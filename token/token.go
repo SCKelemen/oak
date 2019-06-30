@@ -39,6 +39,7 @@ const (
 	_keywords_beg
 	TYPE
 	SWITCH
+	RETURN
 	_keywords_end
 )
 
@@ -71,6 +72,7 @@ var tokens = [...]string{
 
 	TYPE:   "type",
 	SWITCH: "switch",
+	RETURN: "return",
 }
 
 func (token TokenKind) String() string {

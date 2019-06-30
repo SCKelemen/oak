@@ -14,6 +14,10 @@ type Parser struct {
 	peekToken    token.Token
 
 	errors []string
+
+	prefixParseFns map[token.TokenKind]prefixParseFn
+	infixParseFns  map[token.TokenKind]infixParseFn
+	// postfixParseFns map[token.TokenKind]postfixParseFn
 }
 
 func New(lxr *scanner.Scanner) *Parser {
@@ -31,6 +35,14 @@ func New(lxr *scanner.Scanner) *Parser {
 
 func (p *Parser) Errors() []string {
 	return p.errors
+}
+
+func (p *Parser) registerPrefix(TokenKind token.TokenKind, fn prefixParseFn) {
+	p.prefixParseFns[TokenKind] = fn
+}
+
+func (p *Parser) registerInfix(TokenKind token.TokenKind, fn infixParseFn) {
+	p.infixParseFns[TokenKind] = fn
 }
 
 func (p *Parser) nextToken() {
@@ -56,10 +68,25 @@ func (p *Parser) parseTypeDeclaration() *ast.TypeDeclarationStatement {
 	return stmt
 }
 
+func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
+	stmt := &ast.ReturnStatement{Token: p.currentToken}
+
+	p.nextToken()
+
+	// TODO: skip shit
+	for !p.currentTokenIs(token.SEMI) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
 func (p *Parser) parseStatement() ast.Statement {
 	switch p.currentToken.TokenKind {
 	case token.TYPE:
 		return p.parseTypeDeclaration()
+	case token.RETURN:
+		return p.parseReturnStatement()
 	default:
 		return nil
 	}
@@ -102,3 +129,11 @@ func (p *Parser) peekError(t token.TokenKind) {
 	msg := fmt.Sprintf("expected next token to be '%s', received %s", t, p.peekToken.TokenKind)
 	p.errors = append(p.errors, msg)
 }
+
+// pratt and whitney parsing engines
+
+type (
+	prefixParseFn func() ast.Expression
+	infixParseFn  func(ast.Expression) ast.Expression
+	// postfixParseFn func() ast.Expression
+)
