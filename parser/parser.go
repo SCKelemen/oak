@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"fmt"
+
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/scanner"
 	"github.com/SCKelemen/oak/token"
@@ -10,16 +12,25 @@ type Parser struct {
 	lxr          *scanner.Scanner
 	currentToken token.Token
 	peekToken    token.Token
+
+	errors []string
 }
 
 func New(lxr *scanner.Scanner) *Parser {
-	p := &Parser{lxr: lxr}
+	p := &Parser{
+		lxr:    lxr,
+		errors: []string{},
+	}
 
 	// load the first 2 tokens
 	p.nextToken()
 	p.nextToken()
 
 	return p
+}
+
+func (p *Parser) Errors() []string {
+	return p.errors
 }
 
 func (p *Parser) nextToken() {
@@ -82,6 +93,12 @@ func (p *Parser) expectPeek(t token.TokenKind) bool {
 		p.nextToken()
 		return true
 	} else {
+		p.peekError(t)
 		return false
 	}
+}
+
+func (p *Parser) peekError(t token.TokenKind) {
+	msg := fmt.Sprintf("expected next token to be '%s', received %s", t, p.peekToken.TokenKind)
+	p.errors = append(p.errors, msg)
 }
