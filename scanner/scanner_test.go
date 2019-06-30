@@ -93,3 +93,40 @@ func TestScanKeywordWithExtraNoise(t *testing.T) {
 		}
 	}
 }
+
+func TestScanShortExampleProgram(t *testing.T) {
+	input := `
+	type ReaderWriterCloser
+		= Reader
+		& Writer
+		& Closer
+	`
+	tests := []struct {
+		expectedKind    token.TokenKind
+		expectedLiteral string
+	}{
+		{token.TYPE, "type"},
+		{token.IDENT, "ReaderWriterCloser"},
+		{token.EQL, "="},
+		{token.IDENT, "Reader"},
+		{token.AMP, "&"},
+		{token.IDENT, "Writer"},
+		{token.AMP, "&"},
+		{token.IDENT, "Closer"},
+		{token.EOF, ""},
+	}
+
+	scnr := New(input)
+	for i, tt := range tests {
+		tok := scnr.NextToken()
+		if tok.TokenKind != tt.expectedKind {
+			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q",
+				i, tt.expectedKind, tok.TokenKind)
+		}
+
+		if tok.Literal != tt.expectedLiteral {
+			t.Fatalf("tests[%d] - literal wrong. expected=%q, got=%q",
+				i, tt.expectedLiteral, tok.Literal)
+		}
+	}
+}

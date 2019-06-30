@@ -5,8 +5,8 @@ import "strconv"
 type TokenKind int
 
 type Token struct {
-	TokenKind
-	Literal string
+	TokenKind TokenKind
+	Literal   string
 }
 
 const (
