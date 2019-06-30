@@ -102,6 +102,12 @@ func (s *Scanner) NextToken() token.Token {
 	case '=':
 		tok = newToken(token.EQL, s.current)
 
+	// handle bitwise/type like things
+	case '|':
+		tok = newToken(token.PIPE, s.current)
+	case '&':
+		tok = newToken(token.AMP, s.current)
+
 	// handle the nul/eof char
 	case 0:
 		tok.Literal = ""

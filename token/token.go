@@ -33,6 +33,9 @@ const (
 
 	EQL // =
 
+	PIPE // |
+	AMP  // &
+
 	_keywords_beg
 	TYPE
 	SWITCH
@@ -62,6 +65,9 @@ var tokens = [...]string{
 	SEMI:  ";",
 
 	EQL: "=",
+
+	PIPE: "|",
+	AMP:  "&",
 
 	TYPE:   "type",
 	SWITCH: "switch",
