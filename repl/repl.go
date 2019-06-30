@@ -9,7 +9,7 @@ import (
 	"github.com/SCKelemen/oak/token"
 )
 
-const PROMPT = "🌳>"
+const PROMPT = "🌳> "
 
 func Start(in io.Reader, out io.Writer) {
 	scnr := bufio.NewScanner(in)
