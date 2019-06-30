@@ -1,5 +1,7 @@
 package token
 
+import "strconv"
+
 type TokenKind int
 
 type Token struct {
@@ -63,6 +65,17 @@ var tokens = [...]string{
 
 	TYPE:   "type",
 	SWITCH: "switch",
+}
+
+func (token TokenKind) String() string {
+	s := ""
+	if 0 <= token && token < TokenKind(len(tokens)) {
+		s = tokens[token]
+	}
+	if s == "" {
+		s = "token(" + strconv.Itoa(int(token)) + ")"
+	}
+	return s
 }
 
 var keywords map[string]TokenKind
