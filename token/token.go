@@ -92,3 +92,10 @@ func init() {
 		keywords[tokens[i]] = i
 	}
 }
+
+func Lookup(candidate string) TokenKind {
+	if tok, isKeyword := keywords[candidate]; isKeyword {
+		return tok
+	}
+	return IDENT
+}

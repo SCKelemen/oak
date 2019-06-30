@@ -42,3 +42,54 @@ func TestNextToken(t *testing.T) {
 		}
 	}
 }
+
+func TestScanKeyword(t *testing.T) {
+	input := "type"
+	tests := []struct {
+		expectedKind    token.TokenKind
+		expectedLiteral string
+	}{
+		{token.TYPE, "type"},
+		{token.EOF, ""},
+	}
+
+	scnr := New(input)
+	for i, tt := range tests {
+		tok := scnr.NextToken()
+		if tok.TokenKind != tt.expectedKind {
+			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q",
+				i, tt.expectedKind, tok.TokenKind)
+		}
+
+		if tok.Literal != tt.expectedLiteral {
+			t.Fatalf("tests[%d] - literal wrong. expected=%q, got=%q",
+				i, tt.expectedLiteral, tok.Literal)
+		}
+	}
+}
+func TestScanKeywordWithExtraNoise(t *testing.T) {
+	input := "type.keyWord"
+	tests := []struct {
+		expectedKind    token.TokenKind
+		expectedLiteral string
+	}{
+		{token.TYPE, "type"},
+		{token.DOT, "."},
+		{token.IDENT, "keyWord"},
+		{token.EOF, ""},
+	}
+
+	scnr := New(input)
+	for i, tt := range tests {
+		tok := scnr.NextToken()
+		if tok.TokenKind != tt.expectedKind {
+			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q",
+				i, tt.expectedKind, tok.TokenKind)
+		}
+
+		if tok.Literal != tt.expectedLiteral {
+			t.Fatalf("tests[%d] - literal wrong. expected=%q, got=%q",
+				i, tt.expectedLiteral, tok.Literal)
+		}
+	}
+}

@@ -114,7 +114,12 @@ func (s *Scanner) NextToken() token.Token {
 		tok.TokenKind = token.EOF
 
 	default:
-		tok = newToken(token.ILLEGAL, s.current)
+		if util.IsLetter(s.current) {
+			tok.Literal = s.readWord()
+			tok.TokenKind = token.Lookup(tok.Literal)
+		} else {
+			tok = newToken(token.ILLEGAL, s.current)
+		}
 	}
 	s.readChar()
 	return tok
@@ -132,4 +137,14 @@ func (s *Scanner) skipWhitespace() {
 
 func newToken(kind token.TokenKind, ch rune) token.Token {
 	return token.Token{TokenKind: kind, Literal: string(ch)}
+}
+
+// read until the next space
+func (s *Scanner) readWord() string {
+	position := s.head
+	for util.IsIdentifierChar(s.current) {
+		s.readChar()
+	}
+	s.read--
+	return s.input[position:s.head]
 }
