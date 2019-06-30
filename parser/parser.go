@@ -26,6 +26,11 @@ func New(lxr *scanner.Scanner) *Parser {
 		errors: []string{},
 	}
 
+	// register functions
+	p.prefixParseFns = make(map[token.TokenKind]prefixParseFn)
+	p.registerPrefix(token.IDENT, p.parseIdentifier)
+	p.infixParseFns = make(map[token.TokenKind]infixParseFn)
+
 	// load the first 2 tokens
 	p.nextToken()
 	p.nextToken()
@@ -88,8 +93,32 @@ func (p *Parser) parseStatement() ast.Statement {
 	case token.RETURN:
 		return p.parseReturnStatement()
 	default:
+		return p.parseExpressionStatement()
+	}
+}
+
+func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
+	stmt := &ast.ExpressionStatement{Token: p.currentToken}
+
+	stmt.Expression = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(token.SEMI) {
+		p.nextToken()
+	}
+	return stmt
+}
+
+func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
+	prefix := p.prefixParseFns[p.currentToken.TokenKind]
+	if prefix == nil {
 		return nil
 	}
+	leftExp := prefix()
+	return leftExp
+}
+
+func (p *Parser) parseIdentifier() ast.Expression {
+	return &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 }
 
 func (p *Parser) ParseProgram() *ast.Program {
@@ -136,4 +165,19 @@ type (
 	prefixParseFn func() ast.Expression
 	infixParseFn  func(ast.Expression) ast.Expression
 	// postfixParseFn func() ast.Expression
+)
+
+// we should really move this father up (token.go/scanner.go)
+type Precedence int
+
+const (
+	_ Precedence = iota
+	LOWEST
+	EQUALITY   // ==
+	COMPARE    // > or <
+	SUMMATION  // +
+	PRODUCT    // *
+	PREFIX     // -x or !x
+	INVOCATION // aka Call, myfunction(x)
+
 )
