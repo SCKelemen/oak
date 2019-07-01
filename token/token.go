@@ -32,7 +32,7 @@ const (
 	COLON // :
 	SEMI  // ;
 
-	EQL // =
+	ASSIGN // ==
 
 	PIPE // |
 	AMP  // &
@@ -44,10 +44,15 @@ const (
 	MUL // *
 	QUO // /
 
+	EQL  // ==
+	NEQL // !=
+
 	_keywords_beg
 	TYPE
 	SWITCH
 	RETURN
+	TRUE
+	FALSE
 	_keywords_end
 )
 
@@ -74,7 +79,7 @@ var tokens = [...]string{
 	COLON: ":",
 	SEMI:  ";",
 
-	EQL: "=",
+	ASSIGN: "=",
 
 	PIPE: "|",
 	AMP:  "&",
@@ -85,9 +90,14 @@ var tokens = [...]string{
 	MUL: "*",
 	QUO: "/",
 
+	EQL:  "==",
+	NEQL: "!=",
+
 	TYPE:   "type",
 	SWITCH: "switch",
 	RETURN: "return",
+	TRUE:   "true",
+	FALSE:  "false",
 }
 
 func (token TokenKind) String() string {

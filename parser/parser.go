@@ -40,6 +40,7 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.registerInfix(token.MUL, p.parseInfixExpression)
 	p.registerInfix(token.QUO, p.parseInfixExpression)
 	p.registerInfix(token.EQL, p.parseInfixExpression)
+	p.registerInfix(token.NEQL, p.parseInfixExpression)
 	p.registerInfix(token.LCHEV, p.parseInfixExpression)
 	p.registerInfix(token.RCHEV, p.parseInfixExpression)
 
@@ -251,6 +252,7 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 
 var precedences = map[token.TokenKind]Precedence{
 	token.EQL:   EQUALITY,
+	token.NEQL:  EQUALITY,
 	token.LCHEV: COMPARE,
 	token.RCHEV: COMPARE,
 	token.NEG:   SUMMATION,

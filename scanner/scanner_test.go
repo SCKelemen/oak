@@ -22,7 +22,7 @@ func TestNextToken(t *testing.T) {
 		{token.DOT, "."},
 		{token.SEMI, ";"},
 		{token.COLON, ":"},
-		{token.EQL, "="},
+		{token.ASSIGN, "="},
 		{token.PIPE, "|"},
 		{token.AMP, "&"},
 		{token.BANG, "!"},
@@ -109,12 +109,40 @@ func TestScanShortExampleProgram(t *testing.T) {
 	}{
 		{token.TYPE, "type"},
 		{token.IDENT, "ReaderWriterCloser"},
-		{token.EQL, "="},
+		{token.ASSIGN, "="},
 		{token.IDENT, "Reader"},
 		{token.AMP, "&"},
 		{token.IDENT, "Writer"},
 		{token.AMP, "&"},
 		{token.IDENT, "Closer"},
+		{token.EOF, ""},
+	}
+
+	scnr := New(input)
+	for i, tt := range tests {
+		tok := scnr.NextToken()
+		if tok.TokenKind != tt.expectedKind {
+			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q",
+				i, tt.expectedKind, tok.TokenKind)
+		}
+
+		if tok.Literal != tt.expectedLiteral {
+			t.Fatalf("tests[%d] - literal wrong. expected=%q, got=%q",
+				i, tt.expectedLiteral, tok.Literal)
+		}
+	}
+}
+
+func TestScanMultiChars(t *testing.T) {
+	input := "== = != !"
+	tests := []struct {
+		expectedKind    token.TokenKind
+		expectedLiteral string
+	}{
+		{token.EQL, "=="},
+		{token.ASSIGN, "="},
+		{token.NEQL, "!="},
+		{token.BANG, "!"},
 		{token.EOF, ""},
 	}
 

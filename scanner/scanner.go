@@ -100,8 +100,14 @@ func (s *Scanner) NextToken() token.Token {
 
 	// handle arithmeticy things
 	case '=':
-		tok = newToken(token.EQL, s.current)
-
+		if s.peekChar() == '=' {
+			ch := s.current
+			s.readChar()
+			literal := string(ch) + string(s.current)
+			tok = token.Token{TokenKind: token.EQL, Literal: literal}
+		} else {
+			tok = newToken(token.ASSIGN, s.current)
+		}
 	// handle bitwise/type like things
 	case '|':
 		tok = newToken(token.PIPE, s.current)
@@ -109,7 +115,14 @@ func (s *Scanner) NextToken() token.Token {
 		tok = newToken(token.AMP, s.current)
 
 	case '!':
-		tok = newToken(token.BANG, s.current)
+		if s.peekChar() == '=' {
+			ch := s.current
+			s.readChar()
+			literal := string(ch) + string(s.current)
+			tok = token.Token{TokenKind: token.NEQL, Literal: literal}
+		} else {
+			tok = newToken(token.BANG, s.current)
+		}
 	case '-':
 		tok = newToken(token.NEG, s.current)
 	case '+':
@@ -170,4 +183,12 @@ func (s *Scanner) readNumber() string {
 	}
 	s.read--
 	return s.input[position:s.head]
+}
+
+func (s *Scanner) peekChar() byte {
+	if s.read >= len(s.input) {
+		return 0
+	} else {
+		return s.input[s.read]
+	}
 }
