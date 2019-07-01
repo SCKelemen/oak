@@ -40,6 +40,9 @@ const (
 
 	// arithmeticy bits
 	NEG // -
+	SUM // +
+	MUL // *
+	QUO // /
 
 	_keywords_beg
 	TYPE
@@ -78,6 +81,9 @@ var tokens = [...]string{
 	BANG: "!",
 
 	NEG: "-",
+	SUM: "+",
+	MUL: "*",
+	QUO: "/",
 
 	TYPE:   "type",
 	SWITCH: "switch",

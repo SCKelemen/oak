@@ -33,7 +33,15 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.registerPrefix(token.INT, p.parseIntegerLiteral)
 	p.registerPrefix(token.BANG, p.parsePrefixExpression)
 	p.registerPrefix(token.NEG, p.parsePrefixExpression)
+
 	p.infixParseFns = make(map[token.TokenKind]infixParseFn)
+	p.registerInfix(token.SUM, p.parseInfixExpression)
+	p.registerInfix(token.NEG, p.parseInfixExpression)
+	p.registerInfix(token.MUL, p.parseInfixExpression)
+	p.registerInfix(token.QUO, p.parseInfixExpression)
+	p.registerInfix(token.EQL, p.parseInfixExpression)
+	p.registerInfix(token.LCHEV, p.parseInfixExpression)
+	p.registerInfix(token.RCHEV, p.parseInfixExpression)
 
 	// load the first 2 tokens
 	p.nextToken()
@@ -119,6 +127,16 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 		return nil
 	}
 	leftExp := prefix()
+
+	for !p.peekTokenIs(token.SEMI) && precendece < p.peekPrecedence() {
+		infix := p.infixParseFns[p.peekToken.TokenKind]
+		if infix == nil {
+			return leftExp
+		}
+
+		p.nextToken()
+		leftExp = infix(leftExp)
+	}
 	return leftExp
 }
 
@@ -215,4 +233,43 @@ func (p *Parser) parsePrefixExpression() ast.Expression {
 	p.nextToken()
 	exp.Right = p.parseExpression(PREFIX)
 	return exp
+}
+
+func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
+	exp := &ast.InfixExpression{
+		Token:    p.currentToken,
+		Operator: p.currentToken.Literal,
+		Left:     left,
+	}
+
+	precedence := p.currentPrecedence()
+	p.nextToken()
+	exp.Right = p.parseExpression(precedence)
+
+	return exp
+}
+
+var precedences = map[token.TokenKind]Precedence{
+	token.EQL:   EQUALITY,
+	token.LCHEV: COMPARE,
+	token.RCHEV: COMPARE,
+	token.NEG:   SUMMATION,
+	token.SUM:   SUMMATION,
+	token.MUL:   PRODUCT,
+	token.QUO:   PRODUCT,
+}
+
+func (p *Parser) peekPrecedence() Precedence {
+	if p, ok := precedences[p.peekToken.TokenKind]; ok {
+		return p
+	}
+	return LOWEST
+}
+
+func (p *Parser) currentPrecedence() Precedence {
+	if p, ok := precedences[p.currentToken.TokenKind]; ok {
+		return p
+	}
+
+	return LOWEST
 }

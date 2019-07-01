@@ -112,6 +112,12 @@ func (s *Scanner) NextToken() token.Token {
 		tok = newToken(token.BANG, s.current)
 	case '-':
 		tok = newToken(token.NEG, s.current)
+	case '+':
+		tok = newToken(token.SUM, s.current)
+	case '*':
+		tok = newToken(token.MUL, s.current)
+	case '/':
+		tok = newToken(token.QUO, s.current)
 
 	// handle the nul/eof char
 	case 0:

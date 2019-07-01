@@ -255,3 +255,85 @@ func TestPrefixExpressions(t *testing.T) {
 
 	}
 }
+
+func TestInfixExpressions(t *testing.T) {
+	infixTests := []struct {
+		input      string
+		leftValue  int64
+		operator   string
+		rightValue int64
+	}{
+		{"5 + 5;", 5, "+", 5},
+		{"5 - 5;", 5, "-", 5},
+		{"5 * 5;", 5, "*", 5},
+		{"5 / 5;", 5, "/", 5},
+		{"5 > 5;", 5, ">", 5},
+		{"5 < 5;", 5, "<", 5},
+		{"5 == 5;", 5, "==", 5},
+		{"5 != 5;", 5, "!=", 5},
+	}
+
+	for _, tt := range infixTests {
+		lxr := scanner.New(tt.input)
+		p := New(lxr)
+		program := p.ParseProgram()
+		errors := p.Errors()
+		if len(errors) != 0 {
+			t.Errorf("parser had %d errors", len(errors))
+			for _, msg := range errors {
+				t.Errorf("parser error: %q", msg)
+			}
+			t.FailNow()
+		}
+
+		if len(program.Statements) != 1 {
+			t.Fatalf("Program has an unexpected number of statements. Expected 1, received %d", len(program.Statements))
+		}
+
+		stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+		if !ok {
+			t.Fatalf("program.Statements[0]  is not *ast.ExpressionStatement. Received %T", program.Statements[0])
+		}
+
+		exp, ok := stmt.Expression.(*ast.InfixExpression)
+		if !ok {
+
+			t.Fatalf("stmt is not of type ast.InfixExpression, received %T", stmt.Expression)
+		}
+
+		if testIntegerLiteral(t, exp.Left, tt.leftValue) {
+			return
+		}
+
+		if exp.Operator != tt.operator {
+			t.Fatalf("exp.Operator is not '%s', received %s", tt.operator, exp.Operator)
+		}
+
+		if testIntegerLiteral(t, exp.Right, tt.rightValue) {
+			return
+		}
+	}
+}
+
+////////////
+///////////
+func testIntegerLiteral(t *testing.T, il ast.Expression, value int64) bool {
+	integ, ok := il.(*ast.IntegerLiteral)
+	if !ok {
+		t.Errorf("il not *ast.IntegerLiteral. got=%T", il)
+		return false
+	}
+
+	if integ.Value != value {
+		t.Errorf("integ.Value not %d. got=%d", value, integ.Value)
+		return false
+	}
+
+	if integ.TokenLiteral() != fmt.Sprintf("%d", value) {
+		t.Errorf("integ.TokenLiteral not %d. got=%s", value,
+			integ.TokenLiteral())
+		return false
+	}
+
+	return true
+}
