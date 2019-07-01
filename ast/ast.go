@@ -97,16 +97,9 @@ func (rs *ReturnStatement) String() string {
 	return out.String()
 }
 
-// ExpressionStatement is probably not necessary
-// the goal here is to allow an expression to
-// exist without doing anything with it's value
-// for example:
-// let x = 5;
-// here 5 is an expression, and it's value is
-// bound to x. However, it's perfectly acceptable
-// to produce an expression, and do nothing with it:
-// x + 5;
-// this will produce 10, but will do nothing with it.
+// ExpressionStatement is required for
+// side-effecting code such as
+// counter++;
 type ExpressionStatement struct {
 	Token      token.Token // the first token of the expression
 	Expression Expression

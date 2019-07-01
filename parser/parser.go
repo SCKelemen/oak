@@ -250,6 +250,7 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	return exp
 }
 
+// all of these should probably move down to the lexer/scanner
 var precedences = map[token.TokenKind]Precedence{
 	token.EQL:   EQUALITY,
 	token.NEQL:  EQUALITY,
