@@ -31,6 +31,8 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.prefixParseFns = make(map[token.TokenKind]prefixParseFn)
 	p.registerPrefix(token.IDENT, p.parseIdentifier)
 	p.registerPrefix(token.INT, p.parseIntegerLiteral)
+	p.registerPrefix(token.BANG, p.parsePrefixExpression)
+	p.registerPrefix(token.NEG, p.parsePrefixExpression)
 	p.infixParseFns = make(map[token.TokenKind]infixParseFn)
 
 	// load the first 2 tokens
@@ -113,6 +115,7 @@ func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
 func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 	prefix := p.prefixParseFns[p.currentToken.TokenKind]
 	if prefix == nil {
+		p.noPrefixParseFn(p.currentToken.TokenKind)
 		return nil
 	}
 	leftExp := prefix()
@@ -197,3 +200,19 @@ const (
 	INVOCATION // aka Call, myfunction(x)
 
 )
+
+func (p *Parser) noPrefixParseFn(t token.TokenKind) {
+	msg := fmt.Sprintf("no prefix parse function defined for TokenKind %s", t)
+	p.errors = append(p.errors, msg)
+}
+
+func (p *Parser) parsePrefixExpression() ast.Expression {
+	exp := &ast.PrefixExpression{
+		Token:    p.currentToken,
+		Operator: p.currentToken.Literal,
+	}
+
+	p.nextToken()
+	exp.Right = p.parseExpression(PREFIX)
+	return exp
+}

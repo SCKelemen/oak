@@ -108,6 +108,11 @@ func (s *Scanner) NextToken() token.Token {
 	case '&':
 		tok = newToken(token.AMP, s.current)
 
+	case '!':
+		tok = newToken(token.BANG, s.current)
+	case '-':
+		tok = newToken(token.NEG, s.current)
+
 	// handle the nul/eof char
 	case 0:
 		tok.Literal = ""

@@ -36,6 +36,10 @@ const (
 
 	PIPE // |
 	AMP  // &
+	BANG // !
+
+	// arithmeticy bits
+	NEG // -
 
 	_keywords_beg
 	TYPE
@@ -71,6 +75,9 @@ var tokens = [...]string{
 
 	PIPE: "|",
 	AMP:  "&",
+	BANG: "!",
+
+	NEG: "-",
 
 	TYPE:   "type",
 	SWITCH: "switch",

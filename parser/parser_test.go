@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/SCKelemen/oak/ast"
@@ -188,4 +189,69 @@ func TestIntegerLiteralExpression(t *testing.T) {
 		t.Errorf("literal.TokenLiteral not %s, received %s", "5", literal.TokenLiteral())
 	}
 
+}
+
+func TestPrefixExpressions(t *testing.T) {
+	prefixTests := []struct {
+		input        string
+		operator     string
+		integerValue int64
+	}{
+		{"!5;", "!", 5},
+		{"-15;", "-", 15},
+	}
+
+	for _, tt := range prefixTests {
+		lxr := scanner.New(tt.input)
+		p := New(lxr)
+		program := p.ParseProgram()
+		errors := p.Errors()
+		if len(errors) != 0 {
+			t.Errorf("parser had %d errors", len(errors))
+			for _, msg := range errors {
+				t.Errorf("parser error: %q", msg)
+			}
+			t.FailNow()
+		}
+
+		if len(program.Statements) != 1 {
+			t.Fatalf("Program has an unexpected number of statements. Expected 1, received %d", len(program.Statements))
+		}
+
+		stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+		if !ok {
+			t.Fatalf("program.Statements[0]  is not *ast.ExpressionStatement. Received %T", program.Statements[0])
+		}
+
+		exp, ok := stmt.Expression.(*ast.PrefixExpression)
+		if !ok {
+
+			t.Fatalf("stmt is not of type ast.PrefixExpression, received %T", stmt.Expression)
+		}
+
+		if exp.Operator != tt.operator {
+			t.Fatalf("exp.Operator is not '%s', received %s", tt.operator, exp.Operator)
+		}
+
+		// test integer literals
+
+		integ, ok := exp.Right.(*ast.IntegerLiteral)
+		if !ok {
+			t.Fatalf("exp.Right not of type *ast.IntegerLiteral, received %T", exp.Right)
+
+		}
+
+		if integ.Value != tt.integerValue {
+			t.Fatalf("integ.Value not %d, received %d", tt.integerValue, integ.Value)
+
+		}
+
+		if integ.TokenLiteral() != fmt.Sprintf("%d", tt.integerValue) {
+			t.Fatalf("integ.TokenLiteral not %d, received %s", tt.integerValue,
+				integ.TokenLiteral())
+
+		}
+		// end
+
+	}
 }

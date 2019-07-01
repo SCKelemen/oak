@@ -129,3 +129,22 @@ type IntegerLiteral struct {
 func (lit *IntegerLiteral) expressionNode()      {}
 func (lit *IntegerLiteral) TokenLiteral() string { return lit.Token.Literal }
 func (lit *IntegerLiteral) String() string       { return lit.Token.Literal }
+
+type PrefixExpression struct {
+	Token    token.Token // prefix tokens: !, -, *
+	Operator string
+	Right    Expression
+}
+
+func (pe *PrefixExpression) expressionNode()      {}
+func (pe *PrefixExpression) TokenLiteral() string { return pe.Token.Literal }
+func (pe *PrefixExpression) String() string {
+	var out bytes.Buffer
+
+	out.WriteRune('(')
+	out.WriteString(pe.Operator)
+	out.WriteString(pe.Right.String())
+	out.WriteRune(')')
+
+	return out.String()
+}
