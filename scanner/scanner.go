@@ -117,6 +117,9 @@ func (s *Scanner) NextToken() token.Token {
 		if util.IsLetter(s.current) {
 			tok.Literal = s.readWord()
 			tok.TokenKind = token.Lookup(tok.Literal)
+		} else if util.IsDigit(s.current) {
+			tok.Literal = s.readNumber()
+			tok.TokenKind = token.INT
 		} else {
 			tok = newToken(token.ILLEGAL, s.current)
 		}
@@ -143,6 +146,15 @@ func newToken(kind token.TokenKind, ch rune) token.Token {
 func (s *Scanner) readWord() string {
 	position := s.head
 	for util.IsIdentifierChar(s.current) {
+		s.readChar()
+	}
+	s.read--
+	return s.input[position:s.head]
+}
+
+func (s *Scanner) readNumber() string {
+	position := s.head
+	for util.IsDigit(s.current) {
 		s.readChar()
 	}
 	s.read--

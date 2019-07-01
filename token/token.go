@@ -16,6 +16,7 @@ const (
 	COMMENT
 
 	IDENT
+	INT // for natural numbers
 
 	LBRACK // [
 	RBRACK // ]
@@ -50,6 +51,7 @@ var tokens = [...]string{
 	COMMENT: "COMMENT",
 
 	IDENT: "IDENTITY",
+	INT:   "INT",
 
 	LBRACK: "[",
 	RBRACK: "]",
