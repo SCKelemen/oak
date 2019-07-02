@@ -25,8 +25,8 @@ identify the type, as well as to establish visibility. As
 in Go, a capital letter will indicate a public type, 
 otherwise the type will be private.
 
-The colon denotes a type annotation. The type of lexer is
-another type. This makes sense, because class are also types.
+The colon denotes a type annotation. The type of Lexer is
+another type. This makes sense; classes are also types.
 
 ```elm
 Lexer: type 
@@ -51,7 +51,7 @@ In conclusion, we have type which is an intersection of a collection
 of other named types. This is type composition, and the primary 
 construct of the language. 
 
-The language also provide syntactic sugar for using types in a 
+The language also provides syntactic sugar for using types in a 
 more familiar manner. Instead of using intersection '&', a 
 property dot notation is provided:
 
