@@ -276,6 +276,112 @@ func TestFunctionArguments(t *testing.T) {
 	}
 }
 
+func TestInvocationExpression(t *testing.T) {
+	input := "add(1, 2 * 3, 4 + 5);"
+
+	lxr := scanner.New(input)
+	p := New(lxr)
+	program := p.ParseProgram()
+	errors := p.Errors()
+	if len(errors) != 0 {
+		t.Errorf("parser had %d errors", len(errors))
+		for _, msg := range errors {
+			t.Errorf("parser error: %q", msg)
+		}
+		t.FailNow()
+	}
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program.Statements does not contain %d statements, received %d\n",
+			1, len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("program.Statements[0] is not of type ast.ExpressionStatement, received %T",
+			program.Statements[0])
+	}
+
+	expr, ok := stmt.Expression.(*ast.InvocationExpression)
+	if !ok {
+		t.Fatalf("expression not of type *ast.InvocationExpression, received %T", stmt.Expression)
+	}
+
+	if !testIdentifier(t, expr.Function, "add") {
+		return
+	}
+
+	if len(expr.Arguments) != 3 {
+		t.Fatalf("Unexpected length of arguments. Expected 3, received %d", len(expr.Arguments))
+	}
+
+	testLiteralExpression(t, expr.Arguments[0], 1)
+	testInfixExpression(t, expr.Arguments[1], 2, "*", 3)
+	testInfixExpression(t, expr.Arguments[2], 4, "+", 5)
+
+}
+
+func TestInvocationExpressionArguments(t *testing.T) {
+	tests := []struct {
+		input         string
+		expectedIdent string
+		expectedArgs  []string
+	}{
+		{
+			input:         "add();",
+			expectedIdent: "add",
+			expectedArgs:  []string{},
+		},
+		{
+			input:         "add(1);",
+			expectedIdent: "add",
+			expectedArgs:  []string{"1"},
+		},
+		{
+			input:         "add(1, 2 * 3, 4 + 5);",
+			expectedIdent: "add",
+			expectedArgs:  []string{"1", "(2 * 3)", "(4 + 5)"},
+		},
+	}
+
+	for _, tt := range tests {
+		lxr := scanner.New(tt.input)
+		p := New(lxr)
+		program := p.ParseProgram()
+		errors := p.Errors()
+		if len(errors) != 0 {
+			t.Errorf("parser had %d errors", len(errors))
+			for _, msg := range errors {
+				t.Errorf("parser error: %q", msg)
+			}
+			t.FailNow()
+		}
+
+		stmt := program.Statements[0].(*ast.ExpressionStatement)
+		exp, ok := stmt.Expression.(*ast.InvocationExpression)
+		if !ok {
+			t.Fatalf("stmt.Expression is not of type ast.InvocationExpression, received %T",
+				stmt.Expression)
+		}
+
+		if !testIdentifier(t, exp.Function, tt.expectedIdent) {
+			return
+		}
+
+		if len(exp.Arguments) != len(tt.expectedArgs) {
+			t.Fatalf("Unexpected argument length. Expected %d, received %d",
+				len(tt.expectedArgs), len(exp.Arguments))
+		}
+
+		for i, arg := range tt.expectedArgs {
+			if exp.Arguments[i].String() != arg {
+				t.Errorf("Unexpected argument at position %d: Expected %q, received %q", i,
+					arg, exp.Arguments[i].String())
+			}
+		}
+	}
+}
+
 func TestParsingPrefixExpressions(t *testing.T) {
 	prefixTests := []struct {
 		input    string
@@ -467,6 +573,18 @@ func TestOperatorPrecedenceParsing(t *testing.T) {
 		{
 			"69 < 420 == true",
 			"((69 < 420) == true)",
+		},
+		{
+			"a + add(b * c) + d",
+			"((a + add((b * c))) + d)",
+		},
+		{
+			"add(a, b, 1, 2 * 3, 4 + 5, add(6, 7 * 8))",
+			"add(a, b, 1, (2 * 3), (4 + 5), add(6, (7 * 8)))",
+		},
+		{
+			"add(a + b + c * d / f + g)",
+			"add((((a + b) + ((c * d) / f)) + g))",
 		},
 	}
 

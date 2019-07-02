@@ -241,3 +241,28 @@ func (fl *FunctionLiteral) String() string {
 
 	return out.String()
 }
+
+type InvocationExpression struct {
+	Token     token.Token // ( token
+	Function  Expression  // Identifier || FunctionLiteral
+	Arguments []Expression
+}
+
+func (ie InvocationExpression) expressionNode()      {}
+func (ie InvocationExpression) TokenLiteral() string { return ie.Token.Literal }
+func (ie InvocationExpression) String() string {
+	var out bytes.Buffer
+
+	args := []string{}
+	for _, arg := range ie.Arguments {
+		args = append(args, arg.String())
+	}
+
+	out.WriteString(ie.Function.String())
+	out.WriteRune('(')
+	out.WriteString(strings.Join(args, ", "))
+	out.WriteRune(')')
+
+	return out.String()
+
+}

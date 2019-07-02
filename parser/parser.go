@@ -48,6 +48,7 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.registerInfix(token.NEQL, p.parseInfixExpression)
 	p.registerInfix(token.LCHEV, p.parseInfixExpression)
 	p.registerInfix(token.RCHEV, p.parseInfixExpression)
+	p.registerInfix(token.LPAREN, p.parseInvocationExpression)
 
 	// load the first 2 tokens
 	p.nextToken()
@@ -224,6 +225,36 @@ func (p *Parser) parseFunctionArgs() []*ast.Identifier {
 	return ids
 }
 
+func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expression {
+	exp := &ast.InvocationExpression{Token: p.currentToken, Function: function}
+	exp.Arguments = p.parseInvocationArguments()
+	return exp
+}
+
+func (p *Parser) parseInvocationArguments() []ast.Expression {
+	args := []ast.Expression{}
+
+	p.nextToken()
+
+	if p.currentTokenIs(token.RPAREN) {
+		// return if this is a
+		// parameterless invocation
+		return args
+	}
+
+	args = append(args, p.parseExpression(LOWEST))
+	for p.peekTokenIs(token.COMMA) {
+		p.nextToken()
+		p.nextToken()
+		args = append(args, p.parseExpression(LOWEST))
+	}
+
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+	return args
+}
+
 func (p *Parser) parseBoolean() ast.Expression {
 	return &ast.Boolean{Token: p.currentToken, Value: p.currentTokenIs(token.TRUE)}
 }
@@ -364,14 +395,15 @@ func (p *Parser) parseExpressionGroup() ast.Expression {
 
 // all of these should probably move down to the lexer/scanner
 var precedences = map[token.TokenKind]Precedence{
-	token.EQL:   EQUALITY,
-	token.NEQL:  EQUALITY,
-	token.LCHEV: COMPARE,
-	token.RCHEV: COMPARE,
-	token.NEG:   SUMMATION,
-	token.SUM:   SUMMATION,
-	token.MUL:   PRODUCT,
-	token.QUO:   PRODUCT,
+	token.EQL:    EQUALITY,
+	token.NEQL:   EQUALITY,
+	token.LCHEV:  COMPARE,
+	token.RCHEV:  COMPARE,
+	token.NEG:    SUMMATION,
+	token.SUM:    SUMMATION,
+	token.MUL:    PRODUCT,
+	token.QUO:    PRODUCT,
+	token.LPAREN: INVOCATION,
 }
 
 func (p *Parser) peekPrecedence() Precedence {
