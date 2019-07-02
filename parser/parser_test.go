@@ -277,13 +277,13 @@ func TestParsingInfixExpressions(t *testing.T) {
 		}
 
 		if len(program.Statements) != 1 {
-			t.Fatalf("program.Statements does not contain %d statements. got=%d\n",
+			t.Fatalf("program.Statements does not contain %d statements, received %d\n",
 				1, len(program.Statements))
 		}
 
 		stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
 		if !ok {
-			t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+			t.Fatalf("program.Statements[0] is not of type ast.ExpressionStatement, received %T",
 				program.Statements[0])
 		}
 
@@ -348,6 +348,26 @@ func TestOperatorPrecedenceParsing(t *testing.T) {
 			"((3 + (4 * 5)) == ((3 * 1) + (4 * 5)))",
 		},
 		{
+			"1 + (2 + 3) + 4",
+			"((1 + (2 + 3)) + 4)",
+		},
+		{
+			"(5 + 5) * 2",
+			"((5 + 5) * 2)",
+		},
+		{
+			"2 / (5 + 5)",
+			"(2 / (5 + 5))",
+		},
+		{
+			"-(5 + 5)",
+			"(-(5 + 5))",
+		},
+		{
+			"!(true == true)",
+			"(!(true == true))",
+		},
+		{
 			"true",
 			"true",
 		},
@@ -380,7 +400,7 @@ func TestOperatorPrecedenceParsing(t *testing.T) {
 
 		actual := program.String()
 		if actual != tt.expected {
-			t.Errorf("expected=%q, got=%q", tt.expected, actual)
+			t.Errorf("expected %q, received %q", tt.expected, actual)
 		}
 	}
 }
@@ -408,19 +428,19 @@ func TestBooleanExpression(t *testing.T) {
 		}
 
 		if len(program.Statements) != 1 {
-			t.Fatalf("program has not enough statements. got=%d",
+			t.Fatalf("program does not have enough statements, received %d",
 				len(program.Statements))
 		}
 
 		stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
 		if !ok {
-			t.Fatalf("program.Statements[0] is not ast.ExpressionStatement. got=%T",
+			t.Fatalf("program.Statements[0] is not of type ast.ExpressionStatement, received %T",
 				program.Statements[0])
 		}
 
 		boolean, ok := stmt.Expression.(*ast.Boolean)
 		if !ok {
-			t.Fatalf("exp not *ast.Boolean. got=%T", stmt.Expression)
+			t.Fatalf("exp not of type *ast.Boolean, received %T", stmt.Expression)
 		}
 		if boolean.Value != tt.expected {
 			t.Errorf("boolean.Value not %t. got=%t", tt.expected,
@@ -429,22 +449,145 @@ func TestBooleanExpression(t *testing.T) {
 	}
 }
 
+func TestIfExpression(t *testing.T) {
+	input := `if (x < y) { x } `
+
+	lxr := scanner.New(input)
+	p := New(lxr)
+	program := p.ParseProgram()
+	errors := p.Errors()
+	if len(errors) != 0 {
+		t.Errorf("parser had %d errors", len(errors))
+		for _, msg := range errors {
+			t.Errorf("parser error: %q", msg)
+		}
+		t.FailNow()
+	}
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program does not contain enough statements, received %d",
+			len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("program.Statements[0] is not of type ast.ExpressionStatement, received %T",
+			program.Statements[0])
+	}
+
+	exp, ok := stmt.Expression.(*ast.IfExpression)
+	if !ok {
+		t.Fatalf("exp not of type *ast.IfExpression, received %T", stmt.Expression)
+	}
+
+	if !testInfixExpression(t, exp.Condition, "x", "<", "y") {
+		return
+	}
+
+	if len(exp.Consequence.Statements) != 1 {
+		t.Errorf("Number of statements in consequence was not 1, receive %d\n",
+			len(exp.Consequence.Statements))
+	}
+
+	consequence, ok := exp.Consequence.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("Statements[0] is not of type ast.ExpressionStatement, received %T",
+			exp.Consequence.Statements[0])
+	}
+
+	if !testIdentifier(t, consequence.Expression, "x") {
+		return
+	}
+
+	if exp.Alternative != nil {
+		t.Errorf("exp.Alternative.Statements was not nil, received %+v", exp.Alternative)
+	}
+
+}
+
+func TestIfElseExpression(t *testing.T) {
+	input := `if (x < y) { x } else { y } `
+
+	lxr := scanner.New(input)
+	p := New(lxr)
+	program := p.ParseProgram()
+	errors := p.Errors()
+	if len(errors) != 0 {
+		t.Errorf("parser had %d errors", len(errors))
+		for _, msg := range errors {
+			t.Errorf("parser error: %q", msg)
+		}
+		t.FailNow()
+	}
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program does not contain enough statements, received %d",
+			len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("program.Statements[0] is not of type ast.ExpressionStatement, received %T",
+			program.Statements[0])
+	}
+
+	exp, ok := stmt.Expression.(*ast.IfExpression)
+	if !ok {
+		t.Fatalf("exp not of type *ast.IfExpression, received %T", stmt.Expression)
+	}
+
+	if !testInfixExpression(t, exp.Condition, "x", "<", "y") {
+		return
+	}
+
+	if len(exp.Consequence.Statements) != 1 {
+		t.Errorf("Number of statements in consequence was not 1, receive %d\n",
+			len(exp.Consequence.Statements))
+	}
+
+	consequence, ok := exp.Consequence.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("Statements[0] is not of type ast.ExpressionStatement, received %T",
+			exp.Consequence.Statements[0])
+	}
+
+	if !testIdentifier(t, consequence.Expression, "x") {
+		return
+	}
+
+	if len(exp.Alternative.Statements) != 1 {
+		t.Errorf("Number of statements in Alternative was not 1, receive %d\n",
+			len(exp.Alternative.Statements))
+	}
+
+	alternative, ok := exp.Alternative.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("Statements[0] is not of type ast.ExpressionStatement, received %T",
+			exp.Alternative.Statements[0])
+	}
+
+	if !testIdentifier(t, alternative.Expression, "y") {
+		return
+	}
+
+}
+
 ////////////
 ///////////
 func testIntegerLiteral(t *testing.T, il ast.Expression, value int64) bool {
 	integ, ok := il.(*ast.IntegerLiteral)
 	if !ok {
-		t.Errorf("il not *ast.IntegerLiteral. got=%T", il)
+		t.Errorf("il not of type *ast.IntegerLiteral, received %T", il)
 		return false
 	}
 
 	if integ.Value != value {
-		t.Errorf("integ.Value not %d. got=%d", value, integ.Value)
+		t.Errorf("integ.Value not %d, received %d", value, integ.Value)
 		return false
 	}
 
 	if integ.TokenLiteral() != fmt.Sprintf("%d", value) {
-		t.Errorf("integ.TokenLiteral not %d. got=%s", value,
+		t.Errorf("integ.TokenLiteral not %d, received %s", value,
 			integ.TokenLiteral())
 		return false
 	}

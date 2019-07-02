@@ -53,6 +53,8 @@ const (
 	RETURN
 	TRUE
 	FALSE
+	IF
+	ELSE
 	_keywords_end
 )
 
@@ -98,6 +100,8 @@ var tokens = [...]string{
 	RETURN: "return",
 	TRUE:   "true",
 	FALSE:  "false",
+	IF:     "if",
+	ELSE:   "else",
 }
 
 func (token TokenKind) String() string {
