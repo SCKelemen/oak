@@ -53,7 +53,7 @@ construct of the language.
 
 The language also provide syntactic sugar for using types in a 
 more familiar manner. Instead of using intersection '&', a 
-property dot notation is provided.
+property dot notation is provided:
 
 ```elm
 Lexer: type 
