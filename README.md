@@ -62,3 +62,15 @@ Lexer: type
   .position: int
   .readPos:  int
 ```
+
+
+
+## builtins
+
+- map 
+- filter 
+- reduce
+- take
+- limit 
+- zip
+- transform
