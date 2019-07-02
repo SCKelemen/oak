@@ -74,42 +74,51 @@ func TestTypeDeclarationStatements(t *testing.T) {
 }
 
 func TestReturnStatements(t *testing.T) {
-	input := `
-	return 5;
-	return 10;
-	return 1337;
-	`
+	tests := []struct {
+		input       string
+		expectedId  string
+		expectedVal interface{}
+	}{
+		{"return x = 5;", "x", 5},
+		{"return y = true;", "y", true},
+		{"return foobar == y;", "foobar", "y"},
+	}
 
-	lxr := scanner.New(input)
-	p := New(lxr)
+	for _, tt := range tests {
 
-	program := p.ParseProgram()
-	errors := p.Errors()
-	if len(errors) != 0 {
-		t.Errorf("parser had %d errors", len(errors))
-		for _, msg := range errors {
-			t.Errorf("parser error: %q", msg)
+		lxr := scanner.New(tt.input)
+		p := New(lxr)
+
+		program := p.ParseProgram()
+		errors := p.Errors()
+		if len(errors) != 0 {
+			t.Errorf("parser had %d errors", len(errors))
+			for _, msg := range errors {
+				t.Errorf("parser error: %q", msg)
+			}
+			t.FailNow()
 		}
-		t.FailNow()
-	}
 
-	if program == nil {
-		t.Fatalf("ParseProgram() return nil, which isn't ideal.")
-	}
-	if len(program.Statements) != 3 {
-		t.Fatalf("program doesn't have the correct number of statements. Expected 3, received %d", len(program.Statements))
-	}
+		if len(program.Statements) != 1 {
+			t.Fatalf("program doesn't have the correct number of statements. Expected 1, received %d", len(program.Statements))
+		}
 
-	for _, stmt := range program.Statements {
+		stmt := program.Statements[0]
 		returnStmt, ok := stmt.(*ast.ReturnStatement)
 		if !ok {
-			t.Errorf("stmt not *ast.ReturnStatement, received %T", stmt)
-			continue
+			t.Fatalf("stmt not of type *ast.ReturnStatement, received %T", stmt)
 		}
+
 		if returnStmt.TokenLiteral() != "return" {
-			t.Errorf("returnStmt.TokenLiteral not 'return', received %q", returnStmt.TokenLiteral())
+			t.Fatalf("returnStmt.TokenLiteral not 'return', received %q", returnStmt.TokenLiteral())
 		}
+
+		if !testLiteralExpression(t, returnStmt.ReturnValue, tt.expectedVal) {
+			return
+		}
+
 	}
+
 }
 
 func TestIdentifierExpression(t *testing.T) {

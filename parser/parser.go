@@ -97,7 +97,8 @@ func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 
 	p.nextToken()
 
-	// TODO: skip shit
+	stmt.ReturnValue = p.parseExpression(LOWEST)
+
 	for !p.currentTokenIs(token.SEMI) {
 		p.nextToken()
 	}
