@@ -173,7 +173,7 @@ func TestIntegerLiteralExpression(t *testing.T) {
 
 	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
 	if !ok {
-		t.Fatalf("program.Statements[0]  is not *ast.ExpressionStatement. Received %T", program.Statements[0])
+		t.Fatalf("program.Statements[0]  is not of type *ast.ExpressionStatement, received %T", program.Statements[0])
 	}
 
 	literal, ok := stmt.Expression.(*ast.IntegerLiteral)
@@ -189,6 +189,91 @@ func TestIntegerLiteralExpression(t *testing.T) {
 		t.Errorf("literal.TokenLiteral not %s, received %s", "5", literal.TokenLiteral())
 	}
 
+}
+
+func TestFunctionLiteral(t *testing.T) {
+	input := `func(x, y) { x + y; }`
+
+	lxr := scanner.New(input)
+	p := New(lxr)
+	program := p.ParseProgram()
+	errors := p.Errors()
+	if len(errors) != 0 {
+		t.Errorf("parser had %d errors", len(errors))
+		for _, msg := range errors {
+			t.Errorf("parser error: %q", msg)
+		}
+		t.FailNow()
+	}
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("Program has an unexpected number of statements. Expected 1, received %d", len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("program.Statements[0]  is not of type *ast.ExpressionStatement, received %T", program.Statements[0])
+	}
+
+	literal, ok := stmt.Expression.(*ast.FunctionLiteral)
+	if !ok {
+		t.Fatalf("expression not of type *ast.FunctionLiteral, received %T", stmt.Expression)
+	}
+
+	// arity check
+	if len(literal.Arguments) != 2 {
+		t.Fatalf("Function literal arguments list does not match arity of 2, received %d\n", len(literal.Arguments))
+	}
+
+	testLiteralExpression(t, literal.Arguments[0], "x")
+	testLiteralExpression(t, literal.Arguments[1], "y")
+
+	if len(literal.Body.Statements) != 1 {
+		t.Fatalf("Function literal does not have 1 statement, received %d\n", len(literal.Body.Statements))
+	}
+
+	bStmt, ok := literal.Body.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("function body stmt is not of type ast.ExpressionStatement, received %T", literal.Body.Statements[0])
+	}
+
+	testInfixExpression(t, bStmt.Expression, "x", "+", "y")
+}
+
+func TestFunctionArguments(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{input: "func() {};", expected: []string{}},
+		{input: "func(x) {};", expected: []string{"x"}},
+		{input: "func(x, y, z) {};", expected: []string{"x", "y", "z"}},
+	}
+
+	for _, tt := range tests {
+		lxr := scanner.New(tt.input)
+		p := New(lxr)
+		program := p.ParseProgram()
+		errors := p.Errors()
+		if len(errors) != 0 {
+			t.Errorf("parser had %d errors", len(errors))
+			for _, msg := range errors {
+				t.Errorf("parser error: %q", msg)
+			}
+			t.FailNow()
+		}
+
+		stmt := program.Statements[0].(*ast.ExpressionStatement)
+		function := stmt.Expression.(*ast.FunctionLiteral)
+
+		if len(function.Arguments) != len(tt.expected) {
+			t.Errorf("Incorrect argument arity. Expected %d, received %d\n", len(tt.expected), len(function.Arguments))
+		}
+
+		for i, id := range tt.expected {
+			testLiteralExpression(t, function.Arguments[i], id)
+		}
+	}
 }
 
 func TestParsingPrefixExpressions(t *testing.T) {

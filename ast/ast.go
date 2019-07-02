@@ -2,6 +2,7 @@ package ast
 
 import (
 	"bytes"
+	"strings"
 
 	"github.com/SCKelemen/oak/token"
 )
@@ -212,6 +213,31 @@ func (bs *BlockStatement) String() string {
 	for _, s := range bs.Statements {
 		out.WriteString(s.String())
 	}
+
+	return out.String()
+}
+
+type FunctionLiteral struct {
+	Token     token.Token // func
+	Arguments []*Identifier
+	Body      *BlockStatement
+}
+
+func (fl *FunctionLiteral) expressionNode()      {}
+func (fl *FunctionLiteral) TokenLiteral() string { return fl.Token.Literal }
+func (fl *FunctionLiteral) String() string {
+	var out bytes.Buffer
+
+	args := []string{}
+	for _, arg := range fl.Arguments {
+		args = append(args, arg.String())
+	}
+
+	out.WriteString(fl.TokenLiteral())
+	out.WriteRune('(')
+	out.WriteString(strings.Join(args, ", "))
+	out.WriteRune(')')
+	out.WriteString(fl.Body.String())
 
 	return out.String()
 }
