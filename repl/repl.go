@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/SCKelemen/oak/evaluator"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
 )
@@ -31,8 +32,11 @@ func Start(in io.Reader, out io.Writer) {
 			continue
 		}
 
-		io.WriteString(out, program.String())
-		io.WriteString(out, "\n")
+		val := evaluator.Eval(program)
+		if val != nil {
+			io.WriteString(out, val.Inspect())
+			io.WriteString(out, "\n")
+		}
 	}
 
 }
