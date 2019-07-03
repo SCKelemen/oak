@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
-	"github.com/SCKelemen/oak/token"
 )
 
 const PROMPT = "🌳> "
@@ -23,9 +23,22 @@ func Start(in io.Reader, out io.Writer) {
 
 		ln := scnr.Text()
 		lxr := scanner.New(ln)
+		p := parser.New(lxr)
 
-		for tok := lxr.NextToken(); tok.TokenKind != token.EOF; tok = lxr.NextToken() {
-			fmt.Printf("%+v\n", tok)
+		program := p.ParseProgram()
+		if len(p.Errors()) != 0 {
+			printParserErrors(out, p.Errors())
+			continue
 		}
+
+		io.WriteString(out, program.String())
+		io.WriteString(out, "\n")
+	}
+
+}
+
+func printParserErrors(out io.Writer, errors []string) {
+	for _, msg := range errors {
+		io.WriteString(out, "\t"+msg+"\n")
 	}
 }
