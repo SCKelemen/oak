@@ -125,6 +125,8 @@ func (p *Parser) parseStatement() ast.Statement {
 	switch p.currentToken.TokenKind {
 	case token.TYPE:
 		return p.parseTypeDeclaration()
+	case token.LET:
+		return p.parseLetStatement()
 	case token.RETURN:
 		return p.parseReturnStatement()
 	default:
@@ -420,4 +422,27 @@ func (p *Parser) currentPrecedence() Precedence {
 	}
 
 	return LOWEST
+}
+func (p *Parser) parseLetStatement() *ast.LetStatement {
+	stmt := &ast.LetStatement{Token: p.currentToken}
+
+	if !p.expectPeek(token.IDENT) {
+		return nil
+	}
+
+	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+
+	if !p.expectPeek(token.ASSIGN) {
+		return nil
+	}
+
+	p.nextToken()
+
+	stmt.Value = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(token.SEMI) {
+		p.nextToken()
+	}
+
+	return stmt
 }

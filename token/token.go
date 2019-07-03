@@ -56,6 +56,7 @@ const (
 	IF
 	ELSE
 	FUNC
+	LET
 	_keywords_end
 )
 
@@ -104,6 +105,7 @@ var tokens = [...]string{
 	IF:     "if",
 	ELSE:   "else",
 	FUNC:   "func",
+	LET:    "let",
 }
 
 func (token TokenKind) String() string {
