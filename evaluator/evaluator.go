@@ -21,9 +21,10 @@ func Eval(node ast.Node) object.Object {
 	case *ast.Boolean:
 		return mapBooleans(node.Value)
 
+	default:
+		return nil
 	}
 
-	return nil
 }
 
 func evalStatements(stmts []ast.Statement) object.Object {
