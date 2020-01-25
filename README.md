@@ -193,3 +193,23 @@ type NetworkAuthenticationRequired = 511
 type NetworkReadTimeoutError = 598
 type NetworkConnectTimeoutError = 599
 ```
+
+
+### Ops
+
+Pipes:   
+```F#
+|> forward.Pipe
+<| reverse.Pipe
+```
+
+Ranges:
+```rust
+// range
+[1..10]
+```
+```ts
+// spread
+{ ... record } 
+```
+
