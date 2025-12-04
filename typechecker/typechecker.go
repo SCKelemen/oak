@@ -280,6 +280,10 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression) Type {
 		return tc.checkIndexExpression(e)
 	case *ast.ArrayLiteral:
 		return tc.checkArrayLiteral(e)
+	case nil:
+		// Nil expression - likely a parser error, but don't crash
+		tc.addError("nil expression encountered (parser error)")
+		return nil
 	default:
 		tc.addError("unknown expression type: %T", expr)
 		return nil

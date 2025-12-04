@@ -109,11 +109,16 @@ func (p *Parser) parseStatement() ast.Statement {
 	case token.UNSAFE:
 		return p.parseUnsafeBlock()
 	case token.IDENT:
-		// Could be variable declaration (a: type) or assignment (a = b)
+		// Could be variable declaration (a: type = value, a: type, or a = value) or assignment (a = b)
+		// We need to distinguish: if variable exists, it's assignment; if not, it's declaration
+		// For now, we'll parse both and let the type checker/evaluator handle the distinction
 		if p.peekTokenIs(token.COLON) {
 			return p.parseVariableDeclaration()
 		} else if p.peekTokenIs(token.ASSIGN) {
-			return p.parseAssignmentStatement()
+			// This could be either a variable declaration with type inference OR an assignment
+			// We'll parse it as a variable declaration first, and the evaluator/type checker
+			// can handle the case where the variable already exists
+			return p.parseVariableDeclarationWithoutType()
 		}
 		fallthrough
 	default:
@@ -1101,6 +1106,31 @@ func (p *Parser) parseAssignmentStatement() *ast.AssignmentStatement {
 	p.nextToken() // consume =, now currentToken is =
 	p.nextToken() // consume value token, now currentToken is the first token of the value expression
 	stmt.Value = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(token.SEMI) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
+// Parse variable declaration without type annotation: a = value
+func (p *Parser) parseVariableDeclarationWithoutType() *ast.VariableDeclaration {
+	stmt := &ast.VariableDeclaration{Token: p.currentToken}
+
+	// Name is current token (IDENT)
+	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+
+	// Expect assignment operator
+	if !p.expectPeek(token.ASSIGN) {
+		return nil
+	}
+
+	// Parse value (type will be inferred)
+	p.nextToken() // consume =, now currentToken is =
+	p.nextToken() // consume value token, now currentToken is the first token of the value expression
+	stmt.Value = p.parseExpression(LOWEST)
+	stmt.Type = nil // Type inference
 
 	if p.peekTokenIs(token.SEMI) {
 		p.nextToken()

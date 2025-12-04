@@ -169,9 +169,87 @@ func mapBooleans(val bool) *object.Boolean {
 func evalIdentifier(node *ast.Identifier, env *object.Environment) object.Object {
 	val, ok := env.Get(node.Value)
 	if !ok {
+		// Check built-in functions
+		if builtin, ok := getBuiltin(node.Value); ok {
+			return builtin
+		}
 		return newError("identifier not found: %s", node.Value)
 	}
 	return val
+}
+
+// Built-in functions
+func getBuiltin(name string) (*object.Builtin, bool) {
+	builtins := map[string]object.BuiltinFunction{
+		"len": func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return newError("wrong number of arguments. got=%d, want=1", len(args))
+			}
+			switch arg := args[0].(type) {
+			case *object.Array:
+				return &object.Integer{Value: int64(len(arg.Elements))}
+			case *object.String:
+				return &object.Integer{Value: int64(len(arg.Value))}
+			default:
+				return newError("argument to `len` not supported, got %s", args[0].Type())
+			}
+		},
+		"get": func(args ...object.Object) object.Object {
+			if len(args) != 2 {
+				return newError("wrong number of arguments. got=%d, want=2", len(args))
+			}
+			arr, ok := args[0].(*object.Array)
+			if !ok {
+				return newError("first argument to `get` must be array, got %s", args[0].Type())
+			}
+			idx, ok := args[1].(*object.Integer)
+			if !ok {
+				return newError("second argument to `get` must be integer, got %s", args[1].Type())
+			}
+			if idx.Value < 0 || int64(len(arr.Elements)) <= idx.Value {
+				// Return None (for now, we'll use NULL as None)
+				// TODO: Implement Option[T] properly
+				return NULL
+			}
+			// Return Some(value) - for now, just return the value
+			// TODO: Wrap in Option[T]
+			return arr.Elements[idx.Value]
+		},
+		"try_slice": func(args ...object.Object) object.Object {
+			if len(args) != 3 {
+				return newError("wrong number of arguments. got=%d, want=3", len(args))
+			}
+			arr, ok := args[0].(*object.Array)
+			if !ok {
+				return newError("first argument to `try_slice` must be array, got %s", args[0].Type())
+			}
+			start, ok := args[1].(*object.Integer)
+			if !ok {
+				return newError("second argument to `try_slice` must be integer, got %s", args[1].Type())
+			}
+			end, ok := args[2].(*object.Integer)
+			if !ok {
+				return newError("third argument to `try_slice` must be integer, got %s", args[2].Type())
+			}
+			if start.Value < 0 || end.Value < start.Value || int64(len(arr.Elements)) < end.Value {
+				// Return None
+				// TODO: Implement Option[T] properly
+				return NULL
+			}
+			// Create slice
+			slice := &object.Array{
+				Elements: arr.Elements[start.Value:end.Value],
+			}
+			// Return Some(slice) - for now, just return the slice
+			// TODO: Wrap in Option[[]T]
+			return slice
+		},
+	}
+	
+	if fn, ok := builtins[name]; ok {
+		return &object.Builtin{Fn: fn}, true
+	}
+	return nil, false
 }
 
 func evalPrefixExpression(operator string, right object.Object) object.Object {
@@ -298,14 +376,16 @@ func evalExpressions(exps []ast.Expression, env *object.Environment) []object.Ob
 }
 
 func applyFunction(fn object.Object, args []object.Object) object.Object {
-	function, ok := fn.(*object.Function)
-	if !ok {
+	switch fn := fn.(type) {
+	case *object.Function:
+		extendedEnv := extendFunctionEnv(fn, args)
+		evaluated := Eval(fn.Body, extendedEnv)
+		return unwrapReturnValue(evaluated)
+	case *object.Builtin:
+		return fn.Fn(args...)
+	default:
 		return newError("not a function: %s", fn.Type())
 	}
-
-	extendedEnv := extendFunctionEnv(function, args)
-	evaluated := Eval(function.Body, extendedEnv)
-	return unwrapReturnValue(evaluated)
 }
 
 func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Environment {
@@ -492,8 +572,23 @@ func evalUnsafeBlock(ub *ast.UnsafeBlock, env *object.Environment) object.Object
 
 // Evaluate variable declaration: a: type = value or a: type
 func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environment) object.Object {
+	// Check if variable already exists - if so, treat as assignment
+	if _, exists := env.Get(vd.Name.Value); exists && vd.Type == nil {
+		// This is actually an assignment, not a declaration
+		if vd.Value != nil {
+			val := Eval(vd.Value, env)
+			if isError(val) {
+				return val
+			}
+			env.Set(vd.Name.Value, val)
+			return val
+		}
+		return newError("assignment requires a value")
+	}
+
+	// New variable declaration
 	if vd.Value != nil {
-		// Declaration with initialization: a: type = value
+		// Declaration with initialization: a: type = value or a = value (type inference)
 		val := Eval(vd.Value, env)
 		if isError(val) {
 			return val

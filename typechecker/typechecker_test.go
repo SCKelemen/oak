@@ -76,8 +76,8 @@ func TestTypeChecker_VariableDeclaration(t *testing.T) {
 	}{
 		{"x: i32 = 5", false},
 		{"x: i32", false},
-		{"x: i32 = 5; x", false}, // type inference - need to use variable after declaration
-		{"x: string = 5", true}, // type mismatch
+		{"x: i32 = 5; x", false},     // type inference - need to use variable after declaration
+		{"x: string = 5", true},      // type mismatch
 		{"x: i32 = \"hello\"", true}, // type mismatch
 	}
 
@@ -102,9 +102,9 @@ func TestTypeChecker_ArithmeticOperations(t *testing.T) {
 		{"5 - 3", false},
 		{"5 * 3", false},
 		{"5 / 3", false},
-		{"5 + \"hello\"", true}, // type mismatch
+		{"5 + \"hello\"", true},          // type mismatch
 		{"\"hello\" + \"world\"", false}, // string concatenation
-		{"true + false", true}, // type mismatch
+		{"true + false", true},           // type mismatch
 	}
 
 	for _, tt := range tests {
@@ -127,8 +127,8 @@ func TestTypeChecker_TypePromotion(t *testing.T) {
 		{"x: i32 = 5; y: i64 = x", false}, // widening - note: integer literal is i32, so x is i32
 		{"x: i32 = 5; y: i32 = x + 10", false},
 		{"x: i32 = 5; y: i64 = x + 10", false}, // promotion in expression
-		{"x: i32 = 5; y: u32 = x", true},  // signed/unsigned mismatch
-		{"x: u8 = 5; y: i32 = x", true},   // signed/unsigned mismatch
+		{"x: i32 = 5; y: u32 = x", true},       // signed/unsigned mismatch
+		{"x: u8 = 5; y: i32 = x", true},        // signed/unsigned mismatch
 		// Note: u8/u16 widening would require typed literals or explicit casts
 	}
 
@@ -224,7 +224,7 @@ func TestTypeChecker_RecordFieldAccess(t *testing.T) {
 		hasError bool
 	}{
 		{"r: { code: i32 } = { code: 200 }; r.code", false},
-		{"r = { code: 200 }; r.code", false}, // type inference
+		{"r = { code: 200 }; r.code", false},  // type inference
 		{"r = { code: 200 }; r.status", true}, // field doesn't exist
 	}
 
@@ -293,7 +293,7 @@ func TestTypeChecker_WhileStatement(t *testing.T) {
 	}{
 		{"while true { 5 }", false},
 		{"while false { 5 }", false},
-		{"while 5 { 5 }", true}, // condition not bool
+		{"while 5 { 5 }", true},         // condition not bool
 		{"while \"hello\" { 5 }", true}, // condition not bool
 	}
 
@@ -316,7 +316,7 @@ func TestTypeChecker_AssignmentStatement(t *testing.T) {
 	}{
 		{"x: i32 = 5; x = 10", false},
 		{"x: i32 = 5; x = \"hello\"", true}, // type mismatch
-		{"x: i32 = 5; y = 10", true}, // undefined variable y
+		{"x: i32 = 5; y = 10", true},        // undefined variable y
 	}
 
 	for _, tt := range tests {
@@ -338,7 +338,7 @@ func TestTypeChecker_FunctionStatement(t *testing.T) {
 	}{
 		{"fn add(a: i32, b: i32) -> i32 { a + b }", false},
 		{"fn add(a: i32, b: i32) -> i32 { \"hello\" }", true}, // return type mismatch
-		{"fn add(a: i32, b: i32) -> string { a + b }", true}, // return type mismatch
+		{"fn add(a: i32, b: i32) -> string { a + b }", true},  // return type mismatch
 	}
 
 	for _, tt := range tests {
@@ -359,8 +359,8 @@ func TestTypeChecker_FunctionInvocation(t *testing.T) {
 		hasError bool
 	}{
 		{"fn add(a: i32, b: i32) -> i32 { a + b }; add(5, 3)", false},
-		{"fn add(a: i32, b: i32) -> i32 { a + b }; add(5)", true}, // wrong arg count
-		{"fn add(a: i32, b: i32) -> i32 { a + b }; add(5, 3, 4)", true}, // wrong arg count
+		{"fn add(a: i32, b: i32) -> i32 { a + b }; add(5)", true},            // wrong arg count
+		{"fn add(a: i32, b: i32) -> i32 { a + b }; add(5, 3, 4)", true},      // wrong arg count
 		{"fn add(a: i32, b: i32) -> i32 { a + b }; add(\"hello\", 3)", true}, // wrong arg type
 		{"fn add(a: i32, b: i32) -> i32 { a + b }; result = add(5, 3)", false},
 		// Note: calling non-function may need parser fixes
@@ -383,9 +383,9 @@ func TestTypeChecker_UndefinedVariable(t *testing.T) {
 		input    string
 		hasError bool
 	}{
-		{"x", true}, // undefined
+		{"x", true},              // undefined
 		{"x: i32 = 5; x", false}, // defined
-		{"x: i32 = 5; y", true}, // undefined
+		{"x: i32 = 5; y", true},  // undefined
 	}
 
 	for _, tt := range tests {
@@ -412,4 +412,3 @@ func parseProgram(input string) *ast.Program {
 	p := parser.New(l)
 	return p.ParseProgram()
 }
-

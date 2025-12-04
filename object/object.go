@@ -54,6 +54,18 @@ func (f *Function) Inspect() string {
 	return "fn(...) { ... }"
 }
 
+// BuiltinFunction is a function signature for built-in functions
+type BuiltinFunction func(args ...Object) Object
+
+// Builtin represents a built-in function
+type Builtin struct {
+	Fn BuiltinFunction
+}
+
+func (b *Builtin) Kind() ObjectKind { return FUNCTION }
+func (b *Builtin) Type() ObjectType  { return FUNCTION_OBJ }
+func (b *Builtin) Inspect() string  { return "builtin function" }
+
 type ADTValue struct {
 	TypeName string
 	Variant  string
