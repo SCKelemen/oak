@@ -124,6 +124,15 @@ func (lit *IntegerLiteral) expressionNode()      {}
 func (lit *IntegerLiteral) TokenLiteral() string { return lit.Token.Literal }
 func (lit *IntegerLiteral) String() string       { return lit.Token.Literal }
 
+type StringLiteral struct {
+	Token token.Token
+	Value string
+}
+
+func (lit *StringLiteral) expressionNode()      {}
+func (lit *StringLiteral) TokenLiteral() string { return lit.Token.Literal }
+func (lit *StringLiteral) String() string      { return lit.Token.Literal }
+
 type PrefixExpression struct {
 	Token    token.Token // prefix tokens: !, -, *
 	Operator string
@@ -267,26 +276,320 @@ func (ie InvocationExpression) String() string {
 
 }
 
-type LetStatement struct {
-	Token token.Token // the token.LET token
+// Variable declaration: a: type = value or a: type
+type VariableDeclaration struct {
+	Token token.Token
+	Name  *Identifier
+	Type  Expression // optional type annotation
+	Value Expression // optional initial value
+}
+
+func (vd *VariableDeclaration) statementNode()       {}
+func (vd *VariableDeclaration) TokenLiteral() string { return vd.Token.Literal }
+func (vd *VariableDeclaration) String() string {
+	var out bytes.Buffer
+	out.WriteString(vd.Name.String())
+	if vd.Type != nil {
+		out.WriteString(": ")
+		out.WriteString(vd.Type.String())
+	}
+	if vd.Value != nil {
+		out.WriteString(" = ")
+		out.WriteString(vd.Value.String())
+	}
+	return out.String()
+}
+
+// Assignment statement: a = b
+type AssignmentStatement struct {
+	Token token.Token
 	Name  *Identifier
 	Value Expression
 }
 
-func (ls *LetStatement) statementNode()       {}
-func (ls *LetStatement) TokenLiteral() string { return ls.Token.Literal }
-func (ls *LetStatement) String() string {
+func (as *AssignmentStatement) statementNode()       {}
+func (as *AssignmentStatement) TokenLiteral() string { return as.Token.Literal }
+func (as *AssignmentStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString(as.Name.String())
+	out.WriteString(" = ")
+	out.WriteString(as.Value.String())
+	return out.String()
+}
+
+// Pattern matching expression
+type MatchExpression struct {
+	Token     token.Token // '?' token
+	Scrutinee Expression
+	Arms      []*MatchArm
+}
+
+// Variant expression: .Ok or Status::Ok
+type VariantExpression struct {
+	Token     token.Token
+	TypeName  *Identifier // optional, for Status::Ok
+	Variant   *Identifier // .Ok or Ok
+	Payload   Expression  // optional, for .Some(value)
+}
+
+func (ve *VariantExpression) expressionNode()      {}
+func (ve *VariantExpression) TokenLiteral() string { return ve.Token.Literal }
+func (ve *VariantExpression) String() string {
+	var out bytes.Buffer
+	if ve.TypeName != nil {
+		out.WriteString(ve.TypeName.String())
+		out.WriteString("::")
+	}
+	out.WriteString(".")
+	out.WriteString(ve.Variant.String())
+	if ve.Payload != nil {
+		out.WriteRune('(')
+		out.WriteString(ve.Payload.String())
+		out.WriteRune(')')
+	}
+	return out.String()
+}
+
+func (me *MatchExpression) expressionNode()      {}
+func (me *MatchExpression) TokenLiteral() string { return me.Token.Literal }
+func (me *MatchExpression) String() string {
 	var out bytes.Buffer
 
-	out.WriteString(ls.TokenLiteral() + " ")
-	out.WriteString(ls.Name.String())
-	out.WriteString(" = ")
-
-	if ls.Value != nil {
-		out.WriteString(ls.Value.String())
+	out.WriteString(me.Scrutinee.String())
+	out.WriteString(" ? ")
+	for i, arm := range me.Arms {
+		if i > 0 {
+			out.WriteString(" | ")
+		}
+		out.WriteString(arm.String())
 	}
 
-	out.WriteRune(';')
+	return out.String()
+}
 
+// Pattern matching arm
+type MatchArm struct {
+	Token   token.Token // '|' or first token
+	Pattern Pattern
+	Body    Expression
+}
+
+func (ma *MatchArm) String() string {
+	var out bytes.Buffer
+	out.WriteString(ma.Pattern.String())
+	out.WriteString(" -> ")
+	out.WriteString(ma.Body.String())
+	return out.String()
+}
+
+// Pattern interface
+type Pattern interface {
+	Node
+	patternNode()
+}
+
+// Wildcard pattern
+type WildcardPattern struct {
+	Token token.Token // '_'
+}
+
+func (wp *WildcardPattern) patternNode()      {}
+func (wp *WildcardPattern) TokenLiteral() string { return wp.Token.Literal }
+func (wp *WildcardPattern) String() string    { return "_" }
+
+// Binding pattern
+type BindingPattern struct {
+	Token token.Token
+	Name  *Identifier
+}
+
+func (bp *BindingPattern) patternNode()      {}
+func (bp *BindingPattern) TokenLiteral() string { return bp.Token.Literal }
+func (bp *BindingPattern) String() string     { return bp.Name.String() }
+
+// Literal pattern
+type LiteralPattern struct {
+	Token token.Token
+	Value Expression // IntegerLiteral, StringLiteral, etc.
+}
+
+func (lp *LiteralPattern) patternNode()      {}
+func (lp *LiteralPattern) TokenLiteral() string { return lp.Token.Literal }
+func (lp *LiteralPattern) String() string    { return lp.Value.String() }
+
+// Variant pattern
+type VariantPattern struct {
+	Token   token.Token
+	Variant *Identifier // .Ok, .Some, etc.
+	Payload Pattern     // optional, for .Some(x)
+}
+
+func (vp *VariantPattern) patternNode()      {}
+func (vp *VariantPattern) TokenLiteral() string { return vp.Token.Literal }
+func (vp *VariantPattern) String() string {
+	var out bytes.Buffer
+	out.WriteString(".")
+	out.WriteString(vp.Variant.String())
+	if vp.Payload != nil {
+		out.WriteRune('(')
+		out.WriteString(vp.Payload.String())
+		out.WriteRune(')')
+	}
+	return out.String()
+}
+
+// ADT type definition
+type ADTType struct {
+	Token    token.Token // 'type' token
+	Name     *Identifier
+	Variants []*ADTVariant
+}
+
+func (adt *ADTType) statementNode()       {}
+func (adt *ADTType) TokenLiteral() string { return adt.Token.Literal }
+func (adt *ADTType) String() string {
+	var out bytes.Buffer
+	out.WriteString(adt.Name.String())
+	out.WriteString(": type")
+	for i, v := range adt.Variants {
+		if i == 0 {
+			out.WriteString(" = ")
+		} else {
+			out.WriteString(" | ")
+		}
+		out.WriteString(v.String())
+	}
+	return out.String()
+}
+
+// ADT variant
+type ADTVariant struct {
+	Token   token.Token
+	Name    *Identifier
+	Payload Expression // optional type parameter, e.g. Some(T)
+	Literal Expression // optional literal tag, e.g. Ok: 200
+}
+
+func (v *ADTVariant) String() string {
+	var out bytes.Buffer
+	out.WriteString(v.Name.String())
+	if v.Payload != nil {
+		out.WriteRune('(')
+		out.WriteString(v.Payload.String())
+		out.WriteRune(')')
+	}
+	if v.Literal != nil {
+		out.WriteString(": ")
+		out.WriteString(v.Literal.String())
+	}
+	return out.String()
+}
+
+// Package declaration
+type PackageStatement struct {
+	Token token.Token // 'package' token
+	Name  *Identifier
+}
+
+func (ps *PackageStatement) statementNode()       {}
+func (ps *PackageStatement) TokenLiteral() string { return ps.Token.Literal }
+func (ps *PackageStatement) String() string {
+	return "package " + ps.Name.String()
+}
+
+// Import statement
+type ImportStatement struct {
+	Token token.Token // 'import' token
+	Path  *Identifier // package path
+	Alias *Identifier // optional alias
+}
+
+func (is *ImportStatement) statementNode()       {}
+func (is *ImportStatement) TokenLiteral() string { return is.Token.Literal }
+func (is *ImportStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("import(")
+	out.WriteString(is.Path.String())
+	out.WriteRune(')')
+	if is.Alias != nil {
+		out.WriteString(" as ")
+		out.WriteString(is.Alias.String())
+	}
+	return out.String()
+}
+
+// Function declaration (top-level)
+type FunctionStatement struct {
+	Token      token.Token // 'fn' token
+	Name       *Identifier
+	Parameters []*FunctionParameter
+	ReturnType Expression // type expression
+	Body       Expression
+}
+
+func (fs *FunctionStatement) statementNode()       {}
+func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
+func (fs *FunctionStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("fn ")
+	out.WriteString(fs.Name.String())
+	out.WriteRune('(')
+	for i, param := range fs.Parameters {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(param.String())
+	}
+	out.WriteRune(')')
+	if fs.ReturnType != nil {
+		out.WriteString(" -> ")
+		out.WriteString(fs.ReturnType.String())
+	}
+	out.WriteRune(' ')
+	out.WriteString(fs.Body.String())
+	return out.String()
+}
+
+// Function parameter
+type FunctionParameter struct {
+	Token token.Token
+	Name  *Identifier
+	Type  Expression // type expression
+}
+
+func (fp *FunctionParameter) String() string {
+	return fp.Name.String() + ": " + fp.Type.String()
+}
+
+// While loop
+type WhileStatement struct {
+	Token     token.Token // 'while' token
+	Condition Expression
+	Body      *BlockStatement
+}
+
+func (ws *WhileStatement) statementNode()       {}
+func (ws *WhileStatement) TokenLiteral() string { return ws.Token.Literal }
+func (ws *WhileStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("while ")
+	out.WriteString(ws.Condition.String())
+	out.WriteRune(' ')
+	out.WriteString(ws.Body.String())
+	return out.String()
+}
+
+// Unsafe block
+type UnsafeBlock struct {
+	Token token.Token // 'unsafe' token
+	Body  *BlockStatement
+}
+
+func (ub *UnsafeBlock) statementNode()       {}
+func (ub *UnsafeBlock) TokenLiteral() string { return ub.Token.Literal }
+func (ub *UnsafeBlock) String() string {
+	var out bytes.Buffer
+	out.WriteString("unsafe ")
+	out.WriteString(ub.Body.String())
 	return out.String()
 }

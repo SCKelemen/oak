@@ -124,13 +124,25 @@ func (s *Scanner) NextToken() token.Token {
 			tok = newToken(token.BANG, s.current)
 		}
 	case '-':
-		tok = newToken(token.NEG, s.current)
+		if s.peekChar() == '>' {
+			ch := s.current
+			s.readChar()
+			literal := string(ch) + string(s.current)
+			tok = token.Token{TokenKind: token.ARROW, Literal: literal}
+		} else {
+			tok = newToken(token.NEG, s.current)
+		}
 	case '+':
 		tok = newToken(token.SUM, s.current)
 	case '*':
 		tok = newToken(token.MUL, s.current)
 	case '/':
 		tok = newToken(token.QUO, s.current)
+	case '?':
+		tok = newToken(token.QMARK, s.current)
+	case '"':
+		tok.Literal = s.readString()
+		tok.TokenKind = token.STRING
 
 	// handle the nul/eof char
 	case 0:
@@ -183,6 +195,21 @@ func (s *Scanner) readNumber() string {
 	}
 	s.read--
 	return s.input[position:s.head]
+}
+
+func (s *Scanner) readString() string {
+	position := s.head + 1 // skip opening quote
+	for {
+		s.readChar()
+		if s.current == '"' || s.current == 0 {
+			break
+		}
+	}
+	if s.current == '"' {
+		// consume closing quote
+		s.readChar()
+	}
+	return s.input[position : s.head-1] // exclude quotes
 }
 
 func (s *Scanner) peekChar() byte {

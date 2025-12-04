@@ -28,8 +28,9 @@ func testEval(input string) object.Object {
 	lxr := scanner.New(input)
 	p := parser.New(lxr)
 	program := p.ParseProgram()
+	env := object.NewEnvironment()
 
-	return Eval(program)
+	return Eval(program, env)
 }
 
 func TestEvalBooleanExpr(t *testing.T) {

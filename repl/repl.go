@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/SCKelemen/oak/evaluator"
+	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
 )
@@ -14,6 +15,7 @@ const PROMPT = "🌳> "
 
 func Start(in io.Reader, out io.Writer) {
 	scnr := bufio.NewScanner(in)
+	env := object.NewEnvironment()
 
 	for {
 		fmt.Printf(PROMPT)
@@ -23,6 +25,10 @@ func Start(in io.Reader, out io.Writer) {
 		}
 
 		ln := scnr.Text()
+		if ln == "" {
+			continue
+		}
+
 		lxr := scanner.New(ln)
 		p := parser.New(lxr)
 
@@ -32,10 +38,15 @@ func Start(in io.Reader, out io.Writer) {
 			continue
 		}
 
-		val := evaluator.Eval(program)
+		val := evaluator.Eval(program, env)
 		if val != nil {
-			io.WriteString(out, val.Inspect())
-			io.WriteString(out, "\n")
+			if val.Type() == object.ERROR_OBJ {
+				io.WriteString(out, val.Inspect())
+				io.WriteString(out, "\n")
+			} else if val.Type() != object.NULL_OBJ {
+				io.WriteString(out, val.Inspect())
+				io.WriteString(out, "\n")
+			}
 		}
 	}
 

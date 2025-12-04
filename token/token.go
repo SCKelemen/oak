@@ -16,7 +16,8 @@ const (
 	COMMENT
 
 	IDENT
-	INT // for natural numbers
+	INT    // for natural numbers
+	STRING // string literals
 
 	LBRACK // [
 	RBRACK // ]
@@ -32,11 +33,13 @@ const (
 	COLON // :
 	SEMI  // ;
 
-	ASSIGN // ==
+	ASSIGN // =
+	ARROW  // ->
 
 	PIPE // |
 	AMP  // &
 	BANG // !
+	QMARK // ?
 
 	// arithmeticy bits
 	NEG // -
@@ -57,6 +60,11 @@ const (
 	ELSE
 	FUNC
 	LET
+	PACKAGE
+	IMPORT
+	WHILE
+	UNSAFE
+	FN
 	_keywords_end
 )
 
@@ -66,8 +74,9 @@ var tokens = [...]string{
 	TRIVIA:  "TRIVIA",
 	COMMENT: "COMMENT",
 
-	IDENT: "IDENTITY",
-	INT:   "INT",
+	IDENT:  "IDENTITY",
+	INT:    "INT",
+	STRING: "STRING",
 
 	LBRACK: "[",
 	RBRACK: "]",
@@ -84,10 +93,12 @@ var tokens = [...]string{
 	SEMI:  ";",
 
 	ASSIGN: "=",
+	ARROW:  "->",
 
-	PIPE: "|",
-	AMP:  "&",
-	BANG: "!",
+	PIPE:  "|",
+	AMP:   "&",
+	BANG:  "!",
+	QMARK: "?",
 
 	NEG: "-",
 	SUM: "+",
@@ -97,15 +108,20 @@ var tokens = [...]string{
 	EQL:  "==",
 	NEQL: "!=",
 
-	TYPE:   "type",
-	SWITCH: "switch",
-	RETURN: "return",
-	TRUE:   "true",
-	FALSE:  "false",
-	IF:     "if",
-	ELSE:   "else",
-	FUNC:   "func",
-	LET:    "let",
+	TYPE:    "type",
+	SWITCH:  "switch",
+	RETURN:  "return",
+	TRUE:    "true",
+	FALSE:   "false",
+	IF:      "if",
+	ELSE:    "else",
+	FUNC:    "func",
+	LET:     "let",
+	PACKAGE: "package",
+	IMPORT:  "import",
+	WHILE:   "while",
+	UNSAFE:  "unsafe",
+	FN:      "fn",
 }
 
 func (token TokenKind) String() string {
