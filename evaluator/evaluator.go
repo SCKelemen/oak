@@ -706,6 +706,14 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 	
 	// Check if this is record field access (index is identifier) or array indexing
 	if fieldName, ok := ie.Index.(*ast.Identifier); ok {
+		// Special case: raw() method on ADT values
+		if fieldName.Value == "raw" {
+			if adtValue, ok := left.(*object.ADTValue); ok {
+				return evalRawAccessor(adtValue, env)
+			}
+			return newError("raw() only works on ADT values, got %s", left.Type())
+		}
+		
 		// Record field access: record.field
 		if record, ok := left.(*object.Record); ok {
 			if fieldValue, exists := record.Fields[fieldName.Value]; exists {
@@ -713,6 +721,12 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 			}
 			return newError("field '%s' not found in record", fieldName.Value)
 		}
+		
+		// Field lifting: ADT with literal tags - access fields from raw type
+		if adtValue, ok := left.(*object.ADTValue); ok {
+			return evalFieldLifting(adtValue, fieldName.Value, env)
+		}
+		
 		return newError("field access not supported for type %s", left.Type())
 	}
 	
@@ -754,4 +768,47 @@ func evalArrayLiteral(al *ast.ArrayLiteral, env *object.Environment) object.Obje
 	}
 	
 	return &object.Array{Elements: elements}
+}
+
+// evalRawAccessor implements the raw() accessor for ADT values with literal tags
+func evalRawAccessor(adtValue *object.ADTValue, env *object.Environment) object.Object {
+	// Get ADT type definition
+	adtType, ok := env.GetADTType(adtValue.TypeName)
+	if !ok {
+		return newError("ADT type %s not found", adtValue.TypeName)
+	}
+	
+	// Find the variant and its literal
+	for _, variant := range adtType.Variants {
+		if variant.Name == adtValue.Variant {
+			if variant.Literal != nil {
+				// Return the literal value
+				return variant.Literal
+			}
+			return newError("variant %s of ADT %s has no literal tag", adtValue.Variant, adtValue.TypeName)
+		}
+	}
+	
+	return newError("variant %s not found in ADT %s", adtValue.Variant, adtValue.TypeName)
+}
+
+// evalFieldLifting implements field lifting for ADT values with record literal tags
+// e.g., if Status has { code: 200, status: "Ok" }, then s.code returns 200
+func evalFieldLifting(adtValue *object.ADTValue, fieldName string, env *object.Environment) object.Object {
+	// Get the raw value first
+	rawValue := evalRawAccessor(adtValue, env)
+	if isError(rawValue) {
+		return rawValue
+	}
+	
+	// If raw value is a record, access the field
+	if record, ok := rawValue.(*object.Record); ok {
+		if fieldValue, exists := record.Fields[fieldName]; exists {
+			return fieldValue
+		}
+		return newError("field '%s' not found in raw type of ADT %s", fieldName, adtValue.TypeName)
+	}
+	
+	// If raw value is not a record, field lifting doesn't apply
+	return newError("field lifting only works when ADT has record literal tags, got %s", rawValue.Type())
 }

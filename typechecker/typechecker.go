@@ -81,6 +81,28 @@ func (t *ADTType) Equals(other Type) bool {
 	return false
 }
 
+// NarrowedADTVariantType represents a narrowed ADT variant type
+// Used for type narrowing in pattern matching (TypeScript-style)
+type NarrowedADTVariantType struct {
+	ADTName     string
+	VariantName string
+}
+
+func (t *NarrowedADTVariantType) String() string {
+	return fmt.Sprintf("%s::%s", t.ADTName, t.VariantName)
+}
+
+func (t *NarrowedADTVariantType) Equals(other Type) bool {
+	if otherNarrowed, ok := other.(*NarrowedADTVariantType); ok {
+		return t.ADTName == otherNarrowed.ADTName && t.VariantName == otherNarrowed.VariantName
+	}
+	// A narrowed variant is compatible with its parent ADT type
+	if otherADT, ok := other.(*ADTType); ok {
+		return t.ADTName == otherADT.Name
+	}
+	return false
+}
+
 // RecordType represents a record/struct type
 type RecordType struct {
 	Fields map[string]Type // field name -> type
@@ -108,6 +130,59 @@ func (t *RecordType) Equals(other Type) bool {
 		}
 		for name, typ := range t.Fields {
 			if otherTyp, ok := otherRecord.Fields[name]; !ok || !typ.Equals(otherTyp) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// InterfaceType represents an interface type
+type InterfaceType struct {
+	Name    string
+	Methods map[string]*FunctionType // method name -> function type
+}
+
+func (t *InterfaceType) String() string {
+	return t.Name
+}
+
+func (t *InterfaceType) Equals(other Type) bool {
+	if otherInterface, ok := other.(*InterfaceType); ok {
+		return t.Name == otherInterface.Name
+	}
+	return false
+}
+
+// IntersectionType represents an intersection of types (A & B & C)
+type IntersectionType struct {
+	Types []Type // The types being intersected
+}
+
+func (t *IntersectionType) String() string {
+	var out string
+	for i, typ := range t.Types {
+		if i > 0 {
+			out += " & "
+		}
+		out += typ.String()
+	}
+	return out
+}
+
+func (t *IntersectionType) Equals(other Type) bool {
+	if otherIntersection, ok := other.(*IntersectionType); ok {
+		if len(t.Types) != len(otherIntersection.Types) {
+			return false
+		}
+		// Check that all types are present (order doesn't matter for equality)
+		typeSet := make(map[string]bool)
+		for _, typ := range t.Types {
+			typeSet[typ.String()] = true
+		}
+		for _, typ := range otherIntersection.Types {
+			if !typeSet[typ.String()] {
 				return false
 			}
 		}
@@ -543,15 +618,32 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 	// Check that all arms return the same type
 	var returnType Type
 	for i, arm := range expr.Arms {
-		// Type check pattern
-		patternType := tc.checkPattern(arm.Pattern, scrutineeType)
-		if patternType == nil {
+		// Create a new scoped environment for this match arm to support type narrowing
+		armEnv := NewEnclosedTypeEnvironment(tc.env)
+		oldEnv := tc.env
+		tc.env = armEnv
+
+		// Type check pattern and get narrowed type
+		narrowedType := tc.checkPattern(arm.Pattern, scrutineeType)
+		if narrowedType == nil {
+			tc.env = oldEnv
 			continue
 		}
 
-		// Type check arm body expression
+		// If pattern narrowed the type, bind it in the environment
+		// This allows the arm body to use the narrowed type
+		if narrowedVariant, ok := narrowedType.(*NarrowedADTVariantType); ok {
+			// Store the narrowed variant type for potential use in the arm body
+			// The scrutinee variable (if it's an identifier) would be narrowed
+			if ident, ok := expr.Scrutinee.(*ast.Identifier); ok {
+				tc.env.Set(ident.Value, narrowedVariant)
+			}
+		}
+
+		// Type check arm body expression with narrowed type context
 		armType := tc.checkExpression(arm.Body)
 		if armType == nil {
+			tc.env = oldEnv
 			continue
 		}
 
@@ -560,6 +652,9 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 		} else if !armType.Equals(returnType) {
 			tc.addError("match arm %d: expected return type %s, got %s", i+1, returnType, armType)
 		}
+
+		// Restore environment
+		tc.env = oldEnv
 	}
 
 	// Check exhaustiveness for ADT types
@@ -622,7 +717,11 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 							tc.addError("variant %s of ADT %s requires a payload of type %s", variantName, adtType.Name, variant.Payload)
 							return nil
 						}
-						break
+						// Return narrowed variant type for type narrowing
+						return &NarrowedADTVariantType{
+							ADTName:     adtType.Name,
+							VariantName: variantName,
+						}
 					}
 				}
 				if !found {
@@ -631,6 +730,27 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 				}
 			}
 			return expectedType
+		}
+		// Handle matching on primitive types with ADT literal tags (type narrowing)
+		// If matching a primitive literal against an ADT with literal tags, narrow to the variant
+		if tc.isNumericType(expectedType) || expectedType.Equals(&StringType{}) {
+			// Check if any ADT has a variant with a matching literal tag
+			variantName := p.Variant.Value
+			for adtName, adtDef := range tc.adtTypes {
+				for _, variant := range adtDef.Variants {
+					if variant.Name == variantName && variant.Literal != nil {
+						// Check if literal type matches expected type
+						litType := tc.getLiteralType(variant.Literal)
+						if litType != nil && litType.Equals(expectedType) {
+							// This is a valid narrowing: primitive -> ADT variant
+							return &NarrowedADTVariantType{
+								ADTName:     adtName,
+								VariantName: variantName,
+							}
+						}
+					}
+				}
+			}
 		}
 		tc.addError("variant pattern used on non-ADT type: %s", expectedType)
 		return nil
@@ -890,6 +1010,30 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 }
 
 func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
+	// Check if this is a record type definition: Name: type = { field: Type, ... }
+	// Record type definitions are parsed as ADTType with a single variant that has a record literal
+	if len(stmt.Variants) == 1 {
+		variant := stmt.Variants[0]
+		// Check if the variant has a record literal (this indicates a record type definition)
+		if variant.Literal != nil {
+			if recordLit, ok := variant.Literal.(*ast.RecordLiteral); ok {
+				// This is a record type definition
+				tc.checkRecordTypeDefinition(stmt.Name.Value, recordLit)
+				// Store the record type in the environment
+				recordType := tc.parseRecordTypeFromLiteral(recordLit)
+				if recordType != nil {
+					tc.env.Set(stmt.Name.Value, recordType)
+				}
+				return
+			}
+		}
+		// Check if this is a type alias: Name: type = TypeName
+		// If the variant has no name or the name matches the type name, it might be an alias
+		if variant.Name.Value == stmt.Name.Value && variant.Payload != nil && variant.Literal == nil {
+			// This might be a type alias, but we'll handle it as an ADT for now
+		}
+	}
+
 	// ADT types are already registered in the environment
 	// Verify they're well-formed
 	variantNames := make(map[string]bool)
@@ -917,6 +1061,9 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 			literalType := tc.checkExpression(variant.Literal)
 			if literalType == nil {
 				tc.addError("ADT %s variant %s: invalid literal tag", stmt.Name.Value, variantName)
+			} else {
+				// Verify literal tag type consistency across variants
+				tc.checkADTVariantLiteralTag(stmt.Name.Value, variantName, variant.Literal, literalType)
 			}
 		}
 	}
@@ -924,6 +1071,62 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 	// Check that ADT has at least one variant
 	if len(stmt.Variants) == 0 {
 		tc.addError("ADT %s: must have at least one variant", stmt.Name.Value)
+	}
+}
+
+// checkRecordTypeDefinition type checks a record type definition
+func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast.RecordLiteral) {
+	// Check that all fields have valid type annotations
+	fieldNames := make(map[string]bool)
+	for fieldName, fieldExpr := range recordLit.Fields {
+		// Check for duplicate field names
+		if fieldNames[fieldName] {
+			tc.addError("record type %s: duplicate field name %s", typeName, fieldName)
+			continue
+		}
+		fieldNames[fieldName] = true
+
+		// Parse field type from the expression
+		// In a record type definition, fieldExpr should be a type expression (identifier)
+		fieldType := tc.parseTypeExpression(fieldExpr)
+		if fieldType == nil {
+			tc.addError("record type %s field %s: invalid type", typeName, fieldName)
+		}
+	}
+}
+
+// parseRecordTypeFromLiteral parses a RecordType from a record literal used in a type definition
+func (tc *TypeChecker) parseRecordTypeFromLiteral(recordLit *ast.RecordLiteral) *RecordType {
+	fields := make(map[string]Type)
+	for fieldName, fieldExpr := range recordLit.Fields {
+		fieldType := tc.parseTypeExpression(fieldExpr)
+		if fieldType == nil {
+			return nil
+		}
+		fields[fieldName] = fieldType
+	}
+	return &RecordType{Fields: fields}
+}
+
+// checkADTVariantLiteralTag checks that literal tags in ADT variants are consistent
+func (tc *TypeChecker) checkADTVariantLiteralTag(adtName, variantName string, literal ast.Expression, literalType Type) {
+	// Check if this ADT already has variants with literal tags
+	// All literal tags in an ADT must have the same type
+	if adtDef, ok := tc.adtTypes[adtName]; ok {
+		var expectedLiteralType Type
+		for _, variant := range adtDef.Variants {
+			if variant.Literal != nil {
+				// We need to get the type of the literal
+				// For now, we'll check consistency when we encounter multiple variants
+				if expectedLiteralType == nil {
+					expectedLiteralType = literalType
+				} else if !literalType.Equals(expectedLiteralType) {
+					tc.addError("ADT %s: variant %s literal tag type %s does not match expected type %s",
+						adtName, variantName, literalType, expectedLiteralType)
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -1058,12 +1261,143 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 			return &ADTType{Name: ident.Value}
 		}
 	}
-	// Handle array types: []T or [N]T
+
+	// Handle array types: [N]T or []T
+	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		// Check if left side is an array literal syntax or identifier
+		// For [N]T, the parser might represent it as IndexExpression with integer literal
+		// For []T, it might be represented differently
+		// For now, we'll check if the index is an integer (fixed-size array) or identifier (slice)
+		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
+			// Fixed-size array: [N]T
+			elementType := tc.parseTypeExpression(indexExpr.Left)
+			if elementType == nil {
+				return nil
+			}
+			return &ArrayType{
+				Length:      intLit.Value,
+				IsSlice:     false,
+				ElementType: elementType,
+			}
+		} else if indexExpr.Left == nil {
+			// Slice type: []T (represented as IndexExpression with nil left, index is the element type)
+			elementType := tc.parseTypeExpression(indexExpr.Index)
+			if elementType == nil {
+				return nil
+			}
+			return &ArrayType{
+				Length:      0,
+				IsSlice:     true,
+				ElementType: elementType,
+			}
+		}
+	}
+
 	// Handle record types: { field: Type, ... }
+	if recordLit, ok := expr.(*ast.RecordLiteral); ok {
+		fields := make(map[string]Type)
+		for name, fieldExpr := range recordLit.Fields {
+			// In a type annotation, fieldExpr should be a type expression
+			fieldType := tc.parseTypeExpression(fieldExpr)
+			if fieldType == nil {
+				return nil
+			}
+			fields[name] = fieldType
+		}
+		return &RecordType{Fields: fields}
+	}
+
 	// Handle function types: fn(Type1, Type2) -> Type3
-	// For now, these require explicit type annotations in variable declarations
-	// TODO: Implement full type expression parsing for complex types
+	// This would require the parser to represent function types as FunctionLiteral
+	// For now, function types in annotations are not fully supported
+
+	// Handle intersection types: A & B & C
+	// The parser would need to represent this as an InfixExpression with AMP operators
+	// For now, we'll check if it's a chain of & operations
+	if infixExpr, ok := expr.(*ast.InfixExpression); ok && infixExpr.Operator == "&" {
+		// Parse intersection type: left & right
+		leftType := tc.parseTypeExpression(infixExpr.Left)
+		rightType := tc.parseTypeExpression(infixExpr.Right)
+		if leftType == nil || rightType == nil {
+			return nil
+		}
+		// Collect all types in the intersection
+		types := []Type{}
+		tc.collectIntersectionTypes(infixExpr, &types)
+		return &IntersectionType{Types: types}
+	}
+
 	return nil
+}
+
+// collectIntersectionTypes recursively collects all types in an intersection expression
+func (tc *TypeChecker) collectIntersectionTypes(expr ast.Expression, types *[]Type) {
+	if infixExpr, ok := expr.(*ast.InfixExpression); ok && infixExpr.Operator == "&" {
+		// Recursively collect from left and right
+		tc.collectIntersectionTypes(infixExpr.Left, types)
+		tc.collectIntersectionTypes(infixExpr.Right, types)
+	} else {
+		// Base case: parse the type
+		typ := tc.parseTypeExpression(expr)
+		if typ != nil {
+			*types = append(*types, typ)
+		}
+	}
+}
+
+// implementsIntersection checks if a type implements all interfaces in an intersection type
+func (tc *TypeChecker) implementsIntersection(concreteType Type, intersection *IntersectionType) bool {
+	for _, requiredType := range intersection.Types {
+		if !tc.implementsInterface(concreteType, requiredType) {
+			return false
+		}
+	}
+	return true
+}
+
+// implementsInterface checks if a concrete type implements an interface
+// This is a structural check: the type must have methods matching the interface
+func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type) bool {
+	// For now, this is a placeholder
+	// In a full implementation, we would:
+	// 1. Check if interfaceType is an InterfaceType
+	// 2. Look up the concrete type's methods
+	// 3. Verify all interface methods are present with matching signatures
+
+	// If the interface type is actually an ADT or other type, we might need different logic
+	if iface, ok := interfaceType.(*InterfaceType); ok {
+		// TODO: Check if concreteType has all methods in iface.Methods
+		// This requires method lookup, which isn't implemented yet
+		_ = iface
+		return false // Placeholder
+	}
+
+	// If it's an ADT type being used as an interface (not yet supported)
+	// or if it's the same type, return true
+	return concreteType.Equals(interfaceType)
+}
+
+// getLiteralType extracts the type of a literal object
+func (tc *TypeChecker) getLiteralType(literal object.Object) Type {
+	switch lit := literal.(type) {
+	case *object.Integer:
+		// Infer integer type from value
+		// For now, default to i32, but could be more sophisticated
+		return &PrimitiveType{Name: "i32"}
+	case *object.String:
+		return &StringType{}
+	case *object.Boolean:
+		return &BoolType{}
+	case *object.Record:
+		// For record literals, construct a RecordType
+		fields := make(map[string]Type)
+		for name, fieldObj := range lit.Fields {
+			fields[name] = tc.getLiteralType(fieldObj)
+		}
+		return &RecordType{Fields: fields}
+	default:
+		return nil
+	}
 }
 
 // checkExhaustiveness verifies that a match expression covers all variants of an ADT

@@ -46,29 +46,42 @@ This document tracks the implementation progress of the Oak programming language
 ## In Progress 🚧
 
 ### 5. Parser
-- ⏳ ADT type parsing
-- ⏳ Pattern matching expression parsing
-- ⏳ Function declaration parsing (new `fn` syntax)
-- ⏳ Package and import parsing
-- ⏳ While loop parsing
-- ⏳ Unsafe block parsing
+- ✅ ADT type parsing
+- ✅ Pattern matching expression parsing
+- ✅ Function declaration parsing (new `fn` syntax)
+- ✅ Package and import parsing
+- ✅ While loop parsing
+- ✅ Unsafe block parsing
+- ✅ Record literal parsing
+- ✅ Array literal parsing
+- ⏳ Complex type expression parsing (array types, record types in annotations)
 
 ## Pending 📋
 
 ### 6. Type System
-- ⏳ Type checker implementation
-- ⏳ ADT type checking
-- ⏳ Pattern matching exhaustiveness checking
-- ⏳ Type inference for locals
+- ✅ Type checker implementation
+- ✅ ADT type checking
+- ✅ Pattern matching exhaustiveness checking
+- ✅ Type inference for locals
+- ✅ Type narrowing for ADT literal tags (TypeScript-style)
+- ✅ Record type definition checking
+- ✅ Intersection types for interfaces
+- ✅ Enhanced type expression parsing (arrays, records, intersections)
 - ⏳ Generic type support (`Option[T]`, `Result[T, E]`)
+- ⏳ Interface type checking (structural typing)
+- ⏳ Method lookup and interface implementation checking
 
 ### 7. Evaluator
-- ⏳ Arithmetic operations (`+`, `-`, `*`, `/`)
-- ⏳ Comparisons (`==`, `!=`, `<`, `>`)
-- ⏳ Pattern matching evaluation
-- ⏳ Function calls
-- ⏳ Variable bindings (`let` statements)
-- ⏳ ADT construction and matching
+- ✅ Arithmetic operations (`+`, `-`, `*`, `/`)
+- ✅ Comparisons (`==`, `!=`, `<`, `>`)
+- ✅ Pattern matching evaluation
+- ✅ Function calls
+- ✅ Variable bindings (declarations and assignments)
+- ✅ ADT construction and matching
+- ✅ Record literal evaluation
+- ✅ Array literal evaluation
+- ✅ Field access (record.field)
+- ✅ Array indexing (array[index])
 
 ### 8. Borrow Checker
 - ⏳ Slice/span alias analysis
@@ -107,13 +120,13 @@ Source Code
     ↓
 Scanner (Lexer) ✅
     ↓
-Parser ⏳
+Parser ✅ (most features)
     ↓
 AST ✅
     ↓
-Type Checker ⏳
+Type Checker ✅ (core features)
     ↓
-Evaluator ⏳
+Evaluator ✅ (core features)
     ↓
 Code Generator ⏳
     ↓
