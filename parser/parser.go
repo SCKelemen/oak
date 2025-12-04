@@ -37,8 +37,8 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.registerPrefix(token.TRUE, p.parseBoolean)
 	p.registerPrefix(token.FALSE, p.parseBoolean)
 	p.registerPrefix(token.LPAREN, p.parseExpressionGroup)
-	p.registerPrefix(token.IF, p.parseIfExpression)
-	p.registerPrefix(token.FUNC, p.parseFunctionLiteral)
+	p.registerPrefix(token.LBRACE, p.parseRecordLiteral)
+	p.registerPrefix(token.LBRACK, p.parseArrayLiteral)
 	p.registerPrefix(token.FN, p.parseFunctionLiteral)
 
 	p.infixParseFns = make(map[token.TokenKind]infixParseFn)
@@ -51,6 +51,9 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.registerInfix(token.LCHEV, p.parseInfixExpression)
 	p.registerInfix(token.RCHEV, p.parseInfixExpression)
 	p.registerInfix(token.LPAREN, p.parseInvocationExpression)
+	p.registerInfix(token.DOT, p.parseIndexExpression)
+	p.registerInfix(token.LBRACK, p.parseIndexExpression)
+	p.registerInfix(token.LBRACK, p.parseIndexExpression)
 
 	// load the first 2 tokens
 	p.nextToken()
@@ -74,38 +77,6 @@ func (p *Parser) registerInfix(TokenKind token.TokenKind, fn infixParseFn) {
 func (p *Parser) nextToken() {
 	p.currentToken = p.peekToken
 	p.peekToken = p.lxr.NextToken()
-}
-
-func (p *Parser) parseTypeDeclaration() *ast.TypeDeclarationStatement {
-	stmt := &ast.TypeDeclarationStatement{Token: p.currentToken}
-
-	if !p.expectPeek(token.IDENT) {
-		return nil
-	}
-
-	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-	if !p.expectPeek(token.EQL) {
-		return nil
-	}
-	// TODO: skip shit
-	for !p.currentTokenIs(token.SEMI) {
-		p.nextToken()
-	}
-	return stmt
-}
-
-func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
-	stmt := &ast.ReturnStatement{Token: p.currentToken}
-
-	p.nextToken()
-
-	stmt.ReturnValue = p.parseExpression(LOWEST)
-
-	for !p.currentTokenIs(token.SEMI) {
-		p.nextToken()
-	}
-
-	return stmt
 }
 
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
@@ -133,8 +104,6 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseADTType()
 	case token.FN:
 		return p.parseFunctionStatement()
-	case token.RETURN:
-		return p.parseReturnStatement()
 	case token.WHILE:
 		return p.parseWhileStatement()
 	case token.UNSAFE:
@@ -171,7 +140,17 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 	}
 	leftExp := prefix()
 
-	for !p.peekTokenIs(token.SEMI) && precendece < p.peekPrecedence() {
+	// After prefix parse, currentToken is still the prefix token (prefix parsers don't advance)
+	// peekToken is what comes after the expression
+	// Stop if we see a comma, semicolon, closing brace, or closing bracket (these terminate expressions)
+	// Also stop if precedence is too low
+	// Note: We stop at commas and brackets to allow array/record literal parsers to handle them
+	for !p.peekTokenIs(token.SEMI) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.RBRACK) {
+		// Check precedence - if it's too low, stop
+		if precendece >= p.peekPrecedence() {
+			break
+		}
+
 		// Check for match expression (postfix ?)
 		if p.peekTokenIs(token.QMARK) {
 			p.nextToken() // consume ?
@@ -186,6 +165,16 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 
 		p.nextToken()
 		leftExp = infix(leftExp)
+
+		// After infix parse, check if we should stop
+		// (infix parsers like parseIndexExpression may have advanced past stop tokens)
+		// Also check currentToken in case the infix parser advanced past the stop token
+		if p.currentTokenIs(token.SEMI) || p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.RBRACE) || p.currentTokenIs(token.RBRACK) {
+			break
+		}
+		if p.peekTokenIs(token.SEMI) || p.peekTokenIs(token.COMMA) || p.peekTokenIs(token.RBRACE) || p.peekTokenIs(token.RBRACK) {
+			break
+		}
 	}
 	return leftExp
 }
@@ -267,7 +256,10 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 }
 
 func (p *Parser) parseStringLiteral() ast.Expression {
-	return &ast.StringLiteral{Token: p.currentToken, Value: p.currentToken.Literal}
+	lit := &ast.StringLiteral{Token: p.currentToken, Value: p.currentToken.Literal}
+	// Note: We don't advance the token here because parseExpression's loop handles it
+	// The prefix parser should just return the AST node, and the expression parser advances
+	return lit
 }
 
 func (p *Parser) parseFunctionLiteral() ast.Expression {
@@ -321,6 +313,49 @@ func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expressi
 	return exp
 }
 
+// Parse field access: record.field or array indexing: array[index]
+func (p *Parser) parseIndexExpression(left ast.Expression) ast.Expression {
+	exp := &ast.IndexExpression{Token: p.currentToken, Left: left}
+
+	if p.currentTokenIs(token.DOT) {
+		// Record field access: record.field
+		p.nextToken()
+		if !p.currentTokenIs(token.IDENT) {
+			p.peekError(token.IDENT)
+			return nil
+		}
+		exp.Index = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	} else if p.currentTokenIs(token.LBRACK) {
+		// Array indexing: array[index]
+		// The current token is [, next should be the index expression
+		p.nextToken()
+
+		// Parse the index expression
+		indexExpr := p.parseExpression(LOWEST)
+		if indexExpr == nil {
+			return nil
+		}
+		exp.Index = indexExpr
+
+		// After parseExpression, currentToken is the last token of the index expression
+		// peekToken should be the closing bracket
+		// Advance past the index expression to the closing bracket
+		if !p.peekTokenIs(token.RBRACK) {
+			p.peekError(token.RBRACK)
+			return nil
+		}
+		p.nextToken() // Advance past index expression to ]
+		p.nextToken() // Advance past ] to next token
+		// After this, currentToken is past the ], peekToken is what comes after
+		// The expression parser's loop will check peekToken, which should be a stop token
+	} else {
+		p.peekError(token.IDENT)
+		return nil
+	}
+
+	return exp
+}
+
 func (p *Parser) parseInvocationArguments() []ast.Expression {
 	args := []ast.Expression{}
 
@@ -347,39 +382,6 @@ func (p *Parser) parseInvocationArguments() []ast.Expression {
 
 func (p *Parser) parseBoolean() ast.Expression {
 	return &ast.Boolean{Token: p.currentToken, Value: p.currentTokenIs(token.TRUE)}
-}
-
-func (p *Parser) parseIfExpression() ast.Expression {
-	expr := &ast.IfExpression{Token: p.currentToken}
-
-	if !p.expectPeek(token.LPAREN) {
-		return nil
-	}
-
-	p.nextToken()
-	expr.Condition = p.parseExpression(LOWEST)
-
-	if !p.expectPeek(token.RPAREN) {
-		return nil
-	}
-
-	if !p.expectPeek(token.LBRACE) {
-		return nil
-	}
-
-	expr.Consequence = p.parseBlockStatement()
-
-	if p.peekTokenIs(token.ELSE) {
-		p.nextToken()
-
-		if !p.expectPeek(token.LBRACE) {
-			return nil
-		}
-
-		expr.Alternative = p.parseBlockStatement()
-	}
-
-	return expr
 }
 
 func (p *Parser) ParseProgram() *ast.Program {
@@ -440,7 +442,7 @@ const (
 	PRODUCT    // *
 	PREFIX     // -x or !x
 	INVOCATION // aka Call, myfunction(x)
-
+	INDEX      // record.field or array[index] - highest precedence
 )
 
 func (p *Parser) noPrefixParseFn(t token.TokenKind) {
@@ -474,12 +476,15 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 }
 
 func (p *Parser) parseExpressionGroup() ast.Expression {
+	// Skip opening paren - currentToken is LPAREN, advance to expression
 	p.nextToken()
 	exp := p.parseExpression(LOWEST)
+	// After parseExpression, currentToken is the last token of the expression
+	// peekToken should be RPAREN
 	if !p.expectPeek(token.RPAREN) {
 		return nil
 	}
-
+	// After expectPeek, currentToken is RPAREN, peekToken is what comes after
 	return exp
 }
 
@@ -495,6 +500,8 @@ var precedences = map[token.TokenKind]Precedence{
 	token.QUO:    PRODUCT,
 	token.LPAREN: INVOCATION,
 	token.QMARK:  INVOCATION, // Match expression has high precedence
+	token.DOT:    INDEX,      // Field access has highest precedence
+	token.LBRACK: INDEX,      // Array indexing has highest precedence
 }
 
 func (p *Parser) peekPrecedence() Precedence {
@@ -657,10 +664,124 @@ func (p *Parser) parseLiteralExpression() ast.Expression {
 
 // Record literal: { field: value, ... }
 func (p *Parser) parseRecordLiteral() ast.Expression {
-	// For now, return a placeholder - proper record literal AST node needed
-	// TODO: implement proper record literal parsing with RecordLiteral AST node
-	// For now, parse as identifier to avoid errors
-	return &ast.Identifier{Token: p.currentToken, Value: "{}"}
+	record := &ast.RecordLiteral{
+		Token:  p.currentToken,
+		Fields: make(map[string]ast.Expression),
+	}
+
+	// Skip opening brace (currentToken is {)
+	p.nextToken()
+
+	// Handle empty record: {}
+	if p.currentTokenIs(token.RBRACE) {
+		return record
+	}
+
+	// Parse fields until closing brace
+	for {
+		// Parse field name (identifier)
+		if !p.currentTokenIs(token.IDENT) {
+			p.peekError(token.IDENT)
+			return nil
+		}
+		fieldName := p.currentToken.Literal
+
+		// Expect colon
+		if !p.expectPeek(token.COLON) {
+			return nil
+		}
+
+		// Parse field value
+		p.nextToken() // Advance past colon to the value
+		fieldValue := p.parseExpression(LOWEST)
+		if fieldValue == nil {
+			return nil
+		}
+
+		record.Fields[fieldName] = fieldValue
+
+		// After parseExpression returns:
+		// - For simple literals (string, int), currentToken is still the literal token
+		//   (prefix parsers don't advance tokens)
+		// - peekToken should be the comma or closing brace
+		// We need to advance past the expression token to see what's next
+
+		// Advance past the expression's last token
+		p.nextToken()
+
+		// Now currentToken should be comma or closing brace
+		if p.currentTokenIs(token.COMMA) {
+			p.nextToken() // Advance past comma to next field name
+			// Continue loop - currentToken is now the next field name
+		} else if p.currentTokenIs(token.RBRACE) {
+			// We're done - closing brace consumed
+			break
+		} else {
+			// Unexpected token - should be comma or closing brace
+			// This might happen if expression parser consumed more than expected
+			// Try to recover by checking peekToken
+			if p.peekTokenIs(token.COMMA) {
+				// We haven't advanced yet - do it now
+				p.nextToken()
+				p.nextToken()
+				// Continue loop
+			} else if p.peekTokenIs(token.RBRACE) {
+				p.nextToken()
+				p.nextToken()
+				break
+			} else {
+				p.peekError(token.RBRACE)
+				return nil
+			}
+		}
+	}
+
+	return record
+}
+
+// Array literal: [expr1, expr2, ...]
+func (p *Parser) parseArrayLiteral() ast.Expression {
+	array := &ast.ArrayLiteral{
+		Token:    p.currentToken,
+		Elements: []ast.Expression{},
+	}
+
+	// Skip opening bracket (currentToken is [)
+	p.nextToken()
+
+	// Handle empty array: []
+	if p.currentTokenIs(token.RBRACK) {
+		return array
+	}
+
+	// Parse elements until closing bracket
+	for {
+		// Parse element expression
+		elem := p.parseExpression(LOWEST)
+		if elem == nil {
+			return nil
+		}
+		array.Elements = append(array.Elements, elem)
+
+		// After parseExpression, currentToken is the last token of the expression
+		// peekToken should be comma or closing bracket
+		// Check what comes next
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken() // Advance past expression token to comma
+			p.nextToken() // Advance past comma to next element
+			// Continue loop
+		} else if p.peekTokenIs(token.RBRACK) {
+			p.nextToken() // Advance past expression token to closing bracket
+			p.nextToken() // Advance past closing bracket
+			break
+		} else {
+			// Unexpected token
+			p.peekError(token.RBRACK)
+			return nil
+		}
+	}
+
+	return array
 }
 
 // Function statement (top-level function)
@@ -977,8 +1098,8 @@ func (p *Parser) parseAssignmentStatement() *ast.AssignmentStatement {
 		return nil
 	}
 
-	p.nextToken() // consume =
-	p.nextToken() // consume value
+	p.nextToken() // consume =, now currentToken is =
+	p.nextToken() // consume value token, now currentToken is the first token of the value expression
 	stmt.Value = p.parseExpression(LOWEST)
 
 	if p.peekTokenIs(token.SEMI) {

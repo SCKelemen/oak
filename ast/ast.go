@@ -43,29 +43,6 @@ func (p *Program) TokenLiteral() string {
 	}
 }
 
-type TypeDeclarationStatement struct {
-	Token token.Token // 'type' token
-	Name  *Identifier
-	Value Expression
-}
-
-func (tds *TypeDeclarationStatement) statementNode()       {}
-func (tds *TypeDeclarationStatement) TokenLiteral() string { return tds.Token.Literal }
-func (tds *TypeDeclarationStatement) String() string {
-	var out bytes.Buffer
-
-	out.WriteString(tds.TokenLiteral())
-	out.WriteRune(' ')
-	out.WriteString(tds.Name.String())
-	out.WriteString(" = ")
-
-	if tds.Value != nil {
-		out.WriteString(tds.Value.String())
-	}
-	out.WriteRune(';')
-
-	return out.String()
-}
 
 type Identifier struct {
 	Token token.Token // 'ident' token
@@ -76,27 +53,6 @@ func (i *Identifier) expressionNode()      {}
 func (i *Identifier) TokenLiteral() string { return i.Token.Literal }
 func (i *Identifier) String() string       { return i.Value }
 
-type ReturnStatement struct {
-	Token       token.Token // 'return' token
-	ReturnValue Expression
-}
-
-func (rs *ReturnStatement) statementNode()       {}
-func (rs *ReturnStatement) TokenLiteral() string { return rs.Token.Literal }
-func (rs *ReturnStatement) String() string {
-	var out bytes.Buffer
-
-	out.WriteString(rs.TokenLiteral())
-	out.WriteRune(' ')
-
-	if rs.ReturnValue != nil {
-		out.WriteString(rs.ReturnValue.String())
-	}
-
-	out.WriteRune(';')
-
-	return out.String()
-}
 
 // ExpressionStatement is required for
 // side-effecting code such as
@@ -132,6 +88,33 @@ type StringLiteral struct {
 func (lit *StringLiteral) expressionNode()      {}
 func (lit *StringLiteral) TokenLiteral() string { return lit.Token.Literal }
 func (lit *StringLiteral) String() string      { return lit.Token.Literal }
+
+// RecordLiteral: { field1: value1, field2: value2, ... }
+type RecordLiteral struct {
+	Token   token.Token
+	Fields  map[string]Expression
+}
+
+func (rl *RecordLiteral) expressionNode()      {}
+func (rl *RecordLiteral) TokenLiteral() string { return rl.Token.Literal }
+func (rl *RecordLiteral) String() string {
+	var out bytes.Buffer
+	out.WriteRune('{')
+	
+	first := true
+	for field, expr := range rl.Fields {
+		if !first {
+			out.WriteString(", ")
+		}
+		out.WriteString(field)
+		out.WriteString(": ")
+		out.WriteString(expr.String())
+		first = false
+	}
+	
+	out.WriteRune('}')
+	return out.String()
+}
 
 type PrefixExpression struct {
 	Token    token.Token // prefix tokens: !, -, *
@@ -175,6 +158,54 @@ func (ie InfixExpression) String() string {
 	return out.String()
 }
 
+// IndexExpression: record.field or array[index]
+type IndexExpression struct {
+	Token token.Token // The . token or [ token
+	Left  Expression
+	Index Expression // For records, this is an identifier. For arrays, this is an integer expression.
+}
+
+func (ie *IndexExpression) expressionNode()      {}
+func (ie *IndexExpression) TokenLiteral() string { return ie.Token.Literal }
+func (ie *IndexExpression) String() string {
+	var out bytes.Buffer
+	out.WriteRune('(')
+	out.WriteString(ie.Left.String())
+	if ident, ok := ie.Index.(*Identifier); ok {
+		// Record field access
+		out.WriteRune('.')
+		out.WriteString(ident.Value)
+	} else {
+		// Array indexing
+		out.WriteRune('[')
+		out.WriteString(ie.Index.String())
+		out.WriteRune(']')
+	}
+	out.WriteRune(')')
+	return out.String()
+}
+
+// ArrayLiteral: [expr1, expr2, ...]
+type ArrayLiteral struct {
+	Token    token.Token // The [ token
+	Elements []Expression
+}
+
+func (al *ArrayLiteral) expressionNode()      {}
+func (al *ArrayLiteral) TokenLiteral() string { return al.Token.Literal }
+func (al *ArrayLiteral) String() string {
+	var out bytes.Buffer
+	out.WriteRune('[')
+	for i, elem := range al.Elements {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(elem.String())
+	}
+	out.WriteRune(']')
+	return out.String()
+}
+
 type Boolean struct {
 	Token token.Token // true | false                   or maybe ;)
 	Value bool
@@ -184,30 +215,6 @@ func (b *Boolean) expressionNode()      {}
 func (b *Boolean) TokenLiteral() string { return b.Token.Literal }
 func (b *Boolean) String() string       { return b.Token.Literal }
 
-type IfExpression struct {
-	Token       token.Token // if token
-	Condition   Expression
-	Consequence *BlockStatement
-	Alternative *BlockStatement
-}
-
-func (ie *IfExpression) expressionNode()      {}
-func (ie *IfExpression) TokenLiteral() string { return ie.Token.Literal }
-func (ie *IfExpression) String() string {
-	var out bytes.Buffer
-
-	out.WriteString("if")
-	out.WriteString(ie.Condition.String())
-	out.WriteRune(' ')
-	out.WriteString(ie.Consequence.String())
-
-	if ie.Alternative != nil {
-		out.WriteString("else ")
-		out.WriteString(ie.Alternative.String())
-	}
-
-	return out.String()
-}
 
 type BlockStatement struct {
 	Token      token.Token // { token

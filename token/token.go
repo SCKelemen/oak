@@ -36,9 +36,9 @@ const (
 	ASSIGN // =
 	ARROW  // ->
 
-	PIPE // |
-	AMP  // &
-	BANG // !
+	PIPE  // |
+	AMP   // &
+	BANG  // !
 	QMARK // ?
 
 	// arithmeticy bits
@@ -52,14 +52,8 @@ const (
 
 	_keywords_beg
 	TYPE
-	SWITCH
-	RETURN
 	TRUE
 	FALSE
-	IF
-	ELSE
-	FUNC
-	LET
 	PACKAGE
 	IMPORT
 	WHILE
@@ -109,14 +103,8 @@ var tokens = [...]string{
 	NEQL: "!=",
 
 	TYPE:    "type",
-	SWITCH:  "switch",
-	RETURN:  "return",
 	TRUE:    "true",
 	FALSE:   "false",
-	IF:      "if",
-	ELSE:    "else",
-	FUNC:    "func",
-	LET:     "let",
 	PACKAGE: "package",
 	IMPORT:  "import",
 	WHILE:   "while",

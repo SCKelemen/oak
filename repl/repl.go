@@ -9,6 +9,7 @@ import (
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 const PROMPT = "🌳> "
@@ -36,6 +37,16 @@ func Start(in io.Reader, out io.Writer) {
 		if len(p.Errors()) != 0 {
 			printParserErrors(out, p.Errors())
 			continue
+		}
+
+		// Type check the program
+		typeChecker := typechecker.New(env)
+		typeChecker.CheckProgram(program)
+		if len(typeChecker.Errors()) != 0 {
+			for _, msg := range typeChecker.Errors() {
+				io.WriteString(out, "\t[type error] "+msg+"\n")
+			}
+			// Continue to evaluation anyway for now
 		}
 
 		val := evaluator.Eval(program, env)

@@ -32,6 +32,12 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.StringLiteral:
 		return &object.String{Value: node.Value}
 
+	case *ast.RecordLiteral:
+		return evalRecordLiteral(node, env)
+
+	case *ast.ArrayLiteral:
+		return evalArrayLiteral(node, env)
+
 	case *ast.Boolean:
 		return mapBooleans(node.Value)
 
@@ -86,15 +92,15 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		}
 		return applyFunction(function, args)
 
+	case *ast.IndexExpression:
+		return evalIndexExpression(node, env)
+
 	case *ast.MatchExpression:
 		scrutinee := Eval(node.Scrutinee, env)
 		if isError(scrutinee) {
 			return scrutinee
 		}
 		return evalMatchExpression(scrutinee, node.Arms, env)
-
-	case *ast.IfExpression:
-		return evalIfExpression(node, env)
 
 	case *ast.ADTType:
 		return evalADTType(node, env)
@@ -262,21 +268,6 @@ func nativeBoolToBooleanObject(input bool) *object.Boolean {
 		return TRUE
 	}
 	return FALSE
-}
-
-func evalIfExpression(ie *ast.IfExpression, env *object.Environment) object.Object {
-	condition := Eval(ie.Condition, env)
-	if isError(condition) {
-		return condition
-	}
-
-	if isTruthy(condition) {
-		return Eval(ie.Consequence, env)
-	} else if ie.Alternative != nil {
-		return Eval(ie.Alternative, env)
-	} else {
-		return NULL
-	}
 }
 
 func isTruthy(obj object.Object) bool {
@@ -594,4 +585,78 @@ func findADTTypeForVariant(variantName string, env *object.Environment) string {
 	}
 	
 	return ""
+}
+
+// Evaluate record literal: { field1: value1, field2: value2, ... }
+func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Object {
+	fields := make(map[string]object.Object)
+	
+	for fieldName, fieldExpr := range rl.Fields {
+		fieldValue := Eval(fieldExpr, env)
+		if isError(fieldValue) {
+			return fieldValue
+		}
+		fields[fieldName] = fieldValue
+	}
+	
+	return &object.Record{Fields: fields}
+}
+
+// Evaluate field access: record.field or array indexing: array[index]
+func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) object.Object {
+	left := Eval(ie.Left, env)
+	if isError(left) {
+		return left
+	}
+	
+	// Check if this is record field access (index is identifier) or array indexing
+	if fieldName, ok := ie.Index.(*ast.Identifier); ok {
+		// Record field access: record.field
+		if record, ok := left.(*object.Record); ok {
+			if fieldValue, exists := record.Fields[fieldName.Value]; exists {
+				return fieldValue
+			}
+			return newError("field '%s' not found in record", fieldName.Value)
+		}
+		return newError("field access not supported for type %s", left.Type())
+	}
+	
+	// Array indexing: array[index]
+	indexObj := Eval(ie.Index, env)
+	if isError(indexObj) {
+		return indexObj
+	}
+	
+	if array, ok := left.(*object.Array); ok {
+		// Check if index is an integer
+		index, ok := indexObj.(*object.Integer)
+		if !ok {
+			return newError("array index must be integer, got %s", indexObj.Type())
+		}
+		
+		// Bounds check
+		idx := index.Value
+		if idx < 0 || int64(len(array.Elements)) <= idx {
+			return newError("array index out of bounds: %d (length: %d)", idx, len(array.Elements))
+		}
+		
+		return array.Elements[idx]
+	}
+	
+	return newError("index operator not supported for type %s", left.Type())
+}
+
+// Evaluate array literal: [elem1, elem2, ...]
+func evalArrayLiteral(al *ast.ArrayLiteral, env *object.Environment) object.Object {
+	elements := []object.Object{}
+	
+	for _, elemExpr := range al.Elements {
+		elem := Eval(elemExpr, env)
+		if isError(elem) {
+			return elem
+		}
+		elements = append(elements, elem)
+	}
+	
+	return &object.Array{Elements: elements}
 }

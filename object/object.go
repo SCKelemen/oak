@@ -1,6 +1,7 @@
 package object
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 
@@ -83,6 +84,52 @@ type Error struct {
 func (e *Error) Type() ObjectType { return ERROR_OBJ }
 func (e *Error) Inspect() string  { return "ERROR: " + e.Message }
 func (e *Error) Kind() ObjectKind  { return ERROR }
+
+// Record: { field1: value1, field2: value2, ... }
+type Record struct {
+	Fields map[string]Object
+}
+
+func (r *Record) Type() ObjectType { return RECORD_OBJ }
+func (r *Record) Kind() ObjectKind  { return RECORD }
+func (r *Record) Inspect() string {
+	var out bytes.Buffer
+	out.WriteRune('{')
+	
+	first := true
+	for field, value := range r.Fields {
+		if !first {
+			out.WriteString(", ")
+		}
+		out.WriteString(field)
+		out.WriteString(": ")
+		out.WriteString(value.Inspect())
+		first = false
+	}
+	
+	out.WriteRune('}')
+	return out.String()
+}
+
+// Array: [elem1, elem2, ...]
+type Array struct {
+	Elements []Object
+}
+
+func (a *Array) Type() ObjectType { return ARRAY_OBJ }
+func (a *Array) Kind() ObjectKind  { return ARRAY }
+func (a *Array) Inspect() string {
+	var out bytes.Buffer
+	out.WriteRune('[')
+	for i, elem := range a.Elements {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(elem.Inspect())
+	}
+	out.WriteRune(']')
+	return out.String()
+}
 
 type ADTType struct {
 	Name     string
@@ -172,6 +219,8 @@ const (
 	ERROR_OBJ    = "ERROR"
 	FUNCTION_OBJ = "FUNCTION"
 	ADT_OBJ      = "ADT"
+	RECORD_OBJ   = "RECORD"
+	ARRAY_OBJ    = "ARRAY"
 )
 
 const (
@@ -185,6 +234,8 @@ const (
 	VARIANT
 	ERROR
 	RETURN_VALUE
+	RECORD
+	ARRAY
 )
 
 var types = [...]string{
@@ -198,6 +249,8 @@ var types = [...]string{
 	VARIANT:      "VARIANT",
 	ERROR:        "ERROR",
 	RETURN_VALUE: "RETURN_VALUE",
+	RECORD:       "RECORD",
+	ARRAY:        "ARRAY",
 }
 
 func (kind ObjectKind) String() string {
