@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/SCKelemen/oak/evaluator"
 	"github.com/SCKelemen/oak/object"
@@ -31,6 +32,13 @@ func Start(in io.Reader, out io.Writer) {
 		ln := scnr.Text()
 		if ln == "" {
 			continue
+		}
+
+		// Check for special REPL commands
+		trimmed := strings.TrimSpace(ln)
+		if trimmed == "exit" || trimmed == "quit" || trimmed == "q" {
+			fmt.Fprintf(out, "Goodbye!\n")
+			return
 		}
 
 		lxr := scanner.New(ln)

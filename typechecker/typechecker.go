@@ -436,7 +436,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.PrefixExpression:
 		return tc.checkPrefixExpression(e)
 	case *ast.InfixExpression:
-		return tc.checkInfixExpression(e)
+		return tc.checkInfixExpression(e, expected)
 	case *ast.FunctionLiteral:
 		return tc.checkFunctionLiteral(e)
 	case *ast.InvocationExpression:
@@ -446,7 +446,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.VariantExpression:
 		return tc.checkVariantExpression(e)
 	case *ast.RecordLiteral:
-		return tc.checkRecordLiteral(e)
+		return tc.checkRecordLiteral(e, expected)
 	case *ast.IndexExpression:
 		return tc.checkIndexExpression(e)
 	case *ast.ArrayLiteral:
@@ -506,9 +506,24 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
 	}
 }
 
-func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression) Type {
+func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedType ...Type) Type {
+	var expected Type
+	if len(expectedType) > 0 {
+		expected = expectedType[0]
+	}
+
 	leftType := tc.checkExpression(expr.Left)
-	rightType := tc.checkExpression(expr.Right)
+	// For right side, if expected type is numeric and we're doing arithmetic,
+	// use it for context-based inference of literals
+	var rightExpected Type
+	if expected != nil {
+		if prim, ok := expected.(*PrimitiveType); ok {
+			if tc.isNumericType(prim) {
+				rightExpected = expected
+			}
+		}
+	}
+	rightType := tc.checkExpression(expr.Right, rightExpected)
 	if leftType == nil || rightType == nil {
 		return nil
 	}
@@ -717,12 +732,13 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	}
 
 	// Check argument types (with coercion)
+	// Pass expected type for context-based inference (e.g., for integer literals)
 	for i, arg := range expr.Arguments {
-		argType := tc.checkExpression(arg)
+		expectedType := fnType.Parameters[i]
+		argType := tc.checkExpression(arg, expectedType)
 		if argType == nil {
 			continue
 		}
-		expectedType := fnType.Parameters[i]
 		if !tc.isAssignable(argType, expectedType) {
 			tc.addError("argument %d: expected %s, got %s", i+1, expectedType, argType)
 		}
@@ -1378,10 +1394,25 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression) Type 
 	return nil
 }
 
-func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral) Type {
+func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType ...Type) Type {
+	// If expected type is a RecordType, use it for context-based inference
+	var expectedRecord *RecordType
+	if len(expectedType) > 0 {
+		if recType, ok := expectedType[0].(*RecordType); ok {
+			expectedRecord = recType
+		}
+	}
+
 	fields := make(map[string]Type)
 	for name, fieldExpr := range expr.Fields {
-		fieldType := tc.checkExpression(fieldExpr)
+		// Use expected field type for context-based inference
+		var expectedFieldType Type
+		if expectedRecord != nil {
+			if fieldType, ok := expectedRecord.Fields[name]; ok {
+				expectedFieldType = fieldType
+			}
+		}
+		fieldType := tc.checkExpression(fieldExpr, expectedFieldType)
 		if fieldType == nil {
 			continue
 		}
@@ -1568,7 +1599,7 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 						valueWidth := tc.getTypeWidth(valuePrim.Name)
 						if varWidth < valueWidth {
 							// This is a narrowing case - suggest narrowing function
-							tc.addError("assignment: variable %s has type %s, cannot assign %s (use %s_trunc_%s(...) or %s_checked_%s(...) for narrowing)", 
+							tc.addError("assignment: variable %s has type %s, cannot assign %s (use %s_trunc_%s(...) or %s_checked_%s(...) for narrowing)",
 								stmt.Name.Value, varType, valueType, varPrim.Name, valuePrim.Name, varPrim.Name, valuePrim.Name)
 							return
 						}
