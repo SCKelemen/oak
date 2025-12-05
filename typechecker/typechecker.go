@@ -1652,6 +1652,32 @@ func (tc *TypeChecker) SatisfiesConstraint(concreteType Type, constraint Constra
 	return true
 }
 
+// extractInterfacesFromConstraint extracts interface names from a constraint expression
+// Handles both single interfaces (Identifier) and intersections (InfixExpression with &)
+func (tc *TypeChecker) extractInterfacesFromConstraint(expr ast.Expression) []string {
+	interfaces := []string{}
+	
+	// Handle single interface: Reader
+	if ident, ok := expr.(*ast.Identifier); ok {
+		interfaces = append(interfaces, ident.Value)
+		return interfaces
+	}
+	
+	// Handle intersection: Reader & Writer & Closer
+	if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "&" {
+		// Recursively extract from left and right
+		leftInterfaces := tc.extractInterfacesFromConstraint(infix.Left)
+		rightInterfaces := tc.extractInterfacesFromConstraint(infix.Right)
+		interfaces = append(interfaces, leftInterfaces...)
+		interfaces = append(interfaces, rightInterfaces...)
+		return interfaces
+	}
+	
+	// Unknown constraint expression
+	tc.addError("invalid constraint expression: %s", expr.String())
+	return interfaces
+}
+
 // getLiteralType extracts the type of a literal object
 func (tc *TypeChecker) getLiteralType(literal object.Object) Type {
 	switch lit := literal.(type) {
