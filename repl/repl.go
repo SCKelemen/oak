@@ -57,6 +57,7 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "  :help         - Show this help message\n")
 					fmt.Fprintf(out, "  :clear         - Clear the screen\n")
 					fmt.Fprintf(out, "  :reset         - Reset the environment (clear all variables)\n")
+					fmt.Fprintf(out, "  :typeof(expr)  - Show the type of an expression\n")
 					continue
 				case "clear":
 					// ANSI escape code to clear screen and move cursor to top-left
@@ -67,6 +68,27 @@ func Start(in io.Reader, out io.Writer) {
 					env = object.NewEnvironment()
 					typeChecker = typechecker.New(env)
 					fmt.Fprintf(out, "Environment reset.\n")
+					continue
+				case "typeof":
+					// Type check and display the type of an expression
+					if len(replCmd.Args) == 0 {
+						fmt.Fprintf(out, "Usage: :typeof(expression)\n")
+						continue
+					}
+					expr := replCmd.Args[0]
+					// Type check the expression
+					typeChecker.ClearErrors()
+					exprType := typeChecker.CheckExpression(expr)
+					if len(typeChecker.Errors()) > 0 {
+						fmt.Fprintf(out, "Type errors:\n")
+						for _, err := range typeChecker.Errors() {
+							fmt.Fprintf(out, "  %s\n", err)
+						}
+					} else if exprType != nil {
+						fmt.Fprintf(out, "%s\n", exprType.String())
+					} else {
+						fmt.Fprintf(out, "unknown type\n")
+					}
 					continue
 				}
 			}

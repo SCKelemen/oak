@@ -233,11 +233,12 @@ func (ie *IndexExpression) String() string {
 	return out.String()
 }
 
-// ArrayLiteral: [expr1, expr2, ...]
+// ArrayLiteral: [expr1, expr2, ...] or [N]Type{ expr1, expr2, ... }
 type ArrayLiteral struct {
 	BaseNode
 	Token    token.Token // The [ token
 	Elements []Expression
+	Type     Expression // Optional: array type for typed literals like [4]u8{ ... }
 }
 
 func (al *ArrayLiteral) expressionNode()      {}
@@ -772,8 +773,9 @@ func (ub *UnsafeBlock) String() string {
 // These are part of the language syntax and are type-checked
 type REPLCommand struct {
 	BaseNode
-	Token token.Token // ':' token
-	Name  string      // command name: "exit", "quit", "help"
+	Token token.Token   // ':' token
+	Name  string        // command name: "exit", "quit", "help", "typeof"
+	Args  []Expression  // optional arguments to the command (e.g., expression for typeof)
 }
 
 func (rc *REPLCommand) statementNode()       {}

@@ -320,11 +320,20 @@ func (e *TypeEnvironment) SetType(name string, typ Type) {
 }
 
 func New(env *object.Environment) *TypeChecker {
-	return &TypeChecker{
+	tc := &TypeChecker{
 		errors:   []string{},
 		env:      NewTypeEnvironment(),
 		adtTypes: env.GetAllADTTypes(),
 	}
+	// Add builtin type aliases
+	tc.addBuiltinTypeAliases()
+	return tc
+}
+
+// addBuiltinTypeAliases adds builtin type aliases to the type environment
+func (tc *TypeChecker) addBuiltinTypeAliases() {
+	// byte is an alias for u8
+	tc.env.SetType("byte", &PrimitiveType{Name: "u8"})
 }
 
 func (tc *TypeChecker) Errors() []string {
@@ -344,6 +353,12 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	for _, stmt := range program.Statements {
 		tc.checkStatement(stmt)
 	}
+}
+
+// CheckExpression type checks a single expression and returns its type
+// This is useful for REPL inspection commands like :typeof()
+func (tc *TypeChecker) CheckExpression(expr ast.Expression) Type {
+	return tc.checkExpression(expr)
 }
 
 // checkStatement type checks a statement
@@ -1884,9 +1899,44 @@ func (tc *TypeChecker) checkUnsafeBlock(stmt *ast.UnsafeBlock) {
 }
 
 func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
-	// For now, infer element type from first element
-	// Note: Typed arrays [N]T are not yet supported in the parser
-	// For now, all array literals create slices []T
+	// Check if this is a typed array literal: [N]Type{ ... }
+	if expr.Type != nil {
+		// Parse the array type from the Type field (which is an IndexExpression)
+		expectedArrayType := tc.parseTypeExpression(expr.Type)
+		if expectedArrayType == nil {
+			return nil
+		}
+
+		expectedArray, ok := expectedArrayType.(*ArrayType)
+		if !ok {
+			tc.addError("expected array type in typed array literal, got %s", expectedArrayType)
+			return nil
+		}
+
+		// Check that the number of elements matches the array size
+		if !expectedArray.IsSlice && int64(len(expr.Elements)) != expectedArray.Length {
+			tc.addError("array literal has %d elements, expected %d", len(expr.Elements), expectedArray.Length)
+			return nil
+		}
+
+		// Check each element type matches the expected element type
+		for i, elem := range expr.Elements {
+			elemType := tc.checkExpression(elem, expectedArray.ElementType)
+			if elemType == nil {
+				continue
+			}
+
+			// Check if element type is assignable to expected element type
+			if !tc.isAssignable(elemType, expectedArray.ElementType) {
+				tc.addError("array element %d: expected type %s, got %s", i, expectedArray.ElementType, elemType)
+			}
+		}
+
+		return expectedArray
+	}
+
+	// Untyped array literal: [ expr1, expr2, ... ]
+	// Infer element type from first element
 	if len(expr.Elements) == 0 {
 		// Empty array - default to []i32 for now
 		return &ArrayType{
@@ -2026,6 +2076,9 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		switch ident.Value {
 		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
 			return &PrimitiveType{Name: ident.Value}
+		case "byte":
+			// byte is an alias for u8
+			return &PrimitiveType{Name: "u8"}
 		case "string":
 			return &StringType{}
 		case "Bool":
@@ -2037,9 +2090,9 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		case "any":
 			return &AnyType{}
 		default:
-			// Check if it's an interface type in the environment
-			if ifaceType, ok := tc.env.GetType(ident.Value); ok {
-				return ifaceType
+			// Check if it's a type alias in the environment
+			if aliasType, ok := tc.env.GetType(ident.Value); ok {
+				return aliasType
 			}
 			// Assume it's an ADT type
 			return &ADTType{Name: ident.Value}
