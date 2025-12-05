@@ -215,10 +215,21 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 		// After infix parse, check if we should stop
 		// (infix parsers like parseIndexExpression may have advanced past stop tokens)
 		// Also check currentToken in case the infix parser advanced past the stop token
-		// IMPORTANT: Check currentToken first, as some infix parsers (like parseInvocationExpression)
-		// may consume the closing paren, leaving currentToken as the stop token
-		if p.currentTokenIs(token.SEMI) || p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.RPAREN) || p.currentTokenIs(token.RBRACE) || p.currentTokenIs(token.RBRACK) {
+		// IMPORTANT: Some infix parsers (like parseInvocationExpression) may consume the closing paren,
+		// leaving currentToken as the stop token. However, we should only stop if peekToken is also
+		// a stop token, because we might have more operators to parse (e.g., "1 + (2 + 3) + 4")
+		if p.currentTokenIs(token.SEMI) || p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.RBRACE) || p.currentTokenIs(token.RBRACK) {
+			// These are always stop tokens
 			break
+		}
+		// For RPAREN, only stop if peekToken is also a stop token
+		// This allows expressions like "1 + (2 + 3) + 4" to continue parsing
+		if p.currentTokenIs(token.RPAREN) {
+			// Only stop if peekToken is also a stop token
+			if p.peekTokenIs(token.SEMI) || p.peekTokenIs(token.COMMA) || p.peekTokenIs(token.RPAREN) || p.peekTokenIs(token.RBRACE) || p.peekTokenIs(token.RBRACK) || p.peekTokenIs(token.EOF) {
+				break
+			}
+			// Otherwise, continue parsing (peekToken is likely an operator)
 		}
 		if p.peekTokenIs(token.SEMI) || p.peekTokenIs(token.COMMA) || p.peekTokenIs(token.RPAREN) || p.peekTokenIs(token.RBRACE) || p.peekTokenIs(token.RBRACK) {
 			break
@@ -1693,3 +1704,4 @@ func (p *Parser) parseVariableDeclarationWithoutType() *ast.VariableDeclaration 
 
 	return stmt
 }
+

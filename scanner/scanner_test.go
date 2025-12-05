@@ -33,6 +33,10 @@ func TestNextToken(t *testing.T) {
 	scnr := New(input)
 	for i, tt := range tests {
 		tok := scnr.NextToken()
+		// Skip TRIVIA tokens (whitespace) - scanner returns them for source reconstruction
+		for tok.TokenKind == token.TRIVIA {
+			tok = scnr.NextToken()
+		}
 		if tok.TokenKind != tt.expectedKind {
 			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q",
 				i, tt.expectedKind, tok.TokenKind)
@@ -58,6 +62,10 @@ func TestScanKeyword(t *testing.T) {
 	scnr := New(input)
 	for i, tt := range tests {
 		tok := scnr.NextToken()
+		// Skip TRIVIA tokens (whitespace) - scanner returns them for source reconstruction
+		for tok.TokenKind == token.TRIVIA {
+			tok = scnr.NextToken()
+		}
 		if tok.TokenKind != tt.expectedKind {
 			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q",
 				i, tt.expectedKind, tok.TokenKind)
@@ -84,6 +92,10 @@ func TestScanKeywordWithExtraNoise(t *testing.T) {
 	scnr := New(input)
 	for i, tt := range tests {
 		tok := scnr.NextToken()
+		// Skip TRIVIA tokens (whitespace) - scanner returns them for source reconstruction
+		for tok.TokenKind == token.TRIVIA {
+			tok = scnr.NextToken()
+		}
 		if tok.TokenKind != tt.expectedKind {
 			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q",
 				i, tt.expectedKind, tok.TokenKind)
@@ -121,6 +133,10 @@ func TestScanShortExampleProgram(t *testing.T) {
 	scnr := New(input)
 	for i, tt := range tests {
 		tok := scnr.NextToken()
+		// Skip TRIVIA tokens (whitespace) - scanner returns them for source reconstruction
+		for tok.TokenKind == token.TRIVIA {
+			tok = scnr.NextToken()
+		}
 		if tok.TokenKind != tt.expectedKind {
 			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q",
 				i, tt.expectedKind, tok.TokenKind)
@@ -149,6 +165,10 @@ func TestScanMultiChars(t *testing.T) {
 	scnr := New(input)
 	for i, tt := range tests {
 		tok := scnr.NextToken()
+		// Skip TRIVIA tokens (whitespace) - scanner returns them for source reconstruction
+		for tok.TokenKind == token.TRIVIA {
+			tok = scnr.NextToken()
+		}
 		if tok.TokenKind != tt.expectedKind {
 			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q",
 				i, tt.expectedKind, tok.TokenKind)
