@@ -178,6 +178,15 @@ func (s *Scanner) NextToken() token.Token {
 	case '*':
 		tok = newTokenWithPos(token.MUL, s.current, line, column)
 	case '/':
+		// Check for line comment: //
+		if s.peekChar() == '/' {
+			return s.readLineComment()
+		}
+		// Check for block comment: /*
+		if s.peekChar() == '*' {
+			return s.readBlockComment()
+		}
+		// Regular division operator
 		tok = newTokenWithPos(token.QUO, s.current, line, column)
 	case '?':
 		tok = newTokenWithPos(token.QMARK, s.current, line, column)
@@ -310,5 +319,69 @@ func (s *Scanner) peekChar() byte {
 		return 0
 	} else {
 		return s.input[s.read]
+	}
+}
+
+// readLineComment reads a line comment (// ...) and returns it as a COMMENT token
+func (s *Scanner) readLineComment() token.Token {
+	line := s.line
+	column := s.column
+	byteStart := s.head
+
+	// Consume both slashes
+	s.readChar() // consume first /
+	s.readChar() // consume second /
+
+	// Read until end of line or EOF
+	var comment bytes.Buffer
+	for s.current != '\n' && s.current != 0 {
+		comment.WriteRune(s.current)
+		s.readChar()
+	}
+
+	return token.Token{
+		TokenKind: token.COMMENT,
+		Literal:   comment.String(),
+		Line:      line,
+		Column:    column,
+		ByteStart: byteStart,
+		ByteEnd:   s.head,
+	}
+}
+
+// readBlockComment reads a block comment (/* ... */) and returns it as a COMMENT token
+func (s *Scanner) readBlockComment() token.Token {
+	line := s.line
+	column := s.column
+	byteStart := s.head
+
+	// Consume /* 
+	s.readChar() // consume /
+	s.readChar() // consume *
+
+	// Read until */
+	var comment bytes.Buffer
+	for {
+		if s.current == 0 {
+			// EOF reached before closing */
+			break
+		}
+		if s.current == '*' && s.peekChar() == '/' {
+			// Found closing */
+			s.readChar() // consume *
+			s.readChar() // consume /
+			break
+		}
+		comment.WriteRune(s.current)
+		s.readChar()
+	}
+
+	return token.Token{
+		TokenKind: token.COMMENT,
+		Literal:   comment.String(),
+		Line:      line,
+		Column:    column,
+		ByteStart: byteStart,
+		ByteEnd:   s.head,
 	}
 }

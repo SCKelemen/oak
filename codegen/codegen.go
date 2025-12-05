@@ -677,7 +677,7 @@ func (cg *CodeGenerator) emitADTMatch(expr *ast.MatchExpression, tc *typechecker
 					cg.write(fmt.Sprintf("      %s %s = scrutinee.payload.%s;\n", payloadType, payloadName, variantName))
 				} else {
 					// Payload is not a binding - this shouldn't happen in valid code
-					cg.write(fmt.Sprintf("      /* payload extraction */\n"))
+					cg.write("      /* payload extraction */\n")
 				}
 			}
 

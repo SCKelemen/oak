@@ -82,15 +82,15 @@ func (p *Parser) nextToken() {
 	p.currentToken = p.peekToken
 	p.peekToken = p.lxr.NextToken()
 
-	// Skip trivia tokens for currentToken, collecting them as we go
-	for p.currentToken.TokenKind == token.TRIVIA {
+	// Skip trivia and comment tokens for currentToken, collecting them as we go
+	for p.currentToken.TokenKind == token.TRIVIA || p.currentToken.TokenKind == token.COMMENT {
 		p.pendingTrivia = append(p.pendingTrivia, p.currentToken)
 		p.currentToken = p.peekToken
 		p.peekToken = p.lxr.NextToken()
 	}
 
-	// Also skip trivia tokens for peekToken
-	for p.peekToken.TokenKind == token.TRIVIA {
+	// Also skip trivia and comment tokens for peekToken
+	for p.peekToken.TokenKind == token.TRIVIA || p.peekToken.TokenKind == token.COMMENT {
 		p.pendingTrivia = append(p.pendingTrivia, p.peekToken)
 		p.peekToken = p.lxr.NextToken()
 	}
