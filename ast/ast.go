@@ -508,6 +508,46 @@ func (vp *VariantPattern) String() string {
 	return out.String()
 }
 
+// Interface type definition
+// Example: Reader: interface = fn (self) read(...) -> ...
+type InterfaceType struct {
+	BaseNode
+	Token      token.Token // 'interface' token
+	EndToken   token.Token // Last token of the interface definition
+	Name       *Identifier
+	TypeParams []*TypeParameter // Optional type parameters: [T, Tag]
+	Methods    []*FunctionParameter // Method signatures (for now, just function types)
+}
+
+func (it *InterfaceType) statementNode()       {}
+func (it *InterfaceType) TokenLiteral() string { return it.Token.Literal }
+func (it *InterfaceType) String() string {
+	var out bytes.Buffer
+	out.WriteString(it.Name.String())
+	if len(it.TypeParams) > 0 {
+		out.WriteString("[")
+		for i, tp := range it.TypeParams {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			out.WriteString(tp.String())
+		}
+		out.WriteString("]")
+	}
+	out.WriteString(": interface =")
+	if len(it.Methods) > 0 {
+		for i, method := range it.Methods {
+			if i > 0 {
+				out.WriteString("\n  ")
+			} else {
+				out.WriteString(" ")
+			}
+			out.WriteString(method.String())
+		}
+	}
+	return out.String()
+}
+
 // ADT type definition
 type ADTType struct {
 	BaseNode

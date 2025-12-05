@@ -120,6 +120,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseImportStatement()
 	case token.TYPE:
 		return p.parseADTType()
+	case token.INTERFACE:
+		return p.parseInterfaceType()
 	case token.FN:
 		return p.parseFunctionStatement()
 	case token.WHILE:
@@ -685,6 +687,130 @@ func (p *Parser) parseADTType() *ast.ADTType {
 	}
 
 	return adt
+}
+
+// Interface type definition: Name: interface = fn (self) method(...) -> ...
+// Example: Reader: interface = fn (self) read(...) -> ...
+// Example: IntrusiveListNode[T, Tag]: interface = fn (self: *T) hook( _: Tag ) -> *ListHook[T, Tag]
+func (p *Parser) parseInterfaceType() *ast.InterfaceType {
+	it := &ast.InterfaceType{Token: p.currentToken}
+
+	if !p.expectPeek(token.IDENT) {
+		return nil
+	}
+
+	it.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+
+	// Parse optional type parameters: Name[T, Tag]: interface = ...
+	if p.peekTokenIs(token.LBRACK) {
+		it.TypeParams = p.parseTypeParameters()
+		if it.TypeParams == nil {
+			return nil // Error already reported
+		}
+	}
+
+	if !p.expectPeek(token.COLON) {
+		return nil
+	}
+
+	if !p.expectPeek(token.INTERFACE) {
+		return nil
+	}
+
+	if !p.expectPeek(token.ASSIGN) {
+		return nil
+	}
+
+	// Parse method signature(s)
+	// For now, we'll parse a single function signature
+	// In the future, this could be a list of methods
+	p.nextToken()
+	
+	// Parse the method as a function signature
+	// Interface methods are function types: fn (self) method(...) -> ...
+	if !p.currentTokenIs(token.FN) {
+		p.errors = append(p.errors, fmt.Sprintf("expected 'fn' in interface definition, got %s", p.currentToken.Literal))
+		return nil
+	}
+
+	// Parse function signature for the interface method
+	method := p.parseInterfaceMethod()
+	if method == nil {
+		return nil
+	}
+	it.Methods = []*ast.FunctionParameter{method}
+
+	it.EndToken = p.currentToken
+
+	return it
+}
+
+// parseInterfaceMethod parses a method signature for an interface
+// Example: fn (self) read( buf: [*]Byte ) -> Result[u32, Error]
+// Example: fn (self: *T) hook( _: Tag ) -> *ListHook[T, Tag]
+func (p *Parser) parseInterfaceMethod() *ast.FunctionParameter {
+	// We're already at 'fn', so parse the function signature
+	// Parse receiver: (self) or (self: Type)
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+
+	p.nextToken()
+	if !p.currentTokenIs(token.IDENT) {
+		return nil
+	}
+	
+	receiverName := p.currentToken.Literal
+	
+	// Check for receiver type annotation
+	var receiverType ast.Expression
+	if p.peekTokenIs(token.COLON) {
+		p.nextToken() // consume :
+		p.nextToken() // consume type
+		receiverType = p.parseTypeExpressionSimple()
+		if receiverType == nil {
+			return nil
+		}
+	}
+
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+
+	// Parse method name
+	if !p.expectPeek(token.IDENT) {
+		return nil
+	}
+	methodName := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+
+	// Parse parameters
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+	params := p.parseFunctionParameters()
+
+	// Parse return type
+	if !p.expectPeek(token.ARROW) {
+		return nil
+	}
+	p.nextToken() // consume ->
+	returnType := p.parseTypeExpressionSimple()
+	if returnType == nil {
+		return nil
+	}
+
+	// For interface methods, we store the signature as a FunctionParameter
+	// The receiver info is embedded in the method name/type
+	// This is a simplified representation; in a full implementation,
+	// we might want a dedicated InterfaceMethod AST node
+	method := &ast.FunctionParameter{
+		Token: p.currentToken,
+		Name:  methodName,
+		Type:  returnType, // For now, just store return type
+		// TODO: Store full function type including parameters
+	}
+
+	return method
 }
 
 // ADT variant: Name | Name(T) | Name: literal
@@ -1320,7 +1446,7 @@ func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken() // consume =
 		p.nextToken() // consume value
-		stmt.Value = p.parseExpression(LOWEST)
+	stmt.Value = p.parseExpression(LOWEST)
 	}
 
 	if p.peekTokenIs(token.SEMI) {

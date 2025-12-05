@@ -355,6 +355,9 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		// ADT type definitions are already in the environment
 		// Just verify they're well-formed
 		tc.checkADTType(s)
+	case *ast.InterfaceType:
+		// Interface type definitions
+		tc.checkInterfaceType(s)
 	case *ast.ExpressionStatement:
 		// Expression statements don't need type checking beyond checking the expression
 		tc.checkExpression(s.Expression)
@@ -1777,6 +1780,45 @@ func (tc *TypeChecker) getLiteralType(literal object.Object) Type {
 	default:
 		return nil
 	}
+}
+
+// checkInterfaceType type checks an interface definition
+func (tc *TypeChecker) checkInterfaceType(stmt *ast.InterfaceType) {
+	// Extract type parameters
+	typeVars := []string{}
+	if stmt.TypeParams != nil {
+		for _, tp := range stmt.TypeParams {
+			typeVars = append(typeVars, tp.Name.Value)
+		}
+	}
+
+	// Parse method signatures
+	// For now, we just store the interface in the environment
+	// In a full implementation, we'd parse the method signatures into FunctionTypes
+	methods := make(map[string]*FunctionType)
+	for _, method := range stmt.Methods {
+		// Parse return type
+		returnType := tc.parseTypeExpression(method.Type)
+		if returnType == nil {
+			returnType = &UnitType{}
+		}
+		
+		// For now, create a simple function type
+		// TODO: Parse full method signature including parameters
+		methods[method.Name.Value] = &FunctionType{
+			Parameters: []Type{}, // TODO: Parse parameters
+			ReturnType: returnType,
+		}
+	}
+
+	// Create interface type
+	interfaceType := &InterfaceType{
+		Name:    stmt.Name.Value,
+		Methods: methods,
+	}
+
+	// Store in environment
+	tc.env.SetType(stmt.Name.Value, interfaceType)
 }
 
 // checkExhaustiveness verifies that a match expression covers all variants of an ADT

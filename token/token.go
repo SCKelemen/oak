@@ -56,6 +56,7 @@ const (
 
 	_keywords_beg
 	TYPE
+	INTERFACE
 	TRUE
 	FALSE
 	PACKAGE
@@ -106,14 +107,15 @@ var tokens = [...]string{
 	EQL:  "==",
 	NEQL: "!=",
 
-	TYPE:    "type",
-	TRUE:    "true",
-	FALSE:   "false",
-	PACKAGE: "package",
-	IMPORT:  "import",
-	WHILE:   "while",
-	UNSAFE:  "unsafe",
-	FN:      "fn",
+	TYPE:      "type",
+	INTERFACE: "interface",
+	TRUE:      "true",
+	FALSE:     "false",
+	PACKAGE:   "package",
+	IMPORT:    "import",
+	WHILE:     "while",
+	UNSAFE:    "unsafe",
+	FN:        "fn",
 }
 
 func (token TokenKind) String() string {
