@@ -82,18 +82,17 @@ func (p *Parser) nextToken() {
 	p.currentToken = p.peekToken
 	p.peekToken = p.lxr.NextToken()
 
-	// Collect trivia tokens as we encounter them
-	// If currentToken is trivia, collect it and continue reading trivia
-	if p.currentToken.TokenKind == token.TRIVIA {
+	// Skip trivia tokens for currentToken, collecting them as we go
+	for p.currentToken.TokenKind == token.TRIVIA {
 		p.pendingTrivia = append(p.pendingTrivia, p.currentToken)
-		// Continue reading until we get a non-trivia token
-		for p.peekToken.TokenKind == token.TRIVIA {
-			p.currentToken = p.peekToken
-			p.peekToken = p.lxr.NextToken()
-			p.pendingTrivia = append(p.pendingTrivia, p.currentToken)
-		}
-		// Now peekToken is non-trivia, so currentToken should be the last trivia
-		// and peekToken is the next real token
+		p.currentToken = p.peekToken
+		p.peekToken = p.lxr.NextToken()
+	}
+
+	// Also skip trivia tokens for peekToken
+	for p.peekToken.TokenKind == token.TRIVIA {
+		p.pendingTrivia = append(p.pendingTrivia, p.peekToken)
+		p.peekToken = p.lxr.NextToken()
 	}
 }
 
@@ -113,6 +112,11 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 }
 
 func (p *Parser) parseStatement() ast.Statement {
+	// Skip statement terminators (semicolons, etc.)
+	if p.currentTokenIs(token.SEMI) {
+		return nil
+	}
+
 	switch p.currentToken.TokenKind {
 	case token.PACKAGE:
 		return p.parsePackageStatement()
@@ -158,8 +162,25 @@ func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
 }
 
 func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
+	// Check if currentToken can start an expression
+	// If it's a token that can't start an expression (comma, semicolon, closing parens, operators that aren't prefix, etc.), return nil
+	if p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.SEMI) ||
+		p.currentTokenIs(token.RPAREN) || p.currentTokenIs(token.RBRACE) ||
+		p.currentTokenIs(token.RBRACK) {
+		return nil
+	}
+
 	prefix := p.prefixParseFns[p.currentToken.TokenKind]
 	if prefix == nil {
+		// Check if it's an infix operator that can't start an expression
+		// (SUM/+ can't start expressions, but NEG/- can as unary minus)
+		if p.currentTokenIs(token.SUM) || p.currentTokenIs(token.MUL) ||
+			p.currentTokenIs(token.QUO) || p.currentTokenIs(token.EQL) ||
+			p.currentTokenIs(token.NEQL) || p.currentTokenIs(token.LCHEV) ||
+			p.currentTokenIs(token.RCHEV) {
+			// These operators can't start expressions - return nil silently
+			return nil
+		}
 		p.noPrefixParseFn(p.currentToken.TokenKind)
 		return nil
 	}
@@ -167,10 +188,10 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 
 	// After prefix parse, currentToken is still the prefix token (prefix parsers don't advance)
 	// peekToken is what comes after the expression
-	// Stop if we see a comma, semicolon, closing brace, or closing bracket (these terminate expressions)
+	// Stop if we see a comma, semicolon, closing paren, closing brace, or closing bracket (these terminate expressions)
 	// Also stop if precedence is too low
 	// Note: We stop at commas and brackets to allow array/record literal parsers to handle them
-	for !p.peekTokenIs(token.SEMI) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.RBRACK) {
+	for !p.peekTokenIs(token.SEMI) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.RBRACK) {
 		// Check precedence - if it's too low, stop
 		if precendece >= p.peekPrecedence() {
 			break
@@ -194,10 +215,12 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 		// After infix parse, check if we should stop
 		// (infix parsers like parseIndexExpression may have advanced past stop tokens)
 		// Also check currentToken in case the infix parser advanced past the stop token
-		if p.currentTokenIs(token.SEMI) || p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.RBRACE) || p.currentTokenIs(token.RBRACK) {
+		// IMPORTANT: Check currentToken first, as some infix parsers (like parseInvocationExpression)
+		// may consume the closing paren, leaving currentToken as the stop token
+		if p.currentTokenIs(token.SEMI) || p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.RPAREN) || p.currentTokenIs(token.RBRACE) || p.currentTokenIs(token.RBRACK) {
 			break
 		}
-		if p.peekTokenIs(token.SEMI) || p.peekTokenIs(token.COMMA) || p.peekTokenIs(token.RBRACE) || p.peekTokenIs(token.RBRACK) {
+		if p.peekTokenIs(token.SEMI) || p.peekTokenIs(token.COMMA) || p.peekTokenIs(token.RPAREN) || p.peekTokenIs(token.RBRACE) || p.peekTokenIs(token.RBRACK) {
 			break
 		}
 	}
@@ -334,7 +357,34 @@ func (p *Parser) parseFunctionArgs() []*ast.Identifier {
 
 func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expression {
 	exp := &ast.InvocationExpression{Token: p.currentToken, Function: function}
+	// currentToken is ( here (consumed by infix parser setup)
+	// parseInvocationArguments expects currentToken to be ( and will consume it
 	exp.Arguments = p.parseInvocationArguments()
+	// After parseInvocationArguments returns:
+	// - If no args: currentToken is ), peekToken is next token (; or EOF)
+	// - If args: currentToken is last token of last arg, peekToken is )
+	// In both cases, we need to consume the closing paren
+	if p.currentTokenIs(token.RPAREN) {
+		// No args case - already positioned at closing paren, consume it
+		p.nextToken()
+		return exp
+	}
+	// We have arguments, so peekToken should be the closing paren
+	// But first verify we're positioned correctly
+	if !p.peekTokenIs(token.RPAREN) {
+		// peekToken is not the closing paren - this shouldn't happen
+		// Check if we've somehow consumed it already
+		if p.currentTokenIs(token.SEMI) {
+			// We've gone too far - the closing paren was consumed
+			p.peekError(token.RPAREN)
+			return nil
+		}
+		// Try to provide helpful error
+		p.peekError(token.RPAREN)
+		return nil
+	}
+	// Consume the closing paren
+	p.nextToken()
 	return exp
 }
 
@@ -384,24 +434,78 @@ func (p *Parser) parseIndexExpression(left ast.Expression) ast.Expression {
 func (p *Parser) parseInvocationArguments() []ast.Expression {
 	args := []ast.Expression{}
 
-	p.nextToken()
+	// currentToken should be ( here (consumed by infix parser setup before calling parseInvocationExpression)
+	// But parseInvocationExpression is called with currentToken = (, so we need to consume it
+	if !p.currentTokenIs(token.LPAREN) {
+		// This shouldn't happen, but handle it
+		p.peekError(token.LPAREN)
+		return nil
+	}
+	p.nextToken() // currentToken is now first arg or closing paren
 
 	if p.currentTokenIs(token.RPAREN) {
-		// return if this is a
-		// parameterless invocation
+		// parameterless invocation - don't consume the closing paren here,
+		// let parseInvocationExpression do that
 		return args
 	}
 
-	args = append(args, p.parseExpression(LOWEST))
-	for p.peekTokenIs(token.COMMA) {
-		p.nextToken()
-		p.nextToken()
-		args = append(args, p.parseExpression(LOWEST))
-	}
+	// Parse arguments separated by commas
+	for {
+		// Parse current argument
+		arg := p.parseExpression(LOWEST)
+		if arg == nil {
+			// If we failed to parse and we're at closing paren, that's ok (empty args already handled)
+			if p.currentTokenIs(token.RPAREN) {
+				break
+			}
+			return nil
+		}
+		args = append(args, arg)
 
-	if !p.expectPeek(token.RPAREN) {
+		// After parsing expression, check what comes next
+		// parseExpression should leave us positioned such that:
+		// - currentToken is the last token of the expression
+		// - peekToken is the next token (comma, closing paren, etc.)
+
+		// Check if we're already at the closing paren (shouldn't happen, but handle it)
+		if p.currentTokenIs(token.RPAREN) {
+			// We've somehow consumed the closing paren - this is an error state
+			// but try to recover by returning what we have
+			break
+		}
+
+		// Check peekToken for what comes after the expression
+		if p.peekTokenIs(token.RPAREN) {
+			// No more arguments - exit loop, peekToken is the closing paren
+			break
+		}
+		if p.peekTokenIs(token.COMMA) {
+			// More arguments - consume comma and advance
+			p.nextToken() // consume comma
+			p.nextToken() // advance to next argument
+			// Check for trailing comma
+			if p.currentTokenIs(token.RPAREN) {
+				// Trailing comma - error
+				p.peekError(token.IDENT)
+				return nil
+			}
+			continue
+		}
+		// Unexpected token - neither comma nor closing paren
+		// This might happen if parseExpression consumed the closing paren
+		// Check if we've gone past where we should be
+		if p.currentTokenIs(token.SEMI) || p.peekTokenIs(token.SEMI) {
+			// We've consumed too much - the closing paren was likely consumed by parseExpression
+			// This is a bug, but try to provide a helpful error
+			p.peekError(token.RPAREN)
+			return nil
+		}
+		p.peekError(token.RPAREN)
 		return nil
 	}
+
+	// After loop, peekToken should be closing paren
+	// Don't consume it here - let parseInvocationExpression do that
 	return args
 }
 
@@ -742,12 +846,12 @@ func (p *Parser) parseADTType() *ast.ADTType {
 func (p *Parser) parseRecordComposition() ast.Expression {
 	// We're already at the first identifier
 	var left ast.Expression = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-	
+
 	// Parse composition chain: TypeName & TypeName & { ... }
 	for p.peekTokenIs(token.AMP) {
 		p.nextToken() // consume &
 		p.nextToken() // consume next component
-		
+
 		var right ast.Expression
 		if p.currentTokenIs(token.LBRACE) {
 			// Record literal: { field: Type, ... }
@@ -759,11 +863,11 @@ func (p *Parser) parseRecordComposition() ast.Expression {
 			p.errors = append(p.errors, fmt.Sprintf("expected type name or record literal in composition, got %s", p.currentToken.Literal))
 			return nil
 		}
-		
+
 		if right == nil {
 			return nil
 		}
-		
+
 		// Create intersection expression
 		left = &ast.InfixExpression{
 			Token:    p.currentToken,
@@ -772,7 +876,7 @@ func (p *Parser) parseRecordComposition() ast.Expression {
 			Right:    right,
 		}
 	}
-	
+
 	return left
 }
 

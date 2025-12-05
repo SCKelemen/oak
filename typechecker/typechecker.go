@@ -380,12 +380,26 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 }
 
 // checkExpression type checks an expression and returns its type
-func (tc *TypeChecker) checkExpression(expr ast.Expression) Type {
+// expectedType is optional - if provided, it's used for context-based type inference (e.g., for literals)
+func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type) Type {
+	var expected Type
+	if len(expectedType) > 0 {
+		expected = expectedType[0]
+	}
+
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
-		// Integer literals are inferred as i32 by default
-		// In the future, we could infer based on literal size or context
-		// For now, i32 is a reasonable default
+		// Integer literals: use context-based inference if expected type is provided
+		if expected != nil {
+			if primType, ok := expected.(*PrimitiveType); ok {
+				// Check if literal fits in the expected primitive type
+				if tc.literalFitsInType(e.Value, primType.Name) {
+					return primType
+				}
+				// Literal doesn't fit - fall through to default i32
+			}
+		}
+		// Default to i32 if no context or context doesn't match
 		return &PrimitiveType{Name: "i32"}
 	case *ast.StringLiteral:
 		return &StringType{}
@@ -630,6 +644,21 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 }
 
 func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
+	// Check if this is a primitive type constructor: u32(x), u64(y), etc.
+	if ident, ok := expr.Function.(*ast.Identifier); ok {
+		if constructorType := tc.checkPrimitiveConstructor(ident.Value, expr.Arguments); constructorType != nil {
+			return constructorType
+		}
+		// Check if this is a narrowing function: u8_trunc_u32(x), u8_checked_u32(x), etc.
+		if narrowingType := tc.checkNarrowingFunction(ident.Value, expr.Arguments); narrowingType != nil {
+			return narrowingType
+		}
+		// Check if this is a Castable constructor: string(x), byte(x), etc.
+		if castableType := tc.checkCastableConstructor(ident.Value, expr.Arguments); castableType != nil {
+			return castableType
+		}
+	}
+
 	// Check if this is a method call: recv.method(args)
 	if indexExpr, ok := expr.Function.(*ast.IndexExpression); ok {
 		if methodName, ok := indexExpr.Index.(*ast.Identifier); ok {
@@ -669,6 +698,316 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	}
 
 	return fnType.ReturnType
+}
+
+// checkPrimitiveConstructor checks if an invocation is a primitive type constructor
+// (e.g., u32(x), u64(y)) and returns the target type if valid
+func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Expression) Type {
+	// Check if it's a primitive type name
+	primitiveTypes := map[string]bool{
+		"u8": true, "u16": true, "u32": true, "u64": true,
+		"i8": true, "i16": true, "i32": true, "i64": true,
+	}
+	if !primitiveTypes[typeName] {
+		return nil // Not a primitive constructor
+	}
+
+	// Constructors take exactly one argument
+	if len(args) != 1 {
+		tc.addError("primitive constructor %s expects 1 argument, got %d", typeName, len(args))
+		return nil
+	}
+
+	// Check if argument is an integer literal (untyped)
+	if intLit, ok := args[0].(*ast.IntegerLiteral); ok {
+		// Check if literal fits in target type
+		if !tc.literalFitsInType(intLit.Value, typeName) {
+			tc.addError("literal %d does not fit in type %s", intLit.Value, typeName)
+			return nil
+		}
+		// Literal fits - return target type
+		return &PrimitiveType{Name: typeName}
+	}
+
+	// Check argument type for typed values
+	argType := tc.checkExpression(args[0])
+	if argType == nil {
+		return nil
+	}
+
+	// Check if argument is a primitive type
+	argPrim, ok := argType.(*PrimitiveType)
+	if !ok {
+		tc.addError("primitive constructor %s requires a primitive integer argument, got %s", typeName, argType)
+		return nil
+	}
+
+	// Check if widening is valid (same signedness, source is narrower or equal)
+	if !tc.isValidWidening(argPrim.Name, typeName) {
+		tc.addError("cannot widen %s to %s (must be same signedness and source must be narrower or equal)", argPrim.Name, typeName)
+		return nil
+	}
+
+	// Return the target type
+	return &PrimitiveType{Name: typeName}
+}
+
+// literalFitsInType checks if an integer literal value fits in the given primitive type
+func (tc *TypeChecker) literalFitsInType(value int64, typeName string) bool {
+	switch typeName {
+	case "u8":
+		return value >= 0 && value <= 255
+	case "u16":
+		return value >= 0 && value <= 65535
+	case "u32":
+		return value >= 0 && value <= 4294967295
+	case "u64":
+		return value >= 0 // u64 can hold any non-negative int64
+	case "i8":
+		return value >= -128 && value <= 127
+	case "i16":
+		return value >= -32768 && value <= 32767
+	case "i32":
+		return value >= -2147483648 && value <= 2147483647
+	case "i64":
+		return true // i64 can hold any int64
+	default:
+		return false
+	}
+}
+
+// isValidWidening checks if widening from sourceType to targetType is valid
+// Widening is valid if:
+// - Both types have the same signedness (both signed or both unsigned)
+// - Source type is narrower than or equal to target type
+func (tc *TypeChecker) isValidWidening(sourceType, targetType string) bool {
+	// Check signedness
+	sourceSigned := sourceType[0] == 'i'
+	targetSigned := targetType[0] == 'i'
+	if sourceSigned != targetSigned {
+		return false
+	}
+
+	// Get widths
+	sourceWidth := tc.getTypeWidth(sourceType)
+	targetWidth := tc.getTypeWidth(targetType)
+
+	// Source must be narrower than or equal to target
+	return sourceWidth <= targetWidth
+}
+
+// getTypeWidth returns the bit width of a primitive type
+func (tc *TypeChecker) getTypeWidth(typeName string) int {
+	switch typeName {
+	case "u8", "i8":
+		return 8
+	case "u16", "i16":
+		return 16
+	case "u32", "i32":
+		return 32
+	case "u64", "i64":
+		return 64
+	default:
+		return 0
+	}
+}
+
+// checkNarrowingFunction checks if an invocation is a narrowing function
+// (e.g., u8_trunc_u32(x), u8_checked_u32(x), u8_saturating_u32(x))
+// Pattern: {target}_{operation}_{source}
+// Operations: trunc, checked, saturating
+func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expression) Type {
+	// Parse function name: target_operation_source
+	// Examples: u8_trunc_u32, u16_checked_u64, i8_saturating_i32
+	parts := splitNarrowingFunctionName(funcName)
+	if parts == nil {
+		return nil // Not a narrowing function
+	}
+
+	targetType := parts[0]
+	operation := parts[1]
+	sourceType := parts[2]
+
+	// Validate that target and source are primitive types
+	primitiveTypes := map[string]bool{
+		"u8": true, "u16": true, "u32": true, "u64": true,
+		"i8": true, "i16": true, "i32": true, "i64": true,
+	}
+	if !primitiveTypes[targetType] || !primitiveTypes[sourceType] {
+		return nil
+	}
+
+	// Validate operation
+	validOperations := map[string]bool{
+		"trunc":      true,
+		"checked":    true,
+		"saturating": true,
+	}
+	if !validOperations[operation] {
+		return nil
+	}
+
+	// Narrowing functions take exactly one argument
+	if len(args) != 1 {
+		tc.addError("narrowing function %s expects 1 argument, got %d", funcName, len(args))
+		return nil
+	}
+
+	// Check that narrowing is valid (source must be wider than target, same signedness)
+	if !tc.isValidNarrowing(sourceType, targetType) {
+		tc.addError("invalid narrowing: cannot narrow %s to %s (must be same signedness and source must be wider)", sourceType, targetType)
+		return nil
+	}
+
+	// Check argument type matches source type
+	argType := tc.checkExpression(args[0])
+	if argType == nil {
+		return nil
+	}
+
+	argPrim, ok := argType.(*PrimitiveType)
+	if !ok || argPrim.Name != sourceType {
+		tc.addError("narrowing function %s expects argument of type %s, got %s", funcName, sourceType, argType)
+		return nil
+	}
+
+	// Return type depends on operation
+	if operation == "checked" {
+		// Checked operations return Result[target, Overflow]
+		// For now, we'll return a simple type - in the future this should be Result[target, Overflow]
+		// TODO: Implement Result type properly
+		return &PrimitiveType{Name: targetType}
+	}
+
+	// Trunc and saturating return the target type directly
+	return &PrimitiveType{Name: targetType}
+}
+
+// checkCastableConstructor checks if an invocation is a Castable constructor
+// (e.g., string(x), byte(x)) where x implements Castable[target]
+// Castable[T]: interface = fn (self) into() -> T
+func (tc *TypeChecker) checkCastableConstructor(typeName string, args []ast.Expression) Type {
+	// Check if it's a type that supports Castable constructors
+	castableTypes := map[string]bool{
+		"string": true,
+		"byte":   true, // byte is alias for u8
+	}
+	if !castableTypes[typeName] {
+		return nil // Not a Castable constructor
+	}
+
+	// Constructors take exactly one argument
+	if len(args) != 1 {
+		tc.addError("Castable constructor %s expects 1 argument, got %d", typeName, len(args))
+		return nil
+	}
+
+	// Check argument type
+	argType := tc.checkExpression(args[0])
+	if argType == nil {
+		return nil
+	}
+
+	// Determine target type
+	var targetType Type
+	if typeName == "string" {
+		targetType = &StringType{}
+	} else if typeName == "byte" {
+		targetType = &PrimitiveType{Name: "u8"}
+	} else {
+		return nil
+	}
+
+	// Check if argument type implements Castable[targetType]
+	// For now, we'll check if the type has an `into()` method that returns the target type
+	// In a full implementation, we'd check for the Castable interface constraint
+	if !tc.implementsCastable(argType, targetType) {
+		tc.addError("type %s does not implement Castable[%s] (missing into() method)", argType, typeName)
+		return nil
+	}
+
+	return targetType
+}
+
+// implementsCastable checks if a type implements Castable[T]
+// This is a simplified check - in a full implementation, we'd check for the actual Castable interface
+func (tc *TypeChecker) implementsCastable(argType, targetType Type) bool {
+	// For now, we'll do a simple check:
+	// - string implements Castable[string] (identity)
+	// - []byte / array of bytes might implement Castable[string] (future)
+	// - Other types would need explicit into() methods
+
+	// String implements Castable[string]
+	if _, ok := argType.(*StringType); ok {
+		if _, ok := targetType.(*StringType); ok {
+			return true
+		}
+	}
+
+	// TODO: Check for explicit into() method via interface satisfaction
+	// For now, we'll allow string() on string (identity conversion)
+	// and reject others until we have proper interface checking
+
+	return false
+}
+
+// splitNarrowingFunctionName parses a narrowing function name into [target, operation, source]
+// Returns nil if the name doesn't match the pattern
+func splitNarrowingFunctionName(name string) []string {
+	// Pattern: {target}_{operation}_{source}
+	// Examples: u8_trunc_u32, u16_checked_u64, i8_saturating_i32
+
+	// Find the last underscore (separates operation and source)
+	lastUnderscore := -1
+	for i := len(name) - 1; i >= 0; i-- {
+		if name[i] == '_' {
+			lastUnderscore = i
+			break
+		}
+	}
+	if lastUnderscore == -1 {
+		return nil
+	}
+
+	source := name[lastUnderscore+1:]
+	remaining := name[:lastUnderscore]
+
+	// Find the first underscore (separates target and operation)
+	firstUnderscore := -1
+	for i := 0; i < len(remaining); i++ {
+		if remaining[i] == '_' {
+			firstUnderscore = i
+			break
+		}
+	}
+	if firstUnderscore == -1 {
+		return nil
+	}
+
+	target := remaining[:firstUnderscore]
+	operation := remaining[firstUnderscore+1:]
+
+	return []string{target, operation, source}
+}
+
+// isValidNarrowing checks if narrowing from sourceType to targetType is valid
+// Narrowing is valid if:
+// - Both types have the same signedness (both signed or both unsigned)
+// - Source type is wider than target type
+func (tc *TypeChecker) isValidNarrowing(sourceType, targetType string) bool {
+	// Check signedness
+	sourceSigned := sourceType[0] == 'i'
+	targetSigned := targetType[0] == 'i'
+	if sourceSigned != targetSigned {
+		return false
+	}
+
+	// Get widths
+	sourceWidth := tc.getTypeWidth(sourceType)
+	targetWidth := tc.getTypeWidth(targetType)
+
+	// Source must be wider than target (not equal)
+	return sourceWidth > targetWidth
 }
 
 // checkMethodCall type checks a method call: recv.method(args)
@@ -1037,8 +1376,9 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		}
 
 		// If there's an initializer, check that it matches the type (with coercion)
+		// Pass expected type for context-based inference (e.g., for integer literals)
 		if stmt.Value != nil {
-			valueType := tc.checkExpression(stmt.Value)
+			valueType := tc.checkExpression(stmt.Value, varType)
 			if valueType != nil {
 				// Use unification to check compatibility
 				unifier := NewUnifier()
@@ -1827,10 +2167,10 @@ func (tc *TypeChecker) checkInterfaceType(stmt *ast.InterfaceType) {
 func (tc *TypeChecker) parseRecordComposition(typeName string, expr ast.Expression) *RecordType {
 	// Collect all record types from the composition chain
 	fields := make(map[string]Type)
-	
+
 	// Recursively flatten the composition
 	tc.flattenRecordComposition(expr, &fields)
-	
+
 	return &RecordType{Fields: fields}
 }
 
@@ -1843,7 +2183,7 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 		tc.flattenRecordComposition(infix.Right, fields)
 		return
 	}
-	
+
 	// Base case: either a record literal or a type name
 	if recordLit, ok := expr.(*ast.RecordLiteral); ok {
 		// Parse record literal fields
@@ -1853,11 +2193,11 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 				tc.addError("invalid field type in record composition: %s", fieldName)
 				continue
 			}
-			
+
 			// Check for duplicate field names
 			if existingType, exists := (*fields)[fieldName]; exists {
 				if !existingType.Equals(fieldType) {
-					tc.addError("duplicate field %s in record composition with conflicting types: %s vs %s", 
+					tc.addError("duplicate field %s in record composition with conflicting types: %s vs %s",
 						fieldName, existingType, fieldType)
 				}
 			} else {
@@ -1872,11 +2212,11 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 			tc.addError("type %s not found in record composition", ident.Value)
 			return
 		}
-		
+
 		// Instantiate the type scheme
 		unifier := NewUnifier()
 		typ := Instantiate(typeScheme, unifier)
-		
+
 		// Check if it's a record type
 		if recordType, ok := typ.(*RecordType); ok {
 			// Merge fields from the record type
@@ -1884,7 +2224,7 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 				// Check for duplicate field names
 				if existingType, exists := (*fields)[fieldName]; exists {
 					if !existingType.Equals(fieldType) {
-						tc.addError("duplicate field %s in record composition with conflicting types: %s vs %s", 
+						tc.addError("duplicate field %s in record composition with conflicting types: %s vs %s",
 							fieldName, existingType, fieldType)
 					}
 				} else {
