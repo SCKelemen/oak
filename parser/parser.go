@@ -1591,21 +1591,23 @@ func (p *Parser) parseUnsafeBlock() *ast.UnsafeBlock {
 func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 	stmt := &ast.REPLCommand{Token: p.currentToken}
 
-	// Expect an identifier after the colon
-	if !p.expectPeek(token.IDENT) {
-		p.errors = append(p.errors, "expected REPL command name after ':' (exit, quit, help)")
-		return nil
-	}
+		// Expect an identifier after the colon
+		if !p.expectPeek(token.IDENT) {
+			p.errors = append(p.errors, "expected REPL command name after ':' (exit, quit, help, clear, reset)")
+			return nil
+		}
 
 	commandName := p.currentToken.Literal
 	// Validate command name
 	validCommands := map[string]bool{
-		"exit": true,
-		"quit": true,
-		"help": true,
+		"exit":  true,
+		"quit":  true,
+		"help":  true,
+		"clear": true,
+		"reset": true,
 	}
 	if !validCommands[commandName] {
-		p.errors = append(p.errors, fmt.Sprintf("unknown REPL command: %s (valid: exit, quit, help)", commandName))
+		p.errors = append(p.errors, fmt.Sprintf("unknown REPL command: %s (valid: exit, quit, help, clear, reset)", commandName))
 		return nil
 	}
 

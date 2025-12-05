@@ -55,6 +55,18 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "Oak REPL Commands:\n")
 					fmt.Fprintf(out, "  :exit, :quit  - Exit the REPL\n")
 					fmt.Fprintf(out, "  :help         - Show this help message\n")
+					fmt.Fprintf(out, "  :clear         - Clear the screen\n")
+					fmt.Fprintf(out, "  :reset         - Reset the environment (clear all variables)\n")
+					continue
+				case "clear":
+					// ANSI escape code to clear screen and move cursor to top-left
+					fmt.Fprintf(out, "\033[2J\033[H")
+					continue
+				case "reset":
+					// Reset environment and type checker
+					env = object.NewEnvironment()
+					typeChecker = typechecker.New(env)
+					fmt.Fprintf(out, "Environment reset.\n")
 					continue
 				}
 			}
