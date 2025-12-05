@@ -254,7 +254,7 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			return slice
 		},
 	}
-	
+
 	if fn, ok := builtins[name]; ok {
 		return &object.Builtin{Fn: fn}, true
 	}
@@ -691,7 +691,7 @@ func evalVariantExpression(ve *ast.VariantExpression, env *object.Environment) o
 		// Type::Variant form
 		typeName = ve.TypeName.Value
 		variantName = ve.Variant.Value
-		
+
 		// Verify the ADT type exists
 		_, ok := env.GetADTType(typeName)
 		if !ok {
@@ -735,19 +735,19 @@ func findADTTypeForVariant(variantName string, env *object.Environment) string {
 			}
 		}
 	}
-	
+
 	// Search outer environments
 	if outer := env.GetOuter(); outer != nil {
 		return findADTTypeForVariant(variantName, outer)
 	}
-	
+
 	return ""
 }
 
 // Evaluate record literal: { field1: value1, field2: value2, ... }
 func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Object {
 	fields := make(map[string]object.Object)
-	
+
 	for fieldName, fieldExpr := range rl.Fields {
 		fieldValue := Eval(fieldExpr, env)
 		if isError(fieldValue) {
@@ -755,7 +755,7 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 		}
 		fields[fieldName] = fieldValue
 	}
-	
+
 	return &object.Record{Fields: fields}
 }
 
@@ -765,7 +765,7 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 	if isError(left) {
 		return left
 	}
-	
+
 	// Check if this is record field access (index is identifier) or array indexing
 	if fieldName, ok := ie.Index.(*ast.Identifier); ok {
 		// Special case: raw() method on ADT values
@@ -775,7 +775,7 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 			}
 			return newError("raw() only works on ADT values, got %s", left.Type())
 		}
-		
+
 		// Record field access: record.field
 		if record, ok := left.(*object.Record); ok {
 			if fieldValue, exists := record.Fields[fieldName.Value]; exists {
@@ -783,44 +783,44 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 			}
 			return newError("field '%s' not found in record", fieldName.Value)
 		}
-		
+
 		// Field lifting: ADT with literal tags - access fields from raw type
 		if adtValue, ok := left.(*object.ADTValue); ok {
 			return evalFieldLifting(adtValue, fieldName.Value, env)
 		}
-		
+
 		return newError("field access not supported for type %s", left.Type())
 	}
-	
+
 	// Array indexing: array[index]
 	indexObj := Eval(ie.Index, env)
 	if isError(indexObj) {
 		return indexObj
 	}
-	
+
 	if array, ok := left.(*object.Array); ok {
 		// Check if index is an integer
 		index, ok := indexObj.(*object.Integer)
 		if !ok {
 			return newError("array index must be integer, got %s", indexObj.Type())
 		}
-		
+
 		// Bounds check
 		idx := index.Value
 		if idx < 0 || int64(len(array.Elements)) <= idx {
 			return newError("array index out of bounds: %d (length: %d)", idx, len(array.Elements))
 		}
-		
+
 		return array.Elements[idx]
 	}
-	
+
 	return newError("index operator not supported for type %s", left.Type())
 }
 
 // Evaluate array literal: [elem1, elem2, ...]
 func evalArrayLiteral(al *ast.ArrayLiteral, env *object.Environment) object.Object {
 	elements := []object.Object{}
-	
+
 	for _, elemExpr := range al.Elements {
 		elem := Eval(elemExpr, env)
 		if isError(elem) {
@@ -828,7 +828,7 @@ func evalArrayLiteral(al *ast.ArrayLiteral, env *object.Environment) object.Obje
 		}
 		elements = append(elements, elem)
 	}
-	
+
 	return &object.Array{Elements: elements}
 }
 
@@ -839,7 +839,7 @@ func evalRawAccessor(adtValue *object.ADTValue, env *object.Environment) object.
 	if !ok {
 		return newError("ADT type %s not found", adtValue.TypeName)
 	}
-	
+
 	// Find the variant and its literal
 	for _, variant := range adtType.Variants {
 		if variant.Name == adtValue.Variant {
@@ -850,7 +850,7 @@ func evalRawAccessor(adtValue *object.ADTValue, env *object.Environment) object.
 			return newError("variant %s of ADT %s has no literal tag", adtValue.Variant, adtValue.TypeName)
 		}
 	}
-	
+
 	return newError("variant %s not found in ADT %s", adtValue.Variant, adtValue.TypeName)
 }
 
@@ -862,7 +862,7 @@ func evalFieldLifting(adtValue *object.ADTValue, fieldName string, env *object.E
 	if isError(rawValue) {
 		return rawValue
 	}
-	
+
 	// If raw value is a record, access the field
 	if record, ok := rawValue.(*object.Record); ok {
 		if fieldValue, exists := record.Fields[fieldName]; exists {
@@ -870,7 +870,7 @@ func evalFieldLifting(adtValue *object.ADTValue, fieldName string, env *object.E
 		}
 		return newError("field '%s' not found in raw type of ADT %s", fieldName, adtValue.TypeName)
 	}
-	
+
 	// If raw value is not a record, field lifting doesn't apply
 	return newError("field lifting only works when ADT has record literal tags, got %s", rawValue.Type())
 }
