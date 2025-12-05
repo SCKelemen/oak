@@ -487,13 +487,18 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
 		}
 		return &BoolType{}
 	case "-":
-		// Negation works on signed integers
+		// Negation: promote unsigned to signed, or keep signed
 		if prim, ok := rightType.(*PrimitiveType); ok {
 			if prim.Name[0] == 'i' { // signed integer
 				return rightType
+			} else if prim.Name[0] == 'u' {
+				// Unsigned: promote to corresponding signed type
+				// u8 -> i8, u16 -> i16, u32 -> i32, u64 -> i64
+				signedName := "i" + prim.Name[1:]
+				return &PrimitiveType{Name: signedName}
 			}
 		}
-		tc.addError("operator - requires signed integer, got %s", rightType)
+		tc.addError("operator - requires integer type, got %s", rightType)
 		return nil
 	default:
 		tc.addError("unknown prefix operator: %s", expr.Operator)
