@@ -511,10 +511,11 @@ func (vp *VariantPattern) String() string {
 // ADT type definition
 type ADTType struct {
 	BaseNode
-	Token    token.Token // 'type' token
-	EndToken token.Token // Last token of the ADT definition (for end position)
-	Name     *Identifier
-	Variants []*ADTVariant
+	Token      token.Token // 'type' token
+	EndToken   token.Token // Last token of the ADT definition (for end position)
+	Name       *Identifier
+	TypeParams []*TypeParameter // Optional type parameters: [T: Ordered]
+	Variants   []*ADTVariant
 }
 
 func (adt *ADTType) statementNode()       {}
