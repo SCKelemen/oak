@@ -6,10 +6,12 @@ import (
 
 // TypeScheme represents a polymorphic type scheme: ∀α₁...αₙ. C => τ
 // Where C is a set of constraints (interface requirements)
+// This is the basis for HM-style type inference with qualified types
 type TypeScheme struct {
 	// Type variables that are quantified over (∀α₁...αₙ)
 	TypeVars []string
 	// Constraints: interface requirements (e.g., "T: Reader & Writer")
+	// These are checked at instantiation time
 	Constraints []Constraint
 	// The underlying type (τ)
 	Type Type
@@ -17,10 +19,16 @@ type TypeScheme struct {
 
 // Constraint represents an interface constraint on a type variable
 // e.g., "T: Reader & Writer" becomes [Constraint{Var: "T", Interfaces: ["Reader", "Writer"]}]
+// For intersection types, multiple interfaces are listed
 type Constraint struct {
-	Var        string   // Type variable name (e.g., "T")
+	Var        string   // Type variable name (e.g., "T", "U")
 	Interfaces []string // Required interfaces (e.g., ["Reader", "Writer"])
 }
+
+// SatisfiesConstraint checks if a concrete type satisfies an interface constraint
+// This is used when instantiating a polymorphic function with interface constraints
+// Note: This function needs access to TypeChecker, so it's defined in typechecker.go
+// We'll add a method to TypeChecker instead
 
 func (s *TypeScheme) String() string {
 	if len(s.TypeVars) == 0 && len(s.Constraints) == 0 {
@@ -432,8 +440,10 @@ func collectTypeVarsRec(typ Type, vars *[]string, visited map[int]bool) {
 
 // Instantiate creates a fresh instance of a type scheme by replacing
 // quantified type variables with fresh type variables
+// For qualified types (with constraints), constraints are checked but not enforced here
+// (They will be checked when the instantiated type is actually used)
 func Instantiate(scheme *TypeScheme, unifier *Unifier) Type {
-	if len(scheme.TypeVars) == 0 {
+	if len(scheme.TypeVars) == 0 && len(scheme.Constraints) == 0 {
 		return scheme.Type
 	}
 	
@@ -445,5 +455,41 @@ func Instantiate(scheme *TypeScheme, unifier *Unifier) Type {
 	
 	// Apply substitution to the scheme's type
 	return sub.Apply(scheme.Type)
+}
+
+// InstantiateWithConstraints instantiates a type scheme and checks interface constraints
+// This is used when instantiating polymorphic functions with explicit type arguments
+// that must satisfy interface constraints
+func InstantiateWithConstraints(scheme *TypeScheme, typeArgs map[string]Type, unifier *Unifier, tc *TypeChecker) (Type, bool) {
+	// Check that all constraints are satisfied
+	for _, constraint := range scheme.Constraints {
+		concreteType, ok := typeArgs[constraint.Var]
+		if !ok {
+			// Type variable not provided - this shouldn't happen in well-formed code
+			tc.addError("type variable %s not provided for constraint", constraint.Var)
+			return nil, false
+		}
+		
+		if !tc.SatisfiesConstraint(concreteType, constraint) {
+			tc.addError("type %s does not satisfy constraint: %s", concreteType, constraint)
+			return nil, false
+		}
+	}
+	
+	// Create substitution from type arguments
+	sub := make(Substitution)
+	for varName, typeArg := range typeArgs {
+		sub[varName] = typeArg
+	}
+	
+	// For any remaining type vars (not provided), use fresh type vars
+	for _, varName := range scheme.TypeVars {
+		if _, provided := typeArgs[varName]; !provided {
+			sub[varName] = unifier.FreshTypeVar(varName)
+		}
+	}
+	
+	// Apply substitution
+	return sub.Apply(scheme.Type), true
 }
 

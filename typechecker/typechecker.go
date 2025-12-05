@@ -65,6 +65,32 @@ func (t *UnitType) Equals(other Type) bool {
 	return ok
 }
 
+// NeverType represents the uninhabited bottom type
+// Used for non-returning functions and unreachable code
+type NeverType struct{}
+
+func (t *NeverType) String() string {
+	return "never"
+}
+
+func (t *NeverType) Equals(other Type) bool {
+	_, ok := other.(*NeverType)
+	return ok
+}
+
+// AnyType represents the top type
+// Can hold any safe Oak value, but requires explicit annotation
+type AnyType struct{}
+
+func (t *AnyType) String() string {
+	return "any"
+}
+
+func (t *AnyType) Equals(other Type) bool {
+	_, ok := other.(*AnyType)
+	return ok
+}
+
 // ADTType represents an ADT type
 type ADTType struct {
 	Name string
@@ -287,9 +313,9 @@ func (e *TypeEnvironment) Set(name string, scheme *TypeScheme) {
 func (e *TypeEnvironment) SetType(name string, typ Type) {
 	// Convert monomorphic type to a scheme with no quantified variables
 	e.store[name] = &TypeScheme{
-		TypeVars:   []string{},
+		TypeVars:    []string{},
 		Constraints: []Constraint{},
-		Type:       typ,
+		Type:        typ,
 	}
 }
 
@@ -718,11 +744,14 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 		tc.env = armEnv
 
 		// Type check pattern and get narrowed type
-		narrowedType := tc.checkPattern(arm.Pattern, scrutineeType)
-		if narrowedType == nil {
+		patternType := tc.checkPattern(arm.Pattern, scrutineeType)
+		if patternType == nil {
 			tc.env = oldEnv
 			continue
 		}
+
+		// Type narrowing: use lattice narrowing
+		narrowedType := NarrowType(scrutineeType, arm.Pattern)
 
 		// If pattern narrowed the type, bind it in the environment
 		// This allows the arm body to use the narrowed type
@@ -737,18 +766,33 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 		// Type check arm body expression with narrowed type context
 		armType := tc.checkExpression(arm.Body)
 		if armType == nil {
-			tc.env = oldEnv
-			continue
+			// Unreachable or error - use never type
+			armType = &NeverType{}
 		}
-
-		if returnType == nil {
-			returnType = armType
-		} else if !armType.Equals(returnType) {
-			tc.addError("match arm %d: expected return type %s, got %s", i+1, returnType, armType)
-		}
+		armTypes = append(armTypes, armType)
 
 		// Restore environment
 		tc.env = oldEnv
+	}
+	
+	// Compute join of all arm types (lattice-based)
+	returnType := Join(armTypes...)
+	
+	// Strict mode: if join is any and we didn't explicitly request any, it's an error
+	// (This prevents accidental type widening)
+	if _, isAny := returnType.(*AnyType); isAny {
+		// Check if all non-never types are the same
+		nonNeverTypes := []Type{}
+		for _, at := range armTypes {
+			if _, ok := at.(*NeverType); !ok {
+				nonNeverTypes = append(nonNeverTypes, at)
+			}
+		}
+		
+		if len(nonNeverTypes) > 1 {
+			// Multiple different types - this is an error in strict mode
+			tc.addError("match expression has branches with incompatible types. Use explicit 'any' return type if intentional.")
+		}
 	}
 
 	// Check exhaustiveness for ADT types
@@ -757,7 +801,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 	}
 
 	if returnType == nil {
-		return &UnitType{}
+		return &NeverType{} // No branches matched - unreachable
 	}
 	return returnType
 }
@@ -1007,7 +1051,7 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 				}
 			}
 		}
-		
+
 		// Generalize the type (quantify over free type variables)
 		scheme := Generalize(varType, tc.env)
 		tc.env.Set(stmt.Name.Value, scheme)
@@ -1381,8 +1425,8 @@ func (t *ArrayType) Equals(other Type) bool {
 
 // GenericType represents a generic type application: Option[T], Result[T, E], etc.
 type GenericType struct {
-	Name     string   // "Option", "Result", etc.
-	TypeArgs []Type   // Type arguments: [T], [T, E], etc.
+	Name     string // "Option", "Result", etc.
+	TypeArgs []Type // Type arguments: [T], [T, E], etc.
 }
 
 func (t *GenericType) String() string {
@@ -1429,6 +1473,10 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 			return &BoolType{}
 		case "()":
 			return &UnitType{}
+		case "never":
+			return &NeverType{}
+		case "any":
+			return &AnyType{}
 		default:
 			// Assume it's an ADT type
 			return &ADTType{Name: ident.Value}
@@ -1548,6 +1596,28 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 	// If it's an ADT type being used as an interface (not yet supported)
 	// or if it's the same type, return true
 	return concreteType.Equals(interfaceType)
+}
+
+// SatisfiesConstraint checks if a concrete type satisfies an interface constraint
+// This is used when instantiating a polymorphic function with interface constraints
+func (tc *TypeChecker) SatisfiesConstraint(concreteType Type, constraint Constraint) bool {
+	// For each required interface, check if the concrete type implements it
+	for _, ifaceName := range constraint.Interfaces {
+		// Look up the interface type
+		ifaceType, ok := tc.env.GetType(ifaceName)
+		if !ok {
+			// Interface not found - this is a type error
+			tc.addError("interface %s not found in constraint", ifaceName)
+			return false
+		}
+		
+		// Check if concreteType implements the interface
+		if !tc.implementsInterface(concreteType, ifaceType) {
+			return false
+		}
+	}
+	
+	return true
 }
 
 // getLiteralType extracts the type of a literal object
