@@ -741,7 +741,7 @@ func (p *Parser) parseADTType() *ast.ADTType {
 // Returns an InfixExpression representing the composition chain
 func (p *Parser) parseRecordComposition() ast.Expression {
 	// We're already at the first identifier
-	left := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	var left ast.Expression = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 	
 	// Parse composition chain: TypeName & TypeName & { ... }
 	for p.peekTokenIs(token.AMP) {
