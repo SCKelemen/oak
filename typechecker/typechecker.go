@@ -610,7 +610,7 @@ func (tc *TypeChecker) areCompatibleTypes(left, right Type) bool {
 func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Create new environment for function parameters
 	funcEnv := NewEnclosedTypeEnvironment(tc.env)
-
+	
 	// Type check parameters (for anonymous functions, infer from usage)
 	// For now, assume they're all i32 if we can't infer
 	// Note: Type inference for anonymous function parameters is limited
@@ -623,20 +623,20 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 		// Store as a monomorphic scheme
 		funcEnv.SetType(param.Value, paramType)
 	}
-
+	
 	// Save current environment and switch to function environment
 	oldEnv := tc.env
 	tc.env = funcEnv
-
+	
 	// Type check function body (BlockStatement - check last expression)
 	returnType := tc.checkBlockExpression(fn.Body)
-	if returnType == nil {
-		returnType = &UnitType{}
+			if returnType == nil {
+				returnType = &UnitType{}
 	}
-
+	
 	// Restore environment
 	tc.env = oldEnv
-
+	
 	return &FunctionType{
 		Parameters: paramTypes,
 		ReturnType: returnType,
@@ -672,19 +672,19 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	if funcType == nil {
 		return nil
 	}
-
+	
 	fnType, ok := funcType.(*FunctionType)
 	if !ok {
 		tc.addError("attempting to call non-function type: %s", funcType)
 		return nil
 	}
-
+	
 	// Check argument count
 	if len(expr.Arguments) != len(fnType.Parameters) {
 		tc.addError("function expects %d arguments, got %d", len(fnType.Parameters), len(expr.Arguments))
 		return nil
 	}
-
+	
 	// Check argument types (with coercion)
 	for i, arg := range expr.Arguments {
 		argType := tc.checkExpression(arg)
@@ -1061,7 +1061,7 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 			tc.addError("method %s argument %d: expected %s, got %s", methodName, i+1, expectedType, argType)
 		}
 	}
-
+	
 	return fnType.ReturnType
 }
 
@@ -1070,7 +1070,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 	if scrutineeType == nil {
 		return nil
 	}
-
+	
 	// Check that match expression has at least one arm
 	if len(expr.Arms) == 0 {
 		tc.addError("match expression must have at least one arm")
@@ -1091,7 +1091,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 			tc.env = oldEnv
 			continue
 		}
-
+		
 		// Type narrowing: use lattice narrowing
 		narrowedType := NarrowType(scrutineeType, arm.Pattern)
 
@@ -1330,7 +1330,7 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 	if leftType == nil {
 		return nil
 	}
-
+	
 	// Handle record field access: record.field
 	if recordType, ok := leftType.(*RecordType); ok {
 		if ident, ok := expr.Index.(*ast.Identifier); ok {
@@ -1360,12 +1360,44 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 		// In the future, we could require u32 specifically for array indices
 		return arrayType.ElementType
 	}
-
+	
 	tc.addError("index expression not supported for type: %s", leftType)
 	return nil
 }
 
 func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
+	// Check if variable already exists
+	varScheme, exists := tc.env.Get(stmt.Name.Value)
+	if exists {
+		// Variable already exists - this is actually an assignment, not a declaration
+		// Only allow assignment if there's a value (x = value), not just declaration (x: type)
+		if stmt.Value == nil {
+			// This is a redeclaration without assignment - error
+			tc.addError("variable %s already declared", stmt.Name.Value)
+			return
+		}
+		// This is an assignment to an existing variable
+		// Instantiate the scheme to get the actual type
+		unifier := NewUnifier()
+		varType := Instantiate(varScheme, unifier)
+		// Check that assigned value matches variable type
+		valueType := tc.checkExpression(stmt.Value, varType)
+		if valueType != nil {
+			if !tc.isAssignable(valueType, varType) {
+				tc.addError("assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
+			}
+		}
+		return
+	}
+	
+	// Variable doesn't exist - check if this is a declaration without type annotation
+	// If it has no type and no value, that's an error
+	if stmt.Type == nil && stmt.Value == nil {
+		tc.addError("variable %s: no type annotation and no initializer", stmt.Name.Value)
+		return
+	}
+
+	// Variable doesn't exist - this is a declaration
 	// HM-style: let-bound variables get generalized types
 	if stmt.Type != nil {
 		// Explicit type annotation: parse and use it
@@ -1386,8 +1418,8 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 				if sub == nil {
 					// Try assignability check as fallback
 					if !tc.isAssignable(valueType, varType) {
-						tc.addError("variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
-					}
+				tc.addError("variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
+			}
 				} else {
 					// Apply substitution to get the unified type
 					varType = sub.Apply(varType)
@@ -1442,19 +1474,21 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 	// Check that variable exists
 	varScheme, ok := tc.env.Get(stmt.Name.Value)
 	if !ok {
+		// Variable doesn't exist - assignment requires the variable to be declared first
 		tc.addError("undefined variable: %s", stmt.Name.Value)
 		return
 	}
-
+	
+	// Variable exists - this is a real assignment
 	// Instantiate the scheme to get the actual type
 	unifier := NewUnifier()
 	varType := Instantiate(varScheme, unifier)
 
 	// Check that assigned value matches variable type (with coercion)
-	valueType := tc.checkExpression(stmt.Value)
+	valueType := tc.checkExpression(stmt.Value, varType) // Pass expected type for context-based inference
 	if valueType != nil {
 		if !tc.isAssignable(valueType, varType) {
-			tc.addError("assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
+		tc.addError("assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
 		}
 	}
 }
@@ -1691,7 +1725,7 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError("while condition must be bool, got %s", conditionType)
 	}
-
+	
 	// Type check body
 	tc.checkBlockStatement(stmt.Body)
 }
@@ -1742,13 +1776,13 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
 			IsSlice:     true,
 		}
 	}
-
+	
 	// Check all elements have compatible types
 	firstType := tc.checkExpression(expr.Elements[0])
 	if firstType == nil {
 		return nil
 	}
-
+	
 	// Promote to the widest type if needed
 	commonType := firstType
 	for i := 1; i < len(expr.Elements); i++ {
@@ -1769,7 +1803,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
 			}
 		}
 	}
-
+	
 	return &ArrayType{
 		ElementType: commonType,
 		IsSlice:     true, // Array literals create slices for now

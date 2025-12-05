@@ -134,14 +134,14 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseUnsafeBlock()
 	case token.IDENT:
 		// Could be variable declaration (a: type = value, a: type, or a = value) or assignment (a = b)
-		// We need to distinguish: if variable exists, it's assignment; if not, it's declaration
-		// For now, we'll parse both and let the type checker/evaluator handle the distinction
+		// Variable declaration with type: a: type = value or a: type
 		if p.peekTokenIs(token.COLON) {
 			return p.parseVariableDeclaration()
 		} else if p.peekTokenIs(token.ASSIGN) {
 			// This could be either a variable declaration with type inference OR an assignment
-			// We'll parse it as a variable declaration first, and the evaluator/type checker
-			// can handle the case where the variable already exists
+			// We'll parse it as a variable declaration without type, and the typechecker
+			// can distinguish: if variable exists, it's an error (can't redeclare);
+			// if it doesn't exist, it's a declaration
 			return p.parseVariableDeclarationWithoutType()
 		}
 		fallthrough
@@ -1045,12 +1045,119 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 	return variant
 }
 
-// Parse type expression (simplified - just identifier for now)
+// Parse type expression: identifier, record type { field: Type, ... }, or array type [Type]
 func (p *Parser) parseTypeExpression() ast.Expression {
+	// Handle record type: { field: Type, ... }
+	if p.currentTokenIs(token.LBRACE) {
+		return p.parseRecordType()
+	}
+	
+	// Handle array type: [Type] or [N]Type
+	if p.currentTokenIs(token.LBRACK) {
+		return p.parseArrayType()
+	}
+	
+	// Handle identifier type
 	if p.currentTokenIs(token.IDENT) {
 		return &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 	}
+	
 	return nil
+}
+
+// Parse record type: { field: Type, field2: Type2, ... }
+func (p *Parser) parseRecordType() ast.Expression {
+	record := &ast.RecordLiteral{
+		Token:  p.currentToken,
+		Fields: make(map[string]ast.Expression),
+	}
+	
+	// Skip opening brace (currentToken is {)
+	p.nextToken()
+	
+	// Handle empty record type: {}
+	if p.currentTokenIs(token.RBRACE) {
+		record.EndToken = p.currentToken // } token
+		p.nextToken()                    // consume }
+		return record
+	}
+	
+	// Parse fields until closing brace
+	for {
+		// Parse field name (identifier)
+		if !p.currentTokenIs(token.IDENT) {
+			p.peekError(token.IDENT)
+			return nil
+		}
+		fieldName := p.currentToken.Literal
+		
+		// Expect colon
+		if !p.expectPeek(token.COLON) {
+			return nil
+		}
+		
+		// Parse field type (not value - this is a type annotation)
+		p.nextToken() // Advance past colon to the type
+		fieldType := p.parseTypeExpression()
+		if fieldType == nil {
+			return nil
+		}
+		
+		record.Fields[fieldName] = fieldType
+		
+		// Advance past the type expression
+		// After parseTypeExpression returns, currentToken is the last token of the type
+		// peekToken should be comma or closing brace
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken() // consume comma
+			p.nextToken() // advance to next field
+			continue
+		}
+		
+		if p.peekTokenIs(token.RBRACE) {
+			p.nextToken() // consume }
+			record.EndToken = p.currentToken
+			break
+		}
+		
+		// Unexpected token
+		p.peekError(token.RBRACE)
+		return nil
+	}
+	
+	return record
+}
+
+// Parse array type: [Type] or [N]Type
+func (p *Parser) parseArrayType() ast.Expression {
+	// Skip opening bracket (currentToken is [)
+	p.nextToken()
+	
+	// Check for size: [N]Type
+	if p.currentTokenIs(token.INT) {
+		// Fixed-size array - for now, just parse as dynamic array
+		// TODO: Support fixed-size arrays
+		p.nextToken()
+	}
+	
+	// Parse element type
+	elementType := p.parseTypeExpression()
+	if elementType == nil {
+		return nil
+	}
+	
+	// Expect closing bracket
+	if !p.expectPeek(token.RBRACK) {
+		return nil
+	}
+	
+	// For now, return the element type wrapped in an IndexExpression
+	// TODO: Create proper ArrayType AST node
+	return &ast.IndexExpression{
+		Token: p.currentToken,
+		Left:  elementType,
+		Index: &ast.Identifier{Token: p.currentToken, Value: ""}, // Empty index means array type
+	}
 }
 
 // Parse literal expression (integer, string, or record literal)
@@ -1670,7 +1777,8 @@ func (p *Parser) parseAssignmentStatement() *ast.AssignmentStatement {
 	}
 
 	p.nextToken() // consume =, now currentToken is =
-	p.nextToken() // consume value token, now currentToken is the first token of the value expression
+	// Now peekToken is the first token of the value expression
+	// Don't call nextToken() here - parseExpression will handle token advancement
 	stmt.Value = p.parseExpression(LOWEST)
 
 	if p.peekTokenIs(token.SEMI) {
@@ -1694,7 +1802,8 @@ func (p *Parser) parseVariableDeclarationWithoutType() *ast.VariableDeclaration 
 
 	// Parse value (type will be inferred)
 	p.nextToken() // consume =, now currentToken is =
-	p.nextToken() // consume value token, now currentToken is the first token of the value expression
+	// Now peekToken is the first token of the value expression
+	// Don't call nextToken() here - parseExpression will handle token advancement
 	stmt.Value = p.parseExpression(LOWEST)
 	stmt.Type = nil // Type inference
 
@@ -1704,4 +1813,3 @@ func (p *Parser) parseVariableDeclarationWithoutType() *ast.VariableDeclaration 
 
 	return stmt
 }
-
