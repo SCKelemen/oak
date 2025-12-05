@@ -735,9 +735,9 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 		return nil
 	}
 
-	// Check that all arms return the same type
-	var returnType Type
-	for i, arm := range expr.Arms {
+	// Type check each arm and collect types for lattice join
+	armTypes := []Type{}
+	for _, arm := range expr.Arms {
 		// Create a new scoped environment for this match arm to support type narrowing
 		armEnv := NewEnclosedTypeEnvironment(tc.env)
 		oldEnv := tc.env
