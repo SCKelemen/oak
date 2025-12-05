@@ -38,7 +38,7 @@ func (s *Scanner) readChar() {
 			s.column = 0 // Will be incremented to 1 below
 		}
 	}
-	
+
 	// if the look-ahead pointer reaches
 	// the end of the input stream,
 	// set the current character to NUL/0
@@ -57,7 +57,7 @@ func (s *Scanner) readChar() {
 	s.head = s.read
 	// and then increment the read-ahead head
 	s.read++
-	
+
 	// Increment column after reading (1-based)
 	if s.current != '\n' && s.current != 0 {
 		s.column++
@@ -67,12 +67,12 @@ func (s *Scanner) readChar() {
 }
 
 // NextToken emits the next token. Handles single
-//char tokens internally, directly
+// char tokens internally, directly
 func (s *Scanner) NextToken() token.Token {
 	var tok token.Token
-	
+
 	s.skipWhitespace()
-	
+
 	// Save current position after skipping whitespace (this is where the token starts)
 	line := s.line
 	column := s.column

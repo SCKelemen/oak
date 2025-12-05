@@ -142,7 +142,28 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 	}
 
 	// Emit source location comment
-	cg.emitSourceLocationComment(adt.Token, fmt.Sprintf("ADT type %s", typeName))
+	loc := cg.getSourceLocation(adt.Token)
+	// Try to find end position from last variant
+	endLoc := loc
+	if len(adt.Variants) > 0 {
+		lastVariant := adt.Variants[len(adt.Variants)-1]
+		if lastVariant.Literal != nil {
+			// Use the literal token for end position
+			endLoc = cg.getSourceLocation(lastVariant.Literal.(*ast.RecordLiteral).Token)
+		} else {
+			endLoc = cg.getSourceLocation(lastVariant.Token)
+		}
+	}
+	loc.EndLine = endLoc.Line
+	loc.EndCol = endLoc.Column
+	
+	metadata := SourceMetadata{
+		Source:     cg.formatSourceRange(loc),
+		Package:    cg.packageName,
+		Kind:       "ADT",
+		Identifier: typeName,
+	}
+	cg.emitSourceLocationComment(metadata)
 
 	// Check if this is a record type definition: Name: type = { field: Type, ... }
 	// Record type definitions are parsed as ADTType with a single variant that has a record literal
@@ -218,11 +239,18 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 
 // emitADTConstructor emits a constructor function for an ADT variant
 func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVariant) {
-	// Emit source location comment for constructor
-	cg.emitSourceLocationComment(variant.Token, fmt.Sprintf("ADT constructor %s::%s", typeName, variant.Name.Value))
-
 	variantName := variant.Name.Value
 	funcName := fmt.Sprintf("%s_%s", typeName, variantName)
+	
+	// Emit source location comment for constructor
+	loc := cg.getSourceLocation(variant.Token)
+	metadata := SourceMetadata{
+		Source:     cg.formatSourceRange(loc),
+		Package:    cg.packageName,
+		Kind:       "constructor",
+		Identifier: fmt.Sprintf("%s::%s", typeName, variantName),
+	}
+	cg.emitSourceLocationComment(metadata)
 
 	// C style: space inside parentheses
 	cg.write(fmt.Sprintf("static inline %s %s( ", typeName, funcName))
@@ -247,11 +275,29 @@ func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVar
 
 // emitFunction emits C code for a function or method
 func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) {
-	// Emit source location comment
 	funcName := fn.Name.Value
-	cg.emitSourceLocationComment(fn.Token, fmt.Sprintf("function %s", funcName))
-
 	cFuncName := cg.cFunctionName(funcName)
+	
+	// Build Oak function signature
+	signature := cg.buildFunctionSignature(fn)
+	
+	// Emit source location comment
+	loc := cg.getSourceLocation(fn.Token)
+	// Try to estimate end position from body
+	if fn.Body != nil {
+		// For now, use the function token's position (can be enhanced to track actual end)
+		loc.EndLine = loc.Line
+		loc.EndCol = loc.Column + 100 // Placeholder - would need actual end tracking
+	}
+	
+	metadata := SourceMetadata{
+		Source:     cg.formatSourceRange(loc),
+		Package:    cg.packageName,
+		Kind:       "function",
+		Identifier: funcName,
+		Signature:  signature,
+	}
+	cg.emitSourceLocationComment(metadata)
 
 	// Determine return type
 	returnType := "void"
@@ -662,18 +708,89 @@ type SourceLocation struct {
 	File    string
 	Line    int
 	Column  int
+	EndLine int // End line (LSP-style range)
+	EndCol  int // End column (LSP-style range)
 	Package string
 }
 
-// emitSourceLocationComment emits a C comment with source location information
-func (cg *CodeGenerator) emitSourceLocationComment(tok token.Token, description string) {
-	// Format: /* Generated from: package file.oak:line:col - description */
-	// For now, we'll use a simple format since Token doesn't have line/col info
-	// In a full implementation, we'd track line/column numbers during parsing
-	// TODO: Extract line/column from token when available
-	loc := cg.getSourceLocation(tok)
-	cg.write(fmt.Sprintf("/* Generated from: %s %s:%d:%d - %s */\n",
-		loc.Package, loc.File, loc.Line, loc.Column, description))
+// SourceMetadata contains structured metadata for source location comments
+type SourceMetadata struct {
+	Source     string // file:line:col-line:col (LSP-style range)
+	Package    string
+	Kind       string // ADT, function, record, constructor, etc.
+	Identifier string // Name of the construct
+	Signature  string // Full signature (for functions)
+}
+
+// buildFunctionSignature reconstructs the Oak function signature from AST
+func (cg *CodeGenerator) buildFunctionSignature(fn *ast.FunctionStatement) string {
+	var sig strings.Builder
+	
+	sig.WriteString("fn")
+	
+	// Add receiver if method
+	if fn.Receiver != nil {
+		sig.WriteString(" (")
+		sig.WriteString(fn.Receiver.Name.Value)
+		sig.WriteString(": ")
+		sig.WriteString(cg.typeExpressionToString(fn.Receiver.Type))
+		sig.WriteString(")")
+	}
+	
+	// Function name
+	sig.WriteString(" ")
+	sig.WriteString(fn.Name.Value)
+	
+	// Parameters
+	sig.WriteString("(")
+	for i, param := range fn.Parameters {
+		if i > 0 {
+			sig.WriteString(", ")
+		}
+		sig.WriteString(param.Name.Value)
+		sig.WriteString(": ")
+		sig.WriteString(cg.typeExpressionToString(param.Type))
+	}
+	sig.WriteString(")")
+	
+	// Return type
+	if fn.ReturnType != nil {
+		sig.WriteString(" -> ")
+		sig.WriteString(cg.typeExpressionToString(fn.ReturnType))
+	}
+	
+	return sig.String()
+}
+
+// typeExpressionToString converts a type expression AST node to a string
+func (cg *CodeGenerator) typeExpressionToString(expr ast.Expression) string {
+	if ident, ok := expr.(*ast.Identifier); ok {
+		return ident.Value
+	}
+	// For more complex types (arrays, records, etc.), we'd need more handling
+	// For now, return a placeholder
+	return "/* type */"
+}
+
+// SourceLocation represents a location in the source code
+type SourceLocation struct {
+	File    string
+	Line    int
+	Column  int
+	Package string
+}
+
+// emitSourceLocationComment emits a structured C comment with source location metadata
+func (cg *CodeGenerator) emitSourceLocationComment(metadata SourceMetadata) {
+	cg.write("// @source: " + metadata.Source + "\n")
+	cg.write("// @package: " + metadata.Package + "\n")
+	cg.write("// @kind: " + metadata.Kind + "\n")
+	if metadata.Identifier != "" {
+		cg.write("// @identifier: " + metadata.Identifier + "\n")
+	}
+	if metadata.Signature != "" {
+		cg.write("// @signature: " + metadata.Signature + "\n")
+	}
 }
 
 // getSourceLocation extracts source location from a token
@@ -682,8 +799,20 @@ func (cg *CodeGenerator) getSourceLocation(tok token.Token) SourceLocation {
 		File:    cg.sourceFile,
 		Line:    tok.Line,
 		Column:  tok.Column,
+		EndLine: tok.Line, // Default: same as start (can be enhanced)
+		EndCol:  tok.Column,
 		Package: cg.packageName,
 	}
+}
+
+// formatSourceRange formats a source location as LSP-style range (file:startLine:startCol-endLine:endCol)
+func (cg *CodeGenerator) formatSourceRange(loc SourceLocation) string {
+	if loc.EndLine == loc.Line && loc.EndCol == loc.Column {
+		// Single position
+		return fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column)
+	}
+	// Range
+	return fmt.Sprintf("%s:%d:%d-%d:%d", loc.File, loc.Line, loc.Column, loc.EndLine, loc.EndCol)
 }
 
 // emitBlockStatement emits a block statement
@@ -878,7 +1007,18 @@ func (cg *CodeGenerator) emitRecordType(typeName string, recordLit *ast.RecordLi
 	cg.types[cName] = true
 
 	// Emit source location comment
-	cg.emitSourceLocationComment(recordLit.Token, fmt.Sprintf("record type %s", typeName))
+	loc := cg.getSourceLocation(recordLit.Token)
+	// Estimate end position (would need actual tracking)
+	loc.EndLine = loc.Line
+	loc.EndCol = loc.Column + 50 // Placeholder
+	
+	metadata := SourceMetadata{
+		Source:     cg.formatSourceRange(loc),
+		Package:    cg.packageName,
+		Kind:       "record",
+		Identifier: typeName,
+	}
+	cg.emitSourceLocationComment(metadata)
 
 	// Emit struct definition (C style: opening brace on same line)
 	cg.write(fmt.Sprintf("typedef struct %s {\n", cName))
