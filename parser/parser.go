@@ -789,16 +789,54 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 	return array
 }
 
-// Function statement (top-level function)
+// Function statement (top-level function or method)
 func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 	stmt := &ast.FunctionStatement{Token: p.currentToken}
 
-	if !p.expectPeek(token.IDENT) {
-		return nil
+	// Check if this is a method: fn (recv: Type) method(...)
+	// vs regular function: fn name(...)
+	if p.peekTokenIs(token.LPAREN) {
+		// Look ahead to see if this is a receiver: fn ( ident : type )
+		p.nextToken() // consume (
+		if !p.expectPeek(token.IDENT) {
+			return nil
+		}
+		// Save the identifier token before consuming it
+		recvIdentToken := p.peekToken
+		p.nextToken() // consume identifier, now currentToken is IDENT
+		if p.peekTokenIs(token.COLON) {
+			// This is a receiver: fn (recv: Type)
+			receiver := &ast.FunctionParameter{
+				Token: recvIdentToken, // Save the IDENT token
+				Name:  &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal},
+			}
+			p.nextToken() // consume :
+			p.nextToken() // consume type identifier
+			receiver.Type = p.parseTypeExpression()
+			if !p.expectPeek(token.RPAREN) {
+				return nil
+			}
+			stmt.Receiver = receiver
+			// Now parse method name
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		} else {
+			// Not a receiver, this is a regular function
+			// Backtrack: we consumed ( and IDENT, but this is not a receiver
+			// This shouldn't happen with our syntax, but handle it
+			return nil
+		}
+	} else {
+		// Regular function: fn name(...)
+		if !p.expectPeek(token.IDENT) {
+			return nil
+		}
+		stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 	}
 
-	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-
+	// Parse parameters
 	if !p.expectPeek(token.LPAREN) {
 		return nil
 	}

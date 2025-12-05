@@ -528,6 +528,7 @@ func (is *ImportStatement) String() string {
 // Function declaration (top-level)
 type FunctionStatement struct {
 	Token      token.Token // 'fn' token
+	Receiver   *FunctionParameter // optional receiver for methods: fn (recv: Type) method(...)
 	Name       *Identifier
 	Parameters []*FunctionParameter
 	ReturnType Expression // type expression
@@ -539,6 +540,12 @@ func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
 func (fs *FunctionStatement) String() string {
 	var out bytes.Buffer
 	out.WriteString("fn ")
+	if fs.Receiver != nil {
+		out.WriteRune('(')
+		out.WriteString(fs.Receiver.String())
+		out.WriteRune(')')
+		out.WriteRune(' ')
+	}
 	out.WriteString(fs.Name.String())
 	out.WriteRune('(')
 	for i, param := range fs.Parameters {

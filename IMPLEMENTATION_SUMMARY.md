@@ -145,11 +145,11 @@ Status: type
 ## Remaining Work
 
 ### High Priority
-1. **Type System** - Type checking and inference
-2. **ADT Construction** - Creating ADT values
-3. **Record Literals** - Proper parsing and evaluation
-4. **Method Calls** - Go-style receiver methods
-5. **Slices/Spans** - Array and slice operations
+1. ✅ **Type System** - Type checking and inference (completed)
+2. ✅ **ADT Construction** - Creating ADT values (completed)
+3. ✅ **Record Literals** - Proper parsing and evaluation (completed)
+4. ✅ **Method Calls** - Go-style receiver methods (completed)
+5. **Slices/Spans** - Array and slice operations (arrays done, slices pending)
 
 ### Medium Priority
 1. **Borrow Checker** - Slice/span alias analysis

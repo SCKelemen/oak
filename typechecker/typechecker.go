@@ -571,6 +571,15 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 }
 
 func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
+	// Check if this is a method call: recv.method(args)
+	if indexExpr, ok := expr.Function.(*ast.IndexExpression); ok {
+		if methodName, ok := indexExpr.Index.(*ast.Identifier); ok {
+			// This is a method call
+			return tc.checkMethodCall(indexExpr.Left, methodName.Value, expr.Arguments)
+		}
+	}
+
+	// Regular function call
 	funcType := tc.checkExpression(expr.Function)
 	if funcType == nil {
 		return nil
@@ -597,6 +606,58 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		expectedType := fnType.Parameters[i]
 		if !tc.isAssignable(argType, expectedType) {
 			tc.addError("argument %d: expected %s, got %s", i+1, expectedType, argType)
+		}
+	}
+
+	return fnType.ReturnType
+}
+
+// checkMethodCall type checks a method call: recv.method(args)
+func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName string, args []ast.Expression) Type {
+	// Check receiver type
+	recvType := tc.checkExpression(recvExpr)
+	if recvType == nil {
+		return nil
+	}
+
+	// Determine receiver type name
+	var receiverTypeName string
+	if adtType, ok := recvType.(*ADTType); ok {
+		receiverTypeName = adtType.Name
+	} else {
+		tc.addError("method calls only supported for ADT types, got %s", recvType)
+		return nil
+	}
+
+	// Look up method: TypeName::methodName
+	methodKey := fmt.Sprintf("%s::%s", receiverTypeName, methodName)
+	methodType, ok := tc.env.Get(methodKey)
+	if !ok {
+		tc.addError("method %s not found for type %s", methodName, receiverTypeName)
+		return nil
+	}
+
+	fnType, ok := methodType.(*FunctionType)
+	if !ok {
+		tc.addError("method %s is not a function type", methodName)
+		return nil
+	}
+
+	// Check argument count (method has receiver as first parameter, so args should match parameters)
+	if len(args) != len(fnType.Parameters) {
+		tc.addError("method %s expects %d arguments, got %d", methodName, len(fnType.Parameters), len(args))
+		return nil
+	}
+
+	// Check argument types
+	for i, arg := range args {
+		argType := tc.checkExpression(arg)
+		if argType == nil {
+			continue
+		}
+		expectedType := fnType.Parameters[i]
+		if !tc.isAssignable(argType, expectedType) {
+			tc.addError("method %s argument %d: expected %s, got %s", methodName, i+1, expectedType, argType)
 		}
 	}
 
@@ -965,6 +1026,16 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	// Create new environment for function parameters
 	funcEnv := NewEnclosedTypeEnvironment(tc.env)
 
+	// If this is a method, add receiver to the environment
+	if stmt.Receiver != nil {
+		receiverType := tc.parseTypeExpression(stmt.Receiver.Type)
+		if receiverType == nil {
+			tc.addError("method %s: invalid receiver type", stmt.Name.Value)
+			return
+		}
+		funcEnv.Set(stmt.Receiver.Name.Value, receiverType)
+	}
+
 	// Parse parameter types from function signature
 	paramTypes := []Type{}
 	for _, param := range stmt.Parameters {
@@ -1007,6 +1078,18 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		ReturnType: returnType,
 	}
 	tc.env.Set(stmt.Name.Value, funcType)
+
+	// If this is a method, also store it with TypeName::methodName key
+	if stmt.Receiver != nil {
+		receiverType := tc.parseTypeExpression(stmt.Receiver.Type)
+		if receiverType != nil {
+			// For ADT types, use the type name
+			if adtType, ok := receiverType.(*ADTType); ok {
+				methodKey := fmt.Sprintf("%s::%s", adtType.Name, stmt.Name.Value)
+				tc.env.Set(methodKey, funcType)
+			}
+		}
+	}
 }
 
 func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {

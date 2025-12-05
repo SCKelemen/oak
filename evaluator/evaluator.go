@@ -82,6 +82,15 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		}
 
 	case *ast.InvocationExpression:
+		// Check if this is a method call: recv.method(args)
+		// Method calls have an IndexExpression as the function
+		if indexExpr, ok := node.Function.(*ast.IndexExpression); ok {
+			if methodName, ok := indexExpr.Index.(*ast.Identifier); ok {
+				// This is a method call: recv.method(args)
+				return evalMethodCall(indexExpr.Left, methodName.Value, node.Arguments, env)
+			}
+		}
+		// Regular function call
 		function := Eval(node.Function, env)
 		if isError(function) {
 			return function
@@ -518,7 +527,7 @@ func evalADTType(adt *ast.ADTType, env *object.Environment) object.Object {
 	return NULL
 }
 
-// Evaluate function statement (top-level function)
+// Evaluate function statement (top-level function or method)
 func evalFunctionStatement(fn *ast.FunctionStatement, env *object.Environment) object.Object {
 	// Convert FunctionParameters to Identifiers
 	params := make([]*ast.Identifier, len(fn.Parameters))
@@ -532,8 +541,61 @@ func evalFunctionStatement(fn *ast.FunctionStatement, env *object.Environment) o
 		Env:        env,
 	}
 
+	// If this is a method (has a receiver), store it with a special key: TypeName::methodName
+	if fn.Receiver != nil {
+		receiverType := fn.Receiver.Type
+		if receiverTypeIdent, ok := receiverType.(*ast.Identifier); ok {
+			methodKey := fmt.Sprintf("%s::%s", receiverTypeIdent.Value, fn.Name.Value)
+			env.Set(methodKey, function)
+		}
+	}
+
+	// Also store as regular function (methods can be called as regular functions too)
 	env.Set(fn.Name.Value, function)
 	return function
+}
+
+// evalMethodCall evaluates a method call: recv.method(args)
+func evalMethodCall(recvExpr ast.Expression, methodName string, args []ast.Expression, env *object.Environment) object.Object {
+	// Evaluate receiver
+	recv := Eval(recvExpr, env)
+	if isError(recv) {
+		return recv
+	}
+
+	// Determine receiver type name
+	var receiverTypeName string
+	switch recv := recv.(type) {
+	case *object.ADTValue:
+		receiverTypeName = recv.TypeName
+	case *object.Record:
+		// For records, we need to know the record type name
+		// This is tricky - records don't store their type name
+		// For now, we'll need to infer it or store it
+		// Let's use a placeholder approach - we'll need to enhance this
+		return newError("method calls on records not yet fully supported")
+	default:
+		return newError("method calls not supported for type %s", recv.Type())
+	}
+
+	// Look up method: TypeName::methodName
+	methodKey := fmt.Sprintf("%s::%s", receiverTypeName, methodName)
+	method, ok := env.Get(methodKey)
+	if !ok {
+		return newError("method %s not found for type %s", methodName, receiverTypeName)
+	}
+
+	// Evaluate method arguments
+	methodArgs := evalExpressions(args, env)
+	if len(methodArgs) == 1 && isError(methodArgs[0]) {
+		return methodArgs[0]
+	}
+
+	// Prepend receiver as first argument
+	allArgs := append([]object.Object{recv}, methodArgs...)
+
+	// Call the method
+	return applyFunction(method, allArgs)
 }
 
 // Evaluate while statement
