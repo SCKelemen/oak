@@ -760,17 +760,15 @@ func (p *Parser) parseInterfaceMethod() *ast.FunctionParameter {
 		return nil
 	}
 	
-	receiverName := p.currentToken.Literal
-	
 	// Check for receiver type annotation
-	var receiverType ast.Expression
 	if p.peekTokenIs(token.COLON) {
 		p.nextToken() // consume :
 		p.nextToken() // consume type
-		receiverType = p.parseTypeExpressionSimple()
+		receiverType := p.parseTypeExpressionSimple()
 		if receiverType == nil {
 			return nil
 		}
+		_ = receiverType // TODO: Store receiver type in interface method
 	}
 
 	if !p.expectPeek(token.RPAREN) {
@@ -788,6 +786,7 @@ func (p *Parser) parseInterfaceMethod() *ast.FunctionParameter {
 		return nil
 	}
 	params := p.parseFunctionParameters()
+	_ = params // TODO: Store parameters in interface method
 
 	// Parse return type
 	if !p.expectPeek(token.ARROW) {
