@@ -541,7 +541,76 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 			return cg.cTypeName(ident.Value)
 		}
 	}
+
+	// Handle array types: [N]T or []T
+	// The parser represents array types as IndexExpression
+	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		// Check if this is an array type annotation
+		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
+			// Fixed-size array: [N]T
+			elementType := cg.parseTypeExpression(indexExpr.Left)
+			return fmt.Sprintf("%s[ %d ]", elementType, intLit.Value)
+		} else if indexExpr.Left == nil {
+			// Slice type: []T (represented as IndexExpression with nil left)
+			elementType := cg.parseTypeExpression(indexExpr.Index)
+			// Emit view type for []T
+			return cg.emitViewType(elementType)
+		}
+	}
+
+	// Handle record types: { field: Type, ... }
+	if recordLit, ok := expr.(*ast.RecordLiteral); ok {
+		// This is a record type definition
+		// We'll need to generate a struct type name
+		// For now, return a placeholder
+		return "/* record type */"
+	}
+
 	return "void"
+}
+
+// emitViewType emits a view type struct and returns the type name
+func (cg *CodeGenerator) emitViewType(elementType string) string {
+	viewTypeName := fmt.Sprintf("oak_view_%s", elementType)
+	
+	// Check if already emitted
+	if cg.types[viewTypeName] {
+		return viewTypeName
+	}
+	cg.types[viewTypeName] = true
+
+	// Emit view struct (read-only slice)
+	cg.write(fmt.Sprintf("typedef struct %s {\n", viewTypeName))
+	cg.indentLevel++
+	cg.write(fmt.Sprintf("  const %s* base;\n", elementType))
+	cg.write("  u32       len;\n")
+	cg.indentLevel--
+	cg.write(fmt.Sprintf("} %s;\n", viewTypeName))
+	cg.write("\n")
+
+	return viewTypeName
+}
+
+// emitSpanType emits a span type struct and returns the type name
+func (cg *CodeGenerator) emitSpanType(elementType string) string {
+	spanTypeName := fmt.Sprintf("oak_span_%s", elementType)
+	
+	// Check if already emitted
+	if cg.types[spanTypeName] {
+		return spanTypeName
+	}
+	cg.types[spanTypeName] = true
+
+	// Emit span struct (mutable slice)
+	cg.write(fmt.Sprintf("typedef struct %s {\n", spanTypeName))
+	cg.indentLevel++
+	cg.write(fmt.Sprintf("  %s* base;\n", elementType))
+	cg.write("  u32 len;\n")
+	cg.indentLevel--
+	cg.write(fmt.Sprintf("} %s;\n", spanTypeName))
+	cg.write("\n")
+
+	return spanTypeName
 }
 
 func (cg *CodeGenerator) parsePayloadType(expr ast.Expression) string {
