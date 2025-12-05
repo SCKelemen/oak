@@ -331,6 +331,10 @@ func (tc *TypeChecker) Errors() []string {
 	return tc.errors
 }
 
+func (tc *TypeChecker) ClearErrors() {
+	tc.errors = []string{}
+}
+
 func (tc *TypeChecker) addError(format string, args ...interface{}) {
 	tc.errors = append(tc.errors, fmt.Sprintf("[type error] "+format, args...))
 }

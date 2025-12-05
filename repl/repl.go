@@ -17,6 +17,9 @@ const PROMPT = "🌳> "
 func Start(in io.Reader, out io.Writer) {
 	scnr := bufio.NewScanner(in)
 	env := object.NewEnvironment()
+	// Create a single TypeChecker that persists across REPL inputs
+	// This allows variables declared in previous inputs to be available
+	typeChecker := typechecker.New(env)
 
 	for {
 		fmt.Printf(PROMPT)
@@ -39,8 +42,9 @@ func Start(in io.Reader, out io.Writer) {
 			continue
 		}
 
-		// Type check the program
-		typeChecker := typechecker.New(env)
+		// Clear previous errors before type checking
+		typeChecker.ClearErrors()
+		// Type check the program (reusing the same TypeChecker)
 		typeChecker.CheckProgram(program)
 		if len(typeChecker.Errors()) != 0 {
 			for _, msg := range typeChecker.Errors() {
