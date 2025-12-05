@@ -874,9 +874,17 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 	// Return type depends on operation
 	if operation == "checked" {
 		// Checked operations return Result[target, Overflow]
-		// For now, we'll return a simple type - in the future this should be Result[target, Overflow]
-		// TODO: Implement Result type properly
-		return &PrimitiveType{Name: targetType}
+		// Create target type
+		targetPrimType := &PrimitiveType{Name: targetType}
+		
+		// Create Overflow error type (ADT type)
+		overflowType := &ADTType{Name: "Overflow"}
+		
+		// Return Result[target, Overflow]
+		return &GenericType{
+			Name:     "Result",
+			TypeArgs: []Type{targetPrimType, overflowType},
+		}
 	}
 
 	// Trunc and saturating return the target type directly
@@ -930,25 +938,56 @@ func (tc *TypeChecker) checkCastableConstructor(typeName string, args []ast.Expr
 }
 
 // implementsCastable checks if a type implements Castable[T]
-// This is a simplified check - in a full implementation, we'd check for the actual Castable interface
+// Castable[T]: interface = fn (self) into() -> T
 func (tc *TypeChecker) implementsCastable(argType, targetType Type) bool {
-	// For now, we'll do a simple check:
-	// - string implements Castable[string] (identity)
-	// - []byte / array of bytes might implement Castable[string] (future)
-	// - Other types would need explicit into() methods
-
-	// String implements Castable[string]
+	// String implements Castable[string] (identity conversion)
 	if _, ok := argType.(*StringType); ok {
 		if _, ok := targetType.(*StringType); ok {
 			return true
 		}
 	}
 
-	// TODO: Check for explicit into() method via interface satisfaction
-	// For now, we'll allow string() on string (identity conversion)
-	// and reject others until we have proper interface checking
+	// Check if the argument type has an `into()` method that returns the target type
+	// This is a structural check: the type must have a method `into()` -> targetType
+	var typeName string
+	switch t := argType.(type) {
+	case *ADTType:
+		typeName = t.Name
+	case *PrimitiveType:
+		// Primitive types don't have methods
+		return false
+	case *RecordType:
+		// Record types don't have methods (yet)
+		return false
+	default:
+		return false
+	}
 
-	return false
+	// Look up the `into()` method on the argument type
+	methodKey := fmt.Sprintf("%s::into", typeName)
+	methodScheme, ok := tc.env.Get(methodKey)
+	if !ok {
+		// Method not found - type doesn't implement Castable
+		return false
+	}
+
+	// Instantiate the method scheme to get the actual method type
+	unifier := NewUnifier()
+	methodType := Instantiate(methodScheme, unifier)
+	fnType, ok := methodType.(*FunctionType)
+	if !ok {
+		// Method is not a function type - invalid
+		return false
+	}
+
+	// Check that the method takes no arguments (just self) and returns targetType
+	if len(fnType.Parameters) != 0 {
+		// Method should take no arguments (self is implicit in method call)
+		return false
+	}
+
+	// Check that return type matches target type
+	return fnType.ReturnType.Equals(targetType)
 }
 
 // splitNarrowingFunctionName parses a narrowing function name into [target, operation, source]
@@ -1938,7 +1977,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		if elementType == nil {
 			return nil
 		}
-		
+
 		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
 			// Fixed-size array: [N]T
 			return &ArrayType{

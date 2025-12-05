@@ -391,9 +391,8 @@ func findFreeTypeVars(typ Type, env *TypeEnvironment) []string {
 	// Collect all type variables in the type
 	vars := collectTypeVars(typ)
 
-	// Remove any that are bound in the environment
-	boundVars := make(map[string]bool)
-	// TODO: Extract bound type variables from environment schemes
+	// Extract bound type variables from environment schemes
+	boundVars := extractBoundTypeVars(env)
 
 	freeVars := []string{}
 	for _, v := range vars {
@@ -403,6 +402,28 @@ func findFreeTypeVars(typ Type, env *TypeEnvironment) []string {
 	}
 
 	return freeVars
+}
+
+// extractBoundTypeVars extracts all bound type variables from the environment
+// This includes type variables from all schemes in the current and outer environments
+func extractBoundTypeVars(env *TypeEnvironment) map[string]bool {
+	boundVars := make(map[string]bool)
+	
+	// Traverse the environment chain (current and outer environments)
+	currentEnv := env
+	for currentEnv != nil {
+		// Extract type variables from all schemes in this environment
+		for _, scheme := range currentEnv.store {
+			if scheme != nil {
+				for _, tv := range scheme.TypeVars {
+					boundVars[tv] = true
+				}
+			}
+		}
+		currentEnv = currentEnv.outer
+	}
+	
+	return boundVars
 }
 
 // collectTypeVars collects all type variable names from a type

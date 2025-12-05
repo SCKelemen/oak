@@ -15,8 +15,8 @@ type BaseNode struct {
 	trailingTrivia_ []token.Token
 }
 
-func (b *BaseNode) LeadingTrivia() []token.Token  { return b.leadingTrivia_ }
-func (b *BaseNode) TrailingTrivia() []token.Token { return b.trailingTrivia_ }
+func (b *BaseNode) LeadingTrivia() []token.Token           { return b.leadingTrivia_ }
+func (b *BaseNode) TrailingTrivia() []token.Token          { return b.trailingTrivia_ }
 func (b *BaseNode) SetLeadingTrivia(trivia []token.Token)  { b.leadingTrivia_ = trivia }
 func (b *BaseNode) SetTrailingTrivia(trivia []token.Token) { b.trailingTrivia_ = trivia }
 
@@ -46,7 +46,7 @@ type Expression interface {
 type Program struct {
 	Statements []Statement
 	// Trivia tokens that appear before the first statement (e.g., leading whitespace)
-	LeadingTriviaTokens  []token.Token
+	LeadingTriviaTokens []token.Token
 	// Trivia tokens that appear after the last statement (e.g., trailing whitespace)
 	TrailingTriviaTokens []token.Token
 }
@@ -84,7 +84,6 @@ func (p *Program) SetTrailingTrivia(trivia []token.Token) {
 	p.TrailingTriviaTokens = trivia
 }
 
-
 type Identifier struct {
 	BaseNode
 	Token token.Token // 'ident' token
@@ -94,7 +93,6 @@ type Identifier struct {
 func (i *Identifier) expressionNode()      {}
 func (i *Identifier) TokenLiteral() string { return i.Token.Literal }
 func (i *Identifier) String() string       { return i.Value }
-
 
 // ExpressionStatement is required for
 // side-effecting code such as
@@ -132,7 +130,7 @@ type StringLiteral struct {
 
 func (lit *StringLiteral) expressionNode()      {}
 func (lit *StringLiteral) TokenLiteral() string { return lit.Token.Literal }
-func (lit *StringLiteral) String() string      { return lit.Token.Literal }
+func (lit *StringLiteral) String() string       { return lit.Token.Literal }
 
 // RecordLiteral: { field1: value1, field2: value2, ... }
 type RecordLiteral struct {
@@ -147,7 +145,7 @@ func (rl *RecordLiteral) TokenLiteral() string { return rl.Token.Literal }
 func (rl *RecordLiteral) String() string {
 	var out bytes.Buffer
 	out.WriteRune('{')
-	
+
 	first := true
 	for field, expr := range rl.Fields {
 		if !first {
@@ -158,7 +156,7 @@ func (rl *RecordLiteral) String() string {
 		out.WriteString(expr.String())
 		first = false
 	}
-	
+
 	out.WriteRune('}')
 	return out.String()
 }
@@ -266,7 +264,6 @@ type Boolean struct {
 func (b *Boolean) expressionNode()      {}
 func (b *Boolean) TokenLiteral() string { return b.Token.Literal }
 func (b *Boolean) String() string       { return b.Token.Literal }
-
 
 type BlockStatement struct {
 	BaseNode
@@ -392,10 +389,10 @@ type MatchExpression struct {
 // Variant expression: .Ok or Status::Ok
 type VariantExpression struct {
 	BaseNode
-	Token     token.Token
-	TypeName  *Identifier // optional, for Status::Ok
-	Variant   *Identifier // .Ok or Ok
-	Payload   Expression  // optional, for .Some(value)
+	Token    token.Token
+	TypeName *Identifier // optional, for Status::Ok
+	Variant  *Identifier // .Ok or Ok
+	Payload  Expression  // optional, for .Some(value)
 }
 
 func (ve *VariantExpression) expressionNode()      {}
@@ -460,9 +457,9 @@ type WildcardPattern struct {
 	Token token.Token // '_'
 }
 
-func (wp *WildcardPattern) patternNode()      {}
+func (wp *WildcardPattern) patternNode()         {}
 func (wp *WildcardPattern) TokenLiteral() string { return wp.Token.Literal }
-func (wp *WildcardPattern) String() string    { return "_" }
+func (wp *WildcardPattern) String() string       { return "_" }
 
 // Binding pattern
 type BindingPattern struct {
@@ -471,9 +468,9 @@ type BindingPattern struct {
 	Name  *Identifier
 }
 
-func (bp *BindingPattern) patternNode()      {}
+func (bp *BindingPattern) patternNode()         {}
 func (bp *BindingPattern) TokenLiteral() string { return bp.Token.Literal }
-func (bp *BindingPattern) String() string     { return bp.Name.String() }
+func (bp *BindingPattern) String() string       { return bp.Name.String() }
 
 // Literal pattern
 type LiteralPattern struct {
@@ -482,9 +479,9 @@ type LiteralPattern struct {
 	Value Expression // IntegerLiteral, StringLiteral, etc.
 }
 
-func (lp *LiteralPattern) patternNode()      {}
+func (lp *LiteralPattern) patternNode()         {}
 func (lp *LiteralPattern) TokenLiteral() string { return lp.Token.Literal }
-func (lp *LiteralPattern) String() string    { return lp.Value.String() }
+func (lp *LiteralPattern) String() string       { return lp.Value.String() }
 
 // Variant pattern
 type VariantPattern struct {
@@ -494,7 +491,7 @@ type VariantPattern struct {
 	Payload Pattern     // optional, for .Some(x)
 }
 
-func (vp *VariantPattern) patternNode()      {}
+func (vp *VariantPattern) patternNode()         {}
 func (vp *VariantPattern) TokenLiteral() string { return vp.Token.Literal }
 func (vp *VariantPattern) String() string {
 	var out bytes.Buffer
@@ -515,7 +512,7 @@ type InterfaceType struct {
 	Token      token.Token // 'interface' token
 	EndToken   token.Token // Last token of the interface definition
 	Name       *Identifier
-	TypeParams []*TypeParameter // Optional type parameters: [T, Tag]
+	TypeParams []*TypeParameter   // Optional type parameters: [T, Tag]
 	Methods    []*InterfaceMethod // Method signatures
 }
 
@@ -686,14 +683,14 @@ func (tp *TypeParameter) String() string {
 // Function declaration (top-level)
 type FunctionStatement struct {
 	BaseNode
-	Token         token.Token // 'fn' token
-	EndToken      token.Token // Last token of the function (for end position)
-	TypeParams    []*TypeParameter // Optional type parameters: [T: Reader, U: Writer]
-	Receiver      *FunctionParameter // optional receiver for methods: fn (recv: Type) method(...)
-	Name          *Identifier
-	Parameters    []*FunctionParameter
-	ReturnType    Expression // type expression
-	Body          Expression
+	Token      token.Token        // 'fn' token
+	EndToken   token.Token        // Last token of the function (for end position)
+	TypeParams []*TypeParameter   // Optional type parameters: [T: Reader, U: Writer]
+	Receiver   *FunctionParameter // optional receiver for methods: fn (recv: Type) method(...)
+	Name       *Identifier
+	Parameters []*FunctionParameter
+	ReturnType Expression // type expression
+	Body       Expression
 }
 
 func (fs *FunctionStatement) statementNode()       {}

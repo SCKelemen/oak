@@ -955,7 +955,7 @@ func (p *Parser) parseInterfaceType() *ast.InterfaceType {
 // Example: fn (self: *T) hook( _: Tag ) -> *ListHook[T, Tag]
 func (p *Parser) parseInterfaceMethod() *ast.InterfaceMethod {
 	method := &ast.InterfaceMethod{Token: p.currentToken}
-	
+
 	// We're already at 'fn', so parse the function signature
 	// Parse receiver: (self) or (self: Type)
 	if !p.expectPeek(token.LPAREN) {
