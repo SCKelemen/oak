@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -13,6 +14,7 @@ import (
 type CodeGenerator struct {
 	packageName string
 	sourceFile  string // Source file path for source location comments
+	sourceText  string // Full source text for UTF-8 to UTF-16 conversion
 	output      strings.Builder
 	indentLevel int
 	types       map[string]bool // Track emitted types to avoid duplicates
@@ -34,6 +36,11 @@ func New(packageName string, tc *typechecker.TypeChecker) *CodeGenerator {
 // SetSourceFile sets the source file path for source location comments
 func (cg *CodeGenerator) SetSourceFile(file string) {
 	cg.sourceFile = file
+}
+
+// SetSourceText sets the full source text for UTF-8 to UTF-16 conversion
+func (cg *CodeGenerator) SetSourceText(text string) {
+	cg.sourceText = text
 }
 
 // Generate generates C code from an Oak program
@@ -156,7 +163,7 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 	}
 	loc.EndLine = endLoc.Line
 	loc.EndCol = endLoc.Column
-	
+
 	metadata := SourceMetadata{
 		Source:     cg.formatSourceRange(loc),
 		Package:    cg.packageName,
@@ -241,7 +248,7 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVariant) {
 	variantName := variant.Name.Value
 	funcName := fmt.Sprintf("%s_%s", typeName, variantName)
-	
+
 	// Emit source location comment for constructor
 	loc := cg.getSourceLocation(variant.Token)
 	metadata := SourceMetadata{
@@ -277,10 +284,10 @@ func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVar
 func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) {
 	funcName := fn.Name.Value
 	cFuncName := cg.cFunctionName(funcName)
-	
+
 	// Build Oak function signature
 	signature := cg.buildFunctionSignature(fn)
-	
+
 	// Emit source location comment
 	loc := cg.getSourceLocation(fn.Token)
 	// Try to estimate end position from body
@@ -289,7 +296,7 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		loc.EndLine = loc.Line
 		loc.EndCol = loc.Column + 100 // Placeholder - would need actual end tracking
 	}
-	
+
 	metadata := SourceMetadata{
 		Source:     cg.formatSourceRange(loc),
 		Package:    cg.packageName,
@@ -725,9 +732,9 @@ type SourceMetadata struct {
 // buildFunctionSignature reconstructs the Oak function signature from AST
 func (cg *CodeGenerator) buildFunctionSignature(fn *ast.FunctionStatement) string {
 	var sig strings.Builder
-	
+
 	sig.WriteString("fn")
-	
+
 	// Add receiver if method
 	if fn.Receiver != nil {
 		sig.WriteString(" (")
@@ -736,11 +743,11 @@ func (cg *CodeGenerator) buildFunctionSignature(fn *ast.FunctionStatement) strin
 		sig.WriteString(cg.typeExpressionToString(fn.Receiver.Type))
 		sig.WriteString(")")
 	}
-	
+
 	// Function name
 	sig.WriteString(" ")
 	sig.WriteString(fn.Name.Value)
-	
+
 	// Parameters
 	sig.WriteString("(")
 	for i, param := range fn.Parameters {
@@ -752,13 +759,13 @@ func (cg *CodeGenerator) buildFunctionSignature(fn *ast.FunctionStatement) strin
 		sig.WriteString(cg.typeExpressionToString(param.Type))
 	}
 	sig.WriteString(")")
-	
+
 	// Return type
 	if fn.ReturnType != nil {
 		sig.WriteString(" -> ")
 		sig.WriteString(cg.typeExpressionToString(fn.ReturnType))
 	}
-	
+
 	return sig.String()
 }
 
@@ -798,13 +805,37 @@ func (cg *CodeGenerator) getSourceLocation(tok token.Token) SourceLocation {
 }
 
 // formatSourceRange formats a source location as LSP-style range (file:startLine:startCol-endLine:endCol)
+// Uses UTF-16 code units for character offsets (LSP standard)
 func (cg *CodeGenerator) formatSourceRange(loc SourceLocation) string {
-	if loc.EndLine == loc.Line && loc.EndCol == loc.Column {
+	// Convert UTF-8 positions (1-based) to UTF-16 positions (0-based for LSP)
+	var startPos, endPos lsp.Position
+	
+	if cg.sourceText != "" {
+		// Estimate byte offsets (we don't have exact byte offsets, so we'll use column as approximation)
+		// In a full implementation, we'd track actual byte offsets during scanning
+		startByteOffset := loc.Column - 1 // Approximate
+		endByteOffset := loc.EndCol - 1   // Approximate
+		
+		startPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, startByteOffset, loc.Line)
+		endPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, endByteOffset, loc.EndLine)
+	} else {
+		// Fallback: use column directly (assumes 1:1 mapping, which is true for ASCII)
+		startPos = lsp.Position{
+			Line:      loc.Line - 1,      // Convert to zero-based
+			Character: loc.Column - 1,    // Convert to zero-based
+		}
+		endPos = lsp.Position{
+			Line:      loc.EndLine - 1,   // Convert to zero-based
+			Character: loc.EndCol - 1,    // Convert to zero-based
+		}
+	}
+	
+	if startPos.Line == endPos.Line && startPos.Character == endPos.Character {
 		// Single position
-		return fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column)
+		return fmt.Sprintf("%s:%d:%d", loc.File, startPos.Line, startPos.Character)
 	}
 	// Range
-	return fmt.Sprintf("%s:%d:%d-%d:%d", loc.File, loc.Line, loc.Column, loc.EndLine, loc.EndCol)
+	return fmt.Sprintf("%s:%d:%d-%d:%d", loc.File, startPos.Line, startPos.Character, endPos.Line, endPos.Character)
 }
 
 // emitBlockStatement emits a block statement
@@ -1003,7 +1034,7 @@ func (cg *CodeGenerator) emitRecordType(typeName string, recordLit *ast.RecordLi
 	// Estimate end position (would need actual tracking)
 	loc.EndLine = loc.Line
 	loc.EndCol = loc.Column + 50 // Placeholder
-	
+
 	metadata := SourceMetadata{
 		Source:     cg.formatSourceRange(loc),
 		Package:    cg.packageName,
