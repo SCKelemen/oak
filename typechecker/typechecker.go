@@ -400,11 +400,33 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 				if tc.literalFitsInType(e.Value, primType.Name) {
 					return primType
 				}
-				// Literal doesn't fit - fall through to default i32
+				// Literal doesn't fit - fall through to default inference
 			}
 		}
-		// Default to i32 if no context or context doesn't match
-		return &PrimitiveType{Name: "i32"}
+		// No context: infer the smallest type that fits the literal
+		// Prefer unsigned types for non-negative values
+		if e.Value >= 0 {
+			if e.Value <= 255 {
+				return &PrimitiveType{Name: "u8"}
+			} else if e.Value <= 65535 {
+				return &PrimitiveType{Name: "u16"}
+			} else if e.Value <= 4294967295 {
+				return &PrimitiveType{Name: "u32"}
+			} else {
+				return &PrimitiveType{Name: "u64"}
+			}
+		} else {
+			// Negative values: use signed types
+			if e.Value >= -128 && e.Value <= 127 {
+				return &PrimitiveType{Name: "i8"}
+			} else if e.Value >= -32768 && e.Value <= 32767 {
+				return &PrimitiveType{Name: "i16"}
+			} else if e.Value >= -2147483648 && e.Value <= 2147483647 {
+				return &PrimitiveType{Name: "i32"}
+			} else {
+				return &PrimitiveType{Name: "i64"}
+			}
+		}
 	case *ast.StringLiteral:
 		return &StringType{}
 	case *ast.Boolean:
