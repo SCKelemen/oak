@@ -591,16 +591,35 @@ func (is *ImportStatement) String() string {
 	return out.String()
 }
 
+// TypeParameter represents a type parameter with optional constraint
+// Examples: T, T: Reader, T: Reader & Writer
+type TypeParameter struct {
+	BaseNode
+	Token      token.Token // IDENT token for the type parameter name
+	Name       *Identifier // Type parameter name (e.g., "T", "U")
+	Constraint Expression  // Optional constraint expression (interface or intersection)
+}
+
+func (tp *TypeParameter) statementNode()       {}
+func (tp *TypeParameter) TokenLiteral() string { return tp.Token.Literal }
+func (tp *TypeParameter) String() string {
+	if tp.Constraint != nil {
+		return fmt.Sprintf("%s: %s", tp.Name.Value, tp.Constraint.String())
+	}
+	return tp.Name.Value
+}
+
 // Function declaration (top-level)
 type FunctionStatement struct {
 	BaseNode
-	Token      token.Token // 'fn' token
-	EndToken   token.Token // Last token of the function (for end position)
-	Receiver   *FunctionParameter // optional receiver for methods: fn (recv: Type) method(...)
-	Name       *Identifier
-	Parameters []*FunctionParameter
-	ReturnType Expression // type expression
-	Body       Expression
+	Token         token.Token // 'fn' token
+	EndToken      token.Token // Last token of the function (for end position)
+	TypeParams    []*TypeParameter // Optional type parameters: [T: Reader, U: Writer]
+	Receiver      *FunctionParameter // optional receiver for methods: fn (recv: Type) method(...)
+	Name          *Identifier
+	Parameters    []*FunctionParameter
+	ReturnType    Expression // type expression
+	Body          Expression
 }
 
 func (fs *FunctionStatement) statementNode()       {}

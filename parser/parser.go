@@ -624,6 +624,14 @@ func (p *Parser) parseADTType() *ast.ADTType {
 
 	adt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 
+	// Parse optional type parameters: Name[T: Ordered]: type = ...
+	if p.peekTokenIs(token.LBRACK) {
+		adt.TypeParams = p.parseTypeParameters()
+		if adt.TypeParams == nil {
+			return nil // Error already reported
+		}
+	}
+
 	if !p.expectPeek(token.COLON) {
 		return nil
 	}
@@ -861,6 +869,14 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 	stmt := &ast.FunctionStatement{Token: p.currentToken}
 
+	// Parse optional type parameters: fn [T: Reader, U: Writer] name(...)
+	if p.peekTokenIs(token.LBRACK) {
+		stmt.TypeParams = p.parseTypeParameters()
+		if stmt.TypeParams == nil {
+			return nil // Error already reported
+		}
+	}
+
 	// Check if this is a method: fn (recv: Type) method(...)
 	// vs regular function: fn name(...)
 	if p.peekTokenIs(token.LPAREN) {
@@ -916,7 +932,7 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 	}
 
 	p.nextToken() // consume ->
-	stmt.ReturnType = p.parseTypeExpression()
+	stmt.ReturnType = p.parseTypeExpressionSimple()
 
 	// Body can be expression or block
 	p.nextToken()
@@ -954,7 +970,7 @@ func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
 	}
 
 	p.nextToken() // consume type
-	param.Type = p.parseTypeExpression()
+	param.Type = p.parseTypeExpressionSimple()
 	params = append(params, param)
 
 	for p.peekTokenIs(token.COMMA) {
@@ -968,7 +984,7 @@ func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
 			return nil
 		}
 		p.nextToken() // consume type
-		param.Type = p.parseTypeExpression()
+		param.Type = p.parseTypeExpressionSimple()
 		params = append(params, param)
 	}
 
@@ -977,6 +993,153 @@ func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
 	}
 
 	return params
+}
+
+// parseTypeParameters parses a type parameter list: [T, U: Reader, V: Writer & Closer]
+// Returns a list of TypeParameter nodes
+func (p *Parser) parseTypeParameters() []*ast.TypeParameter {
+	params := []*ast.TypeParameter{}
+	
+	if !p.expectPeek(token.LBRACK) {
+		return nil
+	}
+	
+	// Check for empty list: []
+	if p.peekTokenIs(token.RBRACK) {
+		p.nextToken() // consume ]
+		return params
+	}
+	
+	p.nextToken() // consume first type param name
+	
+	// Parse first type parameter
+	param := p.parseTypeParameter()
+	if param == nil {
+		return nil
+	}
+	params = append(params, param)
+	
+	// Parse remaining type parameters
+	for p.peekTokenIs(token.COMMA) {
+		p.nextToken() // consume comma
+		p.nextToken() // consume next type param name
+		param := p.parseTypeParameter()
+		if param == nil {
+			return nil
+		}
+		params = append(params, param)
+	}
+	
+	if !p.expectPeek(token.RBRACK) {
+		return nil
+	}
+	
+	return params
+}
+
+// parseTypeParameter parses a single type parameter: T or T: Constraint
+// Constraint can be a single interface or intersection: Reader & Writer
+func (p *Parser) parseTypeParameter() *ast.TypeParameter {
+	param := &ast.TypeParameter{
+		Token: p.currentToken,
+		Name:  &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal},
+	}
+	
+	// Check for constraint: T: Constraint
+	if p.peekTokenIs(token.COLON) {
+		p.nextToken() // consume :
+		p.nextToken() // consume constraint start
+		
+		// Parse constraint expression (can be identifier or intersection)
+		constraint := p.parseConstraintExpression()
+		if constraint == nil {
+			return nil
+		}
+		param.Constraint = constraint
+	}
+	
+	return param
+}
+
+// parseConstraintExpression parses a constraint: Interface or Interface1 & Interface2 & ...
+// This is essentially a type expression that can use intersection
+func (p *Parser) parseConstraintExpression() ast.Expression {
+	// Start with first interface name
+	first := p.parseTypeExpression()
+	if first == nil {
+		return nil
+	}
+	
+	// Check for intersection: & Interface2 & ...
+	if !p.peekTokenIs(token.AMP) {
+		return first
+	}
+	
+	// Parse intersection: Interface1 & Interface2 & ...
+	// We'll represent this as a chain of infix expressions with &
+	// For now, parse as a left-associative chain
+	left := first
+	for p.peekTokenIs(token.AMP) {
+		p.nextToken() // consume &
+		p.nextToken() // consume next interface name
+		right := p.parseTypeExpression()
+		if right == nil {
+			return nil
+		}
+		// Create intersection expression
+		left = &ast.InfixExpression{
+			Token:    p.currentToken,
+			Left:     left,
+			Operator: "&",
+			Right:    right,
+		}
+	}
+	
+	return left
+}
+
+// parseTypeExpression parses a type expression for constraints
+// Can handle identifiers and intersections: Reader & Writer
+func (p *Parser) parseTypeExpression() ast.Expression {
+	// Start with identifier
+	if !p.currentTokenIs(token.IDENT) {
+		return nil
+	}
+	
+	first := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	
+	// Check for intersection: & Interface2
+	if !p.peekTokenIs(token.AMP) {
+		return first
+	}
+	
+	// Parse intersection chain
+	left := first
+	for p.peekTokenIs(token.AMP) {
+		p.nextToken() // consume &
+		p.nextToken() // consume next identifier
+		if !p.currentTokenIs(token.IDENT) {
+			return nil
+		}
+		right := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		left = &ast.InfixExpression{
+			Token:    p.currentToken,
+			Left:     left,
+			Operator: "&",
+			Right:    right,
+		}
+	}
+	
+	return left
+}
+
+// parseTypeExpressionSimple parses a simple type expression (identifier only)
+// Used for function parameters and return types
+func (p *Parser) parseTypeExpressionSimple() ast.Expression {
+	if !p.currentTokenIs(token.IDENT) {
+		return nil
+	}
+	return &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 }
 
 // Block expression: { stmt1; stmt2; expr }
@@ -1192,7 +1355,7 @@ func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken() // consume =
 		p.nextToken() // consume value
-		stmt.Value = p.parseExpression(LOWEST)
+	stmt.Value = p.parseExpression(LOWEST)
 	}
 
 	if p.peekTokenIs(token.SEMI) {

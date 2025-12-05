@@ -16,17 +16,17 @@ func IsSubtype(t1, t2 Type) bool {
 	if t1.Equals(t2) {
 		return true
 	}
-	
+
 	// Bottom: never ≤ T for all T
 	if _, ok := t1.(*NeverType); ok {
 		return true
 	}
-	
+
 	// Top: T ≤ any for all T
 	if _, ok := t2.(*AnyType); ok {
 		return true
 	}
-	
+
 	// No other relationships in v1
 	return false
 }
@@ -41,11 +41,11 @@ func Join(types ...Type) Type {
 	if len(types) == 0 {
 		return &NeverType{} // Empty join is bottom
 	}
-	
+
 	if len(types) == 1 {
 		return types[0]
 	}
-	
+
 	// Filter out never types (they don't affect the join)
 	nonNeverTypes := []Type{}
 	for _, t := range types {
@@ -53,19 +53,19 @@ func Join(types ...Type) Type {
 			nonNeverTypes = append(nonNeverTypes, t)
 		}
 	}
-	
+
 	// If all were never, result is never
 	if len(nonNeverTypes) == 0 {
 		return &NeverType{}
 	}
-	
+
 	// If any is any, result is any
 	for _, t := range nonNeverTypes {
 		if _, ok := t.(*AnyType); ok {
 			return &AnyType{}
 		}
 	}
-	
+
 	// Check if all types are equal
 	firstType := nonNeverTypes[0]
 	allEqual := true
@@ -75,11 +75,11 @@ func Join(types ...Type) Type {
 			break
 		}
 	}
-	
+
 	if allEqual {
 		return firstType
 	}
-	
+
 	// Incomparable types: result is any
 	return &AnyType{}
 }
@@ -94,18 +94,18 @@ func Meet(types ...Type) Type {
 	if len(types) == 0 {
 		return &AnyType{} // Empty meet is top
 	}
-	
+
 	if len(types) == 1 {
 		return types[0]
 	}
-	
+
 	// If any is never, result is never
 	for _, t := range types {
 		if _, ok := t.(*NeverType); ok {
 			return &NeverType{}
 		}
 	}
-	
+
 	// If any is any, filter it out (any doesn't affect meet)
 	nonAnyTypes := []Type{}
 	for _, t := range types {
@@ -113,12 +113,12 @@ func Meet(types ...Type) Type {
 			nonAnyTypes = append(nonAnyTypes, t)
 		}
 	}
-	
+
 	// If all were any, result is any
 	if len(nonAnyTypes) == 0 {
 		return &AnyType{}
 	}
-	
+
 	// Check if all types are equal
 	firstType := nonAnyTypes[0]
 	allEqual := true
@@ -128,11 +128,11 @@ func Meet(types ...Type) Type {
 			break
 		}
 	}
-	
+
 	if allEqual {
 		return firstType
 	}
-	
+
 	// Incomparable types: result is never
 	return &NeverType{}
 }
@@ -151,10 +151,10 @@ func NarrowType(originalType Type, pattern ast.Pattern) Type {
 			}
 		}
 	}
-	
+
 	// For literal patterns, if the literal type matches, we can narrow
 	// (This is more advanced and can be expanded later)
-	
+
 	// For wildcard or binding patterns, no narrowing
 	return originalType
 }
@@ -171,8 +171,7 @@ func JoinNarrowedTypes(narrowedTypes []Type) Type {
 			adtTypes = append(adtTypes, nt)
 		}
 	}
-	
+
 	// Join them
 	return Join(adtTypes...)
 }
-

@@ -774,10 +774,10 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 		// Restore environment
 		tc.env = oldEnv
 	}
-	
+
 	// Compute join of all arm types (lattice-based)
 	returnType := Join(armTypes...)
-	
+
 	// Strict mode: if join is any and we didn't explicitly request any, it's an error
 	// (This prevents accidental type widening)
 	if _, isAny := returnType.(*AnyType); isAny {
@@ -788,7 +788,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 				nonNeverTypes = append(nonNeverTypes, at)
 			}
 		}
-		
+
 		if len(nonNeverTypes) > 1 {
 			// Multiple different types - this is an error in strict mode
 			tc.addError("match expression has branches with incompatible types. Use explicit 'any' return type if intentional.")
@@ -1117,6 +1117,27 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 }
 
 func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
+	// Extract type parameters and constraints
+	typeVars := []string{}
+	constraints := []Constraint{}
+	
+	if stmt.TypeParams != nil {
+		for _, tp := range stmt.TypeParams {
+			typeVars = append(typeVars, tp.Name.Value)
+			
+			// Extract constraint if present
+			if tp.Constraint != nil {
+				interfaces := tc.extractInterfacesFromConstraint(tp.Constraint)
+				if len(interfaces) > 0 {
+					constraints = append(constraints, Constraint{
+						Var:        tp.Name.Value,
+						Interfaces: interfaces,
+					})
+				}
+			}
+		}
+	}
+	
 	// Create new environment for function parameters
 	funcEnv := NewEnclosedTypeEnvironment(tc.env)
 
@@ -1171,8 +1192,19 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		Parameters: paramTypes,
 		ReturnType: returnType,
 	}
-	// Generalize function type to a scheme
+	
+	// Generalize function type to a scheme with constraints
 	funcScheme := Generalize(funcType, tc.env)
+	
+	// Add type parameters and constraints to the scheme
+	if len(typeVars) > 0 || len(constraints) > 0 {
+		funcScheme = &TypeScheme{
+			TypeVars:    typeVars,
+			Constraints: constraints,
+			Type:        funcScheme.Type,
+		}
+	}
+	
 	tc.env.Set(stmt.Name.Value, funcScheme)
 
 	// If this is a method, also store it with TypeName::methodName key
@@ -1610,13 +1642,13 @@ func (tc *TypeChecker) SatisfiesConstraint(concreteType Type, constraint Constra
 			tc.addError("interface %s not found in constraint", ifaceName)
 			return false
 		}
-		
+
 		// Check if concreteType implements the interface
 		if !tc.implementsInterface(concreteType, ifaceType) {
 			return false
 		}
 	}
-	
+
 	return true
 }
 

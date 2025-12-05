@@ -34,7 +34,7 @@ func (s *TypeScheme) String() string {
 	if len(s.TypeVars) == 0 && len(s.Constraints) == 0 {
 		return s.Type.String()
 	}
-	
+
 	var out string
 	if len(s.TypeVars) > 0 {
 		out += "∀"
@@ -46,7 +46,7 @@ func (s *TypeScheme) String() string {
 		}
 		out += ". "
 	}
-	
+
 	if len(s.Constraints) > 0 {
 		for i, c := range s.Constraints {
 			if i > 0 {
@@ -56,7 +56,7 @@ func (s *TypeScheme) String() string {
 		}
 		out += " => "
 	}
-	
+
 	out += s.Type.String()
 	return out
 }
@@ -122,8 +122,8 @@ func (sub Substitution) Apply(typ Type) Type {
 		}
 	case *ArrayType:
 		return &ArrayType{
-			Length:     t.Length,
-			IsSlice:    t.IsSlice,
+			Length:      t.Length,
+			IsSlice:     t.IsSlice,
 			ElementType: sub.Apply(t.ElementType),
 		}
 	case *GenericType:
@@ -191,7 +191,7 @@ func (u *Unifier) Unify(t1, t2 Type) Substitution {
 	if t1.Equals(t2) {
 		return make(Substitution)
 	}
-	
+
 	// Handle type variables
 	if tv1, ok := t1.(*TypeVar); ok {
 		return u.unifyVar(tv1, t2)
@@ -199,35 +199,35 @@ func (u *Unifier) Unify(t1, t2 Type) Substitution {
 	if tv2, ok := t2.(*TypeVar); ok {
 		return u.unifyVar(tv2, t1)
 	}
-	
+
 	// Handle function types
 	if fn1, ok := t1.(*FunctionType); ok {
 		if fn2, ok := t2.(*FunctionType); ok {
 			return u.unifyFunction(fn1, fn2)
 		}
 	}
-	
+
 	// Handle record types
 	if rec1, ok := t1.(*RecordType); ok {
 		if rec2, ok := t2.(*RecordType); ok {
 			return u.unifyRecord(rec1, rec2)
 		}
 	}
-	
+
 	// Handle array types
 	if arr1, ok := t1.(*ArrayType); ok {
 		if arr2, ok := t2.(*ArrayType); ok {
 			return u.unifyArray(arr1, arr2)
 		}
 	}
-	
+
 	// Handle generic types
 	if gen1, ok := t1.(*GenericType); ok {
 		if gen2, ok := t2.(*GenericType); ok {
 			return u.unifyGeneric(gen1, gen2)
 		}
 	}
-	
+
 	// Types cannot be unified
 	u.errors = append(u.errors, fmt.Sprintf("cannot unify %s with %s", t1, t2))
 	return nil
@@ -239,7 +239,7 @@ func (u *Unifier) unifyVar(tv *TypeVar, t Type) Substitution {
 		u.errors = append(u.errors, fmt.Sprintf("circular type constraint: %s occurs in %s", tv, t))
 		return nil
 	}
-	
+
 	// Create substitution: tv ↦ t
 	sub := make(Substitution)
 	sub[tv.Name] = t
@@ -282,9 +282,9 @@ func (u *Unifier) unifyFunction(fn1, fn2 *FunctionType) Substitution {
 		u.errors = append(u.errors, fmt.Sprintf("function arity mismatch: %d vs %d", len(fn1.Parameters), len(fn2.Parameters)))
 		return nil
 	}
-	
+
 	sub := make(Substitution)
-	
+
 	// Unify parameters
 	for i := 0; i < len(fn1.Parameters); i++ {
 		paramSub := u.Unify(fn1.Parameters[i], fn2.Parameters[i])
@@ -296,13 +296,13 @@ func (u *Unifier) unifyFunction(fn1, fn2 *FunctionType) Substitution {
 		fn1.Parameters[i] = sub.Apply(fn1.Parameters[i])
 		fn2.Parameters[i] = sub.Apply(fn2.Parameters[i])
 	}
-	
+
 	// Unify return types
 	retSub := u.Unify(sub.Apply(fn1.ReturnType), sub.Apply(fn2.ReturnType))
 	if retSub == nil {
 		return nil
 	}
-	
+
 	return sub.Compose(retSub)
 }
 
@@ -311,23 +311,23 @@ func (u *Unifier) unifyRecord(rec1, rec2 *RecordType) Substitution {
 		u.errors = append(u.errors, fmt.Sprintf("record field count mismatch: %d vs %d", len(rec1.Fields), len(rec2.Fields)))
 		return nil
 	}
-	
+
 	sub := make(Substitution)
-	
+
 	for name, field1 := range rec1.Fields {
 		field2, ok := rec2.Fields[name]
 		if !ok {
 			u.errors = append(u.errors, fmt.Sprintf("record field %s missing in second record", name))
 			return nil
 		}
-		
+
 		fieldSub := u.Unify(field1, field2)
 		if fieldSub == nil {
 			return nil
 		}
 		sub = sub.Compose(fieldSub)
 	}
-	
+
 	return sub
 }
 
@@ -336,12 +336,12 @@ func (u *Unifier) unifyArray(arr1, arr2 *ArrayType) Substitution {
 		u.errors = append(u.errors, "cannot unify array with slice")
 		return nil
 	}
-	
+
 	if !arr1.IsSlice && arr1.Length != arr2.Length {
 		u.errors = append(u.errors, fmt.Sprintf("array length mismatch: %d vs %d", arr1.Length, arr2.Length))
 		return nil
 	}
-	
+
 	return u.Unify(arr1.ElementType, arr2.ElementType)
 }
 
@@ -350,14 +350,14 @@ func (u *Unifier) unifyGeneric(gen1, gen2 *GenericType) Substitution {
 		u.errors = append(u.errors, fmt.Sprintf("generic type name mismatch: %s vs %s", gen1.Name, gen2.Name))
 		return nil
 	}
-	
+
 	if len(gen1.TypeArgs) != len(gen2.TypeArgs) {
 		u.errors = append(u.errors, fmt.Sprintf("generic type argument count mismatch: %d vs %d", len(gen1.TypeArgs), len(gen2.TypeArgs)))
 		return nil
 	}
-	
+
 	sub := make(Substitution)
-	
+
 	for i := 0; i < len(gen1.TypeArgs); i++ {
 		argSub := u.Unify(gen1.TypeArgs[i], gen2.TypeArgs[i])
 		if argSub == nil {
@@ -365,7 +365,7 @@ func (u *Unifier) unifyGeneric(gen1, gen2 *GenericType) Substitution {
 		}
 		sub = sub.Compose(argSub)
 	}
-	
+
 	return sub
 }
 
@@ -374,15 +374,15 @@ func (u *Unifier) unifyGeneric(gen1, gen2 *GenericType) Substitution {
 func Generalize(typ Type, env *TypeEnvironment) *TypeScheme {
 	// Find all free type variables in typ that are not bound in env
 	freeVars := findFreeTypeVars(typ, env)
-	
+
 	// Create constraints for any interface requirements
 	// (This will be expanded when we implement interface checking)
 	constraints := []Constraint{}
-	
+
 	return &TypeScheme{
-		TypeVars:   freeVars,
+		TypeVars:    freeVars,
 		Constraints: constraints,
-		Type:       typ,
+		Type:        typ,
 	}
 }
 
@@ -390,18 +390,18 @@ func Generalize(typ Type, env *TypeEnvironment) *TypeScheme {
 func findFreeTypeVars(typ Type, env *TypeEnvironment) []string {
 	// Collect all type variables in the type
 	vars := collectTypeVars(typ)
-	
+
 	// Remove any that are bound in the environment
 	boundVars := make(map[string]bool)
 	// TODO: Extract bound type variables from environment schemes
-	
+
 	freeVars := []string{}
 	for _, v := range vars {
 		if !boundVars[v] {
 			freeVars = append(freeVars, v)
 		}
 	}
-	
+
 	return freeVars
 }
 
@@ -446,13 +446,13 @@ func Instantiate(scheme *TypeScheme, unifier *Unifier) Type {
 	if len(scheme.TypeVars) == 0 && len(scheme.Constraints) == 0 {
 		return scheme.Type
 	}
-	
+
 	// Create substitution mapping scheme type vars to fresh type vars
 	sub := make(Substitution)
 	for _, varName := range scheme.TypeVars {
 		sub[varName] = unifier.FreshTypeVar(varName)
 	}
-	
+
 	// Apply substitution to the scheme's type
 	return sub.Apply(scheme.Type)
 }
@@ -469,27 +469,26 @@ func InstantiateWithConstraints(scheme *TypeScheme, typeArgs map[string]Type, un
 			tc.addError("type variable %s not provided for constraint", constraint.Var)
 			return nil, false
 		}
-		
+
 		if !tc.SatisfiesConstraint(concreteType, constraint) {
 			tc.addError("type %s does not satisfy constraint: %s", concreteType, constraint)
 			return nil, false
 		}
 	}
-	
+
 	// Create substitution from type arguments
 	sub := make(Substitution)
 	for varName, typeArg := range typeArgs {
 		sub[varName] = typeArg
 	}
-	
+
 	// For any remaining type vars (not provided), use fresh type vars
 	for _, varName := range scheme.TypeVars {
 		if _, provided := typeArgs[varName]; !provided {
 			sub[varName] = unifier.FreshTypeVar(varName)
 		}
 	}
-	
+
 	// Apply substitution
 	return sub.Apply(scheme.Type), true
 }
-
