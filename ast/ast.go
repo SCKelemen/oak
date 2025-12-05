@@ -516,7 +516,39 @@ type InterfaceType struct {
 	EndToken   token.Token // Last token of the interface definition
 	Name       *Identifier
 	TypeParams []*TypeParameter // Optional type parameters: [T, Tag]
-	Methods    []*FunctionParameter // Method signatures (for now, just function types)
+	Methods    []*InterfaceMethod // Method signatures
+}
+
+// InterfaceMethod represents a method signature in an interface
+type InterfaceMethod struct {
+	BaseNode
+	Token        token.Token
+	Name         *Identifier
+	ReceiverType Expression // Optional receiver type: (self: *T) or (self)
+	Parameters   []*FunctionParameter
+	ReturnType   Expression
+}
+
+func (im *InterfaceMethod) statementNode()       {}
+func (im *InterfaceMethod) TokenLiteral() string { return im.Token.Literal }
+func (im *InterfaceMethod) String() string {
+	var out bytes.Buffer
+	out.WriteString("fn(")
+	if im.ReceiverType != nil {
+		out.WriteString(im.ReceiverType.String())
+	}
+	out.WriteString(") ")
+	out.WriteString(im.Name.String())
+	out.WriteString("(")
+	for i, param := range im.Parameters {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(param.String())
+	}
+	out.WriteString(") -> ")
+	out.WriteString(im.ReturnType.String())
+	return out.String()
 }
 
 func (it *InterfaceType) statementNode()       {}

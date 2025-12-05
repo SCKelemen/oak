@@ -943,7 +943,7 @@ func (p *Parser) parseInterfaceType() *ast.InterfaceType {
 	if method == nil {
 		return nil
 	}
-	it.Methods = []*ast.FunctionParameter{method}
+	it.Methods = []*ast.InterfaceMethod{method}
 
 	it.EndToken = p.currentToken
 
@@ -953,7 +953,9 @@ func (p *Parser) parseInterfaceType() *ast.InterfaceType {
 // parseInterfaceMethod parses a method signature for an interface
 // Example: fn (self) read( buf: [*]Byte ) -> Result[u32, Error]
 // Example: fn (self: *T) hook( _: Tag ) -> *ListHook[T, Tag]
-func (p *Parser) parseInterfaceMethod() *ast.FunctionParameter {
+func (p *Parser) parseInterfaceMethod() *ast.InterfaceMethod {
+	method := &ast.InterfaceMethod{Token: p.currentToken}
+	
 	// We're already at 'fn', so parse the function signature
 	// Parse receiver: (self) or (self: Type)
 	if !p.expectPeek(token.LPAREN) {
@@ -973,7 +975,7 @@ func (p *Parser) parseInterfaceMethod() *ast.FunctionParameter {
 		if receiverType == nil {
 			return nil
 		}
-		_ = receiverType // TODO: Store receiver type in interface method
+		method.ReceiverType = receiverType
 	}
 
 	if !p.expectPeek(token.RPAREN) {
@@ -984,34 +986,22 @@ func (p *Parser) parseInterfaceMethod() *ast.FunctionParameter {
 	if !p.expectPeek(token.IDENT) {
 		return nil
 	}
-	methodName := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	method.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 
 	// Parse parameters
 	if !p.expectPeek(token.LPAREN) {
 		return nil
 	}
-	params := p.parseFunctionParameters()
-	_ = params // TODO: Store parameters in interface method
+	method.Parameters = p.parseFunctionParameters()
 
 	// Parse return type
 	if !p.expectPeek(token.ARROW) {
 		return nil
 	}
 	p.nextToken() // consume ->
-	returnType := p.parseTypeExpressionSimple()
-	if returnType == nil {
+	method.ReturnType = p.parseTypeExpressionSimple()
+	if method.ReturnType == nil {
 		return nil
-	}
-
-	// For interface methods, we store the signature as a FunctionParameter
-	// The receiver info is embedded in the method name/type
-	// This is a simplified representation; in a full implementation,
-	// we might want a dedicated InterfaceMethod AST node
-	method := &ast.FunctionParameter{
-		Token: p.currentToken,
-		Name:  methodName,
-		Type:  returnType, // For now, just store return type
-		// TODO: Store full function type including parameters
 	}
 
 	return method
@@ -1137,10 +1127,10 @@ func (p *Parser) parseArrayType() ast.Expression {
 	p.nextToken()
 
 	// Check for size: [N]Type
+	var size *ast.IntegerLiteral
 	if p.currentTokenIs(token.INT) {
-		// Fixed-size array - for now, just parse as dynamic array
-		// TODO: Support fixed-size arrays
-		p.nextToken()
+		// Fixed-size array: [N]Type
+		size = p.parseIntegerLiteral().(*ast.IntegerLiteral)
 	}
 
 	// Parse element type
@@ -1154,12 +1144,20 @@ func (p *Parser) parseArrayType() ast.Expression {
 		return nil
 	}
 
-	// For now, return the element type wrapped in an IndexExpression
-	// TODO: Create proper ArrayType AST node
+	// Return as IndexExpression with size as IntegerLiteral (if present) or empty identifier for slices
+	// The typechecker will convert this to ArrayType
+	var index ast.Expression
+	if size != nil {
+		// Fixed-size array: [N]Type
+		index = size
+	} else {
+		// Slice: []Type (empty identifier means slice)
+		index = &ast.Identifier{Token: p.currentToken, Value: ""}
+	}
 	return &ast.IndexExpression{
 		Token: p.currentToken,
 		Left:  elementType,
-		Index: &ast.Identifier{Token: p.currentToken, Value: ""}, // Empty index means array type
+		Index: index,
 	}
 }
 
