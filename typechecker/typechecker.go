@@ -1053,11 +1053,15 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 
 func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 	// Check that variable exists
-	varType, ok := tc.env.Get(stmt.Name.Value)
+	varScheme, ok := tc.env.Get(stmt.Name.Value)
 	if !ok {
 		tc.addError("undefined variable: %s", stmt.Name.Value)
 		return
 	}
+
+	// Instantiate the scheme to get the actual type
+	unifier := NewUnifier()
+	varType := Instantiate(varScheme, unifier)
 
 	// Check that assigned value matches variable type (with coercion)
 	valueType := tc.checkExpression(stmt.Value)
