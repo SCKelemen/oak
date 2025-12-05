@@ -7,6 +7,8 @@ type TokenKind int
 type Token struct {
 	TokenKind TokenKind
 	Literal   string
+	Line      int // 1-based line number
+	Column    int // 1-based column number
 }
 
 const (

@@ -12,10 +12,16 @@ type Scanner struct {
 	head    int
 	read    int
 	current rune
+	line    int // Current line number (1-based)
+	column  int // Current column number (1-based)
 }
 
 func New(input string) *Scanner {
-	s := &Scanner{input: input}
+	s := &Scanner{
+		input:  input,
+		line:   1,
+		column: 1,
+	}
 
 	s.readChar()
 	return s
@@ -25,6 +31,14 @@ func New(input string) *Scanner {
 // the read-ahead head, check for EOF, and then
 // update head to read-ahead head
 func (s *Scanner) readChar() {
+	// Track line/column before advancing
+	if s.read < len(s.input) {
+		if s.input[s.read] == '\n' {
+			s.line++
+			s.column = 0 // Will be incremented to 1 below
+		}
+	}
+	
 	// if the look-ahead pointer reaches
 	// the end of the input stream,
 	// set the current character to NUL/0
@@ -43,13 +57,25 @@ func (s *Scanner) readChar() {
 	s.head = s.read
 	// and then increment the read-ahead head
 	s.read++
+	
+	// Increment column after reading (1-based)
+	if s.current != '\n' && s.current != 0 {
+		s.column++
+	} else if s.current == '\n' {
+		s.column = 1
+	}
 }
 
 // NextToken emits the next token. Handles single
 //char tokens internally, directly
 func (s *Scanner) NextToken() token.Token {
 	var tok token.Token
+	
 	s.skipWhitespace()
+	
+	// Save current position after skipping whitespace (this is where the token starts)
+	line := s.line
+	column := s.column
 
 	switch s.current {
 	/*
@@ -72,31 +98,31 @@ func (s *Scanner) NextToken() token.Token {
 
 	// handle brackety things
 	case '[':
-		tok = newToken(token.LBRACK, s.current)
+		tok = newTokenWithPos(token.LBRACK, s.current, line, column)
 	case ']':
-		tok = newToken(token.RBRACK, s.current)
+		tok = newTokenWithPos(token.RBRACK, s.current, line, column)
 	case '{':
-		tok = newToken(token.LBRACE, s.current)
+		tok = newTokenWithPos(token.LBRACE, s.current, line, column)
 	case '}':
-		tok = newToken(token.RBRACE, s.current)
+		tok = newTokenWithPos(token.RBRACE, s.current, line, column)
 	case '(':
-		tok = newToken(token.LPAREN, s.current)
+		tok = newTokenWithPos(token.LPAREN, s.current, line, column)
 	case ')':
-		tok = newToken(token.RPAREN, s.current)
+		tok = newTokenWithPos(token.RPAREN, s.current, line, column)
 	case '<':
-		tok = newToken(token.LCHEV, s.current)
+		tok = newTokenWithPos(token.LCHEV, s.current, line, column)
 	case '>':
-		tok = newToken(token.RCHEV, s.current)
+		tok = newTokenWithPos(token.RCHEV, s.current, line, column)
 
 	// handle punctionationy things
 	case ',':
-		tok = newToken(token.COMMA, s.current)
+		tok = newTokenWithPos(token.COMMA, s.current, line, column)
 	case '.':
-		tok = newToken(token.DOT, s.current)
+		tok = newTokenWithPos(token.DOT, s.current, line, column)
 	case ':':
-		tok = newToken(token.COLON, s.current)
+		tok = newTokenWithPos(token.COLON, s.current, line, column)
 	case ';':
-		tok = newToken(token.SEMI, s.current)
+		tok = newTokenWithPos(token.SEMI, s.current, line, column)
 
 	// handle arithmeticy things
 	case '=':
@@ -104,60 +130,68 @@ func (s *Scanner) NextToken() token.Token {
 			ch := s.current
 			s.readChar()
 			literal := string(ch) + string(s.current)
-			tok = token.Token{TokenKind: token.EQL, Literal: literal}
+			tok = token.Token{TokenKind: token.EQL, Literal: literal, Line: line, Column: column}
 		} else {
-			tok = newToken(token.ASSIGN, s.current)
+			tok = newTokenWithPos(token.ASSIGN, s.current, line, column)
 		}
 	// handle bitwise/type like things
 	case '|':
-		tok = newToken(token.PIPE, s.current)
+		tok = newTokenWithPos(token.PIPE, s.current, line, column)
 	case '&':
-		tok = newToken(token.AMP, s.current)
+		tok = newTokenWithPos(token.AMP, s.current, line, column)
 
 	case '!':
 		if s.peekChar() == '=' {
 			ch := s.current
 			s.readChar()
 			literal := string(ch) + string(s.current)
-			tok = token.Token{TokenKind: token.NEQL, Literal: literal}
+			tok = token.Token{TokenKind: token.NEQL, Literal: literal, Line: line, Column: column}
 		} else {
-			tok = newToken(token.BANG, s.current)
+			tok = newTokenWithPos(token.BANG, s.current, line, column)
 		}
 	case '-':
 		if s.peekChar() == '>' {
 			ch := s.current
 			s.readChar()
 			literal := string(ch) + string(s.current)
-			tok = token.Token{TokenKind: token.ARROW, Literal: literal}
+			tok = token.Token{TokenKind: token.ARROW, Literal: literal, Line: line, Column: column}
 		} else {
-			tok = newToken(token.NEG, s.current)
+			tok = newTokenWithPos(token.NEG, s.current, line, column)
 		}
 	case '+':
-		tok = newToken(token.SUM, s.current)
+		tok = newTokenWithPos(token.SUM, s.current, line, column)
 	case '*':
-		tok = newToken(token.MUL, s.current)
+		tok = newTokenWithPos(token.MUL, s.current, line, column)
 	case '/':
-		tok = newToken(token.QUO, s.current)
+		tok = newTokenWithPos(token.QUO, s.current, line, column)
 	case '?':
-		tok = newToken(token.QMARK, s.current)
+		tok = newTokenWithPos(token.QMARK, s.current, line, column)
 	case '"':
 		tok.Literal = s.readString()
 		tok.TokenKind = token.STRING
+		tok.Line = line
+		tok.Column = column
 
 	// handle the nul/eof char
 	case 0:
 		tok.Literal = ""
 		tok.TokenKind = token.EOF
+		tok.Line = line
+		tok.Column = column
 
 	default:
 		if util.IsLetter(s.current) {
 			tok.Literal = s.readWord()
 			tok.TokenKind = token.Lookup(tok.Literal)
+			tok.Line = line
+			tok.Column = column
 		} else if util.IsDigit(s.current) {
 			tok.Literal = s.readNumber()
 			tok.TokenKind = token.INT
+			tok.Line = line
+			tok.Column = column
 		} else {
-			tok = newToken(token.ILLEGAL, s.current)
+			tok = newTokenWithPos(token.ILLEGAL, s.current, line, column)
 		}
 	}
 	s.readChar()
@@ -176,6 +210,10 @@ func (s *Scanner) skipWhitespace() {
 
 func newToken(kind token.TokenKind, ch rune) token.Token {
 	return token.Token{TokenKind: kind, Literal: string(ch)}
+}
+
+func newTokenWithPos(kind token.TokenKind, ch rune, line, column int) token.Token {
+	return token.Token{TokenKind: kind, Literal: string(ch), Line: line, Column: column}
 }
 
 // read until the next space

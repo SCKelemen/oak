@@ -12,7 +12,7 @@ import (
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
 	packageName string
-	sourceFile   string // Source file path for source location comments
+	sourceFile  string // Source file path for source location comments
 	output      strings.Builder
 	indentLevel int
 	types       map[string]bool // Track emitted types to avoid duplicates
@@ -24,7 +24,7 @@ type CodeGenerator struct {
 func New(packageName string, tc *typechecker.TypeChecker) *CodeGenerator {
 	return &CodeGenerator{
 		packageName: packageName,
-		sourceFile:   "unknown.oak", // Default, can be set via SetSourceFile
+		sourceFile:  "unknown.oak", // Default, can be set via SetSourceFile
 		types:       make(map[string]bool),
 		typeChecker: tc,
 		typeEnv:     make(map[string]typechecker.Type),
@@ -220,7 +220,7 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVariant) {
 	// Emit source location comment for constructor
 	cg.emitSourceLocationComment(variant.Token, fmt.Sprintf("ADT constructor %s::%s", typeName, variant.Name.Value))
-	
+
 	variantName := variant.Name.Value
 	funcName := fmt.Sprintf("%s_%s", typeName, variantName)
 
@@ -250,7 +250,7 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	// Emit source location comment
 	funcName := fn.Name.Value
 	cg.emitSourceLocationComment(fn.Token, fmt.Sprintf("function %s", funcName))
-	
+
 	cFuncName := cg.cFunctionName(funcName)
 
 	// Determine return type
@@ -659,9 +659,9 @@ func (cg *CodeGenerator) emitSpanType(elementType string) string {
 
 // SourceLocation represents a location in the source code
 type SourceLocation struct {
-	File   string
-	Line   int
-	Column int
+	File    string
+	Line    int
+	Column  int
 	Package string
 }
 
@@ -672,17 +672,16 @@ func (cg *CodeGenerator) emitSourceLocationComment(tok token.Token, description 
 	// In a full implementation, we'd track line/column numbers during parsing
 	// TODO: Extract line/column from token when available
 	loc := cg.getSourceLocation(tok)
-	cg.write(fmt.Sprintf("/* Generated from: %s %s:%d:%d - %s */\n", 
+	cg.write(fmt.Sprintf("/* Generated from: %s %s:%d:%d - %s */\n",
 		loc.Package, loc.File, loc.Line, loc.Column, description))
 }
 
 // getSourceLocation extracts source location from a token
-// TODO: Enhance when Token struct includes line/column information
 func (cg *CodeGenerator) getSourceLocation(tok token.Token) SourceLocation {
 	return SourceLocation{
 		File:    cg.sourceFile,
-		Line:    0, // TODO: Extract from token when available
-		Column:  0, // TODO: Extract from token when available
+		Line:    tok.Line,
+		Column:  tok.Column,
 		Package: cg.packageName,
 	}
 }
@@ -699,7 +698,7 @@ func (cg *CodeGenerator) emitBlockExpression(block *ast.BlockStatement, tc *type
 	// For block expressions, we need to handle statements and return the last expression
 	// This is simplified - in full implementation, we'd need proper scoping
 	cg.output.WriteString("( ")
-	
+
 	for i, stmt := range block.Statements {
 		if i < len(block.Statements)-1 {
 			// Not the last statement - emit as statement
@@ -713,7 +712,7 @@ func (cg *CodeGenerator) emitBlockExpression(block *ast.BlockStatement, tc *type
 			}
 		}
 	}
-	
+
 	cg.output.WriteString(" )")
 }
 
@@ -748,7 +747,7 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 // emitVariableDeclaration emits a variable declaration
 func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
 	varName := stmt.Name.Value
-	
+
 	// Determine type
 	var varType string
 	if stmt.Type != nil {
@@ -758,15 +757,15 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 		// For now, default to i32
 		varType = "i32"
 	}
-	
+
 	// C style: type name;
 	cg.write(fmt.Sprintf("  %s %s", varType, varName))
-	
+
 	if stmt.Value != nil {
 		cg.write(" = ")
 		cg.emitExpressionFragment(stmt.Value, tc)
 	}
-	
+
 	cg.write(";\n")
 }
 
@@ -785,10 +784,10 @@ func (cg *CodeGenerator) emitWhileStatement(stmt *ast.WhileStatement, tc *typech
 	cg.emitExpressionFragment(stmt.Condition, tc)
 	cg.write(" ) {\n")
 	cg.indentLevel++
-	
+
 	// Emit body (while body is always a BlockStatement)
 	cg.emitBlockStatement(stmt.Body, tc, false)
-	
+
 	cg.indentLevel--
 	cg.write("  }\n")
 }
@@ -857,11 +856,12 @@ func (cg *CodeGenerator) emitComparisonADT() {
 	}
 	cg.types["Comparison"] = true
 
+	// Comparison enum with explicit signed values
 	cg.write("typedef enum oak_Comparison {\n")
 	cg.indentLevel++
-	cg.write("  oak_Comparison_Less,\n")
-	cg.write("  oak_Comparison_Equal,\n")
-	cg.write("  oak_Comparison_Greater\n")
+	cg.write("  oak_Comparison_Less    = -1,\n")
+	cg.write("  oak_Comparison_Equal    = 0,\n")
+	cg.write("  oak_Comparison_Greater  = 1\n")
 	cg.indentLevel--
 	cg.write("} Comparison;\n")
 	cg.write("\n")
