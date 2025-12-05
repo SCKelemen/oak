@@ -132,6 +132,20 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 	if cg.types[cName] {
 		return
 	}
+
+	// Check if this is a record type definition: Name: type = { field: Type, ... }
+	// Record type definitions are parsed as ADTType with a single variant that has a record literal
+	if len(adt.Variants) == 1 {
+		variant := adt.Variants[0]
+		if variant.Literal != nil {
+			if recordLit, ok := variant.Literal.(*ast.RecordLiteral); ok {
+				// This is a record type definition
+				cg.emitRecordType(typeName, recordLit, tc)
+				return
+			}
+		}
+	}
+
 	cg.types[cName] = true
 
 	// Emit tag enum (with proper C style spacing)
@@ -262,31 +276,27 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write("\n")
 }
 
-// emitExpression emits C code for an expression
+// emitExpression emits C code for an expression (as a return statement)
 func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.TypeChecker) {
-	switch e := expr.(type) {
-	case *ast.IntegerLiteral:
-		cg.write(fmt.Sprintf("  return %d;\n", e.Value))
-	case *ast.StringLiteral:
-		// TODO: Handle string literals properly
-		cg.write("  /* string literal */\n")
-	case *ast.InfixExpression:
-		cg.emitInfixExpression(e, tc)
-	case *ast.MatchExpression:
-		cg.emitMatchExpression(e, tc)
-	default:
-		cg.write("  /* TODO: emit expression */\n")
-	}
+	cg.write("  return ")
+	cg.emitExpressionFragment(expr, tc)
+	cg.write(";\n")
 }
 
-// emitInfixExpression emits C code for an infix expression
-func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *typechecker.TypeChecker) {
-	// For now, simple arithmetic
-	cg.write("  return ")
-	cg.emitExpressionFragment(expr.Left, tc)
-	cg.write(fmt.Sprintf(" %s ", expr.Operator))
-	cg.emitExpressionFragment(expr.Right, tc)
+// emitStatementExpression emits C code for an expression used as a statement
+func (cg *CodeGenerator) emitStatementExpression(expr ast.Expression, tc *typechecker.TypeChecker) {
+	cg.emitExpressionFragment(expr, tc)
 	cg.write(";\n")
+}
+
+// emitInfixExpression emits C code for an infix expression (as fragment)
+func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *typechecker.TypeChecker) {
+	// C style: space around operators, parentheses for grouping
+	cg.output.WriteString("( ")
+	cg.emitExpressionFragment(expr.Left, tc)
+	cg.output.WriteString(fmt.Sprintf(" %s ", expr.Operator))
+	cg.emitExpressionFragment(expr.Right, tc)
+	cg.output.WriteString(" )")
 }
 
 // emitExpressionFragment emits a fragment of an expression (no return statement)
@@ -294,16 +304,68 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		cg.output.WriteString(fmt.Sprintf("%d", e.Value))
+	case *ast.StringLiteral:
+		// TODO: Properly handle string literals (create string struct)
+		cg.output.WriteString(fmt.Sprintf("/* string: %s */", e.Value))
+	case *ast.Boolean:
+		if e.Value {
+			cg.output.WriteString("oak_Bool_True")
+		} else {
+			cg.output.WriteString("oak_Bool_False")
+		}
 	case *ast.Identifier:
 		cg.output.WriteString(e.Value)
 	case *ast.InfixExpression:
-		cg.output.WriteString("(")
-		cg.emitExpressionFragment(e.Left, tc)
-		cg.output.WriteString(fmt.Sprintf(" %s ", e.Operator))
+		cg.emitInfixExpression(e, tc)
+	case *ast.PrefixExpression:
+		cg.output.WriteString(fmt.Sprintf("%s", e.Operator))
+		cg.output.WriteString("( ")
 		cg.emitExpressionFragment(e.Right, tc)
-		cg.output.WriteString(")")
+		cg.output.WriteString(" )")
+	case *ast.IndexExpression:
+		// Field access or array indexing
+		cg.emitExpressionFragment(e.Left, tc)
+		if ident, ok := e.Index.(*ast.Identifier); ok {
+			// Field access: record.field
+			cg.output.WriteString(fmt.Sprintf(".%s", ident.Value))
+		} else {
+			// Array indexing: array[index]
+			cg.output.WriteString("[ ")
+			cg.emitExpressionFragment(e.Index, tc)
+			cg.output.WriteString(" ]")
+		}
+	case *ast.VariantExpression:
+		// ADT variant construction: .Ok or Status::Ok
+		if e.TypeName != nil {
+			typeName := cg.cTypeName(e.TypeName.Value)
+			variantName := e.Variant.Value
+			constructorName := fmt.Sprintf("%s_%s", typeName, variantName)
+			cg.output.WriteString(fmt.Sprintf("%s(", constructorName))
+			if e.Payload != nil {
+				cg.emitExpressionFragment(e.Payload, tc)
+			}
+			cg.output.WriteString(")")
+		} else {
+			// Bare variant - need type context
+			variantName := e.Variant.Value
+			cg.output.WriteString(fmt.Sprintf("/* .%s */", variantName))
+		}
+	case *ast.InvocationExpression:
+		// Function or method call
+		cg.emitExpressionFragment(e.Function, tc)
+		cg.output.WriteString("( ")
+		for i, arg := range e.Arguments {
+			cg.emitExpressionFragment(arg, tc)
+			if i < len(e.Arguments)-1 {
+				cg.output.WriteString(", ")
+			}
+		}
+		cg.output.WriteString(" )")
+	case *ast.MatchExpression:
+		// Pattern matching - this is complex, emit as a block
+		cg.emitMatchExpressionInline(e, tc)
 	default:
-		cg.output.WriteString("/* TODO */")
+		cg.output.WriteString("/* TODO: emit expression type */")
 	}
 }
 
@@ -312,7 +374,7 @@ func (cg *CodeGenerator) emitMatchExpression(expr *ast.MatchExpression, tc *type
 	// Try to determine scrutinee type from type environment
 	// For now, we'll infer from the pattern or use a simple heuristic
 	// In a full implementation, we'd use the type checker's environment
-	
+
 	// Check if first pattern is a variant pattern (indicates ADT match)
 	if len(expr.Arms) > 0 {
 		if _, ok := expr.Arms[0].Pattern.(*ast.VariantPattern); ok {
@@ -322,7 +384,7 @@ func (cg *CodeGenerator) emitMatchExpression(expr *ast.MatchExpression, tc *type
 			return
 		}
 	}
-	
+
 	// Scalar match
 	cg.emitScalarMatch(expr, tc)
 }
@@ -408,6 +470,47 @@ func (cg *CodeGenerator) emitScalarMatch(expr *ast.MatchExpression, tc *typechec
 	cg.write("  }\n")
 }
 
+// emitMatchExpressionInline emits pattern matching as an inline expression
+// This is used when a match expression is part of a larger expression
+func (cg *CodeGenerator) emitMatchExpressionInline(expr *ast.MatchExpression, tc *typechecker.TypeChecker) {
+	// For inline matches, we need to create a temporary variable
+	// This is a simplified version - full implementation would be more sophisticated
+	cg.output.WriteString("( ")
+	
+	// Determine if ADT or scalar match
+	isADT := false
+	if len(expr.Arms) > 0 {
+		if _, ok := expr.Arms[0].Pattern.(*ast.VariantPattern); ok {
+			isADT = true
+		}
+	}
+	
+	if isADT {
+		// ADT match - emit switch inline (simplified)
+		cg.output.WriteString("/* match expression */")
+	} else {
+		// Scalar match - emit ternary-like chain
+		for i, arm := range expr.Arms {
+			if i > 0 {
+				cg.output.WriteString(" : ")
+			}
+			cg.output.WriteString("( ")
+			// Condition
+			if literalPattern, ok := arm.Pattern.(*ast.LiteralPattern); ok {
+				cg.emitExpressionFragment(expr.Scrutinee, tc)
+				cg.output.WriteString(" == ")
+				cg.emitExpressionFragment(literalPattern.Value, tc)
+			} else {
+				cg.output.WriteString("1") // wildcard
+			}
+			cg.output.WriteString(" ) ? ")
+			cg.emitExpressionFragment(arm.Body, tc)
+		}
+	}
+	
+	cg.output.WriteString(" )")
+}
+
 // Helper functions for name mangling and type parsing
 
 func (cg *CodeGenerator) cTypeName(oakName string) string {
@@ -478,3 +581,31 @@ func (cg *CodeGenerator) emitComparisonADT() {
 	cg.write("\n")
 }
 
+// emitRecordType emits C code for a record type definition
+func (cg *CodeGenerator) emitRecordType(typeName string, recordLit *ast.RecordLiteral, tc *typechecker.TypeChecker) {
+	cName := cg.cTypeName(typeName)
+
+	// Check if already emitted
+	if cg.types[cName] {
+		return
+	}
+	cg.types[cName] = true
+
+	// Emit struct definition (C style: opening brace on same line)
+	cg.write(fmt.Sprintf("typedef struct %s {\n", cName))
+	cg.indentLevel++
+
+	// Emit fields in declaration order
+	// Note: Go maps don't preserve order, so we'll iterate in the order they appear
+	// For now, we'll use the map order (which may vary)
+	for fieldName, fieldExpr := range recordLit.Fields {
+		// Parse field type
+		fieldType := cg.parseTypeExpression(fieldExpr)
+		// C style: pointer asterisk with type (u8* ptr)
+		cg.write(fmt.Sprintf("  %s %s;\n", fieldType, fieldName))
+	}
+
+	cg.indentLevel--
+	cg.write(fmt.Sprintf("} %s;\n", cName))
+	cg.write("\n")
+}
