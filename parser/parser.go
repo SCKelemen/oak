@@ -19,12 +19,16 @@ type Parser struct {
 	prefixParseFns map[token.TokenKind]prefixParseFn
 	infixParseFns  map[token.TokenKind]infixParseFn
 	// postfixParseFns map[token.TokenKind]postfixParseFn
+	
+	// Collected trivia tokens that will be attached to the next non-trivia node
+	pendingTrivia []token.Token
 }
 
 func New(lxr *scanner.Scanner) *Parser {
 	p := &Parser{
-		lxr:    lxr,
-		errors: []string{},
+		lxr:           lxr,
+		errors:        []string{},
+		pendingTrivia: []token.Token{},
 	}
 
 	// register functions
@@ -77,6 +81,20 @@ func (p *Parser) registerInfix(TokenKind token.TokenKind, fn infixParseFn) {
 func (p *Parser) nextToken() {
 	p.currentToken = p.peekToken
 	p.peekToken = p.lxr.NextToken()
+	
+	// Collect trivia tokens as we encounter them
+	// If currentToken is trivia, collect it and continue reading trivia
+	if p.currentToken.TokenKind == token.TRIVIA {
+		p.pendingTrivia = append(p.pendingTrivia, p.currentToken)
+		// Continue reading until we get a non-trivia token
+		for p.peekToken.TokenKind == token.TRIVIA {
+			p.currentToken = p.peekToken
+			p.peekToken = p.lxr.NextToken()
+			p.pendingTrivia = append(p.pendingTrivia, p.currentToken)
+		}
+		// Now peekToken is non-trivia, so currentToken should be the last trivia
+		// and peekToken is the next real token
+	}
 }
 
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
@@ -420,6 +438,36 @@ func (p *Parser) expectPeek(t token.TokenKind) bool {
 		p.peekError(t)
 		return false
 	}
+}
+
+// attachPendingTrivia attaches any pending trivia tokens to a node
+func (p *Parser) attachPendingTrivia(node ast.Node) {
+	if len(p.pendingTrivia) > 0 {
+		node.SetLeadingTrivia(p.pendingTrivia)
+		p.pendingTrivia = []token.Token{} // Clear pending trivia
+	}
+}
+
+// collectTrailingTrivia collects trivia tokens that appear after a node
+// This should be called after parsing a node to collect any trailing trivia
+func (p *Parser) collectTrailingTrivia() []token.Token {
+	trivia := []token.Token{}
+	// Look ahead to collect trivia before the next non-trivia token
+	peek := p.peekToken
+	for peek.TokenKind == token.TRIVIA {
+		trivia = append(trivia, peek)
+		// Advance to get next peek
+		oldCurrent := p.currentToken
+		p.currentToken = peek
+		p.peekToken = p.lxr.NextToken()
+		peek = p.peekToken
+		// Restore current if we didn't find more trivia
+		if peek.TokenKind != token.TRIVIA {
+			// Put back the last trivia as current, next peek is non-trivia
+			p.currentToken = oldCurrent
+		}
+	}
+	return trivia
 }
 
 func (p *Parser) peekError(t token.TokenKind) {
@@ -1144,7 +1192,7 @@ func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken() // consume =
 		p.nextToken() // consume value
-		stmt.Value = p.parseExpression(LOWEST)
+	stmt.Value = p.parseExpression(LOWEST)
 	}
 
 	if p.peekTokenIs(token.SEMI) {

@@ -7,9 +7,29 @@ import (
 	"github.com/SCKelemen/oak/token"
 )
 
+// BaseNode provides default implementations for trivia methods
+// AST nodes can embed this to get default behavior
+type BaseNode struct {
+	leadingTrivia_  []token.Token
+	trailingTrivia_ []token.Token
+}
+
+func (b *BaseNode) LeadingTrivia() []token.Token  { return b.leadingTrivia_ }
+func (b *BaseNode) TrailingTrivia() []token.Token { return b.trailingTrivia_ }
+func (b *BaseNode) SetLeadingTrivia(trivia []token.Token)  { b.leadingTrivia_ = trivia }
+func (b *BaseNode) SetTrailingTrivia(trivia []token.Token) { b.trailingTrivia_ = trivia }
+
 type Node interface {
 	TokenLiteral() string
 	String() string
+	// LeadingTrivia returns trivia tokens that appear before this node
+	LeadingTrivia() []token.Token
+	// TrailingTrivia returns trivia tokens that appear after this node
+	TrailingTrivia() []token.Token
+	// SetLeadingTrivia sets the leading trivia tokens
+	SetLeadingTrivia([]token.Token)
+	// SetTrailingTrivia sets the trailing trivia tokens
+	SetTrailingTrivia([]token.Token)
 }
 
 type Statement interface {
@@ -24,6 +44,10 @@ type Expression interface {
 
 type Program struct {
 	Statements []Statement
+	// Trivia tokens that appear before the first statement (e.g., leading whitespace)
+	LeadingTriviaTokens  []token.Token
+	// Trivia tokens that appear after the last statement (e.g., trailing whitespace)
+	TrailingTriviaTokens []token.Token
 }
 
 func (p *Program) String() string {
@@ -43,8 +67,25 @@ func (p *Program) TokenLiteral() string {
 	}
 }
 
+func (p *Program) LeadingTrivia() []token.Token {
+	return p.LeadingTriviaTokens
+}
+
+func (p *Program) TrailingTrivia() []token.Token {
+	return p.TrailingTriviaTokens
+}
+
+func (p *Program) SetLeadingTrivia(trivia []token.Token) {
+	p.LeadingTriviaTokens = trivia
+}
+
+func (p *Program) SetTrailingTrivia(trivia []token.Token) {
+	p.TrailingTriviaTokens = trivia
+}
+
 
 type Identifier struct {
+	BaseNode
 	Token token.Token // 'ident' token
 	Value string
 }
@@ -58,6 +99,7 @@ func (i *Identifier) String() string       { return i.Value }
 // side-effecting code such as
 // counter++;
 type ExpressionStatement struct {
+	BaseNode
 	Token      token.Token // the first token of the expression
 	Expression Expression
 }
@@ -72,6 +114,7 @@ func (es *ExpressionStatement) String() string {
 }
 
 type IntegerLiteral struct {
+	BaseNode
 	Token token.Token
 	Value int64
 }
@@ -81,6 +124,7 @@ func (lit *IntegerLiteral) TokenLiteral() string { return lit.Token.Literal }
 func (lit *IntegerLiteral) String() string       { return lit.Token.Literal }
 
 type StringLiteral struct {
+	BaseNode
 	Token token.Token
 	Value string
 }
@@ -91,6 +135,7 @@ func (lit *StringLiteral) String() string      { return lit.Token.Literal }
 
 // RecordLiteral: { field1: value1, field2: value2, ... }
 type RecordLiteral struct {
+	BaseNode
 	Token    token.Token // { token
 	EndToken token.Token // } token (for end position)
 	Fields   map[string]Expression
@@ -118,6 +163,7 @@ func (rl *RecordLiteral) String() string {
 }
 
 type PrefixExpression struct {
+	BaseNode
 	Token    token.Token // prefix tokens: !, -, *
 	Operator string
 	Right    Expression
@@ -137,6 +183,7 @@ func (pe *PrefixExpression) String() string {
 }
 
 type InfixExpression struct {
+	BaseNode
 	Token    token.Token // the operator token: +, -, *, /, etc...
 	Left     Expression
 	Operator string
@@ -161,6 +208,7 @@ func (ie InfixExpression) String() string {
 
 // IndexExpression: record.field or array[index]
 type IndexExpression struct {
+	BaseNode
 	Token token.Token // The . token or [ token
 	Left  Expression
 	Index Expression // For records, this is an identifier. For arrays, this is an integer expression.
@@ -188,6 +236,7 @@ func (ie *IndexExpression) String() string {
 
 // ArrayLiteral: [expr1, expr2, ...]
 type ArrayLiteral struct {
+	BaseNode
 	Token    token.Token // The [ token
 	Elements []Expression
 }
@@ -208,6 +257,7 @@ func (al *ArrayLiteral) String() string {
 }
 
 type Boolean struct {
+	BaseNode
 	Token token.Token // true | false                   or maybe ;)
 	Value bool
 }
@@ -218,6 +268,7 @@ func (b *Boolean) String() string       { return b.Token.Literal }
 
 
 type BlockStatement struct {
+	BaseNode
 	Token      token.Token // { token
 	Statements []Statement
 }
@@ -235,6 +286,7 @@ func (bs *BlockStatement) String() string {
 }
 
 type FunctionLiteral struct {
+	BaseNode
 	Token     token.Token // func
 	Arguments []*Identifier
 	Body      *BlockStatement
@@ -260,6 +312,7 @@ func (fl *FunctionLiteral) String() string {
 }
 
 type InvocationExpression struct {
+	BaseNode
 	Token     token.Token // ( token
 	Function  Expression  // Identifier || FunctionLiteral
 	Arguments []Expression
@@ -286,6 +339,7 @@ func (ie InvocationExpression) String() string {
 
 // Variable declaration: a: type = value or a: type
 type VariableDeclaration struct {
+	BaseNode
 	Token token.Token
 	Name  *Identifier
 	Type  Expression // optional type annotation
@@ -310,6 +364,7 @@ func (vd *VariableDeclaration) String() string {
 
 // Assignment statement: a = b
 type AssignmentStatement struct {
+	BaseNode
 	Token token.Token
 	Name  *Identifier
 	Value Expression
@@ -327,6 +382,7 @@ func (as *AssignmentStatement) String() string {
 
 // Pattern matching expression
 type MatchExpression struct {
+	BaseNode
 	Token     token.Token // '?' token
 	Scrutinee Expression
 	Arms      []*MatchArm
@@ -334,6 +390,7 @@ type MatchExpression struct {
 
 // Variant expression: .Ok or Status::Ok
 type VariantExpression struct {
+	BaseNode
 	Token     token.Token
 	TypeName  *Identifier // optional, for Status::Ok
 	Variant   *Identifier // .Ok or Ok
@@ -398,6 +455,7 @@ type Pattern interface {
 
 // Wildcard pattern
 type WildcardPattern struct {
+	BaseNode
 	Token token.Token // '_'
 }
 
@@ -407,6 +465,7 @@ func (wp *WildcardPattern) String() string    { return "_" }
 
 // Binding pattern
 type BindingPattern struct {
+	BaseNode
 	Token token.Token
 	Name  *Identifier
 }
@@ -417,6 +476,7 @@ func (bp *BindingPattern) String() string     { return bp.Name.String() }
 
 // Literal pattern
 type LiteralPattern struct {
+	BaseNode
 	Token token.Token
 	Value Expression // IntegerLiteral, StringLiteral, etc.
 }
@@ -427,6 +487,7 @@ func (lp *LiteralPattern) String() string    { return lp.Value.String() }
 
 // Variant pattern
 type VariantPattern struct {
+	BaseNode
 	Token   token.Token
 	Variant *Identifier // .Ok, .Some, etc.
 	Payload Pattern     // optional, for .Some(x)
@@ -448,6 +509,7 @@ func (vp *VariantPattern) String() string {
 
 // ADT type definition
 type ADTType struct {
+	BaseNode
 	Token    token.Token // 'type' token
 	EndToken token.Token // Last token of the ADT definition (for end position)
 	Name     *Identifier
@@ -496,6 +558,7 @@ func (v *ADTVariant) String() string {
 
 // Package declaration
 type PackageStatement struct {
+	BaseNode
 	Token token.Token // 'package' token
 	Name  *Identifier
 }
@@ -508,6 +571,7 @@ func (ps *PackageStatement) String() string {
 
 // Import statement
 type ImportStatement struct {
+	BaseNode
 	Token token.Token // 'import' token
 	Path  *Identifier // package path
 	Alias *Identifier // optional alias
@@ -529,6 +593,7 @@ func (is *ImportStatement) String() string {
 
 // Function declaration (top-level)
 type FunctionStatement struct {
+	BaseNode
 	Token      token.Token // 'fn' token
 	EndToken   token.Token // Last token of the function (for end position)
 	Receiver   *FunctionParameter // optional receiver for methods: fn (recv: Type) method(...)
@@ -580,6 +645,7 @@ func (fp *FunctionParameter) String() string {
 
 // While loop
 type WhileStatement struct {
+	BaseNode
 	Token     token.Token // 'while' token
 	Condition Expression
 	Body      *BlockStatement
@@ -598,6 +664,7 @@ func (ws *WhileStatement) String() string {
 
 // Unsafe block
 type UnsafeBlock struct {
+	BaseNode
 	Token token.Token // 'unsafe' token
 	Body  *BlockStatement
 }

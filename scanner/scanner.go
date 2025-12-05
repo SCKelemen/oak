@@ -1,8 +1,9 @@
 package scanner
 
 import (
-	"github.com/SCKelemen/oak/token"
+	"bytes"
 
+	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/util"
 )
 
@@ -68,12 +69,16 @@ func (s *Scanner) readChar() {
 
 // NextToken emits the next token. Handles single
 // char tokens internally, directly
+// Returns TRIVIA tokens for whitespace and other non-syntactic content
 func (s *Scanner) NextToken() token.Token {
 	var tok token.Token
 
-	s.skipWhitespace()
+	// Check for whitespace/trivia before the next token
+	if util.IsWhitespace(s.current) {
+		return s.readTrivia()
+	}
 
-	// Save current position after skipping whitespace (this is where the token starts)
+	// Save current position (this is where the token starts)
 	line := s.line
 	column := s.column
 	byteStart := s.head // Byte offset where token starts
@@ -219,13 +224,26 @@ func (s *Scanner) NextToken() token.Token {
 	return tok
 }
 
-// skipWhitespace 's only responsibility is to
-// read while the current token under inspection
-// remains a whitespace character. These don't have
-// syntactic or semantic meaning to the language.
-func (s *Scanner) skipWhitespace() {
+// readTrivia reads whitespace and other non-syntactic content
+// and returns it as a TRIVIA token. This allows exact source reconstruction.
+func (s *Scanner) readTrivia() token.Token {
+	line := s.line
+	column := s.column
+	byteStart := s.head
+	
+	var trivia bytes.Buffer
 	for util.IsWhitespace(s.current) {
+		trivia.WriteRune(s.current)
 		s.readChar()
+	}
+	
+	return token.Token{
+		TokenKind: token.TRIVIA,
+		Literal:   trivia.String(),
+		Line:      line,
+		Column:    column,
+		ByteStart: byteStart,
+		ByteEnd:   s.head,
 	}
 }
 
