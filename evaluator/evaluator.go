@@ -267,6 +267,44 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 	return nil, false
 }
 
+// evalPrimitiveConstructor evaluates primitive type constructors like u32(x), u64(y)
+// These are widening conversions that are total and non-failing
+func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *object.Environment) object.Object {
+	// Check if it's a primitive type name
+	primitiveTypes := map[string]bool{
+		"u8": true, "u16": true, "u32": true, "u64": true,
+		"i8": true, "i16": true, "i32": true, "i64": true,
+	}
+	if !primitiveTypes[typeName] {
+		return nil // Not a primitive constructor
+	}
+
+	// Constructors take exactly one argument
+	if len(args) != 1 {
+		return newError("primitive constructor %s expects 1 argument, got %d", typeName, len(args))
+	}
+
+	// Evaluate the argument
+	arg := Eval(args[0], env)
+	if isError(arg) {
+		return arg
+	}
+
+	// Get the integer value
+	var value int64
+	switch v := arg.(type) {
+	case *object.Integer:
+		value = v.Value
+	default:
+		return newError("primitive constructor %s requires an integer argument, got %s", typeName, arg.Type())
+	}
+
+	// For now, we just return the integer value
+	// In a full implementation, we'd track the type information
+	// But for the REPL, returning the integer is sufficient
+	return &object.Integer{Value: value}
+}
+
 func evalPrefixExpression(operator string, right object.Object) object.Object {
 	switch operator {
 	case "!":
