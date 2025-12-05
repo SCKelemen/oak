@@ -737,6 +737,45 @@ func (p *Parser) parseADTType() *ast.ADTType {
 	return adt
 }
 
+// parseRecordComposition parses record composition: TypeName & TypeName & { ... }
+// Returns an InfixExpression representing the composition chain
+func (p *Parser) parseRecordComposition() ast.Expression {
+	// We're already at the first identifier
+	left := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	
+	// Parse composition chain: TypeName & TypeName & { ... }
+	for p.peekTokenIs(token.AMP) {
+		p.nextToken() // consume &
+		p.nextToken() // consume next component
+		
+		var right ast.Expression
+		if p.currentTokenIs(token.LBRACE) {
+			// Record literal: { field: Type, ... }
+			right = p.parseRecordLiteral()
+		} else if p.currentTokenIs(token.IDENT) {
+			// Type name
+			right = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		} else {
+			p.errors = append(p.errors, fmt.Sprintf("expected type name or record literal in composition, got %s", p.currentToken.Literal))
+			return nil
+		}
+		
+		if right == nil {
+			return nil
+		}
+		
+		// Create intersection expression
+		left = &ast.InfixExpression{
+			Token:    p.currentToken,
+			Left:     left,
+			Operator: "&",
+			Right:    right,
+		}
+	}
+	
+	return left
+}
+
 // Interface type definition: Name: interface = fn (self) method(...) -> ...
 // Example: Reader: interface = fn (self) read(...) -> ...
 // Example: IntrusiveListNode[T, Tag]: interface = fn (self: *T) hook( _: Tag ) -> *ListHook[T, Tag]
