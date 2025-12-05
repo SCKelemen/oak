@@ -1559,6 +1559,22 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 	valueType := tc.checkExpression(stmt.Value, varType) // Pass expected type for context-based inference
 	if valueType != nil {
 		if !tc.isAssignable(valueType, varType) {
+			// Provide helpful error message with suggestion for narrowing
+			if varPrim, ok := varType.(*PrimitiveType); ok {
+				if valuePrim, ok := valueType.(*PrimitiveType); ok {
+					// Both are primitives - check if this is a narrowing case
+					if varPrim.Name[0] == valuePrim.Name[0] { // Same signedness
+						varWidth := tc.getTypeWidth(varPrim.Name)
+						valueWidth := tc.getTypeWidth(valuePrim.Name)
+						if varWidth < valueWidth {
+							// This is a narrowing case - suggest narrowing function
+							tc.addError("assignment: variable %s has type %s, cannot assign %s (use %s_trunc_%s(...) or %s_checked_%s(...) for narrowing)", 
+								stmt.Name.Value, varType, valueType, varPrim.Name, valuePrim.Name, varPrim.Name, valuePrim.Name)
+							return
+						}
+					}
+				}
+			}
 			tc.addError("assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
 		}
 	}
