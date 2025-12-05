@@ -772,14 +772,6 @@ func (cg *CodeGenerator) typeExpressionToString(expr ast.Expression) string {
 	return "/* type */"
 }
 
-// SourceLocation represents a location in the source code
-type SourceLocation struct {
-	File    string
-	Line    int
-	Column  int
-	Package string
-}
-
 // emitSourceLocationComment emits a structured C comment with source location metadata
 func (cg *CodeGenerator) emitSourceLocationComment(metadata SourceMetadata) {
 	cg.write("// @source: " + metadata.Source + "\n")
