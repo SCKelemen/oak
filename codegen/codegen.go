@@ -20,16 +20,22 @@ type CodeGenerator struct {
 	types       map[string]bool // Track emitted types to avoid duplicates
 	typeChecker *typechecker.TypeChecker
 	typeEnv     map[string]typechecker.Type // Type environment for lookups
+	stringLiterals []string // Track string literals to emit as static arrays
+	stringLiteralMap map[string]int // Map string value to index
+	adtTypes    map[string]*ast.ADTType // Map ADT name to AST definition
 }
 
 // New creates a new code generator
 func New(packageName string, tc *typechecker.TypeChecker) *CodeGenerator {
 	return &CodeGenerator{
-		packageName: packageName,
-		sourceFile:  "unknown.oak", // Default, can be set via SetSourceFile
-		types:       make(map[string]bool),
-		typeChecker: tc,
-		typeEnv:     make(map[string]typechecker.Type),
+		packageName:     packageName,
+		sourceFile:      "unknown.oak", // Default, can be set via SetSourceFile
+		types:           make(map[string]bool),
+		typeChecker:     tc,
+		typeEnv:         make(map[string]typechecker.Type),
+		stringLiterals:  []string{},
+		stringLiteralMap: make(map[string]int),
+		adtTypes:        make(map[string]*ast.ADTType),
 	}
 }
 
@@ -47,6 +53,8 @@ func (cg *CodeGenerator) SetSourceText(text string) {
 func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChecker) (string, error) {
 	cg.output.Reset()
 	cg.types = make(map[string]bool)
+	cg.stringLiterals = []string{}
+	cg.stringLiteralMap = make(map[string]int)
 
 	// Extract package name from program
 	for _, stmt := range program.Statements {
@@ -56,14 +64,29 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 		}
 	}
 
+	// First pass: collect all string literals
+	cg.collectStringLiterals(program)
+
 	// Emit header includes and type aliases
 	cg.emitHeader()
+
+	// Emit string literal static arrays
+	cg.emitStringLiterals()
 
 	// Emit standard library ADTs first
 	cg.emitBoolADT()
 	cg.emitComparisonADT()
 
 	// Emit type definitions (ADTs, records)
+	// First, collect all ADT types for later lookup
+	for _, stmt := range program.Statements {
+		switch s := stmt.(type) {
+		case *ast.ADTType:
+			cg.adtTypes[s.Name.Value] = s
+		}
+	}
+	
+	// Now emit the type definitions
 	for _, stmt := range program.Statements {
 		switch s := stmt.(type) {
 		case *ast.ADTType:
@@ -82,6 +105,103 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	}
 
 	return cg.output.String(), nil
+}
+
+// collectStringLiterals collects all string literals from the program
+func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
+	var collectFromExpr func(expr ast.Expression)
+	collectFromExpr = func(expr ast.Expression) {
+		switch e := expr.(type) {
+		case *ast.StringLiteral:
+			if _, exists := cg.stringLiteralMap[e.Value]; !exists {
+				idx := len(cg.stringLiterals)
+				cg.stringLiterals = append(cg.stringLiterals, e.Value)
+				cg.stringLiteralMap[e.Value] = idx
+			}
+		case *ast.InfixExpression:
+			collectFromExpr(e.Left)
+			collectFromExpr(e.Right)
+		case *ast.PrefixExpression:
+			collectFromExpr(e.Right)
+		case *ast.IndexExpression:
+			collectFromExpr(e.Left)
+			collectFromExpr(e.Index)
+		case *ast.VariantExpression:
+			if e.Payload != nil {
+				collectFromExpr(e.Payload)
+			}
+		case *ast.InvocationExpression:
+			collectFromExpr(e.Function)
+			for _, arg := range e.Arguments {
+				collectFromExpr(arg)
+			}
+		case *ast.MatchExpression:
+			collectFromExpr(e.Scrutinee)
+			for _, arm := range e.Arms {
+				collectFromExpr(arm.Body)
+			}
+		case *ast.RecordLiteral:
+			for _, fieldExpr := range e.Fields {
+				collectFromExpr(fieldExpr)
+			}
+		case *ast.ArrayLiteral:
+			for _, elem := range e.Elements {
+				collectFromExpr(elem)
+			}
+		}
+	}
+
+	// Collect from all statements
+	for _, stmt := range program.Statements {
+		switch s := stmt.(type) {
+		case *ast.FunctionStatement:
+			// Function body is an Expression, which could be a BlockStatement
+			// but BlockStatement implements Statement, not Expression
+			// So we just collect from the body expression directly
+			collectFromExpr(s.Body)
+		}
+	}
+}
+
+// emitStringLiterals emits static arrays for all string literals
+func (cg *CodeGenerator) emitStringLiterals() {
+	if len(cg.stringLiterals) == 0 {
+		return
+	}
+	cg.write("/* String literals */\n")
+	for i, str := range cg.stringLiterals {
+		// Escape the string for C
+		escaped := cg.escapeCString(str)
+		cg.write(fmt.Sprintf("static const u8 str_lit_%d[] = \"%s\";\n", i, escaped))
+	}
+	cg.write("\n")
+}
+
+// escapeCString escapes a string for use in a C string literal
+func (cg *CodeGenerator) escapeCString(s string) string {
+	var result strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\n':
+			result.WriteString("\\n")
+		case '\r':
+			result.WriteString("\\r")
+		case '\t':
+			result.WriteString("\\t")
+		case '\\':
+			result.WriteString("\\\\")
+		case '"':
+			result.WriteString("\\\"")
+		default:
+			if r < 32 || r > 126 {
+				// Non-printable or non-ASCII - use hex escape
+				result.WriteString(fmt.Sprintf("\\x%02x", r))
+			} else {
+				result.WriteRune(r)
+			}
+		}
+	}
+	return result.String()
 }
 
 // emitHeader emits the standard header with includes and type aliases
@@ -104,6 +224,12 @@ func (cg *CodeGenerator) emitHeader() {
 	cg.write("\n")
 	cg.write("typedef u8  byte;\n")
 	cg.write("typedef i32 rune;\n")
+	cg.write("\n")
+	// Emit string type definition
+	cg.write("typedef struct oak_string {\n")
+	cg.write("  u8* data;  /* UTF-8 bytes, not necessarily null-terminated */\n")
+	cg.write("  u32 len;   /* number of bytes */\n")
+	cg.write("} string;\n")
 	cg.write("\n")
 
 	// Emit string type
@@ -402,8 +528,16 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 	case *ast.IntegerLiteral:
 		cg.output.WriteString(fmt.Sprintf("%d", e.Value))
 	case *ast.StringLiteral:
-		// TODO: Properly handle string literals (create string struct)
-		cg.output.WriteString(fmt.Sprintf("/* string: %s */", e.Value))
+		// Emit string literal as a string struct
+		idx, exists := cg.stringLiteralMap[e.Value]
+		if !exists {
+			// Should not happen if collectStringLiterals was called
+			idx = len(cg.stringLiterals)
+			cg.stringLiterals = append(cg.stringLiterals, e.Value)
+			cg.stringLiteralMap[e.Value] = idx
+		}
+		// Create string struct: { .data = (u8*)str_lit_N, .len = LEN }
+		cg.output.WriteString(fmt.Sprintf("( (string) { .data = (u8*)str_lit_%d, .len = %d } )", idx, len(e.Value)))
 	case *ast.Boolean:
 		if e.Value {
 			cg.output.WriteString("oak_Bool_True")
@@ -482,9 +616,8 @@ func (cg *CodeGenerator) emitMatchExpression(expr *ast.MatchExpression, tc *type
 	// Check if first pattern is a variant pattern (indicates ADT match)
 	if len(expr.Arms) > 0 {
 		if _, ok := expr.Arms[0].Pattern.(*ast.VariantPattern); ok {
-			// This is likely an ADT match - we need to infer the type
-			// For now, use a placeholder
-			cg.emitADTMatch(expr, nil, tc)
+			// This is likely an ADT match
+			cg.emitADTMatch(expr, tc)
 			return
 		}
 	}
@@ -494,7 +627,7 @@ func (cg *CodeGenerator) emitMatchExpression(expr *ast.MatchExpression, tc *type
 }
 
 // emitADTMatch emits C code for ADT pattern matching
-func (cg *CodeGenerator) emitADTMatch(expr *ast.MatchExpression, adtType *typechecker.ADTType, tc *typechecker.TypeChecker) {
+func (cg *CodeGenerator) emitADTMatch(expr *ast.MatchExpression, tc *typechecker.TypeChecker) {
 	// Infer ADT type name from first variant pattern
 	typeName := "Unknown"
 	if len(expr.Arms) > 0 {
@@ -530,8 +663,7 @@ func (cg *CodeGenerator) emitADTMatch(expr *ast.MatchExpression, adtType *typech
 				if bindingPattern, ok := variantPattern.Payload.(*ast.BindingPattern); ok {
 					payloadName := bindingPattern.Name.Value
 					// Try to determine payload type from ADT definition
-					payloadType := "/* TODO: infer type */"
-					// For now, use a placeholder - in full implementation, we'd look up the ADT variant
+					payloadType := cg.inferPayloadType(adtDef, variantName, tc)
 					cg.write(fmt.Sprintf("      %s %s = scrutinee.payload.%s;\n", payloadType, payloadName, variantName))
 				} else {
 					// Payload is not a binding - this shouldn't happen in valid code
@@ -1005,6 +1137,35 @@ func (cg *CodeGenerator) emitFunctionLiteral(expr *ast.FunctionLiteral, tc *type
 
 func (cg *CodeGenerator) parsePayloadType(expr ast.Expression) string {
 	return cg.parseTypeExpression(expr)
+}
+
+// inferPayloadType infers the C type for an ADT variant's payload
+func (cg *CodeGenerator) inferPayloadType(adtType *ast.ADTType, variantName string, tc *typechecker.TypeChecker) string {
+	if adtType == nil {
+		return "void*" // Fallback
+	}
+	
+	// Find the variant in the ADT definition
+	for _, variant := range adtType.Variants {
+		if variant.Name.Value == variantName {
+			// Check if variant has a payload type
+			if variant.Payload != nil {
+				return cg.parseTypeExpression(variant.Payload)
+			}
+			// No payload
+			return "void"
+		}
+	}
+	
+	// Variant not found - fallback
+	return "void*"
+}
+
+// findADTTypeByName finds an ADT type definition by name in the program
+func (cg *CodeGenerator) findADTTypeByName(program *ast.Program, name string) *ast.ADTType {
+	// This is a helper that would need access to the program
+	// For now, we'll need to pass the program or maintain a map
+	return nil
 }
 
 // emitBoolADT emits the standard Bool ADT

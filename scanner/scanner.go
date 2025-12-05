@@ -216,11 +216,11 @@ func (s *Scanner) NextToken() token.Token {
 		}
 	}
 	s.readChar()
-	
+
 	// Set end position (current head is where token ends)
 	tok.ByteStart = byteStart
 	tok.ByteEnd = s.head
-	
+
 	return tok
 }
 
@@ -230,13 +230,13 @@ func (s *Scanner) readTrivia() token.Token {
 	line := s.line
 	column := s.column
 	byteStart := s.head
-	
+
 	var trivia bytes.Buffer
 	for util.IsWhitespace(s.current) {
 		trivia.WriteRune(s.current)
 		s.readChar()
 	}
-	
+
 	return token.Token{
 		TokenKind: token.TRIVIA,
 		Literal:   trivia.String(),

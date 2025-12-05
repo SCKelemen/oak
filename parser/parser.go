@@ -19,7 +19,7 @@ type Parser struct {
 	prefixParseFns map[token.TokenKind]prefixParseFn
 	infixParseFns  map[token.TokenKind]infixParseFn
 	// postfixParseFns map[token.TokenKind]postfixParseFn
-	
+
 	// Collected trivia tokens that will be attached to the next non-trivia node
 	pendingTrivia []token.Token
 }
@@ -81,7 +81,7 @@ func (p *Parser) registerInfix(TokenKind token.TokenKind, fn infixParseFn) {
 func (p *Parser) nextToken() {
 	p.currentToken = p.peekToken
 	p.peekToken = p.lxr.NextToken()
-	
+
 	// Collect trivia tokens as we encounter them
 	// If currentToken is trivia, collect it and continue reading trivia
 	if p.currentToken.TokenKind == token.TRIVIA {
@@ -746,7 +746,7 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 	// Handle empty record: {}
 	if p.currentTokenIs(token.RBRACE) {
 		record.EndToken = p.currentToken // } token
-		p.nextToken() // consume }
+		p.nextToken()                    // consume }
 		return record
 	}
 
@@ -1192,7 +1192,7 @@ func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken() // consume =
 		p.nextToken() // consume value
-	stmt.Value = p.parseExpression(LOWEST)
+		stmt.Value = p.parseExpression(LOWEST)
 	}
 
 	if p.peekTokenIs(token.SEMI) {
