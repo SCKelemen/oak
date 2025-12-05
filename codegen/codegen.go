@@ -5,12 +5,14 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
 	packageName string
+	sourceFile   string // Source file path for source location comments
 	output      strings.Builder
 	indentLevel int
 	types       map[string]bool // Track emitted types to avoid duplicates
@@ -22,10 +24,16 @@ type CodeGenerator struct {
 func New(packageName string, tc *typechecker.TypeChecker) *CodeGenerator {
 	return &CodeGenerator{
 		packageName: packageName,
+		sourceFile:   "unknown.oak", // Default, can be set via SetSourceFile
 		types:       make(map[string]bool),
 		typeChecker: tc,
 		typeEnv:     make(map[string]typechecker.Type),
 	}
+}
+
+// SetSourceFile sets the source file path for source location comments
+func (cg *CodeGenerator) SetSourceFile(file string) {
+	cg.sourceFile = file
 }
 
 // Generate generates C code from an Oak program
@@ -133,6 +141,9 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 		return
 	}
 
+	// Emit source location comment
+	cg.emitSourceLocationComment(adt.Token, fmt.Sprintf("ADT type %s", typeName))
+
 	// Check if this is a record type definition: Name: type = { field: Type, ... }
 	// Record type definitions are parsed as ADTType with a single variant that has a record literal
 	if len(adt.Variants) == 1 {
@@ -207,6 +218,9 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 
 // emitADTConstructor emits a constructor function for an ADT variant
 func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVariant) {
+	// Emit source location comment for constructor
+	cg.emitSourceLocationComment(variant.Token, fmt.Sprintf("ADT constructor %s::%s", typeName, variant.Name.Value))
+	
 	variantName := variant.Name.Value
 	funcName := fmt.Sprintf("%s_%s", typeName, variantName)
 
@@ -233,7 +247,10 @@ func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVar
 
 // emitFunction emits C code for a function or method
 func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) {
+	// Emit source location comment
 	funcName := fn.Name.Value
+	cg.emitSourceLocationComment(fn.Token, fmt.Sprintf("function %s", funcName))
+	
 	cFuncName := cg.cFunctionName(funcName)
 
 	// Determine return type
@@ -268,12 +285,18 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write(" ) {\n")
 	cg.indentLevel++
 
-	// Emit function body
-	cg.emitExpression(fn.Body, tc)
+	// Emit function body (can be expression or block)
+	cg.emitFunctionBody(fn.Body, tc)
 
 	cg.indentLevel--
 	cg.write("}\n")
 	cg.write("\n")
+}
+
+// emitFunctionBody emits the body of a function (expression or block)
+func (cg *CodeGenerator) emitFunctionBody(body ast.Expression, tc *typechecker.TypeChecker) {
+	// Single expression - emit as return
+	cg.emitExpression(body, tc)
 }
 
 // emitExpression emits C code for an expression (as a return statement)
@@ -364,8 +387,15 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 	case *ast.MatchExpression:
 		// Pattern matching - this is complex, emit as a block
 		cg.emitMatchExpressionInline(e, tc)
+	case *ast.ArrayLiteral:
+		cg.emitArrayLiteral(e, tc)
+	case *ast.RecordLiteral:
+		cg.emitRecordLiteral(e, tc)
+	case *ast.FunctionLiteral:
+		// Function literal (closure) - emit as function pointer
+		cg.emitFunctionLiteral(e, tc)
 	default:
-		cg.output.WriteString("/* TODO: emit expression type */")
+		cg.output.WriteString(fmt.Sprintf("/* TODO: emit expression type %T */", e))
 	}
 }
 
@@ -422,8 +452,17 @@ func (cg *CodeGenerator) emitADTMatch(expr *ast.MatchExpression, adtType *typech
 
 			// Extract payload if present
 			if variantPattern.Payload != nil {
-				payloadName := "value" // TODO: get from binding pattern
-				cg.write(fmt.Sprintf("      %s %s = scrutinee.payload.%s;\n", "/* TODO: type */", payloadName, variantName))
+				// Check if payload is a binding pattern
+				if bindingPattern, ok := variantPattern.Payload.(*ast.BindingPattern); ok {
+					payloadName := bindingPattern.Name.Value
+					// Try to determine payload type from ADT definition
+					payloadType := "/* TODO: infer type */"
+					// For now, use a placeholder - in full implementation, we'd look up the ADT variant
+					cg.write(fmt.Sprintf("      %s %s = scrutinee.payload.%s;\n", payloadType, payloadName, variantName))
+				} else {
+					// Payload is not a binding - this shouldn't happen in valid code
+					cg.write(fmt.Sprintf("      /* payload extraction */\n"))
+				}
 			}
 
 			// Emit body
@@ -453,6 +492,11 @@ func (cg *CodeGenerator) emitScalarMatch(expr *ast.MatchExpression, tc *typechec
 			cg.emitExpressionFragment(expr.Scrutinee, tc)
 			cg.write(" == ")
 			cg.emitExpressionFragment(literalPattern.Value, tc)
+		} else if _, ok := arm.Pattern.(*ast.BindingPattern); ok {
+			// Binding pattern - matches anything, binds to variable
+			cg.write("1")
+			// In full implementation, we'd need to handle the binding
+			// For now, we'll assume the variable is available in the body
 		} else if _, ok := arm.Pattern.(*ast.WildcardPattern); ok {
 			// Wildcard - this should be the last arm
 			cg.write("1")
@@ -476,7 +520,7 @@ func (cg *CodeGenerator) emitMatchExpressionInline(expr *ast.MatchExpression, tc
 	// For inline matches, we need to create a temporary variable
 	// This is a simplified version - full implementation would be more sophisticated
 	cg.output.WriteString("( ")
-	
+
 	// Determine if ADT or scalar match
 	isADT := false
 	if len(expr.Arms) > 0 {
@@ -484,7 +528,7 @@ func (cg *CodeGenerator) emitMatchExpressionInline(expr *ast.MatchExpression, tc
 			isADT = true
 		}
 	}
-	
+
 	if isADT {
 		// ADT match - emit switch inline (simplified)
 		cg.output.WriteString("/* match expression */")
@@ -507,7 +551,7 @@ func (cg *CodeGenerator) emitMatchExpressionInline(expr *ast.MatchExpression, tc
 			cg.emitExpressionFragment(arm.Body, tc)
 		}
 	}
-	
+
 	cg.output.WriteString(" )")
 }
 
@@ -572,7 +616,7 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 // emitViewType emits a view type struct and returns the type name
 func (cg *CodeGenerator) emitViewType(elementType string) string {
 	viewTypeName := fmt.Sprintf("oak_view_%s", elementType)
-	
+
 	// Check if already emitted
 	if cg.types[viewTypeName] {
 		return viewTypeName
@@ -594,7 +638,7 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 // emitSpanType emits a span type struct and returns the type name
 func (cg *CodeGenerator) emitSpanType(elementType string) string {
 	spanTypeName := fmt.Sprintf("oak_span_%s", elementType)
-	
+
 	// Check if already emitted
 	if cg.types[spanTypeName] {
 		return spanTypeName
@@ -611,6 +655,179 @@ func (cg *CodeGenerator) emitSpanType(elementType string) string {
 	cg.write("\n")
 
 	return spanTypeName
+}
+
+// SourceLocation represents a location in the source code
+type SourceLocation struct {
+	File   string
+	Line   int
+	Column int
+	Package string
+}
+
+// emitSourceLocationComment emits a C comment with source location information
+func (cg *CodeGenerator) emitSourceLocationComment(tok token.Token, description string) {
+	// Format: /* Generated from: package file.oak:line:col - description */
+	// For now, we'll use a simple format since Token doesn't have line/col info
+	// In a full implementation, we'd track line/column numbers during parsing
+	// TODO: Extract line/column from token when available
+	loc := cg.getSourceLocation(tok)
+	cg.write(fmt.Sprintf("/* Generated from: %s %s:%d:%d - %s */\n", 
+		loc.Package, loc.File, loc.Line, loc.Column, description))
+}
+
+// getSourceLocation extracts source location from a token
+// TODO: Enhance when Token struct includes line/column information
+func (cg *CodeGenerator) getSourceLocation(tok token.Token) SourceLocation {
+	return SourceLocation{
+		File:    cg.sourceFile,
+		Line:    0, // TODO: Extract from token when available
+		Column:  0, // TODO: Extract from token when available
+		Package: cg.packageName,
+	}
+}
+
+// emitBlockStatement emits a block statement
+func (cg *CodeGenerator) emitBlockStatement(block *ast.BlockStatement, tc *typechecker.TypeChecker, isFunctionBody bool) {
+	for i, stmt := range block.Statements {
+		cg.emitStatement(stmt, tc, isFunctionBody && i == len(block.Statements)-1)
+	}
+}
+
+// emitBlockExpression emits a block as an expression (last statement is the value)
+func (cg *CodeGenerator) emitBlockExpression(block *ast.BlockStatement, tc *typechecker.TypeChecker) {
+	// For block expressions, we need to handle statements and return the last expression
+	// This is simplified - in full implementation, we'd need proper scoping
+	cg.output.WriteString("( ")
+	
+	for i, stmt := range block.Statements {
+		if i < len(block.Statements)-1 {
+			// Not the last statement - emit as statement
+			cg.emitStatement(stmt, tc, false)
+		} else {
+			// Last statement - emit as expression
+			if exprStmt, ok := stmt.(*ast.ExpressionStatement); ok {
+				cg.emitExpressionFragment(exprStmt.Expression, tc)
+			} else {
+				cg.output.WriteString("/* block expression */")
+			}
+		}
+	}
+	
+	cg.output.WriteString(" )")
+}
+
+// emitStatement emits a statement
+func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeChecker, isLastInFunction bool) {
+	switch s := stmt.(type) {
+	case *ast.VariableDeclaration:
+		cg.emitVariableDeclaration(s, tc)
+	case *ast.AssignmentStatement:
+		cg.emitAssignmentStatement(s, tc)
+	case *ast.ExpressionStatement:
+		if isLastInFunction {
+			// Last statement in function - emit as return
+			cg.emitExpression(s.Expression, tc)
+		} else {
+			// Regular statement - emit without return
+			cg.emitStatementExpression(s.Expression, tc)
+		}
+	case *ast.WhileStatement:
+		cg.emitWhileStatement(s, tc)
+	case *ast.BlockStatement:
+		cg.write("  {\n")
+		cg.indentLevel++
+		cg.emitBlockStatement(s, tc, false)
+		cg.indentLevel--
+		cg.write("  }\n")
+	default:
+		cg.write(fmt.Sprintf("  /* TODO: emit statement type %T */\n", s))
+	}
+}
+
+// emitVariableDeclaration emits a variable declaration
+func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
+	varName := stmt.Name.Value
+	
+	// Determine type
+	var varType string
+	if stmt.Type != nil {
+		varType = cg.parseTypeExpression(stmt.Type)
+	} else {
+		// Type inference - try to infer from value
+		// For now, default to i32
+		varType = "i32"
+	}
+	
+	// C style: type name;
+	cg.write(fmt.Sprintf("  %s %s", varType, varName))
+	
+	if stmt.Value != nil {
+		cg.write(" = ")
+		cg.emitExpressionFragment(stmt.Value, tc)
+	}
+	
+	cg.write(";\n")
+}
+
+// emitAssignmentStatement emits an assignment statement
+func (cg *CodeGenerator) emitAssignmentStatement(stmt *ast.AssignmentStatement, tc *typechecker.TypeChecker) {
+	cg.write("  ")
+	cg.emitExpressionFragment(stmt.Name, tc)
+	cg.write(" = ")
+	cg.emitExpressionFragment(stmt.Value, tc)
+	cg.write(";\n")
+}
+
+// emitWhileStatement emits a while loop
+func (cg *CodeGenerator) emitWhileStatement(stmt *ast.WhileStatement, tc *typechecker.TypeChecker) {
+	cg.write("  while ( ")
+	cg.emitExpressionFragment(stmt.Condition, tc)
+	cg.write(" ) {\n")
+	cg.indentLevel++
+	
+	// Emit body (while body is always a BlockStatement)
+	cg.emitBlockStatement(stmt.Body, tc, false)
+	
+	cg.indentLevel--
+	cg.write("  }\n")
+}
+
+// emitArrayLiteral emits an array literal
+func (cg *CodeGenerator) emitArrayLiteral(expr *ast.ArrayLiteral, tc *typechecker.TypeChecker) {
+	// For now, emit as array initializer
+	// In full implementation, we'd need to determine the element type and size
+	cg.output.WriteString("{ ")
+	for i, elem := range expr.Elements {
+		if i > 0 {
+			cg.output.WriteString(", ")
+		}
+		cg.emitExpressionFragment(elem, tc)
+	}
+	cg.output.WriteString(" }")
+}
+
+// emitRecordLiteral emits a record literal
+func (cg *CodeGenerator) emitRecordLiteral(expr *ast.RecordLiteral, tc *typechecker.TypeChecker) {
+	// C99 designated initializers
+	cg.output.WriteString("{ ")
+	first := true
+	for fieldName, fieldExpr := range expr.Fields {
+		if !first {
+			cg.output.WriteString(", ")
+		}
+		cg.output.WriteString(fmt.Sprintf(".%s = ", fieldName))
+		cg.emitExpressionFragment(fieldExpr, tc)
+		first = false
+	}
+	cg.output.WriteString(" }")
+}
+
+// emitFunctionLiteral emits a function literal (closure)
+func (cg *CodeGenerator) emitFunctionLiteral(expr *ast.FunctionLiteral, tc *typechecker.TypeChecker) {
+	// For now, function literals are not fully supported in C
+	// In full implementation, we'd need to emit a function pointer or struct
+	cg.output.WriteString("/* function literal */")
 }
 
 func (cg *CodeGenerator) parsePayloadType(expr ast.Expression) string {
@@ -659,6 +876,9 @@ func (cg *CodeGenerator) emitRecordType(typeName string, recordLit *ast.RecordLi
 		return
 	}
 	cg.types[cName] = true
+
+	// Emit source location comment
+	cg.emitSourceLocationComment(recordLit.Token, fmt.Sprintf("record type %s", typeName))
 
 	// Emit struct definition (C style: opening brace on same line)
 	cg.write(fmt.Sprintf("typedef struct %s {\n", cName))
