@@ -408,7 +408,7 @@ func findFreeTypeVars(typ Type, env *TypeEnvironment) []string {
 // This includes type variables from all schemes in the current and outer environments
 func extractBoundTypeVars(env *TypeEnvironment) map[string]bool {
 	boundVars := make(map[string]bool)
-	
+
 	// Traverse the environment chain (current and outer environments)
 	currentEnv := env
 	for currentEnv != nil {
@@ -422,7 +422,7 @@ func extractBoundTypeVars(env *TypeEnvironment) map[string]bool {
 		}
 		currentEnv = currentEnv.outer
 	}
-	
+
 	return boundVars
 }
 
