@@ -394,12 +394,14 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression) Type {
 
 // Helper functions for type checking specific expression types
 func (tc *TypeChecker) checkIdentifier(ident *ast.Identifier) Type {
-	typ, ok := tc.env.Get(ident.Value)
+	scheme, ok := tc.env.Get(ident.Value)
 	if !ok {
 		tc.addError("undefined variable: %s", ident.Value)
 		return nil
 	}
-	return typ
+	// Instantiate the scheme to get a fresh type
+	unifier := NewUnifier()
+	return Instantiate(scheme, unifier)
 }
 
 func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
@@ -575,7 +577,8 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 		// Default to i32 for now (type inference would be better)
 		paramType := &PrimitiveType{Name: "i32"}
 		paramTypes = append(paramTypes, paramType)
-		funcEnv.Set(param.Value, paramType)
+		// Store as a monomorphic scheme
+		funcEnv.SetType(param.Value, paramType)
 	}
 
 	// Save current environment and switch to function environment
@@ -658,12 +661,15 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 
 	// Look up method: TypeName::methodName
 	methodKey := fmt.Sprintf("%s::%s", receiverTypeName, methodName)
-	methodType, ok := tc.env.Get(methodKey)
+	methodScheme, ok := tc.env.Get(methodKey)
 	if !ok {
 		tc.addError("method %s not found for type %s", methodName, receiverTypeName)
 		return nil
 	}
 
+	// Instantiate the method scheme
+	unifier := NewUnifier()
+	methodType := Instantiate(methodScheme, unifier)
 	fnType, ok := methodType.(*FunctionType)
 	if !ok {
 		tc.addError("method %s is not a function type", methodName)
@@ -724,7 +730,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 			// Store the narrowed variant type for potential use in the arm body
 			// The scrutinee variable (if it's an identifier) would be narrowed
 			if ident, ok := expr.Scrutinee.(*ast.Identifier); ok {
-				tc.env.Set(ident.Value, narrowedVariant)
+				tc.env.SetType(ident.Value, narrowedVariant)
 			}
 		}
 
@@ -762,7 +768,7 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 		return expectedType
 	case *ast.BindingPattern:
 		// Bind the variable in the environment
-		tc.env.Set(p.Name.Value, expectedType)
+		tc.env.SetType(p.Name.Value, expectedType)
 		return expectedType
 	case *ast.LiteralPattern:
 		// Check that literal matches expected type
@@ -995,9 +1001,10 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 					if !tc.isAssignable(valueType, varType) {
 						tc.addError("variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 					}
+				} else {
+					// Apply substitution to get the unified type
+					varType = sub.Apply(varType)
 				}
-				// Apply substitution to get the unified type
-				varType = sub.Apply(varType)
 			}
 		}
 		
@@ -1072,7 +1079,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			tc.addError("method %s: invalid receiver type", stmt.Name.Value)
 			return
 		}
-		funcEnv.Set(stmt.Receiver.Name.Value, receiverType)
+		funcEnv.SetType(stmt.Receiver.Name.Value, receiverType)
 	}
 
 	// Parse parameter types from function signature
@@ -1084,7 +1091,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			paramType = &PrimitiveType{Name: "i32"}
 		}
 		paramTypes = append(paramTypes, paramType)
-		funcEnv.Set(param.Name.Value, paramType)
+		funcEnv.SetType(param.Name.Value, paramType)
 	}
 
 	// Parse return type
@@ -1116,7 +1123,9 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		Parameters: paramTypes,
 		ReturnType: returnType,
 	}
-	tc.env.Set(stmt.Name.Value, funcType)
+	// Generalize function type to a scheme
+	funcScheme := Generalize(funcType, tc.env)
+	tc.env.Set(stmt.Name.Value, funcScheme)
 
 	// If this is a method, also store it with TypeName::methodName key
 	if stmt.Receiver != nil {
@@ -1125,7 +1134,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			// For ADT types, use the type name
 			if adtType, ok := receiverType.(*ADTType); ok {
 				methodKey := fmt.Sprintf("%s::%s", adtType.Name, stmt.Name.Value)
-				tc.env.Set(methodKey, funcType)
+				tc.env.Set(methodKey, funcScheme)
 			}
 		}
 	}
@@ -1144,7 +1153,8 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 				// Store the record type in the environment
 				recordType := tc.parseRecordTypeFromLiteral(recordLit)
 				if recordType != nil {
-					tc.env.Set(stmt.Name.Value, recordType)
+					recordScheme := Generalize(recordType, tc.env)
+					tc.env.Set(stmt.Name.Value, recordScheme)
 				}
 				return
 			}
