@@ -12,30 +12,30 @@ import (
 
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
-	packageName string
-	sourceFile  string // Source file path for source location comments
-	sourceText  string // Full source text for UTF-8 to UTF-16 conversion
-	output      strings.Builder
-	indentLevel int
-	types       map[string]bool // Track emitted types to avoid duplicates
-	typeChecker *typechecker.TypeChecker
-	typeEnv     map[string]typechecker.Type // Type environment for lookups
-	stringLiterals []string // Track string literals to emit as static arrays
-	stringLiteralMap map[string]int // Map string value to index
-	adtTypes    map[string]*ast.ADTType // Map ADT name to AST definition
+	packageName      string
+	sourceFile       string // Source file path for source location comments
+	sourceText       string // Full source text for UTF-8 to UTF-16 conversion
+	output           strings.Builder
+	indentLevel      int
+	types            map[string]bool // Track emitted types to avoid duplicates
+	typeChecker      *typechecker.TypeChecker
+	typeEnv          map[string]typechecker.Type // Type environment for lookups
+	stringLiterals   []string                    // Track string literals to emit as static arrays
+	stringLiteralMap map[string]int              // Map string value to index
+	adtTypes         map[string]*ast.ADTType     // Map ADT name to AST definition
 }
 
 // New creates a new code generator
 func New(packageName string, tc *typechecker.TypeChecker) *CodeGenerator {
 	return &CodeGenerator{
-		packageName:     packageName,
-		sourceFile:      "unknown.oak", // Default, can be set via SetSourceFile
-		types:           make(map[string]bool),
-		typeChecker:     tc,
-		typeEnv:         make(map[string]typechecker.Type),
-		stringLiterals:  []string{},
+		packageName:      packageName,
+		sourceFile:       "unknown.oak", // Default, can be set via SetSourceFile
+		types:            make(map[string]bool),
+		typeChecker:      tc,
+		typeEnv:          make(map[string]typechecker.Type),
+		stringLiterals:   []string{},
 		stringLiteralMap: make(map[string]int),
-		adtTypes:        make(map[string]*ast.ADTType),
+		adtTypes:         make(map[string]*ast.ADTType),
 	}
 }
 
@@ -85,7 +85,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 			cg.adtTypes[s.Name.Value] = s
 		}
 	}
-	
+
 	// Now emit the type definitions
 	for _, stmt := range program.Statements {
 		switch s := stmt.(type) {
@@ -976,7 +976,7 @@ func (cg *CodeGenerator) getSourceLocation(tok token.Token) SourceLocation {
 func (cg *CodeGenerator) formatSourceRange(loc SourceLocation) string {
 	// Convert UTF-8 positions (1-based) to UTF-16 positions (0-based for LSP)
 	var startPos, endPos lsp.Position
-	
+
 	if cg.sourceText != "" && loc.ByteStart >= 0 && loc.ByteEnd >= 0 {
 		// Use actual byte offsets from tokens for accurate conversion
 		startPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, loc.ByteStart, loc.Line)
@@ -985,15 +985,15 @@ func (cg *CodeGenerator) formatSourceRange(loc SourceLocation) string {
 		// Fallback: use column directly (assumes 1:1 mapping, which is true for ASCII)
 		// This is less accurate but works when source text isn't available
 		startPos = lsp.Position{
-			Line:      loc.Line - 1,      // Convert to zero-based
-			Character: loc.Column - 1,    // Convert to zero-based
+			Line:      loc.Line - 1,   // Convert to zero-based
+			Character: loc.Column - 1, // Convert to zero-based
 		}
 		endPos = lsp.Position{
-			Line:      loc.EndLine - 1,   // Convert to zero-based
-			Character: loc.EndCol - 1,    // Convert to zero-based
+			Line:      loc.EndLine - 1, // Convert to zero-based
+			Character: loc.EndCol - 1,  // Convert to zero-based
 		}
 	}
-	
+
 	if startPos.Line == endPos.Line && startPos.Character == endPos.Character {
 		// Single position
 		return fmt.Sprintf("%s:%d:%d", loc.File, startPos.Line, startPos.Character)
@@ -1154,7 +1154,7 @@ func (cg *CodeGenerator) inferPayloadType(adtType *ast.ADTType, variantName stri
 	if adtType == nil {
 		return "void*" // Fallback
 	}
-	
+
 	// Find the variant in the ADT definition
 	for _, variant := range adtType.Variants {
 		if variant.Name.Value == variantName {
@@ -1166,7 +1166,7 @@ func (cg *CodeGenerator) inferPayloadType(adtType *ast.ADTType, variantName stri
 			return "void"
 		}
 	}
-	
+
 	// Variant not found - fallback
 	return "void*"
 }

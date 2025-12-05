@@ -236,14 +236,15 @@ type TypeChecker struct {
 }
 
 // TypeEnvironment stores type information for variables
+// In HM-style inference, we store TypeSchemes (polymorphic types) for let-bound variables
 type TypeEnvironment struct {
-	store map[string]Type
+	store map[string]*TypeScheme // Store schemes, not monomorphic types
 	outer *TypeEnvironment
 }
 
 func NewTypeEnvironment() *TypeEnvironment {
 	return &TypeEnvironment{
-		store: make(map[string]Type),
+		store: make(map[string]*TypeScheme),
 		outer: nil,
 	}
 }
@@ -254,16 +255,42 @@ func NewEnclosedTypeEnvironment(outer *TypeEnvironment) *TypeEnvironment {
 	return env
 }
 
-func (e *TypeEnvironment) Get(name string) (Type, bool) {
-	typ, ok := e.store[name]
+// Get retrieves a type scheme from the environment
+func (e *TypeEnvironment) Get(name string) (*TypeScheme, bool) {
+	scheme, ok := e.store[name]
 	if !ok && e.outer != nil {
-		typ, ok = e.outer.Get(name)
+		scheme, ok = e.outer.Get(name)
 	}
-	return typ, ok
+	return scheme, ok
 }
 
-func (e *TypeEnvironment) Set(name string, typ Type) {
-	e.store[name] = typ
+// GetType retrieves a type (for backward compatibility during migration)
+// This instantiates the scheme if it exists
+func (e *TypeEnvironment) GetType(name string) (Type, bool) {
+	scheme, ok := e.Get(name)
+	if !ok {
+		return nil, false
+	}
+	// For now, return the underlying type (will be improved with proper instantiation)
+	if scheme == nil {
+		return nil, false
+	}
+	return scheme.Type, true
+}
+
+// Set stores a type scheme in the environment
+func (e *TypeEnvironment) Set(name string, scheme *TypeScheme) {
+	e.store[name] = scheme
+}
+
+// SetType stores a monomorphic type as a scheme (for backward compatibility)
+func (e *TypeEnvironment) SetType(name string, typ Type) {
+	// Convert monomorphic type to a scheme with no quantified variables
+	e.store[name] = &TypeScheme{
+		TypeVars:   []string{},
+		Constraints: []Constraint{},
+		Type:       typ,
+	}
 }
 
 func New(env *object.Environment) *TypeChecker {
@@ -947,32 +974,44 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 }
 
 func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
-	// Check if type annotation exists
+	// HM-style: let-bound variables get generalized types
 	if stmt.Type != nil {
-		// Parse type from annotation
+		// Explicit type annotation: parse and use it
 		varType := tc.parseTypeExpression(stmt.Type)
 		if varType == nil {
 			tc.addError("variable %s: invalid type annotation", stmt.Name.Value)
 			return
 		}
 
-		tc.env.Set(stmt.Name.Value, varType)
-
 		// If there's an initializer, check that it matches the type (with coercion)
 		if stmt.Value != nil {
 			valueType := tc.checkExpression(stmt.Value)
 			if valueType != nil {
-				if !tc.isAssignable(valueType, varType) {
-					tc.addError("variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
+				// Use unification to check compatibility
+				unifier := NewUnifier()
+				sub := unifier.Unify(valueType, varType)
+				if sub == nil {
+					// Try assignability check as fallback
+					if !tc.isAssignable(valueType, varType) {
+						tc.addError("variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
+					}
 				}
+				// Apply substitution to get the unified type
+				varType = sub.Apply(varType)
 			}
 		}
+		
+		// Generalize the type (quantify over free type variables)
+		scheme := Generalize(varType, tc.env)
+		tc.env.Set(stmt.Name.Value, scheme)
 	} else {
-		// Type inference from initializer
+		// Type inference from initializer (HM-style)
 		if stmt.Value != nil {
 			inferredType := tc.checkExpression(stmt.Value)
 			if inferredType != nil {
-				tc.env.Set(stmt.Name.Value, inferredType)
+				// Generalize: convert to a type scheme
+				scheme := Generalize(inferredType, tc.env)
+				tc.env.Set(stmt.Name.Value, scheme)
 			}
 		} else {
 			tc.addError("variable %s: no type annotation and no initializer", stmt.Name.Value)
@@ -1322,6 +1361,43 @@ func (t *ArrayType) Equals(other Type) bool {
 		return t.ElementType.Equals(otherArray.ElementType) &&
 			t.Length == otherArray.Length &&
 			t.IsSlice == otherArray.IsSlice
+	}
+	return false
+}
+
+// GenericType represents a generic type application: Option[T], Result[T, E], etc.
+type GenericType struct {
+	Name     string   // "Option", "Result", etc.
+	TypeArgs []Type   // Type arguments: [T], [T, E], etc.
+}
+
+func (t *GenericType) String() string {
+	var out string
+	out += t.Name
+	if len(t.TypeArgs) > 0 {
+		out += "["
+		for i, arg := range t.TypeArgs {
+			if i > 0 {
+				out += ", "
+			}
+			out += arg.String()
+		}
+		out += "]"
+	}
+	return out
+}
+
+func (t *GenericType) Equals(other Type) bool {
+	if otherGen, ok := other.(*GenericType); ok {
+		if t.Name != otherGen.Name || len(t.TypeArgs) != len(otherGen.TypeArgs) {
+			return false
+		}
+		for i, arg := range t.TypeArgs {
+			if !arg.Equals(otherGen.TypeArgs[i]) {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
