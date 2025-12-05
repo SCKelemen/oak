@@ -82,6 +82,12 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		}
 
 	case *ast.InvocationExpression:
+		// Check if this is a primitive type constructor: u32(x), u64(y), etc.
+		if ident, ok := node.Function.(*ast.Identifier); ok {
+			if result := evalPrimitiveConstructor(ident.Value, node.Arguments, env); result != nil {
+				return result
+			}
+		}
 		// Check if this is a method call: recv.method(args)
 		// Method calls have an IndexExpression as the function
 		if indexExpr, ok := node.Function.(*ast.IndexExpression); ok {
