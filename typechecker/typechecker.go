@@ -1501,14 +1501,14 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		// Parse left and right sides recursively
 		leftType := tc.parseTypeExpression(infix.Left)
 		rightType := tc.parseTypeExpression(infix.Right)
-		
+
 		if leftType == nil || rightType == nil {
 			return nil
 		}
-		
+
 		// Build intersection type
 		types := []Type{leftType, rightType}
-		
+
 		// If left or right is already an intersection, flatten it
 		if leftIntersection, ok := leftType.(*IntersectionType); ok {
 			types = append(leftIntersection.Types, rightType)
@@ -1522,10 +1522,10 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 				types = append(types, rightIntersection.Types...)
 			}
 		}
-		
+
 		return &IntersectionType{Types: types}
 	}
-	
+
 	if ident, ok := expr.(*ast.Identifier); ok {
 		// Check if it's a primitive type
 		switch ident.Value {
@@ -1653,12 +1653,12 @@ func (tc *TypeChecker) checkIntersectionConstraint(concreteType Type, constraint
 	if constraintType == nil {
 		return false
 	}
-	
+
 	// If it's an intersection, check all components
 	if intersection, ok := constraintType.(*IntersectionType); ok {
 		return tc.implementsIntersection(concreteType, intersection)
 	}
-	
+
 	// Single interface constraint
 	return tc.implementsInterface(concreteType, constraintType)
 }
@@ -1712,13 +1712,13 @@ func (tc *TypeChecker) SatisfiesConstraint(concreteType Type, constraint Constra
 // This flattens intersection constraints into a list of interface names for storage in Constraint
 func (tc *TypeChecker) extractInterfacesFromConstraint(expr ast.Expression) []string {
 	interfaces := []string{}
-	
+
 	// Handle single interface: Reader
 	if ident, ok := expr.(*ast.Identifier); ok {
 		interfaces = append(interfaces, ident.Value)
 		return interfaces
 	}
-	
+
 	// Handle intersection: Reader & Writer & Closer
 	if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "&" {
 		// Recursively extract from left and right
@@ -1728,7 +1728,7 @@ func (tc *TypeChecker) extractInterfacesFromConstraint(expr ast.Expression) []st
 		interfaces = append(interfaces, rightInterfaces...)
 		return interfaces
 	}
-	
+
 	// Unknown constraint expression
 	tc.addError("invalid constraint expression: %s", expr.String())
 	return interfaces
@@ -1746,13 +1746,13 @@ func (tc *TypeChecker) SatisfiesIntersectionConstraint(concreteType Type, interf
 			tc.addError("interface %s not found in constraint", ifaceName)
 			return false
 		}
-		
+
 		// Check if concreteType implements the interface
 		if !tc.implementsInterface(concreteType, ifaceType) {
 			return false
 		}
 	}
-	
+
 	return true
 }
 

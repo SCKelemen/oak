@@ -1,0 +1,71 @@
+package scheduler
+
+// A zero-sized tag type for the ready queue.
+ReadyQueue: type = ()
+
+// Per-node hook storage for a given list Tag.
+ListHook[T, Tag]: type =
+  { prev: Option[*T]
+  , next: Option[*T]
+  }
+
+// An intrusive list over nodes of type T for a given Tag.
+IntrusiveList[T, Tag]: type =
+  { head: Option[*T]
+  , tail: Option[*T]
+  }
+
+// Interface: "T can provide its hook for list Tag"
+IntrusiveListNode[T, Tag]: interface =
+  fn (self: *T) hook( _: Tag ) -> *ListHook[T, Tag]
+
+// ---- Task type that participates in ReadyQueue list ----
+
+Task: type =
+  { ready: ListHook[Task, ReadyQueue]
+  , id:    u32
+  , name:  string
+  }
+
+// Construct a fresh task with a clean ready-hook.
+fn make_task( id: u32, name: string ) -> Task
+  { ready: { prev: .None, next: .None }
+  , id:    id
+  , name:  name
+  }
+
+// Task implements IntrusiveListNode[Task, ReadyQueue].
+fn (t: *Task) hook( _: ReadyQueue ) -> *ListHook[Task, ReadyQueue]
+  &t.ready
+
+// ---- Intrusive list operations ----
+
+// Initialize an empty intrusive list.
+fn list_init[T, Tag]() -> IntrusiveList[T, Tag]
+  { head: .None
+  , tail: .None
+  }
+
+// Push node at the back of the list.
+// Requires: T implements IntrusiveListNode[T, Tag].
+fn list_push_back[T: IntrusiveListNode[T, Tag], Tag](
+  list: *IntrusiveList[T, Tag],
+  node: *T
+) -> ()
+  hook: *ListHook[T, Tag] = node.hook( Tag() )
+  
+  // If list is empty, node becomes both head and tail.
+  list.head ?
+    | .None ->
+        hook.prev = .None
+        hook.next = .None
+        list.head = .Some( node )
+        list.tail = .Some( node )
+    | .Some(tail_node) ->
+        tail_hook: *ListHook[T, Tag] = tail_node.hook( Tag() )
+        hook.prev = .Some( tail_node )
+        hook.next = .None
+        tail_hook.next = .Some( node )
+        list.tail = .Some( node )
+  ()
+

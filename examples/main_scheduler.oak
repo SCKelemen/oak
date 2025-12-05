@@ -1,0 +1,21 @@
+package main
+
+import(scheduler)
+
+// Example: caller code with zero local type annotations
+// All types are inferred from library function signatures
+fn main() -> i32
+  // No type annotations on locals — all inferred.
+  runq = scheduler.list_init[Task, ReadyQueue]()
+  
+  t1 = scheduler.make_task( 1, "rx" )
+  t2 = scheduler.make_task( 2, "tx" )
+  t3 = scheduler.make_task( 3, "housekeeping" )
+  
+  scheduler.list_push_back( &runq, &t1 )
+  scheduler.list_push_back( &runq, &t2 )
+  scheduler.list_push_back( &runq, &t3 )
+  
+  // ... do scheduling work here ...
+  0
+

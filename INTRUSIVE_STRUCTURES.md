@@ -36,9 +36,8 @@ IntrusiveList[T, Tag]: type =
 
 ```oak
 // Interface: "T can provide its hook for list Tag"
-IntrusiveListNode[T, Tag]: type =
-  interface
-    fn (self: *T) hook( _: Tag ) -> *ListHook[T, Tag]
+IntrusiveListNode[T, Tag]: interface =
+  fn (self: *T) hook( _: Tag ) -> *ListHook[T, Tag]
 ```
 
 ## Example: Task with Multiple Queue Memberships
@@ -62,6 +61,22 @@ fn (t: *Task) hook( _: IoQueue ) -> *ListHook[Task, IoQueue]
 fn (t: *Task) hook( _: TimerQueue ) -> *ListHook[Task, TimerQueue]
   &t.timer
 ```
+
+## Example: Simple Scheduler (Library + Caller)
+
+### Library Side (Fully Explicit Types)
+
+See `examples/intrusive_scheduler.oak` for the complete library implementation with:
+- All types explicitly defined
+- All function signatures with full type annotations
+- Interface definitions using `: interface =` syntax
+
+### Caller Side (Zero Local Annotations)
+
+See `examples/main_scheduler.oak` for caller code that relies entirely on type inference:
+- No type annotations on local variables
+- Types inferred from function calls
+- Clean, readable code
 
 ## Generic Algorithms with Intersection Constraints
 
