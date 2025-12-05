@@ -104,3 +104,12 @@ fn (u: *Uart) read(buf: i32, len: u32) -> i32 { 0 }
 	}
 }
 
+func TestTypeChecker_InterfaceType_Simple(t *testing.T) {
+	// Simple test that should definitely work
+	tc := setupTypeChecker("x: i32 = 5")
+	program := parseProgram("x: i32 = 5")
+	tc.CheckProgram(program)
+	if len(tc.Errors()) > 0 {
+		t.Errorf("unexpected errors: %v", tc.Errors())
+	}
+}

@@ -2,11 +2,6 @@ package typechecker
 
 import (
 	"testing"
-
-	"github.com/SCKelemen/oak/ast"
-	"github.com/SCKelemen/oak/object"
-	"github.com/SCKelemen/oak/parser"
-	"github.com/SCKelemen/oak/scanner"
 )
 
 func TestTypeChecker_IntegerLiteral(t *testing.T) {
@@ -400,15 +395,4 @@ func TestTypeChecker_UndefinedVariable(t *testing.T) {
 	}
 }
 
-// Helper functions
-
-func setupTypeChecker(input string) *TypeChecker {
-	env := object.NewEnvironment()
-	return New(env)
-}
-
-func parseProgram(input string) *ast.Program {
-	l := scanner.New(input)
-	p := parser.New(l)
-	return p.ParseProgram()
-}
+// Helper functions are now in typechecker_test_helper.go

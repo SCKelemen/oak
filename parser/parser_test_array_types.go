@@ -19,7 +19,7 @@ func TestParser_ArrayType_Slice(t *testing.T) {
 	}
 
 	stmt := program.Statements[0].(*ast.VariableDeclaration)
-	
+
 	// Check that type expression is an IndexExpression representing []i32
 	indexExpr, ok := stmt.Type.(*ast.IndexExpression)
 	if !ok {
@@ -49,7 +49,7 @@ func TestParser_ArrayType_FixedSize(t *testing.T) {
 	}
 
 	stmt := program.Statements[0].(*ast.VariableDeclaration)
-	
+
 	// Check that type expression is an IndexExpression representing [10]i32
 	indexExpr, ok := stmt.Type.(*ast.IndexExpression)
 	if !ok {
@@ -79,7 +79,7 @@ func TestParser_ArrayType_InFunctionParameter(t *testing.T) {
 	}
 
 	fn := program.Statements[0].(*ast.FunctionStatement)
-	
+
 	// Check first parameter: [*]Byte (pointer to byte array)
 	if len(fn.Parameters) < 1 {
 		t.Fatal("expected at least 1 parameter")
@@ -105,4 +105,3 @@ func TestParser_ArrayType_InFunctionParameter(t *testing.T) {
 		t.Errorf("expected array size 10, got %d", intLit.Value)
 	}
 }
-
