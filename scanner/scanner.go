@@ -9,8 +9,8 @@ import (
 // Scanner is the lexer
 type Scanner struct {
 	input   string
-	head    int
-	read    int
+	head    int // Current byte position (start of current token)
+	read    int // Look-ahead byte position
 	current rune
 	line    int // Current line number (1-based)
 	column  int // Current column number (1-based)
@@ -76,6 +76,7 @@ func (s *Scanner) NextToken() token.Token {
 	// Save current position after skipping whitespace (this is where the token starts)
 	line := s.line
 	column := s.column
+	byteStart := s.head // Byte offset where token starts
 
 	switch s.current {
 	/*
@@ -167,10 +168,14 @@ func (s *Scanner) NextToken() token.Token {
 	case '?':
 		tok = newTokenWithPos(token.QMARK, s.current, line, column)
 	case '"':
+		// String literal - readString advances head, so we need to capture before
 		tok.Literal = s.readString()
 		tok.TokenKind = token.STRING
 		tok.Line = line
 		tok.Column = column
+		tok.ByteStart = byteStart
+		tok.ByteEnd = s.head // readString already advanced head
+		return tok
 
 	// handle the nul/eof char
 	case 0:
@@ -178,23 +183,39 @@ func (s *Scanner) NextToken() token.Token {
 		tok.TokenKind = token.EOF
 		tok.Line = line
 		tok.Column = column
+		tok.ByteStart = byteStart
+		tok.ByteEnd = s.head
+		return tok
 
 	default:
 		if util.IsLetter(s.current) {
+			// Word - readWord advances head, so we need to capture before
 			tok.Literal = s.readWord()
 			tok.TokenKind = token.Lookup(tok.Literal)
 			tok.Line = line
 			tok.Column = column
+			tok.ByteStart = byteStart
+			tok.ByteEnd = s.head // readWord already advanced head
+			return tok
 		} else if util.IsDigit(s.current) {
+			// Number - readNumber advances head, so we need to capture before
 			tok.Literal = s.readNumber()
 			tok.TokenKind = token.INT
 			tok.Line = line
 			tok.Column = column
+			tok.ByteStart = byteStart
+			tok.ByteEnd = s.head // readNumber already advanced head
+			return tok
 		} else {
 			tok = newTokenWithPos(token.ILLEGAL, s.current, line, column)
 		}
 	}
 	s.readChar()
+	
+	// Set end position (current head is where token ends)
+	tok.ByteStart = byteStart
+	tok.ByteEnd = s.head
+	
 	return tok
 }
 
@@ -213,6 +234,7 @@ func newToken(kind token.TokenKind, ch rune) token.Token {
 }
 
 func newTokenWithPos(kind token.TokenKind, ch rune, line, column int) token.Token {
+	// Note: ByteStart and ByteEnd will be set in NextToken after reading
 	return token.Token{TokenKind: kind, Literal: string(ch), Line: line, Column: column}
 }
 

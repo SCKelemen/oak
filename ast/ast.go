@@ -91,8 +91,9 @@ func (lit *StringLiteral) String() string      { return lit.Token.Literal }
 
 // RecordLiteral: { field1: value1, field2: value2, ... }
 type RecordLiteral struct {
-	Token   token.Token
-	Fields  map[string]Expression
+	Token    token.Token // { token
+	EndToken token.Token // } token (for end position)
+	Fields   map[string]Expression
 }
 
 func (rl *RecordLiteral) expressionNode()      {}
@@ -448,6 +449,7 @@ func (vp *VariantPattern) String() string {
 // ADT type definition
 type ADTType struct {
 	Token    token.Token // 'type' token
+	EndToken token.Token // Last token of the ADT definition (for end position)
 	Name     *Identifier
 	Variants []*ADTVariant
 }
@@ -528,6 +530,7 @@ func (is *ImportStatement) String() string {
 // Function declaration (top-level)
 type FunctionStatement struct {
 	Token      token.Token // 'fn' token
+	EndToken   token.Token // Last token of the function (for end position)
 	Receiver   *FunctionParameter // optional receiver for methods: fn (recv: Type) method(...)
 	Name       *Identifier
 	Parameters []*FunctionParameter

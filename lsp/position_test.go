@@ -26,8 +26,8 @@ func TestUTF8ToUTF16Offset(t *testing.T) {
 		{
 			name:       "UTF-8 multi-byte at boundary",
 			text:       "a𐐀b",
-			utf8Offset: 5, // After 𐐀 (1 byte for 'a' + 4 bytes for 𐐀)
-			want:       4, // 'a' (1) + 𐐀 (2 code units) + 'b' (1) = 4, but we're at position 5 in UTF-8
+			utf8Offset: 5, // Start of 'b' (1 byte for 'a' + 4 bytes for 𐐀 = 5)
+			want:       3, // 'a' (1) + 𐐀 (2 code units) = 3, 'b' starts at UTF-16 offset 3
 		},
 		{
 			name:       "Empty string",

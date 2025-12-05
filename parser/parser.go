@@ -610,6 +610,24 @@ func (p *Parser) parseADTType() *ast.ADTType {
 		adt.Variants = append(adt.Variants, variant)
 	}
 
+	// Set end token to the last token we consumed (last variant's end)
+	if len(adt.Variants) > 0 {
+		lastVariant := adt.Variants[len(adt.Variants)-1]
+		// Try to get end token from last variant's literal or name
+		if lastVariant.Literal != nil {
+			if recordLit, ok := lastVariant.Literal.(*ast.RecordLiteral); ok {
+				adt.EndToken = recordLit.EndToken
+			} else {
+				// For other literals, use the literal's token
+				adt.EndToken = p.currentToken
+			}
+		} else {
+			adt.EndToken = lastVariant.Name.Token
+		}
+	} else {
+		adt.EndToken = p.currentToken
+	}
+
 	return adt
 }
 
@@ -679,6 +697,8 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 
 	// Handle empty record: {}
 	if p.currentTokenIs(token.RBRACE) {
+		record.EndToken = p.currentToken // } token
+		p.nextToken() // consume }
 		return record
 	}
 
@@ -857,6 +877,11 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 	} else {
 		stmt.Body = p.parseExpression(LOWEST)
 	}
+
+	// Set end token to the last token of the body
+	// For expressions, this is the expression's last token
+	// For blocks, we'd need to track the closing brace
+	stmt.EndToken = p.currentToken
 
 	return stmt
 }

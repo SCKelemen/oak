@@ -89,68 +89,17 @@ func UTF16ToUTF8Offset(text string, utf16Offset int) int {
 // ConvertUTF8RangeToUTF16 converts a UTF-8 byte range to a UTF-16 code unit range
 // text: the full source text
 // startByte: UTF-8 byte offset of range start
-// endByte: UTF-8 byte offset of range end
+// endByte: UTF-8 byte offset of range end (exclusive)
 // startLine: line number (1-based, will be converted to 0-based)
 // endLine: end line number (1-based, will be converted to 0-based)
 func ConvertUTF8RangeToUTF16(text string, startByte, endByte, startLine, endLine int) Range {
-	// Split text into lines for accurate line-based conversion
-	lines := splitLines(text)
-	
-	// Convert to zero-based line numbers
-	startLineZero := startLine - 1
-	endLineZero := endLine - 1
-	
-	if startLineZero < 0 {
-		startLineZero = 0
-	}
-	if endLineZero < 0 {
-		endLineZero = 0
-	}
-	if startLineZero >= len(lines) {
-		startLineZero = len(lines) - 1
-	}
-	if endLineZero >= len(lines) {
-		endLineZero = len(lines) - 1
-	}
-	
-	// Calculate byte offsets within each line
-	startLineBytes := 0
-	for i := 0; i < startLineZero && i < len(lines); i++ {
-		startLineBytes += len(lines[i]) + 1 // +1 for newline
-	}
-	
-	endLineBytes := 0
-	for i := 0; i < endLineZero && i < len(lines); i++ {
-		endLineBytes += len(lines[i]) + 1 // +1 for newline
-	}
-	
-	// Get the line text
-	startLineText := ""
-	if startLineZero < len(lines) {
-		startLineText = lines[startLineZero]
-	}
-	endLineText := ""
-	if endLineZero < len(lines) {
-		endLineText = lines[endLineZero]
-	}
-	
-	// Calculate character offset within the line (UTF-8 byte offset from start of line)
-	startCharBytes := startByte - startLineBytes
-	endCharBytes := endByte - endLineBytes
-	
-	// Convert to UTF-16 offsets
-	startCharUTF16 := UTF8ToUTF16Offset(startLineText, startCharBytes)
-	endCharUTF16 := UTF8ToUTF16Offset(endLineText, endCharBytes)
+	// Use the simpler position conversion for start and end
+	startPos := ConvertUTF8PositionToUTF16(text, startByte, startLine)
+	endPos := ConvertUTF8PositionToUTF16(text, endByte, endLine)
 	
 	return Range{
-		Start: Position{
-			Line:      startLineZero,
-			Character: startCharUTF16,
-		},
-		End: Position{
-			Line:      endLineZero,
-			Character: endCharUTF16,
-		},
+		Start: startPos,
+		End:   endPos,
 	}
 }
 
@@ -190,6 +139,14 @@ func splitLines(text string) []string {
 // byteOffset: UTF-8 byte offset
 // line: line number (1-based, will be converted to 0-based)
 func ConvertUTF8PositionToUTF16(text string, byteOffset, line int) Position {
+	if byteOffset < 0 {
+		byteOffset = 0
+	}
+	if byteOffset > len(text) {
+		byteOffset = len(text)
+	}
+	
+	// Split text into lines
 	lines := splitLines(text)
 	
 	// Convert to zero-based line number
@@ -201,18 +158,38 @@ func ConvertUTF8PositionToUTF16(text string, byteOffset, line int) Position {
 		lineZero = len(lines) - 1
 	}
 	
-	// Calculate byte offset within the line
-	lineBytes := 0
+	// Calculate byte offset to start of line
+	lineStartBytes := 0
 	for i := 0; i < lineZero && i < len(lines); i++ {
-		lineBytes += len(lines[i]) + 1 // +1 for newline
+		// Count bytes in line plus newline character(s)
+		lineStartBytes += len(lines[i])
+		// Check for newline after this line
+		nextPos := lineStartBytes
+		if nextPos < len(text) {
+			if text[nextPos] == '\r' && nextPos+1 < len(text) && text[nextPos+1] == '\n' {
+				lineStartBytes += 2 // \r\n
+			} else if text[nextPos] == '\n' || text[nextPos] == '\r' {
+				lineStartBytes += 1 // \n or \r
+			}
+		}
 	}
 	
+	// Get the line text
 	lineText := ""
 	if lineZero < len(lines) {
 		lineText = lines[lineZero]
 	}
 	
-	charBytes := byteOffset - lineBytes
+	// Calculate character offset within the line (UTF-8 byte offset from start of line)
+	charBytes := byteOffset - lineStartBytes
+	if charBytes < 0 {
+		charBytes = 0
+	}
+	if charBytes > len(lineText) {
+		charBytes = len(lineText)
+	}
+	
+	// Convert to UTF-16 offset
 	charUTF16 := UTF8ToUTF16Offset(lineText, charBytes)
 	
 	return Position{

@@ -150,19 +150,34 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 
 	// Emit source location comment
 	loc := cg.getSourceLocation(adt.Token)
-	// Try to find end position from last variant
-	endLoc := loc
-	if len(adt.Variants) > 0 {
+	// Use EndToken if available, otherwise fall back to last variant
+	if adt.EndToken.Line > 0 {
+		endLoc := cg.getSourceLocation(adt.EndToken)
+		loc.EndLine = endLoc.Line
+		loc.EndCol = endLoc.Column
+		loc.ByteEnd = endLoc.ByteEnd
+	} else if len(adt.Variants) > 0 {
+		// Fallback: use last variant
 		lastVariant := adt.Variants[len(adt.Variants)-1]
 		if lastVariant.Literal != nil {
-			// Use the literal token for end position
-			endLoc = cg.getSourceLocation(lastVariant.Literal.(*ast.RecordLiteral).Token)
+			if recordLit, ok := lastVariant.Literal.(*ast.RecordLiteral); ok {
+				endLoc := cg.getSourceLocation(recordLit.EndToken)
+				loc.EndLine = endLoc.Line
+				loc.EndCol = endLoc.Column
+				loc.ByteEnd = endLoc.ByteEnd
+			} else {
+				endLoc := cg.getSourceLocation(lastVariant.Name.Token)
+				loc.EndLine = endLoc.Line
+				loc.EndCol = endLoc.Column
+				loc.ByteEnd = endLoc.ByteEnd
+			}
 		} else {
-			endLoc = cg.getSourceLocation(lastVariant.Token)
+			endLoc := cg.getSourceLocation(lastVariant.Name.Token)
+			loc.EndLine = endLoc.Line
+			loc.EndCol = endLoc.Column
+			loc.ByteEnd = endLoc.ByteEnd
 		}
 	}
-	loc.EndLine = endLoc.Line
-	loc.EndCol = endLoc.Column
 
 	metadata := SourceMetadata{
 		Source:     cg.formatSourceRange(loc),
@@ -290,11 +305,17 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	// Emit source location comment
 	loc := cg.getSourceLocation(fn.Token)
-	// Try to estimate end position from body
-	if fn.Body != nil {
-		// For now, use the function token's position (can be enhanced to track actual end)
+	// Use EndToken if available
+	if fn.EndToken.Line > 0 {
+		endLoc := cg.getSourceLocation(fn.EndToken)
+		loc.EndLine = endLoc.Line
+		loc.EndCol = endLoc.Column
+		loc.ByteEnd = endLoc.ByteEnd
+	} else {
+		// Fallback: estimate from body (shouldn't happen if parser is correct)
 		loc.EndLine = loc.Line
-		loc.EndCol = loc.Column + 100 // Placeholder - would need actual end tracking
+		loc.EndCol = loc.Column
+		loc.ByteEnd = loc.ByteStart
 	}
 
 	metadata := SourceMetadata{
@@ -712,12 +733,14 @@ func (cg *CodeGenerator) emitSpanType(elementType string) string {
 
 // SourceLocation represents a location in the source code
 type SourceLocation struct {
-	File    string
-	Line    int
-	Column  int
-	EndLine int // End line (LSP-style range)
-	EndCol  int // End column (LSP-style range)
-	Package string
+	File      string
+	Line      int
+	Column    int
+	EndLine   int // End line (LSP-style range)
+	EndCol    int // End column (LSP-style range)
+	ByteStart int // UTF-8 byte offset where construct starts
+	ByteEnd   int // UTF-8 byte offset where construct ends
+	Package   string
 }
 
 // SourceMetadata contains structured metadata for source location comments
@@ -795,12 +818,14 @@ func (cg *CodeGenerator) emitSourceLocationComment(metadata SourceMetadata) {
 // getSourceLocation extracts source location from a token
 func (cg *CodeGenerator) getSourceLocation(tok token.Token) SourceLocation {
 	return SourceLocation{
-		File:    cg.sourceFile,
-		Line:    tok.Line,
-		Column:  tok.Column,
-		EndLine: tok.Line, // Default: same as start (can be enhanced)
-		EndCol:  tok.Column,
-		Package: cg.packageName,
+		File:      cg.sourceFile,
+		Line:      tok.Line,
+		Column:    tok.Column,
+		EndLine:   tok.Line, // Default: same as start
+		EndCol:    tok.Column,
+		ByteStart: tok.ByteStart,
+		ByteEnd:   tok.ByteEnd,
+		Package:   cg.packageName,
 	}
 }
 
@@ -810,16 +835,13 @@ func (cg *CodeGenerator) formatSourceRange(loc SourceLocation) string {
 	// Convert UTF-8 positions (1-based) to UTF-16 positions (0-based for LSP)
 	var startPos, endPos lsp.Position
 	
-	if cg.sourceText != "" {
-		// Estimate byte offsets (we don't have exact byte offsets, so we'll use column as approximation)
-		// In a full implementation, we'd track actual byte offsets during scanning
-		startByteOffset := loc.Column - 1 // Approximate
-		endByteOffset := loc.EndCol - 1   // Approximate
-		
-		startPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, startByteOffset, loc.Line)
-		endPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, endByteOffset, loc.EndLine)
+	if cg.sourceText != "" && loc.ByteStart >= 0 && loc.ByteEnd >= 0 {
+		// Use actual byte offsets from tokens for accurate conversion
+		startPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, loc.ByteStart, loc.Line)
+		endPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, loc.ByteEnd, loc.EndLine)
 	} else {
 		// Fallback: use column directly (assumes 1:1 mapping, which is true for ASCII)
+		// This is less accurate but works when source text isn't available
 		startPos = lsp.Position{
 			Line:      loc.Line - 1,      // Convert to zero-based
 			Character: loc.Column - 1,    // Convert to zero-based
@@ -1031,9 +1053,18 @@ func (cg *CodeGenerator) emitRecordType(typeName string, recordLit *ast.RecordLi
 
 	// Emit source location comment
 	loc := cg.getSourceLocation(recordLit.Token)
-	// Estimate end position (would need actual tracking)
-	loc.EndLine = loc.Line
-	loc.EndCol = loc.Column + 50 // Placeholder
+	// Use EndToken if available
+	if recordLit.EndToken.Line > 0 {
+		endLoc := cg.getSourceLocation(recordLit.EndToken)
+		loc.EndLine = endLoc.Line
+		loc.EndCol = endLoc.Column
+		loc.ByteEnd = endLoc.ByteEnd
+	} else {
+		// Fallback: use start position
+		loc.EndLine = loc.Line
+		loc.EndCol = loc.Column
+		loc.ByteEnd = loc.ByteStart
+	}
 
 	metadata := SourceMetadata{
 		Source:     cg.formatSourceRange(loc),

@@ -9,6 +9,8 @@ type Token struct {
 	Literal   string
 	Line      int // 1-based line number
 	Column    int // 1-based column number
+	ByteStart int // UTF-8 byte offset where token starts
+	ByteEnd   int // UTF-8 byte offset where token ends (exclusive)
 }
 
 const (
