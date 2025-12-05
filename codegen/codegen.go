@@ -630,17 +630,27 @@ func (cg *CodeGenerator) emitMatchExpression(expr *ast.MatchExpression, tc *type
 func (cg *CodeGenerator) emitADTMatch(expr *ast.MatchExpression, tc *typechecker.TypeChecker) {
 	// Infer ADT type name from first variant pattern
 	typeName := "Unknown"
+	var adtDef *ast.ADTType
 	if len(expr.Arms) > 0 {
-		if _, ok := expr.Arms[0].Pattern.(*ast.VariantPattern); ok {
-			// Try to extract type name from variant expression
-			// For now, use a placeholder - in full implementation, we'd look up the type
-			typeName = "ADT" // Placeholder
+		if variantPattern, ok := expr.Arms[0].Pattern.(*ast.VariantPattern); ok {
+			// Try to find the ADT type by searching through known ADT types
+			variantName := variantPattern.Variant.Value
+			for name, adt := range cg.adtTypes {
+				for _, variant := range adt.Variants {
+					if variant.Name.Value == variantName {
+						typeName = cg.cTypeName(name)
+						adtDef = adt
+						break
+					}
+				}
+				if typeName != "Unknown" {
+					break
+				}
+			}
 		}
 	}
-	if adtType != nil {
-		typeName = cg.cTypeName(adtType.Name)
-	} else {
-		typeName = cg.cTypeName(typeName)
+	if typeName == "Unknown" {
+		typeName = "ADT" // Fallback
 	}
 	// C style: space inside parentheses
 	cg.write(fmt.Sprintf("  %s scrutinee = ", typeName))
