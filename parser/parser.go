@@ -642,30 +642,78 @@ func (p *Parser) parseADTType() *ast.ADTType {
 		return nil
 	}
 
-	// Parse variants: = Variant1 | Variant2 | ...
+	// Parse type definition: = Variant1 | Variant2 | ... OR = RecordType OR = TypeName & RecordType
 	if !p.expectPeek(token.ASSIGN) {
 		return nil
 	}
 
-	adt.Variants = []*ast.ADTVariant{}
-
-	// Parse first variant
 	p.nextToken()
-	variant := p.parseADTVariant()
-	if variant == nil {
-		return nil
-	}
-	adt.Variants = append(adt.Variants, variant)
 
-	// Parse remaining variants
-	for p.peekTokenIs(token.PIPE) {
-		p.nextToken() // consume |
-		p.nextToken() // consume next token
+	// Check if this is a record type definition or record composition
+	// Record type: { field: Type, ... }
+	// Record composition: TypeName & { field: Type, ... } or TypeName & TypeName
+	if p.currentTokenIs(token.LBRACE) {
+		// This is a record type definition
+		recordLit := p.parseRecordLiteral()
+		if recordLit == nil {
+			return nil
+		}
+		// Store as a single variant with record literal
+		variant := &ast.ADTVariant{
+			Token:   p.currentToken,
+			Name:    adt.Name, // Use ADT name as variant name for record types
+			Literal: recordLit,
+		}
+		adt.Variants = []*ast.ADTVariant{variant}
+	} else if p.currentTokenIs(token.IDENT) {
+		// Could be: TypeName (type alias) or TypeName & RecordType (composition)
+		// Check if next token is & for composition
+		if p.peekTokenIs(token.AMP) {
+			// Record composition: TypeName & TypeName & { ... }
+			composition := p.parseRecordComposition()
+			if composition == nil {
+				return nil
+			}
+			// Store composition as a variant with the composition expression
+			variant := &ast.ADTVariant{
+				Token:   p.currentToken,
+				Name:    adt.Name,
+				Literal: composition, // Store composition expression
+			}
+			adt.Variants = []*ast.ADTVariant{variant}
+		} else {
+			// Type alias: Name: type = OtherType
+			// Parse as a variant with payload
+			typeExpr := p.parseTypeExpressionSimple()
+			if typeExpr == nil {
+				return nil
+			}
+			variant := &ast.ADTVariant{
+				Token:   p.currentToken,
+				Name:    adt.Name,
+				Payload: typeExpr, // Store type alias target
+			}
+			adt.Variants = []*ast.ADTVariant{variant}
+		}
+	} else {
+		// Parse as ADT variants: Variant1 | Variant2 | ...
+		adt.Variants = []*ast.ADTVariant{}
 		variant := p.parseADTVariant()
 		if variant == nil {
 			return nil
 		}
 		adt.Variants = append(adt.Variants, variant)
+
+		// Parse remaining variants
+		for p.peekTokenIs(token.PIPE) {
+			p.nextToken() // consume |
+			p.nextToken() // consume next token
+			variant := p.parseADTVariant()
+			if variant == nil {
+				return nil
+			}
+			adt.Variants = append(adt.Variants, variant)
+		}
 	}
 
 	// Set end token to the last token we consumed (last variant's end)
@@ -725,7 +773,7 @@ func (p *Parser) parseInterfaceType() *ast.InterfaceType {
 	// For now, we'll parse a single function signature
 	// In the future, this could be a list of methods
 	p.nextToken()
-	
+
 	// Parse the method as a function signature
 	// Interface methods are function types: fn (self) method(...) -> ...
 	if !p.currentTokenIs(token.FN) {
@@ -759,7 +807,7 @@ func (p *Parser) parseInterfaceMethod() *ast.FunctionParameter {
 	if !p.currentTokenIs(token.IDENT) {
 		return nil
 	}
-	
+
 	// Check for receiver type annotation
 	if p.peekTokenIs(token.COLON) {
 		p.nextToken() // consume :
@@ -1445,7 +1493,7 @@ func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken() // consume =
 		p.nextToken() // consume value
-	stmt.Value = p.parseExpression(LOWEST)
+		stmt.Value = p.parseExpression(LOWEST)
 	}
 
 	if p.peekTokenIs(token.SEMI) {

@@ -1,0 +1,38 @@
+package examples
+
+// Example: Record composition for extending types
+point2: type =
+  { x: u8
+  , y: u8
+  }
+
+point3: type =
+  point2 &
+  { z: u8
+  }
+
+// Example: Intrusive list node mixins
+intrusive_slist_node[Self]: type =
+  { next: *Self
+  }
+
+intrusive_dlist_node[Self]: type =
+  intrusive_slist_node[Self] &
+  { prev: *Self
+  }
+
+// Example: Composing payload + intrusive node
+point3_node: type =
+  point3 & intrusive_dlist_node[point3]
+
+// Methods for intrusive list operations
+fn (p: *point3_node) next() -> Option[*point3_node]
+  (p.next == null) ?
+    | .True  -> .None
+    | .False -> .Some(p.next)
+
+fn (p: *point3_node) prev() -> Option[*point3_node]
+  (p.prev == null) ?
+    | .True  -> .None
+    | .False -> .Some(p.prev)
+

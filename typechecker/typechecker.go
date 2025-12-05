@@ -1802,7 +1802,7 @@ func (tc *TypeChecker) checkInterfaceType(stmt *ast.InterfaceType) {
 		if returnType == nil {
 			returnType = &UnitType{}
 		}
-		
+
 		// For now, create a simple function type
 		// TODO: Parse full method signature including parameters
 		methods[method.Name.Value] = &FunctionType{
@@ -1819,6 +1819,84 @@ func (tc *TypeChecker) checkInterfaceType(stmt *ast.InterfaceType) {
 
 	// Store in environment
 	tc.env.SetType(stmt.Name.Value, interfaceType)
+}
+
+// parseRecordComposition parses record composition and flattens it into a single record type
+// Example: point3: type = point2 & { z: u8 }
+// Example: point3_node: type = point3 & intrusive_dlist_node[point3]
+func (tc *TypeChecker) parseRecordComposition(typeName string, expr ast.Expression) *RecordType {
+	// Collect all record types from the composition chain
+	fields := make(map[string]Type)
+	
+	// Recursively flatten the composition
+	tc.flattenRecordComposition(expr, &fields)
+	
+	return &RecordType{Fields: fields}
+}
+
+// flattenRecordComposition recursively flattens a record composition expression
+// into a single set of fields, checking for duplicate field names
+func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map[string]Type) {
+	if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "&" {
+		// Recursively flatten left and right
+		tc.flattenRecordComposition(infix.Left, fields)
+		tc.flattenRecordComposition(infix.Right, fields)
+		return
+	}
+	
+	// Base case: either a record literal or a type name
+	if recordLit, ok := expr.(*ast.RecordLiteral); ok {
+		// Parse record literal fields
+		for fieldName, fieldExpr := range recordLit.Fields {
+			fieldType := tc.parseTypeExpression(fieldExpr)
+			if fieldType == nil {
+				tc.addError("invalid field type in record composition: %s", fieldName)
+				continue
+			}
+			
+			// Check for duplicate field names
+			if existingType, exists := (*fields)[fieldName]; exists {
+				if !existingType.Equals(fieldType) {
+					tc.addError("duplicate field %s in record composition with conflicting types: %s vs %s", 
+						fieldName, existingType, fieldType)
+				}
+			} else {
+				(*fields)[fieldName] = fieldType
+			}
+		}
+	} else if ident, ok := expr.(*ast.Identifier); ok {
+		// Look up the type name and flatten its fields
+		// This should be a record type
+		typeScheme, ok := tc.env.Get(ident.Value)
+		if !ok {
+			tc.addError("type %s not found in record composition", ident.Value)
+			return
+		}
+		
+		// Instantiate the type scheme
+		unifier := NewUnifier()
+		typ := Instantiate(typeScheme, unifier)
+		
+		// Check if it's a record type
+		if recordType, ok := typ.(*RecordType); ok {
+			// Merge fields from the record type
+			for fieldName, fieldType := range recordType.Fields {
+				// Check for duplicate field names
+				if existingType, exists := (*fields)[fieldName]; exists {
+					if !existingType.Equals(fieldType) {
+						tc.addError("duplicate field %s in record composition with conflicting types: %s vs %s", 
+							fieldName, existingType, fieldType)
+					}
+				} else {
+					(*fields)[fieldName] = fieldType
+				}
+			}
+		} else {
+			tc.addError("type %s in record composition is not a record type, got %T", ident.Value, typ)
+		}
+	} else {
+		tc.addError("invalid expression in record composition: %T", expr)
+	}
 }
 
 // checkExhaustiveness verifies that a match expression covers all variants of an ADT

@@ -5,9 +5,44 @@ This document describes how Oak supports intrusive data structures using interse
 ## Design Principles
 
 1. **No structural record subtyping** - Types remain nominal
-2. **Intersection types at constraint layer only** - Used for interface composition and intrusive structure capabilities
-3. **Pattern-based narrowing** - No TypeScript-style predicate narrowing
-4. **Clean C compilation** - Direct struct fields, no vtables, no hidden indirection
+2. **Field-level intersection at definition time** - Record composition using `&` for layout composition (intrusive nodes, extending types)
+3. **Interface-level intersection for constraints** - Used for interface composition and intrusive structure capabilities
+4. **Pattern-based narrowing** - No TypeScript-style predicate narrowing
+5. **Clean C compilation** - Direct struct fields, no vtables, no hidden indirection
+
+## Record Composition
+
+Oak supports record composition using `&` at **type definition time only**. This allows composing record layouts without introducing general structural subtyping.
+
+### Basic Record Extension
+
+```oak
+point2: type =
+  { x: u8
+  , y: u8
+  }
+
+point3: type =
+  point2 &
+  { z: u8
+  }
+```
+
+This compiles to a single flattened record:
+```oak
+point3: type =
+  { x: u8
+  , y: u8
+  , z: u8
+  }
+```
+
+**Important**: `point3` and `point2` are **distinct nominal types**. There is no automatic subtyping relationship. To convert, write an explicit function:
+
+```oak
+fn to_point2( p3: point3 ) -> point2
+  { x: p3.x, y: p3.y }
+```
 
 ## Core Building Blocks
 
@@ -29,6 +64,54 @@ ListHook[T, Tag]: type =
 IntrusiveList[T, Tag]: type =
   { head: Option[*T]
   , tail: Option[*T]
+  }
+```
+
+### Intrusive Node Mixins
+
+Using record composition, we can build intrusive list nodes from mixins:
+
+```oak
+// Singly-linked list node mixin
+intrusive_slist_node[Self]: type =
+  { next: *Self
+  }
+
+// Doubly-linked list node (composed from singly-linked + prev)
+intrusive_dlist_node[Self]: type =
+  intrusive_slist_node[Self] &
+  { prev: *Self
+  }
+```
+
+This compiles to a single flattened record:
+```oak
+intrusive_dlist_node[Self]: type =
+  { next: *Self
+  , prev: *Self
+  }
+```
+
+### Composing Payload + Intrusive Node
+
+```oak
+point3: type =
+  { x: u8, y: u8, z: u8
+  }
+
+// Point that can be in a doubly-linked intrusive list
+point3_node: type =
+  point3 & intrusive_dlist_node[point3]
+```
+
+This compiles to:
+```oak
+point3_node: type =
+  { x:    u8
+  , y:    u8
+  , z:    u8
+  , next: *point3_node
+  , prev: *point3_node
   }
 ```
 
@@ -135,10 +218,19 @@ After monomorphization, generic functions become direct C functions with no vtab
 ## Type System Foundation
 
 - **Interfaces** express behavioral subsets
-- **Intersection types** require combinations of behaviors
+- **Interface intersection** (`&` in constraints) requires combinations of behaviors
+- **Record composition** (`&` in type definitions) composes field layouts at definition time
 - **Type schemes**: `∀T. (T: IntrusiveListNode[T, Tag]) => ...`
 - **No general record subtyping** - only `never ≤ T ≤ any` lattice
 - **Pattern-based narrowing** via `?` operator, not field-based predicates
+
+### Record Composition Rules
+
+1. **Only at definition time**: `&` for records is only allowed in `type` definitions
+2. **Flattening**: All components are flattened into a single record type
+3. **Duplicate fields**: Must have identical types (error if conflicting)
+4. **Nominal types**: The resulting type is nominal - no automatic subtyping
+5. **C compilation**: Compiles to a single flattened C struct
 
 ## Benefits
 
