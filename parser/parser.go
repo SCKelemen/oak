@@ -169,7 +169,7 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 	// If it's a token that can't start an expression (comma, semicolon, closing parens, operators that aren't prefix, etc.), return nil
 	if p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.SEMI) ||
 		p.currentTokenIs(token.RPAREN) || p.currentTokenIs(token.RBRACE) ||
-		p.currentTokenIs(token.RBRACK) {
+		p.currentTokenIs(token.RBRACK) || p.currentTokenIs(token.PIPE) {
 		return nil
 	}
 

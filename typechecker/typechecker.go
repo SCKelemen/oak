@@ -610,7 +610,7 @@ func (tc *TypeChecker) areCompatibleTypes(left, right Type) bool {
 func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Create new environment for function parameters
 	funcEnv := NewEnclosedTypeEnvironment(tc.env)
-	
+
 	// Type check parameters (for anonymous functions, infer from usage)
 	// For now, assume they're all i32 if we can't infer
 	// Note: Type inference for anonymous function parameters is limited
@@ -623,20 +623,20 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 		// Store as a monomorphic scheme
 		funcEnv.SetType(param.Value, paramType)
 	}
-	
+
 	// Save current environment and switch to function environment
 	oldEnv := tc.env
 	tc.env = funcEnv
-	
+
 	// Type check function body (BlockStatement - check last expression)
 	returnType := tc.checkBlockExpression(fn.Body)
-			if returnType == nil {
-				returnType = &UnitType{}
+	if returnType == nil {
+		returnType = &UnitType{}
 	}
-	
+
 	// Restore environment
 	tc.env = oldEnv
-	
+
 	return &FunctionType{
 		Parameters: paramTypes,
 		ReturnType: returnType,
@@ -672,19 +672,19 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	if funcType == nil {
 		return nil
 	}
-	
+
 	fnType, ok := funcType.(*FunctionType)
 	if !ok {
 		tc.addError("attempting to call non-function type: %s", funcType)
 		return nil
 	}
-	
+
 	// Check argument count
 	if len(expr.Arguments) != len(fnType.Parameters) {
 		tc.addError("function expects %d arguments, got %d", len(fnType.Parameters), len(expr.Arguments))
 		return nil
 	}
-	
+
 	// Check argument types (with coercion)
 	for i, arg := range expr.Arguments {
 		argType := tc.checkExpression(arg)
@@ -1061,7 +1061,7 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 			tc.addError("method %s argument %d: expected %s, got %s", methodName, i+1, expectedType, argType)
 		}
 	}
-	
+
 	return fnType.ReturnType
 }
 
@@ -1070,7 +1070,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 	if scrutineeType == nil {
 		return nil
 	}
-	
+
 	// Check that match expression has at least one arm
 	if len(expr.Arms) == 0 {
 		tc.addError("match expression must have at least one arm")
@@ -1091,7 +1091,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 			tc.env = oldEnv
 			continue
 		}
-		
+
 		// Type narrowing: use lattice narrowing
 		narrowedType := NarrowType(scrutineeType, arm.Pattern)
 
@@ -1330,7 +1330,7 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 	if leftType == nil {
 		return nil
 	}
-	
+
 	// Handle record field access: record.field
 	if recordType, ok := leftType.(*RecordType); ok {
 		if ident, ok := expr.Index.(*ast.Identifier); ok {
@@ -1360,7 +1360,7 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 		// In the future, we could require u32 specifically for array indices
 		return arrayType.ElementType
 	}
-	
+
 	tc.addError("index expression not supported for type: %s", leftType)
 	return nil
 }
@@ -1418,8 +1418,8 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 				if sub == nil {
 					// Try assignability check as fallback
 					if !tc.isAssignable(valueType, varType) {
-				tc.addError("variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
-			}
+						tc.addError("variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
+					}
 				} else {
 					// Apply substitution to get the unified type
 					varType = sub.Apply(varType)
@@ -1479,7 +1479,7 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 		tc.addError("undefined variable: %s", stmt.Name.Value)
 		return
 	}
-	
+
 	// Variable exists - this is a real assignment
 	// Instantiate the scheme to get the actual type
 	unifier := NewUnifier()
@@ -1489,7 +1489,7 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 	valueType := tc.checkExpression(stmt.Value, varType) // Pass expected type for context-based inference
 	if valueType != nil {
 		if !tc.isAssignable(valueType, varType) {
-		tc.addError("assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
+			tc.addError("assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
 		}
 	}
 }
@@ -1726,7 +1726,7 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError("while condition must be bool, got %s", conditionType)
 	}
-	
+
 	// Type check body
 	tc.checkBlockStatement(stmt.Body)
 }
@@ -1777,13 +1777,13 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
 			IsSlice:     true,
 		}
 	}
-	
+
 	// Check all elements have compatible types
 	firstType := tc.checkExpression(expr.Elements[0])
 	if firstType == nil {
 		return nil
 	}
-	
+
 	// Promote to the widest type if needed
 	commonType := firstType
 	for i := 1; i < len(expr.Elements); i++ {
@@ -1804,7 +1804,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
 			}
 		}
 	}
-	
+
 	return &ArrayType{
 		ElementType: commonType,
 		IsSlice:     true, // Array literals create slices for now
@@ -2044,23 +2044,66 @@ func (tc *TypeChecker) checkIntersectionConstraint(concreteType Type, constraint
 // implementsInterface checks if a concrete type implements an interface
 // This is a structural check: the type must have methods matching the interface
 func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type) bool {
-	// For now, this is a placeholder
-	// In a full implementation, we would:
-	// 1. Check if interfaceType is an InterfaceType
-	// 2. Look up the concrete type's methods
-	// 3. Verify all interface methods are present with matching signatures
-
-	// If the interface type is actually an ADT or other type, we might need different logic
-	if iface, ok := interfaceType.(*InterfaceType); ok {
-		// TODO: Check if concreteType has all methods in iface.Methods
-		// This requires method lookup, which isn't implemented yet
-		_ = iface
-		return false // Placeholder
+	// If it's the same type, return true
+	if concreteType.Equals(interfaceType) {
+		return true
 	}
 
-	// If it's an ADT type being used as an interface (not yet supported)
-	// or if it's the same type, return true
-	return concreteType.Equals(interfaceType)
+	// Check if interfaceType is an InterfaceType
+	iface, ok := interfaceType.(*InterfaceType)
+	if !ok {
+		// Not an interface type - can't implement it
+		return false
+	}
+
+	// Get the concrete type name for method lookup
+	var concreteTypeName string
+	switch t := concreteType.(type) {
+	case *ADTType:
+		concreteTypeName = t.Name
+	case *PrimitiveType:
+		// Primitive types don't have methods
+		return false
+	case *RecordType:
+		// Record types don't have methods (yet)
+		return false
+	default:
+		// Unknown type - can't implement interface
+		return false
+	}
+
+	// Check that the concrete type has all methods required by the interface
+	for methodName, requiredMethodType := range iface.Methods {
+		// Look up method on concrete type: TypeName::methodName
+		methodKey := fmt.Sprintf("%s::%s", concreteTypeName, methodName)
+		methodScheme, ok := tc.env.Get(methodKey)
+		if !ok {
+			// Method not found - type doesn't implement interface
+			return false
+		}
+
+		// Instantiate the method scheme to get the actual method type
+		unifier := NewUnifier()
+		methodType := Instantiate(methodScheme, unifier)
+		concreteMethodType, ok := methodType.(*FunctionType)
+		if !ok {
+			// Method is not a function type - invalid
+			return false
+		}
+
+		// Check that return types match
+		// TODO: Also check parameter types when interface parsing is complete
+		if !concreteMethodType.ReturnType.Equals(requiredMethodType.ReturnType) {
+			// Return type mismatch
+			return false
+		}
+
+		// TODO: Check parameter types when interface method parsing is complete
+		// For now, we just check that the method exists and has the right return type
+	}
+
+	// All required methods are present with matching signatures
+	return true
 }
 
 // SatisfiesConstraint checks if a concrete type satisfies an interface constraint

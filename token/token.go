@@ -37,9 +37,9 @@ const (
 	COLON // :
 	SEMI  // ;
 
-	ASSIGN    // =
+	ASSIGN       // =
 	COLON_ASSIGN // :=
-	ARROW     // ->
+	ARROW        // ->
 
 	PIPE  // |
 	AMP   // &
@@ -87,14 +87,14 @@ var tokens = [...]string{
 	LCHEV:  "<",
 	RCHEV:  ">",
 
-	COMMA:       ",",
-	DOT:         ".",
-	COLON:       ":",
-	SEMI:        ";",
+	COMMA: ",",
+	DOT:   ".",
+	COLON: ":",
+	SEMI:  ";",
 
-	ASSIGN:      "=",
+	ASSIGN:       "=",
 	COLON_ASSIGN: ":=",
-	ARROW:       "->",
+	ARROW:        "->",
 
 	PIPE:  "|",
 	AMP:   "&",
