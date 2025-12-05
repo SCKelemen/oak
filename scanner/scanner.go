@@ -355,7 +355,7 @@ func (s *Scanner) readBlockComment() token.Token {
 	column := s.column
 	byteStart := s.head
 
-	// Consume /* 
+	// Consume /*
 	s.readChar() // consume /
 	s.readChar() // consume *
 

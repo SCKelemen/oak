@@ -236,13 +236,11 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 				return newError("second argument to `get` must be integer, got %s", args[1].Type())
 			}
 			if idx.Value < 0 || int64(len(arr.Elements)) <= idx.Value {
-				// Return None (for now, we'll use NULL as None)
-				// TODO: Implement Option[T] properly
-				return NULL
+				// Return None
+				return makeOptionNone()
 			}
-			// Return Some(value) - for now, just return the value
-			// TODO: Wrap in Option[T]
-			return arr.Elements[idx.Value]
+			// Return Some(value)
+			return makeOptionSome(arr.Elements[idx.Value])
 		},
 		"try_slice": func(args ...object.Object) object.Object {
 			if len(args) != 3 {
@@ -262,16 +260,14 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			}
 			if start.Value < 0 || end.Value < start.Value || int64(len(arr.Elements)) < end.Value {
 				// Return None
-				// TODO: Implement Option[T] properly
-				return NULL
+				return makeOptionNone()
 			}
 			// Create slice
 			slice := &object.Array{
 				Elements: arr.Elements[start.Value:end.Value],
 			}
-			// Return Some(slice) - for now, just return the slice
-			// TODO: Wrap in Option[[]T]
-			return slice
+			// Return Some(slice)
+			return makeOptionSome(slice)
 		},
 	}
 
@@ -554,6 +550,24 @@ func isError(obj object.Object) bool {
 
 func newError(format string, a ...interface{}) *object.Error {
 	return &object.Error{Message: fmt.Sprintf(format, a...)}
+}
+
+// Helper functions for Option[T] values
+// Since we don't have full generic support yet, we create Option values dynamically
+func makeOptionNone() *object.ADTValue {
+	return &object.ADTValue{
+		TypeName: "Option",
+		Variant:  "None",
+		Value:    nil,
+	}
+}
+
+func makeOptionSome(value object.Object) *object.ADTValue {
+	return &object.ADTValue{
+		TypeName: "Option",
+		Variant:  "Some",
+		Value:    value,
+	}
 }
 
 // Evaluate ADT type definition

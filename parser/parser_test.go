@@ -87,9 +87,9 @@ func TestIntegerLiteralExpression(t *testing.T) {
 
 }
 
-// TODO: Update test for new function literal syntax: fn (x: i32) -> i32 { ... }
-func _TestFunctionLiteral(t *testing.T) {
-	input := `fn(x, y) { x + y; }`
+// Test function literal syntax: fn (x, y) { ... }
+func TestFunctionLiteral(t *testing.T) {
+	input := `fn(x, y) { x + y; };`
 
 	lxr := scanner.New(input)
 	p := New(lxr)
@@ -137,8 +137,8 @@ func _TestFunctionLiteral(t *testing.T) {
 	testInfixExpression(t, bStmt.Expression, "x", "+", "y")
 }
 
-// TODO: Update test for new function literal syntax
-func _TestFunctionArguments(t *testing.T) {
+// Test function literal arguments
+func TestFunctionArguments(t *testing.T) {
 	tests := []struct {
 		input    string
 		expected []string
