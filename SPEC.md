@@ -1398,27 +1398,56 @@ Result[T, E]: type
 
 ---
 
-## 15. Standard Library (Planned)
+## 15. REPL Directives
 
-### 13.1 Core Types
+Oak provides REPL directives that are part of the language syntax and are type-checked. These directives are only valid in REPL contexts and are rejected during compilation.
+
+### 15.1 Syntax
+
+REPL directives use a colon prefix:
+
+```oak
+:exit
+:quit
+:help
+```
+
+### 15.2 Available Commands
+
+* `:exit` / `:quit` - Terminates the REPL session. Returns type `never` (execution never returns).
+* `:help` - Displays help information about available REPL commands. Returns type `()`.
+
+### 15.3 Type Checking
+
+REPL commands are type-checked like any other statement:
+* `:exit` and `:quit` have type `never` (they terminate execution)
+* `:help` has type `()`
+
+In compiled code (non-REPL contexts), REPL directives are rejected as compile-time errors.
+
+---
+
+## 16. Standard Library (Planned)
+
+### 16.1 Core Types
 
 * `Option[T]`, `Result[T, E]`, `Bool`, `Comparison`
 * Primitive integers: `i8` through `i64`, `u8` through `u64`
 
-### 13.2 Slice Operations
+### 16.2 Slice Operations
 
 * `get(i: u32) -> Option[T]`
 * `try_slice(start: u32, end: u32) -> Option[[]T]`
 * `len() -> u32`
 
-### 13.3 Built-in Functions
+### 16.3 Built-in Functions
 
 * `zero_init()` - zero-initialize a value
 * `sizeof(T) -> u32` - size of type in bytes
 
 ---
 
-## 16. Implementation Status
+## 17. Implementation Status
 
 ### Completed
 
@@ -1443,7 +1472,7 @@ Result[T, E]: type
 
 ---
 
-## 17. Status and Future Work
+## 18. Status and Future Work
 
 This draft specification is **incomplete**. Notable areas to be specified or refined:
 

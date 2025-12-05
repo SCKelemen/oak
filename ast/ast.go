@@ -767,3 +767,17 @@ func (ub *UnsafeBlock) String() string {
 	out.WriteString(ub.Body.String())
 	return out.String()
 }
+
+// REPLCommand represents a REPL directive like :exit, :quit, :help
+// These are part of the language syntax and are type-checked
+type REPLCommand struct {
+	BaseNode
+	Token token.Token // ':' token
+	Name  string      // command name: "exit", "quit", "help"
+}
+
+func (rc *REPLCommand) statementNode()       {}
+func (rc *REPLCommand) TokenLiteral() string { return rc.Token.Literal }
+func (rc *REPLCommand) String() string {
+	return ":" + rc.Name
+}

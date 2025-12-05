@@ -117,6 +117,11 @@ func (p *Parser) parseStatement() ast.Statement {
 		return nil
 	}
 
+	// Check for REPL directives: :exit, :quit, :help
+	if p.currentTokenIs(token.COLON) {
+		return p.parseREPLCommand()
+	}
+
 	switch p.currentToken.TokenKind {
 	case token.PACKAGE:
 		return p.parsePackageStatement()
@@ -1580,6 +1585,32 @@ func (p *Parser) parseUnsafeBlock() *ast.UnsafeBlock {
 
 	block.Body = p.parseBlockStatement()
 	return block
+}
+
+// parseREPLCommand parses REPL directives like :exit, :quit, :help
+func (p *Parser) parseREPLCommand() *ast.REPLCommand {
+	stmt := &ast.REPLCommand{Token: p.currentToken}
+
+	// Expect an identifier after the colon
+	if !p.expectPeek(token.IDENT) {
+		p.errors = append(p.errors, "expected REPL command name after ':' (exit, quit, help)")
+		return nil
+	}
+
+	commandName := p.currentToken.Literal
+	// Validate command name
+	validCommands := map[string]bool{
+		"exit": true,
+		"quit": true,
+		"help": true,
+	}
+	if !validCommands[commandName] {
+		p.errors = append(p.errors, fmt.Sprintf("unknown REPL command: %s (valid: exit, quit, help)", commandName))
+		return nil
+	}
+
+	stmt.Name = commandName
+	return stmt
 }
 
 // Match expression: expr ? | pattern -> expr | ...

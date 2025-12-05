@@ -137,6 +137,12 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.UnsafeBlock:
 		return evalUnsafeBlock(node, env)
 
+	case *ast.REPLCommand:
+		// REPL commands are handled in the REPL itself, not here
+		// They terminate execution, so we just return NULL
+		// The REPL will check for these and handle them appropriately
+		return NULL
+
 	default:
 		return newError("unknown node type: %T", node)
 	}
@@ -146,6 +152,14 @@ func evalProgram(program *ast.Program, env *object.Environment) object.Object {
 	var result object.Object
 
 	for _, statement := range program.Statements {
+		// Handle REPL commands specially - they terminate evaluation
+		if _, ok := statement.(*ast.REPLCommand); ok {
+			// REPL commands are handled in the REPL itself, not here
+			// But we can return a special marker object if needed
+			// For now, just skip them in the evaluator
+			continue
+		}
+
 		result = Eval(statement, env)
 
 		switch result := result.(type) {

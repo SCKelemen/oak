@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"strings"
 
+	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/evaluator"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
@@ -34,13 +34,6 @@ func Start(in io.Reader, out io.Writer) {
 			continue
 		}
 
-		// Check for special REPL commands
-		trimmed := strings.TrimSpace(ln)
-		if trimmed == "exit" || trimmed == "quit" || trimmed == "q" {
-			fmt.Fprintf(out, "Goodbye!\n")
-			return
-		}
-
 		lxr := scanner.New(ln)
 		p := parser.New(lxr)
 
@@ -48,6 +41,23 @@ func Start(in io.Reader, out io.Writer) {
 		if len(p.Errors()) != 0 {
 			printParserErrors(out, p.Errors())
 			continue
+		}
+
+		// Check for REPL commands in the parsed program
+		// REPL commands are now part of the language syntax
+		if len(program.Statements) > 0 {
+			if replCmd, ok := program.Statements[0].(*ast.REPLCommand); ok {
+				switch replCmd.Name {
+				case "exit", "quit":
+					fmt.Fprintf(out, "Goodbye!\n")
+					return
+				case "help":
+					fmt.Fprintf(out, "Oak REPL Commands:\n")
+					fmt.Fprintf(out, "  :exit, :quit  - Exit the REPL\n")
+					fmt.Fprintf(out, "  :help         - Show this help message\n")
+					continue
+				}
+			}
 		}
 
 		// Clear previous errors before type checking
