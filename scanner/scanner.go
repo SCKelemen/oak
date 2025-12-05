@@ -113,8 +113,10 @@ func (s *Scanner) NextToken() token.Token {
 		tok = newTokenWithPos(token.RBRACE, s.current, line, column)
 	case '(':
 		tok = newTokenWithPos(token.LPAREN, s.current, line, column)
+		// Don't call readChar() here - it will be called at line 218
 	case ')':
 		tok = newTokenWithPos(token.RPAREN, s.current, line, column)
+		// Don't call readChar() here - it will be called at line 218
 	case '<':
 		tok = newTokenWithPos(token.LCHEV, s.current, line, column)
 	case '>':
@@ -262,7 +264,10 @@ func (s *Scanner) readWord() string {
 	for util.IsIdentifierChar(s.current) {
 		s.readChar()
 	}
-	s.read--
+	// After the loop, s.current is the first non-identifier character
+	// s.read points to the character after that
+	// We DON'T back up s.read - we leave s.current pointing to the next character to process
+	// This allows NextToken() to process that character in the next call
 	return s.input[position:s.head]
 }
 
@@ -271,7 +276,10 @@ func (s *Scanner) readNumber() string {
 	for util.IsDigit(s.current) {
 		s.readChar()
 	}
-	s.read--
+	// After the loop, s.current is the first non-digit character
+	// s.read points to the character after that
+	// We DON'T back up s.read - we leave s.current pointing to the next character to process
+	// This allows NextToken() to process that character in the next call
 	return s.input[position:s.head]
 }
 
