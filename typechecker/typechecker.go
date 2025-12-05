@@ -1120,12 +1120,13 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	// Extract type parameters and constraints
 	typeVars := []string{}
 	constraints := []Constraint{}
-	
+
 	if stmt.TypeParams != nil {
 		for _, tp := range stmt.TypeParams {
 			typeVars = append(typeVars, tp.Name.Value)
-			
+
 			// Extract constraint if present
+			// Constraints can be single interfaces or intersections (A & B & C)
 			if tp.Constraint != nil {
 				interfaces := tc.extractInterfacesFromConstraint(tp.Constraint)
 				if len(interfaces) > 0 {
@@ -1137,7 +1138,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			}
 		}
 	}
-	
+
 	// Create new environment for function parameters
 	funcEnv := NewEnclosedTypeEnvironment(tc.env)
 
@@ -1192,10 +1193,10 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		Parameters: paramTypes,
 		ReturnType: returnType,
 	}
-	
+
 	// Generalize function type to a scheme with constraints
 	funcScheme := Generalize(funcType, tc.env)
-	
+
 	// Add type parameters and constraints to the scheme
 	if len(typeVars) > 0 || len(constraints) > 0 {
 		funcScheme = &TypeScheme{
@@ -1204,7 +1205,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			Type:        funcScheme.Type,
 		}
 	}
-	
+
 	tc.env.Set(stmt.Name.Value, funcScheme)
 
 	// If this is a method, also store it with TypeName::methodName key
@@ -1493,7 +1494,38 @@ func (t *GenericType) Equals(other Type) bool {
 }
 
 // parseTypeExpression parses a type from an AST expression
+// Handles identifiers, intersections (A & B), and other type expressions
 func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
+	// Handle intersection types: A & B & C
+	if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "&" {
+		// Parse left and right sides recursively
+		leftType := tc.parseTypeExpression(infix.Left)
+		rightType := tc.parseTypeExpression(infix.Right)
+		
+		if leftType == nil || rightType == nil {
+			return nil
+		}
+		
+		// Build intersection type
+		types := []Type{leftType, rightType}
+		
+		// If left or right is already an intersection, flatten it
+		if leftIntersection, ok := leftType.(*IntersectionType); ok {
+			types = append(leftIntersection.Types, rightType)
+		}
+		if rightIntersection, ok := rightType.(*IntersectionType); ok {
+			if leftIntersection, ok := leftType.(*IntersectionType); ok {
+				// Both are intersections - merge them
+				types = append(leftIntersection.Types, rightIntersection.Types...)
+			} else {
+				types = []Type{leftType}
+				types = append(types, rightIntersection.Types...)
+			}
+		}
+		
+		return &IntersectionType{Types: types}
+	}
+	
 	if ident, ok := expr.(*ast.Identifier); ok {
 		// Check if it's a primitive type
 		switch ident.Value {
@@ -1510,6 +1542,10 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		case "any":
 			return &AnyType{}
 		default:
+			// Check if it's an interface type in the environment
+			if ifaceType, ok := tc.env.GetType(ident.Value); ok {
+				return ifaceType
+			}
 			// Assume it's an ADT type
 			return &ADTType{Name: ident.Value}
 		}
@@ -1599,6 +1635,7 @@ func (tc *TypeChecker) collectIntersectionTypes(expr ast.Expression, types *[]Ty
 }
 
 // implementsIntersection checks if a type implements all interfaces in an intersection type
+// This is used when checking intersection constraints: T: A & B & C
 func (tc *TypeChecker) implementsIntersection(concreteType Type, intersection *IntersectionType) bool {
 	for _, requiredType := range intersection.Types {
 		if !tc.implementsInterface(concreteType, requiredType) {
@@ -1606,6 +1643,24 @@ func (tc *TypeChecker) implementsIntersection(concreteType Type, intersection *I
 		}
 	}
 	return true
+}
+
+// checkIntersectionConstraint checks if a type satisfies an intersection constraint
+// Used when checking qualified types with intersection constraints
+func (tc *TypeChecker) checkIntersectionConstraint(concreteType Type, constraintExpr ast.Expression) bool {
+	// Parse the constraint expression to get intersection type
+	constraintType := tc.parseTypeExpression(constraintExpr)
+	if constraintType == nil {
+		return false
+	}
+	
+	// If it's an intersection, check all components
+	if intersection, ok := constraintType.(*IntersectionType); ok {
+		return tc.implementsIntersection(concreteType, intersection)
+	}
+	
+	// Single interface constraint
+	return tc.implementsInterface(concreteType, constraintType)
 }
 
 // implementsInterface checks if a concrete type implements an interface
@@ -1654,6 +1709,7 @@ func (tc *TypeChecker) SatisfiesConstraint(concreteType Type, constraint Constra
 
 // extractInterfacesFromConstraint extracts interface names from a constraint expression
 // Handles both single interfaces (Identifier) and intersections (InfixExpression with &)
+// This flattens intersection constraints into a list of interface names for storage in Constraint
 func (tc *TypeChecker) extractInterfacesFromConstraint(expr ast.Expression) []string {
 	interfaces := []string{}
 	
@@ -1676,6 +1732,28 @@ func (tc *TypeChecker) extractInterfacesFromConstraint(expr ast.Expression) []st
 	// Unknown constraint expression
 	tc.addError("invalid constraint expression: %s", expr.String())
 	return interfaces
+}
+
+// SatisfiesIntersectionConstraint checks if a concrete type satisfies an intersection constraint
+// This is used when checking constraints like T: Reader & Writer & Closer
+func (tc *TypeChecker) SatisfiesIntersectionConstraint(concreteType Type, interfaces []string) bool {
+	// For each required interface, check if the concrete type implements it
+	for _, ifaceName := range interfaces {
+		// Look up the interface type
+		ifaceType, ok := tc.env.GetType(ifaceName)
+		if !ok {
+			// Interface not found - this is a type error
+			tc.addError("interface %s not found in constraint", ifaceName)
+			return false
+		}
+		
+		// Check if concreteType implements the interface
+		if !tc.implementsInterface(concreteType, ifaceType) {
+			return false
+		}
+	}
+	
+	return true
 }
 
 // getLiteralType extracts the type of a literal object

@@ -999,26 +999,26 @@ func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
 // Returns a list of TypeParameter nodes
 func (p *Parser) parseTypeParameters() []*ast.TypeParameter {
 	params := []*ast.TypeParameter{}
-	
+
 	if !p.expectPeek(token.LBRACK) {
 		return nil
 	}
-	
+
 	// Check for empty list: []
 	if p.peekTokenIs(token.RBRACK) {
 		p.nextToken() // consume ]
 		return params
 	}
-	
+
 	p.nextToken() // consume first type param name
-	
+
 	// Parse first type parameter
 	param := p.parseTypeParameter()
 	if param == nil {
 		return nil
 	}
 	params = append(params, param)
-	
+
 	// Parse remaining type parameters
 	for p.peekTokenIs(token.COMMA) {
 		p.nextToken() // consume comma
@@ -1029,11 +1029,11 @@ func (p *Parser) parseTypeParameters() []*ast.TypeParameter {
 		}
 		params = append(params, param)
 	}
-	
+
 	if !p.expectPeek(token.RBRACK) {
 		return nil
 	}
-	
+
 	return params
 }
 
@@ -1044,12 +1044,12 @@ func (p *Parser) parseTypeParameter() *ast.TypeParameter {
 		Token: p.currentToken,
 		Name:  &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal},
 	}
-	
+
 	// Check for constraint: T: Constraint
 	if p.peekTokenIs(token.COLON) {
 		p.nextToken() // consume :
 		p.nextToken() // consume constraint start
-		
+
 		// Parse constraint expression (can be identifier or intersection)
 		constraint := p.parseConstraintExpression()
 		if constraint == nil {
@@ -1057,7 +1057,7 @@ func (p *Parser) parseTypeParameter() *ast.TypeParameter {
 		}
 		param.Constraint = constraint
 	}
-	
+
 	return param
 }
 
@@ -1069,12 +1069,12 @@ func (p *Parser) parseConstraintExpression() ast.Expression {
 	if first == nil {
 		return nil
 	}
-	
+
 	// Check for intersection: & Interface2 & ...
 	if !p.peekTokenIs(token.AMP) {
 		return first
 	}
-	
+
 	// Parse intersection: Interface1 & Interface2 & ...
 	// We'll represent this as a chain of infix expressions with &
 	// For now, parse as a left-associative chain
@@ -1094,7 +1094,7 @@ func (p *Parser) parseConstraintExpression() ast.Expression {
 			Right:    right,
 		}
 	}
-	
+
 	return left
 }
 
@@ -1320,7 +1320,7 @@ func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken() // consume =
 		p.nextToken() // consume value
-	stmt.Value = p.parseExpression(LOWEST)
+		stmt.Value = p.parseExpression(LOWEST)
 	}
 
 	if p.peekTokenIs(token.SEMI) {
