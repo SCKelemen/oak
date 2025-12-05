@@ -559,7 +559,7 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	}
 
 	// Handle record types: { field: Type, ... }
-	if recordLit, ok := expr.(*ast.RecordLiteral); ok {
+	if _, ok := expr.(*ast.RecordLiteral); ok {
 		// This is a record type definition
 		// We'll need to generate a struct type name
 		// For now, return a placeholder
