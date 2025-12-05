@@ -126,3 +126,6 @@ func TestParser_InterfaceMethod_ReceiverType(t *testing.T) {
 		t.Error("expected receiver type, got nil")
 	}
 }
+
+
+

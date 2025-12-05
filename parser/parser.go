@@ -976,7 +976,7 @@ func (p *Parser) parseInterfaceMethod() *ast.InterfaceMethod {
 	if p.peekTokenIs(token.COLON) {
 		p.nextToken() // consume :
 		p.nextToken() // consume type
-		receiverType := p.parseTypeExpressionSimple()
+		receiverType := p.parseTypeExpression()
 		if receiverType == nil {
 			return nil
 		}
@@ -1004,7 +1004,7 @@ func (p *Parser) parseInterfaceMethod() *ast.InterfaceMethod {
 		return nil
 	}
 	p.nextToken() // consume ->
-	method.ReturnType = p.parseTypeExpressionSimple()
+	method.ReturnType = p.parseTypeExpression()
 	if method.ReturnType == nil {
 		return nil
 	}
@@ -1063,6 +1063,8 @@ func (p *Parser) parseTypeExpression() ast.Expression {
 		return ident
 	}
 
+	// If we get here, we couldn't parse a type expression
+	// This might happen if currentToken is not a valid type start token
 	return nil
 }
 
@@ -1134,56 +1136,90 @@ func (p *Parser) parseArrayType() ast.Expression {
 	// Skip opening bracket (currentToken is [)
 	p.nextToken()
 
+	// Check for span type: [*]Type
+	if p.currentTokenIs(token.MUL) {
+		// This is a span type: [*]Type
+		p.nextToken() // consume *
+		// Expect closing bracket (expectPeek already consumes it)
+		if !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		// expectPeek already consumed ], so currentToken is now ]
+		// We need to advance to the element type
+		p.nextToken() // advance past ] to element type
+		// Now parse the element type
+		elementType := p.parseTypeExpression()
+		if elementType == nil {
+			return nil
+		}
+		// Return as IndexExpression with "*" identifier for span
+		return &ast.IndexExpression{
+			Token: p.currentToken,
+			Left:  elementType,
+			Index: &ast.Identifier{Token: p.currentToken, Value: "*"},
+		}
+	}
+
 	// Check for size: [N]Type
 	var size *ast.IntegerLiteral
 	if p.currentTokenIs(token.INT) {
 		// Fixed-size array: [N]Type
 		size = p.parseIntegerLiteral().(*ast.IntegerLiteral)
+		// parseIntegerLiteral doesn't advance, so currentToken is still the INT
+		// Advance past the integer to get to the closing bracket
+		p.nextToken() // advance past the size integer
+		// Now currentToken should be ]
 	}
 
-	// Parse element type
-	// After parsing the size (if present), we need to advance to the element type
+	// Check if this is a slice type: []Type (no size, just closing bracket)
+	if size == nil && p.currentTokenIs(token.RBRACK) {
+		// This is a slice type: []Type
+		// We need to advance past ] and then parse the element type
+		p.nextToken() // consume ]
+		// Now parse the element type
+		elementType := p.parseTypeExpression()
+		if elementType == nil {
+			return nil
+		}
+		// Return as IndexExpression with empty identifier for slice
+		return &ast.IndexExpression{
+			Token: p.currentToken,
+			Left:  elementType,
+			Index: &ast.Identifier{Token: p.currentToken, Value: ""},
+		}
+	}
+
+	// This is a fixed-size array: [N]Type
+	// After parsing the size, currentToken should be the closing bracket ]
 	if size != nil {
-		// After parsing the integer literal, currentToken might still be the INT token
-		// or it might have advanced. Let's check and advance if needed.
-		// parseIntegerLiteral() doesn't advance, so currentToken is still the INT
-		p.nextToken() // advance past the size integer to the element type
+		// Check for closing bracket after size
+		if !p.currentTokenIs(token.RBRACK) {
+			p.peekError(token.RBRACK)
+			return nil
+		}
+		p.nextToken() // consume ]
+		// Now currentToken is ], peekToken is the element type
+		// We need to advance to the element type, but parseTypeExpression expects currentToken to be the type
+		// So we need to advance first
+		p.nextToken() // advance past ] to element type
+		// Now parse the element type
+		// currentToken should now be the element type (IDENT, LBRACE, or LBRACK)
+		elementType := p.parseTypeExpression()
+		if elementType == nil {
+			return nil
+		}
+		// Return as IndexExpression with size as IntegerLiteral
+		return &ast.IndexExpression{
+			Token: p.currentToken,
+			Left:  elementType,
+			Index: size,
+		}
 	}
-	
-	// Now currentToken should be the element type identifier (e.g., u8)
-	elementType := p.parseTypeExpression()
-	if elementType == nil {
-		return nil
-	}
-	
-	// After parseTypeExpression, currentToken is still the identifier (it doesn't advance)
-	// So we need to advance past it to see the closing bracket
-	p.nextToken() // advance past the element type identifier
 
-	// Now currentToken should be the closing bracket ]
-	// Check if it's the closing bracket
-	if !p.currentTokenIs(token.RBRACK) {
-		p.peekError(token.RBRACK)
-		return nil
-	}
-	p.nextToken() // consume the ]
-	// Now currentToken is the token after ]
-
-	// Return as IndexExpression with size as IntegerLiteral (if present) or empty identifier for slices
-	// The typechecker will convert this to ArrayType
-	var index ast.Expression
-	if size != nil {
-		// Fixed-size array: [N]Type
-		index = size
-	} else {
-		// Slice: []Type (empty identifier means slice)
-		index = &ast.Identifier{Token: p.currentToken, Value: ""}
-	}
-	return &ast.IndexExpression{
-		Token: p.currentToken,
-		Left:  elementType,
-		Index: index,
-	}
+	// This shouldn't happen - we should have handled slice, span, and fixed-size arrays above
+	// Return error
+	p.errors = append(p.errors, "unexpected array type syntax")
+	return nil
 }
 
 // Parse literal expression (integer, string, or record literal)
@@ -1500,7 +1536,7 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 	}
 
 	p.nextToken() // consume ->
-	stmt.ReturnType = p.parseTypeExpressionSimple()
+	stmt.ReturnType = p.parseTypeExpression()
 
 	// Body can be expression or block
 	p.nextToken()
@@ -1538,7 +1574,7 @@ func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
 	}
 
 	p.nextToken() // consume type
-	param.Type = p.parseTypeExpressionSimple()
+	param.Type = p.parseTypeExpression()
 	params = append(params, param)
 
 	for p.peekTokenIs(token.COMMA) {
@@ -1552,7 +1588,7 @@ func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
 			return nil
 		}
 		p.nextToken() // consume type
-		param.Type = p.parseTypeExpressionSimple()
+		param.Type = p.parseTypeExpression()
 		params = append(params, param)
 	}
 
@@ -1728,11 +1764,11 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 	commandName := p.currentToken.Literal
 	// Validate command name
 	validCommands := map[string]bool{
-		"exit":  true,
-		"quit":  true,
-		"help":  true,
-		"clear": true,
-		"reset": true,
+		"exit":   true,
+		"quit":   true,
+		"help":   true,
+		"clear":  true,
+		"reset":  true,
 		"typeof": true,
 	}
 	if !validCommands[commandName] {
@@ -1741,7 +1777,7 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 	}
 
 	stmt.Name = commandName
-	
+
 	// Parse arguments for commands that take them (e.g., typeof(expr))
 	if commandName == "typeof" {
 		if p.peekTokenIs(token.LPAREN) {
@@ -1758,7 +1794,7 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 			stmt.Args = []ast.Expression{expr}
 		}
 	}
-	
+
 	return stmt
 }
 
