@@ -224,8 +224,8 @@ func TestTypeChecker_RecordFieldAccess(t *testing.T) {
 		hasError bool
 	}{
 		{"r: { code: i32 } = { code: 200 }; r.code", false},
-		{"r = { code: 200 }; r.code", false},  // type inference
-		{"r = { code: 200 }; r.status", true}, // field doesn't exist
+		{"r := { code: 200 }; r.code", false},  // type inference
+		{"r := { code: 200 }; r.status", true}, // field doesn't exist
 	}
 
 	for _, tt := range tests {
@@ -268,8 +268,8 @@ func TestTypeChecker_ArrayIndexing(t *testing.T) {
 		input    string
 		hasError bool
 	}{
-		{"arr = [1, 2, 3]; arr[0]", false},
-		{"arr = [1, 2, 3]; arr[1]", false},
+		{"arr := [1, 2, 3]; arr[0]", false},
+		{"arr := [1, 2, 3]; arr[1]", false},
 		{"5[0]", true}, // indexing non-array
 		// Note: string index checking may need parser fixes
 	}
@@ -362,7 +362,7 @@ func TestTypeChecker_FunctionInvocation(t *testing.T) {
 		{"fn add(a: i32, b: i32) -> i32 { a + b }; add(5)", true},            // wrong arg count
 		{"fn add(a: i32, b: i32) -> i32 { a + b }; add(5, 3, 4)", true},      // wrong arg count
 		{"fn add(a: i32, b: i32) -> i32 { a + b }; add(\"hello\", 3)", true}, // wrong arg type
-		{"fn add(a: i32, b: i32) -> i32 { a + b }; result = add(5, 3)", false},
+		{"fn add(a: i32, b: i32) -> i32 { a + b }; result := add(5, 3)", false},
 		// Note: calling non-function may need parser fixes
 	}
 

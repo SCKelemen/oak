@@ -128,7 +128,14 @@ func (s *Scanner) NextToken() token.Token {
 	case '.':
 		tok = newTokenWithPos(token.DOT, s.current, line, column)
 	case ':':
-		tok = newTokenWithPos(token.COLON, s.current, line, column)
+		if s.peekChar() == '=' {
+			ch := s.current
+			s.readChar()
+			literal := string(ch) + string(s.current)
+			tok = token.Token{TokenKind: token.COLON_ASSIGN, Literal: literal, Line: line, Column: column}
+		} else {
+			tok = newTokenWithPos(token.COLON, s.current, line, column)
+		}
 	case ';':
 		tok = newTokenWithPos(token.SEMI, s.current, line, column)
 

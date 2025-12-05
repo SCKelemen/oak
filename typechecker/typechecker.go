@@ -1389,7 +1389,7 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		}
 		return
 	}
-	
+
 	// Variable doesn't exist - check if this is a declaration without type annotation
 	// If it has no type and no value, that's an error
 	if stmt.Type == nil && stmt.Value == nil {
@@ -1471,10 +1471,11 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 }
 
 func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
-	// Check that variable exists
+	// Assignment: x = expr
+	// Rule: x must already be bound in the current scope, otherwise it's a compile-time error
+	// This prevents accidental "silent declaration by typo" (e.g., cont = 1 vs count = 1)
 	varScheme, ok := tc.env.Get(stmt.Name.Value)
 	if !ok {
-		// Variable doesn't exist - assignment requires the variable to be declared first
 		tc.addError("undefined variable: %s", stmt.Name.Value)
 		return
 	}

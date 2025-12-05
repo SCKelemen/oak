@@ -133,16 +133,19 @@ func (p *Parser) parseStatement() ast.Statement {
 	case token.UNSAFE:
 		return p.parseUnsafeBlock()
 	case token.IDENT:
-		// Could be variable declaration (a: type = value, a: type, or a = value) or assignment (a = b)
-		// Variable declaration with type: a: type = value or a: type
-		if p.peekTokenIs(token.COLON) {
+		// Variable declarations and assignments:
+		// - x := expr -> declaration with type inference (short declaration)
+		// - x: T = expr -> declaration with type annotation
+		// - x = expr -> assignment (must refer to existing variable)
+		if p.peekTokenIs(token.COLON_ASSIGN) {
+			// Short declaration: x := expr
+			return p.parseShortVariableDeclaration()
+		} else if p.peekTokenIs(token.COLON) {
+			// Typed declaration: x: T = expr or x: T
 			return p.parseVariableDeclaration()
 		} else if p.peekTokenIs(token.ASSIGN) {
-			// This could be either a variable declaration with type inference OR an assignment
-			// We'll parse it as a variable declaration without type, and the typechecker
-			// can distinguish: if variable exists, it's an error (can't redeclare);
-			// if it doesn't exist, it's a declaration
-			return p.parseVariableDeclarationWithoutType()
+			// Assignment: x = expr (must refer to existing variable)
+			return p.parseAssignmentStatement()
 		}
 		fallthrough
 	default:
@@ -1051,17 +1054,17 @@ func (p *Parser) parseTypeExpression() ast.Expression {
 	if p.currentTokenIs(token.LBRACE) {
 		return p.parseRecordType()
 	}
-	
+
 	// Handle array type: [Type] or [N]Type
 	if p.currentTokenIs(token.LBRACK) {
 		return p.parseArrayType()
 	}
-	
+
 	// Handle identifier type
 	if p.currentTokenIs(token.IDENT) {
 		return &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 	}
-	
+
 	return nil
 }
 
@@ -1071,17 +1074,17 @@ func (p *Parser) parseRecordType() ast.Expression {
 		Token:  p.currentToken,
 		Fields: make(map[string]ast.Expression),
 	}
-	
+
 	// Skip opening brace (currentToken is {)
 	p.nextToken()
-	
+
 	// Handle empty record type: {}
 	if p.currentTokenIs(token.RBRACE) {
 		record.EndToken = p.currentToken // } token
 		p.nextToken()                    // consume }
 		return record
 	}
-	
+
 	// Parse fields until closing brace
 	for {
 		// Parse field name (identifier)
@@ -1090,21 +1093,21 @@ func (p *Parser) parseRecordType() ast.Expression {
 			return nil
 		}
 		fieldName := p.currentToken.Literal
-		
+
 		// Expect colon
 		if !p.expectPeek(token.COLON) {
 			return nil
 		}
-		
+
 		// Parse field type (not value - this is a type annotation)
 		p.nextToken() // Advance past colon to the type
 		fieldType := p.parseTypeExpression()
 		if fieldType == nil {
 			return nil
 		}
-		
+
 		record.Fields[fieldName] = fieldType
-		
+
 		// Advance past the type expression
 		// After parseTypeExpression returns, currentToken is the last token of the type
 		// peekToken should be comma or closing brace
@@ -1113,18 +1116,18 @@ func (p *Parser) parseRecordType() ast.Expression {
 			p.nextToken() // advance to next field
 			continue
 		}
-		
+
 		if p.peekTokenIs(token.RBRACE) {
 			p.nextToken() // consume }
 			record.EndToken = p.currentToken
 			break
 		}
-		
+
 		// Unexpected token
 		p.peekError(token.RBRACE)
 		return nil
 	}
-	
+
 	return record
 }
 
@@ -1132,25 +1135,25 @@ func (p *Parser) parseRecordType() ast.Expression {
 func (p *Parser) parseArrayType() ast.Expression {
 	// Skip opening bracket (currentToken is [)
 	p.nextToken()
-	
+
 	// Check for size: [N]Type
 	if p.currentTokenIs(token.INT) {
 		// Fixed-size array - for now, just parse as dynamic array
 		// TODO: Support fixed-size arrays
 		p.nextToken()
 	}
-	
+
 	// Parse element type
 	elementType := p.parseTypeExpression()
 	if elementType == nil {
 		return nil
 	}
-	
+
 	// Expect closing bracket
 	if !p.expectPeek(token.RBRACK) {
 		return nil
 	}
-	
+
 	// For now, return the element type wrapped in an IndexExpression
 	// TODO: Create proper ArrayType AST node
 	return &ast.IndexExpression{
@@ -1788,20 +1791,20 @@ func (p *Parser) parseAssignmentStatement() *ast.AssignmentStatement {
 	return stmt
 }
 
-// Parse variable declaration without type annotation: a = value
-func (p *Parser) parseVariableDeclarationWithoutType() *ast.VariableDeclaration {
+// Parse short variable declaration: a := value (type inference)
+func (p *Parser) parseShortVariableDeclaration() *ast.VariableDeclaration {
 	stmt := &ast.VariableDeclaration{Token: p.currentToken}
 
 	// Name is current token (IDENT)
 	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 
-	// Expect assignment operator
-	if !p.expectPeek(token.ASSIGN) {
+	// Expect := operator
+	if !p.expectPeek(token.COLON_ASSIGN) {
 		return nil
 	}
 
 	// Parse value (type will be inferred)
-	p.nextToken() // consume =, now currentToken is =
+	p.nextToken() // consume :=, now currentToken is :=
 	// Now peekToken is the first token of the value expression
 	// Don't call nextToken() here - parseExpression will handle token advancement
 	stmt.Value = p.parseExpression(LOWEST)
