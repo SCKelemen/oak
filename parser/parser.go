@@ -1098,41 +1098,6 @@ func (p *Parser) parseConstraintExpression() ast.Expression {
 	return left
 }
 
-// parseTypeExpression parses a type expression for constraints
-// Can handle identifiers and intersections: Reader & Writer
-func (p *Parser) parseTypeExpression() ast.Expression {
-	// Start with identifier
-	if !p.currentTokenIs(token.IDENT) {
-		return nil
-	}
-	
-	first := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-	
-	// Check for intersection: & Interface2
-	if !p.peekTokenIs(token.AMP) {
-		return first
-	}
-	
-	// Parse intersection chain
-	left := first
-	for p.peekTokenIs(token.AMP) {
-		p.nextToken() // consume &
-		p.nextToken() // consume next identifier
-		if !p.currentTokenIs(token.IDENT) {
-			return nil
-		}
-		right := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-		left = &ast.InfixExpression{
-			Token:    p.currentToken,
-			Left:     left,
-			Operator: "&",
-			Right:    right,
-		}
-	}
-	
-	return left
-}
-
 // parseTypeExpressionSimple parses a simple type expression (identifier only)
 // Used for function parameters and return types
 func (p *Parser) parseTypeExpressionSimple() ast.Expression {
