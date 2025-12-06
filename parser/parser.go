@@ -1055,6 +1055,20 @@ func (p *Parser) parseTypeExpression() ast.Expression {
 		return p.parseArrayType()
 	}
 
+	// Handle unit type: ()
+	if p.currentTokenIs(token.LPAREN) {
+		if p.peekTokenIs(token.RPAREN) {
+			// This is the unit type ()
+			unitToken := p.currentToken
+			p.nextToken() // consume (
+			p.nextToken() // consume )
+			return &ast.Identifier{Token: unitToken, Value: "()"}
+		}
+		// Otherwise, it might be a parenthesized type expression
+		// For now, return nil - parenthesized types not yet supported
+		return nil
+	}
+
 	// Handle identifier type
 	if p.currentTokenIs(token.IDENT) {
 		ident := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
@@ -1715,7 +1729,8 @@ func (p *Parser) parseBlockExpression() ast.Expression {
 			return exprStmt.Expression
 		}
 	}
-	return nil
+	// Empty block returns unit type ()
+	return &ast.Identifier{Token: block.Token, Value: "()"}
 }
 
 // While statement

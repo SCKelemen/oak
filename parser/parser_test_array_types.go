@@ -106,5 +106,95 @@ func TestParser_ArrayType_InFunctionParameter(t *testing.T) {
 	}
 }
 
+func TestParser_ArrayType_WithUserDefinedTypes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		check func(*testing.T, *ast.VariableDeclaration)
+	}{
+		{
+			name:  "Slice with user type",
+			input: "arr: []Byte",
+			check: func(t *testing.T, stmt *ast.VariableDeclaration) {
+				indexExpr, ok := stmt.Type.(*ast.IndexExpression)
+				if !ok {
+					t.Fatalf("expected *ast.IndexExpression, got %T", stmt.Type)
+				}
+				ident, ok := indexExpr.Left.(*ast.Identifier)
+				if !ok {
+					t.Fatalf("expected *ast.Identifier for element type, got %T", indexExpr.Left)
+				}
+				if ident.Value != "Byte" {
+					t.Errorf("expected element type Byte, got %q", ident.Value)
+				}
+			},
+		},
+		{
+			name:  "Fixed array with user type",
+			input: "arr: [10]Byte",
+			check: func(t *testing.T, stmt *ast.VariableDeclaration) {
+				indexExpr, ok := stmt.Type.(*ast.IndexExpression)
+				if !ok {
+					t.Fatalf("expected *ast.IndexExpression, got %T", stmt.Type)
+				}
+				ident, ok := indexExpr.Left.(*ast.Identifier)
+				if !ok {
+					t.Fatalf("expected *ast.Identifier for element type, got %T", indexExpr.Left)
+				}
+				if ident.Value != "Byte" {
+					t.Errorf("expected element type Byte, got %q", ident.Value)
+				}
+			},
+		},
+		{
+			name:  "Span with user type",
+			input: "buf: [*]Byte",
+			check: func(t *testing.T, stmt *ast.VariableDeclaration) {
+				indexExpr, ok := stmt.Type.(*ast.IndexExpression)
+				if !ok {
+					t.Fatalf("expected *ast.IndexExpression, got %T", stmt.Type)
+				}
+				ident, ok := indexExpr.Left.(*ast.Identifier)
+				if !ok {
+					t.Fatalf("expected *ast.Identifier for element type, got %T", indexExpr.Left)
+				}
+				if ident.Value != "Byte" {
+					t.Errorf("expected element type Byte, got %q", ident.Value)
+				}
+				spanIdent, ok := indexExpr.Index.(*ast.Identifier)
+				if !ok {
+					t.Fatalf("expected *ast.Identifier for span marker, got %T", indexExpr.Index)
+				}
+				if spanIdent.Value != "*" {
+					t.Errorf("expected span marker *, got %q", spanIdent.Value)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lxr := scanner.New(tt.input)
+			p := New(lxr)
+			program := p.ParseProgram()
+
+			if len(p.Errors()) > 0 {
+				t.Fatalf("unexpected errors: %v", p.Errors())
+			}
+
+			if len(program.Statements) == 0 {
+				t.Fatal("expected at least one statement")
+			}
+
+			stmt, ok := program.Statements[0].(*ast.VariableDeclaration)
+			if !ok {
+				t.Fatalf("expected *ast.VariableDeclaration, got %T", program.Statements[0])
+			}
+
+			tt.check(t, stmt)
+		})
+	}
+}
+
 
 
