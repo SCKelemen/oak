@@ -1165,6 +1165,14 @@ func (p *Parser) parseArrayType() ast.Expression {
 		if elementType == nil {
 			return nil
 		}
+		// parseTypeExpression doesn't advance for identifiers, so if element type is an identifier,
+		// we need to advance past it to position correctly for the caller
+		if ident, ok := elementType.(*ast.Identifier); ok && ident.Value != "()" {
+			// Advance past the identifier if we're still at it
+			if p.currentTokenIs(token.IDENT) {
+				p.nextToken()
+			}
+		}
 		// Return as IndexExpression with "*" identifier for span
 		return &ast.IndexExpression{
 			Token: p.currentToken,
@@ -1215,6 +1223,14 @@ func (p *Parser) parseArrayType() ast.Expression {
 		elementType := p.parseTypeExpression()
 		if elementType == nil {
 			return nil
+		}
+		// parseTypeExpression doesn't advance for identifiers, so if element type is an identifier,
+		// we need to advance past it to position correctly for the caller
+		if ident, ok := elementType.(*ast.Identifier); ok && ident.Value != "()" {
+			// Advance past the identifier if we're still at it
+			if p.currentTokenIs(token.IDENT) {
+				p.nextToken()
+			}
 		}
 		// Return as IndexExpression with size as IntegerLiteral
 		return &ast.IndexExpression{
@@ -1791,15 +1807,61 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 	if commandName == "typeof" {
 		if p.peekTokenIs(token.LPAREN) {
 			p.nextToken() // consume (
-			// Parse the expression argument
-			expr := p.parseExpression(LOWEST)
+			// typeof() can accept both value expressions and type expressions
+			// Try parsing as type expression first (for things like []i32, [10]Byte, etc.)
+			// If that fails, try as value expression
+			var expr ast.Expression
+			if p.currentTokenIs(token.LBRACK) || p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.IDENT) || p.currentTokenIs(token.LPAREN) {
+				// Could be a type expression - try parsing as type
+				expr = p.parseTypeExpression()
+				if expr != nil {
+					// Type expression parsed successfully
+					// parseTypeExpression doesn't advance for identifiers, but does for arrays/records
+					// For array types, parseArrayType may leave currentToken at the element type
+					// For identifiers, we need to advance past them
+					if ident, ok := expr.(*ast.Identifier); ok && ident.Value != "()" {
+						// Identifier type - advance past it
+						p.nextToken()
+					} else if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+						// Array type - check if we need to advance past the element type
+						// If the element type is an identifier, parseTypeExpression didn't advance
+						if ident, ok := indexExpr.Left.(*ast.Identifier); ok {
+							// Element type is an identifier - advance past it if we're still at it
+							if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == ident.Value {
+								p.nextToken()
+							}
+						}
+					}
+					// Advance to closing paren if needed
+					if p.peekTokenIs(token.RPAREN) {
+						p.nextToken() // advance to )
+					}
+				}
+			}
+			
+			// If type expression parsing didn't work, try value expression
 			if expr == nil {
-				p.errors = append(p.errors, "expected expression in typeof()")
+				expr = p.parseExpression(LOWEST)
+				if expr != nil {
+					// After parseExpression, currentToken is at the last token of the expression
+					// peekToken should be the closing paren. Advance to it if needed.
+					if p.peekTokenIs(token.RPAREN) {
+						p.nextToken() // advance to )
+					}
+				}
+			}
+			
+			if expr == nil {
+				p.errors = append(p.errors, "expected expression or type in typeof()")
 				return nil
 			}
-			if !p.expectPeek(token.RPAREN) {
+			
+			// Now consume the closing paren
+			if !p.currentTokenIs(token.RPAREN) {
+				p.errors = append(p.errors, "expected ')' after expression in typeof()")
 				return nil
 			}
+			p.nextToken() // consume )
 			stmt.Args = []ast.Expression{expr}
 		}
 	}
