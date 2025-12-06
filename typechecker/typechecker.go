@@ -1786,7 +1786,13 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 		}
 
 		// Check literal tag if present
+		// Skip if this is a record type definition (record literal in type context)
 		if variant.Literal != nil {
+			// Don't check record literals as expressions - they're type definitions
+			if _, isRecordLiteral := variant.Literal.(*ast.RecordLiteral); isRecordLiteral {
+				// This is a record type definition, skip expression checking
+				continue
+			}
 			literalType := tc.checkExpression(variant.Literal)
 			if literalType == nil {
 				tc.addError("ADT %s variant %s: invalid literal tag", stmt.Name.Value, variantName)

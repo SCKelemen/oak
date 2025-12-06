@@ -589,7 +589,17 @@ func evalADTType(adt *ast.ADTType, env *object.Environment) object.Object {
 		}
 
 		if variant.Literal != nil {
-			variantDef.Literal = Eval(variant.Literal, env)
+			// Check if this is a record type definition (record literal in type context)
+			// In that case, the literal contains type annotations, not values
+			if _, ok := variant.Literal.(*ast.RecordLiteral); ok {
+				// This is a record type definition: { field: Type, ... }
+				// Don't evaluate the field expressions as values - they're type annotations
+				// Just store a marker that this is a record type
+				variantDef.Literal = &object.Record{Fields: make(map[string]object.Object)}
+			} else {
+				// Regular literal (for ADT variants with literal tags)
+				variantDef.Literal = Eval(variant.Literal, env)
+			}
 		}
 
 		adtType.Variants = append(adtType.Variants, variantDef)
