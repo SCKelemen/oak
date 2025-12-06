@@ -234,14 +234,16 @@ func (ie *IndexExpression) String() string {
 	return out.String()
 }
 
-// SliceExpression: array[start:end] or array[start:] or array[:end] or array[:]
+// SliceExpression: array[low:high] or array[low:] or array[:high] or array[:]
 // Supports Python-style negative indices
+// Step field reserved for future [low:high:step] syntax
 type SliceExpression struct {
 	BaseNode
 	Token token.Token // The [ token
-	Left  Expression  // The array/view/span being sliced
-	Start Expression  // Start index (nil means 0, i.e., expr[:end])
-	End   Expression  // End index (nil means len, i.e., expr[start:] or expr[:])
+	Seq   Expression  // The array/view/span being sliced
+	Low   Expression  // Low bound (nil means 0, i.e., expr[:high])
+	High  Expression  // High bound (nil means len, i.e., expr[low:] or expr[:])
+	// Step Expression // Reserved for future [i:j:k] syntax
 }
 
 func (se *SliceExpression) expressionNode()      {}
@@ -249,14 +251,14 @@ func (se *SliceExpression) TokenLiteral() string { return se.Token.Literal }
 func (se *SliceExpression) String() string {
 	var out bytes.Buffer
 	out.WriteRune('(')
-	out.WriteString(se.Left.String())
+	out.WriteString(se.Seq.String())
 	out.WriteRune('[')
-	if se.Start != nil {
-		out.WriteString(se.Start.String())
+	if se.Low != nil {
+		out.WriteString(se.Low.String())
 	}
 	out.WriteRune(':')
-	if se.End != nil {
-		out.WriteString(se.End.String())
+	if se.High != nil {
+		out.WriteString(se.High.String())
 	}
 	out.WriteRune(']')
 	out.WriteRune(')')

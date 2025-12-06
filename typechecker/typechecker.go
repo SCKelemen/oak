@@ -801,6 +801,13 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		}
 	}
 
+	// Check if this is a builtin reinterpret cast: view_as[U](src) or span_as[U](src)
+	if ident, ok := expr.Function.(*ast.Identifier); ok {
+		if ident.Value == "view_as" || ident.Value == "span_as" {
+			return tc.checkReinterpretCast(ident.Value, expr.Arguments)
+		}
+	}
+
 	// Check if this is a method call: recv.method(args)
 	if indexExpr, ok := expr.Function.(*ast.IndexExpression); ok {
 		if methodName, ok := indexExpr.Index.(*ast.Identifier); ok {
@@ -841,6 +848,57 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	}
 
 	return fnType.ReturnType
+}
+
+// checkReinterpretCast checks view_as[U](src: []T) and span_as[U](src: [*]T) calls
+// These functions reinterpret views/spans to different element types
+func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expression) Type {
+	// For now, we'll use a simplified syntax: view_as[U](src) or span_as[U](src)
+	// In the future, we might support explicit generic syntax
+	if len(args) != 1 {
+		tc.addError("%s expects exactly one argument", funcName)
+		return nil
+	}
+
+	srcType := tc.checkExpression(args[0])
+	if srcType == nil {
+		return nil
+	}
+
+	// Check if source is a view or span
+	if arrayType, ok := srcType.(*ArrayType); ok {
+		if funcName == "view_as" && arrayType.IsSlice {
+			// view_as[U]([]T) -> []U
+			// For now, without generics, we'll require type annotation at call site
+			// The actual target type will be inferred from context or explicit annotation
+			// Return a placeholder type that indicates reinterpret is needed
+			// In practice, the target type would come from the generic parameter [U]
+			tc.addError("view_as requires generic type parameter (e.g., view_as[u32](src)). Generic syntax not yet implemented. Use type annotation: v: []u32 = view_as(src)")
+			// Return a placeholder - in full implementation, this would be []U where U is from generic param
+			return &ArrayType{
+				ElementType: arrayType.ElementType, // Placeholder - would be U in full implementation
+				Length:      -1,
+				IsSlice:     true,
+				IsSpan:      false,
+			}
+		} else if funcName == "span_as" && arrayType.IsSpan {
+			// span_as[U]([*]T) -> [*]U
+			tc.addError("span_as requires generic type parameter (e.g., span_as[u32](src)). Generic syntax not yet implemented. Use type annotation: s: [*]u32 = span_as(src)")
+			// Return a placeholder
+			return &ArrayType{
+				ElementType: arrayType.ElementType, // Placeholder - would be U in full implementation
+				Length:      -1,
+				IsSlice:     false,
+				IsSpan:      true,
+			}
+		} else {
+			tc.addError("%s type mismatch: view_as requires []T, span_as requires [*]T, got %s", funcName, srcType)
+			return nil
+		}
+	} else {
+		tc.addError("%s requires a view ([]T) or span ([*]T), got %s", funcName, srcType)
+		return nil
+	}
 }
 
 // checkPrimitiveConstructor checks if an invocation is a primitive type constructor
@@ -1641,36 +1699,36 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 }
 
 func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
-	leftType := tc.checkExpression(expr.Left)
-	if leftType == nil {
+	seqType := tc.checkExpression(expr.Seq)
+	if seqType == nil {
 		return nil
 	}
 
-	// Check start and end indices if provided
-	if expr.Start != nil {
-		startType := tc.checkExpression(expr.Start)
-		if startType == nil {
+	// Check low and high bounds if provided
+	if expr.Low != nil {
+		lowType := tc.checkExpression(expr.Low)
+		if lowType == nil {
 			return nil
 		}
-		if !tc.isNumericType(startType) {
-			tc.addError("slice start index must be numeric type, got %s", startType)
+		if !tc.isNumericType(lowType) {
+			tc.addError("slice low bound must be numeric type, got %s", lowType)
 			return nil
 		}
 	}
 
-	if expr.End != nil {
-		endType := tc.checkExpression(expr.End)
-		if endType == nil {
+	if expr.High != nil {
+		highType := tc.checkExpression(expr.High)
+		if highType == nil {
 			return nil
 		}
-		if !tc.isNumericType(endType) {
-			tc.addError("slice end index must be numeric type, got %s", endType)
+		if !tc.isNumericType(highType) {
+			tc.addError("slice high bound must be numeric type, got %s", highType)
 			return nil
 		}
 	}
 
 	// Handle slicing of arrays, views, and spans
-	if arrayType, ok := leftType.(*ArrayType); ok {
+	if arrayType, ok := seqType.(*ArrayType); ok {
 		// Slicing an owned array [N]T produces a View []T
 		// Slicing a View []T produces a View []T
 		// Slicing a Span [*]T produces a Span [*]T
@@ -1701,7 +1759,7 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 		}
 	}
 
-	tc.addError("slice expression not supported for type: %s", leftType)
+	tc.addError("slice expression not supported for type: %s", seqType)
 	return nil
 }
 

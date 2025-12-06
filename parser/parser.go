@@ -57,9 +57,8 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.registerInfix(token.LCHEV, p.parseInfixExpression)
 	p.registerInfix(token.RCHEV, p.parseInfixExpression)
 	p.registerInfix(token.LPAREN, p.parseInvocationExpression)
-	p.registerInfix(token.DOT, p.parseIndexExpression)
-	p.registerInfix(token.LBRACK, p.parseIndexExpression)
-	p.registerInfix(token.LBRACK, p.parseIndexExpression)
+	p.registerInfix(token.DOT, p.parseFieldAccess)
+	p.registerInfix(token.LBRACK, p.parseIndexOrSliceExpression)
 	p.registerInfix(token.LBRACE, p.parseTypeQualifiedLiteral)
 
 	// load the first 2 tokens
@@ -460,123 +459,90 @@ func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expressi
 	return exp
 }
 
-// Parse field access: record.field or array indexing: array[index]
-func (p *Parser) parseIndexExpression(left ast.Expression) ast.Expression {
-	if p.currentTokenIs(token.DOT) {
-		// Record field access: record.field
-		exp := &ast.IndexExpression{Token: p.currentToken, Left: left}
+// Parse field access: record.field
+func (p *Parser) parseFieldAccess(left ast.Expression) ast.Expression {
+	// Record field access: record.field
+	exp := &ast.IndexExpression{Token: p.currentToken, Left: left}
+	p.nextToken()
+	if !p.currentTokenIs(token.IDENT) {
+		p.peekError(token.IDENT)
+		return nil
+	}
+	exp.Index = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	return exp
+}
+
+// parseIndexOrSliceExpression handles both array[index] and array[low:high] syntax
+// This is a unified Pratt hook for '[' that pattern-matches on ':' to choose index vs slice
+func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression {
+	tok := p.currentToken // '['
+	p.nextToken()         // move to first token after '['
+
+	// Case 1: a[:...] or a[:]
+	if p.currentTokenIs(token.COLON) {
+		// [:high] or [:]
+		low := (ast.Expression)(nil)
+		// skip ':'
 		p.nextToken()
-		if !p.currentTokenIs(token.IDENT) {
-			p.peekError(token.IDENT)
+		var high ast.Expression
+		if !p.currentTokenIs(token.RBRACK) {
+			high = p.parseExpression(LOWEST)
+			if high == nil {
+				return nil
+			}
+		}
+		if !p.expectPeek(token.RBRACK) {
 			return nil
 		}
-		exp.Index = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-		return exp
-	} else if p.currentTokenIs(token.LBRACK) {
-		// Could be array indexing: array[index] or slicing: array[start:end]
-		// The current token is [, next should be the index expression or colon
-		bracketToken := p.currentToken
-		p.nextToken()
+		return &ast.SliceExpression{
+			Token: tok,
+			Seq:   left,
+			Low:   low,
+			High:  high,
+		}
+	}
 
-		// Check if this is a slice (has colon) or an index (no colon)
-		if p.currentTokenIs(token.COLON) {
-			// Slice expression: [:] or [:end] (start is nil)
-			sliceExp := &ast.SliceExpression{
-				Token: bracketToken,
-				Left:  left,
-				Start: nil, // [:end] or [:]
-			}
-			p.nextToken() // consume :, move to first token of end expr (or ])
+	// Otherwise we expect an expression first: candidate for index or low bound.
+	first := p.parseExpression(LOWEST)
+	if first == nil {
+		return nil
+	}
 
-			// Check if there's an end expression
-			// After consuming :, currentToken is the first token after :
-			// which could be ] (no end) or the start of the end expression
-			if p.currentTokenIs(token.RBRACK) {
-				// [:], no end expression
-				sliceExp.End = nil
-				// currentToken is already ], so we're done
-				return sliceExp
-			} else {
-				// [:end], parse end expression
-				// currentToken should be the first token of the end expression
-				endExpr := p.parseExpression(LOWEST)
-				if endExpr == nil {
-					return nil
-				}
-				sliceExp.End = endExpr
-			}
-
-			// Expect closing bracket
-			if !p.peekTokenIs(token.RBRACK) {
-				p.peekError(token.RBRACK)
+	// Now inspect what comes next
+	switch {
+	case p.peekTokenIs(token.RBRACK):
+		// a[expr] — index
+		if !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		return &ast.IndexExpression{
+			Token: tok,
+			Left:  left,
+			Index: first,
+		}
+	case p.peekTokenIs(token.COLON):
+		// a[expr:...]
+		p.nextToken() // move to ':'
+		p.nextToken() // move to start of high expr (or ']')
+		var high ast.Expression
+		if !p.currentTokenIs(token.RBRACK) {
+			high = p.parseExpression(LOWEST)
+			if high == nil {
 				return nil
-			}
-			p.nextToken() // consume ]
-			return sliceExp
-		} else {
-			// Index expression: array[index]
-			// Parse the index expression
-			indexExpr := p.parseExpression(LOWEST)
-			if indexExpr == nil {
-				return nil
-			}
-
-			// Check if this is actually a slice: [start:end] or [start:]
-			if p.peekTokenIs(token.COLON) {
-				// Slice expression: [start:end] or [start:]
-				sliceExp := &ast.SliceExpression{
-					Token: bracketToken,
-					Left:  left,
-					Start: indexExpr, // start is the expression we just parsed
-				}
-				// Advance past the start expression to :
-				// parseExpression leaves currentToken on the last token of the expression
-				// so we need to advance to get to :
-				p.nextToken() // move from last token of start expr to :
-				p.nextToken() // consume :, move to first token of end expr (or ])
-
-				// Check if there's an end expression
-				// After consuming :, currentToken is the first token after :
-				// which could be ] (no end) or the start of the end expression
-				if p.currentTokenIs(token.RBRACK) {
-					// [start:], no end expression
-					sliceExp.End = nil
-					// currentToken is already ], so we're done
-					return sliceExp
-				} else {
-					// [start:end], parse end expression
-					// currentToken should be the first token of the end expression
-					endExpr := p.parseExpression(LOWEST)
-					if endExpr == nil {
-						return nil
-					}
-					sliceExp.End = endExpr
-				}
-
-				// Expect closing bracket
-				if !p.peekTokenIs(token.RBRACK) {
-					p.peekError(token.RBRACK)
-					return nil
-				}
-				p.nextToken() // consume ]
-				return sliceExp
-			} else {
-				// Regular index expression: array[index]
-				exp := &ast.IndexExpression{Token: bracketToken, Left: left, Index: indexExpr}
-
-				// After parseExpression, currentToken is the last token of the index expression
-				// peekToken should be the closing bracket
-				if !p.peekTokenIs(token.RBRACK) {
-					p.peekError(token.RBRACK)
-					return nil
-				}
-				p.nextToken() // Advance past index expression to ]
-				p.nextToken() // Advance past ] to next token
-				return exp
 			}
 		}
-	} else {
-		p.peekError(token.IDENT)
+		if !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		return &ast.SliceExpression{
+			Token: tok,
+			Seq:   left,
+			Low:   first,
+			High:  high,
+		}
+	default:
+		// a[expr ???] – syntax error
+		p.peekError(token.RBRACK)
 		return nil
 	}
 }

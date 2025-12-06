@@ -196,17 +196,17 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 
 // checkSliceExpression checks slice operations for borrow creation
 func (bc *BorrowChecker) checkSliceExpression(slice *ast.SliceExpression, env *typechecker.TypeEnvironment, targetVar string) {
-	// Check the left-hand side (the array/view/span being sliced)
-	bc.checkExpression(slice.Left, env)
+	// Check the sequence being sliced (the array/view/span)
+	bc.checkExpression(slice.Seq, env)
 
 	// According to the spec, slicing an owned array [N]T creates a View borrow
 	// Slicing a View/[]T or Span/[*]T creates a derived subslice (no new borrow)
 
-	// Extract owner from slice.Left
-	ownerName := bc.extractOwnerName(slice.Left)
+	// Extract owner from slice.Seq
+	ownerName := bc.extractOwnerName(slice.Seq)
 	if ownerName == "" {
 		// Could be a view/span being sliced - check if it's a borrow
-		if ident, ok := slice.Left.(*ast.Identifier); ok {
+		if ident, ok := slice.Seq.(*ast.Identifier); ok {
 			// Check if this identifier is a borrow
 			if _, isBorrow := bc.ownerOf[ident.Value]; isBorrow {
 				// This is a subslice - share the same owner
