@@ -150,16 +150,16 @@ func (bc *BorrowChecker) checkBlockStatement(block *ast.BlockStatement, env *typ
 }
 
 // checkFunctionStatement handles function definitions with local scope
-// Functions create a new scope for borrow checking - borrows created inside
-// cannot escape the function, and local variables can be owners
+// Functions create a new lexical scope for borrow checking:
+// - Borrows created inside the function do not affect outer scope (state is restored)
+// - Functions can observe and respect outer borrows (they see current ownerStates/activeBorrows)
+// - Local variables (parameters, receiver) can be owners
+// - Function-local borrows are dropped when the function returns
 func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env *typechecker.TypeEnvironment) {
-	// Get the function's local environment from the typechecker
-	// The typechecker creates an enclosed environment for function parameters
-	// We need to access that environment to check local variables
-
-	// For now, we'll create a fresh borrow checker state for the function
-	// This ensures borrows created inside the function don't affect outer scope
-	// and vice versa
+	// Save current borrow checker state
+	// We snapshot state so borrows created inside don't leak out, but functions
+	// can still see and respect outer borrows (e.g., can't take a span of an
+	// outer owner that already has a view)
 
 	// Save current state
 	savedOwnerStates := make(map[string]BorrowState)
@@ -187,7 +187,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 
 	// Register receiver if present
 	if stmt.Receiver != nil {
-		receiverType := bc.parseTypeFromAST(stmt.Receiver.Type, env)
+		receiverType := bc.parseTypeFromAST(stmt.Receiver.Type, funcEnv)
 		if receiverType != nil {
 			if arrType, ok := receiverType.(*typechecker.ArrayType); ok {
 				if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
@@ -201,7 +201,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 
 	// Register parameters
 	for _, param := range stmt.Parameters {
-		paramType := bc.parseTypeFromAST(param.Type, env)
+		paramType := bc.parseTypeFromAST(param.Type, funcEnv)
 		if paramType != nil {
 			if arrType, ok := paramType.(*typechecker.ArrayType); ok {
 				if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
@@ -262,15 +262,9 @@ func (bc *BorrowChecker) parseTypeFromAST(typeExpr ast.Expression, env *typechec
 					IsSpan:      true,
 					ElementType: elementType,
 				}
-			} else if ident.Value == "" {
-				// Slice type: []T
-				return &typechecker.ArrayType{
-					Length:      -1,
-					IsSlice:     true,
-					IsSpan:      false,
-					ElementType: elementType,
-				}
 			}
+			// Note: []T slice syntax is not represented as IndexExpression with empty identifier
+			// This branch is dead code - slice types should be parsed from the type environment
 		}
 	}
 
@@ -305,7 +299,13 @@ func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement,
 
 	// Check if we're assigning to an owner (which might be borrowed)
 	// The left-hand side is an expression (could be identifier, index, etc.)
-	bc.checkExpression(stmt.Name, env)
+	// If it's an identifier, this is a write operation
+	if ident, ok := stmt.Name.(*ast.Identifier); ok {
+		bc.checkIdentifierUse(ident.Value, env, true)
+	} else {
+		// For indexed assignments (e.g., arr[i] = ...), check the base
+		bc.checkExpression(stmt.Name, env)
+	}
 }
 
 // dropBorrowsInCurrentBlock removes borrows created in the current block
@@ -401,7 +401,8 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		// Check if this is using an owner while it's borrowed
-		bc.checkIdentifierUse(e.Value, env)
+		// This is a read operation (not an assignment target)
+		bc.checkIdentifierUse(e.Value, env, false)
 	case *ast.SliceExpression:
 		bc.checkSliceExpression(e, env, targetVar)
 	case *ast.IndexExpression:
@@ -764,7 +765,8 @@ func (bc *BorrowChecker) checkSpanAsCall(call *ast.InvocationExpression, env *ty
 
 // checkIdentifierUse checks if an identifier is being used while its owner is borrowed
 // This enforces that owners cannot be used directly while they have active borrows
-func (bc *BorrowChecker) checkIdentifierUse(name string, env *typechecker.TypeEnvironment) {
+// isWrite indicates if this is a write operation (assignment target)
+func (bc *BorrowChecker) checkIdentifierUse(name string, env *typechecker.TypeEnvironment, isWrite bool) {
 	// Check if this is an owner
 	state, isOwner := bc.ownerStates[name]
 	if !isOwner {
@@ -774,14 +776,18 @@ func (bc *BorrowChecker) checkIdentifierUse(name string, env *typechecker.TypeEn
 
 	// This is an owner - check if it's being used while borrowed
 	if state == UniqueWrite {
-		// Owner has an active writable span - disallow direct use
+		// Owner has an active writable span - disallow any use (read or write)
 		bc.addError(fmt.Sprintf("cannot use owner '%s' while it has an active writable span", name))
 		return
 	}
 
-	// For SharedRead state, we might allow reads but disallow writes
-	// For now, we'll be conservative and allow reads but could be more restrictive
-	// This can be refined based on the memory model requirements
+	if state == SharedRead && isWrite {
+		// Owner has active read-only views - disallow writes
+		bc.addError(fmt.Sprintf("cannot write to owner '%s' while it has active read-only views", name))
+		return
+	}
+
+	// SharedRead + read operation: allowed (multiple readers can coexist)
 }
 
 // createViewBorrow creates a read-only borrow (view) from an owner
