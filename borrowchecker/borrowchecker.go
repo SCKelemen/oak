@@ -32,13 +32,32 @@ func (bs BorrowState) String() string {
 	}
 }
 
+// borrowKind represents the kind of borrow (view or span)
+type borrowKind int
+
+const (
+	BorrowView borrowKind = iota // []T - read-only view
+	BorrowSpan                   // [*]T - writable span
+)
+
+// borrowInfo tracks information about an active borrow
+type borrowInfo struct {
+	owner      string     // The owner variable name
+	kind       borrowKind // Whether this is a view or span
+	blockDepth int        // Block depth where this borrow was created
+}
+
 // BorrowChecker tracks borrow states and enforces borrowing rules
 type BorrowChecker struct {
 	// ownerStates maps owned array variable names to their current borrow state
 	ownerStates map[string]BorrowState
 
 	// ownerOf maps borrow variable names (views/spans) to their owner variable names
+	// This is kept for backward compatibility and quick lookups
 	ownerOf map[string]string
+
+	// activeBorrows tracks all active borrows with their metadata
+	activeBorrows map[string]borrowInfo
 
 	// errors collects borrow checker errors
 	errors []string
@@ -51,9 +70,10 @@ type BorrowChecker struct {
 // New creates a new borrow checker
 func New() *BorrowChecker {
 	return &BorrowChecker{
-		ownerStates: make(map[string]BorrowState),
-		ownerOf:     make(map[string]string),
-		errors:      []string{},
+		ownerStates:   make(map[string]BorrowState),
+		ownerOf:       make(map[string]string),
+		activeBorrows: make(map[string]borrowInfo),
+		errors:        []string{},
 	}
 }
 
@@ -77,6 +97,7 @@ func (bc *BorrowChecker) CheckProgram(program *ast.Program, env *typechecker.Typ
 	bc.ClearErrors()
 	bc.ownerStates = make(map[string]BorrowState)
 	bc.ownerOf = make(map[string]string)
+	bc.activeBorrows = make(map[string]borrowInfo)
 	bc.currentBlockDepth = 0
 
 	for _, stmt := range program.Statements {
@@ -113,24 +134,41 @@ func (bc *BorrowChecker) checkBlockStatement(block *ast.BlockStatement, env *typ
 }
 
 // dropBorrowsInCurrentBlock removes borrows created in the current block
-// and resets owner states if no borrows remain
+// and recomputes owner states based on remaining active borrows
 func (bc *BorrowChecker) dropBorrowsInCurrentBlock() {
-	// Find all borrows that should be dropped
-	// In v1, all borrows are lexical, so we track them by block depth
-	// For simplicity, we'll track borrows by variable name and drop them at block end
-	// This is a simplified model - a full implementation would track scope more precisely
-
-	// Recompute owner states: if no borrows point to an owner, set it to Free
-	for ownerName := range bc.ownerStates {
-		hasActiveBorrows := false
-		for _, borrowOwner := range bc.ownerOf {
-			if borrowOwner == ownerName {
-				hasActiveBorrows = true
-				break
-			}
+	// Remove borrows created in this block
+	for name, info := range bc.activeBorrows {
+		if info.blockDepth == bc.currentBlockDepth {
+			delete(bc.activeBorrows, name)
+			delete(bc.ownerOf, name)
 		}
-		if !hasActiveBorrows {
-			bc.ownerStates[ownerName] = Free
+	}
+
+	// Recompute owner states from remaining active borrows
+	// Start by marking all owners as Free
+	for owner := range bc.ownerStates {
+		bc.ownerStates[owner] = Free
+	}
+
+	// Scan remaining borrows and set SharedRead/UniqueWrite appropriately
+	for _, info := range bc.activeBorrows {
+		state := bc.ownerStates[info.owner]
+		switch info.kind {
+		case BorrowSpan:
+			// Spans require unique write access
+			if state == SharedRead {
+				// This shouldn't happen if we enforce correctly, but handle it
+				bc.addError("owner '%s' has both views and spans (should be impossible)", info.owner)
+			}
+			bc.ownerStates[info.owner] = UniqueWrite
+		case BorrowView:
+			// Views allow shared read access
+			if state == UniqueWrite {
+				// This shouldn't happen if we enforce correctly, but handle it
+				bc.addError("owner '%s' has both views and spans (should be impossible)", info.owner)
+			} else {
+				bc.ownerStates[info.owner] = SharedRead
+			}
 		}
 	}
 }
@@ -145,7 +183,7 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 	}
 
 	// After type checking, check if this variable is an owned array, view, or span
-	// The typechecker should have registered the type by now
+	// Use type information from the environment to classify the variable
 	typeScheme, ok := env.Get(varName)
 	if ok && typeScheme != nil {
 		typ := typeScheme.Type
@@ -154,11 +192,13 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 				// This is an owned array [N]T - initialize its borrow state
 				bc.ownerStates[varName] = Free
 			}
+			// Views ([]T) and spans ([*]T) are tracked as borrows, not owners
 		}
 	} else if vd.Type != nil {
 		// Type wasn't in environment yet - try to parse it from AST
 		// This is a fallback for when type checking hasn't run yet
 		// In practice, borrow checking should run after type checking
+		// For now, we can't determine the type without the typechecker
 	}
 }
 
@@ -177,6 +217,9 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 	}
 
 	switch e := expr.(type) {
+	case *ast.Identifier:
+		// Check if this is using an owner while it's borrowed
+		bc.checkIdentifierUse(e.Value, env)
 	case *ast.SliceExpression:
 		bc.checkSliceExpression(e, env, targetVar)
 	case *ast.IndexExpression:
@@ -202,50 +245,71 @@ func (bc *BorrowChecker) checkSliceExpression(slice *ast.SliceExpression, env *t
 	// According to the spec, slicing an owned array [N]T creates a View borrow
 	// Slicing a View/[]T or Span/[*]T creates a derived subslice (no new borrow)
 
-	// Extract owner from slice.Seq
+	// Extract owner from slice.Seq - only returns non-empty for true owners
 	ownerName := bc.extractOwnerName(slice.Seq)
-	if ownerName == "" {
-		// Could be a view/span being sliced - check if it's a borrow
-		if ident, ok := slice.Seq.(*ast.Identifier); ok {
-			// Check if this identifier is a borrow
-			if _, isBorrow := bc.ownerOf[ident.Value]; isBorrow {
-				// This is a subslice - share the same owner
-				if targetVar != "" {
-					bc.createSubslice(ident.Value, targetVar)
-				}
-				return
-			}
+	if ownerName != "" {
+		// This is slicing an owned array - creates a View borrow
+		if targetVar != "" {
+			bc.createViewBorrow(ownerName, targetVar)
 		}
 		return
 	}
 
-	// This is slicing an owned array - creates a View borrow
-	if targetVar != "" {
-		bc.createViewBorrow(ownerName, targetVar)
+	// Not an owner - check if it's a view/span being sliced (subslice)
+	if ident, ok := slice.Seq.(*ast.Identifier); ok {
+		// Check if this identifier is a borrow
+		if _, isBorrow := bc.activeBorrows[ident.Value]; isBorrow {
+			// This is a subslice - share the same owner
+			if targetVar != "" {
+				bc.createSubslice(ident.Value, targetVar)
+			}
+			return
+		}
+		
+		// Check type from environment to determine if this should be a borrow
+		// Use type information to classify the identifier
+		if scheme, ok := env.Get(ident.Value); ok {
+			if arrType, ok := scheme.Type.(*typechecker.ArrayType); ok {
+				if arrType.IsSlice {
+					// This is a []T (view) - treat as existing borrow for subslice
+					if targetVar != "" {
+						// We need to find the owner - for now, treat as subslice of unknown source
+						// In a full implementation, we'd track the source borrow
+						bc.addError("cannot create subslice '%s': source '%s' is a view but owner is unknown", targetVar, ident.Value)
+					}
+					return
+				} else if arrType.IsSpan {
+					// This is a [*]T (span) - treat as existing borrow for subslice
+					if targetVar != "" {
+						bc.addError("cannot create subslice '%s': source '%s' is a span but owner is unknown", targetVar, ident.Value)
+					}
+					return
+				}
+			}
+		}
 	}
 }
 
 // extractOwnerName extracts the owner variable name from an expression
 // Returns empty string if the expression is not an owned array reference
+// This only returns non-empty for true owners (variables in ownerStates)
 func (bc *BorrowChecker) extractOwnerName(expr ast.Expression) string {
 	switch e := expr.(type) {
 	case *ast.Identifier:
-		// Check if this is an owned array (has borrow state tracked)
+		// Only return non-empty if this is a true owner (has borrow state tracked)
 		if _, exists := bc.ownerStates[e.Value]; exists {
 			return e.Value
 		}
-		// Could be an owned array that hasn't been registered yet
-		// Return the identifier name and let the caller check
-		return e.Value
+		// Not an owner - could be a borrow or other variable
+		return ""
 	case *ast.PrefixExpression:
 		// Handle *arr (pointer dereference for view()/span() calls)
 		if e.Operator == "*" {
 			if ident, ok := e.Right.(*ast.Identifier); ok {
-				// Check if the dereferenced identifier is an owned array
+				// Only return non-empty if the dereferenced identifier is an owned array
 				if _, exists := bc.ownerStates[ident.Value]; exists {
 					return ident.Value
 				}
-				return ident.Value
 			}
 		}
 	}
@@ -261,8 +325,7 @@ func (bc *BorrowChecker) checkIndexExpression(index *ast.IndexExpression, env *t
 
 // checkInvocationExpression checks function calls for borrow operations
 func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
-	// Check if this is a call to view(), span(), or subslice()
-	// For now, we'll check by function name
+	// Check if this is a call to view(), span(), subslice(), view_as(), or span_as()
 	if ident, ok := call.Function.(*ast.Identifier); ok {
 		switch ident.Value {
 		case "view":
@@ -271,6 +334,10 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			bc.checkSpanCall(call, env, targetVar)
 		case "subslice":
 			bc.checkSubsliceCall(call, env, targetVar)
+		case "view_as":
+			bc.checkViewAsCall(call, env, targetVar)
+		case "span_as":
+			bc.checkSpanAsCall(call, env, targetVar)
 		}
 	}
 
@@ -335,6 +402,105 @@ func (bc *BorrowChecker) checkSubsliceCall(call *ast.InvocationExpression, env *
 	}
 }
 
+// checkViewAsCall handles view_as() calls: creates a derived view borrow with different element type
+func (bc *BorrowChecker) checkViewAsCall(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
+	if len(call.Arguments) != 1 {
+		bc.addError("view_as() expects exactly one argument")
+		return
+	}
+
+	// The argument should be an existing view ([]T)
+	// view_as reinterprets the view but doesn't create a new borrow from the owner
+	if ident, ok := call.Arguments[0].(*ast.Identifier); ok {
+		// Check if this is an existing borrow
+		if sourceInfo, exists := bc.activeBorrows[ident.Value]; exists {
+			if sourceInfo.kind == BorrowView {
+				// This is a view - create a derived view borrow (like subslice)
+				if targetVar != "" {
+					bc.createSubslice(ident.Value, targetVar)
+				}
+			} else {
+				bc.addError("view_as() argument must be a view ([]T), got span ([*]T)")
+			}
+		} else {
+			// Check type from environment
+			if scheme, ok := env.Get(ident.Value); ok {
+				if arrType, ok := scheme.Type.(*typechecker.ArrayType); ok {
+					if arrType.IsSlice {
+						// This is a []T but not tracked - might be from outer scope
+						// For now, we'll allow it but can't track the owner
+						bc.addError("view_as() argument '%s' is a view but owner is unknown (may be from outer scope)", ident.Value)
+					} else {
+						bc.addError("view_as() argument must be a view ([]T)")
+					}
+				}
+			}
+		}
+	} else {
+		bc.addError("view_as() argument must be a view variable")
+	}
+}
+
+// checkSpanAsCall handles span_as() calls: creates a derived span borrow with different element type
+func (bc *BorrowChecker) checkSpanAsCall(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
+	if len(call.Arguments) != 1 {
+		bc.addError("span_as() expects exactly one argument")
+		return
+	}
+
+	// The argument should be an existing span ([*]T)
+	// span_as reinterprets the span but doesn't create a new borrow from the owner
+	if ident, ok := call.Arguments[0].(*ast.Identifier); ok {
+		// Check if this is an existing borrow
+		if sourceInfo, exists := bc.activeBorrows[ident.Value]; exists {
+			if sourceInfo.kind == BorrowSpan {
+				// This is a span - create a derived span borrow (like subslice)
+				if targetVar != "" {
+					bc.createSubslice(ident.Value, targetVar)
+				}
+			} else {
+				bc.addError("span_as() argument must be a span ([*]T), got view ([]T)")
+			}
+		} else {
+			// Check type from environment
+			if scheme, ok := env.Get(ident.Value); ok {
+				if arrType, ok := scheme.Type.(*typechecker.ArrayType); ok {
+					if arrType.IsSpan {
+						// This is a [*]T but not tracked - might be from outer scope
+						bc.addError("span_as() argument '%s' is a span but owner is unknown (may be from outer scope)", ident.Value)
+					} else {
+						bc.addError("span_as() argument must be a span ([*]T)")
+					}
+				}
+			}
+		}
+	} else {
+		bc.addError("span_as() argument must be a span variable")
+	}
+}
+
+// checkIdentifierUse checks if an identifier is being used while its owner is borrowed
+// This enforces that owners cannot be used directly while they have active borrows
+func (bc *BorrowChecker) checkIdentifierUse(name string, env *typechecker.TypeEnvironment) {
+	// Check if this is an owner
+	state, isOwner := bc.ownerStates[name]
+	if !isOwner {
+		// Not an owner - could be a borrow or other variable, no restriction
+		return
+	}
+
+	// This is an owner - check if it's being used while borrowed
+	if state == UniqueWrite {
+		// Owner has an active writable span - disallow direct use
+		bc.addError(fmt.Sprintf("cannot use owner '%s' while it has an active writable span", name))
+		return
+	}
+
+	// For SharedRead state, we might allow reads but disallow writes
+	// For now, we'll be conservative and allow reads but could be more restrictive
+	// This can be refined based on the memory model requirements
+}
+
 // createViewBorrow creates a read-only borrow (view) from an owner
 func (bc *BorrowChecker) createViewBorrow(ownerName, borrowName string) {
 	state := bc.ownerStates[ownerName]
@@ -346,6 +512,13 @@ func (bc *BorrowChecker) createViewBorrow(ownerName, borrowName string) {
 	// Transition to SharedRead if not already
 	bc.ownerStates[ownerName] = SharedRead
 	bc.ownerOf[borrowName] = ownerName
+	
+	// Track this borrow with metadata
+	bc.activeBorrows[borrowName] = borrowInfo{
+		owner:      ownerName,
+		kind:       BorrowView,
+		blockDepth: bc.currentBlockDepth,
+	}
 }
 
 // createSpanBorrow creates a unique writable borrow (span) from an owner
@@ -359,17 +532,29 @@ func (bc *BorrowChecker) createSpanBorrow(ownerName, borrowName string) {
 	// Transition to UniqueWrite
 	bc.ownerStates[ownerName] = UniqueWrite
 	bc.ownerOf[borrowName] = ownerName
+	
+	// Track this borrow with metadata
+	bc.activeBorrows[borrowName] = borrowInfo{
+		owner:      ownerName,
+		kind:       BorrowSpan,
+		blockDepth: bc.currentBlockDepth,
+	}
 }
 
 // createSubslice creates a derived borrow (subslice) from an existing view/span
 func (bc *BorrowChecker) createSubslice(sourceBorrowName, subsliceName string) {
-	ownerName, exists := bc.ownerOf[sourceBorrowName]
+	sourceInfo, exists := bc.activeBorrows[sourceBorrowName]
 	if !exists {
 		bc.addError(fmt.Sprintf("cannot create subslice '%s': source '%s' is not a borrow", subsliceName, sourceBorrowName))
 		return
 	}
 
-	// Subslice shares the same owner
-	bc.ownerOf[subsliceName] = ownerName
-	// No state change - subslices don't create new borrows
+	// Subslice shares the same owner and kind, created at same block depth
+	bc.ownerOf[subsliceName] = sourceInfo.owner
+	bc.activeBorrows[subsliceName] = borrowInfo{
+		owner:      sourceInfo.owner,
+		kind:       sourceInfo.kind, // Subslice preserves view/span kind
+		blockDepth: sourceInfo.blockDepth,
+	}
+	// No state change - subslices don't create new borrows from the owner
 }
