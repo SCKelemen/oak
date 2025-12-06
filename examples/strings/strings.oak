@@ -156,16 +156,20 @@ fn recode[E, F](s: StrView[E]) -> StrView[F] =
 
 import io
 
-// Writer[E] wraps an io.Writer[u8] with an encoding tag E.
+// Writer[E] wraps a concrete type that implements io.Writer[u8] with an encoding tag E.
 // This provides encoding-aware string writing while staying compatible
 // with the generic io.Writer[u8] constraint.
+// The out field must be a concrete type that implements io.Writer[u8].
 Writer[E]: type = {
-    out: io.Writer[u8]  // Concrete type that implements io.Writer[u8]
+    out: *void  // Concrete type that implements io.Writer[u8] (type erased for now)
 }
 
 // Lowest-level: already-encoded bytes.
-fn write_bytes[E](w: Writer[E], payload: []u8) -> io.WriteOutcome =
-    w.out.write_from(payload)
+// This will need to be updated once we have proper generic constraints working.
+fn write_bytes[E, W](w: Writer[E], payload: []u8) -> io.WriteOutcome
+  where W: io.Writer =
+    // Real impl would call w.out.write_from(payload) where w.out is of type W
+    { written: 0, err: None }
 
 // Write a byte-based string whose encoding tag matches.
 fn write[E](w: Writer[E], msg: StrView[E]) -> io.WriteOutcome =

@@ -122,20 +122,20 @@ fn copy_bytes[R, W](r: R, w: W) -> (written: u64, err: Option[IOError])
 // ReadCloser[T] combines Readable[T] with a close operation.
 // Still only a constraint, never a value type.
 ReadCloser[T]: interface = {
-    read:  fn(self, dst: [*]T) -> ReadOutcome
+    read_into:  fn(self, dst: [*]T) -> ReadOutcome
     close: fn(self) -> Option[IOError]
 }
 
 // WriteCloser[T] combines Writable[T] with a close operation.
 WriteCloser[T]: interface = {
-    write: fn(self, src: []T) -> WriteOutcome
+    write_from: fn(self, src: []T) -> WriteOutcome
     close: fn(self) -> Option[IOError]
 }
 
 // ReadWriteCloser[T] combines Readable[T], Writable[T], and Closer.
 ReadWriteCloser[T]: interface = {
-    read:  fn(self, dst: [*]T) -> ReadOutcome
-    write: fn(self, src: []T) -> WriteOutcome
+    read_into:  fn(self, dst: [*]T) -> ReadOutcome
+    write_from: fn(self, src: []T) -> WriteOutcome
     close: fn(self) -> Option[IOError]
 }
 

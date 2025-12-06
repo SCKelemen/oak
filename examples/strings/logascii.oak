@@ -9,15 +9,13 @@ import io
 buf: [1024]u8 = {}
 
 // ASCII-only writer that writes to a UART, syslog, etc.
-// This wraps an io.Writer[u8] with an encoding tag.
+// This wraps a concrete writer type with an encoding tag.
 // The concrete writer type implements io.Writer[u8] constraint.
+//
+// Note: In a real implementation, we'd have a concrete writer struct that
+// implements io.Writer[u8], and wrap it here. For now, this is a placeholder.
 ascii_writer: strings.Writer[strings.Ascii] = {
-    out: {
-        // Concrete type that implements io.Writer[u8]
-        write_from: fn(self, src: []u8) -> io.WriteOutcome =
-            // send `src` to device that expects ASCII bytes
-            { written: len(src), err: None }
-    }
+    out: null  // Placeholder - would be a concrete type implementing io.Writer[u8]
 }
 
 // Internal helper: create a string buffer over a span of our backing buf.
