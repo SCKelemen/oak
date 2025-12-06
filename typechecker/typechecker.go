@@ -821,6 +821,14 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	}
 
 	// Regular function call
+	// Get the function identifier to retrieve the scheme for constraint checking
+	var funcScheme *TypeScheme
+	if funcIdent, ok := expr.Function.(*ast.Identifier); ok {
+		if scheme, ok := tc.env.Get(funcIdent.Value); ok {
+			funcScheme = scheme
+		}
+	}
+
 	funcType := tc.checkExpression(expr.Function)
 	if funcType == nil {
 		return nil
@@ -840,15 +848,25 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 
 	// Check argument types (with coercion)
 	// Pass expected type for context-based inference (e.g., for integer literals)
+	// Also collect argument types for constraint checking
+	argTypes := make([]Type, len(expr.Arguments))
 	for i, arg := range expr.Arguments {
 		expectedType := fnType.Parameters[i]
 		argType := tc.checkExpression(arg, expectedType)
 		if argType == nil {
 			continue
 		}
+		argTypes[i] = argType
 		if !tc.isAssignable(argType, expectedType) {
 			tc.addError("argument %d: expected %s, got %s", i+1, expectedType, argType)
 		}
+	}
+
+	// If the function has constraints, check them
+	// For HM-style inference, we infer type arguments from the call
+	// After unification, we should check that inferred types satisfy constraints
+	if funcScheme != nil && len(funcScheme.Constraints) > 0 {
+		tc.checkFunctionConstraints(funcScheme, fnType, argTypes)
 	}
 
 	return fnType.ReturnType
@@ -2376,32 +2394,17 @@ func (t *GenericType) Equals(other Type) bool {
 // Handles identifiers, intersections (A & B), and other type expressions
 func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 	// Handle intersection types: A & B & C
+	// Use collectIntersectionTypes to properly flatten nested intersections
 	if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "&" {
-		// Parse left and right sides recursively
-		leftType := tc.parseTypeExpression(infix.Left)
-		rightType := tc.parseTypeExpression(infix.Right)
-
-		if leftType == nil || rightType == nil {
+		types := []Type{}
+		tc.collectIntersectionTypes(expr, &types)
+		if len(types) == 0 {
 			return nil
 		}
-
-		// Build intersection type
-		types := []Type{leftType, rightType}
-
-		// If left or right is already an intersection, flatten it
-		if leftIntersection, ok := leftType.(*IntersectionType); ok {
-			types = append(leftIntersection.Types, rightType)
+		// If only one type after collection, return it directly (not an intersection)
+		if len(types) == 1 {
+			return types[0]
 		}
-		if rightIntersection, ok := rightType.(*IntersectionType); ok {
-			if leftIntersection, ok := leftType.(*IntersectionType); ok {
-				// Both are intersections - merge them
-				types = append(leftIntersection.Types, rightIntersection.Types...)
-			} else {
-				types = []Type{leftType}
-				types = append(types, rightIntersection.Types...)
-			}
-		}
-
 		return &IntersectionType{Types: types}
 	}
 
@@ -2502,38 +2505,126 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 	// This would require the parser to represent function types as FunctionLiteral
 	// For now, function types in annotations are not fully supported
 
-	// Handle intersection types: A & B & C
-	// The parser would need to represent this as an InfixExpression with AMP operators
-	// For now, we'll check if it's a chain of & operations
-	if infixExpr, ok := expr.(*ast.InfixExpression); ok && infixExpr.Operator == "&" {
-		// Parse intersection type: left & right
-		leftType := tc.parseTypeExpression(infixExpr.Left)
-		rightType := tc.parseTypeExpression(infixExpr.Right)
-		if leftType == nil || rightType == nil {
-			return nil
-		}
-		// Collect all types in the intersection
-		types := []Type{}
-		tc.collectIntersectionTypes(infixExpr, &types)
-		return &IntersectionType{Types: types}
-	}
-
 	return nil
 }
 
 // collectIntersectionTypes recursively collects all types in an intersection expression
+// This is a helper that avoids infinite recursion by not calling parseTypeExpression
+// for intersection expressions - it only calls it for non-intersection base types
 func (tc *TypeChecker) collectIntersectionTypes(expr ast.Expression, types *[]Type) {
 	if infixExpr, ok := expr.(*ast.InfixExpression); ok && infixExpr.Operator == "&" {
 		// Recursively collect from left and right
 		tc.collectIntersectionTypes(infixExpr.Left, types)
 		tc.collectIntersectionTypes(infixExpr.Right, types)
 	} else {
-		// Base case: parse the type
-		typ := tc.parseTypeExpression(expr)
+		// Base case: parse the type (this won't recurse into intersections since
+		// we've already handled the & operator case in parseTypeExpression)
+		typ := tc.parseTypeExpressionNonIntersection(expr)
 		if typ != nil {
 			*types = append(*types, typ)
 		}
 	}
+}
+
+// parseTypeExpressionNonIntersection parses a type expression but stops at intersections
+// This is used by collectIntersectionTypes to avoid infinite recursion
+func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) Type {
+	// Don't handle intersections here - that's done by the caller
+	if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "&" {
+		// This shouldn't happen if called correctly, but handle gracefully
+		return nil
+	}
+
+	// Handle all other type expressions (same as parseTypeExpression but without intersection handling)
+	if ident, ok := expr.(*ast.Identifier); ok {
+		// Check if it's a primitive type
+		switch ident.Value {
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+			return &PrimitiveType{Name: ident.Value}
+		case "byte":
+			return &PrimitiveType{Name: "u8"}
+		case "string":
+			return &StringType{}
+		case "Bool":
+			return &BoolType{}
+		case "()":
+			return &UnitType{}
+		case "never":
+			return &NeverType{}
+		case "any":
+			return &AnyType{}
+		default:
+			// Check if it's a type alias in the environment
+			if aliasType, ok := tc.env.GetType(ident.Value); ok {
+				return aliasType
+			}
+			// Assume it's an ADT type
+			return &ADTType{Name: ident.Value}
+		}
+	}
+
+	// Handle array types: [N]T or []T
+	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		elementType := tc.parseTypeExpressionNonIntersection(indexExpr.Left)
+		if elementType == nil {
+			return nil
+		}
+
+		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
+			// Fixed-size array: [N]T
+			return &ArrayType{
+				Length:      intLit.Value,
+				IsSlice:     false,
+				IsSpan:      false,
+				ElementType: elementType,
+			}
+		} else if ident, ok := indexExpr.Index.(*ast.Identifier); ok {
+			if ident.Value == "*" {
+				// Span type: [*]T
+				return &ArrayType{
+					Length:      -1,
+					IsSlice:     false,
+					IsSpan:      true,
+					ElementType: elementType,
+				}
+			} else if ident.Value == "" {
+				// Slice type: []T
+				return &ArrayType{
+					Length:      -1,
+					IsSlice:     true,
+					IsSpan:      false,
+					ElementType: elementType,
+				}
+			}
+		} else if indexExpr.Left == nil {
+			// Legacy: Slice type: []T
+			elementType := tc.parseTypeExpressionNonIntersection(indexExpr.Index)
+			if elementType == nil {
+				return nil
+			}
+			return &ArrayType{
+				Length:      -1,
+				IsSlice:     true,
+				IsSpan:      false,
+				ElementType: elementType,
+			}
+		}
+	}
+
+	// Handle record types: { field: Type, ... }
+	if recordLit, ok := expr.(*ast.RecordLiteral); ok {
+		fields := make(map[string]Type)
+		for name, fieldExpr := range recordLit.Fields {
+			fieldType := tc.parseTypeExpressionNonIntersection(fieldExpr)
+			if fieldType == nil {
+				return nil
+			}
+			fields[name] = fieldType
+		}
+		return &RecordType{Fields: fields}
+	}
+
+	return nil
 }
 
 // implementsIntersection checks if a type implements all interfaces in an intersection type
@@ -2683,6 +2774,72 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 
 	// All required methods are present with matching signatures
 	return true
+}
+
+// checkFunctionConstraints checks that inferred type arguments satisfy function constraints
+// This is called after type checking a function call to ensure constraints are satisfied
+// 
+// Note: Full constraint checking in HM-style inference requires:
+// 1. Unifying parameter types with argument types to get type variable bindings
+// 2. Tracking which fresh type vars map to which original type var names
+// 3. Checking that bound type variables satisfy their constraints
+//
+// For now, we do a simplified check: if we can directly match parameter types (that are type vars)
+// with argument types, we check constraints. This works for simple cases but may miss
+// constraints on type vars that appear only in return types or are inferred indirectly.
+func (tc *TypeChecker) checkFunctionConstraints(scheme *TypeScheme, fnType *FunctionType, argTypes []Type) {
+	if len(scheme.Constraints) == 0 {
+		return // No constraints to check
+	}
+
+	// Try to infer type variable bindings from parameter-argument pairs
+	// This is a simplified approach - full HM inference would use unification
+	typeVarBindings := make(map[string]Type)
+	unifier := NewUnifier()
+	
+	for i, paramType := range fnType.Parameters {
+		if i >= len(argTypes) {
+			continue
+		}
+		argType := argTypes[i]
+		if argType == nil {
+			continue
+		}
+		
+		// Try to unify parameter type with argument type
+		// This will give us bindings for type variables
+		sub := unifier.Unify(paramType, argType)
+		if sub != nil {
+			// Apply substitution to see what type variables got bound
+			// For now, we'll check if paramType is directly a TypeVar
+			if typeVar, ok := paramType.(*TypeVar); ok {
+				// Check if this type variable name has constraints
+				for _, constraint := range scheme.Constraints {
+					if constraint.Var == typeVar.Name {
+						// Check that the argument type satisfies the constraint
+						if !tc.SatisfiesConstraint(argType, constraint) {
+							tc.addError("function call: type argument %s (inferred as %s) does not satisfy constraint: %s",
+								typeVar.Name, argType, constraint)
+						}
+					}
+				}
+				typeVarBindings[typeVar.Name] = argType
+			}
+		}
+	}
+	
+	// Check all constraints that we can verify with direct bindings
+	for _, constraint := range scheme.Constraints {
+		if concreteType, ok := typeVarBindings[constraint.Var]; ok {
+			if !tc.SatisfiesConstraint(concreteType, constraint) {
+				tc.addError("function call: type argument %s (inferred as %s) does not satisfy constraint: %s",
+					constraint.Var, concreteType, constraint)
+			}
+		}
+		// Note: Constraints on type variables that appear only in return types or are inferred
+		// indirectly through unification are not checked here. Full constraint checking would
+		// require tracking the full substitution mapping from instantiation through unification.
+	}
 }
 
 // SatisfiesConstraint checks if a concrete type satisfies an interface constraint
