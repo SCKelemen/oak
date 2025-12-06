@@ -831,6 +831,24 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 	fields := make(map[string]object.Object)
 
 	for fieldName, fieldExpr := range rl.Fields {
+		// Check if this looks like a type definition context
+		// In type definitions, field expressions are type annotations (identifiers like u8, i32)
+		// In value contexts, field expressions are values
+		// If the field expression is an identifier that's a primitive type name, skip evaluation
+		if ident, ok := fieldExpr.(*ast.Identifier); ok {
+			primitiveTypes := map[string]bool{
+				"i8": true, "i16": true, "i32": true, "i64": true,
+				"u8": true, "u16": true, "u32": true, "u64": true,
+				"string": true, "Bool": true, "byte": true, "()": true,
+			}
+			if primitiveTypes[ident.Value] {
+				// This is a type annotation in a type definition context
+				// Don't evaluate it as a value - just skip it
+				// The type definition is handled by evalADTType()
+				continue
+			}
+		}
+		
 		fieldValue := Eval(fieldExpr, env)
 		if isError(fieldValue) {
 			return fieldValue
