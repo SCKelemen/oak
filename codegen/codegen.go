@@ -150,11 +150,6 @@ func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 			for _, elem := range e.Elements {
 				collectFromExpr(elem)
 			}
-		case *ast.BlockStatement:
-			// Block expressions contain statements
-			for _, st := range e.Statements {
-				collectFromStmt(st)
-			}
 		}
 	}
 
@@ -531,15 +526,12 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 }
 
 // emitFunctionBody emits the body of a function (expression or block)
+// Note: FunctionStatement.Body is an Expression
+// parseBlockExpression() extracts the last expression from a block, so
+// function bodies with blocks are already converted to expressions by the parser
 func (cg *CodeGenerator) emitFunctionBody(body ast.Expression, tc *typechecker.TypeChecker) {
-	switch b := body.(type) {
-	case *ast.BlockStatement:
-		// Treat as full statement block, last statement is value
-		cg.emitBlockStatement(b, tc, true)
-	default:
-		// Simple expression body: `fn f(...) = expr`
-		cg.emitExpression(body, tc)
-	}
+	// All function bodies are expressions (blocks are converted to their last expression)
+	cg.emitExpression(body, tc)
 }
 
 // emitExpression emits C code for an expression (as a return statement)
