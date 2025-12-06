@@ -110,6 +110,8 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 // collectStringLiterals collects all string literals from the program
 func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 	var collectFromExpr func(expr ast.Expression)
+	var collectFromStmt func(stmt ast.Statement)
+	
 	collectFromExpr = func(expr ast.Expression) {
 		switch e := expr.(type) {
 		case *ast.StringLiteral:
@@ -148,17 +150,57 @@ func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 			for _, elem := range e.Elements {
 				collectFromExpr(elem)
 			}
+		case *ast.BlockStatement:
+			// Block expressions contain statements
+			for _, st := range e.Statements {
+				collectFromStmt(st)
+			}
 		}
 	}
 
-	// Collect from all statements
+	collectFromStmt = func(stmt ast.Statement) {
+		switch s := stmt.(type) {
+		case *ast.ExpressionStatement:
+			collectFromExpr(s.Expression)
+		case *ast.VariableDeclaration:
+			if s.Value != nil {
+				collectFromExpr(s.Value)
+			}
+		case *ast.WhileStatement:
+			collectFromExpr(s.Condition)
+			// Body is a BlockStatement, will be handled recursively
+			for _, st := range s.Body.Statements {
+				collectFromStmt(st)
+			}
+		case *ast.BlockStatement:
+			for _, st := range s.Statements {
+				collectFromStmt(st)
+			}
+		case *ast.AssignmentStatement:
+			collectFromExpr(s.Value)
+		}
+	}
+
+	// Collect from all top-level statements
 	for _, stmt := range program.Statements {
 		switch s := stmt.(type) {
 		case *ast.FunctionStatement:
-			// Function body is an Expression, which could be a BlockStatement
-			// but BlockStatement implements Statement, not Expression
-			// So we just collect from the body expression directly
 			collectFromExpr(s.Body)
+		case *ast.ExpressionStatement:
+			collectFromExpr(s.Expression)
+		case *ast.VariableDeclaration:
+			if s.Value != nil {
+				collectFromExpr(s.Value)
+			}
+		case *ast.WhileStatement:
+			collectFromExpr(s.Condition)
+			for _, st := range s.Body.Statements {
+				collectFromStmt(st)
+			}
+		case *ast.BlockStatement:
+			for _, st := range s.Statements {
+				collectFromStmt(st)
+			}
 		}
 	}
 }
@@ -178,10 +220,12 @@ func (cg *CodeGenerator) emitStringLiterals() {
 }
 
 // escapeCString escapes a string for use in a C string literal
+// Operates on bytes to preserve UTF-8 encoding correctly
 func (cg *CodeGenerator) escapeCString(s string) string {
 	var result strings.Builder
-	for _, r := range s {
-		switch r {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		switch b {
 		case '\n':
 			result.WriteString("\\n")
 		case '\r':
@@ -193,11 +237,11 @@ func (cg *CodeGenerator) escapeCString(s string) string {
 		case '"':
 			result.WriteString("\\\"")
 		default:
-			if r < 32 || r > 126 {
-				// Non-printable or non-ASCII - use hex escape
-				result.WriteString(fmt.Sprintf("\\x%02x", r))
+			if b < 32 || b > 126 {
+				// Non-printable or non-ASCII byte – preserve exact UTF-8 byte value
+				result.WriteString(fmt.Sprintf("\\x%02x", b))
 			} else {
-				result.WriteRune(r)
+				result.WriteByte(b)
 			}
 		}
 	}
@@ -226,13 +270,6 @@ func (cg *CodeGenerator) emitHeader() {
 	cg.write("typedef i32 rune;\n")
 	cg.write("\n")
 	// Emit string type definition
-	cg.write("typedef struct oak_string {\n")
-	cg.write("  u8* data;  /* UTF-8 bytes, not necessarily null-terminated */\n")
-	cg.write("  u32 len;   /* number of bytes */\n")
-	cg.write("} string;\n")
-	cg.write("\n")
-
-	// Emit string type
 	cg.write("typedef struct oak_string {\n")
 	cg.indentLevel++
 	cg.write("  u8* data;  /* UTF-8 bytes, not necessarily null-terminated */\n")
@@ -495,8 +532,14 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 // emitFunctionBody emits the body of a function (expression or block)
 func (cg *CodeGenerator) emitFunctionBody(body ast.Expression, tc *typechecker.TypeChecker) {
-	// Single expression - emit as return
-	cg.emitExpression(body, tc)
+	switch b := body.(type) {
+	case *ast.BlockStatement:
+		// Treat as full statement block, last statement is value
+		cg.emitBlockStatement(b, tc, true)
+	default:
+		// Simple expression body: `fn f(...) = expr`
+		cg.emitExpression(body, tc)
+	}
 }
 
 // emitExpression emits C code for an expression (as a return statement)
