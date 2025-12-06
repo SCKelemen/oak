@@ -82,10 +82,47 @@ func (p *Parser) nextToken() {
 	p.currentToken = p.peekToken
 	p.peekToken = p.lxr.NextToken()
 
+	// Skip ILLEGAL tokens and report errors
+	// Note: zero-initialized tokens have TokenKind == 0 (ILLEGAL), but Line == 0 indicates uninitialized
+	for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
+		// Use the literal from the token (e.g., "unterminated block comment")
+		errorMsg := p.currentToken.Literal
+		if errorMsg == "" {
+			errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.currentToken.Line, p.currentToken.Column)
+		}
+		p.errors = append(p.errors, errorMsg)
+		// Skip the illegal token and continue
+		p.currentToken = p.peekToken
+		p.peekToken = p.lxr.NextToken()
+	}
+
 	// Skip trivia and comment tokens for currentToken, collecting them as we go
 	for p.currentToken.TokenKind == token.TRIVIA || p.currentToken.TokenKind == token.COMMENT {
 		p.pendingTrivia = append(p.pendingTrivia, p.currentToken)
 		p.currentToken = p.peekToken
+		p.peekToken = p.lxr.NextToken()
+		
+		// Skip any ILLEGAL tokens that appear after trivia/comments
+		for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
+			errorMsg := p.currentToken.Literal
+			if errorMsg == "" {
+				errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.currentToken.Line, p.currentToken.Column)
+			}
+			p.errors = append(p.errors, errorMsg)
+			p.currentToken = p.peekToken
+			p.peekToken = p.lxr.NextToken()
+		}
+	}
+
+	// Skip ILLEGAL tokens in peekToken
+	// Note: zero-initialized tokens have TokenKind == 0 (ILLEGAL), but Line == 0 indicates uninitialized
+	for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
+		errorMsg := p.peekToken.Literal
+		if errorMsg == "" {
+			errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.peekToken.Line, p.peekToken.Column)
+		}
+		p.errors = append(p.errors, errorMsg)
+		// Skip the illegal token
 		p.peekToken = p.lxr.NextToken()
 	}
 
@@ -93,6 +130,16 @@ func (p *Parser) nextToken() {
 	for p.peekToken.TokenKind == token.TRIVIA || p.peekToken.TokenKind == token.COMMENT {
 		p.pendingTrivia = append(p.pendingTrivia, p.peekToken)
 		p.peekToken = p.lxr.NextToken()
+		
+		// Skip any ILLEGAL tokens that appear after trivia/comments
+		for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
+			errorMsg := p.peekToken.Literal
+			if errorMsg == "" {
+				errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.peekToken.Line, p.peekToken.Column)
+			}
+			p.errors = append(p.errors, errorMsg)
+			p.peekToken = p.lxr.NextToken()
+		}
 	}
 }
 
@@ -1829,17 +1876,17 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 			// Strategy: try type expression first, but if it fails or positions incorrectly, try value expression
 			var expr ast.Expression
 			p.nextToken() // advance to the first token of the expression
-			
+
 			// Save initial state for potential reset
 			initialToken := p.currentToken
 			initialPeek := p.peekToken
 			initialErrorCount := len(p.errors)
-			
+
 			// Try parsing as type expression if it looks like one
 			if p.currentTokenIs(token.LBRACK) || p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.IDENT) || p.currentTokenIs(token.LPAREN) {
 				expr = p.parseTypeExpression()
 				newErrorCount := len(p.errors)
-				
+
 				// Check if we successfully parsed and are positioned at the closing paren
 				if expr != nil && (p.currentTokenIs(token.RPAREN) || p.peekTokenIs(token.RPAREN)) {
 					// Success! Advance to closing paren if needed
@@ -1859,7 +1906,7 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 					}
 				}
 			}
-			
+
 			// If type expression parsing didn't work, try value expression
 			if expr == nil {
 				expr = p.parseExpression(LOWEST)
@@ -1871,12 +1918,12 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 					}
 				}
 			}
-			
+
 			if expr == nil {
 				p.errors = append(p.errors, "expected expression or type in typeof()")
 				return nil
 			}
-			
+
 			// Now consume the closing paren
 			if !p.currentTokenIs(token.RPAREN) {
 				p.errors = append(p.errors, "expected ')' after expression in typeof()")

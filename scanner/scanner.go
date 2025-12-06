@@ -350,6 +350,7 @@ func (s *Scanner) readLineComment() token.Token {
 }
 
 // readBlockComment reads a block comment (/* ... */) and returns it as a COMMENT token
+// Returns ILLEGAL token if the comment is unterminated (EOF before */)
 func (s *Scanner) readBlockComment() token.Token {
 	line := s.line
 	column := s.column
@@ -363,8 +364,15 @@ func (s *Scanner) readBlockComment() token.Token {
 	var comment bytes.Buffer
 	for {
 		if s.current == 0 {
-			// EOF reached before closing */
-			break
+			// EOF reached before closing */ - this is an error
+			return token.Token{
+				TokenKind: token.ILLEGAL,
+				Literal:   "unterminated block comment",
+				Line:      line,
+				Column:    column,
+				ByteStart: byteStart,
+				ByteEnd:   s.head,
+			}
 		}
 		if s.current == '*' && s.peekChar() == '/' {
 			// Found closing */
