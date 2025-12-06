@@ -1,0 +1,28 @@
+package encoding/utf8
+
+import strings
+
+// Count Unicode scalar values (codepoints) in a UTF-8 string.
+fn len_runes(s: strings.string) -> u32 =
+    /* decode UTF-8 and count runes */ 0
+
+// Convert a UTF-8 string to uppercase (locale-insensitive).
+fn to_upper(s: strings.string) -> strings.string =
+    /* map Unicode toUpper over runes, re-encode to utf8 */ s
+
+// Convert to lowercase.
+fn to_lower(s: strings.string) -> strings.string =
+    /* map Unicode toLower */ s
+
+// Does this UTF-8 string consist only of ASCII bytes?
+fn is_ascii(s: strings.string) -> Bool =
+    strings.is_ascii_string(s)
+
+// Fast path: reinterpret UTF-8 as ASCII (with validation).
+fn as_ascii_view(s: strings.string) -> strings.ascii_string =
+    strings.as_ascii_view(s)
+
+// Provide a UTF-8-typed view explicitly using the generic Str[E] form.
+// Mostly just a spelling of the same type.
+fn as_utf8_view(s: strings.string) -> strings.Str[strings.utf8] =
+    { bytes: s.bytes }

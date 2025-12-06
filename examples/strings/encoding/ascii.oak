@@ -1,0 +1,25 @@
+package encoding/ascii
+
+import strings
+
+// Uppercase ASCII string (A–Z / a–z). Bytes outside [A-Za-z] are unchanged.
+fn to_upper(s: strings.ascii_string) -> strings.ascii_string =
+    /* map 'a'..'z' to 'A'..'Z' in bytes */ s
+
+// Lowercase ASCII string.
+fn to_lower(s: strings.ascii_string) -> strings.ascii_string =
+    /* map 'A'..'Z' to 'a'..'z' */ s
+
+// Lossless conversion from canonical string to ASCII string when possible.
+fn try_from_string(s: strings.string) -> strings.ascii_string =
+    strings.as_ascii_view(s)
+
+// Lossy conversion: non-ASCII become '?' (0x3F).
+fn from_string_lossy(s: strings.string) -> strings.ascii_string =
+    /* copy bytes; replace >= 0x80 with 0x3F */ { bytes: s.bytes }
+
+// Write an ASCII string into any Writer[E].
+// If E == ascii or E == utf8, you can just push bytes;
+// for other encodings you'd recode via strings.recode.
+fn write_ascii[E: strings.Encoding](w: strings.Writer[E], s: strings.ascii_string) -> () =
+    strings.write_bytes[E](w, strings.Str[E]{ bytes: s.bytes })

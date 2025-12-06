@@ -1,0 +1,27 @@
+package logascii
+
+import strings
+import encoding/utf8
+import encoding/ascii
+
+// ASCII-only writer; implementation provided by runtime.
+ascii_writer: strings.Writer[strings.ascii] = {
+    write: fn(bytes: []u8) -> () =
+        /* send to serial port, syslog, whatever */
+        ()
+}
+
+// Public logging API accepts canonical UTF-8 strings.
+fn log(msg: strings.string) -> () =
+    // 1. Ensure message is ASCII-only (fast path, no re-encode).
+    ascii_msg: strings.ascii_string =
+        strings.as_ascii_view(msg)
+
+    // 2. Then write using an ASCII writer – type index on the function
+    //    tells the compiler this uses ASCII encoding rules.
+    strings.write[strings.ascii](ascii_writer, msg)
+
+// Alternative: more "capability-token" flavored call
+fn log_ascii(msg: strings.string) -> () =
+    // Encoding is part of the type-level call:
+    strings.write[strings.ascii](ascii_writer, msg)

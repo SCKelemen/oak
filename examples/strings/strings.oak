@@ -1,0 +1,142 @@
+package strings
+
+//
+// 1. Encoding tags
+//
+
+// All encodings are values of this type.
+// Zero-size, "pure type" capability.
+Encoding: type = {}
+
+// Built-in encodings. Libraries can add more with the same shape.
+utf8: Encoding = {}
+ascii: Encoding = {}
+utf16: Encoding = {}
+utf32: Encoding = {}
+
+//
+// 2. Encoded immutable string views
+//
+
+// Generic "string" view over bytes with a phantom encoding tag.
+//
+// Representation:
+//   - logically immutable view
+//   - physically just a slice of bytes
+Str[E: Encoding]: type = {
+    bytes: []u8
+}
+
+// Canonical Oak string: UTF-8 bytes.
+string: type = Str[utf8]
+
+// ASCII-only string: same representation, stronger promise.
+ascii_string: type = Str[ascii]
+
+//
+// 3. Mutable string buffers (borrowed spans)
+//
+
+// Mutable string buffer borrowed from some owner's backing bytes.
+// This is not "the" string type, just for special perf / reuse cases.
+StrBuf[E: Encoding]: type = {
+    bytes: [*]u8
+}
+
+// Canonical UTF-8 buffer.
+string_buf: type = StrBuf[utf8]
+
+// ASCII buffer over an existing span.
+ascii_string_buf: type = StrBuf[ascii]
+
+//
+// 4. Basic utilities
+//
+
+// Number of bytes in the encoded string.
+fn len_bytes[E: Encoding](s: Str[E]) -> u32 =
+    /* len(s.bytes) – implementation detail */ 0
+
+// Expose the raw bytes (read-only).
+fn as_bytes[E: Encoding](s: Str[E]) -> []u8 =
+    s.bytes
+
+// Wrap bytes as an E-encoded string view without validating.
+// This is a "reinterpret" operation.
+fn from_bytes_unsafe[E: Encoding](bytes: []u8) -> Str[E] =
+    { bytes: bytes }
+
+// Canonical constructor for UTF-8 strings.
+// In a real stdlib this is where you'd validate UTF-8.
+fn string_from_utf8(bytes: []u8) -> string =
+    { bytes: bytes }
+
+// Borrowed mutable buffer wrapper over an existing span.
+fn buf_from_span[E: Encoding](span: [*]u8) -> StrBuf[E] =
+    { bytes: span }
+
+//
+// 5. ASCII-specific helpers on top of canonical UTF-8
+//
+
+// Byte-level predicate: all bytes < 0x80.
+fn is_ascii_bytes(bytes: []u8) -> Bool =
+    /* loop over bytes and check b < 0x80 */ false
+
+// Check if a canonical string is pure ASCII in its bytes.
+fn is_ascii_string(s: string) -> Bool =
+    is_ascii_bytes(s.bytes)
+
+// Reinterpret a UTF-8 string as an ASCII string view.
+// Panics (or would return a Result in a richer API) if non-ASCII.
+fn as_ascii_view(s: string) -> ascii_string =
+    if is_ascii_bytes(s.bytes) then
+        { bytes: s.bytes }
+    else
+        panic("strings.as_ascii_view: non-ASCII byte in string")
+    end
+
+// Construct an ASCII string directly from bytes, validating first.
+fn from_ascii_bytes(bytes: []u8) -> ascii_string =
+    if is_ascii_bytes(bytes) then
+        { bytes: bytes }
+    else
+        panic("strings.from_ascii_bytes: non-ASCII byte")
+    end
+
+//
+// 6. Encoding-tagged generic transforms
+//
+
+// "Into" a different encoding.
+//
+// For encodings that share the same layout (ascii ⊆ utf8),
+// this can be a cheap reinterpret-after-check.
+// For others (utf16, utf32, user encodings) you'd delegate to encoding/*.
+fn into[E: Encoding](s: string) -> Str[E] =
+    // default: assume E shares the utf8 byte layout
+    { bytes: s.bytes }
+
+// Recode between encodings.
+//
+// A full implementation would live in encoding/* packages and do real transcoding.
+fn recode[E: Encoding, F: Encoding](s: Str[E]) -> Str[F] =
+    /* delegate to encoding[E,F] – placeholder */ { bytes: s.bytes }
+
+//
+// 7. Writer abstraction tagged by encoding (for IO-style APIs)
+//
+
+Writer[E: Encoding]: type = {
+    // Contract: bytes passed to write must be interpreted as E.
+    write: fn([]u8) -> ()
+}
+
+// Write a string already in encoding E.
+fn write_bytes[E: Encoding](w: Writer[E], s: Str[E]) -> () =
+    w.write(s.bytes)
+
+// Write a canonical UTF-8 string into a Writer[E],
+// transcoding if needed (delegated to encoding/*).
+fn write[E: Encoding](w: Writer[E], msg: string) -> () =
+    /* recode msg: string (utf8) -> Str[E], then call write_bytes */ ()
