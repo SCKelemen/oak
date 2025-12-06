@@ -2778,7 +2778,7 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 
 // checkFunctionConstraints checks that inferred type arguments satisfy function constraints
 // This is called after type checking a function call to ensure constraints are satisfied
-// 
+//
 // Note: Full constraint checking in HM-style inference requires:
 // 1. Unifying parameter types with argument types to get type variable bindings
 // 2. Tracking which fresh type vars map to which original type var names
@@ -2796,7 +2796,7 @@ func (tc *TypeChecker) checkFunctionConstraints(scheme *TypeScheme, fnType *Func
 	// This is a simplified approach - full HM inference would use unification
 	typeVarBindings := make(map[string]Type)
 	unifier := NewUnifier()
-	
+
 	for i, paramType := range fnType.Parameters {
 		if i >= len(argTypes) {
 			continue
@@ -2805,7 +2805,7 @@ func (tc *TypeChecker) checkFunctionConstraints(scheme *TypeScheme, fnType *Func
 		if argType == nil {
 			continue
 		}
-		
+
 		// Try to unify parameter type with argument type
 		// This will give us bindings for type variables
 		sub := unifier.Unify(paramType, argType)
@@ -2827,7 +2827,7 @@ func (tc *TypeChecker) checkFunctionConstraints(scheme *TypeScheme, fnType *Func
 			}
 		}
 	}
-	
+
 	// Check all constraints that we can verify with direct bindings
 	for _, constraint := range scheme.Constraints {
 		if concreteType, ok := typeVarBindings[constraint.Var]; ok {
