@@ -4,23 +4,12 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/ast"
-	"github.com/SCKelemen/oak/object"
-	"github.com/SCKelemen/oak/parser"
-	"github.com/SCKelemen/oak/scanner"
-	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
 // TestRegionDisjointness_DisjointSpans tests that multiple spans with disjoint regions are allowed
 func TestRegionDisjointness_DisjointSpans(t *testing.T) {
-	input := `
-buf: [16]byte = zero_init()
-left: [*]byte = buf[0:8].span()
-right: [*]byte = buf[8:16].span()
-`
-	// Note: This test uses conceptual syntax - in reality, we'd need to parse slice expressions
-	// For now, we'll test the region overlap logic directly
-	
+	// Test the region overlap logic directly
 	bc := New()
 	env := typechecker.NewTypeEnvironment()
 	
