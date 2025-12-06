@@ -1139,14 +1139,13 @@ func (p *Parser) parseArrayType() ast.Expression {
 	// Check for span type: [*]Type
 	if p.currentTokenIs(token.MUL) {
 		// This is a span type: [*]Type
-		p.nextToken() // consume *
-		// Expect closing bracket (expectPeek already consumes it)
-		if !p.expectPeek(token.RBRACK) {
+		p.nextToken() // consume * - this advances to ]
+		// Check for closing bracket
+		if !p.currentTokenIs(token.RBRACK) {
+			p.peekError(token.RBRACK)
 			return nil
 		}
-		// expectPeek already consumed ], so currentToken is now ]
-		// We need to advance to the element type
-		p.nextToken() // advance past ] to element type
+		p.nextToken() // consume ] - this advances to the element type
 		// Now parse the element type
 		elementType := p.parseTypeExpression()
 		if elementType == nil {
@@ -1197,13 +1196,8 @@ func (p *Parser) parseArrayType() ast.Expression {
 			p.peekError(token.RBRACK)
 			return nil
 		}
-		p.nextToken() // consume ]
-		// Now currentToken is ], peekToken is the element type
-		// We need to advance to the element type, but parseTypeExpression expects currentToken to be the type
-		// So we need to advance first
-		p.nextToken() // advance past ] to element type
-		// Now parse the element type
-		// currentToken should now be the element type (IDENT, LBRACE, or LBRACK)
+		p.nextToken() // consume ] - this advances to the element type
+		// Now currentToken should be the element type (IDENT, LBRACE, or LBRACK)
 		elementType := p.parseTypeExpression()
 		if elementType == nil {
 			return nil
