@@ -1426,6 +1426,27 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 
 	fields := make(map[string]Type)
 	for name, fieldExpr := range expr.Fields {
+		// Check if this looks like a type definition context
+		// In type definitions, field expressions are type annotations (identifiers like u8, i32)
+		// In value contexts, field expressions are values
+		// If the field expression is an identifier and we have an expected type, try parsing as type first
+		if ident, ok := fieldExpr.(*ast.Identifier); ok {
+			// Check if it's a primitive type name
+			primitiveTypes := map[string]bool{
+				"i8": true, "i16": true, "i32": true, "i64": true,
+				"u8": true, "u16": true, "u32": true, "u64": true,
+				"string": true, "Bool": true, "byte": true, "()": true,
+			}
+			if primitiveTypes[ident.Value] {
+				// This is a type annotation, not a value - parse as type
+				fieldType := tc.parseTypeExpression(fieldExpr)
+				if fieldType != nil {
+					fields[name] = fieldType
+					continue
+				}
+			}
+		}
+		
 		// Use expected field type for context-based inference
 		var expectedFieldType Type
 		if expectedRecord != nil {
