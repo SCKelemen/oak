@@ -40,11 +40,21 @@ const (
 	BorrowSpan                   // [*]T - writable span
 )
 
+// Region represents a memory region for a borrow
+// Used for region-level disjointness checks (v2 feature)
+type Region struct {
+	Offset int64 // Start offset in elements (0-based)
+	Length int64 // Length in elements
+	// If Offset or Length is -1, it means the value is not a compile-time constant
+	// and we cannot prove disjointness
+}
+
 // borrowInfo tracks information about an active borrow
 type borrowInfo struct {
 	owner      string     // The owner variable name
 	kind       borrowKind // Whether this is a view or span
 	blockDepth int        // Block depth where this borrow was created
+	region     *Region    // Optional: region information for disjointness checks (nil if unknown)
 }
 
 // BorrowChecker tracks borrow states and enforces borrowing rules
@@ -316,25 +326,32 @@ func (bc *BorrowChecker) dropBorrowsInCurrentBlock() {
 	}
 
 	// Scan remaining borrows and set SharedRead/UniqueWrite appropriately
+	// With v2 region-level disjointness, we can have multiple spans if regions are disjoint
+	hasViews := make(map[string]bool)
+	hasSpans := make(map[string]bool)
+	
 	for _, info := range bc.activeBorrows {
-		state := bc.ownerStates[info.owner]
 		switch info.kind {
 		case BorrowSpan:
-			// Spans require unique write access
-			if state == SharedRead {
-				// This shouldn't happen if we enforce correctly, but handle it
-				bc.addError(fmt.Sprintf("owner '%s' has both views and spans (should be impossible)", info.owner))
-			}
-			bc.ownerStates[info.owner] = UniqueWrite
+			hasSpans[info.owner] = true
 		case BorrowView:
-			// Views allow shared read access
-			if state == UniqueWrite {
-				// This shouldn't happen if we enforce correctly, but handle it
-				bc.addError(fmt.Sprintf("owner '%s' has both views and spans (should be impossible)", info.owner))
-			} else {
-				bc.ownerStates[info.owner] = SharedRead
-			}
+			hasViews[info.owner] = true
 		}
+	}
+	
+	// Set owner states based on remaining borrows
+	for owner := range bc.ownerStates {
+		if hasViews[owner] && hasSpans[owner] {
+			// This shouldn't happen if we enforce correctly, but handle it
+			bc.addError(fmt.Sprintf("owner '%s' has both views and spans (should be impossible)", owner))
+		} else if hasSpans[owner] {
+			// Has spans (may be multiple if regions are disjoint)
+			bc.ownerStates[owner] = UniqueWrite
+		} else if hasViews[owner] {
+			// Has views
+			bc.ownerStates[owner] = SharedRead
+		}
+		// If neither, state remains Free (set above)
 	}
 }
 
@@ -403,6 +420,67 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 	}
 }
 
+// extractConstantInt extracts a constant integer value from an expression
+// Returns the value and true if it's a compile-time constant, or 0, false otherwise
+func (bc *BorrowChecker) extractConstantInt(expr ast.Expression, ownerLength int64) (int64, bool) {
+	if expr == nil {
+		return 0, true // nil means default (0 for low, len for high)
+	}
+	
+	if intLit, ok := expr.(*ast.IntegerLiteral); ok {
+		val := intLit.Value
+		// Handle negative indices: if val < 0, convert to len + val
+		if val < 0 {
+			if ownerLength < 0 {
+				// Can't normalize negative index without knowing length
+				return 0, false
+			}
+			val = ownerLength + val
+		}
+		return val, true
+	}
+	
+	// Not a constant - can't prove disjointness
+	return 0, false
+}
+
+// extractSliceRegion extracts region information from a slice expression
+// Returns region and true if bounds are compile-time constants, or nil, false otherwise
+func (bc *BorrowChecker) extractSliceRegion(slice *ast.SliceExpression, ownerLength int64) (*Region, bool) {
+	// Extract low bound
+	low, lowIsConst := bc.extractConstantInt(slice.Low, ownerLength)
+	if !lowIsConst && slice.Low != nil {
+		return nil, false
+	}
+	
+	// Extract high bound
+	high, highIsConst := bc.extractConstantInt(slice.High, ownerLength)
+	if !highIsConst && slice.High != nil {
+		return nil, false
+	}
+	
+	// Handle defaults
+	if slice.Low == nil {
+		low = 0
+	}
+	if slice.High == nil {
+		if ownerLength < 0 {
+			return nil, false // Can't compute default high without length
+		}
+		high = ownerLength
+	}
+	
+	// Validate bounds
+	if low < 0 || high < low {
+		return nil, false // Invalid bounds
+	}
+	
+	return &Region{
+		Offset: low,
+		Length: high - low,
+	}, true
+}
+
 // checkSliceExpression checks slice operations for borrow creation
 func (bc *BorrowChecker) checkSliceExpression(slice *ast.SliceExpression, env *typechecker.TypeEnvironment, targetVar string) {
 	// Check the sequence being sliced (the array/view/span)
@@ -416,7 +494,17 @@ func (bc *BorrowChecker) checkSliceExpression(slice *ast.SliceExpression, env *t
 	if ownerName != "" {
 		// This is slicing an owned array - creates a View borrow
 		if targetVar != "" {
-			bc.createViewBorrow(ownerName, targetVar)
+			// Try to extract region information for disjointness checks
+			var region *Region
+			if scheme, ok := env.Get(ownerName); ok {
+				if arrType, ok := scheme.Type.(*typechecker.ArrayType); ok && arrType.Length >= 0 {
+					// We know the owner's length - try to extract constant bounds
+					if r, ok := bc.extractSliceRegion(slice, arrType.Length); ok {
+						region = r
+					}
+				}
+			}
+			bc.createViewBorrowWithRegion(ownerName, targetVar, region)
 		}
 		return
 	}
@@ -424,14 +512,23 @@ func (bc *BorrowChecker) checkSliceExpression(slice *ast.SliceExpression, env *t
 	// Not an owner - check if it's a view/span being sliced (subslice)
 	if ident, ok := slice.Seq.(*ast.Identifier); ok {
 		// Check if this identifier is a borrow
-		if _, isBorrow := bc.activeBorrows[ident.Value]; isBorrow {
+		if sourceInfo, isBorrow := bc.activeBorrows[ident.Value]; isBorrow {
 			// This is a subslice - share the same owner
 			if targetVar != "" {
-				bc.createSubslice(ident.Value, targetVar)
+				// Try to compute the new region from the source region
+				var newRegion *Region
+				if sourceInfo.region != nil {
+					// We have source region info - compute new region
+					// For now, we can't compute this without knowing the source's offset
+					// This would require tracking the full region chain
+					// For v2, we'll track relative offsets
+					newRegion = nil // Can't compute without more info
+				}
+				bc.createSubsliceWithRegion(ident.Value, targetVar, newRegion)
 			}
 			return
 		}
-
+		
 		// Check type from environment to determine if this should be a borrow
 		// Use type information to classify the identifier
 		if scheme, ok := env.Get(ident.Value); ok {
@@ -528,7 +625,17 @@ func (bc *BorrowChecker) checkViewCall(call *ast.InvocationExpression, env *type
 	}
 
 	if targetVar != "" {
-		bc.createViewBorrow(ownerName, targetVar)
+		// view() creates a view of the entire array - region is [0, length)
+		var region *Region
+		if scheme, ok := env.Get(ownerName); ok {
+			if arrType, ok := scheme.Type.(*typechecker.ArrayType); ok && arrType.Length >= 0 {
+				region = &Region{
+					Offset: 0,
+					Length: arrType.Length,
+				}
+			}
+		}
+		bc.createViewBorrowWithRegion(ownerName, targetVar, region)
 	}
 }
 
@@ -547,7 +654,17 @@ func (bc *BorrowChecker) checkSpanCall(call *ast.InvocationExpression, env *type
 	}
 
 	if targetVar != "" {
-		bc.createSpanBorrow(ownerName, targetVar)
+		// span() creates a span of the entire array - region is [0, length)
+		var region *Region
+		if scheme, ok := env.Get(ownerName); ok {
+			if arrType, ok := scheme.Type.(*typechecker.ArrayType); ok && arrType.Length >= 0 {
+				region = &Region{
+					Offset: 0,
+					Length: arrType.Length,
+				}
+			}
+		}
+		bc.createSpanBorrowWithRegion(ownerName, targetVar, region)
 	}
 }
 
@@ -669,6 +786,11 @@ func (bc *BorrowChecker) checkIdentifierUse(name string, env *typechecker.TypeEn
 
 // createViewBorrow creates a read-only borrow (view) from an owner
 func (bc *BorrowChecker) createViewBorrow(ownerName, borrowName string) {
+	bc.createViewBorrowWithRegion(ownerName, borrowName, nil)
+}
+
+// createViewBorrowWithRegion creates a read-only borrow (view) from an owner with region information
+func (bc *BorrowChecker) createViewBorrowWithRegion(ownerName, borrowName string, region *Region) {
 	state := bc.ownerStates[ownerName]
 	if state == UniqueWrite {
 		bc.addError(fmt.Sprintf("cannot create view '%s' from '%s': owner has active writable borrow", borrowName, ownerName))
@@ -678,37 +800,112 @@ func (bc *BorrowChecker) createViewBorrow(ownerName, borrowName string) {
 	// Transition to SharedRead if not already
 	bc.ownerStates[ownerName] = SharedRead
 	bc.ownerOf[borrowName] = ownerName
-
+	
 	// Track this borrow with metadata
 	bc.activeBorrows[borrowName] = borrowInfo{
 		owner:      ownerName,
 		kind:       BorrowView,
 		blockDepth: bc.currentBlockDepth,
+		region:     region,
 	}
 }
 
 // createSpanBorrow creates a unique writable borrow (span) from an owner
 func (bc *BorrowChecker) createSpanBorrow(ownerName, borrowName string) {
+	bc.createSpanBorrowWithRegion(ownerName, borrowName, nil)
+}
+
+// regionsOverlap checks if two regions overlap
+// Returns true if the regions overlap, false if they are disjoint
+func (bc *BorrowChecker) regionsOverlap(r1, r2 *Region) bool {
+	if r1 == nil || r2 == nil {
+		// If either region is unknown, assume they might overlap (conservative)
+		return true
+	}
+	
+	// Two regions [off1, off1+len1) and [off2, off2+len2) overlap if:
+	// off1 < off2+len2 && off2 < off1+len1
+	return r1.Offset < r2.Offset+r2.Length && r2.Offset < r1.Offset+r1.Length
+}
+
+// createSpanBorrowWithRegion creates a unique writable borrow (span) from an owner with region information
+// This implements v2 region-level disjointness: multiple spans are allowed if their regions are provably disjoint
+func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string, region *Region) {
 	state := bc.ownerStates[ownerName]
-	if state != Free {
-		bc.addError(fmt.Sprintf("cannot create span '%s' from '%s': owner has active borrows (state: %s)", borrowName, ownerName, state))
+	
+	// Check for existing spans on the same owner
+	existingSpans := []borrowInfo{}
+	for _, info := range bc.activeBorrows {
+		if info.owner == ownerName && info.kind == BorrowSpan {
+			existingSpans = append(existingSpans, info)
+		}
+	}
+	
+	if len(existingSpans) > 0 {
+		// We have existing spans - check if regions are disjoint
+		if region != nil {
+			// We have region information - check disjointness
+			allDisjoint := true
+			for _, existing := range existingSpans {
+				if existing.region != nil {
+					if bc.regionsOverlap(region, existing.region) {
+						allDisjoint = false
+						break
+					}
+				} else {
+					// Existing span has unknown region - can't prove disjointness
+					allDisjoint = false
+					break
+				}
+			}
+			
+			if allDisjoint {
+				// All regions are disjoint - allow multiple spans
+				// Don't change owner state - we track multiple spans now
+				bc.ownerOf[borrowName] = ownerName
+				bc.activeBorrows[borrowName] = borrowInfo{
+					owner:      ownerName,
+					kind:       BorrowSpan,
+					blockDepth: bc.currentBlockDepth,
+					region:     region,
+				}
+				return
+			}
+		}
+		
+		// Can't prove disjointness - fall back to v1 behavior (reject)
+		bc.addError(fmt.Sprintf("cannot create span '%s' from '%s': owner has active span borrows (state: %s). Use disjoint regions to allow multiple spans", borrowName, ownerName, state))
 		return
 	}
-
-	// Transition to UniqueWrite
-	bc.ownerStates[ownerName] = UniqueWrite
+	
+	// No existing spans - check for views
+	if state == SharedRead {
+		bc.addError(fmt.Sprintf("cannot create span '%s' from '%s': owner has active read-only views", borrowName, ownerName))
+		return
+	}
+	
+	// Transition to UniqueWrite (or keep Free if we're allowing multiple disjoint spans)
+	if state == Free {
+		bc.ownerStates[ownerName] = UniqueWrite
+	}
 	bc.ownerOf[borrowName] = ownerName
-
+	
 	// Track this borrow with metadata
 	bc.activeBorrows[borrowName] = borrowInfo{
 		owner:      ownerName,
 		kind:       BorrowSpan,
 		blockDepth: bc.currentBlockDepth,
+		region:     region,
 	}
 }
 
 // createSubslice creates a derived borrow (subslice) from an existing view/span
 func (bc *BorrowChecker) createSubslice(sourceBorrowName, subsliceName string) {
+	bc.createSubsliceWithRegion(sourceBorrowName, subsliceName, nil)
+}
+
+// createSubsliceWithRegion creates a derived borrow (subslice) from an existing view/span with region information
+func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName string, newRegion *Region) {
 	sourceInfo, exists := bc.activeBorrows[sourceBorrowName]
 	if !exists {
 		bc.addError(fmt.Sprintf("cannot create subslice '%s': source '%s' is not a borrow", subsliceName, sourceBorrowName))
@@ -716,11 +913,18 @@ func (bc *BorrowChecker) createSubslice(sourceBorrowName, subsliceName string) {
 	}
 
 	// Subslice shares the same owner and kind, created at same block depth
+	// If we have region info, use it; otherwise inherit from source
+	region := newRegion
+	if region == nil {
+		region = sourceInfo.region // Inherit region from source
+	}
+	
 	bc.ownerOf[subsliceName] = sourceInfo.owner
 	bc.activeBorrows[subsliceName] = borrowInfo{
 		owner:      sourceInfo.owner,
 		kind:       sourceInfo.kind, // Subslice preserves view/span kind
 		blockDepth: sourceInfo.blockDepth,
+		region:     region,
 	}
 	// No state change - subslices don't create new borrows from the owner
 }
