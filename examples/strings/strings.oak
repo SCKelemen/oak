@@ -156,14 +156,16 @@ fn recode[E, F](s: StrView[E]) -> StrView[F] =
 
 import io
 
-// Writer[E] writes encoded bytes tagged with an encoding phantom E.
+// Writer[E] wraps an io.Writer[u8] with an encoding tag E.
+// This provides encoding-aware string writing while staying compatible
+// with the generic io.Writer[u8] constraint.
 Writer[E]: type = {
-    out: io.Writer[u8]
+    out: io.Writer[u8]  // Concrete type that implements io.Writer[u8]
 }
 
 // Lowest-level: already-encoded bytes.
 fn write_bytes[E](w: Writer[E], payload: []u8) -> io.WriteOutcome =
-    w.out.write(payload)
+    w.out.write_from(payload)
 
 // Write a byte-based string whose encoding tag matches.
 fn write[E](w: Writer[E], msg: StrView[E]) -> io.WriteOutcome =

@@ -6,67 +6,152 @@ import strings
 // 1. Error model
 //
 
+// IOError represents an IO operation error.
+// In a richer system, this could be an ADT with specific error variants.
 IOError: type = {
     message: strings.string
 }
 
+// ReadOutcome represents the outcome of a read operation.
 ReadOutcome: type = {
     read: u32              // number of elements read into the buffer
     eof:  Bool             // true if end-of-stream reached
     err:  Option[IOError]  // error, if any
 }
 
+// WriteOutcome represents the outcome of a write operation.
 WriteOutcome: type = {
     written: u32
     err:     Option[IOError]
 }
 
 //
-// 2. Generic Reader / Writer / Closer
+// 2. Core IO interfaces (constraints only, not runtime types)
 //
 
-// Reader of elements T.
-Reader[T]: type = {
-    // Read up to len(buf) elements into buf.
-    // Returns number of elements read, eof, and optional error.
-    read: fn([*]T) -> ReadOutcome
+// Readable[T] is an interface constraint for types that can read elements of type T.
+// This is ONLY used in generic constraints (where clauses), never as a value type.
+// The compiler monomorphizes each instantiation to a concrete C function.
+Readable[T]: interface = {
+    // Read up to len(dst) elements into the writable span dst.
+    // Returns number of elements read, eof flag, and optional error.
+    fn read_into(self, dst: [*]T) -> ReadOutcome
 }
 
-// Writer of elements T.
-Writer[T]: type = {
-    // Write all elements from src, or return an error.
-    write: fn([]T) -> WriteOutcome
+// Writable[T] is an interface constraint for types that can write elements of type T.
+// This is ONLY used in generic constraints, never as a value type.
+Writable[T]: interface = {
+    // Write all elements from the readable view src.
+    // Returns number of elements written and optional error.
+    fn write_from(self, src: []T) -> WriteOutcome
 }
 
-// Closer for resources.
-Closer: type = {
-    close: fn() -> Option[IOError]
+//
+// 3. Go-style aliases (for constraints only)
+//
+
+// Reader is an alias for Readable[u8] - byte-oriented reading.
+// Used only in generic constraints, e.g., fn foo[R: Reader](r: R) -> ...
+Reader: interface = Readable[u8]
+
+// Writer is an alias for Writable[u8] - byte-oriented writing.
+// Used only in generic constraints, e.g., fn bar[W: Writer](w: W) -> ...
+Writer: interface = Writable[u8]
+
+// Rune = Unicode scalar value
+Rune: type = u32
+
+// RuneReader is an alias for Readable[Rune] - rune-oriented reading.
+RuneReader: interface = Readable[Rune]
+
+// RuneWriter is an alias for Writable[Rune] - rune-oriented writing.
+RuneWriter: interface = Writable[Rune]
+
+//
+// 4. String-aware IO (encoding-tagged)
+//
+
+// StringReadable[E] is an interface constraint for types that can read
+// strings with encoding tag E.
+// This works with strings.StrViewUnit[E, Unit] and strings.StrBufUnit[E, Unit].
+StringReadable[E: strings.Encoding]: interface = {
+    // Read a string into the writable string buffer dst.
+    // The encoding tag E is tracked at the type level.
+    fn read_str(self, dst: strings.StrBufUnit[E, u8]) -> (n: u32, err: Option[IOError])
 }
 
-// Combined interfaces.
-
-ReadCloser[T]: type = {
-    read:  fn([*]T) -> ReadOutcome
-    close: fn() -> Option[IOError]
+// StringWritable[E] is an interface constraint for types that can write
+// strings with encoding tag E.
+StringWritable[E: strings.Encoding]: interface = {
+    // Write a string from the readable string view src.
+    // The encoding tag E is tracked at the type level.
+    fn write_str(self, src: strings.StrViewUnit[E, u8]) -> (n: u32, err: Option[IOError])
 }
 
-WriteCloser[T]: type = {
-    write: fn([]T) -> WriteOutcome
-    close: fn() -> Option[IOError]
+// Sugar for UTF-8 (canonical encoding)
+Utf8Readable: interface = StringReadable[strings.Utf8]
+
+Utf8Writable: interface = StringWritable[strings.Utf8]
+
+//
+// 5. Generic utility functions (static dispatch only)
+//
+
+// copy_all copies all data from a Readable[T] to a Writable[T].
+// This is fully generic and monomorphizes to a concrete C function per (T, R, W).
+// No trait objects, no vtables - pure static dispatch.
+fn copy_all[T, R, W](r: R, w: W) -> (written: u64, err: Option[IOError])
+  where R: Readable[T], W: Writable[T] =
+    // Real implementation would:
+    // 1. Allocate a stack buffer: buf: [4096]T
+    // 2. Create a writable span: span: [*]T = span(&buf)
+    // 3. Loop: read into span, write from view, until EOF or error
+    // 4. Return total written and any error
+    (0, None)
+
+// copy_bytes is a convenience wrapper for byte-oriented copying.
+// Uses the Reader/Writer aliases for Go-like ergonomics.
+fn copy_bytes[R, W](r: R, w: W) -> (written: u64, err: Option[IOError])
+  where R: Reader, W: Writer =
+    copy_all[u8, R, W](r, w)
+
+//
+// 6. Combined interface constraints (for convenience)
+//
+
+// ReadCloser[T] combines Readable[T] with a close operation.
+// Still only a constraint, never a value type.
+ReadCloser[T]: interface = {
+    read:  fn(self, dst: [*]T) -> ReadOutcome
+    close: fn(self) -> Option[IOError]
 }
 
-ReadWriteCloser[T]: type = {
-    read:  fn([*]T) -> ReadOutcome
-    write: fn([]T) -> WriteOutcome
-    close: fn() -> Option[IOError]
+// WriteCloser[T] combines Writable[T] with a close operation.
+WriteCloser[T]: interface = {
+    write: fn(self, src: []T) -> WriteOutcome
+    close: fn(self) -> Option[IOError]
 }
 
-// Common aliases.
+// ReadWriteCloser[T] combines Readable[T], Writable[T], and Closer.
+ReadWriteCloser[T]: interface = {
+    read:  fn(self, dst: [*]T) -> ReadOutcome
+    write: fn(self, src: []T) -> WriteOutcome
+    close: fn(self) -> Option[IOError]
+}
 
-ByteReader: type = Reader[u8]
+// Common aliases for combined interfaces
+ByteReadCloser: interface = ReadCloser[u8]
 
-ByteWriter: type = Writer[u8]
+ByteWriteCloser: interface = WriteCloser[u8]
 
-RuneReader: type = Reader[strings.rune]
+ByteReadWriteCloser: interface = ReadWriteCloser[u8]
 
-RuneWriter: type = Writer[strings.rune]
+//
+// 7. Design notes
+//
+// - All interfaces are constraints only, never value types
+// - No trait objects, no vtables, no boxing in stdlib
+// - Everything monomorphizes to concrete C functions
+// - Go-style aliases (Reader/Writer) provide ergonomics without runtime cost
+// - Encoding tags are tracked at type level, zero runtime cost
+// - If dynamic dispatch is needed, apps can build it themselves (not in stdlib)
