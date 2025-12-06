@@ -38,9 +38,11 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.registerPrefix(token.STRING, p.parseStringLiteral)
 	p.registerPrefix(token.BANG, p.parsePrefixExpression)
 	p.registerPrefix(token.NEG, p.parsePrefixExpression)
+	p.registerPrefix(token.AMP, p.parsePrefixExpression) // address-of operator: &value
 	p.registerPrefix(token.TRUE, p.parseBoolean)
 	p.registerPrefix(token.FALSE, p.parseBoolean)
 	p.registerPrefix(token.LPAREN, p.parseExpressionGroup)
+	p.registerPrefix(token.STRUCT, p.parseStructLiteral)
 	p.registerPrefix(token.LBRACE, p.parseRecordLiteral)
 	p.registerPrefix(token.LBRACK, p.parseArrayLiteral)
 	p.registerPrefix(token.FN, p.parseFunctionLiteral)
@@ -58,6 +60,7 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.registerInfix(token.DOT, p.parseIndexExpression)
 	p.registerInfix(token.LBRACK, p.parseIndexExpression)
 	p.registerInfix(token.LBRACK, p.parseIndexExpression)
+	p.registerInfix(token.LBRACE, p.parseTypeQualifiedLiteral)
 
 	// load the first 2 tokens
 	p.nextToken()
@@ -101,7 +104,7 @@ func (p *Parser) nextToken() {
 		p.pendingTrivia = append(p.pendingTrivia, p.currentToken)
 		p.currentToken = p.peekToken
 		p.peekToken = p.lxr.NextToken()
-		
+
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
 			errorMsg := p.currentToken.Literal
@@ -130,7 +133,7 @@ func (p *Parser) nextToken() {
 	for p.peekToken.TokenKind == token.TRIVIA || p.peekToken.TokenKind == token.COMMENT {
 		p.pendingTrivia = append(p.pendingTrivia, p.peekToken)
 		p.peekToken = p.lxr.NextToken()
-		
+
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
 			errorMsg := p.peekToken.Literal
@@ -229,6 +232,7 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 	if prefix == nil {
 		// Check if it's an infix operator that can't start an expression
 		// (SUM/+ can't start expressions, but NEG/- can as unary minus)
+		// AMP/& can start expressions as address-of, so it has a prefix parser
 		if p.currentTokenIs(token.SUM) || p.currentTokenIs(token.MUL) ||
 			p.currentTokenIs(token.QUO) || p.currentTokenIs(token.EQL) ||
 			p.currentTokenIs(token.NEQL) || p.currentTokenIs(token.LCHEV) ||
@@ -837,27 +841,30 @@ func (p *Parser) parseADTType() *ast.ADTType {
 		adt.Variants = []*ast.ADTVariant{variant}
 	} else if p.currentTokenIs(token.IDENT) {
 		// Could be: TypeName (type alias) or TypeName & RecordType (composition)
-		// Check if next token is & for composition
-		if p.peekTokenIs(token.AMP) {
+		// Use parseTypeExpression which now handles intersections
+		typeExpr := p.parseTypeExpression()
+		if typeExpr == nil {
+			return nil
+		}
+		// parseTypeExpression leaves currentToken at the last token of the type expression.
+		// For "Point2 & { z: u8 }", currentToken is on '}' (last token of record type).
+		// For "Point2", currentToken is on "Point2" (the identifier itself).
+
+		// Check if it's an intersection (InfixExpression with &) or a simple type
+		if infix, ok := typeExpr.(*ast.InfixExpression); ok && infix.Operator == "&" {
 			// Record composition: TypeName & TypeName & { ... }
-			composition := p.parseRecordComposition()
-			if composition == nil {
-				return nil
-			}
 			// Store composition as a variant with the composition expression
 			variant := &ast.ADTVariant{
 				Token:   p.currentToken,
 				Name:    adt.Name,
-				Literal: composition, // Store composition expression
+				Literal: typeExpr, // Store composition expression
 			}
 			adt.Variants = []*ast.ADTVariant{variant}
 		} else {
 			// Type alias: Name: type = OtherType
 			// Parse as a variant with payload
-			typeExpr := p.parseTypeExpressionSimple()
-			if typeExpr == nil {
-				return nil
-			}
+			// parseTypeExpression leaves currentToken on the last token of the type.
+			// For identifiers, that's the identifier itself, so we don't need to advance.
 			variant := &ast.ADTVariant{
 				Token:   p.currentToken,
 				Name:    adt.Name,
@@ -1090,105 +1097,208 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 	return variant
 }
 
-// Parse type expression: identifier, record type { field: Type, ... }, or array type [Type]
+// Parse type expression: identifier, record type { field: Type, ... }, struct{ ... }, array type [Type], or intersection Type1 & Type2
+// parseTypeExpression parses type expressions like:
+//
+//	Point2
+//	{ x: u8, y: u8 }
+//	struct{ x: u8, y: u8 }
+//	Point2 & { z: u8 }
+//	(Point2 & Point3)
+//
+// Contract: It assumes currentToken is at the first token of the type
+// and leaves currentToken at the last token of the type (does NOT advance beyond it).
 func (p *Parser) parseTypeExpression() ast.Expression {
-	// Handle record type: { field: Type, ... }
-	if p.currentTokenIs(token.LBRACE) {
-		return p.parseRecordType()
-	}
-
-	// Handle array type: [Type] or [N]Type
-	if p.currentTokenIs(token.LBRACK) {
-		return p.parseArrayType()
-	}
-
-	// Handle unit type: ()
-	if p.currentTokenIs(token.LPAREN) {
-		if p.peekTokenIs(token.RPAREN) {
-			// This is the unit type ()
-			unitToken := p.currentToken
-			p.nextToken() // consume (
-			p.nextToken() // consume )
-			return &ast.Identifier{Token: unitToken, Value: "()"}
-		}
-		// Otherwise, it might be a parenthesized type expression
-		// For now, return nil - parenthesized types not yet supported
+	left := p.parseTypePrimary()
+	if left == nil {
 		return nil
 	}
 
-	// Handle identifier type
-	if p.currentTokenIs(token.IDENT) {
-		ident := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-		// Note: We don't advance here - the caller is responsible for token management
-		// This allows parseArrayType to check peekToken after parsing the element type
-		return ident
+	// Handle left-associative intersections: T1 & T2 & T3
+	for p.peekTokenIs(token.AMP) {
+		p.nextToken() // move to '&'
+		ampToken := p.currentToken
+
+		p.nextToken() // move to start of RHS type
+		right := p.parseTypePrimary()
+		if right == nil {
+			return nil
+		}
+
+		left = &ast.InfixExpression{
+			Token:    ampToken,
+			Left:     left,
+			Operator: "&",
+			Right:    right,
+		}
+		// Note: currentToken is whatever parseTypePrimary left us at
+		// (the last token of `right`). We do not advance further here.
 	}
 
-	// If we get here, we couldn't parse a type expression
-	// This might happen if currentToken is not a valid type start token
-	return nil
+	return left
 }
 
-// Parse record type: { field: Type, field2: Type2, ... }
+// parseTypePrimary parses the "atomic" type forms: identifiers, records,
+// struct{ ... }, array types, and parens/unit.
+// Contract: Assumes currentToken is at the first token of the type,
+// leaves currentToken at the last token of the type (does NOT advance beyond it).
+func (p *Parser) parseTypePrimary() ast.Expression {
+	switch p.currentToken.TokenKind {
+	case token.STRUCT:
+		return p.parseStructType()
+
+	case token.LBRACE:
+		return p.parseRecordType()
+
+	case token.LBRACK:
+		return p.parseArrayType()
+
+	case token.LPAREN:
+		if p.peekTokenIs(token.RPAREN) {
+			// Unit type: ()
+			unitToken := p.currentToken
+			p.nextToken() // move to ')'
+			// currentToken is now ')', last token of the type
+			return &ast.Identifier{
+				Token: unitToken,
+				Value: "()",
+			}
+		}
+		// Parenthesized type: (T)
+		p.nextToken() // move to inner type
+		inner := p.parseTypeExpression()
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
+		// currentToken is ')', last token of the type
+		return inner
+
+	case token.IDENT:
+		ident := &ast.Identifier{
+			Token: p.currentToken,
+			Value: p.currentToken.Literal,
+		}
+		// We do NOT advance here; caller/intersection loop
+		// can decide when to step past the type.
+		return ident
+
+	default:
+		msg := fmt.Sprintf("unexpected token in type expression: %s (%q)",
+			p.currentToken.TokenKind, p.currentToken.Literal)
+		p.errors = append(p.errors, msg)
+		return nil
+	}
+}
+
+// parseRecordType parses a record *type*: { field: Type, field2: Type2, ... }
+// Contract: Assumes currentToken is '{', leaves currentToken at '}' (last token of the type).
 func (p *Parser) parseRecordType() ast.Expression {
 	record := &ast.RecordLiteral{
-		Token:  p.currentToken,
+		Token:  p.currentToken, // '{'
 		Fields: make(map[string]ast.Expression),
 	}
 
-	// Skip opening brace (currentToken is {)
-	p.nextToken()
-
-	// Handle empty record type: {}
-	if p.currentTokenIs(token.RBRACE) {
-		record.EndToken = p.currentToken // } token
-		p.nextToken()                    // consume }
+	// currentToken is '{'. Look ahead:
+	if p.peekTokenIs(token.RBRACE) {
+		p.nextToken() // move to '}'
+		record.EndToken = p.currentToken
+		// currentToken is '}', last token of the type
 		return record
 	}
 
-	// Parse fields until closing brace
+	// Move to first field name
+	p.nextToken() // currentToken should be IDENT or RBRACE
+
 	for {
-		// Parse field name (identifier)
 		if !p.currentTokenIs(token.IDENT) {
 			p.peekError(token.IDENT)
 			return nil
 		}
 		fieldName := p.currentToken.Literal
 
-		// Expect colon
 		if !p.expectPeek(token.COLON) {
 			return nil
 		}
 
-		// Parse field type (not value - this is a type annotation)
-		p.nextToken() // Advance past colon to the type
+		p.nextToken() // move to first token of field type
 		fieldType := p.parseTypeExpression()
 		if fieldType == nil {
 			return nil
 		}
-
 		record.Fields[fieldName] = fieldType
 
-		// Advance past the type expression
-		// After parseTypeExpression returns, currentToken is the last token of the type
-		// peekToken should be comma or closing brace
+		// At this point, currentToken is the **last token of the field type**.
+		// Next token should be ',' or '}'.
 		if p.peekTokenIs(token.COMMA) {
-			p.nextToken() // consume comma
-			p.nextToken() // advance to next field
+			p.nextToken() // move to ','
+			p.nextToken() // move to next field IDENT
 			continue
 		}
 
 		if p.peekTokenIs(token.RBRACE) {
-			p.nextToken() // consume }
+			p.nextToken() // move to '}'
 			record.EndToken = p.currentToken
+			// currentToken is '}', last token of the record type
 			break
 		}
 
-		// Unexpected token
+		// Anything else is a syntax error
 		p.peekError(token.RBRACE)
 		return nil
 	}
 
+	return record
+}
+
+// Parse struct type: struct{ field: Type, field2: Type2, ... }
+func (p *Parser) parseStructType() ast.Expression {
+	// currentToken is STRUCT
+	structToken := p.currentToken
+	p.nextToken() // consume struct
+
+	// Expect opening brace
+	if !p.currentTokenIs(token.LBRACE) {
+		p.peekError(token.LBRACE)
+		return nil
+	}
+
+	// Parse the record type (struct uses same syntax as record types)
+	record := p.parseRecordType()
+	if record == nil {
+		return nil
+	}
+
+	// Mark this as a struct type by wrapping it or adding metadata
+	// For now, we'll use the same RecordLiteral AST node but the STRUCT token
+	// indicates it's a struct type
+	if rl, ok := record.(*ast.RecordLiteral); ok {
+		rl.Token = structToken // Use struct token instead of brace token
+	}
+	return record
+}
+
+// Parse struct literal: struct{ field: value, ... } (value context)
+func (p *Parser) parseStructLiteral() ast.Expression {
+	// currentToken is STRUCT
+	structToken := p.currentToken
+	p.nextToken() // consume struct
+
+	// Expect opening brace
+	if !p.currentTokenIs(token.LBRACE) {
+		p.peekError(token.LBRACE)
+		return nil
+	}
+
+	// Parse the record literal (struct uses same syntax as record literals)
+	record := p.parseRecordLiteral()
+	if record == nil {
+		return nil
+	}
+
+	// Mark this as a struct literal by using the STRUCT token
+	if rl, ok := record.(*ast.RecordLiteral); ok {
+		rl.Token = structToken // Use struct token instead of brace token
+	}
 	return record
 }
 
@@ -1212,10 +1322,10 @@ func (p *Parser) parseArrayType() ast.Expression {
 		if elementType == nil {
 			return nil
 		}
-		// parseTypeExpression doesn't advance for identifiers, so if element type is an identifier,
-		// we need to advance past it to position correctly for the caller
+		// parseTypeExpression leaves currentToken on the last token of the type.
+		// For identifiers, that's the identifier itself, so we need to advance past it.
 		if ident, ok := elementType.(*ast.Identifier); ok && ident.Value != "()" {
-			// Advance past the identifier if we're still at it
+			// Advance past the identifier
 			if p.currentTokenIs(token.IDENT) {
 				p.nextToken()
 			}
@@ -1258,10 +1368,10 @@ func (p *Parser) parseArrayType() ast.Expression {
 		if elementType == nil {
 			return nil
 		}
-		// parseTypeExpression doesn't advance for identifiers, so if element type is an identifier,
-		// we need to advance past it to position correctly for the caller
+		// parseTypeExpression leaves currentToken on the last token of the type.
+		// For identifiers, that's the identifier itself, so we need to advance past it.
 		if ident, ok := elementType.(*ast.Identifier); ok && ident.Value != "()" {
-			// Advance past the identifier if we're still at it
+			// Advance past the identifier
 			if p.currentTokenIs(token.IDENT) {
 				p.nextToken()
 			}
@@ -1289,10 +1399,10 @@ func (p *Parser) parseArrayType() ast.Expression {
 		if elementType == nil {
 			return nil
 		}
-		// parseTypeExpression doesn't advance for identifiers, so if element type is an identifier,
-		// we need to advance past it to position correctly for the caller
+		// parseTypeExpression leaves currentToken on the last token of the type.
+		// For identifiers, that's the identifier itself, so we need to advance past it.
 		if ident, ok := elementType.(*ast.Identifier); ok && ident.Value != "()" {
-			// Advance past the identifier if we're still at it
+			// Advance past the identifier
 			if p.currentTokenIs(token.IDENT) {
 				p.nextToken()
 			}
@@ -1351,7 +1461,7 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 		}
 		fieldName := p.currentToken.Literal
 
-		// Expect colon
+		// Expect colon (used for both type annotations and value assignments)
 		if !p.expectPeek(token.COLON) {
 			return nil
 		}
@@ -1497,6 +1607,33 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 	}
 
 	return array
+}
+
+// Parse type-qualified literal: TypeName{ field: value, ... }
+// This is called as an infix handler when we see TypeName {
+func (p *Parser) parseTypeQualifiedLiteral(typeName ast.Expression) ast.Expression {
+	// typeName is the left expression (the type identifier)
+	// currentToken is LBRACE
+	typeIdent, ok := typeName.(*ast.Identifier)
+	if !ok {
+		// Not a type-qualified literal - this shouldn't happen, but handle gracefully
+		// Fall back to parsing as a regular record literal
+		return p.parseRecordLiteral()
+	}
+
+	// Parse the record literal inside the braces
+	// currentToken is LBRACE, parseRecordLiteral expects currentToken to be LBRACE
+	record := p.parseRecordLiteral()
+	if record == nil {
+		return nil
+	}
+
+	// Attach the type name to the record literal
+	if rl, ok := record.(*ast.RecordLiteral); ok {
+		rl.TypeName = typeIdent
+	}
+
+	return record
 }
 
 // Parse typed array literal: [N]Type{ expr1, expr2, ... }
@@ -2158,8 +2295,7 @@ func (p *Parser) parseShortVariableDeclaration() *ast.VariableDeclaration {
 
 	// Parse value (type will be inferred)
 	p.nextToken() // consume :=, now currentToken is :=
-	// Now peekToken is the first token of the value expression
-	// Don't call nextToken() here - parseExpression will handle token advancement
+	p.nextToken() // advance to first token of the value expression
 	stmt.Value = p.parseExpression(LOWEST)
 	stmt.Type = nil // Type inference
 
