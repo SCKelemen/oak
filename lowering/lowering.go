@@ -37,6 +37,8 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 		return lowerFunctionStatement(s, tc)
 	case *ast.BlockStatement:
 		return lowerBlockStatement(s, tc)
+	case *ast.FunctionStatement:
+		return lowerFunctionStatement(s, tc)
 	default:
 		// Other statement types don't need lowering
 		return stmt
@@ -60,7 +62,12 @@ func lowerVariableDeclaration(vd *ast.VariableDeclaration, tc *typechecker.TypeC
 // lowerFunctionStatement lowers function statements
 func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) *ast.FunctionStatement {
 	if fn.Body != nil {
-		loweredBody := lowerBlockStatement(fn.Body, tc)
+		// Body is an Expression, which could be a BlockStatement
+		loweredBody := lowerExpression(fn.Body, tc)
+		// If it's a BlockStatement, we can lower it further
+		if block, ok := loweredBody.(*ast.BlockStatement); ok {
+			loweredBody = lowerBlockStatement(block, tc)
+		}
 		return &ast.FunctionStatement{
 			BaseNode:   fn.BaseNode,
 			Token:      fn.Token,
@@ -69,7 +76,7 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			Receiver:   fn.Receiver,
 			Parameters: fn.Parameters,
 			ReturnType: fn.ReturnType,
-			Body:       loweredBody.(*ast.BlockStatement),
+			Body:       loweredBody,
 		}
 	}
 	return fn
