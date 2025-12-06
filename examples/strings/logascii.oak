@@ -3,25 +3,46 @@ package logascii
 import strings
 import encoding/utf8
 import encoding/ascii
+import io
 
-// ASCII-only writer; implementation provided by runtime.
-ascii_writer: strings.Writer[strings.ascii] = {
-    write: fn(bytes: []u8) -> () =
-        /* send to serial port, syslog, whatever */
-        ()
+// Backing buffer owned by someone (on stack, global, whatever).
+buf: [1024]u8 = {}
+
+// ASCII-only writer that writes to a UART, syslog, etc.
+// This wraps an io.Writer[u8] with an encoding tag.
+ascii_writer: strings.Writer[strings.Ascii] = {
+    out: {
+        write: fn(payload: []u8) -> io.WriteOutcome =
+            // send `payload` to device that expects ASCII bytes
+            { written: len(payload), err: None }
+    }
 }
 
-// Public logging API accepts canonical UTF-8 strings.
+// Internal helper: create a string buffer over a span of our backing buf.
+fn make_buf() -> strings.string_buf =
+    // Borrow a mutable span from the owner; your language already supports:
+    //    span(&buf): [*]u8
+    strings.buf_from_span[strings.Utf8](span(&buf))
+
+// Public: log a canonical UTF-8 string, but *only* if it's ASCII.
 fn log(msg: strings.string) -> () =
-    // 1. Ensure message is ASCII-only (fast path, no re-encode).
-    ascii_msg: strings.ascii_string =
-        strings.as_ascii_view(msg)
+    if strings.is_ascii_string(msg) then
+        // Type tagged call-site:
+        //
+        //   - ascii_writer: Writer[Ascii]
+        //   - msg: string (StrView[Utf8])
+        //
+        // We write the string using the Writer interface.
+        let _ = strings.write[strings.Ascii](ascii_writer, strings.as_ascii_view(msg)) in
+            ()
+        end
+    else
+        // maybe drop, or call utf8 logger
+        ()
+    end
 
-    // 2. Then write using an ASCII writer – type index on the function
-    //    tells the compiler this uses ASCII encoding rules.
-    strings.write[strings.ascii](ascii_writer, msg)
-
-// Alternative: more "capability-token" flavored call
+// Sugar: explicitly "I want ASCII".
 fn log_ascii(msg: strings.string) -> () =
-    // Encoding is part of the type-level call:
-    strings.write[strings.ascii](ascii_writer, msg)
+    let _ = strings.write[strings.Ascii](ascii_writer, strings.as_ascii_view(msg)) in
+        ()
+    end

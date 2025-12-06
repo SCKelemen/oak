@@ -1,0 +1,72 @@
+package io
+
+import strings
+
+//
+// 1. Error model
+//
+
+IOError: type = {
+    message: strings.string
+}
+
+ReadOutcome: type = {
+    read: u32              // number of elements read into the buffer
+    eof:  Bool             // true if end-of-stream reached
+    err:  Option[IOError]  // error, if any
+}
+
+WriteOutcome: type = {
+    written: u32
+    err:     Option[IOError]
+}
+
+//
+// 2. Generic Reader / Writer / Closer
+//
+
+// Reader of elements T.
+Reader[T]: type = {
+    // Read up to len(buf) elements into buf.
+    // Returns number of elements read, eof, and optional error.
+    read: fn([*]T) -> ReadOutcome
+}
+
+// Writer of elements T.
+Writer[T]: type = {
+    // Write all elements from src, or return an error.
+    write: fn([]T) -> WriteOutcome
+}
+
+// Closer for resources.
+Closer: type = {
+    close: fn() -> Option[IOError]
+}
+
+// Combined interfaces.
+
+ReadCloser[T]: type = {
+    read:  fn([*]T) -> ReadOutcome
+    close: fn() -> Option[IOError]
+}
+
+WriteCloser[T]: type = {
+    write: fn([]T) -> WriteOutcome
+    close: fn() -> Option[IOError]
+}
+
+ReadWriteCloser[T]: type = {
+    read:  fn([*]T) -> ReadOutcome
+    write: fn([]T) -> WriteOutcome
+    close: fn() -> Option[IOError]
+}
+
+// Common aliases.
+
+ByteReader: type = Reader[u8]
+
+ByteWriter: type = Writer[u8]
+
+RuneReader: type = Reader[strings.rune]
+
+RuneWriter: type = Writer[strings.rune]

@@ -1,0 +1,50 @@
+package unicode/runes
+
+import strings
+import unicode
+
+//
+// Map a rune -> rune function across a rune_string.
+//
+
+fn map(f: fn(strings.rune) -> strings.rune,
+       s: strings.rune_string) -> strings.rune_string =
+    // Real impl allocates a new []rune and applies f.
+    { units: []strings.rune{} }
+
+//
+// Filter runes based on a predicate.
+//
+
+fn filter(pred: fn(strings.rune) -> Bool,
+          s: strings.rune_string) -> strings.rune_string =
+    { units: []strings.rune{} }
+
+//
+// Case conversions over entire strings.
+//
+
+fn to_lower(s: strings.rune_string) -> strings.rune_string =
+    map(unicode.to_lower, s)
+
+fn to_upper(s: strings.rune_string) -> strings.rune_string =
+    map(unicode.to_upper, s)
+
+fn to_title(s: strings.rune_string) -> strings.rune_string =
+    map(unicode.to_title, s)
+
+//
+// Case-folded form (for case-insensitive equality).
+//
+
+fn to_case_fold(s: strings.rune_string) -> strings.rune_string =
+    map(unicode.case_fold, s)
+
+//
+// Case-insensitive equality.
+//
+
+fn equal_fold(a: strings.rune_string,
+              b: strings.rune_string) -> Bool =
+    // Conceptually: to_case_fold(a) == to_case_fold(b)
+    False

@@ -1,25 +1,33 @@
 package encoding/ascii
 
 import strings
+import encoding/utf8
 
-// Uppercase ASCII string (A–Z / a–z). Bytes outside [A-Za-z] are unchanged.
+// Uppercase ASCII (A–Z / a–z).
 fn to_upper(s: strings.ascii_string) -> strings.ascii_string =
-    /* map 'a'..'z' to 'A'..'Z' in bytes */ s
+    // mutate a copy of bytes: 'a'..'z' -> 'A'..'Z'
+    s
 
-// Lowercase ASCII string.
+// Lowercase ASCII.
 fn to_lower(s: strings.ascii_string) -> strings.ascii_string =
-    /* map 'A'..'Z' to 'a'..'z' */ s
+    s
 
-// Lossless conversion from canonical string to ASCII string when possible.
+// Lossless: try to view a canonical utf8 string as ASCII.
 fn try_from_string(s: strings.string) -> strings.ascii_string =
     strings.as_ascii_view(s)
 
-// Lossy conversion: non-ASCII become '?' (0x3F).
+// Lossy: non-ASCII bytes become '?' (0x3F).
 fn from_string_lossy(s: strings.string) -> strings.ascii_string =
-    /* copy bytes; replace >= 0x80 with 0x3F */ { bytes: s.bytes }
+    // copy bytes while mapping >=0x80 to '?'
+    { units: s.units }
 
-// Write an ASCII string into any Writer[E].
-// If E == ascii or E == utf8, you can just push bytes;
-// for other encodings you'd recode via strings.recode.
-fn write_ascii[E: strings.Encoding](w: strings.Writer[E], s: strings.ascii_string) -> () =
-    strings.write_bytes[E](w, strings.Str[E]{ bytes: s.bytes })
+// ASCII-aware write helper.
+//
+// Signature is deliberately encoding-tagged:
+//
+//   - If caller chooses E = Ascii, it's just write_bytes.
+//   - If caller chooses E = Utf8, we can still write the same bytes.
+//
+// Other encodings (Utf16, Utf32, user tags) could do something smarter.
+fn write_ascii[E](w: strings.Writer[E], s: strings.ascii_string) -> () =
+    strings.write_bytes[E](w, s.units)

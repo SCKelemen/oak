@@ -1,0 +1,59 @@
+package unicode
+
+import strings
+
+//
+// Basic classification predicates.
+//
+
+fn is_letter(r: strings.rune) -> Bool =
+    // Real impl uses Unicode tables
+    False
+
+fn is_digit(r: strings.rune) -> Bool =
+    False
+
+fn is_number(r: strings.rune) -> Bool =
+    False
+
+fn is_space(r: strings.rune) -> Bool =
+    False
+
+fn is_control(r: strings.rune) -> Bool =
+    False
+
+fn is_punct(r: strings.rune) -> Bool =
+    False
+
+fn is_symbol(r: strings.rune) -> Bool =
+    False
+
+fn is_lower(r: strings.rune) -> Bool =
+    False
+
+fn is_upper(r: strings.rune) -> Bool =
+    False
+
+fn is_title(r: strings.rune) -> Bool =
+    False
+
+//
+// Simple case mappings (1:1 mappings; full Unicode mappings are more complex).
+//
+
+fn to_lower(r: strings.rune) -> strings.rune =
+    // Real impl uses Unicode case mapping tables
+    r
+
+fn to_upper(r: strings.rune) -> strings.rune =
+    r
+
+fn to_title(r: strings.rune) -> strings.rune =
+    r
+
+//
+// Simple case-folding for case-insensitive comparisons.
+//
+
+fn case_fold(r: strings.rune) -> strings.rune =
+    r

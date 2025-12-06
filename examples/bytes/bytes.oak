@@ -1,0 +1,106 @@
+package bytes
+
+import io
+
+//
+// 1. Slice-level utilities
+//
+
+// Basic slice operations over raw bytes.
+
+fn equal(a: []u8, b: []u8) -> Bool =
+    // Real impl: memcmp
+    False
+
+fn contains(b: []u8, sub: []u8) -> Bool =
+    False
+
+fn index(b: []u8, sub: []u8) -> Option[u32] =
+    None
+
+fn has_prefix(b: []u8, prefix: []u8) -> Bool =
+    False
+
+fn has_suffix(b: []u8, suffix: []u8) -> Bool =
+    False
+
+//
+// 2. Buffer: growable byte buffer
+//
+
+// Buffer is the primary "owned" byte buffer.
+// It is a thin record around a writable span into some backing allocation.
+Buffer: type = {
+    data: [*]u8  // writable span into backing storage
+    len:  u32    // number of bytes in use
+    cap:  u32    // total capacity in data
+}
+
+//
+// 3. Construction
+//
+
+// Create an empty buffer with zero capacity.
+fn new() -> Buffer =
+    { data: null, len: 0, cap: 0 }
+
+// Create an empty buffer with specified capacity.
+fn with_cap(cap: u32) -> Buffer =
+    // Real impl allocates backing storage
+    { data: null, len: 0, cap: cap }
+
+// Create a buffer by copying from a slice.
+fn from_slice(src: []u8) -> Buffer =
+    // Real impl allocates and copies
+    { data: null, len: len(src), cap: len(src) }
+
+//
+// 4. Inspectors
+//
+
+fn len(buf: Buffer) -> u32 =
+    buf.len
+
+fn cap(buf: Buffer) -> u32 =
+    buf.cap
+
+// View of currently written bytes.
+fn bytes(buf: Buffer) -> []u8 =
+    view(buf.data)[0 .. buf.len]
+
+//
+// 5. Mutating operations
+//
+
+// Append p to the buffer, growing if necessary.
+// Returns the updated buffer and number of bytes written.
+fn write(buf: Buffer, p: []u8) -> (Buffer, u32) =
+    // Real impl grows buffer if needed, copies p, updates len
+    (buf, len(p))
+
+fn write_byte(buf: Buffer, b: u8) -> Buffer =
+    // Real impl appends single byte
+    buf
+
+// Reset buffer to empty but keep capacity.
+fn reset(buf: Buffer) -> Buffer =
+    { data: buf.data, len: 0, cap: buf.cap }
+
+// Ensure at least n bytes of free capacity.
+fn grow(buf: Buffer, n: u32) -> Buffer =
+    // Real impl reallocates if needed
+    buf
+
+//
+// 6. Integrating with io.Writer[u8]
+//
+
+// Adapt a Buffer into an io.Writer[u8].
+fn as_byte_writer(buf: Buffer) -> io.Writer[u8] =
+    {
+        write: fn(p: []u8) -> io.WriteOutcome =
+            let (buf2, n) = write(buf, p) in
+                // real impl would need to propagate updated buf2 back
+                { written: n, err: None }
+            end
+    }

@@ -198,12 +198,13 @@ func (p *Parser) parseStatement() ast.Statement {
 		// - x := expr -> declaration with type inference (short declaration)
 		// - x: T = expr -> declaration with type annotation
 		// - x = expr -> assignment (must refer to existing variable)
+		// - Name: type = ... -> type definition (ADT type)
 		if p.peekTokenIs(token.COLON_ASSIGN) {
 			// Short declaration: x := expr
 			return p.parseShortVariableDeclaration()
 		} else if p.peekTokenIs(token.COLON) {
-			// Typed declaration: x: T = expr or x: T
-			return p.parseVariableDeclaration()
+			// Centralize IDENT ":" ... handling to avoid token restore issues
+			return p.parseIdentLedStatement()
 		} else if p.peekTokenIs(token.ASSIGN) {
 			// Assignment: x = expr (must refer to existing variable)
 			return p.parseAssignmentStatement()
@@ -844,16 +845,20 @@ func (p *Parser) parseImportStatement() *ast.ImportStatement {
 }
 
 // ADT type definition
+// This handles the "type Name: type = ..." syntax (when TYPE keyword is present).
+// For "Name: type = ..." syntax, use parseADTTypeFromName instead.
 func (p *Parser) parseADTType() *ast.ADTType {
+	// currentToken is TYPE
 	adt := &ast.ADTType{Token: p.currentToken}
 
+	// Next should be IDENT (the type name)
 	if !p.expectPeek(token.IDENT) {
 		return nil
 	}
+	name := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	adt.Name = name
 
-	adt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-
-	// Parse optional type parameters: Name[T: Ordered]: type = ...
+	// Parse optional type parameters: type Name[T: Ordered]: type = ...
 	if p.peekTokenIs(token.LBRACK) {
 		adt.TypeParams = p.parseTypeParameters()
 		if adt.TypeParams == nil {
@@ -861,18 +866,23 @@ func (p *Parser) parseADTType() *ast.ADTType {
 		}
 	}
 
+	// Expect ':'
 	if !p.expectPeek(token.COLON) {
 		return nil
 	}
 
+	// Expect 'type'
 	if !p.expectPeek(token.TYPE) {
 		return nil
 	}
 
-	// Parse type definition: = Variant1 | Variant2 | ... OR = RecordType OR = TypeName & RecordType
+	// Expect '='
 	if !p.expectPeek(token.ASSIGN) {
 		return nil
 	}
+
+	// Move to first token of body
+	p.nextToken()
 
 	p.nextToken()
 
@@ -1162,6 +1172,11 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 // Contract: It assumes currentToken is at the first token of the type
 // and leaves currentToken at the last token of the type (does NOT advance beyond it).
 func (p *Parser) parseTypeExpression() ast.Expression {
+	// Debug: This should NEVER see TYPE as currentToken
+	if p.currentTokenIs(token.TYPE) {
+		p.errors = append(p.errors, fmt.Sprintf("parseTypeExpression: routing bug - saw TYPE token (%q) at line %d. This should be handled by parseADTType/parseADTTypeFromName", p.currentToken.Literal, p.currentToken.Line))
+		return nil
+	}
 	left := p.parseTypePrimary()
 	if left == nil {
 		return nil
@@ -1231,6 +1246,58 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 			Token: p.currentToken,
 			Value: p.currentToken.Literal,
 		}
+		// Check if this is a generic type: Name[TypeArg1, TypeArg2, ...]
+		// NOTE: This should NEVER see TYPE as currentToken - if it does, routing is broken
+		if p.currentTokenIs(token.TYPE) {
+			p.errors = append(p.errors, fmt.Sprintf("parseTypePrimary: unexpected TYPE token (routing bug - this should be handled by parseADTType)"))
+			return nil
+		}
+		if p.peekTokenIs(token.LBRACK) {
+			// This is a generic type application
+			p.nextToken() // move to '['
+			typeArgs := []ast.Expression{}
+
+			// Parse type arguments
+			if !p.peekTokenIs(token.RBRACK) {
+				p.nextToken() // move to first type arg
+				arg := p.parseTypeExpression()
+				if arg == nil {
+					return nil
+				}
+				typeArgs = append(typeArgs, arg)
+
+				// Parse additional type arguments separated by commas
+				for p.peekTokenIs(token.COMMA) {
+					p.nextToken() // consume ','
+					p.nextToken() // move to next type arg
+					arg := p.parseTypeExpression()
+					if arg == nil {
+						return nil
+					}
+					typeArgs = append(typeArgs, arg)
+				}
+			}
+
+			// Expect closing ']'
+			if !p.expectPeek(token.RBRACK) {
+				return nil
+			}
+			// currentToken is now ']', last token of the generic type
+
+			// For now, we'll represent multi-arg generics as nested IndexExpressions
+			// StrViewUnit[E, Unit] becomes IndexExpression(IndexExpression(StrViewUnit, E), Unit)
+			// This is a simple representation that works for parsing
+			var result ast.Expression = ident
+			for _, arg := range typeArgs {
+				result = &ast.IndexExpression{
+					Token: p.currentToken, // ']' token
+					Left:  result,
+					Index: arg,
+				}
+			}
+			return result
+		}
+		// Not a generic type - return identifier as-is
 		// We do NOT advance here; caller/intersection loop
 		// can decide when to step past the type.
 		return ident
@@ -2280,7 +2347,131 @@ func (p *Parser) parseVariantPattern() ast.Pattern {
 	return pattern
 }
 
+// parseIdentLedStatement handles statements that start with IDENT ":" ...
+// This centralizes routing between ADT type definitions and variable declarations.
+func (p *Parser) parseIdentLedStatement() ast.Statement {
+	// currentToken is IDENT (the name)
+	identTok := p.currentToken
+	name := &ast.Identifier{Token: identTok, Value: identTok.Literal}
+
+	// Expect colon
+	if !p.expectPeek(token.COLON) {
+		return nil
+	}
+
+	// Look at the token *after* ':'
+	p.nextToken()
+
+	if p.currentTokenIs(token.TYPE) {
+		// We're in `Name: type = ...` - ADT type definition
+		return p.parseADTTypeFromName(name)
+	}
+
+	// We're in `Name: <TypeExpr> (= ...)?` - variable declaration
+	return p.parseVarDeclFromNameAndTypeStart(name)
+}
+
+// parseADTTypeFromName parses an ADT type definition starting from the name.
+// Assumes currentToken is TYPE (the "type" keyword).
+func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
+	adt := &ast.ADTType{Token: name.Token, Name: name}
+
+	// We are currently on `type`
+	// Parse optional type parameters: Name[T: Ordered]: type = ...
+	if p.peekTokenIs(token.LBRACK) {
+		adt.TypeParams = p.parseTypeParameters()
+		if adt.TypeParams == nil {
+			return nil // Error already reported
+		}
+	}
+
+	// Expect '=' after 'type'
+	if !p.expectPeek(token.ASSIGN) {
+		return nil
+	}
+
+	// Move to first token of body
+	p.nextToken()
+
+	// Parse body: record type or variant list
+	if p.currentTokenIs(token.LBRACE) {
+		// This is a record type definition: Name: type = { field: Type, ... }
+		recordLit := p.parseRecordLiteral()
+		if recordLit == nil {
+			return nil
+		}
+		// Store as a single variant with record literal
+		variant := &ast.ADTVariant{
+			Token:   p.currentToken,
+			Name:    adt.Name, // Use ADT name as variant name for record types
+			Literal: recordLit,
+		}
+		adt.Variants = []*ast.ADTVariant{variant}
+	} else if p.currentTokenIs(token.IDENT) {
+		// Could be: TypeName (type alias) or TypeName & RecordType (composition)
+		// Use parseTypeExpression which now handles intersections
+		typeExpr := p.parseTypeExpression()
+		if typeExpr == nil {
+			return nil
+		}
+
+		// Check if it's an intersection (InfixExpression with &) or a simple type
+		if infix, ok := typeExpr.(*ast.InfixExpression); ok && infix.Operator == "&" {
+			// Record composition: TypeName & TypeName & { ... }
+			// Store composition as a variant with the composition expression
+			variant := &ast.ADTVariant{
+				Token:   p.currentToken,
+				Name:    adt.Name,
+				Literal: typeExpr, // Store composition expression
+			}
+			adt.Variants = []*ast.ADTVariant{variant}
+		} else {
+			// Type alias: Name: type = OtherType
+			variant := &ast.ADTVariant{
+				Token:   p.currentToken,
+				Name:    adt.Name,
+				Payload: typeExpr, // Store type alias target
+			}
+			adt.Variants = []*ast.ADTVariant{variant}
+		}
+	} else {
+		// Could be a variant list starting with '|' or other syntax
+		// For now, treat as error
+		p.errors = append(p.errors, fmt.Sprintf("expected record type, type alias, or variant list after '=', got %s", p.currentToken.TokenKind))
+		return nil
+	}
+
+	return adt
+}
+
+// parseVarDeclFromNameAndTypeStart parses a variable declaration starting from the type.
+// Assumes currentToken is the first token of the type expression (after ':').
+func (p *Parser) parseVarDeclFromNameAndTypeStart(name *ast.Identifier) *ast.VariableDeclaration {
+	stmt := &ast.VariableDeclaration{Token: name.Token, Name: name}
+
+	// Parse type annotation (currentToken is already the first token of the type)
+	stmt.Type = p.parseTypeExpression()
+	if stmt.Type == nil {
+		return nil
+	}
+
+	// Check for optional assignment
+	if p.peekTokenIs(token.ASSIGN) {
+		p.nextToken() // consume =
+		p.nextToken() // consume value
+		stmt.Value = p.parseExpression(LOWEST)
+	}
+
+	if p.peekTokenIs(token.SEMI) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
 // Parse variable declaration: a: type = value or a: type
+// This is kept for backward compatibility but should not be called directly
+// from parseStatement - use parseIdentLedStatement instead.
 func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 	stmt := &ast.VariableDeclaration{Token: p.currentToken}
 
