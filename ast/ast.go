@@ -773,9 +773,9 @@ func (ub *UnsafeBlock) String() string {
 // These are part of the language syntax and are type-checked
 type REPLCommand struct {
 	BaseNode
-	Token token.Token   // ':' token
-	Name  string        // command name: "exit", "quit", "help", "typeof"
-	Args  []Expression  // optional arguments to the command (e.g., expression for typeof)
+	Token token.Token  // ':' token
+	Name  string       // command name: "exit", "quit", "help", "typeof"
+	Args  []Expression // optional arguments to the command (e.g., expression for typeof)
 }
 
 func (rc *REPLCommand) statementNode()       {}

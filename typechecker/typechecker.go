@@ -1981,11 +1981,15 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
 // ArrayType represents array or slice types
 type ArrayType struct {
 	ElementType Type
-	Length      int64 // -1 for slices, >= 0 for arrays
-	IsSlice     bool  // true for []T, false for [N]T
+	Length      int64 // >= 0 for fixed arrays, -1 for slices/spans
+	IsSlice     bool  // true for []T, false for [N]T or [*]T
+	IsSpan      bool  // true for [*]T, false otherwise
 }
 
 func (t *ArrayType) String() string {
+	if t.IsSpan {
+		return fmt.Sprintf("[*]%s", t.ElementType.String())
+	}
 	if t.IsSlice {
 		return fmt.Sprintf("[]%s", t.ElementType.String())
 	}
@@ -1994,6 +1998,9 @@ func (t *ArrayType) String() string {
 
 func (t *ArrayType) Equals(other Type) bool {
 	if otherArray, ok := other.(*ArrayType); ok {
+		if t.IsSpan != otherArray.IsSpan {
+			return false
+		}
 		return t.ElementType.Equals(otherArray.ElementType) &&
 			t.Length == otherArray.Length &&
 			t.IsSlice == otherArray.IsSlice
@@ -2114,14 +2121,26 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 			return &ArrayType{
 				Length:      intLit.Value,
 				IsSlice:     false,
+				IsSpan:      false,
 				ElementType: elementType,
 			}
-		} else if ident, ok := indexExpr.Index.(*ast.Identifier); ok && ident.Value == "" {
-			// Slice type: []T (empty identifier means slice)
-			return &ArrayType{
-				Length:      0,
-				IsSlice:     true,
-				ElementType: elementType,
+		} else if ident, ok := indexExpr.Index.(*ast.Identifier); ok {
+			if ident.Value == "*" {
+				// Span type: [*]T
+				return &ArrayType{
+					Length:      -1,
+					IsSlice:     false,
+					IsSpan:      true,
+					ElementType: elementType,
+				}
+			} else if ident.Value == "" {
+				// Slice type: []T (empty identifier means slice)
+				return &ArrayType{
+					Length:      -1,
+					IsSlice:     true,
+					IsSpan:      false,
+					ElementType: elementType,
+				}
 			}
 		} else if indexExpr.Left == nil {
 			// Legacy: Slice type: []T (represented as IndexExpression with nil left, index is the element type)
@@ -2130,8 +2149,9 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 				return nil
 			}
 			return &ArrayType{
-				Length:      0,
+				Length:      -1,
 				IsSlice:     true,
+				IsSpan:      false,
 				ElementType: elementType,
 			}
 		}

@@ -99,3 +99,6 @@ func TestTypeChecker_ArrayType_SliceVsFixed(t *testing.T) {
 		})
 	}
 }
+
+
+
