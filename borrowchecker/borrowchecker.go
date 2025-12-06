@@ -298,14 +298,9 @@ func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement,
 	bc.checkExpression(stmt.Value, env)
 
 	// Check if we're assigning to an owner (which might be borrowed)
-	// The left-hand side is an expression (could be identifier, index, etc.)
-	// If it's an identifier, this is a write operation
-	if ident, ok := stmt.Name.(*ast.Identifier); ok {
-		bc.checkIdentifierUse(ident.Value, env, true)
-	} else {
-		// For indexed assignments (e.g., arr[i] = ...), check the base
-		bc.checkExpression(stmt.Name, env)
-	}
+	// The left-hand side is an Identifier (assignment target)
+	// This is a write operation
+	bc.checkIdentifierUse(stmt.Name.Value, env, true)
 }
 
 // dropBorrowsInCurrentBlock removes borrows created in the current block
