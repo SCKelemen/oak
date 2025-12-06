@@ -111,7 +111,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 	var collectFromExpr func(expr ast.Expression)
 	var collectFromStmt func(stmt ast.Statement)
-	
+
 	collectFromExpr = func(expr ast.Expression) {
 		switch e := expr.(type) {
 		case *ast.StringLiteral:
