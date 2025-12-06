@@ -11,6 +11,7 @@ import (
 
 // IsSubtype checks if T1 ≤ T2 in the lattice
 // Returns true if T1 is a subtype of T2
+// Implements the subtyping partial order from the type universe spec
 func IsSubtype(t1, t2 Type) bool {
 	// Reflexivity: T ≤ T
 	if t1.Equals(t2) {
@@ -27,16 +28,38 @@ func IsSubtype(t1, t2 Type) bool {
 		return true
 	}
 
-	// No other relationships in v1
+	// Union types: A ≤ A | B and B ≤ A | B
+	if unionType, ok := t2.(*UnionType); ok {
+		for _, memberType := range unionType.Types {
+			if IsSubtype(t1, memberType) {
+				return true
+			}
+		}
+	}
+
+	// Intersection types: A & B ≤ A and A & B ≤ B
+	if intersectionType, ok := t1.(*IntersectionType); ok {
+		// A & B ≤ T if A ≤ T and B ≤ T
+		for _, memberType := range intersectionType.Types {
+			if !IsSubtype(memberType, t2) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// No other relationships in v1 (nominal types remain distinct)
 	return false
 }
 
 // Join computes the least upper bound (join) of types
+// For union types: join(A, B) = A | B (when defined)
 // For our minimal lattice:
 // - join(T, T) = T
 // - join(T, any) = any
 // - join(T, never) = T
-// - join(T1, T2) where T1 ≠ T2 and neither is any/never = any (incomparable)
+// - join(A, B) = A | B for union types
+// - join(T1, T2) where T1 ≠ T2 and neither is any/never/union = any (incomparable)
 func Join(types ...Type) Type {
 	if len(types) == 0 {
 		return &NeverType{} // Empty join is bottom
@@ -80,16 +103,32 @@ func Join(types ...Type) Type {
 		return firstType
 	}
 
-	// Incomparable types: result is any
-	return &AnyType{}
+	// For two types, create a union type A | B
+	if len(nonNeverTypes) == 2 {
+		return &UnionType{Types: nonNeverTypes}
+	}
+
+	// For multiple types, create a union type
+	// Flatten any existing union types
+	flattened := []Type{}
+	for _, t := range nonNeverTypes {
+		if union, ok := t.(*UnionType); ok {
+			flattened = append(flattened, union.Types...)
+		} else {
+			flattened = append(flattened, t)
+		}
+	}
+	return &UnionType{Types: flattened}
 }
 
 // Meet computes the greatest lower bound (meet) of types
+// For intersection types: meet(A, B) = A & B (when defined)
 // For our minimal lattice:
 // - meet(T, T) = T
 // - meet(T, never) = never
 // - meet(T, any) = T
-// - meet(T1, T2) where T1 ≠ T2 and neither is never/any = never (incomparable)
+// - meet(A, B) = A & B for intersection types
+// - meet(T1, T2) where T1 ≠ T2 and neither is never/any/intersection = never (incomparable)
 func Meet(types ...Type) Type {
 	if len(types) == 0 {
 		return &AnyType{} // Empty meet is top
@@ -133,8 +172,22 @@ func Meet(types ...Type) Type {
 		return firstType
 	}
 
-	// Incomparable types: result is never
-	return &NeverType{}
+	// For two types, create an intersection type A & B
+	if len(nonAnyTypes) == 2 {
+		return &IntersectionType{Types: nonAnyTypes}
+	}
+
+	// For multiple types, create an intersection type
+	// Flatten any existing intersection types
+	flattened := []Type{}
+	for _, t := range nonAnyTypes {
+		if intersection, ok := t.(*IntersectionType); ok {
+			flattened = append(flattened, intersection.Types...)
+		} else {
+			flattened = append(flattened, t)
+		}
+	}
+	return &IntersectionType{Types: flattened}
 }
 
 // NarrowType narrows a type based on pattern matching

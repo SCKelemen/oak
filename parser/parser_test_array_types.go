@@ -195,6 +195,3 @@ func TestParser_ArrayType_WithUserDefinedTypes(t *testing.T) {
 		})
 	}
 }
-
-
-

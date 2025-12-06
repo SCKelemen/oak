@@ -196,6 +196,15 @@ func mapBooleans(val bool) *object.Boolean {
 }
 
 func evalIdentifier(node *ast.Identifier, env *object.Environment) object.Object {
+	// First check if it's an ADT type name - types are not values
+	// We need to check this BEFORE looking in the value store, because
+	// type names might have been incorrectly stored as empty records
+	if _, ok := env.GetADTType(node.Value); ok {
+		// This is a type name, not a value - return NULL
+		// Don't look it up in the value store
+		return NULL
+	}
+
 	val, ok := env.Get(node.Value)
 	if !ok {
 		// Check built-in functions
@@ -204,6 +213,19 @@ func evalIdentifier(node *ast.Identifier, env *object.Environment) object.Object
 		}
 		return newError("identifier not found: %s", node.Value)
 	}
+
+	// If we got a value, check if it's an empty record that might be a type marker
+	// This is a workaround for the bug where type names are stored as empty records
+	if record, ok := val.(*object.Record); ok {
+		if len(record.Fields) == 0 {
+			// Empty record - check if this is actually a type name
+			if _, ok := env.GetADTType(node.Value); ok {
+				// This is a type, not a value - return NULL
+				return NULL
+			}
+		}
+	}
+
 	return val
 }
 
@@ -280,10 +302,12 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 // evalPrimitiveConstructor evaluates primitive type constructors like u32(x), u64(y)
 // These are widening conversions that are total and non-failing
 func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *object.Environment) object.Object {
-	// Check if it's a primitive type name
+	// Check if it's a primitive type name (including aliases)
 	primitiveTypes := map[string]bool{
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
+		"byte": true, // alias of u8
+		"rune": true, // alias of i32
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -827,8 +851,18 @@ func findADTTypeForVariant(variantName string, env *object.Environment) string {
 }
 
 // Evaluate record literal: { field1: value1, field2: value2, ... }
+// Also handles type-qualified literals: TypeName{ field1: value1, ... }
 func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Object {
 	fields := make(map[string]object.Object)
+
+	// Type-qualified literals are handled the same way as regular record literals
+	// The typechecker ensures the types match, the evaluator just creates the record
+	// If TypeName is set, we ignore it during evaluation - it's only for type checking
+	// We must NOT look up the type name in the environment here, as that would
+	// interfere with variable evaluation
+
+	// For type-qualified literals, we just evaluate the fields normally
+	// The TypeName is only used by the typechecker, not the evaluator
 
 	for fieldName, fieldExpr := range rl.Fields {
 		// Check if this looks like a type definition context
@@ -848,7 +882,7 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 				continue
 			}
 		}
-		
+
 		fieldValue := Eval(fieldExpr, env)
 		if isError(fieldValue) {
 			return fieldValue

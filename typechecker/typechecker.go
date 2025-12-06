@@ -61,8 +61,15 @@ func (t *UnitType) String() string {
 }
 
 func (t *UnitType) Equals(other Type) bool {
-	_, ok := other.(*UnitType)
-	return ok
+	// Unit equals itself
+	if _, ok := other.(*UnitType); ok {
+		return true
+	}
+	// Unit equals empty record {}
+	if otherRecord, ok := other.(*RecordType); ok {
+		return len(otherRecord.Fields) == 0
+	}
+	return false
 }
 
 // NeverType represents the uninhabited bottom type
@@ -135,22 +142,41 @@ type RecordType struct {
 }
 
 func (t *RecordType) String() string {
+	// Canonical form: struct{ field1: Type1, field2: Type2, ... }
 	var out string
-	out += "{"
+	out += "struct{"
 	first := true
 	for name, typ := range t.Fields {
 		if !first {
 			out += ", "
 		}
-		out += fmt.Sprintf("%s: %s", name, typ.String())
+		out += fmt.Sprintf(" %s: %s", name, typ.String())
 		first = false
+	}
+	if len(t.Fields) > 0 {
+		out += " "
 	}
 	out += "}"
 	return out
 }
 
 func (t *RecordType) Equals(other Type) bool {
+	// Empty record {} is equivalent to Unit
+	if len(t.Fields) == 0 {
+		if _, ok := other.(*UnitType); ok {
+			return true
+		}
+		if otherRecord, ok := other.(*RecordType); ok {
+			return len(otherRecord.Fields) == 0
+		}
+		return false
+	}
+
 	if otherRecord, ok := other.(*RecordType); ok {
+		// If other is empty, we already checked above
+		if len(otherRecord.Fields) == 0 {
+			return false
+		}
 		if len(t.Fields) != len(otherRecord.Fields) {
 			return false
 		}
@@ -161,6 +187,12 @@ func (t *RecordType) Equals(other Type) bool {
 		}
 		return true
 	}
+
+	// Empty record equals Unit, but non-empty records don't equal Unit
+	if _, ok := other.(*UnitType); ok {
+		return false
+	}
+
 	return false
 }
 
@@ -177,6 +209,42 @@ func (t *InterfaceType) String() string {
 func (t *InterfaceType) Equals(other Type) bool {
 	if otherInterface, ok := other.(*InterfaceType); ok {
 		return t.Name == otherInterface.Name
+	}
+	return false
+}
+
+// UnionType represents a union of types (A | B | C)
+type UnionType struct {
+	Types []Type // The types being unioned
+}
+
+func (t *UnionType) String() string {
+	var out string
+	for i, typ := range t.Types {
+		if i > 0 {
+			out += " | "
+		}
+		out += typ.String()
+	}
+	return out
+}
+
+func (t *UnionType) Equals(other Type) bool {
+	if otherUnion, ok := other.(*UnionType); ok {
+		if len(t.Types) != len(otherUnion.Types) {
+			return false
+		}
+		// Check that all types are present (order doesn't matter for equality)
+		typeSet := make(map[string]bool)
+		for _, typ := range t.Types {
+			typeSet[typ.String()] = true
+		}
+		for _, typ := range otherUnion.Types {
+			if !typeSet[typ.String()] {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
@@ -259,6 +327,11 @@ type TypeChecker struct {
 	errors   []string
 	env      *TypeEnvironment
 	adtTypes map[string]*object.ADTType // ADT type definitions
+}
+
+// Env returns the type environment (for use by borrow checker)
+func (tc *TypeChecker) Env() *TypeEnvironment {
+	return tc.env
 }
 
 // TypeEnvironment stores type information for variables
@@ -470,6 +543,8 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		return tc.checkRecordLiteral(e, expected)
 	case *ast.IndexExpression:
 		return tc.checkIndexExpression(e)
+	case *ast.SliceExpression:
+		return tc.checkSliceExpression(e)
 	case *ast.ArrayLiteral:
 		return tc.checkArrayLiteral(e)
 	case nil:
@@ -771,10 +846,12 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 // checkPrimitiveConstructor checks if an invocation is a primitive type constructor
 // (e.g., u32(x), u64(y)) and returns the target type if valid
 func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Expression) Type {
-	// Check if it's a primitive type name
+	// Check if it's a primitive type name (including aliases)
 	primitiveTypes := map[string]bool{
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
+		"byte": true, // alias of u8
+		"rune": true, // alias of i32
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -810,18 +887,32 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		return nil
 	}
 
+	// Normalize aliases for widening check
+	normalizedTarget := typeName
+	if typeName == "byte" {
+		normalizedTarget = "u8"
+	} else if typeName == "rune" {
+		normalizedTarget = "i32"
+	}
+
 	// Check if widening is valid (same signedness, source is narrower or equal)
-	if !tc.isValidWidening(argPrim.Name, typeName) {
+	if !tc.isValidWidening(argPrim.Name, normalizedTarget) {
 		tc.addError("cannot widen %s to %s (must be same signedness and source must be narrower or equal)", argPrim.Name, typeName)
 		return nil
 	}
 
-	// Return the target type
+	// Return the target type (preserve alias name if used)
 	return &PrimitiveType{Name: typeName}
 }
 
 // literalFitsInType checks if an integer literal value fits in the given primitive type
 func (tc *TypeChecker) literalFitsInType(value int64, typeName string) bool {
+	// Normalize aliases
+	if typeName == "byte" {
+		typeName = "u8"
+	} else if typeName == "rune" {
+		typeName = "i32"
+	}
 	switch typeName {
 	case "u8":
 		return value >= 0 && value <= 255
@@ -849,6 +940,18 @@ func (tc *TypeChecker) literalFitsInType(value int64, typeName string) bool {
 // - Both types have the same signedness (both signed or both unsigned)
 // - Source type is narrower than or equal to target type
 func (tc *TypeChecker) isValidWidening(sourceType, targetType string) bool {
+	// Normalize aliases
+	if sourceType == "byte" {
+		sourceType = "u8"
+	} else if sourceType == "rune" {
+		sourceType = "i32"
+	}
+	if targetType == "byte" {
+		targetType = "u8"
+	} else if targetType == "rune" {
+		targetType = "i32"
+	}
+
 	// Check signedness
 	sourceSigned := sourceType[0] == 'i'
 	targetSigned := targetType[0] == 'i'
@@ -866,6 +969,12 @@ func (tc *TypeChecker) isValidWidening(sourceType, targetType string) bool {
 
 // getTypeWidth returns the bit width of a primitive type
 func (tc *TypeChecker) getTypeWidth(typeName string) int {
+	// Normalize aliases
+	if typeName == "byte" {
+		typeName = "u8"
+	} else if typeName == "rune" {
+		typeName = "i32"
+	}
 	switch typeName {
 	case "u8", "i8":
 		return 8
@@ -1416,6 +1525,23 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression) Type 
 }
 
 func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType ...Type) Type {
+	// If this is a type-qualified literal (TypeName{ ... }), look up the type
+	if expr.TypeName != nil {
+		typeName := expr.TypeName.Value
+		namedType, ok := tc.env.GetType(typeName)
+		if !ok {
+			tc.addError("type %s not found", typeName)
+			return nil
+		}
+		// Convert the named type to a RecordType if possible
+		// Record types defined as "Name: type = { ... }" are stored as RecordType in the environment
+		// ADT types with a single record variant are also stored as RecordType
+		if recordType, ok := namedType.(*RecordType); ok {
+			// Direct record type
+			expectedType = []Type{recordType}
+		}
+	}
+
 	// If expected type is a RecordType, use it for context-based inference
 	var expectedRecord *RecordType
 	if len(expectedType) > 0 {
@@ -1446,7 +1572,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 				}
 			}
 		}
-		
+
 		// Use expected field type for context-based inference
 		var expectedFieldType Type
 		if expectedRecord != nil {
@@ -1465,6 +1591,12 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 		}
 		fields[name] = fieldType
 	}
+
+	// Canonicalize empty record {} to Unit
+	if len(fields) == 0 {
+		return &UnitType{}
+	}
+
 	return &RecordType{Fields: fields}
 }
 
@@ -1505,6 +1637,71 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 	}
 
 	tc.addError("index expression not supported for type: %s", leftType)
+	return nil
+}
+
+func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
+	leftType := tc.checkExpression(expr.Left)
+	if leftType == nil {
+		return nil
+	}
+
+	// Check start and end indices if provided
+	if expr.Start != nil {
+		startType := tc.checkExpression(expr.Start)
+		if startType == nil {
+			return nil
+		}
+		if !tc.isNumericType(startType) {
+			tc.addError("slice start index must be numeric type, got %s", startType)
+			return nil
+		}
+	}
+
+	if expr.End != nil {
+		endType := tc.checkExpression(expr.End)
+		if endType == nil {
+			return nil
+		}
+		if !tc.isNumericType(endType) {
+			tc.addError("slice end index must be numeric type, got %s", endType)
+			return nil
+		}
+	}
+
+	// Handle slicing of arrays, views, and spans
+	if arrayType, ok := leftType.(*ArrayType); ok {
+		// Slicing an owned array [N]T produces a View []T
+		// Slicing a View []T produces a View []T
+		// Slicing a Span [*]T produces a Span [*]T
+		if arrayType.IsSpan {
+			// Span -> Span
+			return &ArrayType{
+				ElementType: arrayType.ElementType,
+				Length:      -1,
+				IsSlice:     false,
+				IsSpan:      true,
+			}
+		} else if arrayType.IsSlice {
+			// View -> View
+			return &ArrayType{
+				ElementType: arrayType.ElementType,
+				Length:      -1,
+				IsSlice:     true,
+				IsSpan:      false,
+			}
+		} else {
+			// Owned array [N]T -> View []T
+			return &ArrayType{
+				ElementType: arrayType.ElementType,
+				Length:      -1,
+				IsSlice:     true,
+				IsSpan:      false,
+			}
+		}
+	}
+
+	tc.addError("slice expression not supported for type: %s", leftType)
 	return nil
 }
 
@@ -1776,6 +1973,29 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 				}
 				return
 			}
+			// Check if this is an intersection expression (type composition)
+			if infixExpr, ok := variant.Literal.(*ast.InfixExpression); ok && infixExpr.Operator == "&" {
+				// This is an intersection type: Type1 & Type2 & { ... }
+				// Parse it as a type expression and normalize to a record type
+				intersectionType := tc.parseTypeExpression(variant.Literal)
+				if intersectionType == nil {
+					return
+				}
+				// If it's an IntersectionType, we need to normalize it to a RecordType
+				if intersection, ok := intersectionType.(*IntersectionType); ok {
+					// Collect all record types from the intersection and merge them
+					recordType := tc.normalizeIntersectionToRecord(intersection)
+					if recordType != nil {
+						recordScheme := Generalize(recordType, tc.env)
+						tc.env.Set(stmt.Name.Value, recordScheme)
+					}
+				} else if recordType, ok := intersectionType.(*RecordType); ok {
+					// Already a record type
+					recordScheme := Generalize(recordType, tc.env)
+					tc.env.Set(stmt.Name.Value, recordScheme)
+				}
+				return
+			}
 		}
 		// Check if this is a type alias: Name: type = TypeName
 		// If the variant has no name or the name matches the type name, it might be an alias
@@ -1812,6 +2032,12 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 			// Don't check record literals as expressions - they're type definitions
 			if _, isRecordLiteral := variant.Literal.(*ast.RecordLiteral); isRecordLiteral {
 				// This is a record type definition, skip expression checking
+				continue
+			}
+			// Don't check intersection expressions as value expressions - they're type compositions
+			if infixExpr, ok := variant.Literal.(*ast.InfixExpression); ok && infixExpr.Operator == "&" {
+				// This is an intersection type expression - skip expression checking
+				// It will be handled when we process the type definition
 				continue
 			}
 			literalType := tc.checkExpression(variant.Literal)
@@ -1852,7 +2078,7 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 }
 
 // parseRecordTypeFromLiteral parses a RecordType from a record literal used in a type definition
-func (tc *TypeChecker) parseRecordTypeFromLiteral(recordLit *ast.RecordLiteral) *RecordType {
+func (tc *TypeChecker) parseRecordTypeFromLiteral(recordLit *ast.RecordLiteral) Type {
 	fields := make(map[string]Type)
 	for fieldName, fieldExpr := range recordLit.Fields {
 		fieldType := tc.parseTypeExpression(fieldExpr)
@@ -1861,6 +2087,12 @@ func (tc *TypeChecker) parseRecordTypeFromLiteral(recordLit *ast.RecordLiteral) 
 		}
 		fields[fieldName] = fieldType
 	}
+
+	// Canonicalize empty record {} to Unit
+	if len(fields) == 0 {
+		return &UnitType{}
+	}
+
 	return &RecordType{Fields: fields}
 }
 
@@ -2251,6 +2483,52 @@ func (tc *TypeChecker) implementsIntersection(concreteType Type, intersection *I
 		}
 	}
 	return true
+}
+
+// normalizeIntersectionToRecord normalizes an IntersectionType to a single RecordType
+// by merging all record types in the intersection
+func (tc *TypeChecker) normalizeIntersectionToRecord(intersection *IntersectionType) *RecordType {
+	mergedFields := make(map[string]Type)
+
+	for _, typ := range intersection.Types {
+		// If it's a record type, merge its fields
+		if recordType, ok := typ.(*RecordType); ok {
+			for fieldName, fieldType := range recordType.Fields {
+				// Check for conflicts
+				if existingType, exists := mergedFields[fieldName]; exists {
+					if !existingType.Equals(fieldType) {
+						tc.addError("intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
+						return nil
+					}
+				} else {
+					mergedFields[fieldName] = fieldType
+				}
+			}
+		} else if adtType, ok := typ.(*ADTType); ok {
+			// If it's an ADT type, try to get its record type from the environment
+			// Look up the type in the environment - it should be stored as a RecordType
+			if namedType, ok := tc.env.GetType(adtType.Name); ok {
+				if recordType, ok := namedType.(*RecordType); ok {
+					for fieldName, fieldType := range recordType.Fields {
+						if existingType, exists := mergedFields[fieldName]; exists {
+							if !existingType.Equals(fieldType) {
+								tc.addError("intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
+								return nil
+							}
+						} else {
+							mergedFields[fieldName] = fieldType
+						}
+					}
+				}
+			}
+		} else {
+			// Non-record type in intersection - this is an error for type definitions
+			tc.addError("intersection type contains non-record type %s", typ)
+			return nil
+		}
+	}
+
+	return &RecordType{Fields: mergedFields}
 }
 
 // checkIntersectionConstraint checks if a type satisfies an intersection constraint

@@ -58,6 +58,7 @@ const (
 	_keywords_beg
 	TYPE
 	INTERFACE
+	STRUCT
 	TRUE
 	FALSE
 	PACKAGE
@@ -111,6 +112,7 @@ var tokens = [...]string{
 
 	TYPE:      "type",
 	INTERFACE: "interface",
+	STRUCT:    "struct",
 	TRUE:      "true",
 	FALSE:     "false",
 	PACKAGE:   "package",

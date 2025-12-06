@@ -77,18 +77,18 @@ func Start(in io.Reader, out io.Writer) {
 					}
 					expr := replCmd.Args[0]
 					typeChecker.ClearErrors()
-					
+
 					// typeof() can accept both type expressions (like []i32, [10]Byte) and value expressions
 					// Try parsing as type expression first
 					var exprType typechecker.Type
 					exprType = typeChecker.ParseTypeExpression(expr)
-					
+
 					// If that didn't work, try as value expression
 					if exprType == nil {
 						typeChecker.ClearErrors()
 						exprType = typeChecker.CheckExpression(expr)
 					}
-					
+
 					if len(typeChecker.Errors()) > 0 {
 						fmt.Fprintf(out, "Type errors:\n")
 						for _, err := range typeChecker.Errors() {
