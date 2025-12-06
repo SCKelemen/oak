@@ -361,6 +361,12 @@ func (tc *TypeChecker) CheckExpression(expr ast.Expression) Type {
 	return tc.checkExpression(expr)
 }
 
+// ParseTypeExpression parses a type expression and returns its type
+// This is useful for REPL inspection commands like :typeof() with type expressions
+func (tc *TypeChecker) ParseTypeExpression(expr ast.Expression) Type {
+	return tc.parseTypeExpression(expr)
+}
+
 // checkStatement type checks a statement
 func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 	switch s := stmt.(type) {

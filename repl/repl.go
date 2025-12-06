@@ -70,15 +70,25 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "Environment reset.\n")
 					continue
 				case "typeof":
-					// Type check and display the type of an expression
+					// Type check and display the type of an expression or type
 					if len(replCmd.Args) == 0 {
 						fmt.Fprintf(out, "Usage: :typeof(expression)\n")
 						continue
 					}
 					expr := replCmd.Args[0]
-					// Type check the expression
 					typeChecker.ClearErrors()
-					exprType := typeChecker.CheckExpression(expr)
+					
+					// typeof() can accept both type expressions (like []i32, [10]Byte) and value expressions
+					// Try parsing as type expression first
+					var exprType typechecker.Type
+					exprType = typeChecker.ParseTypeExpression(expr)
+					
+					// If that didn't work, try as value expression
+					if exprType == nil {
+						typeChecker.ClearErrors()
+						exprType = typeChecker.CheckExpression(expr)
+					}
+					
 					if len(typeChecker.Errors()) > 0 {
 						fmt.Fprintf(out, "Type errors:\n")
 						for _, err := range typeChecker.Errors() {

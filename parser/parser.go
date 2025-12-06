@@ -1184,9 +1184,18 @@ func (p *Parser) parseArrayType() ast.Expression {
 	// Check for size: [N]Type
 	var size *ast.IntegerLiteral
 	if p.currentTokenIs(token.INT) {
-		// Fixed-size array: [N]Type
+		// Could be fixed-size array: [N]Type
+		// But could also be array literal: [N, ...]
+		// Check what comes after the integer
 		size = p.parseIntegerLiteral().(*ast.IntegerLiteral)
 		// parseIntegerLiteral doesn't advance, so currentToken is still the INT
+		// Check peekToken to see if it's ] (array type) or , (array literal)
+		if !p.peekTokenIs(token.RBRACK) {
+			// Not an array type - this is an array literal
+			// Don't reset here - let the caller handle it
+			// Just return nil so caller knows to try parsing as value expression
+			return nil
+		}
 		// Advance past the integer to get to the closing bracket
 		p.nextToken() // advance past the size integer
 		// Now currentToken should be ]
@@ -1202,6 +1211,14 @@ func (p *Parser) parseArrayType() ast.Expression {
 		if elementType == nil {
 			return nil
 		}
+		// parseTypeExpression doesn't advance for identifiers, so if element type is an identifier,
+		// we need to advance past it to position correctly for the caller
+		if ident, ok := elementType.(*ast.Identifier); ok && ident.Value != "()" {
+			// Advance past the identifier if we're still at it
+			if p.currentTokenIs(token.IDENT) {
+				p.nextToken()
+			}
+		}
 		// Return as IndexExpression with empty identifier for slice
 		return &ast.IndexExpression{
 			Token: p.currentToken,
@@ -1215,7 +1232,8 @@ func (p *Parser) parseArrayType() ast.Expression {
 	if size != nil {
 		// Check for closing bracket after size
 		if !p.currentTokenIs(token.RBRACK) {
-			p.peekError(token.RBRACK)
+			// Not an array type - likely an array literal
+			// Return nil without error so caller can try parsing as value expression
 			return nil
 		}
 		p.nextToken() // consume ] - this advances to the element type
@@ -1240,9 +1258,8 @@ func (p *Parser) parseArrayType() ast.Expression {
 		}
 	}
 
-	// This shouldn't happen - we should have handled slice, span, and fixed-size arrays above
-	// Return error
-	p.errors = append(p.errors, "unexpected array type syntax")
+	// If we get here, we didn't match any array type pattern
+	// This could be an array literal - return nil so caller can try parsing as value expression
 	return nil
 }
 
@@ -1808,33 +1825,37 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 		if p.peekTokenIs(token.LPAREN) {
 			p.nextToken() // consume (
 			// typeof() can accept both value expressions and type expressions
-			// Try parsing as type expression first (for things like []i32, [10]Byte, etc.)
-			// If that fails, try as value expression
+			// We need to distinguish between array types and array literals
+			// Strategy: try type expression first, but if it fails or positions incorrectly, try value expression
 			var expr ast.Expression
+			p.nextToken() // advance to the first token of the expression
+			
+			// Save initial state for potential reset
+			initialToken := p.currentToken
+			initialPeek := p.peekToken
+			initialErrorCount := len(p.errors)
+			
+			// Try parsing as type expression if it looks like one
 			if p.currentTokenIs(token.LBRACK) || p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.IDENT) || p.currentTokenIs(token.LPAREN) {
-				// Could be a type expression - try parsing as type
 				expr = p.parseTypeExpression()
-				if expr != nil {
-					// Type expression parsed successfully
-					// parseTypeExpression doesn't advance for identifiers, but does for arrays/records
-					// For array types, parseArrayType may leave currentToken at the element type
-					// For identifiers, we need to advance past them
-					if ident, ok := expr.(*ast.Identifier); ok && ident.Value != "()" {
-						// Identifier type - advance past it
-						p.nextToken()
-					} else if indexExpr, ok := expr.(*ast.IndexExpression); ok {
-						// Array type - check if we need to advance past the element type
-						// If the element type is an identifier, parseTypeExpression didn't advance
-						if ident, ok := indexExpr.Left.(*ast.Identifier); ok {
-							// Element type is an identifier - advance past it if we're still at it
-							if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == ident.Value {
-								p.nextToken()
-							}
-						}
-					}
-					// Advance to closing paren if needed
+				newErrorCount := len(p.errors)
+				
+				// Check if we successfully parsed and are positioned at the closing paren
+				if expr != nil && (p.currentTokenIs(token.RPAREN) || p.peekTokenIs(token.RPAREN)) {
+					// Success! Advance to closing paren if needed
 					if p.peekTokenIs(token.RPAREN) {
 						p.nextToken() // advance to )
+					}
+				} else {
+					// Parsing failed or wrong position - this might be a value expression
+					// Reset token position and clear any errors from type expression parsing
+					expr = nil
+					p.currentToken = initialToken
+					p.peekToken = initialPeek
+					// Remove errors added during failed type expression parsing
+					// But keep original errors if any
+					if newErrorCount > initialErrorCount {
+						p.errors = p.errors[:initialErrorCount]
 					}
 				}
 			}
