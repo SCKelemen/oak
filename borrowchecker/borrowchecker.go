@@ -146,11 +146,11 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	// Get the function's local environment from the typechecker
 	// The typechecker creates an enclosed environment for function parameters
 	// We need to access that environment to check local variables
-	
+
 	// For now, we'll create a fresh borrow checker state for the function
 	// This ensures borrows created inside the function don't affect outer scope
 	// and vice versa
-	
+
 	// Save current state
 	savedOwnerStates := make(map[string]BorrowState)
 	for k, v := range bc.ownerStates {
@@ -165,16 +165,16 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 		savedOwnerOf[k] = v
 	}
 	savedBlockDepth := bc.currentBlockDepth
-	
+
 	// Reset to function-local state
 	// We keep the outer environment for type lookups, but start fresh for borrows
 	bc.currentBlockDepth = 0
-	
+
 	// Check function parameters - they might be owners
 	// The typechecker should have registered them in the function's environment
 	// We need to get that environment - for now, we'll check types from the AST
 	funcEnv := typechecker.NewEnclosedTypeEnvironment(env)
-	
+
 	// Register receiver if present
 	if stmt.Receiver != nil {
 		receiverType := bc.parseTypeFromAST(stmt.Receiver.Type, env)
@@ -188,7 +188,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 			funcEnv.SetType(stmt.Receiver.Name.Value, receiverType)
 		}
 	}
-	
+
 	// Register parameters
 	for _, param := range stmt.Parameters {
 		paramType := bc.parseTypeFromAST(param.Type, env)
@@ -202,15 +202,15 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 			funcEnv.SetType(param.Name.Value, paramType)
 		}
 	}
-	
+
 	// Check function body
 	// The body is an Expression - check it directly
 	// If it's a block expression, it will be handled by checkExpression
 	bc.checkExpression(stmt.Body, funcEnv)
-	
+
 	// At function end, all borrows created in the function are dropped
 	// This happens automatically when we restore state
-	
+
 	// Restore outer state
 	bc.ownerStates = savedOwnerStates
 	bc.activeBorrows = savedActiveBorrows
@@ -227,14 +227,14 @@ func (bc *BorrowChecker) parseTypeFromAST(typeExpr ast.Expression, env *typechec
 			return scheme.Type
 		}
 	}
-	
+
 	// For array types, try to parse from IndexExpression
 	if indexExpr, ok := typeExpr.(*ast.IndexExpression); ok {
 		elementType := bc.parseTypeFromAST(indexExpr.Left, env)
 		if elementType == nil {
 			return nil
 		}
-		
+
 		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
 			// Fixed-size array: [N]T
 			return &typechecker.ArrayType{
@@ -263,7 +263,7 @@ func (bc *BorrowChecker) parseTypeFromAST(typeExpr ast.Expression, env *typechec
 			}
 		}
 	}
-	
+
 	// For primitive types
 	if ident, ok := typeExpr.(*ast.Identifier); ok {
 		switch ident.Value {
@@ -275,7 +275,7 @@ func (bc *BorrowChecker) parseTypeFromAST(typeExpr ast.Expression, env *typechec
 			return &typechecker.BoolType{}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -283,7 +283,7 @@ func (bc *BorrowChecker) parseTypeFromAST(typeExpr ast.Expression, env *typechec
 func (bc *BorrowChecker) checkWhileStatement(stmt *ast.WhileStatement, env *typechecker.TypeEnvironment) {
 	// Check condition
 	bc.checkExpression(stmt.Condition, env)
-	
+
 	// Check body (which is a BlockStatement)
 	bc.checkBlockStatement(stmt.Body, env)
 }
@@ -292,7 +292,7 @@ func (bc *BorrowChecker) checkWhileStatement(stmt *ast.WhileStatement, env *type
 func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement, env *typechecker.TypeEnvironment) {
 	// Check the value being assigned
 	bc.checkExpression(stmt.Value, env)
-	
+
 	// Check if we're assigning to an owner (which might be borrowed)
 	// The left-hand side is an expression (could be identifier, index, etc.)
 	bc.checkExpression(stmt.Name, env)
@@ -397,11 +397,9 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		bc.checkExpression(e.Right, env)
 	case *ast.InvocationExpression:
 		bc.checkInvocationExpression(e, env, targetVar)
-	case *ast.BlockStatement:
-		// Block expressions (function bodies, etc.)
-		bc.checkBlockStatement(e, env)
 	default:
 		// Other expressions don't create borrows
+		// Note: Function bodies are Expressions, but they're handled in checkFunctionStatement
 	}
 }
 
