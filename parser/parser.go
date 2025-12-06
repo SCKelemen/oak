@@ -167,7 +167,14 @@ func (p *Parser) parseStatement() ast.Statement {
 	}
 
 	// Check for REPL directives: :exit, :quit, :help
-	if p.currentTokenIs(token.COLON) {
+	// Only at statement level, not inside expressions
+	// We check this before IDENT to catch :exit, :quit, etc.
+	// But we need to be careful: if we have IDENT followed by COLON_ASSIGN (:=),
+	// that's a variable declaration, not a REPL command
+	if p.currentTokenIs(token.COLON) && p.peekTokenIs(token.IDENT) {
+		// This could be a REPL command like :exit
+		// But we need to check if it's actually := (which would be COLON_ASSIGN token)
+		// Since := is a single token, if we see COLON here, it's not :=
 		return p.parseREPLCommand()
 	}
 
@@ -2339,9 +2346,9 @@ func (p *Parser) parseShortVariableDeclaration() *ast.VariableDeclaration {
 		return nil
 	}
 
-	// Parse value (type will be inferred)
-	p.nextToken() // consume :=, now currentToken is :=
-	p.nextToken() // advance to first token of the value expression
+	// expectPeek advanced past :=, so currentToken is now := (COLON_ASSIGN)
+	// We need to advance one more time to get to the first token of the value expression
+	p.nextToken() // advance past := to first token of value expression
 	stmt.Value = p.parseExpression(LOWEST)
 	stmt.Type = nil // Type inference
 

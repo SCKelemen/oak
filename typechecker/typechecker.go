@@ -472,6 +472,10 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 	case *ast.BlockStatement:
 		// Block statements are checked as part of function bodies, while loops, etc.
 		tc.checkBlockStatement(s)
+	case *ast.REPLCommand:
+		// REPL commands are handled in the REPL itself, not in type checking
+		// They don't need type checking
+		return
 	default:
 		tc.addError("unknown statement type: %T", stmt)
 	}
