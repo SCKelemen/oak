@@ -149,6 +149,13 @@ func SerializeAST(program *ast.Program, outputPath string) error {
 
 // serializeNode converts an AST node to JSON format
 func serializeNode(node ast.Node) (ASTNodeJSON, error) {
+	if node == nil {
+		return ASTNodeJSON{
+			Type: "nil",
+			Data: map[string]interface{}{"error": "nil node"},
+		}, nil
+	}
+
 	nodeJSON := ASTNodeJSON{
 		Type: getNodeType(node),
 		Data: make(map[string]interface{}),
@@ -177,7 +184,9 @@ func serializeNode(node ast.Node) (ASTNodeJSON, error) {
 		nodeJSON.Data["value"] = n.Value
 
 	case *ast.VariableDeclaration:
-		nodeJSON.Data["name"] = n.Name.Value
+		if n.Name != nil {
+			nodeJSON.Data["name"] = n.Name.Value
+		}
 		if n.Type != nil {
 			typeStr, err := serializeTypeExpression(n.Type)
 			if err != nil {
@@ -287,8 +296,13 @@ func serializeNode(node ast.Node) (ASTNodeJSON, error) {
 		}
 
 	case *ast.FunctionStatement:
-		nodeJSON.Data["name"] = n.Name.Value
-		if n.Receiver != nil {
+		if n == nil {
+			break
+		}
+		if n.Name != nil {
+			nodeJSON.Data["name"] = n.Name.Value
+		}
+		if n.Receiver != nil && n.Receiver.Name != nil {
 			receiverData := map[string]interface{}{
 				"name": n.Receiver.Name.Value,
 			}
@@ -301,21 +315,27 @@ func serializeNode(node ast.Node) (ASTNodeJSON, error) {
 			}
 			nodeJSON.Data["receiver"] = receiverData
 		}
-		params := make([]map[string]interface{}, 0, len(n.Parameters))
-		for _, param := range n.Parameters {
-			paramData := map[string]interface{}{
-				"name": param.Name.Value,
-			}
-			if param.Type != nil {
-				typeStr, err := serializeTypeExpression(param.Type)
-				if err != nil {
-					return ASTNodeJSON{}, err
+		if n.Parameters != nil {
+			params := make([]map[string]interface{}, 0, len(n.Parameters))
+			for _, param := range n.Parameters {
+				if param == nil {
+					continue
 				}
-				paramData["type"] = typeStr
+				paramData := map[string]interface{}{}
+				if param.Name != nil {
+					paramData["name"] = param.Name.Value
+				}
+				if param.Type != nil {
+					typeStr, err := serializeTypeExpression(param.Type)
+					if err != nil {
+						return ASTNodeJSON{}, err
+					}
+					paramData["type"] = typeStr
+				}
+				params = append(params, paramData)
 			}
-			params = append(params, paramData)
+			nodeJSON.Data["parameters"] = params
 		}
-		nodeJSON.Data["parameters"] = params
 		if n.ReturnType != nil {
 			returnTypeStr, err := serializeTypeExpression(n.ReturnType)
 			if err != nil {
@@ -343,7 +363,9 @@ func serializeNode(node ast.Node) (ASTNodeJSON, error) {
 		nodeJSON.Data["statements"] = statements
 
 	case *ast.ADTType:
-		nodeJSON.Data["name"] = n.Name.Value
+		if n.Name != nil {
+			nodeJSON.Data["name"] = n.Name.Value
+		}
 		variants := make([]map[string]interface{}, 0, len(n.Variants))
 		for _, variant := range n.Variants {
 			variantData := map[string]interface{}{
@@ -492,47 +514,88 @@ func getNodeType(node ast.Node) string {
 
 // getNodePosition extracts position information from a node
 func getNodePosition(node ast.Node) *PositionJSON {
+	if node == nil {
+		return nil
+	}
 	// Try to get token information
 	var tok token.Token
 	switch n := node.(type) {
 	case *ast.Identifier:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.IntegerLiteral:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.StringLiteral:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.Boolean:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.VariableDeclaration:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.ExpressionStatement:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.PrefixExpression:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.InfixExpression:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.IndexExpression:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.SliceExpression:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.ArrayLiteral:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.RecordLiteral:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.FunctionStatement:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.BlockStatement:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.ADTType:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.MatchExpression:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.InvocationExpression:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.WhileStatement:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	case *ast.AssignmentStatement:
-		tok = n.Token
+		if n != nil {
+			tok = n.Token
+		}
 	}
 
 	if tok.Line > 0 {

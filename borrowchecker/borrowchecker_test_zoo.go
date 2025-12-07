@@ -170,7 +170,7 @@ func TestBorrowChecker_PositiveCases(t *testing.T) {
 		}
 
 		t.Run(name, func(t *testing.T) {
-			bc, program, typeChecker := setupBorrowChecker(t, tc.code)
+			bc, program, typeChecker := setupBorrowCheckerForTest(tc.code)
 			if program == nil {
 				t.Fatalf("Failed to parse program for case %d", tc.number)
 			}
@@ -222,7 +222,7 @@ func TestBorrowChecker_NegativeCases(t *testing.T) {
 		}
 
 		t.Run(name, func(t *testing.T) {
-			bc, program, typeChecker := setupBorrowChecker(t, tc.code)
+			bc, program, typeChecker := setupBorrowCheckerForTest(tc.code)
 			if program == nil {
 				// Parser errors are acceptable for some negative cases
 				// but we should still log them

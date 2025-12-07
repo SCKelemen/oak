@@ -1,0 +1,3 @@
+
+x: i32 = "hello"
+y: string = 42

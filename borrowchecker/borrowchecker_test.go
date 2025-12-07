@@ -4,33 +4,19 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/ast"
-	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
 func setupBorrowChecker(t *testing.T, input string) (*BorrowChecker, *ast.Program, *typechecker.TypeChecker) {
-	lxr := scanner.New(input)
-	p := parser.New(lxr)
-	program := p.ParseProgram()
-
-	if len(p.Errors()) > 0 {
-		// Parser errors - return nil program
-		// Errors are available via p.Errors() if needed for debugging
+	bc, program, tc := setupBorrowCheckerForTest(input)
+	if program == nil && len(parser.New(scanner.New(input)).Errors()) > 0 {
 		// Print errors for debugging
-		for _, err := range p.Errors() {
+		for _, err := range parser.New(scanner.New(input)).Errors() {
 			t.Logf("Parser error: %s", err)
 		}
-		return nil, nil, nil
 	}
-
-	// Create object environment for typechecker
-	objEnv := object.NewEnvironment()
-	tc := typechecker.New(objEnv)
-	tc.CheckProgram(program)
-
-	bc := New()
 	return bc, program, tc
 }
 

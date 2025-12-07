@@ -19,7 +19,7 @@ z: i32 = x + y
 	objEnv := object.NewEnvironment()
 	tc := typechecker.New(objEnv)
 
-	// Serialize to golden
+	// Serialize to golden (baseStageNum=0 means source is stage 0, lexer is 1, etc.)
 	outputs, err := SerializeToGolden("test_example", 0, sourceCode, tc)
 	if err != nil {
 		t.Fatalf("Failed to serialize to golden: %v", err)
@@ -59,7 +59,7 @@ y: string = 42    // Type error: int assigned to string
 	objEnv := object.NewEnvironment()
 	tc := typechecker.New(objEnv)
 
-	// Serialize to golden (should capture errors)
+	// Serialize to golden (should capture errors) (baseStageNum=0)
 	outputs, err := SerializeToGolden("test_errors", 0, sourceCode, tc)
 	if err != nil {
 		t.Fatalf("Failed to serialize to golden: %v", err)

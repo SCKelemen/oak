@@ -925,7 +925,7 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	// For HM-style inference, we infer type arguments from the call
 	// After unification, we should check that inferred types satisfy constraints
 	if funcScheme != nil && len(funcScheme.Constraints) > 0 {
-		tc.checkFunctionConstraints(funcScheme, fnType, argTypes)
+		tc.checkFunctionConstraints(funcScheme, fnType, argTypes, expr)
 	}
 
 	return fnType.ReturnType
@@ -937,7 +937,12 @@ func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expressi
 	// For now, we'll use a simplified syntax: view_as[U](src) or span_as[U](src)
 	// In the future, we might support explicit generic syntax
 	if len(args) != 1 {
-		tc.addError("%s expects exactly one argument", funcName)
+		// Use first argument if available, otherwise nil
+		var node ast.Node
+		if len(args) > 0 {
+			node = args[0]
+		}
+		tc.addError(node, "%s expects exactly one argument", funcName)
 		return nil
 	}
 
@@ -954,7 +959,7 @@ func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expressi
 			// The actual target type will be inferred from context or explicit annotation
 			// Return a placeholder type that indicates reinterpret is needed
 			// In practice, the target type would come from the generic parameter [U]
-			tc.addError("view_as requires generic type parameter (e.g., view_as[u32](src)). Generic syntax not yet implemented. Use type annotation: v: []u32 = view_as(src)")
+			tc.addError(args[0], "view_as requires generic type parameter (e.g., view_as[u32](src)). Generic syntax not yet implemented. Use type annotation: v: []u32 = view_as(src)")
 			// Return a placeholder - in full implementation, this would be []U where U is from generic param
 			return &ArrayType{
 				ElementType: arrayType.ElementType, // Placeholder - would be U in full implementation
@@ -964,7 +969,7 @@ func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expressi
 			}
 		} else if funcName == "span_as" && arrayType.IsSpan {
 			// span_as[U]([*]T) -> [*]U
-			tc.addError("span_as requires generic type parameter (e.g., span_as[u32](src)). Generic syntax not yet implemented. Use type annotation: s: [*]u32 = span_as(src)")
+			tc.addError(args[0], "span_as requires generic type parameter (e.g., span_as[u32](src)). Generic syntax not yet implemented. Use type annotation: s: [*]u32 = span_as(src)")
 			// Return a placeholder
 			return &ArrayType{
 				ElementType: arrayType.ElementType, // Placeholder - would be U in full implementation
@@ -973,11 +978,11 @@ func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expressi
 				IsSpan:      true,
 			}
 		} else {
-			tc.addError("%s type mismatch: view_as requires []T, span_as requires [*]T, got %s", funcName, srcType)
+			tc.addError(args[0], "%s type mismatch: view_as requires []T, span_as requires [*]T, got %s", funcName, srcType)
 			return nil
 		}
 	} else {
-		tc.addError("%s requires a view ([]T) or span ([*]T), got %s", funcName, srcType)
+		tc.addError(args[0], "%s requires a view ([]T) or span ([*]T), got %s", funcName, srcType)
 		return nil
 	}
 }
@@ -998,7 +1003,11 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 
 	// Constructors take exactly one argument
 	if len(args) != 1 {
-		tc.addError("primitive constructor %s expects 1 argument, got %d", typeName, len(args))
+		var node ast.Node
+		if len(args) > 0 {
+			node = args[0]
+		}
+		tc.addError(node, "primitive constructor %s expects 1 argument, got %d", typeName, len(args))
 		return nil
 	}
 
@@ -1006,7 +1015,7 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 	if intLit, ok := args[0].(*ast.IntegerLiteral); ok {
 		// Check if literal fits in target type
 		if !tc.literalFitsInType(intLit.Value, typeName) {
-			tc.addError("literal %d does not fit in type %s", intLit.Value, typeName)
+			tc.addError(intLit, "literal %d does not fit in type %s", intLit.Value, typeName)
 			return nil
 		}
 		// Literal fits - return target type
@@ -1022,7 +1031,7 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 	// Check if argument is a primitive type
 	argPrim, ok := argType.(*PrimitiveType)
 	if !ok {
-		tc.addError("primitive constructor %s requires a primitive integer argument, got %s", typeName, argType)
+		tc.addError(args[0], "primitive constructor %s requires a primitive integer argument, got %s", typeName, argType)
 		return nil
 	}
 
@@ -1036,7 +1045,7 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 
 	// Check if widening is valid (same signedness, source is narrower or equal)
 	if !tc.isValidWidening(argPrim.Name, normalizedTarget) {
-		tc.addError("cannot widen %s to %s (must be same signedness and source must be narrower or equal)", argPrim.Name, typeName)
+		tc.addError(args[0], "cannot widen %s to %s (must be same signedness and source must be narrower or equal)", argPrim.Name, typeName)
 		return nil
 	}
 
@@ -1165,13 +1174,17 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 
 	// Narrowing functions take exactly one argument
 	if len(args) != 1 {
-		tc.addError("narrowing function %s expects 1 argument, got %d", funcName, len(args))
+		var node ast.Node
+		if len(args) > 0 {
+			node = args[0]
+		}
+		tc.addError(node, "narrowing function %s expects 1 argument, got %d", funcName, len(args))
 		return nil
 	}
 
 	// Check that narrowing is valid (source must be wider than target, same signedness)
 	if !tc.isValidNarrowing(sourceType, targetType) {
-		tc.addError("invalid narrowing: cannot narrow %s to %s (must be same signedness and source must be wider)", sourceType, targetType)
+		tc.addError(args[0], "invalid narrowing: cannot narrow %s to %s (must be same signedness and source must be wider)", sourceType, targetType)
 		return nil
 	}
 
@@ -1183,7 +1196,7 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 
 	argPrim, ok := argType.(*PrimitiveType)
 	if !ok || argPrim.Name != sourceType {
-		tc.addError("narrowing function %s expects argument of type %s, got %s", funcName, sourceType, argType)
+		tc.addError(args[0], "narrowing function %s expects argument of type %s, got %s", funcName, sourceType, argType)
 		return nil
 	}
 
@@ -1222,7 +1235,11 @@ func (tc *TypeChecker) checkCastableConstructor(typeName string, args []ast.Expr
 
 	// Constructors take exactly one argument
 	if len(args) != 1 {
-		tc.addError("Castable constructor %s expects 1 argument, got %d", typeName, len(args))
+		var node ast.Node
+		if len(args) > 0 {
+			node = args[0]
+		}
+		tc.addError(node, "Castable constructor %s expects 1 argument, got %d", typeName, len(args))
 		return nil
 	}
 
@@ -1246,7 +1263,7 @@ func (tc *TypeChecker) checkCastableConstructor(typeName string, args []ast.Expr
 	// For now, we'll check if the type has an `into()` method that returns the target type
 	// In a full implementation, we'd check for the Castable interface constraint
 	if !tc.implementsCastable(argType, targetType) {
-		tc.addError("type %s does not implement Castable[%s] (missing into() method)", argType, typeName)
+		tc.addError(args[0], "type %s does not implement Castable[%s] (missing into() method)", argType, typeName)
 		return nil
 	}
 
@@ -1378,7 +1395,7 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 	if adtType, ok := recvType.(*ADTType); ok {
 		receiverTypeName = adtType.Name
 	} else {
-		tc.addError("method calls only supported for ADT types, got %s", recvType)
+		tc.addError(recvExpr, "method calls only supported for ADT types, got %s", recvType)
 		return nil
 	}
 
@@ -1386,7 +1403,7 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 	methodKey := fmt.Sprintf("%s::%s", receiverTypeName, methodName)
 	methodScheme, ok := tc.env.Get(methodKey)
 	if !ok {
-		tc.addError("method %s not found for type %s", methodName, receiverTypeName)
+		tc.addError(recvExpr, "method %s not found for type %s", methodName, receiverTypeName)
 		return nil
 	}
 
@@ -1395,13 +1412,13 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 	methodType := Instantiate(methodScheme, unifier)
 	fnType, ok := methodType.(*FunctionType)
 	if !ok {
-		tc.addError("method %s is not a function type", methodName)
+		tc.addError(recvExpr, "method %s is not a function type", methodName)
 		return nil
 	}
 
 	// Check argument count (method has receiver as first parameter, so args should match parameters)
 	if len(args) != len(fnType.Parameters) {
-		tc.addError("method %s expects %d arguments, got %d", methodName, len(fnType.Parameters), len(args))
+		tc.addError(recvExpr, "method %s expects %d arguments, got %d", methodName, len(fnType.Parameters), len(args))
 		return nil
 	}
 
@@ -1413,7 +1430,7 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 		}
 		expectedType := fnType.Parameters[i]
 		if !tc.isAssignable(argType, expectedType) {
-			tc.addError("method %s argument %d: expected %s, got %s", methodName, i+1, expectedType, argType)
+			tc.addError(arg, "method %s argument %d: expected %s, got %s", methodName, i+1, expectedType, argType)
 		}
 	}
 
@@ -1428,7 +1445,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 
 	// Check that match expression has at least one arm
 	if len(expr.Arms) == 0 {
-		tc.addError("match expression must have at least one arm")
+		tc.addError(expr, "match expression must have at least one arm")
 		return nil
 	}
 
@@ -1488,7 +1505,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 
 		if len(nonNeverTypes) > 1 {
 			// Multiple different types - this is an error in strict mode
-			tc.addError("match expression has branches with incompatible types. Use explicit 'any' return type if intentional.")
+			tc.addError(expr, "match expression has branches with incompatible types. Use explicit 'any' return type if intentional.")
 		}
 	}
 
@@ -1518,7 +1535,7 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 			return nil
 		}
 		if !litType.Equals(expectedType) {
-			tc.addError("pattern literal type %s does not match expected type %s", litType, expectedType)
+			tc.addError(p.Value, "pattern literal type %s does not match expected type %s", litType, expectedType)
 			return nil
 		}
 		return expectedType
@@ -1535,7 +1552,12 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 						// Check payload type if variant has one
 						if p.Payload != nil {
 							if variant.Payload == "" {
-								tc.addError("variant %s of ADT %s does not accept a payload", variantName, adtType.Name)
+								// Use the variant pattern as the node
+								if patternNode, ok := pattern.(ast.Node); ok {
+									tc.addError(patternNode, "variant %s of ADT %s does not accept a payload", variantName, adtType.Name)
+								} else {
+									tc.addError(nil, "variant %s of ADT %s does not accept a payload", variantName, adtType.Name)
+								}
 								return nil
 							}
 							// Check payload type matches variant's expected payload type
@@ -1549,7 +1571,11 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 								return nil
 							}
 						} else if variant.Payload != "" {
-							tc.addError("variant %s of ADT %s requires a payload of type %s", variantName, adtType.Name, variant.Payload)
+							if patternNode, ok := pattern.(ast.Node); ok {
+								tc.addError(patternNode, "variant %s of ADT %s requires a payload of type %s", variantName, adtType.Name, variant.Payload)
+							} else {
+								tc.addError(nil, "variant %s of ADT %s requires a payload of type %s", variantName, adtType.Name, variant.Payload)
+							}
 							return nil
 						}
 						// Return narrowed variant type for type narrowing
@@ -1560,7 +1586,11 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 					}
 				}
 				if !found {
-					tc.addError("variant %s not found in ADT %s", variantName, adtType.Name)
+					if patternNode, ok := pattern.(ast.Node); ok {
+						tc.addError(patternNode, "variant %s not found in ADT %s", variantName, adtType.Name)
+					} else {
+						tc.addError(nil, "variant %s not found in ADT %s", variantName, adtType.Name)
+					}
 					return nil
 				}
 			}
@@ -1587,10 +1617,18 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 				}
 			}
 		}
-		tc.addError("variant pattern used on non-ADT type: %s", expectedType)
+		if patternNode, ok := pattern.(ast.Node); ok {
+			tc.addError(patternNode, "variant pattern used on non-ADT type: %s", expectedType)
+		} else {
+			tc.addError(nil, "variant pattern used on non-ADT type: %s", expectedType)
+		}
 		return nil
 	default:
-		tc.addError("unknown pattern type: %T", pattern)
+		if patternNode, ok := pattern.(ast.Node); ok {
+			tc.addError(patternNode, "unknown pattern type: %T", pattern)
+		} else {
+			tc.addError(nil, "unknown pattern type: %T", pattern)
+		}
 		return nil
 	}
 }
@@ -1618,7 +1656,7 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression) Type 
 			}
 		}
 		if adtTypeName == "" {
-			tc.addError("cannot infer ADT type for variant .%s", variantName)
+			tc.addError(expr, "cannot infer ADT type for variant .%s", variantName)
 			return nil
 		}
 	}
@@ -1633,7 +1671,7 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression) Type 
 				// Check payload if provided
 				if expr.Payload != nil {
 					if variant.Payload == "" {
-						tc.addError("variant %s of ADT %s does not accept a payload", variantName, adtTypeName)
+						tc.addError(expr, "variant %s of ADT %s does not accept a payload", variantName, adtTypeName)
 						return nil
 					}
 					expectedPayloadType := tc.parseTypeExpression(&ast.Identifier{Value: variant.Payload})
@@ -1642,24 +1680,24 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression) Type 
 						return nil
 					}
 					if !actualPayloadType.Equals(expectedPayloadType) {
-						tc.addError("variant %s payload: expected %s, got %s", variantName, expectedPayloadType, actualPayloadType)
+						tc.addError(expr.Payload, "variant %s payload: expected %s, got %s", variantName, expectedPayloadType, actualPayloadType)
 						return nil
 					}
 				} else if variant.Payload != "" {
-					tc.addError("variant %s of ADT %s requires a payload of type %s", variantName, adtTypeName, variant.Payload)
+					tc.addError(expr, "variant %s of ADT %s requires a payload of type %s", variantName, adtTypeName, variant.Payload)
 					return nil
 				}
 				break
 			}
 		}
 		if !found {
-			tc.addError("variant %s not found in ADT %s", variantName, adtTypeName)
+			tc.addError(expr, "variant %s not found in ADT %s", variantName, adtTypeName)
 			return nil
 		}
 		return &ADTType{Name: adtTypeName}
 	}
 
-	tc.addError("ADT type %s not found", adtTypeName)
+	tc.addError(expr, "ADT type %s not found", adtTypeName)
 	return nil
 }
 
@@ -1669,7 +1707,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 		typeName := expr.TypeName.Value
 		namedType, ok := tc.env.GetType(typeName)
 		if !ok {
-			tc.addError("type %s not found", typeName)
+			tc.addError(expr.TypeName, "type %s not found", typeName)
 			return nil
 		}
 		// Convert the named type to a RecordType if possible
@@ -1725,7 +1763,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 		}
 		// Check for duplicate field names
 		if _, exists := fields[name]; exists {
-			tc.addError("record literal: duplicate field name %s", name)
+			tc.addError(expr, "record literal: duplicate field name %s", name)
 			continue
 		}
 		fields[name] = fieldType
@@ -1752,10 +1790,10 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 			if fieldType, ok := recordType.Fields[fieldName]; ok {
 				return fieldType
 			}
-			tc.addError("field %s not found in record type %s", fieldName, recordType)
+			tc.addError(expr, "field %s not found in record type %s", fieldName, recordType)
 			return nil
 		}
-		tc.addError("record field access requires identifier, got %T", expr.Index)
+		tc.addError(expr, "record field access requires identifier, got %T", expr.Index)
 		return nil
 	}
 
@@ -1767,7 +1805,7 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 		}
 		// Index must be an integer type
 		if !tc.isNumericType(indexType) {
-			tc.addError("array index must be numeric type, got %s", indexType)
+			tc.addError(expr.Index, "array index must be numeric type, got %s", indexType)
 			return nil
 		}
 		// Index should ideally be unsigned, but we allow any numeric for now
@@ -1775,7 +1813,7 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 		return arrayType.ElementType
 	}
 
-	tc.addError("index expression not supported for type: %s", leftType)
+	tc.addError(expr, "index expression not supported for type: %s", leftType)
 	return nil
 }
 
@@ -1792,7 +1830,7 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 			return nil
 		}
 		if !tc.isNumericType(lowType) {
-			tc.addError("slice low bound must be numeric type, got %s", lowType)
+			tc.addError(expr.Low, "slice low bound must be numeric type, got %s", lowType)
 			return nil
 		}
 	}
@@ -1803,7 +1841,7 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 			return nil
 		}
 		if !tc.isNumericType(highType) {
-			tc.addError("slice high bound must be numeric type, got %s", highType)
+			tc.addError(expr.High, "slice high bound must be numeric type, got %s", highType)
 			return nil
 		}
 	}
@@ -1840,7 +1878,7 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 		}
 	}
 
-	tc.addError("slice expression not supported for type: %s", seqType)
+	tc.addError(expr, "slice expression not supported for type: %s", seqType)
 	return nil
 }
 
@@ -1851,8 +1889,8 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		// Variable already exists - this is actually an assignment, not a declaration
 		// Only allow assignment if there's a value (x = value), not just declaration (x: type)
 		if stmt.Value == nil {
-			// This is a redeclaration without assignment - error
-			tc.addError("variable %s already declared", stmt.Name.Value)
+			// This is a redeclaration without assignment - error (shadowing is banned)
+			tc.addError(stmt.Name, "variable %s already declared; Oak does not allow shadowing", stmt.Name.Value)
 			return
 		}
 		// This is an assignment to an existing variable
@@ -1863,7 +1901,7 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		valueType := tc.checkExpression(stmt.Value, varType)
 		if valueType != nil {
 			if !tc.isAssignable(valueType, varType) {
-				tc.addError("assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
+				tc.addError(stmt, "assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
 			}
 		}
 		return
@@ -1872,7 +1910,7 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 	// Variable doesn't exist - check if this is a declaration without type annotation
 	// If it has no type and no value, that's an error
 	if stmt.Type == nil && stmt.Value == nil {
-		tc.addError("variable %s: no type annotation and no initializer", stmt.Name.Value)
+		tc.addError(stmt.Name, "variable %s: no type annotation and no initializer", stmt.Name.Value)
 		return
 	}
 
@@ -1882,7 +1920,7 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		// Explicit type annotation: parse and use it
 		varType := tc.parseTypeExpression(stmt.Type)
 		if varType == nil {
-			tc.addError("variable %s: invalid type annotation", stmt.Name.Value)
+			tc.addError(stmt.Type, "variable %s: invalid type annotation", stmt.Name.Value)
 			return
 		}
 
@@ -1897,7 +1935,7 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 				if sub == nil {
 					// Try assignability check as fallback
 					if !tc.isAssignable(valueType, varType) {
-						tc.addError("variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
+						tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 					}
 				} else {
 					// Apply substitution to get the unified type
@@ -1919,7 +1957,7 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 				tc.env.Set(stmt.Name.Value, scheme)
 			}
 		} else {
-			tc.addError("variable %s: no type annotation and no initializer", stmt.Name.Value)
+			tc.addError(stmt.Name, "variable %s: no type annotation and no initializer", stmt.Name.Value)
 		}
 	}
 }
@@ -1955,7 +1993,7 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 	// This prevents accidental "silent declaration by typo" (e.g., cont = 1 vs count = 1)
 	varScheme, ok := tc.env.Get(stmt.Name.Value)
 	if !ok {
-		tc.addError("undefined variable: %s", stmt.Name.Value)
+		tc.addError(stmt.Name, "undefined variable: %s", stmt.Name.Value)
 		return
 	}
 
@@ -1977,14 +2015,14 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 						valueWidth := tc.getTypeWidth(valuePrim.Name)
 						if varWidth < valueWidth {
 							// This is a narrowing case - suggest narrowing function
-							tc.addError("assignment: variable %s has type %s, cannot assign %s (use %s_trunc_%s(...) or %s_checked_%s(...) for narrowing)",
+							tc.addError(stmt, "assignment: variable %s has type %s, cannot assign %s (use %s_trunc_%s(...) or %s_checked_%s(...) for narrowing)",
 								stmt.Name.Value, varType, valueType, varPrim.Name, valuePrim.Name, varPrim.Name, valuePrim.Name)
 							return
 						}
 					}
 				}
 			}
-			tc.addError("assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
+			tc.addError(stmt, "assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
 		}
 	}
 }
@@ -2017,9 +2055,14 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 	// If this is a method, add receiver to the environment
 	if stmt.Receiver != nil {
+		// Check for shadowing: receiver name must not conflict with outer scope
+		if _, exists := tc.env.Get(stmt.Receiver.Name.Value); exists {
+			tc.addError(stmt.Receiver.Name, "receiver '%s' already declared in outer scope; Oak does not allow shadowing", stmt.Receiver.Name.Value)
+			return
+		}
 		receiverType := tc.parseTypeExpression(stmt.Receiver.Type)
 		if receiverType == nil {
-			tc.addError("method %s: invalid receiver type", stmt.Name.Value)
+			tc.addError(stmt.Receiver.Type, "method %s: invalid receiver type", stmt.Name.Value)
 			return
 		}
 		funcEnv.SetType(stmt.Receiver.Name.Value, receiverType)
@@ -2027,7 +2070,18 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 	// Parse parameter types from function signature
 	paramTypes := []Type{}
+	paramNames := make(map[string]bool)
 	for _, param := range stmt.Parameters {
+		// Check for shadowing: parameter name must not conflict with outer scope or other parameters
+		if _, exists := tc.env.Get(param.Name.Value); exists {
+			tc.addError(param.Name, "parameter '%s' already declared in outer scope; Oak does not allow shadowing", param.Name.Value)
+			return
+		}
+		if paramNames[param.Name.Value] {
+			tc.addError(param.Name, "duplicate parameter name '%s'; Oak does not allow shadowing", param.Name.Value)
+			return
+		}
+		paramNames[param.Name.Value] = true
 		paramType := tc.parseTypeExpression(param.Type)
 		if paramType == nil {
 			// Default to i32 if type parsing fails
@@ -2055,7 +2109,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 	// Check that body type matches return type
 	if !bodyType.Equals(returnType) {
-		tc.addError("function %s: expected return type %s, got %s", stmt.Name.Value, returnType, bodyType)
+		tc.addError(stmt, "function %s: expected return type %s, got %s", stmt.Name.Value, returnType, bodyType)
 	}
 
 	// Restore environment
@@ -2152,7 +2206,7 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 
 		// Check for duplicate variants
 		if variantNames[variantName] {
-			tc.addError("ADT %s: duplicate variant %s", stmt.Name.Value, variantName)
+			tc.addError(stmt, "ADT %s: duplicate variant %s", stmt.Name.Value, variantName)
 			continue
 		}
 		variantNames[variantName] = true
@@ -2161,7 +2215,7 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 		if variant.Payload != nil {
 			payloadType := tc.parseTypeExpression(variant.Payload)
 			if payloadType == nil {
-				tc.addError("ADT %s variant %s: invalid payload type", stmt.Name.Value, variantName)
+				tc.addError(variant.Payload, "ADT %s variant %s: invalid payload type", stmt.Name.Value, variantName)
 			}
 		}
 
@@ -2181,7 +2235,7 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 			}
 			literalType := tc.checkExpression(variant.Literal)
 			if literalType == nil {
-				tc.addError("ADT %s variant %s: invalid literal tag", stmt.Name.Value, variantName)
+				tc.addError(variant.Literal, "ADT %s variant %s: invalid literal tag", stmt.Name.Value, variantName)
 			} else {
 				// Verify literal tag type consistency across variants
 				tc.checkADTVariantLiteralTag(stmt.Name.Value, variantName, variant.Literal, literalType)
@@ -2191,7 +2245,7 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 
 	// Check that ADT has at least one variant
 	if len(stmt.Variants) == 0 {
-		tc.addError("ADT %s: must have at least one variant", stmt.Name.Value)
+		tc.addError(stmt, "ADT %s: must have at least one variant", stmt.Name.Value)
 	}
 }
 
@@ -2202,7 +2256,8 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 	for fieldName, fieldExpr := range recordLit.Fields {
 		// Check for duplicate field names
 		if fieldNames[fieldName] {
-			tc.addError("record type %s: duplicate field name %s", typeName, fieldName)
+			// Use the record literal as the node if available, otherwise nil
+			tc.addError(nil, "record type %s: duplicate field name %s", typeName, fieldName)
 			continue
 		}
 		fieldNames[fieldName] = true
@@ -2211,7 +2266,12 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 		// In a record type definition, fieldExpr should be a type expression (identifier)
 		fieldType := tc.parseTypeExpression(fieldExpr)
 		if fieldType == nil {
-			tc.addError("record type %s field %s: invalid type", typeName, fieldName)
+			// fieldExpr might be an expression, try to use it as a node
+			if node, ok := fieldExpr.(ast.Node); ok {
+				tc.addError(node, "record type %s field %s: invalid type", typeName, fieldName)
+			} else {
+				tc.addError(nil, "record type %s field %s: invalid type", typeName, fieldName)
+			}
 		}
 	}
 }
@@ -2248,7 +2308,7 @@ func (tc *TypeChecker) checkADTVariantLiteralTag(adtName, variantName string, li
 				if expectedLiteralType == nil {
 					expectedLiteralType = literalType
 				} else if !literalType.Equals(expectedLiteralType) {
-					tc.addError("ADT %s: variant %s literal tag type %s does not match expected type %s",
+					tc.addError(literal, "ADT %s: variant %s literal tag type %s does not match expected type %s",
 						adtName, variantName, literalType, expectedLiteralType)
 					return
 				}
@@ -2260,7 +2320,7 @@ func (tc *TypeChecker) checkADTVariantLiteralTag(adtName, variantName string, li
 func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
-		tc.addError("while condition must be bool, got %s", conditionType)
+		tc.addError(stmt.Condition, "while condition must be bool, got %s", conditionType)
 	}
 
 	// Type check body
@@ -2313,13 +2373,13 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
 
 		expectedArray, ok := expectedArrayType.(*ArrayType)
 		if !ok {
-			tc.addError("expected array type in typed array literal, got %s", expectedArrayType)
+			tc.addError(expr, "expected array type in typed array literal, got %s", expectedArrayType)
 			return nil
 		}
 
 		// Check that the number of elements matches the array size
 		if !expectedArray.IsSlice && int64(len(expr.Elements)) != expectedArray.Length {
-			tc.addError("array literal has %d elements, expected %d", len(expr.Elements), expectedArray.Length)
+			tc.addError(expr, "array literal has %d elements, expected %d", len(expr.Elements), expectedArray.Length)
 			return nil
 		}
 
@@ -2332,7 +2392,11 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
 
 			// Check if element type is assignable to expected element type
 			if !tc.isAssignable(elemType, expectedArray.ElementType) {
-				tc.addError("array element %d: expected type %s, got %s", i, expectedArray.ElementType, elemType)
+				if i < len(expr.Elements) {
+					tc.addError(expr.Elements[i], "array element %d: expected type %s, got %s", i, expectedArray.ElementType, elemType)
+				} else {
+					tc.addError(expr, "array element %d: expected type %s, got %s", i, expectedArray.ElementType, elemType)
+				}
 			}
 		}
 
@@ -2367,11 +2431,19 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
 			if tc.isNumericType(elemType) && tc.isNumericType(commonType) {
 				commonType = tc.promoteNumericTypes(commonType, elemType)
 				if commonType == nil {
-					tc.addError("array element %d: incompatible types %s and %s", i+1, firstType, elemType)
+					if i+1 < len(expr.Elements) {
+						tc.addError(expr.Elements[i+1], "array element %d: incompatible types %s and %s", i+1, firstType, elemType)
+					} else {
+						tc.addError(expr, "array element %d: incompatible types %s and %s", i+1, firstType, elemType)
+					}
 					commonType = firstType // Fallback
 				}
 			} else {
-				tc.addError("array element %d: expected type %s, got %s", i+1, commonType, elemType)
+				if i+1 < len(expr.Elements) {
+					tc.addError(expr.Elements[i+1], "array element %d: expected type %s, got %s", i+1, commonType, elemType)
+				} else {
+					tc.addError(expr, "array element %d: expected type %s, got %s", i+1, commonType, elemType)
+				}
 			}
 		}
 	}
@@ -2709,7 +2781,7 @@ func (tc *TypeChecker) normalizeIntersectionToRecord(intersection *IntersectionT
 				// Check for conflicts
 				if existingType, exists := mergedFields[fieldName]; exists {
 					if !existingType.Equals(fieldType) {
-						tc.addError("intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
+						tc.addError(nil, "intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
 						return nil
 					}
 				} else {
@@ -2724,7 +2796,7 @@ func (tc *TypeChecker) normalizeIntersectionToRecord(intersection *IntersectionT
 					for fieldName, fieldType := range recordType.Fields {
 						if existingType, exists := mergedFields[fieldName]; exists {
 							if !existingType.Equals(fieldType) {
-								tc.addError("intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
+								tc.addError(nil, "intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
 								return nil
 							}
 						} else {
@@ -2735,7 +2807,7 @@ func (tc *TypeChecker) normalizeIntersectionToRecord(intersection *IntersectionT
 			}
 		} else {
 			// Non-record type in intersection - this is an error for type definitions
-			tc.addError("intersection type contains non-record type %s", typ)
+			tc.addError(nil, "intersection type contains non-record type %s", typ)
 			return nil
 		}
 	}
@@ -2846,7 +2918,7 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 // For now, we do a simplified check: if we can directly match parameter types (that are type vars)
 // with argument types, we check constraints. This works for simple cases but may miss
 // constraints on type vars that appear only in return types or are inferred indirectly.
-func (tc *TypeChecker) checkFunctionConstraints(scheme *TypeScheme, fnType *FunctionType, argTypes []Type) {
+func (tc *TypeChecker) checkFunctionConstraints(scheme *TypeScheme, fnType *FunctionType, argTypes []Type, expr ast.Node) {
 	if len(scheme.Constraints) == 0 {
 		return // No constraints to check
 	}
@@ -2877,7 +2949,7 @@ func (tc *TypeChecker) checkFunctionConstraints(scheme *TypeScheme, fnType *Func
 					if constraint.Var == typeVar.Name {
 						// Check that the argument type satisfies the constraint
 						if !tc.SatisfiesConstraint(argType, constraint) {
-							tc.addError("function call: type argument %s (inferred as %s) does not satisfy constraint: %s",
+							tc.addError(expr, "function call: type argument %s (inferred as %s) does not satisfy constraint: %s",
 								typeVar.Name, argType, constraint)
 						}
 					}
@@ -2891,7 +2963,7 @@ func (tc *TypeChecker) checkFunctionConstraints(scheme *TypeScheme, fnType *Func
 	for _, constraint := range scheme.Constraints {
 		if concreteType, ok := typeVarBindings[constraint.Var]; ok {
 			if !tc.SatisfiesConstraint(concreteType, constraint) {
-				tc.addError("function call: type argument %s (inferred as %s) does not satisfy constraint: %s",
+				tc.addError(expr, "function call: type argument %s (inferred as %s) does not satisfy constraint: %s",
 					constraint.Var, concreteType, constraint)
 			}
 		}
@@ -2910,7 +2982,7 @@ func (tc *TypeChecker) SatisfiesConstraint(concreteType Type, constraint Constra
 		ifaceType, ok := tc.env.GetType(ifaceName)
 		if !ok {
 			// Interface not found - this is a type error
-			tc.addError("interface %s not found in constraint", ifaceName)
+			tc.addError(nil, "interface %s not found in constraint", ifaceName)
 			return false
 		}
 
@@ -2946,7 +3018,11 @@ func (tc *TypeChecker) extractInterfacesFromConstraint(expr ast.Expression) []st
 	}
 
 	// Unknown constraint expression
-	tc.addError("invalid constraint expression: %s", expr.String())
+	if node, ok := expr.(ast.Node); ok {
+		tc.addError(node, "invalid constraint expression: %s", expr.String())
+	} else {
+		tc.addError(nil, "invalid constraint expression: %s", expr.String())
+	}
 	return interfaces
 }
 
@@ -2959,7 +3035,7 @@ func (tc *TypeChecker) SatisfiesIntersectionConstraint(concreteType Type, interf
 		ifaceType, ok := tc.env.GetType(ifaceName)
 		if !ok {
 			// Interface not found - this is a type error
-			tc.addError("interface %s not found in constraint", ifaceName)
+			tc.addError(nil, "interface %s not found in constraint", ifaceName)
 			return false
 		}
 
@@ -3070,15 +3146,24 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 		for fieldName, fieldExpr := range recordLit.Fields {
 			fieldType := tc.parseTypeExpression(fieldExpr)
 			if fieldType == nil {
-				tc.addError("invalid field type in record composition: %s", fieldName)
+				if node, ok := fieldExpr.(ast.Node); ok {
+					tc.addError(node, "invalid field type in record composition: %s", fieldName)
+				} else {
+					tc.addError(recordLit, "invalid field type in record composition: %s", fieldName)
+				}
 				continue
 			}
 
 			// Check for duplicate field names
 			if existingType, exists := (*fields)[fieldName]; exists {
 				if !existingType.Equals(fieldType) {
-					tc.addError("duplicate field %s in record composition with conflicting types: %s vs %s",
-						fieldName, existingType, fieldType)
+					if node, ok := fieldExpr.(ast.Node); ok {
+						tc.addError(node, "duplicate field %s in record composition with conflicting types: %s vs %s",
+							fieldName, existingType, fieldType)
+					} else {
+						tc.addError(recordLit, "duplicate field %s in record composition with conflicting types: %s vs %s",
+							fieldName, existingType, fieldType)
+					}
 				}
 			} else {
 				(*fields)[fieldName] = fieldType
@@ -3089,7 +3174,7 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 		// This should be a record type
 		typeScheme, ok := tc.env.Get(ident.Value)
 		if !ok {
-			tc.addError("type %s not found in record composition", ident.Value)
+			tc.addError(ident, "type %s not found in record composition", ident.Value)
 			return
 		}
 
@@ -3104,7 +3189,7 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 				// Check for duplicate field names
 				if existingType, exists := (*fields)[fieldName]; exists {
 					if !existingType.Equals(fieldType) {
-						tc.addError("duplicate field %s in record composition with conflicting types: %s vs %s",
+						tc.addError(ident, "duplicate field %s in record composition with conflicting types: %s vs %s",
 							fieldName, existingType, fieldType)
 					}
 				} else {
@@ -3112,10 +3197,14 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 				}
 			}
 		} else {
-			tc.addError("type %s in record composition is not a record type, got %T", ident.Value, typ)
+			tc.addError(ident, "type %s in record composition is not a record type, got %T", ident.Value, typ)
 		}
 	} else {
-		tc.addError("invalid expression in record composition: %T", expr)
+		if node, ok := expr.(ast.Node); ok {
+			tc.addError(node, "invalid expression in record composition: %T", expr)
+		} else {
+			tc.addError(nil, "invalid expression in record composition: %T", expr)
+		}
 	}
 }
 
@@ -3144,7 +3233,7 @@ func (tc *TypeChecker) checkExhaustiveness(arms []*ast.MatchArm, adtType *ADTTyp
 		// Check that all variants are covered
 		for _, variant := range adtDef.Variants {
 			if !coveredVariants[variant.Name] {
-				tc.addError("match expression is not exhaustive: missing variant %s of ADT %s", variant.Name, adtType.Name)
+				tc.addError(nil, "match expression is not exhaustive: missing variant %s of ADT %s", variant.Name, adtType.Name)
 			}
 		}
 	}

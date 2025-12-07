@@ -50,7 +50,7 @@ func TestCodeGenerator_ADT(t *testing.T) {
 	input := `
 package main
 
-type Status: type = Ok | NotFound
+Status: type = Ok | NotFound
 `
 
 	l := scanner.New(input)

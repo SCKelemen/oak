@@ -487,12 +487,12 @@ func InstantiateWithConstraints(scheme *TypeScheme, typeArgs map[string]Type, un
 		concreteType, ok := typeArgs[constraint.Var]
 		if !ok {
 			// Type variable not provided - this shouldn't happen in well-formed code
-			tc.addError("type variable %s not provided for constraint", constraint.Var)
+			tc.addError(nil, "type variable %s not provided for constraint", constraint.Var)
 			return nil, false
 		}
 
 		if !tc.SatisfiesConstraint(concreteType, constraint) {
-			tc.addError("type %s does not satisfy constraint: %s", concreteType, constraint)
+			tc.addError(nil, "type %s does not satisfy constraint: %s", concreteType, constraint)
 			return nil, false
 		}
 	}

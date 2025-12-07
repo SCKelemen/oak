@@ -1,0 +1,370 @@
+{
+  "statements": [
+    {
+      "type": "FunctionStatement",
+      "data": {}
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "ArrayLiteral",
+          "data": {
+            "elements": [
+              {
+                "type": "Identifier",
+                "data": {
+                  "value": "T"
+                },
+                "position": {
+                  "line": 2,
+                  "column": 16,
+                  "byte_start": 15,
+                  "byte_end": 16
+                }
+              }
+            ]
+          },
+          "position": {
+            "line": 2,
+            "column": 15,
+            "byte_start": 14,
+            "byte_end": 15
+          }
+        }
+      },
+      "position": {
+        "line": 2,
+        "column": 15,
+        "byte_start": 14,
+        "byte_end": 15
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "value",
+        "type": "T"
+      },
+      "position": {
+        "line": 2,
+        "column": 19,
+        "byte_start": 18,
+        "byte_end": 23
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 2,
+        "column": 27,
+        "byte_start": 26,
+        "byte_end": 27
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 2,
+        "column": 28,
+        "byte_start": 27,
+        "byte_end": 28
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 2,
+        "column": 30,
+        "byte_start": 29,
+        "byte_end": 30
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 2,
+        "column": 37,
+        "byte_start": 36,
+        "byte_end": 37
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 21,
+        "byte_start": 57,
+        "byte_end": 58
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 28,
+        "byte_start": 64,
+        "byte_end": 65
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "Identifier",
+          "data": {
+            "value": "value"
+          },
+          "position": {
+            "line": 3,
+            "column": 30,
+            "byte_start": 66,
+            "byte_end": 71
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 30,
+        "byte_start": 66,
+        "byte_end": 71
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 35,
+        "byte_start": 71,
+        "byte_end": 72
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "Identifier",
+          "data": {
+            "value": "value"
+          },
+          "position": {
+            "line": 3,
+            "column": 37,
+            "byte_start": 73,
+            "byte_end": 78
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 37,
+        "byte_start": 73,
+        "byte_end": 78
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 42,
+        "byte_start": 78,
+        "byte_end": 79
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "Identifier",
+          "data": {
+            "value": "value"
+          },
+          "position": {
+            "line": 3,
+            "column": 44,
+            "byte_start": 80,
+            "byte_end": 85
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 44,
+        "byte_start": 80,
+        "byte_end": 85
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 50,
+        "byte_start": 86,
+        "byte_end": 87
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "Identifier",
+          "data": {
+            "value": "xs"
+          },
+          "position": {
+            "line": 4,
+            "column": 6,
+            "byte_start": 92,
+            "byte_end": 94
+          }
+        }
+      },
+      "position": {
+        "line": 4,
+        "column": 6,
+        "byte_start": 92,
+        "byte_end": 94
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "nil",
+          "data": {
+            "error": "nil node"
+          }
+        }
+      },
+      "position": {
+        "line": 5,
+        "column": 2,
+        "byte_start": 95,
+        "byte_end": 96
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "four_ints",
+        "type": "(i32[4])",
+        "value": {
+          "type": "InvocationExpression",
+          "data": {
+            "arguments": [
+              {
+                "type": "IntegerLiteral",
+                "data": {
+                  "value": 7
+                },
+                "position": {
+                  "line": 7,
+                  "column": 33,
+                  "byte_start": 129,
+                  "byte_end": 130
+                }
+              }
+            ],
+            "function": {
+              "type": "Identifier",
+              "data": {
+                "value": "replicate4"
+              },
+              "position": {
+                "line": 7,
+                "column": 22,
+                "byte_start": 118,
+                "byte_end": 128
+              }
+            }
+          },
+          "position": {
+            "line": 7,
+            "column": 32,
+            "byte_start": 128,
+            "byte_end": 129
+          }
+        }
+      },
+      "position": {
+        "line": 7,
+        "column": 2,
+        "byte_start": 98,
+        "byte_end": 107
+      }
+    }
+  ],
+  "type": "Program"
+}

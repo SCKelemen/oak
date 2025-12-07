@@ -295,6 +295,12 @@ func (bc *BorrowChecker) checkWhileStatement(stmt *ast.WhileStatement, env *type
 
 // checkAssignmentStatement handles assignments
 func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement, env *typechecker.TypeEnvironment) {
+	// Borrows are immutable bindings - cannot reassign a variable that currently holds a view/span
+	if _, exists := bc.activeBorrows[stmt.Name.Value]; exists {
+		bc.addError(fmt.Sprintf("cannot reassign borrow variable '%s'; borrows are immutable bindings", stmt.Name.Value))
+		return
+	}
+
 	// Check the value being assigned
 	// If this creates a borrow (e.g., view(&arr) or subslice(v)), pass the target variable
 	// so the borrow is tracked correctly
@@ -304,16 +310,6 @@ func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement,
 	// The left-hand side is an Identifier (assignment target)
 	// This is a write operation
 	bc.checkIdentifierUse(stmt.Name.Value, env, true)
-
-	// If we're reassigning a borrow variable, drop the old borrow first
-	// This prevents false positives where the old borrow sticks around
-	if _, exists := bc.activeBorrows[stmt.Name.Value]; exists {
-		delete(bc.activeBorrows, stmt.Name.Value)
-		delete(bc.ownerOf, stmt.Name.Value)
-		// Recompute owner states since we dropped a borrow
-		// Use the same logic as dropBorrowsInCurrentBlock
-		bc.recomputeOwnerStatesFromActiveBorrows()
-	}
 }
 
 // dropBorrowsInCurrentBlock removes borrows created in the current block

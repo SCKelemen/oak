@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/borrowchecker"
@@ -32,21 +31,22 @@ type GoldenOutputs struct {
 
 // SerializeToGolden runs the full compilation pipeline and serializes each stage
 // to the golden directory using the naming convention: {name}_{stage_num}_{stage}.{ext}
-func SerializeToGolden(name string, stageNum int, sourceCode string, tc *typechecker.TypeChecker) (*GoldenOutputs, error) {
+// Stage numbers increment: 0=source, 1=lexer, 2=parser, 3=ast, 4=typechecker, 5=lowering, 6=borrowchecker, 7=codegen
+func SerializeToGolden(name string, baseStageNum int, sourceCode string, tc *typechecker.TypeChecker) (*GoldenOutputs, error) {
 	goldenDir := "golden"
 	if err := os.MkdirAll(goldenDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create golden directory: %w", err)
 	}
 
 	outputs := &GoldenOutputs{
-		Source:        filepath.Join(goldenDir, fmt.Sprintf("%s_%d_source.oak", name, stageNum)),
-		Lexer:         filepath.Join(goldenDir, fmt.Sprintf("%s_%d_lexer.jsonl", name, stageNum)),
-		Parser:        filepath.Join(goldenDir, fmt.Sprintf("%s_%d_parser.jsonl", name, stageNum)),
-		AST:           filepath.Join(goldenDir, fmt.Sprintf("%s_%d_ast.json", name, stageNum)),
-		Typechecker:   filepath.Join(goldenDir, fmt.Sprintf("%s_%d_typechecker.jsonl", name, stageNum)),
-		Lowering:      filepath.Join(goldenDir, fmt.Sprintf("%s_%d_lowering.json", name, stageNum)),
-		BorrowChecker: filepath.Join(goldenDir, fmt.Sprintf("%s_%d_borrowchecker.jsonl", name, stageNum)),
-		Codegen:       filepath.Join(goldenDir, fmt.Sprintf("%s_%d_codegen.c", name, stageNum)),
+		Source:        filepath.Join(goldenDir, fmt.Sprintf("%s_%d_source.oak", name, baseStageNum+0)),
+		Lexer:         filepath.Join(goldenDir, fmt.Sprintf("%s_%d_lexer.jsonl", name, baseStageNum+1)),
+		Parser:        filepath.Join(goldenDir, fmt.Sprintf("%s_%d_parser.jsonl", name, baseStageNum+2)),
+		AST:           filepath.Join(goldenDir, fmt.Sprintf("%s_%d_ast.json", name, baseStageNum+3)),
+		Typechecker:   filepath.Join(goldenDir, fmt.Sprintf("%s_%d_typechecker.jsonl", name, baseStageNum+4)),
+		Lowering:      filepath.Join(goldenDir, fmt.Sprintf("%s_%d_lowering.json", name, baseStageNum+5)),
+		BorrowChecker: filepath.Join(goldenDir, fmt.Sprintf("%s_%d_borrowchecker.jsonl", name, baseStageNum+6)),
+		Codegen:       filepath.Join(goldenDir, fmt.Sprintf("%s_%d_codegen.c", name, baseStageNum+7)),
 	}
 
 	// Write source file
@@ -183,7 +183,7 @@ func SerializeASTToJSON(program *ast.Program, outputPath string) error {
 
 	// Serialize program to JSON structure
 	programJSON := map[string]interface{}{
-		"type":     "Program",
+		"type":       "Program",
 		"statements": make([]interface{}, 0, len(program.Statements)),
 	}
 
@@ -232,17 +232,18 @@ func SerializeErrors(errors []string, outputPath string) error {
 }
 
 // LoadGolden loads a golden file set for comparison
-func LoadGolden(name string, stageNum int) (*GoldenOutputs, error) {
+// baseStageNum is the stage number for source (0), other stages increment from there
+func LoadGolden(name string, baseStageNum int) (*GoldenOutputs, error) {
 	goldenDir := "golden"
 	outputs := &GoldenOutputs{
-		Source:        filepath.Join(goldenDir, fmt.Sprintf("%s_%d_source.oak", name, stageNum)),
-		Lexer:         filepath.Join(goldenDir, fmt.Sprintf("%s_%d_lexer.jsonl", name, stageNum)),
-		Parser:        filepath.Join(goldenDir, fmt.Sprintf("%s_%d_parser.jsonl", name, stageNum)),
-		AST:           filepath.Join(goldenDir, fmt.Sprintf("%s_%d_ast.json", name, stageNum)),
-		Typechecker:   filepath.Join(goldenDir, fmt.Sprintf("%s_%d_typechecker.jsonl", name, stageNum)),
-		Lowering:      filepath.Join(goldenDir, fmt.Sprintf("%s_%d_lowering.json", name, stageNum)),
-		BorrowChecker: filepath.Join(goldenDir, fmt.Sprintf("%s_%d_borrowchecker.jsonl", name, stageNum)),
-		Codegen:       filepath.Join(goldenDir, fmt.Sprintf("%s_%d_codegen.c", name, stageNum)),
+		Source:        filepath.Join(goldenDir, fmt.Sprintf("%s_%d_source.oak", name, baseStageNum+0)),
+		Lexer:         filepath.Join(goldenDir, fmt.Sprintf("%s_%d_lexer.jsonl", name, baseStageNum+1)),
+		Parser:        filepath.Join(goldenDir, fmt.Sprintf("%s_%d_parser.jsonl", name, baseStageNum+2)),
+		AST:           filepath.Join(goldenDir, fmt.Sprintf("%s_%d_ast.json", name, baseStageNum+3)),
+		Typechecker:   filepath.Join(goldenDir, fmt.Sprintf("%s_%d_typechecker.jsonl", name, baseStageNum+4)),
+		Lowering:      filepath.Join(goldenDir, fmt.Sprintf("%s_%d_lowering.json", name, baseStageNum+5)),
+		BorrowChecker: filepath.Join(goldenDir, fmt.Sprintf("%s_%d_borrowchecker.jsonl", name, baseStageNum+6)),
+		Codegen:       filepath.Join(goldenDir, fmt.Sprintf("%s_%d_codegen.c", name, baseStageNum+7)),
 	}
 
 	// Verify all files exist

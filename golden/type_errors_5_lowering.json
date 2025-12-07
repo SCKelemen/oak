@@ -1,0 +1,55 @@
+{
+  "statements": [
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "x",
+        "type": "i32",
+        "value": {
+          "type": "StringLiteral",
+          "data": {
+            "value": "hello"
+          },
+          "position": {
+            "line": 2,
+            "column": 11,
+            "byte_start": 10,
+            "byte_end": 17
+          }
+        }
+      },
+      "position": {
+        "line": 2,
+        "column": 2,
+        "byte_start": 1,
+        "byte_end": 2
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "y",
+        "type": "string",
+        "value": {
+          "type": "IntegerLiteral",
+          "data": {
+            "value": 42
+          },
+          "position": {
+            "line": 3,
+            "column": 14,
+            "byte_start": 30,
+            "byte_end": 32
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 2,
+        "byte_start": 18,
+        "byte_end": 19
+      }
+    }
+  ],
+  "type": "Program"
+}

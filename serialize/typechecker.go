@@ -1,7 +1,6 @@
 package serialize
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/SCKelemen/oak/typechecker"
@@ -9,9 +8,9 @@ import (
 
 // TypecheckerJSON represents typechecker output in JSON format
 type TypecheckerJSON struct {
-	Errors      []string                `json:"errors,omitempty"`
-	TypeEnv     map[string]string       `json:"type_env,omitempty"` // variable name -> type string
-	Diagnostics []DiagnosticJSON        `json:"diagnostics,omitempty"`
+	Errors      []string          `json:"errors,omitempty"`
+	TypeEnv     map[string]string `json:"type_env,omitempty"` // variable name -> type string
+	Diagnostics []DiagnosticJSON  `json:"diagnostics,omitempty"`
 }
 
 // DiagnosticJSON represents a diagnostic message
@@ -65,8 +64,18 @@ func SerializeTypechecker(tc *typechecker.TypeChecker, outputPath string) error 
 				"index":    i,
 				"message":  diag.Message,
 				"severity": string(diag.Severity),
-				"line":     diag.Position.Line,
-				"column":   diag.Position.Column,
+				"source":   diag.Source,
+				"code":     diag.Code,
+				"range": map[string]interface{}{
+					"start": map[string]interface{}{
+						"line":      diag.Range.Start.Line,
+						"character": diag.Range.Start.Character,
+					},
+					"end": map[string]interface{}{
+						"line":      diag.Range.End.Line,
+						"character": diag.Range.End.Character,
+					},
+				},
 			}
 			if err := writer.WriteLine(diagEntry); err != nil {
 				return fmt.Errorf("failed to write diagnostic: %w", err)
