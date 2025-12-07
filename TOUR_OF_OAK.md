@@ -44,16 +44,16 @@ The package name determines the namespace for your code.
 Oak supports importing packages in several ways:
 
 ```oak
-// Import and bind to a variable
+// Import and rename
 str := import("strings")
 
-// Import with explicit type annotation
+// Import with explicit type annotation (you would never do this)
 str: package = import("strings")
 
 // Import multiple packages
 import("strings", "encoding/utf8")
 
-// Import without binding (for side effects)
+// Import without binding (imported with default package name)
 import("strings")
 ```
 
@@ -105,6 +105,7 @@ Oak includes several primitive types:
 - **Boolean**: `Bool` (ADT, not primitive)
 - **String**: `string`
 - **Byte**: `byte` (alias for `u8`)
+- **Rune**: `rune` (alias for `i32`)
 
 ```oak
 small: i8 = -128
@@ -163,8 +164,8 @@ File: type = {
   fd: u32
 }
 
-fn File::Read(self: File, dst: [*]u8): ReadResult =
-  { n: 0, err: Option::None }
+fn (self: File) Read(dst: [*]u8): ReadResult =
+  { n: 0, err: Option.None }
 ```
 
 ---
@@ -183,9 +184,18 @@ w: i32 = 8 / 2    // Division
 eq: bool = 5 == 5
 ne: bool = 5 != 3
 lt: bool = 3 < 5
+gt: bool = 3 > 5
+lte: bool = 3 <= 5
+gte: bool = 3 >= 5
+
+// there is a built in comparoson type
+Comparison: type = 
+    | Less: -1
+    | Equal: 0
+    | Greater: 1
 
 // String concatenation
-greeting: string = "Hello" + ", " + "Oak!"
+greeting: string = strings.join("Hello", ", ", "Oak!")
 ```
 
 ---
@@ -207,16 +217,26 @@ result: string = x ?
 
 ### Pattern Matching on ADTs
 
+Oak supports both `->` and `=>` for pattern matching arms:
+
 ```oak
 Status: type = Ok | NotFound | Unauthorized
 
 status: Status = Ok
 
+// Using -> (arrow syntax)
 code: i32 = status ?
   | Ok -> 200
   | NotFound -> 404
   | Unauthorized -> 401
   | _ -> 0
+
+// Using => (fat arrow syntax, equivalent)
+code2: i32 = status ?
+  | Ok => 200
+  | NotFound => 404
+  | Unauthorized => 401
+  | _ => 0
 ```
 
 The `_` pattern matches anything (wildcard).
@@ -280,13 +300,14 @@ Result[T, E]: type = {
 ### Generic ADTs
 
 ```oak
-Option[T]: type = {
-  Some: T
-  None: {}
-}
+Option[T]: type = Some[T] | None
 
-some_value: Option[i32] = Option::Some(42)
-no_value: Option[i32] = Option::None
+// also equivalent 
+Option[T]: type = Some[T]
+                | None
+
+some_value: Option[i32] = Option.Some(42)
+no_value: Option[i32] = Option.None
 ```
 
 ---
@@ -410,8 +431,8 @@ Result[T, E]: type = {
 }
 
 // Usage
-maybe_int: Option[i32] = Option::Some(42)
-maybe_string: Option[string] = Option::None
+maybe_int: Option[i32] = Option.Some(42)
+maybe_string: Option[string] = Option.None
 ```
 
 ### Multiple Type Parameters
@@ -419,8 +440,14 @@ maybe_string: Option[string] = Option::None
 ```oak
 fn map_option[A, B](opt: Option[A], f: (A) -> B): Option[B] =
   opt ?
-    | Option::Some(value: A) => Option::Some(f(value))
-    | Option::None => Option::None
+    | Option.Some(value: A) => Option.Some(f(value))
+    | Option.None => Option.None
+
+// Both -> and => work in pattern matching
+fn map_option2[A, B](opt: Option[A], f: (A) -> B): Option[B] =
+  opt ?
+    | Option.Some(value: A) -> Option.Some(f(value))
+    | Option.None -> Option.None
 ```
 
 ---
@@ -431,14 +458,25 @@ Interfaces define method sets that types can implement:
 
 ### Interface Definition
 
+Interfaces can be defined using either function-style or label-style syntax:
+
 ```oak
 ReadResult: type = { n: u64, err: Option[Error] }
+WriteResult: type = { n: u64, err: Option[Error] }
 
+// Function-style syntax (method signature without receiver)
 Reader: interface = {
-  Read: ([]u8) -> ReadResult
+  Read([]u8) -> ReadResult
 }
 
+// Label-style syntax (method name as label)
 Writer: interface = {
+  Write: ([]u8) -> WriteResult
+}
+
+// Both styles can be mixed in the same interface
+ReadWriter: interface = {
+  Read([]u8) -> ReadResult
   Write: ([]u8) -> WriteResult
 }
 ```
@@ -453,19 +491,23 @@ File: type = {
   closed: Bool
 }
 
-// File implements Reader because it has a Read method
-fn File::Read(self: File, dst: [*]u8): ReadResult =
-  { n: 0, err: Option::None }
+// File implements Reader because it has a Read method with the correct signature
+fn (self: File) Read(dst: [*]u8): ReadResult =
+  { n: 0, err: Option.None }
 ```
 
 ### Constrained Generics
+
+Interface constraints use `:` syntax directly in the type parameter list (no `where` keyword):
 
 ```oak
 fn use_reader[R: Reader](r: R): u64 =
   r.Read([]u8{ 0, 0, 0, 0 }).n
 
 // File can be used where Reader is required
-f: File = { fd: 3, closed: Bool::False({}) }
+f: File = { fd: 3, closed: .False }
+// equivalent
+f: File = { fd: 3, closed: Bool.False }
 bytes_read: u64 = use_reader(f)
 ```
 
@@ -474,8 +516,13 @@ bytes_read: u64 = use_reader(f)
 ```oak
 ReadWriteCloser: type = Reader & Writer & Closer
 
+// Constraints with intersection types
 fn safe_close_all[T: ReadWriteCloser](x: T): () =
   x.Close()
+
+// Multiple constraints using intersection
+fn copy_all[R: Reader, W: Writer](src: R, dst: W): u64 =
+  { total: u64 = 0; total }
 ```
 
 ---
@@ -515,6 +562,79 @@ fn to_ascii(s: Encoded[Utf8]): Encoded[Ascii] =
   { bytes: s.bytes }
 ```
 
+### Intrusive Data Structures
+
+Oak's type system enables type-safe intrusive data structures using interfaces, type intersections, and phantom tags. This pattern allows objects to participate in multiple data structures without extra allocations:
+
+```oak
+// Phantom tags for different queue types
+ReadyQueue: type = {}
+IoQueue: type = {}
+TimerQueue: type = {}
+
+// Hook storage for list membership
+ListHook[T, Tag]: type = {
+  prev: Option[*T]
+  next: Option[*T]
+}
+
+// Intrusive list container
+IntrusiveList[T, Tag]: type = {
+  head: Option[*T]
+  tail: Option[*T]
+}
+
+// Interface: "T can provide its hook for list Tag"
+// Using function-style syntax
+IntrusiveListNode[T, Tag]: interface = {
+  fn (self: *T) hook(_: Tag) -> *ListHook[T, Tag]
+}
+
+// Task that can be in multiple queues simultaneously
+Task: type = {
+  ready: ListHook[Task, ReadyQueue]
+  io: ListHook[Task, IoQueue]
+  timer: ListHook[Task, TimerQueue]
+  id: u32
+  name: string
+}
+
+// Implement interfaces for each queue using Go-style method binding
+fn (t: *Task) hook(_: ReadyQueue): *ListHook[Task, ReadyQueue] =
+  &t.ready
+
+fn (t: *Task) hook(_: IoQueue): *ListHook[Task, IoQueue] =
+  &t.io
+
+fn (t: *Task) hook(_: TimerQueue): *ListHook[Task, TimerQueue] =
+  &t.timer
+
+// Generic function with single constraint
+fn schedule[T: IntrusiveListNode[T, ReadyQueue]](
+  runq: *IntrusiveList[T, ReadyQueue],
+  task: *T
+): () = {
+  // Implementation would push task to queue
+}
+
+// Generic function with intersection constraints (multiple list memberships)
+fn park_in_io_and_timer[
+  T: IntrusiveListNode[T, IoQueue] & IntrusiveListNode[T, TimerQueue]
+](
+  ioq: *IntrusiveList[T, IoQueue],
+  tq: *IntrusiveList[T, TimerQueue],
+  task: *T
+): () = {
+  // Implementation would add task to both queues
+}
+```
+
+This pattern provides:
+- **Type safety**: Phantom tags prevent mixing different queue types
+- **Zero allocation**: No extra allocations for list nodes
+- **Multiple memberships**: One object can be in multiple lists
+- **Clean C output**: Compiles to simple struct fields and pointers
+
 ---
 
 ## Subtyping and Intersection Types
@@ -538,7 +658,7 @@ sam: Employee = { name: "Sam", age: 30, id: 1 }
 
 // Can use Employee where Named is expected
 fn greet_named(x: Named): string =
-  "Hello, " + x.name
+  strings.join("Hello, ", x.name)
 
 greeting: string = greet_named(sam)  // Works!
 ```
@@ -553,6 +673,8 @@ Colored: type = { color: Color }
 NamedColored: type = Named & Colored
 
 shirt: NamedColored = { name: "shirt", color: Red }
+// equivalent 
+shirt: NamedColored = { name: "shirt" } & { color: Red }
 ```
 
 ---
@@ -644,11 +766,28 @@ while i < 10 {
 Pattern matching can be used for conditional logic:
 
 ```oak
-result: Option[i32] = Option::Some(42)
+result: Option[i32] = Option.Some(42)
 
 value: i32 = result ?
-  | Option::Some(x: i32) => x
-  | Option::None => 0
+  | Option.Some(x: i32) => x
+  | Option.None => 0
+
+// Type matching (both -> and => work)
+value ? 
+  | _: string -> "string"
+  | _: i32 -> "i32"
+  | _: any -> "anything else"
+
+value ? 
+  | _: string => "string"
+  | _: i32 => "i32"
+  | _ => "anything else"      
+
+// Capturing values in type patterns
+value ? 
+  | captured: string -> strings.join("string was ", captured)
+  | captured: i32 -> strings.join("i32 was ", string(captured))
+  | _ -> "wildcard"
 ```
 
 ---
@@ -660,41 +799,52 @@ value: i32 = result ?
 ```oak
 fn map_option[A, B](opt: Option[A], f: (A) -> B): Option[B] =
   opt ?
-    | Option::Some(value: A) => Option::Some(f(value))
-    | Option::None => Option::None
+    | Option.Some(value: A) => Option.Some(f(value))
+    | Option.None => Option.None
 
 // Usage
-maybe_int: Option[i32] = Option::Some(5)
+maybe_int: Option[i32] = Option.Some(5)
 maybe_doubled: Option[i32] = map_option(maybe_int, fn(x: i32): i32 = x * 2)
 ```
 
 ### Result Type for Error Handling
 
 ```oak
-Result[T, E]: type = {
-  Ok: T
-  Err: E
-}
+// result is a union type
+Result[T, E]: type = 
+                   | Ok: T
+                   | Err: E
+
 
 fn bind_result[A, B, E](
   res: Result[A, E], 
   f: (A) -> Result[B, E]
 ): Result[B, E] =
   res ?
-    | Result::Ok(value: A) => f(value)
-    | Result::Err(err: E) => Result::Err(err)
+    | Result.Ok(value: A) => f(value)
+    | Result.Err(err: E) => Result.Err(err)
+
+// Both -> and => are equivalent in pattern matching
+fn bind_result2[A, B, E](
+  res: Result[A, E], 
+  f: (A) -> Result[B, E]
+): Result[B, E] =
+  res ?
+    | Result.Ok(value: A) -> f(value)
+    | Result.Err(err: E) -> Result.Err(err)
 ```
 
 ### Interface with Generics
 
 ```oak
+TextChunk[T]: type = { data: Encoded[T], eof: Bool }
+
 TextReader[T]: interface = {
   ReadChunk: ([]) -> TextChunk[T]
 }
 
-fn read_one_chunk[R, Tag](r: R): Encoded[Tag]
-  where R: TextReader[Tag] =
-{
+// Constraints go directly in the type parameter list (no where clause)
+fn read_one_chunk[R: TextReader[Tag], Tag](r: R): Encoded[Tag] = {
   chunk: TextChunk[Tag] = r.ReadChunk([])
   chunk.data
 }
