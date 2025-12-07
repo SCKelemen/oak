@@ -56,9 +56,7 @@ fn len_runes(s: strings.utf16_string) -> u32 =
     strings.len_units[strings.Utf32, strings.rune](to_runes(s))
 
 fn rune_at(s: strings.utf16_string, idx: u32) -> strings.rune =
-    let rs = to_runes(s) in
-        rs.units[idx]
-    end
+    to_runes(s).units[idx]
 
 //
 // 4. IO / wire format
@@ -73,4 +71,4 @@ fn encode_le(s: strings.utf16_string) -> []u8 =
 
 // Write LE bytes to a Writer[Utf16LE].
 fn write_le(w: strings.Writer[Utf16LE], s: strings.utf16_string) -> () =
-    w.write(encode_le(s))
+    strings.write_bytes[Utf16LE](w, encode_le(s))

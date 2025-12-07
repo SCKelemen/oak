@@ -10,13 +10,18 @@ import (
 	"github.com/SCKelemen/oak/typechecker"
 )
 
-func setupBorrowChecker(input string) (*BorrowChecker, *ast.Program, *typechecker.TypeChecker) {
+func setupBorrowChecker(t *testing.T, input string) (*BorrowChecker, *ast.Program, *typechecker.TypeChecker) {
 	lxr := scanner.New(input)
 	p := parser.New(lxr)
 	program := p.ParseProgram()
 
 	if len(p.Errors()) > 0 {
 		// Parser errors - return nil program
+		// Errors are available via p.Errors() if needed for debugging
+		// Print errors for debugging
+		for _, err := range p.Errors() {
+			t.Logf("Parser error: %s", err)
+		}
 		return nil, nil, nil
 	}
 
@@ -37,12 +42,12 @@ func TestBorrowChecker_ViewCreation(t *testing.T) {
 	}{
 		{
 			"create view from free array via slice",
-			`buf: [16]byte; v: []byte = buf[0:16]`,
+			"buf: [16]u8\nv: []u8 = buf[0:16]",
 			false,
 		},
 		{
 			"multiple views from same array via slices",
-			`buf: [16]byte; v1: []byte = buf[0:8]; v2: []byte = buf[8:16]`,
+			"buf: [16]u8\nv1: []u8 = buf[0:8]\nv2: []u8 = buf[8:16]",
 			false,
 		},
 		// Note: view() and span() are conceptual primitives from the spec
@@ -52,7 +57,7 @@ func TestBorrowChecker_ViewCreation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bc, program, tc := setupBorrowChecker(tt.input)
+			bc, program, tc := setupBorrowChecker(t, tt.input)
 			if program == nil {
 				t.Fatalf("Failed to parse program")
 			}
@@ -75,7 +80,7 @@ func TestBorrowChecker_SpanCreation(t *testing.T) {
 	}{
 		{
 			"create span from free array",
-			`buf: [16]byte; s: [*]byte = buf.span()`,
+			"buf: [16]u8\ns: [*]u8 = span(&buf)",
 			false,
 		},
 		// Note: span() is a conceptual primitive from the spec
@@ -86,7 +91,7 @@ func TestBorrowChecker_SpanCreation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bc, program, tc := setupBorrowChecker(tt.input)
+			bc, program, tc := setupBorrowChecker(t, tt.input)
 			if program == nil {
 				t.Fatalf("Failed to parse program")
 			}
@@ -111,7 +116,7 @@ func TestBorrowChecker_LexicalScoping(t *testing.T) {
 		// when we have proper block parsing support. For now, we test sequential declarations.
 		{
 			"sequential views from same array",
-			`buf: [16]byte; v1: []byte = buf[0:8]; v2: []byte = buf[8:16]`,
+			"buf: [16]u8\nv1: []u8 = buf[0:8]\nv2: []u8 = buf[8:16]",
 			false, // Multiple views from same array are allowed
 		},
 		// Note: v1 restriction on borrows escaping blocks will be enforced
@@ -120,7 +125,7 @@ func TestBorrowChecker_LexicalScoping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bc, program, tc := setupBorrowChecker(tt.input)
+			bc, program, tc := setupBorrowChecker(t, tt.input)
 			if program == nil {
 				t.Fatalf("Failed to parse program")
 			}
@@ -143,29 +148,29 @@ func TestBorrowChecker_SliceOperations(t *testing.T) {
 	}{
 		{
 			"slice owned array creates view",
-			`buf: [16]byte; v: []byte = buf[0:8]`,
+			"buf: [16]u8\nv: []u8 = buf[0:8]",
 			false,
 		},
 		{
 			"slice view creates subslice",
-			`buf: [16]byte; v1: []byte = buf[0:16]; v2: []byte = v1[4:8]`,
+			"buf: [16]u8\nv1: []u8 = buf[0:16]\nv2: []u8 = v1[4:8]",
 			false,
 		},
 		{
 			"multiple slices from same array",
-			`buf: [16]byte; v1: []byte = buf[0:8]; v2: []byte = buf[8:16]`,
+			"buf: [16]u8\nv1: []u8 = buf[0:8]\nv2: []u8 = buf[8:16]",
 			false,
 		},
 		{
 			"slice with negative index",
-			`buf: [16]byte; v: []byte = buf[0:-1]`,
+			"buf: [16]u8\nv: []u8 = buf[0:-1]",
 			false, // Negative indices are normalized during evaluation
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bc, program, tc := setupBorrowChecker(tt.input)
+			bc, program, tc := setupBorrowChecker(t, tt.input)
 			if program == nil {
 				t.Fatalf("Failed to parse program")
 			}

@@ -562,10 +562,10 @@ func (bc *BorrowChecker) extractOwnerName(expr ast.Expression) string {
 		// Not an owner - could be a borrow or other variable
 		return ""
 	case *ast.PrefixExpression:
-		// Handle *arr (pointer dereference for view()/span() calls)
-		if e.Operator == "*" {
+		// Handle *arr (pointer dereference) and &arr (address-of) for view()/span() calls
+		if e.Operator == "*" || e.Operator == "&" {
 			if ident, ok := e.Right.(*ast.Identifier); ok {
-				// Only return non-empty if the dereferenced identifier is an owned array
+				// Only return non-empty if the identifier is an owned array
 				if _, exists := bc.ownerStates[ident.Value]; exists {
 					return ident.Value
 				}

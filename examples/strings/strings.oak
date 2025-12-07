@@ -203,11 +203,7 @@ fn compare(a: string, b: string) -> i32 =
 
 // Case-insensitive equality using Unicode case-folding.
 fn equal_fold(a: string, b: string) -> Bool =
-    let ra = encoding/utf8.to_runes(a) in
-    let rb = encoding/utf8.to_runes(b) in
-        unicode/runes.equal_fold(ra, rb)
-    end
-    end
+    unicode/runes.equal_fold(encoding/utf8.to_runes(a), encoding/utf8.to_runes(b))
 
 // Prefix/Suffix and membership
 
@@ -249,19 +245,11 @@ fn index_rune(s: string, r: rune) -> Option[u32] =
 
 // Unicode-aware lowercase.
 fn to_lower(s: string) -> string =
-    let rs  = encoding/utf8.to_runes(s) in
-    let rsl = unicode/runes.to_lower(rs) in
-        encoding/utf8.from_runes(rsl)
-    end
-    end
+    encoding/utf8.from_runes(unicode/runes.to_lower(encoding/utf8.to_runes(s)))
 
 // Unicode-aware uppercase.
 fn to_upper(s: string) -> string =
-    let rs  = encoding/utf8.to_runes(s) in
-    let rsu = unicode/runes.to_upper(rs) in
-        encoding/utf8.from_runes(rsu)
-    end
-    end
+    encoding/utf8.from_runes(unicode/runes.to_upper(encoding/utf8.to_runes(s)))
 
 // ASCII-only fast path.
 fn to_lower_ascii(s: string) -> string =

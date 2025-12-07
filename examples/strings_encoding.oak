@@ -36,34 +36,31 @@ ascii_buf: type = StrBuf[ascii]
 
 // Example: encoding-tagged function
 // write[E] converts a string to encoding E and writes it
-fn write[E: Encoding](val: string) -> () {
+fn write[E: Encoding](val: string) -> () =
     // E is the target encoding
     // Convert val (utf8) to bytes in encoding E
     // Push to some E-specific sink
     // (implementation would go here)
-}
+    ()
 
 // Example usage:
 // write[ascii](msg)  // converts utf8 string to ascii and writes
 // write[utf8](msg)   // writes utf8 directly
 
 // Transformation functions using encoding tags
-fn into[E: Encoding](s: string) -> Str[E] {
+fn into[E: Encoding](s: string) -> Str[E] =
     // Convert canonical utf8 string into an E-encoded view
     // (implementation would validate/convert)
     { bytes: s.bytes }  // placeholder - would do actual conversion
-}
 
-fn from_bytes[E: Encoding](b: []u8) -> Str[E] {
+fn from_bytes[E: Encoding](b: []u8) -> Str[E] =
     // Parse bytes as E-encoded text (may validate/fail)
     { bytes: b }  // placeholder
-}
 
-fn recode[E: Encoding, F: Encoding](s: Str[E]) -> Str[F] {
+fn recode[E: Encoding, F: Encoding](s: Str[E]) -> Str[F] =
     // Recode between encodings
     // (implementation would convert E -> F)
     { bytes: s.bytes }  // placeholder
-}
 
 // Example: user-defined encoding
 package encoding/shiftjis
@@ -74,6 +71,5 @@ shiftjis: strings.Encoding = {}
 
 ShiftJisStr: type = strings.Str[shiftjis]
 
-fn to_shiftjis(s: string) -> ShiftJisStr {
+fn to_shiftjis(s: string) -> ShiftJisStr =
     strings.into[shiftjis](s)
-}

@@ -24,6 +24,10 @@ fn make_buf() -> strings.string_buf =
     //    span(&buf): [*]u8
     strings.buf_from_span[strings.Utf8](span(&buf))
 
+// Helper: write ASCII string and discard the outcome, returning ().
+fn write_ascii_ignore_outcome(w: strings.Writer[strings.Ascii], s: strings.ascii_string) -> () =
+    strings.write[strings.Ascii](w, s)
+
 // Public: log a canonical UTF-8 string, but *only* if it's ASCII.
 fn log(msg: strings.string) -> () =
     if strings.is_ascii_string(msg) then
@@ -33,9 +37,7 @@ fn log(msg: strings.string) -> () =
         //   - msg: string (StrView[Utf8])
         //
         // We write the string using the Writer interface.
-        let _ = strings.write[strings.Ascii](ascii_writer, strings.as_ascii_view(msg)) in
-            ()
-        end
+        write_ascii_ignore_outcome(ascii_writer, strings.as_ascii_view(msg))
     else
         // maybe drop, or call utf8 logger
         ()
@@ -43,6 +45,4 @@ fn log(msg: strings.string) -> () =
 
 // Sugar: explicitly "I want ASCII".
 fn log_ascii(msg: strings.string) -> () =
-    let _ = strings.write[strings.Ascii](ascii_writer, strings.as_ascii_view(msg)) in
-        ()
-    end
+    write_ascii_ignore_outcome(ascii_writer, strings.as_ascii_view(msg))

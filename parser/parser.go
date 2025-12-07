@@ -199,11 +199,13 @@ func (p *Parser) parseStatement() ast.Statement {
 		// - x: T = expr -> declaration with type annotation
 		// - x = expr -> assignment (must refer to existing variable)
 		// - Name: type = ... -> type definition (ADT type)
+		// - Name[E, Unit]: type = ... -> generic type definition
 		if p.peekTokenIs(token.COLON_ASSIGN) {
 			// Short declaration: x := expr
 			return p.parseShortVariableDeclaration()
-		} else if p.peekTokenIs(token.COLON) {
-			// Centralize IDENT ":" ... handling to avoid token restore issues
+		} else if p.peekTokenIs(token.COLON) || p.peekTokenIs(token.LBRACK) {
+			// Centralize IDENT ":" ... or IDENT "[" ... handling
+			// LBRACK handles generic type definitions: Name[E, Unit]: type = ...
 			return p.parseIdentLedStatement()
 		} else if p.peekTokenIs(token.ASSIGN) {
 			// Assignment: x = expr (must refer to existing variable)
@@ -1241,17 +1243,18 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 		// currentToken is ')', last token of the type
 		return inner
 
+	case token.TYPE:
+		// TYPE keyword should never appear in a type expression
+		// This is a routing bug - should have been handled by parseADTType/parseADTTypeFromName
+		p.errors = append(p.errors, fmt.Sprintf("parseTypePrimary: routing bug - saw TYPE token (%q) at line %d. This should be handled by parseADTType/parseADTTypeFromName. Current context suggests a variable declaration or type alias was incorrectly parsed as a type expression.", p.currentToken.Literal, p.currentToken.Line))
+		return nil
+
 	case token.IDENT:
 		ident := &ast.Identifier{
 			Token: p.currentToken,
 			Value: p.currentToken.Literal,
 		}
 		// Check if this is a generic type: Name[TypeArg1, TypeArg2, ...]
-		// NOTE: This should NEVER see TYPE as currentToken - if it does, routing is broken
-		if p.currentTokenIs(token.TYPE) {
-			p.errors = append(p.errors, fmt.Sprintf("parseTypePrimary: unexpected TYPE token (routing bug - this should be handled by parseADTType)"))
-			return nil
-		}
 		if p.peekTokenIs(token.LBRACK) {
 			// This is a generic type application
 			p.nextToken() // move to '['
@@ -1443,13 +1446,8 @@ func (p *Parser) parseArrayType() ast.Expression {
 			return nil
 		}
 		// parseTypeExpression leaves currentToken on the last token of the type.
-		// For identifiers, that's the identifier itself, so we need to advance past it.
-		if ident, ok := elementType.(*ast.Identifier); ok && ident.Value != "()" {
-			// Advance past the identifier
-			if p.currentTokenIs(token.IDENT) {
-				p.nextToken()
-			}
-		}
+		// For identifiers, that's the identifier itself.
+		// We do NOT advance past it here - let the caller handle token positioning.
 		// Return as IndexExpression with "*" identifier for span
 		return &ast.IndexExpression{
 			Token: p.currentToken,
@@ -1489,13 +1487,8 @@ func (p *Parser) parseArrayType() ast.Expression {
 			return nil
 		}
 		// parseTypeExpression leaves currentToken on the last token of the type.
-		// For identifiers, that's the identifier itself, so we need to advance past it.
-		if ident, ok := elementType.(*ast.Identifier); ok && ident.Value != "()" {
-			// Advance past the identifier
-			if p.currentTokenIs(token.IDENT) {
-				p.nextToken()
-			}
-		}
+		// For identifiers, that's the identifier itself.
+		// We do NOT advance past it here - let the caller handle token positioning.
 		// Return as IndexExpression with empty identifier for slice
 		return &ast.IndexExpression{
 			Token: p.currentToken,
@@ -1520,13 +1513,8 @@ func (p *Parser) parseArrayType() ast.Expression {
 			return nil
 		}
 		// parseTypeExpression leaves currentToken on the last token of the type.
-		// For identifiers, that's the identifier itself, so we need to advance past it.
-		if ident, ok := elementType.(*ast.Identifier); ok && ident.Value != "()" {
-			// Advance past the identifier
-			if p.currentTokenIs(token.IDENT) {
-				p.nextToken()
-			}
-		}
+		// For identifiers, that's the identifier itself.
+		// We do NOT advance past it here - let the caller handle token positioning.
 		// Return as IndexExpression with size as IntegerLiteral
 		return &ast.IndexExpression{
 			Token: p.currentToken,
@@ -2354,20 +2342,53 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 	identTok := p.currentToken
 	name := &ast.Identifier{Token: identTok, Value: identTok.Literal}
 
-	// Expect colon
+	// Check if this is a generic type definition: Name[E, Unit]: type = ...
+	// If peekToken is LBRACK, we need to parse the generic parameters first
+	var typeParams []*ast.TypeParameter
+	if p.peekTokenIs(token.LBRACK) {
+		// This could be either:
+		// 1. Generic type definition: Name[E, Unit]: type = ...
+		// 2. Generic type application in variable: x: Name[E, Unit] = ...
+		// We'll parse it and check what comes after the ]
+		typeParams = p.parseTypeParameters()
+		if typeParams == nil {
+			return nil // Error already reported
+		}
+		// After parseTypeParameters, currentToken should be on the token after ]
+		// For "Name[E, Unit]: type =", that should be COLON
+	}
+
+	// Expect colon - this advances currentToken to COLON and peekToken to next token
 	if !p.expectPeek(token.COLON) {
 		return nil
 	}
+	// After expectPeek(token.COLON):
+	// - currentToken = COLON
+	// - peekToken = token after COLON (should be TYPE for "Name: type =")
 
-	// Look at the token *after* ':'
+	// Look at the token *after* ':' by advancing
 	p.nextToken()
+	// After nextToken():
+	// - currentToken = what was peekToken (should be TYPE for "Name: type =")
+	// - peekToken = token after that
 
 	if p.currentTokenIs(token.TYPE) {
-		// We're in `Name: type = ...` - ADT type definition
-		return p.parseADTTypeFromName(name)
+		// We're in `Name: type = ...` or `Name[E, Unit]: type = ...` - ADT type definition
+		adt := p.parseADTTypeFromName(name)
+		if adt != nil && len(typeParams) > 0 {
+			// Attach the type parameters we parsed earlier
+			adt.TypeParams = typeParams
+		}
+		return adt
 	}
 
-	// We're in `Name: <TypeExpr> (= ...)?` - variable declaration
+	// We're in `Name: <TypeExpr> (= ...)?` or `Name[E, Unit]: <TypeExpr> (= ...)?` - variable declaration
+	// Safety check: this should never be TYPE at this point
+	if p.currentTokenIs(token.TYPE) {
+		p.errors = append(p.errors, fmt.Sprintf("parseIdentLedStatement: routing bug - currentToken is TYPE after check, this should not happen for '%s'", name.Value))
+		return nil
+	}
+
 	return p.parseVarDeclFromNameAndTypeStart(name)
 }
 
@@ -2377,7 +2398,36 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 	adt := &ast.ADTType{Token: name.Token, Name: name}
 
 	// We are currently on `type`
-	// Parse optional type parameters: Name[T: Ordered]: type = ...
+	// Check if the name had generic parameters: Name[E, Unit]: type = ...
+	// This would have been parsed as a generic type application in parseTypePrimary
+	// But we need to extract the type parameters from the name instead
+	// For now, we'll check if peekToken is LBRACK (type parameters after 'type')
+	// But actually, type parameters come BEFORE the colon: Name[E, Unit]: type = ...
+	// So we need to check the name itself - but at this point name is just an Identifier
+	// The generic syntax would have been parsed in parseIdentLedStatement before we got here
+	// Actually, wait - if we have "Name[E, Unit]: type =", then in parseIdentLedStatement:
+	// - currentToken starts as IDENT "Name"
+	// - We check peekToken for COLON
+	// - But if there's [E, Unit] between Name and :, we need to handle that
+
+	// For now, check if there are type parameters after 'type' keyword
+	// This handles: Name: type [T: Constraint] = ... (unusual but possible)
+	// But the common case is: Name[T: Constraint]: type = ...
+	// Which means we need to parse the [T: Constraint] BEFORE the colon
+
+	// Actually, the issue is that when we have "Name[E, Unit]: type =",
+	// parseIdentLedStatement sees "Name" as IDENT, then checks for COLON
+	// But there's [E, Unit] between Name and :, so peekToken isn't COLON
+	// So it doesn't match the "peekTokenIs(token.COLON)" check!
+
+	// We need to handle: IDENT [ ... ] : type = ...
+	// Let me check if the name identifier itself can have generic syntax
+	// Actually, in parseIdentLedStatement, we're at IDENT "Name"
+	// If peekToken is LBRACK, we should parse the generic part first
+	// Then check what comes after the ]
+
+	// For now, parse optional type parameters after 'type' keyword
+	// This handles the case: Name: type [T: Constraint] = ... (unusual syntax)
 	if p.peekTokenIs(token.LBRACK) {
 		adt.TypeParams = p.parseTypeParameters()
 		if adt.TypeParams == nil {
@@ -2448,6 +2498,13 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 // Assumes currentToken is the first token of the type expression (after ':').
 func (p *Parser) parseVarDeclFromNameAndTypeStart(name *ast.Identifier) *ast.VariableDeclaration {
 	stmt := &ast.VariableDeclaration{Token: name.Token, Name: name}
+
+	// Safety check: this should NEVER be called when currentToken is TYPE
+	// If it is, routing is broken and we should have called parseADTTypeFromName instead
+	if p.currentTokenIs(token.TYPE) {
+		p.errors = append(p.errors, fmt.Sprintf("parseVarDeclFromNameAndTypeStart: routing bug - saw TYPE token for variable '%s' at line %d. This should be handled by parseADTTypeFromName", name.Value, p.currentToken.Line))
+		return nil
+	}
 
 	// Parse type annotation (currentToken is already the first token of the type)
 	stmt.Type = p.parseTypeExpression()

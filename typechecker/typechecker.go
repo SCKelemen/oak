@@ -111,6 +111,11 @@ func (t *ADTType) Equals(other Type) bool {
 	if otherADT, ok := other.(*ADTType); ok {
 		return t.Name == otherADT.Name
 	}
+	// Make equality symmetric with NarrowedADTVariantType
+	// A narrowed variant is compatible with its parent ADT type
+	if narrowed, ok := other.(*NarrowedADTVariantType); ok {
+		return t.Name == narrowed.ADTName
+	}
 	return false
 }
 
@@ -235,12 +240,19 @@ func (t *UnionType) Equals(other Type) bool {
 			return false
 		}
 		// Check that all types are present (order doesn't matter for equality)
-		typeSet := make(map[string]bool)
+		// Use structural equality (Equals) instead of string-based comparison
+		// to avoid non-determinism from map iteration in RecordType.String()
+		used := make([]bool, len(otherUnion.Types))
 		for _, typ := range t.Types {
-			typeSet[typ.String()] = true
-		}
-		for _, typ := range otherUnion.Types {
-			if !typeSet[typ.String()] {
+			matched := false
+			for j, otherTyp := range otherUnion.Types {
+				if !used[j] && typ.Equals(otherTyp) {
+					used[j] = true
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				return false
 			}
 		}
@@ -271,12 +283,19 @@ func (t *IntersectionType) Equals(other Type) bool {
 			return false
 		}
 		// Check that all types are present (order doesn't matter for equality)
-		typeSet := make(map[string]bool)
+		// Use structural equality (Equals) instead of string-based comparison
+		// to avoid non-determinism from map iteration in RecordType.String()
+		used := make([]bool, len(otherIntersection.Types))
 		for _, typ := range t.Types {
-			typeSet[typ.String()] = true
-		}
-		for _, typ := range otherIntersection.Types {
-			if !typeSet[typ.String()] {
+			matched := false
+			for j, otherTyp := range otherIntersection.Types {
+				if !used[j] && typ.Equals(otherTyp) {
+					used[j] = true
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				return false
 			}
 		}

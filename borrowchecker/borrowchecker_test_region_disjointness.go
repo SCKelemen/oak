@@ -71,7 +71,7 @@ func TestBorrowChecker_RegionDisjointness(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bc, program, tc := setupBorrowChecker(tt.input)
+			bc, program, tc := setupBorrowChecker(t, tt.input)
 			if program == nil {
 				t.Fatalf("Failed to parse program")
 			}
@@ -119,7 +119,7 @@ func TestBorrowChecker_RegionDisjointness_UnknownRegions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Note: These tests may not work if the parser doesn't support
 			// variable indices yet. They're here to document expected behavior.
-			bc, program, tc := setupBorrowChecker(tt.input)
+			bc, program, tc := setupBorrowChecker(t, tt.input)
 			if program == nil {
 				// Parser error is expected for some of these - skip test
 				return
@@ -171,7 +171,7 @@ func TestBorrowChecker_RegionDisjointness_Views(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bc, program, tc := setupBorrowChecker(tt.input)
+			bc, program, tc := setupBorrowChecker(t, tt.input)
 			if program == nil {
 				t.Fatalf("Failed to parse program")
 			}
