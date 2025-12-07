@@ -157,7 +157,7 @@ fn apply[A, B, C](f: (A) -> B, x: A): B = f(x)
 
 ### Methods
 
-Functions can be associated with types using the `Type::Method` syntax:
+Functions are associated with types using Go-style method binding (receiver syntax):
 
 ```oak
 File: type = {
