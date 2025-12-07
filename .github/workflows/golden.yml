@@ -1,0 +1,27 @@
+name: Golden File Verification
+
+on:
+  push:
+    branches: [ main, master, specification ]
+  pull_request:
+    branches: [ main, master, specification ]
+
+jobs:
+  verify-golden:
+    name: Verify Golden Files
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.4'
+    
+    - name: Verify dependencies
+      run: go mod verify
+    
+    - name: Verify golden files
+      run: go run cmd/verify_golden/main.go

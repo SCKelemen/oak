@@ -33,7 +33,11 @@ type GoldenOutputs struct {
 // to the golden directory using the naming convention: {name}_{stage_num}_{stage}.{ext}
 // Stage numbers increment: 0=source, 1=lexer, 2=parser, 3=ast, 4=typechecker, 5=lowering, 6=borrowchecker, 7=codegen
 func SerializeToGolden(name string, baseStageNum int, sourceCode string, tc *typechecker.TypeChecker) (*GoldenOutputs, error) {
-	goldenDir := "golden"
+	return SerializeToGoldenDir(name, baseStageNum, sourceCode, tc, "golden")
+}
+
+// SerializeToGoldenDir is like SerializeToGolden but allows specifying the output directory
+func SerializeToGoldenDir(name string, baseStageNum int, sourceCode string, tc *typechecker.TypeChecker, goldenDir string) (*GoldenOutputs, error) {
 	if err := os.MkdirAll(goldenDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create golden directory: %w", err)
 	}
