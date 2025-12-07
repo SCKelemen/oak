@@ -15,7 +15,8 @@ const (
 	Free BorrowState = iota
 	// SharedRead means one or more read-only borrows (View/[]T)
 	SharedRead
-	// UniqueWrite means exactly one writable borrow (Span/[*]T)
+	// UniqueWrite means one or more writable borrows (Span/[*]T)
+	// With region-level disjointness, multiple spans can coexist if regions don't overlap
 	UniqueWrite
 )
 
@@ -45,7 +46,7 @@ const (
 type Region struct {
 	Offset int64 // Start offset in elements (0-based)
 	Length int64 // Length in elements
-	// If Offset or Length is -1, it means the value is not a compile-time constant
+	// nil *Region means the region is unknown (not a compile-time constant)
 	// and we cannot prove disjointness
 }
 
@@ -214,8 +215,8 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	}
 
 	// Check function body
-	// The body is an Expression - check it directly
-	// If it's a block expression, it will be handled by checkExpression
+	// The body is an Expression, but it might be a BlockExpression that contains statements
+	// checkExpression will handle it appropriately
 	bc.checkExpression(stmt.Body, funcEnv)
 
 	// At function end, all borrows created in the function are dropped
@@ -295,12 +296,24 @@ func (bc *BorrowChecker) checkWhileStatement(stmt *ast.WhileStatement, env *type
 // checkAssignmentStatement handles assignments
 func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement, env *typechecker.TypeEnvironment) {
 	// Check the value being assigned
-	bc.checkExpression(stmt.Value, env)
+	// If this creates a borrow (e.g., view(&arr) or subslice(v)), pass the target variable
+	// so the borrow is tracked correctly
+	bc.checkExpression(stmt.Value, env, stmt.Name.Value)
 
 	// Check if we're assigning to an owner (which might be borrowed)
 	// The left-hand side is an Identifier (assignment target)
 	// This is a write operation
 	bc.checkIdentifierUse(stmt.Name.Value, env, true)
+
+	// If we're reassigning a borrow variable, drop the old borrow first
+	// This prevents false positives where the old borrow sticks around
+	if _, exists := bc.activeBorrows[stmt.Name.Value]; exists {
+		delete(bc.activeBorrows, stmt.Name.Value)
+		delete(bc.ownerOf, stmt.Name.Value)
+		// Recompute owner states since we dropped a borrow
+		// Use the same logic as dropBorrowsInCurrentBlock
+		bc.recomputeOwnerStatesFromActiveBorrows()
+	}
 }
 
 // dropBorrowsInCurrentBlock removes borrows created in the current block
@@ -315,6 +328,12 @@ func (bc *BorrowChecker) dropBorrowsInCurrentBlock() {
 	}
 
 	// Recompute owner states from remaining active borrows
+	bc.recomputeOwnerStatesFromActiveBorrows()
+}
+
+// recomputeOwnerStatesFromActiveBorrows recomputes owner states based on active borrows
+// This is used both when dropping borrows at block end and when reassigning borrow variables
+func (bc *BorrowChecker) recomputeOwnerStatesFromActiveBorrows() {
 	// Start by marking all owners as Free
 	for owner := range bc.ownerStates {
 		bc.ownerStates[owner] = Free
@@ -413,6 +432,8 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 	default:
 		// Other expressions don't create borrows
 		// Note: Function bodies are Expressions, but they're handled in checkFunctionStatement
+		// If the body contains nested statements (e.g., in let expressions), those would need
+		// to be handled by the expression's own checking logic
 	}
 }
 
@@ -481,6 +502,14 @@ func (bc *BorrowChecker) extractSliceRegion(slice *ast.SliceExpression, ownerLen
 func (bc *BorrowChecker) checkSliceExpression(slice *ast.SliceExpression, env *typechecker.TypeEnvironment, targetVar string) {
 	// Check the sequence being sliced (the array/view/span)
 	bc.checkExpression(slice.Seq, env)
+
+	// Check slice bounds expressions for any borrow-sensitive operations
+	if slice.Low != nil {
+		bc.checkExpression(slice.Low, env)
+	}
+	if slice.High != nil {
+		bc.checkExpression(slice.High, env)
+	}
 
 	// According to the spec, slicing an owned array [N]T creates a View borrow
 	// Slicing a View/[]T or Span/[*]T creates a derived subslice (no new borrow)
@@ -584,7 +613,14 @@ func (bc *BorrowChecker) checkIndexExpression(index *ast.IndexExpression, env *t
 
 // checkInvocationExpression checks function calls for borrow operations
 func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
-	// Check if this is a call to view(), span(), subslice(), view_as(), or span_as()
+	// 1. Check arguments FIRST under the pre-call state
+	// This ensures that argument validation happens before any borrow state changes
+	for _, arg := range call.Arguments {
+		bc.checkExpression(arg, env)
+	}
+
+	// 2. Then apply borrow-sensitive builtins
+	// Arguments are already validated, so we can safely create borrows
 	if ident, ok := call.Function.(*ast.Identifier); ok {
 		switch ident.Value {
 		case "view":
@@ -600,10 +636,7 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 		}
 	}
 
-	// Check all arguments
-	for _, arg := range call.Arguments {
-		bc.checkExpression(arg, env)
-	}
+	// For non-builtin functions, the arg walk above is all we need.
 }
 
 // checkViewCall handles view() calls: creates a read-only borrow
@@ -614,9 +647,10 @@ func (bc *BorrowChecker) checkViewCall(call *ast.InvocationExpression, env *type
 	}
 
 	// The argument should be a pointer to an owned array: *[N]T
+	// Note: extractOwnerName only handles direct &owner or *owner patterns
 	ownerName := bc.extractOwnerName(call.Arguments[0])
 	if ownerName == "" {
-		bc.addError("view() argument must be a pointer to an owned array")
+		bc.addError("view() argument must be &owner of an owned array")
 		return
 	}
 
@@ -643,9 +677,10 @@ func (bc *BorrowChecker) checkSpanCall(call *ast.InvocationExpression, env *type
 	}
 
 	// The argument should be a pointer to an owned array: *[N]T
+	// Note: extractOwnerName only handles direct &owner or *owner patterns
 	ownerName := bc.extractOwnerName(call.Arguments[0])
 	if ownerName == "" {
-		bc.addError("span() argument must be a pointer to an owned array")
+		bc.addError("span() argument must be &owner of an owned array")
 		return
 	}
 
@@ -923,8 +958,8 @@ func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName
 	bc.ownerOf[subsliceName] = sourceInfo.owner
 	bc.activeBorrows[subsliceName] = borrowInfo{
 		owner:      sourceInfo.owner,
-		kind:       sourceInfo.kind, // Subslice preserves view/span kind
-		blockDepth: sourceInfo.blockDepth,
+		kind:       sourceInfo.kind,      // Subslice preserves view/span kind
+		blockDepth: bc.currentBlockDepth, // Use current block depth, not source depth
 		region:     region,
 	}
 	// No state change - subslices don't create new borrows from the owner
