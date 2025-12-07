@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/object"
 )
 
@@ -343,9 +345,9 @@ func (t *FunctionType) Equals(other Type) bool {
 
 // TypeChecker performs type checking on AST nodes
 type TypeChecker struct {
-	errors   []string
-	env      *TypeEnvironment
-	adtTypes map[string]*object.ADTType // ADT type definitions
+	diagnostics *diagnostic.DiagnosticCollector
+	env         *TypeEnvironment
+	adtTypes    map[string]*object.ADTType // ADT type definitions
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -413,9 +415,9 @@ func (e *TypeEnvironment) SetType(name string, typ Type) {
 
 func New(env *object.Environment) *TypeChecker {
 	tc := &TypeChecker{
-		errors:   []string{},
-		env:      NewTypeEnvironment(),
-		adtTypes: env.GetAllADTTypes(),
+		diagnostics: diagnostic.NewDiagnosticCollector(),
+		env:         NewTypeEnvironment(),
+		adtTypes:    env.GetAllADTTypes(),
 	}
 	// Add builtin type aliases
 	tc.addBuiltinTypeAliases()
@@ -428,16 +430,48 @@ func (tc *TypeChecker) addBuiltinTypeAliases() {
 	tc.env.SetType("byte", &PrimitiveType{Name: "u8"})
 }
 
+// Errors returns errors as strings for backward compatibility
 func (tc *TypeChecker) Errors() []string {
-	return tc.errors
+	errors := []string{}
+	for _, d := range tc.diagnostics.Errors() {
+		errors = append(errors, d.Message)
+	}
+	return errors
+}
+
+// Diagnostics returns all diagnostics
+func (tc *TypeChecker) Diagnostics() []*diagnostic.Diagnostic {
+	return tc.diagnostics.Diagnostics()
+}
+
+// AddDiagnostic adds a diagnostic to the typechecker
+func (tc *TypeChecker) AddDiagnostic(d *diagnostic.Diagnostic) {
+	tc.diagnostics.AddDiagnostic(d)
 }
 
 func (tc *TypeChecker) ClearErrors() {
-	tc.errors = []string{}
+	tc.diagnostics.Clear()
 }
 
-func (tc *TypeChecker) addError(format string, args ...interface{}) {
-	tc.errors = append(tc.errors, fmt.Sprintf("[type error] "+format, args...))
+// addError creates and adds a diagnostic error
+// If node is provided, uses its position; otherwise creates a diagnostic with zero range
+func (tc *TypeChecker) addError(node ast.Node, format string, args ...interface{}) {
+	message := fmt.Sprintf("[type error] "+format, args...)
+	var d *diagnostic.Diagnostic
+	if node != nil {
+		d = diagnostic.NewDiagnosticFromNode(node, "typechecker", message)
+	} else {
+		// Fallback: create diagnostic with zero range
+		d = diagnostic.NewDiagnostic(
+			lsp.Range{
+				Start: lsp.Position{Line: 0, Character: 0},
+				End:   lsp.Position{Line: 0, Character: 0},
+			},
+			"typechecker",
+			message,
+		)
+	}
+	tc.diagnostics.AddDiagnostic(d)
 }
 
 // CheckProgram type checks a program
@@ -496,7 +530,7 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		// They don't need type checking
 		return
 	default:
-		tc.addError("unknown statement type: %T", stmt)
+		tc.addError(stmt, "unknown statement type: %T", stmt)
 	}
 }
 
@@ -572,10 +606,10 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		return tc.checkArrayLiteral(e)
 	case nil:
 		// Nil expression - likely a parser error, but don't crash
-		tc.addError("nil expression encountered (parser error)")
+		tc.addError(nil, "nil expression encountered (parser error)")
 		return nil
 	default:
-		tc.addError("unknown expression type: %T", expr)
+		tc.addError(expr, "unknown expression type: %T", expr)
 		return nil
 	}
 }
@@ -584,7 +618,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 func (tc *TypeChecker) checkIdentifier(ident *ast.Identifier) Type {
 	scheme, ok := tc.env.Get(ident.Value)
 	if !ok {
-		tc.addError("undefined variable: %s", ident.Value)
+		tc.addError(ident, "undefined variable: %s", ident.Value)
 		return nil
 	}
 	// Instantiate the scheme to get a fresh type
@@ -601,7 +635,7 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
 	switch expr.Operator {
 	case "!":
 		if !rightType.Equals(&BoolType{}) {
-			tc.addError("operator ! requires bool, got %s", rightType)
+			tc.addError(expr, "operator ! requires bool, got %s", rightType)
 			return nil
 		}
 		return &BoolType{}
@@ -617,10 +651,10 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
 				return &PrimitiveType{Name: signedName}
 			}
 		}
-		tc.addError("operator - requires integer type, got %s", rightType)
+		tc.addError(expr, "operator - requires integer type, got %s", rightType)
 		return nil
 	default:
-		tc.addError("unknown prefix operator: %s", expr.Operator)
+		tc.addError(expr, "unknown prefix operator: %s", expr.Operator)
 		return nil
 	}
 }
@@ -656,31 +690,31 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
 			return tc.promoteNumericTypes(leftType, rightType)
 		}
-		tc.addError("operator + requires numeric types or strings, got %s and %s", leftType, rightType)
+		tc.addError(expr, "operator + requires numeric types or strings, got %s and %s", leftType, rightType)
 		return nil
 	case "-", "*", "/":
 		// Arithmetic operators require numeric types
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
-			tc.addError("operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
+			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
 		return tc.promoteNumericTypes(leftType, rightType)
 	case "==", "!=":
 		// Equality operators work on compatible types
 		if !tc.areCompatibleTypes(leftType, rightType) {
-			tc.addError("operator %s requires compatible types, got %s and %s", expr.Operator, leftType, rightType)
+			tc.addError(expr, "operator %s requires compatible types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
 		return &BoolType{}
 	case "<", ">", "<=", ">=":
 		// Comparison operators require numeric types
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
-			tc.addError("operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
+			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
 		return &BoolType{}
 	default:
-		tc.addError("unknown infix operator: %s", expr.Operator)
+		tc.addError(expr, "unknown infix operator: %s", expr.Operator)
 		return nil
 	}
 }
@@ -714,7 +748,8 @@ func (tc *TypeChecker) promoteNumericTypes(left, right Type) Type {
 
 	// No implicit conversion between signed and unsigned
 	if leftIsSigned != rightIsSigned {
-		tc.addError("cannot mix signed and unsigned types: %s and %s", left, right)
+		// Note: This function doesn't have access to the expression, so we pass nil
+		tc.addError(nil, "cannot mix signed and unsigned types: %s and %s", left, right)
 		return left
 	}
 
@@ -855,13 +890,13 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 
 	fnType, ok := funcType.(*FunctionType)
 	if !ok {
-		tc.addError("attempting to call non-function type: %s", funcType)
+		tc.addError(expr, "attempting to call non-function type: %s", funcType)
 		return nil
 	}
 
 	// Check argument count
 	if len(expr.Arguments) != len(fnType.Parameters) {
-		tc.addError("function expects %d arguments, got %d", len(fnType.Parameters), len(expr.Arguments))
+		tc.addError(expr, "function expects %d arguments, got %d", len(fnType.Parameters), len(expr.Arguments))
 		return nil
 	}
 
@@ -877,7 +912,12 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		}
 		argTypes[i] = argType
 		if !tc.isAssignable(argType, expectedType) {
-			tc.addError("argument %d: expected %s, got %s", i+1, expectedType, argType)
+			// Use the argument expression for the error location
+			if i < len(expr.Arguments) {
+				tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
+			} else {
+				tc.addError(expr, "argument %d: expected %s, got %s", i+1, expectedType, argType)
+			}
 		}
 	}
 
