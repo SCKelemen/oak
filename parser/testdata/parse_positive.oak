@@ -1,0 +1,135 @@
+// =======================================
+// parse_positive.oak
+// =======================================
+
+// 1. Simple variable declarations
+x: i32 = 42
+y: u8 = 10
+z: string = "hello"
+
+// 2. Type inference (use :=)
+a := 5
+b := "world"
+c: bool = true
+
+// 3. Array types and literals
+arr1: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+arr2: []u8 = arr1[0:4]
+arr3: [*]u8 = span(&arr1)
+
+// 4. Record types and literals
+Point: type = { x: i32, y: i32 }
+p: Point = { x: 10, y: 20 }
+
+// 5. Function definitions with colon return
+fn add(a: i32, b: i32): i32 = a + b
+fn greet(name: string): string = "Hello, " + name
+
+// 6. Method definitions
+fn Point::distance(self: Point, other: Point): i32 = {
+    dx: i32 = self.x - other.x
+    dy: i32 = self.y - other.y
+    dx * dx + dy * dy
+}
+
+// 7. Pattern matching with ? and | (replaces if/else)
+fn max(a: i32, b: i32): i32 =
+    (a > b) ?
+        | true => a
+        | false => b
+
+// 8. While loops
+fn count_to(n: i32): () = {
+    i: i32 = 0
+    while i < n {
+        i = i + 1
+    }
+}
+
+// 9. Pattern matching expressions
+fn describe(x: i32): string =
+    x ?
+        | 0 => "zero"
+        | 1 => "one"
+        | _ => "other"
+
+// 10. ADT definitions
+Option[T]: type = {
+    Some: T
+    None: {}
+}
+
+Result[T, E]: type = {
+    Ok: T
+    Err: E
+}
+
+// 11. ADT usage
+maybe: Option[i32] = Option::Some(42)
+nothing: Option[i32] = Option::None
+
+// 12. Nested blocks
+fn nested(): i32 = {
+    outer: i32 = 10
+    {
+        inner: i32 = 20
+        outer + inner
+    }
+}
+
+// 13. Index and slice expressions
+fn array_ops(): u8 = {
+    arr: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+    first: u8 = arr[0]
+    slice: []u8 = arr[1:3]
+    first
+}
+
+// 14. Prefix and infix expressions
+fn expressions(): i32 = {
+    a: i32 = 10
+    b: i32 = 20
+    neg: i32 = -a
+    sum: i32 = a + b
+    prod: i32 = a * b
+    sum
+}
+
+// 15. Function calls
+fn calls(): i32 = {
+    result: i32 = add(5, 3)
+    result
+}
+
+// 16. Record field access
+fn field_access(): i32 = {
+    p: Point = { x: 10, y: 20 }
+    p.x
+}
+
+// 17. Variant expressions
+fn variant_usage(): Option[i32] = {
+    Option::Some(42)
+}
+
+// 18. Type parameters and constraints
+fn identity[T](x: T): T = x
+fn constrained[T: Reader](x: T): T = x
+
+// 19. Intersection types
+Person: type = { name: string, age: i32 }
+Employee: type = { id: u32 }
+Manager: type = Person & Employee
+
+// 20. Complex nested structures
+fn complex(): i32 = {
+    arr: [4]Option[i32] = [4]Option[i32]{
+        Option::Some(1),
+        Option::Some(2),
+        Option::None,
+        Option::Some(4)
+    }
+    arr[0] ?
+        | Option::Some(x: i32) => x
+        | Option::None => 0
+}

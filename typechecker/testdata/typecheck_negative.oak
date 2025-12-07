@@ -1,0 +1,108 @@
+// =======================================
+// typecheck_negative.oak
+// =======================================
+
+// 1. Undefined variable
+x: i32 = undefined_var
+// EXPECT_TYPE_ERROR: undefined variable
+
+// 2. Type mismatch in assignment
+y: i32 = "hello"
+// EXPECT_TYPE_ERROR: cannot assign string to i32
+
+// 3. Type mismatch in function call
+fn add(a: i32, b: i32): i32 = a + b
+bad: i32 = add("hello", "world")
+// EXPECT_TYPE_ERROR: function expects i32, got string
+
+// 4. Wrong number of arguments
+bad2: i32 = add(5)
+// EXPECT_TYPE_ERROR: function expects 2 arguments, got 1
+
+// 5. Missing return type match
+fn bad3(): i32 = "hello"
+// EXPECT_TYPE_ERROR: expected return type i32, got string
+
+// 6. Invalid array index type
+arr: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+bad4: u8 = arr["index"]
+// EXPECT_TYPE_ERROR: array index must be numeric type
+
+// 7. Field not found in record
+Point: type = { x: i32, y: i32 }
+p: Point = { x: 10, y: 20 }
+bad5: i32 = p.z
+// EXPECT_TYPE_ERROR: field z not found in record type
+
+// 8. ADT variant not found
+Option[T]: type = {
+    Some: T
+    None: {}
+}
+bad6: Option[i32] = Option::Maybe(42)
+// EXPECT_TYPE_ERROR: variant Maybe not found in ADT
+
+// 9. Type mismatch in pattern match
+fn bad7(x: i32): string = {
+    x ?
+        | 0 => 42
+        | 1 => "one"
+}
+// EXPECT_TYPE_ERROR: pattern match branches have incompatible types
+
+// 10. Shadowing (banned)
+outer: i32 = 10
+{
+    outer: i32 = 20
+}
+// EXPECT_TYPE_ERROR: variable already declared; Oak does not allow shadowing
+
+// 11. Invalid primitive constructor
+bad8: u8 = u8("hello")
+// EXPECT_TYPE_ERROR: primitive constructor requires primitive integer argument
+
+// 12. Type mismatch in array literal
+bad9: [4]u8 = [4]u8{ 1, 2, "three", 4 }
+// EXPECT_TYPE_ERROR: array element type mismatch
+
+// 13. Invalid narrowing
+wide: u32 = 1000
+narrow: u8 = wide
+// EXPECT_TYPE_ERROR: cannot assign u32 to u8 (use narrowing function)
+
+// 14. Method not found
+Point: type = { x: i32, y: i32 }
+p2: Point = { x: 10, y: 20 }
+bad10: i32 = p2.nonexistent()
+// EXPECT_TYPE_ERROR: method nonexistent not found
+
+// 15. Invalid generic instantiation
+fn identity[T](x: T): T = x
+bad11: i32 = identity[string](42)
+// EXPECT_TYPE_ERROR: type argument mismatch
+
+// 16. Constraint violation
+Reader: type = { read: fn() -> string }
+fn process[T: Reader](x: T): string = x.read()
+bad12: string = process(42)
+// EXPECT_TYPE_ERROR: type does not satisfy constraint
+
+// 17. Invalid record literal
+Point: type = { x: i32, y: i32 }
+bad13: Point = { x: 10 }
+// EXPECT_TYPE_ERROR: missing required field y
+
+// 18. Invalid intersection type
+bad14: i32 & string = 42
+// EXPECT_TYPE_ERROR: intersection type contains non-record type
+
+// 19. Invalid view/span argument
+arr2: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+bad15: []u8 = view(arr2)
+// EXPECT_TYPE_ERROR: view() argument must be &owner
+
+// 20. Using owner while borrowed
+arr3: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+s: [*]u8 = span(&arr3)
+bad16: u8 = arr3[0]
+// EXPECT_TYPE_ERROR: cannot use owner while it has an active writable span

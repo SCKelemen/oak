@@ -1,0 +1,137 @@
+// =======================================
+// typecheck_positive.oak
+// =======================================
+
+// 1. Primitive type operations
+x: i32 = 10
+y: i32 = 20
+sum: i32 = x + y
+diff: i32 = x - y
+prod: i32 = x * y
+
+// 2. Type widening
+small: u8 = 5
+medium: u16 = small
+large: u32 = medium
+
+// 3. String operations
+greeting: string = "Hello"
+name: string = "World"
+message: string = greeting + ", " + name
+
+// 4. Array operations
+arr: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+first: u8 = arr[0]
+slice: []u8 = arr[1:3]
+
+// 5. Record types
+Point: type = { x: i32, y: i32 }
+p: Point = { x: 10, y: 20 }
+px: i32 = p.x
+
+// 6. Function definitions and calls
+fn add(a: i32, b: i32): i32 = a + b
+result: i32 = add(5, 3)
+
+// 7. Type inference (use :=)
+inferred := 42
+inferred_str := "hello"
+inferred_bool: bool = true
+
+// 8. ADT definitions and usage
+Option[T]: type = {
+    Some: T
+    None: {}
+}
+
+Result[T, E]: type = {
+    Ok: T
+    Err: E
+}
+
+maybe: Option[i32] = Option::Some(42)
+nothing: Option[i32] = Option::None
+
+// 9. Pattern matching with ? and |
+fn unwrap[T](opt: Option[T]): T =
+    opt ?
+        | Option::Some(x: T) => x
+        | Option::None => panic("unwrap on None")
+
+// 10. Generic functions
+fn identity[T](x: T): T = x
+id_int: i32 = identity(42)
+id_str: string = identity("hello")
+
+// 11. Intersection types
+Person: type = { name: string, age: i32 }
+Employee: type = { id: u32 }
+Manager: type = Person & Employee
+
+mgr: Manager = { name: "Alice", age: 30, id: 123 }
+
+// 12. Method calls
+fn Point::distance(self: Point, other: Point): i32 = {
+    dx: i32 = self.x - other.x
+    dy: i32 = self.y - other.y
+    dx * dx + dy * dy
+}
+
+p1: Point = { x: 0, y: 0 }
+p2: Point = { x: 3, y: 4 }
+dist: i32 = Point::distance(p1, p2)
+
+// 13. Type narrowing with pattern match
+fn process_result(res: Result[i32, string]): i32 =
+    res ?
+        | Result::Ok(value: i32) => value
+        | Result::Err(_: string) => 0
+
+// 14. Primitive constructors
+u8_val: u8 = u8(255)
+u16_val: u16 = u16(1000)
+i32_val: i32 = i32(-100)
+
+// 15. View and span operations (avoid shadowing builtins)
+arr2: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+v2: []u8 = view(&arr2)
+s2: [*]u8 = span(&arr2)
+
+// 16. Subslice operations
+v: []u8 = arr2[0:4]
+sub: []u8 = subslice(v, 1, 2)
+
+// 17. View_as and span_as
+v_reinterp: []u8 = view_as(v2)
+s_reinterp: [*]u8 = span_as(s2)
+
+// 18. While loops
+fn sum_array(arr: []u8): u8 = {
+    acc: u8 = 0
+    i: i32 = 0
+    while i < 4 {
+        acc = acc + arr[i]
+        i = i + 1
+    }
+    acc
+}
+
+// 19. Nested scopes
+fn nested(): i32 = {
+    outer: i32 = 10
+    {
+        inner: i32 = 20
+        outer + inner
+    }
+}
+
+// 20. Complex type inference
+fn complex(): Option[i32] = {
+    arr: [4]Option[i32] = [4]Option[i32]{
+        Option::Some(1),
+        Option::Some(2),
+        Option::None,
+        Option::Some(4)
+    }
+    arr[0]
+}

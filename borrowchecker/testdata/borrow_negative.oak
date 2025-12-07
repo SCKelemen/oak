@@ -1,0 +1,151 @@
+// =======================================
+// borrow_negative.oak
+// =======================================
+
+// 1. View then span of the same owner in the same scope
+arr_ns1: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+v_ns1: []u8 = view(&arr_ns1)
+s_ns1: [*]u8 = span(&arr_ns1)
+// EXPECT_BORROW_ERROR: cannot create span 's_ns1' from 'arr_ns1': owner has active read-only views
+
+// 2. Span then view of the same owner
+arr_ns2: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+s_ns2: [*]u8 = span(&arr_ns2)
+v_ns2: []u8 = view(&arr_ns2)
+// EXPECT_BORROW_ERROR: cannot create view 'v_ns2' from 'arr_ns2': owner has active writable borrow
+
+// 3. Using owner while it has an active writable span
+arr_ns3: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+s_ns3: [*]u8 = span(&arr_ns3)
+x_ns3: u8 = arr_ns3[0]
+// EXPECT_BORROW_ERROR: cannot use owner 'arr_ns3' while it has an active writable span
+
+// 4. Writing to owner while it has active read-only views
+arr_ns4: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+v_ns4: []u8 = view(&arr_ns4)
+arr_ns4 = [4]u8{ 0, 0, 0, 0 }
+// EXPECT_BORROW_ERROR: cannot write to owner 'arr_ns4' while it has active read-only views
+
+// 5. view(): wrong number of arguments
+arr_ns5: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+bad_v1: []u8 = view()
+// EXPECT_BORROW_ERROR: view() expects exactly one argument
+
+bad_v2: []u8 = view(&arr_ns5, &arr_ns5)
+// EXPECT_BORROW_ERROR: view() expects exactly one argument
+
+// 6. view(): argument not &owner
+arr_ns6: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+bad_v3: []u8 = view(arr_ns6)
+// EXPECT_BORROW_ERROR: view() argument must be &owner of an owned array
+
+// 7. span(): wrong number of arguments and bad argument
+arr_ns7: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+bad_s1: [*]u8 = span()
+// EXPECT_BORROW_ERROR: span() expects exactly one argument
+
+bad_s2: [*]u8 = span(&arr_ns7, &arr_ns7)
+// EXPECT_BORROW_ERROR: span() expects exactly one argument
+
+bad_s3: [*]u8 = span(arr_ns7)
+// EXPECT_BORROW_ERROR: span() argument must be &owner of an owned array
+
+// 8. subslice(): wrong number of arguments
+arr_ns8: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+v_ns8: []u8 = view(&arr_ns8)
+
+bad_sub1: []u8 = subslice(v_ns8, 0)
+// EXPECT_BORROW_ERROR: subslice() expects exactly three arguments
+
+bad_sub2: []u8 = subslice(v_ns8)
+// EXPECT_BORROW_ERROR: subslice() expects exactly three arguments
+
+// 9. subslice(): first argument not a variable identifier
+arr_ns9: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+bad_sub3: []u8 = subslice(view(&arr_ns9), 0, 2)
+// EXPECT_BORROW_ERROR: subslice() first argument must be a view or span variable
+
+// 10. subslice() from a non-borrow variable
+plain_slice: []u8 = view(&arr_ns8)   // This is tracked, but we'll test with a different case
+
+bad_sub4: []u8 = subslice(plain_slice, 0, 1)
+// EXPECT_BORROW_ERROR: source 'plain_slice' is not a borrow
+
+// 11. view_as(): argument is a span, not a view
+arr_ns10: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+sp_ns10: [*]u8 = span(&arr_ns10)
+bad_va1: []u8 = view_as(sp_ns10)
+// EXPECT_BORROW_ERROR: view_as() argument must be a view ([]T), got span ([*]T)
+
+// 12. span_as(): argument is a view, not a span
+arr_ns11: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+v_ns11: []u8 = view(&arr_ns11)
+bad_sa1: [*]u8 = span_as(v_ns11)
+// EXPECT_BORROW_ERROR: span_as() argument must be a span ([*]T), got view ([]T)
+
+// 13. view_as(): untracked view whose owner is unknown (e.g., function parameter)
+fn f_view_as_param(v: []u8): []u8 = {
+    v2: []u8 = view_as(v)
+    // EXPECT_BORROW_ERROR: view_as() argument 'v' is a view but owner is unknown
+    v2
+}
+
+// 14. span_as(): untracked span whose owner is unknown (e.g., function parameter)
+fn f_span_as_param(s: [*]u8): [*]u8 = {
+    s2: [*]u8 = span_as(s)
+    // EXPECT_BORROW_ERROR: span_as() argument 's' is a span but owner is unknown
+    s2
+}
+
+// 15. Slicing a param view (untracked) – owner unknown for subslice
+fn f_slice_param(v: []u8): []u8 = {
+    w: []u8 = v[0:2]
+    // EXPECT_BORROW_ERROR: cannot create subslice 'w': source 'v' is a view but owner is unknown
+    w
+}
+
+// 16. Slicing a param span (untracked) – owner unknown for subslice
+fn f_slice_param_span(s: [*]u8): [*]u8 = {
+    w: [*]u8 = s[0:2]
+    // EXPECT_BORROW_ERROR: cannot create subslice 'w': source 's' is a span but owner is unknown
+    w
+}
+
+// 17. Using owner after multiple spans without disjoint regions
+arr_ns12: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+s12a: [*]u8 = span(&arr_ns12)
+s12b: [*]u8 = span(&arr_ns12)
+// EXPECT_BORROW_ERROR: cannot create span 's12b' from 'arr_ns12': owner has active span borrows
+
+// 18. View + span + owner write all tangled together
+arr_ns13: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+v13: []u8 = view(&arr_ns13)
+s13: [*]u8 = span(&arr_ns13)
+// EXPECT_BORROW_ERROR (span creation as in case 1)
+// Even if span were allowed, the following would also be bad:
+arr_ns13 = [4]u8{ 0, 0, 0, 0 }
+// EXPECT_BORROW_ERROR: cannot write to owner 'arr_ns13' while it has active read-only views
+
+// 19. Owner use inside while loop with active span
+arr_ns14: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+s14: [*]u8 = span(&arr_ns14)
+
+i_ns14: i32 = 0
+while i_ns14 < 4 {
+    x_ns14: u8 = arr_ns14[i_ns14]
+    // EXPECT_BORROW_ERROR: cannot use owner 'arr_ns14' while it has an active writable span
+    i_ns14 = i_ns14 + 1
+}

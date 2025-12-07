@@ -1,0 +1,74 @@
+// =======================================
+// parse_negative.oak
+// =======================================
+
+// 1. Missing type annotation and initializer
+bad1: i32
+// EXPECT_PARSE_ERROR: variable declaration requires type or initializer
+
+// 2. Invalid array syntax
+bad2: [u8] = [4]u8{ 1, 2, 3 }
+// EXPECT_PARSE_ERROR: invalid array type syntax
+
+// 3. Mismatched brackets
+bad3: [4]u8 = [4]u8{ 1, 2, 3
+// EXPECT_PARSE_ERROR: missing closing bracket
+
+// 4. Invalid function syntax (missing colon)
+fn bad4(a: i32, b: i32) i32 = a + b
+// EXPECT_PARSE_ERROR: missing return type colon
+
+// 5. Invalid method syntax
+fn Point::bad5(self Point): i32 = self.x
+// EXPECT_PARSE_ERROR: missing colon in parameter type
+
+// 6. Unclosed block
+fn bad6(): i32 = {
+    x: i32 = 10
+// EXPECT_PARSE_ERROR: missing closing brace
+
+// 7. Invalid pattern match syntax (missing |)
+fn bad7(x: i32): string = {
+    x ?
+        0 => "zero"
+        1 => "one"
+}
+// EXPECT_PARSE_ERROR: pattern arm must start with |
+
+// 8. Invalid ADT syntax
+BadADT: type = {
+    Variant1: i32
+    Variant2
+}
+// EXPECT_PARSE_ERROR: variant without type or empty record
+
+// 9. Invalid record literal
+bad9: Point = { x: 10 }
+// EXPECT_PARSE_ERROR: missing required field y
+
+// 10. Invalid operator
+bad10: i32 = 5 ** 3
+// EXPECT_PARSE_ERROR: unknown operator
+
+// 11. Invalid type parameter syntax
+fn bad11[T, U](x: T): U = x
+// EXPECT_PARSE_ERROR: type parameters not properly formatted
+
+// 12. Invalid pattern match (missing =>)
+fn bad12(x: i32): string =
+    x ?
+        | 0 "zero"
+        | 1 "one"
+// EXPECT_PARSE_ERROR: pattern arm missing =>
+
+// 13. Invalid slice syntax
+bad13: []u8 = arr[0::4]
+// EXPECT_PARSE_ERROR: invalid slice syntax
+
+// 14. Unclosed string
+bad14: string = "hello
+// EXPECT_PARSE_ERROR: unclosed string literal
+
+// 15. Invalid number literal
+bad15: i32 = 0xGG
+// EXPECT_PARSE_ERROR: invalid number literal

@@ -1,0 +1,131 @@
+// =======================================
+// borrow_positive.oak
+// =======================================
+
+// 1. Multiple shared views of the same owner; only reads via owner
+arr1: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+v1: []u8 = view(&arr1)
+v2: []u8 = view(&arr1)
+
+x1: u8 = v1[0]
+x2: u8 = v2[1]
+x3: u8 = arr1[2]   // read from owner under SharedRead is allowed
+
+// 2. Single writable span on a separate owner; only use via span, not owner
+arr2: [4]u8 = [4]u8{ 10, 20, 30, 40 }
+
+s1: [*]u8 = span(&arr2)
+
+y1: u8 = s1[0]
+y2: u8 = s1[1]
+
+// 3. View in inner block, span after block (tests lexical drop + recompute)
+arr3: [4]u8 = [4]u8{ 5, 6, 7, 8 }
+
+{
+    v3: []u8 = view(&arr3)
+    tmp3: u8 = v3[0]
+} // v3 drops here; arr3 becomes Free again
+
+s3: [*]u8 = span(&arr3)
+z3: u8 = s3[1]
+
+// 4. Slicing an owned array creates views; subslicing creates derived views
+arr4: [6]u8 = [6]u8{ 0, 1, 2, 3, 4, 5 }
+
+// Constant-bound slices exercise region extraction
+sub1: []u8 = arr4[1:4]
+sub2: []u8 = arr4[2:]
+sub3: []u8 = arr4[:4]
+sub4: []u8 = arr4[:]
+
+// Subslice of an existing view (tracked borrow) via slicing
+sub1_inner: []u8 = sub1[0:2]
+
+u1: u8 = sub1[0]
+u2: u8 = sub1_inner[1]
+
+// 5. Derived borrows via subslice() builtin
+arr5: [4]u8 = [4]u8{ 100, 101, 102, 103 }
+
+v5: []u8 = view(&arr5)
+mid5: []u8 = subslice(v5, 1, 2)
+
+u5a: u8 = v5[0]
+u5b: u8 = mid5[1]
+
+// 6. view_as/span_as on existing tracked borrows
+arr6: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+v6: []u8 = view(&arr6)
+v6_reinterp: []u8 = view_as(v6)
+
+s6: [*]u8 = span(&arr6)
+s6_reinterp: [*]u8 = span_as(s6)
+
+// Use only via borrows; never use arr6 directly after span
+r6a: u8 = v6_reinterp[0]
+r6b: u8 = s6_reinterp[1]
+
+// 7. Function with owned receiver and parameter; borrows are local-only
+fn add_delta(self: [4]u8, delta: u8): [4]u8 = {
+    // self is treated as an owned array in this function scope
+    s: [*]u8 = span(&self)
+
+    i: i32 = 0
+    while i < 4 {
+        // Conceptually: self[i] = self[i] + delta
+        // (actual mutation details handled by the rest of the compiler)
+        i = i + 1
+    }
+
+    self
+}
+
+// 8. Function that takes and uses a view; does not create new borrows
+fn sum_view(v: []u8): u8 = {
+    acc: u8 = 0
+
+    i: i32 = 0
+    // Borrow checker just sees a while + index operations; no new borrows
+    while i < 4 {
+        acc = acc + v[i]
+        i = i + 1
+    }
+
+    acc
+}
+
+// 9. Using outer owner and inner block borrows inside a function
+arr7: [4]u8 = [4]u8{ 9, 8, 7, 6 }
+
+fn use_outer_borrows(): u8 = {
+    // view of top-level arr7
+    v7: []u8 = view(&arr7)
+
+    {
+        // subslice in inner block
+        inner7: []u8 = subslice(v7, 1, 2)
+        t: u8 = inner7[0]
+    }
+
+    // owner is still SharedRead here; read is allowed
+    result: u8 = arr7[0]
+    result
+}
+
+// 10. While loop with borrows just to hit WhileStatement paths
+arr8: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+
+v8: []u8 = view(&arr8)
+
+fn loop_over_view(): u8 = {
+    s: u8 = 0
+    i: i32 = 0
+    while i < 4 {
+        s = s + v8[i]
+        i = i + 1
+    }
+    s
+}
