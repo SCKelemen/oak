@@ -250,14 +250,14 @@ func (p *Parser) parseStatement() ast.Statement {
 					// Parse as ADT type definition
 					adt := &ast.ADTType{Token: name.Token, Name: name}
 					adt.Variants = []*ast.ADTVariant{}
-					
+
 					// Parse first variant (we're already on it)
 					variant := p.parseADTVariant()
 					if variant == nil {
 						return nil
 					}
 					adt.Variants = append(adt.Variants, variant)
-					
+
 					// Parse remaining variants
 					for p.currentTokenIs(token.PIPE) {
 						p.nextToken() // consume |
@@ -267,7 +267,7 @@ func (p *Parser) parseStatement() ast.Statement {
 						}
 						adt.Variants = append(adt.Variants, variant)
 					}
-					
+
 					return adt
 				}
 				// Not a type definition, parse as variable declaration from current position
@@ -1223,6 +1223,9 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 	}
 
 	variant.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	// Consume the IDENT token - we've read it into the variant name
+	// We need to consume it before processing payload/literal
+	p.nextToken() // consume the IDENT token
 
 	// Check for payload type or literal tag
 	// Cases:
@@ -1230,7 +1233,7 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 	// 2. Some: T = default - payload type with default
 	// 3. Ok: 200 - literal tag only (no payload type)
 	// 4. Less := -1 - inferred payload type from default
-	if p.peekTokenIs(token.COLON) {
+	if p.currentTokenIs(token.COLON) {
 		// Single colon - could be payload type or literal tag
 		p.nextToken() // consume :
 
@@ -1251,13 +1254,15 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 			p.nextToken() // consume literal
 			variant.Literal = p.parseLiteralExpression()
 		}
-	} else if p.peekTokenIs(token.COLON_ASSIGN) {
+	} else if p.currentTokenIs(token.COLON_ASSIGN) {
 		// Inferred payload type: Less := -1
 		p.nextToken() // consume :=
 		p.nextToken() // consume default value
 		variant.Literal = p.parseLiteralExpression()
 		// Payload type will be inferred from literal during type checking
 	}
+	// For simple variants (no payload, no literal), we've already consumed the IDENT above
+	// and currentToken is now on the next token (e.g., PIPE or EOF)
 
 	return variant
 }

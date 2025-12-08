@@ -101,6 +101,7 @@ Oak includes several primitive types:
 
 - **Signed integers**: `i8`, `i16`, `i32`, `i64`
 - **Unsigned integers**: `u8`, `u16`, `u32`, `u64`
+- **Platform types**: `int`, `uint`, `ptr`, `uptr`
 - **Floating point**: `f32`, `f64` (if supported)
 - **Boolean**: `Bool` (ADT, not primitive)
 - **String**: `string`
@@ -122,18 +123,22 @@ Functions in Oak can be written in several styles:
 
 ```oak
 // Single expression (no braces needed)
+// "ExpressionBodiedFunction"
 fn add(a: i32, b: i32): i32
   a + b
 
 // Single expression with equals
+// "inline ExpressionBodiedFunction"
 fn add(a: i32, b: i32): i32 = a + b
 
 // Block body
+// "BlockBodiedFunction"
 fn add(a: i32, b: i32): i32 {
   a + b
 }
 
 // Block body with equals
+// "inline BlockBodiedFunction"
 fn add(a: i32, b: i32): i32 = { a + b }
 ```
 
@@ -376,10 +381,10 @@ fn color_to_string(c: Color): string = c ? | Color.Red => "red" | Color.Green =>
 // full block
 fn color_to_string(c: Color): string {
   c ?
-    | .Red => "red"
+    | .Red   => "red"
     | .Green => "green"
-    | .Blue => "blue"
-    | _ => "unreachable"
+    | .Blue  => "blue"
+    | _      => "unreachable"
 }      
 // inline expression
 fn color_to_string(c: Color): string = c ? .Red => "red" | .Green => "green" | .Blue => "blue" | _ => "unreachable"
