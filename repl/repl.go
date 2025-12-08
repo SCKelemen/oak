@@ -53,11 +53,15 @@ func Start(in io.Reader, out io.Writer) {
 					return
 				case "help":
 					fmt.Fprintf(out, "Oak REPL Commands:\n")
-					fmt.Fprintf(out, "  :exit, :quit  - Exit the REPL\n")
-					fmt.Fprintf(out, "  :help         - Show this help message\n")
-					fmt.Fprintf(out, "  :clear         - Clear the screen\n")
-					fmt.Fprintf(out, "  :reset         - Reset the environment (clear all variables)\n")
-					fmt.Fprintf(out, "  :typeof(expr)  - Show the type of an expression\n")
+					fmt.Fprintf(out, "  :exit, :quit     - Exit the REPL\n")
+					fmt.Fprintf(out, "  :help            - Show this help message\n")
+					fmt.Fprintf(out, "  :clear           - Clear the screen\n")
+					fmt.Fprintf(out, "  :reset           - Reset the environment (clear all variables)\n")
+					fmt.Fprintf(out, "  :typeof(expr)    - Show the type of an expression\n")
+					fmt.Fprintf(out, "  :ptrsize(size)   - Set size of ptr/uptr (32 or 64)\n")
+					fmt.Fprintf(out, "  :ptrsize()       - Print current ptr/uptr size\n")
+					fmt.Fprintf(out, "  :intsize(size)   - Set size of int/uint (32 or 64)\n")
+					fmt.Fprintf(out, "  :intsize()       - Print current int/uint size\n")
 					continue
 				case "clear":
 					// ANSI escape code to clear screen and move cursor to top-left
@@ -98,6 +102,48 @@ func Start(in io.Reader, out io.Writer) {
 						fmt.Fprintf(out, "%s\n", exprType.String())
 					} else {
 						fmt.Fprintf(out, "unknown type\n")
+					}
+					continue
+				case "ptrsize":
+					if len(replCmd.Args) == 0 {
+						// Print current size
+						fmt.Fprintf(out, "ptr/uptr size: %d bits\n", typeChecker.GetPtrSize())
+					} else if len(replCmd.Args) == 1 {
+						// Set size
+						if intLit, ok := replCmd.Args[0].(*ast.IntegerLiteral); ok {
+							size := int(intLit.Value)
+							if size == 32 || size == 64 {
+								typeChecker.SetPtrSize(size)
+								fmt.Fprintf(out, "ptr/uptr size set to %d bits\n", size)
+							} else {
+								fmt.Fprintf(out, "Error: ptrsize must be 32 or 64, got %d\n", size)
+							}
+						} else {
+							fmt.Fprintf(out, "Error: ptrsize argument must be an integer literal\n")
+						}
+					} else {
+						fmt.Fprintf(out, "Usage: :ptrsize() or :ptrsize(32) or :ptrsize(64)\n")
+					}
+					continue
+				case "intsize":
+					if len(replCmd.Args) == 0 {
+						// Print current size
+						fmt.Fprintf(out, "int/uint size: %d bits\n", typeChecker.GetIntSize())
+					} else if len(replCmd.Args) == 1 {
+						// Set size
+						if intLit, ok := replCmd.Args[0].(*ast.IntegerLiteral); ok {
+							size := int(intLit.Value)
+							if size == 32 || size == 64 {
+								typeChecker.SetIntSize(size)
+								fmt.Fprintf(out, "int/uint size set to %d bits\n", size)
+							} else {
+								fmt.Fprintf(out, "Error: intsize must be 32 or 64, got %d\n", size)
+							}
+						} else {
+							fmt.Fprintf(out, "Error: intsize argument must be an integer literal\n")
+						}
+					} else {
+						fmt.Fprintf(out, "Usage: :intsize() or :intsize(32) or :intsize(64)\n")
 					}
 					continue
 				}

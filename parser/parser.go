@@ -2322,22 +2322,53 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 	commandName := p.currentToken.Literal
 	// Validate command name
 	validCommands := map[string]bool{
-		"exit":   true,
-		"quit":   true,
-		"help":   true,
-		"clear":  true,
-		"reset":  true,
-		"typeof": true,
+		"exit":    true,
+		"quit":    true,
+		"help":    true,
+		"clear":   true,
+		"reset":   true,
+		"typeof":  true,
+		"ptrsize": true,
+		"intsize": true,
 	}
 	if !validCommands[commandName] {
-		p.addErrorAtCurrentToken(fmt.Sprintf("unknown REPL command: %s (valid: exit, quit, help, clear, reset, typeof)", commandName))
+		p.addErrorAtCurrentToken(fmt.Sprintf("unknown REPL command: %s (valid: exit, quit, help, clear, reset, typeof, ptrsize, intsize)", commandName))
 		return nil
 	}
 
 	stmt.Name = commandName
 
-	// Parse arguments for commands that take them (e.g., typeof(expr))
-	if commandName == "typeof" {
+	// Parse arguments for commands that take them
+	if commandName == "ptrsize" || commandName == "intsize" {
+		// These commands take an optional integer argument: :ptrsize(32) or :ptrsize()
+		if p.peekTokenIs(token.LPAREN) {
+			p.nextToken() // consume (
+			if p.peekTokenIs(token.RPAREN) {
+				// No argument: :ptrsize()
+				p.nextToken()                  // consume )
+				stmt.Args = []ast.Expression{} // empty args
+			} else {
+				// Parse integer argument
+				p.nextToken() // advance to the integer
+				if !p.currentTokenIs(token.INT) {
+					p.addErrorAtCurrentToken(fmt.Sprintf("expected integer argument for :%s (e.g., :%s(32) or :%s(64))", commandName, commandName, commandName))
+					return nil
+				}
+				intLit := p.parseIntegerLiteral()
+				if intLit == nil {
+					return nil
+				}
+				// Consume closing paren
+				if !p.peekTokenIs(token.RPAREN) {
+					p.addErrorAtPeekToken("expected ')' after integer argument")
+					return nil
+				}
+				p.nextToken() // consume )
+				stmt.Args = []ast.Expression{intLit}
+			}
+		}
+		// If no parens, treat as no-arg version (just print current size)
+	} else if commandName == "typeof" {
 		if p.peekTokenIs(token.LPAREN) {
 			p.nextToken() // consume (
 			// typeof() can accept both value expressions and type expressions

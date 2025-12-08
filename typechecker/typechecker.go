@@ -348,6 +348,8 @@ type TypeChecker struct {
 	diagnostics *diagnostic.DiagnosticCollector
 	env         *TypeEnvironment
 	adtTypes    map[string]*object.ADTType // ADT type definitions
+	intSize     int                        // Platform size for int/uint (default: 64)
+	ptrSize     int                        // Platform size for ptr/uptr (default: 64)
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -414,14 +416,44 @@ func (e *TypeEnvironment) SetType(name string, typ Type) {
 }
 
 func New(env *object.Environment) *TypeChecker {
+	return NewWithPlatformSizes(env, 64, 64) // Default to 64-bit
+}
+
+func NewWithPlatformSizes(env *object.Environment, intSize, ptrSize int) *TypeChecker {
 	tc := &TypeChecker{
 		diagnostics: diagnostic.NewDiagnosticCollector(),
 		env:         NewTypeEnvironment(),
 		adtTypes:    env.GetAllADTTypes(),
+		intSize:     intSize,
+		ptrSize:     ptrSize,
 	}
 	// Add builtin type aliases
 	tc.addBuiltinTypeAliases()
 	return tc
+}
+
+// SetIntSize sets the platform size for int/uint types
+func (tc *TypeChecker) SetIntSize(size int) {
+	if size == 32 || size == 64 {
+		tc.intSize = size
+	}
+}
+
+// GetIntSize returns the platform size for int/uint types
+func (tc *TypeChecker) GetIntSize() int {
+	return tc.intSize
+}
+
+// SetPtrSize sets the platform size for ptr/uptr types
+func (tc *TypeChecker) SetPtrSize(size int) {
+	if size == 32 || size == 64 {
+		tc.ptrSize = size
+	}
+}
+
+// GetPtrSize returns the platform size for ptr/uptr types
+func (tc *TypeChecker) GetPtrSize() int {
+	return tc.ptrSize
 }
 
 // addBuiltinTypeAliases adds builtin type aliases to the type environment
@@ -1123,10 +1155,12 @@ func (tc *TypeChecker) getTypeWidth(typeName string) int {
 		return 32
 	case "u64", "i64":
 		return 64
-	case "int", "uint", "ptr", "uptr":
-		// Platform types: assume 64-bit platform
-		// TODO: Make this configurable based on target platform
-		return 64
+	case "int", "uint":
+		// Platform types: use configured int size
+		return tc.intSize
+	case "ptr", "uptr":
+		// Platform types: use configured ptr size
+		return tc.ptrSize
 	default:
 		return 0
 	}
