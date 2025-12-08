@@ -1680,7 +1680,8 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 			}
 
 			// Use nil size to indicate slice (not fixed array)
-			return p.parseTypedArrayLiteral(nil, elementType)
+			// Pass the opening bracket token so we can use it in parseTypedArrayLiteral
+			return p.parseTypedArrayLiteralWithToken(openBracketToken, nil, elementType)
 		}
 
 		// Not a slice literal - reset and parse as short array literal
@@ -1722,7 +1723,7 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 					Value: p.currentToken.Literal,
 				}
 
-				return p.parseTypedArrayLiteral(sizeLit, elementType)
+				return p.parseTypedArrayLiteralWithToken(openBracketToken, sizeLit, elementType)
 			}
 
 			// Not a typed array literal - reset and parse as short array literal
@@ -1803,20 +1804,30 @@ func (p *Parser) parseTypeQualifiedLiteral(typeName ast.Expression) ast.Expressi
 
 // Parse typed array literal: [N]Type{ expr1, expr2, ... } or []Type{ expr1, expr2, ... }
 // size can be nil for slice literals ([]Type{ ... })
+// This is a wrapper that should not be called directly - use parseTypedArrayLiteralWithToken instead
+// Kept for backward compatibility but will use a fallback token
 func (p *Parser) parseTypedArrayLiteral(size *ast.IntegerLiteral, elementType ast.Expression) ast.Expression {
+	// Fallback: try to use the element type's token as a reference
+	// This is not ideal but maintains backward compatibility
+	bracketToken := elementType.(*ast.Identifier).Token
+	return p.parseTypedArrayLiteralWithToken(bracketToken, size, elementType)
+}
+
+// parseTypedArrayLiteralWithToken is the internal implementation that takes the bracket token
+func (p *Parser) parseTypedArrayLiteralWithToken(bracketToken token.Token, size *ast.IntegerLiteral, elementType ast.Expression) ast.Expression {
 	// Create array type expression
 	// For slices (size == nil), use empty string identifier as index
 	var index ast.Expression
 	if size == nil {
 		// Slice type: []Type
-		index = &ast.Identifier{Token: p.currentToken, Value: ""}
+		index = &ast.Identifier{Token: bracketToken, Value: ""}
 	} else {
 		// Fixed array type: [N]Type
 		index = size
 	}
 	
 	arrayType := &ast.IndexExpression{
-		Token: p.currentToken, // The [ token
+		Token: bracketToken, // The [ token
 		Left:  elementType,
 		Index: index,
 	}
