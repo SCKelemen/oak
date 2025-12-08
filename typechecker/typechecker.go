@@ -2221,8 +2221,37 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 		}
 	}
 
-	// ADT types are already registered in the environment
-	// Verify they're well-formed
+	// Register the ADT type in the typechecker's adtTypes map FIRST
+	// This allows variant checking to reference the ADT type
+	adtType := &object.ADTType{
+		Name:     stmt.Name.Value,
+		Variants: []*object.ADTVariantDef{},
+	}
+
+	for _, variant := range stmt.Variants {
+		variantDef := &object.ADTVariantDef{
+			Name: variant.Name.Value,
+		}
+
+		if variant.Payload != nil {
+			// Extract payload type name
+			if ident, ok := variant.Payload.(*ast.Identifier); ok {
+				variantDef.Payload = ident.Value
+			} else {
+				// For complex types, just store a placeholder
+				variantDef.Payload = "T" // Generic placeholder
+			}
+		}
+
+		// Note: Literal tags are not stored in object.ADTVariantDef during type checking
+		// They're only used for type checking validation
+
+		adtType.Variants = append(adtType.Variants, variantDef)
+	}
+
+	tc.adtTypes[stmt.Name.Value] = adtType
+
+	// Now verify the ADT is well-formed (after registration)
 	variantNames := make(map[string]bool)
 
 	for _, variant := range stmt.Variants {
@@ -2272,35 +2301,6 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 		tc.addError(stmt, "ADT %s: must have at least one variant", stmt.Name.Value)
 		return
 	}
-
-	// Register the ADT type in the typechecker's adtTypes map
-	adtType := &object.ADTType{
-		Name:     stmt.Name.Value,
-		Variants: []*object.ADTVariantDef{},
-	}
-
-	for _, variant := range stmt.Variants {
-		variantDef := &object.ADTVariantDef{
-			Name: variant.Name.Value,
-		}
-
-		if variant.Payload != nil {
-			// Extract payload type name
-			if ident, ok := variant.Payload.(*ast.Identifier); ok {
-				variantDef.Payload = ident.Value
-			} else {
-				// For complex types, just store a placeholder
-				variantDef.Payload = "T" // Generic placeholder
-			}
-		}
-
-		// Note: Literal tags are not stored in object.ADTVariantDef during type checking
-		// They're only used for type checking validation
-
-		adtType.Variants = append(adtType.Variants, variantDef)
-	}
-
-	tc.adtTypes[stmt.Name.Value] = adtType
 }
 
 // checkRecordTypeDefinition type checks a record type definition
