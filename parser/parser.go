@@ -1664,6 +1664,31 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 	// Skip opening bracket (currentToken is [)
 	p.nextToken()
 
+	// Check if this is a slice literal: []Type{ ... }
+	if p.currentTokenIs(token.RBRACK) {
+		// We have [] - check if after ] we have a type identifier and then {
+		// Temporarily advance to see what's after ]
+		p.nextToken() // move past ] to next token
+
+		// Check if we have an identifier (type name) followed by {
+		if p.currentTokenIs(token.IDENT) && p.peekTokenIs(token.LBRACE) {
+			// This is []Type{ ... } - parse as slice literal
+			// Parse element type
+			elementType := &ast.Identifier{
+				Token: p.currentToken,
+				Value: p.currentToken.Literal,
+			}
+
+			// Use nil size to indicate slice (not fixed array)
+			return p.parseTypedArrayLiteral(nil, elementType)
+		}
+
+		// Not a slice literal - reset and parse as short array literal
+		// Reset to the opening bracket
+		p.currentToken = openBracketToken
+		p.nextToken() // move past [
+	}
+
 	// Check if next token is an integer (array size)
 	if p.currentTokenIs(token.INT) {
 		// This might be [N]Type{ ... } - check ahead
@@ -1776,13 +1801,24 @@ func (p *Parser) parseTypeQualifiedLiteral(typeName ast.Expression) ast.Expressi
 	return record
 }
 
-// Parse typed array literal: [N]Type{ expr1, expr2, ... }
+// Parse typed array literal: [N]Type{ expr1, expr2, ... } or []Type{ expr1, expr2, ... }
+// size can be nil for slice literals ([]Type{ ... })
 func (p *Parser) parseTypedArrayLiteral(size *ast.IntegerLiteral, elementType ast.Expression) ast.Expression {
 	// Create array type expression
+	// For slices (size == nil), use empty string identifier as index
+	var index ast.Expression
+	if size == nil {
+		// Slice type: []Type
+		index = &ast.Identifier{Token: p.currentToken, Value: ""}
+	} else {
+		// Fixed array type: [N]Type
+		index = size
+	}
+	
 	arrayType := &ast.IndexExpression{
 		Token: p.currentToken, // The [ token
 		Left:  elementType,
-		Index: size,
+		Index: index,
 	}
 
 	// Now parse the { ... } part
