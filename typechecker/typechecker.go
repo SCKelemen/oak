@@ -17,7 +17,7 @@ type Type interface {
 
 // PrimitiveType represents primitive integer types
 type PrimitiveType struct {
-	Name string // "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"
+	Name string // "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "ptr", "uptr"
 }
 
 func (t *PrimitiveType) String() string {
@@ -554,30 +554,9 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 				// Literal doesn't fit - fall through to default inference
 			}
 		}
-		// No context: infer the smallest type that fits the literal
-		// Prefer unsigned types for non-negative values
-		if e.Value >= 0 {
-			if e.Value <= 255 {
-				return &PrimitiveType{Name: "u8"}
-			} else if e.Value <= 65535 {
-				return &PrimitiveType{Name: "u16"}
-			} else if e.Value <= 4294967295 {
-				return &PrimitiveType{Name: "u32"}
-			} else {
-				return &PrimitiveType{Name: "u64"}
-			}
-		} else {
-			// Negative values: use signed types
-			if e.Value >= -128 && e.Value <= 127 {
-				return &PrimitiveType{Name: "i8"}
-			} else if e.Value >= -32768 && e.Value <= 32767 {
-				return &PrimitiveType{Name: "i16"}
-			} else if e.Value >= -2147483648 && e.Value <= 2147483647 {
-				return &PrimitiveType{Name: "i32"}
-			} else {
-				return &PrimitiveType{Name: "i64"}
-			}
-		}
+		// No context: default to int (signed native word integer)
+		// This matches the platform-dependent default integer type
+		return &PrimitiveType{Name: "int"}
 	case *ast.StringLiteral:
 		return &StringType{}
 	case *ast.Boolean:
@@ -990,10 +969,11 @@ func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expressi
 // checkPrimitiveConstructor checks if an invocation is a primitive type constructor
 // (e.g., u32(x), u64(y)) and returns the target type if valid
 func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Expression) Type {
-	// Check if it's a primitive type name (including aliases)
+	// Check if it's a primitive type name (including aliases and platform types)
 	primitiveTypes := map[string]bool{
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
+		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
 		"byte": true, // alias of u8
 		"rune": true, // alias of i32
 	}
@@ -1078,6 +1058,16 @@ func (tc *TypeChecker) literalFitsInType(value int64, typeName string) bool {
 		return value >= -2147483648 && value <= 2147483647
 	case "i64":
 		return true // i64 can hold any int64
+	case "int", "ptr":
+		// Platform-dependent signed types: can hold any int64
+		// On 32-bit: int == i32, ptr == i32
+		// On 64-bit: int == i64, ptr == i64
+		return true
+	case "uint", "uptr":
+		// Platform-dependent unsigned types: can hold any non-negative int64
+		// On 32-bit: uint == u32, uptr == u32
+		// On 64-bit: uint == u64, uptr == u64
+		return value >= 0
 	default:
 		return false
 	}
@@ -1100,9 +1090,9 @@ func (tc *TypeChecker) isValidWidening(sourceType, targetType string) bool {
 		targetType = "i32"
 	}
 
-	// Check signedness
-	sourceSigned := sourceType[0] == 'i'
-	targetSigned := targetType[0] == 'i'
+	// Check signedness using helper function
+	sourceSigned := tc.isSignedType(sourceType)
+	targetSigned := tc.isSignedType(targetType)
 	if sourceSigned != targetSigned {
 		return false
 	}
@@ -1116,6 +1106,7 @@ func (tc *TypeChecker) isValidWidening(sourceType, targetType string) bool {
 }
 
 // getTypeWidth returns the bit width of a primitive type
+// For platform types, assumes 64-bit platform (can be made configurable later)
 func (tc *TypeChecker) getTypeWidth(typeName string) int {
 	// Normalize aliases
 	if typeName == "byte" {
@@ -1132,9 +1123,38 @@ func (tc *TypeChecker) getTypeWidth(typeName string) int {
 		return 32
 	case "u64", "i64":
 		return 64
+	case "int", "uint", "ptr", "uptr":
+		// Platform types: assume 64-bit platform
+		// TODO: Make this configurable based on target platform
+		return 64
 	default:
 		return 0
 	}
+}
+
+// isSignedType checks if a type is signed
+func (tc *TypeChecker) isSignedType(typeName string) bool {
+	// Normalize aliases
+	if typeName == "byte" {
+		typeName = "u8"
+	} else if typeName == "rune" {
+		typeName = "i32"
+	}
+	// Fixed-width types
+	if len(typeName) >= 2 && typeName[0] == 'i' {
+		return true
+	}
+	if len(typeName) >= 2 && typeName[0] == 'u' {
+		return false
+	}
+	// Platform types
+	switch typeName {
+	case "int", "ptr":
+		return true
+	case "uint", "uptr":
+		return false
+	}
+	return false
 }
 
 // checkNarrowingFunction checks if an invocation is a narrowing function
@@ -2625,6 +2645,9 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		switch ident.Value {
 		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
 			return &PrimitiveType{Name: ident.Value}
+		case "int", "uint", "ptr", "uptr":
+			// Platform-dependent types
+			return &PrimitiveType{Name: ident.Value}
 		case "byte":
 			// byte is an alias for u8
 			return &PrimitiveType{Name: "u8"}
@@ -2752,6 +2775,9 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 		// Check if it's a primitive type
 		switch ident.Value {
 		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+			return &PrimitiveType{Name: ident.Value}
+		case "int", "uint", "ptr", "uptr":
+			// Platform-dependent types
 			return &PrimitiveType{Name: ident.Value}
 		case "byte":
 			return &PrimitiveType{Name: "u8"}

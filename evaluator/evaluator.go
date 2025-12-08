@@ -302,10 +302,11 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 // evalPrimitiveConstructor evaluates primitive type constructors like u32(x), u64(y)
 // These are widening conversions that are total and non-failing
 func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *object.Environment) object.Object {
-	// Check if it's a primitive type name (including aliases)
+	// Check if it's a primitive type name (including aliases and platform types)
 	primitiveTypes := map[string]bool{
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
+		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
 		"byte": true, // alias of u8
 		"rune": true, // alias of i32
 	}

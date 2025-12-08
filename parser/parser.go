@@ -452,15 +452,65 @@ func (p *Parser) parseVariantExpression() ast.Expression {
 func (p *Parser) parseIntegerLiteral() ast.Expression {
 	lit := &ast.IntegerLiteral{Token: p.currentToken}
 
-	value, err := strconv.ParseInt(p.currentToken.Literal, 0, 64)
+	// Check if this is a radix literal (e.g., "16r1000", "2r1010")
+	literal := p.currentToken.Literal
+	value, err := p.parseRadixLiteral(literal)
 	if err != nil {
-		msg := fmt.Sprintf("could not parse %q as integer", p.currentToken.Literal)
-		p.addErrorAtCurrentToken(msg)
-		return nil
+		// Not a radix literal or error parsing, try normal decimal
+		value, err = strconv.ParseInt(literal, 10, 64)
+		if err != nil {
+			msg := fmt.Sprintf("could not parse %q as integer", literal)
+			p.addErrorAtCurrentToken(msg)
+			return nil
+		}
 	}
 	lit.Value = value
 
 	return lit
+}
+
+// parseRadixLiteral parses a radix literal like "16r1000" or "2r1010"
+// Returns the integer value and nil error if successful, or 0 and error if not a radix literal or invalid
+func (p *Parser) parseRadixLiteral(literal string) (int64, error) {
+	// Find the 'r' or 'R' separator
+	rIndex := -1
+	for i, ch := range literal {
+		if ch == 'r' || ch == 'R' {
+			rIndex = i
+			break
+		}
+	}
+	if rIndex == -1 {
+		return 0, fmt.Errorf("not a radix literal")
+	}
+
+	// Parse the radix (base)
+	radixStr := literal[:rIndex]
+	radix, err := strconv.Atoi(radixStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid radix: %s", radixStr)
+	}
+	if radix < 2 || radix > 16 {
+		return 0, fmt.Errorf("radix must be between 2 and 16, got %d", radix)
+	}
+
+	// Parse the digits after 'r' (skip the 'r' itself)
+	digitsStr := literal[rIndex+1:]
+	// Remove underscores from digits
+	digitsStrClean := ""
+	for _, ch := range digitsStr {
+		if ch != '_' {
+			digitsStrClean += string(ch)
+		}
+	}
+
+	// Convert from the given radix to int64
+	value, err := strconv.ParseInt(digitsStrClean, radix, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid digits for radix %d: %s", radix, digitsStrClean)
+	}
+
+	return value, nil
 }
 
 func (p *Parser) parseStringLiteral() ast.Expression {

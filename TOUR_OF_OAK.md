@@ -113,6 +113,79 @@ small: i8 = -128
 large: i64 = 9223372036854775807
 unsigned: u32 = 4294967295
 text: string = "Hello, Oak!"
+
+// Underscores in numeric literals for readability
+large: i64 = 922_337_203_685_477_5807
+count: u32 = 2_000_000
+```
+
+### Platform-Sized Integer Types
+
+Oak has four platform-dependent sized types that adapt to the target architecture:
+
+- `int` - signed, "native word" integer (for general arithmetic)
+- `uint` - unsigned, "native word" integer (for general arithmetic)
+- `ptr` - signed integer large enough to hold a pointer (for pointer math)
+- `uptr` - unsigned integer large enough to hold a pointer (for pointer math)
+
+**Width on different targets:**
+
+- **32-bit systems** (STM32, etc.):
+  - `int == i32`
+  - `uint == u32`
+  - `ptr == i32`
+  - `uptr == u32`
+
+- **64-bit systems**:
+  - `int == i64`
+  - `uint == u64`
+  - `ptr == i64`
+  - `uptr == u64`
+
+**Usage guidelines:**
+
+- **For struct fields, message formats, FFI boundaries** → use fixed-width types (`u16`, `i32`, etc.)
+- **For locals, temporaries, loop indices, counters** → `int` / `uint` / `ptr` / `uptr` are fine
+
+```oak
+// Untyped integer literals default to int
+a := 5        // a: int = 5 (on 64-bit: i64, on 32-bit: i32)
+b: uint = 6   // b: uint = 6
+
+// Type constructors support all types
+x: int = int(42)
+y: uint = uint(100)
+addr: uptr = uptr(16r1000)  // hex: 4096 in decimal
+offset: ptr = ptr(-4)
+```
+
+### Radix-Based Numeric Literals
+
+Oak supports radix-based numeric literals for bases 2-16 using the format `BASErDIGITS`:
+
+```oak
+// Binary (base 2)
+bin: int = 2r1010        // 10 in decimal
+
+// Octal (base 8)
+oct: int = 8r777         // 511 in decimal
+
+// Decimal (base 10) - explicit
+dec: int = 10r9999       // 9999 in decimal
+
+// Hexadecimal (base 16)
+hex: int = 16rFFFF       // 65535 in decimal
+addr: uptr = uptr(16r1000)  // 4096 in decimal
+
+// Other bases (11-16 use A-F for digits 10-15)
+base11: int = 11rAAAA    // 14640 in decimal
+base12: int = 12rBBBB    // 20735 in decimal
+base13: int = 13rCCCC
+base14: int = 14rDDDD
+base15: int = 15rEEEE
+
+// Underscores are supported in radix literals too
+large_hex: int = 16rFF_FF_FF_FF  // 4294967295
 ```
 
 ---

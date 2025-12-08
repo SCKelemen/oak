@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"bytes"
+	"strconv"
 
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/util"
@@ -296,14 +297,89 @@ func (s *Scanner) readWord() string {
 
 func (s *Scanner) readNumber() string {
 	position := s.head
+
+	// Check if this is a radix literal: BASE r DIGITS
+	// Pattern: one or more digits, followed by 'r', followed by digits/letters
+	radixStart := position
+	radixEnd := position
+
+	// Read the radix (base) number
 	for util.IsDigit(s.current) {
+		radixEnd = s.head
 		s.readChar()
 	}
-	// After the loop, s.current is the first non-digit character
+
+	// Check if we have 'r' followed by valid radix digits
+	if s.current == 'r' || s.current == 'R' {
+		// We have a radix literal
+		radixStr := s.input[radixStart : radixEnd+1] // includes the last digit before 'r'
+		radix, err := strconv.Atoi(radixStr)
+		if err == nil && radix >= 2 && radix <= 16 {
+			// Valid radix, consume 'r'
+			s.readChar()
+
+			// Read the digits after 'r' (can include A-F for hex)
+			for s.isRadixDigit(s.current, radix) {
+				s.readChar()
+			}
+			digitsEnd := s.head
+
+			// Return the full radix literal: "BASErDIGITS"
+			// We'll parse this in the parser
+			return s.input[position:digitsEnd]
+		}
+		// Invalid radix or not a radix literal, fall through to normal number parsing
+		// Reset to start position
+		s.head = position
+		s.read = position + 1
+		if s.read <= len(s.input) {
+			s.current = rune(s.input[position])
+		} else {
+			s.current = 0
+		}
+	}
+
+	// Normal decimal number (possibly with underscores)
+	for util.IsNumericChar(s.current) {
+		s.readChar()
+	}
+	// After the loop, s.current is the first non-numeric character
 	// s.read points to the character after that
 	// We DON'T back up s.read - we leave s.current pointing to the next character to process
 	// This allows NextToken() to process that character in the next call
-	return s.input[position:s.head]
+	// Strip underscores from the number literal
+	numberStr := s.input[position:s.head]
+	// Remove all underscores for parsing
+	result := make([]rune, 0, len(numberStr))
+	for _, ch := range numberStr {
+		if ch != '_' {
+			result = append(result, ch)
+		}
+	}
+	return string(result)
+}
+
+// isRadixDigit checks if a character is a valid digit for the given radix
+func (s *Scanner) isRadixDigit(ch rune, radix int) bool {
+	if ch == '_' {
+		return true // Allow underscores in radix literals too
+	}
+	if util.IsDigit(ch) {
+		digit := int(ch - '0')
+		return digit < radix
+	}
+	if radix > 10 {
+		// For bases > 10, allow A-F (case insensitive)
+		if ch >= 'A' && ch <= 'F' {
+			digit := int(ch-'A') + 10
+			return digit < radix
+		}
+		if ch >= 'a' && ch <= 'f' {
+			digit := int(ch-'a') + 10
+			return digit < radix
+		}
+	}
+	return false
 }
 
 func (s *Scanner) readString() string {
