@@ -233,8 +233,56 @@ func (p *Parser) parseStatement() ast.Statement {
 		// - Name: type = ... -> type definition (ADT type)
 		// - Name[E, Unit]: type = ... -> generic type definition
 		if p.peekTokenIs(token.COLON_ASSIGN) {
-			// Short declaration: x := expr
-			return p.parseShortVariableDeclaration()
+			// Check if this is a type definition shorthand: Color := Red | Blue | Green
+			// We need to peek ahead to see if it's followed by IDENT | IDENT pattern
+			// Save the name for potential type definition
+			name := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			// Consume := to check what follows
+			p.nextToken() // consume :=
+			// Check if next token is IDENT followed by PIPE (variant list pattern)
+			if p.peekTokenIs(token.IDENT) {
+				// We need to check if the token after the IDENT is PIPE
+				// We can't peek two ahead, so we'll advance and check
+				p.nextToken() // advance to IDENT
+				if p.peekTokenIs(token.PIPE) {
+					// This is a type definition shorthand: Color := Red | Blue | Green
+					// Convert to: Color: type = Red | Blue | Green
+					// Parse as ADT type definition
+					adt := &ast.ADTType{Token: name.Token, Name: name}
+					adt.Variants = []*ast.ADTVariant{}
+					
+					// Parse first variant (we're already on it)
+					variant := p.parseADTVariant()
+					if variant == nil {
+						return nil
+					}
+					adt.Variants = append(adt.Variants, variant)
+					
+					// Parse remaining variants
+					for p.currentTokenIs(token.PIPE) {
+						p.nextToken() // consume |
+						variant := p.parseADTVariant()
+						if variant == nil {
+							return nil
+						}
+						adt.Variants = append(adt.Variants, variant)
+					}
+					
+					return adt
+				}
+				// Not a type definition, parse as variable declaration from current position
+				stmt := &ast.VariableDeclaration{Token: name.Token}
+				stmt.Name = name
+				stmt.Value = p.parseExpression(LOWEST)
+				stmt.Type = nil
+				return stmt
+			}
+			// Not starting with IDENT, parse as normal variable declaration
+			stmt := &ast.VariableDeclaration{Token: name.Token}
+			stmt.Name = name
+			stmt.Value = p.parseExpression(LOWEST)
+			stmt.Type = nil
+			return stmt
 		} else if p.peekTokenIs(token.COLON) || p.peekTokenIs(token.LBRACK) {
 			// Centralize IDENT ":" ... or IDENT "[" ... handling
 			// LBRACK handles generic type definitions: Name[E, Unit]: type = ...
