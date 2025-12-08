@@ -182,12 +182,17 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	bc.currentBlockDepth = 0
 
 	// Check function parameters - they might be owners
+	// Check for nil function statement or name
+	if stmt == nil || stmt.Name == nil {
+		return
+	}
+
 	// The typechecker should have registered them in the function's environment
 	// We need to get that environment - for now, we'll check types from the AST
 	funcEnv := typechecker.NewEnclosedTypeEnvironment(env)
 
 	// Register receiver if present
-	if stmt.Receiver != nil {
+	if stmt.Receiver != nil && stmt.Receiver.Name != nil {
 		receiverType := bc.parseTypeFromAST(stmt.Receiver.Type, funcEnv)
 		if receiverType != nil {
 			if arrType, ok := receiverType.(*typechecker.ArrayType); ok {
