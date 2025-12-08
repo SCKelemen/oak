@@ -57,6 +57,7 @@ func New(lxr *scanner.Scanner) *Parser {
 	p.registerInfix(token.NEQL, p.parseInfixExpression)
 	p.registerInfix(token.LCHEV, p.parseInfixExpression)
 	p.registerInfix(token.RCHEV, p.parseInfixExpression)
+	p.registerInfix(token.QMARK, p.parseMatchExpression)
 	p.registerInfix(token.LPAREN, p.parseInvocationExpression)
 	p.registerInfix(token.DOT, p.parseFieldAccess)
 	p.registerInfix(token.LBRACK, p.parseIndexOrSliceExpression)
@@ -271,6 +272,9 @@ func (p *Parser) parseStatement() ast.Statement {
 					return adt
 				}
 				// Not a type definition, parse as variable declaration from current position
+				// At this point, currentToken is the first token of the value expression (e.g., IDENT for ABCD)
+				// We've already consumed := at line 242, and advanced to the value at line 246
+				// So currentToken is already positioned correctly for parsing the value
 				stmt := &ast.VariableDeclaration{Token: name.Token}
 				stmt.Name = name
 				stmt.Value = p.parseExpression(LOWEST)
@@ -1488,9 +1492,21 @@ func (p *Parser) parseRecordType() ast.Expression {
 	}
 
 	// Move to first field name
-	p.nextToken() // currentToken should be IDENT or RBRACE
+	p.nextToken() // currentToken should be IDENT, RBRACE, or COMMA (leading comma)
 
 	for {
+		// Skip leading comma if present (allows: { , A: u32, B: u32 })
+		if p.currentTokenIs(token.COMMA) {
+			p.nextToken() // consume leading comma
+		}
+
+		// Check for closing brace (allows trailing comma: { A: u32, B: u32, })
+		if p.currentTokenIs(token.RBRACE) {
+			record.EndToken = p.currentToken
+			p.nextToken() // consume }
+			break
+		}
+
 		if !p.currentTokenIs(token.IDENT) {
 			p.peekError(token.IDENT)
 			return nil
@@ -1509,18 +1525,26 @@ func (p *Parser) parseRecordType() ast.Expression {
 		record.Fields[fieldName] = fieldType
 
 		// At this point, currentToken is the **last token of the field type**.
-		// Next token should be ',' or '}'.
-		if p.peekTokenIs(token.COMMA) {
-			p.nextToken() // move to ','
-			p.nextToken() // move to next field IDENT
+		// Next token should be ',' or '}' or another IDENT (for next field without comma).
+		p.nextToken() // advance past the type expression
+
+		if p.currentTokenIs(token.COMMA) {
+			p.nextToken() // move past ','
+			// Continue loop - will handle leading comma on next iteration if present
 			continue
 		}
 
-		if p.peekTokenIs(token.RBRACE) {
-			p.nextToken() // move to '}'
+		if p.currentTokenIs(token.RBRACE) {
 			record.EndToken = p.currentToken
-			// currentToken is '}', last token of the record type
+			p.nextToken() // consume }
 			break
+		}
+
+		// Allow fields without commas (newline-separated): { A: u32\n B: u32 }
+		// If next token is IDENT, it's the next field name
+		if p.currentTokenIs(token.IDENT) {
+			// Continue loop - currentToken is already the next field name
+			continue
 		}
 
 		// Anything else is a syntax error
@@ -1720,6 +1744,18 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 
 	// Parse fields until closing brace
 	for {
+		// Skip leading comma if present (allows: { , A: 1, B: 2 })
+		if p.currentTokenIs(token.COMMA) {
+			p.nextToken() // consume leading comma
+		}
+
+		// Check for closing brace (allows trailing comma: { A: 1, B: 2, })
+		if p.currentTokenIs(token.RBRACE) {
+			record.EndToken = p.currentToken
+			p.nextToken() // consume }
+			break
+		}
+
 		// Parse field name (identifier)
 		if !p.currentTokenIs(token.IDENT) {
 			p.peekError(token.IDENT)
@@ -1752,10 +1788,12 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 
 		// Now currentToken should be comma or closing brace
 		if p.currentTokenIs(token.COMMA) {
-			p.nextToken() // Advance past comma to next field name
-			// Continue loop - currentToken is now the next field name
+			p.nextToken() // Advance past comma
+			// Continue loop - will handle leading comma on next iteration if present
 		} else if p.currentTokenIs(token.RBRACE) {
-			// We're done - closing brace consumed
+			// We're done - closing brace
+			record.EndToken = p.currentToken
+			p.nextToken() // consume }
 			break
 		} else {
 			// Unexpected token - should be comma or closing brace
@@ -1768,6 +1806,7 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 				// Continue loop
 			} else if p.peekTokenIs(token.RBRACE) {
 				p.nextToken()
+				record.EndToken = p.currentToken
 				p.nextToken()
 				break
 			} else {
@@ -2092,18 +2131,20 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 	p.nextToken() // advance to type token (string, i32, etc.)
 	stmt.ReturnType = p.parseTypeExpression()
 	// parseTypeExpression advances past the type, so currentToken should be after the type
-	// Check if next token is = (for : Type = syntax)
-	if !p.peekTokenIs(token.ASSIGN) {
-		p.peekError(token.ASSIGN)
-		return nil
-	}
-	p.nextToken() // consume =
-	// Body can be expression or block
-	p.nextToken()
-	if p.currentTokenIs(token.LBRACE) {
+	// Check if next token is = (for : Type = syntax) or { (for : Type { block } syntax)
+	if p.peekTokenIs(token.ASSIGN) {
+		// Expression body: fn name(...): Type = expr
+		p.nextToken() // consume =
+		p.nextToken() // advance to body
+		stmt.Body = p.parseExpression(LOWEST)
+	} else if p.peekTokenIs(token.LBRACE) {
+		// Block body: fn name(...): Type { ... }
+		p.nextToken() // consume {
 		stmt.Body = p.parseBlockExpression()
 	} else {
-		stmt.Body = p.parseExpression(LOWEST)
+		// Neither = nor {, error
+		p.addErrorAtPeekToken("expected '=' or '{' after return type")
+		return nil
 	}
 
 	// Set end token to the last token of the body
@@ -2798,9 +2839,12 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 		adt.Variants = append(adt.Variants, variant)
 
 		// Parse remaining variants (each starts with |)
-		for p.peekTokenIs(token.PIPE) {
+		// After parseADTVariant(), currentToken is on the | separator (if there is one)
+		// or on EOF/next statement if this was the last variant
+		for p.currentTokenIs(token.PIPE) {
 			p.nextToken() // consume |
-			p.nextToken() // consume next token
+			// parseADTVariant expects currentToken to be the variant name (IDENT)
+			// so we don't advance here - let parseADTVariant consume the IDENT
 			variant := p.parseADTVariant()
 			if variant == nil {
 				return nil
@@ -2809,17 +2853,22 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 		}
 	} else if p.currentTokenIs(token.LBRACE) {
 		// This is a record type definition: Name: type = { field: Type, ... }
-		recordLit := p.parseRecordLiteral()
-		if recordLit == nil {
+		// Use parseRecordType() which handles type annotations (field: Type)
+		// instead of parseRecordLiteral() which handles values (field: value)
+		recordType := p.parseRecordType()
+		if recordType == nil {
 			return nil
 		}
-		// Store as a single variant with record literal
+		// parseRecordType() consumes the closing brace and leaves currentToken past it
+		// Store as a single variant with record type
 		variant := &ast.ADTVariant{
 			Token:   p.currentToken,
-			Name:    adt.Name, // Use ADT name as variant name for record types
-			Literal: recordLit,
+			Name:    adt.Name,   // Use ADT name as variant name for record types
+			Literal: recordType, // For record types, we store the type as the "literal"
 		}
 		adt.Variants = []*ast.ADTVariant{variant}
+		// After parseRecordType(), currentToken is past the closing brace
+		// ParseProgram will call p.nextToken() to advance to the next statement
 	} else if p.currentTokenIs(token.IDENT) {
 		// Could be: TypeName (type alias) or TypeName & RecordType (composition)
 		// Use parseTypeExpression which now handles intersections

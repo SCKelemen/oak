@@ -1,0 +1,52 @@
+// Test all ADT definition syntaxes from TOUR_OF_OAK.md
+
+// Single line with leading pipe
+Color1: type = | Red | Green | Blue
+
+// Single line without leading pipe
+Color2: type = Red | Green | Blue
+
+// Shorthand
+Color3 := Red | Green | Blue
+
+// Multiline with backslash (should work with REPL)
+// Color4: type = Red \
+//            | Green \
+//            | Blue
+
+// Test pattern matching syntaxes
+fn color_to_string1(c: Color1): string {
+  c ?
+    | Red => "red"
+    | Green => "green"
+    | Blue => "blue"
+    | _ => "unreachable"
+}
+
+fn color_to_string2(c: Color1): string = c ? Red => "red" | Green => "green" | Blue => "blue" | _ => "unreachable"
+
+fn color_to_string3(c: Color1): string = c ? | Red => "red" | Green => "green" | Blue => "blue" | _ => "unreachable"
+
+fn color_to_string4(c: Color1): string {
+  c ?
+    | .Red => "red"
+    | .Green => "green"
+    | .Blue => "blue"
+    | _ => "unreachable"
+}
+
+fn color_to_string5(c: Color1): string = c ? .Red => "red" | .Green => "green" | .Blue => "blue" | _ => "unreachable"
+
+fn color_to_string6(c: Color1): string = c ? | .Red => "red" | .Green => "green" | .Blue => "blue" | _ => "unreachable"
+
+fn color_to_string7(c: Color1): string {
+  c ?
+    | Color1.Red => "red"
+    | Color1.Green => "green"
+    | Color1.Blue => "blue"
+    | _ => "unreachable"
+}
+
+fn color_to_string8(c: Color1): string = c ? Color1.Red => "red" | Color1.Green => "green" | Color1.Blue => "blue" | _ => "unreachable"
+
+fn color_to_string9(c: Color1): string = c ? | Color1.Red => "red" | Color1.Green => "green" | Color1.Blue => "blue" | _ => "unreachable"

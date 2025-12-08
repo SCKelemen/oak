@@ -482,6 +482,37 @@ sam: Person = { name: "Sam", age: 30 }
 // Field access
 name: string = sam.name
 age: i32 = sam.age
+
+
+ABCD: type = {
+  A: u32
+  B: u32
+  C: u32
+  D: u32
+}
+
+example := ABCD{
+  A: 0,
+  B: 1,
+  C: 2,
+  D: 3, // trailing comma is allowed
+}
+
+example2 := ABCD{ A: 0, B: 1, C: 2, D: 3 }
+example3: ABCD = 
+               { A: 0
+               , B: 1
+               , C: 2
+               , D: 3 
+               }
+
+
+example3 := 
+      ABCD{ A: 0
+          , B: 1
+          , C: 2
+          , D: 3 
+          }
 ```
 
 ### Empty Records

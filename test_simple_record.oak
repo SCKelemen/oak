@@ -1,0 +1,6 @@
+ABCD: type = {
+  A: u32
+  B: u32
+}
+
+test := ABCD{ A: 0, B: 1, }

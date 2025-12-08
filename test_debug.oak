@@ -1,0 +1,2 @@
+ABCD: type = { A: u32, B: u32 }
+x := 1
