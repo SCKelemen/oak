@@ -895,6 +895,26 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 
 // Evaluate field access: record.field or array indexing: array[index]
 func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) object.Object {
+	// Check if this is Type.Variant (ADT constructor) rather than field access
+	// If left is an identifier (type name) and we have an ADT with that name, treat as variant
+	if leftIdent, ok := ie.Left.(*ast.Identifier); ok {
+		adtTypeName := leftIdent.Value
+		if _, ok := env.GetADTType(adtTypeName); ok {
+			// This is Type.Variant - convert to VariantExpression for evaluation
+			if variantIdent, ok := ie.Index.(*ast.Identifier); ok {
+				// Create a VariantExpression and evaluate it
+				ve := &ast.VariantExpression{
+					Token:    ie.Token,
+					TypeName: leftIdent,
+					Variant:  variantIdent,
+					Payload:  nil, // No payload for simple variants
+				}
+				return evalVariantExpression(ve, env)
+			}
+		}
+	}
+
+	// Not an ADT constructor, evaluate as normal index expression
 	left := Eval(ie.Left, env)
 	if isError(left) {
 		return left

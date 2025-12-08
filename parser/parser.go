@@ -341,17 +341,20 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 }
 
 func (p *Parser) parseIdentifier() ast.Expression {
-	// Check if this is a variant construction: .Variant or Type::Variant
+	// Check if this is a variant construction: .Variant or Type.Variant
 	literal := p.currentToken.Literal
 	if len(literal) > 0 && literal[0] == '.' {
 		// This is a variant: .Ok
 		return p.parseVariantExpression()
 	}
 
+	// Check if this might be Type.Variant (Type followed by DOT)
+	// We'll check this in parseVariantExpression if needed
+	// For now, return identifier and let field access handle Type.Variant
 	return &ast.Identifier{Token: p.currentToken, Value: literal}
 }
 
-// Parse variant expression: .Ok, .Some(value), or Type::Ok
+// Parse variant expression: .Ok, .Some(value), or Type.Variant
 func (p *Parser) parseVariantExpression() ast.Expression {
 	expr := &ast.VariantExpression{Token: p.currentToken}
 
@@ -371,24 +374,20 @@ func (p *Parser) parseVariantExpression() ast.Expression {
 			}
 		}
 	} else {
-		// Type::Variant form - current token is Type
+		// Type.Variant form - current token is Type, next should be DOT
 		expr.TypeName = &ast.Identifier{Token: p.currentToken, Value: literal}
-		if !p.expectPeek(token.COLON) {
-			return nil
-		}
-		// Check for second colon (::)
-		if !p.peekTokenIs(token.COLON) {
-			// Not Type::Variant, treat as regular identifier
+		if !p.expectPeek(token.DOT) {
+			// Not Type.Variant, treat as regular identifier
 			return &ast.Identifier{Token: p.currentToken, Value: literal}
 		}
-		p.nextToken() // consume first :
-		p.nextToken() // consume second :
+		p.nextToken() // consume DOT
 		if !p.expectPeek(token.IDENT) {
 			return nil
 		}
+		p.nextToken() // consume variant name
 		expr.Variant = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 
-		// Check for payload: Type::Some(value)
+		// Check for payload: Type.Some(value)
 		if p.peekTokenIs(token.LPAREN) {
 			p.nextToken() // consume (
 			p.nextToken() // consume value
@@ -502,8 +501,11 @@ func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expressi
 }
 
 // Parse field access: record.field
+// Also handles Type.Variant (ADT constructor) - these are parsed as IndexExpression
+// and converted to VariantExpression during type checking
 func (p *Parser) parseFieldAccess(left ast.Expression) ast.Expression {
 	// Record field access: record.field
+	// Or ADT constructor: Type.Variant
 	exp := &ast.IndexExpression{Token: p.currentToken, Left: left}
 	p.nextToken()
 	if !p.currentTokenIs(token.IDENT) {
@@ -1174,21 +1176,39 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 
 	variant.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 
-	// Check for payload: Some(T)
-	if p.peekTokenIs(token.LPAREN) {
-		p.nextToken() // consume (
-		p.nextToken() // consume type
-		variant.Payload = p.parseTypeExpression()
-		if !p.expectPeek(token.RPAREN) {
-			return nil
-		}
-	}
-
-	// Check for literal tag: Ok: 200
+	// Check for payload type or literal tag
+	// Cases:
+	// 1. Some: T - payload type only
+	// 2. Some: T = default - payload type with default
+	// 3. Ok: 200 - literal tag only (no payload type)
+	// 4. Less := -1 - inferred payload type from default
 	if p.peekTokenIs(token.COLON) {
+		// Single colon - could be payload type or literal tag
 		p.nextToken() // consume :
-		p.nextToken() // consume literal
+
+		// Check if next is an identifier (payload type) or literal (literal tag)
+		if p.peekTokenIs(token.IDENT) {
+			// Payload type: Some: T
+			p.nextToken() // consume type identifier
+			variant.Payload = p.parseTypeExpression()
+
+			// Check for default value: Some: T = default
+			if p.peekTokenIs(token.ASSIGN) {
+				p.nextToken() // consume =
+				p.nextToken() // consume default value
+				variant.Literal = p.parseLiteralExpression()
+			}
+		} else {
+			// Literal tag: Ok: 200 (no payload type)
+			p.nextToken() // consume literal
+			variant.Literal = p.parseLiteralExpression()
+		}
+	} else if p.peekTokenIs(token.COLON_ASSIGN) {
+		// Inferred payload type: Less := -1
+		p.nextToken() // consume :=
+		p.nextToken() // consume default value
 		variant.Literal = p.parseLiteralExpression()
+		// Payload type will be inferred from literal during type checking
 	}
 
 	return variant
@@ -2312,11 +2332,14 @@ func (p *Parser) parseMatchArms() []*ast.MatchArm {
 		return nil
 	}
 
-	if !p.expectPeek(token.ARROW) {
+	// Accept both -> and => for pattern matching (canvas prefers =>)
+	if !p.peekTokenIs(token.ARROW) && !p.peekTokenIs(token.FAT_ARROW) {
+		p.peekError(token.ARROW)
 		return nil
 	}
+	p.nextToken() // consume -> or =>
+	p.nextToken() // advance to body token
 
-	p.nextToken() // consume ->
 	body := p.parseExpression(LOWEST)
 	if body == nil {
 		return nil
@@ -2338,11 +2361,14 @@ func (p *Parser) parseMatchArms() []*ast.MatchArm {
 			return nil
 		}
 
-		if !p.expectPeek(token.ARROW) {
+		// Accept both -> and => for pattern matching (canvas prefers =>)
+		if !p.peekTokenIs(token.ARROW) && !p.peekTokenIs(token.FAT_ARROW) {
+			p.peekError(token.ARROW)
 			return nil
 		}
+		p.nextToken() // consume -> or =>
+		p.nextToken() // advance to body token
 
-		p.nextToken() // consume ->
 		body := p.parseExpression(LOWEST)
 		if body == nil {
 			return nil
@@ -2395,25 +2421,34 @@ func (p *Parser) parsePattern() ast.Pattern {
 	}
 }
 
-// Variant pattern: .Ok | .Some(x) | Status::Ok
+// Variant pattern: .Ok | .Some(x) | Type.Variant
 func (p *Parser) parseVariantPattern() ast.Pattern {
 	pattern := &ast.VariantPattern{Token: p.currentToken}
 
-	// Handle .Variant or Type::Variant
+	// Handle .Variant or Type.Variant
 	var variantName string
 	literal := p.currentToken.Literal
 	if len(literal) > 0 && literal[0] == '.' {
+		// .Variant form
 		variantName = literal[1:]
-	} else if len(literal) > 2 && literal[1:3] == "::" {
-		// Type::Variant - extract variant name after ::
-		// For now, just use the full identifier
-		variantName = literal
 	} else {
-		// Capitalized identifier treated as variant
-		variantName = literal
+		// Might be Type.Variant - check if next token is DOT
+		if p.peekTokenIs(token.DOT) {
+			// Type.Variant form - skip the type name and DOT
+			p.nextToken() // consume DOT
+			if !p.currentTokenIs(token.IDENT) {
+				p.peekError(token.IDENT)
+				return nil
+			}
+			variantName = p.currentToken.Literal
+		} else {
+			// Capitalized identifier treated as variant (bare variant name)
+			variantName = literal
+		}
 	}
 
 	pattern.Variant = &ast.Identifier{Token: p.currentToken, Value: variantName}
+	// Note: Type name is not stored in VariantPattern - it's inferred during type checking
 
 	// Check for payload: .Some(x)
 	if p.peekTokenIs(token.LPAREN) {
@@ -2537,7 +2572,44 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 	p.nextToken()
 
 	// Parse body: record type or variant list
-	if p.currentTokenIs(token.LBRACE) {
+	// Variant list can start with | (optional) or directly with variant name
+	// Check for variant list: | Variant1 | Variant2 | ... OR Variant1 | Variant2 | ...
+	isVariantList := false
+	if p.currentTokenIs(token.PIPE) {
+		// Leading pipe - definitely a variant list
+		isVariantList = true
+	} else if p.currentTokenIs(token.IDENT) && p.peekTokenIs(token.PIPE) {
+		// IDENT followed by PIPE - variant list without leading pipe
+		isVariantList = true
+	}
+
+	if isVariantList {
+		// Variant list: | Variant1 | Variant2 | ... OR Variant1 | Variant2 | ...
+		adt.Variants = []*ast.ADTVariant{}
+
+		// Skip leading pipe if present
+		if p.currentTokenIs(token.PIPE) {
+			p.nextToken() // consume leading |
+		}
+
+		// Parse first variant
+		variant := p.parseADTVariant()
+		if variant == nil {
+			return nil
+		}
+		adt.Variants = append(adt.Variants, variant)
+
+		// Parse remaining variants (each starts with |)
+		for p.peekTokenIs(token.PIPE) {
+			p.nextToken() // consume |
+			p.nextToken() // consume next token
+			variant := p.parseADTVariant()
+			if variant == nil {
+				return nil
+			}
+			adt.Variants = append(adt.Variants, variant)
+		}
+	} else if p.currentTokenIs(token.LBRACE) {
 		// This is a record type definition: Name: type = { field: Type, ... }
 		recordLit := p.parseRecordLiteral()
 		if recordLit == nil {
@@ -2578,8 +2650,7 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 			adt.Variants = []*ast.ADTVariant{variant}
 		}
 	} else {
-		// Could be a variant list starting with '|' or other syntax
-		// For now, treat as error
+		// Unknown syntax
 		p.addErrorAtCurrentToken(fmt.Sprintf("expected record type, type alias, or variant list after '=', got %s", p.currentToken.TokenKind))
 		return nil
 	}

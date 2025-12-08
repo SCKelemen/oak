@@ -141,7 +141,14 @@ func (s *Scanner) NextToken() token.Token {
 
 	// handle arithmeticy things
 	case '=':
-		if s.peekChar() == '=' {
+		peek := s.peekChar()
+		if peek == '>' {
+			// Fat arrow for pattern matching: =>
+			ch := s.current
+			s.readChar()
+			literal := string(ch) + string(s.current)
+			tok = token.Token{TokenKind: token.FAT_ARROW, Literal: literal, Line: line, Column: column}
+		} else if peek == '=' {
 			ch := s.current
 			s.readChar()
 			literal := string(ch) + string(s.current)

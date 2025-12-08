@@ -11,7 +11,7 @@ import (
 func LowerProgram(program *ast.Program, tc *typechecker.TypeChecker) *ast.Program {
 	lowered := &ast.Program{
 		Statements:           make([]ast.Statement, 0, len(program.Statements)),
-		LeadingTriviaTokens: program.LeadingTriviaTokens,
+		LeadingTriviaTokens:  program.LeadingTriviaTokens,
 		TrailingTriviaTokens: program.TrailingTriviaTokens,
 	}
 
@@ -29,8 +29,8 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 		return lowerVariableDeclaration(s, tc)
 	case *ast.ExpressionStatement:
 		return &ast.ExpressionStatement{
-			BaseNode:  s.BaseNode,
-			Token:     s.Token,
+			BaseNode:   s.BaseNode,
+			Token:      s.Token,
 			Expression: lowerExpression(s.Expression, tc),
 		}
 	case *ast.FunctionStatement:
@@ -89,8 +89,8 @@ func lowerBlockStatement(block *ast.BlockStatement, tc *typechecker.TypeChecker)
 		loweredStmts = append(loweredStmts, lowerStatement(stmt, tc))
 	}
 	return &ast.BlockStatement{
-		BaseNode:  block.BaseNode,
-		Token:     block.Token,
+		BaseNode:   block.BaseNode,
+		Token:      block.Token,
 		Statements: loweredStmts,
 	}
 }
@@ -202,9 +202,9 @@ func lowerInvocationExpression(expr *ast.InvocationExpression, tc *typechecker.T
 		loweredArgs = append(loweredArgs, lowerExpression(arg, tc))
 	}
 	return &ast.InvocationExpression{
-		BaseNode: expr.BaseNode,
-		Token:    expr.Token,
-		Function: lowerExpression(expr.Function, tc),
+		BaseNode:  expr.BaseNode,
+		Token:     expr.Token,
+		Function:  lowerExpression(expr.Function, tc),
 		Arguments: loweredArgs,
 	}
 }

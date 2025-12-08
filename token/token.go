@@ -40,6 +40,7 @@ const (
 	ASSIGN       // =
 	COLON_ASSIGN // :=
 	ARROW        // ->
+	FAT_ARROW    // =>
 
 	PIPE  // |
 	AMP   // &
@@ -96,6 +97,7 @@ var tokens = [...]string{
 	ASSIGN:       "=",
 	COLON_ASSIGN: ":=",
 	ARROW:        "->",
+	FAT_ARROW:    "=>",
 
 	PIPE:  "|",
 	AMP:   "&",

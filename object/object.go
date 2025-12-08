@@ -76,9 +76,9 @@ func (a *ADTValue) Kind() ObjectKind { return ADT }
 func (a *ADTValue) Type() ObjectType { return ADT_OBJ }
 func (a *ADTValue) Inspect() string {
 	if a.Value != nil {
-		return a.TypeName + "::" + a.Variant + "(" + a.Value.Inspect() + ")"
+		return a.TypeName + "." + a.Variant + "(" + a.Value.Inspect() + ")"
 	}
-	return a.TypeName + "::" + a.Variant
+	return a.TypeName + "." + a.Variant
 }
 
 type ReturnValue struct {

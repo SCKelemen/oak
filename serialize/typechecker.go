@@ -71,7 +71,7 @@ func SerializeTypechecker(tc *typechecker.TypeChecker, outputPath string) error 
 			case 4:
 				severityStr = "hint"
 			}
-			
+
 			diagEntry := map[string]interface{}{
 				"type":     "diagnostic",
 				"index":    i,

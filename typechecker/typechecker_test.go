@@ -244,7 +244,7 @@ func TestTypeChecker_ArrayLiterals(t *testing.T) {
 		hasError bool
 	}{
 		{"[1, 2, 3]", false},
-		{"[]", true}, // empty array requires type annotation
+		{"[]", true},             // empty array requires type annotation
 		{"a: []i32 = []", false}, // empty array with type annotation
 		{"[\"a\", \"b\", \"c\"]", false},
 		{"[1, \"hello\"]", true}, // mixed types

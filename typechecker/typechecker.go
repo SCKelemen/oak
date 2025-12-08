@@ -1778,6 +1778,30 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 }
 
 func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
+	// Check if this is Type.Variant (ADT constructor) rather than field access
+	// If left is an identifier (type name) and we have an ADT with that name, treat as variant
+	// We check this BEFORE checking leftType because type names aren't in the value environment
+	if leftIdent, ok := expr.Left.(*ast.Identifier); ok {
+		adtTypeName := leftIdent.Value
+		if adtDef, ok := tc.adtTypes[adtTypeName]; ok {
+			// This is Type.Variant - convert to VariantExpression for checking
+			if variantIdent, ok := expr.Index.(*ast.Identifier); ok {
+				variantName := variantIdent.Value
+				// Check if this variant exists in the ADT
+				// adtDef is *object.ADTType, variants are []*object.ADTVariantDef
+				for _, v := range adtDef.Variants {
+					if v.Name == variantName {
+						// Valid variant - return the ADT type
+						return &ADTType{Name: adtTypeName}
+					}
+				}
+				tc.addError(expr, "variant %s not found in ADT %s", variantName, adtTypeName)
+				return nil
+			}
+		}
+	}
+
+	// Not an ADT constructor, check as normal index expression
 	leftType := tc.checkExpression(expr.Left)
 	if leftType == nil {
 		return nil
@@ -2246,7 +2270,37 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 	// Check that ADT has at least one variant
 	if len(stmt.Variants) == 0 {
 		tc.addError(stmt, "ADT %s: must have at least one variant", stmt.Name.Value)
+		return
 	}
+
+	// Register the ADT type in the typechecker's adtTypes map
+	adtType := &object.ADTType{
+		Name:     stmt.Name.Value,
+		Variants: []*object.ADTVariantDef{},
+	}
+
+	for _, variant := range stmt.Variants {
+		variantDef := &object.ADTVariantDef{
+			Name: variant.Name.Value,
+		}
+
+		if variant.Payload != nil {
+			// Extract payload type name
+			if ident, ok := variant.Payload.(*ast.Identifier); ok {
+				variantDef.Payload = ident.Value
+			} else {
+				// For complex types, just store a placeholder
+				variantDef.Payload = "T" // Generic placeholder
+			}
+		}
+
+		// Note: Literal tags are not stored in object.ADTVariantDef during type checking
+		// They're only used for type checking validation
+
+		adtType.Variants = append(adtType.Variants, variantDef)
+	}
+
+	tc.adtTypes[stmt.Name.Value] = adtType
 }
 
 // checkRecordTypeDefinition type checks a record type definition

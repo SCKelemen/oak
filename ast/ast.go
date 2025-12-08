@@ -810,7 +810,7 @@ type REPLCommand struct {
 	Args  []Expression // optional arguments to the command (e.g., expression for typeof)
 }
 
-func (rc *REPLCommand) statementNode()       {}
+func (rc *REPLCommand) statementNode() {}
 func (rc *REPLCommand) TokenLiteral() string {
 	if rc == nil {
 		return ""
