@@ -1,0 +1,598 @@
+{
+  "statements": [
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "x",
+        "type": "i32",
+        "value": {
+          "type": "InfixExpression",
+          "data": {
+            "left": {
+              "type": "IntegerLiteral",
+              "data": {
+                "value": 5
+              },
+              "position": {
+                "line": 3,
+                "column": 11,
+                "byte_start": 31,
+                "byte_end": 32
+              }
+            },
+            "operator": "+",
+            "right": {
+              "type": "IntegerLiteral",
+              "data": {
+                "value": 3
+              },
+              "position": {
+                "line": 3,
+                "column": 15,
+                "byte_start": 35,
+                "byte_end": 36
+              }
+            }
+          },
+          "position": {
+            "line": 3,
+            "column": 13,
+            "byte_start": 33,
+            "byte_end": 34
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 2,
+        "byte_start": 22,
+        "byte_end": 23
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "y",
+        "type": "i32",
+        "value": {
+          "type": "InfixExpression",
+          "data": {
+            "left": {
+              "type": "Identifier",
+              "data": {
+                "value": "x"
+              },
+              "position": {
+                "line": 4,
+                "column": 11,
+                "byte_start": 46,
+                "byte_end": 47
+              }
+            },
+            "operator": "*",
+            "right": {
+              "type": "IntegerLiteral",
+              "data": {
+                "value": 2
+              },
+              "position": {
+                "line": 4,
+                "column": 15,
+                "byte_start": 50,
+                "byte_end": 51
+              }
+            }
+          },
+          "position": {
+            "line": 4,
+            "column": 13,
+            "byte_start": 48,
+            "byte_end": 49
+          }
+        }
+      },
+      "position": {
+        "line": 4,
+        "column": 2,
+        "byte_start": 37,
+        "byte_end": 38
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "result",
+        "type": "string",
+        "value": {
+          "type": "MatchExpression",
+          "data": {
+            "arms": [
+              {
+                "body": {
+                  "type": "StringLiteral",
+                  "data": {
+                    "value": "five"
+                  },
+                  "position": {
+                    "line": 8,
+                    "column": 11,
+                    "byte_start": 115,
+                    "byte_end": 121
+                  }
+                },
+                "pattern": {
+                  "type": "Unknown",
+                  "data": {
+                    "string": "5"
+                  }
+                }
+              },
+              {
+                "body": {
+                  "type": "StringLiteral",
+                  "data": {
+                    "value": "eight"
+                  },
+                  "position": {
+                    "line": 9,
+                    "column": 11,
+                    "byte_start": 131,
+                    "byte_end": 138
+                  }
+                },
+                "pattern": {
+                  "type": "Unknown",
+                  "data": {
+                    "string": "8"
+                  }
+                }
+              },
+              {
+                "body": {
+                  "type": "StringLiteral",
+                  "data": {
+                    "value": "other"
+                  },
+                  "position": {
+                    "line": 10,
+                    "column": 11,
+                    "byte_start": 148,
+                    "byte_end": 155
+                  }
+                },
+                "pattern": {
+                  "type": "Unknown",
+                  "data": {
+                    "string": "_"
+                  }
+                }
+              }
+            ],
+            "scrutinee": {
+              "type": "Identifier",
+              "data": {
+                "value": "x"
+              },
+              "position": {
+                "line": 7,
+                "column": 19,
+                "byte_start": 102,
+                "byte_end": 103
+              }
+            }
+          },
+          "position": {
+            "line": 7,
+            "column": 21,
+            "byte_start": 104,
+            "byte_end": 105
+          }
+        }
+      },
+      "position": {
+        "line": 7,
+        "column": 2,
+        "byte_start": 85,
+        "byte_end": 91
+      }
+    },
+    {
+      "type": "ADTType",
+      "data": {
+        "name": "Status",
+        "variants": [
+          {
+            "name": "Status",
+            "payload": {
+              "type": "Identifier",
+              "data": {
+                "value": "Ok"
+              },
+              "position": {
+                "line": 14,
+                "column": 6,
+                "byte_start": 204,
+                "byte_end": 206
+              }
+            }
+          }
+        ]
+      },
+      "position": {
+        "line": 13,
+        "column": 2,
+        "byte_start": 187,
+        "byte_end": 193
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 14,
+        "column": 8,
+        "byte_start": 206,
+        "byte_end": 207
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "IntegerLiteral",
+          "data": {
+            "value": 200
+          },
+          "position": {
+            "line": 14,
+            "column": 10,
+            "byte_start": 208,
+            "byte_end": 211
+          }
+        }
+      },
+      "position": {
+        "line": 14,
+        "column": 10,
+        "byte_start": 208,
+        "byte_end": 211
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 15,
+        "column": 4,
+        "byte_start": 214,
+        "byte_end": 215
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {}
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 16,
+        "column": 4,
+        "byte_start": 232,
+        "byte_end": 233
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {}
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "status1",
+        "type": "Status"
+      },
+      "position": {
+        "line": 19,
+        "column": 2,
+        "byte_start": 274,
+        "byte_end": 281
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "Identifier",
+          "data": {
+            "value": "Ok"
+          },
+          "position": {
+            "line": 19,
+            "column": 21,
+            "byte_start": 293,
+            "byte_end": 295
+          }
+        }
+      },
+      "position": {
+        "line": 19,
+        "column": 21,
+        "byte_start": 293,
+        "byte_end": 295
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "status2",
+        "type": "Status"
+      },
+      "position": {
+        "line": 20,
+        "column": 2,
+        "byte_start": 296,
+        "byte_end": 303
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "Identifier",
+          "data": {
+            "value": "NotFound"
+          },
+          "position": {
+            "line": 20,
+            "column": 21,
+            "byte_start": 315,
+            "byte_end": 323
+          }
+        }
+      },
+      "position": {
+        "line": 20,
+        "column": 21,
+        "byte_start": 315,
+        "byte_end": 323
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "code",
+        "type": "i32",
+        "value": {
+          "type": "MatchExpression",
+          "data": {
+            "arms": [],
+            "scrutinee": {
+              "type": "Identifier",
+              "data": {
+                "value": "status1"
+              },
+              "position": {
+                "line": 23,
+                "column": 14,
+                "byte_start": 361,
+                "byte_end": 368
+              }
+            }
+          },
+          "position": {
+            "line": 23,
+            "column": 22,
+            "byte_start": 369,
+            "byte_end": 370
+          }
+        }
+      },
+      "position": {
+        "line": 23,
+        "column": 2,
+        "byte_start": 349,
+        "byte_end": 353
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "Identifier",
+          "data": {
+            "value": "Ok"
+          },
+          "position": {
+            "line": 24,
+            "column": 7,
+            "byte_start": 376,
+            "byte_end": 378
+          }
+        }
+      },
+      "position": {
+        "line": 24,
+        "column": 7,
+        "byte_start": 376,
+        "byte_end": 378
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 24,
+        "column": 10,
+        "byte_start": 379,
+        "byte_end": 381
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "IntegerLiteral",
+          "data": {
+            "value": 200
+          },
+          "position": {
+            "line": 24,
+            "column": 13,
+            "byte_start": 382,
+            "byte_end": 385
+          }
+        }
+      },
+      "position": {
+        "line": 24,
+        "column": 13,
+        "byte_start": 382,
+        "byte_end": 385
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 25,
+        "column": 4,
+        "byte_start": 388,
+        "byte_end": 389
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 25,
+        "column": 6,
+        "byte_start": 390,
+        "byte_end": 391
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "Identifier",
+          "data": {
+            "value": "NotFound"
+          },
+          "position": {
+            "line": 25,
+            "column": 7,
+            "byte_start": 391,
+            "byte_end": 399
+          }
+        }
+      },
+      "position": {
+        "line": 25,
+        "column": 7,
+        "byte_start": 391,
+        "byte_end": 399
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 25,
+        "column": 16,
+        "byte_start": 400,
+        "byte_end": 402
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "IntegerLiteral",
+          "data": {
+            "value": 404
+          },
+          "position": {
+            "line": 25,
+            "column": 19,
+            "byte_start": 403,
+            "byte_end": 406
+          }
+        }
+      },
+      "position": {
+        "line": 25,
+        "column": 19,
+        "byte_start": 403,
+        "byte_end": 406
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 26,
+        "column": 4,
+        "byte_start": 409,
+        "byte_end": 410
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "Identifier",
+          "data": {
+            "value": "_"
+          },
+          "position": {
+            "line": 26,
+            "column": 6,
+            "byte_start": 411,
+            "byte_end": 412
+          }
+        }
+      },
+      "position": {
+        "line": 26,
+        "column": 6,
+        "byte_start": 411,
+        "byte_end": 412
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 26,
+        "column": 8,
+        "byte_start": 413,
+        "byte_end": 415
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {
+        "expression": {
+          "type": "IntegerLiteral",
+          "data": {
+            "value": 0
+          },
+          "position": {
+            "line": 26,
+            "column": 11,
+            "byte_start": 416,
+            "byte_end": 417
+          }
+        }
+      },
+      "position": {
+        "line": 26,
+        "column": 11,
+        "byte_start": 416,
+        "byte_end": 417
+      }
+    }
+  ],
+  "type": "Program"
+}

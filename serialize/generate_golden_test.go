@@ -10,9 +10,6 @@ import (
 // TestGenerateGoldenFiles generates golden files for inspection
 // Run this test to generate example golden files in the golden/ directory
 func TestGenerateGoldenFiles(t *testing.T) {
-	objEnv := object.NewEnvironment()
-	tc := typechecker.New(objEnv)
-
 	testCases := []struct {
 		name        string
 		sourceCode  string

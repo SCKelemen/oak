@@ -169,21 +169,34 @@ func serializeNode(node ast.Node) (ASTNodeJSON, error) {
 	// Serialize node-specific data
 	switch n := node.(type) {
 	case *ast.Program:
-		nodeJSON.Data["statement_count"] = len(n.Statements)
+		if n != nil {
+			nodeJSON.Data["statement_count"] = len(n.Statements)
+		}
 
 	case *ast.Identifier:
-		nodeJSON.Data["value"] = n.Value
+		if n != nil {
+			nodeJSON.Data["value"] = n.Value
+		}
 
 	case *ast.IntegerLiteral:
-		nodeJSON.Data["value"] = n.Value
+		if n != nil {
+			nodeJSON.Data["value"] = n.Value
+		}
 
 	case *ast.StringLiteral:
-		nodeJSON.Data["value"] = n.Value
+		if n != nil {
+			nodeJSON.Data["value"] = n.Value
+		}
 
 	case *ast.Boolean:
-		nodeJSON.Data["value"] = n.Value
+		if n != nil {
+			nodeJSON.Data["value"] = n.Value
+		}
 
 	case *ast.VariableDeclaration:
+		if n == nil {
+			break
+		}
 		if n.Name != nil {
 			nodeJSON.Data["name"] = n.Name.Value
 		}
@@ -203,32 +216,49 @@ func serializeNode(node ast.Node) (ASTNodeJSON, error) {
 		}
 
 	case *ast.ExpressionStatement:
-		exprJSON, err := serializeNode(n.Expression)
-		if err != nil {
-			return ASTNodeJSON{}, err
+		if n == nil {
+			break
 		}
-		nodeJSON.Data["expression"] = exprJSON
+		if n.Expression != nil {
+			exprJSON, err := serializeNode(n.Expression)
+			if err != nil {
+				return ASTNodeJSON{}, err
+			}
+			nodeJSON.Data["expression"] = exprJSON
+		}
 
 	case *ast.PrefixExpression:
-		nodeJSON.Data["operator"] = n.Operator
-		rightJSON, err := serializeNode(n.Right)
-		if err != nil {
-			return ASTNodeJSON{}, err
+		if n == nil {
+			break
 		}
-		nodeJSON.Data["right"] = rightJSON
+		nodeJSON.Data["operator"] = n.Operator
+		if n.Right != nil {
+			rightJSON, err := serializeNode(n.Right)
+			if err != nil {
+				return ASTNodeJSON{}, err
+			}
+			nodeJSON.Data["right"] = rightJSON
+		}
 
 	case *ast.InfixExpression:
+		if n == nil {
+			break
+		}
 		nodeJSON.Data["operator"] = n.Operator
-		leftJSON, err := serializeNode(n.Left)
-		if err != nil {
-			return ASTNodeJSON{}, err
+		if n.Left != nil {
+			leftJSON, err := serializeNode(n.Left)
+			if err != nil {
+				return ASTNodeJSON{}, err
+			}
+			nodeJSON.Data["left"] = leftJSON
 		}
-		nodeJSON.Data["left"] = leftJSON
-		rightJSON, err := serializeNode(n.Right)
-		if err != nil {
-			return ASTNodeJSON{}, err
+		if n.Right != nil {
+			rightJSON, err := serializeNode(n.Right)
+			if err != nil {
+				return ASTNodeJSON{}, err
+			}
+			nodeJSON.Data["right"] = rightJSON
 		}
-		nodeJSON.Data["right"] = rightJSON
 
 	case *ast.IndexExpression:
 		leftJSON, err := serializeNode(n.Left)
@@ -458,7 +488,11 @@ func serializeNode(node ast.Node) (ASTNodeJSON, error) {
 
 	default:
 		// For unknown node types, just serialize the string representation
-		nodeJSON.Data["string"] = node.String()
+		if node != nil {
+			nodeJSON.Data["string"] = node.String()
+		} else {
+			nodeJSON.Data["string"] = "<nil node>"
+		}
 	}
 
 	return nodeJSON, nil

@@ -14,17 +14,17 @@ StatusInfo: type
   | NotFound: { code: 404, status: "Not Found" }
 
 // Pattern matching
-fn status_code(s: Status) -> u16
+fn status_code(s: Status): u16
   s ?
     | .Ok -> 200
     | .NotFound -> 404
     | _ -> 0
 
 // Simple function
-fn add(a: i32, b: i32) -> i32
+fn add(a: i32, b: i32): i32
   a + b
 
 // Main entry point
-fn main() -> i32
+fn main(): i32
   0
 

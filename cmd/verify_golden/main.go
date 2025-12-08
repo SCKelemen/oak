@@ -12,10 +12,11 @@ import (
 )
 
 func main() {
-	// Test cases to verify
+	// Test cases to verify (must match cmd/generate_golden/main.go)
 	testCases := []struct {
 		name       string
 		sourceCode string
+		skip       bool // Skip if known to have issues
 	}{
 		{
 			name: "simple",
@@ -32,17 +33,118 @@ x: i32 = "hello"
 y: string = 42
 `,
 		},
+		{
+			name: "simple_arithmetic",
+			sourceCode: `
+// Simple arithmetic
+x: i32 = 5 + 3
+y: i32 = x * 2
+
+// Pattern matching on integers
+result: string = x ?
+  | 5 -> "five"
+  | 8 -> "eight"
+  | _ -> "other"
+
+// ADT definition with value 
+Status: type
+  = Ok: 200
+  | NotFound: 404
+  | Unauthorized: 401
+
+// Create ADT values
+status1: Status = .Ok
+status2: Status = .NotFound
+
+// Pattern match on ADT
+code: i32 = status1 ?
+  | .Ok -> 200
+  | .NotFound -> 404
+  | _ -> 0
+`,
+		},
+		{
+			name: "simple_function",
+			sourceCode: `
+fn add(a: i32, b: i32): i32
+  a + b
+
+fn add2(a: i32, b: i32): i32 = a + b
+
+fn add3(a: i32, b: i32): i32 {
+  a + b
+}
+
+fn add4(a: i32, b: i32): i32 = { a + b }
+
+x: i32
+sum: i32 = add(5, 3)
+x = add(4, 2)
+x = add(6, 4)
+`,
+		},
+		{
+			name: "adt_with_values",
+			sourceCode: `
+// Simple ADT
+Status: type
+  = Ok: 200
+  | NotFound: 404
+  | Unauthorized: 401
+
+// ADT with record literal tags
+StatusInfo: type
+  = Ok: { code: 200, status: "Okay" }
+  | NotFound: { code: 404, status: "Not Found" }
+`,
+		},
+		{
+			name: "package_import",
+			sourceCode: `
+package main
+
+import("strings")
+
+str := import("strings")
+
+str2: package = import("strings")
+
+import("strings", "encoding/utf8")
+`,
+		},
+		{
+			name: "comments",
+			sourceCode: `
+// line comment
+x: i32 = 5
+
+/* inline comment */
+y: i32 = 10
+
+/* multiple 
+    line 
+    comment
+*/
+z: i32 = 15
+`,
+		},
 	}
 
 	allPassed := true
 
 	for _, tc := range testCases {
+		if tc.skip {
+			fmt.Printf("Skipping '%s' (known issues)\n", tc.name)
+			continue
+		}
+
 		fmt.Printf("Verifying golden files for '%s'...\n", tc.name)
 
 		// Load expected golden files
 		expected, err := serialize.LoadGolden(tc.name, 0)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "❌ Failed to load expected golden files for %s: %v\n", tc.name, err)
+			fmt.Fprintf(os.Stderr, "   (Run 'go run cmd/generate_golden/main.go' to generate them)\n")
 			allPassed = false
 			continue
 		}

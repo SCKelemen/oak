@@ -2028,6 +2028,17 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 }
 
 func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
+	// Check for nil function statement
+	if stmt == nil {
+		return
+	}
+	
+	// Check for nil function name
+	if stmt.Name == nil {
+		tc.addError(stmt, "function statement: missing function name")
+		return
+	}
+	
 	// Extract type parameters and constraints
 	typeVars := []string{}
 	constraints := []Constraint{}

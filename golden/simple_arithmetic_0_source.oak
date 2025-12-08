@@ -1,0 +1,26 @@
+
+// Simple arithmetic
+x: i32 = 5 + 3
+y: i32 = x * 2
+
+// Pattern matching on integers
+result: string = x ?
+  | 5 -> "five"
+  | 8 -> "eight"
+  | _ -> "other"
+
+// ADT definition with value 
+Status: type
+  = Ok: 200
+  | NotFound: 404
+  | Unauthorized: 401
+
+// Create ADT values
+status1: Status = .Ok
+status2: Status = .NotFound
+
+// Pattern match on ADT
+code: i32 = status1 ?
+  | .Ok -> 200
+  | .NotFound -> 404
+  | _ -> 0

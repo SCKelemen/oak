@@ -59,6 +59,12 @@ func lowerVariableDeclaration(vd *ast.VariableDeclaration, tc *typechecker.TypeC
 
 // lowerFunctionStatement lowers function statements
 func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) *ast.FunctionStatement {
+	if fn == nil {
+		return nil
+	}
+	if fn.Name == nil {
+		return nil
+	}
 	if fn.Body != nil {
 		// Body is an Expression - just lower it recursively
 		loweredBody := lowerExpression(fn.Body, tc)

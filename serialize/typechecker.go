@@ -59,11 +59,24 @@ func SerializeTypechecker(tc *typechecker.TypeChecker, outputPath string) error 
 	diagnostics := tc.Diagnostics()
 	if len(diagnostics) > 0 {
 		for i, diag := range diagnostics {
+			// Convert severity to string representation
+			severityStr := "unknown"
+			switch diag.Severity {
+			case 1:
+				severityStr = "error"
+			case 2:
+				severityStr = "warning"
+			case 3:
+				severityStr = "information"
+			case 4:
+				severityStr = "hint"
+			}
+			
 			diagEntry := map[string]interface{}{
 				"type":     "diagnostic",
 				"index":    i,
 				"message":  diag.Message,
-				"severity": string(diag.Severity),
+				"severity": severityStr,
 				"source":   diag.Source,
 				"code":     diag.Code,
 				"range": map[string]interface{}{

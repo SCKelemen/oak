@@ -811,7 +811,15 @@ type REPLCommand struct {
 }
 
 func (rc *REPLCommand) statementNode()       {}
-func (rc *REPLCommand) TokenLiteral() string { return rc.Token.Literal }
+func (rc *REPLCommand) TokenLiteral() string {
+	if rc == nil {
+		return ""
+	}
+	return rc.Token.Literal
+}
 func (rc *REPLCommand) String() string {
+	if rc == nil {
+		return "<nil REPLCommand>"
+	}
 	return ":" + rc.Name
 }
