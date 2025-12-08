@@ -318,7 +318,18 @@ func (s *Scanner) readString() string {
 		// consume closing quote
 		s.readChar()
 	}
-	return s.input[position : s.head-1] // exclude quotes
+	// Ensure we don't go out of bounds
+	end := s.head - 1
+	if end < position {
+		end = position
+	}
+	if end > len(s.input) {
+		end = len(s.input)
+	}
+	if position > len(s.input) {
+		position = len(s.input)
+	}
+	return s.input[position:end] // exclude quotes
 }
 
 func (s *Scanner) peekChar() byte {

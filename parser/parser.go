@@ -1976,35 +1976,24 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 
 	stmt.Parameters = p.parseFunctionParameters()
 
-	// Support both -> Type and : Type = syntax for return types
-	if p.peekTokenIs(token.ARROW) {
-		// fn name(...) -> Type = body
-		p.nextToken() // consume ->
-		stmt.ReturnType = p.parseTypeExpression()
-		// For -> syntax, we need to consume = if present
-		if p.peekTokenIs(token.ASSIGN) {
-			p.nextToken() // consume =
-		}
-		// Body can be expression or block
-		p.nextToken()
-	} else if p.peekTokenIs(token.COLON) {
-		// fn name(...): Type = body
-		p.nextToken() // consume :
-		p.nextToken() // advance to type token (string, i32, etc.)
-		stmt.ReturnType = p.parseTypeExpression()
-		// parseTypeExpression advances past the type, so currentToken should be after the type
-		// Check if next token is = (for : Type = syntax)
-		if !p.peekTokenIs(token.ASSIGN) {
-			p.peekError(token.ASSIGN)
-			return nil
-		}
-		p.nextToken() // consume =
-		// Body can be expression or block
-		p.nextToken()
-	} else {
-		p.peekError(token.ARROW)
+	// Function definitions use : Type = syntax (not -> which is for function types)
+	if !p.peekTokenIs(token.COLON) {
+		p.peekError(token.COLON)
 		return nil
 	}
+	// fn name(...): Type = body
+	p.nextToken() // consume :
+	p.nextToken() // advance to type token (string, i32, etc.)
+	stmt.ReturnType = p.parseTypeExpression()
+	// parseTypeExpression advances past the type, so currentToken should be after the type
+	// Check if next token is = (for : Type = syntax)
+	if !p.peekTokenIs(token.ASSIGN) {
+		p.peekError(token.ASSIGN)
+		return nil
+	}
+	p.nextToken() // consume =
+	// Body can be expression or block
+	p.nextToken()
 	if p.currentTokenIs(token.LBRACE) {
 		stmt.Body = p.parseBlockExpression()
 	} else {
