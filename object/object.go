@@ -39,8 +39,8 @@ type String struct {
 }
 
 func (s *String) Kind() ObjectKind { return STRING }
-func (s *String) Type() ObjectType  { return STRING_OBJ }
-func (s *String) Inspect() string   { return s.Value }
+func (s *String) Type() ObjectType { return STRING_OBJ }
+func (s *String) Inspect() string  { return s.Value }
 
 type Function struct {
 	Parameters []*ast.Identifier
@@ -63,7 +63,7 @@ type Builtin struct {
 }
 
 func (b *Builtin) Kind() ObjectKind { return FUNCTION }
-func (b *Builtin) Type() ObjectType  { return FUNCTION_OBJ }
+func (b *Builtin) Type() ObjectType { return FUNCTION_OBJ }
 func (b *Builtin) Inspect() string  { return "builtin function" }
 
 type ADTValue struct {
@@ -86,8 +86,8 @@ type ReturnValue struct {
 }
 
 func (rv *ReturnValue) Type() ObjectType { return RETURN_VALUE_OBJ }
-func (rv *ReturnValue) Inspect() string   { return rv.Value.Inspect() }
-func (rv *ReturnValue) Kind() ObjectKind  { return RETURN_VALUE }
+func (rv *ReturnValue) Inspect() string  { return rv.Value.Inspect() }
+func (rv *ReturnValue) Kind() ObjectKind { return RETURN_VALUE }
 
 type Error struct {
 	Message string
@@ -95,7 +95,7 @@ type Error struct {
 
 func (e *Error) Type() ObjectType { return ERROR_OBJ }
 func (e *Error) Inspect() string  { return "ERROR: " + e.Message }
-func (e *Error) Kind() ObjectKind  { return ERROR }
+func (e *Error) Kind() ObjectKind { return ERROR }
 
 // Record: { field1: value1, field2: value2, ... }
 type Record struct {
@@ -103,11 +103,11 @@ type Record struct {
 }
 
 func (r *Record) Type() ObjectType { return RECORD_OBJ }
-func (r *Record) Kind() ObjectKind  { return RECORD }
+func (r *Record) Kind() ObjectKind { return RECORD }
 func (r *Record) Inspect() string {
 	var out bytes.Buffer
 	out.WriteRune('{')
-	
+
 	first := true
 	for field, value := range r.Fields {
 		if !first {
@@ -118,7 +118,7 @@ func (r *Record) Inspect() string {
 		out.WriteString(value.Inspect())
 		first = false
 	}
-	
+
 	out.WriteRune('}')
 	return out.String()
 }
@@ -129,7 +129,7 @@ type Array struct {
 }
 
 func (a *Array) Type() ObjectType { return ARRAY_OBJ }
-func (a *Array) Kind() ObjectKind  { return ARRAY }
+func (a *Array) Kind() ObjectKind { return ARRAY }
 func (a *Array) Inspect() string {
 	var out bytes.Buffer
 	out.WriteRune('[')
@@ -223,16 +223,16 @@ type Object interface {
 type ObjectType string
 
 const (
-	INTEGER_OBJ  = "INTEGER"
-	BOOLEAN_OBJ  = "BOOLEAN"
-	STRING_OBJ   = "STRING"
-	NULL_OBJ     = "NULL"
+	INTEGER_OBJ      = "INTEGER"
+	BOOLEAN_OBJ      = "BOOLEAN"
+	STRING_OBJ       = "STRING"
+	NULL_OBJ         = "NULL"
 	RETURN_VALUE_OBJ = "RETURN_VALUE"
-	ERROR_OBJ    = "ERROR"
-	FUNCTION_OBJ = "FUNCTION"
-	ADT_OBJ      = "ADT"
-	RECORD_OBJ   = "RECORD"
-	ARRAY_OBJ    = "ARRAY"
+	ERROR_OBJ        = "ERROR"
+	FUNCTION_OBJ     = "FUNCTION"
+	ADT_OBJ          = "ADT"
+	RECORD_OBJ       = "RECORD"
+	ARRAY_OBJ        = "ARRAY"
 )
 
 const (

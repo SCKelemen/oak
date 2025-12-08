@@ -1976,15 +1976,35 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 
 	stmt.Parameters = p.parseFunctionParameters()
 
-	if !p.expectPeek(token.ARROW) {
+	// Support both -> Type and : Type = syntax for return types
+	if p.peekTokenIs(token.ARROW) {
+		// fn name(...) -> Type = body
+		p.nextToken() // consume ->
+		stmt.ReturnType = p.parseTypeExpression()
+		// For -> syntax, we need to consume = if present
+		if p.peekTokenIs(token.ASSIGN) {
+			p.nextToken() // consume =
+		}
+		// Body can be expression or block
+		p.nextToken()
+	} else if p.peekTokenIs(token.COLON) {
+		// fn name(...): Type = body
+		p.nextToken() // consume :
+		p.nextToken() // advance to type token (string, i32, etc.)
+		stmt.ReturnType = p.parseTypeExpression()
+		// parseTypeExpression advances past the type, so currentToken should be after the type
+		// Check if next token is = (for : Type = syntax)
+		if !p.peekTokenIs(token.ASSIGN) {
+			p.peekError(token.ASSIGN)
+			return nil
+		}
+		p.nextToken() // consume =
+		// Body can be expression or block
+		p.nextToken()
+	} else {
+		p.peekError(token.ARROW)
 		return nil
 	}
-
-	p.nextToken() // consume ->
-	stmt.ReturnType = p.parseTypeExpression()
-
-	// Body can be expression or block
-	p.nextToken()
 	if p.currentTokenIs(token.LBRACE) {
 		stmt.Body = p.parseBlockExpression()
 	} else {
@@ -2387,11 +2407,32 @@ func (p *Parser) parseMatchArms() []*ast.MatchArm {
 
 // Parse pattern: _ | x | 200 | "string" | .Ok | .Some(x)
 func (p *Parser) parsePattern() ast.Pattern {
+	// Check for .Variant shorthand (DOT followed by IDENT)
+	if p.currentTokenIs(token.DOT) && p.peekTokenIs(token.IDENT) {
+		// This is .Variant form - parse as variant pattern
+		// We need to create a synthetic token with ".Variant" as the literal
+		dotToken := p.currentToken
+		p.nextToken() // consume DOT, now currentToken is IDENT
+		// Create a variant pattern with the variant name
+		pattern := &ast.VariantPattern{Token: dotToken}
+		pattern.Variant = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		// Check for payload: .Some(x)
+		if p.peekTokenIs(token.LPAREN) {
+			p.nextToken() // consume (
+			p.nextToken() // consume pattern
+			pattern.Payload = p.parsePattern()
+			if !p.expectPeek(token.RPAREN) {
+				return nil
+			}
+		}
+		return pattern
+	}
+
 	switch p.currentToken.TokenKind {
 	case token.IDENT:
 		// Could be binding or variant
-		if p.currentToken.Literal[0] == '.' || (len(p.currentToken.Literal) > 0 && p.currentToken.Literal[0] >= 'A' && p.currentToken.Literal[0] <= 'Z') {
-			// Variant pattern: .Ok or Status::Ok
+		if len(p.currentToken.Literal) > 0 && p.currentToken.Literal[0] >= 'A' && p.currentToken.Literal[0] <= 'Z' {
+			// Capitalized identifier treated as variant (bare variant name)
 			return p.parseVariantPattern()
 		}
 		// Binding pattern: x
