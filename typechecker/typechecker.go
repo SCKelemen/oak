@@ -603,7 +603,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.SliceExpression:
 		return tc.checkSliceExpression(e)
 	case *ast.ArrayLiteral:
-		return tc.checkArrayLiteral(e)
+		return tc.checkArrayLiteral(e, expected)
 	case nil:
 		// Nil expression - likely a parser error, but don't crash
 		tc.addError(nil, "nil expression encountered (parser error)")
@@ -2032,13 +2032,13 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	if stmt == nil {
 		return
 	}
-	
+
 	// Check for nil function name
 	if stmt.Name == nil {
 		tc.addError(stmt, "function statement: missing function name")
 		return
 	}
-	
+
 	// Extract type parameters and constraints
 	typeVars := []string{}
 	constraints := []Constraint{}
@@ -2373,7 +2373,12 @@ func (tc *TypeChecker) checkUnsafeBlock(stmt *ast.UnsafeBlock) {
 	tc.checkBlockStatement(stmt.Body)
 }
 
-func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
+func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ...Type) Type {
+	var expected Type
+	if len(expectedType) > 0 {
+		expected = expectedType[0]
+	}
+
 	// Check if this is a typed array literal: [N]Type{ ... }
 	if expr.Type != nil {
 		// Parse the array type from the Type field (which is an IndexExpression)
@@ -2414,13 +2419,35 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral) Type {
 		return expectedArray
 	}
 
-	// Untyped array literal: [ expr1, expr2, ... ]
-	// Infer element type from first element
+	// Untyped array literal: [ expr1, expr2, ... ] or []
+	// For empty array [], use expected type if available
 	if len(expr.Elements) == 0 {
-		// Empty array - default to []i32 for now
-		return &ArrayType{
-			ElementType: &PrimitiveType{Name: "i32"},
-			IsSlice:     true,
+		// Empty array [] - must have type annotation or expected type
+		if expected != nil {
+			// Check if expected type is an array/slice type
+			if arrayType, ok := expected.(*ArrayType); ok {
+				// [] is syntactic sugar for []Type{} - set the type on the AST node
+				// Create the type expression for []Type
+				elementTypeIdent := &ast.Identifier{
+					Token: expr.Token,
+					Value: arrayType.ElementType.String(),
+				}
+				// Create IndexExpression for []Type (empty index means slice)
+				sliceTypeExpr := &ast.IndexExpression{
+					Token: expr.Token,
+					Left:  elementTypeIdent,
+					Index: &ast.Identifier{Token: expr.Token, Value: ""}, // empty string = slice
+				}
+				expr.Type = sliceTypeExpr
+				return arrayType
+			} else {
+				tc.addError(expr, "empty array literal [] cannot be assigned to non-array type %s", expected)
+				return nil
+			}
+		} else {
+			// No type annotation and no expected type - error
+			tc.addError(expr, "empty array literal [] requires type annotation (e.g., []u8{} or a: []u8 = [])")
+			return nil
 		}
 	}
 
