@@ -310,6 +310,81 @@ some_value: Option[i32] = Option.Some(42)
 no_value: Option[i32] = Option.None
 ```
 
+
+### ADT Zoo 
+
+```oak
+Color: type = Red | Green | Blue
+Color: type = | Red | Green | Blue
+Color := Red | Green | Blue
+Color := Red | Green | Blue
+
+Color: type = Red 
+            | Green
+            | Blue
+
+Color: type =
+            | Red 
+            | Green
+            | Blue
+
+Color := Red 
+       | Green
+       | Blue
+
+Color :=
+      | Red 
+      | Green
+      | Blue
+
+
+fn color_to_string(c: Color): string {
+  c ?
+    | Red => "red"
+    | Green => "green"
+    | Blue => "blue"
+    | _ => "unreachable"
+}      
+
+fn color_to_string(c: Color): string = c ? Red => "red" | Green => "green" | Blue => "blue" | _ => "unreachable"
+fn color_to_string(c: Color): string = c ? | Red => "red" | Green => "green" | Blue => "blue" | _ => "unreachable"
+
+fn color_to_string(c: Color): string {
+  c ?
+    | .Red => "red"
+    | .Green => "green"
+    | .Blue => "blue"
+    | _ => "unreachable"
+}      
+
+fn color_to_string(c: Color): string = c ? .Red => "red" | .Green => "green" | .Blue => "blue" | _ => "unreachable"
+fn color_to_string(c: Color): string = c ? | .Red => "red" | .Green => "green" | .Blue => "blue" | _ => "unreachable"
+
+
+fn color_to_string(c: Color): string {
+  c ?
+    | Color.Red => "red"
+    | Color.Green => "green"
+    | Color.Blue => "blue"
+    | _ => "unreachable"
+}      
+
+fn color_to_string(c: Color): string = c ? Color.Red => "red" | Color.Green => "green" | Color.Blue => "blue" | _ => "unreachable"
+fn color_to_string(c: Color): string = c ? | Color.Red => "red" | Color.Green => "green" | Color.Blue => "blue" | _ => "unreachable"
+
+// the canonical form for the formatter are
+// full block
+fn color_to_string(c: Color): string {
+  c ?
+    | .Red => "red"
+    | .Green => "green"
+    | .Blue => "blue"
+    | _ => "unreachable"
+}      
+// inline expression
+fn color_to_string(c: Color): string = c ? .Red => "red" | .Green => "green" | .Blue => "blue" | _ => "unreachable"
+```
+
 ---
 
 ## Records

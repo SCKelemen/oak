@@ -2467,7 +2467,36 @@ func (p *Parser) parsePattern() ast.Pattern {
 
 	switch p.currentToken.TokenKind {
 	case token.IDENT:
-		// Could be binding or variant
+		// Could be binding, variant, or Type.Variant
+		// Check if this is Type.Variant (IDENT followed by DOT)
+		if p.peekTokenIs(token.DOT) {
+			// This could be Type.Variant - check if the identifier after DOT is capitalized
+			// Save the type name
+			typeNameToken := p.currentToken
+			p.nextToken() // consume DOT
+			if p.peekTokenIs(token.IDENT) {
+				// This is Type.Variant form
+				p.nextToken() // consume variant IDENT
+				pattern := &ast.VariantPattern{Token: typeNameToken}
+				pattern.TypeName = &ast.Identifier{Token: typeNameToken, Value: typeNameToken.Literal}
+				pattern.Variant = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+				// Check for payload: Type.Some(x)
+				if p.peekTokenIs(token.LPAREN) {
+					p.nextToken() // consume (
+					p.nextToken() // consume pattern
+					pattern.Payload = p.parsePattern()
+					if !p.expectPeek(token.RPAREN) {
+						return nil
+					}
+				}
+				return pattern
+			}
+			// Not Type.Variant, backtrack (we consumed DOT and IDENT)
+			// Actually, we can't easily backtrack, so this is an error
+			p.addErrorAtCurrentToken("expected variant name after Type.")
+			return nil
+		}
+		// Not Type.Variant, check if it's a bare variant
 		if len(p.currentToken.Literal) > 0 && p.currentToken.Literal[0] >= 'A' && p.currentToken.Literal[0] <= 'Z' {
 			// Capitalized identifier treated as variant (bare variant name)
 			return p.parseVariantPattern()
@@ -2509,26 +2538,28 @@ func (p *Parser) parseVariantPattern() ast.Pattern {
 	if len(literal) > 0 && literal[0] == '.' {
 		// .Variant form
 		variantName = literal[1:]
+		pattern.Variant = &ast.Identifier{Token: p.currentToken, Value: variantName}
 	} else {
 		// Might be Type.Variant - check if next token is DOT
 		if p.peekTokenIs(token.DOT) {
-			// Type.Variant form - skip the type name and DOT
+			// Type.Variant form - store type name and variant name
+			typeNameToken := p.currentToken
+			pattern.TypeName = &ast.Identifier{Token: typeNameToken, Value: typeNameToken.Literal}
 			p.nextToken() // consume DOT
 			if !p.currentTokenIs(token.IDENT) {
 				p.peekError(token.IDENT)
 				return nil
 			}
 			variantName = p.currentToken.Literal
+			pattern.Variant = &ast.Identifier{Token: p.currentToken, Value: variantName}
 		} else {
 			// Capitalized identifier treated as variant (bare variant name)
 			variantName = literal
+			pattern.Variant = &ast.Identifier{Token: p.currentToken, Value: variantName}
 		}
 	}
 
-	pattern.Variant = &ast.Identifier{Token: p.currentToken, Value: variantName}
-	// Note: Type name is not stored in VariantPattern - it's inferred during type checking
-
-	// Check for payload: .Some(x)
+	// Check for payload: .Some(x) or Type.Some(x)
 	if p.peekTokenIs(token.LPAREN) {
 		p.nextToken() // consume (
 		p.nextToken() // consume pattern

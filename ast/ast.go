@@ -519,17 +519,26 @@ func (lp *LiteralPattern) String() string       { return lp.Value.String() }
 // Variant pattern
 type VariantPattern struct {
 	BaseNode
-	Token   token.Token
-	Variant *Identifier // .Ok, .Some, etc.
-	Payload Pattern     // optional, for .Some(x)
+	Token    token.Token
+	TypeName *Identifier // optional type name for Type.Variant patterns
+	Variant  *Identifier // .Ok, .Some, etc.
+	Payload  Pattern     // optional, for .Some(x)
 }
 
 func (vp *VariantPattern) patternNode()         {}
 func (vp *VariantPattern) TokenLiteral() string { return vp.Token.Literal }
 func (vp *VariantPattern) String() string {
 	var out bytes.Buffer
-	out.WriteString(".")
-	out.WriteString(vp.Variant.String())
+	if vp.TypeName != nil {
+		// Type.Variant form
+		out.WriteString(vp.TypeName.String())
+		out.WriteString(".")
+		out.WriteString(vp.Variant.String())
+	} else {
+		// .Variant or bare variant form
+		out.WriteString(".")
+		out.WriteString(vp.Variant.String())
+	}
 	if vp.Payload != nil {
 		out.WriteRune('(')
 		out.WriteString(vp.Payload.String())
