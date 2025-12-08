@@ -278,6 +278,9 @@ func (p *Parser) parseStatement() ast.Statement {
 				return stmt
 			}
 			// Not starting with IDENT, parse as normal variable declaration
+			// We've already consumed := at line 241, so currentToken is :=
+			// We need to advance to the value expression
+			p.nextToken() // advance past := to the value
 			stmt := &ast.VariableDeclaration{Token: name.Token}
 			stmt.Name = name
 			stmt.Value = p.parseExpression(LOWEST)
