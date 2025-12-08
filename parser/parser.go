@@ -1667,6 +1667,8 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 	// Check if this is a slice literal: []Type{ ... }
 	if p.currentTokenIs(token.RBRACK) {
 		// We have [] - check if after ] we have a type identifier and then {
+		// Save the current position before peeking
+		closeBracketToken := p.currentToken
 		// Temporarily advance to see what's after ]
 		p.nextToken() // move past ] to next token
 
@@ -1684,10 +1686,21 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 			return p.parseTypedArrayLiteralWithToken(openBracketToken, nil, elementType)
 		}
 
-		// Not a slice literal - reset and parse as short array literal
-		// Reset to the opening bracket
-		p.currentToken = openBracketToken
-		p.nextToken() // move past [
+		// Not a slice literal - could be empty array [] or we need to parse as short array literal
+		// If we're at EOF or a non-identifier, this is just an empty array []
+		if p.currentTokenIs(token.EOF) || (!p.currentTokenIs(token.IDENT) && !p.currentTokenIs(token.INT)) {
+			// This is an empty array literal: []
+			array := &ast.ArrayLiteral{
+				Token:    openBracketToken,
+				Elements: []ast.Expression{},
+			}
+			// We're already past ], so we're done
+			return array
+		}
+
+		// Reset to the closing bracket to continue parsing as short array literal
+		p.currentToken = closeBracketToken
+		// Don't advance - we want to be at ] so the empty array check below can handle it
 	}
 
 	// Check if next token is an integer (array size)
@@ -1825,7 +1838,7 @@ func (p *Parser) parseTypedArrayLiteralWithToken(bracketToken token.Token, size 
 		// Fixed array type: [N]Type
 		index = size
 	}
-	
+
 	arrayType := &ast.IndexExpression{
 		Token: bracketToken, // The [ token
 		Left:  elementType,
