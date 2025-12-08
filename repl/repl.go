@@ -112,7 +112,8 @@ func Start(in io.Reader, out io.Writer) {
 			for _, msg := range typeChecker.Errors() {
 				io.WriteString(out, "\t[type error] "+msg+"\n")
 			}
-			// Continue to evaluation anyway for now
+			// Skip evaluation on type errors
+			continue
 		}
 
 		val := evaluator.Eval(program, env)

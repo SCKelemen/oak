@@ -1884,25 +1884,14 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 
 func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 	// Check if variable already exists
-	varScheme, exists := tc.env.Get(stmt.Name.Value)
+	_, exists := tc.env.Get(stmt.Name.Value)
 	if exists {
-		// Variable already exists - this is actually an assignment, not a declaration
-		// Only allow assignment if there's a value (x = value), not just declaration (x: type)
-		if stmt.Value == nil {
-			// This is a redeclaration without assignment - error (shadowing is banned)
-			tc.addError(stmt.Name, "variable %s already declared; Oak does not allow shadowing", stmt.Name.Value)
-			return
-		}
-		// This is an assignment to an existing variable
-		// Instantiate the scheme to get the actual type
-		unifier := NewUnifier()
-		varType := Instantiate(varScheme, unifier)
-		// Check that assigned value matches variable type
-		valueType := tc.checkExpression(stmt.Value, varType)
-		if valueType != nil {
-			if !tc.isAssignable(valueType, varType) {
-				tc.addError(stmt, "assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
-			}
+		// Variable already exists - redefinition is not allowed
+		// Use assignment statement (x = value) instead of variable declaration (x: type = value)
+		if stmt.Type != nil {
+			tc.addError(stmt.Name, "variable %s already declared; cannot redeclare with type annotation. Use assignment (x = value) instead", stmt.Name.Value)
+		} else {
+			tc.addError(stmt.Name, "variable %s already declared; Oak does not allow shadowing or redefinition", stmt.Name.Value)
 		}
 		return
 	}
