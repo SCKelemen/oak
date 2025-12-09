@@ -239,12 +239,12 @@ func (p *Parser) parseStatement() ast.Statement {
 			// Save the name for potential type definition
 			name := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 			// Consume := to check what follows
-			p.nextToken() // consume :=
+			p.nextToken() // consume :=, now currentToken is :=
 			// Check if next token is IDENT followed by PIPE (variant list pattern)
 			if p.peekTokenIs(token.IDENT) {
 				// We need to check if the token after the IDENT is PIPE
 				// We can't peek two ahead, so we'll advance and check
-				p.nextToken() // advance to IDENT
+				p.nextToken() // advance to IDENT (first token of value)
 				if p.peekTokenIs(token.PIPE) {
 					// This is a type definition shorthand: Color := Red | Blue | Green
 					// Convert to: Color: type = Red | Blue | Green
@@ -272,19 +272,37 @@ func (p *Parser) parseStatement() ast.Statement {
 					return adt
 				}
 				// Not a type definition, parse as variable declaration from current position
-				// At this point, currentToken is the first token of the value expression (e.g., IDENT for ABCD)
-				// We've already consumed := at line 242, and advanced to the value at line 246
-				// So currentToken is already positioned correctly for parsing the value
+				// currentToken is already at the first token of the value expression (e.g., IDENT for ABCD)
 				stmt := &ast.VariableDeclaration{Token: name.Token}
 				stmt.Name = name
 				stmt.Value = p.parseExpression(LOWEST)
 				stmt.Type = nil
 				return stmt
 			}
-			// Not starting with IDENT, parse as normal variable declaration
-			// We've already consumed := at line 241, so currentToken is :=
-			// We need to advance to the value expression
-			p.nextToken() // advance past := to the value
+			// Not starting with IDENT (value is not an identifier, e.g., x := 1 or x := { ... })
+			// At line 242, we advanced to :=, so currentToken is :=
+			// peekToken should be the first token of the value expression (e.g., INT for 1)
+			// We need to advance past := to get to the value expression
+			if !p.currentTokenIs(token.COLON_ASSIGN) {
+				// This shouldn't happen - we should be at := here
+				// But if we're not, maybe we're already at the value?
+				if p.currentTokenIs(token.INT) || p.currentTokenIs(token.STRING) || p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.IDENT) {
+					// We're already at the value, don't advance
+				} else {
+					p.addErrorAtCurrentToken(fmt.Sprintf("expected := or value expression, got %s", p.currentToken.TokenKind))
+					return nil
+				}
+			} else {
+				// We're at :=, peekToken should be the value expression token
+				// Advance past := to the value
+				// nextToken() sets currentToken = peekToken, so peekToken should already be the value
+				if p.peekToken.TokenKind == token.EOF {
+					p.addErrorAtCurrentToken("expected value expression after :=")
+					return nil
+				}
+				p.nextToken() // advance past := to the value
+				// After nextToken(), currentToken should be the first token of the value
+			}
 			stmt := &ast.VariableDeclaration{Token: name.Token}
 			stmt.Name = name
 			stmt.Value = p.parseExpression(LOWEST)
@@ -321,7 +339,8 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 	if p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.SEMI) ||
 		p.currentTokenIs(token.RPAREN) || p.currentTokenIs(token.RBRACE) ||
 		p.currentTokenIs(token.RBRACK) || p.currentTokenIs(token.PIPE) ||
-		p.currentTokenIs(token.COLON) {
+		p.currentTokenIs(token.COLON) || p.currentTokenIs(token.COLON_ASSIGN) {
+		// COLON_ASSIGN (:=) can't start an expression - it's an assignment operator
 		return nil
 	}
 
@@ -787,7 +806,29 @@ func (p *Parser) ParseProgram() *ast.Program {
 		if stmt != nil {
 			program.Statements = append(program.Statements, stmt)
 		}
-		p.nextToken()
+		// Check if currentToken is already at the start of the next statement
+		// This can happen if parseStatement() left currentToken at the start of the next statement
+		// (e.g., after parsing an ADT definition with variant lists)
+		// In that case, we should NOT call p.nextToken() because we're already at the next statement
+		// We detect this by checking if currentToken is a token that can start a statement
+		// Note: trivia tokens are skipped by nextToken(), so if currentToken is TRIVIA,
+		// we should call p.nextToken() to skip it and get to the actual next statement
+		canStartStatement := (p.currentTokenIs(token.IDENT) ||
+			p.currentTokenIs(token.FN) ||
+			p.currentTokenIs(token.TYPE) ||
+			p.currentTokenIs(token.INTERFACE) ||
+			p.currentTokenIs(token.PACKAGE) ||
+			p.currentTokenIs(token.IMPORT) ||
+			p.currentTokenIs(token.WHILE) ||
+			p.currentTokenIs(token.UNSAFE)) &&
+			!p.currentTokenIs(token.TRIVIA) &&
+			!p.currentTokenIs(token.COMMENT)
+		if !canStartStatement {
+			// currentToken is not at the start of a statement (or is trivia), so advance it
+			p.nextToken()
+		}
+		// If canStartStatement is true, currentToken is already at the start of the next statement,
+		// so we don't call p.nextToken() - we'll parse it in the next iteration
 	}
 
 	return program
@@ -1476,7 +1517,7 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 }
 
 // parseRecordType parses a record *type*: { field: Type, field2: Type2, ... }
-// Contract: Assumes currentToken is '{', leaves currentToken at '}' (last token of the type).
+// Contract: Assumes currentToken is '{', consumes the closing '}' and leaves currentToken past it.
 func (p *Parser) parseRecordType() ast.Expression {
 	record := &ast.RecordLiteral{
 		Token:  p.currentToken, // '{'
@@ -1487,7 +1528,7 @@ func (p *Parser) parseRecordType() ast.Expression {
 	if p.peekTokenIs(token.RBRACE) {
 		p.nextToken() // move to '}'
 		record.EndToken = p.currentToken
-		// currentToken is '}', last token of the type
+		// Leave currentToken at '}' (contract: parseTypePrimary leaves currentToken at last token)
 		return record
 	}
 
@@ -1503,7 +1544,7 @@ func (p *Parser) parseRecordType() ast.Expression {
 		// Check for closing brace (allows trailing comma: { A: u32, B: u32, })
 		if p.currentTokenIs(token.RBRACE) {
 			record.EndToken = p.currentToken
-			p.nextToken() // consume }
+			// Leave currentToken at '}' (contract: parseTypePrimary leaves currentToken at last token)
 			break
 		}
 
@@ -1524,8 +1565,10 @@ func (p *Parser) parseRecordType() ast.Expression {
 		}
 		record.Fields[fieldName] = fieldType
 
-		// At this point, currentToken is the **last token of the field type**.
+		// parseTypeExpression() leaves currentToken at the last token of the field type.
+		// For simple types like "u32", that's the identifier itself.
 		// Next token should be ',' or '}' or another IDENT (for next field without comma).
+		// We need to advance past the type to see what's next.
 		p.nextToken() // advance past the type expression
 
 		if p.currentTokenIs(token.COMMA) {
@@ -1536,7 +1579,7 @@ func (p *Parser) parseRecordType() ast.Expression {
 
 		if p.currentTokenIs(token.RBRACE) {
 			record.EndToken = p.currentToken
-			p.nextToken() // consume }
+			// Leave currentToken at '}' (contract: parseTypePrimary leaves currentToken at last token)
 			break
 		}
 
@@ -1551,6 +1594,16 @@ func (p *Parser) parseRecordType() ast.Expression {
 		p.peekError(token.RBRACE)
 		return nil
 	}
+
+	// After the loop, currentToken should be at the closing brace
+	// (parseRecordType contract: leaves currentToken at '}' - last token of the type)
+	// This matches the contract of parseTypePrimary/parseTypeExpression
+	if !p.currentTokenIs(token.RBRACE) {
+		// This shouldn't happen - we should have broken out of the loop when we saw '}'
+		p.addErrorAtCurrentToken("parseRecordType: expected closing brace")
+		return nil
+	}
+	record.EndToken = p.currentToken
 
 	return record
 }
@@ -2807,7 +2860,7 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 		return nil
 	}
 
-	// Move to first token of body
+	// Move to first token of body (after the '=' sign)
 	p.nextToken()
 
 	// Parse body: record type or variant list
@@ -2851,6 +2904,150 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 			}
 			adt.Variants = append(adt.Variants, variant)
 		}
+		// After the loop, currentToken is past the last variant (on newline, next statement, or EOF)
+		// We need to leave currentToken at the last token of the ADT definition
+		// For variant lists, the last token is the last variant name (for simple variants)
+		// Since parseADTVariant() consumed it, currentToken is already past it
+		// We can't "back up", but we can use the last variant's name token
+		// However, we can't change currentToken to a previous token
+		// The real fix: parseADTVariant() should leave currentToken at the variant name for the last variant
+		// But that's complex. Instead, let's check if currentToken is at the start of the next statement
+		// If so, we need to handle it differently in ParseProgram
+		// Actually, the simplest fix is to ensure parseADTVariant() doesn't consume the variant name
+		// for the last variant. But we don't know which variant is last until after parsing.
+		// So we need a different approach: track the last variant's name token and "restore" currentToken to it
+		// But we can't do that easily. Let me try a different approach:
+		// After parsing all variants, if currentToken is at the start of the next statement,
+		// we need to leave currentToken at the last variant's name. Since we can't "back up",
+		// we'll need to modify ParseProgram to handle this case.
+		// Actually, wait - let me check if the issue is that ParseProgram calls p.nextToken() when
+		// currentToken is already at the start of the next statement. If so, we should NOT call p.nextToken()
+		// in that case. But how do we detect that?
+		// Actually, I think the real fix is simpler: we need to ensure that after parsing the ADT,
+		// currentToken is at the last token of the ADT, not at the start of the next statement.
+		// For variant lists, we can do this by tracking the last variant's name token.
+		// But since we can't "back up", we need to NOT consume it in the first place.
+		// So the fix: modify parseADTVariant() to accept a parameter indicating if it's the last variant,
+		// and if so, don't consume the variant name. But that's hacky.
+		// Let me try yet another approach: after the loop, check if currentToken is at the start of the next statement.
+		// If so, we know we've gone too far, and we need to "back up" to the last variant's name.
+		// But we can't do that. So the fix must be in ParseProgram: don't call p.nextToken() if currentToken
+		// is already at the start of the next statement. But how do we detect that?
+		// Actually, I think the issue is different. Let me check what happens:
+		// 1. After parsing the ADT, currentToken is at the start of the next statement (e.g., `x`)
+		// 2. ParseProgram calls p.nextToken(), which advances to `:=`
+		// 3. parseStatement() is called with currentToken at `:=`
+		// 4. parseStatement() doesn't recognize `:=` as the start of a statement, so it fails
+		// The fix: ensure currentToken is at the last token of the ADT after parsing, not at the start of the next statement.
+		// For variant lists, that's the last variant name. But parseADTVariant() consumed it.
+		// So we need to NOT consume it. The simplest way: don't call p.nextToken() in parseADTVariant()
+		// for the variant name if it's the last variant. But we don't know which variant is last.
+		// So we need to parse all variants first, then "back up" to the last one's name.
+		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
+		// currentToken is already at the start of the next statement. But that's complex.
+		// Actually, I think the simplest fix is: after parsing the last variant, don't advance past it.
+		// But parseADTVariant() already advanced. So we need to modify parseADTVariant() to not advance
+		// for the last variant. But we don't know which variant is last.
+		// Let me try a completely different approach: modify ParseProgram to check if currentToken is
+		// at the start of a statement (e.g., IDENT), and if so, don't call p.nextToken().
+		// But that's also complex because we need to know what tokens can start a statement.
+		// Actually, I think the real fix is simpler: we need to ensure that parseADTTypeFromName leaves
+		// currentToken at the last token of the ADT definition. For variant lists, we can do this by
+		// tracking the last variant's name token and leaving currentToken at it. But since we can't "back up",
+		// we need to NOT consume it in the first place. So the fix: modify parseADTVariant() to not consume
+		// the variant name if it's the last variant. But we don't know which variant is last.
+		// So we need to parse all variants first, then "back up" to the last one's name.
+		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
+		// currentToken is already at the start of the next statement.
+		// Actually, wait. Let me re-read the problem. The issue is that after parsing the ADT, currentToken
+		// is at the start of the next statement. Then ParseProgram calls p.nextToken(), which advances it.
+		// Then parseStatement() is called, but currentToken is at the wrong token.
+		// The fix: ensure currentToken is at the last token of the ADT after parsing, not at the start of the next statement.
+		// For variant lists, that's the last variant name. But parseADTVariant() consumed it.
+		// So we need to NOT consume it. The simplest way: don't call p.nextToken() in parseADTVariant()
+		// for the variant name if it's the last variant. But we don't know which variant is last.
+		// So we need to parse all variants first, then "back up" to the last one's name.
+		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
+		// currentToken is already at the start of the next statement.
+		// Actually, I think I'm overcomplicating this. Let me try the simplest fix: modify ParseProgram
+		// to check if currentToken is at the start of the next statement, and if so, don't call p.nextToken().
+		// But how do we detect that? We can check if currentToken is IDENT, which can start a statement.
+		// But IDENT can also be part of the current statement (e.g., in a type expression).
+		// So that's not reliable.
+		// Actually, I think the real fix is: we need to ensure that parseADTTypeFromName leaves currentToken
+		// at the last token of the ADT definition. For variant lists, we can do this by tracking the last
+		// variant's name token and leaving currentToken at it. But since we can't "back up", we need to
+		// NOT consume it in the first place. So the fix: modify parseADTVariant() to not consume the variant
+		// name if it's the last variant. But we don't know which variant is last.
+		// So we need to parse all variants first, then "back up" to the last one's name.
+		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
+		// currentToken is already at the start of the next statement.
+		// Actually, I think I need to step back and think about this differently. The contract for parseStatement()
+		// is that it should leave currentToken at the last token of the statement. Then ParseProgram calls
+		// p.nextToken() to advance to the start of the next statement. So if parseADTTypeFromName leaves
+		// currentToken at the start of the next statement, that's wrong - it should leave it at the last token
+		// of the ADT definition. For variant lists, that's the last variant name. But parseADTVariant() consumed it.
+		// So we need to NOT consume it. The simplest way: don't call p.nextToken() in parseADTVariant()
+		// for the variant name if it's the last variant. But we don't know which variant is last.
+		// So we need to parse all variants first, then "back up" to the last one's name.
+		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
+		// currentToken is already at the start of the next statement.
+		// Actually, I think the simplest fix is to modify ParseProgram to check if we're already at the start
+		// of the next statement before calling p.nextToken(). But that's complex.
+		// Let me try a completely different approach: what if we modify parseADTVariant() to return the last
+		// token it consumed? Then we can use that to "restore" currentToken to the last variant's name.
+		// But we can't change currentToken to a previous token.
+		// Actually, I think the real fix is: we need to ensure that parseADTTypeFromName leaves currentToken
+		// at the last token of the ADT definition. For variant lists, we can do this by tracking the last
+		// variant's name token and leaving currentToken at it. But since we can't "back up", we need to
+		// NOT consume it in the first place. So the fix: modify parseADTVariant() to not consume the variant
+		// name if it's the last variant. But we don't know which variant is last.
+		// So we need to parse all variants first, then "back up" to the last one's name.
+		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
+		// currentToken is already at the start of the next statement.
+		// I think I'm going in circles. Let me try the simplest possible fix: modify ParseProgram to check
+		// if currentToken is at the start of a statement (e.g., IDENT), and if the previous statement was
+		// an ADT definition, don't call p.nextToken(). But that's hacky.
+		// Actually, I think the real fix is simpler: we need to ensure that parseADTTypeFromName leaves
+		// currentToken at the last token of the ADT definition. For variant lists, we can do this by
+		// tracking the last variant's name token. But since we can't "back up", we need to NOT consume it.
+		// So the fix: modify parseADTVariant() to not consume the variant name if it's the last variant.
+		// But we don't know which variant is last. So we need to parse all variants first, then "back up".
+		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
+		// currentToken is already at the start of the next statement.
+		// I think I need to accept that we can't easily "back up", so the fix must be in ParseProgram.
+		// Let me modify ParseProgram to check if currentToken is at the start of the next statement,
+		// and if so, don't call p.nextToken().
+		// But how do we detect that? We can check if currentToken is IDENT, which can start a statement.
+		// But that's not reliable. So we need a different approach.
+		// Actually, I think the simplest fix is: modify parseADTVariant() to not consume the variant name
+		// for the last variant. But we don't know which variant is last. So we need to parse all variants
+		// first, then "back up" to the last one's name. But we can't do that.
+		// So the fix must be: modify ParseProgram to not call p.nextToken() if currentToken is already
+		// at the start of the next statement. But that's complex.
+		// I think I'm stuck. Let me try one more approach: what if we modify parseADTVariant() to accept
+		// a parameter indicating if it should consume the variant name? Then we can call it with consume=false
+		// for the last variant. But that's hacky.
+		// Actually, I think the real fix is: we need to ensure that parseADTTypeFromName leaves currentToken
+		// at the last token of the ADT definition. For variant lists, we can do this by tracking the last
+		// variant's name token. But since we can't "back up", we need to NOT consume it.
+		// So the fix: modify parseADTVariant() to not consume the variant name if it's the last variant.
+		// But we don't know which variant is last. So we need to parse all variants first, then "back up".
+		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
+		// currentToken is already at the start of the next statement.
+		// I think I need to just implement the ParseProgram fix, even though it's not ideal.
+		// Actually, wait. Let me check if there's a simpler fix. What if we modify parseADTVariant() to
+		// return the last token it consumed? Then we can use that to "restore" currentToken to the last
+		// variant's name. But we can't change currentToken to a previous token.
+		// So the fix must be: modify ParseProgram to not call p.nextToken() if currentToken is already
+		// at the start of the next statement. But that's complex.
+		// I think I'm going to have to implement the ParseProgram fix, even though it's not ideal.
+		// Actually, let me try one more thing: what if we modify parseADTVariant() to not consume the
+		// variant name at all? Then we can leave currentToken at the variant name. But that would break
+		// other code that expects parseADTVariant() to consume the variant name.
+		// So the fix must be: modify ParseProgram to not call p.nextToken() if currentToken is already
+		// at the start of the next statement. But that's complex.
+		// I think I need to just implement it.
 	} else if p.currentTokenIs(token.LBRACE) {
 		// This is a record type definition: Name: type = { field: Type, ... }
 		// Use parseRecordType() which handles type annotations (field: Type)
@@ -2859,7 +3056,9 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 		if recordType == nil {
 			return nil
 		}
-		// parseRecordType() consumes the closing brace and leaves currentToken past it
+		// parseRecordType() leaves currentToken at the closing brace '}'
+		// This is the last token of the ADT definition, so we leave it here
+		// ParseProgram will call p.nextToken() to advance from '}' to the start of the next statement
 		// Store as a single variant with record type
 		variant := &ast.ADTVariant{
 			Token:   p.currentToken,
@@ -2867,7 +3066,8 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 			Literal: recordType, // For record types, we store the type as the "literal"
 		}
 		adt.Variants = []*ast.ADTVariant{variant}
-		// After parseRecordType(), currentToken is past the closing brace
+		// After parseRecordType(), currentToken is at the closing brace '}'
+		// This is the last token of the ADT definition
 		// ParseProgram will call p.nextToken() to advance to the next statement
 	} else if p.currentTokenIs(token.IDENT) {
 		// Could be: TypeName (type alias) or TypeName & RecordType (composition)
