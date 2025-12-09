@@ -85,10 +85,10 @@ name: string = "Oak"
 ### Primitive Types
 
 ```oak
-// Signed integers
+// Fixed-width signed integers
 i8, i16, i32, i64
 
-// Unsigned integers
+// Fixed-width unsigned integers
 u8, u16, u32, u64
 
 // Platform-sized types (adapt to target architecture)
@@ -97,10 +97,107 @@ int, uint, ptr, uptr
 // Floating point (if supported)
 f32, f64
 
+// Pointers
+*T  // pointer to T (non-numeric, own primitive type)
+
 // Aliases
 byte: type = u8
 rune: type = i32
 ```
+
+### Platform-Sized Integer Types
+
+Oak has four platform-dependent sized types that adapt to the target architecture:
+
+- `int` - signed, "native word" integer (for general arithmetic)
+- `uint` - unsigned, "native word" integer (for general arithmetic)
+- `ptr` - signed integer large enough to hold a pointer (for pointer math)
+- `uptr` - unsigned integer large enough to hold a pointer (for pointer math)
+
+**Width on different targets:**
+
+- **32-bit systems** (STM32, etc.):
+  - `int == i32`
+  - `uint == u32`
+  - `ptr == i32`
+  - `uptr == u32`
+
+- **64-bit systems**:
+  - `int == i64`
+  - `uint == u64`
+  - `ptr == i64`
+  - `uptr == u64`
+
+**Usage guidelines:**
+
+- **For struct fields, message formats, FFI boundaries** → use fixed-width types (`u16`, `i32`, etc.)
+- **For locals, temporaries, loop indices, counters** → `int` / `uint` / `ptr` / `uptr` are fine
+
+**Literal inference:**
+
+Untyped integer literals default to `int`:
+
+```oak
+a := 5        // a: int (i32 on 32-bit, i64 on 64-bit)
+b: uint = 6   // b: uint (u32 on 32-bit, u64 on 64-bit)
+c: i32 = 5    // c: i32 (explicit fixed-width)
+d: u32 = 6    // d: u32 (explicit fixed-width)
+```
+
+### Pointers
+
+Pointers in Oak are a distinct primitive type `*T` (pointer to T). Pointers themselves are not signed or unsigned - they're just addresses. When you need to treat an address as a number, you use `ptr`/`uptr` conversions.
+
+**Address-of and dereference:**
+
+```oak
+x: int = 42
+px: *int = &x
+
+arr: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+parr: *[4]u8 = &arr
+
+// Dereference (in unsafe block)
+unsafe {
+  y: int = *px
+  *px = 10
+}
+```
+
+**Pointer ↔ integer conversions:**
+
+All pointer-integer conversions are explicitly **unsafe** and use `ptr`/`uptr`:
+
+```oak
+unsafe {
+  p: *u8 = &buffer[0]
+  
+  // Pointer → integer
+  addr: uptr = uptr(p)
+  
+  // Integer → pointer
+  q: *u8 = *u8(addr)
+  
+  // Pointer arithmetic via uptr
+  r: *u8 = *u8(addr + 4)
+  
+  // Pointer difference as ptr (signed offset)
+  p2: *u8 = &buffer[16]
+  diff: ptr = ptr(p2) - ptr(p)  // signed byte offset
+}
+```
+
+**Rules:**
+
+- `uptr(T)` and `ptr(T)` casts are only allowed in `unsafe` blocks
+- `ptr` is the signed version; `uptr` is the unsigned version
+- In safe code, you never do pointer arithmetic directly; you use arrays/views/spans
+
+**Comparisons:**
+
+In safe code:
+- Allowed: `p == q`, `p != q` for `*T`
+- Disallowed (unless `unsafe`): `<`, `>`, `<=`, `>=` on pointers, arithmetic on pointers
 
 ### Numeric Literals
 
@@ -266,6 +363,67 @@ s: [*]u8 = span(&arr)
 mid: []u8 = subslice(v, 1, 2)
 ```
 
+**Using platform types with arrays/views/spans:**
+
+```oak
+arr: [4]u8 = [4]u8{ 1, 2, 3, 4 }
+v: []u8 = view(&arr)
+
+// Use uint for loop indices and counters
+fn sum_view(xs: []u8): uint = {
+  acc: uint = 0
+  i: uint = 0
+  while i < len(xs) {
+    acc = acc + uint(xs[i])   // explicit widening if needed
+    i = i + 1
+  }
+  acc
+}
+
+// Low-level pointer operations (in unsafe)
+fn c_memcpy(dst: *u8, src: *u8, n: uptr): () = unsafe {
+  i: uptr = 0
+  while i < n {
+    *(*u8(uptr(dst) + i)) = *(*u8(uptr(src) + i))
+    i = i + 1
+  }
+}
+```
+
+### Unsafe Blocks
+
+Oak provides `unsafe` blocks for low-level operations that bypass the borrow checker:
+
+```oak
+unsafe {
+  // Pointer dereference
+  x: int = 42
+  px: *int = &x
+  y: int = *px
+  *px = 10
+  
+  // Pointer-integer conversions
+  p: *u8 = &buffer[0]
+  addr: uptr = uptr(p)
+  q: *u8 = *u8(addr)
+  
+  // Pointer arithmetic
+  r: *u8 = *u8(addr + 4)
+  
+  // Pointer comparisons
+  p2: *u8 = &buffer[16]
+  if p < p2 {
+    // Pointer ordering (if supported)
+  }
+}
+```
+
+**Rules:**
+- All pointer-integer conversions must be in `unsafe` blocks
+- Pointer arithmetic must be in `unsafe` blocks
+- Pointer ordering comparisons (if supported) must be in `unsafe` blocks
+- In safe code, use arrays/views/spans instead of raw pointer manipulation
+
 ### Generics
 
 ```oak
@@ -365,7 +523,7 @@ User: type = {
 
 ### Primitive Types
 
-Oak includes fixed-width integers, platform-sized types, and floating-point numbers:
+Oak includes fixed-width integers, platform-sized types, pointers, and floating-point numbers:
 
 ```oak
 // Fixed-width integers
@@ -375,12 +533,22 @@ u8, u16, u32, u64
 // Platform-sized types (32-bit or 64-bit depending on target)
 int, uint, ptr, uptr
 
+// Pointers
+*T  // pointer to T
+
 // Floating point
 f32, f64
 
 // String type
 string: type = Str[utf8]  // UTF-8 encoded string
 ```
+
+**Platform-sized types:**
+- `int` / `uint`: Native word size for general arithmetic
+- `ptr` / `uptr`: Pointer-sized integers for address arithmetic
+- Width depends on target: 32-bit systems use i32/u32, 64-bit systems use i64/u64
+- Use fixed-width types for struct fields, FFI, and message formats
+- Use platform types for locals, loop indices, and counters
 
 ### Algebraic Data Types
 
@@ -827,6 +995,30 @@ s[0] = 100  // OK
 
 // Cannot mix
 // v3: []u8 = arr[:]  // Error: owner is borrowed as span
+```
+
+### Platform Types with Arrays
+
+```oak
+// Use uint for loop indices and counters
+fn sum_view(xs: []u8): uint = {
+  acc: uint = 0
+  i: uint = 0
+  while i < len(xs) {
+    acc = acc + uint(xs[i])
+    i = i + 1
+  }
+  acc
+}
+
+// Low-level operations use uptr for addresses
+fn c_memcpy(dst: *u8, src: *u8, n: uptr): () = unsafe {
+  i: uptr = 0
+  while i < n {
+    *(*u8(uptr(dst) + i)) = *(*u8(uptr(src) + i))
+    i = i + 1
+  }
+}
 ```
 
 ### Intrusive Lists
