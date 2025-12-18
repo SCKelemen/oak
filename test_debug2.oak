@@ -1,2 +1,0 @@
-ABCD: type = { A: u32, B: u32 }
-x := ABCD{ A: 0 }

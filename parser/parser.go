@@ -820,14 +820,18 @@ func (p *Parser) ParseProgram() *ast.Program {
 			p.currentTokenIs(token.PACKAGE) ||
 			p.currentTokenIs(token.IMPORT) ||
 			p.currentTokenIs(token.WHILE) ||
-			p.currentTokenIs(token.UNSAFE)) &&
+			p.currentTokenIs(token.UNSAFE) ||
+			p.currentTokenIs(token.COLON)) && // COLON for REPL commands like :exit
 			!p.currentTokenIs(token.TRIVIA) &&
 			!p.currentTokenIs(token.COMMENT)
-		if !canStartStatement {
+		// Always advance if peekToken is EOF, regardless of canStartStatement
+		// This prevents infinite loops when currentToken looks like it can start a statement
+		// but is actually the last token of the previous statement
+		if !canStartStatement || p.peekTokenIs(token.EOF) {
 			// currentToken is not at the start of a statement (or is trivia), so advance it
 			p.nextToken()
 		}
-		// If canStartStatement is true, currentToken is already at the start of the next statement,
+		// If canStartStatement is true and peekToken is not EOF, currentToken is already at the start of the next statement,
 		// so we don't call p.nextToken() - we'll parse it in the next iteration
 	}
 

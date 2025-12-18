@@ -1,6 +1,0 @@
-Color1: type = Red | Green | Blue
-fn test(c: Color1): string {
-  c ?
-    | Red => "red"
-    | _ => "other"
-}

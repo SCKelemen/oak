@@ -75,12 +75,22 @@ func (h *History) Reset() {
 }
 
 // readLineWithHistory reads a line with history support and cursor movement
-func readLineWithHistory(prompt string, history *History, in *os.File, out *os.File) (string, error) {
+func readLineWithHistory(prompt string, history *History, in *os.File, out *os.File, persistentScanner *bufio.Scanner) (string, error) {
 	// Check if we're in a terminal
 	if !term.IsTerminal(int(in.Fd())) {
-		// Fall back to simple scanner for non-terminal input
-		scanner := bufio.NewScanner(in)
+		// Use persistent scanner for non-terminal input to preserve buffered data
 		fmt.Fprint(out, prompt)
+		if persistentScanner != nil {
+			if !persistentScanner.Scan() {
+				if err := persistentScanner.Err(); err != nil {
+					return "", err
+				}
+				return "", io.EOF
+			}
+			return persistentScanner.Text(), nil
+		}
+		// Fallback: create a new scanner (shouldn't happen if persistentScanner is properly initialized)
+		scanner := bufio.NewScanner(in)
 		if !scanner.Scan() {
 			return "", io.EOF
 		}
@@ -279,6 +289,13 @@ func Start(in io.Reader, out io.Writer) {
 		outFile = os.Stdout
 	}
 
+	// Create a persistent scanner for non-terminal input to preserve buffered data
+	var persistentScanner *bufio.Scanner
+	isTerminal := term.IsTerminal(int(inFile.Fd()))
+	if !isTerminal {
+		persistentScanner = bufio.NewScanner(inFile)
+	}
+
 	for {
 		// Read multiline input
 		var inputLines []string
@@ -290,9 +307,9 @@ func Start(in io.Reader, out io.Writer) {
 			var err error
 
 			if len(inputLines) == 0 {
-				line, err = readLineWithHistory(PROMPT, history, inFile, outFile)
+				line, err = readLineWithHistory(PROMPT, history, inFile, outFile, persistentScanner)
 			} else {
-				line, err = readLineWithHistory(CONTINUATION_PROMPT, history, inFile, outFile)
+				line, err = readLineWithHistory(CONTINUATION_PROMPT, history, inFile, outFile, persistentScanner)
 			}
 
 			if err == io.EOF {

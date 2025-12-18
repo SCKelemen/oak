@@ -1,4 +1,0 @@
-ABCD: type = {
-  A: u32
-  B: u32
-}
