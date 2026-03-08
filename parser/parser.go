@@ -82,11 +82,11 @@ func (p *Parser) parseTypeDeclaration() *ast.TypeDeclarationStatement {
 	}
 
 	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-	if !p.expectPeek(token.EQL) {
+	if !p.expectPeek(token.ASSIGN) {
 		return nil
 	}
 	// TODO: skip shit
-	for !p.currentTokenIs(token.SEMI) {
+	for !p.currentTokenIs(token.SEMI) && !p.currentTokenIs(token.EOF) {
 		p.nextToken()
 	}
 	return stmt
@@ -99,7 +99,7 @@ func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 
 	stmt.ReturnValue = p.parseExpression(LOWEST)
 
-	for !p.currentTokenIs(token.SEMI) {
+	for !p.currentTokenIs(token.SEMI) && !p.currentTokenIs(token.EOF) {
 		p.nextToken()
 	}
 

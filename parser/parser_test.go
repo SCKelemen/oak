@@ -73,15 +73,38 @@ func TestTypeDeclarationStatements(t *testing.T) {
 	}
 }
 
+func TestTypeDeclarationWithoutSemicolonDoesNotHang(t *testing.T) {
+	input := "type ReaderWriter = Reader & Writer"
+
+	lxr := scanner.New(input)
+	p := New(lxr)
+	program := p.ParseProgram()
+	errors := p.Errors()
+	if len(errors) != 0 {
+		t.Errorf("parser had %d errors", len(errors))
+		for _, msg := range errors {
+			t.Errorf("parser error: %q", msg)
+		}
+		t.FailNow()
+	}
+
+	if program == nil {
+		t.Fatalf("ParseProgram() returned nil")
+	}
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program doesn't have the correct number of statements. Expected 1, received %d", len(program.Statements))
+	}
+}
+
 func TestReturnStatements(t *testing.T) {
 	tests := []struct {
 		input       string
-		expectedId  string
 		expectedVal interface{}
 	}{
-		{"return x = 5;", "x", 5},
-		{"return y = true;", "y", true},
-		{"return foobar == y;", "foobar", "y"},
+		{"return 5;", 5},
+		{"return true;", true},
+		{"return foobar;", "foobar"},
 	}
 
 	for _, tt := range tests {
@@ -119,6 +142,31 @@ func TestReturnStatements(t *testing.T) {
 
 	}
 
+}
+
+func TestReturnStatementWithoutSemicolonDoesNotHang(t *testing.T) {
+	input := "return 5"
+
+	lxr := scanner.New(input)
+	p := New(lxr)
+	program := p.ParseProgram()
+
+	if program == nil {
+		t.Fatalf("ParseProgram returned nil")
+	}
+
+	if len(program.Statements) != 1 {
+		t.Fatalf("program does not have the correct number of statements. Expected 1, received %d", len(program.Statements))
+	}
+
+	stmt, ok := program.Statements[0].(*ast.ReturnStatement)
+	if !ok {
+		t.Fatalf("stmt not of type *ast.ReturnStatement, received %T", program.Statements[0])
+	}
+
+	if !testIntegerLiteral(t, stmt.ReturnValue, 5) {
+		return
+	}
 }
 
 func TestIdentifierExpression(t *testing.T) {
