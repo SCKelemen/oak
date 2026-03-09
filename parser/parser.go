@@ -802,6 +802,7 @@ func (p *Parser) ParseProgram() *ast.Program {
 	program.Statements = []ast.Statement{}
 
 	for p.currentToken.TokenKind != token.EOF {
+		start := p.currentToken
 		stmt := p.parseStatement()
 		if stmt != nil {
 			program.Statements = append(program.Statements, stmt)
@@ -829,6 +830,16 @@ func (p *Parser) ParseProgram() *ast.Program {
 		// but is actually the last token of the previous statement
 		if !canStartStatement || p.peekTokenIs(token.EOF) {
 			// currentToken is not at the start of a statement (or is trivia), so advance it
+			p.nextToken()
+		}
+		// Progress guard: if parseStatement made no token progress, force an advance to avoid infinite loops.
+		// This keeps recovery moving on malformed or unsupported constructs.
+		if p.currentToken.TokenKind == start.TokenKind &&
+			p.currentToken.Line == start.Line &&
+			p.currentToken.Column == start.Column &&
+			p.currentToken.ByteStart == start.ByteStart &&
+			p.currentToken.ByteEnd == start.ByteEnd &&
+			p.currentToken.Literal == start.Literal {
 			p.nextToken()
 		}
 		// If canStartStatement is true and peekToken is not EOF, currentToken is already at the start of the next statement,
@@ -2178,17 +2189,21 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 
 	stmt.Parameters = p.parseFunctionParameters()
 
-	// Function definitions use : Type = syntax (not -> which is for function types)
-	if !p.peekTokenIs(token.COLON) {
+	// Accept both:
+	// - fn name(...): Type = body
+	// - fn name(...) -> Type { body } / fn name(...) -> Type expr
+	if !p.peekTokenIs(token.COLON) && !p.peekTokenIs(token.ARROW) {
 		p.peekError(token.COLON)
 		return nil
 	}
-	// fn name(...): Type = body
-	p.nextToken() // consume :
+	p.nextToken() // consume : or ->
 	p.nextToken() // advance to type token (string, i32, etc.)
 	stmt.ReturnType = p.parseTypeExpression()
 	// parseTypeExpression advances past the type, so currentToken should be after the type
-	// Check if next token is = (for : Type = syntax) or { (for : Type { block } syntax)
+	// Check for supported function body forms:
+	// - = expr
+	// - { ... }
+	// - trailing expression (single-expression body)
 	if p.peekTokenIs(token.ASSIGN) {
 		// Expression body: fn name(...): Type = expr
 		p.nextToken() // consume =
@@ -2199,9 +2214,10 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 		p.nextToken() // consume {
 		stmt.Body = p.parseBlockExpression()
 	} else {
-		// Neither = nor {, error
-		p.addErrorAtPeekToken("expected '=' or '{' after return type")
-		return nil
+		// Single-expression body without "=" or braces:
+		// fn add(a: i32, b: i32) -> i32 a + b
+		p.nextToken()
+		stmt.Body = p.parseExpression(LOWEST)
 	}
 
 	// Set end token to the last token of the body
