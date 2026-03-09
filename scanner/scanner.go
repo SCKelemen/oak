@@ -3,6 +3,7 @@ package scanner
 import (
 	"bytes"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/util"
@@ -14,15 +15,18 @@ type Scanner struct {
 	head    int // Current byte position (start of current token)
 	read    int // Look-ahead byte position
 	current rune
+	width   int
 	line    int // Current line number (1-based)
 	column  int // Current column number (1-based)
+	nextLn  int
+	nextCol int
 }
 
 func New(input string) *Scanner {
 	s := &Scanner{
-		input:  input,
-		line:   1,
-		column: 1,
+		input:   input,
+		nextLn:  1,
+		nextCol: 1,
 	}
 
 	s.readChar()
@@ -33,38 +37,32 @@ func New(input string) *Scanner {
 // the read-ahead head, check for EOF, and then
 // update head to read-ahead head
 func (s *Scanner) readChar() {
-	// Track line/column before advancing
-	if s.read < len(s.input) {
-		if s.input[s.read] == '\n' {
-			s.line++
-			s.column = 0 // Will be incremented to 1 below
-		}
-	}
-
-	// if the look-ahead pointer reaches
-	// the end of the input stream,
-	// set the current character to NUL/0
-	// indicating EOF
 	if s.read >= len(s.input) {
+		s.head = s.read
 		s.current = 0
-	} else {
-		// else, set the current character
-		// under inspection to be the char
-		// at the look-ahead position
-		s.current = rune(s.input[s.read])
+		s.width = 0
+		s.line = s.nextLn
+		s.column = s.nextCol
+		return
 	}
 
-	// then we can set the head to the
-	// read-ahead head
 	s.head = s.read
-	// and then increment the read-ahead head
-	s.read++
+	s.line = s.nextLn
+	s.column = s.nextCol
 
-	// Increment column after reading (1-based)
-	if s.current != '\n' && s.current != 0 {
-		s.column++
-	} else if s.current == '\n' {
-		s.column = 1
+	r, w := utf8.DecodeRuneInString(s.input[s.read:])
+	if r == utf8.RuneError && w == 1 {
+		// Keep progressing on invalid UTF-8 while surfacing ILLEGAL token downstream.
+	}
+	s.current = r
+	s.width = w
+	s.read += w
+
+	if r == '\n' {
+		s.nextLn++
+		s.nextCol = 1
+	} else {
+		s.nextCol++
 	}
 }
 
@@ -129,7 +127,7 @@ func (s *Scanner) NextToken() token.Token {
 	case '.':
 		tok = newTokenWithPos(token.DOT, s.current, line, column)
 	case ':':
-		if s.peekChar() == '=' {
+		if s.peekRune() == '=' {
 			ch := s.current
 			s.readChar()
 			literal := string(ch) + string(s.current)
@@ -142,7 +140,7 @@ func (s *Scanner) NextToken() token.Token {
 
 	// handle arithmeticy things
 	case '=':
-		peek := s.peekChar()
+		peek := s.peekRune()
 		if peek == '>' {
 			// Fat arrow for pattern matching: =>
 			ch := s.current
@@ -164,7 +162,7 @@ func (s *Scanner) NextToken() token.Token {
 		tok = newTokenWithPos(token.AMP, s.current, line, column)
 
 	case '!':
-		if s.peekChar() == '=' {
+		if s.peekRune() == '=' {
 			ch := s.current
 			s.readChar()
 			literal := string(ch) + string(s.current)
@@ -173,7 +171,7 @@ func (s *Scanner) NextToken() token.Token {
 			tok = newTokenWithPos(token.BANG, s.current, line, column)
 		}
 	case '-':
-		if s.peekChar() == '>' {
+		if s.peekRune() == '>' {
 			ch := s.current
 			s.readChar()
 			literal := string(ch) + string(s.current)
@@ -187,11 +185,11 @@ func (s *Scanner) NextToken() token.Token {
 		tok = newTokenWithPos(token.MUL, s.current, line, column)
 	case '/':
 		// Check for line comment: //
-		if s.peekChar() == '/' {
+		if s.peekRune() == '/' {
 			return s.readLineComment()
 		}
 		// Check for block comment: /*
-		if s.peekChar() == '*' {
+		if s.peekRune() == '*' {
 			return s.readBlockComment()
 		}
 		// Regular division operator
@@ -298,60 +296,36 @@ func (s *Scanner) readWord() string {
 func (s *Scanner) readNumber() string {
 	position := s.head
 
-	// Check if this is a radix literal: BASE r DIGITS
-	// Pattern: one or more digits, followed by 'r', followed by digits/letters
-	radixStart := position
-	radixEnd := position
-
-	// Read the radix (base) number
+	// Read ASCII radix prefix candidate / decimal digits first.
 	for util.IsDigit(s.current) {
-		radixEnd = s.head
 		s.readChar()
 	}
 
-	// Check if we have 'r' followed by valid radix digits
+	// Radix literal: BASE r DIGITS (e.g., 16rFF, 2r1010).
 	if s.current == 'r' || s.current == 'R' {
-		// We have a radix literal
-		radixStr := s.input[radixStart : radixEnd+1] // includes the last digit before 'r'
+		radixStr := s.input[position:s.head]
 		radix, err := strconv.Atoi(radixStr)
 		if err == nil && radix >= 2 && radix <= 16 {
-			// Valid radix, consume 'r'
 			s.readChar()
-
-			// Read the digits after 'r' (can include A-F for hex)
 			for s.isRadixDigit(s.current, radix) {
 				s.readChar()
 			}
-			digitsEnd := s.head
-
-			// Return the full radix literal: "BASErDIGITS"
-			// We'll parse this in the parser
-			return s.input[position:digitsEnd]
+			return s.input[position:s.head]
 		}
-		// Invalid radix or not a radix literal, fall through to normal number parsing
-		// Reset to start position
-		s.head = position
-		s.read = position + 1
-		if s.read <= len(s.input) {
-			s.current = rune(s.input[position])
-		} else {
-			s.current = 0
-		}
+		// Invalid radix marker: keep 'r' as next token and return decimal part.
+		return stripUnderscores(s.input[position:s.head])
 	}
 
 	// Normal decimal number (possibly with underscores)
 	for util.IsNumericChar(s.current) {
 		s.readChar()
 	}
-	// After the loop, s.current is the first non-numeric character
-	// s.read points to the character after that
-	// We DON'T back up s.read - we leave s.current pointing to the next character to process
-	// This allows NextToken() to process that character in the next call
-	// Strip underscores from the number literal
-	numberStr := s.input[position:s.head]
-	// Remove all underscores for parsing
-	result := make([]rune, 0, len(numberStr))
-	for _, ch := range numberStr {
+	return stripUnderscores(s.input[position:s.head])
+}
+
+func stripUnderscores(s string) string {
+	result := make([]rune, 0, len(s))
+	for _, ch := range s {
 		if ch != '_' {
 			result = append(result, ch)
 		}
@@ -408,12 +382,12 @@ func (s *Scanner) readString() string {
 	return s.input[position:end] // exclude quotes
 }
 
-func (s *Scanner) peekChar() byte {
+func (s *Scanner) peekRune() rune {
 	if s.read >= len(s.input) {
 		return 0
-	} else {
-		return s.input[s.read]
 	}
+	r, _ := utf8.DecodeRuneInString(s.input[s.read:])
+	return r
 }
 
 // readLineComment reads a line comment (// ...) and returns it as a COMMENT token
@@ -468,7 +442,7 @@ func (s *Scanner) readBlockComment() token.Token {
 				ByteEnd:   s.head,
 			}
 		}
-		if s.current == '*' && s.peekChar() == '/' {
+		if s.current == '*' && s.peekRune() == '/' {
 			// Found closing */
 			s.readChar() // consume *
 			s.readChar() // consume /

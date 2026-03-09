@@ -1,16 +1,16 @@
 package util
 
 import (
+	uax31 "github.com/SCKelemen/unicode/uax31"
 	"unicode"
-	"unicode/utf8"
 )
 
 func IsDigit(ch rune) bool {
-	return '0' <= ch && ch <= '9' || ch >= utf8.RuneSelf && unicode.IsDigit(ch)
+	return ('0' <= ch && ch <= '9') || unicode.IsDigit(ch)
 }
 
 func IsLetter(ch rune) bool {
-	return 'a' <= ch && ch <= 'z' || 'A' <= ch && ch <= 'Z' || ch == '_' || ch >= utf8.RuneSelf && unicode.IsLetter(ch)
+	return ('a' <= ch && ch <= 'z') || ('A' <= ch && ch <= 'Z') || ch == '_' || uax31.IsXIDStart(ch)
 }
 
 func IsWhitespace(ch rune) bool {
@@ -21,10 +21,10 @@ func IsWhitespace(ch rune) bool {
 // Identifiers may contain Letters, _, or Digits
 
 func IsIdentifierInitialChar(ch rune) bool {
-	return ch == '_' || IsLetter(ch)
+	return ch == '_' || uax31.IsValidIdentifierStart(ch) || IsLetter(ch)
 }
 func IsIdentifierChar(ch rune) bool {
-	return ch == '_' || IsLetter(ch) || IsDigit(ch)
+	return ch == '_' || uax31.IsValidIdentifierContinue(ch) || IsLetter(ch) || IsDigit(ch)
 }
 
 // Numbers start with Digits

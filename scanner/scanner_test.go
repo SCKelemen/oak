@@ -179,3 +179,31 @@ func TestScanMultiChars(t *testing.T) {
 		}
 	}
 }
+
+func TestScanUnicodeIdentifier(t *testing.T) {
+	input := "变量 := 16rFF;"
+	tests := []struct {
+		expectedKind    token.TokenKind
+		expectedLiteral string
+	}{
+		{token.IDENT, "变量"},
+		{token.COLON_ASSIGN, ":="},
+		{token.INT, "16rFF"},
+		{token.SEMI, ";"},
+		{token.EOF, ""},
+	}
+
+	scnr := New(input)
+	for i, tt := range tests {
+		tok := scnr.NextToken()
+		for tok.TokenKind == token.TRIVIA {
+			tok = scnr.NextToken()
+		}
+		if tok.TokenKind != tt.expectedKind {
+			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q", i, tt.expectedKind, tok.TokenKind)
+		}
+		if tok.Literal != tt.expectedLiteral {
+			t.Fatalf("tests[%d] - literal wrong. expected=%q, got=%q", i, tt.expectedLiteral, tok.Literal)
+		}
+	}
+}
