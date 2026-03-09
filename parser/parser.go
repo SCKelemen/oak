@@ -2193,7 +2193,7 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 	// - fn name(...): Type = body
 	// - fn name(...) -> Type { body } / fn name(...) -> Type expr
 	if !p.peekTokenIs(token.COLON) && !p.peekTokenIs(token.ARROW) {
-		p.peekError(token.COLON)
+		p.addErrorAtPeekToken("expected ':' or '->' before function return type")
 		return nil
 	}
 	p.nextToken() // consume : or ->
@@ -2924,150 +2924,8 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 			}
 			adt.Variants = append(adt.Variants, variant)
 		}
-		// After the loop, currentToken is past the last variant (on newline, next statement, or EOF)
-		// We need to leave currentToken at the last token of the ADT definition
-		// For variant lists, the last token is the last variant name (for simple variants)
-		// Since parseADTVariant() consumed it, currentToken is already past it
-		// We can't "back up", but we can use the last variant's name token
-		// However, we can't change currentToken to a previous token
-		// The real fix: parseADTVariant() should leave currentToken at the variant name for the last variant
-		// But that's complex. Instead, let's check if currentToken is at the start of the next statement
-		// If so, we need to handle it differently in ParseProgram
-		// Actually, the simplest fix is to ensure parseADTVariant() doesn't consume the variant name
-		// for the last variant. But we don't know which variant is last until after parsing.
-		// So we need a different approach: track the last variant's name token and "restore" currentToken to it
-		// But we can't do that easily. Let me try a different approach:
-		// After parsing all variants, if currentToken is at the start of the next statement,
-		// we need to leave currentToken at the last variant's name. Since we can't "back up",
-		// we'll need to modify ParseProgram to handle this case.
-		// Actually, wait - let me check if the issue is that ParseProgram calls p.nextToken() when
-		// currentToken is already at the start of the next statement. If so, we should NOT call p.nextToken()
-		// in that case. But how do we detect that?
-		// Actually, I think the real fix is simpler: we need to ensure that after parsing the ADT,
-		// currentToken is at the last token of the ADT, not at the start of the next statement.
-		// For variant lists, we can do this by tracking the last variant's name token.
-		// But since we can't "back up", we need to NOT consume it in the first place.
-		// So the fix: modify parseADTVariant() to accept a parameter indicating if it's the last variant,
-		// and if so, don't consume the variant name. But that's hacky.
-		// Let me try yet another approach: after the loop, check if currentToken is at the start of the next statement.
-		// If so, we know we've gone too far, and we need to "back up" to the last variant's name.
-		// But we can't do that. So the fix must be in ParseProgram: don't call p.nextToken() if currentToken
-		// is already at the start of the next statement. But how do we detect that?
-		// Actually, I think the issue is different. Let me check what happens:
-		// 1. After parsing the ADT, currentToken is at the start of the next statement (e.g., `x`)
-		// 2. ParseProgram calls p.nextToken(), which advances to `:=`
-		// 3. parseStatement() is called with currentToken at `:=`
-		// 4. parseStatement() doesn't recognize `:=` as the start of a statement, so it fails
-		// The fix: ensure currentToken is at the last token of the ADT after parsing, not at the start of the next statement.
-		// For variant lists, that's the last variant name. But parseADTVariant() consumed it.
-		// So we need to NOT consume it. The simplest way: don't call p.nextToken() in parseADTVariant()
-		// for the variant name if it's the last variant. But we don't know which variant is last.
-		// So we need to parse all variants first, then "back up" to the last one's name.
-		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
-		// currentToken is already at the start of the next statement. But that's complex.
-		// Actually, I think the simplest fix is: after parsing the last variant, don't advance past it.
-		// But parseADTVariant() already advanced. So we need to modify parseADTVariant() to not advance
-		// for the last variant. But we don't know which variant is last.
-		// Let me try a completely different approach: modify ParseProgram to check if currentToken is
-		// at the start of a statement (e.g., IDENT), and if so, don't call p.nextToken().
-		// But that's also complex because we need to know what tokens can start a statement.
-		// Actually, I think the real fix is simpler: we need to ensure that parseADTTypeFromName leaves
-		// currentToken at the last token of the ADT definition. For variant lists, we can do this by
-		// tracking the last variant's name token and leaving currentToken at it. But since we can't "back up",
-		// we need to NOT consume it in the first place. So the fix: modify parseADTVariant() to not consume
-		// the variant name if it's the last variant. But we don't know which variant is last.
-		// So we need to parse all variants first, then "back up" to the last one's name.
-		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
-		// currentToken is already at the start of the next statement.
-		// Actually, wait. Let me re-read the problem. The issue is that after parsing the ADT, currentToken
-		// is at the start of the next statement. Then ParseProgram calls p.nextToken(), which advances it.
-		// Then parseStatement() is called, but currentToken is at the wrong token.
-		// The fix: ensure currentToken is at the last token of the ADT after parsing, not at the start of the next statement.
-		// For variant lists, that's the last variant name. But parseADTVariant() consumed it.
-		// So we need to NOT consume it. The simplest way: don't call p.nextToken() in parseADTVariant()
-		// for the variant name if it's the last variant. But we don't know which variant is last.
-		// So we need to parse all variants first, then "back up" to the last one's name.
-		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
-		// currentToken is already at the start of the next statement.
-		// Actually, I think I'm overcomplicating this. Let me try the simplest fix: modify ParseProgram
-		// to check if currentToken is at the start of the next statement, and if so, don't call p.nextToken().
-		// But how do we detect that? We can check if currentToken is IDENT, which can start a statement.
-		// But IDENT can also be part of the current statement (e.g., in a type expression).
-		// So that's not reliable.
-		// Actually, I think the real fix is: we need to ensure that parseADTTypeFromName leaves currentToken
-		// at the last token of the ADT definition. For variant lists, we can do this by tracking the last
-		// variant's name token and leaving currentToken at it. But since we can't "back up", we need to
-		// NOT consume it in the first place. So the fix: modify parseADTVariant() to not consume the variant
-		// name if it's the last variant. But we don't know which variant is last.
-		// So we need to parse all variants first, then "back up" to the last one's name.
-		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
-		// currentToken is already at the start of the next statement.
-		// Actually, I think I need to step back and think about this differently. The contract for parseStatement()
-		// is that it should leave currentToken at the last token of the statement. Then ParseProgram calls
-		// p.nextToken() to advance to the start of the next statement. So if parseADTTypeFromName leaves
-		// currentToken at the start of the next statement, that's wrong - it should leave it at the last token
-		// of the ADT definition. For variant lists, that's the last variant name. But parseADTVariant() consumed it.
-		// So we need to NOT consume it. The simplest way: don't call p.nextToken() in parseADTVariant()
-		// for the variant name if it's the last variant. But we don't know which variant is last.
-		// So we need to parse all variants first, then "back up" to the last one's name.
-		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
-		// currentToken is already at the start of the next statement.
-		// Actually, I think the simplest fix is to modify ParseProgram to check if we're already at the start
-		// of the next statement before calling p.nextToken(). But that's complex.
-		// Let me try a completely different approach: what if we modify parseADTVariant() to return the last
-		// token it consumed? Then we can use that to "restore" currentToken to the last variant's name.
-		// But we can't change currentToken to a previous token.
-		// Actually, I think the real fix is: we need to ensure that parseADTTypeFromName leaves currentToken
-		// at the last token of the ADT definition. For variant lists, we can do this by tracking the last
-		// variant's name token and leaving currentToken at it. But since we can't "back up", we need to
-		// NOT consume it in the first place. So the fix: modify parseADTVariant() to not consume the variant
-		// name if it's the last variant. But we don't know which variant is last.
-		// So we need to parse all variants first, then "back up" to the last one's name.
-		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
-		// currentToken is already at the start of the next statement.
-		// I think I'm going in circles. Let me try the simplest possible fix: modify ParseProgram to check
-		// if currentToken is at the start of a statement (e.g., IDENT), and if the previous statement was
-		// an ADT definition, don't call p.nextToken(). But that's hacky.
-		// Actually, I think the real fix is simpler: we need to ensure that parseADTTypeFromName leaves
-		// currentToken at the last token of the ADT definition. For variant lists, we can do this by
-		// tracking the last variant's name token. But since we can't "back up", we need to NOT consume it.
-		// So the fix: modify parseADTVariant() to not consume the variant name if it's the last variant.
-		// But we don't know which variant is last. So we need to parse all variants first, then "back up".
-		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
-		// currentToken is already at the start of the next statement.
-		// I think I need to accept that we can't easily "back up", so the fix must be in ParseProgram.
-		// Let me modify ParseProgram to check if currentToken is at the start of the next statement,
-		// and if so, don't call p.nextToken().
-		// But how do we detect that? We can check if currentToken is IDENT, which can start a statement.
-		// But that's not reliable. So we need a different approach.
-		// Actually, I think the simplest fix is: modify parseADTVariant() to not consume the variant name
-		// for the last variant. But we don't know which variant is last. So we need to parse all variants
-		// first, then "back up" to the last one's name. But we can't do that.
-		// So the fix must be: modify ParseProgram to not call p.nextToken() if currentToken is already
-		// at the start of the next statement. But that's complex.
-		// I think I'm stuck. Let me try one more approach: what if we modify parseADTVariant() to accept
-		// a parameter indicating if it should consume the variant name? Then we can call it with consume=false
-		// for the last variant. But that's hacky.
-		// Actually, I think the real fix is: we need to ensure that parseADTTypeFromName leaves currentToken
-		// at the last token of the ADT definition. For variant lists, we can do this by tracking the last
-		// variant's name token. But since we can't "back up", we need to NOT consume it.
-		// So the fix: modify parseADTVariant() to not consume the variant name if it's the last variant.
-		// But we don't know which variant is last. So we need to parse all variants first, then "back up".
-		// But we can't do that. So the fix must be: modify ParseProgram to not call p.nextToken() if
-		// currentToken is already at the start of the next statement.
-		// I think I need to just implement the ParseProgram fix, even though it's not ideal.
-		// Actually, wait. Let me check if there's a simpler fix. What if we modify parseADTVariant() to
-		// return the last token it consumed? Then we can use that to "restore" currentToken to the last
-		// variant's name. But we can't change currentToken to a previous token.
-		// So the fix must be: modify ParseProgram to not call p.nextToken() if currentToken is already
-		// at the start of the next statement. But that's complex.
-		// I think I'm going to have to implement the ParseProgram fix, even though it's not ideal.
-		// Actually, let me try one more thing: what if we modify parseADTVariant() to not consume the
-		// variant name at all? Then we can leave currentToken at the variant name. But that would break
-		// other code that expects parseADTVariant() to consume the variant name.
-		// So the fix must be: modify ParseProgram to not call p.nextToken() if currentToken is already
-		// at the start of the next statement. But that's complex.
-		// I think I need to just implement it.
+		// parseADTVariant may advance to a separator or following token. ParseProgram's
+		// progress guard handles statement-boundary recovery if needed.
 	} else if p.currentTokenIs(token.LBRACE) {
 		// This is a record type definition: Name: type = { field: Type, ... }
 		// Use parseRecordType() which handles type annotations (field: Type)

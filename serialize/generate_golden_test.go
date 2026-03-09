@@ -1,6 +1,7 @@
 package serialize
 
 import (
+	"os"
 	"testing"
 
 	"github.com/SCKelemen/oak/object"
@@ -10,6 +11,10 @@ import (
 // TestGenerateGoldenFiles generates golden files for inspection
 // Run this test to generate example golden files in the golden/ directory
 func TestGenerateGoldenFiles(t *testing.T) {
+	if os.Getenv("OAK_GENERATE_GOLDEN") != "1" {
+		t.Skip("set OAK_GENERATE_GOLDEN=1 to run golden file generation test")
+	}
+
 	testCases := []struct {
 		name        string
 		sourceCode  string

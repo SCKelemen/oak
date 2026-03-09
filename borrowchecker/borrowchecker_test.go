@@ -4,18 +4,14 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/ast"
-	"github.com/SCKelemen/oak/parser"
-	"github.com/SCKelemen/oak/scanner"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
 func setupBorrowChecker(t *testing.T, input string) (*BorrowChecker, *ast.Program, *typechecker.TypeChecker) {
+	t.Helper()
 	bc, program, tc := setupBorrowCheckerForTest(input)
-	if program == nil && len(parser.New(scanner.New(input)).Errors()) > 0 {
-		// Print errors for debugging
-		for _, err := range parser.New(scanner.New(input)).Errors() {
-			t.Logf("Parser error: %s", err)
-		}
+	if program == nil {
+		t.Logf("setupBorrowCheckerForTest returned nil program for input: %q", input)
 	}
 	return bc, program, tc
 }
