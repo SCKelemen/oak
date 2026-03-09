@@ -224,3 +224,29 @@ func TestScanUnicodeDecimalDigitsAreNormalized(t *testing.T) {
 		t.Fatalf("expected normalized literal %q, got %q", "12345", tok.Literal)
 	}
 }
+
+func TestMalformedRadixLiteralStaysSingleToken(t *testing.T) {
+	input := "16rG;"
+	tests := []struct {
+		expectedKind    token.TokenKind
+		expectedLiteral string
+	}{
+		{token.INT, "16rG"},
+		{token.SEMI, ";"},
+		{token.EOF, ""},
+	}
+
+	scnr := New(input)
+	for i, tt := range tests {
+		tok := scnr.NextToken()
+		for tok.TokenKind == token.TRIVIA {
+			tok = scnr.NextToken()
+		}
+		if tok.TokenKind != tt.expectedKind {
+			t.Fatalf("tests[%d] - tokenKind wrong. expected=%q, got=%q", i, tt.expectedKind, tok.TokenKind)
+		}
+		if tok.Literal != tt.expectedLiteral {
+			t.Fatalf("tests[%d] - literal wrong. expected=%q, got=%q", i, tt.expectedLiteral, tok.Literal)
+		}
+	}
+}

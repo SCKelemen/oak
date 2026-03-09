@@ -49,6 +49,11 @@ func TestInvalidRadixLiteralProducesSpecificErrors(t *testing.T) {
 			input:       "16rF_;",
 			containsMsg: "at the end",
 		},
+		{
+			name:        "digit outside radix",
+			input:       "16rG;",
+			containsMsg: "invalid digits for radix 16",
+		},
 	}
 
 	for _, tt := range tests {

@@ -302,7 +302,9 @@ func (s *Scanner) readNumber() string {
 		radix, err := strconv.Atoi(radixStr)
 		if err == nil && radix >= 2 && radix <= 16 {
 			s.readChar()
-			for s.isRadixDigit(s.current, radix) {
+			// Consume the whole radix tail, even when malformed.
+			// This keeps diagnostics on one token span (e.g., 16rG).
+			for s.isRadixTailChar(s.current) {
 				s.readChar()
 			}
 			return util.NormalizeDigits(s.input[position:s.head])
@@ -332,26 +334,11 @@ func stripUnderscores(s string) string {
 	return string(result)
 }
 
-// isRadixDigit checks if a character is a valid digit for the given radix
-func (s *Scanner) isRadixDigit(ch rune, radix int) bool {
-	if ch == '_' {
-		return true // Allow underscores in radix literals too
+func (s *Scanner) isRadixTailChar(ch rune) bool {
+	if ch == '_' || util.IsDigit(ch) {
+		return true
 	}
-	if digit, ok := util.DigitValue(ch); ok {
-		return digit < radix
-	}
-	if radix > 10 {
-		// For bases > 10, allow A-F (case insensitive)
-		if ch >= 'A' && ch <= 'F' {
-			digit := int(ch-'A') + 10
-			return digit < radix
-		}
-		if ch >= 'a' && ch <= 'f' {
-			digit := int(ch-'a') + 10
-			return digit < radix
-		}
-	}
-	return false
+	return ('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z')
 }
 
 func (s *Scanner) readString() string {
