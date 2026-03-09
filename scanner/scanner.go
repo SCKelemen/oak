@@ -33,9 +33,7 @@ func New(input string) *Scanner {
 	return s
 }
 
-// readChar 's only responsibility is to progress
-// the read-ahead head, check for EOF, and then
-// update head to read-ahead head
+// readChar advances by one UTF-8 rune and updates token position fields.
 func (s *Scanner) readChar() {
 	if s.read >= len(s.input) {
 		s.head = s.read
@@ -66,8 +64,7 @@ func (s *Scanner) readChar() {
 	}
 }
 
-// NextToken emits the next token. Handles single
-// char tokens internally, directly
+// NextToken emits the next token from the rune stream.
 // Returns TRIVIA tokens for whitespace and other non-syntactic content
 func (s *Scanner) NextToken() token.Token {
 	var tok token.Token
@@ -112,16 +109,14 @@ func (s *Scanner) NextToken() token.Token {
 		tok = newTokenWithPos(token.RBRACE, s.current, line, column)
 	case '(':
 		tok = newTokenWithPos(token.LPAREN, s.current, line, column)
-		// Don't call readChar() here - it will be called at line 218
 	case ')':
 		tok = newTokenWithPos(token.RPAREN, s.current, line, column)
-		// Don't call readChar() here - it will be called at line 218
 	case '<':
 		tok = newTokenWithPos(token.LCHEV, s.current, line, column)
 	case '>':
 		tok = newTokenWithPos(token.RCHEV, s.current, line, column)
 
-	// handle punctionationy things
+	// punctuation
 	case ',':
 		tok = newTokenWithPos(token.COMMA, s.current, line, column)
 	case '.':
@@ -138,7 +133,7 @@ func (s *Scanner) NextToken() token.Token {
 	case ';':
 		tok = newTokenWithPos(token.SEMI, s.current, line, column)
 
-	// handle arithmeticy things
+	// operators
 	case '=':
 		peek := s.peekRune()
 		if peek == '>' {
@@ -296,21 +291,21 @@ func (s *Scanner) readWord() string {
 func (s *Scanner) readNumber() string {
 	position := s.head
 
-	// Read ASCII radix prefix candidate / decimal digits first.
+	// Read radix prefix candidate / decimal digits first.
 	for util.IsDigit(s.current) {
 		s.readChar()
 	}
 
 	// Radix literal: BASE r DIGITS (e.g., 16rFF, 2r1010).
 	if s.current == 'r' || s.current == 'R' {
-		radixStr := s.input[position:s.head]
+		radixStr := util.NormalizeDigits(s.input[position:s.head])
 		radix, err := strconv.Atoi(radixStr)
 		if err == nil && radix >= 2 && radix <= 16 {
 			s.readChar()
 			for s.isRadixDigit(s.current, radix) {
 				s.readChar()
 			}
-			return s.input[position:s.head]
+			return util.NormalizeDigits(s.input[position:s.head])
 		}
 		// Invalid radix marker: keep 'r' as next token and return decimal part.
 		return stripUnderscores(s.input[position:s.head])
@@ -327,7 +322,11 @@ func stripUnderscores(s string) string {
 	result := make([]rune, 0, len(s))
 	for _, ch := range s {
 		if ch != '_' {
-			result = append(result, ch)
+			if d, ok := util.DigitValue(ch); ok {
+				result = append(result, rune('0'+d))
+			} else {
+				result = append(result, ch)
+			}
 		}
 	}
 	return string(result)
@@ -338,8 +337,7 @@ func (s *Scanner) isRadixDigit(ch rune, radix int) bool {
 	if ch == '_' {
 		return true // Allow underscores in radix literals too
 	}
-	if util.IsDigit(ch) {
-		digit := int(ch - '0')
+	if digit, ok := util.DigitValue(ch); ok {
 		return digit < radix
 	}
 	if radix > 10 {

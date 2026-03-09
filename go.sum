@@ -1,9 +1,5 @@
-github.com/SCKelemen/text v1.1.1 h1:uAqYW2Zf50iFCuW1errjCaU2xjYfaRrj/UZsDc9YGuE=
-github.com/SCKelemen/text v1.1.1/go.mod h1:R0JK7oSmsRRZ6r8s9a9/ZHGJwRQFPCAp9bp0cJRgt7g=
 github.com/SCKelemen/unicode v1.1.1 h1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=
 github.com/SCKelemen/unicode v1.1.1/go.mod h1:TjSqvWpwZC7BTqAgCfnsweOaS1yIxY039Wubh7xC4G0=
-github.com/SCKelemen/units v1.0.2 h1:pkU72sxAIIGzcxvxWWhRem1L5DzL4wnmtYn9KDZvQP0=
-github.com/SCKelemen/units v1.0.2/go.mod h1:4AtPZnvBZHQ66SxsUk8VjxztXGMMvbA5toat/65B7S4=
 golang.org/x/sys v0.38.0 h1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=
 golang.org/x/sys v0.38.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=
 golang.org/x/term v0.37.0 h1:8EGAD0qCmHYZg6J17DvsMy9/wJ7/D/4pV/wfnld5lTU=

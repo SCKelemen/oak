@@ -181,14 +181,14 @@ func TestScanMultiChars(t *testing.T) {
 }
 
 func TestScanUnicodeIdentifier(t *testing.T) {
-	input := "变量 := 16rFF;"
+	input := "变量 := ١٦rF_٢;"
 	tests := []struct {
 		expectedKind    token.TokenKind
 		expectedLiteral string
 	}{
 		{token.IDENT, "变量"},
 		{token.COLON_ASSIGN, ":="},
-		{token.INT, "16rFF"},
+		{token.INT, "16rF_2"},
 		{token.SEMI, ";"},
 		{token.EOF, ""},
 	}
@@ -205,5 +205,22 @@ func TestScanUnicodeIdentifier(t *testing.T) {
 		if tok.Literal != tt.expectedLiteral {
 			t.Fatalf("tests[%d] - literal wrong. expected=%q, got=%q", i, tt.expectedLiteral, tok.Literal)
 		}
+	}
+}
+
+func TestScanUnicodeDecimalDigitsAreNormalized(t *testing.T) {
+	input := "१२३٤५;"
+	scnr := New(input)
+
+	tok := scnr.NextToken()
+	for tok.TokenKind == token.TRIVIA {
+		tok = scnr.NextToken()
+	}
+
+	if tok.TokenKind != token.INT {
+		t.Fatalf("expected INT token, got %s", tok.TokenKind)
+	}
+	if tok.Literal != "12345" {
+		t.Fatalf("expected normalized literal %q, got %q", "12345", tok.Literal)
 	}
 }

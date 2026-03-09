@@ -3,6 +3,7 @@ package util
 import (
 	uax31 "github.com/SCKelemen/unicode/uax31"
 	"unicode"
+	"unicode/utf8"
 )
 
 func IsDigit(ch rune) bool {
@@ -40,4 +41,68 @@ func IsNumericChar(ch rune) bool {
 
 func IsQuote(ch rune) bool {
 	return ch == '"'
+}
+
+// DigitValue returns the decimal value (0..9) for a Unicode decimal digit.
+// The second return value is false when r is not a decimal digit.
+func DigitValue(r rune) (int, bool) {
+	if '0' <= r && r <= '9' {
+		return int(r - '0'), true
+	}
+
+	// unicode.Digit contains all Nd code points. Nd blocks are structured as
+	// sequences of ten decimal digits in increasing order.
+	for _, rr := range unicode.Digit.R16 {
+		lo := rune(rr.Lo)
+		hi := rune(rr.Hi)
+		stride := rune(rr.Stride)
+		if r < lo || r > hi {
+			continue
+		}
+		if stride == 0 || (r-lo)%stride != 0 {
+			continue
+		}
+		idx := (r - lo) / stride
+		return int(idx % 10), true
+	}
+	for _, rr := range unicode.Digit.R32 {
+		lo := rune(rr.Lo)
+		hi := rune(rr.Hi)
+		stride := rune(rr.Stride)
+		if r < lo || r > hi {
+			continue
+		}
+		if stride == 0 || (r-lo)%stride != 0 {
+			continue
+		}
+		idx := (r - lo) / stride
+		return int(idx % 10), true
+	}
+	return 0, false
+}
+
+// NormalizeDigits rewrites Unicode decimal digits in s to ASCII digits.
+// Non-digit runes are preserved unchanged.
+func NormalizeDigits(s string) string {
+	// Fast path for pure ASCII.
+	isASCII := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			isASCII = false
+			break
+		}
+	}
+	if isASCII {
+		return s
+	}
+
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		if d, ok := DigitValue(r); ok {
+			out = append(out, rune('0'+d))
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }
