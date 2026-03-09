@@ -3,11 +3,13 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/scanner"
 	"github.com/SCKelemen/oak/token"
+	"github.com/SCKelemen/oak/util"
 )
 
 type Parser struct {
@@ -480,18 +482,30 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 
 	// Check if this is a radix literal (e.g., "16r1000", "2r1010")
 	literal := p.currentToken.Literal
-	value, err := p.parseRadixLiteral(literal)
-	if err != nil {
-		// Not a radix literal or error parsing, try normal decimal
-		value, err = strconv.ParseInt(literal, 10, 64)
+	if strings.ContainsAny(literal, "rR") {
+		value, err := p.parseRadixLiteral(literal)
 		if err != nil {
-			msg := fmt.Sprintf("could not parse %q as integer", literal)
-			p.addErrorAtCurrentToken(msg)
+			p.addErrorAtCurrentToken(fmt.Sprintf("invalid radix literal %q: %v", literal, err))
 			return nil
 		}
+		lit.Value = value
+		return lit
 	}
-	lit.Value = value
 
+	value, err := strconv.ParseInt(literal, 10, 64)
+	if err != nil {
+		var msg string
+		numErr, ok := err.(*strconv.NumError)
+		if ok && numErr.Err == strconv.ErrRange {
+			msg = fmt.Sprintf("integer literal out of range: %q", literal)
+		} else {
+			msg = fmt.Sprintf("could not parse %q as integer", literal)
+		}
+		p.addErrorAtCurrentToken(msg)
+		return nil
+	}
+
+	lit.Value = value
 	return lit
 }
 
@@ -511,7 +525,7 @@ func (p *Parser) parseRadixLiteral(literal string) (int64, error) {
 	}
 
 	// Parse the radix (base)
-	radixStr := literal[:rIndex]
+	radixStr := util.NormalizeDigits(literal[:rIndex])
 	radix, err := strconv.Atoi(radixStr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid radix: %s", radixStr)
@@ -521,22 +535,49 @@ func (p *Parser) parseRadixLiteral(literal string) (int64, error) {
 	}
 
 	// Parse the digits after 'r' (skip the 'r' itself)
-	digitsStr := literal[rIndex+1:]
-	// Remove underscores from digits
-	digitsStrClean := ""
-	for _, ch := range digitsStr {
-		if ch != '_' {
-			digitsStrClean += string(ch)
-		}
+	digitsStr := util.NormalizeDigits(literal[rIndex+1:])
+	if digitsStr == "" {
+		return 0, fmt.Errorf("missing digits after radix separator")
+	}
+	if err := validateDigitSeparators(digitsStr); err != nil {
+		return 0, err
+	}
+	digitsStrClean := strings.ReplaceAll(digitsStr, "_", "")
+	if digitsStrClean == "" {
+		return 0, fmt.Errorf("missing digits after radix separator")
 	}
 
 	// Convert from the given radix to int64
 	value, err := strconv.ParseInt(digitsStrClean, radix, 64)
 	if err != nil {
+		if numErr, ok := err.(*strconv.NumError); ok && numErr.Err == strconv.ErrRange {
+			return 0, fmt.Errorf("integer literal out of range for radix %d", radix)
+		}
 		return 0, fmt.Errorf("invalid digits for radix %d: %s", radix, digitsStrClean)
 	}
 
 	return value, nil
+}
+
+func validateDigitSeparators(digits string) error {
+	prevUnderscore := false
+	for i, ch := range digits {
+		if ch != '_' {
+			prevUnderscore = false
+			continue
+		}
+		if i == 0 {
+			return fmt.Errorf("digit separator '_' is not allowed at the beginning of digits")
+		}
+		if prevUnderscore {
+			return fmt.Errorf("consecutive digit separators are not allowed")
+		}
+		prevUnderscore = true
+	}
+	if prevUnderscore {
+		return fmt.Errorf("digit separator '_' is not allowed at the end of digits")
+	}
+	return nil
 }
 
 func (p *Parser) parseStringLiteral() ast.Expression {
