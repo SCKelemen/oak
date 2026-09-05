@@ -11,6 +11,7 @@ type Token struct {
 	Column    int // 1-based column number
 	ByteStart int // UTF-8 byte offset where token starts
 	ByteEnd   int // UTF-8 byte offset where token ends (exclusive)
+	Synthetic bool // true when introduced by normalization rather than source text
 }
 
 const (
