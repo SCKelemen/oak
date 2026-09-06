@@ -1,0 +1,143 @@
+# Executable Lowering and Backends
+
+Oak's semantics are not defined by C, but the C backend is an important executable projection and cost-model oracle.
+
+## 1. Backend-independent semantics
+
+The typed/Semantic IR defines program meaning before a backend chooses concrete machine representation.
+
+A backend must preserve:
+
+- value semantics;
+- control-flow semantics;
+- ownership/effect constraints;
+- integer behavior;
+- ADT constructor distinctions;
+- pattern-match selection;
+- required layout/ABI constraints;
+- safe bounds and pointer rules.
+
+A backend may optimize representation only when those observations remain equivalent.
+
+## 2. C as bootstrap/reference backend
+
+Generated C should be intentionally straightforward and debuggable.
+
+For systems code, a competent C programmer should recognize the expected machine shape:
+
+```text
+record          -> struct / fields
+closed ADT      -> tag + payload or proved equivalent compact representation
+match           -> switch/if branches
+specialized fn  -> direct C function / inlineable code
+view/span       -> pointer + length representation
+raw pointer     -> C pointer
+fixed array     -> fixed storage
+arena/slab      -> explicit allocator calls/storage
+```
+
+C is not Oak's semantic definition and should not prevent future native/LLVM/etc. backends.
+
+## 3. No hidden runtime
+
+The backend may not silently introduce:
+
+- heap allocation;
+- garbage collection;
+- reference counting;
+- exception unwinding;
+- interface vtables for static generic constraints;
+- boxing to a dynamic object representation;
+- hidden string/data copying;
+- unbounded callback dispatch.
+
+If a selected language feature requires such machinery, the semantic model must expose the corresponding representation/effect.
+
+## 4. Generics
+
+Generic functions/types specialize by default.
+
+Monomorphization should erase compile-time constraints and phantom parameters that have no runtime representation.
+
+Specialization must preserve type/effect semantics and must not introduce dynamic dispatch merely for compiler convenience.
+
+A future explicitly selected code-size/dynamic-dispatch strategy may exist, but it is a distinct representation choice.
+
+## 5. ADTs
+
+The ordinary representation is conceptually:
+
+```text
+tag + payload storage
+```
+
+A backend can select tag width from the number/representation constraints of constructors.
+
+Payload defaults/metadata are not automatically discriminant values.
+
+A compact enum-like representation is valid only when constructor payload semantics allow it and the representation mapping is injective over observable constructor values.
+
+## 6. Records
+
+Target layout computes sizes, alignment, padding and offsets from ordered semantic fields plus explicit representation constraints.
+
+The backend must not derive field order from unordered maps.
+
+FFI/wire/persisted layouts require explicit stable representation contracts rather than relying on incidental target ABI layout.
+
+## 7. Integer semantics
+
+Backend operations must implement Oak's specified fixed-width behavior exactly.
+
+C undefined/implementation-defined behavior must not leak into safe Oak semantics. Code generation may need unsigned operations, explicit casts, intrinsics, checks, or helper routines to preserve Oak's rules.
+
+The formal specification of overflow/division/shifts/conversions must precede relying on them for verification.
+
+## 8. Bounds
+
+When the compiler proves an index/range safe, a backend may eliminate the corresponding dynamic check.
+
+When safety is not proved, safe Oak must retain a defined check/failure path rather than compile to out-of-bounds undefined behavior.
+
+## 9. Function values/closures
+
+A plain function value may lower to a function pointer.
+
+A capturing closure requires an explicit environment representation whose storage lifetime has been established by ownership/effect analysis.
+
+The backend may not silently heap-promote escaping captures.
+
+## 10. Source/debug information
+
+Backend output should preserve mappings from generated operations to canonical Oak source spans and stable semantic identities.
+
+The compiler's source model should power:
+
+- C `#line` / debug mappings where useful;
+- DWARF/native debug metadata in future backends;
+- diagnostics and IDE navigation;
+- semantic debugger schemas.
+
+## 11. Verification strategy
+
+Backend verification proceeds in layers:
+
+```text
+semantic operation
+  -> lowering rule
+  -> backend representation/code
+  -> executable equivalence/property test
+  -> formal refinement for critical rules
+```
+
+Early formal-refinement candidates:
+
+- fixed-width integer lowering;
+- record layout calculation;
+- ADT tag/payload lowering;
+- match lowering;
+- view/span representation and bounds;
+- erased phantom/proof parameters;
+- effect-free generic specialization.
+
+The C backend should maintain golden/compile/run tests in addition to formal models. Formal models do not replace generated-code testing.
