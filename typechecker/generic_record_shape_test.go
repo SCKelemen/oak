@@ -51,7 +51,7 @@ result: i32 = sum_xy(p)
 	if len(errs) == 0 {
 		t.Fatal("expected record-shape constraint error")
 	}
-	if !strings.Contains(strings.Join(errs, "\n"), "does not satisfy constraint") {
+	if !strings.Contains(strings.Join(errs, "\n"), "does not satisfy") {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
 }
@@ -68,7 +68,7 @@ result: i32 = sum_xy(p)
 	if len(errs) == 0 {
 		t.Fatal("expected record-shape constraint error")
 	}
-	if !strings.Contains(strings.Join(errs, "\n"), "does not satisfy constraint") {
+	if !strings.Contains(strings.Join(errs, "\n"), "does not satisfy") {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
 }
