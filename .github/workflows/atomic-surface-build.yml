@@ -1,0 +1,46 @@
+name: Atomic Surface Integration
+
+on:
+  push:
+    branches:
+      - feat/atomic-surface-e2e
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Apply compiler integration
+        run: python3 tools/atomic_surface_patch.py
+
+      - name: Format Go sources
+        run: |
+          gofmt -w semir/memory.go semir/memory_surface_test.go \
+            typechecker/memory.go typechecker/memory_surface_test.go typechecker/gadt.go typechecker/typechecker.go \
+            codegen/memory.go codegen/memory_e2e_test.go codegen/codegen.go \
+            object/memory.go evaluator/memory.go evaluator/memory_test.go evaluator/evaluator.go \
+            parser/memory_test.go
+
+      - name: Test full Go implementation
+        run: go test -race ./...
+
+      - name: Commit integrated implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm tools/atomic_surface_patch.py .github/workflows/atomic-surface-build.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "implement atomic source surface end to end"
+          git push origin HEAD:feat/atomic-surface-e2e
