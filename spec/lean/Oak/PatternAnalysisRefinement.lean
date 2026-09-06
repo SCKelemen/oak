@@ -11,7 +11,9 @@ inductive SemanticCase where
   | ctor : Nat → Option SemanticCase → SemanticCase
   | bool : Bool → SemanticCase
   | scalar : Nat → SemanticCase
-  deriving DecidableEq, Repr
+  deriving Repr
+
+deriving instance DecidableEq for SemanticCase
 
 /-- The checker-side pattern fragment handled by the structural coverage tree. -/
 inductive ConcretePattern where
@@ -19,7 +21,9 @@ inductive ConcretePattern where
   | ctor : Nat → Option ConcretePattern → ConcretePattern
   | bool : Bool → ConcretePattern
   | scalar : Nat → ConcretePattern
-  deriving DecidableEq, Repr
+  deriving Repr
+
+deriving instance DecidableEq for ConcretePattern
 
 /-- Executable recursive matching corresponding to `applyCoverage`: a catch-all
     covers the current subtree, and constructor payloads are checked recursively. -/
@@ -116,27 +120,30 @@ theorem completeBool_iff_exhaustive
       Exhaustive cases reachable (CoveredCases cases arms) := by
   constructor
   · intro hcomplete value hreachable
-    by_contra hnotCovered
-    have hmissing : value ∈ MissingCases cases reachable arms := by
-      have hcoveredFalse : CoveredBool arms value = false := by
-        cases hcovered : CoveredBool arms value with
+    by_cases hcovered : value ∈ CoveredCases cases arms
+    · exact hcovered
+    · have hcoveredFalse : CoveredBool arms value = false := by
+        cases hbool : CoveredBool arms value with
         | false => rfl
         | true =>
-            exact False.elim (hnotCovered (by
-              simp [CoveredCases, hreachable.1, hcovered]))
-      simp [MissingCases, hreachable.2, hreachable.1, hcoveredFalse]
-    have hnonempty : MissingCases cases reachable arms ≠ [] := by
-      intro hempty
-      simpa [hempty] using hmissing
-    simpa [CompleteBool, List.isEmpty_iff] using hnonempty
+            exact False.elim (hcovered (by
+              simp [CoveredCases, hreachable.1, hbool]))
+      have hmissing : value ∈ MissingCases cases reachable arms := by
+        simp [MissingCases, hreachable.2, hreachable.1, hcoveredFalse]
+      cases hlist : MissingCases cases reachable arms with
+      | nil => simp [hlist] at hmissing
+      | cons head tail => simp [CompleteBool, hlist] at hcomplete
   · intro hexhaustive
-    apply List.isEmpty_iff.mpr
-    intro value hmissing
-    have hparts :
-        value ∈ reachable ∧ value ∈ cases ∧ CoveredBool arms value = false := by
-      simpa [MissingCases, Bool.and_eq_true] using hmissing
-    have hcovered := hexhaustive value ⟨hparts.2.1, hparts.1⟩
-    simp [CoveredCases, hparts.2.2] at hcovered
+    cases hlist : MissingCases cases reachable arms with
+    | nil => simp [CompleteBool, hlist]
+    | cons value rest =>
+        have hmissing : value ∈ MissingCases cases reachable arms := by
+          simp [hlist]
+        have hparts :
+            value ∈ reachable ∧ value ∈ cases ∧ CoveredBool arms value = false := by
+          simpa [MissingCases, Bool.and_eq_true] using hmissing
+        have hcovered := hexhaustive value ⟨hparts.2.1, hparts.1⟩
+        simp [CoveredCases, hparts.2.2] at hcovered
 
 /-- The checker's no-change decision for an arm coincides with the abstract
     definition of redundancy over the finite semantic case expansion. -/
@@ -145,7 +152,7 @@ theorem redundantBool_iff_redundant
     (arm : ConcretePattern) :
     RedundantBool covered cases arm = true ↔
       Redundant covered (ArmCases cases arm) := by
-  rw [all_eq_true_iff]
-  simp [RedundantBool, Redundant]
+  simp only [RedundantBool, all_eq_true_iff]
+  simp [Redundant, ArmCases]
 
 end Oak.PatternAnalysisRefinement
