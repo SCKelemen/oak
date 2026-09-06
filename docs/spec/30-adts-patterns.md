@@ -148,20 +148,36 @@ For GADT-style constructors, matching may additionally introduce constructor-spe
 
 This extends ordinary ADT matching rather than creating separate GADT match syntax.
 
-## 9. GADT direction
+## 9. Indexed ADTs and constructor results
 
-Oak's long-term GADT feature is understood as **ADTs whose constructors refine type indices/result propositions**.
+Oak models GADTs as ordinary closed ADTs whose constructors may state a more
+specific result application:
 
-For example, a length-indexed vector constructor conceptually proves facts about the resulting length index. Exact constructor result-index surface syntax is not yet normative.
+```oak
+Expr[T]: type =
+  | Int: i64   => Expr[i64]
+  | Flag: Bool => Expr[Bool]
+  | Id: T      => Expr[T]
+```
 
-The design requirements are:
+The clause after `=>` is the constructor result. It must name the enclosing
+ADT and supply exactly one index for each declared type parameter. A constructor
+without an explicit result implicitly returns the enclosing ADT applied to its
+parameters in declaration order.
 
-- constructor-specific refinements enter the branch context;
-- impossible branches can reduce to `never`;
-- pattern matching is the elimination form;
-- exhaustiveness is computed only over cases reachable under the current refinements;
-- runtime representation need not carry proof-only indices when they are erasable;
-- proof erasure must preserve executable semantics.
+Constructor checking unifies the declared result indices with the expected ADT
+application. A fixed index creates an equality requirement. The first occurrence
+of a result parameter binds it; repeated occurrences require the same semantic
+type. Failure means that constructor cannot inhabit the expected indexed type.
+
+Matching a reachable constructor introduces the solved equalities into that
+arm's proof context. Constructors whose result equations are contradictory are
+excluded from the reachable case set, so their arms are semantically `never`
+and are not required for exhaustiveness.
+
+The initial solver is intentionally equality-only. General propositions,
+arithmetic indices, existential indices, and user-directed proof terms require
+separate normative extensions. They must not be inferred by ad hoc runtime tags.
 
 ## 10. Representation separation
 
