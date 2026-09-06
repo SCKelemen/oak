@@ -435,6 +435,8 @@ func NodeToRange(node ast.Node) lsp.Range {
 		return TokenToRange(&n.Token)
 	case *ast.BlockStatement:
 		return TokenToRange(&n.Token)
+	case *ast.BlockExpression:
+		return TokenToRange(&n.Token)
 	case *ast.WhileStatement:
 		return TokenToRange(&n.Token)
 	case *ast.ADTType:

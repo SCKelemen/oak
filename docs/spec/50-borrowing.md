@@ -67,7 +67,7 @@ The compiler may later shorten borrows using liveness/NLL-style analysis without
 
 A borrowed value may not outlive its owner.
 
-Initially, returning/storing a borrow beyond the lexical region that proves the owner lifetime is rejected.
+Initially, returning/storing a borrow beyond the lexical region that proves the owner lifetime is rejected. The compiler enforces this conservatively today by rejecting any function signature whose return type is a view or span (`OAK-B0109`). `Oak.Escape` proves the discipline: dropping scope-local borrows on exit preserves owner liveness, an escaping borrow of a scope-local owner dangles, and an escape of a strictly longer-lived owner would be safe — the headroom the region-indexed forms below can claim without changing the ownership model.
 
 Future region-indexed forms can make escape explicit:
 

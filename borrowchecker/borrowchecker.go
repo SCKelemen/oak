@@ -227,9 +227,14 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 		}
 	}
 
-	// Check function body
-	// The body is an Expression, but it might be a BlockExpression that contains statements
-	// checkExpression will handle it appropriately
+	// Escape discipline (docs/spec/50-borrowing.md section 5, Oak.Escape):
+	// a borrow may not outlive the owner that proves its lifetime, and no
+	// region-indexed signature form exists yet to prove a caller-side owner
+	// outlives the call. Conservatively reject every view/span return.
+	bc.checkBorrowEscape(stmt, env)
+
+	// Check function body. A block body arrives as an ast.BlockExpression
+	// carrying every statement; checkExpression applies block scoping to it.
 	bc.checkExpression(stmt.Body, funcEnv)
 
 	// At function end, all borrows created in the function are dropped
@@ -240,6 +245,40 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	bc.activeBorrows = savedActiveBorrows
 	bc.ownerOf = savedOwnerOf
 	bc.currentBlockDepth = savedBlockDepth
+}
+
+// checkBorrowEscape rejects function signatures that would let a borrow
+// escape the function proving its owner's lifetime. Implementation of
+// docs/spec/50-borrowing.md section 5: initially, returning a borrow is
+// rejected outright; Oak.Escape proves the underlying discipline (dropping
+// scope-local borrows on exit preserves owner liveness, an escaping borrow of
+// a scope-local owner dangles) and that escapes of longer-lived owners are
+// the sound headroom future region-indexed signatures can claim.
+func (bc *BorrowChecker) checkBorrowEscape(stmt *ast.FunctionStatement, env *typechecker.TypeEnvironment) {
+	if stmt.ReturnType == nil {
+		return
+	}
+	scheme, ok := env.Get(stmt.Name.Value)
+	if !ok || scheme == nil {
+		return
+	}
+	fnType, ok := scheme.Type.(*typechecker.FunctionType)
+	if !ok {
+		return
+	}
+	arrType, ok := fnType.ReturnType.(*typechecker.ArrayType)
+	if !ok || (!arrType.IsSlice && !arrType.IsSpan) {
+		return
+	}
+
+	kind := "view"
+	if arrType.IsSpan {
+		kind = "span"
+	}
+	d := bc.reportBorrow(stmt.ReturnType, CodeBorrowEscape,
+		fmt.Sprintf("function %q returns a %s, which would let a borrow escape its owner's scope", stmt.Name.Value, kind))
+	d.AddNote("borrows are lexically scoped: a view or span may not outlive the function that proves its owner's lifetime")
+	d.AddHelp("return owned data, or take a caller-provided span to fill; region-indexed signatures that prove the owner outlives the call are a planned extension")
 }
 
 // parseTypeFromAST parses a type expression from the AST
@@ -467,6 +506,13 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		bc.checkExpression(e.Right, env)
 	case *ast.InvocationExpression:
 		bc.checkInvocationExpression(e, env, targetVar)
+	case *ast.BlockExpression:
+		// A block in expression position (most importantly a function block
+		// body): statements are checked under block scoping, so borrows
+		// created inside are dropped when the block ends.
+		if e.Block != nil {
+			bc.checkBlockStatement(e.Block, env)
+		}
 	default:
 		// Other expressions don't create borrows
 		// Note: Function bodies are Expressions, but they're handled in checkFunctionStatement

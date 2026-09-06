@@ -364,6 +364,37 @@ func (bs *BlockStatement) String() string {
 	return out.String()
 }
 
+// BlockExpression is a braced statement sequence used in expression position,
+// most importantly as a function block body. Every statement is retained; the
+// block's value is the trailing expression statement's expression, or unit
+// when the block is empty or ends with a non-expression statement.
+type BlockExpression struct {
+	BaseNode
+	Token token.Token // { token
+	Block *BlockStatement
+}
+
+func (be *BlockExpression) expressionNode()      {}
+func (be *BlockExpression) TokenLiteral() string { return be.Token.Literal }
+func (be *BlockExpression) String() string {
+	if be.Block == nil {
+		return "{}"
+	}
+	return "{ " + be.Block.String() + " }"
+}
+
+// Result returns the trailing expression statement's expression, or nil when
+// the block's value is unit.
+func (be *BlockExpression) Result() Expression {
+	if be.Block == nil || len(be.Block.Statements) == 0 {
+		return nil
+	}
+	if exprStmt, ok := be.Block.Statements[len(be.Block.Statements)-1].(*ExpressionStatement); ok {
+		return exprStmt.Expression
+	}
+	return nil
+}
+
 type FunctionLiteral struct {
 	BaseNode
 	Token     token.Token // func

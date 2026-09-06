@@ -619,6 +619,8 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		return tc.checkIndexExpression(e)
 	case *ast.SliceExpression:
 		return tc.checkSliceExpression(e)
+	case *ast.BlockExpression:
+		return tc.checkBlockExpression(e.Block)
 	case *ast.ArrayLiteral:
 		return tc.checkArrayLiteral(e, expected)
 	case nil:

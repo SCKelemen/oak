@@ -142,6 +142,12 @@ func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 			for _, arm := range e.Arms {
 				collectFromExpr(arm.Body)
 			}
+		case *ast.BlockExpression:
+			if e.Block != nil {
+				for _, st := range e.Block.Statements {
+					collectFromStmt(st)
+				}
+			}
 		case *ast.RecordLiteral:
 			for _, fieldExpr := range e.Fields {
 				collectFromExpr(fieldExpr)
@@ -526,11 +532,14 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 }
 
 // emitFunctionBody emits the body of a function (expression or block)
-// Note: FunctionStatement.Body is an Expression
-// parseBlockExpression() extracts the last expression from a block, so
-// function bodies with blocks are already converted to expressions by the parser
+// Note: FunctionStatement.Body is an Expression. Block bodies arrive as
+// ast.BlockExpression with every statement retained; the trailing expression
+// statement becomes the C return.
 func (cg *CodeGenerator) emitFunctionBody(body ast.Expression, tc *typechecker.TypeChecker) {
-	// All function bodies are expressions (blocks are converted to their last expression)
+	if block, ok := body.(*ast.BlockExpression); ok && block.Block != nil {
+		cg.emitBlockStatement(block.Block, tc, true)
+		return
+	}
 	cg.emitExpression(body, tc)
 }
 
@@ -627,6 +636,10 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			}
 		}
 		cg.output.WriteString(" )")
+	case *ast.BlockExpression:
+		if e.Block != nil {
+			cg.emitBlockExpression(e.Block, tc)
+		}
 	case *ast.MatchExpression:
 		// Pattern matching - this is complex, emit as a block
 		cg.emitMatchExpressionInline(e, tc)

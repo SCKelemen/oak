@@ -392,6 +392,15 @@ func serializeNode(node ast.Node) (ASTNodeJSON, error) {
 		}
 		nodeJSON.Data["statements"] = statements
 
+	case *ast.BlockExpression:
+		if n.Block != nil {
+			blockJSON, err := serializeNode(n.Block)
+			if err != nil {
+				return ASTNodeJSON{}, err
+			}
+			nodeJSON.Data["block"] = blockJSON
+		}
+
 	case *ast.ADTType:
 		if n.Name != nil {
 			nodeJSON.Data["name"] = n.Name.Value
@@ -531,6 +540,8 @@ func getNodeType(node ast.Node) string {
 		return "FunctionStatement"
 	case *ast.BlockStatement:
 		return "BlockStatement"
+	case *ast.BlockExpression:
+		return "BlockExpression"
 	case *ast.ADTType:
 		return "ADTType"
 	case *ast.MatchExpression:
@@ -607,6 +618,10 @@ func getNodePosition(node ast.Node) *PositionJSON {
 			tok = n.Token
 		}
 	case *ast.BlockStatement:
+		if n != nil {
+			tok = n.Token
+		}
+	case *ast.BlockExpression:
 		if n != nil {
 			tok = n.Token
 		}

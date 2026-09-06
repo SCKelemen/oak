@@ -119,6 +119,19 @@ func lowerExpression(expr ast.Expression, tc *typechecker.TypeChecker) ast.Expre
 		}
 	case *ast.InvocationExpression:
 		return lowerInvocationExpression(e, tc)
+	case *ast.BlockExpression:
+		if e.Block == nil {
+			return e
+		}
+		lowered, ok := lowerStatement(e.Block, tc).(*ast.BlockStatement)
+		if !ok {
+			return e
+		}
+		return &ast.BlockExpression{
+			BaseNode: e.BaseNode,
+			Token:    e.Token,
+			Block:    lowered,
+		}
 	default:
 		// Other expressions don't need lowering
 		return expr

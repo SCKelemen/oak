@@ -68,6 +68,12 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.BlockStatement:
 		return evalBlockStatement(node, env)
 
+	case *ast.BlockExpression:
+		if node.Block == nil {
+			return nil
+		}
+		return evalBlockStatement(node.Block, env)
+
 	case *ast.VariableDeclaration:
 		return evalVariableDeclaration(node, env)
 
