@@ -1,9 +1,7 @@
 name: Atomic Surface Integration
 
 on:
-  push:
-    branches:
-      - feat/atomic-surface-e2e
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -68,7 +66,7 @@ jobs:
         run: |
           gofmt -w semir/memory.go semir/memory_surface_test.go \
             typechecker/memory.go typechecker/memory_surface_test.go typechecker/gadt.go typechecker/typechecker.go \
-            codegen/memory.go codegen/memory_e2e_test.go codegen/codegen.go \
+            codegen/memory.go codegen/memory_e2e_test.go codegen/codegen.go codegen/memory_test.go \
             object/memory.go evaluator/memory.go evaluator/memory_test.go evaluator/evaluator.go \
             parser/memory_test.go
 
