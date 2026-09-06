@@ -13,7 +13,7 @@ Legend:
 
 | Feature | S | I | T | M | P | R | Notes |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | --- |
-| Layout + explicit blocks | ✓ | ✓ | ✓ |  |  |  | parser/layout equivalence exists; formal layout normalization model pending |
+| Layout + explicit blocks | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go tests cover explicit/layout token-kind equivalence, original significant-token preservation, balanced virtual braces, continuation contexts, dedent ordering, and zero-width synthetic spans; `Oak.Layout` proves abstract source-order preservation, virtual-stack balance, EOF closure, and close-underflow rejection; indentation-trigger refinement pending |
 | Source spans / UTF-16 editor positions | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.SourcePosition` proves UTF-8/UTF-16 scalar-width rules, additive coordinate accumulation, monotonic offsets, and ASCII width equivalence; Go tests cover emoji, multiline positions, byte-boundary rejection, links, and LSP coordinates; refinement pending |
 | Delimited parser cursor contract | ✓ | ✓ | ✓ | ✓ | ✓ |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; `Oak.Delimited` proves canonical opener/body/close structure, item preservation, unique close suffix, exact close offset, and trailing-separator semantic transparency; refinement pending |
 | Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
@@ -56,14 +56,15 @@ The formal gate currently checks:
 - `Oak.Delimited`
 - `Oak.RegionLifetime`
 - `Oak.PhantomRepresentation`
+- `Oak.Layout`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
 
 ## Immediate formal-verification queue
 
 1. record layout/alignment once target layout representation stabilizes;
-2. formal layout-normalizer balance/equivalence model;
-3. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, and phantom representation.
+2. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, and layout normalization;
+3. formalize additional resource/boundedness laws as the implementation surfaces stabilize.
 
 ## Refinement policy
 
