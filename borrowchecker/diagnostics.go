@@ -27,17 +27,26 @@ func newDiagnosticsState() *diagnosticsState {
 }
 
 func (s *diagnosticsState) ensure() {
+	if s == nil {
+		return
+	}
 	if s.collector == nil {
 		s.collector = diagnostic.NewDiagnosticCollector()
 	}
 }
 
 func (s *diagnosticsState) clear() {
+	if s == nil {
+		return
+	}
 	s.ensure()
 	s.collector.Clear()
 }
 
 func (s *diagnosticsState) errorStrings() []string {
+	if s == nil {
+		return nil
+	}
 	s.ensure()
 	out := make([]string, 0, len(s.collector.Errors()))
 	for _, d := range s.collector.Errors() {
@@ -67,6 +76,8 @@ func (bc *BorrowChecker) reportBorrow(node ast.Node, code diagnostic.Code, title
 	return d
 }
 
+// activeBorrowNames returns a deterministic ordering for diagnostics and checks
+// whose causal explanation depends on one of several equivalent active borrows.
 func (bc *BorrowChecker) activeBorrowNames(owner string, kind borrowKind) []string {
 	names := make([]string, 0)
 	for name, info := range bc.activeBorrows {
