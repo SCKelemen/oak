@@ -2,6 +2,7 @@ package typechecker
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
@@ -182,6 +183,18 @@ func (tc *TypeChecker) variantResultType(
 		args = append(args, arg)
 	}
 	return &GenericType{Name: adt.Name, TypeArgs: args}
+}
+
+
+func variantResultString(adt *object.ADTType, variant *object.ADTVariantDef) string {
+	name := variant.ResultName
+	if name == "" && adt != nil {
+		name = adt.Name
+	}
+	if len(variant.ResultIndices) == 0 {
+		return name
+	}
+	return fmt.Sprintf("%s[%s]", name, strings.Join(variant.ResultIndices, ", "))
 }
 
 func constructorResultSyntax(result ast.Expression) (string, []string, error) {
