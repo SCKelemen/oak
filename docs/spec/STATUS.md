@@ -15,13 +15,13 @@ Legend:
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | --- |
 | Layout + explicit blocks | ✓ | ✓ | ✓ |  |  |  | parser/layout equivalence exists; formal cursor/layout model pending |
 | Source spans / UTF-16 editor positions | ✓ | ✓ | ✓ |  |  | canonical byte spans plus exact UTF-16/LSP and `filename:line:column`/VS Code projections |
-| Delimited parser cursor contract | ✓ | ✓ | ✓ |  |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; formal cursor proof planned |
+| Delimited parser cursor contract | ✓ | ✓ | ✓ |  |  |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; formal cursor proof planned |
 | Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
 | Nominal records | ✓ | ✓ | ✓ |  |  |  | authoritative source field order is preserved; duplicate fields are rejected; ABI offsets remain a target-layout concern |
 | Record composition | ✓ | partial | partial |  |  |  | semantics now separated from subtyping |
 | ADTs | ✓ | ✓ | ✓ |  |  |  | old payload/default/tag meanings need compiler reconciliation |
 | Pattern matching | ✓ | ✓ | ✓ |  |  |  | canonical `=>`; legacy aliases remain implementation concern |
-| Exhaustiveness | ✓ | partial | partial | planned | planned |  | finite constructor-set proof target |
+| Exhaustiveness | ✓ | partial | partial | ✓ | ✓ |  | `Oak.Exhaustiveness` proves wildcard coverage, complete finite constructor coverage, missing-constructor rejection, and monotonicity under added arms; implementation refinement pending |
 | GADT-style refinements | direction |  |  |  |  |  | semantic direction specified; surface syntax intentionally not frozen |
 | Generic constraints/interfaces | ✓ | ✓ | ✓ |  |  |  | static predicate semantics; dynamic interface values not core |
 | Phantom types | ✓ | partial | partial |  |  |  | zero-runtime representation law to prove |
@@ -51,18 +51,18 @@ The formal gate currently checks:
 - `Oak.Borrowing`
 - `Oak.Handles`
 - `Oak.Slab`
+- `Oak.Exhaustiveness`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
 
 ## Immediate formal-verification queue
 
-1. finite ADT exhaustiveness;
-2. parser delimited-sequence cursor invariant;
-3. source byte-span ↔ UTF-16 coordinate correctness;
-4. region/arena non-escape theorem;
-5. phantom-type zero-runtime representation law;
-6. record layout/alignment once target layout representation stabilizes;
-7. explicit implementation refinements for type lattice, effects, and borrowing.
+1. parser delimited-sequence cursor invariant;
+2. source byte-span ↔ UTF-16 coordinate correctness;
+3. region/arena non-escape theorem;
+4. phantom-type zero-runtime representation law;
+5. record layout/alignment once target layout representation stabilizes;
+6. explicit implementation refinements for type lattice, effects, borrowing, and exhaustiveness.
 
 ## Refinement policy
 
