@@ -85,6 +85,23 @@ Function types use `->`:
 (i32, i32) -> i32
 ```
 
+### Variadic trailing parameters
+
+The last parameter may be variadic, Go-style:
+
+```oak
+fn total(base: i32, rest: ...i32) -> i32
+```
+
+Inside the body, `rest` is `[]i32` — a read-only view. A call supplies at
+least the fixed arity; the trailing arguments (possibly none) are
+materialized into a **caller-owned stack array** whose view lives exactly as
+long as the call: the cost is explicit at the call site and nothing is
+heap-allocated (`Oak.Variadic` proves bundling neither drops nor duplicates
+arguments and the view length equals the trailing count). Spreading an
+existing sequence (`f(xs...)`) is not yet specified. Only the final
+parameter may carry the marker; `..` is not a token.
+
 ## 4. Blocks and layout
 
 Statement/expression blocks may be delimited by indentation or explicit braces. Both normalize to the same structural token stream and AST.

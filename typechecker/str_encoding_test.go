@@ -183,3 +183,33 @@ func TestIsValidUtf8BuiltinTypeChecks(t *testing.T) {
 		})
 	}
 }
+
+// Variadic trailing parameters (docs/spec/10-syntax.md): calls supply at
+// least the fixed arity; every trailing argument checks against the element
+// type; the body sees the parameter as []element.
+func TestVariadicParameters(t *testing.T) {
+	def := "fn total(base: i32, rest: ...i32) -> i32 { base }\n"
+	tests := []struct {
+		name     string
+		input    string
+		hasError bool
+	}{
+		{"zero trailing args", def + "x: i32 = total(1)", false},
+		{"several trailing args", def + "x: i32 = total(1, 2, 3, 4)", false},
+		{"below fixed arity", def + "x: i32 = total()", true},
+		{"trailing element type mismatch", def + "x: i32 = total(1, \"two\")", true},
+		{"fixed argument mismatch", def + "x: i32 = total(\"one\", 2)", true},
+		{"body sees a view", "fn spread(rest: ...u8) -> Bool { is_valid_utf8(rest) }", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := setupTypeChecker(tt.input)
+			program := parseProgram(tt.input)
+			tc.CheckProgram(program)
+			hasError := len(tc.Errors()) > 0
+			if hasError != tt.hasError {
+				t.Errorf("input %q: expected error=%v, got errors=%v", tt.input, tt.hasError, tc.Errors())
+			}
+		})
+	}
+}

@@ -128,3 +128,32 @@ fn fact( n: i32, acc: i32 ) -> i32 {
 		t.Fatalf("recursive arm must not emit a call:\n%s", output)
 	}
 }
+
+// Variadic calls materialize a caller-owned stack array and pass a view:
+// explicit cost, no hidden allocation.
+func TestVariadicCallLowersToStackViewBundle(t *testing.T) {
+	output := generateC(t, `
+package main
+
+fn total( base: i32, rest: ...i32 ) -> i32 {
+  base
+}
+
+fn caller() -> i32 {
+  total(1, 2, 3)
+}
+
+fn empty_caller() -> i32 {
+  total(7)
+}
+`)
+	for _, wanted := range []string{
+		"oak_view_i32 rest",
+		"(oak_view_i32){ (i32[]){ 2, 3 }, 2 }",
+		"(oak_view_i32){ 0, 0 }",
+	} {
+		if !strings.Contains(output, wanted) {
+			t.Fatalf("variadic lowering missing %q:\n%s", wanted, output)
+		}
+	}
+}

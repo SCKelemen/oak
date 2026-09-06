@@ -162,6 +162,20 @@ result: i32 = fact(5, 1)
 `,
 		},
 		{
+			// Variadic trailing parameters: the call site materializes a
+			// caller-owned stack array and passes a view (docs/spec/10-syntax.md).
+			Name: "variadic",
+			SourceCode: `
+fn total(base: i32, rest: ...i32) -> i32 {
+  base
+}
+
+fn caller() -> i32 {
+  total(1, 2, 3)
+}
+`,
+		},
+		{
 			// is_valid_utf8: zero-allocation validation against the proven
 			// Oak.Utf8Validity brackets, lowered to a C runtime helper.
 			Name: "utf8_check",

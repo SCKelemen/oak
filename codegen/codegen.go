@@ -112,6 +112,16 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitAssertHelper()
 	cg.emitUtf8Helper()
 
+	// View typedefs must precede the functions that use them: pre-emit the
+	// element views of every variadic parameter.
+	for _, fn := range cg.programFunctions {
+		for _, param := range fn.Parameters {
+			if param.Variadic {
+				cg.emitViewType(cg.parseTypeExpression(param.Type))
+			}
+		}
+	}
+
 	// Emit type definitions (ADTs, records)
 	// First, collect all ADT types for later lookup
 	for _, stmt := range program.Statements {
@@ -558,7 +568,14 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	// Emit parameters
 	for i, param := range fn.Parameters {
-		cg.write(cg.cParameter(param.Type, param.Name.Value))
+		if param.Variadic {
+			// The body sees a read-only view of the caller-owned argument
+			// array (docs/spec/10-syntax.md, variadic parameters).
+			viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
+			cg.write(fmt.Sprintf("%s %s", viewType, param.Name.Value))
+		} else {
+			cg.write(cg.cParameter(param.Type, param.Name.Value))
+		}
 		if i < len(fn.Parameters)-1 {
 			cg.write(", ")
 		}
@@ -612,6 +629,57 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 	}
 }
 
+
+// variadicCallee reports whether name is a known variadic function.
+func (cg *CodeGenerator) variadicCallee(name string) (*ast.FunctionStatement, bool) {
+	fn, ok := cg.programFunctions[name]
+	if !ok || fn == nil || len(fn.Parameters) == 0 {
+		return nil, false
+	}
+	last := fn.Parameters[len(fn.Parameters)-1]
+	if last == nil || !last.Variadic {
+		return nil, false
+	}
+	return fn, true
+}
+
+// emitVariadicCall lowers a call to a variadic function: fixed arguments
+// pass through; the trailing arguments are materialized as a caller-owned
+// stack array (a C99 compound literal, whose lifetime is the full
+// expression) passed as a read-only view. No hidden allocation.
+func (cg *CodeGenerator) emitVariadicCall(fn *ast.FunctionStatement, call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	fixed := len(fn.Parameters) - 1
+	lastParam := fn.Parameters[fixed]
+	elementType := cg.parseTypeExpression(lastParam.Type)
+	viewType := cg.emitViewType(elementType)
+
+	cg.output.WriteString(cg.cFunctionName(fn.Name.Value))
+	cg.output.WriteString("( ")
+	for i := 0; i < fixed && i < len(call.Arguments); i++ {
+		if i > 0 {
+			cg.output.WriteString(", ")
+		}
+		cg.emitExpressionFragment(call.Arguments[i], tc)
+	}
+	if fixed > 0 {
+		cg.output.WriteString(", ")
+	}
+
+	trailing := call.Arguments[min(fixed, len(call.Arguments)):]
+	if len(trailing) == 0 {
+		cg.output.WriteString(fmt.Sprintf("(%s){ 0, 0 }", viewType))
+	} else {
+		cg.output.WriteString(fmt.Sprintf("(%s){ (%s[]){ ", viewType, elementType))
+		for i, arg := range trailing {
+			if i > 0 {
+				cg.output.WriteString(", ")
+			}
+			cg.emitExpressionFragment(arg, tc)
+		}
+		cg.output.WriteString(fmt.Sprintf(" }, %d }", len(trailing)))
+	}
+	cg.output.WriteString(" )")
+}
 
 // cParameter renders one C parameter declaration, using C's inside-out
 // declarator syntax for owned array parameters ([N]T). In C such parameters
@@ -952,7 +1020,14 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		}
 	case *ast.InvocationExpression:
 		// Function or method call. Runtime builtins lower to their always-on
-		// helpers.
+		// helpers; calls to variadic functions bundle the trailing arguments
+		// into a caller-owned stack array passed as a view.
+		if ident, ok := e.Function.(*ast.Identifier); ok {
+			if fn, isVariadicCallee := cg.variadicCallee(ident.Value); isVariadicCallee {
+				cg.emitVariadicCall(fn, e, tc)
+				return
+			}
+		}
 		if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
 		} else {

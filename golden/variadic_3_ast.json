@@ -1,0 +1,185 @@
+{
+  "statements": [
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "Identifier",
+                        "data": {
+                          "value": "base"
+                        },
+                        "position": {
+                          "line": 3,
+                          "column": 3,
+                          "byte_start": 46,
+                          "byte_end": 50
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 3,
+                      "column": 3,
+                      "byte_start": 46,
+                      "byte_end": 50
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 2,
+                "column": 42,
+                "byte_start": 42,
+                "byte_end": 43
+              }
+            }
+          },
+          "position": {
+            "line": 2,
+            "column": 42,
+            "byte_start": 42,
+            "byte_end": 43
+          }
+        },
+        "name": "total",
+        "parameters": [
+          {
+            "name": "base",
+            "type": "i32"
+          },
+          {
+            "name": "rest",
+            "type": "i32"
+          }
+        ],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 2,
+        "column": 1,
+        "byte_start": 1,
+        "byte_end": 3
+      }
+    },
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "IntegerLiteral",
+                              "data": {
+                                "value": 1
+                              },
+                              "position": {
+                                "line": 7,
+                                "column": 9,
+                                "byte_start": 83,
+                                "byte_end": 84
+                              }
+                            },
+                            {
+                              "type": "IntegerLiteral",
+                              "data": {
+                                "value": 2
+                              },
+                              "position": {
+                                "line": 7,
+                                "column": 12,
+                                "byte_start": 86,
+                                "byte_end": 87
+                              }
+                            },
+                            {
+                              "type": "IntegerLiteral",
+                              "data": {
+                                "value": 3
+                              },
+                              "position": {
+                                "line": 7,
+                                "column": 15,
+                                "byte_start": 89,
+                                "byte_end": 90
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "total"
+                            },
+                            "position": {
+                              "line": 7,
+                              "column": 3,
+                              "byte_start": 77,
+                              "byte_end": 82
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 7,
+                          "column": 8,
+                          "byte_start": 82,
+                          "byte_end": 83
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 7,
+                      "column": 3,
+                      "byte_start": 77,
+                      "byte_end": 82
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 6,
+                "column": 20,
+                "byte_start": 73,
+                "byte_end": 74
+              }
+            }
+          },
+          "position": {
+            "line": 6,
+            "column": 20,
+            "byte_start": 73,
+            "byte_end": 74
+          }
+        },
+        "name": "caller",
+        "parameters": [],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 6,
+        "column": 1,
+        "byte_start": 54,
+        "byte_end": 56
+      }
+    }
+  ],
+  "type": "Program"
+}

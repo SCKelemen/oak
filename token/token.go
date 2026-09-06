@@ -38,7 +38,8 @@ const (
 	RCHEV  // >
 
 	COMMA // ,
-	DOT   // .
+	DOT      // .
+	ELLIPSIS // ...
 	COLON // :
 	SEMI  // ;
 
@@ -97,7 +98,8 @@ var tokens = [...]string{
 	RCHEV:  ">",
 
 	COMMA: ",",
-	DOT:   ".",
+	DOT:      ".",
+	ELLIPSIS: "...",
 	COLON: ":",
 	SEMI:  ";",
 

@@ -59,3 +59,27 @@ func TestGenericTypeDefinitionStillParses(t *testing.T) {
 		t.Fatalf("expected ADTType, got %T", program.Statements[0])
 	}
 }
+
+// Variadic markers parse on the last parameter only; two dots are illegal.
+func TestVariadicParameterParsing(t *testing.T) {
+	program := parseProgramForBlockTest(t, "fn total(base: i32, rest: ...i32) -> i32 { base }")
+	fn := program.Statements[0].(*ast.FunctionStatement)
+	if len(fn.Parameters) != 2 || fn.Parameters[0].Variadic || !fn.Parameters[1].Variadic {
+		t.Fatalf("variadic flags wrong: %#v", fn.Parameters)
+	}
+	if fn.Parameters[1].Type.String() != "i32" {
+		t.Fatalf("variadic element type = %s, want i32", fn.Parameters[1].Type.String())
+	}
+
+	p := New(scanner.New("fn bad(rest: ...i32, tail: i32) -> i32 { tail }"))
+	p.ParseProgram()
+	if len(p.Errors()) == 0 {
+		t.Fatal("non-last variadic parameter must be rejected")
+	}
+
+	p = New(scanner.New("x: i32 = 1 .. 2"))
+	p.ParseProgram()
+	if len(p.Errors()) == 0 {
+		t.Fatal("two-dot token must be illegal")
+	}
+}

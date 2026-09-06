@@ -256,6 +256,9 @@ func sameSignature(a, b *ast.FunctionStatement) bool {
 			a.Parameters[i].Name.Value != b.Parameters[i].Name.Value {
 			return false
 		}
+		if a.Parameters[i].Variadic != b.Parameters[i].Variadic {
+			return false
+		}
 	}
 	return typeSyntax(a.ReturnType) == typeSyntax(b.ReturnType)
 }

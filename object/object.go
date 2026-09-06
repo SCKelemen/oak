@@ -46,6 +46,9 @@ type Function struct {
 	Parameters []*ast.Identifier
 	Body       *ast.BlockStatement
 	Env        *Environment
+	// Variadic marks a Go-style trailing parameter: calls bundle the
+	// trailing arguments into an Array bound to the last parameter name.
+	Variadic bool
 }
 
 func (f *Function) Kind() ObjectKind { return FUNCTION }

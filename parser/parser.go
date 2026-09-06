@@ -2080,11 +2080,22 @@ func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
 			return nil, false
 		}
 		p.nextToken()
+		if p.currentTokenIs(token.ELLIPSIS) {
+			// Variadic trailing parameter: rest: ...T (the element type).
+			param.Variadic = true
+			p.nextToken()
+		}
 		param.Type = p.parseTypeExpression()
 		return param, true
 	})
 	if !ok {
 		return nil
+	}
+	for i, param := range params {
+		if param.Variadic && i != len(params)-1 {
+			p.addErrorAtToken(&param.Token, "only the last parameter may be variadic")
+			return nil
+		}
 	}
 	return params
 }

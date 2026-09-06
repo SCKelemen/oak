@@ -1,0 +1,8 @@
+
+fn total(base: i32, rest: ...i32) -> i32 {
+  base
+}
+
+fn caller() -> i32 {
+  total(1, 2, 3)
+}

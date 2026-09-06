@@ -384,6 +384,11 @@ func (t *IntersectionType) Equals(other Type) bool {
 type FunctionType struct {
 	Parameters []Type
 	ReturnType Type
+	// Variadic marks a Go-style trailing parameter: the last Parameters
+	// entry is the []element view the body sees; calls supply at least
+	// len(Parameters)-1 arguments and each trailing argument checks against
+	// the element type.
+	Variadic bool
 }
 
 func (t *FunctionType) String() string {
@@ -612,14 +617,18 @@ func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
 		if paramType == nil {
 			return // full check reports the error with context
 		}
+		if param.Variadic {
+			paramType = &ArrayType{Length: -1, IsSlice: true, ElementType: paramType}
+		}
 		paramTypes = append(paramTypes, paramType)
 	}
 	returnType := tc.parseTypeExpression(fn.ReturnType)
 	if returnType == nil {
 		returnType = &UnitType{}
 	}
+	isVariadic := len(fn.Parameters) > 0 && fn.Parameters[len(fn.Parameters)-1].Variadic
 	tc.env.Set(fn.Name.Value, &TypeScheme{
-		Type: &FunctionType{Parameters: paramTypes, ReturnType: returnType},
+		Type: &FunctionType{Parameters: paramTypes, ReturnType: returnType, Variadic: isVariadic},
 	})
 }
 
@@ -1121,8 +1130,20 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return nil
 	}
 
-	// Check argument count
-	if len(expr.Arguments) != len(fnType.Parameters) {
+	// Check argument count. A variadic function requires at least its fixed
+	// arity; every trailing argument checks against the element type.
+	fixedParams := len(fnType.Parameters)
+	var variadicElement Type
+	if fnType.Variadic {
+		fixedParams--
+		if viewType, ok := fnType.Parameters[fixedParams].(*ArrayType); ok {
+			variadicElement = viewType.ElementType
+		}
+		if len(expr.Arguments) < fixedParams {
+			tc.addError(expr, "function expects at least %d arguments, got %d", fixedParams, len(expr.Arguments))
+			return nil
+		}
+	} else if len(expr.Arguments) != len(fnType.Parameters) {
 		tc.addError(expr, "function expects %d arguments, got %d", len(fnType.Parameters), len(expr.Arguments))
 		return nil
 	}
@@ -1134,7 +1155,16 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	bindings := make(Substitution)
 	unifier := NewUnifier()
 	for i, arg := range expr.Arguments {
-		expectedType := bindings.Apply(fnType.Parameters[i])
+		var parameterType Type
+		if fnType.Variadic && i >= fixedParams {
+			if variadicElement == nil {
+				continue
+			}
+			parameterType = variadicElement
+		} else {
+			parameterType = fnType.Parameters[i]
+		}
+		expectedType := bindings.Apply(parameterType)
 		argType := tc.checkExpression(arg, expectedType)
 		if argType == nil {
 			continue
@@ -2390,9 +2420,15 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			// Default to i32 if type parsing fails
 			paramType = &PrimitiveType{Name: "i32"}
 		}
+		if param.Variadic {
+			// The body sees the trailing parameter as a read-only view of a
+			// caller-owned argument array (docs/spec/10-syntax.md).
+			paramType = &ArrayType{Length: -1, IsSlice: true, ElementType: paramType}
+		}
 		paramTypes = append(paramTypes, paramType)
 		funcEnv.SetType(param.Name.Value, paramType)
 	}
+	isVariadic := len(stmt.Parameters) > 0 && stmt.Parameters[len(stmt.Parameters)-1].Variadic
 
 	// Parse return type
 	returnType := tc.parseTypeExpressionInEnv(stmt.ReturnType, funcEnv)
@@ -2406,6 +2442,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	funcEnv.SetType(stmt.Name.Value, &FunctionType{
 		Parameters: paramTypes,
 		ReturnType: returnType,
+		Variadic:   isVariadic,
 	})
 
 	// Save current environment and switch to function environment
@@ -2430,6 +2467,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	funcType := &FunctionType{
 		Parameters: paramTypes,
 		ReturnType: returnType,
+		Variadic:   isVariadic,
 	}
 
 	// Generalize function type to a scheme with constraints

@@ -857,10 +857,16 @@ func (fs *FunctionStatement) String() string {
 type FunctionParameter struct {
 	Token token.Token
 	Name  *Identifier
-	Type  Expression // type expression
+	Type  Expression // type expression (the element type when Variadic)
+	// Variadic marks a Go-style trailing parameter (rest: ...T); legal only
+	// in last position. The body sees it as []T.
+	Variadic bool
 }
 
 func (fp *FunctionParameter) String() string {
+	if fp.Variadic {
+		return fp.Name.String() + ": ..." + fp.Type.String()
+	}
 	return fp.Name.String() + ": " + fp.Type.String()
 }
 

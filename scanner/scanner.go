@@ -135,7 +135,18 @@ func (s *Scanner) NextToken() token.Token {
 	case ',':
 		tok = newTokenWithPos(token.COMMA, s.current, line, column)
 	case '.':
-		tok = newTokenWithPos(token.DOT, s.current, line, column)
+		if s.peekRune() == '.' {
+			s.readChar() // second dot
+			if s.peekRune() == '.' {
+				s.readChar() // third dot
+				tok = token.Token{TokenKind: token.ELLIPSIS, Literal: "...", Line: line, Column: column}
+			} else {
+				// Two dots have no meaning; fail closed rather than split.
+				tok = token.Token{TokenKind: token.ILLEGAL, Literal: "..", Line: line, Column: column}
+			}
+		} else {
+			tok = newTokenWithPos(token.DOT, s.current, line, column)
+		}
 	case ':':
 		if s.peekRune() == '=' {
 			ch := s.current

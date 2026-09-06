@@ -526,8 +526,21 @@ func applyFunction(fn object.Object, args []object.Object) object.Object {
 func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Environment {
 	env := object.NewEnclosedEnvironment(fn.Env)
 
+	if fn.Variadic && len(fn.Parameters) > 0 {
+		fixed := len(fn.Parameters) - 1
+		for paramIdx := 0; paramIdx < fixed && paramIdx < len(args); paramIdx++ {
+			env.Set(fn.Parameters[paramIdx].Value, args[paramIdx])
+		}
+		// Bundle the trailing arguments (possibly none) for the last name.
+		rest := &object.Array{Elements: append([]object.Object(nil), args[fixed:]...)}
+		env.Set(fn.Parameters[fixed].Value, rest)
+		return env
+	}
+
 	for paramIdx, param := range fn.Parameters {
-		env.Set(param.Value, args[paramIdx])
+		if paramIdx < len(args) {
+			env.Set(param.Value, args[paramIdx])
+		}
 	}
 
 	return env
@@ -693,6 +706,7 @@ func evalFunctionStatement(fn *ast.FunctionStatement, env *object.Environment) o
 		Parameters: params,
 		Body:       &ast.BlockStatement{Statements: []ast.Statement{&ast.ExpressionStatement{Expression: fn.Body}}},
 		Env:        env,
+		Variadic:   len(fn.Parameters) > 0 && fn.Parameters[len(fn.Parameters)-1].Variadic,
 	}
 
 	// If this is a method (has a receiver), store it with a special key: TypeName::methodName
