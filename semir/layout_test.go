@@ -15,6 +15,9 @@ func TestNaturalRecordLayoutPreservesOrderAndAlignment(t *testing.T) {
 	if got.Kind != RepresentationRecord {
 		t.Fatalf("unexpected representation kind %q", got.Kind)
 	}
+	if got.Policy != RepresentationPolicyNaturalOrdered || !got.Resolved {
+		t.Fatalf("natural layout did not produce resolved natural representation: %#v", got)
+	}
 	if got.Alignment != 4 || got.Size != 12 {
 		t.Fatalf("unexpected record size/alignment: size=%d alignment=%d", got.Size, got.Alignment)
 	}
@@ -38,6 +41,9 @@ func TestNaturalRecordLayoutEmptyRecord(t *testing.T) {
 	got, err := NaturalRecordLayout(nil)
 	if err != nil {
 		t.Fatalf("NaturalRecordLayout failed: %v", err)
+	}
+	if !got.Resolved || got.Policy != RepresentationPolicyNaturalOrdered {
+		t.Fatalf("empty natural layout did not resolve policy: %#v", got)
 	}
 	if got.Size != 0 || got.Alignment != 1 || len(got.Fields) != 0 {
 		t.Fatalf("unexpected empty layout: %#v", got)
