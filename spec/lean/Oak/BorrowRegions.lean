@@ -8,49 +8,75 @@ structure Region where
 
 def Region.finish (r : Region) : Nat := r.offset + r.length
 
-/-- Two known regions overlap exactly when each starts before the other's end. -/
+/-- Two known half-open regions overlap only when both contain elements and
+    each begins before the other's end. Empty regions overlap nothing. -/
 def Overlap (a b : Region) : Prop :=
-  a.offset < b.finish ∧ b.offset < a.finish
+  0 < a.length ∧
+  0 < b.length ∧
+  a.offset < b.finish ∧
+  b.offset < a.finish
 
-/-- Disjointness is the dual half-open ordering relation. -/
+/-- Constructive reasons two half-open regions are disjoint. Empty regions are
+    disjoint regardless of where their offset lies. -/
 def Disjoint (a b : Region) : Prop :=
-  a.finish ≤ b.offset ∨ b.finish ≤ a.offset
+  a.length = 0 ∨
+  b.length = 0 ∨
+  a.finish ≤ b.offset ∨
+  b.finish ≤ a.offset
 
 /-- Region overlap does not depend on argument order. -/
 theorem overlap_symmetric {a b : Region} : Overlap a b ↔ Overlap b a := by
-  constructor <;> intro h <;> exact ⟨h.2, h.1⟩
+  constructor
+  · intro h
+    exact ⟨h.2.1, h.1, h.2.2.2, h.2.2.1⟩
+  · intro h
+    exact ⟨h.2.1, h.1, h.2.2.2, h.2.2.1⟩
 
 /-- Region disjointness does not depend on argument order. -/
 theorem disjoint_symmetric {a b : Region} : Disjoint a b ↔ Disjoint b a := by
   constructor <;> intro h
-  · cases h with
-    | inl hab => exact Or.inr hab
-    | inr hba => exact Or.inl hba
-  · cases h with
-    | inl hba => exact Or.inr hba
-    | inr hab => exact Or.inl hab
+  · rcases h with ha | hb | hab | hba
+    · exact Or.inr (Or.inl ha)
+    · exact Or.inl hb
+    · exact Or.inr (Or.inr (Or.inr hab))
+    · exact Or.inr (Or.inr (Or.inl hba))
+  · rcases h with hb | ha | hba | hab
+    · exact Or.inr (Or.inl hb)
+    · exact Or.inl ha
+    · exact Or.inr (Or.inr (Or.inr hba))
+    · exact Or.inr (Or.inr (Or.inl hab))
 
 /-- Provably disjoint regions cannot overlap. -/
 theorem disjoint_not_overlap {a b : Region} (h : Disjoint a b) : ¬ Overlap a b := by
   intro hov
-  cases h with
-  | inl hab => exact (Nat.not_lt_of_ge hab) hov.1
-  | inr hba => exact (Nat.not_lt_of_ge hba) hov.2
+  rcases h with ha | hb | hab | hba
+  · rw [ha] at hov
+    exact (Nat.not_lt_of_ge (Nat.zero_le 0)) hov.1
+  · rw [hb] at hov
+    exact (Nat.not_lt_of_ge (Nat.zero_le 0)) hov.2.1
+  · exact (Nat.not_lt_of_ge hab) hov.2.2.2
+  · exact (Nat.not_lt_of_ge hba) hov.2.2.1
 
 /-- Adjacent half-open regions are disjoint. -/
 theorem adjacent_disjoint (offset leftLen rightLen : Nat) :
     Disjoint
       { offset := offset, length := leftLen }
       { offset := offset + leftLen, length := rightLen } := by
+  right
+  right
   left
   simp [Region.finish]
+
+/-- A zero-length region is constructively disjoint from every region. -/
+theorem zero_length_disjoint (offset : Nat) (other : Region) :
+    Disjoint { offset := offset, length := 0 } other := by
+  left
+  rfl
 
 /-- A zero-length region overlaps nothing under half-open semantics. -/
 theorem zero_length_not_overlap (offset : Nat) (other : Region) :
     ¬ Overlap { offset := offset, length := 0 } other := by
-  intro h
-  simp [Overlap, Region.finish] at h
-  exact (Nat.not_lt_of_ge (Nat.le_refl offset)) h.2
+  exact disjoint_not_overlap (zero_length_disjoint offset other)
 
 /-- `none` represents a region the compiler cannot establish statically. -/
 def MayOverlap : Option Region -> Option Region -> Prop
