@@ -14,7 +14,7 @@ Legend:
 | Feature | S | I | T | M | P | R | Notes |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | --- |
 | Layout + explicit blocks | ✓ | ✓ | ✓ |  |  |  | parser/layout equivalence exists; formal cursor/layout model pending |
-| Source spans / UTF-16 editor positions | ✓ | ✓ | ✓ |  |  | canonical byte spans plus exact UTF-16/LSP and `filename:line:column`/VS Code projections |
+| Source spans / UTF-16 editor positions | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.SourcePosition` proves UTF-8/UTF-16 scalar-width rules, additive coordinate accumulation, monotonic offsets, and ASCII width equivalence; Go tests cover emoji, multiline positions, byte-boundary rejection, links, and LSP coordinates; refinement pending |
 | Delimited parser cursor contract | ✓ | ✓ | ✓ |  |  |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; formal cursor proof planned |
 | Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
 | Nominal records | ✓ | ✓ | ✓ |  |  |  | authoritative source field order is preserved; duplicate fields are rejected; ABI offsets remain a target-layout concern |
@@ -52,17 +52,17 @@ The formal gate currently checks:
 - `Oak.Handles`
 - `Oak.Slab`
 - `Oak.Exhaustiveness`
+- `Oak.SourcePosition`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
 
 ## Immediate formal-verification queue
 
 1. parser delimited-sequence cursor invariant;
-2. source byte-span ↔ UTF-16 coordinate correctness;
-3. region/arena non-escape theorem;
-4. phantom-type zero-runtime representation law;
-5. record layout/alignment once target layout representation stabilizes;
-6. explicit implementation refinements for type lattice, effects, borrowing, and exhaustiveness.
+2. region/arena non-escape theorem;
+3. phantom-type zero-runtime representation law;
+4. record layout/alignment once target layout representation stabilizes;
+5. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, and source positions.
 
 ## Refinement policy
 
