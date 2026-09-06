@@ -161,7 +161,7 @@ func buildInterfaceDefinition(declaration *ast.InterfaceType) (semir.Definition,
 		}
 		for _, parameter := range method.Parameters {
 			if parameter == nil || parameter.Name == nil {
-				return semir.Definition{}, fmt.Errorf("interface %q method %q has invalid parameter", declaration.Name.Value)
+				return semir.Definition{}, fmt.Errorf("interface %q method %q has invalid parameter", declaration.Name.Value, method.Name.Value)
 			}
 			parameterType, err := semanticTypeName(parameter.Type)
 			if err != nil {
