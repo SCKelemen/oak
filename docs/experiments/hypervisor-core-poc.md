@@ -51,11 +51,21 @@ The POC deliberately requires Oak's `strict` discipline profile:
 - bounds-checked span reads/writes;
 - deterministic lowest-priority-value selection under the mask.
 
-The loop is intentionally straight-line: scalar/Bool match decisions live in small pure helper functions, while the bounded scan performs only loads, comparisons, calls, assignments, and the single monotonic counter advance. This is a useful systems shape independently of current parser limitations because it keeps branch semantics separately testable/provable from iteration/boundedness.
+The bounded scan is branchless after eligibility projection. For u8 priorities `candidate` and `current`, the helper computes:
+
+```text
+better = 1 - ((candidate + 256 - current) / 256)
+```
+
+in `u16`. Because both operands are in `[0,255]`, the numerator is in `[1,511]`, so integer division returns `0` exactly when `candidate < current` and `1` otherwise. `better` is therefore exactly a `0/1` selection bit. The loop uses that bit to select the winning index and priority arithmetically, while retaining the single monotonic loop counter and fixed storage.
+
+`Oak.HypervisorPOC.better_bit_one_iff_lt` and `better_bit_zero_iff_ge` prove the mathematical compare-bit law over the u8 range. This still does not constitute implementation refinement to Oak's `u16` lowering; the machine-integer correspondence remains a separate obligation.
+
+The experiment also exposed a compiler gap: `parsePattern()` currently handles identifiers, integers, strings, and variants but not primitive `true`/`false` tokens, even though the typechecker has direct Bool-pattern tests. We keep that as a language/compiler bug rather than pretending those tests establish full pipeline support. The branchless POC is useful independently of that bug because it is a plausible machine-level fast-path formulation with a compact proof obligation.
 
 This is a first proxy for the OS requirement that the IRQ hot path be simple, bounded, cache-small, and mechanically analyzable.
 
-The Lean `Deliverable` predicate proves the local facts that a deliverable interrupt is enabled, pending, inactive, and below the priority mask. A later step should prove the concrete selection algorithm returns the minimum-priority deliverable IRQ and then refine the executable implementation to that model.
+The Lean `Deliverable` predicate separately proves the local facts that a deliverable interrupt is enabled, pending, inactive, and below the priority mask. A later step should prove the full scan returns the minimum-priority deliverable IRQ and then refine the executable implementation to that model.
 
 ### Stage-2 page arithmetic
 
@@ -98,8 +108,8 @@ For this experiment we distinguish the following strictly:
 
 ```text
 Semantic IR modeled       yes, for the IRQ five-axis example
-Oak executable code       yes, for IRQ lifecycle/selection and page arithmetic
-Strict discipline checked yes
+Oak executable code       yes, for IRQ lifecycle/selection and page arithmetic when CI passes
+Strict discipline checked yes when compiler CI passes
 C lowering                yes when compiler CI passes
 Native host execution     yes when compiler CI passes
 Lean abstract laws        yes when formal CI passes
@@ -113,7 +123,7 @@ A green Lean build proves the theorems in `Oak.HypervisorPOC`; it does not prove
 
 The next useful POCs should be driven by actual EL2 needs:
 
-1. fixed-width machine-integer semantics/refinement for page-table arithmetic;
+1. fixed-width machine-integer semantics/refinement for page-table and branchless-selection arithmetic;
 2. explicit packed/extern/offset representation suitable for architectural descriptors;
 3. source-level end-to-end atomics/fences over the new machine-memory Semantic IR, followed by memory-model refinement and litmus tests;
 4. volatile/MMIO plus explicit AArch64 barrier and device-memory effects;
