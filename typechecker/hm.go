@@ -117,11 +117,15 @@ func (sub Substitution) Apply(typ Type) Type {
 		return &FunctionType{
 			Parameters: newParams,
 			ReturnType: sub.Apply(t.ReturnType),
+			Variadic:   t.Variadic,
 		}
 	case *ArrayType:
+		// IsSpan must survive substitution: dropping it silently strips
+		// write authority from span-typed bindings (docs/spec/50-borrowing).
 		return &ArrayType{
 			Length:      t.Length,
 			IsSlice:     t.IsSlice,
+			IsSpan:      t.IsSpan,
 			ElementType: sub.Apply(t.ElementType),
 		}
 	case *GenericType:
@@ -353,7 +357,14 @@ func (u *Unifier) unifyArray(arr1, arr2 *ArrayType) Substitution {
 		return nil
 	}
 
-	if !arr1.IsSlice && arr1.Length != arr2.Length {
+	// A writable span never unifies with a read-only view or an owned
+	// array: write authority is part of the type (docs/spec/50-borrowing).
+	if arr1.IsSpan != arr2.IsSpan {
+		u.errors = append(u.errors, "cannot unify span with non-span")
+		return nil
+	}
+
+	if !arr1.IsSlice && !arr1.IsSpan && arr1.Length != arr2.Length {
 		u.errors = append(u.errors, fmt.Sprintf("array length mismatch: %d vs %d", arr1.Length, arr2.Length))
 		return nil
 	}

@@ -337,6 +337,28 @@ main: (): i32 {
 `,
 		},
 		{
+			// Portable SIMD (docs/spec/93-simd.md): the byte-search kernel
+			// (load, splat, eq, any), a vector store through a span, and an
+			// arm64 horizontal reduction — usage-gated helper emission with
+			// NEON and portable branches.
+			Name: "simd_kernel",
+			SourceCode: `
+contains16: (v: []u8, needle: u8): Bool {
+  chunk: simd.U8x16 = simd.load_u8x16(v, u32(0))
+  hits: simd.U8x16 = simd.eq_u8x16(chunk, simd.splat_u8x16(needle))
+  simd.any_u8x16(hits)
+}
+
+main: (): i32 {
+  out: [16]u8
+  s: [*]u8 = span(&out)
+  simd.store_u8x16(s, u32(0), simd.splat_u8x16(u8(66)))
+  assert(arm64.uaddlv_u8x16(simd.splat_u8x16(u8(1))) == u32(16))
+  i32(s[0])
+}
+`,
+		},
+		{
 			// Unsafe boundary: unprovable span overlap is admitted inside unsafe
 			// as a recorded OAK-B0110 assumption (warning), not an error.
 			Name: "unsafe_block",

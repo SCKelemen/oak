@@ -95,9 +95,86 @@ var oakConversionCOperands = map[string][]string{
 	"u8": {"UInt8", "Char"}, "u16": {"UInt16"}, "u32": {"UInt32", "UInt"}, "u64": {"UInt64"},
 }
 
-// arm64Intrinsics is the v1 AArch64 instruction-function catalog
-// (docs/spec/92-ffi.md section 3.2). Every function is total over Oak
-// integers; the semantic laws live in Oak.Intrinsics (Lean).
+// SimdType is a member of the `simd` portable vector library
+// (docs/spec/93-simd.md): a nominal 16-byte vector value with no implicit
+// conversions and no borrow interaction.
+type SimdType struct {
+	Name string // "U8x16", "U16x8", "U32x4", "U64x2"
+}
+
+func (t *SimdType) String() string { return "simd." + t.Name }
+
+func (t *SimdType) Equals(other Type) bool {
+	if otherSimd, ok := other.(*SimdType); ok {
+		return t.Name == otherSimd.Name
+	}
+	return false
+}
+
+// SimdShape describes one vector type of docs/spec/93-simd.md section 1.1.
+type SimdShape struct {
+	TypeName string // library member: "U8x16"
+	Suffix   string // op suffix: "u8x16"
+	ElemName string // lane primitive: "u8"
+	Lanes    int    // lane count
+}
+
+// SimdShapes is the v1 vector catalog, shared with the backend and the
+// interpreter (single authority for suffixes, lane types, and counts).
+var SimdShapes = []SimdShape{
+	{TypeName: "U8x16", Suffix: "u8x16", ElemName: "u8", Lanes: 16},
+	{TypeName: "U16x8", Suffix: "u16x8", ElemName: "u16", Lanes: 8},
+	{TypeName: "U32x4", Suffix: "u32x4", ElemName: "u32", Lanes: 4},
+	{TypeName: "U64x2", Suffix: "u64x2", ElemName: "u64", Lanes: 2},
+}
+
+// SimdShapeBySuffix resolves an op suffix ("u8x16") to its shape.
+func SimdShapeBySuffix(suffix string) (SimdShape, bool) {
+	for _, shape := range SimdShapes {
+		if shape.Suffix == suffix {
+			return shape, true
+		}
+	}
+	return SimdShape{}, false
+}
+
+// simdTypeNames indexes the vector type members.
+var simdTypeNames = func() map[string]bool {
+	names := make(map[string]bool, len(SimdShapes))
+	for _, shape := range SimdShapes {
+		names[shape.TypeName] = true
+	}
+	return names
+}()
+
+// simdOps is the operation catalog of docs/spec/93-simd.md section 1.2,
+// built per vector shape: splat, bounds-checked load/store, wrapping
+// add/sub, bitwise and/or/xor, unsigned min/max, eq masks, any/all.
+var simdOps = func() map[string]*FunctionType {
+	ops := make(map[string]*FunctionType)
+	for _, shape := range SimdShapes {
+		vector := &SimdType{Name: shape.TypeName}
+		elem := &PrimitiveType{Name: shape.ElemName}
+		view := &ArrayType{Length: -1, IsSlice: true, ElementType: elem}
+		span := &ArrayType{Length: -1, IsSpan: true, ElementType: elem}
+		offset := &PrimitiveType{Name: "u32"}
+		ops["splat_"+shape.Suffix] = &FunctionType{Parameters: []Type{elem}, ReturnType: vector}
+		ops["load_"+shape.Suffix] = &FunctionType{Parameters: []Type{view, offset}, ReturnType: vector}
+		ops["store_"+shape.Suffix] = &FunctionType{Parameters: []Type{span, offset, vector}, ReturnType: &UnitType{}}
+		for _, binary := range []string{"add", "sub", "and", "or", "xor", "min", "max", "eq"} {
+			ops[binary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
+		}
+		for _, reduction := range []string{"any", "all"} {
+			ops[reduction+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: &BoolType{}}
+		}
+	}
+	return ops
+}()
+
+// arm64Intrinsics is the AArch64 instruction-function catalog
+// (docs/spec/92-ffi.md section 3.2, docs/spec/93-simd.md section 2).
+// Every function is total; the semantic laws live in Oak.Intrinsics and
+// Oak.Simd (Lean).
 var arm64Intrinsics = map[string]*FunctionType{
 	"rev32":  {Parameters: []Type{&PrimitiveType{Name: "u32"}}, ReturnType: &PrimitiveType{Name: "u32"}},
 	"rev64":  {Parameters: []Type{&PrimitiveType{Name: "u64"}}, ReturnType: &PrimitiveType{Name: "u64"}},
@@ -105,6 +182,12 @@ var arm64Intrinsics = map[string]*FunctionType{
 	"rbit64": {Parameters: []Type{&PrimitiveType{Name: "u64"}}, ReturnType: &PrimitiveType{Name: "u64"}},
 	"clz32":  {Parameters: []Type{&PrimitiveType{Name: "u32"}}, ReturnType: &PrimitiveType{Name: "u32"}},
 	"clz64":  {Parameters: []Type{&PrimitiveType{Name: "u64"}}, ReturnType: &PrimitiveType{Name: "u64"}},
+
+	// Horizontal vector instructions (docs/spec/93-simd.md section 2).
+	"uaddlv_u8x16": {Parameters: []Type{&SimdType{Name: "U8x16"}}, ReturnType: &PrimitiveType{Name: "u32"}},
+	"umaxv_u8x16":  {Parameters: []Type{&SimdType{Name: "U8x16"}}, ReturnType: &PrimitiveType{Name: "u8"}},
+	"uminv_u8x16":  {Parameters: []Type{&SimdType{Name: "U8x16"}}, ReturnType: &PrimitiveType{Name: "u8"}},
+	"cnt_u8x16":    {Parameters: []Type{&SimdType{Name: "U8x16"}}, ReturnType: &SimdType{Name: "U8x16"}},
 }
 
 // Arm64IntrinsicNames reports whether name is a v1 arm64 instruction
@@ -128,6 +211,9 @@ func KnownLibraryMember(library, member string) bool {
 	case "arm64":
 		_, isIntrinsic := arm64Intrinsics[member]
 		return isIntrinsic
+	case "simd":
+		_, isOp := simdOps[member]
+		return isOp || simdTypeNames[member]
 	}
 	return false
 }
@@ -159,6 +245,12 @@ func (tc *TypeChecker) libraryQualifiedType(ident *ast.Identifier) (Type, bool) 
 	case "arm64":
 		tc.addError(ident, "arm64.%s is an instruction function, not a type", member)
 		return nil, true
+	case "simd":
+		if simdTypeNames[member] {
+			return &SimdType{Name: member}, true
+		}
+		tc.addError(ident, "the simd library has no type simd.%s", member)
+		return nil, true
 	default:
 		return nil, false
 	}
@@ -181,7 +273,7 @@ func libraryAccess(expr ast.Expression) (library, member string, ok bool) {
 		return "", "", false
 	}
 	base, isIdent := access.Left.(*ast.Identifier)
-	if !isIdent || (base.Value != "c" && base.Value != "arm64") {
+	if !isIdent || !compilerKnownLibraries[base.Value] {
 		return "", "", false
 	}
 	memberIdent, isIdent := access.Index.(*ast.Identifier)
@@ -189,6 +281,17 @@ func libraryAccess(expr ast.Expression) (library, member string, ok bool) {
 		return "", "", false
 	}
 	return base.Value, memberIdent.Value, true
+}
+
+// compilerKnownLibraries are the reserved library names of
+// docs/spec/92-ffi.md and docs/spec/93-simd.md.
+var compilerKnownLibraries = map[string]bool{
+	"c": true, "arm64": true, "simd": true,
+}
+
+// CompilerKnownLibrary reports whether name is a compiler-known library.
+func CompilerKnownLibrary(name string) bool {
+	return compilerKnownLibraries[name]
 }
 
 // checkLibraryInvocation types calls whose callee is a compiler-known
@@ -208,7 +311,11 @@ func (tc *TypeChecker) checkLibraryInvocation(expr *ast.InvocationExpression) (T
 	case "c":
 		return tc.checkCLibraryCall(expr, member), true
 	case "arm64":
-		return tc.checkArm64Call(expr, member), true
+		return tc.checkCatalogCall(expr, "arm64", member, arm64Intrinsics,
+			"the arm64 library has no instruction function arm64.%s"), true
+	case "simd":
+		return tc.checkCatalogCall(expr, "simd", member, simdOps,
+			"the simd library has no operation simd.%s"), true
 	}
 	return nil, false
 }
@@ -242,20 +349,23 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 	return &CType{Name: member}
 }
 
-func (tc *TypeChecker) checkArm64Call(expr *ast.InvocationExpression, member string) Type {
-	signature, known := arm64Intrinsics[member]
+// checkCatalogCall types a call against a fixed library catalog (the arm64
+// instruction functions or the simd operations): exact arity, each argument
+// checked against its declared parameter type.
+func (tc *TypeChecker) checkCatalogCall(expr *ast.InvocationExpression, library, member string, catalog map[string]*FunctionType, unknownFormat string) Type {
+	signature, known := catalog[member]
 	if !known {
-		tc.addError(expr, "the arm64 library has no instruction function arm64.%s", member)
+		tc.addError(expr, unknownFormat, member)
 		return nil
 	}
 	if len(expr.Arguments) != len(signature.Parameters) {
-		tc.addError(expr, "arm64.%s takes %d argument(s), got %d", member, len(signature.Parameters), len(expr.Arguments))
+		tc.addError(expr, "%s.%s takes %d argument(s), got %d", library, member, len(signature.Parameters), len(expr.Arguments))
 		return nil
 	}
 	for i, arg := range expr.Arguments {
 		argType := tc.checkExpression(arg, signature.Parameters[i])
 		if argType != nil && !argType.Equals(signature.Parameters[i]) {
-			tc.addError(arg, "arm64.%s expects %s, got %s", member, signature.Parameters[i], argType)
+			tc.addError(arg, "%s.%s expects %s, got %s", library, member, signature.Parameters[i], argType)
 			return nil
 		}
 	}

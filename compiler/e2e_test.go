@@ -291,6 +291,73 @@ main: (): i32 {
 	}
 }
 
+// Portable SIMD, executed on both lowerings (NEON and the portable C
+// sequences): the canonical byte-search kernel (eq + any), lane arithmetic,
+// masks, vector stores through a span, and the arm64 horizontal
+// instructions — all asserting the Oak.Simd laws on concrete values.
+func TestE2ESimdKernels(t *testing.T) {
+	src := `
+main: (): i32 {
+  zeros: [16]u8
+  v: []u8 = view(&zeros)
+  chunk: simd.U8x16 = simd.load_u8x16(v, u32(0))
+  assert(simd.all_u8x16(simd.eq_u8x16(chunk, simd.splat_u8x16(u8(0)))))
+  assert(simd.any_u8x16(simd.eq_u8x16(chunk, simd.splat_u8x16(u8(7)))) == false)
+
+  a: simd.U8x16 = simd.splat_u8x16(u8(65))
+  b: simd.U8x16 = simd.add_u8x16(a, simd.splat_u8x16(u8(1)))
+  assert(arm64.uaddlv_u8x16(b) == u32(1056))
+  assert(arm64.umaxv_u8x16(simd.max_u8x16(a, b)) == u8(66))
+  assert(arm64.uminv_u8x16(simd.min_u8x16(a, b)) == u8(65))
+
+  counted: simd.U8x16 = arm64.cnt_u8x16(simd.splat_u8x16(u8(255)))
+  assert(arm64.uaddlv_u8x16(counted) == u32(128))
+
+  wide: simd.U64x2 = simd.max_u64x2(simd.splat_u64x2(u64(5)), simd.splat_u64x2(u64(9)))
+  assert(simd.all_u64x2(simd.eq_u64x2(wide, simd.splat_u64x2(u64(9)))))
+  assert(simd.any_u32x4(simd.xor_u32x4(simd.splat_u32x4(u32(3)), simd.splat_u32x4(u32(3)))) == false)
+
+  out: [16]u8
+  s: [*]u8 = span(&out)
+  simd.store_u8x16(s, u32(0), b)
+  s[9] = u8(88)
+  i32(s[0]) + i32(s[9])
+}
+`
+	for _, variant := range []struct {
+		name  string
+		flags []string
+	}{
+		{"instruction", nil},
+		{"portable", []string{"-DOAK_PORTABLE_INTRINSICS"}},
+	} {
+		t.Run(variant.name, func(t *testing.T) {
+			_, code, abnormal := buildAndRunOutput(t, "simd"+variant.name, src, variant.flags...)
+			if abnormal || code != 66+88 {
+				t.Fatalf("exit = (%d, abnormal=%v), want %d (stored lanes read back)", code, abnormal, 66+88)
+			}
+		})
+	}
+}
+
+// A vector load that would read past the view traps at runtime — the
+// never-UB guarantee extends to SIMD (docs/spec/93-simd.md section 1.2).
+func TestE2ESimdOutOfBoundsLoadTraps(t *testing.T) {
+	_, abnormal := buildAndRun(t, "simdoob", `
+main: (): i32 {
+  data: [8]u8
+  v: []u8 = view(&data)
+  chunk: simd.U8x16 = simd.load_u8x16(v, u32(0))
+  hit: Bool = simd.any_u8x16(chunk)
+  assert(hit == false)
+  0
+}
+`)
+	if !abnormal {
+		t.Fatal("16-lane load from an 8-element view must trap, not return normally")
+	}
+}
+
 func TestE2EOutOfBoundsStoreTraps(t *testing.T) {
 	_, abnormal := buildAndRun(t, "oobstore", `
 main: (): i32 {

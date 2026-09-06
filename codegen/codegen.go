@@ -135,6 +135,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitAssertHelper()
 	cg.emitUtf8Helper()
 	cg.emitIntrinsicHelpers(program)
+	cg.emitSimdSupport(program)
 	cg.emitAtomicGlobals(program)
 
 	// Container typedefs (and their bounds-checked index helpers) must
@@ -1688,6 +1689,11 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 			// c-library boundary types carry their C spellings
 			// (docs/spec/92-ffi.md section 2.1).
 			if spelling, isCType := cQualifiedTypeSpelling(ident.Value); isCType {
+				return spelling
+			}
+			// simd vector types lower to their struct typedefs
+			// (docs/spec/93-simd.md section 1.4).
+			if spelling, isSimd := simdQualifiedTypeSpelling(ident.Value); isSimd {
 				return spelling
 			}
 			// Assume it's a type name

@@ -6,6 +6,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/source"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 var (
@@ -103,12 +104,13 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 				return result
 			}
 		}
-		// Compiler-known library calls (docs/spec/92-ffi.md): arm64
-		// instruction functions run natively in the interpreter; c
-		// conversions are value-preserving; extern is native-backend only.
-		// A local binding named c/arm64 shadows the library.
+		// Compiler-known library calls (docs/spec/92-ffi.md,
+		// docs/spec/93-simd.md): arm64 instruction functions and simd
+		// operations run natively in the interpreter; c conversions are
+		// value-preserving; extern is native-backend only. A local binding
+		// named c/arm64/simd shadows the library.
 		if indexExpr, ok := node.Function.(*ast.IndexExpression); ok {
-			if base, isIdent := indexExpr.Left.(*ast.Identifier); isIdent && (base.Value == "c" || base.Value == "arm64") {
+			if base, isIdent := indexExpr.Left.(*ast.Identifier); isIdent && typechecker.CompilerKnownLibrary(base.Value) {
 				if _, bound := env.Get(base.Value); !bound {
 					if member, isIdent := indexExpr.Index.(*ast.Identifier); isIdent {
 						return evalLibraryCall(base.Value, member.Value, node.Arguments, env)

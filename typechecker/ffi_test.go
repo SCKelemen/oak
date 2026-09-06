@@ -101,6 +101,41 @@ func TestFFIBoundaryRules(t *testing.T) {
 			"fn f() -> i32 { c: i32 = 1\nc + 1 }",
 			false, "",
 		},
+		{
+			"simd ops type as ordinary functions",
+			"f: (a, b: simd.U8x16): simd.U8x16 = simd.add_u8x16(a, b)",
+			false, "",
+		},
+		{
+			"simd vector types are nominal per shape",
+			"fn f(a: simd.U8x16, b: simd.U32x4) -> simd.U8x16 = simd.add_u8x16(a, b)",
+			true, "simd.add_u8x16 expects simd.U8x16",
+		},
+		{
+			"simd load requires the matching element view",
+			"fn f(v: []u32) -> simd.U8x16 = simd.load_u8x16(v, u32(0))",
+			true, "",
+		},
+		{
+			"simd store requires a writable span, not a view",
+			"fn f(v: []u8, x: simd.U8x16) -> () = simd.store_u8x16(v, u32(0), x)",
+			true, "",
+		},
+		{
+			"unknown simd operations are rejected",
+			"fn f(a: simd.U8x16) -> simd.U8x16 = simd.shuffle_u8x16(a)",
+			true, "no operation",
+		},
+		{
+			"reductions return Bool",
+			"f: (a, b: simd.U8x16): Bool = simd.any_u8x16(simd.eq_u8x16(a, b))",
+			false, "",
+		},
+		{
+			"vectors cannot cross the extern boundary",
+			"boom: (x: simd.U8x16): () = c.extern(\"boom\")",
+			true, "OAK-F0101",
+		},
 	}
 
 	for _, tt := range tests {

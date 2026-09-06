@@ -146,6 +146,31 @@ func (a *Array) Inspect() string {
 	return out.String()
 }
 
+// Vector is a portable SIMD value (docs/spec/93-simd.md): 16 bytes of lane
+// storage interpreted per Kind ("U8x16", "U16x8", "U32x4", "U64x2"), lanes
+// in index order, each lane little-endian within its bytes.
+type Vector struct {
+	VectorKind string
+	Bytes      [16]byte
+}
+
+func (v *Vector) Type() ObjectType { return VECTOR_OBJ }
+func (v *Vector) Kind() ObjectKind { return VECTOR }
+func (v *Vector) Inspect() string {
+	var out bytes.Buffer
+	out.WriteString("simd.")
+	out.WriteString(v.VectorKind)
+	out.WriteRune('(')
+	for i, b := range v.Bytes {
+		if i > 0 {
+			out.WriteRune(' ')
+		}
+		fmt.Fprintf(&out, "%02x", b)
+	}
+	out.WriteRune(')')
+	return out.String()
+}
+
 type ADTType struct {
 	Name       string
 	TypeParams []string
@@ -239,6 +264,7 @@ const (
 	ADT_OBJ          = "ADT"
 	RECORD_OBJ       = "RECORD"
 	ARRAY_OBJ        = "ARRAY"
+	VECTOR_OBJ       = "VECTOR"
 )
 
 const (
@@ -254,6 +280,7 @@ const (
 	RETURN_VALUE
 	RECORD
 	ARRAY
+	VECTOR
 )
 
 var types = [...]string{
@@ -269,6 +296,7 @@ var types = [...]string{
 	RETURN_VALUE: "RETURN_VALUE",
 	RECORD:       "RECORD",
 	ARRAY:        "ARRAY",
+	VECTOR:       "VECTOR",
 }
 
 func (kind ObjectKind) String() string {

@@ -193,9 +193,10 @@ func lowerExpression(expr ast.Expression, tc *typechecker.TypeChecker) ast.Expre
 
 // lowerIndexExpression lowers arr[i] to core_index(arr, i)
 func lowerIndexExpression(expr *ast.IndexExpression, tc *typechecker.TypeChecker) ast.Expression {
-	// Library member access (c.Int, arm64.clz64, ...) is not element
-	// indexing: preserve the shape for the backend (docs/spec/92-ffi.md).
-	if base, ok := expr.Left.(*ast.Identifier); ok && (base.Value == "c" || base.Value == "arm64") {
+	// Library member access (c.Int, arm64.clz64, simd.load_u8x16, ...) is
+	// not element indexing: preserve the shape for the backend
+	// (docs/spec/92-ffi.md, docs/spec/93-simd.md).
+	if base, ok := expr.Left.(*ast.Identifier); ok && typechecker.CompilerKnownLibrary(base.Value) {
 		if member, ok := expr.Index.(*ast.Identifier); ok && typechecker.KnownLibraryMember(base.Value, member.Value) {
 			return expr
 		}

@@ -1,0 +1,961 @@
+{
+  "statements": [
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "chunk",
+                      "type": "simd.U8x16",
+                      "value": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "Identifier",
+                              "data": {
+                                "value": "v"
+                              },
+                              "position": {
+                                "line": 3,
+                                "column": 39,
+                                "byte_start": 81,
+                                "byte_end": 82
+                              }
+                            },
+                            {
+                              "type": "InvocationExpression",
+                              "data": {
+                                "arguments": [
+                                  {
+                                    "type": "IntegerLiteral",
+                                    "data": {
+                                      "value": 0
+                                    },
+                                    "position": {
+                                      "line": 3,
+                                      "column": 46,
+                                      "byte_start": 88,
+                                      "byte_end": 89
+                                    }
+                                  }
+                                ],
+                                "function": {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "u32"
+                                  },
+                                  "position": {
+                                    "line": 3,
+                                    "column": 42,
+                                    "byte_start": 84,
+                                    "byte_end": 87
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 3,
+                                "column": 45,
+                                "byte_start": 87,
+                                "byte_end": 88
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "IndexExpression",
+                            "data": {
+                              "index": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "load_u8x16"
+                                },
+                                "position": {
+                                  "line": 3,
+                                  "column": 28,
+                                  "byte_start": 70,
+                                  "byte_end": 80
+                                }
+                              },
+                              "left": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "simd"
+                                },
+                                "position": {
+                                  "line": 3,
+                                  "column": 23,
+                                  "byte_start": 65,
+                                  "byte_end": 69
+                                }
+                              }
+                            },
+                            "position": {
+                              "line": 3,
+                              "column": 27,
+                              "byte_start": 69,
+                              "byte_end": 70
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 3,
+                          "column": 38,
+                          "byte_start": 80,
+                          "byte_end": 81
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 3,
+                      "column": 3,
+                      "byte_start": 45,
+                      "byte_end": 50
+                    }
+                  },
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "hits",
+                      "type": "simd.U8x16",
+                      "value": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "Identifier",
+                              "data": {
+                                "value": "chunk"
+                              },
+                              "position": {
+                                "line": 4,
+                                "column": 36,
+                                "byte_start": 127,
+                                "byte_end": 132
+                              }
+                            },
+                            {
+                              "type": "InvocationExpression",
+                              "data": {
+                                "arguments": [
+                                  {
+                                    "type": "Identifier",
+                                    "data": {
+                                      "value": "needle"
+                                    },
+                                    "position": {
+                                      "line": 4,
+                                      "column": 60,
+                                      "byte_start": 151,
+                                      "byte_end": 157
+                                    }
+                                  }
+                                ],
+                                "function": {
+                                  "type": "IndexExpression",
+                                  "data": {
+                                    "index": {
+                                      "type": "Identifier",
+                                      "data": {
+                                        "value": "splat_u8x16"
+                                      },
+                                      "position": {
+                                        "line": 4,
+                                        "column": 48,
+                                        "byte_start": 139,
+                                        "byte_end": 150
+                                      }
+                                    },
+                                    "left": {
+                                      "type": "Identifier",
+                                      "data": {
+                                        "value": "simd"
+                                      },
+                                      "position": {
+                                        "line": 4,
+                                        "column": 43,
+                                        "byte_start": 134,
+                                        "byte_end": 138
+                                      }
+                                    }
+                                  },
+                                  "position": {
+                                    "line": 4,
+                                    "column": 47,
+                                    "byte_start": 138,
+                                    "byte_end": 139
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 4,
+                                "column": 59,
+                                "byte_start": 150,
+                                "byte_end": 151
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "IndexExpression",
+                            "data": {
+                              "index": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "eq_u8x16"
+                                },
+                                "position": {
+                                  "line": 4,
+                                  "column": 27,
+                                  "byte_start": 118,
+                                  "byte_end": 126
+                                }
+                              },
+                              "left": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "simd"
+                                },
+                                "position": {
+                                  "line": 4,
+                                  "column": 22,
+                                  "byte_start": 113,
+                                  "byte_end": 117
+                                }
+                              }
+                            },
+                            "position": {
+                              "line": 4,
+                              "column": 26,
+                              "byte_start": 117,
+                              "byte_end": 118
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 4,
+                          "column": 35,
+                          "byte_start": 126,
+                          "byte_end": 127
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 4,
+                      "column": 3,
+                      "byte_start": 94,
+                      "byte_end": 98
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "Identifier",
+                              "data": {
+                                "value": "hits"
+                              },
+                              "position": {
+                                "line": 5,
+                                "column": 18,
+                                "byte_start": 177,
+                                "byte_end": 181
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "IndexExpression",
+                            "data": {
+                              "index": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "any_u8x16"
+                                },
+                                "position": {
+                                  "line": 5,
+                                  "column": 8,
+                                  "byte_start": 167,
+                                  "byte_end": 176
+                                }
+                              },
+                              "left": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "simd"
+                                },
+                                "position": {
+                                  "line": 5,
+                                  "column": 3,
+                                  "byte_start": 162,
+                                  "byte_end": 166
+                                }
+                              }
+                            },
+                            "position": {
+                              "line": 5,
+                              "column": 7,
+                              "byte_start": 166,
+                              "byte_end": 167
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 5,
+                          "column": 17,
+                          "byte_start": 176,
+                          "byte_end": 177
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 5,
+                      "column": 3,
+                      "byte_start": 162,
+                      "byte_end": 166
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 2,
+                "column": 41,
+                "byte_start": 41,
+                "byte_end": 42
+              }
+            }
+          },
+          "position": {
+            "line": 2,
+            "column": 41,
+            "byte_start": 41,
+            "byte_end": 42
+          }
+        },
+        "name": "contains16",
+        "parameters": [
+          {
+            "name": "v",
+            "type": "(u8.)"
+          },
+          {
+            "name": "needle",
+            "type": "u8"
+          }
+        ],
+        "return_type": "Bool"
+      },
+      "position": {
+        "line": 2,
+        "column": 1,
+        "byte_start": 1,
+        "byte_end": 11
+      }
+    },
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "out",
+                      "type": "(u8[16])"
+                    },
+                    "position": {
+                      "line": 9,
+                      "column": 3,
+                      "byte_start": 204,
+                      "byte_end": 207
+                    }
+                  },
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "s",
+                      "type": "(u8.*)",
+                      "value": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "PrefixExpression",
+                              "data": {
+                                "operator": "\u0026",
+                                "right": {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "out"
+                                  },
+                                  "position": {
+                                    "line": 10,
+                                    "column": 20,
+                                    "byte_start": 235,
+                                    "byte_end": 238
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 10,
+                                "column": 19,
+                                "byte_start": 234,
+                                "byte_end": 235
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "span"
+                            },
+                            "position": {
+                              "line": 10,
+                              "column": 14,
+                              "byte_start": 229,
+                              "byte_end": 233
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 10,
+                          "column": 18,
+                          "byte_start": 233,
+                          "byte_end": 234
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 10,
+                      "column": 3,
+                      "byte_start": 218,
+                      "byte_end": 219
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "Identifier",
+                              "data": {
+                                "value": "s"
+                              },
+                              "position": {
+                                "line": 11,
+                                "column": 20,
+                                "byte_start": 259,
+                                "byte_end": 260
+                              }
+                            },
+                            {
+                              "type": "InvocationExpression",
+                              "data": {
+                                "arguments": [
+                                  {
+                                    "type": "IntegerLiteral",
+                                    "data": {
+                                      "value": 0
+                                    },
+                                    "position": {
+                                      "line": 11,
+                                      "column": 27,
+                                      "byte_start": 266,
+                                      "byte_end": 267
+                                    }
+                                  }
+                                ],
+                                "function": {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "u32"
+                                  },
+                                  "position": {
+                                    "line": 11,
+                                    "column": 23,
+                                    "byte_start": 262,
+                                    "byte_end": 265
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 11,
+                                "column": 26,
+                                "byte_start": 265,
+                                "byte_end": 266
+                              }
+                            },
+                            {
+                              "type": "InvocationExpression",
+                              "data": {
+                                "arguments": [
+                                  {
+                                    "type": "InvocationExpression",
+                                    "data": {
+                                      "arguments": [
+                                        {
+                                          "type": "IntegerLiteral",
+                                          "data": {
+                                            "value": 66
+                                          },
+                                          "position": {
+                                            "line": 11,
+                                            "column": 51,
+                                            "byte_start": 290,
+                                            "byte_end": 292
+                                          }
+                                        }
+                                      ],
+                                      "function": {
+                                        "type": "Identifier",
+                                        "data": {
+                                          "value": "u8"
+                                        },
+                                        "position": {
+                                          "line": 11,
+                                          "column": 48,
+                                          "byte_start": 287,
+                                          "byte_end": 289
+                                        }
+                                      }
+                                    },
+                                    "position": {
+                                      "line": 11,
+                                      "column": 50,
+                                      "byte_start": 289,
+                                      "byte_end": 290
+                                    }
+                                  }
+                                ],
+                                "function": {
+                                  "type": "IndexExpression",
+                                  "data": {
+                                    "index": {
+                                      "type": "Identifier",
+                                      "data": {
+                                        "value": "splat_u8x16"
+                                      },
+                                      "position": {
+                                        "line": 11,
+                                        "column": 36,
+                                        "byte_start": 275,
+                                        "byte_end": 286
+                                      }
+                                    },
+                                    "left": {
+                                      "type": "Identifier",
+                                      "data": {
+                                        "value": "simd"
+                                      },
+                                      "position": {
+                                        "line": 11,
+                                        "column": 31,
+                                        "byte_start": 270,
+                                        "byte_end": 274
+                                      }
+                                    }
+                                  },
+                                  "position": {
+                                    "line": 11,
+                                    "column": 35,
+                                    "byte_start": 274,
+                                    "byte_end": 275
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 11,
+                                "column": 47,
+                                "byte_start": 286,
+                                "byte_end": 287
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "IndexExpression",
+                            "data": {
+                              "index": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "store_u8x16"
+                                },
+                                "position": {
+                                  "line": 11,
+                                  "column": 8,
+                                  "byte_start": 247,
+                                  "byte_end": 258
+                                }
+                              },
+                              "left": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "simd"
+                                },
+                                "position": {
+                                  "line": 11,
+                                  "column": 3,
+                                  "byte_start": 242,
+                                  "byte_end": 246
+                                }
+                              }
+                            },
+                            "position": {
+                              "line": 11,
+                              "column": 7,
+                              "byte_start": 246,
+                              "byte_end": 247
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 11,
+                          "column": 19,
+                          "byte_start": 258,
+                          "byte_end": 259
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 11,
+                      "column": 3,
+                      "byte_start": 242,
+                      "byte_end": 246
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "InfixExpression",
+                              "data": {
+                                "left": {
+                                  "type": "InvocationExpression",
+                                  "data": {
+                                    "arguments": [
+                                      {
+                                        "type": "InvocationExpression",
+                                        "data": {
+                                          "arguments": [
+                                            {
+                                              "type": "InvocationExpression",
+                                              "data": {
+                                                "arguments": [
+                                                  {
+                                                    "type": "IntegerLiteral",
+                                                    "data": {
+                                                      "value": 1
+                                                    },
+                                                    "position": {
+                                                      "line": 12,
+                                                      "column": 49,
+                                                      "byte_start": 344,
+                                                      "byte_end": 345
+                                                    }
+                                                  }
+                                                ],
+                                                "function": {
+                                                  "type": "Identifier",
+                                                  "data": {
+                                                    "value": "u8"
+                                                  },
+                                                  "position": {
+                                                    "line": 12,
+                                                    "column": 46,
+                                                    "byte_start": 341,
+                                                    "byte_end": 343
+                                                  }
+                                                }
+                                              },
+                                              "position": {
+                                                "line": 12,
+                                                "column": 48,
+                                                "byte_start": 343,
+                                                "byte_end": 344
+                                              }
+                                            }
+                                          ],
+                                          "function": {
+                                            "type": "IndexExpression",
+                                            "data": {
+                                              "index": {
+                                                "type": "Identifier",
+                                                "data": {
+                                                  "value": "splat_u8x16"
+                                                },
+                                                "position": {
+                                                  "line": 12,
+                                                  "column": 34,
+                                                  "byte_start": 329,
+                                                  "byte_end": 340
+                                                }
+                                              },
+                                              "left": {
+                                                "type": "Identifier",
+                                                "data": {
+                                                  "value": "simd"
+                                                },
+                                                "position": {
+                                                  "line": 12,
+                                                  "column": 29,
+                                                  "byte_start": 324,
+                                                  "byte_end": 328
+                                                }
+                                              }
+                                            },
+                                            "position": {
+                                              "line": 12,
+                                              "column": 33,
+                                              "byte_start": 328,
+                                              "byte_end": 329
+                                            }
+                                          }
+                                        },
+                                        "position": {
+                                          "line": 12,
+                                          "column": 45,
+                                          "byte_start": 340,
+                                          "byte_end": 341
+                                        }
+                                      }
+                                    ],
+                                    "function": {
+                                      "type": "IndexExpression",
+                                      "data": {
+                                        "index": {
+                                          "type": "Identifier",
+                                          "data": {
+                                            "value": "uaddlv_u8x16"
+                                          },
+                                          "position": {
+                                            "line": 12,
+                                            "column": 16,
+                                            "byte_start": 311,
+                                            "byte_end": 323
+                                          }
+                                        },
+                                        "left": {
+                                          "type": "Identifier",
+                                          "data": {
+                                            "value": "arm64"
+                                          },
+                                          "position": {
+                                            "line": 12,
+                                            "column": 10,
+                                            "byte_start": 305,
+                                            "byte_end": 310
+                                          }
+                                        }
+                                      },
+                                      "position": {
+                                        "line": 12,
+                                        "column": 15,
+                                        "byte_start": 310,
+                                        "byte_end": 311
+                                      }
+                                    }
+                                  },
+                                  "position": {
+                                    "line": 12,
+                                    "column": 28,
+                                    "byte_start": 323,
+                                    "byte_end": 324
+                                  }
+                                },
+                                "operator": "==",
+                                "right": {
+                                  "type": "InvocationExpression",
+                                  "data": {
+                                    "arguments": [
+                                      {
+                                        "type": "IntegerLiteral",
+                                        "data": {
+                                          "value": 16
+                                        },
+                                        "position": {
+                                          "line": 12,
+                                          "column": 61,
+                                          "byte_start": 356,
+                                          "byte_end": 358
+                                        }
+                                      }
+                                    ],
+                                    "function": {
+                                      "type": "Identifier",
+                                      "data": {
+                                        "value": "u32"
+                                      },
+                                      "position": {
+                                        "line": 12,
+                                        "column": 57,
+                                        "byte_start": 352,
+                                        "byte_end": 355
+                                      }
+                                    }
+                                  },
+                                  "position": {
+                                    "line": 12,
+                                    "column": 60,
+                                    "byte_start": 355,
+                                    "byte_end": 356
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 12,
+                                "column": 54,
+                                "byte_start": 349,
+                                "byte_end": 351
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "assert"
+                            },
+                            "position": {
+                              "line": 12,
+                              "column": 3,
+                              "byte_start": 298,
+                              "byte_end": 304
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 12,
+                          "column": 9,
+                          "byte_start": 304,
+                          "byte_end": 305
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 12,
+                      "column": 3,
+                      "byte_start": 298,
+                      "byte_end": 304
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "IndexExpression",
+                              "data": {
+                                "index": {
+                                  "type": "IntegerLiteral",
+                                  "data": {
+                                    "value": 0
+                                  },
+                                  "position": {
+                                    "line": 13,
+                                    "column": 9,
+                                    "byte_start": 369,
+                                    "byte_end": 370
+                                  }
+                                },
+                                "left": {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "s"
+                                  },
+                                  "position": {
+                                    "line": 13,
+                                    "column": 7,
+                                    "byte_start": 367,
+                                    "byte_end": 368
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 13,
+                                "column": 8,
+                                "byte_start": 368,
+                                "byte_end": 369
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "i32"
+                            },
+                            "position": {
+                              "line": 13,
+                              "column": 3,
+                              "byte_start": 363,
+                              "byte_end": 366
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 13,
+                          "column": 6,
+                          "byte_start": 366,
+                          "byte_end": 367
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 13,
+                      "column": 3,
+                      "byte_start": 363,
+                      "byte_end": 366
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 8,
+                "column": 15,
+                "byte_start": 200,
+                "byte_end": 201
+              }
+            }
+          },
+          "position": {
+            "line": 8,
+            "column": 15,
+            "byte_start": 200,
+            "byte_end": 201
+          }
+        },
+        "name": "main",
+        "parameters": [],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 8,
+        "column": 1,
+        "byte_start": 186,
+        "byte_end": 190
+      }
+    }
+  ],
+  "type": "Program"
+}

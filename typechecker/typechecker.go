@@ -771,7 +771,7 @@ func (tc *TypeChecker) checkIdentifier(ident *ast.Identifier) Type {
 	if !ok {
 		// Unbound library names get the library explanation, not
 		// "undefined variable" (a local named c still shadows normally).
-		if ident.Value == "c" || ident.Value == "arm64" {
+		if CompilerKnownLibrary(ident.Value) {
 			tc.addError(ident, "%s is a compiler-known library, not a value (docs/spec/92-ffi.md)", ident.Value)
 			return nil
 		}

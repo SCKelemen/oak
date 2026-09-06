@@ -35,7 +35,7 @@ func libraryCallTarget(fn ast.Expression) (library, member string, ok bool) {
 		return "", "", false
 	}
 	base, isIdent := access.Left.(*ast.Identifier)
-	if !isIdent || (base.Value != "c" && base.Value != "arm64") {
+	if !isIdent || !typechecker.CompilerKnownLibrary(base.Value) {
 		return "", "", false
 	}
 	memberIdent, isIdent := access.Index.(*ast.Identifier)
@@ -71,12 +71,28 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 		cg.output.WriteString(" ))")
 		return true
 	case "arm64":
-		if !arm64IntrinsicWidths[member] || len(call.Arguments) != 1 {
+		validScalar := arm64IntrinsicWidths[member]
+		validVector := arm64VectorIntrinsicSources[member] != ""
+		if (!validScalar && !validVector) || len(call.Arguments) != 1 {
 			cg.output.WriteString("OAK_UNSUPPORTED_ARM64_INTRINSIC")
 			return true
 		}
 		cg.output.WriteString(fmt.Sprintf("oak_arm64_%s( ", member))
 		cg.emitExpressionFragment(call.Arguments[0], tc)
+		cg.output.WriteString(" )")
+		return true
+	case "simd":
+		if _, _, valid := simdOpSplit(member); !valid {
+			cg.output.WriteString("OAK_UNSUPPORTED_SIMD_OP")
+			return true
+		}
+		cg.output.WriteString(fmt.Sprintf("oak_simd_%s( ", member))
+		for i, arg := range call.Arguments {
+			cg.emitExpressionFragment(arg, tc)
+			if i < len(call.Arguments)-1 {
+				cg.output.WriteString(", ")
+			}
+		}
 		cg.output.WriteString(" )")
 		return true
 	}
@@ -91,21 +107,38 @@ var arm64IntrinsicWidths = map[string]bool{
 	"clz32": true, "clz64": true,
 }
 
-// collectUsedIntrinsics scans the program for arm64 instruction-function
-// calls so only the helpers a program uses are emitted. The scan walks the
-// same node kinds the emitter handles; anything it cannot see would surface
-// as a missing helper at C compile time (fail closed, caught by the cc
-// gate), never as wrong behavior.
+// collectUsedIntrinsics scans the program for scalar arm64
+// instruction-function calls so only the helpers a program uses are
+// emitted. Anything the scan cannot see would surface as a missing helper
+// at C compile time (fail closed, caught by the cc gate), never as wrong
+// behavior.
 func collectUsedIntrinsics(program *ast.Program) []string {
 	used := map[string]bool{}
+	scanCalls(program, func(library, member string) {
+		if library == "arm64" && arm64IntrinsicWidths[member] {
+			used[member] = true
+		}
+	})
+	names := make([]string, 0, len(used))
+	for name := range used {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// scanCalls walks the program and reports every compiler-known library
+// call target (library, member). The walk covers the same node kinds the
+// emitter handles.
+func scanCalls(program *ast.Program, visit func(library, member string)) {
 	var scanExpr func(expr ast.Expression)
 	var scanStmt func(stmt ast.Statement)
 
 	scanExpr = func(expr ast.Expression) {
 		switch e := expr.(type) {
 		case *ast.InvocationExpression:
-			if library, member, ok := libraryCallTarget(e.Function); ok && library == "arm64" && arm64IntrinsicWidths[member] {
-				used[member] = true
+			if library, member, ok := libraryCallTarget(e.Function); ok {
+				visit(library, member)
 			} else {
 				scanExpr(e.Function)
 			}
@@ -192,12 +225,6 @@ func collectUsedIntrinsics(program *ast.Program) []string {
 	for _, stmt := range program.Statements {
 		scanStmt(stmt)
 	}
-	names := make([]string, 0, len(used))
-	for name := range used {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // emitIntrinsicHelpers emits the helpers for the instruction functions the
