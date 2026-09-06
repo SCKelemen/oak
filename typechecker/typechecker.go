@@ -911,35 +911,35 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return nil
 	}
 
-	// Check argument types (with coercion)
-	// Pass expected type for context-based inference (e.g., for integer literals)
-	// Also collect argument types for constraint checking
+	// Infer one substitution while checking arguments. Generic parameters are
+	// unified first; ordinary Oak assignability remains the fallback for concrete
+	// types (for example, numeric widening).
 	argTypes := make([]Type, len(expr.Arguments))
+	bindings := make(Substitution)
+	unifier := NewUnifier()
 	for i, arg := range expr.Arguments {
-		expectedType := fnType.Parameters[i]
+		expectedType := bindings.Apply(fnType.Parameters[i])
 		argType := tc.checkExpression(arg, expectedType)
 		if argType == nil {
 			continue
 		}
 		argTypes[i] = argType
+
+		if argSub := unifier.Unify(expectedType, argType); argSub != nil {
+			bindings = bindings.Compose(argSub)
+			continue
+		}
+
 		if !tc.isAssignable(argType, expectedType) {
-			// Use the argument expression for the error location
-			if i < len(expr.Arguments) {
-				tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
-			} else {
-				tc.addError(expr, "argument %d: expected %s, got %s", i+1, expectedType, argType)
-			}
+			tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
 		}
 	}
 
-	// If the function has constraints, check them
-	// For HM-style inference, we infer type arguments from the call
-	// After unification, we should check that inferred types satisfy constraints
 	if funcScheme != nil && len(funcScheme.Constraints) > 0 {
-		tc.checkFunctionConstraints(funcScheme, fnType, argTypes, expr)
+		tc.checkFunctionConstraintBindings(funcScheme, bindings, expr)
 	}
 
-	return fnType.ReturnType
+	return bindings.Apply(fnType.ReturnType)
 }
 
 // checkReinterpretCast checks view_as[U](src: []T) and span_as[U](src: [*]T) calls
@@ -1861,6 +1861,21 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 		return nil
 	}
 
+	// A constrained type variable exposes only fields guaranteed by its semantic
+	// record-shape requirements, never fields that happen to exist on one caller.
+	if typeVar, ok := leftType.(*TypeVar); ok {
+		ident, isIdent := expr.Index.(*ast.Identifier)
+		if !isIdent {
+			tc.addError(expr, "generic record field access requires identifier, got %T", expr.Index)
+			return nil
+		}
+		if fieldType, guaranteed := tc.constrainedFieldType(typeVar, ident.Value); guaranteed {
+			return fieldType
+		}
+		tc.addError(expr, "field %s is not guaranteed by constraints on type parameter %s", ident.Value, typeVar.Name)
+		return nil
+	}
+
 	// Handle record field access: record.field
 	if recordType, ok := leftType.(*RecordType); ok {
 		if ident, ok := expr.Index.(*ast.Identifier); ok {
@@ -2128,8 +2143,14 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		}
 	}
 
-	// Create new environment for function parameters
+	// Create new environment for function parameters and bind source-level
+	// type variables before resolving the signature. Constraint metadata stays
+	// checker-local and does not participate in representation or type identity.
 	funcEnv := NewEnclosedTypeEnvironment(tc.env)
+	bindConstrainedTypeVars(funcEnv, typeVars, constraints)
+	if !tc.validateGenericConstraints(constraints, funcEnv, stmt) {
+		return
+	}
 
 	// If this is a method, add receiver to the environment
 	if stmt.Receiver != nil {
@@ -2138,7 +2159,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			tc.addError(stmt.Receiver.Name, "receiver '%s' already declared in outer scope; Oak does not allow shadowing", stmt.Receiver.Name.Value)
 			return
 		}
-		receiverType := tc.parseTypeExpression(stmt.Receiver.Type)
+		receiverType := tc.parseTypeExpressionInEnv(stmt.Receiver.Type, funcEnv)
 		if receiverType == nil {
 			tc.addError(stmt.Receiver.Type, "method %s: invalid receiver type", stmt.Name.Value)
 			return
@@ -2160,7 +2181,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			return
 		}
 		paramNames[param.Name.Value] = true
-		paramType := tc.parseTypeExpression(param.Type)
+		paramType := tc.parseTypeExpressionInEnv(param.Type, funcEnv)
 		if paramType == nil {
 			// Default to i32 if type parsing fails
 			paramType = &PrimitiveType{Name: "i32"}
@@ -2170,7 +2191,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	}
 
 	// Parse return type
-	returnType := tc.parseTypeExpression(stmt.ReturnType)
+	returnType := tc.parseTypeExpressionInEnv(stmt.ReturnType, funcEnv)
 	if returnType == nil {
 		returnType = &UnitType{}
 	}
@@ -2215,7 +2236,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 	// If this is a method, also store it with TypeName::methodName key
 	if stmt.Receiver != nil {
-		receiverType := tc.parseTypeExpression(stmt.Receiver.Type)
+		receiverType := tc.parseTypeExpressionInEnv(stmt.Receiver.Type, funcEnv)
 		if receiverType != nil {
 			// For ADT types, use the type name
 			if adtType, ok := receiverType.(*ADTType); ok {
@@ -2982,7 +3003,14 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 		return true
 	}
 
-	// Check if interfaceType is an InterfaceType
+	// Semantic record shapes are static field requirements. Candidate order,
+	// extra fields, and runtime representation are intentionally irrelevant.
+	if requiredRecord, ok := interfaceType.(*RecordType); ok {
+		candidateRecord, ok := tc.asRecordType(concreteType)
+		return ok && recordSatisfiesShape(candidateRecord, requiredRecord)
+	}
+
+	// Otherwise this is the existing method-interface relation.
 	iface, ok := interfaceType.(*InterfaceType)
 	if !ok {
 		// Not an interface type - can't implement it
@@ -3123,7 +3151,7 @@ func (tc *TypeChecker) SatisfiesConstraint(concreteType Type, constraint Constra
 		ifaceType, ok := tc.env.GetType(ifaceName)
 		if !ok {
 			// Interface not found - this is a type error
-			tc.addError(nil, "interface %s not found in constraint", ifaceName)
+			tc.addError(nil, "constraint requirement %s not found", ifaceName)
 			return false
 		}
 
@@ -3176,7 +3204,7 @@ func (tc *TypeChecker) SatisfiesIntersectionConstraint(concreteType Type, interf
 		ifaceType, ok := tc.env.GetType(ifaceName)
 		if !ok {
 			// Interface not found - this is a type error
-			tc.addError(nil, "interface %s not found in constraint", ifaceName)
+			tc.addError(nil, "constraint requirement %s not found", ifaceName)
 			return false
 		}
 
