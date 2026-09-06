@@ -13,7 +13,7 @@ The top-level Oak documents below are retained as design history and examples un
 | `borrow_checker.md` | `50-borrowing.md` | many-readers/one-writer and views/spans retained; negative-index policy moved out of borrow semantics; future regions integrated with allocation/effect model |
 | `STRINGS_ENCODING_SPEC.md` | `70-strings.md` | encoding tags and zero-overhead views retained; arbitrary bytes may not become valid text without validation |
 | `STRINGS_INTEGRATION.md` | `50-borrowing.md`, `70-strings.md` | borrow-preserving wrappers retained; unsafe reinterpretation language tightened |
-| `STRINGS_UTF16_UTF32_SPEC.md` | `70-strings.md` | code-unit-parametric text retained; exact `rune` semantics need one canonical refined `u32` decision |
+| `STRINGS_UTF16_UTF32_SPEC.md` | `70-strings.md` | code-unit-parametric text retained; `rune` is canonically `u32` (decided; implemented as the alias's carrier in typechecker/evaluator/backend), with the surrogate/max-scalar range refinement pending refinement types |
 | `C_BACKEND_SPEC.md` | `90-backend.md` | readable C remains bootstrap/reference backend; C no longer defines Oak semantics |
 | `json_lexer.md` | acceptance/workload tests + `90-backend.md` | retained as a language benchmark for zero-allocation parsing/state machines, not a core language spec |
 | `VARIABLE_SYNTAX.md` | `10-syntax.md` | `x:T=e`, `x:=e`, `x=e` retained; implicit NULL/uninitialized safe variables rejected pending definite-init semantics |

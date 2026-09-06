@@ -8,6 +8,7 @@ import Oak.Escape
 import Oak.Unsafe
 import Oak.Discipline
 import Oak.Utf8Validity
+import Oak.StrEncoding
 import Oak.Handles
 import Oak.Slab
 import Oak.Exhaustiveness

@@ -24,23 +24,75 @@ func (t *PrimitiveType) String() string {
 	return t.Name
 }
 
+// normalizePrimitiveName folds the surface aliases onto their carriers so
+// alias and carrier are one type: byte = u8, rune = u32 (70-strings §9).
+func normalizePrimitiveName(name string) string {
+	switch name {
+	case "byte":
+		return "u8"
+	case "rune":
+		return "u32"
+	default:
+		return name
+	}
+}
+
 func (t *PrimitiveType) Equals(other Type) bool {
 	if otherPrim, ok := other.(*PrimitiveType); ok {
-		return t.Name == otherPrim.Name
+		return normalizePrimitiveName(t.Name) == normalizePrimitiveName(otherPrim.Name)
 	}
 	return false
 }
 
-// StringType represents the string type
-type StringType struct{}
+// StringType represents an encoded string type (docs/spec/70-strings.md):
+// `string` is Str[Utf8]. Encoding tags are phantom — they distinguish static
+// identity while every Str[E] shares one representation — so Equals compares
+// encodings and nothing else.
+type StringType struct {
+	// Encoding is the phantom encoding tag; empty means Utf8, so the
+	// canonical `string` type is the zero value.
+	Encoding string
+}
+
+// encoding returns the normalized phantom tag.
+func (t *StringType) encoding() string {
+	if t.Encoding == "" {
+		return "Utf8"
+	}
+	return t.Encoding
+}
 
 func (t *StringType) String() string {
-	return "string"
+	if t.encoding() == "Utf8" {
+		return "string"
+	}
+	return "Str[" + t.encoding() + "]"
 }
 
 func (t *StringType) Equals(other Type) bool {
-	_, ok := other.(*StringType)
-	return ok
+	otherString, ok := other.(*StringType)
+	return ok && t.encoding() == otherString.encoding()
+}
+
+// stringEncodings are the phantom encoding tags of docs/spec/70-strings.md.
+var stringEncodings = map[string]bool{
+	"Utf8": true, "Utf16": true, "Utf32": true, "Ascii": true,
+}
+
+// parseStrEncodingType resolves Str[E] type applications to the
+// corresponding phantom-encoded string type; nil when expr is not one.
+func (tc *TypeChecker) parseStrEncodingType(indexExpr *ast.IndexExpression) Type {
+	base, ok := indexExpr.Left.(*ast.Identifier)
+	if !ok || base.Value != "Str" {
+		return nil
+	}
+	arg, ok := indexExpr.Index.(*ast.Identifier)
+	if !ok || !stringEncodings[arg.Value] {
+		tc.addError(indexExpr, "Str[...] requires an encoding tag (Utf8, Utf16, Utf32, Ascii)")
+		// Recover as the canonical encoding so one bad tag does not cascade.
+		return &StringType{}
+	}
+	return &StringType{Encoding: arg.Value}
 }
 
 // BoolType represents the boolean type
@@ -1051,7 +1103,7 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		"i8": true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
 		"byte": true, // alias of u8
-		"rune": true, // alias of i32
+		"rune": true, // alias of u32 (docs/spec/70-strings.md section 9)
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -1096,7 +1148,7 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 	if typeName == "byte" {
 		normalizedTarget = "u8"
 	} else if typeName == "rune" {
-		normalizedTarget = "i32"
+		normalizedTarget = "u32"
 	}
 
 	// Check if widening is valid (same signedness, source is narrower or equal)
@@ -1115,7 +1167,7 @@ func (tc *TypeChecker) literalFitsInType(value int64, typeName string) bool {
 	if typeName == "byte" {
 		typeName = "u8"
 	} else if typeName == "rune" {
-		typeName = "i32"
+		typeName = "u32"
 	}
 	switch typeName {
 	case "u8":
@@ -1158,12 +1210,12 @@ func (tc *TypeChecker) isValidWidening(sourceType, targetType string) bool {
 	if sourceType == "byte" {
 		sourceType = "u8"
 	} else if sourceType == "rune" {
-		sourceType = "i32"
+		sourceType = "u32"
 	}
 	if targetType == "byte" {
 		targetType = "u8"
 	} else if targetType == "rune" {
-		targetType = "i32"
+		targetType = "u32"
 	}
 
 	// Check signedness using helper function
@@ -1188,7 +1240,7 @@ func (tc *TypeChecker) getTypeWidth(typeName string) int {
 	if typeName == "byte" {
 		typeName = "u8"
 	} else if typeName == "rune" {
-		typeName = "i32"
+		typeName = "u32"
 	}
 	switch typeName {
 	case "u8", "i8":
@@ -1216,7 +1268,7 @@ func (tc *TypeChecker) isSignedType(typeName string) bool {
 	if typeName == "byte" {
 		typeName = "u8"
 	} else if typeName == "rune" {
-		typeName = "i32"
+		typeName = "u32"
 	}
 	// Fixed-width types
 	if len(typeName) >= 2 && typeName[0] == 'i' {
@@ -2715,6 +2767,13 @@ func (t *GenericType) Equals(other Type) bool {
 // parseTypeExpression parses a type from an AST expression
 // Handles identifiers, intersections (A & B), and other type expressions
 func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
+	// Phantom-encoded strings resolve before generic ADT application:
+	// Str[Utf8] is a built-in phantom type, not a user generic.
+	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		if strType := tc.parseStrEncodingType(indexExpr); strType != nil {
+			return strType
+		}
+	}
 	if generic, recognized := tc.parseGenericTypeApplication(expr); recognized {
 		return generic
 	}
@@ -2745,6 +2804,9 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		case "byte":
 			// byte is an alias for u8
 			return &PrimitiveType{Name: "u8"}
+		case "rune":
+			// rune is the canonical refined u32 (docs/spec/70-strings.md section 9)
+			return &PrimitiveType{Name: "u32"}
 		case "string":
 			return &StringType{}
 		case "Bool":
@@ -2767,6 +2829,10 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 
 	// Handle array types: [N]T or []T
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		// Phantom-encoded strings: Str[Utf8] etc. (docs/spec/70-strings.md).
+		if strType := tc.parseStrEncodingType(indexExpr); strType != nil {
+			return strType
+		}
 		// Check if left side is an array literal syntax or identifier
 		// For [N]T, the parser represents it as IndexExpression with IntegerLiteral in Index
 		// For []T, it's represented as IndexExpression with empty Identifier in Index
@@ -2875,6 +2941,9 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 			return &PrimitiveType{Name: ident.Value}
 		case "byte":
 			return &PrimitiveType{Name: "u8"}
+		case "rune":
+			// rune is the canonical refined u32 (docs/spec/70-strings.md section 9)
+			return &PrimitiveType{Name: "u32"}
 		case "string":
 			return &StringType{}
 		case "Bool":
@@ -2897,6 +2966,10 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 
 	// Handle array types: [N]T or []T
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		// Phantom-encoded strings: Str[Utf8] etc. (docs/spec/70-strings.md).
+		if strType := tc.parseStrEncodingType(indexExpr); strType != nil {
+			return strType
+		}
 		elementType := tc.parseTypeExpressionNonIntersection(indexExpr.Left)
 		if elementType == nil {
 			return nil

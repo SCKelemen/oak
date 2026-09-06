@@ -314,7 +314,7 @@ func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *objec
 		"i8": true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
 		"byte": true, // alias of u8
-		"rune": true, // alias of i32
+		"rune": true, // alias of u32 (docs/spec/70-strings.md section 9)
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor

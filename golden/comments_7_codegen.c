@@ -13,7 +13,7 @@ typedef int32_t i32;
 typedef int64_t i64;
 
 typedef u8  byte;
-typedef i32 rune;
+typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
 
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */

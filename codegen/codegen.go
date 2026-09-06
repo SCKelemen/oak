@@ -272,7 +272,7 @@ func (cg *CodeGenerator) emitHeader() {
 	cg.write("typedef int64_t i64;\n")
 	cg.write("\n")
 	cg.write("typedef u8  byte;\n")
-	cg.write("typedef i32 rune;\n")
+	cg.write("typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */\n")
 	cg.write("\n")
 	// Emit string type definition
 	cg.write("typedef struct oak_string {\n")
@@ -906,6 +906,11 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	// Handle array types: [N]T or []T
 	// The parser represents array types as IndexExpression
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		// Phantom-encoded strings share one representation: every Str[E]
+		// lowers to the same C string struct (docs/spec/70-strings.md).
+		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Str" {
+			return "string"
+		}
 		// Check if this is an array type annotation
 		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
 			// Fixed-size array: [N]T
