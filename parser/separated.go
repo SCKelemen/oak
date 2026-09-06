@@ -11,6 +11,10 @@ import "github.com/SCKelemen/oak/token"
 // generic arguments, type parameters, array elements, and similar grammar
 // forms. Go 1.27 generic methods let the operation live on Parser instead of
 // proliferating type-specific package helpers.
+//
+// Existing grammar productions should migrate onto this one at a time, keeping
+// their parser tests green after each change. Reducing duplicated token
+// movement is useful; changing several positioning contracts at once is not.
 func (p *Parser) parseSeparated[T any](
 	close token.TokenKind,
 	separator token.TokenKind,
