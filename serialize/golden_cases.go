@@ -162,6 +162,28 @@ result: i32 = fact(5, 1)
 `,
 		},
 		{
+			// ADT construction and tag-guarded match lowering, including a
+			// variant-arm tail call lowered to a loop.
+			Name: "adt_match",
+			SourceCode: `
+Shape: type =
+  | Circle: i32
+  | Square: i32
+  | Empty
+
+area2: (s: Shape): i32 = s ?
+  | .Circle(r) -> r * 3
+  | .Square(w) -> w * w
+  | .Empty -> 0
+
+main: (): i32 {
+  c: Shape = .Circle(5)
+  q: Shape = .Square(4)
+  area2(c) + area2(q)
+}
+`,
+		},
+		{
 			// Canonical declaration-form functions (10-syntax section 3):
 			// a name bound to a function interface and a definition.
 			Name: "function_binding",

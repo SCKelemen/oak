@@ -48,6 +48,7 @@ type localContainer struct {
 	kind    containerKind
 	length  int64  // ownedArray only
 	element string // C element type for ownedArray/view/span
+	adtName string // declared ADT name for containerADT
 }
 
 type containerKind int
@@ -58,6 +59,7 @@ const (
 	containerView
 	containerSpan
 	containerString
+	containerADT
 )
 
 // New creates a new code generator
@@ -657,12 +659,41 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 // returns, and loop/trampoline tail continues all compose.
 func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typechecker.TypeChecker) {
 	for _, arm := range match.Arms {
-		if literal, ok := arm.Pattern.(*ast.LiteralPattern); ok {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
 			cg.write("  if ( ")
 			cg.emitExpressionFragment(match.Scrutinee, tc)
 			cg.output.WriteString(" == ")
-			cg.emitExpressionFragment(literal.Value, tc)
+			cg.emitExpressionFragment(pattern.Value, tc)
 			cg.output.WriteString(" ) {\n")
+			cg.emitExpression(arm.Body, tc)
+			cg.write("  }\n")
+			continue
+		case *ast.VariantPattern:
+			// Guard strictly on the tag; the payload union is read only
+			// under the matching guard.
+			info := cg.localContainerOf(match.Scrutinee)
+			if info.kind != containerADT {
+				cg.write("  OAK_UNSUPPORTED_MATCH_SCRUTINEE;\n")
+				return
+			}
+			adt := cg.adtTypes[info.adtName]
+			cName := cg.cTypeName(info.adtName)
+			variantName := pattern.Variant.Value
+			cg.write("  if ( ")
+			cg.emitExpressionFragment(match.Scrutinee, tc)
+			cg.output.WriteString(fmt.Sprintf(".tag == %s_tag_%s ) {\n", cName, variantName))
+			if binding, ok := pattern.Payload.(*ast.BindingPattern); ok && binding.Name != nil {
+				payloadType := "OAK_UNKNOWN_PAYLOAD"
+				for _, variant := range adt.Variants {
+					if variant.Name.Value == variantName && variant.Payload != nil {
+						payloadType = cg.parsePayloadType(variant.Payload)
+					}
+				}
+				cg.write(fmt.Sprintf("    %s %s = ", payloadType, binding.Name.Value))
+				cg.emitExpressionFragment(match.Scrutinee, tc)
+				cg.output.WriteString(fmt.Sprintf(".payload.%s;\n", variantName))
+			}
 			cg.emitExpression(arm.Body, tc)
 			cg.write("  }\n")
 			continue
@@ -737,6 +768,9 @@ func (cg *CodeGenerator) classifyContainer(typeExpr ast.Expression) localContain
 	case *ast.Identifier:
 		if t.Value == "string" {
 			return localContainer{kind: containerString}
+		}
+		if _, isADT := cg.adtTypes[t.Value]; isADT {
+			return localContainer{kind: containerADT, adtName: t.Value}
 		}
 	case *ast.IndexExpression:
 		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Str" {
@@ -1309,9 +1343,30 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			}
 			cg.output.WriteString(")")
 		} else {
-			// Bare variant - need type context
-			variantName := e.Variant.Value
-			cg.output.WriteString(fmt.Sprintf("/* .%s */", variantName))
+			// Bare variant: resolve the ADT by unique variant name across
+			// the program's declarations; ambiguity fails closed.
+			adtName := ""
+			for name, adt := range cg.adtTypes {
+				for _, variant := range adt.Variants {
+					if variant.Name.Value == e.Variant.Value {
+						if adtName != "" && adtName != name {
+							adtName = ""
+							break
+						}
+						adtName = name
+					}
+				}
+			}
+			if adtName == "" {
+				cg.output.WriteString("OAK_UNRESOLVED_VARIANT")
+				return
+			}
+			constructorName := fmt.Sprintf("%s_%s", cg.cTypeName(adtName), e.Variant.Value)
+			cg.output.WriteString(fmt.Sprintf("%s(", constructorName))
+			if e.Payload != nil {
+				cg.emitExpressionFragment(e.Payload, tc)
+			}
+			cg.output.WriteString(")")
 		}
 	case *ast.InvocationExpression:
 		// Function or method call. Runtime builtins lower to their always-on

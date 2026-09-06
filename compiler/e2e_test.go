@@ -166,3 +166,29 @@ main: (): i32 {
 		t.Fatal("failed assert must trap, not return normally")
 	}
 }
+
+// ADT construction and match, executed: tagged-union lowering with payload
+// bindings guarded strictly by the tag.
+func TestE2EADTConstructAndMatch(t *testing.T) {
+	code, abnormal := buildAndRun(t, "adt", `
+Shape: type =
+  | Circle: i32
+  | Square: i32
+  | Empty
+
+area2: (s: Shape): i32 = s ?
+  | .Circle(r) -> r * 3
+  | .Square(w) -> w * w
+  | .Empty -> 0
+
+main: (): i32 {
+  c: Shape = .Circle(5)
+  q: Shape = .Square(4)
+  e: Shape = .Empty
+  area2(c) + area2(q) + area2(e)
+}
+`)
+	if abnormal || code != 31 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 31 (15 + 16 + 0)", code, abnormal)
+	}
+}

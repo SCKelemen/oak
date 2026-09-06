@@ -323,6 +323,19 @@ func LowerableMatchShape(m *ast.MatchExpression) bool {
 			if pattern.Name == nil || pattern.Name.Value != "_" {
 				return false
 			}
+		case *ast.VariantPattern:
+			// ADT arms lower when the payload pattern is absent or a plain
+			// binding; nested patterns fail closed.
+			switch payload := pattern.Payload.(type) {
+			case nil:
+			case *ast.BindingPattern:
+				if payload.Name == nil {
+					return false
+				}
+			case *ast.WildcardPattern:
+			default:
+				return false
+			}
 		default:
 			return false
 		}

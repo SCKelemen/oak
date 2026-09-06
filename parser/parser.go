@@ -43,6 +43,7 @@ func New(source token.Source) *Parser {
 	p.registerPrefix(token.NEG, p.parsePrefixExpression)
 	p.registerPrefix(token.AMP, p.parsePrefixExpression) // address-of operator: &value
 	p.registerPrefix(token.TRUE, p.parseBoolean)
+	p.registerPrefix(token.DOT, p.parseDotVariantExpression)
 	p.registerPrefix(token.FALSE, p.parseBoolean)
 	p.registerPrefix(token.LPAREN, p.parseExpressionGroup)
 	p.registerPrefix(token.STRUCT, p.parseStructLiteral)
@@ -465,6 +466,27 @@ func (p *Parser) parseIdentifier() ast.Expression {
 	return &ast.Identifier{Token: p.currentToken, Value: literal}
 }
 
+// parseDotVariantExpression parses bare variant construction in expression
+// position: .Ok, .Some(value). The ADT is resolved from context (declared
+// type, or unique variant name).
+func (p *Parser) parseDotVariantExpression() ast.Expression {
+	dotToken := p.currentToken
+	if !p.expectPeek(token.IDENT) {
+		return nil
+	}
+	expr := &ast.VariantExpression{Token: dotToken}
+	expr.Variant = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	if p.peekTokenIs(token.LPAREN) {
+		p.nextToken() // move to '('
+		p.nextToken() // move to the payload expression
+		expr.Payload = p.parseExpression(LOWEST)
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
+	}
+	return expr
+}
+
 // Parse variant expression: .Ok, .Some(value), or Type.Variant
 func (p *Parser) parseVariantExpression() ast.Expression {
 	expr := &ast.VariantExpression{Token: p.currentToken}
@@ -791,15 +813,17 @@ func (p *Parser) ParseProgram() *ast.Program {
 			p.currentTokenIs(token.COLON)) && // COLON for REPL commands like :exit
 			!p.currentTokenIs(token.TRIVIA) &&
 			!p.currentTokenIs(token.COMMENT)
-		// A token can only be the START of the next statement if it sits on a
-		// later line than this statement began: a statement-final identifier
-		// (a type name in a value-less declaration, an identifier value)
-		// stays on the statement's own line and must be advanced past, not
-		// re-parsed as a stray expression statement.
+		// A token can only be the START of the next top-level statement if it
+		// sits on a later line than this statement began AND at the start of
+		// its line (column 1): a statement-final identifier — a type name in
+		// a value-less declaration, an identifier value, or an indented
+		// final ADT variant — belongs to the statement just parsed and must
+		// be advanced past, not re-parsed as a stray expression statement.
 		// Always advance if peekToken is EOF, regardless of canStartStatement
 		// This prevents infinite loops when currentToken looks like it can start a statement
 		// but is actually the last token of the previous statement
-		if !canStartStatement || p.currentToken.Line <= start.Line || p.peekTokenIs(token.EOF) {
+		if !canStartStatement || p.currentToken.Line <= start.Line ||
+			p.currentToken.Column != 1 || p.peekTokenIs(token.EOF) {
 			// currentToken is not at the start of a statement (or is trivia), so advance it
 			p.nextToken()
 		}

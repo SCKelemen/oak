@@ -1,8 +1,6 @@
-{"error_index":0,"message":"[type error] undefined variable: b","type":"error"}
-{"error_index":1,"message":"[type error] nil expression encountered (parser error)","type":"error"}
-{"error_index":2,"message":"[type error] function add4: expected return type i32, got ()","type":"error"}
-{"error_index":3,"message":"[type error] nil expression encountered (parser error)","type":"error"}
-{"code":"OAK-T0000","index":0,"message":"[type error] undefined variable: b","range":{"end":{"character":7,"line":2},"start":{"character":6,"line":2}},"severity":"error","source":"typechecker","type":"diagnostic"}
-{"code":"OAK-T0000","index":1,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
-{"code":"OAK-T0000","index":2,"message":"[type error] function add4: expected return type i32, got ()","range":{"end":{"character":2,"line":10},"start":{"character":0,"line":10}},"severity":"error","source":"typechecker","type":"diagnostic"}
-{"code":"OAK-T0000","index":3,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"error_index":0,"message":"[type error] nil expression encountered (parser error)","type":"error"}
+{"error_index":1,"message":"[type error] function add4: expected return type i32, got ()","type":"error"}
+{"error_index":2,"message":"[type error] nil expression encountered (parser error)","type":"error"}
+{"code":"OAK-T0000","index":0,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":1,"message":"[type error] function add4: expected return type i32, got ()","range":{"end":{"character":2,"line":10},"start":{"character":0,"line":10}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":2,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}

@@ -723,7 +723,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.InvocationExpression:
 		return tc.checkInvocationExpression(e)
 	case *ast.MatchExpression:
-		return tc.checkMatchExpression(e)
+		return tc.checkMatchExpression(e, expected)
 	case *ast.VariantExpression:
 		return tc.checkVariantExpression(e, expected)
 	case *ast.RecordLiteral:
@@ -1758,7 +1758,11 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 	return fnType.ReturnType
 }
 
-func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
+func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedType ...Type) Type {
+	var expected Type
+	if len(expectedType) > 0 {
+		expected = expectedType[0]
+	}
 	scrutineeType := tc.checkExpression(expr.Scrutinee)
 	if scrutineeType == nil {
 		return nil
@@ -1808,8 +1812,14 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 			}
 		}
 
-		// Type check arm body expression with narrowed type context
-		armType := tc.checkExpression(arm.Body)
+		// Type check arm body expression with narrowed type context,
+		// inferring literals against the expected result type.
+		var armType Type
+		if expected != nil {
+			armType = tc.checkExpression(arm.Body, expected)
+		} else {
+			armType = tc.checkExpression(arm.Body)
+		}
 		if armType == nil {
 			// Unreachable or error - use never type
 			armType = &NeverType{}

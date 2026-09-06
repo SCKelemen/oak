@@ -1,0 +1,16 @@
+
+Shape: type =
+  | Circle: i32
+  | Square: i32
+  | Empty
+
+area2: (s: Shape): i32 = s ?
+  | .Circle(r) -> r * 3
+  | .Square(w) -> w * w
+  | .Empty -> 0
+
+main: (): i32 {
+  c: Shape = .Circle(5)
+  q: Shape = .Square(4)
+  area2(c) + area2(q)
+}

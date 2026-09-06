@@ -220,3 +220,15 @@ func TestBoundedLoopShapes(t *testing.T) {
 		})
 	}
 }
+
+// ADT variant arms (nil or binding payload) are lowerable tail sites, so
+// recursion with an ADT base case lowers to a loop.
+func TestVariantArmTailRecursionLowers(t *testing.T) {
+	result := analyze(t, "Count: type =\n  | More: i32\n  | Done\n\nwalk: (c: Count, acc: i32): i32 = c ?\n  | .Done -> acc\n  | .More(n) -> walk(.Done, acc + n)\n")
+	if len(result.Diagnostics()) != 0 {
+		t.Fatalf("variant-arm tail recursion must be silent, got %#v", result.Diagnostics())
+	}
+	if !result.LoopLowered["walk"] {
+		t.Fatal("variant-arm self tail recursion must be loop-lowered")
+	}
+}

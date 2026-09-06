@@ -1,0 +1,377 @@
+{
+  "statements": [
+    {
+      "type": "ADTType",
+      "data": {
+        "name": "Shape",
+        "variants": [
+          {
+            "name": "Circle",
+            "payload": {
+              "type": "Identifier",
+              "data": {
+                "value": "i32"
+              },
+              "position": {
+                "line": 3,
+                "column": 13,
+                "byte_start": 27,
+                "byte_end": 30
+              }
+            }
+          },
+          {
+            "name": "Square",
+            "payload": {
+              "type": "Identifier",
+              "data": {
+                "value": "i32"
+              },
+              "position": {
+                "line": 4,
+                "column": 13,
+                "byte_start": 43,
+                "byte_end": 46
+              }
+            }
+          },
+          {
+            "name": "Empty"
+          }
+        ]
+      },
+      "position": {
+        "line": 2,
+        "column": 1,
+        "byte_start": 1,
+        "byte_end": 6
+      }
+    },
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "MatchExpression",
+          "data": {
+            "arms": [
+              {
+                "body": {
+                  "type": "InfixExpression",
+                  "data": {
+                    "left": {
+                      "type": "Identifier",
+                      "data": {
+                        "value": "r"
+                      },
+                      "position": {
+                        "line": 8,
+                        "column": 19,
+                        "byte_start": 105,
+                        "byte_end": 106
+                      }
+                    },
+                    "operator": "*",
+                    "right": {
+                      "type": "IntegerLiteral",
+                      "data": {
+                        "value": 3
+                      },
+                      "position": {
+                        "line": 8,
+                        "column": 23,
+                        "byte_start": 109,
+                        "byte_end": 110
+                      }
+                    }
+                  },
+                  "position": {
+                    "line": 8,
+                    "column": 21,
+                    "byte_start": 107,
+                    "byte_end": 108
+                  }
+                },
+                "pattern": {
+                  "type": "Unknown",
+                  "data": {
+                    "string": ".Circle(r)"
+                  }
+                }
+              },
+              {
+                "body": {
+                  "type": "InfixExpression",
+                  "data": {
+                    "left": {
+                      "type": "Identifier",
+                      "data": {
+                        "value": "w"
+                      },
+                      "position": {
+                        "line": 9,
+                        "column": 19,
+                        "byte_start": 129,
+                        "byte_end": 130
+                      }
+                    },
+                    "operator": "*",
+                    "right": {
+                      "type": "Identifier",
+                      "data": {
+                        "value": "w"
+                      },
+                      "position": {
+                        "line": 9,
+                        "column": 23,
+                        "byte_start": 133,
+                        "byte_end": 134
+                      }
+                    }
+                  },
+                  "position": {
+                    "line": 9,
+                    "column": 21,
+                    "byte_start": 131,
+                    "byte_end": 132
+                  }
+                },
+                "pattern": {
+                  "type": "Unknown",
+                  "data": {
+                    "string": ".Square(w)"
+                  }
+                }
+              },
+              {
+                "body": {
+                  "type": "IntegerLiteral",
+                  "data": {
+                    "value": 0
+                  },
+                  "position": {
+                    "line": 10,
+                    "column": 15,
+                    "byte_start": 149,
+                    "byte_end": 150
+                  }
+                },
+                "pattern": {
+                  "type": "Unknown",
+                  "data": {
+                    "string": ".Empty"
+                  }
+                }
+              }
+            ],
+            "scrutinee": {
+              "type": "Identifier",
+              "data": {
+                "value": "s"
+              },
+              "position": {
+                "line": 7,
+                "column": 26,
+                "byte_start": 83,
+                "byte_end": 84
+              }
+            }
+          },
+          "position": {
+            "line": 7,
+            "column": 28,
+            "byte_start": 85,
+            "byte_end": 86
+          }
+        },
+        "name": "area2",
+        "parameters": [
+          {
+            "name": "s",
+            "type": "Shape"
+          }
+        ],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 7,
+        "column": 1,
+        "byte_start": 58,
+        "byte_end": 63
+      }
+    },
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "c",
+                      "type": "Shape",
+                      "value": {
+                        "type": "Unknown",
+                        "data": {
+                          "string": ".Circle(5)"
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 13,
+                      "column": 3,
+                      "byte_start": 170,
+                      "byte_end": 171
+                    }
+                  },
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "q",
+                      "type": "Shape",
+                      "value": {
+                        "type": "Unknown",
+                        "data": {
+                          "string": ".Square(4)"
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 14,
+                      "column": 3,
+                      "byte_start": 194,
+                      "byte_end": 195
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InfixExpression",
+                        "data": {
+                          "left": {
+                            "type": "InvocationExpression",
+                            "data": {
+                              "arguments": [
+                                {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "c"
+                                  },
+                                  "position": {
+                                    "line": 15,
+                                    "column": 9,
+                                    "byte_start": 224,
+                                    "byte_end": 225
+                                  }
+                                }
+                              ],
+                              "function": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "area2"
+                                },
+                                "position": {
+                                  "line": 15,
+                                  "column": 3,
+                                  "byte_start": 218,
+                                  "byte_end": 223
+                                }
+                              }
+                            },
+                            "position": {
+                              "line": 15,
+                              "column": 8,
+                              "byte_start": 223,
+                              "byte_end": 224
+                            }
+                          },
+                          "operator": "+",
+                          "right": {
+                            "type": "InvocationExpression",
+                            "data": {
+                              "arguments": [
+                                {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "q"
+                                  },
+                                  "position": {
+                                    "line": 15,
+                                    "column": 20,
+                                    "byte_start": 235,
+                                    "byte_end": 236
+                                  }
+                                }
+                              ],
+                              "function": {
+                                "type": "Identifier",
+                                "data": {
+                                  "value": "area2"
+                                },
+                                "position": {
+                                  "line": 15,
+                                  "column": 14,
+                                  "byte_start": 229,
+                                  "byte_end": 234
+                                }
+                              }
+                            },
+                            "position": {
+                              "line": 15,
+                              "column": 19,
+                              "byte_start": 234,
+                              "byte_end": 235
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 15,
+                          "column": 12,
+                          "byte_start": 227,
+                          "byte_end": 228
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 15,
+                      "column": 3,
+                      "byte_start": 218,
+                      "byte_end": 223
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 12,
+                "column": 15,
+                "byte_start": 166,
+                "byte_end": 167
+              }
+            }
+          },
+          "position": {
+            "line": 12,
+            "column": 15,
+            "byte_start": 166,
+            "byte_end": 167
+          }
+        },
+        "name": "main",
+        "parameters": [],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 12,
+        "column": 1,
+        "byte_start": 152,
+        "byte_end": 156
+      }
+    }
+  ],
+  "type": "Program"
+}

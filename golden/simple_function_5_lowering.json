@@ -60,29 +60,6 @@
       }
     },
     {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "Identifier",
-          "data": {
-            "value": "b"
-          },
-          "position": {
-            "line": 3,
-            "column": 7,
-            "byte_start": 35,
-            "byte_end": 36
-          }
-        }
-      },
-      "position": {
-        "line": 3,
-        "column": 7,
-        "byte_start": 35,
-        "byte_end": 36
-      }
-    },
-    {
       "type": "FunctionStatement",
       "data": {
         "body": {
