@@ -18,7 +18,7 @@ Legend:
 | Delimited parser cursor contract | ✓ | ✓ | ✓ | ✓ | ✓ |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; `Oak.Delimited` proves canonical opener/body/close structure, item preservation, unique close suffix, exact close offset, and trailing-separator semantic transparency; refinement pending |
 | Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
 | Semantic records/products | ✓ | ✓ | ✓ |  |  |  | plain `{ ... }` is parsed as a semantic product and projects semantic fields while leaving representation unspecified; source order is preserved as declaration metadata; duplicate fields are rejected |
-| Record shape constraints | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR implements representation-blind required-field satisfaction; generic `T: Shape` checking now binds real type variables, exposes only guaranteed shape fields inside generic bodies, accepts extra candidate fields, rejects missing/wrong fields, supports intersected shape requirements, and substitutes inferred generic return types. `Oak.RecordShape` proves the abstract containment/order/representation laws; implementation refinement remains pending |
+| Record shape constraints | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Semantic IR and the generic checker implement representation-blind required-field satisfaction. `Oak.RecordShapeRefinement` models the concrete name-lookup/exact-type decision procedure and proves soundness, completeness, and equivalence with `Oak.RecordShape.Satisfies` for well-formed unique-name records. **R applies to the shape-satisfaction decision relation only**; generic inference/substitution and whole constraint-discharge refinement remain pending. |
 | Natural struct representation selection | ✓ | ✓ | ✓ |  |  |  | parser preserves `struct { ... }` distinctly from `{ ... }`; `type = struct { ... }` selects `RepresentationRecord + natural-ordered` while remaining unresolved until target field representations are known |
 | Natural struct layout | ✓ | ✓ | ✓ | ✓ | ✓ |  | `NaturalRecordLayout` computes checked ordered non-packed layout with power-of-two alignment and uint32 overflow rejection; `Oak.RecordLayout` proves identity/order preservation, field alignment, non-overlap, and final-size alignment in the unbounded arithmetic model; implementation refinement pending |
 | Record composition | ✓ | partial | partial |  |  |  | semantic composition is separated from subtyping and from representation composition |
@@ -62,17 +62,17 @@ The formal gate currently checks:
 - `Oak.Layout`
 - `Oak.RecordLayout`
 - `Oak.RecordShape`
+- `Oak.RecordShapeRefinement`
 
-A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
+A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement except where an explicit refinement theorem is identified in this matrix.
 
 ## Immediate formal-verification queue
 
-1. explicit refinement from the generic typechecker record-shape relation to `Oak.RecordShape`;
+1. formalize generic inference/substitution and whole constraint-discharge preservation around the now-refined record-shape decision relation;
 2. explicit refinement from selected/resolved struct representation to `Oak.RecordLayout`;
 3. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, and layout normalization;
-4. formalize generic substitution/constraint-discharge preservation laws;
-5. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
-6. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
+4. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
+5. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
 
 ## Refinement policy
 
