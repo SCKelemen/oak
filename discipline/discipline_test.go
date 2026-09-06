@@ -167,3 +167,28 @@ func TestBuiltinsAndUnknownCalleesAreNotEdges(t *testing.T) {
 		t.Fatalf("builtin/unknown callees must not create edges, got %#v", result.Diagnostics())
 	}
 }
+
+// Terminating recursion: a lowerable-shape match (base case + tail call)
+// counts as tail position, so factorial-style functions lower to loops.
+func TestFactorialShapedRecursionLowersToLoop(t *testing.T) {
+	result := analyze(t, "fn fact(n: i32, acc: i32) -> i32 {\nn ?\n  | 0 -> acc\n  | _ -> fact(n - 1, acc * n)\n}")
+	if len(result.Diagnostics()) != 0 {
+		t.Fatalf("factorial-shaped recursion must be silent, got %#v", result.Diagnostics())
+	}
+	if !result.LoopLowered["fact"] {
+		t.Fatal("factorial-shaped self tail recursion must be loop-lowered")
+	}
+}
+
+// A self call inside a non-lowerable arm (binding pattern) fails closed to
+// the recorded obligation.
+func TestSelfCallInBindingArmIsNotLowered(t *testing.T) {
+	result := analyze(t, "fn f(n: i32) -> i32 {\nn ?\n  | 0 -> 0\n  | m -> f(m - 1)\n}")
+	if result.LoopLowered["f"] {
+		t.Fatal("binding-pattern arm must not be loop-lowered")
+	}
+	if got := countCode(result, CodeTailRecursionObligation); got != 1 {
+		t.Fatalf("non-lowerable tail cycle produced %d %s records, want exactly 1: %#v",
+			got, CodeTailRecursionObligation, result.Diagnostics())
+	}
+}

@@ -590,6 +590,29 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write("\n")
 }
 
+// emitMatchReturn emits a lowerable-shape match (identifier scrutinee,
+// literal/wildcard patterns) in return position as guarded statements. Arm
+// bodies are emitted in return position themselves, so nested matches,
+// returns, and loop/trampoline tail continues all compose.
+func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typechecker.TypeChecker) {
+	for _, arm := range match.Arms {
+		if literal, ok := arm.Pattern.(*ast.LiteralPattern); ok {
+			cg.write("  if ( ")
+			cg.emitExpressionFragment(match.Scrutinee, tc)
+			cg.output.WriteString(" == ")
+			cg.emitExpressionFragment(literal.Value, tc)
+			cg.output.WriteString(" ) {\n")
+			cg.emitExpression(arm.Body, tc)
+			cg.write("  }\n")
+			continue
+		}
+		// Wildcard: unconditional; later arms are unreachable by
+		// exhaustiveness analysis.
+		cg.emitExpression(arm.Body, tc)
+		return
+	}
+}
+
 // emitAssertHelper emits the always-on assertion primitive: TigerStyle
 // assertions are compiled into every build mode, never elided
 // (docs/spec/85-discipline.md section 5).
@@ -755,6 +778,14 @@ func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.Typ
 				}
 			}
 		}
+	}
+	// A lowerable-shape match in return position emits as guarded statements
+	// so arm bodies stay in return position: value arms return, tail calls
+	// inside arms lower to loop/trampoline continues. The shape decision is
+	// discipline.LowerableMatchShape — the same procedure the analyzer uses.
+	if match, ok := expr.(*ast.MatchExpression); ok && discipline.LowerableMatchShape(match) {
+		cg.emitMatchReturn(match, tc)
+		return
 	}
 	cg.write("  return ")
 	cg.emitExpressionFragment(expr, tc)

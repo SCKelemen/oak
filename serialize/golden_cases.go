@@ -148,6 +148,20 @@ total: i32 = countdown(10, 0)
 `,
 		},
 		{
+			// Terminating recursion: base case + tail call in a lowerable-shape
+			// match compiles to a loop with a guarded return.
+			Name: "factorial",
+			SourceCode: `
+fn fact(n: i32, acc: i32) -> i32 {
+  n ?
+    | 0 -> acc
+    | _ -> fact(n - 1, acc * n)
+}
+
+result: i32 = fact(5, 1)
+`,
+		},
+		{
 			// assert is always compiled in (docs/spec/85-discipline.md section 5).
 			Name: "assertions",
 			SourceCode: `

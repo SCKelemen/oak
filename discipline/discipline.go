@@ -217,14 +217,21 @@ func TrampolineLowerable(members []string, functions map[string]*ast.FunctionSta
 		if !sameSignature(reference, fn) {
 			return false
 		}
-		if resultInvocationOfAny(fn.Body, memberSet) == nil {
+		// Every call to a group member must sit at a lowerable tail site.
+		lowerable := 0
+		for _, inv := range lowerableTailInvocations(fn.Body) {
+			if ident, ok := inv.Function.(*ast.Identifier); ok && memberSet[ident.Value] {
+				lowerable++
+			}
+		}
+		if lowerable == 0 {
 			return false
 		}
 		total := 0
 		for member := range memberSet {
 			total += countCalls(fn.Body, member)
 		}
-		if total != 1 {
+		if total != lowerable {
 			return false
 		}
 	}
@@ -279,31 +286,69 @@ func selfTailLoop(fn *ast.FunctionStatement) bool {
 		return false
 	}
 	name := fn.Name.Value
-	// The body's result position must be a self invocation, and it must be
-	// the only self call anywhere in the body (arguments included), so the
-	// backend can replace it with parameter rebinding plus continue.
-	if resultInvocationOf(fn.Body, name) == nil {
-		return false
+	// Every self call must sit at a lowerable tail site, so the backend can
+	// replace each with parameter rebinding plus continue.
+	lowerable := 0
+	for _, inv := range lowerableTailInvocations(fn.Body) {
+		if ident, ok := inv.Function.(*ast.Identifier); ok && ident.Value == name {
+			lowerable++
+		}
 	}
-	return countCalls(fn.Body, name) == 1
+	return lowerable >= 1 && countCalls(fn.Body, name) == lowerable
 }
 
-// resultInvocationOf returns the invocation of name sitting in the body's
-// result position, if any: the body itself, or the trailing expression of a
-// block body.
-func resultInvocationOf(body ast.Expression, name string) *ast.InvocationExpression {
-	expr := body
-	if block, ok := body.(*ast.BlockExpression); ok {
-		expr = block.Result()
+// LowerableMatchShape reports whether the backend can lower this match to
+// guarded statements in return position: the scrutinee is an identifier
+// (safe to re-evaluate per arm) and every arm pattern is a literal or the
+// wildcard. This is the single decision procedure shared by the analyzer
+// and the backend.
+func LowerableMatchShape(m *ast.MatchExpression) bool {
+	if m == nil {
+		return false
 	}
-	inv, ok := expr.(*ast.InvocationExpression)
-	if !ok {
-		return nil
+	if _, ok := m.Scrutinee.(*ast.Identifier); !ok {
+		return false
 	}
-	if ident, ok := inv.Function.(*ast.Identifier); ok && ident.Value == name {
-		return inv
+	for _, arm := range m.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern, *ast.WildcardPattern:
+		case *ast.BindingPattern:
+			// `_` parses as a binding named "_": semantically the wildcard.
+			if pattern.Name == nil || pattern.Name.Value != "_" {
+				return false
+			}
+		default:
+			return false
+		}
 	}
-	return nil
+	return true
+}
+
+// lowerableTailInvocations returns the invocations at positions the backend
+// lowers to rebind-plus-continue: the body result, block trailing
+// expressions, and arm bodies of lowerable-shape matches in those positions.
+func lowerableTailInvocations(body ast.Expression) []*ast.InvocationExpression {
+	var out []*ast.InvocationExpression
+	var visit func(expr ast.Expression)
+	visit = func(expr ast.Expression) {
+		switch e := expr.(type) {
+		case *ast.InvocationExpression:
+			out = append(out, e)
+		case *ast.BlockExpression:
+			if result := e.Result(); result != nil {
+				visit(result)
+			}
+		case *ast.MatchExpression:
+			if !LowerableMatchShape(e) {
+				return
+			}
+			for _, arm := range e.Arms {
+				visit(arm.Body)
+			}
+		}
+	}
+	visit(body)
+	return out
 }
 
 // collectCallEdges walks one function body and records every call to another

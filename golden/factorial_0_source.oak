@@ -1,0 +1,8 @@
+
+fn fact(n: i32, acc: i32) -> i32 {
+  n ?
+    | 0 -> acc
+    | _ -> fact(n - 1, acc * n)
+}
+
+result: i32 = fact(5, 1)

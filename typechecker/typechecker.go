@@ -1702,6 +1702,17 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 		tc.env.SetType(p.Name.Value, expectedType)
 		return expectedType
 	case *ast.LiteralPattern:
+		// Integer pattern literals infer from the scrutinee's type, exactly
+		// like expression literals infer from their expected type.
+		if intLit, ok := p.Value.(*ast.IntegerLiteral); ok {
+			if prim, ok := expectedType.(*PrimitiveType); ok {
+				if tc.literalFitsInType(intLit.Value, prim.Name) {
+					return expectedType
+				}
+				tc.addError(p.Value, "pattern literal %d does not fit in scrutinee type %s", intLit.Value, expectedType)
+				return nil
+			}
+		}
 		litType := tc.checkExpression(p.Value)
 		if litType == nil {
 			return nil

@@ -109,7 +109,17 @@ Bounds must be proved statically or checked dynamically in safe code. Out-of-ran
 
 Exact index-normalization policy (including whether negative indices remain in Oak) is a separate sequence/indexing decision; it does not alter the ownership model.
 
-## 8. Raw pointers
+## 8. Move/consume
+
+Owned aggregates (`[N]T` and resolved records) have explicit value semantics
+in v1: binding or passing one is an explicit-cost copy, never a hidden
+allocation and never an ownership transfer, so use-after-move cannot occur
+yet. Move/consume semantics — and their diagnostics, for which `OAK-B0111`
+is reserved — arrive together with resource types (handles, arenas, files),
+whose values must not be duplicated. When they land, the diagnostic must
+show both the move site and the later use (`15-diagnostics` section 6).
+
+## 9. Raw pointers
 
 Raw pointers do not automatically participate in safe borrow tracking because arbitrary pointer arithmetic/aliasing can destroy provenance facts.
 
@@ -117,7 +127,7 @@ Creating/dereferencing/reinterpreting raw pointers therefore requires the releva
 
 `unsafe` introduces assumptions; it does not disable unrelated typing/bounds/effect checks.
 
-## 9. DMA and ownership states
+## 10. DMA and ownership states
 
 The same ownership vocabulary should extend to machine/device custody without special pointer syntax.
 

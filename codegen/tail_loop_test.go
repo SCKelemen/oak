@@ -101,3 +101,30 @@ fn add( a: i32, b: i32 ) -> i32
 		t.Fatalf("non-recursive function must not be loop-wrapped, got:\n%s", output)
 	}
 }
+
+// Terminating recursion: a lowerable-shape match gives the base case a
+// guarded return while the recursive arm continues the loop.
+func TestFactorialCompilesToLoopWithBaseCase(t *testing.T) {
+	output := generateC(t, `
+package main
+
+fn fact( n: i32, acc: i32 ) -> i32 {
+  n ?
+    | 0 -> acc
+    | _ -> fact(n - 1, acc * n)
+}
+`)
+	for _, wanted := range []string{
+		"while (1)",
+		"if ( n == 0 ) {",
+		"return acc",
+		"continue;",
+	} {
+		if !strings.Contains(output, wanted) {
+			t.Fatalf("factorial output missing %q:\n%s", wanted, output)
+		}
+	}
+	if strings.Contains(output, "return oak_fact") {
+		t.Fatalf("recursive arm must not emit a call:\n%s", output)
+	}
+}

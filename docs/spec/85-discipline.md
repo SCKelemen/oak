@@ -41,10 +41,14 @@ eliminable.
 
 Current enforcement:
 
-- Direct self tail recursion whose only self call is the body's result
-  invocation **compiles to a loop** in the C backend (parameter rebinding
-  plus `continue` in a `while (1)` frame): accepted silently, genuinely
-  constant-stack.
+- Direct self tail recursion whose self calls all sit at lowerable tail
+  sites **compiles to a loop** in the C backend (parameter rebinding plus
+  `continue` in a `while (1)` frame): accepted silently, genuinely
+  constant-stack. Lowerable tail sites are the body result, block trailing
+  expressions, and the arms of result-position matches over an identifier
+  scrutinee with literal/wildcard patterns — so terminating recursion
+  (base case + tail call) lowers, with base-case arms becoming guarded
+  returns.
 - Mutual tail recursion whose members share one signature (types and
   parameter names) and whose member calls all sit in result position
   **compiles to a trampoline**: one engine function with a state tag per
@@ -52,7 +56,8 @@ Current enforcement:
   single frame, and thin wrappers preserving each member's identity. This
   is the cooperative state-machine / superloop shape of embedded firmware.
 - Tail-only cycles the backend does not lower yet (mismatched signatures,
-  tail calls inside match arms) are accepted with the recorded obligation
+  binding/variant-pattern arms, non-identifier scrutinees) are accepted
+  with the recorded obligation
   `OAK-D0102` (warning): eliminable in principle, elimination not yet
   guaranteed. Strict profile treats this as a rejection until lowering
   lands.
@@ -60,8 +65,8 @@ Current enforcement:
 
 Planned extensions: declared recursion depth bounds (a semantic fact that
 converts a stack cycle into a bounded obligation with a runtime check when
-not statically discharged), trampoline lowering for mismatched-signature
-groups and for tail calls in match-arm position.
+not statically discharged), trampoline lowering for
+mismatched-signature groups, and lowering for binding/variant-pattern arms.
 
 ## 3. Bounded loops
 
