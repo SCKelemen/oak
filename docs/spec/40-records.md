@@ -56,6 +56,41 @@ A type-level record may therefore be known before its exact machine layout is kn
 
 The compiler must fail closed when a backend requires a representation fact that has not been established.
 
+### 3.1 Natural ordered representation
+
+Oak defines a small target-independent **natural ordered** record-layout primitive for backends or ABI profiles that select ordinary non-packed product representation.
+
+Its inputs are the authoritative ordered field sequence plus an already-established machine size and non-zero power-of-two alignment for each field. It does not infer field machine representation.
+
+For fields `f[0..n)`:
+
+```text
+cursor = 0
+record_alignment = 1
+
+for field in source_order:
+    offset = align_up(cursor, field.alignment)
+    place field at offset
+    cursor = offset + field.size
+    record_alignment = max(record_alignment, field.alignment)
+
+record_size = align_up(cursor, record_alignment)
+```
+
+Required laws:
+
+- field order is unchanged;
+- each field offset is divisible by that field's alignment;
+- ordinary fields do not overlap;
+- zero-sized fields consume no bytes but may still carry alignment;
+- record alignment is the maximum field alignment, or 1 for an empty record;
+- final size is rounded up to record alignment;
+- narrowing into fixed-width representation metadata must be checked for overflow.
+
+This algorithm is not a claim that every target ABI uses this layout. Packed records, explicit offsets, overlays/unions, vector ABI rules, or platform-specific aggregate classification are separate representation policies. A backend must select an applicable policy explicitly rather than silently changing this primitive.
+
+The Semantic IR implementation is `NaturalRecordLayout` in `semir/layout.go`.
+
 ## 4. Construction
 
 Canonical named construction:
@@ -143,7 +178,11 @@ Initial proof targets:
 - compatible composition is deterministic;
 - incompatible duplicate fields are rejected;
 - field lookup returns the field associated with that name;
-- target layout, when computed, gives non-overlapping ordinary fields unless explicit overlay/union representation is requested;
-- layout offsets satisfy alignment and size constraints.
+- natural ordered layout preserves field identity/order;
+- natural ordered layout gives non-overlapping ordinary fields;
+- every natural-layout field offset satisfies its alignment;
+- final natural-layout size satisfies record alignment and covers the final field cursor.
 
-The semantic record proof should not assume a specific ABI. ABI-specific layout theorems belong to representation/backend models.
+`spec/lean/Oak/RecordLayout.lean` models the unbounded arithmetic core of the natural ordered layout. Fixed-width overflow checks remain executable implementation obligations until an explicit refinement connects the Go representation widths to the Lean model.
+
+The semantic record proof should not assume that all targets use the natural profile. ABI-specific layout theorems belong to their representation/backend models.
