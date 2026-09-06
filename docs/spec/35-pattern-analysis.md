@@ -46,7 +46,7 @@ is not exhaustive. A valid counterexample is:
 
 A constructor payload matched by `_` or a binding covers the entire reachable payload space for that constructor.
 
-Nested ADTs compose recursively under the same rule.
+Nested constructor patterns compose recursively.
 
 ## 3. Open and finite domains
 
@@ -149,7 +149,7 @@ The compiler should avoid cascading body diagnostics from an arm whose impossibi
 
 ## 8. Counterexamples
 
-A non-exhaustive match diagnostic must provide one or more source-level witness patterns when the analyzer can construct them.
+A non-exhaustive match diagnostic must provide one or more human-readable semantic witness patterns when the analyzer can construct them.
 
 Examples:
 
@@ -158,6 +158,8 @@ Examples:
 .Some(false)
 .Wrap(.B)
 ```
+
+These witnesses use Oak-like pattern notation for diagnostics, but they are semantic diagnostic data rather than a new grammar production.
 
 For an open scalar domain, `_` may be used as the witness meaning "some value outside the explicitly covered finite set".
 
