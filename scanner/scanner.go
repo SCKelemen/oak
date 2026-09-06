@@ -9,13 +9,8 @@ import (
 	"github.com/SCKelemen/oak/util"
 )
 
-// Scanner is the lexer. A Scanner created with FromSource is a thin compatibility
-// adapter around another token.Source; this lets older parser entry points accept
-// transformed token streams while the parser migrates away from its historical
-// concrete *Scanner dependency.
+// Scanner is the Oak lexer.
 type Scanner struct {
-	source token.Source
-
 	input   string
 	head    int // Current byte position (start of current token)
 	read    int // Look-ahead byte position
@@ -36,14 +31,6 @@ func New(input string) *Scanner {
 
 	s.readChar()
 	return s
-}
-
-// FromSource adapts an arbitrary token.Source to the historical *Scanner API.
-// New compiler code should compose token.Source values directly; this adapter
-// exists only so Parser can be decoupled incrementally without duplicating the
-// parser implementation.
-func FromSource(source token.Source) *Scanner {
-	return &Scanner{source: source}
 }
 
 // readChar advances by one UTF-8 rune and updates token position fields.
@@ -80,10 +67,6 @@ func (s *Scanner) readChar() {
 // NextToken emits the next token from the rune stream.
 // Returns TRIVIA tokens for whitespace and other non-syntactic content.
 func (s *Scanner) NextToken() token.Token {
-	if s.source != nil {
-		return s.source.NextToken()
-	}
-
 	var tok token.Token
 
 	// Check for whitespace/trivia before the next token

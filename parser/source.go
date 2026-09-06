@@ -1,16 +1,9 @@
 package parser
 
-import (
-	"github.com/SCKelemen/oak/scanner"
-	"github.com/SCKelemen/oak/token"
-)
+import "github.com/SCKelemen/oak/token"
 
-// NewSource constructs a parser from any token.Source.
-//
-// Parser historically stores *scanner.Scanner internally. scanner.FromSource
-// is a narrow compatibility adapter so callers can compose Scanner -> Layout ->
-// Parser today without duplicating the parser. The concrete field can disappear
-// once parser.go itself is migrated to token.Source.
+// NewSource is a compatibility spelling for New. Parser itself owns the
+// token.Source directly; there is no scanner adapter in this path.
 func NewSource(source token.Source) *Parser {
-	return New(scanner.FromSource(source))
+	return New(source)
 }

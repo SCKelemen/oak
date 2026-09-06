@@ -64,7 +64,7 @@ type token.Source interface {
 }
 ```
 
-Both `scanner.Scanner` and `layout.Normalizer` satisfy it. The canonical front end is now:
+Both `scanner.Scanner` and `layout.Normalizer` satisfy it. The canonical front end is:
 
 ```text
 SourceText
@@ -78,22 +78,25 @@ SourceText
 
 Tests require layout and explicit forms of the same function to produce equivalent AST semantics, and layout-style functions must pass semantic analysis.
 
-### Transitional parser adapter
+### Parser source ownership
 
-`parser.Parser` historically stores `*scanner.Scanner` internally. Replacing that field in the monolithic parser should be done as a focused mechanical migration rather than mixed with grammar changes.
+`parser.Parser` now stores `token.Source` directly. Its token cursor reads only through that interface, so the parser no longer imports or depends on the concrete scanner implementation.
 
-Until then:
+This removes the old `scanner.FromSource` compatibility layer entirely:
 
-- `token.Source` is the real boundary;
-- `parser.NewSource` is the public source-oriented constructor;
-- `scanner.FromSource` is a narrow compatibility adapter for the old concrete field;
-- new compiler paths must not bypass `layout.Normalizer`.
+```text
+scanner.Scanner ─┐
+                 ├─ token.Source -> Parser
+layout.Normalizer┘
+```
 
-Once `Parser` stores `token.Source` directly, the adapter can be deleted without changing callers.
+`parser.New` accepts any `token.Source`. `parser.NewSource` remains only as a compatibility spelling for callers that already adopted it; it delegates directly to `New` and does not wrap the source.
+
+The important architectural boundary is therefore real rather than aspirational: token production and token consumption are independently substitutable, while the normal compiler path still requires layout normalization before parsing.
 
 ## Generic parser mechanics
 
-Go 1.27 generic methods are useful for repeated structural grammar operations. Oak now has a generic separated-sequence primitive on `Parser`:
+Go 1.27 generic methods are useful for repeated structural grammar operations. Oak has a generic separated-sequence primitive on `Parser`:
 
 ```go
 func (p *Parser) parseSeparated[T any](
@@ -104,16 +107,15 @@ func (p *Parser) parseSeparated[T any](
 ) ([]T, bool)
 ```
 
-It captures the token-positioning rules shared by constructs such as:
+It captures the two-token cursor rules shared by comma-separated grammar forms. The first migrations now use it for:
 
-- function parameters;
-- invocation arguments;
-- generic/type arguments;
-- type parameters;
-- array elements;
-- similar comma-separated grammar forms.
+- function-literal argument names;
+- function and method parameters;
+- generic/type parameter declarations.
 
-The existing parser methods should migrate onto this primitive incrementally, with parser tests after each conversion. We should not rewrite the grammar merely to use generics.
+Those productions had matching cursor contracts: they start with `currentToken` on the opening delimiter, parse each item with `currentToken` on its first token, and finish with `currentToken` on the closing delimiter.
+
+Other constructs should move only when their positioning contract matches. Invocation arguments and array literals currently have different close-token behavior, so they should be normalized deliberately rather than forced through the helper. We should not rewrite grammar semantics merely to use generics.
 
 ## Lexer policy
 
@@ -123,7 +125,7 @@ Generics belong around the lexer where they remove repeated infrastructure: toke
 
 ## Verification status
 
-The Go 1.27 normal test gate runs `go test -v -race ./...` and is green with the fluent API, token-source composition, layout parsing, and generic parser-helper tests.
+The Go 1.27 normal test gate runs `go test -v -race ./...` and is green with the fluent API, token-source composition, layout parsing, direct parser source ownership, and the first separated-list migrations.
 
 The repository's separate golden-file workflow remains red because its fixture set is incomplete/out of date: several named suites have no checked-in expected files, while older lexer/AST snapshots predate recent token/schema changes. This is tracked as golden-fixture debt, not treated as a passing verification gate. New front-end behavior is therefore covered by ordinary parser/compiler tests until the golden corpus is regenerated and made complete.
 
@@ -170,14 +172,10 @@ Compilation
 Likewise, front-end cleanup should stay incremental:
 
 ```text
-token.Source
-    -> Parser stores token.Source directly
-    -> generic separated/delimited parsing
+token.Source-owned Parser
+    -> normalize remaining cursor contracts
+    -> migrate matching separated/delimited parsing
     -> typed SyntaxList[T] where source fidelity benefits
     -> generic syntax traversal for tools
     -> remaining callers move to Compilation
 ```
-
-The next safe parser refactor is intentionally mechanical: replace the stored `*scanner.Scanner` field with `token.Source` without changing parsing behavior, then migrate one comma-separated grammar production at a time onto `parseSeparated[T]` with its existing tests held constant.
-
-The API should preserve Oak's core rule: define a semantic fact once and let every compiler phase that can use it consume the same fact.
