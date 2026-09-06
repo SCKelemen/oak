@@ -9,7 +9,7 @@ structure TypeVar where
   deriving DecidableEq, Repr
 
 inductive Ty where
-  | variable : TypeVar → Ty
+  | var : TypeVar → Ty
   | atom : Nat → Ty
   | arrow : Ty → Ty → Ty
   deriving DecidableEq, Repr
@@ -19,32 +19,32 @@ abbrev Substitution := TypeVar → Option Ty
 
 def empty : Substitution := fun _ => none
 
-def singleton (variable : TypeVar) (replacement : Ty) : Substitution :=
-  fun candidate => if candidate = variable then some replacement else none
+def singleton (v : TypeVar) (replacement : Ty) : Substitution :=
+  fun candidate => if candidate = v then some replacement else none
 
 def apply (sub : Substitution) : Ty → Ty
-  | .variable variable =>
-      match sub variable with
+  | .var v =>
+      match sub v with
       | some replacement => replacement
-      | none => .variable variable
+      | none => .var v
   | .atom value => .atom value
   | .arrow parameter result => .arrow (apply sub parameter) (apply sub result)
 
 /-- A singleton substitution replaces exactly its own binder. -/
-theorem singleton_hits (variable : TypeVar) (replacement : Ty) :
-    apply (singleton variable replacement) (.variable variable) = replacement := by
+theorem singleton_hits (v : TypeVar) (replacement : Ty) :
+    apply (singleton v replacement) (.var v) = replacement := by
   simp [apply, singleton]
 
 /-- A substitution for one binder cannot affect a distinct binder, even when the
     two variables have the same source-facing name. -/
 theorem singleton_misses_distinct_binder (left right : TypeVar) (replacement : Ty)
     (hne : left ≠ right) :
-    apply (singleton left replacement) (.variable right) = .variable right := by
+    apply (singleton left replacement) (.var right) = .var right := by
   simp [apply, singleton, hne]
 
 /-- Equal display names do not collapse distinct binder identities. -/
 theorem same_name_can_be_distinct (left right : TypeVar)
-    (sameName : left.name = right.name)
+    (_sameName : left.name = right.name)
     (differentBinder : left.binder ≠ right.binder) : left ≠ right := by
   intro heq
   apply differentBinder
@@ -55,15 +55,15 @@ theorem same_name_can_be_distinct (left right : TypeVar)
 theorem same_name_does_not_alias (left right : TypeVar) (replacement : Ty)
     (sameName : left.name = right.name)
     (differentBinder : left.binder ≠ right.binder) :
-    apply (singleton left replacement) (.variable right) = .variable right := by
+    apply (singleton left replacement) (.var right) = .var right := by
   apply singleton_misses_distinct_binder
   exact same_name_can_be_distinct left right sameName differentBinder
 
 /-- Repeated occurrences of one binder are substituted consistently. -/
-theorem repeated_binder_substitutes_consistently (variable : TypeVar)
+theorem repeated_binder_substitutes_consistently (v : TypeVar)
     (replacement : Ty) :
-    apply (singleton variable replacement)
-        (.arrow (.variable variable) (.variable variable)) =
+    apply (singleton v replacement)
+        (.arrow (.var v) (.var v)) =
       .arrow replacement replacement := by
   simp [apply, singleton]
 
