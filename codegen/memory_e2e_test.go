@@ -13,15 +13,15 @@ import (
 	"github.com/SCKelemen/oak/typechecker"
 )
 
-func TestAtomicSourceLowersWithoutHeapOrRuntimeOrderDispatch(t *testing.T) {
-	input := `
+const atomicNativeSource = `
 package main
 counter: Atomic[u64]
 
-fn ordered() -> u64
+fn ordered() -> u64 {
   atomic_store_release(counter, u64(1))
   atomic_fence_acq_rel()
   atomic_fetch_add_seq_cst(counter, u64(1))
+}
 
 fn bump() -> u64
   atomic_fetch_add_relaxed(counter, u64(1))
@@ -29,7 +29,10 @@ fn bump() -> u64
 fn read() -> u64
   atomic_load_acquire(counter)
 `
-	p := parser.New(scanner.New(input))
+
+func generateAtomicTestC(t *testing.T) string {
+	t.Helper()
+	p := parser.New(scanner.New(atomicNativeSource))
 	program := p.ParseProgram()
 	if errs := p.Errors(); len(errs) != 0 {
 		t.Fatalf("parser errors: %v", errs)
@@ -44,7 +47,11 @@ fn read() -> u64
 	if err != nil {
 		t.Fatalf("code generation: %v", err)
 	}
+	return generated
+}
 
+func TestAtomicSourceLowersWithoutHeapOrRuntimeOrderDispatch(t *testing.T) {
+	generated := generateAtomicTestC(t)
 	for _, required := range []string{
 		"#include <stdatomic.h>",
 		"static _Atomic(u64) counter = 0;",
@@ -71,37 +78,7 @@ func TestAtomicGeneratedCIsCorrectUnderContention(t *testing.T) {
 	if err != nil {
 		t.Skip("cc is required for native atomic execution test")
 	}
-	input := `
-package main
-counter: Atomic[u64]
-
-fn ordered() -> u64
-  atomic_store_release(counter, u64(1))
-  atomic_fence_acq_rel()
-  atomic_fetch_add_seq_cst(counter, u64(1))
-
-fn bump() -> u64
-  atomic_fetch_add_relaxed(counter, u64(1))
-
-fn read() -> u64
-  atomic_load_acquire(counter)
-`
-	p := parser.New(scanner.New(input))
-	program := p.ParseProgram()
-	if errs := p.Errors(); len(errs) != 0 {
-		t.Fatalf("parser errors: %v", errs)
-	}
-	tc := typechecker.New(object.NewEnvironment())
-	tc.CheckProgram(program)
-	if errs := tc.Errors(); len(errs) != 0 {
-		t.Fatalf("type errors: %v", errs)
-	}
-	cg := New("main", tc)
-	generated, err := cg.Generate(program, tc)
-	if err != nil {
-		t.Fatalf("code generation: %v", err)
-	}
-
+	generated := generateAtomicTestC(t)
 	harness := `
 #include <pthread.h>
 #define OAK_TEST_THREADS 4
