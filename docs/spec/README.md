@@ -63,6 +63,8 @@ Use these terms precisely:
 - `80-metadata.md` — typed attributes/tags and phantom semantic types
 - `90-backend.md` — executable lowering and C-backend requirements
 - `92-ffi.md` — the `c` interface library, extern bindings, and the abstract assembly interface
+- `93-simd.md` — portable SIMD vectors and architecture vector instruction functions
+- `94-assembler.md` — typed abstract assembly units and register types (normative design)
 - `STATUS.md` — implementation and proof coverage matrix
 
 The files above are introduced incrementally. Until a feature has an authoritative document here, its legacy document remains design input rather than normative law.
