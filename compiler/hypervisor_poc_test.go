@@ -152,7 +152,7 @@ main: (): i32 {
     keep: u16 = u16(1) - choose
     best = choose * i + keep * best
     best_priority = choose * candidate + keep * best_priority
-    i = i + u16(1)
+    i = i + 1
   }
 
   i32(best)
