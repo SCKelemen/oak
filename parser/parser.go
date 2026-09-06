@@ -20,6 +20,7 @@ type Parser struct {
 
 	prefixParseFns map[token.TokenKind]prefixParseFn
 	infixParseFns  map[token.TokenKind]infixParseFn
+
 	// postfixParseFns map[token.TokenKind]postfixParseFn
 
 	// Collected trivia tokens that will be attached to the next non-trivia node
@@ -788,10 +789,15 @@ func (p *Parser) ParseProgram() *ast.Program {
 			p.currentTokenIs(token.COLON)) && // COLON for REPL commands like :exit
 			!p.currentTokenIs(token.TRIVIA) &&
 			!p.currentTokenIs(token.COMMENT)
+		// A token can only be the START of the next statement if it sits on a
+		// later line than this statement began: a statement-final identifier
+		// (a type name in a value-less declaration, an identifier value)
+		// stays on the statement's own line and must be advanced past, not
+		// re-parsed as a stray expression statement.
 		// Always advance if peekToken is EOF, regardless of canStartStatement
 		// This prevents infinite loops when currentToken looks like it can start a statement
 		// but is actually the last token of the previous statement
-		if !canStartStatement || p.peekTokenIs(token.EOF) {
+		if !canStartStatement || p.currentToken.Line <= start.Line || p.peekTokenIs(token.EOF) {
 			// currentToken is not at the start of a statement (or is trivia), so advance it
 			p.nextToken()
 		}

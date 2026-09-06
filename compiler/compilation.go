@@ -5,7 +5,10 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/borrowchecker"
 	"github.com/SCKelemen/oak/codegen"
+	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/layout"
 	"github.com/SCKelemen/oak/lowering"
 	"github.com/SCKelemen/oak/object"
@@ -31,6 +34,11 @@ type Options struct {
 	PackageName string
 	IntSize     int
 	PtrSize     int
+	// Profile selects the discipline profile (docs/spec/85-discipline.md):
+	// "default" gates on error-severity diagnostics only; "strict" promotes
+	// every warning (recorded unsafe assumptions, tail-recursion
+	// obligations, unnecessary-code warnings) to a rejection.
+	Profile string
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -95,6 +103,13 @@ func (comp Compilation) WithPlatformSizes(intSize, ptrSize int) Compilation {
 	return comp
 }
 
+// WithProfile returns a compilation using the given discipline profile
+// ("default" or "strict", docs/spec/85-discipline.md section 1).
+func (comp Compilation) WithProfile(profile string) Compilation {
+	comp.options.Profile = profile
+	return comp
+}
+
 // Options returns the effective compilation options.
 func (comp Compilation) Options() Options {
 	return comp.options
@@ -137,17 +152,49 @@ func (comp Compilation) SyntaxTree() Stage[*SyntaxTree] {
 	return comp.Parse()
 }
 
-// Check parses and type-checks the source.
+// Check parses and semantically checks the source: type checking, borrow
+// checking (memory safety), and discipline analysis (bounded execution) all
+// gate compilation. Error-severity diagnostics always reject; in the strict
+// profile, warnings (recorded unsafe assumptions, tail-recursion
+// obligations, unnecessary-code warnings) reject too (85-discipline §7).
 func (comp Compilation) Check() Stage[*SemanticModel] {
 	return comp.Parse().Then(func(tree *SyntaxTree) (*SemanticModel, error) {
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		tc.CheckProgram(tree.Root)
-		if errors := diagnosticErrors(tc.Diagnostics()); len(errors) != 0 {
-			return nil, &DiagnosticError{Phase: "typecheck", Diagnostics: errors}
+		if err := comp.gate("typecheck", tc.Diagnostics()); err != nil {
+			return nil, err
 		}
+
+		bc := borrowchecker.New()
+		bc.CheckProgram(tree.Root, tc.Env())
+		if err := comp.gate("borrowcheck", bc.Diagnostics()); err != nil {
+			return nil, err
+		}
+
+		if err := comp.gate("discipline", discipline.AnalyzeProgram(tree.Root).Diagnostics()); err != nil {
+			return nil, err
+		}
+
 		return &SemanticModel{Tree: tree, TypeChecker: tc}, nil
 	})
+}
+
+// gate rejects on error diagnostics, and on warnings too in the strict
+// profile (zero-warning rule).
+func (comp Compilation) gate(phase string, diagnostics []*diagnostic.Diagnostic) error {
+	rejecting := diagnosticErrors(diagnostics)
+	if comp.options.Profile == "strict" {
+		for _, d := range diagnostics {
+			if d.Severity == diagnostic.SeverityWarning {
+				rejecting = append(rejecting, d)
+			}
+		}
+	}
+	if len(rejecting) != 0 {
+		return &DiagnosticError{Phase: phase, Diagnostics: rejecting}
+	}
+	return nil
 }
 
 // SemanticModel is the Roslyn-style spelling for Check.

@@ -10,29 +10,6 @@
       "type": "ExpressionStatement",
       "data": {
         "expression": {
-          "type": "Identifier",
-          "data": {
-            "value": "main"
-          },
-          "position": {
-            "line": 2,
-            "column": 9,
-            "byte_start": 9,
-            "byte_end": 13
-          }
-        }
-      },
-      "position": {
-        "line": 2,
-        "column": 9,
-        "byte_start": 9,
-        "byte_end": 13
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
           "type": "StringLiteral",
           "data": {
             "value": "strings"
@@ -92,19 +69,9 @@
       },
       "position": {
         "line": 6,
-        "column": 15,
-        "byte_start": 48,
-        "byte_end": 57
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 6,
-        "column": 24,
-        "byte_start": 57,
-        "byte_end": 58
+        "column": 14,
+        "byte_start": 47,
+        "byte_end": 48
       }
     },
     {

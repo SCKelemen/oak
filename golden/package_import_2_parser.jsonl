@@ -1,8 +1,6 @@
 {"error_index":0,"message":"expected next token to be 'IDENTITY', received STRING"}
 {"error_index":1,"message":"no prefix parse function defined for TokenKind import"}
-{"error_index":2,"message":"expected next token to be 'IDENTITY', received STRING"}
-{"error_index":3,"message":"unexpected token in type expression: package (\"package\")"}
-{"error_index":4,"message":"expected next token to be 'IDENTITY', received ="}
-{"error_index":5,"message":"no prefix parse function defined for TokenKind ="}
-{"error_index":6,"message":"expected next token to be 'IDENTITY', received STRING"}
-{"error_index":7,"message":"expected next token to be 'IDENTITY', received STRING"}
+{"error_index":2,"message":"unexpected token in type expression: package (\"package\")"}
+{"error_index":3,"message":"no prefix parse function defined for TokenKind ="}
+{"error_index":4,"message":"expected next token to be 'IDENTITY', received STRING"}
+{"error_index":5,"message":"expected next token to be 'IDENTITY', received STRING"}

@@ -14,29 +14,6 @@
       }
     },
     {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "Identifier",
-          "data": {
-            "value": "u8"
-          },
-          "position": {
-            "line": 2,
-            "column": 10,
-            "byte_start": 10,
-            "byte_end": 12
-          }
-        }
-      },
-      "position": {
-        "line": 2,
-        "column": 10,
-        "byte_start": 10,
-        "byte_end": 12
-      }
-    },
-    {
       "type": "Unknown",
       "data": {
         "string": "unsafe a: (u8.*) = span((\u0026buf))b: (u8.*) = span((\u0026buf))"

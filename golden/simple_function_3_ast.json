@@ -142,29 +142,6 @@
       }
     },
     {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "Identifier",
-          "data": {
-            "value": "b"
-          },
-          "position": {
-            "line": 5,
-            "column": 36,
-            "byte_start": 73,
-            "byte_end": 74
-          }
-        }
-      },
-      "position": {
-        "line": 5,
-        "column": 36,
-        "byte_start": 73,
-        "byte_end": 74
-      }
-    },
-    {
       "type": "FunctionStatement",
       "data": {
         "body": {
@@ -307,29 +284,6 @@
     },
     {
       "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "Identifier",
-          "data": {
-            "value": "b"
-          },
-          "position": {
-            "line": 11,
-            "column": 38,
-            "byte_start": 155,
-            "byte_end": 156
-          }
-        }
-      },
-      "position": {
-        "line": 11,
-        "column": 38,
-        "byte_start": 155,
-        "byte_end": 156
-      }
-    },
-    {
-      "type": "ExpressionStatement",
       "data": {},
       "position": {
         "line": 11,
@@ -349,29 +303,6 @@
         "column": 1,
         "byte_start": 160,
         "byte_end": 161
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "Identifier",
-          "data": {
-            "value": "i32"
-          },
-          "position": {
-            "line": 13,
-            "column": 4,
-            "byte_start": 163,
-            "byte_end": 166
-          }
-        }
-      },
-      "position": {
-        "line": 13,
-        "column": 4,
-        "byte_start": 163,
-        "byte_end": 166
       }
     },
     {

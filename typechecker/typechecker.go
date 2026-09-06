@@ -44,6 +44,22 @@ func (t *PrimitiveType) Equals(other Type) bool {
 	return false
 }
 
+// isArrayTypeSyntax reports whether an IndexExpression is array-type syntax
+// ([N]T, []T, [*]T) rather than a generic type application.
+func isArrayTypeSyntax(expr ast.Expression) bool {
+	indexExpr, ok := expr.(*ast.IndexExpression)
+	if !ok {
+		return false
+	}
+	switch index := indexExpr.Index.(type) {
+	case *ast.IntegerLiteral:
+		return true
+	case *ast.Identifier:
+		return index.Value == "*" || index.Value == ""
+	}
+	return false
+}
+
 // StringType represents an encoded string type (docs/spec/70-strings.md):
 // `string` is Str[Utf8]. Encoding tags are phantom — they distinguish static
 // identity while every Str[E] shares one representation — so Equals compares
@@ -914,6 +930,62 @@ func (tc *TypeChecker) areCompatibleTypes(left, right Type) bool {
 	return false
 }
 
+// checkBorrowBuiltin types view(&owner) -> []T and span(&owner) -> [*]T.
+func (tc *TypeChecker) checkBorrowBuiltin(name string, expr *ast.InvocationExpression) Type {
+	if len(expr.Arguments) != 1 {
+		tc.addError(expr, "%s expects exactly one argument: &owner of an owned array", name)
+		return nil
+	}
+	prefix, ok := expr.Arguments[0].(*ast.PrefixExpression)
+	if !ok || prefix.Operator != "&" {
+		tc.addError(expr.Arguments[0], "%s argument must be &owner of an owned array", name)
+		return nil
+	}
+	ownerType := tc.checkExpression(prefix.Right)
+	if ownerType == nil {
+		return nil
+	}
+	arrType, ok := ownerType.(*ArrayType)
+	if !ok || arrType.IsSlice || arrType.IsSpan || arrType.Length < 0 {
+		tc.addError(prefix.Right, "%s requires an owned array [N]T, got %s", name, ownerType)
+		return nil
+	}
+	return &ArrayType{
+		Length:      -1,
+		IsSlice:     name == "view",
+		IsSpan:      name == "span",
+		ElementType: arrType.ElementType,
+	}
+}
+
+// checkSubsliceBuiltin types subslice(v, start, len): the derived borrow has
+// the source's view/span type.
+func (tc *TypeChecker) checkSubsliceBuiltin(expr *ast.InvocationExpression) Type {
+	if len(expr.Arguments) != 3 {
+		tc.addError(expr, "subslice expects exactly three arguments (view/span, start, len)")
+		return nil
+	}
+	srcType := tc.checkExpression(expr.Arguments[0])
+	if srcType == nil {
+		return nil
+	}
+	arrType, ok := srcType.(*ArrayType)
+	if !ok || (!arrType.IsSlice && !arrType.IsSpan) {
+		tc.addError(expr.Arguments[0], "subslice first argument must be a view or span, got %s", srcType)
+		return nil
+	}
+	for _, bound := range expr.Arguments[1:] {
+		boundType := tc.checkExpression(bound, &PrimitiveType{Name: "int"})
+		if boundType == nil {
+			continue
+		}
+		if prim, ok := boundType.(*PrimitiveType); !ok || !tc.isNumericType(prim) {
+			tc.addError(bound, "subslice bounds must be integers, got %s", boundType)
+		}
+	}
+	return srcType
+}
+
 func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Capture discipline (docs/spec/60-effects-allocation.md section 10):
 	// capturing closures need explicitly justified environment storage,
@@ -976,6 +1048,16 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
 		if ident.Value == "view_as" || ident.Value == "span_as" {
 			return tc.checkReinterpretCast(ident.Value, expr.Arguments)
+		}
+		// Borrow-creation builtins (docs/spec/50-borrowing.md): view(&owner)
+		// and span(&owner) borrow an owned array; subslice derives from an
+		// existing view/span. The borrow checker enforces the aliasing laws;
+		// here we type the access paths.
+		if ident.Value == "view" || ident.Value == "span" {
+			return tc.checkBorrowBuiltin(ident.Value, expr)
+		}
+		if ident.Value == "subslice" {
+			return tc.checkSubsliceBuiltin(expr)
 		}
 		// assert (docs/spec/85-discipline.md section 5): a Bool condition,
 		// compiled in and never elided by build mode.
@@ -2804,8 +2886,12 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 			return strType
 		}
 	}
-	if generic, recognized := tc.parseGenericTypeApplication(expr); recognized {
-		return generic
+	// Array-type syntax is never a generic application: its index position
+	// holds a size or the span/slice marker, not a type argument.
+	if !isArrayTypeSyntax(expr) {
+		if generic, recognized := tc.parseGenericTypeApplication(expr); recognized {
+			return generic
+		}
 	}
 
 	// Handle intersection types: A & B & C

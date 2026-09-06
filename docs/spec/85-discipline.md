@@ -17,8 +17,11 @@ the compiler with stable diagnostic codes (`OAK-D01xx`), not new syntax.
 - **strict** — every rule in this chapter is enforced; warnings are treated
   as rejections (zero-warning policy).
 
-Profile selection is a build-level concern; its surface (manifest field,
-compiler flag) is not yet frozen.
+Profile selection is a build-level concern, carried by
+`compiler.Options.Profile` (`WithProfile("strict")`); the CLI surface is not
+yet frozen. The compile pipeline gates on type checking, borrow checking,
+and discipline analysis: error diagnostics always reject, and the strict
+profile also rejects every warning (section 7).
 
 ## 2. Bounded call depth: safe recursion
 
