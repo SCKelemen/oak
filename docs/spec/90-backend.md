@@ -26,14 +26,15 @@ Generated C should be intentionally straightforward and debuggable.
 For systems code, a competent C programmer should recognize the expected machine shape:
 
 ```text
-record          -> struct / fields
-closed ADT      -> tag + payload or proved equivalent compact representation
-match           -> switch/if branches
-specialized fn  -> direct C function / inlineable code
-view/span       -> pointer + length representation
-raw pointer     -> C pointer
-fixed array     -> fixed storage
-arena/slab      -> explicit allocator calls/storage
+semantic record constraint -> erased after specialization; no runtime object required
+natural struct             -> C struct / ordered fields
+closed ADT                 -> tag + payload or proved equivalent compact representation
+match                      -> switch/if branches
+specialized fn             -> direct C function / inlineable code
+view/span                  -> pointer + length representation
+raw pointer                -> C pointer
+fixed array                -> fixed storage
+arena/slab                 -> explicit allocator calls/storage
 ```
 
 C is not Oak's semantic definition and should not prevent future native/LLVM/etc. backends.
@@ -52,6 +53,8 @@ The backend may not silently introduce:
 - unbounded callback dispatch.
 
 If a selected language feature requires such machinery, the semantic model must expose the corresponding representation/effect.
+
+A semantic record/shape constraint specifically does not authorize the backend to invent a runtime dictionary, boxed record, or vtable. Specialization must resolve its required members against the concrete type.
 
 ## 4. Generics
 
@@ -77,13 +80,27 @@ Payload defaults/metadata are not automatically discriminant values.
 
 A compact enum-like representation is valid only when constructor payload semantics allow it and the representation mapping is injective over observable constructor values.
 
-## 6. Records
+## 6. Records and structs
 
-Target layout computes sizes, alignment, padding and offsets from ordered semantic fields plus explicit representation constraints.
+A **record** is semantic product/shape information. It may be consumed entirely at compile time and therefore may have no runtime representation at all.
 
-The backend must not derive field order from unordered maps.
+A **struct** selects a concrete product representation policy. Plain `struct` selects Oak's natural ordered policy; target primitive representations must still be known before numeric field offsets and total size are resolved.
+
+The compiler therefore treats these states distinctly:
+
+```text
+semantic shape only
+representation policy selected
+representation resolved
+```
+
+The backend may lower only from a representation state sufficient for the operation it is performing. It must fail closed rather than fabricate offsets or sizes.
+
+Target layout computes sizes, alignment, padding and offsets from ordered struct fields plus explicit representation constraints. The backend must not derive representation field order from unordered maps.
 
 FFI/wire/persisted layouts require explicit stable representation contracts rather than relying on incidental target ABI layout.
+
+A shape constraint may be satisfied by concrete types with different layouts because shape satisfaction is about semantic members, not offsets. Specialization resolves field accesses against each concrete representation.
 
 ## 7. Integer semantics
 
@@ -124,6 +141,8 @@ Backend verification proceeds in layers:
 
 ```text
 semantic operation
+  -> representation selection
+  -> representation resolution
   -> lowering rule
   -> backend representation/code
   -> executable equivalence/property test
@@ -133,7 +152,8 @@ semantic operation
 Early formal-refinement candidates:
 
 - fixed-width integer lowering;
-- record layout calculation;
+- natural struct layout calculation;
+- semantic record-shape satisfaction;
 - ADT tag/payload lowering;
 - match lowering;
 - view/span representation and bounds;
