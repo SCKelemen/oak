@@ -1,17 +1,17 @@
 namespace Oak.PatternAnalysis
 
-/-- A semantic case is reachable when it belongs to the closed case universe and
+/-- A semantic case is reachable when it belongs to the closed case set and
     survives the refinements known at the match site. For ordinary ADTs the
     reachable list is normally the full constructor/product case set; GADT
     index equalities may make it a strict subset. -/
 def ReachableCase [DecidableEq α]
-    (universe reachable : List α) (value : α) : Prop :=
-  value ∈ universe ∧ value ∈ reachable
+    (cases reachable : List α) (value : α) : Prop :=
+  value ∈ cases ∧ value ∈ reachable
 
 /-- Coverage is exhaustive exactly when every reachable semantic case is covered. -/
 def Exhaustive [DecidableEq α]
-    (universe reachable covered : List α) : Prop :=
-  ∀ value, ReachableCase universe reachable value → value ∈ covered
+    (cases reachable covered : List α) : Prop :=
+  ∀ value, ReachableCase cases reachable value → value ∈ covered
 
 /-- An arm is redundant when it contributes no case outside prior coverage. -/
 def Redundant [DecidableEq α] (covered arm : List α) : Prop :=
@@ -23,25 +23,25 @@ def Useful [DecidableEq α] (covered arm : List α) : Prop :=
 
 /-- A counterexample is a reachable semantic case not covered by the match. -/
 def Counterexample [DecidableEq α]
-    (universe reachable covered : List α) (value : α) : Prop :=
-  ReachableCase universe reachable value ∧ value ∉ covered
+    (cases reachable covered : List α) (value : α) : Prop :=
+  ReachableCase cases reachable value ∧ value ∉ covered
 
 /-- A reported counterexample is sufficient to refute exhaustiveness. -/
 theorem counterexample_refutes_exhaustive [DecidableEq α]
-    {universe reachable covered : List α} {value : α}
-    (h : Counterexample universe reachable covered value) :
-    ¬ Exhaustive universe reachable covered := by
+    {cases reachable covered : List α} {value : α}
+    (h : Counterexample cases reachable covered value) :
+    ¬ Exhaustive cases reachable covered := by
   intro hexhaustive
   exact h.2 (hexhaustive value h.1)
 
 /-- A missing reachable case is exactly a counterexample witness. -/
 theorem missing_reachable_is_counterexample [DecidableEq α]
-    {universe reachable covered : List α} {value : α}
-    (huniverse : value ∈ universe)
+    {cases reachable covered : List α} {value : α}
+    (hcases : value ∈ cases)
     (hreachable : value ∈ reachable)
     (hmissing : value ∉ covered) :
-    Counterexample universe reachable covered value := by
-  exact ⟨⟨huniverse, hreachable⟩, hmissing⟩
+    Counterexample cases reachable covered value := by
+  exact ⟨⟨hcases, hreachable⟩, hmissing⟩
 
 /-- Redundant and useful are mutually exclusive. -/
 theorem redundant_not_useful [DecidableEq α]
@@ -54,28 +54,28 @@ theorem redundant_not_useful [DecidableEq α]
 
 /-- Adding a redundant arm cannot change an already exhaustive match. -/
 theorem adding_redundant_preserves_exhaustive [DecidableEq α]
-    {universe reachable covered arm : List α}
-    (hexhaustive : Exhaustive universe reachable covered)
+    {cases reachable covered arm : List α}
+    (hexhaustive : Exhaustive cases reachable covered)
     (_ : Redundant covered arm) :
-    Exhaustive universe reachable (covered ++ arm) := by
+    Exhaustive cases reachable (covered ++ arm) := by
   intro value hreachable
   exact List.mem_append_left arm (hexhaustive value hreachable)
 
 /-- A constructor excluded by the current refinement is not a reachable case. -/
 theorem refinement_excludes_other [DecidableEq α]
-    {universe : List α} {selected other : α}
+    {cases : List α} {selected other : α}
     (hne : other ≠ selected) :
-    ¬ ReachableCase universe [selected] other := by
+    ¬ ReachableCase cases [selected] other := by
   intro h
-  have : other = selected := by
+  have hsame : other = selected := by
     simpa using h.2
-  exact hne this
+  exact hne hsame
 
 /-- Exhaustiveness never requires a case that the current refinement excludes. -/
 theorem unreachable_case_not_required [DecidableEq α]
-    {universe reachable covered : List α} {value : α}
+    {cases reachable : List α} {value : α}
     (hunreachable : value ∉ reachable) :
-    ¬ ReachableCase universe reachable value := by
+    ¬ ReachableCase cases reachable value := by
   intro h
   exact hunreachable h.2
 
