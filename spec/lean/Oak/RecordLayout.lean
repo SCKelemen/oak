@@ -17,27 +17,23 @@ structure PlacedField where
     by the surrounding specification and left unchanged here. -/
 def alignUp (value alignment : Nat) : Nat :=
   if alignment = 0 then value
-  else
-    let remainder := value % alignment
-    if remainder = 0 then value
-    else value + (alignment - remainder)
+  else if value % alignment = 0 then value
+  else value + (alignment - value % alignment)
 
 theorem alignUp_ge (value alignment : Nat) : value ≤ alignUp value alignment := by
-  unfold alignUp
-  split
-  · exact Nat.le_refl value
-  · split
-    · exact Nat.le_refl value
-    · exact Nat.le_add_right value _
+  by_cases hzero : alignment = 0
+  · simp [alignUp, hzero]
+  · by_cases hrem : value % alignment = 0
+    · simp [alignUp, hzero, hrem]
+    · simp [alignUp, hzero, hrem]
 
 theorem alignUp_aligned (value alignment : Nat) (halignment : 0 < alignment) :
     alignUp value alignment % alignment = 0 := by
-  unfold alignUp
-  have hne : alignment ≠ 0 := Nat.ne_of_gt halignment
-  simp [hne]
-  split hrem
-  · exact hrem
-  · have hlt : value % alignment < alignment := Nat.mod_lt value halignment
+  have hzero : alignment ≠ 0 := Nat.ne_of_gt halignment
+  by_cases hrem : value % alignment = 0
+  · simp [alignUp, hzero, hrem]
+  · simp only [alignUp, hzero, if_false, hrem]
+    have hlt : value % alignment < alignment := Nat.mod_lt value halignment
     have hpos : 0 < value % alignment := Nat.pos_of_ne_zero hrem
     have hpadlt : alignment - value % alignment < alignment := by omega
     rw [Nat.add_mod]
@@ -51,19 +47,17 @@ theorem alignUp_aligned (value alignment : Nat) (halignment : 0 < alignment) :
 def placeFrom : Nat -> List FieldSpec -> List PlacedField
   | _, [] => []
   | cursor, field :: rest =>
-      let offset := alignUp cursor field.alignment
       { identity := field.identity
         size := field.size
         alignment := field.alignment
-        offset := offset } ::
-        placeFrom (offset + field.size) rest
+        offset := alignUp cursor field.alignment } ::
+        placeFrom (alignUp cursor field.alignment + field.size) rest
 
 /-- Cursor immediately after the final field, before tail padding. -/
 def cursorAfter : Nat -> List FieldSpec -> Nat
   | cursor, [] => cursor
   | cursor, field :: rest =>
-      let offset := alignUp cursor field.alignment
-      cursorAfter (offset + field.size) rest
+      cursorAfter (alignUp cursor field.alignment + field.size) rest
 
 def maxAlignment : List FieldSpec -> Nat
   | [] => 1
@@ -81,7 +75,13 @@ def NonOverlapping : List PlacedField -> Prop
       first.offset + first.size ≤ second.offset ∧
         NonOverlapping (second :: rest)
 
-/-- Every field has non-zero alignment. -/
+/-- Every placed field satisfies its own alignment. -/
+def AllAligned : List PlacedField -> Prop
+  | [] => True
+  | field :: rest =>
+      field.offset % field.alignment = 0 ∧ AllAligned rest
+
+/-- Every input field has non-zero alignment. -/
 def ValidAlignments (fields : List FieldSpec) : Prop :=
   ∀ field, field ∈ fields -> 0 < field.alignment
 
@@ -101,15 +101,18 @@ theorem placeFrom_preserves_identity_order (cursor : Nat) (fields : List FieldSp
 
 theorem placeFrom_fields_aligned (cursor : Nat) (fields : List FieldSpec)
     (hvalid : ValidAlignments fields) :
-    List.Forall (fun field => field.offset % field.alignment = 0)
-      (placeFrom cursor fields) := by
+    AllAligned (placeFrom cursor fields) := by
   induction fields generalizing cursor with
-  | nil => simp [placeFrom]
+  | nil => simp [placeFrom, AllAligned]
   | cons field rest ih =>
       have hfield : 0 < field.alignment := hvalid field (by simp)
       have hrest : ValidAlignments rest := by
         intro candidate hmember
         exact hvalid candidate (by simp [hmember])
+      change
+        alignUp cursor field.alignment % field.alignment = 0 ∧
+          AllAligned
+            (placeFrom (alignUp cursor field.alignment + field.size) rest)
       constructor
       · exact alignUp_aligned cursor field.alignment hfield
       · exact ih (alignUp cursor field.alignment + field.size) hrest
@@ -122,20 +125,21 @@ theorem placeFrom_nonoverlapping (cursor : Nat) (fields : List FieldSpec) :
       cases rest with
       | nil => simp [placeFrom, NonOverlapping]
       | cons next tail =>
-          let offset := alignUp cursor field.alignment
-          let nextCursor := offset + field.size
-          have hnext : nextCursor ≤ alignUp nextCursor next.alignment :=
-            alignUp_ge nextCursor next.alignment
+          change
+            alignUp cursor field.alignment + field.size ≤
+                alignUp (alignUp cursor field.alignment + field.size) next.alignment ∧
+              NonOverlapping
+                (placeFrom (alignUp cursor field.alignment + field.size)
+                  (next :: tail))
           constructor
-          · simpa [placeFrom, NonOverlapping, offset, nextCursor] using hnext
-          · simpa [placeFrom, offset, nextCursor] using
-              ih nextCursor
+          · exact alignUp_ge _ _
+          · exact ih (alignUp cursor field.alignment + field.size)
 
 theorem maxAlignment_positive (fields : List FieldSpec) : 0 < maxAlignment fields := by
   induction fields with
-  | nil => decide
+  | nil => simp [maxAlignment]
   | cons field rest ih =>
-      simp [maxAlignment]
+      change 0 < Nat.max field.alignment (maxAlignment rest)
       exact Nat.lt_of_lt_of_le ih (Nat.le_max_right _ _)
 
 theorem finalSize_aligned (fields : List FieldSpec) :
