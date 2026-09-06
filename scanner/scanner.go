@@ -3,28 +3,41 @@ package scanner
 import (
 	"bytes"
 	"strconv"
+	"unicode/utf16"
 	"unicode/utf8"
 
+	"github.com/SCKelemen/oak/source"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/util"
 )
 
 // Scanner is the Oak lexer.
 type Scanner struct {
+	file    *source.File
 	input   string
 	head    int // Current byte position (start of current token)
 	read    int // Look-ahead byte position
 	current rune
 	width   int
 	line    int // Current line number (1-based)
-	column  int // Current column number (1-based)
+	column  int // Current UTF-16 column number (1-based)
 	nextLn  int
 	nextCol int
 }
 
 func New(input string) *Scanner {
+	return NewFile(source.NewFile(0, "", input))
+}
+
+// NewFile constructs a scanner that preserves source identity for diagnostics,
+// editor links, and later compiler projections.
+func NewFile(file *source.File) *Scanner {
+	if file == nil {
+		file = source.NewFile(0, "", "")
+	}
 	s := &Scanner{
-		input:   input,
+		file:    file,
+		input:   file.Text,
 		nextLn:  1,
 		nextCol: 1,
 	}
@@ -33,7 +46,11 @@ func New(input string) *Scanner {
 	return s
 }
 
+// SourceFile implements token.LocatedSource.
+func (s *Scanner) SourceFile() *source.File { return s.file }
+
 // readChar advances by one UTF-8 rune and updates token position fields.
+// Columns use UTF-16 code units so scanner positions map exactly to LSP/VS Code.
 func (s *Scanner) readChar() {
 	if s.read >= len(s.input) {
 		s.head = s.read
@@ -60,7 +77,11 @@ func (s *Scanner) readChar() {
 		s.nextLn++
 		s.nextCol = 1
 	} else {
-		s.nextCol++
+		units := utf16.RuneLen(r)
+		if units < 1 {
+			units = 1
+		}
+		s.nextCol += units
 	}
 }
 
@@ -77,28 +98,9 @@ func (s *Scanner) NextToken() token.Token {
 	// Save current position (this is where the token starts)
 	line := s.line
 	column := s.column
-	byteStart := s.head // Byte offset where token starts
+	byteStart := s.head
 
 	switch s.current {
-	/*
-		LBRACK // [
-		RBRACK // ]
-		LBRACE // {
-		RBRACE // }
-		LPAREN // (
-		RPAREN // )
-		LCHEV  // <
-		RCHEV  // >
-
-		COMMA // ,
-		DOT   // .
-		COLON // :
-		SEMI  // ;
-
-		EQL // =
-	*/
-
-	// handle brackety things
 	case '[':
 		tok = newTokenWithPos(token.LBRACK, s.current, line, column)
 	case ']':
@@ -116,7 +118,6 @@ func (s *Scanner) NextToken() token.Token {
 	case '>':
 		tok = newTokenWithPos(token.RCHEV, s.current, line, column)
 
-	// punctuation
 	case ',':
 		tok = newTokenWithPos(token.COMMA, s.current, line, column)
 	case '.':
@@ -133,11 +134,9 @@ func (s *Scanner) NextToken() token.Token {
 	case ';':
 		tok = newTokenWithPos(token.SEMI, s.current, line, column)
 
-	// operators
 	case '=':
 		peek := s.peekRune()
 		if peek == '>' {
-			// Fat arrow for pattern matching: =>
 			ch := s.current
 			s.readChar()
 			literal := string(ch) + string(s.current)
@@ -150,12 +149,10 @@ func (s *Scanner) NextToken() token.Token {
 		} else {
 			tok = newTokenWithPos(token.ASSIGN, s.current, line, column)
 		}
-	// handle bitwise/type like things
 	case '|':
 		tok = newTokenWithPos(token.PIPE, s.current, line, column)
 	case '&':
 		tok = newTokenWithPos(token.AMP, s.current, line, column)
-
 	case '!':
 		if s.peekRune() == '=' {
 			ch := s.current
@@ -179,67 +176,55 @@ func (s *Scanner) NextToken() token.Token {
 	case '*':
 		tok = newTokenWithPos(token.MUL, s.current, line, column)
 	case '/':
-		// Check for line comment: //
 		if s.peekRune() == '/' {
 			return s.readLineComment()
 		}
-		// Check for block comment: /*
 		if s.peekRune() == '*' {
 			return s.readBlockComment()
 		}
-		// Regular division operator
 		tok = newTokenWithPos(token.QUO, s.current, line, column)
 	case '?':
 		tok = newTokenWithPos(token.QMARK, s.current, line, column)
 	case '"':
-		// String literal - readString advances head, so we need to capture before
 		tok.Literal = s.readString()
 		tok.TokenKind = token.STRING
 		tok.Line = line
 		tok.Column = column
-		tok.ByteStart = byteStart
-		tok.ByteEnd = s.head // readString already advanced head
-		return tok
+		return s.finishToken(tok, byteStart)
 
-	// handle the nul/eof char
 	case 0:
 		tok.Literal = ""
 		tok.TokenKind = token.EOF
 		tok.Line = line
 		tok.Column = column
-		tok.ByteStart = byteStart
-		tok.ByteEnd = s.head
-		return tok
+		return s.finishToken(tok, byteStart)
 
 	default:
 		if util.IsLetter(s.current) {
-			// Word - readWord advances head, so we need to capture before
 			tok.Literal = s.readWord()
 			tok.TokenKind = token.Lookup(tok.Literal)
 			tok.Line = line
 			tok.Column = column
-			tok.ByteStart = byteStart
-			tok.ByteEnd = s.head // readWord already advanced head
-			return tok
+			return s.finishToken(tok, byteStart)
 		} else if util.IsDigit(s.current) {
-			// Number - readNumber advances head, so we need to capture before
 			tok.Literal = s.readNumber()
 			tok.TokenKind = token.INT
 			tok.Line = line
 			tok.Column = column
-			tok.ByteStart = byteStart
-			tok.ByteEnd = s.head // readNumber already advanced head
-			return tok
+			return s.finishToken(tok, byteStart)
 		} else {
 			tok = newTokenWithPos(token.ILLEGAL, s.current, line, column)
 		}
 	}
 	s.readChar()
+	return s.finishToken(tok, byteStart)
+}
 
-	// Set end position (current head is where token ends)
+func (s *Scanner) finishToken(tok token.Token, byteStart int) token.Token {
 	tok.ByteStart = byteStart
 	tok.ByteEnd = s.head
-
+	tok.EndLine = s.line
+	tok.EndColumn = s.column
 	return tok
 }
 
@@ -256,14 +241,12 @@ func (s *Scanner) readTrivia() token.Token {
 		s.readChar()
 	}
 
-	return token.Token{
+	return s.finishToken(token.Token{
 		TokenKind: token.TRIVIA,
 		Literal:   trivia.String(),
 		Line:      line,
 		Column:    column,
-		ByteStart: byteStart,
-		ByteEnd:   s.head,
-	}
+	}, byteStart)
 }
 
 func newToken(kind token.TokenKind, ch rune) token.Token {
@@ -271,49 +254,37 @@ func newToken(kind token.TokenKind, ch rune) token.Token {
 }
 
 func newTokenWithPos(kind token.TokenKind, ch rune, line, column int) token.Token {
-	// Note: ByteStart and ByteEnd will be set in NextToken after reading
 	return token.Token{TokenKind: kind, Literal: string(ch), Line: line, Column: column}
 }
 
-// read until the next space
 func (s *Scanner) readWord() string {
 	position := s.head
 	for util.IsIdentifierChar(s.current) {
 		s.readChar()
 	}
-	// After the loop, s.current is the first non-identifier character
-	// s.read points to the character after that
-	// We DON'T back up s.read - we leave s.current pointing to the next character to process
-	// This allows NextToken() to process that character in the next call
 	return s.input[position:s.head]
 }
 
 func (s *Scanner) readNumber() string {
 	position := s.head
 
-	// Read radix prefix candidate / decimal digits first.
 	for util.IsDigit(s.current) {
 		s.readChar()
 	}
 
-	// Radix literal: BASE r DIGITS (e.g., 16rFF, 2r1010).
 	if s.current == 'r' || s.current == 'R' {
 		radixStr := util.NormalizeDigits(s.input[position:s.head])
 		radix, err := strconv.Atoi(radixStr)
 		if err == nil && radix >= 2 && radix <= 16 {
 			s.readChar()
-			// Consume the whole radix tail, even when malformed.
-			// This keeps diagnostics on one token span (e.g., 16rG).
 			for s.isRadixTailChar(s.current) {
 				s.readChar()
 			}
 			return util.NormalizeDigits(s.input[position:s.head])
 		}
-		// Invalid radix marker: keep 'r' as next token and return decimal part.
 		return stripUnderscores(s.input[position:s.head])
 	}
 
-	// Normal decimal number (possibly with underscores)
 	for util.IsNumericChar(s.current) {
 		s.readChar()
 	}
@@ -342,7 +313,7 @@ func (s *Scanner) isRadixTailChar(ch rune) bool {
 }
 
 func (s *Scanner) readString() string {
-	position := s.head + 1 // skip opening quote
+	position := s.head + 1
 	for {
 		s.readChar()
 		if s.current == '"' || s.current == 0 {
@@ -350,10 +321,8 @@ func (s *Scanner) readString() string {
 		}
 	}
 	if s.current == '"' {
-		// consume closing quote
 		s.readChar()
 	}
-	// Ensure we don't go out of bounds
 	end := s.head - 1
 	if end < position {
 		end = position
@@ -364,7 +333,7 @@ func (s *Scanner) readString() string {
 	if position > len(s.input) {
 		position = len(s.input)
 	}
-	return s.input[position:end] // exclude quotes
+	return s.input[position:end]
 }
 
 func (s *Scanner) peekRune() rune {
@@ -375,74 +344,59 @@ func (s *Scanner) peekRune() rune {
 	return r
 }
 
-// readLineComment reads a line comment (// ...) and returns it as a COMMENT token
 func (s *Scanner) readLineComment() token.Token {
 	line := s.line
 	column := s.column
 	byteStart := s.head
 
-	// Consume both slashes
-	s.readChar() // consume first /
-	s.readChar() // consume second /
+	s.readChar()
+	s.readChar()
 
-	// Read until end of line or EOF
 	var comment bytes.Buffer
 	for s.current != '\n' && s.current != 0 {
 		comment.WriteRune(s.current)
 		s.readChar()
 	}
 
-	return token.Token{
+	return s.finishToken(token.Token{
 		TokenKind: token.COMMENT,
 		Literal:   comment.String(),
 		Line:      line,
 		Column:    column,
-		ByteStart: byteStart,
-		ByteEnd:   s.head,
-	}
+	}, byteStart)
 }
 
-// readBlockComment reads a block comment (/* ... */) and returns it as a COMMENT token
-// Returns ILLEGAL token if the comment is unterminated (EOF before */)
 func (s *Scanner) readBlockComment() token.Token {
 	line := s.line
 	column := s.column
 	byteStart := s.head
 
-	// Consume /*
-	s.readChar() // consume /
-	s.readChar() // consume *
+	s.readChar()
+	s.readChar()
 
-	// Read until */
 	var comment bytes.Buffer
 	for {
 		if s.current == 0 {
-			// EOF reached before closing */ - this is an error
-			return token.Token{
+			return s.finishToken(token.Token{
 				TokenKind: token.ILLEGAL,
 				Literal:   "unterminated block comment",
 				Line:      line,
 				Column:    column,
-				ByteStart: byteStart,
-				ByteEnd:   s.head,
-			}
+			}, byteStart)
 		}
 		if s.current == '*' && s.peekRune() == '/' {
-			// Found closing */
-			s.readChar() // consume *
-			s.readChar() // consume /
+			s.readChar()
+			s.readChar()
 			break
 		}
 		comment.WriteRune(s.current)
 		s.readChar()
 	}
 
-	return token.Token{
+	return s.finishToken(token.Token{
 		TokenKind: token.COMMENT,
 		Literal:   comment.String(),
 		Line:      line,
 		Column:    column,
-		ByteStart: byteStart,
-		ByteEnd:   s.head,
-	}
+	}, byteStart)
 }
