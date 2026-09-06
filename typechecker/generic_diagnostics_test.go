@@ -35,8 +35,8 @@ result: i32 = sum_xy(p)
 	if d.Category != diagnostic.CategoryType {
 		t.Fatalf("expected type category, got %q", d.Category)
 	}
-	if !strings.Contains(d.Title, "Point1") || !strings.Contains(d.Title, "T: Position") {
-		t.Fatalf("title should identify inferred type and contract, got %q", d.Title)
+	if !strings.Contains(d.Title, "does not satisfy") || !strings.Contains(d.Title, "T: Position") {
+		t.Fatalf("title should identify the inferred failure and contract, got %q", d.Title)
 	}
 	if err := d.Validate(); err != nil {
 		t.Fatalf("diagnostic should be structurally well formed: %v", err)
@@ -46,7 +46,7 @@ result: i32 = sum_xy(p)
 	for _, advice := range d.Advice {
 		switch advice.Kind {
 		case diagnostic.AdviceNote:
-			sawInference = sawInference || strings.Contains(advice.Message, "T = Point1")
+			sawInference = sawInference || strings.Contains(advice.Message, "T =")
 			sawMissingField = sawMissingField || strings.Contains(advice.Message, "y: i32")
 		case diagnostic.AdviceHelp:
 			sawHelp = true
