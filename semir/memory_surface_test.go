@@ -39,6 +39,8 @@ func TestAtomicSurfaceDoesNotExposeIllegalOrderPairs(t *testing.T) {
 	}
 }
 
+// Semantic lookup is on every checker/backend atomic path. Keep it a switch
+// over static descriptors: no map initialization and no per-operation heap work.
 func TestAtomicBuiltinLookupAllocatesNothing(t *testing.T) {
 	allocs := testing.AllocsPerRun(1000, func() {
 		spec, ok := LookupAtomicBuiltin("atomic_fetch_add_acq_rel")
