@@ -27,18 +27,20 @@ type Type struct {
 	Parameters []TypeParameter
 	Fields     []Field
 	Variants   []Variant
+	Methods    []Method
 }
 
 type TypeKind string
 
 const (
-	TypeInvalid  TypeKind = ""
-	TypeScalar   TypeKind = "scalar"
-	TypeAlias    TypeKind = "alias"
-	TypeRecord   TypeKind = "record"
-	TypeSum      TypeKind = "sum"
-	TypeFunction TypeKind = "function"
-	TypeOpaque   TypeKind = "opaque"
+	TypeInvalid   TypeKind = ""
+	TypeScalar    TypeKind = "scalar"
+	TypeAlias     TypeKind = "alias"
+	TypeRecord    TypeKind = "record"
+	TypeSum       TypeKind = "sum"
+	TypeFunction  TypeKind = "function"
+	TypeInterface TypeKind = "interface"
+	TypeOpaque    TypeKind = "opaque"
 )
 
 type TypeParameter struct {
@@ -55,6 +57,13 @@ type Field struct {
 type Variant struct {
 	Name    string
 	Payload string
+}
+
+type Method struct {
+	Name       string
+	Receiver   string
+	Parameters []Field
+	Return     string
 }
 
 // Representation describes the bits/layout chosen for a semantic type. Empty
@@ -105,11 +114,11 @@ type TagLayout struct {
 // Authority describes what code holding a value may do with it. Ownership,
 // capabilities, and effects are semantic facts, not comments or tags.
 type Authority struct {
-	Ownership       Ownership
-	Capabilities    []Capability
-	RequiredEffects []Effect
+	Ownership        Ownership
+	Capabilities     []Capability
+	RequiredEffects  []Effect
 	ForbiddenEffects []Effect
-	UnsafeBoundary  bool
+	UnsafeBoundary   bool
 }
 
 type Ownership string
@@ -217,11 +226,11 @@ type State struct {
 }
 
 type Transition struct {
-	Name       string
-	From       string
-	To         string
-	Requires   []Proposition
-	Effects    []Effect
+	Name     string
+	From     string
+	To       string
+	Requires []Proposition
+	Effects  []Effect
 }
 
 type TemporalProperty struct {
