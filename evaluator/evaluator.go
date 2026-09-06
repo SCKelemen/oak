@@ -92,6 +92,11 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		}
 
 	case *ast.InvocationExpression:
+		if ident, ok := node.Function.(*ast.Identifier); ok {
+			if result, recognized := evalAtomicInvocation(ident.Value, node.Arguments, env); recognized {
+				return result
+			}
+		}
 		// Check if this is a primitive type constructor: u32(x), u64(y), etc.
 		if ident, ok := node.Function.(*ast.Identifier); ok {
 			if result := evalPrimitiveConstructor(ident.Value, node.Arguments, env); result != nil {
@@ -818,6 +823,14 @@ func evalUnsafeBlock(ub *ast.UnsafeBlock, env *object.Environment) object.Object
 
 // Evaluate variable declaration: a: type = value or a: type
 func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environment) object.Object {
+	if isAtomicTypeExpression(vd.Type) {
+		if vd.Value != nil {
+			return newError("Atomic[T] cells are zero-initialized in v1; initialize with atomic_store_*")
+		}
+		cell := &object.AtomicCell{}
+		env.Set(vd.Name.Value, cell)
+		return cell
+	}
 	// Check if variable already exists - if so, treat as assignment
 	if _, exists := env.Get(vd.Name.Value); exists && vd.Type == nil {
 		// This is actually an assignment, not a declaration
@@ -852,9 +865,12 @@ func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environmen
 // Evaluate assignment statement: a = b
 func evalAssignmentStatement(as *ast.AssignmentStatement, env *object.Environment) object.Object {
 	// Check if variable exists
-	_, ok := env.Get(as.Name.Value)
+	existing, ok := env.Get(as.Name.Value)
 	if !ok {
 		return newError("variable not declared: %s", as.Name.Value)
+	}
+	if _, atomic := existing.(*object.AtomicCell); atomic {
+		return newError("Atomic[T] cells are not directly assignable; use atomic_store_*")
 	}
 
 	val := Eval(as.Value, env)

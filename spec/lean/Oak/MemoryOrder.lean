@@ -63,4 +63,72 @@ theorem legal_store_not_acquire (o : Order)
     (h : legal .store o = true) : o != .acquire ∧ o != .acqRel := by
   cases o <;> simp_all [legal]
 
+/-- The exact source-level atomic builtin set. Memory order is encoded in the
+    builtin identity, so the program never carries a runtime order enum and an
+    illegal operation/order pair has no source constructor. -/
+inductive Builtin where
+  | loadRelaxed
+  | loadAcquire
+  | loadSeqCst
+  | storeRelaxed
+  | storeRelease
+  | storeSeqCst
+  | fetchAddRelaxed
+  | fetchAddAcquire
+  | fetchAddRelease
+  | fetchAddAcqRel
+  | fetchAddSeqCst
+  | fenceAcquire
+  | fenceRelease
+  | fenceAcqRel
+  | fenceSeqCst
+  deriving DecidableEq, Repr
+
+def builtinOp : Builtin -> AtomicOp
+  | .loadRelaxed | .loadAcquire | .loadSeqCst => .load
+  | .storeRelaxed | .storeRelease | .storeSeqCst => .store
+  | .fetchAddRelaxed | .fetchAddAcquire | .fetchAddRelease
+  | .fetchAddAcqRel | .fetchAddSeqCst => .rmw
+  | .fenceAcquire | .fenceRelease | .fenceAcqRel | .fenceSeqCst => .fence
+
+def builtinOrder : Builtin -> Order
+  | .loadRelaxed => .relaxed
+  | .loadAcquire => .acquire
+  | .loadSeqCst => .seqCst
+  | .storeRelaxed => .relaxed
+  | .storeRelease => .release
+  | .storeSeqCst => .seqCst
+  | .fetchAddRelaxed => .relaxed
+  | .fetchAddAcquire => .acquire
+  | .fetchAddRelease => .release
+  | .fetchAddAcqRel => .acqRel
+  | .fetchAddSeqCst => .seqCst
+  | .fenceAcquire => .acquire
+  | .fenceRelease => .release
+  | .fenceAcqRel => .acqRel
+  | .fenceSeqCst => .seqCst
+
+/-- Every operation expressible by Oak's v1 source surface is legal according
+    to the language memory-order matrix. -/
+theorem source_builtin_legal (b : Builtin) :
+    legal (builtinOp b) (builtinOrder b) = true := by
+  cases b <;> rfl
+
+/-- The source surface cannot express a release/acq-rel load. -/
+theorem source_load_not_release (b : Builtin)
+    (h : builtinOp b = .load) :
+    builtinOrder b != .release ∧ builtinOrder b != .acqRel := by
+  cases b <;> simp_all [builtinOp, builtinOrder]
+
+/-- The source surface cannot express an acquire/acq-rel store. -/
+theorem source_store_not_acquire (b : Builtin)
+    (h : builtinOp b = .store) :
+    builtinOrder b != .acquire ∧ builtinOrder b != .acqRel := by
+  cases b <;> simp_all [builtinOp, builtinOrder]
+
+/-- A source fence can never be relaxed. -/
+theorem source_fence_not_relaxed (b : Builtin)
+    (h : builtinOp b = .fence) : builtinOrder b != .relaxed := by
+  cases b <;> simp_all [builtinOp, builtinOrder]
+
 end Oak.MemoryOrder

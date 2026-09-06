@@ -2,10 +2,10 @@ package semir
 
 import "fmt"
 
-// TypeAtomic is the semantic type of one atomic machine value. The carrier is
+// TypeAtomic is the semantic type of one atomic machine cell. The carrier is
 // stored in Type.Base so Atomic[u32] is represented as Type{Kind: TypeAtomic,
-// Base: "u32"}. Atomicity is an access contract, not a request for a different
-// numeric value domain.
+// Base: "u32"}. Atomicity is an access contract attached to storage identity;
+// a value loaded from the cell is an ordinary carrier value.
 const TypeAtomic TypeKind = "atomic"
 
 // MemoryOrder is Oak's language-level memory-order vocabulary. These names are
@@ -31,9 +31,8 @@ func (o MemoryOrder) Valid() bool {
 }
 
 // AtomicOperation classifies an atomic access independently of its memory
-// order. Compare-exchange is intentionally deferred: its distinct success and
-// failure orders deserve a separate contract instead of being squeezed into a
-// single-order RMW operation.
+// order. Compare-exchange is intentionally separate future work because it has
+// independent success/failure orders and failure-side value-update semantics.
 type AtomicOperation string
 
 const (
@@ -44,8 +43,7 @@ const (
 )
 
 // LegalAtomicOrder encodes the v1 order matrix. Illegal combinations are a
-// language error, not a backend choice. In particular a load can never be
-// release/acq-rel and a store can never be acquire/acq-rel.
+// language error, not a backend choice.
 func LegalAtomicOrder(op AtomicOperation, order MemoryOrder) bool {
 	if !order.Valid() {
 		return false
@@ -58,11 +56,81 @@ func LegalAtomicOrder(op AtomicOperation, order MemoryOrder) bool {
 	case AtomicRMW:
 		return true
 	case AtomicFence:
-		// A relaxed fence has no synchronization effect and is excluded from
-		// the surface rather than pretending to be useful.
 		return order != MemoryOrderRelaxed
 	default:
 		return false
+	}
+}
+
+// AtomicBuiltinKind identifies the exact source operation while AtomicOperation
+// captures the memory-model class shared by proofs/effects.
+type AtomicBuiltinKind uint8
+
+const (
+	AtomicBuiltinInvalid AtomicBuiltinKind = iota
+	AtomicBuiltinLoad
+	AtomicBuiltinStore
+	AtomicBuiltinFetchAdd
+	AtomicBuiltinFence
+)
+
+// AtomicBuiltinSpec is the single semantic descriptor used by the checker,
+// evaluator, and backend. Arity and order are compile-time facts. Lookup uses a
+// switch rather than a map so the compiler's hot semantic lookup path performs
+// no heap allocation and has no initialization state.
+type AtomicBuiltinSpec struct {
+	Name      string
+	Kind      AtomicBuiltinKind
+	Operation AtomicOperation
+	Order     MemoryOrder
+	Arity     uint8
+}
+
+func (s AtomicBuiltinSpec) ReturnsValue() bool {
+	return s.Kind == AtomicBuiltinLoad || s.Kind == AtomicBuiltinFetchAdd
+}
+
+func (s AtomicBuiltinSpec) Effect() (Effect, error) {
+	return AtomicEffect(s.Operation, s.Order)
+}
+
+// LookupAtomicBuiltin defines the complete v1 source surface. Order-specific
+// names make illegal operation/order pairs unrepresentable rather than asking a
+// runtime enum or backend fallback to reject them.
+func LookupAtomicBuiltin(name string) (AtomicBuiltinSpec, bool) {
+	switch name {
+	case "atomic_load_relaxed":
+		return AtomicBuiltinSpec{name, AtomicBuiltinLoad, AtomicLoad, MemoryOrderRelaxed, 1}, true
+	case "atomic_load_acquire":
+		return AtomicBuiltinSpec{name, AtomicBuiltinLoad, AtomicLoad, MemoryOrderAcquire, 1}, true
+	case "atomic_load_seq_cst":
+		return AtomicBuiltinSpec{name, AtomicBuiltinLoad, AtomicLoad, MemoryOrderSeqCst, 1}, true
+	case "atomic_store_relaxed":
+		return AtomicBuiltinSpec{name, AtomicBuiltinStore, AtomicStore, MemoryOrderRelaxed, 2}, true
+	case "atomic_store_release":
+		return AtomicBuiltinSpec{name, AtomicBuiltinStore, AtomicStore, MemoryOrderRelease, 2}, true
+	case "atomic_store_seq_cst":
+		return AtomicBuiltinSpec{name, AtomicBuiltinStore, AtomicStore, MemoryOrderSeqCst, 2}, true
+	case "atomic_fetch_add_relaxed":
+		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderRelaxed, 2}, true
+	case "atomic_fetch_add_acquire":
+		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderAcquire, 2}, true
+	case "atomic_fetch_add_release":
+		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderRelease, 2}, true
+	case "atomic_fetch_add_acq_rel":
+		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderAcqRel, 2}, true
+	case "atomic_fetch_add_seq_cst":
+		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderSeqCst, 2}, true
+	case "atomic_fence_acquire":
+		return AtomicBuiltinSpec{name, AtomicBuiltinFence, AtomicFence, MemoryOrderAcquire, 0}, true
+	case "atomic_fence_release":
+		return AtomicBuiltinSpec{name, AtomicBuiltinFence, AtomicFence, MemoryOrderRelease, 0}, true
+	case "atomic_fence_acq_rel":
+		return AtomicBuiltinSpec{name, AtomicBuiltinFence, AtomicFence, MemoryOrderAcqRel, 0}, true
+	case "atomic_fence_seq_cst":
+		return AtomicBuiltinSpec{name, AtomicBuiltinFence, AtomicFence, MemoryOrderSeqCst, 0}, true
+	default:
+		return AtomicBuiltinSpec{}, false
 	}
 }
 

@@ -678,8 +678,10 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		// Interface type definitions
 		tc.checkInterfaceType(s)
 	case *ast.ExpressionStatement:
-		// Expression statements don't need type checking beyond checking the expression
-		tc.checkExpression(s.Expression)
+		resultType := tc.checkExpression(s.Expression)
+		if ContainsAtomicStorage(resultType) {
+			tc.addError(s.Expression, "Atomic[T] is storage identity, not a value; use an atomic_load_* operation")
+		}
 	case *ast.WhileStatement:
 		tc.checkWhileStatement(s)
 	case *ast.UnsafeBlock:
@@ -788,6 +790,10 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
 	if rightType == nil {
 		return nil
 	}
+	if ContainsAtomicStorage(rightType) {
+		tc.addError(expr.Right, "Atomic[T] cannot be used with prefix operators; load the cell explicitly")
+		return nil
+	}
 
 	switch expr.Operator {
 	case "!":
@@ -835,6 +841,10 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 	}
 	rightType := tc.checkExpression(expr.Right, rightExpected)
 	if leftType == nil || rightType == nil {
+		return nil
+	}
+	if ContainsAtomicStorage(leftType) || ContainsAtomicStorage(rightType) {
+		tc.addError(expr, "Atomic[T] cells cannot participate in ordinary operators; use explicit atomic_load_*/store_*/fetch_add_* operations")
 		return nil
 	}
 
@@ -1063,6 +1073,11 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 }
 
 func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
+	if ident, ok := expr.Function.(*ast.Identifier); ok {
+		if atomicType, recognized := tc.checkAtomicInvocation(ident.Value, expr); recognized {
+			return atomicType
+		}
+	}
 	// Compiler-known library calls: c conversions, misplaced c.extern, and
 	// arm64 instruction functions (docs/spec/92-ffi.md).
 	if libraryType, isLibrary := tc.checkLibraryInvocation(expr); isLibrary {
@@ -1836,6 +1851,10 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 	if scrutineeType == nil {
 		return nil
 	}
+	if ContainsAtomicStorage(scrutineeType) {
+		tc.addError(expr.Scrutinee, "Atomic[T] cells cannot be matched as values; load the cell explicitly")
+		return nil
+	}
 
 	// Check that match expression has at least one arm
 	if len(expr.Arms) == 0 {
@@ -2340,6 +2359,16 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 			return
 		}
 
+		if _, atomic := varType.(*AtomicType); atomic {
+			if stmt.Value != nil {
+				tc.addError(stmt, "Atomic[T] cells are zero-initialized storage in v1; initialize with atomic_store_* after declaration")
+				return
+			}
+		} else if ContainsAtomicStorage(varType) {
+			tc.addError(stmt.Type, "Atomic[T] cannot be embedded in arrays, records, or generic values in v1")
+			return
+		}
+
 		// If there's an initializer, check that it matches the type (with coercion)
 		// Pass expected type for context-based inference (e.g., for integer literals)
 		if stmt.Value != nil {
@@ -2368,6 +2397,10 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		if stmt.Value != nil {
 			inferredType := tc.checkExpression(stmt.Value)
 			if inferredType != nil {
+				if ContainsAtomicStorage(inferredType) {
+					tc.addError(stmt.Value, "Atomic[T] storage cannot be inferred/copied into a value binding; declare a named Atomic[T] cell")
+					return
+				}
 				// Generalize: convert to a type scheme
 				scheme := Generalize(inferredType, tc.env)
 				tc.env.Set(stmt.Name.Value, scheme)
@@ -2417,6 +2450,10 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 	// Instantiate the scheme to get the actual type
 	unifier := NewUnifier()
 	varType := Instantiate(varScheme, unifier)
+	if _, atomic := varType.(*AtomicType); atomic {
+		tc.addError(stmt, "Atomic[T] cells are not assignable; use an atomic_store_* operation")
+		return
+	}
 
 	// Check that assigned value matches variable type (with coercion)
 	valueType := tc.checkExpression(stmt.Value, varType) // Pass expected type for context-based inference
@@ -2531,6 +2568,10 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			// Default to i32 if type parsing fails
 			paramType = &PrimitiveType{Name: "i32"}
 		}
+		if ContainsAtomicStorage(paramType) {
+			tc.addError(param.Type, "Atomic[T] storage cannot be passed by value in v1; use package/local cells until an AtomicRef borrowing contract exists")
+			return
+		}
 		if param.Variadic {
 			// The body sees the trailing parameter as a read-only view of a
 			// caller-owned argument array (docs/spec/10-syntax.md).
@@ -2545,6 +2586,10 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	returnType := tc.parseTypeExpressionInEnv(stmt.ReturnType, funcEnv)
 	if returnType == nil {
 		returnType = &UnitType{}
+	}
+	if ContainsAtomicStorage(returnType) {
+		tc.addError(stmt.ReturnType, "Atomic[T] storage cannot be returned by value in v1")
+		return
 	}
 
 	// Pre-bind the declared signature so the body can reference itself:
@@ -2710,6 +2755,9 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 		// Check payload type if present
 		if variant.Payload != nil {
 			payloadType := tc.parseTypeExpression(variant.Payload)
+			if ContainsAtomicStorage(payloadType) {
+				tc.addError(variant.Payload, "Atomic[T] cannot be embedded in ADT payloads in v1")
+			}
 			if payloadType == nil {
 				tc.addError(variant.Payload, "ADT %s variant %s: invalid payload type", stmt.Name.Value, variantName)
 			}
@@ -2762,6 +2810,9 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 		// Parse field type from the expression
 		// In a record type definition, fieldExpr should be a type expression (identifier)
 		fieldType := tc.parseTypeExpression(fieldExpr)
+		if ContainsAtomicStorage(fieldType) {
+			tc.addError(fieldExpr, "Atomic[T] cannot be embedded in record values in v1")
+		}
 		if fieldType == nil {
 			// fieldExpr might be an expression, try to use it as a node
 			if node, ok := fieldExpr.(ast.Node); ok {
@@ -3115,6 +3166,9 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 			return &NeverType{}
 		case "any":
 			return &AnyType{}
+		case "Atomic":
+			tc.addError(ident, "Atomic requires exactly one carrier: Atomic[u8|u16|u32|u64|i8|i16|i32|i64]")
+			return nil
 		default:
 			// Check if it's a type alias in the environment
 			if aliasType, ok := tc.env.GetType(ident.Value); ok {
@@ -3275,6 +3329,9 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 			return &NeverType{}
 		case "any":
 			return &AnyType{}
+		case "Atomic":
+			tc.addError(ident, "Atomic requires exactly one carrier: Atomic[u8|u16|u32|u64|i8|i16|i32|i64]")
+			return nil
 		default:
 			// Check if it's a type alias in the environment
 			if aliasType, ok := tc.env.GetType(ident.Value); ok {

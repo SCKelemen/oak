@@ -36,6 +36,22 @@ func (tc *TypeChecker) parseGenericTypeApplication(expr ast.Expression) (Type, b
 	if !ok || len(argExprs) == 0 {
 		return nil, false
 	}
+	if name == "Atomic" {
+		if len(argExprs) != 1 {
+			tc.addError(expr, "Atomic[...] expects exactly one fixed-width integer carrier")
+			return nil, true
+		}
+		element := tc.parseTypeExpression(argExprs[0])
+		if element == nil {
+			return nil, true
+		}
+		atomicType, err := NewAtomicType(element)
+		if err != nil {
+			tc.addError(expr, "%v", err)
+			return nil, true
+		}
+		return atomicType, true
+	}
 	args := make([]Type, 0, len(argExprs))
 	for _, argExpr := range argExprs {
 		arg := tc.parseTypeExpression(argExpr)
@@ -201,7 +217,6 @@ func (tc *TypeChecker) variantResultType(
 	}
 	return &GenericType{Name: adt.Name, TypeArgs: args}
 }
-
 
 func variantResultString(adt *object.ADTType, variant *object.ADTVariantDef) string {
 	name := variant.ResultName

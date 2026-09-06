@@ -135,6 +135,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitAssertHelper()
 	cg.emitUtf8Helper()
 	cg.emitIntrinsicHelpers(program)
+	cg.emitAtomicGlobals(program)
 
 	// Container typedefs (and their bounds-checked index helpers) must
 	// precede the functions that use them: pre-emit every view/span element
@@ -715,7 +716,6 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 		return
 	}
 }
-
 
 // preEmitContainerTypes emits the view/span typedefs and their index helpers
 // for every container type expression in the program, so later per-function
@@ -1411,6 +1411,9 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(")")
 		}
 	case *ast.InvocationExpression:
+		if cg.emitAtomicInvocation(e, tc) {
+			return
+		}
 		// Function or method call. Runtime builtins lower to their always-on
 		// helpers; calls to variadic functions bundle the trailing arguments
 		// into a caller-owned stack array passed as a view.
@@ -1695,6 +1698,9 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	// Handle array types: [N]T or []T
 	// The parser represents array types as IndexExpression
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		if cType, atomic := atomicTypeC(indexExpr); atomic {
+			return cType
+		}
 		// Phantom-encoded strings share one representation: every Str[E]
 		// lowers to the same C string struct (docs/spec/70-strings.md).
 		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Str" {
@@ -2012,6 +2018,17 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 // emitVariableDeclaration emits a variable declaration
 func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
 	varName := stmt.Name.Value
+
+	if stmt.Type != nil {
+		if cType, atomic := atomicTypeC(stmt.Type); atomic {
+			if stmt.Value != nil {
+				cg.write("  OAK_ATOMIC_INITIALIZER_MUST_BE_ZERO_INIT;\n")
+				return
+			}
+			cg.write(fmt.Sprintf("  %s %s = 0;\n", cType, varName))
+			return
+		}
+	}
 
 	// Owned arrays use C declarator syntax; value-less arrays are
 	// zero-filled (definite-initialization semantics pending — the backend

@@ -3,12 +3,14 @@ package codegen
 import (
 	"fmt"
 
+	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
-// cMemoryOrder is the C11 projection of Oak's language-level ordering. This is
-// deliberately a total checked conversion: a backend must never silently
-// strengthen, weaken, or guess an unknown order.
+// cMemoryOrder is the checked refinement from Oak's semantic memory orders to
+// C11. There is deliberately no default: a new language order must teach the
+// backend how to preserve it before code generation can succeed.
 func cMemoryOrder(order semir.MemoryOrder) (string, error) {
 	switch order {
 	case semir.MemoryOrderRelaxed:
@@ -22,23 +24,271 @@ func cMemoryOrder(order semir.MemoryOrder) (string, error) {
 	case semir.MemoryOrderSeqCst:
 		return "memory_order_seq_cst", nil
 	default:
-		return "", fmt.Errorf("unknown Oak memory order %q", order)
+		return "", fmt.Errorf("unsupported Oak memory order %q", order)
 	}
 }
 
-// atomicCType returns the exact C11 atomic carrier used by the bootstrap C
-// backend. _Atomic(T) preserves the fixed-width carrier chosen by Oak rather
-// than substituting one of C's implementation-sized convenience typedefs.
-func atomicCType(base string) (string, error) {
-	if !semir.AtomicCarrierAllowed(base) {
-		return "", fmt.Errorf("unsupported atomic C carrier %q", base)
+// atomicCType lowers an already validated fixed-width carrier to exact C11
+// atomic storage. It does not use implementation-sized convenience typedefs.
+func atomicCType(carrier string) (string, error) {
+	if !semir.AtomicCarrierAllowed(carrier) {
+		return "", fmt.Errorf("unsupported atomic carrier %q", carrier)
 	}
-	return fmt.Sprintf("_Atomic(%s)", base), nil
+	return "_Atomic(" + carrier + ")", nil
 }
 
+// atomicTypeCarrier recognizes the parser's Atomic[T] IndexExpression and
+// returns the exact fixed-width carrier spelling. Invalid forms fail closed.
+func atomicTypeCarrier(expr ast.Expression) (string, bool) {
+	index, ok := expr.(*ast.IndexExpression)
+	if !ok || index == nil {
+		return "", false
+	}
+	base, ok := index.Left.(*ast.Identifier)
+	if !ok || base.Value != "Atomic" {
+		return "", false
+	}
+	carrier, ok := index.Index.(*ast.Identifier)
+	if !ok || !semir.AtomicCarrierAllowed(carrier.Value) {
+		return "", false
+	}
+	return carrier.Value, true
+}
+
+func atomicTypeC(expr ast.Expression) (string, bool) {
+	carrier, ok := atomicTypeCarrier(expr)
+	if !ok {
+		return "", false
+	}
+	cType, err := atomicCType(carrier)
+	return cType, err == nil
+}
+
+// programUsesAtomics is a compile-time AST scan used solely to make the C11
+// atomic dependency pay-for-use. Non-atomic programs keep byte-for-byte stable
+// C output and do not include <stdatomic.h>.
+func programUsesAtomics(program *ast.Program) bool {
+	var exprUses func(ast.Expression) bool
+	var stmtUses func(ast.Statement) bool
+
+	exprUses = func(expr ast.Expression) bool {
+		switch e := expr.(type) {
+		case *ast.InvocationExpression:
+			if id, ok := e.Function.(*ast.Identifier); ok {
+				if _, atomic := semir.LookupAtomicBuiltin(id.Value); atomic {
+					return true
+				}
+			}
+			if exprUses(e.Function) {
+				return true
+			}
+			for _, arg := range e.Arguments {
+				if exprUses(arg) {
+					return true
+				}
+			}
+		case *ast.BlockExpression:
+			if e.Block != nil {
+				for _, stmt := range e.Block.Statements {
+					if stmtUses(stmt) {
+						return true
+					}
+				}
+			}
+		case *ast.InfixExpression:
+			return exprUses(e.Left) || exprUses(e.Right)
+		case *ast.PrefixExpression:
+			return exprUses(e.Right)
+		case *ast.IndexExpression:
+			if _, atomic := atomicTypeC(e); atomic {
+				return true
+			}
+			return exprUses(e.Left) || exprUses(e.Index)
+		case *ast.SliceExpression:
+			return exprUses(e.Seq) || exprUses(e.Low) || exprUses(e.High)
+		case *ast.VariantExpression:
+			return exprUses(e.Payload)
+		case *ast.MatchExpression:
+			if exprUses(e.Scrutinee) {
+				return true
+			}
+			for _, arm := range e.Arms {
+				if exprUses(arm.Body) {
+					return true
+				}
+			}
+		case *ast.RecordLiteral:
+			for _, field := range e.Fields {
+				if exprUses(field) {
+					return true
+				}
+			}
+		case *ast.ArrayLiteral:
+			for _, element := range e.Elements {
+				if exprUses(element) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	stmtUses = func(stmt ast.Statement) bool {
+		switch s := stmt.(type) {
+		case *ast.VariableDeclaration:
+			if _, atomic := atomicTypeC(s.Type); atomic {
+				return true
+			}
+			return exprUses(s.Value)
+		case *ast.ExpressionStatement:
+			return exprUses(s.Expression)
+		case *ast.AssignmentStatement:
+			return exprUses(s.Value)
+		case *ast.IndexAssignmentStatement:
+			return exprUses(s.Target) || exprUses(s.Value)
+		case *ast.FunctionStatement:
+			return exprUses(s.Body)
+		case *ast.WhileStatement:
+			if exprUses(s.Condition) {
+				return true
+			}
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					if stmtUses(inner) {
+						return true
+					}
+				}
+			}
+		case *ast.BlockStatement:
+			for _, inner := range s.Statements {
+				if stmtUses(inner) {
+					return true
+				}
+			}
+		case *ast.UnsafeBlock:
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					if stmtUses(inner) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	for _, stmt := range program.Statements {
+		if stmtUses(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+// emitAtomicGlobals emits the atomic C dependency only for programs that use
+// atomics, then package-scope Atomic[T] cells as zero-initialized static storage.
+// There is no wrapper object and no heap allocation.
+func (cg *CodeGenerator) emitAtomicGlobals(program *ast.Program) {
+	if !programUsesAtomics(program) {
+		return
+	}
+	cg.write("#include <stdatomic.h>\n\n")
+
+	emitted := false
+	for _, stmt := range program.Statements {
+		decl, ok := stmt.(*ast.VariableDeclaration)
+		if !ok || decl.Type == nil || decl.Name == nil {
+			continue
+		}
+		cType, atomic := atomicTypeC(decl.Type)
+		if !atomic {
+			continue
+		}
+		if !emitted {
+			cg.write("/* package-scope atomic cells: inline, zero initialized */\n")
+			emitted = true
+		}
+		if decl.Value != nil {
+			cg.write("OAK_ATOMIC_INITIALIZER_MUST_BE_ZERO_INIT;\n")
+			continue
+		}
+		cg.write(fmt.Sprintf("static %s %s = 0;\n", cType, decl.Name.Value))
+	}
+	if emitted {
+		cg.write("\n")
+	}
+}
+
+// emitAtomicInvocation emits one source builtin directly as one C11 atomic
+// primitive. The order is compile-time semantic data: there is no runtime
+// order switch, wrapper allocation, or helper call in the generated hot path.
+func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc *typechecker.TypeChecker) bool {
+	ident, ok := call.Function.(*ast.Identifier)
+	if !ok {
+		return false
+	}
+	spec, ok := semir.LookupAtomicBuiltin(ident.Value)
+	if !ok {
+		return false
+	}
+	if len(call.Arguments) != int(spec.Arity) || !semir.LegalAtomicOrder(spec.Operation, spec.Order) {
+		cg.output.WriteString("OAK_INVALID_ATOMIC_OPERATION")
+		return true
+	}
+	order, err := cMemoryOrder(spec.Order)
+	if err != nil {
+		cg.output.WriteString("OAK_INVALID_ATOMIC_ORDER")
+		return true
+	}
+
+	if spec.Kind == semir.AtomicBuiltinFence {
+		cg.output.WriteString("atomic_thread_fence(")
+		cg.output.WriteString(order)
+		cg.output.WriteString(")")
+		return true
+	}
+
+	cell, isCell := call.Arguments[0].(*ast.Identifier)
+	if !isCell || cell == nil {
+		cg.output.WriteString("OAK_ATOMIC_CELL_MUST_BE_NAMED")
+		return true
+	}
+	address := "&(" + cell.Value + ")"
+
+	switch spec.Kind {
+	case semir.AtomicBuiltinLoad:
+		cg.output.WriteString("atomic_load_explicit(")
+		cg.output.WriteString(address)
+		cg.output.WriteString(", ")
+		cg.output.WriteString(order)
+		cg.output.WriteString(")")
+	case semir.AtomicBuiltinStore:
+		cg.output.WriteString("atomic_store_explicit(")
+		cg.output.WriteString(address)
+		cg.output.WriteString(", ")
+		cg.emitExpressionFragment(call.Arguments[1], tc)
+		cg.output.WriteString(", ")
+		cg.output.WriteString(order)
+		cg.output.WriteString(")")
+	case semir.AtomicBuiltinFetchAdd:
+		cg.output.WriteString("atomic_fetch_add_explicit(")
+		cg.output.WriteString(address)
+		cg.output.WriteString(", ")
+		cg.emitExpressionFragment(call.Arguments[1], tc)
+		cg.output.WriteString(", ")
+		cg.output.WriteString(order)
+		cg.output.WriteString(")")
+	default:
+		cg.output.WriteString("OAK_INVALID_ATOMIC_BUILTIN")
+	}
+	return true
+}
+
+// The string helpers below are retained for direct backend unit tests and for
+// future Semantic-IR-only compilation paths.
 func atomicLoadC(address string, order semir.MemoryOrder) (string, error) {
 	if !semir.LegalAtomicOrder(semir.AtomicLoad, order) {
-		return "", fmt.Errorf("illegal load order %q", order)
+		return "", fmt.Errorf("illegal atomic load order %q", order)
 	}
 	cOrder, err := cMemoryOrder(order)
 	if err != nil {
@@ -49,7 +299,7 @@ func atomicLoadC(address string, order semir.MemoryOrder) (string, error) {
 
 func atomicStoreC(address, value string, order semir.MemoryOrder) (string, error) {
 	if !semir.LegalAtomicOrder(semir.AtomicStore, order) {
-		return "", fmt.Errorf("illegal store order %q", order)
+		return "", fmt.Errorf("illegal atomic store order %q", order)
 	}
 	cOrder, err := cMemoryOrder(order)
 	if err != nil {
@@ -60,7 +310,7 @@ func atomicStoreC(address, value string, order semir.MemoryOrder) (string, error
 
 func atomicExchangeC(address, value string, order semir.MemoryOrder) (string, error) {
 	if !semir.LegalAtomicOrder(semir.AtomicRMW, order) {
-		return "", fmt.Errorf("illegal exchange order %q", order)
+		return "", fmt.Errorf("illegal atomic exchange order %q", order)
 	}
 	cOrder, err := cMemoryOrder(order)
 	if err != nil {
@@ -71,7 +321,7 @@ func atomicExchangeC(address, value string, order semir.MemoryOrder) (string, er
 
 func atomicFetchAddC(address, value string, order semir.MemoryOrder) (string, error) {
 	if !semir.LegalAtomicOrder(semir.AtomicRMW, order) {
-		return "", fmt.Errorf("illegal fetch-add order %q", order)
+		return "", fmt.Errorf("illegal atomic fetch-add order %q", order)
 	}
 	cOrder, err := cMemoryOrder(order)
 	if err != nil {
@@ -82,7 +332,7 @@ func atomicFetchAddC(address, value string, order semir.MemoryOrder) (string, er
 
 func atomicFenceC(order semir.MemoryOrder) (string, error) {
 	if !semir.LegalAtomicOrder(semir.AtomicFence, order) {
-		return "", fmt.Errorf("illegal fence order %q", order)
+		return "", fmt.Errorf("illegal atomic fence order %q", order)
 	}
 	cOrder, err := cMemoryOrder(order)
 	if err != nil {
@@ -91,14 +341,16 @@ func atomicFenceC(order semir.MemoryOrder) (string, error) {
 	return fmt.Sprintf("atomic_thread_fence(%s)", cOrder), nil
 }
 
-// volatileReadC/volatileWriteC model exactly one volatile access through an
-// already-typed address expression. They intentionally emit no fence: volatile
-// is observability, not inter-thread synchronization or a complete device-MMIO
-// protocol.
-func volatileReadC(cType, address string) string {
-	return fmt.Sprintf("(*(volatile %s *)(%s))", cType, address)
+func volatileReadC(carrier, address string) (string, error) {
+	if !semir.AtomicCarrierAllowed(carrier) {
+		return "", fmt.Errorf("unsupported volatile carrier %q", carrier)
+	}
+	return fmt.Sprintf("(*(volatile %s *)(%s))", carrier, address), nil
 }
 
-func volatileWriteC(cType, address, value string) string {
-	return fmt.Sprintf("(*(volatile %s *)(%s) = (%s))", cType, address, value)
+func volatileWriteC(carrier, address, value string) (string, error) {
+	if !semir.AtomicCarrierAllowed(carrier) {
+		return "", fmt.Errorf("unsupported volatile carrier %q", carrier)
+	}
+	return fmt.Sprintf("(*(volatile %s *)(%s) = (%s))", carrier, address, value), nil
 }
