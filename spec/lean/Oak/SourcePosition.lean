@@ -45,15 +45,18 @@ theorem two_byte_utf8_width (scalar : Nat)
 theorem three_byte_utf8_width (scalar : Nat)
     (hlo : 2047 < scalar) (hhi : scalar ≤ 65535) :
     utf8Width scalar = 3 := by
-  have h127 : ¬ scalar ≤ 127 := by omega
+  have h127lt : 127 < scalar := Nat.lt_trans (by decide : 127 < 2047) hlo
+  have h127 : ¬ scalar ≤ 127 := Nat.not_le_of_lt h127lt
   have h2047 : ¬ scalar ≤ 2047 := Nat.not_le_of_lt hlo
   simp [utf8Width, h127, h2047, hhi]
 
 theorem four_byte_utf8_width (scalar : Nat)
     (hlo : 65535 < scalar) :
     utf8Width scalar = 4 := by
-  have h127 : ¬ scalar ≤ 127 := by omega
-  have h2047 : ¬ scalar ≤ 2047 := by omega
+  have h127lt : 127 < scalar := Nat.lt_trans (by decide : 127 < 65535) hlo
+  have h2047lt : 2047 < scalar := Nat.lt_trans (by decide : 2047 < 65535) hlo
+  have h127 : ¬ scalar ≤ 127 := Nat.not_le_of_lt h127lt
+  have h2047 : ¬ scalar ≤ 2047 := Nat.not_le_of_lt h2047lt
   have h65535 : ¬ scalar ≤ 65535 := Nat.not_le_of_lt hlo
   simp [utf8Width, h127, h2047, h65535]
 
