@@ -7,13 +7,12 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
-	"github.com/SCKelemen/oak/scanner"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/util"
 )
 
 type Parser struct {
-	lxr          *scanner.Scanner
+	source       token.Source
 	currentToken token.Token
 	peekToken    token.Token
 
@@ -27,9 +26,9 @@ type Parser struct {
 	pendingTrivia []token.Token
 }
 
-func New(lxr *scanner.Scanner) *Parser {
+func New(source token.Source) *Parser {
 	p := &Parser{
-		lxr:           lxr,
+		source:        source,
 		diagnostics:   diagnostic.NewDiagnosticCollector(),
 		pendingTrivia: []token.Token{},
 	}
@@ -117,7 +116,7 @@ func (p *Parser) registerInfix(TokenKind token.TokenKind, fn infixParseFn) {
 
 func (p *Parser) nextToken() {
 	p.currentToken = p.peekToken
-	p.peekToken = p.lxr.NextToken()
+	p.peekToken = p.source.NextToken()
 
 	// Skip ILLEGAL tokens and report errors
 	// Note: zero-initialized tokens have TokenKind == 0 (ILLEGAL), but Line == 0 indicates uninitialized
@@ -130,14 +129,14 @@ func (p *Parser) nextToken() {
 		p.addErrorAtToken(&p.currentToken, errorMsg)
 		// Skip the illegal token and continue
 		p.currentToken = p.peekToken
-		p.peekToken = p.lxr.NextToken()
+		p.peekToken = p.source.NextToken()
 	}
 
 	// Skip trivia and comment tokens for currentToken, collecting them as we go
 	for p.currentToken.TokenKind == token.TRIVIA || p.currentToken.TokenKind == token.COMMENT {
 		p.pendingTrivia = append(p.pendingTrivia, p.currentToken)
 		p.currentToken = p.peekToken
-		p.peekToken = p.lxr.NextToken()
+		p.peekToken = p.source.NextToken()
 
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
@@ -147,7 +146,7 @@ func (p *Parser) nextToken() {
 			}
 			p.addErrorAtToken(&p.currentToken, errorMsg)
 			p.currentToken = p.peekToken
-			p.peekToken = p.lxr.NextToken()
+			p.peekToken = p.source.NextToken()
 		}
 	}
 
@@ -160,13 +159,13 @@ func (p *Parser) nextToken() {
 		}
 		p.addErrorAtToken(&p.peekToken, errorMsg)
 		// Skip the illegal token
-		p.peekToken = p.lxr.NextToken()
+		p.peekToken = p.source.NextToken()
 	}
 
 	// Also skip trivia and comment tokens for peekToken
 	for p.peekToken.TokenKind == token.TRIVIA || p.peekToken.TokenKind == token.COMMENT {
 		p.pendingTrivia = append(p.pendingTrivia, p.peekToken)
-		p.peekToken = p.lxr.NextToken()
+		p.peekToken = p.source.NextToken()
 
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
@@ -175,7 +174,7 @@ func (p *Parser) nextToken() {
 				errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.peekToken.Line, p.peekToken.Column)
 			}
 			p.addErrorAtToken(&p.peekToken, errorMsg)
-			p.peekToken = p.lxr.NextToken()
+			p.peekToken = p.source.NextToken()
 		}
 	}
 }
@@ -606,32 +605,14 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 }
 
 func (p *Parser) parseFunctionArgs() []*ast.Identifier {
-	ids := []*ast.Identifier{}
-
-	if p.peekTokenIs(token.RPAREN) {
-		p.nextToken()
-		return ids
-	}
-
-	p.nextToken()
-
-	ident := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-	ids = append(ids, ident)
-
-	for p.peekTokenIs(token.COMMA) {
-		p.nextToken() // consume the comma
-		p.nextToken() // load token after comma
-		ident := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-		ids = append(ids, ident)
-	}
-
-	if !p.expectPeek(token.RPAREN) {
+	args, ok := p.parseSeparated[*ast.Identifier](token.RPAREN, token.COMMA, false, func() (*ast.Identifier, bool) {
+		return &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}, true
+	})
+	if !ok {
 		return nil
 	}
-
-	return ids
+	return args
 }
-
 func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expression {
 	exp := &ast.InvocationExpression{Token: p.currentToken, Function: function}
 	// currentToken is ( here (consumed by infix parser setup)
@@ -927,7 +908,7 @@ func (p *Parser) collectTrailingTrivia() []token.Token {
 		// Advance to get next peek
 		oldCurrent := p.currentToken
 		p.currentToken = peek
-		p.peekToken = p.lxr.NextToken()
+		p.peekToken = p.source.NextToken()
 		peek = p.peekToken
 		// Restore current if we didn't find more trivia
 		if peek.TokenKind != token.TRIVIA {
@@ -2270,94 +2251,39 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 }
 
 // Function parameters: name: Type, name2: Type2
+
 func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
-	params := []*ast.FunctionParameter{}
-
-	if p.peekTokenIs(token.RPAREN) {
-		p.nextToken()
-		return params
-	}
-
-	p.nextToken() // consume first param name
-	param := &ast.FunctionParameter{
-		Token: p.currentToken,
-		Name:  &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal},
-	}
-
-	if !p.expectPeek(token.COLON) {
-		return nil
-	}
-
-	p.nextToken() // consume type
-	param.Type = p.parseTypeExpression()
-	params = append(params, param)
-
-	for p.peekTokenIs(token.COMMA) {
-		p.nextToken() // consume comma
-		p.nextToken() // consume param name
+	params, ok := p.parseSeparated[*ast.FunctionParameter](token.RPAREN, token.COMMA, false, func() (*ast.FunctionParameter, bool) {
 		param := &ast.FunctionParameter{
 			Token: p.currentToken,
 			Name:  &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal},
 		}
 		if !p.expectPeek(token.COLON) {
-			return nil
+			return nil, false
 		}
-		p.nextToken() // consume type
+		p.nextToken()
 		param.Type = p.parseTypeExpression()
-		params = append(params, param)
-	}
-
-	if !p.expectPeek(token.RPAREN) {
+		return param, true
+	})
+	if !ok {
 		return nil
 	}
-
 	return params
 }
 
-// parseTypeParameters parses a type parameter list: [T, U: Reader, V: Writer & Closer]
-// Returns a list of TypeParameter nodes
 func (p *Parser) parseTypeParameters() []*ast.TypeParameter {
-	params := []*ast.TypeParameter{}
-
 	if !p.expectPeek(token.LBRACK) {
 		return nil
 	}
-
-	// Check for empty list: []
-	if p.peekTokenIs(token.RBRACK) {
-		p.nextToken() // consume ]
-		return params
-	}
-
-	p.nextToken() // consume first type param name
-
-	// Parse first type parameter
-	param := p.parseTypeParameter()
-	if param == nil {
-		return nil
-	}
-	params = append(params, param)
-
-	// Parse remaining type parameters
-	for p.peekTokenIs(token.COMMA) {
-		p.nextToken() // consume comma
-		p.nextToken() // consume next type param name
+	params, ok := p.parseSeparated[*ast.TypeParameter](token.RBRACK, token.COMMA, false, func() (*ast.TypeParameter, bool) {
 		param := p.parseTypeParameter()
-		if param == nil {
-			return nil
-		}
-		params = append(params, param)
-	}
-
-	if !p.expectPeek(token.RBRACK) {
+		return param, param != nil
+	})
+	if !ok {
 		return nil
 	}
-
 	return params
 }
-
-// parseTypeParameter parses a single type parameter: T or T: Constraint
-// Constraint can be a single interface or intersection: Reader & Writer
 func (p *Parser) parseTypeParameter() *ast.TypeParameter {
 	param := &ast.TypeParameter{
 		Token: p.currentToken,

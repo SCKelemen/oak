@@ -106,7 +106,7 @@ func (comp Compilation) Source() SourceText {
 func (comp Compilation) Parse() Stage[*SyntaxTree] {
 	return Value(comp.source).Then(func(source SourceText) (*SyntaxTree, error) {
 		tokens := layout.New(scanner.New(source.Text))
-		p := parser.NewSource(tokens)
+		p := parser.New(tokens)
 		root := p.ParseProgram()
 		if errors := p.Errors(); len(errors) != 0 {
 			return nil, phaseError("parse", errors)
