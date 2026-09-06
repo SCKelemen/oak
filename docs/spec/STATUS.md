@@ -17,7 +17,8 @@ Legend:
 | Source spans / UTF-16 editor positions | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.SourcePosition` proves UTF-8/UTF-16 scalar-width rules, additive coordinate accumulation, monotonic offsets, and ASCII width equivalence; Go tests cover emoji, multiline positions, byte-boundary rejection, links, and LSP coordinates; refinement pending |
 | Delimited parser cursor contract | ✓ | ✓ | ✓ | ✓ | ✓ |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; `Oak.Delimited` proves canonical opener/body/close structure, item preservation, unique close suffix, exact close offset, and trailing-separator semantic transparency; refinement pending |
 | Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
-| Nominal records | ✓ | ✓ | ✓ |  |  |  | authoritative source field order is preserved; duplicate fields are rejected; ABI offsets remain a target-layout concern |
+| Nominal records | ✓ | ✓ | ✓ |  |  |  | authoritative source field order is preserved and duplicate fields are rejected; semantic record/composition refinement remains pending |
+| Natural record layout | ✓ | ✓ | ✓ | ✓ | ✓ |  | `NaturalRecordLayout` computes checked ordered non-packed layout with power-of-two alignment and uint32 overflow rejection; `Oak.RecordLayout` proves identity/order preservation, field alignment, non-overlap, and final-size alignment in the unbounded arithmetic model; implementation refinement pending |
 | Record composition | ✓ | partial | partial |  |  |  | semantics now separated from subtyping |
 | ADTs | ✓ | ✓ | ✓ |  |  |  | old payload/default/tag meanings need compiler reconciliation |
 | Pattern matching | ✓ | ✓ | ✓ |  |  |  | canonical `=>`; legacy aliases remain implementation concern |
@@ -57,14 +58,15 @@ The formal gate currently checks:
 - `Oak.RegionLifetime`
 - `Oak.PhantomRepresentation`
 - `Oak.Layout`
+- `Oak.RecordLayout`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
 
 ## Immediate formal-verification queue
 
-1. record layout/alignment once target layout representation stabilizes;
-2. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, and layout normalization;
-3. formalize additional resource/boundedness laws as the implementation surfaces stabilize.
+1. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, layout normalization, and record layout;
+2. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
+3. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
 
 ## Refinement policy
 
