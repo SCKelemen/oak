@@ -1,6 +1,8 @@
 module github.com/SCKelemen/oak
 
-go 1.25.4
+go 1.27.0
+
+toolchain go1.27.1
 
 require (
 	github.com/SCKelemen/unicode v1.1.1
