@@ -7,6 +7,33 @@ import (
 	"github.com/SCKelemen/oak/ast"
 )
 
+const constraintBindingPrefix = "\x00oak.constraint."
+
+// constraintSetType is checker-only lexical metadata. It is deliberately not
+// embedded in TypeVar, so qualified-type requirements do not become part of
+// type identity, substitution, layout, or runtime representation.
+type constraintSetType struct {
+	Requirements []string
+}
+
+func (t *constraintSetType) String() string { return strings.Join(t.Requirements, " & ") }
+func (t *constraintSetType) Equals(other Type) bool {
+	o, ok := other.(*constraintSetType)
+	if !ok || len(t.Requirements) != len(o.Requirements) {
+		return false
+	}
+	for i := range t.Requirements {
+		if t.Requirements[i] != o.Requirements[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func constraintBindingName(typeVarName string) string {
+	return constraintBindingPrefix + typeVarName
+}
+
 // constraintRequirements returns the named requirements attached to one type variable.
 // Constraint.Interfaces is the historical field name; requirements may now be either
 // method interfaces or semantic record shapes.
@@ -26,14 +53,15 @@ func (c Constraint) String() string {
 }
 
 // bindConstrainedTypeVars makes source-level type parameters visible while the
-// generic function signature and body are checked. The requirements are static
-// proof obligations only; they do not imply a runtime representation.
+// generic function signature and body are checked. Requirements are stored in
+// a checker-only lexical binding next to the TypeVar binding.
 func bindConstrainedTypeVars(env *TypeEnvironment, typeVars []string, constraints []Constraint) {
 	unifier := NewUnifier()
 	for _, name := range typeVars {
-		tv := unifier.FreshTypeVar(name)
-		tv.Requirements = constraintRequirements(name, constraints)
-		env.SetType(name, tv)
+		env.SetType(name, unifier.FreshTypeVar(name))
+		env.SetType(constraintBindingName(name), &constraintSetType{
+			Requirements: constraintRequirements(name, constraints),
+		})
 	}
 }
 
@@ -81,9 +109,18 @@ func (tc *TypeChecker) asRecordType(typ Type) (*RecordType, bool) {
 // semantic record-shape requirement on the type variable. If two requirements
 // guarantee the same name with incompatible types, the field is not usable.
 func (tc *TypeChecker) constrainedFieldType(typeVar *TypeVar, fieldName string) (Type, bool) {
+	binding, ok := tc.env.GetType(constraintBindingName(typeVar.Name))
+	if !ok {
+		return nil, false
+	}
+	set, ok := binding.(*constraintSetType)
+	if !ok {
+		return nil, false
+	}
+
 	var result Type
 	found := false
-	for _, requirementName := range typeVar.Requirements {
+	for _, requirementName := range set.Requirements {
 		requirement, ok := tc.env.GetType(requirementName)
 		if !ok {
 			continue
