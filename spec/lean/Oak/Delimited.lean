@@ -89,8 +89,9 @@ theorem drop_to_close (items : List Nat) (trailing : Bool) :
   have hoff :
       closeOffset items trailing = Nat.succ (body items trailing).length := by
     simp [closeOffset]
+    omega
   rw [hoff]
-  simp [encode, drop_prefix_tokens]
+  simp [encode]
 
 /-- The closing-delimiter cursor is always a valid token position. -/
 theorem close_offset_in_bounds (items : List Nat) (trailing : Bool) :
