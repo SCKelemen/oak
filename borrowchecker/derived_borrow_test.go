@@ -51,8 +51,8 @@ func TestWritableReborrowSuspendsAndRestoresParent(t *testing.T) {
 	bc.currentBlockDepth = 1
 	bc.createSubsliceWithRegion("parent", "child", &Region{Offset: 4, Length: 4}, nil)
 	parent := bc.activeBorrows["parent"]
-	if parent.suspendedBy != "child" {
-		t.Fatalf("parent suspendedBy = %q, want child", parent.suspendedBy)
+	if len(parent.reborrows) != 1 || parent.reborrows[0] != "child" {
+		t.Fatalf("parent reborrows = %#v, want [child]", parent.reborrows)
 	}
 
 	bc.checkIdentifierUse(&ast.Identifier{Value: "parent"}, "parent", nil, false)
@@ -66,8 +66,8 @@ func TestWritableReborrowSuspendsAndRestoresParent(t *testing.T) {
 	if !ok {
 		t.Fatal("outer parent borrow was dropped with inner child")
 	}
-	if parent.suspendedBy != "" {
-		t.Fatalf("parent remained suspended by %q after child scope ended", parent.suspendedBy)
+	if len(parent.reborrows) != 0 {
+		t.Fatalf("parent remained suspended by %#v after child scope ended", parent.reborrows)
 	}
 }
 
@@ -81,24 +81,24 @@ func TestNestedWritableReborrowRestoresOneLevelAtATime(t *testing.T) {
 	bc.currentBlockDepth = 2
 	bc.createSubsliceWithRegion("child", "grandchild", &Region{Offset: 6, Length: 2}, nil)
 
-	if bc.activeBorrows["child"].suspendedBy != "grandchild" {
+	if got := bc.activeBorrows["child"].reborrows; len(got) != 1 || got[0] != "grandchild" {
 		t.Fatal("child should be suspended by grandchild")
 	}
-	if bc.activeBorrows["parent"].suspendedBy != "child" {
+	if got := bc.activeBorrows["parent"].reborrows; len(got) != 1 || got[0] != "child" {
 		t.Fatal("parent should remain suspended by child")
 	}
 
 	bc.dropBorrowsInCurrentBlock()
-	if bc.activeBorrows["child"].suspendedBy != "" {
+	if len(bc.activeBorrows["child"].reborrows) != 0 {
 		t.Fatal("dropping grandchild should restore child")
 	}
-	if bc.activeBorrows["parent"].suspendedBy != "child" {
+	if got := bc.activeBorrows["parent"].reborrows; len(got) != 1 || got[0] != "child" {
 		t.Fatal("restoring child must not restore parent early")
 	}
 
 	bc.currentBlockDepth = 1
 	bc.dropBorrowsInCurrentBlock()
-	if bc.activeBorrows["parent"].suspendedBy != "" {
+	if len(bc.activeBorrows["parent"].reborrows) != 0 {
 		t.Fatal("dropping child should restore parent")
 	}
 }
@@ -109,7 +109,7 @@ func TestDerivedViewDoesNotSuspendParentView(t *testing.T) {
 	bc.createViewBorrowWithRegion("buf", "parent", &Region{Offset: 0, Length: 16}, nil)
 	bc.currentBlockDepth = 1
 	bc.createSubsliceWithRegion("parent", "child", &Region{Offset: 4, Length: 4}, nil)
-	if bc.activeBorrows["parent"].suspendedBy != "" {
+	if len(bc.activeBorrows["parent"].reborrows) != 0 {
 		t.Fatal("read-only derivation must not suspend its parent view")
 	}
 }
@@ -145,7 +145,7 @@ func TestFrontEndSpanSliceSuspendsParentWithPreciseRegion(t *testing.T) {
 		t.Fatalf("unexpected borrow diagnostics: %#v", bc.Diagnostics())
 	}
 	parent, ok := bc.activeBorrows["parent"]
-	if !ok || parent.suspendedBy != "child" {
+	if !ok || len(parent.reborrows) != 1 || parent.reborrows[0] != "child" {
 		t.Fatalf("parent reborrow state = %#v, want suspended by child", parent)
 	}
 	child, ok := bc.activeBorrows["child"]
@@ -157,5 +157,143 @@ func TestFrontEndSpanSliceSuspendsParentWithPreciseRegion(t *testing.T) {
 	}
 	if child.parent != "parent" || child.owner != "buf" {
 		t.Fatalf("child provenance = parent %q owner %q", child.parent, child.owner)
+	}
+}
+
+func countDiagnosticsWithCode(bc *BorrowChecker, code string) int {
+	count := 0
+	for _, d := range bc.Diagnostics() {
+		if d.Code == code {
+			count++
+		}
+	}
+	return count
+}
+
+func TestDisjointWritableReborrowsCoexist(t *testing.T) {
+	bc := New()
+	bc.ownerStates["buf"] = Free
+	bc.createSpanBorrowWithRegion("buf", "parent", &Region{Offset: 0, Length: 16}, nil)
+
+	bc.currentBlockDepth = 1
+	bc.createSubsliceWithRegion("parent", "left", &Region{Offset: 0, Length: 8}, nil)
+	bc.createSubsliceWithRegion("parent", "right", &Region{Offset: 8, Length: 8}, nil)
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("disjoint sibling reborrows must be accepted, got %#v", bc.Diagnostics())
+	}
+	parent := bc.activeBorrows["parent"]
+	if len(parent.reborrows) != 2 || parent.reborrows[0] != "left" || parent.reborrows[1] != "right" {
+		t.Fatalf("parent reborrows = %#v, want [left right]", parent.reborrows)
+	}
+
+	// Direct use of the suspended parent still reports exactly one diagnostic.
+	bc.checkIdentifierUse(&ast.Identifier{Value: "parent"}, "parent", nil, false)
+	if got := countDiagnosticsWithCode(bc, string(CodeBorrowSuspended)); got != 1 {
+		t.Fatalf("suspended-parent use produced %d %s diagnostics, want exactly 1", got, CodeBorrowSuspended)
+	}
+
+	bc.dropBorrowsInCurrentBlock()
+	if len(bc.activeBorrows["parent"].reborrows) != 0 {
+		t.Fatalf("parent remained suspended by %#v after both children dropped", bc.activeBorrows["parent"].reborrows)
+	}
+}
+
+func TestOverlappingWritableReborrowRejected(t *testing.T) {
+	bc := New()
+	bc.ownerStates["buf"] = Free
+	bc.createSpanBorrowWithRegion("buf", "parent", &Region{Offset: 0, Length: 16}, nil)
+
+	bc.currentBlockDepth = 1
+	bc.createSubsliceWithRegion("parent", "left", &Region{Offset: 0, Length: 8}, nil)
+	bc.createSubsliceWithRegion("parent", "mid", &Region{Offset: 4, Length: 8}, nil)
+
+	if got := countDiagnosticsWithCode(bc, string(CodeReborrowOverlap)); got != 1 {
+		t.Fatalf("overlapping sibling produced %d %s diagnostics, want exactly 1", got, CodeReborrowOverlap)
+	}
+	if _, exists := bc.activeBorrows["mid"]; exists {
+		t.Fatal("overlapping reborrow must not be created")
+	}
+	if got := bc.activeBorrows["parent"].reborrows; len(got) != 1 || got[0] != "left" {
+		t.Fatalf("parent reborrows = %#v, want [left]", got)
+	}
+}
+
+func TestUnknownRegionReborrowAdmitsNoSiblings(t *testing.T) {
+	// An unknown-region child fails closed in both directions: it cannot join
+	// live known-region siblings, and no sibling can join it.
+	bc := New()
+	bc.ownerStates["buf"] = Free
+	bc.createSpanBorrowWithRegion("buf", "parent", &Region{Offset: 0, Length: 16}, nil)
+	bc.currentBlockDepth = 1
+	bc.createSubsliceWithRegion("parent", "unknown", nil, nil)
+	bc.createSubsliceWithRegion("parent", "known", &Region{Offset: 8, Length: 8}, nil)
+	if got := countDiagnosticsWithCode(bc, string(CodeReborrowOverlap)); got != 1 {
+		t.Fatalf("sibling of unknown-region reborrow produced %d %s diagnostics, want exactly 1", got, CodeReborrowOverlap)
+	}
+
+	bc = New()
+	bc.ownerStates["buf"] = Free
+	bc.createSpanBorrowWithRegion("buf", "parent", &Region{Offset: 0, Length: 16}, nil)
+	bc.currentBlockDepth = 1
+	bc.createSubsliceWithRegion("parent", "known", &Region{Offset: 8, Length: 8}, nil)
+	bc.createSubsliceWithRegion("parent", "unknown", nil, nil)
+	if got := countDiagnosticsWithCode(bc, string(CodeReborrowOverlap)); got != 1 {
+		t.Fatalf("unknown-region sibling produced %d %s diagnostics, want exactly 1", got, CodeReborrowOverlap)
+	}
+}
+
+func TestFrontEndDisjointSpanSplit(t *testing.T) {
+	bc, program, tc := setupBorrowCheckerForTest(
+		"buf: [16]u8\nparent: [*]u8 = span(&buf)\nleft: [*]u8 = parent[0:8]\nright: [*]u8 = parent[8:16]")
+	if program == nil {
+		t.Fatal("failed to parse disjoint-split program")
+	}
+	bc.CheckProgram(program, tc.Env())
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("disjoint span split must check cleanly, got %#v", bc.Diagnostics())
+	}
+	parent := bc.activeBorrows["parent"]
+	if len(parent.reborrows) != 2 || parent.reborrows[0] != "left" || parent.reborrows[1] != "right" {
+		t.Fatalf("parent reborrows = %#v, want [left right]", parent.reborrows)
+	}
+	left := bc.activeBorrows["left"]
+	right := bc.activeBorrows["right"]
+	if left.region == nil || right.region == nil {
+		t.Fatalf("split children missing exact regions: %#v / %#v", left.region, right.region)
+	}
+	if bc.regionsOverlap(left.region, right.region) {
+		t.Fatalf("split children regions overlap: %#v / %#v", left.region, right.region)
+	}
+}
+
+func TestFrontEndOverlappingReborrowReportsExactlyOneDiagnostic(t *testing.T) {
+	bc, program, tc := setupBorrowCheckerForTest(
+		"buf: [16]u8\nparent: [*]u8 = span(&buf)\nleft: [*]u8 = parent[0:8]\nmid: [*]u8 = parent[4:12]")
+	if program == nil {
+		t.Fatal("failed to parse overlapping-reborrow program")
+	}
+	bc.CheckProgram(program, tc.Env())
+	if got := len(bc.Diagnostics()); got != 1 {
+		t.Fatalf("overlapping reborrow produced %d diagnostics, want exactly 1: %#v", got, bc.Diagnostics())
+	}
+	if code := bc.Diagnostics()[0].Code; code != string(CodeReborrowOverlap) {
+		t.Fatalf("overlapping reborrow diagnostic code = %s, want %s", code, CodeReborrowOverlap)
+	}
+}
+
+func TestFrontEndSuspendedParentUseReportsExactlyOneDiagnostic(t *testing.T) {
+	// Pins the invariant that a suspended parent's direct use is diagnosed by
+	// exactly one traversal path, regardless of walk order.
+	bc, program, tc := setupBorrowCheckerForTest(
+		"buf: [16]u8\nparent: [*]u8 = span(&buf)\nchild: [*]u8 = parent[4:8]\nparent")
+	if program == nil {
+		t.Fatal("failed to parse suspended-parent-use program")
+	}
+	bc.CheckProgram(program, tc.Env())
+	if got := len(bc.Diagnostics()); got != 1 {
+		t.Fatalf("suspended-parent use produced %d diagnostics, want exactly 1: %#v", got, bc.Diagnostics())
+	}
+	if code := bc.Diagnostics()[0].Code; code != string(CodeBorrowSuspended) {
+		t.Fatalf("suspended-parent use diagnostic code = %s, want %s", code, CodeBorrowSuspended)
 	}
 }

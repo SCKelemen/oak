@@ -46,9 +46,110 @@ theorem release_restores_parent :
     releaseChild .childActive = .parentUsable := by
   rfl
 
-/-- A second child cannot be derived directly from an already active child state. -/
+/-- A second child cannot be derived directly from an already active child state
+    when no region facts are available (the fail-closed single-chain model). -/
 theorem active_child_rejects_sibling :
     reborrow .childActive = none := by
   rfl
+
+/-! ### Disjoint sibling reborrows
+
+With exact regions, one parent span may be split into several live writable
+children, provided their regions are statically proven pairwise disjoint.
+The parent stays suspended while any child is live and is restored when the
+last child is released. Unknown regions are not representable here: the
+compiler fails closed and admits no sibling next to an unknown region. -/
+
+namespace Split
+
+/-- Half-open element region in absolute owner coordinates. -/
+structure Region where
+  offset : Nat
+  length : Nat
+  deriving DecidableEq, Repr
+
+/-- Exclusive end of a half-open region. -/
+def Region.stop (r : Region) : Nat := r.offset + r.length
+
+/-- Two half-open regions are disjoint when neither begins before the other ends. -/
+def Disjoint (a b : Region) : Prop := a.stop ≤ b.offset ∨ b.stop ≤ a.offset
+
+/-- Disjointness is symmetric. -/
+theorem disjoint_symm {a b : Region} (h : Disjoint a b) : Disjoint b a :=
+  h.symm
+
+/-- Executable disjointness test used by the admission check. -/
+def disjointB (a b : Region) : Bool := a.stop ≤ b.offset || b.stop ≤ a.offset
+
+theorem disjointB_iff {a b : Region} : disjointB a b = true ↔ Disjoint a b := by
+  simp [disjointB, Disjoint]
+
+/-- A candidate child is admitted only when disjoint from every live sibling. -/
+def admits : List Region → Region → Bool
+  | [], _ => true
+  | c :: rest, r => disjointB r c && admits rest r
+
+theorem admits_iff {s : List Region} {r : Region} :
+    admits s r = true ↔ ∀ c ∈ s, Disjoint r c := by
+  induction s with
+  | nil => simp [admits]
+  | cons c rest ih => simp [admits, disjointB_iff, ih]
+
+/-- The parent span is directly usable only while no writable child is live. -/
+def ParentUsable (children : List Region) : Prop := children = []
+
+/-- Deriving a writable child: admitted children join the live set; anything
+    that cannot be proven disjoint from every live sibling is rejected. -/
+def reborrowChild (children : List Region) (r : Region) : Option (List Region) :=
+  if admits children r then some (r :: children) else none
+
+/-- Any successful reborrow suspends direct use of the parent. -/
+theorem reborrow_suspends_parent {children after : List Region} {r : Region}
+    (h : reborrowChild children r = some after) : ¬ ParentUsable after := by
+  unfold reborrowChild at h
+  cases hadm : admits children r with
+  | false => simp [hadm] at h
+  | true =>
+    simp [hadm] at h
+    subst h
+    simp [ParentUsable]
+
+/-- A reborrow overlapping any live sibling is rejected. -/
+theorem overlapping_reborrow_rejected {children : List Region} {r c : Region}
+    (hmem : c ∈ children) (hover : ¬ Disjoint r c) :
+    reborrowChild children r = none := by
+  unfold reborrowChild
+  cases hadm : admits children r with
+  | false => simp
+  | true => exact absurd (admits_iff.mp hadm c hmem) hover
+
+/-- Admission preserves pairwise disjointness of the live children. -/
+theorem reborrow_preserves_pairwise_disjoint {children after : List Region} {r : Region}
+    (hpair : children.Pairwise Disjoint) (h : reborrowChild children r = some after) :
+    after.Pairwise Disjoint := by
+  unfold reborrowChild at h
+  cases hadm : admits children r with
+  | false => simp [hadm] at h
+  | true =>
+    simp [hadm] at h
+    subst h
+    exact List.Pairwise.cons (admits_iff.mp hadm) hpair
+
+/-- Releasing one live child. -/
+def releaseChildAt (children : List Region) (i : Nat) : List Region :=
+  children.eraseIdx i
+
+/-- Releasing the last live child restores direct parent authority. -/
+theorem release_last_restores_parent (r : Region) :
+    ParentUsable (releaseChildAt [r] 0) := by
+  rfl
+
+/-- Releasing a child never revokes disjointness among the remaining children. -/
+theorem release_preserves_pairwise_disjoint {children : List Region} {i : Nat}
+    (hpair : children.Pairwise Disjoint) :
+    (releaseChildAt children i).Pairwise Disjoint :=
+  hpair.eraseIdx i
+
+end Split
 
 end Oak.Reborrow
