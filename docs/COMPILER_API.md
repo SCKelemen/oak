@@ -125,7 +125,7 @@ Generics belong around the lexer where they remove repeated infrastructure: toke
 
 The Go 1.27 normal test gate runs `go test -v -race ./...` and is green with the fluent API, token-source composition, layout parsing, and generic parser-helper tests.
 
-The repository's separate golden-file workflow remains red because its fixture set is already incomplete/out of date: several named suites have no checked-in expected files, while older lexer/AST snapshots predate recent token/schema changes. This is tracked as golden-fixture debt, not treated as a passing verification gate. New front-end behavior is therefore covered by ordinary parser/compiler tests until the golden corpus is regenerated and made complete.
+The repository's separate golden-file workflow remains red because its fixture set is incomplete/out of date: several named suites have no checked-in expected files, while older lexer/AST snapshots predate recent token/schema changes. This is tracked as golden-fixture debt, not treated as a passing verification gate. New front-end behavior is therefore covered by ordinary parser/compiler tests until the golden corpus is regenerated and made complete.
 
 We should repair that workflow rather than weaken it: regenerate the full expected corpus, review the semantic diffs, commit it atomically, and then require the golden gate again.
 
@@ -177,5 +177,7 @@ token.Source
     -> generic syntax traversal for tools
     -> remaining callers move to Compilation
 ```
+
+The next safe parser refactor is intentionally mechanical: replace the stored `*scanner.Scanner` field with `token.Source` without changing parsing behavior, then migrate one comma-separated grammar production at a time onto `parseSeparated[T]` with its existing tests held constant.
 
 The API should preserve Oak's core rule: define a semantic fact once and let every compiler phase that can use it consume the same fact.
