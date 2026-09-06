@@ -302,19 +302,18 @@ func (u *Unifier) unifyFunction(fn1, fn2 *FunctionType) Substitution {
 
 	sub := make(Substitution)
 
-	// Unify parameters
+	// Each equation is solved under all bindings learned from earlier
+	// parameters. This preserves repeated-variable consistency without mutating
+	// either input function type.
 	for i := 0; i < len(fn1.Parameters); i++ {
-		paramSub := u.Unify(fn1.Parameters[i], fn2.Parameters[i])
+		paramSub := u.Unify(sub.Apply(fn1.Parameters[i]), sub.Apply(fn2.Parameters[i]))
 		if paramSub == nil {
 			return nil
 		}
 		sub = sub.Compose(paramSub)
-		// Apply substitution to remaining types
-		fn1.Parameters[i] = sub.Apply(fn1.Parameters[i])
-		fn2.Parameters[i] = sub.Apply(fn2.Parameters[i])
 	}
 
-	// Unify return types
+	// The result equation sees the same accumulated substitution.
 	retSub := u.Unify(sub.Apply(fn1.ReturnType), sub.Apply(fn2.ReturnType))
 	if retSub == nil {
 		return nil
@@ -338,7 +337,7 @@ func (u *Unifier) unifyRecord(rec1, rec2 *RecordType) Substitution {
 			return nil
 		}
 
-		fieldSub := u.Unify(field1, field2)
+		fieldSub := u.Unify(sub.Apply(field1), sub.Apply(field2))
 		if fieldSub == nil {
 			return nil
 		}
@@ -376,7 +375,7 @@ func (u *Unifier) unifyGeneric(gen1, gen2 *GenericType) Substitution {
 	sub := make(Substitution)
 
 	for i := 0; i < len(gen1.TypeArgs); i++ {
-		argSub := u.Unify(gen1.TypeArgs[i], gen2.TypeArgs[i])
+		argSub := u.Unify(sub.Apply(gen1.TypeArgs[i]), sub.Apply(gen2.TypeArgs[i]))
 		if argSub == nil {
 			return nil
 		}
