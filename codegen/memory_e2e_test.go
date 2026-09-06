@@ -106,6 +106,7 @@ static void* oak_atomic_runner(void* ignored) {
   return NULL;
 }
 int main(void) {
+  if (!atomic_is_lock_free(&counter)) return 5;
   if (oak_ordered() != 1) return 10;
   pthread_t threads[OAK_TEST_THREADS];
   for (int i = 0; i < OAK_TEST_THREADS; ++i) {
