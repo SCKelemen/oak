@@ -1,6 +1,9 @@
 package semir
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 func (m Module) Validate() error {
 	definitions := make(map[string]struct{}, len(m.Definitions))
@@ -15,6 +18,17 @@ func (m Module) Validate() error {
 		if err := definition.Validate(); err != nil {
 			return fmt.Errorf("definition %q: %w", definition.Name, err)
 		}
+	}
+
+	allocators := make(map[string]struct{}, len(m.Allocators))
+	for _, allocator := range m.Allocators {
+		if err := allocator.Validate(); err != nil {
+			return err
+		}
+		if _, exists := allocators[allocator.Name]; exists {
+			return fmt.Errorf("duplicate allocator %q", allocator.Name)
+		}
+		allocators[allocator.Name] = struct{}{}
 	}
 
 	protocols := make(map[string]struct{}, len(m.Protocols))
@@ -89,31 +103,20 @@ func (d Definition) Validate() error {
 }
 
 func (a Authority) Validate() error {
-	required := make(map[string]struct{}, len(a.RequiredEffects))
-	for _, effect := range a.RequiredEffects {
-		key, err := effectKey(effect)
-		if err != nil {
-			return err
-		}
-		if _, exists := required[key]; exists {
-			return fmt.Errorf("duplicate required effect %q", key)
-		}
-		required[key] = struct{}{}
+	if err := validateEffectList("required", a.RequiredEffects); err != nil {
+		return err
 	}
-
-	forbidden := make(map[string]struct{}, len(a.ForbiddenEffects))
-	for _, effect := range a.ForbiddenEffects {
-		key, err := effectKey(effect)
-		if err != nil {
-			return err
+	if err := validateEffectList("forbidden", a.ForbiddenEffects); err != nil {
+		return err
+	}
+	for _, required := range a.RequiredEffects {
+		for _, forbidden := range a.ForbiddenEffects {
+			if effectsOverlap(required, forbidden) {
+				requiredKey, _ := effectKey(required)
+				forbiddenKey, _ := effectKey(forbidden)
+				return fmt.Errorf("effect %q overlaps %q and is both required and forbidden", requiredKey, forbiddenKey)
+			}
 		}
-		if _, exists := forbidden[key]; exists {
-			return fmt.Errorf("duplicate forbidden effect %q", key)
-		}
-		if _, exists := required[key]; exists {
-			return fmt.Errorf("effect %q is both required and forbidden", key)
-		}
-		forbidden[key] = struct{}{}
 	}
 
 	capabilities := make(map[string]struct{}, len(a.Capabilities))
@@ -297,11 +300,56 @@ func operatorArity(op Operator) (int, bool) {
 	}
 }
 
+func validateEffectList(kind string, effects []Effect) error {
+	seen := make(map[string]struct{}, len(effects))
+	for _, effect := range effects {
+		key, err := effectKey(effect)
+		if err != nil {
+			return err
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate %s effect %q", kind, key)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
 func effectKey(effect Effect) (string, error) {
 	if effect.Name == "" {
 		return "", fmt.Errorf("effect has empty name")
 	}
-	return qualified(effect.Namespace, effect.Name), nil
+	base := qualified(effect.Namespace, effect.Name)
+	if len(effect.Parameters) == 0 {
+		return base, nil
+	}
+	for _, parameter := range effect.Parameters {
+		if parameter == "" {
+			return "", fmt.Errorf("effect %q has empty parameter", base)
+		}
+	}
+	return base + "[" + strings.Join(effect.Parameters, ",") + "]", nil
+}
+
+// effectsOverlap implements effect-class subsumption: an unparameterized effect
+// denotes the whole class, while two parameterized effects overlap only when
+// their parameter lists are identical.
+func effectsOverlap(left, right Effect) bool {
+	if left.Namespace != right.Namespace || left.Name != right.Name {
+		return false
+	}
+	if len(left.Parameters) == 0 || len(right.Parameters) == 0 {
+		return true
+	}
+	if len(left.Parameters) != len(right.Parameters) {
+		return false
+	}
+	for i := range left.Parameters {
+		if left.Parameters[i] != right.Parameters[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func qualified(namespace, name string) string {

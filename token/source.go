@@ -1,5 +1,7 @@
 package token
 
+import "github.com/SCKelemen/oak/source"
+
 // Source is the minimal streaming contract between lexical and syntactic
 // compiler stages. Scanner and layout normalization both implement Source.
 //
@@ -8,4 +10,12 @@ package token
 // about one another.
 type Source interface {
 	NextToken() Token
+}
+
+// LocatedSource is implemented by token streams that preserve the source file
+// they originated from. Parser code may use this optional contract for
+// diagnostics/editor links without coupling syntax to scanner implementation.
+type LocatedSource interface {
+	Source
+	SourceFile() *source.File
 }

@@ -2,7 +2,6 @@ package compiler
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -28,8 +27,8 @@ func (comp Compilation) TypeModel() Stage[*semir.Module] {
 
 // BuildTypeModel projects type-level declarations from an already parsed Oak
 // program. It never invents representation information that the AST cannot
-// justify. In particular, record membership is preserved but field layout stays
-// unspecified because the historical AST stores record fields in a map.
+// justify. Record source order is preserved; concrete ABI offsets remain unknown
+// until a target layout pass computes them.
 func BuildTypeModel(program *ast.Program) (*semir.Module, error) {
 	module := &semir.Module{}
 	for _, statement := range program.Statements {
@@ -80,8 +79,8 @@ func buildADTDefinition(declaration *ast.ADTType) (semir.Definition, error) {
 			}
 			definition.Type.Kind = semir.TypeRecord
 			definition.Type.Fields = fields
-			// Representation intentionally stays unspecified until source field
-			// order is preserved by the typed syntax representation.
+			// Representation intentionally stays unspecified until a target-specific
+			// layout pass computes sizes, alignments, and offsets.
 			return definition, nil
 		}
 
@@ -198,19 +197,18 @@ func buildRecordFields(record *ast.RecordLiteral) ([]semir.Field, error) {
 	if record == nil {
 		return nil, fmt.Errorf("nil record")
 	}
-	names := make([]string, 0, len(record.Fields))
-	for name := range record.Fields {
-		names = append(names, name)
+	ordered := record.OrderedFields()
+	if len(record.Fields) > 0 && len(ordered) == 0 {
+		return nil, fmt.Errorf("record source order is unavailable")
 	}
-	sort.Strings(names)
 
-	fields := make([]semir.Field, 0, len(names))
-	for _, name := range names {
-		fieldType, err := semanticTypeName(record.Fields[name])
+	fields := make([]semir.Field, 0, len(ordered))
+	for _, field := range ordered {
+		fieldType, err := semanticTypeName(field.Value)
 		if err != nil {
-			return nil, fmt.Errorf("field %q: %w", name, err)
+			return nil, fmt.Errorf("field %q: %w", field.Name, err)
 		}
-		fields = append(fields, semir.Field{Name: name, Type: fieldType})
+		fields = append(fields, semir.Field{Name: field.Name, Type: fieldType})
 	}
 	return fields, nil
 }

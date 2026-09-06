@@ -27,18 +27,15 @@ func TestCompilationTypeModelProjectsADT(t *testing.T) {
 	}
 }
 
-func TestBuildTypeModelProjectsRecordWithoutInventingLayout(t *testing.T) {
+func TestBuildTypeModelPreservesRecordOrderWithoutInventingLayout(t *testing.T) {
+	record := &ast.RecordLiteral{Fields: make(map[string]ast.Expression)}
+	record.AddField(ast.Identifier{}.Token, "y", &ast.Identifier{Value: "i32"})
+	record.AddField(ast.Identifier{}.Token, "x", &ast.Identifier{Value: "i32"})
 	program := &ast.Program{Statements: []ast.Statement{
 		&ast.ADTType{
 			Name: &ast.Identifier{Value: "Point"},
 			Variants: []*ast.ADTVariant{
-				{
-					Name: &ast.Identifier{Value: "Point"},
-					Literal: &ast.RecordLiteral{Fields: map[string]ast.Expression{
-						"y": &ast.Identifier{Value: "i32"},
-						"x": &ast.Identifier{Value: "i32"},
-					}},
-				},
+				{Name: &ast.Identifier{Value: "Point"}, Literal: record},
 			},
 		},
 	}}
@@ -52,10 +49,28 @@ func TestBuildTypeModelProjectsRecordWithoutInventingLayout(t *testing.T) {
 		t.Fatalf("expected record semantic type, got %q", point.Type.Kind)
 	}
 	if point.Representation.Kind != semir.RepresentationUnspecified || len(point.Representation.Fields) != 0 {
-		t.Fatalf("projector invented representation from unordered AST: %#v", point.Representation)
+		t.Fatalf("projector invented ABI representation: %#v", point.Representation)
 	}
-	if got := []string{point.Type.Fields[0].Name, point.Type.Fields[1].Name}; got[0] != "x" || got[1] != "y" {
-		t.Fatalf("expected deterministic semantic field order [x y], got %v", got)
+	if got := []string{point.Type.Fields[0].Name, point.Type.Fields[1].Name}; got[0] != "y" || got[1] != "x" {
+		t.Fatalf("expected source field order [y x], got %v", got)
+	}
+}
+
+func TestBuildTypeModelRejectsRecordWithoutSourceOrder(t *testing.T) {
+	program := &ast.Program{Statements: []ast.Statement{
+		&ast.ADTType{
+			Name: &ast.Identifier{Value: "Legacy"},
+			Variants: []*ast.ADTVariant{{
+				Name: &ast.Identifier{Value: "Legacy"},
+				Literal: &ast.RecordLiteral{Fields: map[string]ast.Expression{
+					"x": &ast.Identifier{Value: "i32"},
+				}},
+			}},
+		},
+	}}
+	_, err := BuildTypeModel(program)
+	if err == nil || !strings.Contains(err.Error(), "source order is unavailable") {
+		t.Fatalf("expected fail-closed record-order error, got %v", err)
 	}
 }
 

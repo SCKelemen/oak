@@ -14,10 +14,10 @@ Legend:
 | Feature | S | I | T | M | P | R | Notes |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | --- |
 | Layout + explicit blocks | ✓ | ✓ | ✓ |  |  |  | parser/layout equivalence exists; formal cursor/layout model pending |
-| Source spans / UTF-16 editor positions | ✓ | draft | draft |  |  |  | implementation is in draft PR #6 |
-| Delimited parser cursor contract | ✓ | draft | draft |  |  |  | implementation is in draft PR #6; formal cursor proof planned |
-| Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | abstract laws proved in `Oak.TypeLattice`; current Go `IsSubtype` intersection behavior still needs reconciliation/refinement |
-| Nominal records | ✓ | ✓ | ✓ |  |  |  | ordered field semantics implementation is in draft PR #6 |
+| Source spans / UTF-16 editor positions | ✓ | ✓ | ✓ |  |  | canonical byte spans plus exact UTF-16/LSP and `filename:line:column`/VS Code projections |
+| Delimited parser cursor contract | ✓ | ✓ | ✓ |  |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; formal cursor proof planned |
+| Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
+| Nominal records | ✓ | ✓ | ✓ |  |  |  | authoritative source field order is preserved; duplicate fields are rejected; ABI offsets remain a target-layout concern |
 | Record composition | ✓ | partial | partial |  |  |  | semantics now separated from subtyping |
 | ADTs | ✓ | ✓ | ✓ |  |  |  | old payload/default/tag meanings need compiler reconciliation |
 | Pattern matching | ✓ | ✓ | ✓ |  |  |  | canonical `=>`; legacy aliases remain implementation concern |
@@ -28,9 +28,9 @@ Legend:
 | Views / spans | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.Borrowing` proves the local authority-state laws; compiler correspondence is not yet proved |
 | Borrow-state machine | ✓ | partial | partial | ✓ | ✓ |  | explicit actions; valid transitions preserve state invariant and read/write authority stays exclusive |
 | Unsafe boundary | ✓ | partial | partial |  |  |  | unsafe must admit assumptions, not disable all checking |
-| Effects | ✓ | draft | draft | ✓ | ✓ |  | `Oak.Effects` proves broad/scoped subsumption and overlap laws; implementation is in draft PR #6 |
-| Arena semantics | ✓ | draft | draft |  |  |  | semantic IR in draft PR #6; region escape proof pending |
-| Slab allocator semantics | ✓ | draft | draft | ✓ | ✓ |  | `Oak.Slab` proves capacity preservation and rejects allocation from a full slab |
+| Effects | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR implements broad/scoped effect identity and conflict validation; `Oak.Effects` proves the abstract subsumption/overlap laws; refinement pending |
+| Arena semantics | ✓ | ✓ | ✓ |  |  |  | Semantic IR represents explicit arena identity/lifetime and validates required metadata; region non-escape proof pending |
+| Slab allocator semantics | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR validates explicit bounded slab/pool capacity and identity; `Oak.Slab` proves abstract capacity preservation; refinement pending |
 | Generational handles | ✓ |  |  | ✓ | ✓ |  | `Oak.Handles` proves stale handles cannot resolve after generation-changing reuse and cleared slots never resolve |
 | UTF-8 `string` validity | ✓ | partial | partial |  |  |  | legacy string code exists but must reconcile validation invariant |
 | UTF-16 / UTF-32 encoded views | ✓ | partial | partial |  |  |  | legacy library/spec work exists; no proof yet |

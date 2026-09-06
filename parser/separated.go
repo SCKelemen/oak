@@ -2,19 +2,30 @@ package parser
 
 import "github.com/SCKelemen/oak/token"
 
-// parseSeparated parses a delimiter-contained sequence of T using the parser's
-// existing two-token cursor convention. currentToken must be the opening
-// delimiter when called. parseItem receives currentToken positioned at the
-// first token of an item and must leave it at that item's final token.
+// parseDelimited is the canonical contract for delimiter-contained sequences.
 //
-// This is the common mechanism behind function parameters, call arguments,
-// generic arguments, type parameters, array elements, and similar grammar
-// forms. Go 1.27 generic methods let the operation live on Parser instead of
-// proliferating type-specific package helpers.
-//
-// Existing grammar productions should migrate onto this one at a time, keeping
-// their parser tests green after each change. Reducing duplicated token
-// movement is useful; changing several positioning contracts at once is not.
+// Precondition: currentToken is open.
+// Success postcondition: currentToken is close.
+// parseItem starts on the first token of an item and leaves currentToken on the
+// item's final token. Empty sequences and, when requested, trailing separators
+// obey the same postcondition.
+func (p *Parser) parseDelimited[T any](
+	open token.TokenKind,
+	close token.TokenKind,
+	separator token.TokenKind,
+	allowTrailing bool,
+	parseItem func() (T, bool),
+) ([]T, bool) {
+	if !p.currentTokenIs(open) {
+		p.addErrorAtCurrentToken("delimited parser entered on wrong opening token")
+		return nil, false
+	}
+	return p.parseSeparated(close, separator, allowTrailing, parseItem)
+}
+
+// parseSeparated implements the sequence after the opening delimiter has been
+// established by the caller. It is kept as the small common primitive used by
+// existing productions while they migrate to parseDelimited.
 func (p *Parser) parseSeparated[T any](
 	close token.TokenKind,
 	separator token.TokenKind,
