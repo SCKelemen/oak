@@ -58,6 +58,7 @@ type Field struct {
 type Variant struct {
 	Name    string
 	Payload string
+	Result  string
 }
 
 type Method struct {
