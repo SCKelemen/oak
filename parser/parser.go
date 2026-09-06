@@ -1009,9 +1009,9 @@ func (p *Parser) parseADTType() *ast.ADTType {
 		return nil
 	}
 
-	// Move to first token of body
-	p.nextToken()
-
+	// Move to the first token of the body. Keep a leading `|` visible so
+	// this prefix form follows the same constructor-list contract as
+	// `Name: type = | ...`.
 	p.nextToken()
 
 	// Check if this is a semantic record, concrete struct, or record composition.
@@ -1062,8 +1062,11 @@ func (p *Parser) parseADTType() *ast.ADTType {
 			adt.Variants = []*ast.ADTVariant{variant}
 		}
 	} else {
-		// Parse as ADT variants: Variant1 | Variant2 | ...
+		// Parse as ADT variants: | Variant1 | Variant2 | ...
 		adt.Variants = []*ast.ADTVariant{}
+		if p.currentTokenIs(token.PIPE) {
+			p.nextToken() // first constructor name
+		}
 		variant := p.parseADTVariant()
 		if variant == nil {
 			return nil
