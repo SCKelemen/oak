@@ -1,10 +1,17 @@
 # Type Inference and Explicit Contracts
 
-Oak aims for Hindley-Milner-style inference ergonomics without making type
+Oak aims for **powerful, lightweight, sound inference** without making type
 annotations part of ordinary implementation plumbing.
 
-This document is normative for where Oak infers types, where it generalizes
-polymorphism, and where explicit type contracts are required.
+Hindley-Milner ideas are an important foundation—fresh type variables,
+unification, occurs checking, generalization, instantiation, and principal types
+where they exist—but Oak is not defined as a pure HM language. Its inference
+system also has to cooperate with records/ADTs/GADT-style refinements, qualified
+constraints, ownership, effects, regions, representation facts, and proof
+obligations.
+
+This document is normative for where Oak infers facts, where it generalizes
+polymorphism, and where explicit contracts are required.
 
 ## 1. Design rule
 
@@ -24,23 +31,53 @@ formal reasoning.
 
 Annotations are therefore primarily **contracts**, not ceremony.
 
-## 2. HM-style local inference
+Inference must never guess in order to keep source short. When multiple meanings
+remain possible, Oak asks for the smallest annotation that resolves the
+ambiguity.
 
-Oak's core inference model is HM-style:
+## 2. Layered inference model
+
+Oak's inference engine is layered rather than tied to one named type-system
+family.
+
+The core layer uses HM-derived machinery where it is a good fit:
 
 - expressions produce type constraints;
-- fresh type variables stand for unknown types;
-- unification solves compatible constraints;
-- occurs checking rejects infinite types;
-- eligible bindings are generalized to type schemes;
-- each use of a polymorphic binding is instantiated with fresh type variables;
-- qualified constraints are carried as compile-time predicates over quantified
-  type variables.
+- fresh type variables stand for unknown semantic types;
+- unification solves equality-compatible constraints;
+- occurs checking rejects infinite/cyclic types;
+- eligible bindings are generalized to reusable schemes;
+- polymorphic uses instantiate fresh binders;
+- principal types are preferred when the active feature subset admits one.
 
-The implementation target is principal typing whenever the active feature set
-admits a principal type.
+Additional Oak layers then refine/discharge facts that ordinary HM does not
+model:
 
-For example, ordinary local code should not need repetitive annotations:
+```text
+core type inference / unification
+        ↓
+record + interface constraints
+        ↓
+ADT/GADT + refinement facts
+        ↓
+ownership / borrowing / regions
+        ↓
+effects + capabilities
+        ↓
+representation / ABI obligations
+        ↓
+proof obligations where required
+```
+
+These layers should cooperate through explicit semantic constraints rather than
+through hidden runtime conversions.
+
+A later layer may reject or refine an otherwise valid core unification result.
+It must not silently change the runtime representation or authority of a value.
+
+## 3. Lightweight local programming
+
+Ordinary local code should not need repetitive annotations:
 
 ```oak
 fn transform(xs: []i32): i32
@@ -49,13 +86,18 @@ fn transform(xs: []i32): i32
   total
 ```
 
-`doubled`, `total`, the lambda parameter/result relationships, and generic
-instantiations should be inferred when they are unambiguous.
+`doubled`, `total`, the lambda parameter/result relationships, generic
+instantiations, and applicable constraints should be inferred when they are
+unambiguous and sound.
+
+The desired user experience is closer to ML/Elm/TypeScript-style inference than
+to a systems language that requires every local value and generic argument to be
+spelled manually.
 
 Exact lambda syntax remains governed by the syntax specification; the semantic
 rule here is independent of punctuation.
 
-## 3. Explicit module and library boundaries
+## 4. Explicit module and library boundaries
 
 Externally visible declarations require explicit contracts.
 
@@ -65,22 +107,25 @@ A public/exported function contract includes at least:
 - result type;
 - quantified type parameters when they are part of the API;
 - required generic constraints;
-- public effects/capabilities when the effect system makes them observable;
-- ownership/borrowing obligations that callers must satisfy.
+- public effects/capabilities when those are caller-observable;
+- ownership/borrowing obligations that callers must satisfy;
+- representation/ABI requirements only when representation is intentionally part
+  of the public contract.
 
 A public/exported data contract includes the semantic type identity and any
 representation contract that is intentionally public ABI.
 
 This rule gives separate compilation a stable interface and prevents a private
-implementation change from silently changing a library's public inferred type.
+implementation change from silently changing a library's public inferred
+contract.
 
-The compiler may verify that an explicit public signature is at least as general
-as, or exactly matches according to the applicable contract rule, the inferred
-implementation. It must not silently widen or weaken the declared API.
+The compiler verifies implementations against explicit public signatures. It
+must not silently widen, weaken, or reinterpret the declared API.
 
-## 4. Private functions may infer more
+## 5. Private functions may infer more
 
-Private/local helpers may omit types when inference has a unique sound result.
+Private/local helpers may omit types whenever inference has a unique sound
+result.
 
 Conceptually:
 
@@ -94,10 +139,27 @@ fn public_api(x: Request): Response
 The public boundary is explicit. Local helper values and intermediate types are
 inferred.
 
+A private function may also infer generic parameters when doing so is principal
+and safe. Public generic parameters remain explicit when they are part of the
+module contract.
+
 Whether a top-level declaration is exported is a module-system concern; this
 document specifies the typing policy rather than freezing export punctuation.
 
-## 5. Generalization is ownership/effect aware
+## 6. Binder identity is semantic; names are ergonomic
+
+A type variable's source name (`T`, `U`, etc.) is not its semantic identity.
+Independent binders may use the same readable name without becoming the same
+unknown type.
+
+Substitution, occurs checking, generalization, instantiation, and refinement must
+operate on binder identity. Human-facing names exist for source readability and
+diagnostics only.
+
+This is necessary for sound inference across nested scopes, independently
+instantiated generic functions, and module boundaries.
+
+## 7. Generalization is ownership/effect aware
 
 Oak is not a purely functional language. It has mutation, unique authority,
 arenas/regions, raw pointers, effects, and explicit storage.
@@ -118,37 +180,43 @@ or escaping authority.
 The long-term preferred rule is proof/effect based rather than syntax based:
 
 ```text
-pure/non-escaping value                  -> generalize
+pure/non-escaping value                    -> generalize
 pure computation producing immutable data -> generalize
-unique mutable capability capture       -> do not generalize unsafely
-fresh region-bound allocation           -> preserve region identity
-external/MMIO authority                 -> preserve authority identity
+unique mutable capability capture         -> do not generalize unsafely
+fresh region-bound allocation             -> preserve region identity
+external/MMIO authority                   -> preserve authority identity
 ```
 
-This keeps inference powerful without reproducing the polymorphic-reference
-unsoundness that unrestricted generalization would introduce in an imperative
-systems language.
+This keeps inference powerful without reproducing polymorphic-reference or
+capability-duplication unsoundness in an imperative systems language.
 
-## 6. Constraints do not imply runtime dictionaries
+## 8. Constraints and refinements extend inference
 
-Qualified inference may infer a concrete type argument and then discharge
-record-shape or method/interface constraints at compile time.
+Inference may produce obligations in addition to equalities.
 
-For example:
+Examples include:
 
-```oak
-Position: type = { x: f32, y: f32 }
-
-fn length2[T: Position](p: T): f32
-  p.x * p.x + p.y * p.y
+```text
+T satisfies Position
+T implements Reader
+N > 0
+buffer region outlives view
+function effect set excludes Allocate
+representation provides required ABI alignment
 ```
 
-A call with a concrete `T` should infer `T`, prove the `Position` obligation,
-and specialize normally. Inference does not imply boxing, a runtime interface
-object, or a dictionary unless a future feature explicitly requests such a
-representation.
+A type result is accepted only after the required obligations are discharged or
+made explicit in the surrounding contract.
 
-## 7. Representation is not inferred from semantic shape
+Qualified constraints do not imply runtime dictionaries. A call may infer a
+concrete `T`, prove its record/interface obligations, and specialize normally
+without boxing or a runtime interface object.
+
+GADT/refinement reasoning may narrow types and propositions inside a pattern arm.
+Where such reasoning has no principal inference result, Oak may require a local
+annotation or explicit proof fact rather than guess.
+
+## 9. Representation is orthogonal to semantic inference
 
 Type inference may determine semantic type identity without choosing a runtime
 representation.
@@ -162,7 +230,11 @@ layout merely because they satisfy the same shape constraint.
 Likewise, selecting one of several valid representations for a semantic type
 must not change its inferred semantic identity.
 
-## 8. When annotations are required
+Representation inference, where offered, is therefore constrained selection from
+explicitly legal representation policies—not semantic type inference by another
+name.
+
+## 10. When annotations are required
 
 Oak requires an annotation when inference cannot produce one sound, stable
 contract without guessing.
@@ -171,18 +243,20 @@ Important cases include:
 
 - exported/public API boundaries;
 - FFI, ABI, MMIO, wire, or explicit-layout boundaries;
-- ambiguous numeric or overloaded operations after available context is used;
-- recursive definitions when the implementation cannot infer the intended
-  recursive polymorphic contract safely;
+- ambiguous numeric/overloaded operations after available context is used;
+- recursive definitions when the intended recursive polymorphic contract cannot
+  be inferred safely;
 - GADT/refinement cases where local annotations are needed to guide proof or
   type refinement;
 - existential/dynamic type boundaries if such features are introduced;
-- effect/authority boundaries whose omission would change caller obligations.
+- effect/authority boundaries whose omission would change caller obligations;
+- representation choices when multiple legal layouts remain and the choice is
+  externally observable.
 
 The compiler should request the smallest useful annotation rather than forcing a
 fully annotated expression tree.
 
-## 9. Explicit annotations are checked facts
+## 11. Explicit annotations are checked facts
 
 An annotation constrains inference; it does not bypass it.
 
@@ -198,7 +272,7 @@ precise mismatch at the source boundary. An annotation must not silently cause:
 
 Those operations require their own explicit semantics.
 
-## 10. Inference and tooling
+## 12. Inference and tooling
 
 Editor tooling should expose inferred facts without requiring the source to spell
 them repeatedly.
@@ -206,30 +280,39 @@ them repeatedly.
 Useful projections include:
 
 - hover: inferred semantic type;
-- hover: generalized type scheme;
-- hover: inferred effects/ownership when available;
+- hover: generalized scheme/quantified binders;
+- hover: inferred constraints, refinements, effects, ownership, and regions when
+  relevant;
 - inlay hints for developers who want them;
 - go-to-definition for inferred constraints and type constructors;
-- diagnostics showing the two constraints that failed to unify;
-- an "explain inferred type" view for difficult generic code.
+- diagnostics showing the conflicting constraints/facts that prevented inference;
+- an "explain inferred type" view for difficult generic/refinement code.
 
 Inlay hints are tooling, not syntax. Source remains lightweight.
 
-## 11. Formal obligations
+## 13. Formal obligations
 
-The inference implementation should be formalized incrementally.
+The inference implementation should be formalized incrementally by layer.
 
-Required proof targets include:
+Core obligations include:
 
-1. substitution application preserves well-formed types;
-2. unification is sound: a returned substitution makes both input types equal;
-3. occurs checking rejects cyclic substitutions;
-4. generalization quantifies only type variables not free in the environment;
-5. instantiation is capture-free and fresh;
-6. qualified constraint discharge agrees with the semantic constraint relation;
-7. ownership/effect-aware generalization cannot duplicate forbidden authority;
-8. inferred local implementation types satisfy explicit exported signatures.
+1. type-variable binder identity is independent of display names;
+2. substitution application preserves well-formed types;
+3. unification is sound: a returned substitution satisfies the equalities it
+   claims to solve;
+4. occurs checking rejects cyclic substitutions;
+5. generalization quantifies only variables not free in the environment and does
+   not duplicate forbidden authority;
+6. instantiation is capture-free and fresh;
+7. record/interface constraint discharge agrees with the semantic constraint
+   relation;
+8. refinement/GADT narrowing preserves soundness of the surrounding type facts;
+9. ownership/effect/region inference preserves their respective safety
+   invariants;
+10. inferred local implementations satisfy explicit exported signatures;
+11. representation selection cannot change inferred semantic identity.
 
-Oak may describe its current compiler as **HM-style** while these pieces are
-implemented incrementally. It should claim full/principal HM inference only for
-the subset for which those properties actually hold.
+Oak should describe the implementation by the properties it actually provides
+(e.g. unification-based inference, qualified constraints, refinement-aware
+checking) rather than claiming conformance to one named family for the entire
+language.
