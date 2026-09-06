@@ -9,3 +9,4 @@ import Oak.Delimited
 import Oak.RegionLifetime
 import Oak.PhantomRepresentation
 import Oak.Layout
+import Oak.RecordLayout
