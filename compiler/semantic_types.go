@@ -7,6 +7,7 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
+	"github.com/SCKelemen/oak/token"
 )
 
 // TypeModel projects the currently implemented Oak type declarations into the
@@ -28,7 +29,7 @@ func (comp Compilation) TypeModel() Stage[*semir.Module] {
 // BuildTypeModel projects type-level declarations from an already parsed Oak
 // program. It never invents representation information that the AST cannot
 // justify. Record source order is preserved; concrete ABI offsets remain unknown
-// until a target layout pass computes them.
+// until a representation pass has all required target facts.
 func BuildTypeModel(program *ast.Program) (*semir.Module, error) {
 	module := &semir.Module{}
 	for _, statement := range program.Statements {
@@ -79,8 +80,17 @@ func buildADTDefinition(declaration *ast.ADTType) (semir.Definition, error) {
 			}
 			definition.Type.Kind = semir.TypeRecord
 			definition.Type.Fields = fields
-			// Representation intentionally stays unspecified until a target-specific
-			// layout pass computes sizes, alignments, and offsets.
+
+			// Plain { ... } is semantic product/shape only. struct { ... } selects
+			// concrete natural ordered storage, but target-specific field sizes and
+			// offsets are still unresolved at this stage.
+			if record.Token.TokenKind == token.STRUCT {
+				definition.Representation = semir.Representation{
+					Kind:     semir.RepresentationRecord,
+					Policy:   semir.RepresentationPolicyNaturalOrdered,
+					Resolved: false,
+				}
+			}
 			return definition, nil
 		}
 
@@ -151,7 +161,7 @@ func buildInterfaceDefinition(declaration *ast.InterfaceType) (semir.Definition,
 		}
 		for _, parameter := range method.Parameters {
 			if parameter == nil || parameter.Name == nil {
-				return semir.Definition{}, fmt.Errorf("interface %q method %q has invalid parameter", declaration.Name.Value, method.Name.Value)
+				return semir.Definition{}, fmt.Errorf("interface %q method %q has invalid parameter", declaration.Name.Value)
 			}
 			parameterType, err := semanticTypeName(parameter.Type)
 			if err != nil {
