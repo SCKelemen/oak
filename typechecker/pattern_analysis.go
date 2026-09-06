@@ -114,7 +114,8 @@ func (tc *TypeChecker) applyCoverage(node *coverageNode, pattern ast.Pattern) (c
 		if !ok {
 			return false, true, false
 		}
-		if _, isADT := tc.adtNameForCoverage(node.typ); isADT {
+		_, _, isADT := tc.adtNameForCoverage(node.typ)
+		if isADT {
 			return false, true, false
 		}
 		if node.literals[key] {
