@@ -107,16 +107,21 @@ main: (): i32 {
 // Bounded priority selection over fixed caller-owned storage. The loop shape
 // is intentionally accepted by Oak's strict Power-of-Ten/TigerStyle profile:
 // fixed storage, no allocation, monotonically increasing counter, immutable
-// loop bound, and no recursion. Match decisions live in small pure helpers so
-// the hot loop itself stays straight-line and mechanically obvious.
+// loop bound, and no recursion.
+//
+// The current parser does not yet admit primitive Bool literals as match
+// patterns through the real compilation pipeline. Rather than hide that gap,
+// this POC uses a machine-friendly branchless selector. For u8 priorities a,b,
+// (a + 256 - b) is in [1,511], so integer division by 256 yields 0 exactly
+// when a < b and 1 otherwise; subtracting from 1 gives a checked 0/1 selector.
 func TestHypervisorPOCBoundedIrqSelection(t *testing.T) {
 	code, abnormal := buildAndRunStrict(t, "hypervisor_irq_select", `
 candidate_for: (eligible: u8, priority: u8, mask: u8): u8 = eligible ?
   | 1 -> priority
   | _ -> mask
 
-next_best_for: (better: Bool, i: u32, current: i32): i32 = better ? | true -> i32(i) | false -> current
-next_priority_for: (better: Bool, candidate: u8, current: u8): u8 = better ? | true -> candidate | false -> current
+better_bit: (candidate: u8, current: u8): u16 =
+  u16(1) - ((u16(candidate) + u16(256) - u16(current)) / u16(256))
 
 main: (): i32 {
   eligible_storage: [4]u8
@@ -135,20 +140,21 @@ main: (): i32 {
   priority[3] = u8(20)
 
   mask: u8 = u8(40)
-  best: i32 = -1
+  best: u32 = u32(0)
   best_priority: u8 = mask
   n: u32 = len(eligible)
   i: u32 = 0
 
   while i < n {
     candidate: u8 = candidate_for(eligible[i], priority[i], mask)
-    better: Bool = candidate < best_priority
-    best = next_best_for(better, i, best)
-    best_priority = next_priority_for(better, candidate, best_priority)
+    choose: u16 = better_bit(candidate, best_priority)
+    keep: u16 = u16(1) - choose
+    best = u32(choose) * i + u32(keep) * best
+    best_priority = u8(choose * u16(candidate) + keep * u16(best_priority))
     i = i + 1
   }
 
-  best
+  i32(best)
 }
 `)
 	if abnormal || code != 1 {
