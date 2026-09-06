@@ -62,7 +62,7 @@ Oak defines a small target-independent **natural ordered** record-layout primiti
 
 Its inputs are the authoritative ordered field sequence plus an already-established machine size and non-zero power-of-two alignment for each field. It does not infer field machine representation.
 
-For fields `f[0..n)`:
+The following is **normative specification pseudocode, not Oak source syntax**:
 
 ```text
 cursor = 0
@@ -76,6 +76,8 @@ for field in source_order:
 
 record_size = align_up(cursor, record_alignment)
 ```
+
+It defines the layout algorithm over the ordered field sequence; it does not introduce `for`, `place`, `align_up`, or mutable assignment as Oak surface-language constructs.
 
 Required laws:
 
