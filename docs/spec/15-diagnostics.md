@@ -158,6 +158,16 @@ tree when one local annotation is sufficient.
 If inference has multiple valid semantic answers and no principal/stable answer,
 Oak asks for an annotation rather than guessing.
 
+Indexed ADT diagnostics use stable identities:
+
+- `OAK-T0301` — a constructor result does not name the enclosing ADT with the
+  declared number of indices;
+- `OAK-T0302` — a constructor's result equations cannot inhabit the expected
+  indexed ADT application.
+
+The latter should name the constructor, its declared result, and the expected
+application without exposing internal unification variables.
+
 ## 6. Borrowing and ownership diagnostics
 
 Borrow diagnostics should describe ownership operations and storage relationships:
