@@ -7,11 +7,6 @@ package layout
 
 import "github.com/SCKelemen/oak/token"
 
-// Source is the minimal token source shared by the scanner and normalizer.
-type Source interface {
-	NextToken() token.Token
-}
-
 // Normalizer presents a normalized token stream.
 type Normalizer struct {
 	tokens []token.Token
@@ -22,7 +17,7 @@ type Normalizer struct {
 // The compiler-side allocation here is intentional: normalization is tooling,
 // not target runtime code, and a materialized stream makes equivalence testing
 // and diagnostics straightforward.
-func New(source Source) *Normalizer {
+func New(source token.Source) *Normalizer {
 	raw := make([]token.Token, 0, 256)
 	for {
 		tok := source.NextToken()
@@ -34,7 +29,7 @@ func New(source Source) *Normalizer {
 	return &Normalizer{tokens: normalize(raw)}
 }
 
-// NextToken implements Source.
+// NextToken implements token.Source.
 func (n *Normalizer) NextToken() token.Token {
 	if n.index >= len(n.tokens) {
 		return token.Token{TokenKind: token.EOF}
