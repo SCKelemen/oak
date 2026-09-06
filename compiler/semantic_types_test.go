@@ -27,6 +27,42 @@ func TestCompilationTypeModelProjectsADT(t *testing.T) {
 	}
 }
 
+func TestCompilationTypeModelSeparatesRecordAndStructRepresentation(t *testing.T) {
+	const source = `
+Shape: type = { x: u8, y: u32 }
+Stored: type = struct { x: u8, y: u32 }
+`
+
+	module, err := New().WithSource("records.oak", source).TypeModel().Get()
+	if err != nil {
+		t.Fatalf("type model projection failed: %v", err)
+	}
+	if len(module.Definitions) != 2 {
+		t.Fatalf("expected two semantic definitions, got %d", len(module.Definitions))
+	}
+
+	shape := module.Definitions[0]
+	stored := module.Definitions[1]
+	if shape.Type.Kind != semir.TypeRecord || stored.Type.Kind != semir.TypeRecord {
+		t.Fatalf("expected both declarations to have record semantics: shape=%#v stored=%#v", shape.Type, stored.Type)
+	}
+	if shape.Representation.Kind != semir.RepresentationUnspecified || shape.Representation.Policy != semir.RepresentationPolicyUnspecified || shape.Representation.Resolved {
+		t.Fatalf("plain record unexpectedly selected representation: %#v", shape.Representation)
+	}
+	if stored.Representation.Kind != semir.RepresentationRecord {
+		t.Fatalf("struct did not select record representation: %#v", stored.Representation)
+	}
+	if stored.Representation.Policy != semir.RepresentationPolicyNaturalOrdered {
+		t.Fatalf("struct selected wrong policy: %#v", stored.Representation)
+	}
+	if stored.Representation.Resolved {
+		t.Fatalf("struct representation should remain unresolved before target field representations are known: %#v", stored.Representation)
+	}
+	if stored.Representation.Alignment != 0 || stored.Representation.Size != 0 || len(stored.Representation.Fields) != 0 {
+		t.Fatalf("struct projection invented numeric layout facts: %#v", stored.Representation)
+	}
+}
+
 func TestBuildTypeModelPreservesRecordOrderWithoutInventingLayout(t *testing.T) {
 	record := &ast.RecordLiteral{Fields: make(map[string]ast.Expression)}
 	record.AddField(ast.Identifier{}.Token, "y", &ast.Identifier{Value: "i32"})
@@ -48,7 +84,7 @@ func TestBuildTypeModelPreservesRecordOrderWithoutInventingLayout(t *testing.T) 
 	if point.Type.Kind != semir.TypeRecord {
 		t.Fatalf("expected record semantic type, got %q", point.Type.Kind)
 	}
-	if point.Representation.Kind != semir.RepresentationUnspecified || len(point.Representation.Fields) != 0 {
+	if point.Representation.Kind != semir.RepresentationUnspecified || point.Representation.Policy != semir.RepresentationPolicyUnspecified || point.Representation.Resolved || len(point.Representation.Fields) != 0 {
 		t.Fatalf("projector invented ABI representation: %#v", point.Representation)
 	}
 	if got := []string{point.Type.Fields[0].Name, point.Type.Fields[1].Name}; got[0] != "y" || got[1] != "x" {
