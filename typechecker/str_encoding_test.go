@@ -97,3 +97,28 @@ func TestRuneIsUnsigned32(t *testing.T) {
 		})
 	}
 }
+
+// assert (docs/spec/85-discipline.md section 5): one Bool argument, unit
+// result, always compiled in.
+func TestAssertBuiltinTypeChecks(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		hasError bool
+	}{
+		{"bool condition accepted", "x: i32 = 5\nassert(x == 5)", false},
+		{"non-bool condition rejected", "x: i32 = 5\nassert(x)", true},
+		{"arity enforced", "assert(true, false)", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := setupTypeChecker(tt.input)
+			program := parseProgram(tt.input)
+			tc.CheckProgram(program)
+			hasError := len(tc.Errors()) > 0
+			if hasError != tt.hasError {
+				t.Errorf("input %q: expected error=%v, got errors=%v", tt.input, tt.hasError, tc.Errors())
+			}
+		})
+	}
+}

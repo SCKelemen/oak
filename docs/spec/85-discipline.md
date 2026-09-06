@@ -85,11 +85,12 @@ enforced.
 ## 5. Assertions
 
 TigerStyle assertion density: functions assert their arguments, results, and
-invariants; assertions are compiled in, not compiled out. Planned: an
-`assert` builtin whose condition feeds the proposition axis (statically
-discharged assertions become proofs; the rest remain runtime checks that are
-never elided in any build mode), plus a strict-profile density lint.
-Not yet enforced.
+invariants; assertions are compiled in, not compiled out. The `assert`
+builtin exists: it takes one `Bool`, returns unit, evaluates in the
+interpreter, and lowers to an always-on C helper (`__builtin_trap` on
+failure) that no build mode elides. Planned: feeding assert conditions into
+the proposition axis (statically discharged assertions become proofs) and a
+strict-profile density lint.
 
 ## 6. Checked results
 

@@ -238,6 +238,21 @@ func evalIdentifier(node *ast.Identifier, env *object.Environment) object.Object
 // Built-in functions
 func getBuiltin(name string) (*object.Builtin, bool) {
 	builtins := map[string]object.BuiltinFunction{
+		"assert": func(args ...object.Object) object.Object {
+			// docs/spec/85-discipline.md section 5: assertions are always
+			// checked, in every mode.
+			if len(args) != 1 {
+				return newError("assert expects exactly one Bool argument, got %d", len(args))
+			}
+			cond, ok := args[0].(*object.Boolean)
+			if !ok {
+				return newError("assert condition must be Bool, got %s", args[0].Type())
+			}
+			if !cond.Value {
+				return newError("assertion failed")
+			}
+			return NULL
+		},
 		"len": func(args ...object.Object) object.Object {
 			if len(args) != 1 {
 				return newError("wrong number of arguments. got=%d, want=1", len(args))

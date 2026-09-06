@@ -109,6 +109,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// Emit standard library ADTs first
 	cg.emitBoolADT()
 	cg.emitComparisonADT()
+	cg.emitAssertHelper()
 
 	// Emit type definitions (ADTs, records)
 	// First, collect all ADT types for later lookup
@@ -589,6 +590,18 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write("\n")
 }
 
+// emitAssertHelper emits the always-on assertion primitive: TigerStyle
+// assertions are compiled into every build mode, never elided
+// (docs/spec/85-discipline.md section 5).
+func (cg *CodeGenerator) emitAssertHelper() {
+	cg.write("/* assert: always compiled in (docs/spec/85-discipline.md section 5) */\n")
+	cg.write("static inline void oak_assert(Bool cond) {\n")
+	cg.write("  if (!cond) {\n")
+	cg.write("    __builtin_trap();\n")
+	cg.write("  }\n")
+	cg.write("}\n\n")
+}
+
 // emitTrampolineGroup merges one mutual-tail cycle into a state-machine
 // engine plus per-member wrappers (docs/spec/85-discipline.md): tail calls
 // between members become state switches inside one frame, so the cycle
@@ -825,7 +838,13 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		}
 	case *ast.InvocationExpression:
 		// Function or method call
-		cg.emitExpressionFragment(e.Function, tc)
+		if ident, ok := e.Function.(*ast.Identifier); ok && ident.Value == "assert" {
+			// assert lowers to the always-on helper: never elided
+			// (docs/spec/85-discipline.md section 5).
+			cg.output.WriteString("oak_assert")
+		} else {
+			cg.emitExpressionFragment(e.Function, tc)
+		}
 		cg.output.WriteString("( ")
 		for i, arg := range e.Arguments {
 			cg.emitExpressionFragment(arg, tc)

@@ -1,0 +1,7 @@
+
+fn checked_double(n: i32) -> i32 {
+  assert(n < 100)
+  n * 2
+}
+
+v: i32 = checked_double(21)

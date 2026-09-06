@@ -148,6 +148,18 @@ total: i32 = countdown(10, 0)
 `,
 		},
 		{
+			// assert is always compiled in (docs/spec/85-discipline.md section 5).
+			Name: "assertions",
+			SourceCode: `
+fn checked_double(n: i32) -> i32 {
+  assert(n < 100)
+  n * 2
+}
+
+v: i32 = checked_double(21)
+`,
+		},
+		{
 			// Mutual tail recursion with matching signatures compiles to one
 			// trampoline engine (docs/spec/85-discipline.md): the whole cycle
 			// runs in a single frame.

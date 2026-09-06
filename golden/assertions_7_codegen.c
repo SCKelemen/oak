@@ -41,10 +41,10 @@ static inline void oak_assert(Bool cond) {
 // @source: unknown.oak:1:0-4:0
 // @package: main
 // @kind: function
-// @identifier: scale
-// @signature: fn scale(a: i32, b: i32) -> i32
-i32 oak_scale( i32 a, i32 b ) {
-    i32 doubled   = ( a * 2 )  ;
-    return ( doubled + b )  ;
+// @identifier: checked_double
+// @signature: fn checked_double(n: i32) -> i32
+i32 oak_checked_double( i32 n ) {
+oak_assert( ( n < 100 ) )  ;
+    return ( n * 2 )  ;
 }
 

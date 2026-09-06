@@ -971,6 +971,19 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if ident.Value == "view_as" || ident.Value == "span_as" {
 			return tc.checkReinterpretCast(ident.Value, expr.Arguments)
 		}
+		// assert (docs/spec/85-discipline.md section 5): a Bool condition,
+		// compiled in and never elided by build mode.
+		if ident.Value == "assert" {
+			if len(expr.Arguments) != 1 {
+				tc.addError(expr, "assert expects exactly one Bool argument")
+				return &UnitType{}
+			}
+			condType := tc.checkExpression(expr.Arguments[0])
+			if condType != nil && !condType.Equals(&BoolType{}) {
+				tc.addError(expr.Arguments[0], "assert condition must be Bool, got %s", condType)
+			}
+			return &UnitType{}
+		}
 	}
 
 	// Check if this is a method call: recv.method(args)

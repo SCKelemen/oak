@@ -1,0 +1,217 @@
+{
+  "statements": [
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "InfixExpression",
+                              "data": {
+                                "left": {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "n"
+                                  },
+                                  "position": {
+                                    "line": 3,
+                                    "column": 10,
+                                    "byte_start": 45,
+                                    "byte_end": 46
+                                  }
+                                },
+                                "operator": "\u003c",
+                                "right": {
+                                  "type": "IntegerLiteral",
+                                  "data": {
+                                    "value": 100
+                                  },
+                                  "position": {
+                                    "line": 3,
+                                    "column": 14,
+                                    "byte_start": 49,
+                                    "byte_end": 52
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 3,
+                                "column": 12,
+                                "byte_start": 47,
+                                "byte_end": 48
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "assert"
+                            },
+                            "position": {
+                              "line": 3,
+                              "column": 3,
+                              "byte_start": 38,
+                              "byte_end": 44
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 3,
+                          "column": 9,
+                          "byte_start": 44,
+                          "byte_end": 45
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 3,
+                      "column": 3,
+                      "byte_start": 38,
+                      "byte_end": 44
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InfixExpression",
+                        "data": {
+                          "left": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "n"
+                            },
+                            "position": {
+                              "line": 4,
+                              "column": 3,
+                              "byte_start": 56,
+                              "byte_end": 57
+                            }
+                          },
+                          "operator": "*",
+                          "right": {
+                            "type": "IntegerLiteral",
+                            "data": {
+                              "value": 2
+                            },
+                            "position": {
+                              "line": 4,
+                              "column": 7,
+                              "byte_start": 60,
+                              "byte_end": 61
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 4,
+                          "column": 5,
+                          "byte_start": 58,
+                          "byte_end": 59
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 4,
+                      "column": 3,
+                      "byte_start": 56,
+                      "byte_end": 57
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 2,
+                "column": 34,
+                "byte_start": 34,
+                "byte_end": 35
+              }
+            }
+          },
+          "position": {
+            "line": 2,
+            "column": 34,
+            "byte_start": 34,
+            "byte_end": 35
+          }
+        },
+        "name": "checked_double",
+        "parameters": [
+          {
+            "name": "n",
+            "type": "i32"
+          }
+        ],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 2,
+        "column": 1,
+        "byte_start": 1,
+        "byte_end": 3
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "v",
+        "type": "i32",
+        "value": {
+          "type": "InvocationExpression",
+          "data": {
+            "arguments": [
+              {
+                "type": "IntegerLiteral",
+                "data": {
+                  "value": 21
+                },
+                "position": {
+                  "line": 7,
+                  "column": 25,
+                  "byte_start": 89,
+                  "byte_end": 91
+                }
+              }
+            ],
+            "function": {
+              "type": "Identifier",
+              "data": {
+                "value": "checked_double"
+              },
+              "position": {
+                "line": 7,
+                "column": 10,
+                "byte_start": 74,
+                "byte_end": 88
+              }
+            }
+          },
+          "position": {
+            "line": 7,
+            "column": 24,
+            "byte_start": 88,
+            "byte_end": 89
+          }
+        }
+      },
+      "position": {
+        "line": 7,
+        "column": 1,
+        "byte_start": 65,
+        "byte_end": 66
+      }
+    }
+  ],
+  "type": "Program"
+}

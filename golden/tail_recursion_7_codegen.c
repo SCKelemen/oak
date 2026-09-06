@@ -31,6 +31,13 @@ typedef enum oak_Comparison {
     oak_Comparison_Greater  = 1
 } Comparison;
 
+/* assert: always compiled in (docs/spec/85-discipline.md section 5) */
+static inline void oak_assert(Bool cond) {
+  if (!cond) {
+    __builtin_trap();
+  }
+}
+
 // @source: unknown.oak:1:0-3:0
 // @package: main
 // @kind: function

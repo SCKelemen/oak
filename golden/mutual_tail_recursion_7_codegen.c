@@ -31,6 +31,13 @@ typedef enum oak_Comparison {
     oak_Comparison_Greater  = 1
 } Comparison;
 
+/* assert: always compiled in (docs/spec/85-discipline.md section 5) */
+static inline void oak_assert(Bool cond) {
+  if (!cond) {
+    __builtin_trap();
+  }
+}
+
 /* trampoline for mutual tail recursion: ping, pong */
 typedef enum {
     oak_tramp_ping_pong_ping,
