@@ -29,7 +29,7 @@ Legend:
 | ADTs | ✓ | ✓ | ✓ |  |  |  | old payload/default/tag meanings need compiler reconciliation |
 | Pattern matching | ✓ | ✓ | ✓ | partial | partial |  | canonical `=>`; constructor/payload narrowing exists; recursive coverage analysis is formalized separately; legacy surface aliases remain implementation concern |
 | Exhaustiveness | ✓ | ✓ | ✓ | ✓ | ✓ |  | recursive coverage tree distinguishes constructor payload cases, finite `Bool`, and open scalar domains; counterexamples are deterministic source-level pattern witnesses; malformed patterns suppress derivative coverage errors. `Oak.Exhaustiveness` proves finite constructor coverage laws and `Oak.PatternAnalysis` proves reachable-case coverage/counterexample laws; implementation refinement pending |
-| Pattern redundancy / reachable-state analysis | ✓ | ✓ | ✓ | ✓ | ✓ |  | source-order usefulness detects subsumed arms; existing narrowed constructor facts restrict the reachable case universe; impossible/redundant arm bodies are treated as `never` and do not widen match results. `OAK-T0202`/`OAK-T0203` are structured unnecessary-code warnings. `Oak.PatternAnalysis` proves redundant-vs-useful exclusion and constructor exclusion under refinements; implementation refinement pending |
+| Pattern redundancy / reachable-state analysis | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | source-order usefulness detects subsumed arms; existing narrowed constructor facts restrict the reachable case universe; impossible/redundant arm bodies are treated as `never` and do not widen match results. `OAK-T0202`/`OAK-T0203` are structured unnecessary-code warnings. `Oak.PatternAnalysisRefinement` proves scoped correspondence for finite recursive semantic case expansion: concrete recursive matching, completion, redundancy, and bounded counterexample witnesses agree with `Oak.PatternAnalysis`. Open scalar domains and representation-level extraction from Go maps remain outside this scoped **R** claim. |
 | GADT-style refinements | direction | partial | partial | ✓ | ✓ |  | the analyzer and formal model operate over a refinement-restricted reachable semantic case set, including empty/vacuously exhaustive states. Concrete support currently consumes existing constructor narrowing only; constructor result-index declaration syntax, equality/proposition generation, and a GADT solver are intentionally not yet frozen or implemented |
 | Generic constraints/interfaces | ✓ | ✓ | ✓ | partial | partial | partial | static predicate semantics; named requirements may be method interfaces or semantic record shapes; record-shape call inference/discharge/substitution has a scoped refinement proof, but arbitrary multi-variable/multi-parameter unification and method-interface discharge are not yet refined |
 | Phantom types | ✓ | partial | partial | ✓ | ✓ |  | `Oak.PhantomRepresentation` proves phantom rebinding changes static identity while preserving the entire runtime representation record, including size, alignment, and bit width; implementation refinement/inference pending |
@@ -64,6 +64,7 @@ The formal gate currently checks:
 - `Oak.Slab`
 - `Oak.Exhaustiveness`
 - `Oak.PatternAnalysis`
+- `Oak.PatternAnalysisRefinement`
 - `Oak.SourcePosition`
 - `Oak.Delimited`
 - `Oak.RegionLifetime`
@@ -82,7 +83,7 @@ A green Lean build means the stated theorems type-check against the pinned proof
 
 ## Immediate formal-verification queue
 
-1. connect concrete recursive coverage-tree operations and generated witnesses to `Oak.PatternAnalysis` with an explicit implementation refinement; then extend the reachable-case provider from constructor narrowing to real GADT result-index equalities/propositions;
+1. extend the reachable-case provider from constructor narrowing to real GADT result-index equalities/propositions, and later connect the Go map representation itself to the now-proved finite recursive decision procedure;
 2. extend general inference refinement from direct/one-level unary `T: Shape` calls to multiple parameters, repeated type-variable occurrences, generic applications, multiple quantified variables and refinement obligations;
 3. connect ownership/effect/region analysis to `GeneralizationFacts`, then prove/refine the concrete generalization decision against `Oak.GeneralizationSafety`;
 4. finish migrating parser/type/effect/representation and remaining borrow/escape/move failures to first-class diagnostic codes and canonical byte locations, then refine the concrete diagnostic identity/primary-cause operations against `Oak.Diagnostics`;
