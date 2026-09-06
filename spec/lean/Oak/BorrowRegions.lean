@@ -49,13 +49,15 @@ theorem disjoint_symmetric {a b : Region} : Disjoint a b ↔ Disjoint b a := by
 /-- Provably disjoint regions cannot overlap. -/
 theorem disjoint_not_overlap {a b : Region} (h : Disjoint a b) : ¬ Overlap a b := by
   intro hov
+  have haPos : 0 < a.length := hov.1
+  have hbPos : 0 < b.length := hov.2.1
+  have habStart : a.offset < b.finish := hov.2.2.1
+  have hbaStart : b.offset < a.finish := hov.2.2.2
   rcases h with ha | hb | hab | hba
-  · rw [ha] at hov
-    exact (Nat.not_lt_of_ge (Nat.zero_le 0)) hov.1
-  · rw [hb] at hov
-    exact (Nat.not_lt_of_ge (Nat.zero_le 0)) hov.2.1
-  · exact (Nat.not_lt_of_ge hab) hov.2.2.2
-  · exact (Nat.not_lt_of_ge hba) hov.2.2.1
+  · simp [ha] at haPos
+  · simp [hb] at hbPos
+  · exact (Nat.not_lt_of_ge hab) habStart
+  · exact (Nat.not_lt_of_ge hba) hbaStart
 
 /-- Adjacent half-open regions are disjoint. -/
 theorem adjacent_disjoint (offset leftLen rightLen : Nat) :
