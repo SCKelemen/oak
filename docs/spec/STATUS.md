@@ -15,6 +15,7 @@ Legend:
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | --- |
 | Layout + explicit blocks | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go tests cover explicit/layout token-kind equivalence, original significant-token preservation, balanced virtual braces, continuation contexts, dedent ordering, and zero-width synthetic spans; `Oak.Layout` proves abstract source-order preservation, virtual-stack balance, EOF closure, and close-underflow rejection; indentation-trigger refinement pending |
 | Source spans / UTF-16 editor positions | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.SourcePosition` proves UTF-8/UTF-16 scalar-width rules, additive coordinate accumulation, monotonic offsets, and ASCII width equivalence; Go tests cover emoji, multiline positions, byte-boundary rejection, links, and LSP coordinates; refinement pending |
+| First-class diagnostics | ✓ | partial | ✓ | ✓ | ✓ |  | `diagnostic.Diagnostic` now has stable code/category, one primary label, secondary labels, structured notes/help, deterministic plain rendering, and validation; `Compilation.Check` preserves structured type diagnostics instead of flattening them; generic constraint/record-shape failures use specific codes and explain inferred types/missing fields; `source.Location` establishes canonical source identity. `Oak.Diagnostics` proves retitling/advice/secondary context preserve stable identity and primary cause. Parser/general type/borrow/effect diagnostics, canonical byte-location threading into every diagnostic, code-frame rendering, cascade suppression, and implementation refinement remain pending |
 | Delimited parser cursor contract | ✓ | ✓ | ✓ | ✓ | ✓ |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; `Oak.Delimited` proves canonical opener/body/close structure, item preservation, unique close suffix, exact close offset, and trailing-separator semantic transparency; refinement pending |
 | Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
 | Type inference | ✓ | partial | partial | partial | partial | partial | Oak uses unification/type-scheme machinery where useful but inference is layered with constraints, refinements, ownership/effects/regions, representation and proof obligations. Binder identity is distinct from source-facing names; `Oak.TypeVarIdentity` proves substitution isolation for same-named distinct binders. `Oak.GenericConstraintRefinement` proves scoped direct/unary constrained inference paths. Principal/general inference, richer refinements and exported-signature checking remain pending |
@@ -70,6 +71,7 @@ The formal gate currently checks:
 - `Oak.RepresentationPolymorphism`
 - `Oak.TypeVarIdentity`
 - `Oak.GeneralizationSafety`
+- `Oak.Diagnostics`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement except where an explicit refinement theorem is identified in this matrix.
 
@@ -77,11 +79,12 @@ A green Lean build means the stated theorems type-check against the pinned proof
 
 1. extend general inference refinement from direct/one-level unary `T: Shape` calls to multiple parameters, repeated type-variable occurrences, generic applications, multiple quantified variables and refinement obligations;
 2. connect ownership/effect/region analysis to `GeneralizationFacts`, then prove/refine the concrete generalization decision against `Oak.GeneralizationSafety`;
-3. explicit refinement from selected/resolved struct representation to `Oak.RecordLayout` and from `RepresentationRegistry` selection to `Oak.RepresentationPolymorphism`;
-4. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, binder identity, and layout normalization;
-5. formalize method-interface constraint discharge and its no-runtime-object specialization semantics;
-6. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
-7. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
+3. migrate parser/type/borrow/effect/representation failures to first-class diagnostic codes and canonical byte locations, then refine the concrete diagnostic identity/primary-cause operations against `Oak.Diagnostics`;
+4. explicit refinement from selected/resolved struct representation to `Oak.RecordLayout` and from `RepresentationRegistry` selection to `Oak.RepresentationPolymorphism`;
+5. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, binder identity, and layout normalization;
+6. formalize method-interface constraint discharge and its no-runtime-object specialization semantics;
+7. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
+8. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
 
 ## Refinement policy
 
