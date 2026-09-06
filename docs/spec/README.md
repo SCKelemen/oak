@@ -53,7 +53,8 @@ Use these terms precisely:
 - `15-diagnostics.md` — first-class compiler errors, stable codes, causal labels, notes/help, and UX requirements
 - `20-types.md` — type universe, subtyping, joins/meets, nominal identity
 - `25-type-inference.md` — layered local inference, safe generalization, explicit module/API contracts
-- `30-adts-patterns.md` — ADTs, GADT direction, constructors, matching, exhaustiveness
+- `30-adts-patterns.md` — ADTs, GADT direction, constructors, and core matching semantics
+- `35-pattern-analysis.md` — recursive exhaustiveness, redundancy, reachable refinements, unreachable arms, and counterexamples
 - `40-records.md` — products, record identity, composition, order, layout separation
 - `45-representations.md` — multiple checked representations per semantic type and representation selection
 - `50-borrowing.md` — ownership, views, spans, safe/unsafe boundaries
