@@ -108,21 +108,37 @@ func (tc *TypeChecker) variantIndexBindings(
 		params[name] = true
 	}
 	bindings := make(map[string]Type)
+	apply := func(sub Substitution) {
+		for name, bound := range bindings {
+			bindings[name] = sub.Apply(bound)
+		}
+	}
 	for i, expected := range indices {
 		if params[expected] {
 			if prior, exists := bindings[expected]; exists {
-				if !prior.Equals(actual[i]) {
+				sub := NewUnifier().Unify(prior, actual[i])
+				if sub == nil {
 					return nil, false
 				}
+				apply(sub)
+				bindings[expected] = sub.Apply(prior)
 			} else {
 				bindings[expected] = actual[i]
 			}
 			continue
 		}
 		concrete := tc.storedIndexType(expected)
-		if concrete == nil || !concrete.Equals(actual[i]) {
+		if concrete == nil {
 			return nil, false
 		}
+		sub := NewUnifier().Unify(actual[i], concrete)
+		if sub == nil {
+			return nil, false
+		}
+		apply(sub)
+		// Record the refined ADT index position as well as applying the
+		// substitution to any constructor-parameter bindings.
+		bindings[adt.TypeParams[i]] = concrete
 	}
 	return bindings, true
 }
@@ -175,7 +191,11 @@ func constructorResultSyntax(result ast.Expression) (string, []string, error) {
 	}
 	indices := make([]string, 0, len(args))
 	for _, arg := range args {
-		indices = append(indices, arg.String())
+		ident, atomic := arg.(*ast.Identifier)
+		if !atomic || ident.Value == "" {
+			return "", nil, fmt.Errorf("result indices must be atomic type names or parameters")
+		}
+		indices = append(indices, ident.Value)
 	}
 	return name, indices, nil
 }
