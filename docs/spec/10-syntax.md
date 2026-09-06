@@ -54,35 +54,36 @@ is not part of the safe core until definite-initialization semantics are specifi
 
 ## 3. Functions
 
-Canonical return annotation uses `:`:
+A function is an ordinary declaration: a name bound to a function interface
+and a definition, exactly like every other `name: Type = value` form.
+
+```oak
+addi32: (a, b: i32): i32 = a + b
+addu8: (a, b: u8) -> u8 = a + b
+```
+
+Both return spellings are accepted: `:` and `->`. Parameter names may be
+grouped, sharing one type (`a, b: i32`); the last group may be variadic
+(`rest: ...T`, one name). The definition is `= expression` or a brace block:
+
+```oak
+mix: (a: u8, b, c: i32) -> i32 {
+  b + c
+}
+```
+
+The `fn` keyword form remains available (methods with receivers and generic
+type parameters currently use it) with the same body semantics:
 
 ```oak
 fn add(a: i32, b: i32): i32 = a + b
 ```
 
-Layout body:
+Function types (interfaces without a definition) use `->` and appear anywhere
+a type does — a variable of function type holds a function value:
 
 ```oak
-fn add(a: i32, b: i32): i32
-  sum := a + b
-  sum
-```
-
-Explicit body:
-
-```oak
-fn add(a: i32, b: i32): i32 {
-  sum := a + b
-  sum
-}
-```
-
-These forms have one block/expression semantics. `=` is useful for an explicitly expression-bodied function; a following layout block or brace block is the ordinary body form.
-
-Function types use `->`:
-
-```oak
-(i32, i32) -> i32
+handler: (i32, i32) -> i32 = addi32
 ```
 
 ### Variadic trailing parameters

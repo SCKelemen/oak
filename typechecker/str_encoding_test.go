@@ -239,3 +239,33 @@ func TestLenBuiltinTypeChecks(t *testing.T) {
 		})
 	}
 }
+
+// Declaration-form functions (docs/spec/10-syntax.md section 3): the
+// canonical form typechecks, recurses, and function-type variables hold
+// function values.
+func TestDeclarationFormFunctionsTypecheck(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		hasError bool
+	}{
+		{"colon return", "addi32: (a, b: i32): i32 = a + b\nx: i32 = addi32(1, 2)", false},
+		{"arrow return", "addu8: (a, b: u8) -> u8 = a + b\nx: u8 = addu8(1, 2)", false},
+		{"grouped params share the type", "mix: (a: u8, b, c: i32) -> i32 = b + c\nx: i32 = mix(1, 2, 3)", false},
+		{"recursion through the form", "fact: (n, acc: i32): i32 = n ?\n  | 0 -> acc\n  | _ -> fact(n - 1, acc * n)\nx: i32 = fact(5, 1)", false},
+		{"body type must match", "bad: (a: i32): string = a", true},
+		{"function-type variable holds a function", "addi32: (a, b: i32): i32 = a + b\nhandler: (i32, i32) -> i32 = addi32", false},
+		{"function-type variable rejects mismatched arity", "addi32: (a, b: i32): i32 = a + b\nhandler: (i32) -> i32 = addi32", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := setupTypeChecker(tt.input)
+			program := parseProgram(tt.input)
+			tc.CheckProgram(program)
+			hasError := len(tc.Errors()) > 0
+			if hasError != tt.hasError {
+				t.Errorf("input %q: expected error=%v, got errors=%v", tt.input, tt.hasError, tc.Errors())
+			}
+		})
+	}
+}

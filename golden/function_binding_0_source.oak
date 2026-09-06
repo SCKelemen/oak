@@ -1,0 +1,10 @@
+
+addi32: (a, b: i32): i32 = a + b
+
+scale: (base: i32, factor, offset: i32) -> i32 {
+  addi32(base * factor, offset)
+}
+
+fact: (n, acc: i32): i32 = n ?
+  | 0 -> acc
+  | _ -> fact(n - 1, acc * n)

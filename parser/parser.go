@@ -1419,20 +1419,55 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 		return p.parseArrayType()
 
 	case token.LPAREN:
+		openToken := p.currentToken
 		if p.peekTokenIs(token.RPAREN) {
-			// Unit type: ()
-			unitToken := p.currentToken
 			p.nextToken() // move to ')'
-			// currentToken is now ')', last token of the type
+			if p.peekTokenIs(token.ARROW) {
+				// Nullary function type: () -> R
+				p.nextToken() // move to '->'
+				p.nextToken() // move to return type
+				returnType := p.parseTypeExpression()
+				if returnType == nil {
+					return nil
+				}
+				return &ast.FunctionTypeExpression{Token: openToken, Return: returnType}
+			}
+			// Unit type: ()
 			return &ast.Identifier{
-				Token: unitToken,
+				Token: openToken,
 				Value: "()",
 			}
 		}
-		// Parenthesized type: (T)
+		// Parenthesized type (T), or function type (T1, T2, ...) -> R.
 		p.nextToken() // move to inner type
 		inner := p.parseTypeExpression()
+		if inner == nil {
+			return nil
+		}
+		parameters := []ast.Expression{inner}
+		for p.peekTokenIs(token.COMMA) {
+			p.nextToken() // move to ','
+			p.nextToken() // move to next type
+			next := p.parseTypeExpression()
+			if next == nil {
+				return nil
+			}
+			parameters = append(parameters, next)
+		}
 		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
+		if p.peekTokenIs(token.ARROW) {
+			p.nextToken() // move to '->'
+			p.nextToken() // move to return type
+			returnType := p.parseTypeExpression()
+			if returnType == nil {
+				return nil
+			}
+			return &ast.FunctionTypeExpression{Token: openToken, Parameters: parameters, Return: returnType}
+		}
+		if len(parameters) > 1 {
+			p.addErrorAtCurrentToken("a parenthesized type list must be a function type: (T1, T2) -> R")
 			return nil
 		}
 		// currentToken is ')', last token of the type
@@ -2607,6 +2642,159 @@ func (p *Parser) bracketGroupPrecedesColon() bool {
 	return false
 }
 
+// parameterListAhead looks ahead, without consuming tokens, from a position
+// where currentToken is '(' after `name:`. It reports whether the group is a
+// parameter list — a top-level colon before the matching ')', or an empty
+// group whose ')' is followed by a return annotation (':' or '->').
+func (p *Parser) parameterListAhead() bool {
+	cursor, ok := p.source.(*token.Cursor)
+	if !ok {
+		return false
+	}
+	// The token stream position: currentToken is '(', peekToken is the first
+	// token inside; cursor.Peek(0) is the token after peekToken.
+	if p.peekTokenIs(token.RPAREN) {
+		// Empty parameter list only when a return annotation follows.
+		offset := 0
+		const lookaheadLimit = 16
+		for step := 0; step < lookaheadLimit; step++ {
+			next := cursor.Peek(offset)
+			offset++
+			if next.TokenKind == token.TRIVIA || next.TokenKind == token.COMMENT {
+				continue
+			}
+			return next.TokenKind == token.COLON || next.TokenKind == token.ARROW
+		}
+		return false
+	}
+	depth := 1
+	if p.peekTokenIs(token.LPAREN) {
+		depth++
+	}
+	if p.peekTokenIs(token.COLON) {
+		return true
+	}
+	offset := 0
+	const lookaheadLimit = 4096
+	for step := 0; step < lookaheadLimit; step++ {
+		tok := cursor.Peek(offset)
+		offset++
+		switch tok.TokenKind {
+		case token.LPAREN:
+			depth++
+		case token.RPAREN:
+			depth--
+			if depth == 0 {
+				return false
+			}
+		case token.COLON:
+			if depth == 1 {
+				return true
+			}
+		case token.EOF:
+			return false
+		}
+	}
+	return false
+}
+
+// parseFunctionDefinitionFromName parses the canonical declaration-form
+// function definition. currentToken is '(' of the parameter list. Grouped
+// names share one type: (a, b: i32, c: u8). The last group may be variadic.
+func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.FunctionStatement {
+	stmt := &ast.FunctionStatement{Token: name.Token, Name: name}
+
+	// Parse parameter groups.
+	params := []*ast.FunctionParameter{}
+	if !p.peekTokenIs(token.RPAREN) {
+		for {
+			// Collect the group's names.
+			group := []*ast.Identifier{}
+			for {
+				if !p.expectPeek(token.IDENT) {
+					return nil
+				}
+				group = append(group, &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal})
+				if p.peekTokenIs(token.COLON) {
+					break
+				}
+				if !p.expectPeek(token.COMMA) {
+					return nil
+				}
+			}
+			if !p.expectPeek(token.COLON) {
+				return nil
+			}
+			p.nextToken()
+			variadic := false
+			if p.currentTokenIs(token.ELLIPSIS) {
+				variadic = true
+				p.nextToken()
+			}
+			groupType := p.parseTypeExpression()
+			if groupType == nil {
+				return nil
+			}
+			if variadic && len(group) != 1 {
+				p.addErrorAtCurrentToken("a variadic parameter group must name exactly one parameter")
+				return nil
+			}
+			for _, groupName := range group {
+				params = append(params, &ast.FunctionParameter{
+					Token:    groupName.Token,
+					Name:     groupName,
+					Type:     groupType,
+					Variadic: variadic,
+				})
+			}
+			if p.peekTokenIs(token.RPAREN) {
+				break
+			}
+			if !p.expectPeek(token.COMMA) {
+				return nil
+			}
+		}
+	}
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+	for i, param := range params {
+		if param.Variadic && i != len(params)-1 {
+			p.addErrorAtToken(&param.Token, "only the last parameter may be variadic")
+			return nil
+		}
+	}
+	stmt.Parameters = params
+
+	// Return annotation: ':' or '->'.
+	if p.peekTokenIs(token.COLON) || p.peekTokenIs(token.ARROW) {
+		p.nextToken()
+		p.nextToken()
+		stmt.ReturnType = p.parseTypeExpression()
+		if stmt.ReturnType == nil {
+			return nil
+		}
+	}
+
+	// Body: '= expr' or a brace block.
+	if p.peekTokenIs(token.ASSIGN) {
+		p.nextToken()
+		p.nextToken()
+		stmt.Body = p.parseExpression(LOWEST)
+	} else if p.peekTokenIs(token.LBRACE) {
+		p.nextToken()
+		stmt.Body = p.parseBlockExpression()
+	} else {
+		p.addErrorAtCurrentToken(fmt.Sprintf("function %s needs a definition: '= expression' or a brace block", name.Value))
+		return nil
+	}
+	if stmt.Body == nil {
+		return nil
+	}
+	stmt.EndToken = p.currentToken
+	return stmt
+}
+
 // parseIdentLedStatement handles statements that start with IDENT ":" ...
 // This centralizes routing between ADT type definitions and variable declarations.
 func (p *Parser) parseIdentLedStatement() ast.Statement {
@@ -2655,6 +2843,23 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 			adt.TypeParams = typeParams
 		}
 		return adt
+	}
+
+	// Canonical function definition (docs/spec/10-syntax.md section 3):
+	// name: (params): Ret = body  /  name: (params) -> Ret = body.
+	// A parenthesized group that is a parameter list (top-level colon inside,
+	// or an empty group followed by a return annotation) defines a function;
+	// anything else stays a type expression, so variables of function type
+	// are unaffected.
+	if p.currentTokenIs(token.LPAREN) && p.parameterListAhead() {
+		fn := p.parseFunctionDefinitionFromName(name)
+		if fn == nil {
+			return nil
+		}
+		if len(typeParams) > 0 {
+			fn.TypeParams = typeParams
+		}
+		return fn
 	}
 
 	// We're in `Name: <TypeExpr> (= ...)?` or `Name[E, Unit]: <TypeExpr> (= ...)?` - variable declaration

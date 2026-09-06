@@ -158,6 +158,10 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 		}
 	}
 
+	// Forward declarations: C requires declaration before use, and Oak
+	// functions are order-independent.
+	cg.emitFunctionPrototypes(program)
+
 	// Emit function definitions
 	for _, stmt := range program.Statements {
 		switch s := stmt.(type) {
@@ -862,6 +866,42 @@ func (cg *CodeGenerator) emitLen(call *ast.InvocationExpression, tc *typechecker
 	}
 }
 
+// emitFunctionPrototypes forward-declares every top-level function so calls
+// are order-independent in the emitted C.
+func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
+	emitted := false
+	for _, stmt := range program.Statements {
+		fn, ok := stmt.(*ast.FunctionStatement)
+		if !ok || fn.Name == nil || fn.Receiver != nil {
+			continue
+		}
+		if !emitted {
+			cg.write("/* forward declarations */\n")
+			emitted = true
+		}
+		returnType := cg.parseTypeExpression(fn.ReturnType)
+		cg.write(fmt.Sprintf("%s %s( ", returnType, cg.cFunctionName(fn.Name.Value)))
+		if len(fn.Parameters) == 0 {
+			cg.write("void")
+		}
+		for i, param := range fn.Parameters {
+			if param.Variadic {
+				viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
+				cg.write(fmt.Sprintf("%s %s", viewType, param.Name.Value))
+			} else {
+				cg.write(cg.cParameter(param.Type, param.Name.Value))
+			}
+			if i < len(fn.Parameters)-1 {
+				cg.write(", ")
+			}
+		}
+		cg.write(" );\n")
+	}
+	if emitted {
+		cg.write("\n")
+	}
+}
+
 // variadicCallee reports whether name is a known variadic function.
 func (cg *CodeGenerator) variadicCallee(name string) (*ast.FunctionStatement, bool) {
 	fn, ok := cg.programFunctions[name]
@@ -1280,6 +1320,9 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
+		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil {
+			// Calls to program functions use the mangled C name.
+			cg.output.WriteString(cg.cFunctionName(ident.Value))
 		} else {
 			cg.emitExpressionFragment(e.Function, tc)
 		}

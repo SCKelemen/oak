@@ -120,6 +120,10 @@ static inline i32 oak_view_index_i32(oak_view_i32 v, u64 i) {
   return v.base[i];
 }
 
+/* forward declarations */
+i32 oak_total( i32 base, oak_view_i32 rest );
+i32 oak_caller( void );
+
 // @source: unknown.oak:1:0-3:0
 // @package: main
 // @kind: function

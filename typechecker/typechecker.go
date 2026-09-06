@@ -3015,6 +3015,25 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		}
 	}
 
+	if fnExpr, ok := expr.(*ast.FunctionTypeExpression); ok {
+		params := make([]Type, 0, len(fnExpr.Parameters))
+		for _, param := range fnExpr.Parameters {
+			paramType := tc.parseTypeExpression(param)
+			if paramType == nil {
+				return nil
+			}
+			params = append(params, paramType)
+		}
+		var returnType Type = &UnitType{}
+		if fnExpr.Return != nil {
+			returnType = tc.parseTypeExpression(fnExpr.Return)
+			if returnType == nil {
+				return nil
+			}
+		}
+		return &FunctionType{Parameters: params, ReturnType: returnType}
+	}
+
 	// Handle array types: [N]T or []T
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
 		// Phantom-encoded strings: Str[Utf8] etc. (docs/spec/70-strings.md).
@@ -3150,6 +3169,25 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 			// Assume it's an ADT type
 			return &ADTType{Name: ident.Value}
 		}
+	}
+
+	if fnExpr, ok := expr.(*ast.FunctionTypeExpression); ok {
+		params := make([]Type, 0, len(fnExpr.Parameters))
+		for _, param := range fnExpr.Parameters {
+			paramType := tc.parseTypeExpressionNonIntersection(param)
+			if paramType == nil {
+				return nil
+			}
+			params = append(params, paramType)
+		}
+		var returnType Type = &UnitType{}
+		if fnExpr.Return != nil {
+			returnType = tc.parseTypeExpressionNonIntersection(fnExpr.Return)
+			if returnType == nil {
+				return nil
+			}
+		}
+		return &FunctionType{Parameters: params, ReturnType: returnType}
 	}
 
 	// Handle array types: [N]T or []T

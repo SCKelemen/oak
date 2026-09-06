@@ -400,6 +400,34 @@ func (be *BlockExpression) Result() Expression {
 	return nil
 }
 
+// FunctionTypeExpression is a function interface type: (T1, T2) -> R.
+type FunctionTypeExpression struct {
+	BaseNode
+	Token      token.Token // ( token
+	Parameters []Expression
+	Return     Expression
+}
+
+func (ft *FunctionTypeExpression) expressionNode()      {}
+func (ft *FunctionTypeExpression) TokenLiteral() string { return ft.Token.Literal }
+func (ft *FunctionTypeExpression) String() string {
+	var out bytes.Buffer
+	out.WriteRune('(')
+	for i, param := range ft.Parameters {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(param.String())
+	}
+	out.WriteString(") -> ")
+	if ft.Return != nil {
+		out.WriteString(ft.Return.String())
+	} else {
+		out.WriteString("()")
+	}
+	return out.String()
+}
+
 type FunctionLiteral struct {
 	BaseNode
 	Token     token.Token // func

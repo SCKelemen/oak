@@ -110,6 +110,9 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
+/* forward declarations */
+u32 oak_sum( u8 buf[8] );
+
 // @source: unknown.oak:1:0-11:0
 // @package: main
 // @kind: function

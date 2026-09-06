@@ -162,6 +162,22 @@ result: i32 = fact(5, 1)
 `,
 		},
 		{
+			// Canonical declaration-form functions (10-syntax section 3):
+			// a name bound to a function interface and a definition.
+			Name: "function_binding",
+			SourceCode: `
+addi32: (a, b: i32): i32 = a + b
+
+scale: (base: i32, factor, offset: i32) -> i32 {
+  addi32(base * factor, offset)
+}
+
+fact: (n, acc: i32): i32 = n ?
+  | 0 -> acc
+  | _ -> fact(n - 1, acc * n)
+`,
+		},
+		{
 			// Bounds-checked element access: views index through a trapping
 			// helper, owned arrays through a static-length guard; len lowers
 			// to constants or the len field (50-borrowing: never UB).

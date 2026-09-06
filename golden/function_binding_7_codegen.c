@@ -111,45 +111,45 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 }
 
 /* forward declarations */
-i32 oak_ping( i32 n );
-i32 oak_pong( i32 n );
+i32 oak_addi32( i32 a, i32 b );
+i32 oak_scale( i32 base, i32 factor, i32 offset );
+i32 oak_fact( i32 n, i32 acc );
 
-/* trampoline for mutual tail recursion: ping, pong */
-typedef enum {
-    oak_tramp_ping_pong_ping,
-    oak_tramp_ping_pong_pong
-} oak_tramp_ping_pong_state;
-
-static i32 oak_tramp_ping_pong( oak_tramp_ping_pong_state __oak_state, i32 n ) {
-  while (1) {
-  switch (__oak_state) {
-  case oak_tramp_ping_pong_ping: {
-  i32 x = ( n + 1 );
-  {
-    i32 __oak_tail_0 = x;
-    n = __oak_tail_0;
-    __oak_state = oak_tramp_ping_pong_pong;
-    continue;
-  }
-  }
-  case oak_tramp_ping_pong_pong: {
-  i32 y = ( n * 2 );
-  {
-    i32 __oak_tail_0 = y;
-    n = __oak_tail_0;
-    __oak_state = oak_tramp_ping_pong_ping;
-    continue;
-  }
-  }
-  }
-  }
+// @source: unknown.oak:1:0-1:31
+// @package: main
+// @kind: function
+// @identifier: addi32
+// @signature: fn addi32(a: i32, b: i32) -> i32
+i32 oak_addi32( i32 a, i32 b ) {
+    return ( a + b )  ;
 }
 
-i32 oak_ping( i32 n ) {
-  return oak_tramp_ping_pong( oak_tramp_ping_pong_ping, n );
+// @source: unknown.oak:3:0-5:0
+// @package: main
+// @kind: function
+// @identifier: scale
+// @signature: fn scale(base: i32, factor: i32, offset: i32) -> i32
+i32 oak_scale( i32 base, i32 factor, i32 offset ) {
+    return oak_addi32( ( base * factor ), offset )  ;
 }
 
-i32 oak_pong( i32 n ) {
-  return oak_tramp_ping_pong( oak_tramp_ping_pong_pong, n );
+// @source: unknown.oak:7:0-9:28
+// @package: main
+// @kind: function
+// @identifier: fact
+// @signature: fn fact(n: i32, acc: i32) -> i32
+i32 oak_fact( i32 n, i32 acc ) {
+    while (1) {
+    if ( n == 0 ) {
+    return acc  ;
+    }
+    {
+      i32 __oak_tail_0 = ( n - 1 );
+      i32 __oak_tail_1 = ( acc * n );
+      n = __oak_tail_0;
+      acc = __oak_tail_1;
+      continue;
+    }
+    }
 }
 
