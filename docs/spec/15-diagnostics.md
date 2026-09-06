@@ -179,6 +179,28 @@ When two writable spans overlap, show both ranges. When storage ends before a
 view, show both endpoints. When an owner was moved, show the move and the later
 use.
 
+The first stable borrow-conflict family is:
+
+| Code | Meaning |
+| --- | --- |
+| `OAK-B0101` | a view/span binding is reassigned while it still carries borrowed access |
+| `OAK-B0102` | an owner is used directly while a writable span has exclusive access |
+| `OAK-B0103` | an owner is mutated while read-only views are active |
+| `OAK-B0104` | a read-only view is requested while writable span access is active |
+| `OAK-B0105` | a writable span is requested while read-only views are active |
+| `OAK-B0106` | writable span regions overlap or cannot be proved disjoint |
+
+For `OAK-B0106`, known regions use half-open interval semantics. The diagnostic
+should show the requested region and one earliest causal conflicting span. If a
+region is unknown, Oak fails closed and explains that it could not prove the two
+writable regions disjoint. It must not describe this conservative rejection as a
+proven overlap.
+
+When several active borrows could explain the same conflict, the compiler should
+choose causal context deterministically, preferring the earliest relevant source
+borrow. Map iteration order, allocation order, or internal pointer identity must
+never select the explanation.
+
 ## 7. Help must be safe and mechanically credible
 
 A `help` message is actionable advice, not speculation.
