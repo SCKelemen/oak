@@ -60,6 +60,36 @@ z: i32 = x + y
 	}
 }
 
+func TestCompilationLayoutAndExplicitBlocksHaveSameSyntaxTree(t *testing.T) {
+	const explicit = `fn add(a: i32, b: i32): i32 {
+  a + b
+}`
+	const layout = `fn add(a: i32, b: i32): i32
+  a + b`
+
+	explicitTree, err := New().WithSource("explicit.oak", explicit).SyntaxTree().Get()
+	if err != nil {
+		t.Fatalf("explicit syntax failed to parse: %v", err)
+	}
+	layoutTree, err := New().WithSource("layout.oak", layout).SyntaxTree().Get()
+	if err != nil {
+		t.Fatalf("layout syntax failed to parse: %v", err)
+	}
+
+	if got, want := layoutTree.Root.String(), explicitTree.Root.String(); got != want {
+		t.Fatalf("surface styles produced different syntax semantics:\nlayout:   %q\nexplicit: %q", got, want)
+	}
+}
+
+func TestCompilationLayoutFunctionTypeChecks(t *testing.T) {
+	const source = `fn add(a: i32, b: i32): i32
+  a + b`
+
+	if _, err := New().WithSource("layout.oak", source).SemanticModel().Get(); err != nil {
+		t.Fatalf("layout-style function failed semantic analysis: %v", err)
+	}
+}
+
 func TestCompilationWithMethodsDoNotMutateBase(t *testing.T) {
 	base := New()
 	left := base.WithSource("left.oak", "x: i32 = 1").WithPackageName("left")
