@@ -21,6 +21,7 @@ var closureBuiltins = map[string]bool{
 	"view": true, "span": true, "subslice": true,
 	"view_as": true, "span_as": true, "assert": true,
 	"len": true, "get": true, "try_slice": true,
+	"is_valid_utf8": true,
 }
 
 // checkClosureCaptures reports OAK-T0401 when the function literal captures

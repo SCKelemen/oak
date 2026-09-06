@@ -110,6 +110,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitBoolADT()
 	cg.emitComparisonADT()
 	cg.emitAssertHelper()
+	cg.emitUtf8Helper()
 
 	// Emit type definitions (ADTs, records)
 	// First, collect all ADT types for later lookup
@@ -557,9 +558,7 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	// Emit parameters
 	for i, param := range fn.Parameters {
-		paramType := cg.parseTypeExpression(param.Type)
-		paramName := param.Name.Value
-		cg.write(fmt.Sprintf("%s %s", paramType, paramName))
+		cg.write(cg.cParameter(param.Type, param.Name.Value))
 		if i < len(fn.Parameters)-1 {
 			cg.write(", ")
 		}
@@ -613,6 +612,90 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 	}
 }
 
+
+// cParameter renders one C parameter declaration, using C's inside-out
+// declarator syntax for owned array parameters ([N]T). In C such parameters
+// decay to pointers; the explicit-cost copy semantics of 50-borrowing
+// section 8 for owned aggregates is tracked as backend debt.
+func (cg *CodeGenerator) cParameter(typeExpr ast.Expression, name string) string {
+	if indexExpr, ok := typeExpr.(*ast.IndexExpression); ok {
+		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
+			element := cg.parseTypeExpression(indexExpr.Left)
+			return fmt.Sprintf("%s %s[%d]", element, name, intLit.Value)
+		}
+	}
+	return fmt.Sprintf("%s %s", cg.parseTypeExpression(typeExpr), name)
+}
+
+// runtimeBuiltins maps Oak builtins to the C runtime helpers emitted with
+// every compilation unit.
+var runtimeBuiltins = map[string]string{
+	"assert":        "oak_assert",        // 85-discipline section 5: never elided
+	"is_valid_utf8": "oak_is_valid_utf8", // 70-strings: Oak.Utf8Validity brackets
+}
+
+// emitUtf8Helper emits the zero-allocation UTF-8 validator: a C
+// transliteration of the well-formed sequences proven in Oak.Utf8Validity
+// (the third projection of one fact, after the Lean model and the Go
+// ingestion validator). Bounds checks use u64 arithmetic so no view length
+// can wrap them; the helper reads only v.len bytes and fails closed.
+func (cg *CodeGenerator) emitUtf8Helper() {
+	viewType := cg.emitViewType("u8")
+	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	cg.write(fmt.Sprintf("static Bool oak_is_valid_utf8(%s v) {\n", viewType))
+	cg.write("  u64 i = 0;\n")
+	cg.write("  u64 n = (u64)v.len;\n")
+	cg.write("  while (i < n) {\n")
+	cg.write("    u8 b0 = v.base[i];\n")
+	cg.write("    if (b0 <= 0x7F) { i += 1; continue; }\n")
+	cg.write("    if (0xC2 <= b0 && b0 <= 0xDF) {\n")
+	cg.write("      if (i + 1 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF) { return oak_Bool_False; }\n")
+	cg.write("      i += 2; continue;\n")
+	cg.write("    }\n")
+	cg.write("    if (b0 == 0xE0) {\n")
+	cg.write("      if (i + 2 >= n || v.base[i+1] < 0xA0 || v.base[i+1] > 0xBF ||\n")
+	cg.write("          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }\n")
+	cg.write("      i += 3; continue;\n")
+	cg.write("    }\n")
+	cg.write("    if (0xE1 <= b0 && b0 <= 0xEC) {\n")
+	cg.write("      if (i + 2 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF ||\n")
+	cg.write("          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }\n")
+	cg.write("      i += 3; continue;\n")
+	cg.write("    }\n")
+	cg.write("    if (b0 == 0xED) {\n")
+	cg.write("      if (i + 2 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0x9F ||\n")
+	cg.write("          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }\n")
+	cg.write("      i += 3; continue;\n")
+	cg.write("    }\n")
+	cg.write("    if (0xEE <= b0 && b0 <= 0xEF) {\n")
+	cg.write("      if (i + 2 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF ||\n")
+	cg.write("          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }\n")
+	cg.write("      i += 3; continue;\n")
+	cg.write("    }\n")
+	cg.write("    if (b0 == 0xF0) {\n")
+	cg.write("      if (i + 3 >= n || v.base[i+1] < 0x90 || v.base[i+1] > 0xBF ||\n")
+	cg.write("          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF ||\n")
+	cg.write("          v.base[i+3] < 0x80 || v.base[i+3] > 0xBF) { return oak_Bool_False; }\n")
+	cg.write("      i += 4; continue;\n")
+	cg.write("    }\n")
+	cg.write("    if (0xF1 <= b0 && b0 <= 0xF3) {\n")
+	cg.write("      if (i + 3 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF ||\n")
+	cg.write("          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF ||\n")
+	cg.write("          v.base[i+3] < 0x80 || v.base[i+3] > 0xBF) { return oak_Bool_False; }\n")
+	cg.write("      i += 4; continue;\n")
+	cg.write("    }\n")
+	cg.write("    if (b0 == 0xF4) {\n")
+	cg.write("      if (i + 3 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0x8F ||\n")
+	cg.write("          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF ||\n")
+	cg.write("          v.base[i+3] < 0x80 || v.base[i+3] > 0xBF) { return oak_Bool_False; }\n")
+	cg.write("      i += 4; continue;\n")
+	cg.write("    }\n")
+	cg.write("    return oak_Bool_False;\n")
+	cg.write("  }\n")
+	cg.write("  return oak_Bool_True;\n")
+	cg.write("}\n\n")
+}
+
 // emitAssertHelper emits the always-on assertion primitive: TigerStyle
 // assertions are compiled into every build mode, never elided
 // (docs/spec/85-discipline.md section 5).
@@ -648,7 +731,7 @@ func (cg *CodeGenerator) emitTrampolineGroup(members []string, tc *typechecker.T
 
 	cg.write(fmt.Sprintf("static %s %s( %s __oak_state", returnType, engine, stateType))
 	for _, param := range first.Parameters {
-		cg.write(fmt.Sprintf(", %s %s", cg.parseTypeExpression(param.Type), param.Name.Value))
+		cg.write(", " + cg.cParameter(param.Type, param.Name.Value))
 	}
 	cg.write(" ) {\n")
 	cg.write("  while (1) {\n")
@@ -680,7 +763,7 @@ func (cg *CodeGenerator) emitTrampolineGroup(members []string, tc *typechecker.T
 			if i > 0 {
 				cg.write(", ")
 			}
-			cg.write(fmt.Sprintf("%s %s", cg.parseTypeExpression(param.Type), param.Name.Value))
+			cg.write(cg.cParameter(param.Type, param.Name.Value))
 		}
 		cg.write(" ) {\n")
 		cg.write(fmt.Sprintf("  return %s( %s_%s", engine, engine, member))
@@ -868,11 +951,10 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(fmt.Sprintf("/* .%s */", variantName))
 		}
 	case *ast.InvocationExpression:
-		// Function or method call
-		if ident, ok := e.Function.(*ast.Identifier); ok && ident.Value == "assert" {
-			// assert lowers to the always-on helper: never elided
-			// (docs/spec/85-discipline.md section 5).
-			cg.output.WriteString("oak_assert")
+		// Function or method call. Runtime builtins lower to their always-on
+		// helpers.
+		if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
+			cg.output.WriteString(runtimeBuiltins[ident.Value])
 		} else {
 			cg.emitExpressionFragment(e.Function, tc)
 		}
@@ -1111,11 +1193,16 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 			// Fixed-size array: [N]T
 			elementType := cg.parseTypeExpression(indexExpr.Left)
 			return fmt.Sprintf("%s[ %d ]", elementType, intLit.Value)
-		} else if indexExpr.Left == nil {
-			// Slice type: []T (represented as IndexExpression with nil left)
-			elementType := cg.parseTypeExpression(indexExpr.Index)
-			// Emit view type for []T
-			return cg.emitViewType(elementType)
+		} else if marker, ok := indexExpr.Index.(*ast.Identifier); ok {
+			// The parser represents []T as IndexExpression{Left: T, Index: ""}
+			// and [*]T as IndexExpression{Left: T, Index: "*"}.
+			elementType := cg.parseTypeExpression(indexExpr.Left)
+			if marker.Value == "" {
+				return cg.emitViewType(elementType)
+			}
+			if marker.Value == "*" {
+				return cg.emitSpanType(elementType)
+			}
 		}
 	}
 

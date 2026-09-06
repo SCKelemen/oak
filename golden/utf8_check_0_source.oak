@@ -1,0 +1,5 @@
+
+fn all_text(buf: [16]u8) -> Bool {
+  v: []u8 = buf[0:16]
+  is_valid_utf8(v)
+}

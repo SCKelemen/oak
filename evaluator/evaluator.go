@@ -5,6 +5,7 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
+	"github.com/SCKelemen/oak/source"
 )
 
 var (
@@ -252,6 +253,27 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 				return newError("assertion failed")
 			}
 			return NULL
+		},
+		"is_valid_utf8": func(args ...object.Object) object.Object {
+			// docs/spec/70-strings.md: validate bytes against the well-formed
+			// UTF-8 sequences (Oak.Utf8Validity) before trusting them as text.
+			if len(args) != 1 {
+				return newError("is_valid_utf8 expects exactly one []u8 argument, got %d", len(args))
+			}
+			arr, ok := args[0].(*object.Array)
+			if !ok {
+				return newError("is_valid_utf8 requires a []u8 view, got %s", args[0].Type())
+			}
+			bytes := make([]byte, 0, len(arr.Elements))
+			for _, element := range arr.Elements {
+				integer, ok := element.(*object.Integer)
+				if !ok || integer.Value < 0 || integer.Value > 255 {
+					return newError("is_valid_utf8 requires byte elements")
+				}
+				bytes = append(bytes, byte(integer.Value))
+			}
+			_, valid := source.ValidateUTF8(string(bytes))
+			return nativeBoolToBooleanObject(valid)
 		},
 		"len": func(args ...object.Object) object.Object {
 			if len(args) != 1 {

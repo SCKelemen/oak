@@ -101,23 +101,13 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
-// @source: unknown.oak:1:0-5:0
+// @source: unknown.oak:1:0-4:0
 // @package: main
 // @kind: function
-// @identifier: fact
-// @signature: fn fact(n: i32, acc: i32) -> i32
-i32 oak_fact( i32 n, i32 acc ) {
-    while (1) {
-    if ( n == 0 ) {
-    return acc  ;
-    }
-    {
-      i32 __oak_tail_0 = ( n - 1 );
-      i32 __oak_tail_1 = ( acc * n );
-      n = __oak_tail_0;
-      acc = __oak_tail_1;
-      continue;
-    }
-    }
+// @identifier: all_text
+// @signature: fn all_text(buf: /* type */) -> Bool
+Bool oak_all_text( u8 buf[16] ) {
+    oak_view_u8 v   = core_slice( buf, 0, 16 )  ;
+    return oak_is_valid_utf8( v )  ;
 }
 

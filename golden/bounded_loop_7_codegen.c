@@ -38,3 +38,66 @@ static inline void oak_assert(Bool cond) {
   }
 }
 
+typedef struct oak_view_u8 {
+    const u8* base;
+    u32       len;
+} oak_view_u8;
+
+/* core_slice: view construction as a brace initializer (declaration
+   position); field order matches the view/span structs {base, len} */
+#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }
+
+/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
+static Bool oak_is_valid_utf8(oak_view_u8 v) {
+  u64 i = 0;
+  u64 n = (u64)v.len;
+  while (i < n) {
+    u8 b0 = v.base[i];
+    if (b0 <= 0x7F) { i += 1; continue; }
+    if (0xC2 <= b0 && b0 <= 0xDF) {
+      if (i + 1 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF) { return oak_Bool_False; }
+      i += 2; continue;
+    }
+    if (b0 == 0xE0) {
+      if (i + 2 >= n || v.base[i+1] < 0xA0 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }
+      i += 3; continue;
+    }
+    if (0xE1 <= b0 && b0 <= 0xEC) {
+      if (i + 2 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }
+      i += 3; continue;
+    }
+    if (b0 == 0xED) {
+      if (i + 2 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0x9F ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }
+      i += 3; continue;
+    }
+    if (0xEE <= b0 && b0 <= 0xEF) {
+      if (i + 2 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }
+      i += 3; continue;
+    }
+    if (b0 == 0xF0) {
+      if (i + 3 >= n || v.base[i+1] < 0x90 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF ||
+          v.base[i+3] < 0x80 || v.base[i+3] > 0xBF) { return oak_Bool_False; }
+      i += 4; continue;
+    }
+    if (0xF1 <= b0 && b0 <= 0xF3) {
+      if (i + 3 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF ||
+          v.base[i+3] < 0x80 || v.base[i+3] > 0xBF) { return oak_Bool_False; }
+      i += 4; continue;
+    }
+    if (b0 == 0xF4) {
+      if (i + 3 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0x8F ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF ||
+          v.base[i+3] < 0x80 || v.base[i+3] > 0xBF) { return oak_Bool_False; }
+      i += 4; continue;
+    }
+    return oak_Bool_False;
+  }
+  return oak_Bool_True;
+}
+

@@ -162,6 +162,17 @@ result: i32 = fact(5, 1)
 `,
 		},
 		{
+			// is_valid_utf8: zero-allocation validation against the proven
+			// Oak.Utf8Validity brackets, lowered to a C runtime helper.
+			Name: "utf8_check",
+			SourceCode: `
+fn all_text(buf: [16]u8) -> Bool {
+  v: []u8 = buf[0:16]
+  is_valid_utf8(v)
+}
+`,
+		},
+		{
 			// The canonical bounded loop shape (docs/spec/85-discipline.md
 			// section 3) carries its own static iteration bound.
 			Name: "bounded_loop",

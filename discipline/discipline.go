@@ -35,6 +35,7 @@ const (
 var builtinCallees = map[string]bool{
 	"view": true, "span": true, "subslice": true,
 	"view_as": true, "span_as": true, "assert": true,
+	"is_valid_utf8": true,
 }
 
 type callEdge struct {

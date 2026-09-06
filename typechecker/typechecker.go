@@ -1059,6 +1059,25 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if ident.Value == "subslice" {
 			return tc.checkSubsliceBuiltin(expr)
 		}
+		// is_valid_utf8 (docs/spec/70-strings.md): zero-allocation byte
+		// validation against the well-formed sequences of Oak.Utf8Validity.
+		if ident.Value == "is_valid_utf8" {
+			if len(expr.Arguments) != 1 {
+				tc.addError(expr, "is_valid_utf8 expects exactly one []u8 argument")
+				return &BoolType{}
+			}
+			argType := tc.checkExpression(expr.Arguments[0])
+			arr, ok := argType.(*ArrayType)
+			elemOK := ok && arr.IsSlice
+			if elemOK {
+				prim, isPrim := arr.ElementType.(*PrimitiveType)
+				elemOK = isPrim && normalizePrimitiveName(prim.Name) == "u8"
+			}
+			if argType != nil && !elemOK {
+				tc.addError(expr.Arguments[0], "is_valid_utf8 requires a []u8 view, got %s", argType)
+			}
+			return &BoolType{}
+		}
 		// assert (docs/spec/85-discipline.md section 5): a Bool condition,
 		// compiled in and never elided by build mode.
 		if ident.Value == "assert" {

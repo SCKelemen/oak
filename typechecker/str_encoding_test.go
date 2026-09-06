@@ -159,3 +159,27 @@ func TestClosureCaptureDiscipline(t *testing.T) {
 		})
 	}
 }
+
+// is_valid_utf8 (docs/spec/70-strings.md): []u8 in, Bool out.
+func TestIsValidUtf8BuiltinTypeChecks(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		hasError bool
+	}{
+		{"byte view accepted", "buf: [16]u8\nv: []u8 = buf[0:8]\nok: Bool = is_valid_utf8(v)", false},
+		{"non-byte view rejected", "buf: [4]i32\nv: []i32 = buf[0:2]\nok: Bool = is_valid_utf8(v)", true},
+		{"arity enforced", "ok: Bool = is_valid_utf8()", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := setupTypeChecker(tt.input)
+			program := parseProgram(tt.input)
+			tc.CheckProgram(program)
+			hasError := len(tc.Errors()) > 0
+			if hasError != tt.hasError {
+				t.Errorf("input %q: expected error=%v, got errors=%v", tt.input, tt.hasError, tc.Errors())
+			}
+		})
+	}
+}
