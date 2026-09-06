@@ -78,20 +78,22 @@ func TestViewConflictPointsToExistingWritableSpan(t *testing.T) {
 	}
 }
 
-func TestSpanOverlapReportsDeterministicConflictingBorrowAndRegions(t *testing.T) {
+func TestSpanOverlapReportsEarliestCausalBorrowAndRegions(t *testing.T) {
 	bc := New()
 	bc.ownerStates["buf"] = UniqueWrite
+	// Insert in the opposite order from source causality. Diagnostics must choose
+	// the earliest causal source borrow, not Go map iteration or lexical name order.
 	bc.activeBorrows["zeta"] = borrowInfo{
 		owner:  "buf",
 		kind:   BorrowSpan,
 		region: &Region{Offset: 0, Length: 12},
-		origin: diagnosticIdent("zeta", 2, 1),
+		origin: diagnosticIdent("zeta", 3, 1),
 	}
 	bc.activeBorrows["alpha"] = borrowInfo{
 		owner:  "buf",
 		kind:   BorrowSpan,
 		region: &Region{Offset: 4, Length: 8},
-		origin: diagnosticIdent("alpha", 3, 1),
+		origin: diagnosticIdent("alpha", 2, 1),
 	}
 
 	bc.createSpanBorrowWithRegion(
@@ -105,9 +107,8 @@ func TestSpanOverlapReportsDeterministicConflictingBorrowAndRegions(t *testing.T
 	if len(d.Labels) != 2 {
 		t.Fatalf("expected new span and one causal existing span, got %#v", d.Labels)
 	}
-	// activeBorrowNames sorts names, so diagnostics do not depend on Go map order.
 	if !strings.Contains(d.Labels[1].Message, "alpha") {
-		t.Fatalf("expected deterministic first conflict alpha, got %q", d.Labels[1].Message)
+		t.Fatalf("expected earliest causal conflict alpha, got %q", d.Labels[1].Message)
 	}
 	joined := d.PlainText()
 	if !strings.Contains(joined, "[6..10)") || !strings.Contains(joined, "[4..12)") {
@@ -133,6 +134,35 @@ func TestUnknownSpanRegionFailsClosedAndExplainsWhy(t *testing.T) {
 	}
 }
 
+func TestSpanConflictPointsToActiveReadOnlyView(t *testing.T) {
+	bc := New()
+	bc.ownerStates["buf"] = SharedRead
+	bc.activeBorrows["header"] = borrowInfo{
+		owner:  "buf",
+		kind:   BorrowView,
+		region: &Region{Offset: 0, Length: 4},
+		origin: diagnosticIdent("header", 2, 1),
+	}
+
+	bc.createSpanBorrowWithRegion(
+		"buf",
+		"writer",
+		&Region{Offset: 8, Length: 4},
+		diagnosticIdent("writer", 5, 1),
+	)
+
+	d := findBorrowDiagnostic(t, bc, CodeSpanConflictsWithView)
+	if len(d.Labels) != 2 || !strings.Contains(d.Labels[1].Message, "header") {
+		t.Fatalf("expected active view as secondary cause, got %#v", d.Labels)
+	}
+	if !strings.Contains(d.Title, "read-only views") {
+		t.Fatalf("expected programmer-facing authority explanation, got %q", d.Title)
+	}
+	if !hasAdviceKind(d, diagnostic.AdviceHelp) {
+		t.Fatal("expected safe remediation help")
+	}
+}
+
 func TestOwnerWriteDuringViewPointsBackToView(t *testing.T) {
 	bc := New()
 	bc.ownerStates["buf"] = SharedRead
@@ -151,6 +181,27 @@ func TestOwnerWriteDuringViewPointsBackToView(t *testing.T) {
 	}
 	if !hasAdviceKind(d, diagnostic.AdviceHelp) {
 		t.Fatal("expected safe remediation help")
+	}
+}
+
+func TestOwnerUseDuringSpanPointsBackToSpan(t *testing.T) {
+	bc := New()
+	bc.ownerStates["buf"] = UniqueWrite
+	bc.activeBorrows["payload"] = borrowInfo{
+		owner:  "buf",
+		kind:   BorrowSpan,
+		region: &Region{Offset: 8, Length: 8},
+		origin: diagnosticIdent("payload", 2, 1),
+	}
+
+	bc.checkIdentifierUse(diagnosticIdent("buf", 5, 1), "buf", nil, false)
+
+	d := findBorrowDiagnostic(t, bc, CodeOwnerUsedDuringSpan)
+	if len(d.Labels) != 2 || !strings.Contains(d.Labels[1].Message, "payload") {
+		t.Fatalf("expected causal writable span label, got %#v", d.Labels)
+	}
+	if !strings.Contains(d.Title, "writable access") {
+		t.Fatalf("expected programmer-facing authority explanation, got %q", d.Title)
 	}
 }
 
