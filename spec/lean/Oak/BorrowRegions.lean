@@ -56,8 +56,8 @@ theorem disjoint_not_overlap {a b : Region} (h : Disjoint a b) : ¬ Overlap a b 
   rcases h with ha | hb | hab | hba
   · simp [ha] at haPos
   · simp [hb] at hbPos
-  · exact (Nat.not_lt_of_ge hab) habStart
-  · exact (Nat.not_lt_of_ge hba) hbaStart
+  · exact (Nat.not_lt_of_ge hab) hbaStart
+  · exact (Nat.not_lt_of_ge hba) habStart
 
 /-- Adjacent half-open regions are disjoint. -/
 theorem adjacent_disjoint (offset leftLen rightLen : Nat) :
