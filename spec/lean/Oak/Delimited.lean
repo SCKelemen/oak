@@ -86,7 +86,11 @@ theorem drop_prefix_tokens (pre suffix : List Token) :
     exactly with the closing delimiter. -/
 theorem drop_to_close (items : List Nat) (trailing : Bool) :
     List.drop (closeOffset items trailing) (encode items trailing) = [.close] := by
-  simp [closeOffset, encode, drop_prefix_tokens]
+  have hoff :
+      closeOffset items trailing = Nat.succ (body items trailing).length := by
+    simp [closeOffset]
+  rw [hoff]
+  simp [encode, drop_prefix_tokens]
 
 /-- The closing-delimiter cursor is always a valid token position. -/
 theorem close_offset_in_bounds (items : List Nat) (trailing : Bool) :
