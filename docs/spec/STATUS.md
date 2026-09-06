@@ -47,6 +47,7 @@ Legend:
 | C backend | ✓ | ✓ | ✓ |  |  |  | semantic shape constraints erase; concrete struct lowering requires resolved representation; golden corpus currently has known stale/missing debt |
 | Functional generic specialization | ✓ | partial | partial | ✓ | ✓ | partial | `Oak.GenericConstraintRefinement` proves direct/unary inference, accumulated multiple-variable and multiple-parameter bindings, repeated-occurrence consistency, binary generic applications, result substitution, and scoped record-shape discharge. Constraint sets, deeper applications, refinements and function-type inference remain pending |
 | Closure capture/storage effects | ✓ |  |  |  |  |  | semantics specified; implementation pending |
+| Discipline profile (bounded execution) | ✓ | partial | ✓ | ✓ | ✓ |  | `docs/spec/85-discipline.md` defines MISRA/Power-of-Ten/TigerStyle profiles. Safe recursion is enforced: the `discipline` analyzer ranks call-graph SCCs (strict rank decrease on stack calls, non-increase on tail calls), rejects stack-consuming cycles (`OAK-D0101`), records unlowered tail cycles (`OAK-D0102`, warning), and the C backend compiles direct self tail recursion to loops (parameter rebinding + continue). `Oak.Discipline` proves the rank certificate bounds stack depth and forces cycles to be tail-only. Bounded loops, allocation-phase, assertion, and checked-result rules are specified direction; profile gating of the pipeline, mutual tail-call lowering, and refinement pending |
 | Protocol/typestate semantic axis | direction |  |  |  |  |  | will receive its own normative spec before implementation |
 
 ## Formal verification gate
@@ -63,6 +64,7 @@ The formal gate currently checks:
 - `Oak.ReborrowRefinement`
 - `Oak.Escape`
 - `Oak.Unsafe`
+- `Oak.Discipline`
 - `Oak.Handles`
 - `Oak.Slab`
 - `Oak.Exhaustiveness`
