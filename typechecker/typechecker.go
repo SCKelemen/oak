@@ -1707,7 +1707,8 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expec
 		bindings, reachable = tc.variantIndexBindings(adtDef, variant, args)
 		if !reachable {
 			d := tc.addTypeDiagnostic(expr, CodeGADTResultMismatch, "constructor result does not inhabit the expected indexed ADT")
-			d.AddNote(fmt.Sprintf("%s.%s cannot produce %s", adtTypeName, variant.Name, expected))
+			d.AddNote(fmt.Sprintf("%s.%s is declared to produce %s, but this context expects %s",
+				adtTypeName, variant.Name, variantResultString(adtDef, variant), expected))
 			d.AddHelp("choose a constructor whose declared result indices match the expected type")
 			return nil
 		}
