@@ -29,7 +29,7 @@ Legend:
 | Borrow-state machine | ✓ | partial | partial | ✓ | ✓ |  | explicit actions; valid transitions preserve state invariant and read/write authority stays exclusive |
 | Unsafe boundary | ✓ | partial | partial |  |  |  | unsafe must admit assumptions, not disable all checking |
 | Effects | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR implements broad/scoped effect identity and conflict validation; `Oak.Effects` proves the abstract subsumption/overlap laws; refinement pending |
-| Arena semantics | ✓ | ✓ | ✓ |  |  |  | Semantic IR represents explicit arena identity/lifetime and validates required metadata; region non-escape proof pending |
+| Arena semantics | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR represents explicit arena identity/lifetime; `Oak.RegionLifetime` proves lifetime containment, transitivity, alive-child implies alive-region, and that a region-bound value cannot remain alive after the region ends; refinement pending |
 | Slab allocator semantics | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR validates explicit bounded slab/pool capacity and identity; `Oak.Slab` proves abstract capacity preservation; refinement pending |
 | Generational handles | ✓ |  |  | ✓ | ✓ |  | `Oak.Handles` proves stale handles cannot resolve after generation-changing reuse and cleared slots never resolve |
 | UTF-8 `string` validity | ✓ | partial | partial |  |  |  | legacy string code exists but must reconcile validation invariant |
@@ -54,16 +54,16 @@ The formal gate currently checks:
 - `Oak.Exhaustiveness`
 - `Oak.SourcePosition`
 - `Oak.Delimited`
+- `Oak.RegionLifetime`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
 
 ## Immediate formal-verification queue
 
-1. region/arena non-escape theorem;
-2. phantom-type zero-runtime representation law;
-3. record layout/alignment once target layout representation stabilizes;
-4. formal layout-normalizer balance/equivalence model;
-5. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, and delimited parsing.
+1. phantom-type zero-runtime representation law;
+2. record layout/alignment once target layout representation stabilizes;
+3. formal layout-normalizer balance/equivalence model;
+4. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, and region lifetimes.
 
 ## Refinement policy
 
