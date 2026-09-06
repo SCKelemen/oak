@@ -2,6 +2,7 @@ package typechecker
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
@@ -82,49 +83,82 @@ func (tc *TypeChecker) instantiateStoredType(spelling string, bindings map[strin
 	return tc.storedIndexType(spelling)
 }
 
-// variantIndexBindings is the first concrete GADT solver. Constructor result
-// parameters bind once and repeated occurrences must agree; concrete result
-// indices must equal the scrutinee indices exactly.
+// variantIndexBindings is the first concrete GADT solver. Constructor-result
+// equations are solved under one accumulated substitution. Named result
+// parameters and fixed positional indices must agree with every prior equation.
 func (tc *TypeChecker) variantIndexBindings(
 	adt *object.ADTType,
 	variant *object.ADTVariantDef,
 	actual []Type,
-) (map[string]Type, bool) {
+) (map[string]Type, Substitution, bool) {
 	if adt == nil || variant == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	if variant.ResultName != "" && variant.ResultName != adt.Name {
-		return nil, false
+		return nil, nil, false
 	}
 	indices := variant.ResultIndices
 	if len(indices) == 0 && len(adt.TypeParams) > 0 {
 		indices = adt.TypeParams
 	}
 	if len(indices) != len(actual) {
-		return nil, len(indices) == 0 && len(actual) == 0
+		return nil, nil, len(indices) == 0 && len(actual) == 0
 	}
+
 	params := make(map[string]bool, len(adt.TypeParams))
 	for _, name := range adt.TypeParams {
 		params[name] = true
 	}
 	bindings := make(map[string]Type)
+	substitution := make(Substitution)
+	applyBindings := func() {
+		for name, bound := range bindings {
+			bindings[name] = substitution.Apply(bound)
+		}
+	}
+	unify := func(left, right Type) bool {
+		equation := NewUnifier().Unify(substitution.Apply(left), substitution.Apply(right))
+		if equation == nil {
+			return false
+		}
+		substitution = substitution.Compose(equation)
+		applyBindings()
+		return true
+	}
+	bind := func(name string, value Type) bool {
+		value = substitution.Apply(value)
+		if prior, exists := bindings[name]; exists {
+			if !unify(prior, value) {
+				return false
+			}
+			bindings[name] = substitution.Apply(prior)
+			return true
+		}
+		bindings[name] = value
+		return true
+	}
+
 	for i, expected := range indices {
+		actualIndex := substitution.Apply(actual[i])
 		if params[expected] {
-			if prior, exists := bindings[expected]; exists {
-				if !prior.Equals(actual[i]) {
-					return nil, false
-				}
-			} else {
-				bindings[expected] = actual[i]
+			if !bind(expected, actualIndex) {
+				return nil, nil, false
 			}
 			continue
 		}
+
 		concrete := tc.storedIndexType(expected)
-		if concrete == nil || !concrete.Equals(actual[i]) {
-			return nil, false
+		if concrete == nil || !unify(actualIndex, concrete) {
+			return nil, nil, false
+		}
+		// A fixed result at position i also refines the ADT parameter occupying
+		// that position. Compose it with any equation already established for
+		// that parameter; never overwrite an earlier binding.
+		if i < len(adt.TypeParams) && !bind(adt.TypeParams[i], concrete) {
+			return nil, nil, false
 		}
 	}
-	return bindings, true
+	return bindings, substitution, true
 }
 
 func (tc *TypeChecker) variantReachable(typ Type, adtName string, variant *object.ADTVariantDef) bool {
@@ -133,7 +167,7 @@ func (tc *TypeChecker) variantReachable(typ Type, adtName string, variant *objec
 		return false
 	}
 	adt := tc.adtTypes[adtName]
-	_, reachable := tc.variantIndexBindings(adt, variant, args)
+	_, _, reachable := tc.variantIndexBindings(adt, variant, args)
 	return reachable
 }
 
@@ -168,6 +202,18 @@ func (tc *TypeChecker) variantResultType(
 	return &GenericType{Name: adt.Name, TypeArgs: args}
 }
 
+
+func variantResultString(adt *object.ADTType, variant *object.ADTVariantDef) string {
+	name := variant.ResultName
+	if name == "" && adt != nil {
+		name = adt.Name
+	}
+	if len(variant.ResultIndices) == 0 {
+		return name
+	}
+	return fmt.Sprintf("%s[%s]", name, strings.Join(variant.ResultIndices, ", "))
+}
+
 func constructorResultSyntax(result ast.Expression) (string, []string, error) {
 	name, args, ok := flattenTypeApplicationSyntax(result)
 	if !ok || len(args) == 0 {
@@ -175,7 +221,11 @@ func constructorResultSyntax(result ast.Expression) (string, []string, error) {
 	}
 	indices := make([]string, 0, len(args))
 	for _, arg := range args {
-		indices = append(indices, arg.String())
+		ident, atomic := arg.(*ast.Identifier)
+		if !atomic || ident.Value == "" {
+			return "", nil, fmt.Errorf("result indices must be atomic type names or parameters")
+		}
+		indices = append(indices, ident.Value)
 	}
 	return name, indices, nil
 }
