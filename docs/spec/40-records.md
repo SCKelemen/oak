@@ -1,68 +1,143 @@
-# Records
+# Records and Structs
 
-Records are Oak's product types.
+Oak deliberately separates **semantic record/product meaning** from **runtime struct representation**.
 
-## 1. Product semantics
+This distinction is foundational: a type should be usable for checking, constraints, proofs, schemas and tooling without accidentally committing to byte layout, while systems code must still be able to state and verify exact storage representation when needed.
+
+## 1. Records are semantic products
+
+A record describes a finite named product:
 
 ```oak
-Point: type = {
-  x: i32
-  y: i32
+XY: type = {
+  x: f32
+  y: f32
 }
 ```
 
-A `Point` value contains one `i32` value for `x` and one for `y`.
+A value satisfying this record meaning has an `x` value of type `f32` and a `y` value of type `f32`.
 
-Named record declarations are nominal types. Two records with the same fields are not interchangeable merely because their shapes match.
+The abstract semantic shape is about **member identity and member types**. It does not imply byte offsets, padding, packing, total size, ABI classification, or field alignment.
 
-## 2. Field order
+Named record declarations are nominal in ordinary value positions. Two named records do not become interchangeable merely because they have the same semantic members.
 
-Source field order is preserved as semantic input.
+## 2. Source order is preserved, but is not shape identity
+
+The compiler preserves declaration order exactly:
 
 ```oak
-Header: type = {
+HeaderShape: type = {
   kind: u8
   len:  u16
   flags: u8
 }
 ```
 
-The compiler may not reconstruct this order from an unordered map.
+Preserved source order is useful to:
 
-Preserved order may be consumed by:
-
-- an ABI/layout projection;
-- serialization schemas;
+- formatting and source fidelity;
+- generated documentation;
 - debugger/UI display;
-- documentation;
-- reflection/metadata tooling.
+- schema projections;
+- deterministic representation derivation when a representation policy chooses declaration order.
 
-Preserved order does not itself determine byte offsets.
+However, source order is **not itself structural shape compatibility**. A field-shape constraint asks whether the required named members/types exist, not whether another type happened to spell them in the same order.
 
-## 3. Representation is separate
+The compiler may never reconstruct source order from an unordered map.
 
-Record meaning and record ABI are separate axes.
+## 3. Record shapes can describe compile-time interfaces
 
-A target representation pass determines:
+A semantic record can be used as a structural field requirement in a constraint position once shape constraints are implemented:
 
-- field offsets;
-- field alignment;
-- record alignment;
-- padding;
-- total size;
-- packing/ABI rules.
+```oak
+XY: type = {
+  x: f32
+  y: f32
+}
 
-A type-level record may therefore be known before its exact machine layout is known.
+fn length2[T: XY](value: T): f32
+  value.x * value.x + value.y * value.y
+```
 
-The compiler must fail closed when a backend requires a representation fact that has not been established.
+This means that `T` must provide fields compatible with `x: f32` and `y: f32`.
 
-### 3.1 Natural ordered representation
+It does **not** mean:
 
-Oak defines a small target-independent **natural ordered** record-layout primitive for backends or ABI profiles that select ordinary non-packed product representation.
+- `T` has the same runtime offsets as `XY`;
+- a `T` value is boxed into an `XY` object;
+- a vtable exists;
+- all record types participate in global width subtyping.
 
-Its inputs are the authoritative ordered field sequence plus an already-established machine size and non-zero power-of-two alignment for each field. It does not infer field machine representation.
+Shape satisfaction belongs to the constraint/type axis and should be erased by specialization just like ordinary static interface constraints.
 
-The following is **normative specification pseudocode, not Oak source syntax**:
+Method constraints and field-shape constraints should share one compile-time constraint framework where possible; Oak should not invent a separate runtime object model merely to express interfaces.
+
+## 4. Structs select concrete storage representation
+
+`struct` is the representation-bearing product form:
+
+```oak
+Point: type = struct {
+  x: f32
+  y: f32
+}
+```
+
+`Point` has record/product semantics **plus** a selected runtime representation policy.
+
+Plain `struct` selects Oak's **natural ordered** representation profile:
+
+- declaration order is layout-significant;
+- each field is placed at an aligned non-overlapping offset;
+- field storage uses the field's already-established machine size/alignment;
+- record alignment is the maximum field alignment (1 for an empty struct);
+- total size is tail-padded to record alignment.
+
+Selecting `struct` does not mean all numeric layout facts are immediately known. Primitive/field representations may still depend on the target. The compiler therefore distinguishes:
+
+```text
+semantic record known
+representation policy selected
+representation fully resolved
+```
+
+These are three different states.
+
+## 5. Record and struct are not synonyms
+
+These declarations intentionally mean different things:
+
+```oak
+Shape: type = {
+  x: u8
+  y: u32
+}
+
+Stored: type = struct {
+  x: u8
+  y: u32
+}
+```
+
+`Shape` states semantic members only.
+
+`Stored` additionally states that runtime storage follows the ordinary struct representation policy.
+
+Both can have the same semantic member set. That does not collapse their nominal identities, and it does not make the representation choice part of `Shape`.
+
+This is the earlier Oak distinction between the **type layer** and the **layout layer**, made explicit in the modern Semantic IR.
+
+## 6. Natural ordered representation
+
+Oak defines a target-independent natural ordered record-layout primitive for a representation policy that has already selected ordinary non-packed struct storage.
+
+Its inputs are:
+
+- the authoritative ordered field sequence;
+- an already-established machine size for each field;
+- a non-zero power-of-two alignment for each field.
+
+The following is **specification pseudocode, not Oak source syntax**. It does not introduce `for`, `place`, `align_up`, or mutable assignment as Oak language constructs.
 
 ```text
 cursor = 0
@@ -77,35 +152,56 @@ for field in source_order:
 record_size = align_up(cursor, record_alignment)
 ```
 
-It defines the layout algorithm over the ordered field sequence; it does not introduce `for`, `place`, `align_up`, or mutable assignment as Oak surface-language constructs.
-
 Required laws:
 
 - field order is unchanged;
 - each field offset is divisible by that field's alignment;
 - ordinary fields do not overlap;
 - zero-sized fields consume no bytes but may still carry alignment;
-- record alignment is the maximum field alignment, or 1 for an empty record;
+- record alignment is the maximum field alignment, or 1 for an empty struct;
 - final size is rounded up to record alignment;
-- narrowing into fixed-width representation metadata must be checked for overflow.
+- narrowing into fixed-width representation metadata is checked for overflow.
 
-This algorithm is not a claim that every target ABI uses this layout. Packed records, explicit offsets, overlays/unions, vector ABI rules, or platform-specific aggregate classification are separate representation policies. A backend must select an applicable policy explicitly rather than silently changing this primitive.
+This algorithm is not a claim that every target ABI uses this layout. Packed records, explicit offsets, overlays/unions, vector ABI rules, platform-specific aggregate classification, wire layouts, and FFI layouts are separate representation policies.
 
 The Semantic IR implementation is `NaturalRecordLayout` in `semir/layout.go`.
 
-## 4. Construction
+## 7. Explicit representation variants
 
-Canonical named construction:
+Future representation forms should extend the representation axis rather than changing record semantics.
+
+Examples of policies we may need:
+
+```text
+natural struct
+packed struct
+extern/C struct
+explicit offsets
+bit fields
+wire/network layout
+persistent/on-disk layout
+vector/SIMD layout
+```
+
+Exact surface syntax for those policies is intentionally not frozen yet. The important semantic rule is that a representation choice is explicit and independently checkable.
+
+A future separate representation declaration may allow one semantic type to be related to a specialized physical form. Such a feature must define and verify the conversion/refinement relation rather than assuming semantic fields and physical fields are identical.
+
+## 8. Construction
+
+Named construction uses the semantic type:
 
 ```oak
 p := Point { x: 1, y: 2 }
 ```
 
-Field order in a literal need not be the same as declaration order if every field is named and the language can prove the mapping unambiguously. The resulting runtime layout follows the type's representation, not literal spelling order.
+Construction braces do not choose layout. The type's representation policy does.
 
-Duplicate fields are errors. Missing required fields are errors unless a separately specified field-default rule supplies them.
+Field order in a literal need not match declaration order if every field is named and the compiler proves an unambiguous mapping. Runtime storage follows the resolved representation of `Point`, not literal spelling order.
 
-## 5. Defaults
+Duplicate fields are errors. Missing required fields are errors unless a separately specified construction-default rule supplies them.
+
+## 9. Defaults
 
 A field default, if supported, means only a construction default:
 
@@ -115,17 +211,19 @@ Config: type = {
 }
 ```
 
-It does not affect field offset, wire encoding, database schema, or UI metadata unless a separate projection explicitly uses it.
+It does not affect field offset, wire encoding, database schema, or UI metadata unless a separate projection explicitly consumes it.
 
-## 6. Record composition
+The same rule applies to struct-backed types: default construction semantics and representation semantics are separate axes.
 
-Definition-time composition may form a new nominal record from existing record components:
+## 10. Record composition
+
+Definition-time composition forms a new semantic record from existing components:
 
 ```oak
 Point3: type = Point2 & { z: i32 }
 ```
 
-This means “compose these fields into the definition of `Point3`.”
+This means “compose these semantic members into the definition of `Point3`.”
 
 It does not imply:
 
@@ -135,56 +233,57 @@ Point3 <= Point2
 
 and does not introduce general width subtyping.
 
-Composition flattens the field sequence in component order.
+Duplicate field names are accepted only if their semantic types and correctness-critical semantic attributes agree exactly. Otherwise composition fails.
 
-Duplicate field names are accepted only if their semantic type and correctness-critical attributes agree exactly. Otherwise composition fails.
+Representation does not automatically compose with semantic record composition. If the resulting type needs concrete storage, its representation must be selected/resolved independently.
 
-## 7. Shape constraints
+## 11. Empty records, empty structs, and Unit
 
-General structural record subtyping is not core Oak.
+An empty semantic record has one value and zero members. It has the same semantic cardinality as Unit, but named types remain nominally distinct.
 
-If a future API needs “has at least these fields,” that should be expressed as an explicit shape/interface constraint feature rather than silently making all records structurally subtype one another.
+An empty natural struct has zero data bytes and alignment 1 in the natural representation profile.
 
-This preserves nominal identity and predictable layout while still leaving room for local structural constraints.
+The canonical procedure-like return spelling is `()`.
 
-## 8. Empty records and Unit
+Named empty marker types are useful as phantom tags even when a selected runtime representation is zero-sized.
 
-An empty record has one value and zero fields. It may share the same semantic cardinality/representation as Unit.
+## 12. Metadata
 
-The canonical language spelling for procedure-like return values is `()`.
-
-Named empty marker types remain nominally useful as phantom tags even if their runtime representation is zero-sized.
-
-## 9. Metadata
-
-Field metadata is not part of the runtime record value unless a projection explicitly requests it.
+Field metadata is not part of the runtime record/struct value unless a projection explicitly requests it.
 
 A field may carry compile-time attributes such as serializer field numbers, DB names, units, debugger labels, or documentation, but those facts live in the metadata axis.
 
-Correctness-critical representation properties should use typed representation constructs rather than arbitrary string-valued tags.
+Correctness-critical representation properties must use typed representation constructs rather than arbitrary string-valued tags.
 
-## 10. Borrowing and fields
+## 13. Borrowing and fields
 
-Borrowing a field must preserve ownership/aliasing facts about the containing storage.
+Borrowing a field preserves ownership/aliasing facts about the containing storage.
 
 A view/span of a field or subrange cannot manufacture an independent owner. Derived borrows retain provenance to the owning object/region.
 
+For a semantic shape constraint, field access is resolved against the concrete specialized type before executable lowering; the constraint itself does not contain runtime storage.
+
 The exact borrow rules are specified in `50-borrowing.md`.
 
-## 11. Formal verification targets
+## 14. Formal verification targets
 
-Initial proof targets:
+Semantic-record proof targets:
 
-- field-name uniqueness after composition;
-- composition preserves declared source order;
-- compatible composition is deterministic;
+- field-name uniqueness;
+- structural shape satisfaction depends on required names/types, not layout offsets;
+- record composition is deterministic;
 - incompatible duplicate fields are rejected;
-- field lookup returns the field associated with that name;
-- natural ordered layout preserves field identity/order;
-- natural ordered layout gives non-overlapping ordinary fields;
-- every natural-layout field offset satisfies its alignment;
-- final natural-layout size satisfies record alignment and covers the final field cursor.
+- field lookup returns the member associated with that name.
 
-`spec/lean/Oak/RecordLayout.lean` models the unbounded arithmetic core of the natural ordered layout. Fixed-width overflow checks remain executable implementation obligations until an explicit refinement connects the Go representation widths to the Lean model.
+Struct-representation proof targets:
 
-The semantic record proof should not assume that all targets use the natural profile. ABI-specific layout theorems belong to their representation/backend models.
+- selected natural representation preserves declaration order;
+- every placed field satisfies its alignment;
+- ordinary placed fields do not overlap;
+- final size satisfies struct alignment;
+- overflow is rejected rather than wrapped;
+- a resolved representation corresponds to the selected representation policy.
+
+`spec/lean/Oak/RecordLayout.lean` models the unbounded arithmetic core of natural ordered struct layout. Fixed-width overflow checks remain executable implementation obligations until an explicit refinement connects Go representation widths to the Lean model.
+
+The semantic record proof must not assume a specific ABI. ABI-specific theorems belong to representation/backend models.
