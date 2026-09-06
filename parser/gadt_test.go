@@ -35,3 +35,19 @@ func TestParsesIndexedADTConstructorResults(t *testing.T) {
 		}
 	}
 }
+
+func TestParsesIndexedResultsInPrefixTypeForm(t *testing.T) {
+	input := `type Expr[T]: type = | Int: i64 => Expr[i64] | Flag: Bool => Expr[Bool]`
+	p := New(scanner.New(input))
+	program := p.ParseProgram()
+	if errors := p.Errors(); len(errors) != 0 {
+		t.Fatalf("parser errors: %v", errors)
+	}
+	if len(program.Statements) != 1 {
+		t.Fatalf("statements = %d, want 1", len(program.Statements))
+	}
+	decl, ok := program.Statements[0].(*ast.ADTType)
+	if !ok || len(decl.Variants) != 2 {
+		t.Fatalf("prefix-form declaration = %#v", program.Statements[0])
+	}
+}
