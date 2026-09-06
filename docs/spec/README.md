@@ -50,8 +50,9 @@ Use these terms precisely:
 - `00-constitution.md` — values, design constraints, semantic axes
 - `05-ergonomics-and-cost.md` — functional ergonomics and systems cost transparency
 - `10-syntax.md` — lexical/layout/block rules and canonical punctuation
+- `15-diagnostics.md` — first-class compiler errors, stable codes, causal labels, notes/help, and UX requirements
 - `20-types.md` — type universe, subtyping, joins/meets, nominal identity
-- `25-type-inference.md` — HM-style local inference, safe generalization, explicit module/API contracts
+- `25-type-inference.md` — layered local inference, safe generalization, explicit module/API contracts
 - `30-adts-patterns.md` — ADTs, GADT direction, constructors, matching, exhaustiveness
 - `40-records.md` — products, record identity, composition, order, layout separation
 - `45-representations.md` — multiple checked representations per semantic type and representation selection
@@ -73,12 +74,13 @@ spec/
       TypeLattice.lean
       Effects.lean
       Borrowing.lean
+      Diagnostics.lean
       ...
   tla/
     ...
 ```
 
-Lean is the primary proof layer for local algebraic and semantic laws: type lattices, refinements, effect subsumption, bounds, ownership facts, and representation-independent compiler invariants.
+Lean is the primary proof layer for local algebraic and semantic laws: type lattices, refinements, effect subsumption, bounds, ownership facts, representation-independent compiler invariants, and structural diagnostic invariants.
 
 TLA+ (or another explicit state-machine model checker) is appropriate when the property is fundamentally temporal/concurrent: ownership transfer across actors, asynchronous protocols, scheduler/queue interaction, or other behavior over traces.
 
@@ -96,4 +98,4 @@ implementation property tests against the same laws
 explicit refinement for load-bearing compiler/runtime components
 ```
 
-The first refinement targets should be small and foundational: the type lattice, delimited parser cursor contract, borrow-state transitions, effect subsumption, and exact source-span conversions.
+The first refinement targets should be small and foundational: the type lattice, delimited parser cursor contract, borrow-state transitions, effect subsumption, exact source-span conversions, and first-class diagnostic structure.

@@ -133,8 +133,8 @@ func (comp Compilation) Check() Stage[*SemanticModel] {
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		tc.CheckProgram(tree.Root)
-		if errors := tc.Errors(); len(errors) != 0 {
-			return nil, phaseError("typecheck", errors)
+		if errors := diagnosticErrors(tc.Diagnostics()); len(errors) != 0 {
+			return nil, &DiagnosticError{Phase: "typecheck", Diagnostics: errors}
 		}
 		return &SemanticModel{Tree: tree, TypeChecker: tc}, nil
 	})

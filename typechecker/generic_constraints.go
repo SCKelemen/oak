@@ -2,6 +2,7 @@ package typechecker
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -71,7 +72,11 @@ func (tc *TypeChecker) validateGenericConstraints(constraints []Constraint, env 
 		for _, requirementName := range constraint.Interfaces {
 			requirement, ok := env.GetType(requirementName)
 			if !ok {
-				tc.addError(node, "generic constraint %s: requirement %s not found", constraint.Var, requirementName)
+				tc.addTypeDiagnostic(
+					node,
+					CodeConstraintRequirementMissing,
+					fmt.Sprintf("constraint `%s` refers to unknown requirement `%s`", constraint.Var, requirementName),
+				).AddHelp(fmt.Sprintf("define `%s` as a record shape or interface before using it as a constraint", requirementName))
 				valid = false
 				continue
 			}
@@ -79,7 +84,11 @@ func (tc *TypeChecker) validateGenericConstraints(constraints []Constraint, env 
 			case *InterfaceType, *RecordType:
 				// Static method interface or static semantic record-shape requirement.
 			default:
-				tc.addError(node, "generic constraint %s: %s is neither an interface nor a record shape", constraint.Var, requirementName)
+				tc.addTypeDiagnostic(
+					node,
+					CodeConstraintRequirementInvalid,
+					fmt.Sprintf("`%s` cannot be used as a generic constraint", requirementName),
+				).AddNote("generic requirements must name a semantic record shape or interface")
 				valid = false
 			}
 		}
@@ -167,17 +176,70 @@ func (tc *TypeChecker) constrainedFieldType(typeVar *TypeVar, fieldName string) 
 	return result, found
 }
 
+// constraintMismatchDetail explains one deterministic record-shape mismatch in
+// source-level terms. Method-interface details will receive the same treatment
+// when method constraint discharge is migrated to first-class diagnostics.
+func (tc *TypeChecker) constraintMismatchDetail(concreteType Type, constraint Constraint) string {
+	candidate, ok := tc.asRecordType(concreteType)
+	if !ok {
+		return ""
+	}
+
+	for _, requirementName := range constraint.Interfaces {
+		requirement, ok := tc.env.GetType(requirementName)
+		if !ok {
+			continue
+		}
+		shape, ok := requirement.(*RecordType)
+		if !ok {
+			continue
+		}
+
+		names := make([]string, 0, len(shape.Fields))
+		for name := range shape.Fields {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		for _, name := range names {
+			requiredType := shape.Fields[name]
+			candidateType, present := candidate.Fields[name]
+			if !present {
+				return fmt.Sprintf("`%s` requires field `%s: %s`, but the inferred type has no `%s` field", requirementName, name, requiredType, name)
+			}
+			if !candidateType.Equals(requiredType) {
+				return fmt.Sprintf("`%s` requires `%s: %s`, but the inferred type provides `%s: %s`", requirementName, name, requiredType, name, candidateType)
+			}
+		}
+	}
+	return ""
+}
+
 // checkFunctionConstraintBindings discharges the qualified-type obligations
 // after generic argument inference has produced concrete type bindings.
 func (tc *TypeChecker) checkFunctionConstraintBindings(scheme *TypeScheme, bindings Substitution, expr ast.Node) {
 	for _, constraint := range scheme.Constraints {
 		concreteType, ok := bindings.LookupName(constraint.Var)
 		if !ok {
-			tc.addError(expr, "function call: could not infer constrained type argument %s for %s", constraint.Var, constraint)
+			tc.addTypeDiagnostic(
+				expr,
+				CodeConstraintInferenceFailed,
+				fmt.Sprintf("cannot infer type argument `%s` required by `%s`", constraint.Var, constraint),
+			).AddNote("the call does not provide enough information to choose one sound type argument").
+				AddHelp(fmt.Sprintf("add a local annotation or pass an argument that determines `%s`", constraint.Var))
 			continue
 		}
 		if !tc.SatisfiesConstraint(concreteType, constraint) {
-			tc.addError(expr, "function call: type argument %s (inferred as %s) does not satisfy constraint: %s", constraint.Var, concreteType, constraint)
+			d := tc.addTypeDiagnostic(
+				expr,
+				CodeConstraintUnsatisfied,
+				fmt.Sprintf("inferred type `%s` does not satisfy `%s`", concreteType, constraint),
+			)
+			d.AddNote(fmt.Sprintf("inference chose `%s = %s` for this call", constraint.Var, concreteType))
+			if detail := tc.constraintMismatchDetail(concreteType, constraint); detail != "" {
+				d.AddNote(detail)
+			}
+			d.AddHelp("pass a value that satisfies the declared requirement or change the generic contract explicitly")
 		}
 	}
 }
