@@ -1621,7 +1621,7 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 				tc.addError(p, "variant %s not found in ADT %s", p.Variant.Value, adtName)
 				return nil
 			}
-			bindings, reachable := tc.variantIndexBindings(adtDef, variant, typeArgs)
+			bindings, _, reachable := tc.variantIndexBindings(adtDef, variant, typeArgs)
 			if !reachable {
 				bindings = map[string]Type{}
 			}
@@ -1702,9 +1702,11 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expec
 	}
 
 	var bindings map[string]Type
+	refinedExpected := expected
 	if name, _, args, hasExpectedADT := adtInstantiation(expected); hasExpectedADT && name == adtTypeName {
+		var resultSubstitution Substitution
 		var reachable bool
-		bindings, reachable = tc.variantIndexBindings(adtDef, variant, args)
+		bindings, resultSubstitution, reachable = tc.variantIndexBindings(adtDef, variant, args)
 		if !reachable {
 			d := tc.addTypeDiagnostic(expr, CodeGADTResultMismatch, "constructor result does not inhabit the expected indexed ADT")
 			d.AddNote(fmt.Sprintf("%s.%s is declared to produce %s, but this context expects %s",
@@ -1712,6 +1714,7 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expec
 			d.AddHelp("choose a constructor whose declared result indices match the expected type")
 			return nil
 		}
+		refinedExpected = resultSubstitution.Apply(expected)
 	}
 
 	if expr.Payload != nil {
@@ -1730,7 +1733,7 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expec
 		return nil
 	}
 
-	return tc.variantResultType(adtDef, variant, expected)
+	return tc.variantResultType(adtDef, variant, refinedExpected)
 }
 
 func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType ...Type) Type {
