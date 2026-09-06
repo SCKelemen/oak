@@ -136,6 +136,20 @@ Option[T]: type =
   | None
 ```
 
+An indexed constructor writes its explicit result after `=>`:
+
+```oak
+Expr[T]: type =
+  | Int: i64  => Expr[i64]
+  | Flag: Bool => Expr[Bool]
+  | Id: T     => Expr[T]
+```
+
+The result must be the enclosing ADT applied to exactly its declared type
+indices. Omitting the result is equivalent to returning the enclosing ADT with
+its parameters unchanged. This `=>` is declaration punctuation; match arms
+use the same token in expression context.
+
 Constructors:
 
 ```oak
