@@ -64,10 +64,136 @@ func atomicTypeC(expr ast.Expression) (string, bool) {
 	return cType, err == nil
 }
 
-// emitAtomicGlobals emits package-scope Atomic[T] cells as zero-initialized
-// static-duration C11 atomic storage. They have no wrapper object and no heap
-// allocation. Non-atomic globals remain outside this v1 slice.
+// programUsesAtomics is a compile-time AST scan used solely to make the C11
+// atomic dependency pay-for-use. Non-atomic programs keep byte-for-byte stable
+// C output and do not include <stdatomic.h>.
+func programUsesAtomics(program *ast.Program) bool {
+	var exprUses func(ast.Expression) bool
+	var stmtUses func(ast.Statement) bool
+
+	exprUses = func(expr ast.Expression) bool {
+		switch e := expr.(type) {
+		case *ast.InvocationExpression:
+			if id, ok := e.Function.(*ast.Identifier); ok {
+				if _, atomic := semir.LookupAtomicBuiltin(id.Value); atomic {
+					return true
+				}
+			}
+			if exprUses(e.Function) {
+				return true
+			}
+			for _, arg := range e.Arguments {
+				if exprUses(arg) {
+					return true
+				}
+			}
+		case *ast.BlockExpression:
+			if e.Block != nil {
+				for _, stmt := range e.Block.Statements {
+					if stmtUses(stmt) {
+						return true
+					}
+				}
+			}
+		case *ast.InfixExpression:
+			return exprUses(e.Left) || exprUses(e.Right)
+		case *ast.PrefixExpression:
+			return exprUses(e.Right)
+		case *ast.IndexExpression:
+			if _, atomic := atomicTypeC(e); atomic {
+				return true
+			}
+			return exprUses(e.Left) || exprUses(e.Index)
+		case *ast.SliceExpression:
+			return exprUses(e.Seq) || exprUses(e.Low) || exprUses(e.High)
+		case *ast.VariantExpression:
+			return exprUses(e.Payload)
+		case *ast.MatchExpression:
+			if exprUses(e.Scrutinee) {
+				return true
+			}
+			for _, arm := range e.Arms {
+				if exprUses(arm.Body) {
+					return true
+				}
+			}
+		case *ast.RecordLiteral:
+			for _, field := range e.Fields {
+				if exprUses(field) {
+					return true
+				}
+			}
+		case *ast.ArrayLiteral:
+			for _, element := range e.Elements {
+				if exprUses(element) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	stmtUses = func(stmt ast.Statement) bool {
+		switch s := stmt.(type) {
+		case *ast.VariableDeclaration:
+			if _, atomic := atomicTypeC(s.Type); atomic {
+				return true
+			}
+			return exprUses(s.Value)
+		case *ast.ExpressionStatement:
+			return exprUses(s.Expression)
+		case *ast.AssignmentStatement:
+			return exprUses(s.Value)
+		case *ast.IndexAssignmentStatement:
+			return exprUses(s.Target) || exprUses(s.Value)
+		case *ast.FunctionStatement:
+			return exprUses(s.Body)
+		case *ast.WhileStatement:
+			if exprUses(s.Condition) {
+				return true
+			}
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					if stmtUses(inner) {
+						return true
+					}
+				}
+			}
+		case *ast.BlockStatement:
+			for _, inner := range s.Statements {
+				if stmtUses(inner) {
+					return true
+				}
+			}
+		case *ast.UnsafeBlock:
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					if stmtUses(inner) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	for _, stmt := range program.Statements {
+		if stmtUses(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+// emitAtomicGlobals emits the atomic C dependency only for programs that use
+// atomics, then package-scope Atomic[T] cells as zero-initialized static storage.
+// There is no wrapper object and no heap allocation.
 func (cg *CodeGenerator) emitAtomicGlobals(program *ast.Program) {
+	if !programUsesAtomics(program) {
+		return
+	}
+	cg.write("#include <stdatomic.h>\n\n")
+
 	emitted := false
 	for _, stmt := range program.Statements {
 		decl, ok := stmt.(*ast.VariableDeclaration)
