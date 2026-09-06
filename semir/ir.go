@@ -6,6 +6,7 @@ package semir
 type Module struct {
 	Definitions []Definition
 	Protocols   []Protocol
+	Allocators  []Allocator
 }
 
 // Definition keeps Oak's five semantic axes orthogonal. A declaration can use
@@ -137,9 +138,14 @@ type Capability struct {
 	Name      string
 }
 
+// Effect is a semantic operation class. Parameters refine an effect without
+// inventing a new effect name, e.g. Memory.Allocate[request_region]. An
+// unparameterized effect denotes the whole class and therefore overlaps all of
+// its parameterized instances for requires/forbids checking.
 type Effect struct {
-	Namespace string
-	Name      string
+	Namespace  string
+	Name       string
+	Parameters []string
 }
 
 // Proposition is a structured fact suitable for multiple proof backends. The
