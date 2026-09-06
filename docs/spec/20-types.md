@@ -202,9 +202,9 @@ Refinements add propositions to a base type:
 {x : u16 | x < N}
 ```
 
-Exact surface syntax is not yet normative, but the semantic rule is: a refined type denotes the subset of its base type satisfying the proposition.
+A refined type denotes the subset of its base type satisfying the proposition. General value-refinement surface syntax remains future work.
 
-GADT-style constructors extend the same idea to constructor-specific result refinements. They should be introduced by enriching ADTs and propositions rather than by creating a separate object system.
+GADT-style constructors extend the same idea to constructor-specific result refinements. Constructor result-index syntax and equality solving are normative in `30-adts-patterns.md`: fixed result indices and repeated result parameters introduce equality propositions. More general propositions must extend this refinement system rather than create a separate object system.
 
 ## 11. Machine types
 
