@@ -21,7 +21,48 @@ jobs:
           go-version: '1.27.1'
 
       - name: Apply compiler integration
-        run: python3 tools/atomic_surface_patch.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("tools/atomic_surface_patch.py")
+          s = p.read_text()
+          marker = '''replace_once(
+              "typechecker/typechecker.go",
+              ''' + "'''" + '''func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {'''
+          start = s.index(marker)
+          end = s.index("\n\nreplace_once(", start)
+          p.write_text(s[:start] + s[end + 2:])
+          PY
+          python3 tools/atomic_surface_patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("typechecker/typechecker.go")
+          s = p.read_text()
+          old = '''func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
+          \t// Compiler-known library calls: c conversions, misplaced c.extern, and
+          \t// arm64 instruction functions (docs/spec/92-ffi.md).
+          \tif libraryType, isLibrary := tc.checkLibraryInvocation(expr); isLibrary {
+          \t\treturn libraryType
+          \t}
+          '''
+          new = '''func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
+          \tif ident, ok := expr.Function.(*ast.Identifier); ok {
+          \t\tif atomicType, recognized := tc.checkAtomicInvocation(ident.Value, expr); recognized {
+          \t\t\treturn atomicType
+          \t\t}
+          \t}
+          \t// Compiler-known library calls: c conversions, misplaced c.extern, and
+          \t// arm64 instruction functions (docs/spec/92-ffi.md).
+          \tif libraryType, isLibrary := tc.checkLibraryInvocation(expr); isLibrary {
+          \t\treturn libraryType
+          \t}
+          '''
+          if s.count(old) != 1:
+              raise SystemExit(f"current checker invocation prelude count={s.count(old)}")
+          p.write_text(s.replace(old, new, 1))
+          PY
 
       - name: Format Go sources
         run: |
