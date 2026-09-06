@@ -5,6 +5,7 @@ import Oak.BorrowRegions
 import Oak.Reborrow
 import Oak.ReborrowRefinement
 import Oak.Escape
+import Oak.Unsafe
 import Oak.Handles
 import Oak.Slab
 import Oak.Exhaustiveness

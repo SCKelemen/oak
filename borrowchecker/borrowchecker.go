@@ -83,6 +83,12 @@ type BorrowChecker struct {
 	// currentBlock tracks the current block scope for lexical borrowing
 	// In v1, borrows cannot escape their creation block
 	currentBlockDepth int
+
+	// unsafeDepth tracks lexical unsafe-block nesting (Oak.Unsafe.Scope).
+	// Inside an unsafe boundary the checker may admit exactly the
+	// writable-disjointness assumption, recording it as an auditable
+	// warning; every other invariant remains checked.
+	unsafeDepth int
 }
 
 // New creates a new borrow checker
@@ -118,6 +124,7 @@ func (bc *BorrowChecker) CheckProgram(program *ast.Program, env *typechecker.Typ
 	bc.ownerOf = make(map[string]string)
 	bc.activeBorrows = make(map[string]borrowInfo)
 	bc.currentBlockDepth = 0
+	bc.unsafeDepth = 0
 
 	for _, stmt := range program.Statements {
 		bc.checkStatement(stmt, env)
@@ -139,9 +146,24 @@ func (bc *BorrowChecker) checkStatement(stmt ast.Statement, env *typechecker.Typ
 		bc.checkWhileStatement(s, env)
 	case *ast.AssignmentStatement:
 		bc.checkAssignmentStatement(s, env)
+	case *ast.UnsafeBlock:
+		bc.checkUnsafeBlock(s, env)
 	default:
 		// Other statement types don't affect borrowing
 	}
+}
+
+// checkUnsafeBlock checks an unsafe boundary (Oak.Unsafe): the body is
+// checked like any block — unsafe does not disable checking — but while the
+// boundary is open, the writable-disjointness obligation may be admitted as
+// a recorded assumption instead of proven.
+func (bc *BorrowChecker) checkUnsafeBlock(stmt *ast.UnsafeBlock, env *typechecker.TypeEnvironment) {
+	if stmt == nil || stmt.Body == nil {
+		return
+	}
+	bc.unsafeDepth++
+	bc.checkBlockStatement(stmt.Body, env)
+	bc.unsafeDepth--
 }
 
 // checkBlockStatement handles block scoping for lexical borrowing
@@ -716,6 +738,11 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			if firstIdent, ok := call.Arguments[0].(*ast.Identifier); ok {
 				_, skipDerivationSource = bc.activeBorrows[firstIdent.Value]
 			}
+		case "view", "span":
+			// &owner in a borrow-creation position is not a direct use of the
+			// owner; createViewBorrowWithRegion/createSpanBorrowWithRegion is
+			// the single authority for whether the borrow is allowed.
+			skipDerivationSource = bc.extractOwnerName(call.Arguments[0]) != ""
 		}
 	}
 
@@ -1036,7 +1063,19 @@ func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string
 			conflict = bc.activeBorrows[conflictName]
 		}
 
-		if allDisjoint {
+		if allDisjoint || bc.unsafeDepth > 0 {
+			if !allDisjoint {
+				// Oak.Unsafe: inside an unsafe boundary the unprovable
+				// writable-disjointness obligation is admitted, not proven.
+				d := bc.reportUnsafeAssumption(origin,
+					fmt.Sprintf("unsafe assumption: writable span %q is assumed disjoint from existing writable access to %q", borrowName, ownerName))
+				d.AddNote(fmt.Sprintf("requested region: %s", describeRegion(region)))
+				if conflictName != "" {
+					bc.addBorrowContext(d, conflictName, conflict,
+						fmt.Sprintf("existing span %q covers %s", conflictName, describeRegion(conflict.region)))
+				}
+				d.AddNote("Oak cannot prove the writable regions are disjoint; this unsafe block takes responsibility for that fact")
+			}
 			bc.ownerOf[borrowName] = ownerName
 			bc.activeBorrows[borrowName] = borrowInfo{
 				owner:      ownerName,
@@ -1119,16 +1158,27 @@ func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName
 		if conflict, ok := admitReborrow(siblingRegions, newRegion); !ok {
 			siblingName := siblingNames[conflict]
 			sibling := bc.activeBorrows[siblingName]
-			d := bc.reportBorrow(origin, CodeReborrowOverlap,
-				fmt.Sprintf("writable reborrow %q may overlap live reborrow %q of span %q", subsliceName, siblingName, sourceBorrowName))
-			d.AddNote(fmt.Sprintf("requested region: %s", describeRegion(newRegion)))
-			bc.addBorrowContext(d, siblingName, sibling,
-				fmt.Sprintf("reborrow %q is still live here", siblingName))
-			if newRegion == nil || sibling.region == nil {
-				d.AddNote("Oak could not prove the reborrowed regions are disjoint, so it rejects the alias conservatively")
+			if bc.unsafeDepth > 0 {
+				// Oak.Unsafe: the unprovable sibling-disjointness obligation
+				// is admitted inside an unsafe boundary, not proven.
+				d := bc.reportUnsafeAssumption(origin,
+					fmt.Sprintf("unsafe assumption: writable reborrow %q is assumed disjoint from live reborrow %q of span %q", subsliceName, siblingName, sourceBorrowName))
+				d.AddNote(fmt.Sprintf("requested region: %s", describeRegion(newRegion)))
+				bc.addBorrowContext(d, siblingName, sibling,
+					fmt.Sprintf("reborrow %q is still live here", siblingName))
+				d.AddNote("Oak cannot prove the reborrowed regions are disjoint; this unsafe block takes responsibility for that fact")
+			} else {
+				d := bc.reportBorrow(origin, CodeReborrowOverlap,
+					fmt.Sprintf("writable reborrow %q may overlap live reborrow %q of span %q", subsliceName, siblingName, sourceBorrowName))
+				d.AddNote(fmt.Sprintf("requested region: %s", describeRegion(newRegion)))
+				bc.addBorrowContext(d, siblingName, sibling,
+					fmt.Sprintf("reborrow %q is still live here", siblingName))
+				if newRegion == nil || sibling.region == nil {
+					d.AddNote("Oak could not prove the reborrowed regions are disjoint, so it rejects the alias conservatively")
+				}
+				d.AddHelp("reborrow statically disjoint regions, or let the live child span leave scope first")
+				return
 			}
-			d.AddHelp("reborrow statically disjoint regions, or let the live child span leave scope first")
-			return
 		}
 		sourceInfo.reborrows = append(sourceInfo.reborrows, subsliceName)
 		bc.activeBorrows[sourceBorrowName] = sourceInfo

@@ -19,6 +19,7 @@ const (
 	CodeBorrowSuspended        diagnostic.Code = "OAK-B0107"
 	CodeReborrowOverlap        diagnostic.Code = "OAK-B0108"
 	CodeBorrowEscape           diagnostic.Code = "OAK-B0109"
+	CodeUnsafeAssumption       diagnostic.Code = "OAK-B0110"
 )
 
 type diagnosticsState struct {
@@ -76,6 +77,15 @@ func (bc *BorrowChecker) reportBorrow(node ast.Node, code diagnostic.Code, title
 	}
 	d := diagnostic.NewDiagnosticFromNodeWithCode(node, "borrowchecker", string(code), title)
 	bc.diagnostics.collector.AddDiagnostic(d)
+	return d
+}
+
+// reportUnsafeAssumption records an admitted unsafe assumption as an
+// auditable warning (Oak.Unsafe): the obligation is not silently dropped,
+// it is visibly assumed.
+func (bc *BorrowChecker) reportUnsafeAssumption(node ast.Node, title string) *diagnostic.Diagnostic {
+	d := bc.reportBorrow(node, CodeUnsafeAssumption, title)
+	d.Severity = diagnostic.SeverityWarning
 	return d
 }
 

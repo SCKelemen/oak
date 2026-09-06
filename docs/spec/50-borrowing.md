@@ -85,7 +85,7 @@ The conservative rule treats two writable regions of one owner as conflicting.
 
 Oak may admit simultaneous mutable subspans when the compiler proves their byte/element ranges are disjoint.
 
-The proof obligation is semantic range disjointness, not programmer assertion. If disjointness cannot be established, the operation is rejected in safe code or requires an explicit unsafe boundary.
+The proof obligation is semantic range disjointness, not programmer assertion. If disjointness cannot be established, the operation is rejected in safe code or requires an explicit unsafe boundary. Inside an unsafe boundary the admission is recorded as an auditable assumption (`OAK-B0110`, warning severity) rather than silently dropped; every unrelated borrow invariant remains checked (`Oak.Unsafe`).
 
 ## 7. Slicing
 
