@@ -58,3 +58,34 @@ func TestParseSeparatedAllowsEmptyAndOptionalTrailingSeparator(t *testing.T) {
 		t.Fatalf("unexpected trailing-separator result: %v, ok=%v", items, ok)
 	}
 }
+
+func TestParseDelimitedHasOneCursorContract(t *testing.T) {
+	p := New(scanner.New("[alpha, beta,] tail"))
+	items, ok := p.parseDelimited(token.LBRACK, token.RBRACK, token.COMMA, true, func() (string, bool) {
+		if !p.currentTokenIs(token.IDENT) {
+			return "", false
+		}
+		return p.currentToken.Literal, true
+	})
+	if !ok {
+		t.Fatalf("parseDelimited failed: %v", p.Errors())
+	}
+	if len(items) != 2 || items[0] != "alpha" || items[1] != "beta" {
+		t.Fatalf("unexpected items %v", items)
+	}
+	if !p.currentTokenIs(token.RBRACK) || !p.peekTokenIs(token.IDENT) || p.peekToken.Literal != "tail" {
+		t.Fatalf("expected cursor on ] with tail in lookahead, got current=%s peek=%s(%q)", p.currentToken.TokenKind, p.peekToken.TokenKind, p.peekToken.Literal)
+	}
+}
+
+func TestParseDelimitedRejectsWrongOpeningToken(t *testing.T) {
+	p := New(scanner.New("(a)"))
+	if _, ok := p.parseDelimited(token.LBRACK, token.RBRACK, token.COMMA, false, func() (string, bool) {
+		return p.currentToken.Literal, true
+	}); ok {
+		t.Fatal("expected wrong opening token to fail")
+	}
+	if len(p.Errors()) == 0 {
+		t.Fatal("expected diagnostic for wrong opening token")
+	}
+}
