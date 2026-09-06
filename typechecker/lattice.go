@@ -263,10 +263,17 @@ func Meet(types ...Type) Type {
 func NarrowType(originalType Type, pattern ast.Pattern) Type {
 	// For variant patterns, narrow to that specific variant
 	if variantPattern, ok := pattern.(*ast.VariantPattern); ok {
-		if adtType, ok := originalType.(*ADTType); ok {
+		switch adtType := originalType.(type) {
+		case *ADTType:
 			return &NarrowedADTVariantType{
 				ADTName:     adtType.Name,
 				VariantName: variantPattern.Variant.Value,
+			}
+		case *GenericType:
+			return &NarrowedADTVariantType{
+				ADTName:     adtType.Name,
+				VariantName: variantPattern.Variant.Value,
+				TypeArgs:    append([]Type(nil), adtType.TypeArgs...),
 			}
 		}
 	}
@@ -285,7 +292,11 @@ func JoinNarrowedTypes(narrowedTypes []Type) Type {
 	adtTypes := []Type{}
 	for _, nt := range narrowedTypes {
 		if narrowed, ok := nt.(*NarrowedADTVariantType); ok {
-			adtTypes = append(adtTypes, &ADTType{Name: narrowed.ADTName})
+			if len(narrowed.TypeArgs) > 0 {
+				adtTypes = append(adtTypes, &GenericType{Name: narrowed.ADTName, TypeArgs: narrowed.TypeArgs})
+			} else {
+				adtTypes = append(adtTypes, &ADTType{Name: narrowed.ADTName})
+			}
 		} else {
 			adtTypes = append(adtTypes, nt)
 		}
