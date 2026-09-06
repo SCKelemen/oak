@@ -111,47 +111,48 @@ main: (): i32 {
 //
 // The current parser does not yet admit primitive Bool literals as match
 // patterns through the real compilation pipeline. Rather than hide that gap,
-// this POC uses a machine-friendly branchless selector. For u8 priorities a,b,
-// (a + 256 - b) is in [1,511], so integer division by 256 yields 0 exactly
-// when a < b and 1 otherwise; subtracting from 1 gives a checked 0/1 selector.
+// this POC uses a machine-friendly branchless selector. Priorities remain in
+// the u8 semantic range but use u16 storage/arithmetic because the current
+// compiler implements lossless widening and does not yet implement the
+// explicit narrowing conversions described by the specification.
 func TestHypervisorPOCBoundedIrqSelection(t *testing.T) {
 	code, abnormal := buildAndRunStrict(t, "hypervisor_irq_select", `
-candidate_for: (eligible: u8, priority: u8, mask: u8): u8 = eligible ?
+candidate_for: (eligible: u16, priority: u16, mask: u16): u16 = eligible ?
   | 1 -> priority
   | _ -> mask
 
-better_bit: (candidate: u8, current: u8): u16 =
-  u16(1) - ((u16(candidate) + u16(256) - u16(current)) / u16(256))
+better_bit: (candidate: u16, current: u16): u16 =
+  u16(1) - ((candidate + u16(256) - current) / u16(256))
 
 main: (): i32 {
-  eligible_storage: [4]u8
-  priority_storage: [4]u8
-  eligible: [*]u8 = span(&eligible_storage)
-  priority: [*]u8 = span(&priority_storage)
+  eligible_storage: [4]u16
+  priority_storage: [4]u16
+  eligible: [*]u16 = span(&eligible_storage)
+  priority: [*]u16 = span(&priority_storage)
 
-  eligible[0] = u8(1)
-  eligible[1] = u8(1)
-  eligible[2] = u8(0)
-  eligible[3] = u8(1)
+  eligible[0] = u16(1)
+  eligible[1] = u16(1)
+  eligible[2] = u16(0)
+  eligible[3] = u16(1)
 
-  priority[0] = u8(50)
-  priority[1] = u8(10)
-  priority[2] = u8(1)
-  priority[3] = u8(20)
+  priority[0] = u16(50)
+  priority[1] = u16(10)
+  priority[2] = u16(1)
+  priority[3] = u16(20)
 
-  mask: u8 = u8(40)
-  best: u32 = u32(0)
-  best_priority: u8 = mask
-  n: u32 = len(eligible)
-  i: u32 = 0
+  mask: u16 = u16(40)
+  best: u16 = u16(0)
+  best_priority: u16 = mask
+  n: u16 = u16(4)
+  i: u16 = u16(0)
 
   while i < n {
-    candidate: u8 = candidate_for(eligible[i], priority[i], mask)
+    candidate: u16 = candidate_for(eligible[i], priority[i], mask)
     choose: u16 = better_bit(candidate, best_priority)
     keep: u16 = u16(1) - choose
-    best = u32(choose) * i + u32(keep) * best
-    best_priority = u8(choose * u16(candidate) + keep * u16(best_priority))
-    i = i + 1
+    best = choose * i + keep * best
+    best_priority = choose * candidate + keep * best_priority
+    i = i + u16(1)
   }
 
   i32(best)
