@@ -3,7 +3,6 @@ package borrowchecker
 import "testing"
 
 func TestRegionsOverlapHalfOpenSemantics(t *testing.T) {
-	bc := New()
 	tests := []struct {
 		name    string
 		left    *Region
@@ -80,10 +79,10 @@ func TestRegionsOverlapHalfOpenSemantics(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := bc.regionsOverlap(test.left, test.right); got != test.overlap {
+			if got := regionsOverlap(test.left, test.right); got != test.overlap {
 				t.Fatalf("regionsOverlap(%#v, %#v) = %v, want %v", test.left, test.right, got, test.overlap)
 			}
-			if got := bc.regionsOverlap(test.right, test.left); got != test.overlap {
+			if got := regionsOverlap(test.right, test.left); got != test.overlap {
 				t.Fatalf("regionsOverlap symmetry failed: reverse = %v, want %v", got, test.overlap)
 			}
 		})

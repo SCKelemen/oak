@@ -261,7 +261,7 @@ func TestFrontEndDisjointSpanSplit(t *testing.T) {
 	if left.region == nil || right.region == nil {
 		t.Fatalf("split children missing exact regions: %#v / %#v", left.region, right.region)
 	}
-	if bc.regionsOverlap(left.region, right.region) {
+	if regionsOverlap(left.region, right.region) {
 		t.Fatalf("split children regions overlap: %#v / %#v", left.region, right.region)
 	}
 }
@@ -278,6 +278,125 @@ func TestFrontEndOverlappingReborrowReportsExactlyOneDiagnostic(t *testing.T) {
 	}
 	if code := bc.Diagnostics()[0].Code; code != string(CodeReborrowOverlap) {
 		t.Fatalf("overlapping reborrow diagnostic code = %s, want %s", code, CodeReborrowOverlap)
+	}
+}
+
+// overlapByElements is the brute-force element-level reference for
+// Oak.BorrowRegions.Overlap: two valid known regions overlap exactly when
+// they share at least one element index. It intentionally shares no code
+// with regionsOverlap.
+func overlapByElements(r1, r2 *Region) bool {
+	for i := r1.Offset; i < r1.Offset+r1.Length; i++ {
+		if i >= r2.Offset && i < r2.Offset+r2.Length {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRegionsOverlapMatchesElementSemantics differentially checks the
+// implemented decision procedure against brute-force element semantics on a
+// grid of valid regions, mirroring the proof
+// Oak.ReborrowRefinement.regionsOverlap_eq_false_iff_disjoint.
+func TestRegionsOverlapMatchesElementSemantics(t *testing.T) {
+	var grid []*Region
+	for offset := int64(0); offset <= 4; offset++ {
+		for length := int64(0); length <= 4; length++ {
+			grid = append(grid, &Region{Offset: offset, Length: length})
+		}
+	}
+	for _, r1 := range grid {
+		for _, r2 := range grid {
+			want := overlapByElements(r1, r2)
+			if got := regionsOverlap(r1, r2); got != want {
+				t.Fatalf("regionsOverlap(%+v, %+v) = %v, element semantics say %v", *r1, *r2, got, want)
+			}
+		}
+	}
+}
+
+// TestRegionsOverlapFailsClosedOnUnrepresentableRegions pins the conservative
+// answers proven in Oak.ReborrowRefinement for unknown, malformed, and
+// overflowing regions.
+func TestRegionsOverlapFailsClosedOnUnrepresentableRegions(t *testing.T) {
+	valid := &Region{Offset: 0, Length: 4}
+	cases := []struct {
+		name    string
+		left    *Region
+		right   *Region
+		overlap bool
+	}{
+		{"unknown left", nil, valid, true},
+		{"unknown right", valid, nil, true},
+		{"negative offset", &Region{Offset: -1, Length: 4}, valid, true},
+		{"negative length", &Region{Offset: 0, Length: -1}, valid, true},
+		{"overflowing end", &Region{Offset: maxRegionInt64, Length: 1}, valid, true},
+		{"at max, disjoint from origin", &Region{Offset: maxRegionInt64 - 1, Length: 1}, valid, false},
+		{"malformed but zero-length still conflicts", &Region{Offset: -1, Length: 0}, valid, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := regionsOverlap(tc.left, tc.right); got != tc.overlap {
+				t.Fatalf("regionsOverlap = %v, want %v", got, tc.overlap)
+			}
+		})
+	}
+}
+
+// TestAdmitReborrowMatchesAbstractAdmission differentially checks the
+// implemented sibling admission loop against a reference computed from
+// element semantics, mirroring Oak.ReborrowRefinement.admitReborrow_refines
+// and the fail-closed unknown-region theorems.
+func TestAdmitReborrowMatchesAbstractAdmission(t *testing.T) {
+	sample := []*Region{
+		nil,
+		{Offset: 0, Length: 0},
+		{Offset: 0, Length: 4},
+		{Offset: 2, Length: 4},
+		{Offset: 4, Length: 4},
+		{Offset: 8, Length: 0},
+		{Offset: 8, Length: 8},
+	}
+
+	admitsReference := func(siblings []*Region, newRegion *Region) bool {
+		for _, sibling := range siblings {
+			if newRegion == nil || sibling == nil || overlapByElements(newRegion, sibling) {
+				return false
+			}
+		}
+		return true
+	}
+
+	var siblingLists [][]*Region
+	siblingLists = append(siblingLists, nil)
+	for _, a := range sample {
+		siblingLists = append(siblingLists, []*Region{a})
+		for _, b := range sample {
+			siblingLists = append(siblingLists, []*Region{a, b})
+		}
+	}
+
+	for _, siblings := range siblingLists {
+		for _, newRegion := range sample {
+			want := admitsReference(siblings, newRegion)
+			_, got := admitReborrow(siblings, newRegion)
+			if got != want {
+				t.Fatalf("admitReborrow(siblings=%v, new=%v) = %v, reference says %v", siblings, newRegion, got, want)
+			}
+		}
+	}
+}
+
+// TestAdmitReborrowConflictIndexIsFirst pins that the reported conflict is the
+// earliest live sibling, which the diagnostics rely on for causal ordering.
+func TestAdmitReborrowConflictIndexIsFirst(t *testing.T) {
+	siblings := []*Region{
+		{Offset: 0, Length: 4},
+		{Offset: 4, Length: 4},
+	}
+	conflict, ok := admitReborrow(siblings, &Region{Offset: 2, Length: 8})
+	if ok || conflict != 0 {
+		t.Fatalf("admitReborrow = (%d, %v), want first conflicting sibling 0", conflict, ok)
 	}
 }
 

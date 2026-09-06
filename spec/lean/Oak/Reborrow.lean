@@ -1,3 +1,5 @@
+import Oak.BorrowRegions
+
 namespace Oak.Reborrow
 
 /-- Writable authority has exactly one usable point in a reborrow chain. -/
@@ -57,32 +59,29 @@ theorem active_child_rejects_sibling :
 With exact regions, one parent span may be split into several live writable
 children, provided their regions are statically proven pairwise disjoint.
 The parent stays suspended while any child is live and is restored when the
-last child is released. Unknown regions are not representable here: the
-compiler fails closed and admits no sibling next to an unknown region. -/
+last child is released. Region identity and disjointness are the authoritative
+`Oak.BorrowRegions` facts (in particular, zero-length regions alias nothing);
+this section only adds the admission discipline. Unknown regions are not
+representable here: `Oak.ReborrowRefinement` proves the concrete compiler
+procedure fails closed and admits no sibling next to an unknown region. -/
 
 namespace Split
 
-/-- Half-open element region in absolute owner coordinates. -/
-structure Region where
-  offset : Nat
-  length : Nat
-  deriving DecidableEq, Repr
+open Oak.BorrowRegions
 
-/-- Exclusive end of a half-open region. -/
-def Region.stop (r : Region) : Nat := r.offset + r.length
-
-/-- Two half-open regions are disjoint when neither begins before the other ends. -/
-def Disjoint (a b : Region) : Prop := a.stop ≤ b.offset ∨ b.stop ≤ a.offset
-
-/-- Disjointness is symmetric. -/
-theorem disjoint_symm {a b : Region} (h : Disjoint a b) : Disjoint b a :=
-  h.symm
+instance (a b : Region) : Decidable (Disjoint a b) := by
+  unfold Oak.BorrowRegions.Disjoint
+  exact inferInstance
 
 /-- Executable disjointness test used by the admission check. -/
-def disjointB (a b : Region) : Bool := a.stop ≤ b.offset || b.stop ≤ a.offset
+def disjointB (a b : Region) : Bool := decide (Disjoint a b)
 
-theorem disjointB_iff {a b : Region} : disjointB a b = true ↔ Disjoint a b := by
-  simp [disjointB, Disjoint]
+theorem disjointB_iff {a b : Region} : disjointB a b = true ↔ Disjoint a b :=
+  decide_eq_true_iff
+
+/-- Disjointness is symmetric (restated from `Oak.BorrowRegions`). -/
+theorem disjoint_symm {a b : Region} (h : Disjoint a b) : Disjoint b a :=
+  disjoint_symmetric.mp h
 
 /-- A candidate child is admitted only when disjoint from every live sibling. -/
 def admits : List Region → Region → Bool

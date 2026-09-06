@@ -965,26 +965,6 @@ func (bc *BorrowChecker) createSpanBorrow(ownerName, borrowName string) {
 	bc.createSpanBorrowWithRegion(ownerName, borrowName, nil, nil)
 }
 
-// regionsOverlap checks if two regions overlap
-// Returns true if the regions overlap, false if they are disjoint
-func (bc *BorrowChecker) regionsOverlap(r1, r2 *Region) bool {
-	if r1 == nil || r2 == nil {
-		return true
-	}
-	if r1.Offset < 0 || r1.Length < 0 || r2.Offset < 0 || r2.Length < 0 {
-		return true
-	}
-	if r1.Length == 0 || r2.Length == 0 {
-		return false
-	}
-	end1, ok1 := regionEnd(r1)
-	end2, ok2 := regionEnd(r2)
-	if !ok1 || !ok2 {
-		return true
-	}
-	return r1.Offset < end2 && r2.Offset < end1
-}
-
 // createSpanBorrowWithRegion creates a unique writable borrow (span) from an owner with region information.
 // Multiple spans are allowed only when every active writable region is provably disjoint.
 func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string, region *Region, origin ast.Node) {
@@ -998,7 +978,7 @@ func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string
 		if allDisjoint {
 			for _, existingName := range spanNames {
 				existing := bc.activeBorrows[existingName]
-				if existing.region == nil || bc.regionsOverlap(region, existing.region) {
+				if existing.region == nil || regionsOverlap(region, existing.region) {
 					allDisjoint = false
 					conflictName = existingName
 					conflict = existing
@@ -1080,23 +1060,29 @@ func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName
 	}
 
 	if sourceInfo.kind == BorrowSpan {
+		siblingNames := make([]string, 0, len(sourceInfo.reborrows))
+		siblingRegions := make([]*Region, 0, len(sourceInfo.reborrows))
 		for _, siblingName := range sourceInfo.reborrows {
 			sibling, ok := bc.activeBorrows[siblingName]
 			if !ok {
 				continue
 			}
-			if newRegion == nil || sibling.region == nil || bc.regionsOverlap(newRegion, sibling.region) {
-				d := bc.reportBorrow(origin, CodeReborrowOverlap,
-					fmt.Sprintf("writable reborrow %q may overlap live reborrow %q of span %q", subsliceName, siblingName, sourceBorrowName))
-				d.AddNote(fmt.Sprintf("requested region: %s", describeRegion(newRegion)))
-				bc.addBorrowContext(d, siblingName, sibling,
-					fmt.Sprintf("reborrow %q is still live here", siblingName))
-				if newRegion == nil || sibling.region == nil {
-					d.AddNote("Oak could not prove the reborrowed regions are disjoint, so it rejects the alias conservatively")
-				}
-				d.AddHelp("reborrow statically disjoint regions, or let the live child span leave scope first")
-				return
+			siblingNames = append(siblingNames, siblingName)
+			siblingRegions = append(siblingRegions, sibling.region)
+		}
+		if conflict, ok := admitReborrow(siblingRegions, newRegion); !ok {
+			siblingName := siblingNames[conflict]
+			sibling := bc.activeBorrows[siblingName]
+			d := bc.reportBorrow(origin, CodeReborrowOverlap,
+				fmt.Sprintf("writable reborrow %q may overlap live reborrow %q of span %q", subsliceName, siblingName, sourceBorrowName))
+			d.AddNote(fmt.Sprintf("requested region: %s", describeRegion(newRegion)))
+			bc.addBorrowContext(d, siblingName, sibling,
+				fmt.Sprintf("reborrow %q is still live here", siblingName))
+			if newRegion == nil || sibling.region == nil {
+				d.AddNote("Oak could not prove the reborrowed regions are disjoint, so it rejects the alias conservatively")
 			}
+			d.AddHelp("reborrow statically disjoint regions, or let the live child span leave scope first")
+			return
 		}
 		sourceInfo.reborrows = append(sourceInfo.reborrows, subsliceName)
 		bc.activeBorrows[sourceBorrowName] = sourceInfo
