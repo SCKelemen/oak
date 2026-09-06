@@ -15,6 +15,9 @@ const (
 	CodeMatchNonExhaustive = "OAK-T0201"
 	CodeMatchRedundantArm  = "OAK-T0202"
 	CodeMatchImpossibleArm = "OAK-T0203"
+
+	CodeGADTResultInvalid  = "OAK-T0301"
+	CodeGADTResultMismatch = "OAK-T0302"
 )
 
 func (tc *TypeChecker) addTypeDiagnostic(node ast.Node, code, title string) *diagnostic.Diagnostic {
