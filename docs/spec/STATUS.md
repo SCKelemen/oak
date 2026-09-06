@@ -17,8 +17,10 @@ Legend:
 | Source spans / UTF-16 editor positions | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.SourcePosition` proves UTF-8/UTF-16 scalar-width rules, additive coordinate accumulation, monotonic offsets, and ASCII width equivalence; Go tests cover emoji, multiline positions, byte-boundary rejection, links, and LSP coordinates; refinement pending |
 | Delimited parser cursor contract | ✓ | ✓ | ✓ | ✓ | ✓ |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; `Oak.Delimited` proves canonical opener/body/close structure, item preservation, unique close suffix, exact close offset, and trailing-separator semantic transparency; refinement pending |
 | Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
+| HM-style type inference | ✓ | partial | partial | partial | partial | partial | checker has type schemes, fresh variables, substitution, unification, occurs checks, generalization/instantiation, and qualified constraints. `Oak.GenericConstraintRefinement` proves direct and one-level unary constrained inference/substitution paths. Full principal inference, ownership/effect-aware generalization, multiple-variable inference, and exported-signature checking remain pending |
 | Semantic records/products | ✓ | ✓ | ✓ |  |  |  | plain `{ ... }` is parsed as a semantic product and projects semantic fields while leaving representation unspecified; source order is preserved as declaration metadata; duplicate fields are rejected |
 | Record shape constraints | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `Oak.RecordShapeRefinement` proves the concrete name-lookup/exact-type decision procedure equivalent to `Oak.RecordShape.Satisfies`. `Oak.GenericConstraintRefinement` additionally proves the implemented direct `T: Shape` call path and one unary-container inference path succeed exactly when the abstract shape obligation holds and return exactly the substituted semantic result. **R is scoped to these modeled record-shape paths**, not arbitrary HM programs or method-interface constraints. |
+| Representation polymorphism | ✓ | ✓ | ✓ | ✓ | ✓ |  | `RepresentationRegistry` permits multiple named representation bindings for one semantic definition; selection rebinds only `Definition.Representation`; ordinary resolved record representations must cover semantic fields exactly once. `Oak.RepresentationPolymorphism` proves semantic identity and shape satisfaction are representation-independent; registry implementation refinement pending |
 | Natural struct representation selection | ✓ | ✓ | ✓ |  |  |  | parser preserves `struct { ... }` distinctly from `{ ... }`; `type = struct { ... }` selects `RepresentationRecord + natural-ordered` while remaining unresolved until target field representations are known |
 | Natural struct layout | ✓ | ✓ | ✓ | ✓ | ✓ |  | `NaturalRecordLayout` computes checked ordered non-packed layout with power-of-two alignment and uint32 overflow rejection; `Oak.RecordLayout` proves identity/order preservation, field alignment, non-overlap, and final-size alignment in the unbounded arithmetic model; implementation refinement pending |
 | Record composition | ✓ | partial | partial |  |  |  | semantic composition is separated from subtyping and from representation composition |
@@ -64,17 +66,19 @@ The formal gate currently checks:
 - `Oak.RecordShape`
 - `Oak.RecordShapeRefinement`
 - `Oak.GenericConstraintRefinement`
+- `Oak.RepresentationPolymorphism`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement except where an explicit refinement theorem is identified in this matrix.
 
 ## Immediate formal-verification queue
 
-1. extend generic refinement from direct/one-level unary `T: Shape` calls to multiple parameters, repeated type-variable occurrences, generic applications, and multiple quantified variables;
-2. explicit refinement from selected/resolved struct representation to `Oak.RecordLayout`;
-3. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, and layout normalization;
-4. formalize method-interface constraint discharge and its no-runtime-object specialization semantics;
-5. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
-6. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
+1. extend generic/HM refinement from direct/one-level unary `T: Shape` calls to multiple parameters, repeated type-variable occurrences, generic applications, and multiple quantified variables;
+2. formalize ownership/effect-aware generalization and prove that generalized schemes cannot duplicate unique/mutable/region authority;
+3. explicit refinement from selected/resolved struct representation to `Oak.RecordLayout` and from `RepresentationRegistry` selection to `Oak.RepresentationPolymorphism`;
+4. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, and layout normalization;
+5. formalize method-interface constraint discharge and its no-runtime-object specialization semantics;
+6. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
+7. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
 
 ## Refinement policy
 
