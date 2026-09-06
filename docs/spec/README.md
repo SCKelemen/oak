@@ -48,10 +48,13 @@ Use these terms precisely:
 ## Authoritative documents
 
 - `00-constitution.md` — values, design constraints, semantic axes
+- `05-ergonomics-and-cost.md` — functional ergonomics and systems cost transparency
 - `10-syntax.md` — lexical/layout/block rules and canonical punctuation
 - `20-types.md` — type universe, subtyping, joins/meets, nominal identity
+- `25-type-inference.md` — HM-style local inference, safe generalization, explicit module/API contracts
 - `30-adts-patterns.md` — ADTs, GADT direction, constructors, matching, exhaustiveness
 - `40-records.md` — products, record identity, composition, order, layout separation
+- `45-representations.md` — multiple checked representations per semantic type and representation selection
 - `50-borrowing.md` — ownership, views, spans, safe/unsafe boundaries
 - `60-effects-allocation.md` — effects, arenas, slabs, handles, realtime prohibitions
 - `70-strings.md` — encoded text, validation, borrowing and representation
