@@ -1,0 +1,595 @@
+from pathlib import Path
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected one match, found {count}")
+    return text.replace(old, new, 1)
+
+
+p = Path("borrowchecker/borrowchecker.go")
+text = p.read_text()
+
+old = """type borrowInfo struct {
+\towner      string     // The owner variable name
+\tkind       borrowKind // Whether this is a view or span
+\tblockDepth int        // Block depth where this borrow was created
+\tregion     *Region    // Optional: region information for disjointness checks (nil if unknown)
+\torigin     ast.Node   // Source expression that created this borrow, when known
+}"""
+new = """type borrowInfo struct {
+\towner       string     // The owner variable name
+\tkind        borrowKind // Whether this is a view or span
+\tblockDepth  int        // Block depth where this borrow was created
+\tregion      *Region    // Exact absolute owner region, or nil when not statically known
+\torigin      ast.Node   // Source expression that created this borrow, when known
+\tparent      string     // Immediate source borrow for a derived view/span
+\tsuspendedBy string     // Writable child temporarily holding this span's authority
+}"""
+text = replace_once(text, old, new, "borrowInfo")
+
+old = """func (bc *BorrowChecker) dropBorrowsInCurrentBlock() {
+\t// Remove borrows created in this block
+\tfor name, info := range bc.activeBorrows {
+\t\tif info.blockDepth == bc.currentBlockDepth {
+\t\t\tdelete(bc.activeBorrows, name)
+\t\t\tdelete(bc.ownerOf, name)
+\t\t}
+\t}
+
+\t// Recompute owner states from remaining active borrows
+\tbc.recomputeOwnerStatesFromActiveBorrows()
+}"""
+new = """func (bc *BorrowChecker) dropBorrowsInCurrentBlock() {
+\tfor name, info := range bc.activeBorrows {
+\t\tif info.blockDepth == bc.currentBlockDepth {
+\t\t\tbc.dropBorrow(name)
+\t\t}
+\t}
+
+\tbc.recomputeOwnerStatesFromActiveBorrows()
+}
+
+// dropBorrow removes one borrow and restores its writable parent when this
+// borrow was the child that suspended it.
+func (bc *BorrowChecker) dropBorrow(name string) {
+\tinfo, exists := bc.activeBorrows[name]
+\tif !exists {
+\t\treturn
+\t}
+\tif info.parent != "" {
+\t\tif parent, ok := bc.activeBorrows[info.parent]; ok && parent.suspendedBy == name {
+\t\t\tparent.suspendedBy = ""
+\t\t\tbc.activeBorrows[info.parent] = parent
+\t\t}
+\t}
+\tdelete(bc.activeBorrows, name)
+\tdelete(bc.ownerOf, name)
+}"""
+text = replace_once(text, old, new, "drop borrows")
+
+old = """\t// Validate bounds
+\tif low < 0 || high < low {
+\t\treturn nil, false // Invalid bounds
+\t}
+"""
+new = """\t// Validate bounds against the sequence whose indices these are.
+\tif low < 0 || high < low || ownerLength < 0 || high > ownerLength {
+\t\treturn nil, false
+\t}
+"""
+text = replace_once(text, old, new, "slice bounds")
+
+old = """\t\t// Check if this identifier is a borrow
+\t\tif sourceInfo, isBorrow := bc.activeBorrows[ident.Value]; isBorrow {
+\t\t\t// This is a subslice - share the same owner
+\t\t\tif targetVar != "" {
+\t\t\t\t// Try to compute the new region from the source region
+\t\t\t\tvar newRegion *Region
+\t\t\t\tif sourceInfo.region != nil {
+\t\t\t\t\t// We have source region info - compute new region
+\t\t\t\t\t// For now, we can't compute this without knowing the source's offset
+\t\t\t\t\t// This would require tracking the full region chain
+\t\t\t\t\t// For v2, we'll track relative offsets
+\t\t\t\t\tnewRegion = nil // Can't compute without more info
+\t\t\t\t}
+\t\t\t\tbc.createSubsliceWithRegion(ident.Value, targetVar, newRegion)
+\t\t\t}
+\t\t\treturn
+\t\t}
+"""
+new = """\t\t// Check if this identifier is a borrow.
+\t\tif sourceInfo, isBorrow := bc.activeBorrows[ident.Value]; isBorrow {
+\t\t\t// checkExpression above already diagnosed a suspended parent; do not
+\t\t\t// create a second child from authority that is currently reborrowed.
+\t\t\tif sourceInfo.suspendedBy != "" {
+\t\t\t\treturn
+\t\t\t}
+\t\t\tif targetVar != "" {
+\t\t\t\tvar newRegion *Region
+\t\t\t\tif sourceInfo.region != nil {
+\t\t\t\t\tif relative, ok := bc.extractSliceRegion(slice, sourceInfo.region.Length); ok {
+\t\t\t\t\t\tif absolute, ok := deriveRegion(sourceInfo.region, relative); ok {
+\t\t\t\t\t\t\tnewRegion = absolute
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tbc.createSubsliceWithRegion(ident.Value, targetVar, newRegion, slice)
+\t\t\t}
+\t\t\treturn
+\t\t}
+"""
+text = replace_once(text, old, new, "slice derived borrow")
+
+old = """func (bc *BorrowChecker) checkSubsliceCall(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
+\tif len(call.Arguments) != 3 {
+\t\tbc.addError("subslice() expects exactly three arguments (view/span, start, len)")
+\t\treturn
+\t}
+
+\t// The first argument should be an existing view or span
+\tif ident, ok := call.Arguments[0].(*ast.Identifier); ok {
+\t\tif targetVar != "" {
+\t\t\tbc.createSubslice(ident.Value, targetVar)
+\t\t}
+\t} else {
+\t\tbc.addError("subslice() first argument must be a view or span variable")
+\t}
+}"""
+new = """func (bc *BorrowChecker) checkSubsliceCall(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
+\tif len(call.Arguments) != 3 {
+\t\tbc.addError("subslice() expects exactly three arguments (view/span, start, len)")
+\t\treturn
+\t}
+
+\tident, ok := call.Arguments[0].(*ast.Identifier)
+\tif !ok {
+\t\tbc.addError("subslice() first argument must be a view or span variable")
+\t\treturn
+\t}
+\tif targetVar == "" {
+\t\treturn
+\t}
+\tsourceInfo, exists := bc.activeBorrows[ident.Value]
+\tif !exists {
+\t\tbc.createSubsliceWithRegion(ident.Value, targetVar, nil, call)
+\t\treturn
+\t}
+\tif sourceInfo.suspendedBy != "" {
+\t\treturn
+\t}
+
+\tvar region *Region
+\tif sourceInfo.region != nil {
+\t\tstart, startOK := call.Arguments[1].(*ast.IntegerLiteral)
+\t\tlength, lengthOK := call.Arguments[2].(*ast.IntegerLiteral)
+\t\tif startOK && lengthOK && start.Value >= 0 && length.Value >= 0 {
+\t\t\trelative := &Region{Offset: start.Value, Length: length.Value}
+\t\t\tif absolute, ok := deriveRegion(sourceInfo.region, relative); ok {
+\t\t\t\tregion = absolute
+\t\t\t}
+\t\t}
+\t}
+\tbc.createSubsliceWithRegion(ident.Value, targetVar, region, call)
+}"""
+text = replace_once(text, old, new, "subslice call")
+
+count = text.count("if sourceInfo, exists := bc.activeBorrows[ident.Value]; exists {\n")
+if count != 2:
+    raise SystemExit(f"reinterpret sources: expected 2 matches, found {count}")
+text = text.replace(
+    "if sourceInfo, exists := bc.activeBorrows[ident.Value]; exists {\n",
+    "if sourceInfo, exists := bc.activeBorrows[ident.Value]; exists {\n\t\t\tif sourceInfo.suspendedBy != \"\" {\n\t\t\t\treturn\n\t\t\t}\n",
+)
+
+count = text.count("bc.createSubslice(ident.Value, targetVar)")
+if count != 2:
+    raise SystemExit(f"reinterpret derivations: expected 2 matches, found {count}")
+text = text.replace(
+    "bc.createSubslice(ident.Value, targetVar)",
+    "bc.createSubsliceWithRegion(ident.Value, targetVar, nil, call)",
+)
+
+marker = """func (bc *BorrowChecker) checkIdentifierUse(node ast.Node, name string, env *typechecker.TypeEnvironment, isWrite bool) {
+\t// Check if this is an owner
+"""
+replacement = """func (bc *BorrowChecker) checkIdentifierUse(node ast.Node, name string, env *typechecker.TypeEnvironment, isWrite bool) {
+\tif info, isBorrow := bc.activeBorrows[name]; isBorrow && info.suspendedBy != "" {
+\t\td := bc.reportBorrow(node, CodeBorrowSuspended,
+\t\t\tfmt.Sprintf("writable span %q is suspended by reborrow %q", name, info.suspendedBy))
+\t\tif child, ok := bc.activeBorrows[info.suspendedBy]; ok {
+\t\t\tbc.addBorrowContext(d, info.suspendedBy, child,
+\t\t\t\tfmt.Sprintf("reborrow %q temporarily holds this writable authority", info.suspendedBy))
+\t\t}
+\t\td.AddHelp("use the child span, or let it leave scope before using the parent span again")
+\t\treturn
+\t}
+
+\t// Check if this is an owner
+"""
+text = replace_once(text, marker, replacement, "suspended use")
+
+old = """// createSubslice creates a derived borrow (subslice) from an existing view/span
+func (bc *BorrowChecker) createSubslice(sourceBorrowName, subsliceName string) {
+\tbc.createSubsliceWithRegion(sourceBorrowName, subsliceName, nil)
+}
+
+// createSubsliceWithRegion creates a derived borrow (subslice) from an existing view/span with region information
+func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName string, newRegion *Region) {
+\tsourceInfo, exists := bc.activeBorrows[sourceBorrowName]
+\tif !exists {
+\t\tbc.addError(fmt.Sprintf("cannot create subslice '%s': source '%s' is not a borrow", subsliceName, sourceBorrowName))
+\t\treturn
+\t}
+
+\t// Subslice shares the same owner and kind, created at same block depth
+\t// If we have region info, use it; otherwise inherit from source
+\tregion := newRegion
+\tif region == nil {
+\t\tregion = sourceInfo.region // Inherit region from source
+\t}
+
+\tbc.ownerOf[subsliceName] = sourceInfo.owner
+\tbc.activeBorrows[subsliceName] = borrowInfo{
+\t\towner:      sourceInfo.owner,
+\t\tkind:       sourceInfo.kind,      // Subslice preserves view/span kind
+\t\tblockDepth: bc.currentBlockDepth, // Use current block depth, not source depth
+\t\tregion:     region,
+\t\torigin:     sourceInfo.origin,
+\t}
+\t// No state change - subslices don't create new borrows from the owner
+}"""
+new = """// createSubslice creates a conservative derived borrow when exact region facts are unavailable.
+func (bc *BorrowChecker) createSubslice(sourceBorrowName, subsliceName string) {
+\tbc.createSubsliceWithRegion(sourceBorrowName, subsliceName, nil, nil)
+}
+
+// createSubsliceWithRegion creates a derived borrow. Writable derivations are
+// reborrows: the child temporarily suspends direct use of its parent span.
+func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName string, newRegion *Region, origin ast.Node) {
+\tsourceInfo, exists := bc.activeBorrows[sourceBorrowName]
+\tif !exists {
+\t\tbc.addError(fmt.Sprintf("cannot create subslice '%s': source '%s' is not a borrow", subsliceName, sourceBorrowName))
+\t\treturn
+\t}
+\tif sourceInfo.suspendedBy != "" {
+\t\td := bc.reportBorrow(origin, CodeBorrowSuspended,
+\t\t\tfmt.Sprintf("writable span %q is already suspended by reborrow %q", sourceBorrowName, sourceInfo.suspendedBy))
+\t\tif child, ok := bc.activeBorrows[sourceInfo.suspendedBy]; ok {
+\t\t\tbc.addBorrowContext(d, sourceInfo.suspendedBy, child,
+\t\t\t\tfmt.Sprintf("existing reborrow %q holds the writable authority", sourceInfo.suspendedBy))
+\t\t}
+\t\td.AddHelp("derive from the active child span, or let it leave scope before reusing the parent")
+\t\treturn
+\t}
+
+\tif sourceInfo.kind == BorrowSpan {
+\t\tsourceInfo.suspendedBy = subsliceName
+\t\tbc.activeBorrows[sourceBorrowName] = sourceInfo
+\t}
+\tif origin == nil {
+\t\torigin = sourceInfo.origin
+\t}
+\tbc.ownerOf[subsliceName] = sourceInfo.owner
+\tbc.activeBorrows[subsliceName] = borrowInfo{
+\t\towner:      sourceInfo.owner,
+\t\tkind:       sourceInfo.kind,
+\t\tblockDepth: bc.currentBlockDepth,
+\t\tregion:     newRegion,
+\t\torigin:     origin,
+\t\tparent:     sourceBorrowName,
+\t}
+}"""
+text = replace_once(text, old, new, "create subslice")
+
+old = """func (bc *BorrowChecker) regionsOverlap(r1, r2 *Region) bool {
+\tif r1 == nil || r2 == nil {
+\t\t// If either region is unknown, assume they might overlap (conservative).
+\t\treturn true
+\t}
+\tif r1.Length == 0 || r2.Length == 0 {
+\t\t// Half-open empty regions contain no elements and overlap nothing.
+\t\treturn false
+\t}
+
+\t// Non-empty regions [off1, off1+len1) and [off2, off2+len2) overlap if:
+\t// off1 < off2+len2 && off2 < off1+len1.
+\treturn r1.Offset < r2.Offset+r2.Length && r2.Offset < r1.Offset+r1.Length
+}"""
+new = """func (bc *BorrowChecker) regionsOverlap(r1, r2 *Region) bool {
+\tif r1 == nil || r2 == nil {
+\t\treturn true
+\t}
+\tif r1.Offset < 0 || r1.Length < 0 || r2.Offset < 0 || r2.Length < 0 {
+\t\treturn true
+\t}
+\tif r1.Length == 0 || r2.Length == 0 {
+\t\treturn false
+\t}
+\tend1, ok1 := regionEnd(r1)
+\tend2, ok2 := regionEnd(r2)
+\tif !ok1 || !ok2 {
+\t\treturn true
+\t}
+\treturn r1.Offset < end2 && r2.Offset < end1
+}"""
+text = replace_once(text, old, new, "region overlap")
+p.write_text(text)
+
+p = Path("borrowchecker/diagnostics.go")
+text = p.read_text()
+old = '\tCodeSpanOverlap            diagnostic.Code = "OAK-B0106"\n)'
+new = '\tCodeSpanOverlap            diagnostic.Code = "OAK-B0106"\n\tCodeBorrowSuspended        diagnostic.Code = "OAK-B0107"\n)'
+text = replace_once(text, old, new, "diagnostic code")
+old = """func describeRegion(region *Region) string {
+\tif region == nil {
+\t\treturn "an unknown region"
+\t}
+\treturn fmt.Sprintf("[%d..%d)", region.Offset, region.Offset+region.Length)
+}"""
+new = """func describeRegion(region *Region) string {
+\tif region == nil {
+\t\treturn "an unknown region"
+\t}
+\tend, ok := regionEnd(region)
+\tif !ok {
+\t\treturn "an invalid or overflowing region"
+\t}
+\treturn fmt.Sprintf("[%d..%d)", region.Offset, end)
+}"""
+text = replace_once(text, old, new, "describe region")
+p.write_text(text)
+
+Path("borrowchecker/derived_region.go").write_text("""package borrowchecker
+
+const maxRegionInt64 = int64(^uint64(0) >> 1)
+
+// regionEnd validates a known region and returns its exclusive end. Malformed
+// or overflowing regions are never trusted by alias analysis.
+func regionEnd(region *Region) (int64, bool) {
+\tif region == nil || region.Offset < 0 || region.Length < 0 {
+\t\treturn 0, false
+\t}
+\tif region.Length > maxRegionInt64-region.Offset {
+\t\treturn 0, false
+\t}
+\treturn region.Offset + region.Length, true
+}
+
+// deriveRegion converts a region relative to parent into an exact absolute
+// owner region. It fails closed when either input is unknown, malformed,
+// outside the parent, or offset addition would overflow int64.
+func deriveRegion(parent, relative *Region) (*Region, bool) {
+\tif parent == nil || relative == nil {
+\t\treturn nil, false
+\t}
+\tif _, ok := regionEnd(parent); !ok {
+\t\treturn nil, false
+\t}
+\tif relative.Offset < 0 || relative.Length < 0 || relative.Offset > parent.Length {
+\t\treturn nil, false
+\t}
+\tif relative.Length > parent.Length-relative.Offset {
+\t\treturn nil, false
+\t}
+\tif relative.Offset > maxRegionInt64-parent.Offset {
+\t\treturn nil, false
+\t}
+
+\tderived := &Region{Offset: parent.Offset + relative.Offset, Length: relative.Length}
+\tif _, ok := regionEnd(derived); !ok {
+\t\treturn nil, false
+\t}
+\treturn derived, true
+}
+""")
+
+Path("borrowchecker/derived_borrow_test.go").write_text("""package borrowchecker
+
+import (
+\t"testing"
+
+\t"github.com/SCKelemen/oak/ast"
+)
+
+func TestDeriveRegionUsesAbsoluteOwnerCoordinates(t *testing.T) {
+\tgot, ok := deriveRegion(&Region{Offset: 10, Length: 8}, &Region{Offset: 2, Length: 3})
+\tif !ok || got.Offset != 12 || got.Length != 3 {
+\t\tt.Fatalf("deriveRegion = %#v, %v; want [12..15)", got, ok)
+\t}
+}
+
+func TestDeriveRegionRejectsOutsideAndOverflow(t *testing.T) {
+\tcases := []struct {
+\t\tname     string
+\t\tparent   *Region
+\t\trelative *Region
+\t}{
+\t\t{"outside", &Region{Offset: 10, Length: 8}, &Region{Offset: 7, Length: 2}},
+\t\t{"negative", &Region{Offset: 0, Length: 8}, &Region{Offset: -1, Length: 1}},
+\t\t{"parent overflow", &Region{Offset: maxRegionInt64, Length: 1}, &Region{Offset: 0, Length: 0}},
+\t}
+\tfor _, tc := range cases {
+\t\tt.Run(tc.name, func(t *testing.T) {
+\t\t\tif got, ok := deriveRegion(tc.parent, tc.relative); ok || got != nil {
+\t\t\t\tt.Fatalf("deriveRegion = %#v, %v; want failure", got, ok)
+\t\t\t}
+\t\t})
+\t}
+}
+
+func TestExtractSliceRegionRejectsKnownOutOfBounds(t *testing.T) {
+\tbc := New()
+\tslice := &ast.SliceExpression{
+\t\tLow:  &ast.IntegerLiteral{Value: 0},
+\t\tHigh: &ast.IntegerLiteral{Value: 17},
+\t}
+\tif region, ok := bc.extractSliceRegion(slice, 16); ok || region != nil {
+\t\tt.Fatalf("extractSliceRegion = %#v, %v; want out-of-bounds rejection", region, ok)
+\t}
+}
+
+func TestWritableReborrowSuspendsAndRestoresParent(t *testing.T) {
+\tbc := New()
+\tbc.ownerStates["buf"] = Free
+\tbc.createSpanBorrowWithRegion("buf", "parent", &Region{Offset: 0, Length: 16}, nil)
+
+\tbc.currentBlockDepth = 1
+\tbc.createSubsliceWithRegion("parent", "child", &Region{Offset: 4, Length: 4}, nil)
+\tparent := bc.activeBorrows["parent"]
+\tif parent.suspendedBy != "child" {
+\t\tt.Fatalf("parent suspendedBy = %q, want child", parent.suspendedBy)
+\t}
+
+\tbc.checkIdentifierUse(&ast.Identifier{Value: "parent"}, "parent", nil, false)
+\tdiagnostics := bc.Diagnostics()
+\tif len(diagnostics) == 0 || diagnostics[len(diagnostics)-1].Code != string(CodeBorrowSuspended) {
+\t\tt.Fatalf("expected %s diagnostic, got %#v", CodeBorrowSuspended, diagnostics)
+\t}
+
+\tbc.dropBorrowsInCurrentBlock()
+\tparent, ok := bc.activeBorrows["parent"]
+\tif !ok {
+\t\tt.Fatal("outer parent borrow was dropped with inner child")
+\t}
+\tif parent.suspendedBy != "" {
+\t\tt.Fatalf("parent remained suspended by %q after child scope ended", parent.suspendedBy)
+\t}
+}
+
+func TestNestedWritableReborrowRestoresOneLevelAtATime(t *testing.T) {
+\tbc := New()
+\tbc.ownerStates["buf"] = Free
+\tbc.createSpanBorrowWithRegion("buf", "parent", &Region{Offset: 0, Length: 16}, nil)
+
+\tbc.currentBlockDepth = 1
+\tbc.createSubsliceWithRegion("parent", "child", &Region{Offset: 4, Length: 8}, nil)
+\tbc.currentBlockDepth = 2
+\tbc.createSubsliceWithRegion("child", "grandchild", &Region{Offset: 6, Length: 2}, nil)
+
+\tif bc.activeBorrows["child"].suspendedBy != "grandchild" {
+\t\tt.Fatal("child should be suspended by grandchild")
+\t}
+\tif bc.activeBorrows["parent"].suspendedBy != "child" {
+\t\tt.Fatal("parent should remain suspended by child")
+\t}
+
+\tbc.dropBorrowsInCurrentBlock()
+\tif bc.activeBorrows["child"].suspendedBy != "" {
+\t\tt.Fatal("dropping grandchild should restore child")
+\t}
+\tif bc.activeBorrows["parent"].suspendedBy != "child" {
+\t\tt.Fatal("restoring child must not restore parent early")
+\t}
+
+\tbc.currentBlockDepth = 1
+\tbc.dropBorrowsInCurrentBlock()
+\tif bc.activeBorrows["parent"].suspendedBy != "" {
+\t\tt.Fatal("dropping child should restore parent")
+\t}
+}
+
+func TestDerivedViewDoesNotSuspendParentView(t *testing.T) {
+\tbc := New()
+\tbc.ownerStates["buf"] = Free
+\tbc.createViewBorrowWithRegion("buf", "parent", &Region{Offset: 0, Length: 16}, nil)
+\tbc.currentBlockDepth = 1
+\tbc.createSubsliceWithRegion("parent", "child", &Region{Offset: 4, Length: 4}, nil)
+\tif bc.activeBorrows["parent"].suspendedBy != "" {
+\t\tt.Fatal("read-only derivation must not suspend its parent view")
+\t}
+}
+""")
+
+Path("spec/lean/Oak/Reborrow.lean").write_text("""namespace Oak.Reborrow
+
+/-- Writable authority has exactly one usable point in a reborrow chain. -/
+inductive WritableState where
+  | parentUsable
+  | childActive
+  | ended
+  deriving DecidableEq, Repr
+
+/-- A writable child may only be created while the parent is usable. -/
+def reborrow : WritableState -> Option WritableState
+  | .parentUsable => some .childActive
+  | .childActive => none
+  | .ended => none
+
+/-- Releasing the child restores the suspended parent authority. -/
+def releaseChild : WritableState -> WritableState
+  | .childActive => .parentUsable
+  | state => state
+
+/-- Direct parent access exists only in the parent-usable state. -/
+def ParentUsable : WritableState -> Prop
+  | .parentUsable => True
+  | _ => False
+
+/-- Child writable access exists only while the reborrow is active. -/
+def ChildActive : WritableState -> Prop
+  | .childActive => True
+  | _ => False
+
+/-- Successful reborrowing necessarily suspends direct parent use. -/
+theorem successful_reborrow_suspends_parent {before after : WritableState}
+    (h : reborrow before = some after) :
+    after = .childActive ∧ ¬ ParentUsable after := by
+  cases before <;> simp [reborrow] at h
+  subst after
+  simp [ParentUsable]
+
+/-- No state grants simultaneous writable use through parent and child. -/
+theorem parent_child_exclusive (state : WritableState) :
+    ¬ (ParentUsable state ∧ ChildActive state) := by
+  cases state <;> simp [ParentUsable, ChildActive]
+
+/-- Ending a writable child restores the parent exactly. -/
+theorem release_restores_parent :
+    releaseChild .childActive = .parentUsable := by
+  rfl
+
+/-- A second child cannot be derived directly from an already active child state. -/
+theorem active_child_rejects_sibling :
+    reborrow .childActive = none := by
+  rfl
+
+end Oak.Reborrow
+""")
+
+p = Path("spec/lean/Oak.lean")
+text = p.read_text()
+if "import Oak.Reborrow" not in text:
+    text = text.replace("import Oak.BorrowRegions\n", "import Oak.BorrowRegions\nimport Oak.Reborrow\n", 1)
+p.write_text(text)
+
+p = Path("docs/spec/50-borrowing.md")
+text = p.read_text()
+marker = """Obtaining writable access from owned storage is explicit (`span`, an equivalent borrow operation, or a mutable binding rule later specified).
+
+Bounds must be proved statically or checked dynamically in safe code. Out-of-range access is never undefined behavior.
+"""
+replacement = """Obtaining writable access from owned storage is explicit (`span`, an equivalent borrow operation, or a mutable binding rule later specified).
+
+A derived writable span is a **reborrow**. While the child span is live, direct use of its parent span is suspended. When the child leaves its lexical scope, the parent becomes usable again. This preserves one usable writable authority along a parent/child chain without requiring lifetime syntax in ordinary Oak code.
+
+Known slice/subslice bounds are translated into the same absolute owner coordinate space as their parent region. If the compiler cannot establish a precise derived region, it keeps the region unknown and fails closed for alias-disjointness decisions rather than inventing precision.
+
+Bounds must be proved statically or checked dynamically in safe code. Out-of-range access is never undefined behavior.
+"""
+text = replace_once(text, marker, replacement, "borrowing spec")
+p.write_text(text)
+
+p = Path("docs/spec/STATUS.md")
+text = p.read_text()
+text = text.replace(
+    "`Oak.Borrowing` proves local read/write authority laws. `Oak.BorrowRegions` additionally proves half-open region symmetry/disjointness, adjacency, zero-length behavior, and conservative unknown-region conflict; compiler correspondence is not yet proved",
+    "`Oak.Borrowing` proves local read/write authority laws. `Oak.BorrowRegions` proves half-open region symmetry/disjointness, adjacency, zero-length behavior, and conservative unknown-region conflict. Derived slices/subslices now retain exact absolute owner regions when statically known; writable children suspend their parent span until lexical release. `Oak.Reborrow` proves parent/child writable exclusivity and restoration; compiler correspondence is not yet proved",
+)
+text = text.replace(
+    "`OAK-B0101`..`OAK-B0106` cover borrow reassignment, owner-use/write conflicts, view/span exclusivity, and writable-region overlap/unknown-disjointness.",
+    "`OAK-B0101`..`OAK-B0107` cover borrow reassignment, owner-use/write conflicts, view/span exclusivity, writable-region overlap/unknown-disjointness, and use of a writable parent suspended by a reborrow.",
+)
+text = text.replace("- `Oak.BorrowRegions`\n", "- `Oak.BorrowRegions`\n- `Oak.Reborrow`\n", 1)
+p.write_text(text)
