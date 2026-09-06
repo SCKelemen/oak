@@ -75,9 +75,9 @@ theorem encode_starts_with_open (items : List Nat) (trailing : Bool) :
   rfl
 
 /-- Dropping an entire syntactic prefix reaches the exact suffix. -/
-theorem drop_prefix (prefix suffix : List Token) :
-    List.drop prefix.length (prefix ++ suffix) = suffix := by
-  induction prefix with
+theorem drop_prefix_tokens (pre suffix : List Token) :
+    List.drop pre.length (pre ++ suffix) = suffix := by
+  induction pre with
   | nil => rfl
   | cons token rest ih =>
       simp [ih]
@@ -86,12 +86,13 @@ theorem drop_prefix (prefix suffix : List Token) :
     exactly with the closing delimiter. -/
 theorem drop_to_close (items : List Nat) (trailing : Bool) :
     List.drop (closeOffset items trailing) (encode items trailing) = [.close] := by
-  simp [closeOffset, encode, drop_prefix]
+  simp [closeOffset, encode, drop_prefix_tokens]
 
 /-- The closing-delimiter cursor is always a valid token position. -/
 theorem close_offset_in_bounds (items : List Nat) (trailing : Bool) :
     closeOffset items trailing < (encode items trailing).length := by
   simp [closeOffset, encode]
+  omega
 
 /-- No closing delimiter can occur before the canonical close position. -/
 theorem close_unique_to_suffix (items : List Nat) (trailing : Bool) :
