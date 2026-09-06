@@ -40,7 +40,7 @@ Legend:
 | Effects | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR implements broad/scoped effect identity and conflict validation; `Oak.Effects` proves the abstract subsumption/overlap laws; refinement pending |
 | Arena semantics | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR represents explicit arena identity/lifetime; `Oak.RegionLifetime` proves lifetime containment, transitivity, alive-child implies alive-region, and that a region-bound value cannot remain alive after the region ends; refinement pending |
 | Slab allocator semantics | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR validates explicit bounded slab/pool capacity and identity; `Oak.Slab` proves abstract capacity preservation; refinement pending |
-| Generational handles | ✓ |  |  | ✓ | ✓ |  | `Oak.Handles` proves stale handles cannot resolve after generation-changing reuse and cleared slots never resolve |
+| Generational handles | ✓ | partial | ✓ | ✓ | ✓ |  | `Oak.Handles` proves stale handles cannot resolve after generation-changing reuse and cleared slots never resolve. `semir.HandleTable` implements slot+generation identity as a transliteration of the model's `Resolves`/`clear`/`reuse` operations (generation advances before re-occupancy; an exhausted 32-bit generation retires its slot fail-closed instead of wrapping), with tests mirroring the proven laws; surface syntax, codegen lowering, and refinement pending |
 | UTF-8 `string` validity | ✓ | partial | partial |  |  |  | legacy string code exists but must reconcile validation invariant |
 | UTF-16 / UTF-32 encoded views | ✓ | partial | partial |  |  |  | legacy library/spec work exists; no proof yet |
 | Compile-time metadata | ✓ | partial | partial |  |  |  | legacy backtick syntax is not yet normative |

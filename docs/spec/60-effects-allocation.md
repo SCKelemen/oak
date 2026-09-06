@@ -192,4 +192,4 @@ Initial Lean proof targets:
 - stale generation cannot resolve after slot reuse;
 - region-bound values cannot outlive their region in the abstract lifetime model.
 
-`spec/lean/Oak/Effects.lean` begins with the effect-overlap laws. Slab/handle proofs should be added once their implementation representation is stabilized.
+`spec/lean/Oak/Effects.lean` proves the effect-overlap laws, `spec/lean/Oak/Slab.lean` the capacity law, and `spec/lean/Oak/Handles.lean` the stale-generation and cleared-slot laws. The semantic IR's `semir.HandleTable` implements the handle operations as transliterations of `Oak.Handles` (`Resolve` = `Resolves`, `Free` = `clear`, reuse advances the generation before re-occupancy); the concrete 32-bit generation space fails closed by retiring an exhausted slot rather than wrapping it.
