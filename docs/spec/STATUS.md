@@ -16,21 +16,22 @@ Legend:
 | Layout + explicit blocks | ✓ | ✓ | ✓ |  |  |  | parser/layout equivalence exists; formal cursor/layout model pending |
 | Source spans / UTF-16 editor positions | ✓ | draft | draft |  |  |  | implementation is in draft PR #6 |
 | Delimited parser cursor contract | ✓ | draft | draft |  |  |  | implementation is in draft PR #6; formal cursor proof planned |
-| Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | planned in this branch | planned |  | current `IsSubtype` intersection law needs reconciliation |
+| Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | abstract laws proved in `Oak.TypeLattice`; current Go `IsSubtype` intersection behavior still needs reconciliation/refinement |
 | Nominal records | ✓ | ✓ | ✓ |  |  |  | ordered field semantics implementation is in draft PR #6 |
 | Record composition | ✓ | partial | partial |  |  |  | semantics now separated from subtyping |
 | ADTs | ✓ | ✓ | ✓ |  |  |  | old payload/default/tag meanings need compiler reconciliation |
-| Pattern matching | ✓ | ✓ | ✓ | planned | planned |  | canonical `=>`; legacy aliases remain implementation concern |
+| Pattern matching | ✓ | ✓ | ✓ |  |  |  | canonical `=>`; legacy aliases remain implementation concern |
 | Exhaustiveness | ✓ | partial | partial | planned | planned |  | finite constructor-set proof target |
 | GADT-style refinements | direction |  |  |  |  |  | semantic direction specified; surface syntax intentionally not frozen |
 | Generic constraints/interfaces | ✓ | ✓ | ✓ |  |  |  | static predicate semantics; dynamic interface values not core |
 | Phantom types | ✓ | partial | partial |  |  |  | zero-runtime representation law to prove |
-| Views / spans | ✓ | ✓ | ✓ | planned | planned |  | borrowing implementation/spec reconciliation needed |
-| Borrow-state machine | ✓ | partial | partial | planned | planned |  | local formal model planned |
+| Views / spans | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.Borrowing` proves the local authority-state laws; compiler correspondence is not yet proved |
+| Borrow-state machine | ✓ | partial | partial | ✓ | ✓ |  | explicit actions; valid transitions preserve state invariant and read/write authority stays exclusive |
 | Unsafe boundary | ✓ | partial | partial |  |  |  | unsafe must admit assumptions, not disable all checking |
-| Effects | ✓ | draft | draft | planned | planned |  | parameterized effect implementation in draft PR #6 |
-| Arena / slab allocator semantics | ✓ | draft | draft |  |  |  | semantic IR in draft PR #6; surface library types pending |
-| Generational handles | ✓ |  |  | planned | planned |  | semantics only; implementation representation not stabilized |
+| Effects | ✓ | draft | draft | ✓ | ✓ |  | `Oak.Effects` proves broad/scoped subsumption and overlap laws; implementation is in draft PR #6 |
+| Arena semantics | ✓ | draft | draft |  |  |  | semantic IR in draft PR #6; region escape proof pending |
+| Slab allocator semantics | ✓ | draft | draft | ✓ | ✓ |  | `Oak.Slab` proves capacity preservation and rejects allocation from a full slab |
+| Generational handles | ✓ |  |  | ✓ | ✓ |  | `Oak.Handles` proves stale handles cannot resolve after generation-changing reuse and cleared slots never resolve |
 | UTF-8 `string` validity | ✓ | partial | partial |  |  |  | legacy string code exists but must reconcile validation invariant |
 | UTF-16 / UTF-32 encoded views | ✓ | partial | partial |  |  |  | legacy library/spec work exists; no proof yet |
 | Compile-time metadata | ✓ | partial | partial |  |  |  | legacy backtick syntax is not yet normative |
@@ -39,16 +40,29 @@ Legend:
 | Closure capture/storage effects | ✓ |  |  |  |  |  | semantics specified; implementation pending |
 | Protocol/typestate semantic axis | direction |  |  |  |  |  | will receive its own normative spec before implementation |
 
+## Formal verification gate
+
+`spec/lean` is pinned to Lean 4.33.1 and built by `.github/workflows/formal.yml`.
+
+The formal gate currently checks:
+
+- `Oak.TypeLattice`
+- `Oak.Effects`
+- `Oak.Borrowing`
+- `Oak.Handles`
+- `Oak.Slab`
+
+A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
+
 ## Immediate formal-verification queue
 
-1. type-lattice algebra;
-2. effect overlap/subsumption;
-3. local borrow-state safety;
-4. finite ADT exhaustiveness;
-5. parser delimited-sequence cursor invariant;
-6. source byte-span ↔ UTF-16 coordinate correctness;
-7. generational-handle stale-reference theorem;
-8. record layout/alignment once target layout representation stabilizes.
+1. finite ADT exhaustiveness;
+2. parser delimited-sequence cursor invariant;
+3. source byte-span ↔ UTF-16 coordinate correctness;
+4. region/arena non-escape theorem;
+5. phantom-type zero-runtime representation law;
+6. record layout/alignment once target layout representation stabilizes;
+7. explicit implementation refinements for type lattice, effects, and borrowing.
 
 ## Refinement policy
 
