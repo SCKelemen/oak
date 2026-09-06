@@ -1,0 +1,12 @@
+package atomic_counter
+
+counter: Atomic[u64]
+
+fn publish(value: u64) -> ()
+  atomic_store_release(counter, value)
+
+fn increment() -> u64
+  atomic_fetch_add_relaxed(counter, u64(1))
+
+fn observe() -> u64
+  atomic_load_acquire(counter)
