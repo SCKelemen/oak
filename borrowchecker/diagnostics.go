@@ -9,13 +9,13 @@ import (
 )
 
 const (
-	CodeBorrowGeneric             diagnostic.Code = "OAK-B0000"
-	CodeBorrowReassign            diagnostic.Code = "OAK-B0101"
-	CodeOwnerUsedDuringSpan       diagnostic.Code = "OAK-B0102"
-	CodeOwnerWrittenDuringView    diagnostic.Code = "OAK-B0103"
-	CodeViewConflictsWithSpan     diagnostic.Code = "OAK-B0104"
-	CodeSpanConflictsWithView     diagnostic.Code = "OAK-B0105"
-	CodeSpanOverlap               diagnostic.Code = "OAK-B0106"
+	CodeBorrowGeneric          diagnostic.Code = "OAK-B0000"
+	CodeBorrowReassign         diagnostic.Code = "OAK-B0101"
+	CodeOwnerUsedDuringSpan    diagnostic.Code = "OAK-B0102"
+	CodeOwnerWrittenDuringView diagnostic.Code = "OAK-B0103"
+	CodeViewConflictsWithSpan  diagnostic.Code = "OAK-B0104"
+	CodeSpanConflictsWithView  diagnostic.Code = "OAK-B0105"
+	CodeSpanOverlap            diagnostic.Code = "OAK-B0106"
 )
 
 type diagnosticsState struct {

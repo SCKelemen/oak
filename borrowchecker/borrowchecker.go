@@ -56,6 +56,7 @@ type borrowInfo struct {
 	kind       borrowKind // Whether this is a view or span
 	blockDepth int        // Block depth where this borrow was created
 	region     *Region    // Optional: region information for disjointness checks (nil if unknown)
+	origin     ast.Node   // Source expression that created this borrow, when known
 }
 
 // BorrowChecker tracks borrow states and enforces borrowing rules
@@ -70,8 +71,9 @@ type BorrowChecker struct {
 	// activeBorrows tracks all active borrows with their metadata
 	activeBorrows map[string]borrowInfo
 
-	// errors collects borrow checker errors
-	errors []string
+	// diagnostics are the first-class borrow-checking result. Errors() remains
+	// a compatibility projection for older callers and tests.
+	diagnostics *diagnosticsState
 
 	// currentBlock tracks the current block scope for lexical borrowing
 	// In v1, borrows cannot escape their creation block
@@ -84,23 +86,24 @@ func New() *BorrowChecker {
 		ownerStates:   make(map[string]BorrowState),
 		ownerOf:       make(map[string]string),
 		activeBorrows: make(map[string]borrowInfo),
-		errors:        []string{},
+		diagnostics:   newDiagnosticsState(),
 	}
 }
 
-// Errors returns all borrow checker errors
+// Errors returns a compatibility text projection of first-class diagnostics.
 func (bc *BorrowChecker) Errors() []string {
-	return bc.errors
+	return bc.diagnostics.errorStrings()
 }
 
-// ClearErrors clears all errors
+// ClearErrors clears all borrow diagnostics.
 func (bc *BorrowChecker) ClearErrors() {
-	bc.errors = []string{}
+	bc.diagnostics.clear()
 }
 
-// addError adds an error to the error list
+// addError is the migration fallback for borrow checks that have not yet been
+// assigned a specific stable code. New checks should call reportBorrow.
 func (bc *BorrowChecker) addError(msg string) {
-	bc.errors = append(bc.errors, fmt.Sprintf("[borrow error] %s", msg))
+	bc.reportBorrow(nil, CodeBorrowGeneric, msg)
 }
 
 // CheckProgram performs borrow checking on a program
@@ -301,8 +304,13 @@ func (bc *BorrowChecker) checkWhileStatement(stmt *ast.WhileStatement, env *type
 // checkAssignmentStatement handles assignments
 func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement, env *typechecker.TypeEnvironment) {
 	// Borrows are immutable bindings - cannot reassign a variable that currently holds a view/span
-	if _, exists := bc.activeBorrows[stmt.Name.Value]; exists {
-		bc.addError(fmt.Sprintf("cannot reassign borrow variable '%s'; borrows are immutable bindings", stmt.Name.Value))
+	if info, exists := bc.activeBorrows[stmt.Name.Value]; exists {
+		d := bc.reportBorrow(stmt.Name, CodeBorrowReassign,
+			fmt.Sprintf("borrow %q cannot be reassigned", stmt.Name.Value))
+		bc.addBorrowContext(d, stmt.Name.Value, info,
+			"this binding already carries borrowed access")
+		d.AddNote("views and spans are non-owning access paths tied to their backing owner")
+		d.AddHelp("create a new view/span binding, or end the current borrow before reusing the name")
 		return
 	}
 
@@ -314,7 +322,7 @@ func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement,
 	// Check if we're assigning to an owner (which might be borrowed)
 	// The left-hand side is an Identifier (assignment target)
 	// This is a write operation
-	bc.checkIdentifierUse(stmt.Name.Value, env, true)
+	bc.checkIdentifierUse(stmt.Name, stmt.Name.Value, env, true)
 }
 
 // dropBorrowsInCurrentBlock removes borrows created in the current block
@@ -417,7 +425,7 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 	case *ast.Identifier:
 		// Check if this is using an owner while it's borrowed
 		// This is a read operation (not an assignment target)
-		bc.checkIdentifierUse(e.Value, env, false)
+		bc.checkIdentifierUse(e, e.Value, env, false)
 	case *ast.SliceExpression:
 		bc.checkSliceExpression(e, env, targetVar)
 	case *ast.IndexExpression:
@@ -530,7 +538,7 @@ func (bc *BorrowChecker) checkSliceExpression(slice *ast.SliceExpression, env *t
 					}
 				}
 			}
-			bc.createViewBorrowWithRegion(ownerName, targetVar, region)
+			bc.createViewBorrowWithRegion(ownerName, targetVar, region, slice)
 		}
 		return
 	}
@@ -666,7 +674,7 @@ func (bc *BorrowChecker) checkViewCall(call *ast.InvocationExpression, env *type
 				}
 			}
 		}
-		bc.createViewBorrowWithRegion(ownerName, targetVar, region)
+		bc.createViewBorrowWithRegion(ownerName, targetVar, region, call)
 	}
 }
 
@@ -696,7 +704,7 @@ func (bc *BorrowChecker) checkSpanCall(call *ast.InvocationExpression, env *type
 				}
 			}
 		}
-		bc.createSpanBorrowWithRegion(ownerName, targetVar, region)
+		bc.createSpanBorrowWithRegion(ownerName, targetVar, region, call)
 	}
 }
 
@@ -797,7 +805,7 @@ func (bc *BorrowChecker) checkSpanAsCall(call *ast.InvocationExpression, env *ty
 // checkIdentifierUse checks if an identifier is being used while its owner is borrowed
 // This enforces that owners cannot be used directly while they have active borrows
 // isWrite indicates if this is a write operation (assignment target)
-func (bc *BorrowChecker) checkIdentifierUse(name string, env *typechecker.TypeEnvironment, isWrite bool) {
+func (bc *BorrowChecker) checkIdentifierUse(node ast.Node, name string, env *typechecker.TypeEnvironment, isWrite bool) {
 	// Check if this is an owner
 	state, isOwner := bc.ownerStates[name]
 	if !isOwner {
@@ -805,51 +813,68 @@ func (bc *BorrowChecker) checkIdentifierUse(name string, env *typechecker.TypeEn
 		return
 	}
 
-	// This is an owner - check if it's being used while borrowed
+	// This is an owner - check if it's being used while borrowed.
 	if state == UniqueWrite {
-		// Owner has an active writable span - disallow any use (read or write)
-		bc.addError(fmt.Sprintf("cannot use owner '%s' while it has an active writable span", name))
+		d := bc.reportBorrow(node, CodeOwnerUsedDuringSpan,
+			fmt.Sprintf("owner %q cannot be used while writable access is active", name))
+		if borrowName, info, ok := bc.firstActiveBorrow(name, BorrowSpan); ok {
+			bc.addBorrowContext(d, borrowName, info,
+				fmt.Sprintf("writable span %q keeps exclusive access here", borrowName))
+		}
+		d.AddHelp("use the existing span for access, or let it leave scope before using the owner directly")
 		return
 	}
 
 	if state == SharedRead && isWrite {
-		// Owner has active read-only views - disallow writes
-		bc.addError(fmt.Sprintf("cannot write to owner '%s' while it has active read-only views", name))
+		d := bc.reportBorrow(node, CodeOwnerWrittenDuringView,
+			fmt.Sprintf("owner %q cannot be written while read-only views are active", name))
+		if borrowName, info, ok := bc.firstActiveBorrow(name, BorrowView); ok {
+			bc.addBorrowContext(d, borrowName, info,
+				fmt.Sprintf("read-only view %q observes this owner", borrowName))
+		}
+		d.AddHelp("finish using the views before mutating the owner")
 		return
 	}
 
-	// SharedRead + read operation: allowed (multiple readers can coexist)
+	// SharedRead + read operation: allowed (multiple readers can coexist).
 }
 
 // createViewBorrow creates a read-only borrow (view) from an owner
 func (bc *BorrowChecker) createViewBorrow(ownerName, borrowName string) {
-	bc.createViewBorrowWithRegion(ownerName, borrowName, nil)
+	bc.createViewBorrowWithRegion(ownerName, borrowName, nil, nil)
 }
 
-// createViewBorrowWithRegion creates a read-only borrow (view) from an owner with region information
-func (bc *BorrowChecker) createViewBorrowWithRegion(ownerName, borrowName string, region *Region) {
+// createViewBorrowWithRegion creates a read-only borrow (view) from an owner with region information.
+func (bc *BorrowChecker) createViewBorrowWithRegion(ownerName, borrowName string, region *Region, origin ast.Node) {
 	state := bc.ownerStates[ownerName]
 	if state == UniqueWrite {
-		bc.addError(fmt.Sprintf("cannot create view '%s' from '%s': owner has active writable borrow", borrowName, ownerName))
+		d := bc.reportBorrow(origin, CodeViewConflictsWithSpan,
+			fmt.Sprintf("view %q cannot be created while %q has writable access", borrowName, ownerName))
+		if existingName, info, ok := bc.firstActiveBorrow(ownerName, BorrowSpan); ok {
+			bc.addBorrowContext(d, existingName, info,
+				fmt.Sprintf("writable span %q already has exclusive access", existingName))
+		}
+		d.AddHelp("end the writable span before creating a read-only view")
 		return
 	}
 
-	// Transition to SharedRead if not already
+	// Transition to SharedRead if not already.
 	bc.ownerStates[ownerName] = SharedRead
 	bc.ownerOf[borrowName] = ownerName
 
-	// Track this borrow with metadata
+	// Track this borrow with metadata.
 	bc.activeBorrows[borrowName] = borrowInfo{
 		owner:      ownerName,
 		kind:       BorrowView,
 		blockDepth: bc.currentBlockDepth,
 		region:     region,
+		origin:     origin,
 	}
 }
 
 // createSpanBorrow creates a unique writable borrow (span) from an owner
 func (bc *BorrowChecker) createSpanBorrow(ownerName, borrowName string) {
-	bc.createSpanBorrowWithRegion(ownerName, borrowName, nil)
+	bc.createSpanBorrowWithRegion(ownerName, borrowName, nil, nil)
 }
 
 // regionsOverlap checks if two regions overlap
@@ -865,74 +890,78 @@ func (bc *BorrowChecker) regionsOverlap(r1, r2 *Region) bool {
 	return r1.Offset < r2.Offset+r2.Length && r2.Offset < r1.Offset+r1.Length
 }
 
-// createSpanBorrowWithRegion creates a unique writable borrow (span) from an owner with region information
-// This implements v2 region-level disjointness: multiple spans are allowed if their regions are provably disjoint
-func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string, region *Region) {
+// createSpanBorrowWithRegion creates a unique writable borrow (span) from an owner with region information.
+// Multiple spans are allowed only when every active writable region is provably disjoint.
+func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string, region *Region, origin ast.Node) {
 	state := bc.ownerStates[ownerName]
+	spanNames := bc.activeBorrowNames(ownerName, BorrowSpan)
 
-	// Check for existing spans on the same owner
-	existingSpans := []borrowInfo{}
-	for _, info := range bc.activeBorrows {
-		if info.owner == ownerName && info.kind == BorrowSpan {
-			existingSpans = append(existingSpans, info)
-		}
-	}
-
-	if len(existingSpans) > 0 {
-		// We have existing spans - check if regions are disjoint
-		if region != nil {
-			// We have region information - check disjointness
-			allDisjoint := true
-			for _, existing := range existingSpans {
-				if existing.region != nil {
-					if bc.regionsOverlap(region, existing.region) {
-						allDisjoint = false
-						break
-					}
-				} else {
-					// Existing span has unknown region - can't prove disjointness
+	if len(spanNames) > 0 {
+		var conflictName string
+		var conflict borrowInfo
+		allDisjoint := region != nil
+		if allDisjoint {
+			for _, existingName := range spanNames {
+				existing := bc.activeBorrows[existingName]
+				if existing.region == nil || bc.regionsOverlap(region, existing.region) {
 					allDisjoint = false
+					conflictName = existingName
+					conflict = existing
 					break
 				}
 			}
-
-			if allDisjoint {
-				// All regions are disjoint - allow multiple spans
-				// Don't change owner state - we track multiple spans now
-				bc.ownerOf[borrowName] = ownerName
-				bc.activeBorrows[borrowName] = borrowInfo{
-					owner:      ownerName,
-					kind:       BorrowSpan,
-					blockDepth: bc.currentBlockDepth,
-					region:     region,
-				}
-				return
-			}
+		} else {
+			conflictName = spanNames[0]
+			conflict = bc.activeBorrows[conflictName]
 		}
 
-		// Can't prove disjointness - fall back to v1 behavior (reject)
-		bc.addError(fmt.Sprintf("cannot create span '%s' from '%s': owner has active span borrows (state: %s). Use disjoint regions to allow multiple spans", borrowName, ownerName, state))
+		if allDisjoint {
+			bc.ownerOf[borrowName] = ownerName
+			bc.activeBorrows[borrowName] = borrowInfo{
+				owner:      ownerName,
+				kind:       BorrowSpan,
+				blockDepth: bc.currentBlockDepth,
+				region:     region,
+				origin:     origin,
+			}
+			return
+		}
+
+		d := bc.reportBorrow(origin, CodeSpanOverlap,
+			fmt.Sprintf("writable span %q may overlap existing writable access to %q", borrowName, ownerName))
+		d.AddNote(fmt.Sprintf("requested region: %s", describeRegion(region)))
+		if conflictName != "" {
+			bc.addBorrowContext(d, conflictName, conflict,
+				fmt.Sprintf("existing span %q covers %s", conflictName, describeRegion(conflict.region)))
+		}
+		if region == nil || (conflictName != "" && conflict.region == nil) {
+			d.AddNote("Oak could not prove the writable regions are disjoint, so it rejects the alias conservatively")
+		}
+		d.AddHelp("split the owner into statically disjoint regions before taking multiple writable spans")
 		return
 	}
 
-	// No existing spans - check for views
 	if state == SharedRead {
-		bc.addError(fmt.Sprintf("cannot create span '%s' from '%s': owner has active read-only views", borrowName, ownerName))
+		d := bc.reportBorrow(origin, CodeSpanConflictsWithView,
+			fmt.Sprintf("writable span %q cannot be created while %q has read-only views", borrowName, ownerName))
+		if existingName, info, ok := bc.firstActiveBorrow(ownerName, BorrowView); ok {
+			bc.addBorrowContext(d, existingName, info,
+				fmt.Sprintf("read-only view %q is still active", existingName))
+		}
+		d.AddHelp("finish using the views before requesting writable access")
 		return
 	}
 
-	// Transition to UniqueWrite (or keep Free if we're allowing multiple disjoint spans)
 	if state == Free {
 		bc.ownerStates[ownerName] = UniqueWrite
 	}
 	bc.ownerOf[borrowName] = ownerName
-
-	// Track this borrow with metadata
 	bc.activeBorrows[borrowName] = borrowInfo{
 		owner:      ownerName,
 		kind:       BorrowSpan,
 		blockDepth: bc.currentBlockDepth,
 		region:     region,
+		origin:     origin,
 	}
 }
 
@@ -962,6 +991,7 @@ func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName
 		kind:       sourceInfo.kind,      // Subslice preserves view/span kind
 		blockDepth: bc.currentBlockDepth, // Use current block depth, not source depth
 		region:     region,
+		origin:     sourceInfo.origin,
 	}
 	// No state change - subslices don't create new borrows from the owner
 }
