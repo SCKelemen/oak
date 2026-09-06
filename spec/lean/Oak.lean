@@ -7,6 +7,7 @@ import Oak.Handles
 import Oak.Slab
 import Oak.Exhaustiveness
 import Oak.PatternAnalysis
+import Oak.PatternAnalysisRefinement
 import Oak.SourcePosition
 import Oak.Delimited
 import Oak.RegionLifetime
