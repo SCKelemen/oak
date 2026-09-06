@@ -12,131 +12,33 @@ jobs:
   fix:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           ref: feat/source-delimited-alloc-model
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version: 1.27.1
-      - name: Apply duplicate-field invariant
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
 
-          ast = Path('ast/ast.go')
-          text = ast.read_text()
-          old = '''func (rl *RecordLiteral) AddField(tok token.Token, name string, value Expression) {
-\tif rl.Fields == nil {
-\t\trl.Fields = make(map[string]Expression)
-\t}
-\trl.Fields[name] = value
-\trl.FieldOrder = append(rl.FieldOrder, RecordField{Token: tok, Name: name, Value: value})
-}
-'''
-          new = '''func (rl *RecordLiteral) AddField(tok token.Token, name string, value Expression) bool {
-\tif rl.Fields == nil {
-\t\trl.Fields = make(map[string]Expression)
-\t}
-\tif _, exists := rl.Fields[name]; exists {
-\t\treturn false
-\t}
-\trl.Fields[name] = value
-\trl.FieldOrder = append(rl.FieldOrder, RecordField{Token: tok, Name: name, Value: value})
-\treturn true
-}
-'''
-          if old not in text:
-              raise SystemExit('ast AddField pattern not found')
-          ast.write_text(text.replace(old, new, 1))
+      - name: Apply repair
+        run: python3 tools/fix_record_duplicates.py
 
-          parser = Path('parser/parser.go')
-          text = parser.read_text()
-          old_type = '''\t\trecord.AddField(fieldToken, fieldName, fieldType)
-'''
-          new_type = '''\t\tif !record.AddField(fieldToken, fieldName, fieldType) {
-\t\t\tp.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldName))
-\t\t\treturn nil
-\t\t}
-'''
-          if old_type not in text:
-              raise SystemExit('record type AddField pattern not found')
-          text = text.replace(old_type, new_type, 1)
-          old_value = '''\t\trecord.AddField(fieldToken, fieldName, fieldValue)
-'''
-          new_value = '''\t\tif !record.AddField(fieldToken, fieldName, fieldValue) {
-\t\t\tp.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldName))
-\t\t\treturn nil
-\t\t}
-'''
-          if old_value not in text:
-              raise SystemExit('record literal AddField pattern not found')
-          parser.write_text(text.replace(old_value, new_value, 1))
-          PY
+      - name: Format
+        run: gofmt -w ast/ast.go parser/parser.go parser/record_duplicates_test.go
 
-          cat > parser/record_duplicates_test.go <<'EOF'
-          package parser
+      - name: Verify
+        run: go test -race ./...
 
-          import (
-          	"strings"
-          	"testing"
-
-          	"github.com/SCKelemen/oak/scanner"
-          )
-
-          func TestRecordLiteralRejectsDuplicateFields(t *testing.T) {
-          	p := New(scanner.New("{ x: 1, x: 2 }"))
-          	program := p.ParseProgram()
-          	if program == nil {
-          		t.Fatal("expected parser to return a program with diagnostics")
-          	}
-          	if len(p.Errors()) == 0 {
-          		t.Fatal("expected duplicate record literal field diagnostic")
-          	}
-          	found := false
-          	for _, err := range p.Errors() {
-          		if strings.Contains(err, "duplicate record field") {
-          			found = true
-          			break
-          		}
-          	}
-          	if !found {
-          		t.Fatalf("expected duplicate field diagnostic, got %v", p.Errors())
-          	}
-          }
-
-          func TestRecordTypeRejectsDuplicateFields(t *testing.T) {
-          	p := New(scanner.New("Point: type = { x: i32, x: u32 }"))
-          	program := p.ParseProgram()
-          	if program == nil {
-          		t.Fatal("expected parser to return a program with diagnostics")
-          	}
-          	if len(p.Errors()) == 0 {
-          		t.Fatal("expected duplicate record type field diagnostic")
-          	}
-          	found := false
-          	for _, err := range p.Errors() {
-          		if strings.Contains(err, "duplicate record field") {
-          			found = true
-          			break
-          		}
-          	}
-          	if !found {
-          		t.Fatalf("expected duplicate field diagnostic, got %v", p.Errors())
-          	}
-          }
-          EOF
-          gofmt -w ast/ast.go parser/parser.go parser/record_duplicates_test.go
-          go test -race ./...
-      - name: Commit validated fix without harness
+      - name: Commit validated repair
         shell: bash
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git rm .github/workflows/fix-record-duplicates.yml
+          git rm .github/workflows/fix-record-duplicates.yml tools/fix_record_duplicates.py
           git add -A
-          git commit --amend -m "Reject duplicate record fields"
-          git push --force-with-lease origin HEAD:feat/source-delimited-alloc-model
+          git commit -m "Reject duplicate record fields"
+          git push origin HEAD:feat/source-delimited-alloc-model
