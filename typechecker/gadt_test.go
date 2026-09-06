@@ -1,6 +1,7 @@
 package typechecker
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/SCKelemen/oak/ast"
@@ -73,6 +74,71 @@ func TestGADTConstructorRejectsWrongExpectedIndex(t *testing.T) {
 		if diagnostic.Code == CodeGADTResultMismatch {
 			return
 		}
+	}
+	t.Fatalf("expected %s, got %#v", CodeGADTResultMismatch, tc.Diagnostics())
+}
+
+
+func TestGADTVariableScrutineeRefinesFixedConstructors(t *testing.T) {
+	tc := New(object.NewEnvironment())
+	tc.checkADTType(indexedExprDecl())
+	index := NewUnifier().FreshTypeVar("T")
+	scrutinee := &GenericType{Name: "Expr", TypeArgs: []Type{index}}
+	expr := &ast.MatchExpression{
+		Scrutinee: &ast.Identifier{Value: "x"},
+		Arms: []*ast.MatchArm{
+			{Pattern: variantPattern("Int", &ast.BindingPattern{Name: &ast.Identifier{Value: "n"}}), Body: &ast.IntegerLiteral{Value: 1}},
+			{Pattern: variantPattern("Flag", &ast.BindingPattern{Name: &ast.Identifier{Value: "b"}}), Body: &ast.IntegerLiteral{Value: 2}},
+			{Pattern: variantPattern("Id", &ast.BindingPattern{Name: &ast.Identifier{Value: "v"}}), Body: &ast.IntegerLiteral{Value: 3}},
+		},
+	}
+	analysis := tc.analyzeMatch(expr, scrutinee)
+	if len(analysis.Arms) != 3 || !analysis.Arms[0].Reachable || !analysis.Arms[1].Reachable {
+		t.Fatalf("fixed constructors must remain reachable for a variable index: %#v", analysis.Arms)
+	}
+	for arm, want := range []string{"i64", "Bool"} {
+		equalities := analysis.Arms[arm].Refinements[0].Equalities
+		if len(equalities) != 1 || equalities[0].Parameter != "T" || equalities[0].Type != want {
+			t.Fatalf("arm %d equalities = %#v, want T = %s", arm, equalities, want)
+		}
+	}
+}
+
+func TestGADTRejectsNestedResultIndicesUntilSupported(t *testing.T) {
+	tc := New(object.NewEnvironment())
+	decl := indexedExprDecl()
+	decl.Variants[0].Result = &ast.IndexExpression{
+		Left:  &ast.Identifier{Value: "Expr"},
+		Index: indexedType("Box", "i64"),
+	}
+	tc.checkADTType(decl)
+	for _, diagnostic := range tc.Diagnostics() {
+		if diagnostic.Code == CodeGADTResultInvalid {
+			return
+		}
+	}
+	t.Fatalf("expected %s for nested result index, got %#v", CodeGADTResultInvalid, tc.Diagnostics())
+}
+
+func TestGADTMismatchDiagnosticNamesDeclaredAndExpectedResults(t *testing.T) {
+	tc := New(object.NewEnvironment())
+	tc.checkADTType(indexedExprDecl())
+	expr := &ast.VariantExpression{
+		TypeName: &ast.Identifier{Value: "Expr"},
+		Variant:  &ast.Identifier{Value: "Flag"},
+		Payload:  &ast.Boolean{Value: true},
+	}
+	expected := &GenericType{Name: "Expr", TypeArgs: []Type{&PrimitiveType{Name: "i64"}}}
+	tc.checkVariantExpression(expr, expected)
+	for _, diagnostic := range tc.Diagnostics() {
+		if diagnostic.Code != CodeGADTResultMismatch {
+			continue
+		}
+		joined := strings.Join(diagnostic.Notes, "\n")
+		if !strings.Contains(joined, "Expr[Bool]") || !strings.Contains(joined, "Expr[i64]") {
+			t.Fatalf("mismatch notes = %q", joined)
+		}
+		return
 	}
 	t.Fatalf("expected %s, got %#v", CodeGADTResultMismatch, tc.Diagnostics())
 }
