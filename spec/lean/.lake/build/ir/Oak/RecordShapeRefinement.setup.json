@@ -1,0 +1,9 @@
+{"plugins": [],
+ "package": "oak-spec",
+ "options": {},
+ "name": "Oak.RecordShapeRefinement",
+ "isModule": false,
+ "importArts":
+ {"Oak.RecordShape":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/RecordShape.olean"]]},
+ "dynlibs": []}

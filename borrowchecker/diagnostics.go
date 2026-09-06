@@ -16,6 +16,7 @@ const (
 	CodeViewConflictsWithSpan  diagnostic.Code = "OAK-B0104"
 	CodeSpanConflictsWithView  diagnostic.Code = "OAK-B0105"
 	CodeSpanOverlap            diagnostic.Code = "OAK-B0106"
+	CodeBorrowSuspended        diagnostic.Code = "OAK-B0107"
 )
 
 type diagnosticsState struct {
@@ -135,5 +136,9 @@ func describeRegion(region *Region) string {
 	if region == nil {
 		return "an unknown region"
 	}
-	return fmt.Sprintf("[%d..%d)", region.Offset, region.Offset+region.Length)
+	end, ok := regionEnd(region)
+	if !ok {
+		return "an invalid or overflowing region"
+	}
+	return fmt.Sprintf("[%d..%d)", region.Offset, end)
 }

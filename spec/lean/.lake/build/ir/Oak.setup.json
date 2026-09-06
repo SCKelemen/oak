@@ -1,0 +1,49 @@
+{"plugins": [],
+ "package": "oak-spec",
+ "options": {},
+ "name": "Oak",
+ "isModule": false,
+ "importArts":
+ {"Oak.TypeVarIdentity":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/TypeVarIdentity.olean"]],
+  "Oak.TypeLattice":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/TypeLattice.olean"]],
+  "Oak.SourcePosition":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/SourcePosition.olean"]],
+  "Oak.Slab":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Slab.olean"]],
+  "Oak.RepresentationPolymorphism":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/RepresentationPolymorphism.olean"]],
+  "Oak.RegionLifetime":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/RegionLifetime.olean"]],
+  "Oak.RecordShapeRefinement":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/RecordShapeRefinement.olean"]],
+  "Oak.RecordShape":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/RecordShape.olean"]],
+  "Oak.RecordLayout":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/RecordLayout.olean"]],
+  "Oak.Reborrow":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Reborrow.olean"]],
+  "Oak.PhantomRepresentation":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/PhantomRepresentation.olean"]],
+  "Oak.Layout":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Layout.olean"]],
+  "Oak.Handles":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Handles.olean"]],
+  "Oak.GenericConstraintRefinement":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/GenericConstraintRefinement.olean"]],
+  "Oak.GeneralizationSafety":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/GeneralizationSafety.olean"]],
+  "Oak.Exhaustiveness":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Exhaustiveness.olean"]],
+  "Oak.Effects":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Effects.olean"]],
+  "Oak.Diagnostics":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Diagnostics.olean"]],
+  "Oak.Delimited":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Delimited.olean"]],
+  "Oak.Borrowing":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Borrowing.olean"]],
+  "Oak.BorrowRegions":
+  [["/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/BorrowRegions.olean"]]},
+ "dynlibs": []}

@@ -99,6 +99,10 @@ span slice        -> writable span
 
 Obtaining writable access from owned storage is explicit (`span`, an equivalent borrow operation, or a mutable binding rule later specified).
 
+A derived writable span is a **reborrow**. While the child span is live, direct use of its parent span is suspended. When the child leaves its lexical scope, the parent becomes usable again. This preserves one usable writable authority along a parent/child chain without requiring lifetime syntax in ordinary Oak code.
+
+Known slice/subslice bounds are translated into the same absolute owner coordinate space as their parent region. If the compiler cannot establish a precise derived region, it keeps the region unknown and fails closed for alias-disjointness decisions rather than inventing precision.
+
 Bounds must be proved statically or checked dynamically in safe code. Out-of-range access is never undefined behavior.
 
 Exact index-normalization policy (including whether negative indices remain in Oak) is a separate sequence/indexing decision; it does not alter the ownership model.

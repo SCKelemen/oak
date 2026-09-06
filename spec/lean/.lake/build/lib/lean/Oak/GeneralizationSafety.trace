@@ -1,0 +1,30 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["e6cb9a66e7384db0.olean"],
+  "m": false,
+  "i": "4434671a660a4105.ilean",
+  "c": "8d153dfd0f3fafdb.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean /home/runner/.elan/toolchains/leanprover--lean4---v4.33.1/bin/lean /home/runner/work/oak/oak/spec/lean/Oak/GeneralizationSafety.lean -o /home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/GeneralizationSafety.olean -i /home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/GeneralizationSafety.ilean -c /home/runner/work/oak/oak/spec/lean/.lake/build/ir/Oak/GeneralizationSafety.c --setup /home/runner/work/oak/oak/spec/lean/.lake/build/ir/Oak/GeneralizationSafety.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["«oak-spec»/Oak:extraDep", [["@«oak-spec»:extraDep", "00000000000006bb"]]],
+    ["imports", "00000000000006bb"]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.33.1, commit 819816b2e0a3bf405af45ae5c7af2491d8f5bee6",
+   "0051240b7c23c453"],
+  ["/home/runner/work/oak/oak/spec/lean/Oak/GeneralizationSafety.lean",
+   "c093ea9e9cf44bb0"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: Oak.GeneralizationSafety", "bf08b1a2013db416"],
+  ["Package.id?: (some oak-spec)", "d0f7d8d2397854e7"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "5928618bfd98bd36"}

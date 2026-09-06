@@ -1,0 +1,29 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["966465f29c000415.olean"],
+  "m": false,
+  "i": "e0a079295e9a30a9.ilean",
+  "c": "21786a989ca02ac6.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean /home/runner/.elan/toolchains/leanprover--lean4---v4.33.1/bin/lean /home/runner/work/oak/oak/spec/lean/Oak/Slab.lean -o /home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Slab.olean -i /home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Slab.ilean -c /home/runner/work/oak/oak/spec/lean/.lake/build/ir/Oak/Slab.c --setup /home/runner/work/oak/oak/spec/lean/.lake/build/ir/Oak/Slab.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["«oak-spec»/Oak:extraDep", [["@«oak-spec»:extraDep", "00000000000006bb"]]],
+    ["imports", "00000000000006bb"]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.33.1, commit 819816b2e0a3bf405af45ae5c7af2491d8f5bee6",
+   "0051240b7c23c453"],
+  ["/home/runner/work/oak/oak/spec/lean/Oak/Slab.lean", "cbd6053bec7e95f6"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: Oak.Slab", "a64c4dd2aa7df501"],
+  ["Package.id?: (some oak-spec)", "d0f7d8d2397854e7"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "2b047e262950d1be"}

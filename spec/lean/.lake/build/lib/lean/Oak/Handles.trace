@@ -1,0 +1,29 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["d806b7deb09430f2.olean"],
+  "m": false,
+  "i": "c5f1f443996843d6.ilean",
+  "c": "0193417f64a60ded.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean /home/runner/.elan/toolchains/leanprover--lean4---v4.33.1/bin/lean /home/runner/work/oak/oak/spec/lean/Oak/Handles.lean -o /home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Handles.olean -i /home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Handles.ilean -c /home/runner/work/oak/oak/spec/lean/.lake/build/ir/Oak/Handles.c --setup /home/runner/work/oak/oak/spec/lean/.lake/build/ir/Oak/Handles.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["«oak-spec»/Oak:extraDep", [["@«oak-spec»:extraDep", "00000000000006bb"]]],
+    ["imports", "00000000000006bb"]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.33.1, commit 819816b2e0a3bf405af45ae5c7af2491d8f5bee6",
+   "0051240b7c23c453"],
+  ["/home/runner/work/oak/oak/spec/lean/Oak/Handles.lean", "4b8412e2c33fd274"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: Oak.Handles", "9bc4ec22b98c3798"],
+  ["Package.id?: (some oak-spec)", "d0f7d8d2397854e7"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "6268de7bdfcfe534"}

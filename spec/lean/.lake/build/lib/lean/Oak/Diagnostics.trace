@@ -1,0 +1,30 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["a1a9b0f77efb4a68.olean"],
+  "m": false,
+  "i": "15695a399d3e81d1.ilean",
+  "c": "73981664a89a48a9.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean /home/runner/.elan/toolchains/leanprover--lean4---v4.33.1/bin/lean /home/runner/work/oak/oak/spec/lean/Oak/Diagnostics.lean -o /home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Diagnostics.olean -i /home/runner/work/oak/oak/spec/lean/.lake/build/lib/lean/Oak/Diagnostics.ilean -c /home/runner/work/oak/oak/spec/lean/.lake/build/ir/Oak/Diagnostics.c --setup /home/runner/work/oak/oak/spec/lean/.lake/build/ir/Oak/Diagnostics.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["«oak-spec»/Oak:extraDep", [["@«oak-spec»:extraDep", "00000000000006bb"]]],
+    ["imports", "00000000000006bb"]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.33.1, commit 819816b2e0a3bf405af45ae5c7af2491d8f5bee6",
+   "0051240b7c23c453"],
+  ["/home/runner/work/oak/oak/spec/lean/Oak/Diagnostics.lean",
+   "313fa4657ce983e5"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: Oak.Diagnostics", "5f5b9a67e919439b"],
+  ["Package.id?: (some oak-spec)", "d0f7d8d2397854e7"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "8dbb0a17e7355766"}
