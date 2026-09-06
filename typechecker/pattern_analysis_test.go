@@ -31,6 +31,7 @@ func patternAnalysisChecker() *TypeChecker {
 			{Name: "Empty"},
 		},
 	})
+	env.SetADTType("Void", &object.ADTType{Name: "Void"})
 	return New(env)
 }
 
@@ -62,6 +63,9 @@ func TestPatternAnalysisProducesNestedCounterexample(t *testing.T) {
 	}
 
 	analysis := tc.analyzeMatch(expr, &ADTType{Name: "OptionBool"})
+	if !analysis.Reliable {
+		t.Fatal("valid patterns should produce reliable coverage")
+	}
 	if len(analysis.Missing) != 1 || analysis.Missing[0] != ".Some(false)" {
 		t.Fatalf("missing = %#v, want [.Some(false)]", analysis.Missing)
 	}
@@ -122,6 +126,34 @@ func TestPatternAnalysisUsesRefinedConstructorUniverse(t *testing.T) {
 	}
 	if len(analysis.Missing) != 0 {
 		t.Fatalf("unexpected missing cases: %#v", analysis.Missing)
+	}
+}
+
+func TestPatternAnalysisEmptyReachableSpaceIsExhaustive(t *testing.T) {
+	tc := patternAnalysisChecker()
+	coverage := newCoverageNode(&ADTType{Name: "Void"})
+	if !tc.coverageComplete(coverage) {
+		t.Fatal("empty semantic case space must be vacuously exhaustive")
+	}
+	if missing := tc.coverageWitnesses(coverage, 4); len(missing) != 0 {
+		t.Fatalf("empty case space has counterexamples: %#v", missing)
+	}
+}
+
+func TestInvalidPatternSuppressesDerivativeExhaustiveness(t *testing.T) {
+	tc := patternAnalysisChecker()
+	expr := &ast.MatchExpression{Arms: []*ast.MatchArm{
+		arm(variantPattern("Some", &ast.LiteralPattern{Value: &ast.StringLiteral{Value: "wrong"}})),
+	}}
+	analysis := tc.analyzeMatch(expr, &ADTType{Name: "OptionBool"})
+	if analysis.Reliable {
+		t.Fatal("type-invalid payload pattern must make coverage unreliable")
+	}
+	tc.emitMatchAnalysisDiagnostics(expr, analysis)
+	for _, d := range tc.Diagnostics() {
+		if d.Code == CodeMatchNonExhaustive {
+			t.Fatalf("invalid pattern caused derivative exhaustiveness diagnostic: %#v", d)
+		}
 	}
 }
 
