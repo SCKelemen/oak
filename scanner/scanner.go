@@ -116,9 +116,21 @@ func (s *Scanner) NextToken() token.Token {
 	case ')':
 		tok = newTokenWithPos(token.RPAREN, s.current, line, column)
 	case '<':
-		tok = newTokenWithPos(token.LCHEV, s.current, line, column)
+		if s.peekRune() == '=' {
+			ch := s.current
+			s.readChar()
+			tok = token.Token{TokenKind: token.LEQ, Literal: string(ch) + string(s.current), Line: line, Column: column}
+		} else {
+			tok = newTokenWithPos(token.LCHEV, s.current, line, column)
+		}
 	case '>':
-		tok = newTokenWithPos(token.RCHEV, s.current, line, column)
+		if s.peekRune() == '=' {
+			ch := s.current
+			s.readChar()
+			tok = token.Token{TokenKind: token.GEQ, Literal: string(ch) + string(s.current), Line: line, Column: column}
+		} else {
+			tok = newTokenWithPos(token.RCHEV, s.current, line, column)
+		}
 
 	case ',':
 		tok = newTokenWithPos(token.COMMA, s.current, line, column)

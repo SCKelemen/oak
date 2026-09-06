@@ -162,6 +162,19 @@ result: i32 = fact(5, 1)
 `,
 		},
 		{
+			// The canonical bounded loop shape (docs/spec/85-discipline.md
+			// section 3) carries its own static iteration bound.
+			Name: "bounded_loop",
+			SourceCode: `
+total: i32 = 0
+i: i32 = 0
+while i < 10 {
+  total = total + i
+  i = i + 1
+}
+`,
+		},
+		{
 			// assert is always compiled in (docs/spec/85-discipline.md section 5).
 			Name: "assertions",
 			SourceCode: `

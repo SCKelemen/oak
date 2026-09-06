@@ -76,3 +76,25 @@ func TestStrictProfilePromotesWarnings(t *testing.T) {
 		t.Fatalf("expected OAK-B0110 in strict rejection, got: %v", err)
 	}
 }
+
+// Bounded loops (85-discipline section 3): unbounded loops record an
+// obligation that passes the default profile and rejects in strict; the
+// canonical bounded shape passes both.
+func TestStrictProfileRejectsUnboundedLoops(t *testing.T) {
+	unbounded := "i: i32 = 0\nwhile true {\ni = i + 1\n}\n"
+	if _, err := emit(t, "", unbounded); err != nil {
+		t.Fatalf("unbounded loop must pass the default profile as an obligation: %v", err)
+	}
+	_, err := emit(t, "strict", unbounded)
+	if err == nil {
+		t.Fatal("strict profile must reject unbounded loops")
+	}
+	if !strings.Contains(err.Error(), "OAK-D0103") {
+		t.Fatalf("expected OAK-D0103 in strict rejection, got: %v", err)
+	}
+
+	bounded := "i: i32 = 0\nwhile i < 10 {\ni = i + 1\n}\n"
+	if _, err := emit(t, "strict", bounded); err != nil {
+		t.Fatalf("canonical bounded loop must pass the strict profile: %v", err)
+	}
+}

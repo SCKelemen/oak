@@ -58,6 +58,8 @@ func New(source token.Source) *Parser {
 	p.registerInfix(token.EQL, p.parseInfixExpression)
 	p.registerInfix(token.NEQL, p.parseInfixExpression)
 	p.registerInfix(token.LCHEV, p.parseInfixExpression)
+	p.registerInfix(token.LEQ, p.parseInfixExpression)
+	p.registerInfix(token.GEQ, p.parseInfixExpression)
 	p.registerInfix(token.RCHEV, p.parseInfixExpression)
 	p.registerInfix(token.QMARK, p.parseMatchExpression)
 	p.registerInfix(token.LPAREN, p.parseInvocationExpression)
@@ -942,6 +944,8 @@ var precedences = map[token.TokenKind]Precedence{
 	token.EQL:    EQUALITY,
 	token.NEQL:   EQUALITY,
 	token.LCHEV:  COMPARE,
+	token.LEQ:    COMPARE,
+	token.GEQ:    COMPARE,
 	token.RCHEV:  COMPARE,
 	token.NEG:    SUMMATION,
 	token.SUM:    SUMMATION,

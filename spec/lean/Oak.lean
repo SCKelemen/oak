@@ -10,6 +10,7 @@ import Oak.Discipline
 import Oak.Utf8Validity
 import Oak.StrEncoding
 import Oak.ClosureCapture
+import Oak.BoundedLoop
 import Oak.Handles
 import Oak.Slab
 import Oak.Exhaustiveness

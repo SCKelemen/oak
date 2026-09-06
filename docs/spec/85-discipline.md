@@ -74,10 +74,14 @@ mismatched-signature groups, and lowering for binding/variant-pattern arms.
 ## 3. Bounded loops
 
 Every loop must have a statically evident bound (Power of Ten rule 2).
-Planned enforcement: a loop bound is a semantic fact (constant trip count,
-structural recursion over a finite sequence, or a declared bound with a
-checked runtime guard). `while` loops without an evident bound will be
-rejected in the strict profile. Not yet enforced.
+Enforced: the canonical bounded counter shape — `while i < bound` (or `<=`)
+advancing `i` exactly once per iteration by a positive constant, with the
+bound a literal or an identifier the body never reassigns — is recognized as
+carrying its own bound (`Oak.BoundedLoop` proves such a loop runs at most
+`bound - i` iterations). Every other `while` records the obligation
+`OAK-D0103` (warning), which the strict profile rejects. Planned
+extensions: declared bounds with checked runtime guards, and structural
+iteration over finite sequences.
 
 ## 4. Allocation phase
 
@@ -117,5 +121,6 @@ ones do not.
 
 - rank certificate bounds stack depth (`Oak.Discipline.stack_depth_bounded`) — proved;
 - accepted cycles are tail-only (`Oak.Discipline.cycle_is_all_tail`) — proved;
-- loop-bound and allocation-phase laws — to be formalized with their
-  enforcement.
+- bounded counter loops admit at most `bound - start` iterations
+  (`Oak.BoundedLoop.trace_bounded`) — proved;
+- allocation-phase laws — to be formalized with their enforcement.

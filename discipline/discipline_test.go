@@ -192,3 +192,31 @@ func TestSelfCallInBindingArmIsNotLowered(t *testing.T) {
 			got, CodeTailRecursionObligation, result.Diagnostics())
 	}
 }
+
+// Bounded loops (docs/spec/85-discipline.md section 3, Oak.BoundedLoop): the
+// canonical counter shape is recognized; everything else records OAK-D0103.
+func TestBoundedLoopShapes(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantD0103  int
+	}{
+		{"canonical literal bound", "i: i32 = 0\nwhile i < 10 {\ni = i + 1\n}", 0},
+		{"canonical identifier bound", "n: i32 = 8\ni: i32 = 0\nwhile i < n {\ni = i + 2\n}", 0},
+		{"inclusive bound", "i: i32 = 0\nwhile i <= 10 {\ni = i + 1\n}", 0},
+		{"boolean condition", "i: i32 = 0\nwhile true {\ni = i + 1\n}", 1},
+		{"missing advance", "i: i32 = 0\nwhile i < 10 {\nx: i32 = i\n}", 1},
+		{"decrementing advance", "i: i32 = 0\nwhile i < 10 {\ni = i - 1\n}", 1},
+		{"double assignment to counter", "i: i32 = 0\nwhile i < 10 {\ni = i + 1\ni = i + 1\n}", 1},
+		{"bound mutated in body", "n: i32 = 8\ni: i32 = 0\nwhile i < n {\ni = i + 1\nn = n + 1\n}", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := analyze(t, tt.input)
+			if got := countCode(result, CodeUnboundedLoop); got != tt.wantD0103 {
+				t.Errorf("input %q: %d %s obligations, want %d: %#v",
+					tt.input, got, CodeUnboundedLoop, tt.wantD0103, result.Diagnostics())
+			}
+		})
+	}
+}

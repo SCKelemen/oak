@@ -33,6 +33,8 @@ const (
 	LPAREN // (
 	RPAREN // )
 	LCHEV  // <
+	LEQ    // <=
+	GEQ    // >=
 	RCHEV  // >
 
 	COMMA // ,
@@ -90,6 +92,8 @@ var tokens = [...]string{
 	LPAREN: "(",
 	RPAREN: ")",
 	LCHEV:  "<",
+	LEQ:    "<=",
+	GEQ:    ">=",
 	RCHEV:  ">",
 
 	COMMA: ",",

@@ -106,6 +106,8 @@ func AnalyzeProgram(program *ast.Program) *Result {
 	for _, component := range components {
 		result.classifyComponent(component, functions, edges)
 	}
+
+	result.analyzeLoops(program)
 	return result
 }
 
