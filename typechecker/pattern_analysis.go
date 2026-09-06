@@ -2,7 +2,6 @@ package typechecker
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
@@ -26,8 +25,9 @@ type MatchArmAnalysis struct {
 }
 
 type MatchAnalysis struct {
-	Arms    []MatchArmAnalysis
-	Missing []string
+	Arms     []MatchArmAnalysis
+	Missing  []string
+	Reliable bool
 }
 
 type coverageNode struct {
@@ -91,6 +91,22 @@ func (tc *TypeChecker) variantPayloadType(variant *object.ADTVariantDef) Type {
 	return tc.parseTypeExpression(&ast.Identifier{Value: variant.Payload})
 }
 
+func literalMatchesCoverageType(typ Type, expr ast.Expression) bool {
+	switch typ.(type) {
+	case *BoolType:
+		_, ok := expr.(*ast.Boolean)
+		return ok
+	case *StringType:
+		_, ok := expr.(*ast.StringLiteral)
+		return ok
+	case *PrimitiveType:
+		_, ok := expr.(*ast.IntegerLiteral)
+		return ok
+	default:
+		return false
+	}
+}
+
 // applyCoverage applies one pattern to a cloned coverage tree.
 // valid=false means ordinary pattern checking owns the diagnostic and no
 // coverage conclusion should be drawn from the malformed pattern.
@@ -110,12 +126,14 @@ func (tc *TypeChecker) applyCoverage(node *coverageNode, pattern ast.Pattern) (c
 		return true, true, true
 
 	case *ast.LiteralPattern:
-		key, ok := patternLiteralKey(p.Value)
-		if !ok {
+		if _, _, isADT := tc.adtNameForCoverage(node.typ); isADT {
 			return false, true, false
 		}
-		_, _, isADT := tc.adtNameForCoverage(node.typ)
-		if isADT {
+		if !literalMatchesCoverageType(node.typ, p.Value) {
+			return false, true, false
+		}
+		key, ok := patternLiteralKey(p.Value)
+		if !ok {
 			return false, true, false
 		}
 		if node.literals[key] {
@@ -147,7 +165,11 @@ func (tc *TypeChecker) applyCoverage(node *coverageNode, pattern ast.Pattern) (c
 
 		child, exists := node.constructors[variant.Name]
 		if !exists {
-			child = newCoverageNode(tc.variantPayloadType(variant))
+			payloadType := tc.variantPayloadType(variant)
+			if payloadType == nil {
+				return false, true, false
+			}
+			child = newCoverageNode(payloadType)
 			node.constructors[variant.Name] = child
 		}
 		if !hasPayload {
@@ -199,18 +221,18 @@ func (tc *TypeChecker) coverageComplete(node *coverageNode) bool {
 	if !ok {
 		return false
 	}
-	seenReachable := false
 	for _, variant := range adt.Variants {
 		if onlyVariant != "" && variant.Name != onlyVariant {
 			continue
 		}
-		seenReachable = true
 		child, covered := node.constructors[variant.Name]
 		if !covered || !tc.coverageComplete(child) {
 			return false
 		}
 	}
-	return seenReachable
+	// No reachable constructors is the empty semantic case space. Coverage is
+	// vacuously complete, which is required for impossible GADT index states.
+	return true
 }
 
 func (tc *TypeChecker) coverageWitnesses(node *coverageNode, limit int) []string {
@@ -276,7 +298,10 @@ func constructorRefinement(subject string, pattern ast.Pattern) []PatternRefinem
 }
 
 func (tc *TypeChecker) analyzeMatch(expr *ast.MatchExpression, scrutineeType Type) MatchAnalysis {
-	analysis := MatchAnalysis{Arms: make([]MatchArmAnalysis, len(expr.Arms))}
+	analysis := MatchAnalysis{
+		Arms:     make([]MatchArmAnalysis, len(expr.Arms)),
+		Reliable: true,
+	}
 	coverage := newCoverageNode(scrutineeType)
 	subject := ""
 	if ident, ok := expr.Scrutinee.(*ast.Identifier); ok {
@@ -292,7 +317,9 @@ func (tc *TypeChecker) analyzeMatch(expr *ast.MatchExpression, scrutineeType Typ
 		}
 		switch {
 		case !valid:
-			// Ordinary pattern checking will report the malformed pattern.
+			// Pattern checking will report the root error. Coverage is no longer
+			// reliable enough to emit a derivative non-exhaustive diagnostic.
+			analysis.Reliable = false
 		case !possible:
 			state.Reachable = false
 			state.Impossible = true
@@ -311,7 +338,9 @@ func (tc *TypeChecker) analyzeMatch(expr *ast.MatchExpression, scrutineeType Typ
 		analysis.Arms[i] = state
 	}
 
-	analysis.Missing = tc.coverageWitnesses(coverage, 4)
+	if analysis.Reliable {
+		analysis.Missing = tc.coverageWitnesses(coverage, 4)
+	}
 	return analysis
 }
 
@@ -336,12 +365,11 @@ func (tc *TypeChecker) emitMatchAnalysisDiagnostics(expr *ast.MatchExpression, a
 		}
 	}
 
-	if len(analysis.Missing) == 0 {
+	if !analysis.Reliable || len(analysis.Missing) == 0 {
 		return
 	}
 	d := tc.addTypeDiagnostic(expr, CodeMatchNonExhaustive, "match is not exhaustive")
 	missing := append([]string(nil), analysis.Missing...)
-	sort.Strings(missing)
 	for _, witness := range missing {
 		d.AddNote("uncovered case: " + witness)
 	}
