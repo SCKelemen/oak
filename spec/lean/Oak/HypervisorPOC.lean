@@ -54,7 +54,7 @@ theorem pending_ack_eoi_idle : eoi (acknowledge pending) = idle := by
 theorem disabled_does_not_raise : raise disabled = disabled := by
   rfl
 
-/-! ## Deliverability -/
+/-! ## Deliverability and bounded priority selection -/
 
 structure Irq where
   enabled : Bool
@@ -89,6 +89,28 @@ theorem deliverable_not_active {mask : Nat} {irq : Irq}
 theorem deliverable_priority_below_mask {mask : Nat} {irq : Irq}
     (h : Deliverable mask irq) : irq.priority < mask :=
   h.2.2.2
+
+/-- Mathematical counterpart of the executable u16 `better_bit` helper. For
+    u8 operands, `candidate + 256 - current` is always representable in u16 and
+    lies in `[1, 511]`; division by 256 therefore produces exactly the compare
+    bit we need without a branch. -/
+def betterBit (candidate current : Nat) : Nat :=
+  1 - ((candidate + 256 - current) / 256)
+
+/-- For u8-range priorities, the branchless selector is exactly 1 when the
+    candidate has strictly higher scheduling priority (smaller numeric value). -/
+theorem better_bit_one_iff_lt {candidate current : Nat}
+    (hc : candidate ≤ 255) (hb : current ≤ 255) :
+    betterBit candidate current = 1 ↔ candidate < current := by
+  unfold betterBit
+  omega
+
+/-- The selector is exactly 0 for an equal or lower-priority candidate. -/
+theorem better_bit_zero_iff_ge {candidate current : Nat}
+    (hc : candidate ≤ 255) (hb : current ≤ 255) :
+    betterBit candidate current = 0 ↔ current ≤ candidate := by
+  unfold betterBit
+  omega
 
 /-! ## Stage-2 page arithmetic -/
 
