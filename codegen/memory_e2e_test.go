@@ -30,9 +30,9 @@ fn read() -> u64
   atomic_load_acquire(counter)
 `
 
-func generateAtomicTestC(t *testing.T) string {
+func generateSourceC(t *testing.T, source string) string {
 	t.Helper()
-	p := parser.New(scanner.New(atomicNativeSource))
+	p := parser.New(scanner.New(source))
 	program := p.ParseProgram()
 	if errs := p.Errors(); len(errs) != 0 {
 		t.Fatalf("parser errors: %v", errs)
@@ -48,6 +48,10 @@ func generateAtomicTestC(t *testing.T) string {
 		t.Fatalf("code generation: %v", err)
 	}
 	return generated
+}
+
+func generateAtomicTestC(t *testing.T) string {
+	return generateSourceC(t, atomicNativeSource)
 }
 
 func TestAtomicSourceLowersWithoutHeapOrRuntimeOrderDispatch(t *testing.T) {
@@ -70,6 +74,17 @@ func TestAtomicSourceLowersWithoutHeapOrRuntimeOrderDispatch(t *testing.T) {
 		if strings.Contains(generated, forbidden) {
 			t.Fatalf("atomic lowering introduced hidden allocation/runtime dispatch %q", forbidden)
 		}
+	}
+}
+
+func TestNonAtomicProgramDoesNotPayAtomicBackendDependency(t *testing.T) {
+	generated := generateSourceC(t, `
+package main
+fn value() -> u64
+  u64(7)
+`)
+	if strings.Contains(generated, "#include <stdatomic.h>") || strings.Contains(generated, "_Atomic(") {
+		t.Fatalf("non-atomic program paid atomic backend cost:\n%s", generated)
 	}
 }
 
