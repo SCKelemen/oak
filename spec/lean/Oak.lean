@@ -14,3 +14,4 @@ import Oak.RecordShape
 import Oak.RecordShapeRefinement
 import Oak.GenericConstraintRefinement
 import Oak.RepresentationPolymorphism
+import Oak.TypeVarIdentity
