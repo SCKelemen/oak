@@ -40,7 +40,10 @@ theorem singleton_hits (v : TypeVar) (replacement : Ty) :
 theorem singleton_misses_distinct_binder (left right : TypeVar) (replacement : Ty)
     (hne : left ≠ right) :
     apply (singleton left replacement) (.var right) = .var right := by
-  simp [apply, singleton, hne]
+  have hrev : right ≠ left := by
+    intro heq
+    exact hne heq.symm
+  simp [apply, singleton, hrev]
 
 /-- Equal display names do not collapse distinct binder identities. -/
 theorem same_name_can_be_distinct (left right : TypeVar)
