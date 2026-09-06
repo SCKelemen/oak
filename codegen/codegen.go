@@ -37,7 +37,28 @@ type CodeGenerator struct {
 	trampolineEmitted map[string]bool
 	tailGroup         map[string]string
 	tailGroupParams   []*ast.FunctionParameter
+	// localTypes maps in-scope names to their container kind while a
+	// function body is being emitted, so element access lowers to the right
+	// bounds-checked form. Unknown containers fail closed.
+	localTypes map[string]localContainer
 }
+
+// localContainer classifies a local binding for element-access lowering.
+type localContainer struct {
+	kind    containerKind
+	length  int64  // ownedArray only
+	element string // C element type for ownedArray/view/span
+}
+
+type containerKind int
+
+const (
+	containerUnknown containerKind = iota
+	containerOwnedArray
+	containerView
+	containerSpan
+	containerString
+)
 
 // New creates a new code generator
 func New(packageName string, tc *typechecker.TypeChecker) *CodeGenerator {
@@ -112,15 +133,11 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitAssertHelper()
 	cg.emitUtf8Helper()
 
-	// View typedefs must precede the functions that use them: pre-emit the
-	// element views of every variadic parameter.
-	for _, fn := range cg.programFunctions {
-		for _, param := range fn.Parameters {
-			if param.Variadic {
-				cg.emitViewType(cg.parseTypeExpression(param.Type))
-			}
-		}
-	}
+	// Container typedefs (and their bounds-checked index helpers) must
+	// precede the functions that use them: pre-emit every view/span element
+	// type appearing in parameters and local declarations, and the element
+	// views of variadic parameters.
+	cg.preEmitContainerTypes(program)
 
 	// Emit type definitions (ADTs, records)
 	// First, collect all ADT types for later lookup
@@ -584,6 +601,9 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write(" ) {\n")
 	cg.indentLevel++
 
+	cg.localTypes = cg.buildLocalTypes(fn)
+	defer func() { cg.localTypes = nil }()
+
 	// Self tail recursion compiles to a loop (docs/spec/85-discipline.md):
 	// the tail self-call becomes parameter rebinding plus continue, so the
 	// frame is reused and stack depth stays constant.
@@ -629,6 +649,218 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 	}
 }
 
+
+// preEmitContainerTypes emits the view/span typedefs and their index helpers
+// for every container type expression in the program, so later per-function
+// emission never writes a typedef mid-function.
+func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
+	emit := func(typeExpr ast.Expression) {
+		info := cg.classifyContainer(typeExpr)
+		switch info.kind {
+		case containerView:
+			cg.emitViewType(info.element)
+		case containerSpan:
+			cg.emitSpanType(info.element)
+		}
+	}
+	var walkStmt func(stmt ast.Statement)
+	walkStmt = func(stmt ast.Statement) {
+		switch s := stmt.(type) {
+		case *ast.VariableDeclaration:
+			if s.Type != nil {
+				emit(s.Type)
+			}
+		case *ast.FunctionStatement:
+			for _, param := range s.Parameters {
+				if param.Variadic {
+					cg.emitViewType(cg.parseTypeExpression(param.Type))
+				} else if param.Type != nil {
+					emit(param.Type)
+				}
+			}
+			if block, ok := s.Body.(*ast.BlockExpression); ok && block.Block != nil {
+				for _, inner := range block.Block.Statements {
+					walkStmt(inner)
+				}
+			}
+		case *ast.WhileStatement:
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					walkStmt(inner)
+				}
+			}
+		case *ast.BlockStatement:
+			for _, inner := range s.Statements {
+				walkStmt(inner)
+			}
+		case *ast.UnsafeBlock:
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					walkStmt(inner)
+				}
+			}
+		}
+	}
+	for _, stmt := range program.Statements {
+		walkStmt(stmt)
+	}
+}
+
+// classifyContainer analyzes a type expression for element-access lowering.
+func (cg *CodeGenerator) classifyContainer(typeExpr ast.Expression) localContainer {
+	switch t := typeExpr.(type) {
+	case *ast.Identifier:
+		if t.Value == "string" {
+			return localContainer{kind: containerString}
+		}
+	case *ast.IndexExpression:
+		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Str" {
+			return localContainer{kind: containerString}
+		}
+		switch index := t.Index.(type) {
+		case *ast.IntegerLiteral:
+			return localContainer{
+				kind:    containerOwnedArray,
+				length:  index.Value,
+				element: cg.parseTypeExpression(t.Left),
+			}
+		case *ast.Identifier:
+			if index.Value == "" {
+				return localContainer{kind: containerView, element: cg.parseTypeExpression(t.Left)}
+			}
+			if index.Value == "*" {
+				return localContainer{kind: containerSpan, element: cg.parseTypeExpression(t.Left)}
+			}
+		}
+	}
+	return localContainer{kind: containerUnknown}
+}
+
+// buildLocalTypes indexes a function's parameters and local declarations for
+// element-access lowering.
+func (cg *CodeGenerator) buildLocalTypes(fn *ast.FunctionStatement) map[string]localContainer {
+	table := make(map[string]localContainer)
+	for _, param := range fn.Parameters {
+		if param.Name == nil {
+			continue
+		}
+		if param.Variadic {
+			table[param.Name.Value] = localContainer{
+				kind:    containerView,
+				element: cg.parseTypeExpression(param.Type),
+			}
+			continue
+		}
+		table[param.Name.Value] = cg.classifyContainer(param.Type)
+	}
+	var walkStmt func(stmt ast.Statement)
+	var walkExpr func(expr ast.Expression)
+	walkStmt = func(stmt ast.Statement) {
+		switch s := stmt.(type) {
+		case *ast.VariableDeclaration:
+			if s.Name != nil && s.Type != nil {
+				table[s.Name.Value] = cg.classifyContainer(s.Type)
+			}
+		case *ast.WhileStatement:
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					walkStmt(inner)
+				}
+			}
+		case *ast.BlockStatement:
+			for _, inner := range s.Statements {
+				walkStmt(inner)
+			}
+		case *ast.UnsafeBlock:
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					walkStmt(inner)
+				}
+			}
+		case *ast.ExpressionStatement:
+			walkExpr(s.Expression)
+		}
+	}
+	walkExpr = func(expr ast.Expression) {
+		if block, ok := expr.(*ast.BlockExpression); ok && block.Block != nil {
+			for _, inner := range block.Block.Statements {
+				walkStmt(inner)
+			}
+		}
+	}
+	if fn.Body != nil {
+		walkExpr(fn.Body)
+		if inv, ok := fn.Body.(*ast.InvocationExpression); ok {
+			_ = inv
+		}
+	}
+	return table
+}
+
+// localContainerOf resolves an expression's container classification; only
+// identifiers are classified — everything else fails closed.
+func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
+	ident, ok := expr.(*ast.Identifier)
+	if !ok || cg.localTypes == nil {
+		return localContainer{kind: containerUnknown}
+	}
+	return cg.localTypes[ident.Value]
+}
+
+// primitiveCasts maps primitive constructor names to their C cast targets.
+var primitiveCasts = map[string]string{
+	"u8": "u8", "u16": "u16", "u32": "u32", "u64": "u64",
+	"i8": "i8", "i16": "i16", "i32": "i32", "i64": "i64",
+	"byte": "u8", "rune": "u32",
+}
+
+// emitCoreIndex lowers core_index(seq, i) to the bounds-checked access for
+// the container kind (docs/spec/50-borrowing.md: out-of-range access is
+// never undefined behavior). Unknown containers fail closed with a marker
+// the C compiler rejects.
+func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	seq, index := call.Arguments[0], call.Arguments[1]
+	info := cg.localContainerOf(seq)
+	switch info.kind {
+	case containerView:
+		cg.output.WriteString(fmt.Sprintf("oak_view_index_%s( ", info.element))
+		cg.emitExpressionFragment(seq, tc)
+		cg.output.WriteString(", (u64)( ")
+		cg.emitExpressionFragment(index, tc)
+		cg.output.WriteString(" ) )")
+	case containerSpan:
+		cg.output.WriteString(fmt.Sprintf("oak_span_index_%s( ", info.element))
+		cg.emitExpressionFragment(seq, tc)
+		cg.output.WriteString(", (u64)( ")
+		cg.emitExpressionFragment(index, tc)
+		cg.output.WriteString(" ) )")
+	case containerOwnedArray:
+		cg.output.WriteString("oak_index( ")
+		cg.emitExpressionFragment(seq, tc)
+		cg.output.WriteString(fmt.Sprintf(", %d, (u64)( ", info.length))
+		cg.emitExpressionFragment(index, tc)
+		cg.output.WriteString(" ) )")
+	default:
+		cg.output.WriteString("OAK_UNSUPPORTED_INDEX_TARGET")
+	}
+}
+
+// emitLen lowers len(x): static length for owned arrays, the len field for
+// views, spans, and strings.
+func (cg *CodeGenerator) emitLen(call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	seq := call.Arguments[0]
+	info := cg.localContainerOf(seq)
+	switch info.kind {
+	case containerOwnedArray:
+		cg.output.WriteString(fmt.Sprintf("%d", info.length))
+	case containerView, containerSpan, containerString:
+		cg.output.WriteString("((u32)( ")
+		cg.emitExpressionFragment(seq, tc)
+		cg.output.WriteString(" ).len)")
+	default:
+		cg.output.WriteString("OAK_UNSUPPORTED_LEN_TARGET")
+	}
+}
 
 // variadicCallee reports whether name is a known variadic function.
 func (cg *CodeGenerator) variadicCallee(name string) (*ast.FunctionStatement, bool) {
@@ -709,7 +941,7 @@ var runtimeBuiltins = map[string]string{
 // can wrap them; the helper reads only v.len bytes and fails closed.
 func (cg *CodeGenerator) emitUtf8Helper() {
 	viewType := cg.emitViewType("u8")
-	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
 	cg.write(fmt.Sprintf("static Bool oak_is_valid_utf8(%s v) {\n", viewType))
 	cg.write("  u64 i = 0;\n")
 	cg.write("  u64 n = (u64)v.len;\n")
@@ -812,9 +1044,11 @@ func (cg *CodeGenerator) emitTrampolineGroup(members []string, tc *typechecker.T
 	cg.tailGroupParams = first.Parameters
 	for _, member := range members {
 		fn := cg.programFunctions[member]
+		cg.localTypes = cg.buildLocalTypes(fn)
 		cg.write(fmt.Sprintf("  case %s_%s: {\n", engine, member))
 		cg.emitFunctionBody(fn.Body, tc)
 		cg.write("  }\n")
+		cg.localTypes = nil
 	}
 	cg.tailGroup = nil
 	cg.tailGroupParams = nil
@@ -1025,6 +1259,22 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		if ident, ok := e.Function.(*ast.Identifier); ok {
 			if fn, isVariadicCallee := cg.variadicCallee(ident.Value); isVariadicCallee {
 				cg.emitVariadicCall(fn, e, tc)
+				return
+			}
+		}
+		if ident, ok := e.Function.(*ast.Identifier); ok {
+			if ident.Value == "core_index" && len(e.Arguments) == 2 {
+				cg.emitCoreIndex(e, tc)
+				return
+			}
+			if ident.Value == "len" && len(e.Arguments) == 1 {
+				cg.emitLen(e, tc)
+				return
+			}
+			if target, isCast := primitiveCasts[ident.Value]; isCast && len(e.Arguments) == 1 {
+				cg.output.WriteString(fmt.Sprintf("((%s)( ", target))
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(" ))")
 				return
 			}
 		}
@@ -1311,6 +1561,13 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 	cg.write(fmt.Sprintf("} %s;\n", viewTypeName))
 	cg.write("\n")
 
+	// Bounds-checked element access: out-of-range is a trap, never UB
+	// (docs/spec/50-borrowing.md).
+	cg.write(fmt.Sprintf("static inline %s oak_view_index_%s(%s v, u64 i) {\n", elementType, elementType, viewTypeName))
+	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
+	cg.write("  return v.base[i];\n")
+	cg.write("}\n\n")
+
 	return viewTypeName
 }
 
@@ -1332,6 +1589,13 @@ func (cg *CodeGenerator) emitSpanType(elementType string) string {
 	cg.indentLevel--
 	cg.write(fmt.Sprintf("} %s;\n", spanTypeName))
 	cg.write("\n")
+
+	// Bounds-checked element access: out-of-range is a trap, never UB
+	// (docs/spec/50-borrowing.md).
+	cg.write(fmt.Sprintf("static inline %s oak_span_index_%s(%s v, u64 i) {\n", elementType, elementType, spanTypeName))
+	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
+	cg.write("  return v.base[i];\n")
+	cg.write("}\n\n")
 
 	return spanTypeName
 }

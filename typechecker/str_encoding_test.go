@@ -213,3 +213,29 @@ func TestVariadicParameters(t *testing.T) {
 		})
 	}
 }
+
+// len (v1): containers in, u32 out.
+func TestLenBuiltinTypeChecks(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		hasError bool
+	}{
+		{"owned array", "buf: [8]u8\nn: u32 = len(buf)", false},
+		{"view", "buf: [8]u8\nv: []u8 = buf[0:4]\nn: u32 = len(v)", false},
+		{"string", "s: string = \"hi\"\nn: u32 = len(s)", false},
+		{"non-container rejected", "x: i32 = 5\nn: u32 = len(x)", true},
+		{"arity enforced", "n: u32 = len()", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := setupTypeChecker(tt.input)
+			program := parseProgram(tt.input)
+			tc.CheckProgram(program)
+			hasError := len(tc.Errors()) > 0
+			if hasError != tt.hasError {
+				t.Errorf("input %q: expected error=%v, got errors=%v", tt.input, tt.hasError, tc.Errors())
+			}
+		})
+	}
+}

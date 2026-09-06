@@ -162,6 +162,25 @@ result: i32 = fact(5, 1)
 `,
 		},
 		{
+			// Bounds-checked element access: views index through a trapping
+			// helper, owned arrays through a static-length guard; len lowers
+			// to constants or the len field (50-borrowing: never UB).
+			Name: "indexing",
+			SourceCode: `
+fn sum(buf: [8]u8) -> u32 {
+  v: []u8 = buf[0:8]
+  n: u32 = len(v)
+  total: u32 = 0
+  i: u32 = 0
+  while i < n {
+    total = total + u32(v[i])
+    i = i + 1
+  }
+  total + u32(buf[0]) + len(buf)
+}
+`,
+		},
+		{
 			// Variadic trailing parameters: the call site materializes a
 			// caller-owned stack array and passes a view (docs/spec/10-syntax.md).
 			Name: "variadic",

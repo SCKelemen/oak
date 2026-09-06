@@ -110,13 +110,20 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
-// @source: unknown.oak:1:0-4:0
+// @source: unknown.oak:1:0-11:0
 // @package: main
 // @kind: function
-// @identifier: checked_double
-// @signature: fn checked_double(n: i32) -> i32
-i32 oak_checked_double( i32 n ) {
-oak_assert( ( n < 100 ) )  ;
-    return ( n * 2 )  ;
+// @identifier: sum
+// @signature: fn sum(buf: /* type */) -> u32
+u32 oak_sum( u8 buf[8] ) {
+    oak_view_u8 v   = core_slice( buf, 0, 8 )  ;
+    u32 n   = ((u32)( v ).len)  ;
+    u32 total   = 0  ;
+    u32 i   = 0  ;
+    while ( ( i < n )   ) {
+      total     = ( total + ((u32)( oak_view_index_u8( v, (u64)( i ) ) )) )    ;
+      i     = ( i + 1 )    ;
+    }
+    return ( ( total + ((u32)( oak_index( buf, 8, (u64)( 0 ) ) )) ) + 8 )  ;
 }
 

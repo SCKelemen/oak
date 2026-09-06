@@ -1068,6 +1068,21 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if ident.Value == "subslice" {
 			return tc.checkSubsliceBuiltin(expr)
 		}
+		// len: element/byte count of a container. v1 representation counts
+		// are u32, matching the view/span structs.
+		if ident.Value == "len" {
+			if len(expr.Arguments) != 1 {
+				tc.addError(expr, "len expects exactly one argument")
+				return &PrimitiveType{Name: "u32"}
+			}
+			argType := tc.checkExpression(expr.Arguments[0])
+			switch argType.(type) {
+			case *ArrayType, *StringType, nil:
+			default:
+				tc.addError(expr.Arguments[0], "len requires an array, view, span, or string, got %s", argType)
+			}
+			return &PrimitiveType{Name: "u32"}
+		}
 		// is_valid_utf8 (docs/spec/70-strings.md): zero-allocation byte
 		// validation against the well-formed sequences of Oak.Utf8Validity.
 		if ident.Value == "is_valid_utf8" {

@@ -37,6 +37,40 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 		return lowerFunctionStatement(s, tc)
 	case *ast.BlockStatement:
 		return lowerBlockStatement(s, tc)
+	case *ast.AssignmentStatement:
+		return &ast.AssignmentStatement{
+			BaseNode: s.BaseNode,
+			Token:    s.Token,
+			Name:     s.Name,
+			Value:    lowerExpression(s.Value, tc),
+		}
+	case *ast.WhileStatement:
+		lowered := &ast.WhileStatement{
+			BaseNode:  s.BaseNode,
+			Token:     s.Token,
+			Condition: lowerExpression(s.Condition, tc),
+		}
+		if s.Body != nil {
+			if body, ok := lowerStatement(s.Body, tc).(*ast.BlockStatement); ok {
+				lowered.Body = body
+			} else {
+				lowered.Body = s.Body
+			}
+		}
+		return lowered
+	case *ast.UnsafeBlock:
+		lowered := &ast.UnsafeBlock{
+			BaseNode: s.BaseNode,
+			Token:    s.Token,
+		}
+		if s.Body != nil {
+			if body, ok := lowerStatement(s.Body, tc).(*ast.BlockStatement); ok {
+				lowered.Body = body
+			} else {
+				lowered.Body = s.Body
+			}
+		}
+		return lowered
 	default:
 		// Other statement types don't need lowering
 		return stmt

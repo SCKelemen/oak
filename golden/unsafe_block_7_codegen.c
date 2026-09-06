@@ -43,9 +43,18 @@ typedef struct oak_view_u8 {
     u32       len;
 } oak_view_u8;
 
+static inline u8 oak_view_index_u8(oak_view_u8 v, u64 i) {
+  if (i >= (u64)v.len) { __builtin_trap(); }
+  return v.base[i];
+}
+
 /* core_slice: view construction as a brace initializer (declaration
    position); field order matches the view/span structs {base, len} */
 #define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }
+
+/* bounds-checked owned-array indexing: out-of-range traps, never UB */
+static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }
+#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
 static Bool oak_is_valid_utf8(oak_view_u8 v) {
@@ -99,5 +108,15 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
     return oak_Bool_False;
   }
   return oak_Bool_True;
+}
+
+typedef struct oak_span_u8 {
+    u8* base;
+    u32 len;
+} oak_span_u8;
+
+static inline u8 oak_span_index_u8(oak_span_u8 v, u64 i) {
+  if (i >= (u64)v.len) { __builtin_trap(); }
+  return v.base[i];
 }
 

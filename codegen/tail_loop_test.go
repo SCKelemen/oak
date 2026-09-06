@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SCKelemen/oak/lowering"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
@@ -21,8 +22,9 @@ func generateC(t *testing.T, input string) string {
 	env := object.NewEnvironment()
 	tc := typechecker.New(env)
 	tc.CheckProgram(program)
+	lowered := lowering.LowerProgram(program, tc)
 	cg := New("main", tc)
-	output, err := cg.Generate(program, tc)
+	output, err := cg.Generate(lowered, tc)
 	if err != nil {
 		t.Fatalf("code generation error: %v", err)
 	}
@@ -155,5 +157,43 @@ fn empty_caller() -> i32 {
 		if !strings.Contains(output, wanted) {
 			t.Fatalf("variadic lowering missing %q:\n%s", wanted, output)
 		}
+	}
+}
+
+// Element access is bounds-checked in the C backend: views index through a
+// trapping helper, owned arrays through a static-length guard, and len
+// lowers to constants or the len field.
+func TestElementAccessLowersBoundsChecked(t *testing.T) {
+	output := generateC(t, `
+package main
+
+fn sum(buf: [8]u8) -> u32 {
+  v: []u8 = buf[0:8]
+  n: u32 = len(v)
+  total: u32 = 0
+  i: u32 = 0
+  while i < n {
+    total = total + u32(v[i])
+    i = i + 1
+  }
+  total + u32(buf[0]) + len(buf)
+}
+`)
+	for _, wanted := range []string{
+		"oak_view_index_u8( v, (u64)( i ) )",
+		"if (i >= (u64)v.len) { __builtin_trap(); }",
+		"((u32)( v ).len)",
+		"oak_index( buf, 8, (u64)( 0 ) )",
+		"((u32)( ",
+	} {
+		if !strings.Contains(output, wanted) {
+			t.Fatalf("bounds-checked access missing %q:\n%s", wanted, output)
+		}
+	}
+	if strings.Contains(output, "OAK_UNSUPPORTED") {
+		t.Fatalf("unexpected fail-closed marker:\n%s", output)
+	}
+	if strings.Contains(output, "len( buf )") || strings.Contains(output, "core_index") {
+		t.Fatalf("unlowered builtin survived:\n%s", output)
 	}
 }
