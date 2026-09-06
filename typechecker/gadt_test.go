@@ -150,6 +150,49 @@ func TestGADTMismatchDiagnosticNamesDeclaredAndExpectedResults(t *testing.T) {
 	t.Fatalf("expected %s, got %#v", CodeGADTResultMismatch, tc.Diagnostics())
 }
 
+
+func TestGADTConstructorRefinesVariableExpectedIndex(t *testing.T) {
+	tc := New(object.NewEnvironment())
+	tc.checkADTType(indexedExprDecl())
+	index := NewUnifier().FreshTypeVar("T")
+	expected := &GenericType{Name: "Expr", TypeArgs: []Type{index}}
+	expr := &ast.VariantExpression{
+		TypeName: &ast.Identifier{Value: "Expr"},
+		Variant:  &ast.Identifier{Value: "Int"},
+		Payload:  &ast.IntegerLiteral{Value: 1},
+	}
+
+	got := tc.checkVariantExpression(expr, expected)
+	want := &GenericType{Name: "Expr", TypeArgs: []Type{&PrimitiveType{Name: "i64"}}}
+	if got == nil || !got.Equals(want) {
+		t.Fatalf("constructor type = %v, want %v", got, want)
+	}
+}
+
+func TestGADTPositionalResultEquationsCannotOverwriteBindings(t *testing.T) {
+	tc := New(object.NewEnvironment())
+	decl := &ast.ADTType{
+		Name: &ast.Identifier{Value: "Pair"},
+		TypeParams: []*ast.TypeParameter{
+			{Name: &ast.Identifier{Value: "A"}},
+			{Name: &ast.Identifier{Value: "B"}},
+		},
+		Variants: []*ast.ADTVariant{{
+			Name: &ast.Identifier{Value: "Contradiction"},
+			Result: &ast.IndexExpression{
+				Left:  indexedType("Pair", "B"),
+				Index: &ast.Identifier{Value: "i64"},
+			},
+		}},
+	}
+	tc.checkADTType(decl)
+	adt := tc.adtTypes["Pair"]
+	actual := []Type{&BoolType{}, &PrimitiveType{Name: "i64"}}
+	if _, _, reachable := tc.variantIndexBindings(adt, adt.Variants[0], actual); reachable {
+		t.Fatal("Pair[B, i64] must not inhabit Pair[Bool, i64]")
+	}
+}
+
 func TestParsesGenericADTTypeApplication(t *testing.T) {
 	tc := New(object.NewEnvironment())
 	got := tc.parseTypeExpression(indexedType("Expr", "i64"))
