@@ -1,0 +1,134 @@
+name: Refactor parser token source
+
+on:
+  push:
+    branches:
+      - feat/parser-token-source
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/parser-token-source
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+      - name: Apply mechanical parser refactor
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_function(text: str, name: str, replacement: str) -> str:
+              start = text.index(f"func (p *Parser) {name}(")
+              next_func = text.find("\nfunc (", start + 1)
+              if next_func == -1:
+                  raise SystemExit(f"could not find end of {name}")
+              return text[:start] + replacement.rstrip() + "\n" + text[next_func + 1:]
+
+          parser = Path("parser/parser.go")
+          text = parser.read_text()
+          original = text
+          text = text.replace('\t"github.com/SCKelemen/oak/scanner"\n', '')
+          text = text.replace('lxr          *scanner.Scanner', 'source       token.Source')
+          text = text.replace('func New(lxr *scanner.Scanner) *Parser {', 'func New(source token.Source) *Parser {')
+          text = text.replace('\t\tlxr:           lxr,', '\t\tsource:        source,')
+          text = text.replace('p.lxr.NextToken()', 'p.source.NextToken()')
+          if text == original or 'scanner.Scanner' in text or 'p.lxr' in text:
+              raise SystemExit('parser source replacement was incomplete')
+
+          text = replace_function(text, "parseFunctionArgs", r'''
+          func (p *Parser) parseFunctionArgs() []*ast.Identifier {
+          	args, ok := p.parseSeparated[*ast.Identifier](token.RPAREN, token.COMMA, false, func() (*ast.Identifier, bool) {
+          		return &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}, true
+          	})
+          	if !ok {
+          		return nil
+          	}
+          	return args
+          }
+          ''')
+
+          text = replace_function(text, "parseFunctionParameters", r'''
+          func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
+          	params, ok := p.parseSeparated[*ast.FunctionParameter](token.RPAREN, token.COMMA, false, func() (*ast.FunctionParameter, bool) {
+          		param := &ast.FunctionParameter{
+          			Token: p.currentToken,
+          			Name:  &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal},
+          		}
+          		if !p.expectPeek(token.COLON) {
+          			return nil, false
+          		}
+          		p.nextToken()
+          		param.Type = p.parseTypeExpression()
+          		return param, true
+          	})
+          	if !ok {
+          		return nil
+          	}
+          	return params
+          }
+          ''')
+
+          text = replace_function(text, "parseTypeParameters", r'''
+          func (p *Parser) parseTypeParameters() []*ast.TypeParameter {
+          	if !p.expectPeek(token.LBRACK) {
+          		return nil
+          	}
+          	params, ok := p.parseSeparated[*ast.TypeParameter](token.RBRACK, token.COMMA, false, func() (*ast.TypeParameter, bool) {
+          		param := p.parseTypeParameter()
+          		return param, param != nil
+          	})
+          	if !ok {
+          		return nil
+          	}
+          	return params
+          }
+          ''')
+          parser.write_text(text)
+
+          scanner = Path("scanner/scanner.go")
+          text = scanner.read_text()
+          text = text.replace('// Scanner is the lexer. A Scanner created with FromSource is a thin compatibility\n// adapter around another token.Source; this lets older parser entry points accept\n// transformed token streams while the parser migrates away from its historical\n// concrete *Scanner dependency.\n', '// Scanner is the Oak lexer.\n')
+          text = text.replace('\tsource token.Source\n\n', '')
+          start = text.index('// FromSource adapts an arbitrary token.Source')
+          end = text.index('// readChar advances', start)
+          text = text[:start] + text[end:]
+          text = text.replace('\tif s.source != nil {\n\t\treturn s.source.NextToken()\n\t}\n\n', '')
+          if 'FromSource' in text or 's.source' in text:
+              raise SystemExit('scanner compatibility adapter replacement was incomplete')
+          scanner.write_text(text)
+
+          Path("parser/source.go").write_text(r'''package parser
+
+import "github.com/SCKelemen/oak/token"
+
+// NewSource is a compatibility spelling for New. Parser itself owns the
+// token.Source directly; there is no scanner adapter in this path.
+func NewSource(source token.Source) *Parser {
+	return New(source)
+}
+''')
+
+          compilation = Path("compiler/compilation.go")
+          text = compilation.read_text().replace('p := parser.NewSource(tokens)', 'p := parser.New(tokens)')
+          compilation.write_text(text)
+          PY
+          gofmt -w parser/parser.go parser/source.go scanner/scanner.go compiler/compilation.go
+      - name: Validate refactor
+        run: go test -race ./...
+      - name: Commit validated refactor
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add parser/parser.go parser/source.go scanner/scanner.go compiler/compilation.go
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Decouple parser from scanner and reuse separated lists"
+          git push origin HEAD:feat/parser-token-source
