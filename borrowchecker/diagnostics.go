@@ -18,6 +18,7 @@ const (
 	CodeSpanOverlap            diagnostic.Code = "OAK-B0106"
 	CodeBorrowSuspended        diagnostic.Code = "OAK-B0107"
 	CodeReborrowOverlap        diagnostic.Code = "OAK-B0108"
+	CodeBorrowEscape           diagnostic.Code = "OAK-B0109"
 )
 
 type diagnosticsState struct {

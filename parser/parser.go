@@ -310,9 +310,14 @@ func (p *Parser) parseStatement() ast.Statement {
 			stmt.Value = p.parseExpression(LOWEST)
 			stmt.Type = nil
 			return stmt
-		} else if p.peekTokenIs(token.COLON) || p.peekTokenIs(token.LBRACK) {
-			// Centralize IDENT ":" ... or IDENT "[" ... handling
-			// LBRACK handles generic type definitions: Name[E, Unit]: type = ...
+		} else if p.peekTokenIs(token.COLON) {
+			// Centralize IDENT ":" ... handling
+			return p.parseIdentLedStatement()
+		} else if p.peekTokenIs(token.LBRACK) && p.bracketGroupPrecedesColon() {
+			// IDENT "[" ... "]" ":" is a generic type definition or annotated
+			// declaration head: Name[E, Unit]: type = ...
+			// Without the trailing ':', IDENT "[" starts an index or slice
+			// expression statement (e.g. buf[0:8]) and falls through below.
 			return p.parseIdentLedStatement()
 		} else if p.peekTokenIs(token.ASSIGN) {
 			// Assignment: x = expr (must refer to existing variable)
@@ -2129,17 +2134,11 @@ func (p *Parser) parseTypeExpressionSimple() ast.Expression {
 }
 
 // Block expression: { stmt1; stmt2; expr }
+// Every statement is retained so downstream checkers and backends see the
+// whole body; the block's value is the trailing expression statement.
 func (p *Parser) parseBlockExpression() ast.Expression {
 	block := p.parseBlockStatement()
-	// Convert block statement to expression
-	// For now, return the last statement's expression
-	if len(block.Statements) > 0 {
-		if exprStmt, ok := block.Statements[len(block.Statements)-1].(*ast.ExpressionStatement); ok {
-			return exprStmt.Expression
-		}
-	}
-	// Empty block returns unit type ()
-	return &ast.Identifier{Token: block.Token, Value: "()"}
+	return &ast.BlockExpression{Token: block.Token, Block: block}
 }
 
 // While statement
@@ -2516,6 +2515,48 @@ func (p *Parser) parseVariantPattern() ast.Pattern {
 	}
 
 	return pattern
+}
+
+// bracketGroupPrecedesColon looks ahead, without consuming tokens, from a
+// position where currentToken is IDENT and peekToken is '[': it reports
+// whether the bracket group closes and is immediately followed by ':' —
+// the shape of a generic type definition head (Name[E, Unit]: ...) as opposed
+// to an index or slice expression statement (buf[0:8]).
+func (p *Parser) bracketGroupPrecedesColon() bool {
+	cursor, ok := p.source.(*token.Cursor)
+	if !ok {
+		// No lookahead available: preserve the historical routing.
+		return true
+	}
+	depth := 1 // the '[' already sitting in peekToken
+	offset := 0
+	const lookaheadLimit = 4096
+	for step := 0; step < lookaheadLimit; step++ {
+		tok := cursor.Peek(offset)
+		offset++
+		switch tok.TokenKind {
+		case token.LBRACK:
+			depth++
+		case token.RBRACK:
+			depth--
+			if depth == 0 {
+				// Find the first significant token after the group.
+				for step < lookaheadLimit {
+					step++
+					next := cursor.Peek(offset)
+					offset++
+					if next.TokenKind == token.TRIVIA || next.TokenKind == token.COMMENT {
+						continue
+					}
+					return next.TokenKind == token.COLON
+				}
+				return false
+			}
+		case token.EOF:
+			return false
+		}
+	}
+	return false
 }
 
 // parseIdentLedStatement handles statements that start with IDENT ":" ...
