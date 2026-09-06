@@ -45,17 +45,9 @@ fn bump() -> u64
 	if !ok {
 		t.Fatalf("statement 2 is %T, want function", program.Statements[2])
 	}
-	block, ok := fn.Body.(*ast.BlockExpression)
-	if !ok || block.Block == nil || len(block.Block.Statements) != 1 {
-		t.Fatalf("unexpected bump body: %#v", fn.Body)
-	}
-	exprStmt, ok := block.Block.Statements[0].(*ast.ExpressionStatement)
+	call, ok := fn.Body.(*ast.InvocationExpression)
 	if !ok {
-		t.Fatalf("bump body is %T, want expression statement", block.Block.Statements[0])
-	}
-	call, ok := exprStmt.Expression.(*ast.InvocationExpression)
-	if !ok {
-		t.Fatalf("bump expression is %T, want invocation", exprStmt.Expression)
+		t.Fatalf("single-expression bump body is %T, want invocation", fn.Body)
 	}
 	callee, ok := call.Function.(*ast.Identifier)
 	if !ok || callee.Value != "atomic_fetch_add_relaxed" {
