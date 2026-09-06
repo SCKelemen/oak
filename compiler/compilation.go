@@ -6,6 +6,7 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/codegen"
+	"github.com/SCKelemen/oak/layout"
 	"github.com/SCKelemen/oak/lowering"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
@@ -98,12 +99,14 @@ func (comp Compilation) Source() SourceText {
 	return comp.source
 }
 
-// Parse produces the syntax tree. This method is intentionally the only place
-// in the facade that constructs the parser; layout normalization will be wired
-// here once Parser accepts the shared token-source interface.
+// Parse produces the syntax tree through the canonical front-end pipeline.
+// Explicit braces pass through layout unchanged; indentation-delimited bodies
+// become synthetic braces before the parser sees them. Both surface styles
+// therefore share one parser and one AST semantics.
 func (comp Compilation) Parse() Stage[*SyntaxTree] {
 	return Value(comp.source).Then(func(source SourceText) (*SyntaxTree, error) {
-		p := parser.New(scanner.New(source.Text))
+		tokens := layout.New(scanner.New(source.Text))
+		p := parser.NewSource(tokens)
 		root := p.ParseProgram()
 		if errors := p.Errors(); len(errors) != 0 {
 			return nil, phaseError("parse", errors)
