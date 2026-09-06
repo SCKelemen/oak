@@ -51,6 +51,8 @@ The POC deliberately requires Oak's `strict` discipline profile:
 - bounds-checked span reads/writes;
 - deterministic lowest-priority-value selection under the mask.
 
+The loop is intentionally straight-line: scalar/Bool match decisions live in small pure helper functions, while the bounded scan performs only loads, comparisons, calls, assignments, and the single monotonic counter advance. This is a useful systems shape independently of current parser limitations because it keeps branch semantics separately testable/provable from iteration/boundedness.
+
 This is a first proxy for the OS requirement that the IRQ hot path be simple, bounded, cache-small, and mechanically analyzable.
 
 The Lean `Deliverable` predicate proves the local facts that a deliverable interrupt is enabled, pending, inactive, and below the priority mask. A later step should prove the concrete selection algorithm returns the minimum-priority deliverable IRQ and then refine the executable implementation to that model.
@@ -73,6 +75,22 @@ The current Lean model uses mathematical naturals. This is **not yet** a proof o
 `Oak.HypervisorPOC.stale_handle_fails_after_reuse` proves the basic stale-generation law used by capability/object handles. This complements the existing, more general `Oak.Handles` work.
 
 The finite-width production policy remains: generation exhaustion retires a slot rather than wrapping and accidentally reviving stale authority.
+
+### Machine-memory foundation on the specification base
+
+While this experiment was being built, the `specification` branch gained `docs/spec/65-machine-memory.md` plus Semantic IR, typechecker, C-lowering tests, and `Oak.MemoryOrder` Lean coverage for the initial machine-memory layer.
+
+That foundation now includes:
+
+```text
+Atomic[T] over fixed-width integer carriers
+relaxed / acquire / release / acq-rel / seq-cst orders
+load / store / RMW / fence legality
+C11 atomic lowering
+volatile load/store kept distinct from atomics
+```
+
+This is relevant evidence for the hypervisor direction, but it is not yet a source-level hypervisor atomic POC: source syntax, the full data-race/happens-before model, architecture barriers, device-memory/MMIO ordering, interrupt-entry ordering, DMA coherency, and hardware litmus tests remain separate work.
 
 ## Verification levels
 
@@ -97,8 +115,8 @@ The next useful POCs should be driven by actual EL2 needs:
 
 1. fixed-width machine-integer semantics/refinement for page-table arithmetic;
 2. explicit packed/extern/offset representation suitable for architectural descriptors;
-3. atomics and memory-order semantics with a formal memory model;
-4. volatile/MMIO plus AArch64 barrier effects;
+3. source-level end-to-end atomics/fences over the new machine-memory Semantic IR, followed by memory-model refinement and litmus tests;
+4. volatile/MMIO plus explicit AArch64 barrier and device-memory effects;
 5. system-register and constrained inline-assembly/intrinsic boundaries;
 6. freestanding C/object emission with no libc/runtime dependency;
 7. a real Oak-generated pure IRQ object linked into the existing Zig/QEMU EL2 payload;
