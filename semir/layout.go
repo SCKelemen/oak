@@ -25,6 +25,15 @@ type RecordFieldRepresentation struct {
 //
 // This is a representation primitive, not an ABI claim. A target ABI may choose
 // a different explicit representation policy before calling backend lowering.
+//
+// The checked placement loop and final-size check are maintained as
+// transliterations of Oak.RecordLayoutRefinement
+// (spec/lean/Oak/RecordLayoutRefinement.lean), which proves that whenever
+// they succeed they compute exactly the abstract placement of
+// Oak.RecordLayout — so order/identity preservation, per-field alignment,
+// non-overlap, and aligned final size transfer verbatim — and that every
+// accepted offset, end, and size fits uint32 (narrowing is lossless;
+// overflow can only fail, never truncate).
 func NaturalRecordLayout(fields []RecordFieldRepresentation) (Representation, error) {
 	representation := Representation{
 		Kind:      RepresentationRecord,
