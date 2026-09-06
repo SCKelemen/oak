@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/SCKelemen/oak/codegen"
+	"github.com/SCKelemen/oak/layout"
 	"github.com/SCKelemen/oak/lowering"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
@@ -22,9 +23,8 @@ type PipelineOutputs struct {
 	Codegen    string
 }
 
-// SerializePipeline runs the full compilation pipeline and serializes each stage to JSONL
+// SerializePipeline runs the full compilation pipeline and serializes each stage to JSONL.
 func SerializePipeline(sourceCode string, outputDir string, tc *typechecker.TypeChecker) (*PipelineOutputs, error) {
-	// Ensure output directory exists
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
@@ -36,7 +36,8 @@ func SerializePipeline(sourceCode string, outputDir string, tc *typechecker.Type
 		Codegen:    filepath.Join(outputDir, "codegen.jsonl"),
 	}
 
-	// Stage 1: Scanner -> Tokens
+	// Stage 1: raw scanner tokens. Golden lexer output intentionally remains
+	// pre-layout so it records exactly what appeared in source text.
 	scnr := scanner.New(sourceCode)
 	var tokens []token.Token
 	for {
@@ -51,8 +52,10 @@ func SerializePipeline(sourceCode string, outputDir string, tc *typechecker.Type
 		return nil, fmt.Errorf("failed to serialize tokens: %w", err)
 	}
 
-	// Stage 2: Parser -> AST
-	p := parser.New(scanner.New(sourceCode))
+	// Stage 2: canonical parser input is layout-normalized. Explicit and
+	// indentation-delimited block syntax therefore serialize to the same AST
+	// semantics while lexer goldens retain source fidelity.
+	p := parser.NewSource(layout.New(scanner.New(sourceCode)))
 	program := p.ParseProgram()
 
 	if len(p.Errors()) > 0 {
@@ -66,7 +69,6 @@ func SerializePipeline(sourceCode string, outputDir string, tc *typechecker.Type
 	// Stage 3: Lowering -> Lowered AST
 	// Note: Lowering requires a type checker, so we need to typecheck first
 	if tc == nil {
-		// Create a temporary type checker if none provided
 		objEnv := object.NewEnvironment()
 		tc = typechecker.New(objEnv)
 		tc.CheckProgram(program)
