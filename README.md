@@ -445,7 +445,7 @@ fn zip[A, B](a: []A, b: []B): []{ first: A, second: B } {
 
 // Generic with constraints
 fn process[T: Readable & Writable](item: T): () {
-  // Implementation
+  // Process item
 }
 ```
 
