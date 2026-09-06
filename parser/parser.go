@@ -212,21 +212,45 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseREPLCommand()
 	}
 
+	// Each case guards against typed-nil pointers escaping into the
+	// ast.Statement interface: a failed parse must return an untyped nil so
+	// callers' nil checks hold and downstream stages never see nil nodes.
 	switch p.currentToken.TokenKind {
 	case token.PACKAGE:
-		return p.parsePackageStatement()
+		if stmt := p.parsePackageStatement(); stmt != nil {
+			return stmt
+		}
+		return nil
 	case token.IMPORT:
-		return p.parseImportStatement()
+		if stmt := p.parseImportStatement(); stmt != nil {
+			return stmt
+		}
+		return nil
 	case token.TYPE:
-		return p.parseADTType()
+		if stmt := p.parseADTType(); stmt != nil {
+			return stmt
+		}
+		return nil
 	case token.INTERFACE:
-		return p.parseInterfaceType()
+		if stmt := p.parseInterfaceType(); stmt != nil {
+			return stmt
+		}
+		return nil
 	case token.FN:
-		return p.parseFunctionStatement()
+		if stmt := p.parseFunctionStatement(); stmt != nil {
+			return stmt
+		}
+		return nil
 	case token.WHILE:
-		return p.parseWhileStatement()
+		if stmt := p.parseWhileStatement(); stmt != nil {
+			return stmt
+		}
+		return nil
 	case token.UNSAFE:
-		return p.parseUnsafeBlock()
+		if stmt := p.parseUnsafeBlock(); stmt != nil {
+			return stmt
+		}
+		return nil
 	case token.IDENT:
 		// Variable declarations and assignments:
 		// - x := expr -> declaration with type inference (short declaration)
@@ -325,7 +349,10 @@ func (p *Parser) parseStatement() ast.Statement {
 		}
 		fallthrough
 	default:
-		return p.parseExpressionStatement()
+		if stmt := p.parseExpressionStatement(); stmt != nil {
+			return stmt
+		}
+		return nil
 	}
 }
 
@@ -2599,7 +2626,10 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 	if p.currentTokenIs(token.TYPE) {
 		// We're in `Name: type = ...` or `Name[E, Unit]: type = ...` - ADT type definition
 		adt := p.parseADTTypeFromName(name)
-		if adt != nil && len(typeParams) > 0 {
+		if adt == nil {
+			return nil
+		}
+		if len(typeParams) > 0 {
 			// Attach the type parameters we parsed earlier
 			adt.TypeParams = typeParams
 		}
@@ -2613,7 +2643,13 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 		return nil
 	}
 
-	return p.parseVarDeclFromNameAndTypeStart(name)
+	// Return an untyped nil on failure: a typed-nil *ast.VariableDeclaration
+	// inside the ast.Statement interface would pass callers' nil checks and
+	// crash downstream stages.
+	if decl := p.parseVarDeclFromNameAndTypeStart(name); decl != nil {
+		return decl
+	}
+	return nil
 }
 
 // parseADTTypeFromName parses an ADT type definition starting from the name.

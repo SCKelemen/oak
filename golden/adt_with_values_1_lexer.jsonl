@@ -1,0 +1,77 @@
+{"kind":"TRIVIA","literal":"\n","line":1,"column":1,"byte_start":0,"byte_end":1}
+{"kind":"COMMENT","literal":" Simple ADT","line":2,"column":1,"byte_start":1,"byte_end":14}
+{"kind":"TRIVIA","literal":"\n","line":2,"column":14,"byte_start":14,"byte_end":15}
+{"kind":"IDENTITY","literal":"Status","line":3,"column":1,"byte_start":15,"byte_end":21}
+{"kind":":","literal":":","line":3,"column":7,"byte_start":21,"byte_end":22}
+{"kind":"TRIVIA","literal":" ","line":3,"column":8,"byte_start":22,"byte_end":23}
+{"kind":"type","literal":"type","line":3,"column":9,"byte_start":23,"byte_end":27}
+{"kind":"TRIVIA","literal":"\n  ","line":3,"column":13,"byte_start":27,"byte_end":30}
+{"kind":"=","literal":"=","line":4,"column":3,"byte_start":30,"byte_end":31}
+{"kind":"TRIVIA","literal":" ","line":4,"column":4,"byte_start":31,"byte_end":32}
+{"kind":"IDENTITY","literal":"Ok","line":4,"column":5,"byte_start":32,"byte_end":34}
+{"kind":":","literal":":","line":4,"column":7,"byte_start":34,"byte_end":35}
+{"kind":"TRIVIA","literal":" ","line":4,"column":8,"byte_start":35,"byte_end":36}
+{"kind":"INT","literal":"200","line":4,"column":9,"byte_start":36,"byte_end":39}
+{"kind":"TRIVIA","literal":"\n  ","line":4,"column":12,"byte_start":39,"byte_end":42}
+{"kind":"|","literal":"|","line":5,"column":3,"byte_start":42,"byte_end":43}
+{"kind":"TRIVIA","literal":" ","line":5,"column":4,"byte_start":43,"byte_end":44}
+{"kind":"IDENTITY","literal":"NotFound","line":5,"column":5,"byte_start":44,"byte_end":52}
+{"kind":":","literal":":","line":5,"column":13,"byte_start":52,"byte_end":53}
+{"kind":"TRIVIA","literal":" ","line":5,"column":14,"byte_start":53,"byte_end":54}
+{"kind":"INT","literal":"404","line":5,"column":15,"byte_start":54,"byte_end":57}
+{"kind":"TRIVIA","literal":"\n  ","line":5,"column":18,"byte_start":57,"byte_end":60}
+{"kind":"|","literal":"|","line":6,"column":3,"byte_start":60,"byte_end":61}
+{"kind":"TRIVIA","literal":" ","line":6,"column":4,"byte_start":61,"byte_end":62}
+{"kind":"IDENTITY","literal":"Unauthorized","line":6,"column":5,"byte_start":62,"byte_end":74}
+{"kind":":","literal":":","line":6,"column":17,"byte_start":74,"byte_end":75}
+{"kind":"TRIVIA","literal":" ","line":6,"column":18,"byte_start":75,"byte_end":76}
+{"kind":"INT","literal":"401","line":6,"column":19,"byte_start":76,"byte_end":79}
+{"kind":"TRIVIA","literal":"\n\n","line":6,"column":22,"byte_start":79,"byte_end":81}
+{"kind":"COMMENT","literal":" ADT with record literal tags","line":8,"column":1,"byte_start":81,"byte_end":112}
+{"kind":"TRIVIA","literal":"\n","line":8,"column":32,"byte_start":112,"byte_end":113}
+{"kind":"IDENTITY","literal":"StatusInfo","line":9,"column":1,"byte_start":113,"byte_end":123}
+{"kind":":","literal":":","line":9,"column":11,"byte_start":123,"byte_end":124}
+{"kind":"TRIVIA","literal":" ","line":9,"column":12,"byte_start":124,"byte_end":125}
+{"kind":"type","literal":"type","line":9,"column":13,"byte_start":125,"byte_end":129}
+{"kind":"TRIVIA","literal":"\n  ","line":9,"column":17,"byte_start":129,"byte_end":132}
+{"kind":"=","literal":"=","line":10,"column":3,"byte_start":132,"byte_end":133}
+{"kind":"TRIVIA","literal":" ","line":10,"column":4,"byte_start":133,"byte_end":134}
+{"kind":"IDENTITY","literal":"Ok","line":10,"column":5,"byte_start":134,"byte_end":136}
+{"kind":":","literal":":","line":10,"column":7,"byte_start":136,"byte_end":137}
+{"kind":"TRIVIA","literal":" ","line":10,"column":8,"byte_start":137,"byte_end":138}
+{"kind":"{","literal":"{","line":10,"column":9,"byte_start":138,"byte_end":139}
+{"kind":"TRIVIA","literal":" ","line":10,"column":10,"byte_start":139,"byte_end":140}
+{"kind":"IDENTITY","literal":"code","line":10,"column":11,"byte_start":140,"byte_end":144}
+{"kind":":","literal":":","line":10,"column":15,"byte_start":144,"byte_end":145}
+{"kind":"TRIVIA","literal":" ","line":10,"column":16,"byte_start":145,"byte_end":146}
+{"kind":"INT","literal":"200","line":10,"column":17,"byte_start":146,"byte_end":149}
+{"kind":",","literal":",","line":10,"column":20,"byte_start":149,"byte_end":150}
+{"kind":"TRIVIA","literal":" ","line":10,"column":21,"byte_start":150,"byte_end":151}
+{"kind":"IDENTITY","literal":"status","line":10,"column":22,"byte_start":151,"byte_end":157}
+{"kind":":","literal":":","line":10,"column":28,"byte_start":157,"byte_end":158}
+{"kind":"TRIVIA","literal":" ","line":10,"column":29,"byte_start":158,"byte_end":159}
+{"kind":"STRING","literal":"Okay","line":10,"column":30,"byte_start":159,"byte_end":165}
+{"kind":"TRIVIA","literal":" ","line":10,"column":36,"byte_start":165,"byte_end":166}
+{"kind":"}","literal":"}","line":10,"column":37,"byte_start":166,"byte_end":167}
+{"kind":"TRIVIA","literal":"\n  ","line":10,"column":38,"byte_start":167,"byte_end":170}
+{"kind":"|","literal":"|","line":11,"column":3,"byte_start":170,"byte_end":171}
+{"kind":"TRIVIA","literal":" ","line":11,"column":4,"byte_start":171,"byte_end":172}
+{"kind":"IDENTITY","literal":"NotFound","line":11,"column":5,"byte_start":172,"byte_end":180}
+{"kind":":","literal":":","line":11,"column":13,"byte_start":180,"byte_end":181}
+{"kind":"TRIVIA","literal":" ","line":11,"column":14,"byte_start":181,"byte_end":182}
+{"kind":"{","literal":"{","line":11,"column":15,"byte_start":182,"byte_end":183}
+{"kind":"TRIVIA","literal":" ","line":11,"column":16,"byte_start":183,"byte_end":184}
+{"kind":"IDENTITY","literal":"code","line":11,"column":17,"byte_start":184,"byte_end":188}
+{"kind":":","literal":":","line":11,"column":21,"byte_start":188,"byte_end":189}
+{"kind":"TRIVIA","literal":" ","line":11,"column":22,"byte_start":189,"byte_end":190}
+{"kind":"INT","literal":"404","line":11,"column":23,"byte_start":190,"byte_end":193}
+{"kind":",","literal":",","line":11,"column":26,"byte_start":193,"byte_end":194}
+{"kind":"TRIVIA","literal":" ","line":11,"column":27,"byte_start":194,"byte_end":195}
+{"kind":"IDENTITY","literal":"status","line":11,"column":28,"byte_start":195,"byte_end":201}
+{"kind":":","literal":":","line":11,"column":34,"byte_start":201,"byte_end":202}
+{"kind":"TRIVIA","literal":" ","line":11,"column":35,"byte_start":202,"byte_end":203}
+{"kind":"STRING","literal":"Not Found","line":11,"column":36,"byte_start":203,"byte_end":214}
+{"kind":"TRIVIA","literal":" ","line":11,"column":47,"byte_start":214,"byte_end":215}
+{"kind":"}","literal":"}","line":11,"column":48,"byte_start":215,"byte_end":216}
+{"kind":"TRIVIA","literal":"\n","line":11,"column":49,"byte_start":216,"byte_end":217}
+{"kind":"EOF","literal":"","line":12,"column":1,"byte_start":217,"byte_end":217}

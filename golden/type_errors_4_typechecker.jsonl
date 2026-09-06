@@ -1,4 +1,4 @@
 {"error_index":0,"message":"[type error] variable x: expected type i32, got string","type":"error"}
-{"error_index":1,"message":"[type error] variable y: expected type string, got u8","type":"error"}
-{"code":"","index":0,"message":"[type error] variable x: expected type i32, got string","range":{"end":{"character":2,"line":1},"start":{"character":1,"line":1}},"severity":"\u0001","source":"typechecker","type":"diagnostic"}
-{"code":"","index":1,"message":"[type error] variable y: expected type string, got u8","range":{"end":{"character":2,"line":2},"start":{"character":1,"line":2}},"severity":"\u0001","source":"typechecker","type":"diagnostic"}
+{"error_index":1,"message":"[type error] variable y: expected type string, got int","type":"error"}
+{"code":"OAK-T0000","index":0,"message":"[type error] variable x: expected type i32, got string","range":{"end":{"character":1,"line":1},"start":{"character":0,"line":1}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":1,"message":"[type error] variable y: expected type string, got int","range":{"end":{"character":1,"line":2},"start":{"character":0,"line":2}},"severity":"error","source":"typechecker","type":"diagnostic"}

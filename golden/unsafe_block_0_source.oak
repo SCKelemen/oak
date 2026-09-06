@@ -1,0 +1,6 @@
+
+buf: [16]u8
+unsafe {
+  a: [*]u8 = span(&buf)
+  b: [*]u8 = span(&buf)
+}

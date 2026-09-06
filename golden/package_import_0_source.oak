@@ -1,0 +1,10 @@
+
+package main
+
+import("strings")
+
+str := import("strings")
+
+str2: package = import("strings")
+
+import("strings", "encoding/utf8")

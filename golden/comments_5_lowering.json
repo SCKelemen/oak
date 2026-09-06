@@ -1,0 +1,80 @@
+{
+  "statements": [
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "x",
+        "type": "i32",
+        "value": {
+          "type": "IntegerLiteral",
+          "data": {
+            "value": 5
+          },
+          "position": {
+            "line": 3,
+            "column": 10,
+            "byte_start": 26,
+            "byte_end": 27
+          }
+        }
+      },
+      "position": {
+        "line": 3,
+        "column": 1,
+        "byte_start": 17,
+        "byte_end": 18
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "y",
+        "type": "i32",
+        "value": {
+          "type": "IntegerLiteral",
+          "data": {
+            "value": 10
+          },
+          "position": {
+            "line": 6,
+            "column": 10,
+            "byte_start": 59,
+            "byte_end": 61
+          }
+        }
+      },
+      "position": {
+        "line": 6,
+        "column": 1,
+        "byte_start": 50,
+        "byte_end": 51
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "z",
+        "type": "i32",
+        "value": {
+          "type": "IntegerLiteral",
+          "data": {
+            "value": 15
+          },
+          "position": {
+            "line": 12,
+            "column": 10,
+            "byte_start": 108,
+            "byte_end": 110
+          }
+        }
+      },
+      "position": {
+        "line": 12,
+        "column": 1,
+        "byte_start": 99,
+        "byte_end": 100
+      }
+    }
+  ],
+  "type": "Program"
+}

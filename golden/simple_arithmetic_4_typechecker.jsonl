@@ -1,0 +1,16 @@
+{"error_index":0,"message":"[type error] pattern literal type int does not match expected type i32","type":"error"}
+{"error_index":1,"message":"[type error] pattern literal type int does not match expected type i32","type":"error"}
+{"error_index":2,"message":"[type error] nil expression encountered (parser error)","type":"error"}
+{"error_index":3,"message":"[type error] nil expression encountered (parser error)","type":"error"}
+{"error_index":4,"message":"[type error] undefined variable: Ok","type":"error"}
+{"error_index":5,"message":"[type error] undefined variable: NotFound","type":"error"}
+{"error_index":6,"message":"[type error] variant Ok not found in ADT Status","type":"error"}
+{"error_index":7,"message":"[type error] variant NotFound not found in ADT Status","type":"error"}
+{"code":"OAK-T0000","index":0,"message":"[type error] pattern literal type int does not match expected type i32","range":{"end":{"character":5,"line":7},"start":{"character":4,"line":7}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":1,"message":"[type error] pattern literal type int does not match expected type i32","range":{"end":{"character":5,"line":8},"start":{"character":4,"line":8}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":2,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":3,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":4,"message":"[type error] undefined variable: Ok","range":{"end":{"character":21,"line":18},"start":{"character":19,"line":18}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":5,"message":"[type error] undefined variable: NotFound","range":{"end":{"character":27,"line":19},"start":{"character":19,"line":19}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":6,"message":"[type error] variant Ok not found in ADT Status","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":7,"message":"[type error] variant NotFound not found in ADT Status","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
