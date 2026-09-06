@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
@@ -23,6 +24,9 @@ type CodeGenerator struct {
 	stringLiterals   []string                    // Track string literals to emit as static arrays
 	stringLiteralMap map[string]int              // Map string value to index
 	adtTypes         map[string]*ast.ADTType     // Map ADT name to AST definition
+	// tailLoopFunction is set while emitting a loop-lowered self-tail-recursive
+	// function: its tail self-call emits parameter rebinding plus continue.
+	tailLoopFunction *ast.FunctionStatement
 }
 
 // New creates a new code generator
@@ -523,12 +527,51 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write(" ) {\n")
 	cg.indentLevel++
 
+	// Self tail recursion compiles to a loop (docs/spec/85-discipline.md):
+	// the tail self-call becomes parameter rebinding plus continue, so the
+	// frame is reused and stack depth stays constant.
+	lowered := discipline.SelfTailLoop(fn)
+	if lowered {
+		cg.tailLoopFunction = fn
+		cg.write("  while (1) {\n")
+	}
+
 	// Emit function body (can be expression or block)
 	cg.emitFunctionBody(fn.Body, tc)
+
+	if lowered {
+		cg.write("  }\n")
+		cg.tailLoopFunction = nil
+	}
 
 	cg.indentLevel--
 	cg.write("}\n")
 	cg.write("\n")
+}
+
+// emitTailLoopContinue lowers a tail self-call inside a loop-lowered function:
+// arguments are evaluated into temporaries first so parameter rebinding is
+// order-independent, then the loop continues in the same frame.
+func (cg *CodeGenerator) emitTailLoopContinue(call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	fn := cg.tailLoopFunction
+	cg.write("  {\n")
+	for i, param := range fn.Parameters {
+		if i >= len(call.Arguments) {
+			break
+		}
+		paramType := cg.parseTypeExpression(param.Type)
+		cg.write(fmt.Sprintf("    %s __oak_tail_%d = ", paramType, i))
+		cg.emitExpressionFragment(call.Arguments[i], tc)
+		cg.output.WriteString(";\n")
+	}
+	for i, param := range fn.Parameters {
+		if i >= len(call.Arguments) {
+			break
+		}
+		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", param.Name.Value, i))
+	}
+	cg.write("    continue;\n")
+	cg.write("  }\n")
 }
 
 // emitFunctionBody emits the body of a function (expression or block)
@@ -545,6 +588,16 @@ func (cg *CodeGenerator) emitFunctionBody(body ast.Expression, tc *typechecker.T
 
 // emitExpression emits C code for an expression (as a return statement)
 func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.TypeChecker) {
+	// In a loop-lowered function, the tail self-call in return position is
+	// the loop's next iteration, not a call.
+	if cg.tailLoopFunction != nil {
+		if inv, ok := expr.(*ast.InvocationExpression); ok {
+			if ident, ok := inv.Function.(*ast.Identifier); ok && ident.Value == cg.tailLoopFunction.Name.Value {
+				cg.emitTailLoopContinue(inv, tc)
+				return
+			}
+		}
+	}
 	cg.write("  return ")
 	cg.emitExpressionFragment(expr, tc)
 	cg.write(";\n")
