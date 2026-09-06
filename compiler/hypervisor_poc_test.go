@@ -107,7 +107,8 @@ main: (): i32 {
 // Bounded priority selection over fixed caller-owned storage. The loop shape
 // is intentionally accepted by Oak's strict Power-of-Ten/TigerStyle profile:
 // fixed storage, no allocation, monotonically increasing counter, immutable
-// loop bound, and no recursion.
+// loop bound, and no recursion. Matches remain value-producing expressions;
+// the loop performs the state update after those values have been selected.
 func TestHypervisorPOCBoundedIrqSelection(t *testing.T) {
 	code, abnormal := buildAndRunStrict(t, "hypervisor_irq_select", `
 main: (): i32 {
@@ -133,15 +134,18 @@ main: (): i32 {
   i: u32 = 0
 
   while i < n {
-    eligible[i] ?
-      | 1 -> (priority[i] < best_priority) ?
-          | .True -> {
-              best = i32(i)
-              best_priority = priority[i]
-              ()
-            }
-          | .False -> ()
-      | _ -> ()
+    candidate: u8 = eligible[i] ?
+      | 1 -> priority[i]
+      | _ -> mask
+    better: Bool = candidate < best_priority
+    next_best: i32 = better ?
+      | .True -> i32(i)
+      | .False -> best
+    next_priority: u8 = better ?
+      | .True -> candidate
+      | .False -> best_priority
+    best = next_best
+    best_priority = next_priority
     i = i + 1
   }
 
