@@ -17,6 +17,8 @@ import Oak.TypeLatticeRefinement
 import Oak.ADTSemantics
 import Oak.SemanticRecord
 import Oak.Variadic
+import Oak.Intrinsics
+import Oak.CInterop
 import Oak.Handles
 import Oak.Slab
 import Oak.Exhaustiveness
