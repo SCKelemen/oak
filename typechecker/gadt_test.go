@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/ast"
+	diagnosticpkg "github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/object"
 )
 
@@ -134,7 +135,13 @@ func TestGADTMismatchDiagnosticNamesDeclaredAndExpectedResults(t *testing.T) {
 		if diagnostic.Code != CodeGADTResultMismatch {
 			continue
 		}
-		joined := strings.Join(diagnostic.Notes, "\n")
+		var notes []string
+		for _, advice := range diagnostic.Advice {
+			if advice.Kind == diagnosticpkg.AdviceNote {
+				notes = append(notes, advice.Message)
+			}
+		}
+		joined := strings.Join(notes, "\n")
 		if !strings.Contains(joined, "Expr[Bool]") || !strings.Contains(joined, "Expr[i64]") {
 			t.Fatalf("mismatch notes = %q", joined)
 		}
