@@ -83,65 +83,82 @@ func (tc *TypeChecker) instantiateStoredType(spelling string, bindings map[strin
 	return tc.storedIndexType(spelling)
 }
 
-// variantIndexBindings is the first concrete GADT solver. Constructor result
-// parameters bind once and repeated occurrences must agree; concrete result
-// indices must equal the scrutinee indices exactly.
+// variantIndexBindings is the first concrete GADT solver. Constructor-result
+// equations are solved under one accumulated substitution. Named result
+// parameters and fixed positional indices must agree with every prior equation.
 func (tc *TypeChecker) variantIndexBindings(
 	adt *object.ADTType,
 	variant *object.ADTVariantDef,
 	actual []Type,
-) (map[string]Type, bool) {
+) (map[string]Type, Substitution, bool) {
 	if adt == nil || variant == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	if variant.ResultName != "" && variant.ResultName != adt.Name {
-		return nil, false
+		return nil, nil, false
 	}
 	indices := variant.ResultIndices
 	if len(indices) == 0 && len(adt.TypeParams) > 0 {
 		indices = adt.TypeParams
 	}
 	if len(indices) != len(actual) {
-		return nil, len(indices) == 0 && len(actual) == 0
+		return nil, nil, len(indices) == 0 && len(actual) == 0
 	}
+
 	params := make(map[string]bool, len(adt.TypeParams))
 	for _, name := range adt.TypeParams {
 		params[name] = true
 	}
 	bindings := make(map[string]Type)
-	apply := func(sub Substitution) {
+	substitution := make(Substitution)
+	applyBindings := func() {
 		for name, bound := range bindings {
-			bindings[name] = sub.Apply(bound)
+			bindings[name] = substitution.Apply(bound)
 		}
 	}
+	unify := func(left, right Type) bool {
+		equation := NewUnifier().Unify(substitution.Apply(left), substitution.Apply(right))
+		if equation == nil {
+			return false
+		}
+		substitution = substitution.Compose(equation)
+		applyBindings()
+		return true
+	}
+	bind := func(name string, value Type) bool {
+		value = substitution.Apply(value)
+		if prior, exists := bindings[name]; exists {
+			if !unify(prior, value) {
+				return false
+			}
+			bindings[name] = substitution.Apply(prior)
+			return true
+		}
+		bindings[name] = value
+		return true
+	}
+
 	for i, expected := range indices {
+		actualIndex := substitution.Apply(actual[i])
 		if params[expected] {
-			if prior, exists := bindings[expected]; exists {
-				sub := NewUnifier().Unify(prior, actual[i])
-				if sub == nil {
-					return nil, false
-				}
-				apply(sub)
-				bindings[expected] = sub.Apply(prior)
-			} else {
-				bindings[expected] = actual[i]
+			if !bind(expected, actualIndex) {
+				return nil, nil, false
 			}
 			continue
 		}
+
 		concrete := tc.storedIndexType(expected)
-		if concrete == nil {
-			return nil, false
+		if concrete == nil || !unify(actualIndex, concrete) {
+			return nil, nil, false
 		}
-		sub := NewUnifier().Unify(actual[i], concrete)
-		if sub == nil {
-			return nil, false
+		// A fixed result at position i also refines the ADT parameter occupying
+		// that position. Compose it with any equation already established for
+		// that parameter; never overwrite an earlier binding.
+		if i < len(adt.TypeParams) && !bind(adt.TypeParams[i], concrete) {
+			return nil, nil, false
 		}
-		apply(sub)
-		// Record the refined ADT index position as well as applying the
-		// substitution to any constructor-parameter bindings.
-		bindings[adt.TypeParams[i]] = concrete
 	}
-	return bindings, true
+	return bindings, substitution, true
 }
 
 func (tc *TypeChecker) variantReachable(typ Type, adtName string, variant *object.ADTVariantDef) bool {
@@ -150,7 +167,7 @@ func (tc *TypeChecker) variantReachable(typ Type, adtName string, variant *objec
 		return false
 	}
 	adt := tc.adtTypes[adtName]
-	_, reachable := tc.variantIndexBindings(adt, variant, args)
+	_, _, reachable := tc.variantIndexBindings(adt, variant, args)
 	return reachable
 }
 
