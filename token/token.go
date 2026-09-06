@@ -7,12 +7,12 @@ type TokenKind int
 type Token struct {
 	TokenKind TokenKind
 	Literal   string
-	Line      int // 1-based line number
-	Column    int // 1-based UTF-16 column (VS Code/LSP compatible + 1)
-	EndLine   int // 1-based line immediately after the token
-	EndColumn int // 1-based UTF-16 column immediately after the token
-	ByteStart int // UTF-8 byte offset where token starts
-	ByteEnd   int // UTF-8 byte offset where token ends (exclusive)
+	Line      int  // 1-based line number
+	Column    int  // 1-based UTF-16 column (VS Code/LSP compatible + 1)
+	EndLine   int  // 1-based line immediately after the token
+	EndColumn int  // 1-based UTF-16 column immediately after the token
+	ByteStart int  // UTF-8 byte offset where token starts
+	ByteEnd   int  // UTF-8 byte offset where token ends (exclusive)
 	Synthetic bool // true when introduced by normalization rather than source text
 }
 

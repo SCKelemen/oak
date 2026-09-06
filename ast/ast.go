@@ -3,6 +3,7 @@ package ast
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/token"
@@ -132,13 +133,40 @@ func (lit *StringLiteral) expressionNode()      {}
 func (lit *StringLiteral) TokenLiteral() string { return lit.Token.Literal }
 func (lit *StringLiteral) String() string       { return lit.Token.Literal }
 
-// RecordLiteral: { field1: value1, field2: value2, ... }
+// RecordField is one record member in source order. Value is either a value
+// expression or a type expression depending on the record's syntactic context.
+type RecordField struct {
+	Token token.Token
+	Name  string
+	Value Expression
+}
+
+// RecordLiteral represents both record value and record type syntax. Fields is
+// retained for O(1) compatibility lookup; FieldOrder is authoritative source order.
 type RecordLiteral struct {
 	BaseNode
-	Token    token.Token // { token or struct token
-	EndToken token.Token // } token (for end position)
-	Fields   map[string]Expression
-	TypeName *Identifier // optional type name for type-qualified literals: TypeName{ ... }
+	Token      token.Token // { token or struct token
+	EndToken   token.Token // } token (for end position)
+	Fields     map[string]Expression
+	FieldOrder []RecordField
+	TypeName   *Identifier // optional type name for type-qualified literals: TypeName{ ... }
+}
+
+func (rl *RecordLiteral) AddField(tok token.Token, name string, value Expression) {
+	if rl.Fields == nil {
+		rl.Fields = make(map[string]Expression)
+	}
+	rl.Fields[name] = value
+	rl.FieldOrder = append(rl.FieldOrder, RecordField{Token: tok, Name: name, Value: value})
+}
+
+// OrderedFields returns source order when it is known. It deliberately returns
+// nil for legacy/manually-built map-only records rather than fabricating order.
+func (rl *RecordLiteral) OrderedFields() []RecordField {
+	if len(rl.FieldOrder) == 0 {
+		return nil
+	}
+	return rl.FieldOrder
 }
 
 func (rl *RecordLiteral) expressionNode()      {}
@@ -147,15 +175,31 @@ func (rl *RecordLiteral) String() string {
 	var out bytes.Buffer
 	out.WriteRune('{')
 
-	first := true
-	for field, expr := range rl.Fields {
-		if !first {
-			out.WriteString(", ")
+	if len(rl.FieldOrder) > 0 {
+		for i, field := range rl.FieldOrder {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			out.WriteString(field.Name)
+			out.WriteString(": ")
+			out.WriteString(field.Value.String())
 		}
-		out.WriteString(field)
-		out.WriteString(": ")
-		out.WriteString(expr.String())
-		first = false
+	} else {
+		// Legacy/manual ASTs have no source order. Sort only for deterministic
+		// rendering; semantic/layout code must not treat this as source order.
+		names := make([]string, 0, len(rl.Fields))
+		for name := range rl.Fields {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for i, name := range names {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			out.WriteString(name)
+			out.WriteString(": ")
+			out.WriteString(rl.Fields[name].String())
+		}
 	}
 
 	out.WriteRune('}')
