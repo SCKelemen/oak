@@ -152,6 +152,11 @@ type RecordLiteral struct {
 	TypeName   *Identifier // optional type name for type-qualified literals: TypeName{ ... }
 }
 
+// AddField appends a uniquely named field in declaration order, rejecting
+// duplicates. Maintained as the transliteration of
+// Oak.SemanticRecord.addField (spec/lean/Oak/SemanticRecord.lean), which
+// proves construction preserves uniqueness and declaration order and that
+// lookup returns exactly the member associated with a name.
 func (rl *RecordLiteral) AddField(tok token.Token, name string, value Expression) bool {
 	if rl.Fields == nil {
 		rl.Fields = make(map[string]Expression)

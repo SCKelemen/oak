@@ -13,6 +13,8 @@ import Oak.ClosureCapture
 import Oak.BoundedLoop
 import Oak.BorrowStateRefinement
 import Oak.TypeLatticeRefinement
+import Oak.ADTSemantics
+import Oak.SemanticRecord
 import Oak.Handles
 import Oak.Slab
 import Oak.Exhaustiveness
