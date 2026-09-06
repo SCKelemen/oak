@@ -1,5 +1,6 @@
 import Oak.TypeLattice
 import Oak.Effects
+import Oak.MemoryOrder
 import Oak.Borrowing
 import Oak.BorrowRegions
 import Oak.Reborrow
