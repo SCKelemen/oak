@@ -5,7 +5,10 @@
 // kinds and are marked Token.Synthetic so later tooling can preserve source style.
 package layout
 
-import "github.com/SCKelemen/oak/token"
+import (
+	"github.com/SCKelemen/oak/source"
+	"github.com/SCKelemen/oak/token"
+)
 
 // Source is kept as a compatibility alias while token.Source becomes the shared
 // compiler-wide token stream contract.
@@ -15,22 +18,28 @@ type Source = token.Source
 type Normalizer struct {
 	tokens []token.Token
 	index  int
+	file   *source.File
 }
 
 // New consumes source once and constructs a deterministic normalized stream.
 // The compiler-side allocation here is intentional: normalization is tooling,
 // not target runtime code, and a materialized stream makes equivalence testing
 // and diagnostics straightforward.
-func New(source token.Source) *Normalizer {
+func New(src token.Source) *Normalizer {
 	raw := make([]token.Token, 0, 256)
 	for {
-		tok := source.NextToken()
+		tok := src.NextToken()
 		raw = append(raw, tok)
 		if tok.TokenKind == token.EOF {
 			break
 		}
 	}
-	return &Normalizer{tokens: normalize(raw)}
+
+	var file *source.File
+	if located, ok := src.(token.LocatedSource); ok {
+		file = located.SourceFile()
+	}
+	return &Normalizer{tokens: normalize(raw), file: file}
 }
 
 // NextToken implements token.Source.
@@ -42,6 +51,9 @@ func (n *Normalizer) NextToken() token.Token {
 	n.index++
 	return tok
 }
+
+// SourceFile preserves source identity across normalization.
+func (n *Normalizer) SourceFile() *source.File { return n.file }
 
 type pendingBody struct {
 	active bool
@@ -95,6 +107,8 @@ func normalize(raw []token.Token) []token.Token {
 						Literal:   "expected indented body",
 						Line:      tok.Line,
 						Column:    tok.Column,
+						EndLine:   tok.Line,
+						EndColumn: tok.Column,
 						ByteStart: tok.ByteStart,
 						ByteEnd:   tok.ByteStart,
 						Synthetic: true,
@@ -176,6 +190,8 @@ func synthetic(kind token.TokenKind, at token.Token) token.Token {
 		Literal:   literal,
 		Line:      at.Line,
 		Column:    at.Column,
+		EndLine:   at.Line,
+		EndColumn: at.Column,
 		ByteStart: at.ByteStart,
 		ByteEnd:   at.ByteStart,
 		Synthetic: true,
