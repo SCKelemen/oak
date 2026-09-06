@@ -7,6 +7,10 @@ package layout
 
 import "github.com/SCKelemen/oak/token"
 
+// Source is kept as a compatibility alias while token.Source becomes the shared
+// compiler-wide token stream contract.
+type Source = token.Source
+
 // Normalizer presents a normalized token stream.
 type Normalizer struct {
 	tokens []token.Token
