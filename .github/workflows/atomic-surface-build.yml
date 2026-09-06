@@ -1,7 +1,9 @@
 name: Atomic Surface Integration
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - feat/atomic-surface-e2e
 
 permissions:
   contents: write
@@ -36,6 +38,7 @@ jobs:
           python3 tools/atomic_surface_patch.py
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path("typechecker/typechecker.go")
           s = p.read_text()
           old = '''func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
@@ -60,6 +63,16 @@ jobs:
           if s.count(old) != 1:
               raise SystemExit(f"current checker invocation prelude count={s.count(old)}")
           p.write_text(s.replace(old, new, 1))
+
+          # stdatomic is emitted by emitAtomicGlobals only when the AST uses
+          # atomics. Remove the generic-header patch so non-atomic golden output
+          # stays byte-for-byte unchanged.
+          p = Path("codegen/codegen.go")
+          s = p.read_text()
+          needle = '\t' + 'cg.write("#include <stdatomic.h>\\n")' + '\n'
+          if s.count(needle) != 1:
+              raise SystemExit(f"stdatomic generic include count={s.count(needle)}")
+          p.write_text(s.replace(needle, "", 1))
           PY
 
       - name: Format Go sources
