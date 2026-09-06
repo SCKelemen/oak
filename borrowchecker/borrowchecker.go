@@ -453,18 +453,16 @@ func (bc *BorrowChecker) recomputeOwnerStatesFromActiveBorrows() {
 	}
 
 	// Set owner states based on remaining borrows
+	// (Oak.BorrowStateRefinement.ownerStateFor: the recompute rule).
 	for owner := range bc.ownerStates {
-		if hasViews[owner] && hasSpans[owner] {
-			// This shouldn't happen if we enforce correctly, but handle it
+		state, ok := ownerStateFor(hasViews[owner], hasSpans[owner])
+		if !ok {
+			// The impossible state has no abstract representation
+			// (Oak.BorrowStateRefinement.both_kinds_flagged).
 			bc.addError(fmt.Sprintf("owner '%s' has both views and spans (should be impossible)", owner))
-		} else if hasSpans[owner] {
-			// Has spans (may be multiple if regions are disjoint)
-			bc.ownerStates[owner] = UniqueWrite
-		} else if hasViews[owner] {
-			// Has views
-			bc.ownerStates[owner] = SharedRead
+			continue
 		}
-		// If neither, state remains Free (set above)
+		bc.ownerStates[owner] = state
 	}
 }
 
@@ -1000,6 +998,42 @@ func (bc *BorrowChecker) checkIdentifierUse(node ast.Node, name string, env *typ
 	// SharedRead + read operation: allowed (multiple readers can coexist).
 }
 
+// The owner-state decision procedures below are maintained as line-for-line
+// transliterations of spec/lean/Oak/BorrowStateRefinement.lean, which proves
+// them sound and complete against the abstract ownership transitions of
+// Oak.Borrowing (view admission ↔ acquireRead, span-core admission ↔
+// acquireWrite, recompute ↔ release targets).
+
+// admitViewBorrow: a read-only view is admitted unless a writer holds the
+// owner (Oak.BorrowStateRefinement.admitView).
+func admitViewBorrow(state BorrowState) bool {
+	return state != UniqueWrite
+}
+
+// admitSpanBorrowCore: the single-writer core admits a writable span only
+// from the free state (Oak.BorrowStateRefinement.admitSpanCore). The
+// disjoint multi-span and unsafe-admission extensions layer on top and are
+// refined separately (Oak.ReborrowRefinement, Oak.Unsafe).
+func admitSpanBorrowCore(state BorrowState) bool {
+	return state == Free
+}
+
+// ownerStateFor recomputes an owner's state from its remaining live borrows
+// (Oak.BorrowStateRefinement.ownerStateFor). Both kinds live at once is the
+// flagged impossible case.
+func ownerStateFor(hasViews, hasSpans bool) (BorrowState, bool) {
+	switch {
+	case hasViews && hasSpans:
+		return Free, false
+	case hasSpans:
+		return UniqueWrite, true
+	case hasViews:
+		return SharedRead, true
+	default:
+		return Free, true
+	}
+}
+
 // createViewBorrow creates a read-only borrow (view) from an owner
 func (bc *BorrowChecker) createViewBorrow(ownerName, borrowName string) {
 	bc.createViewBorrowWithRegion(ownerName, borrowName, nil, nil)
@@ -1008,7 +1042,7 @@ func (bc *BorrowChecker) createViewBorrow(ownerName, borrowName string) {
 // createViewBorrowWithRegion creates a read-only borrow (view) from an owner with region information.
 func (bc *BorrowChecker) createViewBorrowWithRegion(ownerName, borrowName string, region *Region, origin ast.Node) {
 	state := bc.ownerStates[ownerName]
-	if state == UniqueWrite {
+	if !admitViewBorrow(state) {
 		d := bc.reportBorrow(origin, CodeViewConflictsWithSpan,
 			fmt.Sprintf("view %q cannot be created while %q has writable access", borrowName, ownerName))
 		if existingName, info, ok := bc.firstActiveBorrow(ownerName, BorrowSpan); ok {
@@ -1112,7 +1146,7 @@ func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string
 		return
 	}
 
-	if state == Free {
+	if admitSpanBorrowCore(state) {
 		bc.ownerStates[ownerName] = UniqueWrite
 	}
 	bc.ownerOf[borrowName] = ownerName
