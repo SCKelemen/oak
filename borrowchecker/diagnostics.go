@@ -76,8 +76,9 @@ func (bc *BorrowChecker) reportBorrow(node ast.Node, code diagnostic.Code, title
 	return d
 }
 
-// activeBorrowNames returns a deterministic ordering for diagnostics and checks
-// whose causal explanation depends on one of several equivalent active borrows.
+// activeBorrowNames returns a deterministic causal ordering. Borrow origins
+// with source positions come first in source order; names are only the stable
+// fallback when provenance is unavailable or tied.
 func (bc *BorrowChecker) activeBorrowNames(owner string, kind borrowKind) []string {
 	names := make([]string, 0)
 	for name, info := range bc.activeBorrows {
@@ -85,7 +86,25 @@ func (bc *BorrowChecker) activeBorrowNames(owner string, kind borrowKind) []stri
 			names = append(names, name)
 		}
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool {
+		left := bc.activeBorrows[names[i]]
+		right := bc.activeBorrows[names[j]]
+		if left.origin != nil && right.origin != nil {
+			lr := diagnostic.NodeToRange(left.origin).Start
+			rr := diagnostic.NodeToRange(right.origin).Start
+			if lr.Line != rr.Line {
+				return lr.Line < rr.Line
+			}
+			if lr.Character != rr.Character {
+				return lr.Character < rr.Character
+			}
+		} else if left.origin != nil {
+			return true
+		} else if right.origin != nil {
+			return false
+		}
+		return names[i] < names[j]
+	})
 	return names
 }
 
