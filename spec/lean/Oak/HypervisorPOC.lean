@@ -119,7 +119,9 @@ theorem page_offset_in_range (addr : Nat) : pageOffset addr < PageSize := by
     mathematical model. Machine-u64 overflow correspondence remains a separate
     refinement obligation. -/
 theorem page_decomposition (addr : Nat) : pageBase addr + pageOffset addr = addr := by
-  simpa [pageBase, pageOffset] using (Nat.div_add_mod addr PageSize)
+  unfold pageBase pageOffset
+  rw [Nat.mul_comm (addr / PageSize) PageSize]
+  exact Nat.div_add_mod addr PageSize
 
 /-- `pageBase` is exactly the indexed page multiplied by the granule. -/
 theorem page_base_from_index (addr : Nat) :
