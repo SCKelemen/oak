@@ -514,9 +514,45 @@ func (tc *TypeChecker) addError(node ast.Node, format string, args ...interface{
 
 // CheckProgram type checks a program
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
+	// Pre-declare top-level non-generic function signatures so functions can
+	// reference one another regardless of declaration order (mutual
+	// recursion included); each signature is finalized when its declaration
+	// is checked.
+	for _, stmt := range program.Statements {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok {
+			tc.predeclareFunctionSignature(fn)
+		}
+	}
 	for _, stmt := range program.Statements {
 		tc.checkStatement(stmt)
 	}
+}
+
+// predeclareFunctionSignature registers a function's declared type before any
+// body is checked. Generic functions and methods are skipped: their schemes
+// depend on constraint machinery that runs during the full check.
+func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
+	if fn == nil || fn.Name == nil || fn.Receiver != nil || len(fn.TypeParams) > 0 {
+		return
+	}
+	if _, exists := tc.env.Get(fn.Name.Value); exists {
+		return
+	}
+	paramTypes := make([]Type, 0, len(fn.Parameters))
+	for _, param := range fn.Parameters {
+		paramType := tc.parseTypeExpression(param.Type)
+		if paramType == nil {
+			return // full check reports the error with context
+		}
+		paramTypes = append(paramTypes, paramType)
+	}
+	returnType := tc.parseTypeExpression(fn.ReturnType)
+	if returnType == nil {
+		returnType = &UnitType{}
+	}
+	tc.env.Set(fn.Name.Value, &TypeScheme{
+		Type: &FunctionType{Parameters: paramTypes, ReturnType: returnType},
+	})
 }
 
 // CheckExpression type checks a single expression and returns its type
@@ -1957,6 +1993,10 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 }
 
 func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
+	if stmt == nil || stmt.Name == nil {
+		// Defense in depth against parser error-recovery artifacts.
+		return
+	}
 	// Check if variable already exists
 	_, exists := tc.env.Get(stmt.Name.Value)
 	if exists {
@@ -2176,6 +2216,14 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	if returnType == nil {
 		returnType = &UnitType{}
 	}
+
+	// Pre-bind the declared signature so the body can reference itself:
+	// recursion is legal, with its stack discipline governed separately
+	// (docs/spec/85-discipline.md).
+	funcEnv.SetType(stmt.Name.Value, &FunctionType{
+		Parameters: paramTypes,
+		ReturnType: returnType,
+	})
 
 	// Save current environment and switch to function environment
 	oldEnv := tc.env
