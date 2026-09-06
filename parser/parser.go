@@ -261,8 +261,9 @@ func (p *Parser) parseStatement() ast.Statement {
 					adt.Variants = append(adt.Variants, variant)
 
 					// Parse remaining variants
-					for p.currentTokenIs(token.PIPE) {
+					for p.peekTokenIs(token.PIPE) {
 						p.nextToken() // consume |
+						p.nextToken() // next constructor name
 						variant := p.parseADTVariant()
 						if variant == nil {
 							return nil
@@ -1257,17 +1258,15 @@ func (p *Parser) parseInterfaceMethod() *ast.InterfaceMethod {
 // ADT variant: Name | Name(T) | Name: literal
 func (p *Parser) parseADTVariant() *ast.ADTVariant {
 	variant := &ast.ADTVariant{Token: p.currentToken}
-
 	if !p.currentTokenIs(token.IDENT) {
 		p.peekError(token.IDENT)
 		return nil
 	}
-
 	variant.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-	p.nextToken() // move to the token after the constructor name
 
-	if p.currentTokenIs(token.COLON) {
-		p.nextToken() // move to the payload type or literal tag
+	if p.peekTokenIs(token.COLON) {
+		p.nextToken() // ':'
+		p.nextToken() // payload type or literal tag
 		switch p.currentToken.TokenKind {
 		case token.INT, token.STRING:
 			variant.Literal = p.parseLiteralExpression()
@@ -1285,7 +1284,8 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 				}
 			}
 		}
-	} else if p.currentTokenIs(token.COLON_ASSIGN) {
+	} else if p.peekTokenIs(token.COLON_ASSIGN) {
+		p.nextToken() // ':='
 		p.nextToken() // inferred literal/default value
 		variant.Literal = p.parseLiteralExpression()
 		if variant.Literal == nil {
@@ -1297,25 +1297,18 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 	//     | Int: i64 => Expr[i64]
 	// Constructors without this clause implicitly return the enclosing ADT
 	// applied to its declared parameters.
-	if p.currentTokenIs(token.FAT_ARROW) {
-		p.nextToken()
-		variant.Result = p.parseTypeExpression()
-	} else if p.peekTokenIs(token.FAT_ARROW) {
+	if p.peekTokenIs(token.FAT_ARROW) {
 		p.nextToken() // '=>'
 		p.nextToken() // first token of result type
 		variant.Result = p.parseTypeExpression()
-	}
-	if variant.Result == nil &&
-		(p.currentTokenIs(token.FAT_ARROW) || p.peekTokenIs(token.FAT_ARROW)) {
-		p.addErrorAtCurrentToken("expected indexed constructor result type after '=>'")
-		return nil
+		if variant.Result == nil {
+			p.addErrorAtCurrentToken("expected indexed constructor result type after '=>'")
+			return nil
+		}
 	}
 
-	// Keep the historical parseADTTypeFromName loop contract: when another
-	// constructor follows, leave currentToken on its separating pipe.
-	if !p.currentTokenIs(token.PIPE) && p.peekTokenIs(token.PIPE) {
-		p.nextToken()
-	}
+	// Contract: leave currentToken on the final token belonging to this
+	// constructor and peekToken on the separator or following statement.
 	return variant
 }
 
@@ -2658,21 +2651,16 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 		}
 		adt.Variants = append(adt.Variants, variant)
 
-		// Parse remaining variants (each starts with |)
-		// After parseADTVariant(), currentToken is on the | separator (if there is one)
-		// or on EOF/next statement if this was the last variant
-		for p.currentTokenIs(token.PIPE) {
+		// Parse remaining variants while the separator is the next token
+		for p.peekTokenIs(token.PIPE) {
 			p.nextToken() // consume |
-			// parseADTVariant expects currentToken to be the variant name (IDENT)
-			// so we don't advance here - let parseADTVariant consume the IDENT
+			p.nextToken() // next constructor name
 			variant := p.parseADTVariant()
 			if variant == nil {
 				return nil
 			}
 			adt.Variants = append(adt.Variants, variant)
 		}
-		// parseADTVariant may advance to a separator or following token. ParseProgram's
-		// progress guard handles statement-boundary recovery if needed.
 	} else if p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.STRUCT) {
 		// Semantic records and concrete structs share product-type parsing. The
 		// RecordLiteral AST retains the opening token: LBRACE means semantic shape;
