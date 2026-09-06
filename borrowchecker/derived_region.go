@@ -27,14 +27,3 @@ func deriveRegion(parent, relative *Region) (*Region, bool) {
 		Length: relative.Length,
 	}, true
 }
-
-// constantSubsliceRegion derives `subslice(source, start, length)` when both
-// numeric arguments are non-negative compile-time integer literals and the
-// source region is known. Unknown/dynamic facts deliberately return nil so the
-// caller retains a conservative region rather than fabricating precision.
-func (bc *BorrowChecker) constantSubsliceRegion(callStart, callLength interface{ isBorrowRegionExpr() }, parent *Region) *Region {
-	// This interface-shaped helper is intentionally not used directly; the AST
-	// adapter lives in borrowchecker.go so derived_region.go remains independent
-	// of syntax nodes. Keeping the arithmetic here makes the proof target small.
-	return parent
-}
