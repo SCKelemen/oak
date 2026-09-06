@@ -47,7 +47,7 @@ theorem no_escape_after_region_finish (value region : Lifetime) (instant : Nat)
     ¬ AliveAt value instant := by
   intro hvalue
   have hregion := within_preserves_alive value region instant hwithin hvalue
-  omega
+  exact (Nat.not_lt_of_ge hended) hregion.2
 
 /-- A value cannot begin before the region to which it is bound. -/
 theorem no_escape_before_region_start (value region : Lifetime)
@@ -69,10 +69,10 @@ theorem nested_region_non_escape (value inner outer : Lifetime)
     Within value outer := by
   exact within_trans value inner outer hvalue hinner
 
-/-- A well-formed live value necessarily has a non-empty lifetime. -/
+/-- A live interval necessarily has positive extent. -/
 theorem alive_implies_start_before_finish (lifetime : Lifetime) (instant : Nat)
     (halive : AliveAt lifetime instant) :
     lifetime.start < lifetime.finish := by
-  omega
+  exact Nat.lt_of_le_of_lt halive.1 halive.2
 
 end Oak.RegionLifetime
