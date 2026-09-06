@@ -72,13 +72,20 @@ theorem repeated_parameter_iff_equal
     Solve [] [.param parameter, .param parameter] [first, second] =
         some [(parameter, first)] ↔
       first = second := by
-  simp [Solve, UnifyIndex, Lookup]
+  by_cases h : first = second
+  · simp [Solve, UnifyIndex, Lookup, h]
+  · simp [Solve, UnifyIndex, Lookup, h]
 
 theorem arity_mismatch_rejected
     (index : Index)
     (actual : Nat) :
     Solve [] [index] [actual, actual] = none := by
-  cases index <;> simp [Solve, UnifyIndex, Lookup]
+  cases index with
+  | param parameter => simp [Solve, UnifyIndex, Lookup]
+  | atom expected =>
+      by_cases h : expected = actual
+      · simp [Solve, UnifyIndex, Lookup, h]
+      · simp [Solve, UnifyIndex, Lookup, h]
 
 /-- A constructor with a contradictory fixed result index is absent from the
     reachable semantic case provider consumed by pattern analysis. -/
