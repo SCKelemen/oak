@@ -125,10 +125,20 @@ func TestOneShotStructTypeParserRepair(t *testing.T) {
 	}
 
 	run("gofmt", "-w", "parser/parser.go")
+	run("git", "fetch", "origin", "feat/record-layout:refs/remotes/origin/feat/record-layout")
+
+	cmd := exec.Command("git", "rev-parse", "refs/remotes/origin/feat/record-layout")
+	cmd.Dir = repo
+	expectedBytes, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("read remote head: %v", err)
+	}
+	expected := strings.TrimSpace(string(expectedBytes))
+
 	run("git", "config", "user.name", "github-actions[bot]")
 	run("git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
 	run("git", "add", "parser/parser.go")
 	run("git", "rm", "parser/zz_one_shot_struct_parser_repair_test.go")
 	run("git", "commit", "-m", "Parse semantic records and concrete structs as type forms")
-	run("git", "push", "origin", "HEAD:feat/record-layout")
+	run("git", "push", "origin", "--force-with-lease=feat/record-layout:"+expected, "HEAD:feat/record-layout")
 }
