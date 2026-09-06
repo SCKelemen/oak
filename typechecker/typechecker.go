@@ -733,7 +733,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.SliceExpression:
 		return tc.checkSliceExpression(e)
 	case *ast.BlockExpression:
-		return tc.checkBlockExpression(e.Block)
+		return tc.checkBlockExpression(e.Block, expected)
 	case *ast.ArrayLiteral:
 		return tc.checkArrayLiteral(e, expected)
 	case nil:
@@ -1381,6 +1381,12 @@ func (tc *TypeChecker) isValidWidening(sourceType, targetType string) bool {
 		targetType = "u8"
 	} else if targetType == "rune" {
 		targetType = "u32"
+	}
+
+	// A lossless cross-sign conversion is a valid explicit widening: an
+	// unsigned source fits any strictly wider signed target.
+	if !tc.isSignedType(sourceType) && tc.isSignedType(targetType) {
+		return tc.getTypeWidth(sourceType) < tc.getTypeWidth(targetType)
 	}
 
 	// Check signedness using helper function
@@ -2464,8 +2470,9 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	oldEnv := tc.env
 	tc.env = funcEnv
 
-	// Type check function body
-	bodyType := tc.checkExpression(stmt.Body)
+	// Type check function body, inferring literals against the declared
+	// return type.
+	bodyType := tc.checkExpression(stmt.Body, returnType)
 	if bodyType == nil {
 		bodyType = &UnitType{}
 	}
@@ -2734,8 +2741,13 @@ func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
 	}
 }
 
-// checkBlockExpression type checks a block expression and returns the type of the last expression
-func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement) Type {
+// checkBlockExpression type checks a block expression and returns the type of
+// the last expression, inferring it against the expected type when given.
+func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedType ...Type) Type {
+	var expected Type
+	if len(expectedType) > 0 {
+		expected = expectedType[0]
+	}
 	if len(block.Statements) == 0 {
 		return &UnitType{}
 	}
@@ -2748,6 +2760,9 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement) Type {
 	// The last statement should be an expression statement
 	lastStmt := block.Statements[len(block.Statements)-1]
 	if exprStmt, ok := lastStmt.(*ast.ExpressionStatement); ok {
+		if expected != nil {
+			return tc.checkExpression(exprStmt.Expression, expected)
+		}
 		return tc.checkExpression(exprStmt.Expression)
 	}
 

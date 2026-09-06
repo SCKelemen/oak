@@ -170,7 +170,28 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 		}
 	}
 
+	cg.emitEntryPoint()
+
 	return cg.output.String(), nil
+}
+
+// emitEntryPoint emits the real C entry point when the program defines a
+// top-level main: pure delegation to oak_main, nothing else. Programs
+// without main stay library-style.
+func (cg *CodeGenerator) emitEntryPoint() {
+	mainFn, ok := cg.programFunctions["main"]
+	if !ok || mainFn == nil || mainFn.Receiver != nil || len(mainFn.Parameters) != 0 {
+		return
+	}
+	returnType := cg.parseTypeExpression(mainFn.ReturnType)
+	cg.write("int main(void) {" + "\n")
+	if returnType == "void" {
+		cg.write(fmt.Sprintf("  %s();", cg.cFunctionName("main")) + "\n")
+		cg.write("  return 0;" + "\n")
+	} else {
+		cg.write(fmt.Sprintf("  return (int)%s();", cg.cFunctionName("main")) + "\n")
+	}
+	cg.write("}" + "\n")
 }
 
 // collectStringLiterals collects all string literals from the program
@@ -1542,6 +1563,8 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 			return "string"
 		case "Bool":
 			return "Bool"
+		case "()":
+			return "void"
 		default:
 			// Assume it's a type name
 			return cg.cTypeName(ident.Value)
@@ -1833,6 +1856,23 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 // emitVariableDeclaration emits a variable declaration
 func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
 	varName := stmt.Name.Value
+
+	// Owned arrays use C declarator syntax; value-less arrays are
+	// zero-filled (definite-initialization semantics pending — the backend
+	// never leaves storage uninitialized).
+	if stmt.Type != nil {
+		if info := cg.classifyContainer(stmt.Type); info.kind == containerOwnedArray {
+			cg.write(fmt.Sprintf("  %s %s[%d]", info.element, varName, info.length))
+			if stmt.Value == nil {
+				cg.output.WriteString(" = {0}")
+			} else {
+				cg.output.WriteString(" = ")
+				cg.emitExpressionFragment(stmt.Value, tc)
+			}
+			cg.output.WriteString(";\n")
+			return
+		}
+	}
 
 	// Determine type
 	var varType string
