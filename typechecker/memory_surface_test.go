@@ -35,12 +35,13 @@ func TestAtomicSurfaceTypesEndToEnd(t *testing.T) {
 	errs := checkAtomicSource(t, `
 package main
 counter: Atomic[u64]
-fn bump() -> u64
+fn bump() -> u64 {
   atomic_store_release(counter, u64(40))
   before: u64 = atomic_fetch_add_acq_rel(counter, u64(2))
   assert(before == u64(40))
   atomic_fence_seq_cst()
   atomic_load_acquire(counter)
+}
 `)
 	if len(errs) != 0 {
 		t.Fatalf("valid atomic program rejected: %v", errs)
@@ -76,9 +77,10 @@ func TestAtomicSurfaceRejectsNonCellOperandAndWrongValue(t *testing.T) {
 	errs := checkAtomicSource(t, `
 package main
 counter: Atomic[u64]
-fn bad() -> u64
+fn bad() -> u64 {
   atomic_store_release(counter, "bad")
   atomic_load_relaxed(u64(1))
+}
 `)
 	requireAtomicErrorContains(t, errs, "value must be u64")
 	requireAtomicErrorContains(t, errs, "requires a named Atomic[T] cell")
