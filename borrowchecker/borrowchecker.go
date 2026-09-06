@@ -881,12 +881,16 @@ func (bc *BorrowChecker) createSpanBorrow(ownerName, borrowName string) {
 // Returns true if the regions overlap, false if they are disjoint
 func (bc *BorrowChecker) regionsOverlap(r1, r2 *Region) bool {
 	if r1 == nil || r2 == nil {
-		// If either region is unknown, assume they might overlap (conservative)
+		// If either region is unknown, assume they might overlap (conservative).
 		return true
 	}
+	if r1.Length == 0 || r2.Length == 0 {
+		// Half-open empty regions contain no elements and overlap nothing.
+		return false
+	}
 
-	// Two regions [off1, off1+len1) and [off2, off2+len2) overlap if:
-	// off1 < off2+len2 && off2 < off1+len1
+	// Non-empty regions [off1, off1+len1) and [off2, off2+len2) overlap if:
+	// off1 < off2+len2 && off2 < off1+len1.
 	return r1.Offset < r2.Offset+r2.Length && r2.Offset < r1.Offset+r1.Length
 }
 
