@@ -12,7 +12,7 @@ type RecordFieldRepresentation struct {
 }
 
 // NaturalRecordLayout computes the target-independent natural ordered layout
-// used when a backend has selected ordinary non-packed record representation.
+// used when a backend has selected ordinary non-packed struct representation.
 //
 // Rules:
 //   - fields remain in semantic/source order;
@@ -28,6 +28,8 @@ type RecordFieldRepresentation struct {
 func NaturalRecordLayout(fields []RecordFieldRepresentation) (Representation, error) {
 	representation := Representation{
 		Kind:      RepresentationRecord,
+		Policy:    RepresentationPolicyNaturalOrdered,
+		Resolved:  true,
 		Alignment: 1,
 		Fields:    make([]FieldLayout, 0, len(fields)),
 	}
