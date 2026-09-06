@@ -24,7 +24,7 @@ Legend:
 | Exhaustiveness | ✓ | partial | partial | ✓ | ✓ |  | `Oak.Exhaustiveness` proves wildcard coverage, complete finite constructor coverage, missing-constructor rejection, and monotonicity under added arms; implementation refinement pending |
 | GADT-style refinements | direction |  |  |  |  |  | semantic direction specified; surface syntax intentionally not frozen |
 | Generic constraints/interfaces | ✓ | ✓ | ✓ |  |  |  | static predicate semantics; dynamic interface values not core |
-| Phantom types | ✓ | partial | partial |  |  |  | zero-runtime representation law to prove |
+| Phantom types | ✓ | partial | partial | ✓ | ✓ |  | `Oak.PhantomRepresentation` proves phantom rebinding changes static identity while preserving the entire runtime representation record, including size, alignment, and bit width; implementation refinement/inference pending |
 | Views / spans | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.Borrowing` proves the local authority-state laws; compiler correspondence is not yet proved |
 | Borrow-state machine | ✓ | partial | partial | ✓ | ✓ |  | explicit actions; valid transitions preserve state invariant and read/write authority stays exclusive |
 | Unsafe boundary | ✓ | partial | partial |  |  |  | unsafe must admit assumptions, not disable all checking |
@@ -55,15 +55,15 @@ The formal gate currently checks:
 - `Oak.SourcePosition`
 - `Oak.Delimited`
 - `Oak.RegionLifetime`
+- `Oak.PhantomRepresentation`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
 
 ## Immediate formal-verification queue
 
-1. phantom-type zero-runtime representation law;
-2. record layout/alignment once target layout representation stabilizes;
-3. formal layout-normalizer balance/equivalence model;
-4. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, and region lifetimes.
+1. record layout/alignment once target layout representation stabilizes;
+2. formal layout-normalizer balance/equivalence model;
+3. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, and phantom representation.
 
 ## Refinement policy
 
