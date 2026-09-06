@@ -115,13 +115,8 @@ candidate_for: (eligible: u8, priority: u8, mask: u8): u8 = eligible ?
   | 1 -> priority
   | _ -> mask
 
-next_best_for: (better: Bool, i: u32, current: i32): i32 = better ?
-  | true -> i32(i)
-  | false -> current
-
-next_priority_for: (better: Bool, candidate: u8, current: u8): u8 = better ?
-  | true -> candidate
-  | false -> current
+next_best_for: (better: Bool, i: u32, current: i32): i32 = better ? | true -> i32(i) | false -> current
+next_priority_for: (better: Bool, candidate: u8, current: u8): u8 = better ? | true -> candidate | false -> current
 
 main: (): i32 {
   eligible_storage: [4]u8
