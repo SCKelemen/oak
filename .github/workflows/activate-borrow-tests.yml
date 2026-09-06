@@ -1,0 +1,86 @@
+name: Activate Borrow Tests
+
+on:
+  push:
+    branches:
+      - feat/borrow-diagnostics
+    paths:
+      - .github/workflows/activate-borrow-tests.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/borrow-diagnostics
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+
+      - name: Fix empty half-open regions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('borrowchecker/borrowchecker.go')
+          text = p.read_text()
+          old = '''func (bc *BorrowChecker) regionsOverlap(r1, r2 *Region) bool {
+          \tif r1 == nil || r2 == nil {
+          \t\t// If either region is unknown, assume they might overlap (conservative)
+          \t\treturn true
+          \t}
+
+          \t// Two regions [off1, off1+len1) and [off2, off2+len2) overlap if:
+          \t// off1 < off2+len2 && off2 < off1+len1
+          \treturn r1.Offset < r2.Offset+r2.Length && r2.Offset < r1.Offset+r1.Length
+          }'''.replace('          ', '')
+          new = '''func (bc *BorrowChecker) regionsOverlap(r1, r2 *Region) bool {
+          \tif r1 == nil || r2 == nil {
+          \t\t// If either region is unknown, assume they might overlap (conservative).
+          \t\treturn true
+          \t}
+          \tif r1.Length == 0 || r2.Length == 0 {
+          \t\t// Half-open empty regions contain no elements and overlap nothing.
+          \t\treturn false
+          \t}
+
+          \t// Non-empty regions [off1, off1+len1) and [off2, off2+len2) overlap if:
+          \t// off1 < off2+len2 && off2 < off1+len1.
+          \treturn r1.Offset < r2.Offset+r2.Length && r2.Offset < r1.Offset+r1.Length
+          }'''.replace('          ', '')
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one regionsOverlap body, found {text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Activate dormant borrow test files
+        run: |
+          mv borrowchecker/borrowchecker_test_helper.go borrowchecker/test_helper_test.go
+          mv borrowchecker/borrowchecker_test_advanced_types.go borrowchecker/advanced_types_test.go
+          mv borrowchecker/borrowchecker_test_region_disjointness.go borrowchecker/region_disjointness_test.go
+          mv borrowchecker/borrowchecker_test_zoo.go borrowchecker/zoo_test.go
+
+      - name: Format
+        run: gofmt -w borrowchecker/borrowchecker.go borrowchecker/*_test.go
+
+      - name: Validate all Go tests
+        run: go test -race ./...
+
+      - name: Remove one-shot workflow
+        run: rm .github/workflows/activate-borrow-tests.yml
+
+      - name: Commit only validated changes
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix empty borrow regions and activate test suites"
+          git push origin HEAD:feat/borrow-diagnostics
