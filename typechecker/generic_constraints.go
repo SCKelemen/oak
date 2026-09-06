@@ -171,7 +171,7 @@ func (tc *TypeChecker) constrainedFieldType(typeVar *TypeVar, fieldName string) 
 // after generic argument inference has produced concrete type bindings.
 func (tc *TypeChecker) checkFunctionConstraintBindings(scheme *TypeScheme, bindings Substitution, expr ast.Node) {
 	for _, constraint := range scheme.Constraints {
-		concreteType, ok := bindings[constraint.Var]
+		concreteType, ok := bindings.LookupName(constraint.Var)
 		if !ok {
 			tc.addError(expr, "function call: could not infer constrained type argument %s for %s", constraint.Var, constraint)
 			continue

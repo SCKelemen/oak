@@ -76,20 +76,18 @@ func (tv *TypeVar) String() string {
 }
 
 func (tv *TypeVar) Equals(other Type) bool {
-	if otherTV, ok := other.(*TypeVar); ok {
-		return tv.ID == otherTV.ID
-	}
-	return false
+	otherTV, ok := other.(*TypeVar)
+	return ok && tv == otherTV
 }
 
 // Substitution represents a type substitution: [α₁ ↦ τ₁, α₂ ↦ τ₂, ...]
-type Substitution map[string]Type
+type Substitution map[*TypeVar]Type
 
 // Apply applies a substitution to a type, returning a new type
 func (sub Substitution) Apply(typ Type) Type {
 	switch t := typ.(type) {
 	case *TypeVar:
-		if replacement, ok := sub[t.Name]; ok {
+		if replacement, ok := sub[t]; ok {
 			return replacement
 		}
 		return t
@@ -139,6 +137,25 @@ func (sub Substitution) Apply(typ Type) Type {
 	default:
 		return t // Unknown type, return as-is
 	}
+}
+
+// LookupName resolves a human-facing quantified variable name only when exactly
+// one binder with that name is present in the substitution. Ambiguous names fail
+// closed; substitution identity itself is always the *TypeVar binder pointer.
+func (sub Substitution) LookupName(name string) (Type, bool) {
+	var result Type
+	found := false
+	for variable, value := range sub {
+		if variable == nil || variable.Name != name {
+			continue
+		}
+		if found {
+			return nil, false
+		}
+		result = value
+		found = true
+	}
+	return result, found
 }
 
 // Compose composes two substitutions: sub2 ∘ sub1
@@ -242,14 +259,14 @@ func (u *Unifier) unifyVar(tv *TypeVar, t Type) Substitution {
 
 	// Create substitution: tv ↦ t
 	sub := make(Substitution)
-	sub[tv.Name] = t
+	sub[tv] = t
 	return sub
 }
 
 func (u *Unifier) occursIn(tv *TypeVar, t Type) bool {
 	switch typ := t.(type) {
 	case *TypeVar:
-		return tv.ID == typ.ID
+		return tv == typ
 	case *RecordType:
 		for _, fieldType := range typ.Fields {
 			if u.occursIn(tv, fieldType) {
@@ -429,16 +446,16 @@ func extractBoundTypeVars(env *TypeEnvironment) map[string]bool {
 // collectTypeVars collects all type variable names from a type
 func collectTypeVars(typ Type) []string {
 	var vars []string
-	visited := make(map[int]bool)
+	visited := make(map[*TypeVar]bool)
 	collectTypeVarsRec(typ, &vars, visited)
 	return vars
 }
 
-func collectTypeVarsRec(typ Type, vars *[]string, visited map[int]bool) {
+func collectTypeVarsRec(typ Type, vars *[]string, visited map[*TypeVar]bool) {
 	switch t := typ.(type) {
 	case *TypeVar:
-		if !visited[t.ID] {
-			visited[t.ID] = true
+		if !visited[t] {
+			visited[t] = true
 			*vars = append(*vars, t.Name)
 		}
 	case *RecordType:
@@ -459,6 +476,54 @@ func collectTypeVarsRec(typ Type, vars *[]string, visited map[int]bool) {
 	}
 }
 
+// quantifiedSubstitution binds the actual TypeVar identities found in a scheme
+// to one fresh/provided replacement per quantified source name. Source names are
+// only binder labels here; the resulting substitution is keyed by binder identity.
+func quantifiedSubstitution(typ Type, quantified []string, replacements map[string]Type, unifier *Unifier) Substitution {
+	wanted := make(map[string]struct{}, len(quantified))
+	for _, name := range quantified {
+		wanted[name] = struct{}{}
+	}
+
+	resolved := make(map[string]Type, len(quantified))
+	sub := make(Substitution)
+	var visit func(Type)
+	visit = func(current Type) {
+		switch current := current.(type) {
+		case *TypeVar:
+			if _, ok := wanted[current.Name]; !ok {
+				return
+			}
+			replacement, ok := resolved[current.Name]
+			if !ok {
+				replacement, ok = replacements[current.Name]
+				if !ok {
+					replacement = unifier.FreshTypeVar(current.Name)
+				}
+				resolved[current.Name] = replacement
+			}
+			sub[current] = replacement
+		case *RecordType:
+			for _, field := range current.Fields {
+				visit(field)
+			}
+		case *FunctionType:
+			for _, parameter := range current.Parameters {
+				visit(parameter)
+			}
+			visit(current.ReturnType)
+		case *ArrayType:
+			visit(current.ElementType)
+		case *GenericType:
+			for _, argument := range current.TypeArgs {
+				visit(argument)
+			}
+		}
+	}
+	visit(typ)
+	return sub
+}
+
 // Instantiate creates a fresh instance of a type scheme by replacing
 // quantified type variables with fresh type variables
 // For qualified types (with constraints), constraints are checked but not enforced here
@@ -468,13 +533,8 @@ func Instantiate(scheme *TypeScheme, unifier *Unifier) Type {
 		return scheme.Type
 	}
 
-	// Create substitution mapping scheme type vars to fresh type vars
-	sub := make(Substitution)
-	for _, varName := range scheme.TypeVars {
-		sub[varName] = unifier.FreshTypeVar(varName)
-	}
-
-	// Apply substitution to the scheme's type
+	// Bind the quantified variables by their actual binder identities.
+	sub := quantifiedSubstitution(scheme.Type, scheme.TypeVars, nil, unifier)
 	return sub.Apply(scheme.Type)
 }
 
@@ -497,19 +557,8 @@ func InstantiateWithConstraints(scheme *TypeScheme, typeArgs map[string]Type, un
 		}
 	}
 
-	// Create substitution from type arguments
-	sub := make(Substitution)
-	for varName, typeArg := range typeArgs {
-		sub[varName] = typeArg
-	}
-
-	// For any remaining type vars (not provided), use fresh type vars
-	for _, varName := range scheme.TypeVars {
-		if _, provided := typeArgs[varName]; !provided {
-			sub[varName] = unifier.FreshTypeVar(varName)
-		}
-	}
-
-	// Apply substitution
+	// Bind provided arguments (and freshen any remaining quantified binders)
+	// using the scheme's actual TypeVar identities.
+	sub := quantifiedSubstitution(scheme.Type, scheme.TypeVars, typeArgs, unifier)
 	return sub.Apply(scheme.Type), true
 }
