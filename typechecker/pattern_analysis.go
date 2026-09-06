@@ -92,7 +92,7 @@ func (tc *TypeChecker) variantPayloadType(parent Type, variant *object.ADTVarian
 	if !ok {
 		return nil
 	}
-	bindings, reachable := tc.variantIndexBindings(tc.adtTypes[adtName], variant, args)
+	bindings, _, reachable := tc.variantIndexBindings(tc.adtTypes[adtName], variant, args)
 	if !reachable {
 		return nil
 	}
@@ -321,7 +321,7 @@ func (tc *TypeChecker) constructorRefinement(subject string, pattern ast.Pattern
 	if !found {
 		return []PatternRefinement{refinement}
 	}
-	bindings, reachable := tc.variantIndexBindings(adt, variant, args)
+	bindings, _, reachable := tc.variantIndexBindings(adt, variant, args)
 	if !reachable {
 		return []PatternRefinement{refinement}
 	}
