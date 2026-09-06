@@ -51,7 +51,12 @@ type Result struct {
 	// LoopLowered names functions whose recursion is exactly self tail calls
 	// in loop-lowerable position; the C backend compiles these to loops.
 	LoopLowered map[string]bool
-	diagnostics []*diagnostic.Diagnostic
+	// TrampolineGroups are all-tail cycles of two or more functions with
+	// identical signatures whose member calls all sit in result position;
+	// the C backend merges each group into one state-machine loop, so the
+	// whole cycle runs in a single frame. Members are sorted.
+	TrampolineGroups [][]string
+	diagnostics      []*diagnostic.Diagnostic
 }
 
 // Diagnostics returns the discipline findings, errors first.
@@ -161,6 +166,13 @@ func (r *Result) classifyComponent(component []string, functions map[string]*ast
 		return
 	}
 
+	// A multi-function all-tail cycle with matching signatures and
+	// result-position calls compiles to one trampoline: safe, silent.
+	if len(component) >= 2 && TrampolineLowerable(sorted, functions) {
+		r.TrampolineGroups = append(r.TrampolineGroups, sorted)
+		return
+	}
+
 	first := internalTail[0]
 	d := diagnostic.NewDiagnosticFromNodeWithCode(first.edge.site, "discipline", string(CodeTailRecursionObligation),
 		fmt.Sprintf("tail recursion through %v relies on tail-call elimination the backend does not guarantee yet", sorted))
@@ -176,6 +188,90 @@ func (r *Result) classifyComponent(component []string, functions map[string]*ast
 // consume no stack depth).
 func SelfTailLoop(fn *ast.FunctionStatement) bool {
 	return selfTailLoop(fn)
+}
+
+// TrampolineLowerable reports whether a group of mutually tail-recursive
+// functions can be merged into one state-machine loop by the backend: every
+// member exists, all signatures are syntactically identical (equal syntax
+// implies equal type), and each member's calls to group members are exactly
+// one invocation in its body's result position. This is the single decision
+// procedure shared by the analyzer and the backend, so no cycle is accepted
+// as lowered without actually being lowered.
+func TrampolineLowerable(members []string, functions map[string]*ast.FunctionStatement) bool {
+	if len(members) < 2 {
+		return false
+	}
+	memberSet := make(map[string]bool, len(members))
+	for _, name := range members {
+		if functions[name] == nil || functions[name].Name == nil {
+			return false
+		}
+		memberSet[name] = true
+	}
+	reference := functions[members[0]]
+	for _, name := range members {
+		fn := functions[name]
+		if fn.Receiver != nil || len(fn.TypeParams) > 0 {
+			return false
+		}
+		if !sameSignature(reference, fn) {
+			return false
+		}
+		if resultInvocationOfAny(fn.Body, memberSet) == nil {
+			return false
+		}
+		total := 0
+		for member := range memberSet {
+			total += countCalls(fn.Body, member)
+		}
+		if total != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// sameSignature compares parameter lists and return types syntactically.
+// Parameter names must also match: the trampoline engine shares one set of
+// parameter slots across all members' bodies.
+func sameSignature(a, b *ast.FunctionStatement) bool {
+	if len(a.Parameters) != len(b.Parameters) {
+		return false
+	}
+	for i := range a.Parameters {
+		if typeSyntax(a.Parameters[i].Type) != typeSyntax(b.Parameters[i].Type) {
+			return false
+		}
+		if a.Parameters[i].Name == nil || b.Parameters[i].Name == nil ||
+			a.Parameters[i].Name.Value != b.Parameters[i].Name.Value {
+			return false
+		}
+	}
+	return typeSyntax(a.ReturnType) == typeSyntax(b.ReturnType)
+}
+
+func typeSyntax(expr ast.Expression) string {
+	if expr == nil {
+		return "()"
+	}
+	return expr.String()
+}
+
+// resultInvocationOfAny returns the invocation of any member sitting in the
+// body's result position, if any.
+func resultInvocationOfAny(body ast.Expression, members map[string]bool) *ast.InvocationExpression {
+	expr := body
+	if block, ok := body.(*ast.BlockExpression); ok {
+		expr = block.Result()
+	}
+	inv, ok := expr.(*ast.InvocationExpression)
+	if !ok {
+		return nil
+	}
+	if ident, ok := inv.Function.(*ast.Identifier); ok && members[ident.Value] {
+		return inv
+	}
+	return nil
 }
 
 func selfTailLoop(fn *ast.FunctionStatement) bool {

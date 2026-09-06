@@ -1,0 +1,10 @@
+
+fn ping(n: i32) -> i32 {
+  x: i32 = n + 1
+  pong(x)
+}
+
+fn pong(n: i32) -> i32 {
+  y: i32 = n * 2
+  ping(y)
+}

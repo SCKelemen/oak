@@ -1,0 +1,285 @@
+{
+  "statements": [
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "x",
+                      "type": "i32",
+                      "value": {
+                        "type": "InfixExpression",
+                        "data": {
+                          "left": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "n"
+                            },
+                            "position": {
+                              "line": 3,
+                              "column": 12,
+                              "byte_start": 37,
+                              "byte_end": 38
+                            }
+                          },
+                          "operator": "+",
+                          "right": {
+                            "type": "IntegerLiteral",
+                            "data": {
+                              "value": 1
+                            },
+                            "position": {
+                              "line": 3,
+                              "column": 16,
+                              "byte_start": 41,
+                              "byte_end": 42
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 3,
+                          "column": 14,
+                          "byte_start": 39,
+                          "byte_end": 40
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 3,
+                      "column": 3,
+                      "byte_start": 28,
+                      "byte_end": 29
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "Identifier",
+                              "data": {
+                                "value": "x"
+                              },
+                              "position": {
+                                "line": 4,
+                                "column": 8,
+                                "byte_start": 50,
+                                "byte_end": 51
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "pong"
+                            },
+                            "position": {
+                              "line": 4,
+                              "column": 3,
+                              "byte_start": 45,
+                              "byte_end": 49
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 4,
+                          "column": 7,
+                          "byte_start": 49,
+                          "byte_end": 50
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 4,
+                      "column": 3,
+                      "byte_start": 45,
+                      "byte_end": 49
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 2,
+                "column": 24,
+                "byte_start": 24,
+                "byte_end": 25
+              }
+            }
+          },
+          "position": {
+            "line": 2,
+            "column": 24,
+            "byte_start": 24,
+            "byte_end": 25
+          }
+        },
+        "name": "ping",
+        "parameters": [
+          {
+            "name": "n",
+            "type": "i32"
+          }
+        ],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 2,
+        "column": 1,
+        "byte_start": 1,
+        "byte_end": 3
+      }
+    },
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "y",
+                      "type": "i32",
+                      "value": {
+                        "type": "InfixExpression",
+                        "data": {
+                          "left": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "n"
+                            },
+                            "position": {
+                              "line": 8,
+                              "column": 12,
+                              "byte_start": 92,
+                              "byte_end": 93
+                            }
+                          },
+                          "operator": "*",
+                          "right": {
+                            "type": "IntegerLiteral",
+                            "data": {
+                              "value": 2
+                            },
+                            "position": {
+                              "line": 8,
+                              "column": 16,
+                              "byte_start": 96,
+                              "byte_end": 97
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 8,
+                          "column": 14,
+                          "byte_start": 94,
+                          "byte_end": 95
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 8,
+                      "column": 3,
+                      "byte_start": 83,
+                      "byte_end": 84
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "Identifier",
+                              "data": {
+                                "value": "y"
+                              },
+                              "position": {
+                                "line": 9,
+                                "column": 8,
+                                "byte_start": 105,
+                                "byte_end": 106
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "ping"
+                            },
+                            "position": {
+                              "line": 9,
+                              "column": 3,
+                              "byte_start": 100,
+                              "byte_end": 104
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 9,
+                          "column": 7,
+                          "byte_start": 104,
+                          "byte_end": 105
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 9,
+                      "column": 3,
+                      "byte_start": 100,
+                      "byte_end": 104
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 7,
+                "column": 24,
+                "byte_start": 79,
+                "byte_end": 80
+              }
+            }
+          },
+          "position": {
+            "line": 7,
+            "column": 24,
+            "byte_start": 79,
+            "byte_end": 80
+          }
+        },
+        "name": "pong",
+        "parameters": [
+          {
+            "name": "n",
+            "type": "i32"
+          }
+        ],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 7,
+        "column": 1,
+        "byte_start": 56,
+        "byte_end": 58
+      }
+    }
+  ],
+  "type": "Program"
+}

@@ -116,10 +116,26 @@ func TestSelfTailRecursionWithBlockBodyLowers(t *testing.T) {
 	}
 }
 
-func TestMutualTailRecursionRecordsObligation(t *testing.T) {
+// Same-signature mutual tail recursion lowers to a trampoline: silent.
+func TestMutualTailRecursionWithMatchingSignaturesLowers(t *testing.T) {
 	result := analyze(t, "fn f(n: i32) -> i32 { g(n) }\nfn g(n: i32) -> i32 { f(n) }")
+	if len(result.Diagnostics()) != 0 {
+		t.Fatalf("trampoline-lowerable cycle must be silent, got %#v", result.Diagnostics())
+	}
+	if len(result.TrampolineGroups) != 1 {
+		t.Fatalf("expected one trampoline group, got %#v", result.TrampolineGroups)
+	}
+	group := result.TrampolineGroups[0]
+	if len(group) != 2 || group[0] != "f" || group[1] != "g" {
+		t.Fatalf("trampoline group = %#v, want [f g]", group)
+	}
+}
+
+// Mismatched signatures cannot share one engine frame: the obligation stays.
+func TestMutualTailRecursionWithMismatchedSignaturesRecordsObligation(t *testing.T) {
+	result := analyze(t, "fn f(n: i32) -> i32 { g(n) }\nfn g(m: i32) -> i32 { f(m) }")
 	if got := countCode(result, CodeTailRecursionObligation); got != 1 {
-		t.Fatalf("mutual tail recursion produced %d %s records, want exactly 1: %#v",
+		t.Fatalf("mismatched-signature tail cycle produced %d %s records, want exactly 1: %#v",
 			got, CodeTailRecursionObligation, result.Diagnostics())
 	}
 	for _, d := range result.Diagnostics() {
@@ -129,6 +145,9 @@ func TestMutualTailRecursionRecordsObligation(t *testing.T) {
 	}
 	if got := countCode(result, CodeStackRecursion); got != 0 {
 		t.Fatalf("pure tail cycle must not be a stack-recursion error, got %d", got)
+	}
+	if len(result.TrampolineGroups) != 0 {
+		t.Fatalf("mismatched signatures must not form a trampoline group: %#v", result.TrampolineGroups)
 	}
 }
 

@@ -54,6 +54,41 @@ fn countdown( n: i32, acc: i32 ) -> i32 {
 	}
 }
 
+// Mutual tail recursion with matching signatures compiles to one trampoline
+// engine: state switches inside a single frame, wrappers preserve identity.
+func TestMutualTailRecursionCompilesToTrampoline(t *testing.T) {
+	output := generateC(t, `
+package main
+
+fn ping( n: i32 ) -> i32 {
+  x: i32 = n + 1
+  pong(x)
+}
+
+fn pong( n: i32 ) -> i32 {
+  y: i32 = n * 2
+  ping(y)
+}
+`)
+	for _, wanted := range []string{
+		"typedef enum",
+		"oak_tramp_ping_pong_ping",
+		"oak_tramp_ping_pong_pong",
+		"switch (__oak_state)",
+		"__oak_state = oak_tramp_ping_pong_pong;",
+		"continue;",
+		"i32 oak_ping( i32 n )",
+		"i32 oak_pong( i32 n )",
+	} {
+		if !strings.Contains(output, wanted) {
+			t.Fatalf("trampoline output missing %q:\n%s", wanted, output)
+		}
+	}
+	if strings.Contains(output, "return oak_pong( ") || strings.Contains(output, "return oak_ping( x") {
+		t.Fatalf("member tail calls must not be emitted as recursive calls:\n%s", output)
+	}
+}
+
 // Non-recursive functions keep the plain return shape.
 func TestNonRecursiveFunctionKeepsPlainReturn(t *testing.T) {
 	output := generateC(t, `

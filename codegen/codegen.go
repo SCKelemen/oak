@@ -27,6 +27,16 @@ type CodeGenerator struct {
 	// tailLoopFunction is set while emitting a loop-lowered self-tail-recursive
 	// function: its tail self-call emits parameter rebinding plus continue.
 	tailLoopFunction *ast.FunctionStatement
+	// Trampoline lowering state (docs/spec/85-discipline.md): mutual tail
+	// cycles merge into one state-machine engine so the cycle runs in one
+	// frame. trampolineMember maps a member to its group key; tailGroup maps
+	// members to their state tags while an engine body is being emitted.
+	programFunctions  map[string]*ast.FunctionStatement
+	trampolineMember  map[string]string
+	trampolineGroups  map[string][]string
+	trampolineEmitted map[string]bool
+	tailGroup         map[string]string
+	tailGroupParams   []*ast.FunctionParameter
 }
 
 // New creates a new code generator
@@ -70,6 +80,25 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 
 	// First pass: collect all string literals
 	cg.collectStringLiterals(program)
+
+	// Discipline analysis drives recursion lowering: self tail loops and
+	// mutual tail trampolines (docs/spec/85-discipline.md).
+	cg.programFunctions = make(map[string]*ast.FunctionStatement)
+	for _, stmt := range program.Statements {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil {
+			cg.programFunctions[fn.Name.Value] = fn
+		}
+	}
+	cg.trampolineMember = make(map[string]string)
+	cg.trampolineGroups = make(map[string][]string)
+	cg.trampolineEmitted = make(map[string]bool)
+	for _, group := range discipline.AnalyzeProgram(program).TrampolineGroups {
+		key := strings.Join(group, "_")
+		cg.trampolineGroups[key] = group
+		for _, member := range group {
+			cg.trampolineMember[member] = key
+		}
+	}
 
 	// Emit header includes and type aliases
 	cg.emitHeader()
@@ -466,6 +495,17 @@ func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVar
 // emitFunction emits C code for a function or method
 func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) {
 	funcName := fn.Name.Value
+
+	// Trampoline-group members are emitted once, together, as one engine
+	// plus per-member wrappers.
+	if key, isMember := cg.trampolineMember[funcName]; isMember {
+		if !cg.trampolineEmitted[key] {
+			cg.trampolineEmitted[key] = true
+			cg.emitTrampolineGroup(cg.trampolineGroups[key], tc)
+		}
+		return
+	}
+
 	cFuncName := cg.cFunctionName(funcName)
 
 	// Build Oak function signature
@@ -549,6 +589,99 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write("\n")
 }
 
+// emitTrampolineGroup merges one mutual-tail cycle into a state-machine
+// engine plus per-member wrappers (docs/spec/85-discipline.md): tail calls
+// between members become state switches inside one frame, so the cycle
+// consumes no stack.
+func (cg *CodeGenerator) emitTrampolineGroup(members []string, tc *typechecker.TypeChecker) {
+	engine := "oak_tramp_" + strings.Join(members, "_")
+	stateType := engine + "_state"
+	first := cg.programFunctions[members[0]]
+	returnType := cg.parseTypeExpression(first.ReturnType)
+
+	cg.write(fmt.Sprintf("/* trampoline for mutual tail recursion: %s */\n", strings.Join(members, ", ")))
+	cg.write("typedef enum {\n")
+	for i, member := range members {
+		separator := ","
+		if i == len(members)-1 {
+			separator = ""
+		}
+		cg.write(fmt.Sprintf("    %s_%s%s\n", engine, member, separator))
+	}
+	cg.write(fmt.Sprintf("} %s;\n\n", stateType))
+
+	cg.write(fmt.Sprintf("static %s %s( %s __oak_state", returnType, engine, stateType))
+	for _, param := range first.Parameters {
+		cg.write(fmt.Sprintf(", %s %s", cg.parseTypeExpression(param.Type), param.Name.Value))
+	}
+	cg.write(" ) {\n")
+	cg.write("  while (1) {\n")
+	cg.write("  switch (__oak_state) {\n")
+
+	cg.tailGroup = make(map[string]string, len(members))
+	for _, member := range members {
+		cg.tailGroup[member] = engine + "_" + member
+	}
+	cg.tailGroupParams = first.Parameters
+	for _, member := range members {
+		fn := cg.programFunctions[member]
+		cg.write(fmt.Sprintf("  case %s_%s: {\n", engine, member))
+		cg.emitFunctionBody(fn.Body, tc)
+		cg.write("  }\n")
+	}
+	cg.tailGroup = nil
+	cg.tailGroupParams = nil
+
+	cg.write("  }\n")
+	cg.write("  }\n")
+	cg.write("}\n\n")
+
+	// Wrappers preserve each member's public identity.
+	for _, member := range members {
+		fn := cg.programFunctions[member]
+		cg.write(fmt.Sprintf("%s %s( ", returnType, cg.cFunctionName(member)))
+		for i, param := range fn.Parameters {
+			if i > 0 {
+				cg.write(", ")
+			}
+			cg.write(fmt.Sprintf("%s %s", cg.parseTypeExpression(param.Type), param.Name.Value))
+		}
+		cg.write(" ) {\n")
+		cg.write(fmt.Sprintf("  return %s( %s_%s", engine, engine, member))
+		for _, param := range fn.Parameters {
+			cg.write(", " + param.Name.Value)
+		}
+		cg.write(" );\n")
+		cg.write("}\n\n")
+	}
+}
+
+// emitTailGroupContinue lowers a tail call between trampoline members:
+// arguments are evaluated into temporaries, the shared parameters are
+// rebound, the state switches to the callee, and the loop continues in the
+// same frame.
+func (cg *CodeGenerator) emitTailGroupContinue(call *ast.InvocationExpression, stateTag string, tc *typechecker.TypeChecker) {
+	cg.write("  {\n")
+	for i, param := range cg.tailGroupParams {
+		if i >= len(call.Arguments) {
+			break
+		}
+		paramType := cg.parseTypeExpression(param.Type)
+		cg.write(fmt.Sprintf("    %s __oak_tail_%d = ", paramType, i))
+		cg.emitExpressionFragment(call.Arguments[i], tc)
+		cg.output.WriteString(";\n")
+	}
+	for i, param := range cg.tailGroupParams {
+		if i >= len(call.Arguments) {
+			break
+		}
+		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", param.Name.Value, i))
+	}
+	cg.write(fmt.Sprintf("    __oak_state = %s;\n", stateTag))
+	cg.write("    continue;\n")
+	cg.write("  }\n")
+}
+
 // emitTailLoopContinue lowers a tail self-call inside a loop-lowered function:
 // arguments are evaluated into temporaries first so parameter rebinding is
 // order-independent, then the loop continues in the same frame.
@@ -595,6 +728,18 @@ func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.Typ
 			if ident, ok := inv.Function.(*ast.Identifier); ok && ident.Value == cg.tailLoopFunction.Name.Value {
 				cg.emitTailLoopContinue(inv, tc)
 				return
+			}
+		}
+	}
+	// In a trampoline engine, a tail call to any group member is a state
+	// switch inside the same frame, not a call.
+	if cg.tailGroup != nil {
+		if inv, ok := expr.(*ast.InvocationExpression); ok {
+			if ident, ok := inv.Function.(*ast.Identifier); ok {
+				if stateTag, isMember := cg.tailGroup[ident.Value]; isMember {
+					cg.emitTailGroupContinue(inv, stateTag, tc)
+					return
+				}
 			}
 		}
 	}
