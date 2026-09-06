@@ -113,3 +113,49 @@ func TestDerivedViewDoesNotSuspendParentView(t *testing.T) {
 		t.Fatal("read-only derivation must not suspend its parent view")
 	}
 }
+
+func TestFrontEndDerivedViewKeepsAbsoluteOwnerRegion(t *testing.T) {
+	bc, program, tc := setupBorrowCheckerForTest("buf: [16]u8\nv1: []u8 = buf[4:12]\nv2: []u8 = v1[2:4]")
+	if program == nil {
+		t.Fatal("failed to parse derived-view program")
+	}
+	bc.CheckProgram(program, tc.Env())
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("unexpected borrow diagnostics: %#v", bc.Diagnostics())
+	}
+	v2, ok := bc.activeBorrows["v2"]
+	if !ok || v2.region == nil {
+		t.Fatalf("derived view missing exact region: %#v", v2)
+	}
+	if v2.region.Offset != 6 || v2.region.Length != 2 {
+		t.Fatalf("derived view region = %#v, want [6..8)", v2.region)
+	}
+	if v2.parent != "v1" || v2.owner != "buf" {
+		t.Fatalf("derived view provenance = parent %q owner %q", v2.parent, v2.owner)
+	}
+}
+
+func TestFrontEndSpanSliceSuspendsParentWithPreciseRegion(t *testing.T) {
+	bc, program, tc := setupBorrowCheckerForTest("buf: [16]u8\nparent: [*]u8 = span(&buf)\nchild: [*]u8 = parent[4:8]")
+	if program == nil {
+		t.Fatal("failed to parse writable-reborrow program")
+	}
+	bc.CheckProgram(program, tc.Env())
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("unexpected borrow diagnostics: %#v", bc.Diagnostics())
+	}
+	parent, ok := bc.activeBorrows["parent"]
+	if !ok || parent.suspendedBy != "child" {
+		t.Fatalf("parent reborrow state = %#v, want suspended by child", parent)
+	}
+	child, ok := bc.activeBorrows["child"]
+	if !ok || child.region == nil {
+		t.Fatalf("child missing exact region: %#v", child)
+	}
+	if child.region.Offset != 4 || child.region.Length != 4 {
+		t.Fatalf("child region = %#v, want [4..8)", child.region)
+	}
+	if child.parent != "parent" || child.owner != "buf" {
+		t.Fatalf("child provenance = parent %q owner %q", child.parent, child.owner)
+	}
+}
