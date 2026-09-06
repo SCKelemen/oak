@@ -43,8 +43,8 @@ func (m Module) Validate() error {
 }
 
 func (d Definition) Validate() error {
-	if d.Type.Kind == TypeInvalid {
-		return fmt.Errorf("type axis is unspecified")
+	if !validTypeKind(d.Type.Kind) {
+		return fmt.Errorf("invalid type kind %q", d.Type.Kind)
 	}
 	if err := validateUniqueNames("type parameter", typeParameterNames(d.Type.Parameters)); err != nil {
 		return err
@@ -52,8 +52,29 @@ func (d Definition) Validate() error {
 	if err := validateUniqueNames("field", fieldNames(d.Type.Fields)); err != nil {
 		return err
 	}
+	for _, field := range d.Type.Fields {
+		if field.Type == "" {
+			return fmt.Errorf("field %q has empty type", field.Name)
+		}
+	}
 	if err := validateUniqueNames("variant", variantNames(d.Type.Variants)); err != nil {
 		return err
+	}
+	if err := validateUniqueNames("method", methodNames(d.Type.Methods)); err != nil {
+		return err
+	}
+	for _, method := range d.Type.Methods {
+		if method.Return == "" {
+			return fmt.Errorf("method %q has empty return type", method.Name)
+		}
+		if err := validateUniqueNames("method parameter", fieldNames(method.Parameters)); err != nil {
+			return fmt.Errorf("method %q: %w", method.Name, err)
+		}
+		for _, parameter := range method.Parameters {
+			if parameter.Type == "" {
+				return fmt.Errorf("method %q parameter %q has empty type", method.Name, parameter.Name)
+			}
+		}
 	}
 	if d.Representation.Alignment != 0 && !isPowerOfTwo(d.Representation.Alignment) {
 		return fmt.Errorf("representation alignment %d is not a power of two", d.Representation.Alignment)
@@ -237,14 +258,32 @@ func validatePropositions(propositions []Proposition) error {
 			return fmt.Errorf("duplicate proposition %q", proposition.Name)
 		}
 		names[proposition.Name] = struct{}{}
-		if proposition.Status == "" {
-			return fmt.Errorf("proposition %q has no proof status", proposition.Name)
+		if !validProofStatus(proposition.Status) {
+			return fmt.Errorf("proposition %q has invalid proof status %q", proposition.Name, proposition.Status)
 		}
 		if err := proposition.Expr.Validate(); err != nil {
 			return fmt.Errorf("proposition %q: %w", proposition.Name, err)
 		}
 	}
 	return nil
+}
+
+func validTypeKind(kind TypeKind) bool {
+	switch kind {
+	case TypeScalar, TypeAlias, TypeRecord, TypeSum, TypeFunction, TypeInterface, TypeOpaque:
+		return true
+	default:
+		return false
+	}
+}
+
+func validProofStatus(status ProofStatus) bool {
+	switch status {
+	case ProofSpecified, ProofChecked, ProofSMT, ProofKernel, ProofModelChecked, ProofTested, ProofRefined:
+		return true
+	default:
+		return false
+	}
 }
 
 func operatorArity(op Operator) (int, bool) {
@@ -310,6 +349,14 @@ func variantNames(variants []Variant) []string {
 	names := make([]string, len(variants))
 	for i, variant := range variants {
 		names[i] = variant.Name
+	}
+	return names
+}
+
+func methodNames(methods []Method) []string {
+	names := make([]string, len(methods))
+	for i, method := range methods {
+		names[i] = method.Name
 	}
 	return names
 }
