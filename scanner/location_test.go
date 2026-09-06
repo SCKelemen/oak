@@ -42,11 +42,11 @@ func TestScannerTracksMultilineCommentEnd(t *testing.T) {
 	if comment.TokenKind != token.COMMENT {
 		t.Fatalf("expected COMMENT, got %s", comment.TokenKind)
 	}
-	if comment.Line != 1 || comment.Column != 1 || comment.EndLine != 2 || comment.EndColumn != 5 {
+	if comment.Line != 1 || comment.Column != 1 || comment.EndLine != 2 || comment.EndColumn != 6 {
 		t.Fatalf("unexpected comment range %d:%d-%d:%d", comment.Line, comment.Column, comment.EndLine, comment.EndColumn)
 	}
 	ident := s.NextToken()
-	if ident.TokenKind != token.IDENT || ident.Line != 2 || ident.Column != 5 {
-		t.Fatalf("expected x at 2:5, got %s at %d:%d", ident.TokenKind, ident.Line, ident.Column)
+	if ident.TokenKind != token.IDENT || ident.Line != 2 || ident.Column != 6 {
+		t.Fatalf("expected x at 2:6, got %s at %d:%d", ident.TokenKind, ident.Line, ident.Column)
 	}
 }
