@@ -1,0 +1,12 @@
+
+// line comment
+x: i32 = 5
+
+/* inline comment */
+y: i32 = 10
+
+/* multiple
+    line
+    comment
+*/
+z: i32 = 15

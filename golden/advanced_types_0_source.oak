@@ -1,7 +1,0 @@
-
-fn replicate4[T](value: T): [4]T = {
-    xs: [4]T = [4]T{ value, value, value, value }
-    xs
-}
-
-four_ints: [4]i32 = replicate4(7)

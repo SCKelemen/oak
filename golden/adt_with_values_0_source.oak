@@ -1,0 +1,11 @@
+
+// Simple ADT
+Status: type
+  = Ok: 200
+  | NotFound: 404
+  | Unauthorized: 401
+
+// ADT with record literal tags
+StatusInfo: type
+  = Ok: { code: 200, status: "Okay" }
+  | NotFound: { code: 404, status: "Not Found" }

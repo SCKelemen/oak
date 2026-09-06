@@ -1,0 +1,6 @@
+{"error_index":0,"message":"[type error] undefined variable: u8","type":"error"}
+{"error_index":1,"message":"[type error] undefined variable: span","type":"error"}
+{"error_index":2,"message":"[type error] undefined variable: span","type":"error"}
+{"code":"OAK-T0000","index":0,"message":"[type error] undefined variable: u8","range":{"end":{"character":11,"line":1},"start":{"character":9,"line":1}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":1,"message":"[type error] undefined variable: span","range":{"end":{"character":17,"line":3},"start":{"character":13,"line":3}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0000","index":2,"message":"[type error] undefined variable: span","range":{"end":{"character":17,"line":4},"start":{"character":13,"line":4}},"severity":"error","source":"typechecker","type":"diagnostic"}

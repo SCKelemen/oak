@@ -1,0 +1,222 @@
+{
+  "statements": [
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "InfixExpression",
+                              "data": {
+                                "left": {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "n"
+                                  },
+                                  "position": {
+                                    "line": 3,
+                                    "column": 13,
+                                    "byte_start": 53,
+                                    "byte_end": 54
+                                  }
+                                },
+                                "operator": "-",
+                                "right": {
+                                  "type": "IntegerLiteral",
+                                  "data": {
+                                    "value": 1
+                                  },
+                                  "position": {
+                                    "line": 3,
+                                    "column": 17,
+                                    "byte_start": 57,
+                                    "byte_end": 58
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 3,
+                                "column": 15,
+                                "byte_start": 55,
+                                "byte_end": 56
+                              }
+                            },
+                            {
+                              "type": "InfixExpression",
+                              "data": {
+                                "left": {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "acc"
+                                  },
+                                  "position": {
+                                    "line": 3,
+                                    "column": 20,
+                                    "byte_start": 60,
+                                    "byte_end": 63
+                                  }
+                                },
+                                "operator": "+",
+                                "right": {
+                                  "type": "Identifier",
+                                  "data": {
+                                    "value": "n"
+                                  },
+                                  "position": {
+                                    "line": 3,
+                                    "column": 26,
+                                    "byte_start": 66,
+                                    "byte_end": 67
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 3,
+                                "column": 24,
+                                "byte_start": 64,
+                                "byte_end": 65
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "countdown"
+                            },
+                            "position": {
+                              "line": 3,
+                              "column": 3,
+                              "byte_start": 43,
+                              "byte_end": 52
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 3,
+                          "column": 12,
+                          "byte_start": 52,
+                          "byte_end": 53
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 3,
+                      "column": 3,
+                      "byte_start": 43,
+                      "byte_end": 52
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 2,
+                "column": 39,
+                "byte_start": 39,
+                "byte_end": 40
+              }
+            }
+          },
+          "position": {
+            "line": 2,
+            "column": 39,
+            "byte_start": 39,
+            "byte_end": 40
+          }
+        },
+        "name": "countdown",
+        "parameters": [
+          {
+            "name": "n",
+            "type": "i32"
+          },
+          {
+            "name": "acc",
+            "type": "i32"
+          }
+        ],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 2,
+        "column": 1,
+        "byte_start": 1,
+        "byte_end": 3
+      }
+    },
+    {
+      "type": "VariableDeclaration",
+      "data": {
+        "name": "total",
+        "type": "i32",
+        "value": {
+          "type": "InvocationExpression",
+          "data": {
+            "arguments": [
+              {
+                "type": "IntegerLiteral",
+                "data": {
+                  "value": 10
+                },
+                "position": {
+                  "line": 6,
+                  "column": 24,
+                  "byte_start": 95,
+                  "byte_end": 97
+                }
+              },
+              {
+                "type": "IntegerLiteral",
+                "data": {
+                  "value": 0
+                },
+                "position": {
+                  "line": 6,
+                  "column": 28,
+                  "byte_start": 99,
+                  "byte_end": 100
+                }
+              }
+            ],
+            "function": {
+              "type": "Identifier",
+              "data": {
+                "value": "countdown"
+              },
+              "position": {
+                "line": 6,
+                "column": 14,
+                "byte_start": 85,
+                "byte_end": 94
+              }
+            }
+          },
+          "position": {
+            "line": 6,
+            "column": 23,
+            "byte_start": 94,
+            "byte_end": 95
+          }
+        }
+      },
+      "position": {
+        "line": 6,
+        "column": 1,
+        "byte_start": 72,
+        "byte_end": 77
+      }
+    }
+  ],
+  "type": "Program"
+}

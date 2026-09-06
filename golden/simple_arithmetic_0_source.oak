@@ -9,7 +9,7 @@ result: string = x ?
   | 8 -> "eight"
   | _ -> "other"
 
-// ADT definition with value 
+// ADT definition with value
 Status: type
   = Ok: 200
   | NotFound: 404
