@@ -75,6 +75,24 @@ through hidden runtime conversions.
 A later layer may reject or refine an otherwise valid core unification result.
 It must not silently change the runtime representation or authority of a value.
 
+### 2.1 Accumulated equality solving
+
+A generic invocation solves all parameter/argument equations under one
+accumulated substitution. Each newly solved equation is applied before the next
+sibling or parameter is checked.
+
+Consequently:
+
+- distinct variables may be inferred independently across multiple parameters
+  and generic-application arguments;
+- every occurrence of the same binder must resolve to the same semantic type;
+- a conflict such as `Pair[T, T]` against `Pair[i32, string]` rejects the
+  invocation rather than overwriting or ignoring an earlier binding;
+- the solved substitution is applied recursively to the result type.
+
+Equation order must not change whether a well-formed set of equality constraints
+is accepted. Diagnostics may report the first source-ordered conflict.
+
 ## 3. Lightweight local programming
 
 Ordinary local code should not need repetitive annotations:
