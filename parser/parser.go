@@ -1013,20 +1013,18 @@ func (p *Parser) parseADTType() *ast.ADTType {
 
 	p.nextToken()
 
-	// Check if this is a record type definition or record composition
-	// Record type: { field: Type, ... }
-	// Record composition: TypeName & { field: Type, ... } or TypeName & TypeName
-	if p.currentTokenIs(token.LBRACE) {
-		// This is a record type definition
-		recordLit := p.parseRecordLiteral()
-		if recordLit == nil {
+	// Check if this is a semantic record, concrete struct, or record composition.
+	// Both product forms go through the type parser; struct carries a distinct
+	// STRUCT token so later semantic projection can select representation.
+	if p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.STRUCT) {
+		recordType := p.parseTypePrimary()
+		if recordType == nil {
 			return nil
 		}
-		// Store as a single variant with record literal
 		variant := &ast.ADTVariant{
 			Token:   p.currentToken,
-			Name:    adt.Name, // Use ADT name as variant name for record types
-			Literal: recordLit,
+			Name:    adt.Name,
+			Literal: recordType,
 		}
 		adt.Variants = []*ast.ADTVariant{variant}
 	} else if p.currentTokenIs(token.IDENT) {
@@ -2664,27 +2662,20 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 		}
 		// parseADTVariant may advance to a separator or following token. ParseProgram's
 		// progress guard handles statement-boundary recovery if needed.
-	} else if p.currentTokenIs(token.LBRACE) {
-		// This is a record type definition: Name: type = { field: Type, ... }
-		// Use parseRecordType() which handles type annotations (field: Type)
-		// instead of parseRecordLiteral() which handles values (field: value)
-		recordType := p.parseRecordType()
+	} else if p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.STRUCT) {
+		// Semantic records and concrete structs share product-type parsing. The
+		// RecordLiteral AST retains the opening token: LBRACE means semantic shape;
+		// STRUCT means a concrete representation policy was explicitly selected.
+		recordType := p.parseTypePrimary()
 		if recordType == nil {
 			return nil
 		}
-		// parseRecordType() leaves currentToken at the closing brace '}'
-		// This is the last token of the ADT definition, so we leave it here
-		// ParseProgram will call p.nextToken() to advance from '}' to the start of the next statement
-		// Store as a single variant with record type
 		variant := &ast.ADTVariant{
 			Token:   p.currentToken,
-			Name:    adt.Name,   // Use ADT name as variant name for record types
-			Literal: recordType, // For record types, we store the type as the "literal"
+			Name:    adt.Name,
+			Literal: recordType,
 		}
 		adt.Variants = []*ast.ADTVariant{variant}
-		// After parseRecordType(), currentToken is at the closing brace '}'
-		// This is the last token of the ADT definition
-		// ParseProgram will call p.nextToken() to advance to the next statement
 	} else if p.currentTokenIs(token.IDENT) {
 		// Could be: TypeName (type alias) or TypeName & RecordType (composition)
 		// Use parseTypeExpression which now handles intersections
