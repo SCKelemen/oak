@@ -29,6 +29,13 @@ def itemValues : List Token -> List Nat
   | .item x :: rest => x :: itemValues rest
   | _ :: rest => itemValues rest
 
+theorem itemValues_append (left right : List Token) :
+    itemValues (left ++ right) = itemValues left ++ itemValues right := by
+  induction left with
+  | nil => rfl
+  | cons token rest ih =>
+      cases token <;> simp [itemValues, ih]
+
 theorem body_contains_no_open (items : List Nat) (trailing : Bool) :
     .open ∉ body items trailing := by
   induction items generalizing trailing with
@@ -61,26 +68,30 @@ theorem body_preserves_items (items : List Nat) (trailing : Bool) :
 
 theorem encode_preserves_items (items : List Nat) (trailing : Bool) :
     itemValues (encode items trailing) = items := by
-  simp [encode, itemValues, body_preserves_items]
+  simp [encode, itemValues, itemValues_append, body_preserves_items]
 
 theorem encode_starts_with_open (items : List Nat) (trailing : Bool) :
     encode items trailing = .open :: (body items trailing ++ [.close]) := by
   rfl
 
+/-- Dropping an entire syntactic prefix reaches the exact suffix. -/
+theorem drop_prefix (prefix suffix : List Token) :
+    List.drop prefix.length (prefix ++ suffix) = suffix := by
+  induction prefix with
+  | nil => rfl
+  | cons token rest ih =>
+      simp [ih]
+
 /-- At the specified postcondition offset, the remaining token stream begins
     exactly with the closing delimiter. -/
 theorem drop_to_close (items : List Nat) (trailing : Bool) :
     List.drop (closeOffset items trailing) (encode items trailing) = [.close] := by
-  simp [closeOffset, encode]
+  simp [closeOffset, encode, drop_prefix]
 
 /-- The closing-delimiter cursor is always a valid token position. -/
 theorem close_offset_in_bounds (items : List Nat) (trailing : Bool) :
     closeOffset items trailing < (encode items trailing).length := by
-  have hlen :
-      (encode items trailing).length = closeOffset items trailing + 1 := by
-    simp [encode, closeOffset, Nat.add_assoc]
-  rw [hlen]
-  exact Nat.lt_succ_self _
+  simp [closeOffset, encode]
 
 /-- No closing delimiter can occur before the canonical close position. -/
 theorem close_unique_to_suffix (items : List Nat) (trailing : Bool) :
