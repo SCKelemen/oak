@@ -13,9 +13,9 @@ Legend:
 
 | Feature | S | I | T | M | P | R | Notes |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | --- |
-| Layout + explicit blocks | ✓ | ✓ | ✓ |  |  |  | parser/layout equivalence exists; formal cursor/layout model pending |
+| Layout + explicit blocks | ✓ | ✓ | ✓ |  |  |  | parser/layout equivalence exists; formal layout normalization model pending |
 | Source spans / UTF-16 editor positions | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.SourcePosition` proves UTF-8/UTF-16 scalar-width rules, additive coordinate accumulation, monotonic offsets, and ASCII width equivalence; Go tests cover emoji, multiline positions, byte-boundary rejection, links, and LSP coordinates; refinement pending |
-| Delimited parser cursor contract | ✓ | ✓ | ✓ |  |  |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; formal cursor proof planned |
+| Delimited parser cursor contract | ✓ | ✓ | ✓ | ✓ | ✓ |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; `Oak.Delimited` proves canonical opener/body/close structure, item preservation, unique close suffix, exact close offset, and trailing-separator semantic transparency; refinement pending |
 | Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
 | Nominal records | ✓ | ✓ | ✓ |  |  |  | authoritative source field order is preserved; duplicate fields are rejected; ABI offsets remain a target-layout concern |
 | Record composition | ✓ | partial | partial |  |  |  | semantics now separated from subtyping |
@@ -53,16 +53,17 @@ The formal gate currently checks:
 - `Oak.Slab`
 - `Oak.Exhaustiveness`
 - `Oak.SourcePosition`
+- `Oak.Delimited`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
 
 ## Immediate formal-verification queue
 
-1. parser delimited-sequence cursor invariant;
-2. region/arena non-escape theorem;
-3. phantom-type zero-runtime representation law;
-4. record layout/alignment once target layout representation stabilizes;
-5. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, and source positions.
+1. region/arena non-escape theorem;
+2. phantom-type zero-runtime representation law;
+3. record layout/alignment once target layout representation stabilizes;
+4. formal layout-normalizer balance/equivalence model;
+5. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, and delimited parsing.
 
 ## Refinement policy
 
