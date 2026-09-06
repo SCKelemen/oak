@@ -11,6 +11,7 @@ import (
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
+	"github.com/SCKelemen/oak/source"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -18,6 +19,10 @@ import (
 type SourceText struct {
 	Path string
 	Text string
+}
+
+func (s SourceText) File(id source.ID) *source.File {
+	return source.NewFile(id, s.Path, s.Text)
 }
 
 // Options contains target-independent compilation options. More target and
@@ -39,6 +44,7 @@ type Compilation struct {
 // SyntaxTree is a parsed Oak source file.
 type SyntaxTree struct {
 	Source SourceText
+	File   *source.File
 	Root   *ast.Program
 }
 
@@ -104,14 +110,15 @@ func (comp Compilation) Source() SourceText {
 // become synthetic braces before the parser sees them. Both surface styles
 // therefore share one parser and one AST semantics.
 func (comp Compilation) Parse() Stage[*SyntaxTree] {
-	return Value(comp.source).Then(func(source SourceText) (*SyntaxTree, error) {
-		tokens := layout.New(scanner.New(source.Text))
+	return Value(comp.source).Then(func(text SourceText) (*SyntaxTree, error) {
+		file := text.File(1)
+		tokens := layout.New(scanner.NewFile(file))
 		p := parser.New(tokens)
 		root := p.ParseProgram()
 		if errors := p.Errors(); len(errors) != 0 {
 			return nil, phaseError("parse", errors)
 		}
-		return &SyntaxTree{Source: source, Root: root}, nil
+		return &SyntaxTree{Source: text, File: file, Root: root}, nil
 	})
 }
 
