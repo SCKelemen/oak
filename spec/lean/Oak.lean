@@ -11,3 +11,4 @@ import Oak.PhantomRepresentation
 import Oak.Layout
 import Oak.RecordLayout
 import Oak.RecordShape
+import Oak.RecordShapeRefinement
