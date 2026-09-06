@@ -30,13 +30,13 @@ def instantiate (template : PhantomTemplate) (phantom : Nat) : Instance :=
     runtime := template.runtime }
 
 /-- Runtime lowering erases phantom identity completely. -/
-def erasePhantom (instance : Instance) : RuntimeRepresentation :=
-  instance.runtime
+def erasePhantom (inst : Instance) : RuntimeRepresentation :=
+  inst.runtime
 
 /-- Rebinding only the phantom parameter leaves all other semantic/runtime facts
     unchanged. -/
-def rebindPhantom (instance : Instance) (phantom : Nat) : Instance :=
-  { instance with phantom := phantom }
+def rebindPhantom (inst : Instance) (phantom : Nat) : Instance :=
+  { inst with phantom := phantom }
 
 /-- All instantiations of one phantom template have exactly the same runtime
     representation. -/
@@ -47,8 +47,8 @@ theorem instantiate_runtime_invariant (template : PhantomTemplate)
   rfl
 
 /-- Rebinding phantom identity is representation-preserving. -/
-theorem rebind_runtime_invariant (instance : Instance) (phantom : Nat) :
-    erasePhantom (rebindPhantom instance phantom) = erasePhantom instance := by
+theorem rebind_runtime_invariant (inst : Instance) (phantom : Nat) :
+    erasePhantom (rebindPhantom inst phantom) = erasePhantom inst := by
   rfl
 
 /-- Phantom identity still participates in static type identity. -/
@@ -61,28 +61,28 @@ theorem different_phantoms_are_distinct (template : PhantomTemplate)
 
 /-- The zero-runtime law covers the whole representation record, therefore size
     is unchanged under phantom rebinding. -/
-theorem rebind_preserves_size (instance : Instance) (phantom : Nat) :
-    (erasePhantom (rebindPhantom instance phantom)).size =
-      (erasePhantom instance).size := by
+theorem rebind_preserves_size (inst : Instance) (phantom : Nat) :
+    (erasePhantom (rebindPhantom inst phantom)).size =
+      (erasePhantom inst).size := by
   rfl
 
 /-- Alignment is likewise independent of phantom identity. -/
-theorem rebind_preserves_alignment (instance : Instance) (phantom : Nat) :
-    (erasePhantom (rebindPhantom instance phantom)).alignment =
-      (erasePhantom instance).alignment := by
+theorem rebind_preserves_alignment (inst : Instance) (phantom : Nat) :
+    (erasePhantom (rebindPhantom inst phantom)).alignment =
+      (erasePhantom inst).alignment := by
   rfl
 
 /-- Machine bit width is likewise independent of phantom identity. -/
-theorem rebind_preserves_bits (instance : Instance) (phantom : Nat) :
-    (erasePhantom (rebindPhantom instance phantom)).bits =
-      (erasePhantom instance).bits := by
+theorem rebind_preserves_bits (inst : Instance) (phantom : Nat) :
+    (erasePhantom (rebindPhantom inst phantom)).bits =
+      (erasePhantom inst).bits := by
   rfl
 
 /-- Rebinding twice keeps only the final static phantom identity while retaining
     the original runtime representation. -/
-theorem rebind_last_wins (instance : Instance) (first second : Nat) :
-    rebindPhantom (rebindPhantom instance first) second =
-      rebindPhantom instance second := by
+theorem rebind_last_wins (inst : Instance) (first second : Nat) :
+    rebindPhantom (rebindPhantom inst first) second =
+      rebindPhantom inst second := by
   rfl
 
 end Oak.PhantomRepresentation
