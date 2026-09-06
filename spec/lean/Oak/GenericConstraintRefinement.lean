@@ -87,19 +87,17 @@ theorem invoke_direct_record_iff
     Invoke v (.var v) (.record candidate) result required =
         some (Substitute v (.record candidate) result) ↔
       Satisfies candidate required := by
-  rw [show Invoke v (.var v) (.record candidate) result required =
-      (if SatisfiesBool candidate required then
-        some (Substitute v (.record candidate) result) else none) by
-        simp [Invoke, Infer, Discharge]]
   constructor
   · intro hinvoke
-    by_cases hbool : SatisfiesBool candidate required = true
-    · exact (satisfiesBool_iff_satisfies candidate required hcandidate hrequired).mp hbool
-    · simp [hbool] at hinvoke
+    cases hbool : SatisfiesBool candidate required with
+    | false =>
+        simp [Invoke, Infer, Discharge, hbool] at hinvoke
+    | true =>
+        exact (satisfiesBool_iff_satisfies candidate required hcandidate hrequired).mp hbool
   · intro hsatisfies
     have hbool : SatisfiesBool candidate required = true :=
       (satisfiesBool_iff_satisfies candidate required hcandidate hrequired).mpr hsatisfies
-    simp [hbool]
+    simp [Invoke, Infer, Discharge, hbool]
 
 /-- The same correspondence holds when `T` is inferred through one semantic
     unary constructor (e.g. a modeled view/container position). -/
@@ -115,22 +113,17 @@ theorem invoke_unary_record_iff
         result required =
         some (Substitute v (.record candidate) result) ↔
       Satisfies candidate required := by
-  rw [show Invoke v
-        (.unary ctor (.var v))
-        (.unary ctor (.record candidate))
-        result required =
-      (if SatisfiesBool candidate required then
-        some (Substitute v (.record candidate) result) else none) by
-        simp [Invoke, Infer, Discharge]]
   constructor
   · intro hinvoke
-    by_cases hbool : SatisfiesBool candidate required = true
-    · exact (satisfiesBool_iff_satisfies candidate required hcandidate hrequired).mp hbool
-    · simp [hbool] at hinvoke
+    cases hbool : SatisfiesBool candidate required with
+    | false =>
+        simp [Invoke, Infer, Discharge, hbool] at hinvoke
+    | true =>
+        exact (satisfiesBool_iff_satisfies candidate required hcandidate hrequired).mp hbool
   · intro hsatisfies
     have hbool : SatisfiesBool candidate required = true :=
       (satisfiesBool_iff_satisfies candidate required hcandidate hrequired).mpr hsatisfies
-    simp [hbool]
+    simp [Invoke, Infer, Discharge, hbool]
 
 /-- If the abstract shape obligation fails, the direct generic call cannot
     produce a substituted result. -/
