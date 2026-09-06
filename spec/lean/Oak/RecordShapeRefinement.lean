@@ -33,12 +33,11 @@ private theorem lookup_mem
   induction shape with
   | nil => simp [Lookup] at h
   | cons field rest ih =>
-      simp only [Lookup] at h
       by_cases heq : field.name = name
-      · simp [heq] at h
+      · simp [Lookup, heq] at h
         subst ty
         exact ⟨field, by simp, heq, rfl⟩
-      · simp [heq] at h
+      · simp [Lookup, heq] at h
         obtain ⟨found, hmem, hname, hty⟩ := ih h
         exact ⟨found, by simp [hmem], hname, hty⟩
 
@@ -55,8 +54,9 @@ private theorem lookup_of_mem_unique
       · have hne : head.name ≠ field.name := by
           intro hname
           have heq := hunique head (by simp) field (by simp [hrest]) hname
-          subst field
-          simp at hrest
+          exact (by
+            subst field
+            exact (List.not_mem_of_mem_tail hrest) rfl)
         have hrestUnique : UniqueNames rest := by
           intro a ha b hb hname
           exact hunique a (by simp [ha]) b (by simp [hb]) hname
@@ -67,48 +67,46 @@ private theorem all_eq_true_iff {xs : List α} {p : α → Bool} :
   induction xs with
   | nil => simp
   | cons head tail ih =>
-      simp [List.all, ih, and_left_comm, and_assoc]
+      simp [List.all, ih]
 
-/-- Soundness: if the executable checker accepts two well-formed shapes, the
-    abstract semantic satisfaction relation holds. -/
+/-- Soundness: if the executable checker accepts a well-formed candidate shape,
+    the abstract semantic satisfaction relation holds. -/
 theorem satisfiesBool_sound
     (candidate required : ConcreteShape)
-    (hcandidate : UniqueNames candidate)
-    (hrequired : UniqueNames required)
+    (_hcandidate : UniqueNames candidate)
+    (_hrequired : UniqueNames required)
     (hcheck : SatisfiesBool candidate required = true) :
     Satisfies candidate required := by
   intro field hfield
-  have hall := (all_eq_true_iff.mp hcheck) field hfield
-  simp only [SatisfiesBool] at hcheck
-  unfold SatisfiesBool at hcheck
-  have hlookupCheck := (all_eq_true_iff.mp hcheck) field hfield
+  have hlookupCheck :=
+    (all_eq_true_iff.mp hcheck) field hfield
   cases hlookup : Lookup field.name candidate with
-  | none => simp [hlookup] at hlookupCheck
+  | none =>
+      simp [SatisfiesBool, hlookup] at hlookupCheck
   | some ty =>
-      simp [hlookup] at hlookupCheck
       have hty : ty = field.ty := by
-        exact of_decide_eq_true hlookupCheck
+        simpa [SatisfiesBool, hlookup] using hlookupCheck
       obtain ⟨candidateField, hmem, hname, hcandidateTy⟩ :=
         lookup_mem candidate field.name ty hlookup
       have hsame : candidateField = field := by
-        apply hrequired field hfield field hfield rfl
-      subst candidateField
-      exact hmem
+        cases candidateField
+        cases field
+        simp_all
+      simpa [hsame] using hmem
 
 /-- Completeness: the abstract relation over unique-name records is accepted by
     the executable lookup-and-equality checker. -/
 theorem satisfiesBool_complete
     (candidate required : ConcreteShape)
     (hcandidate : UniqueNames candidate)
-    (hrequired : UniqueNames required)
+    (_hrequired : UniqueNames required)
     (hsatisfies : Satisfies candidate required) :
     SatisfiesBool candidate required = true := by
-  unfold SatisfiesBool
   apply all_eq_true_iff.mpr
   intro field hfield
   have hcandidateField : field ∈ candidate := hsatisfies field hfield
   have hlookup := lookup_of_mem_unique candidate hcandidate field hcandidateField
-  simp [hlookup]
+  simp [SatisfiesBool, hlookup]
 
 /-- The concrete decision procedure and abstract semantic relation coincide on
     well-formed record shapes. This is the refinement theorem used for Oak's R
