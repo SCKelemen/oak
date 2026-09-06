@@ -1,0 +1,122 @@
+name: One-shot struct type parser repair
+
+on:
+  push:
+    branches:
+      - feat/record-layout
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/record-layout
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Repair type declaration routing
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('parser/parser.go')
+          text = path.read_text()
+
+          old = '''\t// Check if this is a record type definition or record composition
+\t// Record type: { field: Type, ... }
+\t// Record composition: TypeName & { field: Type, ... } or TypeName & TypeName
+\tif p.currentTokenIs(token.LBRACE) {
+\t\t// This is a record type definition
+\t\trecordLit := p.parseRecordLiteral()
+\t\tif recordLit == nil {
+\t\t\treturn nil
+\t\t}
+\t\t// Store as a single variant with record literal
+\t\tvariant := &ast.ADTVariant{
+\t\t\tToken:   p.currentToken,
+\t\t\tName:    adt.Name, // Use ADT name as variant name for record types
+\t\t\tLiteral: recordLit,
+\t\t}
+\t\tadt.Variants = []*ast.ADTVariant{variant}
+'''
+          new = '''\t// Check if this is a semantic record, concrete struct, or record composition.
+\t// Both product forms go through the type parser; struct carries a distinct
+\t// STRUCT token so later semantic projection can select representation.
+\tif p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.STRUCT) {
+\t\trecordType := p.parseTypePrimary()
+\t\tif recordType == nil {
+\t\t\treturn nil
+\t\t}
+\t\tvariant := &ast.ADTVariant{
+\t\t\tToken:   p.currentToken,
+\t\t\tName:    adt.Name,
+\t\t\tLiteral: recordType,
+\t\t}
+\t\tadt.Variants = []*ast.ADTVariant{variant}
+'''
+          if old not in text:
+              raise SystemExit('legacy parseADTType record block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''\t} else if p.currentTokenIs(token.LBRACE) {
+\t\t// This is a record type definition: Name: type = { field: Type, ... }
+\t\t// Use parseRecordType() which handles type annotations (field: Type)
+\t\t// instead of parseRecordLiteral() which handles values (field: value)
+\t\trecordType := p.parseRecordType()
+\t\tif recordType == nil {
+\t\t\treturn nil
+\t\t}
+\t\t// parseRecordType() leaves currentToken at the closing brace '}'
+\t\t// This is the last token of the ADT definition, so we leave it here
+\t\t// ParseProgram will call p.nextToken() to advance from '}' to the start of the next statement
+\t\t// Store as a single variant with record type
+\t\tvariant := &ast.ADTVariant{
+\t\t\tToken:   p.currentToken,
+\t\t\tName:    adt.Name,   // Use ADT name as variant name for record types
+\t\t\tLiteral: recordType, // For record types, we store the type as the "literal"
+\t\t}
+\t\tadt.Variants = []*ast.ADTVariant{variant}
+\t\t// After parseRecordType(), currentToken is at the closing brace '}'
+\t\t// This is the last token of the ADT definition
+\t\t// ParseProgram will call p.nextToken() to advance to the next statement
+'''
+          new = '''\t} else if p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.STRUCT) {
+\t\t// Semantic records and concrete structs share product-type parsing. The
+\t\t// RecordLiteral AST retains the opening token: LBRACE means semantic shape;
+\t\t// STRUCT means a concrete representation policy was explicitly selected.
+\t\trecordType := p.parseTypePrimary()
+\t\tif recordType == nil {
+\t\t\treturn nil
+\t\t}
+\t\tvariant := &ast.ADTVariant{
+\t\t\tToken:   p.currentToken,
+\t\t\tName:    adt.Name,
+\t\t\tLiteral: recordType,
+\t\t}
+\t\tadt.Variants = []*ast.ADTVariant{variant}
+'''
+          if old not in text:
+              raise SystemExit('parseADTTypeFromName record block not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+          gofmt -w parser/parser.go
+      - name: Verify
+        run: go test -race ./...
+      - name: Commit validated repair
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/patch-struct-type-parser.yml
+          git add parser/parser.go
+          git commit -m 'Parse semantic records and concrete structs as type forms'
+          git push origin HEAD:feat/record-layout
