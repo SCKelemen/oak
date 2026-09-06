@@ -65,10 +65,12 @@ func (s *Scanner) readChar() {
 	s.line = s.nextLn
 	s.column = s.nextCol
 
+	// Invalid UTF-8 decodes to U+FFFD and the scanner keeps progressing.
+	// This is tolerated only because ingestion is the authoritative gate:
+	// Compilation.Parse rejects any source that fails source.ValidateUTF8
+	// before the scanner runs (docs/spec/70-strings.md section 8), so
+	// invalid bytes here can occur only for partial buffers (e.g. editors).
 	r, w := utf8.DecodeRuneInString(s.input[s.read:])
-	if r == utf8.RuneError && w == 1 {
-		// Keep progressing on invalid UTF-8 while surfacing ILLEGAL token downstream.
-	}
 	s.current = r
 	s.width = w
 	s.read += w

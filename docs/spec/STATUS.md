@@ -41,7 +41,7 @@ Legend:
 | Arena semantics | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR represents explicit arena identity/lifetime; `Oak.RegionLifetime` proves lifetime containment, transitivity, alive-child implies alive-region, and that a region-bound value cannot remain alive after the region ends; refinement pending |
 | Slab allocator semantics | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR validates explicit bounded slab/pool capacity and identity; `Oak.Slab` proves abstract capacity preservation; refinement pending |
 | Generational handles | ✓ | partial | ✓ | ✓ | ✓ |  | `Oak.Handles` proves stale handles cannot resolve after generation-changing reuse and cleared slots never resolve. `semir.HandleTable` implements slot+generation identity as a transliteration of the model's `Resolves`/`clear`/`reuse` operations (generation advances before re-occupancy; an exhausted 32-bit generation retires its slot fail-closed instead of wrapping), with tests mirroring the proven laws; surface syntax, codegen lowering, and refinement pending |
-| UTF-8 `string` validity | ✓ | partial | partial |  |  |  | legacy string code exists but must reconcile validation invariant |
+| UTF-8 `string` validity | ✓ | partial | ✓ | ✓ | ✓ |  | source ingestion is the authoritative validity gate: `source.ValidateUTF8` (a transliteration of `Oak.Utf8Validity.Seq`, Unicode Table 3-7) rejects invalid source before scanning, so string literals cannot carry invalid bytes into `string` values or generated C; differentially tested against the standard library (exhaustive 1–2 byte, bracket-boundary 3–4 byte, randomized). `Oak.Utf8Validity` proves accepted sequences denote Unicode scalars (no surrogates, ≤ U+10FFFF), byte counts equal canonical widths (no overlongs, tied to `Oak.SourcePosition.utf8Width`), and ASCII/compositional validity. Encoding-phantom `Str[E]` types, the validated `[]u8 → string` conversion surface, canonical refined-`u32` `rune`, and refinement remain pending |
 | UTF-16 / UTF-32 encoded views | ✓ | partial | partial |  |  |  | legacy library/spec work exists; no proof yet |
 | Compile-time metadata | ✓ | partial | partial |  |  |  | legacy backtick syntax is not yet normative |
 | C backend | ✓ | ✓ | ✓ |  |  |  | semantic shape constraints erase; concrete struct lowering requires resolved representation. The golden corpus (single authoritative case list in `serialize.GoldenCases`) captures every stage — source through emitted C — for all cases, is verified by `go test` (drift fails CI), and each golden `.c` is syntax-checked with the system C compiler; corpus covers block bodies, tail-recursion loop lowering, and unsafe admission. Legacy ADT value-tag syntax (`Ok: 200`) fails to parse and is captured as an error-path case pending ADT reconciliation |
@@ -65,6 +65,7 @@ The formal gate currently checks:
 - `Oak.Escape`
 - `Oak.Unsafe`
 - `Oak.Discipline`
+- `Oak.Utf8Validity`
 - `Oak.Handles`
 - `Oak.Slab`
 - `Oak.Exhaustiveness`

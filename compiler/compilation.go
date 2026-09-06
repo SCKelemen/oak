@@ -111,6 +111,16 @@ func (comp Compilation) Source() SourceText {
 // therefore share one parser and one AST semantics.
 func (comp Compilation) Parse() Stage[*SyntaxTree] {
 	return Value(comp.source).Then(func(text SourceText) (*SyntaxTree, error) {
+		// Source-decoder validation (docs/spec/70-strings.md section 8,
+		// Oak.Utf8Validity): string literals inherit their validity from the
+		// whole file being valid UTF-8, so invalid bytes are rejected at
+		// ingestion instead of flowing byte-exact into `string` values and
+		// generated C.
+		if offset, ok := source.ValidateUTF8(text.Text); !ok {
+			return nil, phaseError("source", []string{
+				fmt.Sprintf("source is not valid UTF-8 at byte offset %d", offset),
+			})
+		}
 		file := text.File(1)
 		tokens := layout.New(scanner.NewFile(file))
 		p := parser.New(tokens)
