@@ -175,9 +175,13 @@ arm's proof context. Constructors whose result equations are contradictory are
 excluded from the reachable case set, so their arms are semantically `never`
 and are not required for exhaustiveness.
 
-The initial solver is intentionally equality-only. General propositions,
-arithmetic indices, existential indices, and user-directed proof terms require
-separate normative extensions. They must not be inferred by ad hoc runtime tags.
+The initial solver is intentionally equality-only. Its accepted result indices
+are atomic type names or declared type parameters. Nested applications,
+arithmetic indices, existential indices, general propositions, and user-directed
+proof terms require separate normative extensions; until their structured
+representation and solving rules are implemented, declarations using them are
+rejected with `OAK-T0301`. They must not be approximated by stringly typed
+identifiers or inferred from ad hoc runtime tags.
 
 ## 10. Representation separation
 
