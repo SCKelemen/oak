@@ -11,9 +11,15 @@ import (
 // PatternRefinement is one fact learned by entering a reachable match arm.
 // Today the compiler materializes constructor refinements as narrowed ADT types;
 // future GADT result-index equalities plug into this same arm-fact channel.
+type TypeIndexEquality struct {
+	Parameter string
+	Type      string
+}
+
 type PatternRefinement struct {
 	Subject     string
 	Constructor string
+	Equalities  []TypeIndexEquality
 }
 
 type MatchArmAnalysis struct {
@@ -61,14 +67,8 @@ func cloneCoverageNode(node *coverageNode) *coverageNode {
 }
 
 func (tc *TypeChecker) adtNameForCoverage(typ Type) (string, string, bool) {
-	switch t := typ.(type) {
-	case *ADTType:
-		return t.Name, "", true
-	case *NarrowedADTVariantType:
-		return t.ADTName, t.VariantName, true
-	default:
-		return "", "", false
-	}
+	name, onlyVariant, _, ok := adtInstantiation(typ)
+	return name, onlyVariant, ok
 }
 
 func (tc *TypeChecker) findADTVariant(adtName, variantName string) (*object.ADTVariantDef, bool) {
@@ -84,11 +84,19 @@ func (tc *TypeChecker) findADTVariant(adtName, variantName string) (*object.ADTV
 	return nil, false
 }
 
-func (tc *TypeChecker) variantPayloadType(variant *object.ADTVariantDef) Type {
+func (tc *TypeChecker) variantPayloadType(parent Type, variant *object.ADTVariantDef) Type {
 	if variant == nil || variant.Payload == "" {
 		return &UnitType{}
 	}
-	return tc.parseTypeExpression(&ast.Identifier{Value: variant.Payload})
+	adtName, _, args, ok := adtInstantiation(parent)
+	if !ok {
+		return nil
+	}
+	bindings, reachable := tc.variantIndexBindings(tc.adtTypes[adtName], variant, args)
+	if !reachable {
+		return nil
+	}
+	return tc.instantiateStoredType(variant.Payload, bindings)
 }
 
 func literalMatchesCoverageType(typ Type, expr ast.Expression) bool {
@@ -157,6 +165,9 @@ func (tc *TypeChecker) applyCoverage(node *coverageNode, pattern ast.Pattern) (c
 		if onlyVariant != "" && variant.Name != onlyVariant {
 			return false, false, true
 		}
+		if !tc.variantReachable(node.typ, adtName, variant) {
+			return false, false, true
+		}
 
 		hasPayload := variant.Payload != ""
 		if hasPayload != (p.Payload != nil) {
@@ -165,7 +176,7 @@ func (tc *TypeChecker) applyCoverage(node *coverageNode, pattern ast.Pattern) (c
 
 		child, exists := node.constructors[variant.Name]
 		if !exists {
-			payloadType := tc.variantPayloadType(variant)
+			payloadType := tc.variantPayloadType(node.typ, variant)
 			if payloadType == nil {
 				return false, true, false
 			}
@@ -225,6 +236,9 @@ func (tc *TypeChecker) coverageComplete(node *coverageNode) bool {
 		if onlyVariant != "" && variant.Name != onlyVariant {
 			continue
 		}
+		if !tc.variantReachable(node.typ, adtName, variant) {
+			continue
+		}
 		child, covered := node.constructors[variant.Name]
 		if !covered || !tc.coverageComplete(child) {
 			return false
@@ -267,6 +281,9 @@ func (tc *TypeChecker) coverageWitnesses(node *coverageNode, limit int) []string
 		if onlyVariant != "" && variant.Name != onlyVariant {
 			continue
 		}
+		if !tc.variantReachable(node.typ, adtName, variant) {
+			continue
+		}
 		child, covered := node.constructors[variant.Name]
 		if !covered {
 			if variant.Payload == "" {
@@ -289,12 +306,34 @@ func (tc *TypeChecker) coverageWitnesses(node *coverageNode, limit int) []string
 	return witnesses
 }
 
-func constructorRefinement(subject string, pattern ast.Pattern) []PatternRefinement {
-	variant, ok := pattern.(*ast.VariantPattern)
+func (tc *TypeChecker) constructorRefinement(subject string, pattern ast.Pattern, scrutinee Type) []PatternRefinement {
+	patternVariant, ok := pattern.(*ast.VariantPattern)
 	if !ok || subject == "" {
 		return nil
 	}
-	return []PatternRefinement{{Subject: subject, Constructor: variant.Variant.Value}}
+	refinement := PatternRefinement{Subject: subject, Constructor: patternVariant.Variant.Value}
+	adtName, _, args, isADT := adtInstantiation(scrutinee)
+	if !isADT {
+		return []PatternRefinement{refinement}
+	}
+	adt := tc.adtTypes[adtName]
+	variant, found := tc.findADTVariant(adtName, patternVariant.Variant.Value)
+	if !found {
+		return []PatternRefinement{refinement}
+	}
+	bindings, reachable := tc.variantIndexBindings(adt, variant, args)
+	if !reachable {
+		return []PatternRefinement{refinement}
+	}
+	for _, parameter := range adt.TypeParams {
+		if bound, exists := bindings[parameter]; exists {
+			refinement.Equalities = append(refinement.Equalities, TypeIndexEquality{
+				Parameter: parameter,
+				Type:      bound.String(),
+			})
+		}
+	}
+	return []PatternRefinement{refinement}
 }
 
 func (tc *TypeChecker) analyzeMatch(expr *ast.MatchExpression, scrutineeType Type) MatchAnalysis {
@@ -313,7 +352,7 @@ func (tc *TypeChecker) analyzeMatch(expr *ast.MatchExpression, scrutineeType Typ
 		changed, possible, valid := tc.applyCoverage(candidate, arm.Pattern)
 		state := MatchArmAnalysis{
 			Reachable:   true,
-			Refinements: constructorRefinement(subject, arm.Pattern),
+			Refinements: tc.constructorRefinement(subject, arm.Pattern, scrutineeType),
 		}
 		switch {
 		case !valid:

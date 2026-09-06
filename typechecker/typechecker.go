@@ -126,19 +126,25 @@ func (t *ADTType) Equals(other Type) bool {
 type NarrowedADTVariantType struct {
 	ADTName     string
 	VariantName string
+	TypeArgs    []Type
 }
 
 func (t *NarrowedADTVariantType) String() string {
-	return fmt.Sprintf("%s::%s", t.ADTName, t.VariantName)
+	parent := (&GenericType{Name: t.ADTName, TypeArgs: t.TypeArgs}).String()
+	return fmt.Sprintf("%s::%s", parent, t.VariantName)
 }
 
 func (t *NarrowedADTVariantType) Equals(other Type) bool {
 	if otherNarrowed, ok := other.(*NarrowedADTVariantType); ok {
-		return t.ADTName == otherNarrowed.ADTName && t.VariantName == otherNarrowed.VariantName
+		return t.ADTName == otherNarrowed.ADTName &&
+			t.VariantName == otherNarrowed.VariantName &&
+			typeListsEqual(t.TypeArgs, otherNarrowed.TypeArgs)
 	}
-	// A narrowed variant is compatible with its parent ADT type
 	if otherADT, ok := other.(*ADTType); ok {
-		return t.ADTName == otherADT.Name
+		return t.ADTName == otherADT.Name && len(t.TypeArgs) == 0
+	}
+	if otherGeneric, ok := other.(*GenericType); ok {
+		return t.ADTName == otherGeneric.Name && typeListsEqual(t.TypeArgs, otherGeneric.TypeArgs)
 	}
 	return false
 }
@@ -606,7 +612,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.MatchExpression:
 		return tc.checkMatchExpression(e)
 	case *ast.VariantExpression:
-		return tc.checkVariantExpression(e)
+		return tc.checkVariantExpression(e, expected)
 	case *ast.RecordLiteral:
 		return tc.checkRecordLiteral(e, expected)
 	case *ast.IndexExpression:
@@ -1584,11 +1590,9 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 	case *ast.WildcardPattern:
 		return expectedType
 	case *ast.BindingPattern:
-		// Bind the variable in the environment
 		tc.env.SetType(p.Name.Value, expectedType)
 		return expectedType
 	case *ast.LiteralPattern:
-		// Check that literal matches expected type
 		litType := tc.checkExpression(p.Value)
 		if litType == nil {
 			return nil
@@ -1599,102 +1603,60 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 		}
 		return expectedType
 	case *ast.VariantPattern:
-		// A nested match may see a scrutinee already refined by an outer
-		// constructor arm. Validate against the parent ADT; coverage analysis
-		// separately rejects constructors made impossible by that refinement.
-		if narrowed, ok := expectedType.(*NarrowedADTVariantType); ok {
-			expectedType = &ADTType{Name: narrowed.ADTName}
-		}
-		// Check that variant belongs to expected ADT type.
-		if adtType, ok := expectedType.(*ADTType); ok {
-			if p.TypeName != nil && p.TypeName.Value != adtType.Name {
-				tc.addError(p.TypeName, "pattern constructor %s.%s does not belong to scrutinee type %s", p.TypeName.Value, p.Variant.Value, adtType.Name)
+		adtName, _, typeArgs, isADT := adtInstantiation(expectedType)
+		if isADT {
+			if p.TypeName != nil && p.TypeName.Value != adtName {
+				tc.addError(p.TypeName, "pattern constructor %s.%s does not belong to scrutinee type %s", p.TypeName.Value, p.Variant.Value, adtName)
 				return nil
 			}
-			// Verify variant exists in ADT
-			if adtDef, ok := tc.adtTypes[adtType.Name]; ok {
-				variantName := p.Variant.Value
-				found := false
-				for _, variant := range adtDef.Variants {
-					if variant.Name == variantName {
-						found = true
-						// Check payload type if variant has one
-						if p.Payload != nil {
-							if variant.Payload == "" {
-								// Use the variant pattern as the node
-								if patternNode, ok := pattern.(ast.Node); ok {
-									tc.addError(patternNode, "variant %s of ADT %s does not accept a payload", variantName, adtType.Name)
-								} else {
-									tc.addError(nil, "variant %s of ADT %s does not accept a payload", variantName, adtType.Name)
-								}
-								return nil
-							}
-							// Check payload type matches variant's expected payload type
-							expectedPayloadType := tc.parseTypeExpression(&ast.Identifier{Value: variant.Payload})
-							if expectedPayloadType == nil {
-								return nil
-							}
-							// For variant patterns, payload is a pattern, so we check it matches the expected type
-							payloadType := tc.checkPattern(p.Payload, expectedPayloadType)
-							if payloadType == nil {
-								return nil
-							}
-						} else if variant.Payload != "" {
-							if patternNode, ok := pattern.(ast.Node); ok {
-								tc.addError(patternNode, "variant %s of ADT %s requires a payload of type %s", variantName, adtType.Name, variant.Payload)
-							} else {
-								tc.addError(nil, "variant %s of ADT %s requires a payload of type %s", variantName, adtType.Name, variant.Payload)
-							}
-							return nil
-						}
-						// Return narrowed variant type for type narrowing
-						return &NarrowedADTVariantType{
-							ADTName:     adtType.Name,
-							VariantName: variantName,
-						}
-					}
-				}
-				if !found {
-					if patternNode, ok := pattern.(ast.Node); ok {
-						tc.addError(patternNode, "variant %s not found in ADT %s", variantName, adtType.Name)
-					} else {
-						tc.addError(nil, "variant %s not found in ADT %s", variantName, adtType.Name)
-					}
+			adtDef, exists := tc.adtTypes[adtName]
+			if !exists {
+				tc.addError(p, "ADT type %s not found", adtName)
+				return nil
+			}
+			variant, found := tc.findADTVariant(adtName, p.Variant.Value)
+			if !found {
+				tc.addError(p, "variant %s not found in ADT %s", p.Variant.Value, adtName)
+				return nil
+			}
+			bindings, reachable := tc.variantIndexBindings(adtDef, variant, typeArgs)
+			if !reachable {
+				bindings = map[string]Type{}
+			}
+			if p.Payload != nil {
+				if variant.Payload == "" {
+					tc.addError(p, "variant %s of ADT %s does not accept a payload", variant.Name, adtName)
 					return nil
 				}
+				expectedPayload := tc.instantiateStoredType(variant.Payload, bindings)
+				if expectedPayload == nil || tc.checkPattern(p.Payload, expectedPayload) == nil {
+					return nil
+				}
+			} else if variant.Payload != "" {
+				tc.addError(p, "variant %s of ADT %s requires a payload of type %s", variant.Name, adtName, variant.Payload)
+				return nil
 			}
-			return expectedType
+			return &NarrowedADTVariantType{ADTName: adtName, VariantName: variant.Name, TypeArgs: typeArgs}
 		}
-		// Handle matching on primitive types with ADT literal tags (type narrowing)
-		// If matching a primitive literal against an ADT with literal tags, narrow to the variant
+
+		// Literal-tag ADTs may still narrow primitive scrutinees.
 		if tc.isNumericType(expectedType) || expectedType.Equals(&StringType{}) {
-			// Check if any ADT has a variant with a matching literal tag
-			variantName := p.Variant.Value
 			for adtName, adtDef := range tc.adtTypes {
 				for _, variant := range adtDef.Variants {
-					if variant.Name == variantName && variant.Literal != nil {
-						// Check if literal type matches expected type
+					if variant.Name == p.Variant.Value && variant.Literal != nil {
 						litType := tc.getLiteralType(variant.Literal)
 						if litType != nil && litType.Equals(expectedType) {
-							// This is a valid narrowing: primitive -> ADT variant
-							return &NarrowedADTVariantType{
-								ADTName:     adtName,
-								VariantName: variantName,
-							}
+							return &NarrowedADTVariantType{ADTName: adtName, VariantName: variant.Name}
 						}
 					}
 				}
 			}
 		}
-		if patternNode, ok := pattern.(ast.Node); ok {
-			tc.addError(patternNode, "variant pattern used on non-ADT type: %s", expectedType)
-		} else {
-			tc.addError(nil, "variant pattern used on non-ADT type: %s", expectedType)
-		}
+		tc.addError(p, "variant pattern used on non-ADT type: %s", expectedType)
 		return nil
 	default:
-		if patternNode, ok := pattern.(ast.Node); ok {
-			tc.addError(patternNode, "unknown pattern type: %T", pattern)
+		if node, ok := pattern.(ast.Node); ok {
+			tc.addError(node, "unknown pattern type: %T", pattern)
 		} else {
 			tc.addError(nil, "unknown pattern type: %T", pattern)
 		}
@@ -1702,72 +1664,70 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 	}
 }
 
-func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression) Type {
-	var adtTypeName string
-
+func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expected Type) Type {
+	adtTypeName := ""
 	if expr.TypeName != nil {
-		// Type::Variant form
 		adtTypeName = expr.TypeName.Value
+	} else if name, _, _, ok := adtInstantiation(expected); ok {
+		adtTypeName = name
 	} else {
-		// Bare variant (.Variant) - need to infer from context
-		// For now, we'll need to search for ADT types that contain this variant
-		// This is a limitation - we'd need better type inference
-		variantName := expr.Variant.Value
 		for name, adtDef := range tc.adtTypes {
 			for _, variant := range adtDef.Variants {
-				if variant.Name == variantName {
+				if variant.Name == expr.Variant.Value {
+					if adtTypeName != "" && adtTypeName != name {
+						tc.addError(expr, "cannot infer ADT type for ambiguous variant .%s", expr.Variant.Value)
+						return nil
+					}
 					adtTypeName = name
-					break
 				}
 			}
-			if adtTypeName != "" {
-				break
-			}
 		}
-		if adtTypeName == "" {
-			tc.addError(expr, "cannot infer ADT type for variant .%s", variantName)
+	}
+	if adtTypeName == "" {
+		tc.addError(expr, "cannot infer ADT type for variant .%s", expr.Variant.Value)
+		return nil
+	}
+
+	adtDef, ok := tc.adtTypes[adtTypeName]
+	if !ok {
+		tc.addError(expr, "ADT type %s not found", adtTypeName)
+		return nil
+	}
+	variant, found := tc.findADTVariant(adtTypeName, expr.Variant.Value)
+	if !found {
+		tc.addError(expr, "variant %s not found in ADT %s", expr.Variant.Value, adtTypeName)
+		return nil
+	}
+
+	var bindings map[string]Type
+	if name, _, args, hasExpectedADT := adtInstantiation(expected); hasExpectedADT && name == adtTypeName {
+		var reachable bool
+		bindings, reachable = tc.variantIndexBindings(adtDef, variant, args)
+		if !reachable {
+			d := tc.addTypeDiagnostic(expr, CodeGADTResultMismatch, "constructor result does not inhabit the expected indexed ADT")
+			d.AddNote(fmt.Sprintf("%s.%s cannot produce %s", adtTypeName, variant.Name, expected))
+			d.AddHelp("choose a constructor whose declared result indices match the expected type")
 			return nil
 		}
 	}
 
-	// Verify variant exists in ADT
-	if adtDef, ok := tc.adtTypes[adtTypeName]; ok {
-		variantName := expr.Variant.Value
-		found := false
-		for _, variant := range adtDef.Variants {
-			if variant.Name == variantName {
-				found = true
-				// Check payload if provided
-				if expr.Payload != nil {
-					if variant.Payload == "" {
-						tc.addError(expr, "variant %s of ADT %s does not accept a payload", variantName, adtTypeName)
-						return nil
-					}
-					expectedPayloadType := tc.parseTypeExpression(&ast.Identifier{Value: variant.Payload})
-					actualPayloadType := tc.checkExpression(expr.Payload)
-					if actualPayloadType == nil {
-						return nil
-					}
-					if !actualPayloadType.Equals(expectedPayloadType) {
-						tc.addError(expr.Payload, "variant %s payload: expected %s, got %s", variantName, expectedPayloadType, actualPayloadType)
-						return nil
-					}
-				} else if variant.Payload != "" {
-					tc.addError(expr, "variant %s of ADT %s requires a payload of type %s", variantName, adtTypeName, variant.Payload)
-					return nil
-				}
-				break
-			}
-		}
-		if !found {
-			tc.addError(expr, "variant %s not found in ADT %s", variantName, adtTypeName)
+	if expr.Payload != nil {
+		if variant.Payload == "" {
+			tc.addError(expr, "variant %s of ADT %s does not accept a payload", variant.Name, adtTypeName)
 			return nil
 		}
-		return &ADTType{Name: adtTypeName}
+		expectedPayload := tc.instantiateStoredType(variant.Payload, bindings)
+		actualPayload := tc.checkExpression(expr.Payload, expectedPayload)
+		if expectedPayload == nil || actualPayload == nil || !tc.isAssignable(actualPayload, expectedPayload) {
+			tc.addError(expr.Payload, "variant %s payload: expected %s, got %s", variant.Name, expectedPayload, actualPayload)
+			return nil
+		}
+	} else if variant.Payload != "" {
+		tc.addError(expr, "variant %s of ADT %s requires a payload of type %s", variant.Name, adtTypeName, variant.Payload)
+		return nil
 	}
 
-	tc.addError(expr, "ADT type %s not found", adtTypeName)
-	return nil
+	return tc.variantResultType(adtDef, variant, expected)
 }
 
 func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType ...Type) Type {
@@ -2314,28 +2274,34 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 	// Register the ADT type in the typechecker's adtTypes map FIRST
 	// This allows variant checking to reference the ADT type
 	adtType := &object.ADTType{
-		Name:     stmt.Name.Value,
-		Variants: []*object.ADTVariantDef{},
+		Name:       stmt.Name.Value,
+		TypeParams: make([]string, 0, len(stmt.TypeParams)),
+		Variants:   []*object.ADTVariantDef{},
+	}
+	for _, param := range stmt.TypeParams {
+		adtType.TypeParams = append(adtType.TypeParams, param.Name.Value)
 	}
 
 	for _, variant := range stmt.Variants {
-		variantDef := &object.ADTVariantDef{
-			Name: variant.Name.Value,
+		variantDef := &object.ADTVariantDef{Name: variant.Name.Value}
+		if variant.Payload != nil {
+			variantDef.Payload = variant.Payload.String()
 		}
 
-		if variant.Payload != nil {
-			// Extract payload type name
-			if ident, ok := variant.Payload.(*ast.Identifier); ok {
-				variantDef.Payload = ident.Value
+		if variant.Result == nil {
+			variantDef.ResultName = stmt.Name.Value
+			variantDef.ResultIndices = append([]string(nil), adtType.TypeParams...)
+		} else {
+			resultName, indices, err := constructorResultSyntax(variant.Result)
+			if err != nil || resultName != stmt.Name.Value || len(indices) != len(adtType.TypeParams) {
+				d := tc.addTypeDiagnostic(variant.Result, CodeGADTResultInvalid, "invalid indexed constructor result")
+				d.AddNote(fmt.Sprintf("constructor %s must return %s with %d type indices", variant.Name.Value, stmt.Name.Value, len(adtType.TypeParams)))
+				d.AddHelp("write the result as the enclosing ADT applied to exactly its declared type indices")
 			} else {
-				// For complex types, just store a placeholder
-				variantDef.Payload = "T" // Generic placeholder
+				variantDef.ResultName = resultName
+				variantDef.ResultIndices = indices
 			}
 		}
-
-		// Note: Literal tags are not stored in object.ADTVariantDef during type checking
-		// They're only used for type checking validation
-
 		adtType.Variants = append(adtType.Variants, variantDef)
 	}
 
@@ -2695,6 +2661,10 @@ func (t *GenericType) Equals(other Type) bool {
 // parseTypeExpression parses a type from an AST expression
 // Handles identifiers, intersections (A & B), and other type expressions
 func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
+	if generic, recognized := tc.parseGenericTypeApplication(expr); recognized {
+		return generic
+	}
+
 	// Handle intersection types: A & B & C
 	// Use collectIntersectionTypes to properly flatten nested intersections
 	if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "&" {

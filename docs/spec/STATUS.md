@@ -30,7 +30,7 @@ Legend:
 | Pattern matching | ✓ | ✓ | ✓ | partial | partial |  | canonical `=>`; constructor/payload narrowing exists; recursive coverage analysis is formalized separately; legacy surface aliases remain implementation concern |
 | Exhaustiveness | ✓ | ✓ | ✓ | ✓ | ✓ |  | recursive coverage tree distinguishes constructor payload cases, finite `Bool`, and open scalar domains; counterexamples are deterministic source-level pattern witnesses; malformed patterns suppress derivative coverage errors. `Oak.Exhaustiveness` proves finite constructor coverage laws and `Oak.PatternAnalysis` proves reachable-case coverage/counterexample laws; implementation refinement pending |
 | Pattern redundancy / reachable-state analysis | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | source-order usefulness detects subsumed arms; existing narrowed constructor facts restrict the reachable case universe; impossible/redundant arm bodies are treated as `never` and do not widen match results. `OAK-T0202`/`OAK-T0203` are structured unnecessary-code warnings. `Oak.PatternAnalysisRefinement` proves scoped correspondence for finite recursive semantic case expansion: concrete recursive matching, completion, redundancy, and bounded counterexample witnesses agree with `Oak.PatternAnalysis`. Open scalar domains and representation-level extraction from Go maps remain outside this scoped **R** claim. |
-| GADT-style refinements | direction | partial | partial | ✓ | ✓ |  | the analyzer and formal model operate over a refinement-restricted reachable semantic case set, including empty/vacuously exhaustive states. Concrete support currently consumes existing constructor narrowing only; constructor result-index declaration syntax, equality/proposition generation, and a GADT solver are intentionally not yet frozen or implemented |
+| GADT-style refinements | ✓ | partial | ✓ | ✓ | ✓ |  | canonical `=> EnclosingADT[indices]` constructor results are parsed and checked; fixed atomic indices and repeated result parameters generate equality obligations, restrict reachable constructors, and enter reachable-arm refinement facts. `Oak.GADTRefinement` proves fixed equality, mismatch, repeated-parameter, arity, and reachable-case laws. Nested applied indices, general propositions/existentials, payload-wide substitution, and implementation refinement remain pending |
 | Generic constraints/interfaces | ✓ | ✓ | ✓ | partial | partial | partial | static predicate semantics; named requirements may be method interfaces or semantic record shapes; record-shape call inference/discharge/substitution has a scoped refinement proof, but arbitrary multi-variable/multi-parameter unification and method-interface discharge are not yet refined |
 | Phantom types | ✓ | partial | partial | ✓ | ✓ |  | `Oak.PhantomRepresentation` proves phantom rebinding changes static identity while preserving the entire runtime representation record, including size, alignment, and bit width; implementation refinement/inference pending |
 | Views / spans | ✓ | ✓ | ✓ | ✓ | ✓ | partial | `Oak.Borrowing` proves local read/write authority laws. `Oak.BorrowRegions` proves half-open region symmetry/disjointness, adjacency, zero-length behavior, and conservative unknown-region conflict. Derived slices/subslices retain exact absolute owner regions when statically known; writable children suspend their parent span until the last live child's lexical release, and sibling reborrows coexist when their regions are statically proven pairwise disjoint (fail-closed for unknown regions). `Oak.Reborrow` proves parent/child writable exclusivity and restoration, and `Oak.Reborrow.Split` proves sibling admission requires pairwise disjointness, preserves it, rejects overlap, and restores the parent after the last release, with `Oak.BorrowRegions.Disjoint` as the single authoritative disjointness fact. `Oak.ReborrowRefinement` proves the concrete compiler decision procedure (`regionEnd`, `regionsOverlap`, `admitReborrow`, kept as line-for-line transliterations, cross-checked by differential element-semantics tests) decides exactly the abstract overlap/admission laws on validated regions and fails closed for unknown, malformed, and overflowing regions. **R is scoped to this pure admission procedure**; traversal, borrow-state bookkeeping, and the remaining view/span machinery are not yet refined |
@@ -66,6 +66,7 @@ The formal gate currently checks:
 - `Oak.Exhaustiveness`
 - `Oak.PatternAnalysis`
 - `Oak.PatternAnalysisRefinement`
+- `Oak.GADTRefinement`
 - `Oak.SourcePosition`
 - `Oak.Delimited`
 - `Oak.RegionLifetime`
@@ -84,15 +85,14 @@ A green Lean build means the stated theorems type-check against the pinned proof
 
 ## Immediate formal-verification queue
 
-1. extend the reachable-case provider from constructor narrowing to real GADT result-index equalities/propositions, and later connect the Go map representation itself to the now-proved finite recursive decision procedure;
-2. extend general inference refinement from direct/one-level unary `T: Shape` calls to multiple parameters, repeated type-variable occurrences, generic applications, multiple quantified variables and refinement obligations;
-3. connect ownership/effect/region analysis to `GeneralizationFacts`, then prove/refine the concrete generalization decision against `Oak.GeneralizationSafety`;
-4. finish migrating parser/type/effect/representation and remaining borrow/escape/move failures to first-class diagnostic codes and canonical byte locations, then refine the concrete diagnostic identity/primary-cause operations against `Oak.Diagnostics`;
-5. explicit refinement from selected/resolved struct representation to `Oak.RecordLayout` and from `RepresentationRegistry` selection to `Oak.RepresentationPolymorphism`;
-6. explicit implementation refinements for type lattice, effects, borrowing/regions, source positions, delimited parsing, region lifetimes, phantom representation, binder identity, and layout normalization;
-7. formalize method-interface constraint discharge and its no-runtime-object specialization semantics;
-8. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
-9. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
+1. extend general inference refinement from direct/one-level unary `T: Shape` calls to multiple parameters, repeated type-variable occurrences, generic applications, multiple quantified variables and refinement obligations;
+2. connect ownership/effect/region analysis to `GeneralizationFacts`, then prove/refine the concrete generalization decision against `Oak.GeneralizationSafety`;
+3. finish migrating parser/type/effect/representation and remaining borrow/escape/move failures to first-class diagnostic codes and canonical byte locations, then refine the concrete diagnostic identity/primary-cause operations against `Oak.Diagnostics`;
+4. explicit refinement from selected/resolved struct representation to `Oak.RecordLayout` and from `RepresentationRegistry` selection to `Oak.RepresentationPolymorphism`;
+5. explicit implementation refinements for type lattice, effects, borrowing/regions, source positions, delimited parsing, region lifetimes, phantom representation, binder identity, and layout normalization;
+6. connect the Go coverage-map and indexed-ADT solver representations to `Oak.PatternAnalysisRefinement` and `Oak.GADTRefinement`, then formalize method-interface constraint discharge and its no-runtime-object specialization semantics;
+7. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
+8. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
 
 ## Refinement policy
 

@@ -137,7 +137,7 @@ Exhaustiveness is required only over cases that remain reachable after applying 
 
 If the current proof context excludes every constructor, the semantic case space is empty and exhaustiveness is vacuous. The programmer must not be required to add a fake wildcard for an impossible value.
 
-This document does **not** freeze syntax for declaring constructor result indices/equalities. Until that syntax and its solver are implemented, the compiler's concrete GADT behavior is limited to refinement facts it can already represent, such as an existing narrowed constructor. The reachable-case abstraction is intentionally the integration point for future GADT equality solving.
+Constructor result indices use the normative declaration syntax specified in `30-adts-patterns.md`. Before coverage is computed, the equality solver unifies each constructor result with the scrutinee's indexed ADT application. Fixed-index contradictions and inconsistent repeated parameter bindings remove that constructor from the reachable semantic case set. Successful parameter bindings are emitted as arm refinement facts. General non-equality propositions are not yet part of the core solver.
 
 ## 7. Reachable arm typing
 

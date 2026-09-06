@@ -261,8 +261,9 @@ func (p *Parser) parseStatement() ast.Statement {
 					adt.Variants = append(adt.Variants, variant)
 
 					// Parse remaining variants
-					for p.currentTokenIs(token.PIPE) {
+					for p.peekTokenIs(token.PIPE) {
 						p.nextToken() // consume |
+						p.nextToken() // next constructor name
 						variant := p.parseADTVariant()
 						if variant == nil {
 							return nil
@@ -1008,9 +1009,9 @@ func (p *Parser) parseADTType() *ast.ADTType {
 		return nil
 	}
 
-	// Move to first token of body
-	p.nextToken()
-
+	// Move to the first token of the body. Keep a leading `|` visible so
+	// this prefix form follows the same constructor-list contract as
+	// `Name: type = | ...`.
 	p.nextToken()
 
 	// Check if this is a semantic record, concrete struct, or record composition.
@@ -1061,8 +1062,11 @@ func (p *Parser) parseADTType() *ast.ADTType {
 			adt.Variants = []*ast.ADTVariant{variant}
 		}
 	} else {
-		// Parse as ADT variants: Variant1 | Variant2 | ...
+		// Parse as ADT variants: | Variant1 | Variant2 | ...
 		adt.Variants = []*ast.ADTVariant{}
+		if p.currentTokenIs(token.PIPE) {
+			p.nextToken() // first constructor name
+		}
 		variant := p.parseADTVariant()
 		if variant == nil {
 			return nil
@@ -1257,54 +1261,57 @@ func (p *Parser) parseInterfaceMethod() *ast.InterfaceMethod {
 // ADT variant: Name | Name(T) | Name: literal
 func (p *Parser) parseADTVariant() *ast.ADTVariant {
 	variant := &ast.ADTVariant{Token: p.currentToken}
-
 	if !p.currentTokenIs(token.IDENT) {
 		p.peekError(token.IDENT)
 		return nil
 	}
-
 	variant.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-	// Consume the IDENT token - we've read it into the variant name
-	// We need to consume it before processing payload/literal
-	p.nextToken() // consume the IDENT token
 
-	// Check for payload type or literal tag
-	// Cases:
-	// 1. Some: T - payload type only
-	// 2. Some: T = default - payload type with default
-	// 3. Ok: 200 - literal tag only (no payload type)
-	// 4. Less := -1 - inferred payload type from default
-	if p.currentTokenIs(token.COLON) {
-		// Single colon - could be payload type or literal tag
-		p.nextToken() // consume :
-
-		// Check if next is an identifier (payload type) or literal (literal tag)
-		if p.peekTokenIs(token.IDENT) {
-			// Payload type: Some: T
-			p.nextToken() // consume type identifier
-			variant.Payload = p.parseTypeExpression()
-
-			// Check for default value: Some: T = default
-			if p.peekTokenIs(token.ASSIGN) {
-				p.nextToken() // consume =
-				p.nextToken() // consume default value
-				variant.Literal = p.parseLiteralExpression()
-			}
-		} else {
-			// Literal tag: Ok: 200 (no payload type)
-			p.nextToken() // consume literal
+	if p.peekTokenIs(token.COLON) {
+		p.nextToken() // ':'
+		p.nextToken() // payload type or literal tag
+		switch p.currentToken.TokenKind {
+		case token.INT, token.STRING:
 			variant.Literal = p.parseLiteralExpression()
+		default:
+			variant.Payload = p.parseTypeExpression()
+			if variant.Payload == nil {
+				return nil
+			}
+			if p.peekTokenIs(token.ASSIGN) {
+				p.nextToken() // '='
+				p.nextToken() // default value
+				variant.Literal = p.parseLiteralExpression()
+				if variant.Literal == nil {
+					return nil
+				}
+			}
 		}
-	} else if p.currentTokenIs(token.COLON_ASSIGN) {
-		// Inferred payload type: Less := -1
-		p.nextToken() // consume :=
-		p.nextToken() // consume default value
+	} else if p.peekTokenIs(token.COLON_ASSIGN) {
+		p.nextToken() // ':='
+		p.nextToken() // inferred literal/default value
 		variant.Literal = p.parseLiteralExpression()
-		// Payload type will be inferred from literal during type checking
+		if variant.Literal == nil {
+			return nil
+		}
 	}
-	// For simple variants (no payload, no literal), we've already consumed the IDENT above
-	// and currentToken is now on the next token (e.g., PIPE or EOF)
 
+	// An explicit result freezes constructor result indices:
+	//     | Int: i64 => Expr[i64]
+	// Constructors without this clause implicitly return the enclosing ADT
+	// applied to its declared parameters.
+	if p.peekTokenIs(token.FAT_ARROW) {
+		p.nextToken() // '=>'
+		p.nextToken() // first token of result type
+		variant.Result = p.parseTypeExpression()
+		if variant.Result == nil {
+			p.addErrorAtCurrentToken("expected indexed constructor result type after '=>'")
+			return nil
+		}
+	}
+
+	// Contract: leave currentToken on the final token belonging to this
+	// constructor and peekToken on the separator or following statement.
 	return variant
 }
 
@@ -2647,21 +2654,16 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 		}
 		adt.Variants = append(adt.Variants, variant)
 
-		// Parse remaining variants (each starts with |)
-		// After parseADTVariant(), currentToken is on the | separator (if there is one)
-		// or on EOF/next statement if this was the last variant
-		for p.currentTokenIs(token.PIPE) {
+		// Parse remaining variants while the separator is the next token
+		for p.peekTokenIs(token.PIPE) {
 			p.nextToken() // consume |
-			// parseADTVariant expects currentToken to be the variant name (IDENT)
-			// so we don't advance here - let parseADTVariant consume the IDENT
+			p.nextToken() // next constructor name
 			variant := p.parseADTVariant()
 			if variant == nil {
 				return nil
 			}
 			adt.Variants = append(adt.Variants, variant)
 		}
-		// parseADTVariant may advance to a separator or following token. ParseProgram's
-		// progress guard handles statement-boundary recovery if needed.
 	} else if p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.STRUCT) {
 		// Semantic records and concrete structs share product-type parsing. The
 		// RecordLiteral AST retains the opening token: LBRACE means semantic shape;

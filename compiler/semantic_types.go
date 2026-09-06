@@ -126,6 +126,13 @@ func buildADTDefinition(declaration *ast.ADTType) (semir.Definition, error) {
 			}
 			semanticVariant.Payload = payload
 		}
+		if variant.Result != nil {
+			result, err := semanticTypeName(variant.Result)
+			if err != nil {
+				return semir.Definition{}, fmt.Errorf("type %q variant %q result: %w", declaration.Name.Value, variant.Name.Value, err)
+			}
+			semanticVariant.Result = result
+		}
 		definition.Type.Variants = append(definition.Type.Variants, semanticVariant)
 	}
 	return definition, nil

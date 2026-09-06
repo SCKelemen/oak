@@ -144,14 +144,17 @@ func (a *Array) Inspect() string {
 }
 
 type ADTType struct {
-	Name     string
-	Variants []*ADTVariantDef
+	Name       string
+	TypeParams []string
+	Variants   []*ADTVariantDef
 }
 
 type ADTVariantDef struct {
-	Name    string
-	Payload string // type name if has payload
-	Literal Object // optional literal tag
+	Name          string
+	Payload       string   // semantic payload type spelling
+	Literal       Object   // optional literal tag
+	ResultName    string   // enclosing ADT name for an explicit indexed result
+	ResultIndices []string // constructor result indices in source order
 }
 
 type Environment struct {

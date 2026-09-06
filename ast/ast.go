@@ -698,8 +698,9 @@ func (adt *ADTType) String() string {
 type ADTVariant struct {
 	Token   token.Token
 	Name    *Identifier
-	Payload Expression // optional type parameter, e.g. Some(T)
-	Literal Expression // optional literal tag, e.g. Ok: 200
+	Payload Expression // optional payload type, e.g. Some: T
+	Literal Expression // optional literal tag/default, e.g. Ok: 200
+	Result  Expression // optional indexed result type, e.g. Expr[i64]
 }
 
 func (v *ADTVariant) String() string {
@@ -713,6 +714,10 @@ func (v *ADTVariant) String() string {
 	if v.Literal != nil {
 		out.WriteString(": ")
 		out.WriteString(v.Literal.String())
+	}
+	if v.Result != nil {
+		out.WriteString(" => ")
+		out.WriteString(v.Result.String())
 	}
 	return out.String()
 }

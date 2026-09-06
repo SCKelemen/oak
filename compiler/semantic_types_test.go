@@ -177,3 +177,22 @@ func TestSemanticTypeNameFlattensGenericArguments(t *testing.T) {
 		t.Fatalf("expected Result[T, E], got %q", got)
 	}
 }
+
+
+func TestCompilationTypeModelPreservesIndexedConstructorResults(t *testing.T) {
+	const source = `Expr[T]: type =
+  | Int: i64 => Expr[i64]
+  | Id: T => Expr[T]`
+
+	module, err := New().WithSource("expr.oak", source).TypeModel().Get()
+	if err != nil {
+		t.Fatalf("type model projection failed: %v", err)
+	}
+	if len(module.Definitions) != 1 || len(module.Definitions[0].Type.Variants) != 2 {
+		t.Fatalf("unexpected indexed ADT model: %#v", module)
+	}
+	variants := module.Definitions[0].Type.Variants
+	if variants[0].Result != "Expr[i64]" || variants[1].Result != "Expr[T]" {
+		t.Fatalf("constructor results were not preserved: %#v", variants)
+	}
+}
