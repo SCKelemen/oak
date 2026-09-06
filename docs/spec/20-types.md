@@ -12,7 +12,7 @@ Subtyping is a partial order over semantic types:
 - transitive: `A <= B` and `B <= C` imply `A <= C`;
 - antisymmetric up to semantic equivalence.
 
-Nominal identity is separate from structural representation. Two named record declarations can have identical fields/layout and still be distinct nominal types.
+Semantic type identity is separate from runtime representation. Two types may share an identical machine layout and remain statically distinct; conversely, a semantic type may be useful to checking/proof/tooling without fixing a runtime layout at all.
 
 ## 2. Bottom, unit, and top
 
@@ -32,7 +32,7 @@ It is the result type of computations that cannot return normally.
 
 Unit has exactly one semantic value. `()` is the canonical surface spelling.
 
-An empty record value/type may have the same zero-field representation, but representation equality does not by itself create nominal type equality.
+An empty record or zero-sized struct may have the same cardinality/storage size, but representation equality does not create nominal type equality.
 
 ### `any`
 
@@ -90,28 +90,71 @@ defines one **nominal tagged sum type** `Option[T]` with constructors `Some` and
 
 The `|` in an ADT declaration enumerates constructors. It does not mean that `Option[T]` is an untagged runtime union of `T` and Unit, nor does it grant arbitrary implicit conversion between payload types and the ADT.
 
-Pattern matching can narrow an ADT value to a constructor case because the constructor tag is part of the value's semantics.
+Pattern matching can narrow an ADT value to a constructor case because constructor identity is part of the value's semantics. Its concrete tag/payload representation is a separate axis.
 
-## 5. Records are products
+## 5. Records are semantic products/shapes
 
-A record is an ordered product of named fields:
+A record describes named product semantics:
 
 ```oak
-Point: type = {
-  x: i32
-  y: i32
+XY: type = {
+  x: f32
+  y: f32
 }
 ```
 
-Source field order is semantically preserved. It may influence an explicitly chosen ABI/layout, formatting, generated schemas, and tooling.
+The abstract record meaning is determined by its named fields and their semantic types. Source declaration order is preserved by the compiler as an authoritative declaration fact for formatting, schemas, documentation and possible representation derivation, but **field order is not itself structural-compatibility semantics**.
 
-Field order alone does not determine target offsets: size, alignment, padding, packing, and ABI rules belong to the representation axis.
+Named record types remain nominal in ordinary value positions. Equal field sets do not silently create ordinary subtyping between distinct named types.
 
-Named records are nominal by default. Equal structure does not imply mutual subtyping.
+A record definition does not promise byte offsets, padding, field alignment, total size, packing, calling convention classification, or any other ABI fact.
 
-## 6. Record composition is not subtyping
+This allows a record shape to participate in compile-time reasoning without requiring a runtime representation.
 
-Definition-time record composition combines fields to form a new nominal product. It is a construction operation, not width subtyping.
+### 5.1 Record shapes as constraints
+
+In a generic constraint position, a record shape may act as a structural predicate over members:
+
+```oak
+XY: type = { x: f32, y: f32 }
+
+fn length2[T: XY](value: T): f32
+  value.x * value.x + value.y * value.y
+```
+
+The intended rule is: `T` satisfies `XY` when it provides fields with the required semantic names/types. This does not require matching memory offsets or an identical layout, and does not create a runtime interface object.
+
+Shape satisfaction is a **constraint relation**, not global width subtyping. Its compiler implementation and formal laws must be completed before this surface use is considered implemented.
+
+## 6. Structs select runtime product representation
+
+`struct` is the representation-bearing product form:
+
+```oak
+Point: type = struct {
+  x: f32
+  y: f32
+}
+```
+
+`Point` has record/product semantics and additionally selects concrete ordered struct storage. Plain `struct` selects Oak's natural ordered representation profile unless another explicit representation policy is specified.
+
+Therefore:
+
+```oak
+Shape: type = { x: u8, y: u32 }
+Stored: type = struct { x: u8, y: u32 }
+```
+
+have related semantic field shapes, but only `Stored` makes the ordinary struct layout policy part of its declaration.
+
+A backend may still need target primitive representations before the final offsets/size can be resolved. Selecting a representation policy and resolving all of its numeric layout facts are distinct compiler states.
+
+Future packed, extern, explicit-offset, wire, vector, or platform ABI representations must be explicit representation choices rather than alternate meanings of `{ ... }`.
+
+## 7. Record composition is not subtyping
+
+Definition-time record composition combines fields to form a new semantic product. It is a construction operation, not width subtyping.
 
 If surface `&` is retained for record composition, its meaning is context-specific:
 
@@ -123,9 +166,9 @@ means “define a new record from these components,” not `Point3 <= Point2`.
 
 Duplicate fields are legal only when their types and required semantic attributes agree exactly; otherwise composition fails.
 
-No automatic structural record subtyping is part of the core language.
+Composition does not imply that the resulting type has the same runtime representation policy as any component. Representation composition must be established separately.
 
-## 7. Interface constraints are predicates
+## 8. Interface constraints are predicates
 
 An interface constraint describes requirements on a type's operations. It is best understood as a predicate over types, not as a runtime interface object.
 
@@ -137,7 +180,9 @@ uses `&` as **constraint conjunction**: `T` must satisfy both predicates.
 
 Core Oak interfaces are compile-time constraints and are erased/specialized during executable lowering. Dynamic existential/interface values require a separate explicit feature and representation.
 
-## 8. Phantom types
+Longer term, method/interface requirements and record-shape requirements should share the same constraint machinery where possible rather than creating separate runtime object models.
+
+## 9. Phantom types
 
 A type parameter may distinguish semantic identities without changing runtime representation.
 
@@ -149,7 +194,7 @@ can make `Id[User]` distinct from `Id[Order]` while both lower to the same machi
 
 Phantom identity belongs to the type axis. It must not silently add runtime fields.
 
-## 9. Refinements and GADT direction
+## 10. Refinements and GADT direction
 
 Refinements add propositions to a base type:
 
@@ -161,16 +206,22 @@ Exact surface syntax is not yet normative, but the semantic rule is: a refined t
 
 GADT-style constructors extend the same idea to constructor-specific result refinements. They should be introduced by enriching ADTs and propositions rather than by creating a separate object system.
 
-## 10. Machine types
+## 11. Machine types
 
 Fixed-width integer types (`u8`..`u64`, `i8`..`i64`) have exact machine-width semantics. Target-width integer/pointer-sized types are distinct semantic types whose widths are supplied by the target.
 
 Mathematical proof integers are never silently substituted for machine integers. Overflow, conversion, division, and shift semantics must be specified for each machine operation.
 
-## 11. Formal obligations
+## 12. Formal obligations
 
 The executable type lattice must satisfy the laws in §3.
 
-The initial Lean model in `spec/lean/Oak/TypeLattice.lean` proves those laws over semantic type denotations. Go property/unit tests must exercise the implementation against the same laws.
+Record/struct verification is split deliberately:
 
-An implementation is not called refined until we explicitly relate `typechecker.Type`/`IsSubtype`/`Join`/`Meet` to the formal denotation model.
+- semantic record proofs cover member uniqueness, shape satisfaction and composition;
+- struct representation proofs cover ordered placement, alignment, padding, non-overlap and final size;
+- a representation refinement must prove that a concrete `struct` declaration is lowered according to its selected representation policy.
+
+The initial Lean type-lattice model proves its laws over semantic type denotations. Go property/unit tests must exercise the implementation against the same laws.
+
+An implementation is not called refined until we explicitly relate concrete compiler structures/operations to the formal denotation and representation models.

@@ -67,10 +67,16 @@ type Method struct {
 	Return     string
 }
 
-// Representation describes the bits/layout chosen for a semantic type. Empty
-// Representation means the declaration has no representation constraint yet.
+// Representation describes the bits/layout selected for a semantic type.
+//
+// Kind == RepresentationUnspecified means the semantic type has no explicit
+// runtime representation contract yet. Policy records an explicitly selected
+// representation strategy. Resolved distinguishes "policy selected, target
+// facts still missing" from "all representation facts below are established".
 type Representation struct {
 	Kind       RepresentationKind
+	Policy     RepresentationPolicy
+	Resolved   bool
 	Bits       uint16
 	Size       uint32
 	Alignment  uint32
@@ -91,6 +97,16 @@ const (
 	RepresentationView        RepresentationKind = "view"
 	RepresentationSpan        RepresentationKind = "span"
 	RepresentationOpaque      RepresentationKind = "opaque"
+)
+
+// RepresentationPolicy states how concrete storage is to be derived. It is
+// separate from Kind so a policy can be selected before target-specific numeric
+// layout facts have been resolved.
+type RepresentationPolicy string
+
+const (
+	RepresentationPolicyUnspecified    RepresentationPolicy = ""
+	RepresentationPolicyNaturalOrdered RepresentationPolicy = "natural-ordered"
 )
 
 type Endianness string

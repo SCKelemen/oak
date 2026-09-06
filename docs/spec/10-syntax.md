@@ -162,22 +162,41 @@ value ? {
 
 The leading `|` is canonical in multiline form because it visually exposes the closed set of alternatives. Inline formatters may omit redundant whitespace but not change semantics.
 
-## 8. Records
+## 8. Records and structs
 
-Type:
+Oak deliberately separates **semantic record shape** from **runtime struct representation**.
+
+A record type describes named product semantics without promising a byte layout:
 
 ```oak
-Point: type = {
-  x: i32
-  y: i32
+XY: type = {
+  x: f32
+  y: f32
 }
 ```
 
-Value:
+Such a type may participate in compile-time reasoning, constraints, schemas, proofs, and tooling even when no concrete runtime representation is required.
+
+A struct type selects concrete ordered storage representation as part of the declaration:
+
+```oak
+Point: type = struct {
+  x: f32
+  y: f32
+}
+```
+
+`struct` is therefore a representation-bearing type form, not a synonym for `{ ... }`.
+
+The default `struct` policy is the natural ordered representation specified in `40-records.md`: declaration order is layout-significant, fields receive aligned non-overlapping storage, and final size is tail-padded to record alignment. Future packed/extern/explicit-offset policies must be selected explicitly rather than changing plain record semantics.
+
+Named value construction remains:
 
 ```oak
 p := Point { x: 1, y: 2 }
 ```
+
+The value-construction braces do not themselves select a representation; the value's type does.
 
 Anonymous record values/types may be supported where context makes the type unambiguous, but named construction is preferred at boundaries because it preserves nominal intent.
 
@@ -196,6 +215,17 @@ fn copy[T: Reader & Writer](x: T): ()
 ```
 
 `&` in a generic constraint means “satisfies both constraints.” Record composition, if retained, is a separate definition-time operation despite sharing the token.
+
+A semantic record type may also be used as a structural shape requirement in a constraint position once shape constraints are implemented:
+
+```oak
+XY: type = { x: f32, y: f32 }
+
+fn length2[T: XY](value: T): f32
+  value.x * value.x + value.y * value.y
+```
+
+This means `T` must expose the required semantic fields. It does **not** require `T` to share the same runtime layout as `XY`, and it does not create a runtime interface object or vtable. Shape-constraint implementation remains separate from ordinary value subtyping.
 
 ## 10. Unsafe
 
