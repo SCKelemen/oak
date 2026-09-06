@@ -152,12 +152,16 @@ type RecordLiteral struct {
 	TypeName   *Identifier // optional type name for type-qualified literals: TypeName{ ... }
 }
 
-func (rl *RecordLiteral) AddField(tok token.Token, name string, value Expression) {
+func (rl *RecordLiteral) AddField(tok token.Token, name string, value Expression) bool {
 	if rl.Fields == nil {
 		rl.Fields = make(map[string]Expression)
 	}
+	if _, exists := rl.Fields[name]; exists {
+		return false
+	}
 	rl.Fields[name] = value
 	rl.FieldOrder = append(rl.FieldOrder, RecordField{Token: tok, Name: name, Value: value})
+	return true
 }
 
 // OrderedFields returns source order when it is known. It deliberately returns

@@ -1490,7 +1490,10 @@ func (p *Parser) parseRecordType() ast.Expression {
 		if fieldType == nil {
 			return nil
 		}
-		record.AddField(fieldToken, fieldName, fieldType)
+		if !record.AddField(fieldToken, fieldName, fieldType) {
+			p.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldName))
+			return nil
+		}
 
 		// parseTypeExpression() leaves currentToken at the last token of the field type.
 		// For simple types like "u32", that's the identifier itself.
@@ -1756,7 +1759,10 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 			return nil
 		}
 
-		record.AddField(fieldToken, fieldName, fieldValue)
+		if !record.AddField(fieldToken, fieldName, fieldValue) {
+			p.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldName))
+			return nil
+		}
 
 		// After parseExpression returns:
 		// - For simple literals (string, int), currentToken is still the literal token
