@@ -164,6 +164,8 @@ Non-escaping captures can use stack/static/caller-owned storage.
 
 If capture escape requires arena/slab/heap allocation, the effect is explicit and subject to `forbids` checks.
 
+Enforcement today: captureless function literals are accepted as bare code pointers; capturing closures are rejected (`OAK-T0401`) until a storage justification surface exists, per `Oak.ClosureCapture`.
+
 ## 11. Realtime/bounded code
 
 A realtime/bounded function should be able to establish structural properties such as:

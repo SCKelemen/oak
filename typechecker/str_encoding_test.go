@@ -122,3 +122,40 @@ func TestAssertBuiltinTypeChecks(t *testing.T) {
 		})
 	}
 }
+
+// Closure capture discipline (docs/spec/60-effects-allocation.md section 10,
+// Oak.ClosureCapture): captureless function literals are legal code
+// pointers; capturing closures are rejected until environment storage can be
+// justified explicitly.
+func TestClosureCaptureDiscipline(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantCode bool
+	}{
+		{"captureless literal accepted", "f := fn(x, y) { x + y }", false},
+		{"capturing an outer local rejected", "n: i32 = 1\nf := fn(x) { x + n }", true},
+		{"parameter shadowing is not capture", "n: i32 = 1\nf := fn(n) { n + 1 }", false},
+		{"top-level function reference is not capture", "fn helper(a: i32) -> i32 { a }\nf := fn(x) { helper(x) }", false},
+		{"nested literal parameters are not captures", "f := fn(x) { g := fn(y) { y + x }\nx }", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := setupTypeChecker(tt.input)
+			program := parseProgram(tt.input)
+			tc.CheckProgram(program)
+			count := 0
+			for _, d := range tc.Diagnostics() {
+				if d.Code == CodeClosureCaptureStorage {
+					count++
+				}
+			}
+			if tt.wantCode && count != 1 {
+				t.Errorf("input %q: expected exactly one %s, got %d (%v)", tt.input, CodeClosureCaptureStorage, count, tc.Errors())
+			}
+			if !tt.wantCode && count != 0 {
+				t.Errorf("input %q: unexpected %s: %v", tt.input, CodeClosureCaptureStorage, tc.Errors())
+			}
+		})
+	}
+}

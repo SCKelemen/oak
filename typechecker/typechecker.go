@@ -915,6 +915,12 @@ func (tc *TypeChecker) areCompatibleTypes(left, right Type) bool {
 }
 
 func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
+	// Capture discipline (docs/spec/60-effects-allocation.md section 10):
+	// capturing closures need explicitly justified environment storage,
+	// which has no surface yet — reject rather than silently drop or
+	// heap-promote the environment.
+	tc.checkClosureCaptures(fn)
+
 	// Create new environment for function parameters
 	funcEnv := NewEnclosedTypeEnvironment(tc.env)
 
