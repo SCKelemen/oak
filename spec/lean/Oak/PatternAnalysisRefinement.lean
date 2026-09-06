@@ -4,41 +4,48 @@ namespace Oak.PatternAnalysisRefinement
 
 open Oak.PatternAnalysis
 
-/-- Finite semantic leaves produced by recursively expanding a closed match
-    domain. Constructor payloads remain recursive; booleans are finite leaves,
-    while `scalar` represents a concrete literal in an otherwise open domain. -/
-inductive SemanticCase where
-  | ctor : Nat → Option SemanticCase → SemanticCase
-  | bool : Bool → SemanticCase
-  | scalar : Nat → SemanticCase
-  deriving Repr
+/-- Terminal leaves of the implementation's unary constructor/payload tree. -/
+inductive SemanticLeaf where
+  | unit
+  | bool : Bool → SemanticLeaf
+  | scalar : Nat → SemanticLeaf
+  deriving DecidableEq, Repr
 
-deriving instance DecidableEq for SemanticCase
+/-- A recursively expanded semantic case is a constructor path and its leaf. -/
+structure SemanticCase where
+  constructors : List Nat
+  leaf : SemanticLeaf
+  deriving DecidableEq, Repr
 
 /-- The checker-side pattern fragment handled by the structural coverage tree. -/
-inductive ConcretePattern where
+inductive LeafPattern where
   | any
-  | ctor : Nat → Option ConcretePattern → ConcretePattern
-  | bool : Bool → ConcretePattern
-  | scalar : Nat → ConcretePattern
-  deriving Repr
+  | unit
+  | bool : Bool → LeafPattern
+  | scalar : Nat → LeafPattern
+  deriving DecidableEq, Repr
 
-deriving instance DecidableEq for ConcretePattern
+structure ConcretePattern where
+  constructors : List Nat
+  leaf : LeafPattern
+  deriving DecidableEq, Repr
+
+def PrefixBool : List Nat → List Nat → Bool
+  | [], _ => true
+  | _, [] => false
+  | expected :: expectedRest, actual :: actualRest =>
+      expected == actual && PrefixBool expectedRest actualRest
 
 /-- Executable recursive matching corresponding to `applyCoverage`: a catch-all
     covers the current subtree, and constructor payloads are checked recursively. -/
-def MatchesBool : ConcretePattern → SemanticCase → Bool
-  | .any, _ => true
-  | .ctor expected expectedPayload, .ctor actual actualPayload =>
-      if expected = actual then
-        match expectedPayload, actualPayload with
-        | none, none => true
-        | some pattern, some value => MatchesBool pattern value
-        | _, _ => false
-      else false
-  | .bool expected, .bool actual => expected == actual
-  | .scalar expected, .scalar actual => expected == actual
-  | _, _ => false
+def MatchesBool (pattern : ConcretePattern) (value : SemanticCase) : Bool :=
+  match pattern.leaf with
+  | .any => PrefixBool pattern.constructors value.constructors
+  | .unit => pattern.constructors == value.constructors && value.leaf == .unit
+  | .bool expected =>
+      pattern.constructors == value.constructors && value.leaf == .bool expected
+  | .scalar expected =>
+      pattern.constructors == value.constructors && value.leaf == .scalar expected
 
 def CoveredBool (arms : List ConcretePattern) (value : SemanticCase) : Bool :=
   arms.any fun pattern => MatchesBool pattern value
@@ -108,7 +115,7 @@ theorem witness_is_counterexample
   have hparts :
       value ∈ reachable ∧ value ∈ cases ∧ CoveredBool arms value = false := by
     simpa [MissingCases, Bool.and_eq_true] using hmissing
-  refine ⟨⟨hparts.2.1, hparts.1⟩, ?_⟩
+  apply missing_reachable_is_counterexample hparts.2.1 hparts.1
   simp [CoveredCases, hparts.2.2]
 
 /-- Completeness refinement for finite recursive domains: the executable check
@@ -152,7 +159,13 @@ theorem redundantBool_iff_redundant
     (arm : ConcretePattern) :
     RedundantBool covered cases arm = true ↔
       Redundant covered (ArmCases cases arm) := by
-  simp only [RedundantBool, all_eq_true_iff]
-  simp [Redundant, ArmCases]
+  constructor
+  · intro h value hvalue
+    have hall := all_eq_true_iff.mp h
+    simpa using hall value hvalue
+  · intro h
+    apply all_eq_true_iff.mpr
+    intro value hvalue
+    simpa using h value hvalue
 
 end Oak.PatternAnalysisRefinement
