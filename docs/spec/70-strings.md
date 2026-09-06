@@ -130,7 +130,7 @@ A generic `len` or indexing operator should not hide an O(n) scan where programm
 
 ## 8. Literals
 
-Ordinary source string literals are UTF-8 semantic strings after the source decoder validates them.
+Ordinary source string literals are UTF-8 semantic strings after the source decoder validates them. This is enforced: compilation validates the entire source file against the well-formed byte sequences of `Oak.Utf8Validity` (Unicode Table 3-7) before scanning, via `source.ValidateUTF8`, so no literal can carry invalid bytes into `string` values.
 
 The compiler may emit their bytes in readonly static storage.
 
