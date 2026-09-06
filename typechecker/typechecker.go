@@ -1503,9 +1503,14 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 		return nil
 	}
 
-	// Type check each arm and collect types for lattice join
+	analysis := tc.analyzeMatch(expr, scrutineeType)
+	tc.emitMatchAnalysisDiagnostics(expr, analysis)
+
+	// Type check only reachable arms and collect their result types.
+	// Redundant or refinement-impossible arms are semantically never and
+	// must not widen the result type or create cascaded body errors.
 	armTypes := []Type{}
-	for _, arm := range expr.Arms {
+	for armIndex, arm := range expr.Arms {
 		// Create a new scoped environment for this match arm to support type narrowing
 		armEnv := NewEnclosedTypeEnvironment(tc.env)
 		oldEnv := tc.env
@@ -1514,6 +1519,11 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 		// Type check pattern and get narrowed type
 		patternType := tc.checkPattern(arm.Pattern, scrutineeType)
 		if patternType == nil {
+			tc.env = oldEnv
+			continue
+		}
+		if armIndex < len(analysis.Arms) && !analysis.Arms[armIndex].Reachable {
+			armTypes = append(armTypes, &NeverType{})
 			tc.env = oldEnv
 			continue
 		}
@@ -1563,11 +1573,6 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression) Type {
 		}
 	}
 
-	// Check exhaustiveness for ADT types
-	if adtType, ok := scrutineeType.(*ADTType); ok {
-		tc.checkExhaustiveness(expr.Arms, adtType)
-	}
-
 	if returnType == nil {
 		return &NeverType{} // No branches matched - unreachable
 	}
@@ -1594,8 +1599,18 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 		}
 		return expectedType
 	case *ast.VariantPattern:
-		// Check that variant belongs to expected ADT type
+		// A nested match may see a scrutinee already refined by an outer
+		// constructor arm. Validate against the parent ADT; coverage analysis
+		// separately rejects constructors made impossible by that refinement.
+		if narrowed, ok := expectedType.(*NarrowedADTVariantType); ok {
+			expectedType = &ADTType{Name: narrowed.ADTName}
+		}
+		// Check that variant belongs to expected ADT type.
 		if adtType, ok := expectedType.(*ADTType); ok {
+			if p.TypeName != nil && p.TypeName.Value != adtType.Name {
+				tc.addError(p.TypeName, "pattern constructor %s.%s does not belong to scrutinee type %s", p.TypeName.Value, p.Variant.Value, adtType.Name)
+				return nil
+			}
 			// Verify variant exists in ADT
 			if adtDef, ok := tc.adtTypes[adtType.Name]; ok {
 				variantName := p.Variant.Value
@@ -3373,37 +3388,6 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 			tc.addError(node, "invalid expression in record composition: %T", expr)
 		} else {
 			tc.addError(nil, "invalid expression in record composition: %T", expr)
-		}
-	}
-}
-
-// checkExhaustiveness verifies that a match expression covers all variants of an ADT
-func (tc *TypeChecker) checkExhaustiveness(arms []*ast.MatchArm, adtType *ADTType) {
-	if adtDef, ok := tc.adtTypes[adtType.Name]; ok {
-		coveredVariants := make(map[string]bool)
-		hasWildcard := false
-
-		// Check which variants are covered
-		for _, arm := range arms {
-			switch p := arm.Pattern.(type) {
-			case *ast.WildcardPattern:
-				hasWildcard = true
-			case *ast.VariantPattern:
-				variantName := p.Variant.Value
-				coveredVariants[variantName] = true
-			}
-		}
-
-		// If there's a wildcard, all variants are covered
-		if hasWildcard {
-			return
-		}
-
-		// Check that all variants are covered
-		for _, variant := range adtDef.Variants {
-			if !coveredVariants[variant.Name] {
-				tc.addError(nil, "match expression is not exhaustive: missing variant %s of ADT %s", variant.Name, adtType.Name)
-			}
 		}
 	}
 }

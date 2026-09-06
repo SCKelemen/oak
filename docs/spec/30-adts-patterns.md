@@ -1,6 +1,6 @@
 # ADTs and Pattern Matching
 
-This document is normative for Oak algebraic data types and matching.
+This document is normative for Oak algebraic data types and matching. Recursive coverage, redundancy, reachable-state analysis, counterexample generation, and GADT-ready refinement coverage are specified in `35-pattern-analysis.md`.
 
 ## 1. Closed nominal sums
 
@@ -120,18 +120,15 @@ When no safe representable common type exists, the match is ill-typed unless the
 
 ## 7. Exhaustiveness
 
-A match over a closed ADT must be exhaustive.
+A match over a closed ADT must be exhaustive over its reachable semantic case space.
 
-The checker accepts a match when either:
+Coverage is recursive through constructor payload patterns; seeing a constructor name does not by itself imply the constructor's entire payload space is covered. `35-pattern-analysis.md` defines the complete coverage/usefulness rules and source-level counterexamples.
 
-- every constructor is covered; or
-- an otherwise valid wildcard/binding catch-all covers the remainder.
-
-A missing constructor is a compile-time error.
+A missing reachable case is a compile-time error.
 
 For large scalar domains such as `u32` or strings, finite literal arms are not exhaustive without a wildcard/binding remainder.
 
-Redundant/unreachable arms should be diagnosed.
+Redundant and refinement-impossible arms are diagnosed.
 
 ## 8. Constructor narrowing
 
@@ -147,21 +144,22 @@ x ?
   | .None    => ...
 ```
 
-For future GADT-style constructors, matching may additionally introduce constructor-specific propositions/equalities into the arm's proof context.
+For GADT-style constructors, matching may additionally introduce constructor-specific propositions/equalities into the arm's proof context. Those facts restrict the reachable semantic case space described by `35-pattern-analysis.md`.
 
-This should extend ordinary ADT matching rather than create separate GADT match syntax.
+This extends ordinary ADT matching rather than creating separate GADT match syntax.
 
 ## 9. GADT direction
 
-Oak's long-term GADT feature should be understood as **ADTs whose constructors refine type indices/result propositions**.
+Oak's long-term GADT feature is understood as **ADTs whose constructors refine type indices/result propositions**.
 
-For example, a length-indexed vector constructor conceptually proves facts about the resulting length index. Exact surface syntax is not yet normative.
+For example, a length-indexed vector constructor conceptually proves facts about the resulting length index. Exact constructor result-index surface syntax is not yet normative.
 
 The design requirements are:
 
 - constructor-specific refinements enter the branch context;
 - impossible branches can reduce to `never`;
 - pattern matching is the elimination form;
+- exhaustiveness is computed only over cases reachable under the current refinements;
 - runtime representation need not carry proof-only indices when they are erasable;
 - proof erasure must preserve executable semantics.
 
@@ -202,13 +200,16 @@ requires an explicit runtime representation for `any`/type identity. It is not p
 
 ## 13. Formal verification targets
 
-Initial formal obligations include:
+Formal obligations include:
 
-- constructor coverage/exhaustiveness for finite ADTs;
+- constructor and nested-payload coverage/exhaustiveness;
+- redundancy/usefulness over source-ordered arms;
+- refinement-restricted reachable case spaces and impossible arms;
+- counterexamples are reachable and uncovered;
 - match selection is deterministic;
 - only the selected branch is evaluated;
 - constructor narrowing yields the declared payload type/refinement;
 - `never` branches do not widen a match result;
 - erased proof/index information does not alter runtime constructor semantics.
 
-The first Lean model should formalize finite constructor sets and exhaustiveness independently of parser syntax. Later refinement work can relate compiler constructor tables/match checking to that model.
+`Oak.Exhaustiveness` formalizes the initial finite-constructor laws. `Oak.PatternAnalysis` formalizes reachable-case coverage, redundancy/usefulness, counterexamples, constructor refinement, and refinement-excluded arms independently of parser syntax. Implementation refinement remains a separate obligation.
