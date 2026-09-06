@@ -52,11 +52,13 @@ type Region struct {
 
 // borrowInfo tracks information about an active borrow
 type borrowInfo struct {
-	owner      string     // The owner variable name
-	kind       borrowKind // Whether this is a view or span
-	blockDepth int        // Block depth where this borrow was created
-	region     *Region    // Optional: region information for disjointness checks (nil if unknown)
-	origin     ast.Node   // Source expression that created this borrow, when known
+	owner       string     // The owner variable name
+	kind        borrowKind // Whether this is a view or span
+	blockDepth  int        // Block depth where this borrow was created
+	region      *Region    // Exact absolute owner region, or nil when not statically known
+	origin      ast.Node   // Source expression that created this borrow, when known
+	parent      string     // Immediate source borrow for a derived view/span
+	suspendedBy string     // Writable child temporarily holding this span's authority
 }
 
 // BorrowChecker tracks borrow states and enforces borrowing rules
@@ -328,16 +330,30 @@ func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement,
 // dropBorrowsInCurrentBlock removes borrows created in the current block
 // and recomputes owner states based on remaining active borrows
 func (bc *BorrowChecker) dropBorrowsInCurrentBlock() {
-	// Remove borrows created in this block
 	for name, info := range bc.activeBorrows {
 		if info.blockDepth == bc.currentBlockDepth {
-			delete(bc.activeBorrows, name)
-			delete(bc.ownerOf, name)
+			bc.dropBorrow(name)
 		}
 	}
 
-	// Recompute owner states from remaining active borrows
 	bc.recomputeOwnerStatesFromActiveBorrows()
+}
+
+// dropBorrow removes one borrow and restores its writable parent when this
+// borrow was the child that suspended it.
+func (bc *BorrowChecker) dropBorrow(name string) {
+	info, exists := bc.activeBorrows[name]
+	if !exists {
+		return
+	}
+	if info.parent != "" {
+		if parent, ok := bc.activeBorrows[info.parent]; ok && parent.suspendedBy == name {
+			parent.suspendedBy = ""
+			bc.activeBorrows[info.parent] = parent
+		}
+	}
+	delete(bc.activeBorrows, name)
+	delete(bc.ownerOf, name)
 }
 
 // recomputeOwnerStatesFromActiveBorrows recomputes owner states based on active borrows
@@ -496,9 +512,9 @@ func (bc *BorrowChecker) extractSliceRegion(slice *ast.SliceExpression, ownerLen
 		high = ownerLength
 	}
 
-	// Validate bounds
-	if low < 0 || high < low {
-		return nil, false // Invalid bounds
+	// Validate bounds against the sequence whose indices these are.
+	if low < 0 || high < low || ownerLength < 0 || high > ownerLength {
+		return nil, false
 	}
 
 	return &Region{
@@ -545,20 +561,23 @@ func (bc *BorrowChecker) checkSliceExpression(slice *ast.SliceExpression, env *t
 
 	// Not an owner - check if it's a view/span being sliced (subslice)
 	if ident, ok := slice.Seq.(*ast.Identifier); ok {
-		// Check if this identifier is a borrow
+		// Check if this identifier is a borrow.
 		if sourceInfo, isBorrow := bc.activeBorrows[ident.Value]; isBorrow {
-			// This is a subslice - share the same owner
+			// checkExpression above already diagnosed a suspended parent; do not
+			// create a second child from authority that is currently reborrowed.
+			if sourceInfo.suspendedBy != "" {
+				return
+			}
 			if targetVar != "" {
-				// Try to compute the new region from the source region
 				var newRegion *Region
 				if sourceInfo.region != nil {
-					// We have source region info - compute new region
-					// For now, we can't compute this without knowing the source's offset
-					// This would require tracking the full region chain
-					// For v2, we'll track relative offsets
-					newRegion = nil // Can't compute without more info
+					if relative, ok := bc.extractSliceRegion(slice, sourceInfo.region.Length); ok {
+						if absolute, ok := deriveRegion(sourceInfo.region, relative); ok {
+							newRegion = absolute
+						}
+					}
 				}
-				bc.createSubsliceWithRegion(ident.Value, targetVar, newRegion)
+				bc.createSubsliceWithRegion(ident.Value, targetVar, newRegion, slice)
 			}
 			return
 		}
@@ -715,14 +734,35 @@ func (bc *BorrowChecker) checkSubsliceCall(call *ast.InvocationExpression, env *
 		return
 	}
 
-	// The first argument should be an existing view or span
-	if ident, ok := call.Arguments[0].(*ast.Identifier); ok {
-		if targetVar != "" {
-			bc.createSubslice(ident.Value, targetVar)
-		}
-	} else {
+	ident, ok := call.Arguments[0].(*ast.Identifier)
+	if !ok {
 		bc.addError("subslice() first argument must be a view or span variable")
+		return
 	}
+	if targetVar == "" {
+		return
+	}
+	sourceInfo, exists := bc.activeBorrows[ident.Value]
+	if !exists {
+		bc.createSubsliceWithRegion(ident.Value, targetVar, nil, call)
+		return
+	}
+	if sourceInfo.suspendedBy != "" {
+		return
+	}
+
+	var region *Region
+	if sourceInfo.region != nil {
+		start, startOK := call.Arguments[1].(*ast.IntegerLiteral)
+		length, lengthOK := call.Arguments[2].(*ast.IntegerLiteral)
+		if startOK && lengthOK && start.Value >= 0 && length.Value >= 0 {
+			relative := &Region{Offset: start.Value, Length: length.Value}
+			if absolute, ok := deriveRegion(sourceInfo.region, relative); ok {
+				region = absolute
+			}
+		}
+	}
+	bc.createSubsliceWithRegion(ident.Value, targetVar, region, call)
 }
 
 // checkViewAsCall handles view_as() calls: creates a derived view borrow with different element type
@@ -737,10 +777,13 @@ func (bc *BorrowChecker) checkViewAsCall(call *ast.InvocationExpression, env *ty
 	if ident, ok := call.Arguments[0].(*ast.Identifier); ok {
 		// Check if this is an existing borrow
 		if sourceInfo, exists := bc.activeBorrows[ident.Value]; exists {
+			if sourceInfo.suspendedBy != "" {
+				return
+			}
 			if sourceInfo.kind == BorrowView {
 				// This is a view - create a derived view borrow (like subslice)
 				if targetVar != "" {
-					bc.createSubslice(ident.Value, targetVar)
+					bc.createSubsliceWithRegion(ident.Value, targetVar, nil, call)
 				}
 			} else {
 				bc.addError("view_as() argument must be a view ([]T), got span ([*]T)")
@@ -776,10 +819,13 @@ func (bc *BorrowChecker) checkSpanAsCall(call *ast.InvocationExpression, env *ty
 	if ident, ok := call.Arguments[0].(*ast.Identifier); ok {
 		// Check if this is an existing borrow
 		if sourceInfo, exists := bc.activeBorrows[ident.Value]; exists {
+			if sourceInfo.suspendedBy != "" {
+				return
+			}
 			if sourceInfo.kind == BorrowSpan {
 				// This is a span - create a derived span borrow (like subslice)
 				if targetVar != "" {
-					bc.createSubslice(ident.Value, targetVar)
+					bc.createSubsliceWithRegion(ident.Value, targetVar, nil, call)
 				}
 			} else {
 				bc.addError("span_as() argument must be a span ([*]T), got view ([]T)")
@@ -806,6 +852,17 @@ func (bc *BorrowChecker) checkSpanAsCall(call *ast.InvocationExpression, env *ty
 // This enforces that owners cannot be used directly while they have active borrows
 // isWrite indicates if this is a write operation (assignment target)
 func (bc *BorrowChecker) checkIdentifierUse(node ast.Node, name string, env *typechecker.TypeEnvironment, isWrite bool) {
+	if info, isBorrow := bc.activeBorrows[name]; isBorrow && info.suspendedBy != "" {
+		d := bc.reportBorrow(node, CodeBorrowSuspended,
+			fmt.Sprintf("writable span %q is suspended by reborrow %q", name, info.suspendedBy))
+		if child, ok := bc.activeBorrows[info.suspendedBy]; ok {
+			bc.addBorrowContext(d, info.suspendedBy, child,
+				fmt.Sprintf("reborrow %q temporarily holds this writable authority", info.suspendedBy))
+		}
+		d.AddHelp("use the child span, or let it leave scope before using the parent span again")
+		return
+	}
+
 	// Check if this is an owner
 	state, isOwner := bc.ownerStates[name]
 	if !isOwner {
@@ -881,17 +938,20 @@ func (bc *BorrowChecker) createSpanBorrow(ownerName, borrowName string) {
 // Returns true if the regions overlap, false if they are disjoint
 func (bc *BorrowChecker) regionsOverlap(r1, r2 *Region) bool {
 	if r1 == nil || r2 == nil {
-		// If either region is unknown, assume they might overlap (conservative).
+		return true
+	}
+	if r1.Offset < 0 || r1.Length < 0 || r2.Offset < 0 || r2.Length < 0 {
 		return true
 	}
 	if r1.Length == 0 || r2.Length == 0 {
-		// Half-open empty regions contain no elements and overlap nothing.
 		return false
 	}
-
-	// Non-empty regions [off1, off1+len1) and [off2, off2+len2) overlap if:
-	// off1 < off2+len2 && off2 < off1+len1.
-	return r1.Offset < r2.Offset+r2.Length && r2.Offset < r1.Offset+r1.Length
+	end1, ok1 := regionEnd(r1)
+	end2, ok2 := regionEnd(r2)
+	if !ok1 || !ok2 {
+		return true
+	}
+	return r1.Offset < end2 && r2.Offset < end1
 }
 
 // createSpanBorrowWithRegion creates a unique writable borrow (span) from an owner with region information.
@@ -969,33 +1029,44 @@ func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string
 	}
 }
 
-// createSubslice creates a derived borrow (subslice) from an existing view/span
+// createSubslice creates a conservative derived borrow when exact region facts are unavailable.
 func (bc *BorrowChecker) createSubslice(sourceBorrowName, subsliceName string) {
-	bc.createSubsliceWithRegion(sourceBorrowName, subsliceName, nil)
+	bc.createSubsliceWithRegion(sourceBorrowName, subsliceName, nil, nil)
 }
 
-// createSubsliceWithRegion creates a derived borrow (subslice) from an existing view/span with region information
-func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName string, newRegion *Region) {
+// createSubsliceWithRegion creates a derived borrow. Writable derivations are
+// reborrows: the child temporarily suspends direct use of its parent span.
+func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName string, newRegion *Region, origin ast.Node) {
 	sourceInfo, exists := bc.activeBorrows[sourceBorrowName]
 	if !exists {
 		bc.addError(fmt.Sprintf("cannot create subslice '%s': source '%s' is not a borrow", subsliceName, sourceBorrowName))
 		return
 	}
-
-	// Subslice shares the same owner and kind, created at same block depth
-	// If we have region info, use it; otherwise inherit from source
-	region := newRegion
-	if region == nil {
-		region = sourceInfo.region // Inherit region from source
+	if sourceInfo.suspendedBy != "" {
+		d := bc.reportBorrow(origin, CodeBorrowSuspended,
+			fmt.Sprintf("writable span %q is already suspended by reborrow %q", sourceBorrowName, sourceInfo.suspendedBy))
+		if child, ok := bc.activeBorrows[sourceInfo.suspendedBy]; ok {
+			bc.addBorrowContext(d, sourceInfo.suspendedBy, child,
+				fmt.Sprintf("existing reborrow %q holds the writable authority", sourceInfo.suspendedBy))
+		}
+		d.AddHelp("derive from the active child span, or let it leave scope before reusing the parent")
+		return
 	}
 
+	if sourceInfo.kind == BorrowSpan {
+		sourceInfo.suspendedBy = subsliceName
+		bc.activeBorrows[sourceBorrowName] = sourceInfo
+	}
+	if origin == nil {
+		origin = sourceInfo.origin
+	}
 	bc.ownerOf[subsliceName] = sourceInfo.owner
 	bc.activeBorrows[subsliceName] = borrowInfo{
 		owner:      sourceInfo.owner,
-		kind:       sourceInfo.kind,      // Subslice preserves view/span kind
-		blockDepth: bc.currentBlockDepth, // Use current block depth, not source depth
-		region:     region,
-		origin:     sourceInfo.origin,
+		kind:       sourceInfo.kind,
+		blockDepth: bc.currentBlockDepth,
+		region:     newRegion,
+		origin:     origin,
+		parent:     sourceBorrowName,
 	}
-	// No state change - subslices don't create new borrows from the owner
 }

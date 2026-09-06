@@ -32,9 +32,9 @@ Legend:
 | GADT-style refinements | direction |  |  |  |  |  | semantic direction specified; surface syntax intentionally not frozen |
 | Generic constraints/interfaces | ✓ | ✓ | ✓ | partial | partial | partial | static predicate semantics; named requirements may be method interfaces or semantic record shapes; record-shape call inference/discharge/substitution has a scoped refinement proof, but arbitrary multi-variable/multi-parameter unification and method-interface discharge are not yet refined |
 | Phantom types | ✓ | partial | partial | ✓ | ✓ |  | `Oak.PhantomRepresentation` proves phantom rebinding changes static identity while preserving the entire runtime representation record, including size, alignment, and bit width; implementation refinement/inference pending |
-| Views / spans | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.Borrowing` proves local read/write authority laws. `Oak.BorrowRegions` additionally proves half-open region symmetry/disjointness, adjacency, zero-length behavior, and conservative unknown-region conflict; compiler correspondence is not yet proved |
+| Views / spans | ✓ | ✓ | ✓ | ✓ | ✓ |  | `Oak.Borrowing` proves local read/write authority laws. `Oak.BorrowRegions` proves half-open region symmetry/disjointness, adjacency, zero-length behavior, and conservative unknown-region conflict. Derived slices/subslices now retain exact absolute owner regions when statically known; writable children suspend their parent span until lexical release. `Oak.Reborrow` proves parent/child writable exclusivity and restoration; compiler correspondence is not yet proved |
 | Borrow-state machine | ✓ | partial | partial | ✓ | ✓ |  | explicit actions; valid transitions preserve state invariant and read/write authority stays exclusive |
-| Borrow diagnostics | ✓ | partial | ✓ | ✓ | ✓ |  | `OAK-B0101`..`OAK-B0106` cover borrow reassignment, owner-use/write conflicts, view/span exclusivity, and writable-region overlap/unknown-disjointness. Borrow provenance records the creating source expression; conflicts select earliest causal source context deterministically and explain known regions or fail-closed unknown regions. `Oak.Borrowing`, `Oak.BorrowRegions`, and `Oak.Diagnostics` prove the corresponding abstract authority/region/diagnostic structural laws. Escape/move diagnostics, remaining borrow builtin errors, canonical byte-location threading, and implementation refinement remain pending |
+| Borrow diagnostics | ✓ | partial | ✓ | ✓ | ✓ |  | `OAK-B0101`..`OAK-B0107` cover borrow reassignment, owner-use/write conflicts, view/span exclusivity, writable-region overlap/unknown-disjointness, and use of a writable parent suspended by a reborrow. Borrow provenance records the creating source expression; conflicts select earliest causal source context deterministically and explain known regions or fail-closed unknown regions. `Oak.Borrowing`, `Oak.BorrowRegions`, and `Oak.Diagnostics` prove the corresponding abstract authority/region/diagnostic structural laws. Escape/move diagnostics, remaining borrow builtin errors, canonical byte-location threading, and implementation refinement remain pending |
 | Unsafe boundary | ✓ | partial | partial |  |  |  | unsafe must admit assumptions, not disable all checking |
 | Effects | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR implements broad/scoped effect identity and conflict validation; `Oak.Effects` proves the abstract subsumption/overlap laws; refinement pending |
 | Arena semantics | ✓ | ✓ | ✓ | ✓ | ✓ |  | Semantic IR represents explicit arena identity/lifetime; `Oak.RegionLifetime` proves lifetime containment, transitivity, alive-child implies alive-region, and that a region-bound value cannot remain alive after the region ends; refinement pending |
@@ -58,6 +58,7 @@ The formal gate currently checks:
 - `Oak.Effects`
 - `Oak.Borrowing`
 - `Oak.BorrowRegions`
+- `Oak.Reborrow`
 - `Oak.Handles`
 - `Oak.Slab`
 - `Oak.Exhaustiveness`
