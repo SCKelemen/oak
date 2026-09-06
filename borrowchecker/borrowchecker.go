@@ -148,6 +148,8 @@ func (bc *BorrowChecker) checkStatement(stmt ast.Statement, env *typechecker.Typ
 		bc.checkAssignmentStatement(s, env)
 	case *ast.UnsafeBlock:
 		bc.checkUnsafeBlock(s, env)
+	case *ast.IndexAssignmentStatement:
+		bc.checkIndexAssignmentStatement(s, env)
 	default:
 		// Other statement types don't affect borrowing
 	}
@@ -391,6 +393,22 @@ func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement,
 	bc.checkIdentifierUse(stmt.Name, stmt.Name.Value, env, true)
 }
 
+// checkIndexAssignmentStatement checks s[i] = value: writing through a span
+// is a use of that borrow (suspended-reborrow rules apply); writing an owned
+// array element directly is an owner write (view exclusivity applies).
+func (bc *BorrowChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentStatement, env *typechecker.TypeEnvironment) {
+	if stmt == nil || stmt.Target == nil {
+		return
+	}
+	bc.checkExpression(stmt.Value, env)
+	bc.checkExpression(stmt.Target.Index, env)
+	if ident, ok := stmt.Target.Left.(*ast.Identifier); ok {
+		bc.checkIdentifierUse(ident, ident.Value, env, true)
+		return
+	}
+	bc.checkExpression(stmt.Target.Left, env)
+}
+
 // dropBorrowsInCurrentBlock removes borrows created in the current block
 // and recomputes owner states based on remaining active borrows
 func (bc *BorrowChecker) dropBorrowsInCurrentBlock() {
@@ -488,10 +506,13 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 			// Views ([]T) and spans ([*]T) are tracked as borrows, not owners
 		}
 	} else if vd.Type != nil {
-		// Type wasn't in environment yet - try to parse it from AST
-		// This is a fallback for when type checking hasn't run yet
-		// In practice, borrow checking should run after type checking
-		// For now, we can't determine the type without the typechecker
+		// Function-local declarations are not in the surviving global
+		// environment; classify owners from the declared type instead.
+		if arrType, ok := bc.parseTypeFromAST(vd.Type, env).(*typechecker.ArrayType); ok {
+			if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
+				bc.ownerStates[varName] = Free
+			}
+		}
 	}
 }
 

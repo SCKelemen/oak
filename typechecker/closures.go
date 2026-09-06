@@ -152,6 +152,10 @@ func (tc *TypeChecker) closureCaptures(fn *ast.FunctionLiteral) []string {
 			if s.Name != nil {
 				noteUse(s.Name.Value, locals)
 			}
+		case *ast.IndexAssignmentStatement:
+			walkExpr(s.Target.Left, locals)
+			walkExpr(s.Target.Index, locals)
+			walkExpr(s.Value, locals)
 		case *ast.WhileStatement:
 			walkExpr(s.Condition, locals)
 			if s.Body != nil {

@@ -1,0 +1,16 @@
+
+fill: (s: [*]u8): i32 {
+  n: u32 = len(s)
+  i: u32 = 0
+  while i < n {
+    s[i] = u8(7)
+    i = i + 1
+  }
+  i32(s[0]) + i32(s[3])
+}
+
+main: (): i32 {
+  data: [4]u8
+  s: [*]u8 = span(&data)
+  fill(s)
+}

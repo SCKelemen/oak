@@ -55,6 +55,7 @@ static inline u8 oak_view_index_u8(oak_view_u8 v, u64 i) {
 /* bounds-checked owned-array indexing: out-of-range traps, never UB */
 static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }
 #define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])
+#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
 static Bool oak_is_valid_utf8(oak_view_u8 v) {
@@ -118,5 +119,10 @@ typedef struct oak_span_u8 {
 static inline u8 oak_span_index_u8(oak_span_u8 v, u64 i) {
   if (i >= (u64)v.len) { __builtin_trap(); }
   return v.base[i];
+}
+
+static inline void oak_span_store_u8(oak_span_u8 v, u64 i, u8 value) {
+  if (i >= (u64)v.len) { __builtin_trap(); }
+  v.base[i] = value;
 }
 

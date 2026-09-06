@@ -917,6 +917,21 @@ func (ws *WhileStatement) String() string {
 	return out.String()
 }
 
+// IndexAssignmentStatement writes an element through an index: s[i] = value.
+// The target must be a writable span or an owned array; views are read-only.
+type IndexAssignmentStatement struct {
+	BaseNode
+	Token  token.Token // the '=' token
+	Target *IndexExpression
+	Value  Expression
+}
+
+func (ia *IndexAssignmentStatement) statementNode()       {}
+func (ia *IndexAssignmentStatement) TokenLiteral() string { return ia.Token.Literal }
+func (ia *IndexAssignmentStatement) String() string {
+	return ia.Target.String() + " = " + ia.Value.String()
+}
+
 // Unsafe block
 type UnsafeBlock struct {
 	BaseNode

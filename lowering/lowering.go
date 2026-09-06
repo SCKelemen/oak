@@ -44,6 +44,20 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 			Name:     s.Name,
 			Value:    lowerExpression(s.Value, tc),
 		}
+	case *ast.IndexAssignmentStatement:
+		// The target stays an index expression (the store lowering is a
+		// backend decision); its parts are lowered.
+		return &ast.IndexAssignmentStatement{
+			BaseNode: s.BaseNode,
+			Token:    s.Token,
+			Target: &ast.IndexExpression{
+				BaseNode: s.Target.BaseNode,
+				Token:    s.Target.Token,
+				Left:     lowerExpression(s.Target.Left, tc),
+				Index:    lowerExpression(s.Target.Index, tc),
+			},
+			Value: lowerExpression(s.Value, tc),
+		}
 	case *ast.WhileStatement:
 		lowered := &ast.WhileStatement{
 			BaseNode:  s.BaseNode,

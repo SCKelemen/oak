@@ -651,6 +651,8 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		tc.checkVariableDeclaration(s)
 	case *ast.AssignmentStatement:
 		tc.checkAssignmentStatement(s)
+	case *ast.IndexAssignmentStatement:
+		tc.checkIndexAssignmentStatement(s)
 	case *ast.FunctionStatement:
 		tc.checkFunctionStatement(s)
 	case *ast.ADTType:
@@ -1756,6 +1758,38 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 	}
 
 	return fnType.ReturnType
+}
+
+// checkIndexAssignmentStatement types s[i] = value: the target sequence must
+// be writable (a span [*]T or an owned array [N]T — views are read-only), the
+// index an integer, and the value assignable to the element type.
+func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentStatement) {
+	if stmt == nil || stmt.Target == nil {
+		return
+	}
+	seqType := tc.checkExpression(stmt.Target.Left)
+	if seqType == nil {
+		return
+	}
+	arrType, ok := seqType.(*ArrayType)
+	if !ok {
+		tc.addError(stmt.Target.Left, "cannot index-assign into %s", seqType)
+		return
+	}
+	if arrType.IsSlice {
+		tc.addError(stmt.Target.Left, "cannot write through a read-only view []%s; use a span ([*]T) or the owner", arrType.ElementType)
+		return
+	}
+	indexType := tc.checkExpression(stmt.Target.Index, &PrimitiveType{Name: "u32"})
+	if indexType != nil {
+		if prim, isPrim := indexType.(*PrimitiveType); !isPrim || !tc.isNumericType(prim) {
+			tc.addError(stmt.Target.Index, "index must be an integer, got %s", indexType)
+		}
+	}
+	valueType := tc.checkExpression(stmt.Value, arrType.ElementType)
+	if valueType != nil && !tc.isAssignable(valueType, arrType.ElementType) {
+		tc.addError(stmt.Value, "cannot assign %s to element type %s", valueType, arrType.ElementType)
+	}
 }
 
 func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedType ...Type) Type {

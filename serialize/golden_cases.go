@@ -162,6 +162,28 @@ result: i32 = fact(5, 1)
 `,
 		},
 		{
+			// Span writes: bounds-checked stores through writable spans,
+			// symmetric with the loads; views are read-only at type level.
+			Name: "span_write",
+			SourceCode: `
+fill: (s: [*]u8): i32 {
+  n: u32 = len(s)
+  i: u32 = 0
+  while i < n {
+    s[i] = u8(7)
+    i = i + 1
+  }
+  i32(s[0]) + i32(s[3])
+}
+
+main: (): i32 {
+  data: [4]u8
+  s: [*]u8 = span(&data)
+  fill(s)
+}
+`,
+		},
+		{
 			// ADT construction and tag-guarded match lowering, including a
 			// variant-arm tail call lowered to a loop.
 			Name: "adt_match",

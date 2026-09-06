@@ -66,6 +66,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		}
 		return evalInfixExpression(node.Operator, left, right)
 
+	case *ast.IndexAssignmentStatement:
+		return evalIndexAssignmentStatement(node, env)
+
 	case *ast.BlockStatement:
 		return evalBlockStatement(node, env)
 
@@ -956,6 +959,36 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 }
 
 // Evaluate field access: record.field or array indexing: array[index]
+// evalIndexAssignmentStatement mutates one element, bounds-checked: parity
+// with the trapping C store semantics (error, never silent wrap).
+func evalIndexAssignmentStatement(stmt *ast.IndexAssignmentStatement, env *object.Environment) object.Object {
+	seq := Eval(stmt.Target.Left, env)
+	if isError(seq) {
+		return seq
+	}
+	index := Eval(stmt.Target.Index, env)
+	if isError(index) {
+		return index
+	}
+	value := Eval(stmt.Value, env)
+	if isError(value) {
+		return value
+	}
+	array, ok := seq.(*object.Array)
+	if !ok {
+		return newError("cannot index-assign into %s", seq.Type())
+	}
+	idx, ok := index.(*object.Integer)
+	if !ok {
+		return newError("index must be an integer, got %s", index.Type())
+	}
+	if idx.Value < 0 || idx.Value >= int64(len(array.Elements)) {
+		return newError("array index out of bounds: %d (length: %d)", idx.Value, len(array.Elements))
+	}
+	array.Elements[idx.Value] = value
+	return NULL
+}
+
 func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) object.Object {
 	// Check if this is Type.Variant (ADT constructor) rather than field access
 	// If left is an identifier (type name) and we have an ADT with that name, treat as variant

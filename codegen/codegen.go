@@ -268,6 +268,10 @@ func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 			}
 		case *ast.AssignmentStatement:
 			collectFromExpr(s.Value)
+		case *ast.IndexAssignmentStatement:
+			collectFromExpr(s.Target.Left)
+			collectFromExpr(s.Target.Index)
+			collectFromExpr(s.Value)
 		}
 	}
 
@@ -904,6 +908,31 @@ func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typec
 	}
 }
 
+// emitBorrowConstruction lowers view(&owner) / span(&owner) to a struct
+// literal over the owned array's storage with its static length. Unknown
+// owners fail closed.
+func (cg *CodeGenerator) emitBorrowConstruction(kind string, call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	prefix, ok := call.Arguments[0].(*ast.PrefixExpression)
+	if !ok || prefix.Operator != "&" {
+		cg.output.WriteString("OAK_UNSUPPORTED_BORROW_SOURCE")
+		return
+	}
+	info := cg.localContainerOf(prefix.Right)
+	if info.kind != containerOwnedArray {
+		cg.output.WriteString("OAK_UNSUPPORTED_BORROW_SOURCE")
+		return
+	}
+	structName := ""
+	if kind == "view" {
+		structName = cg.emitViewType(info.element)
+	} else {
+		structName = cg.emitSpanType(info.element)
+	}
+	cg.output.WriteString(fmt.Sprintf("(%s){ ", structName))
+	cg.emitExpressionFragment(prefix.Right, tc)
+	cg.output.WriteString(fmt.Sprintf(", %d }", info.length))
+}
+
 // emitLen lowers len(x): static length for owned arrays, the len field for
 // views, spans, and strings.
 func (cg *CodeGenerator) emitLen(call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
@@ -1036,7 +1065,7 @@ var runtimeBuiltins = map[string]string{
 // can wrap them; the helper reads only v.len bytes and fails closed.
 func (cg *CodeGenerator) emitUtf8Helper() {
 	viewType := cg.emitViewType("u8")
-	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
 	cg.write(fmt.Sprintf("static Bool oak_is_valid_utf8(%s v) {\n", viewType))
 	cg.write("  u64 i = 0;\n")
 	cg.write("  u64 n = (u64)v.len;\n")
@@ -1387,6 +1416,10 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.emitLen(e, tc)
 				return
 			}
+			if (ident.Value == "view" || ident.Value == "span") && len(e.Arguments) == 1 {
+				cg.emitBorrowConstruction(ident.Value, e, tc)
+				return
+			}
 			if target, isCast := primitiveCasts[ident.Value]; isCast && len(e.Arguments) == 1 {
 				cg.output.WriteString(fmt.Sprintf("((%s)( ", target))
 				cg.emitExpressionFragment(e.Arguments[0], tc)
@@ -1718,6 +1751,12 @@ func (cg *CodeGenerator) emitSpanType(elementType string) string {
 	cg.write("  return v.base[i];\n")
 	cg.write("}\n\n")
 
+	// Bounds-checked element store, symmetric with the load.
+	cg.write(fmt.Sprintf("static inline void oak_span_store_%s(%s v, u64 i, %s value) {\n", elementType, spanTypeName, elementType))
+	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
+	cg.write("  v.base[i] = value;\n")
+	cg.write("}\n\n")
+
 	return spanTypeName
 }
 
@@ -1895,6 +1934,8 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 			// Regular statement - emit without return
 			cg.emitStatementExpression(s.Expression, tc)
 		}
+	case *ast.IndexAssignmentStatement:
+		cg.emitIndexAssignment(s, tc)
 	case *ast.WhileStatement:
 		cg.emitWhileStatement(s, tc)
 	case *ast.BlockStatement:
@@ -1905,6 +1946,33 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 		cg.write("  }\n")
 	default:
 		cg.write(fmt.Sprintf("  /* TODO: emit statement type %T */\n", s))
+	}
+}
+
+// emitIndexAssignment emits a bounds-checked element store: spans go through
+// the trapping helper, owned arrays through the static-length store guard;
+// unknown targets fail closed.
+func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement, tc *typechecker.TypeChecker) {
+	info := cg.localContainerOf(stmt.Target.Left)
+	switch info.kind {
+	case containerSpan:
+		cg.write(fmt.Sprintf("  oak_span_store_%s( ", info.element))
+		cg.emitExpressionFragment(stmt.Target.Left, tc)
+		cg.output.WriteString(", (u64)( ")
+		cg.emitExpressionFragment(stmt.Target.Index, tc)
+		cg.output.WriteString(" ), ")
+		cg.emitExpressionFragment(stmt.Value, tc)
+		cg.output.WriteString(" );\n")
+	case containerOwnedArray:
+		cg.write("  oak_store( ")
+		cg.emitExpressionFragment(stmt.Target.Left, tc)
+		cg.output.WriteString(fmt.Sprintf(", %d, (u64)( ", info.length))
+		cg.emitExpressionFragment(stmt.Target.Index, tc)
+		cg.output.WriteString(" ), ")
+		cg.emitExpressionFragment(stmt.Value, tc)
+		cg.output.WriteString(" );\n")
+	default:
+		cg.write("  OAK_UNSUPPORTED_STORE_TARGET;\n")
 	}
 }
 

@@ -111,46 +111,51 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
+typedef struct oak_span_u8 {
+    u8* base;
+    u32 len;
+} oak_span_u8;
+
+static inline u8 oak_span_index_u8(oak_span_u8 v, u64 i) {
+  if (i >= (u64)v.len) { __builtin_trap(); }
+  return v.base[i];
+}
+
+static inline void oak_span_store_u8(oak_span_u8 v, u64 i, u8 value) {
+  if (i >= (u64)v.len) { __builtin_trap(); }
+  v.base[i] = value;
+}
+
 /* forward declarations */
-i32 oak_ping( i32 n );
-i32 oak_pong( i32 n );
+i32 oak_fill( oak_span_u8 s );
+i32 oak_main( void );
 
-/* trampoline for mutual tail recursion: ping, pong */
-typedef enum {
-    oak_tramp_ping_pong_ping,
-    oak_tramp_ping_pong_pong
-} oak_tramp_ping_pong_state;
-
-static i32 oak_tramp_ping_pong( oak_tramp_ping_pong_state __oak_state, i32 n ) {
-  while (1) {
-  switch (__oak_state) {
-  case oak_tramp_ping_pong_ping: {
-  i32 x = ( n + 1 );
-  {
-    i32 __oak_tail_0 = x;
-    n = __oak_tail_0;
-    __oak_state = oak_tramp_ping_pong_pong;
-    continue;
-  }
-  }
-  case oak_tramp_ping_pong_pong: {
-  i32 y = ( n * 2 );
-  {
-    i32 __oak_tail_0 = y;
-    n = __oak_tail_0;
-    __oak_state = oak_tramp_ping_pong_ping;
-    continue;
-  }
-  }
-  }
-  }
+// @source: unknown.oak:1:0-9:0
+// @package: main
+// @kind: function
+// @identifier: fill
+// @signature: fn fill(s: /* type */) -> i32
+i32 oak_fill( oak_span_u8 s ) {
+    u32 n   = ((u32)( s ).len)  ;
+    u32 i   = 0  ;
+    while ( ( i < n )   ) {
+      oak_span_store_u8( s, (u64)( i ), ((u8)( 7 )) );
+      i     = ( i + 1 )    ;
+    }
+    return ( ((i32)( oak_span_index_u8( s, (u64)( 0 ) ) )) + ((i32)( oak_span_index_u8( s, (u64)( 3 ) ) )) )  ;
 }
 
-i32 oak_ping( i32 n ) {
-  return oak_tramp_ping_pong( oak_tramp_ping_pong_ping, n );
+// @source: unknown.oak:11:0-15:0
+// @package: main
+// @kind: function
+// @identifier: main
+// @signature: fn main() -> i32
+i32 oak_main(  ) {
+    u8 data[4] = {0};
+    oak_span_u8 s   = (oak_span_u8){ data, 4 }  ;
+    return oak_fill( s )  ;
 }
 
-i32 oak_pong( i32 n ) {
-  return oak_tramp_ping_pong( oak_tramp_ping_pong_pong, n );
+int main(void) {
+  return (int)oak_main();
 }
-

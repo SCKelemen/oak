@@ -457,6 +457,10 @@ func collectCallEdges(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			}
 		case *ast.AssignmentStatement:
 			walkExpr(s.Value, false)
+		case *ast.IndexAssignmentStatement:
+			walkExpr(s.Target.Left, false)
+			walkExpr(s.Target.Index, false)
+			walkExpr(s.Value, false)
 		case *ast.WhileStatement:
 			walkExpr(s.Condition, false)
 			if s.Body != nil {

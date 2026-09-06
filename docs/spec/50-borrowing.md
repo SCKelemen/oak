@@ -105,7 +105,7 @@ Sibling writable reborrows of one parent span may coexist when the compiler stat
 
 Known slice/subslice bounds are translated into the same absolute owner coordinate space as their parent region. If the compiler cannot establish a precise derived region, it keeps the region unknown and fails closed for alias-disjointness decisions rather than inventing precision.
 
-Bounds must be proved statically or checked dynamically in safe code. Out-of-range access is never undefined behavior. This is enforced in the C backend: view/span indexing lowers to trapping bounds-checked helpers, owned-array indexing to a static-length guard, and unknown containers fail closed at compile time.
+Bounds must be proved statically or checked dynamically in safe code. Out-of-range access is never undefined behavior. This is enforced in the C backend: view/span indexing lowers to trapping bounds-checked helpers, owned-array indexing to a static-length guard, and unknown containers fail closed at compile time. Stores are symmetric: `s[i] = value` writes through spans and owners via bounds-checked trapping stores, and writing through a read-only view is rejected by the type checker.
 
 Exact index-normalization policy (including whether negative indices remain in Oak) is a separate sequence/indexing decision; it does not alter the ownership model.
 

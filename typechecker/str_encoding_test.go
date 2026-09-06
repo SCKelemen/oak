@@ -269,3 +269,30 @@ func TestDeclarationFormFunctionsTypecheck(t *testing.T) {
 		})
 	}
 }
+
+// Index assignment (docs/spec/50-borrowing.md): spans and owners are
+// writable; views are read-only at the type level.
+func TestIndexAssignmentTypeRules(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		hasError bool
+	}{
+		{"span write ok", "buf: [4]u8\ns: [*]u8 = span(&buf)\ns[0] = u8(7)", false},
+		{"owner write ok", "buf: [4]u8\nbuf[0] = u8(7)", false},
+		{"view write rejected", "buf: [4]u8\nv: []u8 = buf[0:4]\nv[0] = u8(7)", true},
+		{"element type mismatch", "buf: [4]u8\nbuf[0] = \"x\"", true},
+		{"non-integer index", "buf: [4]u8\nbuf[\"a\"] = u8(1)", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := setupTypeChecker(tt.input)
+			program := parseProgram(tt.input)
+			tc.CheckProgram(program)
+			hasError := len(tc.Errors()) > 0
+			if hasError != tt.hasError {
+				t.Errorf("input %q: expected error=%v, got errors=%v", tt.input, tt.hasError, tc.Errors())
+			}
+		})
+	}
+}

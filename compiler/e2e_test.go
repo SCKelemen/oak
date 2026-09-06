@@ -192,3 +192,42 @@ main: (): i32 {
 		t.Fatalf("exit = (%d, abnormal=%v), want 31 (15 + 16 + 0)", code, abnormal)
 	}
 }
+
+// Span writes, executed: fill an array through a writable span in a bounded
+// loop, then read the elements back — and an out-of-bounds store traps.
+func TestE2ESpanWritesRoundTrip(t *testing.T) {
+	code, abnormal := buildAndRun(t, "spanwrite", `
+fill: (s: [*]u8): i32 {
+  n: u32 = len(s)
+  i: u32 = 0
+  while i < n {
+    s[i] = u8(7)
+    i = i + 1
+  }
+  i32(s[0]) + i32(s[1]) + i32(s[2]) + i32(s[3])
+}
+
+main: (): i32 {
+  data: [4]u8
+  s: [*]u8 = span(&data)
+  fill(s) + 2
+}
+`)
+	if abnormal || code != 30 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 30 (4*7 written through the span + 2)", code, abnormal)
+	}
+}
+
+func TestE2EOutOfBoundsStoreTraps(t *testing.T) {
+	_, abnormal := buildAndRun(t, "oobstore", `
+main: (): i32 {
+  data: [4]u8
+  s: [*]u8 = span(&data)
+  s[9] = u8(1)
+  0
+}
+`)
+	if !abnormal {
+		t.Fatal("out-of-bounds store must trap, not return normally")
+	}
+}

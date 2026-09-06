@@ -353,10 +353,23 @@ func (p *Parser) parseStatement() ast.Statement {
 		}
 		fallthrough
 	default:
-		if stmt := p.parseExpressionStatement(); stmt != nil {
-			return stmt
+		stmt := p.parseExpressionStatement()
+		if stmt == nil {
+			return nil
 		}
-		return nil
+		// Index assignment: s[i] = value (docs/spec/50-borrowing.md: spans
+		// and owners are writable; views are read-only).
+		if target, ok := stmt.Expression.(*ast.IndexExpression); ok && p.peekTokenIs(token.ASSIGN) {
+			p.nextToken() // move to '='
+			assignToken := p.currentToken
+			p.nextToken() // move to the value
+			value := p.parseExpression(LOWEST)
+			if value == nil {
+				return nil
+			}
+			return &ast.IndexAssignmentStatement{Token: assignToken, Target: target, Value: value}
+		}
+		return stmt
 	}
 }
 
