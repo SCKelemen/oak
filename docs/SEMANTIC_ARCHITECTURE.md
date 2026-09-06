@@ -1,21 +1,27 @@
 # Oak Semantic Architecture
 
-Oak's central design goal is to define semantic facts once and reuse them everywhere that can benefit from them.
-
-A type, protocol, ownership rule, refinement, effect, or layout fact should not be independently re-written for the compiler, verifier, serializer, debugger, model checker, and documentation. Oak should preserve one checked semantic representation and derive projections from it.
-
-## Core principle
+Oak's central design goal is to define semantic facts once and reuse them everywhere that can soundly benefit from them.
 
 > Define a fact once; project it many ways.
+
+The normative language model is organized around five orthogonal axes described in `LANGUAGE_MODEL.md`:
+
+1. **Type** — what does this value mean?
+2. **Representation** — what bits represent it?
+3. **Authority / effects** — what may code holding it do?
+4. **Proposition** — what facts are statically known?
+5. **Protocol** — how may state evolve over time?
+
+These axes are kept separate deliberately. Two values may share representation but have different semantic types. A type may have propositions without constraining layout. A protocol can refer to authority transitions without baking scheduler policy into the type.
 
 ```text
 Oak source
     |
     v
-parser
+parser / layout normalization
     |
     v
-typed AST
+typed syntax
     |
     v
 Semantic IR
@@ -32,104 +38,83 @@ Semantic IR
     +--> deterministic simulation actions
 ```
 
-The Semantic IR is the source of truth for all projections.
+The Semantic IR is the semantic source of truth for all projections.
 
-## Semantic IR responsibilities
+## Current executable foundation
 
-The IR must preserve more than ordinary compiler types. It should be able to represent:
+The Go package `semir` is the first executable representation of this design. It deliberately starts smaller than the eventual language:
+
+- `Definition` contains the five axes independently;
+- proposition expressions are structured trees, not strings;
+- temporal formulas are structured trees;
+- proof status is explicit;
+- authority validation rejects contradictory effect contracts;
+- protocol validation rejects missing states and malformed transitions;
+- representation validation rejects impossible alignment claims;
+- module validation rejects duplicate definitions/protocols and unknown protocol references.
+
+The current `semir` package is a host compiler data model, not yet a promise that every proposed Oak surface syntax exists. Surface syntax should be added only after its semantic meaning is stable in the IR.
+
+## Type axis
+
+The type axis preserves:
 
 - nominal and algebraic type identity;
 - fixed-width and mathematical numeric domains;
-- record/sum structure;
-- exact target representation, size, alignment, offsets, and endianness where specified;
-- ownership, borrowing, mutability, and linear/affine state;
-- phantom parameters and zero-runtime semantic distinctions;
-- refinements and predicates;
-- effects and forbidden effects;
-- boundedness/resource facts;
-- compile-time tags and namespaced metadata;
-- protocol states and transitions;
-- invariants, preconditions, and postconditions;
-- temporal assumptions and guarantees;
-- source locations and documentation.
-
-Not every type needs every category.
-
-## Types drive multiple projections
+- record/product structure;
+- sum/ADT structure;
+- functions;
+- generic constraints;
+- phantom parameters and zero-runtime semantic distinctions.
 
 Example:
 
 ```oak
 IrqId[N]: type = u16
   where value < N
-
-Irq: type =
-  enabled: bool
-  priority: u8
-  latched_pending: bool
-  level_asserted: bool
-  active: bool
 ```
 
-The same semantic declarations should be sufficient to derive:
+`IrqId[N]` is not merely an alias for `u16`; it is a semantic type whose machine representation may be `u16` and whose proposition axis contains `value < N`.
 
-- the machine representation;
-- bounds checks or their elimination when statically proved;
-- Lean definitions;
-- SMT assumptions/obligations;
-- structured debugger descriptions;
-- serialization schemas where requested;
-- property-test generators;
-- human-readable documentation.
+## Representation axis
+
+Machine layout is not merely a backend implementation detail. A representation-constrained definition may expose:
+
+```text
+bits(T)
+size(T)
+align(T)
+offset(T.field)
+endianness(T.field)
+tag-layout(T)
+```
+
+These facts should be consumable by verification and tooling.
+
+A wire/MMIO/ABI type can therefore use the same checked definition as executable code rather than maintaining a duplicate schema.
+
+### Unknown representation stays unknown
+
+The IR must fail closed when earlier compiler phases lost information. It must never invent semantic facts for convenience.
+
+For example, Oak's historical AST stores record fields in a Go map. Exact source field order therefore cannot yet be justified from that node. Semantic record membership can be projected; exact machine field layout must remain unspecified until the syntax/typed representation preserves order.
+
+This is intentional: missing information is represented as missing information, not reconstructed by guesswork.
 
 ## Machine integers and mathematical integers are different
 
 Oak must never silently identify an unbounded mathematical integer with a machine integer.
 
-Examples:
-
 ```text
 Nat / Int       mathematical domains
 u8..u64         fixed-width machine domains
 uint / int      target-word machine domains
-uptr / ptr      target-pointer-width machine domains
+uptr / iptr     target-pointer-width machine domains
 ```
 
 Conversions are explicit semantic operations with explicit proof obligations where overflow or truncation is possible.
 
-This lets proofs reason accurately about wrapping, checked arithmetic, address widths, wire layouts, and target-specific representation.
-
-## Layout is a semantic fact
-
-Machine layout is not merely a backend implementation detail.
-
-For a representation-constrained type, the compiler should be able to expose facts such as:
-
-```text
-size(T)
-align(T)
-offset(T.field)
-endianness(T.field)
-```
-
-These facts should be consumable by verification and tooling.
-
-A wire or MMIO layout can therefore use the same checked type definition as executable code rather than maintaining a duplicate schema.
-
-## Refinements
-
-Oak should support refinements as semantic predicates over values.
-
-Conceptual syntax:
-
-```oak
-PageIndex[N]: type = u32 where value < N
-AlignedPage: type = uptr where value % PageSize == 0
-```
-
-The exact syntax remains open. The semantic requirement does not: a refinement becomes a fact available to the type checker, SMT solver, Lean projection, optimizer, test generator, and documentation.
-
-## Ownership and typestate
+## Authority and effects
 
 Ownership is part of semantics, not linting.
 
@@ -139,9 +124,10 @@ Examples:
 CpuOwned[Buffer]
 DeviceOwned[Buffer]
 SharedRead[Buffer]
+UniqueWrite[Buffer]
 ```
 
-A DMA submission may be modeled as a transition:
+DMA submission may be modeled as:
 
 ```text
 CpuOwned[Buffer] -> DeviceOwned[Buffer]
@@ -153,39 +139,46 @@ and completion as:
 DeviceOwned[Buffer] -> CpuOwned[Buffer]
 ```
 
-The executable checker prevents illegal use, while protocol/state projections can reason about the same transitions globally.
+Effects express systems constraints:
 
-## Effects
+```oak
+fn irq_entry(...)
+  effects { Cpu.Local, Mmio.Aic }
 
-Effects should be explicit enough to express systems constraints.
+realtime fn process(...)
+  effects { Audio.Read, Audio.Write }
+  forbids { Memory.Allocate, Thread.Block, Os.Syscall }
+```
+
+Required and forbidden effects must be internally consistent. The same effect cannot be both.
+
+`unsafe` is an explicit authority/proof boundary, not a switch that disables all checking.
+
+## Proposition axis
+
+Refinements, preconditions, postconditions, and invariants are structured propositions.
 
 Conceptual examples:
 
 ```oak
-fn irq_entry(...)
-  effects { CpuLocal, Mmio[Aic] }
-
-realtime fn process(...)
-  effects { AudioRead, AudioWrite }
-  forbids { Allocate, Block, Syscall }
+PageIndex[N]: type = u32 where value < N
+AlignedPage: type = uptr where value % PageSize == 0
 ```
 
-The exact syntax remains open.
+A proposition becomes one fact available to:
 
-Effects should power:
+- the type checker;
+- SMT;
+- Lean projection;
+- optimizer/bounds-check elimination;
+- test generation;
+- documentation.
 
-- compile-time capability restrictions;
-- realtime/no-allocation guarantees;
-- call-graph checks;
-- proof assumptions;
-- documentation;
-- security review.
+The `semir.Expr` tree exists specifically so proof backends do not have to parse arbitrary annotation strings.
 
-## Protocols and temporal semantics
+## Protocol axis
 
 Executable functions describe what one step does. Concurrent systems also need a description of which sequences of steps are legal.
-
-Oak should therefore support protocol/state-machine declarations with a semantics capable of projection into temporal/model-checking tools.
 
 Conceptual example:
 
@@ -198,21 +191,21 @@ protocol VirtualIrq
   transition inject Idle -> Pending
   transition acknowledge Pending -> Active
   transition eoi Active -> Idle
-
-  invariant active_is_known_irq
 ```
 
-The same declaration should eventually be able to drive:
+The same declaration should eventually drive:
 
 - typestate APIs;
-- state-machine implementation scaffolding;
+- executable state-machine scaffolding;
 - model checking;
 - Lean transition definitions;
 - deterministic simulator actions;
 - state diagrams;
 - debugger decoding.
 
-Temporal liveness properties must state environmental assumptions explicitly. For example, eventual completion may depend on scheduler fairness, device progress, or peer behavior.
+Temporal liveness properties must state environmental assumptions explicitly. Eventual completion may depend on scheduler fairness, device progress, or peer behavior.
+
+The `semir.TemporalExpr` tree is the shared representation for these formulas; temporal backends should consume that rather than independent handwritten models whenever possible.
 
 ## Verification backends have different jobs
 
@@ -228,54 +221,78 @@ implementation behavior   -> generated property tests / DST
 unproved debug contracts  -> runtime assertions where requested
 ```
 
-All backends consume the same Semantic IR rather than independent hand-written models whenever possible.
+All backends should consume the same Semantic IR facts where possible.
 
 ## Proof status is explicit
 
-Oak tooling should distinguish at least:
+Oak tooling distinguishes at least:
 
-- **specified**: a property exists in the semantic model;
-- **checked**: discharged by ordinary static checking;
-- **proved-smt**: discharged by an SMT solver;
-- **proved-kernel**: checked by a proof assistant kernel;
-- **model-checked**: explored by a finite-state/temporal checker under stated bounds;
-- **tested**: exercised against generated or user tests;
-- **refined**: a formal correspondence to a lower-level implementation/model has been established.
+- **specified** — property exists in the semantic model;
+- **checked** — discharged by ordinary static checking;
+- **proved-smt** — discharged by an SMT solver;
+- **proved-kernel** — checked by a proof assistant kernel;
+- **model-checked** — explored by a finite-state/temporal checker under stated bounds;
+- **tested** — exercised against generated or user tests;
+- **refined** — formal correspondence to a lower-level implementation/model has been established.
 
-The compiler and documentation must never collapse these into a vague "verified" label.
+The compiler and documentation must never collapse these into a vague `verified` label.
 
 ## Tags remain extensible metadata
 
-Oak's existing compile-time tag system remains useful for metadata that does not change core language semantics:
+Oak's existing compile-time tags remain useful for projection metadata that does not define core language correctness:
 
 ```oak
 field: u64 `{ wire.field: 7, ui.unit: "bytes" }`
 ```
 
-Correctness-critical concepts such as ownership, effects, refinements, alignment, and protocol transitions should graduate to typed language constructs rather than relying on arbitrary stringly metadata.
+Correctness-critical concepts such as ownership, effects, refinements, alignment, discriminants, and protocol transitions graduate to typed language constructs and typed Semantic IR nodes.
+
+## Existing Oak features map naturally
+
+```text
+ADTs / records / generics               -> Type
+machine ints / pointers / layouts       -> Representation
+views / spans / borrow checker / unsafe -> Authority
+phantom types / constraints             -> Type + Proposition
+struct tags                             -> extensible attributes
+pattern-driven state changes            -> seed for Protocol
+```
+
+The architecture extends Oak's strongest existing ideas rather than replacing them.
+
+## Strings and validity
+
+Encoding is a semantic validity fact. Arbitrary bytes cannot safely become `Str[Utf8]` merely by attaching a phantom encoding parameter.
+
+A future safe API should distinguish raw bytes from validated strings and make validation/unsafe assumption explicit.
+
+## Interfaces
+
+Interface constraints are compile-time capabilities by default and should not imply hidden vtables or allocation. Runtime existential/interface values, if added, must have explicit type and representation semantics.
+
+## C is one projection
+
+Readable C remains a valuable bootstrap backend and audit surface, but Oak semantics are not defined by C. The Semantic IR is above executable backends and proof/tooling projections alike.
 
 ## Syntax and semantics are separate
 
-Oak supports both layout and explicit-brace styles. Both normalize into one AST before semantic analysis.
+Oak supports both layout and explicit-brace styles. Both normalize into one parser path before semantic analysis.
 
-No proof, type rule, ownership rule, effect, or backend may depend on which surface style was used.
+No proof, type rule, ownership rule, effect, representation, or protocol may depend on which surface style was used.
 
 See `SYNTAX_DIRECTION.md`.
 
-## Development strategy
+## Development sequence
 
-Oak should earn these features incrementally using real systems code as pressure.
-
-Recommended sequence:
-
-1. dual layout/explicit block syntax;
-2. stable Semantic IR for existing Oak types, tags, ownership, views/spans, and layout;
-3. one multi-projection experiment using the OS interrupt types;
-4. refinements and SMT obligations;
-5. Lean projection for local invariants;
-6. protocol/state-machine representation and temporal projection;
-7. generated property/DST tests;
-8. effects and bounded/realtime contracts;
-9. stronger refinement between generated/executable code and proof models.
+1. stabilize dual layout/explicit block syntax;
+2. establish the five-axis Semantic IR and validation rules;
+3. preserve enough typed/source structure to derive existing Oak definitions without information loss;
+4. perform one multi-projection experiment using OS interrupt types;
+5. add refinements and SMT obligations;
+6. add Lean projection for local invariants;
+7. add protocol/state-machine syntax and temporal projection;
+8. generate property/DST tests;
+9. add effects and bounded/realtime contracts;
+10. strengthen refinement between executable lowering and proof models.
 
 The OS remains implemented in Zig while Oak proves that its semantic model can eliminate duplication around real core subsystems. Oak should replace the implementation language only if and when its generated code, machine control, ergonomics, and verification story are demonstrably better.
