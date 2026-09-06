@@ -18,7 +18,7 @@ Legend:
 | Delimited parser cursor contract | ✓ | ✓ | ✓ | ✓ | ✓ |  | one `parseDelimited[T]` path covers invocations, parameters, type arguments, and array elements; `Oak.Delimited` proves canonical opener/body/close structure, item preservation, unique close suffix, exact close offset, and trailing-separator semantic transparency; refinement pending |
 | Type lattice (`never`, `any`, join/meet) | ✓ | ✓ | ✓ | ✓ | ✓ |  | Go subtype decision procedure is aligned with the proved distributive-lattice laws; explicit implementation refinement is still pending |
 | Semantic records/products | ✓ | ✓ | ✓ |  |  |  | plain `{ ... }` is parsed as a semantic product and projects semantic fields while leaving representation unspecified; source order is preserved as declaration metadata; duplicate fields are rejected |
-| Record shape constraints | ✓ |  |  |  |  |  | normative direction: `T: Shape` checks required semantic members without layout equality or runtime interface objects; implementation/formal relation pending |
+| Record shape constraints | ✓ | partial | partial | ✓ | ✓ |  | Semantic IR implements representation-blind required-field satisfaction with exact field-type identity, extra fields allowed, and order ignored; `Oak.RecordShape` proves reflexivity, extension/transitivity, order independence, missing-field rejection, and representation irrelevance; generic `T: Shape` typechecker integration and refinement remain pending |
 | Natural struct representation selection | ✓ | ✓ | ✓ |  |  |  | parser preserves `struct { ... }` distinctly from `{ ... }`; `type = struct { ... }` selects `RepresentationRecord + natural-ordered` while remaining unresolved until target field representations are known |
 | Natural struct layout | ✓ | ✓ | ✓ | ✓ | ✓ |  | `NaturalRecordLayout` computes checked ordered non-packed layout with power-of-two alignment and uint32 overflow rejection; `Oak.RecordLayout` proves identity/order preservation, field alignment, non-overlap, and final-size alignment in the unbounded arithmetic model; implementation refinement pending |
 | Record composition | ✓ | partial | partial |  |  |  | semantic composition is separated from subtyping and from representation composition |
@@ -61,14 +61,15 @@ The formal gate currently checks:
 - `Oak.PhantomRepresentation`
 - `Oak.Layout`
 - `Oak.RecordLayout`
+- `Oak.RecordShape`
 
 A green Lean build means the stated theorems type-check against the pinned proof kernel. It does **not** imply implementation refinement.
 
 ## Immediate formal-verification queue
 
-1. semantic record-shape satisfaction laws, independent of representation;
+1. generic-constraint integration for semantic record shapes without global width subtyping;
 2. explicit refinement from selected/resolved struct representation to `Oak.RecordLayout`;
-3. explicit implementation refinements for type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, and layout normalization;
+3. explicit implementation refinements for record-shape satisfaction, type lattice, effects, borrowing, exhaustiveness, source positions, delimited parsing, region lifetimes, phantom representation, and layout normalization;
 4. formalize additional resource/boundedness laws as the implementation surfaces stabilize;
 5. add ABI-specific representation profiles only when an actual backend requires semantics beyond the natural ordered profile.
 
