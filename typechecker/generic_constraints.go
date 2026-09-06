@@ -65,6 +65,28 @@ func bindConstrainedTypeVars(env *TypeEnvironment, typeVars []string, constraint
 	}
 }
 
+func (tc *TypeChecker) validateGenericConstraints(constraints []Constraint, env *TypeEnvironment, node ast.Node) bool {
+	valid := true
+	for _, constraint := range constraints {
+		for _, requirementName := range constraint.Interfaces {
+			requirement, ok := env.GetType(requirementName)
+			if !ok {
+				tc.addError(node, "generic constraint %s: requirement %s not found", constraint.Var, requirementName)
+				valid = false
+				continue
+			}
+			switch requirement.(type) {
+			case *InterfaceType, *RecordType:
+				// Static method interface or static semantic record-shape requirement.
+			default:
+				tc.addError(node, "generic constraint %s: %s is neither an interface nor a record shape", constraint.Var, requirementName)
+				valid = false
+			}
+		}
+	}
+	return valid
+}
+
 // parseTypeExpressionInEnv resolves a type expression in a specific lexical
 // environment without changing the caller's long-lived environment.
 func (tc *TypeChecker) parseTypeExpressionInEnv(expr ast.Expression, env *TypeEnvironment) Type {
