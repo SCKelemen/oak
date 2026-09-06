@@ -1,0 +1,337 @@
+{
+  "statements": [
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "InvocationExpression",
+          "data": {
+            "arguments": [
+              {
+                "type": "StringLiteral",
+                "data": {
+                  "value": "putchar"
+                },
+                "position": {
+                  "line": 2,
+                  "column": 40,
+                  "byte_start": 40,
+                  "byte_end": 49
+                }
+              }
+            ],
+            "function": {
+              "type": "IndexExpression",
+              "data": {
+                "index": {
+                  "type": "Identifier",
+                  "data": {
+                    "value": "extern"
+                  },
+                  "position": {
+                    "line": 2,
+                    "column": 33,
+                    "byte_start": 33,
+                    "byte_end": 39
+                  }
+                },
+                "left": {
+                  "type": "Identifier",
+                  "data": {
+                    "value": "c"
+                  },
+                  "position": {
+                    "line": 2,
+                    "column": 31,
+                    "byte_start": 31,
+                    "byte_end": 32
+                  }
+                }
+              },
+              "position": {
+                "line": 2,
+                "column": 32,
+                "byte_start": 32,
+                "byte_end": 33
+              }
+            }
+          },
+          "position": {
+            "line": 2,
+            "column": 39,
+            "byte_start": 39,
+            "byte_end": 40
+          }
+        },
+        "name": "putchar",
+        "parameters": [
+          {
+            "name": "ch",
+            "type": "c.Int"
+          }
+        ],
+        "return_type": "c.Int"
+      },
+      "position": {
+        "line": 2,
+        "column": 1,
+        "byte_start": 1,
+        "byte_end": 8
+      }
+    },
+    {
+      "type": "FunctionStatement",
+      "data": {
+        "body": {
+          "type": "BlockExpression",
+          "data": {
+            "block": {
+              "type": "BlockStatement",
+              "data": {
+                "statements": [
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "InvocationExpression",
+                              "data": {
+                                "arguments": [
+                                  {
+                                    "type": "IntegerLiteral",
+                                    "data": {
+                                      "value": 79
+                                    },
+                                    "position": {
+                                      "line": 5,
+                                      "column": 17,
+                                      "byte_start": 84,
+                                      "byte_end": 86
+                                    }
+                                  }
+                                ],
+                                "function": {
+                                  "type": "IndexExpression",
+                                  "data": {
+                                    "index": {
+                                      "type": "Identifier",
+                                      "data": {
+                                        "value": "Int"
+                                      },
+                                      "position": {
+                                        "line": 5,
+                                        "column": 13,
+                                        "byte_start": 80,
+                                        "byte_end": 83
+                                      }
+                                    },
+                                    "left": {
+                                      "type": "Identifier",
+                                      "data": {
+                                        "value": "c"
+                                      },
+                                      "position": {
+                                        "line": 5,
+                                        "column": 11,
+                                        "byte_start": 78,
+                                        "byte_end": 79
+                                      }
+                                    }
+                                  },
+                                  "position": {
+                                    "line": 5,
+                                    "column": 12,
+                                    "byte_start": 79,
+                                    "byte_end": 80
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 5,
+                                "column": 16,
+                                "byte_start": 83,
+                                "byte_end": 84
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "putchar"
+                            },
+                            "position": {
+                              "line": 5,
+                              "column": 3,
+                              "byte_start": 70,
+                              "byte_end": 77
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 5,
+                          "column": 10,
+                          "byte_start": 77,
+                          "byte_end": 78
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 5,
+                      "column": 3,
+                      "byte_start": 70,
+                      "byte_end": 77
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "InvocationExpression",
+                              "data": {
+                                "arguments": [
+                                  {
+                                    "type": "IntegerLiteral",
+                                    "data": {
+                                      "value": 10
+                                    },
+                                    "position": {
+                                      "line": 6,
+                                      "column": 17,
+                                      "byte_start": 105,
+                                      "byte_end": 107
+                                    }
+                                  }
+                                ],
+                                "function": {
+                                  "type": "IndexExpression",
+                                  "data": {
+                                    "index": {
+                                      "type": "Identifier",
+                                      "data": {
+                                        "value": "Int"
+                                      },
+                                      "position": {
+                                        "line": 6,
+                                        "column": 13,
+                                        "byte_start": 101,
+                                        "byte_end": 104
+                                      }
+                                    },
+                                    "left": {
+                                      "type": "Identifier",
+                                      "data": {
+                                        "value": "c"
+                                      },
+                                      "position": {
+                                        "line": 6,
+                                        "column": 11,
+                                        "byte_start": 99,
+                                        "byte_end": 100
+                                      }
+                                    }
+                                  },
+                                  "position": {
+                                    "line": 6,
+                                    "column": 12,
+                                    "byte_start": 100,
+                                    "byte_end": 101
+                                  }
+                                }
+                              },
+                              "position": {
+                                "line": 6,
+                                "column": 16,
+                                "byte_start": 104,
+                                "byte_end": 105
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "putchar"
+                            },
+                            "position": {
+                              "line": 6,
+                              "column": 3,
+                              "byte_start": 91,
+                              "byte_end": 98
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 6,
+                          "column": 10,
+                          "byte_start": 98,
+                          "byte_end": 99
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 6,
+                      "column": 3,
+                      "byte_start": 91,
+                      "byte_end": 98
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "IntegerLiteral",
+                        "data": {
+                          "value": 0
+                        },
+                        "position": {
+                          "line": 7,
+                          "column": 3,
+                          "byte_start": 112,
+                          "byte_end": 113
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 7,
+                      "column": 3,
+                      "byte_start": 112,
+                      "byte_end": 113
+                    }
+                  }
+                ]
+              },
+              "position": {
+                "line": 4,
+                "column": 15,
+                "byte_start": 66,
+                "byte_end": 67
+              }
+            }
+          },
+          "position": {
+            "line": 4,
+            "column": 15,
+            "byte_start": 66,
+            "byte_end": 67
+          }
+        },
+        "name": "main",
+        "parameters": [],
+        "return_type": "i32"
+      },
+      "position": {
+        "line": 4,
+        "column": 1,
+        "byte_start": 52,
+        "byte_end": 56
+      }
+    }
+  ],
+  "type": "Program"
+}

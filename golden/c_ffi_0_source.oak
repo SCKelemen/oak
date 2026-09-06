@@ -1,0 +1,8 @@
+
+putchar: (ch: c.Int): c.Int = c.extern("putchar")
+
+main: (): i32 {
+  putchar(c.Int(79))
+  putchar(c.Int(10))
+  0
+}

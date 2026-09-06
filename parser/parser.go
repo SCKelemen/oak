@@ -1521,6 +1521,17 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 			Token: p.currentToken,
 			Value: p.currentToken.Literal,
 		}
+		// Qualified library type: c.Int32, c.Ptr, ... (docs/spec/92-ffi.md
+		// section 2.1). The dotted name stays one identifier; the type
+		// checker resolves the library member.
+		if p.peekTokenIs(token.DOT) {
+			p.nextToken() // move to '.'
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			ident.Value = ident.Value + "." + p.currentToken.Literal
+			return ident
+		}
 		// Check if this is a generic type: Name[TypeArg1, TypeArg2, ...]
 		if p.peekTokenIs(token.LBRACK) {
 			p.nextToken() // move to '['
@@ -2829,7 +2840,38 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		return nil
 	}
 	stmt.EndToken = p.currentToken
+	if symbol, ok := externBindingSymbol(stmt.Body); ok {
+		stmt.ExternSymbol = symbol
+	}
 	return stmt
+}
+
+// externBindingSymbol recognizes the extern binding definition shape
+// `c.extern("symbol")` (docs/spec/92-ffi.md section 2.3). Validation of the
+// symbol and of the signature belongs to the type checker; the parser only
+// records the shape.
+func externBindingSymbol(body ast.Expression) (string, bool) {
+	call, ok := body.(*ast.InvocationExpression)
+	if !ok || len(call.Arguments) != 1 {
+		return "", false
+	}
+	access, ok := call.Function.(*ast.IndexExpression)
+	if !ok {
+		return "", false
+	}
+	library, ok := access.Left.(*ast.Identifier)
+	if !ok || library.Value != "c" {
+		return "", false
+	}
+	member, ok := access.Index.(*ast.Identifier)
+	if !ok || member.Value != "extern" {
+		return "", false
+	}
+	symbol, ok := call.Arguments[0].(*ast.StringLiteral)
+	if !ok {
+		return "", false
+	}
+	return symbol.Value, true
 }
 
 // parseIdentLedStatement handles statements that start with IDENT ":" ...

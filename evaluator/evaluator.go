@@ -98,6 +98,19 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 				return result
 			}
 		}
+		// Compiler-known library calls (docs/spec/92-ffi.md): arm64
+		// instruction functions run natively in the interpreter; c
+		// conversions are value-preserving; extern is native-backend only.
+		// A local binding named c/arm64 shadows the library.
+		if indexExpr, ok := node.Function.(*ast.IndexExpression); ok {
+			if base, isIdent := indexExpr.Left.(*ast.Identifier); isIdent && (base.Value == "c" || base.Value == "arm64") {
+				if _, bound := env.Get(base.Value); !bound {
+					if member, isIdent := indexExpr.Index.(*ast.Identifier); isIdent {
+						return evalLibraryCall(base.Value, member.Value, node.Arguments, env)
+					}
+				}
+			}
+		}
 		// Check if this is a method call: recv.method(args)
 		// Method calls have an IndexExpression as the function
 		if indexExpr, ok := node.Function.(*ast.IndexExpression); ok {

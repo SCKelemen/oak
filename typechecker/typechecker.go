@@ -429,6 +429,9 @@ type TypeChecker struct {
 	adtTypes    map[string]*object.ADTType // ADT type definitions
 	intSize     int                        // Platform size for int/uint (default: 64)
 	ptrSize     int                        // Platform size for ptr/uptr (default: 64)
+	// checkedExterns marks extern bindings already validated, so the
+	// predeclare pass and the statement pass never double-report.
+	checkedExterns map[*ast.FunctionStatement]bool
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -505,6 +508,8 @@ func NewWithPlatformSizes(env *object.Environment, intSize, ptrSize int) *TypeCh
 		adtTypes:    env.GetAllADTTypes(),
 		intSize:     intSize,
 		ptrSize:     ptrSize,
+
+		checkedExterns: make(map[*ast.FunctionStatement]bool),
 	}
 	// Add builtin type aliases
 	tc.addBuiltinTypeAliases()
@@ -606,6 +611,16 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 // depend on constraint machinery that runs during the full check.
 func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
 	if fn == nil || fn.Name == nil || fn.Receiver != nil || len(fn.TypeParams) > 0 {
+		return
+	}
+	// Extern bindings are validated and registered by their own path
+	// (docs/spec/92-ffi.md section 2.3), predeclared here so calls may
+	// precede the binding in source order.
+	if fn.ExternSymbol != "" {
+		if !tc.checkedExterns[fn] {
+			tc.checkedExterns[fn] = true
+			tc.checkExternFunction(fn)
+		}
 		return
 	}
 	if _, exists := tc.env.Get(fn.Name.Value); exists {
@@ -751,6 +766,14 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 // Helper functions for type checking specific expression types
 func (tc *TypeChecker) checkIdentifier(ident *ast.Identifier) Type {
 	scheme, ok := tc.env.Get(ident.Value)
+	if !ok {
+		// Unbound library names get the library explanation, not
+		// "undefined variable" (a local named c still shadows normally).
+		if ident.Value == "c" || ident.Value == "arm64" {
+			tc.addError(ident, "%s is a compiler-known library, not a value (docs/spec/92-ffi.md)", ident.Value)
+			return nil
+		}
+	}
 	if !ok {
 		tc.addError(ident, "undefined variable: %s", ident.Value)
 		return nil
@@ -1040,6 +1063,12 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 }
 
 func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
+	// Compiler-known library calls: c conversions, misplaced c.extern, and
+	// arm64 instruction functions (docs/spec/92-ffi.md).
+	if libraryType, isLibrary := tc.checkLibraryInvocation(expr); isLibrary {
+		return libraryType
+	}
+
 	// Check if this is a primitive type constructor: u32(x), u64(y), etc.
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
 		if constructorType := tc.checkPrimitiveConstructor(ident.Value, expr.Arguments); constructorType != nil {
@@ -1301,6 +1330,12 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 	argType := tc.checkExpression(args[0])
 	if argType == nil {
 		return nil
+	}
+
+	// A matching c.* value converts back explicitly along the invertible
+	// rows of the conversion table (docs/spec/92-ffi.md section 2.2).
+	if cConversionToOak(typeName, argType) {
+		return &PrimitiveType{Name: typeName}
 	}
 
 	// Check if argument is a primitive type
@@ -2420,6 +2455,17 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		return
 	}
 
+	// Extern bindings have no Oak body: validate the boundary signature and
+	// register the declared type (docs/spec/92-ffi.md section 2.3). Nested
+	// bindings that the predeclare pass never saw are validated here.
+	if stmt.ExternSymbol != "" {
+		if !tc.checkedExterns[stmt] {
+			tc.checkedExterns[stmt] = true
+			tc.checkExternFunction(stmt)
+		}
+		return
+	}
+
 	// Extract type parameters and constraints
 	typeVars := []string{}
 	constraints := []Constraint{}
@@ -3041,6 +3087,11 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 	}
 
 	if ident, ok := expr.(*ast.Identifier); ok {
+		// Library-qualified types (c.Int32, ...) resolve before anything
+		// else: type position always means the library (docs/spec/92-ffi.md).
+		if libraryType, isLibrary := tc.libraryQualifiedType(ident); isLibrary {
+			return libraryType
+		}
 		// Check if it's a primitive type
 		switch ident.Value {
 		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
@@ -3198,6 +3249,10 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 
 	// Handle all other type expressions (same as parseTypeExpression but without intersection handling)
 	if ident, ok := expr.(*ast.Identifier); ok {
+		// Library-qualified types (c.Int32, ...): docs/spec/92-ffi.md.
+		if libraryType, isLibrary := tc.libraryQualifiedType(ident); isLibrary {
+			return libraryType
+		}
 		// Check if it's a primitive type
 		switch ident.Value {
 		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":

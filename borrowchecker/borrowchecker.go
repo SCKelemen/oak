@@ -189,6 +189,12 @@ func (bc *BorrowChecker) checkBlockStatement(block *ast.BlockStatement, env *typ
 // - Local variables (parameters, receiver) can be owners
 // - Function-local borrows are dropped when the function returns
 func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env *typechecker.TypeEnvironment) {
+	// Extern bindings have no Oak body and their c.* signatures carry no
+	// borrowable owners: foreign pointers are opaque (docs/spec/92-ffi.md).
+	if stmt.ExternSymbol != "" {
+		return
+	}
+
 	// Save current borrow checker state
 	// We snapshot state so borrows created inside don't leak out, but functions
 	// can still see and respect outer borrows (e.g., can't take a span of an

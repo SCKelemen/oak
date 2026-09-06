@@ -1,0 +1,318 @@
+package codegen
+
+// C backend lowering for the foreign-interface libraries
+// (docs/spec/92-ffi.md): extern binding prototypes and calls, c type
+// spellings and conversions, and the arm64 instruction-function helpers.
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/typechecker"
+)
+
+// cQualifiedTypeSpelling resolves a dotted c-library type name ("c.Int32")
+// to its C spelling. Unknown members fail closed with a compile-breaking
+// marker rather than guessing a spelling.
+func cQualifiedTypeSpelling(name string) (string, bool) {
+	if !strings.HasPrefix(name, "c.") {
+		return "", false
+	}
+	spelling, known := typechecker.CTypeSpelling(strings.TrimPrefix(name, "c."))
+	if !known {
+		return "OAK_UNSUPPORTED_C_TYPE", true
+	}
+	return spelling, true
+}
+
+// libraryCallTarget destructures `library.member` invocation callees for
+// the compiler-known libraries.
+func libraryCallTarget(fn ast.Expression) (library, member string, ok bool) {
+	access, isAccess := fn.(*ast.IndexExpression)
+	if !isAccess {
+		return "", "", false
+	}
+	base, isIdent := access.Left.(*ast.Identifier)
+	if !isIdent || (base.Value != "c" && base.Value != "arm64") {
+		return "", "", false
+	}
+	memberIdent, isIdent := access.Index.(*ast.Identifier)
+	if !isIdent {
+		return "", "", false
+	}
+	return base.Value, memberIdent.Value, true
+}
+
+// emitLibraryCall lowers a compiler-known library call: a c conversion
+// becomes an explicit C cast to the member's spelling; an arm64 instruction
+// function becomes its helper. Reports whether the call was handled.
+// The type checker has already rejected shadowed/local uses of the library
+// names in checked pipelines; unknown members fail closed.
+func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typechecker.TypeChecker) bool {
+	library, member, ok := libraryCallTarget(call.Function)
+	if !ok {
+		return false
+	}
+	switch library {
+	case "c":
+		if member == "extern" || len(call.Arguments) != 1 {
+			cg.output.WriteString("OAK_UNSUPPORTED_C_CALL")
+			return true
+		}
+		spelling, known := typechecker.CTypeSpelling(member)
+		if !known {
+			cg.output.WriteString("OAK_UNSUPPORTED_C_TYPE")
+			return true
+		}
+		cg.output.WriteString(fmt.Sprintf("((%s)( ", spelling))
+		cg.emitExpressionFragment(call.Arguments[0], tc)
+		cg.output.WriteString(" ))")
+		return true
+	case "arm64":
+		if !arm64IntrinsicWidths[member] || len(call.Arguments) != 1 {
+			cg.output.WriteString("OAK_UNSUPPORTED_ARM64_INTRINSIC")
+			return true
+		}
+		cg.output.WriteString(fmt.Sprintf("oak_arm64_%s( ", member))
+		cg.emitExpressionFragment(call.Arguments[0], tc)
+		cg.output.WriteString(" )")
+		return true
+	}
+	return false
+}
+
+// arm64IntrinsicWidths lists the v1 catalog (docs/spec/92-ffi.md
+// section 3.2), matching the type checker's table.
+var arm64IntrinsicWidths = map[string]bool{
+	"rev32": true, "rev64": true,
+	"rbit32": true, "rbit64": true,
+	"clz32": true, "clz64": true,
+}
+
+// collectUsedIntrinsics scans the program for arm64 instruction-function
+// calls so only the helpers a program uses are emitted. The scan walks the
+// same node kinds the emitter handles; anything it cannot see would surface
+// as a missing helper at C compile time (fail closed, caught by the cc
+// gate), never as wrong behavior.
+func collectUsedIntrinsics(program *ast.Program) []string {
+	used := map[string]bool{}
+	var scanExpr func(expr ast.Expression)
+	var scanStmt func(stmt ast.Statement)
+
+	scanExpr = func(expr ast.Expression) {
+		switch e := expr.(type) {
+		case *ast.InvocationExpression:
+			if library, member, ok := libraryCallTarget(e.Function); ok && library == "arm64" && arm64IntrinsicWidths[member] {
+				used[member] = true
+			} else {
+				scanExpr(e.Function)
+			}
+			for _, arg := range e.Arguments {
+				scanExpr(arg)
+			}
+		case *ast.InfixExpression:
+			scanExpr(e.Left)
+			scanExpr(e.Right)
+		case *ast.PrefixExpression:
+			scanExpr(e.Right)
+		case *ast.IndexExpression:
+			scanExpr(e.Left)
+			scanExpr(e.Index)
+		case *ast.SliceExpression:
+			scanExpr(e.Seq)
+			scanExpr(e.Low)
+			scanExpr(e.High)
+		case *ast.MatchExpression:
+			scanExpr(e.Scrutinee)
+			for _, arm := range e.Arms {
+				scanExpr(arm.Body)
+			}
+		case *ast.BlockExpression:
+			if e.Block != nil {
+				for _, stmt := range e.Block.Statements {
+					scanStmt(stmt)
+				}
+			}
+		case *ast.VariantExpression:
+			scanExpr(e.Payload)
+		case *ast.ArrayLiteral:
+			for _, element := range e.Elements {
+				scanExpr(element)
+			}
+		case *ast.RecordLiteral:
+			for _, field := range e.Fields {
+				scanExpr(field)
+			}
+		case *ast.FunctionLiteral:
+			if e.Body != nil {
+				for _, stmt := range e.Body.Statements {
+					scanStmt(stmt)
+				}
+			}
+		}
+	}
+
+	scanStmt = func(stmt ast.Statement) {
+		switch s := stmt.(type) {
+		case *ast.ExpressionStatement:
+			scanExpr(s.Expression)
+		case *ast.VariableDeclaration:
+			scanExpr(s.Value)
+		case *ast.AssignmentStatement:
+			scanExpr(s.Value)
+		case *ast.IndexAssignmentStatement:
+			scanExpr(s.Target)
+			scanExpr(s.Value)
+		case *ast.WhileStatement:
+			scanExpr(s.Condition)
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					scanStmt(inner)
+				}
+			}
+		case *ast.UnsafeBlock:
+			if s.Body != nil {
+				for _, inner := range s.Body.Statements {
+					scanStmt(inner)
+				}
+			}
+		case *ast.BlockStatement:
+			for _, inner := range s.Statements {
+				scanStmt(inner)
+			}
+		case *ast.FunctionStatement:
+			if s.ExternSymbol == "" {
+				scanExpr(s.Body)
+			}
+		}
+	}
+
+	for _, stmt := range program.Statements {
+		scanStmt(stmt)
+	}
+	names := make([]string, 0, len(used))
+	for name := range used {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// emitIntrinsicHelpers emits the helpers for the instruction functions the
+// program uses. On an AArch64 target each helper is the instruction itself
+// (inline assembly); elsewhere it is the portable C99 lowering
+// (docs/spec/92-ffi.md section 3.3). Semantics are identical by
+// Oak.Intrinsics plus the differential execution suite.
+func (cg *CodeGenerator) emitIntrinsicHelpers(program *ast.Program) {
+	used := collectUsedIntrinsics(program)
+	if len(used) == 0 {
+		return
+	}
+	cg.write("/* arm64 instruction functions: docs/spec/92-ffi.md section 3 */\n")
+	for _, name := range used {
+		cg.writeRaw(arm64HelperSources[name])
+		cg.write("\n")
+	}
+}
+
+// arm64HelperSources holds one helper per instruction function. The
+// portable branches supply the total semantics the builtins leave undefined
+// (clz of zero) or missing (bit reverse, as the branch-free swap network).
+var arm64HelperSources = map[string]string{
+	"rev32": `static inline u32 oak_arm64_rev32( u32 x ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__("rev %w0, %w1" : "=r"(x) : "r"(x));
+  return x;
+#else
+  return __builtin_bswap32(x);
+#endif
+}
+`,
+	"rev64": `static inline u64 oak_arm64_rev64( u64 x ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__("rev %0, %1" : "=r"(x) : "r"(x));
+  return x;
+#else
+  return __builtin_bswap64(x);
+#endif
+}
+`,
+	"rbit32": `static inline u32 oak_arm64_rbit32( u32 x ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__("rbit %w0, %w1" : "=r"(x) : "r"(x));
+  return x;
+#else
+  /* branch-free swap network (docs/spec/92-ffi.md section 3.3) */
+  x = ((x & 0x55555555u) << 1) | ((x >> 1) & 0x55555555u);
+  x = ((x & 0x33333333u) << 2) | ((x >> 2) & 0x33333333u);
+  x = ((x & 0x0F0F0F0Fu) << 4) | ((x >> 4) & 0x0F0F0F0Fu);
+  return __builtin_bswap32(x);
+#endif
+}
+`,
+	"rbit64": `static inline u64 oak_arm64_rbit64( u64 x ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__("rbit %0, %1" : "=r"(x) : "r"(x));
+  return x;
+#else
+  /* branch-free swap network (docs/spec/92-ffi.md section 3.3) */
+  x = ((x & 0x5555555555555555u) << 1) | ((x >> 1) & 0x5555555555555555u);
+  x = ((x & 0x3333333333333333u) << 2) | ((x >> 2) & 0x3333333333333333u);
+  x = ((x & 0x0F0F0F0F0F0F0F0Fu) << 4) | ((x >> 4) & 0x0F0F0F0F0F0F0F0Fu);
+  return __builtin_bswap64(x);
+#endif
+}
+`,
+	"clz32": `static inline u32 oak_arm64_clz32( u32 x ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  u32 r;
+  __asm__("clz %w0, %w1" : "=r"(r) : "r"(x));
+  return r;
+#else
+  /* guard supplies the total CLZ(0) = 32 the builtin leaves undefined */
+  return x == 0u ? 32u : (u32)__builtin_clz(x);
+#endif
+}
+`,
+	"clz64": `static inline u64 oak_arm64_clz64( u64 x ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  u64 r;
+  __asm__("clz %0, %1" : "=r"(r) : "r"(x));
+  return r;
+#else
+  /* guard supplies the total CLZ(0) = 64 the builtin leaves undefined */
+  return x == 0u ? 64u : (u64)__builtin_clzll(x);
+#endif
+}
+`,
+}
+
+// emitExternPrototype emits the foreign declaration an extern binding
+// asserts (docs/spec/92-ffi.md section 2.3). The symbol is re-validated
+// against the C identifier grammar before emission (defense in depth behind
+// OAK-F0102): an invalid symbol fails closed as a compile-breaking marker,
+// never as interpolated C.
+func (cg *CodeGenerator) emitExternPrototype(fn *ast.FunctionStatement) {
+	symbol := fn.ExternSymbol
+	if !typechecker.ValidCSymbol(symbol) {
+		cg.write("OAK_INVALID_EXTERN_SYMBOL;\n")
+		return
+	}
+	returnType := "void"
+	if fn.ReturnType != nil {
+		returnType = cg.parseTypeExpression(fn.ReturnType)
+	}
+	cg.write(fmt.Sprintf("extern %s %s( ", returnType, symbol))
+	if len(fn.Parameters) == 0 {
+		cg.write("void")
+	}
+	for i, param := range fn.Parameters {
+		cg.write(fmt.Sprintf("%s %s", cg.parseTypeExpression(param.Type), param.Name.Value))
+		if i < len(fn.Parameters)-1 {
+			cg.write(", ")
+		}
+	}
+	cg.write(" );\n")
+}

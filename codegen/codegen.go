@@ -134,6 +134,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitComparisonADT()
 	cg.emitAssertHelper()
 	cg.emitUtf8Helper()
+	cg.emitIntrinsicHelpers(program)
 
 	// Container typedefs (and their bounds-checked index helpers) must
 	// precede the functions that use them: pre-emit every view/span element
@@ -554,6 +555,12 @@ func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVar
 
 // emitFunction emits C code for a function or method
 func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) {
+	// Extern bindings have no Oak body; their foreign declaration was
+	// emitted with the prototypes (docs/spec/92-ffi.md section 2.3).
+	if fn.ExternSymbol != "" {
+		return
+	}
+
 	funcName := fn.Name.Value
 
 	// Trampoline-group members are emitted once, together, as one engine
@@ -962,6 +969,12 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 		if !emitted {
 			cg.write("/* forward declarations */\n")
 			emitted = true
+		}
+		// An extern binding declares the foreign symbol it asserts
+		// (docs/spec/92-ffi.md section 2.3) instead of an Oak prototype.
+		if fn.ExternSymbol != "" {
+			cg.emitExternPrototype(fn)
+			continue
 		}
 		returnType := cg.parseTypeExpression(fn.ReturnType)
 		cg.write(fmt.Sprintf("%s %s( ", returnType, cg.cFunctionName(fn.Name.Value)))
@@ -1401,6 +1414,11 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		// Function or method call. Runtime builtins lower to their always-on
 		// helpers; calls to variadic functions bundle the trailing arguments
 		// into a caller-owned stack array passed as a view.
+		// Compiler-known library calls first: c conversions become explicit
+		// casts, arm64 instruction functions become their helpers.
+		if cg.emitLibraryCall(e, tc) {
+			return
+		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
 			if fn, isVariadicCallee := cg.variadicCallee(ident.Value); isVariadicCallee {
 				cg.emitVariadicCall(fn, e, tc)
@@ -1430,8 +1448,18 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
 		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil {
-			// Calls to program functions use the mangled C name.
-			cg.output.WriteString(cg.cFunctionName(ident.Value))
+			// Calls to program functions use the mangled C name; calls to
+			// extern bindings use the validated foreign symbol raw
+			// (docs/spec/92-ffi.md section 2.3).
+			if target := cg.programFunctions[ident.Value]; target.ExternSymbol != "" {
+				if typechecker.ValidCSymbol(target.ExternSymbol) {
+					cg.output.WriteString(target.ExternSymbol)
+				} else {
+					cg.output.WriteString("OAK_INVALID_EXTERN_SYMBOL")
+				}
+			} else {
+				cg.output.WriteString(cg.cFunctionName(ident.Value))
+			}
 		} else {
 			cg.emitExpressionFragment(e.Function, tc)
 		}
@@ -1654,6 +1682,11 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 		case "()":
 			return "void"
 		default:
+			// c-library boundary types carry their C spellings
+			// (docs/spec/92-ffi.md section 2.1).
+			if spelling, isCType := cQualifiedTypeSpelling(ident.Value); isCType {
+				return spelling
+			}
 			// Assume it's a type name
 			return cg.cTypeName(ident.Value)
 		}

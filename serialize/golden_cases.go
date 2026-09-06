@@ -308,6 +308,35 @@ fn pong(n: i32) -> i32 {
 `,
 		},
 		{
+			// The C interface library (docs/spec/92-ffi.md): an extern
+			// binding declares the foreign symbol it asserts, calls use the
+			// raw symbol, and c conversions are explicit casts.
+			Name: "c_ffi",
+			SourceCode: `
+putchar: (ch: c.Int): c.Int = c.extern("putchar")
+
+main: (): i32 {
+  putchar(c.Int(79))
+  putchar(c.Int(10))
+  0
+}
+`,
+		},
+		{
+			// arm64 instruction functions (docs/spec/92-ffi.md section 3):
+			// the instruction on AArch64 targets, the proven-equivalent
+			// portable sequence elsewhere, one helper per intrinsic.
+			Name: "arm64_intrinsics",
+			SourceCode: `
+main: (): i32 {
+  assert(arm64.clz32(u32(0)) == u32(32))
+  assert(arm64.rev32(arm64.rev32(u32(287454020))) == u32(287454020))
+  assert(arm64.rbit64(arm64.rbit64(u64(9))) == u64(9))
+  0
+}
+`,
+		},
+		{
 			// Unsafe boundary: unprovable span overlap is admitted inside unsafe
 			// as a recorded OAK-B0110 assumption (warning), not an error.
 			Name: "unsafe_block",

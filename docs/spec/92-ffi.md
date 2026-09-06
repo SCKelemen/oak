@@ -22,8 +22,13 @@ typed function call, and every assumption the call imports is written down.**
 
 ## 2. The `c` library
 
-`c` is a compiler-known library, not a user package. It cannot be shadowed,
-reassigned, or extended from Oak source.
+`c` is a compiler-known library, not a user package. It cannot be reassigned
+or extended from Oak source. In **type position** the name always resolves to
+the library (`x: c.Int32` is never a local). In **expression position** an
+ordinary local binding named `c` shadows the library — `c` stays a usable
+variable name — and the library interpretation applies only where no such
+binding is in scope. The same rules govern the architecture libraries
+(`arm64`).
 
 ### 2.1 Types
 

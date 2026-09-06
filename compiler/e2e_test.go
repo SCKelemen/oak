@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,15 @@ import (
 // never-UB guarantee, verified in running machine code.
 
 func buildAndRun(t *testing.T, name, src string) (exitCode int, abnormal bool) {
+	t.Helper()
+	_, exitCode, abnormal = buildAndRunOutput(t, name, src)
+	return exitCode, abnormal
+}
+
+// buildAndRunOutput additionally captures the binary's stdout and accepts
+// extra cc flags (the differential intrinsic tests force the portable
+// lowering with -DOAK_PORTABLE_INTRINSICS).
+func buildAndRunOutput(t *testing.T, name, src string, ccFlags ...string) (stdout string, exitCode int, abnormal bool) {
 	t.Helper()
 	cc, err := exec.LookPath("cc")
 	if err != nil {
@@ -31,24 +41,28 @@ func buildAndRun(t *testing.T, name, src string) (exitCode int, abnormal bool) {
 	if err := os.WriteFile(cPath, []byte(output), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	compile := exec.Command(cc, "-std=c99", "-O1", "-o", binPath, cPath)
+	args := append([]string{"-std=c99", "-O1"}, ccFlags...)
+	args = append(args, "-o", binPath, cPath)
+	compile := exec.Command(cc, args...)
 	if combined, err := compile.CombinedOutput(); err != nil {
 		t.Fatalf("cc failed: %v\n%s\n--- generated C ---\n%s", err, combined, output)
 	}
 
 	run := exec.Command(binPath)
+	var captured strings.Builder
+	run.Stdout = &captured
 	err = run.Run()
 	if err == nil {
-		return 0, false
+		return captured.String(), 0, false
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		if exitErr.ExitCode() >= 0 {
-			return exitErr.ExitCode(), false
+			return captured.String(), exitErr.ExitCode(), false
 		}
-		return -1, true // killed by a signal: the trap fired
+		return captured.String(), -1, true // killed by a signal: the trap fired
 	}
 	t.Fatalf("failed to run binary: %v", err)
-	return 0, false
+	return "", 0, false
 }
 
 func TestE2EExitCodePassthrough(t *testing.T) {
@@ -215,6 +229,65 @@ main: (): i32 {
 `)
 	if abnormal || code != 30 {
 		t.Fatalf("exit = (%d, abnormal=%v), want 30 (4*7 written through the span + 2)", code, abnormal)
+	}
+}
+
+// The C boundary, executed: an extern binding to libc putchar writes real
+// bytes to stdout through the c interface library (docs/spec/92-ffi.md).
+func TestE2EExternPutchar(t *testing.T) {
+	stdout, code, abnormal := buildAndRunOutput(t, "externputchar", `
+putchar: (ch: c.Int): c.Int = c.extern("putchar")
+
+main: (): i32 {
+  putchar(c.Int(79))
+  putchar(c.Int(75))
+  putchar(c.Int(10))
+  0
+}
+`)
+	if abnormal || code != 0 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 0", code, abnormal)
+	}
+	if stdout != "OK\n" {
+		t.Fatalf("stdout = %q, want %q (bytes through the extern boundary)", stdout, "OK\n")
+	}
+}
+
+// The abstract assembly interface, executed on both lowerings: the default
+// build takes the AArch64 instructions on this host, and the second build
+// forces the portable C sequences (-DOAK_PORTABLE_INTRINSICS). Both must
+// satisfy the Oak.Intrinsics laws on the same inputs — the differential
+// witness of docs/spec/92-ffi.md section 3.3.
+func TestE2EArm64Intrinsics(t *testing.T) {
+	src := `
+main: (): i32 {
+  assert(arm64.clz64(u64(1)) == u64(63))
+  assert(arm64.clz32(u32(0)) == u32(32))
+  assert(arm64.clz64(u64(0)) == u64(64))
+  assert(arm64.rev32(u32(287454020)) == u32(1144201745))
+  v: u32 = u32(2864434397)
+  assert(arm64.rev32(arm64.rev32(v)) == v)
+  w: u64 = u64(81985529216486895)
+  assert(arm64.rev64(arm64.rev64(w)) == w)
+  assert(arm64.rbit32(u32(1)) == u32(2147483648))
+  assert(arm64.rbit64(arm64.rbit64(u64(1234567890))) == u64(1234567890))
+  assert(arm64.clz64(u64(255)) == u64(56))
+  56
+}
+`
+	for _, variant := range []struct {
+		name  string
+		flags []string
+	}{
+		{"instruction", nil},
+		{"portable", []string{"-DOAK_PORTABLE_INTRINSICS"}},
+	} {
+		t.Run(variant.name, func(t *testing.T) {
+			_, code, abnormal := buildAndRunOutput(t, "arm64"+variant.name, src, variant.flags...)
+			if abnormal || code != 56 {
+				t.Fatalf("exit = (%d, abnormal=%v), want 56 (clz64(255))", code, abnormal)
+			}
+		})
 	}
 }
 

@@ -113,6 +113,10 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 	if fn.Name == nil {
 		return nil
 	}
+	// Extern bindings have no Oak body to lower (docs/spec/92-ffi.md).
+	if fn.ExternSymbol != "" {
+		return fn
+	}
 	if fn.Body != nil {
 		// Body is an Expression - just lower it recursively
 		loweredBody := lowerExpression(fn.Body, tc)
@@ -120,6 +124,7 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			BaseNode:   fn.BaseNode,
 			Token:      fn.Token,
 			EndToken:   fn.EndToken,
+			TypeParams: fn.TypeParams,
 			Name:       fn.Name,
 			Receiver:   fn.Receiver,
 			Parameters: fn.Parameters,
@@ -188,6 +193,13 @@ func lowerExpression(expr ast.Expression, tc *typechecker.TypeChecker) ast.Expre
 
 // lowerIndexExpression lowers arr[i] to core_index(arr, i)
 func lowerIndexExpression(expr *ast.IndexExpression, tc *typechecker.TypeChecker) ast.Expression {
+	// Library member access (c.Int, arm64.clz64, ...) is not element
+	// indexing: preserve the shape for the backend (docs/spec/92-ffi.md).
+	if base, ok := expr.Left.(*ast.Identifier); ok && (base.Value == "c" || base.Value == "arm64") {
+		if member, ok := expr.Index.(*ast.Identifier); ok && typechecker.KnownLibraryMember(base.Value, member.Value) {
+			return expr
+		}
+	}
 	// Create a call to core_index intrinsic
 	coreIndex := &ast.Identifier{
 		Token: expr.Token,

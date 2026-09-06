@@ -850,6 +850,11 @@ type FunctionStatement struct {
 	Parameters []*FunctionParameter
 	ReturnType Expression // type expression
 	Body       Expression
+	// ExternSymbol, when non-empty, marks an extern C binding
+	// (docs/spec/92-ffi.md section 2.3): the definition was
+	// `c.extern("symbol")`, the function has no Oak body, and calls
+	// lower to the foreign symbol.
+	ExternSymbol string
 }
 
 func (fs *FunctionStatement) statementNode()       {}
