@@ -99,7 +99,9 @@ span slice        -> writable span
 
 Obtaining writable access from owned storage is explicit (`span`, an equivalent borrow operation, or a mutable binding rule later specified).
 
-A derived writable span is a **reborrow**. While the child span is live, direct use of its parent span is suspended. When the child leaves its lexical scope, the parent becomes usable again. This preserves one usable writable authority along a parent/child chain without requiring lifetime syntax in ordinary Oak code.
+A derived writable span is a **reborrow**. While any child span is live, direct use of its parent span is suspended. When the last live child leaves its lexical scope, the parent becomes usable again. This preserves usable writable authority along a parent/child chain without requiring lifetime syntax in ordinary Oak code.
+
+Sibling writable reborrows of one parent span may coexist when the compiler statically proves their regions pairwise disjoint (the disjoint-mutable-regions rule of section 6 applied to derived spans). This admits splitting one span into independent writable halves without an unsafe boundary. A reborrow whose region cannot be established, or that cannot be proven disjoint from every live sibling, is rejected; an unknown-region reborrow therefore admits no siblings in either direction.
 
 Known slice/subslice bounds are translated into the same absolute owner coordinate space as their parent region. If the compiler cannot establish a precise derived region, it keeps the region unknown and fails closed for alias-disjointness decisions rather than inventing precision.
 
