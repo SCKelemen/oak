@@ -121,6 +121,14 @@ The lexical state machine should remain explicit. A switch over punctuation/oper
 
 Generics belong around the lexer where they remove repeated infrastructure: token streams, typed cursors, transformations, collections, and compiler-stage APIs. They should not obscure recognition rules.
 
+## Verification status
+
+The Go 1.27 normal test gate runs `go test -v -race ./...` and is green with the fluent API, token-source composition, layout parsing, and generic parser-helper tests.
+
+The repository's separate golden-file workflow remains red because its fixture set is already incomplete/out of date: several named suites have no checked-in expected files, while older lexer/AST snapshots predate recent token/schema changes. This is tracked as golden-fixture debt, not treated as a passing verification gate. New front-end behavior is therefore covered by ordinary parser/compiler tests until the golden corpus is regenerated and made complete.
+
+We should repair that workflow rather than weaken it: regenerate the full expected corpus, review the semantic diffs, commit it atomically, and then require the golden gate again.
+
 ## Why generic methods matter
 
 Before Go 1.27, changing a pipeline result type generally required package-level generic functions such as:
