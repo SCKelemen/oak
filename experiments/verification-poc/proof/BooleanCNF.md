@@ -85,3 +85,8 @@ lean -DwarningAsError=true --run proof/BooleanCNFCompare.lean "$OAK_BOOLEAN_CNF_
 
 The ordinary Go tests need no Lean installation. The opt-in job retains the
 proof diagnostics, corpus, and comparison output with its soundness artifacts.
+
+[The proof and comparison gate passed](https://github.com/SCKelemen/oak/actions/runs/34157808526/job/101853157858):
+3,249 expressions and 12,996 input valuations, split equally between satisfiable
+and unsatisfiable outcomes. `../validation-boolean-cnf.json` records the tested
+commit, theorem assumptions, exact test scope, and remaining proof boundaries.

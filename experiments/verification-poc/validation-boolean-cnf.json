@@ -1,0 +1,70 @@
+{
+  "format": "oak-boolean-cnf-validation-1",
+  "date": "2026-09-07",
+  "commit": "08dcae99356bafe317020132c4b7acec1703f87f",
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34157808526",
+  "soundness_job": 101853157858,
+  "passed": true,
+  "lean_version": "4.33.1",
+  "warnings_as_errors": true,
+  "theorems": {
+    "andClauses_correct": {
+      "axioms": [
+        "propext"
+      ]
+    },
+    "orClauses_correct": {
+      "axioms": [
+        "propext"
+      ]
+    },
+    "encode_sound": {
+      "claim": "Every satisfying CNF assignment makes the expression true under its input values.",
+      "axioms": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "encode_complete": {
+      "claim": "Every true input valuation has a concretely constructed satisfying auxiliary extension.",
+      "axioms": [
+        "propext"
+      ]
+    },
+    "encoding_iff": {
+      "claim": "For every fixed input valuation, expression truth is equivalent to existence of a satisfying CNF extension agreeing on inputs.",
+      "axioms": [
+        "propext",
+        "Quot.sound"
+      ]
+    }
+  },
+  "comparison": {
+    "passed": true,
+    "exhaustive_expressions": 3244,
+    "deeper_regressions": 5,
+    "expressions": 3249,
+    "input_valuations": 12996,
+    "satisfiable": 6498,
+    "unsatisfiable": 6498,
+    "domain": "All expressions of depth at most two over false, true, x, y, NOT, AND, and OR; five deeper sharing/complement/commutativity regressions.",
+    "go_path": "encode(model, initial), Circuit.dimacs, lrat.Parse, and exhaustive assignment search with fixed inputs.",
+    "lean_path": "Reconstruct source expression, encode symbolic clauses, enumerate every auxiliary valuation with the forced one atom true.",
+    "checks": [
+      "Go recursive evaluation equals Go emitted-CNF satisfiability.",
+      "Lean recursive evaluation equals Lean symbolic-CNF satisfiability.",
+      "Go and Lean results agree for every tested input valuation.",
+      "Kernel-evaluated adapter regressions check nested negation and rejection of non-backward references."
+    ]
+  },
+  "scope": {
+    "proved": "Logical Tseitin clauses over symbolic atoms; all expression sizes and arbitrary input valuations.",
+    "not_proved": [
+      "Numeric allocation or a mapping into the numbered RUP clause database.",
+      "Go constant folding, commutative caching, implementation refinement, or DIMACS serialization.",
+      "Oak frontend semantics, base/step obligation construction, enums, bit-vector arithmetic, XOR, or other operators.",
+      "Correctness of the JSON comparison adapter beyond its specific regression examples."
+    ]
+  },
+  "artifacts": "Proof diagnostics, generated comparison corpus, and agreement logs are retained for 30 days in the opt-in soundness artifact."
+}
