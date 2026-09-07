@@ -144,12 +144,32 @@ v[i] < best ? {
 }
 ```
 
+Conditionals are **expressions**: with both branches present, the match
+produces a value, block branches yielding their trailing expression.
+
+```oak
+sign: (n: i32): i32 = n < 0 ? { 0 - 1 } | { 1 }
+
+s: i32 = ready ? {
+  bonus: i32 = 3
+  bonus + 1
+} | 0
+```
+
 Omitting the second branch supplies an implicit empty (unit) branch, so a
 one-armed condition is legal in statement position (a one-armed
-*expression* branch requires the block form: `cond ? { x }`). Positional
-branches are recognized by the absence of `=>`/`->` in the first arm;
-pattern arms behave exactly as in §7. In statement position the Bool match
-lowers to a plain C `if`/`else`.
+*expression* branch requires the block form: `cond ? { x }`); in value
+position both branches are required, which the type checker enforces
+(unit never equals the value type). Positional branches are recognized by
+the absence of `=>`/`->` in the first arm; pattern arms behave exactly as
+in §7.
+
+**Lowering** is the compiler's job, not the syntax's: statement-position
+conditions emit plain C `if`/`else`; value positions with expression
+branches emit a single-evaluation ternary; value positions with
+statement-bearing block branches hoist to a declaration plus branch
+assignment — in every case the C a careful author would have written by
+hand, with the condition evaluated exactly once.
 
 `&&` and `||` are short-circuit connectives over `Bool` (the right operand
 evaluates only when the left leaves the result open); `!` is negation.

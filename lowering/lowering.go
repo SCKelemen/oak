@@ -232,6 +232,14 @@ func branchBlock(body ast.Expression, tc *typechecker.TypeChecker) *ast.BlockSta
 func lowerBlockStatement(block *ast.BlockStatement, tc *typechecker.TypeChecker) *ast.BlockStatement {
 	loweredStmts := make([]ast.Statement, 0, len(block.Statements))
 	for _, stmt := range block.Statements {
+		// A declaration or assignment whose value is a Bool condition match
+		// with statement-bearing branches hoists into a declaration plus a
+		// branch statement assigning each branch's trailing value — the C an
+		// author would write (docs/spec/10-syntax.md §3a).
+		if hoisted, wasHoisted := hoistBoolMatchValue(stmt, tc); wasHoisted {
+			loweredStmts = append(loweredStmts, hoisted...)
+			continue
+		}
 		loweredStmts = append(loweredStmts, lowerStatement(stmt, tc))
 	}
 	return &ast.BlockStatement{
@@ -239,6 +247,128 @@ func lowerBlockStatement(block *ast.BlockStatement, tc *typechecker.TypeChecker)
 		Token:      block.Token,
 		Statements: loweredStmts,
 	}
+}
+
+// hoistBoolMatchValue expands `x: T = cond ? {…; a} | {…; b}` (and the
+// assignment form) when either branch carries statements: the value form
+// cannot inline into a C expression, so it becomes a declaration followed
+// by if/else whose branches end in an assignment of the trailing value.
+func hoistBoolMatchValue(stmt ast.Statement, tc *typechecker.TypeChecker) ([]ast.Statement, bool) {
+	var name *ast.Identifier
+	var match *ast.MatchExpression
+	var lead ast.Statement
+
+	switch s := stmt.(type) {
+	case *ast.VariableDeclaration:
+		candidate, isMatch := s.Value.(*ast.MatchExpression)
+		if !isMatch {
+			return nil, false
+		}
+		name = s.Name
+		match = candidate
+		lead = &ast.VariableDeclaration{
+			BaseNode: s.BaseNode, Token: s.Token, Name: s.Name, Type: s.Type,
+		}
+	case *ast.AssignmentStatement:
+		candidate, isMatch := s.Value.(*ast.MatchExpression)
+		if !isMatch {
+			return nil, false
+		}
+		name = s.Name
+		match = candidate
+	default:
+		return nil, false
+	}
+
+	trueBody, falseBody, isBool := boolMatchArms(match)
+	if !isBool || !(branchCarriesStatements(trueBody) || branchCarriesStatements(falseBody)) {
+		return nil, false
+	}
+	trueBlock, trueOK := branchAssignBlock(name, trueBody, tc)
+	falseBlock, falseOK := branchAssignBlock(name, falseBody, tc)
+	if !trueOK || !falseOK {
+		return nil, false
+	}
+
+	branch := &ast.IfStatement{
+		BaseNode:    match.BaseNode,
+		Token:       match.Token,
+		Condition:   lowerExpression(match.Scrutinee, tc),
+		Consequence: trueBlock,
+		Alternative: falseBlock,
+	}
+	if lead != nil {
+		return []ast.Statement{lead, branch}, true
+	}
+	return []ast.Statement{branch}, true
+}
+
+// boolMatchArms classifies a two-arm Bool condition match (true/false
+// literal patterns, trailing wildcard admitted).
+func boolMatchArms(match *ast.MatchExpression) (trueBody, falseBody ast.Expression, ok bool) {
+	if match.Scrutinee == nil || len(match.Arms) != 2 {
+		return nil, nil, false
+	}
+	for i, arm := range match.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			boolLit, isBool := pattern.Value.(*ast.Boolean)
+			if !isBool {
+				return nil, nil, false
+			}
+			if boolLit.Value {
+				trueBody = arm.Body
+			} else {
+				falseBody = arm.Body
+			}
+		case *ast.WildcardPattern:
+			if i != 1 {
+				return nil, nil, false
+			}
+			if trueBody == nil {
+				trueBody = arm.Body
+			} else {
+				falseBody = arm.Body
+			}
+		default:
+			return nil, nil, false
+		}
+	}
+	return trueBody, falseBody, trueBody != nil && falseBody != nil
+}
+
+func branchCarriesStatements(body ast.Expression) bool {
+	block, isBlock := body.(*ast.BlockExpression)
+	return isBlock && block.Block != nil && len(block.Block.Statements) > 1
+}
+
+// branchAssignBlock lowers one value branch into a block whose final
+// statement assigns the branch's trailing value to name.
+func branchAssignBlock(name *ast.Identifier, body ast.Expression, tc *typechecker.TypeChecker) (*ast.BlockStatement, bool) {
+	assign := func(value ast.Expression) ast.Statement {
+		return &ast.AssignmentStatement{Name: name, Value: lowerExpression(value, tc)}
+	}
+	block, isBlock := body.(*ast.BlockExpression)
+	if !isBlock {
+		return &ast.BlockStatement{Statements: []ast.Statement{assign(body)}}, true
+	}
+	if block.Block == nil || len(block.Block.Statements) == 0 {
+		return nil, false
+	}
+	statements := block.Block.Statements
+	trailing, isExpr := statements[len(statements)-1].(*ast.ExpressionStatement)
+	if !isExpr {
+		return nil, false
+	}
+	loweredLead := make([]ast.Statement, 0, len(statements))
+	for _, inner := range statements[:len(statements)-1] {
+		loweredLead = append(loweredLead, lowerStatement(inner, tc))
+	}
+	return &ast.BlockStatement{
+		BaseNode:   block.Block.BaseNode,
+		Token:      block.Block.Token,
+		Statements: append(loweredLead, assign(trailing.Expression)),
+	}, true
 }
 
 // lowerExpression lowers an expression

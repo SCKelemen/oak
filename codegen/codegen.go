@@ -697,6 +697,60 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write("\n")
 }
 
+// boolMatchBranches recognizes a Bool condition match: two arms whose
+// patterns are the true/false literals (a trailing wildcard covers the
+// remaining case). Returns the branch bodies.
+func boolMatchBranches(match *ast.MatchExpression) (trueBody, falseBody ast.Expression, ok bool) {
+	if match.Scrutinee == nil || len(match.Arms) != 2 {
+		return nil, nil, false
+	}
+	for i, arm := range match.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			boolLit, isBool := pattern.Value.(*ast.Boolean)
+			if !isBool {
+				return nil, nil, false
+			}
+			if boolLit.Value {
+				trueBody = arm.Body
+			} else {
+				falseBody = arm.Body
+			}
+		case *ast.WildcardPattern:
+			if i != 1 {
+				return nil, nil, false
+			}
+			if trueBody == nil {
+				trueBody = arm.Body
+			} else {
+				falseBody = arm.Body
+			}
+		default:
+			return nil, nil, false
+		}
+	}
+	if trueBody == nil || falseBody == nil {
+		return nil, nil, false
+	}
+	return trueBody, falseBody, true
+}
+
+// emitBoolMatchReturn emits a Bool condition match in return position as C
+// if/else with both branches in return position.
+func (cg *CodeGenerator) emitBoolMatchReturn(condition, trueBody, falseBody ast.Expression, tc *typechecker.TypeChecker) {
+	cg.write("  if ( ")
+	cg.emitExpressionFragment(condition, tc)
+	cg.output.WriteString(" ) {\n")
+	cg.indentLevel++
+	cg.emitFunctionBody(trueBody, tc)
+	cg.indentLevel--
+	cg.write("  } else {\n")
+	cg.indentLevel++
+	cg.emitFunctionBody(falseBody, tc)
+	cg.indentLevel--
+	cg.write("  }\n")
+}
+
 // emitMatchReturn emits a lowerable-shape match (identifier scrutinee,
 // literal/wildcard patterns) in return position as guarded statements. Arm
 // bodies are emitted in return position themselves, so nested matches,
@@ -1340,6 +1394,17 @@ func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.Typ
 			}
 		}
 	}
+	// A Bool condition match in return position emits as plain C if/else —
+	// the condition evaluates exactly once, and arm bodies stay in return
+	// position (blocks return their trailing value; tail calls lower to
+	// loop/trampoline continues). The surface is one match form; the
+	// lowering is what a C author would write (docs/spec/10-syntax.md §3a).
+	if match, ok := expr.(*ast.MatchExpression); ok {
+		if trueBody, falseBody, isBool := boolMatchBranches(match); isBool {
+			cg.emitBoolMatchReturn(match.Scrutinee, trueBody, falseBody, tc)
+			return
+		}
+	}
 	// A lowerable-shape match in return position emits as guarded statements
 	// so arm bodies stay in return position: value arms return, tail calls
 	// inside arms lower to loop/trampoline continues. The shape decision is
@@ -1678,14 +1743,25 @@ func (cg *CodeGenerator) emitMatchExpressionInline(expr *ast.MatchExpression, tc
 	if isADT {
 		// ADT match - emit switch inline (simplified)
 		cg.output.WriteString("/* match expression */")
+	} else if trueBody, falseBody, isBool := boolMatchBranches(expr); isBool {
+		// Bool condition match: a plain C ternary, condition evaluated once.
+		cg.output.WriteString("( ")
+		cg.emitExpressionFragment(expr.Scrutinee, tc)
+		cg.output.WriteString(" ) ? ")
+		cg.emitExpressionFragment(trueBody, tc)
+		cg.output.WriteString(" : ")
+		cg.emitExpressionFragment(falseBody, tc)
 	} else {
-		// Scalar match - emit ternary-like chain
+		// Scalar match - a guarded ternary chain; the final arm is the
+		// unconditional else (exhaustiveness is checked upstream, so a
+		// match reaching codegen always has a last arm to fall to).
 		for i, arm := range expr.Arms {
-			if i > 0 {
-				cg.output.WriteString(" : ")
+			last := i == len(expr.Arms)-1
+			if last {
+				cg.emitExpressionFragment(arm.Body, tc)
+				break
 			}
 			cg.output.WriteString("( ")
-			// Condition
 			if literalPattern, ok := arm.Pattern.(*ast.LiteralPattern); ok {
 				cg.emitExpressionFragment(expr.Scrutinee, tc)
 				cg.output.WriteString(" == ")
@@ -1695,6 +1771,7 @@ func (cg *CodeGenerator) emitMatchExpressionInline(expr *ast.MatchExpression, tc
 			}
 			cg.output.WriteString(" ) ? ")
 			cg.emitExpressionFragment(arm.Body, tc)
+			cg.output.WriteString(" : ")
 		}
 	}
 
