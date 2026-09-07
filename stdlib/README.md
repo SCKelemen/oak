@@ -118,6 +118,90 @@ the offset, so even `u32(4294967295)` fails safely. Bytes outside successful
 writes remain unchanged. These operations encode integers only; they do not
 provide a record format, checksum, persistence ordering, or transaction protocol.
 
+## Byte ranges and contiguous buffers
+
+`bytes_fill(dst, value)` initializes every byte in a mutable span.
+`bytes_copy_at(dst, offset, src)` copies the whole source at an explicit offset.
+`bytes_move_within(storage, dst, src, count)` moves bytes within one exclusive
+span, handling both overlap directions. The latter two return
+`Result[u32,ByteRangeError]`; `OutOfBounds` leaves all bytes unchanged. A zero
+count permits offsets at the end, but not beyond it. `bytes_compare(left, right)`
+returns -1, 0, or 1 in unsigned-byte lexicographic order, with shorter equal
+prefixes first. None of these functions allocates.
+
+`ByteBufferCursor` tracks a contiguous live range `[start, end)` in caller-owned
+storage. Start with a zero-initialized `[1]ByteBufferCursor` and initialized byte
+array. Keep the cursor paired with the same storage; copying it does not create
+independent storage. These APIs require exclusive access to the cursor and are
+sequential. Corrupted cursors trap before operations access storage.
+
+| Function | Behavior |
+| --- | --- |
+| `buffer_len(cursor, capacity)` | Number of live bytes |
+| `buffer_tail_space(cursor, capacity)` | Available contiguous append space |
+| `buffer_append(cursor, storage, src)` | Appends all source bytes or returns `Full`, unchanged |
+| `buffer_peek_into(cursor, storage, dst)` | Fills the whole destination without consuming, or returns `InsufficientData`, unchanged |
+| `buffer_read_into(cursor, storage, dst)` | Exact peek followed by consume on success |
+| `buffer_consume(cursor, capacity, count)` | Advances start, or returns `InsufficientData`, unchanged |
+| `buffer_compact(cursor, storage)` | Moves live bytes to offset zero; returns their count |
+| `buffer_reset(cursor)` | Clears offsets without erasing storage |
+
+Append, peek, read and consume return `Result[u32,BufferError]` with the byte
+count on success. Supply the actual backing capacity to metadata-only operations.
+Consuming the last live byte resets both offsets. Append never compacts implicitly;
+call compact to reclaim a consumed prefix. Append/read/peek cost O(copied bytes),
+compact costs O(live bytes), and metadata operations cost O(1). Storage passed to
+append/compact is `[*]u8`; peek/read takes `[]u8` plus a separate mutable destination.
+Use lexical scopes to release a write borrow before creating a read view.
+
+Returning borrowed slices is not yet supported by Oak's borrow checker, so these
+read APIs copy into caller-provided storage. There is no owning buffer object,
+automatic growth, allocator, zero-copy returned view, or implicit byte erasure.
+
+## Fluent byte builder
+
+```oak
+import(std)
+
+main: (): i32 {
+  data: [4]u8
+  storage: [*]u8 = span(&data)
+  built: ByteBuilder = byte_builder().
+    append_byte(storage, u8(10)).
+    append_byte(storage, u8(32))
+  result: Result[u32, BufferError] = built.finish_bytes()
+  count: u32 = result ? | .Ok(n) => n | .Err(e) => u32(0)
+  assert(count == u32(2))
+  i32(storage[0]) + i32(storage[1])
+}
+```
+
+`ByteBuilder` is a small value record containing `length` and `failed`. The builder
+owns no storage and holds no borrow. Keep the same storage paired with a chain.
+`append_bytes(builder, storage, src)` and `append_byte(builder, storage, value)`
+return updated state; `finish_bytes(builder)` returns the length or `Full`.
+An append that does not fit writes nothing, preserves the successful prefix,
+and sets a sticky failure: later appends write nothing. Earlier successful writes
+are not rolled back. Reset by constructing a new builder; this does not erase bytes.
+Copies of builder state alias the same caller-selected storage and are not snapshots.
+
+With `import(std)`, the three fluent spellings `.append_bytes(...)`,
+`.append_byte(...)`, and `.finish_bytes()` expand into those ordinary functions,
+with the receiver supplied exactly once as the first argument. The usual type,
+borrow and discipline checks run on the expanded calls. This bootstrap sugar is
+limited to these three exports; it is not general method dispatch or generic
+method inference. Free-function spelling remains available. For multiline chains,
+keep the dot at the end of the preceding line: a leading dot on a new line
+starts a variant expression in Oak.
+
+The builder uses no boxes, heap allocation, closures or virtual dispatch. Its
+value state and direct calls can be inlined and removed by the C optimizer;
+that is an optimization opportunity, not a guarantee for every program or build
+mode. A Linux amd64 CI regression compares a constant single-byte fluent chain's
+`-O3` assembly with a direct constant return. Dynamic lengths still need bounds
+checks, copying still performs work, and an unoptimized build may retain calls.
+Native Apple Silicon optimizer validation remains separate work.
+
 ## Verification and remaining work
 
 `compiler/e2e_stdlib_test.go` compiles real imported Oak through the compiler and
@@ -130,6 +214,11 @@ Go byte-encoding fixtures, including high-bit and maximum values at unaligned
 offsets. Bitset traces check each backing byte against a reference model across
 zero, partial-byte and byte-boundary capacities; bounds tests cover unchanged
 failed writes and maximum u32 arguments.
+
+Buffer tests run deterministic mixed-operation traces against a byte-array model,
+checking cursor offsets and every backing byte after each operation. Byte moves
+are checked against Go copy for both overlap directions and empty ranges. Builder
+tests cover fluent chains, exact capacity, sticky failure, and type rejection.
 
 The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,

@@ -1,0 +1,11 @@
+import(std)
+
+main: (): i32 {
+  data: [4]u8
+  storage: [*]u8 = span(&data)
+  built: ByteBuilder = byte_builder().append_byte(storage, u8(10)).append_byte(storage, u8(32))
+  result: Result[u32, BufferError] = built.finish_bytes()
+  count: u32 = result ? | .Ok(n) => n | .Err(e) => u32(0)
+  assert(count == u32(2))
+  i32(storage[0]) + i32(storage[1])
+}

@@ -316,3 +316,203 @@ bytes_write_u64_be: (dst: [*]u8, offset: u32, value: u64): Result[u32, EndianErr
     .Err(.BufferTooSmall)
   }
 }
+
+// Bounded byte operations. Range errors never partially mutate storage.
+ByteRangeError: type = | OutOfBounds
+bytes_fill: (dst: [*]u8, value: u8): () {
+  i: u32 = 0
+  while i < len(dst) {
+    dst[i] = value
+    i = i + u32(1)
+  }
+}
+
+bytes_copy_at: (dst: [*]u8, offset: u32, src: []u8): Result[u32, ByteRangeError] {
+  n: u32 = len(src)
+  bytes_range_fits(len(dst), offset, n) ? {
+    i: u32 = 0
+    while i < n {
+      dst[offset + i] = src[i]
+      i = i + u32(1)
+    }
+    .Ok(n)
+  } | { .Err(.OutOfBounds) }
+}
+
+// A single exclusive span permits overlapping source and destination ranges.
+bytes_move_within: (storage: [*]u8, dst: u32, src: u32, count: u32): Result[u32, ByteRangeError] {
+  valid: Bool = bytes_range_fits(len(storage), dst, count) && bytes_range_fits(len(storage), src, count)
+  valid ? {
+    dst > src ? {
+      remaining: u32 = count
+      while remaining > u32(0) {
+        remaining = remaining - u32(1)
+        storage[dst + remaining] = storage[src + remaining]
+      }
+    } | {
+      i: u32 = 0
+      while i < count {
+        storage[dst + i] = storage[src + i]
+        i = i + u32(1)
+      }
+    }
+    .Ok(count)
+  } | { .Err(.OutOfBounds) }
+}
+
+// Unsigned-byte lexicographic order, with a shorter equal prefix first.
+bytes_compare: (left: []u8, right: []u8): i32 {
+  limit: u32 = len(left) < len(right) ? len(left) | len(right)
+  order: i32 = 0
+  i: u32 = 0
+  while i < limit && order == 0 {
+    left[i] < right[i] ? { order = -1 }
+    left[i] > right[i] ? { order = 1 }
+    i = i + u32(1)
+  }
+  order == 0 ? {
+    len(left) < len(right) ? { order = -1 }
+    len(left) > len(right) ? { order = 1 }
+  }
+  order
+}
+
+// Live bytes occupy [start, end). Keep cursor and storage paired.
+ByteBufferCursor: type = struct {
+  start: u32
+  end: u32
+}
+BufferError: type = Full | InsufficientData
+
+buffer_check: (cursor: [*]ByteBufferCursor, capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(cursor[0].start <= cursor[0].end)
+  assert(cursor[0].end <= capacity)
+}
+
+buffer_len: (cursor: [*]ByteBufferCursor, capacity: u32): u32 {
+  buffer_check(cursor, capacity)
+  cursor[0].end - cursor[0].start
+}
+
+buffer_tail_space: (cursor: [*]ByteBufferCursor, capacity: u32): u32 {
+  buffer_check(cursor, capacity)
+  capacity - cursor[0].end
+}
+
+// Append requires contiguous tail space. Reclaim consumed space with compact.
+buffer_append: (cursor: [*]ByteBufferCursor, storage: [*]u8, src: []u8): Result[u32, BufferError] {
+  buffer_check(cursor, len(storage))
+  n: u32 = len(src)
+  n <= len(storage) - cursor[0].end ? {
+    i: u32 = 0
+    while i < n {
+      storage[cursor[0].end + i] = src[i]
+      i = i + u32(1)
+    }
+    cursor[0].end = cursor[0].end + n
+    .Ok(n)
+  } | { .Err(.Full) }
+}
+
+// Exact read into a separate destination. Does not consume buffered bytes.
+buffer_peek_into: (cursor: [*]ByteBufferCursor, storage: []u8, dst: [*]u8): Result[u32, BufferError] {
+  buffer_check(cursor, len(storage))
+  n: u32 = len(dst)
+  n <= cursor[0].end - cursor[0].start ? {
+    i: u32 = 0
+    while i < n {
+      dst[i] = storage[cursor[0].start + i]
+      i = i + u32(1)
+    }
+    .Ok(n)
+  } | { .Err(.InsufficientData) }
+}
+
+// Consuming the last byte resets both offsets, making the whole capacity free.
+buffer_consume: (cursor: [*]ByteBufferCursor, capacity: u32, count: u32): Result[u32, BufferError] {
+  buffer_check(cursor, capacity)
+  count <= cursor[0].end - cursor[0].start ? {
+    cursor[0].start = cursor[0].start + count
+    cursor[0].start == cursor[0].end ? {
+      cursor[0].start = u32(0)
+      cursor[0].end = u32(0)
+    }
+    .Ok(count)
+  } | { .Err(.InsufficientData) }
+}
+
+buffer_read_into: (cursor: [*]ByteBufferCursor, storage: []u8, dst: [*]u8): Result[u32, BufferError] {
+  copied: Result[u32, BufferError] = buffer_peek_into(cursor, storage, dst)
+  copied ?
+    | .Ok(count) => buffer_consume(cursor, len(storage), count)
+    | .Err(reason) => .Err(reason)
+}
+
+// O(live length), forward copy is safe because the destination precedes source.
+buffer_compact: (cursor: [*]ByteBufferCursor, storage: [*]u8): u32 {
+  buffer_check(cursor, len(storage))
+  n: u32 = cursor[0].end - cursor[0].start
+  cursor[0].start > u32(0) ? {
+    i: u32 = 0
+    while i < n {
+      storage[i] = storage[cursor[0].start + i]
+      i = i + u32(1)
+    }
+  }
+  cursor[0].start = u32(0)
+  cursor[0].end = n
+  n
+}
+
+// Logical reset only: this does not erase bytes or revoke external authority.
+buffer_reset: (cursor: [*]ByteBufferCursor): () {
+  assert(len(cursor) == u32(1))
+  cursor[0].start = u32(0)
+  cursor[0].end = u32(0)
+}
+
+// Small value-state builder. Storage is passed explicitly on every operation.
+// A failed append is sticky; the successful prefix stays available on finish.
+ByteBuilder: type = struct {
+  length: u32
+  failed: Bool
+}
+
+byte_builder: (): ByteBuilder {
+  initial: ByteBuilder = ByteBuilder { length: u32(0), failed: false }
+  initial
+}
+
+append_bytes: (builder: ByteBuilder, storage: [*]u8, src: []u8): ByteBuilder {
+  next: ByteBuilder = builder
+  builder.failed ? { next } | {
+    assert(builder.length <= len(storage))
+    n: u32 = len(src)
+    n <= len(storage) - builder.length ? {
+      i: u32 = 0
+      while i < n {
+        storage[builder.length + i] = src[i]
+        i = i + u32(1)
+      }
+      next.length = builder.length + n
+    } | { next.failed = true }
+    next
+  }
+}
+
+append_byte: (builder: ByteBuilder, storage: [*]u8, value: u8): ByteBuilder {
+  next: ByteBuilder = builder
+  builder.failed ? { next } | {
+    assert(builder.length <= len(storage))
+    builder.length < len(storage) ? {
+      storage[builder.length] = value
+      next.length = builder.length + u32(1)
+    } | { next.failed = true }
+    next
+  }
+}
+
+finish_bytes: (builder: ByteBuilder): Result[u32, BufferError] {
+  builder.failed ? { .Err(.Full) } | { .Ok(builder.length) }
+}
