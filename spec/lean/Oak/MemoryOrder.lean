@@ -201,7 +201,8 @@ theorem source_cas_pair_legal (b : Builtin) (failure : Order)
     (hOp : builtinOp b = .compareExchange)
     (hFailure : builtinFailureOrder b = some failure) :
     casLegal (builtinOrder b) failure = true := by
-  cases b <;> simp_all [builtinOp, builtinFailureOrder, builtinOrder, casLegal]
+  cases b <;> cases failure <;>
+    simp_all [builtinOp, builtinFailureOrder, builtinOrder, casLegal]
 
 /-- No source CAS can express release/acq-rel failure ordering. -/
 theorem source_cas_failure_not_release (b : Builtin) (failure : Order)
