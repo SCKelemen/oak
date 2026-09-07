@@ -116,6 +116,29 @@ arguments and the view length equals the trailing count). Spreading an
 existing sequence (`f(xs...)`) is not yet specified. Only the final
 parameter may carry the marker; `..` is not a token.
 
+## 3a. Statement conditionals and Boolean connectives
+
+`if` is a statement: a `Bool` condition, a brace block, an optional
+`else if` chain, and an optional final `else`.
+
+```oak
+if v[i] < best && !masked {
+  best = v[i]
+} else if v[i] == best {
+  ties = ties + 1
+}
+```
+
+The condition is a statement header: a `{` after it always opens the block,
+never a record literal (the same rule as `while`; parenthesized
+subexpressions re-admit literals). `if` produces no value — expression-position
+conditionals are `?` match's job — so branch blocks are statement blocks.
+
+`&&` and `||` are short-circuit connectives over `Bool` (the right operand
+evaluates only when the left leaves the result open); `!` is Boolean
+negation. They bind looser than comparison: `a == b || c < d` reads as
+`(a == b) || (c < d)`.
+
 ## 4. Blocks and layout
 
 Statement/expression blocks may be delimited by indentation or explicit braces. Both normalize to the same structural token stream and AST.

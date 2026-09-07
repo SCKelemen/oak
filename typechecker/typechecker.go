@@ -715,6 +715,8 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		}
 	case *ast.WhileStatement:
 		tc.checkWhileStatement(s)
+	case *ast.IfStatement:
+		tc.checkIfStatement(s)
 	case *ast.UnsafeBlock:
 		tc.checkUnsafeBlock(s)
 	case *ast.PackageStatement:
@@ -904,6 +906,15 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			return nil
 		}
 		return &BoolType{}
+	case "&&", "||":
+		// Short-circuit Boolean connectives (docs/spec/10-syntax.md): both
+		// operands are Bool; the right operand evaluates only when needed.
+		bool_ := &BoolType{}
+		if !leftType.Equals(bool_) || !rightType.Equals(bool_) {
+			tc.addError(expr, "operator %s requires Bool operands, got %s and %s", expr.Operator, leftType, rightType)
+			return nil
+		}
+		return bool_
 	case "<", ">", "<=", ">=":
 		// Comparison operators require numeric types
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
@@ -1384,6 +1395,15 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		return &PrimitiveType{Name: typeName}
 	}
 
+	// Untyped arithmetic over literals infers against the constructed type
+	// (the same expected-type threading literals get elsewhere).
+	if argPrimitive, isPrimitive := argType.(*PrimitiveType); isPrimitive && argPrimitive.Name == "int" {
+		rechecked := tc.checkExpression(args[0], &PrimitiveType{Name: typeName})
+		if rechecked != nil {
+			argType = rechecked
+		}
+	}
+
 	// Check if argument is a primitive type
 	argPrim, ok := argType.(*PrimitiveType)
 	if !ok {
@@ -1566,11 +1586,14 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 		return nil
 	}
 
-	// Validate operation
+	// Validate operation. `bits` is the same-width cross-sign
+	// reinterpretation (two's complement bit pattern, total): the explicit
+	// path between u32 and i32 that widening/narrowing deliberately lack.
 	validOperations := map[string]bool{
 		"trunc":      true,
 		"checked":    true,
 		"saturating": true,
+		"bits":       true,
 	}
 	if !validOperations[operation] {
 		return nil
@@ -1586,20 +1609,31 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 		return nil
 	}
 
-	// Check that narrowing is valid (source must be wider than target, same signedness)
-	if !tc.isValidNarrowing(sourceType, targetType) {
+	// Check the pair against the operation's own rule: narrowing ops need
+	// a strictly wider same-signedness source; bits needs the same width
+	// and opposite signedness.
+	if operation == "bits" {
+		sameWidth := tc.getTypeWidth(sourceType) == tc.getTypeWidth(targetType)
+		crossSign := (sourceType[0] == 'i') != (targetType[0] == 'i')
+		if !sameWidth || !crossSign {
+			tc.addError(args[0], "invalid reinterpretation: %s_bits_%s requires the same width and opposite signedness", targetType, sourceType)
+			return nil
+		}
+	} else if !tc.isValidNarrowing(sourceType, targetType) {
 		tc.addError(args[0], "invalid narrowing: cannot narrow %s to %s (must be same signedness and source must be wider)", sourceType, targetType)
 		return nil
 	}
 
-	// Check argument type matches source type
-	argType := tc.checkExpression(args[0])
+	// Check argument type matches source type, inferring untyped literals
+	// against it.
+	sourcePrim := &PrimitiveType{Name: sourceType}
+	argType := tc.checkExpression(args[0], sourcePrim)
 	if argType == nil {
 		return nil
 	}
 
 	argPrim, ok := argType.(*PrimitiveType)
-	if !ok || argPrim.Name != sourceType {
+	if !ok || normalizePrimitiveName(argPrim.Name) != sourceType {
 		tc.addError(args[0], "narrowing function %s expects argument of type %s, got %s", funcName, sourceType, argType)
 		return nil
 	}
@@ -2956,6 +2990,27 @@ func (tc *TypeChecker) checkADTVariantLiteralTag(adtName, variantName string, li
 				}
 			}
 		}
+	}
+}
+
+// checkIfStatement types the statement-position conditional
+// (docs/spec/10-syntax.md): Bool condition, both branches checked.
+func (tc *TypeChecker) checkIfStatement(stmt *ast.IfStatement) {
+	conditionType := tc.checkExpression(stmt.Condition)
+	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
+		tc.addError(stmt.Condition, "if condition must be Bool, got %s", conditionType)
+	}
+	if stmt.Consequence != nil {
+		tc.checkBlockStatement(stmt.Consequence)
+	}
+	switch alternative := stmt.Alternative.(type) {
+	case nil:
+	case *ast.IfStatement:
+		tc.checkIfStatement(alternative)
+	case *ast.BlockStatement:
+		tc.checkBlockStatement(alternative)
+	default:
+		tc.addError(stmt, "if statement: invalid else branch %T", stmt.Alternative)
 	}
 }
 

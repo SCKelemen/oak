@@ -62,6 +62,9 @@ const (
 	EQL  // ==
 	NEQL // !=
 
+	LAND // && (short-circuit logical and)
+	LOR  // || (short-circuit logical or)
+
 	_keywords_beg
 	TYPE
 	INTERFACE
@@ -73,6 +76,8 @@ const (
 	WHILE
 	UNSAFE
 	FN
+	IF
+	ELSE
 	_keywords_end
 )
 
@@ -121,6 +126,9 @@ var tokens = [...]string{
 	EQL:  "==",
 	NEQL: "!=",
 
+	LAND: "&&",
+	LOR:  "||",
+
 	TYPE:      "type",
 	INTERFACE: "interface",
 	STRUCT:    "struct",
@@ -131,6 +139,8 @@ var tokens = [...]string{
 	WHILE:     "while",
 	UNSAFE:    "unsafe",
 	FN:        "fn",
+	IF:        "if",
+	ELSE:      "else",
 }
 
 func (token TokenKind) String() string {

@@ -62,6 +62,8 @@ func New(source token.Source) *Parser {
 	p.registerInfix(token.MUL, p.parseInfixExpression)
 	p.registerInfix(token.QUO, p.parseInfixExpression)
 	p.registerInfix(token.EQL, p.parseInfixExpression)
+	p.registerInfix(token.LAND, p.parseInfixExpression)
+	p.registerInfix(token.LOR, p.parseInfixExpression)
 	p.registerInfix(token.NEQL, p.parseInfixExpression)
 	p.registerInfix(token.LCHEV, p.parseInfixExpression)
 	p.registerInfix(token.LEQ, p.parseInfixExpression)
@@ -252,6 +254,11 @@ func (p *Parser) parseStatement() ast.Statement {
 		return nil
 	case token.WHILE:
 		if stmt := p.parseWhileStatement(); stmt != nil {
+			return stmt
+		}
+		return nil
+	case token.IF:
+		if stmt := p.parseIfStatement(); stmt != nil {
 			return stmt
 		}
 		return nil
@@ -476,10 +483,13 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 		// IMPORTANT: Some infix parsers (like parseInvocationExpression) may consume the closing paren,
 		// leaving currentToken as the stop token. However, we should only stop if peekToken is also
 		// a stop token, because we might have more operators to parse (e.g., "1 + (2 + 3) + 4")
-		if p.currentTokenIs(token.SEMI) || p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.RBRACE) || p.currentTokenIs(token.RBRACK) {
+		if p.currentTokenIs(token.SEMI) || p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.RBRACE) {
 			// These are always stop tokens
 			break
 		}
+		// After an index expression currentToken is ']'; the expression
+		// continues when an operator follows (v[i] < limit) — the loop head
+		// decides from peekToken like everywhere else.
 		// For RPAREN, only stop if peekToken is also a stop token
 		// This allows expressions like "1 + (2 + 3) + 4" to continue parsing
 		if p.currentTokenIs(token.RPAREN) {
@@ -858,6 +868,7 @@ func (p *Parser) ParseProgram() *ast.Program {
 			p.currentTokenIs(token.PACKAGE) ||
 			p.currentTokenIs(token.IMPORT) ||
 			p.currentTokenIs(token.WHILE) ||
+			p.currentTokenIs(token.IF) ||
 			p.currentTokenIs(token.UNSAFE) ||
 			p.currentTokenIs(token.COLON)) && // COLON for REPL commands like :exit
 			!p.currentTokenIs(token.TRIVIA) &&
@@ -960,7 +971,9 @@ type Precedence int
 const (
 	_ Precedence = iota
 	LOWEST
-	EQUALITY   // ==
+	LOGICAL_OR  // ||
+	LOGICAL_AND // &&
+	EQUALITY    // ==
 	COMPARE    // > or <
 	SUMMATION  // +
 	PRODUCT    // *
@@ -1014,6 +1027,8 @@ func (p *Parser) parseExpressionGroup() ast.Expression {
 
 // all of these should probably move down to the lexer/scanner
 var precedences = map[token.TokenKind]Precedence{
+	token.LOR:    LOGICAL_OR,
+	token.LAND:   LOGICAL_AND,
 	token.EQL:    EQUALITY,
 	token.NEQL:   EQUALITY,
 	token.LCHEV:  COMPARE,
@@ -2309,6 +2324,52 @@ func (p *Parser) parseBlockExpression() ast.Expression {
 }
 
 // While statement
+// parseIfStatement parses the statement-position conditional
+// (docs/spec/10-syntax.md): if cond { ... } [else if cond { ... }]* [else { ... }]
+// The condition is a statement header, so '{' after it opens the block.
+func (p *Parser) parseIfStatement() *ast.IfStatement {
+	stmt := &ast.IfStatement{Token: p.currentToken}
+
+	p.nextToken()
+	wasDisabled := p.braceLiteralDisabled
+	p.braceLiteralDisabled = true
+	stmt.Condition = p.parseExpression(LOWEST)
+	p.braceLiteralDisabled = wasDisabled
+	if stmt.Condition == nil {
+		return nil
+	}
+
+	if !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+	stmt.Consequence = p.parseBlockStatement()
+	if stmt.Consequence == nil {
+		return nil
+	}
+
+	if p.peekTokenIs(token.ELSE) {
+		p.nextToken() // move to 'else'
+		if p.peekTokenIs(token.IF) {
+			p.nextToken() // move to 'if'
+			alternative := p.parseIfStatement()
+			if alternative == nil {
+				return nil
+			}
+			stmt.Alternative = alternative
+		} else {
+			if !p.expectPeek(token.LBRACE) {
+				return nil
+			}
+			alternative := p.parseBlockStatement()
+			if alternative == nil {
+				return nil
+			}
+			stmt.Alternative = alternative
+		}
+	}
+	return stmt
+}
+
 func (p *Parser) parseWhileStatement() *ast.WhileStatement {
 	stmt := &ast.WhileStatement{Token: p.currentToken}
 

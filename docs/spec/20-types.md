@@ -212,6 +212,26 @@ Fixed-width integer types (`u8`..`u64`, `i8`..`i64`) have exact machine-width se
 
 Mathematical proof integers are never silently substituted for machine integers. Overflow, conversion, division, and shift semantics must be specified for each machine operation.
 
+### 11.1 Explicit integer conversions
+
+Implicit conversion is limited to value-preserving widening within one
+signedness (constructor form: `i32(x: i8)`, `u64(x: u32)`; unsigned also
+widens into a strictly wider signed type). Every other move between machine
+integers is an explicit named conversion, `{target}_{op}_{source}`, and
+every operation is **total** with two's-complement semantics — the C
+lowering uses no implementation-defined conversions (signed results are
+produced by union type punning, defined since C99 TC3):
+
+| Op | Pair rule | Semantics |
+| --- | --- | --- |
+| `trunc` | strictly narrower, same signedness | low bits, wraps mod `2^N` |
+| `saturating` | strictly narrower, same signedness | clamps to the target range |
+| `bits` | same width, opposite signedness | bit-pattern reinterpretation (`i32_bits_u32`, `u64_bits_i64`) |
+| `checked` | strictly narrower, same signedness | `Result[target, Overflow]`; usable once generic ADTs lower |
+
+`bits` is the explicit path between `u32` and `i32` that widening and
+narrowing deliberately lack: honest at the call site, free at runtime.
+
 ## 12. Formal obligations
 
 The executable type lattice must satisfy the laws in §3.

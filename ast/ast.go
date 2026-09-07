@@ -908,6 +908,38 @@ func (fp *FunctionParameter) String() string {
 }
 
 // While loop
+// IfStatement is the statement-position conditional
+// (docs/spec/10-syntax.md): Bool condition, brace blocks, optional
+// `else if` chain or final `else`. Expression-position conditionals are
+// match's job.
+type IfStatement struct {
+	BaseNode
+	Token       token.Token // 'if' token
+	Condition   Expression
+	Consequence *BlockStatement
+	// Alternative is nil, an *IfStatement (else if ...), or a
+	// *BlockStatement (final else).
+	Alternative Statement
+}
+
+func (is *IfStatement) statementNode()       {}
+func (is *IfStatement) TokenLiteral() string { return is.Token.Literal }
+func (is *IfStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("if ")
+	out.WriteString(is.Condition.String())
+	out.WriteString(" { ")
+	if is.Consequence != nil {
+		out.WriteString(is.Consequence.String())
+	}
+	out.WriteString(" }")
+	if is.Alternative != nil {
+		out.WriteString(" else ")
+		out.WriteString(is.Alternative.String())
+	}
+	return out.String()
+}
+
 type WhileStatement struct {
 	BaseNode
 	Token     token.Token // 'while' token

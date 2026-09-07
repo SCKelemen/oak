@@ -386,6 +386,27 @@ main: (): i32 {
 `,
 		},
 		{
+			// Statement conditionals, short-circuit connectives, and total
+			// explicit conversions (docs/spec/10-syntax.md,
+			// docs/spec/20-types.md) — the kernel-ergonomics surface.
+			Name: "conditionals",
+			SourceCode: `
+classify: (n: i32, urgent: Bool): i32 {
+  result: i32 = 0
+  if n < 0 && !urgent {
+    result = 0 - 1
+  } else if n == 0 || urgent {
+    result = i32_bits_u32(u32(1))
+  } else {
+    result = i32(u8_saturating_u32(u32(300)))
+  }
+  result
+}
+
+main: (): i32 = classify(5, false)
+`,
+		},
+		{
 			// Unsafe boundary: unprovable span overlap is admitted inside unsafe
 			// as a recorded OAK-B0110 assumption (warning), not an error.
 			Name: "unsafe_block",

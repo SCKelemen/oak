@@ -1,5 +1,11 @@
 # Oak
 
+> **Status**: the only authoritative feature/verification matrix is
+> [`docs/spec/STATUS.md`](docs/spec/STATUS.md), and the normative language
+> specification lives in [`docs/spec/`](docs/spec/). Examples below may
+> describe design direction ahead of the implemented subset; when this
+> document and `docs/spec/` disagree, `docs/spec/` wins.
+
 Oak is a systems programming language designed for embedded systems, firmware, and low-level programming. It combines strong type safety, memory safety through borrow checking, and expressive type system features while compiling to simple, readable C code.
 
 ## Table of Contents

@@ -218,6 +218,42 @@ func KnownLibraryMember(library, member string) bool {
 	return false
 }
 
+// conversionPrimitives are the fixed-width operands of the explicit
+// conversion family ({target}_{op}_{source}: trunc, saturating, checked,
+// bits — docs/spec/20-types.md).
+var conversionPrimitives = map[string]int{
+	"u8": 8, "u16": 16, "u32": 32, "u64": 64,
+	"i8": 8, "i16": 16, "i32": 32, "i64": 64,
+}
+
+var conversionOperations = map[string]bool{
+	"trunc": true, "saturating": true, "checked": true, "bits": true,
+}
+
+// ConversionParts destructures an explicit-conversion function name for the
+// backend and the interpreter, sharing the type checker's grammar. The
+// caller still validates the pair per operation.
+func ConversionParts(name string) (target, op, source string, ok bool) {
+	parts := splitNarrowingFunctionName(name)
+	if parts == nil {
+		return "", "", "", false
+	}
+	target, op, source = parts[0], parts[1], parts[2]
+	if _, isPrim := conversionPrimitives[target]; !isPrim {
+		return "", "", "", false
+	}
+	if _, isPrim := conversionPrimitives[source]; !isPrim {
+		return "", "", "", false
+	}
+	if !conversionOperations[op] {
+		return "", "", "", false
+	}
+	return target, op, source, true
+}
+
+// PrimitiveBits is the fixed width of a conversion operand.
+func PrimitiveBits(name string) int { return conversionPrimitives[name] }
+
 // cIdentifierPattern is the C identifier grammar of OAK-F0102.
 var cIdentifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 

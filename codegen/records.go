@@ -36,6 +36,10 @@ var fixedFieldRepresentations = map[string]semir.RecordFieldRepresentation{
 	"u32": {Size: 4, Alignment: 4}, "i32": {Size: 4, Alignment: 4},
 	"u64": {Size: 8, Alignment: 8}, "i64": {Size: 8, Alignment: 8},
 	"byte": {Size: 1, Alignment: 1}, "rune": {Size: 4, Alignment: 4},
+	// Bool lowers to a C enum, int-sized on the recorded ILP32/LP64 target
+	// model (docs/spec/92-ffi.md section 2.4); the emitted sizeof/offsetof
+	// assertions verify this against the actual ABI at C compile time.
+	"Bool": {Size: 4, Alignment: 4},
 }
 
 // fieldRepresentation resolves one field's size and alignment, reporting

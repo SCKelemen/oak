@@ -164,6 +164,18 @@ func (tc *TypeChecker) closureCaptures(fn *ast.FunctionLiteral) []string {
 					walkStmt(inner, bodyLocals)
 				}
 			}
+		case *ast.IfStatement:
+			walkExpr(s.Condition, locals)
+			if s.Consequence != nil {
+				branchLocals := copyLocals(locals)
+				for _, inner := range s.Consequence.Statements {
+					walkStmt(inner, branchLocals)
+				}
+			}
+			if s.Alternative != nil {
+				branchLocals := copyLocals(locals)
+				walkStmt(s.Alternative, branchLocals)
+			}
 		case *ast.BlockStatement:
 			blockLocals := copyLocals(locals)
 			for _, inner := range s.Statements {

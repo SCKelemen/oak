@@ -144,6 +144,10 @@ func scanCalls(program *ast.Program, visit func(library, member string)) {
 		case *ast.InvocationExpression:
 			if library, member, ok := libraryCallTarget(e.Function); ok {
 				visit(library, member)
+			} else if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
+				// Plain callees are visited with an empty library, so
+				// helper collectors (conversions) can see them.
+				visit("", ident.Value)
 			} else {
 				scanExpr(e.Function)
 			}
@@ -209,6 +213,14 @@ func scanCalls(program *ast.Program, visit func(library, member string)) {
 				for _, inner := range s.Body.Statements {
 					scanStmt(inner)
 				}
+			}
+		case *ast.IfStatement:
+			scanExpr(s.Condition)
+			if s.Consequence != nil {
+				scanStmt(s.Consequence)
+			}
+			if s.Alternative != nil {
+				scanStmt(s.Alternative)
 			}
 		case *ast.UnsafeBlock:
 			if s.Body != nil {

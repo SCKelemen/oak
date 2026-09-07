@@ -61,6 +61,29 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if isError(left) {
 			return left
 		}
+		// Short-circuit connectives (docs/spec/10-syntax.md): the right
+		// operand evaluates only when the left leaves the result open.
+		if node.Operator == "&&" || node.Operator == "||" {
+			leftBool, ok := left.(*object.Boolean)
+			if !ok {
+				return newError("operator %s requires Bool operands, got %s", node.Operator, left.Type())
+			}
+			if node.Operator == "&&" && !leftBool.Value {
+				return FALSE
+			}
+			if node.Operator == "||" && leftBool.Value {
+				return TRUE
+			}
+			right := Eval(node.Right, env)
+			if isError(right) {
+				return right
+			}
+			rightBool, ok := right.(*object.Boolean)
+			if !ok {
+				return newError("operator %s requires Bool operands, got %s", node.Operator, right.Type())
+			}
+			return nativeBoolToBooleanObject(rightBool.Value)
+		}
 		right := Eval(node.Right, env)
 		if isError(right) {
 			return right
@@ -101,6 +124,11 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		// Check if this is a primitive type constructor: u32(x), u64(y), etc.
 		if ident, ok := node.Function.(*ast.Identifier); ok {
 			if result := evalPrimitiveConstructor(ident.Value, node.Arguments, env); result != nil {
+				return result
+			}
+			// Explicit integer conversions: {target}_{op}_{source}
+			// (docs/spec/20-types.md), total two's-complement semantics.
+			if result, isConversion := evalConversionCall(ident.Value, node.Arguments, env); isConversion {
 				return result
 			}
 		}
@@ -163,6 +191,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 
 	case *ast.WhileStatement:
 		return evalWhileStatement(node, env)
+
+	case *ast.IfStatement:
+		return evalIfStatement(node, env)
 
 	case *ast.UnsafeBlock:
 		return evalUnsafeBlock(node, env)
@@ -790,6 +821,23 @@ func evalMethodCall(recvExpr ast.Expression, methodName string, args []ast.Expre
 }
 
 // Evaluate while statement
+func evalIfStatement(is *ast.IfStatement, env *object.Environment) object.Object {
+	condition := Eval(is.Condition, env)
+	if isError(condition) {
+		return condition
+	}
+	if isTruthy(condition) {
+		if is.Consequence == nil {
+			return NULL
+		}
+		return Eval(is.Consequence, env)
+	}
+	if is.Alternative != nil {
+		return Eval(is.Alternative, env)
+	}
+	return NULL
+}
+
 func evalWhileStatement(ws *ast.WhileStatement, env *object.Environment) object.Object {
 	var result object.Object = NULL
 

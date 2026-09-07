@@ -468,6 +468,16 @@ func collectCallEdges(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 					walkStmt(inner)
 				}
 			}
+		case *ast.IfStatement:
+			walkExpr(s.Condition, false)
+			if s.Consequence != nil {
+				for _, inner := range s.Consequence.Statements {
+					walkStmt(inner)
+				}
+			}
+			if s.Alternative != nil {
+				walkStmt(s.Alternative)
+			}
 		case *ast.BlockStatement:
 			for _, inner := range s.Statements {
 				walkStmt(inner)
@@ -553,6 +563,16 @@ func countCalls(expr ast.Expression, name string) int {
 				for _, inner := range n.Body.Statements {
 					walkStmt(inner)
 				}
+			}
+		case *ast.IfStatement:
+			walkExpr(n.Condition)
+			if n.Consequence != nil {
+				for _, inner := range n.Consequence.Statements {
+					walkStmt(inner)
+				}
+			}
+			if n.Alternative != nil {
+				walkStmt(n.Alternative)
 			}
 		case *ast.BlockStatement:
 			for _, inner := range n.Statements {

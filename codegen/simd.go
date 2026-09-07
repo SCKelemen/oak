@@ -185,6 +185,13 @@ func (cg *CodeGenerator) programMentionsSimdLocals(program *ast.Program) bool {
 					scanStmt(inner)
 				}
 			}
+		case *ast.IfStatement:
+			if s.Consequence != nil {
+				scanStmt(s.Consequence)
+			}
+			if s.Alternative != nil {
+				scanStmt(s.Alternative)
+			}
 		case *ast.BlockStatement:
 			for _, inner := range s.Statements {
 				scanStmt(inner)

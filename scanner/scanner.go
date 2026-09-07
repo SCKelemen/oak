@@ -175,9 +175,21 @@ func (s *Scanner) NextToken() token.Token {
 			tok = newTokenWithPos(token.ASSIGN, s.current, line, column)
 		}
 	case '|':
-		tok = newTokenWithPos(token.PIPE, s.current, line, column)
+		if s.peekRune() == '|' {
+			ch := s.current
+			s.readChar()
+			tok = token.Token{TokenKind: token.LOR, Literal: string(ch) + string(s.current), Line: line, Column: column}
+		} else {
+			tok = newTokenWithPos(token.PIPE, s.current, line, column)
+		}
 	case '&':
-		tok = newTokenWithPos(token.AMP, s.current, line, column)
+		if s.peekRune() == '&' {
+			ch := s.current
+			s.readChar()
+			tok = token.Token{TokenKind: token.LAND, Literal: string(ch) + string(s.current), Line: line, Column: column}
+		} else {
+			tok = newTokenWithPos(token.AMP, s.current, line, column)
+		}
 	case '!':
 		if s.peekRune() == '=' {
 			ch := s.current

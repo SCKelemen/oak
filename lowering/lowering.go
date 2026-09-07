@@ -58,6 +58,22 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 			},
 			Value: lowerExpression(s.Value, tc),
 		}
+	case *ast.IfStatement:
+		loweredIf := &ast.IfStatement{
+			BaseNode:  s.BaseNode,
+			Token:     s.Token,
+			Condition: lowerExpression(s.Condition, tc),
+		}
+		if s.Consequence != nil {
+			loweredIf.Consequence = lowerBlockStatement(s.Consequence, tc)
+		}
+		switch alternative := s.Alternative.(type) {
+		case *ast.IfStatement:
+			loweredIf.Alternative = lowerStatement(alternative, tc)
+		case *ast.BlockStatement:
+			loweredIf.Alternative = lowerBlockStatement(alternative, tc)
+		}
+		return loweredIf
 	case *ast.WhileStatement:
 		lowered := &ast.WhileStatement{
 			BaseNode:  s.BaseNode,

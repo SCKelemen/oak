@@ -410,6 +410,96 @@ main: (): i32 = add(twice(10), 2)
 	}
 }
 
+// Statement-position conditionals, short-circuit connectives, and record
+// fields as Bool operands — the exact shapes the hypervisor evaluation
+// found inexpressible (if-with-assignment, s.a || s.b). ackHighest-style
+// kernel scan, executed.
+func TestE2EIfStatementsAndLogicalOperators(t *testing.T) {
+	code, abnormal := buildAndRun(t, "ifops", `
+Flags: type = struct {
+  pending: Bool
+  masked: Bool
+}
+
+deliverable: (f: Flags): Bool = f.pending && !f.masked
+
+pick_highest: (v: [*]u8): i32 {
+  best: i32 = 0 - 1
+  bestPriority: u8 = u8(255)
+  n: u32 = len(v)
+  i: u32 = 0
+  while i < n {
+    if v[i] < bestPriority {
+      best = i32_bits_u32(i)
+      bestPriority = v[i]
+    }
+    i = i + 1
+  }
+  best
+}
+
+classify: (n: i32): i32 {
+  result: i32 = 1
+  if n < 0 {
+    result = 0 - 1
+  } else if n == 0 {
+    result = 0
+  }
+  result
+}
+
+main: (): i32 {
+  hot: Flags = Flags { pending: true, masked: false }
+  cold: Flags = Flags { pending: true, masked: true }
+  assert(deliverable(hot))
+  assert(!deliverable(cold))
+  assert(deliverable(hot) || deliverable(cold))
+  assert(!(deliverable(cold) && deliverable(hot)))
+
+  prio: [4]u8
+  s: [*]u8 = span(&prio)
+  s[0] = u8(9)
+  s[1] = u8(3)
+  s[2] = u8(7)
+  s[3] = u8(3)
+  found: i32 = pick_highest(s)
+  assert(found == 1)
+
+  classify(0 - 5) + classify(0) + classify(40) + found + 41
+}
+`)
+	if abnormal || code != 42 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 42 (-1 + 0 + 1 + 1 + 41)", code, abnormal)
+	}
+}
+
+// Explicit integer conversions, executed: same-width cross-sign bits
+// reinterpretation round-trips, truncation wraps mod 2^N, saturation
+// clamps — total semantics, no implementation-defined C.
+func TestE2EIntegerConversions(t *testing.T) {
+	code, abnormal := buildAndRun(t, "conversions", `
+main: (): i32 {
+  negOne: i32 = i32_bits_u32(u32(4294967295))
+  assert(negOne == 0 - 1)
+  assert(u32_bits_i32(negOne) == u32(4294967295))
+  assert(i32_bits_u32(u32_bits_i32(0 - 12345)) == 0 - 12345)
+
+  assert(u8_trunc_u32(u32(300)) == u8(44))
+  assert(i8_trunc_i32(0 - 300) == i8(0 - 44))
+
+  assert(u8_saturating_u32(u32(300)) == u8(255))
+  assert(u8_saturating_u32(u32(200)) == u8(200))
+  assert(i8_saturating_i32(300) == i8(127))
+  assert(u8_bits_i8(i8_saturating_i32(0 - 300)) == u8(128))
+
+  i32(u8_trunc_u32(u32(299)))
+}
+`)
+	if abnormal || code != 43 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 43 (299 mod 256)", code, abnormal)
+	}
+}
+
 func TestE2EOutOfBoundsStoreTraps(t *testing.T) {
 	_, abnormal := buildAndRun(t, "oobstore", `
 main: (): i32 {

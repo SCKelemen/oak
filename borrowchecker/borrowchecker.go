@@ -144,6 +144,8 @@ func (bc *BorrowChecker) checkStatement(stmt ast.Statement, env *typechecker.Typ
 		bc.checkFunctionStatement(s, env)
 	case *ast.WhileStatement:
 		bc.checkWhileStatement(s, env)
+	case *ast.IfStatement:
+		bc.checkIfStatement(s, env)
 	case *ast.AssignmentStatement:
 		bc.checkAssignmentStatement(s, env)
 	case *ast.UnsafeBlock:
@@ -373,6 +375,24 @@ func (bc *BorrowChecker) checkWhileStatement(stmt *ast.WhileStatement, env *type
 
 	// Check body (which is a BlockStatement)
 	bc.checkBlockStatement(stmt.Body, env)
+}
+
+// checkIfStatement checks the conditional's condition and both branches.
+// Branches are checked in sequence against the same incoming state: a
+// borrow created inside one branch is block-scoped and released at the
+// branch's end, and conservative sequential checking over-approximates
+// (never under-approximates) the set of live borrows.
+func (bc *BorrowChecker) checkIfStatement(stmt *ast.IfStatement, env *typechecker.TypeEnvironment) {
+	bc.checkExpression(stmt.Condition, env)
+	if stmt.Consequence != nil {
+		bc.checkBlockStatement(stmt.Consequence, env)
+	}
+	switch alternative := stmt.Alternative.(type) {
+	case *ast.IfStatement:
+		bc.checkIfStatement(alternative, env)
+	case *ast.BlockStatement:
+		bc.checkBlockStatement(alternative, env)
+	}
 }
 
 // checkAssignmentStatement handles assignments

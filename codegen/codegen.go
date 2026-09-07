@@ -142,6 +142,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitUtf8Helper()
 	cg.emitIntrinsicHelpers(program)
 	cg.emitSimdSupport(program)
+	cg.emitConversionHelpers(program)
 	cg.emitAtomicGlobals(program)
 
 	// Container typedefs (and their bounds-checked index helpers) must
@@ -271,6 +272,14 @@ func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 			for _, st := range s.Body.Statements {
 				collectFromStmt(st)
 			}
+		case *ast.IfStatement:
+			collectFromExpr(s.Condition)
+			if s.Consequence != nil {
+				collectFromStmt(s.Consequence)
+			}
+			if s.Alternative != nil {
+				collectFromStmt(s.Alternative)
+			}
 		case *ast.BlockStatement:
 			for _, st := range s.Statements {
 				collectFromStmt(st)
@@ -299,6 +308,14 @@ func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 			collectFromExpr(s.Condition)
 			for _, st := range s.Body.Statements {
 				collectFromStmt(st)
+			}
+		case *ast.IfStatement:
+			collectFromExpr(s.Condition)
+			if s.Consequence != nil {
+				collectFromStmt(s.Consequence)
+			}
+			if s.Alternative != nil {
+				collectFromStmt(s.Alternative)
 			}
 		case *ast.BlockStatement:
 			for _, st := range s.Statements {
@@ -770,6 +787,13 @@ func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
 				for _, inner := range s.Body.Statements {
 					walkStmt(inner)
 				}
+			}
+		case *ast.IfStatement:
+			if s.Consequence != nil {
+				walkStmt(s.Consequence)
+			}
+			if s.Alternative != nil {
+				walkStmt(s.Alternative)
 			}
 		case *ast.BlockStatement:
 			for _, inner := range s.Statements {
@@ -1437,6 +1461,11 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		if cg.emitLibraryCall(e, tc) {
 			return
 		}
+		// Explicit integer conversions ({target}_{op}_{source}) lower to
+		// their total two's-complement helpers.
+		if cg.emitConversionCall(e, tc) {
+			return
+		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
 			if fn, isVariadicCallee := cg.variadicCallee(ident.Value); isVariadicCallee {
 				cg.emitVariadicCall(fn, e, tc)
@@ -1997,6 +2026,8 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 		cg.emitIndexAssignment(s, tc)
 	case *ast.WhileStatement:
 		cg.emitWhileStatement(s, tc)
+	case *ast.IfStatement:
+		cg.emitIfStatement(s, tc)
 	case *ast.BlockStatement:
 		cg.write("  {\n")
 		cg.indentLevel++
@@ -2109,6 +2140,35 @@ func (cg *CodeGenerator) emitWhileStatement(stmt *ast.WhileStatement, tc *typech
 
 	cg.indentLevel--
 	cg.write("  }\n")
+}
+
+// emitIfStatement emits the statement-position conditional as C if/else
+// (docs/spec/10-syntax.md).
+func (cg *CodeGenerator) emitIfStatement(stmt *ast.IfStatement, tc *typechecker.TypeChecker) {
+	cg.write("  if ( ")
+	cg.emitExpressionFragment(stmt.Condition, tc)
+	cg.write(" ) {\n")
+	cg.indentLevel++
+	if stmt.Consequence != nil {
+		cg.emitBlockStatement(stmt.Consequence, tc, false)
+	}
+	cg.indentLevel--
+	switch alternative := stmt.Alternative.(type) {
+	case *ast.IfStatement:
+		cg.write("  } else {\n")
+		cg.indentLevel++
+		cg.emitIfStatement(alternative, tc)
+		cg.indentLevel--
+		cg.write("  }\n")
+	case *ast.BlockStatement:
+		cg.write("  } else {\n")
+		cg.indentLevel++
+		cg.emitBlockStatement(alternative, tc, false)
+		cg.indentLevel--
+		cg.write("  }\n")
+	default:
+		cg.write("  }\n")
+	}
 }
 
 // emitArrayLiteral emits an array literal

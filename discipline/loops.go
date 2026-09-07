@@ -94,6 +94,15 @@ func forEachWhile(program *ast.Program, visit func(*ast.WhileStatement)) {
 					walkStmt(inner)
 				}
 			}
+		case *ast.IfStatement:
+			if s.Consequence != nil {
+				for _, inner := range s.Consequence.Statements {
+					walkStmt(inner)
+				}
+			}
+			if s.Alternative != nil {
+				walkStmt(s.Alternative)
+			}
 		case *ast.BlockStatement:
 			for _, inner := range s.Statements {
 				walkStmt(inner)
@@ -152,6 +161,15 @@ func countAssignments(block *ast.BlockStatement, name string) int {
 			if s.Name != nil && s.Name.Value == name {
 				count++
 			}
+		case *ast.IfStatement:
+			if s.Consequence != nil {
+				for _, inner := range s.Consequence.Statements {
+					walkStmt(inner)
+				}
+			}
+			if s.Alternative != nil {
+				walkStmt(s.Alternative)
+			}
 		case *ast.WhileStatement:
 			if s.Body != nil {
 				for _, inner := range s.Body.Statements {
@@ -190,6 +208,15 @@ func findAssignment(block *ast.BlockStatement, name string) *ast.AssignmentState
 		case *ast.AssignmentStatement:
 			if s.Name != nil && s.Name.Value == name {
 				found = s
+			}
+		case *ast.IfStatement:
+			if s.Consequence != nil {
+				for _, inner := range s.Consequence.Statements {
+					walkStmt(inner)
+				}
+			}
+			if s.Alternative != nil {
+				walkStmt(s.Alternative)
 			}
 		case *ast.WhileStatement:
 			if s.Body != nil {
