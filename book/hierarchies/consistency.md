@@ -19,12 +19,20 @@ both.
    partitions with availability.
 5. **Snapshot** — every read within a scope observes one consistent
    point-in-time state.
-6. **Sequential** — all observers agree on a single total order of
-   operations (not necessarily real-time).
-7. **Linearizable ("strong")** — sequential *and* consistent with
-   real time: an operation appears to take effect at an instant between
-   its start and end. Per-object; its transactional big sibling is strict
-   serializability (see [Isolation](isolation.md)).
+6. **Sequential** — there exists a single total order of all operations,
+   consistent with each observer's own program order, that every observer
+   agrees on. The order need not respect real time: an operation that
+   finished yesterday may legally appear "after" one issued today, so long
+   as everyone agrees.
+7. **Linearizable ("strong")** — the Herlihy–Wing definition: every
+   operation appears to take effect **atomically at a single instant
+   between its invocation and its response**, and the resulting total
+   order is therefore consistent with real time — if operation A completed
+   before operation B began, A precedes B in the order. Defined per
+   object; composable (a system of linearizable objects is linearizable).
+   Its transactional sibling — the same real-time condition stated over
+   multi-object transactions — is strict serializability (see
+   [Isolation](isolation.md)).
 
 ## The mapping that makes this a kernel chapter
 

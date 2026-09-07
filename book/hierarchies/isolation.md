@@ -13,10 +13,17 @@ manager decides at run time.
    in one scope may disagree (non-repeatable reads).
 3. **Repeatable read / snapshot** — a scope's reads are stable; write
    skew between scopes remains possible.
-4. **Serializable** — concurrent work is equivalent to *some* serial
-   order; with predicate/range locking, phantoms are excluded too.
-5. **Strict serializable** — serializable and real-time ordered (the
-   transactional face of linearizability).
+4. **Serializable** — the outcome of executing concurrent transactions is
+   **equal to the outcome of executing the same transactions one at a
+   time in some serial order**. The order may be any order — including one
+   that contradicts real time — and the guarantee covers whole
+   transactions, not single operations. With predicate/range locking the
+   equivalence extends to the *sets* a transaction read, excluding
+   phantoms (rows appearing mid-transaction in a range already read).
+5. **Strict serializable** — serializable **and** the equivalent serial
+   order respects real time: if transaction A committed before B began, A
+   precedes B in it. This is [linearizability](consistency.md) lifted from
+   single operations on one object to transactions over many.
 
 ## The borrow checker as the scheduler
 
