@@ -1,0 +1,18 @@
+
+Ring[T, N: u32]: type = struct {
+  buffer: [N]T
+  head: u32
+  count: u32
+}
+
+events: Ring[u8, 8]
+
+push: (v: u8): () {
+  events.buffer[(events.head + events.count) % u32(8)] = v
+  events.count = events.count + 1
+}
+
+main: (): i32 {
+  push(u8(7))
+  i32(events.buffer[events.head]) + i32(events.count)
+}

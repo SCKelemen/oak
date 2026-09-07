@@ -34,6 +34,61 @@ func (inst Instantiation) MangledName() string {
 	return inst.ADT + "_" + strings.Join(inst.Args, "_")
 }
 
+// ConstIntType is a compile-time integer used as a type argument — a const
+// parameter (Ring[u8, 16] — docs/spec/20-types.md). It is not a value type:
+// it exists only inside generic applications.
+type ConstIntType struct {
+	Value int64
+}
+
+func (t *ConstIntType) String() string { return fmt.Sprintf("%d", t.Value) }
+
+func (t *ConstIntType) Equals(other Type) bool {
+	if otherConst, ok := other.(*ConstIntType); ok {
+		return t.Value == otherConst.Value
+	}
+	return false
+}
+
+// SubstituteTypeAST rewrites type-parameter identifiers inside a type
+// expression with the argument spellings — the one substitution both the
+// checker's record instantiation and the backend's monomorphization use.
+// Unsupported shapes report false (fail closed).
+func SubstituteTypeAST(expr ast.Expression, bindings map[string]ast.Expression) (ast.Expression, bool) {
+	switch t := expr.(type) {
+	case nil:
+		return nil, true
+	case *ast.Identifier:
+		if replacement, isParam := bindings[t.Value]; isParam {
+			return replacement, true
+		}
+		return t, true
+	case *ast.IndexExpression:
+		left, okLeft := SubstituteTypeAST(t.Left, bindings)
+		index, okIndex := SubstituteTypeAST(t.Index, bindings)
+		if !okLeft || !okIndex {
+			return nil, false
+		}
+		return &ast.IndexExpression{Token: t.Token, Left: left, Index: index, Dot: t.Dot}, true
+	case *ast.IntegerLiteral:
+		return t, true
+	}
+	return nil, false
+}
+
+// ArgumentSpelling renders a concrete type argument back to type-expression
+// syntax, for substitution into templates.
+func ArgumentSpelling(arg Type) (ast.Expression, bool) {
+	if constInt, isConst := arg.(*ConstIntType); isConst {
+		return &ast.IntegerLiteral{Value: constInt.Value}, true
+	}
+	atom, ok := typeAtom(arg)
+	if !ok {
+		return nil, false
+	}
+	return &ast.Identifier{Value: atom}, true
+}
+
 // typeAtom flattens a concrete type argument into a name atom. Types the
 // v1 backend cannot mangle (arrays, views, spans, functions, anonymous
 // shapes, unresolved variables) report false, and the instantiation is not
@@ -52,6 +107,8 @@ func typeAtom(argType Type) (string, bool) {
 		if t.Name != "" {
 			return t.Name, true
 		}
+	case *ConstIntType:
+		return fmt.Sprintf("%d", t.Value), true
 	case *GenericType:
 		inner := make([]string, 0, len(t.TypeArgs))
 		for _, arg := range t.TypeArgs {
@@ -136,6 +193,126 @@ func (tc *TypeChecker) resolutionName(name string, args []Type) (string, bool) {
 		return name, true
 	}
 	return tc.recordADTInstantiation(name, args)
+}
+
+// lenientFlattenApplication decodes F[A][B]... allowing integer-literal
+// arguments (const parameters). The caller disambiguates against array
+// syntax by consulting the template registry.
+func lenientFlattenApplication(expr ast.Expression) (string, []ast.Expression, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return e.Value, nil, e.Value != ""
+	case *ast.IndexExpression:
+		name, args, ok := lenientFlattenApplication(e.Left)
+		if !ok || e.Index == nil {
+			return "", nil, false
+		}
+		if marker, isIdent := e.Index.(*ast.Identifier); isIdent && (marker.Value == "" || marker.Value == "*") {
+			return "", nil, false
+		}
+		return name, append(args, e.Index), true
+	default:
+		return "", nil, false
+	}
+}
+
+// resolveRecordTemplateApplication instantiates Ring[u8, 16]-style
+// applications of declared record templates. Template knowledge is the
+// disambiguator against array syntax ([16]u8 stays an array; a template
+// name applied to its declared parameter count is an application).
+func (tc *TypeChecker) resolveRecordTemplateApplication(expr ast.Expression) (Type, bool) {
+	name, argExprs, ok := lenientFlattenApplication(expr)
+	if !ok || len(argExprs) == 0 {
+		return nil, false
+	}
+	template, isTemplate := tc.recordTemplates[name]
+	if !isTemplate || len(template.TypeParams) != len(argExprs) {
+		return nil, false
+	}
+	args := make([]Type, 0, len(argExprs))
+	for _, argExpr := range argExprs {
+		arg := tc.parseTypeExpression(argExpr)
+		if arg == nil {
+			return nil, true
+		}
+		args = append(args, arg)
+	}
+	if instantiated := tc.instantiateRecordTemplate(template, args); instantiated != nil {
+		return instantiated, true
+	}
+	tc.addError(expr, "cannot instantiate %s with these arguments", name)
+	return nil, true
+}
+
+// instantiateRecordTemplate builds the nominal record type for one
+// template instantiation: field types with parameters substituted, the
+// mangled name as identity, cached per instantiation. The backend emits
+// the matching struct from the same substitution (codegen/mono.go over
+// SubstituteTypeAST — one substitution authority).
+func (tc *TypeChecker) instantiateRecordTemplate(template *ast.ADTType, args []Type) *RecordType {
+	if template == nil || len(template.TypeParams) != len(args) {
+		return nil
+	}
+	recordLit, isRecord := recordTemplateLiteral(template)
+	if !isRecord {
+		return nil
+	}
+	mangled, ok := tc.recordADTInstantiation(template.Name.Value, args)
+	if !ok {
+		return nil
+	}
+	if cached, hit := tc.recordInstantiationCache[mangled]; hit {
+		return cached
+	}
+
+	bindings := make(map[string]ast.Expression, len(args))
+	for i, param := range template.TypeParams {
+		if param == nil || param.Name == nil {
+			return nil
+		}
+		spelling, okArg := ArgumentSpelling(args[i])
+		if !okArg {
+			return nil
+		}
+		bindings[param.Name.Value] = spelling
+	}
+
+	fields := make(map[string]Type, len(recordLit.FieldOrder))
+	order := make([]string, 0, len(recordLit.FieldOrder))
+	for _, field := range recordLit.FieldOrder {
+		substituted, okSubst := SubstituteTypeAST(field.Value, bindings)
+		if !okSubst {
+			return nil
+		}
+		fieldType := tc.parseTypeExpression(substituted)
+		if fieldType == nil {
+			return nil
+		}
+		fields[field.Name] = fieldType
+		order = append(order, field.Name)
+	}
+	instantiated := &RecordType{Name: mangled, Order: order, Fields: fields}
+	if tc.recordInstantiationCache == nil {
+		tc.recordInstantiationCache = make(map[string]*RecordType)
+	}
+	tc.recordInstantiationCache[mangled] = instantiated
+	return instantiated
+}
+
+// recordTemplateLiteral extracts the record literal of a template decl.
+func recordTemplateLiteral(template *ast.ADTType) (*ast.RecordLiteral, bool) {
+	if len(template.Variants) != 1 || template.Variants[0].Literal == nil {
+		return nil, false
+	}
+	recordLit, ok := template.Variants[0].Literal.(*ast.RecordLiteral)
+	return recordLit, ok
+}
+
+// RecordTemplateInstantiations exposes which recorded instantiations are
+// record templates (the backend routes them to struct emission).
+func (tc *TypeChecker) RecordTemplate(name string) (*ast.ADTType, bool) {
+	template, ok := tc.recordTemplates[name]
+	return template, ok
 }
 
 // ADTInstantiations returns every recorded concrete instantiation, sorted

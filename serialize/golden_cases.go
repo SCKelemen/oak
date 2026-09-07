@@ -459,6 +459,32 @@ main: (): i32 {
 `,
 		},
 		{
+			// Const parameters and generic records (docs/spec/20-types.md,
+			// docs/spec/40-records.md): Ring[T, N] as a zero-initialized
+			// static global with field mutation, array-field stores through
+			// the proven layout, and % arithmetic.
+			Name: "ring_buffer",
+			SourceCode: `
+Ring[T, N: u32]: type = struct {
+  buffer: [N]T
+  head: u32
+  count: u32
+}
+
+events: Ring[u8, 8]
+
+push: (v: u8): () {
+  events.buffer[(events.head + events.count) % u32(8)] = v
+  events.count = events.count + 1
+}
+
+main: (): i32 {
+  push(u8(7))
+  i32(events.buffer[events.head]) + i32(events.count)
+}
+`,
+		},
+		{
 			// Unsafe boundary: unprovable span overlap is admitted inside unsafe
 			// as a recorded OAK-B0110 assumption (warning), not an error.
 			Name: "unsafe_block",

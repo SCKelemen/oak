@@ -60,12 +60,18 @@ func (tc *TypeChecker) parseGenericTypeApplication(expr ast.Expression) (Type, b
 		}
 		args = append(args, arg)
 	}
-	// A concrete application of a declared generic ADT (Option[i32] in an
-	// annotation) is an instantiation the backend must monomorphize
-	// (typechecker/mono.go); type-variable arguments record nothing.
-	if _, isDeclaredADT := tc.adtTypes[name]; isDeclaredADT {
-		tc.recordADTInstantiation(name, args)
+	// A concrete application of a declared generic RECORD instantiates to a
+	// nominal record type right here (field access, layout, and mutation
+	// then need no special cases); other concrete applications are recorded
+	// for the backend to monomorphize (typechecker/mono.go).
+	if template, isRecordTemplate := tc.recordTemplates[name]; isRecordTemplate {
+		if instantiated := tc.instantiateRecordTemplate(template, args); instantiated != nil {
+			return instantiated, true
+		}
+		tc.addError(expr, "cannot instantiate %s with these arguments", name)
+		return nil, true
 	}
+	tc.recordADTInstantiation(name, args)
 	return &GenericType{Name: name, TypeArgs: args}, true
 }
 

@@ -45,6 +45,21 @@ var fixedFieldRepresentations = map[string]semir.RecordFieldRepresentation{
 // fieldRepresentation resolves one field's size and alignment, reporting
 // failure for types the v1 table cannot place.
 func (cg *CodeGenerator) fieldRepresentation(name string, typeExpr ast.Expression) (semir.RecordFieldRepresentation, bool) {
+	// Owned-array fields: [N]T occupies N contiguous elements at the
+	// element's alignment (buffer: [16]u8 — the Ring shape).
+	if indexExpr, isIndex := typeExpr.(*ast.IndexExpression); isIndex {
+		if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed && length.Value > 0 {
+			element, ok := cg.fieldRepresentation(name, indexExpr.Left)
+			if !ok {
+				return semir.RecordFieldRepresentation{}, false
+			}
+			total := uint64(element.Size) * uint64(length.Value)
+			if total > uint64(^uint32(0)) {
+				return semir.RecordFieldRepresentation{}, false
+			}
+			return semir.RecordFieldRepresentation{Name: name, Size: uint32(total), Alignment: element.Alignment}, true
+		}
+	}
 	ident, isIdent := typeExpr.(*ast.Identifier)
 	if !isIdent {
 		return semir.RecordFieldRepresentation{}, false
@@ -100,6 +115,13 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 
 	cg.write(fmt.Sprintf("typedef struct %s {\n", cName))
 	for _, field := range recordLit.FieldOrder {
+		// Array fields need the C declarator form: u8 buffer[ 16 ];
+		if indexExpr, isIndex := field.Value.(*ast.IndexExpression); isIndex {
+			if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed {
+				cg.write(fmt.Sprintf("  %s %s[ %d ];\n", cg.parseTypeExpression(indexExpr.Left), field.Name, length.Value))
+				continue
+			}
+		}
 		cg.write(fmt.Sprintf("  %s %s;\n", cg.parseTypeExpression(field.Value), field.Name))
 	}
 	cg.write(fmt.Sprintf("} %s;\n", cName))

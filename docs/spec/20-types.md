@@ -212,6 +212,29 @@ Fixed-width integer types (`u8`..`u64`, `i8`..`i64`) have exact machine-width se
 
 Mathematical proof integers are never silently substituted for machine integers. Overflow, conversion, division, and shift semantics must be specified for each machine operation.
 
+### 11.0 Const parameters
+
+A generic type may take **value parameters** alongside type parameters,
+declared with a fixed-width integer kind and instantiated with integer
+literals:
+
+```oak
+Ring[T, N: u32]: type = struct {
+  buffer: [N]T
+  head: u32
+  count: u32
+}
+
+events: Ring[u8, 8]
+```
+
+`N` participates in field types (`[N]T`) and is substituted at
+instantiation — `Ring[u8, 8]` is a distinct nominal type whose layout is
+computed and proven like any concrete record (`Oak.RecordLayout` and the
+emitted `sizeof`/`offsetof` assertions). Template knowledge disambiguates
+applications from array syntax, so a const parameter cannot be the sole
+argument of an unknown name; `%` is the modulo operator these shapes want.
+
 ### 11.1 Explicit integer conversions
 
 Implicit conversion is limited to value-preserving widening within one

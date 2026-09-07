@@ -1064,6 +1064,22 @@ func (cg *CodeGenerator) buildLocalTypes(fn *ast.FunctionStatement) map[string]l
 // localContainerOf resolves an expression's container classification; only
 // identifiers are classified — everything else fails closed.
 func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
+	// Record-field access paths resolve through the record's declared
+	// field type: ring.buffer classifies as the [N]T it was declared as.
+	if access, isAccess := expr.(*ast.IndexExpression); isAccess && access.Dot {
+		base := cg.localContainerOf(access.Left)
+		fieldIdent, isIdent := access.Index.(*ast.Identifier)
+		if base.kind == containerADT && isIdent {
+			if recordDecl, known := cg.adtTypes[base.adtName]; known {
+				if recordLit, isRecord := recordDefinitionShape(recordDecl); isRecord {
+					if fieldType, declared := recordLit.Fields[fieldIdent.Value]; declared {
+						return cg.classifyContainer(fieldType)
+					}
+				}
+			}
+		}
+		return localContainer{kind: containerUnknown}
+	}
 	ident, ok := expr.(*ast.Identifier)
 	if !ok {
 		return localContainer{kind: containerUnknown}
@@ -2292,6 +2308,20 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 // the trapping helper, owned arrays through the static-length store guard;
 // unknown targets fail closed.
 func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement, tc *typechecker.TypeChecker) {
+	// Record field assignment: p.x = value (docs/spec/40-records.md).
+	if stmt.Target.Dot {
+		cg.write("  ")
+		cg.emitExpressionFragment(stmt.Target.Left, tc)
+		if fieldIdent, isIdent := stmt.Target.Index.(*ast.Identifier); isIdent {
+			cg.output.WriteString(fmt.Sprintf(".%s = ", fieldIdent.Value))
+		} else {
+			cg.output.WriteString(".OAK_UNSUPPORTED_FIELD = ")
+		}
+		cg.emitExpressionFragment(stmt.Value, tc)
+		cg.output.WriteString(";\n")
+		return
+	}
+
 	info := cg.localContainerOf(stmt.Target.Left)
 	switch info.kind {
 	case containerSpan:

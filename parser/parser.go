@@ -62,6 +62,7 @@ func New(source token.Source) *Parser {
 	p.registerInfix(token.MUL, p.parseInfixExpression)
 	p.registerInfix(token.QUO, p.parseInfixExpression)
 	p.registerInfix(token.EQL, p.parseInfixExpression)
+	p.registerInfix(token.REM, p.parseInfixExpression)
 	p.registerInfix(token.LAND, p.parseInfixExpression)
 	p.registerInfix(token.LOR, p.parseInfixExpression)
 	p.registerInfix(token.NEQL, p.parseInfixExpression)
@@ -1034,6 +1035,7 @@ var precedences = map[token.TokenKind]Precedence{
 	token.SUM:    SUMMATION,
 	token.MUL:    PRODUCT,
 	token.QUO:    PRODUCT,
+	token.REM:    PRODUCT,
 	token.LPAREN: INVOCATION,
 	token.QMARK:  CONDITION, // the whole operator expression is the scrutinee
 	token.DOT:    INDEX,      // Field access has highest precedence
@@ -1587,6 +1589,11 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 				token.COMMA,
 				false,
 				func() (ast.Expression, bool) {
+					// Const parameters: integer literals are type arguments
+					// (Ring[u8, 16] — docs/spec/20-types.md).
+					if p.currentTokenIs(token.INT) {
+						return p.parseIntegerLiteral(), true
+					}
 					arg := p.parseTypeExpression()
 					return arg, arg != nil
 				},
@@ -1794,6 +1801,23 @@ func (p *Parser) parseArrayType() ast.Expression {
 			Token: p.currentToken,
 			Left:  elementType,
 			Index: &ast.Identifier{Token: p.currentToken, Value: "*"},
+		}
+	}
+
+	// Symbolic length: [N]T inside a generic template, where N is a const
+	// parameter substituted at instantiation (docs/spec/20-types.md).
+	if p.currentTokenIs(token.IDENT) && p.peekTokenIs(token.RBRACK) {
+		lengthParam := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		p.nextToken() // move to ']'
+		p.nextToken() // move to the element type
+		elementType := p.parseTypeExpression()
+		if elementType == nil {
+			return nil
+		}
+		return &ast.IndexExpression{
+			Token: p.currentToken,
+			Left:  elementType,
+			Index: lengthParam,
 		}
 	}
 

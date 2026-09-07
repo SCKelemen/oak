@@ -182,6 +182,8 @@ func (s *Scanner) NextToken() token.Token {
 		} else {
 			tok = newTokenWithPos(token.PIPE, s.current, line, column)
 		}
+	case '%':
+		tok = newTokenWithPos(token.REM, s.current, line, column)
 	case '&':
 		if s.peekRune() == '&' {
 			ch := s.current

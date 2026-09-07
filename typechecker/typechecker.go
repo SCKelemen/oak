@@ -469,6 +469,10 @@ type TypeChecker struct {
 	adtInstantiations  map[string]Instantiation
 	variantResolutions map[string]string
 	matchResolutions   map[string]string
+	// recordTemplates holds generic record declarations (Ring[T, N: u32]);
+	// instantiations are cached by mangled name.
+	recordTemplates        map[string]*ast.ADTType
+	recordInstantiationCache map[string]*RecordType
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -903,7 +907,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		}
 		tc.addError(expr, "operator + requires numeric types or strings, got %s and %s", leftType, rightType)
 		return nil
-	case "-", "*", "/":
+	case "-", "*", "/", "%":
 		// Arithmetic operators require numeric types
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
@@ -1902,6 +1906,26 @@ func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentSt
 	if seqType == nil {
 		return
 	}
+	// Record field assignment: p.x = value (docs/spec/40-records.md).
+	if stmt.Target.Dot {
+		record, isRecord := seqType.(*RecordType)
+		fieldIdent, isIdent := stmt.Target.Index.(*ast.Identifier)
+		if !isRecord || !isIdent {
+			tc.addError(stmt.Target.Left, "cannot assign a field of %s", seqType)
+			return
+		}
+		fieldType, declared := record.Fields[fieldIdent.Value]
+		if !declared {
+			tc.addError(stmt.Target.Index, "field %s not found in %s", fieldIdent.Value, record.DisplayName())
+			return
+		}
+		valueType := tc.checkExpression(stmt.Value, fieldType)
+		if valueType != nil && !tc.isAssignable(valueType, fieldType) {
+			tc.addError(stmt.Value, "cannot assign %s to field %s of type %s", valueType, fieldIdent.Value, fieldType)
+		}
+		return
+	}
+
 	arrType, ok := seqType.(*ArrayType)
 	if !ok {
 		tc.addError(stmt.Target.Left, "cannot index-assign into %s", seqType)
@@ -2790,6 +2814,15 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 		// Check if the variant has a record literal (this indicates a record type definition)
 		if variant.Literal != nil {
 			if recordLit, ok := variant.Literal.(*ast.RecordLiteral); ok {
+				// A generic record declaration is a template: fields are
+				// validated per instantiation (typechecker/mono.go).
+				if len(stmt.TypeParams) > 0 {
+					if tc.recordTemplates == nil {
+						tc.recordTemplates = make(map[string]*ast.ADTType)
+					}
+					tc.recordTemplates[stmt.Name.Value] = stmt
+					return
+				}
 				// This is a record type definition
 				tc.checkRecordTypeDefinition(stmt.Name.Value, recordLit)
 				// Store the record type in the environment with its nominal
@@ -3289,6 +3322,12 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		if strType := tc.parseStrEncodingType(indexExpr); strType != nil {
 			return strType
 		}
+		// Record-template applications (Ring[u8, 16]) resolve before array
+		// syntax: template knowledge is the const-parameter disambiguator
+		// (typechecker/mono.go).
+		if instantiated, isTemplate := tc.resolveRecordTemplateApplication(indexExpr); isTemplate {
+			return instantiated
+		}
 	}
 	// Array-type syntax is never a generic application: its index position
 	// holds a size or the span/slice marker, not a type argument.
@@ -3311,6 +3350,12 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 			return types[0]
 		}
 		return &IntersectionType{Types: types}
+	}
+
+	// Const parameters: integer literals appear as type arguments
+	// (Ring[u8, 16] — docs/spec/20-types.md).
+	if intLit, ok := expr.(*ast.IntegerLiteral); ok {
+		return &ConstIntType{Value: intLit.Value}
 	}
 
 	if ident, ok := expr.(*ast.Identifier); ok {
@@ -3475,6 +3520,13 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 	if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "&" {
 		// This shouldn't happen if called correctly, but handle gracefully
 		return nil
+	}
+
+	// Record-template applications (Ring[u8, 16]): typechecker/mono.go.
+	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		if instantiated, isTemplate := tc.resolveRecordTemplateApplication(indexExpr); isTemplate {
+			return instantiated
+		}
 	}
 
 	// Handle all other type expressions (same as parseTypeExpression but without intersection handling)

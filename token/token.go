@@ -58,6 +58,7 @@ const (
 	SUM // +
 	MUL // *
 	QUO // /
+	REM // %
 
 	EQL  // ==
 	NEQL // !=
@@ -120,6 +121,7 @@ var tokens = [...]string{
 	SUM: "+",
 	MUL: "*",
 	QUO: "/",
+	REM: "%",
 
 	EQL:  "==",
 	NEQL: "!=",

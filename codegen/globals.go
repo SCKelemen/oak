@@ -50,7 +50,11 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 	declarator := ""
 	if decl.Type != nil {
 		if indexExpr, isIndex := decl.Type.(*ast.IndexExpression); isIndex {
-			if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed {
+			// Generic instantiations (Ring[u8, 8]) are struct types, not
+			// arrays — the template's arity disambiguates (codegen/mono.go).
+			if mangled, isGeneric := cg.genericAnnotationName(indexExpr); isGeneric {
+				declarator = fmt.Sprintf("static %s %s", cg.cTypeName(mangled), name)
+			} else if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed {
 				element := cg.parseTypeExpression(indexExpr.Left)
 				declarator = fmt.Sprintf("static %s %s[ %d ]", element, name, length.Value)
 			}

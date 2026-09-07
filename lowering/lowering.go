@@ -55,7 +55,12 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 		}
 	case *ast.IndexAssignmentStatement:
 		// The target stays an index expression (the store lowering is a
-		// backend decision); its parts are lowered.
+		// backend decision); its parts are lowered. Dot rides along: a
+		// field name is not an expression and is never index-lowered.
+		targetIndex := s.Target.Index
+		if !s.Target.Dot {
+			targetIndex = lowerExpression(s.Target.Index, tc)
+		}
 		return &ast.IndexAssignmentStatement{
 			BaseNode: s.BaseNode,
 			Token:    s.Token,
@@ -63,7 +68,8 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 				BaseNode: s.Target.BaseNode,
 				Token:    s.Target.Token,
 				Left:     lowerExpression(s.Target.Left, tc),
-				Index:    lowerExpression(s.Target.Index, tc),
+				Index:    targetIndex,
+				Dot:      s.Target.Dot,
 			},
 			Value: lowerExpression(s.Value, tc),
 		}
