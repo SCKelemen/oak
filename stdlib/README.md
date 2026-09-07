@@ -202,6 +202,91 @@ mode. A Linux amd64 CI regression compares a constant single-byte fluent chain's
 checks, copying still performs work, and an unoptimized build may retain calls.
 Native Apple Silicon optimizer validation remains separate work.
 
+## Bounded array lists
+
+The array-list API borrows initialized `[N]T` storage and a zero-initialized
+`[1]ArrayListCursor`. `cursor[0].length` tracks the live prefix. Keep the cursor
+paired with the same storage and pass its actual capacity to metadata operations.
+This bootstrap API uses a separate cursor and span, like the ring; there is no
+owning `ArrayList[T]` aggregate or allocator-backed growth yet.
+
+| Operation | Result | Cost |
+| --- | --- | --- |
+| `array_list_push(cursor, storage, value)` | Inserted index, or `Full` | O(1) |
+| `array_list_insert(cursor, storage, index, value)` | Inserted index, or `OutOfBounds` / `Full` | O(length - index) |
+| `array_list_get(cursor, view, index)` | Value copy, or `OutOfBounds` | O(1) |
+| `array_list_set(cursor, storage, index, value)` | Previous value, or `OutOfBounds` | O(1) |
+| `array_list_pop(cursor, storage)` | Last value, or `Empty` | O(1) |
+| `array_list_remove(cursor, storage, index)` | Removed value, preserving order | O(length - index) |
+| `array_list_swap_remove(cursor, storage, index)` | Removed value, replacing it with the last element | O(1) |
+| `array_list_clear(cursor, capacity)` | Logical reset; no erasure | O(1) |
+
+Fallible operations return `Result[Payload,CollectionError]`. Removal outside the
+live prefix returns `OutOfBounds`. Insert permits `index == length` and validates
+the index before capacity. Errors preserve both length and every backing element.
+Array-list get takes `[]T`; other element operations take `[*]T`. Generic calls
+infer T from the arguments. Costs above exclude the size of an element copy.
+Elements must be initialized, copyable values; no resource destruction or ownership
+transfer is performed. Removal and clear leave stale bytes outside the live prefix.
+
+## Intrusive lists and queues
+
+Embed `slist: SListHook` and/or `dlist: DListHook` in a concrete node record.
+Algorithms specialize for that record type and update its embedded hooks in place;
+they never allocate node wrappers or copy payloads. The field names are the
+bootstrap hook-selection convention. A node can participate in one singly linked
+list and one doubly linked list simultaneously; multiple independently named hooks
+of the same family and generic hook adapters are future work.
+
+```oak
+Task: type = struct {
+  value: u32
+  slist: SListHook
+  dlist: DListHook
+}
+```
+
+Back nodes with an initialized fixed array, and borrow it as `[*]Task`. Each list
+uses a zero-initialized `[1]IntrusiveCursor`; call `intrusive_init(cursor, id)`
+with a nonzero ID before use. IDs must be unique among live cursors operating on
+the same pool and hook family. An ID is a caller-maintained membership label,
+not a capability, generation counter, or cryptographic authority. Keep each cursor
+paired with its pool and hook family; do not copy active cursors, mutate live hooks,
+move/reorder linked nodes within the pool, or reuse an ID while its hooks remain linked.
+Initialization rejects a nonempty cursor. Clear or pop/remove all nodes before reuse.
+
+Links store `pool_index + 1`, with zero representing no link. Operation arguments
+and successful results use ordinary zero-based pool indices. Each hook records its
+owning list ID. Duplicate insertion returns `AlreadyLinked`, even into a different
+list; removal through the wrong list or of a detached node returns `NotMember`.
+Indices outside the pool return `OutOfBounds`; popping an empty list returns `Empty`.
+These expected errors leave cursor, hooks and payloads unchanged.
+
+| Operations | Cost |
+| --- | --- |
+| `slist_push_front`, `slist_push_back`, `slist_pop_front` | O(1) |
+| `slist_remove` | O(length), finding the predecessor |
+| `dlist_push_front`, `dlist_push_back`, `dlist_pop_front`, `dlist_pop_back`, `dlist_remove` | O(1) |
+| `intrusive_queue_push`, `intrusive_queue_pop` | O(1), FIFO facade over singly linked hooks |
+| `slist_validate`, `dlist_validate` | O(length), bounded full-chain validation |
+| `slist_clear`, `dlist_clear` | O(length), validate then detach every member; return old count |
+
+Push/remove take `(cursor, nodes, index)`; pop, validate and clear take
+`(cursor, nodes)`. Push/pop/remove return `Result[u32,CollectionError]`. Successful
+removal zeroes that hook's links and owner, preserving payload and the other hook.
+All collections are sequential and require exclusive access. Metadata and touched
+links are checked on ordinary operations; full validators additionally check the
+whole forward chain, owner IDs, exact count/tail termination, and doubly linked
+backlinks. Invalid internal state traps. This is not protection against forged
+cursors, stale indices, ID collisions, or adversarial hook mutations.
+
+Traverse from `cursor[0].head`; a nonzero link names `nodes[link - 1]`, whose hook's
+`next` continues traversal. Doubly linked traversal may start at `tail` and follow
+`prev`. Keep the pool and membership stable while traversing. No raw pointer bits,
+PAC codes, heap objects or runtime dispatch tables are used.
+
+See `examples/stdlib_intrusive_queue.oak` for a complete queue example.
+
 ## Verification and remaining work
 
 `compiler/e2e_stdlib_test.go` compiles real imported Oak through the compiler and
@@ -220,7 +305,12 @@ checking cursor offsets and every backing byte after each operation. Byte moves
 are checked against Go copy for both overlap directions and empty ranges. Builder
 tests cover fluent chains, exact capacity, sticky failure, and type rejection.
 
+Collection tests compare array-list operations against an array/length model and
+intrusive operations against two sequence models sharing one pool. They verify
+every link, owner, cursor and payload after each step, independent hooks, clearing,
+record-valued elements, missing-hook rejection, and bounded corruption traps.
+
 The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
-pools/intrusive structures, concurrent rings, broader collections and persistence
+allocator-backed pools, intrusive trees/hash tables, concurrent rings, broader collections and persistence
 protocols remain separate work; importing this module does not implement them.

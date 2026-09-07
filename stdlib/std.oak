@@ -516,3 +516,371 @@ append_byte: (builder: ByteBuilder, storage: [*]u8, value: u8): ByteBuilder {
 finish_bytes: (builder: ByteBuilder): Result[u32, BufferError] {
   builder.failed ? { .Err(.Full) } | { .Ok(builder.length) }
 }
+
+
+CollectionError: type = Full | Empty | OutOfBounds | AlreadyLinked | NotMember
+ArrayListCursor: type = struct { length: u32 }
+
+array_list_check: (cursor: [*]ArrayListCursor, capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(cursor[0].length <= capacity)
+}
+
+array_list_push[T]: (cursor: [*]ArrayListCursor, storage: [*]T, value: T): Result[u32, CollectionError] {
+  array_list_check(cursor, len(storage))
+  index: u32 = cursor[0].length
+  index == len(storage) ? { .Err(.Full) } | {
+    storage[index] = value
+    cursor[0].length = index + u32(1)
+    .Ok(index)
+  }
+}
+
+array_list_get[T]: (cursor: [*]ArrayListCursor, storage: []T, index: u32): Result[T, CollectionError] {
+  array_list_check(cursor, len(storage))
+  index >= cursor[0].length ? { .Err(.OutOfBounds) } | { .Ok(storage[index]) }
+}
+
+array_list_set[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32, value: T): Result[T, CollectionError] {
+  array_list_check(cursor, len(storage))
+  index >= cursor[0].length ? { .Err(.OutOfBounds) } | {
+    previous: T = storage[index]
+    storage[index] = value
+    .Ok(previous)
+  }
+}
+
+array_list_pop[T]: (cursor: [*]ArrayListCursor, storage: [*]T): Result[T, CollectionError] {
+  array_list_check(cursor, len(storage))
+  cursor[0].length == u32(0) ? { .Err(.Empty) } | {
+    cursor[0].length = cursor[0].length - u32(1)
+    .Ok(storage[cursor[0].length])
+  }
+}
+
+array_list_insert[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32, value: T): Result[u32, CollectionError] {
+  array_list_check(cursor, len(storage))
+  index > cursor[0].length ? { .Err(.OutOfBounds) } | {
+    cursor[0].length == len(storage) ? { .Err(.Full) } | {
+      i: u32 = cursor[0].length
+      while i > index {
+        storage[i] = storage[i - u32(1)]
+        i = i - u32(1)
+      }
+      storage[index] = value
+      cursor[0].length = cursor[0].length + u32(1)
+      .Ok(index)
+    }
+  }
+}
+
+array_list_remove[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32): Result[T, CollectionError] {
+  array_list_check(cursor, len(storage))
+  index >= cursor[0].length ? { .Err(.OutOfBounds) } | {
+    value: T = storage[index]
+    i: u32 = index
+    last: u32 = cursor[0].length - u32(1)
+    while i < last {
+      storage[i] = storage[i + u32(1)]
+      i = i + u32(1)
+    }
+    cursor[0].length = last
+    .Ok(value)
+  }
+}
+
+array_list_swap_remove[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32): Result[T, CollectionError] {
+  array_list_check(cursor, len(storage))
+  index >= cursor[0].length ? { .Err(.OutOfBounds) } | {
+    value: T = storage[index]
+    last: u32 = cursor[0].length - u32(1)
+    storage[index] = storage[last]
+    cursor[0].length = last
+    .Ok(value)
+  }
+}
+
+array_list_clear: (cursor: [*]ArrayListCursor, capacity: u32): () {
+  array_list_check(cursor, capacity)
+  cursor[0].length = u32(0)
+}
+
+// Intrusive links encode pool index + 1; zero is detached/end-of-list.
+// A nonzero list ID must be unique among live cursors sharing a hook pool.
+SListHook: type = struct { next: u32, owner: u32 }
+DListHook: type = struct { next: u32, prev: u32, owner: u32 }
+IntrusiveCursor: type = struct { head: u32, tail: u32, count: u32, id: u32 }
+
+intrusive_init: (cursor: [*]IntrusiveCursor, id: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(id != u32(0))
+  assert(cursor[0].count == u32(0) && cursor[0].head == u32(0) && cursor[0].tail == u32(0))
+  cursor[0].id = id
+}
+
+intrusive_check: (cursor: [*]IntrusiveCursor, capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(cursor[0].id != u32(0))
+  assert(cursor[0].count <= capacity)
+  cursor[0].count == u32(0) ? {
+    assert(cursor[0].head == u32(0) && cursor[0].tail == u32(0))
+  } | {
+    assert(cursor[0].head > u32(0) && cursor[0].head <= capacity)
+    assert(cursor[0].tail > u32(0) && cursor[0].tail <= capacity)
+    cursor[0].count == u32(1) ? { assert(cursor[0].head == cursor[0].tail) }
+  }
+}
+
+// T supplies an embedded slist: SListHook field.
+slist_check[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
+  intrusive_check(cursor, len(nodes))
+  cursor[0].count > u32(0) ? {
+    assert(nodes[cursor[0].head - u32(1)].slist.owner == cursor[0].id)
+    assert(nodes[cursor[0].tail - u32(1)].slist.owner == cursor[0].id)
+    assert(nodes[cursor[0].tail - u32(1)].slist.next == u32(0))
+  }
+}
+
+slist_push_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+  slist_check(cursor, nodes)
+  index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+    nodes[index].slist.owner != u32(0) ? { .Err(.AlreadyLinked) } | {
+      assert(nodes[index].slist.next == u32(0))
+      assert(cursor[0].count < len(nodes))
+      link: u32 = index + u32(1)
+      nodes[index].slist.owner = cursor[0].id
+      nodes[index].slist.next = cursor[0].head
+      cursor[0].count == u32(0) ? { cursor[0].tail = link }
+      cursor[0].head = link
+      cursor[0].count = cursor[0].count + u32(1)
+      .Ok(index)
+    }
+  }
+}
+
+slist_push_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+  slist_check(cursor, nodes)
+  index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+    nodes[index].slist.owner != u32(0) ? { .Err(.AlreadyLinked) } | {
+      assert(nodes[index].slist.next == u32(0))
+      assert(cursor[0].count < len(nodes))
+      link: u32 = index + u32(1)
+      nodes[index].slist.owner = cursor[0].id
+      cursor[0].count == u32(0) ? { cursor[0].head = link } | {
+        nodes[cursor[0].tail - u32(1)].slist.next = link
+      }
+      cursor[0].tail = link
+      cursor[0].count = cursor[0].count + u32(1)
+      .Ok(index)
+    }
+  }
+}
+
+slist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+  slist_check(cursor, nodes)
+  index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+    nodes[index].slist.owner != cursor[0].id ? { .Err(.NotMember) } | {
+      assert(cursor[0].count > u32(0))
+      link: u32 = index + u32(1)
+      following: u32 = nodes[index].slist.next
+      assert(following <= len(nodes) && following != link)
+      previous: u32 = 0
+      current: u32 = cursor[0].head
+      visited: u32 = 0
+      while current != link && visited < cursor[0].count {
+        assert(current > u32(0) && current <= len(nodes))
+        assert(nodes[current - u32(1)].slist.owner == cursor[0].id)
+        previous = current
+        current = nodes[current - u32(1)].slist.next
+        visited = visited + u32(1)
+      }
+      assert(current == link)
+      following == u32(0) ? { assert(cursor[0].tail == link) } | {
+        assert(nodes[following - u32(1)].slist.owner == cursor[0].id)
+      }
+      previous == u32(0) ? { cursor[0].head = following } | {
+        nodes[previous - u32(1)].slist.next = following
+      }
+      following == u32(0) ? { cursor[0].tail = previous }
+      nodes[index].slist.next = u32(0)
+      nodes[index].slist.owner = u32(0)
+      cursor[0].count = cursor[0].count - u32(1)
+      .Ok(index)
+    }
+  }
+}
+
+slist_pop_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
+  slist_check(cursor, nodes)
+  cursor[0].count == u32(0) ? { .Err(.Empty) } | {
+    slist_remove(cursor, nodes, cursor[0].head - u32(1))
+  }
+}
+
+// Full bounded walk for diagnostics; ordinary operations check local links.
+slist_validate[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
+  slist_check(cursor, nodes)
+  current: u32 = cursor[0].head
+  previous: u32 = 0
+  visited: u32 = 0
+  while visited < cursor[0].count {
+    assert(current > u32(0) && current <= len(nodes))
+    assert(nodes[current - u32(1)].slist.owner == cursor[0].id)
+    previous = current
+    current = nodes[current - u32(1)].slist.next
+    visited = visited + u32(1)
+  }
+  assert(current == u32(0) && previous == cursor[0].tail)
+}
+
+// T supplies an embedded dlist: DListHook field.
+dlist_check[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
+  intrusive_check(cursor, len(nodes))
+  cursor[0].count > u32(0) ? {
+    assert(nodes[cursor[0].head - u32(1)].dlist.owner == cursor[0].id)
+    assert(nodes[cursor[0].tail - u32(1)].dlist.owner == cursor[0].id)
+    assert(nodes[cursor[0].tail - u32(1)].dlist.next == u32(0))
+    assert(nodes[cursor[0].head - u32(1)].dlist.prev == u32(0))
+  }
+}
+
+dlist_push_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+  dlist_check(cursor, nodes)
+  index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+    nodes[index].dlist.owner != u32(0) ? { .Err(.AlreadyLinked) } | {
+      assert(nodes[index].dlist.next == u32(0))
+      assert(nodes[index].dlist.prev == u32(0))
+      assert(cursor[0].count < len(nodes))
+      link: u32 = index + u32(1)
+      nodes[index].dlist.owner = cursor[0].id
+      nodes[index].dlist.next = cursor[0].head
+      cursor[0].count == u32(0) ? { cursor[0].tail = link } | { nodes[cursor[0].head - u32(1)].dlist.prev = link }
+      cursor[0].head = link
+      cursor[0].count = cursor[0].count + u32(1)
+      .Ok(index)
+    }
+  }
+}
+
+dlist_push_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+  dlist_check(cursor, nodes)
+  index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+    nodes[index].dlist.owner != u32(0) ? { .Err(.AlreadyLinked) } | {
+      assert(nodes[index].dlist.next == u32(0))
+      assert(nodes[index].dlist.prev == u32(0))
+      assert(cursor[0].count < len(nodes))
+      link: u32 = index + u32(1)
+      nodes[index].dlist.owner = cursor[0].id
+      nodes[index].dlist.prev = cursor[0].tail
+      cursor[0].count == u32(0) ? { cursor[0].head = link } | {
+        nodes[cursor[0].tail - u32(1)].dlist.next = link
+      }
+      cursor[0].tail = link
+      cursor[0].count = cursor[0].count + u32(1)
+      .Ok(index)
+    }
+  }
+}
+
+dlist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+  dlist_check(cursor, nodes)
+  index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+    nodes[index].dlist.owner != cursor[0].id ? { .Err(.NotMember) } | {
+      assert(cursor[0].count > u32(0))
+      link: u32 = index + u32(1)
+      following: u32 = nodes[index].dlist.next
+      assert(following <= len(nodes) && following != link)
+      previous: u32 = nodes[index].dlist.prev
+      assert(previous <= len(nodes) && previous != link)
+      previous == u32(0) ? { assert(cursor[0].head == link) } | {
+        assert(nodes[previous - u32(1)].dlist.owner == cursor[0].id)
+        assert(nodes[previous - u32(1)].dlist.next == link)
+      }
+      following == u32(0) ? { assert(cursor[0].tail == link) } | {
+        assert(nodes[following - u32(1)].dlist.owner == cursor[0].id)
+        assert(nodes[following - u32(1)].dlist.prev == link)
+      }
+      previous == u32(0) ? { cursor[0].head = following } | {
+        nodes[previous - u32(1)].dlist.next = following
+      }
+      following == u32(0) ? { cursor[0].tail = previous } | { nodes[following - u32(1)].dlist.prev = previous }
+      nodes[index].dlist.next = u32(0)
+      nodes[index].dlist.owner = u32(0)
+      nodes[index].dlist.prev = u32(0)
+      cursor[0].count = cursor[0].count - u32(1)
+      .Ok(index)
+    }
+  }
+}
+
+dlist_pop_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
+  dlist_check(cursor, nodes)
+  cursor[0].count == u32(0) ? { .Err(.Empty) } | {
+    dlist_remove(cursor, nodes, cursor[0].head - u32(1))
+  }
+}
+
+dlist_pop_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
+  dlist_check(cursor, nodes)
+  cursor[0].count == u32(0) ? { .Err(.Empty) } | {
+    dlist_remove(cursor, nodes, cursor[0].tail - u32(1))
+  }
+}
+
+// Full bounded walk for diagnostics; ordinary operations check local links.
+dlist_validate[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
+  dlist_check(cursor, nodes)
+  current: u32 = cursor[0].head
+  previous: u32 = 0
+  visited: u32 = 0
+  while visited < cursor[0].count {
+    assert(current > u32(0) && current <= len(nodes))
+    assert(nodes[current - u32(1)].dlist.owner == cursor[0].id)
+    assert(nodes[current - u32(1)].dlist.prev == previous)
+    previous = current
+    current = nodes[current - u32(1)].dlist.next
+    visited = visited + u32(1)
+  }
+  assert(current == u32(0) && previous == cursor[0].tail)
+}
+
+// FIFO queue facade shares the singly linked hook and cursor contract.
+intrusive_queue_push[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+  slist_push_back(cursor, nodes, index)
+}
+intrusive_queue_pop[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
+  slist_pop_front(cursor, nodes)
+}
+
+slist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
+  slist_validate(cursor, nodes)
+  count: u32 = cursor[0].count
+  current: u32 = cursor[0].head
+  while current != u32(0) {
+    index: u32 = current - u32(1)
+    current = nodes[index].slist.next
+    nodes[index].slist.next = u32(0)
+    nodes[index].slist.owner = u32(0)
+  }
+  cursor[0].head = u32(0)
+  cursor[0].tail = u32(0)
+  cursor[0].count = u32(0)
+  count
+}
+
+dlist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
+  dlist_validate(cursor, nodes)
+  count: u32 = cursor[0].count
+  current: u32 = cursor[0].head
+  while current != u32(0) {
+    index: u32 = current - u32(1)
+    current = nodes[index].dlist.next
+    nodes[index].dlist.next = u32(0)
+    nodes[index].dlist.owner = u32(0)
+    nodes[index].dlist.prev = u32(0)
+  }
+  cursor[0].head = u32(0)
+  cursor[0].tail = u32(0)
+  cursor[0].count = u32(0)
+  count
+}
