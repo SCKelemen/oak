@@ -1,0 +1,159 @@
+{
+  "format": "oak-verification-milestone-1",
+  "date": "2026-09-07",
+  "external": {
+    "commit": "2e5f15f3f14b37857550fcd2fd480bef96f70201",
+    "run": "https://github.com/SCKelemen/oak/actions/runs/34121108927",
+    "job": 101739083467,
+    "passed": true,
+    "checks": {
+      "counter": {
+        "cadical": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "lean": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "tlc": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "z3": {
+          "passed": true,
+          "expected_safety": true
+        }
+      },
+      "counter-broken": {
+        "cadical": {
+          "passed": true,
+          "expected_safety": false
+        },
+        "lean": {
+          "passed": true,
+          "expected_safety": false
+        },
+        "tlc": {
+          "passed": true,
+          "expected_safety": false
+        },
+        "z3": {
+          "passed": true,
+          "expected_safety": false
+        }
+      },
+      "enum": {
+        "cadical": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "lean": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "tlc": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "z3": {
+          "passed": true,
+          "expected_safety": true
+        }
+      },
+      "enum-broken": {
+        "cadical": {
+          "passed": true,
+          "expected_safety": false
+        },
+        "lean": {
+          "passed": true,
+          "expected_safety": false
+        },
+        "tlc": {
+          "passed": true,
+          "expected_safety": false
+        },
+        "z3": {
+          "passed": true,
+          "expected_safety": false
+        }
+      },
+      "publication": {
+        "cadical": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "lean": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "tlc": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "z3": {
+          "passed": true,
+          "expected_safety": true
+        }
+      },
+      "publication-relaxed": {
+        "cadical": {
+          "passed": true,
+          "expected_safety": false
+        },
+        "lean": {
+          "passed": true,
+          "expected_safety": false
+        },
+        "tlc": {
+          "passed": true,
+          "expected_safety": false
+        },
+        "z3": {
+          "passed": true,
+          "expected_safety": false
+        }
+      },
+      "wrap": {
+        "cadical": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "lean": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "tlc": {
+          "passed": true,
+          "expected_safety": true
+        },
+        "z3": {
+          "passed": true,
+          "expected_safety": true
+        }
+      }
+    },
+    "z3_archive_sha256": "93f91f9c6f4a00a041c19fc7a74adc1f441c8244ce70d486e19abcd89c6a014b"
+  },
+  "soundness": {
+    "commit": "9ece46fd8c0bc5a83802b35f268b63b907265b25",
+    "run": "https://github.com/SCKelemen/oak/actions/runs/34121597916",
+    "job": 101740669608,
+    "passed": true,
+    "command": "lean -DwarningAsError=true proof/RUPSoundness.lean",
+    "theorem": "OakVerification.accepted_unsatisfiable",
+    "axioms": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ]
+  },
+  "scope": [
+    "Seven finite projects across four real backends; expected failures count as passing negative tests.",
+    "CaDiCaL UNSAT certificates independently checked; Z3/TLC counterexamples imported and replayed.",
+    "Go race-enabled tests include publication correspondence with semir.MemoryExecution.",
+    "Abstract rule soundness only: no proof of Go implementation refinement, parsing, or source-to-CNF preservation.",
+    "Raw run artifacts retained for 30 days by the opt-in workflow."
+  ]
+}

@@ -117,7 +117,7 @@ Install the versions in `tools.lock.json`, put Lean, Z3, CaDiCaL, and Java on
 ./build/oak-verify suite --tla-jar /absolute/path/to/tla2tools.jar --out build/integration
 ```
 
-The suite covers five safe/broken enum and byte models. It checks tool versions,
+The suite covers seven safe/broken enum, byte, and publication models. It checks tool versions,
 compiles Lean definitions before checking theorems, runs Z3 obligations and
 bounded searches, runs TLC, and independently checks CaDiCaL LRAT proofs.
 Z3/TLC counterexamples must replay successfully. Z3 `unsat` is never relabeled
@@ -165,16 +165,18 @@ TLA+, and Lean files match the captured Python outputs. Their existing LRAT
 proofs and traces also validate after explicit test-only identity rebinding.
 `testdata/parity/` contains these static fixtures; running tests needs no Python.
 
-External Lean/Z3/TLC/CaDiCaL execution remains unvalidated: those toolchains
-were unavailable in the local workspace. Importer tests use synthetic outputs.
-The next gate is to run the pinned external suite on a provisioned machine.
+The pinned external Lean/Z3/TLC/CaDiCaL suite has now passed in GitHub Actions
+across all seven projects (28 backend/project checks). This includes checking
+actual CaDiCaL LRAT certificates and replaying actual Z3/TLC counterexamples.
+See `validation-external.json` for the tested commit, run, and scope.
 
 The Python implementation and earlier tree/closed-set prototype are preserved
 in [Git history](https://github.com/SCKelemen/oak/tree/fa920cd07aaa213feb376a46787c574a58a51a84/experiments/verification-poc).
 The current command replaces them with the typed finite model, LRAT, and trace
 pipeline, including closed-set checking; it does not accept the old
 `oak-evidence-1` certificate format.
-No production compiler, root dependency manifest, or workflow was changed.
+The experiment uses the existing production compiler and root dependencies.
+Its only root-level addition is the removable opt-in workflow described below.
 
 ## Next-stage validation projects
 
