@@ -237,4 +237,7 @@ Oak frontend and export correspondence remain outside that theorem.
 The [Oak-resident RUP kernel](proof/SelfHostedRUP.md) moves the first certificate
 checking algorithm into Oak source. It checks one decoded RUP step with bounded,
 caller-owned storage and is compared against both the Go checker and Lean's
-proved checker. Complete proof streams and text decoding are not in Oak yet.
+proved checker. The [complete bounded stream checker](proof/SelfHostedStream.md)
+adds insertion, deletion, increasing IDs, and persistent refutation state in Oak.
+It is compared with Go and Lean on 425 complete streams. Text decoding remains
+in Go and Lean.

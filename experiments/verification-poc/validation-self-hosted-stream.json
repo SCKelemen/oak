@@ -1,0 +1,100 @@
+{
+  "artifacts": "Soundness CI retains the canonical stream corpus and Go/Oak and Lean comparison logs for 30 days.",
+  "commit": "afffa318d02c61202768960096fae0f366bae7ef",
+  "comparison": {
+    "accepted": 104,
+    "cases": 425,
+    "generated": 200,
+    "hand_labelled": 25,
+    "malformed_resource_rejections": 11,
+    "mutated": 200,
+    "oracles": [
+      "Go internal/lrat.Check over serialized DIMACS/LRAT",
+      "Lean OakVerification.checkProof",
+      "Exhaustive truth table checks unsatisfiability of accepted initial databases"
+    ],
+    "rejected": 321,
+    "seed": 81043
+  },
+  "date": "2026-09-07",
+  "formal_reference": {
+    "qualification": "Corpus agreement does not prove universal refinement of the Oak implementation.",
+    "theorem": "OakVerification.checkProof_sound"
+  },
+  "format": "oak-self-hosted-stream-validation-1",
+  "implementation": {
+    "allocation_free_check": [
+      "No malloc, calloc, or realloc in emitted C",
+      "No OAK_UNSUPPORTED marker in emitted C"
+    ],
+    "component": "Complete bounded decoded RUP addition/deletion streams",
+    "formal_reference": "Lean 4",
+    "host_harness": "Go",
+    "language": "Oak",
+    "python_runtime": false,
+    "storage": "Read-only input pools and records; bounded local stack arrays"
+  },
+  "passed": true,
+  "profile": {
+    "maximum_addition_hints": 256,
+    "maximum_addition_id": 256,
+    "maximum_commands": 256,
+    "maximum_deletion_stamp": 2147483647,
+    "maximum_initial_clauses": 256,
+    "maximum_literals": 4096,
+    "maximum_references": 4096,
+    "maximum_variables": 64,
+    "minimum_variables": 1
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34166818760",
+  "scope": {
+    "implemented_in_oak": [
+      "Decoded RUP steps",
+      "Clause insertion and deletion",
+      "Live-hint validation",
+      "Increasing addition IDs",
+      "Persistent refutation",
+      "Full-stream validation",
+      "Bounded layout checks"
+    ],
+    "not_claimed": [
+      "Universal refinement of Oak to Lean",
+      "Compiler semantics preservation",
+      "A self-verified toolchain"
+    ],
+    "not_yet_in_oak": [
+      "ASCII DIMACS/LRAT parsing",
+      "Source-to-CNF reconstruction",
+      "Evidence receipts"
+    ],
+    "trusted_execution": [
+      "Oak parser and typechecker",
+      "Oak lowering and generated C",
+      "C compiler and runtime",
+      "Go differential harness"
+    ],
+    "unsupported": [
+      "RAT",
+      "Binary LRAT",
+      "Extension variables",
+      "Theory lemmas"
+    ]
+  },
+  "semantics": {
+    "addition_ids": "Strictly increasing; deleted IDs cannot be reused",
+    "deletion_stamp": "At least the last addition ID; does not advance it",
+    "literal_encoding": "2*zero_based_variable + polarity; polarity 1 is positive",
+    "reference_encoding": "one-based clause ID",
+    "refutation": "Persists after deletion of an initial or derived empty clause",
+    "suffix": "Every remaining command is checked; any invalid suffix rejects"
+  },
+  "solvers_job": 101879397466,
+  "soundness_job": 101879397566,
+  "repository_ci": {
+    "CI": "success",
+    "Standard library": "success",
+    "Formal Verification": "success",
+    "Golden File Verification": "success",
+    "Verification experiment (opt-in)": "success"
+  }
+}

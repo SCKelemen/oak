@@ -178,5 +178,11 @@ The opt-in solver gate exercises safe and relaxed publication models from Oak.
 [SelfHostedRUP.md](SelfHostedRUP.md) describes the first certificate-checking
 kernel written in Oak. It checks one bounded decoded RUP addition using only
 caller-owned storage. A deterministic corpus compares the compiled Oak result
-with the Go checker and the proved Lean checker. Stream state and text decoding
-remain the next self-hosting steps.
+with the Go checker and the proved Lean checker.
+
+[SelfHostedStream.md](SelfHostedStream.md) extends it to complete bounded decoded
+streams: live-clause state, fresh increasing IDs, checked deletion, and persistent
+refutation. The native Oak checker is compared with Go and Lean on 425 streams,
+with separate malformed-layout and resource rejection tests. Text decoding is
+the next self-hosting step; universal refinement of the Oak implementation
+remains unproved.
