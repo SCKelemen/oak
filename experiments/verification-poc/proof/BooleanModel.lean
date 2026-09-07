@@ -101,7 +101,6 @@ theorem checkTexts_sound (m : Model) (bp sp : String)
       exact checkSafety_sound m b s h
 
 
-#print axioms checkTexts_sound
 end OakVerification.BooleanModel
 
 open OakVerification.BooleanModel

@@ -1,0 +1,2 @@
+import BooleanModel
+#print axioms OakVerification.BooleanModel.checkTexts_sound
