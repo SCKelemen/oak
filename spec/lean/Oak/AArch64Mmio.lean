@@ -84,6 +84,6 @@ theorem mmio_does_not_hide_barrier (op : Operation) (access : Access) :
     (capability op access).ordersMemory = false ∧
     (capability op access).completesMemory = false ∧
     (capability op access).instructionSync = false := by
-  cases op <;> cases access <;> rfl
+  cases op <;> cases access <;> simp [capability]
 
 end Oak.AArch64Mmio
