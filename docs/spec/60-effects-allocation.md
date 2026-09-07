@@ -61,11 +61,34 @@ This includes:
 - iterator/combinator use;
 - closure capture;
 - string conversion;
-- collection construction beyond fixed/caller-provided storage.
+- collection construction beyond fixed/caller-provided storage;
+- explicit parallel combinators whose selected implementation does not declare allocation.
 
 If an implementation strategy would require allocation, either another allocation-free lowering must be used or the operation must expose/require an allocator effect.
 
-## 4. Allocation strategies are ordinary types
+## 4. Effect ordering and transformations
+
+The presence or absence of effects is a semantic input to optimization legality.
+
+A compiler transformation may reorder, duplicate, fuse, eliminate, or execute operations concurrently only when doing so preserves every observable effect contract involved.
+
+Effects such as the following are normally order-sensitive unless their specific contract states otherwise:
+
+```text
+Io[channel]
+Mmio[device]
+Thread.Block
+Os.Syscall
+volatile/atomic/synchronization operations when modeled as effects or equivalent machine obligations
+```
+
+Two operations having the same broad effect class does not by itself make them interchangeable or reorderable. Parameter identities and operation semantics matter.
+
+Pure/empty-effect computation provides the widest rewrite freedom, subject still to machine numeric semantics, borrowing/resource flow, traps, and representation obligations.
+
+Explicit parallel constructs do not weaken this rule. A parallel callback must satisfy the operation's required/forbidden effect contract, and an implementation must not introduce scheduler allocation, blocking, or syscalls that the source/profile forbids. See `55-parallelism`.
+
+## 5. Allocation strategies are ordinary types
 
 Oak should not need special grammar for common allocation policies.
 
@@ -80,7 +103,7 @@ Handle[T]
 
 These are ordinary semantic/library types whose parameters carry facts that the checker/proof system can use.
 
-## 5. Arenas / regions
+## 6. Arenas / regions
 
 An arena groups many allocations under one lifetime identity `R`.
 
@@ -99,7 +122,7 @@ An arena operation has an allocation effect scoped to that arena identity.
 
 The type/proof system should be able to express that `T[R]` cannot safely escape `R`.
 
-## 6. Slabs / pools
+## 7. Slabs / pools
 
 A bounded typed slab:
 
@@ -118,7 +141,7 @@ Static capacity is a semantic fact and can support proofs of:
 
 No general heap behavior is implied.
 
-## 7. Handles
+## 8. Handles
 
 `Handle[T]` is object identity, not a pointer synonym and not an allocator.
 
@@ -138,7 +161,7 @@ After a slot is freed/reused, stale handles must not resolve to the new object.
 
 Pointer values may locate bytes; handles identify logical objects.
 
-## 8. Caller-provided storage
+## 9. Caller-provided storage
 
 For many systems APIs, caller-owned storage should be the ergonomic default:
 
@@ -150,13 +173,13 @@ rather than a result type that implies hidden allocation.
 
 This makes ownership, capacity, and failure behavior visible.
 
-## 9. Stack/static storage
+## 10. Stack/static storage
 
 Stack and static storage are also explicit lifetime/storage strategies even when they require no allocator object.
 
 The compiler may choose stack placement for non-escaping values as an optimization/refinement of explicit value semantics. It must not silently move an escaping value to the heap.
 
-## 10. Closures
+## 11. Closures
 
 A capturing closure has an environment whose storage must be justified by ownership analysis.
 
@@ -166,7 +189,9 @@ If capture escape requires arena/slab/heap allocation, the effect is explicit an
 
 Enforcement today: captureless function literals are accepted as bare code pointers; capturing closures are rejected (`OAK-T0401`) until a storage justification surface exists, per `Oak.ClosureCapture`.
 
-## 11. Realtime/bounded code
+Static higher-order specialization may eliminate a callable wrapper or closure representation only when the specialized lowering preserves the same ownership and effect semantics. It must not use specialization as a way to hide an otherwise-required allocation.
+
+## 12. Realtime/bounded code
 
 A realtime/bounded function should be able to establish structural properties such as:
 
@@ -182,7 +207,9 @@ These are stronger than merely “lock-free.”
 
 The effect system is one source of evidence; boundedness/resource proofs are additional propositions.
 
-## 12. Formal verification targets
+Explicit parallelism is realtime-safe only when its execution resources, scheduling, synchronization, and boundedness satisfy the same profile. A general-purpose task runtime is not implicitly permitted merely because the source uses a parallel combinator.
+
+## 13. Formal verification targets
 
 Initial Lean proof targets:
 
@@ -190,6 +217,8 @@ Initial Lean proof targets:
 - unparameterized effect class overlaps all parameterized instances of the same class;
 - distinct parameterized instances do not overlap unless parameters are equal;
 - required/forbidden overlap is rejected;
+- effect-aware transformations preserve modeled observable order;
+- explicitly parallel lowering does not introduce effects forbidden by the source/profile contract;
 - slab occupancy cannot exceed static capacity under valid transitions;
 - stale generation cannot resolve after slot reuse;
 - region-bound values cannot outlive their region in the abstract lifetime model.
