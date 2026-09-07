@@ -659,6 +659,11 @@ func (tc *TypeChecker) addError(node ast.Node, format string, args ...interface{
 
 // CheckProgram type checks a program
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
+    // Resolve declared types before caching function signatures. Otherwise a
+    // span of a named record can retain an unresolved type variable.
+    for _, stmt := range program.Statements {
+        if adt, ok := stmt.(*ast.ADTType); ok { tc.checkStatement(adt) }
+    }
 	// Pre-declare top-level non-generic function signatures so functions can
 	// reference one another regardless of declaration order (mutual
 	// recursion included); each signature is finalized when its declaration
@@ -669,6 +674,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 	}
 	for _, stmt := range program.Statements {
+        if _, ok := stmt.(*ast.ADTType); ok { continue }
 		// Top-level bindings are static storage: constant initializers only
 		// (typechecker/globals.go).
 		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {

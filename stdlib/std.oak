@@ -52,7 +52,7 @@ ring_pop[T]: (cursor: [*]RingCursor, storage: [*]T): Option[T] {
 
 // Consumes no authority and performs no allocation. Destination exhaustion is
 // checked before writing; success copies the entire source.
-CopyError: type = DestinationTooSmall
+CopyError: type = | DestinationTooSmall
 bytes_copy_into: (dst: [*]u8, src: []u8): Result[u32, CopyError] {
   n: u32 = len(src)
   len(dst) < n ? {

@@ -29,6 +29,9 @@ func specializeFunctions(program *ast.Program) error {
   fn, ok := stmt.(*ast.FunctionStatement)
   if !ok || len(fn.TypeParams) == 0 { ordinary = append(ordinary, stmt); continue }
   if fn.Receiver != nil || fn.ExternSymbol != "" { return fmt.Errorf("specialize: generic methods and externs are unsupported") }
+  constrained := false
+  for _, tp := range fn.TypeParams { if tp.Constraint != nil { constrained = true } }
+  if constrained { ordinary = append(ordinary, stmt); continue }
   params := map[string]bool{}
   for _, tp := range fn.TypeParams {
    if tp.Constraint != nil { return fmt.Errorf("specialize: constrained/const parameter %s is not supported", tp.Name.Value) }
@@ -78,6 +81,10 @@ func specializeFunctions(program *ast.Program) error {
      clone.Name.Value = mangled
      clone.TypeParams = nil
      if err := transformSyntax(reflect.ValueOf(clone), func(e ast.Expression) (ast.Expression, error) {
+      switch node := e.(type) {
+      case *ast.MatchExpression: node.Token.SemanticContext = mangled
+      case *ast.VariantExpression: node.Token.SemanticContext = mangled
+      }
       if id, ok := e.(*ast.Identifier); ok {
        if concrete, found := bindings[id.Value]; found {
         replacement := *id; replacement.Value = concrete; replacement.Token.Literal = concrete
@@ -178,7 +185,7 @@ func inspectBinders(v reflect.Value, check func(string)error) error {
    switch n:=v.Interface().(type) {
    case *ast.VariableDeclaration: if n.Name!=nil { if err:=check(n.Name.Value);err!=nil{return err} }
    case *ast.FunctionParameter: if n.Name!=nil { if err:=check(n.Name.Value);err!=nil{return err} }
-   case *ast.FunctionLiteral: return fmt.Errorf("specialize: function literals in programs with generic functions are not yet supported")
+   case *ast.BindingPattern: if n.Name!=nil { if err:=check(n.Name.Value);err!=nil{return err} }
    }
   }
   return inspectBinders(v.Elem(),check)

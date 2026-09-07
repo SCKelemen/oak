@@ -5,6 +5,9 @@ import "strconv"
 type TokenKind int
 
 type Token struct {
+    // Distinguishes imported/specialized syntax at identical source positions.
+    // Lowering copies it with the token; it never changes diagnostic locations.
+    SemanticContext string `json:",omitempty"`
 	TokenKind TokenKind
 	Literal   string
 	Line      int  // 1-based line number

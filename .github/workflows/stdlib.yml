@@ -17,3 +17,16 @@ jobs:
       - name: Check formatting
         run: |
           gofmt -d compiler/stdlib.go compiler/specialize.go compiler/e2e_stdlib_test.go stdlib/source.go
+      - name: Build development artifacts
+        if: always()
+        run: |
+          mkdir -p build
+          go build -o build/oak .
+          go test -c -o build/compiler.test ./compiler
+          cp "$(go env GOROOT)/bin/gofmt" build/gofmt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oak-stdlib-development
+          path: build/
+          retention-days: 1

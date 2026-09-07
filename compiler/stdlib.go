@@ -2,6 +2,7 @@ package compiler
 
 import (
  "fmt"
+ "reflect"
  "github.com/SCKelemen/oak/ast"
  "github.com/SCKelemen/oak/stdlib"
 )
@@ -23,6 +24,13 @@ func loadStandardLibrary(tree *SyntaxTree) error {
  if !imported { return nil }
  lib, err := New().WithSource("std.oak", stdlib.Source).Parse().Get()
  if err != nil { return fmt.Errorf("standard library: %w", err) }
+ if err := transformSyntax(reflect.ValueOf(lib.Root), func(e ast.Expression) (ast.Expression,error) {
+  switch n:=e.(type) {
+  case *ast.MatchExpression: n.Token.SemanticContext = "std"
+  case *ast.VariantExpression: n.Token.SemanticContext = "std"
+  }
+  return e,nil
+ }); err != nil { return err }
  exports := map[string]bool{}
  for _, stmt := range lib.Root.Statements {
   if name := declarationName(stmt); name != "" { exports[name] = true }

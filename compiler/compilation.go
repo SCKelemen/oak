@@ -221,7 +221,12 @@ func (comp Compilation) Lower() Stage[*LoweredProgram] {
 // EmitC runs the current C backend through the same fluent compilation value.
 func (comp Compilation) EmitC() Stage[string] {
 	return comp.Lower().Then(func(lowered *LoweredProgram) (string, error) {
-		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
+		for _, stmt := range lowered.Root.Statements {
+            if fn, ok := stmt.(*ast.FunctionStatement); ok && len(fn.TypeParams) != 0 {
+                return "", fmt.Errorf("codegen: generic function %s requires supported explicit specialization", fn.Name.Value)
+            }
+        }
+        generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
 		generator.SetSourceText(lowered.Model.Tree.Source.Text)
 		return generator.Generate(lowered.Root, lowered.Model.TypeChecker)
