@@ -1,0 +1,55 @@
+name: Apply never backend patch
+
+on:
+  push:
+    branches:
+      - feat/el2-cold-enter
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/el2-cold-enter
+          fetch-depth: 0
+      - name: Apply surgical backend patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('codegen/codegen.go')
+          s = p.read_text()
+          old = '''\t\tcase "()":\n\t\t\treturn "void"\n\t\tdefault:\n'''
+          new = '''\t\tcase "()":\n\t\t\treturn "void"\n\t\tcase "never":\n\t\t\treturn "oak_never"\n\t\tdefault:\n'''
+          if s.count(old) != 1:
+              raise SystemExit(f'parseTypeExpression anchor count = {s.count(old)}, want 1')
+          s = s.replace(old, new, 1)
+
+          old = '''\tcg.write("typedef u8  byte;\\n")\n\tcg.write("typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */\\n")\n\tcg.write("\\n")\n'''
+          new = '''\tcg.write("typedef u8  byte;\\n")\n\tcg.write("typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */\\n")\n\tcg.write("typedef u8 oak_never; /* backend carrier for uninhabited Oak bottom type */\\n")\n\tcg.write("\\n")\n'''
+          if s.count(old) != 1:
+              raise SystemExit(f'header anchor count = {s.count(old)}, want 1')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('codegen/eret.go')
+          s = p.read_text()
+          old = 'arm64HelperSources[member] = `typedef u8 oak_never; /* uninhabited in Oak; no value is ever produced */\n__attribute__((noreturn)) static inline oak_never oak_arm64_eret( void ) {'
+          new = 'arm64HelperSources[member] = `__attribute__((noreturn)) static inline oak_never oak_arm64_eret( void ) {'
+          if s.count(old) != 1:
+              raise SystemExit(f'ERET typedef anchor count = {s.count(old)}, want 1')
+          p.write_text(s.replace(old, new, 1))
+
+          Path('.github/workflows/patch-never-backend.yml').unlink()
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add codegen/codegen.go codegen/eret.go .github/workflows/patch-never-backend.yml
+          git commit -m "fix package-independent never backend representation"
+          git push origin HEAD:feat/el2-cold-enter
