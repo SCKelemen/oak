@@ -52,3 +52,10 @@ func findTrace(m *Model)(*Certificate,error){
         for _,t:=range states{key:=stateKey(t);if !seen[key]&&truth(m.Terms["step"],s,t){seen[key]=true;next:=append(append([]State{},path...),t);paths=append(paths,next)}}
     };return nil,fmt.Errorf("no counterexample in exhaustively explored finite model")
 }
+func closedSet(m *Model)(*Certificate,error){
+    all,e:=m.states();if e!=nil{return nil,e};queue:=[]State{};seen:=map[string]bool{}
+    for _,s:=range all{if truth(m.Terms["initial"],s,nil){queue=append(queue,s);seen[stateKey(s)]=true}}
+    if len(queue)==0{return nil,fmt.Errorf("empty initial set")}
+    for head:=0;head<len(queue);head++{s:=queue[head];if !truth(m.Terms["invariant"],s,nil){return nil,fmt.Errorf("reachable safety violation; use trace")};for _,target:=range all{key:=stateKey(target);if !seen[key]&&truth(m.Terms["step"],s,target){seen[key]=true;queue=append(queue,target)}}}
+    return &Certificate{Format:evidenceFormat,Digest:m.Digest,Kind:"closed-set",States:queue},nil
+}

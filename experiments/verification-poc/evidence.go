@@ -16,6 +16,16 @@ type Certificate struct{
 }
 func verify(m *Model,c *Certificate)(map[string]any,error){
     if c.Format!=evidenceFormat||c.Digest!=m.Digest{return nil,fmt.Errorf("wrong evidence format or source/model identity")}
+    if c.Kind=="closed-set" {
+        if c.Initial!=nil||c.Proofs!=nil||len(c.States)==0||len(c.States)>1024{return nil,fmt.Errorf("invalid closed-set evidence")}
+        members:=map[string]bool{}
+        for _,s:=range c.States{if e:=m.valid(s);e!=nil{return nil,e};key:=stateKey(s);if members[key]{return nil,fmt.Errorf("duplicate closed-set state")};members[key]=true;if !truth(m.Terms["invariant"],s,nil){return nil,fmt.Errorf("unsafe closed-set member")}}
+        all,e:=m.states();if e!=nil{return nil,e};initials:=0
+        for _,s:=range all{if truth(m.Terms["initial"],s,nil){initials++;if !members[stateKey(s)]{return nil,fmt.Errorf("closed set omits an initial state")}}}
+        if initials==0{return nil,fmt.Errorf("empty initial set")}
+        for _,s:=range c.States{for _,target:=range all{if truth(m.Terms["step"],s,target)&&!members[stateKey(target)]{return nil,fmt.Errorf("closed set omits a successor")}}}
+        return map[string]any{"accepted":true,"claim":"nonvacuous reachable safety","evidence":"checked finite closed set","states":len(c.States),"translation_trusted":true},nil
+    }
     if c.Kind=="trace"{
         if c.Initial!=nil||c.Proofs!=nil{return nil,fmt.Errorf("unexpected trace fields")}
         if e:=replay(m,c.States);e!=nil{return nil,e}

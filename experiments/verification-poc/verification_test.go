@@ -113,3 +113,22 @@ func TestOriginalBooleanModelsUseNativeOak(t *testing.T){
     safe,e:=loadModel("examples/borrow.json");if e!=nil{t.Fatal(e)};proof,e:=localProof(safe);if e!=nil{t.Fatal(e)};if _,e:=verify(safe,proof);e!=nil{t.Fatal(e)}
     broken,e:=loadModel("examples/broken.json");if e!=nil{t.Fatal(e)};trace,e:=findTrace(broken);if e!=nil{t.Fatal(e)};if len(trace.States)!=3{t.Fatal("Boolean model trace changed")};if _,e:=verify(broken,trace);e!=nil{t.Fatal(e)}
 }
+func TestClosedSetsPreserveReachableSafetyCapability(t *testing.T){
+    m:=fixture(t,"counter");cert,e:=closedSet(m);if e!=nil{t.Fatal(e)};if _,e:=verify(m,cert);e!=nil{t.Fatal(e)}
+    original:=cert.States;cert.States=original[:len(original)-1];if _,e:=verify(m,cert);e==nil{t.Fatal("accepted omitted successor")}
+    cert.States=append(append([]State{},original...),State{"count":4});if _,e:=verify(m,cert);e==nil{t.Fatal("accepted unsafe member")}
+    cert.States=append(append([]State{},original...),original[0]);if _,e:=verify(m,cert);e==nil{t.Fatal("accepted duplicate state")}
+    cert.States=original[1:];if _,e:=verify(m,cert);e==nil{t.Fatal("accepted omitted initial state")}
+    source:=`State: type = { count: u8 }
+initial: (s: State): Bool = s.count == u8(0)
+safe: (s: State): Bool = s.count <= u8(3)
+step: (s: State, t: State): Bool = s.count ? {
+  | 0 => t.count == u8(0)
+  | _ => true
+}
+`
+    dir:=t.TempDir();cfg:=Config{Source:"model.oak",Initial:"initial",Step:"step",Invariant:"safe"}
+    if e:=os.WriteFile(filepath.Join(dir,"model.oak"),[]byte(source),0644);e!=nil{t.Fatal(e)};if e:=os.WriteFile(filepath.Join(dir,"model.json"),[]byte(jsonText(cfg)),0644);e!=nil{t.Fatal(e)}
+    m,e=loadModel(filepath.Join(dir,"model.json"));if e!=nil{t.Fatal(e)};if _,e:=localProof(m);e==nil{t.Fatal("proved noninductive invariant")};cert,e=closedSet(m);if e!=nil{t.Fatal(e)};if len(cert.States)!=1{t.Fatal("wrong reachable closure")};if _,e:=verify(m,cert);e!=nil{t.Fatal(e)}
+    out:=filepath.Join(dir,"closure.json");if _,e:=command([]string{"closed-set","--out",out,filepath.Join(dir,"model.json")});e!=nil{t.Fatal(e)};if _,e:=command([]string{"verify",filepath.Join(dir,"model.json"),out});e!=nil{t.Fatal(e)}
+}

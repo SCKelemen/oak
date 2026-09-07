@@ -13,6 +13,7 @@ func usage()string{return `usage:
   go run . emit --out DIR PROJECT.json
   go run . prove-local --out CERT.json PROJECT.json
   go run . trace --out CERT.json PROJECT.json
+  go run . closed-set --out CERT.json PROJECT.json
   go run . verify PROJECT.json CERT.json
   go run . lrat FORMULA.cnf PROOF.lrat
   go run . suite [--tla-jar FILE] [--out DIR] [--timeout SECONDS]
@@ -28,7 +29,7 @@ func command(args []string)(any,error){
     if action=="suite"{if len(pos)!=0||*timeout<=0{return nil,fmt.Errorf("invalid suite arguments")};if *out==""{*out="build/integration"};return runSuite(*examples,*out,*jar,time.Duration(*timeout*float64(time.Second)))}
     if action=="lrat"{if len(pos)!=2{return nil,fmt.Errorf("lrat requires CNF and proof")};a,e:=os.ReadFile(pos[0]);if e!=nil{return nil,e};b,e:=os.ReadFile(pos[1]);if e!=nil{return nil,e};return lrat.Check(string(a),string(b))}
     need:=1;if action=="verify"||action=="import-trace"{need=2};if len(pos)!=need{return nil,fmt.Errorf("%s",usage())}
-    if action!="emit"&&action!="prove-local"&&action!="trace"&&action!="verify"&&action!="import-trace"{return nil,fmt.Errorf("unknown action: %s",action)}
+    if action!="emit"&&action!="prove-local"&&action!="trace"&&action!="closed-set"&&action!="verify"&&action!="import-trace"{return nil,fmt.Errorf("unknown action: %s",action)}
     m,e:=loadModel(pos[0]);if e!=nil{return nil,e}
     if action=="emit"{if *out==""{return nil,fmt.Errorf("--out required")};if e:=emit(m,*out);e!=nil{return nil,e};return map[string]any{"generated":true,"semantic_digest":m.Digest,"verification_claim":false},nil}
     var c *Certificate
@@ -36,6 +37,7 @@ func command(args []string)(any,error){
     case "verify":c=&Certificate{};e=readJSON(pos[1],c)
     case "prove-local":c,e=localProof(m)
     case "trace":c,e=findTrace(m)
+    case "closed-set":c,e=closedSet(m)
     case "import-trace":
         var r Receipt;if e:=readJSON(*receiptFile,&r);e!=nil{return nil,e};q,e:=os.ReadFile(*queryFile);if e!=nil{return nil,e};raw,e:=os.ReadFile(pos[1]);if e!=nil{return nil,e};var k *int;if *bound>=0{k=bound};c,e=importTrace(m,*backend,string(q),string(raw),r,k);if e!=nil{return nil,e}
     }

@@ -1,6 +1,0 @@
-{
-  "source": "borrow.oak",
-  "initial": "initial",
-  "step": "step",
-  "invariant": "safe"
-}
