@@ -289,6 +289,7 @@ func TestE2EStdlibArrayListRecordValues(t *testing.T) {
 	src := `
 import(std)
 Point: type = struct { x: u32, y: u32 }
+point_code: (point: Point): i32 = point.x == u32(11) && point.y == u32(31) ? 42 | 0
 main: (): i32 {
  data: [2]Point
  state: [1]ArrayListCursor
@@ -297,8 +298,7 @@ main: (): i32 {
  point: Point = Point { x: u32(11), y: u32(31) }
  inserted: Result[u32, CollectionError] = array_list_push(q, s, point)
  popped: Result[Point, CollectionError] = array_list_pop(q, s)
- popped ? | .Ok(p) => { assert(p.x == u32(11) && p.y == u32(31))
- 42 } | .Err(e) => 0
+ popped ? | .Ok(p) => point_code(p) | .Err(e) => 0
 }
 `
 	code, abnormal := buildAndRun(t, "arraylistrecord", src)
