@@ -97,3 +97,47 @@ explicit decision to use this Lean checker as an independent certificate gate.
 13,019 cases, with 610 accepted and 12,409 rejected by both checkers.
 `../validation-refinement.json` records the tested commit, theorem assumptions,
 corpus scope, and remaining proof boundaries.
+
+## Independent certificate gate
+
+`RUPText.lean` decodes ASCII DIMACS and the supported ASCII LRAT subset directly,
+without calling the Go parser. It checks declared variable bounds and clause
+counts, zero terminators, signed integer limits, and the complete proof stream.
+`RUPCheck.lean` exposes it as an isolated file checker:
+
+```sh
+export LEAN_PATH="$PWD/proof"
+lean -DwarningAsError=true -o proof/RUPText.olean proof/RUPText.lean
+lean -DwarningAsError=true --run proof/RUPCheck.lean FORMULA.cnf PROOF.lrat
+```
+
+Compile the two prerequisite modules as shown above first. The command prints
+one JSON result; status zero means acceptance and status one with a structured
+result means rejection. Usage errors, compilation failures, and I/O exceptions
+are not certificate results.
+
+The new `checkText_sound` theorem states that successful text checking implies
+unsatisfiability of **the database returned by `parseDIMACS`**. It connects the
+wrapper to the proved checker, but does not prove that parsing preserves the
+external DIMACS meaning. Both the parser and source-to-CNF translation remain
+trust boundaries. ASCII whitespace and decimal integers are the adapter's
+supported lexical scope; Go's broader Unicode whitespace behavior is not claimed.
+
+After the external suite succeeds, the opt-in solver job runs
+`bash ci/check-certificates.sh`. It independently accepts every real UNSAT
+certificate recorded by the suite, then requires rejection of each certificate
+against its project's satisfiable initial query and rejection of an appended,
+syntactically valid but unjustified empty-clause addition. The latter rejection
+must occur in the checker, rather than the parser. The gate requires structured
+results and exact exit codes, so a tool crash cannot pass a negative test.
+
+The gate checks that all expected certificates were visited, records SHA-256
+hashes of the original CNF/proof pairs, and retains the acceptance and rejection
+outputs under `build/lean-gate/`. It runs explicitly after the Go `suite` command;
+the normal verifier does not acquire a runtime Lean dependency.
+
+`RUPTextCompare.lean` compares text acceptance with Go on the decoded stream
+corpus plus hand-labelled malformed and valid text cases. To reproduce it,
+set `OAK_LEAN_TEXT_CORPUS_OUT` alongside `OAK_LEAN_DIFFERENTIAL_OUT` when running
+`TestLeanDifferentialCorpus`, then pass that JSON file to
+`lean -DwarningAsError=true --run proof/RUPTextCompare.lean`.

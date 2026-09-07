@@ -102,10 +102,13 @@ def parseLRAT (text : String) : Except String (List Instruction) := do
       commands := commands.push (.add index (clause.map literal) (← positiveIDs hints))
   return commands.toList
 
-def checkText (cnf proof : String) : Except String Bool := do
-  let formula ← parseDIMACS cnf
-  let commands ← parseLRAT proof
-  return checkProof formula.variables formula.clauses commands
+def checkText (cnf proof : String) : Except String Bool :=
+  match parseDIMACS cnf with
+  | .error reason => .error reason
+  | .ok formula =>
+    match parseLRAT proof with
+    | .error reason => .error reason
+    | .ok commands => .ok (checkProof formula.variables formula.clauses commands)
 
 theorem checkText_sound {cnf proof : String}
     (accepted : checkText cnf proof = .ok true) :
@@ -118,7 +121,7 @@ theorem checkText_sound {cnf proof : String}
     cases decoded : parseLRAT proof with
     | error reason => simp [parsed, decoded] at accepted
     | ok commands =>
-      refine ⟨formula, parsed, checkProof_sound ?_⟩
+      refine ⟨formula, rfl, checkProof_sound ?_⟩
       simpa [parsed, decoded] using accepted
 
 #print axioms checkText_sound

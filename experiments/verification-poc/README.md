@@ -210,3 +210,10 @@ hole cannot silently turn the soundness job green.
 source `build/tools/env.sh` afterward. Lean and TLC downloads are hash-checked,
 CaDiCaL is built from its pinned commit, and the older Z3 release is version-pinned
 with its fetched archive hash recorded. The verifier itself never installs tools.
+
+The opt-in solver job now also runs `ci/check-certificates.sh`: an independent
+Lean text adapter rechecks the actual CaDiCaL UNSAT certificates, mismatched
+formula/proof pairs, and invalid proof suffixes. The typed Lean checker and its
+wrapper have soundness theorems; the ASCII parser and source-to-CNF translation
+remain unproved. See [the certificate gate](proof/README.md#independent-certificate-gate)
+for commands, results, and trust boundaries.
