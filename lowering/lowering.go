@@ -242,8 +242,9 @@ func branchBlock(body ast.Expression, tc *typechecker.TypeChecker) *ast.BlockSta
 	}
 }
 
-// lowerFunctionBodyBlock lowers a function's block body, keeping the final
-// statement's expression form intact (it is the return position).
+// lowerFunctionBodyBlock lowers a value-position block (function bodies,
+// match arm and branch bodies), keeping the final statement's expression
+// form intact — the block's value.
 func lowerFunctionBodyBlock(body *ast.BlockExpression, tc *typechecker.TypeChecker) *ast.BlockExpression {
 	statements := body.Block.Statements
 	lowered := make([]ast.Statement, 0, len(statements))
@@ -488,19 +489,28 @@ func lowerExpression(expr ast.Expression, tc *typechecker.TypeChecker) ast.Expre
 		}
 	case *ast.InvocationExpression:
 		return lowerInvocationExpression(e, tc)
+	case *ast.MatchExpression:
+		lowered := &ast.MatchExpression{
+			BaseNode:  e.BaseNode,
+			Token:     e.Token, // position keys resolution records
+			Scrutinee: lowerExpression(e.Scrutinee, tc),
+		}
+		for _, arm := range e.Arms {
+			lowered.Arms = append(lowered.Arms, &ast.MatchArm{
+				Token:   arm.Token,
+				Pattern: arm.Pattern,
+				Body:    lowerExpression(arm.Body, tc),
+			})
+		}
+		return lowered
 	case *ast.BlockExpression:
-		if e.Block == nil {
+		// A block expression's final statement is its VALUE: it lowers as
+		// an expression (a tail match stays a match for return-position
+		// emission), never through the statement-form conversion.
+		if e.Block == nil || len(e.Block.Statements) == 0 {
 			return e
 		}
-		lowered, ok := lowerStatement(e.Block, tc).(*ast.BlockStatement)
-		if !ok {
-			return e
-		}
-		return &ast.BlockExpression{
-			BaseNode: e.BaseNode,
-			Token:    e.Token,
-			Block:    lowered,
-		}
+		return lowerFunctionBodyBlock(e, tc)
 	default:
 		// Other expressions don't need lowering
 		return expr

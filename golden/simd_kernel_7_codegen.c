@@ -55,6 +55,8 @@ static inline u8 oak_view_index_u8(oak_view_u8 v, u64 i) {
 /* bounds-checked owned-array indexing: out-of-range traps, never UB */
 static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }
 #define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])
+/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */
+static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }
 #define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */

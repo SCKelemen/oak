@@ -1297,7 +1297,7 @@ var runtimeBuiltins = map[string]string{
 // can wrap them; the helper reads only v.len bytes and fails closed.
 func (cg *CodeGenerator) emitUtf8Helper() {
 	viewType := cg.emitViewType("u8")
-	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
 	cg.write(fmt.Sprintf("static Bool oak_is_valid_utf8(%s v) {\n", viewType))
 	cg.write("  u64 i = 0;\n")
 	cg.write("  u64 n = (u64)v.len;\n")
@@ -1621,16 +1621,31 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		cg.emitExpressionFragment(e.Right, tc)
 		cg.output.WriteString(" )")
 	case *ast.IndexExpression:
-		// Field access or array indexing
-		cg.emitExpressionFragment(e.Left, tc)
-		if ident, ok := e.Index.(*ast.Identifier); ok {
-			// Field access: record.field
-			cg.output.WriteString(fmt.Sprintf(".%s", ident.Value))
+		// Field access (the Dot mark) or array indexing — never guessed
+		// from the index's shape.
+		if e.Dot {
+			cg.emitExpressionFragment(e.Left, tc)
+			if ident, ok := e.Index.(*ast.Identifier); ok {
+				cg.output.WriteString(fmt.Sprintf(".%s", ident.Value))
+			} else {
+				cg.output.WriteString(".OAK_UNSUPPORTED_FIELD")
+			}
 		} else {
-			// Array indexing: array[index]
-			cg.output.WriteString("[ ")
-			cg.emitExpressionFragment(e.Index, tc)
-			cg.output.WriteString(" ]")
+			// Bracket indexing that reaches the fragment emitter unlowered
+			// goes through the checked-lvalue helper when the container is
+			// known, so element access is never unchecked.
+			info := cg.localContainerOf(e.Left)
+			if info.kind == containerOwnedArray {
+				cg.emitExpressionFragment(e.Left, tc)
+				cg.output.WriteString("[ oak_lv_idx( (u64)( ")
+				cg.emitExpressionFragment(e.Index, tc)
+				cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
+			} else {
+				cg.emitExpressionFragment(e.Left, tc)
+				cg.output.WriteString("[ ")
+				cg.emitExpressionFragment(e.Index, tc)
+				cg.output.WriteString(" ]")
+			}
 		}
 	case *ast.VariantExpression:
 		// ADT variant construction: .Ok or Status::Ok
@@ -2304,14 +2319,63 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 	}
 }
 
+// emitLvaluePath emits an assignable access path: identifiers, field
+// accesses, and bounds-checked owned-array/span element accesses (views are
+// rejected upstream as read-only). Unknown shapes fail closed.
+func (cg *CodeGenerator) emitLvaluePath(expr ast.Expression, tc *typechecker.TypeChecker) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		cg.output.WriteString(e.Value)
+	case *ast.IndexExpression:
+		if e.Dot {
+			cg.emitLvaluePath(e.Left, tc)
+			if ident, ok := e.Index.(*ast.Identifier); ok {
+				cg.output.WriteString(fmt.Sprintf(".%s", ident.Value))
+			} else {
+				cg.output.WriteString(".OAK_UNSUPPORTED_FIELD")
+			}
+			return
+		}
+		info := cg.localContainerOf(e.Left)
+		switch info.kind {
+		case containerOwnedArray:
+			cg.emitLvaluePath(e.Left, tc)
+			cg.output.WriteString("[ oak_lv_idx( (u64)( ")
+			cg.emitExpressionFragment(e.Index, tc)
+			cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
+		case containerSpan:
+			cg.emitLvaluePath(e.Left, tc)
+			cg.output.WriteString(".base[ oak_lv_idx( (u64)( ")
+			cg.emitExpressionFragment(e.Index, tc)
+			cg.output.WriteString(" ), (u64)(")
+			cg.emitLvaluePath(e.Left, tc)
+			cg.output.WriteString(".len) ) ]")
+		default:
+			cg.output.WriteString("OAK_UNSUPPORTED_LVALUE")
+		}
+	case *ast.InvocationExpression:
+		// A lowered core_index over a known container re-emits as a checked
+		// lvalue access.
+		if ident, ok := e.Function.(*ast.Identifier); ok && ident.Value == "core_index" && len(e.Arguments) == 2 {
+			cg.emitLvaluePath(&ast.IndexExpression{Left: e.Arguments[0], Index: e.Arguments[1]}, tc)
+			return
+		}
+		cg.output.WriteString("OAK_UNSUPPORTED_LVALUE")
+	default:
+		cg.output.WriteString("OAK_UNSUPPORTED_LVALUE")
+	}
+}
+
 // emitIndexAssignment emits a bounds-checked element store: spans go through
 // the trapping helper, owned arrays through the static-length store guard;
 // unknown targets fail closed.
 func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement, tc *typechecker.TypeChecker) {
-	// Record field assignment: p.x = value (docs/spec/40-records.md).
+	// Record field assignment: p.x = value, pool[i].next = value —
+	// the target's path emits in lvalue position with checked indices
+	// (docs/spec/40-records.md, docs/spec/50-borrowing.md).
 	if stmt.Target.Dot {
 		cg.write("  ")
-		cg.emitExpressionFragment(stmt.Target.Left, tc)
+		cg.emitLvaluePath(stmt.Target.Left, tc)
 		if fieldIdent, isIdent := stmt.Target.Index.(*ast.Identifier); isIdent {
 			cg.output.WriteString(fmt.Sprintf(".%s = ", fieldIdent.Value))
 		} else {

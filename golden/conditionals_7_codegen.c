@@ -55,6 +55,8 @@ static inline u8 oak_view_index_u8(oak_view_u8 v, u64 i) {
 /* bounds-checked owned-array indexing: out-of-range traps, never UB */
 static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }
 #define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])
+/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */
+static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }
 #define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
@@ -137,8 +139,10 @@ i32 oak_classify( i32 n, Bool urgent ) {
     if ( ( ( n < 0 ) && !( urgent ) )   ) {
       result     = ( 0 - 1 )    ;
     } else {
-      if ( ( ( n == 0 ) || urgent )     ) {
+      if ( ( ( n == 0 ) || urgent ) == oak_Bool_True ) {
         result       = oak_conv_i32_bits_u32( ((u32)( 1 )) )      ;
+      }
+      if ( ( ( n == 0 ) || urgent ) == oak_Bool_False ) {
       }
     }
     return result  ;
