@@ -640,6 +640,10 @@ func matchesLiteral(obj object.Object, literal ast.Expression) bool {
 		if intObj, ok := obj.(*object.Integer); ok {
 			return intObj.Value == lit.Value
 		}
+	case *ast.Boolean:
+		if boolObj, ok := obj.(*object.Boolean); ok {
+			return boolObj.Value == lit.Value
+		}
 	case *ast.StringLiteral:
 		if strObj, ok := obj.(*object.String); ok {
 			return strObj.Value == lit.Value

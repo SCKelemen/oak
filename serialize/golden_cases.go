@@ -386,19 +386,20 @@ main: (): i32 {
 `,
 		},
 		{
-			// Statement conditionals, short-circuit connectives, and total
-			// explicit conversions (docs/spec/10-syntax.md,
-			// docs/spec/20-types.md) — the kernel-ergonomics surface.
+			// Conditionals are matches (docs/spec/10-syntax.md §3a): the Bool
+			// condition sugar in statement position (lowered to C if/else),
+			// short-circuit connectives, and total explicit conversions
+			// (docs/spec/20-types.md). No if/else keywords exist.
 			Name: "conditionals",
 			SourceCode: `
 classify: (n: i32, urgent: Bool): i32 {
-  result: i32 = 0
-  if n < 0 && !urgent {
+  result: i32 = i32(u8_saturating_u32(u32(300)))
+  n < 0 && !urgent ? {
     result = 0 - 1
-  } else if n == 0 || urgent {
-    result = i32_bits_u32(u32(1))
-  } else {
-    result = i32(u8_saturating_u32(u32(300)))
+  } | {
+    n == 0 || urgent ? {
+      result = i32_bits_u32(u32(1))
+    }
   }
   result
 }

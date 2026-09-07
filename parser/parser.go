@@ -257,11 +257,6 @@ func (p *Parser) parseStatement() ast.Statement {
 			return stmt
 		}
 		return nil
-	case token.IF:
-		if stmt := p.parseIfStatement(); stmt != nil {
-			return stmt
-		}
-		return nil
 	case token.UNSAFE:
 		if stmt := p.parseUnsafeBlock(); stmt != nil {
 			return stmt
@@ -868,7 +863,6 @@ func (p *Parser) ParseProgram() *ast.Program {
 			p.currentTokenIs(token.PACKAGE) ||
 			p.currentTokenIs(token.IMPORT) ||
 			p.currentTokenIs(token.WHILE) ||
-			p.currentTokenIs(token.IF) ||
 			p.currentTokenIs(token.UNSAFE) ||
 			p.currentTokenIs(token.COLON)) && // COLON for REPL commands like :exit
 			!p.currentTokenIs(token.TRIVIA) &&
@@ -971,6 +965,7 @@ type Precedence int
 const (
 	_ Precedence = iota
 	LOWEST
+	CONDITION   // ? (match binds looser than any operator: x < 2 ? a | b)
 	LOGICAL_OR  // ||
 	LOGICAL_AND // &&
 	EQUALITY    // ==
@@ -1040,7 +1035,7 @@ var precedences = map[token.TokenKind]Precedence{
 	token.MUL:    PRODUCT,
 	token.QUO:    PRODUCT,
 	token.LPAREN: INVOCATION,
-	token.QMARK:  INVOCATION, // Match expression has high precedence
+	token.QMARK:  CONDITION, // the whole operator expression is the scrutinee
 	token.DOT:    INDEX,      // Field access has highest precedence
 	token.LBRACK: INDEX,      // Array indexing has highest precedence
 }
@@ -2324,52 +2319,6 @@ func (p *Parser) parseBlockExpression() ast.Expression {
 }
 
 // While statement
-// parseIfStatement parses the statement-position conditional
-// (docs/spec/10-syntax.md): if cond { ... } [else if cond { ... }]* [else { ... }]
-// The condition is a statement header, so '{' after it opens the block.
-func (p *Parser) parseIfStatement() *ast.IfStatement {
-	stmt := &ast.IfStatement{Token: p.currentToken}
-
-	p.nextToken()
-	wasDisabled := p.braceLiteralDisabled
-	p.braceLiteralDisabled = true
-	stmt.Condition = p.parseExpression(LOWEST)
-	p.braceLiteralDisabled = wasDisabled
-	if stmt.Condition == nil {
-		return nil
-	}
-
-	if !p.expectPeek(token.LBRACE) {
-		return nil
-	}
-	stmt.Consequence = p.parseBlockStatement()
-	if stmt.Consequence == nil {
-		return nil
-	}
-
-	if p.peekTokenIs(token.ELSE) {
-		p.nextToken() // move to 'else'
-		if p.peekTokenIs(token.IF) {
-			p.nextToken() // move to 'if'
-			alternative := p.parseIfStatement()
-			if alternative == nil {
-				return nil
-			}
-			stmt.Alternative = alternative
-		} else {
-			if !p.expectPeek(token.LBRACE) {
-				return nil
-			}
-			alternative := p.parseBlockStatement()
-			if alternative == nil {
-				return nil
-			}
-			stmt.Alternative = alternative
-		}
-	}
-	return stmt
-}
-
 func (p *Parser) parseWhileStatement() *ast.WhileStatement {
 	stmt := &ast.WhileStatement{Token: p.currentToken}
 
@@ -2538,18 +2487,117 @@ func (p *Parser) parseMatchExpression(left ast.Expression) ast.Expression {
 
 	// Parse match arms
 	if p.peekTokenIs(token.LBRACE) {
-		// Braced form: ? { pattern -> expr | ... }
-		p.nextToken() // consume {
-		match.Arms = p.parseMatchArms()
-		if !p.expectPeek(token.RBRACE) {
-			return nil
+		if p.lookaheadSignificant(2).TokenKind == token.PIPE {
+			// Braced arm list: ? { | pattern => expr | ... }
+			p.nextToken() // consume {
+			match.Arms = p.parseMatchArms()
+			if !p.expectPeek(token.RBRACE) {
+				return nil
+			}
+		} else {
+			// Bool-condition sugar with a block true branch:
+			// cond ? { stmts } [| else-branch]
+			return p.parseConditionSugarArms(match)
 		}
+	} else if p.positionalArmsAhead() {
+		// Bool-condition sugar: cond ? branch1 | branch2 (and the
+		// leading-pipe multiline layout).
+		return p.parseConditionSugarArms(match)
 	} else {
 		// Inline form: ? | pattern -> expr | ...
 		match.Arms = p.parseMatchArms()
 	}
 
 	return match
+}
+
+// positionalArmsAhead reports whether the arms after '?' are the Bool
+// condition sugar (docs/spec/10-syntax.md §3a): patternless branches
+// separated by '|'. Detected by scanning the first arm segment — a
+// depth-0 '|' before any '->'/'=>' means positional; an arrow means
+// pattern arms. Leading pipes (multiline layout) are skipped.
+func (p *Parser) positionalArmsAhead() bool {
+	depth := 0
+	leading := true
+	const lookaheadLimit = 512
+	for i := 1; i < lookaheadLimit; i++ {
+		tok := p.lookaheadSignificant(i)
+		switch tok.TokenKind {
+		case token.PIPE:
+			if leading {
+				continue
+			}
+			if depth == 0 {
+				return true
+			}
+		case token.ARROW, token.FAT_ARROW:
+			if depth == 0 {
+				return false
+			}
+		case token.LPAREN, token.LBRACK, token.LBRACE:
+			depth++
+		case token.RPAREN, token.RBRACK, token.RBRACE:
+			depth--
+			if depth < 0 {
+				return false
+			}
+		case token.EOF:
+			return false
+		}
+		leading = false
+	}
+	return false
+}
+
+// parseConditionSugarArms parses the Bool-condition sugar into ordinary
+// true/false literal arms, so everything downstream sees one match form:
+//
+//	cond ? branch1 | branch2
+//	cond ? | branch1 | branch2   (multiline layout)
+//	cond ? { stmts } | { stmts } (block branches; else branch optional)
+//
+// currentToken is '?'.
+func (p *Parser) parseConditionSugarArms(match *ast.MatchExpression) ast.Expression {
+	qmark := p.currentToken
+
+	// Multiline layout puts a leading '|' before the true branch.
+	if p.peekTokenIs(token.PIPE) {
+		p.nextToken()
+	}
+	trueBody := p.parseConditionBranch()
+	if trueBody == nil {
+		return nil
+	}
+
+	var falseBody ast.Expression
+	if p.peekTokenIs(token.PIPE) {
+		p.nextToken() // consume '|'
+		falseBody = p.parseConditionBranch()
+		if falseBody == nil {
+			return nil
+		}
+	} else {
+		// No else branch: the false arm is an empty (unit) block, so the
+		// match stays exhaustive and statement-position use is natural.
+		falseBody = &ast.BlockExpression{Token: qmark, Block: &ast.BlockStatement{Token: qmark}}
+	}
+
+	match.Arms = []*ast.MatchArm{
+		{Token: qmark, Pattern: &ast.LiteralPattern{Token: qmark, Value: &ast.Boolean{Token: qmark, Value: true}}, Body: trueBody},
+		{Token: qmark, Pattern: &ast.LiteralPattern{Token: qmark, Value: &ast.Boolean{Token: qmark, Value: false}}, Body: falseBody},
+	}
+	return match
+}
+
+// parseConditionBranch parses one sugar branch: a brace block or an
+// expression. currentToken is the token before the branch.
+func (p *Parser) parseConditionBranch() ast.Expression {
+	if p.peekTokenIs(token.LBRACE) {
+		p.nextToken() // move to '{'
+		return p.parseBlockExpression()
+	}
+	p.nextToken() // move to the expression
+	return p.parseExpression(LOWEST)
 }
 
 // Parse match arms: | pattern -> expr | pattern2 -> expr2
@@ -2683,6 +2731,13 @@ func (p *Parser) parsePattern() ast.Pattern {
 		return &ast.BindingPattern{
 			Token: p.currentToken,
 			Name:  &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal},
+		}
+	case token.TRUE, token.FALSE:
+		// Boolean literal patterns for the explicit conditional form:
+		// cond ? | true => branch1 | false => branch2
+		return &ast.LiteralPattern{
+			Token: p.currentToken,
+			Value: &ast.Boolean{Token: p.currentToken, Value: p.currentTokenIs(token.TRUE)},
 		}
 	case token.INT:
 		// Literal pattern: 200

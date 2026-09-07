@@ -410,10 +410,11 @@ main: (): i32 = add(twice(10), 2)
 	}
 }
 
-// Statement-position conditionals, short-circuit connectives, and record
-// fields as Bool operands — the exact shapes the hypervisor evaluation
-// found inexpressible (if-with-assignment, s.a || s.b). ackHighest-style
-// kernel scan, executed.
+// Statement-position conditionals through the ? match sugar, short-circuit
+// connectives, and record fields as Bool operands — the exact shapes the
+// hypervisor evaluation found inexpressible. There are no if/else
+// keywords: a Bool condition is a two-arm match (docs/spec/10-syntax.md
+// §3a). ackHighest-style kernel scan, executed.
 func TestE2EIfStatementsAndLogicalOperators(t *testing.T) {
 	code, abnormal := buildAndRun(t, "ifops", `
 Flags: type = struct {
@@ -429,7 +430,7 @@ pick_highest: (v: [*]u8): i32 {
   n: u32 = len(v)
   i: u32 = 0
   while i < n {
-    if v[i] < bestPriority {
+    v[i] < bestPriority ? {
       best = i32_bits_u32(i)
       bestPriority = v[i]
     }
@@ -440,10 +441,12 @@ pick_highest: (v: [*]u8): i32 {
 
 classify: (n: i32): i32 {
   result: i32 = 1
-  if n < 0 {
+  n < 0 ? {
     result = 0 - 1
-  } else if n == 0 {
-    result = 0
+  } | {
+    n == 0 ? {
+      result = 0
+    }
   }
   result
 }

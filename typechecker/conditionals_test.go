@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// Statement-position conditionals and Boolean connectives
-// (docs/spec/10-syntax.md): Bool-typed conditions and operands, both
-// branches checked.
+// Statement-position conditionals through the ? match sugar and Boolean
+// connectives (docs/spec/10-syntax.md §3a): Bool-typed conditions and
+// operands, both branches checked. There are no if/else keywords.
 func TestIfStatementsAndLogicalOperators(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -16,18 +16,33 @@ func TestIfStatementsAndLogicalOperators(t *testing.T) {
 		wantInText string
 	}{
 		{
-			"if with else-if chain",
-			"f: (n: i32): i32 {\n  r: i32 = 0\n  if n < 0 {\n    r = 1\n  } else if n == 0 {\n    r = 2\n  } else {\n    r = 3\n  }\n  r\n}",
+			"condition sugar with both block branches",
+			"f: (n: i32): i32 {\n  r: i32 = 0\n  n < 0 ? {\n    r = 1\n  } | {\n    r = 2\n  }\n  r\n}",
+			false, "",
+		},
+		{
+			"one-armed condition statement",
+			"f: (n: i32): i32 {\n  r: i32 = 0\n  n < 0 ? {\n    r = 1\n  }\n  r\n}",
+			false, "",
+		},
+		{
+			"explicit true/false pattern arms",
+			"f: (a: Bool): i32 = a ?\n  | true => 1\n  | false => 2",
+			false, "",
+		},
+		{
+			"positional expression branches",
+			"f: (a: Bool): i32 = a ? 1 | 2",
 			false, "",
 		},
 		{
 			"condition must be Bool",
-			"f: (n: i32): i32 {\n  if n {\n    n = 0\n  }\n  n\n}",
-			true, "if condition must be Bool",
+			"f: (n: i32): i32 {\n  n ? {\n    n = 0\n  }\n  n\n}",
+			true, "",
 		},
 		{
 			"branch bodies are checked",
-			"f: (n: i32): i32 {\n  if n < 0 {\n    x: i32 = \"nope\"\n  }\n  n\n}",
+			"f: (n: i32): i32 {\n  n < 0 ? {\n    x: i32 = \"nope\"\n  }\n  n\n}",
 			true, "",
 		},
 		{

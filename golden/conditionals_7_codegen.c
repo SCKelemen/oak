@@ -133,14 +133,12 @@ i32 oak_main( void );
 // @identifier: classify
 // @signature: fn classify(n: i32, urgent: Bool) -> i32
 i32 oak_classify( i32 n, Bool urgent ) {
-    i32 result   = 0  ;
+    i32 result   = ((i32)( oak_conv_u8_saturating_u32( ((u32)( 300 )) ) ))  ;
     if ( ( ( n < 0 ) && !( urgent ) )   ) {
       result     = ( 0 - 1 )    ;
     } else {
       if ( ( ( n == 0 ) || urgent )     ) {
         result       = oak_conv_i32_bits_u32( ((u32)( 1 )) )      ;
-      } else {
-        result       = ((i32)( oak_conv_u8_saturating_u32( ((u32)( 300 )) ) ))      ;
       }
     }
     return result  ;

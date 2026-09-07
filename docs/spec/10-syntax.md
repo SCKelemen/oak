@@ -116,28 +116,54 @@ arguments and the view length equals the trailing count). Spreading an
 existing sequence (`f(xs...)`) is not yet specified. Only the final
 parameter may carry the marker; `..` is not a token.
 
-## 3a. Statement conditionals and Boolean connectives
+## 3a. Conditionals are matches
 
-`if` is a statement: a `Bool` condition, a brace block, an optional
-`else if` chain, and an optional final `else`.
+Oak has **no `if`/`else` keywords**. The one branching form is the match
+expression `?`, and a Boolean condition is just a match over `Bool`. Sugar
+makes the two-arm case read naturally — all of these are the same match:
 
 ```oak
-if v[i] < best && !masked {
+condition ? branch1 | branch2
+
+condition ?
+          | branch1
+          | branch2
+
+condition ?
+          | true  => branch1
+          | false => branch2
+```
+
+Branches are expressions or brace blocks; block branches may contain
+statements, so conditional mutation is ordinary:
+
+```oak
+v[i] < best ? {
   best = v[i]
-} else if v[i] == best {
-  ties = ties + 1
+  bestIndex = i
 }
 ```
 
-The condition is a statement header: a `{` after it always opens the block,
-never a record literal (the same rule as `while`; parenthesized
-subexpressions re-admit literals). `if` produces no value — expression-position
-conditionals are `?` match's job — so branch blocks are statement blocks.
+Omitting the second branch supplies an implicit empty (unit) branch, so a
+one-armed condition is legal in statement position (a one-armed
+*expression* branch requires the block form: `cond ? { x }`). Positional
+branches are recognized by the absence of `=>`/`->` in the first arm;
+pattern arms behave exactly as in §7. In statement position the Bool match
+lowers to a plain C `if`/`else`.
 
 `&&` and `||` are short-circuit connectives over `Bool` (the right operand
-evaluates only when the left leaves the result open); `!` is Boolean
-negation. They bind looser than comparison: `a == b || c < d` reads as
+evaluates only when the left leaves the result open); `!` is negation.
+They bind looser than comparison: `a == b || c < d` reads as
 `(a == b) || (c < d)`.
+
+**Design guidance — Boolean blindness.** `Bool` is the type of *answers to
+comparisons at a use site*, not a modeling tool. A domain state deserves an
+ADT whose constructors name the states (and carry their evidence), matched
+with `?` — `Line: type = | Idle | Pending: Cause | Masked` beats three
+Booleans that can drift into impossible combinations, and a match on it
+cannot forget which case it is in. Reach for the Bool sugar when the
+condition is genuinely a comparison (`i < n`, `x == limit`); reach for an
+ADT when the condition *is the domain*.
 
 ## 4. Blocks and layout
 

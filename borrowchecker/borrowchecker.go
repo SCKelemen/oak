@@ -573,6 +573,11 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		bc.checkExpression(e.Right, env)
 	case *ast.InvocationExpression:
 		bc.checkInvocationExpression(e, env, targetVar)
+	case *ast.MatchExpression:
+		bc.checkExpression(e.Scrutinee, env)
+		for _, arm := range e.Arms {
+			bc.checkExpression(arm.Body, env)
+		}
 	case *ast.BlockExpression:
 		// A block in expression position (most importantly a function block
 		// body): statements are checked under block scoping, so borrows

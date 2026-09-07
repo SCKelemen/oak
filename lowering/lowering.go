@@ -28,6 +28,15 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 	case *ast.VariableDeclaration:
 		return lowerVariableDeclaration(s, tc)
 	case *ast.ExpressionStatement:
+		// A statement-position Bool match (the condition sugar of
+		// docs/spec/10-syntax.md §3a, or an explicit true/false match)
+		// lowers to the internal branch statement, so side-effecting
+		// branches emit as C if/else.
+		if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+			if branch, isBranch := lowerBoolMatchStatement(match, tc); isBranch {
+				return branch
+			}
+		}
 		return &ast.ExpressionStatement{
 			BaseNode:   s.BaseNode,
 			Token:      s.Token,
@@ -149,6 +158,74 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 		}
 	}
 	return fn
+}
+
+// lowerBoolMatchStatement converts a statement-position match whose arms
+// are Bool-literal (or trailing wildcard) patterns into the internal branch
+// statement (ast.IfStatement — no surface keyword; the surface form is the
+// `?` condition sugar). Reports false for any other match shape.
+func lowerBoolMatchStatement(match *ast.MatchExpression, tc *typechecker.TypeChecker) (ast.Statement, bool) {
+	if match.Scrutinee == nil || len(match.Arms) == 0 || len(match.Arms) > 2 {
+		return nil, false
+	}
+	var trueBody, falseBody ast.Expression
+	for i, arm := range match.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			boolLit, isBool := pattern.Value.(*ast.Boolean)
+			if !isBool {
+				return nil, false
+			}
+			if boolLit.Value {
+				trueBody = arm.Body
+			} else {
+				falseBody = arm.Body
+			}
+		case *ast.WildcardPattern:
+			// A trailing wildcard covers the remaining case.
+			if i != len(match.Arms)-1 {
+				return nil, false
+			}
+			if trueBody == nil {
+				trueBody = arm.Body
+			} else {
+				falseBody = arm.Body
+			}
+		default:
+			return nil, false
+		}
+	}
+	if trueBody == nil {
+		return nil, false
+	}
+
+	branch := &ast.IfStatement{
+		BaseNode:    match.BaseNode,
+		Token:       match.Token,
+		Condition:   lowerExpression(match.Scrutinee, tc),
+		Consequence: branchBlock(trueBody, tc),
+	}
+	if falseBlock := branchBlock(falseBody, tc); falseBlock != nil && len(falseBlock.Statements) > 0 {
+		branch.Alternative = falseBlock
+	}
+	return branch, true
+}
+
+// branchBlock normalizes a lowered arm body into a block of statements.
+func branchBlock(body ast.Expression, tc *typechecker.TypeChecker) *ast.BlockStatement {
+	if body == nil {
+		return nil
+	}
+	lowered := lowerExpression(body, tc)
+	if block, isBlock := lowered.(*ast.BlockExpression); isBlock {
+		if block.Block == nil {
+			return &ast.BlockStatement{}
+		}
+		return block.Block
+	}
+	return &ast.BlockStatement{
+		Statements: []ast.Statement{&ast.ExpressionStatement{Expression: lowered}},
+	}
 }
 
 // lowerBlockStatement lowers block statements

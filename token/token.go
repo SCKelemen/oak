@@ -76,8 +76,6 @@ const (
 	WHILE
 	UNSAFE
 	FN
-	IF
-	ELSE
 	_keywords_end
 )
 
@@ -139,8 +137,6 @@ var tokens = [...]string{
 	WHILE:     "while",
 	UNSAFE:    "unsafe",
 	FN:        "fn",
-	IF:        "if",
-	ELSE:      "else",
 }
 
 func (token TokenKind) String() string {

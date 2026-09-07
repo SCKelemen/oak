@@ -908,10 +908,11 @@ func (fp *FunctionParameter) String() string {
 }
 
 // While loop
-// IfStatement is the statement-position conditional
-// (docs/spec/10-syntax.md): Bool condition, brace blocks, optional
-// `else if` chain or final `else`. Expression-position conditionals are
-// match's job.
+// IfStatement is the INTERNAL branch statement: Oak has no if/else
+// keywords — the surface form is the `?` condition sugar over Bool
+// (docs/spec/10-syntax.md §3a), and lowering converts statement-position
+// Bool matches into this node so side-effecting branches emit as C
+// if/else.
 type IfStatement struct {
 	BaseNode
 	Token       token.Token // 'if' token
