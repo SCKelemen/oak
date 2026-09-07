@@ -89,7 +89,7 @@ def DataRace {Event : Type u}
     (conflict : Event -> Event -> Prop)
     (atomic : Event -> Bool)
     (a b : Event) : Prop :=
-  thread a != thread b ∧
+  thread a ≠ thread b ∧
   conflict a b ∧
   (atomic a = false ∨ atomic b = false) ∧
   ¬ hb a b ∧
