@@ -214,8 +214,10 @@ strong-CAS relation. It proves, among other facts:
 - every source CAS constructor has a legal success/failure pair;
 - no source CAS can expose release/acq-rel failure ordering.
 
-These are language-level proofs. C/ISA refinement and the complete
-happens-before model remain separate proof obligations.
+The execution-level meaning of publication, happens-before, conflicting access,
+and data races is specified separately in `66-memory-model.md` and modeled in
+`spec/lean/Oak/HappensBefore.lean`. These are language-level proofs. C/ISA
+refinement remains a separate proof obligation.
 
 ## 11. End-to-end tests
 
@@ -250,12 +252,13 @@ Acceptance spans the whole executable stack:
 | compiler semantic lookup allocation | tested at zero allocations |
 | contended CAS linearized final value | native-tested |
 | CAS retry instrumentation | native-tested |
+| core happens-before/data-race relations | specified + implemented + Lean-modeled in chapter 66 |
+| complete memory-model closure (fences/release sequences/SC) | not yet complete |
 | C/ISA formal refinement | not yet proved |
-| complete happens-before/data-race model | not yet specified |
 | AArch64 weak-memory litmus suite | not yet implemented |
 | target-specific lock-free admission | not yet implemented |
 
-Next machine-memory work should define Oak's complete happens-before/data-race
-model and then verify the AArch64 refinement with weak-memory litmus tests. Only
-then should higher-level SPSC/MPSC queue proofs rely on these atomics as their
-shared memory foundation.
+The next closure work is fence-mediated synchronization, release sequences, and
+sequential-consistency constraints in the execution model, followed by C/AArch64
+refinement and weak-memory litmus tests. Higher-level SPSC/MPSC proofs should
+consume that closed contract rather than invent their own memory semantics.
