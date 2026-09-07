@@ -20,6 +20,9 @@ These statements cover arbitrary expressions built from Boolean constants,
 inputs, NOT, AND, and OR, and arbitrary decoded proof streams. They compose
 `BooleanCNF.encode_complete`, the numbering preservation proof, and
 `RUPExecutable.checkProof_sound`. No solver-correctness assumption is needed.
+The printed kernel assumptions for numbering are `propext` and `Quot.sound`;
+the two acceptance theorems also use `Classical.choice` through the RUP proof.
+There are no project-specific axioms or proof holes.
 
 The allocator uses an atom's first occurrence in the flattened CNF, plus one,
 as its numeric ID. The table deliberately retains duplicate atoms; unused ID
@@ -55,7 +58,7 @@ are retained under `build/boolean-proofs/`. A fresh attempt starts with a failed
 report, so a retry cannot leave an old success report in place.
 
 The existing `BooleanCNFCompare.lean` corpus also compares numbered and symbolic
-clause satisfaction for every enumerated auxiliary assignment, checks ID bounds,
+satisfiability by enumerating auxiliary assignments, checks ID bounds,
 and retains its independent Go/Lean comparison across 3,249 expressions and
 12,996 input valuations. These finite tests supplement the general theorems.
 

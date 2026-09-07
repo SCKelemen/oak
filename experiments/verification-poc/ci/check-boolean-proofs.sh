@@ -10,7 +10,7 @@ export LEAN_PATH="$attempt"
 for module in RUPSoundness RUPExecutable RUPText BooleanCNF NumberedCNF; do
   lean -DwarningAsError=true -o "$attempt/$module.olean" "proof/$module.lean" > "$attempt/$module.log" 2>&1 || { cat "$attempt/$module.log"; exit 1; }
 done
-lean -DwarningAsError=true --run proof/BooleanProof.lean list > "$attempt/examples.tsv"
+lean -DwarningAsError=true --run proof/BooleanProof.lean list > "$attempt/examples.tsv" 2>&1 || { cat "$attempt/examples.tsv"; exit 1; }
 check() {
   local expected=$1 name=$2 proof=$3 output=$4 status
   set +e
