@@ -132,12 +132,12 @@ func layoutStream(c streamCase) streamLayout {
  r:=streamLayout{}
  for _,clause:=range c.Database {r.starts=append(r.starts,uint32(len(r.lits)));r.lengths=append(r.lengths,uint32(len(clause)));for _,lit:=range clause {r.lits=append(r.lits,oakLiteral(lit))}}
  for _,cmd:=range c.Commands {
-  start,refstart:=len(r.lits),len(r.refs);count:=0;action:=".Add"
-  if cmd.Kind=="delete" {action=".Delete";r.refs=append(r.refs,cmd.IDs...)} else {
+  start,refstart:=len(r.lits),len(r.refs);count:=0;action:="true"
+  if cmd.Kind=="delete" {action="false";r.refs=append(r.refs,cmd.IDs...)} else {
    count=len(cmd.Clause);for _,lit:=range cmd.Clause {r.lits=append(r.lits,oakLiteral(lit))}
    for _,hint:=range cmd.Hints {encoded:=uint32(0);if hint>0 {encoded=uint32(hint)};r.refs=append(r.refs,encoded)}
   }
-  r.commands=append(r.commands,fmt.Sprintf("RUPCommand { action: %s, id: u32(%d), start: u32(%d), count: u32(%d), refs_start: u32(%d), refs_count: u32(%d) }",action,cmd.ID,start,count,refstart,len(r.refs)-refstart))
+  r.commands=append(r.commands,fmt.Sprintf("RUPCommand { addition: %s, id: u32(%d), start: u32(%d), count: u32(%d), refs_start: u32(%d), refs_count: u32(%d) }",action,cmd.ID,start,count,refstart,len(r.refs)-refstart))
  }
  return r
 }

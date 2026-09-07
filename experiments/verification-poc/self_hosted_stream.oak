@@ -1,7 +1,6 @@
 // Decoded bounded proof streams. Append after self_hosted_rup.oak to compile.
-RUPAction: type = Add | Delete
 RUPCommand: type = struct {
-  action: RUPAction
+  addition: Bool
   id: u32
   start: u32
   count: u32
@@ -65,10 +64,8 @@ rup_stream_check: (
     valid = command.id <= u32(2147483647)
     valid = valid && command.refs_start <= len(references)
     valid = valid && command.refs_count <= len(references) - command.refs_start
-    action: RUPAction = command.action
     valid ? {
-      action ?
-      | .Add => {
+      command.addition ? {
         valid = command.id > last && command.id <= u32(256)
         valid = valid && command.start <= len(literals) && command.count <= len(literals) - command.start
         valid = valid && command.refs_count <= u32(256)
@@ -101,7 +98,7 @@ rup_stream_check: (
           refuted = refuted || command.count == u32(0)
         }
       }
-      | .Delete => {
+      | {
         valid = command.id >= last
         d: u32 = 0
         while d < command.refs_count && valid {
