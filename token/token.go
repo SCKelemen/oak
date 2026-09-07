@@ -54,11 +54,11 @@ const (
 	PIPE         // |
 	PIPE_FORWARD // |>
 	AMP          // &
-	BANG  // !
-	QMARK // ?
-	CARET // ^ (infix xor, prefix complement)
-	SHL   // <<
-	SHR   // >>
+	BANG         // !
+	QMARK        // ?
+	CARET        // ^ (infix xor, prefix complement)
+	SHL          // <<
+	SHR          // >>
 
 	// arithmeticy bits
 	NEG // -
@@ -122,11 +122,11 @@ var tokens = [...]string{
 	PIPE:         "|",
 	PIPE_FORWARD: "|>",
 	AMP:          "&",
-	CARET: "^",
-	SHL:   "<<",
-	SHR:   ">>",
-	BANG:  "!",
-	QMARK: "?",
+	CARET:        "^",
+	SHL:          "<<",
+	SHR:          ">>",
+	BANG:         "!",
+	QMARK:        "?",
 
 	NEG: "-",
 	SUM: "+",

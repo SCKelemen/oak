@@ -1713,8 +1713,13 @@ func (p *Parser) parseRecordType() ast.Expression {
 		return record
 	}
 
-	// Move to first field name
+	// Move to first field name or row variable.
 	p.nextToken() // currentToken should be IDENT, RBRACE, or COMMA (leading comma)
+	if p.currentTokenIs(token.IDENT) && p.peekTokenIs(token.PIPE) {
+		record.Extension = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		p.nextToken() // move to |
+		p.nextToken() // move to first required field
+	}
 
 	for {
 		// Skip leading comma if present (allows: { , A: u32, B: u32 })
