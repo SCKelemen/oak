@@ -38,20 +38,20 @@ def referencePath : List Stage := [
 
 /-- ERET is admitted only after the explicit synchronization stage in this
     protocol model. -/
-theorem eret_requires_synchronized {from : Stage}
-    (h : Step from .transferred) : from = .synchronized := by
+theorem eret_requires_synchronized {src : Stage}
+    (h : Step src .transferred) : src = .synchronized := by
   cases h
   rfl
 
 /-- ISB is the only modeled step that reaches the synchronized state. -/
-theorem synchronized_requires_guest_context {from : Stage}
-    (h : Step from .synchronized) : from = .guestContextInstalled := by
+theorem synchronized_requires_guest_context {src : Stage}
+    (h : Step src .synchronized) : src = .guestContextInstalled := by
   cases h
   rfl
 
 /-- The staged reference path has no ordinary state after architectural
     transfer; transfer is terminal in the cold-entry protocol. -/
-theorem no_step_after_transfer {to : Stage} : ¬ Step .transferred to := by
+theorem no_step_after_transfer {dst : Stage} : ¬ Step .transferred dst := by
   intro h
   cases h
 
