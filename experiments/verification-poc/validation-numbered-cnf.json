@@ -1,0 +1,96 @@
+{
+  "format": "oak-numbered-cnf-validation-1",
+  "date": "2026-09-07",
+  "commit": "b40eb4c4b7eacba9aebc48b76bfe690ed1ed0454",
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34160659002",
+  "soundness_job": 101861669391,
+  "solvers_job": 101861669443,
+  "passed": true,
+  "lean_version": "4.33.1",
+  "warnings_as_errors": true,
+  "theorems": {
+    "numbering_iff": {
+      "claim": "Symbolic CNF satisfiability is equivalent to existence of a model of its numbered database.",
+      "axioms": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "numbered_bounds": {
+      "claim": "Every numbered literal ID is positive and within the declared variable bound.",
+      "axioms": [
+        "propext",
+        "Quot.sound"
+      ]
+    },
+    "checkEncoded_sound": {
+      "claim": "Acceptance of any decoded proof stream implies the source Boolean expression is false under every input valuation.",
+      "axioms": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "checkValid_sound": {
+      "claim": "Acceptance of a refutation of the negated expression implies the expression is true under every input valuation.",
+      "axioms": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    }
+  },
+  "comparison": {
+    "expressions": 3249,
+    "input_valuations": 12996,
+    "checks": [
+      "Numeric literal bounds.",
+      "Numbered versus symbolic satisfiability via enumerated auxiliary assignments.",
+      "Existing Go encoder, Lean symbolic CNF, and source expression evaluations agree."
+    ],
+    "decoded_rup_cases": 13019,
+    "text_rup_cases": 2571
+  },
+  "real_solver": {
+    "solver": "CaDiCaL 2.1.3, pinned by tools.lock.json",
+    "accepted_refutations": 6,
+    "satisfiable_targets_rejected": 3,
+    "wrong_source_rejected": 6,
+    "invalid_suffix_rejected": 6,
+    "accepted_examples": [
+      "false",
+      "contradiction",
+      "excluded-middle",
+      "de-morgan",
+      "distributivity",
+      "shared-contradiction"
+    ],
+    "satisfiable_examples": [
+      "true",
+      "input",
+      "non-tautology"
+    ],
+    "existing_certificate_gate": {
+      "accepted": 11,
+      "corruptions_rejected": 22
+    },
+    "acceptance_path": "Decode LRAT, reconstruct the target CNF from the fixture expression, invoke checkEncoded or checkValid; no DIMACS input is read by this gate."
+  },
+  "scope": {
+    "proved": "Lean Boolean expressions with constants, inputs, NOT, AND, OR; finite numeric allocation; source-level soundness of RUP acceptance.",
+    "not_proved": [
+      "Oak parsing, types, source semantics, and obligation construction.",
+      "Go encoder/checker refinement and optimized allocation.",
+      "Enums, arithmetic, transition-system encodings, RAT and theory lemmas.",
+      "Fixture CLI/JSON tooling and Lean compiler/runtime correctness."
+    ],
+    "independent_dimacs_gate": "The existing RUPCheck gate retains its separate DIMACS parsing boundary."
+  },
+  "repository_ci_at_tested_commit": {
+    "CI": "success",
+    "Formal Verification": "success",
+    "Golden File Verification": "success",
+    "Standard library": "Tests passed; formatting step referenced deleted compiler/specialize.go. Reference corrected in the subsequent documentation/workflow commit."
+  },
+  "artifacts": "The opt-in workflow retains proof diagnostics, generated comparison corpus, solver logs, CNF/proof hashes, and structured rejection results for 30 days."
+}

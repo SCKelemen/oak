@@ -77,3 +77,8 @@ separate `RUPCheck.lean` gate, which accepts a supplied DIMACS file.
 
 The prototype remains isolated under `experiments/verification-poc`. This is a
 proved Boolean encoding/checking path, not verification of Oak or its toolchain.
+
+[The proof, comparison, and real-solver gates passed](https://github.com/SCKelemen/oak/actions/runs/34160659002):
+6 refutations accepted, 3 satisfiable targets rejected, and 12 corruptions
+rejected. `../validation-numbered-cnf.json` records the tested commit, assumptions,
+comparison counts, and remaining boundaries.
