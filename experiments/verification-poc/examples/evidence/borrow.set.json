@@ -1,0 +1,19 @@
+{
+  "format": "oak-evidence-1",
+  "semantic_digest": "28bc9213fd9ab4e9508edd6785ffa28a14655c0b1b82ba99dbfd8b1b5724f6f6",
+  "kind": "closed-set",
+  "states": [
+    {
+      "reader": false,
+      "writer": false
+    },
+    {
+      "reader": false,
+      "writer": true
+    },
+    {
+      "reader": true,
+      "writer": false
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+// A Boolean ownership model: reader means "at least one reader".
+// This is an abstract model, not the implementation's reader-count logic.
+State: type = {
+  reader: Bool
+  writer: Bool
+}
+
+initial: (s: State) -> Bool = !s.reader && !s.writer
+safe: (s: State) -> Bool = !(s.reader && s.writer)
+
+acquire_read: (s: State, t: State) -> Bool =
+  !s.writer && t.reader && !t.writer
+
+release_read: (s: State, t: State) -> Bool =
+  s.reader && !s.writer && !t.reader && !t.writer
+
+acquire_write: (s: State, t: State) -> Bool =
+  !s.reader && !s.writer && !t.reader && t.writer
+
+release_write: (s: State, t: State) -> Bool =
+  s.writer && !s.reader && !t.reader && !t.writer
+
+step: (s: State, t: State) -> Bool =
+  acquire_read(s, t) || release_read(s, t) ||
+  acquire_write(s, t) || release_write(s, t)

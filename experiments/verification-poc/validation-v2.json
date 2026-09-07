@@ -1,0 +1,71 @@
+{
+  "tests_passed": 20,
+  "cli_checks": [
+    {
+      "evidence": "examples/evidence/borrow.proof.json",
+      "project": "examples/borrow.json",
+      "expected_exit": 0,
+      "actual_exit": 0,
+      "result": {
+        "accepted": true,
+        "claim": "nonvacuous inductive safety",
+        "proof_nodes": {
+          "base": 7,
+          "step": 31
+        }
+      }
+    },
+    {
+      "evidence": "examples/evidence/borrow.set.json",
+      "project": "examples/borrow.json",
+      "expected_exit": 0,
+      "actual_exit": 0,
+      "result": {
+        "accepted": true,
+        "claim": "finite-state safety via closed invariant set",
+        "states": 3
+      }
+    },
+    {
+      "evidence": "examples/evidence/broken.trace.json",
+      "project": "examples/broken.json",
+      "expected_exit": 0,
+      "actual_exit": 0,
+      "result": {
+        "accepted": true,
+        "claim": "reachable safety counterexample",
+        "states": 3
+      }
+    },
+    {
+      "evidence": "examples/evidence/forged.proof.json",
+      "project": "examples/borrow.json",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "result": {
+        "accepted": false,
+        "reason": "leaf does not establish falsity"
+      }
+    },
+    {
+      "evidence": "examples/evidence/incomplete.set.json",
+      "project": "examples/borrow.json",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "result": {
+        "accepted": false,
+        "reason": "certificate is not closed under transitions"
+      }
+    },
+    {
+      "evidence": "examples/evidence/illegal.trace.json",
+      "project": "examples/broken.json",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "result": {
+        "accepted": false,
+        "reason": "trace contains an illegal transition"
+      }
+    }
+  ]
+}
