@@ -185,6 +185,35 @@ cannot forget which case it is in. Reach for the Bool sugar when the
 condition is genuinely a comparison (`i < n`, `x == limit`); reach for an
 ADT when the condition *is the domain*.
 
+### 3a.1 The evidence rule
+
+The single-arm statement form (`v > best ? { best = v }`) is the FLOOR:
+a Bool consumed at the moment it is produced, with nothing bound. It is
+honest sugar over the two-arm Bool match, and fine for a raw guard — but
+a Bool that crosses any distance is boolean blindness. The
+doctrine-conformant spellings, in ascending order:
+
+```oak
+Ordering: type = Less | Equal | Greater
+
+cmp[T]: (a: T, b: T): Ordering {
+  a < b ? .Less | (a == b ? .Equal | .Greater)
+}
+
+// evidence-carrying: the match binds WHY, exhaustively
+cmp(v, best) ?
+  | .Greater => { best = v }
+  | .Less => { }
+  | .Equal => { }
+
+// domain function: the conditional mutation disappears entirely
+best = max(best, v)
+```
+
+`cmp` and `max` are written once, generically (`20-types.md` §11.2), and
+the Bool sugar bottoms out the tower — some primitive comparison must
+exist, and everything above it is constructed evidence.
+
 ## 3b. Bitwise and shift operators
 
 The register-bitfield vocabulary: `&` (and), `|` (or), `^` (xor), `<<`,

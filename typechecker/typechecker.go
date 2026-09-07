@@ -502,6 +502,12 @@ type TypeChecker struct {
 	// shiftWidths records the operand width of each shift expression
 	// (position-keyed), consumed by the backend's checked-shift emission.
 	shiftWidths map[string]int
+	// Generic function templates and their monomorphized instantiations
+	// (typechecker/genericfn.go).
+	globalEnv                  *TypeEnvironment
+	functionTemplates          map[string]*ast.FunctionStatement
+	functionInstantiations     map[string]*ast.FunctionStatement
+	functionInstantiationOrder []string
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -661,7 +667,17 @@ func (tc *TypeChecker) addError(node ast.Node, format string, args ...interface{
 }
 
 // CheckProgram type checks a program
+func typeParamsConstrained(params []*ast.TypeParameter) bool {
+	for _, param := range params {
+		if param != nil && param.Constraint != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
+<<<<<<< Updated upstream
 	// Resolve declared types before caching function signatures. Otherwise a
 	// span of a named record can retain an unresolved type variable.
 	for _, stmt := range program.Statements {
@@ -670,6 +686,11 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.checkStatement(stmt)
 		}
 	}
+=======
+	// The global scope is the closure of top-level declarations; template
+	// instantiations check against it, never a caller's local scope.
+	tc.globalEnv = tc.env
+>>>>>>> Stashed changes
 	// Pre-declare top-level non-generic function signatures so functions can
 	// reference one another regardless of declaration order (mutual
 	// recursion included); each signature is finalized when its declaration
@@ -690,6 +711,26 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.checkGlobalInitializer(decl)
 		}
 		tc.checkStatement(stmt)
+	}
+
+	// Generic function templates are replaced by their monomorphized
+	// instantiations, so the borrow checker, discipline analysis, lowering,
+	// and codegen see only ordinary functions — every safety gate runs on
+	// every instantiation (typechecker/genericfn.go).
+	if len(tc.functionTemplates) > 0 {
+		kept := make([]ast.Statement, 0, len(program.Statements)+len(tc.functionInstantiationOrder))
+		for _, stmt := range program.Statements {
+			if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil && len(fn.TypeParams) > 0 {
+				if _, isTemplate := tc.functionTemplates[fn.Name.Value]; isTemplate {
+					continue
+				}
+			}
+			kept = append(kept, stmt)
+		}
+		for _, specialized := range tc.InstantiatedFunctions() {
+			kept = append(kept, specialized)
+		}
+		program.Statements = kept
 	}
 }
 
@@ -1229,6 +1270,12 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	// arm64 instruction functions (docs/spec/92-ffi.md).
 	if libraryType, isLibrary := tc.checkLibraryInvocation(expr); isLibrary {
 		return libraryType
+	}
+
+	// Generic function calls monomorphize here: the call site is rewritten
+	// to the specialized name and re-typed (typechecker/genericfn.go).
+	if genericType, isGeneric := tc.resolveGenericInvocation(expr); isGeneric {
+		return genericType
 	}
 
 	// Check if this is a primitive type constructor: u32(x), u64(y), etc.
@@ -2742,6 +2789,18 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			tc.checkedExterns[stmt] = true
 			tc.checkExternFunction(stmt)
 		}
+		return
+	}
+
+	// An UNCONSTRAINED generic function declaration is a template:
+	// registered, never checked generically — each instantiation is
+	// specialized and checked with concrete types
+	// (typechecker/genericfn.go), the record-template precedent applied to
+	// functions. Constraint-carrying generics ([T: Position]) keep the
+	// constraint-checking path and its structured diagnostics; their
+	// monomorphization is the recorded next step.
+	if len(stmt.TypeParams) > 0 && stmt.Receiver == nil && !typeParamsConstrained(stmt.TypeParams) {
+		tc.registerFunctionTemplate(stmt)
 		return
 	}
 

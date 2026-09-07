@@ -284,6 +284,40 @@ produced by union type punning, defined since C99 TC3):
 `bits` is the explicit path between `u32` and `i32` that widening and
 narrowing deliberately lack: honest at the call site, free at runtime.
 
+### 11.2 Generic functions monomorphize
+
+```oak
+max[T]: (a: T, b: T): T {
+  a < b ? b | a
+}
+
+wide: u64 = max(u64(40), u64(2))     // inferred: max_u64
+narrow: u32 = max[u32](2, 40)        // explicit instantiation
+```
+
+An UNCONSTRAINED generic function declaration is a template — never
+checked or emitted generically. Each call site infers type bindings from
+its argument types (bare type-parameter positions bind directly; `[N]T`
+positions descend into the element) or supplies them explicitly; the body
+is specialized through the single substitution authority
+(`SubstituteTypeAST`) and the specialization is typechecked with concrete
+types — instantiation-time checking, the record-template precedent: an
+operation illegal for the concrete type fails at that instantiation
+(`maskLow[T]` using `&` fails for `T = i32`, works for `u32`).
+
+Specializations are appended to the program and templates removed BEFORE
+the borrow checker, discipline analysis, lowering, and codegen run: every
+safety gate sees only ordinary functions and runs on every instantiation.
+Call sites are rewritten to the mangled name (`oak_max_u32`). The
+instantiation cache registers before body checking, so recursive generic
+functions terminate; generic functions calling generic functions
+re-resolve concretely inside the specialized body. Uninferable parameters
+demand explicit instantiation; unmangleable arguments fail closed.
+
+Constraint-carrying generics (`fn [T: Position] sum_xy(p: T)`) keep the
+structural constraint-checking path and its structured diagnostics
+(`OAK-T0104`); their monomorphization is the recorded next step.
+
 ## 12. Formal obligations
 
 The executable type lattice must satisfy the laws in §3.
