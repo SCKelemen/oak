@@ -44,6 +44,16 @@ jobs:
           go test -count=1 -v ./internal/lrat -run '^TestLeanDifferentialCorpus$' 2>&1 | tee build/soundness/go-corpus.log
           lean -DwarningAsError=true --run proof/RUPCompare.lean "$OAK_LEAN_DIFFERENTIAL_OUT" 2>&1 | tee build/soundness/agreement.log
           lean -DwarningAsError=true --run proof/RUPTextCompare.lean "$OAK_LEAN_TEXT_CORPUS_OUT" 2>&1 | tee build/soundness/text-agreement.log
+      - name: Prove Boolean CNF encoding and compare with Go
+        working-directory: experiments/verification-poc
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LEAN_PATH="$PWD/proof"
+          lean -DwarningAsError=true -o proof/BooleanCNF.olean proof/BooleanCNF.lean 2>&1 | tee build/soundness/boolean-cnf.log
+          export OAK_BOOLEAN_CNF_CORPUS_OUT="$PWD/build/soundness/boolean-cnf-cases.json"
+          go test -count=1 -v . -run '^TestBooleanCNFSpecification$' 2>&1 | tee build/soundness/boolean-cnf-go.log
+          lean -DwarningAsError=true --run proof/BooleanCNFCompare.lean "$OAK_BOOLEAN_CNF_CORPUS_OUT" 2>&1 | tee build/soundness/boolean-cnf-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

@@ -218,3 +218,27 @@ main: (): i32 {
 		})
 	}
 }
+
+func TestE2EGenericShiftWidthsRemainDistinct(t *testing.T) {
+	src := `
+shift[T]: (value: T, amount: T): T = value << amount
+main: (): i32 {
+  narrow: u8 = shift[u8](u8(1), u8(7))
+  wide: u64 = shift[u64](u64(1), u64(40))
+  assert(narrow == u8(128))
+  assert(wide == u64(1099511627776))
+  42
+}
+`
+	code, abnormal := buildAndRun(t, "genericshift", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	// Both instantiations share source coordinates. A width record keyed only
+	// by those coordinates would let the u8 call use the u64 shift bound.
+	bad := strings.Replace(src, "u8(7)", "u8(8)", 1)
+	_, abnormal = buildAndRun(t, "genericshifttrap", bad)
+	if !abnormal {
+		t.Fatal("u8 shift by 8 must trap even when the u64 specialization is emitted later")
+	}
+}

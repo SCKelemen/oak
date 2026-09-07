@@ -126,6 +126,8 @@ func specializeFunctions(program *ast.Program) error {
 					clone.TypeParams = nil
 					if err := transformSyntax(reflect.ValueOf(clone), func(e ast.Expression) (ast.Expression, error) {
 						switch node := e.(type) {
+						case *ast.InfixExpression:
+							node.Token.SemanticContext = mangled
 						case *ast.MatchExpression:
 							node.Token.SemanticContext = mangled
 						case *ast.VariantExpression:

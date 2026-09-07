@@ -185,6 +185,41 @@ cannot forget which case it is in. Reach for the Bool sugar when the
 condition is genuinely a comparison (`i < n`, `x == limit`); reach for an
 ADT when the condition *is the domain*.
 
+## 3b. Bitwise and shift operators
+
+The register-bitfield vocabulary: `&` (and), `|` (or), `^` (xor), `<<`,
+`>>`, and prefix `^` (complement — Go's spelling; there is no `~`).
+Integer literals admit `0xFF` and `0b1010` sugar beside the canonical
+radix form (`16rFF`, `2r1010`).
+
+```oak
+hcr: u64 = hcrVM | hcrFMO | (u64(1) << 27)
+cleared: u64 = hcr & ^hcrFMO
+field: u64 = (hcr >> 3) & 0x3
+```
+
+Rules:
+
+- **Unsigned-only, same-width.** Both operands are the same unsigned
+  fixed-width type; literals infer through the operator (the left
+  operand types the right, so `hcr & 0x19` and `v << 3` need no
+  annotations). No signed bitwise, no C promotion rules: bitwise on a
+  signed value is a modeling smell — convert explicitly
+  (`u32_bits_i32`).
+- **Precedence is Go's**: `<< >> &` bind at the multiplicative level,
+  `| ^` at the additive level. `x & mask == 0` parses as
+  `(x & mask) == 0`, not C's famous trap.
+- **Shifts are never UB.** A constant count is statically checked
+  against the operand width (`x << 32` on `u32` is a compile error); a
+  variable count that reaches the width traps at runtime (`oak_shl_u32`
+  and friends — the bounds-check doctrine; constant counts fold the
+  check away under optimization).
+- **The arm rule.** Inside a bare-expression `?`-match arm body, `|` is
+  the arm separator; parenthesize to use bitwise or there
+  (`cond ? (a | b) | c` — first arm `(a | b)`, second arm `c`). Brace
+  blocks and parentheses restore `|` as an operator; everywhere else,
+  bare `|` is bitwise or.
+
 ## 4. Blocks and layout
 
 Statement/expression blocks may be delimited by indentation or explicit braces. Both normalize to the same structural token stream and AST.

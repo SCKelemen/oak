@@ -55,6 +55,9 @@ const (
 	AMP   // &
 	BANG  // !
 	QMARK // ?
+	CARET // ^ (infix xor, prefix complement)
+	SHL   // <<
+	SHR   // >>
 
 	// arithmeticy bits
 	NEG // -
@@ -117,6 +120,9 @@ var tokens = [...]string{
 
 	PIPE:  "|",
 	AMP:   "&",
+	CARET: "^",
+	SHL:   "<<",
+	SHR:   ">>",
 	BANG:  "!",
 	QMARK: "?",
 

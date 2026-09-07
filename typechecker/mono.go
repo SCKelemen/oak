@@ -170,6 +170,21 @@ func positionKey(tok token.Token) string {
 	return fmt.Sprintf("%s:%d:%d:%s", tok.SemanticContext, tok.Line, tok.Column, tok.Literal)
 }
 
+// recordShiftWidth notes the operand width of one shift expression, so the
+// backend emits the right checked helper without re-deriving types.
+func (tc *TypeChecker) recordShiftWidth(expr *ast.InfixExpression, width int) {
+	if tc.shiftWidths == nil {
+		tc.shiftWidths = make(map[string]int)
+	}
+	tc.shiftWidths[positionKey(expr.Token)] = width
+}
+
+// ShiftWidth reports the recorded operand width of a shift expression.
+func (tc *TypeChecker) ShiftWidth(tok token.Token) (int, bool) {
+	width, ok := tc.shiftWidths[positionKey(tok)]
+	return width, ok
+}
+
 // recordMatchResolution notes which instantiation a match scrutinee has.
 func (tc *TypeChecker) recordMatchResolution(match *ast.MatchExpression, name string, args []Type) {
 	if match == nil {

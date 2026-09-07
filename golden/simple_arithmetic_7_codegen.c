@@ -62,6 +62,13 @@ static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }
 #define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])
 /* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */
 static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }
+
+/* checked shifts: a count reaching the operand width traps, never UB
+   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */
+#define OAK_SHIFT_HELPERS(T, W) \
+  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \
+  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }
+OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)
 #define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */

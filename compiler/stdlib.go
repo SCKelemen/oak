@@ -34,6 +34,8 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 	}
 	if err := transformSyntax(reflect.ValueOf(lib.Root), func(e ast.Expression) (ast.Expression, error) {
 		switch n := e.(type) {
+		case *ast.InfixExpression:
+			n.Token.SemanticContext = "std"
 		case *ast.MatchExpression:
 			n.Token.SemanticContext = "std"
 		case *ast.VariantExpression:

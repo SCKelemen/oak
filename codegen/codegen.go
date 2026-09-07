@@ -1328,7 +1328,7 @@ var runtimeBuiltins = map[string]string{
 // can wrap them; the helper reads only v.len bytes and fails closed.
 func (cg *CodeGenerator) emitUtf8Helper() {
 	viewType := cg.emitViewType("u8")
-	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n\n/* checked shifts: a count reaching the operand width traps, never UB\n   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */\n#define OAK_SHIFT_HELPERS(T, W) \\\n  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \\\n  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }\nOAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
 	cg.write(fmt.Sprintf("static Bool oak_is_valid_utf8(%s v) {\n", viewType))
 	cg.write("  u64 i = 0;\n")
 	cg.write("  u64 n = (u64)v.len;\n")
@@ -1612,6 +1612,26 @@ func (cg *CodeGenerator) emitStatementExpression(expr ast.Expression, tc *typech
 
 // emitInfixExpression emits C code for an infix expression (as fragment)
 func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *typechecker.TypeChecker) {
+	// Shifts route through the checked helpers (oak_shl_u32 and friends):
+	// the operand width was recorded by the checker; without a record the
+	// emission fails closed rather than guessing a width.
+	if expr.Operator == "<<" || expr.Operator == ">>" {
+		width, known := tc.ShiftWidth(expr.Token)
+		if !known {
+			cg.output.WriteString("OAK_UNSUPPORTED_SHIFT")
+			return
+		}
+		helper := "oak_shl_u"
+		if expr.Operator == ">>" {
+			helper = "oak_shr_u"
+		}
+		cg.output.WriteString(fmt.Sprintf("%s%d( ", helper, width))
+		cg.emitExpressionFragment(expr.Left, tc)
+		cg.output.WriteString(", ")
+		cg.emitExpressionFragment(expr.Right, tc)
+		cg.output.WriteString(" )")
+		return
+	}
 	// C style: space around operators, parentheses for grouping
 	cg.output.WriteString("( ")
 	cg.emitExpressionFragment(expr.Left, tc)
@@ -1647,7 +1667,13 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 	case *ast.InfixExpression:
 		cg.emitInfixExpression(e, tc)
 	case *ast.PrefixExpression:
-		cg.output.WriteString(fmt.Sprintf("%s", e.Operator))
+		operator := e.Operator
+		// Oak's unary ^ (bitwise complement, Go-style) is C's ~; C's
+		// unary ^ does not exist.
+		if operator == "^" {
+			operator = "~"
+		}
+		cg.output.WriteString(operator)
 		cg.output.WriteString("( ")
 		cg.emitExpressionFragment(e.Right, tc)
 		cg.output.WriteString(" )")

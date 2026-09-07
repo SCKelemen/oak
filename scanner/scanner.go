@@ -120,6 +120,10 @@ func (s *Scanner) NextToken() token.Token {
 			ch := s.current
 			s.readChar()
 			tok = token.Token{TokenKind: token.LEQ, Literal: string(ch) + string(s.current), Line: line, Column: column}
+		} else if s.peekRune() == '<' {
+			ch := s.current
+			s.readChar()
+			tok = token.Token{TokenKind: token.SHL, Literal: string(ch) + string(s.current), Line: line, Column: column}
 		} else {
 			tok = newTokenWithPos(token.LCHEV, s.current, line, column)
 		}
@@ -128,6 +132,10 @@ func (s *Scanner) NextToken() token.Token {
 			ch := s.current
 			s.readChar()
 			tok = token.Token{TokenKind: token.GEQ, Literal: string(ch) + string(s.current), Line: line, Column: column}
+		} else if s.peekRune() == '>' {
+			ch := s.current
+			s.readChar()
+			tok = token.Token{TokenKind: token.SHR, Literal: string(ch) + string(s.current), Line: line, Column: column}
 		} else {
 			tok = newTokenWithPos(token.RCHEV, s.current, line, column)
 		}
@@ -184,6 +192,8 @@ func (s *Scanner) NextToken() token.Token {
 		}
 	case '%':
 		tok = newTokenWithPos(token.REM, s.current, line, column)
+	case '^':
+		tok = newTokenWithPos(token.CARET, s.current, line, column)
 	case '&':
 		if s.peekRune() == '&' {
 			ch := s.current
@@ -306,6 +316,26 @@ func (s *Scanner) readWord() string {
 
 func (s *Scanner) readNumber() string {
 	position := s.head
+
+	// 0x/0b sugar for the radix form: 0xFF reads as 16rFF, 0b1010 as
+	// 2r1010 (docs/spec/10-syntax.md). The canonical radix spelling stays.
+	if s.current == '0' && (s.peekRune() == 'x' || s.peekRune() == 'X' || s.peekRune() == 'b' || s.peekRune() == 'B') {
+		radix := "16"
+		if s.peekRune() == 'b' || s.peekRune() == 'B' {
+			radix = "2"
+		}
+		s.readChar() // past 0
+		s.readChar() // past x/b
+		digitsStart := s.head
+		for s.isRadixTailChar(s.current) {
+			s.readChar()
+		}
+		digits := stripUnderscores(s.input[digitsStart:s.head])
+		if len(digits) == 0 {
+			return s.input[position:s.head]
+		}
+		return radix + "r" + digits
+	}
 
 	for util.IsDigit(s.current) {
 		s.readChar()
