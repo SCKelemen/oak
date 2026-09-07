@@ -1,0 +1,6 @@
+{
+  "source": "publication.oak",
+  "initial": "initial",
+  "step": "step",
+  "invariant": "safe"
+}

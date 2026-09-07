@@ -1,0 +1,73 @@
+name: Verification experiment (opt-in)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [specification]
+
+permissions:
+  contents: read
+
+# Commit-message opt-in also works before this workflow reaches the default
+# branch. Ordinary pushes create skipped jobs and install/run no solvers.
+jobs:
+  soundness:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[verify-poc]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Lean
+        run: bash experiments/verification-poc/ci/install-tools.sh lean
+      - name: Check abstract RUP/deletion soundness
+        working-directory: experiments/verification-poc
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/soundness
+          lean --version | tee build/soundness/tool-version.txt
+          lean -DwarningAsError=true proof/RUPSoundness.lean 2>&1 | tee build/soundness/lean.log
+      - name: Retain proof and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-soundness-${{ github.sha }}
+          path: |
+            experiments/verification-poc/proof/
+            experiments/verification-poc/build/soundness/
+          retention-days: 30
+  solvers:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[verify-poc]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned backends
+        run: bash experiments/verification-poc/ci/install-tools.sh all
+      - name: Check native experiment and publication correspondence
+        working-directory: experiments/verification-poc
+        run: go test -v -race ./...
+      - name: Run external verification suite
+        working-directory: experiments/verification-poc
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o build/oak-verify .
+          ./build/oak-verify suite --timeout 120 --tla-jar "$PWD/build/tools/tla2tools.jar" --out build/integration
+      - name: Retain models, solver logs, certificates and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-solvers-${{ github.sha }}
+          path: |
+            experiments/verification-poc/build/integration/
+            experiments/verification-poc/build/tools/provenance.json
+            experiments/verification-poc/tools.lock.json
+          retention-days: 30

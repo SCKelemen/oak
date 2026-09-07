@@ -82,7 +82,7 @@ func runSuite(examples,out,jar string,timeout time.Duration)(*SuiteResult,error)
     if e:=os.MkdirAll(out,0755);e!=nil{return nil,e};attempt,e:=os.MkdirTemp(out,"attempt-");if e!=nil{return nil,e}
     r:=&SuiteResult{Format:"oak-go-integration-1",Passed:true,Attempt:attempt,Tools:map[string]ToolStatus{},Models:map[string]map[string]BackendResult{}}
     for _,name:=range []string{"go","lean","z3","cadical","tlc"}{r.Tools[name]=probe(name,attempt,jar,timeout);r.Passed=r.Passed&&r.Tools[name].Available}
-    for _,test:=range []struct{name string;safe bool;bound int}{{"enum",true,3},{"enum-broken",false,3},{"counter",true,5},{"counter-broken",false,5},{"wrap",true,3}}{
+    for _,test:=range []struct{name string;safe bool;bound int}{{"enum",true,3},{"enum-broken",false,3},{"counter",true,5},{"counter-broken",false,5},{"wrap",true,3},{"publication",true,3},{"publication-relaxed",false,3}}{
         results:=map[string]BackendResult{};r.Models[test.name]=results;m,e:=loadModel(filepath.Join(examples,test.name+".json"));if e!=nil{results["frontend"]=BackendResult{Reason:e.Error()};r.Passed=false;continue}
         folder:=filepath.Join(attempt,test.name);if e:=emit(m,folder);e!=nil{return nil,e}
         for _,tool:=range []string{"lean","z3","cadical","tlc"}{if !r.Tools[tool].Available{results[tool]=BackendResult{ExpectedSafety:test.safe,Reason:r.Tools[tool].Reason};r.Passed=false;continue};result:=runBackend(m,tool,folder,test.safe,test.bound,timeout,jar,execute);results[tool]=result;r.Passed=r.Passed&&result.Passed}

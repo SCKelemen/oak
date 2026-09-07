@@ -175,3 +175,32 @@ The current command replaces them with the typed finite model, LRAT, and trace
 pipeline, including closed-set checking; it does not accept the old
 `oak-evidence-1` certificate format.
 No production compiler, root dependency manifest, or workflow was changed.
+
+## Next-stage validation projects
+
+The suite now also includes [bounded release/acquire publication](examples/native/publication.md)
+and its weakened-ordering counterexample. Go tests compare the model's reachable
+prefixes with Oak's `semir.MemoryExecution` happens-before and race queries.
+
+[Abstract RUP/deletion soundness](proof/README.md) is specified and proved in
+Lean separately from the Go implementation. The principal theorem is
+`OakVerification.accepted_unsatisfiable`. It does not claim that the Go checker,
+its parser, or the source-to-CNF translator has been refined to that specification.
+
+The opt-in workflow is `.github/workflows/verification-poc.yml`. Use its manual
+`workflow_dispatch` trigger once available on the default branch, or push a
+commit to `specification` whose message contains `[verify-poc]`. Ordinary pushes
+skip its jobs and install no solver toolchains. The marker also permits explicit
+empty-commit validation runs without changing model files.
+
+The workflow has separate soundness and external-solver jobs. It installs the
+pinned toolchains, checks Go regressions and memory-model correspondence, runs
+all seven model projects, and retains generated models, solver outputs, proof
+certificates, replayed counterexamples, tool provenance, and Lean diagnostics as
+30-day artifacts even after a failed check. Lean warnings are errors, so a proof
+hole cannot silently turn the soundness job green.
+
+`bash ci/install-tools.sh all` provides the same explicit Linux provisioning;
+source `build/tools/env.sh` afterward. Lean and TLC downloads are hash-checked,
+CaDiCaL is built from its pinned commit, and the older Z3 release is version-pinned
+with its fetched archive hash recorded. The verifier itself never installs tools.

@@ -1,0 +1,6 @@
+{
+  "source": "publication-relaxed.oak",
+  "initial": "initial",
+  "step": "step",
+  "invariant": "safe"
+}

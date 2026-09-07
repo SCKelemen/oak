@@ -1,0 +1,9 @@
+// One payload write, one flag publication, one observation of that flag write.
+// ordered records the HB edge from the payload write to the flag observation.
+State: type = { written: Bool, published: Bool, observed: Bool, ordered: Bool }
+initial: (s: State): Bool = !s.written && !s.published && !s.observed && !s.ordered
+safe: (s: State): Bool = (!s.published || s.written) && (!s.observed || s.published) && (s.ordered == s.observed)
+write_payload: (s: State, t: State): Bool = !s.written && t.written && t.published == s.published && t.observed == s.observed && t.ordered == s.ordered
+publish_flag: (s: State, t: State): Bool = s.written && !s.published && t.published && t.written == s.written && t.observed == s.observed && t.ordered == s.ordered
+observe_flag: (s: State, t: State): Bool = s.published && !s.observed && t.observed && t.ordered && t.written == s.written && t.published == s.published
+step: (s: State, t: State): Bool = write_payload(s, t) || publish_flag(s, t) || observe_flag(s, t)

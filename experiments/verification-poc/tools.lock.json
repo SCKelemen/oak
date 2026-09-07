@@ -1,8 +1,24 @@
 {
-  "go": {"version": "1.27.1", "source": "../../go.mod"},
-  "lean": {"version": "4.33.1", "source": "https://github.com/leanprover/lean4/releases/tag/v4.33.1"},
-  "z3": {"version": "4.13.4", "source": "https://github.com/Z3Prover/z3/releases/tag/z3-4.13.4"},
-  "cadical": {"version": "2.1.3", "commit": "f13d74439a5b5c963ac5b02d05ce93a8098018b8", "source": "https://github.com/arminbiere/cadical/tree/rel-2.1.3"},
+  "go": {
+    "version": "1.27.1",
+    "source": "../../go.mod"
+  },
+  "lean": {
+    "version": "4.33.1",
+    "source": "https://github.com/leanprover/lean4/releases/tag/v4.33.1",
+    "archive": "https://github.com/leanprover/lean4/releases/download/v4.33.1/lean-4.33.1-linux.zip",
+    "sha256": "0376ac87487246b40dd077268c097e701f552e94c6d020d2373b50c7444fa22f"
+  },
+  "z3": {
+    "version": "4.13.4",
+    "source": "https://github.com/Z3Prover/z3/releases/tag/z3-4.13.4",
+    "archive": "https://github.com/Z3Prover/z3/releases/download/z3-4.13.4/z3-4.13.4-x64-glibc-2.35.zip"
+  },
+  "cadical": {
+    "version": "2.1.3",
+    "commit": "f13d74439a5b5c963ac5b02d05ce93a8098018b8",
+    "source": "https://github.com/arminbiere/cadical/tree/rel-2.1.3"
+  },
   "tlc": {
     "version": "1.8.0",
     "source": "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar",
