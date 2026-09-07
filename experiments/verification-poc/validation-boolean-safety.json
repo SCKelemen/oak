@@ -1,0 +1,92 @@
+{
+  "format": "oak-boolean-safety-validation-1",
+  "date": "2026-09-07",
+  "commit": "943aa8dd523552e1887de346f9946d89a8e17662",
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34163677156",
+  "soundness_job": 101870414202,
+  "solvers_job": 101870414373,
+  "passed": true,
+  "implementation": "Go; Lean formal proofs and independent checker; shell CI orchestration; no Python dependency",
+  "lean_version": "4.33.1",
+  "warnings_as_errors": true,
+  "theorems": {
+    "eval_rename": {
+      "claim": "Input-index substitution preserves expression evaluation.",
+      "axioms": [
+        "propext"
+      ]
+    },
+    "checkSafety_sound": {
+      "claim": "Accepted base and preservation refutations imply the invariant holds in every finitely reachable state of the Boolean model.",
+      "axioms": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "checkTexts_sound": {
+      "claim": "Successful checking of both ASCII LRAT proof texts implies reachable-state safety of the supplied decoded model.",
+      "axioms": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    }
+  },
+  "go_tests": {
+    "passed": true,
+    "race": true,
+    "native_models": [
+      "publication",
+      "publication-relaxed"
+    ],
+    "state_predicate_comparisons": 64,
+    "transition_comparisons": 512,
+    "conditional_comparisons": 16,
+    "numeric_model_rejection": true
+  },
+  "model_gate": {
+    "safe_models_accepted": 1,
+    "unsafe_models_rejected": 1,
+    "wrong_models_rejected": 1,
+    "invalid_suffixes_rejected": 2,
+    "malformed_models_rejected": 3,
+    "malformed_cases": [
+      "non-backward child reference",
+      "input outside field domain",
+      "expanded expression exceeds 4096 nodes"
+    ],
+    "initial_queries": "Both reported SAT by CaDiCaL; not a verified witness.",
+    "safe_model": {
+      "name": "publication",
+      "source_sha256": "81602879a11361acd5b3d3a1cab81897bda2057061194390760da1f7e92aa3c2",
+      "semantic_digest": "c08fb6c2c855f07c299a96f0e368e8ae78635fbabb49d1aaa2a9eb040ed65e84"
+    },
+    "unsafe_model": {
+      "name": "publication-relaxed",
+      "source_sha256": "1c4a68ad794ba885ba47722eb154c06c10f1880f6c4da1d110d7ca1eff6b109e",
+      "semantic_digest": "a5635fc33eeb8335616606d14779557df0c557ddba45679ec223377baa6820b3"
+    }
+  },
+  "previous_regressions": {
+    "decoded_rup_cases": 13019,
+    "text_rup_cases": 2571,
+    "boolean_expressions": 3249,
+    "input_valuations": 12996,
+    "real_dimacs_certificates": 11,
+    "real_boolean_refutations": 6
+  },
+  "scope": {
+    "claim": "decoded-boolean-model",
+    "proved": "Boolean transition-model semantics, obligation construction, input renaming, invariant induction, and acceptance soundness.",
+    "not_proved": [
+      "Oak parsing, type checking, frontend/export correspondence, Boolean desugaring, or Go implementation correctness.",
+      "Liveness, fairness, deadlock freedom, nonempty initial states, arithmetic, enums, or a self-hosted Oak proof kernel.",
+      "Bundle metadata authenticity or correspondence to an independently supplied Oak source file.",
+      "Lean compiler and runtime correctness."
+    ],
+    "source_identity": "Source and semantic digests are metadata from the Go exporter; independently supplied bundles are not authenticated by the Lean checker."
+  },
+  "repository_ci": "CI, Standard library, Formal Verification, and Golden File Verification all passed at the tested commit.",
+  "artifacts": "Proof diagnostics, source bundles, CNFs, LRAT proofs, hashes, and structured receipts retained for 30 days in workflow artifacts."
+}

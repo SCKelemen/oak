@@ -39,7 +39,9 @@ liveness, fairness, termination, or absence of deadlock.
 `BooleanModel.checkTexts_sound` connects successful LRAT text checking to that
 same reachability theorem for the decoded model. Checking reconstructs both CNFs
 from the model rather than reading back the solver's DIMACS files. Solver search
-is outside the trusted mathematical argument.
+is outside the trusted mathematical argument. The two acceptance theorems print
+only `propext`, `Classical.choice`, and `Quot.sound` as kernel assumptions; input
+renaming uses `propext`. No project-specific axiom or proof hole is used.
 
 An empty initial-state set makes safety vacuous. The example gate separately
 requires CaDiCaL to report satisfiable initial states for both examples, but that
@@ -94,3 +96,9 @@ attempt starts with a failed report, preventing stale success after a failed ret
 All additions remain in the removable verification experiment. This milestone
 adds a formally specified transition model and checked invariant reasoning; it
 does not claim a self-hosted Oak kernel or a verified Oak implementation yet.
+
+[The formal proof and real model gate passed](https://github.com/SCKelemen/oak/actions/runs/34163677156).
+The safe model was accepted; the unsafe model, wrong-model proof pairing, two
+corruptions, and three malformed models were rejected. The Go export tests and
+repository race tests also passed. `../validation-boolean-safety.json` records the
+tested commit, assumptions, test scope, and remaining correspondence boundaries.
