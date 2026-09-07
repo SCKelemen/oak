@@ -2,6 +2,7 @@ import Oak.TypeLattice
 import Oak.Effects
 import Oak.MemoryOrder
 import Oak.HappensBefore
+import Oak.SequentialConsistency
 import Oak.Borrowing
 import Oak.BorrowRegions
 import Oak.Reborrow
