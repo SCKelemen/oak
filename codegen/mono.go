@@ -53,6 +53,9 @@ func specializeADT(template *ast.ADTType, inst typechecker.Instantiation) (*ast.
 				Token:    recordLit.Token,
 				EndToken: recordLit.EndToken,
 				Fields:   make(map[string]ast.Expression, len(recordLit.Fields)),
+				// Declared layout (packed/align) is part of the template and
+				// carries to every instantiation unchanged.
+				Layout: recordLit.Layout,
 			}
 			for _, field := range recordLit.FieldOrder {
 				substituted, okField := typechecker.SubstituteTypeAST(field.Value, bindings)

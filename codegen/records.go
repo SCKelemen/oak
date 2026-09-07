@@ -112,9 +112,25 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 		fields = append(fields, fieldRep)
 	}
 
+	// The declared layout spec (struct(packed), struct(align: N)) routes to
+	// the spec-aware placement; the packed-atomic combination the checker
+	// rejects also fails closed here (misaligned _Atomic is UB).
+	spec := semir.RecordLayoutSpec{}
+	if recordLit.Layout != nil {
+		spec.Packed = recordLit.Layout.Packed
+		spec.Align = recordLit.Layout.Align
+	}
+	if spec.Packed {
+		for _, field := range recordLit.FieldOrder {
+			if _, isAtomic := atomicTypeCarrier(field.Value); isAtomic {
+				supported = false
+			}
+		}
+	}
+
 	var layout semir.Representation
 	if supported {
-		computed, err := semir.NaturalRecordLayout(fields)
+		computed, err := semir.RecordLayoutWithSpec(fields, spec)
 		if err != nil {
 			supported = false
 		} else {
@@ -144,12 +160,26 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 		}
 		cg.write(fmt.Sprintf("  %s %s;\n", cg.parseTypeExpression(field.Value), field.Name))
 	}
-	cg.write(fmt.Sprintf("} %s;\n", cName))
+	// GNU attribute syntax (GCC/Clang, the recorded C targets): the layout
+	// attributes sit between the member list and the typedef name.
+	attributes := ""
+	if spec.Packed {
+		attributes += " __attribute__((packed))"
+	}
+	if spec.Align != 0 {
+		attributes += fmt.Sprintf(" __attribute__((aligned(%d)))", spec.Align)
+	}
+	cg.write(fmt.Sprintf("}%s %s;\n", attributes, cName))
 
-	// The proven layout (Oak.RecordLayoutRefinement), enforced at C compile
-	// time: a mismatch makes the array type negative and cc fails.
+	// The proven layout (Oak.RecordLayoutRefinement / Oak.LayoutSpec),
+	// enforced at C compile time: a mismatch makes the array type negative
+	// and cc fails. Declared layout also pins the record's alignment.
 	cg.write(fmt.Sprintf("typedef char oak_layout_size_%s[ (sizeof(%s) == %du) ? 1 : -1 ];\n",
 		typeName, cName, layout.Size))
+	if recordLit.Layout != nil {
+		cg.write(fmt.Sprintf("typedef char oak_layout_align_%s[ (_Alignof(%s) == %du) ? 1 : -1 ];\n",
+			typeName, cName, layout.Alignment))
+	}
 	for _, placed := range layout.Fields {
 		cg.write(fmt.Sprintf("typedef char oak_layout_off_%s_%s[ (offsetof(%s, %s) == %du) ? 1 : -1 ];\n",
 			typeName, placed.Name, cName, placed.Name, placed.Offset))

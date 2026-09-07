@@ -19,7 +19,7 @@ A value satisfying this record meaning has an `x` value of type `f32` and a `y` 
 
 The abstract semantic shape is about **member identity and member types**. It does not imply byte offsets, padding, packing, total size, ABI classification, or field alignment.
 
-Named record declarations are nominal in ordinary value positions. Two named records do not become interchangeable merely because they have the same semantic members.
+Nominal identity rides on the `struct` keyword (§5, `20-types.md` §5.1): two named structs do not become interchangeable merely because they have the same semantic members. A named semantic record like `XY` is a structural, order-free shape.
 
 ## 2. Source order is preserved, but is not shape identity
 
@@ -119,11 +119,23 @@ Stored: type = struct {
 }
 ```
 
-`Shape` states semantic members only.
+`Shape` states semantic members only. It is a structural, order-free
+*shape*: any record with those fields satisfies it, in any field order.
 
-`Stored` additionally states that runtime storage follows the ordinary struct representation policy.
+`Stored` additionally states that runtime storage follows the ordinary
+struct representation policy — and that commitment brings **nominal
+identity** (`20-types.md` §5.1): two named structs are the same type only
+when they are the same declaration, even with identical fields. So
 
-Both can have the same semantic member set. That does not collapse their nominal identities, and it does not make the representation choice part of `Shape`.
+```oak
+u8_ab: type = { a, b: u8 }             // shape (grouped names: a and b, both u8)
+
+AB: type = struct { a: u8, b: u8 }
+BA: type = struct { b: u8, a: u8 }     // different layout, different type
+```
+
+`AB` and `BA` are distinct nominal types with distinct layouts, and both
+satisfy `u8_ab`. The representation choice is never part of `Shape`.
 
 This is the earlier Oak distinction between the **type layer** and the **layout layer**, made explicit in the modern Semantic IR.
 
@@ -166,6 +178,61 @@ This algorithm is not a claim that every target ABI uses this layout. Packed rec
 
 The Semantic IR implementation is `NaturalRecordLayout` in `semir/layout.go`.
 
+## 6a. Declared layout specs: `struct(packed)` and `struct(align: N)`
+
+A struct declaration may carry an explicit layout spec as a parenthesized
+clause — no attribute syntax, no annotation line:
+
+```oak
+Wire: type = struct(packed) {
+  magic: u32
+  kind: u8
+  length: u16
+}
+
+Line: type = struct(align: 64) {
+  cell: Atomic[u32]
+}
+```
+
+The clause vocabulary is closed: `packed`, `align: N` (a nonzero
+power-of-two `u32` literal), or both, comma-separated.
+
+Semantics (`semir.RecordLayoutWithSpec`, the transliteration of
+`Oak.LayoutSpec`):
+
+- **`packed`** places every field at the running sum of the preceding
+  sizes — dense, no inter-field padding, record alignment 1 unless raised
+  by an explicit `align`. Packed placement is order- and
+  identity-preserving and contiguous (each field ends exactly where the
+  next begins), so the pre-alignment size is exactly the sum of the field
+  sizes (proven: `Oak.LayoutSpec.placePacked_dense`,
+  `packed_cursor_exact`).
+- **`align: N`** raises the record's alignment to `N` without moving any
+  field: placement stays the natural placement by definition
+  (`raise_keeps_offsets`), and only the final size changes, rounded up to
+  `N` (`raisedSize_aligned`). `N` below the natural alignment is
+  rejected — under-alignment has no coherent meaning; packing, not
+  under-alignment, removes padding.
+- A **packed record cannot contain atomic storage**: dense placement can
+  land an `Atomic[T]` cell unaligned, and misaligned C11 `_Atomic` access
+  is undefined behavior. The checker rejects the declaration and the
+  backend independently fails closed.
+- The spec is part of a record template and carries to every
+  instantiation (`Slot[T]: type = struct(align: 16) { value: T }`).
+- Nesting composes through the ordinary representation registry: a packed
+  record used as a field contributes its dense size and alignment 1, so
+  a `crc` field after a 7-byte packed header sits at offset 7.
+
+The emitted C carries the layout on the typedef
+(`__attribute__((packed))`, `__attribute__((aligned(N)))` — GCC/Clang,
+the recorded C targets) and extends the layout assertions with
+`_Alignof`: the C compiler ratifies size, every offset, **and** alignment
+of every declared-layout record in every generated artifact.
+
+All spec arithmetic remains uint32-overflow-checked: an oversized packed
+or aligned record fails, never truncates.
+
 ## 7. Explicit representation variants
 
 Future representation forms should extend the representation axis rather than changing record semantics.
@@ -183,7 +250,7 @@ persistent/on-disk layout
 vector/SIMD layout
 ```
 
-Exact surface syntax for those policies is intentionally not frozen yet. The important semantic rule is that a representation choice is explicit and independently checkable.
+Packed structs and raised alignment are frozen and implemented (§6a). Exact surface syntax for the remaining policies is intentionally not frozen yet. The important semantic rule is that a representation choice is explicit and independently checkable.
 
 A future separate representation declaration may allow one semantic type to be related to a specialized physical form. Such a feature must define and verify the conversion/refinement relation rather than assuming semantic fields and physical fields are identical.
 

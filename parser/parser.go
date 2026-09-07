@@ -1669,8 +1669,17 @@ func (p *Parser) parseRecordType() ast.Expression {
 			p.peekError(token.IDENT)
 			return nil
 		}
-		fieldToken := p.currentToken
-		fieldName := fieldToken.Literal
+		// Grouped field names share one type: { a, b: u8 } declares both a
+		// and b as u8, in written order (docs/spec/40-records.md §1). A bare
+		// name followed by ',' has no other reading in type position.
+		fieldTokens := []token.Token{p.currentToken}
+		for p.peekTokenIs(token.COMMA) {
+			p.nextToken() // to ','
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			fieldTokens = append(fieldTokens, p.currentToken)
+		}
 
 		if !p.expectPeek(token.COLON) {
 			return nil
@@ -1681,9 +1690,11 @@ func (p *Parser) parseRecordType() ast.Expression {
 		if fieldType == nil {
 			return nil
 		}
-		if !record.AddField(fieldToken, fieldName, fieldType) {
-			p.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldName))
-			return nil
+		for _, fieldToken := range fieldTokens {
+			if !record.AddField(fieldToken, fieldToken.Literal, fieldType) {
+				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldToken.Literal))
+				return nil
+			}
 		}
 
 		// parseTypeExpression() leaves currentToken at the last token of the field type.
@@ -1729,11 +1740,21 @@ func (p *Parser) parseRecordType() ast.Expression {
 	return record
 }
 
-// Parse struct type: struct{ field: Type, field2: Type2, ... }
+// Parse struct type: struct{ field: Type, ... } with an optional declared
+// layout spec: struct(packed) { ... }, struct(align: 64) { ... },
+// struct(packed, align: 4) { ... } (docs/spec/40-records.md).
 func (p *Parser) parseStructType() ast.Expression {
 	// currentToken is STRUCT
 	structToken := p.currentToken
 	p.nextToken() // consume struct
+
+	var layout *ast.RecordLayoutSpec
+	if p.currentTokenIs(token.LPAREN) {
+		layout = p.parseRecordLayoutSpec()
+		if layout == nil {
+			return nil
+		}
+	}
 
 	// Expect opening brace
 	if !p.currentTokenIs(token.LBRACE) {
@@ -1752,8 +1773,69 @@ func (p *Parser) parseStructType() ast.Expression {
 	// indicates it's a struct type
 	if rl, ok := record.(*ast.RecordLiteral); ok {
 		rl.Token = structToken // Use struct token instead of brace token
+		rl.Layout = layout
 	}
 	return record
+}
+
+// parseRecordLayoutSpec parses the parenthesized layout clause after
+// `struct`: comma-separated entries, each either the word `packed` or
+// `align: <integer literal>`. Anything else is a parse error — the layout
+// vocabulary is closed. On success the cursor sits on the token after `)`.
+func (p *Parser) parseRecordLayoutSpec() *ast.RecordLayoutSpec {
+	spec := &ast.RecordLayoutSpec{}
+	p.nextToken() // consume (
+	for {
+		if !p.currentTokenIs(token.IDENT) {
+			p.addErrorAtCurrentToken("expected 'packed' or 'align' in struct layout spec")
+			return nil
+		}
+		switch p.currentToken.Literal {
+		case "packed":
+			if spec.Packed {
+				p.addErrorAtCurrentToken("duplicate 'packed' in struct layout spec")
+				return nil
+			}
+			spec.Packed = true
+			p.nextToken()
+		case "align":
+			if spec.Align != 0 {
+				p.addErrorAtCurrentToken("duplicate 'align' in struct layout spec")
+				return nil
+			}
+			if !p.peekTokenIs(token.COLON) {
+				p.addErrorAtCurrentToken("expected ':' after 'align' in struct layout spec")
+				return nil
+			}
+			p.nextToken() // to :
+			if !p.peekTokenIs(token.INT) {
+				p.addErrorAtCurrentToken("expected integer alignment after 'align:'")
+				return nil
+			}
+			p.nextToken() // to the integer
+			value, err := strconv.ParseUint(p.currentToken.Literal, 10, 32)
+			if err != nil || value == 0 || value&(value-1) != 0 {
+				p.addErrorAtCurrentToken("struct alignment must be a nonzero power-of-two u32")
+				return nil
+			}
+			spec.Align = uint32(value)
+			p.nextToken()
+		default:
+			p.addErrorAtCurrentToken("expected 'packed' or 'align' in struct layout spec")
+			return nil
+		}
+		if p.currentTokenIs(token.COMMA) {
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	if !p.currentTokenIs(token.RPAREN) {
+		p.peekError(token.RPAREN)
+		return nil
+	}
+	p.nextToken() // consume )
+	return spec
 }
 
 // Parse struct literal: struct{ field: value, ... } (value context)

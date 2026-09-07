@@ -126,16 +126,34 @@ The intended rule is: `T` satisfies `XY` when it provides fields with the requir
 
 Shape satisfaction is a **constraint relation**, not global width subtyping. Its compiler implementation and formal laws must be completed before this surface use is considered implemented.
 
-### 5.1 Nominal identity of declared records
+### 5.1 Nominal identity of declared structs
 
-A **declared** record type is a nominal island: two named record types are
+A **declared struct** type is a nominal island: two named struct types are
 the same type only when they are the same declaration (or the same
 template instantiation) — `Idx[Thread]` and `Idx[Timer]` share a shape and
-are distinct. Anonymous record shapes (literals, structural constraints)
-remain structural, and shape *constraints* (§9 of `10-syntax.md`) remain
-satisfaction checks, not identity. This is what makes phantom-parameterized
-records (typed indices, tagged handles) sound: the phantom does its work
-in the name.
+are distinct. This is what makes phantom-parameterized records (typed
+indices, tagged handles) sound: the phantom does its work in the name.
+
+The nominal commitment rides on the `struct` keyword, because `struct`
+commits to an ordered concrete representation. A **semantic record type**
+(`u8_ab: type = { a, b: u8 }`, named or not) remains a structural,
+order-free *shape*: any record with those fields satisfies it, including
+either ordered struct over them —
+
+```oak
+u8_ab: type = { a, b: u8 }             // shape: order-free
+
+AB: type = struct { a: u8, b: u8 }     // ordered layout, nominal
+BA: type = struct { b: u8, a: u8 }     // different layout, different type
+
+sum: (v: u8_ab): u8 = v.a + v.b        // AB and BA both satisfy u8_ab
+```
+
+`AB` and `BA` never substitute for each other (nominal, and their layouts
+differ), but both flow into `u8_ab` positions. Anonymous shapes and shape
+*constraints* (§9 of `10-syntax.md`) remain satisfaction checks, not
+identity. Grouped field names (`a, b: u8`) declare each name at the shared
+type, in written order.
 
 ## 6. Structs select runtime product representation
 

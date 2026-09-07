@@ -149,7 +149,17 @@ type RecordLiteral struct {
 	EndToken   token.Token // } token (for end position)
 	Fields     map[string]Expression
 	FieldOrder []RecordField
-	TypeName   *Identifier // optional type name for type-qualified literals: TypeName{ ... }
+	TypeName   *Identifier       // optional type name for type-qualified literals: TypeName{ ... }
+	Layout     *RecordLayoutSpec // optional declared layout: struct(packed), struct(align: 64)
+}
+
+// RecordLayoutSpec is the source-declared layout discipline of a struct type
+// (docs/spec/40-records.md): Packed forbids padding between fields, Align
+// raises the record's alignment (0 means natural). Semantics and arithmetic
+// live in semir.RecordLayoutWithSpec; this node only carries the declaration.
+type RecordLayoutSpec struct {
+	Packed bool
+	Align  uint32
 }
 
 // AddField appends a uniquely named field in declaration order, rejecting

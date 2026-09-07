@@ -291,7 +291,9 @@ func (tc *TypeChecker) instantiateRecordTemplate(template *ast.ADTType, args []T
 		fields[field.Name] = fieldType
 		order = append(order, field.Name)
 	}
-	instantiated := &RecordType{Name: mangled, Order: order, Fields: fields}
+	// Template instantiations inherit the template's representation
+	// commitment: struct templates yield nominal structs (Idx[Thread]).
+	instantiated := &RecordType{Name: mangled, Order: order, Fields: fields, Struct: recordLit.Token.TokenKind == token.STRUCT}
 	if tc.recordInstantiationCache == nil {
 		tc.recordInstantiationCache = make(map[string]*RecordType)
 	}

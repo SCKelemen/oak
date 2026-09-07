@@ -108,7 +108,7 @@ func (sub Substitution) Apply(typ Type) Type {
 		for name, fieldType := range t.Fields {
 			newFields[name] = sub.Apply(fieldType)
 		}
-		return &RecordType{Fields: newFields, Name: t.Name, Order: t.Order}
+		return &RecordType{Fields: newFields, Name: t.Name, Order: t.Order, Struct: t.Struct}
 	case *FunctionType:
 		// Apply substitution to parameter and return types
 		newParams := make([]Type, len(t.Parameters))
@@ -328,10 +328,11 @@ func (u *Unifier) unifyFunction(fn1, fn2 *FunctionType) Substitution {
 }
 
 func (u *Unifier) unifyRecord(rec1, rec2 *RecordType) Substitution {
-	// Declared records are nominal: two named record types unify only by
+	// Declared STRUCTS are nominal: two named struct types unify only by
 	// name (Idx[Thread] never unifies with Idx[Timer], whatever the
-	// shape); anonymous shapes stay structural.
-	if rec1.Name != "" && rec2.Name != "" && rec1.Name != rec2.Name {
+	// shape). Semantic record types stay structural shapes — a struct
+	// satisfies a record shape whatever its field order.
+	if rec1.Name != "" && rec2.Name != "" && rec1.Struct && rec2.Struct && rec1.Name != rec2.Name {
 		u.errors = append(u.errors, fmt.Sprintf("distinct record types %s and %s", rec1.Name, rec2.Name))
 		return nil
 	}

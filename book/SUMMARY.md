@@ -6,6 +6,7 @@
 
 - [Values and Places](foundations/values-and-places.md)
 - [The Type Lattice](foundations/type-lattice.md)
+- [Layout: Alignment, Packing, and Cache Geometry](foundations/layout.md)
 
 ## Hierarchies
 

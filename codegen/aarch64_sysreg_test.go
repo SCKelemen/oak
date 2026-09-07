@@ -103,7 +103,11 @@ fn read() -> u64
 	if err := os.WriteFile(cPath, []byte(generated), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(cc, "-std=c11", "-O2", "-c", cPath, "-o", oPath)
+	// Force the portable lowering (-DOAK_PORTABLE_INTRINSICS): on an
+	// arm64 host cc compiles the real mrs/msr, so the fail-closed branch
+	// must be selected explicitly — the same host-independence rule the
+	// barrier and MMIO tests follow.
+	cmd := exec.Command(cc, "-std=c11", "-O2", "-DOAK_PORTABLE_INTRINSICS", "-c", cPath, "-o", oPath)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatal("host compilation of system-register operation unexpectedly succeeded")

@@ -8,6 +8,7 @@ import (
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/object"
+	"github.com/SCKelemen/oak/token"
 )
 
 // Type represents a type in the Oak type system
@@ -229,6 +230,11 @@ type RecordType struct {
 	// Order preserves declaration order (Oak.SemanticRecord), which is
 	// layout-significant for struct representation (docs/spec/40-records.md).
 	Order []string
+	// Struct marks a representation-committed declaration (the struct
+	// keyword). Named STRUCTS are nominal islands (phantom types depend on
+	// it); named semantic records remain structural shapes any struct with
+	// those fields satisfies, whatever its field order.
+	Struct bool
 }
 
 // DisplayName is the nominal name when declared, else the structural shape.
@@ -254,6 +260,11 @@ func (t *RecordType) orderedFieldNames() []string {
 }
 
 func (t *RecordType) String() string {
+	// A nominal struct IS its name — printing the shape for Idx[Thread]
+	// vs Idx[Timer] would show two identical shapes in a mismatch.
+	if t.Name != "" && t.Struct {
+		return t.Name
+	}
 	// Canonical form: struct{ field1: Type1, field2: Type2, ... }
 	var out string
 	out += "struct{"
@@ -284,12 +295,14 @@ func (t *RecordType) Equals(other Type) bool {
 		return false
 	}
 
-	// Declared records are nominal islands: two NAMED record types are the
+	// Declared STRUCTS are nominal islands: two NAMED struct types are the
 	// same type only by name — Idx[Thread] and Idx[Timer] share a shape
 	// and are still distinct (phantom-typed indices depend on this).
-	// Anonymous shapes (literals, structural constraints) stay structural.
+	// Semantic record types ({ a, b: u8 }, named or not) stay structural:
+	// they are shapes, satisfied by any record with those fields in any
+	// order, including either ordered struct over them.
 	if otherRecord, ok := other.(*RecordType); ok {
-		if t.Name != "" && otherRecord.Name != "" {
+		if t.Name != "" && otherRecord.Name != "" && t.Struct && otherRecord.Struct {
 			return t.Name == otherRecord.Name
 		}
 	}
@@ -2988,6 +3001,12 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 		if !atomicFieldShapeLegal(fieldType) {
 			tc.addError(fieldExpr, "Atomic[T] may be a field or an owned array of cells; deeper embeddings are not supported in v1")
 		}
+		// A packed record places fields densely, so an Atomic[T] field can
+		// land unaligned — misaligned C11 _Atomic access is undefined
+		// behavior and never lock-free. Rejected outright.
+		if recordLit.Layout != nil && recordLit.Layout.Packed && fieldType != nil && ContainsAtomicStorage(fieldType) {
+			tc.addError(fieldExpr, "record type %s: packed records cannot contain atomic storage (field %s); misaligned atomics are undefined behavior", typeName, fieldName)
+		}
 		if fieldType == nil {
 			// fieldExpr might be an expression, try to use it as a node
 			if node, ok := fieldExpr.(ast.Node); ok {
@@ -3038,7 +3057,10 @@ func (tc *TypeChecker) parseRecordTypeFromLiteral(recordLit *ast.RecordLiteral) 
 		return &UnitType{}
 	}
 
-	return &RecordType{Fields: fields, Order: order}
+	// The struct keyword commits the declaration to concrete ordered
+	// representation — and, once named, to nominal identity. A plain
+	// { ... } declaration stays a structural shape.
+	return &RecordType{Fields: fields, Order: order, Struct: recordLit.Token.TokenKind == token.STRUCT}
 }
 
 // checkADTVariantLiteralTag checks that literal tags in ADT variants are consistent

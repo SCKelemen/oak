@@ -94,6 +94,104 @@ func NaturalRecordLayout(fields []RecordFieldRepresentation) (Representation, er
 	return representation, nil
 }
 
+// RecordLayoutSpec is the source-declared layout discipline of one record:
+// Packed places fields densely (no inter-field or tail padding beyond the
+// explicit alignment), and Align raises the record's alignment above its
+// natural alignment. Align == 0 means natural. Under-alignment of a
+// non-packed record is rejected: lowering alignment without removing
+// padding has no coherent meaning — packing is the way down.
+type RecordLayoutSpec struct {
+	Packed bool
+	Align  uint32
+}
+
+// Natural reports the default spec: ordered fields, natural padding.
+func (s RecordLayoutSpec) Natural() bool {
+	return !s.Packed && s.Align == 0
+}
+
+// RecordLayoutWithSpec computes the ordered layout under an explicit layout
+// spec. The packed placement loop and the alignment-raising step are
+// maintained as transliterations of Oak.LayoutSpec
+// (spec/lean/Oak/LayoutSpec.lean): packed placement is dense (each offset is
+// the sum of the preceding sizes, hence non-overlapping and order-preserving),
+// and raising the record alignment leaves every field offset unchanged while
+// keeping the final size divisible by the raised alignment. All arithmetic is
+// checked in uint64 before narrowing to uint32 — overflow can only fail,
+// never truncate.
+func RecordLayoutWithSpec(fields []RecordFieldRepresentation, spec RecordLayoutSpec) (Representation, error) {
+	if spec.Align != 0 && !isPowerOfTwo(spec.Align) {
+		return Representation{}, fmt.Errorf("record alignment %d is not a power of two", spec.Align)
+	}
+	if spec.Natural() {
+		return NaturalRecordLayout(fields)
+	}
+	const maxUint32 = uint64(^uint32(0))
+
+	if !spec.Packed {
+		// Natural placement with raised alignment: offsets are the natural
+		// offsets; only record alignment and tail padding change.
+		layout, err := NaturalRecordLayout(fields)
+		if err != nil {
+			return Representation{}, err
+		}
+		if spec.Align < layout.Alignment {
+			return Representation{}, fmt.Errorf(
+				"record alignment %d is below the natural alignment %d; packing, not under-alignment, removes padding",
+				spec.Align, layout.Alignment,
+			)
+		}
+		finalSize := alignUp64(uint64(layout.Size), uint64(spec.Align))
+		if finalSize > maxUint32 {
+			return Representation{}, fmt.Errorf("aligned record size overflows uint32")
+		}
+		layout.Size = uint32(finalSize)
+		layout.Alignment = spec.Align
+		return layout, nil
+	}
+
+	// Packed placement: every offset is the running sum of field sizes.
+	representation := Representation{
+		Kind:      RepresentationRecord,
+		Policy:    RepresentationPolicyNaturalOrdered,
+		Resolved:  true,
+		Alignment: 1,
+		Fields:    make([]FieldLayout, 0, len(fields)),
+	}
+	seen := make(map[string]struct{}, len(fields))
+	cursor := uint64(0)
+	for _, field := range fields {
+		if field.Name == "" {
+			return Representation{}, fmt.Errorf("record layout field has empty name")
+		}
+		if _, exists := seen[field.Name]; exists {
+			return Representation{}, fmt.Errorf("record layout has duplicate field %q", field.Name)
+		}
+		seen[field.Name] = struct{}{}
+		end := cursor + uint64(field.Size)
+		if end > maxUint32 {
+			return Representation{}, fmt.Errorf("record field %q end offset overflows uint32", field.Name)
+		}
+		representation.Fields = append(representation.Fields, FieldLayout{
+			Name:   field.Name,
+			Offset: uint32(cursor),
+			Size:   field.Size,
+		})
+		cursor = end
+	}
+	alignment := uint64(1)
+	if spec.Align != 0 {
+		alignment = uint64(spec.Align)
+	}
+	finalSize := alignUp64(cursor, alignment)
+	if finalSize > maxUint32 {
+		return Representation{}, fmt.Errorf("packed record size overflows uint32")
+	}
+	representation.Size = uint32(finalSize)
+	representation.Alignment = uint32(alignment)
+	return representation, nil
+}
+
 // alignUp64 rounds value upward to a power-of-two alignment. Callers validate
 // the alignment before use. Values entering record layout are uint32-bounded,
 // so uint64 intermediates leave enough headroom for the addition.
