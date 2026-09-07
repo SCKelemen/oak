@@ -12,6 +12,11 @@ main: (): i32 {
   person: Person = Person { name: 39, age: 7 }
   selected: i32 = person |> .name
   .name(person) |> add(selected)
+	}
+`)
+	if abnormal || code != 78 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 78", code, abnormal)
+ 	}
 }
 
 func TestE2EFirstClassFieldAccessor(t *testing.T) {
@@ -44,10 +49,5 @@ main: (): i32 {
 `)
 	if abnormal || code != 42 {
 		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
-	}
-}
-`)
-	if abnormal || code != 78 {
-		t.Fatalf("exit = (%d, abnormal=%v), want 78", code, abnormal)
 	}
 }
