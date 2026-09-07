@@ -10,11 +10,7 @@ import (
 )
 
 func TestEretEvaluatorFailsClosed(t *testing.T) {
-	p := parser.New(scanner.New(`
-package main
-fn enter() -> never
-  arm64.eret()
-`))
+	p := parser.New(scanner.New(`arm64.eret()`))
 	program := p.ParseProgram()
 	if errs := p.Errors(); len(errs) != 0 {
 		t.Fatalf("parser errors: %v", errs)
