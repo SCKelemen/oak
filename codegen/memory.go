@@ -84,6 +84,7 @@ func programUsesAtomics(program *ast.Program) bool {
 						return true
 					}
 				}
+			}
 		case *ast.InfixExpression:
 			return exprUses(e.Left) || exprUses(e.Right)
 		case *ast.PrefixExpression:
@@ -147,11 +148,13 @@ func programUsesAtomics(program *ast.Program) bool {
 						return true
 					}
 				}
+			}
 		case *ast.BlockStatement:
 			for _, inner := range s.Statements {
 				if stmtUses(inner) {
 					return true
 				}
+			}
 		case *ast.UnsafeBlock:
 			if s.Body != nil {
 				for _, inner := range s.Body.Statements {
@@ -159,6 +162,7 @@ func programUsesAtomics(program *ast.Program) bool {
 						return true
 					}
 				}
+			}
 		}
 		return false
 	}
