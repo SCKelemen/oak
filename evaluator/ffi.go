@@ -2,10 +2,9 @@ package evaluator
 
 // Interpreter semantics for the compiler-known foreign-interface libraries.
 // Portable arm64 value-transforming instruction functions execute natively in
-// the interpreter. Architectural barriers and MMIO do not: their machine
-// ordering/device-access semantics cannot be faithfully represented by the
-// sequential host evaluator, so execution fails explicitly rather than
-// pretending they are no-ops or ordinary host memory accesses.
+// the interpreter. Architectural barriers, MMIO, and system registers do not:
+// their machine semantics cannot be faithfully represented by the sequential
+// host evaluator, so execution fails explicitly rather than inventing state.
 
 import (
 	"math/bits"
@@ -34,6 +33,16 @@ func evalLibraryCall(library, member string, args []ast.Expression, env *object.
 }
 
 func evalArm64Intrinsic(member string, args []ast.Expression, env *object.Environment) object.Object {
+	if _, sysreg, write := semir.LookupArm64SysRegMember(member); sysreg {
+		want := 0
+		if write {
+			want = 1
+		}
+		if len(args) != want {
+			return newError("arm64.%s takes exactly %d argument(s)", member, want)
+		}
+		return newError("arm64.%s is a system-register machine operation and requires the native AArch64 backend", member)
+	}
 	if spec, mmio := semir.LookupArm64Mmio(member); mmio {
 		if len(args) != int(spec.Arity) {
 			return newError("arm64.%s takes exactly %d argument(s)", member, spec.Arity)
