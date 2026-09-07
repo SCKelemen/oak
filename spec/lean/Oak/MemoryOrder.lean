@@ -196,13 +196,14 @@ theorem source_fence_not_relaxed (b : Builtin)
     (h : builtinOp b = .fence) : builtinOrder b != .relaxed := by
   cases b <;> simp_all [builtinOp, builtinOrder]
 
-/-- Any source CAS constructor has a failure order and that pair is legal. -/
+/-- Any source CAS constructor has a failure order and that pair is legal.
+    The failure-order equality is eliminated before reducing `casLegal`; this
+    keeps the proof tied directly to the source constructor table. -/
 theorem source_cas_pair_legal (b : Builtin) (failure : Order)
     (hOp : builtinOp b = .compareExchange)
     (hFailure : builtinFailureOrder b = some failure) :
     casLegal (builtinOrder b) failure = true := by
-  cases b <;> cases failure <;>
-    simp_all [builtinOp, builtinFailureOrder, builtinOrder, casLegal]
+  cases b <;> simp_all [builtinOp, builtinFailureOrder, builtinOrder, casLegal]
 
 /-- No source CAS can express release/acq-rel failure ordering. -/
 theorem source_cas_failure_not_release (b : Builtin) (failure : Order)
