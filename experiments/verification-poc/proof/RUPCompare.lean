@@ -24,7 +24,7 @@ structure TestCase where
   expected : Bool
   deriving FromJson
 
-def decodeLiteral (n : Int) : Literal := ⟨n.natAbs, decide (0 < n)⟩
+def decodeLiteral (n : Int) : OakVerification.Literal := ⟨n.natAbs, decide (0 < n)⟩
 def decodeClause (c : Array Int) : Clause := c.toList.map decodeLiteral
 -- Negative/RAT hints become ID zero, which checkRUP always rejects.
 def decodeHints (h : Array Int) : List Nat := h.toList.map Int.toNat

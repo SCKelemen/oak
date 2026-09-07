@@ -1,1 +1,3 @@
 build/
+proof/*.olean*
+proof/*.ilean
