@@ -1,16 +1,18 @@
 package evaluator
 
-// Interpreter semantics for the compiler-known foreign-interface libraries
-// (docs/spec/92-ffi.md section 4): every arm64 instruction function runs
-// natively so interpreted and compiled programs agree; c conversions are
-// value-preserving (nominal typing is enforced statically); extern bindings
-// cannot be called, because the interpreter has no foreign world.
+// Interpreter semantics for the compiler-known foreign-interface libraries.
+// Portable arm64 value-transforming instruction functions execute natively in
+// the interpreter. Architectural barriers do not: DMB/DSB/ISB have machine
+// ordering/completion semantics that cannot be faithfully represented by the
+// sequential host evaluator, so execution fails explicitly rather than
+// pretending they are no-ops.
 
 import (
 	"math/bits"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
+	"github.com/SCKelemen/oak/semir"
 )
 
 func evalLibraryCall(library, member string, args []ast.Expression, env *object.Environment) object.Object {
@@ -23,8 +25,6 @@ func evalLibraryCall(library, member string, args []ast.Expression, env *object.
 		if member == "extern" {
 			return newError("extern bindings require the native backend; the interpreter cannot call foreign code")
 		}
-		// A c.* conversion preserves the abstract value (Oak.CInterop);
-		// the nominal boundary typing is enforced by the type checker.
 		if len(args) != 1 {
 			return newError("c.%s takes exactly one argument", member)
 		}
@@ -33,10 +33,13 @@ func evalLibraryCall(library, member string, args []ast.Expression, env *object.
 	return newError("unknown library: %s", library)
 }
 
-// evalArm64Intrinsic implements the v1 catalog of docs/spec/92-ffi.md
-// section 3.2 with the same total semantics as the Lean model
-// (Oak.Intrinsics) and the C lowerings.
 func evalArm64Intrinsic(member string, args []ast.Expression, env *object.Environment) object.Object {
+	if _, barrier := semir.LookupArm64Barrier(member); barrier {
+		if len(args) != 0 {
+			return newError("arm64.%s takes exactly zero arguments", member)
+		}
+		return newError("arm64.%s is an architectural barrier and requires the native AArch64 backend", member)
+	}
 	if arm64VectorMembers[member] {
 		return evalArm64VectorIntrinsic(member, args, env)
 	}
@@ -61,24 +64,17 @@ func evalArm64Intrinsic(member string, args []ast.Expression, env *object.Enviro
 	case "rbit64":
 		return &object.Integer{Value: int64(bits.Reverse64(uint64(operand.Value)))}
 	case "clz32":
-		// Total: clz32(0) = 32, the ARM CLZ semantics (Oak.Intrinsics).
 		return &object.Integer{Value: int64(bits.LeadingZeros32(uint32(operand.Value)))}
 	case "clz64":
-		// Total: clz64(0) = 64.
 		return &object.Integer{Value: int64(bits.LeadingZeros64(uint64(operand.Value)))}
 	}
 	return newError("the arm64 library has no instruction function arm64.%s", member)
 }
 
-// arm64VectorMembers are the horizontal vector instruction functions
-// (docs/spec/93-simd.md section 2).
 var arm64VectorMembers = map[string]bool{
 	"uaddlv_u8x16": true, "umaxv_u8x16": true, "uminv_u8x16": true, "cnt_u8x16": true,
 }
 
-// evalArm64VectorIntrinsic implements the horizontal vector instructions of
-// docs/spec/93-simd.md section 2 with the same total semantics as the NEON
-// and portable C lowerings.
 func evalArm64VectorIntrinsic(member string, args []ast.Expression, env *object.Environment) object.Object {
 	if len(args) != 1 {
 		return newError("arm64.%s takes exactly one argument", member)
@@ -112,7 +108,6 @@ func evalArm64VectorIntrinsic(member string, args []ast.Expression, env *object.
 			if lane < min {
 				min = lane
 			}
-		}
 		return &object.Integer{Value: int64(min)}
 	case "cnt_u8x16":
 		result := &object.Vector{VectorKind: "U8x16"}
