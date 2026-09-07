@@ -183,6 +183,10 @@ func TestE2EStdlibBufferRejectsInvalidCursor(t *testing.T) {
 func TestE2EStdlibFluentBuilder(t *testing.T) {
 	src := `
 import(std)
+counted_builder: (calls: [*]u8): ByteBuilder {
+ calls[0] = calls[0] + u8(1)
+ byte_builder()
+}
 main: (): i32 {
  data: [4]u8
  input: [2]u8
@@ -190,7 +194,13 @@ main: (): i32 {
  input[1] = u8(30)
  s: [*]u8 = span(&data)
  v: []u8 = view(&input)
- built: ByteBuilder = byte_builder().append_byte(s, u8(10)).append_bytes(s, v).append_byte(s, u8(40))
+ calls: [1]u8
+ c: [*]u8 = span(&calls)
+ built: ByteBuilder = counted_builder(c)
+   .append_byte(s, u8(10))
+   .append_bytes(s, v)
+   .append_byte(s, u8(40))
+ assert(c[0] == u8(1))
  done: Result[u32, BufferError] = built.finish_bytes()
  count: u32 = done ? | .Ok(n) => n | .Err(e) => u32(99)
  assert(count == u32(4))
@@ -294,5 +304,34 @@ main: (): i32 {
 	want := instructions("constant", "int oak_main(void) { return 42; }\n")
 	if actual != want {
 		t.Fatalf("builder did not optimize to a direct constant return:\n%s\nwant:\n%s", actual, want)
+	}
+}
+
+func TestE2EStdlibBufferZeroAndOverflow(t *testing.T) {
+	src := `
+import(std)
+main: (): i32 {
+ state: [1]ByteBufferCursor
+ q: [*]ByteBufferCursor = span(&state)
+ assert(buffer_len(q, u32(0)) == u32(0))
+ assert(buffer_tail_space(q, u32(0)) == u32(0))
+ zero: Result[u32, BufferError] = buffer_consume(q, u32(0), u32(0))
+ ok: Bool = zero ? | .Ok(n) => n == u32(0) | .Err(e) => false
+ assert(ok)
+ bad: Result[u32, BufferError] = buffer_consume(q, u32(0), u32(4294967295))
+ rejected: Bool = bad ? | .Ok(n) => false | .Err(e) => true
+ assert(rejected && q[0].start == u32(0) && q[0].end == u32(0))
+ q[0].start = u32(4294967294)
+ q[0].end = u32(4294967295)
+ assert(buffer_len(q, u32(4294967295)) == u32(1))
+ last: Result[u32, BufferError] = buffer_consume(q, u32(4294967295), u32(1))
+ complete: Bool = last ? | .Ok(n) => n == u32(1) | .Err(e) => false
+ assert(complete && q[0].start == u32(0) && q[0].end == u32(0))
+ 42
+}
+`
+	code, abnormal := buildAndRun(t, "bufferzero", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }

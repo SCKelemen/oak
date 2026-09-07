@@ -17,10 +17,10 @@ structure ProofExample where
 
 def equivalent (a b : BExpr) : BExpr := .disj (.conj a b) (.conj (.neg a) (.neg b))
 def examples : List ProofExample :=
-  let x := BExpr.input 0
-  let y := BExpr.input 1
-  let z := BExpr.input 2
-  let shared := BExpr.disj x y
+  let x : BExpr := .input 0
+  let y : BExpr := .input 1
+  let z : BExpr := .input 2
+  let shared : BExpr := .disj x y
   [⟨"false", .constant false, false, true⟩,
    ⟨"contradiction", .conj x (.neg x), false, true⟩,
    ⟨"excluded-middle", .disj x (.neg x), true, true⟩,
