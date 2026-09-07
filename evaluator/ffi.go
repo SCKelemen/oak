@@ -108,6 +108,7 @@ func evalArm64VectorIntrinsic(member string, args []ast.Expression, env *object.
 			if lane < min {
 				min = lane
 			}
+		}
 		return &object.Integer{Value: int64(min)}
 	case "cnt_u8x16":
 		result := &object.Vector{VectorKind: "U8x16"}
