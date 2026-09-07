@@ -98,6 +98,9 @@ jobs:
       - name: Check expression-to-proof bridge with real certificates
         working-directory: experiments/verification-poc
         run: bash ci/check-boolean-proofs.sh
+      - name: Check Boolean invariant certificates from Oak projects
+        working-directory: experiments/verification-poc
+        run: bash ci/check-boolean-models.sh
       - name: Retain models, solver logs, certificates and traces
         if: always()
         uses: actions/upload-artifact@v4
