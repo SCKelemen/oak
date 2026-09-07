@@ -23,23 +23,39 @@ structure EncodingCase where
   rows : Array ValuationRow
   deriving FromJson
 
+def decodeNode (built : Array OakVerification.BooleanCNF.Expr) (n : ProgramNode) :
+    Except String OakVerification.BooleanCNF.Expr := do
+  let child := fun index => match built[index]? with
+    | some e => Except.ok e
+    | none => Except.error "non-backward child reference"
+  match n.op with
+  | "bool" => return .constant n.value
+  | "var" =>
+    if n.index < 2 then return .input n.index else throw "input outside corpus domain"
+  | "!" => return .neg (← child n.left)
+  | "&&" => return .conj (← child n.left) (← child n.right)
+  | "||" => return .disj (← child n.left) (← child n.right)
+  | _ => throw "unsupported Boolean operator"
+
 def decodeProgram (program : Array ProgramNode) : Except String OakVerification.BooleanCNF.Expr := do
   let mut built : Array OakVerification.BooleanCNF.Expr := #[]
   for n in program do
-    let child := fun index => match built[index]? with
-      | some e => Except.ok e
-      | none => Except.error "non-backward child reference"
-    let e ← match n.op with
-      | "bool" => pure (.constant n.value)
-      | "var" => if n.index < 2 then pure (.input n.index) else throw "input outside corpus domain"
-      | "!" => do return .neg (← child n.left)
-      | "&&" => do return .conj (← child n.left) (← child n.right)
-      | "||" => do return .disj (← child n.left) (← child n.right)
-      | _ => throw "unsupported Boolean operator"
+    let e ← decodeNode built n
     built := built.push e
   match built.back? with
   | some e => return e
   | none => throw "empty expression program"
+
+-- These kernel-evaluated regressions catch returning after the first operator
+-- instead of reconstructing the final root, and accepting forward references.
+private def doubleNegationProgram : Array ProgramNode := #[
+  ⟨"bool", false, 0, 0, 0⟩, ⟨"!", false, 0, 0, 0⟩, ⟨"!", false, 0, 1, 0⟩]
+example : (match decodeProgram doubleNegationProgram with
+    | .ok e => e == .neg (.neg (.constant false))
+    | .error _ => false) = true := by decide
+example : (match decodeProgram #[⟨"!", false, 0, 0, 0⟩] with
+    | .ok _ => false
+    | .error _ => true) = true := by decide
 
 -- The symbolic specification has different auxiliary names and may retain
 -- gates that Go simplifies away. Compare existential satisfiability, not IDs.

@@ -217,3 +217,9 @@ formula/proof pairs, and invalid proof suffixes. The typed Lean checker and its
 wrapper have soundness theorems; the ASCII parser and source-to-CNF translation
 remain unproved. See [the certificate gate](proof/README.md#independent-certificate-gate)
 for commands, results, and trust boundaries.
+
+[The Boolean CNF specification](proof/BooleanCNF.md) adds soundness and
+completeness proofs for the logical encoding of constants, inputs, NOT, AND,
+and OR. Exhaustive small-expression tests compare Go's emitted DIMACS with
+Lean's symbolic encoding. Numeric allocation, Go refinement, and the remaining
+Oak query/type semantics are separate proof obligations.

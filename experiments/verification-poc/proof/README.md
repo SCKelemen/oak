@@ -148,3 +148,11 @@ corpus also agreed on all 2,571 cases (145 accepted, 2,426 rejected), alongside
 the existing 13,019 decoded cases. `../validation-certificate-gate.json` records
 the tested commit and remaining boundaries. Failed retries replace any earlier
 success report before validating new input.
+
+## Boolean source-to-CNF specification
+
+[BooleanCNF.lean](BooleanCNF.md) specifies the logical Tseitin encoding for
+constants, inputs, NOT, AND, and OR, with soundness and completeness theorems.
+Its symbolic auxiliary names keep numbering and Go optimizations outside the
+proof. The opt-in gate compares the Lean specification and the actual Go
+initial-query encoder on exhaustive small expressions and deeper regressions.
