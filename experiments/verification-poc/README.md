@@ -188,6 +188,10 @@ prefixes with Oak's `semir.MemoryExecution` happens-before and race queries.
 Lean separately from the Go implementation. The principal theorem is
 `OakVerification.accepted_unsatisfiable`. It does not claim that the Go checker,
 its parser, or the source-to-CNF translator has been refined to that specification.
+The companion `proof/RUPExecutable.lean` now defines an executable checker for
+decoded proof streams and proves `checkProof_sound`. The opt-in gate also checks
+Go/Lean decision agreement on a bounded exhaustive and regression corpus; that
+agreement is tested, not formally proved. See the proof README for exact scope.
 
 The opt-in workflow is `.github/workflows/verification-poc.yml`. Use its manual
 `workflow_dispatch` trigger once available on the default branch, or push a

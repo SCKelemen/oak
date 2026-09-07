@@ -114,9 +114,20 @@ func TestLeanDifferentialCorpus(t *testing.T) {
         target:=clauseMask(3,rng.Intn(64))
         if len(target)>0 && i%2==0 { target=append(target,target[0]) }
         h:=[]int{}
-        for j:=0;j<rng.Intn(6);j++ { h=append(h,1+rng.Intn(5)) }
+        for j, length:=0,rng.Intn(6);j<length;j++ { h=append(h,1+rng.Intn(5)) }
         add(differentialCase{Kind:"rup",Variables:3,Database:db,Clause:target,Hints:h})
     }
+    for _,h:=range [][]int{{1,2,3},{2,1,3},{1,1,2,3},{1,2},{1,2,3,1}} {
+        add(differentialCase{Kind:"rup",Variables:2,Database:[][]int{{1},{-1,2},{-2}},Hints:h})
+    }
+    add(differentialCase{Kind:"rup",Variables:2,Database:[][]int{{1},{-1,2}},Clause:[]int{2},Hints:[]int{1,2}})
+    add(differentialCase{Kind:"proof",Variables:2,Database:[][]int{{1},{-1,2},{-2}},Commands:[]commandCase{
+        {Kind:"add",ID:4,Hints:[]int{1,2,3}},
+    }})
+    add(differentialCase{Kind:"proof",Variables:0})
+    add(differentialCase{Kind:"proof",Variables:0,Database:[][]int{{}},Commands:[]commandCase{
+        {Kind:"delete",ID:1,IDs:[]int{1}},
+    }})
     // Decoded stream tests cover ordering, deletion, reuse, and validation
     // after an empty clause has already been established.
     operations:=[]commandCase{

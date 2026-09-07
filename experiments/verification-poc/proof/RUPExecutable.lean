@@ -13,7 +13,7 @@ instance (xs : List Literal) (c : Clause) : Decidable (Falsified xs c) :=
 instance (xs : List Literal) (c : Clause) (u : Literal) : Decidable (UnitUnder xs c u) :=
   inferInstanceAs (Decidable (u ∈ c ∧ ∀ l ∈ c, l = u ∨ negate l ∈ xs))
 
-structure CheckedPropagation (db : Database) (xs : List Literal) (hints : List Nat) where
+structure CheckedPropagation (db : Database) (xs : List Literal) (hints : List Nat) : Type where
   derivation : Propagate db xs hints
 
 -- Searching the finite clause avoids assuming the existence of a unit literal.
