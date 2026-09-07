@@ -35,7 +35,8 @@ Oak has no mandatory:
 - runtime interface vtables for ordinary generic constraints;
 - reference counting;
 - hidden asynchronous scheduler;
-- implicit buffer copying.
+- implicit copying;
+- implicit parallel execution of ordinary sequential constructs.
 
 A language feature that requires one of these costs must make that representation/effect explicit.
 
@@ -105,6 +106,27 @@ For bounded/slice-like inputs, optimized lowering should be capable of producing
 
 APIs that inherently construct new storage must accept or identify their allocator rather than allocate invisibly.
 
+Statically known higher-order callables should specialize away when possible. A direct lambda passed to a known combinator is not permission to introduce an indirect call, runtime closure object, or heap environment when static specialization can preserve semantics.
+
+Optimization is constrained by semantics. Fusion, inlining, vectorization, tiling, reassociation, and related transformations are legal only when they preserve values, machine numeric behavior, borrow/resource flow, effect ordering, traps whose ordering is observable, synchronization, and representation/ABI obligations. `55-parallelism` defines the corresponding rules for explicitly parallel operations.
+
+## Explicit parallel cost
+
+Ordinary loops and ordinary combinators remain sequential unless an API explicitly grants parallel execution semantics.
+
+For explicitly parallel algorithms, documentation should make two additional cost dimensions visible:
+
+```text
+work  = total computation performed
+span  = longest dependency chain assuming sufficient parallel resources
+```
+
+These complement, rather than replace, Oak's existing allocation, blocking, syscall, memory, and storage costs.
+
+A parallel algorithm with `O(N)` work and `O(log N)` span does not promise a particular wall-clock speed. Backend scheduling, target resources, vector width, memory hierarchy, and synchronization overhead remain real costs. Compiler tooling should expose the chosen lowering when it materially affects predictability.
+
+Parallel execution itself must not smuggle in a hidden general-purpose scheduler, task allocation, or blocking behavior. If a selected implementation requires such effects, they must be part of the operation/profile contract.
+
 ## Mutation is explicit, not stigmatized
 
 Oak is not purely functional. Mutation is appropriate for:
@@ -156,6 +178,7 @@ specialized fn  -> direct call/inlined code
 view/span       -> pointer + length (subject to target representation)
 raw pointer     -> machine pointer
 arena/slab op   -> explicit bounded allocator operation
+par operation   -> explicit scheduling/vectorization opportunity under its contract
 ```
 
 When that correspondence is not obvious, compiler tooling should expose the lowering rather than rely on folklore.
