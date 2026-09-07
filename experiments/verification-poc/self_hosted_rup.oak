@@ -30,12 +30,12 @@ rup_check: (
   // Validate every hint before accepting contradictory target assumptions.
   i = u32(0)
   while i < hint_count && valid {
-    id: u32 = hints[i]
-    valid = id < clause_count
+    checked_hint_id: u32 = hints[i]
+    valid = checked_hint_id < clause_count
     valid ? {
-      start: u32 = clause_starts[id]
-      count: u32 = clause_lengths[id]
-      valid = start <= len(clause_literals) && count <= len(clause_literals) - start
+      checked_start: u32 = clause_starts[checked_hint_id]
+      checked_count: u32 = clause_lengths[checked_hint_id]
+      valid = checked_start <= len(clause_literals) && checked_count <= len(clause_literals) - checked_start
     }
     i = i + u32(1)
   }
@@ -43,14 +43,14 @@ rup_check: (
   contradictory: Bool = false
   i = u32(0)
   while i < target_count && valid && !contradictory {
-    literal: u32 = target[i]
-    variable: u32 = literal / u32(2)
-    valid = variable < variables
+    target_literal: u32 = target[i]
+    target_variable: u32 = target_literal / u32(2)
+    valid = target_variable < variables
     valid ? {
-      wanted: u8 = literal_false_value(literal)
-      prior: u8 = assignments[variable]
+      wanted: u8 = literal_false_value(target_literal)
+      prior: u8 = assignments[target_variable]
       contradictory = prior != u8(0) && prior != wanted
-      prior == u8(0) ? { assignments[variable] = wanted }
+      prior == u8(0) ? { assignments[target_variable] = wanted }
     }
     i = i + u32(1)
   }
@@ -58,29 +58,29 @@ rup_check: (
   conflict: Bool = false
   h: u32 = 0
   while h < hint_count && valid && !contradictory && !conflict {
-    id: u32 = hints[h]
-    start: u32 = clause_starts[id]
-    count: u32 = clause_lengths[id]
+    clause_id: u32 = hints[h]
+    start: u32 = clause_starts[clause_id]
+    count: u32 = clause_lengths[clause_id]
     satisfied: Bool = false
     remaining: u32 = 0
     unit_literal: u32 = 0
     j: u32 = 0
     while j < count && valid && !satisfied {
-      literal: u32 = clause_literals[start + j]
-      variable: u32 = literal / u32(2)
-      valid = variable < variables
+      clause_literal: u32 = clause_literals[start + j]
+      clause_variable: u32 = clause_literal / u32(2)
+      valid = clause_variable < variables
       duplicate: Bool = false
       k: u32 = 0
       while k < j && valid && !duplicate {
-        duplicate = clause_literals[start + k] == literal
+        duplicate = clause_literals[start + k] == clause_literal
         k = k + u32(1)
       }
       valid && !duplicate ? {
-        assigned: u8 = assignments[variable]
-        satisfied = assigned != u8(0) && assigned == literal_value(literal)
+        assigned: u8 = assignments[clause_variable]
+        satisfied = assigned != u8(0) && assigned == literal_value(clause_literal)
         assigned == u8(0) ? {
           remaining = remaining + u32(1)
-          unit_literal = literal
+          unit_literal = clause_literal
         }
       }
       j = j + u32(1)
@@ -91,8 +91,8 @@ rup_check: (
         valid = conflict
       } | {
         remaining == u32(1) ? {
-          variable: u32 = unit_literal / u32(2)
-          assignments[variable] = literal_value(unit_literal)
+          unit_variable: u32 = unit_literal / u32(2)
+          assignments[unit_variable] = literal_value(unit_literal)
         } | {
           valid = false
         }
