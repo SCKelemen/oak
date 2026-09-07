@@ -1,0 +1,42 @@
+{
+  "format": "oak-executable-refinement-validation-1",
+  "date": "2026-09-07",
+  "commit": "1f04b1640514a8f9da82392e19067f973d30fc5d",
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34131061664",
+  "soundness_job": 101771025913,
+  "soundness_passed": true,
+  "lean_version": "4.33.1",
+  "warning_as_error": true,
+  "theorems": {
+    "OakVerification.checkRUP_sound": {
+      "claim": "Successful decoded RUP checks yield a Propagate derivation.",
+      "axioms": [
+        "propext"
+      ]
+    },
+    "OakVerification.checkProof_sound": {
+      "claim": "checkProof = true implies Unsatisfiable (initialDatabase clauses).",
+      "axioms": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    }
+  },
+  "differential": {
+    "passed": true,
+    "cases": 13019,
+    "accepted": 610,
+    "rejected": 12409,
+    "exhaustive_rup_cases": 9984,
+    "exhaustive_domain": "One variable, all two-entry clause databases and target clauses, hints of length 0..3 over [-1,0,1,2,3].",
+    "other_cases": "Seeded three-variable cases, explicit multi-unit chains, and decoded addition/deletion stream regressions.",
+    "oracle": "Every accepted Go RUP or full-proof decision also passes an independent exhaustive truth table."
+  },
+  "limits": [
+    "The theorem verifies the Lean checker on decoded instructions, not the Go implementation.",
+    "Differential agreement is finite testing, not a Go-to-Lean refinement theorem.",
+    "JSON and DIMACS/LRAT parsing, resource limits, and source-to-CNF translation remain outside the proof.",
+    "RAT and theory lemmas remain unsupported."
+  ]
+}

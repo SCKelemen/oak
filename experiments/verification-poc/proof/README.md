@@ -44,9 +44,10 @@ The file declares no project-specific axioms and contains no proof holes. It
 prints the kernel assumptions of its principal theorems. Classical logic is
 used when deriving clause satisfaction from contradiction.
 
-For the Go implementation, the outstanding refinement obligation is to prove that every successful RUP check
-and database update corresponds to this relation. After that, source-to-CNF
-translation needs its own semantic preservation theorem. Neither is claimed here, and this system is not yet self-verified.
+For the Go implementation, the outstanding refinement obligation is to prove
+that every successful RUP check and database update corresponds to this relation.
+After that, source-to-CNF translation needs its own semantic preservation theorem.
+Neither is claimed here, and this system is not yet self-verified.
 
 ## Executable refinement
 
@@ -91,3 +92,8 @@ verify the Go parser's signed-integer limits, byte limits, or DIMACS domain chec
 The source-to-CNF encoder also remains outside the proof. The next formal step
 is a semantics-preserving connection to the implementation used by Oak, or an
 explicit decision to use this Lean checker as an independent certificate gate.
+
+[The executable soundness and agreement gate passed](https://github.com/SCKelemen/oak/actions/runs/34131061664/job/101771025913):
+13,019 cases, with 610 accepted and 12,409 rejected by both checkers.
+`../validation-refinement.json` records the tested commit, theorem assumptions,
+corpus scope, and remaining proof boundaries.
