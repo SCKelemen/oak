@@ -111,14 +111,13 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
-/* arm64 instruction functions: docs/spec/92-ffi.md section 3 */
+/* arm64 instruction functions */
 static inline u32 oak_arm64_clz32( u32 x ) {
 #if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
   u32 r;
   __asm__("clz %w0, %w1" : "=r"(r) : "r"(x));
   return r;
 #else
-  /* guard supplies the total CLZ(0) = 32 the builtin leaves undefined */
   return x == 0u ? 32u : (u32)__builtin_clz(x);
 #endif
 }
@@ -128,7 +127,6 @@ static inline u64 oak_arm64_rbit64( u64 x ) {
   __asm__("rbit %0, %1" : "=r"(x) : "r"(x));
   return x;
 #else
-  /* branch-free swap network (docs/spec/92-ffi.md section 3.3) */
   x = ((x & 0x5555555555555555u) << 1) | ((x >> 1) & 0x5555555555555555u);
   x = ((x & 0x3333333333333333u) << 2) | ((x >> 2) & 0x3333333333333333u);
   x = ((x & 0x0F0F0F0F0F0F0F0Fu) << 4) | ((x >> 4) & 0x0F0F0F0F0F0F0F0Fu);
