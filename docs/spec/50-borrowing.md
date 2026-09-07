@@ -55,6 +55,8 @@ UniqueWrite   --span--> error
 
 Releasing the last shared reader returns to `Free`; releasing the unique writer returns to `Free`.
 
+Temporary writable exclusivity is not consumption. A `UniqueWrite` borrow suspends other access and eventually returns authority to the owner. Consumption permanently invalidates the consumed resource value and the aliases whose authority depends on it.
+
 ## 4. Lexical v1 lifetimes
 
 The first safe implementation may conservatively keep a borrow live until the end of its lexical block.
@@ -109,17 +111,73 @@ Bounds must be proved statically or checked dynamically in safe code. Out-of-ran
 
 Exact index-normalization policy (including whether negative indices remain in Oak) is a separate sequence/indexing decision; it does not alter the ownership model.
 
-## 8. Move/consume
+## 8. Symbolic extents
 
-Owned aggregates (`[N]T` and resolved records) have explicit value semantics
-in v1: binding or passing one is an explicit-cost copy, never a hidden
-allocation and never an ownership transfer, so use-after-move cannot occur
-yet. Move/consume semantics — and their diagnostics, for which `OAK-B0111`
-is reserved — arrive together with resource types (handles, arenas, files),
-whose values must not be duplicated. When they land, the diagnostic must
-show both the move site and the later use (`15-diagnostics` section 6).
+A view/span already carries a runtime length. Oak may additionally attach a compile-time **extent proposition** to that value without changing its runtime representation.
 
-## 9. Raw pointers
+Conceptually:
+
+```text
+Extent(xs) = N
+```
+
+where `N` may be a constant, a compile-time value parameter, or a fresh symbolic extent inferred from program structure.
+
+This is deliberately different from `[N]T`. An owned `[N]T` has representation-bearing fixed size and `N` participates in layout. A borrowed `[]T` or `[*]T` remains pointer + length (subject to target representation); its symbolic extent is a proposition about that value, not a new allocation shape.
+
+Extent propositions may be introduced and propagated by operations whose semantics establish them. Examples include:
+
+```text
+Extent(view(array[N])) = N
+Extent(slice(xs, a, b)) = b - a        when the bounds are established
+Extent(left) + Extent(right) = Extent(parent)  for a proved split
+```
+
+A function may require relationships between extents without requiring dependent runtime representation. Surface syntax is not yet frozen; conceptually a same-length operation can require:
+
+```oak
+fn dot[N](a: []f32 where len = N, b: []f32 where len = N): f32
+```
+
+When an operation returns a length that cannot be expressed using caller-visible symbols, the semantic result may introduce a fresh existential extent:
+
+```text
+exists N. []T where Extent(result) = N
+```
+
+The compiler may keep such existential extents internal until Oak has surface syntax that improves ordinary code.
+
+The initial extent theory should remain intentionally small and decidable. Equality, constants, addition/subtraction, inequalities, and multiplication by known constants are sufficient starting points. Oak does not require general dependent typing to obtain useful size facts.
+
+Extent facts may discharge bounds checks, establish same-shape preconditions, and strengthen disjoint-region proofs. Failure to prove an extent relationship must fail closed; the compiler must not guess from runtime coincidence.
+
+## 9. Move/consume and resource flow
+
+Owned aggregates (`[N]T` and resolved records) retain explicit value semantics in v1: binding or passing one is an explicit-cost copy, never a hidden allocation and never an ownership transfer.
+
+Resource types — handles with unique custody, arenas, files, device submissions, or other non-duplicable values — add a distinct **consumption** operation. Consumption is a semantic flow fact, not a spelling of ordinary mutable borrowing and not necessarily a distinct nominal type constructor.
+
+Conceptually, a parameter or operation may consume a resource:
+
+```oak
+fn close(file: consume File): ()
+fn submit(buffer: consume Buffer[CpuOwned]): Buffer[DeviceOwned]
+```
+
+Exact surface syntax is not frozen. The normative semantics are:
+
+- after a value is consumed, that value cannot be used again;
+- any alias whose authority depends on the consumed value is also invalid for later resource access;
+- a resource cannot be consumed while an incompatible live borrow depends on it;
+- consuming an input and proving that an output is alias-free are separate facts;
+- consumption does not imply allocation, copying, or destruction unless the operation separately specifies those effects;
+- safe control flow must establish that every reachable use occurs before consumption or on a path where consumption did not occur.
+
+The checker should track alias classes or equivalent provenance so that consumption invalidates the relevant authority rather than merely one variable name. Copyable values remain outside this rule unless their type/protocol explicitly opts into resource semantics.
+
+`OAK-B0111` is reserved for use after consumption. Its diagnostic must show the consume site, the later use, and any relevant alias/provenance chain that explains why the later name lost authority (`15-diagnostics` section 6).
+
+## 10. Raw pointers
 
 Raw pointers do not automatically participate in safe borrow tracking because arbitrary pointer arithmetic/aliasing can destroy provenance facts.
 
@@ -127,7 +185,7 @@ Creating/dereferencing/reinterpreting raw pointers therefore requires the releva
 
 `unsafe` introduces assumptions; it does not disable unrelated typing/bounds/effect checks.
 
-## 10. DMA and ownership states
+## 11. DMA and ownership states
 
 The same ownership vocabulary should extend to machine/device custody without special pointer syntax.
 
@@ -135,23 +193,23 @@ Conceptually:
 
 ```text
 Buffer[CpuOwned]
-    --submit--> Buffer[DeviceOwned]
-    --complete--> Buffer[CpuOwned]
+    --consume/submit--> Buffer[DeviceOwned]
+    --consume/complete--> Buffer[CpuOwned]
 ```
 
 CPU code cannot safely access a device-owned buffer because it lacks the corresponding authority/state, not because the pointer has disappeared.
 
-This is a protocol/typestate refinement layered on the core borrow model.
+These transitions combine protocol/typestate refinement with consumption: the previous state value is invalid after transfer, while the returned value carries the new custody state.
 
-## 10. Strings and wrappers
+## 12. Strings and wrappers
 
 A type containing a view/span inherits its borrow lifetime. Wrapping `[]u8` in `Str[Utf8]` does not sever provenance or extend lifetime.
 
 No special string escape rule is needed if semantic wrappers preserve ownership facts.
 
-## 11. Formal verification targets
+## 13. Formal verification targets
 
-The core borrow state machine must prove:
+The core borrow/resource model must prove:
 
 - no state contains simultaneous read and write authority;
 - at most one unique writer exists;
@@ -160,6 +218,10 @@ The core borrow state machine must prove:
 - release cannot underflow a reader count;
 - derived views/spans preserve owner provenance;
 - safe borrow values cannot outlive owners;
-- disjoint mutable borrowing, when enabled, relies on proved disjoint ranges.
+- disjoint mutable borrowing, when enabled, relies on proved disjoint ranges;
+- consumption permanently removes the consumed resource authority on that control-flow path;
+- live aliases in the consumed alias class cannot retain resource authority;
+- temporary `UniqueWrite` borrowing and permanent consumption remain distinct transitions;
+- extent propagation preserves the semantic length equations introduced by array views, slices, and proved splits.
 
-`spec/lean/Oak/Borrowing.lean` models the local borrow-state laws. Temporal ownership transfer across asynchronous actors may additionally use TLA+ when introduced.
+`spec/lean/Oak/Borrowing.lean` models the local borrow-state laws. Consumption/alias-class and symbolic-extent lemmas should extend that proof surface as the checker representation lands. Temporal ownership transfer across asynchronous actors may additionally use TLA+ when introduced.
