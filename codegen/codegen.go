@@ -164,21 +164,14 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 		}
 	}
 
-	// Now emit the type definitions. Generic templates are never emitted:
-	// each recorded concrete instantiation is specialized and emitted
-	// instead (codegen/mono.go).
-	for _, stmt := range program.Statements {
-		switch s := stmt.(type) {
-		case *ast.ADTType:
-			if len(s.TypeParams) > 0 {
-				continue
-			}
-			cg.emitADTType(s, tc)
-		case *ast.FunctionStatement:
-			// Functions will be emitted separately
-		}
-	}
-	cg.instantiateGenericADTs(tc)
+	// Now emit the type definitions in dependency order (codegen/mono.go):
+	// records and record-template instantiations may reference each other
+	// as field types (Thread holding an Idx[Thread] link, Ring[Thread, 8]
+	// holding [8]Thread), so emission runs to a fixpoint — a type emits
+	// once every field it needs is already placed. Generic templates are
+	// never emitted; tagged-union ADTs follow the records they may carry
+	// as payloads.
+	cg.emitTypesInDependencyOrder(program, tc)
 
 	// Static globals come after type emission (record/ADT globals need
 	// their typedefs) and before functions.

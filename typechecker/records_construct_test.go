@@ -89,3 +89,16 @@ func TestRecordTypeKeepsNameAndOrder(t *testing.T) {
 		t.Fatalf("declaration order = %v, want [y x]", record.Order)
 	}
 }
+
+// Declared records are nominal: same shape, different name, different
+// type — the property phantom-typed indices (Idx[Thread] vs Idx[Timer])
+// depend on. Anonymous shapes remain structural.
+func TestNamedRecordsAreNominal(t *testing.T) {
+	input := "Idx[P]: type = struct { raw: u32 }\n\nThread: type = struct { priority: u8 }\nTimer: type = struct { deadline: u32 }\n\nwake: (t: Idx[Timer]): u32 = t.raw\n\nmain: (): u32 {\n  threadIdx: Idx[Thread]\n  wake(threadIdx)\n}\n"
+	tc := setupTypeChecker(input)
+	program := parseProgram(input)
+	tc.CheckProgram(program)
+	if len(tc.Errors()) == 0 {
+		t.Fatal("Idx[Thread] passed where Idx[Timer] expected: phantom index typing must reject cross-pool links")
+	}
+}

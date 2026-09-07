@@ -56,6 +56,15 @@ func (cg *CodeGenerator) fieldRepresentation(name string, typeExpr ast.Expressio
 		}
 		return semir.RecordFieldRepresentation{}, false
 	}
+	// Generic-record instantiation fields (Idx[Thread], Ring[u8, 4])
+	// resolve through the layout registry once their struct is emitted —
+	// the dependency the fixpoint emission order satisfies.
+	if mangled, isGeneric := cg.genericAnnotationName(typeExpr); isGeneric {
+		if nested, placed := cg.recordLayouts[mangled]; placed {
+			return semir.RecordFieldRepresentation{Name: name, Size: nested.Size, Alignment: nested.Alignment}, true
+		}
+		return semir.RecordFieldRepresentation{}, false
+	}
 	// Owned-array fields: [N]T occupies N contiguous elements at the
 	// element's alignment (buffer: [16]u8 — the Ring shape).
 	if indexExpr, isIndex := typeExpr.(*ast.IndexExpression); isIndex {

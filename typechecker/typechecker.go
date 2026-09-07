@@ -284,6 +284,16 @@ func (t *RecordType) Equals(other Type) bool {
 		return false
 	}
 
+	// Declared records are nominal islands: two NAMED record types are the
+	// same type only by name — Idx[Thread] and Idx[Timer] share a shape
+	// and are still distinct (phantom-typed indices depend on this).
+	// Anonymous shapes (literals, structural constraints) stay structural.
+	if otherRecord, ok := other.(*RecordType); ok {
+		if t.Name != "" && otherRecord.Name != "" {
+			return t.Name == otherRecord.Name
+		}
+	}
+
 	if otherRecord, ok := other.(*RecordType); ok {
 		// If other is empty, we already checked above
 		if len(otherRecord.Fields) == 0 {

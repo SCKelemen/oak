@@ -126,6 +126,17 @@ The intended rule is: `T` satisfies `XY` when it provides fields with the requir
 
 Shape satisfaction is a **constraint relation**, not global width subtyping. Its compiler implementation and formal laws must be completed before this surface use is considered implemented.
 
+### 5.1 Nominal identity of declared records
+
+A **declared** record type is a nominal island: two named record types are
+the same type only when they are the same declaration (or the same
+template instantiation) — `Idx[Thread]` and `Idx[Timer]` share a shape and
+are distinct. Anonymous record shapes (literals, structural constraints)
+remain structural, and shape *constraints* (§9 of `10-syntax.md`) remain
+satisfaction checks, not identity. This is what makes phantom-parameterized
+records (typed indices, tagged handles) sound: the phantom does its work
+in the name.
+
 ## 6. Structs select runtime product representation
 
 `struct` is the representation-bearing product form:

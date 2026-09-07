@@ -64,6 +64,29 @@ Ordered by link count per element:
    several typed index fields; the type system keeps queue A's links from
    being used as queue B's, which the pointer form cannot.
 
+## Typed links: phantom indices
+
+Raw `u32` links are honest but promiscuous — nothing stops queue A's index
+from landing in pool B. The cure is a one-field generic record:
+
+```oak
+Idx[P]: type = struct { raw: u32 }
+
+Thread: type = struct {
+  priority: u8
+  next: Idx[Thread]     // this link can never point into the Timer pool
+}
+```
+
+`Idx[Thread]` and `Idx[Timer]` share a shape and are **distinct nominal
+types** (declared records are nominal islands; the phantom parameter does
+its work purely at compile time), and the monomorphized `oak_Idx_Thread`
+is a 4-byte struct — layout-asserted, zero-cost. Executed:
+`TestE2EPhantomTypedLinks` runs a free-list over `Idx[Thread]` links, and
+`TestNamedRecordsAreNominal` proves the cross-pool rejection. This is the
+`Str[Utf8]` doctrine applied to identity: the phantom carries *which pool*
+the way the encoding parameter carries *which validity*.
+
 ## What's still missing
 
 Reusable intrusive *libraries* need generic functions

@@ -17,31 +17,6 @@ import (
 	"github.com/SCKelemen/oak/typechecker"
 )
 
-// instantiateGenericADTs specializes and registers every recorded
-// instantiation, then emits its tagged union. Called after concrete ADT
-// collection, before function prototypes.
-func (cg *CodeGenerator) instantiateGenericADTs(tc *typechecker.TypeChecker) {
-	for _, inst := range tc.ADTInstantiations() {
-		template, declared := cg.adtTypes[inst.ADT]
-		if !declared || len(template.TypeParams) == 0 {
-			continue
-		}
-		mangled := inst.MangledName()
-		if existing, collision := cg.adtTypes[mangled]; collision && len(existing.TypeParams) == 0 && existing != template {
-			// A declared type already owns this name: never silently merge.
-			cg.write(fmt.Sprintf("OAK_MONOMORPHIZATION_NAME_COLLISION(%s);\n\n", cg.cTypeName(mangled)))
-			continue
-		}
-		specialized, ok := specializeADT(template, inst)
-		if !ok {
-			cg.write(fmt.Sprintf("OAK_UNSUPPORTED_INSTANTIATION(%s);\n\n", cg.cTypeName(mangled)))
-			continue
-		}
-		cg.adtTypes[mangled] = specialized
-		cg.emitADTType(specialized, tc)
-	}
-}
-
 // specializeADT builds the concrete ADT for one instantiation: the mangled
 // name, and every variant's payload type with the template's parameters
 // substituted by the argument atoms (which are ordinary Oak type names).
@@ -190,4 +165,135 @@ func annotationAtom(expr ast.Expression) (string, bool) {
 		return base.Value + "_" + inner, true
 	}
 	return "", false
+}
+
+// typeEmissionUnit is one pending type definition: a declared concrete
+// type, or a recorded instantiation of a generic template.
+type typeEmissionUnit struct {
+	name          string
+	declared      *ast.ADTType
+	instantiation *typechecker.Instantiation
+}
+
+// emitTypesInDependencyOrder emits records (concrete and instantiated) to
+// a fixpoint — a record emits once every field type it references is
+// placed — then tagged-union ADTs (concrete and instantiated), which may
+// carry any of the records as payloads. Types that never become placeable
+// fail closed with a compile-breaking marker.
+func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *typechecker.TypeChecker) {
+	var records []typeEmissionUnit
+	var unions []typeEmissionUnit
+
+	for _, stmt := range program.Statements {
+		adt, isADT := stmt.(*ast.ADTType)
+		if !isADT || len(adt.TypeParams) > 0 {
+			continue
+		}
+		unit := typeEmissionUnit{name: adt.Name.Value, declared: adt}
+		if _, isRecord := recordDefinitionShape(adt); isRecord {
+			records = append(records, unit)
+		} else {
+			unions = append(unions, unit)
+		}
+	}
+	for _, inst := range tc.ADTInstantiations() {
+		template, declared := cg.adtTypes[inst.ADT]
+		if !declared || len(template.TypeParams) == 0 {
+			continue
+		}
+		instantiation := inst
+		unit := typeEmissionUnit{name: inst.MangledName(), instantiation: &instantiation}
+		if _, isRecord := recordDefinitionShape(template); isRecord {
+			records = append(records, unit)
+		} else {
+			unions = append(unions, unit)
+		}
+	}
+
+	// Records: fixpoint on field placeability.
+	pending := records
+	for len(pending) > 0 {
+		progressed := false
+		var stuck []typeEmissionUnit
+		for _, unit := range pending {
+			recordLit, ok := cg.emissionRecordLiteral(unit)
+			if ok && cg.recordPlaceable(recordLit) {
+				cg.emitTypeUnit(unit, tc)
+				progressed = true
+				continue
+			}
+			stuck = append(stuck, unit)
+		}
+		pending = stuck
+		if !progressed {
+			break
+		}
+	}
+	for _, unit := range pending {
+		// Fail closed: a record whose field types never became placeable.
+		cg.write(fmt.Sprintf("OAK_UNSUPPORTED_RECORD_LAYOUT(%s);\n\n", cg.cTypeName(unit.name)))
+	}
+
+	// Tagged unions after every record they might carry.
+	for _, unit := range unions {
+		cg.emitTypeUnit(unit, tc)
+	}
+}
+
+// emissionRecordLiteral resolves the (specialized) record literal a unit
+// would emit, without emitting.
+func (cg *CodeGenerator) emissionRecordLiteral(unit typeEmissionUnit) (*ast.RecordLiteral, bool) {
+	if unit.declared != nil {
+		return recordDefinitionShape(unit.declared)
+	}
+	template, declared := cg.adtTypes[unit.instantiation.ADT]
+	if !declared {
+		return nil, false
+	}
+	specialized, ok := specializeADT(template, *unit.instantiation)
+	if !ok {
+		return nil, false
+	}
+	return recordDefinitionShape(specialized)
+}
+
+// recordPlaceable reports whether every field's representation is known —
+// the emission-order dependency test.
+func (cg *CodeGenerator) recordPlaceable(recordLit *ast.RecordLiteral) bool {
+	if len(recordLit.FieldOrder) == 0 {
+		return false
+	}
+	for _, field := range recordLit.FieldOrder {
+		if _, ok := cg.fieldRepresentation(field.Name, field.Value); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// emitTypeUnit emits one unit: declared types through emitADTType,
+// instantiations through specialization (mirroring instantiateGenericADTs
+// for a single instantiation).
+func (cg *CodeGenerator) emitTypeUnit(unit typeEmissionUnit, tc *typechecker.TypeChecker) {
+	if unit.declared != nil {
+		cg.emitADTType(unit.declared, tc)
+		return
+	}
+	inst := *unit.instantiation
+	template, declared := cg.adtTypes[inst.ADT]
+	if !declared || len(template.TypeParams) == 0 {
+		return
+	}
+	mangled := inst.MangledName()
+	if existing, collision := cg.adtTypes[mangled]; collision && len(existing.TypeParams) == 0 && existing != template {
+		cg.write(fmt.Sprintf("OAK_MONOMORPHIZATION_NAME_COLLISION(%s);\n\n", cg.cTypeName(mangled)))
+		return
+	}
+	specialized, ok := specializeADT(template, inst)
+	if !ok {
+		cg.write(fmt.Sprintf("OAK_UNSUPPORTED_INSTANTIATION(%s);\n\n", cg.cTypeName(mangled)))
+		return
+	}
+	cg.adtTypes[mangled] = specialized
+	cg.emitADTType(specialized, tc)
 }

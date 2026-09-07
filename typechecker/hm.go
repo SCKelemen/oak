@@ -328,6 +328,13 @@ func (u *Unifier) unifyFunction(fn1, fn2 *FunctionType) Substitution {
 }
 
 func (u *Unifier) unifyRecord(rec1, rec2 *RecordType) Substitution {
+	// Declared records are nominal: two named record types unify only by
+	// name (Idx[Thread] never unifies with Idx[Timer], whatever the
+	// shape); anonymous shapes stay structural.
+	if rec1.Name != "" && rec2.Name != "" && rec1.Name != rec2.Name {
+		u.errors = append(u.errors, fmt.Sprintf("distinct record types %s and %s", rec1.Name, rec2.Name))
+		return nil
+	}
 	if len(rec1.Fields) != len(rec2.Fields) {
 		u.errors = append(u.errors, fmt.Sprintf("record field count mismatch: %d vs %d", len(rec1.Fields), len(rec2.Fields)))
 		return nil

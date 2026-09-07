@@ -112,6 +112,23 @@ selective receive, and `select` over multiple channels are protocol
 extensions (a select is a rendezvous race on several state cells); they
 await either careful hand construction or the protocol/typestate axis.
 
+## The FastFlow corollary: compose SPSC, avoid CAS
+
+[FastFlow](https://github.com/fastflow/fastflow) (see also the
+[1024cores notes](https://web.archive.org/web/20250719163454/https://www.1024cores.net/home/lock-free-algorithms/queues/fastflow))
+demonstrates the composition doctrine at scale: build *every* topology —
+fan-out farms, fan-in collectors, pipelines, feedback loops — from
+**wait-free SPSC channels plus mediator processes**, and use no CAS at
+all. An "MPMC queue" becomes an emitter process draining N SPSC inputs
+and feeding M SPSC outputs: the sharing that forced compare-and-swap is
+replaced by topology, and every hop stays on the wait-free rung. The cost
+is a mediator hop of latency; the reward is that the whole network's
+progress argument is just the SPSC argument repeated. In Oak terms:
+`Ring[T, N]` per edge, one owning process per node, custody everywhere —
+the strongest form of "reduce sharing until the protocol fits in one
+atomic cell" is reducing it until the only atomics left are the ring
+indices.
+
 ## The doctrine, restated
 
 CSP's discipline and Oak's are the same discipline at two scales:
