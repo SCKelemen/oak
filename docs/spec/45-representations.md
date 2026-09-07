@@ -151,6 +151,61 @@ relation is preserved.
 This lets Oak support aggressive systems representations without weakening the
 semantic type system.
 
+## 7.1 Aggregate representations: AoS, SoA, and AoSoA
+
+Array-of-structs and structure-of-arrays are representations of a **sequence of
+semantic record values**, not different record meanings.
+
+For a semantic element shape:
+
+```oak
+Particle: type = {
+  x: f32
+  y: f32
+  mass: f32
+}
+```
+
+the abstract value of an `N`-element collection is the same indexed sequence
+of `Particle` values under each of these layouts:
+
+```text
+AoS:   [x0 y0 mass0] [x1 y1 mass1] ...
+SoA:   [x0 x1 ...] [y0 y1 ...] [mass0 mass1 ...]
+AoSoA: [x0..xL] [y0..yL] [mass0..massL] ...
+```
+
+This diagram is specification notation, not Oak surface syntax.
+
+The current `[N]Stored` form, where `Stored` is a concrete struct, retains
+its ordinary contiguous array-of-structs representation. A future SoA or AoSoA
+form must be selected explicitly on the collection representation axis. The
+compiler must not infer such a transformation merely from use, optimization
+level, target SIMD width, or field order.
+
+Every aggregate representation must establish an abstraction relation
+`element(storage, i)` such that, for each in-range index `i`:
+
+- the logical element has exactly the semantic fields and field types required
+  by the element record;
+- reading `elements[i].field` denotes the corresponding field at `i`;
+- writing through authorized mutable access changes that field and no other
+  semantic element;
+- collection length and element order are preserved;
+- borrowing/provenance rules apply to the actual projected storage regions;
+- conversion or materialization never introduces hidden unbounded copying.
+
+A SoA representation does not contain a contiguous struct object for each
+logical element. Therefore it must not manufacture `&elements[i]` as a
+pointer to such an object. An element view may instead be a checked logical
+projection; the exact source form is intentionally not frozen here.
+
+SIMD width, column alignment, cache-line separation, tiling, and prefetch stride
+are representation parameters. They may change physical placement and access
+cost, but they cannot change record-shape satisfaction. AoS, SoA, and AoSoA
+realizations of `Particle` all satisfy the same `Particle` field
+requirements.
+
 ## 8. Representation and ABI visibility
 
 A private representation may change without changing the semantic module API,
