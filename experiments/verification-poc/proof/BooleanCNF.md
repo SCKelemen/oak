@@ -48,8 +48,8 @@ keeps the semantic specification small and makes the satisfying extension
 explicit. It is not a specification of Go's integer allocation algorithm,
 commutative cache, constant folding, or byte-level serialization.
 
-No theorem here connects numbered clauses to the RUP checker's database. That
-requires a name-to-number preservation theorem. Go refinement, the Oak frontend,
+[NumberedCNF.lean](NumberedCNF.md) now connects this symbolic encoding to the
+RUP checker through a proved numeric allocator. Go refinement, the Oak frontend,
 query construction for base/step obligations, enums, and bit-vector arithmetic
 also remain outside this milestone. In particular, agreement tests do not prove
 that the Go encoder implements this specification.
@@ -77,7 +77,10 @@ The opt-in soundness job runs the following commands from the experiment folder:
 ```sh
 mkdir -p build/soundness
 export LEAN_PATH="$PWD/proof"
+lean -DwarningAsError=true -o proof/RUPSoundness.olean proof/RUPSoundness.lean
+lean -DwarningAsError=true -o proof/RUPExecutable.olean proof/RUPExecutable.lean
 lean -DwarningAsError=true -o proof/BooleanCNF.olean proof/BooleanCNF.lean
+lean -DwarningAsError=true -o proof/NumberedCNF.olean proof/NumberedCNF.lean
 export OAK_BOOLEAN_CNF_CORPUS_OUT="$PWD/build/soundness/boolean-cnf-cases.json"
 go test -count=1 -v . -run '^TestBooleanCNFSpecification$'
 lean -DwarningAsError=true --run proof/BooleanCNFCompare.lean "$OAK_BOOLEAN_CNF_CORPUS_OUT"

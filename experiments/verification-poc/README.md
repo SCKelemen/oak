@@ -223,3 +223,8 @@ completeness proofs for the logical encoding of constants, inputs, NOT, AND,
 and OR. Exhaustive small-expression tests compare Go's emitted DIMACS with
 Lean's symbolic encoding. Numeric allocation, Go refinement, and the remaining
 Oak query/type semantics are separate proof obligations.
+
+The [numbered Boolean proof bridge](proof/NumberedCNF.md) now connects the Lean
+Boolean encoder to the proved RUP checker. Its opt-in real-solver gate reconstructs
+the target CNF from the expression before checking each certificate. The Go
+implementation and Oak frontend still require their own refinement proofs.

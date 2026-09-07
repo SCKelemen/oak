@@ -156,3 +156,12 @@ constants, inputs, NOT, AND, and OR, with soundness and completeness theorems.
 Its symbolic auxiliary names keep numbering and Go optimizations outside the
 proof. The opt-in gate compares the Lean specification and the actual Go
 initial-query encoder on exhaustive small expressions and deeper regressions.
+
+## Numbered Boolean proof bridge
+
+[NumberedCNF.lean](NumberedCNF.md) proves that numeric allocation preserves CNF
+satisfiability and connects the Boolean source expression to the proved checker.
+Acceptance implies unsatisfiability of the expression, or validity when checking
+its negation. The opt-in solver job exercises this path with real CaDiCaL proofs
+and rejects satisfiable targets and corrupted certificates. Go allocation and
+the Oak frontend remain outside the theorem.

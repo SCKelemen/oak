@@ -677,7 +677,6 @@ func typeParamsConstrained(params []*ast.TypeParameter) bool {
 }
 
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
-<<<<<<< Updated upstream
 	// Resolve declared types before caching function signatures. Otherwise a
 	// span of a named record can retain an unresolved type variable.
 	for _, stmt := range program.Statements {
@@ -686,11 +685,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.checkStatement(stmt)
 		}
 	}
-=======
 	// The global scope is the closure of top-level declarations; template
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
->>>>>>> Stashed changes
 	// Pre-declare top-level non-generic function signatures so functions can
 	// reference one another regardless of declaration order (mutual
 	// recursion included); each signature is finalized when its declaration
