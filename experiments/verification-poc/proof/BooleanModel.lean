@@ -80,10 +80,12 @@ def dimacs (e : BooleanCNF.Expr) : String :=
       (if l.positive then "" else "-") ++ toString l.index)) ++ " 0\n"
   s!"p cnf {table.length} {clauses.length}\n" ++ String.join (clauses.map line)
 
-def checkTexts (m : Model) (baseText stepText : String) : Except String Bool := do
-  let bp ← Text.parseLRAT baseText
-  let sp ← Text.parseLRAT stepText
-  return checkSafety m bp sp
+def checkTexts (m : Model) (baseText stepText : String) : Except String Bool :=
+  match Text.parseLRAT baseText with
+  | .error e => .error e
+  | .ok bp => match Text.parseLRAT stepText with
+    | .error e => .error e
+    | .ok sp => .ok (checkSafety m bp sp)
 
 theorem checkTexts_sound (m : Model) (bp sp : String)
     (accepted : checkTexts m bp sp = .ok true) :

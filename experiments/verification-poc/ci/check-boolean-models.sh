@@ -51,6 +51,12 @@ done
 jq '.step[0] = {op:"!",value:false,index:0,left:0,right:0}' "$safe.json" > "$attempt/forward.json"
 if lean -DwarningAsError=true --run proof/BooleanModel.lean emit "$attempt/forward.json" step "$attempt/forward.cnf" > "$attempt/forward.log" 2>&1; then exit 1; fi
 grep -q 'non-backward child reference' "$attempt/forward.log"
+jq '.initial[0] = {op:"var",value:false,index:99,left:0,right:0}' "$safe.json" > "$attempt/outside.json"
+if lean -DwarningAsError=true --run proof/BooleanModel.lean emit "$attempt/outside.json" initial "$attempt/outside.cnf" > "$attempt/outside.log" 2>&1; then exit 1; fi
+grep -q 'input outside field domain' "$attempt/outside.log"
+jq '.initial = ([{op:"bool",value:true,index:0,left:0,right:0}] + [range(1;15) | {op:"&&",value:false,index:0,left:(.-1),right:(.-1)}])' "$safe.json" > "$attempt/expansion.json"
+if lean -DwarningAsError=true --run proof/BooleanModel.lean emit "$attempt/expansion.json" initial "$attempt/expansion.cnf" > "$attempt/expansion.log" 2>&1; then exit 1; fi
+grep -q 'expanded expression exceeds 4096 nodes' "$attempt/expansion.log"
 sha256sum "$attempt/"*.cnf "$attempt/"*.lrat "$safe.json" "$broken.json" > "$attempt/sha256sums.txt"
-jq -n --arg attempt "$attempt" '{format:"oak-boolean-model-gate-1",passed:true,attempt:$attempt,safe_models:1,unsafe_models_rejected:1,wrong_models_rejected:1,invalid_suffixes_rejected:2,malformed_models_rejected:1}' > build/boolean-models/report.json
-printf 'Boolean model gate: 1 safe model accepted, 1 unsafe model, 1 wrong model, 2 corruptions and 1 malformed model rejected\n'
+jq -n --arg attempt "$attempt" '{format:"oak-boolean-model-gate-1",passed:true,attempt:$attempt,safe_models:1,unsafe_models_rejected:1,wrong_models_rejected:1,invalid_suffixes_rejected:2,malformed_models_rejected:3}' > build/boolean-models/report.json
+printf 'Boolean model gate: 1 safe model accepted, 1 unsafe model, 1 wrong model, 2 corruptions and 3 malformed models rejected\n'

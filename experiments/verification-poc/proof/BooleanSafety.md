@@ -83,7 +83,8 @@ The ordered publication model must pass both obligations. The relaxed model must
 fail preservation. Its base obligation still holds, so rejecting it specifically
 exercises the need for a checked step obligation. The gate also rejects the safe
 model's proofs against the relaxed model, an unjustified suffix appended to each
-of the two proofs independently, and a malformed forward-reference program.
+of the two proofs independently, and malformed programs with forward references, out-of-domain inputs, or
+excessive expression expansion.
 
 Negative proof tests require both the expected exit code and a structured checker
 rejection; compilation failures cannot pass them. Source bundles, emitted CNFs,
