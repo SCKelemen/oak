@@ -399,7 +399,6 @@ func (cg *CodeGenerator) emitHeader() {
 	cg.write("\n")
 	cg.write("typedef u8  byte;\n")
 	cg.write("typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */\n")
-	cg.write("typedef u8 oak_never; /* backend carrier for uninhabited Oak bottom type */\n")
 	cg.write("\n")
 	// Emit string type definition
 	cg.write("typedef struct oak_string {\n")

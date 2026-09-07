@@ -17,7 +17,8 @@ func init() {
 		if !ok {
 			continue
 		}
-		arm64HelperSources[member] = `__attribute__((noreturn)) static inline oak_never oak_arm64_eret( void ) {
+		arm64HelperSources[member] = `typedef u8 oak_never; /* uninhabited Oak bottom carrier; ERET never produces it */
+__attribute__((noreturn)) static inline oak_never oak_arm64_eret( void ) {
 #if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
   __asm__ volatile("` + spec.Instruction + `" ::: "memory");
   __builtin_unreachable();
