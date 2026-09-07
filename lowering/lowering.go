@@ -143,8 +143,16 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 		return fn
 	}
 	if fn.Body != nil {
-		// Body is an Expression - just lower it recursively
-		loweredBody := lowerExpression(fn.Body, tc)
+		// Body is an Expression - just lower it recursively. A block body's
+		// final statement is the function's return position: a match there
+		// must stay a match (the backend emits it with arms in return
+		// position), never the statement-form branch conversion.
+		var loweredBody ast.Expression
+		if block, isBlock := fn.Body.(*ast.BlockExpression); isBlock && block.Block != nil && len(block.Block.Statements) > 0 {
+			loweredBody = lowerFunctionBodyBlock(block, tc)
+		} else {
+			loweredBody = lowerExpression(fn.Body, tc)
+		}
 		return &ast.FunctionStatement{
 			BaseNode:   fn.BaseNode,
 			Token:      fn.Token,
@@ -228,6 +236,39 @@ func branchBlock(body ast.Expression, tc *typechecker.TypeChecker) *ast.BlockSta
 	}
 }
 
+// lowerFunctionBodyBlock lowers a function's block body, keeping the final
+// statement's expression form intact (it is the return position).
+func lowerFunctionBodyBlock(body *ast.BlockExpression, tc *typechecker.TypeChecker) *ast.BlockExpression {
+	statements := body.Block.Statements
+	lowered := make([]ast.Statement, 0, len(statements))
+	for _, stmt := range statements[:len(statements)-1] {
+		if hoisted, wasHoisted := hoistBoolMatchValue(stmt, tc); wasHoisted {
+			lowered = append(lowered, hoisted...)
+			continue
+		}
+		lowered = append(lowered, lowerStatement(stmt, tc))
+	}
+	last := statements[len(statements)-1]
+	if exprStmt, isExpr := last.(*ast.ExpressionStatement); isExpr {
+		lowered = append(lowered, &ast.ExpressionStatement{
+			BaseNode:   exprStmt.BaseNode,
+			Token:      exprStmt.Token,
+			Expression: lowerExpression(exprStmt.Expression, tc),
+		})
+	} else {
+		lowered = append(lowered, lowerStatement(last, tc))
+	}
+	return &ast.BlockExpression{
+		BaseNode: body.BaseNode,
+		Token:    body.Token,
+		Block: &ast.BlockStatement{
+			BaseNode:   body.Block.BaseNode,
+			Token:      body.Block.Token,
+			Statements: lowered,
+		},
+	}
+}
+
 // lowerBlockStatement lowers block statements
 func lowerBlockStatement(block *ast.BlockStatement, tc *typechecker.TypeChecker) *ast.BlockStatement {
 	loweredStmts := make([]ast.Statement, 0, len(block.Statements))
@@ -281,26 +322,72 @@ func hoistBoolMatchValue(stmt ast.Statement, tc *typechecker.TypeChecker) ([]ast
 	}
 
 	trueBody, falseBody, isBool := boolMatchArms(match)
-	if !isBool || !(branchCarriesStatements(trueBody) || branchCarriesStatements(falseBody)) {
-		return nil, false
-	}
-	trueBlock, trueOK := branchAssignBlock(name, trueBody, tc)
-	falseBlock, falseOK := branchAssignBlock(name, falseBody, tc)
-	if !trueOK || !falseOK {
-		return nil, false
+	if isBool {
+		if !(branchCarriesStatements(trueBody) || branchCarriesStatements(falseBody)) {
+			return nil, false
+		}
+		trueBlock, trueOK := branchAssignBlock(name, trueBody, tc)
+		falseBlock, falseOK := branchAssignBlock(name, falseBody, tc)
+		if !trueOK || !falseOK {
+			return nil, false
+		}
+
+		branch := &ast.IfStatement{
+			BaseNode:    match.BaseNode,
+			Token:       match.Token,
+			Condition:   lowerExpression(match.Scrutinee, tc),
+			Consequence: trueBlock,
+			Alternative: falseBlock,
+		}
+		if lead != nil {
+			return []ast.Statement{lead, branch}, true
+		}
+		return []ast.Statement{branch}, true
 	}
 
-	branch := &ast.IfStatement{
-		BaseNode:    match.BaseNode,
-		Token:       match.Token,
-		Condition:   lowerExpression(match.Scrutinee, tc),
-		Consequence: trueBlock,
-		Alternative: falseBlock,
+	// General value match (ADT/scalar arms): hoist to a declaration plus a
+	// statement-position match whose arm bodies end in an assignment of
+	// each arm's trailing value; the backend emits tag-guarded statement
+	// blocks with payload bindings intact.
+	if !matchNeedsHoist(match) {
+		return nil, false
 	}
+	rewritten := &ast.MatchExpression{
+		BaseNode:  match.BaseNode,
+		Token:     match.Token,
+		Scrutinee: lowerExpression(match.Scrutinee, tc),
+	}
+	for _, arm := range match.Arms {
+		armBlock, ok := branchAssignBlock(name, arm.Body, tc)
+		if !ok {
+			return nil, false
+		}
+		rewritten.Arms = append(rewritten.Arms, &ast.MatchArm{
+			Token:   arm.Token,
+			Pattern: arm.Pattern,
+			Body:    &ast.BlockExpression{Token: arm.Token, Block: armBlock},
+		})
+	}
+	hoisted := &ast.ExpressionStatement{Expression: rewritten}
 	if lead != nil {
-		return []ast.Statement{lead, branch}, true
+		return []ast.Statement{lead, hoisted}, true
 	}
-	return []ast.Statement{branch}, true
+	return []ast.Statement{hoisted}, true
+}
+
+// matchNeedsHoist reports whether a value-position match cannot inline as a
+// C expression: variant patterns need tag guards and payload bindings, and
+// statement-bearing block arms need statement position.
+func matchNeedsHoist(match *ast.MatchExpression) bool {
+	for _, arm := range match.Arms {
+		if _, isVariant := arm.Pattern.(*ast.VariantPattern); isVariant {
+			return true
+		}
+		if branchCarriesStatements(arm.Body) {
+			return true
+		}
+	}
+	return false
 }
 
 // boolMatchArms classifies a two-arm Bool condition match (true/false

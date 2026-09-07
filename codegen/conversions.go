@@ -29,7 +29,7 @@ func collectUsedConversions(program *ast.Program) []string {
 		if library != "" {
 			return
 		}
-		if _, op, _, ok := typechecker.ConversionParts(member); ok && op != "checked" {
+		if _, _, _, ok := typechecker.ConversionParts(member); ok {
 			used[member] = true
 		}
 	})
@@ -50,9 +50,71 @@ func (cg *CodeGenerator) emitConversionHelpers(program *ast.Program) {
 	cg.write("/* explicit integer conversions: total, two's complement, no\n")
 	cg.write("   implementation-defined C (signed results via union punning) */\n")
 	for _, name := range used {
-		cg.writeRaw(conversionHelperSource(name))
+		if _, op, _, _ := typechecker.ConversionParts(name); op == "checked" {
+			cg.writeRaw(cg.checkedConversionHelperSource(name))
+		} else {
+			cg.writeRaw(conversionHelperSource(name))
+		}
 		cg.write("\n")
 	}
+}
+
+// checkedConversionHelperSource emits the Result-returning checked
+// narrowing (docs/spec/20-types.md §11.1): usable when the program declares
+// Result[T, E] with Ok/Err constructors and a payload-less Overflow ADT —
+// anything else fails closed.
+func (cg *CodeGenerator) checkedConversionHelperSource(oakName string) string {
+	target, _, source, ok := typechecker.ConversionParts(oakName)
+	if !ok {
+		return "OAK_UNSUPPORTED_CONVERSION\n"
+	}
+	resultADT, hasResult := cg.adtTypes["Result_"+target+"_Overflow"]
+	overflowADT, hasOverflow := cg.adtTypes["Overflow"]
+	if !hasResult || !hasOverflow || len(overflowADT.Variants) == 0 {
+		return fmt.Sprintf("OAK_CHECKED_CONVERSION_NEEDS_RESULT_AND_OVERFLOW(%s);\n", oakName)
+	}
+	okName, errName := "", ""
+	for _, variant := range resultADT.Variants {
+		if variant.Payload == nil {
+			continue
+		}
+		payload, isIdent := variant.Payload.(*ast.Identifier)
+		if !isIdent {
+			continue
+		}
+		if payload.Value == target {
+			okName = variant.Name.Value
+		}
+		if payload.Value == "Overflow" {
+			errName = variant.Name.Value
+		}
+	}
+	overflowCtor := ""
+	for _, variant := range overflowADT.Variants {
+		if variant.Payload == nil {
+			overflowCtor = variant.Name.Value
+			break
+		}
+	}
+	if okName == "" || errName == "" || overflowCtor == "" {
+		return fmt.Sprintf("OAK_CHECKED_CONVERSION_NEEDS_RESULT_AND_OVERFLOW(%s);\n", oakName)
+	}
+
+	resultC := cg.cTypeName("Result_" + target + "_Overflow")
+	overflowC := cg.cTypeName("Overflow")
+	targetBits := typechecker.PrimitiveBits(target)
+	var b strings.Builder
+	fmt.Fprintf(&b, "static inline %s %s( %s x ) {\n", resultC, conversionHelperName(oakName), source)
+	if strings.HasPrefix(target, "u") {
+		max := (uint64(1) << uint(targetBits)) - 1
+		fmt.Fprintf(&b, "  if (x > (%s)%du) { return %s_%s(%s_%s()); }\n", source, max, resultC, errName, overflowC, overflowCtor)
+	} else {
+		max := int64(1)<<uint(targetBits-1) - 1
+		min := -(int64(1) << uint(targetBits-1))
+		fmt.Fprintf(&b, "  if (x > (%s)%d || x < (%s)(%d)) { return %s_%s(%s_%s()); }\n", source, max, source, min, resultC, errName, overflowC, overflowCtor)
+	}
+	fmt.Fprintf(&b, "  return %s_%s((%s)x);\n}\n", resultC, okName, target)
+	return b.String()
 }
 
 // conversionHelperSource builds the helper body. Names come from the fixed
@@ -110,13 +172,17 @@ func (cg *CodeGenerator) emitConversionCall(call *ast.InvocationExpression, tc *
 	if !isIdent || len(call.Arguments) != 1 {
 		return false
 	}
-	_, op, _, ok := typechecker.ConversionParts(ident.Value)
+	target, op, _, ok := typechecker.ConversionParts(ident.Value)
 	if !ok {
 		return false
 	}
 	if op == "checked" {
-		cg.output.WriteString("OAK_UNSUPPORTED_CHECKED_CONVERSION")
-		return true
+		// Callable once the program declares Result and Overflow (the
+		// helper validates the shapes); otherwise fail closed.
+		if _, hasResult := cg.adtTypes["Result_"+target+"_Overflow"]; !hasResult {
+			cg.output.WriteString("OAK_CHECKED_CONVERSION_NEEDS_RESULT_AND_OVERFLOW")
+			return true
+		}
 	}
 	cg.output.WriteString(fmt.Sprintf("%s( ", conversionHelperName(ident.Value)))
 	cg.emitExpressionFragment(call.Arguments[0], tc)

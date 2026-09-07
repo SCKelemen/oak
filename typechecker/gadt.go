@@ -60,6 +60,12 @@ func (tc *TypeChecker) parseGenericTypeApplication(expr ast.Expression) (Type, b
 		}
 		args = append(args, arg)
 	}
+	// A concrete application of a declared generic ADT (Option[i32] in an
+	// annotation) is an instantiation the backend must monomorphize
+	// (typechecker/mono.go); type-variable arguments record nothing.
+	if _, isDeclaredADT := tc.adtTypes[name]; isDeclaredADT {
+		tc.recordADTInstantiation(name, args)
+	}
 	return &GenericType{Name: name, TypeArgs: args}, true
 }
 

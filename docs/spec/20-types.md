@@ -227,7 +227,7 @@ produced by union type punning, defined since C99 TC3):
 | `trunc` | strictly narrower, same signedness | low bits, wraps mod `2^N` |
 | `saturating` | strictly narrower, same signedness | clamps to the target range |
 | `bits` | same width, opposite signedness | bit-pattern reinterpretation (`i32_bits_u32`, `u64_bits_i64`) |
-| `checked` | strictly narrower, same signedness | `Result[target, Overflow]`; usable once generic ADTs lower |
+| `checked` | strictly narrower, same signedness | `Result[target, Overflow]` — `Ok` in range, `Err(Overflow)` otherwise; requires the program to declare `Result[T, E]` (Ok/Err) and `Overflow` |
 
 `bits` is the explicit path between `u32` and `i32` that widening and
 narrowing deliberately lack: honest at the call site, free at runtime.

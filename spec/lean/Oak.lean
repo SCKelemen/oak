@@ -25,6 +25,7 @@ import Oak.Variadic
 import Oak.Intrinsics
 import Oak.CInterop
 import Oak.Simd
+import Oak.Monomorphization
 import Oak.Handles
 import Oak.Slab
 import Oak.Exhaustiveness

@@ -111,89 +111,162 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
-// @source: unknown.oak:1:0-4:4
+// @source: unknown.oak:1:0-1:19
 // @package: main
 // @kind: ADT
-// @identifier: Shape
-typedef enum oak_Shape_tag {
-    oak_Shape_tag_Circle  ,
-    oak_Shape_tag_Square  ,
-    oak_Shape_tag_Empty
-} oak_Shape_tag;
+// @identifier: Overflow
+typedef enum oak_Overflow_tag {
+    oak_Overflow_tag_Overflow
+} oak_Overflow_tag;
 
-typedef struct oak_Shape {
-    oak_Shape_tag tag;
+typedef struct oak_Overflow {
+    oak_Overflow_tag tag;
+} oak_Overflow;
+
+// @source: unknown.oak:1:19
+// @package: main
+// @kind: constructor
+// @identifier: oak_Overflow::Overflow
+static inline oak_Overflow oak_Overflow_Overflow(  ) {
+    oak_Overflow res;
+    res.tag = oak_Overflow_tag_Overflow;
+    return res;
+}
+
+// @source: unknown.oak:5:0-5:28
+// @package: main
+// @kind: ADT
+// @identifier: Option_u32
+typedef enum oak_Option_u32_tag {
+    oak_Option_u32_tag_Some  ,
+    oak_Option_u32_tag_None
+} oak_Option_u32_tag;
+
+typedef struct oak_Option_u32 {
+    oak_Option_u32_tag tag;
     union {
-        i32 Circle;
-        i32 Square;
+        u32 Some;
     } payload;
-} oak_Shape;
+} oak_Option_u32;
 
-// @source: unknown.oak:2:4
+// @source: unknown.oak:5:18
 // @package: main
 // @kind: constructor
-// @identifier: oak_Shape::Circle
-static inline oak_Shape oak_Shape_Circle( i32 value ) {
-    oak_Shape res;
-    res.tag = oak_Shape_tag_Circle;
-    res.payload.Circle = value;
+// @identifier: oak_Option_u32::Some
+static inline oak_Option_u32 oak_Option_u32_Some( u32 value ) {
+    oak_Option_u32 res;
+    res.tag = oak_Option_u32_tag_Some;
+    res.payload.Some = value;
     return res;
 }
 
-// @source: unknown.oak:3:4
+// @source: unknown.oak:5:28
 // @package: main
 // @kind: constructor
-// @identifier: oak_Shape::Square
-static inline oak_Shape oak_Shape_Square( i32 value ) {
-    oak_Shape res;
-    res.tag = oak_Shape_tag_Square;
-    res.payload.Square = value;
+// @identifier: oak_Option_u32::None
+static inline oak_Option_u32 oak_Option_u32_None(  ) {
+    oak_Option_u32 res;
+    res.tag = oak_Option_u32_tag_None;
     return res;
 }
 
-// @source: unknown.oak:4:4
+// @source: unknown.oak:3:0-3:29
+// @package: main
+// @kind: ADT
+// @identifier: Result_u8_Overflow
+typedef enum oak_Result_u8_Overflow_tag {
+    oak_Result_u8_Overflow_tag_Ok  ,
+    oak_Result_u8_Overflow_tag_Err
+} oak_Result_u8_Overflow_tag;
+
+typedef struct oak_Result_u8_Overflow {
+    oak_Result_u8_Overflow_tag tag;
+    union {
+        u8 Ok;
+        oak_Overflow Err;
+    } payload;
+} oak_Result_u8_Overflow;
+
+// @source: unknown.oak:3:21
 // @package: main
 // @kind: constructor
-// @identifier: oak_Shape::Empty
-static inline oak_Shape oak_Shape_Empty(  ) {
-    oak_Shape res;
-    res.tag = oak_Shape_tag_Empty;
+// @identifier: oak_Result_u8_Overflow::Ok
+static inline oak_Result_u8_Overflow oak_Result_u8_Overflow_Ok( u8 value ) {
+    oak_Result_u8_Overflow res;
+    res.tag = oak_Result_u8_Overflow_tag_Ok;
+    res.payload.Ok = value;
     return res;
+}
+
+// @source: unknown.oak:3:29
+// @package: main
+// @kind: constructor
+// @identifier: oak_Result_u8_Overflow::Err
+static inline oak_Result_u8_Overflow oak_Result_u8_Overflow_Err( oak_Overflow value ) {
+    oak_Result_u8_Overflow res;
+    res.tag = oak_Result_u8_Overflow_tag_Err;
+    res.payload.Err = value;
+    return res;
+}
+
+/* explicit integer conversions: total, two's complement, no
+   implementation-defined C (signed results via union punning) */
+static inline i32 oak_conv_i32_bits_u32( u32 x ) {
+  union { u32 from; i32 to; } pun;
+  pun.from = x;
+  return pun.to;
+}
+
+static inline oak_Result_u8_Overflow oak_conv_u8_checked_u32( u32 x ) {
+  if (x > (u32)255u) { return oak_Result_u8_Overflow_Err(oak_Overflow_Overflow()); }
+  return oak_Result_u8_Overflow_Ok((u8)x);
 }
 
 /* forward declarations */
-i32 oak_area2( oak_Shape s );
+oak_Option_u32 oak_first_even( u32 a, u32 b );
 i32 oak_main( void );
 
-// @source: unknown.oak:6:0-9:14
+// @source: unknown.oak:7:0-11:0
 // @package: main
 // @kind: function
-// @identifier: area2
-// @signature: fn area2(s: Shape) -> i32
-i32 oak_area2( oak_Shape s ) {
-    if ( s.tag == oak_Shape_tag_Circle ) {
-      i32 r = s.payload.Circle;
-    return ( r * 3 )  ;
+// @identifier: first_even
+// @signature: fn first_even(a: u32, b: u32) -> /* type */
+oak_Option_u32 oak_first_even( u32 a, u32 b ) {
+    if ( ( ( a - ( ( a / ((u32)( 2 )) ) * ((u32)( 2 )) ) ) == ((u32)( 0 )) ) ) {
+      return oak_Option_u32_Some(a)    ;
+    } else {
+      if ( ( ( b - ( ( b / ((u32)( 2 )) ) * ((u32)( 2 )) ) ) == ((u32)( 0 )) ) ) {
+        return oak_Option_u32_Some(b)      ;
+      } else {
+        return oak_Option_u32_None()      ;
+      }
     }
-    if ( s.tag == oak_Shape_tag_Square ) {
-      i32 w = s.payload.Square;
-    return ( w * w )  ;
-    }
-    if ( s.tag == oak_Shape_tag_Empty ) {
-    return 0  ;
-    }
-    __builtin_trap(); /* unreachable: exhaustive match */
 }
 
-// @source: unknown.oak:11:0-15:0
+// @source: unknown.oak:13:0-21:0
 // @package: main
 // @kind: function
 // @identifier: main
 // @signature: fn main() -> i32
 i32 oak_main(  ) {
-    oak_Shape c   = oak_Shape_Circle(5)  ;
-    oak_Shape q   = oak_Shape_Square(4)  ;
-    return ( oak_area2( c ) + oak_area2( q ) )  ;
+    oak_Option_u32 found   = oak_first_even( ((u32)( 3 )), ((u32)( 8 )) )  ;
+    i32 byteRange  ;
+    if ( oak_conv_u8_checked_u32( ((u32)( 300 )) ).tag == oak_Result_u8_Overflow_tag_Ok ) {
+      u8 v = oak_conv_u8_checked_u32( ((u32)( 300 )) ).payload.Ok;
+      byteRange     = ((i32)( v ))    ;
+    }
+    if ( oak_conv_u8_checked_u32( ((u32)( 300 )) ).tag == oak_Result_u8_Overflow_tag_Err ) {
+      oak_Overflow e = oak_conv_u8_checked_u32( ((u32)( 300 )) ).payload.Err;
+      byteRange     = ( 0 - 1 )    ;
+    }
+    if ( found.tag == oak_Option_u32_tag_Some ) {
+      u32 n = found.payload.Some;
+    return ( oak_conv_i32_bits_u32( n ) + byteRange )  ;
+    }
+    if ( found.tag == oak_Option_u32_tag_None ) {
+    return byteRange  ;
+    }
+    __builtin_trap(); /* unreachable: exhaustive match */
 }
 
 int main(void) {

@@ -25,6 +25,8 @@ type CodeGenerator struct {
 	stringLiterals   []string                    // Track string literals to emit as static arrays
 	stringLiteralMap map[string]int              // Map string value to index
 	adtTypes         map[string]*ast.ADTType     // Map ADT name to AST definition
+	// scrutineeCounter names hoisted match-scrutinee temporaries.
+	scrutineeCounter int
 	// recordLayouts holds the resolved natural layout of each emitted
 	// record type (semir.NaturalRecordLayout, the Oak.RecordLayoutRefinement
 	// transliteration), for nested-record placement and layout assertions.
@@ -142,7 +144,6 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitUtf8Helper()
 	cg.emitIntrinsicHelpers(program)
 	cg.emitSimdSupport(program)
-	cg.emitConversionHelpers(program)
 	cg.emitAtomicGlobals(program)
 
 	// Container typedefs (and their bounds-checked index helpers) must
@@ -160,15 +161,25 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 		}
 	}
 
-	// Now emit the type definitions
+	// Now emit the type definitions. Generic templates are never emitted:
+	// each recorded concrete instantiation is specialized and emitted
+	// instead (codegen/mono.go).
 	for _, stmt := range program.Statements {
 		switch s := stmt.(type) {
 		case *ast.ADTType:
+			if len(s.TypeParams) > 0 {
+				continue
+			}
 			cg.emitADTType(s, tc)
 		case *ast.FunctionStatement:
 			// Functions will be emitted separately
 		}
 	}
+	cg.instantiateGenericADTs(tc)
+
+	// Conversion helpers come after ADT emission: checked narrowing returns
+	// a monomorphized Result (docs/spec/20-types.md §11.1).
+	cg.emitConversionHelpers(program)
 
 	// Forward declarations: C requires declaration before use, and Oak
 	// functions are order-independent.
@@ -428,6 +439,12 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 
 	// Check if already emitted
 	if cg.types[cName] {
+		return
+	}
+
+	// Generic templates have no representation of their own; their
+	// instantiations are emitted by instantiateGenericADTs.
+	if len(adt.TypeParams) > 0 {
 		return
 	}
 
@@ -772,8 +789,15 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 			// under the matching guard.
 			info := cg.localContainerOf(match.Scrutinee)
 			if info.kind != containerADT {
-				cg.write("  OAK_UNSUPPORTED_MATCH_SCRUTINEE;\n")
-				return
+				// The type checker's recorded instantiation covers
+				// scrutinees the local-type table cannot classify
+				// (typechecker/mono.go).
+				if mangled, resolved := tc.MatchResolution(match); resolved {
+					info = localContainer{kind: containerADT, adtName: mangled}
+				} else {
+					cg.write("  OAK_UNSUPPORTED_MATCH_SCRUTINEE;\n")
+					return
+				}
 			}
 			adt := cg.adtTypes[info.adtName]
 			cName := cg.cTypeName(info.adtName)
@@ -799,6 +823,73 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 		// Wildcard: unconditional; later arms are unreachable by
 		// exhaustiveness analysis.
 		cg.emitExpression(arm.Body, tc)
+		return
+	}
+	// Exhaustiveness is checked upstream; if control ever falls through the
+	// guards, that impossibility is a fail-stop, never undefined behavior.
+	cg.write("  __builtin_trap(); /* unreachable: exhaustive match */\n")
+}
+
+// emitMatchStatement emits a statement-position match (side-effecting
+// arms) as tag-guarded statement blocks — the same structure as
+// emitMatchReturn with bodies in statement position. Produced by the
+// lowering hoist for value matches and by statement-position ADT matches.
+func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *typechecker.TypeChecker) {
+	for _, arm := range match.Arms {
+		emitBody := func() {
+			if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock && block.Block != nil {
+				cg.emitBlockStatement(block.Block, tc, false)
+			} else {
+				cg.emitStatementExpression(arm.Body, tc)
+			}
+		}
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			cg.write("  if ( ")
+			cg.emitExpressionFragment(match.Scrutinee, tc)
+			cg.output.WriteString(" == ")
+			cg.emitExpressionFragment(pattern.Value, tc)
+			cg.output.WriteString(" ) {\n")
+			cg.indentLevel++
+			emitBody()
+			cg.indentLevel--
+			cg.write("  }\n")
+			continue
+		case *ast.VariantPattern:
+			info := cg.localContainerOf(match.Scrutinee)
+			if info.kind != containerADT {
+				if mangled, resolved := tc.MatchResolution(match); resolved {
+					info = localContainer{kind: containerADT, adtName: mangled}
+				} else {
+					cg.write("  OAK_UNSUPPORTED_MATCH_SCRUTINEE;\n")
+					return
+				}
+			}
+			adt := cg.adtTypes[info.adtName]
+			cName := cg.cTypeName(info.adtName)
+			variantName := pattern.Variant.Value
+			cg.write("  if ( ")
+			cg.emitExpressionFragment(match.Scrutinee, tc)
+			cg.output.WriteString(fmt.Sprintf(".tag == %s_tag_%s ) {\n", cName, variantName))
+			if binding, ok := pattern.Payload.(*ast.BindingPattern); ok && binding.Name != nil {
+				payloadType := "OAK_UNKNOWN_PAYLOAD"
+				for _, variant := range adt.Variants {
+					if variant.Name.Value == variantName && variant.Payload != nil {
+						payloadType = cg.parsePayloadType(variant.Payload)
+					}
+				}
+				cg.write(fmt.Sprintf("    %s %s = ", payloadType, binding.Name.Value))
+				cg.emitExpressionFragment(match.Scrutinee, tc)
+				cg.output.WriteString(fmt.Sprintf(".payload.%s;\n", variantName))
+			}
+			cg.indentLevel++
+			emitBody()
+			cg.indentLevel--
+			cg.write("  }\n")
+			continue
+		}
+		// Wildcard: unconditional; later arms unreachable by exhaustiveness.
+		emitBody()
 		return
 	}
 }
@@ -879,6 +970,9 @@ func (cg *CodeGenerator) classifyContainer(typeExpr ast.Expression) localContain
 	case *ast.IndexExpression:
 		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Str" {
 			return localContainer{kind: containerString}
+		}
+		if mangled, isGeneric := cg.genericAnnotationName(t); isGeneric {
+			return localContainer{kind: containerADT, adtName: mangled}
 		}
 		switch index := t.Index.(type) {
 		case *ast.IntegerLiteral:
@@ -1413,6 +1507,35 @@ func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.Typ
 		cg.emitMatchReturn(match, tc)
 		return
 	}
+	// An ADT match on a non-identifier scrutinee (matching directly on a
+	// call result) hoists the scrutinee into a temporary — evaluated once —
+	// then emits the guarded returns against the temporary. The type
+	// checker's recorded resolution names the monomorphized type.
+	if match, ok := expr.(*ast.MatchExpression); ok {
+		if _, isIdent := match.Scrutinee.(*ast.Identifier); !isIdent {
+			if mangled, resolved := tc.MatchResolution(match); resolved {
+				if _, known := cg.adtTypes[mangled]; known {
+					tmp := fmt.Sprintf("oak_scrutinee_%d", cg.scrutineeCounter)
+					cg.scrutineeCounter++
+					cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), tmp))
+					cg.emitExpressionFragment(match.Scrutinee, tc)
+					cg.output.WriteString(";\n")
+					if cg.localTypes == nil {
+						cg.localTypes = map[string]localContainer{}
+					}
+					cg.localTypes[tmp] = localContainer{kind: containerADT, adtName: mangled}
+					hoisted := &ast.MatchExpression{
+						BaseNode:  match.BaseNode,
+						Token:     match.Token, // same position: resolution carries over
+						Scrutinee: &ast.Identifier{Token: match.Token, Value: tmp},
+						Arms:      match.Arms,
+					}
+					cg.emitMatchReturn(hoisted, tc)
+					return
+				}
+			}
+		}
+	}
 	cg.write("  return ")
 	cg.emitExpressionFragment(expr, tc)
 	cg.write(";\n")
@@ -1489,17 +1612,29 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			}
 			cg.output.WriteString(")")
 		} else {
-			// Bare variant: resolve the ADT by unique variant name across
-			// the program's declarations; ambiguity fails closed.
+			// Bare variant: the type checker's recorded resolution is the
+			// authority (typechecker/mono.go) — it knows which
+			// instantiation this constructor was checked against. The
+			// unique-name search over concrete declarations is the
+			// fallback; generic templates never participate; ambiguity
+			// fails closed.
 			adtName := ""
-			for name, adt := range cg.adtTypes {
-				for _, variant := range adt.Variants {
-					if variant.Name.Value == e.Variant.Value {
-						if adtName != "" && adtName != name {
-							adtName = ""
-							break
+			if mangled, resolved := tc.VariantResolution(e); resolved {
+				adtName = mangled
+			}
+			if adtName == "" {
+				for name, adt := range cg.adtTypes {
+					if len(adt.TypeParams) > 0 {
+						continue
+					}
+					for _, variant := range adt.Variants {
+						if variant.Name.Value == e.Variant.Value {
+							if adtName != "" && adtName != name {
+								adtName = ""
+								break
+							}
+							adtName = name
 						}
-						adtName = name
 					}
 				}
 			}
@@ -1626,11 +1761,23 @@ func (cg *CodeGenerator) emitADTMatch(expr *ast.MatchExpression, tc *typechecker
 	// Infer ADT type name from first variant pattern
 	typeName := "Unknown"
 	var adtDef *ast.ADTType
-	if len(expr.Arms) > 0 {
+	// The type checker's recorded scrutinee instantiation is the authority
+	// (typechecker/mono.go); the variant-name scan is the fallback and
+	// never considers generic templates.
+	if mangled, resolved := tc.MatchResolution(expr); resolved {
+		if adt, registered := cg.adtTypes[mangled]; registered {
+			typeName = cg.cTypeName(mangled)
+			adtDef = adt
+		}
+	}
+	if adtDef == nil && len(expr.Arms) > 0 {
 		if variantPattern, ok := expr.Arms[0].Pattern.(*ast.VariantPattern); ok {
 			// Try to find the ADT type by searching through known ADT types
 			variantName := variantPattern.Variant.Value
 			for name, adt := range cg.adtTypes {
+				if len(adt.TypeParams) > 0 {
+					continue
+				}
 				for _, variant := range adt.Variants {
 					if variant.Name.Value == variantName {
 						typeName = cg.cTypeName(name)
@@ -1831,6 +1978,11 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 		// lowers to the same C string struct (docs/spec/70-strings.md).
 		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Str" {
 			return "string"
+		}
+		// Concrete generic-ADT annotations lower to their monomorphized
+		// typedefs: Option[i32] -> oak_Option_i32 (codegen/mono.go).
+		if mangled, isGeneric := cg.genericAnnotationName(indexExpr); isGeneric {
+			return cg.cTypeName(mangled)
 		}
 		// Check if this is an array type annotation
 		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
@@ -2095,6 +2247,10 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 		if isLastInFunction {
 			// Last statement in function - emit as return
 			cg.emitExpression(s.Expression, tc)
+		} else if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+			// Statement-position match with side-effecting arms
+			// (docs/spec/30-adts): tag-guarded statement blocks.
+			cg.emitMatchStatement(match, tc)
 		} else {
 			// Regular statement - emit without return
 			cg.emitStatementExpression(s.Expression, tc)

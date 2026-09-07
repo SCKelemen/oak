@@ -18,6 +18,23 @@ A bare constructor has Unit payload. A payload-bearing constructor has exactly t
 
 ADTs are not ordinary untagged unions. The constructor identity/tag is part of the semantic value.
 
+## 1a. Generic instantiation and representation
+
+A generic ADT (`Option[T]`, `Result[T, E]`) is a template; each concrete
+instantiation a program uses is a distinct nominal type with its own
+runtime representation. The compiler **monomorphizes**: the type checker
+records every concrete instantiation and the instantiation each
+constructor/match was checked against (it is the single resolution
+authority — the backend never resolves variants by name guessing), and the
+C backend emits one specialized tagged union per instantiation
+(`Option[i32]` → `oak_Option_i32`) by substituting the parameters in the
+declared payload types. `Oak.Monomorphization` (Lean) proves substitution
+preserves the variant count and every tag in order — so the tag-guarded
+dispatch laws of `Oak.ADTSemantics` transfer to every instantiation — and
+that payloads are substituted exactly. Templates themselves are never
+emitted; instantiations whose arguments cannot be named (views, functions,
+anonymous shapes) fail closed.
+
 ## 2. Construction
 
 Canonical qualified form:

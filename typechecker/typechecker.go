@@ -463,6 +463,12 @@ type TypeChecker struct {
 	// checkedExterns marks extern bindings already validated, so the
 	// predeclare pass and the statement pass never double-report.
 	checkedExterns map[*ast.FunctionStatement]bool
+	// Monomorphization records (typechecker/mono.go): the concrete
+	// generic-ADT instantiations the program uses and the instantiation
+	// each variant expression / match scrutinee was checked against.
+	adtInstantiations  map[string]Instantiation
+	variantResolutions map[string]string
+	matchResolutions   map[string]string
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -1647,6 +1653,11 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 		// Create Overflow error type (ADT type)
 		overflowType := &ADTType{Name: "Overflow"}
 
+		// The backend monomorphizes this instantiation like any other
+		// (typechecker/mono.go); usable once the program declares
+		// Result[T, E] and Overflow.
+		tc.recordADTInstantiation("Result", []Type{targetPrimType, overflowType})
+
 		// Return Result[target, Overflow]
 		return &GenericType{
 			Name:     "Result",
@@ -1920,6 +1931,13 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		tc.addError(expr.Scrutinee, "Atomic[T] cells cannot be matched as values; load the cell explicitly")
 		return nil
 	}
+	// Record the scrutinee's concrete type for the backend
+	// (typechecker/mono.go): matches over Option[i32] dispatch on the
+	// monomorphized type; matches over binding locals resolve without
+	// name scans.
+	if name, _, args, isADT := adtInstantiation(scrutineeType); isADT {
+		tc.recordMatchResolution(expr, name, args)
+	}
 
 	// Check that match expression has at least one arm
 	if len(expr.Arms) == 0 {
@@ -2137,6 +2155,10 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expec
 	var bindings map[string]Type
 	refinedExpected := expected
 	if name, _, args, hasExpectedADT := adtInstantiation(expected); hasExpectedADT && name == adtTypeName {
+		// Record the type this constructor was checked against
+		// (typechecker/mono.go), so the backend calls the right
+		// constructor without name guessing.
+		tc.recordVariantResolution(expr, adtTypeName, args)
 		var resultSubstitution Substitution
 		var reachable bool
 		bindings, resultSubstitution, reachable = tc.variantIndexBindings(adtDef, variant, args)

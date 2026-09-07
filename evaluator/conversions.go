@@ -18,7 +18,7 @@ func evalConversionCall(name string, args []ast.Expression, env *object.Environm
 		return nil, false
 	}
 	if op == "checked" {
-		return newError("%s: checked conversions require Result[T, Overflow], which does not lower yet", name), true
+		return evalCheckedConversion(name, target, args, env), true
 	}
 	if len(args) != 1 {
 		return newError("%s takes exactly one argument", name), true
@@ -77,6 +77,44 @@ func evalConversionCall(name string, args []ast.Expression, env *object.Environm
 		return &object.Integer{Value: int64(unsignedValue)}, true
 	}
 	return newError("unknown conversion %s", name), true
+}
+
+// evalCheckedConversion returns Result[target, Overflow]: Ok on in-range
+// values, Err(Overflow) otherwise — the same contract as the C helper.
+// Requires the program to declare Result (Ok/Err) and Overflow.
+func evalCheckedConversion(name, target string, args []ast.Expression, env *object.Environment) object.Object {
+	if len(args) != 1 {
+		return newError("%s takes exactly one argument", name)
+	}
+	resultADT, hasResult := env.GetADTType("Result")
+	overflowADT, hasOverflow := env.GetADTType("Overflow")
+	if !hasResult || !hasOverflow || len(resultADT.Variants) < 2 || len(overflowADT.Variants) == 0 {
+		return newError("%s requires declared Result[T, E] and Overflow types (docs/spec/20-types.md)", name)
+	}
+	operandObject := Eval(args[0], env)
+	if isError(operandObject) {
+		return operandObject
+	}
+	operand, isInt := operandObject.(*object.Integer)
+	if !isInt {
+		return newError("%s requires an integer operand, got %s", name, operandObject.Type())
+	}
+
+	targetBits := uint(typechecker.PrimitiveBits(target))
+	inRange := false
+	if target[0] == 'i' {
+		max := int64(1)<<(targetBits-1) - 1
+		min := -(int64(1) << (targetBits - 1))
+		inRange = operand.Value >= min && operand.Value <= max
+	} else {
+		inRange = operand.Value >= 0 && uint64(operand.Value) <= widthMask(targetBits)
+	}
+
+	if inRange {
+		return &object.ADTValue{TypeName: "Result", Variant: resultADT.Variants[0].Name, Value: operand}
+	}
+	overflow := &object.ADTValue{TypeName: "Overflow", Variant: overflowADT.Variants[0].Name}
+	return &object.ADTValue{TypeName: "Result", Variant: resultADT.Variants[1].Name, Value: overflow}
 }
 
 func widthMask(bits uint) uint64 {

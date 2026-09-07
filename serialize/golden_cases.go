@@ -408,6 +408,37 @@ main: (): i32 = classify(5, false)
 `,
 		},
 		{
+			// Generic ADT monomorphization (codegen/mono.go): two
+			// instantiations of one template get separate specialized tagged
+			// unions, variant construction and matching resolve
+			// type-directed via the checker's records, and checked
+			// narrowing returns a monomorphized Result.
+			Name: "generic_adt",
+			SourceCode: `
+Overflow: type = | Overflow
+
+Result[T, E]: type = Ok: T | Err: E
+
+Option[T]: type = Some: T | None
+
+first_even: (a: u32, b: u32): Option[u32] {
+  a - (a / u32(2)) * u32(2) == u32(0) ? { .Some(a) } | {
+    b - (b / u32(2)) * u32(2) == u32(0) ? { .Some(b) } | { .None }
+  }
+}
+
+main: (): i32 {
+  found: Option[u32] = first_even(u32(3), u32(8))
+  byteRange: i32 = u8_checked_u32(u32(300)) ?
+    | .Ok(v) => i32(v)
+    | .Err(e) => 0 - 1
+  found ?
+    | .Some(n) => i32_bits_u32(n) + byteRange
+    | .None => byteRange
+}
+`,
+		},
+		{
 			// Unsafe boundary: unprovable span overlap is admitted inside unsafe
 			// as a recorded OAK-B0110 assumption (warning), not an error.
 			Name: "unsafe_block",
