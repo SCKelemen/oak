@@ -399,6 +399,7 @@ func (cg *CodeGenerator) emitHeader() {
 	cg.write("\n")
 	cg.write("typedef u8  byte;\n")
 	cg.write("typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */\n")
+	cg.write("typedef u8 oak_never; /* backend carrier for uninhabited Oak bottom type */\n")
 	cg.write("\n")
 	// Emit string type definition
 	cg.write("typedef struct oak_string {\n")
@@ -2042,6 +2043,8 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 			return "Bool"
 		case "()":
 			return "void"
+		case "never":
+			return "oak_never"
 		default:
 			// c-library boundary types carry their C spellings
 			// (docs/spec/92-ffi.md section 2.1).
