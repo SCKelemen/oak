@@ -41,8 +41,15 @@ def decodeNode (bound : Nat) (built : Array BooleanCNF.Expr) (n : Node) :
 def decodeProgram (bound : Nat) (nodes : Array Node) : Except String BooleanCNF.Expr := do
   if nodes.isEmpty || nodes.size > 4096 then throw "program needs 1..4096 nodes"
   let mut built : Array BooleanCNF.Expr := #[]
+  let mut sizes : Array Nat := #[]
   for node in nodes do
     let e ← decodeNode bound built node
+    let size := match node.op with
+      | "!" => 1 + sizes[node.left]!
+      | "&&" | "||" => 1 + sizes[node.left]! + sizes[node.right]!
+      | _ => 1
+    if size > 4096 then throw "expanded expression exceeds 4096 nodes"
+    sizes := sizes.push size
     built := built.push e
   match built.back? with
   | some e => return e
@@ -91,6 +98,8 @@ theorem checkTexts_sound (m : Model) (bp sp : String)
       have h : checkSafety m b s = true := by simpa [hb, hs] using accepted
       exact checkSafety_sound m b s h
 
+
+#print axioms checkTexts_sound
 end OakVerification.BooleanModel
 
 open OakVerification.BooleanModel

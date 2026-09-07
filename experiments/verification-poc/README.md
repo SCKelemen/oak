@@ -228,3 +228,8 @@ The [numbered Boolean proof bridge](proof/NumberedCNF.md) now connects the Lean
 Boolean encoder to the proved RUP checker. Its opt-in real-solver gate reconstructs
 the target CNF from the expression before checking each certificate. The Go
 implementation and Oak frontend still require their own refinement proofs.
+
+The [Boolean invariant certificate path](proof/BooleanSafety.md) exports checked
+Oak projects with `export-boolean` and checks base/preservation refutations for
+their decoded transition model. Reachable-state safety is proved in Lean; the
+Oak frontend and export correspondence remain outside that theorem.

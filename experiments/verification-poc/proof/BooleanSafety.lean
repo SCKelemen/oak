@@ -57,7 +57,10 @@ def checkSafety (m : Model) (baseProof stepProof : List Instruction) : Bool :=
 theorem checkSafety_sound (m : Model) (baseProof stepProof : List Instruction)
     (accepted : checkSafety m baseProof stepProof = true) :
     ∀ s, Reachable m s → eval s m.invariant = true := by
-  obtain ⟨baseAccepted, stepAccepted⟩ := Bool.and_eq_true.mp accepted
+  have both : NumberedCNF.checkEncoded (base m) baseProof = true ∧
+      NumberedCNF.checkEncoded (preservation m) stepProof = true := by
+    simpa only [checkSafety, Bool.and_eq_true] using accepted
+  obtain ⟨baseAccepted, stepAccepted⟩ := both
   have hb := NumberedCNF.checkEncoded_sound (base m) baseProof baseAccepted
   have hs := NumberedCNF.checkEncoded_sound (preservation m) stepProof stepAccepted
   intro s reachable

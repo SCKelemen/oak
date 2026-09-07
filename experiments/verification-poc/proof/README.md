@@ -165,3 +165,10 @@ Acceptance implies unsatisfiability of the expression, or validity when checking
 its negation. The opt-in solver job exercises this path with real CaDiCaL proofs
 and rejects satisfiable targets and corrupted certificates. Go allocation and
 the Oak frontend remain outside the theorem.
+
+## Boolean transition safety
+
+[BooleanSafety.lean](BooleanSafety.md) proves reachable-state invariance from
+accepted base and preservation refutations. `BooleanModel.lean` reconstructs the
+obligations from a bounded Boolean model export and checks the two proof streams.
+The opt-in solver gate exercises safe and relaxed publication models from Oak.
