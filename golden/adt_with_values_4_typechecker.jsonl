@@ -3,12 +3,8 @@
 {"error_index":2,"message":"[type error] nil expression encountered (parser error)","type":"error"}
 {"error_index":3,"message":"[type error] nil expression encountered (parser error)","type":"error"}
 {"error_index":4,"message":"[type error] nil expression encountered (parser error)","type":"error"}
-{"error_index":5,"message":"[type error] nil expression encountered (parser error)","type":"error"}
-{"error_index":6,"message":"[type error] nil expression encountered (parser error)","type":"error"}
 {"code":"OAK-T0000","index":0,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
 {"code":"OAK-T0000","index":1,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
 {"code":"OAK-T0000","index":2,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
 {"code":"OAK-T0000","index":3,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
 {"code":"OAK-T0000","index":4,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
-{"code":"OAK-T0000","index":5,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
-{"code":"OAK-T0000","index":6,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}

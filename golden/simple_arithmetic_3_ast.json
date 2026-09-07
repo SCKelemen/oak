@@ -202,19 +202,49 @@
         "name": "Status",
         "variants": [
           {
-            "name": "Status",
-            "payload": {
-              "type": "Identifier",
+            "literal": {
+              "type": "IntegerLiteral",
               "data": {
-                "value": "Ok"
+                "value": 200
               },
               "position": {
                 "line": 14,
-                "column": 5,
-                "byte_start": 203,
-                "byte_end": 205
+                "column": 9,
+                "byte_start": 207,
+                "byte_end": 210
               }
-            }
+            },
+            "name": "Ok"
+          },
+          {
+            "literal": {
+              "type": "IntegerLiteral",
+              "data": {
+                "value": 404
+              },
+              "position": {
+                "line": 15,
+                "column": 15,
+                "byte_start": 225,
+                "byte_end": 228
+              }
+            },
+            "name": "NotFound"
+          },
+          {
+            "literal": {
+              "type": "IntegerLiteral",
+              "data": {
+                "value": 401
+              },
+              "position": {
+                "line": 16,
+                "column": 19,
+                "byte_start": 247,
+                "byte_end": 250
+              }
+            },
+            "name": "Unauthorized"
           }
         ]
       },
@@ -223,59 +253,6 @@
         "column": 1,
         "byte_start": 186,
         "byte_end": 192
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 14,
-        "column": 7,
-        "byte_start": 205,
-        "byte_end": 206
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "IntegerLiteral",
-          "data": {
-            "value": 200
-          },
-          "position": {
-            "line": 14,
-            "column": 9,
-            "byte_start": 207,
-            "byte_end": 210
-          }
-        }
-      },
-      "position": {
-        "line": 14,
-        "column": 9,
-        "byte_start": 207,
-        "byte_end": 210
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 15,
-        "column": 3,
-        "byte_start": 213,
-        "byte_end": 214
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 16,
-        "column": 3,
-        "byte_start": 231,
-        "byte_end": 232
       }
     },
     {

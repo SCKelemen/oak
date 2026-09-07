@@ -230,6 +230,18 @@ Semicolons may separate statements in explicit single-line blocks, but normal Oa
 
 ## 6. ADTs
 
+Inline declarations take no leading pipe — the `=` already introduces the
+alternatives, and payload-carrying variants are unambiguous (aliases are
+bare identifiers, records use braces):
+
+```oak
+Case: type = Upper | Lower | Title | Modifier | Other
+Shape: type = Circle: i32 | Square: i32 | Empty
+```
+
+In multiline layout the leading pipe is canonical, exposing the closed set
+of alternatives down the margin:
+
 ```oak
 Option[T]: type =
   | Some: T

@@ -6,19 +6,49 @@
         "name": "Status",
         "variants": [
           {
-            "name": "Status",
-            "payload": {
-              "type": "Identifier",
+            "literal": {
+              "type": "IntegerLiteral",
               "data": {
-                "value": "Ok"
+                "value": 200
               },
               "position": {
                 "line": 4,
-                "column": 5,
-                "byte_start": 32,
-                "byte_end": 34
+                "column": 9,
+                "byte_start": 36,
+                "byte_end": 39
               }
-            }
+            },
+            "name": "Ok"
+          },
+          {
+            "literal": {
+              "type": "IntegerLiteral",
+              "data": {
+                "value": 404
+              },
+              "position": {
+                "line": 5,
+                "column": 15,
+                "byte_start": 54,
+                "byte_end": 57
+              }
+            },
+            "name": "NotFound"
+          },
+          {
+            "literal": {
+              "type": "IntegerLiteral",
+              "data": {
+                "value": 401
+              },
+              "position": {
+                "line": 6,
+                "column": 19,
+                "byte_start": 76,
+                "byte_end": 79
+              }
+            },
+            "name": "Unauthorized"
           }
         ]
       },
@@ -33,82 +63,10 @@
       "type": "ExpressionStatement",
       "data": {},
       "position": {
-        "line": 4,
-        "column": 7,
-        "byte_start": 34,
-        "byte_end": 35
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "IntegerLiteral",
-          "data": {
-            "value": 200
-          },
-          "position": {
-            "line": 4,
-            "column": 9,
-            "byte_start": 36,
-            "byte_end": 39
-          }
-        }
-      },
-      "position": {
-        "line": 4,
-        "column": 9,
-        "byte_start": 36,
-        "byte_end": 39
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 5,
-        "column": 3,
-        "byte_start": 42,
-        "byte_end": 43
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 6,
-        "column": 3,
-        "byte_start": 60,
-        "byte_end": 61
-      }
-    },
-    {
-      "type": "ADTType",
-      "data": {
-        "name": "StatusInfo",
-        "variants": [
-          {
-            "name": "StatusInfo",
-            "payload": {
-              "type": "Identifier",
-              "data": {
-                "value": "Ok"
-              },
-              "position": {
-                "line": 10,
-                "column": 5,
-                "byte_start": 134,
-                "byte_end": 136
-              }
-            }
-          }
-        ]
-      },
-      "position": {
-        "line": 9,
-        "column": 1,
-        "byte_start": 113,
-        "byte_end": 123
+        "line": 10,
+        "column": 20,
+        "byte_start": 149,
+        "byte_end": 150
       }
     },
     {
@@ -116,57 +74,9 @@
       "data": {},
       "position": {
         "line": 10,
-        "column": 7,
-        "byte_start": 136,
-        "byte_end": 137
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "RecordLiteral",
-          "data": {
-            "fields": {
-              "code": {
-                "type": "IntegerLiteral",
-                "data": {
-                  "value": 200
-                },
-                "position": {
-                  "line": 10,
-                  "column": 17,
-                  "byte_start": 146,
-                  "byte_end": 149
-                }
-              },
-              "status": {
-                "type": "StringLiteral",
-                "data": {
-                  "value": "Okay"
-                },
-                "position": {
-                  "line": 10,
-                  "column": 30,
-                  "byte_start": 159,
-                  "byte_end": 165
-                }
-              }
-            }
-          },
-          "position": {
-            "line": 10,
-            "column": 9,
-            "byte_start": 138,
-            "byte_end": 139
-          }
-        }
-      },
-      "position": {
-        "line": 10,
-        "column": 9,
-        "byte_start": 138,
-        "byte_end": 139
+        "column": 37,
+        "byte_start": 166,
+        "byte_end": 167
       }
     },
     {

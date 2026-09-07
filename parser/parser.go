@@ -3268,6 +3268,12 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 	} else if p.currentTokenIs(token.IDENT) && p.peekTokenIs(token.PIPE) {
 		// IDENT followed by PIPE - variant list without leading pipe
 		isVariantList = true
+	} else if p.currentTokenIs(token.IDENT) && p.peekTokenIs(token.COLON) {
+		// IDENT followed by COLON - a payload-carrying first variant without
+		// a leading pipe: Shape: type = Circle: i32 | Square: i32 | Empty
+		// (aliases are bare identifiers, records use braces, so the colon is
+		// unambiguous here).
+		isVariantList = true
 	}
 
 	if isVariantList {
