@@ -22,13 +22,13 @@ fn load_acquire() -> u64
 fn load_seq_cst() -> u64
   atomic_load_seq_cst(cell)
 
-fn store_relaxed(value: u64) -> unit
+fn store_relaxed(value: u64) -> ()
   atomic_store_relaxed(cell, value)
 
-fn store_release(value: u64) -> unit
+fn store_release(value: u64) -> ()
   atomic_store_release(cell, value)
 
-fn store_seq_cst(value: u64) -> unit
+fn store_seq_cst(value: u64) -> ()
   atomic_store_seq_cst(cell, value)
 
 fn fetch_add_relaxed(value: u64) -> u64
@@ -49,16 +49,16 @@ fn cas_acq_rel(expected: u64, desired: u64) -> u64
 fn cas_seq_cst(expected: u64, desired: u64) -> u64
   atomic_compare_exchange_seq_cst_seq_cst(cell, expected, desired)
 
-fn fence_acquire() -> unit
+fn fence_acquire() -> ()
   atomic_fence_acquire()
 
-fn fence_release() -> unit
+fn fence_release() -> ()
   atomic_fence_release()
 
-fn fence_acq_rel() -> unit
+fn fence_acq_rel() -> ()
   atomic_fence_acq_rel()
 
-fn fence_seq_cst() -> unit
+fn fence_seq_cst() -> ()
   atomic_fence_seq_cst()
 `
 
