@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
@@ -184,7 +183,3 @@ func compareExchangeMacro(spec semir.AtomicBuiltinSpec) (string, error) {
 	}
 	return "__oak_cas_" + suffix, nil
 }
-
-// Keep strings imported intentionally exercised at compile time: macro output
-// must never carry an order token supplied by a runtime Oak value.
-var _ = strings.Builder{}
