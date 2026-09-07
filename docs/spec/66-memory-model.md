@@ -9,15 +9,19 @@ The governing rule is:
 > Shared-memory correctness is an explicit relation between events, not an
 > accidental consequence of compiler or processor behavior.
 
-This chapter intentionally separates two questions:
+This chapter intentionally separates the layers:
 
 1. **What is happens-before and what constitutes a data race?** This chapter
    specifies and implements those core relations.
 2. **Which synchronization witnesses are valid?** `67-memory-ordering.md`
    extends the same execution model with modification order, release sequences,
-   and fence-mediated synchronization. Sequential consistency, backend
-   refinement, and AArch64 litmus validation remain closure work before the
-   complete machine memory model is declared finished.
+   and fence-mediated synchronization.
+3. **How are all seq-cst events globally ordered?** `68-sequential-consistency.md`
+   defines the separate SC witness and its HB, modification-order, and read
+   visibility constraints.
+
+Backend refinement and AArch64 litmus validation remain before the complete
+compiler-to-machine story is closed.
 
 ## 1. Execution events
 
@@ -206,8 +210,8 @@ Its graph queries obey these structural rules:
 6. traversal work is finite and bounded by the supplied execution size;
 7. zero internal allocations are regression-tested with `testing.AllocsPerRun`.
 
-Chapter 67 preserves the same rule for release-sequence traversal: it walks
-existing reads-from links with an event-count bound and no internal allocation.
+Chapter 67 preserves the same rule for release-sequence traversal, and chapter
+68 keeps the global SC witness caller-owned while reusing the HB workspace.
 
 The reference implementation currently favors simple auditable bounded scans
 over sophisticated graph indexing. Faster representations may be added later as
@@ -227,9 +231,9 @@ refinements while preserving this semantic model.
 - the release-like and acquire-like order classifications contain the intended
   orders and exclude relaxed.
 
-The same Lean module now also models release sequences and the fence
-synchronization constructors from chapter 67, with publication theorems for
-those paths.
+The same Lean module also models release sequences and the fence synchronization
+constructors from chapter 67. `Oak.SequentialConsistency` models the global SC
+order, its HB/MO consistency, and SC-read visibility from chapter 68.
 
 These are mathematical language-level theorems. They do not yet constitute a
 formal refinement proof from Go graph traversal to Lean or from generated C to
@@ -249,8 +253,9 @@ AArch64 instructions.
 - undersized scratch fails explicitly;
 - HB traversal performs zero internal allocations;
 - race queries perform zero internal allocations;
-- chapter-67 tests add modification-order, RMW-chain, release-sequence, and
-  fence-mediated publication coverage.
+- chapter-67 tests cover modification order, RMW chains, release sequences, and
+  fence-mediated publication;
+- chapter-68 tests cover global SC membership/order and SC-read visibility.
 
 The full repository Go/race suite and Lean build remain CI acceptance gates.
 
@@ -268,21 +273,22 @@ The full repository Go/race suite and Lean build remain CI acceptance gates.
 | modification order | specified + implemented in chapter 67 |
 | release-sequence semantics | specified + implemented + Lean-modeled in chapter 67 |
 | fence-mediated synchronization | specified + implemented + Lean-modeled in chapter 67 |
+| seq-cst global order and read visibility | specified + implemented + Lean-modeled in chapter 68 |
 | Go-to-Lean refinement | not yet proved |
-| seq-cst global order | next |
-| compiler/C refinement | not yet proved |
-| AArch64 weak-memory litmus suite | not yet implemented |
+| compiler/C refinement | next major layer |
+| AArch64 weak-memory litmus suite | next major layer |
 
 ## 12. Next closure steps
 
-Before higher-level lock-free structures depend on the memory model as a closed
-contract, Oak should add:
+The language-level relation set is now explicit. Before higher-level lock-free
+structures depend on it end to end, Oak should verify refinement through:
 
-1. sequential-consistency total-order constraints;
-2. backend/compiler refinement tests;
-3. AArch64 MP/SB/LB/IRIW-style litmus coverage and assembly inspection;
-4. target lock-free admission rules for realtime profiles.
+1. generated-C memory-order/assembly tests;
+2. AArch64 MP/SB/LB/IRIW-style litmus coverage and instruction inspection;
+3. target lock-free admission rules for realtime profiles;
+4. direct implementation-to-Lean refinement for the most load-bearing pieces
+   where the proof cost is justified.
 
-Only after those pieces are explicit should `SpscRing[T, N]` be treated as a
-proof consumer of the complete machine-memory model rather than as an isolated
-algorithm test.
+Only after the compiler/machine projection is demonstrated should
+`SpscRing[T, N]` be treated as a proof consumer of Oak's memory model rather
+than as an isolated algorithm test.
