@@ -154,13 +154,14 @@ func emitStreamCase(b *strings.Builder,c streamCase,mutation string,expected boo
  for i,cmd:=range r.commands {fmt.Fprintf(b,"commands[%d] = %s\n",i,cmd)}
  fmt.Fprintf(b,"nvars: u32 = %d\n",c.Variables)
  b.WriteString(mutation)
- fmt.Fprintf(b,"result: Bool = rup_stream_check(pool[0:%d], initial[0:%d], sizes[0:%d], refs[0:%d], commands[0:%d], nvars)\n",len(r.lits),len(r.starts),len(r.lengths),len(r.refs),len(r.commands))
+ fmt.Fprintf(b,"pool_view: []u32 = pool[0:%d]\ninitial_view: []u32 = initial[0:%d]\nsizes_view: []u32 = sizes[0:%d]\nrefs_view: []u32 = refs[0:%d]\ncommands_view: []RUPCommand = commands[0:%d]\n",len(r.lits),len(r.starts),len(r.lengths),len(r.refs),len(r.commands))
+ fmt.Fprintln(b,"result: Bool = rup_stream_check(pool_view, initial_view, sizes_view, refs_view, commands_view, nvars)")
  fmt.Fprintf(b,"assert(result == %t)\n}\n",expected)
 }
 func runOakStream(t *testing.T,source string) {
  t.Helper();cc,err:=exec.LookPath("cc");if err!=nil {t.Fatal("C compiler required for Oak stream checks")}
  generated,err:=compiler.New().WithSource("self_hosted_stream_test.oak",source).EmitC().Get();if err!=nil {t.Fatalf("Oak stream compile: %v",err)}
- for _,bad:=range []string{"malloc(","calloc(","realloc(","OAK_UNSUPPORTED"} {if strings.Contains(generated,bad) {t.Fatalf("unexpected %s in generated checker",bad)}}
+ for _,bad:=range []string{"malloc(","calloc(","realloc(","OAK_UNSUPPORTED"} {if at:=strings.Index(generated,bad);at>=0 {start:=at-180;if start<0 {start=0};end:=at+400;if end>len(generated) {end=len(generated)};t.Fatalf("unexpected %s in generated checker: %s",bad,generated[start:end])}}
  dir:=t.TempDir();cpath:=filepath.Join(dir,"stream.c");bin:=filepath.Join(dir,"stream")
  if err:=os.WriteFile(cpath,[]byte(generated),0644);err!=nil {t.Fatal(err)}
  ctx,cancel:=context.WithTimeout(context.Background(),90*time.Second);defer cancel()
@@ -174,13 +175,15 @@ func TestSelfHostedProofStreams(t *testing.T) {
  rup,err:=os.ReadFile("self_hosted_rup.oak");if err!=nil {t.Fatal(err)}
  stream,err:=os.ReadFile("self_hosted_stream.oak");if err!=nil {t.Fatal(err)}
  corpus:=streamCorpus(t);accepted:=0
- var source strings.Builder;source.Write(rup);source.Write(stream);source.WriteString("\nmain: (): i32 {\n")
- for _,c:=range corpus {emitStreamCase(&source,c,"",c.Expected);if c.Expected {accepted++}}
+ var source, main strings.Builder;source.Write(rup);source.Write(stream);main.WriteString("\nmain: (): i32 {\n")
+ caseIndex:=0
+ emit:=func(c streamCase,mutation string,expected bool) {fmt.Fprintf(&source,"\nstream_case_%d: (): Bool {\n",caseIndex);emitStreamCase(&source,c,mutation,expected);source.WriteString("true\n}\n");fmt.Fprintf(&main,"assert(stream_case_%d())\n",caseIndex);caseIndex++}
+ for _,c:=range corpus {emit(c,"",c.Expected);if c.Expected {accepted++}}
  // Raw representation and resource failures are separate from semantic parity.
  base:=corpus[0]
  mutations:=[]string{"nvars = u32(0)\n","nvars = u32(65)\n","initial[0] = u32(4294967295)\n","sizes[0] = u32(4294967295)\n","commands[0].start = u32(4294967295)\n","commands[0].count = u32(4294967295)\n","commands[0].refs_start = u32(4294967295)\n","commands[0].refs_count = u32(4294967295)\n","commands[0].id = u32(257)\n","pool[0] = u32(4294967295)\n","refs[0] = u32(257)\n"}
- for _,mutation:=range mutations {emitStreamCase(&source,base,mutation,false)}
- source.WriteString("42\n}\n");runOakStream(t,source.String())
+ for _,mutation:=range mutations {emit(base,mutation,false)}
+ main.WriteString("42\n}\n");source.WriteString(main.String());runOakStream(t,source.String())
  if path:=os.Getenv("OAK_SELF_HOSTED_STREAM_CORPUS_OUT");path!="" {data,err:=json.MarshalIndent(corpus,"","  ");if err!=nil {t.Fatal(err)};if err:=os.WriteFile(path,append(data,'\n'),0644);err!=nil {t.Fatal(err)}}
  t.Logf("Oak/Go proof-stream agreement: %d cases (%d accepted, %d rejected); %d malformed/resource cases rejected",len(corpus),accepted,len(corpus)-accepted,len(mutations))
 }
