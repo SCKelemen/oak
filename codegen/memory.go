@@ -8,9 +8,6 @@ import (
 	"github.com/SCKelemen/oak/typechecker"
 )
 
-// cMemoryOrder is the checked refinement from Oak's semantic memory orders to
-// C11. There is deliberately no default: a new language order must teach the
-// backend how to preserve it before code generation can succeed.
 func cMemoryOrder(order semir.MemoryOrder) (string, error) {
 	switch order {
 	case semir.MemoryOrderRelaxed:
@@ -28,8 +25,6 @@ func cMemoryOrder(order semir.MemoryOrder) (string, error) {
 	}
 }
 
-// atomicCType lowers an already validated fixed-width carrier to exact C11
-// atomic storage. It does not use implementation-sized convenience typedefs.
 func atomicCType(carrier string) (string, error) {
 	if !semir.AtomicCarrierAllowed(carrier) {
 		return "", fmt.Errorf("unsupported atomic carrier %q", carrier)
@@ -37,8 +32,6 @@ func atomicCType(carrier string) (string, error) {
 	return "_Atomic(" + carrier + ")", nil
 }
 
-// atomicTypeCarrier recognizes the parser's Atomic[T] IndexExpression and
-// returns the exact fixed-width carrier spelling. Invalid forms fail closed.
 func atomicTypeCarrier(expr ast.Expression) (string, bool) {
 	index, ok := expr.(*ast.IndexExpression)
 	if !ok || index == nil {
@@ -64,9 +57,6 @@ func atomicTypeC(expr ast.Expression) (string, bool) {
 	return cType, err == nil
 }
 
-// programUsesAtomics is a compile-time AST scan used solely to make the C11
-// atomic dependency pay-for-use. Non-atomic programs keep byte-for-byte stable
-// C output and do not include <stdatomic.h>.
 func programUsesAtomics(program *ast.Program) bool {
 	var exprUses func(ast.Expression) bool
 	var stmtUses func(ast.Statement) bool
@@ -185,9 +175,8 @@ func programUsesAtomics(program *ast.Program) bool {
 	return false
 }
 
-// emitAtomicGlobals emits the atomic C dependency only for programs that use
-// atomics, then package-scope Atomic[T] cells as zero-initialized static storage.
-// There is no wrapper object and no heap allocation.
+// emitAtomicGlobals emits the C11 dependency only for programs that use
+// atomics, package-scope inline cells, and any used CAS helper family.
 func (cg *CodeGenerator) emitAtomicGlobals(program *ast.Program) {
 	if !programUsesAtomics(program) {
 		return
@@ -217,11 +206,13 @@ func (cg *CodeGenerator) emitAtomicGlobals(program *ast.Program) {
 	if emitted {
 		cg.write("\n")
 	}
+	cg.emitCompareExchangeHelpers(program)
 }
 
-// emitAtomicInvocation emits one source builtin directly as one C11 atomic
-// primitive. The order is compile-time semantic data: there is no runtime
-// order switch, wrapper allocation, or helper call in the generated hot path.
+// emitAtomicInvocation emits each source builtin directly as a C11 atomic
+// primitive. Order data is compile-time semantic data. Compare-exchange uses a
+// C11 _Generic-selected static inline helper so it can return the observed
+// value without a mutable Oak out-parameter or runtime order dispatch.
 func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc *typechecker.TypeChecker) bool {
 	ident, ok := call.Function.(*ast.Identifier)
 	if !ok {
@@ -231,17 +222,17 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 	if !ok {
 		return false
 	}
-	if len(call.Arguments) != int(spec.Arity) || !semir.LegalAtomicOrder(spec.Operation, spec.Order) {
+	if len(call.Arguments) != int(spec.Arity) || !spec.Legal() {
 		cg.output.WriteString("OAK_INVALID_ATOMIC_OPERATION")
-		return true
-	}
-	order, err := cMemoryOrder(spec.Order)
-	if err != nil {
-		cg.output.WriteString("OAK_INVALID_ATOMIC_ORDER")
 		return true
 	}
 
 	if spec.Kind == semir.AtomicBuiltinFence {
+		order, err := cMemoryOrder(spec.Order)
+		if err != nil {
+			cg.output.WriteString("OAK_INVALID_ATOMIC_ORDER")
+			return true
+		}
 		cg.output.WriteString("atomic_thread_fence(")
 		cg.output.WriteString(order)
 		cg.output.WriteString(")")
@@ -255,6 +246,28 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 	}
 	address := "&(" + cell.Value + ")"
 
+	if spec.Kind == semir.AtomicBuiltinCompareExchange {
+		macro, err := compareExchangeMacro(spec)
+		if err != nil {
+			cg.output.WriteString("OAK_INVALID_COMPARE_EXCHANGE")
+			return true
+		}
+		cg.output.WriteString(macro)
+		cg.output.WriteString("(")
+		cg.output.WriteString(address)
+		cg.output.WriteString(", ")
+		cg.emitExpressionFragment(call.Arguments[1], tc)
+		cg.output.WriteString(", ")
+		cg.emitExpressionFragment(call.Arguments[2], tc)
+		cg.output.WriteString(")")
+		return true
+	}
+
+	order, err := cMemoryOrder(spec.Order)
+	if err != nil {
+		cg.output.WriteString("OAK_INVALID_ATOMIC_ORDER")
+		return true
+	}
 	switch spec.Kind {
 	case semir.AtomicBuiltinLoad:
 		cg.output.WriteString("atomic_load_explicit(")
@@ -284,8 +297,6 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 	return true
 }
 
-// The string helpers below are retained for direct backend unit tests and for
-// future Semantic-IR-only compilation paths.
 func atomicLoadC(address string, order semir.MemoryOrder) (string, error) {
 	if !semir.LegalAtomicOrder(semir.AtomicLoad, order) {
 		return "", fmt.Errorf("illegal atomic load order %q", order)
@@ -328,6 +339,18 @@ func atomicFetchAddC(address, value string, order semir.MemoryOrder) (string, er
 		return "", err
 	}
 	return fmt.Sprintf("atomic_fetch_add_explicit(%s, %s, %s)", address, value, cOrder), nil
+}
+
+func atomicCompareExchangeC(cellType, address, expected, desired string, success, failure semir.MemoryOrder) (string, error) {
+	if !semir.AtomicCarrierAllowed(cellType) || !semir.LegalCompareExchangeOrders(success, failure) {
+		return "", fmt.Errorf("invalid compare-exchange lowering for %s success=%s failure=%s", cellType, success, failure)
+	}
+	spec := semir.AtomicBuiltinSpec{Kind: semir.AtomicBuiltinCompareExchange, Operation: semir.AtomicCompareExchange, Order: success, FailureOrder: failure, Arity: 3}
+	macro, err := compareExchangeMacro(spec)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s(%s, %s, %s)", macro, address, expected, desired), nil
 }
 
 func atomicFenceC(order semir.MemoryOrder) (string, error) {

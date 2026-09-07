@@ -29,10 +29,6 @@ func (t *AtomicType) Equals(other Type) bool {
 	return t.Element.Equals(o.Element)
 }
 
-// IsAtomicCarrier reports whether typ has the unambiguous fixed-width machine
-// representation required by the first atomic surface. Native int/uint and
-// pointers are intentionally excluded until target-width and provenance rules
-// are part of the atomic contract.
 func IsAtomicCarrier(typ Type) bool {
 	prim, ok := typ.(*PrimitiveType)
 	if !ok || prim == nil {
@@ -46,7 +42,6 @@ func IsAtomicCarrier(typ Type) bool {
 	}
 }
 
-// NewAtomicType is the single checked constructor used by type elaboration.
 func NewAtomicType(element Type) (*AtomicType, error) {
 	if !IsAtomicCarrier(element) {
 		if element == nil {
@@ -57,10 +52,6 @@ func NewAtomicType(element Type) (*AtomicType, error) {
 	return &AtomicType{Element: element}, nil
 }
 
-// ContainsAtomicStorage detects atomic cell identity nested inside another
-// value. v1 permits Atomic[T] only as a direct local/package cell: aggregate
-// embedding and by-value function transport remain rejected until Oak has a
-// non-copy storage/borrow contract for them.
 func ContainsAtomicStorage(typ Type) bool {
 	switch t := typ.(type) {
 	case *AtomicType:
@@ -94,10 +85,19 @@ func atomicCellIdentifier(expr ast.Expression) bool {
 	return ok
 }
 
+func (tc *TypeChecker) checkAtomicValueArgument(name string, arg ast.Expression, expected Type) bool {
+	valueType := tc.checkExpression(arg, expected)
+	if valueType != nil && !tc.isAssignable(valueType, expected) {
+		tc.addError(arg, "%s value must be %s, got %s", name, expected, valueType)
+		return false
+	}
+	return true
+}
+
 // checkAtomicInvocation types every source-level atomic builtin from the
 // semantic descriptor in semir. The first operand is an identifier naming a
-// cell, never a temporary value: this preserves storage identity and prevents
-// an implicit atomic copy at the call boundary.
+// cell, never a temporary value. Strong compare-exchange takes expected and
+// desired carrier values and returns the value observed by the atomic compare.
 func (tc *TypeChecker) checkAtomicInvocation(name string, expr *ast.InvocationExpression) (Type, bool) {
 	spec, recognized := semir.LookupAtomicBuiltin(name)
 	if !recognized {
@@ -126,18 +126,27 @@ func (tc *TypeChecker) checkAtomicInvocation(name string, expr *ast.InvocationEx
 		return nil, true
 	}
 
-	if spec.Kind == semir.AtomicBuiltinStore || spec.Kind == semir.AtomicBuiltinFetchAdd {
-		valueType := tc.checkExpression(expr.Arguments[1], cell.Element)
-		if valueType != nil && !tc.isAssignable(valueType, cell.Element) {
-			tc.addError(expr.Arguments[1], "%s value must be %s, got %s", name, cell.Element, valueType)
+	switch spec.Kind {
+	case semir.AtomicBuiltinStore, semir.AtomicBuiltinFetchAdd:
+		if !tc.checkAtomicValueArgument(name, expr.Arguments[1], cell.Element) {
+			return nil, true
+		}
+	case semir.AtomicBuiltinCompareExchange:
+		okExpected := tc.checkAtomicValueArgument(name+" expected", expr.Arguments[1], cell.Element)
+		okDesired := tc.checkAtomicValueArgument(name+" desired", expr.Arguments[2], cell.Element)
+		if !okExpected || !okDesired {
 			return nil, true
 		}
 	}
 
-	// This is also a defensive executable check that the source descriptor
-	// remains inside the formally specified legality matrix.
-	if !semir.LegalAtomicOrder(spec.Operation, spec.Order) {
-		tc.addError(expr, "internal atomic builtin %s has illegal order %s", name, spec.Order)
+	// Defensive executable check that the source descriptor remains inside the
+	// formally specified legality relation. CAS validates the related order pair.
+	if !spec.Legal() {
+		if spec.Kind == semir.AtomicBuiltinCompareExchange {
+			tc.addError(expr, "internal compare-exchange builtin %s has illegal orders success=%s failure=%s", name, spec.Order, spec.FailureOrder)
+		} else {
+			tc.addError(expr, "internal atomic builtin %s has illegal order %s", name, spec.Order)
+		}
 		return nil, true
 	}
 
