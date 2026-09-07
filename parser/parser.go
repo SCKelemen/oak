@@ -30,6 +30,9 @@ type Parser struct {
 	// infix while parsing a statement-header expression (a while condition),
 	// where '{' opens the statement's block — Go's composite-literal rule.
 	braceLiteralDisabled bool
+	// armDepth > 0 while parsing a bare-expression ?-match arm body, where
+	// bare | is the arm separator, not bitwise or (parens re-enable).
+	armDepth int
 }
 
 func New(source token.Source) *Parser {
@@ -46,7 +49,8 @@ func New(source token.Source) *Parser {
 	p.registerPrefix(token.STRING, p.parseStringLiteral)
 	p.registerPrefix(token.BANG, p.parsePrefixExpression)
 	p.registerPrefix(token.NEG, p.parsePrefixExpression)
-	p.registerPrefix(token.AMP, p.parsePrefixExpression) // address-of operator: &value
+	p.registerPrefix(token.AMP, p.parsePrefixExpression)   // address-of operator: &value
+	p.registerPrefix(token.CARET, p.parsePrefixExpression) // bitwise complement: ^mask (Go-style)
 	p.registerPrefix(token.TRUE, p.parseBoolean)
 	p.registerPrefix(token.DOT, p.parseDotVariantExpression)
 	p.registerPrefix(token.FALSE, p.parseBoolean)
@@ -58,6 +62,11 @@ func New(source token.Source) *Parser {
 
 	p.infixParseFns = make(map[token.TokenKind]infixParseFn)
 	p.registerInfix(token.SUM, p.parseInfixExpression)
+	p.registerInfix(token.AMP, p.parseInfixExpression)   // bitwise and
+	p.registerInfix(token.PIPE, p.parseInfixExpression)  // bitwise or (arm-separator rule: parenthesize inside ? arms)
+	p.registerInfix(token.CARET, p.parseInfixExpression) // bitwise xor
+	p.registerInfix(token.SHL, p.parseInfixExpression)
+	p.registerInfix(token.SHR, p.parseInfixExpression)
 	p.registerInfix(token.NEG, p.parseInfixExpression)
 	p.registerInfix(token.MUL, p.parseInfixExpression)
 	p.registerInfix(token.QUO, p.parseInfixExpression)
@@ -1017,7 +1026,11 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 }
 
 func (p *Parser) parseExpressionGroup() ast.Expression {
-	// Skip opening paren - currentToken is LPAREN, advance to expression
+	// Skip opening paren - currentToken is LPAREN, advance to expression.
+	// Parens re-enable '|' as bitwise or inside ?-match arm bodies.
+	saved := p.armDepth
+	p.armDepth = 0
+	defer func() { p.armDepth = saved }()
 	p.nextToken()
 	exp := p.parseExpression(LOWEST)
 	// After parseExpression, currentToken is the last token of the expression
@@ -1041,6 +1054,11 @@ var precedences = map[token.TokenKind]Precedence{
 	token.RCHEV:  COMPARE,
 	token.NEG:    SUMMATION,
 	token.SUM:    SUMMATION,
+	token.PIPE:   SUMMATION, // bitwise or (Go's precedence model)
+	token.CARET:  SUMMATION, // bitwise xor
+	token.AMP:    PRODUCT,   // bitwise and
+	token.SHL:    PRODUCT,
+	token.SHR:    PRODUCT,
 	token.MUL:    PRODUCT,
 	token.QUO:    PRODUCT,
 	token.REM:    PRODUCT,
@@ -1051,6 +1069,12 @@ var precedences = map[token.TokenKind]Precedence{
 }
 
 func (p *Parser) peekPrecedence() Precedence {
+	// Inside a bare-expression ?-match arm body, '|' is the arm separator,
+	// never bitwise or — parenthesize (a | b) to use the operator there.
+	// Parens and brace blocks reset the suppression.
+	if p.armDepth > 0 && p.peekToken.TokenKind == token.PIPE {
+		return LOWEST
+	}
 	if p, ok := precedences[p.peekToken.TokenKind]; ok {
 		return p
 	}
@@ -2859,6 +2883,8 @@ func (p *Parser) parseConditionBranch() ast.Expression {
 		return p.parseBlockExpression()
 	}
 	p.nextToken() // move to the expression
+	p.armDepth++
+	defer func() { p.armDepth-- }()
 	return p.parseExpression(LOWEST)
 }
 
@@ -2937,6 +2963,8 @@ func (p *Parser) parseMatchArmBody() ast.Expression {
 	if p.currentTokenIs(token.LBRACE) {
 		return p.parseBlockExpression()
 	}
+	p.armDepth++
+	defer func() { p.armDepth-- }()
 	return p.parseExpression(LOWEST)
 }
 

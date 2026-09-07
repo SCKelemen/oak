@@ -448,6 +448,12 @@ func evalPrefixExpression(operator string, right object.Object) object.Object {
 		return evalBangOperatorExpression(right)
 	case "-":
 		return evalMinusPrefixOperatorExpression(right)
+	case "^":
+		// Bitwise complement (Go-style unary ^), unsigned semantics.
+		if integer, isInt := right.(*object.Integer); isInt {
+			return &object.Integer{Value: int64(^uint64(integer.Value))}
+		}
+		return newError("unknown operator: ^%s", right.Type())
 	default:
 		return newError("unknown operator: %s%s", operator, right.Type())
 	}
@@ -513,6 +519,25 @@ func evalIntegerInfixExpression(operator string, left, right object.Object) obje
 			return newError("modulo by zero")
 		}
 		return &object.Integer{Value: leftVal % rightVal}
+	case "&":
+		return &object.Integer{Value: int64(uint64(leftVal) & uint64(rightVal))}
+	case "|":
+		return &object.Integer{Value: int64(uint64(leftVal) | uint64(rightVal))}
+	case "^":
+		return &object.Integer{Value: int64(uint64(leftVal) ^ uint64(rightVal))}
+	case "<<":
+		// The checker bounds constant counts per operand width; the
+		// evaluator's untyped integers enforce the 64-bit ceiling
+		// (the compiled backend traps at the operand width).
+		if rightVal < 0 || rightVal >= 64 {
+			return newError("shift count out of range: %d", rightVal)
+		}
+		return &object.Integer{Value: int64(uint64(leftVal) << uint64(rightVal))}
+	case ">>":
+		if rightVal < 0 || rightVal >= 64 {
+			return newError("shift count out of range: %d", rightVal)
+		}
+		return &object.Integer{Value: int64(uint64(leftVal) >> uint64(rightVal))}
 	case "<":
 		return nativeBoolToBooleanObject(leftVal < rightVal)
 	case ">":

@@ -499,6 +499,9 @@ type TypeChecker struct {
 	// tagSchemas holds declared tag schemas (json: tag = { name: string }) —
 	// the closed namespace field tags check against (typechecker/tags.go).
 	tagSchemas map[string]*RecordType
+	// shiftWidths records the operand width of each shift expression
+	// (position-keyed), consumed by the backend's checked-shift emission.
+	shiftWidths map[string]int
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -878,6 +881,13 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
 			return nil
 		}
 		return &BoolType{}
+	case "^":
+		// Bitwise complement (Go-style unary ^), unsigned-only.
+		if prim, ok := rightType.(*PrimitiveType); ok && prim.Name[0] == 'u' {
+			return rightType
+		}
+		tc.addError(expr, "operator ^ (complement) requires an unsigned fixed-width operand, got %s", rightType)
+		return nil
 	case "-":
 		// Negation: promote unsigned to signed, or keep signed
 		if prim, ok := rightType.(*PrimitiveType); ok {
@@ -904,7 +914,17 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		expected = expectedType[0]
 	}
 
-	leftType := tc.checkExpression(expr.Left)
+	// Bitwise operands infer through the operator: the outer expected type
+	// flows into the left operand, and the left operand's type types the
+	// right (so hcr & 0x19 and v << 3 need no literal annotations).
+	bitwise := expr.Operator == "&" || expr.Operator == "|" || expr.Operator == "^" ||
+		expr.Operator == "<<" || expr.Operator == ">>"
+	var leftType Type
+	if bitwise && expected != nil && tc.isNumericType(expected) {
+		leftType = tc.checkExpression(expr.Left, expected)
+	} else {
+		leftType = tc.checkExpression(expr.Left)
+	}
 	// For right side, if expected type is numeric and we're doing arithmetic,
 	// use it for context-based inference of literals
 	var rightExpected Type
@@ -914,6 +934,9 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 				rightExpected = expected
 			}
 		}
+	}
+	if bitwise && leftType != nil && tc.isNumericType(leftType) {
+		rightExpected = leftType
 	}
 	rightType := tc.checkExpression(expr.Right, rightExpected)
 	if leftType == nil || rightType == nil {
@@ -958,6 +981,33 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			return nil
 		}
 		return bool_
+	case "&", "|", "^", "<<", ">>":
+		// Bitwise operators are unsigned-only and same-width — MISRA-style:
+		// no signed bitwise, no C promotion rules, no mixed widths
+		// (docs/spec/10-syntax.md §3b). Shifts with a constant count are
+		// statically bounds-checked; variable counts trap at runtime when
+		// the count reaches the operand width (never-UB).
+		leftPrim, leftIsPrim := leftType.(*PrimitiveType)
+		rightPrim, rightIsPrim := rightType.(*PrimitiveType)
+		if !leftIsPrim || !rightIsPrim || leftPrim.Name[0] != 'u' || rightPrim.Name[0] != 'u' {
+			tc.addError(expr, "operator %s requires unsigned fixed-width operands, got %s and %s (bitwise on signed values is a modeling smell: convert explicitly)", expr.Operator, leftType, rightType)
+			return nil
+		}
+		if leftPrim.Name != rightPrim.Name {
+			tc.addError(expr, "operator %s requires same-width operands, got %s and %s (no implicit promotion)", expr.Operator, leftType, rightType)
+			return nil
+		}
+		if expr.Operator == "<<" || expr.Operator == ">>" {
+			width := tc.getBitWidth(leftPrim.Name)
+			if lit, isLit := expr.Right.(*ast.IntegerLiteral); isLit {
+				if lit.Value < 0 || lit.Value >= int64(width) {
+					tc.addError(expr, "shift count %d out of range for %s (width %d)", lit.Value, leftPrim.Name, width)
+					return nil
+				}
+			}
+			tc.recordShiftWidth(expr, width)
+		}
+		return leftType
 	case "<", ">", "<=", ">=":
 		// Comparison operators require numeric types
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
