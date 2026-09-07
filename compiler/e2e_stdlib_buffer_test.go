@@ -196,10 +196,10 @@ main: (): i32 {
  v: []u8 = view(&input)
  calls: [1]u8
  c: [*]u8 = span(&calls)
- built: ByteBuilder = counted_builder(c)
-   .append_byte(s, u8(10))
-   .append_bytes(s, v)
-   .append_byte(s, u8(40))
+ built: ByteBuilder = counted_builder(c).
+   append_byte(s, u8(10)).
+   append_bytes(s, v).
+   append_byte(s, u8(40))
  assert(c[0] == u8(1))
  done: Result[u32, BufferError] = built.finish_bytes()
  count: u32 = done ? | .Ok(n) => n | .Err(e) => u32(99)

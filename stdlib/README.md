@@ -166,9 +166,9 @@ import(std)
 main: (): i32 {
   data: [4]u8
   storage: [*]u8 = span(&data)
-  built: ByteBuilder = byte_builder()
-    .append_byte(storage, u8(10))
-    .append_byte(storage, u8(32))
+  built: ByteBuilder = byte_builder().
+    append_byte(storage, u8(10)).
+    append_byte(storage, u8(32))
   result: Result[u32, BufferError] = built.finish_bytes()
   count: u32 = result ? | .Ok(n) => n | .Err(e) => u32(0)
   assert(count == u32(2))
@@ -190,7 +190,9 @@ With `import(std)`, the three fluent spellings `.append_bytes(...)`,
 with the receiver supplied exactly once as the first argument. The usual type,
 borrow and discipline checks run on the expanded calls. This bootstrap sugar is
 limited to these three exports; it is not general method dispatch or generic
-method inference. Free-function spelling remains available.
+method inference. Free-function spelling remains available. For multiline chains,
+keep the dot at the end of the preceding line: a leading dot on a new line
+starts a variant expression in Oak.
 
 The builder uses no boxes, heap allocation, closures or virtual dispatch. Its
 value state and direct calls can be inlined and removed by the C optimizer;
