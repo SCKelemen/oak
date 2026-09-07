@@ -391,6 +391,25 @@ doctrine, and Elm's no-reflection rule.
 
 Correctness-critical representation properties must use typed representation constructs rather than arbitrary string-valued tags — which is why `packed`/`align` are syntax (§6a), not tags.
 
+**Open syntax question (recorded, not decided):** a Go-style backtick
+trailer at the end of the field line may read better than the
+parenthesized clause —
+
+```oak
+User: type = struct {
+  id(align: 8): u64 `json: "user_id", pb: 1`
+}
+```
+
+This would be spelling only: the semantics are frozen regardless —
+namespaces are declared schemas, values typecheck, unknown keys are
+errors, metadata never touches representation (`Oak.FieldTags` holds
+either way). The trailer form separates metadata visually from the
+representation clause (`align` stays in the parentheses, tags move to
+the end of the line), which is arguably the axis split made typographic.
+Revisit when the first projection consumer lands; migrating the spelling
+is mechanical.
+
 ## 13. Borrowing and fields
 
 Borrowing a field preserves ownership/aliasing facts about the containing storage.
