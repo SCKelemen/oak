@@ -1,0 +1,121 @@
+// Decoded bounded proof streams. Append after self_hosted_rup.oak to compile.
+RUPAction: type = Add | Delete
+RUPCommand: type = struct {
+  action: RUPAction
+  id: u32
+  start: u32
+  count: u32
+  refs_start: u32
+  refs_count: u32
+}
+
+// Clause IDs are one-based, including hint and deletion references.
+// The input literal pool is immutable; insertion publishes a checked range.
+// All mutable database and propagation storage is bounded local stack storage.
+rup_stream_check: (
+  literals: []u32,
+  initial_starts: []u32,
+  initial_lengths: []u32,
+  references: []u32,
+  commands: []RUPCommand,
+  variables: u32
+): Bool {
+  starts: [256]u32
+  lengths: [256]u32
+  live: [256]Bool
+  mapped_hints: [256]u32
+  proposed: [4096]u32
+  scratch: [64]u8
+  valid: Bool = variables > u32(0) && variables <= u32(64)
+  valid = valid && len(literals) <= u32(4096) && len(references) <= u32(4096)
+  valid = valid && len(initial_starts) == len(initial_lengths) && len(initial_starts) <= u32(256)
+  valid = valid && len(commands) <= u32(256)
+  i: u32 = 0
+  while i < u32(256) {
+    starts[i] = u32(0)
+    lengths[i] = u32(0)
+    live[i] = false
+    i = i + u32(1)
+  }
+  // Validate all literals, even suffixes of tautological proposed clauses.
+  i = u32(0)
+  while i < len(literals) && valid {
+    valid = literals[i] / u32(2) < variables
+    i = i + u32(1)
+  }
+  refuted: Bool = false
+  i = u32(0)
+  while i < len(initial_starts) && valid {
+    initial_start: u32 = initial_starts[i]
+    initial_count: u32 = initial_lengths[i]
+    valid = initial_start <= len(literals) && initial_count <= len(literals) - initial_start
+    valid ? {
+      starts[i] = initial_start
+      lengths[i] = initial_count
+      live[i] = true
+      refuted = refuted || initial_count == u32(0)
+    }
+    i = i + u32(1)
+  }
+  last: u32 = len(initial_starts)
+  c: u32 = 0
+  // Do not stop at refutation: the entire remaining stream must be valid.
+  while c < len(commands) && valid {
+    command: RUPCommand = commands[c]
+    valid = command.id <= u32(2147483647)
+    valid = valid && command.refs_start <= len(references)
+    valid = valid && command.refs_count <= len(references) - command.refs_start
+    valid ? {
+      command.action ?
+      | .Add => {
+        valid = command.id > last && command.id <= u32(256)
+        valid = valid && command.start <= len(literals) && command.count <= len(literals) - command.start
+        valid = valid && command.refs_count <= u32(256)
+        h: u32 = 0
+        while h < command.refs_count && valid {
+          hinted_id: u32 = references[command.refs_start + h]
+          valid = hinted_id > u32(0) && hinted_id <= u32(256)
+          valid ? {
+            valid = live[hinted_id - u32(1)]
+            mapped_hints[h] = hinted_id - u32(1)
+          }
+          h = h + u32(1)
+        }
+        p: u32 = 0
+        while p < command.count && valid {
+          proposed[p] = literals[command.start + p]
+          p = p + u32(1)
+        }
+        valid ? {
+          valid = rup_check(literals, view(&starts), view(&lengths), u32(256),
+            view(&proposed), command.count, view(&mapped_hints), command.refs_count,
+            span(&scratch), variables)
+        }
+        valid ? {
+          slot: u32 = command.id - u32(1)
+          starts[slot] = command.start
+          lengths[slot] = command.count
+          live[slot] = true
+          last = command.id
+          refuted = refuted || command.count == u32(0)
+        }
+      }
+      | .Delete => {
+        valid = command.id >= last
+        d: u32 = 0
+        while d < command.refs_count && valid {
+          deleted_id: u32 = references[command.refs_start + d]
+          valid = deleted_id > u32(0) && deleted_id <= u32(256)
+          valid ? {
+            valid = live[deleted_id - u32(1)]
+            live[deleted_id - u32(1)] = false
+          }
+          d = d + u32(1)
+        }
+        // A deletion stamp does not advance the last addition ID.
+      }
+    }
+    c = c + u32(1)
+  }
+  valid && refuted
+}
