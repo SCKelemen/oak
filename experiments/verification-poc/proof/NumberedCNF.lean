@@ -60,6 +60,9 @@ theorem atom_member (f : CNF) (c : BooleanCNF.Clause) (l : Lit)
     (hc : c ∈ f) (hl : l ∈ c) : l.atom ∈ atoms f := by
   exact List.mem_flatMap.mpr ⟨c, hc, List.mem_map.mpr ⟨l, hl, rfl⟩⟩
 
+instance (a : OakVerification.Assignment) (l : OakVerification.Literal) : Decidable (Holds a l) :=
+  inferInstanceAs (Decidable (a l.index = l.positive))
+
 def numberedSat (a : OakVerification.Assignment) (f : List OakVerification.Clause) : Bool :=
   f.all (fun c => c.any (fun l => decide (Holds a l)))
 
@@ -72,7 +75,7 @@ theorem number_holds (table : List Atom) (a : OakVerification.Assignment) (l : L
 
 theorem number_semantics (table : List Atom) (a : OakVerification.Assignment) (f : CNF) :
     numberedSat a (numberCNF table f) = cnfSat (pull table a) f := by
-  simp [numberedSat, numberCNF, cnfSat, clauseSat, number_holds]
+  simp [numberedSat, numberCNF, cnfSat, clauseSat, Function.comp_def, number_holds]
 
 theorem literal_lift (table : List Atom) (a : BooleanCNF.Assignment) (l : Lit)
     (member : l.atom ∈ table) :
@@ -94,7 +97,7 @@ private theorem get_member {α : Type} (xs : List α) (x : α) (n : Nat)
     | succ n => exact List.mem_cons_of_mem first (ih n (by simpa using found))
 
 private theorem member_get {α : Type} (xs : List α) (x : α) (member : x ∈ xs) :
-    ∃ n, xs[n]? = some x := by
+    ∃ n : Nat, xs[n]? = some x := by
   induction xs with
   | nil => simp at member
   | cons first rest ih =>

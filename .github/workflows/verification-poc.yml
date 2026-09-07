@@ -92,6 +92,9 @@ jobs:
       - name: Independently recheck actual certificates with Lean
         working-directory: experiments/verification-poc
         run: bash ci/check-certificates.sh
+      - name: Check expression-to-proof bridge with real certificates
+        working-directory: experiments/verification-poc
+        run: bash ci/check-boolean-proofs.sh
       - name: Retain models, solver logs, certificates and traces
         if: always()
         uses: actions/upload-artifact@v4
@@ -100,6 +103,7 @@ jobs:
           path: |
             experiments/verification-poc/build/integration/
             experiments/verification-poc/build/lean-gate/
+            experiments/verification-poc/build/boolean-proofs/
             experiments/verification-poc/build/tools/provenance.json
             experiments/verification-poc/tools.lock.json
           retention-days: 30

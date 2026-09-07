@@ -86,7 +86,7 @@ def main (args : List String) : IO Unit := do
     let numbered := OakVerification.NumberedCNF.numberCNF table f
     for clause in numbered do
       for literal in clause do
-        if literal.index == 0 || literal.index > table.length then
+        if literal.index = 0 ∨ literal.index > table.length then
           throw (IO.userError "numbered literal outside declared domain")
     if names.length > 10 then throw (IO.userError "auxiliary enumeration bound exceeded")
     if c.rows.size != 4 then throw (IO.userError "expected all four input valuations")
