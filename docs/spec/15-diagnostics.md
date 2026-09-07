@@ -73,7 +73,9 @@ such as:
 - where backing storage ends;
 - where a generic requirement was declared;
 - where an inferred effect was introduced;
-- where a concrete representation was selected.
+- where a concrete representation was selected;
+- where a resource was consumed;
+- where a symbolic extent or region fact originated.
 
 The compiler should prefer causal explanations over proximity. The token nearest
 the final failure is not necessarily the most useful primary label.
@@ -98,7 +100,9 @@ Oak may internally solve:
 
 - unification constraints;
 - ownership and exclusivity constraints;
+- resource consumption and alias-class constraints;
 - region containment;
+- symbolic extent/range propositions;
 - effect/capability requirements;
 - GADT/refinement propositions;
 - record-shape predicates;
@@ -136,9 +140,18 @@ this call inferred `T = Packet`
 
 over anonymous unification-variable output.
 
-Internal facts may be available in an expanded "explain" view for compiler
-engineers and advanced users, but ordinary diagnostics lead with source-level
-semantics.
+For symbolic extent failures, explain the programmer-visible origins of the
+length facts rather than only printing fresh solver names. For example:
+
+```text
+input has length N from parameter `input`
+output has length M from parameter `output`
+this operation requires N = M, but Oak cannot prove that relationship
+```
+
+An expanded "explain" view may expose internal normalized propositions for
+compiler engineers and advanced users, but ordinary diagnostics lead with
+source-level semantics.
 
 ## 5. Inference diagnostics
 
@@ -178,6 +191,7 @@ Borrow diagnostics should describe ownership operations and storage relationship
 - overlap;
 - escape;
 - move/consume;
+- alias/provenance chains relevant to consumption;
 - backing storage lifetime.
 
 Views and spans exist partly so ordinary code does not need explicit lifetime
@@ -186,8 +200,9 @@ syntax. Diagnostics must preserve that abstraction: users should normally see
 than solver-generated lifetime names.
 
 When two writable spans overlap, show both ranges. When storage ends before a
-view, show both endpoints. When an owner was moved, show the move and the later
-use.
+view, show both endpoints. When a resource was consumed, show the consume site,
+the later use, and any intervening alias/provenance relationship needed to explain
+why the later name lost authority.
 
 The first stable borrow-conflict family is:
 
@@ -199,6 +214,9 @@ The first stable borrow-conflict family is:
 | `OAK-B0104` | a read-only view is requested while writable span access is active |
 | `OAK-B0105` | a writable span is requested while read-only views are active |
 | `OAK-B0106` | writable span regions overlap or cannot be proved disjoint |
+| `OAK-B0109` | a view/span escapes the lifetime currently established for its owner |
+| `OAK-B0110` | unsafe code assumes mutable-region disjointness that safe analysis could not prove |
+| `OAK-B0111` | a resource or alias is used after its authority was consumed |
 
 For `OAK-B0106`, known regions use half-open interval semantics. The diagnostic
 should show the requested region and one earliest causal conflicting span. If a
@@ -206,12 +224,40 @@ region is unknown, Oak fails closed and explains that it could not prove the two
 writable regions disjoint. It must not describe this conservative rejection as a
 proven overlap.
 
-When several active borrows could explain the same conflict, the compiler should
-choose causal context deterministically, preferring the earliest relevant source
-borrow. Map iteration order, allocation order, or internal pointer identity must
-never select the explanation.
+For `OAK-B0111`, the primary label is the invalid later use. The consume site is
+a secondary label. If the later name is not the syntactic name consumed directly,
+the diagnostic must include the shortest useful programmer-visible alias or
+provenance chain connecting it to the consumed authority. It should not dump an
+internal alias-set identifier.
 
-## 7. Help must be safe and mechanically credible
+When several active borrows or aliases could explain the same conflict, the
+compiler should choose causal context deterministically, preferring the earliest
+relevant source operation and shortest useful provenance explanation. Map
+iteration order, allocation order, or internal pointer identity must never select
+the explanation.
+
+## 7. Parallelism and proposition diagnostics
+
+Explicit parallel operations rely on ownership, effect, extent, range, and
+algebraic propositions. A rejection should name the missing fact rather than
+collapse to a generic "cannot parallelize" message.
+
+Examples include:
+
+```text
+cannot prove writes from distinct iterations are disjoint
+input and output extents are not proven equal
+callback may perform Thread.Block, which this operation forbids
+reduction operator is not known to permit reassociation
+resource consumed in one iteration may be used by another iteration
+```
+
+For a failed symbolic extent/range proof, diagnostics should show the normalized
+programmer-facing relationship being requested and trace each symbolic operand to
+the source expression or contract that introduced it. Internal fresh-variable
+numbers are suitable only for an expanded debug/explain projection.
+
+## 8. Help must be safe and mechanically credible
 
 A `help` message is actionable advice, not speculation.
 
@@ -228,7 +274,7 @@ The compiler must not recommend a transformation that:
 When several repairs are possible, prefer describing the semantic choices rather
 than pretending one rewrite is universally correct.
 
-## 8. Suppress cascades
+## 9. Suppress cascades
 
 One root cause should not produce a wall of derivative errors.
 
@@ -240,7 +286,7 @@ The quality target is not "maximum number of detected inconsistencies". It is
 "minimum set of diagnostics that lets the programmer understand and repair the
 program".
 
-## 9. Exact locations and links
+## 10. Exact locations and links
 
 Diagnostics use Oak's canonical UTF-8 byte spans and source identity internally.
 Editor coordinates are derived exactly as UTF-16 positions.
@@ -255,7 +301,7 @@ All human-facing source locations should be able to project to:
 A renderer must not estimate a range from byte length when exact source spans are
 available.
 
-## 10. Determinism
+## 11. Determinism
 
 Given the same source, compiler version, target options, and diagnostic mode,
 diagnostic ordering and semantic contents are deterministic.
@@ -266,7 +312,7 @@ other unstable implementation details must not leak into user-facing output.
 This is required for reproducible builds, golden tests, editor stability, and
 useful bug reports.
 
-## 11. Testing policy
+## 12. Testing policy
 
 Important diagnostics should have two kinds of tests:
 
@@ -279,10 +325,11 @@ Structural assertions are authoritative. Wording snapshots may change when the
 new wording is demonstrably better, without changing the diagnostic code.
 
 Tests should include Unicode source positions, layout syntax, nested inference,
-borrow/region failures, record-shape failures, and multi-source context where
-applicable.
+borrow/region failures, resource-consumption aliases, symbolic extent/range
+failures, parallel legality failures, record-shape failures, and multi-source
+context where applicable.
 
-## 12. Internal compiler errors
+## 13. Internal compiler errors
 
 A compiler invariant failure is not a user program error.
 
@@ -296,7 +343,7 @@ Internal failures use the internal diagnostic category and should identify:
 The compiler must not disguise an internal invariant failure as a type error or
 encourage the programmer to rewrite valid source to avoid it.
 
-## 13. Design test
+## 14. Design test
 
 For every new checker feature ask:
 
