@@ -121,7 +121,7 @@ theorem checkText_sound {cnf proof : String}
     cases decoded : parseLRAT proof with
     | error reason => simp [parsed, decoded] at accepted
     | ok commands =>
-      refine ⟨formula, rfl, checkProof_sound ?_⟩
+      refine ⟨formula, rfl, checkProof_sound (variables := formula.variables) (commands := commands) ?_⟩
       simpa [parsed, decoded] using accepted
 
 #print axioms checkText_sound
