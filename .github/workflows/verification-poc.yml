@@ -44,6 +44,64 @@ jobs:
           go test -count=1 -v ./internal/lrat -run '^TestLeanDifferentialCorpus$' 2>&1 | tee build/soundness/go-corpus.log
           lean -DwarningAsError=true --run proof/RUPCompare.lean "$OAK_LEAN_DIFFERENTIAL_OUT" 2>&1 | tee build/soundness/agreement.log
           lean -DwarningAsError=true --run proof/RUPTextCompare.lean "$OAK_LEAN_TEXT_CORPUS_OUT" 2>&1 | tee build/soundness/text-agreement.log
+      - name: Prove Boolean CNF encoding and compare with Go
+        working-directory: experiments/verification-poc
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LEAN_PATH="$PWD/proof"
+          lean -DwarningAsError=true -o proof/BooleanCNF.olean proof/BooleanCNF.lean 2>&1 | tee build/soundness/boolean-cnf.log
+          export OAK_BOOLEAN_CNF_CORPUS_OUT="$PWD/build/soundness/boolean-cnf-cases.json"
+          go test -count=1 -v . -run '^TestBooleanCNFSpecification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-soundness-${{ github.sha }}
+          path: |
+            experiments/verification-poc/proof/
+            experiments/verification-poc/build/soundness/
+          retention-days: 30
+  solvers:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[verify-poc]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned backends
+        run: bash experiments/verification-poc/ci/install-tools.sh all
+      - name: Check native experiment and publication correspondence
+        working-directory: experiments/verification-poc
+        run: go test -v -race ./...
+      - name: Run external verification suite
+        working-directory: experiments/verification-poc
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o build/oak-verify .
+          ./build/oak-verify suite --timeout 120 --tla-jar "$PWD/build/tools/tla2tools.jar" --out build/integration
+      - name: Independently recheck actual certificates with Lean
+        working-directory: experiments/verification-poc
+        run: bash ci/check-certificates.sh
+      - name: Retain models, solver logs, certificates and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-solvers-${{ github.sha }}
+          path: |
+            experiments/verification-poc/build/integration/
+            experiments/verification-poc/build/lean-gate/
+            experiments/verification-poc/build/tools/provenance.json
+            experiments/verification-poc/tools.lock.json
+          retention-days: 30
+ 2>&1 | tee build/soundness/boolean-cnf-go.log
+          lean -DwarningAsError=true --run proof/BooleanCNFCompare.lean "$OAK_BOOLEAN_CNF_CORPUS_OUT" 2>&1 | tee build/soundness/boolean-cnf-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
