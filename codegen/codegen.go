@@ -7,6 +7,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -24,6 +25,10 @@ type CodeGenerator struct {
 	stringLiterals   []string                    // Track string literals to emit as static arrays
 	stringLiteralMap map[string]int              // Map string value to index
 	adtTypes         map[string]*ast.ADTType     // Map ADT name to AST definition
+	// recordLayouts holds the resolved natural layout of each emitted
+	// record type (semir.NaturalRecordLayout, the Oak.RecordLayoutRefinement
+	// transliteration), for nested-record placement and layout assertions.
+	recordLayouts map[string]semir.Representation
 	// tailLoopFunction is set while emitting a loop-lowered self-tail-recursive
 	// function: its tail self-call emits parameter rebinding plus continue.
 	tailLoopFunction *ast.FunctionStatement
@@ -92,6 +97,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.types = make(map[string]bool)
 	cg.stringLiterals = []string{}
 	cg.stringLiteralMap = make(map[string]int)
+	cg.recordLayouts = make(map[string]semir.Representation)
 
 	// Extract package name from program
 	for _, stmt := range program.Statements {
@@ -405,6 +411,14 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 
 	// Check if already emitted
 	if cg.types[cName] {
+		return
+	}
+
+	// A record type declaration (one record-literal variant) is a struct,
+	// not a tagged union (docs/spec/40-records.md).
+	if recordLit, isRecord := recordDefinitionShape(adt); isRecord {
+		cg.types[cName] = true
+		cg.emitRecordTypeDef(typeName, recordLit)
 		return
 	}
 
@@ -2113,18 +2127,27 @@ func (cg *CodeGenerator) emitArrayLiteral(expr *ast.ArrayLiteral, tc *typechecke
 
 // emitRecordLiteral emits a record literal
 func (cg *CodeGenerator) emitRecordLiteral(expr *ast.RecordLiteral, tc *typechecker.TypeChecker) {
-	// C99 designated initializers
+	// C99 designated initializers in declaration order (deterministic
+	// output; layout-significant order is the struct's own).
+	if expr.TypeName != nil {
+		// Typed construction is a compound literal usable in any
+		// expression position: ((oak_Point){ .x = ..., .y = ... }).
+		cg.output.WriteString(fmt.Sprintf("((%s)", cg.cTypeName(expr.TypeName.Value)))
+	}
 	cg.output.WriteString("{ ")
 	first := true
-	for fieldName, fieldExpr := range expr.Fields {
+	for _, field := range expr.FieldOrder {
 		if !first {
 			cg.output.WriteString(", ")
 		}
-		cg.output.WriteString(fmt.Sprintf(".%s = ", fieldName))
-		cg.emitExpressionFragment(fieldExpr, tc)
+		cg.output.WriteString(fmt.Sprintf(".%s = ", field.Name))
+		cg.emitExpressionFragment(field.Value, tc)
 		first = false
 	}
 	cg.output.WriteString(" }")
+	if expr.TypeName != nil {
+		cg.output.WriteString(")")
+	}
 }
 
 // emitFunctionLiteral emits a function literal (closure)

@@ -102,12 +102,13 @@ func (sub Substitution) Apply(typ Type) Type {
 	case *ADTType:
 		return t // ADT names are unchanged
 	case *RecordType:
-		// Apply substitution to all field types
+		// Apply substitution to all field types; nominal name and
+		// declaration order survive (layout-significant metadata).
 		newFields := make(map[string]Type)
 		for name, fieldType := range t.Fields {
 			newFields[name] = sub.Apply(fieldType)
 		}
-		return &RecordType{Fields: newFields}
+		return &RecordType{Fields: newFields, Name: t.Name, Order: t.Order}
 	case *FunctionType:
 		// Apply substitution to parameter and return types
 		newParams := make([]Type, len(t.Parameters))

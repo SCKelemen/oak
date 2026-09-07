@@ -358,6 +358,58 @@ main: (): i32 {
 	}
 }
 
+// Records, executed: struct construction, field access, nesting, and
+// pass/return by value — with the proven natural layout
+// (Oak.RecordLayoutRefinement) enforced by static assertions inside the
+// generated C, so the exit code below only exists if the C compiler agreed
+// with the proof about every offset and size.
+func TestE2ERecordsEndToEnd(t *testing.T) {
+	code, abnormal := buildAndRun(t, "records", `
+Point: type = struct {
+  x: i32
+  y: i32
+}
+
+Rect: type = struct {
+  a: Point
+  b: Point
+  tag: u8
+}
+
+shift: (p: Point, dx: i32): Point = Point { x: p.x + dx, y: p.y }
+
+main: (): i32 {
+  p: Point = Point { x: 11, y: 31 }
+  q: Point = shift(p, 9)
+  r: Rect = Rect { a: p, b: q, tag: u8(3) }
+  assert(r.b.x == 20)
+  r.a.x + r.b.y + i32(r.tag)
+}
+`)
+	if abnormal || code != 45 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 45 (11 + 31 + 3 through nested records)", code, abnormal)
+	}
+}
+
+// The colon-less definition form and '=' block bodies
+// (docs/spec/10-syntax.md §3): add(l, r: u32): u32 = { body } is the same
+// declaration, executed.
+func TestE2EColonlessDefinitionForm(t *testing.T) {
+	code, abnormal := buildAndRun(t, "colonless", `
+add(l: i32, r: i32): i32 = {
+  total: i32 = l + r
+  total
+}
+
+twice(n: i32) -> i32 = n + n
+
+main: (): i32 = add(twice(10), 2)
+`)
+	if abnormal || code != 22 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 22", code, abnormal)
+	}
+}
+
 func TestE2EOutOfBoundsStoreTraps(t *testing.T) {
 	_, abnormal := buildAndRun(t, "oobstore", `
 main: (): i32 {

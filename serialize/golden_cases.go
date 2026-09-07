@@ -359,6 +359,33 @@ main: (): i32 {
 `,
 		},
 		{
+			// Records end to end (docs/spec/40-records.md): struct typedefs
+			// in declaration order with the proven natural layout
+			// (Oak.RecordLayoutRefinement) enforced by static assertions,
+			// compound-literal construction, and field access. Includes the
+			// colon-less definition form (docs/spec/10-syntax.md section 3).
+			Name: "records",
+			SourceCode: `
+Point: type = struct {
+  x: i32
+  y: i32
+}
+
+Pair: type = struct {
+  first: Point
+  tag: u8
+}
+
+shift(p: Point, dx: i32): Point = Point { x: p.x + dx, y: p.y }
+
+main: (): i32 {
+  p: Point = Point { x: 11, y: 31 }
+  pair: Pair = Pair { first: shift(p, 9), tag: u8(3) }
+  pair.first.x + i32(pair.tag)
+}
+`,
+		},
+		{
 			// Unsafe boundary: unprovable span overlap is admitted inside unsafe
 			// as a recorded OAK-B0110 assumption (warning), not an error.
 			Name: "unsafe_block",

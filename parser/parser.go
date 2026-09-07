@@ -25,6 +25,11 @@ type Parser struct {
 
 	// Collected trivia tokens that will be attached to the next non-trivia node
 	pendingTrivia []token.Token
+
+	// braceLiteralDisabled suppresses the TypeName { ... } composite-literal
+	// infix while parsing a statement-header expression (a while condition),
+	// where '{' opens the statement's block — Go's composite-literal rule.
+	braceLiteralDisabled bool
 }
 
 func New(source token.Source) *Parser {
@@ -350,6 +355,16 @@ func (p *Parser) parseStatement() ast.Statement {
 		} else if p.peekTokenIs(token.ASSIGN) {
 			// Assignment: x = expr (must refer to existing variable)
 			return p.parseAssignmentStatement()
+		} else if p.peekTokenIs(token.LPAREN) && p.callableDefinitionAhead() {
+			// Colon-less definition form (docs/spec/10-syntax.md §3):
+			// add(l: u32, r: u32): u32 = l + r
+			name := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			p.nextToken() // move to '('
+			fn := p.parseFunctionDefinitionFromName(name)
+			if fn == nil {
+				return nil
+			}
+			return fn
 		}
 		fallthrough
 	default:
@@ -419,6 +434,22 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 	// Also stop if precedence is too low
 	// Note: We stop at commas and brackets to allow array/record literal parsers to handle them
 	for !p.peekTokenIs(token.SEMI) && !p.peekTokenIs(token.COMMA) && !p.peekTokenIs(token.RPAREN) && !p.peekTokenIs(token.RBRACE) && !p.peekTokenIs(token.RBRACK) && !p.peekTokenIs(token.COLON) {
+		// Type-qualified record construction: TypeName { field: value }.
+		// Admitted only for an identifier receiver and outside statement
+		// headers (Go's composite-literal rule), so 'while ready {' keeps
+		// its block. Checked before the precedence gate: '{' carries no
+		// operator precedence.
+		if p.peekTokenIs(token.LBRACE) && !p.braceLiteralDisabled {
+			if _, isIdent := leftExp.(*ast.Identifier); isIdent {
+				p.nextToken() // move to '{'
+				leftExp = p.parseTypeQualifiedLiteral(leftExp)
+				if leftExp == nil {
+					return nil
+				}
+				continue
+			}
+		}
+
 		// Check precedence - if it's too low, stop
 		if precendece >= p.peekPrecedence() {
 			break
@@ -686,6 +717,10 @@ func (p *Parser) parseFunctionArgs() []*ast.Identifier {
 }
 func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expression {
 	exp := &ast.InvocationExpression{Token: p.currentToken, Function: function}
+	// Inside parentheses a '{' can only be a composite literal, even when
+	// the call sits in a statement header (Go's rule).
+	wasDisabled := p.braceLiteralDisabled
+	p.braceLiteralDisabled = false
 	args, ok := p.parseDelimited[ast.Expression](
 		token.LPAREN,
 		token.RPAREN,
@@ -696,6 +731,7 @@ func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expressi
 			return arg, arg != nil
 		},
 	)
+	p.braceLiteralDisabled = wasDisabled
 	if !ok {
 		return nil
 	}
@@ -709,7 +745,7 @@ func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expressi
 func (p *Parser) parseFieldAccess(left ast.Expression) ast.Expression {
 	// Record field access: record.field
 	// Or ADT constructor: Type.Variant
-	exp := &ast.IndexExpression{Token: p.currentToken, Left: left}
+	exp := &ast.IndexExpression{Token: p.currentToken, Left: left, Dot: true}
 	p.nextToken()
 	if !p.currentTokenIs(token.IDENT) {
 		p.peekError(token.IDENT)
@@ -1848,10 +1884,13 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 	// Skip opening brace (currentToken is {)
 	p.nextToken()
 
+	// Contract: leaves currentToken ON the closing '}' (the last token of
+	// the literal), like every other prefix/infix expression parser — the
+	// Pratt loop and statement loop advance past it themselves.
+
 	// Handle empty record: {}
 	if p.currentTokenIs(token.RBRACE) {
 		record.EndToken = p.currentToken // } token
-		p.nextToken()                    // consume }
 		return record
 	}
 
@@ -1865,7 +1904,6 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 		// Check for closing brace (allows trailing comma: { A: 1, B: 2, })
 		if p.currentTokenIs(token.RBRACE) {
 			record.EndToken = p.currentToken
-			p.nextToken() // consume }
 			break
 		}
 
@@ -1908,9 +1946,8 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 			p.nextToken() // Advance past comma
 			// Continue loop - will handle leading comma on next iteration if present
 		} else if p.currentTokenIs(token.RBRACE) {
-			// We're done - closing brace
+			// We're done - closing brace stays current (contract above)
 			record.EndToken = p.currentToken
-			p.nextToken() // consume }
 			break
 		} else {
 			// Unexpected token - should be comma or closing brace
@@ -1924,7 +1961,6 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 			} else if p.peekTokenIs(token.RBRACE) {
 				p.nextToken()
 				record.EndToken = p.currentToken
-				p.nextToken()
 				break
 			} else {
 				p.peekError(token.RBRACE)
@@ -2277,7 +2313,12 @@ func (p *Parser) parseWhileStatement() *ast.WhileStatement {
 	stmt := &ast.WhileStatement{Token: p.currentToken}
 
 	p.nextToken()
+	// The condition is a statement header: '{' after it opens the loop
+	// body, never a composite literal.
+	wasDisabled := p.braceLiteralDisabled
+	p.braceLiteralDisabled = true
 	stmt.Condition = p.parseExpression(LOWEST)
+	p.braceLiteralDisabled = wasDisabled
 
 	if !p.expectPeek(token.LBRACE) {
 		return nil
@@ -2722,6 +2763,16 @@ func (p *Parser) parameterListAhead() bool {
 	if p.peekTokenIs(token.COLON) {
 		return true
 	}
+	// Colons inside nested braces (record literals) or brackets (slices)
+	// are not parameter annotations: f(Point { x: 1 }) and f(a[0:2]) are
+	// calls, not signatures.
+	braceDepth, bracketDepth := 0, 0
+	if p.peekTokenIs(token.LBRACE) {
+		braceDepth++
+	}
+	if p.peekTokenIs(token.LBRACK) {
+		bracketDepth++
+	}
 	offset := 0
 	const lookaheadLimit = 4096
 	for step := 0; step < lookaheadLimit; step++ {
@@ -2735,9 +2786,86 @@ func (p *Parser) parameterListAhead() bool {
 			if depth == 0 {
 				return false
 			}
+		case token.LBRACE:
+			braceDepth++
+		case token.RBRACE:
+			braceDepth--
+		case token.LBRACK:
+			bracketDepth++
+		case token.RBRACK:
+			bracketDepth--
 		case token.COLON:
-			if depth == 1 {
+			if depth == 1 && braceDepth == 0 && bracketDepth == 0 {
 				return true
+			}
+		case token.EOF:
+			return false
+		}
+	}
+	return false
+}
+
+// callableDefinitionAhead reports whether an IDENT-led statement whose next
+// token is '(' is a colon-less function definition
+// (docs/spec/10-syntax.md §3):
+//
+//	add(l: u32, r: u32): u32 = l + r
+//
+// rather than a call statement. The shape requires a parameter annotation
+// colon at parenthesis depth 1 (outside nested braces/brackets), or an
+// empty list, and a return annotation, '=', or block after the closing
+// parenthesis. currentToken is the IDENT; peekToken is '('.
+func (p *Parser) callableDefinitionAhead() bool {
+	cursor, ok := p.source.(*token.Cursor)
+	if !ok {
+		return false
+	}
+	depth := 1
+	braceDepth, bracketDepth := 0, 0
+	sawAnnotation := false
+	offset := 0
+	const lookaheadLimit = 4096
+	for step := 0; step < lookaheadLimit; step++ {
+		tok := cursor.Peek(offset)
+		offset++
+		switch tok.TokenKind {
+		case token.LPAREN:
+			depth++
+		case token.RPAREN:
+			depth--
+			if depth == 0 {
+				// After the parameter list: a definition continues with a
+				// return annotation, '=', or a brace block. Nullary shapes
+				// require the annotation ('f() = x' and 'f() {' stay
+				// expression territory).
+				for rest := 0; rest < 16; rest++ {
+					next := cursor.Peek(offset)
+					offset++
+					if next.TokenKind == token.TRIVIA || next.TokenKind == token.COMMENT {
+						continue
+					}
+					switch next.TokenKind {
+					case token.COLON, token.ARROW:
+						return true
+					case token.ASSIGN, token.LBRACE:
+						return sawAnnotation
+					default:
+						return false
+					}
+				}
+				return false
+			}
+		case token.LBRACE:
+			braceDepth++
+		case token.RBRACE:
+			braceDepth--
+		case token.LBRACK:
+			bracketDepth++
+		case token.RBRACK:
+			bracketDepth--
+		case token.COLON:
+			if depth == 1 && braceDepth == 0 && bracketDepth == 0 {
+				sawAnnotation = true
 			}
 		case token.EOF:
 			return false
@@ -2824,11 +2952,17 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		}
 	}
 
-	// Body: '= expr' or a brace block.
+	// Body: '= expr', '= { block }', or a brace block.
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken()
 		p.nextToken()
-		stmt.Body = p.parseExpression(LOWEST)
+		if p.currentTokenIs(token.LBRACE) {
+			// '= {' opens a block body: whole-body anonymous record
+			// literals need a named form (docs/spec/10-syntax.md §3).
+			stmt.Body = p.parseBlockExpression()
+		} else {
+			stmt.Body = p.parseExpression(LOWEST)
+		}
 	} else if p.peekTokenIs(token.LBRACE) {
 		p.nextToken()
 		stmt.Body = p.parseBlockExpression()

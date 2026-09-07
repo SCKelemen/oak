@@ -174,6 +174,16 @@
       "data": {},
       "position": {
         "line": 11,
+        "column": 3,
+        "byte_start": 170,
+        "byte_end": 171
+      }
+    },
+    {
+      "type": "ExpressionStatement",
+      "data": {},
+      "position": {
+        "line": 11,
         "column": 26,
         "byte_start": 193,
         "byte_end": 194

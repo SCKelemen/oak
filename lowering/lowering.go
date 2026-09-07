@@ -193,9 +193,22 @@ func lowerExpression(expr ast.Expression, tc *typechecker.TypeChecker) ast.Expre
 
 // lowerIndexExpression lowers arr[i] to core_index(arr, i)
 func lowerIndexExpression(expr *ast.IndexExpression, tc *typechecker.TypeChecker) ast.Expression {
+	// Member access spelled with '.' (record fields, library members, ADT
+	// constructors) is not element indexing: only bracket indexing lowers
+	// to bounds-checked core_index. The receiver still lowers.
+	if expr.Dot {
+		return &ast.IndexExpression{
+			BaseNode: expr.BaseNode,
+			Token:    expr.Token,
+			Left:     lowerExpression(expr.Left, tc),
+			Index:    expr.Index,
+			Dot:      true,
+		}
+	}
 	// Library member access (c.Int, arm64.clz64, simd.load_u8x16, ...) is
 	// not element indexing: preserve the shape for the backend
-	// (docs/spec/92-ffi.md, docs/spec/93-simd.md).
+	// (docs/spec/92-ffi.md, docs/spec/93-simd.md). (Defense in depth for
+	// accesses constructed without the Dot mark.)
 	if base, ok := expr.Left.(*ast.Identifier); ok && typechecker.CompilerKnownLibrary(base.Value) {
 		if member, ok := expr.Index.(*ast.Identifier); ok && typechecker.KnownLibraryMember(base.Value, member.Value) {
 			return expr

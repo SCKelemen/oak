@@ -2,6 +2,7 @@ package typechecker
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
@@ -220,6 +221,36 @@ func (t *NarrowedADTVariantType) Equals(other Type) bool {
 // RecordType represents a record/struct type
 type RecordType struct {
 	Fields map[string]Type // field name -> type
+	// Name is the nominal identity of a declared record type
+	// (Point: type = struct { ... }); empty for anonymous shapes.
+	// Identity for Equals stays structural; Name exists so the backend can
+	// emit the declared struct.
+	Name string
+	// Order preserves declaration order (Oak.SemanticRecord), which is
+	// layout-significant for struct representation (docs/spec/40-records.md).
+	Order []string
+}
+
+// DisplayName is the nominal name when declared, else the structural shape.
+func (t *RecordType) DisplayName() string {
+	if t.Name != "" {
+		return t.Name
+	}
+	return t.String()
+}
+
+// orderedFieldNames returns the declaration order when known, else the
+// field names sorted (deterministic diagnostics for anonymous shapes).
+func (t *RecordType) orderedFieldNames() []string {
+	if len(t.Order) == len(t.Fields) {
+		return t.Order
+	}
+	names := make([]string, 0, len(t.Fields))
+	for name := range t.Fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (t *RecordType) String() string {
@@ -2172,6 +2203,42 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 		fields[name] = fieldType
 	}
 
+	// Against a declared record type, the literal must cover the fields
+	// exactly: no unknown fields, no missing fields, each value at its
+	// declared type. The literal's type is the declared type (nominal name
+	// and declaration order flow to the backend).
+	if expectedRecord != nil {
+		valid := true
+		unknown := make([]string, 0)
+		for name := range fields {
+			if _, declared := expectedRecord.Fields[name]; !declared {
+				unknown = append(unknown, name)
+			}
+		}
+		sort.Strings(unknown)
+		for _, name := range unknown {
+			tc.addError(expr, "record literal: %s has no field %s", expectedRecord.DisplayName(), name)
+			valid = false
+		}
+		for _, name := range expectedRecord.orderedFieldNames() {
+			declared := expectedRecord.Fields[name]
+			given, present := fields[name]
+			if !present {
+				tc.addError(expr, "record literal: missing field %s of %s", name, expectedRecord.DisplayName())
+				valid = false
+				continue
+			}
+			if given != nil && !given.Equals(declared) {
+				tc.addError(expr, "record literal: field %s expects %s, got %s", name, declared, given)
+				valid = false
+			}
+		}
+		if !valid {
+			return nil
+		}
+		return expectedRecord
+	}
+
 	// Canonicalize empty record {} to Unit
 	if len(fields) == 0 {
 		return &UnitType{}
@@ -2664,8 +2731,12 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 			if recordLit, ok := variant.Literal.(*ast.RecordLiteral); ok {
 				// This is a record type definition
 				tc.checkRecordTypeDefinition(stmt.Name.Value, recordLit)
-				// Store the record type in the environment
+				// Store the record type in the environment with its nominal
+				// name, so the backend can emit the declared struct.
 				recordType := tc.parseRecordTypeFromLiteral(recordLit)
+				if named, isRecord := recordType.(*RecordType); isRecord {
+					named.Name = stmt.Name.Value
+				}
 				if recordType != nil {
 					recordScheme := Generalize(recordType, tc.env)
 					tc.env.Set(stmt.Name.Value, recordScheme)
@@ -2824,15 +2895,38 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 	}
 }
 
-// parseRecordTypeFromLiteral parses a RecordType from a record literal used in a type definition
+// parseRecordTypeFromLiteral parses a RecordType from a record literal used
+// in a type definition, preserving declaration order (layout-significant:
+// docs/spec/40-records.md).
 func (tc *TypeChecker) parseRecordTypeFromLiteral(recordLit *ast.RecordLiteral) Type {
 	fields := make(map[string]Type)
-	for fieldName, fieldExpr := range recordLit.Fields {
-		fieldType := tc.parseTypeExpression(fieldExpr)
+	order := make([]string, 0, len(recordLit.FieldOrder))
+	for _, field := range recordLit.FieldOrder {
+		fieldType := tc.parseTypeExpression(field.Value)
 		if fieldType == nil {
 			return nil
 		}
-		fields[fieldName] = fieldType
+		fields[field.Name] = fieldType
+		order = append(order, field.Name)
+	}
+	// Defense in depth: fields that reached the map without an order entry
+	// (older construction paths) are appended deterministically.
+	if len(order) < len(recordLit.Fields) {
+		missing := make([]string, 0)
+		for fieldName := range recordLit.Fields {
+			if _, present := fields[fieldName]; !present {
+				missing = append(missing, fieldName)
+			}
+		}
+		sort.Strings(missing)
+		for _, fieldName := range missing {
+			fieldType := tc.parseTypeExpression(recordLit.Fields[fieldName])
+			if fieldType == nil {
+				return nil
+			}
+			fields[fieldName] = fieldType
+			order = append(order, fieldName)
+		}
 	}
 
 	// Canonicalize empty record {} to Unit
@@ -2840,7 +2934,7 @@ func (tc *TypeChecker) parseRecordTypeFromLiteral(recordLit *ast.RecordLiteral) 
 		return &UnitType{}
 	}
 
-	return &RecordType{Fields: fields}
+	return &RecordType{Fields: fields, Order: order}
 }
 
 // checkADTVariantLiteralTag checks that literal tags in ADT variants are consistent

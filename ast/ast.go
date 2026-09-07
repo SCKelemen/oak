@@ -265,6 +265,10 @@ type IndexExpression struct {
 	Token token.Token // The . token or [ token
 	Left  Expression
 	Index Expression // For records, this is an identifier. For arrays, this is an integer expression.
+	// Dot marks member access spelled with '.', so field access (p.x) is
+	// never confused with element indexing (a[i]) downstream: lowering
+	// rewrites only bracket indexing to bounds-checked core_index.
+	Dot bool
 }
 
 func (ie *IndexExpression) expressionNode()      {}

@@ -1,0 +1,18 @@
+
+Point: type = struct {
+  x: i32
+  y: i32
+}
+
+Pair: type = struct {
+  first: Point
+  tag: u8
+}
+
+shift(p: Point, dx: i32): Point = Point { x: p.x + dx, y: p.y }
+
+main: (): i32 {
+  p: Point = Point { x: 11, y: 31 }
+  pair: Pair = Pair { first: shift(p, 9), tag: u8(3) }
+  pair.first.x + i32(pair.tag)
+}

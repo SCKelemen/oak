@@ -64,13 +64,26 @@ addu8: (a, b: u8) -> u8 = a + b
 
 Both return spellings are accepted: `:` and `->`. Parameter names may be
 grouped, sharing one type (`a, b: i32`); the last group may be variadic
-(`rest: ...T`, one name). The definition is `= expression` or a brace block:
+(`rest: ...T`, one name). The definition is `= expression`, `= { block }`,
+or a brace block:
 
 ```oak
 mix: (a: u8, b, c: i32) -> i32 {
   b + c
 }
+
+add(l: u32, r: u32): u32 = {
+  l + r
+}
 ```
+
+The second shape is the **colon-less form**: the name is followed directly
+by its parameter list. It is recognized when the parentheses carry a
+parameter annotation (`name: type` at top level of the list) or when an
+empty list is followed by a return annotation; otherwise `name(...)` is a
+call. After `=`, a `{` opens a block body — a whole-body record literal
+must use its named form (`= Point { ... }`), which is preferred at
+boundaries anyway (§8).
 
 The `fn` keyword form remains available (methods with receivers and generic
 type parameters currently use it) with the same body semantics:
