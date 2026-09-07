@@ -75,7 +75,7 @@ theorem number_holds (table : List Atom) (a : OakVerification.Assignment) (l : L
 
 theorem number_semantics (table : List Atom) (a : OakVerification.Assignment) (f : CNF) :
     numberedSat a (numberCNF table f) = cnfSat (pull table a) f := by
-  simp [numberedSat, numberCNF, cnfSat, clauseSat, Function.comp_def, number_holds]
+  simp [numberedSat, numberCNF, cnfSat, BooleanCNF.clauseSat, Function.comp_def, number_holds]
 
 theorem literal_lift (table : List Atom) (a : BooleanCNF.Assignment) (l : Lit)
     (member : l.atom ∈ table) :

@@ -8,7 +8,7 @@ attempt=$(mktemp -d "$experiment_root/build/boolean-proofs/attempt-XXXXXX")
 jq -n --arg attempt "$attempt" '{format:"oak-boolean-proofs-1",passed:false,attempt:$attempt}' > build/boolean-proofs/report.json
 export LEAN_PATH="$attempt"
 for module in RUPSoundness RUPExecutable RUPText BooleanCNF NumberedCNF; do
-  lean -DwarningAsError=true -o "$attempt/$module.olean" "proof/$module.lean" > "$attempt/$module.log" 2>&1
+  lean -DwarningAsError=true -o "$attempt/$module.olean" "proof/$module.lean" > "$attempt/$module.log" 2>&1 || { cat "$attempt/$module.log"; exit 1; }
 done
 lean -DwarningAsError=true --run proof/BooleanProof.lean list > "$attempt/examples.tsv"
 check() {
