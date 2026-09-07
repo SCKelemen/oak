@@ -1,0 +1,52 @@
+{
+  "format": "oak-lean-certificate-gate-validation-1",
+  "date": "2026-09-07",
+  "ci_commit": "4e6d0a30cb91c0b328630e02ebfedcb6e8aa25a5",
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34141167226",
+  "jobs": {
+    "soundness": 101803255856,
+    "solvers": 101803255468
+  },
+  "all_workflows_passed": true,
+  "theorem": {
+    "name": "OakVerification.Text.checkText_sound",
+    "claim": "Text acceptance implies unsatisfiability of the database returned by parseDIMACS.",
+    "axioms": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "warnings_as_errors": true
+  },
+  "text_agreement": {
+    "cases": 2571,
+    "accepted": 145,
+    "rejected": 2426,
+    "passed": true
+  },
+  "decoded_agreement": {
+    "cases": 13019,
+    "accepted": 610,
+    "rejected": 12409,
+    "passed": true
+  },
+  "real_certificates": {
+    "accepted": 11,
+    "wrong_formula_rejected": 11,
+    "invalid_suffix_rejected": 11,
+    "all_rejections_from_checker": true,
+    "passed": true
+  },
+  "additional_local_validation": {
+    "change": "Replace any prior gate report with passed=false before validating a new attempt.",
+    "test": "Start with passed=true and an unsuccessful suite report; script exits nonzero and replaces the gate report with passed=false.",
+    "passed": true
+  },
+  "artifacts": "The opt-in workflow retains original solver artifacts and build/lean-gate records, input SHA-256 hashes, checker outputs and corruptions for 30 days.",
+  "limits": [
+    "The theorem refers to decoded DIMACS semantics; format-preservation of the parser remains unproved.",
+    "Go-to-Lean refinement and source-to-CNF semantic preservation remain unproved.",
+    "The gate is opt-in CI/developer tooling; the normal Go verifier has no Lean runtime dependency.",
+    "RAT and theory lemmas are unsupported."
+  ]
+}

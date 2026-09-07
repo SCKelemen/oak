@@ -4,9 +4,13 @@ set -euo pipefail
 experiment_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$experiment_root"
 report=${1:-build/integration/report.json}
-jq -e '.passed == true and (.models | length > 0)' "$report" >/dev/null
 mkdir -p build/lean-gate
 attempt=$(mktemp -d "$experiment_root/build/lean-gate/attempt-XXXXXX")
+# Replace any prior success before validation so failed retries cannot leave a
+# stale green report behind.
+jq -n --arg attempt "$attempt" \
+  '{format:"oak-lean-certificate-gate-1",passed:false,attempt:$attempt}' > build/lean-gate/report.json
+jq -e '.passed == true and (.models | length > 0)' "$report" >/dev/null
 export LEAN_PATH="$attempt"
 lean -DwarningAsError=true -o "$attempt/RUPSoundness.olean" proof/RUPSoundness.lean > "$attempt/soundness.log" 2>&1
 lean -DwarningAsError=true -o "$attempt/RUPExecutable.olean" proof/RUPExecutable.lean > "$attempt/executable.log" 2>&1

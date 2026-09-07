@@ -141,3 +141,10 @@ corpus plus hand-labelled malformed and valid text cases. To reproduce it,
 set `OAK_LEAN_TEXT_CORPUS_OUT` alongside `OAK_LEAN_DIFFERENTIAL_OUT` when running
 `TestLeanDifferentialCorpus`, then pass that JSON file to
 `lean -DwarningAsError=true --run proof/RUPTextCompare.lean`.
+
+[The real-certificate gate passed](https://github.com/SCKelemen/oak/actions/runs/34141167226):
+11 certificates accepted and 22 corruptions rejected by the checker. The text
+corpus also agreed on all 2,571 cases (145 accepted, 2,426 rejected), alongside
+the existing 13,019 decoded cases. `../validation-certificate-gate.json` records
+the tested commit and remaining boundaries. Failed retries replace any earlier
+success report before validating new input.
