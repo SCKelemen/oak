@@ -80,9 +80,35 @@ func ContainsAtomicStorage(typ Type) bool {
 	return false
 }
 
-func atomicCellIdentifier(expr ast.Expression) bool {
-	_, ok := expr.(*ast.Identifier)
-	return ok
+// atomicCellPath admits the storage paths that can name a cell: a global
+// or local identifier, a record field path, or an element of an atomic
+// array — always rooted at a named binding, never a temporary.
+func atomicCellPath(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return true
+	case *ast.IndexExpression:
+		return atomicCellPath(e.Left)
+	default:
+		return false
+	}
+}
+
+// atomicFieldShapeLegal admits the storage shapes a record field may take
+// when it involves atomics: a direct cell, or an owned array of cells.
+// A record containing either becomes storage identity itself (no copies).
+func atomicFieldShapeLegal(fieldType Type) bool {
+	if !ContainsAtomicStorage(fieldType) {
+		return true
+	}
+	switch t := fieldType.(type) {
+	case *AtomicType:
+		return true
+	case *ArrayType:
+		_, elemAtomic := t.ElementType.(*AtomicType)
+		return elemAtomic && !t.IsSlice && !t.IsSpan
+	}
+	return false
 }
 
 func (tc *TypeChecker) checkAtomicValueArgument(name string, arg ast.Expression, expected Type) bool {
@@ -113,8 +139,8 @@ func (tc *TypeChecker) checkAtomicInvocation(name string, expr *ast.InvocationEx
 	if spec.Kind == semir.AtomicBuiltinFence {
 		return &UnitType{}, true
 	}
-	if !atomicCellIdentifier(expr.Arguments[0]) {
-		tc.addError(expr.Arguments[0], "%s requires a named Atomic[T] cell; temporaries and copied cells are forbidden", name)
+	if !atomicCellPath(expr.Arguments[0]) {
+		tc.addError(expr.Arguments[0], "%s requires a named Atomic[T] cell or a storage path to one (field, element); temporaries and copied cells are forbidden", name)
 		return nil, true
 	}
 	cellType := tc.checkExpression(expr.Arguments[0])

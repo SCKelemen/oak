@@ -99,6 +99,35 @@ rung by construction (no concurrent observer). Register-backed addressing
 (TPIDR) awaits the assembler milestone — the indexed form is expressible
 today.
 
+## The queue taxonomy (after 1024cores)
+
+Vyukov's queue catalog ([archived](https://web.archive.org/web/20250719163454/https://www.1024cores.net/home/lock-free-algorithms/queues/queue-catalog))
+classifies queues along axes that compose into the design space; every
+queue in this repository is a point in it:
+
+- **producers × consumers**: SPSC / MPSC / SPMC / MPMC — each step up in
+  sharing costs a rung of progress or consistency somewhere.
+- **boundedness**: all Oak queues are bounded (static pools; the
+  unbounded variants require allocation, which Oak makes explicit or
+  impossible).
+- **intrusiveness**: intrusive (links inside pooled elements — DV-MPSC)
+  vs non-intrusive (separate slot arrays — the rings, bounded MPMC).
+- **ordering**: per-producer FIFO (all of ours) vs total order; the
+  LIFO-grab MPSC delivers batches whose global order is the grab order.
+- **failure/blocking semantics**: what full, empty, and mid-publication
+  look like — Oak's contribution is making each a named `Bool`/`Option`/
+  ADT case rather than a spin hidden inside the operation.
+
+Executed points in the space: SPSC ring and zero-copy SPSC
+(`TestE2ESpscRing`, `TestE2EZeroCopySpsc`), LIFO-grab MPSC
+(`TestE2EMpscIntake`), DV-MPSC with plain and with atomic links
+(`TestE2EDvMpsc`, `TestE2EDvMpscAtomicLinks` — the faithful
+[intrusive form](https://web.archive.org/web/20250810034830/https://www.1024cores.net/home/lock-free-algorithms/queues/intrusive-mpsc-node-based-queue)),
+and the [bounded MPMC](https://web.archive.org/web/20250810034104/https://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue)
+with per-slot sequence cells over `[N]Atomic[u32]` (`TestE2EBoundedMpmc`).
+The seqlock (`TestE2ESeqlock`) is the reader-writer side of the same
+catalog ([archived](https://web.archive.org/web/20250517153648/https://www.1024cores.net/home/lock-free-algorithms/reader-writer-problem)).
+
 ## What the catalog teaches
 
 Every entry got *cheaper to reason about* by naming its rungs, and the

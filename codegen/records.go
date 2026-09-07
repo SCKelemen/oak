@@ -45,6 +45,17 @@ var fixedFieldRepresentations = map[string]semir.RecordFieldRepresentation{
 // fieldRepresentation resolves one field's size and alignment, reporting
 // failure for types the v1 table cannot place.
 func (cg *CodeGenerator) fieldRepresentation(name string, typeExpr ast.Expression) (semir.RecordFieldRepresentation, bool) {
+	// Atomic cell fields take their carrier's size and alignment on the
+	// recorded target model (lock-free C11 _Atomic over fixed-width
+	// integers); the emitted sizeof/offsetof assertions verify this
+	// against the actual ABI at C compile time.
+	if carrier, isAtomic := atomicTypeCarrier(typeExpr); isAtomic {
+		if fixed, ok := fixedFieldRepresentations[carrier]; ok {
+			fixed.Name = name
+			return fixed, true
+		}
+		return semir.RecordFieldRepresentation{}, false
+	}
 	// Owned-array fields: [N]T occupies N contiguous elements at the
 	// element's alignment (buffer: [16]u8 — the Ring shape).
 	if indexExpr, isIndex := typeExpr.(*ast.IndexExpression); isIndex {

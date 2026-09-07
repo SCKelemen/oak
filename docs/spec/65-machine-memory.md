@@ -27,10 +27,23 @@ counter: Atomic[u64]
 ```
 
 It is zero-initialized and has storage identity. Direct assignment/copy,
-ordinary arithmetic/matching, by-value argument/return transport, aggregate
-embedding, and temporary-cell operands are rejected. A future borrowed
+ordinary arithmetic/matching, by-value argument/return transport, and
+temporary-cell operands are rejected.
+
+Cells also embed as **storage**: a record field may be `Atomic[T]` or an
+owned array of cells (`[N]Atomic[T]`), and atomic arrays may be declared
+directly. A record or array containing cells is itself storage identity —
+zero-initialized declaration only, never copied, passed, returned, or
+constructed by literal. Atomic operations accept **storage paths** as the
+cell operand (`nodes[i].next`, `seqs[cell]`): identifier-rooted access
+paths, emitted in checked lvalue position and addressed — never a
+temporary. Deeper embeddings (cells inside ADT payloads, views/spans of
+cells, generic arguments) remain rejected in v1. A future borrowed
 `AtomicRef[T]` may transport cell identity without copying it; v1 does not
 manufacture an implicit pointer or heap wrapper.
+
+The canonical consumers are the 1024cores queue family: the intrusive
+MPSC's atomic next links and the bounded MPMC's per-slot sequence cells.
 
 ## 2. Single-operation memory orders
 

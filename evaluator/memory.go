@@ -46,17 +46,26 @@ func evalAtomicInvocation(name string, args []ast.Expression, env *object.Enviro
 	if spec.Kind == semir.AtomicBuiltinFence {
 		return NULL, true
 	}
-	ident, ok := args[0].(*ast.Identifier)
-	if !ok {
-		return newError("%s requires a named Atomic[T] cell", name), true
-	}
-	stored, ok := env.Get(ident.Value)
-	if !ok {
-		return newError("atomic cell not found: %s", ident.Value), true
+	// The cell argument is a storage path: a named cell, a record field,
+	// or an element of an atomic array. Evaluating the path yields the
+	// shared AtomicCell object (records/arrays hold cell references, so
+	// path access is identity, never a copy).
+	var stored object.Object
+	if ident, isIdent := args[0].(*ast.Identifier); isIdent {
+		bound, found := env.Get(ident.Value)
+		if !found {
+			return newError("atomic cell not found: %s", ident.Value), true
+		}
+		stored = bound
+	} else {
+		stored = Eval(args[0], env)
+		if isError(stored) {
+			return stored, true
+		}
 	}
 	cell, ok := stored.(*object.AtomicCell)
 	if !ok || cell == nil {
-		return newError("%s first argument must be an Atomic[T] cell", name), true
+		return newError("%s first argument must be an Atomic[T] cell (storage path)", name), true
 	}
 
 	switch spec.Kind {
@@ -103,4 +112,60 @@ func evalAtomicInvocation(name string, args []ast.Expression, env *object.Enviro
 	default:
 		return newError("unsupported atomic builtin: %s", name), true
 	}
+}
+
+// zeroAtomicStorage constructs the zero value for atomic-bearing storage
+// declarations: records whose fields include cells, and owned arrays of
+// cells. Non-atomic declarations report false and take the ordinary path.
+func zeroAtomicStorage(typeExpr ast.Expression, env *object.Environment) (object.Object, bool) {
+	switch t := typeExpr.(type) {
+	case *ast.IndexExpression:
+		length, isFixed := t.Index.(*ast.IntegerLiteral)
+		if !isFixed {
+			return nil, false
+		}
+		if !isAtomicTypeExpression(t.Left) {
+			// Arrays of atomic-bearing records also qualify.
+			if elem, isStorage := zeroAtomicStorage(t.Left, env); isStorage {
+				elements := make([]object.Object, length.Value)
+				elements[0] = elem
+				for i := int64(1); i < length.Value; i++ {
+					fresh, _ := zeroAtomicStorage(t.Left, env)
+					elements[i] = fresh
+				}
+				return &object.Array{Elements: elements}, true
+			}
+			return nil, false
+		}
+		elements := make([]object.Object, length.Value)
+		for i := range elements {
+			elements[i] = &object.AtomicCell{}
+		}
+		return &object.Array{Elements: elements}, true
+	case *ast.Identifier:
+		recordDecl, isRecord := env.GetRecordDecl(t.Value)
+		if !isRecord {
+			return nil, false
+		}
+		hasAtomic := false
+		fields := make(map[string]object.Object, len(recordDecl.FieldOrder))
+		for _, field := range recordDecl.FieldOrder {
+			if isAtomicTypeExpression(field.Value) {
+				fields[field.Name] = &object.AtomicCell{}
+				hasAtomic = true
+				continue
+			}
+			if nested, isStorage := zeroAtomicStorage(field.Value, env); isStorage {
+				fields[field.Name] = nested
+				hasAtomic = true
+				continue
+			}
+			fields[field.Name] = &object.Integer{Value: 0}
+		}
+		if !hasAtomic {
+			return nil, false
+		}
+		return &object.Record{Fields: fields}, true
+	}
+	return nil, false
 }

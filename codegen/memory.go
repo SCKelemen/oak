@@ -48,6 +48,24 @@ func atomicTypeCarrier(expr ast.Expression) (string, bool) {
 	return carrier.Value, true
 }
 
+
+// atomicPathShape mirrors the checker's atomicCellPath: identifier-rooted
+// access paths only. Lowered element accesses arrive as core_index calls,
+// which emitLvaluePath re-emits as checked lvalue accesses.
+func atomicPathShape(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return true
+	case *ast.IndexExpression:
+		return atomicPathShape(e.Left)
+	case *ast.InvocationExpression:
+		ident, isIdent := e.Function.(*ast.Identifier)
+		return isIdent && ident.Value == "core_index" && len(e.Arguments) == 2 && atomicPathShape(e.Arguments[0])
+	default:
+		return false
+	}
+}
+
 func atomicTypeC(expr ast.Expression) (string, bool) {
 	carrier, ok := atomicTypeCarrier(expr)
 	if !ok {
@@ -239,12 +257,19 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 		return true
 	}
 
-	cell, isCell := call.Arguments[0].(*ast.Identifier)
-	if !isCell || cell == nil {
+	// The cell argument is a storage path: a named cell, a record field
+	// (nodes[i].next), or an element of an atomic array — emitted in
+	// lvalue position with checked indices, then addressed.
+	cellPath := call.Arguments[0]
+	if !atomicPathShape(cellPath) {
 		cg.output.WriteString("OAK_ATOMIC_CELL_MUST_BE_NAMED")
 		return true
 	}
-	address := "&(" + cell.Value + ")"
+	emitAddress := func() {
+		cg.output.WriteString("&(")
+		cg.emitLvaluePath(cellPath, tc)
+		cg.output.WriteString(")")
+	}
 
 	if spec.Kind == semir.AtomicBuiltinCompareExchange {
 		macro, err := compareExchangeMacro(spec)
@@ -254,7 +279,7 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 		}
 		cg.output.WriteString(macro)
 		cg.output.WriteString("(")
-		cg.output.WriteString(address)
+		emitAddress()
 		cg.output.WriteString(", ")
 		cg.emitExpressionFragment(call.Arguments[1], tc)
 		cg.output.WriteString(", ")
@@ -271,13 +296,13 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 	switch spec.Kind {
 	case semir.AtomicBuiltinLoad:
 		cg.output.WriteString("atomic_load_explicit(")
-		cg.output.WriteString(address)
+		emitAddress()
 		cg.output.WriteString(", ")
 		cg.output.WriteString(order)
 		cg.output.WriteString(")")
 	case semir.AtomicBuiltinStore:
 		cg.output.WriteString("atomic_store_explicit(")
-		cg.output.WriteString(address)
+		emitAddress()
 		cg.output.WriteString(", ")
 		cg.emitExpressionFragment(call.Arguments[1], tc)
 		cg.output.WriteString(", ")
@@ -285,7 +310,7 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 		cg.output.WriteString(")")
 	case semir.AtomicBuiltinFetchAdd:
 		cg.output.WriteString("atomic_fetch_add_explicit(")
-		cg.output.WriteString(address)
+		emitAddress()
 		cg.output.WriteString(", ")
 		cg.emitExpressionFragment(call.Arguments[1], tc)
 		cg.output.WriteString(", ")
@@ -293,7 +318,7 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 		cg.output.WriteString(")")
 	case semir.AtomicBuiltinExchange:
 		cg.output.WriteString("atomic_exchange_explicit(")
-		cg.output.WriteString(address)
+		emitAddress()
 		cg.output.WriteString(", ")
 		cg.emitExpressionFragment(call.Arguments[1], tc)
 		cg.output.WriteString(", ")

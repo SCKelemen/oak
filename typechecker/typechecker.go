@@ -2511,14 +2511,14 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 			return
 		}
 
-		if _, atomic := varType.(*AtomicType); atomic {
+		if ContainsAtomicStorage(varType) {
+			// Atomic-bearing storage (a cell, a record with cell fields, an
+			// array of cells) is zero-initialized declaration only: it is
+			// storage identity, never a copied value.
 			if stmt.Value != nil {
-				tc.addError(stmt, "Atomic[T] cells are zero-initialized storage in v1; initialize with atomic_store_* after declaration")
+				tc.addError(stmt, "Atomic[T] storage is zero-initialized at declaration; initialize with atomic_store_* afterward, and never copy it")
 				return
 			}
-		} else if ContainsAtomicStorage(varType) {
-			tc.addError(stmt.Type, "Atomic[T] cannot be embedded in arrays, records, or generic values in v1")
-			return
 		}
 
 		// If there's an initializer, check that it matches the type (with coercion)
@@ -2975,8 +2975,8 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 		// Parse field type from the expression
 		// In a record type definition, fieldExpr should be a type expression (identifier)
 		fieldType := tc.parseTypeExpression(fieldExpr)
-		if ContainsAtomicStorage(fieldType) {
-			tc.addError(fieldExpr, "Atomic[T] cannot be embedded in record values in v1")
+		if !atomicFieldShapeLegal(fieldType) {
+			tc.addError(fieldExpr, "Atomic[T] may be a field or an owned array of cells; deeper embeddings are not supported in v1")
 		}
 		if fieldType == nil {
 			// fieldExpr might be an expression, try to use it as a node

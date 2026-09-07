@@ -739,11 +739,14 @@ func evalADTType(adt *ast.ADTType, env *object.Environment) object.Object {
 		if variant.Literal != nil {
 			// Check if this is a record type definition (record literal in type context)
 			// In that case, the literal contains type annotations, not values
-			if _, ok := variant.Literal.(*ast.RecordLiteral); ok {
+			if recordLit, ok := variant.Literal.(*ast.RecordLiteral); ok {
 				// This is a record type definition: { field: Type, ... }
 				// Don't evaluate the field expressions as values - they're type annotations
 				// Just store a marker that this is a record type
 				variantDef.Literal = &object.Record{Fields: make(map[string]object.Object)}
+				// Retain the field structure for zero-value construction of
+				// storage-identity records (evaluator/memory.go).
+				env.SetRecordDecl(adt.Name.Value, recordLit)
 			} else {
 				// Regular literal (for ADT variants with literal tags)
 				variantDef.Literal = Eval(variant.Literal, env)
@@ -889,6 +892,15 @@ func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environmen
 		cell := &object.AtomicCell{}
 		env.Set(vd.Name.Value, cell)
 		return cell
+	}
+	// Atomic-bearing storage declarations (records with cell fields, arrays
+	// of cells) construct their zero value with shared cell objects, so
+	// storage paths resolve to identities.
+	if vd.Value == nil && vd.Type != nil {
+		if zero, isStorage := zeroAtomicStorage(vd.Type, env); isStorage {
+			env.Set(vd.Name.Value, zero)
+			return zero
+		}
 	}
 	// Check if variable already exists - if so, treat as assignment
 	if _, exists := env.Get(vd.Name.Value); exists && vd.Type == nil {

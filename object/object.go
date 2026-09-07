@@ -188,7 +188,11 @@ type ADTVariantDef struct {
 type Environment struct {
 	store    map[string]Object
 	adtTypes map[string]*ADTType
-	outer    *Environment
+	// recordDecls retains record type declarations' field structure
+	// (name/order/type expressions) for zero-value construction of
+	// storage-identity records in the interpreter.
+	recordDecls map[string]*ast.RecordLiteral
+	outer       *Environment
 }
 
 func NewEnvironment() *Environment {
@@ -234,6 +238,23 @@ func (e *Environment) GetADTType(name string) (*ADTType, bool) {
 
 func (e *Environment) SetADTType(name string, adt *ADTType) {
 	e.adtTypes[name] = adt
+}
+
+// SetRecordDecl retains a record declaration's field structure.
+func (e *Environment) SetRecordDecl(name string, decl *ast.RecordLiteral) {
+	if e.recordDecls == nil {
+		e.recordDecls = make(map[string]*ast.RecordLiteral)
+	}
+	e.recordDecls[name] = decl
+}
+
+// GetRecordDecl resolves a record declaration through the scope chain.
+func (e *Environment) GetRecordDecl(name string) (*ast.RecordLiteral, bool) {
+	decl, ok := e.recordDecls[name]
+	if !ok && e.outer != nil {
+		return e.outer.GetRecordDecl(name)
+	}
+	return decl, ok
 }
 
 func (e *Environment) GetAllADTTypes() map[string]*ADTType {

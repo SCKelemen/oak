@@ -2050,6 +2050,10 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Str" {
 			return "string"
 		}
+		// Atomic cells embed as C11 _Atomic members (docs/spec/65).
+		if atomicC, isAtomic := atomicTypeC(indexExpr); isAtomic {
+			return atomicC
+		}
 		// Concrete generic-ADT annotations lower to their monomorphized
 		// typedefs: Option[i32] -> oak_Option_i32 (codegen/mono.go).
 		if mangled, isGeneric := cg.genericAnnotationName(indexExpr); isGeneric {
