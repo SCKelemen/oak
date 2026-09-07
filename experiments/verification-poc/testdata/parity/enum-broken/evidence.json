@@ -1,0 +1,16 @@
+{
+  "format": "oak-evidence-2",
+  "semantic_digest": "ae9ced36acc2e130026b5ae7f70f790f910914e48812725340593330ae10c914",
+  "kind": "trace",
+  "states": [
+    {
+      "phase": "Idle"
+    },
+    {
+      "phase": "Reading"
+    },
+    {
+      "phase": "Conflict"
+    }
+  ]
+}

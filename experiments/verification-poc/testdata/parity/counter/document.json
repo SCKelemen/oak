@@ -1,0 +1,165 @@
+{
+  "format": "oak-finite-1",
+  "state": "State",
+  "fields": [
+    [
+      "count",
+      "u8"
+    ]
+  ],
+  "enums": {},
+  "functions": {
+    "initial": {
+      "params": [
+        "s"
+      ],
+      "body": [
+        "==",
+        [
+          "member",
+          "s",
+          "count"
+        ],
+        [
+          "call",
+          "u8",
+          [
+            [
+              "integer",
+              0
+            ]
+          ]
+        ]
+      ]
+    },
+    "safe": {
+      "params": [
+        "s"
+      ],
+      "body": [
+        "<=",
+        [
+          "member",
+          "s",
+          "count"
+        ],
+        [
+          "call",
+          "u8",
+          [
+            [
+              "integer",
+              3
+            ]
+          ]
+        ]
+      ]
+    },
+    "step": {
+      "params": [
+        "s",
+        "t"
+      ],
+      "body": [
+        "match",
+        [
+          "member",
+          "s",
+          "count"
+        ],
+        [
+          [
+            [
+              "integer",
+              0
+            ],
+            [
+              "==",
+              [
+                "member",
+                "t",
+                "count"
+              ],
+              [
+                "call",
+                "u8",
+                [
+                  [
+                    "integer",
+                    1
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            [
+              "integer",
+              1
+            ],
+            [
+              "==",
+              [
+                "member",
+                "t",
+                "count"
+              ],
+              [
+                "call",
+                "u8",
+                [
+                  [
+                    "integer",
+                    2
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            [
+              "integer",
+              2
+            ],
+            [
+              "==",
+              [
+                "member",
+                "t",
+                "count"
+              ],
+              [
+                "call",
+                "u8",
+                [
+                  [
+                    "integer",
+                    3
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            [
+              "wildcard"
+            ],
+            [
+              "==",
+              [
+                "member",
+                "t",
+                "count"
+              ],
+              [
+                "member",
+                "s",
+                "count"
+              ]
+            ]
+          ]
+        ]
+      ]
+    }
+  }
+}

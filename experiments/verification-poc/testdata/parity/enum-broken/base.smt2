@@ -1,0 +1,5 @@
+(set-logic QF_BV)
+(declare-const s_f_phase (_ BitVec 2))
+(declare-const t_f_phase (_ BitVec 2))
+(assert (and (and true ) (= s_f_phase (_ bv0 2)) (not (distinct s_f_phase (_ bv3 2)))))
+(check-sat)

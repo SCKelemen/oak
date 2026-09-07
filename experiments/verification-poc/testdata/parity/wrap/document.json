@@ -1,0 +1,138 @@
+{
+  "format": "oak-finite-1",
+  "state": "State",
+  "fields": [
+    [
+      "count",
+      "u8"
+    ]
+  ],
+  "enums": {},
+  "functions": {
+    "initial": {
+      "params": [
+        "s"
+      ],
+      "body": [
+        "==",
+        [
+          "member",
+          "s",
+          "count"
+        ],
+        [
+          "call",
+          "u8",
+          [
+            [
+              "integer",
+              255
+            ]
+          ]
+        ]
+      ]
+    },
+    "safe": {
+      "params": [
+        "s"
+      ],
+      "body": [
+        "<=",
+        [
+          "+",
+          [
+            "member",
+            "s",
+            "count"
+          ],
+          [
+            "call",
+            "u8",
+            [
+              [
+                "integer",
+                1
+              ]
+            ]
+          ]
+        ],
+        [
+          "call",
+          "u8",
+          [
+            [
+              "integer",
+              1
+            ]
+          ]
+        ]
+      ]
+    },
+    "step": {
+      "params": [
+        "s",
+        "t"
+      ],
+      "body": [
+        "match",
+        [
+          "member",
+          "s",
+          "count"
+        ],
+        [
+          [
+            [
+              "integer",
+              255
+            ],
+            [
+              "==",
+              [
+                "member",
+                "t",
+                "count"
+              ],
+              [
+                "+",
+                [
+                  "member",
+                  "s",
+                  "count"
+                ],
+                [
+                  "call",
+                  "u8",
+                  [
+                    [
+                      "integer",
+                      1
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            [
+              "wildcard"
+            ],
+            [
+              "==",
+              [
+                "member",
+                "t",
+                "count"
+              ],
+              [
+                "member",
+                "s",
+                "count"
+              ]
+            ]
+          ]
+        ]
+      ]
+    }
+  }
+}

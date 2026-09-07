@@ -1,29 +1,29 @@
 // The bridge reads Oak's checked AST. It does not modify or lower the program.
-package main
+package frontend
 
 import (
     "crypto/sha256"
     "encoding/hex"
-    "encoding/json"
+    
     "fmt"
-    "os"
+    
 
     "github.com/SCKelemen/oak/ast"
     "github.com/SCKelemen/oak/compiler"
     "github.com/SCKelemen/oak/typechecker"
 )
 
-type function struct {
+type Function struct {
     Params []string `json:"params"`
     Body any `json:"body"`
 }
-type document struct {
+type Document struct {
     Format string `json:"format"`
     SourceHash string `json:"source_sha256"`
     State string `json:"state"`
     Fields [][2]string `json:"fields"`
     Enums map[string][]string `json:"enums"`
-    Functions map[string]function `json:"functions"`
+    Functions map[string]Function `json:"functions"`
 }
 
 func identifier(e ast.Expression) (string, error) {
@@ -53,7 +53,7 @@ func expression(e ast.Expression) (any, error) {
         right, err := expression(x.Right); if err != nil { return nil, err }
         return []any{"!", right}, nil
     case *ast.InfixExpression:
-        switch x.Operator { case "+", "-", "==", "!=", "<", ">", "<=", ">=":
+        switch x.Operator { case "&&", "||", "+", "-", "==", "!=", "<", ">", "<=", ">=":
         default: return nil, fmt.Errorf("unsupported infix %s", x.Operator) }
         left, err := expression(x.Left); if err != nil { return nil, err }
         right, err := expression(x.Right); if err != nil { return nil, err }
@@ -96,11 +96,11 @@ func expression(e ast.Expression) (any, error) {
     }
 }
 
-func export(path string, source []byte) (*document, error) {
+func Export(path string, source []byte) (*Document, error) {
     checked, err := compiler.New().WithSource(path, string(source)).Check().Get()
     if err != nil { return nil, err }
     hash := sha256.Sum256(source)
-    d := &document{Format:"oak-finite-1", SourceHash:hex.EncodeToString(hash[:]), Fields:[][2]string{}, Enums:map[string][]string{}, Functions:map[string]function{}}
+    d := &Document{Format:"oak-finite-1", SourceHash:hex.EncodeToString(hash[:]), Fields:[][2]string{}, Enums:map[string][]string{}, Functions:map[string]Function{}}
     names := map[string]bool{}
     for _, statement := range checked.Tree.Root.Statements {
         switch s := statement.(type) {
@@ -150,7 +150,7 @@ func export(path string, source []byte) (*document, error) {
                 params = append(params, p.Name.Value)
             }
             body, err := expression(s.Body); if err != nil { return nil, err }
-            d.Functions[s.Name.Value] = function{params, body}
+            d.Functions[s.Name.Value] = Function{params, body}
         default:
             return nil, fmt.Errorf("unsupported top-level statement %T", statement)
         }
@@ -159,9 +159,3 @@ func export(path string, source []byte) (*document, error) {
     return d, nil
 }
 
-func main() {
-    if len(os.Args) != 2 { fmt.Fprintln(os.Stderr, "usage: frontend MODEL.oak"); os.Exit(2) }
-    bytes, err := os.ReadFile(os.Args[1]); if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(2) }
-    d, err := export(os.Args[1], bytes); if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(2) }
-    if err := json.NewEncoder(os.Stdout).Encode(d); err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(2) }
-}

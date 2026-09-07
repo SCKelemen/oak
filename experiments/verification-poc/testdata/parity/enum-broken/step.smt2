@@ -1,0 +1,5 @@
+(set-logic QF_BV)
+(declare-const s_f_phase (_ BitVec 2))
+(declare-const t_f_phase (_ BitVec 2))
+(assert (and (and true ) (and true ) (distinct s_f_phase (_ bv3 2)) (ite (= s_f_phase (_ bv0 2)) (distinct t_f_phase (_ bv3 2)) (ite (= s_f_phase (_ bv1 2)) (= t_f_phase (_ bv3 2)) (ite (= s_f_phase (_ bv2 2)) (= t_f_phase (_ bv0 2)) (= t_f_phase (_ bv3 2))))) (not (distinct t_f_phase (_ bv3 2)))))
+(check-sat)

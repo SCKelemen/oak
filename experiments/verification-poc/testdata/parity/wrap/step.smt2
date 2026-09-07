@@ -1,0 +1,5 @@
+(set-logic QF_BV)
+(declare-const s_f_count (_ BitVec 8))
+(declare-const t_f_count (_ BitVec 8))
+(assert (and (and true ) (and true ) (bvule (bvadd s_f_count (_ bv1 8)) (_ bv1 8)) (ite (= s_f_count (_ bv255 8)) (= t_f_count (bvadd s_f_count (_ bv1 8))) (= t_f_count s_f_count)) (not (bvule (bvadd t_f_count (_ bv1 8)) (_ bv1 8)))))
+(check-sat)

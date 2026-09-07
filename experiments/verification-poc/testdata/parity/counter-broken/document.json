@@ -1,0 +1,91 @@
+{
+  "format": "oak-finite-1",
+  "state": "State",
+  "fields": [
+    [
+      "count",
+      "u8"
+    ]
+  ],
+  "enums": {},
+  "functions": {
+    "initial": {
+      "params": [
+        "s"
+      ],
+      "body": [
+        "==",
+        [
+          "member",
+          "s",
+          "count"
+        ],
+        [
+          "call",
+          "u8",
+          [
+            [
+              "integer",
+              0
+            ]
+          ]
+        ]
+      ]
+    },
+    "safe": {
+      "params": [
+        "s"
+      ],
+      "body": [
+        "<=",
+        [
+          "member",
+          "s",
+          "count"
+        ],
+        [
+          "call",
+          "u8",
+          [
+            [
+              "integer",
+              3
+            ]
+          ]
+        ]
+      ]
+    },
+    "step": {
+      "params": [
+        "s",
+        "t"
+      ],
+      "body": [
+        "==",
+        [
+          "member",
+          "t",
+          "count"
+        ],
+        [
+          "+",
+          [
+            "member",
+            "s",
+            "count"
+          ],
+          [
+            "call",
+            "u8",
+            [
+              [
+                "integer",
+                1
+              ]
+            ]
+          ]
+        ]
+      ]
+    }
+  }
+}

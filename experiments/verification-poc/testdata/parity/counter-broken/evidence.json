@@ -1,0 +1,22 @@
+{
+  "format": "oak-evidence-2",
+  "semantic_digest": "5535ebe06b8681891d499ac12d8e6d13b3a2e59faeb8be6e5dbe56ba8e997a5f",
+  "kind": "trace",
+  "states": [
+    {
+      "count": 0
+    },
+    {
+      "count": 1
+    },
+    {
+      "count": 2
+    },
+    {
+      "count": 3
+    },
+    {
+      "count": 4
+    }
+  ]
+}

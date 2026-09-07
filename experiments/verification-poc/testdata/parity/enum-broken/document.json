@@ -1,0 +1,152 @@
+{
+  "format": "oak-finite-1",
+  "state": "State",
+  "fields": [
+    [
+      "phase",
+      "Phase"
+    ]
+  ],
+  "enums": {
+    "Phase": [
+      "Idle",
+      "Reading",
+      "Writing",
+      "Conflict"
+    ]
+  },
+  "functions": {
+    "initial": {
+      "params": [
+        "s"
+      ],
+      "body": [
+        "==",
+        [
+          "member",
+          "s",
+          "phase"
+        ],
+        [
+          "member",
+          "Phase",
+          "Idle"
+        ]
+      ]
+    },
+    "safe": {
+      "params": [
+        "s"
+      ],
+      "body": [
+        "!=",
+        [
+          "member",
+          "s",
+          "phase"
+        ],
+        [
+          "member",
+          "Phase",
+          "Conflict"
+        ]
+      ]
+    },
+    "step": {
+      "params": [
+        "s",
+        "t"
+      ],
+      "body": [
+        "match",
+        [
+          "member",
+          "s",
+          "phase"
+        ],
+        [
+          [
+            [
+              "member",
+              "Phase",
+              "Idle"
+            ],
+            [
+              "!=",
+              [
+                "member",
+                "t",
+                "phase"
+              ],
+              [
+                "member",
+                "Phase",
+                "Conflict"
+              ]
+            ]
+          ],
+          [
+            [
+              "member",
+              "Phase",
+              "Reading"
+            ],
+            [
+              "==",
+              [
+                "member",
+                "t",
+                "phase"
+              ],
+              [
+                "member",
+                "Phase",
+                "Conflict"
+              ]
+            ]
+          ],
+          [
+            [
+              "member",
+              "Phase",
+              "Writing"
+            ],
+            [
+              "==",
+              [
+                "member",
+                "t",
+                "phase"
+              ],
+              [
+                "member",
+                "Phase",
+                "Idle"
+              ]
+            ]
+          ],
+          [
+            [
+              "member",
+              "Phase",
+              "Conflict"
+            ],
+            [
+              "==",
+              [
+                "member",
+                "t",
+                "phase"
+              ],
+              [
+                "member",
+                "Phase",
+                "Conflict"
+              ]
+            ]
+          ]
+        ]
+      ]
+    }
+  }
+}
