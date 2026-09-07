@@ -5,6 +5,7 @@ import Oak.HappensBefore
 import Oak.SequentialConsistency
 import Oak.AArch64Memory
 import Oak.AArch64Barrier
+import Oak.AArch64Mmio
 import Oak.Borrowing
 import Oak.BorrowRegions
 import Oak.Reborrow
