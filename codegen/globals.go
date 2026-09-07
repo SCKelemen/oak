@@ -49,6 +49,9 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 	// Declarator: owned arrays put the length after the name.
 	declarator := ""
 	if decl.Type != nil {
+		if fn, isFunction := decl.Type.(*ast.FunctionTypeExpression); isFunction {
+			declarator = "static " + cg.cFunctionPointer(fn, name)
+		}
 		if indexExpr, isIndex := decl.Type.(*ast.IndexExpression); isIndex {
 			// Generic instantiations (Ring[u8, 8]) are struct types, not
 			// arrays — the template's arity disambiguates (codegen/mono.go).

@@ -884,7 +884,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.FunctionLiteral:
 		return tc.checkFunctionLiteral(e)
 	case *ast.FieldAccessorExpression:
-		return &FieldAccessorType{Field: e.Field.Value}
+		return tc.checkFieldAccessorExpression(e, expected)
 	case *ast.InvocationExpression:
 		return tc.checkInvocationExpression(e)
 	case *ast.MatchExpression:
@@ -909,6 +909,43 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		tc.addError(expr, "unknown expression type: %T", expr)
 		return nil
 	}
+}
+
+// checkFieldAccessorExpression specializes Elm-style .field when context
+// supplies a concrete unary function type. The source construct remains
+// structurally polymorphic; only its zero-storage backend representation is
+// tied to the concrete record layout selected at this use site.
+func (tc *TypeChecker) checkFieldAccessorExpression(expr *ast.FieldAccessorExpression, expected Type) Type {
+	if expected == nil {
+		return &FieldAccessorType{Field: expr.Field.Value}
+	}
+	fn, ok := expected.(*FunctionType)
+	if !ok || fn.Variadic || len(fn.Parameters) != 1 {
+		tc.addError(expr, "field accessor .%s requires a unary function context, got %s", expr.Field.Value, expected)
+		return nil
+	}
+	record, ok := fn.Parameters[0].(*RecordType)
+	if !ok {
+		tc.addError(expr, "field accessor .%s requires a record parameter, got %s", expr.Field.Value, fn.Parameters[0])
+		return nil
+	}
+	fieldType, found := record.Fields[expr.Field.Value]
+	if !found {
+		tc.addError(expr, "field %s not found in record type %s", expr.Field.Value, record)
+		return nil
+	}
+	if record.Name == "" || !record.Struct {
+		tc.addError(expr, "first-class field accessor .%s needs a concrete declared struct context", expr.Field.Value)
+		return nil
+	}
+	// Function-pointer ABIs are invariant: even a value-level numeric
+	// widening would give the helper a different C function type.
+	if !fieldType.Equals(fn.ReturnType) {
+		tc.addError(expr, "field accessor .%s returns %s, not %s", expr.Field.Value, fieldType, fn.ReturnType)
+		return nil
+	}
+	expr.ResolvedRecord = record.Name
+	return fn
 }
 
 // Helper functions for type checking specific expression types
@@ -2736,6 +2773,10 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		if stmt.Value != nil {
 			inferredType := tc.checkExpression(stmt.Value)
 			if inferredType != nil {
+				if accessor, unresolved := inferredType.(*FieldAccessorType); unresolved {
+					tc.addError(stmt.Value, "field accessor .%s needs an explicit function type or a contextual function argument", accessor.Field)
+					return
+				}
 				if ContainsAtomicStorage(inferredType) {
 					tc.addError(stmt.Value, "Atomic[T] storage cannot be inferred/copied into a value binding; declare a named Atomic[T] cell")
 					return

@@ -43,7 +43,7 @@ func IsConstantInitializer(expr ast.Expression) bool {
 // the forms the backend emits as C constant expressions at file scope.
 func isConstantExpression(expr ast.Expression) bool {
 	switch e := expr.(type) {
-	case *ast.IntegerLiteral, *ast.StringLiteral, *ast.Boolean:
+	case *ast.IntegerLiteral, *ast.StringLiteral, *ast.Boolean, *ast.FieldAccessorExpression:
 		return true
 	case *ast.PrefixExpression:
 		return isConstantExpression(e.Right)

@@ -103,3 +103,15 @@ result: i32 = same(left, right)
 		t.Fatalf("unexpected errors: %v", errs)
 	}
 }
+
+func TestGenericCallInfersFieldAccessorResult(t *testing.T) {
+	input := `
+Person: type = struct { name: i32, age: u8 }
+fn [T, U] project(selector: (T) -> U, value: T) -> U { selector(value) }
+person: Person = Person { name: 42, age: 7 }
+result: i32 = project(.name, person)
+`
+	if errs := checkGenericShapeSource(t, input); len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+}

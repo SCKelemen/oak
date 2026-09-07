@@ -596,6 +596,10 @@ type FieldAccessorExpression struct {
 	BaseNode
 	Token token.Token
 	Field *Identifier
+	// ResolvedRecord is filled by contextual type checking when the
+	// accessor is used as a first-class (Record) -> Field function. It is
+	// deliberately absent for direct .field(value) sugar.
+	ResolvedRecord string
 }
 
 func (fa *FieldAccessorExpression) expressionNode()      {}
