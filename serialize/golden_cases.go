@@ -17,7 +17,11 @@ func GoldenCases() []GoldenCase {
 			SourceCode: `
 x: i32 = 5
 y: i32 = 10
-z: i32 = x + y
+
+main: (): i32 {
+  z: i32 = x + y
+  z
+}
 `,
 		},
 		{
@@ -32,13 +36,6 @@ y: string = 42
 			SourceCode: `
 // Simple arithmetic
 x: i32 = 5 + 3
-y: i32 = x * 2
-
-// Pattern matching on integers
-result: string = x ?
-  | 5 -> "five"
-  | 8 -> "eight"
-  | _ -> "other"
 
 // ADT definition with value
 Status: type
@@ -46,15 +43,26 @@ Status: type
   | NotFound: 404
   | Unauthorized: 401
 
-// Create ADT values
-status1: Status = .Ok
-status2: Status = .NotFound
+main: (): i32 {
+  y: i32 = x * 2
 
-// Pattern match on ADT
-code: i32 = status1 ?
-  | .Ok -> 200
-  | .NotFound -> 404
-  | _ -> 0
+  // Pattern matching on integers
+  result: string = x ?
+    | 5 -> "five"
+    | 8 -> "eight"
+    | _ -> "other"
+
+  // Create ADT values
+  status1: Status = .Ok
+  status2: Status = .NotFound
+
+  // Pattern match on ADT
+  code: i32 = status1 ?
+    | .Ok -> 200
+    | .NotFound -> 404
+    | _ -> 0
+  y + code
+}
 `,
 		},
 		{
@@ -132,7 +140,10 @@ fn scale(a: i32, b: i32) -> i32 {
   doubled + b
 }
 
-result: i32 = scale(3, 4)
+main: (): i32 {
+  result: i32 = scale(3, 4)
+  result
+}
 `,
 		},
 		{
@@ -144,7 +155,10 @@ fn countdown(n: i32, acc: i32) -> i32 {
   countdown(n - 1, acc + n)
 }
 
-total: i32 = countdown(10, 0)
+main: (): i32 {
+  total: i32 = countdown(10, 0)
+  total
+}
 `,
 		},
 		{
@@ -158,7 +172,10 @@ fn fact(n: i32, acc: i32) -> i32 {
     | _ -> fact(n - 1, acc * n)
 }
 
-result: i32 = fact(5, 1)
+main: (): i32 {
+  result: i32 = fact(5, 1)
+  result
+}
 `,
 		},
 		{
@@ -287,7 +304,10 @@ fn checked_double(n: i32) -> i32 {
   n * 2
 }
 
-v: i32 = checked_double(21)
+main: (): i32 {
+  v: i32 = checked_double(21)
+  v
+}
 `,
 		},
 		{

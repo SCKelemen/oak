@@ -113,6 +113,7 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 
 /* forward declarations */
 i32 oak_scale( i32 a, i32 b );
+i32 oak_main( void );
 
 // @source: unknown.oak:1:0-4:0
 // @package: main
@@ -124,3 +125,16 @@ i32 oak_scale( i32 a, i32 b ) {
     return ( doubled + b )  ;
 }
 
+// @source: unknown.oak:6:0-9:0
+// @package: main
+// @kind: function
+// @identifier: main
+// @signature: fn main() -> i32
+i32 oak_main(  ) {
+    i32 result   = oak_scale( 3, 4 )  ;
+    return result  ;
+}
+
+int main(void) {
+  return (int)oak_main();
+}

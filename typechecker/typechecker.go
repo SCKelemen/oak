@@ -639,6 +639,11 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 	}
 	for _, stmt := range program.Statements {
+		// Top-level bindings are static storage: constant initializers only
+		// (typechecker/globals.go).
+		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {
+			tc.checkGlobalInitializer(decl)
+		}
 		tc.checkStatement(stmt)
 	}
 }

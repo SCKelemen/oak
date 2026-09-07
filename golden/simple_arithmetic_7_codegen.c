@@ -116,7 +116,7 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
-// @source: unknown.oak:12:0-15:4
+// @source: unknown.oak:5:0-8:4
 // @package: main
 // @kind: ADT
 // @identifier: Status
@@ -130,7 +130,7 @@ typedef struct oak_Status {
     oak_Status_tag tag;
 } oak_Status;
 
-// @source: unknown.oak:13:4
+// @source: unknown.oak:6:4
 // @package: main
 // @kind: constructor
 // @identifier: oak_Status::Ok
@@ -140,7 +140,7 @@ static inline oak_Status oak_Status_Ok(  ) {
     return res;
 }
 
-// @source: unknown.oak:14:4
+// @source: unknown.oak:7:4
 // @package: main
 // @kind: constructor
 // @identifier: oak_Status::NotFound
@@ -150,7 +150,7 @@ static inline oak_Status oak_Status_NotFound(  ) {
     return res;
 }
 
-// @source: unknown.oak:15:4
+// @source: unknown.oak:8:4
 // @package: main
 // @kind: constructor
 // @identifier: oak_Status::Unauthorized
@@ -160,3 +160,33 @@ static inline oak_Status oak_Status_Unauthorized(  ) {
     return res;
 }
 
+/* static globals: constant-initialized, zero otherwise */
+static i32 x = ( 5 + 3 );
+
+/* forward declarations */
+i32 oak_main( void );
+
+// @source: unknown.oak:10:0-29:0
+// @package: main
+// @kind: function
+// @identifier: main
+// @signature: fn main() -> i32
+i32 oak_main(  ) {
+    i32 y   = ( x * 2 )  ;
+    string result   = ( ( x == 5 ) ? ( (string) { .data = (u8*)str_lit_0, .len = 4 } ) : ( x == 8 ) ? ( (string) { .data = (u8*)str_lit_1, .len = 5 } ) : ( (string) { .data = (u8*)str_lit_2, .len = 5 } ) )  ;
+    oak_Status status1   = oak_Status_Ok()  ;
+    oak_Status status2   = oak_Status_NotFound()  ;
+    i32 code  ;
+    if ( status1.tag == oak_Status_tag_Ok ) {
+      code     = 200    ;
+    }
+    if ( status1.tag == oak_Status_tag_NotFound ) {
+      code     = 404    ;
+    }
+    code   = 0  ;
+    return ( y + code )  ;
+}
+
+int main(void) {
+  return (int)oak_main();
+}

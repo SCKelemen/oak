@@ -111,3 +111,23 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
+/* static globals: constant-initialized, zero otherwise */
+static i32 x = 5;
+static i32 y = 10;
+
+/* forward declarations */
+i32 oak_main( void );
+
+// @source: unknown.oak:4:0-7:0
+// @package: main
+// @kind: function
+// @identifier: main
+// @signature: fn main() -> i32
+i32 oak_main(  ) {
+    i32 z   = ( x + y )  ;
+    return z  ;
+}
+
+int main(void) {
+  return (int)oak_main();
+}

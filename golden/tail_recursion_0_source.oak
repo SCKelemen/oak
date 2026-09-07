@@ -3,4 +3,7 @@ fn countdown(n: i32, acc: i32) -> i32 {
   countdown(n - 1, acc + n)
 }
 
-total: i32 = countdown(10, 0)
+main: (): i32 {
+  total: i32 = countdown(10, 0)
+  total
+}

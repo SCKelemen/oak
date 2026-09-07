@@ -4,4 +4,7 @@ fn scale(a: i32, b: i32) -> i32 {
   doubled + b
 }
 
-result: i32 = scale(3, 4)
+main: (): i32 {
+  result: i32 = scale(3, 4)
+  result
+}

@@ -42,19 +42,34 @@
 {"kind":"TRIVIA","literal":"\n","line":4,"column":14,"byte_start":71,"byte_end":72}
 {"kind":"}","literal":"}","line":5,"column":1,"byte_start":72,"byte_end":73}
 {"kind":"TRIVIA","literal":"\n\n","line":5,"column":2,"byte_start":73,"byte_end":75}
-{"kind":"IDENTITY","literal":"result","line":7,"column":1,"byte_start":75,"byte_end":81}
-{"kind":":","literal":":","line":7,"column":7,"byte_start":81,"byte_end":82}
-{"kind":"TRIVIA","literal":" ","line":7,"column":8,"byte_start":82,"byte_end":83}
-{"kind":"IDENTITY","literal":"i32","line":7,"column":9,"byte_start":83,"byte_end":86}
-{"kind":"TRIVIA","literal":" ","line":7,"column":12,"byte_start":86,"byte_end":87}
-{"kind":"=","literal":"=","line":7,"column":13,"byte_start":87,"byte_end":88}
+{"kind":"IDENTITY","literal":"main","line":7,"column":1,"byte_start":75,"byte_end":79}
+{"kind":":","literal":":","line":7,"column":5,"byte_start":79,"byte_end":80}
+{"kind":"TRIVIA","literal":" ","line":7,"column":6,"byte_start":80,"byte_end":81}
+{"kind":"(","literal":"(","line":7,"column":7,"byte_start":81,"byte_end":82}
+{"kind":")","literal":")","line":7,"column":8,"byte_start":82,"byte_end":83}
+{"kind":":","literal":":","line":7,"column":9,"byte_start":83,"byte_end":84}
+{"kind":"TRIVIA","literal":" ","line":7,"column":10,"byte_start":84,"byte_end":85}
+{"kind":"IDENTITY","literal":"i32","line":7,"column":11,"byte_start":85,"byte_end":88}
 {"kind":"TRIVIA","literal":" ","line":7,"column":14,"byte_start":88,"byte_end":89}
-{"kind":"IDENTITY","literal":"scale","line":7,"column":15,"byte_start":89,"byte_end":94}
-{"kind":"(","literal":"(","line":7,"column":20,"byte_start":94,"byte_end":95}
-{"kind":"INT","literal":"3","line":7,"column":21,"byte_start":95,"byte_end":96}
-{"kind":",","literal":",","line":7,"column":22,"byte_start":96,"byte_end":97}
-{"kind":"TRIVIA","literal":" ","line":7,"column":23,"byte_start":97,"byte_end":98}
-{"kind":"INT","literal":"4","line":7,"column":24,"byte_start":98,"byte_end":99}
-{"kind":")","literal":")","line":7,"column":25,"byte_start":99,"byte_end":100}
-{"kind":"TRIVIA","literal":"\n","line":7,"column":26,"byte_start":100,"byte_end":101}
-{"kind":"EOF","literal":"","line":8,"column":1,"byte_start":101,"byte_end":101}
+{"kind":"{","literal":"{","line":7,"column":15,"byte_start":89,"byte_end":90}
+{"kind":"TRIVIA","literal":"\n  ","line":7,"column":16,"byte_start":90,"byte_end":93}
+{"kind":"IDENTITY","literal":"result","line":8,"column":3,"byte_start":93,"byte_end":99}
+{"kind":":","literal":":","line":8,"column":9,"byte_start":99,"byte_end":100}
+{"kind":"TRIVIA","literal":" ","line":8,"column":10,"byte_start":100,"byte_end":101}
+{"kind":"IDENTITY","literal":"i32","line":8,"column":11,"byte_start":101,"byte_end":104}
+{"kind":"TRIVIA","literal":" ","line":8,"column":14,"byte_start":104,"byte_end":105}
+{"kind":"=","literal":"=","line":8,"column":15,"byte_start":105,"byte_end":106}
+{"kind":"TRIVIA","literal":" ","line":8,"column":16,"byte_start":106,"byte_end":107}
+{"kind":"IDENTITY","literal":"scale","line":8,"column":17,"byte_start":107,"byte_end":112}
+{"kind":"(","literal":"(","line":8,"column":22,"byte_start":112,"byte_end":113}
+{"kind":"INT","literal":"3","line":8,"column":23,"byte_start":113,"byte_end":114}
+{"kind":",","literal":",","line":8,"column":24,"byte_start":114,"byte_end":115}
+{"kind":"TRIVIA","literal":" ","line":8,"column":25,"byte_start":115,"byte_end":116}
+{"kind":"INT","literal":"4","line":8,"column":26,"byte_start":116,"byte_end":117}
+{"kind":")","literal":")","line":8,"column":27,"byte_start":117,"byte_end":118}
+{"kind":"TRIVIA","literal":"\n  ","line":8,"column":28,"byte_start":118,"byte_end":121}
+{"kind":"IDENTITY","literal":"result","line":9,"column":3,"byte_start":121,"byte_end":127}
+{"kind":"TRIVIA","literal":"\n","line":9,"column":9,"byte_start":127,"byte_end":128}
+{"kind":"}","literal":"}","line":10,"column":1,"byte_start":128,"byte_end":129}
+{"kind":"TRIVIA","literal":"\n","line":10,"column":2,"byte_start":129,"byte_end":130}
+{"kind":"EOF","literal":"","line":11,"column":1,"byte_start":130,"byte_end":130}

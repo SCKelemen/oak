@@ -144,65 +144,126 @@
       }
     },
     {
-      "type": "VariableDeclaration",
+      "type": "FunctionStatement",
       "data": {
-        "name": "result",
-        "type": "i32",
-        "value": {
-          "type": "InvocationExpression",
+        "body": {
+          "type": "BlockExpression",
           "data": {
-            "arguments": [
-              {
-                "type": "IntegerLiteral",
-                "data": {
-                  "value": 3
-                },
-                "position": {
-                  "line": 7,
-                  "column": 21,
-                  "byte_start": 95,
-                  "byte_end": 96
-                }
-              },
-              {
-                "type": "IntegerLiteral",
-                "data": {
-                  "value": 4
-                },
-                "position": {
-                  "line": 7,
-                  "column": 24,
-                  "byte_start": 98,
-                  "byte_end": 99
-                }
-              }
-            ],
-            "function": {
-              "type": "Identifier",
+            "block": {
+              "type": "BlockStatement",
               "data": {
-                "value": "scale"
+                "statements": [
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "result",
+                      "type": "i32",
+                      "value": {
+                        "type": "InvocationExpression",
+                        "data": {
+                          "arguments": [
+                            {
+                              "type": "IntegerLiteral",
+                              "data": {
+                                "value": 3
+                              },
+                              "position": {
+                                "line": 8,
+                                "column": 23,
+                                "byte_start": 113,
+                                "byte_end": 114
+                              }
+                            },
+                            {
+                              "type": "IntegerLiteral",
+                              "data": {
+                                "value": 4
+                              },
+                              "position": {
+                                "line": 8,
+                                "column": 26,
+                                "byte_start": 116,
+                                "byte_end": 117
+                              }
+                            }
+                          ],
+                          "function": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "scale"
+                            },
+                            "position": {
+                              "line": 8,
+                              "column": 17,
+                              "byte_start": 107,
+                              "byte_end": 112
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 8,
+                          "column": 22,
+                          "byte_start": 112,
+                          "byte_end": 113
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 8,
+                      "column": 3,
+                      "byte_start": 93,
+                      "byte_end": 99
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "Identifier",
+                        "data": {
+                          "value": "result"
+                        },
+                        "position": {
+                          "line": 9,
+                          "column": 3,
+                          "byte_start": 121,
+                          "byte_end": 127
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 9,
+                      "column": 3,
+                      "byte_start": 121,
+                      "byte_end": 127
+                    }
+                  }
+                ]
               },
               "position": {
                 "line": 7,
                 "column": 15,
                 "byte_start": 89,
-                "byte_end": 94
+                "byte_end": 90
               }
             }
           },
           "position": {
             "line": 7,
-            "column": 20,
-            "byte_start": 94,
-            "byte_end": 95
+            "column": 15,
+            "byte_start": 89,
+            "byte_end": 90
           }
-        }
+        },
+        "name": "main",
+        "parameters": [],
+        "return_type": "i32"
       },
       "position": {
         "line": 7,
         "column": 1,
         "byte_start": 75,
-        "byte_end": 81
+        "byte_end": 79
       }
     }
   ],

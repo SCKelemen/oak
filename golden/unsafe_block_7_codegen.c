@@ -126,3 +126,6 @@ static inline void oak_span_store_u8(oak_span_u8 v, u64 i, u8 value) {
   v.base[i] = value;
 }
 
+/* static globals: constant-initialized, zero otherwise */
+static u8 buf[ 16 ] = {0};
+

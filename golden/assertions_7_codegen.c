@@ -113,6 +113,7 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 
 /* forward declarations */
 i32 oak_checked_double( i32 n );
+i32 oak_main( void );
 
 // @source: unknown.oak:1:0-4:0
 // @package: main
@@ -124,3 +125,16 @@ oak_assert( ( n < 100 ) )  ;
     return ( n * 2 )  ;
 }
 
+// @source: unknown.oak:6:0-9:0
+// @package: main
+// @kind: function
+// @identifier: main
+// @signature: fn main() -> i32
+i32 oak_main(  ) {
+    i32 v   = oak_checked_double( 21 )  ;
+    return v  ;
+}
+
+int main(void) {
+  return (int)oak_main();
+}

@@ -113,6 +113,7 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 
 /* forward declarations */
 i32 oak_countdown( i32 n, i32 acc );
+i32 oak_main( void );
 
 // @source: unknown.oak:1:0-3:0
 // @package: main
@@ -131,3 +132,16 @@ i32 oak_countdown( i32 n, i32 acc ) {
     }
 }
 
+// @source: unknown.oak:5:0-8:0
+// @package: main
+// @kind: function
+// @identifier: main
+// @signature: fn main() -> i32
+i32 oak_main(  ) {
+    i32 total   = oak_countdown( 10, 0 )  ;
+    return total  ;
+}
+
+int main(void) {
+  return (int)oak_main();
+}

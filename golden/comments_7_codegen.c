@@ -111,3 +111,8 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
+/* static globals: constant-initialized, zero otherwise */
+static i32 x = 5;
+static i32 y = 10;
+static i32 z = 15;
+

@@ -51,52 +51,113 @@
       }
     },
     {
-      "type": "VariableDeclaration",
+      "type": "FunctionStatement",
       "data": {
-        "name": "z",
-        "type": "i32",
-        "value": {
-          "type": "InfixExpression",
+        "body": {
+          "type": "BlockExpression",
           "data": {
-            "left": {
-              "type": "Identifier",
+            "block": {
+              "type": "BlockStatement",
               "data": {
-                "value": "x"
+                "statements": [
+                  {
+                    "type": "VariableDeclaration",
+                    "data": {
+                      "name": "z",
+                      "type": "i32",
+                      "value": {
+                        "type": "InfixExpression",
+                        "data": {
+                          "left": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "x"
+                            },
+                            "position": {
+                              "line": 6,
+                              "column": 12,
+                              "byte_start": 52,
+                              "byte_end": 53
+                            }
+                          },
+                          "operator": "+",
+                          "right": {
+                            "type": "Identifier",
+                            "data": {
+                              "value": "y"
+                            },
+                            "position": {
+                              "line": 6,
+                              "column": 16,
+                              "byte_start": 56,
+                              "byte_end": 57
+                            }
+                          }
+                        },
+                        "position": {
+                          "line": 6,
+                          "column": 14,
+                          "byte_start": 54,
+                          "byte_end": 55
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 6,
+                      "column": 3,
+                      "byte_start": 43,
+                      "byte_end": 44
+                    }
+                  },
+                  {
+                    "type": "ExpressionStatement",
+                    "data": {
+                      "expression": {
+                        "type": "Identifier",
+                        "data": {
+                          "value": "z"
+                        },
+                        "position": {
+                          "line": 7,
+                          "column": 3,
+                          "byte_start": 60,
+                          "byte_end": 61
+                        }
+                      }
+                    },
+                    "position": {
+                      "line": 7,
+                      "column": 3,
+                      "byte_start": 60,
+                      "byte_end": 61
+                    }
+                  }
+                ]
               },
               "position": {
-                "line": 4,
-                "column": 10,
-                "byte_start": 33,
-                "byte_end": 34
-              }
-            },
-            "operator": "+",
-            "right": {
-              "type": "Identifier",
-              "data": {
-                "value": "y"
-              },
-              "position": {
-                "line": 4,
-                "column": 14,
-                "byte_start": 37,
-                "byte_end": 38
+                "line": 5,
+                "column": 15,
+                "byte_start": 39,
+                "byte_end": 40
               }
             }
           },
           "position": {
-            "line": 4,
-            "column": 12,
-            "byte_start": 35,
-            "byte_end": 36
+            "line": 5,
+            "column": 15,
+            "byte_start": 39,
+            "byte_end": 40
           }
-        }
+        },
+        "name": "main",
+        "parameters": [],
+        "return_type": "i32"
       },
       "position": {
-        "line": 4,
+        "line": 5,
         "column": 1,
-        "byte_start": 24,
-        "byte_end": 25
+        "byte_start": 25,
+        "byte_end": 29
       }
     }
   ],

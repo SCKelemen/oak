@@ -4,4 +4,7 @@ fn checked_double(n: i32) -> i32 {
   n * 2
 }
 
-v: i32 = checked_double(21)
+main: (): i32 {
+  v: i32 = checked_double(21)
+  v
+}

@@ -27,6 +27,9 @@ type CodeGenerator struct {
 	adtTypes         map[string]*ast.ADTType     // Map ADT name to AST definition
 	// scrutineeCounter names hoisted match-scrutinee temporaries.
 	scrutineeCounter int
+	// globalTypes classifies top-level bindings (static globals) the same
+	// way localTypes classifies function locals.
+	globalTypes map[string]localContainer
 	// recordLayouts holds the resolved natural layout of each emitted
 	// record type (semir.NaturalRecordLayout, the Oak.RecordLayoutRefinement
 	// transliteration), for nested-record placement and layout assertions.
@@ -176,6 +179,10 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 		}
 	}
 	cg.instantiateGenericADTs(tc)
+
+	// Static globals come after type emission (record/ADT globals need
+	// their typedefs) and before functions.
+	cg.emitGlobals(program, tc)
 
 	// Conversion helpers come after ADT emission: checked narrowing returns
 	// a monomorphized Result (docs/spec/20-types.md §11.1).
@@ -1058,10 +1065,19 @@ func (cg *CodeGenerator) buildLocalTypes(fn *ast.FunctionStatement) map[string]l
 // identifiers are classified — everything else fails closed.
 func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 	ident, ok := expr.(*ast.Identifier)
-	if !ok || cg.localTypes == nil {
+	if !ok {
 		return localContainer{kind: containerUnknown}
 	}
-	return cg.localTypes[ident.Value]
+	if cg.localTypes != nil {
+		if info, isLocal := cg.localTypes[ident.Value]; isLocal && info.kind != containerUnknown {
+			return info
+		}
+	}
+	// Static globals: no-shadowing makes the fallback unambiguous.
+	if info, isGlobal := cg.globalTypes[ident.Value]; isGlobal {
+		return info
+	}
+	return localContainer{kind: containerUnknown}
 }
 
 // primitiveCasts maps primitive constructor names to their C cast targets.

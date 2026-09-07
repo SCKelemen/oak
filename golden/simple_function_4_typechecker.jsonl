@@ -4,3 +4,4 @@
 {"code":"OAK-T0000","index":0,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
 {"code":"OAK-T0000","index":1,"message":"[type error] function add4: expected return type i32, got ()","range":{"end":{"character":2,"line":10},"start":{"character":0,"line":10}},"severity":"error","source":"typechecker","type":"diagnostic"}
 {"code":"OAK-T0000","index":2,"message":"[type error] nil expression encountered (parser error)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"code":"OAK-T0501","index":3,"message":"global initializer is not a compile-time constant","range":{"end":{"character":3,"line":13},"start":{"character":0,"line":13}},"severity":"warning","source":"typechecker","type":"diagnostic"}
