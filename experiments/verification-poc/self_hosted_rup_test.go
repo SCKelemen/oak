@@ -46,7 +46,12 @@ func selfHostedCases() []selfHostedRUPCase {
 		for i := range hints { hints[i] = rng.Intn(len(clauses)+2) }
 		cases = append(cases, selfHostedRUPCase{Variables:variables,Clauses:clauses,Target:target,Hints:hints})
 	}
-	for i := range cases { cases[i].Accepted = lrat.CheckRUPDecoded(cases[i].Variables,cases[i].Clauses,cases[i].Target,cases[i].Hints) == nil }
+	for i := range cases {
+		if cases[i].Target==nil {cases[i].Target=[]int{}}
+		if cases[i].Hints==nil {cases[i].Hints=[]int{}}
+		for j:=range cases[i].Clauses {if cases[i].Clauses[j]==nil {cases[i].Clauses[j]=[]int{}}}
+		cases[i].Accepted = lrat.CheckRUPDecoded(cases[i].Variables,cases[i].Clauses,cases[i].Target,cases[i].Hints) == nil
+	}
 	return cases
 }
 
