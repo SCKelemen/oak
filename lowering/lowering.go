@@ -489,6 +489,12 @@ func lowerExpression(expr ast.Expression, tc *typechecker.TypeChecker) ast.Expre
 		}
 	case *ast.InvocationExpression:
 		return lowerInvocationExpression(e, tc)
+	case *ast.VariantExpression:
+		// Constructor payloads are ordinary expressions: lower their indexing
+		// and calls too, while preserving the variant's resolution identity.
+		lowered := *e
+		lowered.Payload = lowerExpression(e.Payload, tc)
+		return &lowered
 	case *ast.MatchExpression:
 		lowered := &ast.MatchExpression{
 			BaseNode:  e.BaseNode,

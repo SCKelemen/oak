@@ -17,4 +17,4 @@ jobs:
       - name: Check formatting
         if: always()
         run: |
-          gofmt -d compiler/stdlib.go compiler/specialize.go compiler/e2e_stdlib_test.go compiler/e2e_stdlib_bits_endian_test.go compiler/compilation.go stdlib/source.go codegen/codegen.go typechecker/typechecker.go typechecker/mono.go token/token.go
+          gofmt -d compiler/stdlib.go compiler/specialize.go compiler/e2e_stdlib_test.go compiler/e2e_stdlib_bits_endian_test.go compiler/compilation.go stdlib/source.go codegen/codegen.go typechecker/typechecker.go typechecker/mono.go token/token.go lowering/lowering.go

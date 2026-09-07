@@ -132,15 +132,18 @@ func TestE2EStdlibBitset(t *testing.T) {
 func TestE2EStdlibBitsetBounds(t *testing.T) {
 	src := `
 import(std)
+is_storage_error: (reason: BitSetError): Bool = reason ?
+ | .StorageTooSmall => true
+ | .BitOutOfRange => false
 main: (): i32 {
  data: [1]u8
  s: [*]u8 = span(&data)
  s[0] = u8(123)
  a: Result[Bool, BitSetError] = bitset_set(s, u32(9), u32(0), false)
- ae: Bool = a ? | .Ok(v) => false | .Err(e) => e ? | .StorageTooSmall => true | .BitOutOfRange => false
+ ae: Bool = a ? | .Ok(v) => false | .Err(e) => is_storage_error(e)
  assert(ae && s[0] == u8(123))
  b: Result[Bool, BitSetError] = bitset_set(s, u32(8), u32(4294967295), true)
- be: Bool = b ? | .Ok(v) => false | .Err(e) => e ? | .StorageTooSmall => false | .BitOutOfRange => true
+ be: Bool = b ? | .Ok(v) => false | .Err(e) => !is_storage_error(e)
  assert(be && s[0] == u8(123))
  input: [1]u8
  v: []u8 = view(&input)
@@ -148,8 +151,8 @@ main: (): i32 {
  ce: Bool = c ? | .Ok(v) => false | .Err(e) => true
  d: Result[u32, BitSetError] = bitset_count(v, u32(4294967295))
  de: Bool = d ? | .Ok(v) => false | .Err(e) => true
- e: Result[Bool, BitSetError] = bitset_contains(v, u32(0), u32(0))
- ee: Bool = e ? | .Ok(v) => false | .Err(e) => true
+ empty_result: Result[Bool, BitSetError] = bitset_contains(v, u32(0), u32(0))
+ ee: Bool = empty_result ? | .Ok(v) => false | .Err(e) => true
  assert(ce && de && ee)
  42
 }
@@ -157,5 +160,27 @@ main: (): i32 {
 	code, abnormal := buildAndRun(t, "bitsetbounds", src)
 	if abnormal || code != 42 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
+func TestE2EVariantPayloadIndexBounds(t *testing.T) {
+	src := `
+Maybe[T]: type = Some: T | None
+read: (data: []u8, index: u32): Maybe[u8] = .Some(data[index])
+main: (): i32 {
+ data: [1]u8
+ data[0] = u8(42)
+ v: []u8 = view(&data)
+ r: Maybe[u8] = read(v, u32(0))
+ r ? | .Some(value) => i32(value) | .None => 0
+}
+`
+	code, abnormal := buildAndRun(t, "variantindex", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	_, abnormal = buildAndRun(t, "variantindexbounds", strings.Replace(src, "read(v, u32(0))", "read(v, u32(1))", 1))
+	if !abnormal {
+		t.Fatal("out-of-bounds indexing in a variant payload must trap")
 	}
 }
