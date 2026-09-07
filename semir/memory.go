@@ -31,19 +31,20 @@ func (o MemoryOrder) Valid() bool {
 }
 
 // AtomicOperation classifies an atomic access independently of its memory
-// order. Compare-exchange is intentionally separate future work because it has
-// independent success/failure orders and failure-side value-update semantics.
+// order. Compare-exchange is a distinct class because it has independent
+// success/failure orders.
 type AtomicOperation string
 
 const (
-	AtomicLoad  AtomicOperation = "load"
-	AtomicStore AtomicOperation = "store"
-	AtomicRMW   AtomicOperation = "rmw"
-	AtomicFence AtomicOperation = "fence"
+	AtomicLoad            AtomicOperation = "load"
+	AtomicStore           AtomicOperation = "store"
+	AtomicRMW             AtomicOperation = "rmw"
+	AtomicCompareExchange AtomicOperation = "compare-exchange"
+	AtomicFence           AtomicOperation = "fence"
 )
 
-// LegalAtomicOrder encodes the v1 order matrix. Illegal combinations are a
-// language error, not a backend choice.
+// LegalAtomicOrder encodes the single-order v1 matrix. Compare-exchange must
+// use LegalCompareExchangeOrders because its two orders are related.
 func LegalAtomicOrder(op AtomicOperation, order MemoryOrder) bool {
 	if !order.Valid() {
 		return false
@@ -62,6 +63,32 @@ func LegalAtomicOrder(op AtomicOperation, order MemoryOrder) bool {
 	}
 }
 
+// LegalCompareExchangeOrders is Oak's strong compare-exchange order relation.
+// Failure never performs a write, so release/acq-rel failure orders are
+// forbidden. Failure may also not be stronger than the success order.
+func LegalCompareExchangeOrders(success, failure MemoryOrder) bool {
+	if !success.Valid() || !failure.Valid() {
+		return false
+	}
+	if failure == MemoryOrderRelease || failure == MemoryOrderAcqRel {
+		return false
+	}
+	switch success {
+	case MemoryOrderRelaxed:
+		return failure == MemoryOrderRelaxed
+	case MemoryOrderAcquire:
+		return failure == MemoryOrderRelaxed || failure == MemoryOrderAcquire
+	case MemoryOrderRelease:
+		return failure == MemoryOrderRelaxed
+	case MemoryOrderAcqRel:
+		return failure == MemoryOrderRelaxed || failure == MemoryOrderAcquire
+	case MemoryOrderSeqCst:
+		return failure == MemoryOrderRelaxed || failure == MemoryOrderAcquire || failure == MemoryOrderSeqCst
+	default:
+		return false
+	}
+}
+
 // AtomicBuiltinKind identifies the exact source operation while AtomicOperation
 // captures the memory-model class shared by proofs/effects.
 type AtomicBuiltinKind uint8
@@ -71,72 +98,120 @@ const (
 	AtomicBuiltinLoad
 	AtomicBuiltinStore
 	AtomicBuiltinFetchAdd
+	AtomicBuiltinCompareExchange
 	AtomicBuiltinFence
 )
 
 // AtomicBuiltinSpec is the single semantic descriptor used by the checker,
-// evaluator, and backend. Arity and order are compile-time facts. Lookup uses a
-// switch rather than a map so the compiler's hot semantic lookup path performs
-// no heap allocation and has no initialization state.
+// evaluator, and backend. Order and FailureOrder are compile-time facts.
+// FailureOrder is empty for every non-CAS builtin. Lookup uses a switch rather
+// than a map so the compiler's hot semantic lookup path performs no heap
+// allocation and has no initialization state.
 type AtomicBuiltinSpec struct {
-	Name      string
-	Kind      AtomicBuiltinKind
-	Operation AtomicOperation
-	Order     MemoryOrder
-	Arity     uint8
+	Name         string
+	Kind         AtomicBuiltinKind
+	Operation    AtomicOperation
+	Order        MemoryOrder
+	FailureOrder MemoryOrder
+	Arity        uint8
 }
 
 func (s AtomicBuiltinSpec) ReturnsValue() bool {
-	return s.Kind == AtomicBuiltinLoad || s.Kind == AtomicBuiltinFetchAdd
+	return s.Kind == AtomicBuiltinLoad || s.Kind == AtomicBuiltinFetchAdd || s.Kind == AtomicBuiltinCompareExchange
+}
+
+func (s AtomicBuiltinSpec) Legal() bool {
+	if s.Kind == AtomicBuiltinCompareExchange {
+		return LegalCompareExchangeOrders(s.Order, s.FailureOrder)
+	}
+	return LegalAtomicOrder(s.Operation, s.Order)
 }
 
 func (s AtomicBuiltinSpec) Effect() (Effect, error) {
+	if s.Kind == AtomicBuiltinCompareExchange {
+		return AtomicCompareExchangeEffect(s.Order, s.FailureOrder)
+	}
 	return AtomicEffect(s.Operation, s.Order)
 }
 
-// LookupAtomicBuiltin defines the complete v1 source surface. Order-specific
-// names make illegal operation/order pairs unrepresentable rather than asking a
-// runtime enum or backend fallback to reject them.
+func atomicBuiltin(name string, kind AtomicBuiltinKind, op AtomicOperation, order MemoryOrder, arity uint8) AtomicBuiltinSpec {
+	return AtomicBuiltinSpec{Name: name, Kind: kind, Operation: op, Order: order, Arity: arity}
+}
+
+func compareExchangeBuiltin(name string, success, failure MemoryOrder) AtomicBuiltinSpec {
+	return AtomicBuiltinSpec{
+		Name:         name,
+		Kind:         AtomicBuiltinCompareExchange,
+		Operation:    AtomicCompareExchange,
+		Order:        success,
+		FailureOrder: failure,
+		Arity:        3,
+	}
+}
+
+// LookupAtomicBuiltin defines the complete source surface. Order-specific names
+// make illegal operation/order pairs unrepresentable rather than asking a
+// runtime enum or backend fallback to reject them. Compare-exchange names encode
+// success order first and failure order second.
 func LookupAtomicBuiltin(name string) (AtomicBuiltinSpec, bool) {
 	switch name {
 	case "atomic_load_relaxed":
-		return AtomicBuiltinSpec{name, AtomicBuiltinLoad, AtomicLoad, MemoryOrderRelaxed, 1}, true
+		return atomicBuiltin(name, AtomicBuiltinLoad, AtomicLoad, MemoryOrderRelaxed, 1), true
 	case "atomic_load_acquire":
-		return AtomicBuiltinSpec{name, AtomicBuiltinLoad, AtomicLoad, MemoryOrderAcquire, 1}, true
+		return atomicBuiltin(name, AtomicBuiltinLoad, AtomicLoad, MemoryOrderAcquire, 1), true
 	case "atomic_load_seq_cst":
-		return AtomicBuiltinSpec{name, AtomicBuiltinLoad, AtomicLoad, MemoryOrderSeqCst, 1}, true
+		return atomicBuiltin(name, AtomicBuiltinLoad, AtomicLoad, MemoryOrderSeqCst, 1), true
 	case "atomic_store_relaxed":
-		return AtomicBuiltinSpec{name, AtomicBuiltinStore, AtomicStore, MemoryOrderRelaxed, 2}, true
+		return atomicBuiltin(name, AtomicBuiltinStore, AtomicStore, MemoryOrderRelaxed, 2), true
 	case "atomic_store_release":
-		return AtomicBuiltinSpec{name, AtomicBuiltinStore, AtomicStore, MemoryOrderRelease, 2}, true
+		return atomicBuiltin(name, AtomicBuiltinStore, AtomicStore, MemoryOrderRelease, 2), true
 	case "atomic_store_seq_cst":
-		return AtomicBuiltinSpec{name, AtomicBuiltinStore, AtomicStore, MemoryOrderSeqCst, 2}, true
+		return atomicBuiltin(name, AtomicBuiltinStore, AtomicStore, MemoryOrderSeqCst, 2), true
 	case "atomic_fetch_add_relaxed":
-		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderRelaxed, 2}, true
+		return atomicBuiltin(name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderRelaxed, 2), true
 	case "atomic_fetch_add_acquire":
-		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderAcquire, 2}, true
+		return atomicBuiltin(name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderAcquire, 2), true
 	case "atomic_fetch_add_release":
-		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderRelease, 2}, true
+		return atomicBuiltin(name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderRelease, 2), true
 	case "atomic_fetch_add_acq_rel":
-		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderAcqRel, 2}, true
+		return atomicBuiltin(name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderAcqRel, 2), true
 	case "atomic_fetch_add_seq_cst":
-		return AtomicBuiltinSpec{name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderSeqCst, 2}, true
+		return atomicBuiltin(name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderSeqCst, 2), true
+
+	case "atomic_compare_exchange_relaxed_relaxed":
+		return compareExchangeBuiltin(name, MemoryOrderRelaxed, MemoryOrderRelaxed), true
+	case "atomic_compare_exchange_acquire_relaxed":
+		return compareExchangeBuiltin(name, MemoryOrderAcquire, MemoryOrderRelaxed), true
+	case "atomic_compare_exchange_acquire_acquire":
+		return compareExchangeBuiltin(name, MemoryOrderAcquire, MemoryOrderAcquire), true
+	case "atomic_compare_exchange_release_relaxed":
+		return compareExchangeBuiltin(name, MemoryOrderRelease, MemoryOrderRelaxed), true
+	case "atomic_compare_exchange_acq_rel_relaxed":
+		return compareExchangeBuiltin(name, MemoryOrderAcqRel, MemoryOrderRelaxed), true
+	case "atomic_compare_exchange_acq_rel_acquire":
+		return compareExchangeBuiltin(name, MemoryOrderAcqRel, MemoryOrderAcquire), true
+	case "atomic_compare_exchange_seq_cst_relaxed":
+		return compareExchangeBuiltin(name, MemoryOrderSeqCst, MemoryOrderRelaxed), true
+	case "atomic_compare_exchange_seq_cst_acquire":
+		return compareExchangeBuiltin(name, MemoryOrderSeqCst, MemoryOrderAcquire), true
+	case "atomic_compare_exchange_seq_cst_seq_cst":
+		return compareExchangeBuiltin(name, MemoryOrderSeqCst, MemoryOrderSeqCst), true
+
 	case "atomic_fence_acquire":
-		return AtomicBuiltinSpec{name, AtomicBuiltinFence, AtomicFence, MemoryOrderAcquire, 0}, true
+		return atomicBuiltin(name, AtomicBuiltinFence, AtomicFence, MemoryOrderAcquire, 0), true
 	case "atomic_fence_release":
-		return AtomicBuiltinSpec{name, AtomicBuiltinFence, AtomicFence, MemoryOrderRelease, 0}, true
+		return atomicBuiltin(name, AtomicBuiltinFence, AtomicFence, MemoryOrderRelease, 0), true
 	case "atomic_fence_acq_rel":
-		return AtomicBuiltinSpec{name, AtomicBuiltinFence, AtomicFence, MemoryOrderAcqRel, 0}, true
+		return atomicBuiltin(name, AtomicBuiltinFence, AtomicFence, MemoryOrderAcqRel, 0), true
 	case "atomic_fence_seq_cst":
-		return AtomicBuiltinSpec{name, AtomicBuiltinFence, AtomicFence, MemoryOrderSeqCst, 0}, true
+		return atomicBuiltin(name, AtomicBuiltinFence, AtomicFence, MemoryOrderSeqCst, 0), true
 	default:
 		return AtomicBuiltinSpec{}, false
 	}
 }
 
-// AtomicEffect projects an atomic operation into Oak's authority/effect axis.
-// The order is retained as a parameter so verification, documentation, and
-// future scheduling/debug tooling do not need to recover it from syntax.
+// AtomicEffect projects a single-order atomic operation into Oak's
+// authority/effect axis.
 func AtomicEffect(op AtomicOperation, order MemoryOrder) (Effect, error) {
 	if !LegalAtomicOrder(op, order) {
 		return Effect{}, fmt.Errorf("illegal atomic memory order %q for %q", order, op)
@@ -153,6 +228,19 @@ func AtomicEffect(op AtomicOperation, order MemoryOrder) (Effect, error) {
 		name = "AtomicFence"
 	}
 	return Effect{Namespace: "Memory", Name: name, Parameters: []string{string(order)}}, nil
+}
+
+// AtomicCompareExchangeEffect retains both orders as semantic data so later
+// happens-before proofs and tooling do not need to recover them from a name.
+func AtomicCompareExchangeEffect(success, failure MemoryOrder) (Effect, error) {
+	if !LegalCompareExchangeOrders(success, failure) {
+		return Effect{}, fmt.Errorf("illegal compare-exchange orders success=%q failure=%q", success, failure)
+	}
+	return Effect{
+		Namespace:  "Memory",
+		Name:       "AtomicCompareExchange",
+		Parameters: []string{string(success), string(failure)},
+	}, nil
 }
 
 // AtomicCarrierAllowed is deliberately narrow for the first executable
