@@ -32,6 +32,7 @@ jobs:
           export LEAN_PATH="$PWD/proof"
           lean -DwarningAsError=true -o proof/RUPSoundness.olean proof/RUPSoundness.lean 2>&1 | tee build/soundness/lean.log
           lean -DwarningAsError=true -o proof/RUPExecutable.olean proof/RUPExecutable.lean 2>&1 | tee build/soundness/executable.log
+          lean -DwarningAsError=true -o proof/RUPText.olean proof/RUPText.lean 2>&1 | tee build/soundness/text.log
       - name: Compare Go and Lean checker decisions
         working-directory: experiments/verification-poc
         shell: bash
@@ -39,8 +40,10 @@ jobs:
           set -euo pipefail
           export LEAN_PATH="$PWD/proof"
           export OAK_LEAN_DIFFERENTIAL_OUT="$PWD/build/soundness/cases.json"
+          export OAK_LEAN_TEXT_CORPUS_OUT="$PWD/build/soundness/text-cases.json"
           go test -count=1 -v ./internal/lrat -run '^TestLeanDifferentialCorpus$' 2>&1 | tee build/soundness/go-corpus.log
           lean -DwarningAsError=true --run proof/RUPCompare.lean "$OAK_LEAN_DIFFERENTIAL_OUT" 2>&1 | tee build/soundness/agreement.log
+          lean -DwarningAsError=true --run proof/RUPTextCompare.lean "$OAK_LEAN_TEXT_CORPUS_OUT" 2>&1 | tee build/soundness/text-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -75,6 +78,9 @@ jobs:
           set -euo pipefail
           go build -o build/oak-verify .
           ./build/oak-verify suite --timeout 120 --tla-jar "$PWD/build/tools/tla2tools.jar" --out build/integration
+      - name: Independently recheck actual certificates with Lean
+        working-directory: experiments/verification-poc
+        run: bash ci/check-certificates.sh
       - name: Retain models, solver logs, certificates and traces
         if: always()
         uses: actions/upload-artifact@v4
@@ -82,6 +88,7 @@ jobs:
           name: verification-solvers-${{ github.sha }}
           path: |
             experiments/verification-poc/build/integration/
+            experiments/verification-poc/build/lean-gate/
             experiments/verification-poc/build/tools/provenance.json
             experiments/verification-poc/tools.lock.json
           retention-days: 30

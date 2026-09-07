@@ -57,7 +57,7 @@ func emitNumbers(b *strings.Builder, xs []int) {
     for _,x:=range xs { fmt.Fprintf(b,"%d ",x) }
     b.WriteString("0")
 }
-func proofDecision(c differentialCase) bool {
+func proofTexts(c differentialCase) (string,string) {
     var cnf, proof strings.Builder
     fmt.Fprintf(&cnf,"p cnf %d %d\n",c.Variables,len(c.Database))
     for _,clause:=range c.Database { emitNumbers(&cnf,clause); cnf.WriteByte('\n') }
@@ -68,7 +68,11 @@ func proofDecision(c differentialCase) bool {
         }
         proof.WriteByte('\n')
     }
-    result,err:=Check(cnf.String(),proof.String())
+    return cnf.String(),proof.String()
+}
+func proofDecision(c differentialCase) bool {
+    cnf,proof:=proofTexts(c)
+    result,err:=Check(cnf,proof)
     return err==nil && result.Accepted
 }
 func TestLeanDifferentialCorpus(t *testing.T) {
@@ -158,6 +162,7 @@ func TestLeanDifferentialCorpus(t *testing.T) {
     add(differentialCase{Kind:"proof",Variables:1,Database:[][]int{{1,1},{-1,-1}},Commands:[]commandCase{
         {Kind:"add",ID:3,Clause:[]int{1,1},Hints:[]int{1}}, {Kind:"add",ID:4,Hints:[]int{3,2}},
     }})
+    checkTextCorpus(t,cases)
     accepted:=0;for _,c:=range cases { if c.Expected {accepted++} }
     if accepted==0 || accepted==len(cases) { t.Fatal("corpus must cover both outcomes") }
     t.Logf("%d cases: %d accepted, %d rejected; all accepted decisions pass exhaustive truth tables",len(cases),accepted,len(cases)-accepted)
