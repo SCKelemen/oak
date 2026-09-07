@@ -13,7 +13,7 @@ structure LocalOrdering where
   rcscAcquire : Bool
   deriving DecidableEq, Repr
 
-def none : LocalOrdering := ⟨false, false, false⟩
+def unordered : LocalOrdering := ⟨false, false, false⟩
 def acquireRCsc : LocalOrdering := ⟨true, false, true⟩
 def releaseOnly : LocalOrdering := ⟨false, true, false⟩
 def acquireReleaseRCsc : LocalOrdering := ⟨true, true, true⟩
@@ -22,22 +22,22 @@ def acquireReleaseRCsc : LocalOrdering := ⟨true, true, true⟩
     additional global constraints in Oak.SequentialConsistency; locally its load
     requires RCsc acquire. -/
 def requiredLoad : Order -> Option LocalOrdering
-  | .relaxed => some none
+  | .relaxed => some unordered
   | .acquire => some acquireRCsc
   | .seqCst => some acquireRCsc
-  | .release | .acqRel => none
+  | .release | .acqRel => Option.none
 
 /-- Required local ordering for a legal Oak store. -/
 def requiredStore : Order -> Option LocalOrdering
-  | .relaxed => some none
+  | .relaxed => some unordered
   | .release => some releaseOnly
   | .seqCst => some releaseOnly
-  | .acquire | .acqRel => none
+  | .acquire | .acqRel => Option.none
 
 /-- Required local ordering for RMW. RCsc acquire is required whenever the RMW
     has acquire semantics. -/
 def requiredRMW : Order -> LocalOrdering
-  | .relaxed => none
+  | .relaxed => unordered
   | .acquire => acquireRCsc
   | .release => releaseOnly
   | .acqRel | .seqCst => acquireReleaseRCsc
@@ -47,7 +47,7 @@ def requiredFence : Order -> Option LocalOrdering
   | .acquire => some acquireRCsc
   | .release => some releaseOnly
   | .acqRel | .seqCst => some acquireReleaseRCsc
-  | .relaxed => none
+  | .relaxed => Option.none
 
 /-- A provided instruction class satisfies required local ordering when it
     contains every requested capability. -/
@@ -63,7 +63,7 @@ inductive LoadInstruction where
   deriving DecidableEq, Repr
 
 def loadProvided : LoadInstruction -> LocalOrdering
-  | .ldr => none
+  | .ldr => unordered
   | .ldar => acquireRCsc
   | .ldapr => ⟨true, false, false⟩
 
@@ -73,7 +73,7 @@ inductive StoreInstruction where
   deriving DecidableEq, Repr
 
 def storeProvided : StoreInstruction -> LocalOrdering
-  | .str => none
+  | .str => unordered
   | .stlr => releaseOnly
 
 inductive FenceInstruction where
@@ -93,7 +93,7 @@ inductive ExclusivePair where
   deriving DecidableEq, Repr
 
 def exclusiveProvided : ExclusivePair -> LocalOrdering
-  | .ldxrStxr => none
+  | .ldxrStxr => unordered
   | .ldaxrStxr => acquireRCsc
   | .ldxrStlxr => releaseOnly
   | .ldaxrStlxr => acquireReleaseRCsc
@@ -106,7 +106,7 @@ inductive LSEInstruction where
   deriving DecidableEq, Repr
 
 def lseProvided : LSEInstruction -> LocalOrdering
-  | .relaxed => none
+  | .relaxed => unordered
   | .acquire => acquireRCsc
   | .release => releaseOnly
   | .acqRel => acquireReleaseRCsc
@@ -115,22 +115,21 @@ def lseProvided : LSEInstruction -> LocalOrdering
 def baselineLoad : Order -> Option LoadInstruction
   | .relaxed => some .ldr
   | .acquire | .seqCst => some .ldar
-  | .release | .acqRel => none
+  | .release | .acqRel => Option.none
 
 /-- Baseline AArch64 store profile. -/
 def baselineStore : Order -> Option StoreInstruction
   | .relaxed => some .str
   | .release | .seqCst => some .stlr
-  | .acquire | .acqRel => none
+  | .acquire | .acqRel => Option.none
 
 /-- Baseline fences. -/
 def baselineFence : Order -> Option FenceInstruction
   | .acquire => some .dmbIshld
   | .release | .acqRel | .seqCst => some .dmbIsh
-  | .relaxed => none
+  | .relaxed => Option.none
 
-/-- The current base ARMv8 evidence gate checks relaxed and acquire-release/SC
-    RMW families explicitly. -/
+/-- The base ARMv8 profile for all RMW order strengths. -/
 def baselineRMW : Order -> ExclusivePair
   | .relaxed => .ldxrStxr
   | .acquire => .ldaxrStxr
@@ -144,29 +143,39 @@ def lseRMW : Order -> LSEInstruction
   | .release => .release
   | .acqRel | .seqCst => .acqRel
 
-theorem baseline_loads_satisfy_local_order (o : Order)
-    (required : LocalOrdering) (instruction : LoadInstruction)
-    (hRequired : requiredLoad o = some required)
-    (hInstruction : baselineLoad o = some instruction) :
-    satisfies (loadProvided instruction) required = true := by
-  cases o <;> simp_all [requiredLoad, baselineLoad, loadProvided, satisfies,
-    none, acquireRCsc]
+/-- A total checker for the load profile. Illegal load orders are accepted only
+    when both the requirement and machine mapping are absent. -/
+def baselineLoadProfileValid (o : Order) : Bool :=
+  match requiredLoad o, baselineLoad o with
+  | some required, some instruction => satisfies (loadProvided instruction) required
+  | Option.none, Option.none => true
+  | _, _ => false
 
-theorem baseline_stores_satisfy_local_order (o : Order)
-    (required : LocalOrdering) (instruction : StoreInstruction)
-    (hRequired : requiredStore o = some required)
-    (hInstruction : baselineStore o = some instruction) :
-    satisfies (storeProvided instruction) required = true := by
-  cases o <;> simp_all [requiredStore, baselineStore, storeProvided, satisfies,
-    none, releaseOnly]
+/-- A total checker for the store profile. -/
+def baselineStoreProfileValid (o : Order) : Bool :=
+  match requiredStore o, baselineStore o with
+  | some required, some instruction => satisfies (storeProvided instruction) required
+  | Option.none, Option.none => true
+  | _, _ => false
 
-theorem baseline_fences_satisfy_local_order (o : Order)
-    (required : LocalOrdering) (instruction : FenceInstruction)
-    (hRequired : requiredFence o = some required)
-    (hInstruction : baselineFence o = some instruction) :
-    satisfies (fenceProvided instruction) required = true := by
-  cases o <;> simp_all [requiredFence, baselineFence, fenceProvided, satisfies,
-    acquireRCsc, releaseOnly, acquireReleaseRCsc]
+/-- A total checker for the fence profile. -/
+def baselineFenceProfileValid (o : Order) : Bool :=
+  match requiredFence o, baselineFence o with
+  | some required, some instruction => satisfies (fenceProvided instruction) required
+  | Option.none, Option.none => true
+  | _, _ => false
+
+theorem baseline_load_profile_valid (o : Order) :
+    baselineLoadProfileValid o = true := by
+  cases o <;> rfl
+
+theorem baseline_store_profile_valid (o : Order) :
+    baselineStoreProfileValid o = true := by
+  cases o <;> rfl
+
+theorem baseline_fence_profile_valid (o : Order) :
+    baselineFenceProfileValid o = true := by
+  cases o <;> rfl
 
 theorem baseline_rmw_satisfies_local_order (o : Order) :
     satisfies (exclusiveProvided (baselineRMW o)) (requiredRMW o) = true := by
@@ -185,8 +194,8 @@ theorem ldar_satisfies_oak_acquire :
     satisfies (loadProvided .ldar) acquireRCsc = true := rfl
 
 /-- Seq-cst's global total-order/read-visibility obligations are not discharged
-    by this local instruction mapping. This theorem records only the local load
-    component; Oak.SequentialConsistency remains a separate proof obligation. -/
+    by this local instruction mapping. These record only local components;
+    Oak.SequentialConsistency remains the separate global proof obligation. -/
 theorem seqCst_load_uses_rcsc_acquire : baselineLoad .seqCst = some .ldar := rfl
 
 theorem seqCst_store_uses_release : baselineStore .seqCst = some .stlr := rfl
