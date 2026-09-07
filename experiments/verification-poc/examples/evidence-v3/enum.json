@@ -1,0 +1,18 @@
+{
+  "format": "oak-evidence-2",
+  "semantic_digest": "f311a956863b9e1be391a81613dbf2ed7a603271b2dbb7d73aed7b7b666a62da",
+  "kind": "lrat",
+  "initial_witness": {
+    "phase": "Idle"
+  },
+  "proofs": {
+    "base": {
+      "cnf_sha256": "3af0b17dc4552350ab3a8dfb780f34be967a95d7f9a3de9b1bf4614d64d47af5",
+      "lrat": "12 0 1 11 8 9 2 3 5 0\n"
+    },
+    "step": {
+      "cnf_sha256": "8e58fec5bf613aa285f94ef3439232d67fac6004bf3cfa36a3807f1a96f8f567",
+      "lrat": "54 -2 0 1 5 17 20 38 53 50 51 8 9 14 25 27 30 47 48 4 13 32 37 42 46 0\n55 2 0 1 2 11 29 53 50 51 8 9 14 21 39 48 46 41 42 7 19 23 28 33 37 0\n56 0 1 53 54 55 0\n"
+    }
+  }
+}

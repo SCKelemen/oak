@@ -1,0 +1,6 @@
+{
+  "source": "enum.oak",
+  "initial": "initial",
+  "step": "step",
+  "invariant": "safe"
+}

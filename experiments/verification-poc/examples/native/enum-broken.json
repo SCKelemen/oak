@@ -1,0 +1,6 @@
+{
+  "source": "enum-broken.oak",
+  "initial": "initial",
+  "step": "step",
+  "invariant": "safe"
+}

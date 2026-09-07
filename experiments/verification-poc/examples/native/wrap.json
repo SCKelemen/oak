@@ -1,0 +1,7 @@
+{
+  "source": "wrap.oak",
+  "initial": "initial",
+  "step": "step",
+  "invariant": "safe",
+  "arithmetic": "u8-wrap"
+}

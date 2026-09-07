@@ -1,0 +1,6 @@
+{
+  "source": "broken.oak",
+  "initial": "initial",
+  "step": "step",
+  "invariant": "safe"
+}

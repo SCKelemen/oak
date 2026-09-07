@@ -1,0 +1,9 @@
+State: type = { count: u8 }
+initial: (s: State): Bool = s.count == u8(0)
+safe: (s: State): Bool = s.count <= u8(3)
+step: (s: State, t: State): Bool = s.count ? {
+  | 0 => t.count == u8(1)
+  | 1 => t.count == u8(2)
+  | 2 => t.count == u8(3)
+  | _ => t.count == s.count
+}

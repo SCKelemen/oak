@@ -1,0 +1,12 @@
+{
+  "go": {"version": "1.27.1", "source": "../../go.mod"},
+  "lean": {"version": "4.33.1", "source": "https://github.com/leanprover/lean4/releases/tag/v4.33.1"},
+  "z3": {"version": "4.13.4", "source": "https://github.com/Z3Prover/z3/releases/tag/z3-4.13.4"},
+  "cadical": {"version": "2.1.3", "commit": "f13d74439a5b5c963ac5b02d05ce93a8098018b8", "source": "https://github.com/arminbiere/cadical/tree/rel-2.1.3"},
+  "tlc": {
+    "version": "1.8.0",
+    "source": "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar",
+    "sha256": "b658b4e504fdf0b721caf7066320f6b6fe5805f4dd2f717d0e47baba4097205e",
+    "note": "Upstream marks this as a mutable prerelease; the jar digest pins the actual artifact. Java 17+ required."
+  }
+}

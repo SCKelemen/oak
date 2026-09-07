@@ -1,0 +1,10 @@
+Phase: type = | Idle | Reading | Writing | Conflict
+State: type = { phase: Phase }
+initial: (s: State): Bool = s.phase == Phase.Idle
+safe: (s: State): Bool = s.phase != Phase.Conflict
+step: (s: State, t: State): Bool = s.phase ? {
+  | Phase.Idle => t.phase != Phase.Conflict
+  | Phase.Reading => t.phase == Phase.Conflict
+  | Phase.Writing => t.phase == Phase.Idle
+  | Phase.Conflict => t.phase == Phase.Conflict
+}

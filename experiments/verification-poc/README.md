@@ -1,260 +1,199 @@
-# Oak verification projection experiment
+# Oak verification experiment
 
-A disposable proof of concept: ordinary-looking Oak model declarations in,
-Lean / SMT-LIB / TLA+ files out. One folder, no compiler changes, no dependencies
-for generation or the local finite-state check. Requires Python 3.10+.
+A removable experiment in `experiments/verification-poc/`. Models use records,
+nominal enums, and ordinary predicates; a small JSON file assigns initial,
+transition, and invariant roles. No verification syntax or compiler changes are
+introduced. Delete this directory to remove the experiment.
 
-This is an experiment in authoring and projection, **not** a proposed language
-extension, an Oak compiler plugin, or a proof kernel. Delete this folder to
-remove it. The experiment lives in `experiments/verification-poc/`. No CI, package
-configuration, or compiler code is modified; it is not wired into any build.
+## Current milestone: typed models and checked SAT evidence
 
-## New: independent evidence checking (v2)
+The third iteration adds:
 
-This revision adds `produce.py` (untrusted example search) and `evidence.py`
-(evidence acceptance). The original projection tool is unchanged. There is no
-production integration and no additional dependency. Remove this one directory
-to discard the experiment.
+- A read-only Go bridge through Oak's existing `Compilation.Check()` API.
+- A typed finite fragment: `Bool`, nullary nominal enums, and `u8`.
+- Lean, SMT-LIB, TLA+, and CNF projections from the same typed model.
+- An independent ASCII LRAT checker, plus an intentionally small local proof
+  producer. CaDiCaL is the external SAT proof producer; Z3 remains an SMT backend.
+- Z3 bounded-model and TLC JSON trace importers that replay candidates before
+  accepting counterexamples.
+- A pinned external integration suite with explicit failure on unavailable
+  tools, wrong versions, timeouts, unknown answers, or failed evidence checks.
+
+**Validation status:** 35 Python tests pass; one Go-dependent differential test
+is skipped. Local LRAT proofs and counterexamples are generated and checked.
+Go, Lean, Z3, CaDiCaL, and the TLC jar are unavailable in the delivery environment;
+network downloads were denied. The Go bridge and external projections have
+**not been executed against their toolchains**. Trace-decoder tests use synthetic
+fixtures derived from upstream formats, not captured successful external runs.
+`validation-v3.json` records the actual checks. The native path is a candidate
+integration until its gate passes; it never falls back to the reference parser.
+
+## Try it offline
+
+Python 3.10+ and its standard library suffice. From this directory:
 
 ```sh
-python3 produce.py examples/borrow.json --kind inductive --out build/borrow.proof.json
-python3 evidence.py examples/borrow.json build/borrow.proof.json
-
-python3 produce.py examples/borrow.json --kind closed-set --out build/borrow.set.json
-python3 evidence.py examples/borrow.json build/borrow.set.json
-
-python3 produce.py examples/broken.json --kind trace --out build/broken.trace.json
-python3 evidence.py examples/broken.json build/broken.trace.json
+python3 -m unittest -v
+python3 finite.py emit examples/native/enum.json --frontend experimental --out build/enum
+python3 finite.py prove-local examples/native/enum.json --frontend experimental --out build/enum.proof.json
+python3 verify.py examples/native/enum.json build/enum.proof.json --frontend experimental
+python3 finite.py trace examples/native/counter-broken.json --frontend experimental --out build/counter.trace.json
+python3 verify.py examples/native/counter-broken.json build/counter.trace.json --frontend experimental
 ```
 
-`evidence.py` returns 0 when the supplied evidence establishes its stated claim,
-and 1 for rejected, malformed, mismatched, or unreadable evidence. Accepting a
-**counterexample** establishes a bug, not safety. Its JSON output names the
-claim explicitly. A positive search report is not accepted as evidence.
+`prove-local` constructs LRAT refutations of initialization and preservation
+counterexample formulas. The acceptance checker rebuilds each CNF from the
+source and checks the proof. Evidence cannot replace the formula, field domain,
+or assumptions. A checked initial-state witness prevents vacuous safety claims.
+`trace` performs finite breadth-first search; accepting its evidence establishes
+an actual model bug, **not** safety. The JSON result names the claim.
 
-Three evidence formats share a source/project/version digest:
+The suite contains a safe enum ownership model, a broken ownership model,
+a bounded byte counter, a broken counter reaching `4`, and a wraparound model.
+The enum model abstracts ownership; it is not a proof of Oak's borrow checker.
 
-| Kind | Checked obligations |
-| --- | --- |
-| `trace` | Exact Boolean states; initial start; legal transitions (or stuttering); unsafe endpoint |
-| `inductive` | Valid initial witness; Boolean refutations of initialization and preservation counterexamples |
-| `closed-set` | Nonempty initial set; every initial state included; every member safe; all successors included |
+## Use Oak's frontend
 
-The checker reconstructs obligations from the given project; the evidence
-cannot supply a replacement formula, variable domain, or assumption. A closed
-set need not be exactly the reachable set: any safe closed overapproximation
-containing all initials is sufficient. This version checks closure by exhaustive
-finite enumeration, so it offers separation of trust, not a speedup.
+Run inside the Oak checkout, with the repository's Go toolchain installed:
 
-The Boolean proof format has only two rules:
+```sh
+go test ./frontend
+python3 finite.py emit examples/native/enum.json --out build/native-enum
+python3 finite.py prove-local examples/native/enum.json --out build/native-enum.proof.json
+python3 verify.py examples/native/enum.json build/native-enum.proof.json
+```
 
-1. `{ "false": true }`: the reconstructed counterexample formula must evaluate
-   to false under the current partial assignment.
-2. `{ "split": "s.reader", "zero": ..., "one": ... }`: check both Boolean
-   branches of a permitted variable not already assigned on this path.
+All new CLIs default to `--frontend oak`. The bridge checks the program using
+Oak, then exports a narrow read-only AST document. The model adapter additionally
+rejects effects, recursion, unsupported types and expressions. Source hashes
+bind the bridge response; evidence identity also binds the project, frontend,
+normalized model, and experimental semantics version. Native and reference
+certificates deliberately have different identities.
 
-Proof leaves use conservative three-valued evaluation: unknown is never false.
-The producer currently emits full case trees. This is a small propositional
-certificate experiment, **not** LRAT, a general SAT/SMT proof importer, or a
-Lean-compatible dependent kernel. No external checker output is automatically
-upgraded to independently checked evidence. An adapter could supply these formats
-later; the checker would still reconstruct claims from the source project.
+The bridge was reviewed against `specification` at `657d5a5c`; subsequent changes
+through `3028b0fe` did not change its frontend API dependencies. Native tests are
+in `frontend/main_test.go`; the existing repository-wide Go test command will
+also discover them. No workflow or production compiler file is changed.
 
-Why these rules should be sound: a false leaf excludes every completion of its
-partial assignment; a split covers both possible values. Induction over the
-proof tree therefore establishes unsatisfiability. This is a design argument,
-not a mechanically checked metatheorem.
+The original experiment accepted `&&` and `||`; Oak's current lexer/type checker
+does not. Oak's parser also does not currently accept Boolean literal patterns.
+Native candidate examples therefore use enum/integer patterns and wildcard
+arms. `examples/reference/` preserves Boolean-match encodings solely for offline
+comparison with the original truth tables. They are not native Oak examples.
 
-The trust boundary still includes the shared source parser/type checks/term
-expansion, source binding by digest, the new checker, Python, and its execution
-environment. The checker has its own evaluator and does not call `produce.py`,
-`finite_check`, or the producer's evaluator. It does not yet verify itself,
-Oak's compiler, translations to third-party systems, or arbitrary Oak programs.
+## Model semantics
 
-Pre-generated evidence and rejection examples are in `examples/evidence/`.
-`validation-v2.json` records the actual independent CLI checks and expected
-outcomes. All **20 tests pass** (10 original, 10 evidence tests), including
-missing proof cases, forged leaves, repeated variables, illegal trace edges,
-omitted closure states, wrong-source evidence, initial witnesses, duplicate
-JSON keys, and exhaustive small-formula evaluator/proof checks. External
-Lean/Z3/TLC validation remains unavailable as in the first delivery.
+```oak
+Phase: type = | Idle | Reading | Writing | Conflict
+State: type = { phase: Phase }
+initial: (s: State): Bool = s.phase == Phase.Idle
+safe: (s: State): Bool = s.phase != Phase.Conflict
+step: (s: State, t: State): Bool = s.phase ? {
+  | Phase.Idle => t.phase != Phase.Conflict
+  | Phase.Reading => t.phase == Phase.Idle
+  | Phase.Writing => t.phase == Phase.Idle
+  | Phase.Conflict => t.phase == Phase.Conflict
+}
+```
 
-## Try the original projection tool
+The project file names `source`, `initial`, `step`, and `invariant`. No field is
+implicitly unchanged: an unconstrained next-state field is nondeterministic.
+The temporal model permits stuttering and checks safety without fairness or
+liveness claims. Inductiveness is stronger than reachable safety.
 
-From this directory:
+Enum equality is nominal. Unused bit encodings are excluded by explicit domain
+guards. `u8` comparisons are unsigned and constants must be explicit `u8(n)`
+with `0 <= n < 256`. Addition/subtraction require the project setting
+`"arithmetic": "u8-wrap"`; results then wrap modulo 256 in every projection.
+This is an **explicit experimental model profile**, not a definition of Oak's
+runtime overflow behavior. Oak's type specification requires machine-operation
+semantics to be specified separately; translation refinement remains unproved.
+
+The fragment permits one record with 1–6 fields and at most 16 encoded state
+bits, enums with up to 16 nullary constructors, and nonrecursive pure Boolean
+predicates over the state record. Matches must be exhaustive; captures are
+unsupported. Local enumeration is limited to 1,024 states and local proof search
+to 4,096 nodes. Larger problems require external search and further engineering.
+
+## Pinned external gate
+
+Install the versions linked in `tools.lock.json` and put `go`, `lean`, `z3`,
+`cadical`, and Java on `PATH`. Use the exact TLC jar SHA-256 in that file.
+No tools are installed automatically; nothing changes global package state.
+
+| Tool | Pin | Role |
+| --- | --- | --- |
+| Go | 1.27.1, matching Oak | Native checked-AST bridge |
+| Lean | 4.33.1, matching `spec/lean/lean-toolchain` | Compile definitions; prove base/preservation with `bv_decide` |
+| Z3 | 4.13.4 | SMT obligations and bounded counterexamples |
+| CaDiCaL | 2.1.3 / `f13d74439a5b5c963ac5b02d05ce93a8098018b8` | ASCII LRAT via `--lrat --no-binary` |
+| TLC | 1.8.0 jar, SHA-256 pinned | Finite reachable safety and JSON traces; Java 17+ |
+
+The TLC upstream release is a mutable prerelease; the jar digest fixes the
+actual artifact used. Binary versions are checked before execution. Version
+checks are reproducibility guards, not authentication of a binary.
+
+```sh
+python3 backend_suite.py --tla-jar /absolute/path/to/tla2tools.jar --out build/integration
+```
+
+The suite checks all five native models, compares native/reference frontend
+output, compiles Lean definitions before testing theorem outcomes, checks Z3
+initial/base/step obligations and bounded searches, runs TLC, and validates
+CaDiCaL certificates. Broken-model Z3/TLC traces must replay successfully.
+Lean rejection alone is not accepted as counterexample evidence.
+
+Each attempt gets a fresh directory. `report.json` retains exact commands,
+exit codes, stdout/stderr, tool probes, and individual outcomes. Trace receipts
+bind source identity, query bytes, and output bytes to prevent accidental stale
+reuse; they are not solver signatures. Counterexample acceptance always replays
+the actual states and transitions. SMT bounded `unsat` only covers its bound.
+
+Exit 0 means the requested operation/gate succeeded; the evidence CLI names
+whether the accepted claim is safety or a counterexample. The integration suite
+exits 2 for any failed or unavailable check. The other new CLIs exit 1 on
+rejected evidence, invalid input, unavailable tools, or search failure.
+`--frontend experimental` enables a separate offline-parser integration run;
+it does not validate Oak's frontend.
+
+## Trust boundary and limits
+
+`lrat.py` depends only on Python's standard library and is independent of the
+source adapter, translator, and proof producer. It checks ASCII RUP additions
+and deletions and requires an established empty clause. Negative RAT hints,
+binary LRAT, general SMT proof formats, and extension variables are explicitly
+unsupported. This restricted format targets the pinned CaDiCaL producer;
+actual interoperability is still an external validation gate.
+
+The full claim still trusts Oak's frontend (or the explicit reference parser),
+the typed-model adapter, source binding, CNF translation, LRAT checker, Python,
+and execution environment. Trace replay shares the typed model's evaluator.
+Translation equivalence tests are testing evidence, not a refinement proof.
+This system does not verify itself, Oak's compiler, or arbitrary Oak programs.
+
+Z3 `unsat` is solver-backed evidence; it is never relabeled as independently
+checked LRAT. Native Oak self-hosting, a verified kernel, dependent type theory,
+Apalache, liveness/fairness, unbounded theories, and compiler refinement remain
+future work. The next gate is to run the pinned suite on a provisioned machine
+and resolve any frontend/projection incompatibilities before expanding scope.
+
+## Earlier experiments remain available
+
+The original Boolean projector and the v2 tree/closed-set checker are unchanged:
 
 ```sh
 python3 project.py check examples/borrow.json
-python3 project.py check examples/broken.json
-python3 -m unittest -v
+python3 produce.py examples/borrow.json --kind inductive --out build/borrow.v1.json
+python3 evidence.py examples/borrow.json build/borrow.v1.json
+python3 produce.py examples/borrow.json --kind closed-set --out build/borrow.set.json
+python3 evidence.py examples/borrow.json build/borrow.set.json
 ```
 
-The first command succeeds. The second deliberately exits 1 and reports:
+Their source files use an independent Oak-inspired parser. Historical evidence
+is in `examples/evidence/` with `validation-v2.json`. New evidence uses
+`oak-evidence-2`; it is intentionally separate from their `oak-evidence-1` format.
 
-```text
-{reader: false, writer: false}
-{reader: true,  writer: false}
-{reader: true,  writer: true}
-```
-
-The model is deliberately tiny: `reader` means at least one reader, not a
-concrete reader count. `release_read` abstracts the last reader releasing.
-No correspondence with the compiler's actual borrow bookkeeping is claimed.
-
-## Authoring surface
-
-`examples/borrow.oak` contains one semantic record and ordinary predicate
-functions. For example:
-
-```oak
-State: type = {
-  reader: Bool
-  writer: Bool
-}
-
-initial: (s: State) -> Bool = !s.reader && !s.writer
-safe: (s: State) -> Bool = !(s.reader && s.writer)
-```
-
-Transition predicates take old and new state explicitly. Calls compose them
-into `step`. Every field of the next state must be constrained when that is
-intended; omitting a constraint means nondeterminism, not an implicit unchanged
-field. There is no transition or invariant keyword.
-
-`examples/borrow.json` assigns roles outside the language:
-
-```json
-{
-  "source": "borrow.oak",
-  "initial": "initial",
-  "step": "step",
-  "invariant": "safe"
-}
-```
-
-The prototype independently parses and checks a narrow subset inspired by
-Oak's normative syntax at `specification` commit
-`03ac63c17347293e022d038763850f67bd6d3d2e`:
-
-- Exactly one record, with 1–6 Boolean fields.
-- Declaration-form functions with individually typed state parameters,
-  `-> Bool` or `: Bool`, and `= expression` bodies.
-- Boolean literals, field reads, `!`, `&&`, `||`, `==`, `!=`, parentheses,
-  and nonrecursive predicate calls (including forward references).
-- Whitespace/newlines and `//` comments; optional commas between record fields.
-
-Everything else is rejected, including integers, record equality, imports,
-mutation, recursion, arbitrary expressions as state arguments, and unsupported
-syntax. The real Oak parser/typechecker is not used or modified. These source
-files have **not** been compiled with Oak. The independent parser is a conscious
-disposability tradeoff; retain it only as long as useful for this experiment.
-
-## Generate and hand off
-
-```sh
-python3 project.py emit examples/borrow.json
-```
-
-Outputs go to `build/borrow/` (or `--out DIR`):
-
-| File | Meaning |
-| --- | --- |
-| `Model.lean` | Boolean definitions and kernel-evaluated case-split proofs of initialization and inductive preservation |
-| `initial.smt2` | Initial-state satisfiability; expected `sat` |
-| `base.smt2` | Counterexample to initialization; expected `unsat` |
-| `step.smt2` | Counterexample to inductive preservation; expected `unsat` |
-| `Model.tla`, `Model.cfg` | Finite record-valued transition system, stuttering, type and safety invariants |
-| `manifest.json` | Source/config/version digest and translation trust boundary |
-
-There is no copied handwritten model per backend. Predicate calls are inlined
-from one checked Boolean tree, and identifiers are mapped to generated names.
-Generation invalidates any old `report.json`; generation alone is never a
-verification result. Files in the output directory are disposable.
-
-With the external checkers installed:
-
-```sh
-python3 project.py check examples/borrow.json --backend z3
-python3 project.py check examples/borrow.json --backend lean
-python3 project.py check examples/borrow.json --backend tlc --tla-jar /path/to/tla2tools.jar
-python3 project.py check examples/borrow.json --backend all --tla-jar /path/to/tla2tools.jar
-```
-
-Use the same commands with `examples/broken.json` to exercise failures.
-Lean and Z3 must be on PATH. TLC needs Java and a caller-supplied tools jar.
-No tool is downloaded or installed by this project. `--timeout SECONDS`
-defaults to 30 seconds per external process/query.
-
-You can also invoke the generated files directly:
-
-```sh
-lean build/borrow/Model.lean
-z3 -smt2 build/borrow/initial.smt2
-z3 -smt2 build/borrow/base.smt2
-z3 -smt2 build/borrow/step.smt2
-java -cp /path/to/tla2tools.jar tlc2.TLC -config build/borrow/Model.cfg build/borrow/Model.tla
-```
-
-Apalache is not included as a runner: TLC is enough for the first finite-state
-experiment; typed Apalache projection is a later, separate test.
-
-## Results and trust
-
-`check` always runs the independent finite-state explorer, then any requested
-external backends. It writes `report.json` and prints the same JSON.
-
-- Exit **0**: every requested check passed.
-- Exit **1**: a reachable counterexample or an external check failure occurred.
-- Exit **2**: invalid input, unavailable tool, timeout, error, or unknown result.
-
-The finite checker rejects an empty initial set, enumerates the entire Boolean
-domain, and performs breadth-first reachability with a shortest counterexample
-trace. It also checks inductiveness independently. A reachable invariant can
-hold without being inductive; the report preserves that distinction. Deadlocks
-are listed but are not safety failures; the temporal model permits stuttering.
-
-Lean/SMT establish the stronger inductive obligations, whereas TLC explores
-reachable safety. These methods can disagree on an invariant that needs
-strengthening; that is not necessarily a translation bug. Initial-state
-nonvacuity is checked by the local explorer and SMT; the generated Lean file
-only proves the two implications.
-
-All results concern **this explicit finite model**, not the Oak compiler or
-arbitrary concurrent implementations. There are no fairness, liveness,
-unbounded-integer, or implementation-refinement claims. The adapter is trusted;
-its source-to-backend translation has not been formally proved. Z3 `unsat`
-is solver-backed evidence, not an independently checked certificate. External
-tool output and exit codes are retained; nonzero Lean/TLC exits may indicate
-input/tool errors as well as failed obligations, so inspect their diagnostics.
-
-## Validation performed for this delivery
-
-| Check | Result |
-| --- | --- |
-| Safe model, complete finite exploration | Passed: 3 reachable states out of 4; inductive |
-| Broken model | Expected 3-state counterexample |
-| Unit/behavioral tests | 10 passed |
-| Generated SMT assertions | Exhaustively evaluated against the source obligations for both fixtures |
-| Lean executable | Unavailable; generated file not externally checked |
-| Z3 executable | Unavailable; generated file not externally checked |
-| TLC tools jar | Unavailable; generated file not externally checked |
-
-Generated `build/` files are ignored; rerun the commands above to recreate
-them. `validation-v2.json` records the evidence checks performed for this delivery. The tests cover typing/name/arity rejection, recursion rejection,
-operator precedence, exact borrow transitions, counterexample replay,
-noninductive but reachable safety, vacuity, deterministic generation, stale
-report invalidation, and unavailable/unknown tool results.
-
-## What this experiment lets us decide
-
-1. Do ordinary records and old/new-state predicates feel natural enough?
-2. Is keeping the role assignment in a tiny project file sufficient?
-3. Are generated models and counterexamples understandable?
-
-If yes, the next small step is using Oak's actual parsed/typed representation
-behind the adapter, followed by a carefully scoped integer fragment. If no,
-delete the folder; no production interface depends on it.
-
-References: [Oak syntax](https://github.com/SCKelemen/oak/blob/03ac63c17347293e022d038763850f67bd6d3d2e/docs/spec/10-syntax.md),
-[Lean](https://lean-lang.org/), [Z3](https://github.com/Z3Prover/z3),
-[TLA+ tools](https://github.com/tlaplus/tlaplus).
+Sources: [Oak type semantics](../../docs/spec/20-types.md),
+[CaDiCaL LRAT tracer](https://github.com/arminbiere/cadical/blob/rel-2.1.3/src/lrattracer.cpp),
+[TLC JSON trace format](https://github.com/tlaplus/tlaplus/blob/v1.8.0/tlatools/org.lamport.tlatools/src/tla2sany/StandardModules/_JsonTrace.tla),
+[LRAT resources](https://github.com/marijnheule/drat-trim).
