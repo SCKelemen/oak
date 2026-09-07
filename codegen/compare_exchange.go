@@ -119,6 +119,16 @@ func compareExchangeSpecsUsed(program *ast.Program) []semir.AtomicBuiltinSpec {
 					visitStmt(inner)
 				}
 			}
+		case *ast.IfStatement:
+			visitExpr(s.Condition)
+			if s.Consequence != nil {
+				for _, inner := range s.Consequence.Statements {
+					visitStmt(inner)
+				}
+			}
+			if s.Alternative != nil {
+				visitStmt(s.Alternative)
+			}
 		case *ast.BlockStatement:
 			for _, inner := range s.Statements {
 				visitStmt(inner)

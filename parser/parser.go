@@ -458,6 +458,14 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 			break
 		}
 
+		// A '.' opening a NEW LINE starts a bare-variant expression (a new
+		// statement), never a continuation of the previous line: a
+		// statement-final call followed by `.Some(v)` must not glue into a
+		// member access on the call's result.
+		if p.peekTokenIs(token.DOT) && p.peekToken.Line != p.currentToken.Line {
+			break
+		}
+
 		// Check for match expression (postfix ?)
 		if p.peekTokenIs(token.QMARK) {
 			p.nextToken() // consume ?
@@ -2647,7 +2655,7 @@ func (p *Parser) parseMatchArms() []*ast.MatchArm {
 	p.nextToken() // consume -> or =>
 	p.nextToken() // advance to body token
 
-	body := p.parseExpression(LOWEST)
+	body := p.parseMatchArmBody()
 	if body == nil {
 		return nil
 	}
@@ -2676,7 +2684,7 @@ func (p *Parser) parseMatchArms() []*ast.MatchArm {
 		p.nextToken() // consume -> or =>
 		p.nextToken() // advance to body token
 
-		body := p.parseExpression(LOWEST)
+		body := p.parseMatchArmBody()
 		if body == nil {
 			return nil
 		}
@@ -2690,6 +2698,16 @@ func (p *Parser) parseMatchArms() []*ast.MatchArm {
 	}
 
 	return arms
+}
+
+// parseMatchArmBody parses one arm body: a brace block (statements, the
+// block's trailing expression as its value) or an expression. currentToken
+// is the body's first token.
+func (p *Parser) parseMatchArmBody() ast.Expression {
+	if p.currentTokenIs(token.LBRACE) {
+		return p.parseBlockExpression()
+	}
+	return p.parseExpression(LOWEST)
 }
 
 // Parse pattern: _ | x | 200 | "string" | .Ok | .Some(x)

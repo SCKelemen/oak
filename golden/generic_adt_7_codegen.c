@@ -253,12 +253,13 @@ oak_Option_u32 oak_first_even( u32 a, u32 b ) {
 i32 oak_main(  ) {
     oak_Option_u32 found   = oak_first_even( ((u32)( 3 )), ((u32)( 8 )) )  ;
     i32 byteRange  ;
-    if ( oak_conv_u8_checked_u32( ((u32)( 300 )) ).tag == oak_Result_u8_Overflow_tag_Ok ) {
-      u8 v = oak_conv_u8_checked_u32( ((u32)( 300 )) ).payload.Ok;
+    oak_Result_u8_Overflow oak_scrutinee_0 = oak_conv_u8_checked_u32( ((u32)( 300 )) );
+    if ( oak_scrutinee_0.tag == oak_Result_u8_Overflow_tag_Ok ) {
+      u8 v = oak_scrutinee_0.payload.Ok;
       byteRange     = ((i32)( v ))    ;
     }
-    if ( oak_conv_u8_checked_u32( ((u32)( 300 )) ).tag == oak_Result_u8_Overflow_tag_Err ) {
-      oak_Overflow e = oak_conv_u8_checked_u32( ((u32)( 300 )) ).payload.Err;
+    if ( oak_scrutinee_0.tag == oak_Result_u8_Overflow_tag_Err ) {
+      oak_Overflow e = oak_scrutinee_0.payload.Err;
       byteRange     = ( 0 - 1 )    ;
     }
     if ( found.tag == oak_Option_u32_tag_Some ) {

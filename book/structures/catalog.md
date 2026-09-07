@@ -19,10 +19,12 @@ Ring[T, N: u32]: type = struct {
 ```
 
 `compiler/e2e_ring_test.go`. Single-owner form: atomicity rung 0 (sole
-custody), progress wait-free bounded trivially. SPSC form: indices become
-`Atomic[u32]` with release-publish/acquire-consume — atomicity rung 2
-(ownership transfer), consistency causal, progress wait-free bounded.
-The kfifo/CircularQueue equivalent.
+custody), progress wait-free bounded trivially. **SPSC form — executed**
+(`compiler/e2e_queues_test.go`, `TestE2ESpscRing`): free-running
+`Atomic[u32]` indices, plain slot writes published by
+`atomic_store_release` of the producer index, consumed under
+`atomic_load_acquire` — atomicity rung 2 (ownership transfer), consistency
+causal, progress wait-free bounded. The kfifo/CircularQueue equivalent.
 
 ## Pool + free list
 
@@ -57,13 +59,17 @@ Atomicity rung 2 (version protocol), consistency: readers get snapshot-or
 -retry, progress: writers wait-free, readers obstruction-free. The
 canonical "cross-EL time struct" shape.
 
-## MPSC mailbox
+## MPSC mailbox — executed
 
-Producers CAS a slot claim (lock-free), single consumer drains custody
-(wait-free). The standard inter-core doorbell; the pattern the hypervisor
-design restricts to *within one trust domain*, because a hostile producer
-can spin its peers — the progress ladder is per-participant, and adversarial
-participants define your floor.
+`compiler/e2e_queues_test.go`, `TestE2EMpscIntake` — the Vyukov LIFO-grab
+shape: producers CAS-push pool indices (index+1 encoding, so the
+zero-initialized head cell means empty) with release order in a bounded,
+asserted retry loop (lock-free, and *visibly* so); the consumer grabs the
+entire chain with one `acq_rel` CAS to empty, reverses in place to FIFO,
+and walks it wait-free. The standard inter-core doorbell; the pattern the
+hypervisor design restricts to *within one trust domain*, because a
+hostile producer can spin its peers — the progress ladder is
+per-participant, and adversarial participants define your floor.
 
 ## Handle table
 

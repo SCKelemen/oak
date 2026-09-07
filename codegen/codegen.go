@@ -842,6 +842,30 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 // emitMatchReturn with bodies in statement position. Produced by the
 // lowering hoist for value matches and by statement-position ADT matches.
 func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *typechecker.TypeChecker) {
+	// A non-identifier scrutinee (matching on a call result) evaluates
+	// exactly once: hoist it into a temporary, then guard on the
+	// temporary — never re-evaluate per arm.
+	if _, isIdent := match.Scrutinee.(*ast.Identifier); !isIdent {
+		if mangled, resolved := tc.MatchResolution(match); resolved {
+			if _, known := cg.adtTypes[mangled]; known {
+				tmp := fmt.Sprintf("oak_scrutinee_%d", cg.scrutineeCounter)
+				cg.scrutineeCounter++
+				cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), tmp))
+				cg.emitExpressionFragment(match.Scrutinee, tc)
+				cg.output.WriteString(";\n")
+				if cg.localTypes == nil {
+					cg.localTypes = map[string]localContainer{}
+				}
+				cg.localTypes[tmp] = localContainer{kind: containerADT, adtName: mangled}
+				match = &ast.MatchExpression{
+					BaseNode:  match.BaseNode,
+					Token:     match.Token, // same position: resolution carries over
+					Scrutinee: &ast.Identifier{Token: match.Token, Value: tmp},
+					Arms:      match.Arms,
+				}
+			}
+		}
+	}
 	for _, arm := range match.Arms {
 		emitBody := func() {
 			if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock && block.Block != nil {

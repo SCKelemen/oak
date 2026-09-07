@@ -71,6 +71,9 @@ mailbox's publish** (the `atomic_fetch_add`/CAS that claims the slot plus
 the release store that completes it). Responses return by per-producer
 reply slots or completion indices.
 
+Executed: `compiler/e2e_queues_test.go` runs both halves of this recipe —
+the SPSC ring (`TestE2ESpscRing`) and the MPSC intake with LIFO-grab and
+in-place FIFO reversal (`TestE2EMpscIntake`).
 Coordinates: object code is rung-0 (sole custody) — the entire concurrency
 budget is spent inside one mailbox. Progress: producers lock-free (CAS
 claim) or wait-free (fetch_add claim with bounded slots); executor
