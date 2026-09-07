@@ -143,6 +143,40 @@ type RecordField struct {
 	// 0 for natural. A representation detail, never shape identity
 	// (docs/spec/40-records.md §6a).
 	Align uint32
+	// Tags are the field's typed metadata (id(json: "user_id"): u64) —
+	// each names a declared tag schema and carries a checked value
+	// (docs/spec/40-records.md §12). Metadata axis only: never layout,
+	// never the runtime value.
+	Tags []FieldTag
+}
+
+// FieldTag is one typed metadata entry on a record field: the namespace
+// (a declared tag schema) and its value — a bare literal (bound to the
+// schema's first declared field) or a record literal over schema fields.
+type FieldTag struct {
+	Token token.Token
+	Name  string
+	Value Expression
+}
+
+// TagDeclaration declares a tag schema: json: tag = { name: string }.
+// The schema body is ordinary record-type syntax; fields give the typed
+// vocabulary a projection may read from tagged record fields.
+type TagDeclaration struct {
+	BaseNode
+	Token    token.Token // the schema name token
+	EndToken token.Token // closing brace of the schema
+	Name     *Identifier
+	Schema   *RecordLiteral
+}
+
+func (td *TagDeclaration) statementNode()       {}
+func (td *TagDeclaration) TokenLiteral() string { return td.Token.Literal }
+func (td *TagDeclaration) String() string {
+	if td.Name != nil && td.Schema != nil {
+		return td.Name.Value + ": tag = " + td.Schema.String()
+	}
+	return "tag declaration"
 }
 
 // RecordLiteral represents both record value and record type syntax. Fields is

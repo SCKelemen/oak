@@ -496,6 +496,9 @@ type TypeChecker struct {
 	// instantiations are cached by mangled name.
 	recordTemplates        map[string]*ast.ADTType
 	recordInstantiationCache map[string]*RecordType
+	// tagSchemas holds declared tag schemas (json: tag = { name: string }) —
+	// the closed namespace field tags check against (typechecker/tags.go).
+	tagSchemas map[string]*RecordType
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -763,6 +766,8 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 	case *ast.ImportStatement:
 		// Import statements don't need type checking
 		// They're just metadata
+	case *ast.TagDeclaration:
+		tc.checkTagDeclaration(s)
 	case *ast.BlockStatement:
 		// Block statements are checked as part of function bodies, while loops, etc.
 		tc.checkBlockStatement(s)
@@ -2992,6 +2997,10 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 				tc.addError(field.Value, "record type %s: field %s declares align inside a packed record; packing and raised member alignment contradict", typeName, field.Name)
 			}
 		}
+	}
+	// Typed field tags check against declared schemas (typechecker/tags.go).
+	for _, field := range recordLit.FieldOrder {
+		tc.checkFieldTags(typeName, field)
 	}
 	// Check that all fields have valid type annotations
 	fieldNames := make(map[string]bool)

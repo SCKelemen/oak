@@ -194,3 +194,73 @@ Bad: type = struct {
 		t.Fatalf("under-aligned field must fail closed:\n%s", output)
 	}
 }
+
+// Typed field tags are metadata-axis only: the emitted C is byte-identical
+// with and without them, and no tag value leaks into the artifact. Go's
+// tag ergonomics, statically checked, zero cost.
+func TestE2ETypedTagsAreZeroCost(t *testing.T) {
+	tagged := `
+json: tag = { name: string, omit: Bool }
+pb: tag = { field: u32 }
+
+User: type = struct {
+  id(align: 8, json: "user_id", pb: 1): u64
+  score(json: { name: "score", omit: true }): u32
+}
+
+u: User
+
+main: (): i32 {
+  u.id = u64(7)
+  u.score = u32(42)
+  assert(u.id == u64(7))
+  42
+}
+`
+	untagged := `
+User: type = struct {
+  id(align: 8): u64
+  score: u32
+}
+
+u: User
+
+main: (): i32 {
+  u.id = u64(7)
+  u.score = u32(42)
+  assert(u.id == u64(7))
+  42
+}
+`
+	taggedC, err := New().WithSource("tagged.oak", tagged).EmitC().Get()
+	if err != nil {
+		t.Fatalf("tagged compilation failed: %v", err)
+	}
+	untaggedC, err := New().WithSource("tagged.oak", untagged).EmitC().Get()
+	if err != nil {
+		t.Fatalf("untagged compilation failed: %v", err)
+	}
+	// Source-position provenance comments necessarily differ (the tag
+	// declarations occupy lines); everything else must be byte-identical.
+	stripProvenance := func(c string) string {
+		lines := strings.Split(c, "\n")
+		kept := lines[:0]
+		for _, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "// @source:") {
+				continue
+			}
+			kept = append(kept, line)
+		}
+		return strings.Join(kept, "\n")
+	}
+	if stripProvenance(taggedC) != stripProvenance(untaggedC) {
+		t.Fatalf("tags changed the emitted C — metadata leaked into representation:\n--- tagged ---\n%s\n--- untagged ---\n%s", taggedC, untaggedC)
+	}
+	if strings.Contains(taggedC, "user_id") {
+		t.Fatal("tag value leaked into the emitted C")
+	}
+	code, abnormal := buildAndRun(t, "tagged", tagged)
+	if abnormal || code != 42 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}

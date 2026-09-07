@@ -189,6 +189,11 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		// Import statements are handled at top level, just return null
 		return NULL
 
+	case *ast.TagDeclaration:
+		// Tag schemas are compile-time metadata for projections; no
+		// runtime existence at all.
+		return NULL
+
 	case *ast.WhileStatement:
 		return evalWhileStatement(node, env)
 

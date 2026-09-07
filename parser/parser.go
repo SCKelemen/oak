@@ -1681,27 +1681,23 @@ func (p *Parser) parseRecordType() ast.Expression {
 			fieldTokens = append(fieldTokens, p.currentToken)
 		}
 
-		// Optional per-field layout spec, mirroring the struct clause:
-		// head(align: 64): Atomic[u32]. Only align — packing is a property
-		// of placement BETWEEN fields, so it belongs to the container; a
-		// dense region inside a natural record is a nested packed struct.
+		// Optional per-field spec, mirroring the struct clause:
+		// id(align: 8, json: "user_id"): u64. `align` is the reserved
+		// representation key; every other name must be a declared tag
+		// schema (checked by the typechecker — unknown namespaces are
+		// errors, never silent metadata). Packing is a property of
+		// placement BETWEEN fields, so it belongs to the container.
 		var fieldAlign uint32
+		var fieldTags []ast.FieldTag
 		if p.peekTokenIs(token.LPAREN) {
 			p.nextToken() // to (
-			spec := p.parseRecordLayoutSpec()
-			if spec == nil {
+			align, tags, ok := p.parseFieldSpec()
+			if !ok {
 				return nil
 			}
-			if spec.Packed {
-				p.addErrorAtCurrentToken("'packed' is a struct-level spec: padding lives between fields; use a nested struct(packed) for a dense region")
-				return nil
-			}
-			if spec.Align == 0 {
-				p.addErrorAtCurrentToken("field layout spec requires align: N")
-				return nil
-			}
-			fieldAlign = spec.Align
-			// parseRecordLayoutSpec leaves the cursor after ')'.
+			fieldAlign = align
+			fieldTags = tags
+			// parseFieldSpec leaves the cursor after ')'.
 			if !p.currentTokenIs(token.COLON) {
 				p.peekError(token.COLON)
 				return nil
@@ -1720,10 +1716,12 @@ func (p *Parser) parseRecordType() ast.Expression {
 				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldToken.Literal))
 				return nil
 			}
-			// The declared alignment rides on the ordered entry AddField
-			// just appended; AddField's proven construction contract
-			// (Oak.SemanticRecord) covers name/value, not representation.
+			// The declared alignment and tags ride on the ordered entry
+			// AddField just appended; AddField's proven construction
+			// contract (Oak.SemanticRecord) covers name/value, not
+			// representation or metadata.
 			record.FieldOrder[len(record.FieldOrder)-1].Align = fieldAlign
+			record.FieldOrder[len(record.FieldOrder)-1].Tags = fieldTags
 		}
 
 		// parseTypeExpression() leaves currentToken at the last token of the field type.
@@ -1805,6 +1803,127 @@ func (p *Parser) parseStructType() ast.Expression {
 		rl.Layout = layout
 	}
 	return record
+}
+
+// parseFieldSpec parses the parenthesized per-field clause: `align: N`
+// (reserved representation key) and `namespace: value` tag entries,
+// comma-separated. Leaves the cursor after ')'.
+func (p *Parser) parseFieldSpec() (uint32, []ast.FieldTag, bool) {
+	var align uint32
+	var tags []ast.FieldTag
+	seen := map[string]bool{}
+	p.nextToken() // consume (
+	for {
+		if !p.currentTokenIs(token.IDENT) {
+			p.addErrorAtCurrentToken("expected 'align' or a tag namespace in field spec")
+			return 0, nil, false
+		}
+		switch p.currentToken.Literal {
+		case "packed":
+			p.addErrorAtCurrentToken("'packed' is a struct-level spec: padding lives between fields; use a nested struct(packed) for a dense region")
+			return 0, nil, false
+		case "align":
+			if align != 0 {
+				p.addErrorAtCurrentToken("duplicate 'align' in field spec")
+				return 0, nil, false
+			}
+			if !p.peekTokenIs(token.COLON) {
+				p.addErrorAtCurrentToken("expected ':' after 'align' in field spec")
+				return 0, nil, false
+			}
+			p.nextToken() // to :
+			if !p.peekTokenIs(token.INT) {
+				p.addErrorAtCurrentToken("expected integer alignment after 'align:'")
+				return 0, nil, false
+			}
+			p.nextToken() // to the integer
+			value, err := strconv.ParseUint(p.currentToken.Literal, 10, 32)
+			if err != nil || value == 0 || value&(value-1) != 0 {
+				p.addErrorAtCurrentToken("field alignment must be a nonzero power-of-two u32")
+				return 0, nil, false
+			}
+			align = uint32(value)
+			p.nextToken()
+		default:
+			namespace := p.currentToken
+			if seen[namespace.Literal] {
+				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate tag namespace %q in field spec", namespace.Literal))
+				return 0, nil, false
+			}
+			seen[namespace.Literal] = true
+			if !p.expectPeek(token.COLON) {
+				return 0, nil, false
+			}
+			p.nextToken() // to the value
+			value := p.parseFieldTagValue()
+			if value == nil {
+				return 0, nil, false
+			}
+			tags = append(tags, ast.FieldTag{Token: namespace, Name: namespace.Literal, Value: value})
+			p.nextToken() // past the value's last token
+		}
+		if p.currentTokenIs(token.COMMA) {
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	if !p.currentTokenIs(token.RPAREN) {
+		p.peekError(token.RPAREN)
+		return 0, nil, false
+	}
+	p.nextToken() // consume )
+	return align, tags, true
+}
+
+// parseTagDeclarationFromName parses a tag schema declaration after the
+// name and ':' were consumed: json: tag = { name: string, omit: Bool }.
+// currentToken sits on the contextual `tag` identifier.
+func (p *Parser) parseTagDeclarationFromName(name *ast.Identifier) *ast.TagDeclaration {
+	decl := &ast.TagDeclaration{Token: name.Token, Name: name}
+	p.nextToken() // consume `tag`; currentToken is '='
+	if !p.currentTokenIs(token.ASSIGN) {
+		p.peekError(token.ASSIGN)
+		return nil
+	}
+	p.nextToken() // to '{'
+	if !p.currentTokenIs(token.LBRACE) {
+		p.peekError(token.LBRACE)
+		return nil
+	}
+	schema := p.parseRecordType()
+	if schema == nil {
+		return nil
+	}
+	recordLit, isRecord := schema.(*ast.RecordLiteral)
+	if !isRecord || len(recordLit.FieldOrder) == 0 {
+		p.addErrorAtCurrentToken("tag schema requires at least one field")
+		return nil
+	}
+	decl.Schema = recordLit
+	decl.EndToken = recordLit.EndToken
+	return decl
+}
+
+// parseFieldTagValue parses one tag value in a field clause: a bare
+// literal (string, integer, true/false — bound to the schema's first
+// declared field) or a record literal over schema fields. The closed
+// value vocabulary is deliberate: tag values are compile-time data for
+// projections, not expressions.
+func (p *Parser) parseFieldTagValue() ast.Expression {
+	switch p.currentToken.TokenKind {
+	case token.STRING:
+		return &ast.StringLiteral{Token: p.currentToken, Value: p.currentToken.Literal}
+	case token.INT:
+		return p.parseIntegerLiteral()
+	case token.TRUE, token.FALSE:
+		return &ast.Boolean{Token: p.currentToken, Value: p.currentTokenIs(token.TRUE)}
+	case token.LBRACE:
+		return p.parseRecordLiteral()
+	default:
+		p.addErrorAtCurrentToken("tag value must be a string, integer, true/false, or a record literal")
+		return nil
+	}
 }
 
 // parseRecordLayoutSpec parses the parenthesized layout clause after
@@ -3313,6 +3432,13 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 	// After nextToken():
 	// - currentToken = what was peekToken (should be TYPE for "Name: type =")
 	// - peekToken = token after that
+
+	// Tag schema declaration: json: tag = { name: string }. `tag` is
+	// contextual (it stays a legal field/variable name); only the exact
+	// shape IDENT ':' tag '=' '{' reads as a declaration.
+	if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "tag" && p.peekTokenIs(token.ASSIGN) {
+		return p.parseTagDeclarationFromName(name)
+	}
 
 	if p.currentTokenIs(token.TYPE) {
 		// We're in `Name: type = ...` or `Name[E, Unit]: type = ...` - ADT type definition

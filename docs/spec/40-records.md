@@ -345,13 +345,51 @@ The canonical procedure-like return spelling is `()`.
 
 Named empty marker types are useful as phantom tags even when a selected runtime representation is zero-sized.
 
-## 12. Metadata
+## 12. Metadata: typed field tags
 
 Field metadata is not part of the runtime record/struct value unless a projection explicitly requests it.
 
-A field may carry compile-time attributes such as serializer field numbers, DB names, units, debugger labels, or documentation, but those facts live in the metadata axis.
+Oak has Go's per-field tag ergonomics with the checking Go never had.
+A tag namespace is a **declared schema**; uses typecheck against it:
 
-Correctness-critical representation properties must use typed representation constructs rather than arbitrary string-valued tags.
+```oak
+json: tag = { name: string, omit: Bool }
+pb: tag = { field: u32 }
+
+User: type = struct {
+  id(align: 8, json: "user_id", pb: 1): u64
+  score(json: { name: "score", omit: true }): u32
+}
+```
+
+Rules (`typechecker/tags.go`, transliterating `Oak.FieldTags`, which
+proves the conformance checker sound and complete):
+
+- **Closed namespace.** A tag key that is not a declared schema is a
+  compile error — `jsn: "user_id"` can never become silent metadata, the
+  Go failure mode this design exists to close (proven:
+  `Oak.FieldTags.unknown_field_rejected`). `align` remains the reserved
+  representation key (§6a.1) and is enforced, not metadata.
+- **Typed values.** Schema fields are compile-time data: `string`,
+  fixed-width integers, `Bool`. A bare value (`json: "user_id"`) binds to
+  the schema's first declared field — the F# positional-argument
+  precedent; the record form provides any subset (tags are sparse), each
+  value checked against its declared type.
+- **Metadata axis only.** Tags never affect layout, representation, or
+  the emitted C — byte-identical artifacts with or without them
+  (execution-verified). Consumers are compile-time projections
+  (serializers, schema generators, debuggers) reading the checker's
+  schema and tag records — the OCaml `deriving` doctrine, never runtime
+  reflection (the Elm rule).
+
+Prior art, briefly: F#/.NET and Scala check attribute types (the model
+followed here); OCaml ppx attributes place well but check nothing —
+payloads are raw AST a plugin may or may not read; Go tags are unchecked
+strings; Elm refuses metadata and writes decoders as ordinary functions.
+Oak takes F#'s checkedness, Go's placement, OCaml's compile-time-consumer
+doctrine, and Elm's no-reflection rule.
+
+Correctness-critical representation properties must use typed representation constructs rather than arbitrary string-valued tags — which is why `packed`/`align` are syntax (§6a), not tags.
 
 ## 13. Borrowing and fields
 
