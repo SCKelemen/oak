@@ -94,7 +94,8 @@ theorem rup_entails {db : Database} {c : Clause} {hints : List Nat}
     (p : Propagate db (c.map negate) hints) (a : Assignment) (hm : Models a db) :
     SatisfiesClause a c := by
   classical
-  by_contra notClause
+  apply Classical.byContradiction
+  intro notClause
   apply propagation_sound p a hm
   intro l member
   obtain ⟨original, originalMember, eq⟩ := List.mem_map.mp member
@@ -134,8 +135,8 @@ inductive Step : Database → Database → Prop where
 theorem step_preserves {before after : Database} (step : Step before after)
     (a : Assignment) (hm : Models a before) : Models a after := by
   cases step with
-  | add db id c hints proof => exact insert_preserves hm (rup_entails proof a hm)
-  | delete db ids => exact erase_preserves ids hm
+  | add id c hints proof => exact insert_preserves hm (rup_entails proof a hm)
+  | delete ids => exact erase_preserves ids hm
 
 inductive Steps : Database → Database → Prop where
   | refl (db : Database) : Steps db db
