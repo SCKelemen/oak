@@ -65,8 +65,8 @@ rup_stream_check: (
     valid = command.id <= u32(2147483647)
     valid = valid && command.refs_start <= len(references)
     valid = valid && command.refs_count <= len(references) - command.refs_start
+    action: RUPAction = command.action
     valid ? {
-      action: RUPAction = command.action
       action ?
       | .Add => {
         valid = command.id > last && command.id <= u32(256)

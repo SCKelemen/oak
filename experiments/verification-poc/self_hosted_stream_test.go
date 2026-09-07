@@ -143,7 +143,7 @@ func layoutStream(c streamCase) streamLayout {
 }
 func emitStreamCase(b *strings.Builder,c streamCase,mutation string,expected bool) {
  r:=layoutStream(c)
- fmt.Fprintln(b,"true ? {")
+ 
  for _,a:=range []struct{name string; values []uint32}{{"pool",r.lits},{"initial",r.starts},{"sizes",r.lengths},{"refs",r.refs}} {
   capacity:=len(a.values);if capacity==0 {capacity=1}
   fmt.Fprintf(b,"%s: [%d]u32\n",a.name,capacity)
@@ -156,7 +156,7 @@ func emitStreamCase(b *strings.Builder,c streamCase,mutation string,expected boo
  b.WriteString(mutation)
  fmt.Fprintf(b,"pool_view: []u32 = pool[0:%d]\ninitial_view: []u32 = initial[0:%d]\nsizes_view: []u32 = sizes[0:%d]\nrefs_view: []u32 = refs[0:%d]\ncommands_view: []RUPCommand = commands[0:%d]\n",len(r.lits),len(r.starts),len(r.lengths),len(r.refs),len(r.commands))
  fmt.Fprintln(b,"result: Bool = rup_stream_check(pool_view, initial_view, sizes_view, refs_view, commands_view, nvars)")
- fmt.Fprintf(b,"assert(result == %t)\n}\n",expected)
+ fmt.Fprintf(b,"assert(result == %t)\n",expected)
 }
 func runOakStream(t *testing.T,source string) {
  t.Helper();cc,err:=exec.LookPath("cc");if err!=nil {t.Fatal("C compiler required for Oak stream checks")}
