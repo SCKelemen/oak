@@ -214,10 +214,18 @@ strong-CAS relation. It proves, among other facts:
 - every source CAS constructor has a legal success/failure pair;
 - no source CAS can expose release/acq-rel failure ordering.
 
-The execution-level meaning of publication, happens-before, conflicting access,
-and data races is specified separately in `66-memory-model.md` and modeled in
-`spec/lean/Oak/HappensBefore.lean`. These are language-level proofs. C/ISA
-refinement remains a separate proof obligation.
+The execution-level meaning is specified by the next three chapters:
+
+- `66-memory-model.md`: reads-from, synchronizes-with, happens-before, conflicts,
+  and data races;
+- `67-memory-ordering.md`: modification order, RMW adjacency, release sequences,
+  and fence-mediated synchronization;
+- `68-sequential-consistency.md`: one explicit global SC order and SC-read
+  visibility constraints.
+
+Lean models these layers in `Oak.HappensBefore` and `Oak.SequentialConsistency`.
+These are language-level proofs; C/ISA refinement remains a separate proof and
+testing obligation.
 
 ## 11. End-to-end tests
 
@@ -236,6 +244,8 @@ Acceptance spans the whole executable stack:
   Oak-generated atomic cell; the exact final value is checked;
 - the contention harness records total attempts and retries so CAS retry cost is
   explicit and measurable rather than hidden;
+- Semantic IR execution tests cover HB/race, modification order, release
+  sequences, fences, and global SC validation;
 - ordinary Go CI, race-enabled integration where configured, golden output, and
   Lean proofs gate merge.
 
@@ -253,12 +263,15 @@ Acceptance spans the whole executable stack:
 | contended CAS linearized final value | native-tested |
 | CAS retry instrumentation | native-tested |
 | core happens-before/data-race relations | specified + implemented + Lean-modeled in chapter 66 |
-| complete memory-model closure (fences/release sequences/SC) | not yet complete |
+| modification order/release sequences/fences | specified + implemented + Lean-modeled in chapter 67 |
+| global seq-cst order/read visibility | specified + implemented + Lean-modeled in chapter 68 |
+| language-level memory relation set | explicit through seq-cst |
 | C/ISA formal refinement | not yet proved |
-| AArch64 weak-memory litmus suite | not yet implemented |
+| AArch64 weak-memory litmus suite | next major layer |
 | target-specific lock-free admission | not yet implemented |
 
-The next closure work is fence-mediated synchronization, release sequences, and
-sequential-consistency constraints in the execution model, followed by C/AArch64
-refinement and weak-memory litmus tests. Higher-level SPSC/MPSC proofs should
-consume that closed contract rather than invent their own memory semantics.
+The next work is no longer to invent additional language-level memory-order
+semantics. It is to **refine and test the projection**: generated C, emitted
+AArch64 instructions, weak-memory litmus outcomes, and target lock-free
+admission. Higher-level SPSC/MPSC proofs should consume that demonstrated
+compiler-to-machine contract rather than re-specifying atomics locally.
