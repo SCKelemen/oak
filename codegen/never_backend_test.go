@@ -21,3 +21,14 @@ fn stop() -> never
 		t.Fatalf("global never backend carrier emitted %d times, want exactly 1:\n%s", got, generated)
 	}
 }
+
+func TestNeverBackendCarrierIsPayForUse(t *testing.T) {
+	generated := generateSourceC(t, `
+package ordinary
+fn answer() -> u64
+  42
+`)
+	if strings.Contains(generated, "oak_never") {
+		t.Fatalf("ordinary program paid for unused never backend support:\n%s", generated)
+	}
+}
