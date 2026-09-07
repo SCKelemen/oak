@@ -12,11 +12,11 @@ structure Case where
   accepted : Bool
   deriving FromJson
 
-def literal (x : Int) : Except String Literal := do
+def literal (x : Int) : Except String OakVerification.Literal := do
   if x = 0 then throw "zero is not a literal"
   return ⟨x.natAbs, x > 0⟩
 
-def clause (xs : Array Int) : Except String Clause := do
+def clause (xs : Array Int) : Except String OakVerification.Clause := do
   let mut result := []
   for x in xs do result := (← literal x) :: result
   return result.reverse
