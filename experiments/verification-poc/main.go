@@ -10,6 +10,7 @@ import (
     "github.com/SCKelemen/oak/experiments/verification-poc/internal/lrat"
 )
 func usage()string{return `usage:
+  go run . export-boolean --out MODEL.json PROJECT.json
   go run . emit --out DIR PROJECT.json
   go run . prove-local --out CERT.json PROJECT.json
   go run . trace --out CERT.json PROJECT.json
@@ -29,8 +30,9 @@ func command(args []string)(any,error){
     if action=="suite"{if len(pos)!=0||*timeout<=0{return nil,fmt.Errorf("invalid suite arguments")};if *out==""{*out="build/integration"};return runSuite(*examples,*out,*jar,time.Duration(*timeout*float64(time.Second)))}
     if action=="lrat"{if len(pos)!=2{return nil,fmt.Errorf("lrat requires CNF and proof")};a,e:=os.ReadFile(pos[0]);if e!=nil{return nil,e};b,e:=os.ReadFile(pos[1]);if e!=nil{return nil,e};return lrat.Check(string(a),string(b))}
     need:=1;if action=="verify"||action=="import-trace"{need=2};if len(pos)!=need{return nil,fmt.Errorf("%s",usage())}
-    if action!="emit"&&action!="prove-local"&&action!="trace"&&action!="closed-set"&&action!="verify"&&action!="import-trace"{return nil,fmt.Errorf("unknown action: %s",action)}
+    if action!="export-boolean"&&action!="emit"&&action!="prove-local"&&action!="trace"&&action!="closed-set"&&action!="verify"&&action!="import-trace"{return nil,fmt.Errorf("unknown action: %s",action)}
     m,e:=loadModel(pos[0]);if e!=nil{return nil,e}
+    if action=="export-boolean"{b,e:=exportBoolean(m);if e!=nil{return nil,e};if e:=writeArtifact(*out,jsonText(b));e!=nil{return nil,e};return map[string]any{"generated":true,"format":b.Format,"semantic_digest":m.Digest,"verification_claim":false},nil}
     if action=="emit"{if *out==""{return nil,fmt.Errorf("--out required")};if e:=emit(m,*out);e!=nil{return nil,e};return map[string]any{"generated":true,"semantic_digest":m.Digest,"verification_claim":false},nil}
     var c *Certificate
     switch action{

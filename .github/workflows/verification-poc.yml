@@ -52,6 +52,8 @@ jobs:
           export LEAN_PATH="$PWD/proof"
           lean -DwarningAsError=true -o proof/BooleanCNF.olean proof/BooleanCNF.lean 2>&1 | tee build/soundness/boolean-cnf.log
           lean -DwarningAsError=true -o proof/NumberedCNF.olean proof/NumberedCNF.lean 2>&1 | tee build/soundness/numbered-cnf.log
+          lean -DwarningAsError=true -o proof/BooleanSafety.olean proof/BooleanSafety.lean 2>&1 | tee build/soundness/boolean-safety.log
+          lean -DwarningAsError=true -o proof/BooleanModel.olean proof/BooleanModel.lean 2>&1 | tee build/soundness/boolean-model.log
           export OAK_BOOLEAN_CNF_CORPUS_OUT="$PWD/build/soundness/boolean-cnf-cases.json"
           go test -count=1 -v . -run '^TestBooleanCNFSpecification$' 2>&1 | tee build/soundness/boolean-cnf-go.log
           lean -DwarningAsError=true --run proof/BooleanCNFCompare.lean "$OAK_BOOLEAN_CNF_CORPUS_OUT" 2>&1 | tee build/soundness/boolean-cnf-agreement.log
@@ -104,6 +106,7 @@ jobs:
             experiments/verification-poc/build/integration/
             experiments/verification-poc/build/lean-gate/
             experiments/verification-poc/build/boolean-proofs/
+            experiments/verification-poc/build/boolean-models/
             experiments/verification-poc/build/tools/provenance.json
             experiments/verification-poc/tools.lock.json
           retention-days: 30
