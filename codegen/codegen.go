@@ -2318,6 +2318,14 @@ func (cg *CodeGenerator) formatSourceRange(loc SourceLocation) string {
 
 // emitBlockStatement emits a block statement
 func (cg *CodeGenerator) emitBlockStatement(block *ast.BlockStatement, tc *typechecker.TypeChecker, isFunctionBody bool) {
+	// Container metadata follows lexical scopes, including sibling blocks
+	// that reuse a name with different array lengths.
+	outer := cg.localTypes
+	cg.localTypes = make(map[string]localContainer, len(outer))
+	for name, info := range outer {
+		cg.localTypes[name] = info
+	}
+	defer func() { cg.localTypes = outer }()
 	for i, stmt := range block.Statements {
 		cg.emitStatement(stmt, tc, isFunctionBody && i == len(block.Statements)-1)
 	}
@@ -2475,6 +2483,12 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 // emitVariableDeclaration emits a variable declaration
 func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
 	varName := stmt.Name.Value
+	if stmt.Type != nil {
+		if cg.localTypes == nil {
+			cg.localTypes = make(map[string]localContainer)
+		}
+		cg.localTypes[varName] = cg.classifyContainer(stmt.Type)
+	}
 
 	if stmt.Type != nil {
 		if cType, atomic := atomicTypeC(stmt.Type); atomic {

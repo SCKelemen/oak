@@ -100,7 +100,7 @@ func TestE2EStdlibBufferTrace(t *testing.T) {
 			for step := 0; step < 120; step++ {
 				seed = seed*1664525 + 1013904223
 				op := seed >> 28
-				n := int((seed >> 8) % 4) + 1
+				n := int((seed>>8)%4) + 1
 				src.WriteString("true ? {\n")
 				switch {
 				case op < 7:
