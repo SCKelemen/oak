@@ -1,0 +1,24 @@
+import(std)
+
+Task: type = struct {
+  value: u32
+  slist: SListHook
+}
+
+main: (): i32 {
+  pool: [4]Task
+  state: [1]IntrusiveCursor
+  nodes: [*]Task = span(&pool)
+  queue: [*]IntrusiveCursor = span(&state)
+  intrusive_init(queue, u32(1))
+  nodes[0].value = u32(42)
+  pushed: Result[u32, CollectionError] = intrusive_queue_push(queue, nodes, u32(0))
+  inserted: Bool = pushed ? | .Ok(index) => true | .Err(reason) => false
+  assert(inserted)
+  popped: Result[u32, CollectionError] = intrusive_queue_pop(queue, nodes)
+  index: u32 = popped ? | .Ok(value) => value | .Err(reason) => u32(4294967295)
+  assert(index == u32(0))
+  assert(nodes[index].slist.owner == u32(0))
+  assert(nodes[index].value == u32(42))
+  42
+}

@@ -255,9 +255,19 @@ main: (): i32 {
  assert(s[0].slist.next == u32(0) && s[0].dlist.prev == u32(0) && s[0].dlist.next == u32(0) && s[0].dlist.owner == u32(0))
  assert(result_code(intrusive_queue_push(q, s, u32(0))) == u32(0))
  assert(result_value(intrusive_queue_pop(q, s)) == u32(0))
+ assert(result_code(intrusive_queue_push(q, s, u32(0))) == u32(0))
+ assert(result_code(intrusive_queue_push(q, s, u32(1))) == u32(0))
+ assert(result_code(dlist_push_back(t, s, u32(0))) == u32(0))
+ assert(slist_clear(q, s) == u32(2))
+ assert(slist_clear(q, s) == u32(0))
+ assert(s[0].dlist.owner == u32(1) && s[0].slist.owner == u32(0) && s[1].slist.owner == u32(0))
+ assert(dlist_clear(t, s) == u32(1))
+ assert(dlist_clear(t, s) == u32(0))
+ assert(s[0].dlist.owner == u32(0))
  slist_validate(q, s)
  dlist_validate(t, s)
- i32(s[0].value)
+ assert(s[0].value == u32(42))
+ 42
 }
 `
 	output, err := New().WithSource("intrusivehooks.oak", src).EmitC().Get()
@@ -287,7 +297,8 @@ main: (): i32 {
  point: Point = Point { x: u32(11), y: u32(31) }
  inserted: Result[u32, CollectionError] = array_list_push(q, s, point)
  popped: Result[Point, CollectionError] = array_list_pop(q, s)
- popped ? | .Ok(p) => i32(p.x + p.y) | .Err(e) => 0
+ popped ? | .Ok(p) => { assert(p.x == u32(11) && p.y == u32(31))
+ 42 } | .Err(e) => 0
 }
 `
 	code, abnormal := buildAndRun(t, "arraylistrecord", src)
@@ -335,6 +346,19 @@ main: (): i32 {
 		_, abnormal := buildAndRun(t, "corruptlist", src)
 		if !abnormal {
 			t.Fatal("corrupt links must trap during bounded validation")
+		}
+	}
+}
+
+func TestE2EStdlibCollectionCursorGuards(t *testing.T) {
+	for _, src := range []string{
+		"import(std)\nmain: (): i32 {\ndata: [2]u8\nstate: [1]ArrayListCursor\nq: [*]ArrayListCursor = span(&state)\ns: [*]u8 = span(&data)\nq[0].length = u32(3)\nr: Result[u32, CollectionError] = array_list_push(q, s, u8(1))\n0\n}",
+		"import(std)\nmain: (): i32 {\nstate: [1]IntrusiveCursor\nq: [*]IntrusiveCursor = span(&state)\nintrusive_init(q, u32(0))\n0\n}",
+		"import(std)\nmain: (): i32 {\nstate: [1]IntrusiveCursor\nq: [*]IntrusiveCursor = span(&state)\nq[0].count = u32(1)\nintrusive_init(q, u32(1))\n0\n}",
+	} {
+		_, abnormal := buildAndRun(t, "collectionguard", src)
+		if !abnormal {
+			t.Fatal("invalid cursor must trap")
 		}
 	}
 }

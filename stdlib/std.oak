@@ -627,6 +627,7 @@ intrusive_check: (cursor: [*]IntrusiveCursor, capacity: u32): () {
   } | {
     assert(cursor[0].head > u32(0) && cursor[0].head <= capacity)
     assert(cursor[0].tail > u32(0) && cursor[0].tail <= capacity)
+    cursor[0].count == u32(1) ? { assert(cursor[0].head == cursor[0].tail) }
   }
 }
 
@@ -682,7 +683,7 @@ slist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u
       assert(cursor[0].count > u32(0))
       link: u32 = index + u32(1)
       following: u32 = nodes[index].slist.next
-      assert(following <= len(nodes))
+      assert(following <= len(nodes) && following != link)
       previous: u32 = 0
       current: u32 = cursor[0].head
       visited: u32 = 0
@@ -788,9 +789,9 @@ dlist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u
       assert(cursor[0].count > u32(0))
       link: u32 = index + u32(1)
       following: u32 = nodes[index].dlist.next
-      assert(following <= len(nodes))
+      assert(following <= len(nodes) && following != link)
       previous: u32 = nodes[index].dlist.prev
-      assert(previous <= len(nodes))
+      assert(previous <= len(nodes) && previous != link)
       previous == u32(0) ? { assert(cursor[0].head == link) } | {
         assert(nodes[previous - u32(1)].dlist.owner == cursor[0].id)
         assert(nodes[previous - u32(1)].dlist.next == link)
@@ -849,4 +850,37 @@ intrusive_queue_push[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): 
 }
 intrusive_queue_pop[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
   slist_pop_front(cursor, nodes)
+}
+
+slist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
+  slist_validate(cursor, nodes)
+  count: u32 = cursor[0].count
+  current: u32 = cursor[0].head
+  while current != u32(0) {
+    index: u32 = current - u32(1)
+    current = nodes[index].slist.next
+    nodes[index].slist.next = u32(0)
+    nodes[index].slist.owner = u32(0)
+  }
+  cursor[0].head = u32(0)
+  cursor[0].tail = u32(0)
+  cursor[0].count = u32(0)
+  count
+}
+
+dlist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
+  dlist_validate(cursor, nodes)
+  count: u32 = cursor[0].count
+  current: u32 = cursor[0].head
+  while current != u32(0) {
+    index: u32 = current - u32(1)
+    current = nodes[index].dlist.next
+    nodes[index].dlist.next = u32(0)
+    nodes[index].dlist.owner = u32(0)
+    nodes[index].dlist.prev = u32(0)
+  }
+  cursor[0].head = u32(0)
+  cursor[0].tail = u32(0)
+  cursor[0].count = u32(0)
+  count
 }
