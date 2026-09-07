@@ -92,3 +92,226 @@ bytes_find: (src: []u8, needle: u8): Option[u32] {
   }
   index == n ? { .None } | { .Some(index) }
 }
+
+// Byte-oriented bitsets: bit zero is the least significant bit of byte zero.
+// Logical capacity is independent of spare backing bytes and tail bits.
+BitSetError: type = StorageTooSmall | BitOutOfRange
+
+bitset_storage_bytes: (bits: u32): u32 {
+  whole: u32 = bits / u32(8)
+  bits % u32(8) == u32(0) ? whole | whole + u32(1)
+}
+
+bitset_contains: (storage: []u8, bits: u32, index: u32): Result[Bool, BitSetError] {
+  len(storage) < bitset_storage_bytes(bits) ? {
+    .Err(.StorageTooSmall)
+  } | {
+    index >= bits ? {
+      .Err(.BitOutOfRange)
+    } | {
+      mask: u8 = u8(1) << u8_trunc_u32(index % u32(8))
+      .Ok((storage[index / u32(8)] & mask) != u8(0))
+    }
+  }
+}
+
+// Returns the previous bit. Errors leave every backing byte unchanged.
+bitset_set: (storage: [*]u8, bits: u32, index: u32, value: Bool): Result[Bool, BitSetError] {
+  len(storage) < bitset_storage_bytes(bits) ? {
+    .Err(.StorageTooSmall)
+  } | {
+    index >= bits ? {
+      .Err(.BitOutOfRange)
+    } | {
+      byte_index: u32 = index / u32(8)
+      mask: u8 = u8(1) << u8_trunc_u32(index % u32(8))
+      previous: Bool = (storage[byte_index] & mask) != u8(0)
+      value ? {
+        storage[byte_index] = (storage[byte_index] | mask)
+      } | {
+        storage[byte_index] = storage[byte_index] & (mask ^ u8(255))
+      }
+      .Ok(previous)
+    }
+  }
+}
+
+// Counts only logical bits; ignores unused tail bits and spare backing bytes.
+bitset_count: (storage: []u8, bits: u32): Result[u32, BitSetError] {
+  len(storage) < bitset_storage_bytes(bits) ? {
+    .Err(.StorageTooSmall)
+  } | {
+    count: u32 = 0
+    i: u32 = 0
+    while i < bits {
+      mask: u8 = u8(1) << u8_trunc_u32(i % u32(8))
+      (storage[i / u32(8)] & mask) != u8(0) ? { count = count + u32(1) }
+      i = i + u32(1)
+    }
+    .Ok(count)
+  }
+}
+
+// Bounds are checked by subtraction before any indexing or mutation.
+EndianError: type = | BufferTooSmall
+bytes_range_fits: (length: u32, offset: u32, width: u32): Bool {
+  offset > length ? false | width <= length - offset
+}
+
+bytes_read_u16_le: (src: []u8, offset: u32): Result[u16, EndianError] {
+  bytes_range_fits(len(src), offset, u32(2)) ? {
+    value: u16 = 0
+    value = (value | (u16(src[offset + u32(0)]) << u16(0)))
+    value = (value | (u16(src[offset + u32(1)]) << u16(8)))
+    .Ok(value)
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_write_u16_le: (dst: [*]u8, offset: u32, value: u16): Result[u32, EndianError] {
+  bytes_range_fits(len(dst), offset, u32(2)) ? {
+    dst[offset + u32(0)] = u8_trunc_u16(value >> u16(0))
+    dst[offset + u32(1)] = u8_trunc_u16(value >> u16(8))
+    .Ok(u32(2))
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_read_u16_be: (src: []u8, offset: u32): Result[u16, EndianError] {
+  bytes_range_fits(len(src), offset, u32(2)) ? {
+    value: u16 = 0
+    value = (value | (u16(src[offset + u32(0)]) << u16(8)))
+    value = (value | (u16(src[offset + u32(1)]) << u16(0)))
+    .Ok(value)
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_write_u16_be: (dst: [*]u8, offset: u32, value: u16): Result[u32, EndianError] {
+  bytes_range_fits(len(dst), offset, u32(2)) ? {
+    dst[offset + u32(0)] = u8_trunc_u16(value >> u16(8))
+    dst[offset + u32(1)] = u8_trunc_u16(value >> u16(0))
+    .Ok(u32(2))
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_read_u32_le: (src: []u8, offset: u32): Result[u32, EndianError] {
+  bytes_range_fits(len(src), offset, u32(4)) ? {
+    value: u32 = 0
+    value = (value | (u32(src[offset + u32(0)]) << u32(0)))
+    value = (value | (u32(src[offset + u32(1)]) << u32(8)))
+    value = (value | (u32(src[offset + u32(2)]) << u32(16)))
+    value = (value | (u32(src[offset + u32(3)]) << u32(24)))
+    .Ok(value)
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_write_u32_le: (dst: [*]u8, offset: u32, value: u32): Result[u32, EndianError] {
+  bytes_range_fits(len(dst), offset, u32(4)) ? {
+    dst[offset + u32(0)] = u8_trunc_u32(value >> u32(0))
+    dst[offset + u32(1)] = u8_trunc_u32(value >> u32(8))
+    dst[offset + u32(2)] = u8_trunc_u32(value >> u32(16))
+    dst[offset + u32(3)] = u8_trunc_u32(value >> u32(24))
+    .Ok(u32(4))
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_read_u32_be: (src: []u8, offset: u32): Result[u32, EndianError] {
+  bytes_range_fits(len(src), offset, u32(4)) ? {
+    value: u32 = 0
+    value = (value | (u32(src[offset + u32(0)]) << u32(24)))
+    value = (value | (u32(src[offset + u32(1)]) << u32(16)))
+    value = (value | (u32(src[offset + u32(2)]) << u32(8)))
+    value = (value | (u32(src[offset + u32(3)]) << u32(0)))
+    .Ok(value)
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_write_u32_be: (dst: [*]u8, offset: u32, value: u32): Result[u32, EndianError] {
+  bytes_range_fits(len(dst), offset, u32(4)) ? {
+    dst[offset + u32(0)] = u8_trunc_u32(value >> u32(24))
+    dst[offset + u32(1)] = u8_trunc_u32(value >> u32(16))
+    dst[offset + u32(2)] = u8_trunc_u32(value >> u32(8))
+    dst[offset + u32(3)] = u8_trunc_u32(value >> u32(0))
+    .Ok(u32(4))
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_read_u64_le: (src: []u8, offset: u32): Result[u64, EndianError] {
+  bytes_range_fits(len(src), offset, u32(8)) ? {
+    value: u64 = 0
+    value = (value | (u64(src[offset + u32(0)]) << u64(0)))
+    value = (value | (u64(src[offset + u32(1)]) << u64(8)))
+    value = (value | (u64(src[offset + u32(2)]) << u64(16)))
+    value = (value | (u64(src[offset + u32(3)]) << u64(24)))
+    value = (value | (u64(src[offset + u32(4)]) << u64(32)))
+    value = (value | (u64(src[offset + u32(5)]) << u64(40)))
+    value = (value | (u64(src[offset + u32(6)]) << u64(48)))
+    value = (value | (u64(src[offset + u32(7)]) << u64(56)))
+    .Ok(value)
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_write_u64_le: (dst: [*]u8, offset: u32, value: u64): Result[u32, EndianError] {
+  bytes_range_fits(len(dst), offset, u32(8)) ? {
+    dst[offset + u32(0)] = u8_trunc_u64(value >> u64(0))
+    dst[offset + u32(1)] = u8_trunc_u64(value >> u64(8))
+    dst[offset + u32(2)] = u8_trunc_u64(value >> u64(16))
+    dst[offset + u32(3)] = u8_trunc_u64(value >> u64(24))
+    dst[offset + u32(4)] = u8_trunc_u64(value >> u64(32))
+    dst[offset + u32(5)] = u8_trunc_u64(value >> u64(40))
+    dst[offset + u32(6)] = u8_trunc_u64(value >> u64(48))
+    dst[offset + u32(7)] = u8_trunc_u64(value >> u64(56))
+    .Ok(u32(8))
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_read_u64_be: (src: []u8, offset: u32): Result[u64, EndianError] {
+  bytes_range_fits(len(src), offset, u32(8)) ? {
+    value: u64 = 0
+    value = (value | (u64(src[offset + u32(0)]) << u64(56)))
+    value = (value | (u64(src[offset + u32(1)]) << u64(48)))
+    value = (value | (u64(src[offset + u32(2)]) << u64(40)))
+    value = (value | (u64(src[offset + u32(3)]) << u64(32)))
+    value = (value | (u64(src[offset + u32(4)]) << u64(24)))
+    value = (value | (u64(src[offset + u32(5)]) << u64(16)))
+    value = (value | (u64(src[offset + u32(6)]) << u64(8)))
+    value = (value | (u64(src[offset + u32(7)]) << u64(0)))
+    .Ok(value)
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
+
+bytes_write_u64_be: (dst: [*]u8, offset: u32, value: u64): Result[u32, EndianError] {
+  bytes_range_fits(len(dst), offset, u32(8)) ? {
+    dst[offset + u32(0)] = u8_trunc_u64(value >> u64(56))
+    dst[offset + u32(1)] = u8_trunc_u64(value >> u64(48))
+    dst[offset + u32(2)] = u8_trunc_u64(value >> u64(40))
+    dst[offset + u32(3)] = u8_trunc_u64(value >> u64(32))
+    dst[offset + u32(4)] = u8_trunc_u64(value >> u64(24))
+    dst[offset + u32(5)] = u8_trunc_u64(value >> u64(16))
+    dst[offset + u32(6)] = u8_trunc_u64(value >> u64(8))
+    dst[offset + u32(7)] = u8_trunc_u64(value >> u64(0))
+    .Ok(u32(8))
+  } | {
+    .Err(.BufferTooSmall)
+  }
+}
