@@ -115,10 +115,15 @@ fn barrier() -> ()
 	if err := os.WriteFile(cPath, []byte(generated), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(cc, "-std=c11", "-O2", "-c", cPath, "-o", oPath)
+	// Force the non-AArch64 branch regardless of the host architecture
+	// (-DOAK_PORTABLE_INTRINSICS, the same switch the differential
+	// execution tests use): barriers must fail closed with #error rather
+	// than acquire a fake portable lowering. On an actual AArch64 host the
+	// unforced build correctly compiles to the real instruction.
+	cmd := exec.Command(cc, "-std=c11", "-O2", "-DOAK_PORTABLE_INTRINSICS", "-c", cPath, "-o", oPath)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatal("host compilation of architectural barrier unexpectedly succeeded")
+		t.Fatal("non-AArch64 compilation of architectural barrier unexpectedly succeeded")
 	}
 	if !strings.Contains(string(output), "arm64.dsb_sy requires an AArch64 target") {
 		t.Fatalf("host failure did not explain AArch64 barrier requirement:\n%s\n--- C ---\n%s", output, generated)
