@@ -89,7 +89,11 @@ func TestSelfHostedRUPKernel(t *testing.T) {
 	dir:=t.TempDir();cpath:=filepath.Join(dir,"checker.c");bin:=filepath.Join(dir,"checker")
 	if err:=os.WriteFile(cpath,[]byte(generated),0644);err!=nil {t.Fatal(err)}
 	if output,err:=exec.Command(cc,"-std=c99","-O1","-o",bin,cpath).CombinedOutput();err!=nil {t.Fatalf("cc: %v\n%s",err,output)}
-	if output,err:=exec.Command(bin).CombinedOutput();err!=nil {t.Fatalf("Oak checker: %v\n%s",err,output)}
+	run:=exec.Command(bin)
+	output,err:=run.CombinedOutput()
+	exitCode:=0
+	if err!=nil {if e,ok:=err.(*exec.ExitError);ok {exitCode=e.ExitCode()} else {t.Fatalf("Oak checker: %v\n%s",err,output)}}
+	if exitCode!=42 {t.Fatalf("Oak checker exit=%d, want 42\n%s",exitCode,output)}
 	if path:=os.Getenv("OAK_SELF_HOSTED_RUP_CORPUS_OUT");path!="" {data,_:=json.MarshalIndent(cases,"","  ");if err:=os.WriteFile(path,append(data,'\n'),0644);err!=nil {t.Fatal(err)}}
 	t.Logf("Oak RUP kernel agreed with Go on %d cases",len(cases))
 }
