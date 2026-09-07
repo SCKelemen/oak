@@ -153,7 +153,6 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// precede the functions that use them: pre-emit every view/span element
 	// type appearing in parameters and local declarations, and the element
 	// views of variadic parameters.
-	cg.preEmitContainerTypes(program)
 
 	// Emit type definitions (ADTs, records)
 	// First, collect all ADT types for later lookup
@@ -172,6 +171,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// never emitted; tagged-union ADTs follow the records they may carry
 	// as payloads.
 	cg.emitTypesInDependencyOrder(program, tc)
+	cg.preEmitContainerTypes(program)
 
 	// Static globals come after type emission (record/ADT globals need
 	// their typedefs) and before functions.
@@ -1081,6 +1081,18 @@ func (cg *CodeGenerator) buildLocalTypes(fn *ast.FunctionStatement) map[string]l
 // localContainerOf resolves an expression's container classification; only
 // identifiers are classified — everything else fails closed.
 func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
+    if call, ok := expr.(*ast.InvocationExpression); ok {
+        if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "core_index" && len(call.Arguments) == 2 {
+            return cg.localContainerOf(&ast.IndexExpression{Left: call.Arguments[0], Index: call.Arguments[1]})
+        }
+    }
+    if index, ok := expr.(*ast.IndexExpression); ok && !index.Dot {
+        base := cg.localContainerOf(index.Left)
+        if base.kind == containerOwnedArray || base.kind == containerView || base.kind == containerSpan {
+            name := strings.TrimPrefix(base.element, "oak_")
+            if _, exists := cg.adtTypes[name]; exists { return localContainer{kind: containerADT, adtName: name} }
+        }
+    }
 	// Record-field access paths resolve through the record's declared
 	// field type: ring.buffer classifies as the [N]T it was declared as.
 	if access, isAccess := expr.(*ast.IndexExpression); isAccess && access.Dot {

@@ -159,7 +159,13 @@ func (comp Compilation) SyntaxTree() Stage[*SyntaxTree] {
 // obligations, unnecessary-code warnings) reject too (85-discipline §7).
 func (comp Compilation) Check() Stage[*SemanticModel] {
 	return comp.Parse().Then(func(tree *SyntaxTree) (*SemanticModel, error) {
-		env := object.NewEnvironment()
+		if err := loadStandardLibrary(tree); err != nil {
+            return nil, err
+        }
+        if err := specializeFunctions(tree.Root); err != nil {
+            return nil, err
+        }
+        env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		tc.CheckProgram(tree.Root)
 		if err := comp.gate("typecheck", tc.Diagnostics()); err != nil {
