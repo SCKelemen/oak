@@ -439,3 +439,10 @@ or an explicitly unsafe function/operation where the syntax is later finalized. 
 ```
 
 Both styles format the same AST. The formatter should not preserve obsolete punctuation aliases merely because the parser temporarily accepts them for migration.
+
+
+## 12. Pipeline and field-accessor expressions
+
+Oak admits the left-associative pipeline operator `|>`. `value |> f` is equivalent to `f(value)`; `value |> f(a, b)` is equivalent to `f(a, b, value)`. It binds more loosely than Boolean, comparison, and arithmetic operators and more tightly than a match expression, and introduces no allocation.
+
+A leading-dot lowercase identifier is a structurally polymorphic field accessor: `.name(record)` is equivalent to `record.name`, and `record |> .name` selects `record.name`. Leading-dot uppercase identifiers remain inferred ADT constructors (`.Ok`, `.Some(value)`). The accessor requires exactly one argument and works for every record or struct whose type guarantees that field; it captures no environment and causes no record boxing.

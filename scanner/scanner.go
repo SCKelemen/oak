@@ -183,7 +183,11 @@ func (s *Scanner) NextToken() token.Token {
 			tok = newTokenWithPos(token.ASSIGN, s.current, line, column)
 		}
 	case '|':
-		if s.peekRune() == '|' {
+		if s.peekRune() == '>' {
+			ch := s.current
+			s.readChar()
+			tok = token.Token{TokenKind: token.PIPE_FORWARD, Literal: string(ch) + string(s.current), Line: line, Column: column}
+		} else if s.peekRune() == '|' {
 			ch := s.current
 			s.readChar()
 			tok = token.Token{TokenKind: token.LOR, Literal: string(ch) + string(s.current), Line: line, Column: column}

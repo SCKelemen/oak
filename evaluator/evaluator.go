@@ -49,6 +49,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.VariantExpression:
 		return evalVariantExpression(node, env)
 
+	case *ast.FieldAccessorExpression:
+		return &object.FieldAccessor{Field: node.Field.Value}
+
 	case *ast.PrefixExpression:
 		right := Eval(node.Right, env)
 		if isError(right) {
@@ -607,6 +610,19 @@ func applyFunction(fn object.Object, args []object.Object) object.Object {
 		return unwrapReturnValue(evaluated)
 	case *object.Builtin:
 		return fn.Fn(args...)
+	case *object.FieldAccessor:
+		if len(args) != 1 {
+			return newError("field accessor .%s expects exactly one argument", fn.Field)
+		}
+		record, ok := args[0].(*object.Record)
+		if !ok {
+			return newError("field accessor .%s requires a record, got %s", fn.Field, args[0].Type())
+		}
+		value, found := record.Fields[fn.Field]
+		if !found {
+			return newError("field '%s' not found in record", fn.Field)
+		}
+		return value
 	default:
 		return newError("not a function: %s", fn.Type())
 	}

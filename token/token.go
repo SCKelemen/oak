@@ -51,8 +51,9 @@ const (
 	ARROW        // ->
 	FAT_ARROW    // =>
 
-	PIPE  // |
-	AMP   // &
+	PIPE         // |
+	PIPE_FORWARD // |>
+	AMP          // &
 	BANG  // !
 	QMARK // ?
 	CARET // ^ (infix xor, prefix complement)
@@ -118,8 +119,9 @@ var tokens = [...]string{
 	ARROW:        "->",
 	FAT_ARROW:    "=>",
 
-	PIPE:  "|",
-	AMP:   "&",
+	PIPE:         "|",
+	PIPE_FORWARD: "|>",
+	AMP:          "&",
 	CARET: "^",
 	SHL:   "<<",
 	SHR:   ">>",

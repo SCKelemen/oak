@@ -235,6 +235,9 @@ type RecordType struct {
 	// it); named semantic records remain structural shapes any struct with
 	// those fields satisfies, whatever its field order.
 	Struct bool
+	// Open marks { r | ... }; Row is diagnostic metadata only.
+	Open bool
+	Row  string
 }
 
 // DisplayName is the nominal name when declared, else the structural shape.
@@ -302,6 +305,9 @@ func (t *RecordType) Equals(other Type) bool {
 	// they are shapes, satisfied by any record with those fields in any
 	// order, including either ordered struct over them.
 	if otherRecord, ok := other.(*RecordType); ok {
+		if t.Open != otherRecord.Open {
+			return false
+		}
 		if t.Name != "" && otherRecord.Name != "" && t.Struct && otherRecord.Struct {
 			return t.Name == otherRecord.Name
 		}
@@ -432,6 +438,15 @@ func (t *IntersectionType) Equals(other Type) bool {
 		return true
 	}
 	return false
+}
+
+// FieldAccessorType is the zero-storage callable denoted by .field.
+type FieldAccessorType struct{ Field string }
+
+func (t *FieldAccessorType) String() string { return "." + t.Field }
+func (t *FieldAccessorType) Equals(other Type) bool {
+	o, ok := other.(*FieldAccessorType)
+	return ok && t.Field == o.Field
 }
 
 // FunctionType represents a function type
@@ -868,6 +883,8 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		return tc.checkInfixExpression(e, expected)
 	case *ast.FunctionLiteral:
 		return tc.checkFunctionLiteral(e)
+	case *ast.FieldAccessorExpression:
+		return &FieldAccessorType{Field: e.Field.Value}
 	case *ast.InvocationExpression:
 		return tc.checkInvocationExpression(e)
 	case *ast.MatchExpression:
@@ -1215,6 +1232,32 @@ func (tc *TypeChecker) checkSubsliceBuiltin(expr *ast.InvocationExpression) Type
 	return srcType
 }
 
+func (tc *TypeChecker) checkFieldAccessorInvocation(field string, expr *ast.InvocationExpression) Type {
+	if len(expr.Arguments) != 1 {
+		tc.addError(expr, "field accessor .%s expects exactly one record argument", field)
+		return nil
+	}
+	argType := tc.checkExpression(expr.Arguments[0])
+	if record, ok := argType.(*RecordType); ok {
+		if result, found := record.Fields[field]; found {
+			return result
+		}
+		tc.addError(expr, "field %s not found in record type %s", field, record)
+		return nil
+	}
+	if typeVar, ok := argType.(*TypeVar); ok {
+		if result, guaranteed := tc.constrainedFieldType(typeVar, field); guaranteed {
+			return result
+		}
+		tc.addError(expr, "field %s is not guaranteed by constraints on type parameter %s", field, typeVar.Name)
+		return nil
+	}
+	if argType != nil {
+		tc.addError(expr, "field accessor .%s requires a record, got %s", field, argType)
+	}
+	return nil
+}
+
 func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Capture discipline (docs/spec/60-effects-allocation.md section 10):
 	// capturing closures need explicitly justified environment storage,
@@ -1258,6 +1301,9 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 }
 
 func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
+	if accessor, ok := expr.Function.(*ast.FieldAccessorExpression); ok {
+		return tc.checkFieldAccessorInvocation(accessor.Field.Value, expr)
+	}
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
 		if atomicType, recognized := tc.checkAtomicInvocation(ident.Value, expr); recognized {
 			return atomicType
@@ -1376,6 +1422,9 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return nil
 	}
 
+	if accessor, ok := funcType.(*FieldAccessorType); ok {
+		return tc.checkFieldAccessorInvocation(accessor.Field, expr)
+	}
 	fnType, ok := funcType.(*FunctionType)
 	if !ok {
 		tc.addError(expr, "attempting to call non-function type: %s", funcType)
@@ -2355,6 +2404,10 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expec
 }
 
 func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType ...Type) Type {
+	if expr.Extension != nil {
+		tc.addError(expr, "extensible record syntax is a type constraint, not a record value")
+		return nil
+	}
 	// If this is a type-qualified literal (TypeName{ ... }), look up the type
 	if expr.TypeName != nil {
 		typeName := expr.TypeName.Value
@@ -2700,6 +2753,19 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 // isAssignable checks if a value type can be assigned to a variable type
 // Allows widening conversions (u8 -> u16, etc.) but not narrowing or sign changes
 func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
+	// Open targets use width matching; source representation remains intact.
+	if target, ok := varType.(*RecordType); ok && target.Open {
+		if source, ok := valueType.(*RecordType); ok {
+			for name, required := range target.Fields {
+				actual, present := source.Fields[name]
+				if !present || !actual.Equals(required) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+
 	// Exact match
 	if valueType.Equals(varType) {
 		return true
@@ -3653,7 +3719,11 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 			}
 			fields[name] = fieldType
 		}
-		return &RecordType{Fields: fields}
+		row := ""
+		if recordLit.Extension != nil {
+			row = recordLit.Extension.Value
+		}
+		return &RecordType{Fields: fields, Open: recordLit.Extension != nil, Row: row}
 	}
 
 	// Handle function types: fn(Type1, Type2) -> Type3
@@ -3819,7 +3889,11 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 			}
 			fields[name] = fieldType
 		}
-		return &RecordType{Fields: fields}
+		row := ""
+		if recordLit.Extension != nil {
+			row = recordLit.Extension.Value
+		}
+		return &RecordType{Fields: fields, Open: recordLit.Extension != nil, Row: row}
 	}
 
 	return nil

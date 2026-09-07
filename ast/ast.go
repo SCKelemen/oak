@@ -187,6 +187,9 @@ type RecordLiteral struct {
 	EndToken   token.Token // } token (for end position)
 	Fields     map[string]Expression
 	FieldOrder []RecordField
+	// Extension is the row variable in { r | name: string }.
+	// It is type-level metadata and has no runtime representation.
+	Extension  *Identifier
 	TypeName   *Identifier       // optional type name for type-qualified literals: TypeName{ ... }
 	Layout     *RecordLayoutSpec // optional declared layout: struct(packed), struct(align: 64)
 }
@@ -231,6 +234,10 @@ func (rl *RecordLiteral) TokenLiteral() string { return rl.Token.Literal }
 func (rl *RecordLiteral) String() string {
 	var out bytes.Buffer
 	out.WriteRune('{')
+	if rl.Extension != nil {
+		out.WriteString(rl.Extension.String())
+		out.WriteString(" | ")
+	}
 
 	if len(rl.FieldOrder) > 0 {
 		for i, field := range rl.FieldOrder {
@@ -582,6 +589,18 @@ type MatchExpression struct {
 	Scrutinee Expression
 	Arms      []*MatchArm
 }
+
+// FieldAccessorExpression is Elm-style .field sugar. It is a contextual,
+// structurally polymorphic function: .name(value) is value.name.
+type FieldAccessorExpression struct {
+	BaseNode
+	Token token.Token
+	Field *Identifier
+}
+
+func (fa *FieldAccessorExpression) expressionNode()      {}
+func (fa *FieldAccessorExpression) TokenLiteral() string { return fa.Token.Literal }
+func (fa *FieldAccessorExpression) String() string       { return "." + fa.Field.String() }
 
 // Variant expression: .Ok or Status::Ok
 type VariantExpression struct {
