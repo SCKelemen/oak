@@ -145,7 +145,8 @@ bitset_count: (storage: []u8, bits: u32): Result[u32, BitSetError] {
     i: u32 = 0
     while i < bits {
       mask: u8 = u8(1) << u8_trunc_u32(i % u32(8))
-      (storage[i / u32(8)] & mask) != u8(0) ? { count = count + u32(1) }
+      present: Bool = (storage[i / u32(8)] & mask) != u8(0)
+      present ? { count = count + u32(1) }
       i = i + u32(1)
     }
     .Ok(count)

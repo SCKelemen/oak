@@ -47,9 +47,26 @@ func TestE2EStdlibEndian(t *testing.T) {
 						fmt.Fprintf(&src, "assert(s%d[%d] == u8(%d))\n", k, i+1, encoded[i])
 					}
 					fmt.Fprintf(&src, "assert(s%d[0] == u8(91) && s%d[%d] == u8(92))\n", k, k, n+1)
+					fmt.Fprintf(&src, "exact%d: Result[u32, EndianError] = bytes_write_u%d_%s(s%d, u32(2), u%d(%d))\nex%d: u32 = exact%d ? | .Ok(v) => v | .Err(e) => u32(99)\nassert(ex%d == u32(%d))\n", k, width, order, k, width, value, k, k, k, n)
+					for i := 0; i < n; i++ {
+						fmt.Fprintf(&src, "assert(s%d[%d] == u8(%d))\n", k, i+2, encoded[i])
+					}
+					expected := value >> 8
+					if order == "be" {
+						expected = (value << 8) & mask
+					}
+					fmt.Fprintf(&src, "exactr%d: Result[u%d, EndianError] = bytes_read_u%d_%s(v%d, u32(2))\nexr%d: Bool = exactr%d ? | .Ok(v) => v == u%d(%d) | .Err(e) => false\nassert(exr%d)\n", k, width, width, order, k, k, k, width, expected, k)
 				}
 				src.WriteString("42\n}\n")
-				code, abnormal := buildAndRun(t, "endian", src.String())
+				// Oak currently parses integer literals through signed 64-bit storage.
+				// Construct high unsigned values from representable halves.
+				program := src.String()
+				for _, value := range []uint64{mask, 0x8123456789abcdef & mask, (mask << 8) & mask, uint64(0x23456789abcdef00) & mask} {
+					if value > uint64(1<<63-1) {
+						program = strings.ReplaceAll(program, fmt.Sprintf("u64(%d)", value), fmt.Sprintf("((u64(%d) << u64(32)) | u64(%d))", value>>32, uint32(value)))
+					}
+				}
+				code, abnormal := buildAndRun(t, "endian", program)
 				if abnormal || code != 42 {
 					t.Fatalf("exit=(%d,%v)", code, abnormal)
 				}

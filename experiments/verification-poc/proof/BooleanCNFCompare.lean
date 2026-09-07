@@ -1,4 +1,4 @@
-import BooleanCNF
+import NumberedCNF
 import Lean
 
 open Lean
@@ -82,6 +82,12 @@ def main (args : List String) : IO Unit := do
     let e ← IO.ofExcept (decodeProgram c.program)
     let f := encode e
     let names := auxiliaries f
+    let table := OakVerification.NumberedCNF.atoms f
+    let numbered := OakVerification.NumberedCNF.numberCNF table f
+    for clause in numbered do
+      for literal in clause do
+        if literal.index == 0 || literal.index > table.length then
+          throw (IO.userError "numbered literal outside declared domain")
     if names.length > 10 then throw (IO.userError "auxiliary enumeration bound exceeded")
     if c.rows.size != 4 then throw (IO.userError "expected all four input valuations")
     let mut seen : List (Bool × Bool) := []
@@ -91,7 +97,11 @@ def main (args : List String) : IO Unit := do
       let input := fun n => if n == 0 then row.x else row.y
       let value := eval input e
       let sat := (auxiliaryValuations names).any (fun values => cnfSat (extension input values) f)
-      if value != row.value || sat != value || sat != row.go_sat then
-        throw (IO.userError s!"{c.name}: Lean expression={value}, Lean CNF={sat}, Go expression={row.value}, Go CNF={row.go_sat}")
+      let numericSat := (auxiliaryValuations names).any (fun values =>
+        OakVerification.NumberedCNF.numberedSat
+          (OakVerification.NumberedCNF.lift table (extension input values)) numbered)
+      if value != row.value || sat != value || sat != row.go_sat || numericSat != sat then
+        throw (IO.userError s!"{c.name}: Lean expression={value}, Lean CNF={sat}, numbered CNF={numericSat}, Go expression={row.value}, Go CNF={row.go_sat}")
       count := count + 1
   IO.println s!"Boolean CNF agreement: {testCases.size} expressions, {count} input valuations"
+  IO.println s!"Numbered CNF agreement: {testCases.size} expressions, {count} input valuations"
