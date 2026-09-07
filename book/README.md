@@ -31,6 +31,10 @@ discipline of knowing which rung of a ladder you are standing on:
   barriers ([concurrency/memory-order.md](concurrency/memory-order.md))
 - **a catalog of kernel structures** with their classifications
   ([structures/catalog.md](structures/catalog.md))
+- **constructing the upper rungs** — linearizable objects and serializable
+  transactions as recipes over the primitives, for database and OS
+  implementers
+  ([structures/constructing-guarantees.md](structures/constructing-guarantees.md))
 
 ## How to read claims in this book
 

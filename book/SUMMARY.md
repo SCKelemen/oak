@@ -25,3 +25,4 @@
 ## Structures
 
 - [A Catalog of Kernel Structures](structures/catalog.md)
+- [Constructing the Upper Rungs](structures/constructing-guarantees.md)

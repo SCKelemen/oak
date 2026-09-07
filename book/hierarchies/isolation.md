@@ -56,3 +56,9 @@ database one: the cheapest serializable system is the one whose
 transactions never touch shared rows. Typestate/session-typed protocols
 (the `docs/spec/` protocol axis, still direction) are the recorded path to
 making cross-boundary isolation as checkable as the intra-thread kind.
+
+Serializable and strict-serializable *transactions* are not language
+features; they are built — single-sequencer executors, deterministic
+partitioning, and (as a last resort) lock tables — with recipes and their
+proof obligations in
+[Constructing the Upper Rungs](../structures/constructing-guarantees.md).

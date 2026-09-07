@@ -80,3 +80,8 @@ each rung down converts a class of runtime failures into impossibilities.
 The two ladders meet in practice: a rung-4 *ordering* choice
 (acquire/release) is usually what makes a rung-1 *invariant* claim ("this
 Ring's slots are initialized before visible") actually true across cores.
+
+Oak provides the top rung only per atomic cell; building linearizable
+*objects* out of cells is protocol work — recipes with named
+linearization points in
+[Constructing the Upper Rungs](../structures/constructing-guarantees.md).
