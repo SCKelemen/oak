@@ -57,7 +57,7 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 		}
 	}
 	tree.Root.Statements = append(lib.Root.Statements, user...)
-	return nil
+	return lowerStdlibFluent(tree.Root)
 }
 
 func declarationName(stmt ast.Statement) string {
