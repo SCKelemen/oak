@@ -19,14 +19,18 @@ The third iteration adds:
 - A pinned external integration suite with explicit failure on unavailable
   tools, wrong versions, timeouts, unknown answers, or failed evidence checks.
 
-**Validation status:** 35 Python tests pass; one Go-dependent differential test
-is skipped. Local LRAT proofs and counterexamples are generated and checked.
-Go, Lean, Z3, CaDiCaL, and the TLC jar are unavailable in the delivery environment;
-network downloads were denied. The Go bridge and external projections have
-**not been executed against their toolchains**. Trace-decoder tests use synthetic
-fixtures derived from upstream formats, not captured successful external runs.
-`validation-v3.json` records the actual checks. The native path is a candidate
-integration until its gate passes; it never falls back to the reference parser.
+**Validation status:** 35 Python tests pass locally; one Go-dependent differential
+check is skipped locally. Three LRAT safety certificates and two counterexamples
+are generated and checked. After push, [GitHub CI](https://github.com/SCKelemen/oak/actions/runs/34088946833)
+compiled the Go bridge and passed its five native-model cases and two rejection
+tests under `go test -v -race ./...`. See `validation-v3.json` for local results
+and `validation-ci-v3.json` for the CI record.
+
+The full native/Python differential check and external Lean/Z3/TLC/CaDiCaL
+suite remain **unexecuted**. Those toolchains are unavailable locally and network
+downloads were denied. Trace-decoder tests use synthetic fixtures derived from
+upstream formats, not captured successful external runs. The native bridge
+never falls back to the reference parser.
 
 ## Try it offline
 
