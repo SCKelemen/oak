@@ -17,4 +17,7 @@ fn stop() -> never
 	if strings.Contains(generated, "oak_hypervisor_never") {
 		t.Fatalf("builtin never was incorrectly package-mangled:\n%s", generated)
 	}
+	if got := strings.Count(generated, "typedef u8 oak_never;"); got != 1 {
+		t.Fatalf("global never backend carrier emitted %d times, want exactly 1:\n%s", got, generated)
+	}
 }
