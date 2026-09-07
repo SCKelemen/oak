@@ -172,3 +172,11 @@ the Oak frontend remain outside the theorem.
 accepted base and preservation refutations. `BooleanModel.lean` reconstructs the
 obligations from a bounded Boolean model export and checks the two proof streams.
 The opt-in solver gate exercises safe and relaxed publication models from Oak.
+
+## Oak-resident RUP kernel
+
+[SelfHostedRUP.md](SelfHostedRUP.md) describes the first certificate-checking
+kernel written in Oak. It checks one bounded decoded RUP addition using only
+caller-owned storage. A deterministic corpus compares the compiled Oak result
+with the Go checker and the proved Lean checker. Stream state and text decoding
+remain the next self-hosting steps.

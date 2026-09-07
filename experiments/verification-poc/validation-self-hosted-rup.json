@@ -1,0 +1,90 @@
+{
+  "format": "oak-self-hosted-rup-validation-1",
+  "date": "2026-09-07",
+  "commit": "b180ce72d29fd4d9b06328b89c360393688a97f4",
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34165110343",
+  "soundness_job": 101874508167,
+  "solvers_job": 101874508096,
+  "passed": true,
+  "implementation": {
+    "language": "Oak",
+    "host_harness": "Go",
+    "formal_reference": "Lean 4",
+    "python_runtime": false,
+    "component": "One decoded bounded RUP addition",
+    "storage": "Caller-owned arrays and views; caller-owned assignment scratch",
+    "allocation_free_check": [
+      "No malloc, calloc, or realloc in emitted C",
+      "No OAK_UNSUPPORTED marker in emitted C"
+    ]
+  },
+  "semantics": {
+    "literal_encoding": "2*zero_based_variable + polarity; polarity 1 is positive",
+    "hint_encoding": "zero-based clause index",
+    "maximum_variables": 64,
+    "duplicate_literals": "set semantics",
+    "success": "Contradictory target assumptions after complete hint validation, or conflict at the final hint"
+  },
+  "comparison": {
+    "cases": 400,
+    "accepted": 65,
+    "rejected": 335,
+    "seed": 741921,
+    "oracles": [
+      "Go internal/lrat.CheckRUPDecoded",
+      "Lean OakVerification.checkRUP"
+    ],
+    "coverage": [
+      "empty clauses and targets",
+      "complementary and duplicate literals",
+      "empty, valid, invalid, and future hint chains",
+      "unit propagation",
+      "already satisfied hints",
+      "non-unit hints",
+      "early and final conflicts"
+    ]
+  },
+  "formal_reference": {
+    "theorem": "OakVerification.checkRUP_sound",
+    "claim": "Every decoded RUP step accepted by Lean has a Propagate derivation.",
+    "qualification": "The 400-case agreement does not prove universal refinement of the Oak implementation."
+  },
+  "scope": {
+    "implemented_in_oak": [
+      "decoded target assumption setup",
+      "hint prevalidation",
+      "bounded assignment scratch",
+      "unit propagation",
+      "conflict ordering",
+      "duplicate-literal handling"
+    ],
+    "not_yet_in_oak": [
+      "ASCII DIMACS/LRAT parsing",
+      "full addition/deletion streams",
+      "database mutation",
+      "fresh monotone proof IDs",
+      "persistent empty-clause state",
+      "source-CNF reconstruction and evidence receipts",
+      "RAT, binary LRAT, extensions, or theory lemmas"
+    ],
+    "trusted_execution": [
+      "Oak parser and typechecker",
+      "Oak lowering and generated C",
+      "C compiler and runtime",
+      "Go differential harness"
+    ],
+    "not_claimed": [
+      "A proof that the Oak kernel refines Lean for all inputs",
+      "A semantics-preservation proof for the Oak compiler",
+      "A self-verified Oak kernel or toolchain"
+    ]
+  },
+  "repository_ci": {
+    "CI": "success",
+    "Standard library": "success",
+    "Formal Verification": "success",
+    "Golden File Verification": "success",
+    "Verification experiment (opt-in)": "success"
+  },
+  "artifacts": "The soundness artifact retains the canonical corpus, emitted proof diagnostics, Oak/Go logs, and Lean comparison logs for 30 days."
+}

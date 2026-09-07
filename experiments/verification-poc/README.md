@@ -233,3 +233,8 @@ The [Boolean invariant certificate path](proof/BooleanSafety.md) exports checked
 Oak projects with `export-boolean` and checks base/preservation refutations for
 their decoded transition model. Reachable-state safety is proved in Lean; the
 Oak frontend and export correspondence remain outside that theorem.
+
+The [Oak-resident RUP kernel](proof/SelfHostedRUP.md) moves the first certificate
+checking algorithm into Oak source. It checks one decoded RUP step with bounded,
+caller-owned storage and is compared against both the Go checker and Lean's
+proved checker. Complete proof streams and text decoding are not in Oak yet.
