@@ -1,0 +1,27 @@
+package hypervisor
+
+// Initial guest-context installation and architectural transfer before this
+// vCPU has executed. Live stage-2 reconfiguration requires a separate
+// TLBI/DSB protocol and must not reuse this cold-entry contract.
+fn el2_cold_enter(
+  hcr: u64,
+  vttbr: u64,
+  vtcr: u64,
+  cnthctl: u64,
+  cntvoff: u64,
+  guest_sp: u64,
+  guest_pc: u64,
+  guest_pstate: u64
+) -> never {
+  arm64.daifset_irq()
+  arm64.write_hcr_el2(hcr)
+  arm64.write_vttbr_el2(vttbr)
+  arm64.write_vtcr_el2(vtcr)
+  arm64.write_cnthctl_el2(cnthctl)
+  arm64.write_cntvoff_el2(cntvoff)
+  arm64.write_sp_el1(guest_sp)
+  arm64.write_elr_el2(guest_pc)
+  arm64.write_spsr_el2(guest_pstate)
+  arm64.isb()
+  arm64.eret()
+}
