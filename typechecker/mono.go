@@ -167,7 +167,7 @@ func (tc *TypeChecker) recordVariantResolution(expr *ast.VariantExpression, name
 // positionKey identifies a node by source position, so resolutions survive
 // the lowering pass's node reconstruction.
 func positionKey(tok token.Token) string {
-	return fmt.Sprintf("%d:%d:%s", tok.Line, tok.Column, tok.Literal)
+	return fmt.Sprintf("%s:%d:%d:%s", tok.SemanticContext, tok.Line, tok.Column, tok.Literal)
 }
 
 // recordShiftWidth notes the operand width of one shift expression, so the

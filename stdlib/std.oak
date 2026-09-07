@@ -1,0 +1,94 @@
+// Bootstrap standard library. Every allocation is supplied by the caller.
+Option[T]: type = Some: T | None
+Result[T, E]: type = Ok: T | Err: E
+Overflow: type = | Overflow
+
+option_or[T]: (item: Option[T], fallback: T): T = item ?
+  | .Some(value) => value
+  | .None => fallback
+
+// Capacity is the supplied storage length. This cursor owns no elements.
+// A cursor is paired with the same storage for its entire active lifetime.
+RingCursor: type = struct {
+  head: u32
+  count: u32
+}
+RingPush: type = Inserted | Full
+
+ring_check: (cursor: [*]RingCursor, capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(capacity > u32(0))
+  assert(cursor[0].head < capacity)
+  assert(cursor[0].count <= capacity)
+}
+
+ring_push[T]: (cursor: [*]RingCursor, storage: [*]T, item: T): RingPush {
+  capacity: u32 = len(storage)
+  ring_check(cursor, capacity)
+  cursor[0].count == capacity ? {
+    .Full
+  } | {
+    // Subtraction form avoids overflow of head + count before reduction.
+    remaining: u32 = capacity - cursor[0].head
+    index: u32 = cursor[0].count < remaining ? cursor[0].head + cursor[0].count | cursor[0].count - remaining
+    storage[index] = item
+    cursor[0].count = cursor[0].count + u32(1)
+    .Inserted
+  }
+}
+
+ring_pop[T]: (cursor: [*]RingCursor, storage: [*]T): Option[T] {
+  capacity: u32 = len(storage)
+  ring_check(cursor, capacity)
+  cursor[0].count == u32(0) ? {
+    .None
+  } | {
+    item: T = storage[cursor[0].head]
+    cursor[0].head = cursor[0].head == capacity - u32(1) ? u32(0) | cursor[0].head + u32(1)
+    cursor[0].count = cursor[0].count - u32(1)
+    .Some(item)
+  }
+}
+
+// Consumes no authority and performs no allocation. Destination exhaustion is
+// checked before writing; success copies the entire source.
+CopyError: type = | DestinationTooSmall
+bytes_copy_into: (dst: [*]u8, src: []u8): Result[u32, CopyError] {
+  n: u32 = len(src)
+  len(dst) < n ? {
+    .Err(.DestinationTooSmall)
+  } | {
+    i: u32 = 0
+    while i < n {
+      dst[i] = src[i]
+      i = i + u32(1)
+    }
+    .Ok(n)
+  }
+}
+
+bytes_equal: (left: []u8, right: []u8): Bool {
+  n: u32 = len(left)
+  n == len(right) ? {
+    same: Bool = true
+    i: u32 = 0
+    while i < n {
+      same = same && left[i] == right[i]
+      i = i + u32(1)
+    }
+    same
+  } | {
+    false
+  }
+}
+
+bytes_find: (src: []u8, needle: u8): Option[u32] {
+  n: u32 = len(src)
+  index: u32 = n
+  i: u32 = 0
+  while i < n {
+    index == n && src[i] == needle ? { index = i }
+    i = i + u32(1)
+  }
+  index == n ? { .None } | { .Some(index) }
+}
