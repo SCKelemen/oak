@@ -1,0 +1,11 @@
+import(std)
+
+main: (): i32 {
+  data: [8]u8
+  state: [1]RingCursor
+  storage: [*]u8 = span(&data)
+  cursor: [*]RingCursor = span(&state)
+  inserted: RingPush = ring_push[u8](cursor, storage, u8(42))
+  item: Option[u8] = ring_pop[u8](cursor, storage)
+  i32(option_or[u8](item, u8(0)))
+}

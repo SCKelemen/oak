@@ -137,3 +137,53 @@ func TestExplicitGenericsRejectUnsupportedAndUnsoundCalls(t *testing.T) {
   t.Run(fmt.Sprint(i),func(t *testing.T) { if _,err:=New().WithSource("bad.oak",src).EmitC().Get();err==nil { t.Fatal("accepted unsupported or unsound specialization") } })
  }
 }
+
+func TestE2EStdlibRingAgainstSequence(t *testing.T) {
+ for _,capacity:=range []int{1,3,8} {
+  t.Run(fmt.Sprint(capacity),func(t *testing.T) {
+   var src strings.Builder
+   fmt.Fprintf(&src,"import(std)\nmain: (): i32 {\ndata: [%d]u32\nstate: [1]RingCursor\ns: [*]u32 = span(&data)\nq: [*]RingCursor = span(&state)\n",capacity)
+   var model []uint32
+   seed:=uint32(12345)
+   for i:=0;i<128;i++ {
+    seed=seed*1664525+1013904223
+    if seed>>29<5 {
+     value:=seed>>8
+     full:=len(model)==capacity
+     fmt.Fprintf(&src,"r%d: RingPush = ring_push[u32](q, s, u32(%d))\nf%d: Bool = r%d ? | .Full => true | .Inserted => false\nassert(f%d == %t)\n",i,value,i,i,i,full)
+     if !full { model=append(model,value) }
+    } else {
+     expected:=uint32(4294967295)
+     if len(model)>0 { expected=model[0];model=model[1:] }
+     fmt.Fprintf(&src,"assert(option_or[u32](ring_pop[u32](q, s), u32(4294967295)) == u32(%d))\n",expected)
+    }
+    fmt.Fprintf(&src,"assert(q[0].count == u32(%d))\n",len(model))
+   }
+   for _,expected:=range model { fmt.Fprintf(&src,"assert(option_or[u32](ring_pop[u32](q, s), u32(4294967295)) == u32(%d))\n",expected) }
+   src.WriteString("assert(q[0].count == u32(0))\n42\n}\n")
+   code,abnormal:=buildAndRun(t,"ringtrace",src.String())
+   if abnormal || code!=42 { t.Fatalf("exit=(%d,%v)",code,abnormal) }
+  })
+ }
+}
+
+func TestE2EStdlibRingRejectsInvalidCursor(t *testing.T) {
+ for _,field:=range []string{"head","count"} {
+  t.Run(field,func(t *testing.T) {
+   src:=fmt.Sprintf(`
+import(std)
+main: (): i32 {
+ data: [2]u8
+ state: [1]RingCursor
+ s: [*]u8 = span(&data)
+ q: [*]RingCursor = span(&state)
+ q[0].%s = u32(3)
+ r: RingPush = ring_push[u8](q, s, u8(1))
+ 0
+}
+`,field)
+   _,abnormal:=buildAndRun(t,"ringinvalid",src)
+   if !abnormal { t.Fatal("invalid cursor must trap") }
+  })
+ }
+}

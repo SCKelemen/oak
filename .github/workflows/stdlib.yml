@@ -15,8 +15,9 @@ jobs:
       - name: Test standard library and compiler
         run: go test ./compiler ./codegen ./typechecker ./borrowchecker
       - name: Check formatting
+        if: always()
         run: |
-          gofmt -d compiler/stdlib.go compiler/specialize.go compiler/e2e_stdlib_test.go stdlib/source.go
+          gofmt -d compiler/stdlib.go compiler/specialize.go compiler/e2e_stdlib_test.go compiler/compilation.go stdlib/source.go codegen/codegen.go typechecker/typechecker.go typechecker/mono.go token/token.go
       - name: Build development artifacts
         if: always()
         run: |
