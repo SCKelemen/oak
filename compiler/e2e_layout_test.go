@@ -132,3 +132,65 @@ main: (): i32 {
 		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}
 }
+
+// Per-field alignment: both queue cursors carry their own cache line
+// inside ONE struct — no wrapper records. offsetof(tail) == 64 and
+// sizeof == 128 are asserted in the emitted C, so cc proves the false
+// sharing is gone by construction.
+func TestE2EPerFieldAlignment(t *testing.T) {
+	src := `
+Queue: type = struct {
+  head(align: 64): Atomic[u32]
+  tail(align: 64): Atomic[u32]
+  buffer: [8]u8
+}
+
+q: Queue
+
+main: (): i32 {
+  atomic_store_relaxed(q.head, u32(30))
+  atomic_store_relaxed(q.tail, u32(11))
+  q.buffer[u32(3)] = u8(1)
+  h: u32 = atomic_load_relaxed(q.head)
+  t: u32 = atomic_load_relaxed(q.tail)
+  assert(h + t == u32(41))
+  42
+}
+`
+	output, err := New().WithSource("fieldalign.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	for _, want := range []string{
+		"head __attribute__((aligned(64)))",
+		"offsetof(oak_Queue, tail) == 64u",
+		"offsetof(oak_Queue, buffer) == 68u",
+		"sizeof(oak_Queue) == 128u",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("emitted C lacks %q:\n%s", want, output)
+		}
+	}
+	code, abnormal := buildAndRun(t, "fieldalign", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
+
+// Under-alignment of a field (align below the type's natural alignment)
+// is packing semantics and fails closed: the record is never emitted
+// with a guessed layout.
+func TestE2EUnderAlignedFieldFailsClosed(t *testing.T) {
+	src := `
+Bad: type = struct {
+  wide(align: 2): u64
+}
+`
+	output, err := New().WithSource("underalign.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	if !strings.Contains(output, "OAK_UNSUPPORTED_RECORD_LAYOUT(oak_Bad)") {
+		t.Fatalf("under-aligned field must fail closed:\n%s", output)
+	}
+}

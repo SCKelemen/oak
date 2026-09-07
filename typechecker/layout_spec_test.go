@@ -31,3 +31,15 @@ func TestNaturalRecordAcceptsAtomicStorage(t *testing.T) {
 		t.Fatalf("unexpected errors: %v", tc.Errors())
 	}
 }
+
+// Per-field align inside a packed container contradicts dense placement.
+func TestPackedRecordRejectsFieldAlignment(t *testing.T) {
+	input := "Bad: type = struct(packed) {\n  a(align: 4): u8\n  b: u8\n}\n"
+	tc := setupTypeChecker(input)
+	program := parseProgram(input)
+	tc.CheckProgram(program)
+	joined := strings.Join(tc.Errors(), "\n")
+	if !strings.Contains(joined, "packing and raised member alignment contradict") {
+		t.Fatalf("field align in packed record must be rejected, got: %v", tc.Errors())
+	}
+}

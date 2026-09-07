@@ -64,7 +64,7 @@ func specializeADT(template *ast.ADTType, inst typechecker.Instantiation) (*ast.
 				}
 				substitutedRecord.Fields[field.Name] = substituted
 				substitutedRecord.FieldOrder = append(substitutedRecord.FieldOrder, ast.RecordField{
-					Token: field.Token, Name: field.Name, Value: substituted,
+					Token: field.Token, Name: field.Name, Value: substituted, Align: field.Align,
 				})
 			}
 			literal = substitutedRecord
@@ -267,7 +267,7 @@ func (cg *CodeGenerator) recordPlaceable(recordLit *ast.RecordLiteral) bool {
 		return false
 	}
 	for _, field := range recordLit.FieldOrder {
-		if _, ok := cg.fieldRepresentation(field.Name, field.Value); !ok {
+		if _, ok := cg.fieldRepresentation(field.Name, field.Value, field.Align); !ok {
 			return false
 		}
 	}

@@ -96,7 +96,7 @@ fn wait() -> ()
 	if err := os.WriteFile(cPath, []byte(generated), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	output, err := exec.Command(cc, "-std=c11", "-O2", "-c", cPath, "-o", oPath).CombinedOutput()
+	output, err := exec.Command(cc, "-std=c11", "-O2", "-DOAK_PORTABLE_INTRINSICS", "-c", cPath, "-o", oPath).CombinedOutput()
 	if err == nil {
 		t.Fatal("host compilation of architectural event control unexpectedly succeeded")
 	}

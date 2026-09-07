@@ -1681,7 +1681,32 @@ func (p *Parser) parseRecordType() ast.Expression {
 			fieldTokens = append(fieldTokens, p.currentToken)
 		}
 
-		if !p.expectPeek(token.COLON) {
+		// Optional per-field layout spec, mirroring the struct clause:
+		// head(align: 64): Atomic[u32]. Only align — packing is a property
+		// of placement BETWEEN fields, so it belongs to the container; a
+		// dense region inside a natural record is a nested packed struct.
+		var fieldAlign uint32
+		if p.peekTokenIs(token.LPAREN) {
+			p.nextToken() // to (
+			spec := p.parseRecordLayoutSpec()
+			if spec == nil {
+				return nil
+			}
+			if spec.Packed {
+				p.addErrorAtCurrentToken("'packed' is a struct-level spec: padding lives between fields; use a nested struct(packed) for a dense region")
+				return nil
+			}
+			if spec.Align == 0 {
+				p.addErrorAtCurrentToken("field layout spec requires align: N")
+				return nil
+			}
+			fieldAlign = spec.Align
+			// parseRecordLayoutSpec leaves the cursor after ')'.
+			if !p.currentTokenIs(token.COLON) {
+				p.peekError(token.COLON)
+				return nil
+			}
+		} else if !p.expectPeek(token.COLON) {
 			return nil
 		}
 
@@ -1695,6 +1720,10 @@ func (p *Parser) parseRecordType() ast.Expression {
 				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldToken.Literal))
 				return nil
 			}
+			// The declared alignment rides on the ordered entry AddField
+			// just appended; AddField's proven construction contract
+			// (Oak.SemanticRecord) covers name/value, not representation.
+			record.FieldOrder[len(record.FieldOrder)-1].Align = fieldAlign
 		}
 
 		// parseTypeExpression() leaves currentToken at the last token of the field type.

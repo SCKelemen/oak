@@ -224,9 +224,40 @@ Semantics (`semir.RecordLayoutWithSpec`, the transliteration of
   record used as a field contributes its dense size and alignment 1, so
   a `crc` field after a 7-byte packed header sits at offset 7.
 
+### 6a.1 Per-field alignment
+
+A field may raise its own alignment; the spec mirrors the struct clause,
+attached to the name it modifies:
+
+```oak
+Queue: type = struct {
+  head(align: 64): Atomic[u32]
+  tail(align: 64): Atomic[u32]     // its own cache line; offset 64, asserted
+  buffer: [8]u8                    // offset 68
+}
+```
+
+Rules:
+
+- Only `align` — packing is a property of placement *between* fields, so
+  it belongs to the container; a dense region inside a natural record is
+  a nested `struct(packed)`.
+- The declared alignment must be at or above the field's natural
+  alignment; under-alignment fails closed (it is packing semantics).
+- Per-field `align` inside a packed container is rejected: dense
+  placement and raised member alignment contradict.
+- Record alignment remains the maximum field alignment, raised fields
+  included (so `Queue` above is 64-aligned and 128 bytes, both asserted).
+
+No new proof obligations: `Oak.RecordLayout` quantifies over arbitrary
+valid per-field alignments — `placeFrom` places each field at *its*
+alignment, so `AllAligned`, non-overlap, and the size laws transfer to
+raised fields verbatim.
+
 The emitted C carries the layout on the typedef
 (`__attribute__((packed))`, `__attribute__((aligned(N)))` — GCC/Clang,
-the recorded C targets) and extends the layout assertions with
+the recorded C targets), per-field alignment on the member declarator,
+and extends the layout assertions with
 `_Alignof`: the C compiler ratifies size, every offset, **and** alignment
 of every declared-layout record in every generated artifact.
 

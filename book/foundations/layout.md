@@ -75,21 +75,26 @@ sharing**, and it is the classic silent 10× on every queue in the
 are written by different cores by design, and placing them adjacent
 undoes the whole point of the algorithm.
 
-The cure is one aligned wrapper record, and the phantom habit applies —
-name what the line is for:
+The cure is per-field alignment — each cursor claims its line inside the
+one struct that owns the queue:
 
 ```oak
-Cursor: type = struct(align: 64) {
-  cell: Atomic[u32]
+Queue: type = struct {
+  head(align: 64): Atomic[u32]   // consumer's line, offset 0
+  tail(align: 64): Atomic[u32]   // producer's line, offset 64 — asserted
+  buffer: [8]u8
 }
-
-head: Cursor    // consumer's line
-tail: Cursor    // producer's line
 ```
 
-Each cursor now owns its line: `sizeof(Cursor) == 64` means even an array
-of them never shares, and `_Alignof == 64` is asserted in the emitted C,
-not hoped for. This is the layout-level half of the doctrine the
+`offsetof(tail) == 64` is a compile-time assertion in the emitted C, not
+a hope. The wrapper form still earns its keep when the line deserves a
+*name* (`Cursor: type = struct(align: 64) { cell: Atomic[u32] }` — and
+`sizeof == 64` means even an array of them never shares); per-field
+`align` is the same guarantee without the ceremony. Only `align` exists
+at field level: packing is a property of the space *between* fields, so
+it belongs to the container — a dense region inside a natural record is
+a nested `struct(packed)`, which keeps a nominal name for the boundary
+bytes anyway. This is the layout-level half of the doctrine the
 [CSP chapter](../concurrency/csp-models.md) states protocol-level:
 *reduce sharing until what remains is deliberate* — memory orders make
 the sharing correct, cache geometry makes the non-sharing real.
@@ -103,5 +108,8 @@ record laws (order, uniqueness, lookup) hold regardless of placement, and
 the placement laws (density, alignment, non-overlap, exact size) hold
 regardless of meaning. The claims here are **executed**
 (`TestE2EPackedWire`, `TestE2EAlignedCacheLine`,
-`TestE2ELayoutSpecOnTemplate`) and **proven** (`Oak.LayoutSpec`,
-`Oak.RecordLayout`), with the C compiler as the standing witness.
+`TestE2EPerFieldAlignment`, `TestE2ELayoutSpecOnTemplate`) and **proven**
+(`Oak.LayoutSpec`, `Oak.RecordLayout` — whose placement theorems
+quantify over arbitrary valid per-field alignments, so raised fields
+carry no new proof obligations), with the C compiler as the standing
+witness.

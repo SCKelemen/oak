@@ -139,6 +139,10 @@ type RecordField struct {
 	Token token.Token
 	Name  string
 	Value Expression
+	// Align is the field's declared alignment (head(align: 64): Atomic[u32]),
+	// 0 for natural. A representation detail, never shape identity
+	// (docs/spec/40-records.md §6a).
+	Align uint32
 }
 
 // RecordLiteral represents both record value and record type syntax. Fields is

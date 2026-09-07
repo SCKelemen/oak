@@ -2984,6 +2984,15 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 
 // checkRecordTypeDefinition type checks a record type definition
 func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast.RecordLiteral) {
+	// A packed container places fields densely; a raised member alignment
+	// contradicts that placement. Rejected here, fail-closed in the backend.
+	if recordLit.Layout != nil && recordLit.Layout.Packed {
+		for _, field := range recordLit.FieldOrder {
+			if field.Align != 0 {
+				tc.addError(field.Value, "record type %s: field %s declares align inside a packed record; packing and raised member alignment contradict", typeName, field.Name)
+			}
+		}
+	}
 	// Check that all fields have valid type annotations
 	fieldNames := make(map[string]bool)
 	for fieldName, fieldExpr := range recordLit.Fields {

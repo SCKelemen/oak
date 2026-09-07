@@ -43,8 +43,25 @@ var fixedFieldRepresentations = map[string]semir.RecordFieldRepresentation{
 }
 
 // fieldRepresentation resolves one field's size and alignment, reporting
-// failure for types the v1 table cannot place.
-func (cg *CodeGenerator) fieldRepresentation(name string, typeExpr ast.Expression) (semir.RecordFieldRepresentation, bool) {
+// failure for types the v1 table cannot place. A declared per-field
+// alignment (head(align: 64): Atomic[u32]) raises the natural alignment;
+// declaring one BELOW natural is under-alignment — packing semantics — and
+// fails closed rather than being approximated.
+func (cg *CodeGenerator) fieldRepresentation(name string, typeExpr ast.Expression, declaredAlign uint32) (semir.RecordFieldRepresentation, bool) {
+	rep, ok := cg.naturalFieldRepresentation(name, typeExpr)
+	if !ok {
+		return semir.RecordFieldRepresentation{}, false
+	}
+	if declaredAlign != 0 {
+		if declaredAlign < rep.Alignment {
+			return semir.RecordFieldRepresentation{}, false
+		}
+		rep.Alignment = declaredAlign
+	}
+	return rep, true
+}
+
+func (cg *CodeGenerator) naturalFieldRepresentation(name string, typeExpr ast.Expression) (semir.RecordFieldRepresentation, bool) {
 	// Atomic cell fields take their carrier's size and alignment on the
 	// recorded target model (lock-free C11 _Atomic over fixed-width
 	// integers); the emitted sizeof/offsetof assertions verify this
@@ -69,7 +86,7 @@ func (cg *CodeGenerator) fieldRepresentation(name string, typeExpr ast.Expressio
 	// element's alignment (buffer: [16]u8 — the Ring shape).
 	if indexExpr, isIndex := typeExpr.(*ast.IndexExpression); isIndex {
 		if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed && length.Value > 0 {
-			element, ok := cg.fieldRepresentation(name, indexExpr.Left)
+			element, ok := cg.naturalFieldRepresentation(name, indexExpr.Left)
 			if !ok {
 				return semir.RecordFieldRepresentation{}, false
 			}
@@ -104,7 +121,7 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 	fields := make([]semir.RecordFieldRepresentation, 0, len(recordLit.FieldOrder))
 	supported := true
 	for _, field := range recordLit.FieldOrder {
-		fieldRep, ok := cg.fieldRepresentation(field.Name, field.Value)
+		fieldRep, ok := cg.fieldRepresentation(field.Name, field.Value, field.Align)
 		if !ok {
 			supported = false
 			break
@@ -123,6 +140,9 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 	if spec.Packed {
 		for _, field := range recordLit.FieldOrder {
 			if _, isAtomic := atomicTypeCarrier(field.Value); isAtomic {
+				supported = false
+			}
+			if field.Align != 0 {
 				supported = false
 			}
 		}
@@ -151,14 +171,21 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 
 	cg.write(fmt.Sprintf("typedef struct %s {\n", cName))
 	for _, field := range recordLit.FieldOrder {
+		// Declared per-field alignment lands on the member declarator
+		// (GNU attribute form, valid in every mode of the recorded C
+		// targets); the offsetof assertions below make cc ratify it.
+		memberAlign := ""
+		if field.Align != 0 {
+			memberAlign = fmt.Sprintf(" __attribute__((aligned(%d)))", field.Align)
+		}
 		// Array fields need the C declarator form: u8 buffer[ 16 ];
 		if indexExpr, isIndex := field.Value.(*ast.IndexExpression); isIndex {
 			if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed {
-				cg.write(fmt.Sprintf("  %s %s[ %d ];\n", cg.parseTypeExpression(indexExpr.Left), field.Name, length.Value))
+				cg.write(fmt.Sprintf("  %s %s[ %d ]%s;\n", cg.parseTypeExpression(indexExpr.Left), field.Name, length.Value, memberAlign))
 				continue
 			}
 		}
-		cg.write(fmt.Sprintf("  %s %s;\n", cg.parseTypeExpression(field.Value), field.Name))
+		cg.write(fmt.Sprintf("  %s %s%s;\n", cg.parseTypeExpression(field.Value), field.Name, memberAlign))
 	}
 	// GNU attribute syntax (GCC/Clang, the recorded C targets): the layout
 	// attributes sit between the member list and the typedef name.
