@@ -310,16 +310,17 @@ The Semantic IR test suite includes:
 | release-fence -> acquire-fence | specified + implemented + Lean-modeled + tested |
 | zero-allocation release-sequence walk | regression-tested |
 | implementation-to-Lean refinement | not yet proved |
-| sequential-consistency total order | next |
-| C/backend weak-memory refinement | not yet proved |
-| AArch64 litmus/assembly validation | not yet implemented |
+| sequential-consistency total order | specified + implemented + Lean-modeled in chapter 68 |
+| C/backend weak-memory refinement | next major layer |
+| AArch64 litmus/assembly validation | next major layer |
 
-## 11. Next closure step: sequential consistency
+## 11. Next closure layer: backend refinement
 
-`seq-cst` must not mean merely "stronger local acquire/release." Oak still needs
-an explicit global SC-order witness with constraints tying it to program order,
-modification order, and the values observed by SC loads/RMWs.
+Chapter 68 defines the explicit global seq-cst witness and ties it to HB,
+modification order, and read visibility. The language-level relation set is
+therefore explicit enough to stop inventing semantics in the backend.
 
-That should be modeled and tested as a separate relation. After SC is closed,
-the memory model can move to compiler/backend and AArch64 refinement before a
-lock-free queue is allowed to treat it as a trusted proof dependency.
+The next work is to verify that generated C and AArch64 code preserve these
+relations through assembly inspection and weak-memory litmus tests. Only then
+should a lock-free queue be accepted as relying on Oak's memory model end to
+end.
