@@ -19,10 +19,22 @@ func isAtomicTypeExpression(expr ast.Expression) bool {
 	return ok && semir.AtomicCarrierAllowed(carrier.Value)
 }
 
-// evalAtomicInvocation evaluates the value semantics of Oak atomics. Go's
-// sync/atomic implementation is at least as strong as every Oak order exposed
-// here; the evaluator is therefore a reference for cell identity and returned
-// values, not a weak-memory litmus-test engine.
+func evalAtomicInteger(name string, expr ast.Expression, env *object.Environment) (*object.Integer, object.Object) {
+	value := Eval(expr, env)
+	if isError(value) {
+		return nil, value
+	}
+	integer, ok := value.(*object.Integer)
+	if !ok {
+		return nil, newError("%s value must be an integer", name)
+	}
+	return integer, nil
+}
+
+// evalAtomicInvocation evaluates Oak's atomic value semantics. Go's sync/atomic
+// implementation is stronger than several Oak order variants, so this is a
+// reference for storage identity and sequential return values, not the
+// weak-memory oracle. Native generated-code tests validate C11 order lowering.
 func evalAtomicInvocation(name string, args []ast.Expression, env *object.Environment) (object.Object, bool) {
 	spec, recognized := semir.LookupAtomicBuiltin(name)
 	if !recognized {
@@ -50,20 +62,41 @@ func evalAtomicInvocation(name string, args []ast.Expression, env *object.Enviro
 	switch spec.Kind {
 	case semir.AtomicBuiltinLoad:
 		return &object.Integer{Value: cell.Value.Load()}, true
+
 	case semir.AtomicBuiltinStore, semir.AtomicBuiltinFetchAdd:
-		value := Eval(args[1], env)
-		if isError(value) {
-			return value, true
-		}
-		integer, ok := value.(*object.Integer)
-		if !ok {
-			return newError("%s value must be an integer", name), true
+		integer, errObj := evalAtomicInteger(name, args[1], env)
+		if errObj != nil {
+			return errObj, true
 		}
 		if spec.Kind == semir.AtomicBuiltinStore {
 			cell.Value.Store(integer.Value)
 			return NULL, true
 		}
 		return &object.Integer{Value: cell.Value.Add(integer.Value) - integer.Value}, true
+
+	case semir.AtomicBuiltinCompareExchange:
+		expected, errObj := evalAtomicInteger(name+" expected", args[1], env)
+		if errObj != nil {
+			return errObj, true
+		}
+		desired, errObj := evalAtomicInteger(name+" desired", args[2], env)
+		if errObj != nil {
+			return errObj, true
+		}
+
+		// Strong CAS: success is observed == expected. On failure the Oak
+		// result is the observed cell value, mirroring C11's updated expected.
+		// The evaluator is exercised sequentially; concurrent weak-memory
+		// behavior belongs to generated C/ISA tests rather than Go's model.
+		observed := cell.Value.Load()
+		if observed != expected.Value {
+			return &object.Integer{Value: observed}, true
+		}
+		if cell.Value.CompareAndSwap(expected.Value, desired.Value) {
+			return &object.Integer{Value: expected.Value}, true
+		}
+		return &object.Integer{Value: cell.Value.Load()}, true
+
 	default:
 		return newError("unsupported atomic builtin: %s", name), true
 	}
