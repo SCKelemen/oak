@@ -78,6 +78,46 @@ than accidentally passing a whole fixed-size ring by value.
 Byte functions allocate nothing. Copy requires the normal nonconflicting
 source/destination borrows; it is not an overlapping-memory move primitive.
 
+## Bounded bitsets
+
+Bitsets use caller-owned bytes, with bit zero in the least significant bit of
+byte zero. Pass the logical bit count on each call; it may be zero and need not
+fill the backing storage. `bitset_storage_bytes(bits)` computes the required
+byte count without overflow, including for the maximum u32 bit count.
+
+| Function | Contract |
+| --- | --- |
+| `bitset_contains(storage, bits, index)` | `Result[Bool,BitSetError]`; reads one logical bit in O(1) |
+| `bitset_set(storage, bits, index, value)` | `Result[Bool,BitSetError]`; returns the previous bit and updates it in O(1) |
+| `bitset_count(storage, bits)` | `Result[u32,BitSetError]`; counts logical set bits in O(bits) |
+
+Read operations take `[]u8`; set takes `[*]u8`. Insufficient backing storage
+returns `StorageTooSmall` before index validation; an index outside the logical
+range returns `BitOutOfRange`. Errors do not mutate storage. Set preserves every
+other bit, including unused tail bits and spare bytes. Count ignores those bits.
+Storage must be initialized; use zero-initialized arrays for an empty set.
+These are sequential operations and do not implement atomic bitmap allocation.
+
+## Explicit endian encoding
+
+`bytes_read_u16_le`, `bytes_read_u32_le`, and `bytes_read_u64_le` decode little-endian
+integers; replace `_le` with `_be` for big-endian. They accept `(src: []u8,
+offset: u32)` and return `Result[u16|u32|u64,EndianError]` with the corresponding
+concrete integer type.
+
+The matching `bytes_write_u16_le` / `_u32_le` / `_u64_le` functions (and `_be`
+variants) accept `(dst: [*]u8, offset: u32, value)` and return
+`Result[u32,EndianError]`: success reports the number of bytes written, not the
+next offset. All accesses are byte-oriented, independent of host endianness,
+with no alignment requirement beyond byte storage and no allocation.
+
+Every function checks that its entire range fits before indexing or writing.
+`BufferTooSmall` covers both an invalid offset and an incomplete integer; failed
+writes leave all bytes unchanged. Range checks subtract only after validating
+the offset, so even `u32(4294967295)` fails safely. Bytes outside successful
+writes remain unchanged. These operations encode integers only; they do not
+provide a record format, checksum, persistence ordering, or transaction protocol.
+
 ## Verification and remaining work
 
 `compiler/e2e_stdlib_test.go` compiles real imported Oak through the compiler and
@@ -85,7 +125,11 @@ system C compiler and executes the result. It covers typed outcomes, independent
 ring instances, wraparound, capacity one, full/empty behavior, byte-copy failure,
 explicit specialization and negative compilation cases. Seeded traces compare
 128 operations at capacities 1, 3 and 8 against a plain sequence model; invalid
-cursor fields must trap.
+cursor fields must trap. Endian tests compare all six width/order pairs against
+Go byte-encoding fixtures, including high-bit and maximum values at unaligned
+offsets. Bitset traces check each backing byte against a reference model across
+zero, partial-byte and byte-boundary capacities; bounds tests cover unchanged
+failed writes and maximum u32 arguments.
 
 The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
