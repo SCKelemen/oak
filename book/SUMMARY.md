@@ -21,6 +21,7 @@
 ## Concurrency
 
 - [The Memory-Order Ladder](concurrency/memory-order.md)
+- [CSP Models: Rendezvous, Channels, Mailboxes, Actors](concurrency/csp-models.md)
 
 ## Structures
 

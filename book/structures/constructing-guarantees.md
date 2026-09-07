@@ -55,6 +55,34 @@ Generalize slots with a generation counter when writers are frequent
 its index — in bounded-interrupt kernel contexts, "after the next
 quiescent point").
 
+## Recipe 1b — zero-copy transfer: reserve, fill in place, commit
+
+Recipe 1 moves values; for large payloads, move **nothing**. The ring's
+indices partition one pool into a producer-writable region and a
+consumer-readable region — disjoint by the protocol invariant (the dynamic
+sibling of Oak's statically-proven disjoint spans):
+
+```oak
+Packet: type = struct { kind: u8, a: u32, b: u32 }
+packets: [4]Packet
+zcHead: Atomic[u32]
+zcTail: Atomic[u32]
+
+// producer: check capacity, fill the claimed slot IN PLACE, then commit
+// with one release store of the index. consumer: read fields in place,
+// release the slot by bumping head.
+```
+
+Executed with the copy-freedom **asserted against the emitted C**
+(`TestE2EZeroCopySpsc`: no compound literal, no Packet-typed local, no
+whole-element load — the only Packet code is field stores and field reads
+into the pool). The payload is written exactly once, where it lives;
+"transfer" is a u32 store. Handing the producer a *scoped borrow* of the
+claimed slot (`reserve(): [*]Packet`) is the natural next form; today the
+escape rule (`OAK-B0109`) forbids returning spans, and region-indexed
+signatures — the headroom `Oak.Escape` proves sound — are the recorded
+path to making slot loans first-class.
+
 ## Recipe 2 — a linearizable arbitrary object: the operation funnel
 
 When the object cannot be immutable-swapped (a B-tree page cache, a wait
@@ -124,6 +152,23 @@ is listed last deliberately: it is the one whose obligations (every
 access covered by its lock; no escape of borrowed state past release) Oak
 cannot yet see — prefer Recipes 1–3, which put the obligation into one
 atomic cell the type system already quarantines.
+
+## Costs: allocation and copies
+
+Every recipe above is **zero-allocation by construction** — not as a
+property of careful code but of the language: the backend contains no
+allocator, all storage is static pools and stack values. The recorded
+doctrine for the day dynamic allocation lands is Zig's: *static by
+default, or an allocator received explicitly as a parameter* — never an
+ambient heap, never a hidden allocation inside a library call
+(`docs/spec/60-effects-allocation.md`).
+
+Copies: index-passing designs (recipes 1b, 2, and both MPSC variants) are
+zero-copy — payloads are written once, in place, and never move; only
+word-sized indices cross boundaries. By-value transfer (the plain SPSC
+ring) costs exactly one store in and one load out — the same as `kfifo`,
+with any *accidental* aggregate copy visible in Oak because owned
+aggregates copy only explicitly (moves are `OAK-B0111` territory).
 
 ## What to check, and where
 

@@ -59,17 +59,30 @@ Atomicity rung 2 (version protocol), consistency: readers get snapshot-or
 -retry, progress: writers wait-free, readers obstruction-free. The
 canonical "cross-EL time struct" shape.
 
-## MPSC mailbox — executed
+## MPSC mailbox — two protocols, both executed
 
-`compiler/e2e_queues_test.go`, `TestE2EMpscIntake` — the Vyukov LIFO-grab
-shape: producers CAS-push pool indices (index+1 encoding, so the
-zero-initialized head cell means empty) with release order in a bounded,
-asserted retry loop (lock-free, and *visibly* so); the consumer grabs the
-entire chain with one `acq_rel` CAS to empty, reverses in place to FIFO,
-and walks it wait-free. The standard inter-core doorbell; the pattern the
-hypervisor design restricts to *within one trust domain*, because a
-hostile producer can spin its peers — the progress ladder is
-per-participant, and adversarial participants define your floor.
+The same job, two rungs — pick consciously:
+
+| | LIFO-grab (`TestE2EMpscIntake`) | DV-MPSC (`TestE2EDvMpsc`) |
+| --- | --- | --- |
+| producer | CAS retry loop — lock-free | one `atomic_exchange` — **wait-free**, no retry ever |
+| consumer | one CAS grabs the whole chain, O(batch) reversal | follows links; can observe the publication window |
+| algorithm overall | lock-free | **blocking** (a stalled producer mid-publication strands the consumer) |
+| consistency | linearizable (single-CAS publication) | serializable only (two-step publication can invert real-time order) |
+| API honesty | `Option` empty | three states: `Item \| Empty \| Busy` — the window is a named constructor |
+
+The DV-MPSC analysis follows int08h's ["Ode to a Vyukov
+Queue"](https://int08h.com/post/ode-to-a-vyukov-queue/): academically
+under-credentialed, operationally superb — the cheapest possible send
+under contention. Oak's contribution is making the tradeoff visible: the
+retry loop of the grab variant carries the discipline warning, and the
+Vyukov window is an ADT case the consumer must match. Both are
+zero-allocation and zero-copy (payloads stay pooled; indices travel).
+v1 note: faithful cross-core DV-MPSC wants atomic record fields for the
+links — a recorded gap. The standard inter-core doorbell; the hypervisor
+design restricts it to *within one trust domain*, because a hostile
+producer can spin its peers — the progress ladder is per-participant, and
+adversarial participants define your floor.
 
 ## Handle table
 

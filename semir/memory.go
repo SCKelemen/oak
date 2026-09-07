@@ -98,6 +98,7 @@ const (
 	AtomicBuiltinLoad
 	AtomicBuiltinStore
 	AtomicBuiltinFetchAdd
+	AtomicBuiltinExchange
 	AtomicBuiltinCompareExchange
 	AtomicBuiltinFence
 )
@@ -117,7 +118,7 @@ type AtomicBuiltinSpec struct {
 }
 
 func (s AtomicBuiltinSpec) ReturnsValue() bool {
-	return s.Kind == AtomicBuiltinLoad || s.Kind == AtomicBuiltinFetchAdd || s.Kind == AtomicBuiltinCompareExchange
+	return s.Kind == AtomicBuiltinLoad || s.Kind == AtomicBuiltinFetchAdd || s.Kind == AtomicBuiltinExchange || s.Kind == AtomicBuiltinCompareExchange
 }
 
 func (s AtomicBuiltinSpec) Legal() bool {
@@ -177,6 +178,21 @@ func LookupAtomicBuiltin(name string) (AtomicBuiltinSpec, bool) {
 		return atomicBuiltin(name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderAcqRel, 2), true
 	case "atomic_fetch_add_seq_cst":
 		return atomicBuiltin(name, AtomicBuiltinFetchAdd, AtomicRMW, MemoryOrderSeqCst, 2), true
+
+	// atomic_exchange: unconditional swap returning the prior value — the
+	// wait-free RMW (one instruction, no retry), legal at every RMW order
+	// (docs/spec/65-machine-memory.md section 2). The Vyukov MPSC producer
+	// is its canonical consumer.
+	case "atomic_exchange_relaxed":
+		return atomicBuiltin(name, AtomicBuiltinExchange, AtomicRMW, MemoryOrderRelaxed, 2), true
+	case "atomic_exchange_acquire":
+		return atomicBuiltin(name, AtomicBuiltinExchange, AtomicRMW, MemoryOrderAcquire, 2), true
+	case "atomic_exchange_release":
+		return atomicBuiltin(name, AtomicBuiltinExchange, AtomicRMW, MemoryOrderRelease, 2), true
+	case "atomic_exchange_acq_rel":
+		return atomicBuiltin(name, AtomicBuiltinExchange, AtomicRMW, MemoryOrderAcqRel, 2), true
+	case "atomic_exchange_seq_cst":
+		return atomicBuiltin(name, AtomicBuiltinExchange, AtomicRMW, MemoryOrderSeqCst, 2), true
 
 	case "atomic_compare_exchange_relaxed_relaxed":
 		return compareExchangeBuiltin(name, MemoryOrderRelaxed, MemoryOrderRelaxed), true

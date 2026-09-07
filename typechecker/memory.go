@@ -127,7 +127,7 @@ func (tc *TypeChecker) checkAtomicInvocation(name string, expr *ast.InvocationEx
 	}
 
 	switch spec.Kind {
-	case semir.AtomicBuiltinStore, semir.AtomicBuiltinFetchAdd:
+	case semir.AtomicBuiltinStore, semir.AtomicBuiltinFetchAdd, semir.AtomicBuiltinExchange:
 		if !tc.checkAtomicValueArgument(name, expr.Arguments[1], cell.Element) {
 			return nil, true
 		}

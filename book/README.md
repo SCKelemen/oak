@@ -29,6 +29,9 @@ discipline of knowing which rung of a ladder you are standing on:
   graphs ([hierarchies/intrusive.md](hierarchies/intrusive.md))
 - **the memory-order ladder** — plain, volatile/MMIO, relaxed to seq_cst,
   barriers ([concurrency/memory-order.md](concurrency/memory-order.md))
+- **CSP models** — rendezvous, buffered channels, mailboxes, and actors,
+  constructed from the executed queues
+  ([concurrency/csp-models.md](concurrency/csp-models.md))
 - **a catalog of kernel structures** with their classifications
   ([structures/catalog.md](structures/catalog.md))
 - **constructing the upper rungs** — linearizable objects and serializable

@@ -63,7 +63,7 @@ func evalAtomicInvocation(name string, args []ast.Expression, env *object.Enviro
 	case semir.AtomicBuiltinLoad:
 		return &object.Integer{Value: cell.Value.Load()}, true
 
-	case semir.AtomicBuiltinStore, semir.AtomicBuiltinFetchAdd:
+	case semir.AtomicBuiltinStore, semir.AtomicBuiltinFetchAdd, semir.AtomicBuiltinExchange:
 		integer, errObj := evalAtomicInteger(name, args[1], env)
 		if errObj != nil {
 			return errObj, true
@@ -71,6 +71,9 @@ func evalAtomicInvocation(name string, args []ast.Expression, env *object.Enviro
 		if spec.Kind == semir.AtomicBuiltinStore {
 			cell.Value.Store(integer.Value)
 			return NULL, true
+		}
+		if spec.Kind == semir.AtomicBuiltinExchange {
+			return &object.Integer{Value: cell.Value.Swap(integer.Value)}, true
 		}
 		return &object.Integer{Value: cell.Value.Add(integer.Value) - integer.Value}, true
 

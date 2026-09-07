@@ -291,6 +291,14 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 		cg.output.WriteString(", ")
 		cg.output.WriteString(order)
 		cg.output.WriteString(")")
+	case semir.AtomicBuiltinExchange:
+		cg.output.WriteString("atomic_exchange_explicit(")
+		cg.output.WriteString(address)
+		cg.output.WriteString(", ")
+		cg.emitExpressionFragment(call.Arguments[1], tc)
+		cg.output.WriteString(", ")
+		cg.output.WriteString(order)
+		cg.output.WriteString(")")
 	default:
 		cg.output.WriteString("OAK_INVALID_ATOMIC_BUILTIN")
 	}

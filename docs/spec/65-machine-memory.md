@@ -119,6 +119,17 @@ atomic_store_release(cell, value) -> ()
 atomic_store_seq_cst(cell, value) -> ()
 ```
 
+Exchange (unconditional swap returning the prior value — the wait-free
+RMW: one instruction, no retry; the Vyukov MPSC producer's claim):
+
+```text
+atomic_exchange_relaxed(cell, value) -> T
+atomic_exchange_acquire(cell, value) -> T
+atomic_exchange_release(cell, value) -> T
+atomic_exchange_acq_rel(cell, value) -> T
+atomic_exchange_seq_cst(cell, value) -> T
+```
+
 Fetch-add returns the pre-add value and exists for all five orders. Fences exist
 for acquire, release, acq-rel, and seq-cst. Atomic exchange remains a backend
 building block but is not yet a normative source builtin.

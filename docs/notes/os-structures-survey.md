@@ -142,7 +142,10 @@ tables and sysreg writes — assembler milestone.
    register-backed per-CPU; already normative design.
 4. **Const-parameter arithmetic** (`[N+1]T`, `N % 2 == 0` constraints) —
    wanted for power-of-two ring masks instead of `%`.
-5. **Bounds-check elision for proven-in-range indices** — the canonical
+5. **Atomic record fields / atomic arrays** — v1 confines `Atomic[T]` to
+   standalone globals; faithful cross-core intrusive links (Vyukov MPSC
+   next pointers, per-slot MPMC sequence counters) want atomic fields.
+6. **Bounds-check elision for proven-in-range indices** — the canonical
    bounded loop already proves `i < N`; the backend still emits the trap.
    Zero-cost claim is "zero *abstraction* cost"; the safety cost is
    deliberate but should shrink where proofs already discharge it.
