@@ -12,18 +12,19 @@ The governing rule is:
 This chapter intentionally separates two questions:
 
 1. **What is happens-before and what constitutes a data race?** This chapter
-   specifies and implements those core relations now.
-2. **Which architecture/backend executions are valid?** Fence synchronization,
-   release sequences, sequential-consistency total order, compiler refinement,
-   and AArch64 litmus validation extend the execution witness and are tracked as
-   remaining work before the complete machine memory model is declared closed.
+   specifies and implements those core relations.
+2. **Which synchronization witnesses are valid?** `67-memory-ordering.md`
+   extends the same execution model with modification order, release sequences,
+   and fence-mediated synchronization. Sequential consistency, backend
+   refinement, and AArch64 litmus validation remain closure work before the
+   complete machine memory model is declared finished.
 
 ## 1. Execution events
 
 A memory-model execution is a finite set of indexed events. Event identity is a
 compact integer index rather than a pointer or heap object.
 
-Each event carries:
+The core event vocabulary carries:
 
 ```text
 thread
@@ -34,6 +35,9 @@ atomic
 order        // only for atomic events
 reads_from?  // only for atomic reads/RMW
 ```
+
+Chapter 67 extends write-like atomic events with explicit per-location
+modification-order indices while preserving these identities and relations.
 
 `location` is semantic storage identity. It is not required to be a virtual or
 physical machine address.
@@ -74,8 +78,7 @@ provenance.
 
 Synchronizes-with is an explicit, validated inter-thread edge.
 
-The first executable synchronization rule is direct release/acquire
-publication:
+The foundational synchronization rule is direct release/acquire publication:
 
 ```text
 release-like atomic write/RMW
@@ -107,9 +110,9 @@ witness names the source event and both access the same location.
 Relaxed operations therefore do not silently acquire or release merely because
 they happen to observe the same value.
 
-The edge representation is extensible. Fence-mediated synchronization and
-release-sequence witnesses will add new synchronization reasons without
-changing the definition of happens-before.
+Chapter 67 adds explicit synchronization reasons for release sequences and
+release/acquire fences without changing the definition of happens-before. The
+reason and its witness event IDs remain visible in Semantic IR.
 
 ## 5. Happens-before
 
@@ -149,6 +152,7 @@ payload write happens-before payload read
 
 This theorem is formalized in Lean and execution-tested in the Semantic IR
 model. It is the core fact required by an SPSC publication/consumption proof.
+The richer synchronization rules in chapter 67 feed the same HB closure.
 
 ## 6. Conflicting accesses
 
@@ -202,6 +206,9 @@ Its graph queries obey these structural rules:
 6. traversal work is finite and bounded by the supplied execution size;
 7. zero internal allocations are regression-tested with `testing.AllocsPerRun`.
 
+Chapter 67 preserves the same rule for release-sequence traversal: it walks
+existing reads-from links with an event-count bound and no internal allocation.
+
 The reference implementation currently favors simple auditable bounded scans
 over sophisticated graph indexing. Faster representations may be added later as
 refinements while preserving this semantic model.
@@ -217,8 +224,12 @@ refinements while preserving this semantic model.
   payload read;
 - an established HB edge excludes the data-race predicate;
 - therefore the canonical published payload pair is not a data race;
-- the release-like and acquire-like order classifications used by direct
-  publication contain the intended orders and exclude relaxed.
+- the release-like and acquire-like order classifications contain the intended
+  orders and exclude relaxed.
+
+The same Lean module now also models release sequences and the fence
+synchronization constructors from chapter 67, with publication theorems for
+those paths.
 
 These are mathematical language-level theorems. They do not yet constitute a
 formal refinement proof from Go graph traversal to Lean or from generated C to
@@ -237,7 +248,9 @@ AArch64 instructions.
 - a synchronization edge must agree with its reads-from source;
 - undersized scratch fails explicitly;
 - HB traversal performs zero internal allocations;
-- race queries perform zero internal allocations.
+- race queries perform zero internal allocations;
+- chapter-67 tests add modification-order, RMW-chain, release-sequence, and
+  fence-mediated publication coverage.
 
 The full repository Go/race suite and Lean build remain CI acceptance gates.
 
@@ -252,9 +265,10 @@ The full repository Go/race suite and Lean build remain CI acceptance gates.
 | publication theorem | proved in Lean + execution-tested |
 | data-race definition | specified + implemented + Lean-modeled |
 | zero-allocation HB/race traversal | regression-tested |
+| modification order | specified + implemented in chapter 67 |
+| release-sequence semantics | specified + implemented + Lean-modeled in chapter 67 |
+| fence-mediated synchronization | specified + implemented + Lean-modeled in chapter 67 |
 | Go-to-Lean refinement | not yet proved |
-| fence-mediated synchronization | next |
-| release-sequence semantics | next |
 | seq-cst global order | next |
 | compiler/C refinement | not yet proved |
 | AArch64 weak-memory litmus suite | not yet implemented |
@@ -264,12 +278,10 @@ The full repository Go/race suite and Lean build remain CI acceptance gates.
 Before higher-level lock-free structures depend on the memory model as a closed
 contract, Oak should add:
 
-1. fence-mediated synchronization witnesses and proofs;
-2. explicit release-sequence semantics for RMW chains;
-3. the sequential-consistency total-order constraints;
-4. backend/compiler refinement tests;
-5. AArch64 MP/SB/LB/IRIW-style litmus coverage and assembly inspection;
-6. target lock-free admission rules for realtime profiles.
+1. sequential-consistency total-order constraints;
+2. backend/compiler refinement tests;
+3. AArch64 MP/SB/LB/IRIW-style litmus coverage and assembly inspection;
+4. target lock-free admission rules for realtime profiles.
 
 Only after those pieces are explicit should `SpscRing[T, N]` be treated as a
 proof consumer of the complete machine-memory model rather than as an isolated
