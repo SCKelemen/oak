@@ -51,6 +51,7 @@ jobs:
           set -euo pipefail
           export LEAN_PATH="$PWD/proof"
           lean -DwarningAsError=true -o proof/BooleanCNF.olean proof/BooleanCNF.lean 2>&1 | tee build/soundness/boolean-cnf.log
+          lean -DwarningAsError=true -o proof/NumberedCNF.olean proof/NumberedCNF.lean 2>&1 | tee build/soundness/numbered-cnf.log
           export OAK_BOOLEAN_CNF_CORPUS_OUT="$PWD/build/soundness/boolean-cnf-cases.json"
           go test -count=1 -v . -run '^TestBooleanCNFSpecification$' 2>&1 | tee build/soundness/boolean-cnf-go.log
           lean -DwarningAsError=true --run proof/BooleanCNFCompare.lean "$OAK_BOOLEAN_CNF_CORPUS_OUT" 2>&1 | tee build/soundness/boolean-cnf-agreement.log
