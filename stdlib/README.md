@@ -83,10 +83,11 @@ source/destination borrows; it is not an overlapping-memory move primitive.
 `compiler/e2e_stdlib_test.go` compiles real imported Oak through the compiler and
 system C compiler and executes the result. It covers typed outcomes, independent
 ring instances, wraparound, capacity one, full/empty behavior, byte-copy failure,
-explicit specialization and negative compilation cases.
+explicit specialization and negative compilation cases. Seeded traces compare
+128 operations at capacities 1, 3 and 8 against a plain sequence model; invalid
+cursor fields must trap.
 
-The standard-library workflow runs the compiler, backend, checker and borrowing
-suites. These are implementation tests, not formal refinement proofs. Native
+The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
 pools/intrusive structures, concurrent rings, broader collections and persistence
 protocols remain separate work; importing this module does not implement them.

@@ -160,12 +160,12 @@ func (comp Compilation) SyntaxTree() Stage[*SyntaxTree] {
 func (comp Compilation) Check() Stage[*SemanticModel] {
 	return comp.Parse().Then(func(tree *SyntaxTree) (*SemanticModel, error) {
 		if err := loadStandardLibrary(tree); err != nil {
-            return nil, err
-        }
-        if err := specializeFunctions(tree.Root); err != nil {
-            return nil, err
-        }
-        env := object.NewEnvironment()
+			return nil, err
+		}
+		if err := specializeFunctions(tree.Root); err != nil {
+			return nil, err
+		}
+		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		tc.CheckProgram(tree.Root)
 		if err := comp.gate("typecheck", tc.Diagnostics()); err != nil {
@@ -222,11 +222,11 @@ func (comp Compilation) Lower() Stage[*LoweredProgram] {
 func (comp Compilation) EmitC() Stage[string] {
 	return comp.Lower().Then(func(lowered *LoweredProgram) (string, error) {
 		for _, stmt := range lowered.Root.Statements {
-            if fn, ok := stmt.(*ast.FunctionStatement); ok && len(fn.TypeParams) != 0 {
-                return "", fmt.Errorf("codegen: generic function %s requires supported explicit specialization", fn.Name.Value)
-            }
-        }
-        generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
+			if fn, ok := stmt.(*ast.FunctionStatement); ok && len(fn.TypeParams) != 0 {
+				return "", fmt.Errorf("codegen: generic function %s requires supported explicit specialization", fn.Name.Value)
+			}
+		}
+		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
 		generator.SetSourceText(lowered.Model.Tree.Source.Text)
 		return generator.Generate(lowered.Root, lowered.Model.TypeChecker)

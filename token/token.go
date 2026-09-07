@@ -5,18 +5,18 @@ import "strconv"
 type TokenKind int
 
 type Token struct {
-    // Distinguishes imported/specialized syntax at identical source positions.
-    // Lowering copies it with the token; it never changes diagnostic locations.
-    SemanticContext string `json:",omitempty"`
-	TokenKind TokenKind
-	Literal   string
-	Line      int  // 1-based line number
-	Column    int  // 1-based UTF-16 column (VS Code/LSP compatible + 1)
-	EndLine   int  // 1-based line immediately after the token
-	EndColumn int  // 1-based UTF-16 column immediately after the token
-	ByteStart int  // UTF-8 byte offset where token starts
-	ByteEnd   int  // UTF-8 byte offset where token ends (exclusive)
-	Synthetic bool // true when introduced by normalization rather than source text
+	// Distinguishes imported/specialized syntax at identical source positions.
+	// Lowering copies it with the token; it never changes diagnostic locations.
+	SemanticContext string `json:",omitempty"`
+	TokenKind       TokenKind
+	Literal         string
+	Line            int  // 1-based line number
+	Column          int  // 1-based UTF-16 column (VS Code/LSP compatible + 1)
+	EndLine         int  // 1-based line immediately after the token
+	EndColumn       int  // 1-based UTF-16 column immediately after the token
+	ByteStart       int  // UTF-8 byte offset where token starts
+	ByteEnd         int  // UTF-8 byte offset where token ends (exclusive)
+	Synthetic       bool // true when introduced by normalization rather than source text
 }
 
 const (
@@ -40,11 +40,11 @@ const (
 	GEQ    // >=
 	RCHEV  // >
 
-	COMMA // ,
+	COMMA    // ,
 	DOT      // .
 	ELLIPSIS // ...
-	COLON // :
-	SEMI  // ;
+	COLON    // :
+	SEMI     // ;
 
 	ASSIGN       // =
 	COLON_ASSIGN // :=
@@ -104,11 +104,11 @@ var tokens = [...]string{
 	GEQ:    ">=",
 	RCHEV:  ">",
 
-	COMMA: ",",
+	COMMA:    ",",
 	DOT:      ".",
 	ELLIPSIS: "...",
-	COLON: ":",
-	SEMI:  ";",
+	COLON:    ":",
+	SEMI:     ";",
 
 	ASSIGN:       "=",
 	COLON_ASSIGN: ":=",

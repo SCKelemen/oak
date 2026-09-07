@@ -1,13 +1,13 @@
 package compiler
 
 import (
- "fmt"
- "strings"
- "testing"
+	"fmt"
+	"strings"
+	"testing"
 )
 
 func TestE2EStdlibValues(t *testing.T) {
- src := `
+	src := `
 import(std)
 main: (): i32 {
  a: Option[i32] = .Some(19)
@@ -22,14 +22,16 @@ main: (): i32 {
  42
 }
 `
- code, abnormal := buildAndRun(t,"stdvalues",src)
- if abnormal || code!=42 { t.Fatalf("exit=(%d,%v)",code,abnormal) }
+	code, abnormal := buildAndRun(t, "stdvalues", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
 }
 
 func TestE2EStdlibRing(t *testing.T) {
- // Independent cursors and capacities; storage and state are borrowed, not
- // copied into a function. Full insertion must not change either.
- src := `
+	// Independent cursors and capacities; storage and state are borrowed, not
+	// copied into a function. Full insertion must not change either.
+	src := `
 import(std)
 main: (): i32 {
  a: [3]u8
@@ -62,17 +64,23 @@ main: (): i32 {
  42
 }
 `
- output,err:=New().WithSource("ring.oak",src).EmitC().Get()
- if err!=nil { t.Fatal(err) }
- for _, forbidden:=range []string{"malloc(","calloc(","realloc(","OAK_UNSUPPORTED"} {
-  if strings.Contains(output,forbidden) { t.Fatalf("unexpected %s in generated C",forbidden) }
- }
- code,abnormal:=buildAndRun(t,"stdring",src)
- if abnormal || code!=42 { t.Fatalf("exit=(%d,%v)",code,abnormal) }
+	output, err := New().WithSource("ring.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"malloc(", "calloc(", "realloc(", "OAK_UNSUPPORTED"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("unexpected %s in generated C", forbidden)
+		}
+	}
+	code, abnormal := buildAndRun(t, "stdring", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
 }
 
 func TestE2EStdlibBytes(t *testing.T) {
- src:=`
+	src := `
 import(std)
 main: (): i32 {
  input: [3]u8
@@ -95,23 +103,29 @@ main: (): i32 {
  42
 }
 `
- code,abnormal:=buildAndRun(t,"stdbytes",src)
- if abnormal || code!=42 { t.Fatalf("exit=(%d,%v)",code,abnormal) }
+	code, abnormal := buildAndRun(t, "stdbytes", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
 }
 
 func TestStdlibImportsFailClosed(t *testing.T) {
- for _,src:=range []string{
-  "import(missing)\nmain: (): i32 = 0",
-  "import(std) as other\nmain: (): i32 = 0",
-  "import(std)\nOption[T]: type = Some: T | None\nmain: (): i32 = 0",
- } {
-  if _,err:=New().WithSource("bad.oak",src).EmitC().Get();err==nil { t.Fatalf("accepted %s",src) }
- }
- if _,err:=New().WithSource("twice.oak","import(std)\nimport(std)\nmain: (): i32 = 0").EmitC().Get();err!=nil { t.Fatal(err) }
+	for _, src := range []string{
+		"import(missing)\nmain: (): i32 = 0",
+		"import(std) as other\nmain: (): i32 = 0",
+		"import(std)\nOption[T]: type = Some: T | None\nmain: (): i32 = 0",
+	} {
+		if _, err := New().WithSource("bad.oak", src).EmitC().Get(); err == nil {
+			t.Fatalf("accepted %s", src)
+		}
+	}
+	if _, err := New().WithSource("twice.oak", "import(std)\nimport(std)\nmain: (): i32 = 0").EmitC().Get(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestE2EExplicitGenericFunctions(t *testing.T) {
- src:=`
+	src := `
 identity[T]: (arg: T): T = arg
 forward[T]: (arg: T): T = identity[T](arg)
 main: (): i32 {
@@ -120,57 +134,72 @@ main: (): i32 {
  42
 }
 `
- code,abnormal:=buildAndRun(t,"genericfn",src)
- if abnormal || code!=42 { t.Fatalf("exit=(%d,%v)",code,abnormal) }
+	code, abnormal := buildAndRun(t, "genericfn", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
 }
 
 func TestExplicitGenericsRejectUnsupportedAndUnsoundCalls(t *testing.T) {
- for i,src:=range []string{
-  "identity[T]: (x: T): T = x\nmain: (): i32 = identity[u8](i32(7))",
-  "identity[T]: (x: T): T = x\nmain: (): i32 = identity(7)",
-  "identity[T]: (x: T): T = x\nmain: (): i32 = identity[Missing](7)",
-  "identity[T]: (T: T): T = T\nmain: (): i32 = identity[i32](7)",
-  "identity[T]: (x: T): T = x\nmain: (): i32 = identity[u8,i32](7)",
-  "identity[T]: (x: T): T = x\noak_spec_8_identity_3_i32: (): i32 = 0\nmain: (): i32 = identity[i32](7)",
-  "bad[T]: (x: T): T = true\nmain: (): i32 = bad[i32](7)",
- } {
-  t.Run(fmt.Sprint(i),func(t *testing.T) { if _,err:=New().WithSource("bad.oak",src).EmitC().Get();err==nil { t.Fatal("accepted unsupported or unsound specialization") } })
- }
+	for i, src := range []string{
+		"identity[T]: (x: T): T = x\nmain: (): i32 = identity[u8](i32(7))",
+		"identity[T]: (x: T): T = x\nmain: (): i32 = identity(7)",
+		"identity[T]: (x: T): T = x\nmain: (): i32 = identity[Missing](7)",
+		"identity[T]: (T: T): T = T\nmain: (): i32 = identity[i32](7)",
+		"identity[T]: (x: T): T = x\nmain: (): i32 = identity[u8,i32](7)",
+		"identity[T]: (x: T): T = x\noak_spec_8_identity_3_i32: (): i32 = 0\nmain: (): i32 = identity[i32](7)",
+		"bad[T]: (x: T): T = true\nmain: (): i32 = bad[i32](7)",
+	} {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			if _, err := New().WithSource("bad.oak", src).EmitC().Get(); err == nil {
+				t.Fatal("accepted unsupported or unsound specialization")
+			}
+		})
+	}
 }
 
 func TestE2EStdlibRingAgainstSequence(t *testing.T) {
- for _,capacity:=range []int{1,3,8} {
-  t.Run(fmt.Sprint(capacity),func(t *testing.T) {
-   var src strings.Builder
-   fmt.Fprintf(&src,"import(std)\nmain: (): i32 {\ndata: [%d]u32\nstate: [1]RingCursor\ns: [*]u32 = span(&data)\nq: [*]RingCursor = span(&state)\n",capacity)
-   var model []uint32
-   seed:=uint32(12345)
-   for i:=0;i<128;i++ {
-    seed=seed*1664525+1013904223
-    if seed>>29<5 {
-     value:=seed>>8
-     full:=len(model)==capacity
-     fmt.Fprintf(&src,"r%d: RingPush = ring_push[u32](q, s, u32(%d))\nf%d: Bool = r%d ? | .Full => true | .Inserted => false\nassert(f%d == %t)\n",i,value,i,i,i,full)
-     if !full { model=append(model,value) }
-    } else {
-     expected:=uint32(4294967295)
-     if len(model)>0 { expected=model[0];model=model[1:] }
-     fmt.Fprintf(&src,"assert(option_or[u32](ring_pop[u32](q, s), u32(4294967295)) == u32(%d))\n",expected)
-    }
-    fmt.Fprintf(&src,"assert(q[0].count == u32(%d))\n",len(model))
-   }
-   for _,expected:=range model { fmt.Fprintf(&src,"assert(option_or[u32](ring_pop[u32](q, s), u32(4294967295)) == u32(%d))\n",expected) }
-   src.WriteString("assert(q[0].count == u32(0))\n42\n}\n")
-   code,abnormal:=buildAndRun(t,"ringtrace",src.String())
-   if abnormal || code!=42 { t.Fatalf("exit=(%d,%v)",code,abnormal) }
-  })
- }
+	for _, capacity := range []int{1, 3, 8} {
+		t.Run(fmt.Sprint(capacity), func(t *testing.T) {
+			var src strings.Builder
+			fmt.Fprintf(&src, "import(std)\nmain: (): i32 {\ndata: [%d]u32\nstate: [1]RingCursor\ns: [*]u32 = span(&data)\nq: [*]RingCursor = span(&state)\n", capacity)
+			var model []uint32
+			seed := uint32(12345)
+			for i := 0; i < 128; i++ {
+				seed = seed*1664525 + 1013904223
+				if seed>>29 < 5 {
+					value := seed >> 8
+					full := len(model) == capacity
+					fmt.Fprintf(&src, "r%d: RingPush = ring_push[u32](q, s, u32(%d))\nf%d: Bool = r%d ? | .Full => true | .Inserted => false\nassert(f%d == %t)\n", i, value, i, i, i, full)
+					if !full {
+						model = append(model, value)
+					}
+				} else {
+					expected := uint32(4294967295)
+					if len(model) > 0 {
+						expected = model[0]
+						model = model[1:]
+					}
+					fmt.Fprintf(&src, "assert(option_or[u32](ring_pop[u32](q, s), u32(4294967295)) == u32(%d))\n", expected)
+				}
+				fmt.Fprintf(&src, "assert(q[0].count == u32(%d))\n", len(model))
+			}
+			for _, expected := range model {
+				fmt.Fprintf(&src, "assert(option_or[u32](ring_pop[u32](q, s), u32(4294967295)) == u32(%d))\n", expected)
+			}
+			src.WriteString("assert(q[0].count == u32(0))\n42\n}\n")
+			code, abnormal := buildAndRun(t, "ringtrace", src.String())
+			if abnormal || code != 42 {
+				t.Fatalf("exit=(%d,%v)", code, abnormal)
+			}
+		})
+	}
 }
 
 func TestE2EStdlibRingRejectsInvalidCursor(t *testing.T) {
- for _,field:=range []string{"head","count"} {
-  t.Run(field,func(t *testing.T) {
-   src:=fmt.Sprintf(`
+	for _, field := range []string{"head", "count"} {
+		t.Run(field, func(t *testing.T) {
+			src := fmt.Sprintf(`
 import(std)
 main: (): i32 {
  data: [2]u8
@@ -181,9 +210,11 @@ main: (): i32 {
  r: RingPush = ring_push[u8](q, s, u8(1))
  0
 }
-`,field)
-   _,abnormal:=buildAndRun(t,"ringinvalid",src)
-   if !abnormal { t.Fatal("invalid cursor must trap") }
-  })
- }
+`, field)
+			_, abnormal := buildAndRun(t, "ringinvalid", src)
+			if !abnormal {
+				t.Fatal("invalid cursor must trap")
+			}
+		})
+	}
 }
