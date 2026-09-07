@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -240,7 +241,14 @@ func (cg *CodeGenerator) emitIntrinsicHelpers(program *ast.Program) {
 	if len(used) == 0 {
 		return
 	}
-	cg.write("/* arm64 instruction functions and barriers */\n")
+	header := "/* arm64 instruction functions */\n"
+	for _, name := range used {
+		if _, barrier := semir.LookupArm64Barrier(name); barrier {
+			header = "/* arm64 instruction functions and barriers */\n"
+			break
+		}
+	}
+	cg.write(header)
 	for _, name := range used {
 		cg.writeRaw(arm64HelperSources[name])
 		cg.write("\n")
