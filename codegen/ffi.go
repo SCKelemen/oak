@@ -45,11 +45,10 @@ func libraryCallTarget(fn ast.Expression) (library, member string, ok bool) {
 	return base.Value, memberIdent.Value, true
 }
 
-// emitLibraryCall lowers a compiler-known library call: a c conversion
-// becomes an explicit C cast to the member's spelling; an arm64 instruction
-// function becomes its helper. Reports whether the call was handled.
-// The type checker has already rejected shadowed/local uses of the library
-// names in checked pipelines; unknown members fail closed.
+// emitLibraryCall lowers a compiler-known library call. The typechecker owns
+// the arm64 signature catalog, so codegen queries arity rather than maintaining
+// a second table. This supports both ordinary one-operand intrinsics and
+// nullary architectural barriers without runtime dispatch.
 func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typechecker.TypeChecker) bool {
 	library, member, ok := libraryCallTarget(call.Function)
 	if !ok {
@@ -71,14 +70,20 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 		cg.output.WriteString(" ))")
 		return true
 	case "arm64":
-		validScalar := arm64IntrinsicWidths[member]
-		validVector := arm64VectorIntrinsicSources[member] != ""
-		if (!validScalar && !validVector) || len(call.Arguments) != 1 {
+		_, validVector := arm64VectorIntrinsicSources[member]
+		_, validScalarOrBarrier := arm64HelperSources[member]
+		arity, knownSignature := typechecker.Arm64IntrinsicArity(member)
+		if (!validScalarOrBarrier && !validVector) || !knownSignature || len(call.Arguments) != arity {
 			cg.output.WriteString("OAK_UNSUPPORTED_ARM64_INTRINSIC")
 			return true
 		}
 		cg.output.WriteString(fmt.Sprintf("oak_arm64_%s( ", member))
-		cg.emitExpressionFragment(call.Arguments[0], tc)
+		for i, arg := range call.Arguments {
+			cg.emitExpressionFragment(arg, tc)
+			if i < len(call.Arguments)-1 {
+				cg.output.WriteString(", ")
+			}
+		}
 		cg.output.WriteString(" )")
 		return true
 	case "simd":
@@ -99,23 +104,22 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 	return false
 }
 
-// arm64IntrinsicWidths lists the v1 catalog (docs/spec/92-ffi.md
-// section 3.2), matching the type checker's table.
+// arm64IntrinsicWidths retains the original scalar-integer catalog for tests
+// and documentation. Barrier membership is instead owned by the SemIR-backed
+// typechecker catalog and arm64HelperSources below.
 var arm64IntrinsicWidths = map[string]bool{
 	"rev32": true, "rev64": true,
 	"rbit32": true, "rbit64": true,
 	"clz32": true, "clz64": true,
 }
 
-// collectUsedIntrinsics scans the program for scalar arm64
-// instruction-function calls so only the helpers a program uses are
-// emitted. Anything the scan cannot see would surface as a missing helper
-// at C compile time (fail closed, caught by the cc gate), never as wrong
-// behavior.
+// collectUsedIntrinsics scans the program for scalar arm64 instruction
+// functions and machine barriers. Presence in arm64HelperSources is the backend
+// capability witness; the typechecker independently rejects unknown members.
 func collectUsedIntrinsics(program *ast.Program) []string {
 	used := map[string]bool{}
 	scanCalls(program, func(library, member string) {
-		if library == "arm64" && arm64IntrinsicWidths[member] {
+		if library == "arm64" && arm64HelperSources[member] != "" {
 			used[member] = true
 		}
 	})
@@ -227,26 +231,26 @@ func scanCalls(program *ast.Program, visit func(library, member string)) {
 	}
 }
 
-// emitIntrinsicHelpers emits the helpers for the instruction functions the
-// program uses. On an AArch64 target each helper is the instruction itself
-// (inline assembly); elsewhere it is the portable C99 lowering
-// (docs/spec/92-ffi.md section 3.3). Semantics are identical by
-// Oak.Intrinsics plus the differential execution suite.
+// emitIntrinsicHelpers emits only helpers referenced by the program. Scalar
+// instruction functions keep their portable semantics. Architectural barriers
+// deliberately have no portable branch: compiling one for a non-AArch64 target
+// is a hard error rather than a semantic lie.
 func (cg *CodeGenerator) emitIntrinsicHelpers(program *ast.Program) {
 	used := collectUsedIntrinsics(program)
 	if len(used) == 0 {
 		return
 	}
-	cg.write("/* arm64 instruction functions: docs/spec/92-ffi.md section 3 */\n")
+	cg.write("/* arm64 instruction functions and barriers */\n")
 	for _, name := range used {
 		cg.writeRaw(arm64HelperSources[name])
 		cg.write("\n")
 	}
 }
 
-// arm64HelperSources holds one helper per instruction function. The
-// portable branches supply the total semantics the builtins leave undefined
-// (clz of zero) or missing (bit reverse, as the branch-free swap network).
+// arm64HelperSources holds one helper per scalar instruction function and
+// barrier. The portable scalar branches supply total semantics where possible;
+// barriers fail closed off AArch64 because DMB/DSB/ISB have architectural
+// semantics the host evaluator/C backend cannot faithfully emulate.
 var arm64HelperSources = map[string]string{
 	"rev32": `static inline u32 oak_arm64_rev32( u32 x ) {
 #if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
@@ -271,7 +275,6 @@ var arm64HelperSources = map[string]string{
   __asm__("rbit %w0, %w1" : "=r"(x) : "r"(x));
   return x;
 #else
-  /* branch-free swap network (docs/spec/92-ffi.md section 3.3) */
   x = ((x & 0x55555555u) << 1) | ((x >> 1) & 0x55555555u);
   x = ((x & 0x33333333u) << 2) | ((x >> 2) & 0x33333333u);
   x = ((x & 0x0F0F0F0Fu) << 4) | ((x >> 4) & 0x0F0F0F0Fu);
@@ -284,7 +287,6 @@ var arm64HelperSources = map[string]string{
   __asm__("rbit %0, %1" : "=r"(x) : "r"(x));
   return x;
 #else
-  /* branch-free swap network (docs/spec/92-ffi.md section 3.3) */
   x = ((x & 0x5555555555555555u) << 1) | ((x >> 1) & 0x5555555555555555u);
   x = ((x & 0x3333333333333333u) << 2) | ((x >> 2) & 0x3333333333333333u);
   x = ((x & 0x0F0F0F0F0F0F0F0Fu) << 4) | ((x >> 4) & 0x0F0F0F0F0F0F0F0Fu);
@@ -298,7 +300,6 @@ var arm64HelperSources = map[string]string{
   __asm__("clz %w0, %w1" : "=r"(r) : "r"(x));
   return r;
 #else
-  /* guard supplies the total CLZ(0) = 32 the builtin leaves undefined */
   return x == 0u ? 32u : (u32)__builtin_clz(x);
 #endif
 }
@@ -309,8 +310,55 @@ var arm64HelperSources = map[string]string{
   __asm__("clz %0, %1" : "=r"(r) : "r"(x));
   return r;
 #else
-  /* guard supplies the total CLZ(0) = 64 the builtin leaves undefined */
   return x == 0u ? 64u : (u64)__builtin_clzll(x);
+#endif
+}
+`,
+	"dmb_ishld": `static inline void oak_arm64_dmb_ishld( void ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__ volatile("dmb ishld" ::: "memory");
+#else
+#error "arm64.dmb_ishld requires an AArch64 target"
+#endif
+}
+`,
+	"dmb_ish": `static inline void oak_arm64_dmb_ish( void ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__ volatile("dmb ish" ::: "memory");
+#else
+#error "arm64.dmb_ish requires an AArch64 target"
+#endif
+}
+`,
+	"dmb_sy": `static inline void oak_arm64_dmb_sy( void ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__ volatile("dmb sy" ::: "memory");
+#else
+#error "arm64.dmb_sy requires an AArch64 target"
+#endif
+}
+`,
+	"dsb_ish": `static inline void oak_arm64_dsb_ish( void ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__ volatile("dsb ish" ::: "memory");
+#else
+#error "arm64.dsb_ish requires an AArch64 target"
+#endif
+}
+`,
+	"dsb_sy": `static inline void oak_arm64_dsb_sy( void ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__ volatile("dsb sy" ::: "memory");
+#else
+#error "arm64.dsb_sy requires an AArch64 target"
+#endif
+}
+`,
+	"isb": `static inline void oak_arm64_isb( void ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  __asm__ volatile("isb" ::: "memory");
+#else
+#error "arm64.isb requires an AArch64 target"
 #endif
 }
 `,
