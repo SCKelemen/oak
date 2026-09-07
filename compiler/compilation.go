@@ -162,9 +162,6 @@ func (comp Compilation) Check() Stage[*SemanticModel] {
 		if err := loadStandardLibrary(tree); err != nil {
 			return nil, err
 		}
-		if err := specializeFunctions(tree.Root); err != nil {
-			return nil, err
-		}
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		tc.CheckProgram(tree.Root)

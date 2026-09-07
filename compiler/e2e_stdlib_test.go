@@ -147,7 +147,7 @@ func TestExplicitGenericsRejectUnsupportedAndUnsoundCalls(t *testing.T) {
 		"identity[T]: (x: T): T = x\nmain: (): i32 = identity[Missing](7)",
 		"identity[T]: (T: T): T = T\nmain: (): i32 = identity[i32](7)",
 		"identity[T]: (x: T): T = x\nmain: (): i32 = identity[u8,i32](7)",
-		"identity[T]: (x: T): T = x\noak_spec_8_identity_3_i32: (): i32 = 0\nmain: (): i32 = identity[i32](7)",
+		"identity[T]: (x: T): T = x\nidentity_i32: (): i32 = 0\nmain: (): i32 = identity[i32](7)",
 		"bad[T]: (x: T): T = true\nmain: (): i32 = bad[i32](7)",
 	} {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {

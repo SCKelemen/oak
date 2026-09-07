@@ -15,8 +15,45 @@ package typechecker
 // fails closed with a diagnostic, never a guess.
 
 import (
+	"reflect"
+
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/token"
 )
+
+// stampSemanticContext walks a freshly substituted declaration and sets
+// SemanticContext on every token it contains — the clone is private to
+// this instantiation, so the walk never touches the template.
+func stampSemanticContext(value reflect.Value, context string) {
+	switch value.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		if value.IsNil() {
+			return
+		}
+		stampSemanticContext(value.Elem(), context)
+	case reflect.Struct:
+		if value.Type() == reflect.TypeOf(token.Token{}) {
+			if value.CanSet() {
+				value.FieldByName("SemanticContext").SetString(context)
+			}
+			return
+		}
+		for i := 0; i < value.NumField(); i++ {
+			field := value.Field(i)
+			if field.CanSet() || field.Kind() == reflect.Ptr || field.Kind() == reflect.Interface || field.Kind() == reflect.Slice {
+				stampSemanticContext(field, context)
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < value.Len(); i++ {
+			stampSemanticContext(value.Index(i), context)
+		}
+	case reflect.Map:
+		for _, key := range value.MapKeys() {
+			stampSemanticContext(value.MapIndex(key), context)
+		}
+	}
+}
 
 // registerFunctionTemplate notes a generic function declaration and keeps
 // it out of the ordinary checking path.
@@ -168,6 +205,13 @@ func (tc *TypeChecker) instantiateFunctionTemplate(template *ast.FunctionStateme
 	if _, cached := tc.functionInstantiations[mangled]; cached {
 		return mangled, true
 	}
+	// The mangled name must be free: a user declaration spelled like an
+	// instantiation (identity_i32) would silently merge with it in C.
+	if tc.globalEnv != nil {
+		if _, taken := tc.globalEnv.Get(mangled); taken {
+			return "", false
+		}
+	}
 
 	bindings := make(map[string]ast.Expression, len(args))
 	for i, tp := range template.TypeParams {
@@ -182,6 +226,11 @@ func (tc *TypeChecker) instantiateFunctionTemplate(template *ast.FunctionStateme
 	if !ok {
 		return "", false
 	}
+	// Every instantiation shares the template's source positions; the
+	// position-keyed resolution records (variants, matches, shift widths)
+	// disambiguate through the token's SemanticContext, stamped with the
+	// instantiation's name (the stdlib stamps "std" the same way).
+	stampSemanticContext(reflect.ValueOf(specialized), mangled)
 	if tc.functionInstantiations == nil {
 		tc.functionInstantiations = make(map[string]*ast.FunctionStatement)
 	}
@@ -224,6 +273,11 @@ func substituteFunctionAST(template *ast.FunctionStatement, bindings map[string]
 		Name:     &ast.Identifier{Token: template.Name.Token, Value: mangled},
 	}
 	for _, param := range template.Parameters {
+		if param.Name != nil {
+			if _, shadows := bindings[param.Name.Value]; shadows {
+				return nil, false
+			}
+		}
 		paramType, ok := SubstituteTypeAST(param.Type, bindings)
 		if !ok {
 			return nil, false
@@ -250,6 +304,13 @@ func substituteStmt(stmt ast.Statement, bindings map[string]ast.Expression) (ast
 	case nil:
 		return nil, true
 	case *ast.VariableDeclaration:
+		// A local named like a type parameter would be rewritten by the
+		// identifier substitution: fail closed rather than mis-instantiate.
+		if s.Name != nil {
+			if _, shadows := bindings[s.Name.Value]; shadows {
+				return nil, false
+			}
+		}
 		declType, ok := SubstituteTypeAST(s.Type, bindings)
 		if !ok {
 			return nil, false
@@ -328,8 +389,31 @@ func substituteExpr(expr ast.Expression, bindings map[string]ast.Expression) (as
 	switch e := expr.(type) {
 	case nil:
 		return nil, true
-	case *ast.Identifier, *ast.IntegerLiteral, *ast.StringLiteral, *ast.Boolean:
-		return e, true
+	// A type parameter never names a value, so an identifier matching a
+	// binding in ANY expression position is a type reference (explicit
+	// type arguments inner[T](x), constructors T(x)) and takes the concrete
+	// spelling. Leaves are copied too, so the instantiation shares no node
+	// with the template (token stamping must never touch the template).
+	case *ast.Identifier:
+		if replacement, bound := bindings[e.Value]; bound {
+			if ident, isIdent := replacement.(*ast.Identifier); isIdent {
+				clone := *ident
+				clone.Token = e.Token
+				return &clone, true
+			}
+			return replacement, true
+		}
+		clone := *e
+		return &clone, true
+	case *ast.IntegerLiteral:
+		clone := *e
+		return &clone, true
+	case *ast.StringLiteral:
+		clone := *e
+		return &clone, true
+	case *ast.Boolean:
+		clone := *e
+		return &clone, true
 	case *ast.PrefixExpression:
 		right, ok := substituteExpr(e.Right, bindings)
 		if !ok {
