@@ -58,6 +58,9 @@ jobs:
           export OAK_BOOLEAN_CNF_CORPUS_OUT="$PWD/build/soundness/boolean-cnf-cases.json"
           go test -count=1 -v . -run '^TestBooleanCNFSpecification$' 2>&1 | tee build/soundness/boolean-cnf-go.log
           lean -DwarningAsError=true --run proof/BooleanCNFCompare.lean "$OAK_BOOLEAN_CNF_CORPUS_OUT" 2>&1 | tee build/soundness/boolean-cnf-agreement.log
+          export OAK_SELF_HOSTED_RUP_CORPUS_OUT="$PWD/build/soundness/self-hosted-rup-cases.json"
+          go test -count=1 -v . -run '^TestSelfHostedRUPKernel$' 2>&1 | tee build/soundness/self-hosted-rup-go.log
+          lean -DwarningAsError=true --run proof/SelfHostedRUPCompare.lean "$OAK_SELF_HOSTED_RUP_CORPUS_OUT" 2>&1 | tee build/soundness/self-hosted-rup-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

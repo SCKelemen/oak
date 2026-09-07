@@ -1,0 +1,106 @@
+// Bounded RUP propagation kernel in Oak.
+// Literals use 2*variable + polarity, with variable indices starting at zero.
+// Polarity one is positive. Hint indices start at zero.
+literal_value: (literal: u32): u8 = literal % u32(2) == u32(1) ? u8(2) | u8(1)
+literal_false_value: (literal: u32): u8 = literal % u32(2) == u32(1) ? u8(1) | u8(2)
+
+rup_check: (
+  clause_literals: []u32,
+  clause_starts: []u32,
+  clause_lengths: []u32,
+  clause_count: u32,
+  target: []u32,
+  target_count: u32,
+  hints: []u32,
+  hint_count: u32,
+  assignments: [*]u8,
+  variables: u32
+): Bool {
+  valid: Bool = variables > u32(0) && variables <= u32(64)
+  valid = valid && clause_count <= len(clause_starts) && clause_count <= len(clause_lengths)
+  valid = valid && target_count <= len(target) && hint_count <= len(hints)
+  valid = valid && variables <= len(assignments)
+
+  i: u32 = 0
+  while i < variables && valid {
+    assignments[i] = u8(0)
+    i = i + u32(1)
+  }
+
+  // Validate every hint before accepting contradictory target assumptions.
+  i = u32(0)
+  while i < hint_count && valid {
+    id: u32 = hints[i]
+    valid = id < clause_count
+    valid ? {
+      start: u32 = clause_starts[id]
+      count: u32 = clause_lengths[id]
+      valid = start <= len(clause_literals) && count <= len(clause_literals) - start
+    }
+    i = i + u32(1)
+  }
+
+  contradictory: Bool = false
+  i = u32(0)
+  while i < target_count && valid && !contradictory {
+    literal: u32 = target[i]
+    variable: u32 = literal / u32(2)
+    valid = variable < variables
+    valid ? {
+      wanted: u8 = literal_false_value(literal)
+      prior: u8 = assignments[variable]
+      contradictory = prior != u8(0) && prior != wanted
+      prior == u8(0) ? { assignments[variable] = wanted }
+    }
+    i = i + u32(1)
+  }
+
+  conflict: Bool = false
+  h: u32 = 0
+  while h < hint_count && valid && !contradictory && !conflict {
+    id: u32 = hints[h]
+    start: u32 = clause_starts[id]
+    count: u32 = clause_lengths[id]
+    satisfied: Bool = false
+    remaining: u32 = 0
+    unit_literal: u32 = 0
+    j: u32 = 0
+    while j < count && valid && !satisfied {
+      literal: u32 = clause_literals[start + j]
+      variable: u32 = literal / u32(2)
+      valid = variable < variables
+      duplicate: Bool = false
+      k: u32 = 0
+      while k < j && valid && !duplicate {
+        duplicate = clause_literals[start + k] == literal
+        k = k + u32(1)
+      }
+      valid && !duplicate ? {
+        assigned: u8 = assignments[variable]
+        satisfied = assigned != u8(0) && assigned == literal_value(literal)
+        assigned == u8(0) ? {
+          remaining = remaining + u32(1)
+          unit_literal = literal
+        }
+      }
+      j = j + u32(1)
+    }
+    valid && !satisfied ? {
+      remaining == u32(0) ? {
+        conflict = h + u32(1) == hint_count
+        valid = conflict
+      } | {
+        remaining == u32(1) ? {
+          variable: u32 = unit_literal / u32(2)
+          assignments[variable] = literal_value(unit_literal)
+        } | {
+          valid = false
+        }
+      }
+    } | {
+      valid = false
+    }
+    h = h + u32(1)
+  }
+  valid && (contradictory || conflict)
+}

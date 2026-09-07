@@ -94,3 +94,18 @@ func Check(cnf,proof string) (Result,error) {
     if !empty{return result,fmt.Errorf("proof never establishes the empty clause")}
     result.Accepted=true;return result,nil
 }
+
+// CheckRUPDecoded exposes one decoded RUP step for differential testing of
+// bounded self-hosted kernels. Clauses and literals use DIMACS conventions.
+func CheckRUPDecoded(variables int, clauses [][]int, target []int, hints []int) error {
+    if variables <= 0 { return fmt.Errorf("invalid variable count") }
+    db := map[int]Clause{}
+    convert := func(xs []int) (Clause,error) {
+        c:=Clause{}
+        for _,x:=range xs { if x==0 || abs(x)>variables{return nil,fmt.Errorf("literal outside variable domain")};c[x]=true }
+        return c,nil
+    }
+    for i,xs:=range clauses {c,e:=convert(xs);if e!=nil{return e};db[i+1]=c}
+    c,e:=convert(target);if e!=nil{return e}
+    return rup(db,c,hints)
+}
