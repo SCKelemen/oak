@@ -50,7 +50,7 @@ package main
 fn bad(value: u64) -> ()
   arm64.write_esr_el2(value)
 `)
-	requireSysRegError(t, errs, "no member write_esr_el2")
+	requireSysRegError(t, errs, "no instruction function arm64.write_esr_el2")
 }
 
 func TestSysRegWriteRequiresU64(t *testing.T) {
@@ -68,5 +68,5 @@ package main
 fn bad(value: u64) -> u64
   arm64.read_hcr_el2(value)
 `)
-	requireSysRegError(t, errs, "expects 0 argument")
+	requireSysRegError(t, errs, "takes 0 argument(s), got 1")
 }
