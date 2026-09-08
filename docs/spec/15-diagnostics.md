@@ -217,6 +217,7 @@ The first stable borrow-conflict family is:
 | `OAK-B0109` | a view/span escapes the lifetime currently established for its owner |
 | `OAK-B0110` | unsafe code assumes mutable-region disjointness that safe analysis could not prove |
 | `OAK-B0111` | a resource or alias is used after its authority was consumed |
+| `OAK-B0112` | a resource call requires exclusive authority but two mode-marked arguments alias the same resource |
 
 For `OAK-B0106`, known regions use half-open interval semantics. The diagnostic
 should show the requested region and one earliest causal conflicting span. If a
@@ -229,6 +230,14 @@ a secondary label. If the later name is not the syntactic name consumed directly
 the diagnostic must include the shortest useful programmer-visible alias or
 provenance chain connecting it to the consumed authority. It should not dump an
 internal alias-set identifier.
+
+For `OAK-B0112`, the primary label is the argument whose semantic parameter mode
+requires exclusive authority. The conflicting argument is a secondary label.
+When the two arguments use different names, include the shortest useful alias or
+provenance chain showing why they identify one resource authority class. A call
+rejected for this conflict has not occurred semantically, so the diagnostic must
+not trigger a derivative use-after-consume error merely because one of its
+parameters was marked consuming.
 
 When several active borrows or aliases could explain the same conflict, the
 compiler should choose causal context deterministically, preferring the earliest

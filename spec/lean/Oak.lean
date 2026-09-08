@@ -12,6 +12,7 @@ import Oak.AArch64ControlTransfer
 import Oak.AArch64ColdEntry
 import Oak.Borrowing
 import Oak.ResourceFlow
+import Oak.ResourceCall
 import Oak.BorrowRegions
 import Oak.Reborrow
 import Oak.ReborrowRefinement

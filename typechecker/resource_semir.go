@@ -2,6 +2,7 @@ package typechecker
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
@@ -9,8 +10,8 @@ import (
 
 // ResourceModelFromSemIR derives the typechecker's executable resource model
 // from checked semantic facts. Resource-bearing definitions are identified by
-// their Authority.Resource axis; consuming/fresh-return operations come from
-// structured resource effects bound to resolved protocol callables.
+// their Authority.Resource axis; parameter authority modes and fresh-return
+// semantics come from structured resource effects bound to resolved callables.
 func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 	if err := module.Validate(); err != nil {
 		return ResourceModel{}, fmt.Errorf("invalid semantic module: %w", err)
@@ -66,6 +67,7 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 			fullSemantics[callable] = semantics
 
 			model.MarkOperation(callable, ResourceOperation{
+				Parameters:   resourceParametersFromSemIR(semantics),
 				Consumes:     append([]int(nil), semantics.Consumes...),
 				ReturnsFresh: semantics.ReturnsFresh,
 			})
@@ -73,6 +75,22 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 	}
 
 	return model, nil
+}
+
+func resourceParametersFromSemIR(semantics semir.ResourceTransitionSemantics) []ResourceParameterDeclaration {
+	parameters := make([]ResourceParameterDeclaration, 0,
+		len(semantics.Borrowed)+len(semantics.BorrowedMut)+len(semantics.Consumes))
+	for _, index := range semantics.Borrowed {
+		parameters = append(parameters, ResourceParameterDeclaration{Index: index, Mode: ResourceParameterBorrowed})
+	}
+	for _, index := range semantics.BorrowedMut {
+		parameters = append(parameters, ResourceParameterDeclaration{Index: index, Mode: ResourceParameterBorrowedMut})
+	}
+	for _, index := range semantics.Consumes {
+		parameters = append(parameters, ResourceParameterDeclaration{Index: index, Mode: ResourceParameterConsumed})
+	}
+	sort.Slice(parameters, func(i, j int) bool { return parameters[i].Index < parameters[j].Index })
+	return parameters
 }
 
 // CheckProgramWithSemIR is the semantic-pipeline resource-checking entrypoint.
@@ -88,8 +106,15 @@ func (tc *TypeChecker) CheckProgramWithSemIR(program *ast.Program, module semir.
 }
 
 func sameResourceOperation(left, right ResourceOperation) bool {
-	if left.ReturnsFresh != right.ReturnsFresh || len(left.Consumes) != len(right.Consumes) {
+	if left.ReturnsFresh != right.ReturnsFresh ||
+		len(left.Parameters) != len(right.Parameters) ||
+		len(left.Consumes) != len(right.Consumes) {
 		return false
+	}
+	for i := range left.Parameters {
+		if left.Parameters[i] != right.Parameters[i] {
+			return false
+		}
 	}
 	for i := range left.Consumes {
 		if left.Consumes[i] != right.Consumes[i] {
