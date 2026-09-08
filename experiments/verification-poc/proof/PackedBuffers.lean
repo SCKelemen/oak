@@ -20,7 +20,7 @@ def push (b : Buffer) (item : Nat) : Option Buffer :=
     some { b with pool := b.pool ++ [item], pending := b.pending ++ [item] }
   else none
 
-def seal (b : Buffer) : Buffer :=
+def closeSegment (b : Buffer) : Buffer :=
   { b with closed := b.closed ++ [b.pending], pending := [] }
 
 theorem empty_wellFormed (capacity : Nat) : WellFormed (empty capacity) := by
@@ -50,13 +50,13 @@ theorem push_layout {b after : Buffer} {item : Nat}
 theorem push_full (b : Buffer) (item : Nat) (h : b.capacity ≤ b.pool.length) : push b item = none := by
   simp [push, show ¬ b.pool.length < b.capacity by omega]
 
-theorem seal_preserves (b : Buffer) (h : WellFormed b) : WellFormed (seal b) := by
+theorem seal_preserves (b : Buffer) (h : WellFormed b) : WellFormed (closeSegment b) := by
   obtain ⟨hp, hc⟩ := h
-  simp [WellFormed, seal, List.flatten_append, hp, hc]
+  simp [WellFormed, closeSegment, List.flatten_append, hp, hc]
 
 theorem seal_layout (b : Buffer) :
-    (seal b).pool = b.pool ∧ (seal b).closed = b.closed ++ [b.pending] ∧
-    (seal b).pending = [] := by simp [seal]
+    (closeSegment b).pool = b.pool ∧ (closeSegment b).closed = b.closed ++ [b.pending] ∧
+    (closeSegment b).pending = [] := by simp [closeSegment]
 
 -- The decoder stores this start/count pair when it sees a zero terminator.
 def start (b : Buffer) : Nat := b.pool.length - b.pending.length
@@ -83,7 +83,7 @@ inductive Mode where
 -- The exact spelling of deletion's terminator is checked by the byte adapter.
 def tokenStep (mode : Mode) (variables : Nat) (b : Buffer) (t : Token) : Option Buffer :=
   if t.kind = 2 ∧ (t.sign = 1 ∨ t.sign = 2) then
-    if t.magnitude = 0 then some (seal b)
+    if t.magnitude = 0 then some (closeSegment b)
     else if mode = .literal then
       if t.magnitude ≤ variables then
         push b ((t.magnitude - 1) * 2 + if t.sign = 1 then 1 else 0)
@@ -109,7 +109,7 @@ theorem tokenStep_preserves {mode : Mode} {variables : Nat} {b after : Buffer} {
 
 theorem zero_seals (mode : Mode) (variables : Nat) (b : Buffer) (t : Token)
     (hk : t.kind = 2) (hs : t.sign = 1 ∨ t.sign = 2) (hz : t.magnitude = 0) :
-    tokenStep mode variables b t = some (seal b) := by
+    tokenStep mode variables b t = some (closeSegment b) := by
   simp [tokenStep, hk, hs, hz]
 
 def tokens (mode : Mode) (variables : Nat) (b : Buffer) : List Token → Option Buffer
