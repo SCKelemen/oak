@@ -47,6 +47,7 @@ jobs:
           lean -DwarningAsError=true -o proof/PropagationState.olean proof/PropagationState.lean 2>&1 | tee build/soundness/propagation-proof.log
           lean -DwarningAsError=true -o proof/ClauseClassifier.olean proof/ClauseClassifier.lean 2>&1 | tee build/soundness/classifier-proof.log
           lean -DwarningAsError=true -o proof/PropagationChain.olean proof/PropagationChain.lean 2>&1 | tee build/soundness/chain-proof.log
+          lean -DwarningAsError=true -o proof/CertifiedStream.olean proof/CertifiedStream.lean 2>&1 | tee build/soundness/certified-stream-proof.log
       - name: Compare Go and Lean checker decisions
         working-directory: experiments/verification-poc
         shell: bash
@@ -129,6 +130,9 @@ jobs:
           export OAK_CHAIN_CORPUS_OUT="$PWD/build/soundness/chain-cases.json"
           go test -count=1 -v . -run '^TestSelfHostedPropagationChain$' 2>&1 | tee build/soundness/chain-go.log
           lean -DwarningAsError=true --run proof/PropagationChainCompare.lean "$OAK_CHAIN_CORPUS_OUT" 2>&1 | tee build/soundness/chain-agreement.log
+          export OAK_CERTIFIED_STREAM_CORPUS_OUT="$PWD/build/soundness/certified-stream-cases.json"
+          go test -count=1 -v . -run '^TestSelfHostedCertifiedStream$' 2>&1 | tee build/soundness/certified-stream-go.log
+          lean -DwarningAsError=true --run proof/CertifiedStreamCompare.lean "$OAK_CERTIFIED_STREAM_CORPUS_OUT" 2>&1 | tee build/soundness/certified-stream-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

@@ -230,3 +230,7 @@ proved Lean classifier over exhaustive small clauses and all variable boundaries
 proof-producing chain. Accepted targets are entailed by the database; accepted
 empty targets prove unsatisfiability. Native long-chain tests compare Oak, Go,
 the new certified chain, and the original Lean checker.
+
+[CertifiedStream.md](CertifiedStream.md) connects the new certified chain to live
+table updates and proves whole-stream acceptance soundness. Native raw layouts
+and long publish/delete sequences compare Oak, Go, and both Lean stream checkers.
