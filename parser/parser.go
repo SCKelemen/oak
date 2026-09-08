@@ -29,7 +29,7 @@ type Parser struct {
 
 	// braceLiteralDisabled suppresses the TypeName { ... } composite-literal
 	// infix while parsing a statement-header expression (a while condition),
-	// where '{' opens the statement's block — Go's composite-literal rule.
+	// where '{' opens the statement's block â Go's composite-literal rule.
 	braceLiteralDisabled bool
 	// armDepth > 0 while parsing a bare-expression ?-match arm body, where
 	// bare | is the arm separator, not bitwise or (parens re-enable).
@@ -370,7 +370,7 @@ func (p *Parser) parseStatement() ast.Statement {
 			// Assignment: x = expr (must refer to existing variable)
 			return p.parseAssignmentStatement()
 		} else if p.peekTokenIs(token.LPAREN) && p.callableDefinitionAhead() {
-			// Colon-less definition form (docs/spec/10-syntax.md §3):
+			// Colon-less definition form (docs/spec/10-syntax.md Â§3):
 			// add(l: u32, r: u32): u32 = l + r
 			name := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 			p.nextToken() // move to '('
@@ -504,7 +504,7 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 			break
 		}
 		// After an index expression currentToken is ']'; the expression
-		// continues when an operator follows (v[i] < limit) — the loop head
+		// continues when an operator follows (v[i] < limit) â the loop head
 		// decides from peekToken like everywhere else.
 		// For RPAREN, only stop if peekToken is also a stop token
 		// This allows expressions like "1 + (2 + 3) + 4" to continue parsing
@@ -828,7 +828,7 @@ func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression
 	// Now inspect what comes next
 	switch {
 	case p.peekTokenIs(token.RBRACK):
-		// a[expr] — index
+		// a[expr] â index
 		if !p.expectPeek(token.RBRACK) {
 			return nil
 		}
@@ -858,7 +858,7 @@ func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression
 			High:  high,
 		}
 	default:
-		// a[expr ???] – syntax error
+		// a[expr ???] â syntax error
 		p.peekError(token.RBRACK)
 		return nil
 	}
@@ -898,9 +898,9 @@ func (p *Parser) ParseProgram() *ast.Program {
 			!p.currentTokenIs(token.COMMENT)
 		// A token can only be the START of the next top-level statement if it
 		// sits on a later line than this statement began AND at the start of
-		// its line (column 1): a statement-final identifier — a type name in
+		// its line (column 1): a statement-final identifier â a type name in
 		// a value-less declaration, an identifier value, or an indented
-		// final ADT variant — belongs to the statement just parsed and must
+		// final ADT variant â belongs to the statement just parsed and must
 		// be advanced past, not re-parsed as a stray expression statement.
 		// Always advance if peekToken is EOF, regardless of canStartStatement
 		// This prevents infinite loops when currentToken looks like it can start a statement
@@ -1110,7 +1110,7 @@ var precedences = map[token.TokenKind]Precedence{
 
 func (p *Parser) peekPrecedence() Precedence {
 	// Inside a bare-expression ?-match arm body, '|' is the arm separator,
-	// never bitwise or — parenthesize (a | b) to use the operator there.
+	// never bitwise or â parenthesize (a | b) to use the operator there.
 	// Parens and brace blocks reset the suppression.
 	if p.armDepth > 0 && p.peekToken.TokenKind == token.PIPE {
 		return LOWEST
@@ -1662,7 +1662,7 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 				false,
 				func() (ast.Expression, bool) {
 					// Const parameters: integer literals are type arguments
-					// (Ring[u8, 16] — docs/spec/20-types.md).
+					// (Ring[u8, 16] â docs/spec/20-types.md).
 					if p.currentTokenIs(token.INT) {
 						return p.parseIntegerLiteral(), true
 					}
@@ -1739,7 +1739,7 @@ func (p *Parser) parseRecordType() ast.Expression {
 			return nil
 		}
 		// Grouped field names share one type: { a, b: u8 } declares both a
-		// and b as u8, in written order (docs/spec/40-records.md §1). A bare
+		// and b as u8, in written order (docs/spec/40-records.md Â§1). A bare
 		// name followed by ',' has no other reading in type position.
 		fieldTokens := []token.Token{p.currentToken}
 		for p.peekTokenIs(token.COMMA) {
@@ -1753,7 +1753,7 @@ func (p *Parser) parseRecordType() ast.Expression {
 		// Optional per-field spec, mirroring the struct clause:
 		// id(align: 8, json: "user_id"): u64. `align` is the reserved
 		// representation key; every other name must be a declared tag
-		// schema (checked by the typechecker — unknown namespaces are
+		// schema (checked by the typechecker â unknown namespaces are
 		// errors, never silent metadata). Packing is a property of
 		// placement BETWEEN fields, so it belongs to the container.
 		var fieldAlign uint32
@@ -1975,7 +1975,7 @@ func (p *Parser) parseTagDeclarationFromName(name *ast.Identifier) *ast.TagDecla
 }
 
 // parseFieldTagValue parses one tag value in a field clause: a bare
-// literal (string, integer, true/false — bound to the schema's first
+// literal (string, integer, true/false â bound to the schema's first
 // declared field) or a record literal over schema fields. The closed
 // value vocabulary is deliberate: tag values are compile-time data for
 // projections, not expressions.
@@ -1997,7 +1997,7 @@ func (p *Parser) parseFieldTagValue() ast.Expression {
 
 // parseRecordLayoutSpec parses the parenthesized layout clause after
 // `struct`: comma-separated entries, each either the word `packed` or
-// `align: <integer literal>`. Anything else is a parse error — the layout
+// `align: <integer literal>`. Anything else is a parse error â the layout
 // vocabulary is closed. On success the cursor sits on the token after `)`.
 func (p *Parser) parseRecordLayoutSpec() *ast.RecordLayoutSpec {
 	spec := &ast.RecordLayoutSpec{}
@@ -2226,7 +2226,7 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 	p.nextToken()
 
 	// Contract: leaves currentToken ON the closing '}' (the last token of
-	// the literal), like every other prefix/infix expression parser — the
+	// the literal), like every other prefix/infix expression parser â the
 	// Pratt loop and statement loop advance past it themselves.
 
 	// Extensible record type: { r | field: Type, ... }.
@@ -2454,9 +2454,9 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 		if !p.expectPeek(token.IDENT) {
 			return nil
 		}
-		// Save the identifier token before consuming it
-		recvIdentToken := p.peekToken
-		p.nextToken() // consume identifier, now currentToken is IDENT
+		// expectPeek consumed the identifier and left it current. Advancing here
+		// would skip ':' and corrupt every receiver declaration into a nil AST.
+		recvIdentToken := p.currentToken
 		if p.peekTokenIs(token.COLON) {
 			// This is a receiver: fn (recv: Type)
 			receiver := &ast.FunctionParameter{
@@ -2850,8 +2850,8 @@ func (p *Parser) parseMatchExpression(left ast.Expression) ast.Expression {
 }
 
 // positionalArmsAhead reports whether the arms after '?' are the Bool
-// condition sugar (docs/spec/10-syntax.md §3a): patternless branches
-// separated by '|'. Detected by scanning the first arm segment — a
+// condition sugar (docs/spec/10-syntax.md Â§3a): patternless branches
+// separated by '|'. Detected by scanning the first arm segment â a
 // depth-0 '|' before any '->'/'=>' means positional; an arrow means
 // pattern arms. Leading pipes (multiline layout) are skipped.
 func (p *Parser) positionalArmsAhead() bool {
@@ -3159,7 +3159,7 @@ func (p *Parser) parseVariantPattern() ast.Pattern {
 
 // bracketGroupPrecedesColon looks ahead, without consuming tokens, from a
 // position where currentToken is IDENT and peekToken is '[': it reports
-// whether the bracket group closes and is immediately followed by ':' —
+// whether the bracket group closes and is immediately followed by ':' â
 // the shape of a generic type definition head (Name[E, Unit]: ...) as opposed
 // to an index or slice expression statement (buf[0:8]).
 func (p *Parser) bracketGroupPrecedesColon() bool {
@@ -3201,7 +3201,7 @@ func (p *Parser) bracketGroupPrecedesColon() bool {
 
 // parameterListAhead looks ahead, without consuming tokens, from a position
 // where currentToken is '(' after `name:`. It reports whether the group is a
-// parameter list — a top-level colon before the matching ')', or an empty
+// parameter list â a top-level colon before the matching ')', or an empty
 // group whose ')' is followed by a return annotation (':' or '->').
 func (p *Parser) parameterListAhead() bool {
 	cursor, ok := p.source.(*token.Cursor)
@@ -3275,7 +3275,7 @@ func (p *Parser) parameterListAhead() bool {
 
 // callableDefinitionAhead reports whether an IDENT-led statement whose next
 // token is '(' is a colon-less function definition
-// (docs/spec/10-syntax.md §3):
+// (docs/spec/10-syntax.md Â§3):
 //
 //	add(l: u32, r: u32): u32 = l + r
 //
@@ -3426,7 +3426,7 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		p.nextToken()
 		if p.currentTokenIs(token.LBRACE) {
 			// '= {' opens a block body: whole-body anonymous record
-			// literals need a named form (docs/spec/10-syntax.md §3).
+			// literals need a named form (docs/spec/10-syntax.md Â§3).
 			stmt.Body = p.parseBlockExpression()
 		} else {
 			stmt.Body = p.parseExpression(LOWEST)
