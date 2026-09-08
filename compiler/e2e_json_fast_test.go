@@ -254,8 +254,8 @@ while position < u32(%d) {
  byte_value: u32 = 0
  while byte_value < u32(256) {
   data[position] = u8_trunc_u32(byte_value)
-  input: []u8 = view(&data)
-  assert(check_encoding(input))
+  mutated: []u8 = view(&data)
+  assert(check_encoding(mutated))
   byte_value = byte_value + u32(1)
  }
  data[position] = original

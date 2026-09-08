@@ -115,6 +115,9 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps({"metadata": metadata, "summary": summary, "samples": samples}, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
+    oak_samples = {s["sample"]: s["ns"] for s in samples if s["backend"] == "oak"}
+    simd_samples = {s["sample"]: s["ns"] for s in samples if s["backend"] == "simdjson_ondemand"}
+    print(json.dumps({"paired_time_ratios": [oak_samples[i] / simd_samples[i] for i in sorted(oak_samples)]}))
     print("Saved", args.output)
 
 
