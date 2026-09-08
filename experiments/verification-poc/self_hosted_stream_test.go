@@ -158,7 +158,7 @@ func emitStreamCase(b *strings.Builder,c streamCase,mutation string,expected boo
  fmt.Fprintln(b,"result: Bool = rup_stream_check(pool_view, initial_view, sizes_view, refs_view, commands_view, nvars)")
  fmt.Fprintf(b,"assert(result == %t)\n",expected)
 }
-func runOakStream(t *testing.T,source string) {
+func runOakStreamUnit(t *testing.T,source string) {
  t.Helper();cc,err:=exec.LookPath("cc");if err!=nil {t.Fatal("C compiler required for Oak stream checks")}
  generated,err:=compiler.New().WithSource("self_hosted_stream_test.oak",source).EmitC().Get();if err!=nil {t.Fatalf("Oak stream compile: %v",err)}
  for _,bad:=range []string{"malloc(","calloc(","realloc(","OAK_UNSUPPORTED"} {if at:=strings.Index(generated,bad);at>=0 {start:=at-180;if start<0 {start=0};end:=at+400;if end>len(generated) {end=len(generated)};t.Fatalf("unexpected %s in generated checker: %s",bad,generated[start:end])}}
