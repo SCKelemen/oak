@@ -521,3 +521,8 @@ The standard-library workflow runs the full Go suite with the race detector. The
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
 allocator-backed pools, intrusive trees/hash tables, concurrent rings, broader collections and persistence
 protocols remain separate work; importing this module does not implement them.
+
+
+See [Oak collection ports](COLLECTION_PORTS.md) for Bloom/counting Bloom filters,
+u64-key hash maps and sets, bitset algebra, validated flags, and the remaining OS
+library parity work.
