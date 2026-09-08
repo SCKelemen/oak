@@ -14,6 +14,7 @@ import (
 )
 
 type Config struct {
+	Adapter                              string
 	EmitFuzz                             string
 	CC                                   string
 	Runs, MaxBytes, Shrink, MaxDiscards  int
@@ -47,6 +48,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("oak test", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&cfg.CC, "cc", cfg.CC, "C compiler executable")
+	flags.StringVar(&cfg.Adapter, "adapter", "", "trusted deterministic native adapter manifest (also required for replay)")
 	flags.IntVar(&cfg.Runs, "runs", cfg.Runs, "accepted generated cases per property/simulation/fuzz campaign")
 	flags.IntVar(&cfg.MaxBytes, "max-bytes", cfg.MaxBytes, "maximum input/choice-tape bytes (0..1048576)")
 	flags.Uint64Var(&cfg.Seed, "seed", cfg.Seed, "reproducible root seed")
@@ -79,8 +81,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid test configuration")
 		return 2
 	}
-	if cfg.EmitFuzz != "" && (cfg.Fuzz == "" || cfg.Replay != "" || cfg.List) {
-		fmt.Fprintln(stderr, "-emit-fuzz-harness requires -fuzz and cannot combine with replay/list")
+	if cfg.EmitFuzz != "" && (cfg.Fuzz == "" || cfg.Replay != "" || cfg.List || cfg.Adapter != "") {
+		fmt.Fprintln(stderr, "-emit-fuzz-harness requires -fuzz and cannot combine with replay/list/adapter; export then link native dependencies explicitly")
 		return 2
 	}
 	run, err := regexp.Compile(cfg.Run)
@@ -182,7 +184,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stdout, "  "+result.Failure)
 			}
 			if result.Artifact != "" {
-				fmt.Fprintf(stdout, "  replay: oak test -replay %q %q\n", result.Artifact, result.Package)
+				adapterFlag := ""
+				if cfg.Adapter != "" { adapterFlag = fmt.Sprintf(" -adapter %q", cfg.Adapter) }
+				fmt.Fprintf(stdout, "  replay: oak test%s -replay %q %q\n", adapterFlag, result.Artifact, result.Package)
 			}
 			if result.Output != "" {
 				fmt.Fprintln(stdout, result.Output)

@@ -67,6 +67,9 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 		}
 	}
 	for _, stmt := range lib.Root.Statements {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.ExternSymbol != "" && testingImported {
+			fn.Token.SemanticContext = "testing-host"
+		}
 		if name := declarationName(stmt); name != "" {
 			exports[name] = true
 		}

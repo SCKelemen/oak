@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SCKelemen/oak/compiler"
 )
 
 const engineVersion = "oak-test-v1-splitmix64-choice-bytes"
@@ -64,7 +63,9 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 			_ = os.RemoveAll(dir)
 		}
 	}()
-	generated, err := compiler.New().WithSource(filepath.Join(pkg.Dir, "<oak-test-package>"), pkg.Source).EmitC().Get()
+	adapter, err := loadAdapter(cfg.Adapter)
+	if err != nil { return nil, err }
+	generated, err := packageCompilation(pkg, adapter).EmitC().Get()
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +106,15 @@ int main(int argc, char **argv) {
 		flags = append(flags, "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer")
 	}
 	args := append(append([]string{}, flags...), "-o", filepath.Join(dir, "test"), cpath)
+	adapterIdentity := ""
+	if adapter != nil {
+		adapterIdentity = adapter.identity
+		for i, data := range adapter.objects {
+			path := filepath.Join(dir, fmt.Sprintf("adapter-%d%s", i, filepath.Ext(adapter.manifest.Objects[i].Path)))
+			if err := os.WriteFile(path, data, 0600); err != nil { return nil, err }
+			args = append(args, path)
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.BuildTimeout)
 	defer cancel()
 	var output limitedBuffer
@@ -121,7 +131,7 @@ int main(int argc, char **argv) {
 	}
 	// Generated C captures compiler/lowering changes; flags and compiler identity
 	// prevent replay under a silently different native build.
-	hash := sha256.Sum256([]byte(engineVersion + "\n" + source.String() + "\n" + strings.Join(flags, " ") + "\n" + versionOutput.String()))
+	hash := sha256.Sum256([]byte(engineVersion + "\n" + source.String() + "\n" + strings.Join(flags, " ") + "\n" + versionOutput.String() + "\nadapter-v1:" + adapterIdentity))
 	keep = true
 	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: cfg.MaxBytes, timeout: cfg.Timeout}, nil
 }

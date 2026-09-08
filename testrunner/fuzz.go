@@ -3,10 +3,8 @@ package testrunner
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/SCKelemen/oak/compiler"
 )
 
 // EmitFuzzHarness exports the checked C translation unit with a libFuzzer
@@ -16,7 +14,7 @@ func EmitFuzzHarness(pkg Package, test Test, maxBytes int) (string, error) {
 	if test.Kind != "fuzz" || !cIdentifier.MatchString(test.Name) || maxBytes < 0 || maxBytes > 1<<20 {
 		return "", fmt.Errorf("invalid fuzz harness target")
 	}
-	generated, err := compiler.New().WithSource(filepath.Join(pkg.Dir, "<oak-test-package>"), pkg.Source).EmitC().Get()
+	generated, err := packageCompilation(pkg, nil).EmitC().Get()
 	if err != nil {
 		return "", err
 	}

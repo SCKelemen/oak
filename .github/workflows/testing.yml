@@ -33,7 +33,7 @@ jobs:
         if: always()
         run: |
           mkdir -p build
-          gofmt -d main.go compiler/stdlib.go stdlib/source.go testrunner/*.go > build/format.patch
+          gofmt -d main.go compiler/compilation.go compiler/stdlib.go compiler/simulation.go stdlib/source.go testrunner/*.go > build/format.patch
       - uses: actions/upload-artifact@v4
         if: always()
         with:
