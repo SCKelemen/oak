@@ -1,0 +1,29 @@
+import(std)
+
+Task: type = struct {
+  work: u32
+  slist: SListHook
+}
+
+main: (): i32 {
+  pool: [2]Task
+  ready_state: [1]IntrusiveCursor
+  pending_state: [1]IntrusiveCursor
+  nodes: [*]Task = span(&pool)
+  ready: [*]IntrusiveCursor = span(&ready_state)
+  pending: [*]IntrusiveCursor = span(&pending_state)
+  intrusive_init(ready, u32(1))
+  intrusive_init(pending, u32(2))
+  nodes[0].work = u32(42)
+  pushed: Result[u32, CollectionError] = intrusive_queue_push(pending, nodes, u32(0))
+  inserted: Bool = pushed ? | .Ok(index) => true | .Err(reason) => false
+  assert(inserted)
+  batch: Result[u32, ListTransferError] = intrusive_queue_append(ready, pending, nodes)
+  moved: u32 = batch ? | .Ok(count) => count | .Err(reason) => u32(0)
+  assert(moved == u32(1) && pending[0].count == u32(0))
+  assert(nodes[0].slist.owner == ready[0].id)
+  item: Result[u32, CollectionError] = intrusive_queue_pop(ready, nodes)
+  index: u32 = item ? | .Ok(value) => value | .Err(reason) => u32(4294967295)
+  assert(index == u32(0) && nodes[index].work == u32(42))
+  42
+}

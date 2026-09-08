@@ -287,6 +287,47 @@ PAC codes, heap objects or runtime dispatch tables are used.
 
 See `examples/stdlib_intrusive_queue.oak` for a complete queue example.
 
+## Intrusive transfer and splice
+
+These operations move membership between two initialized cursors sharing the
+same pool and hook family. Arguments are destination first, then source, then
+`nodes`; single-node transfers also take a zero-based node index. Both cursor IDs
+must be distinct and must obey the existing per-pool uniqueness contract.
+
+| Operation | Result on success | Work |
+| --- | --- | --- |
+| `slist_transfer_front` / `slist_transfer_back` | Moved node index | O(source length), locating its predecessor |
+| `dlist_transfer_front` / `dlist_transfer_back` | Moved node index | O(1) |
+| `slist_splice_front` / `slist_splice_back` | Number of moved nodes | O(source length) |
+| `dlist_splice_front` / `dlist_splice_back` | Number of moved nodes | O(source length) |
+| `intrusive_queue_append` | Number of moved nodes | O(source length), FIFO append using singly linked hooks |
+
+All return `Result[u32,ListTransferError]`. `SameList` rejects equal IDs, including
+self-transfer and self-splice; this check precedes index validation. For single-node
+transfer, `OutOfBounds` rejects indices outside the pool, and `NotMember` rejects
+detached nodes or nodes belonging to another list. Expected errors preserve both
+cursors and every node. They do not perform a remove followed by a recoverable
+failed insertion: destination capacity and membership eligibility are checked first.
+
+Splice preserves the source's order. Back splice yields `old destination ++ old
+source`; front splice yields `old source ++ old destination`. The source becomes
+empty and retains its ID for reuse. Splicing an empty source into a distinct
+list succeeds with count zero and changes nothing. Each moved hook gets the
+destination's owner ID, so subsequent removal through the old source returns
+`NotMember`. Payloads and hooks of the other family remain unchanged.
+
+The per-node owner update makes whole-list splice linear even though connecting
+list endpoints takes constant work. Splice validates the complete bounded source
+chain before retagging it; destination endpoint checks and the combined-count
+check also run before mutation. Single transfers use the existing local checks
+and removal rules. Both inputs must satisfy their full list invariants; these
+operations are not a repair mechanism for forged cursors or arbitrary hook writes.
+
+These are sequential operations, with no heap allocation or payload copies.
+They are not atomic publication primitives: callers must provide any required
+synchronization. For an executable scheduler-style batch transfer, see
+`examples/stdlib_queue_transfer.oak`.
+
 ## Verification and remaining work
 
 `compiler/e2e_stdlib_test.go` compiles real imported Oak through the compiler and
@@ -309,6 +350,11 @@ Collection tests compare array-list operations against an array/length model and
 intrusive operations against two sequence models sharing one pool. They verify
 every link, owner, cursor and payload after each step, independent hooks, clearing,
 record-valued elements, missing-hook rejection, and bounded corruption traps.
+
+Transfer tests compare 120 mixed operations per hook family against three
+sequence models sharing a pool. They check every cursor, owner, link and payload,
+including an independent live membership through the other hook family. Additional
+tests cover FIFO batch order, old-owner rejection, detach/reuse and corrupt chains.
 
 The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
