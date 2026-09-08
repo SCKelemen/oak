@@ -97,13 +97,13 @@ Slot[T]: type = struct(align: 16) { value: T, tag: u8 }
 func TestAPISnapshotIncludesMethodsGenericFieldsAndLiteralADTs(t *testing.T) {
 	methodSnapshot, err := New().WithSource("method.oak", `
 Uart: type = { port: u32 }
-fn (u: *Uart) read() -> i32 = 0
+fn (u: Uart) read() -> i32 = 0
 `).APISnapshot("1.0.0").Get()
 	if err != nil {
 		t.Fatal(err)
 	}
-	method, ok := methodSnapshot.Exports["*Uart::read"]
-	if !ok || method.Kind != "method" || !strings.Contains(method.Type, "receiver[*Uart]") {
+	method, ok := methodSnapshot.Exports["Uart::read"]
+	if !ok || method.Kind != "method" || !strings.Contains(method.Type, "receiver[Uart]") {
 		t.Fatalf("receiver method missing from API: %#v", method)
 	}
 

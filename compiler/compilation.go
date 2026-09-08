@@ -162,7 +162,7 @@ func (comp Compilation) SyntaxTree() Stage[*SyntaxTree] {
 // checking (memory safety), and discipline analysis (bounded execution) all
 // gate compilation. Error-severity diagnostics always reject; in the strict
 // profile, warnings (recorded unsafe assumptions, tail-recursion
-// obligations, unnecessary-code warnings) reject too (85-discipline Â§7).
+// obligations, unnecessary-code warnings) reject too (85-discipline §7).
 func (comp Compilation) Check() Stage[*SemanticModel] {
 	return comp.Parse().Then(func(tree *SyntaxTree) (*SemanticModel, error) {
 		publicRoot, ok := cloneSyntax(reflect.ValueOf(tree.Root)).Interface().(*ast.Program)
