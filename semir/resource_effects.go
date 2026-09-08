@@ -101,13 +101,22 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 }
 
 // ValidateResourceSemantics validates every resource-specific transition fact
-// in the module. Module.Validate owns the generic SemIR schema; this method is
-// the resource protocol refinement consumed by resource-aware frontends.
+// in the module. Resource effects require an explicit resolved Callable so a
+// protocol-local transition label cannot accidentally affect an unrelated
+// source callable with the same spelling.
 func (m Module) ValidateResourceSemantics() error {
 	for _, protocol := range m.Protocols {
 		for _, transition := range protocol.Transitions {
-			if _, _, err := transition.ResourceSemantics(); err != nil {
+			_, present, err := transition.ResourceSemantics()
+			if err != nil {
 				return fmt.Errorf("protocol %q transition %q: %w", protocol.Name, transition.Name, err)
+			}
+			if present && transition.Callable == "" {
+				return fmt.Errorf(
+					"protocol %q transition %q has resource effects but no resolved callable",
+					protocol.Name,
+					transition.Name,
+				)
 			}
 		}
 	}
