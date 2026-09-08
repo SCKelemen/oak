@@ -1,8 +1,10 @@
 package compiler
 
 import (
+ "encoding/json"
  "fmt"
  "os"
+ "strconv"
  "strings"
  "testing"
  "unicode/utf16"
@@ -364,11 +366,11 @@ func TestE2EStdlibTextBuilder(t *testing.T) {
 }
 
 func TestE2EStdlibTextExample(t *testing.T) {
-	source, err := os.ReadFile("../examples/stdlib_strings.oak")
-	if err != nil {
-		t.Fatal(err)
+	for _, path := range []string{"stdlib_strings.oak", "strings/strings.oak", "strings/encoding/ascii.oak", "strings/encoding/utf8.oak", "strings/encoding/utf16.oak", "strings/encoding/utf32.oak", "strings/logascii.oak", "strings_encoding.oak"} {
+		source, err := os.ReadFile("../examples/" + path)
+		if err != nil { t.Fatal(err) }
+		runTextTest(t, "textexample", string(source))
 	}
-	runTextTest(t, "textexample", string(source))
 }
 
 func TestE2EStdlibTextLiterals(t *testing.T) {
@@ -452,4 +454,90 @@ main: (): i32 {
  42
 }
 `)
+}
+
+func TestE2EStdlibTextUnicodeTables(t *testing.T) {
+	data, err := os.ReadFile("../stdlib/unicode17.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Version string                       `json:"version"`
+		Maps    map[string]map[string][]uint32 `json:"maps"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.Version != "17.0.0" {
+		t.Fatal("unexpected Unicode version")
+	}
+	var src strings.Builder
+	src.WriteString("import(std)\nmain: (): i32 {\n")
+	for _, name := range []string{"lower", "upper", "fold"} {
+		mappings := map[uint32][]uint32{}
+		for key, values := range fixture.Maps[name] {
+			cp, err := strconv.ParseUint(key, 10, 32)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mappings[uint32(cp)] = values
+		}
+		var checksum, count uint64
+		for cp := uint32(0); cp <= 0x10ffff; cp++ {
+			if cp >= 0xd800 && cp <= 0xdfff {
+				continue
+			}
+			values, ok := mappings[cp]
+			if !ok {
+				values = []uint32{cp}
+			}
+			count += uint64(len(values))
+			for i, value := range values {
+				checksum += uint64(cp+1) * uint64(value+1) * uint64(i+1)
+			}
+		}
+		fmt.Fprintf(&src, "true ? {\ncp: u32 = 0\nchecksum: u64 = 0\ncount: u64 = 0\nwhile cp <= u32(1114111) {\nunicode_is_scalar(cp) ? {\nmapping: UnicodeMapping = unicode_%s(cp)\ncount = count + u64(mapping.count)\ni: u32 = 0\nwhile i < mapping.count {\nvalue: u32 = unicode_mapping_at(mapping, i)\nassert(unicode_is_scalar(value))\nchecksum = checksum + u64(cp + u32(1)) * u64(value + u32(1)) * u64(i + u32(1))\ni = i + u32(1)\n}\n}\ncp = cp + u32(1)\n}\nassert(checksum == u64(%d) && count == u64(%d))\n}\n", name, checksum, count)
+	}
+	src.WriteString("42\n}\n")
+	runTextTest(t, "texttables", src.String())
+}
+
+func TestE2EStdlibTextBorrowedSlices(t *testing.T) {
+	runTextTest(t, "textviews", `
+import(std)
+low_calls: u32 = 0
+high_calls: u32 = 0
+slice_low: (): u32 { low_calls = low_calls + u32(1)
+ u32(1)
+}
+slice_high: (): u32 { high_calls = high_calls + u32(1)
+ u32(4)
+}
+main: (): i32 {
+ src: []u8 = text_literal("hello")
+ middle: []u8 = src[slice_low():slice_high()]
+ assert(low_calls == u32(1) && high_calls == u32(1))
+ assert(text_equal(middle, text_literal("ell")))
+ nested: []u8 = middle[1:]
+ assert(text_equal(nested, text_literal("ll")))
+ empty: []u8 = src[5:5]
+ assert(len(empty) == u32(0))
+ data: [4]u8
+ true ? {
+  whole: [*]u8 = span(&data)
+  writable: [*]u8 = whole[1:3]
+  writable[0] = u8(42)
+  writable[1] = u8(7)
+ }
+ assert(data[0] == u8(0) && data[1] == u8(42) && data[2] == u8(7) && data[3] == u8(0))
+ 42
+}
+`)
+	for _, bounds := range [][2]uint32{{2, 1}, {0, 4}, {^uint32(0), ^uint32(0)}} {
+		source := fmt.Sprintf("import(std)\nmain: (): i32 {\nsrc: []u8 = text_literal(\"abc\")\nlow: u32 = %d\nhigh: u32 = %d\npart: []u8 = src[low:high]\n0\n}", bounds[0], bounds[1])
+		_, abnormal := buildAndRun(t, "badtextview", source)
+		if !abnormal {
+			t.Fatal("invalid borrowed slice must trap")
+		}
+	}
 }

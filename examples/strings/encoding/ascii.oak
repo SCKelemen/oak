@@ -1,33 +1,9 @@
-package encoding/ascii
-
-import strings
-import encoding/utf8
-
-// Uppercase ASCII (A–Z / a–z).
-fn to_upper(s: strings.ascii_string) -> strings.ascii_string =
-    // mutate a copy of bytes: 'a'..'z' -> 'A'..'Z'
-    s
-
-// Lowercase ASCII.
-fn to_lower(s: strings.ascii_string) -> strings.ascii_string =
-    s
-
-// Lossless: try to view a canonical utf8 string as ASCII.
-fn try_from_string(s: strings.string) -> strings.ascii_string =
-    strings.as_ascii_view(s)
-
-// Lossy: non-ASCII bytes become '?' (0x3F).
-fn from_string_lossy(s: strings.string) -> strings.ascii_string =
-    // copy bytes while mapping >=0x80 to '?'
-    { units: s.units }
-
-// ASCII-aware write helper.
-//
-// Signature is deliberately encoding-tagged:
-//
-//   - If caller chooses E = Ascii, it's just write_bytes.
-//   - If caller chooses E = Utf8, we can still write the same bytes.
-//
-// Other encodings (Utf16, Utf32, user tags) could do something smarter.
-fn write_ascii[E](w: strings.Writer[E], s: strings.ascii_string) -> () =
-    strings.write_bytes[E](w, s.units)
+import(std)
+main: (): i32 {
+  src: []u8 = text_literal("ASCII")
+  storage: [5]u8
+  dst: [*]u8 = span(&storage)
+  assert(text_result_value(utf8_to_ascii(dst, src)) == u32(5))
+  assert(!text_result_ok(utf8_to_ascii(dst, text_literal("é"))))
+  42
+}

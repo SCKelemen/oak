@@ -1,75 +1,17 @@
-// Example: strings encoding system design
-// This demonstrates the encoding tag system for strings
-
-package strings
-
-// Encoding is the base kind for all encodings
-Encoding: type = {}
-
-// Built-in encoding instances (zero-size marker types)
-utf8: Encoding = {}
-ascii: Encoding = {}
-utf16: Encoding = {}
-utf32: Encoding = {}
-
-// Generic immutable string view over bytes
-// Str[E] represents a read-only string in encoding E
-Str[E: Encoding]: type = {
-    bytes: []u8
+import(std)
+main: (): i32 {
+  src: []u8 = text_literal("A😀")
+  storage: [3]u16
+  true ? {
+    dst: [*]u16 = span(&storage)
+    assert(text_result_value(utf8_to_utf16(dst, src)) == u32(3))
+  }
+  true ? {
+    units: []u16 = view(&storage)
+    assert(text_result_value(utf16_count(units)) == u32(2))
+    output: [5]u8
+    dst: [*]u8 = span(&output)
+    assert(text_result_value(utf16_to_utf8(dst, units)) == u32(5))
+  }
+  42
 }
-
-// Generic mutable string buffer (borrowed span)
-// StrBuf[E] represents a mutable view into bytes in encoding E
-StrBuf[E: Encoding]: type = {
-    bytes: [*]u8
-}
-
-// Canonical built-in string type (UTF-8)
-string: type = Str[utf8]
-
-// Named variants for protocols where encoding matters
-ascii_string: type = Str[ascii]
-
-// Mutable string buffers
-string_buf: type = StrBuf[utf8]
-ascii_buf: type = StrBuf[ascii]
-
-// Example: encoding-tagged function
-// write[E] converts a string to encoding E and writes it
-fn write[E: Encoding](val: string) -> () =
-    // E is the target encoding
-    // Convert val (utf8) to bytes in encoding E
-    // Push to some E-specific sink
-    // (implementation would go here)
-    ()
-
-// Example usage:
-// write[ascii](msg)  // converts utf8 string to ascii and writes
-// write[utf8](msg)   // writes utf8 directly
-
-// Transformation functions using encoding tags
-fn into[E: Encoding](s: string) -> Str[E] =
-    // Convert canonical utf8 string into an E-encoded view
-    // (implementation would validate/convert)
-    { bytes: s.bytes }  // placeholder - would do actual conversion
-
-fn from_bytes[E: Encoding](b: []u8) -> Str[E] =
-    // Parse bytes as E-encoded text (may validate/fail)
-    { bytes: b }  // placeholder
-
-fn recode[E: Encoding, F: Encoding](s: Str[E]) -> Str[F] =
-    // Recode between encodings
-    // (implementation would convert E -> F)
-    { bytes: s.bytes }  // placeholder
-
-// Example: user-defined encoding
-package encoding/shiftjis
-
-import strings
-
-shiftjis: strings.Encoding = {}
-
-ShiftJisStr: type = strings.Str[shiftjis]
-
-fn to_shiftjis(s: string) -> ShiftJisStr =
-    strings.into[shiftjis](s)

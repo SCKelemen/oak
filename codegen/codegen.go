@@ -55,6 +55,7 @@ type CodeGenerator struct {
 	// function body is being emitted, so element access lowers to the right
 	// bounds-checked form. Unknown containers fail closed.
 	localTypes map[string]localContainer
+	sliceHelpers map[string]string
 }
 
 // localContainer classifies a local binding for element-access lowering.
@@ -104,6 +105,7 @@ func (cg *CodeGenerator) SetSourceText(text string) {
 // Generate generates C code from an Oak program
 func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChecker) (string, error) {
 	cg.output.Reset()
+	cg.sliceHelpers = make(map[string]string)
 	cg.types = make(map[string]bool)
 	cg.stringLiterals = []string{}
 	cg.stringLiteralMap = make(map[string]int)
@@ -190,6 +192,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 
 	// Forward declarations: C requires declaration before use, and Oak
 	// functions are order-independent.
+	sliceHelperOffset := cg.output.Len()
 	cg.emitFunctionPrototypes(program)
 
 	// Emit function definitions
@@ -202,7 +205,20 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 
 	cg.emitEntryPoint()
 
-	return cg.output.String(), nil
+	output := cg.output.String()
+	if len(cg.sliceHelpers) != 0 {
+		names := make([]string, 0, len(cg.sliceHelpers))
+		for name := range cg.sliceHelpers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		var helpers strings.Builder
+		for _, name := range names {
+			helpers.WriteString(cg.sliceHelpers[name])
+		}
+		output = output[:sliceHelperOffset] + helpers.String() + output[sliceHelperOffset:]
+	}
+	return output, nil
 }
 
 // emitEntryPoint emits the real C entry point when the program defines a
@@ -1126,6 +1142,12 @@ func (cg *CodeGenerator) buildLocalTypes(fn *ast.FunctionStatement) map[string]l
 // identifiers are classified — everything else fails closed.
 func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 	if call, ok := expr.(*ast.InvocationExpression); ok {
+		if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "core_slice" && len(call.Arguments) == 3 {
+			info := cg.localContainerOf(call.Arguments[0])
+			if info.kind == containerView || info.kind == containerSpan {
+				return info
+			}
+		}
 		if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "core_index" && len(call.Arguments) == 2 {
 			return cg.localContainerOf(&ast.IndexExpression{Left: call.Arguments[0], Index: call.Arguments[1]})
 		}
@@ -1883,11 +1905,14 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			}
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
+			if ident.Value == "core_slice" && len(e.Arguments) == 3 && cg.emitBorrowedSlice(e, tc) {
+				return
+			}
 			if ident.Value == "core_index" && len(e.Arguments) == 2 {
 				cg.emitCoreIndex(e, tc)
 				return
 			}
-			if ident.Value == "len" && len(e.Arguments) == 1 {
+			if (ident.Value == "len" || ident.Value == "core_len") && len(e.Arguments) == 1 {
 				cg.emitLen(e, tc)
 				return
 			}
