@@ -3,7 +3,12 @@ JsonError: type = InvalidEncoding | InvalidSyntax | DestinationTooSmall | SizeOv
 JsonStrict: type = StrictJson
 // Policy is phantom: only cursor and sticky error state occupy storage.
 JsonEncoder[Policy]: type = struct { written: u32, status: u32 }
-json_encoder: (): JsonEncoder[JsonStrict] = JsonEncoder[JsonStrict] { written: u32(0), status: u32(0) }
+json_encoder: (): JsonEncoder[JsonStrict] {
+ encoder: JsonEncoder[JsonStrict]
+ encoder.written = u32(0)
+ encoder.status = u32(0)
+ encoder
+}
 json_result_ok: (value: Result[u32, JsonError]): Bool = value ? | .Ok(n) => true | .Err(e) => false
 json_result_value: (value: Result[u32, JsonError]): u32 = value ? | .Ok(n) => n | .Err(e) => u32(4294967295)
 json_error_code: (error: JsonError): u32 = error ?
@@ -89,7 +94,7 @@ json_string_encode_at: (dst: [*]u8, offset: u32, src: []u8): Result[u32, JsonErr
   while at < len(src) {
    end: u32 = json_string_run(src, at)
    json_copy_run(dst, out, src, at, end)
-   out = out + end - at
+   out = out + (end - at)
    at = end
    at < len(src) ? {
     unit: u8 = src[at]
@@ -151,7 +156,7 @@ json_string_decode_size: (src: []u8): Result[u32, JsonError] {
   valid: Bool = true
   while at < limit && valid {
    end: u32 = json_string_run(src, at)
-   total = total + end - at
+   total = total + (end - at)
    at = end
    at < limit ? {
     valid = src[at] == u8(92)
@@ -176,7 +181,7 @@ json_string_decode: (dst: [*]u8, src: []u8): Result[u32, JsonError] {
   while at < limit {
    end: u32 = json_string_run(src, at)
    json_copy_run(dst, out, src, at, end)
-   out = out + end - at
+   out = out + (end - at)
    at = end
    at < limit ? {
     item: TextScalar = json_escape(src, at)
@@ -191,10 +196,11 @@ json_string_decode: (dst: [*]u8, src: []u8): Result[u32, JsonError] {
 }
 append_json_string: (encoder: JsonEncoder[JsonStrict], dst: [*]u8, src: []u8): JsonEncoder[JsonStrict] {
  next: JsonEncoder[JsonStrict] = encoder
+ next.status == u32(0) && next.written != u32(0) ? { next.status = u32(2) }
  next.status == u32(0) ? {
   result: Result[u32, JsonError] = json_string_encode_at(dst, next.written, src)
   result ? | .Ok(n) => { next.written = next.written + n } | .Err(e) => { next.status = json_error_code(e) }
  }
  next
 }
-finish_json: (encoder: JsonEncoder[JsonStrict]): Result[u32, JsonError] = encoder.status == u32(0) ? { .Ok(encoder.written) } | encoder.status == u32(1) ? { .Err(.InvalidEncoding) } | encoder.status == u32(2) ? { .Err(.InvalidSyntax) } | encoder.status == u32(3) ? { .Err(.DestinationTooSmall) } | { .Err(.SizeOverflow) }
+finish_json: (encoder: JsonEncoder[JsonStrict]): Result[u32, JsonError] = encoder.status == u32(0) && encoder.written == u32(0) ? { .Err(.InvalidSyntax) } | encoder.status == u32(0) ? { .Ok(encoder.written) } | encoder.status == u32(1) ? { .Err(.InvalidEncoding) } | encoder.status == u32(2) ? { .Err(.InvalidSyntax) } | encoder.status == u32(3) ? { .Err(.DestinationTooSmall) } | { .Err(.SizeOverflow) }

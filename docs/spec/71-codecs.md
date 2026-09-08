@@ -1,15 +1,16 @@
 # Codecs: Phantom-Typed Producers and Consumers
 
-**Status: normative design.** No codec surface is implemented yet; this
-document fixes the model so that serialization, transcoding, and record
-codecs are built against one design. Prerequisites and their status are
-listed in §9.
+**Status: normative design with a first concrete JSON string codec.**
+`stdlib/json.oak` implements strict string encoding/decoding, bounded SIMD
+runs, and a phantom-policy encoder cursor (§10). Generic `From`/`To`,
+record derivation, borrowed decode results, and fusion remain design work.
+Prerequisites are listed in §9.
 
 ## 1. What is borrowed from weePickle, and what is not
 
 weePickle's decomposition is right for Oak: a **producer** deconstructs a
 value into operations, a **consumer** builds a result from them, and
-connecting a producer directly to a consumer never materializes an
+connecting a producer directly to a consumer does not require an
 intermediate document tree. That is the no-hidden-allocation doctrine
 applied to serialization.
 
@@ -66,12 +67,10 @@ length; decoding constructs the requested value into caller-provided
 storage. Fluent adapter spellings (`from(x).to[Json](out)`) are surface
 sugar over these functions and must lower to the same direct calls.
 
-The only place an event stream is unavoidable is format-to-format
-transcoding **without a schema** (`Json -> MsgPack` for unknown data).
-There the events are a stack-value ADT —
-`Event = ObjectStart | ObjectEnd | Key: Text[Utf8] | Int: i64 | ...` —
-delivered to a sink whose type is a **type parameter**, so even that
-dispatch is monomorphized, never indirect.
+Schema-less format-to-format transcoding can use direct structural visitor
+operations. It need not materialize an event ADT. An explicit event buffer
+is an optional adapter with caller-owned storage; bulk text, byte, and
+array operations must remain available to specialized implementations.
 
 ## 4. Zero cost, defined
 
@@ -154,7 +153,7 @@ establish memory safety (ownership does that) or hardware privilege
 ## 8. What NOT to do
 
 - Do not wrap the UTF transcoders in a per-scalar visitor. They are
-  already direct span-to-span loops with SIMD paths; a visitor would slow
+  already direct span-to-span loops; a visitor would slow
   the fast path to fit an abstraction. Text stays phantom-encoded
   functions (§3).
 - Do not introduce runtime codec dispatch by default. When the format is
@@ -177,3 +176,65 @@ establish memory safety (ownership does that) or hardware privilege
    is honest and allocation-free.
 4. Then the first codec: JSON over declared records, verified zero-cost
    per §4.
+
+## 10. Concrete JSON string codec
+
+The first implementation exports:
+
+- `json_string_encode_size(src)`, `json_string_encode(dst, src)`, and
+  `json_string_encode_at(dst, offset, src)`;
+- `json_string_decode_size(src)` and `json_string_decode(dst, src)`;
+- `json_encoder().append_json_string(dst, src).finish_json()`.
+
+Results are `Result[u32, JsonError]`; lengths count bytes. Decoding accepts
+exactly one quoted JSON string, without surrounding whitespace. It supports
+all JSON escapes and paired UTF-16 surrogate escapes, rejects lone
+surrogates, unescaped controls, invalid UTF-8, and trailing content. Encoding
+preserves UTF-8 and escapes controls as `\\u00xx`. Neither path adds a NUL
+terminator. Input and output must obey ordinary non-aliasing borrow rules.
+
+Both directions preflight validity and output size before writing, so errors
+leave the entire destination unchanged. Explicit preflight followed by an
+encode/decode repeats validation: a size result is not a validity capability.
+
+`JsonEncoder[JsonStrict]` has only two u32 fields: written bytes and sticky
+error status. The policy is phantom. This bootstrap cursor emits one string
+value; empty finish and a second successful append are syntax errors. It is
+not a record/object builder or protected validation proof. Public cursor
+fields do not establish validity for arbitrary forged cursor values.
+
+## 11. SIMD, locality, and fusion
+
+The concrete string scanner classifies 16 contiguous bytes per full block
+using portable SIMD operations; the AArch64 backend supplies NEON lowering.
+Unescaped runs copy with vector loads/stores and a scalar tail. Every vector
+load fits within the actual view; no hidden input padding or cache-line-size
+assumption exists. UTF-8 validation is a separate existing runtime pass.
+There is no claim of fused UTF-8 validation or simdjson-equivalent parsing.
+
+The steady-state working set is input/output spans plus scalar cursors and
+vectors. No document tree, per-character event allocation, or token array is
+required. Two-pass atomic output trades additional reads for unchanged output
+on failure. Future incremental sinks must name their partial-write contract.
+
+Future structural scanning should retain block classification, reductions,
+prefix scans, and index compaction in compiler IR until fusion decisions are
+made. Futhark's vertical/horizontal and scan-scatter fusion are useful models:
+remove temporary arrays and combine compatible passes, subject to effects,
+error ordering, bounds, and ownership. Monomorphization alone does not provide
+these transformations. Scratch indexes remain explicit where materializing
+them is beneficial; the IR must not mandate an event object per byte/token.
+
+CPU SIMD and multicore/GPU parallel execution are separate choices. The kernel
+and hypervisor codec path must not implicitly launch workers or GPU work.
+Physical cache tuning, kernel SIMD-context eligibility, native M-series
+throughput, and code-size claims require target-specific verification.
+
+Tests exercise strict escape semantics against Go's JSON decoder, malformed
+inputs, exact/tiny buffers, and boundaries around 16/32/64 bytes. Generated C
+checks cover allocation absence and the presence of NEON load/store paths;
+these are not an assembly-level proof that all fluent wrappers disappear.
+
+References: [weePickle](https://github.com/rallyhealth/weePickle),
+[Futhark scan-scatter fusion](https://futhark-lang.org/blog/2026-03-24-scan-scatter-fusion.html).
+

@@ -60,7 +60,15 @@ func TestE2EJsonCodec(t *testing.T) {
 	source.WriteString(`
 true ? {
  input: []u8 = text_literal("hello")
- encoded: []u8 = text_literal("\"hello\"")
+ encoded_data: [7]u8
+ encoded_data[0] = u8(34)
+ encoded_data[1] = u8(104)
+ encoded_data[2] = u8(101)
+ encoded_data[3] = u8(108)
+ encoded_data[4] = u8(108)
+ encoded_data[5] = u8(111)
+ encoded_data[6] = u8(34)
+ encoded: []u8 = view(&encoded_data)
  data: [4]u8
  dst: [*]u8 = span(&data)
  dst[0] = u8(77)
@@ -72,6 +80,18 @@ true ? {
  assert(!json_result_ok(encoder.finish_json()))
  assert(encoder.written == u32(0))
  assert(dst[0] == u8(77) && dst[3] == u8(88))
+}
+true ? {
+ input: []u8 = text_literal("x")
+ data: [6]u8
+ dst: [*]u8 = span(&data)
+ assert(!json_result_ok(json_encoder().finish_json()))
+ encoder: JsonEncoder[JsonStrict] = json_encoder().append_json_string(dst, input)
+ assert(json_result_value(encoder.finish_json()) == u32(3))
+ dst[3] = u8(77)
+ twice: JsonEncoder[JsonStrict] = encoder.append_json_string(dst, input)
+ assert(!json_result_ok(twice.finish_json()))
+ assert(twice.written == u32(3) && dst[3] == u8(77))
 }
 42
 }
@@ -103,7 +123,10 @@ main: (): i32 {
 			t.Fatalf("unexpected lowering: %s", forbidden)
 		}
 	}
-	// The policy must not become a field of the emitted cursor record.
+	// Two u32 fields only: the policy contributes no tag or payload.
+	if !strings.Contains(emitted, "sizeof(oak_JsonEncoder_JsonStrict) == 8u") {
+		t.Fatal("phantom policy changed cursor layout")
+	}
 	if !strings.Contains(emitted, "vld1q_u8") || !strings.Contains(emitted, "vst1q_u8") {
 		t.Fatal("missing NEON block load/store lowering")
 	}
