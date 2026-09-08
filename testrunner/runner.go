@@ -31,18 +31,29 @@ func Defaults() Config {
 
 type Result struct {
 	Test
-	Commands       []Command      `json:"commands,omitempty"`
-	Trace          []TraceEvent   `json:"trace,omitempty"`
-	TraceTruncated bool           `json:"trace_truncated,omitempty"`
-	Package        string         `json:"package"`
-	Status         string         `json:"status"`
-	Cases          int            `json:"cases"`
-	Discards       int            `json:"discards"`
-	Seed           uint64         `json:"seed"`
-	Failure        string         `json:"failure,omitempty"`
-	Artifact       string         `json:"artifact,omitempty"`
-	Output         string         `json:"output,omitempty"`
-	Classes        map[uint32]int `json:"classes,omitempty"`
+	Commands       []Command    `json:"commands,omitempty"`
+	Trace          []TraceEvent `json:"trace,omitempty"`
+	TraceText      []string     `json:"trace_text,omitempty"`
+	TraceTruncated bool         `json:"trace_truncated,omitempty"`
+	// Divergence is set when a strict replay reproduced the failure signature
+	// but not the recorded semantic trace.
+	Divergence *TraceDivergence `json:"trace_divergence,omitempty"`
+	Package    string           `json:"package"`
+	Status     string           `json:"status"`
+	Cases      int              `json:"cases"`
+	Discards   int              `json:"discards"`
+	Seed       uint64           `json:"seed"`
+	Failure    string           `json:"failure,omitempty"`
+	Artifact   string           `json:"artifact,omitempty"`
+	Output     string           `json:"output,omitempty"`
+	Classes    map[uint32]int   `json:"classes,omitempty"`
+	schema     *TraceSchema
+}
+
+// setTrace records a trace with its decoded text when the package has a schema.
+func (r *Result) setTrace(trace []TraceEvent, truncated bool) {
+	r.Trace, r.TraceTruncated = trace, truncated
+	r.TraceText = r.schema.describeAll(trace)
 }
 
 // Main is usable without os.Exit, including by CLI integration tests.
@@ -208,8 +219,17 @@ func Main(args []string, stdout, stderr io.Writer) int {
 				start = 0
 			}
 			for i := start; i < len(result.Trace); i++ {
-				e := result.Trace[i]
-				fmt.Fprintf(stdout, "  trace[%d] id=%d a=%d b=%d\n", i, e.ID, e.A, e.B)
+				fmt.Fprintf(stdout, "  trace[%d] %s\n", i, result.schema.Describe(result.Trace[i]))
+			}
+			if d := result.Divergence; d != nil {
+				recorded, observed := "trace ended", "trace ended"
+				if d.Recorded != nil {
+					recorded = result.schema.Describe(*d.Recorded)
+				}
+				if d.Observed != nil {
+					observed = result.schema.Describe(*d.Observed)
+				}
+				fmt.Fprintf(stdout, "  diverged at trace[%d]: recorded %s; observed %s\n", d.Index, recorded, observed)
 			}
 			if result.TraceTruncated {
 				fmt.Fprintln(stdout, "  trace truncated after 256 events; later events were not recorded")
@@ -278,7 +298,7 @@ func parseCover(raw string) (map[uint32]int, error) {
 }
 
 func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Config, cover map[uint32]int, replay *Artifact) Result {
-	result := Result{Test: test, Package: pkg.Dir, Status: "pass", Seed: cfg.Seed, Classes: map[uint32]int{}}
+	result := Result{Test: test, Package: pkg.Dir, Status: "pass", Seed: cfg.Seed, Classes: map[uint32]int{}, schema: pkg.Schema}
 	format := ""
 	generator := -1
 	if test.Generator != "" {
@@ -308,7 +328,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		out := native.run(index, replay.Input)
 		result.Cases = 1
 		result.Output = out.output
-		result.Trace, result.TraceTruncated = out.trace, out.traceTruncated
+		result.setTrace(out.trace, out.traceTruncated)
 		if format != "" {
 			result.Commands = decodeCommands(replay.Input)
 		}
@@ -317,7 +337,12 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 			result.Failure = "reproduced " + out.signature
 			if replay.TraceVersion == traceVersion && !sameTrace(out, outcome{trace: replay.Trace, traceTruncated: replay.TraceTruncated}) {
 				result.Status = "error"
-				result.Failure = "replay trace diverged despite matching failure signature"
+				result.Divergence = divergence(replay.Trace, out.trace)
+				if result.Divergence != nil {
+					result.Failure = fmt.Sprintf("replay trace diverged at event %d despite matching failure signature", result.Divergence.Index)
+				} else {
+					result.Failure = "replay trace truncation flag diverged despite matching failure signature"
+				}
 			}
 		} else {
 			result.Status = "error"
@@ -390,7 +415,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 				}
 			}
 		}
-		result.Trace, result.TraceTruncated = out.trace, out.traceTruncated
+		result.setTrace(out.trace, out.traceTruncated)
 		result.Output = out.output
 		if format != "" {
 			result.Commands = decodeCommands(best)
@@ -445,7 +470,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 				}
 				if generated.status != "pass" {
 					result.Status, result.Failure, result.Output = "error", "command generator failed: "+generated.signature, generated.output
-					result.Trace, result.TraceTruncated = generated.trace, generated.traceTruncated
+					result.setTrace(generated.trace, generated.traceTruncated)
 					return result
 				}
 				input = encodeCommands(generated.commands)
