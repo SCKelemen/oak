@@ -204,3 +204,60 @@ append_json_string: (encoder: JsonEncoder[JsonStrict], dst: [*]u8, src: []u8): J
  next
 }
 finish_json: (encoder: JsonEncoder[JsonStrict]): Result[u32, JsonError] = encoder.status == u32(0) && encoder.written == u32(0) ? { .Err(.InvalidSyntax) } | encoder.status == u32(0) ? { .Ok(encoder.written) } | encoder.status == u32(1) ? { .Err(.InvalidEncoding) } | encoder.status == u32(2) ? { .Err(.InvalidSyntax) } | encoder.status == u32(3) ? { .Err(.DestinationTooSmall) } | { .Err(.SizeOverflow) }
+
+// Format marker for compiler-derived codecs; never stored in a value.
+Json: type = | JsonFormat
+json_u64_size: (value: u64): u32 {
+ remaining: u64 = value
+ digits: u32 = 1
+ while remaining >= u64(10) { remaining = remaining / u64(10)
+  digits = digits + u32(1)
+ }
+ digits
+}
+json_i64_magnitude: (value: i64): u64 = value < i64(0) ? u64_bits_i64(i64(0) - (value + i64(1))) + u64(1) | u64_bits_i64(value)
+json_i64_size: (value: i64): u32 = json_u64_size(json_i64_magnitude(value)) + (value < i64(0) ? u32(1) | u32(0))
+json_bool_size: (value: Bool): u32 = value ? u32(4) | u32(5)
+json_u64_encode_at: (dst: [*]u8, offset: u32, value: u64): Result[u32, JsonError] {
+ digits: u32 = json_u64_size(value)
+ !bytes_range_fits(len(dst), offset, digits) ? { .Err(.DestinationTooSmall) } | {
+  remaining: u64 = value
+  i: u32 = digits
+  while i > u32(0) {
+   i = i - u32(1)
+   dst[offset + i] = u8(48) + u8_trunc_u64(remaining % u64(10))
+   remaining = remaining / u64(10)
+  }
+  .Ok(digits)
+ }
+}
+json_i64_encode_at: (dst: [*]u8, offset: u32, value: i64): Result[u32, JsonError] {
+ size: u32 = json_i64_size(value)
+ !bytes_range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | {
+  at: u32 = offset
+  value < i64(0) ? { dst[at] = u8(45)
+   at = at + u32(1)
+  }
+  result: Result[u32, JsonError] = json_u64_encode_at(dst, at, json_i64_magnitude(value))
+  assert(json_result_ok(result))
+  .Ok(size)
+ }
+}
+json_bool_encode_at: (dst: [*]u8, offset: u32, value: Bool): Result[u32, JsonError] {
+ size: u32 = json_bool_size(value)
+ !bytes_range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | {
+  value ? {
+   dst[offset] = u8(116)
+   dst[offset + u32(1)] = u8(114)
+   dst[offset + u32(2)] = u8(117)
+   dst[offset + u32(3)] = u8(101)
+  } | {
+   dst[offset] = u8(102)
+   dst[offset + u32(1)] = u8(97)
+   dst[offset + u32(2)] = u8(108)
+   dst[offset + u32(3)] = u8(115)
+   dst[offset + u32(4)] = u8(101)
+  }
+  .Ok(size)
+ }
+}
