@@ -36,8 +36,9 @@ complete text grammar, and compiler correctness remain unproved. The observation
 adapter, Go oracle, compiler, generated C, and C runtime remain trusted test
 infrastructure. CI runs with warnings as errors and records axiom reports.
 
-Next: propagation scratch-state refinement, beginning with encoded assignment
-updates and conflict detection.
+The [propagation-state milestone](PropagationState.md) now proves encoded
+assignment and semantic unit/conflict lemmas and compares complete native scratch
+traces. Universal classifier and whole-executor refinement remain open.
 
 ## Validation
 
