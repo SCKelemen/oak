@@ -493,6 +493,10 @@ func (t *FunctionType) Equals(other Type) bool {
 
 // TypeChecker performs type checking on AST nodes
 type TypeChecker struct {
+	// Module-system facts (typechecker/modules.go): opaque types by internal
+	// name and the loaded package paths.
+	opaqueTypes             map[string]string
+	packagePaths            map[string]bool
 	adtPayloadTypes         map[string]map[string]Type
 	monomorphicTransactions [][]Substitution
 	diagnostics             *diagnostic.DiagnosticCollector
@@ -2573,6 +2577,9 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 				tc.addError(p, "ADT type %s not found", adtName)
 				return nil
 			}
+			if !tc.checkOpaqueProjection(p.Token, adtName, p, "match") {
+				return nil
+			}
 			variant, found := tc.findADTVariant(adtName, p.Variant.Value)
 			if !found {
 				tc.addError(p, "variant %s not found in ADT %s", p.Variant.Value, adtName)
@@ -2652,6 +2659,9 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expec
 		tc.addError(expr, "ADT type %s not found", adtTypeName)
 		return nil
 	}
+	if !tc.checkOpaqueProjection(expr.Token, adtTypeName, expr, "construct") {
+		return nil
+	}
 	variant, found := tc.findADTVariant(adtTypeName, expr.Variant.Value)
 	if !found {
 		tc.addError(expr, "variant %s not found in ADT %s", expr.Variant.Value, adtTypeName)
@@ -2708,6 +2718,9 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 		namedType, ok := tc.env.GetType(typeName)
 		if !ok {
 			tc.addError(expr.TypeName, "type %s not found", typeName)
+			return nil
+		}
+		if !tc.checkOpaqueProjection(expr.Token, typeName, expr.TypeName, "construct") {
 			return nil
 		}
 		// Convert the named type to a RecordType if possible
@@ -2820,6 +2833,9 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 	if leftIdent, ok := expr.Left.(*ast.Identifier); ok {
 		adtTypeName := leftIdent.Value
 		if adtDef, ok := tc.adtTypes[adtTypeName]; ok {
+			if !tc.checkOpaqueProjection(expr.Token, adtTypeName, expr, "name a variant of") {
+				return nil
+			}
 			// This is Type.Variant - convert to VariantExpression for checking
 			if variantIdent, ok := expr.Index.(*ast.Identifier); ok {
 				variantName := variantIdent.Value
@@ -2860,6 +2876,9 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 
 	// Handle record field access: record.field
 	if recordType, ok := leftType.(*RecordType); ok {
+		if recordType.Name != "" && !tc.checkOpaqueProjection(expr.Token, recordType.Name, expr, "read a field of") {
+			return nil
+		}
 		if ident, ok := expr.Index.(*ast.Identifier); ok {
 			fieldName := ident.Value
 			if fieldType, ok := recordType.Fields[fieldName]; ok {

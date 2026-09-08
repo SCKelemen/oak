@@ -10,12 +10,12 @@ func TestAPISnapshotSeparatesRecordMeaningFromStructABI(t *testing.T) {
 	snapshot, err := New().
 		WithPackageName("example/layout").
 		WithSource("layout.oak", `
-AB: type = struct { a: u8, b: u32 }
-BA: type = struct { b: u32, a: u8 }
-ShapeAB: type = { a: u8, b: u32 }
-ShapeBA: type = { b: u32, a: u8 }
+pub AB: type = struct { a: u8, b: u32 }
+pub BA: type = struct { b: u32, a: u8 }
+pub ShapeAB: type = { a: u8, b: u32 }
+pub ShapeBA: type = { b: u32, a: u8 }
 
-getA: (value: { r | a: u8 }): u8 = value.a
+pub getA: (value: { r | a: u8 }): u8 = value.a
 `).
 		APISnapshot("1.2.3").
 		Get()
@@ -51,9 +51,9 @@ getA: (value: { r | a: u8 }): u8 = value.a
 
 func TestAPISnapshotIsDeterministic(t *testing.T) {
 	compilation := New().WithPackageName("example/deterministic").WithSource("api.oak", `
-Shape: type = { z: u16, a: u8, middle: u32 }
-Stored: type = struct(align: 16) { z: u16, a: u8, middle: u32 }
-identity[T]: (value: T): T = value
+pub Shape: type = { z: u16, a: u8, middle: u32 }
+pub Stored: type = struct(align: 16) { z: u16, a: u8, middle: u32 }
+pub identity[T]: (value: T): T = value
 `)
 	first, err := compilation.APISnapshot("0.1.0").Get()
 	if err != nil {
@@ -79,7 +79,7 @@ func TestAPISnapshotRejectsInvalidVersionBeforePublication(t *testing.T) {
 
 func TestAPISnapshotPreservesGenericStructLayoutContract(t *testing.T) {
 	snapshot, err := New().WithSource("generic.oak", `
-Slot[T]: type = struct(align: 16) { value: T, tag: u8 }
+pub Slot[T]: type = struct(align: 16) { value: T, tag: u8 }
 `).APISnapshot("0.1.0").Get()
 	if err != nil {
 		t.Fatal(err)
@@ -95,8 +95,8 @@ Slot[T]: type = struct(align: 16) { value: T, tag: u8 }
 
 func TestAPISnapshotIncludesMethodsGenericFieldsAndLiteralADTs(t *testing.T) {
 	methodSnapshot, err := New().WithSource("method.oak", `
-Uart: type = { port: u32 }
-fn (u: Uart) read() -> i32 = 0
+pub Uart: type = { port: u32 }
+pub fn (u: Uart) read() -> i32 = 0
 `).APISnapshot("1.0.0").Get()
 	if err != nil {
 		t.Fatal(err)
@@ -107,8 +107,8 @@ fn (u: Uart) read() -> i32 = 0
 	}
 
 	genericSnapshot, err := New().WithSource("generic-field.oak", `
-Slot[T]: type = struct { value: T }
-Holder: type = struct { slot: Slot[u8], tail: u32 }
+pub Slot[T]: type = struct { value: T }
+pub Holder: type = struct { slot: Slot[u8], tail: u32 }
 `).APISnapshot("1.0.0").Get()
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ Holder: type = struct { slot: Slot[u8], tail: u32 }
 	}
 
 	adtSnapshot, err := New().WithSource("literal-adt.oak", `
-Status: type = | Ready: u8 = 1
+pub Status: type = | Ready: u8 = 1
 `).APISnapshot("1.0.0").Get()
 	if err != nil {
 		t.Fatal(err)
@@ -131,8 +131,8 @@ Status: type = | Ready: u8 = 1
 func TestAPISnapshotExcludesInjectedAndSpecializedDeclarations(t *testing.T) {
 	snapshot, err := New().WithSource("public.oak", `
 import(std)
-identity[T]: (value: T): T = value
-main: (): i32 = identity[i32](42)
+pub identity[T]: (value: T): T = value
+pub main: (): i32 = identity[i32](42)
 `).APISnapshot("1.0.0").Get()
 	if err != nil {
 		t.Fatal(err)

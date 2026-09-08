@@ -16,6 +16,7 @@ package typechecker
 
 import (
 	"reflect"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/token"
@@ -34,7 +35,15 @@ func stampSemanticContext(value reflect.Value, context string) {
 	case reflect.Struct:
 		if value.Type() == reflect.TypeOf(token.Token{}) {
 			if value.CanSet() {
-				value.FieldByName("SemanticContext").SetString(context)
+				field := value.FieldByName("SemanticContext")
+				// A package-stamped token keeps its package prefix so the
+				// module system can still tell which package the syntax
+				// belongs to (opaque-type projection, typechecker/modules.go).
+				if existing := field.String(); existing != "" && existing != context && !strings.Contains(existing, "|") {
+					field.SetString(existing + "|" + context)
+				} else {
+					field.SetString(context)
+				}
 			}
 			return
 		}

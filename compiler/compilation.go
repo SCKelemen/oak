@@ -55,6 +55,12 @@ type Compilation struct {
 	resourceProtocols  []typechecker.ResourceProtocolDeclaration
 	simulation         bool
 	simulationBindings []SimulationBinding
+	// Package build (compiler/modules.go): when packageDir is set, the
+	// compilation loads the package directory and everything it imports
+	// instead of the single source.
+	packageDir   string
+	includeTests bool
+	moduleCache  string
 }
 
 // SyntaxTree is a parsed Oak source file.
@@ -62,6 +68,9 @@ type SyntaxTree struct {
 	Source SourceText
 	File   *source.File
 	Root   *ast.Program
+	// Modules carries the elaborator's facts for a package build; nil for a
+	// single-source compilation.
+	Modules *ModuleInfo
 }
 
 // SemanticModel owns type information for a syntax tree.
@@ -158,6 +167,11 @@ func (comp Compilation) Source() SourceText {
 // become synthetic braces before the parser sees them. Both surface styles
 // therefore share one parser and one AST semantics.
 func (comp Compilation) Parse() Stage[*SyntaxTree] {
+	if comp.packageDir != "" {
+		return Value(comp.packageDir).Then(func(string) (*SyntaxTree, error) {
+			return comp.parsePackageBuild()
+		})
+	}
 	return Value(comp.source).Then(func(text SourceText) (*SyntaxTree, error) {
 		// Source-decoder validation (docs/spec/70-strings.md section 8,
 		// Oak.Utf8Validity): string literals inherit their validity from the
@@ -198,7 +212,11 @@ func (comp Compilation) Check() Stage[*SemanticModel] {
 
 func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDeclaration) Stage[*SemanticModel] {
 	return comp.Parse().Then(func(tree *SyntaxTree) (*SemanticModel, error) {
-		publicRoot, ok := cloneSyntax(reflect.ValueOf(tree.Root)).Interface().(*ast.Program)
+		publicSource := tree.Root
+		if tree.Modules != nil && tree.Modules.Public != nil {
+			publicSource = tree.Modules.Public
+		}
+		publicRoot, ok := cloneSyntax(reflect.ValueOf(publicSource)).Interface().(*ast.Program)
 		if !ok || publicRoot == nil {
 			return nil, fmt.Errorf("compiler: cannot preserve public syntax surface")
 		}
@@ -219,7 +237,14 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		}
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
+		if tree.Modules != nil {
+			tc.SetModuleContext(tree.Modules.OpaqueTypes, tree.Modules.Packages)
+		}
 		tc.CheckProgram(tree.Root)
+		if tree.Modules != nil {
+			// Sealed-import member types (docs/spec/83-modules.md section 6.3).
+			tc.CheckSignatureObligations(tree.Modules.Obligations)
+		}
 		if err := comp.gate("typecheck", tc.Diagnostics()); err != nil {
 			return nil, err
 		}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/modules"
 )
 
 // DiagnosticError preserves first-class compiler diagnostics across the public
@@ -27,7 +28,7 @@ func (e *DiagnosticError) Error() string {
 		if d == nil {
 			continue
 		}
-		parts = append(parts, d.PlainText())
+		parts = append(parts, modules.DemangleText(d.PlainText()))
 	}
 	if len(parts) == 0 {
 		return fmt.Sprintf("%s failed", e.Phase)

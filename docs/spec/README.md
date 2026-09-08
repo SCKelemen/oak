@@ -61,6 +61,8 @@ Use these terms precisely:
 - `60-effects-allocation.md` — effects, arenas, slabs, handles, realtime prohibitions
 - `70-strings.md` — encoded text, validation, borrowing and representation
 - `80-metadata.md` — typed attributes/tags and phantom semantic types
+- `82-package-semver.md` — checked public API snapshots and automatic SemVer
+- `83-modules.md` — packages, modules (`oak.mod`), imports, `pub`/`pub(opaque)` visibility, sealed imports, injective internal naming
 - `71-codecs.md` — phantom-typed producer/consumer codecs: formats, encodings, policies, and validation state as erased type parameters (normative design)
 - `90-backend.md` — executable lowering and C-backend requirements
 - `92-ffi.md` — the `c` interface library, extern bindings, and the abstract assembly interface

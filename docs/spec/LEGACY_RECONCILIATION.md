@@ -4,7 +4,7 @@ The top-level Oak documents below are retained as design history and examples un
 
 | Legacy document | Normative destination | Reconciliation notes |
 | --- | --- | --- |
-| `SPEC.md` | entire `docs/spec/` tree | foundational design source; several syntax/semantic choices were later contradicted by newer docs |
+| `SPEC.md` | entire `docs/spec/` tree | foundational design source; several syntax/semantic choices were later contradicted by newer docs; §3.3 capitalization-based visibility and `import(pkg) as x` / `name.Type::Variant` are superseded by `83-modules.md` |
 | `ADT_AND_PATTERN_MATCHING.md` | `10-syntax.md`, `30-adts-patterns.md` | preserves ADTs/patterns; canonicalizes `=>`, `Type.Case`, `.Case`; separates payload defaults from representation/metadata |
 | `tags_and_phantoms.md` | `30-adts-patterns.md`, `80-metadata.md` | valuable split between phantom identity and metadata; old default/tag syntax no longer normative |
 | `TAGGING_AND_LABELING.md` | `80-metadata.md` | semantic concept retained; backtick surface syntax remains unresolved/legacy |
@@ -24,6 +24,23 @@ The top-level Oak documents below are retained as design history and examples un
 | `IMPLEMENTATION_SUMMARY.md` | `STATUS.md` | historical implementation snapshot; contains known stale statements such as future C backend work |
 
 ## Major conflicts resolved so far
+
+### Visibility and import syntax
+
+`SPEC.md` §3.3 promised Go-style visibility by capitalization; `README.md` and
+`TOUR_OF_OAK.md` advertised `str: package = import("strings")` and
+`import("a", "b")`. `82-package-semver.md` forbade inferring visibility from
+spelling. Normative decision (`83-modules.md`):
+
+```text
+pub decl              exported; everything else private
+pub(opaque) T: type   exported name, private definition
+import("a/b")         binds b
+x := import("a/b")    binds x
+x: Sig = import("a/b") binds x sealed to the record shape Sig
+```
+
+One path per import; `package` is not a type; `as` is not an alias keyword.
 
 ### Match arrows
 

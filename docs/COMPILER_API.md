@@ -29,6 +29,23 @@ cSource, err := c.EmitC().Get()
 
 `Compilation` is a value. `With...` methods return modified copies rather than mutating a shared compiler object.
 
+A whole-package build (docs/spec/83-modules.md) replaces `WithSource` with a
+package directory; the module loader resolves `oak.mod`, every imported
+package, visibility, and sealing before the ordinary phases run:
+
+```go
+c := compiler.New().
+    WithPackageDir("examples/modules").   // root package + everything it imports
+    WithModuleCache(os.Getenv("OAKMODCACHE")). // optional; where required modules live
+    WithTestFiles(false)                  // include *_test.oak of the root package
+
+cSource, err := c.EmitC().Get()           // one C translation unit
+```
+
+Module diagnostics arrive as a `*DiagnosticError` with phase `"modules"` and
+codes `OAK-M01xx`; `SyntaxTree.Modules` carries the elaborator's facts
+(public surface, opaque types, sealed-import obligations, compile order).
+
 The command-line compiler now uses this API rather than manually constructing scanner, parser, type checker, lowering, and code-generation phases.
 
 ## Generic stages

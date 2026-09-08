@@ -48,18 +48,34 @@ Oak is designed with these principles:
 
 ### Packages and Imports
 
+Normative rules: [`docs/spec/83-modules.md`](docs/spec/83-modules.md). A
+package is a directory; a module is an `oak.mod` tree; visibility is explicit.
+
 ```oak
 package main
 
-// Import and bind
-str := import("strings")
+// Import and bind under the last path segment
+import("example.com/hello/geometry")
 
-// Import multiple
-import("strings", "encoding/utf8")
+// Import under an explicit alias
+geo := import("example.com/hello/geometry")
 
-// Import without binding (use default package name)
-import("strings")
+// Import sealed to a signature: only Key, key and hash are visible
+h: { Key: type, key: (u64) -> Key, hash: (Key) -> u64 } = import("example.com/hello/fnv")
+
+// Bootstrap standard library (unqualified prelude, see the spec)
+import(std)
 ```
+
+```oak
+package geometry
+
+pub(opaque) Point: type = struct { x: i32, y: i32 }   // name exported, fields private
+pub make: (x: i32, y: i32): Point = Point { x: x, y: y }
+abs: (v: i32): i32 = v < 0 ? 0 - v | v                // private to the package
+```
+
+Build a package with `oak build [dir]`; see `examples/modules`.
 
 ### Comments
 

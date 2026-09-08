@@ -1,0 +1,6 @@
+package geometry
+
+// Shape is transparent: importers may construct and match its variants.
+pub Shape: type = Dot | Line: i32
+
+pub length: (s: Shape): i32 = s ? .Dot => 0 | .Line(n) => n

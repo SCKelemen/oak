@@ -84,6 +84,7 @@ const (
 	WHILE
 	UNSAFE
 	FN
+	PUB
 	_keywords_end
 )
 
@@ -150,6 +151,7 @@ var tokens = [...]string{
 	WHILE:     "while",
 	UNSAFE:    "unsafe",
 	FN:        "fn",
+	PUB:       "pub",
 }
 
 func (token TokenKind) String() string {

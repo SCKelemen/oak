@@ -168,6 +168,11 @@ type TagDeclaration struct {
 	EndToken token.Token // closing brace of the schema
 	Name     *Identifier
 	Schema   *RecordLiteral
+	// Exported marks a `pub` declaration (docs/spec/83-modules.md section
+	// 6); visibility is never inferred from spelling. Opaque marks
+	// `pub(opaque)`: the name is exported, the definition is not.
+	Exported bool
+	Opaque   bool
 }
 
 func (td *TagDeclaration) statementNode()       {}
@@ -189,9 +194,9 @@ type RecordLiteral struct {
 	FieldOrder []RecordField
 	// Extension is the row variable in { r | name: string }.
 	// It is type-level metadata and has no runtime representation.
-	Extension  *Identifier
-	TypeName   *Identifier       // optional type name for type-qualified literals: TypeName{ ... }
-	Layout     *RecordLayoutSpec // optional declared layout: struct(packed), struct(align: 64)
+	Extension *Identifier
+	TypeName  *Identifier       // optional type name for type-qualified literals: TypeName{ ... }
+	Layout    *RecordLayoutSpec // optional declared layout: struct(packed), struct(align: 64)
 }
 
 // RecordLayoutSpec is the source-declared layout discipline of a struct type
@@ -546,6 +551,11 @@ type VariableDeclaration struct {
 	Name  *Identifier
 	Type  Expression // optional type annotation
 	Value Expression // optional initial value
+	// Exported marks a `pub` declaration (docs/spec/83-modules.md section
+	// 6); visibility is never inferred from spelling. Opaque marks
+	// `pub(opaque)`: the name is exported, the definition is not.
+	Exported bool
+	Opaque   bool
 }
 
 func (vd *VariableDeclaration) statementNode()       {}
@@ -743,6 +753,11 @@ type InterfaceType struct {
 	Name       *Identifier
 	TypeParams []*TypeParameter   // Optional type parameters: [T, Tag]
 	Methods    []*InterfaceMethod // Method signatures
+	// Exported marks a `pub` declaration (docs/spec/83-modules.md section
+	// 6); visibility is never inferred from spelling. Opaque marks
+	// `pub(opaque)`: the name is exported, the definition is not.
+	Exported bool
+	Opaque   bool
 }
 
 // InterfaceMethod represents a method signature in an interface
@@ -814,6 +829,11 @@ type ADTType struct {
 	Name       *Identifier
 	TypeParams []*TypeParameter // Optional type parameters: [T: Ordered]
 	Variants   []*ADTVariant
+	// Exported marks a `pub` declaration (docs/spec/83-modules.md section
+	// 6); visibility is never inferred from spelling. Opaque marks
+	// `pub(opaque)`: the name is exported, the definition is not.
+	Exported bool
+	Opaque   bool
 }
 
 func (adt *ADTType) statementNode()       {}
@@ -874,26 +894,62 @@ func (ps *PackageStatement) String() string {
 	return "package " + ps.Name.String()
 }
 
-// Import statement
+// ImportStatement is a package import (docs/spec/83-modules.md section 3).
+// The statement form `import("example.com/net")` binds the path's last
+// segment; the binding forms `net := import("example.com/net")` and
+// `n: Sig = import("example.com/net")` name the binding explicitly, the
+// latter sealing the import to the signature Sig.
 type ImportStatement struct {
 	BaseNode
 	Token token.Token // 'import' token
-	Path  *Identifier // package path
-	Alias *Identifier // optional alias
+	// Path is the import path; its Value is the full path text ("a/b").
+	Path *Identifier
+	// Alias is the explicit binding name of a binding-form import; nil
+	// means the last path segment.
+	Alias *Identifier
+	// Signature is the sealing type of `alias: Sig = import(path)`; nil
+	// for an unsealed import.
+	Signature Expression
 }
 
 func (is *ImportStatement) statementNode()       {}
 func (is *ImportStatement) TokenLiteral() string { return is.Token.Literal }
 func (is *ImportStatement) String() string {
 	var out bytes.Buffer
-	out.WriteString("import(")
-	out.WriteString(is.Path.String())
-	out.WriteRune(')')
 	if is.Alias != nil {
-		out.WriteString(" as ")
 		out.WriteString(is.Alias.String())
+		if is.Signature != nil {
+			out.WriteString(": ")
+			out.WriteString(is.Signature.String())
+			out.WriteString(" = ")
+		} else {
+			out.WriteString(" := ")
+		}
 	}
+	out.WriteString("import(\"")
+	if is.Path != nil {
+		out.WriteString(is.Path.Value)
+	}
+	out.WriteString("\")")
 	return out.String()
+}
+
+// ImportExpression is `import(path)` in expression position. It is legal
+// only as the whole initializer of a top-level binding, where the parser
+// folds it into an ImportStatement; anywhere else the loader rejects it.
+type ImportExpression struct {
+	BaseNode
+	Token token.Token // 'import' token
+	Path  *Identifier
+}
+
+func (ie *ImportExpression) expressionNode()      {}
+func (ie *ImportExpression) TokenLiteral() string { return ie.Token.Literal }
+func (ie *ImportExpression) String() string {
+	if ie.Path == nil {
+		return "import()"
+	}
+	return "import(\"" + ie.Path.Value + "\")"
 }
 
 // TypeParameter represents a type parameter with optional constraint
@@ -936,6 +992,11 @@ type FunctionStatement struct {
 	// compilation when a unit's matching signature is found; a body-less
 	// declaration with no unit is a compile error.
 	AsmBacked bool
+	// Exported marks a `pub` declaration (docs/spec/83-modules.md section
+	// 6); visibility is never inferred from spelling. Opaque marks
+	// `pub(opaque)`: the name is exported, the definition is not.
+	Exported bool
+	Opaque   bool
 }
 
 func (fs *FunctionStatement) statementNode()       {}

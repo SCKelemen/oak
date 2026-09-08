@@ -1,0 +1,16 @@
+package geometry
+
+// Point is exported by name only: its fields are private to this package
+// (docs/spec/83-modules.md section 6.2).
+pub(opaque) Point: type = struct { x: i32, y: i32 }
+
+pub origin: (): Point = Point { x: 0, y: 0 }
+
+pub make: (x: i32, y: i32): Point = Point { x: x, y: y }
+
+pub manhattan: (p: Point): i32 = abs(p.x) + abs(p.y)
+
+// A private helper: not pub, unreachable from other packages.
+abs: (v: i32): i32 = v < 0 ? 0 - v | v
+
+pub larger[T]: (a: T, b: T): T = a < b ? b | a
