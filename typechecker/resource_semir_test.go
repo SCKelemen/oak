@@ -150,6 +150,7 @@ func TestResourceModelFromSemIRRejectsConflictingCallableSemantics(t *testing.T)
 	module := semir.Module{
 		Definitions: []semir.Definition{{
 			Name:      "Handle",
+			Type:      semir.Type{Kind: semir.TypeRecord},
 			Authority: semir.Authority{Resource: semir.ResourceAuthorityLive},
 		}},
 		Protocols: []semir.Protocol{
