@@ -14,7 +14,7 @@ invariant that pending data is empty between segments.
 The executable publication state records each completed segment's start and
 count. Its invariant states that the full metadata sequence is exactly
 `ProofPacking.segments 0 buffer.closed`. Successful publication preserves that
-invariant, and the theorem extends to any successful sequence of segment reads.
+invariant, and a sequence theorem covers successful reads in a fixed mode.
 Each published range returns precisely its segment's encoded values, even after
 arbitrary later buffer appends. The corresponding clause range decodes those
 values through the existing literal decoder.
@@ -34,3 +34,33 @@ implementation remains open. Full DIMACS/LRAT file parsing, command-ID schedulin
 and complete text-to-stream state composition are not established here. Rejected
 reads return no publication state; exact partial native mutations on failure are
 outside these acceptance and publication theorems.
+
+## Validation
+
+[The soundness job passed](https://github.com/SCKelemen/oak/actions/runs/34284667952/job/102257356593)
+on commit `24585b30e72269e4829d5a747c0c78e3c9ca225d`. All 12 theorem audits
+passed with warnings treated as errors, without proof holes or project-specific
+axioms. Dependencies are limited to standard `propext`, `Quot.sound`, and
+`Classical.choice`.
+
+The publication-state adapter, earlier buffer adapter, Go oracle, and compiled
+Oak agreed on all 72 cases: 52 decoded layouts and 20 rejected inputs. Native
+buffer comparison took 3.32 seconds without the race detector. Existing proved
+packing comparisons passed 425 cases, and certified streams passed 887 layouts
+(308 accepted, 579 rejected; native comparison 55.95 seconds).
+
+[The solver job passed](https://github.com/SCKelemen/oak/actions/runs/34284667952/job/102257356714).
+The buffer corpus also passed with the race detector in 5.41 seconds. Existing
+real-certificate replay accepted nine bounded certificates and rejected 18
+corruptions, with two certificates explicitly outside the bounded profile.
+All 11 source certificates and 22 corruptions passed the earlier Lean text gate.
+Boolean proof/model checks and the full external solver suite passed.
+These certificate gates retain the previously proved packing/text entry path;
+they do not yet use a complete file parser assembled from publication states.
+
+Repository CI, standard-library race tests, Oak testing tools, formal verification,
+golden files, and AArch64 memory refinement all passed on the tested commit.
+`../validation-segment-publication.json` records the exact scope and job links.
+
+Next: prove command assembly from published clause and hint ranges, including
+addition IDs and deletion stamps, before connecting the complete file state machine.

@@ -1,0 +1,140 @@
+{
+  "artifacts": {
+    "retention_days": 30,
+    "solvers": "Existing real-certificate layouts, source hashes, replay logs and backend provenance",
+    "soundness": "SegmentPublication.lean, segment-publication-proof.log, segment-publication-agreement.log, buffer-cases.json and native buffer logs"
+  },
+  "commit": "24585b30e72269e4829d5a747c0c78e3c9ca225d",
+  "comparison": {
+    "compared": [
+      "Compiled Oak buffer-layout observations",
+      "Go buffer oracle",
+      "Existing Lean buffer adapter",
+      "New Lean publication-state adapter"
+    ],
+    "decoded": 52,
+    "existing_packing_accepted": 104,
+    "existing_packing_cases": 425,
+    "existing_packing_rejected": 321,
+    "existing_stream_accepted": 308,
+    "existing_stream_layouts": 887,
+    "existing_stream_rejected": 579,
+    "native_seconds_with_race": 5.41,
+    "native_seconds_without_race": 3.32,
+    "publication_cases": 72,
+    "rejected": 20,
+    "stream_native_seconds_with_race": 86.13,
+    "stream_native_seconds_without_race": 55.95
+  },
+  "date": "2026-09-08",
+  "existing_gates": {
+    "boolean_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "boolean_model": {
+      "corruptions_rejected": 2,
+      "malformed_rejected": 3,
+      "safe_accepted": 1,
+      "unsafe_rejected": 1,
+      "wrong_model_rejected": 1
+    },
+    "bounded_certificate_replay": {
+      "accepted": 9,
+      "native_seconds": 2.05,
+      "outside_profile": 2,
+      "rejected_corruptions": 18
+    },
+    "external_solver_suite": "success",
+    "lean_text_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "native_race_suite": "success"
+  },
+  "format": "oak-segment-publication-validation-1",
+  "implementation": {
+    "decoder_reused": "Packed.segment and Packed.segmentLoop",
+    "host_harness": "Go",
+    "native_Oak_changed": false,
+    "new_formal_module": "SegmentPublication.lean",
+    "production_language_changed": false,
+    "python_introduced": false,
+    "reference_packer": "ProofPacking.segments"
+  },
+  "next_step": "Prove command assembly from published clause and hint ranges, including addition IDs and deletion stamps.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.SegmentPublication.close_completes' depends on axioms: [propext]",
+      "'OakVerification.SegmentPublication.push_completion' depends on axioms: [propext]",
+      "'OakVerification.SegmentPublication.nonzero_push' depends on axioms: [propext]",
+      "'OakVerification.SegmentPublication.zero_closes' depends on axioms: [propext]",
+      "'OakVerification.SegmentPublication.segmentLoop_completes' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.SegmentPublication.segment_completes' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.SegmentPublication.segments_append' depends on axioms: [propext]",
+      "'OakVerification.SegmentPublication.empty_valid' depends on axioms: [propext]",
+      "'OakVerification.SegmentPublication.publish_layout' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.SegmentPublication.publish_valid' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.SegmentPublication.published_contents' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.SegmentPublication.publications_valid' depends on axioms: [propext, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Every successful byte-segment read appends a pool suffix, closes exactly one segment, clears pending data and preserves capacity",
+      "Published metadata is exactly ProofPacking.segments 0 buffer.closed",
+      "Successful publication preserves the valid state invariant",
+      "Published ranges retain their contents under arbitrary later pool appends",
+      "Fixed-mode publication sequences preserve validity"
+    ],
+    "reported_theorems": 12,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Full-file command assembly and ID/deletion-stamp scheduling",
+      "Universal refinement of the concrete Oak text decoder",
+      "Compiler and C runtime correctness"
+    ],
+    "proved": [
+      "Executable Lean byte-segment completion",
+      "Publication metadata correspondence to proved packer ranges",
+      "Persistence of published range contents"
+    ],
+    "rejected_states": "No publication state is returned on failure; exact partial native mutations are outside this theorem",
+    "tested": [
+      "Compiled Oak and Go agreement with the Lean publication adapter"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34284667952",
+  "solvers_job": 102257356714,
+  "soundness_job": 102257356593,
+  "repository_ci": {
+    "Oak testing tools": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34284667850"
+    },
+    "Formal Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34284667995"
+    },
+    "Golden File Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34284667873"
+    },
+    "Verification experiment (opt-in)": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34284667952"
+    },
+    "CI": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34284667849"
+    },
+    "Standard library": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34284667812"
+    }
+  },
+  "aarch64_memory_refinement": "success"
+}

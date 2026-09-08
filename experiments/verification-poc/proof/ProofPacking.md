@@ -72,5 +72,6 @@ Repository CI, standard-library race tests, Oak testing tools, formal verificati
 golden files, and AArch64 memory refinement all passed on the tested commit.
 `../validation-proof-packing.json` records the precise scope and job links.
 
-Next: connect the Oak text-decoder state model to this proved packer, beginning
-with publication of completed clause and hint segments into the same ranges.
+The subsequent [segment-publication milestone](SegmentPublication.md) connects
+the byte-reading segment model to the same published ranges. Full command
+assembly and universal Oak refinement remain open.

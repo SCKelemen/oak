@@ -240,3 +240,6 @@ proved range-decoder connection and the bounded solver-certificate gate.
 
 See [Proved proof-stream packing](ProofPacking.md) for universal packing roundtrip
 and the composed parsed-text acceptance theorem.
+
+See [Decoder segment publication](SegmentPublication.md) for the proved connection
+from the byte-reading segment state to the packer's published ranges.
