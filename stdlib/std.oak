@@ -1338,7 +1338,8 @@ id_pool_reserve: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError]
     id >= limit ? { .Err(.OutOfBounds) } | {
       index: u32 = id / u32(8)
       mask: u8 = u8(1) << u8_trunc_u32(id % u32(8))
-      (storage[index] & mask) != u8(0) ? { .Err(.AlreadyAllocated) } | {
+      occupied: Bool = (storage[index] & mask) != u8(0)
+      occupied ? { .Err(.AlreadyAllocated) } | {
         storage[index] = (storage[index] | mask)
         .Ok(id)
       }
@@ -1351,7 +1352,8 @@ id_pool_release: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError]
     id >= limit ? { .Err(.OutOfBounds) } | {
       index: u32 = id / u32(8)
       mask: u8 = u8(1) << u8_trunc_u32(id % u32(8))
-      (storage[index] & mask) == u8(0) ? { .Err(.NotAllocated) } | {
+      vacant: Bool = (storage[index] & mask) == u8(0)
+      vacant ? { .Err(.NotAllocated) } | {
         storage[index] = storage[index] & (mask ^ u8(255))
         .Ok(id)
       }
@@ -1363,19 +1365,19 @@ id_pool_release: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError]
 id_pool_allocate: (storage: [*]u8, limit: u32): Result[u32, IdPoolError] {
   needed: u32 = bitset_storage_bytes(limit)
   len(storage) < needed ? { .Err(.StorageTooSmall) } | {
-    byte: u32 = 0
+    byte_index: u32 = 0
     id: u32 = limit
-    while byte < needed && id == limit {
-      storage[byte] != u8(255) ? {
+    while byte_index < needed && id == limit {
+      storage[byte_index] != u8(255) ? {
         bit: u32 = 0
         while bit < u32(8) && id == limit {
-          candidate: u32 = byte * u32(8) + bit
+          candidate: u32 = byte_index * u32(8) + bit
           mask: u8 = u8(1) << u8_trunc_u32(bit)
-          candidate < limit && (storage[byte] & mask) == u8(0) ? { id = candidate }
+          candidate < limit && (storage[byte_index] & mask) == u8(0) ? { id = candidate }
           bit = bit + u32(1)
         }
       }
-      byte = byte + u32(1)
+      byte_index = byte_index + u32(1)
     }
     id == limit ? { .Err(.Full) } | { id_pool_reserve(storage, limit, id) }
   }
