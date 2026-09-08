@@ -151,7 +151,34 @@ theorem cursor_progress {pos size : Nat} (h : pos < size) (hs : size ≤ 65536) 
   unfold modulus
   omega
 
+-- Logical initialized prefixes of the decoder's fixed-capacity arrays.
+-- The representation relation to concrete Oak arrays is a separate obligation.
+structure Buffer where
+  capacity : Nat
+  values : List Nat
+
+def appendBuffer (buffer : Buffer) (item : Nat) : Option Buffer :=
+  if buffer.values.length < buffer.capacity then
+    some ⟨buffer.capacity, buffer.values ++ [item]⟩
+  else none
+
+theorem appendBuffer_invariant {before after : Buffer} {item : Nat}
+    (h : appendBuffer before item = some after) :
+    before.values.length < before.capacity ∧
+    after.capacity = before.capacity ∧
+    after.values = before.values ++ [item] ∧
+    after.values.length ≤ after.capacity := by
+  unfold appendBuffer at h
+  split at h
+  · rename_i room
+    cases Option.some.inj h
+    refine ⟨room, rfl, rfl, ?_⟩
+    simp only [List.length_append, List.length_singleton]
+    omega
+  · simp at h
+
 #print axioms step_refines
+#print axioms step_bounds
 #print axioms step_no_wrap
 #print axioms run_refines
 #print axioms decodeDigit_refines
@@ -162,4 +189,5 @@ theorem cursor_progress {pos size : Nat} (h : pos < size) (hs : size ≤ 65536) 
 #print axioms append_bounds
 #print axioms append_no_wrap
 #print axioms cursor_progress
+#print axioms appendBuffer_invariant
 end OakVerification.Decimal
