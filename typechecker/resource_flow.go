@@ -79,11 +79,19 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			flow:     resourceflow.New(),
 			reported: make(map[string]bool),
 		}
-		if fn.Receiver != nil && fn.Receiver.Name != nil && model.isResourceType(fn.Receiver.Type) {
-			analysis.flow.Register(fn.Receiver.Name.Value, fn.Receiver.Name)
+		analysis.pushScope()
+		if fn.Receiver != nil && fn.Receiver.Name != nil {
+			analysis.bind(fn.Receiver.Name.Value)
+			if model.isResourceType(fn.Receiver.Type) {
+				analysis.flow.Register(fn.Receiver.Name.Value, fn.Receiver.Name)
+			}
 		}
 		for _, parameter := range fn.Parameters {
-			if parameter != nil && parameter.Name != nil && model.isResourceType(parameter.Type) {
+			if parameter == nil || parameter.Name == nil {
+				continue
+			}
+			analysis.bind(parameter.Name.Value)
+			if model.isResourceType(parameter.Type) {
 				analysis.flow.Register(parameter.Name.Value, parameter.Name)
 			}
 		}
@@ -96,6 +104,7 @@ type typedResourceAnalysis struct {
 	model    ResourceModel
 	flow     *resourceflow.Flow
 	reported map[string]bool
+	scopes   []map[string]struct{}
 }
 
 func (m ResourceModel) isResourceType(expr ast.Expression) bool {
@@ -114,13 +123,105 @@ func (m ResourceModel) isResourceType(expr ast.Expression) bool {
 	return m.ResourceTypes[expr.String()]
 }
 
-func (m ResourceModel) operation(expr ast.Expression) (ResourceOperation, bool) {
-	ident, ok := expr.(*ast.Identifier)
-	if !ok || ident == nil {
+func (m ResourceModel) operationByName(name string) (ResourceOperation, bool) {
+	if name == "" {
 		return ResourceOperation{}, false
 	}
-	op, exists := m.Operations[ident.Value]
+	op, exists := m.Operations[name]
 	return op, exists
+}
+
+func (a *typedResourceAnalysis) pushScope() {
+	if a == nil {
+		return
+	}
+	a.scopes = append(a.scopes, make(map[string]struct{}))
+}
+
+func (a *typedResourceAnalysis) popScope() {
+	if a == nil || len(a.scopes) == 0 {
+		return
+	}
+	a.scopes = a.scopes[:len(a.scopes)-1]
+}
+
+func (a *typedResourceAnalysis) bind(name string) {
+	if a == nil || name == "" {
+		return
+	}
+	if len(a.scopes) == 0 {
+		a.pushScope()
+	}
+	a.scopes[len(a.scopes)-1][name] = struct{}{}
+}
+
+func (a *typedResourceAnalysis) isLocalBinding(name string) bool {
+	if a == nil || name == "" {
+		return false
+	}
+	for i := len(a.scopes) - 1; i >= 0; i-- {
+		if _, exists := a.scopes[i][name]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+// callableIdentity resolves a checked invocation to the semantic callable key
+// used by ResourceModel. Direct calls must still denote a global function after
+// lexical shadowing; method calls use the checked receiver type and the same
+// Receiver::method key as the type environment. No resource rule is inferred
+// from source spelling alone.
+func (a *typedResourceAnalysis) callableIdentity(expr *ast.InvocationExpression) (string, bool) {
+	if a == nil || a.tc == nil || a.tc.globalEnv == nil || expr == nil {
+		return "", false
+	}
+	switch function := expr.Function.(type) {
+	case *ast.Identifier:
+		if function == nil || function.Value == "" || a.isLocalBinding(function.Value) {
+			return "", false
+		}
+		typ, exists := a.tc.globalEnv.GetType(function.Value)
+		if !exists || typ == nil {
+			return "", false
+		}
+		if _, ok := typ.(*FunctionType); !ok {
+			return "", false
+		}
+		return function.Value, true
+
+	case *ast.IndexExpression:
+		if function == nil || !function.Dot {
+			return "", false
+		}
+		method, ok := function.Index.(*ast.Identifier)
+		if !ok || method == nil || method.Value == "" {
+			return "", false
+		}
+		receiverType := a.tc.env.CheckedExpressionType(function.Left)
+		receiverName := nominalTypeName(receiverType)
+		if receiverName == "" {
+			return "", false
+		}
+		key := receiverName + "::" + method.Value
+		typ, exists := a.tc.globalEnv.GetType(key)
+		if !exists || typ == nil {
+			return "", false
+		}
+		if _, ok := typ.(*FunctionType); !ok {
+			return "", false
+		}
+		return key, true
+	}
+	return "", false
+}
+
+func (a *typedResourceAnalysis) operation(expr *ast.InvocationExpression) (ResourceOperation, bool) {
+	identity, ok := a.callableIdentity(expr)
+	if !ok {
+		return ResourceOperation{}, false
+	}
+	return a.model.operationByName(identity)
 }
 
 func (a *typedResourceAnalysis) statement(stmt ast.Statement) {
@@ -155,6 +256,8 @@ func (a *typedResourceAnalysis) block(block *ast.BlockStatement) {
 	if block == nil {
 		return
 	}
+	a.pushScope()
+	defer a.popScope()
 	for _, stmt := range block.Statements {
 		a.statement(stmt)
 	}
@@ -164,13 +267,17 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 	if stmt == nil || stmt.Name == nil {
 		return
 	}
+	// The declaration becomes visible only after its initializer has been
+	// evaluated, so a local with the same name as a global callable does not
+	// retroactively shadow that callable inside its own initializer.
+	defer a.bind(stmt.Name.Value)
 	if stmt.Value != nil {
 		a.expression(stmt.Value)
 	}
 	isResource := a.model.isResourceType(stmt.Type)
 	if !isResource {
 		if call, ok := stmt.Value.(*ast.InvocationExpression); ok {
-			if op, exists := a.model.operation(call.Function); exists && op.ReturnsFresh {
+			if op, exists := a.operation(call); exists && op.ReturnsFresh {
 				isResource = true
 			}
 		}
@@ -296,10 +403,19 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 		// Capturing resource closures are rejected by the existing closure
 		// discipline. Analyze the body independently so local resource uses
 		// are still checked without lending outer authority to the closure.
-		outer := a.flow
+		outerFlow := a.flow
+		outerScopes := a.scopes
 		a.flow = resourceflow.New()
+		a.scopes = nil
+		a.pushScope()
+		for _, argument := range e.Arguments {
+			if argument != nil {
+				a.bind(argument.Value)
+			}
+		}
 		a.block(e.Body)
-		a.flow = outer
+		a.flow = outerFlow
+		a.scopes = outerScopes
 	}
 }
 
@@ -316,7 +432,7 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 		a.expression(argument)
 	}
 
-	op, consuming := a.model.operation(expr.Function)
+	op, consuming := a.operation(expr)
 	if !consuming {
 		return
 	}
