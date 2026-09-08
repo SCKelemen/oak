@@ -161,7 +161,7 @@ func functionCaptureFacts(fn *ast.FunctionLiteral, env *TypeEnvironment) General
 // methodSelectorFacts propagates authority carried by the method implementation
 // while keeping ordinary field selector names out of lexical binding lookup.
 func methodSelectorFacts(selector *ast.IndexExpression, env *TypeEnvironment) GeneralizationFacts {
-	if selector == nil || selector.Token.Literal != "." {
+	if selector == nil || (!selector.Dot && selector.Token.Literal != ".") {
 		return GeneralizationFacts{}
 	}
 	method, ok := selector.Index.(*ast.Identifier)
@@ -247,7 +247,7 @@ func functionCaptureFactsWithBound(fn *ast.FunctionLiteral, env *TypeEnvironment
 			walkExpr(e.Left)
 			// The identifier after '.' is a selector name, not a lexical
 			// variable. Computed array indices still participate in capture.
-			if e.Token.Literal != "." {
+			if !e.Dot && e.Token.Literal != "." {
 				walkExpr(e.Index)
 			}
 		case *ast.SliceExpression:
@@ -264,7 +264,7 @@ func functionCaptureFactsWithBound(fn *ast.FunctionLiteral, env *TypeEnvironment
 			}
 		case *ast.InvocationExpression:
 			if selector, ok := e.Function.(*ast.IndexExpression); ok &&
-				selector.Token.Literal == "." {
+				(selector.Dot || selector.Token.Literal == ".") {
 				if library, ok := selector.Left.(*ast.Identifier); ok && CompilerKnownLibrary(library.Value) {
 					// Compiler libraries are namespaces, not captured values or
 					// authority-bearing method receivers. Their arguments still
@@ -334,8 +334,7 @@ func functionCaptureFactsWithBound(fn *ast.FunctionLiteral, env *TypeEnvironment
 				facts = facts.With(GeneralizationMutableAuthority).With(GeneralizationEffectfulCapture)
 			}
 			if s.Target != nil {
-				walkExpr(s.Target.Left)
-				walkExpr(s.Target.Index)
+				walkExpr(s.Target)
 			}
 			walkExpr(s.Value)
 		case *ast.IfStatement:
@@ -720,7 +719,7 @@ func deriveGeneralizationFacts(typ Type, initializer ast.Expression, env *TypeEn
 			return bindingFacts(e.Payload)
 		case *ast.IndexExpression:
 			result := bindingFacts(e.Left)
-			if e.Token.Literal != "." {
+			if !e.Dot && e.Token.Literal != "." {
 				result.Barriers |= bindingFacts(e.Index).Barriers
 			}
 			return result
@@ -762,8 +761,7 @@ func deriveGeneralizationFacts(typ Type, initializer ast.Expression, env *TypeEn
 				Barriers: GeneralizationMutableAuthority | GeneralizationEffectfulCapture,
 			}
 			if s.Target != nil {
-				result.Barriers |= bindingFacts(s.Target.Left).Barriers
-				result.Barriers |= bindingFacts(s.Target.Index).Barriers
+				result.Barriers |= bindingFacts(s.Target).Barriers
 			}
 			result.Barriers |= bindingFacts(s.Value).Barriers
 			return result
@@ -837,7 +835,7 @@ func deriveGeneralizationFacts(typ Type, initializer ast.Expression, env *TypeEn
 			visitExpr(e.Left)
 			// A dotted identifier is a selector name, not a lexical binding.
 			// Computed indices remain ordinary expressions and propagate metadata.
-			if e.Token.Literal != "." {
+			if !e.Dot && e.Token.Literal != "." {
 				visitExpr(e.Index)
 			}
 		case *ast.SliceExpression:
@@ -925,9 +923,8 @@ func deriveGeneralizationFacts(typ Type, initializer ast.Expression, env *TypeEn
 		case *ast.IndexAssignmentStatement:
 			facts = facts.With(GeneralizationMutableAuthority).With(GeneralizationEffectfulCapture)
 			if s.Target != nil {
-				visitExpr(s.Target.Left)
-				visitExpr(s.Target.Index)
-				facts.Barriers |= bindingFacts(s.Target.Left).Barriers
+				visitExpr(s.Target)
+				facts.Barriers |= bindingFacts(s.Target).Barriers
 			}
 			visitExpr(s.Value)
 			facts.Barriers |= bindingFacts(s.Value).Barriers
