@@ -58,6 +58,27 @@ func TestResourceTransitionSemanticsRejectsMalformedConsume(t *testing.T) {
 	}
 }
 
+func TestValidateResourceSemanticsRequiresResolvedCallable(t *testing.T) {
+	module := Module{
+		Protocols: []Protocol{{
+			Name:    "HandleLifecycle",
+			Initial: "Open",
+			States:  []State{{Name: "Open"}, {Name: "Closed"}},
+			Transitions: []Transition{{
+				Name:    "CloseTransition",
+				From:    "Open",
+				To:      "Closed",
+				Effects: []Effect{ResourceConsumeArgument(0)},
+			}},
+		}},
+	}
+
+	err := module.ValidateResourceSemantics()
+	if err == nil || !strings.Contains(err.Error(), "no resolved callable") {
+		t.Fatalf("expected resource transition callable requirement, got %v", err)
+	}
+}
+
 func TestValidateResourceSemanticsQualifiesProtocolAndTransition(t *testing.T) {
 	module := Module{
 		Protocols: []Protocol{{
@@ -65,9 +86,10 @@ func TestValidateResourceSemanticsQualifiesProtocolAndTransition(t *testing.T) {
 			Initial: "Open",
 			States:  []State{{Name: "Open"}, {Name: "Closed"}},
 			Transitions: []Transition{{
-				Name: "close",
-				From: "Open",
-				To:   "Closed",
+				Name:     "CloseTransition",
+				Callable: "close",
+				From:     "Open",
+				To:       "Closed",
 				Effects: []Effect{{
 					Namespace: ResourceEffectNamespace,
 					Name:      "typo",
@@ -77,7 +99,7 @@ func TestValidateResourceSemanticsQualifiesProtocolAndTransition(t *testing.T) {
 	}
 
 	err := module.ValidateResourceSemantics()
-	if err == nil || !strings.Contains(err.Error(), `protocol "HandleLifecycle" transition "close"`) {
+	if err == nil || !strings.Contains(err.Error(), `protocol "HandleLifecycle" transition "CloseTransition"`) {
 		t.Fatalf("expected qualified resource semantic error, got %v", err)
 	}
 }
