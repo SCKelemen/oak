@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -63,10 +64,8 @@ identity[T]: (value: T): T = value
 		if err != nil {
 			t.Fatal(err)
 		}
-		for name, export := range first.Exports {
-			if next.Exports[name] != export {
-				t.Fatalf("run %d export %q changed: %#v vs %#v", i, name, export, next.Exports[name])
-			}
+		if !reflect.DeepEqual(first, next) {
+			t.Fatalf("run %d snapshot changed: %#v vs %#v", i, first, next)
 		}
 	}
 }
@@ -126,5 +125,31 @@ Status: type = | Ready: u8 = 1
 	}
 	if got := adtSnapshot.Exports["Status"].Type; got != "sum{Ready(u8)=1}" {
 		t.Fatalf("literal ADT identity = %q", got)
+	}
+}
+
+func TestAPISnapshotExcludesInjectedAndSpecializedDeclarations(t *testing.T) {
+	snapshot, err := New().WithSource("public.oak", `
+import(std)
+identity[T]: (value: T): T = value
+main: (): i32 = identity[i32](42)
+`).APISnapshot("1.0.0").Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Exports) != 2 {
+		t.Fatalf("injected declarations leaked into exports: %#v", snapshot.Exports)
+	}
+	for _, name := range []string{"identity", "main"} {
+		if snapshot.Exports[name].Kind != "function" {
+			t.Fatalf("source function %q missing: %#v", name, snapshot.Exports)
+		}
+	}
+}
+
+func TestAPISnapshotRejectsInvalidProgram(t *testing.T) {
+	_, err := New().WithSource("invalid.oak", "main: (): i32 = true").APISnapshot("1.0.0").Get()
+	if err == nil || !strings.Contains(err.Error(), "type") {
+		t.Fatalf("publication must reject type errors, got %v", err)
 	}
 }
