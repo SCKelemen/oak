@@ -167,14 +167,15 @@ func runOakStream(t *testing.T,source string) {
  if strings.Contains(source,"text_case_") {
   var traced strings.Builder;traced.WriteString("#include <stdio.h>\nstatic int oak_text_trace_left = 80;\n")
   for _,line:=range strings.Split(generated,"\n") {
-   if strings.TrimSpace(line)=="return kind;" {traced.WriteString("if (oak_text_trace_left-- > 0) fprintf(stderr, \"token kind=%u begin=%u end=%u magnitude=%u sign=%u\\n\", kind, begin, pos, magnitude, sign);\n")}
-   if strings.TrimSpace(line)=="return accepted;" {traced.WriteString("if (oak_text_trace_left-- > 0) fprintf(stderr, \"decoded valid=%d accepted=%d stage=%u vars=%u clauses=%u expected=%u literals=%u commands=%u refs=%u\\n\", valid, accepted, stage, variables, clauses, expected, literals, count, references);\n")}
+   if strings.Contains(line,"return") && strings.Contains(line,"kind") {traced.WriteString("if (oak_text_trace_left-- > 0) fprintf(stderr, \"token kind=%u begin=%u end=%u magnitude=%u sign=%u\\n\", kind, begin, pos, magnitude, sign);\n")}
+   if strings.Contains(line,"return") && strings.Contains(line,"accepted") {traced.WriteString("if (oak_text_trace_left-- > 0) fprintf(stderr, \"decoded valid=%d accepted=%d stage=%u vars=%u clauses=%u expected=%u literals=%u commands=%u refs=%u\\n\", valid, accepted, stage, variables, clauses, expected, literals, count, references);\n")}
    traced.WriteString(line);traced.WriteByte('\n')
    if at:=strings.Index(line,"text_case_");at>=0 && strings.HasSuffix(strings.TrimSpace(line),"{") {
     end:=at;for end<len(line)&&line[end]!='(' {end++}
     fmt.Fprintf(&traced,"fprintf(stderr, \"enter %s\\n\");\n",strings.TrimSpace(line[at:end]))
    }
   };generated=traced.String()
+  start:=strings.Index(generated,"rup_space( u8 b ) {");end:=strings.LastIndex(generated,"text_case_0( void ) {");if start>=0&&end>start {t.Logf("decoder C:\n%s",generated[start:end])}
  }
  dir:=t.TempDir();cpath:=filepath.Join(dir,"stream.c");bin:=filepath.Join(dir,"stream")
  if err:=os.WriteFile(cpath,[]byte(generated),0644);err!=nil {t.Fatal(err)}
