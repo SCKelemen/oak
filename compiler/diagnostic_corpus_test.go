@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SCKelemen/oak/borrowchecker"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -73,7 +74,7 @@ func TestDiagnosticCorpus(t *testing.T) {
 	}
 }
 
-func TestDiagnosticCorpusCoversStableTypeDiagnostics(t *testing.T) {
+func TestDiagnosticCorpusCoversStableSourceDiagnostics(t *testing.T) {
 	root := filepath.Join("testdata", "diagnostics")
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -99,10 +100,39 @@ func TestDiagnosticCorpusCoversStableTypeDiagnostics(t *testing.T) {
 		typechecker.CodeMatchImpossibleArm,
 		typechecker.CodeGADTResultInvalid,
 		typechecker.CodeGADTResultMismatch,
+		typechecker.CodeClosureCaptureStorage,
+		typechecker.CodeExternSignatureNotC,
+		typechecker.CodeExternSymbolInvalid,
+		typechecker.CodeExternOutsideDefinition,
+		string(borrowchecker.CodeBorrowReassign),
+		string(borrowchecker.CodeOwnerUsedDuringSpan),
+		string(borrowchecker.CodeOwnerWrittenDuringView),
+		string(borrowchecker.CodeViewConflictsWithSpan),
+		string(borrowchecker.CodeSpanConflictsWithView),
+		string(borrowchecker.CodeSpanOverlap),
+		string(borrowchecker.CodeBorrowSuspended),
+		string(borrowchecker.CodeReborrowOverlap),
+		string(borrowchecker.CodeBorrowEscape),
+		string(borrowchecker.CodeUnsafeAssumption),
 	}
 	for _, code := range stable {
 		if !covered[code] {
 			t.Errorf("stable source-facing diagnostic %s has no public-pipeline corpus witness", code)
+		}
+	}
+
+	// These codes are intentionally outside the public source contract today.
+	// Keeping the reasons here prevents them from becoming silent coverage gaps.
+	nonSource := map[string]string{
+		string(borrowchecker.CodeBorrowGeneric): "migration fallback for borrow checks that do not yet have a specific stable semantic code",
+		typechecker.CodeResourceUsedAfterConsume: "resource flow requires CheckProgramWithResources and a ResourceModel; Compilation does not expose a source opt-in until resource syntax is frozen",
+	}
+	for code, reason := range nonSource {
+		if reason == "" {
+			t.Errorf("non-source diagnostic %s lacks an explicit exclusion reason", code)
+		}
+		if covered[code] {
+			t.Errorf("diagnostic %s is marked non-source but also has a public source corpus witness", code)
 		}
 	}
 }

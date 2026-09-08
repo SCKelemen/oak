@@ -1,0 +1,1 @@
+borrowed: (buf: [4]u8): []u8 = buf[0:4]

@@ -1,0 +1,5 @@
+main: (): i32 {
+  captured: i32 = 42
+  f := fn() { captured }
+  0
+}
