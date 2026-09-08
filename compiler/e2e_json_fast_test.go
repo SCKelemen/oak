@@ -22,8 +22,8 @@ main: (): i32 {
  n: u32 = 0
  while n < u32(256) {
   data[0] = u8_trunc_u32(n)
-  input: []u8 = view(&data)
-  assert(check_integer(input, u32(0)))
+  byte_input: []u8 = view(&data)
+  assert(check_integer(byte_input, u32(0)))
   n = n + u32(1)
  }
 `)
