@@ -63,8 +63,8 @@ func New(source token.Source) *Parser {
 
 	p.infixParseFns = make(map[token.TokenKind]infixParseFn)
 	p.registerInfix(token.SUM, p.parseInfixExpression)
-	p.registerInfix(token.AMP, p.parseInfixExpression)   // bitwise and
-	p.registerInfix(token.PIPE, p.parseInfixExpression)  // bitwise or (arm-separator rule: parenthesize inside ? arms)
+	p.registerInfix(token.AMP, p.parseInfixExpression)  // bitwise and
+	p.registerInfix(token.PIPE, p.parseInfixExpression) // bitwise or (arm-separator rule: parenthesize inside ? arms)
 	p.registerInfix(token.PIPE_FORWARD, p.parsePipelineExpression)
 	p.registerInfix(token.CARET, p.parseInfixExpression) // bitwise xor
 	p.registerInfix(token.SHL, p.parseInfixExpression)
@@ -412,7 +412,6 @@ func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
 	}
 	return stmt
 }
-
 func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 	// Check if currentToken can start an expression
 	// If it's a token that can't start an expression (comma, semicolon, closing parens, operators that aren't prefix, etc.), return nil
@@ -833,6 +832,10 @@ func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression
 		for p.peekTokenIs(token.COMMA) {
 			p.nextToken()
 			p.nextToken()
+			if p.currentTokenIs(token.RBRACK) || p.currentTokenIs(token.EOF) || p.currentTokenIs(token.COMMA) {
+				p.addErrorAtCurrentToken("expected a type argument after comma")
+				return nil
+			}
 			arg := p.parseExpression(LOWEST)
 			if arg == nil {
 				return nil
@@ -1023,12 +1026,12 @@ const (
 	LOGICAL_OR  // ||
 	LOGICAL_AND // &&
 	EQUALITY    // ==
-	COMPARE    // > or <
-	SUMMATION  // +
-	PRODUCT    // *
-	PREFIX     // -x or !x
-	INVOCATION // aka Call, myfunction(x)
-	INDEX      // record.field or array[index] - highest precedence
+	COMPARE     // > or <
+	SUMMATION   // +
+	PRODUCT     // *
+	PREFIX      // -x or !x
+	INVOCATION  // aka Call, myfunction(x)
+	INDEX       // record.field or array[index] - highest precedence
 )
 
 func (p *Parser) noPrefixParseFn(t token.TokenKind) {
@@ -1108,28 +1111,28 @@ func (p *Parser) parseExpressionGroup() ast.Expression {
 // all of these should probably move down to the lexer/scanner
 var precedences = map[token.TokenKind]Precedence{
 	token.PIPE_FORWARD: PIPELINE,
-	token.LOR:    LOGICAL_OR,
-	token.LAND:   LOGICAL_AND,
-	token.EQL:    EQUALITY,
-	token.NEQL:   EQUALITY,
-	token.LCHEV:  COMPARE,
-	token.LEQ:    COMPARE,
-	token.GEQ:    COMPARE,
-	token.RCHEV:  COMPARE,
-	token.NEG:    SUMMATION,
-	token.SUM:    SUMMATION,
-	token.PIPE:   SUMMATION, // bitwise or (Go's precedence model)
-	token.CARET:  SUMMATION, // bitwise xor
-	token.AMP:    PRODUCT,   // bitwise and
-	token.SHL:    PRODUCT,
-	token.SHR:    PRODUCT,
-	token.MUL:    PRODUCT,
-	token.QUO:    PRODUCT,
-	token.REM:    PRODUCT,
-	token.LPAREN: INVOCATION,
-	token.QMARK:  CONDITION, // the whole operator expression is the scrutinee
-	token.DOT:    INDEX,      // Field access has highest precedence
-	token.LBRACK: INDEX,      // Array indexing has highest precedence
+	token.LOR:          LOGICAL_OR,
+	token.LAND:         LOGICAL_AND,
+	token.EQL:          EQUALITY,
+	token.NEQL:         EQUALITY,
+	token.LCHEV:        COMPARE,
+	token.LEQ:          COMPARE,
+	token.GEQ:          COMPARE,
+	token.RCHEV:        COMPARE,
+	token.NEG:          SUMMATION,
+	token.SUM:          SUMMATION,
+	token.PIPE:         SUMMATION, // bitwise or (Go's precedence model)
+	token.CARET:        SUMMATION, // bitwise xor
+	token.AMP:          PRODUCT,   // bitwise and
+	token.SHL:          PRODUCT,
+	token.SHR:          PRODUCT,
+	token.MUL:          PRODUCT,
+	token.QUO:          PRODUCT,
+	token.REM:          PRODUCT,
+	token.LPAREN:       INVOCATION,
+	token.QMARK:        CONDITION, // the whole operator expression is the scrutinee
+	token.DOT:          INDEX,     // Field access has highest precedence
+	token.LBRACK:       INDEX,     // Array indexing has highest precedence
 }
 
 func (p *Parser) peekPrecedence() Precedence {
@@ -3847,4 +3850,3 @@ func (p *Parser) parseShortVariableDeclaration() *ast.VariableDeclaration {
 
 	return stmt
 }
-

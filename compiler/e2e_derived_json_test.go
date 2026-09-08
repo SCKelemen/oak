@@ -7,6 +7,7 @@ import (
 
 const derivedJsonPrelude = `import(std)
 json: tag = { name: string }
+calls: u32 = u32(0)
 Point: type = struct { x: i32, y: u64 }
 Record: type = struct {
  id(json: "record_id"): u64
@@ -14,6 +15,7 @@ Record: type = struct {
  point: Point
 }
 make_record: (): Record {
+ calls = calls + u32(1)
  value: Record
  value.id = (u64(9223372036854775807) * u64(2) + u64(1))
  value.active = true
@@ -30,12 +32,14 @@ func TestE2EDerivedJson(t *testing.T) {
 	writeTextView(&source, "expected", expected)
 	source.WriteString(`
  value: Record = make_record()
+ assert(calls == u32(1))
  assert(json_result_value(encoded_size[Record, Json](value)) == len(expected))
  data: [128]u8
  true ? {
   dst: [*]u8 = span(&data)
   result: Result[u32, JsonError] = from[Record](value).to[Json](dst)
   assert(json_result_value(result) == len(expected))
+  assert(calls == u32(1))
   i: u32 = 0
   while i < len(expected) { assert(dst[i] == expected[i])
    i = i + u32(1)
@@ -87,12 +91,17 @@ func TestDerivedJsonLowering(t *testing.T) {
  data: [128]u8
  dst: [*]u8 = span(&data)
  assert(json_result_ok(from[Record](make_record()).to[Json](dst)))
+ assert(calls == u32(1))
  42
 }`
 	direct := strings.ReplaceAll(fluent, "from[Record](make_record()).to[Json](dst)", "encode[Record, Json](make_record(), dst)")
 	a, err := New().WithSource("derived.oak", fluent).EmitC().Get()
 	if err != nil {
 		t.Fatal(err)
+	}
+	code, abnormal := buildAndRun(t, "derived_once", fluent)
+	if abnormal || code != 42 {
+		t.Fatalf("source evaluated incorrectly: exit=(%d,%v)", code, abnormal)
 	}
 	b, err := New().WithSource("derived.oak", direct).EmitC().Get()
 	if err != nil {
