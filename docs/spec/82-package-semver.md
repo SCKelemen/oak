@@ -44,6 +44,10 @@ The declared candidate version must equal the exact next version implied by the
 table. A lower bump is unsafe; a larger bump is rejected as non-reproducible
 versioning. Package identity must not change between the two snapshots.
 
+Oak source text is UTF-8. Package versions nevertheless use SemVer's lexical
+grammar: each `MAJOR`, `MINOR`, and `PATCH` component consists only of the ASCII
+digits `0` through `9`, without a leading zero unless the component is `0`.
+
 The reference checker is:
 
 ```sh

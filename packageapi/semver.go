@@ -48,8 +48,17 @@ func ParseVersion(text string) (Version, error) {
 		if part == "" || (len(part) > 1 && part[0] == '0') {
 			return Version{}, fmt.Errorf("version %q has a non-canonical component", text)
 		}
+		// Oak source is UTF-8, but SemVer numeric identifiers are defined by
+		// the ASCII digits 0-9. Validate the lexical grammar before Atoi so
+		// signs and other Unicode source characters cannot be normalized into
+		// a different package version.
+		for j := 0; j < len(part); j++ {
+			if part[j] < '0' || part[j] > '9' {
+				return Version{}, fmt.Errorf("version %q has an invalid component", text)
+			}
+		}
 		n, err := strconv.Atoi(part)
-		if err != nil || n < 0 {
+		if err != nil {
 			return Version{}, fmt.Errorf("version %q has an invalid component", text)
 		}
 		values[i] = n

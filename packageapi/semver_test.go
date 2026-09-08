@@ -65,8 +65,23 @@ func TestPreOneBreakingChangeAdvancesMinor(t *testing.T) {
 	}
 }
 
-func TestVersionParserRejectsNonCanonicalVersions(t *testing.T) {
-	for _, input := range []string{"1.2", "1.02.3", "1.2.-1", "1.2.3-alpha"} {
+func TestVersionParserAcceptsCanonicalVersions(t *testing.T) {
+	for _, input := range []string{"0.0.0", "1.2.3", "v1.2.3"} {
+		if _, err := ParseVersion(input); err != nil {
+			t.Fatalf("ParseVersion(%q) failed: %v", input, err)
+		}
+	}
+}
+
+func TestVersionParserRejectsInvalidSemVerComponents(t *testing.T) {
+	for _, input := range []string{
+		"1.2", "1.2.3.4",
+		"01.2.3", "1.02.3", "1.2.03",
+		"+1.2.3", "-1.2.3", "1.+2.3", "1.-2.3", "1.2.+4", "1.2.+04", "1.2.-0", "1.2.-1",
+		"1.2.3-alpha", "1.2.3+build",
+		"1.2. 3", "1.2.\t3", "1.2.٣",
+		"V1.2.3", "vv1.2.3",
+	} {
 		if _, err := ParseVersion(input); err == nil {
 			t.Fatalf("ParseVersion(%q) succeeded", input)
 		}
