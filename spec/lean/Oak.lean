@@ -54,3 +54,4 @@ import Oak.TypeVarIdentity
 import Oak.GeneralizationSafety
 import Oak.Diagnostics
 import Oak.HypervisorPOC
+import Oak.CausalFrontier
