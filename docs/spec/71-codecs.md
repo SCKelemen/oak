@@ -225,6 +225,13 @@ error ordering, bounds, and ownership. Monomorphization alone does not provide
 these transformations. Scratch indexes remain explicit where materializing
 them is beneficial; the IR must not mandate an event object per byte/token.
 
+Futhark's uniqueness/consumption model also makes an operation's cost part
+of its contract: an update must not silently copy an entire array. Oak uses
+its own view/span ownership model, and must preserve source/result alias
+relationships and consumption effects across codec composition. A generic
+fluent wrapper cannot erase those facts or silently insert a copy to resolve
+an ownership error.
+
 CPU SIMD and multicore/GPU parallel execution are separate choices. The kernel
 and hypervisor codec path must not implicitly launch workers or GPU work.
 Physical cache tuning, kernel SIMD-context eligibility, native M-series
@@ -236,5 +243,6 @@ checks cover allocation absence and the presence of NEON load/store paths;
 these are not an assembly-level proof that all fluent wrappers disappear.
 
 References: [weePickle](https://github.com/rallyhealth/weePickle),
-[Futhark scan-scatter fusion](https://futhark-lang.org/blog/2026-03-24-scan-scatter-fusion.html).
+[Futhark scan-scatter fusion](https://futhark-lang.org/blog/2026-03-24-scan-scatter-fusion.html),
+[Futhark uniqueness and updates](https://futhark-lang.org/blog/2022-06-13-uniqueness-types.html).
 

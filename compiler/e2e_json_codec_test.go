@@ -123,6 +123,16 @@ main: (): i32 {
 			t.Fatalf("unexpected lowering: %s", forbidden)
 		}
 	}
+	// Fluent syntax must lower identically to the handwritten free-call form.
+	direct := strings.ReplaceAll(source, "json_encoder().append_json_string(dst, input)", "append_json_string(json_encoder(), dst, input)")
+	direct = strings.ReplaceAll(direct, "encoder.finish_json()", "finish_json(encoder)")
+	directC, err := New().WithSource("json_codec.oak", direct).EmitC().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if emitted != directC {
+		t.Fatal("fluent codec emitted different C from direct calls")
+	}
 	// Two u32 fields only: the policy contributes no tag or payload.
 	if !strings.Contains(emitted, "sizeof(oak_JsonEncoder_JsonStrict) == 8u") {
 		t.Fatal("phantom policy changed cursor layout")
