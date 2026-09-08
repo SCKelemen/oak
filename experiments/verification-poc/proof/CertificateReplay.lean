@@ -1,4 +1,4 @@
-import InitialDecoder
+import ProofPacking
 import RUPText
 import Lean
 
@@ -33,6 +33,12 @@ def pack (formula : Text.Formula) (instructions : List Instruction) : Layout := 
       commands := commands ++ [⟨false, stamp, 0, 0, refs.length, ids.length⟩]
       refs := refs ++ ids
   return ⟨formula.variables, pool, starts, sizes, refs, commands⟩
+
+def pack (formula : Text.Formula) (instructions : List Instruction) : Layout :=
+  ProofPacking.pack formula.variables formula.clauses instructions
+
+deriving instance DecidableEq for Command
+deriving instance DecidableEq for Layout
 
 def layoutJSON (name : String) (raw : Layout) (accepted : Bool) : Json :=
   Json.mkObj [
@@ -70,6 +76,8 @@ def main (args : List String) : IO Unit := do
     let formula ← IO.ofExcept (Text.parseDIMACS (← IO.FS.readFile input.cnf))
     let instructions ← IO.ofExcept (Text.parseLRAT (← IO.FS.readFile input.proof))
     let raw := pack formula instructions
+    if !(decide (raw = packReference formula instructions)) then
+      throw (IO.userError s!"{input.cnf}: proved and reference packing differ")
     match decodeLayout raw with
     | none =>
       results := results.push (Json.mkObj [
@@ -78,6 +86,8 @@ def main (args : List String) : IO Unit := do
     | some decoded =>
       if !(decide (decoded.clauses = formula.clauses ∧ decoded.commands = instructions)) then
         throw (IO.userError s!"{input.cnf}: packing changed decoded formula or commands")
+      if !(ProofPacking.check formula.variables formula.clauses instructions) then
+        throw (IO.userError s!"{input.cnf}: certified packing composition rejected")
       cases := cases.push (← checkCase input.cnf raw true)
       -- Keep the variable domain while replacing the database by a SAT unit.
       let wrong := pack ⟨formula.variables, [[⟨1, true⟩]]⟩ instructions

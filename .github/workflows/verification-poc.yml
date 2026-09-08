@@ -49,6 +49,8 @@ jobs:
           lean -DwarningAsError=true -o proof/PropagationChain.olean proof/PropagationChain.lean 2>&1 | tee build/soundness/chain-proof.log
           lean -DwarningAsError=true -o proof/CertifiedStream.olean proof/CertifiedStream.lean 2>&1 | tee build/soundness/certified-stream-proof.log
           lean -DwarningAsError=true -o proof/InitialDecoder.olean proof/InitialDecoder.lean 2>&1 | tee build/soundness/initial-decoder-proof.log
+          lean -DwarningAsError=true -o proof/ProofPacking.olean proof/ProofPacking.lean 2>&1 | tee build/soundness/proof-packing.log
+          lean -DwarningAsError=true proof/CertificateReplay.lean
       - name: Compare Go and Lean checker decisions
         working-directory: experiments/verification-poc
         shell: bash
@@ -80,6 +82,7 @@ jobs:
           export OAK_SELF_HOSTED_STREAM_CORPUS_OUT="$PWD/build/soundness/self-hosted-stream-cases.json"
           go test -count=1 -v . -run '^TestSelfHostedProofStreams$' 2>&1 | tee build/soundness/self-hosted-stream-go.log
           lean -DwarningAsError=true --run proof/RUPCompare.lean "$OAK_SELF_HOSTED_STREAM_CORPUS_OUT" 2>&1 | tee build/soundness/self-hosted-stream-agreement.log
+          lean -DwarningAsError=true --run proof/ProofPackingCompare.lean "$OAK_SELF_HOSTED_STREAM_CORPUS_OUT" 2>&1 | tee build/soundness/proof-packing-agreement.log
           export OAK_SELF_HOSTED_TEXT_CORPUS_OUT="$PWD/build/soundness/self-hosted-text-cases.json"
           go test -count=1 -v . -run '^TestSelfHostedText$|^TestSelfHostedTextProfile$' 2>&1 | tee build/soundness/self-hosted-text-go.log
           lean -DwarningAsError=true --run proof/RUPTextCompare.lean "$OAK_SELF_HOSTED_TEXT_CORPUS_OUT" 2>&1 | tee build/soundness/self-hosted-text-agreement.log
