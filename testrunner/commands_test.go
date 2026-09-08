@@ -46,6 +46,34 @@ func TestCommandShrinkPreservesDependencies(t *testing.T) {
 	}
 }
 
+// A time advance that a shrunk compare value no longer needs is deleted in
+// the next round instead of surviving as a no-op in the counterexample.
+func TestCommandShrinkReachesFixpoint(t *testing.T) {
+	// program(compare=3), tick(+3), wfi: fails when the line is up at the wfi.
+	input := encodeCommands([]Command{{0, 3, 0}, {2, 0, 3}, {3, 0, 0}})
+	fails := func(data []byte) bool {
+		var compare, now uint32
+		armed := false
+		for _, c := range decodeCommands(data) {
+			now += c.Value
+			switch c.Kind {
+			case 0:
+				compare, armed = c.Target, true
+			case 3:
+				if armed && now >= compare {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	got := decodeCommands(MinimizeCommands(context.Background(), input, 200, fails))
+	want := []Command{{0, 0, 0}, {3, 0, 0}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
 func TestCommandGeneratorDiscovery(t *testing.T) {
 	for _, source := range []string{
 		"GeneratePropertyMissing: (data: []u8): () {}",
