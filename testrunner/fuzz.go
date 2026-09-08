@@ -1,6 +1,7 @@
 package testrunner
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"strings"
@@ -11,14 +12,21 @@ import (
 // entry point. Clang instruments the production implementation itself.
 // Test code must reset all state on every invocation: libFuzzer is persistent.
 func EmitFuzzHarness(pkg Package, test Test, maxBytes int) (string, error) {
+	return emitFuzzHarness(pkg, test, maxBytes, nil)
+}
+
+func emitFuzzHarness(pkg Package, test Test, maxBytes int, adapter *nativeAdapter) (string, error) {
 	if test.Kind != "fuzz" || !cIdentifier.MatchString(test.Name) || maxBytes < 0 || maxBytes > 1<<20 {
 		return "", fmt.Errorf("invalid fuzz harness target")
 	}
-	generated, err := packageCompilation(pkg, nil).EmitC().Get()
+	generated, err := packageCompilation(pkg, adapter).EmitC().Get()
 	if err != nil {
 		return "", err
 	}
 	var out strings.Builder
+	if adapter != nil {
+		fmt.Fprintf(&out, "/* Trusted adapter manifest identity SHA-256: %x; link its pinned objects explicitly. */\n", sha256.Sum256([]byte(adapter.identity)))
+	}
 	out.WriteString(`#include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>

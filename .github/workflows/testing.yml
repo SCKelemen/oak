@@ -16,6 +16,7 @@ jobs:
         run: |
           mkdir -p build
           go build -o build/oak .
+          cp "$(go env GOROOT)/bin/gofmt" build/gofmt
       - name: Test runner and failure replay
         run: go test -race ./testrunner -count=1 -v
       - name: Run Oak test suite

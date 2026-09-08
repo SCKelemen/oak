@@ -81,8 +81,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid test configuration")
 		return 2
 	}
-	if cfg.EmitFuzz != "" && (cfg.Fuzz == "" || cfg.Replay != "" || cfg.List || cfg.Adapter != "") {
-		fmt.Fprintln(stderr, "-emit-fuzz-harness requires -fuzz and cannot combine with replay/list/adapter; export then link native dependencies explicitly")
+	if cfg.EmitFuzz != "" && (cfg.Fuzz == "" || cfg.Replay != "" || cfg.List) {
+		fmt.Fprintln(stderr, "-emit-fuzz-harness requires -fuzz and cannot combine with replay/list")
 		return 2
 	}
 	run, err := regexp.Compile(cfg.Run)
@@ -152,7 +152,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		}
 		for _, pkg := range packages {
 			if len(pkg.Tests) == 1 {
-				content, err := EmitFuzzHarness(pkg, pkg.Tests[0], cfg.MaxBytes)
+				adapter, err := loadAdapter(cfg.Adapter)
+				content := ""
+				if err == nil { content, err = emitFuzzHarness(pkg, pkg.Tests[0], cfg.MaxBytes, adapter) }
 				if err == nil {
 					err = writeHarness(cfg.EmitFuzz, content)
 				}

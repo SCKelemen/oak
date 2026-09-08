@@ -35,7 +35,9 @@ func (comp Compilation) WithSimulation(bindings []SimulationBinding) Compilation
 
 func simulationABI(expr ast.Expression) string {
 	if id, ok := expr.(*ast.Identifier); ok && id.Value == "()" { return "()" }
-	if member, ok := expr.(*ast.IndexExpression); ok && member.Dot {
+	// Qualified type syntax currently uses IndexExpression without setting
+	// Dot. Ordinary type checking remains the authority for legal C types.
+	if member, ok := expr.(*ast.IndexExpression); ok {
 		base, bok := member.Left.(*ast.Identifier)
 		name, nok := member.Index.(*ast.Identifier)
 		if bok && nok && base.Value == "c" {
