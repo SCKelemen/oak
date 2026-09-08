@@ -35,6 +35,34 @@ both: (x: AB, y: BA): u8 = sum(x) + sum(y)
 	}
 }
 
+// Layout policy is not part of semantic shape identity. Natural, packed,
+// aggregate-aligned, per-field-aligned, and reordered structs over the same
+// members all satisfy the same record requirement.
+func TestRecordShapeSatisfactionIgnoresConcreteLayoutPolicy(t *testing.T) {
+	input := `
+u8_ab: type = { a, b: u8 }
+
+Natural: type = struct { a: u8, b: u8 }
+Packed: type = struct(packed) { b: u8, a: u8 }
+Aligned: type = struct(align: 16) { a: u8, b: u8 }
+FieldAligned: type = struct {
+  b(align: 16): u8
+  a: u8
+}
+
+sum: (v: u8_ab): u8 = v.a + v.b
+
+all: (n: Natural, p: Packed, a: Aligned, f: FieldAligned): u8 =
+  sum(n) + sum(p) + sum(a) + sum(f)
+`
+	tc := setupTypeChecker(input)
+	program := parseProgram(input)
+	tc.CheckProgram(program)
+	if len(tc.Errors()) > 0 {
+		t.Fatalf("layout policy must not affect record-shape satisfaction: %v", tc.Errors())
+	}
+}
+
 // Named structs stay nominal islands even when a shape would match:
 // ordered representation is identity, and BA is not AB.
 func TestOrderedStructsRemainNominal(t *testing.T) {
