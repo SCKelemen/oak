@@ -1,0 +1,123 @@
+{
+  "artifacts": "ClauseClassifier.lean, classifier-proof.log, classifier-cases.json, classifier-go.log, classifier-agreement.log; retained 30 days",
+  "commit": "c4bb5d67c8165086d66d2d67460efa807a3ce521",
+  "comparison": {
+    "cases": 1149,
+    "compared_fields": [
+      "classification",
+      "exact encoded unit literal"
+    ],
+    "conflict": 205,
+    "corruptions_rejected": 3,
+    "domain": "Valid encoded clauses, positive logical variable indices, 1..64 assignment cells with values 0..2",
+    "exhaustive_small_cases": 765,
+    "native_seconds_with_race": 6.8,
+    "native_seconds_without_race": 3.81,
+    "oracles": [
+      "Go set-based logical classification",
+      "Proved Lean functional classifier"
+    ],
+    "ordered_clauses": 85,
+    "partial_assignments": 9,
+    "satisfied": 588,
+    "unit": 228,
+    "unresolved": 128,
+    "variable_polarity_assignment_boundaries": 384
+  },
+  "date": "2026-09-08",
+  "existing_gates": {
+    "boolean_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "boolean_model": {
+      "accepted_safe": 1,
+      "rejected_corruptions": 2,
+      "rejected_malformed": 3,
+      "rejected_unsafe": 1,
+      "rejected_wrong": 1
+    },
+    "lean_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "oak_ascii_certificate": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    }
+  },
+  "format": "oak-clause-classifier-validation-1",
+  "implementation": {
+    "actual": "Byte-for-byte extracted clause scan and literal_value from Oak rup_check",
+    "formal_model": "Lean 4 duplicate-aware residual classifier",
+    "host_harness": "Go",
+    "production_checker_changed": false,
+    "python_runtime": false
+  },
+  "next_step": "Connect the proved classifier to the executable propagation chain, carrying assignment invariants and deriving RUP acceptance soundness.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.ClauseClassifier.mem_unique' depends on axioms: [propext]",
+      "'OakVerification.ClauseClassifier.mem_survivors' depends on axioms: [propext]",
+      "'OakVerification.ClauseClassifier.conflict_residual' depends on axioms: [propext]",
+      "'OakVerification.ClauseClassifier.unit_residual' depends on axioms: [propext]",
+      "'OakVerification.ClauseClassifier.conflict_premise' depends on axioms: [propext]",
+      "'OakVerification.ClauseClassifier.unit_premise' depends on axioms: [propext]",
+      "'OakVerification.ClauseClassifier.unit_unassigned' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.ClauseClassifier.classified_conflict_sound' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.ClauseClassifier.classified_unit_write' depends on axioms: [propext, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Duplicate removal preserves literal membership",
+      "Residual membership is original membership and not falsified",
+      "Conflict classification has empty residual",
+      "Unit classification has singleton residual",
+      "Conflict establishes every literal is false",
+      "Unit belongs to the clause and every different literal is false",
+      "Returned unit variable is unassigned",
+      "Classified conflict excludes satisfying compatible assignments",
+      "Classified unit write preserves compatible models"
+    ],
+    "reported_theorems": 9,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Universal Oak scan-to-classifier equivalence",
+      "Complete propagation-chain refinement",
+      "Loop counter and concrete byte-array semantics",
+      "Invalid-literal short-circuit equivalence",
+      "Compiler correctness"
+    ],
+    "proved": [
+      "Functional duplicate-aware classifier establishes unit/conflict premises",
+      "Classification composes with scratch-state semantic lemmas"
+    ],
+    "tested": [
+      "Actual extracted Oak scan agrees with Go and Lean on corpus",
+      "Repeated literals count once for unit classification",
+      "Boundary variable/polarity handling"
+    ],
+    "trusted_infrastructure": [
+      "Go harness and source extraction",
+      "JSON comparison adapter",
+      "Oak compiler",
+      "Generated C",
+      "C compiler/runtime"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34230178433",
+  "solvers_job": 102074038803,
+  "soundness_job": 102074038367,
+  "repository_ci": {
+    "Formal Verification": "success",
+    "Golden File Verification": "success",
+    "Verification experiment (opt-in)": "success",
+    "CI": "success",
+    "Standard library": "success"
+  },
+  "aarch64_memory_refinement": "success"
+}

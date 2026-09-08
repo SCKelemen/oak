@@ -40,8 +40,9 @@ No claim is made that an unvisited invalid literal suffix is validated by this
 kernel; the stream caller validates the whole literal pool. Text decoding and
 compiler correctness remain separate proof boundaries.
 
-Next: prove that the duplicate-aware clause classifier establishes the unit and
-conflict premises, then compose propagation transitions with the proved checker.
+The [clause-classifier milestone](ClauseClassifier.md) now derives those premises
+from a functional duplicate-aware classifier and compares it with the actual Oak
+scan. Complete propagation-chain refinement remains the next composition step.
 
 ## Validation
 

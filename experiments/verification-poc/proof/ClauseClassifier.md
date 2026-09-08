@@ -43,3 +43,26 @@ This module does not yet replace the trace executor's existing classifier.
 
 Next: connect the proved classifier to the executable propagation chain, carrying
 assignment invariants and deriving RUP acceptance soundness through the chain.
+
+## Validation
+
+[The soundness gate passed](https://github.com/SCKelemen/oak/actions/runs/34230178433/job/102074038367)
+on commit `c4bb5d67c8165086d66d2d67460efa807a3ce521`. All nine reported theorems
+passed with warnings as errors and no proof holes or project-specific axioms.
+Their reports contain only `propext` and, for the assignment semantics, `Quot.sound`.
+
+Oak, Go, and Lean agreed on all 1,149 classifications: 205 conflicts, 228 units,
+588 satisfied clauses, and 128 unresolved clauses. Exact encoded unit literals
+also agreed. All three corrupt expected outputs were rejected. The native
+comparison took 3.81 seconds without the race detector. CI retains the canonical
+corpus and proof/comparison logs for 30 days;
+`../validation-clause-classifier.json` records the tested commit and scope.
+
+The native comparison passed with Go's race detector in 6.80 seconds. The full
+native suite, external verification suite, Oak ASCII replay, Lean certificate
+gate (11 accepted, 22 corruptions rejected), Boolean proof bridge, and Boolean
+invariant-model gate also passed on the tested commit.
+
+Repository CI, standard-library, formal-verification, golden-file, and AArch64
+memory-refinement checks all passed on the tested commit. Existing gates, corpus
+coverage, and timeout limits were preserved.
