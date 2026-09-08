@@ -194,8 +194,55 @@ split/join, byte boundaries, zero capacity, embedded NUL, maximum integer values
 borrowed slices, literal rejection and sticky builder errors. All examples are
 compiled and executed. Emitted builder C is checked for allocator calls.
 
-The older design sketches described an eventual module-level `Str[E]` construction
-and writer interface. Those are not replaced with unchecked wrappers here: the
-current executable surface deliberately uses checked code-unit views and explicit
-outputs. The compiler's semantic `string`/`Str[E]` model remains distinct; a general
-borrow-preserving runtime conversion requires a corresponding compiler contract.
+The checked code-unit API interoperates with the scoped runtime UTF-8 string
+conversions below. General encoding-polymorphic wrappers and writer interfaces
+remain separate work.
+
+## Runtime UTF-8 strings
+
+The compiler provides two zero-copy, zero-allocation conversions:
+
+| Operation | Result | Work |
+| --- | --- | --- |
+| `str_from_utf8(bytes)` | `string` / `Str[Utf8]` | Strict O(n) UTF-8 validation; traps on invalid input |
+| `str_bytes(text)` | Read-only `[]u8` | O(1), same backing storage |
+
+Bind the source and result explicitly. `str_from_utf8` accepts a named read-only
+byte view, including a view parameter; it does not accept owned arrays, writable
+spans, or temporary view expressions. `str_bytes` accepts a named string borrow
+or a literal. Neither adds a terminator, copies bytes, or allocates backing
+storage. Empty strings and embedded NUL are supported.
+
+```oak
+data: [2]u8
+data[0] = u8(104)
+data[1] = u8(105)
+bytes: []u8 = view(&data)
+text: string = str_from_utf8(bytes)
+same_bytes: []u8 = str_bytes(text)
+```
+
+For recoverable invalid input, branch on `is_valid_utf8(bytes)` before calling
+`str_from_utf8`. The constructor still checks validity; no unchecked cast or
+proof of validity is inferred from the branch. Its validation is runtime work,
+while wrapping and unwrapping only copy the descriptor.
+
+All aliases retain the backing owner and region. Function-call checks include
+transitive writes to global backing arrays; unknown callees conservatively may
+write all global owners. The owner cannot be written or
+mutably borrowed until the read-only borrows leave scope. Direct view/span
+parameters participate in provenance tracking too. A copied span is a reborrow
+that suspends its parent until the alias leaves scope.
+
+String bindings require initialization and cannot be reassigned. A function may
+return a literal string directly, but cannot return a borrowed string without a
+region contract. String-containing records, arrays, and ADT payloads are
+conservatively rejected at the same storage boundaries as other borrows,
+including aggregates containing literal strings. General aggregate lifetimes and
+closure capture lifetimes remain unsupported; function literals in an active
+borrow scope are rejected. UTF-16/32 string wrapping is not provided by these
+builtins; their checked code-unit codecs remain available.
+
+See [runtime_utf8.oak](../examples/strings/runtime_utf8.oak) for caller-owned
+runtime input, string views, and a fluent text builder used together.
+

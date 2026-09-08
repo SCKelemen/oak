@@ -1621,6 +1621,9 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if ident.Value == "subslice" {
 			return tc.checkSubsliceBuiltin(expr)
 		}
+		if ident.Value == "str_from_utf8" || ident.Value == "str_bytes" {
+			return tc.checkStringViewBuiltin(ident.Value, expr)
+		}
 		// len: element/byte count of a container. v1 representation counts
 		// are u32, matching the view/span structs.
 		if ident.Value == "len" {
@@ -3157,6 +3160,10 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 }
 
 func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
+	if stmt != nil && stmt.Name != nil && (stmt.Name.Value == "str_from_utf8" || stmt.Name.Value == "str_bytes") {
+		tc.addError(stmt.Name, "%s is a reserved string-view builtin", stmt.Name.Value)
+		return
+	}
 	before := len(tc.Errors())
 	tc.beginMonomorphicTransaction()
 	defer func() {

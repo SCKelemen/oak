@@ -18,6 +18,7 @@ type CodeGenerator struct {
 	packageName      string
 	sourceFile       string // Source file path for source location comments
 	sourceText       string // Full source text for UTF-8 to UTF-16 conversion
+	sourceIndex      *lsp.PositionIndex
 	output           strings.Builder
 	indentLevel      int
 	types            map[string]bool // Track emitted types to avoid duplicates
@@ -100,6 +101,7 @@ func (cg *CodeGenerator) SetSourceFile(file string) {
 // SetSourceText sets the full source text for UTF-8 to UTF-16 conversion
 func (cg *CodeGenerator) SetSourceText(text string) {
 	cg.sourceText = text
+	cg.sourceIndex = nil
 }
 
 // Generate generates C code from an Oak program
@@ -1142,6 +1144,14 @@ func (cg *CodeGenerator) buildLocalTypes(fn *ast.FunctionStatement) map[string]l
 // identifiers are classified — everything else fails closed.
 func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 	if call, ok := expr.(*ast.InvocationExpression); ok {
+		if id, ok := call.Function.(*ast.Identifier); ok {
+			switch id.Value {
+			case "str_from_utf8":
+				return localContainer{kind: containerString}
+			case "str_bytes":
+				return localContainer{kind: containerView, element: "u8"}
+			}
+		}
 		if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "core_slice" && len(call.Arguments) == 3 {
 			info := cg.localContainerOf(call.Arguments[0])
 			if info.kind == containerView || info.kind == containerSpan {
@@ -1905,6 +1915,9 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			}
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
+			if cg.emitStringViewCall(e, tc) {
+				return
+			}
 			if ident.Value == "core_slice" && len(e.Arguments) == 3 && cg.emitBorrowedSlice(e, tc) {
 				return
 			}
@@ -2430,8 +2443,11 @@ func (cg *CodeGenerator) formatSourceRange(loc SourceLocation) string {
 
 	if cg.sourceText != "" && loc.ByteStart >= 0 && loc.ByteEnd >= 0 {
 		// Use actual byte offsets from tokens for accurate conversion
-		startPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, loc.ByteStart, loc.Line)
-		endPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, loc.ByteEnd, loc.EndLine)
+		if cg.sourceIndex == nil {
+			cg.sourceIndex = lsp.NewPositionIndex(cg.sourceText)
+		}
+		startPos = cg.sourceIndex.Position(loc.ByteStart, loc.Line)
+		endPos = cg.sourceIndex.Position(loc.ByteEnd, loc.EndLine)
 	} else {
 		// Fallback: use column directly (assumes 1:1 mapping, which is true for ASCII)
 		// This is less accurate but works when source text isn't available

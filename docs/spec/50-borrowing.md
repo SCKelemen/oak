@@ -219,11 +219,20 @@ Until field-sensitive provenance and destination lifetimes are represented,
 aggregate initializers, parameters, arguments, assignments, and field/element
 writes containing borrowed storage are rejected with `OAK-B0109`. This is a
 conservative restriction, not support for storing safe aggregate borrows. Direct
-views/spans of borrow-free elements, owned records/ADTs, and literal strings
-remain supported. Typechecking retains resolved local expression/declaration
+views/spans of borrow-free elements, owned records/ADTs, and direct literal strings
+remain supported. String fields/payloads count as borrowed storage, even when an
+individual initializer is a literal. Typechecking retains resolved local expression/declaration
 types so this boundary cannot depend on a local scope remaining in the global
-environment. General runtime `Str[E]` construction remains unavailable; it still
-requires provenance-preserving conversions and region-aware wrapper storage.
+environment.
+
+Scoped UTF-8 construction is available through `str_from_utf8`, with `str_bytes`
+providing the inverse read-only view. Both propagate the source owner/region into
+an explicit new binding. Direct borrowed parameters receive caller-owned origins;
+view/string aliases retain shared reads and span aliases suspend their parent.
+Borrowed bindings cannot be reassigned, and string declarations require a tracked
+initializer. Direct literal-string returns are allowed; borrowed returns and
+general region-aware wrapper storage remain unavailable. Function literals in an
+active borrow scope are conservatively rejected pending capture-lifetime analysis.
 
 ## 13. Formal verification targets
 
@@ -243,4 +252,5 @@ The core borrow/resource model must prove:
 - extent propagation preserves the semantic length equations introduced by array views, slices, and proved splits.
 
 `spec/lean/Oak/Borrowing.lean` models the local borrow-state laws. Consumption/alias-class and symbolic-extent lemmas should extend that proof surface as the checker representation lands. Temporal ownership transfer across asynchronous actors may additionally use TLA+ when introduced.
+
 

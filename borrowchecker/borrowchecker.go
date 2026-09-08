@@ -66,6 +66,9 @@ type borrowInfo struct {
 
 // BorrowChecker tracks borrow states and enforces borrowing rules
 type BorrowChecker struct {
+	staticStringFunctions map[string]bool
+	globalWrites          map[string]map[string]bool
+	globalOwners          map[string]bool
 	// ownerStates maps owned array variable names to their current borrow state
 	ownerStates map[string]BorrowState
 
@@ -125,6 +128,13 @@ func (bc *BorrowChecker) CheckProgram(program *ast.Program, env *typechecker.Typ
 	bc.activeBorrows = make(map[string]borrowInfo)
 	bc.currentBlockDepth = 0
 	bc.unsafeDepth = 0
+	bc.staticStringFunctions = make(map[string]bool)
+	bc.collectGlobalWrites(program, env)
+	for _, statement := range program.Statements {
+		if fn, ok := statement.(*ast.FunctionStatement); ok && fn.Name != nil && literalStringResult(fn.Body) {
+			bc.staticStringFunctions[fn.Name.Value] = true
+		}
+	}
 
 	for _, stmt := range program.Statements {
 		bc.checkStatement(stmt, env)
@@ -235,6 +245,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	if stmt.Receiver != nil && stmt.Receiver.Name != nil {
 		receiverType := bc.parseTypeFromAST(stmt.Receiver.Type, funcEnv)
 		bc.checkAggregateType(stmt.Receiver.Type, receiverType, env, false)
+		bc.registerBorrowParameter(stmt.Receiver.Name.Value, receiverType, stmt.Receiver.Type)
 		if receiverType != nil {
 			if arrType, ok := receiverType.(*typechecker.ArrayType); ok {
 				if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
@@ -255,6 +266,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 			}
 		}
 		bc.checkAggregateType(param.Type, paramType, env, false)
+		bc.registerBorrowParameter(param.Name.Value, paramType, param.Type)
 		if paramType != nil {
 			if arrType, ok := paramType.(*typechecker.ArrayType); ok {
 				if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
@@ -302,6 +314,9 @@ func (bc *BorrowChecker) checkBorrowEscape(stmt *ast.FunctionStatement, env *typ
 		}
 	}
 	kind := returnedBorrowKind(resultType, make(map[typechecker.Type]bool))
+	if _, text := resultType.(*typechecker.StringType); text && literalStringResult(stmt.Body) {
+		return
+	}
 	if kind == "" && env.ContainsBorrowStorage(resultType) {
 		kind = "borrow"
 	}
@@ -403,6 +418,10 @@ func (bc *BorrowChecker) checkIfStatement(stmt *ast.IfStatement, env *typechecke
 // checkAssignmentStatement handles assignments
 func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement, env *typechecker.TypeEnvironment) {
 	bc.checkAggregateStorage(stmt.Value, env, false)
+	if isDirectBorrowType(env.CheckedExpressionType(stmt.Value)) {
+		bc.reportBorrow(stmt.Name, CodeBorrowReassign, "borrowed values require a new binding and cannot be assigned into an existing binding")
+		return
+	}
 	// Borrows are immutable bindings - cannot reassign a variable that currently holds a view/span
 	if info, exists := bc.activeBorrows[stmt.Name.Value]; exists {
 		d := bc.reportBorrow(stmt.Name, CodeBorrowReassign,
@@ -526,6 +545,14 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 	if vd.Value != nil {
 		bc.checkExpression(vd.Value, env, varName)
 	}
+	if _, text := env.CheckedDeclarationType(vd).(*typechecker.StringType); text {
+		valueType := env.CheckedExpressionType(vd.Value)
+		_, stringValue := valueType.(*typechecker.StringType)
+		// Do not cascade lifetime errors from an already ill-typed initializer.
+		if _, tracked := bc.activeBorrows[varName]; !tracked && (valueType == nil || stringValue) {
+			bc.reportBorrow(vd.Name, CodeBorrowEscape, "string binding requires a literal or a tracked string borrow")
+		}
+	}
 
 	// After type checking, check if this variable is an owned array, view, or span
 	// Use type information from the environment to classify the variable
@@ -569,6 +596,15 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		// Check if this is using an owner while it's borrowed
 		// This is a read operation (not an assignment target)
 		bc.checkIdentifierUse(e, e.Value, env, false)
+		if targetVar != "" {
+			if source, tracked := bc.activeBorrows[e.Value]; tracked {
+				bc.createSubsliceWithRegion(e.Value, targetVar, source.region, e)
+			}
+		}
+	case *ast.StringLiteral:
+		if targetVar != "" {
+			bc.createViewBorrowWithRegion("$literal:"+targetVar, targetVar, nil, e)
+		}
 	case *ast.SliceExpression:
 		bc.checkSliceExpression(e, env, targetVar)
 	case *ast.IndexExpression:
@@ -586,6 +622,9 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		for _, arm := range e.Arms {
 			bc.checkExpression(arm.Body, env)
 		}
+		if targetVar != "" && literalStringResult(e) {
+			bc.createViewBorrowWithRegion("$literal-match:"+targetVar, targetVar, nil, e)
+		}
 	case *ast.RecordLiteral:
 		for _, field := range e.Fields {
 			bc.checkExpression(field, env)
@@ -596,6 +635,15 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		}
 	case *ast.VariantExpression:
 		bc.checkExpression(e.Payload, env)
+	case *ast.FunctionLiteral:
+		body := &ast.BlockExpression{Block: e.Body}
+		if len(bc.activeBorrows) != 0 {
+			bc.reportBorrow(e, CodeBorrowEscape, "function literals in a borrow scope require capture-lifetime analysis")
+		}
+		if fn, ok := env.CheckedExpressionType(e).(*typechecker.FunctionType); ok && env.ContainsBorrowStorage(fn.ReturnType) && !literalStringResult(body) {
+			bc.reportBorrow(e, CodeBorrowEscape, "function literal cannot return borrowed storage")
+		}
+		bc.checkExpression(body, env)
 	case *ast.BlockExpression:
 		// A block in expression position (most importantly a function block
 		// body): statements are checked under block scoping, so borrows
@@ -796,6 +844,7 @@ func (bc *BorrowChecker) checkIndexExpression(index *ast.IndexExpression, env *t
 
 // checkInvocationExpression checks function calls for borrow operations
 func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
+	bc.checkCallGlobalWrites(call, env)
 	// A borrow named as the first argument of a bound derive builtin is a
 	// derivation source, not a direct use; createSubsliceWithRegion is the
 	// single authority for whether the derivation is allowed.
@@ -828,6 +877,8 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 	// Arguments are already validated, so we can safely create borrows
 	if ident, ok := call.Function.(*ast.Identifier); ok {
 		switch ident.Value {
+		case "str_from_utf8", "str_bytes":
+			bc.checkStringViewCall(call, env, targetVar)
 		case "view":
 			bc.checkViewCall(call, env, targetVar)
 		case "span":
@@ -838,6 +889,9 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			bc.checkViewAsCall(call, env, targetVar)
 		case "span_as":
 			bc.checkSpanAsCall(call, env, targetVar)
+		}
+		if targetVar != "" && bc.staticStringFunctions[ident.Value] {
+			bc.createViewBorrowWithRegion("$literal-call:"+targetVar, targetVar, nil, call)
 		}
 	}
 
