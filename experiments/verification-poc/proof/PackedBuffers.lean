@@ -52,7 +52,9 @@ theorem push_full (b : Buffer) (item : Nat) (h : b.capacity ≤ b.pool.length) :
 
 theorem seal_preserves (b : Buffer) (h : WellFormed b) : WellFormed (closeSegment b) := by
   obtain ⟨hp, hc⟩ := h
-  simp [WellFormed, closeSegment, List.flatten_append, hp, hc]
+  constructor
+  · simpa [closeSegment, List.flatten_append] using hp
+  · exact hc
 
 theorem seal_layout (b : Buffer) :
     (closeSegment b).pool = b.pool ∧ (closeSegment b).closed = b.closed ++ [b.pending] ∧
