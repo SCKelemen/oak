@@ -46,8 +46,9 @@ type Options struct {
 // modified copies so callers can cheaply derive configurations without hidden
 // mutation between compiler phases.
 type Compilation struct {
-	source  SourceText
-	options Options
+	source            SourceText
+	options           Options
+	resourceProtocols []typechecker.ResourceProtocolDeclaration
 }
 
 // SyntaxTree is a parsed Oak source file.
@@ -116,6 +117,15 @@ func (comp Compilation) WithProfile(profile string) Compilation {
 	return comp
 }
 
+// WithResourceProtocols configures syntax-independent resource semantics for
+// the ordinary Check pipeline. These declarations are resolved against Oak's
+// checked type/callable environment; this API intentionally freezes no source
+// spelling for resource protocols, consumption, or fresh authority.
+func (comp Compilation) WithResourceProtocols(declarations []typechecker.ResourceProtocolDeclaration) Compilation {
+	comp.resourceProtocols = cloneResourceProtocolDeclarations(declarations)
+	return comp
+}
+
 // Options returns the effective compilation options.
 func (comp Compilation) Options() Options {
 	return comp.options
@@ -159,11 +169,17 @@ func (comp Compilation) SyntaxTree() Stage[*SyntaxTree] {
 }
 
 // Check parses and semantically checks the source: type checking, borrow
-// checking (memory safety), and discipline analysis (bounded execution) all
-// gate compilation. Error-severity diagnostics always reject; in the strict
-// profile, warnings (recorded unsafe assumptions, tail-recursion
-// obligations, unnecessary-code warnings) reject too (85-discipline §7).
+// checking (memory safety), configured resource-authority checking, and
+// discipline analysis (bounded execution) all gate compilation. Resource
+// semantics enter through syntax-independent resolved declarations rather than
+// a source spelling. Error-severity diagnostics always reject; in the strict
+// profile, warnings (recorded unsafe assumptions, tail-recursion obligations,
+// unnecessary-code warnings) reject too (85-discipline §7).
 func (comp Compilation) Check() Stage[*SemanticModel] {
+	return comp.check(comp.resourceProtocols)
+}
+
+func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDeclaration) Stage[*SemanticModel] {
 	return comp.Parse().Then(func(tree *SyntaxTree) (*SemanticModel, error) {
 		publicRoot, ok := cloneSyntax(reflect.ValueOf(tree.Root)).Interface().(*ast.Program)
 		if !ok || publicRoot == nil {
@@ -179,17 +195,25 @@ func (comp Compilation) Check() Stage[*SemanticModel] {
 			return nil, err
 		}
 
+		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc}
+
 		bc := borrowchecker.New()
 		bc.CheckProgram(tree.Root, tc.Env())
 		if err := comp.gate("borrowcheck", bc.Diagnostics()); err != nil {
 			return nil, err
 		}
 
+		if len(resourceProtocols) != 0 {
+			if _, _, err := comp.checkResourceProtocols(model, resourceProtocols); err != nil {
+				return nil, err
+			}
+		}
+
 		if err := comp.gate("discipline", discipline.AnalyzeProgram(tree.Root).Diagnostics()); err != nil {
 			return nil, err
 		}
 
-		return &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc}, nil
+		return model, nil
 	})
 }
 
