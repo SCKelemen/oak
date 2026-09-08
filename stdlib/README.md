@@ -387,6 +387,84 @@ This is a sequential queue: synchronization, stable handles, decrease-key,
 arbitrary removal and intrusive heap membership are not implemented by this API.
 See `examples/stdlib_priority_queue.oak` for an executable example.
 
+## Bounded circular deque
+
+Inspired by SerenityOS AK's [CircularDeque](https://github.com/SerenityOS/serenity/blob/master/AK/CircularDeque.h),
+Oak's deque supports both FIFO and LIFO use, with constant-time access at either
+end and by logical index. The implementation is written in Oak and uses the
+existing caller-owned storage convention. Unlike AK's overwriting enqueue,
+Oak returns `Full` and preserves the queue when capacity is exhausted.
+
+Pair a zero-initialized `[1]DequeCursor` (`head`, `count`) with initialized storage
+of copyable `T`. Keep the same backing storage and capacity for its active lifetime.
+Logical index zero is the front; values may wrap around the physical array.
+Zero capacity is valid: pushes return `Full`, pops/front/back return `Empty`,
+and indexed operations return `OutOfBounds`.
+
+| Operation | Success | Error |
+| --- | --- | --- |
+| `deque_push_front/back(cursor, storage, value)` | New count | `Full` |
+| `deque_pop_front/back(cursor, storage)` | Removed value | `Empty` |
+| `deque_front/back(cursor, view)` | Copy of endpoint | `Empty` |
+| `deque_get(cursor, view, index)` | Copy at logical index | `OutOfBounds` |
+| `deque_set(cursor, storage, index, value)` | Previous value | `OutOfBounds` |
+| `deque_clear(cursor, capacity)` | Resets head and count | Invalid cursor traps |
+
+Fallible operations return `Result[_, CollectionError]`. Every error preserves
+both cursor fields and all backing entries. Pop and clear leave stale bytes in
+storage; they do not erase memory or run resource destruction. All operations
+are O(1), excluding ordinary element-copy cost. They neither allocate nor shift
+other entries. Generic specialization uses concrete values without boxing.
+
+`deque_check` validates bounds on every operation; an empty cursor can have a
+nonzero head when capacity is nonzero. `deque_offset` is a checked arithmetic
+helper requiring head and offset below capacity. Its subtraction-based wrap
+avoids overflow even at the maximum u32 capacity. Direct callers must preserve
+cursor/storage pairing and the logical contents; the cursor is not a borrow or
+an ownership token. No concurrent access, stable element handles, or intrusive
+membership is provided. Existing `ring_*` APIs retain their original contracts.
+
+## Dense reusable ID pool
+
+SerenityOS AK's [IDAllocator](https://github.com/SerenityOS/serenity/blob/master/AK/IDAllocator.h)
+provides the inspiration for explicit ID allocation and release. Oak's bounded
+variant uses a caller-owned bitmap instead of AK's random selection and hash
+table. IDs are deterministic zero-based slots in `[0, limit)`: allocation always
+selects the lowest free ID. This suits fixed kernel object tables and database
+request pools; use an explicit reservation to exclude a slot such as zero.
+
+Supply at least `bitset_storage_bytes(limit)` initialized bytes, zeroed or cleared
+before first use. A set bit means allocated. There is no separate cursor or hidden
+allocator state. Keep the bitmap and limit paired while IDs are live; changing the
+limit can expose previously unused bits. Do not mutate the bitmap independently
+of its users.
+
+| Operation | Success | Work |
+| --- | --- | --- |
+| `id_pool_allocate(storage, limit)` | Lowest free ID | O(limit), skips full bytes |
+| `id_pool_reserve(storage, limit, id)` | Specified newly allocated ID | O(1) |
+| `id_pool_release(storage, limit, id)` | Released ID | O(1) |
+| `id_pool_contains(view, limit, id)` | Whether ID is allocated | O(1) |
+| `id_pool_clear(storage, limit)` | Logical limit | O(ceil(limit / 8)) |
+
+Results use `IdPoolError`: `StorageTooSmall`, `Full`, `OutOfBounds`,
+`AlreadyAllocated`, or `NotAllocated`. Storage size is checked first. Reserve
+rejects an occupied ID; release rejects a free ID. Every error leaves all bytes
+unchanged. Operations ignore and preserve unused high bits in the final byte and
+all spare bytes, including clear. Limit zero is valid and always full; the full
+u32 argument range is checked without overflowing the byte-size calculation.
+
+IDs are reusable numeric slots, not generation-checked handles, capabilities,
+random identifiers, or PAC-authenticated pointers. Release followed by allocation
+can return the same number. Applications needing stale-handle detection must
+track generations separately. Clear invalidates all logical allocations and must
+only be used when their users have been retired. Synchronization is caller-owned.
+
+See `examples/stdlib_deque_ids.oak` for a compiled, executed example combining a
+record-valued deque with an ID pool. Both structures operate without allocation.
+Further AK-inspired work includes hash tables/maps, intrusive ordered trees, and
+segmented/disjoint storage; these are not implemented by this addition.
+
 ## Verification and remaining work
 
 `compiler/e2e_stdlib_test.go` compiles real imported Oak through the compiler and
@@ -421,7 +499,16 @@ invariant and failed-operation snapshot. Additional cases exercise prefix heapif
 zero count, even/odd sizes, invalid counts, equal/high unsigned priorities,
 independent heaps, missing/wrong priority fields and corruption traps.
 
+Deque tests compare mixed operations with a sequence model at capacities 0, 1, 3
+and 8, including both endpoints, indexed replacement, wraparound, full/empty
+errors and unchanged failed writes. ID-pool tests compare every logical bit and
+backing byte with an independent occupancy model across zero, partial-byte and
+byte-boundary limits. They verify deterministic reuse, reservation, double release,
+short storage, maximum u32 bounds, preserved tail/spare bits and the runnable
+record-valued example. Emitted example C is checked for allocator calls.
+
 The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
 allocator-backed pools, intrusive trees/hash tables, concurrent rings, broader collections and persistence
 protocols remain separate work; importing this module does not implement them.
+
