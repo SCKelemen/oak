@@ -11,6 +11,18 @@ import (
 const aarch64SysRegSource = `
 package main
 
+fn sysreg_read_physical_count() -> u64
+  arm64.read_cntpct_el0()
+fn sysreg_read_frequency() -> u64
+  arm64.read_cntfrq_el0()
+fn sysreg_read_hyp_control() -> u64
+  arm64.read_cnthp_ctl_el2()
+fn sysreg_write_hyp_control(value: u64) -> ()
+  arm64.write_cnthp_ctl_el2(value)
+fn sysreg_read_hyp_compare() -> u64
+  arm64.read_cnthp_cval_el2()
+fn sysreg_write_hyp_compare(value: u64) -> ()
+  arm64.write_cnthp_cval_el2(value)
 fn sysreg_read_hcr() -> u64
   arm64.read_hcr_el2()
 fn sysreg_write_hcr(value: u64) -> ()
@@ -68,6 +80,12 @@ func TestAArch64SystemRegisterInstructionRefinement(t *testing.T) {
 		mnemonic string
 		reg      string
 	}{
+		{"sysreg_read_physical_count", "mrs", "cntpct_el0"},
+		{"sysreg_read_frequency", "mrs", "cntfrq_el0"},
+		{"sysreg_read_hyp_control", "mrs", "cnthp_ctl_el2"},
+		{"sysreg_write_hyp_control", "msr", "cnthp_ctl_el2"},
+		{"sysreg_read_hyp_compare", "mrs", "cnthp_cval_el2"},
+		{"sysreg_write_hyp_compare", "msr", "cnthp_cval_el2"},
 		{"sysreg_read_hcr", "mrs", "hcr_el2"},
 		{"sysreg_write_hcr", "msr", "hcr_el2"},
 		{"sysreg_read_esr", "mrs", "esr_el2"},

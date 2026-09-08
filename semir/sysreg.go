@@ -52,6 +52,10 @@ var arm64SysRegs = [...]SysRegSpec{
 	{Name: "far_el2", Asm: "FAR_EL2", Access: SysRegReadOnly},
 	{Name: "hpfar_el2", Asm: "HPFAR_EL2", Access: SysRegReadOnly},
 	{Name: "cntvct_el0", Asm: "CNTVCT_EL0", Access: SysRegReadOnly},
+	{Name: "cntpct_el0", Asm: "CNTPCT_EL0", Access: SysRegReadOnly},
+	{Name: "cntfrq_el0", Asm: "CNTFRQ_EL0", Access: SysRegReadOnly},
+	{Name: "cnthp_ctl_el2", Asm: "CNTHP_CTL_EL2", Access: SysRegReadWrite},
+	{Name: "cnthp_cval_el2", Asm: "CNTHP_CVAL_EL2", Access: SysRegReadWrite},
 
 	{Name: "hcr_el2", Asm: "HCR_EL2", Access: SysRegReadWrite},
 	{Name: "vttbr_el2", Asm: "VTTBR_EL2", Access: SysRegReadWrite},
