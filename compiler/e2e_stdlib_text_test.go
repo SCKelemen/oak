@@ -1,12 +1,12 @@
 package compiler
 
 import (
- "testing"
+ "fmt"
+ "os"
  "strings"
- "github.com/SCKelemen/oak/ast"
- "github.com/SCKelemen/oak/object"
- "github.com/SCKelemen/oak/stdlib"
- "github.com/SCKelemen/oak/typechecker"
+ "testing"
+ "unicode/utf16"
+ "unicode/utf8"
 )
 
 func TestE2EStdlibTextSmoke(t *testing.T) {
@@ -46,14 +46,327 @@ main: (): i32 {
 	}
 }
 
-func TestE2EStdlibTextSyntax(t *testing.T) {
- tree, err := New().WithSource("std.oak", stdlib.Source).Parse().Get()
- if err != nil { t.Fatal(err) }
- for i, stmt := range tree.Root.Statements {
-  tc := typechecker.New(object.NewEnvironment())
-  tc.CheckProgram(&ast.Program{Statements: tree.Root.Statements[:i+1]})
-  for _, e := range tc.Errors() {
-   if strings.Contains(e, "nil expression") { t.Fatalf("first nil expression at declaration %d %s", i, declarationName(stmt)) }
+const textTestPrelude = `
+import(std)
+text_code: (result: Result[u32, TextError]): u32 = result ?
+ | .Ok(value) => u32(0)
+ | .Err(reason) => text_error_code(reason)
+text_range: (result: Result[TextRange, TextError]): TextRange = result ?
+ | .Ok(value) => value
+ | .Err(reason) => TextRange { start: u32(4294967295), end: u32(4294967295) }
+range_code: (result: Result[TextRange, TextError]): u32 = result ?
+ | .Ok(value) => u32(0)
+ | .Err(reason) => text_error_code(reason)
+`
+
+func writeTextView(src *strings.Builder, name string, value string) {
+	fmt.Fprintf(src, "%s_data: [%d]u8\n", name, len(value))
+	for i, b := range []byte(value) {
+		fmt.Fprintf(src, "%s_data[%d] = u8(%d)\n", name, i, b)
+	}
+	fmt.Fprintf(src, "%s: []u8 = view(&%s_data)\n", name, name)
+}
+
+func runTextTest(t *testing.T, name string, src string) {
+	t.Helper()
+	code, abnormal := buildAndRun(t, name, src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
+func TestE2EStdlibTextCodecs(t *testing.T) {
+	var src strings.Builder
+	src.WriteString(textTestPrelude + "main: (): i32 {\n")
+	fixtures := []string{"", "A\x00z", "é", "世界", "😀", "\u007f\u0080\u07ff\u0800\ud7ff\ue000\uffff\U00010000\U0010ffff"}
+	for _, value := range fixtures {
+		src.WriteString("true ? {\n")
+		writeTextView(&src, "input", value)
+		runes := []rune(value)
+		units := utf16.Encode(runes)
+		fmt.Fprintf(&src, "wide_data: [%d]u16\nscalar_data: [%d]u32\n", len(units), len(runes))
+		for i, v := range units {
+			fmt.Fprintf(&src, "wide_data[%d] = u16(%d)\n", i, v)
+		}
+		for i, v := range runes {
+			fmt.Fprintf(&src, "scalar_data[%d] = u32(%d)\n", i, v)
+		}
+		src.WriteString("wide: []u16 = view(&wide_data)\nscalars: []u32 = view(&scalar_data)\n")
+		for _, in := range []struct {
+			bits int
+			name string
+		}{{8, "input"}, {16, "wide"}, {32, "scalars"}} {
+			fmt.Fprintf(&src, "assert(text_result_value(utf%d_count(%s)) == u32(%d))\n", in.bits, in.name, len(runes))
+			for _, out := range []struct {
+				bits   int
+				values []uint32
+			}{{8, bytesAsU32([]byte(value))}, {16, unitsAsU32(units)}, {32, runesAsU32(runes)}} {
+				if in.bits == out.bits {
+					continue
+				}
+				fmt.Fprintf(&src, "true ? {\nout_data: [%d]u%d\ndst: [*]u%d = span(&out_data)\nassert(text_result_value(utf%d_to_utf%d(dst, %s)) == u32(%d))\n", len(out.values), out.bits, out.bits, in.bits, out.bits, in.name, len(out.values))
+				for i, v := range out.values {
+					fmt.Fprintf(&src, "assert(dst[%d] == u%d(%d))\n", i, out.bits, v)
+				}
+				src.WriteString("}\n")
+			}
+		}
+		src.WriteString("}\n")
+	}
+	// Exercise every Unicode scalar through both variable-width codecs.
+	src.WriteString(`
+ bytes: [4]u8
+ wide: [2]u16
+ value: u32 = 0
+ while value <= u32(1114111) {
+  unicode_is_scalar(value) ? {
+   n8: u32 = 0
+   n16: u32 = 0
+   true ? {
+    dst: [*]u8 = span(&bytes)
+    n8 = text_result_value(utf8_encode(dst, u32(0), value))
+   }
+   true ? {
+    dst: [*]u16 = span(&wide)
+    n16 = text_result_value(utf16_encode(dst, u32(0), value))
+   }
+   true ? {
+    v: []u8 = bytes[0:n8]
+    decoded: TextScalar = text_decoded(utf8_decode(v, u32(0)))
+    assert(decoded.value == value && decoded.next == n8 && is_valid_utf8(v))
+   }
+   true ? {
+    v: []u16 = wide[0:n16]
+    decoded: TextScalar = text_decoded(utf16_decode(v, u32(0)))
+    assert(decoded.value == value && decoded.next == n16)
+   }
   }
+  value = value + u32(1)
  }
+ 42
+}
+`)
+	runTextTest(t, "textcodecs", src.String())
+}
+
+func bytesAsU32(values []byte) []uint32 {
+	out := make([]uint32, len(values))
+	for i, v := range values {
+		out[i] = uint32(v)
+	}
+	return out
+}
+func unitsAsU32(values []uint16) []uint32 {
+	out := make([]uint32, len(values))
+	for i, v := range values {
+		out[i] = uint32(v)
+	}
+	return out
+}
+func runesAsU32(values []rune) []uint32 {
+	out := make([]uint32, len(values))
+	for i, v := range values {
+		out[i] = uint32(v)
+	}
+	return out
+}
+
+func TestE2EStdlibTextInvalidEncoding(t *testing.T) {
+	var src strings.Builder
+	src.WriteString(textTestPrelude + "main: (): i32 {\n")
+	invalid := []string{"\x80", "\xbf", "\xc0\x80", "\xc1\xbf", "\xc2", "\xc2A", "\xe0\x80\x80", "\xed\xa0\x80", "\xed\xbf\xbf", "\xe1\x80", "\xf0\x80\x80\x80", "\xf4\x90\x80\x80", "\xf5\x80\x80\x80", "\xf0\x90\x80", "\xff", "a\xff"}
+	for _, value := range invalid {
+		if utf8.ValidString(value) {
+			t.Fatal("fixture should be invalid")
+		}
+		src.WriteString("true ? {\n")
+		writeTextView(&src, "input", value)
+		src.WriteString("out: [8]u16\ndst: [*]u16 = span(&out)\ni: u32 = 0\nwhile i < u32(8) { dst[i] = u16(90)\ni = i + u32(1) }\nassert(!utf8_validate(input) && !is_valid_utf8(input))\nassert(text_code(utf8_to_utf16(dst, input)) == u32(1))\ni = u32(0)\nwhile i < u32(8) { assert(dst[i] == u16(90))\ni = i + u32(1) }\n}\n")
+	}
+	src.WriteString(`
+ data: [4]u8
+ dst: [*]u8 = span(&data)
+ bytes_fill(dst, u8(90))
+ assert(text_code(utf8_encode(dst, u32(0), u32(55296))) == u32(2))
+ assert(text_code(utf8_encode(dst, u32(0), u32(1114112))) == u32(2))
+ assert(text_code(utf8_encode(dst, u32(4294967295), u32(65))) == u32(4))
+ assert(text_code(utf8_encode(dst, u32(1), u32(128512))) == u32(4))
+ wide: [1]u16
+ wide[0] = u16(55296)
+ v: []u16 = view(&wide)
+ assert(!utf16_validate(v))
+ assert(text_code(utf16_to_utf8(dst, v)) == u32(1))
+ scalars: [1]u32
+ scalars[0] = u32(4294967295)
+ s: []u32 = view(&scalars)
+ assert(!utf32_validate(s))
+ assert(text_code(utf32_to_utf8(dst, s)) == u32(1))
+ assert(dst[0] == u8(90) && dst[1] == u8(90) && dst[2] == u8(90) && dst[3] == u8(90))
+ 42
+}
+`)
+	runTextTest(t, "textinvalid", src.String())
+}
+
+func TestE2EStdlibTextSearch(t *testing.T) {
+	var src strings.Builder
+	src.WriteString(textTestPrelude + "main: (): i32 {\n")
+	for _, haystack := range []string{"", "abababa", "é😀é", "a\x00b", "hello"} {
+		for _, needle := range []string{"", "a", "aba", "é", "😀", "\x00", "missing"} {
+			src.WriteString("true ? {\n")
+			writeTextView(&src, "input", haystack)
+			writeTextView(&src, "needle", needle)
+			for _, find := range []struct {
+				name string
+				want int
+			}{{"text_index", strings.Index(haystack, needle)}, {"text_last_index", strings.LastIndex(haystack, needle)}} {
+				want := uint32(find.want)
+				fmt.Fprintf(&src, "assert(option_or(%s(input, needle), u32(4294967295)) == u32(%d))\n", find.name, want)
+			}
+			fmt.Fprintf(&src, "assert(text_contains(input, needle) == %t)\nassert(text_has_prefix(input, needle) == %t)\nassert(text_has_suffix(input, needle) == %t)\nassert(text_equal(input, needle) == %t)\nassert(text_compare(input, needle) == i32(%d))\n", strings.Contains(haystack, needle), strings.HasPrefix(haystack, needle), strings.HasSuffix(haystack, needle), haystack == needle, strings.Compare(haystack, needle))
+			src.WriteString("}\n")
+		}
+	}
+	src.WriteString("42\n}\n")
+	runTextTest(t, "textsearch", src.String())
+}
+
+func TestE2EStdlibTextUnicodeCase(t *testing.T) {
+	fixtures := []struct {
+		input, lower, upper, fold string
+	}{
+		{"Straße", "straße", "STRASSE", "strasse"},
+		{"İ", "i\u0307", "İ", "i\u0307"},
+		{"ΟΣ", "ος", "ΟΣ", "οσ"},
+		{"ΟΣ\u0301", "ος\u0301", "ΟΣ\u0301", "οσ\u0301"},
+		{"ΟΣ\u0301Α", "οσ\u0301α", "ΟΣ\u0301Α", "οσ\u0301α"},
+		{"ﬃ", "ﬃ", "FFI", "ffi"},
+		{"\U00010400", "\U00010428", "\U00010400", "\U00010428"},
+		{"A\x00z", "a\x00z", "A\x00Z", "a\x00z"},
+		{"", "", "", ""},
+	}
+	var src strings.Builder
+	src.WriteString(textTestPrelude + "main: (): i32 {\n")
+	for _, fixture := range fixtures {
+		for mode, expected := range []string{fixture.lower, fixture.upper, fixture.fold} {
+			src.WriteString("true ? {\n")
+			writeTextView(&src, "input", fixture.input)
+			fmt.Fprintf(&src, "output: [%d]u8\ntrue ? {\ndst: [*]u8 = span(&output)\nassert(text_result_value(text_case_into(dst, input, u32(%d))) == u32(%d))\n", len(expected)+1, mode, len(expected))
+			for i, b := range []byte(expected) {
+				fmt.Fprintf(&src, "assert(dst[%d] == u8(%d))\n", i, b)
+			}
+			fmt.Fprintf(&src, "assert(dst[%d] == u8(0))\n}\n", len(expected))
+			if len(expected) > 0 {
+				fmt.Fprintf(&src, "true ? {\nsmall: [%d]u8\ndst: [*]u8 = span(&small)\nbytes_fill(dst, u8(90))\nassert(text_code(text_case_into(dst, input, u32(%d))) == u32(4))\ni: u32 = 0\nwhile i < len(dst) { assert(dst[i] == u8(90))\ni = i + u32(1) }\n}\n", len(expected)-1, mode)
+			}
+			writeTextView(&src, "folded", fixture.fold)
+			src.WriteString("assert(text_equal_fold(input, folded))\n}\n")
+		}
+	}
+	src.WriteString("42\n}\n")
+	runTextTest(t, "textcase", src.String())
+}
+
+func TestE2EStdlibTextRangesAndWrites(t *testing.T) {
+	var src strings.Builder
+	src.WriteString(textTestPrelude + "main: (): i32 {\n")
+	writeTextView(&src, "input", "\u2003é,a,,😀,\u00a0")
+	writeTextView(&src, "separator", ",")
+	writeTextView(&src, "cutset", "\u2003\u00a0")
+	writeTextView(&src, "replacement", "--")
+	src.WriteString(`
+ trimmed: TextRange = text_trim_space(input)
+ cut: TextRange = text_trim(input, cutset)
+ assert(trimmed.start == u32(3) && trimmed.end == u32(14))
+ assert(cut.start == trimmed.start && cut.end == trimmed.end)
+ assert(range_code(text_slice_range(input, u32(1), u32(3))) == u32(3))
+ assert(range_code(text_slice_range(input, u32(3), u32(5))) == u32(0))
+ state: [1]TextSplitCursor
+ cursor: [*]TextSplitCursor = span(&state)
+ parts: [5]TextRange
+ true ? {
+  spans: [*]TextRange = span(&parts)
+  i: u32 = 0
+  while i < u32(5) { spans[i] = text_range(text_split_next(cursor, input, separator))
+   i = i + u32(1)
+  }
+  assert(spans[0].start == u32(0) && spans[0].end == u32(5))
+  assert(spans[2].start == u32(8) && spans[2].end == u32(8))
+  assert(range_code(text_split_next(cursor, input, separator)) == u32(7))
+ }
+ true ? {
+  spans: []TextRange = view(&parts)
+  out: [32]u8
+  dst: [*]u8 = span(&out)
+  assert(text_result_value(text_join(dst, input, spans, separator)) == len(input))
+  i: u32 = 0
+  while i < len(input) { assert(dst[i] == input[i])
+   i = i + u32(1)
+  }
+  assert(text_result_value(text_replace(dst, input, separator, replacement)) == len(input) + u32(4))
+ }
+ true ? {
+  tiny: [1]u8
+  dst: [*]u8 = span(&tiny)
+  dst[0] = u8(90)
+  assert(text_code(text_copy(dst, input)) == u32(4))
+  assert(text_code(text_repeat(dst, input, u32(4294967295))) == u32(5))
+  assert(text_code(text_repeat(dst, input, u32(2))) == u32(4))
+  assert(text_code(text_replace(dst, input, separator, replacement)) == u32(4))
+  assert(dst[0] == u8(90))
+ }
+ 42
+}
+`)
+	// UTF-8 byte offsets, independently derived from the fixture.
+	s := "\u2003é,a,,😀,\u00a0"
+	trimEnd := len(strings.TrimRight(s, "\u00a0"))
+	source := strings.Replace(src.String(), "trimmed.end == u32(14)", fmt.Sprintf("trimmed.end == u32(%d)", trimEnd), 1)
+	runTextTest(t, "textranges", source)
+}
+
+func TestE2EStdlibTextBuilder(t *testing.T) {
+	var src strings.Builder
+	src.WriteString(textTestPrelude + "main: (): i32 {\n")
+	writeTextView(&src, "prefix", "id=")
+	writeTextView(&src, "bad", "\xff")
+	src.WriteString(`
+ data: [27]u8
+ dst: [*]u8 = span(&data)
+ maximum: u64 = (u64(1) << u64(63)) | ((u64(1) << u64(63)) - u64(1))
+ b: TextBuilder = text_builder().append_text(dst, prefix).append_u64(dst, maximum).append_rune(dst, u32(128512))
+ assert(text_result_value(b.finish_text()) == u32(27))
+ assert(dst[0] == u8(105) && dst[3] == u8(49) && dst[22] == u8(53) && dst[23] == u8(240) && dst[26] == u8(128))
+ failed: TextBuilder = b.append_rune(dst, u32(65)).append_text(dst, bad)
+ assert(failed.length == u32(27) && text_code(failed.finish_text()) == u32(4))
+ other: [4]u8
+ out: [*]u8 = span(&other)
+ bytes_fill(out, u8(90))
+ invalid: TextBuilder = text_builder().append_text(out, bad).append_rune(out, u32(65))
+ assert(invalid.length == u32(0) && text_code(invalid.finish_text()) == u32(1))
+ assert(out[0] == u8(90) && out[3] == u8(90))
+ zero: TextBuilder = text_builder().append_u64(out, u64(0))
+ assert(zero.length == u32(1) && out[0] == u8(48))
+ 42
+}
+`)
+	source := strings.Replace(src.String(), "maximum: u64 = (u64(1) << u64(63)) | ((u64(1) << u64(63)) - u64(1))", "maximum: u64 = ((u64(1) << u64(63)) | ((u64(1) << u64(63)) - u64(1)))", 1)
+	output, err := New().WithSource("textbuilder.oak", source).EmitC().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"malloc(", "calloc(", "realloc(", "OAK_UNSUPPORTED", "/* match expression */"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("unexpected %s in generated text code", forbidden)
+		}
+	}
+	runTextTest(t, "textbuilder", source)
+}
+
+func TestE2EStdlibTextExample(t *testing.T) {
+	source, err := os.ReadFile("../examples/stdlib_strings.oak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTextTest(t, "textexample", string(source))
 }

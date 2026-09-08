@@ -801,3 +801,97 @@ text_error_from_code: (status: u32): TextError = status ?
  | 5 => .SizeOverflow
  | 6 => .EmptySeparator
  | _ => .Empty
+
+ascii_to_utf8: (dst: [*]u8, src: []u8): Result[u32, TextError] {
+  !text_is_ascii(src) ? { .Err(.InvalidEncoding) } | { text_copy(dst, src) }
+}
+utf8_to_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = ascii_to_utf8(dst, src)
+
+utf8_decode_previous: (src: []u8, end: u32): Result[TextScalar, TextError] {
+  end > len(src) ? { .Err(.OutOfBounds) } | end == u32(0) ? { .Err(.Empty) } | {
+    start: u32 = end - u32(1)
+    steps: u32 = 1
+    while start > u32(0) && steps < u32(4) && (src[start] & u8(192)) == u8(128) {
+      start = start - u32(1)
+      steps = steps + u32(1)
+    }
+    decoded: Result[TextScalar, TextError] = utf8_decode(src, start)
+    !text_decode_ok(decoded) ? { .Err(.InvalidEncoding) } | {
+      item: TextScalar = text_decoded(decoded)
+      item.next != end ? { .Err(.InvalidEncoding) } | {
+        .Ok(TextScalar { value: item.value, next: start })
+      }
+    }
+  }
+}
+text_split: (dst: [*]TextRange, src: []u8, separator: []u8): Result[u32, TextError] {
+  !is_valid_utf8(src) || !is_valid_utf8(separator) ? { .Err(.InvalidEncoding) } | len(separator) == u32(0) ? { .Err(.EmptySeparator) } | {
+    total: u64 = 1
+    at: u32 = 0
+    searching: Bool = true
+    while searching {
+      found: u32 = option_or(text_find_from(src, separator, at), len(src))
+      searching = found != len(src)
+      searching ? { total = total + u64(1)
+        at = found + len(separator)
+      }
+    }
+    total > u64(4294967295) ? { .Err(.SizeOverflow) } | total > u64(len(dst)) ? { .Err(.DestinationTooSmall) } | {
+      state: [1]TextSplitCursor
+      cursor: [*]TextSplitCursor = span(&state)
+      i: u32 = 0
+      while i < u32_trunc_u64(total) {
+        start: u32 = cursor[0].next
+        found: u32 = option_or(text_find_from(src, separator, start), len(src))
+        dst[i] = TextRange { start: start, end: found }
+        found != len(src) ? { cursor[0].next = found + len(separator) }
+        i = i + u32(1)
+      }
+      .Ok(u32_trunc_u64(total))
+    }
+  }
+}
+text_fields_next: (cursor: [*]TextSplitCursor, src: []u8): Result[TextRange, TextError] {
+  assert(len(cursor) == u32(1))
+  !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | !text_is_boundary(src, cursor[0].next) ? { .Err(.OutOfBounds) } | cursor[0].done ? { .Err(.Empty) } | {
+    at: u32 = cursor[0].next
+    start: u32 = len(src)
+    end: u32 = len(src)
+    searching: Bool = true
+    while at < len(src) && searching {
+      item: TextScalar = text_decoded(utf8_decode(src, at))
+      unicode_is_space(item.value) ? {
+        start != len(src) ? { end = at
+          searching = false
+        }
+      } | { start == len(src) ? { start = at } }
+      at = item.next
+    }
+    cursor[0].next = at
+    start == len(src) ? { cursor[0].done = true
+      .Err(.Empty)
+    } | { .Ok(TextRange { start: start, end: end }) }
+  }
+}
+
+TextParseError: type = InvalidRadix | InvalidDigit | NumberOverflow | EmptyNumber
+text_parse_u64: (src: []u8, radix: u32): Result[u64, TextParseError] {
+  radix < u32(2) || radix > u32(36) ? { .Err(.InvalidRadix) } | len(src) == u32(0) ? { .Err(.EmptyNumber) } | {
+    maximum: u64 = ((u64(1) << u64(63)) | ((u64(1) << u64(63)) - u64(1)))
+    value: u64 = 0
+    i: u32 = 0
+    valid: Bool = true
+    overflowed: Bool = false
+    while i < len(src) && valid && !overflowed {
+      unit: u32 = u32(ascii_lower(src[i]))
+      digit: u32 = unit >= u32(48) && unit <= u32(57) ? unit - u32(48) | unit >= u32(97) && unit <= u32(122) ? unit - u32(97) + u32(10) | u32(36)
+      valid = digit < radix
+      valid ? {
+        overflowed = value > (maximum - u64(digit)) / u64(radix)
+        !overflowed ? { value = value * u64(radix) + u64(digit) }
+      }
+      i = i + u32(1)
+    }
+    !valid ? { .Err(.InvalidDigit) } | overflowed ? { .Err(.NumberOverflow) } | { .Ok(value) }
+  }
+}
