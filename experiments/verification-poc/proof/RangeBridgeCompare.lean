@@ -24,7 +24,7 @@ structure RangeCase where
   accepted : Bool
   deriving FromJson
 
-def signedLiteral (l : Literal) : Int := if l.positive then Int.ofNat l.index else -(Int.ofNat l.index)
+def signedLiteral (l : OakVerification.Literal) : Int := if l.positive then Int.ofNat l.index else -(Int.ofNat l.index)
 def meaning (variables : Nat) (d : Decoded) : Array Int := Id.run do
   let mut out : List Int := [Int.ofNat variables, Int.ofNat d.clauses.length]
   for c in d.clauses do out := out ++ [Int.ofNat c.length] ++ c.map signedLiteral
