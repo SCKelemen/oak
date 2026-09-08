@@ -107,3 +107,41 @@ main: (): i32 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }
+
+func TestE2EJsonFastRecordKeys(t *testing.T) {
+	var source strings.Builder
+	source.WriteString("import(std)\nFastRecord: type = struct { id: u64, items: [2]i32 }\nmain: (): i32 {\n")
+	valid := `{"id":18446744073709551615,"items":[-2147483648,2147483647]}`
+	// Every truncated buffer must be rejected without reading beyond its view.
+	for end := 0; end < len(valid); end++ {
+		source.WriteString("true ? {\n")
+		writeTextView(&source, "input", valid[:end])
+		source.WriteString("result: Result[FastRecord, JsonDecodeError] = decode[FastRecord, Json](input)\nresult ? | .Ok(value) => { assert(false) } | .Err(reason) => {}\n}\n")
+	}
+	for _, fixture := range []struct {
+		input string
+		code  int
+	}{
+		{`{"id":1,"items":[2,3]}`, 0},
+		{`{"i\u0064":1,"it\u0065ms":[2,3]}`, 0},
+		{`{"items" : [ 2 , 3 ], "id" : 1 }`, 0},
+		{`{"idX":1}`, 7},
+		{`{"i":1}`, 7},
+		{`{"id\u0000":1}`, 7},
+		{`{"id":1,"i\u0064":2}`, 6},
+		{`{"id"x:1}`, 2},
+		{`{"id":1,"items":[2, ]}`, 2},
+		{`{"id":1,"items":[2, true]}`, 3},
+		{`{"id":1,"items":[2, 01]}`, 2},
+		{`{"id":1,"items":[2, 2147483648]}`, 4},
+	} {
+		source.WriteString("true ? {\n")
+		writeTextView(&source, "input", fixture.input)
+		fmt.Fprintf(&source, "result: Result[FastRecord, JsonDecodeError] = decode[FastRecord, Json](input)\nresult ? | .Ok(value) => { assert(u32(%d) == u32(0)) } | .Err(reason) => { assert(json_decode_error_code(reason) == u32(%d)) }\n}\n", fixture.code, fixture.code)
+	}
+	source.WriteString("42\n}\n")
+	_, code, abnormal := buildAndRunOutput(t, "json_fast_record_keys", source.String(), "-fsanitize=address,undefined", "-DOAK_PORTABLE_INTRINSICS")
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
