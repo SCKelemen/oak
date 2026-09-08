@@ -6,9 +6,11 @@
 package resourceflow
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/diagnostic"
 )
 
 // Authority summarizes every control-flow path reaching a program point.
@@ -297,28 +299,19 @@ func (f *Flow) aliasEdge(left, right string) (AliasEdge, bool) {
 // common predecessor. Names introduced on only some paths do not escape the
 // join; incompatible provenance also fails closed by dropping that name.
 func Join(flows ...*Flow) *Flow {
-	if len(flows) == 0 {
+	if len(flows) == 0 || flows[0] == nil {
 		return New()
 	}
-	var first *Flow
 	for _, flow := range flows {
-		if flow != nil {
-			first = flow
-			break
+		if flow == nil {
+			return New()
 		}
 	}
-	if first == nil {
-		return New()
-	}
-	out := first.Clone()
+	out := flows[0].Clone()
 
 	for name, info := range out.aliases {
 		compatible := true
-		for _, flow := range flows {
-			if flow == nil {
-				compatible = false
-				break
-			}
+		for _, flow := range flows[1:] {
 			other, exists := flow.aliases[name]
 			if !exists || other.class != info.class || other.parent != info.parent {
 				compatible = false
@@ -337,12 +330,12 @@ func Join(flows ...*Flow) *Flow {
 		authority := state.authority
 		consumptions := append([]Consumption(nil), state.consumptions...)
 		valid := true
-		for i := 1; i < len(flows); i++ {
-			if flows[i] == nil || flows[i].classes[id] == nil {
+		for _, flow := range flows[1:] {
+			other := flow.classes[id]
+			if other == nil {
 				valid = false
 				break
 			}
-			other := flows[i].classes[id]
 			authority = JoinAuthority(authority, other.authority)
 			consumptions = append(consumptions, other.consumptions...)
 		}
@@ -354,10 +347,17 @@ func Join(flows ...*Flow) *Flow {
 		state.consumptions = dedupeConsumptions(consumptions)
 	}
 
-	// Remove any alias whose class did not survive structural compatibility.
+	usedClasses := make(map[classID]bool)
 	for name, info := range out.aliases {
 		if _, exists := out.classes[info.class]; !exists {
 			delete(out.aliases, name)
+			continue
+		}
+		usedClasses[info.class] = true
+	}
+	for id := range out.classes {
+		if !usedClasses[id] {
+			delete(out.classes, id)
 		}
 	}
 	return out
@@ -369,10 +369,11 @@ type orderKey struct {
 
 func nodeOrder(node ast.Node) orderKey {
 	if node == nil {
-		return orderKey{line: int(^uint(0) >> 1), column: int(^uint(0) >> 1)}
+		max := int(^uint(0) >> 1)
+		return orderKey{line: max, column: max}
 	}
-	pos := node.Pos()
-	return orderKey{line: pos.Line, column: pos.Column}
+	start := diagnostic.NodeToRange(node).Start
+	return orderKey{line: start.Line, column: start.Character}
 }
 
 func dedupeConsumptions(in []Consumption) []Consumption {
@@ -381,8 +382,8 @@ func dedupeConsumptions(in []Consumption) []Consumption {
 	for _, item := range in {
 		key := item.Name
 		if item.Site != nil {
-			pos := item.Site.Pos()
-			key += "@" + positionKey(pos.Line, pos.Column)
+			start := diagnostic.NodeToRange(item.Site).Start
+			key += fmt.Sprintf("@%d:%d", start.Line, start.Character)
 		}
 		if seen[key] {
 			continue
@@ -391,26 +392,4 @@ func dedupeConsumptions(in []Consumption) []Consumption {
 		out = append(out, item)
 	}
 	return out
-}
-
-func positionKey(line, column int) string {
-	// Decimal formatting without fmt keeps this core dependency-light.
-	return itoa(line) + ":" + itoa(column)
-}
-
-func itoa(value int) string {
-	if value == 0 {
-		return "0"
-	}
-	if value < 0 {
-		return "-" + itoa(-value)
-	}
-	var digits [24]byte
-	i := len(digits)
-	for value > 0 {
-		i--
-		digits[i] = byte('0' + value%10)
-		value /= 10
-	}
-	return string(digits[i:])
 }
