@@ -1,0 +1,20 @@
+name: Freestanding SIMD
+on:
+  pull_request:
+    branches: [specification]
+jobs:
+  target:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Require Clang
+        run: clang --version
+      - name: Check scalar and NEON target lowering
+        run: go test ./codegen -run '^TestAArch64(SimdWithoutNeon|ExplicitVector)' -count=1
+      - name: Verify golden output
+        run: go test ./serialize -run TestGoldenCorpusMatches -count=1
+      - name: Check formatting
+        run: test -z "$(gofmt -l codegen/simd.go codegen/aarch64_no_neon_test.go)"

@@ -17,13 +17,47 @@ type ResourceProtocolDeclaration struct {
 	Transitions   []ResourceTransitionDeclaration
 }
 
+// ResourceParameterMode describes how one callable parameter participates in
+// resource authority. These are semantic/ABI facts, not source-level syntax.
+type ResourceParameterMode uint8
+
+const (
+	ResourceParameterUnspecified ResourceParameterMode = iota
+	ResourceParameterBorrowed
+	ResourceParameterBorrowedMut
+	ResourceParameterConsumed
+)
+
+func (mode ResourceParameterMode) String() string {
+	switch mode {
+	case ResourceParameterBorrowed:
+		return "borrowed"
+	case ResourceParameterBorrowedMut:
+		return "borrowed-mut"
+	case ResourceParameterConsumed:
+		return "consumed"
+	default:
+		return "unspecified"
+	}
+}
+
+// ResourceParameterDeclaration assigns one resource-authority mode to a
+// zero-based callable parameter.
+type ResourceParameterDeclaration struct {
+	Index int
+	Mode  ResourceParameterMode
+}
+
 // ResourceTransitionDeclaration binds one protocol-local transition label to
 // an explicit callable identity. Callable is never inferred from Name.
 type ResourceTransitionDeclaration struct {
-	Name         string
-	Callable     string
-	From         string
-	To           string
+	Name       string
+	Callable   string
+	From       string
+	To         string
+	Parameters []ResourceParameterDeclaration
+	// Consumes is the compatibility input for callers that predate explicit
+	// parameter modes. Resolution normalizes it to ResourceParameterConsumed.
 	Consumes     []int
 	ReturnsFresh bool
 }
@@ -47,12 +81,24 @@ type ResolvedResourceProtocol struct {
 	Transitions []ResolvedResourceTransition
 }
 
+type ResolvedResourceParameter struct {
+	Index int
+	Mode  ResourceParameterMode
+}
+
 type ResolvedResourceTransition struct {
-	Name         string
-	Callable     string
-	From         string
-	To           string
+	Name       string
+	Callable   string
+	From       string
+	To         string
+	Parameters []ResolvedResourceParameter
+	// Consumes is retained as the executable permanent-authority projection.
 	Consumes     []int
+	ReturnsFresh bool
+}
+
+type resolvedCallableResourceSemantics struct {
+	Parameters   []ResolvedResourceParameter
 	ReturnsFresh bool
 }
 
@@ -109,8 +155,6 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 		}
 	}
 
-	// A stable type order makes emitted semantic modules independent of map
-	// iteration and of later resolver implementation details.
 	sort.Slice(resolved.Types, func(i, j int) bool {
 		if resolved.Types[i].Name != resolved.Types[j].Name {
 			return resolved.Types[i].Name < resolved.Types[j].Name
@@ -118,7 +162,7 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 		return resolved.Types[i].Protocol < resolved.Types[j].Protocol
 	})
 
-	callableSemantics := make(map[string]ResourceOperation)
+	callableSemantics := make(map[string]resolvedCallableResourceSemantics)
 	for _, declaration := range declarations {
 		stateNames := make(map[string]bool, len(declaration.States))
 		states := make([]string, 0, len(declaration.States))
@@ -139,11 +183,7 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 			return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q initial state %q does not exist", declaration.Name, declaration.Initial)
 		}
 
-		protocol := ResolvedResourceProtocol{
-			Name:    declaration.Name,
-			States:  states,
-			Initial: declaration.Initial,
-		}
+		protocol := ResolvedResourceProtocol{Name: declaration.Name, States: states, Initial: declaration.Initial}
 		transitionNames := make(map[string]bool, len(declaration.Transitions))
 		for _, transition := range declaration.Transitions {
 			if transition.Name == "" {
@@ -172,19 +212,9 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q transition %q binds %q, which is not a function", declaration.Name, transition.Name, transition.Callable)
 			}
 
-			consumes := append([]int(nil), transition.Consumes...)
-			sort.Ints(consumes)
-			for i, index := range consumes {
-				if index < 0 || index >= len(function.Parameters) {
-					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q consumes argument %d outside its %d parameters", transition.Callable, index, len(function.Parameters))
-				}
-				if i > 0 && consumes[i-1] == index {
-					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q consumes argument %d more than once", transition.Callable, index)
-				}
-				parameterName := nominalTypeName(function.Parameters[index])
-				if !resourceTypes[parameterName] {
-					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q argument %d has non-resource type %s", transition.Callable, index, function.Parameters[index])
-				}
+			parameters, consumes, err := resolveResourceParameters(transition, function, resourceTypes)
+			if err != nil {
+				return ResolvedResourceProgram{}, err
 			}
 			if transition.ReturnsFresh {
 				returnName := nominalTypeName(function.ReturnType)
@@ -193,16 +223,17 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				}
 			}
 
-			operation := ResourceOperation{Consumes: consumes, ReturnsFresh: transition.ReturnsFresh}
-			if previous, exists := callableSemantics[transition.Callable]; exists && !sameResourceOperation(previous, operation) {
+			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh}
+			if previous, exists := callableSemantics[transition.Callable]; exists && !sameResolvedCallableResourceSemantics(previous, semantics) {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q has conflicting semantics across protocols", transition.Callable)
 			}
-			callableSemantics[transition.Callable] = operation
+			callableSemantics[transition.Callable] = semantics
 			protocol.Transitions = append(protocol.Transitions, ResolvedResourceTransition{
 				Name:         transition.Name,
 				Callable:     transition.Callable,
 				From:         transition.From,
 				To:           transition.To,
+				Parameters:   parameters,
 				Consumes:     consumes,
 				ReturnsFresh: transition.ReturnsFresh,
 			})
@@ -211,6 +242,75 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 	}
 
 	return resolved, nil
+}
+
+func resolveResourceParameters(
+	transition ResourceTransitionDeclaration,
+	function *FunctionType,
+	resourceTypes map[string]bool,
+) ([]ResolvedResourceParameter, []int, error) {
+	seen := make(map[int]ResourceParameterMode)
+	parameters := make([]ResolvedResourceParameter, 0, len(transition.Parameters)+len(transition.Consumes))
+
+	validate := func(index int, mode ResourceParameterMode) error {
+		if mode == ResourceParameterUnspecified || mode > ResourceParameterConsumed {
+			return fmt.Errorf("resource callable %q argument %d has invalid parameter mode %d", transition.Callable, index, mode)
+		}
+		if index < 0 || index >= len(function.Parameters) {
+			return fmt.Errorf("resource callable %q marks argument %d outside its %d parameters", transition.Callable, index, len(function.Parameters))
+		}
+		if previous, exists := seen[index]; exists {
+			return fmt.Errorf("resource callable %q argument %d has both %s and %s modes", transition.Callable, index, previous, mode)
+		}
+		parameterName := nominalTypeName(function.Parameters[index])
+		if !resourceTypes[parameterName] {
+			return fmt.Errorf("resource callable %q argument %d has non-resource type %s", transition.Callable, index, function.Parameters[index])
+		}
+		seen[index] = mode
+		parameters = append(parameters, ResolvedResourceParameter{Index: index, Mode: mode})
+		return nil
+	}
+
+	for _, parameter := range transition.Parameters {
+		if err := validate(parameter.Index, parameter.Mode); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	legacyConsumes := append([]int(nil), transition.Consumes...)
+	sort.Ints(legacyConsumes)
+	for i, index := range legacyConsumes {
+		if i > 0 && legacyConsumes[i-1] == index {
+			return nil, nil, fmt.Errorf("resource callable %q consumes argument %d more than once", transition.Callable, index)
+		}
+		if _, exists := seen[index]; exists {
+			return nil, nil, fmt.Errorf("resource callable %q argument %d is specified by both parameter modes and legacy consumes", transition.Callable, index)
+		}
+		if err := validate(index, ResourceParameterConsumed); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	sort.Slice(parameters, func(i, j int) bool { return parameters[i].Index < parameters[j].Index })
+	consumes := make([]int, 0, len(parameters))
+	for _, parameter := range parameters {
+		if parameter.Mode == ResourceParameterConsumed {
+			consumes = append(consumes, parameter.Index)
+		}
+	}
+	return parameters, consumes, nil
+}
+
+func sameResolvedCallableResourceSemantics(left, right resolvedCallableResourceSemantics) bool {
+	if left.ReturnsFresh != right.ReturnsFresh || len(left.Parameters) != len(right.Parameters) {
+		return false
+	}
+	for i := range left.Parameters {
+		if left.Parameters[i] != right.Parameters[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // nominalTypeName returns the authority-bearing nominal base. Structural

@@ -62,7 +62,7 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 	}
 	exports := map[string]bool{}
 	if imported {
-		for _, name := range []string{"text_literal", "encode", "encoded_size", "from"} {
+		for _, name := range []string{"text_literal", "encode", "decode", "encoded_size", "from"} {
 			exports[name] = true
 		}
 	}

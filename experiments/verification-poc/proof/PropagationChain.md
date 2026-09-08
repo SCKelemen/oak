@@ -4,7 +4,7 @@
 proof-producing RUP chain. It prepares target-negation assumptions in forward
 order, tracks compatibility of partial assignments, propagates classified units,
 and accepts a classified conflict only at the final hint. Satisfied and unresolved
-clauses reject, as do missing hints. Every hint is checked for existence before
+clauses reject, as do references to absent clauses. Every hint is checked for existence before
 contradictory target assumptions may accept.
 
 Successful execution returns a `CertifiedClause` proving that every model of the
@@ -45,3 +45,29 @@ generated C, and C compiler/runtime remain trusted test infrastructure.
 
 Next: connect certified chain results to live-table publication and whole
 proof-stream acceptance, preserving the same small removable experiment boundary.
+
+## Validation
+
+[The soundness gate passed](https://github.com/SCKelemen/oak/actions/runs/34232455434/job/102081727926)
+on commit `2812b6b9103e95ea66feaf1c3f927629a6a66f76`. All six reported theorems
+and the three proof-producing executable definitions passed with warnings as
+errors. Their axiom reports contain only standard `propext`, `Quot.sound`, and
+`Classical.choice`; there are no proof holes or project-specific axioms.
+
+Oak, Go, the new certified Lean chain, and the original Lean checker agreed on
+all 937 cases: 368 accepted and 569 rejected. This includes chains with 64 unit
+writes and the deliberate missing, premature, and reordered-hint cases. The
+native comparison took 14.03 seconds without the race detector. CI retains the
+canonical corpus and proof/comparison logs for 30 days;
+`../validation-propagation-chain.json` records the exact tested commit and scope.
+
+The new native comparison also passed with Go's race detector in 20.56 seconds.
+The full native suite and existing external/certificate gates passed, including
+11 accepted Lean certificates and 22 rejected corruptions, the Boolean proof
+bridge, and the invariant-model gate. Those certificate gates still use the
+existing stream path; they are regression checks, not a claim that the new chain
+has already replaced that path.
+
+Repository CI, standard-library, formal-verification, golden-file, and AArch64
+memory-refinement checks all passed on the tested commit. Existing gates, corpus
+coverage, and timeout limits were preserved.

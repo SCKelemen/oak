@@ -1,0 +1,123 @@
+{
+  "artifacts": "PropagationChain.lean, chain-proof.log, chain-cases.json, chain-go.log, chain-agreement.log; retained 30 days",
+  "commit": "2812b6b9103e95ea66feaf1c3f927629a6a66f76",
+  "comparison": {
+    "accepted": 368,
+    "cases": 937,
+    "compared": [
+      "Actual Oak RUP kernel",
+      "Existing Go RUP checker",
+      "New Lean certified classifier-based chain",
+      "Original Lean proof-producing RUP checker"
+    ],
+    "constructed_chain_cases": 320,
+    "maximum_unit_writes": 64,
+    "native_seconds_with_race": 20.56,
+    "native_seconds_without_race": 14.03,
+    "rejected": 569,
+    "scratch_state_cases": 617,
+    "variants": [
+      "Ordered chains",
+      "Triplicated literals",
+      "Missing final conflict",
+      "Nonfinal conflict",
+      "Swapped first hints, including a valid reversed one-variable chain"
+    ]
+  },
+  "date": "2026-09-08",
+  "existing_gates": {
+    "boolean_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "boolean_model": {
+      "accepted_safe": 1,
+      "rejected_corruptions": 2,
+      "rejected_malformed": 3,
+      "rejected_unsafe": 1,
+      "rejected_wrong": 1
+    },
+    "lean_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "oak_ascii_certificate": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    }
+  },
+  "format": "oak-propagation-chain-validation-1",
+  "implementation": {
+    "actual": "Uninstrumented Oak rup_check",
+    "formal_model": "Lean classifier-based certified propagation chain",
+    "host_harness": "Go",
+    "old_checker_used_to_decide_new_result": false,
+    "production_checker_changed": false,
+    "python_runtime": false
+  },
+  "next_step": "Connect certified chain results to live-table publication and whole proof-stream acceptance.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.PropagationChain.assigned_tail' does not depend on any axioms",
+      "'OakVerification.PropagationChain.literal_write' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.PropagationChain.prepare' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.PropagationChain.chain' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.PropagationChain.assumptions_entail' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.PropagationChain.check' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.PropagationChain.check_entails' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.PropagationChain.checked_insert_preserves' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.PropagationChain.checked_empty_unsatisfiable' depends on axioms: [propext,\n Classical.choice,\n Quot.sound]"
+    ],
+    "certificate": "Every database model satisfies the accepted target clause",
+    "custom_axioms": false,
+    "guarantees": [
+      "Forward assumption preparation preserves compatible assignments or certifies a clash",
+      "Each classified unit write preserves compatible database models",
+      "Classified conflict is accepted only at the final hint",
+      "Successful RUP checks entail their target",
+      "Inserting a certified target preserves database models",
+      "An accepted empty target implies database unsatisfiability"
+    ],
+    "reported_executable_definitions": 3,
+    "reported_theorems": 6,
+    "sorry": false,
+    "termination": "Structural recursion on target assumptions and hint lists"
+  },
+  "proof_boundary": {
+    "certificate_kind": "Semantic entailment, not a Propagate syntactic derivation",
+    "comparison_domain": "Bounded structured inputs; whole-pool and malformed raw layout handling remain in preceding gates",
+    "not_yet_proved": [
+      "Universal equality with the original Lean checker",
+      "Universal Oak-loop refinement",
+      "Composition of the new chain with live-table and proof-stream execution",
+      "Raw array and compiler semantics"
+    ],
+    "proved": [
+      "Soundness of the complete new Lean chain for successful checks",
+      "Semantic entailment, insertion preservation, and empty-target unsatisfiability"
+    ],
+    "tested": [
+      "Decision agreement across Oak, Go, and both Lean implementations"
+    ],
+    "trusted_infrastructure": [
+      "JSON adapter",
+      "Go harness",
+      "Oak compiler",
+      "Generated C",
+      "C compiler/runtime"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34232455434",
+  "solvers_job": 102081728317,
+  "soundness_job": 102081727926,
+  "repository_ci": {
+    "Formal Verification": "success",
+    "Golden File Verification": "success",
+    "Verification experiment (opt-in)": "success",
+    "CI": "success",
+    "Standard library": "success"
+  },
+  "aarch64_memory_refinement": "success"
+}

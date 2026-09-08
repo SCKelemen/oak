@@ -79,6 +79,7 @@ func cloneResourceProtocolDeclarations(declarations []typechecker.ResourceProtoc
 		cloned[i].Transitions = make([]typechecker.ResourceTransitionDeclaration, len(declaration.Transitions))
 		for j, transition := range declaration.Transitions {
 			cloned[i].Transitions[j] = transition
+			cloned[i].Transitions[j].Parameters = append([]typechecker.ResourceParameterDeclaration(nil), transition.Parameters...)
 			cloned[i].Transitions[j].Consumes = append([]int(nil), transition.Consumes...)
 		}
 	}
@@ -116,8 +117,17 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 				From:     resourceTransition.From,
 				To:       resourceTransition.To,
 			}
-			for _, index := range resourceTransition.Consumes {
-				transition.Effects = append(transition.Effects, semir.ResourceConsumeArgument(index))
+			for _, parameter := range resourceTransition.Parameters {
+				switch parameter.Mode {
+				case typechecker.ResourceParameterBorrowed:
+					transition.Effects = append(transition.Effects, semir.ResourceBorrowArgument(parameter.Index))
+				case typechecker.ResourceParameterBorrowedMut:
+					transition.Effects = append(transition.Effects, semir.ResourceBorrowMutArgument(parameter.Index))
+				case typechecker.ResourceParameterConsumed:
+					transition.Effects = append(transition.Effects, semir.ResourceConsumeArgument(parameter.Index))
+				default:
+					return semir.Module{}, fmt.Errorf("resource callable %q has unresolved parameter mode %d", resourceTransition.Callable, parameter.Mode)
+				}
 			}
 			if resourceTransition.ReturnsFresh {
 				transition.Effects = append(transition.Effects, semir.ResourceReturnFresh())

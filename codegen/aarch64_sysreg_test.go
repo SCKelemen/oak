@@ -23,6 +23,10 @@ fn sysreg_write_vttbr(value: u64) -> ()
   arm64.write_vttbr_el2(value)
 fn sysreg_write_vtcr(value: u64) -> ()
   arm64.write_vtcr_el2(value)
+fn sysreg_read_vbar() -> u64
+  arm64.read_vbar_el2()
+fn sysreg_write_vbar(value: u64) -> ()
+  arm64.write_vbar_el2(value)
 `
 
 func compileSysRegAArch64Assembly(t *testing.T) (generated, assembly string) {
@@ -70,6 +74,8 @@ func TestAArch64SystemRegisterInstructionRefinement(t *testing.T) {
 		{"sysreg_read_counter", "mrs", "cntvct_el0"},
 		{"sysreg_write_vttbr", "msr", "vttbr_el2"},
 		{"sysreg_write_vtcr", "msr", "vtcr_el2"},
+		{"sysreg_read_vbar", "mrs", "vbar_el2"},
+		{"sysreg_write_vbar", "msr", "vbar_el2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fn, func(t *testing.T) {

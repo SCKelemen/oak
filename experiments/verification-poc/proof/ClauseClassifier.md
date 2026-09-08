@@ -41,8 +41,9 @@ invalid-literal short-circuit behavior, and compiler remain outside these proofs
 The prior complete propagation trace and stream/certificate gates remain active.
 This module does not yet replace the trace executor's existing classifier.
 
-Next: connect the proved classifier to the executable propagation chain, carrying
-assignment invariants and deriving RUP acceptance soundness through the chain.
+The [propagation-chain milestone](PropagationChain.md) now connects this classifier
+to a proof-producing chain with target-entailment and empty-target unsatisfiability
+theorems. Universal equivalence with the concrete Oak loop remains open.
 
 ## Validation
 

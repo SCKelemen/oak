@@ -57,4 +57,3 @@ jobs:
 
     - name: Verify memory-model litmus outcomes
       run: go test -v ./semir -run '^TestLitmus'
-
