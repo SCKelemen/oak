@@ -135,12 +135,12 @@ func codecName(operation, typ string) string { return "__oak_json_" + operation 
 type codecDeriver struct {
 	decodeGenerated map[string]bool
 	decodeActive    map[string]bool
-	records   map[string]*ast.ADTType
-	schemas   map[string]*ast.TagDeclaration
-	names     map[string]bool
-	generated map[string]bool
-	active    map[string]bool
-	output    []ast.Statement
+	records         map[string]*ast.ADTType
+	schemas         map[string]*ast.TagDeclaration
+	names           map[string]bool
+	generated       map[string]bool
+	active          map[string]bool
+	output          []ast.Statement
 }
 
 type codecField struct{ name, wire, typ string }

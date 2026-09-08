@@ -10,7 +10,7 @@ func codecU64Literal(value uint64) string {
 	if value <= 9223372036854775807 {
 		return fmt.Sprintf("u64(%d)", value)
 	}
-	return fmt.Sprintf("(u64(9223372036854775807) + u64(%d))", value-9223372036854775807)
+	return fmt.Sprintf("(u64(%d) * u64(4294967296) + u64(%d))", value>>32, value&4294967295)
 }
 
 // Decoder helpers return concrete values plus offsets, not a token tree or

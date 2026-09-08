@@ -1,11 +1,11 @@
 # Codecs: Phantom-Typed Producers and Consumers
 
-**Status: normative design with JSON strings and derived record encoding.**
+**Status: normative design with JSON strings and derived record codecs.**
 `stdlib/json.oak` implements strict string encoding/decoding, bounded SIMD
 runs, and a phantom-policy encoder cursor (§10). The compiler derives
-concrete JSON encoders and lowers immediate `from[T](value).to[Json](out)`
-composition (§12). General codec interfaces, derived decoding, borrowed
-decode results, and fusion remain design work. Prerequisites are listed in §9.
+concrete JSON encoders and decoders and lowers immediate producer/consumer
+composition (§12–13). General codec interfaces, borrowed decode results,
+and fusion remain design work. Prerequisites are listed in §9.
 
 ## 1. What is borrowed from weePickle, and what is not
 
@@ -299,7 +299,67 @@ eliminate every aggregate copy or repeated measurement.
 This first projection requires explicit concrete names at expansion time.
 Type aliases, generic record applications, codec calls depending on an
 unspecialized type variable, arrays, floats, ADT variants, and borrowed
-record fields are not yet derived. `decode[T, Json]`, `FromTo[T]`, generic
-visitor dictionaries, custom format implementations, and derivation-time
-omission policies are not implemented by this subset. Failures are compile
+record fields are not yet derived. `FromTo[T]`, generic visitor dictionaries, custom format implementations,
+and derivation-time omission policies are not implemented by this subset.
+Derived decoding is specified in §13. Failures are compile
 errors, not serialization fallbacks or runtime reflection.
+
+## 13. Derived JSON decoding (implemented subset)
+
+```oak
+// input: []u8
+result: Result[Sample, JsonDecodeError] = decode[Sample, Json](input)
+result: Result[Sample, JsonDecodeError] = from[Json](input).to[Sample]()
+```
+
+The two lines are alternative spellings, not declarations in the same
+scope. They lower to identical C. Decoding returns a concrete value inside
+`Result`; no boxed value, generic document tree, token array, or allocator
+is required. For this fixed-size subset the destination is the returned
+value, so there is no separate output-storage argument. Input is borrowed
+read-only; no reference to its bytes escapes in the result.
+
+Supported targets are fixed-width integers, Bool, and closed concrete
+records recursively containing those types. Record fields may appear in
+any order. All declared fields are required; duplicate and unknown fields
+are errors. The `json` name tag from §12 governs both directions. Matching
+compares decoded Unicode scalars: an escaped spelling of a field name is
+the same field, including surrogate-pair spellings. No normalization or
+case folding is implied. Matching uses scalar comparison with bounded
+SIMD runs in string tokenization, and fixed local schema-key arrays; no
+unescaped key buffer is constructed. Field dispatch is currently linear
+in the number of declared fields, not a hash lookup or a fused scan.
+
+The root decoder validates UTF-8, consumes one value, and permits only
+JSON whitespace before and after it. It rejects trailing values/content,
+malformed number grammar, unescaped string controls, invalid escapes,
+and unpaired surrogates. Integer targets accept integer lexical forms;
+fractions and exponents are `TypeMismatch`, even if mathematically integral.
+Unsigned targets reject a minus sign, including `-0`; signed targets accept
+`-0` as zero. Decimal accumulation and target-width checks report overflow
+before conversion; no number passes through floating point.
+
+`JsonDecodeError` distinguishes `InvalidEncoding`, `InvalidSyntax`,
+`TypeMismatch`, `NumericOverflow`, `MissingField`, `DuplicateField`, and
+`UnknownField`. UTF-8 validation runs first. Subsequent errors are fail-fast:
+unknown/duplicate fields can be reported before their values are parsed.
+Errors do not contain a partly constructed output record. The decoder does
+not mutate caller storage. Returning `Result[T, JsonDecodeError]` still uses
+Oak's existing value ABI; no claim is made that all aggregate copies vanish.
+
+Each helper returns `JsonDecoded[T]` (a concrete value and next byte offset).
+Nesting follows the finite schema: no runtime-depth stack allocation or
+unbounded recursive JSON-tree traversal is introduced. Read helpers use
+ordinary bounds checks, and out-of-range explicit helper offsets trap.
+The root wrapper is the whole-document validation boundary; offset helpers
+are not independently validated-input capabilities.
+
+Borrowed strings, arrays, general ADTs, floats, dynamic schemas, and aliases
+are not derived yet. `decode[string, Json]` fails with guidance to use the
+existing `json_string_decode` into a caller-provided span. Relaxing that
+restriction requires explicit storage/lifetime contracts, not boxing.
+
+Tests cover integer limits in every width, nested and reordered records,
+escaped Unicode keys, malformed inputs, missing/duplicate/unknown fields,
+trailing content, and C address/undefined-behavior sanitizers. Fluent/direct
+C equality and allocator absence are checked alongside encoder regressions.
