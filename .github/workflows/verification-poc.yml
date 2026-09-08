@@ -67,6 +67,16 @@ jobs:
           export OAK_SELF_HOSTED_TEXT_CORPUS_OUT="$PWD/build/soundness/self-hosted-text-cases.json"
           go test -count=1 -v . -run '^TestSelfHostedText$|^TestSelfHostedTextProfile$' 2>&1 | tee build/soundness/self-hosted-text-go.log
           lean -DwarningAsError=true --run proof/RUPTextCompare.lean "$OAK_SELF_HOSTED_TEXT_CORPUS_OUT" 2>&1 | tee build/soundness/self-hosted-text-agreement.log
+      - name: Prove bounded decimal refinement and compare with Oak
+        working-directory: experiments/verification-poc
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LEAN_PATH="$PWD/proof"
+          lean -DwarningAsError=true -o proof/BoundedDecimal.olean proof/BoundedDecimal.lean 2>&1 | tee build/soundness/bounded-decimal-proof.log
+          export OAK_DECIMAL_CORPUS_OUT="$PWD/build/soundness/decimal-cases.json"
+          go test -count=1 -v . -run '^TestSelfHostedDecimal$' 2>&1 | tee build/soundness/decimal-go.log
+          lean -DwarningAsError=true --run proof/BoundedDecimalCompare.lean "$OAK_DECIMAL_CORPUS_OUT" 2>&1 | tee build/soundness/decimal-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
