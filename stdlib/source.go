@@ -17,4 +17,7 @@ var causalFrontierSource string
 //go:embed strings.oak
 var stringsSource string
 
-var Source = baseSource + "\n" + causalFrontierSource + "\n" + stringsSource
+//go:embed unicode.oak
+var unicodeSource string
+
+var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "\n" + stringsSource

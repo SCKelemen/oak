@@ -11,7 +11,7 @@ import (
 // appears exactly once as the first argument. This is static sugar, not dynamic
 // method lookup, and is enabled only by import(std).
 func lowerStdlibFluent(program *ast.Program) error {
-	names := map[string]bool{"append_bytes": true, "append_byte": true, "finish_bytes": true}
+	names := map[string]bool{"append_bytes": true, "append_byte": true, "finish_bytes": true, "append_text": true, "append_rune": true, "append_u64": true, "finish_text": true}
 	return transformSyntax(reflect.ValueOf(program), func(expr ast.Expression) (ast.Expression, error) {
 		call, ok := expr.(*ast.InvocationExpression)
 		if !ok {

@@ -31,7 +31,7 @@ utf8_decode: (src: []u8, offset: u32): Result[TextScalar, TextError] {
       while i < width {
         unit: u32 = u32(src[offset + i])
         unit < u32(128) || unit > u32(191) ? { valid = false }
-        value = (value << u32(6)) | (unit & u32(63))
+        value = ((value << u32(6)) | (unit & u32(63)))
         i = i + u32(1)
       }
       valid = valid && unicode_is_scalar(value) && utf8_width(value) == width
@@ -552,7 +552,10 @@ text_join: (dst: [*]u8, src: []u8, parts: []TextRange, separator: []u8): Result[
       part: TextRange = parts[i]
       fits: Bool = part.start <= part.end && text_is_boundary(src, part.start) && text_is_boundary(src, part.end)
       !fits ? { valid = false } | { total = total + u64(part.end - part.start) }
-      i > u32(0) ? { total = total + u64(len(separator)) }
+      total <= u64(4294967295) ? {
+        i > u32(0) ? { total = total + u64(len(separator)) }
+      }
+      total > u64(4294967295) ? { total = u64(4294967296) }
       i = i + u32(1)
     }
     !valid ? { .Err(.OutOfBounds) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | total > u64(len(dst)) ? { .Err(.DestinationTooSmall) } | {
@@ -588,3 +591,196 @@ text_ascii_case: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, TextError] {
 }
 text_to_lower_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_ascii_case(dst, src, false)
 text_to_upper_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_ascii_case(dst, src, true)
+
+// Unicode default (non-locale) full casing. Mode: lower=0, upper=1, fold=2.
+text_followed_by_cased: (src: []u8, offset: u32): Bool {
+  at: u32 = offset
+  searching: Bool = true
+  cased: Bool = false
+  while at < len(src) && searching {
+    item: TextScalar = text_decoded(utf8_decode(src, at))
+    !unicode_is_case_ignorable(item.value) ? {
+      cased = unicode_is_cased(item.value)
+      searching = false
+    }
+    at = item.next
+  }
+  cased
+}
+text_case_mapping: (src: []u8, item: TextScalar, preceded: Bool, mode: u32): UnicodeMapping {
+  mode == u32(1) ? { unicode_upper(item.value) } | mode == u32(2) ? { unicode_fold(item.value) } | {
+    item.value == u32(931) && preceded && !text_followed_by_cased(src, item.next) ? {
+      UnicodeMapping { count: u32(1), first: u32(962), second: u32(0), third: u32(0) }
+    } | { unicode_lower(item.value) }
+  }
+}
+text_case_size: (src: []u8, mode: u32): Result[u32, TextError] {
+  assert(mode <= u32(2))
+  !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {
+    at: u32 = 0
+    total: u64 = 0
+    preceded: Bool = false
+    while at < len(src) {
+      item: TextScalar = text_decoded(utf8_decode(src, at))
+      mapping: UnicodeMapping = text_case_mapping(src, item, preceded, mode)
+      i: u32 = 0
+      while i < mapping.count {
+        total = total + u64(utf8_width(unicode_mapping_at(mapping, i)))
+        i = i + u32(1)
+      }
+      !unicode_is_case_ignorable(item.value) ? { preceded = unicode_is_cased(item.value) }
+      at = item.next
+    }
+    total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
+  }
+}
+text_case_into: (dst: [*]u8, src: []u8, mode: u32): Result[u32, TextError] {
+  measured: Result[u32, TextError] = text_case_size(src, mode)
+  !text_result_ok(measured) ? { measured } | text_result_value(measured) > len(dst) ? { .Err(.DestinationTooSmall) } | {
+    at: u32 = 0
+    out: u32 = 0
+    preceded: Bool = false
+    while at < len(src) {
+      item: TextScalar = text_decoded(utf8_decode(src, at))
+      mapping: UnicodeMapping = text_case_mapping(src, item, preceded, mode)
+      i: u32 = 0
+      while i < mapping.count {
+        encoded: Result[u32, TextError] = utf8_encode(dst, out, unicode_mapping_at(mapping, i))
+        assert(text_result_ok(encoded))
+        out = out + text_result_value(encoded)
+        i = i + u32(1)
+      }
+      !unicode_is_case_ignorable(item.value) ? { preceded = unicode_is_cased(item.value) }
+      at = item.next
+    }
+    .Ok(out)
+  }
+}
+text_to_lower: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(0))
+text_to_upper: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(1))
+text_case_fold: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(2))
+TextFoldCursor: type = struct { next: u32, index: u32, mapping: UnicodeMapping }
+text_fold_next: (cursor: [*]TextFoldCursor, src: []u8): Option[u32] {
+  assert(len(cursor) == u32(1))
+  assert(cursor[0].next <= len(src))
+  cursor[0].index == cursor[0].mapping.count && cursor[0].next < len(src) ? {
+    item: TextScalar = text_decoded(utf8_decode(src, cursor[0].next))
+    cursor[0].next = item.next
+    cursor[0].mapping = unicode_fold(item.value)
+    cursor[0].index = u32(0)
+  }
+  cursor[0].index == cursor[0].mapping.count ? { .None } | {
+    value: u32 = unicode_mapping_at(cursor[0].mapping, cursor[0].index)
+    cursor[0].index = cursor[0].index + u32(1)
+    .Some(value)
+  }
+}
+text_equal_fold: (left: []u8, right: []u8): Bool {
+  text_require(left)
+  text_require(right)
+  left_state: [1]TextFoldCursor
+  right_state: [1]TextFoldCursor
+  a: [*]TextFoldCursor = span(&left_state)
+  b: [*]TextFoldCursor = span(&right_state)
+  same: Bool = true
+  finished: Bool = false
+  while same && !finished {
+    x: u32 = option_or(text_fold_next(a, left), u32(4294967295))
+    y: u32 = option_or(text_fold_next(b, right), u32(4294967295))
+    same = x == y
+    finished = x == u32(4294967295)
+  }
+  same
+}
+
+// Replace non-overlapping matches; empty old text is rejected explicitly.
+text_replace: (dst: [*]u8, src: []u8, old: []u8, replacement: []u8): Result[u32, TextError] {
+  !is_valid_utf8(src) || !is_valid_utf8(old) || !is_valid_utf8(replacement) ? { .Err(.InvalidEncoding) } | len(old) == u32(0) ? { .Err(.EmptySeparator) } | {
+    total: u64 = 0
+    at: u32 = 0
+    while at < len(src) {
+      text_match_at(src, old, at) ? {
+        total = total + u64(len(replacement))
+        at = at + len(old)
+      } | { total = total + u64(1)
+        at = at + u32(1)
+      }
+    }
+    total > u64(4294967295) ? { .Err(.SizeOverflow) } | total > u64(len(dst)) ? { .Err(.DestinationTooSmall) } | {
+      out: u32 = 0
+      at = u32(0)
+      while at < len(src) {
+        text_match_at(src, old, at) ? {
+          i: u32 = 0
+          while i < len(replacement) { dst[out] = replacement[i]
+            out = out + u32(1)
+            i = i + u32(1)
+          }
+          at = at + len(old)
+        } | { dst[out] = src[at]
+          at = at + u32(1)
+          out = out + u32(1)
+        }
+      }
+      .Ok(out)
+    }
+  }
+}
+
+TextBuilder: type = struct { length: u32, failed: Bool, reason: TextError }
+text_builder: (): TextBuilder = TextBuilder { length: u32(0), failed: false, reason: .Empty }
+text_builder_error: (builder: TextBuilder, reason: TextError): TextBuilder {
+  next: TextBuilder = builder
+  !next.failed ? { next.failed = true
+    next.reason = reason
+  }
+  next
+}
+append_text: (builder: TextBuilder, dst: [*]u8, src: []u8): TextBuilder {
+  assert(builder.length <= len(dst))
+  builder.failed ? { builder } | !is_valid_utf8(src) ? { text_builder_error(builder, .InvalidEncoding) } | len(src) > len(dst) - builder.length ? { text_builder_error(builder, .DestinationTooSmall) } | {
+    next: TextBuilder = builder
+    i: u32 = 0
+    while i < len(src) { dst[builder.length + i] = src[i]
+      i = i + u32(1)
+    }
+    next.length = next.length + len(src)
+    next
+  }
+}
+append_rune: (builder: TextBuilder, dst: [*]u8, value: u32): TextBuilder {
+  assert(builder.length <= len(dst))
+  builder.failed ? { builder } | !unicode_is_scalar(value) ? { text_builder_error(builder, .InvalidScalar) } | {
+    encoded: Result[u32, TextError] = utf8_encode(dst, builder.length, value)
+    !text_result_ok(encoded) ? { text_builder_error(builder, .DestinationTooSmall) } | {
+      next: TextBuilder = builder
+      next.length = next.length + text_result_value(encoded)
+      next
+    }
+  }
+}
+append_u64: (builder: TextBuilder, dst: [*]u8, value: u64): TextBuilder {
+  assert(builder.length <= len(dst))
+  builder.failed ? { builder } | {
+    digits: [20]u8
+    count: u32 = 0
+    remaining: u64 = value
+    more: Bool = true
+    while more {
+      digits[count] = u8(48) + u8_trunc_u64(remaining % u64(10))
+      count = count + u32(1)
+      remaining = remaining / u64(10)
+      more = remaining != u64(0)
+    }
+    count > len(dst) - builder.length ? { text_builder_error(builder, .DestinationTooSmall) } | {
+      next: TextBuilder = builder
+      i: u32 = 0
+      while i < count { dst[builder.length + i] = digits[count - i - u32(1)]
+        i = i + u32(1)
+      }
+      next.length = next.length + count
+      next
+    }
+  }
+}
+finish_text: (builder: TextBuilder): Result[u32, TextError] = builder.failed ? .Err(builder.reason) | .Ok(builder.length)
