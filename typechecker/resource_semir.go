@@ -37,6 +37,7 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 		}
 	}
 
+	fullSemantics := make(map[string]semir.ResourceTransitionSemantics)
 	for _, protocol := range module.Protocols {
 		for _, transition := range protocol.Transitions {
 			semantics, present, err := transition.ResourceSemantics()
@@ -52,13 +53,9 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 				continue
 			}
 
-			operation := ResourceOperation{
-				Consumes:     append([]int(nil), semantics.Consumes...),
-				ReturnsFresh: semantics.ReturnsFresh,
-			}
 			callable := transition.Callable
-			if existing, exists := model.Operations[callable]; exists {
-				if !sameResourceOperation(existing, operation) {
+			if existing, exists := fullSemantics[callable]; exists {
+				if !sameResourceTransitionSemantics(existing, semantics) {
 					return ResourceModel{}, fmt.Errorf(
 						"resource callable %q has conflicting semantics across protocols",
 						callable,
@@ -66,7 +63,12 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 				}
 				continue
 			}
-			model.MarkOperation(callable, operation)
+			fullSemantics[callable] = semantics
+
+			model.MarkOperation(callable, ResourceOperation{
+				Consumes:     append([]int(nil), semantics.Consumes...),
+				ReturnsFresh: semantics.ReturnsFresh,
+			})
 		}
 	}
 
@@ -91,6 +93,27 @@ func sameResourceOperation(left, right ResourceOperation) bool {
 	}
 	for i := range left.Consumes {
 		if left.Consumes[i] != right.Consumes[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameResourceTransitionSemantics(left, right semir.ResourceTransitionSemantics) bool {
+	if left.ReturnsFresh != right.ReturnsFresh {
+		return false
+	}
+	return sameIntSlice(left.Borrowed, right.Borrowed) &&
+		sameIntSlice(left.BorrowedMut, right.BorrowedMut) &&
+		sameIntSlice(left.Consumes, right.Consumes)
+}
+
+func sameIntSlice(left, right []int) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
 			return false
 		}
 	}
