@@ -3871,6 +3871,22 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 	return adt
 }
 
+// validSectionName admits ELF (.shared) and Mach-O (__DATA,__shared)
+// section spellings and nothing that could escape a C string literal.
+func validSectionName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == ',', r == '$':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // parseVarDeclFromNameAndTypeStart parses a variable declaration starting from the type.
 // Assumes currentToken is the first token of the type expression (after ':').
 func (p *Parser) parseVarDeclFromNameAndTypeStart(name *ast.Identifier) *ast.VariableDeclaration {
@@ -3887,6 +3903,28 @@ func (p *Parser) parseVarDeclFromNameAndTypeStart(name *ast.Identifier) *ast.Var
 	stmt.Type = p.parseTypeExpression()
 	if stmt.Type == nil {
 		return nil
+	}
+
+	// Optional placement clause: name: Type (section: "shared"). The
+	// section name is validated here so nothing but a plain section
+	// spelling can reach generated C.
+	if p.peekTokenIs(token.LPAREN) {
+		p.nextToken() // to (
+		if !p.expectPeek(token.IDENT) || p.currentToken.Literal != "section" {
+			p.addErrorAtCurrentToken("placement clause takes the form (section: \"name\")")
+			return nil
+		}
+		if !p.expectPeek(token.COLON) || !p.expectPeek(token.STRING) {
+			return nil
+		}
+		if !validSectionName(p.currentToken.Literal) {
+			p.addErrorAtCurrentToken(fmt.Sprintf("section name %q must match [A-Za-z0-9_.,$]+", p.currentToken.Literal))
+			return nil
+		}
+		stmt.Section = p.currentToken.Literal
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
 	}
 
 	// Check for optional assignment

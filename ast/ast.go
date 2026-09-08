@@ -556,6 +556,11 @@ type VariableDeclaration struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// Section is the declared linker section of a static
+	// (ring: [8]u64 (section: "shared")); empty for the default
+	// (docs/spec/65-machine-memory.md). Fixed addresses stay with the
+	// linker script; only the section is language surface.
+	Section string
 }
 
 func (vd *VariableDeclaration) statementNode()       {}

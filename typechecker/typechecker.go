@@ -526,6 +526,8 @@ type TypeChecker struct {
 	// Generic function templates and their monomorphized instantiations
 	// (typechecker/genericfn.go).
 	globalEnv                  *TypeEnvironment
+	layoutQueries              map[string]LayoutQuery
+	asmBackedFunctions         map[string]bool
 	functionTemplates          map[string]*ast.FunctionStatement
 	functionInstantiations     map[string]*ast.FunctionStatement
 	functionInstantiationOrder []string
@@ -1587,6 +1589,12 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	// arm64 instruction functions (docs/spec/92-ffi.md).
 	if libraryType, isLibrary := tc.checkLibraryInvocation(expr); isLibrary {
 		return libraryType
+	}
+
+	// Layout introspection, static_assert, address_of
+	// (typechecker/layout_builtins.go).
+	if layoutType, isLayout := tc.resolveLayoutBuiltin(expr); isLayout {
+		return layoutType
 	}
 
 	// Generic function calls monomorphize here: the call site is rewritten

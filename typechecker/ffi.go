@@ -443,6 +443,10 @@ func cConversionToOak(oakName string, arg Type) bool {
 // results. The signature is registered so calls type ordinarily; the body
 // is the unit's, checked by the assembler.
 func (tc *TypeChecker) checkAsmBoundary(stmt *ast.FunctionStatement) {
+	if tc.asmBackedFunctions == nil {
+		tc.asmBackedFunctions = make(map[string]bool)
+	}
+	tc.asmBackedFunctions[stmt.Name.Value] = true
 	if stmt.Receiver != nil || len(stmt.TypeParams) > 0 {
 		tc.addError(stmt, "asm-backed function %s cannot have a receiver or generic parameters", stmt.Name.Value)
 		return

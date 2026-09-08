@@ -200,9 +200,14 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   under `frame 160`, a flags/label loop, and a 2 KiB-aligned sixteen-entry
   `eret` vector table (assembled, its extents checked statically).
 
+- **`address_of(f)`** yields the `u64` code address of an asm-backed
+  function and nothing else — the `VBAR_EL2` install path
+  (`arm64.write_vbar_el2(address_of(vectors))`). Ordinary Oak functions
+  have no exposed address.
+
 Pending, in the order the pilot needs them: memory through typed pointer
 parameters (`[x0, #off]` where `x0` is bound to a span); callee-saved
 clobbers with save/restore obligations; the operand-stack shorthand
 (`push left / push right / add`); an Oak fallback body for non-AArch64
-targets; taking an asm function's address for `VBAR_EL2`; the semantic
+targets; the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.

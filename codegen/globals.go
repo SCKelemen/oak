@@ -71,6 +71,12 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 		return
 	}
 
+	// Declared placement (docs/spec/65-machine-memory.md): the linker
+	// section; the parser admitted only a plain section spelling.
+	if decl.Section != "" {
+		declarator = fmt.Sprintf("__attribute__((section(\"%s\"))) %s", decl.Section, declarator)
+	}
+
 	if decl.Value == nil {
 		// Zero initialization: explicit for aggregates, zero for scalars.
 		if _, isIndex := decl.Type.(*ast.IndexExpression); isIndex {

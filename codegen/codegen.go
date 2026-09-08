@@ -198,6 +198,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// functions are order-independent.
 	sliceHelperOffset := cg.output.Len()
 	cg.emitFunctionPrototypes(program)
+	cg.emitStaticAsserts(program, tc)
 	cg.emitAsmUnits()
 
 	// Emit function definitions
@@ -1348,6 +1349,83 @@ func programReturnsNever(program *ast.Program) bool {
 	return false
 }
 
+// emitLayoutBuiltin emits size_of/align_of/offset_of over the real emitted
+// type, address_of as the code symbol's address, and static_assert as a
+// compile-time check (a negative array size in a sizeof type is a C
+// constraint violation, so a false condition fails the build). Reports
+// whether the invocation was one of these.
+func (cg *CodeGenerator) emitLayoutBuiltin(ident *ast.Identifier, e *ast.InvocationExpression, tc *typechecker.TypeChecker) bool {
+	switch ident.Value {
+	case "address_of":
+		if len(e.Arguments) != 1 {
+			return false
+		}
+		target, ok := e.Arguments[0].(*ast.Identifier)
+		if !ok {
+			return false
+		}
+		cg.output.WriteString(fmt.Sprintf("((u64)(uintptr_t)&%s)", cg.cFunctionName(target.Value)))
+		return true
+	case "static_assert":
+		if len(e.Arguments) != 1 {
+			return false
+		}
+		cg.output.WriteString("((void)sizeof(char[ (")
+		cg.emitExpressionFragment(e.Arguments[0], tc)
+		cg.output.WriteString(") ? 1 : -1 ]))")
+		return true
+	case "size_of", "align_of", "offset_of":
+		query, ok := tc.LayoutQueryAt(ident.Token)
+		if !ok {
+			cg.output.WriteString("OAK_UNRESOLVED_LAYOUT_QUERY")
+			return true
+		}
+		typeName := query.TypeName
+		if query.Record {
+			typeName = cg.cTypeName(query.TypeName)
+		}
+		switch query.Kind {
+		case "size_of":
+			cg.output.WriteString(fmt.Sprintf("((u32)sizeof(%s))", typeName))
+		case "align_of":
+			cg.output.WriteString(fmt.Sprintf("((u32)_Alignof(%s))", typeName))
+		case "offset_of":
+			cg.output.WriteString(fmt.Sprintf("((u32)offsetof(%s, %s))", typeName, query.Field))
+		}
+		return true
+	}
+	return false
+}
+
+// emitStaticAsserts emits top-level static_assert statements as typedef
+// assertions once every type and global they may mention exists.
+func (cg *CodeGenerator) emitStaticAsserts(program *ast.Program, tc *typechecker.TypeChecker) {
+	count := 0
+	for _, stmt := range program.Statements {
+		exprStmt, ok := stmt.(*ast.ExpressionStatement)
+		if !ok {
+			continue
+		}
+		call, ok := exprStmt.Expression.(*ast.InvocationExpression)
+		if !ok || len(call.Arguments) != 1 {
+			continue
+		}
+		if ident, isIdent := call.Function.(*ast.Identifier); !isIdent || ident.Value != "static_assert" {
+			continue
+		}
+		if count == 0 {
+			cg.write("/* static_assert: the C compiler ratifies each layout claim */\n")
+		}
+		cg.write(fmt.Sprintf("typedef char oak_static_assert_%d[ (", count))
+		cg.emitExpressionFragment(call.Arguments[0], tc)
+		cg.write(") ? 1 : -1 ];\n")
+		count++
+	}
+	if count > 0 {
+		cg.write("\n")
+	}
+}
+
 // SetAsmFunctions supplies the checked asm-unit functions to emit.
 func (cg *CodeGenerator) SetAsmFunctions(functions []*asm.Function) {
 	cg.asmFunctions = functions
@@ -2024,6 +2102,9 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.output.WriteString(fmt.Sprintf("((%s)( ", target))
 				cg.emitExpressionFragment(e.Arguments[0], tc)
 				cg.output.WriteString(" ))")
+				return
+			}
+			if cg.emitLayoutBuiltin(ident, e, tc) {
 				return
 			}
 		}

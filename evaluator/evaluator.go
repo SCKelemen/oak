@@ -301,6 +301,24 @@ func evalIdentifier(node *ast.Identifier, env *object.Environment) object.Object
 // Built-in functions
 func getBuiltin(name string) (*object.Builtin, bool) {
 	builtins := map[string]object.BuiltinFunction{
+		// Layout introspection and code addresses exist only in the
+		// compiled backend, where the C compiler is the authority; the
+		// interpreter has no struct layout or code symbols to report.
+		"size_of": func(args ...object.Object) object.Object {
+			return newError("size_of is compile-time layout introspection; unavailable in the interpreter")
+		},
+		"align_of": func(args ...object.Object) object.Object {
+			return newError("align_of is compile-time layout introspection; unavailable in the interpreter")
+		},
+		"offset_of": func(args ...object.Object) object.Object {
+			return newError("offset_of is compile-time layout introspection; unavailable in the interpreter")
+		},
+		"address_of": func(args ...object.Object) object.Object {
+			return newError("address_of names a compiled code symbol; unavailable in the interpreter")
+		},
+		"static_assert": func(args ...object.Object) object.Object {
+			return NULL
+		},
 		"assert": func(args ...object.Object) object.Object {
 			// docs/spec/85-discipline.md section 5: assertions are always
 			// checked, in every mode.

@@ -264,6 +264,32 @@ of every declared-layout record in every generated artifact.
 All spec arithmetic remains uint32-overflow-checked: an oversized packed
 or aligned record fails, never truncates.
 
+## 6b. Layout introspection and `static_assert`
+
+The compiler's layout assertions (§6a) ratify the compiler's own claims.
+The author's claims — the ring ABI a stage-2 mapping expects, a grant
+window's exact size — are pinned with the layout builtins and a
+compile-time assertion:
+
+```oak
+static_assert(size_of[Ring]() == u32(16))
+static_assert(offset_of[Ring](tail) == u32(4))
+static_assert(align_of[Line]() == u32(64))
+```
+
+- `size_of[T]()`, `align_of[T]()`, `offset_of[T](field)` type as `u32` and
+  lower to `sizeof`/`_Alignof`/`offsetof` over the **emitted** type — the C
+  compiler is the authority on the numbers, not a second model of them.
+  `T` is a declared record (or instantiation) or a primitive; `field` is a
+  declared field name.
+- `static_assert(cond)` requires `cond` to be a compile-time constant over
+  those builtins, literals, primitive constructors, and operators (a
+  runtime condition is an error: use `assert`). It lowers to a C99
+  compile-time assertion, so a false claim fails the build. Legal at top
+  level and inside functions.
+- In the interpreter the builtins are unavailable (no struct layout exists
+  there); they are compiled-backend facts by construction.
+
 ## 7. Explicit representation variants
 
 Future representation forms should extend the representation axis rather than changing record semantics.
