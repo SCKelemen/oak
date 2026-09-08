@@ -216,3 +216,7 @@ and the actual Oak stream checker's acceptance decisions.
 [LiveTable.md](LiveTable.md) relates live range-table publication and deletion to
 functional database updates. Native snapshots compare every slot and control flag
 after initialization and each attempted command against Go and Lean models.
+
+[PropagationState.md](PropagationState.md) proves partial-assignment representation
+and the semantics of falsified clauses and forced unit writes. Native traces check
+all scratch cells and propagation control flags against Go and Lean models.

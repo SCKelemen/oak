@@ -44,6 +44,7 @@ jobs:
           lean -DwarningAsError=true -o proof/PackedBuffers.olean proof/PackedBuffers.lean 2>&1 | tee build/soundness/packed-buffers-proof.log
           lean -DwarningAsError=true -o proof/RangeBridge.olean proof/RangeBridge.lean 2>&1 | tee build/soundness/range-bridge-proof.log
           lean -DwarningAsError=true -o proof/LiveTable.olean proof/LiveTable.lean 2>&1 | tee build/soundness/live-table-proof.log
+          lean -DwarningAsError=true -o proof/PropagationState.olean proof/PropagationState.lean 2>&1 | tee build/soundness/propagation-proof.log
       - name: Compare Go and Lean checker decisions
         working-directory: experiments/verification-poc
         shell: bash
@@ -117,6 +118,9 @@ jobs:
           export OAK_TABLE_CORPUS_OUT="$PWD/build/soundness/table-cases.json"
           go test -count=1 -v . -run '^TestSelfHostedLiveTable$' 2>&1 | tee build/soundness/table-go.log
           lean -DwarningAsError=true --run proof/LiveTableCompare.lean "$OAK_TABLE_CORPUS_OUT" 2>&1 | tee build/soundness/table-agreement.log
+          export OAK_PROPAGATION_CORPUS_OUT="$PWD/build/soundness/propagation-cases.json"
+          go test -count=1 -v . -run '^TestSelfHostedPropagationState$' 2>&1 | tee build/soundness/propagation-go.log
+          lean -DwarningAsError=true --run proof/PropagationStateCompare.lean "$OAK_PROPAGATION_CORPUS_OUT" 2>&1 | tee build/soundness/propagation-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
