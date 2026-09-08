@@ -15,12 +15,12 @@ theorem mapM_lookup {α β : Type} (f : α → Option β) (xs : List α) (ys : L
     simp
   | cons x xs ih =>
     cases head : f x with
-    | none => simp [List.mapM, head] at decoded
+    | none => simp [head] at decoded
     | some y =>
       cases tail : xs.mapM f with
-      | none => simp [List.mapM, head, tail] at decoded
+      | none => simp [head, tail] at decoded
       | some rest =>
-        have same : y :: rest = ys := by simpa [List.mapM, head, tail] using decoded
+        have same : y :: rest = ys := by simpa [head, tail] using decoded
         subst ys
         intro slot
         cases slot with
