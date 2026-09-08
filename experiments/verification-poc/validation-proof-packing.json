@@ -1,0 +1,145 @@
+{
+  "actual_certificates": {
+    "accepted_supported": 9,
+    "inputs": 11,
+    "native_layouts": 27,
+    "native_seconds": 2.13,
+    "outside_profile": 2,
+    "raw_source_hashes": "Retained by the existing gate in build/lean-gate/attempt-*",
+    "reference_layout_equalities": 9,
+    "rejected_corruptions": 18,
+    "text_entry_accepted": 9,
+    "text_entry_rejected_corruptions": 18
+  },
+  "artifacts": {
+    "retention_days": 30,
+    "solvers": "build/lean-gate attempt reports, layouts, certificate hashes, replay logs and build/tools/provenance.json",
+    "soundness": "ProofPacking.lean, PackedText.lean, proof-packing.log, packed-text-proof.log, proof-packing-agreement.log and canonical stream corpora"
+  },
+  "commit": "bb8932260e444d56f2d009fdefcde16ddbdcd0e4",
+  "comparison": {
+    "accepted": 104,
+    "compared": [
+      "Go oracle and compiled Oak via the existing stream corpus",
+      "Proved packing plus certified stream",
+      "Original Lean range checker",
+      "Certified raw stream"
+    ],
+    "packed_streams": 425,
+    "raw_accepted": 308,
+    "raw_native_seconds_with_race": 86.85,
+    "raw_native_seconds_without_race": 44.98,
+    "raw_rejected": 579,
+    "raw_stream_layouts": 887,
+    "rejected": 321
+  },
+  "date": "2026-09-08",
+  "existing_gates": {
+    "boolean_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "boolean_model": {
+      "corruptions_rejected": 2,
+      "malformed_rejected": 3,
+      "safe_accepted": 1,
+      "unsafe_rejected": 1,
+      "wrong_model_rejected": 1
+    },
+    "external_solver_suite": "success",
+    "lean_text_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "native_race_suite": "success"
+  },
+  "format": "oak-proof-packing-validation-1",
+  "next_step": "Prove refinement between Oak's concrete text-decoder state transitions and the proved packing model.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.ProofPacking.check' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.ProofPacking.check_sound' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.ProofPacking.clause_roundtrip' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.ProofPacking.read_encoded' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.ProofPacking.initial_ranges' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.ProofPacking.command_ranges' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.ProofPacking.roundtrip' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.ProofPacking.packed_sound' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.PackedText.check' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.PackedText.check_sound' depends on axioms: [propext, Classical.choice, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Encoding and decoding each positive-index literal clause is identity",
+      "Initial clause ranges and command ranges decode correctly under arbitrary prefix and suffix buffers",
+      "For every Supported input, decodeLayout(pack variables clauses instructions) returns exactly the original clauses and instructions",
+      "Packing-checker acceptance implies unsatisfiability of the supplied initial clause database",
+      "Text-entry acceptance supplies executable parser results and unsatisfiability of the parsed formula"
+    ],
+    "reported_executable_definitions": 2,
+    "reported_theorems": 8,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Conformance of the external DIMACS/LRAT grammar",
+      "Universal refinement of Oak's concrete text decoder or stream executor",
+      "Compiler and C runtime correctness"
+    ],
+    "proved": [
+      "Packing roundtrip for all supported decoded inputs",
+      "Sound composition of executable text parsing, packing, range decoding and certified propagation with respect to the returned formula"
+    ],
+    "tested": [
+      "Raw-layout equality between proved packer and retained imperative reference",
+      "Native Oak and Go agreement on emitted layouts"
+    ],
+    "trusted_infrastructure": [
+      "JSON adapters",
+      "Go harness",
+      "Oak compiler",
+      "Generated C and C compiler/runtime"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34282323768",
+  "solvers_job": 102249771902,
+  "soundness_job": 102249772228,
+  "tlc_pin_update": {
+    "asset_id": 551007111,
+    "asset_updated_at": "2026-09-08T17:57:45Z",
+    "digest_source": "https://api.github.com/repos/tlaplus/tlaplus/releases/assets/551007111",
+    "note": "Mutable upstream prerelease. Explicitly refreshed from GitHub's published asset digest on 2026-09-08; checksum verification remains mandatory.",
+    "sha256": "4c7bb1f6b050d56c197ee9ddd6e57fe521eae175f5043c9fb98b169f7b2d5407",
+    "source_commit": "b123b22654942bd7f8b1bcadcc47da4ee2cf4c0e",
+    "verified_download": true
+  },
+  "repository_ci": {
+    "Formal Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34282323764"
+    },
+    "Golden File Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34282323760"
+    },
+    "Oak testing tools": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34282323776"
+    },
+    "Verification experiment (opt-in)": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34282323768"
+    },
+    "Standard library": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34282323735"
+    },
+    "CI": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34282323766"
+    }
+  },
+  "aarch64_memory_refinement": "success"
+}

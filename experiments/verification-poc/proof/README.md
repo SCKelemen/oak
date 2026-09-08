@@ -237,3 +237,6 @@ and long publish/delete sequences compare Oak, Go, and both Lean stream checkers
 
 See [Initial decoder and real certificate replay](InitialDecoder.md) for the
 proved range-decoder connection and the bounded solver-certificate gate.
+
+See [Proved proof-stream packing](ProofPacking.md) for universal packing roundtrip
+and the composed parsed-text acceptance theorem.

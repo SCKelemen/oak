@@ -71,5 +71,6 @@ Repository CI, standard-library tests with the race detector, formal verificatio
 golden files, and AArch64 memory refinement all passed on the tested commit.
 `../validation-initial-decoder.json` records the exact proof and testing scope.
 
-Next: prove packing roundtrip for all supported inputs, then connect that theorem
-to the Oak text decoder. Universal Oak and compiler refinement remain open.
+The subsequent [packing milestone](ProofPacking.md) proves roundtrip for all
+supported decoded inputs and adds a sound text-entry composition. Universal
+Oak text-decoder and compiler refinement remain open.
