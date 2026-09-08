@@ -148,15 +148,15 @@ const nativePreamble = `
 #include <stdlib.h>
 #include <stdint.h>
 static FILE *oak_test_report;
-static unsigned oak_test_generating, oak_test_command_count;
+static unsigned oak_test_generating, oak_test_emitted_count;
 uint32_t oak_test_host_command_limit(void) { return OAK_COMMAND_LIMIT; }
 void oak_test_host_command(uint32_t kind, uint32_t target, uint32_t value) {
  if (!oak_test_report) exit(125);
- if (!oak_test_generating || oak_test_command_count >= OAK_COMMAND_LIMIT) {
+ if (!oak_test_generating || oak_test_emitted_count >= OAK_COMMAND_LIMIT) {
   fputs("error command-mode-or-limit\n", oak_test_report); fflush(oak_test_report); exit(125);
  }
  fprintf(oak_test_report, "command %u %u %u\n", (unsigned)kind, (unsigned)target, (unsigned)value);
- oak_test_command_count++;
+ oak_test_emitted_count++;
 }
 static unsigned oak_test_trace_count;
 void oak_test_host_trace(uint32_t id, uint64_t a, uint64_t b) {
