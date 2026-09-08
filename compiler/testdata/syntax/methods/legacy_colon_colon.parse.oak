@@ -1,0 +1,2 @@
+Point: type = { x: i32, y: i32 }
+fn Point::distance(self: Point, other: Point): i32 = self.x - other.x

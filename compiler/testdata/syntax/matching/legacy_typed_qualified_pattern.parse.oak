@@ -1,0 +1,4 @@
+Option[T]: type = Some: T | None
+unwrap: (value: Option[i32]): i32 = value ?
+  | Option::Some(x: i32) => x
+  | Option::None => 0

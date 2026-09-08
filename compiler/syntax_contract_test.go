@@ -10,10 +10,10 @@ import (
 )
 
 type syntaxContract struct {
-	Status             string
-	Spec               string
-	NoNativeReason     string
-	CompatibilityNote  string
+	Status            string
+	Spec              string
+	NoNativeReason    string
+	CompatibilityNote string
 }
 
 const (
@@ -38,6 +38,7 @@ var syntaxContracts = map[string]syntaxContract{
 	"matching/pattern_fat_arrow.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §7"},
 	"matching/braced_fat_arrow.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §7"},
 	"matching/legacy_arrow.parse.oak": {Status: syntaxCompatibility, Spec: "10-syntax.md §1", NoNativeReason: "legacy -> match arms are parser compatibility only; => is the canonical match token", CompatibilityNote: "migration alias; formatter must not emit it"},
+	"matching/legacy_typed_qualified_pattern.parse.oak": {Status: syntaxCompatibility, Spec: "10-syntax.md §7", NoNativeReason: "typed Type::Case payload patterns are historical parser compatibility", CompatibilityNote: "canonical patterns use .Case(binding) or Type.Case(binding) without an inline payload type annotation"},
 	"expressions/operators.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §§3a,3b"},
 	"expressions/address_of.exit42.oak": {Status: syntaxCanonical, Spec: "50-borrowing.md"},
 	"expressions/pipeline.exit42.oak": {Status: syntaxCanonical, Spec: "05-ergonomics-and-cost.md pipeline ergonomics"},
@@ -45,8 +46,19 @@ var syntaxContracts = map[string]syntaxContract{
 	"expressions/string.exit42.oak": {Status: syntaxCanonical, Spec: "70-strings.md"},
 	"expressions/record_literal.parse.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §8", NoNativeReason: "anonymous semantic record literal has no promised runtime representation without contextual representation selection"},
 	"expressions/struct_literal.parse.oak": {Status: syntaxCompatibility, Spec: "10-syntax.md §8", NoNativeReason: "anonymous struct value spelling is parser surface; named concrete construction is the representation-bearing canonical boundary form", CompatibilityNote: "prefer named Type { ... } construction"},
+	"literals/decimal.exit42.oak": {Status: syntaxCanonical, Spec: "20-types.md integer literals"},
+	"literals/hex.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §3b"},
+	"literals/binary.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §3b"},
+	"literals/radix.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §3b"},
+	"literals/radix_separator.exit42.oak": {Status: syntaxCanonical, Spec: "20-types.md integer literals"},
+	"literals/unicode_radix.exit242.oak": {Status: syntaxCanonical, Spec: "20-types.md integer literals"},
 	"arrays/contextual_literal.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §1 array forms"},
 	"arrays/slice.exit42.oak": {Status: syntaxCanonical, Spec: "50-borrowing.md"},
+	"arrays/slice_open_low.exit42.oak": {Status: syntaxCanonical, Spec: "50-borrowing.md"},
+	"arrays/slice_open_high.exit42.oak": {Status: syntaxCanonical, Spec: "50-borrowing.md"},
+	"arrays/slice_all.exit42.oak": {Status: syntaxCanonical, Spec: "50-borrowing.md"},
+	"arrays/typed_literal_legacy.parse.oak": {Status: syntaxCompatibility, Spec: "10-syntax.md array migration", NoNativeReason: "typed aggregate literal [N]T{...} is historical parser compatibility", CompatibilityNote: "canonical source uses contextual [a, b, ...] literals with an expected [N]T"},
+	"arrays/nested_typed_legacy.parse.oak": {Status: syntaxCompatibility, Spec: "10-syntax.md array migration", NoNativeReason: "nested typed aggregate literal syntax is historical parser compatibility", CompatibilityNote: "retain only while old aggregate sources remain accepted"},
 	"adts/dot_variant.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §6"},
 	"adts/qualified_dot.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §6"},
 	"adts/qualified_colon_colon.parse.oak": {Status: syntaxCompatibility, Spec: "10-syntax.md §1", NoNativeReason: "Type::Case is a legacy constructor spelling", CompatibilityNote: "migration alias; canonical qualification is Type.Case"},
@@ -56,7 +68,9 @@ var syntaxContracts = map[string]syntaxContract{
 	"records/semantic.check.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §8", NoNativeReason: "semantic record shape intentionally does not promise byte representation"},
 	"records/struct.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §8"},
 	"records/extensible.parse.oak": {Status: syntaxCanonical, Spec: "05-ergonomics-and-cost.md extensible records", NoNativeReason: "row-polymorphic record syntax is a semantic typing surface rather than a standalone runtime representation"},
+	"records/composition.parse.oak": {Status: syntaxCompatibility, Spec: "10-syntax.md §9", NoNativeReason: "record composition is accepted definition-time syntax without a standalone runtime observation", CompatibilityNote: "kept while the shared & token remains accepted for record composition"},
 	"interfaces/generic_typed_self.parse.oak": {Status: syntaxCompatibility, Spec: "10-syntax.md §9", NoNativeReason: "generic interface receiver syntax is compile-time contract syntax and has no runtime interface object", CompatibilityNote: "accepted historical interface spelling until interface syntax is normalized"},
+	"methods/legacy_colon_colon.parse.oak": {Status: syntaxCompatibility, Spec: "10-syntax.md §3", NoNativeReason: "legacy receiver method syntax is parser compatibility and has no canonical runtime witness", CompatibilityNote: "retain only while Point::method source remains accepted"},
 	"types/array_forms.parse.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §1", NoNativeReason: "type-form inventory has no independent runtime behavior"},
 	"types/generic_application.check.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §1", NoNativeReason: "generic application typing is the observation; executable generic instantiations have separate native cases"},
 	"types/lowercase_bool.parse.oak": {Status: syntaxCompatibility, Spec: "20-types.md primitive naming", NoNativeReason: "lowercase bool is a historical parser spelling", CompatibilityNote: "canonical Boolean type is Bool"},
@@ -68,13 +82,15 @@ var syntaxFamilies = map[string][]string{
 	"function values": {"functions/function_literal.parse.oak"},
 	"generics": {"functions/generic_declaration.exit42.oak", "functions/generic_fn.parse.oak", "types/generic_application.check.oak"},
 	"variadics": {"functions/variadic.exit42.oak"},
-	"matches and conditionals": {"matching/positional_inline.exit42.oak", "matching/pattern_fat_arrow.exit42.oak", "matching/braced_fat_arrow.exit42.oak", "matching/legacy_arrow.parse.oak"},
+	"matches and conditionals": {"matching/positional_inline.exit42.oak", "matching/pattern_fat_arrow.exit42.oak", "matching/braced_fat_arrow.exit42.oak", "matching/legacy_arrow.parse.oak", "matching/legacy_typed_qualified_pattern.parse.oak"},
 	"operators": {"expressions/operators.exit42.oak", "expressions/address_of.exit42.oak", "expressions/pipeline.exit42.oak", "expressions/field_accessor_pipeline.exit42.oak"},
-	"literals": {"expressions/string.exit42.oak", "arrays/contextual_literal.exit42.oak", "expressions/record_literal.parse.oak", "expressions/struct_literal.parse.oak"},
-	"arrays and slices": {"arrays/contextual_literal.exit42.oak", "arrays/slice.exit42.oak", "types/array_forms.parse.oak"},
+	"integer literals": {"literals/decimal.exit42.oak", "literals/hex.exit42.oak", "literals/binary.exit42.oak", "literals/radix.exit42.oak", "literals/radix_separator.exit42.oak", "literals/unicode_radix.exit242.oak"},
+	"literals": {"expressions/string.exit42.oak", "arrays/contextual_literal.exit42.oak", "arrays/typed_literal_legacy.parse.oak", "arrays/nested_typed_legacy.parse.oak", "expressions/record_literal.parse.oak", "expressions/struct_literal.parse.oak"},
+	"arrays and slices": {"arrays/contextual_literal.exit42.oak", "arrays/slice.exit42.oak", "arrays/slice_open_low.exit42.oak", "arrays/slice_open_high.exit42.oak", "arrays/slice_all.exit42.oak", "arrays/typed_literal_legacy.parse.oak", "arrays/nested_typed_legacy.parse.oak", "types/array_forms.parse.oak"},
 	"ADTs": {"adts/dot_variant.exit42.oak", "adts/qualified_dot.exit42.oak", "adts/qualified_colon_colon.parse.oak", "adts/brace_legacy.parse.oak", "adts/shorthand_legacy.parse.oak", "adts/indexed.check.oak"},
-	"records": {"records/semantic.check.oak", "records/struct.exit42.oak", "records/extensible.parse.oak"},
+	"records": {"records/semantic.check.oak", "records/struct.exit42.oak", "records/extensible.parse.oak", "records/composition.parse.oak"},
 	"interfaces": {"interfaces/generic_typed_self.parse.oak"},
+	"methods": {"methods/legacy_colon_colon.parse.oak"},
 	"primitive compatibility": {"types/lowercase_bool.parse.oak"},
 }
 
