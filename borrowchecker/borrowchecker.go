@@ -627,13 +627,14 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 	case *ast.VariantExpression:
 		bc.checkExpression(e.Payload, env)
 	case *ast.FunctionLiteral:
+		body := &ast.BlockExpression{Block: e.Body}
 		if len(bc.activeBorrows) != 0 {
 			bc.reportBorrow(e, CodeBorrowEscape, "function literals in a borrow scope require capture-lifetime analysis")
 		}
-		if fn, ok := env.CheckedExpressionType(e).(*typechecker.FunctionType); ok && env.ContainsBorrowStorage(fn.ReturnType) && !literalStringResult(e.Body) {
+		if fn, ok := env.CheckedExpressionType(e).(*typechecker.FunctionType); ok && env.ContainsBorrowStorage(fn.ReturnType) && !literalStringResult(body) {
 			bc.reportBorrow(e, CodeBorrowEscape, "function literal cannot return borrowed storage")
 		}
-		bc.checkExpression(e.Body, env)
+		bc.checkExpression(body, env)
 	case *ast.BlockExpression:
 		// A block in expression position (most importantly a function block
 		// body): statements are checked under block scoping, so borrows
