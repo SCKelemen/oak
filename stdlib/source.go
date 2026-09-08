@@ -10,6 +10,7 @@ var baseSource string
 
 // The host compiler composes bounded frontier helpers into import(std).
 // Generated target code keeps no runtime module descriptor.
+//
 //go:embed causal_frontier.oak
 var causalFrontierSource string
 
