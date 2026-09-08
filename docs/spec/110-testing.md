@@ -172,7 +172,8 @@ replace the existing memory-model litmus tests or hardware validation.
 
 Go tests execute compiled Oak programs for registration, native unit/property/
 fuzz/simulation modes, rejection budgets, coverage labels, crash and timeout
-isolation, minimization, strict replay, source drift, and corpus reuse. A mutation test deliberately drops edges arriving while active in the IRQ
+isolation, minimization, strict replay, source drift, and corpus reuse. A mutation
+test deliberately drops edges arriving while active in the IRQ
 pilot and requires the model to detect invariant 2011 with the four-command
 counterexample `enable, inject, acknowledge, inject`. Go fuzz targets exercise
 reducer invariants and mutation bounds. The dedicated workflow

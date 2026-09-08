@@ -180,6 +180,14 @@ TestSurvives: (): () { test_check(true, u32(1)) }
 	if states["TestSurvives"].Status != "pass" || states["TestTimeout"].Failure != "timeout" || states["TestCrash"].Status != "fail" || states["PropertyDiscard"].Discards != 3 {
 		t.Fatalf("%+v", states)
 	}
+	a, err := readArtifact(states["TestTimeout"].Artifact, 256)
+	if err != nil || a.TimeoutNanos != 100000000 {
+		t.Fatalf("timeout configuration lost: %+v %v", a, err)
+	}
+	code, results, stderr = runCLI(t, "-replay", states["TestTimeout"].Artifact, dir)
+	if code != 1 || len(results) != 1 || results[0].Failure != "reproduced timeout" {
+		t.Fatalf("timeout replay: %d %+v %s", code, results, stderr)
+	}
 }
 func TestNoTestsAndInvalidFlagsFail(t *testing.T) {
 	dir := t.TempDir()
@@ -298,5 +306,17 @@ func TestIRQMutationDetected(t *testing.T) {
 	}
 	if !bytes.Equal(a.Input, []byte{0, 2, 5, 2}) {
 		t.Fatalf("unexpected minimized history: %v", a.Input)
+	}
+}
+
+// Importing testing alone must not reserve the unrelated std codec names.
+func TestTestingImportPreservesProductionNames(t *testing.T) {
+	dir := fixture(t, map[string]string{"a_test.oak": `import(testing)
+encode: (value: u32): u32 = value
+TestEncode: (): () { test_check(encode(u32(7)) == u32(7), u32(1)) }
+`})
+	code, results, stderr := runCLI(t, dir)
+	if code != 0 {
+		t.Fatalf("testing import reserved a production name: %d %+v %s", code, results, stderr)
 	}
 }
