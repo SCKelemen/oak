@@ -52,6 +52,9 @@ Codes use the `OAK-<category><number>` family. Initial category prefixes are:
 | `S` | source / encoding / location |
 | `C` | compiler pipeline / configuration |
 | `I` | internal compiler invariant failure |
+| `F` | foreign interface (`92-ffi.md`) |
+| `D` | discipline profile (`85-discipline.md`) |
+| `M` | modules / packages / imports / visibility (`83-modules.md`) |
 
 `0000` is the migration fallback for an otherwise structured diagnostic whose
 specific stable code has not yet been assigned. User-facing production errors

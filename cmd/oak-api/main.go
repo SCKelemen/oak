@@ -10,19 +10,23 @@ import (
 
 func main() {
 	if len(os.Args) != 4 {
-		fmt.Fprintln(os.Stderr, "usage: oak-api PACKAGE VERSION SOURCE.oak")
+		fmt.Fprintln(os.Stderr, "usage: oak-api PACKAGE VERSION SOURCE.oak|PACKAGE_DIR")
 		os.Exit(2)
 	}
-	source, err := os.ReadFile(os.Args[3])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "read source: %v\n", err)
-		os.Exit(2)
+	comp := compiler.New().WithPackageName(os.Args[1])
+	if info, err := os.Stat(os.Args[3]); err == nil && info.IsDir() {
+		// A package directory is built through the module loader
+		// (docs/spec/83-modules.md); the snapshot covers the root package only.
+		comp = comp.WithPackageDir(os.Args[3])
+	} else {
+		source, err := os.ReadFile(os.Args[3])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read source: %v\n", err)
+			os.Exit(2)
+		}
+		comp = comp.WithSource(os.Args[3], string(source))
 	}
-	snapshot, err := compiler.New().
-		WithPackageName(os.Args[1]).
-		WithSource(os.Args[3], string(source)).
-		APISnapshot(os.Args[2]).
-		Get()
+	snapshot, err := comp.APISnapshot(os.Args[2]).Get()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

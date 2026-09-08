@@ -1,0 +1,12 @@
+package counter
+
+import("example.com/hello/geometry")
+
+value: i32 = 0
+
+pub bump: (by: i32): i32 = {
+  value = value + by
+  value
+}
+
+pub scaled_length: (s: geometry.Shape): i32 = geometry.length(s) * 2

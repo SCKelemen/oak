@@ -60,6 +60,8 @@ func New(source token.Source) *Parser {
 	p.registerPrefix(token.LBRACE, p.parseRecordLiteral)
 	p.registerPrefix(token.LBRACK, p.parseArrayLiteral)
 	p.registerPrefix(token.FN, p.parseFunctionLiteral)
+	p.registerPrefix(token.IMPORT, p.parseImportExpression)
+	p.registerPrefix(token.TYPE, p.parseTypeKindExpression)
 
 	p.infixParseFns = make(map[token.TokenKind]infixParseFn)
 	p.registerInfix(token.SUM, p.parseInfixExpression)
@@ -274,6 +276,11 @@ func (p *Parser) parseStatement() ast.Statement {
 			return stmt
 		}
 		return nil
+	case token.PUB:
+		if stmt := p.parsePubDeclaration(); stmt != nil {
+			return stmt
+		}
+		return nil
 	case token.IDENT:
 		// Variable declarations and assignments:
 		// - x := expr -> declaration with type inference (short declaration)
@@ -454,7 +461,7 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 		// its block. Checked before the precedence gate: '{' carries no
 		// operator precedence.
 		if p.peekTokenIs(token.LBRACE) && !p.braceLiteralDisabled {
-			if _, isIdent := leftExp.(*ast.Identifier); isIdent {
+			if _, isIdent := leftExp.(*ast.Identifier); isIdent || p.qualifiedTypeReceiver(leftExp) {
 				p.nextToken() // move to '{'
 				leftExp = p.parseTypeQualifiedLiteral(leftExp)
 				if leftExp == nil {
@@ -895,6 +902,39 @@ func (p *Parser) parseBoolean() ast.Expression {
 	return &ast.Boolean{Token: p.currentToken, Value: p.currentTokenIs(token.TRUE)}
 }
 
+// qualifiedTypeReceiver reports whether leftExp is `pkg.Type` immediately
+// followed (same line) by `{`: a package-qualified typed record literal
+// (docs/spec/83-modules.md section 3.4). The same-line rule keeps a field
+// access that ends a line from swallowing a following block.
+func (p *Parser) qualifiedTypeReceiver(leftExp ast.Expression) bool {
+	access, isAccess := leftExp.(*ast.IndexExpression)
+	if !isAccess || !access.Dot {
+		return false
+	}
+	_, baseOK := access.Left.(*ast.Identifier)
+	member, memberOK := access.Index.(*ast.Identifier)
+	return baseOK && memberOK && member.Token.Line == p.peekToken.Line
+}
+
+// foldImportBinding turns a top-level binding whose whole initializer is
+// `import(path)` into an ImportStatement carrying the binding name and the
+// optional sealing signature (docs/spec/83-modules.md section 3.2).
+func (p *Parser) foldImportBinding(stmt ast.Statement) ast.Statement {
+	decl, ok := stmt.(*ast.VariableDeclaration)
+	if !ok {
+		return stmt
+	}
+	imp, isImport := decl.Value.(*ast.ImportExpression)
+	if !isImport {
+		return stmt
+	}
+	if decl.Exported {
+		p.addErrorAtToken(&decl.Token, "an import binding cannot be pub")
+		return stmt
+	}
+	return &ast.ImportStatement{BaseNode: decl.BaseNode, Token: imp.Token, Path: imp.Path, Alias: decl.Name, Signature: decl.Type}
+}
+
 func (p *Parser) ParseProgram() *ast.Program {
 	program := &ast.Program{}
 	program.Statements = []ast.Statement{}
@@ -903,7 +943,7 @@ func (p *Parser) ParseProgram() *ast.Program {
 		start := p.currentToken
 		stmt := p.parseStatement()
 		if stmt != nil {
-			program.Statements = append(program.Statements, stmt)
+			program.Statements = append(program.Statements, p.foldImportBinding(stmt))
 		}
 		// Check if currentToken is already at the start of the next statement
 		// This can happen if parseStatement() left currentToken at the start of the next statement
@@ -918,6 +958,7 @@ func (p *Parser) ParseProgram() *ast.Program {
 			p.currentTokenIs(token.INTERFACE) ||
 			p.currentTokenIs(token.PACKAGE) ||
 			p.currentTokenIs(token.IMPORT) ||
+			p.currentTokenIs(token.PUB) ||
 			p.currentTokenIs(token.WHILE) ||
 			p.currentTokenIs(token.UNSAFE) ||
 			p.currentTokenIs(token.COLON)) && // COLON for REPL commands like :exit
@@ -1168,33 +1209,110 @@ func (p *Parser) parsePackageStatement() *ast.PackageStatement {
 	return stmt
 }
 
-// Import statement
+// Import statement (docs/spec/83-modules.md section 3): import(path).
 func (p *Parser) parseImportStatement() *ast.ImportStatement {
 	stmt := &ast.ImportStatement{Token: p.currentToken}
+	path := p.parseImportPath()
+	if path == nil {
+		return nil
+	}
+	stmt.Path = path
+	return stmt
+}
 
+// parseImportPath parses `( path )` after `import`. The path is a string
+// literal; a bare identifier is sugar for a single-segment path
+// (`import(std)`).
+func (p *Parser) parseImportPath() *ast.Identifier {
 	if !p.expectPeek(token.LPAREN) {
 		return nil
 	}
-
-	if !p.expectPeek(token.IDENT) {
+	p.nextToken()
+	var path *ast.Identifier
+	switch p.currentToken.TokenKind {
+	case token.STRING, token.IDENT:
+		path = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	default:
+		p.addErrorAtCurrentToken(fmt.Sprintf("import path must be a string literal or identifier, got %s", p.currentToken.TokenKind))
 		return nil
 	}
-
-	stmt.Path = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-
 	if !p.expectPeek(token.RPAREN) {
 		return nil
 	}
+	return path
+}
 
-	// Optional alias: import(pkg) as alias
-	if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "as" {
-		p.nextToken() // consume 'as'
+// parseImportExpression parses `import(path)` in expression position. Only a
+// top-level binding initializer is legal (ParseProgram folds it into an
+// ImportStatement); the loader rejects any other placement.
+func (p *Parser) parseImportExpression() ast.Expression {
+	expr := &ast.ImportExpression{Token: p.currentToken}
+	path := p.parseImportPath()
+	if path == nil {
+		return nil
+	}
+	expr.Path = path
+	return expr
+}
+
+// parseTypeKindExpression admits the keyword `type` as a member type inside
+// a signature shape (`{ Key: type, hash: (k: Key): u64 }`,
+// docs/spec/83-modules.md section 6.3). Elsewhere the type checker rejects
+// `type` as a value.
+func (p *Parser) parseTypeKindExpression() ast.Expression {
+	return &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+}
+
+// parsePubDeclaration parses `pub decl` and `pub(opaque) decl`
+// (docs/spec/83-modules.md section 6). pub applies to package-level
+// declarations only; pub(opaque) applies to type declarations only.
+func (p *Parser) parsePubDeclaration() ast.Statement {
+	pubToken := p.currentToken
+	opaque := false
+	if p.peekTokenIs(token.LPAREN) {
+		p.nextToken() // (
 		if !p.expectPeek(token.IDENT) {
 			return nil
 		}
-		stmt.Alias = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		if p.currentToken.Literal != "opaque" {
+			p.addErrorAtCurrentToken(fmt.Sprintf("pub accepts only the opaque modifier, got pub(%s)", p.currentToken.Literal))
+			return nil
+		}
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
+		opaque = true
 	}
-
+	if p.peekTokenIs(token.EOF) {
+		p.addErrorAtToken(&pubToken, "pub must be followed by a declaration")
+		return nil
+	}
+	p.nextToken()
+	stmt := p.parseStatement()
+	if stmt == nil {
+		return nil
+	}
+	isType := false
+	switch decl := stmt.(type) {
+	case *ast.FunctionStatement:
+		decl.Exported, decl.Opaque = true, opaque
+	case *ast.VariableDeclaration:
+		decl.Exported, decl.Opaque = true, opaque
+	case *ast.ADTType:
+		decl.Exported, decl.Opaque = true, opaque
+		isType = true
+	case *ast.InterfaceType:
+		decl.Exported, decl.Opaque = true, opaque
+	case *ast.TagDeclaration:
+		decl.Exported, decl.Opaque = true, opaque
+	default:
+		p.addErrorAtToken(&pubToken, "pub applies only to package-level declarations (functions, values, types, interfaces, tag schemas)")
+		return nil
+	}
+	if opaque && !isType {
+		p.addErrorAtToken(&pubToken, "pub(opaque) applies only to type declarations")
+		return nil
+	}
 	return stmt
 }
 
@@ -1553,11 +1671,9 @@ func (p *Parser) parseADTVariant() *ast.ADTVariant {
 // Contract: It assumes currentToken is at the first token of the type
 // and leaves currentToken at the last token of the type (does NOT advance beyond it).
 func (p *Parser) parseTypeExpression() ast.Expression {
-	// Debug: This should NEVER see TYPE as currentToken
-	if p.currentTokenIs(token.TYPE) {
-		p.addErrorAtCurrentToken(fmt.Sprintf("parseTypeExpression: routing bug - saw TYPE token (%q) at line %d. This should be handled by parseADTType/parseADTTypeFromName", p.currentToken.Literal, p.currentToken.Line))
-		return nil
-	}
+	// `type` in type position is the abstract type member of an import
+	// signature shape (docs/spec/83-modules.md section 6.3); parseTypePrimary
+	// admits it as an identifier the type checker interprets.
 	left := p.parseTypePrimary()
 	if left == nil {
 		return nil
@@ -1658,10 +1774,10 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 		return inner
 
 	case token.TYPE:
-		// TYPE keyword should never appear in a type expression
-		// This is a routing bug - should have been handled by parseADTType/parseADTTypeFromName
-		p.addErrorAtCurrentToken(fmt.Sprintf("parseTypePrimary: routing bug - saw TYPE token (%q) at line %d. This should be handled by parseADTType/parseADTTypeFromName. Current context suggests a variable declaration or type alias was incorrectly parsed as a type expression.", p.currentToken.Literal, p.currentToken.Line))
-		return nil
+		// `type` as a member type: an abstract type member of an import
+		// signature shape (docs/spec/83-modules.md section 6.3). The type
+		// checker rejects it anywhere else.
+		return &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 
 	case token.IDENT:
 		ident := &ast.Identifier{
@@ -1677,7 +1793,8 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 				return nil
 			}
 			ident.Value = ident.Value + "." + p.currentToken.Literal
-			return ident
+			// A qualified package type may still take type arguments
+			// (pkg.Ring[u8, 8]); fall through to the generic check.
 		}
 		// Check if this is a generic type: Name[TypeArg1, TypeArg2, ...]
 		if p.peekTokenIs(token.LBRACK) {
@@ -2401,9 +2518,21 @@ func (p *Parser) parseTypeQualifiedLiteral(typeName ast.Expression) ast.Expressi
 	// currentToken is LBRACE
 	typeIdent, ok := typeName.(*ast.Identifier)
 	if !ok {
-		// Not a type-qualified literal - this shouldn't happen, but handle gracefully
-		// Fall back to parsing as a regular record literal
-		return p.parseRecordLiteral()
+		// A package-qualified type (pkg.Point { ... }, docs/spec/83-modules.md
+		// section 3.4): keep the dotted name as one identifier for the
+		// module elaborator to resolve, exactly like type position does.
+		if access, isAccess := typeName.(*ast.IndexExpression); isAccess && access.Dot {
+			base, baseOK := access.Left.(*ast.Identifier)
+			member, memberOK := access.Index.(*ast.Identifier)
+			if baseOK && memberOK {
+				typeIdent = &ast.Identifier{Token: base.Token, Value: base.Value + "." + member.Value}
+				ok = true
+			}
+		}
+		if !ok {
+			p.addErrorAtCurrentToken("a typed record literal requires a type name before {")
+			return nil
+		}
 	}
 
 	// Parse the record literal inside the braces

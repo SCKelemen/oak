@@ -1,0 +1,1104 @@
+package compiler
+
+// Module system loader and elaborator (docs/spec/83-modules.md).
+//
+// A package build (Compilation.WithPackageDir) locates the module root
+// (oak.mod), loads every package the root package transitively imports,
+// checks package clauses and import paths, orders the packages
+// (modules.Order), and elaborates the whole program into ONE flat syntax tree
+// the existing pipeline already understands: every package-level declaration
+// of an imported package is renamed to its injective internal name
+// (modules.Mangle) throughout that package, and every qualified reference
+// `alias.member` in an importing package is resolved — visibility and
+// sealing decided by modules.Lookup — to that internal name. The root
+// package keeps its source names, so single-file programs are unchanged.
+//
+// The elaborator is the single resolution authority for package members: the
+// type checker, borrow checker, lowering, and backend never see an import.
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+
+	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/layout"
+	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/modules"
+	"github.com/SCKelemen/oak/packageapi"
+	"github.com/SCKelemen/oak/parser"
+	"github.com/SCKelemen/oak/scanner"
+	"github.com/SCKelemen/oak/source"
+	"github.com/SCKelemen/oak/token"
+	"github.com/SCKelemen/oak/typechecker"
+)
+
+// Diagnostic codes of the module family (docs/spec/83-modules.md section 8).
+const (
+	// CodeImportPathInvalid rejects an import path outside the grammar of
+	// section 3.1; the grammar is what makes the directory mapping
+	// containment-safe.
+	CodeImportPathInvalid = "OAK-M0101"
+	// CodeImportUnresolvable rejects an import path that names no package
+	// the build can see: no module provides it, the directory is missing
+	// or empty, or the standard library package does not exist.
+	CodeImportUnresolvable = "OAK-M0102"
+	// CodePackageClause rejects a file without a leading package clause,
+	// files of one directory disagreeing on the package name, an invalid
+	// package name, or a name differing from the directory's import-path
+	// segment.
+	CodePackageClause = "OAK-M0103"
+	// CodeImportCycle rejects a package graph with an import cycle; the
+	// diagnostic names one concrete cycle.
+	CodeImportCycle = "OAK-M0104"
+	// CodeNoSuchMember rejects `alias.name` when the package declares no
+	// such package-level name.
+	CodeNoSuchMember = "OAK-M0105"
+	// CodeMemberNotExported rejects `alias.name` when the declaration exists
+	// but is not marked pub.
+	CodeMemberNotExported = "OAK-M0106"
+	// CodeImportAlias rejects alias misuse: a bare alias used as a value or
+	// redeclared, two imports binding one alias to different paths, an
+	// alias colliding with a package-level declaration or a compiler-known
+	// library, and an unused import.
+	CodeImportAlias = "OAK-M0107"
+	// CodeReservedIdentifier rejects identifiers containing `__`, which are
+	// reserved for internal names (the capture-freedom rule).
+	CodeReservedIdentifier = "OAK-M0108"
+	// CodeSignatureMismatch rejects a sealed import whose package does not
+	// provide a signature member with the demanded kind, and access through
+	// a sealed import to a member outside the signature.
+	CodeSignatureMismatch = "OAK-M0109"
+	// CodeImportPlacement rejects `import(...)` anywhere other than a
+	// top-level import statement or a top-level binding initializer, and
+	// imports that follow declarations.
+	CodeImportPlacement = "OAK-M0111"
+	// CodeManifest rejects an unreadable or malformed oak.mod, a dependency
+	// module that cannot be located, or a module whose manifest disagrees
+	// with the path it was required under.
+	CodeManifest = "OAK-M0112"
+)
+
+// ModuleInfo is what elaboration hands the later phases.
+type ModuleInfo struct {
+	// Public is the root package's own syntax, the surface API tooling
+	// projects from.
+	Public *ast.Program
+	// OpaqueTypes maps an internal type name to its declaring package path
+	// for every pub(opaque) declaration.
+	OpaqueTypes map[string]string
+	// Obligations are the sealed-import member types the type checker must
+	// verify after checking the program.
+	Obligations []typechecker.SignatureObligation
+	// Packages lists the loaded package paths in compile order (root last).
+	Packages []string
+}
+
+// bootstrapImports are the prelude-style imports the standard-library
+// loader splices in unqualified (docs/spec/83-modules.md section 9).
+var bootstrapImports = map[string]bool{"std": true, "testing": true}
+
+type packageFile struct {
+	Path string
+	Text string
+	Root *ast.Program
+	File *source.File
+}
+
+type importBinding struct {
+	Alias     string
+	Path      string
+	Signature ast.Expression
+	Statement *ast.ImportStatement
+	File      string
+	Used      bool
+	// resolved signature members (nil when unsealed)
+	sig       *modules.Signature
+	sigOrder  []string
+	sigTypes  map[string]ast.Expression
+	sigKinds  map[string]modules.MemberKind
+	sigFields map[string]ast.RecordField
+}
+
+type loadedPackage struct {
+	Path      string
+	Dir       string
+	Name      string
+	IsRoot    bool
+	Files     []*packageFile
+	Imports   map[string]*importBinding // by alias
+	Edges     []string                  // imported package paths
+	Exports   modules.Exports
+	Renames   map[string]string
+	Bootstrap map[string]*ast.ImportStatement
+	// statements after elaboration, in source order across files
+	Statements []ast.Statement
+}
+
+type moduleRoot struct {
+	Dir      string
+	Manifest modules.Manifest
+}
+
+type moduleLoader struct {
+	comp        Compilation
+	cache       string
+	root        *moduleRoot
+	located     map[string]*moduleRoot
+	packages    map[string]*loadedPackage
+	diagnostics []*diagnostic.Diagnostic
+	nextFileID  source.ID
+	opaque      map[string]string
+	obligations []typechecker.SignatureObligation
+}
+
+// WithPackageDir configures a whole-package build: dir is compiled as the
+// root package together with every package it imports, resolved through the
+// enclosing module's oak.mod (docs/spec/83-modules.md section 4).
+func (comp Compilation) WithPackageDir(dir string) Compilation {
+	comp.packageDir = dir
+	return comp
+}
+
+// WithTestFiles includes `*_test.oak` files of the root package in a
+// package build (the `oak test` runner's contract).
+func (comp Compilation) WithTestFiles(include bool) Compilation {
+	comp.includeTests = include
+	return comp
+}
+
+// WithModuleCache sets the directory where required modules are looked up
+// as `<path>@v<version>`; the default is $OAKMODCACHE.
+func (comp Compilation) WithModuleCache(dir string) Compilation {
+	comp.moduleCache = dir
+	return comp
+}
+
+func (comp Compilation) parsePackageBuild() (*SyntaxTree, error) {
+	loader := &moduleLoader{
+		comp:     comp,
+		cache:    comp.moduleCache,
+		located:  map[string]*moduleRoot{},
+		packages: map[string]*loadedPackage{},
+		opaque:   map[string]string{},
+	}
+	if loader.cache == "" {
+		loader.cache = os.Getenv("OAKMODCACHE")
+	}
+	tree, ok := loader.load(comp.packageDir)
+	if !ok || len(loader.diagnostics) != 0 {
+		if len(loader.diagnostics) == 0 {
+			return nil, fmt.Errorf("modules failed")
+		}
+		return nil, &DiagnosticError{Phase: "modules", Diagnostics: loader.diagnostics}
+	}
+	return tree, nil
+}
+
+func (l *moduleLoader) report(code string, node ast.Node, format string, args ...interface{}) *diagnostic.Diagnostic {
+	title := fmt.Sprintf(format, args...)
+	var d *diagnostic.Diagnostic
+	if node != nil {
+		d = diagnostic.NewDiagnosticFromNodeWithCode(node, "compiler", code, title)
+	} else {
+		d = diagnostic.NewDiagnosticWithCode(lsp.Range{}, "compiler", code, title)
+	}
+	l.diagnostics = append(l.diagnostics, d)
+	return d
+}
+
+func (l *moduleLoader) reportAt(code string, file string, node ast.Node, format string, args ...interface{}) *diagnostic.Diagnostic {
+	title := fmt.Sprintf(format, args...)
+	if file != "" {
+		title = file + ": " + title
+	}
+	return l.report(code, node, "%s", title)
+}
+
+// load drives the build: module root, package graph, order, elaboration.
+func (l *moduleLoader) load(dir string) (*SyntaxTree, bool) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		l.report(CodeManifest, nil, "package directory %s: %v", dir, err)
+		return nil, false
+	}
+	info, err := os.Stat(absDir)
+	if err != nil || !info.IsDir() {
+		l.report(CodeManifest, nil, "package directory %s is not a directory", dir)
+		return nil, false
+	}
+	rootPath := "main"
+	if root, found := l.findModuleRoot(absDir); found {
+		if !l.locateDependencies() {
+			return nil, false
+		}
+		rel, err := filepath.Rel(root.Dir, absDir)
+		if err != nil {
+			l.report(CodeManifest, nil, "package directory %s is outside module root %s", absDir, root.Dir)
+			return nil, false
+		}
+		rootPath = root.Manifest.Path
+		if rel != "." {
+			rootPath = root.Manifest.Path + "/" + filepath.ToSlash(rel)
+		}
+	} else if len(l.diagnostics) != 0 {
+		return nil, false
+	}
+	rootPkg := l.loadPackage(absDir, rootPath, true)
+	if rootPkg == nil {
+		return nil, false
+	}
+	if len(l.diagnostics) != 0 {
+		return nil, false
+	}
+	// Order the closed graph.
+	nodes := make([]string, 0, len(l.packages))
+	graph := map[string][]string{}
+	for path, pkg := range l.packages {
+		nodes = append(nodes, path)
+		graph[path] = pkg.Edges
+	}
+	order, stuck := modules.Order(nodes, graph)
+	if len(stuck) != 0 {
+		cycle := modules.ImportCycle(stuck, graph)
+		var node ast.Node
+		if first := l.packages[cycle[0]]; first != nil {
+			for _, binding := range first.Imports {
+				if len(cycle) > 1 && binding.Path == cycle[1] || len(cycle) == 1 && binding.Path == cycle[0] {
+					node = binding.Statement
+				}
+			}
+		}
+		d := l.report(CodeImportCycle, node, "import cycle: %s", strings.Join(append(cycle, cycle[0]), " -> "))
+		d.AddNote("packages form a directed acyclic graph; move the shared declarations into a package both sides import")
+		return nil, false
+	}
+	// Elaborate dependencies first so their exports are known to importers.
+	for _, path := range order {
+		l.elaborate(l.packages[path])
+	}
+	if len(l.diagnostics) != 0 {
+		return nil, false
+	}
+	return l.merge(order, rootPkg), true
+}
+
+// findModuleRoot walks up from dir looking for oak.mod.
+func (l *moduleLoader) findModuleRoot(dir string) (*moduleRoot, bool) {
+	current := dir
+	for {
+		candidate := filepath.Join(current, modules.ManifestFile)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			manifest, ok := l.readManifest(candidate)
+			if !ok {
+				return nil, false
+			}
+			l.root = &moduleRoot{Dir: current, Manifest: manifest}
+			l.located[manifest.Path] = l.root
+			return l.root, true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil, false
+		}
+		current = parent
+	}
+}
+
+func (l *moduleLoader) readManifest(path string) (modules.Manifest, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		l.report(CodeManifest, nil, "%s: %v", path, err)
+		return modules.Manifest{}, false
+	}
+	if info.Size() > modules.MaxManifestSize {
+		l.report(CodeManifest, nil, "%s exceeds %d bytes", path, modules.MaxManifestSize)
+		return modules.Manifest{}, false
+	}
+	text, err := os.ReadFile(path)
+	if err != nil {
+		l.report(CodeManifest, nil, "%s: %v", path, err)
+		return modules.Manifest{}, false
+	}
+	manifest, err := modules.ParseManifest(string(text))
+	if err != nil {
+		l.report(CodeManifest, nil, "%s: %v", filepath.Dir(path), err)
+		return modules.Manifest{}, false
+	}
+	return manifest, true
+}
+
+// locateDependencies performs minimal version selection over every manifest
+// reachable from the root and locates each selected module on disk.
+func (l *moduleLoader) locateDependencies() bool {
+	requirements := append([]modules.Requirement(nil), l.root.Manifest.Requires...)
+	versions := map[string]packageapi.Version{}
+	for iteration := 0; iteration < 1000; iteration++ {
+		selected := modules.Select(requirements)
+		stable := true
+		for _, path := range modules.SelectedPaths(selected) {
+			version := selected[path]
+			if have, seen := versions[path]; seen && have == version {
+				continue
+			}
+			stable = false
+			versions[path] = version
+			root, ok := l.locateModule(path, version)
+			if !ok {
+				return false
+			}
+			l.located[path] = root
+			requirements = append(requirements, root.Manifest.Requires...)
+		}
+		if stable {
+			return true
+		}
+	}
+	l.report(CodeManifest, nil, "module graph did not stabilize")
+	return false
+}
+
+func (l *moduleLoader) locateModule(path string, version packageapi.Version) (*moduleRoot, bool) {
+	var dir string
+	if replacement, replaced := l.root.Manifest.Replaces[path]; replaced {
+		dir = replacement
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(l.root.Dir, filepath.FromSlash(dir))
+		}
+	} else {
+		if l.cache == "" {
+			l.report(CodeManifest, nil, "module %s v%s is required but no replace directive and no module cache ($OAKMODCACHE) provide it", path, version)
+			return nil, false
+		}
+		dir = filepath.Join(l.cache, filepath.FromSlash(path)+"@v"+version.String())
+	}
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		l.report(CodeManifest, nil, "module %s: %v", path, err)
+		return nil, false
+	}
+	manifestPath := filepath.Join(dir, modules.ManifestFile)
+	if _, err := os.Stat(manifestPath); err != nil {
+		l.report(CodeManifest, nil, "module %s v%s: %s has no %s", path, version, dir, modules.ManifestFile)
+		return nil, false
+	}
+	manifest, ok := l.readManifest(manifestPath)
+	if !ok {
+		return nil, false
+	}
+	if manifest.Path != path {
+		l.report(CodeManifest, nil, "module at %s declares path %q but was required as %q", dir, manifest.Path, path)
+		return nil, false
+	}
+	return &moduleRoot{Dir: dir, Manifest: manifest}, true
+}
+
+// resolveImportDir maps an import path to the directory of its package.
+func (l *moduleLoader) resolveImportDir(path string) (string, bool) {
+	var candidates []string
+	for modulePath := range l.located {
+		if modules.HasPathPrefix(path, modulePath) {
+			candidates = append(candidates, modulePath)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", false
+	}
+	// The longest module path wins (nested modules are not supported, but
+	// the rule is deterministic either way).
+	sort.Slice(candidates, func(i, j int) bool { return len(candidates[i]) > len(candidates[j]) })
+	root := l.located[candidates[0]]
+	rel := strings.TrimPrefix(strings.TrimPrefix(path, candidates[0]), "/")
+	dir := root.Dir
+	if rel != "" {
+		dir = filepath.Join(root.Dir, filepath.FromSlash(rel))
+	}
+	// Containment: the resolved directory must lie within the module root,
+	// through symlinks too.
+	rootReal, err := filepath.EvalSymlinks(root.Dir)
+	if err != nil {
+		return "", false
+	}
+	dirReal, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", false
+	}
+	relCheck, err := filepath.Rel(rootReal, dirReal)
+	if err != nil || relCheck == ".." || strings.HasPrefix(relCheck, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return dir, true
+}
+
+// parseFile runs the canonical front end on one file with its own source id.
+func (l *moduleLoader) parseFile(path, text string) (*packageFile, bool) {
+	if offset, ok := source.ValidateUTF8(text); !ok {
+		l.report(CodeManifest, nil, "%s: source is not valid UTF-8 at byte offset %d", path, offset)
+		return nil, false
+	}
+	l.nextFileID++
+	file := source.NewFile(l.nextFileID, path, text)
+	tokens := layout.New(scanner.NewFile(file))
+	p := parser.New(tokens)
+	root := p.ParseProgram()
+	if errors := p.Errors(); len(errors) != 0 {
+		for _, message := range errors {
+			l.report("OAK-P0000", nil, "%s: %s", path, message)
+		}
+		return nil, false
+	}
+	return &packageFile{Path: path, Text: text, Root: root, File: file}, true
+}
+
+// loadPackage reads a package directory, checks its clause and imports, and
+// recursively loads what it imports. It returns nil after reporting.
+func (l *moduleLoader) loadPackage(dir, path string, isRoot bool) *loadedPackage {
+	if existing, loaded := l.packages[path]; loaded {
+		return existing
+	}
+	pkg := &loadedPackage{
+		Path:      path,
+		Dir:       dir,
+		IsRoot:    isRoot,
+		Imports:   map[string]*importBinding{},
+		Exports:   modules.Exports{},
+		Renames:   map[string]string{},
+		Bootstrap: map[string]*ast.ImportStatement{},
+	}
+	// Register before recursing so cycles terminate; Order reports them.
+	l.packages[path] = pkg
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		l.report(CodeImportUnresolvable, nil, "package %s: %v", path, err)
+		return nil
+	}
+	var names []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".oak") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		if strings.HasSuffix(name, "_test.oak") && !(isRoot && l.comp.includeTests) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		l.report(CodeImportUnresolvable, nil, "package %s: directory %s contains no .oak files", path, dir)
+		return nil
+	}
+	ok := true
+	for _, name := range names {
+		filePath := filepath.Join(dir, name)
+		text, err := os.ReadFile(filePath)
+		if err != nil {
+			l.report(CodeImportUnresolvable, nil, "%s: %v", filePath, err)
+			return nil
+		}
+		file, parsed := l.parseFile(filePath, string(text))
+		if !parsed {
+			ok = false
+			continue
+		}
+		pkg.Files = append(pkg.Files, file)
+	}
+	if !ok {
+		return nil
+	}
+	if !l.checkPackageClause(pkg) {
+		return nil
+	}
+	l.collectDeclarations(pkg)
+	if !l.collectImports(pkg) {
+		return nil
+	}
+	for _, alias := range sortedAliases(pkg.Imports) {
+		binding := pkg.Imports[alias]
+		if bootstrapImports[binding.Path] {
+			continue
+		}
+		if _, loaded := l.packages[binding.Path]; loaded {
+			continue
+		}
+		depDir, found := l.resolveImportDir(binding.Path)
+		if !found {
+			d := l.reportAt(CodeImportUnresolvable, binding.File, binding.Statement, "cannot resolve import %q", binding.Path)
+			if modules.IsStandardLibraryPath(binding.Path) {
+				d.AddNote("only the bootstrap standard library imports std and testing exist today")
+			} else if l.root == nil {
+				d.AddNote("the package is not inside a module: add an oak.mod with a module directive to import packages")
+			} else {
+				d.AddHelp("require the module providing the package in oak.mod, or check the directory exists under the module root")
+			}
+			continue
+		}
+		if l.loadPackage(depDir, binding.Path, false) == nil {
+			continue
+		}
+	}
+	return pkg
+}
+
+func sortedAliases(imports map[string]*importBinding) []string {
+	aliases := make([]string, 0, len(imports))
+	for alias := range imports {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	return aliases
+}
+
+// checkPackageClause enforces section 2: every file opens with the same
+// package clause, the name is valid, and an importable package is named
+// after its directory segment.
+func (l *moduleLoader) checkPackageClause(pkg *loadedPackage) bool {
+	ok := true
+	for _, file := range pkg.Files {
+		if len(file.Root.Statements) == 0 {
+			l.reportAt(CodePackageClause, file.Path, nil, "file has no package clause")
+			ok = false
+			continue
+		}
+		clause, isClause := file.Root.Statements[0].(*ast.PackageStatement)
+		if !isClause {
+			l.reportAt(CodePackageClause, file.Path, file.Root.Statements[0], "a file must begin with a package clause")
+			ok = false
+			continue
+		}
+		name := clause.Name.Value
+		if !modules.ValidPackageName(name) {
+			l.reportAt(CodePackageClause, file.Path, clause, "invalid package name %q (lowercase ASCII identifier, no __)", name)
+			ok = false
+			continue
+		}
+		if pkg.Name == "" {
+			pkg.Name = name
+		} else if pkg.Name != name {
+			l.reportAt(CodePackageClause, file.Path, clause, "package clause %q disagrees with %q in a sibling file", name, pkg.Name)
+			ok = false
+		}
+		for _, stmt := range file.Root.Statements[1:] {
+			if _, again := stmt.(*ast.PackageStatement); again {
+				l.reportAt(CodePackageClause, file.Path, stmt, "duplicate package clause")
+				ok = false
+			}
+		}
+	}
+	if !ok {
+		return false
+	}
+	if !pkg.IsRoot && pkg.Name != modules.LastSegment(pkg.Path) {
+		l.reportAt(CodePackageClause, pkg.Files[0].Path, pkg.Files[0].Root.Statements[0], "package %q must be named after its import path segment %q (import path %s)", pkg.Name, modules.LastSegment(pkg.Path), pkg.Path)
+		return false
+	}
+	if !pkg.IsRoot && pkg.Name == "main" {
+		l.reportAt(CodePackageClause, pkg.Files[0].Path, pkg.Files[0].Root.Statements[0], "package main cannot be imported")
+		return false
+	}
+	return true
+}
+
+// collectDeclarations builds the export table and the rename map.
+func (l *moduleLoader) collectDeclarations(pkg *loadedPackage) {
+	seen := map[string]string{}
+	for _, file := range pkg.Files {
+		for _, stmt := range file.Root.Statements {
+			name, kind, exported, opaque, renamable := declarationMember(stmt)
+			if name == "" {
+				continue
+			}
+			if prior, dup := seen[name]; dup && kind != modules.KindValue {
+				l.reportAt(CodePackageClause, file.Path, stmt, "%s redeclared (first in %s)", name, prior)
+				continue
+			}
+			seen[name] = file.Path
+			pkg.Exports[name] = modules.Member{Name: name, Kind: kind, Exported: exported, Opaque: opaque}
+			if renamable && !pkg.IsRoot {
+				pkg.Renames[name] = modules.Mangle(pkg.Path, name)
+			}
+			if opaque {
+				internal := name
+				if !pkg.IsRoot {
+					internal = modules.Mangle(pkg.Path, name)
+				}
+				l.opaque[internal] = pkg.Path
+			}
+		}
+	}
+}
+
+// declarationMember classifies a top-level statement. Methods and tag
+// schemas are looked up by label, never renamed (section 7).
+func declarationMember(stmt ast.Statement) (name string, kind modules.MemberKind, exported, opaque, renamable bool) {
+	switch s := stmt.(type) {
+	case *ast.FunctionStatement:
+		if s.Name == nil {
+			return "", 0, false, false, false
+		}
+		if s.Receiver != nil {
+			return "", 0, false, false, false
+		}
+		return s.Name.Value, modules.KindValue, s.Exported, false, true
+	case *ast.VariableDeclaration:
+		if s.Name == nil {
+			return "", 0, false, false, false
+		}
+		return s.Name.Value, modules.KindValue, s.Exported, false, true
+	case *ast.ADTType:
+		if s.Name == nil {
+			return "", 0, false, false, false
+		}
+		return s.Name.Value, modules.KindType, s.Exported, s.Opaque, true
+	case *ast.InterfaceType:
+		if s.Name == nil {
+			return "", 0, false, false, false
+		}
+		return s.Name.Value, modules.KindInterface, s.Exported, false, true
+	case *ast.TagDeclaration:
+		if s.Name == nil {
+			return "", 0, false, false, false
+		}
+		return s.Name.Value, modules.KindTag, s.Exported, false, false
+	}
+	return "", 0, false, false, false
+}
+
+// collectImports validates the import statements of every file and merges
+// them into the package's alias table (imports are package-scoped, section
+// 3.3).
+func (l *moduleLoader) collectImports(pkg *loadedPackage) bool {
+	ok := true
+	for _, file := range pkg.Files {
+		declarationsStarted := false
+		for _, stmt := range file.Root.Statements[1:] {
+			imp, isImport := stmt.(*ast.ImportStatement)
+			if !isImport {
+				declarationsStarted = true
+				continue
+			}
+			if declarationsStarted {
+				l.reportAt(CodeImportPlacement, file.Path, imp, "imports must precede declarations")
+				ok = false
+			}
+			if imp.Path == nil {
+				l.reportAt(CodeImportPathInvalid, file.Path, imp, "import without a path")
+				ok = false
+				continue
+			}
+			path := imp.Path.Value
+			if err := modules.ValidateImportPath(path); err != nil {
+				l.reportAt(CodeImportPathInvalid, file.Path, imp, "%v", err)
+				ok = false
+				continue
+			}
+			if bootstrapImports[path] {
+				if imp.Alias != nil || imp.Signature != nil {
+					l.reportAt(CodeImportPlacement, file.Path, imp, "the bootstrap import %s is unqualified and cannot be bound or sealed", path)
+					ok = false
+					continue
+				}
+				pkg.Bootstrap[path] = imp
+				continue
+			}
+			alias := modules.LastSegment(path)
+			if imp.Alias != nil {
+				alias = imp.Alias.Value
+			}
+			if !modules.ValidPackageName(alias) && imp.Alias == nil {
+				l.reportAt(CodeImportPathInvalid, file.Path, imp, "import path %q does not end in a package name; bind it explicitly (name := import(...))", path)
+				ok = false
+				continue
+			}
+			if modules.Reserved(alias) {
+				l.reportAt(CodeReservedIdentifier, file.Path, imp, "import alias %q contains the reserved sequence __", alias)
+				ok = false
+				continue
+			}
+			if typechecker.CompilerKnownLibrary(alias) {
+				l.reportAt(CodeImportAlias, file.Path, imp, "import alias %q is a compiler-known library name", alias)
+				ok = false
+				continue
+			}
+			if _, declared := pkg.Exports[alias]; declared {
+				l.reportAt(CodeImportAlias, file.Path, imp, "import alias %q collides with a package-level declaration", alias)
+				ok = false
+				continue
+			}
+			if existing, dup := pkg.Imports[alias]; dup {
+				if existing.Path != path {
+					l.reportAt(CodeImportAlias, file.Path, imp, "import alias %q already binds %q (in %s)", alias, existing.Path, existing.File)
+					ok = false
+				} else if imp.Signature != nil || existing.Signature != nil {
+					l.reportAt(CodeImportAlias, file.Path, imp, "import %q is bound in more than one file with a signature; seal it once", path)
+					ok = false
+				}
+				continue
+			}
+			pkg.Imports[alias] = &importBinding{Alias: alias, Path: path, Signature: imp.Signature, Statement: imp, File: file.Path}
+			pkg.Edges = append(pkg.Edges, path)
+		}
+	}
+	sort.Strings(pkg.Edges)
+	return ok
+}
+
+// elaborate renames a dependency's declarations and resolves the package's
+// qualified references. Dependencies are elaborated before importers.
+func (l *moduleLoader) elaborate(pkg *loadedPackage) {
+	// Reserved identifiers are checked before any renaming introduces __.
+	for _, file := range pkg.Files {
+		(&syntaxVisitor{ident: func(id *ast.Identifier, label bool) {
+			if !label && modules.Reserved(id.Value) && !strings.Contains(id.Value, ".") {
+				l.reportAt(CodeReservedIdentifier, file.Path, id, "identifier %q contains the reserved sequence __", id.Value)
+			}
+		}}).walk(reflect.ValueOf(file.Root), false)
+	}
+	// Sealed imports: check membership/kind and prepare obligations.
+	for _, alias := range sortedAliases(pkg.Imports) {
+		l.prepareSignature(pkg, pkg.Imports[alias])
+	}
+	for _, file := range pkg.Files {
+		visitor := &syntaxVisitor{
+			expr: func(slot reflect.Value) {
+				access, isAccess := slot.Interface().(*ast.IndexExpression)
+				if !isAccess || !access.Dot {
+					return
+				}
+				base, isIdent := access.Left.(*ast.Identifier)
+				if !isIdent {
+					return
+				}
+				binding := pkg.Imports[base.Value]
+				if binding == nil {
+					return
+				}
+				member, isMember := access.Index.(*ast.Identifier)
+				if !isMember {
+					return
+				}
+				binding.Used = true
+				internal := l.resolveMember(pkg, file, binding, member.Value, access)
+				replacement := &ast.Identifier{Token: base.Token, Value: internal}
+				replacement.Token.Literal = internal
+				slot.Set(reflect.ValueOf(ast.Expression(replacement)))
+			},
+			ident: func(id *ast.Identifier, label bool) {
+				if label {
+					return
+				}
+				if library, member, qualified := splitDotted(id.Value); qualified {
+					if binding := pkg.Imports[library]; binding != nil {
+						binding.Used = true
+						id.Value = l.resolveMember(pkg, file, binding, member, id)
+					}
+					return
+				}
+				if _, isAlias := pkg.Imports[id.Value]; isAlias {
+					d := l.reportAt(CodeImportAlias, file.Path, id, "%s is an imported package, not a value; use %s.member", id.Value, id.Value)
+					d.AddNote("import aliases are package-scoped names and cannot be redeclared or passed around")
+					return
+				}
+				if internal, renamed := pkg.Renames[id.Value]; renamed {
+					id.Value = internal
+				}
+			},
+		}
+		visitor.walk(reflect.ValueOf(file.Root), false)
+	}
+	for _, alias := range sortedAliases(pkg.Imports) {
+		binding := pkg.Imports[alias]
+		if !binding.Used {
+			d := l.reportAt(CodeImportAlias, binding.File, binding.Statement, "import %q is unused", binding.Path)
+			d.AddHelp("remove the import or use one of its members")
+		}
+	}
+	if !pkg.IsRoot {
+		for _, file := range pkg.Files {
+			stampSemanticContext(reflect.ValueOf(file.Root), pkg.Path)
+		}
+	}
+	for _, file := range pkg.Files {
+		for _, stmt := range file.Root.Statements {
+			switch stmt.(type) {
+			case *ast.PackageStatement, *ast.ImportStatement:
+				continue
+			}
+			pkg.Statements = append(pkg.Statements, stmt)
+		}
+	}
+}
+
+// stampSemanticContext sets every token's SemanticContext so position-keyed
+// resolution records never collide across packages (the stdlib stamps
+// "std" the same way).
+func stampSemanticContext(value reflect.Value, context string) {
+	switch value.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		if value.IsNil() {
+			return
+		}
+		stampSemanticContext(value.Elem(), context)
+	case reflect.Struct:
+		if value.Type() == reflect.TypeOf(token.Token{}) {
+			if value.CanSet() {
+				value.FieldByName("SemanticContext").SetString(context)
+			}
+			return
+		}
+		for i := 0; i < value.NumField(); i++ {
+			field := value.Field(i)
+			if field.CanSet() || field.Kind() == reflect.Ptr || field.Kind() == reflect.Interface || field.Kind() == reflect.Slice {
+				stampSemanticContext(field, context)
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < value.Len(); i++ {
+			stampSemanticContext(value.Index(i), context)
+		}
+	case reflect.Map:
+		for _, key := range value.MapKeys() {
+			stampSemanticContext(value.MapIndex(key), context)
+		}
+	}
+}
+
+func splitDotted(name string) (library, member string, ok bool) {
+	index := strings.IndexByte(name, '.')
+	if index <= 0 || index == len(name)-1 {
+		return "", "", false
+	}
+	return name[:index], name[index+1:], true
+}
+
+// resolveMember decides `alias.member` with modules.Lookup and returns the
+// internal name to substitute. On failure it reports and still returns the
+// would-be internal name so the failure does not cascade.
+func (l *moduleLoader) resolveMember(pkg *loadedPackage, file *packageFile, binding *importBinding, member string, node ast.Node) string {
+	target := l.packages[binding.Path]
+	internal := modules.Mangle(binding.Path, member)
+	if target == nil {
+		return internal
+	}
+	found, outcome := modules.Lookup(target.Exports, binding.sig, member)
+	switch outcome {
+	case modules.Resolved:
+		if found.Kind == modules.KindTag {
+			// Tag schemas are looked up by label program-wide (section 7).
+			return member
+		}
+		return internal
+	case modules.NotInSignature:
+		d := l.reportAt(CodeSignatureMismatch, file.Path, node, "%s.%s is outside the signature %s was sealed with", binding.Alias, member, binding.Alias)
+		d.AddNote("a sealed import exposes exactly the members its signature lists")
+	case modules.NoSuchMember:
+		l.reportAt(CodeNoSuchMember, file.Path, node, "package %s has no member %s", binding.Path, member)
+	case modules.NotExported:
+		d := l.reportAt(CodeMemberNotExported, file.Path, node, "%s is not exported by package %s", member, binding.Path)
+		d.AddHelp(fmt.Sprintf("mark the declaration pub in package %s to export it", binding.Path))
+	}
+	return internal
+}
+
+// prepareSignature validates a sealed import's signature against the
+// package's export table (membership and kind) and records the type
+// obligations for the checker (section 6.3).
+func (l *moduleLoader) prepareSignature(pkg *loadedPackage, binding *importBinding) {
+	if binding.Signature == nil {
+		return
+	}
+	shape, isShape := binding.Signature.(*ast.RecordLiteral)
+	if !isShape || shape.TypeName != nil {
+		l.reportAt(CodeSignatureMismatch, binding.File, binding.Statement, "an import signature must be an inline record shape { member: Type, Name: type, ... }")
+		return
+	}
+	target := l.packages[binding.Path]
+	if target == nil {
+		return
+	}
+	binding.sigKinds = map[string]modules.MemberKind{}
+	binding.sigTypes = map[string]ast.Expression{}
+	typeMembers := map[string]string{}
+	for _, field := range shape.FieldOrder {
+		binding.sigOrder = append(binding.sigOrder, field.Name)
+		if ident, isIdent := field.Value.(*ast.Identifier); isIdent && ident.Value == "type" {
+			binding.sigKinds[field.Name] = modules.KindType
+			typeMembers[field.Name] = modules.Mangle(binding.Path, field.Name)
+			continue
+		}
+		binding.sigKinds[field.Name] = modules.KindValue
+		binding.sigTypes[field.Name] = field.Value
+	}
+	binding.sig = &modules.Signature{Members: binding.sigKinds}
+	problems := modules.Conforms(target.Exports, *binding.sig, binding.sigOrder)
+	for _, problem := range problems {
+		switch problem.Outcome {
+		case modules.NoSuchMember:
+			l.reportAt(CodeSignatureMismatch, binding.File, binding.Statement, "signature member %s: package %s has no such declaration", problem.Name, binding.Path)
+		case modules.NotExported:
+			l.reportAt(CodeSignatureMismatch, binding.File, binding.Statement, "signature member %s is not exported by package %s", problem.Name, binding.Path)
+		default:
+			l.reportAt(CodeSignatureMismatch, binding.File, binding.Statement, "signature member %s must be a %s, but package %s declares a %s", problem.Name, problem.Want, binding.Path, problem.Got)
+		}
+	}
+	if len(problems) != 0 {
+		return
+	}
+	// Value members: the checker compares the declaration's type with the
+	// signature's, where sibling type members denote the package's types.
+	for _, name := range binding.sigOrder {
+		typeExpr, isValue := binding.sigTypes[name]
+		if !isValue {
+			continue
+		}
+		(&syntaxVisitor{ident: func(id *ast.Identifier, label bool) {
+			if label {
+				return
+			}
+			if internal, isTypeMember := typeMembers[id.Value]; isTypeMember {
+				id.Value = internal
+			}
+		}}).walk(reflect.ValueOf(&typeExpr).Elem(), false)
+		l.obligations = append(l.obligations, typechecker.SignatureObligation{
+			Internal: modules.Mangle(binding.Path, name),
+			Member:   binding.Alias + "." + name,
+			Type:     typeExpr,
+			Node:     binding.Statement,
+		})
+	}
+}
+
+// merge assembles the flat program: bootstrap imports first, dependencies
+// in compile order, the root package last.
+func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
+	program := &ast.Program{}
+	bootstrap := map[string]*ast.ImportStatement{}
+	for _, path := range order {
+		for name, imp := range l.packages[path].Bootstrap {
+			if _, seen := bootstrap[name]; !seen {
+				bootstrap[name] = imp
+			}
+		}
+	}
+	for _, name := range []string{"std", "testing"} {
+		if imp, present := bootstrap[name]; present {
+			program.Statements = append(program.Statements, imp)
+		}
+	}
+	for _, file := range root.Files {
+		if clause, ok := file.Root.Statements[0].(*ast.PackageStatement); ok {
+			program.Statements = append(program.Statements, clause)
+			break
+		}
+	}
+	for _, path := range order {
+		if path == root.Path {
+			continue
+		}
+		program.Statements = append(program.Statements, l.packages[path].Statements...)
+	}
+	program.Statements = append(program.Statements, root.Statements...)
+	public := &ast.Program{Statements: append([]ast.Statement(nil), root.Statements...)}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Obligations: l.obligations, Packages: order}
+	return &SyntaxTree{
+		Source:  SourceText{Path: root.Dir},
+		File:    root.Files[0].File,
+		Root:    program,
+		Modules: info,
+	}
+}
+
+// syntaxVisitor walks a syntax tree reflectively. expr is called on every
+// settable expression slot (pre-order) and may replace its content; ident
+// is called on every identifier with label=true for member labels
+// (`.field`, variant and method names) that name nothing in scope.
+type syntaxVisitor struct {
+	expr  func(slot reflect.Value)
+	ident func(id *ast.Identifier, label bool)
+}
+
+var (
+	tokenType           = reflect.TypeOf(token.Token{})
+	identifierType      = reflect.TypeOf(&ast.Identifier{})
+	indexExpressionType = reflect.TypeOf(ast.IndexExpression{})
+	variantExprType     = reflect.TypeOf(ast.VariantExpression{})
+	variantPatternType  = reflect.TypeOf(ast.VariantPattern{})
+	adtVariantType      = reflect.TypeOf(ast.ADTVariant{})
+	interfaceMethodType = reflect.TypeOf(ast.InterfaceMethod{})
+	functionStmtType    = reflect.TypeOf(ast.FunctionStatement{})
+	fieldAccessorType   = reflect.TypeOf(ast.FieldAccessorExpression{})
+	importStmtType      = reflect.TypeOf(ast.ImportStatement{})
+	packageStmtType     = reflect.TypeOf(ast.PackageStatement{})
+)
+
+func (sv *syntaxVisitor) walk(v reflect.Value, label bool) {
+	switch v.Kind() {
+	case reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		if _, isExpr := v.Interface().(ast.Expression); isExpr && v.CanSet() && sv.expr != nil {
+			sv.expr(v)
+		}
+		sv.walk(v.Elem(), label)
+	case reflect.Pointer:
+		if v.IsNil() {
+			return
+		}
+		if v.Type() == identifierType {
+			if sv.ident != nil {
+				sv.ident(v.Interface().(*ast.Identifier), label)
+			}
+			return
+		}
+		sv.walk(v.Elem(), label)
+	case reflect.Struct:
+		t := v.Type()
+		if t == tokenType || t == importStmtType || t == packageStmtType {
+			return
+		}
+		for i := 0; i < v.NumField(); i++ {
+			field := t.Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			sv.walk(v.Field(i), label || isLabelSlot(t, field.Name, v))
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			sv.walk(v.Index(i), label)
+		}
+	case reflect.Map:
+		keys := v.MapKeys()
+		sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+		for _, key := range keys {
+			value := reflect.New(v.Type().Elem()).Elem()
+			value.Set(v.MapIndex(key))
+			sv.walk(value, label)
+			v.SetMapIndex(key, value)
+		}
+	}
+}
+
+// isLabelSlot names the identifier slots that are member labels rather than
+// references: field/variant/member selectors, variant declarations, method
+// names in interfaces and receiver functions.
+func isLabelSlot(t reflect.Type, field string, v reflect.Value) bool {
+	switch t {
+	case indexExpressionType:
+		return field == "Index" && v.FieldByName("Dot").Bool()
+	case variantExprType, variantPatternType:
+		return field == "Variant"
+	case adtVariantType, interfaceMethodType:
+		return field == "Name"
+	case fieldAccessorType:
+		return field == "Field"
+	case functionStmtType:
+		return field == "Name" && !v.FieldByName("Receiver").IsNil()
+	}
+	return false
+}

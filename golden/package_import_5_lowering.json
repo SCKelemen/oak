@@ -7,71 +7,15 @@
       }
     },
     {
-      "type": "ExpressionStatement",
+      "type": "Unknown",
       "data": {
-        "expression": {
-          "type": "StringLiteral",
-          "data": {
-            "value": "strings"
-          },
-          "position": {
-            "line": 4,
-            "column": 8,
-            "byte_start": 22,
-            "byte_end": 31
-          }
-        }
-      },
-      "position": {
-        "line": 4,
-        "column": 8,
-        "byte_start": 22,
-        "byte_end": 31
+        "string": "import(\"strings\")"
       }
     },
     {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 4,
-        "column": 17,
-        "byte_start": 31,
-        "byte_end": 32
-      }
-    },
-    {
-      "type": "VariableDeclaration",
+      "type": "Unknown",
       "data": {
-        "name": "str"
-      },
-      "position": {
-        "line": 6,
-        "column": 1,
-        "byte_start": 34,
-        "byte_end": 37
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "StringLiteral",
-          "data": {
-            "value": "strings"
-          },
-          "position": {
-            "line": 6,
-            "column": 15,
-            "byte_start": 48,
-            "byte_end": 57
-          }
-        }
-      },
-      "position": {
-        "line": 6,
-        "column": 14,
-        "byte_start": 47,
-        "byte_end": 48
+        "string": "str := import(\"strings\")"
       }
     },
     {
@@ -85,59 +29,9 @@
       }
     },
     {
-      "type": "ExpressionStatement",
+      "type": "Unknown",
       "data": {
-        "expression": {
-          "type": "StringLiteral",
-          "data": {
-            "value": "strings"
-          },
-          "position": {
-            "line": 8,
-            "column": 24,
-            "byte_start": 83,
-            "byte_end": 92
-          }
-        }
-      },
-      "position": {
-        "line": 8,
-        "column": 24,
-        "byte_start": 83,
-        "byte_end": 92
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 8,
-        "column": 33,
-        "byte_start": 92,
-        "byte_end": 93
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {
-        "expression": {
-          "type": "StringLiteral",
-          "data": {
-            "value": "strings"
-          },
-          "position": {
-            "line": 10,
-            "column": 8,
-            "byte_start": 102,
-            "byte_end": 111
-          }
-        }
-      },
-      "position": {
-        "line": 10,
-        "column": 8,
-        "byte_start": 102,
-        "byte_end": 111
+        "string": "import(\"strings\")"
       }
     },
     {

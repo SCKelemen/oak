@@ -16,8 +16,9 @@ import (
 
 // APISnapshot parses and checks the package, then projects its public semantic
 // surface and observable representations into the deterministic format used by
-// packageapi.Enforce. Oak has no private-declaration syntax yet, so every named
-// package-level declaration is public in this version of the language.
+// packageapi.Enforce. Only declarations marked pub are public
+// (docs/spec/83-modules.md section 6); visibility is never inferred from
+// spelling (docs/spec/82-package-semver.md section 5).
 func (comp Compilation) APISnapshot(version string) Stage[packageapi.Snapshot] {
 	return comp.Check().Then(func(model *SemanticModel) (packageapi.Snapshot, error) {
 		if _, err := packageapi.ParseVersion(version); err != nil {
@@ -43,13 +44,13 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 		var concreteStruct bool
 		switch declaration := statement.(type) {
 		case *ast.ADTType:
-			if declaration.Name == nil {
+			if declaration.Name == nil || !declaration.Exported {
 				continue
 			}
 			name = declaration.Name.Value
 			kind, typeIdentity, concreteStruct, err = canonicalADTDeclaration(declaration, model.TypeChecker)
 		case *ast.InterfaceType:
-			if declaration.Name == nil {
+			if declaration.Name == nil || !declaration.Exported {
 				continue
 			}
 			name, kind = declaration.Name.Value, "interface"
@@ -86,7 +87,7 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 		var name, kind string
 		switch declaration := statement.(type) {
 		case *ast.FunctionStatement:
-			if declaration.Name == nil {
+			if declaration.Name == nil || !declaration.Exported {
 				continue
 			}
 			if declaration.Receiver != nil {
@@ -104,7 +105,7 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 			}
 			name, kind = declaration.Name.Value, "function"
 		case *ast.VariableDeclaration:
-			if declaration.Name == nil {
+			if declaration.Name == nil || !declaration.Exported {
 				continue
 			}
 			name, kind = declaration.Name.Value, "value"

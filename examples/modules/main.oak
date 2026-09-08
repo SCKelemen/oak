@@ -1,0 +1,14 @@
+package main
+
+// Build with: oak build examples/modules
+geo := import("example.com/hello/geometry")
+import("example.com/hello/counter")
+
+main: (): i32 = {
+  p: geo.Point = geo.make(-20, 15)
+  a := geo.manhattan(p)
+  b := counter.scaled_length(.Line(3))
+  c := counter.bump(1)
+  d := geo.larger[i32](a, 1)
+  a + b + c + d - 35
+}
