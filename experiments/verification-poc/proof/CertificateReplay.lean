@@ -11,8 +11,8 @@ structure Input where
   proof : String
   deriving FromJson
 
--- Test adapter only: preserve literal order, command IDs, and deletion stamps.
-def pack (formula : Text.Formula) (instructions : List Instruction) : Layout := Id.run do
+-- Imperative reference retained for comparison with the proved packer.
+def packReference (formula : Text.Formula) (instructions : List Instruction) : Layout := Id.run do
   let mut pool := []
   let mut starts := []
   let mut sizes := []
@@ -36,7 +36,7 @@ def pack (formula : Text.Formula) (instructions : List Instruction) : Layout := 
 def pack (formula : Text.Formula) (instructions : List Instruction) : Layout :=
   ProofPacking.pack formula.variables formula.clauses instructions
 
-deriving instance DecidableEq for Command
+deriving instance DecidableEq for OakVerification.Ranges.Command
 deriving instance DecidableEq for Layout
 
 def layoutJSON (name : String) (raw : Layout) (accepted : Bool) : Json :=
@@ -89,11 +89,11 @@ def main (args : List String) : IO Unit := do
         throw (IO.userError s!"{input.cnf}: packing changed decoded formula or commands")
       if !(ProofPacking.check formula.variables formula.clauses instructions) then
         throw (IO.userError s!"{input.cnf}: certified packing composition rejected")
-      if (PackedText.check cnfText proofText) != .ok true then
+      if !(← IO.ofExcept (PackedText.check cnfText proofText)) then
         throw (IO.userError s!"{input.cnf}: packed text composition rejected")
-      if (PackedText.check s!"p cnf {formula.variables} 1\n1 0\n" proofText) != .ok false then
+      if (← IO.ofExcept (PackedText.check s!"p cnf {formula.variables} 1\n1 0\n" proofText)) then
         throw (IO.userError s!"{input.cnf}: packed text accepted wrong formula")
-      if (PackedText.check cnfText (proofText ++ "\n1 0 0\n")) != .ok false then
+      if (← IO.ofExcept (PackedText.check cnfText (proofText ++ "\n1 0 0\n"))) then
         throw (IO.userError s!"{input.cnf}: packed text accepted invalid suffix")
       cases := cases.push (← checkCase input.cnf raw true)
       -- Keep the variable domain while replacing the database by a SAT unit.
