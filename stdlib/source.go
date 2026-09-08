@@ -20,6 +20,9 @@ var stringsSource string
 //go:embed unicode.oak
 var unicodeSource string
 
+//go:embed json.oak
+var jsonSource string
+
 //go:embed filters.oak
 var filtersSource string
 
@@ -29,4 +32,4 @@ var hashTableSource string
 //go:embed bitset_algebra.oak
 var bitsetAlgebraSource string
 
-var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "\n" + stringsSource + "\n" + filtersSource + "\n" + hashTableSource + "\n" + bitsetAlgebraSource
+var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "\n" + stringsSource + "\n" + jsonSource + "\n" + filtersSource + "\n" + hashTableSource + "\n" + bitsetAlgebraSource

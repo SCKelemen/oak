@@ -117,8 +117,8 @@ counting_bloom_update: (storage: [*]u8, config: BloomConfig, hash: u64, insert: 
       allowed: Bool = true
       p: u32 = 0
       while p < config.probes {
-        index: u32 = filter_index(config, hash, p)
-        allowed = allowed && (insert ? storage[index] < u8(255) | storage[index] > u8(0))
+        check_index: u32 = filter_index(config, hash, p)
+        allowed = allowed && (insert ? storage[check_index] < u8(255) | storage[check_index] > u8(0))
         p = p + u32(1)
       }
       !allowed ? {

@@ -1,0 +1,135 @@
+{
+  "artifacts": "PropagationState.lean, propagation-proof.log, propagation-cases.json, propagation-go.log, propagation-agreement.log; retained 30 days",
+  "commit": "99736f3e8d343722938d340de54c2c4360b7e97e",
+  "comparison": {
+    "acceptance_crosscheck": "Existing Go CheckRUPDecoded",
+    "accepted": 239,
+    "base_rup_cases": 400,
+    "cases": 617,
+    "cell_observations": 105536,
+    "cells_per_snapshot": 64,
+    "control_fields": [
+      "valid",
+      "contradictory",
+      "conflict"
+    ],
+    "exact_trace_length": true,
+    "exhaustive_short_targets": 84,
+    "invalid_and_nonfinal_conflict_cases": 5,
+    "native_seconds_with_race": 9.86,
+    "native_seconds_without_race": 6.2,
+    "observation_points": [
+      "after scratch reset and hint prevalidation",
+      "after every attempted target assumption",
+      "after every attempted hint"
+    ],
+    "observer_corruptions_rejected": 6,
+    "oracles": [
+      "Go signed-variable assignment map and literal set classification",
+      "Lean functional-cell trace executor"
+    ],
+    "poison_value": 7,
+    "polarity_and_variable_boundaries": 128,
+    "rejected": 378,
+    "snapshots": 1649
+  },
+  "date": "2026-09-08",
+  "existing_gates": {
+    "boolean_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "boolean_model": {
+      "accepted_safe": 1,
+      "rejected_corruptions": 2,
+      "rejected_malformed": 3,
+      "rejected_unsafe": 1,
+      "rejected_wrong": 1
+    },
+    "lean_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "oak_ascii_certificate": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    }
+  },
+  "format": "oak-propagation-state-validation-1",
+  "implementation": {
+    "actual": "Oak rup_check observed through test-generated source seams",
+    "formal_model": "Lean 4",
+    "host_harness": "Go",
+    "production_checker_changed": false,
+    "python_runtime": false
+  },
+  "next_step": "Prove the duplicate-aware clause classifier establishes the unit/conflict premises; compose propagation transitions with the proved checker.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.PropagationState.decode_encode' does not depend on any axioms",
+      "'OakVerification.PropagationState.encode_decode' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.PropagationState.store_refines' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.PropagationState.store_other' depends on axioms: [propext]",
+      "'OakVerification.PropagationState.empty_extends' does not depend on any axioms",
+      "'OakVerification.PropagationState.write_extends' depends on axioms: [propext]",
+      "'OakVerification.PropagationState.false_excludes' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.PropagationState.conflict_sound' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.PropagationState.unit_sound' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.PropagationState.unit_write_extends' depends on axioms: [propext, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Option Bool and valid byte codes round-trip",
+      "Encoded stores project to abstract partial-assignment writes",
+      "Other cells are unchanged by a store",
+      "Every assignment extends empty scratch state",
+      "Compatible writes preserve extension",
+      "A falsified literal cannot hold under a compatible assignment",
+      "A fully falsified clause cannot be satisfied",
+      "A satisfying extension must make the sole remaining unit literal true",
+      "A justified unit write preserves compatible models"
+    ],
+    "reported_theorems": 10,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "input_scope": "Structured complete clauses, targets and hints; malformed raw descriptor coverage remains in preceding gates",
+    "not_yet_proved": [
+      "Duplicate-aware clause classifier establishes semantic premises universally",
+      "Whole propagation executor refines the proved RUP checker",
+      "Concrete Oak array semantics",
+      "Complete text-decoder refinement",
+      "Compiler correctness"
+    ],
+    "proved": [
+      "Partial-assignment representation and write semantics",
+      "Semantic falsification, conflict, and unit-update lemmas"
+    ],
+    "tested": [
+      "Complete bounded trace executor correspondence with Go and compiled Oak",
+      "Reset prefix and untouched poisoned suffix",
+      "Ordered target/hint control decisions"
+    ],
+    "trusted_infrastructure": [
+      "Go harness",
+      "Observation source substitutions",
+      "JSON adapter",
+      "Oak compiler",
+      "Generated C",
+      "C compiler/runtime"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34227481489",
+  "solvers_job": 102065051190,
+  "soundness_job": 102065051526,
+  "repository_ci": {
+    "Golden File Verification": "success",
+    "Formal Verification": "success",
+    "Verification experiment (opt-in)": "success",
+    "CI": "success",
+    "Standard library": "success"
+  },
+  "aarch64_memory_refinement": "success"
+}

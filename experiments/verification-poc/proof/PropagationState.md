@@ -42,3 +42,26 @@ compiler correctness remain separate proof boundaries.
 
 Next: prove that the duplicate-aware clause classifier establishes the unit and
 conflict premises, then compose propagation transitions with the proved checker.
+
+## Validation
+
+[The soundness gate passed](https://github.com/SCKelemen/oak/actions/runs/34227481489/job/102065051526)
+on commit `99736f3e8d343722938d340de54c2c4360b7e97e`. All ten reported theorems
+passed with warnings as errors and no proof holes or project-specific axioms.
+Two use no axioms; the remaining reports use only `propext` and/or `Quot.sound`.
+
+Oak, Go, and Lean agreed on all 617 cases and 1,649 complete snapshots (105,536
+cell observations plus all control flags and exact trace lengths). Final results
+were 239 accepted and 378 rejected; all six observer corruptions were rejected.
+The native comparison took 6.20 seconds without the race detector. The canonical
+JSON corpus and proof/comparison logs are retained with the soundness artifact
+for 30 days. `../validation-propagation-state.json` records the exact scope.
+
+The native comparison also passed with Go's race detector in 9.86 seconds. The
+full native suite, external verification suite, Oak ASCII replay (one accepted,
+two corruptions rejected), Lean certificate gate (11 accepted, 22 corruptions
+rejected), Boolean proof bridge, and Boolean invariant-model gate all passed.
+
+Repository CI, standard-library, formal-verification, golden-file, and AArch64
+memory-refinement checks also passed on the tested commit. No existing gates,
+corpus cases, or subprocess timeout limits were removed or relaxed.

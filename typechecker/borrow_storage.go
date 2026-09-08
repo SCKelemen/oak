@@ -12,6 +12,7 @@ type borrowTypeInfo struct {
 	adts         map[string]*object.ADTType
 	expressions  map[ast.Expression]Type
 	declarations map[*ast.VariableDeclaration]Type
+	simdCalls    map[*ast.InvocationExpression]string
 }
 
 func (e *TypeEnvironment) borrowMetadata() *borrowTypeInfo {
@@ -134,4 +135,14 @@ func (e *TypeEnvironment) ContainsBorrowStorage(typ Type) bool {
 		return false
 	}
 	return visit(typ, nil)
+}
+
+// CheckedSIMDOperation identifies a resolved builtin, never a shadowing field.
+// SIMD stores affect only their explicit span; no SIMD operation writes an
+// unrelated global owner. Borrow checking uses this after local scopes close.
+func (e *TypeEnvironment) CheckedSIMDOperation(call *ast.InvocationExpression) string {
+	if info := e.borrowMetadata(); info != nil {
+		return info.simdCalls[call]
+	}
+	return ""
 }
