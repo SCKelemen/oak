@@ -46,6 +46,7 @@ jobs:
           lean -DwarningAsError=true -o proof/LiveTable.olean proof/LiveTable.lean 2>&1 | tee build/soundness/live-table-proof.log
           lean -DwarningAsError=true -o proof/PropagationState.olean proof/PropagationState.lean 2>&1 | tee build/soundness/propagation-proof.log
           lean -DwarningAsError=true -o proof/ClauseClassifier.olean proof/ClauseClassifier.lean 2>&1 | tee build/soundness/classifier-proof.log
+          lean -DwarningAsError=true -o proof/PropagationChain.olean proof/PropagationChain.lean 2>&1 | tee build/soundness/chain-proof.log
       - name: Compare Go and Lean checker decisions
         working-directory: experiments/verification-poc
         shell: bash
@@ -125,6 +126,9 @@ jobs:
           export OAK_CLASSIFIER_CORPUS_OUT="$PWD/build/soundness/classifier-cases.json"
           go test -count=1 -v . -run '^TestSelfHostedClauseClassifier$' 2>&1 | tee build/soundness/classifier-go.log
           lean -DwarningAsError=true --run proof/ClauseClassifierCompare.lean "$OAK_CLASSIFIER_CORPUS_OUT" 2>&1 | tee build/soundness/classifier-agreement.log
+          export OAK_CHAIN_CORPUS_OUT="$PWD/build/soundness/chain-cases.json"
+          go test -count=1 -v . -run '^TestSelfHostedPropagationChain$' 2>&1 | tee build/soundness/chain-go.log
+          lean -DwarningAsError=true --run proof/PropagationChainCompare.lean "$OAK_CHAIN_CORPUS_OUT" 2>&1 | tee build/soundness/chain-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

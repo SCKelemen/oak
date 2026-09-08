@@ -225,3 +225,8 @@ all scratch cells and propagation control flags against Go and Lean models.
 a computed duplicate-aware classification and composes them with scratch-state
 semantics. The Go harness compares the actual extracted Oak clause scan with the
 proved Lean classifier over exhaustive small clauses and all variable boundaries.
+
+[PropagationChain.md](PropagationChain.md) connects the proved classifier to a
+proof-producing chain. Accepted targets are entailed by the database; accepted
+empty targets prove unsatisfiability. Native long-chain tests compare Oak, Go,
+the new certified chain, and the original Lean checker.
