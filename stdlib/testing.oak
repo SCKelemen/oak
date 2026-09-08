@@ -3,9 +3,16 @@
 testing_fail_host: (id: c.UInt32): () = c.extern("oak_test_host_fail")
 testing_discard: (): () = c.extern("oak_test_host_discard")
 testing_classify_host: (id: c.UInt32): () = c.extern("oak_test_host_classify")
+testing_trace_host: (id: c.UInt32, a: c.UInt64, b: c.UInt64): () = c.extern("oak_test_host_trace")
 
 testing_fail: (id: u32): () { testing_fail_host(c.UInt32(id)) }
 testing_classify: (id: u32): () { testing_classify_host(c.UInt32(id)) }
+
+// Bounded semantic trace: stable event ID and two domain-defined payloads.
+// The native runner retains the first 256 events and marks truncation.
+testing_trace: (id: u32, a: u64, b: u64): () {
+  testing_trace_host(c.UInt32(id), c.UInt64(a), c.UInt64(b))
+}
 
 test_check: (condition: Bool, id: u32): () {
   !condition ? { testing_fail(id) }

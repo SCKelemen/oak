@@ -38,6 +38,7 @@ void oak_test_host_fail(uint32_t id) {
 }
 void oak_test_host_discard(void) { longjmp(oak_fuzz_discard, 1); }
 void oak_test_host_classify(uint32_t id) { (void)id; }
+void oak_test_host_trace(uint32_t id, uint64_t a, uint64_t b) { (void)id; (void)a; (void)b; }
 #define main oak_fuzz_application_entry
 `)
 	out.WriteString(generated)

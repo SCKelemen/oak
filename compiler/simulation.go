@@ -60,6 +60,7 @@ func checkSimulation(root *ast.Program, bindings []SimulationBinding) error {
 		{Name: "testing_fail_host", Symbol: "oak_test_host_fail", Parameters: []string{"c.UInt32"}, Return: "()"},
 		{Name: "testing_discard", Symbol: "oak_test_host_discard", Return: "()"},
 		{Name: "testing_classify_host", Symbol: "oak_test_host_classify", Parameters: []string{"c.UInt32"}, Return: "()"},
+		{Name: "testing_trace_host", Symbol: "oak_test_host_trace", Parameters: []string{"c.UInt32", "c.UInt64", "c.UInt64"}, Return: "()"},
 	}
 	return walkSimulation(reflect.ValueOf(root), func(value any) error {
 		switch n := value.(type) {

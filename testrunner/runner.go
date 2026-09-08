@@ -31,15 +31,17 @@ func Defaults() Config {
 
 type Result struct {
 	Test
-	Package  string         `json:"package"`
-	Status   string         `json:"status"`
-	Cases    int            `json:"cases"`
-	Discards int            `json:"discards"`
-	Seed     uint64         `json:"seed"`
-	Failure  string         `json:"failure,omitempty"`
-	Artifact string         `json:"artifact,omitempty"`
-	Output   string         `json:"output,omitempty"`
-	Classes  map[uint32]int `json:"classes,omitempty"`
+	Trace          []TraceEvent   `json:"trace,omitempty"`
+	TraceTruncated bool           `json:"trace_truncated,omitempty"`
+	Package        string         `json:"package"`
+	Status         string         `json:"status"`
+	Cases          int            `json:"cases"`
+	Discards       int            `json:"discards"`
+	Seed           uint64         `json:"seed"`
+	Failure        string         `json:"failure,omitempty"`
+	Artifact       string         `json:"artifact,omitempty"`
+	Output         string         `json:"output,omitempty"`
+	Classes        map[uint32]int `json:"classes,omitempty"`
 }
 
 // Main is usable without os.Exit, including by CLI integration tests.
@@ -197,6 +199,17 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			if result.Output != "" {
 				fmt.Fprintln(stdout, result.Output)
 			}
+			start := len(result.Trace) - 8
+			if start < 0 {
+				start = 0
+			}
+			for i := start; i < len(result.Trace); i++ {
+				e := result.Trace[i]
+				fmt.Fprintf(stdout, "  trace[%d] id=%d a=%d b=%d\n", i, e.ID, e.A, e.B)
+			}
+			if result.TraceTruncated {
+				fmt.Fprintln(stdout, "  trace truncated after 256 events; later events were not recorded")
+			}
 		}
 	}
 	for _, pkg := range packages {
@@ -272,9 +285,14 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		out := native.run(index, replay.Input)
 		result.Cases = 1
 		result.Output = out.output
+		result.Trace, result.TraceTruncated = out.trace, out.traceTruncated
 		if out.status == "fail" && out.signature == replay.Signature {
 			result.Status = "fail"
 			result.Failure = "reproduced " + out.signature
+			if replay.TraceVersion == traceVersion && !sameTrace(out, outcome{trace: replay.Trace, traceTruncated: replay.TraceTruncated}) {
+				result.Status = "error"
+				result.Failure = "replay trace diverged despite matching failure signature"
+			}
 		} else {
 			result.Status = "error"
 			result.Failure = fmt.Sprintf("replay diverged: expected %s, got %s %s", replay.Signature, out.status, out.signature)
@@ -315,18 +333,33 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		// Timeouts and infrastructure failures are not stable shrink predicates.
 		if test.Kind != "unit" && cfg.Shrink > 0 && out.signature != "timeout" && !strings.HasPrefix(out.signature, "harness:") {
 			confirmation := native.run(index, input)
-			if confirmation.status != "fail" || confirmation.signature != out.signature {
+			if confirmation.status != "fail" || confirmation.signature != out.signature || !sameTrace(confirmation, out) {
 				result.Failure = "non-reproducible failure: " + out.signature
 			} else {
 				ctx, cancel := context.WithTimeout(context.Background(), cfg.ShrinkTimeout)
+				bestOutcome := confirmation
 				best = Minimize(ctx, input, cfg.Shrink, func(candidate []byte) bool {
 					r := native.run(index, candidate)
-					return r.status == "fail" && r.signature == out.signature
+					matches := r.status == "fail" && r.signature == out.signature
+					if matches {
+						bestOutcome = r
+					}
+					return matches
 				})
 				cancel()
+				final := native.run(index, best)
+				if final.status == "fail" && final.signature == out.signature && sameTrace(final, bestOutcome) {
+					out = final
+				} else {
+					best = input
+					result.Failure = "non-reproducible minimized failure: " + out.signature
+				}
 			}
 		}
+		result.Trace, result.TraceTruncated = out.trace, out.traceTruncated
+		result.Output = out.output
 		artifact := Artifact{TimeoutNanos: int64(cfg.Timeout), Version: 1, Engine: engineVersion, Test: test.Name, Kind: test.Kind, Build: native.build, Seed: cfg.Seed, Attempt: attempt, MaxBytes: cfg.MaxBytes, Sanitize: cfg.Sanitize, Signature: out.signature, Input: best}
+		artifact.TraceVersion, artifact.Trace, artifact.TraceTruncated = traceVersion, out.trace, out.traceTruncated
 		path, err := saveArtifact(pkg, test, artifact)
 		if err != nil {
 			result.Failure += "; cannot save failure: " + err.Error()

@@ -49,6 +49,8 @@ type nativeProgram struct {
 type outcome struct {
 	status, signature, output string
 	classes                   map[uint32]bool
+	trace                     []TraceEvent
+	traceTruncated            bool
 }
 
 func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
@@ -144,6 +146,18 @@ const nativePreamble = `
 #include <stdlib.h>
 #include <stdint.h>
 static FILE *oak_test_report;
+static unsigned oak_test_trace_count;
+void oak_test_host_trace(uint32_t id, uint64_t a, uint64_t b) {
+ if (!oak_test_report) return;
+ if (oak_test_trace_count < 256) {
+  fprintf(oak_test_report, "trace %u %llu %llu\n", (unsigned)id, (unsigned long long)a, (unsigned long long)b);
+  oak_test_trace_count++;
+ } else if (oak_test_trace_count == 256) {
+  fputs("trace-truncated\n", oak_test_report);
+  oak_test_trace_count++;
+ }
+ fflush(oak_test_report);
+}
 void oak_test_host_fail(uint32_t id) {
  if (oak_test_report) { fprintf(oak_test_report, "fail %u\n", (unsigned)id); fflush(oak_test_report); }
  exit(101);
@@ -157,8 +171,8 @@ void oak_test_host_classify(uint32_t id) {
 }
 `
 
-func (p *nativeProgram) run(index int, input []byte) outcome {
-	result := outcome{status: "fail", classes: map[uint32]bool{}}
+func (p *nativeProgram) run(index int, input []byte) (result outcome) {
+	result = outcome{status: "fail", classes: map[uint32]bool{}}
 	if len(input) > p.maxBytes {
 		result.signature = "harness:input-too-large"
 		return result
@@ -175,10 +189,14 @@ func (p *nativeProgram) run(index int, input []byte) outcome {
 	cmd.WaitDelay = 100 * time.Millisecond
 	err := cmd.Run()
 	result.output = output.text()
-	if ctx.Err() != nil {
-		result.signature = "timeout"
-		return result
-	}
+	timedOut := ctx.Err() != nil
+	// Read the flushed prefix even when a watchdog killed the process. A
+	// partial final report line must not hide the original timeout outcome.
+	defer func() {
+		if timedOut {
+			result.status, result.signature = "fail", "timeout"
+		}
+	}()
 	var report []byte
 	if f, openErr := os.Open(reportPath); openErr == nil {
 		report, _ = io.ReadAll(io.LimitReader(f, outputLimit+1))
@@ -194,7 +212,22 @@ func (p *nativeProgram) run(index int, input []byte) outcome {
 		if len(fields) == 0 {
 			continue
 		}
-		if len(fields) == 2 && (fields[0] == "class" || fields[0] == "fail") {
+		if len(fields) == 4 && fields[0] == "trace" {
+			id, e1 := strconv.ParseUint(fields[1], 10, 32)
+			a, e2 := strconv.ParseUint(fields[2], 10, 64)
+			b, e3 := strconv.ParseUint(fields[3], 10, 64)
+			if e1 != nil || e2 != nil || e3 != nil || len(result.trace) >= traceLimit || result.traceTruncated {
+				result.signature = "harness:bad-report"
+				return result
+			}
+			result.trace = append(result.trace, TraceEvent{ID: uint32(id), A: a, B: b})
+		} else if len(fields) == 1 && fields[0] == "trace-truncated" {
+			if len(result.trace) != traceLimit || result.traceTruncated {
+				result.signature = "harness:bad-report"
+				return result
+			}
+			result.traceTruncated = true
+		} else if len(fields) == 2 && (fields[0] == "class" || fields[0] == "fail") {
 			id, e := strconv.ParseUint(fields[1], 10, 32)
 			if e != nil {
 				result.signature = "harness:bad-report"

@@ -36,6 +36,14 @@ A failure prints an exact replay command and saves its minimized input under
 runs execute the corpus before exploring new inputs. `-replay` checks the exact
 build and expected failure; a reproduced failure still exits nonzero.
 
+Use `testing_trace(id, a, b)` to record semantic actions or observations with a
+stable `u32` event ID and two `u64` payloads. Failures retain the first 256 events
+with an explicit truncation flag; the terminal prints the last eight retained
+events. The saved trace describes the **minimized** input, and exact replay
+compares both the failure and its recorded trace. JSON payloads are decimal
+strings so tools can preserve every 64-bit value. Trace calls are no-ops in
+libFuzzer exports; rerun a raw crash input with `oak test` to collect its trace.
+
 `-timeout`, `-max-bytes`, `-max-discards`, `-shrink`, and `-shrink-timeout` make
 campaign costs explicit. `-cover 1:10,2:1` requires sample counts for IDs emitted
 by `testing_classify`. Rejected inputs never count as passes. Use `-sanitize`
