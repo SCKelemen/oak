@@ -105,14 +105,18 @@ func TestE2EStdlibDequeTrace(t *testing.T) {
 
 const idPoolTestPrelude = `
 import(std)
-id_code: (result: Result[u32, IdPoolError]): u32 = result ?
- | .Ok(value) => u32(0)
- | .Err(reason) => reason ?
+id_error_code: (reason: IdPoolError): u32 = reason ?
    | .StorageTooSmall => u32(1)
    | .Full => u32(2)
    | .OutOfBounds => u32(3)
    | .AlreadyAllocated => u32(4)
    | .NotAllocated => u32(5)
+id_code: (result: Result[u32, IdPoolError]): u32 = result ?
+ | .Ok(value) => u32(0)
+ | .Err(reason) => id_error_code(reason)
+id_contains_code: (result: Result[Bool, IdPoolError]): u32 = result ?
+ | .Ok(value) => u32(0)
+ | .Err(reason) => id_error_code(reason)
 id_value: (result: Result[u32, IdPoolError]): u32 = result ?
  | .Ok(value) => value
  | .Err(reason) => u32(4294967295)
@@ -229,9 +233,8 @@ main: (): i32 {
  }
  true ? {
   v: []u8 = view(&data)
-  undersized: Bool = id_pool_contains(v, u32(9), u32(0)) ? | .Ok(x) => false | .Err(e) => e ? | .StorageTooSmall => true | _ => false
-  outside: Bool = id_pool_contains(v, u32(8), u32(8)) ? | .Ok(x) => false | .Err(e) => e ? | .OutOfBounds => true | _ => false
-  assert(undersized && outside)
+  assert(id_contains_code(id_pool_contains(v, u32(9), u32(0))) == u32(1))
+  assert(id_contains_code(id_pool_contains(v, u32(8), u32(8))) == u32(3))
  }
  42
 }
