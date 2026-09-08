@@ -229,9 +229,9 @@ main: (): i32 {
  }
  true ? {
   v: []u8 = view(&data)
-  short: Bool = id_pool_contains(v, u32(9), u32(0)) ? | .Ok(x) => false | .Err(e) => e ? | .StorageTooSmall => true | _ => false
+  undersized: Bool = id_pool_contains(v, u32(9), u32(0)) ? | .Ok(x) => false | .Err(e) => e ? | .StorageTooSmall => true | _ => false
   outside: Bool = id_pool_contains(v, u32(8), u32(8)) ? | .Ok(x) => false | .Err(e) => e ? | .OutOfBounds => true | _ => false
-  assert(short && outside)
+  assert(undersized && outside)
  }
  42
 }
