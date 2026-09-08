@@ -1,0 +1,147 @@
+{
+  "artifacts": "Soundness artifact retains packed-buffers-proof.log, buffer-cases.json, buffers-go.log, and buffers-agreement.log for 30 days.",
+  "commit": "456378fd294597d3a16d099d372cc0e30361ea68",
+  "comparison": {
+    "cases": 72,
+    "checked_fields": [
+      "Every initialized literal pool item",
+      "Every initial-clause start and size",
+      "Every initialized reference pool item",
+      "Every command addition flag, ID, literal start/count, reference start/count"
+    ],
+    "coverage": [
+      "Empty segments",
+      "Signed zero",
+      "Literal encoding and variable bounds",
+      "Negative and overflowing references",
+      "Missing and malformed terminators",
+      "Exact deletion terminator spelling",
+      "4095, 4096, and 4097 pool sizes",
+      "Shared capacity across initial and added clauses",
+      "Shared capacity across hints and deletions",
+      "256 and 257 initial clauses and commands"
+    ],
+    "decoded": 52,
+    "execution": "Actual Oak parser control flow -> generated C -> native observation of decoder handoff",
+    "instrumentation": "Only entry signature and final proof-checker handoff are substituted in test-generated source; production experiment sources are unchanged.",
+    "meaning": "Decoded layout success is not proof acceptance.",
+    "oracles": [
+      "Go integer parsing and list construction",
+      "Lean scanner and packed-buffer segment model"
+    ],
+    "random_cases": 40,
+    "rejected": 20,
+    "result_codes": {
+      "0": "decoder rejected",
+      "1": "decoder succeeded but layout mismatched",
+      "2": "decoder succeeded and every layout field matched"
+    },
+    "seed": 88412
+  },
+  "date": "2026-09-08",
+  "existing_certificate_gate": {
+    "accepted": 11,
+    "boolean_model_gate": {
+      "accepted_safe": 1,
+      "rejected_corruptions": 2,
+      "rejected_malformed": 3,
+      "rejected_unsafe": 1,
+      "rejected_wrong_model": 1
+    },
+    "boolean_proof_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "oak_ascii_replay": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    },
+    "rejected_corruptions": 22
+  },
+  "format": "oak-packed-buffer-validation-1",
+  "implementation": {
+    "actual_implementation": "Oak: buffer construction in rup_text_check, self_hosted_text.oak",
+    "formal_model": "Lean 4: proof/PackedBuffers.lean",
+    "host_harness": "Go: self_hosted_buffers_test.go",
+    "python_runtime": false
+  },
+  "native_buffer_seconds": {
+    "with_race_detector": 5.63,
+    "without_race_detector": 2.52
+  },
+  "next_step": "Relate completed ranges to the decoded proof-stream checker, preserving stored literal and reference meaning.",
+  "passed": true,
+  "profile": {
+    "command_limit": 256,
+    "initial_clause_limit": 256,
+    "literal_pool_capacity": 4096,
+    "reference_pool_capacity": 4096,
+    "variable_limit": 64
+  },
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.Packed.empty_wellFormed' depends on axioms: [propext]",
+      "'OakVerification.Packed.push_preserves' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Packed.push_layout' depends on axioms: [propext]",
+      "'OakVerification.Packed.push_full' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Packed.seal_preserves' depends on axioms: [propext]",
+      "'OakVerification.Packed.seal_layout' depends on axioms: [propext]",
+      "'OakVerification.Packed.pending_range' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Packed.pending_index' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Packed.tokenStep_preserves' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Packed.zero_seals' depends on axioms: [propext]",
+      "'OakVerification.Packed.tokens_preserve' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Packed.segmentLoop_preserves' depends on axioms: [propext, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Accepted appends preserve initialized contents and closed segments",
+      "Append writes below capacity",
+      "Closing records the pending segment and clears it without changing the pool",
+      "Pending start/count identifies exactly the pending suffix",
+      "Every pending offset below count is in bounds",
+      "Valid zero tokens close without consuming a pool item",
+      "Successful token sequences preserve the invariant",
+      "Successful byte-scanned segments preserve the invariant"
+    ],
+    "invariant": "Pool equals flattened closed segments followed by the pending segment, within capacity.",
+    "reported_theorems": 12,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Universal concrete Oak array-to-model representation relation",
+      "Intermediate state of rejected Oak executions",
+      "Descriptor-array capacity invariants",
+      "Complete DIMACS/LRAT grammar refinement",
+      "Command-ID and proof-checking semantics",
+      "Compiler semantics preservation"
+    ],
+    "proved": [
+      "Lean initialized-prefix, capacity, and pending-range invariants",
+      "Composition with token transitions and executable scanner"
+    ],
+    "tested": [
+      "Complete buffer layouts produced by the instrumented Oak decoder",
+      "Decoder rejection on malformed and boundary corpus cases"
+    ],
+    "trusted_execution": [
+      "Oak compiler",
+      "Generated C",
+      "C compiler/runtime",
+      "Go harness and observation seam",
+      "JSON and layout adapters"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34214521450",
+  "solvers_job": 102023019074,
+  "soundness_job": 102023018746,
+  "repository_ci": {
+    "Golden File Verification": "success",
+    "Formal Verification": "success",
+    "CI": "success",
+    "Verification experiment (opt-in)": "success",
+    "Standard library": "success"
+  }
+}

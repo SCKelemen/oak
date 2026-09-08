@@ -202,3 +202,8 @@ invariants. A separate Go/Oak/Lean corpus compares actual token parsing.
 [ScannerState.md](ScannerState.md) adds a partial-decimal trace relation and
 scanner cursor/range invariants. A Go/Oak/Lean gate compares complete token state
 sequences, including partial values on rejection and repeated scans.
+
+[PackedBuffers.md](PackedBuffers.md) proves initialized-prefix and pending-range
+invariants for clause and hint pools, including zero-token closure and composition
+with the scanner. Native observation checks complete decoder layouts against Go
+and Lean while existing proof-acceptance gates remain separate.

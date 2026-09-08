@@ -69,6 +69,7 @@ semantic preservation. The host harness, compiler, and execution environment
 remain outside the proof. There is no claim that Oak or this system is fully
 self-verified.
 
-The next step is to connect scanner tokens to the decoder's clause and hint
-buffer transitions, with explicit invariants for initialized prefixes and
-zero terminators.
+The [packed-buffer milestone](PackedBuffers.md) connects scanner tokens to
+initialized-prefix and pending-range invariants, including zero terminators.
+The next step is to relate those completed ranges to the decoded proof-stream
+checker while preserving literal and reference meaning.
