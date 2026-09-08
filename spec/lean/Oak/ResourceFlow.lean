@@ -63,7 +63,8 @@ class, not merely the name passed to the consuming operation. -/
 theorem consume_invalidates_alias {s : State} {source alias : Name}
     (h : Aliases s source alias) :
     ¬ Usable (consume s source) alias := by
-  simp [Usable, consume, consumeClass, Aliases, h]
+  have halias : s.classOf alias = s.classOf source := h.symm
+  simp [Usable, consume, consumeClass, halias]
 
 /-- An unrelated alias class keeps exactly the authority it had before another
 class was consumed. -/
