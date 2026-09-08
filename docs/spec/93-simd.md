@@ -9,6 +9,11 @@ additionally expose the instructions that have no portable meaning worth
 abstracting (horizontal reductions, lane population counts) as ordinary
 typed functions over the same vector types.
 
+A second, deliberately distinct abstraction is reserved for **scalable vector
+execution**. Fixed vector values and scalable execution must not be conflated:
+a fixed vector's lane count is language semantics; a scalable execution width
+is selected by the backend/hardware for one bounded chunk of work.
+
 ## 1. The `simd` library
 
 `simd` is a compiler-known library with the same name rules as `c` and
@@ -31,6 +36,12 @@ borrow interaction, no implicit conversion between vector types or to
 scalars. Lane order is index order; lane `0` is the first element loaded
 from memory (memory order matches view element order, independent of host
 endianness at the semantic level).
+
+The 128-bit size is a semantic representation contract for these types, **not
+a claim about the target's physical vector-register width**. A backend may
+use one hardware vector register, part of a wider register, multiple narrower
+operations, or scalar code, provided the exact fixed-lane semantics are
+preserved.
 
 Signed, float, and wider vectors are reserved for later revisions; the
 naming (`I32x4`, `F32x4`, 256-bit `U8x32`) is fixed now so programs and
@@ -88,6 +99,11 @@ with equivalent instruction sequences (64-bit lane `min`/`max` via
 compare-and-select; `all` over 64-bit lanes via per-lane extraction) — the
 portable semantics are the specification, the instruction selection is not.
 
+On a scalable-vector target such as RISC-V V or AArch64 SVE, fixed vectors
+remain fixed semantic values. The backend may use a scalable register to
+implement them, but physical VLEN is never observable through `U8x16` or any
+other fixed type.
+
 ## 2. arm64 vector instruction functions
 
 Horizontal (across-vector) operations do not abstract portably at fixed
@@ -124,3 +140,117 @@ Discipline profiles see vector code as ordinary code: bounded loops over
 chunks, assertions on invariants, no hidden allocation anywhere in the
 library (vectors are stack values; loads/stores touch only caller-provided
 storage).
+
+## 4. Scalable vector execution
+
+RISC-V V and AArch64 SVE demonstrate that bulk SIMD should not require source
+programs to know the physical register width. Oak therefore reserves a
+separate scalable execution model rather than extending fixed vector types
+with target-dependent lane counts.
+
+The scalable model has these normative design constraints:
+
+1. **Hardware width is not a type property.** The source program supplies a
+   remaining element count; the backend chooses a positive active extent not
+   greater than that count and its target capacity. The loop advances by the
+   returned extent. This is the portable strip-mining model.
+2. **The active extent is explicit semantic state.** It is not inferred from
+   register contents. Bounds proofs and memory effects apply only to active
+   lanes.
+3. **Inactive and tail lanes are not Oak values.** Reading, storing, reducing,
+   comparing, or otherwise observing a lane outside the active extent is not
+   an operation in the scalable API. A backend is therefore free to use
+   hardware tail-agnostic/mask-agnostic policies without introducing
+   indeterminate Oak values or undefined behavior.
+4. **Predicates are logically distinct from data vectors.** The scalable API
+   will use a first-class predicate/mask value whose observable domain is the
+   active extent. It will not require all-ones integer data vectors merely to
+   represent control predicates. Fixed v1 `eq_E -> E` remains unchanged for
+   compatibility.
+5. **Masked-off lanes do not perform memory effects.** A masked load/store may
+   access only active-and-enabled lanes. This rule is semantic and must be
+   preserved by every backend.
+6. **No implicit vector state crosses ordinary calls.** Physical vector length,
+   element-width configuration, restart state, predicate registers, rounding
+   mode, and saturation flags are backend machine state. Unless an explicit
+   future vector calling convention says otherwise, ordinary Oak calls may
+   clobber that state and the compiler must re-establish what it needs.
+7. **Scalable values are initially block-local and non-ABI.** They do not live
+   in records, globals, stable wire layouts, FFI signatures, or ordinary
+   function parameters/returns. This avoids baking one target's vector calling
+   convention or VLEN into Oak's stable ABI.
+8. **The cost remains bounded by caller-visible work.** One scalable operation
+   touches at most the active extent selected for the current chunk; loops over
+   a span still carry Oak's ordinary bounded-loop obligations.
+
+A future source surface may expose the strip-mining shape approximately as:
+
+```oak
+remaining: u32 = len(input)
+offset: u32 = u32(0)
+while remaining != u32(0) bounded_by len(input) {
+  active: simd.Active = simd.active_u8(remaining)
+  chunk: simd.ScalableU8 = simd.load_active_u8(input, offset, active)
+  // operations preserve `active`
+  simd.store_active_u8(output, offset, chunk, active)
+  offset = offset + simd.count(active)
+  remaining = remaining - simd.count(active)
+}
+```
+
+The spelling is non-normative in v1; the semantic constraints above are the
+design boundary.
+
+### 4.1 Tail and mask policy
+
+Oak does **not** expose a generic "agnostic value" to source programs. The
+hardware distinction between undisturbed and agnostic inactive/tail elements
+is a lowering choice whenever those elements are semantically dead. If the
+program requires preservation, that preservation must be visible in the Oak
+operation (for example by merging a result under a predicate) and the backend
+must select an undisturbed or equivalent lowering.
+
+This lets out-of-order RVV/SVE implementations avoid unnecessary preservation
+work while preserving Oak's rule that every observable value has exact
+semantics.
+
+### 4.2 Fault-only-first and restartable vector memory
+
+RISC-V V's fault-only-first loads are useful for vectorizing bounded scans with
+data-dependent termination, but they combine memory access, partial progress,
+and fault behavior. Oak must not expose them as an ordinary total load.
+
+A future portable primitive may return both a loaded scalable value and an
+explicit completed element count. Its contract must state:
+
+- element 0 fault behavior separately from later-element shortening;
+- which memory effects occurred before the returned count;
+- that inaccessible elements past the completed count are not semantically
+  loaded;
+- that non-idempotent/device/MMIO memory is excluded unless a machine-specific
+  contract proves restart/partial-access behavior safe;
+- that partial progress is represented as a result, never hidden mutable vector
+  restart state.
+
+Architecture-specific fault-first instructions may be exposed earlier through
+a target library if their machine contract is explicit.
+
+## 5. Cross-target verification obligations
+
+Adding a scalable backend does not weaken the three-witness rule. Verification
+must cover at least:
+
+- the same fixed-vector program under portable scalar, AArch64 NEON, and a
+  scalable backend;
+- multiple emulated hardware vector lengths for the same scalable program;
+- final partial chunks of every size from zero through the target maximum;
+- masked operations with every-active, none-active, and mixed predicates;
+- proof/tests that inactive/tail lanes cannot affect reductions, stores,
+  comparisons, control flow, or returned Oak values;
+- call boundaries that clobber target vector configuration and require correct
+  re-establishment;
+- fault-first behavior separately from ordinary total vector loads.
+
+A scalable implementation is not considered portable merely because it runs on
+one VLEN. The same Oak source must retain its semantics across every supported
+hardware vector length.
