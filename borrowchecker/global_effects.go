@@ -79,7 +79,7 @@ func (bc *BorrowChecker) collectGlobalWrites(program *ast.Program, env *typechec
 					if id.Value == "span" && len(value.Arguments) == 1 {
 						mark(value.Arguments[0])
 					}
-				} else {
+				} else if env.CheckedSIMDOperation(value) == "" {
 					callees["$indirect"] = true
 				}
 				for _, arg := range value.Arguments {
@@ -184,6 +184,9 @@ func scalarIntegerName(name string) bool {
 }
 
 func (bc *BorrowChecker) checkCallGlobalWrites(call *ast.InvocationExpression, env *typechecker.TypeEnvironment) {
+	if env.CheckedSIMDOperation(call) != "" {
+		return
+	}
 	effects := bc.globalOwners
 	if name, ok := call.Function.(*ast.Identifier); ok {
 		if known, exists := bc.globalWrites[name.Value]; exists {

@@ -20,4 +20,7 @@ var stringsSource string
 //go:embed unicode.oak
 var unicodeSource string
 
-var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "\n" + stringsSource
+//go:embed json.oak
+var jsonSource string
+
+var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "\n" + stringsSource + "\n" + jsonSource
