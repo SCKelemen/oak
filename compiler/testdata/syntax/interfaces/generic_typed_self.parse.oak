@@ -1,0 +1,1 @@
+IntrusiveListNode[T, Tag]: interface = fn (self: *T) hook(_: Tag) -> *ListHook[T, Tag]

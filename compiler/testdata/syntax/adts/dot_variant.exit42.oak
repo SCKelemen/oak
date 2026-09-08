@@ -1,0 +1,4 @@
+Choice: type =
+  | Answer: i32
+main: (): i32 = .Answer(42) ?
+  | .Answer(x) => x

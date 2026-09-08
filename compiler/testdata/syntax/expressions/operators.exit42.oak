@@ -1,0 +1,24 @@
+main: (): i32 {
+  assert(!false)
+  neg: i32 = -1
+  assert(neg < 0)
+  assert((40 + 2) == 42)
+  assert(50 - 8 == 42)
+  assert(6 * 7 == 42)
+  assert(84 / 2 == 42)
+  assert(44 % 7 == 2)
+  assert(1 != 2)
+  assert(1 <= 1)
+  assert(2 >= 1)
+  assert(2 > 1)
+  assert(true && true)
+  assert(false || true)
+  bits: u32 = 0x28 | 0b0010
+  assert(bits == 0x2A)
+  assert((bits & 0x2) == 0x2)
+  assert((bits ^ 0x2) == 0x28)
+  assert((u32(1) << 5) == u32(32))
+  assert((u32(32) >> 5) == u32(1))
+  assert((bits & ^u32(0x2)) == u32(0x28))
+  42
+}

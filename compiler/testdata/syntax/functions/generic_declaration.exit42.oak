@@ -1,0 +1,2 @@
+identity[T]: (x: T): T = x
+main: (): i32 = identity(i32(42))
