@@ -1,0 +1,4 @@
+import(std)
+BenchRecord: type = struct { id: u64, active: Bool, samples: [4]i32 }
+benchmark_read: (src: []u8): Result[BenchRecord, JsonDecodeError] = decode[BenchRecord, Json](src)
+main: (): i32 = 0

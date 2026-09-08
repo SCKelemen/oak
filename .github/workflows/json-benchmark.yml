@@ -1,0 +1,32 @@
+name: JSON benchmark smoke
+on:
+  push:
+    branches: [specification, codex/json-benchmark]
+    paths: ['benchmarks/json/**', '.github/workflows/json-benchmark.yml', 'compiler/**', 'codegen/**', 'stdlib/**']
+  pull_request:
+    branches: [specification]
+    paths: ['benchmarks/json/**', '.github/workflows/json-benchmark.yml', 'compiler/**', 'codegen/**', 'stdlib/**']
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - uses: actions/checkout@v4
+        with:
+          repository: simdjson/simdjson
+          ref: f5de14f09256982933af2849beb43778bd421ca7 # v4.6.11
+          path: benchmark-simdjson
+          persist-credentials: false
+      - name: Sanitizer correctness
+        run: python3 benchmarks/json/run.py --simdjson benchmark-simdjson --documents 16 --rounds 1 --samples 1 --sanitize --output benchmark-results/sanitizer.json
+      - name: Release correctness and timing smoke
+        run: python3 benchmarks/json/run.py --simdjson benchmark-simdjson --documents 64 --rounds 2 --samples 2 --output benchmark-results/release.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: json-benchmark-smoke
+          path: benchmark-results/*.json

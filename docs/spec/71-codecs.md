@@ -460,4 +460,8 @@ use consumed checksums and both warm-cache and streaming-sized workloads.
 Compare full validated typed materialization with equivalent work; selective
 extraction is a separate benchmark with its validation coverage stated.
 No parity claim or Apple Silicon throughput measurement accompanies this
-implementation. A native benchmark harness remains to be built.
+implementation. The native [typed JSON comparison](../../benchmarks/json/README.md)
+now implements a first integer/Bool/fixed-array workload against pinned
+simdjson On-Demand, with preflight validation and consumed checksums.
+Its CI runs are correctness smoke tests, not native M-series results.
+Allocation instrumentation and additional schemas remain future work.
