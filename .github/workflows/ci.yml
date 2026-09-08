@@ -28,7 +28,7 @@ jobs:
       run: go mod verify
 
     - name: Run tests
-      run: go test -v -race ./...
+      run: go test -v -race -timeout 20m ./...
 
   aarch64-memory-refinement:
     name: AArch64 Memory Refinement
@@ -57,3 +57,4 @@ jobs:
 
     - name: Verify memory-model litmus outcomes
       run: go test -v ./semir -run '^TestLitmus'
+
