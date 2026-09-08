@@ -145,3 +145,39 @@ func TestE2EJsonFastRecordKeys(t *testing.T) {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }
+
+func TestE2EJsonFastDigitLanes(t *testing.T) {
+	source := `import(std)
+check: (src: []u8): Bool {
+ fast: Result[JsonInteger, JsonDecodeError] = json_read_integer(src, u32(0))
+ slow: Result[JsonInteger, JsonDecodeError] = json_read_integer_slow(src, u32(0))
+ fast ?
+ | .Err(a) => { slow ? | .Err(b) => json_decode_error_code(a) == json_decode_error_code(b) | .Ok(b) => false }
+ | .Ok(a) => { slow ? | .Err(b) => false | .Ok(b) => a.magnitude == b.magnitude && a.negative == b.negative && a.next == b.next }
+}
+main: (): i32 {
+ data: [21]u8
+ fill: u32 = 0
+ while fill < u32(21) { data[fill] = u8(49)
+  fill = fill + u32(1)
+ }
+ data[20] = u8(44)
+ input: []u8 = view(&data)
+ position: u32 = 1
+ while position < u32(20) {
+  byte_value: u32 = 0
+  while byte_value < u32(256) {
+   data[position] = u8_trunc_u32(byte_value)
+   assert(check(input))
+   byte_value = byte_value + u32(1)
+  }
+  data[position] = u8(49)
+  position = position + u32(1)
+ }
+ 42
+}`
+	_, code, abnormal := buildAndRunOutput(t, "json_fast_digit_lanes", source, "-fsanitize=address,undefined", "-DOAK_PORTABLE_INTRINSICS")
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}

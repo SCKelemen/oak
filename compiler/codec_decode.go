@@ -66,7 +66,7 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 		}
 		body.WriteString("}\n")
 	case "bool":
-		body.WriteString("part: JsonToken = json_token(src, offset)\npart.kind <= u32(1) ? { .Err(.InvalidSyntax) } | part.kind != u32(8) && part.kind != u32(9) ? { .Err(.TypeMismatch) } | {\nitem: JsonDecoded[Bool]\nitem.value = part.kind == u32(8)\nitem.next = part.end\n.Ok(item)\n}\n")
+		body.WriteString("at: u32 = json_skip_space(src, offset)\npart: JsonToken\nlen(src) - at >= u32(4) && src[at] == u8(116) && src[at + u32(1)] == u8(114) && src[at + u32(2)] == u8(117) && src[at + u32(3)] == u8(101) && json_value_boundary(src, at + u32(4)) ? { part = JsonToken { kind: u32(8), start: at, end: at + u32(4) } } | len(src) - at >= u32(5) && src[at] == u8(102) && src[at + u32(1)] == u8(97) && src[at + u32(2)] == u8(108) && src[at + u32(3)] == u8(115) && src[at + u32(4)] == u8(101) && json_value_boundary(src, at + u32(5)) ? { part = JsonToken { kind: u32(9), start: at, end: at + u32(5) } } | { part = json_token(src, at) }\npart.kind <= u32(1) ? { .Err(.InvalidSyntax) } | part.kind != u32(8) && part.kind != u32(9) ? { .Err(.TypeMismatch) } | {\nitem: JsonDecoded[Bool]\nitem.value = part.kind == u32(8)\nitem.next = part.end\n.Ok(item)\n}\n")
 	default:
 		fields, err := d.fields(typ)
 		if err != nil {
