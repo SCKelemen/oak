@@ -109,7 +109,7 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 		fmt.Fprintf(&body, "status != u32(0) ? { .Err(json_decode_error(status)) } | !(%s) ? { .Err(.MissingField) } | {\nitem: JsonDecoded[%s]\nitem.value = value\nitem.next = at\n.Ok(item)\n}\n}\n", strings.Join(required, " && "), typ)
 	}
 	source := fmt.Sprintf("%s: (src: []u8, offset: u32): Result[JsonDecoded[%s], JsonDecodeError] {\n%s}\n", codecName("read", typ), typ, body.String())
-	source += fmt.Sprintf("%s: (src: []u8): Result[%s, JsonDecodeError] {\n!is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {\nresult: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, u32(0))\nresult ?\n | .Err(reason) => { .Err(reason) }\n | .Ok(item) => { json_skip_space(src, item.next) != len(src) ? { .Err(.InvalidSyntax) } | { .Ok(item.value) }\n}\n}\n", codecName("decode", typ), typ, typ, codecName("read", typ))
+	source += fmt.Sprintf("%s: (src: []u8): Result[%s, JsonDecodeError] {\n!json_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {\nresult: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, u32(0))\nresult ?\n | .Err(reason) => { .Err(reason) }\n | .Ok(item) => { json_skip_space(src, item.next) != len(src) ? { .Err(.InvalidSyntax) } | { .Ok(item.value) }\n}\n}\n", codecName("decode", typ), typ, typ, codecName("read", typ))
 	if err := d.appendCodecSource(typ, source); err != nil {
 		return err
 	}

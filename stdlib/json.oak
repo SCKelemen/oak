@@ -294,6 +294,15 @@ json_value_boundary: (src: []u8, at: u32): Bool = at == len(src) || (at < len(sr
 // 7 number, 8 true, 9 false, 10 null, 11 [, 12 ]. No token allocation.
 json_token: (src: []u8, offset: u32): JsonToken {
  assert(offset <= len(src))
+ at: u32 = json_skip_space(src, offset)
+ at == len(src) ? { JsonToken { kind: u32(0), start: at, end: at } } | {
+  unit: u8 = src[at]
+  kind: u32 = unit == u8(123) ? u32(2) | unit == u8(125) ? u32(3) | unit == u8(58) ? u32(4) | unit == u8(44) ? u32(5) | unit == u8(91) ? u32(11) | unit == u8(93) ? u32(12) | u32(0)
+  kind != u32(0) ? { JsonToken { kind: kind, start: at, end: at + u32(1) } } | { json_token_full(src, at) }
+ }
+}
+json_token_full: (src: []u8, offset: u32): JsonToken {
+ assert(offset <= len(src))
  start: u32 = json_skip_space(src, offset)
  at: u32 = start
  kind: u32 = 0
@@ -455,4 +464,22 @@ json_read_integer_slow: (src: []u8, offset: u32): Result[JsonInteger, JsonDecode
    valid ? { .Ok(JsonInteger { magnitude: magnitude, negative: negative, next: item.end }) } | { .Err(.NumericOverflow) }
   }
  }
+}
+
+// Every ASCII byte is a valid UTF-8 scalar. Probe only complete vectors;
+// any non-ASCII byte delegates to the full validator, including sequences
+// that straddle a vector boundary. JSON syntax is checked separately.
+json_valid_utf8: (src: []u8): Bool {
+ at: u32 = 0
+ ascii: Bool = true
+ while len(src) - at >= u32(16) && ascii {
+  chunk: simd.U8x16 = simd.load_u8x16(src, at)
+  ascii = !simd.any_u8x16(simd.and_u8x16(chunk, simd.splat_u8x16(u8(128))))
+  at = at + u32(16)
+ }
+ while at < len(src) && ascii {
+  ascii = src[at] < u8(128)
+  at = at + u32(1)
+ }
+ ascii || is_valid_utf8(src)
 }

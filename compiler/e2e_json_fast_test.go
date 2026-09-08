@@ -65,3 +65,45 @@ func TestE2EJsonFastKeys(t *testing.T) {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }
+
+func TestE2EJsonFastUtf8AndTokens(t *testing.T) {
+	var source strings.Builder
+	source.WriteString(`import(std)
+main: (): i32 {
+ data: [65]u8
+ position: u32 = 0
+ while position < u32(65) {
+  unit_value: u32 = 0
+  while unit_value < u32(256) {
+   data[position] = u8_trunc_u32(unit_value)
+   input: []u8 = view(&data)
+   assert(json_valid_utf8(input) == is_valid_utf8(input))
+   unit_value = unit_value + u32(1)
+  }
+  data[position] = u8(0)
+  position = position + u32(1)
+ }
+`)
+	for length := 0; length <= 65; length++ {
+		source.WriteString("true ? {\n")
+		writeTextView(&source, "ascii_input", strings.Repeat(" ", length))
+		source.WriteString("assert(json_valid_utf8(ascii_input))\n}\n")
+	}
+	for _, prefix := range []int{0, 14, 15, 16, 30, 31, 32, 63} {
+		for _, suffix := range []string{"é", "€", "😀", "\xc0\x80", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xf0\x9f"} {
+			source.WriteString("true ? {\n")
+			writeTextView(&source, "unicode_input", strings.Repeat(" ", prefix)+suffix)
+			source.WriteString("assert(json_valid_utf8(unicode_input) == is_valid_utf8(unicode_input))\n}\n")
+		}
+	}
+	for _, input := range []string{"", " ", "{", "}", "[", "]", ",", ":", " \ttrue", "false", "null", "01", "1e+", "-1", `"\ud800"`, `"\u0061"`, `"😀"`} {
+		source.WriteString("true ? {\n")
+		writeTextView(&source, "token_input", input)
+		source.WriteString("a: JsonToken = json_token(token_input, u32(0))\nb: JsonToken = json_token_full(token_input, u32(0))\nassert(a.kind == b.kind && a.start == b.start && a.end == b.end)\n}\n")
+	}
+	source.WriteString("42\n}\n")
+	_, code, abnormal := buildAndRunOutput(t, "json_fast_utf8", source.String(), "-fsanitize=address,undefined", "-DOAK_PORTABLE_INTRINSICS")
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
