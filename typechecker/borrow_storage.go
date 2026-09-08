@@ -59,6 +59,8 @@ func (e *TypeEnvironment) ContainsBorrowStorage(typ Type) bool {
 			return false
 		}
 		switch t := typ.(type) {
+		case *StringType:
+			return true
 		case *ArrayType:
 			if t.IsSlice || t.IsSpan {
 				return true

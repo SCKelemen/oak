@@ -1142,6 +1142,14 @@ func (cg *CodeGenerator) buildLocalTypes(fn *ast.FunctionStatement) map[string]l
 // identifiers are classified — everything else fails closed.
 func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 	if call, ok := expr.(*ast.InvocationExpression); ok {
+		if id, ok := call.Function.(*ast.Identifier); ok {
+			switch id.Value {
+			case "str_from_utf8":
+				return localContainer{kind: containerString}
+			case "str_bytes":
+				return localContainer{kind: containerView, element: "u8"}
+			}
+		}
 		if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "core_slice" && len(call.Arguments) == 3 {
 			info := cg.localContainerOf(call.Arguments[0])
 			if info.kind == containerView || info.kind == containerSpan {
@@ -1905,6 +1913,9 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			}
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
+			if cg.emitStringViewCall(e, tc) {
+				return
+			}
 			if ident.Value == "core_slice" && len(e.Arguments) == 3 && cg.emitBorrowedSlice(e, tc) {
 				return
 			}

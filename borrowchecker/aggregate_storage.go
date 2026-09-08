@@ -15,6 +15,9 @@ func (bc *BorrowChecker) checkAggregateStorage(value ast.Expression, env *typech
 
 func (bc *BorrowChecker) checkAggregateType(origin ast.Node, typ typechecker.Type, env *typechecker.TypeEnvironment, element bool) {
 	if !element {
+		if _, ok := typ.(*typechecker.StringType); ok {
+			return
+		}
 		if array, ok := typ.(*typechecker.ArrayType); ok && (array.IsSlice || array.IsSpan) {
 			if !env.ContainsBorrowStorage(array.ElementType) {
 				return
