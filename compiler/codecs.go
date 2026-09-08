@@ -273,4 +273,3 @@ func (d *codecDeriver) derive(typ string) error {
 	d.output = append(d.output, tree.Root.Statements...)
 	return nil
 }
-

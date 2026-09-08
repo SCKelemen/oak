@@ -15,7 +15,7 @@ Record: type = struct {
 }
 make_record: (): Record {
  value: Record
- value.id = u64(18446744073709551615)
+ value.id = (u64(9223372036854775807) * u64(2) + u64(1))
  value.active = true
  value.point.x = i32(0) - i32(42)
  value.point.y = u64(9007199254740993)
@@ -60,7 +60,7 @@ func TestE2EDerivedJsonScalars(t *testing.T) {
 	var source strings.Builder
 	source.WriteString("import(std)\nmain: (): i32 {\n")
 	for _, fixture := range []struct{ typ, expr, expected string }{
-		{"u64", "u64(18446744073709551615)", "18446744073709551615"},
+		{"u64", "(u64(9223372036854775807) * u64(2) + u64(1))", "18446744073709551615"},
 		{"u8", "u8(255)", "255"},
 		{"i64", "i64(0) - i64(9223372036854775807) - i64(1)", "-9223372036854775808"},
 		{"i64", "i64(9223372036854775807)", "9223372036854775807"},

@@ -825,6 +825,30 @@ func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression
 		return nil
 	}
 
+	// Comma-separated explicit type arguments normalize to the existing
+	// nested application AST. In expression position they must be called;
+	// ordinary subscripts and slices keep their existing grammar.
+	if p.peekTokenIs(token.COMMA) {
+		var application ast.Expression = &ast.IndexExpression{Token: tok, Left: left, Index: first}
+		for p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+			p.nextToken()
+			arg := p.parseExpression(LOWEST)
+			if arg == nil {
+				return nil
+			}
+			application = &ast.IndexExpression{Token: tok, Left: application, Index: arg}
+		}
+		if !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		if !p.peekTokenIs(token.LPAREN) {
+			p.peekError(token.LPAREN)
+			return nil
+		}
+		return application
+	}
+
 	// Now inspect what comes next
 	switch {
 	case p.peekTokenIs(token.RBRACK):
@@ -3823,3 +3847,4 @@ func (p *Parser) parseShortVariableDeclaration() *ast.VariableDeclaration {
 
 	return stmt
 }
+
