@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/borrowchecker"
 	"github.com/SCKelemen/oak/codegen"
@@ -40,6 +41,9 @@ type Options struct {
 	// every warning (recorded unsafe assumptions, tail-recursion
 	// obligations, unnecessary-code warnings) to a rejection.
 	Profile string
+	// AsmUnits are the `.oakasm` translation units providing bodies for
+	// definition-less declarations (docs/spec/94-assembler.md).
+	AsmUnits []SourceText
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -69,6 +73,9 @@ type SemanticModel struct {
 	// never from compiler-generated declarations.
 	PublicRoot  *ast.Program
 	TypeChecker *typechecker.TypeChecker
+	// AsmFunctions are the checked asm-unit functions the backend emits as
+	// top-level assembly blocks.
+	AsmFunctions []*asm.Function
 }
 
 // LoweredProgram is the executable-oriented AST plus its semantic model.
@@ -94,6 +101,14 @@ func New() Compilation {
 // WithSource returns a compilation using path/text as its source.
 func (comp Compilation) WithSource(path, text string) Compilation {
 	comp.source = SourceText{Path: path, Text: text}
+	return comp
+}
+
+// WithAsmUnit adds one `.oakasm` translation unit (docs/spec/94-assembler.md):
+// its functions provide the bodies of the source's definition-less
+// declarations with identical signatures.
+func (comp Compilation) WithAsmUnit(path, text string) Compilation {
+	comp.options.AsmUnits = append(append([]SourceText(nil), comp.options.AsmUnits...), SourceText{Path: path, Text: text})
 	return comp
 }
 
@@ -195,6 +210,13 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 				return nil, err
 			}
 		}
+		// Asm units pair with definition-less declarations and pass the
+		// assembler's seam checker before type checking sees the program
+		// (docs/spec/94-assembler.md).
+		asmFunctions, asmDiagnostics := comp.stitchAsmUnits(tree.Root)
+		if err := comp.gate("asm", asmDiagnostics); err != nil {
+			return nil, err
+		}
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		tc.CheckProgram(tree.Root)
@@ -202,7 +224,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			return nil, err
 		}
 
-		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc}
+		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions}
 
 		bc := borrowchecker.New()
 		bc.CheckProgram(tree.Root, tc.Env())
@@ -265,6 +287,7 @@ func (comp Compilation) EmitC() Stage[string] {
 			}
 		}
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
+		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
 		generator.SetSourceText(lowered.Model.Tree.Source.Text)
 		return generator.Generate(lowered.Root, lowered.Model.TypeChecker)

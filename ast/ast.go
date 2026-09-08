@@ -930,6 +930,12 @@ type FunctionStatement struct {
 	// `c.extern("symbol")`, the function has no Oak body, and calls
 	// lower to the foreign symbol.
 	ExternSymbol string
+	// AsmBacked marks a definition-less declaration whose body an asm
+	// translation unit provides (docs/spec/94-assembler.md): the Oak side
+	// is the typed interface, the unit the instruction sequence. Set by the
+	// compilation when a unit's matching signature is found; a body-less
+	// declaration with no unit is a compile error.
+	AsmBacked bool
 }
 
 func (fs *FunctionStatement) statementNode()       {}

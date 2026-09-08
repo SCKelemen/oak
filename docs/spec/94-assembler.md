@@ -7,8 +7,8 @@ the parts Go leaves untyped made typed, and with lower-level control
 available where systems code needs it. The instruction-function layer
 (`92-ffi.md` §3, `93-simd.md`) is already normative and implemented; this
 chapter governs the next layer: **whole functions written as instruction
-sequences**. It is normative design; implementation lands in its own
-milestone, and nothing here is claimed in STATUS as implemented until it is.
+sequences**. **v1 is implemented** (§7 lists exactly what landed and what
+is pending); the design sections remain normative for the rest.
 
 ## 1. Position
 
@@ -153,3 +153,56 @@ instruction-function counterpart must cite the same semantics. A kernel
 should be written with instruction functions first; an asm unit is the
 escalation for register-allocation-critical or flags-critical inner loops,
 not the default.
+
+## 7. v1 implementation scope
+
+Landed (`asm/` package; `Compilation.WithAsmUnit`; executed natively on an
+AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
+
+- **Units and stitching.** `.oakasm` units hold `name: (params) -> Ret = {
+  ... }` blocks whose header is parsed by the Oak parser; each pairs with a
+  definition-less Oak declaration of identical signature (structural
+  comparison; mismatch, missing declaration, missing unit, and duplicate
+  definitions are `asm`-phase errors). Body-less declarations are legal
+  syntax only for this purpose.
+- **Directives.** `bind <reg> = <param>` (written, never inferred; must be
+  the AAPCS64 contract register at the parameter's width class — `w0` for
+  `u32`, `x0` for `u64`, `v0` for `simd.*`), `clobber <regs>`, `frame N`
+  (multiple of 16), `system` (capability for `mrs`/`msr`/`eret`), and
+  `align N` (a power of two; the first sets the entry alignment).
+- **Instruction table (AArch64).** `mov add sub adds subs and orr eor lsl
+  lsr cmp ldr str ldp stp b b.<cond> bl ret eret mrs msr dmb dsb isb nop`,
+  each with its legal operand forms, flag effects, memory effect, branch
+  kind, and privilege requirement. Nothing outside the table is
+  expressible.
+- **The seam checker.** Width discipline with `wN`/`xN` aliasing; no read
+  of a register that is not bound, written, `sp`, or a zero register (no
+  uninitialized reads); no write outside bound registers, the result
+  register, and declared clobbers; callee-saved `x19–x29` refused as
+  clobbers (save/restore obligations pending); flags consumers dominated by
+  a producer with labels and calls invalidating; memory only through the
+  declared `sp` frame, with the static sp displacement tracked through
+  pre/post-index and `add/sub sp` and every access bounds-checked against
+  `[-frame, 0)`; displacement agreement at every label, 0 at every `ret`
+  and at every branch to another function; `bl` requires `clobber x30` and
+  invalidates caller-saved state; `align` regions whose instruction bytes
+  exceed their stride are refused, and an aligned region is an **entry
+  point** (fresh state, displacement 0 — the vector-table shape); no
+  unreachable instructions, no fall-through past the end, no `ret` from a
+  `never` function, `eret` only from `never`/unit results.
+- **Emission.** The Oak declaration emits an ordinary C prototype; the
+  block emits a top-level `__asm__` under the prototype's C symbol
+  (`OAK_ASM_SYMBOL` applies the target's user-label prefix, so Mach-O and
+  ELF both link), numeric local labels (`1:`/`1b`/`1f`, assembler-local on
+  both object formats), `.balign` for entry and region alignment. A
+  non-AArch64 target fails closed with `#error`.
+- **Executed:** `add_asm`, a trap-frame save/restore of `x0–x17` as pairs
+  under `frame 160`, a flags/label loop, and a 2 KiB-aligned sixteen-entry
+  `eret` vector table (assembled, its extents checked statically).
+
+Pending, in the order the pilot needs them: memory through typed pointer
+parameters (`[x0, #off]` where `x0` is bound to a span); callee-saved
+clobbers with save/restore obligations; the operand-stack shorthand
+(`push left / push right / add`); an Oak fallback body for non-AArch64
+targets; taking an asm function's address for `VBAR_EL2`; the semantic
+verification of straight-line bodies against `Oak.Intrinsics`.

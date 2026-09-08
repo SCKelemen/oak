@@ -3200,6 +3200,18 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		return
 	}
 
+	// A definition-less declaration is legal only as the typed interface of
+	// an asm unit's function (docs/spec/94-assembler.md §2); the compilation
+	// marks it AsmBacked when the unit's matching signature exists.
+	if stmt.Body == nil {
+		if stmt.AsmBacked {
+			tc.checkAsmBoundary(stmt)
+			return
+		}
+		tc.addError(stmt, "function %s needs a definition ('= expression', a brace block) or an asm unit providing its body", stmt.Name.Value)
+		return
+	}
+
 	// An UNCONSTRAINED generic function declaration is a template:
 	// registered, never checked generically — each instantiation is
 	// specialized and checked with concrete types

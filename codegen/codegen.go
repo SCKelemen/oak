@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/asm"
 	"sort"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
+	asmFunctions     []*asm.Function
 	packageName      string
 	sourceFile       string // Source file path for source location comments
 	sourceText       string // Full source text for UTF-8 to UTF-16 conversion
@@ -145,7 +147,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	}
 
 	// Emit header includes and type aliases
-	cg.emitHeader()
+	cg.emitHeader(program)
 
 	// Emit string literal static arrays
 	cg.emitStringLiterals()
@@ -196,6 +198,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// functions are order-independent.
 	sliceHelperOffset := cg.output.Len()
 	cg.emitFunctionPrototypes(program)
+	cg.emitAsmUnits()
 
 	// Emit function definitions
 	for _, stmt := range program.Statements {
@@ -409,7 +412,7 @@ func (cg *CodeGenerator) escapeCString(s string) string {
 }
 
 // emitHeader emits the standard header with includes and type aliases
-func (cg *CodeGenerator) emitHeader() {
+func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("/* Generated C code from Oak */\n")
 	cg.write("#include <stdint.h>\n")
 	cg.write("#include <stddef.h>\n")
@@ -417,6 +420,11 @@ func (cg *CodeGenerator) emitHeader() {
 
 	// Emit primitive type aliases
 	cg.write("typedef uint8_t  u8;\n")
+	if programReturnsNever(program) {
+		// The uninhabited bottom carrier, emitted once and only when some
+		// function (Oak-bodied or asm-backed) is declared never to return.
+		cg.write("typedef u8 oak_never; /* uninhabited Oak bottom carrier */\n")
+	}
 	cg.write("typedef uint16_t u16;\n")
 	cg.write("typedef uint32_t u32;\n")
 	cg.write("typedef uint64_t u64;\n")
@@ -636,7 +644,9 @@ func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVar
 func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) {
 	// Extern bindings have no Oak body; their foreign declaration was
 	// emitted with the prototypes (docs/spec/92-ffi.md section 2.3).
-	if fn.ExternSymbol != "" {
+	// Asm-backed declarations have their body emitted as an assembly
+	// block beside the prototypes (docs/spec/94-assembler.md).
+	if fn.ExternSymbol != "" || fn.AsmBacked || fn.Body == nil {
 		return
 	}
 
@@ -1324,6 +1334,35 @@ func (cg *CodeGenerator) emitLen(call *ast.InvocationExpression, tc *typechecker
 		cg.output.WriteString(" ).len)")
 	default:
 		cg.output.WriteString("OAK_UNSUPPORTED_LEN_TARGET")
+	}
+}
+
+// programReturnsNever reports whether any function declares the never
+// result — the pay-for-use condition for the bottom carrier typedef.
+func programReturnsNever(program *ast.Program) bool {
+	for _, stmt := range program.Statements {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.ReturnType != nil && fn.ReturnType.String() == "never" {
+			return true
+		}
+	}
+	return false
+}
+
+// SetAsmFunctions supplies the checked asm-unit functions to emit.
+func (cg *CodeGenerator) SetAsmFunctions(functions []*asm.Function) {
+	cg.asmFunctions = functions
+}
+
+// emitAsmUnits emits every asm-unit function as a top-level assembly block
+// under the C symbol its Oak prototype declared (docs/spec/94-assembler.md).
+func (cg *CodeGenerator) emitAsmUnits() {
+	if len(cg.asmFunctions) == 0 {
+		return
+	}
+	cg.write(asm.CPrelude)
+	cg.write("\n")
+	for _, fn := range cg.asmFunctions {
+		cg.write(asm.EmitC(fn, cg.cFunctionName(fn.Name), cg.cFunctionName))
 	}
 }
 

@@ -437,6 +437,46 @@ func cConversionToOak(oakName string, arg Type) bool {
 // (docs/spec/92-ffi.md section 2.3). The declaration is the recorded trust
 // boundary: the signature is asserted, not checked, against the foreign
 // symbol. Returns the declared function type, or nil if invalid.
+// checkAsmBoundary validates the typed interface of an asm-backed
+// declaration (docs/spec/94-assembler.md §3): v1 admits fixed-width
+// integers, Bool, and simd vectors across the boundary, plus () and never
+// results. The signature is registered so calls type ordinarily; the body
+// is the unit's, checked by the assembler.
+func (tc *TypeChecker) checkAsmBoundary(stmt *ast.FunctionStatement) {
+	if stmt.Receiver != nil || len(stmt.TypeParams) > 0 {
+		tc.addError(stmt, "asm-backed function %s cannot have a receiver or generic parameters", stmt.Name.Value)
+		return
+	}
+	boundary := func(typ Type) bool {
+		switch t := typ.(type) {
+		case *PrimitiveType:
+			return t != nil && (t.Name[0] == 'u' || t.Name[0] == 'i')
+		case *BoolType, *SimdType:
+			return true
+		}
+		return false
+	}
+	for _, param := range stmt.Parameters {
+		if param.Variadic {
+			tc.addError(param.Name, "asm-backed function %s cannot be variadic", stmt.Name.Value)
+			continue
+		}
+		paramType := tc.parseTypeExpression(param.Type)
+		if paramType != nil && !boundary(paramType) {
+			tc.addError(param.Name, "asm-backed function %s: parameter %s has type %s, which cannot cross the asm boundary in v1 (fixed-width integers, Bool, simd vectors)", stmt.Name.Value, param.Name.Value, paramType)
+		}
+	}
+	if stmt.ReturnType != nil {
+		returnType := tc.parseTypeExpression(stmt.ReturnType)
+		_, isUnit := returnType.(*UnitType)
+		_, isNever := returnType.(*NeverType)
+		if returnType != nil && !isUnit && !isNever && !boundary(returnType) {
+			tc.addError(stmt.ReturnType, "asm-backed function %s returns %s, which cannot cross the asm boundary in v1", stmt.Name.Value, returnType)
+		}
+	}
+	tc.predeclareFunctionSignature(stmt)
+}
+
 func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 	if !ValidCSymbol(stmt.ExternSymbol) {
 		d := tc.addTypeDiagnostic(stmt, CodeExternSymbolInvalid,

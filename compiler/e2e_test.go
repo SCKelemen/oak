@@ -25,12 +25,19 @@ func buildAndRun(t *testing.T, name, src string) (exitCode int, abnormal bool) {
 // lowering with -DOAK_PORTABLE_INTRINSICS).
 func buildAndRunOutput(t *testing.T, name, src string, ccFlags ...string) (stdout string, exitCode int, abnormal bool) {
 	t.Helper()
+	return buildAndRunFrom(t, name, New().WithSource(name+".oak", src), ccFlags...)
+}
+
+// buildAndRunFrom runs a fully configured compilation (asm units, profiles)
+// through cc and executes the result.
+func buildAndRunFrom(t *testing.T, name string, comp Compilation, ccFlags ...string) (stdout string, exitCode int, abnormal bool) {
+	t.Helper()
 	cc, err := exec.LookPath("cc")
 	if err != nil {
 		t.Skip("no C compiler on PATH")
 	}
 
-	output, err := New().WithSource(name+".oak", src).EmitC().Get()
+	output, err := comp.EmitC().Get()
 	if err != nil {
 		t.Fatalf("compilation failed: %v", err)
 	}

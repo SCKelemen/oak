@@ -47,6 +47,7 @@ import Oak.RecordLayout
 import Oak.RecordLayoutRefinement
 import Oak.LayoutSpec
 import Oak.FieldTags
+import Oak.Assembler
 import Oak.RecordShape
 import Oak.RecordShapeRefinement
 import Oak.GenericConstraintRefinement

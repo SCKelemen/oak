@@ -3462,8 +3462,12 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		p.nextToken()
 		stmt.Body = p.parseBlockExpression()
 	} else {
-		p.addErrorAtCurrentToken(fmt.Sprintf("function %s needs a definition: '= expression' or a brace block", name.Value))
-		return nil
+		// Definition-less declaration: the typed interface of a function
+		// whose body an asm translation unit provides
+		// (docs/spec/94-assembler.md §2). Legality — a unit must exist —
+		// is the compilation's to decide, not the parser's.
+		stmt.EndToken = p.currentToken
+		return stmt
 	}
 	if stmt.Body == nil {
 		return nil
