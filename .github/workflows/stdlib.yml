@@ -1,7 +1,7 @@
 name: Standard library
 on:
   push:
-    branches: [specification, codex/stdlib-foundation, codex/stdlib-bits-endian, codex/stdlib-buffers, codex/stdlib-collections, codex/stdlib-splice, codex/stdlib-heap, codex/stdlib-serenity, codex/stdlib-strings, codex/borrow-storage, codex/runtime-strings, codex/json-codecs, codex/json-codecs-integration, codex/derived-json, codex/derived-json-integration, codex/decode-json, codex/decode-json-integration, codex/json-arrays, codex/json-options, codex/json-optimize, codex/json-speed]
+    branches: [specification, codex/stdlib-foundation, codex/stdlib-bits-endian, codex/stdlib-buffers, codex/stdlib-collections, codex/stdlib-splice, codex/stdlib-heap, codex/stdlib-serenity, codex/stdlib-strings, codex/borrow-storage, codex/runtime-strings, codex/json-codecs, codex/json-codecs-integration, codex/derived-json, codex/derived-json-integration, codex/decode-json, codex/decode-json-integration, codex/json-arrays, codex/json-options, codex/json-optimize, codex/json-speed, codex/json-gap]
   pull_request:
     branches: [specification]
 jobs:

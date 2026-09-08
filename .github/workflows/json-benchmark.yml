@@ -1,7 +1,7 @@
 name: JSON benchmark smoke
 on:
   push:
-    branches: [specification, codex/json-benchmark, codex/json-optimize, codex/json-speed]
+    branches: [specification, codex/json-benchmark, codex/json-optimize, codex/json-speed, codex/json-gap]
     paths: ['benchmarks/json/**', '.github/workflows/json-benchmark.yml', 'compiler/**', 'codegen/**', 'stdlib/**']
   pull_request:
     branches: [specification]
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: SCKelemen/oak
-          ref: 01f4ca73cc737b15c7bf5f0a237a0cdbff3b56a2
+          ref: 661e614e8da9ab49e46d23a11f788492fb256766
           path: benchmark-baseline
           persist-credentials: false
       - name: Baseline release measurement

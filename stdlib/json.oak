@@ -283,9 +283,8 @@ json_digit: (unit: u8): Bool = unit >= u8(48) && unit <= u8(57)
 json_skip_space: (src: []u8, offset: u32): u32 {
  assert(offset <= len(src))
  at: u32 = offset
- scanning: Bool = true
- while at < len(src) && scanning {
-  json_space(src[at]) ? { at = at + u32(1) } | { scanning = false }
+ while at < len(src) && json_space(src[at]) {
+  at = at + u32(1)
  }
  at
 }

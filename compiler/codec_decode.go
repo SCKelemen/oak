@@ -37,6 +37,7 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 		}
 	}
 	var body strings.Builder
+	var keys strings.Builder
 	primitive, _ := codecPrimitive(typ)
 	switch primitive {
 	case "u64", "i64":
@@ -78,15 +79,23 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 		}
 		body.WriteString("opening: JsonToken = json_token(src, offset)\nopening.kind <= u32(1) ? { .Err(.InvalidSyntax) } | opening.kind != u32(2) ? { .Err(.TypeMismatch) } | {\n")
 		fmt.Fprintf(&body, "value: %s\nat: u32 = opening.end\nstatus: u32 = 0\ndone: Bool = false\n", typ)
-		for i, field := range fields {
-			// Key bytes live in fixed local arrays. Their views never escape;
-			// callers cannot mutate a generated global and change the schema.
-			fmt.Fprintf(&body, "seen%d: Bool = false\nkey%d_data: [%d]u8\n", i, i, len(field.wire))
-			for j, b := range []byte(field.wire) {
-				fmt.Fprintf(&body, "key%d_data[%d] = u8(%d)\n", i, j, b)
-			}
-			fmt.Fprintf(&body, "key%d: []u8 = view(&key%d_data)\n", i, i)
+		if d.names[codecName("key", typ)] {
+			return fmt.Errorf("codec: generated name %s conflicts with a declaration", codecName("key", typ))
 		}
+		fmt.Fprintf(&keys, "%s: (src: []u8, key: JsonToken): u32 {\n", codecName("key", typ))
+		for i, field := range fields {
+			fmt.Fprintf(&body, "seen%d: Bool = false\n", i)
+			// Keep fallback key storage out of the record reader's live state.
+			fmt.Fprintf(&keys, "key%d_data: [%d]u8\n", i, len(field.wire))
+			for j, b := range []byte(field.wire) {
+				fmt.Fprintf(&keys, "key%d_data[%d] = u8(%d)\n", i, j, b)
+			}
+			fmt.Fprintf(&keys, "key%d: []u8 = view(&key%d_data)\n", i, i)
+		}
+		for i := range fields {
+			fmt.Fprintf(&keys, "json_key_equal(src, key, key%d) ? u32(%d) | ", i, i+1)
+		}
+		keys.WriteString("u32(0)\n}\n")
 		body.WriteString("first: u32 = json_skip_space(src, at)\nfirst < len(src) && src[first] == u8(125) ? { done = true\nat = first + u32(1)\n}\nwhile !done && status == u32(0) {\nat = json_skip_space(src, at)\nkey: JsonToken\nfield_index: u32 = 0\n")
 		// Match bounded literal spellings directly. Escaped and unusual keys
 		// retain the full tokenizer and Unicode comparison path.
@@ -100,16 +109,25 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 				continue
 			}
 			fmt.Fprintf(&body, "len(src) - at >= u32(%d)", len(literal))
-			for j, b := range literal {
-				fmt.Fprintf(&body, " && src[at + u32(%d)] == u8(%d)", j, b)
+			for j := 0; j < len(literal); {
+				if len(literal)-j >= 4 {
+					var word uint32
+					parts := make([]string, 4)
+					for k := 0; k < 4; k++ {
+						word |= uint32(literal[j+k]) << (8 * k)
+						parts[k] = fmt.Sprintf("(u32(src[at + u32(%d)]) << u32(%d))", j+k, 8*k)
+					}
+					fmt.Fprintf(&body, " && (%s) == u32(%d)", strings.Join(parts, " | "), word)
+					j += 4
+				} else {
+					fmt.Fprintf(&body, " && src[at + u32(%d)] == u8(%d)", j, literal[j])
+					j++
+				}
 			}
 			fmt.Fprintf(&body, " ? { field_index = u32(%d)\nkey = JsonToken { kind: u32(6), start: at, end: at + u32(%d) }\n} | ", i+1, len(literal))
 		}
-		body.WriteString("true ? {\nkey = json_token(src, at)\n")
-		for i := range fields {
-			fmt.Fprintf(&body, "json_key_equal(src, key, key%d) ? { field_index = u32(%d) } | ", i, i+1)
-		}
-		body.WriteString("{}\n}\nkey.kind != u32(6) ? { status = u32(2) } | {\ncolon_at: u32 = json_skip_space(src, key.end)\ncolon: JsonToken = JsonToken { kind: u32(4), start: colon_at, end: colon_at }\ncolon_at >= len(src) || src[colon_at] != u8(58) ? { status = u32(2) } | {\ncolon.end = colon_at + u32(1)\n")
+		fmt.Fprintf(&body, "true ? {\nkey = json_token(src, at)\nfield_index = %s(src, key)\n}\n", codecName("key", typ))
+		body.WriteString("key.kind != u32(6) ? { status = u32(2) } | {\ncolon_at: u32 = json_skip_space(src, key.end)\ncolon: JsonToken = JsonToken { kind: u32(4), start: colon_at, end: colon_at }\ncolon_at >= len(src) || src[colon_at] != u8(58) ? { status = u32(2) } | {\ncolon.end = colon_at + u32(1)\n")
 		for i, field := range fields {
 			fmt.Fprintf(&body, "field_index == u32(%d) ? {\nseen%d ? { status = u32(6) } | {\n", i+1, i)
 			if field.nullable {
@@ -130,7 +148,7 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 		}
 		fmt.Fprintf(&body, "status != u32(0) ? { .Err(json_decode_error(status)) } | !(%s) ? { .Err(.MissingField) } | {\nitem: JsonDecoded[%s]\nitem.value = value\nitem.next = at\n.Ok(item)\n}\n}\n", strings.Join(required, " && "), typ)
 	}
-	source := fmt.Sprintf("%s: (src: []u8, offset: u32): Result[JsonDecoded[%s], JsonDecodeError] {\n%s}\n", codecName("read", typ), typ, body.String())
+	source := keys.String() + fmt.Sprintf("%s: (src: []u8, offset: u32): Result[JsonDecoded[%s], JsonDecodeError] {\n%s}\n", codecName("read", typ), typ, body.String())
 	source += fmt.Sprintf("%s: (src: []u8): Result[%s, JsonDecodeError] {\n!json_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {\nresult: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, u32(0))\nresult ?\n | .Err(reason) => { .Err(reason) }\n | .Ok(item) => { json_skip_space(src, item.next) != len(src) ? { .Err(.InvalidSyntax) } | { .Ok(item.value) }\n}\n}\n", codecName("decode", typ), typ, typ, codecName("read", typ))
 	if err := d.appendCodecSource(typ, source); err != nil {
 		return err
