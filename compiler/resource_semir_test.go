@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -61,8 +62,14 @@ f: (h: Handle): u32 {
 	if definition.Name != "Handle" || definition.Protocol != "HandleLifecycle" {
 		t.Fatalf("unexpected resource definition: %#v", definition)
 	}
-	if definition.Authority.Resource != "live" || definition.Authority.Ownership != "owned" {
+	if definition.Type.Kind != semir.TypeOpaque {
+		t.Fatalf("resource-only projection must not invent detailed type shape: %#v", definition.Type)
+	}
+	if definition.Authority.Resource != semir.ResourceAuthorityLive {
 		t.Fatalf("resource authority was not emitted canonically: %#v", definition.Authority)
+	}
+	if definition.Authority.Ownership != semir.OwnershipUnspecified {
+		t.Fatalf("resource liveness must not invent temporary ownership authority: %#v", definition.Authority)
 	}
 	if len(result.Module.Protocols) != 1 || len(result.Module.Protocols[0].Transitions) != 2 {
 		t.Fatalf("unexpected emitted protocols: %#v", result.Module.Protocols)
@@ -111,7 +118,7 @@ f: (h: Handle): u32 {
 	}
 	found := false
 	for _, diagnostic := range diagnosticErr.Diagnostics {
-		if diagnostic != nil && string(diagnostic.Code) == typechecker.CodeResourceUsedAfterConsume {
+		if diagnostic != nil && diagnostic.Code == typechecker.CodeResourceUsedAfterConsume {
 			found = true
 			break
 		}
