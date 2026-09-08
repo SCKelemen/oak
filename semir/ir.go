@@ -262,7 +262,11 @@ type State struct {
 }
 
 type Transition struct {
-	Name     string
+	Name string
+	// Callable is the resolved semantic callable implementing this transition.
+	// It is deliberately distinct from Name: transition labels are protocol-local,
+	// while callable identities are what executable semantic analyses consume.
+	Callable string
 	From     string
 	To       string
 	Requires []Proposition
