@@ -143,7 +143,10 @@ type codecDeriver struct {
 	output          []ast.Statement
 }
 
-type codecField struct{ name, wire, typ string }
+type codecField struct {
+	name, wire, typ string
+	length          int64 // Zero denotes a scalar field; fixed arrays must be nonempty.
+}
 
 func (d *codecDeriver) fields(name string) ([]codecField, error) {
 	decl := d.records[name]
@@ -157,7 +160,16 @@ func (d *codecDeriver) fields(name string) ([]codecField, error) {
 	fields := []codecField{}
 	seen := map[string]bool{}
 	for _, field := range record.OrderedFields() {
-		typ, ok := field.Value.(*ast.Identifier)
+		element := field.Value
+		length := int64(0)
+		if array, ok := element.(*ast.IndexExpression); ok && !array.Dot {
+			count, fixed := array.Index.(*ast.IntegerLiteral)
+			if !fixed || count.Value <= 0 || count.Value > 4294967295 {
+				return nil, fmt.Errorf("codec: %s.%s requires a fixed array length in 1..4294967295", name, field.Name)
+			}
+			length, element = count.Value, array.Left
+		}
+		typ, ok := element.(*ast.Identifier)
 		if !ok || typ.Value == "string" {
 			return nil, fmt.Errorf("codec: unsupported field %s.%s; borrowed fields and composite type applications need further codec support", name, field.Name)
 		}
@@ -194,7 +206,7 @@ func (d *codecDeriver) fields(name string) ([]codecField, error) {
 			return nil, fmt.Errorf("codec: %s has duplicate JSON field name %q", name, wire)
 		}
 		seen[wire] = true
-		fields = append(fields, codecField{field.Name, wire, typ.Value})
+		fields = append(fields, codecField{field.Name, wire, typ.Value, length})
 	}
 	return fields, nil
 }
@@ -255,11 +267,20 @@ func (d *codecDeriver) derive(typ string) error {
 			if i != 0 {
 				prefix = append([]byte{','}, prefix...)
 			}
-			fmt.Fprintf(&size, "part%d: Result[u32, JsonError] = %s(value.%s)\nvalid = valid && json_result_ok(part%d)\ntotal = total + u64(%d) + u64(json_result_value(part%d))\n", i, codecName("encoded_size", field.typ), field.name, i, len(prefix), i)
+			if field.length == 0 {
+				fmt.Fprintf(&size, "part%d: Result[u32, JsonError] = %s(value.%s)\nvalid = valid && json_result_ok(part%d)\ntotal = total + u64(%d) + u64(json_result_value(part%d))\n", i, codecName("encoded_size", field.typ), field.name, i, len(prefix), i)
+			} else {
+				// Include brackets and commas once; the loop does not expand with N.
+				fmt.Fprintf(&size, "total = total + u64(%d)\nindex%d: u32 = 0\nwhile index%d < u32(%d) && valid {\npart%d: Result[u32, JsonError] = %s(value.%s[index%d])\nvalid = json_result_ok(part%d)\ntotal = total + u64(json_result_value(part%d))\nvalid = valid && total <= u64(4294967295)\nindex%d = index%d + u32(1)\n}\n", int64(len(prefix))+field.length+1, i, i, field.length, i, codecName("encoded_size", field.typ), field.name, i, i, i, i, i)
+			}
 			for _, b := range prefix {
 				fmt.Fprintf(&write, "dst[out] = u8(%d)\nout = out + u32(1)\n", b)
 			}
-			fmt.Fprintf(&write, "part%d: Result[u32, JsonError] = %s(value.%s, dst, out)\nassert(json_result_ok(part%d))\nout = out + json_result_value(part%d)\n", i, codecName("write", field.typ), field.name, i, i)
+			if field.length == 0 {
+				fmt.Fprintf(&write, "part%d: Result[u32, JsonError] = %s(value.%s, dst, out)\nassert(json_result_ok(part%d))\nout = out + json_result_value(part%d)\n", i, codecName("write", field.typ), field.name, i, i)
+			} else {
+				fmt.Fprintf(&write, "dst[out] = u8(91)\nout = out + u32(1)\nindex%d: u32 = 0\nwhile index%d < u32(%d) {\nindex%d != u32(0) ? { dst[out] = u8(44)\nout = out + u32(1)\n}\npart%d: Result[u32, JsonError] = %s(value.%s[index%d], dst, out)\nassert(json_result_ok(part%d))\nout = out + json_result_value(part%d)\nindex%d = index%d + u32(1)\n}\ndst[out] = u8(93)\nout = out + u32(1)\n", i, i, field.length, i, i, codecName("write", field.typ), field.name, i, i, i, i, i)
+			}
 		}
 		size.WriteString("!valid || total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }\n")
 		write.WriteString("dst[out] = u8(125)\n.Ok(out - offset + u32(1))\n")

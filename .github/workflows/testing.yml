@@ -1,7 +1,7 @@
 name: Oak testing tools
 on:
   push:
-    branches: [specification]
+    branches: [specification, codex/oak-testing-tools]
   pull_request:
     branches: [specification]
 jobs:
