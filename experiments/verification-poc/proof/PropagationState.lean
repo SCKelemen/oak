@@ -117,7 +117,8 @@ def assumeLiteral (variables : Nat) (s : State) (n : Nat) : State :=
   if n / 2 ≥ variables then { s with valid := false }
   else
     let prior := s.cells (n / 2)
-    { s with contradictory := (prior != 0 && prior != (falseValue n)),
+    { s with
+      contradictory := prior != 0 && prior != (falseValue n)
       cells := if prior = 0 then storeCell s.cells (n / 2) (falseValue n) else s.cells }
 
 def hintStep (variables : Nat) (s : State) (clause : List Nat) (finalHint : Bool) : State := Id.run do
