@@ -1,0 +1,6 @@
+Expr[T]: type =
+  | Int: i64 => Expr[i64]
+  | Flag: Bool => Expr[Bool]
+eval: (x: Expr[i64]): i32 = x ?
+  | .Int(n) => 1
+  | .Flag(b) => 2

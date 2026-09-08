@@ -1,0 +1,2 @@
+choose: (x: Bool): i32 = x ?
+  | true => 1

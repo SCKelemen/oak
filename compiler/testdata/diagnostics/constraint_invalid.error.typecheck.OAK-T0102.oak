@@ -1,0 +1,4 @@
+Flag: type =
+  | On
+  | Off
+fn [T: Flag] identity(x: T) -> T { x }

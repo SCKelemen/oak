@@ -1,0 +1,5 @@
+Position: type = { x: i32, y: i32 }
+Point1: type = struct { x: i32 }
+fn [T: Position] sum_xy(p: T) -> i32 { p.x + p.y }
+p: Point1 = Point1 { x: 1 }
+result: i32 = sum_xy(p)

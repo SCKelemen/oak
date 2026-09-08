@@ -1,0 +1,3 @@
+choose: (x: Bool): i32 = x ?
+  | _ => 1
+  | true => 2
