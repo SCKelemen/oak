@@ -14,6 +14,7 @@ import (
 	"fmt"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -220,6 +221,14 @@ func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *ty
 		var stuck []typeEmissionUnit
 		for _, unit := range pending {
 			recordLit, ok := cg.emissionRecordLiteral(unit)
+			if ok && !cg.recordPlaceable(recordLit) {
+				// Nullable record fields depend on a concrete Option union.
+				// Emit only those dependencies here, preserving existing order
+				// for programs without nullable record fields.
+				if cg.emitRecordOptions(recordLit, unions, tc) {
+					progressed = true
+				}
+			}
 			if ok && cg.recordPlaceable(recordLit) {
 				cg.emitTypeUnit(unit, tc)
 				progressed = true
@@ -241,6 +250,45 @@ func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *ty
 	for _, unit := range unions {
 		cg.emitTypeUnit(unit, tc)
 	}
+}
+
+// The supported Option shape has one payload, so its C union has exactly
+// that payload's size/alignment. Place the enum tag and union as an ordered
+// record and have the C compiler verify the selected ABI, never guess it.
+func (cg *CodeGenerator) emitRecordOptions(record *ast.RecordLiteral, unions []typeEmissionUnit, tc *typechecker.TypeChecker) bool {
+	progressed := false
+	for _, field := range record.FieldOrder {
+		name, generic := cg.genericAnnotationName(field.Value)
+		if !generic {
+			continue
+		}
+		if _, placed := cg.recordLayouts[name]; placed {
+			continue
+		}
+		for _, unit := range unions {
+			if unit.name != name || unit.instantiation == nil || unit.instantiation.ADT != "Option" {
+				continue
+			}
+			adt, ok := specializeADT(cg.adtTypes["Option"], *unit.instantiation)
+			if !ok || len(adt.Variants) != 2 || adt.Variants[0].Name.Value != "Some" || adt.Variants[0].Payload == nil || adt.Variants[1].Name.Value != "None" || adt.Variants[1].Payload != nil {
+				continue
+			}
+			payload, ok := cg.naturalFieldRepresentation("payload", adt.Variants[0].Payload)
+			if !ok {
+				continue
+			}
+			layout, err := semir.NaturalRecordLayout([]semir.RecordFieldRepresentation{{Name: "tag", Size: 4, Alignment: 4}, payload})
+			if err != nil {
+				continue
+			}
+			cg.emitTypeUnit(unit, tc)
+			cName := cg.cTypeName(name)
+			cg.write(fmt.Sprintf("typedef char oak_option_layout_%s[ (sizeof(%s) == %du && _Alignof(%s) == %du && sizeof(%s_tag) == 4 && offsetof(%s, payload) == %du) ? 1 : -1 ];\n\n", name, cName, layout.Size, cName, layout.Alignment, cName, cName, layout.Fields[1].Offset))
+			cg.recordLayouts[name] = layout
+			progressed = true
+		}
+	}
+	return progressed
 }
 
 // emissionRecordLiteral resolves the (specialized) record literal a unit

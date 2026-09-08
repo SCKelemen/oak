@@ -90,7 +90,9 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 		body.WriteString("first: JsonToken = json_token(src, at)\nfirst.kind == u32(3) ? { done = true\nat = first.end\n}\nwhile !done && status == u32(0) {\nkey: JsonToken = json_token(src, at)\nkey.kind != u32(6) ? { status = u32(2) } | {\ncolon: JsonToken = json_token(src, key.end)\ncolon.kind != u32(4) ? { status = u32(2) } | {\n")
 		for i, field := range fields {
 			fmt.Fprintf(&body, "json_key_equal(src, key, key%d) ? {\nseen%d ? { status = u32(6) } | {\n", i, i)
-			if field.length == 0 {
+			if field.nullable {
+				fmt.Fprintf(&body, "token: JsonToken = json_token(src, colon.end)\ntoken.kind == u32(10) ? {\nabsent: Option[%s] = .None\nvalue.%s = absent\nat = token.end\nseen%d = true\n} | {\npart%d: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, colon.end)\npart%d ?\n | .Err(reason) => { status = json_decode_error_code(reason) }\n | .Ok(decoded) => {\npresent: Option[%s] = .Some(decoded.value)\nvalue.%s = present\nat = decoded.next\nseen%d = true\n}\n}\n", field.typ, field.name, i, i, field.typ, codecName("read", field.typ), i, field.typ, field.name, i)
+			} else if field.length == 0 {
 				fmt.Fprintf(&body, "part%d: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, colon.end)\npart%d ?\n | .Err(reason) => { status = json_decode_error_code(reason) }\n | .Ok(decoded) => { value.%s = decoded.value\nat = decoded.next\nseen%d = true\n}\n", i, field.typ, codecName("read", field.typ), i, field.name, i)
 			} else {
 				body.WriteString("array_start: JsonToken = json_token(src, colon.end)\narray_start.kind <= u32(1) ? { status = u32(2) } | array_start.kind != u32(11) ? { status = u32(3) } | {\nat = array_start.end\nindex: u32 = 0\n")
