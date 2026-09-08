@@ -70,7 +70,8 @@ def readClause (pool : List Nat) (start count : Nat) : Option Clause :=
 
 theorem clause_contents (before items suffix : List Nat) :
     readClause (before ++ items ++ suffix) before.length items.length = some (items.map decodeLiteral) := by
-  simp [readClause, range_contents]
+  exact congrArg (fun xs : Option (List Nat) => xs.map (List.map decodeLiteral))
+    (range_contents before items suffix)
 
 theorem reference_contents (before ids suffix : List Nat) :
     readRange (before ++ ids ++ suffix) before.length ids.length = some ids :=
