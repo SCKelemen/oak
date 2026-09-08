@@ -411,13 +411,29 @@ json_key_equal_unicode: (src: []u8, key: JsonToken, expected: []u8): Bool {
  }
  valid && other == len(expected)
 }
+// Compact internal scan ABI: status 0/1 means positive/negative; status > 1
+// carries json_decode_error_code + 1. Sixteen bytes fit the AArch64 register
+// return convention. The public reader retains Result and JsonInteger.
+JsonIntegerScan: type = struct { magnitude: u64, next: u32, status: u32 }
 json_read_integer: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError] {
+ scan: JsonIntegerScan = json_scan_integer(src, offset)
+ scan.status > u32(1) ? { .Err(json_decode_error(scan.status - u32(1))) } | {
+  .Ok(JsonInteger { magnitude: scan.magnitude, negative: scan.status == u32(1), next: scan.next })
+ }
+}
+json_scan_integer_slow: (src: []u8, offset: u32): JsonIntegerScan {
+ result: Result[JsonInteger, JsonDecodeError] = json_read_integer_slow(src, offset)
+ result ?
+ | .Err(reason) => JsonIntegerScan { magnitude: u64(0), next: offset, status: json_decode_error_code(reason) + u32(1) }
+ | .Ok(value) => JsonIntegerScan { magnitude: value.magnitude, next: value.next, status: value.negative ? u32(1) | u32(0) }
+}
+json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
  assert(offset <= len(src))
  start: u32 = json_skip_space(src, offset)
  at: u32 = start
  negative: Bool = at < len(src) && src[at] == u8(45)
  negative ? { at = at + u32(1) }
- at >= len(src) || !json_digit(src[at]) ? { json_read_integer_slow(src, offset) } | {
+ at >= len(src) || !json_digit(src[at]) ? { json_scan_integer_slow(src, offset) } | {
   leading_zero: Bool = src[at] == u8(48)
   magnitude: u64 = u64(src[at] - u8(48))
   // Every sequence of at most 19 decimal digits fits in u64. Keep the
@@ -437,12 +453,12 @@ json_read_integer: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError
    at = at + u32(1)
   }
   digits_start: u32 = negative ? start + u32(1) | start
-  leading_zero && at - digits_start != u32(1) ? { json_read_integer_slow(src, offset) } | !json_value_boundary(src, at) ? {
+  leading_zero && at - digits_start != u32(1) ? { json_scan_integer_slow(src, offset) } | !json_value_boundary(src, at) ? {
    // Preserve syntax/type precedence for decimals, exponents and malformed
    // suffixes, even when the integral prefix exceeded u64.
-   json_read_integer_slow(src, offset)
-  } | overflow ? { .Err(.NumericOverflow) } | {
-   .Ok(JsonInteger { magnitude: magnitude, negative: negative, next: at })
+   json_scan_integer_slow(src, offset)
+  } | overflow ? { JsonIntegerScan { magnitude: u64(0), next: at, status: u32(5) } } | {
+   JsonIntegerScan { magnitude: magnitude, next: at, status: negative ? u32(1) | u32(0) }
   }
  }
 }

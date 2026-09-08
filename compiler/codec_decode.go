@@ -41,13 +41,13 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 	switch primitive {
 	case "u64", "i64":
 		bits, _ := strconv.Atoi(typ[1:])
-		body.WriteString("parsed: Result[JsonInteger, JsonDecodeError] = json_read_integer(src, offset)\nparsed ?\n | .Err(reason) => { .Err(reason) }\n | .Ok(raw) => {\n")
+		body.WriteString("raw: JsonIntegerScan = json_scan_integer(src, offset)\nraw.status > u32(1) ? { .Err(json_decode_error(raw.status - u32(1))) } | {\n")
 		if primitive == "u64" {
 			maximum := ^uint64(0)
 			if bits < 64 {
 				maximum = (uint64(1) << bits) - 1
 			}
-			fmt.Fprintf(&body, "raw.negative ? { .Err(.TypeMismatch) } | raw.magnitude > %s ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(maximum))
+			fmt.Fprintf(&body, "(raw.status == u32(1)) ? { .Err(.TypeMismatch) } | raw.magnitude > %s ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(maximum))
 			conversion := "raw.magnitude"
 			if bits < 64 {
 				conversion = typ + "_trunc_u64(raw.magnitude)"
@@ -55,8 +55,8 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			fmt.Fprintf(&body, "item: JsonDecoded[%s]\nitem.value = %s\nitem.next = raw.next\n.Ok(item)\n}\n", typ, conversion)
 		} else {
 			negativeMax := uint64(1) << (bits - 1)
-			fmt.Fprintf(&body, "limit: u64 = raw.negative ? %s | %s\nraw.magnitude > limit ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(negativeMax), codecU64Literal(negativeMax-1))
-			body.WriteString("number: i64 = i64(0)\nraw.negative && raw.magnitude > u64(0) ? { number = i64(0) - i64_bits_u64(raw.magnitude - u64(1)) - i64(1) } | { number = i64_bits_u64(raw.magnitude) }\n")
+			fmt.Fprintf(&body, "limit: u64 = (raw.status == u32(1)) ? %s | %s\nraw.magnitude > limit ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(negativeMax), codecU64Literal(negativeMax-1))
+			body.WriteString("number: i64 = i64(0)\n(raw.status == u32(1)) && raw.magnitude > u64(0) ? { number = i64(0) - i64_bits_u64(raw.magnitude - u64(1)) - i64(1) } | { number = i64_bits_u64(raw.magnitude) }\n")
 			conversion := "number"
 			if bits < 64 {
 				conversion = typ + "_trunc_i64(number)"

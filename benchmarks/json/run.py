@@ -88,7 +88,7 @@ def main():
             subprocess.run(commands[-1], check=True)
             assembly = (args.inspect / "oak.s").read_text()
             # Print the derived reader and its callees for remote inspection.
-            for name in ("oak___oak_json_read_BenchRecord", "oak___oak_json_read_i32", "oak_json_read_integer", "oak_json_key_equal"):
+            for name in ("oak___oak_json_read_BenchRecord", "oak___oak_json_read_i32", "oak_json_read_integer", "oak_json_scan_integer", "oak_json_key_equal"):
                 start = assembly.find("\n_" + name + ":")
                 if start < 0:
                     start = assembly.find("\n" + name + ":")
