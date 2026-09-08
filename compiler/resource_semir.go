@@ -116,6 +116,9 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 				From:     resourceTransition.From,
 				To:       resourceTransition.To,
 			}
+			if resourceTransition.ConsumesReceiver {
+				transition.Effects = append(transition.Effects, semir.ResourceConsumeReceiver())
+			}
 			for _, index := range resourceTransition.Consumes {
 				transition.Effects = append(transition.Effects, semir.ResourceConsumeArgument(index))
 			}

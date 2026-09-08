@@ -53,8 +53,9 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 			}
 
 			operation := ResourceOperation{
-				Consumes:     append([]int(nil), semantics.Consumes...),
-				ReturnsFresh: semantics.ReturnsFresh,
+				Consumes:         append([]int(nil), semantics.Consumes...),
+				ConsumesReceiver: semantics.ConsumesReceiver,
+				ReturnsFresh:     semantics.ReturnsFresh,
 			}
 			callable := transition.Callable
 			if existing, exists := model.Operations[callable]; exists {
@@ -86,7 +87,9 @@ func (tc *TypeChecker) CheckProgramWithSemIR(program *ast.Program, module semir.
 }
 
 func sameResourceOperation(left, right ResourceOperation) bool {
-	if left.ReturnsFresh != right.ReturnsFresh || len(left.Consumes) != len(right.Consumes) {
+	if left.ConsumesReceiver != right.ConsumesReceiver ||
+		left.ReturnsFresh != right.ReturnsFresh ||
+		len(left.Consumes) != len(right.Consumes) {
 		return false
 	}
 	for i := range left.Consumes {

@@ -15,11 +15,13 @@ import (
 const CodeResourceUsedAfterConsume = "OAK-B0111"
 
 // ResourceOperation is internal semantic metadata for a callable. It freezes
-// no source syntax: frontends/protocol lowering can mark which arguments lose
-// old authority, and whether the result denotes fresh authority.
+// no source syntax: frontends/protocol lowering can mark which explicit
+// arguments and/or receiver lose old authority, and whether the result denotes
+// fresh authority.
 type ResourceOperation struct {
-	Consumes     []int
-	ReturnsFresh bool
+	Consumes         []int
+	ConsumesReceiver bool
+	ReturnsFresh     bool
 }
 
 // ResourceModel is the syntax-independent bridge from resolved types/callables
@@ -436,6 +438,9 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 	if !consuming {
 		return
 	}
+	if op.ConsumesReceiver {
+		a.consumeReceiver(expr)
+	}
 	for _, index := range op.Consumes {
 		if index < 0 || index >= len(expr.Arguments) {
 			continue
@@ -449,6 +454,26 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 		if a.flow.CanUse(ident.Value) {
 			a.flow.Consume(ident.Value, expr)
 		}
+	}
+}
+
+func (a *typedResourceAnalysis) consumeReceiver(expr *ast.InvocationExpression) {
+	if a == nil || a.flow == nil || expr == nil {
+		return
+	}
+	access, ok := expr.Function.(*ast.IndexExpression)
+	if !ok || access == nil || !access.Dot {
+		return
+	}
+	receiver, ok := access.Left.(*ast.Identifier)
+	if !ok || receiver == nil || !a.flow.Registered(receiver.Value) {
+		return
+	}
+	// Receiver evaluation already performed the ordinary Use check. As with
+	// explicit consuming arguments, avoid duplicating that diagnostic when the
+	// authority was unavailable before the invocation.
+	if a.flow.CanUse(receiver.Value) {
+		a.flow.Consume(receiver.Value, expr)
 	}
 }
 

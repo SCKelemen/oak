@@ -51,6 +51,13 @@ func resourceSemanticModule() semir.Module {
 							semir.ResourceReturnFresh(),
 						},
 					},
+					{
+						Name:     "CloseMethodTransition",
+						Callable: "Handle::close",
+						From:     "Open",
+						To:       "Closed",
+						Effects:  []semir.Effect{semir.ResourceConsumeReceiver()},
+					},
 				},
 			},
 			{
@@ -82,12 +89,16 @@ func TestResourceModelFromSemIRDerivesTypesAndResolvedCallables(t *testing.T) {
 		t.Fatal("protocol membership alone must not invent resource authority")
 	}
 	closeOp, ok := model.Operations["close"]
-	if !ok || len(closeOp.Consumes) != 1 || closeOp.Consumes[0] != 0 || closeOp.ReturnsFresh {
+	if !ok || len(closeOp.Consumes) != 1 || closeOp.Consumes[0] != 0 || closeOp.ConsumesReceiver || closeOp.ReturnsFresh {
 		t.Fatalf("unexpected close resource operation: %#v", closeOp)
 	}
 	renewOp, ok := model.Operations["renew"]
-	if !ok || len(renewOp.Consumes) != 1 || renewOp.Consumes[0] != 0 || !renewOp.ReturnsFresh {
+	if !ok || len(renewOp.Consumes) != 1 || renewOp.Consumes[0] != 0 || renewOp.ConsumesReceiver || !renewOp.ReturnsFresh {
 		t.Fatalf("unexpected renew resource operation: %#v", renewOp)
+	}
+	methodOp, ok := model.Operations["Handle::close"]
+	if !ok || !methodOp.ConsumesReceiver || len(methodOp.Consumes) != 0 || methodOp.ReturnsFresh {
+		t.Fatalf("unexpected receiver-consuming method operation: %#v", methodOp)
 	}
 	if _, ok := model.Operations["CloseTransition"]; ok {
 		t.Fatal("protocol-local transition labels must not be treated as callable identities")
@@ -137,6 +148,10 @@ f: (h: Handle): u32 {
 
 func TestResourceModelFromSemIRRejectsConflictingCallableSemantics(t *testing.T) {
 	module := semir.Module{
+		Definitions: []semir.Definition{{
+			Name:      "Handle",
+			Authority: semir.Authority{Resource: semir.ResourceAuthorityLive},
+		}},
 		Protocols: []semir.Protocol{
 			{
 				Name:    "Left",
@@ -144,10 +159,10 @@ func TestResourceModelFromSemIRRejectsConflictingCallableSemantics(t *testing.T)
 				States:  []semir.State{{Name: "S"}},
 				Transitions: []semir.Transition{{
 					Name:     "LeftClose",
-					Callable: "close",
+					Callable: "Handle::close",
 					From:     "S",
 					To:       "S",
-					Effects:  []semir.Effect{semir.ResourceConsumeArgument(0)},
+					Effects:  []semir.Effect{semir.ResourceConsumeReceiver()},
 				}},
 			},
 			{
@@ -156,10 +171,10 @@ func TestResourceModelFromSemIRRejectsConflictingCallableSemantics(t *testing.T)
 				States:  []semir.State{{Name: "S"}},
 				Transitions: []semir.Transition{{
 					Name:     "RightClose",
-					Callable: "close",
+					Callable: "Handle::close",
 					From:     "S",
 					To:       "S",
-					Effects:  []semir.Effect{semir.ResourceConsumeArgument(1)},
+					Effects:  []semir.Effect{semir.ResourceConsumeArgument(0)},
 				}},
 			},
 		},

@@ -3,6 +3,7 @@ package typechecker
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // ResourceProtocolDeclaration is syntax-independent resource protocol input to
@@ -20,12 +21,13 @@ type ResourceProtocolDeclaration struct {
 // ResourceTransitionDeclaration binds one protocol-local transition label to
 // an explicit callable identity. Callable is never inferred from Name.
 type ResourceTransitionDeclaration struct {
-	Name         string
-	Callable     string
-	From         string
-	To           string
-	Consumes     []int
-	ReturnsFresh bool
+	Name             string
+	Callable         string
+	From             string
+	To               string
+	Consumes         []int
+	ConsumesReceiver bool
+	ReturnsFresh     bool
 }
 
 // ResolvedResourceProgram contains only resource facts that have been checked
@@ -48,12 +50,13 @@ type ResolvedResourceProtocol struct {
 }
 
 type ResolvedResourceTransition struct {
-	Name         string
-	Callable     string
-	From         string
-	To           string
-	Consumes     []int
-	ReturnsFresh bool
+	Name             string
+	Callable         string
+	From             string
+	To               string
+	Consumes         []int
+	ConsumesReceiver bool
+	ReturnsFresh     bool
 }
 
 // ResolveResourceDeclarations resolves internal protocol facts against the
@@ -186,6 +189,15 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q argument %d has non-resource type %s", transition.Callable, index, function.Parameters[index])
 				}
 			}
+			if transition.ConsumesReceiver {
+				receiverName := resourceCallableReceiverName(tc.env, transition.Callable)
+				if receiverName == "" {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q consumes its receiver but has no resolved nominal receiver identity", transition.Callable)
+				}
+				if !resourceTypes[receiverName] {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q consumes receiver of non-resource type %q", transition.Callable, receiverName)
+				}
+			}
 			if transition.ReturnsFresh {
 				returnName := nominalTypeName(function.ReturnType)
 				if !resourceTypes[returnName] {
@@ -193,24 +205,49 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				}
 			}
 
-			operation := ResourceOperation{Consumes: consumes, ReturnsFresh: transition.ReturnsFresh}
+			operation := ResourceOperation{
+				Consumes:         consumes,
+				ConsumesReceiver: transition.ConsumesReceiver,
+				ReturnsFresh:     transition.ReturnsFresh,
+			}
 			if previous, exists := callableSemantics[transition.Callable]; exists && !sameResourceOperation(previous, operation) {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q has conflicting semantics across protocols", transition.Callable)
 			}
 			callableSemantics[transition.Callable] = operation
 			protocol.Transitions = append(protocol.Transitions, ResolvedResourceTransition{
-				Name:         transition.Name,
-				Callable:     transition.Callable,
-				From:         transition.From,
-				To:           transition.To,
-				Consumes:     consumes,
-				ReturnsFresh: transition.ReturnsFresh,
+				Name:             transition.Name,
+				Callable:         transition.Callable,
+				From:             transition.From,
+				To:               transition.To,
+				Consumes:         consumes,
+				ConsumesReceiver: transition.ConsumesReceiver,
+				ReturnsFresh:     transition.ReturnsFresh,
 			})
 		}
 		resolved.Protocols = append(resolved.Protocols, protocol)
 	}
 
 	return resolved, nil
+}
+
+// resourceCallableReceiverName projects the nominal receiver component from
+// the typechecker's canonical method identity Receiver::method. It validates
+// the receiver against the semantic environment, so arbitrary text containing
+// "::" cannot manufacture receiver authority.
+func resourceCallableReceiverName(env *TypeEnvironment, callable string) string {
+	if env == nil {
+		return ""
+	}
+	separator := strings.LastIndex(callable, "::")
+	if separator <= 0 || separator+2 >= len(callable) {
+		return ""
+	}
+	receiver := callable[:separator]
+	typ, exists := env.GetType(receiver)
+	if !exists || typ == nil || nominalTypeName(typ) != receiver {
+		return ""
+	}
+	return receiver
 }
 
 // nominalTypeName returns the authority-bearing nominal base. Structural
