@@ -18,7 +18,7 @@ const CodeResourceUsedAfterConsume = "OAK-B0111"
 // no source syntax: frontends/protocol lowering can mark which arguments lose
 // old authority, and whether the result denotes fresh authority.
 type ResourceOperation struct {
-	Consumes    []int
+	Consumes     []int
 	ReturnsFresh bool
 }
 
@@ -374,7 +374,7 @@ func (a *typedResourceAnalysis) use(name string, node ast.Node) {
 	if authority == resourceflow.AuthorityMaybeConsumed {
 		title = fmt.Sprintf("resource %q cannot be used because its authority may have been consumed", name)
 	}
-	d := a.tc.addTypeDiagnostic(node, CodeResourceUsedAfterConsume, title)
+	d := a.tc.addResourceDiagnostic(node, title)
 	consumptions := a.flow.Consumptions(name)
 	for _, consumed := range consumptions {
 		if consumed.Site != nil {
