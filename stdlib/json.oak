@@ -283,9 +283,8 @@ json_digit: (unit: u8): Bool = unit >= u8(48) && unit <= u8(57)
 json_skip_space: (src: []u8, offset: u32): u32 {
  assert(offset <= len(src))
  at: u32 = offset
- scanning: Bool = true
- while at < len(src) && scanning {
-  json_space(src[at]) ? { at = at + u32(1) } | { scanning = false }
+ while at < len(src) && json_space(src[at]) {
+  at = at + u32(1)
  }
  at
 }
@@ -440,6 +439,20 @@ json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
   // common loop free of overflow state; check the twentieth and later digits.
   fast_end: u32 = len(src) - at > u32(19) ? at + u32(19) | len(src)
   at = at + u32(1)
+  chunks: Bool = true
+  while fast_end - at >= u32(8) && chunks {
+   word: u64 = ((u64(src[at + u32(0)]) << u64(0)) | (u64(src[at + u32(1)]) << u64(8)) | (u64(src[at + u32(2)]) << u64(16)) | (u64(src[at + u32(3)]) << u64(24)) | (u64(src[at + u32(4)]) << u64(32)) | (u64(src[at + u32(5)]) << u64(40)) | (u64(src[at + u32(6)]) << u64(48)) | (u64(src[at + u32(7)]) << u64(56)))
+   // SWAR: all eight lanes must contain ASCII decimal digits.
+   chunks = (((word + u64(5063812098665367110)) | (word - u64(3472328296227680304))) & (u64(2155905152) * u64(4294967296) + u64(2155905152))) == u64(0)
+   chunks ? {
+    digits: u64 = word & u64(1085102592571150095)
+    pairs: u64 = ((digits * u64(10)) + (digits >> u64(8))) & u64(71777214294589695)
+    quads: u64 = ((pairs * u64(100)) + (pairs >> u64(16))) & u64(281470681808895)
+    number: u64 = ((quads * u64(10000)) + (quads >> u64(32))) & u64(4294967295)
+    magnitude = magnitude * u64(100000000) + number
+    at = at + u32(8)
+   }
+  }
   while at < fast_end && json_digit(src[at]) {
    magnitude = magnitude * u64(10) + u64(src[at] - u8(48))
    at = at + u32(1)

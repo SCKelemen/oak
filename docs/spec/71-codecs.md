@@ -342,7 +342,7 @@ before conversion; no number passes through floating point.
 
 `JsonDecodeError` distinguishes `InvalidEncoding`, `InvalidSyntax`,
 `TypeMismatch`, `NumericOverflow`, `MissingField`, `DuplicateField`, and
-`UnknownField`, plus `LengthMismatch` for fixed arrays. UTF-8 validation runs first. Subsequent errors are fail-fast:
+`UnknownField`, plus `LengthMismatch` for fixed arrays. InvalidEncoding takes precedence over all other errors. Other errors are fail-fast:
 unknown/duplicate fields can be reported before their values are parsed.
 Errors do not contain a partly constructed output record. The decoder does
 not mutate caller storage. Returning `Result[T, JsonDecodeError]` still uses
@@ -443,10 +443,11 @@ Both API levels should share scanning/conversion kernels; high-level
 convenience must not force scalar processing or hidden allocations.
 
 Matching simdjson on Apple M-series is a target, not a measured result.
-Current key scanning uses bounded SIMD runs, but numeric conversion and
-schema dispatch are scalar, field lookup is linear, and root UTF-8
-validation performs a separate pass. Removing abstraction overhead alone
-does not close those algorithmic gaps. Investigate fused structural/UTF-8
+Key scanning uses bounded SIMD runs; integer conversion uses scalar and
+word-parallel operations, and field lookup remains linear. Successful typed
+parsing establishes UTF-8 validity; failure paths retain a full validation
+pass to preserve error precedence. Removing abstraction overhead alone
+does not establish parity across JSON workloads. Investigate fused structural/UTF-8
 scanning, faster checked numeric conversion, schema-specialized field
 matching, and reusable bounded work buffers based on profiles. Any padded
 input fast path requires an explicit verified readable-capacity contract;
@@ -487,7 +488,7 @@ Punctuation has a small token wrapper; other tokens retain the full parser.
 ASCII keys avoid per-scalar Unicode decoding, while escapes and non-ASCII
 keys retain the existing semantic comparison.
 
-Root UTF-8 validation has a bounded 16-byte SIMD ASCII fast path. An entirely
+The standalone UTF-8 validator has a bounded 16-byte SIMD ASCII fast path. An entirely
 ASCII input is valid UTF-8; any high bit delegates to the original complete
 validator. Incomplete tails use scalar reads. This does not fuse UTF-8 with
 JSON syntax checking, relax JSON control-character rules, or assume readable
@@ -507,7 +508,7 @@ with the candidate on the same Linux and ARM64 macOS runner, using five
 samples of 1,024,000 documents per backend. Paired reports check compatible
 metadata and report simdjson timing drift as a noise indicator. Raw samples
 remain in workflow artifacts. See [recorded measurements](../../benchmarks/json/RESULTS.md).
-Field dispatch remains linear, numeric accumulation remains scalar, and
+Field dispatch remains linear, numeric accumulation now includes word-parallel batches, and
 aggregate copy elimination is not guaranteed. These results support specific
 improvements on this schema, not universal parser or language superiority.
 
@@ -525,7 +526,8 @@ Empty-object and post-comma array lookahead inspect only the relevant closing
 byte after whitespace. Colons and separators use direct bounded checks where
 every other token must produce InvalidSyntax. Positions requiring distinctions
 between malformed syntax and a valid value of the wrong type retain token
-classification. Root UTF-8 validation remains a separate complete pass.
+classification. Successful typed decoding establishes UTF-8 validity as described
+below; failures retain a complete validation pass.
 
 The implementation-only JsonIntegerScan contains magnitude:u64, next:u32, and
 status:u32. Status 0/1 denotes positive/negative success; larger values encode
@@ -541,3 +543,51 @@ The native benchmark can retain generated C and assembly with --inspect.
 Sanitizer coverage includes every truncated prefix of a representative record,
 escaped key aliases and duplicates, malformed separators, and numeric error
 precedence. Updated measurements and their scope are in the benchmark results.
+
+## 19. Word-parallel scanning and successful-parse validation
+
+Record fallback key matching lives in a separate derived helper, keeping its
+fixed key storage out of the common reader's live state. Plain literal keys
+and Boolean spellings use bounded little-endian word comparisons plus scalar
+tails. Array lookahead classifies an initial closing bracket as LengthMismatch
+and a closing bracket after a comma as InvalidSyntax, without a second scan.
+Whitespace scanning tests the byte in the loop condition.
+
+The integer scanner processes eight ASCII decimal digits at a time when eight
+bytes remain within the first-19-digit bound. A word mask validates every byte
+before combining adjacent digits into pairs, four-digit groups, and an
+eight-digit number. The aggregate update is magnitude * 100000000 + group.
+At most 19 accumulated digits fit u64, so this update cannot overflow. The
+existing cutoff handles subsequent digits, and the original slow reader
+preserves leading-zero, suffix, type, and overflow error precedence. This is
+word-parallel arithmetic (SWAR), not eight heap values or a padded overread.
+
+The C backend recognizes complete 4/8-byte little-endian packs written as
+ORs of unsigned widened bytes shifted by 0, 8, ... bits. Recognition requires
+the same u8 view identifier, the same side-effect-free offset identifier,
+consecutive offset additions, and the matching unsigned result width. It
+emits a helper with one overflow-safe range check and ordinary unsigned byte
+loads from a common pointer. C optimization can combine those into one word
+load; unaligned access, strict aliasing and byte order remain portable. Other
+expressions retain their existing lowering. Out-of-range access still traps.
+This compiler optimization applies to ordinary Oak expressions, not JSON names.
+
+For the current derivation subset (integers, Bool, records, fixed arrays and
+required nullable fields), a successful complete parse establishes valid UTF-8:
+all value tokens, delimiters and whitespace are ASCII; direct key matches are
+ASCII; other successful key matches validate UTF-8 or JSON Unicode escapes.
+Nested readers satisfy the same property, and the root consumes the full
+input. The success path therefore needs no additional UTF-8 pass. On any
+failure, including trailing content, the root validates the entire input
+before returning the error, preserving InvalidEncoding precedence even for
+invalid bytes beyond the first syntax error. Extending the derivation subset
+requires preserving this property or reinstating an explicit validity check.
+The public standalone token and offset readers do not gain a whole-document
+validity guarantee.
+
+Sanitizer regressions sweep every byte value through digit lanes and through
+every position of a representative record, check unaligned 32/64-bit loads
+against a scalar oracle, and verify traps at short and extreme offsets.
+Escaped-key, nullable, numeric-boundary and truncation tests remain in place.
+These are executable checks and an algorithmic argument, not a machine-checked
+proof of the complete compiler transformation or parser.

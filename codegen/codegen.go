@@ -1908,6 +1908,9 @@ func (cg *CodeGenerator) emitStatementExpression(expr ast.Expression, tc *typech
 
 // emitInfixExpression emits C code for an infix expression (as fragment)
 func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *typechecker.TypeChecker) {
+	if cg.emitBytePack(expr, tc) {
+		return
+	}
 	// Shifts route through the checked helpers (oak_shl_u32 and friends):
 	// the operand width was recorded by the checker; without a record the
 	// emission fails closed rather than guessing a width.

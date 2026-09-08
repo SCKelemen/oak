@@ -43,7 +43,7 @@ results when publishing. Do not compare sanitizer timing with release timing.
 
 CI runs sanitizer checks and paired release measurements on Linux and ARM64
 macOS. Each job compares the workflow's pinned baseline with the candidate
-using 1,024 documents, 1,000 rounds and five samples per backend. The two
+using 1,024 documents, 1,000 rounds and nine samples per backend. The two
 revisions run in separate processes, baseline first, on the same runner.
 `compare.py` checks metadata compatibility and reports simdjson timing drift.
 These hosted measurements are not a performance gate. Results and limitations
@@ -59,3 +59,8 @@ Use `--inspect results/native` to retain the generated `schema.c` and
 optimized `oak.s`. Assembly is produced with the same C flags as the timed
 Oak object. Selected scanner/reader functions are also printed for inspection
 in remote CI logs. The workflow uploads these files alongside raw JSON samples.
+
+The harness also prints each release sample's Oak/simdjson time ratio.
+Inspect these alongside the ratio of medians: variation can cross a target
+threshold even when the overall median meets it. Sanitizer ratios describe
+correctness instrumentation and must not be used for performance claims.
