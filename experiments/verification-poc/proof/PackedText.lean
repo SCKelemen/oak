@@ -4,10 +4,13 @@ import RUPText
 set_option autoImplicit false
 namespace OakVerification.PackedText
 
-def check (cnf proof : String) : Except String Bool := do
-  let formula ← Text.parseDIMACS cnf
-  let instructions ← Text.parseLRAT proof
-  return ProofPacking.check formula.variables formula.clauses instructions
+def check (cnf proof : String) : Except String Bool :=
+  match Text.parseDIMACS cnf with
+  | .error message => .error message
+  | .ok formula =>
+    match Text.parseLRAT proof with
+    | .error message => .error message
+    | .ok instructions => .ok (ProofPacking.check formula.variables formula.clauses instructions)
 
 -- Soundness is about the formula returned by the executable text parser.
 -- No assertion of external grammar correctness or Oak equivalence is hidden here.

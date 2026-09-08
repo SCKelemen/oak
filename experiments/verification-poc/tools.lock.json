@@ -22,7 +22,11 @@
   "tlc": {
     "version": "1.8.0",
     "source": "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar",
-    "sha256": "b658b4e504fdf0b721caf7066320f6b6fe5805f4dd2f717d0e47baba4097205e",
-    "note": "Upstream marks this as a mutable prerelease; the jar digest pins the actual artifact. Java 17+ required."
+    "sha256": "4c7bb1f6b050d56c197ee9ddd6e57fe521eae175f5043c9fb98b169f7b2d5407",
+    "note": "Mutable upstream prerelease. Explicitly refreshed from GitHub's published asset digest on 2026-09-08; checksum verification remains mandatory.",
+    "asset_id": 551007111,
+    "asset_updated_at": "2026-09-08T17:57:45Z",
+    "source_commit": "b123b22654942bd7f8b1bcadcc47da4ee2cf4c0e",
+    "digest_source": "https://api.github.com/repos/tlaplus/tlaplus/releases/assets/551007111"
   }
 }
