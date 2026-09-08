@@ -1753,6 +1753,16 @@ func TestWritesThroughParametersDoNotCaptureAuthority(t *testing.T) {
 	if facts := functionCaptureFacts(fn, tc.env); !facts.Safe() {
 		t.Fatalf("parameter write treated as captured authority: %v", facts)
 	}
+	store := fn.Body.Statements[0].(*ast.IndexAssignmentStatement)
+	store.Target = &ast.IndexExpression{
+		Dot:   true,
+		Left:  store.Target,
+		Index: &ast.Identifier{Value: "count"},
+	}
+	tc.env.Set("count", &TypeScheme{Type: &UnitType{}, GeneralizationBarriers: GeneralizationUnsafeAssumption})
+	if facts := functionCaptureFacts(fn, tc.env); !facts.Safe() {
+		t.Fatalf("field name treated as captured binding: %v", facts)
+	}
 	fn.Arguments = nil
 	tc.env.SetType("buffer", &ArrayType{Length: -1, IsSpan: true, ElementType: &PrimitiveType{Name: "i32"}})
 	facts := functionCaptureFacts(fn, tc.env)
