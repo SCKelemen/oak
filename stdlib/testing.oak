@@ -4,6 +4,33 @@ testing_fail_host: (id: c.UInt32): () = c.extern("oak_test_host_fail")
 testing_discard: (): () = c.extern("oak_test_host_discard")
 testing_classify_host: (id: c.UInt32): () = c.extern("oak_test_host_classify")
 testing_trace_host: (id: c.UInt32, a: c.UInt64, b: c.UInt64): () = c.extern("oak_test_host_trace")
+testing_command_host: (kind: c.UInt32, target: c.UInt32, value: c.UInt32): () = c.extern("oak_test_host_command")
+testing_command_limit_host: (): c.UInt32 = c.extern("oak_test_host_command_limit")
+
+// A generator emits concrete commands; execution never reruns random choices.
+TestCommand: type = struct { kind: u32, target: u32, value: u32 }
+testing_command_limit: (): u32 = u32(testing_command_limit_host())
+testing_command: (command: TestCommand): () {
+  testing_command_host(c.UInt32(command.kind), c.UInt32(command.target), c.UInt32(command.value))
+}
+
+test_command_count: (data: []u8): u32 {
+  test_assume(len(data) % u32(12) == u32(0))
+  len(data) / u32(12)
+}
+
+test_command_word: (data: []u8, offset: u32): u32 {
+  assert(offset <= len(data) && len(data) - offset >= u32(4))
+  u32(data[offset]) | (u32(data[offset + u32(1)]) << u32(8)) |
+    (u32(data[offset + u32(2)]) << u32(16)) | (u32(data[offset + u32(3)]) << u32(24))
+}
+
+test_command_at: (data: []u8, index: u32): TestCommand {
+  count: u32 = test_command_count(data)
+  assert(index < count)
+  offset: u32 = index * u32(12)
+  TestCommand { kind: test_command_word(data, offset), target: test_command_word(data, offset + u32(4)), value: test_command_word(data, offset + u32(8)) }
+}
 
 testing_fail: (id: u32): () { testing_fail_host(c.UInt32(id)) }
 testing_classify: (id: u32): () { testing_classify_host(c.UInt32(id)) }

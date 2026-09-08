@@ -31,6 +31,7 @@ func Defaults() Config {
 
 type Result struct {
 	Test
+	Commands       []Command      `json:"commands,omitempty"`
 	Trace          []TraceEvent   `json:"trace,omitempty"`
 	TraceTruncated bool           `json:"trace_truncated,omitempty"`
 	Package        string         `json:"package"`
@@ -199,6 +200,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			if result.Output != "" {
 				fmt.Fprintln(stdout, result.Output)
 			}
+			for i, c := range result.Commands {
+				fmt.Fprintf(stdout, "  command[%d] kind=%d target=%d value=%d\n", i, c.Kind, c.Target, c.Value)
+			}
 			start := len(result.Trace) - 8
 			if start < 0 {
 				start = 0
@@ -275,7 +279,26 @@ func parseCover(raw string) (map[uint32]int, error) {
 
 func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Config, cover map[uint32]int, replay *Artifact) Result {
 	result := Result{Test: test, Package: pkg.Dir, Status: "pass", Seed: cfg.Seed, Classes: map[uint32]int{}}
+	format := ""
+	generator := -1
+	if test.Generator != "" {
+		format = commandFormat
+		for i, t := range pkg.Registry {
+			if t.Name == test.Generator {
+				generator = i
+				break
+			}
+		}
+		if generator < 0 {
+			result.Status, result.Failure = "error", "missing command generator"
+			return result
+		}
+	}
 	if replay != nil {
+		if replay.InputFormat != format {
+			result.Status, result.Failure = "error", "replay input format mismatch"
+			return result
+		}
 		result.Seed = replay.Seed
 		if replay.Build != native.build {
 			result.Status = "error"
@@ -286,6 +309,9 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		result.Cases = 1
 		result.Output = out.output
 		result.Trace, result.TraceTruncated = out.trace, out.traceTruncated
+		if format != "" {
+			result.Commands = decodeCommands(replay.Input)
+		}
 		if out.status == "fail" && out.signature == replay.Signature {
 			result.Status = "fail"
 			result.Failure = "reproduced " + out.signature
@@ -306,6 +332,10 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		return result
 	}
 	execute := func(input []byte, attempt int) bool {
+		if format != "" && (len(input)%commandWidth != 0 || len(input)/commandWidth > commandLimit) {
+			result.Status, result.Failure = "error", "invalid concrete command corpus: expected at most 256 complete 12-byte commands"
+			return false
+		}
 		out := native.run(index, input)
 		if out.status == "discard" {
 			result.Discards++
@@ -338,7 +368,11 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 			} else {
 				ctx, cancel := context.WithTimeout(context.Background(), cfg.ShrinkTimeout)
 				bestOutcome := confirmation
-				best = Minimize(ctx, input, cfg.Shrink, func(candidate []byte) bool {
+				minimize := Minimize
+				if format != "" {
+					minimize = MinimizeCommands
+				}
+				best = minimize(ctx, input, cfg.Shrink, func(candidate []byte) bool {
 					r := native.run(index, candidate)
 					matches := r.status == "fail" && r.signature == out.signature
 					if matches {
@@ -358,7 +392,11 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		}
 		result.Trace, result.TraceTruncated = out.trace, out.traceTruncated
 		result.Output = out.output
+		if format != "" {
+			result.Commands = decodeCommands(best)
+		}
 		artifact := Artifact{TimeoutNanos: int64(cfg.Timeout), Version: 1, Engine: engineVersion, Test: test.Name, Kind: test.Kind, Build: native.build, Seed: cfg.Seed, Attempt: attempt, MaxBytes: cfg.MaxBytes, Sanitize: cfg.Sanitize, Signature: out.signature, Input: best}
+		artifact.InputFormat = format
 		artifact.TraceVersion, artifact.Trace, artifact.TraceTruncated = traceVersion, out.trace, out.traceTruncated
 		path, err := saveArtifact(pkg, test, artifact)
 		if err != nil {
@@ -395,6 +433,23 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		for attempt := 0; accepted < cfg.Runs; attempt++ {
 			r := randomFor(cfg.Seed, test.Name, attempt)
 			input := generate(&r, attempt, cfg.MaxBytes)
+			if generator >= 0 {
+				generated := native.run(generator, input)
+				if generated.status == "discard" {
+					result.Discards++
+					if result.Discards > cfg.MaxDiscards {
+						result.Status, result.Failure = "fail", "generator discard budget exhausted"
+						return result
+					}
+					continue
+				}
+				if generated.status != "pass" {
+					result.Status, result.Failure, result.Output = "error", "command generator failed: "+generated.signature, generated.output
+					result.Trace, result.TraceTruncated = generated.trace, generated.traceTruncated
+					return result
+				}
+				input = encodeCommands(generated.commands)
+			}
 			if test.Kind == "fuzz" && attempt >= len(seeds) {
 				input = mutate(&r, seeds, cfg.MaxBytes)
 			} else if test.Kind == "fuzz" {

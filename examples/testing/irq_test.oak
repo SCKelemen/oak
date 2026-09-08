@@ -112,3 +112,73 @@ SimTimerIrq: (data: []u8): () {
   irq_apply(state, u32(6))
   test_check(irq_deliverable(state[0]), u32(2032))
 }
+
+// Model preconditions for command histories: acknowledgement requires a
+// deliverable model state and EOI requires an active one. Everything else is
+// always legal. The generator and the target share this single definition, so
+// shrinking cannot produce a history the target would not have accepted.
+irq_legal: (bits: u8, action: u32): Bool {
+  action == u32(5) ? { (bits & u8(5)) == u8(1) && (bits & u8(10)) != u8(0) } |
+  action == u32(6) ? { (bits & u8(4)) != u8(0) } |
+  { action <= u32(6) }
+}
+
+// Concrete command histories. The generator selects only legal operations
+// against the model; the emitted commands, not this tape, are the test input.
+GeneratePropertyIrqCommands: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  limit: u32 = testing_command_limit()
+  limit > u32(32) ? { limit = u32(32) }
+  count: u32 = test_range(choices, data, u32(0), limit)
+  model: u8 = u8(0)
+  i: u32 = u32(0)
+  while i < count {
+    legal: [7]u32
+    options: u32 = u32(0)
+    action: u32 = u32(0)
+    while action <= u32(6) {
+      irq_legal(model, action) ? { legal[options] = action; options = options + u32(1) }
+      action = action + u32(1)
+    }
+    chosen: u32 = legal[test_range(choices, data, u32(0), options - u32(1))]
+    testing_command(TestCommand { kind: chosen, target: u32(0), value: u32(0) })
+    model = irq_model(model, chosen)
+    i = i + u32(1)
+  }
+}
+
+PropertyIrqCommands: (data: []u8): () {
+  count: u32 = test_command_count(data)
+  // Validate the entire history first: a shrunk history that deletes the
+  // enabling command must reject, which preserves dependencies.
+  model: u8 = u8(0)
+  i: u32 = u32(0)
+  while i < count {
+    command: TestCommand = test_command_at(data, i)
+    test_assume(command.target == u32(0) && command.value == u32(0))
+    test_assume(irq_legal(model, command.kind))
+    model = irq_model(model, command.kind)
+    i = i + u32(1)
+  }
+  storage: [1]Irq
+  state: [*]Irq = span(&storage)
+  model = u8(0)
+  i = u32(0)
+  while i < count {
+    action: u32 = test_command_at(data, i).kind
+    before: Irq = state[0]
+    testing_trace(u32(202), u64(action), u64(i))
+    irq_apply(state, action)
+    model = irq_model(model, action)
+    after: Irq = state[0]
+    test_check(after.enabled == ((model & u8(1)) != u8(0)), u32(2010))
+    test_check(after.latched == ((model & u8(2)) != u8(0)), u32(2011))
+    test_check(after.active == ((model & u8(4)) != u8(0)), u32(2012))
+    test_check(after.level == ((model & u8(8)) != u8(0)), u32(2013))
+    !before.active && after.active ? { test_check(irq_deliverable(before), u32(2015)) }
+    after.active ? { test_check(!irq_deliverable(after), u32(2016)) }
+    testing_classify(action)
+    i = i + u32(1)
+  }
+}
