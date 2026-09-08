@@ -98,7 +98,7 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q references unknown type %q", declaration.Name, name)
 			}
 			if nominalTypeName(typ) != name {
-				return ResolvedResourceProgram{}, fmt.Errorf("resource type %q must resolve to a nominal Oak type, got %s", name, typ)
+				return ResolvedResourceProgram{}, fmt.Errorf("resource type %q must resolve to a concrete nominal Oak type, got %s", name, typ)
 			}
 			if previous, exists := resourceProtocols[name]; exists {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource type %q is bound to both protocols %q and %q", name, previous, declaration.Name)
@@ -213,9 +213,16 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 	return resolved, nil
 }
 
+// nominalTypeName returns the authority-bearing nominal base. Structural
+// records and interface contracts deliberately return empty: letting either opt
+// into non-duplicable resource semantics would allow structural compatibility
+// or dynamic abstraction to bypass the authority class model.
 func nominalTypeName(typ Type) string {
 	switch t := typ.(type) {
 	case *RecordType:
+		if !t.Struct {
+			return ""
+		}
 		return t.Name
 	case *ADTType:
 		return t.Name
@@ -223,8 +230,6 @@ func nominalTypeName(typ Type) string {
 		return t.Name
 	case *NarrowedADTVariantType:
 		return t.ADTName
-	case *InterfaceType:
-		return t.Name
 	default:
 		return ""
 	}
