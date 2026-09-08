@@ -83,7 +83,6 @@ func GeneralizeWithFacts(typ Type, env *TypeEnvironment, facts GeneralizationFac
 	return scheme
 }
 
-
 // factsFromType conservatively extracts authority and region evidence already
 // represented by the checker type. It recurses through data containers, but not
 // through function parameters/results: accepting a function value does not
@@ -340,7 +339,9 @@ func functionCaptureFactsWithBound(fn *ast.FunctionLiteral, env *TypeEnvironment
 		case *ast.IfStatement:
 			walkExpr(s.Condition)
 			walkBlock(s.Consequence)
-			if s.Alternative != nil { walkStmt(s.Alternative) }
+			if s.Alternative != nil {
+				walkStmt(s.Alternative)
+			}
 		case *ast.WhileStatement:
 			walkExpr(s.Condition)
 			walkBlock(s.Body)
@@ -399,7 +400,6 @@ func functionCaptureFactsWithBound(fn *ast.FunctionLiteral, env *TypeEnvironment
 	}
 	return facts
 }
-
 
 func generalizationDeclaredType(expr ast.Expression, env *TypeEnvironment) Type {
 	switch e := expr.(type) {
@@ -515,10 +515,14 @@ func conservativePatternBindingFacts(pattern ast.Pattern) map[string]Generalizat
 func (tc *TypeChecker) valueAuthorityFacts(typ Type, visiting map[string]bool) GeneralizationFacts {
 	facts := factsFromType(typ)
 	adtName, _, arguments, ok := adtInstantiation(typ)
-	if !ok { return facts }
+	if !ok {
+		return facts
+	}
 	// Recursive definitions can change their type arguments on every step
 	// (for example Nest[T] -> Nest[[]T]); bound traversal by definition.
-	if visiting[adtName] { return facts }
+	if visiting[adtName] {
+		return facts
+	}
 	visiting[adtName] = true
 	defer delete(visiting, adtName)
 	adt := tc.adtTypes[adtName]
@@ -527,7 +531,9 @@ func (tc *TypeChecker) valueAuthorityFacts(typ Type, visiting map[string]bool) G
 	}
 	for _, variant := range adt.Variants {
 		bindings, _, reachable := tc.variantIndexBindings(adt, variant, arguments)
-		if !reachable { continue }
+		if !reachable {
+			continue
+		}
 		if payload := tc.instantiatedVariantPayload(adtName, variant, bindings); payload != nil {
 			facts.Barriers |= tc.valueAuthorityFacts(payload, visiting).Barriers
 		}
@@ -549,12 +555,18 @@ func (tc *TypeChecker) generalizationPatternBindingFacts(pattern ast.Pattern, ex
 			}
 		case *ast.VariantPattern:
 			adtName, _, arguments, ok := adtInstantiation(currentType)
-			if !ok || p.Variant == nil { return }
+			if !ok || p.Variant == nil {
+				return
+			}
 			adt := tc.adtTypes[adtName]
 			variant, found := tc.findADTVariant(adtName, p.Variant.Value)
-			if adt == nil || !found { return }
+			if adt == nil || !found {
+				return
+			}
 			bindings, _, reachable := tc.variantIndexBindings(adt, variant, arguments)
-			if !reachable { return }
+			if !reachable {
+				return
+			}
 			if p.Payload != nil {
 				visit(p.Payload, tc.instantiatedVariantPayload(adtName, variant, bindings))
 			}
@@ -755,8 +767,12 @@ func deriveGeneralizationFacts(typ Type, initializer ast.Expression, env *TypeEn
 			return result
 		case *ast.IfStatement:
 			result := bindingFacts(s.Condition)
-			if s.Consequence != nil { result.Barriers |= statementBindingFacts(s.Consequence).Barriers }
-			if s.Alternative != nil { result.Barriers |= statementBindingFacts(s.Alternative).Barriers }
+			if s.Consequence != nil {
+				result.Barriers |= statementBindingFacts(s.Consequence).Barriers
+			}
+			if s.Alternative != nil {
+				result.Barriers |= statementBindingFacts(s.Alternative).Barriers
+			}
 			return result
 		case *ast.WhileStatement:
 			result := bindingFacts(s.Condition)
@@ -916,7 +932,9 @@ func deriveGeneralizationFacts(typ Type, initializer ast.Expression, env *TypeEn
 		case *ast.IfStatement:
 			visitExpr(s.Condition)
 			visitBlock(s.Consequence)
-			if s.Alternative != nil { visitStmt(s.Alternative) }
+			if s.Alternative != nil {
+				visitStmt(s.Alternative)
+			}
 		case *ast.WhileStatement:
 			visitExpr(s.Condition)
 			visitBlock(s.Body)

@@ -39,7 +39,6 @@ func TestVariantPatternBinderCarriesInstantiatedPayloadAuthority(t *testing.T) {
 	}
 }
 
-
 func TestWholeADTBindingCarriesReachablePayloadAuthority(t *testing.T) {
 	tc := New(object.NewEnvironment())
 	tc.adtTypes["Carrier"] = &object.ADTType{
@@ -65,7 +64,6 @@ func TestWholeADTBindingCarriesReachablePayloadAuthority(t *testing.T) {
 		t.Fatalf("whole ADT facts = %v, want mutable and unique authority", facts)
 	}
 }
-
 
 func TestExpandingRecursiveADTAuthorityTraversalTerminates(t *testing.T) {
 	tc := New(object.NewEnvironment())
@@ -96,7 +94,7 @@ func TestExpandingRecursiveADTAuthorityTraversalTerminates(t *testing.T) {
 		},
 	}
 	facts := tc.valueAuthorityFacts(&GenericType{
-		Name: "Nest",
+		Name:     "Nest",
 		TypeArgs: []Type{&PrimitiveType{Name: "i32"}},
 	}, make(map[string]bool))
 	if !facts.Has(GeneralizationRegionBound) {
@@ -104,11 +102,10 @@ func TestExpandingRecursiveADTAuthorityTraversalTerminates(t *testing.T) {
 	}
 }
 
-
 func TestIndexedStoreCreatesCaptureBarrier(t *testing.T) {
 	env := NewTypeEnvironment()
 	env.Set("values", &TypeScheme{Type: &ArrayType{
-		Length: 2,
+		Length:      2,
 		ElementType: &PrimitiveType{Name: "i32"},
 	}})
 	fn := &ast.FunctionStatement{

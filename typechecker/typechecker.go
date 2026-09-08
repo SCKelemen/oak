@@ -493,13 +493,13 @@ func (t *FunctionType) Equals(other Type) bool {
 
 // TypeChecker performs type checking on AST nodes
 type TypeChecker struct {
-	adtPayloadTypes map[string]map[string]Type
+	adtPayloadTypes         map[string]map[string]Type
 	monomorphicTransactions [][]Substitution
-	diagnostics *diagnostic.DiagnosticCollector
-	env         *TypeEnvironment
-	adtTypes    map[string]*object.ADTType // ADT type definitions
-	intSize     int                        // Platform size for int/uint (default: 64)
-	ptrSize     int                        // Platform size for ptr/uptr (default: 64)
+	diagnostics             *diagnostic.DiagnosticCollector
+	env                     *TypeEnvironment
+	adtTypes                map[string]*object.ADTType // ADT type definitions
+	intSize                 int                        // Platform size for int/uint (default: 64)
+	ptrSize                 int                        // Platform size for ptr/uptr (default: 64)
 	// checkedExterns marks extern bindings already validated, so the
 	// predeclare pass and the statement pass never double-report.
 	checkedExterns map[*ast.FunctionStatement]bool
@@ -602,13 +602,13 @@ func New(env *object.Environment) *TypeChecker {
 
 func NewWithPlatformSizes(env *object.Environment, intSize, ptrSize int) *TypeChecker {
 	tc := &TypeChecker{
-		diagnostics: diagnostic.NewDiagnosticCollector(),
-		env:         NewTypeEnvironment(),
+		diagnostics:     diagnostic.NewDiagnosticCollector(),
+		env:             NewTypeEnvironment(),
 		adtTypes:        env.GetAllADTTypes(),
 		adtPayloadTypes: make(map[string]map[string]Type),
 		intSize:         intSize,
 		ptrSize:         ptrSize,
-		checkedExterns:   make(map[*ast.FunctionStatement]bool),
+		checkedExterns:  make(map[*ast.FunctionStatement]bool),
 	}
 	// Add builtin type aliases
 	tc.addBuiltinTypeAliases()
@@ -719,7 +719,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok {
 			tc.predeclareFunctionSignature(fn)
 			if len(fn.TypeParams) > 0 && fn.Receiver == nil && !typeParamsConstrained(fn.TypeParams) {
-				if tc.functionTemplates == nil { tc.functionTemplates = make(map[string]*ast.FunctionStatement) }
+				if tc.functionTemplates == nil {
+					tc.functionTemplates = make(map[string]*ast.FunctionStatement)
+				}
 				tc.functionTemplates[fn.Name.Value] = fn
 			}
 		}
@@ -973,7 +975,7 @@ func (tc *TypeChecker) predeclaredMethodBarrierScheme(fn *ast.FunctionStatement)
 		Type: &FunctionType{
 			Parameters: parameters,
 			ReturnType: result,
-			Variadic: len(fn.Parameters) > 0 && fn.Parameters[len(fn.Parameters)-1].Variadic,
+			Variadic:   len(fn.Parameters) > 0 && fn.Parameters[len(fn.Parameters)-1].Variadic,
 		},
 	}
 }
@@ -2406,7 +2408,6 @@ func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentSt
 		tc.addError(stmt.Value, "cannot assign %s to element type %s", valueType, arrType.ElementType)
 	}
 }
-
 
 func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedType ...Type) Type {
 	var expected Type

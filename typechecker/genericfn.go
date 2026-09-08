@@ -64,7 +64,13 @@ func (tc *TypeChecker) registerFunctionTemplate(stmt *ast.FunctionStatement) {
 	tc.functionTemplates[stmt.Name.Value] = stmt
 	tc.predeclareFunctionSignature(stmt)
 	if scheme, ok := tc.env.Get(stmt.Name.Value); ok && scheme != nil {
-		facts := functionStatementCaptureFacts(stmt, tc.env)
+		factsEnv := NewEnclosedTypeEnvironment(tc.env)
+		if signature, ok := scheme.Type.(*FunctionType); ok && len(signature.Parameters) == len(stmt.Parameters) {
+			for i, parameter := range stmt.Parameters {
+				factsEnv.SetType(parameter.Name.Value, signature.Parameters[i])
+			}
+		}
+		facts := functionStatementCaptureFacts(stmt, factsEnv)
 		facts.Barriers |= scheme.GeneralizationBarriers
 		if !facts.Safe() && len(scheme.TypeVars) > 0 {
 			scheme = makeMonomorphicScheme(scheme.Type, scheme.Constraints)
@@ -454,7 +460,9 @@ func substituteStmt(stmt ast.Statement, bindings map[string]ast.Expression) (ast
 		return &ast.WhileStatement{Token: s.Token, Condition: condition, Body: body}, true
 	case *ast.UnsafeBlock:
 		body, ok := substituteBlock(s.Body, bindings)
-		if !ok { return nil, false }
+		if !ok {
+			return nil, false
+		}
 		clone := *s
 		clone.Body = body
 		return &clone, true

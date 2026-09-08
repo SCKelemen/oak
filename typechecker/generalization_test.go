@@ -150,7 +150,6 @@ func TestClosedFunctionLiteralAddsNoAuthorityBarrier(t *testing.T) {
 	}
 }
 
-
 func TestNestedNamedClosureContributesOuterCaptureFacts(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	element := NewUnifier().FreshTypeVar("T")
@@ -173,7 +172,7 @@ func TestBlockInitializerVisitsAllExecutedStatements(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	block := &ast.BlockExpression{Block: &ast.BlockStatement{Statements: []ast.Statement{
 		&ast.VariableDeclaration{
-			Name: &ast.Identifier{Value: "value"},
+			Name:  &ast.Identifier{Value: "value"},
 			Value: &ast.InvocationExpression{Function: &ast.Identifier{Value: "unknown"}},
 		},
 		&ast.WhileStatement{
@@ -218,8 +217,6 @@ func TestNamedGenericFunctionUnsafeBodyRemainsMonomorphic(t *testing.T) {
 		t.Fatalf("unsafe named closure generalized to %#v", scheme.TypeVars)
 	}
 }
-
-
 
 func TestStatelessBuiltinDoesNotBecomeForwardCapture(t *testing.T) {
 	tc := New(nilObjectEnvironment())
@@ -330,7 +327,6 @@ func TestSafeForwardCalleePreservesEarlierGenericCaller(t *testing.T) {
 	}
 }
 
-
 func TestGenericCalleeParticipatesInForwardBarrierFixedPoint(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	helper := &ast.FunctionStatement{
@@ -397,7 +393,6 @@ func TestGenericCalleeParticipatesInForwardBarrierFixedPoint(t *testing.T) {
 	}
 }
 
-
 func TestBlockedSchemePersistsFirstCallSubstitution(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	v := NewUnifier().FreshTypeVar("T")
@@ -455,7 +450,7 @@ func TestBlockedSchemePersistsThroughHigherOrderArguments(t *testing.T) {
 	})
 
 	first := &ast.InvocationExpression{
-		Function: &ast.Identifier{Value: "takesInt"},
+		Function:  &ast.Identifier{Value: "takesInt"},
 		Arguments: []ast.Expression{&ast.Identifier{Value: "blocked"}},
 	}
 	tc.checkInvocationExpression(first)
@@ -465,7 +460,7 @@ func TestBlockedSchemePersistsThroughHigherOrderArguments(t *testing.T) {
 
 	before := len(tc.Errors())
 	second := &ast.InvocationExpression{
-		Function: &ast.Identifier{Value: "takesString"},
+		Function:  &ast.Identifier{Value: "takesString"},
 		Arguments: []ast.Expression{&ast.Identifier{Value: "blocked"}},
 	}
 	tc.checkInvocationExpression(second)
@@ -484,7 +479,7 @@ func TestBlockedSchemeCannotBeRegeneralizedByAlias(t *testing.T) {
 	)
 	tc.env.Set("blocked", blocked)
 	tc.checkVariableDeclaration(&ast.VariableDeclaration{
-		Name: &ast.Identifier{Value: "alias"},
+		Name:  &ast.Identifier{Value: "alias"},
 		Value: &ast.Identifier{Value: "blocked"},
 	})
 	alias, ok := tc.env.Get("alias")
@@ -493,12 +488,12 @@ func TestBlockedSchemeCannotBeRegeneralizedByAlias(t *testing.T) {
 	}
 
 	tc.checkInvocationExpression(&ast.InvocationExpression{
-		Function: &ast.Identifier{Value: "alias"},
+		Function:  &ast.Identifier{Value: "alias"},
 		Arguments: []ast.Expression{&ast.IntegerLiteral{Value: 1}},
 	})
 	before := len(tc.Errors())
 	tc.checkInvocationExpression(&ast.InvocationExpression{
-		Function: &ast.Identifier{Value: "blocked"},
+		Function:  &ast.Identifier{Value: "blocked"},
 		Arguments: []ast.Expression{&ast.StringLiteral{Value: "different"}},
 	})
 	if len(tc.Errors()) == before {
@@ -516,7 +511,7 @@ func TestBlockedConstrainedSchemeReusesPersistentBinding(t *testing.T) {
 	tc.env.Set("blockedConstrained", scheme)
 	call := func() {
 		tc.checkInvocationExpression(&ast.InvocationExpression{
-			Function: &ast.Identifier{Value: "blockedConstrained"},
+			Function:  &ast.Identifier{Value: "blockedConstrained"},
 			Arguments: []ast.Expression{&ast.IntegerLiteral{Value: 1}},
 		})
 	}
@@ -546,8 +541,8 @@ func TestMatchArmBindingIsNotAnOuterCapture(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	tc.env.SetType("item", &ArrayType{
 		ElementType: &PrimitiveType{Name: "u8"},
-		Length: -1,
-		IsSpan: true,
+		Length:      -1,
+		IsSpan:      true,
 	})
 	fn := &ast.FunctionLiteral{
 		Arguments: []*ast.Identifier{{Value: "value"}},
@@ -556,7 +551,7 @@ func TestMatchArmBindingIsNotAnOuterCapture(t *testing.T) {
 				Scrutinee: &ast.Identifier{Value: "value"},
 				Arms: []*ast.MatchArm{{
 					Pattern: &ast.BindingPattern{Name: &ast.Identifier{Value: "item"}},
-					Body: &ast.Identifier{Value: "item"},
+					Body:    &ast.Identifier{Value: "item"},
 				}},
 			}},
 		}},
@@ -570,15 +565,15 @@ func TestSelectorNameIsNotAnOuterCapture(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	tc.env.SetType("field", &ArrayType{
 		ElementType: &PrimitiveType{Name: "u8"},
-		Length: -1,
-		IsSpan: true,
+		Length:      -1,
+		IsSpan:      true,
 	})
 	fn := &ast.FunctionLiteral{
 		Arguments: []*ast.Identifier{{Value: "record"}},
 		Body: &ast.BlockStatement{Statements: []ast.Statement{
 			&ast.ExpressionStatement{Expression: &ast.IndexExpression{
 				Token: token.Token{Literal: "."},
-				Left: &ast.Identifier{Value: "record"},
+				Left:  &ast.Identifier{Value: "record"},
 				Index: &ast.Identifier{Value: "field"},
 			}},
 		}},
@@ -598,7 +593,7 @@ func TestSelectorNameDoesNotPropagateInitializerBarrier(t *testing.T) {
 	tc.env.Set("field", selectorBinding)
 	projection := &ast.IndexExpression{
 		Token: token.Token{Literal: "."},
-		Left: &ast.Identifier{Value: "record"},
+		Left:  &ast.Identifier{Value: "record"},
 		Index: &ast.Identifier{Value: "field"},
 	}
 	if facts := deriveGeneralizationFacts(polymorphicIdentityType(), projection, tc.env); !facts.Safe() {
@@ -821,7 +816,7 @@ func TestMethodSelectorPropagatesResolvedSchemeBarriers(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	tc.env.SetType("receiver", &ADTType{Name: "Box"})
 	tc.env.Set("Box::touch", &TypeScheme{
-		Type: &FunctionType{ReturnType: &UnitType{}},
+		Type:                   &FunctionType{ReturnType: &UnitType{}},
 		GeneralizationBarriers: GeneralizationUnsafeAssumption,
 	})
 	call := &ast.InvocationExpression{
@@ -873,8 +868,8 @@ func TestNestedClosureInheritsMatchArmBindingScope(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	tc.env.SetType("item", &ArrayType{
 		ElementType: &PrimitiveType{Name: "u8"},
-		Length: -1,
-		IsSpan: true,
+		Length:      -1,
+		IsSpan:      true,
 	})
 	nested := &ast.FunctionLiteral{Body: &ast.BlockStatement{Statements: []ast.Statement{
 		&ast.ExpressionStatement{Expression: &ast.Identifier{Value: "item"}},
@@ -886,7 +881,7 @@ func TestNestedClosureInheritsMatchArmBindingScope(t *testing.T) {
 				Scrutinee: &ast.Identifier{Value: "value"},
 				Arms: []*ast.MatchArm{{
 					Pattern: &ast.BindingPattern{Name: &ast.Identifier{Value: "item"}},
-					Body: nested,
+					Body:    nested,
 				}},
 			}},
 		}},
@@ -944,7 +939,7 @@ func TestDirectFunctionReferenceAddsNoCaptureBarrier(t *testing.T) {
 	})
 	fn := &ast.FunctionLiteral{Body: &ast.BlockStatement{Statements: []ast.Statement{
 		&ast.ExpressionStatement{Expression: &ast.InvocationExpression{
-			Function: &ast.Identifier{Value: "helper"},
+			Function:  &ast.Identifier{Value: "helper"},
 			Arguments: []ast.Expression{&ast.IntegerLiteral{Value: 1}},
 		}},
 	}}}
@@ -964,13 +959,13 @@ func TestArgumentDiagnosticPreventsMonomorphicCommit(t *testing.T) {
 	tc.env.Set("blocked", scheme)
 	badArray := &ast.ArrayLiteral{
 		Type: &ast.IndexExpression{
-			Left: &ast.Identifier{Value: "int"},
+			Left:  &ast.Identifier{Value: "int"},
 			Index: &ast.IntegerLiteral{Value: 1},
 		},
 		Elements: []ast.Expression{&ast.StringLiteral{Value: "bad element"}},
 	}
 	tc.checkInvocationExpression(&ast.InvocationExpression{
-		Function: &ast.Identifier{Value: "blocked"},
+		Function:  &ast.Identifier{Value: "blocked"},
 		Arguments: []ast.Expression{badArray},
 	})
 	if _, fixed := scheme.Monomorphic[v]; fixed {
@@ -979,7 +974,7 @@ func TestArgumentDiagnosticPreventsMonomorphicCommit(t *testing.T) {
 
 	before := len(tc.Errors())
 	result := tc.checkInvocationExpression(&ast.InvocationExpression{
-		Function: &ast.Identifier{Value: "blocked"},
+		Function:  &ast.Identifier{Value: "blocked"},
 		Arguments: []ast.Expression{&ast.StringLiteral{Value: "valid"}},
 	})
 	if result == nil || !result.Equals(&StringType{}) {
@@ -994,8 +989,8 @@ func TestNestedNamedFunctionInheritsMatchArmBindingScope(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	tc.env.SetType("item", &ArrayType{
 		ElementType: &PrimitiveType{Name: "u8"},
-		Length: -1,
-		IsSpan: true,
+		Length:      -1,
+		IsSpan:      true,
 	})
 	inner := &ast.FunctionStatement{
 		Name: &ast.Identifier{Value: "inner"},
@@ -1012,7 +1007,7 @@ func TestNestedNamedFunctionInheritsMatchArmBindingScope(t *testing.T) {
 				Scrutinee: &ast.Identifier{Value: "value"},
 				Arms: []*ast.MatchArm{{
 					Pattern: &ast.BindingPattern{Name: &ast.Identifier{Value: "item"}},
-					Body: armBody,
+					Body:    armBody,
 				}},
 			}},
 		}},
@@ -1041,8 +1036,8 @@ func TestAnnotatedAliasCommitsBlockedSpecialization(t *testing.T) {
 	})
 
 	tc.checkVariableDeclaration(&ast.VariableDeclaration{
-		Name: &ast.Identifier{Value: "intAlias"},
-		Type: &ast.Identifier{Value: "IntFn"},
+		Name:  &ast.Identifier{Value: "intAlias"},
+		Type:  &ast.Identifier{Value: "IntFn"},
 		Value: &ast.Identifier{Value: "blocked"},
 	})
 	if got := blocked.Monomorphic.Apply(v); !got.Equals(&PrimitiveType{Name: "int"}) {
@@ -1050,8 +1045,8 @@ func TestAnnotatedAliasCommitsBlockedSpecialization(t *testing.T) {
 	}
 	before := len(tc.Errors())
 	tc.checkVariableDeclaration(&ast.VariableDeclaration{
-		Name: &ast.Identifier{Value: "stringAlias"},
-		Type: &ast.Identifier{Value: "StringFn"},
+		Name:  &ast.Identifier{Value: "stringAlias"},
+		Type:  &ast.Identifier{Value: "StringFn"},
 		Value: &ast.Identifier{Value: "blocked"},
 	})
 	if len(tc.Errors()) == before {
@@ -1091,7 +1086,7 @@ func TestIndependentBlockedSchemesDoNotPolluteConstraints(t *testing.T) {
 	before := len(tc.Errors())
 	for _, name := range []string{"first", "second"} {
 		tc.checkInvocationExpression(&ast.InvocationExpression{
-			Function: &ast.Identifier{Value: name},
+			Function:  &ast.Identifier{Value: name},
 			Arguments: []ast.Expression{&ast.IntegerLiteral{Value: 1}},
 		})
 	}
@@ -1106,7 +1101,7 @@ func TestBlockedLocalDoesNotCaptureEnclosingTypeBinder(t *testing.T) {
 	env.SetType("T", enclosing)
 	localType := &ArrayType{
 		ElementType: enclosing,
-		Length: 1,
+		Length:      1,
 	}
 	scheme := GeneralizeWithFacts(
 		localType,
@@ -1168,7 +1163,7 @@ func TestMatchInitializerDoesNotPropagateShadowedBarrierMetadata(t *testing.T) {
 		Scrutinee: &ast.Boolean{Value: true},
 		Arms: []*ast.MatchArm{{
 			Pattern: &ast.BindingPattern{Name: &ast.Identifier{Value: "item"}},
-			Body: &ast.Identifier{Value: "item"},
+			Body:    &ast.Identifier{Value: "item"},
 		}},
 	}
 	if facts := deriveGeneralizationFacts(polymorphicIdentityType(), match, tc.env); !facts.Safe() {
@@ -1228,7 +1223,7 @@ func TestFailedAnnotatedDeclarationRollsBackNestedCall(t *testing.T) {
 		Name: &ast.Identifier{Value: "bad"},
 		Type: &ast.Identifier{Value: "string"},
 		Value: &ast.InvocationExpression{
-			Function: &ast.Identifier{Value: "blocked"},
+			Function:  &ast.Identifier{Value: "blocked"},
 			Arguments: []ast.Expression{&ast.IntegerLiteral{Value: 1}},
 		},
 	})
@@ -1237,7 +1232,7 @@ func TestFailedAnnotatedDeclarationRollsBackNestedCall(t *testing.T) {
 	}
 	before := len(tc.Errors())
 	result := tc.checkInvocationExpression(&ast.InvocationExpression{
-		Function: &ast.Identifier{Value: "blocked"},
+		Function:  &ast.Identifier{Value: "blocked"},
 		Arguments: []ast.Expression{&ast.StringLiteral{Value: "valid"}},
 	})
 	if result == nil || !result.Equals(&StringType{}) {
@@ -1266,7 +1261,7 @@ func TestSiblingUsesSharePendingMonomorphicSpecialization(t *testing.T) {
 	})
 	callBlocked := func(argument ast.Expression) ast.Expression {
 		return &ast.InvocationExpression{
-			Function: &ast.Identifier{Value: "blocked"},
+			Function:  &ast.Identifier{Value: "blocked"},
 			Arguments: []ast.Expression{argument},
 		}
 	}
@@ -1299,7 +1294,7 @@ func TestAssertFailureRollsBackNestedSpecialization(t *testing.T) {
 		Function: &ast.Identifier{Value: "assert"},
 		Arguments: []ast.Expression{
 			&ast.InvocationExpression{
-				Function: &ast.Identifier{Value: "blocked"},
+				Function:  &ast.Identifier{Value: "blocked"},
 				Arguments: []ast.Expression{&ast.IntegerLiteral{Value: 1}},
 			},
 		},
@@ -1309,7 +1304,7 @@ func TestAssertFailureRollsBackNestedSpecialization(t *testing.T) {
 	}
 	before := len(tc.Errors())
 	result := tc.checkInvocationExpression(&ast.InvocationExpression{
-		Function: &ast.Identifier{Value: "blocked"},
+		Function:  &ast.Identifier{Value: "blocked"},
 		Arguments: []ast.Expression{&ast.StringLiteral{Value: "valid"}},
 	})
 	if result == nil || !result.Equals(&StringType{}) {
@@ -1371,7 +1366,7 @@ func TestFailedAssignmentRollsBackNestedSpecialization(t *testing.T) {
 	tc.checkAssignmentStatement(&ast.AssignmentStatement{
 		Name: &ast.Identifier{Value: "target"},
 		Value: &ast.InvocationExpression{
-			Function: &ast.Identifier{Value: "blocked"},
+			Function:  &ast.Identifier{Value: "blocked"},
 			Arguments: []ast.Expression{&ast.IntegerLiteral{Value: 1}},
 		},
 	})
@@ -1380,7 +1375,7 @@ func TestFailedAssignmentRollsBackNestedSpecialization(t *testing.T) {
 	}
 	before := len(tc.Errors())
 	result := tc.checkInvocationExpression(&ast.InvocationExpression{
-		Function: &ast.Identifier{Value: "blocked"},
+		Function:  &ast.Identifier{Value: "blocked"},
 		Arguments: []ast.Expression{&ast.StringLiteral{Value: "valid"}},
 	})
 	if result == nil || !result.Equals(&StringType{}) {
@@ -1390,7 +1385,6 @@ func TestFailedAssignmentRollsBackNestedSpecialization(t *testing.T) {
 		t.Fatalf("later valid call cascaded: %v", tc.Errors()[before:])
 	}
 }
-
 
 func TestSiblingConstrainedUsesSeePendingMonomorphicSpecialization(t *testing.T) {
 	tc := New(nilObjectEnvironment())
@@ -1409,7 +1403,7 @@ func TestSiblingConstrainedUsesSeePendingMonomorphicSpecialization(t *testing.T)
 	})
 	callBlocked := func(value int64) ast.Expression {
 		return &ast.InvocationExpression{
-			Function: &ast.Identifier{Value: "blocked"},
+			Function:  &ast.Identifier{Value: "blocked"},
 			Arguments: []ast.Expression{&ast.IntegerLiteral{Value: value}},
 		}
 	}
@@ -1432,7 +1426,6 @@ func TestSiblingConstrainedUsesSeePendingMonomorphicSpecialization(t *testing.T)
 		t.Fatalf("committed constrained specialization = %v, want int", got)
 	}
 }
-
 
 func TestEscapedTypeVariableJoinsBlockedMonomorphicGroup(t *testing.T) {
 	tc := New(nilObjectEnvironment())
@@ -1460,7 +1453,7 @@ func TestEscapedTypeVariableJoinsBlockedMonomorphicGroup(t *testing.T) {
 	tc.env.Set("stringIdentity", &TypeScheme{Type: stringFn})
 	callBlocked := func(name string) Type {
 		return tc.checkInvocationExpression(&ast.InvocationExpression{
-			Function: &ast.Identifier{Value: "blocked"},
+			Function:  &ast.Identifier{Value: "blocked"},
 			Arguments: []ast.Expression{&ast.Identifier{Value: name}},
 		})
 	}
@@ -1485,7 +1478,6 @@ func TestEscapedTypeVariableJoinsBlockedMonomorphicGroup(t *testing.T) {
 		t.Fatal("escaped variable reopened blocked binding at string identity")
 	}
 }
-
 
 func TestBarredPredeclaredGenericIsPersistent(t *testing.T) {
 	tc := New(object.NewEnvironment())
@@ -1537,7 +1529,6 @@ func TestBarredPredeclaredGenericIsPersistent(t *testing.T) {
 	}
 }
 
-
 func TestPredeclaredMethodCallDoesNotMonomorphizeSafeGeneric(t *testing.T) {
 	box := &ast.ADTType{
 		Name: &ast.Identifier{Value: "Box"},
@@ -1586,7 +1577,6 @@ func TestPredeclaredMethodCallDoesNotMonomorphizeSafeGeneric(t *testing.T) {
 	}
 }
 
-
 func TestCompilerLibraryCallDoesNotCreateCaptureBarrier(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	fn := &ast.FunctionLiteral{
@@ -1609,16 +1599,16 @@ func TestCompilerLibraryCallDoesNotCreateCaptureBarrier(t *testing.T) {
 
 func TestPredeclaredMethodParametersResolveMethodAuthority(t *testing.T) {
 	box := &ast.ADTType{
-		Name: &ast.Identifier{Value: "Box"},
+		Name:     &ast.Identifier{Value: "Box"},
 		Variants: []*ast.ADTVariant{{Name: &ast.Identifier{Value: "Box"}}},
 	}
 	read := &ast.FunctionStatement{
 		Receiver: &ast.FunctionParameter{
 			Name: &ast.Identifier{Value: "self"}, Type: &ast.Identifier{Value: "Box"},
 		},
-		Name: &ast.Identifier{Value: "read"},
+		Name:       &ast.Identifier{Value: "read"},
 		ReturnType: &ast.Identifier{Value: "i32"},
-		Body: &ast.IntegerLiteral{Value: 0},
+		Body:       &ast.IntegerLiteral{Value: 0},
 	}
 	forward := &ast.FunctionStatement{
 		Receiver: &ast.FunctionParameter{
@@ -1632,7 +1622,7 @@ func TestPredeclaredMethodParametersResolveMethodAuthority(t *testing.T) {
 		Body: &ast.InvocationExpression{
 			Function: &ast.IndexExpression{
 				Token: token.Token{Literal: "."},
-				Left: &ast.Identifier{Value: "other"},
+				Left:  &ast.Identifier{Value: "other"},
 				Index: &ast.Identifier{Value: "read"},
 			},
 		},
@@ -1649,7 +1639,6 @@ func TestPredeclaredMethodParametersResolveMethodAuthority(t *testing.T) {
 	}
 }
 
-
 func TestDeclaredLocalTypeResolvesMethodAuthority(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	tc.env.Set("Box::read", &TypeScheme{
@@ -1662,13 +1651,13 @@ func TestDeclaredLocalTypeResolvesMethodAuthority(t *testing.T) {
 				Type: &ast.Identifier{Value: "Box"},
 				Value: &ast.VariantExpression{
 					TypeName: &ast.Identifier{Value: "Box"},
-					Variant: &ast.Identifier{Value: "Box"},
+					Variant:  &ast.Identifier{Value: "Box"},
 				},
 			},
 			&ast.ExpressionStatement{Expression: &ast.InvocationExpression{
 				Function: &ast.IndexExpression{
 					Token: token.Token{Literal: "."},
-					Left: &ast.Identifier{Value: "box"},
+					Left:  &ast.Identifier{Value: "box"},
 					Index: &ast.Identifier{Value: "read"},
 				},
 			}},
@@ -1679,7 +1668,6 @@ func TestDeclaredLocalTypeResolvesMethodAuthority(t *testing.T) {
 	}
 }
 
-
 func TestExpressionReceiverResolvesMethodAuthority(t *testing.T) {
 	tc := New(nilObjectEnvironment())
 	tc.env.Set("makeBox", &TypeScheme{Type: &FunctionType{ReturnType: &ADTType{Name: "Box"}}})
@@ -1688,12 +1676,62 @@ func TestExpressionReceiverResolvesMethodAuthority(t *testing.T) {
 		&ast.ExpressionStatement{Expression: &ast.InvocationExpression{
 			Function: &ast.IndexExpression{
 				Token: token.Token{Literal: "."},
-				Left: &ast.InvocationExpression{Function: &ast.Identifier{Value: "makeBox"}},
+				Left:  &ast.InvocationExpression{Function: &ast.Identifier{Value: "makeBox"}},
 				Index: &ast.Identifier{Value: "read"},
 			},
 		}},
 	}}}
 	if facts := functionCaptureFacts(fn, tc.env); !facts.Safe() {
 		t.Fatalf("expression receiver blocked generalization: %v", facts)
+	}
+}
+
+func TestTemplateAuthorityCannotBeReopenedBySpecialization(t *testing.T) {
+	tc := New(nilObjectEnvironment())
+	fn := &ast.FunctionStatement{
+		Name:       &ast.Identifier{Value: "restricted"},
+		TypeParams: []*ast.TypeParameter{{Name: &ast.Identifier{Value: "T"}}},
+		Parameters: []*ast.FunctionParameter{{
+			Name: &ast.Identifier{Value: "value"},
+			Type: &ast.Identifier{Value: "T"},
+		}},
+		ReturnType: &ast.Identifier{Value: "T"},
+		Body: &ast.BlockExpression{Block: &ast.BlockStatement{Statements: []ast.Statement{
+			&ast.UnsafeBlock{Body: &ast.BlockStatement{}},
+			&ast.ExpressionStatement{Expression: &ast.Identifier{Value: "value"}},
+		}}},
+	}
+	tc.CheckProgram(&ast.Program{Statements: []ast.Statement{fn}})
+	first := tc.CheckExpression(&ast.InvocationExpression{
+		Function:  &ast.Identifier{Value: "restricted"},
+		Arguments: []ast.Expression{&ast.IntegerLiteral{Value: 1}},
+	})
+	if first == nil || len(tc.Errors()) != 0 {
+		t.Fatalf("first specialization failed: %v", tc.Errors())
+	}
+	before := len(tc.Errors())
+	second := tc.CheckExpression(&ast.InvocationExpression{
+		Function:  &ast.Identifier{Value: "restricted"},
+		Arguments: []ast.Expression{&ast.StringLiteral{Value: "different"}},
+	})
+	if second != nil || len(tc.Errors()) == before {
+		t.Fatal("template specialization reopened restricted authority")
+	}
+}
+
+func TestConditionalUnsafeBodyContributesGeneralizationBarrier(t *testing.T) {
+	tc := New(nilObjectEnvironment())
+	body := &ast.BlockStatement{Statements: []ast.Statement{
+		&ast.IfStatement{
+			Condition: &ast.Boolean{Value: true},
+			Consequence: &ast.BlockStatement{Statements: []ast.Statement{
+				&ast.UnsafeBlock{Body: &ast.BlockStatement{}},
+			}},
+		},
+	}}
+	capture := functionCaptureFacts(&ast.FunctionLiteral{Body: body}, tc.env)
+	initializer := deriveGeneralizationFacts(polymorphicIdentityType(), &ast.BlockExpression{Block: body}, tc.env)
+	if !capture.Has(GeneralizationUnsafeAssumption) || !initializer.Has(GeneralizationUnsafeAssumption) {
+		t.Fatalf("conditional hid unsafe evidence: capture=%v initializer=%v", capture, initializer)
 	}
 }

@@ -80,7 +80,7 @@ type TypeVar struct {
 	// Monomorphic is shared by every occurrence descended from a blocked
 	// binding. It makes the variable participate persistently in unification
 	// even through aliases and higher-order arguments.
-	Monomorphic Substitution
+	Monomorphic      Substitution
 	monomorphicGroup *monomorphicGroup
 }
 
@@ -597,14 +597,20 @@ func typeVarsIn(typ Type) []*TypeVar {
 				variables = append(variables, t)
 			}
 		case *RecordType:
-			for _, field := range t.Fields { visit(field) }
+			for _, field := range t.Fields {
+				visit(field)
+			}
 		case *FunctionType:
-			for _, parameter := range t.Parameters { visit(parameter) }
+			for _, parameter := range t.Parameters {
+				visit(parameter)
+			}
 			visit(t.ReturnType)
 		case *ArrayType:
 			visit(t.ElementType)
 		case *GenericType:
-			for _, argument := range t.TypeArgs { visit(argument) }
+			for _, argument := range t.TypeArgs {
+				visit(argument)
+			}
 		}
 	}
 	visit(typ)
@@ -621,14 +627,20 @@ func findMonomorphicSubstitution(typ Type) Substitution {
 				found = t.Monomorphic
 			}
 		case *RecordType:
-			for _, field := range t.Fields { visit(field) }
+			for _, field := range t.Fields {
+				visit(field)
+			}
 		case *FunctionType:
-			for _, parameter := range t.Parameters { visit(parameter) }
+			for _, parameter := range t.Parameters {
+				visit(parameter)
+			}
 			visit(t.ReturnType)
 		case *ArrayType:
 			visit(t.ElementType)
 		case *GenericType:
-			for _, argument := range t.TypeArgs { visit(argument) }
+			for _, argument := range t.TypeArgs {
+				visit(argument)
+			}
 		}
 	}
 	visit(typ)
@@ -654,14 +666,20 @@ func markMonomorphicTypeVars(typ Type, persistent Substitution, group *monomorph
 				t.monomorphicGroup = group
 			}
 		case *RecordType:
-			for _, field := range t.Fields { visit(field) }
+			for _, field := range t.Fields {
+				visit(field)
+			}
 		case *FunctionType:
-			for _, parameter := range t.Parameters { visit(parameter) }
+			for _, parameter := range t.Parameters {
+				visit(parameter)
+			}
 			visit(t.ReturnType)
 		case *ArrayType:
 			visit(t.ElementType)
 		case *GenericType:
-			for _, argument := range t.TypeArgs { visit(argument) }
+			for _, argument := range t.TypeArgs {
+				visit(argument)
+			}
 		}
 	}
 	visit(typ)
@@ -703,9 +721,9 @@ func makeMonomorphicSchemeFor(typ Type, constraints []Constraint, variables []*T
 	}
 	if len(variables) == 0 {
 		return &TypeScheme{
-			TypeVars: []string{},
+			TypeVars:    []string{},
 			Constraints: constraints,
-			Type: typ,
+			Type:        typ,
 		}
 	}
 	if persistent == nil {
@@ -721,9 +739,9 @@ func makeMonomorphicSchemeFor(typ Type, constraints []Constraint, variables []*T
 		}
 	}
 	return &TypeScheme{
-		TypeVars: []string{},
+		TypeVars:    []string{},
 		Constraints: constraints,
-		Type: typ,
+		Type:        typ,
 		Monomorphic: persistent,
 	}
 }

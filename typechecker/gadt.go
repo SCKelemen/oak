@@ -112,10 +112,14 @@ func (tc *TypeChecker) instantiateStoredType(spelling string, bindings map[strin
 }
 
 func substituteNamedADTParameters(typ Type, bindings map[string]Type) Type {
-	if typ == nil { return nil }
+	if typ == nil {
+		return nil
+	}
 	switch t := typ.(type) {
 	case *ADTType:
-		if bound, ok := bindings[t.Name]; ok { return bound }
+		if bound, ok := bindings[t.Name]; ok {
+			return bound
+		}
 		return t
 	case *ArrayType:
 		return &ArrayType{
@@ -144,7 +148,7 @@ func substituteNamedADTParameters(typ Type, bindings map[string]Type) Type {
 		return &FunctionType{
 			Parameters: parameters,
 			ReturnType: substituteNamedADTParameters(t.ReturnType, bindings),
-			Variadic: t.Variadic,
+			Variadic:   t.Variadic,
 		}
 	default:
 		return typ
@@ -152,7 +156,9 @@ func substituteNamedADTParameters(typ Type, bindings map[string]Type) Type {
 }
 
 func (tc *TypeChecker) instantiatedVariantPayload(adtName string, variant *object.ADTVariantDef, bindings map[string]Type) Type {
-	if variant == nil || variant.Payload == "" { return nil }
+	if variant == nil || variant.Payload == "" {
+		return nil
+	}
 	if variants := tc.adtPayloadTypes[adtName]; variants != nil {
 		if checked := variants[variant.Name]; checked != nil {
 			return substituteNamedADTParameters(checked, bindings)
@@ -279,7 +285,6 @@ func (tc *TypeChecker) variantResultType(
 	}
 	return &GenericType{Name: adt.Name, TypeArgs: args}
 }
-
 
 func variantResultString(adt *object.ADTType, variant *object.ADTVariantDef) string {
 	name := variant.ResultName
