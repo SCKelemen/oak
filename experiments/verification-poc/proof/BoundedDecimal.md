@@ -97,6 +97,7 @@ relationship is tested on the corpus. No universal theorem connects the Oak
 scanner, compiler output, or complete DIMACS/LRAT parser to this model yet.
 The C compiler/runtime and Go harness also remain trusted execution components.
 
-The next step is a scanner-state relation covering byte positions, token ranges,
-partial accumulators, and rejection states. Composing that relation with these
-arithmetic and buffer lemmas would support a proof of the complete decoder.
+The [scanner-state milestone](ScannerState.md) adds a partial-decimal trace
+relation and token cursor/range invariants. The next step is to connect scanner
+tokens to the decoder's clause and hint buffer transitions, preserving
+initialized prefixes and zero terminators.

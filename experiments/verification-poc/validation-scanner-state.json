@@ -1,0 +1,131 @@
+{
+  "artifacts": "Soundness artifact retains scanner-proof.log, scanner-cases.json, scanner-go.log, and scanner-agreement.log for 30 days.",
+  "commit": "3dd80bd46f795d81b8b543304d1cb81335f7da63",
+  "comparison": {
+    "all_byte_values": 256,
+    "cases": 1242,
+    "checks": [
+      "Token kind",
+      "Next cursor",
+      "Token start",
+      "Token end",
+      "Magnitude, including partial values on rejection",
+      "Sign tag, including negative zero"
+    ],
+    "coverage": [
+      "Every starting cursor in representative streams",
+      "Repeated scans and repeated EOF",
+      "Poisoned initial output fields",
+      "First invalid byte and decimal overflow with unconsumed numeric suffix",
+      "Whitespace and newline boundaries",
+      "65536-byte input boundaries"
+    ],
+    "execution": "Actual Oak frontend -> generated C -> native assertions",
+    "oracles": [
+      "Go byte scanner with uint64 arithmetic followed by bound check",
+      "Executable Lean scanner model"
+    ],
+    "random_streams": 300,
+    "seed": 20260908,
+    "transitions": 6533,
+    "transport": "JSON numeric byte arrays preserve invalid UTF-8"
+  },
+  "date": "2026-09-08",
+  "format": "oak-scanner-state-validation-1",
+  "implementation": {
+    "actual_implementation": "Oak: rup_token in self_hosted_text.oak",
+    "formal_model": "Lean 4: proof/ScannerState.lean",
+    "host_harness": "Go: self_hosted_scanner_test.go",
+    "python_runtime": false
+  },
+  "next_step": "Connect scanner tokens to clause and hint buffer transitions, preserving initialized prefixes and zero terminators.",
+  "profile": {
+    "initial_cursor": "0 <= cursor <= input length",
+    "maximum_input_bytes": 65536,
+    "maximum_magnitude": 2147483647,
+    "word_modulus": 4294967296
+  },
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.Scanner.countWhile_bounds' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Scanner.advance_refines' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Scanner.walk_trace' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Scanner.trace_bounds' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Scanner.walk_bounds' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Scanner.scanTail_range' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Scanner.scan_range' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Scanner.scan_no_wrap' depends on axioms: [propext, Classical.choice, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "invariants": [
+      "Numeric cursor stays within its digit list",
+      "Bounded initial accumulators yield bounded partial magnitudes",
+      "Successful numeric scans consume every digit byte",
+      "Token start and end are ordered and in bounds",
+      "Next cursor equals token end",
+      "Every non-EOF token advances the initial cursor",
+      "Resulting cursor does not wrap at the supported input bound"
+    ],
+    "relation": "Trace specifies ASCII numeric prefixes by unbounded arithmetic and bounded results; first failure consumes one byte and retains the preceding magnitude.",
+    "reported_theorems": 8,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Universal Oak execution-to-model representation relation",
+      "Complete external lexical specification",
+      "Concrete clause and hint buffer correspondence",
+      "End-to-end DIMACS/LRAT semantic preservation",
+      "Oak compiler semantics preservation"
+    ],
+    "proved": [
+      "Lean numeric model-to-Trace refinement",
+      "Lean token cursor and range invariants"
+    ],
+    "tested": [
+      "Compiled Oak-to-Lean model correspondence on all corpus state sequences"
+    ],
+    "trusted_execution": [
+      "Oak compiler",
+      "Generated C",
+      "C compiler/runtime",
+      "Go harness",
+      "Corpus JSON adapters"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34208314647",
+  "solvers_job": 102003029167,
+  "soundness_job": 102003028992,
+  "passed": true,
+  "native_scanner_seconds": {
+    "without_race_detector": 31.36,
+    "with_race_detector": 183.61
+  },
+  "repository_ci": {
+    "Golden File Verification": "success",
+    "Formal Verification": "success",
+    "CI": "success",
+    "Standard library": "success",
+    "Verification experiment (opt-in)": "success"
+  },
+  "existing_certificate_gate": {
+    "accepted": 11,
+    "rejected_corruptions": 22,
+    "oak_ascii_replay": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    },
+    "boolean_proof_bridge": {
+      "accepted": 6,
+      "rejected_satisfiable": 3,
+      "rejected_corruptions": 12
+    },
+    "boolean_model_gate": {
+      "accepted_safe": 1,
+      "rejected_unsafe": 1,
+      "rejected_wrong_model": 1,
+      "rejected_corruptions": 2,
+      "rejected_malformed": 3
+    }
+  }
+}

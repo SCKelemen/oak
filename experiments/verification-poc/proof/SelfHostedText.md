@@ -111,6 +111,7 @@ theory lemmas remain unsupported.
 
 The [bounded decimal milestone](BoundedDecimal.md) now proves model-level
 decimal refinement and local buffer invariants. Correspondence between compiled
-Oak and that model remains tested rather than universally proved. The next step
-is a scanner-state relation covering cursors, token ranges, partial values, and
-rejection states.
+Oak and that model remains tested rather than universally proved. The
+[scanner-state milestone](ScannerState.md) adds partial-decimal trace refinement
+and token cursor/range invariants, with complete state-sequence comparisons.
+Connecting scanner tokens to clause and hint buffer transitions is next.

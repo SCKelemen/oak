@@ -44,6 +44,21 @@ same complete state sequences against the executable Lean model. Compiler
 failures, traps, timeouts, missing tools, and malformed corpus data fail the gate.
 The opt-in workflow retains the corpus, proof axiom reports, and comparison logs.
 
+[The soundness gate passed](https://github.com/SCKelemen/oak/actions/runs/34208314647/job/102003028992):
+all eight reported theorems were checked without proof holes or project-specific
+axioms, and 1,242 cases containing 6,533 transitions agreed across compiled Oak,
+Go, and Lean. The reports contain only `propext`, `Classical.choice`, and
+`Quot.sound`. Sharing the generated assertion function preserves all comparisons
+while reducing compilation work; the native scanner test completed in 31.36
+seconds without the race detector. The complete validation record is stored in
+`../validation-scanner-state.json`.
+
+The complete native suite also passed with Go's race detector; the scanner
+comparison took 183.61 seconds in that configuration. The external verification
+suite and certificate gates passed, including 11 accepted Lean certificate
+checks with 22 rejected corruptions, and one accepted Oak ASCII replay with two
+rejected corruptions. Boolean proof and invariant-model gates passed as well.
+
 ## Proof boundary
 
 The numeric model-to-relation refinement and scanner cursor/range invariants
