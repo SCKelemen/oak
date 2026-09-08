@@ -49,23 +49,16 @@ func (m *ResourceModel) MarkOperation(name string, operation ResourceOperation) 
 	if m.Operations == nil {
 		m.Operations = make(map[string]ResourceOperation)
 	}
-	copyOperation := operation
-	copyOperation.Parameters = append([]ResourceParameterDeclaration(nil), operation.Parameters...)
-	copyOperation.Consumes = append([]int(nil), operation.Consumes...)
-	// Compatibility for pre-parameter-mode callers: a legacy consume list is
-	// equivalent to explicit consumed parameters when no richer modes exist.
-	if len(copyOperation.Parameters) == 0 {
-		for _, index := range copyOperation.Consumes {
-			copyOperation.Parameters = append(copyOperation.Parameters, ResourceParameterDeclaration{
-				Index: index,
-				Mode:  ResourceParameterConsumed,
-			})
-		}
+	normalized, err := normalizeResourceOperation(operation)
+	if err != nil {
+		// Keep malformed input for the checking entry point to diagnose. Never
+		// silently replace a conflicting contract with an empty operation.
+		operation.Parameters = append([]ResourceParameterDeclaration(nil), operation.Parameters...)
+		operation.Consumes = append([]int(nil), operation.Consumes...)
+		m.Operations[name] = operation
+		return
 	}
-	sort.Slice(copyOperation.Parameters, func(i, j int) bool {
-		return copyOperation.Parameters[i].Index < copyOperation.Parameters[j].Index
-	})
-	m.Operations[name] = copyOperation
+	m.Operations[name] = normalized
 }
 
 // CheckProgramWithResources is the integrated typed-program entrypoint for the
@@ -83,6 +76,24 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 	if tc == nil || program == nil {
 		return
 	}
+	// Normalize here too: callers can populate Operations without MarkOperation.
+	normalized := NewResourceModel()
+	normalized.ResourceTypes = model.ResourceTypes
+	names := make([]string, 0, len(model.Operations))
+	for name := range model.Operations {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		op, err := normalizeResourceOperation(model.Operations[name])
+		if err != nil {
+			tc.addResourceDiagnosticWithCode(nil, CodeResourceCallAliasConflict,
+				fmt.Sprintf("invalid resource contract for %q: %v", name, err))
+			return
+		}
+		normalized.Operations[name] = op
+	}
+	model = normalized
 	for _, statement := range program.Statements {
 		fn, ok := statement.(*ast.FunctionStatement)
 		if !ok || fn == nil || fn.ExternSymbol != "" {
@@ -122,6 +133,7 @@ type typedResourceAnalysis struct {
 	reported         map[string]bool
 	unknownResources map[string]bool
 	scopes           []map[string]struct{}
+	freshCalls       map[*ast.InvocationExpression]bool
 }
 
 func (m ResourceModel) isResourceType(expr ast.Expression) bool {
@@ -260,6 +272,10 @@ func (a *typedResourceAnalysis) statement(stmt ast.Statement) {
 		a.variable(s)
 	case *ast.AssignmentStatement:
 		a.expression(s.Value)
+		if a.isResourceValue(s.Value) {
+			a.tc.addResourceDiagnosticWithCode(s, CodeResourceCallAliasConflict,
+				"resource reassignment requires tracked destination provenance")
+		}
 	case *ast.IndexAssignmentStatement:
 		if s.Target != nil {
 			a.expression(s.Target.Left)
@@ -308,7 +324,7 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 
 	fresh := false
 	if call, ok := stmt.Value.(*ast.InvocationExpression); ok {
-		if op, exists := a.operation(call); exists && op.ReturnsFresh {
+		if a.freshCalls[call] {
 			fresh = true
 		}
 	}
@@ -481,6 +497,11 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 	if expr == nil {
 		return
 	}
+	if a.freshCalls == nil {
+		a.freshCalls = make(map[*ast.InvocationExpression]bool)
+	}
+	delete(a.freshCalls, expr)
+	diagnosticsBefore := len(a.tc.Diagnostics())
 	// The callee identifier is not a resource value. Non-identifier callees
 	// may themselves evaluate expressions, so preserve their effects.
 	if _, simple := expr.Function.(*ast.Identifier); !simple {
@@ -497,7 +518,7 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 	// Call-local resource modes are checked after ordinary argument uses and
 	// before permanent consumption. Invalid calls therefore do not mutate
 	// authority state and cannot create cascading use-after-consume errors.
-	if !a.checkCallResourceExclusivity(expr, op) {
+	if len(a.tc.Diagnostics()) != diagnosticsBefore || !a.checkCallResourceExclusivity(expr, op) {
 		return
 	}
 	for _, index := range op.Consumes {
@@ -514,6 +535,7 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 			a.flow.Consume(ident.Value, expr)
 		}
 	}
+	a.freshCalls[expr] = op.ReturnsFresh
 }
 
 func (a *typedResourceAnalysis) match(expr *ast.MatchExpression) {
@@ -575,3 +597,4 @@ func (a *typedResourceAnalysis) use(name string, node ast.Node) {
 	}
 	d.AddHelp("use the fresh resource value returned by the consuming operation, if the protocol returns one")
 }
+

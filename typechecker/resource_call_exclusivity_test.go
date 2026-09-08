@@ -8,13 +8,7 @@ import (
 func resourceCallModel(name string, parameters ...ResourceParameterDeclaration) ResourceModel {
 	model := NewResourceModel()
 	model.MarkResourceType("Handle")
-	operation := ResourceOperation{Parameters: parameters}
-	for _, parameter := range parameters {
-		if parameter.Mode == ResourceParameterConsumed {
-			operation.Consumes = append(operation.Consumes, parameter.Index)
-		}
-	}
-	model.MarkOperation(name, operation)
+	model.MarkOperation(name, ResourceOperation{Parameters: parameters})
 	return model
 }
 
@@ -236,5 +230,153 @@ f: (left: Handle, right: Handle): u32 {
 
 	if got := resourceCallDiagnostics(tc, CodeResourceCallAliasConflict); len(got) != 0 {
 		t.Fatalf("explicit fresh return must introduce tracked independent authority: %v", got)
+	}
+}
+
+
+func TestResourceCallConsumedModeInvalidatesAliases(t *testing.T) {
+	input := `
+Handle: type = struct { id: u32 }
+close: (h: Handle): () = {}
+f: (h: Handle): u32 {
+  alias: Handle = h
+  close(h)
+  alias.id
+}`
+	model := resourceCallModel("close", ResourceParameterDeclaration{Index: 0, Mode: ResourceParameterConsumed})
+	tc := setupTypeChecker(input)
+	tc.CheckProgramWithResources(parseProgram(input), model)
+	if got := resourceCallDiagnostics(tc, CodeResourceUsedAfterConsume); len(got) != 1 {
+		t.Fatalf("consumed mode must invalidate aliases without legacy metadata: %v (all: %v)", got, tc.Errors())
+	}
+}
+
+func TestResourceCallDirectFreshResultMatchesBinding(t *testing.T) {
+	for _, invocation := range []string{"update_pair(renew(left), right)", "next: Handle = renew(left)\n  update_pair(next, right)", "update_pair(renew(left), renew(left))"} {
+		t.Run(invocation, func(t *testing.T) {
+			input := `
+Handle: type = struct { id: u32 }
+renew: (h: Handle): Handle = h
+update_pair: (left: Handle, right: Handle): () = {}
+f: (left: Handle, right: Handle): u32 {
+  ` + invocation + `
+  left.id
+}`
+			model := resourceCallModel("update_pair",
+				ResourceParameterDeclaration{Index: 0, Mode: ResourceParameterBorrowedMut},
+				ResourceParameterDeclaration{Index: 1, Mode: ResourceParameterBorrowed})
+			model.MarkOperation("renew", ResourceOperation{ReturnsFresh: true})
+			tc := setupTypeChecker(input)
+			tc.CheckProgramWithResources(parseProgram(input), model)
+			if len(tc.Errors()) != 0 {
+				t.Fatalf("fresh expression and binding forms must both be valid: %v", tc.Errors())
+			}
+		})
+	}
+}
+
+func TestResourceCallUnknownDiagnosticNamesSharedArgument(t *testing.T) {
+	input := `
+Handle: type = struct { id: u32 }
+Holder: type = struct { handle: Handle }
+update_pair: (left: Handle, right: Handle): () = {}
+f: (h: Handle, holder: Holder): u32 {
+  update_pair(h, holder.handle)
+  h.id
+}`
+	model := resourceCallModel("update_pair",
+		ResourceParameterDeclaration{Index: 0, Mode: ResourceParameterBorrowedMut},
+		ResourceParameterDeclaration{Index: 1, Mode: ResourceParameterBorrowed})
+	tc := setupTypeChecker(input)
+	tc.CheckProgramWithResources(parseProgram(input), model)
+	got := resourceCallDiagnostics(tc, CodeResourceCallAliasConflict)
+	if len(got) != 1 || !strings.Contains(got[0], "argument 2 resource provenance is not traceable") {
+		t.Fatalf("diagnostic must identify the unknown shared argument: %v", got)
+	}
+}
+
+func TestResourceCallAlreadyConsumedDoesNotCascade(t *testing.T) {
+	input := `
+Handle: type = struct { id: u32 }
+close: (h: Handle): () = {}
+f: (h: Handle): u32 {
+  close(h)
+  close(h)
+  0
+}`
+	model := resourceCallModel("close", ResourceParameterDeclaration{Index: 0, Mode: ResourceParameterConsumed})
+	tc := setupTypeChecker(input)
+	tc.CheckProgramWithResources(parseProgram(input), model)
+	if got := resourceCallDiagnostics(tc, CodeResourceUsedAfterConsume); len(got) != 1 {
+		t.Fatalf("expected one use-after-consume: %v", got)
+	}
+	if got := resourceCallDiagnostics(tc, CodeResourceCallAliasConflict); len(got) != 0 {
+		t.Fatalf("known consumed authority is not unknown provenance: %v", got)
+	}
+}
+
+func TestResourceReassignmentFailsClosed(t *testing.T) {
+	input := `
+Handle: type = struct { id: u32 }
+update_pair: (left: Handle, right: Handle): () = {}
+f: (h: Handle, other: Handle): u32 {
+  alias: Handle = other
+  alias = h
+  update_pair(h, alias)
+  0
+}`
+	model := resourceCallModel("update_pair",
+		ResourceParameterDeclaration{Index: 0, Mode: ResourceParameterBorrowedMut},
+		ResourceParameterDeclaration{Index: 1, Mode: ResourceParameterBorrowed})
+	tc := setupTypeChecker(input)
+	tc.CheckProgramWithResources(parseProgram(input), model)
+	got := resourceCallDiagnostics(tc, CodeResourceCallAliasConflict)
+	if len(got) == 0 || !strings.Contains(got[0], "resource reassignment") {
+		t.Fatalf("unsupported reassignment must not retain trusted distinctness: %v (all: %v)", got, tc.Errors())
+	}
+}
+
+func TestRejectedFreshCallDoesNotConsumeOuterArgument(t *testing.T) {
+	input := `
+Handle: type = struct { id: u32 }
+renew: (left: Handle, right: Handle): Handle = left
+close_pair: (left: Handle, right: Handle): () = {}
+f: (h: Handle, other: Handle): u32 {
+  close_pair(renew(h, h), other)
+  other.id
+}`
+	model := resourceCallModel("close_pair",
+		ResourceParameterDeclaration{Index: 0, Mode: ResourceParameterConsumed},
+		ResourceParameterDeclaration{Index: 1, Mode: ResourceParameterConsumed})
+	model.MarkOperation("renew", ResourceOperation{
+		Parameters: []ResourceParameterDeclaration{
+			{Index: 0, Mode: ResourceParameterBorrowedMut},
+			{Index: 1, Mode: ResourceParameterBorrowed},
+		},
+		ReturnsFresh: true,
+	})
+	tc := setupTypeChecker(input)
+	tc.CheckProgramWithResources(parseProgram(input), model)
+	if got := resourceCallDiagnostics(tc, CodeResourceCallAliasConflict); len(got) != 1 {
+		t.Fatalf("expected only inner call conflict: %v", got)
+	}
+	if got := resourceCallDiagnostics(tc, CodeResourceUsedAfterConsume); len(got) != 0 {
+		t.Fatalf("invalid inner call cannot authorize outer consumption: %v", got)
+	}
+}
+
+func TestResourceModelConflictingModesFailClosed(t *testing.T) {
+	input := `Handle: type = struct { id: u32 }`
+	model := NewResourceModel()
+	model.MarkResourceType("Handle")
+	// Populate the map directly to exercise the checking entry-point boundary.
+	model.Operations["close"] = ResourceOperation{
+		Parameters: []ResourceParameterDeclaration{{Index: 0, Mode: ResourceParameterBorrowed}},
+		Consumes: []int{0},
+	}
+	tc := setupTypeChecker(input)
+	tc.CheckProgramWithResources(parseProgram(input), model)
+	if got := resourceCallDiagnostics(tc, CodeResourceCallAliasConflict); len(got) != 1 {
+		t.Fatalf("conflicting legacy and canonical metadata must fail closed: %v", got)
 	}
 }
