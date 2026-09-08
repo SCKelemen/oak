@@ -88,3 +88,45 @@ func TestCheckerAccepts(t *testing.T) {
 		})
 	}
 }
+
+// Typed pointer memory: span/view parameters bind a register pair and are
+// addressable only under a dominating length guard.
+func TestCheckerSpanAccess(t *testing.T) {
+	decl := "first_two: (frame: [*]u64) -> u64"
+	accept := "  bind x0, w1 = frame\n  clobber x9\n  cmp w1, #2\n  b.lo short\n  ldr x9, [x0, #8]\n  ldr x0, [x0]\n  add x0, x0, x9\n  ret\nshort:\n  mov x0, #0\n  ret"
+	unit, errs := ParseUnit("span.oakasm", decl+" = {\n"+accept+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	sig, _ := parseSignature(decl)
+	if findings := Check(unit.Functions[0], sig, nil); len(findings) != 0 {
+		t.Fatalf("guarded span access must pass: %v", findings)
+	}
+
+	cases := []struct{ name, decl, body, want string }{
+		{"unguarded", decl, "  bind x0, w1 = frame\n  ldr x0, [x0]\n  ret", "without a dominating bounds guard"},
+		{"beyond guard", decl, "  bind x0, w1 = frame\n  cmp w1, #2\n  b.lo short\n  ldr x0, [x0, #16]\n  ret\nshort:\n  mov x0, #0\n  ret", "guard proves only 2 elements"},
+		{"padded x1 is no guard", decl, "  bind x0, w1 = frame\n  cmp x1, #2\n  b.lo short\n  ldr x0, [x0]\n  ret\nshort:\n  mov x0, #0\n  ret", "without a dominating bounds guard"},
+		{"guard dies at label", decl, "  bind x0, w1 = frame\n  cmp w1, #2\n  b.lo short\nagain:\n  ldr x0, [x0]\n  ret\nshort:\n  mov x0, #0\n  ret", "without a dominating bounds guard"},
+		{"pre-index on span base", decl, "  bind x0, w1 = frame\n  cmp w1, #2\n  b.lo short\n  ldr x0, [x0, #8]!\n  ret\nshort:\n  mov x0, #0\n  ret", "never moved"},
+		{"store through view", "peek: (bytes: []u8) -> u64", "  bind x0, w1 = bytes\n  clobber w9\n  cmp w1, #4\n  b.lo short\n  mov w9, #1\n  str w9, [x0]\n  mov x0, #0\n  ret\nshort:\n  mov x0, #0\n  ret", "read-only view"},
+		{"scalar binding for span", decl, "  bind x0 = frame\n  mov x0, #0\n  ret", "binds a pair"},
+		{"wrong pair widths", decl, "  bind x0, x1 = frame\n  mov x0, #0\n  ret", "w1 (length"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit(tc.name+".oakasm", tc.decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			sig, err := parseSignature(tc.decl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(Check(unit.Functions[0], sig, nil), "\n")
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("expected a finding mentioning %q, got:\n%s", tc.want, joined)
+			}
+		})
+	}
+}

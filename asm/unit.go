@@ -70,9 +70,12 @@ func (l Label) itemLine() int       { return l.Line }
 func (a Align) itemLine() int       { return a.Line }
 func (i Instruction) itemLine() int { return i.Line }
 
-// Binding pins a parameter to its contract register: bind w0 = left.
+// Binding pins a parameter to its contract register: bind w0 = left. A
+// span or view parameter binds its pair: bind x0, w1 = frame (base pointer,
+// then the 32-bit length; the upper half of x1 is padding and never read).
 type Binding struct {
 	Register Register
+	Length   *Register
 	Param    string
 	Line     int
 }
@@ -225,17 +228,27 @@ func ParseUnit(path, text string) (*Unit, []error) {
 		head := strings.ToLower(fields[0])
 		switch head {
 		case "bind":
-			// bind w0 = left
-			if len(fields) != 4 || fields[2] != "=" {
-				fail(lineNo, "bind takes the form `bind <register> = <parameter>`")
+			// bind w0 = left  |  bind x0, w1 = frame
+			switch {
+			case len(fields) == 4 && fields[2] == "=":
+				reg, ok := parseRegister(fields[1])
+				if !ok {
+					fail(lineNo, "bind: unknown register %q", fields[1])
+					continue
+				}
+				current.Bindings = append(current.Bindings, Binding{Register: reg, Param: fields[3], Line: lineNo})
+			case len(fields) == 5 && fields[3] == "=":
+				base, okBase := parseRegister(fields[1])
+				length, okLen := parseRegister(fields[2])
+				if !okBase || !okLen {
+					fail(lineNo, "bind: unknown register in pair %q, %q", fields[1], fields[2])
+					continue
+				}
+				current.Bindings = append(current.Bindings, Binding{Register: base, Length: &length, Param: fields[4], Line: lineNo})
+			default:
+				fail(lineNo, "bind takes the form `bind <register> = <parameter>` or `bind <base>, <length> = <span>`")
 				continue
 			}
-			reg, ok := parseRegister(fields[1])
-			if !ok {
-				fail(lineNo, "bind: unknown register %q", fields[1])
-				continue
-			}
-			current.Bindings = append(current.Bindings, Binding{Register: reg, Param: fields[3], Line: lineNo})
 		case "clobber":
 			for _, name := range fields[1:] {
 				reg, ok := parseRegister(name)

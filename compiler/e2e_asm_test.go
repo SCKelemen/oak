@@ -218,3 +218,58 @@ func TestAsmStitchingRejections(t *testing.T) {
 		t.Fatalf("signature mismatch must be rejected, got %v", err)
 	}
 }
+
+// Typed pointer memory: a handler reads its caller's span under a
+// dominating length guard — the trap-frame-through-a-parameter shape.
+func TestE2EAsmSpanParameter(t *testing.T) {
+	requireArm64Host(t)
+	comp := New().WithSource("asmspan.oak", `
+first_two: (frame: [*]u64) -> u64
+byte_sum: (bytes: []u8) -> u64
+
+main: (): i32 {
+  regs: [4]u64
+  regs[u32(0)] = u64(40)
+  regs[u32(1)] = u64(2)
+  sp: [*]u64 = span(&regs)
+  assert(first_two(sp) == u64(42))
+
+  data: [4]u8
+  data[u32(0)] = u8(42)
+  v: []u8 = view(&data)
+  assert(byte_sum(v) == u64(42))
+  42
+}
+`).WithAsmUnit("span.arm64.oakasm", `
+first_two: (frame: [*]u64) -> u64 = {
+  bind x0, w1 = frame
+  clobber x9
+  cmp w1, #2
+  b.lo short
+  ldr x9, [x0, #8]
+  ldr x0, [x0]
+  add x0, x0, x9
+  ret
+short:
+  mov x0, #0
+  ret
+}
+
+byte_sum: (bytes: []u8) -> u64 = {
+  bind x0, w1 = bytes
+  clobber x9
+  cmp w1, #4
+  b.lo short
+  ldr w9, [x0]
+  mov x0, x9
+  ret
+short:
+  mov x0, #0
+  ret
+}
+`)
+	_, code, abnormal := buildAndRunFrom(t, "asmspan", comp)
+	if abnormal || code != 42 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}

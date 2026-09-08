@@ -200,13 +200,27 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   under `frame 160`, a flags/label loop, and a 2 KiB-aligned sixteen-entry
   `eret` vector table (assembled, its extents checked statically).
 
+- **Typed pointer memory.** A span (`[*]T`) or view (`[]T`) parameter of
+  fixed-width elements crosses as its `{base, u32 len}` pair and binds
+  both registers explicitly — `bind x0, w1 = frame` (the base pointer,
+  then the 32-bit length; the upper half of `x1` is padding the contract
+  never defines, so only `w1` is ever consulted). Memory through the base
+  (`ldr x9, [x0, #8]`) is admitted only under a **dominating bounds
+  guard**: `cmp w1, #N` immediately followed by `b.lo <fail>` proves
+  `len >= N` on the fall-through path, and the checker then proves each
+  access `[off, off+size)` lies within `N * elem` bytes
+  (`Oak.Assembler.span_access`). Guards die at labels, at calls, and on
+  any write to the base or length register; a span base is never moved
+  (no pre/post-index); stores through a view are refused; a comparison
+  of `x1` is not a guard. This is the bounds-check doctrine made explicit
+  in assembly: the runtime check is written by the author, its dominance
+  is verified by the checker, and the offsets under it are proven.
 - **`address_of(f)`** yields the `u64` code address of an asm-backed
   function and nothing else — the `VBAR_EL2` install path
   (`arm64.write_vbar_el2(address_of(vectors))`). Ordinary Oak functions
   have no exposed address.
 
-Pending, in the order the pilot needs them: memory through typed pointer
-parameters (`[x0, #off]` where `x0` is bound to a span); callee-saved
+Pending, in the order the pilot needs them: callee-saved
 clobbers with save/restore obligations; the operand-stack shorthand
 (`push left / push right / add`); an Oak fallback body for non-AArch64
 targets; the semantic

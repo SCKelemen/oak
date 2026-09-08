@@ -125,4 +125,38 @@ def DispOk (frame disp : Int) : Prop := 0 ≤ disp ∧ disp ≤ frame
 theorem disp_move (frame disp delta : Int) (h : DispOk frame (disp + delta)) :
     0 ≤ disp + delta ∧ disp + delta ≤ frame := h
 
+/-- Typed pointer memory: a span of `len` elements of `elem` bytes owns
+    bytes `[0, elem*len)`. A dominating guard establishes `minLen ≤ len`;
+    the checker admits an access `[off, off+size)` when
+    `off + size ≤ elem * minLen` — which places every accessed byte inside
+    the span for every runtime length the guard admits
+    (`asm.checker.spanAccess`). -/
+def SpanAccessOk (elem minLen off size : Nat) : Prop :=
+  off + size ≤ elem * minLen
+
+theorem span_access (elem minLen len off size : Nat)
+    (hguard : minLen ≤ len) (hacc : SpanAccessOk elem minLen off size) :
+    off + size ≤ elem * len := by
+  unfold SpanAccessOk at hacc
+  calc off + size ≤ elem * minLen := hacc
+    _ ≤ elem * len := Nat.mul_le_mul_left elem hguard
+
+/-- Every byte of an admitted span access lies inside the span. -/
+theorem span_access_bytes (elem minLen len off size b : Nat)
+    (hguard : minLen ≤ len) (hacc : SpanAccessOk elem minLen off size)
+    (hb : off ≤ b ∧ b < off + size) : b < elem * len := by
+  have h := span_access elem minLen len off size hguard hacc
+  omega
+
+/-- The transliterated check. -/
+def spanAccessCheck (elem minLen off size : Nat) : Bool :=
+  decide (off + size ≤ elem * minLen)
+
+theorem spanAccessCheck_sound (elem minLen off size : Nat)
+    (h : spanAccessCheck elem minLen off size = true) :
+    SpanAccessOk elem minLen off size := by
+  unfold spanAccessCheck at h
+  unfold SpanAccessOk
+  exact of_decide_eq_true h
+
 end Oak.Assembler

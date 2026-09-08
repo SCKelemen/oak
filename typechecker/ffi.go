@@ -457,6 +457,14 @@ func (tc *TypeChecker) checkAsmBoundary(stmt *ast.FunctionStatement) {
 			return t != nil && (t.Name[0] == 'u' || t.Name[0] == 'i')
 		case *BoolType, *SimdType:
 			return true
+		case *ArrayType:
+			// Spans and views of fixed-width elements cross as {base, len}
+			// pairs (docs/spec/94-assembler.md §7); owned arrays do not.
+			if t == nil || !(t.IsSpan || t.IsSlice) {
+				return false
+			}
+			elem, isPrim := t.ElementType.(*PrimitiveType)
+			return isPrim && elem != nil && (elem.Name[0] == 'u' || elem.Name[0] == 'i')
 		}
 		return false
 	}
