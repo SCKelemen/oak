@@ -40,7 +40,7 @@ theorem initialize_lookup (pool : List Nat) (ranges : List (Nat × Nat)) (id : N
 -- It is a representation premise, not an unsatisfiability assumption.
 theorem initialize_refines (pool : List Nat) (ranges : List (Nat × Nat))
     (clauses : List Clause)
-    (decoded : ∀ slot, (ranges[slot]?).bind (fun r => readClause pool r.1 r.2) = clauses[slot]?) :
+    (decoded : ∀ slot : Nat, (ranges[slot]?).bind (fun r => readClause pool r.1 r.2) = clauses[slot]?) :
     database pool (initialTable ranges) = initialDatabase clauses := by
   funext id
   rw [initialize_lookup]
