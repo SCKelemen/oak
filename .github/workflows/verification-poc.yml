@@ -77,6 +77,16 @@ jobs:
           export OAK_DECIMAL_CORPUS_OUT="$PWD/build/soundness/decimal-cases.json"
           go test -count=1 -v . -run '^TestSelfHostedDecimal$' 2>&1 | tee build/soundness/decimal-go.log
           lean -DwarningAsError=true --run proof/BoundedDecimalCompare.lean "$OAK_DECIMAL_CORPUS_OUT" 2>&1 | tee build/soundness/decimal-agreement.log
+      - name: Prove scanner state invariants and compare all output fields
+        working-directory: experiments/verification-poc
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LEAN_PATH="$PWD/proof"
+          lean -DwarningAsError=true -o proof/ScannerState.olean proof/ScannerState.lean 2>&1 | tee build/soundness/scanner-proof.log
+          export OAK_SCANNER_CORPUS_OUT="$PWD/build/soundness/scanner-cases.json"
+          go test -count=1 -v . -run '^TestScannerOracle$|^TestSelfHostedScanner$' 2>&1 | tee build/soundness/scanner-go.log
+          lean -DwarningAsError=true --run proof/ScannerStateCompare.lean "$OAK_SCANNER_CORPUS_OUT" 2>&1 | tee build/soundness/scanner-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

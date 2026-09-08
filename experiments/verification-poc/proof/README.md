@@ -198,3 +198,7 @@ select only one arm. Native regressions and the parser corpus cover the fix.
 to unbounded decimal evaluation with a final magnitude check, along with
 nonwrapping arithmetic, range/cursor guards, and bounded-prefix append
 invariants. A separate Go/Oak/Lean corpus compares actual token parsing.
+
+[ScannerState.md](ScannerState.md) adds a partial-decimal trace relation and
+scanner cursor/range invariants. A Go/Oak/Lean gate compares complete token state
+sequences, including partial values on rejection and repeated scans.
