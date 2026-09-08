@@ -47,7 +47,7 @@ def prepare (s : Scratch) : (xs : List Literal) → Option (Prepared s xs)
               (assigned_tail a l rest assumptions)))
     else none
 
-structure Refutation (db : Database) (s : Scratch) where
+structure Refutation (db : Database) (s : Scratch) : Type where
   sound : ∀ a, Models a db → Extends a s → False
 
 -- Each recursive call consumes a hint. Conflict is accepted only at the final
@@ -78,7 +78,7 @@ def chain (variables : Nat) (db : Database) (s : Scratch) :
         | _ => none
       else none
 
-structure CertifiedClause (db : Database) (target : Clause) where
+structure CertifiedClause (db : Database) (target : Clause) : Type where
   entails : ∀ a, Models a db → SatisfiesClause a target
 
 theorem assumptions_entail (db : Database) (target : Clause)
