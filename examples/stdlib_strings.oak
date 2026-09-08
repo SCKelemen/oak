@@ -1,9 +1,8 @@
 import(std)
 
 main: (): i32 {
-  // UTF-8 for Straße. All backing storage is explicit.
-  name: [7]u8 = [7]u8{83, 116, 114, 97, 195, 159, 101}
-  src: []u8 = view(&name)
+  // Literal bytes live in static storage; transformations use explicit buffers.
+  src: []u8 = text_literal("Straße")
   assert(utf8_validate(src))
   upper: [7]u8
   true ? {

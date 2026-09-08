@@ -228,7 +228,7 @@ func TestE2EStdlibTextSearch(t *testing.T) {
 		}
 	}
 	src.WriteString("42\n}\n")
-	runTextTest(t, "textsearch", src.String())
+	runTextTest(t, "textsearch", strings.ReplaceAll(src.String(), "i32(-1)", "-i32(1)"))
 }
 
 func TestE2EStdlibTextUnicodeCase(t *testing.T) {
@@ -369,4 +369,87 @@ func TestE2EStdlibTextExample(t *testing.T) {
 		t.Fatal(err)
 	}
 	runTextTest(t, "textexample", string(source))
+}
+
+func TestE2EStdlibTextLiterals(t *testing.T) {
+	runTextTest(t, "textliterals", `
+import(std)
+main: (): i32 {
+ __oak_text_literal_0: u32 = 42
+ src: []u8 = text_literal("hé😀")
+ again: []u8 = text_literal("hé😀")
+ empty: []u8 = text_literal("")
+ assert(len(src) == u32(7) && len(empty) == u32(0))
+ assert(text_equal(src, again))
+ assert(text_result_value(utf8_count(src)) == u32(3))
+ assert(__oak_text_literal_0 == u32(42))
+ 42
+}
+`)
+	for _, source := range []string{
+		"import(std)\nmain: (): i32 {\ns: string = \"x\"\nv: []u8 = text_literal(s)\n0\n}",
+		"import(std)\nmain: (): i32 {\nv: []u8 = text_literal()\n0\n}",
+		"import(std)\ntext_literal: (): u32 = u32(0)\nmain: (): i32 = 0",
+	} {
+		if _, err := New().WithSource("badtextliteral.oak", source).EmitC().Get(); err == nil {
+			t.Fatal("invalid text literal call must be rejected")
+		}
+	}
+}
+
+func TestE2EStdlibTextSplitEdgesAndParse(t *testing.T) {
+	runTextTest(t, "textedges", textTestPrelude+`
+parsed_value: (result: Result[u64, TextParseError]): u64 = result ? | .Ok(value) => value | .Err(reason) => u64(0)
+parse_failed: (result: Result[u64, TextParseError]): Bool = result ? | .Ok(value) => false | .Err(reason) => true
+main: (): i32 {
+ empty: []u8 = text_literal("")
+ comma: []u8 = text_literal(",")
+ input: []u8 = text_literal(",a,")
+ bad: []u8 = text_literal("é")
+ parts: [3]TextRange
+ true ? {
+  dst: [*]TextRange = span(&parts)
+  assert(text_result_value(text_split(dst, input, comma)) == u32(3))
+  assert(dst[0].start == u32(0) && dst[0].end == u32(0))
+  assert(dst[1].start == u32(1) && dst[1].end == u32(2))
+  assert(dst[2].start == u32(3) && dst[2].end == u32(3))
+  assert(text_code(text_split(dst, input, empty)) == u32(6))
+  assert(dst[1].start == u32(1) && dst[1].end == u32(2))
+  assert(text_result_value(text_split(dst, empty, comma)) == u32(1))
+ }
+ true ? {
+  whole: [*]TextRange = span(&parts)
+  dst: [*]TextRange = whole[0:2]
+  assert(text_code(text_split(dst, input, comma)) == u32(4))
+  assert(dst[0].start == u32(0) && dst[0].end == u32(0))
+ }
+ out: [2]u8
+ dst: [*]u8 = span(&out)
+ bytes_fill(dst, u8(90))
+ assert(text_code(utf8_to_ascii(dst, bad)) == u32(1))
+ assert(text_result_value(text_repeat(dst, empty, u32(4294967295))) == u32(0))
+ assert(text_result_value(text_repeat(dst, comma, u32(0))) == u32(0))
+ assert(dst[0] == u8(90) && dst[1] == u8(90))
+ previous: TextScalar = text_decoded(utf8_decode_previous(bad, u32(2)))
+ assert(previous.value == u32(233) && previous.next == u32(0))
+ assert(!text_decode_ok(utf8_decode_previous(bad, u32(1))))
+ fields: []u8 = text_literal("  one　two  ")
+ state: [1]TextSplitCursor
+ cursor: [*]TextSplitCursor = span(&state)
+ first: TextRange = text_range(text_fields_next(cursor, fields))
+ second: TextRange = text_range(text_fields_next(cursor, fields))
+ assert(first.start == u32(2) && first.end == u32(5))
+ assert(second.start == u32(8) && second.end == u32(11))
+ assert(range_code(text_fields_next(cursor, fields)) == u32(7))
+ assert(parse_failed(text_parse_u64(text_literal("18446744073709551616"), u32(10))))
+ assert(parse_failed(text_parse_u64(text_literal("-1"), u32(10))))
+ assert(parse_failed(text_parse_u64(empty, u32(10))))
+ assert(parse_failed(text_parse_u64(comma, u32(1))))
+ maximum: u64 = ((u64(1) << u64(63)) | ((u64(1) << u64(63)) - u64(1)))
+ assert(parsed_value(text_parse_u64(text_literal("18446744073709551615"), u32(10))) == maximum)
+ assert(parsed_value(text_parse_u64(text_literal("Ff"), u32(16))) == u64(255))
+ assert(parsed_value(text_parse_u64(text_literal("z"), u32(36))) == u64(35))
+ 42
+}
+`)
 }

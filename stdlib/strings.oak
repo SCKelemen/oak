@@ -842,9 +842,9 @@ text_split: (dst: [*]TextRange, src: []u8, separator: []u8): Result[u32, TextErr
       i: u32 = 0
       while i < u32_trunc_u64(total) {
         start: u32 = cursor[0].next
-        found: u32 = option_or(text_find_from(src, separator, start), len(src))
-        dst[i] = TextRange { start: start, end: found }
-        found != len(src) ? { cursor[0].next = found + len(separator) }
+        end_offset: u32 = option_or(text_find_from(src, separator, start), len(src))
+        dst[i] = TextRange { start: start, end: end_offset }
+        end_offset != len(src) ? { cursor[0].next = end_offset + len(separator) }
         i = i + u32(1)
       }
       .Ok(u32_trunc_u64(total))
