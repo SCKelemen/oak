@@ -4,8 +4,8 @@ import "testing"
 
 func TestArm64SysRegCatalogIsLegalAndUnique(t *testing.T) {
 	regs := Arm64SysRegs()
-	if len(regs) != 19 {
-		t.Fatalf("system-register catalog has %d entries, want 19", len(regs))
+	if len(regs) != 20 {
+		t.Fatalf("system-register catalog has %d entries, want 20", len(regs))
 	}
 	seenReg := map[string]bool{}
 	seenMember := map[string]bool{}

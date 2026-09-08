@@ -60,6 +60,7 @@ var arm64SysRegs = [...]SysRegSpec{
 	{Name: "cntvoff_el2", Asm: "CNTVOFF_EL2", Access: SysRegReadWrite},
 	{Name: "elr_el2", Asm: "ELR_EL2", Access: SysRegReadWrite},
 	{Name: "spsr_el2", Asm: "SPSR_EL2", Access: SysRegReadWrite},
+	{Name: "vbar_el2", Asm: "VBAR_EL2", Access: SysRegReadWrite},
 
 	{Name: "cntv_ctl_el0", Asm: "CNTV_CTL_EL0", Access: SysRegReadWrite},
 	{Name: "cntv_cval_el0", Asm: "CNTV_CVAL_EL0", Access: SysRegReadWrite},
