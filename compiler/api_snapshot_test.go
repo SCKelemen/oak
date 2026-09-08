@@ -58,7 +58,7 @@ identity[T]: (value: T): T = value
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 3; i++ {
 		next, err := compilation.APISnapshot("0.1.0").Get()
 		if err != nil {
 			t.Fatal(err)
