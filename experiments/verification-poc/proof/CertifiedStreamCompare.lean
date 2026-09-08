@@ -1,4 +1,4 @@
-import CertifiedStream
+import InitialDecoder
 import Lean
 
 open Lean OakVerification OakVerification.Ranges
@@ -32,6 +32,7 @@ def main (args : List String) : IO Unit := do
     let raw : Layout := ⟨c.variables, c.pool.toList, c.starts.toList, c.sizes.toList, c.refs.toList, cmds⟩
     let result := CertifiedStream.check raw
     if result != c.accepted then throw (IO.userError s!"{c.name}: certified stream differs")
+    if InitialDecoder.check raw != result then throw (IO.userError s!"{c.name}: decoder composition differs")
     if checkLayout raw != result then throw (IO.userError s!"{c.name}: original Lean stream differs")
     if result then accepted := accepted + 1
   IO.println s!"Oak/Go/Lean certified stream: {cases.size} layouts ({accepted} accepted, {cases.size - accepted} rejected); both Lean streams agree"

@@ -54,7 +54,18 @@ done < <(jq -r '.models[].cadical.logs[] | select(.exit_code == 20 and .command[
 expected=$(jq '[.models[].cadical | if .expected_safety then 2 else 1 end] | add' "$report")
 test "$count" -gt 0
 test "$count" -eq "$expected"
-jq -s --arg attempt "$attempt" \
-  '{format:"oak-lean-certificate-gate-1",passed:true,attempt:$attempt,certificates:length,rejection_checks:(length*2),results:.}' \
+# Replay every real certificate that fits the fixed Oak profile. Exclusions are
+# retained explicitly; malformed text and in-profile disagreement fail the gate.
+for module in BoundedDecimal ScannerState PackedBuffers RangeBridge LiveTable PropagationState ClauseClassifier PropagationChain CertifiedStream InitialDecoder; do
+  lean -DwarningAsError=true -o "$attempt/$module.olean" "proof/$module.lean" 2>&1 | tee "$attempt/$module.log"
+done
+jq '[.models[].cadical.logs[] | select(.exit_code == 20 and .command[0] == "cadical") | {cnf:.command[-2],proof:.command[-1]}]' \
+  "$report" > "$attempt/certified-manifest.json"
+lean -DwarningAsError=true --run proof/CertificateReplay.lean "$attempt/certified-manifest.json" \
+  "$attempt/certified-cases.json" "$attempt/certified-report.json" 2>&1 | tee "$attempt/certified-lean.log"
+OAK_CERTIFIED_CERTIFICATE_CASES="$attempt/certified-cases.json" \
+  go test -count=1 -v . -run '^TestSelfHostedCertifiedCertificates$' 2>&1 | tee "$attempt/certified-oak-go.log"
+jq -s --arg attempt "$attempt" --slurpfile certified "$attempt/certified-report.json" \
+  '{format:"oak-lean-certificate-gate-1",passed:true,attempt:$attempt,certificates:length,rejection_checks:(length*2),results:.,certified_replay:($certified[0] + {native_agreement:true})}' \
   "$attempt/"*-record.json > build/lean-gate/report.json
 printf 'Lean certificate gate: %d accepted certificates, %d rejected corruptions\n' "$count" "$((count * 2))"

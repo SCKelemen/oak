@@ -48,6 +48,7 @@ jobs:
           lean -DwarningAsError=true -o proof/ClauseClassifier.olean proof/ClauseClassifier.lean 2>&1 | tee build/soundness/classifier-proof.log
           lean -DwarningAsError=true -o proof/PropagationChain.olean proof/PropagationChain.lean 2>&1 | tee build/soundness/chain-proof.log
           lean -DwarningAsError=true -o proof/CertifiedStream.olean proof/CertifiedStream.lean 2>&1 | tee build/soundness/certified-stream-proof.log
+          lean -DwarningAsError=true -o proof/InitialDecoder.olean proof/InitialDecoder.lean 2>&1 | tee build/soundness/initial-decoder-proof.log
       - name: Compare Go and Lean checker decisions
         working-directory: experiments/verification-poc
         shell: bash

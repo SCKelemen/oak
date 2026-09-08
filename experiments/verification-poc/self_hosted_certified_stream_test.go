@@ -26,7 +26,11 @@ func certifiedStreamCorpus(t *testing.T) []rangeCase {
  return cases
 }
 func TestSelfHostedCertifiedStream(t *testing.T) {
- cases:=certifiedStreamCorpus(t);accepted:=0
+ cases:=certifiedStreamCorpus(t)
+ runCertifiedStreamCases(t,cases)
+}
+func runCertifiedStreamCases(t *testing.T,cases []rangeCase) {
+ t.Helper();accepted:=0
  var source,main strings.Builder
  for _,path:=range []string{"self_hosted_rup.oak","self_hosted_stream.oak"} {data,err:=os.ReadFile(path);if err!=nil {t.Fatal(err)};source.Write(data);source.WriteByte('\n')}
  main.WriteString("main: (): i32 {\n")
@@ -40,5 +44,23 @@ func TestSelfHostedCertifiedStream(t *testing.T) {
  }
  main.WriteString("42\n}\n");source.WriteString(main.String());runOakStream(t,source.String())
  if path:=os.Getenv("OAK_CERTIFIED_STREAM_CORPUS_OUT");path!="" {data,err:=json.MarshalIndent(cases,"","  ");if err!=nil {t.Fatal(err)};if err:=os.WriteFile(path,append(data,'\n'),0644);err!=nil {t.Fatal(err)}}
- t.Logf("Oak/Go certified stream: %d layouts (%d accepted, %d rejected), 256 constructed live-chain/suffix cases",len(cases),accepted,len(cases)-accepted)
+ t.Logf("Oak/Go certified stream: %d layouts (%d accepted, %d rejected)",len(cases),accepted,len(cases)-accepted)
+}
+
+// Actual solver files are selected and packed by the Lean gate. The independent
+// Go oracle and uninstrumented compiled Oak must replay every exported case.
+func TestSelfHostedCertifiedCertificates(t *testing.T) {
+ path:=os.Getenv("OAK_CERTIFIED_CERTIFICATE_CASES")
+ if path=="" {t.Skip("actual certificate replay runs in the opt-in solver gate")}
+ data,err:=os.ReadFile(path);if err!=nil {t.Fatal(err)}
+ var cases []rangeCase
+ if err:=json.Unmarshal(data,&cases);err!=nil {t.Fatal(err)}
+ if len(cases)==0||len(cases)%3!=0 {t.Fatal("expected certificate/corruption triples")}
+ for i,c:=range cases {
+  if c.Accepted!=(i%3==0) {t.Fatal("invalid replay expectation",c.Name)}
+  s,_,ok:=rangeDecode(c)
+  if (ok&&streamReference(s))!=c.Accepted {t.Fatal("Go replay differs",c.Name)}
+ }
+ runCertifiedStreamCases(t,cases)
+ t.Logf("Oak/Go actual certified replay: %d certificates, %d rejected corruptions",len(cases)/3,len(cases)*2/3)
 }

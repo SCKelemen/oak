@@ -234,3 +234,6 @@ the new certified chain, and the original Lean checker.
 [CertifiedStream.md](CertifiedStream.md) connects the new certified chain to live
 table updates and proves whole-stream acceptance soundness. Native raw layouts
 and long publish/delete sequences compare Oak, Go, and both Lean stream checkers.
+
+See [Initial decoder and real certificate replay](InitialDecoder.md) for the
+proved range-decoder connection and the bounded solver-certificate gate.

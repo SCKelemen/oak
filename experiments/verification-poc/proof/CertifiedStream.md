@@ -32,8 +32,9 @@ both agree with the Go oracle and compiled Oak.
 
 Whole-stream soundness of this new Lean model is proved. Universal equivalence
 with the concrete Oak executor or the original Lean checker is not proved; that
-correspondence is tested on the corpus. Initialization uses the functional range
-table, so the decoded-clause transport retains a representation premise. A failed
+correspondence is tested on the corpus. The original `decoded_sound` theorem retains a representation premise;
+[`InitialDecoder.lean`](InitialDecoder.md) now derives it from successful
+executable range decoding. A failed
 deletion returns no certified state; the exact partial mutation on rejected inputs
 is covered by the preceding native table-trace tests, not this acceptance theorem.
 
@@ -42,9 +43,8 @@ path, and the existing external certificate gates are unchanged. JSON adapters,
 the Go harness, Oak compiler, generated C, and C compiler/runtime remain trusted
 test infrastructure. Full text-grammar and compiler refinement remain open.
 
-Next: replay real certificates through the new certified stream and connect the
-text/range decoder to its initial-database representation without a supplied
-per-index equation.
+The subsequent [initial-decoder milestone](InitialDecoder.md) adds real-certificate
+replay and removes the supplied per-index equation from the composed theorem.
 
 ## Validation
 
