@@ -215,11 +215,42 @@ func (tc *TypeChecker) constraintMismatchDetail(concreteType Type, constraint Co
 	return ""
 }
 
+// monomorphicConstraintBinding resolves a blocked scheme's original binder by
+// identity. Enclosing expression transactions may have staged its solution
+// without committing it to scheme.Monomorphic yet.
+func (tc *TypeChecker) monomorphicConstraintBinding(scheme *TypeScheme, bindings Substitution, name string) (Type, bool) {
+	var variable *TypeVar
+	for _, candidate := range typeVarsIn(scheme.Type) {
+		if candidate.Name != name {
+			continue
+		}
+		if variable != nil {
+			return nil, false
+		}
+		variable = candidate
+	}
+	if variable == nil {
+		return nil, false
+	}
+
+	concreteType := scheme.Monomorphic.Apply(variable)
+	concreteType = tc.applyPendingMonomorphic(concreteType)
+	concreteType = bindings.Apply(concreteType)
+	concreteType = tc.applyPendingMonomorphic(concreteType)
+	if len(typeVarsIn(concreteType)) != 0 {
+		return nil, false
+	}
+	return concreteType, true
+}
+
 // checkFunctionConstraintBindings discharges the qualified-type obligations
 // after generic argument inference has produced concrete type bindings.
 func (tc *TypeChecker) checkFunctionConstraintBindings(scheme *TypeScheme, bindings Substitution, expr ast.Node) {
 	for _, constraint := range scheme.Constraints {
 		concreteType, ok := bindings.LookupName(constraint.Var)
+		if scheme.Monomorphic != nil {
+			concreteType, ok = tc.monomorphicConstraintBinding(scheme, bindings, constraint.Var)
+		}
 		if !ok {
 			tc.addTypeDiagnostic(
 				expr,

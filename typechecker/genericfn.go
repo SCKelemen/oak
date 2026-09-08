@@ -62,6 +62,16 @@ func (tc *TypeChecker) registerFunctionTemplate(stmt *ast.FunctionStatement) {
 		tc.functionTemplates = make(map[string]*ast.FunctionStatement)
 	}
 	tc.functionTemplates[stmt.Name.Value] = stmt
+	tc.predeclareFunctionSignature(stmt)
+	if scheme, ok := tc.env.Get(stmt.Name.Value); ok && scheme != nil {
+		facts := functionStatementCaptureFacts(stmt, tc.env)
+		facts.Barriers |= scheme.GeneralizationBarriers
+		if !facts.Safe() && len(scheme.TypeVars) > 0 {
+			scheme = makeMonomorphicScheme(scheme.Type, scheme.Constraints)
+		}
+		scheme.GeneralizationBarriers = facts.Barriers
+		tc.env.Set(stmt.Name.Value, scheme)
+	}
 }
 
 // IsFunctionTemplate reports whether name is a registered generic function.
@@ -237,6 +247,26 @@ func (tc *TypeChecker) bindTypeParams(paramType ast.Expression, argType Type, pa
 // invokeInstantiated monomorphizes the template for the given arguments,
 // rewrites the call site to the mangled name, and returns the call's type.
 func (tc *TypeChecker) invokeInstantiated(expr *ast.InvocationExpression, template *ast.FunctionStatement, args []Type) Type {
+	// A template and all of its specializations share the original binding's
+	// authority restriction. Stage equations in the enclosing call transaction.
+	if scheme, found := tc.env.Get(template.Name.Value); found && scheme.Monomorphic != nil {
+		bindings := make(Substitution)
+		for i, parameter := range template.TypeParams {
+			for _, variable := range typeVarsIn(scheme.Type) {
+				if variable.Name != parameter.Name.Value {
+					continue
+				}
+				expected := tc.applyPendingMonomorphic(bindings.Apply(variable))
+				equation := NewUnifier().Unify(expected, args[i])
+				if equation == nil {
+					tc.addError(expr, "%s cannot reuse authority at incompatible type %s (previously %s)", template.Name.Value, args[i], expected)
+					return nil
+				}
+				bindings = bindings.Compose(equation)
+			}
+		}
+		tc.stageMonomorphicBindings(bindings)
+	}
 	if !tc.validateTemplateRowArguments(expr, template, args) {
 		return nil
 	}
@@ -422,6 +452,12 @@ func substituteStmt(stmt ast.Statement, bindings map[string]ast.Expression) (ast
 			return nil, false
 		}
 		return &ast.WhileStatement{Token: s.Token, Condition: condition, Body: body}, true
+	case *ast.UnsafeBlock:
+		body, ok := substituteBlock(s.Body, bindings)
+		if !ok { return nil, false }
+		clone := *s
+		clone.Body = body
+		return &clone, true
 	case *ast.BlockStatement:
 		return substituteBlockAsStmt(s, bindings)
 	}

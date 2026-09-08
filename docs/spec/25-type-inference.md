@@ -208,6 +208,26 @@ external/MMIO authority                   -> preserve authority identity
 This keeps inference powerful without reproducing polymorphic-reference or
 capability-duplication unsoundness in an imperative systems language.
 
+The initial implementation derives conservative evidence at each local variable or named-function binding:
+
+- owned arrays contribute mutable and unique authority;
+- views contribute a region-bound barrier;
+- spans contribute mutable, unique, and region-bound barriers;
+- raw pointer-sized values contribute external and unresolved authority;
+- closures contribute the authority of referenced outer bindings and any
+  lexically contained unsafe assumption;
+- invocation initializers contribute effectful and unresolved evidence until
+  their callee carries a checked effect summary.
+
+Evidence is joined monotonically: later analysis may add barriers but must never
+erase an already established one. A blocked scheme retains a shared monomorphic
+substitution: the first successful use that solves a remaining free variable
+fixes that variable for every later use; independent call-site unifiers must not
+reopen it. Function parameter and result types alone do
+not count as captured authority; only the function value's environment does.
+This rule is deliberately fail-closed while effect summaries and compiler-wide
+region identities are being threaded through type schemes.
+
 ## 8. Constraints and refinements extend inference
 
 Inference may produce obligations in addition to equalities.
