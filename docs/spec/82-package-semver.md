@@ -98,6 +98,9 @@ declared record alignment, and per-field alignment. Each concrete instantiation
 is still resolved and verified by ordinary lowering.
 
 Until Oak gains an explicit visibility modifier, every named package-level type,
-interface, function, and value declaration is public. A future visibility
-feature must change this projection and is itself a language-version decision;
-the compiler must never infer visibility from capitalization or spelling.
+interface, function, receiver method, and value declaration is public. Receiver
+methods use a receiver-qualified export name and include the receiver in their
+canonical signature. Literal/default ADT variants retain their checked literal
+in type identity. A future visibility feature must change this projection and is
+itself a language-version decision; the compiler must never infer visibility
+from capitalization or spelling.

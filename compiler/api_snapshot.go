@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/packageapi"
@@ -27,10 +28,6 @@ func (comp Compilation) APISnapshot(version string) Stage[packageapi.Snapshot] {
 }
 
 func buildAPISnapshot(packageName, version string, model *SemanticModel, options Options) (packageapi.Snapshot, error) {
-	module, err := BuildTypeModel(model.PublicRoot)
-	if err != nil {
-		return packageapi.Snapshot{}, fmt.Errorf("semantic type projection failed: %w", err)
-	}
 	layouts, err := resolvePublicStructLayouts(model.PublicRoot, options)
 	if err != nil {
 		return packageapi.Snapshot{}, fmt.Errorf("public ABI projection failed: %w", err)
@@ -41,27 +38,46 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 		Version: version,
 		Exports: make(map[string]packageapi.Export),
 	}
-	for _, definition := range module.Definitions {
-		kind := string(definition.Type.Kind)
+	for _, statement := range model.PublicRoot.Statements {
+		var name, kind, typeIdentity string
+		var concreteStruct bool
+		switch declaration := statement.(type) {
+		case *ast.ADTType:
+			if declaration.Name == nil {
+				continue
+			}
+			name = declaration.Name.Value
+			kind, typeIdentity, concreteStruct, err = canonicalADTDeclaration(declaration, model.TypeChecker)
+		case *ast.InterfaceType:
+			if declaration.Name == nil {
+				continue
+			}
+			name, kind = declaration.Name.Value, "interface"
+			typeIdentity, err = canonicalInterfaceDeclaration(declaration)
+		default:
+			continue
+		}
+		if err != nil {
+			return packageapi.Snapshot{}, fmt.Errorf("public type %q: %w", name, err)
+		}
 		abi := ""
-		if definition.Type.Kind == semir.TypeRecord && definition.Representation.Kind == semir.RepresentationRecord {
-			kind = "struct"
-			if layout, ok := layouts[definition.Name]; ok {
+		if concreteStruct {
+			if layout, ok := layouts[name]; ok {
 				abi = canonicalRecordABI(layout.representation, layout.spec)
 			} else {
-				var found bool
-				abi, found, err = canonicalGenericStructABI(definition.Name, model.PublicRoot)
+				var ok bool
+				abi, ok, err = canonicalGenericStructABI(name, model.PublicRoot)
 				if err != nil {
 					return packageapi.Snapshot{}, err
 				}
-				if !found {
-					return packageapi.Snapshot{}, fmt.Errorf("struct %q has no resolved public layout", definition.Name)
+				if !ok {
+					return packageapi.Snapshot{}, fmt.Errorf("struct %q has no resolved public layout", name)
 				}
 			}
 		}
-		snapshot.Exports[definition.Name] = packageapi.Export{
+		snapshot.Exports[name] = packageapi.Export{
 			Kind: kind,
-			Type: canonicalDefinitionType(definition.Type),
+			Type: typeIdentity,
 			ABI:  abi,
 		}
 	}
@@ -70,7 +86,20 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 		var name, kind string
 		switch declaration := statement.(type) {
 		case *ast.FunctionStatement:
-			if declaration.Receiver != nil || declaration.Name == nil {
+			if declaration.Name == nil {
+				continue
+			}
+			if declaration.Receiver != nil {
+				receiver, err := canonicalTypeExpression(declaration.Receiver.Type)
+				if err != nil {
+					return packageapi.Snapshot{}, fmt.Errorf("public method %q: %w", declaration.Name.Value, err)
+				}
+				name, kind = receiver+"::"+declaration.Name.Value, "method"
+				typeIdentity, err := canonicalFunctionDeclaration(declaration)
+				if err != nil {
+					return packageapi.Snapshot{}, fmt.Errorf("public method %q: %w", name, err)
+				}
+				snapshot.Exports[name] = packageapi.Export{Kind: kind, Type: typeIdentity}
 				continue
 			}
 			name, kind = declaration.Name.Value, "function"
@@ -97,6 +126,130 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 		snapshot.Exports[name] = packageapi.Export{Kind: kind, Type: canonicalScheme(scheme)}
 	}
 	return snapshot, nil
+}
+
+func canonicalADTDeclaration(declaration *ast.ADTType, checker *typechecker.TypeChecker) (string, string, bool, error) {
+	parameters, err := canonicalTypeParameters(declaration.TypeParams)
+	if err != nil {
+		return "", "", false, err
+	}
+	if len(declaration.Variants) == 1 {
+		variant := declaration.Variants[0]
+		if variant == nil {
+			return "", "", false, fmt.Errorf("nil variant")
+		}
+		if record, ok := variant.Literal.(*ast.RecordLiteral); ok {
+			identity, err := canonicalTypeExpression(record)
+			if err != nil {
+				return "", "", false, err
+			}
+			identity = "record" + parameters + strings.TrimPrefix(identity, "record")
+			isStruct := record.Token.TokenKind == token.STRUCT
+			kind := "record"
+			if isStruct {
+				kind = "struct"
+			}
+			return kind, identity, isStruct, nil
+		}
+		if infix, ok := variant.Literal.(*ast.InfixExpression); ok && infix.Operator == "&" {
+			if scheme, ok := checker.Env().Get(declaration.Name.Value); ok && scheme.Type != nil {
+				return "record", "record" + parameters + strings.TrimPrefix(canonicalCheckedType(scheme.Type), "record"), false, nil
+			}
+		}
+		if variant.Name != nil && variant.Name.Value == declaration.Name.Value && variant.Payload != nil && variant.Literal == nil {
+			base, err := canonicalTypeExpression(variant.Payload)
+			if err != nil {
+				return "", "", false, err
+			}
+			return "alias", "alias" + parameters + "(" + base + ")", false, nil
+		}
+	}
+	variants := make([]string, 0, len(declaration.Variants))
+	for _, variant := range declaration.Variants {
+		if variant == nil || variant.Name == nil {
+			return "", "", false, fmt.Errorf("unnamed variant")
+		}
+		part := variant.Name.Value
+		if variant.Payload != nil {
+			payload, err := canonicalTypeExpression(variant.Payload)
+			if err != nil {
+				return "", "", false, err
+			}
+			part += "(" + payload + ")"
+		}
+		if variant.Literal != nil {
+			part += "=" + strings.ReplaceAll(variant.Literal.String(), " ", "")
+		}
+		if variant.Result != nil {
+			result, err := canonicalTypeExpression(variant.Result)
+			if err != nil {
+				return "", "", false, err
+			}
+			part += "=>" + result
+		}
+		variants = append(variants, part)
+	}
+	return "sum", "sum" + parameters + "{" + strings.Join(variants, "|") + "}", false, nil
+}
+
+func canonicalInterfaceDeclaration(declaration *ast.InterfaceType) (string, error) {
+	parameters, err := canonicalTypeParameters(declaration.TypeParams)
+	if err != nil {
+		return "", err
+	}
+	methods := make([]string, 0, len(declaration.Methods))
+	for _, method := range declaration.Methods {
+		if method == nil || method.Name == nil {
+			return "", fmt.Errorf("unnamed method")
+		}
+		parts := make([]string, 0, len(method.Parameters)+1)
+		if method.ReceiverType != nil {
+			receiver, err := canonicalTypeExpression(method.ReceiverType)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, receiver)
+		}
+		for _, parameter := range method.Parameters {
+			identity, err := canonicalTypeExpression(parameter.Type)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, identity)
+		}
+		result := "()"
+		if method.ReturnType != nil {
+			result, err = canonicalTypeExpression(method.ReturnType)
+			if err != nil {
+				return "", err
+			}
+		}
+		methods = append(methods, method.Name.Value+"("+strings.Join(parts, ",")+")->"+result)
+	}
+	sort.Strings(methods)
+	return "interface" + parameters + "{" + strings.Join(methods, ";") + "}", nil
+}
+
+func canonicalTypeParameters(parameters []*ast.TypeParameter) (string, error) {
+	parts := make([]string, 0, len(parameters))
+	for _, parameter := range parameters {
+		if parameter == nil || parameter.Name == nil {
+			return "", fmt.Errorf("invalid type parameter")
+		}
+		part := parameter.Name.Value
+		if parameter.Constraint != nil {
+			constraint, err := canonicalTypeExpression(parameter.Constraint)
+			if err != nil {
+				return "", err
+			}
+			part += ":" + constraint
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return "[" + strings.Join(parts, ",") + "]", nil
 }
 
 func canonicalFunctionDeclaration(function *ast.FunctionStatement) (string, error) {
@@ -140,6 +293,13 @@ func canonicalFunctionDeclaration(function *ast.FunctionStatement) (string, erro
 	prefix := ""
 	if len(typeParameters) != 0 {
 		prefix = "forall[" + strings.Join(typeParameters, ",") + "]."
+	}
+	if function.Receiver != nil {
+		receiver, err := canonicalTypeExpression(function.Receiver.Type)
+		if err != nil {
+			return "", err
+		}
+		prefix += "receiver[" + receiver + "]."
 	}
 	return prefix + "fn(" + strings.Join(parameters, ",") + ")->" + result, nil
 }
@@ -389,14 +549,34 @@ func canonicalIntersection(text string) string {
 }
 
 func canonicalTypeText(text string) string {
-	text = strings.ReplaceAll(text, " ", "")
-	if text == "byte" {
-		return "u8"
+	var out strings.Builder
+	identifier := make([]rune, 0)
+	flush := func() {
+		if len(identifier) == 0 {
+			return
+		}
+		word := string(identifier)
+		switch word {
+		case "byte":
+			word = "u8"
+		case "rune":
+			word = "u32"
+		}
+		out.WriteString(word)
+		identifier = identifier[:0]
 	}
-	if text == "rune" {
-		return "u32"
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			identifier = append(identifier, r)
+			continue
+		}
+		flush()
+		if !unicode.IsSpace(r) {
+			out.WriteRune(r)
+		}
 	}
-	return text
+	flush()
+	return out.String()
 }
 
 type resolvedRecordLayout struct {
@@ -425,7 +605,7 @@ func resolvePublicStructLayouts(program *ast.Program, options Options) (map[stri
 		progress := false
 		next := pending[:0]
 		for _, declaration := range pending {
-			layout, spec, ok, err := resolveRecordLayout(declaration.record, resolved, options)
+			layout, spec, ok, err := resolveRecordLayout(declaration.record, resolved, options, program)
 			if err != nil {
 				return nil, fmt.Errorf("struct %q: %w", declaration.name, err)
 			}
@@ -449,10 +629,10 @@ func resolvePublicStructLayouts(program *ast.Program, options Options) (map[stri
 	return resolved, nil
 }
 
-func resolveRecordLayout(record *ast.RecordLiteral, resolved map[string]resolvedRecordLayout, options Options) (semir.Representation, semir.RecordLayoutSpec, bool, error) {
+func resolveRecordLayout(record *ast.RecordLiteral, resolved map[string]resolvedRecordLayout, options Options, program *ast.Program) (semir.Representation, semir.RecordLayoutSpec, bool, error) {
 	fields := make([]semir.RecordFieldRepresentation, 0, len(record.FieldOrder))
 	for _, field := range record.FieldOrder {
-		representation, ok, err := fieldRepresentation(field, resolved, options)
+		representation, ok, err := fieldRepresentation(field, resolved, options, program)
 		if err != nil {
 			return semir.Representation{}, semir.RecordLayoutSpec{}, false, err
 		}
@@ -470,8 +650,11 @@ func resolveRecordLayout(record *ast.RecordLiteral, resolved map[string]resolved
 	return layout, spec, err == nil, err
 }
 
-func fieldRepresentation(field ast.RecordField, resolved map[string]resolvedRecordLayout, options Options) (semir.RecordFieldRepresentation, bool, error) {
-	representation, ok := naturalTypeRepresentation(field.Name, field.Value, resolved, options)
+func fieldRepresentation(field ast.RecordField, resolved map[string]resolvedRecordLayout, options Options, program *ast.Program) (semir.RecordFieldRepresentation, bool, error) {
+	representation, ok, err := naturalTypeRepresentation(field.Name, field.Value, resolved, options, program)
+	if err != nil {
+		return semir.RecordFieldRepresentation{}, false, err
+	}
 	if !ok {
 		return semir.RecordFieldRepresentation{}, false, nil
 	}
@@ -484,26 +667,34 @@ func fieldRepresentation(field ast.RecordField, resolved map[string]resolvedReco
 	return representation, true, nil
 }
 
-func naturalTypeRepresentation(name string, expression ast.Expression, resolved map[string]resolvedRecordLayout, options Options) (semir.RecordFieldRepresentation, bool) {
+func naturalTypeRepresentation(name string, expression ast.Expression, resolved map[string]resolvedRecordLayout, options Options, program *ast.Program) (semir.RecordFieldRepresentation, bool, error) {
 	if indexed, ok := expression.(*ast.IndexExpression); ok {
 		if base, isIdent := indexed.Left.(*ast.Identifier); isIdent && base.Value == "Atomic" {
-			return naturalTypeRepresentation(name, indexed.Index, resolved, options)
+			return naturalTypeRepresentation(name, indexed.Index, resolved, options, program)
+		}
+		if layout, ok, err := resolveGenericStructApplication(indexed, resolved, options, program); err != nil {
+			return semir.RecordFieldRepresentation{}, false, err
+		} else if ok {
+			return semir.RecordFieldRepresentation{Name: name, Size: layout.Size, Alignment: layout.Alignment}, true, nil
 		}
 		if length, fixed := indexed.Index.(*ast.IntegerLiteral); fixed && length.Value >= 0 {
-			element, ok := naturalTypeRepresentation(name, indexed.Left, resolved, options)
+			element, ok, err := naturalTypeRepresentation(name, indexed.Left, resolved, options, program)
+			if err != nil {
+				return semir.RecordFieldRepresentation{}, false, err
+			}
 			if !ok {
-				return semir.RecordFieldRepresentation{}, false
+				return semir.RecordFieldRepresentation{}, false, nil
 			}
 			total := uint64(element.Size) * uint64(length.Value)
 			if total > uint64(^uint32(0)) {
-				return semir.RecordFieldRepresentation{}, false
+				return semir.RecordFieldRepresentation{}, false, nil
 			}
-			return semir.RecordFieldRepresentation{Name: name, Size: uint32(total), Alignment: element.Alignment}, true
+			return semir.RecordFieldRepresentation{Name: name, Size: uint32(total), Alignment: element.Alignment}, true, nil
 		}
 	}
 	identifier, ok := expression.(*ast.Identifier)
 	if !ok {
-		return semir.RecordFieldRepresentation{}, false
+		return semir.RecordFieldRepresentation{}, false, nil
 	}
 	fixed := map[string]semir.RecordFieldRepresentation{
 		"u8": {Size: 1, Alignment: 1}, "i8": {Size: 1, Alignment: 1}, "byte": {Size: 1, Alignment: 1},
@@ -523,12 +714,81 @@ func naturalTypeRepresentation(name string, expression ast.Expression, resolved 
 	}
 	if representation, exists := fixed[identifier.Value]; exists {
 		representation.Name = name
-		return representation, true
+		return representation, true, nil
 	}
 	if nested, exists := resolved[identifier.Value]; exists {
-		return semir.RecordFieldRepresentation{Name: name, Size: nested.representation.Size, Alignment: nested.representation.Alignment}, true
+		return semir.RecordFieldRepresentation{Name: name, Size: nested.representation.Size, Alignment: nested.representation.Alignment}, true, nil
 	}
-	return semir.RecordFieldRepresentation{}, false
+	return semir.RecordFieldRepresentation{}, false, nil
+}
+
+func resolveGenericStructApplication(application *ast.IndexExpression, resolved map[string]resolvedRecordLayout, options Options, program *ast.Program) (semir.Representation, bool, error) {
+	name, arguments, ok := flattenGenericApplication(application)
+	if !ok {
+		return semir.Representation{}, false, nil
+	}
+	key, err := canonicalTypeExpression(application)
+	if err != nil {
+		return semir.Representation{}, false, err
+	}
+	if cached, ok := resolved[key]; ok {
+		return cached.representation, true, nil
+	}
+	for _, statement := range program.Statements {
+		template, ok := statement.(*ast.ADTType)
+		if !ok || template.Name == nil || template.Name.Value != name || len(template.TypeParams) != len(arguments) || len(template.Variants) != 1 {
+			continue
+		}
+		record, ok := template.Variants[0].Literal.(*ast.RecordLiteral)
+		if !ok || record.Token.TokenKind != token.STRUCT {
+			return semir.Representation{}, false, nil
+		}
+		bindings := make(map[string]ast.Expression, len(arguments))
+		for i, parameter := range template.TypeParams {
+			if parameter == nil || parameter.Name == nil {
+				return semir.Representation{}, false, fmt.Errorf("generic struct %q has invalid type parameters", name)
+			}
+			bindings[parameter.Name.Value] = arguments[i]
+		}
+		instantiated := *record
+		instantiated.Fields = make(map[string]ast.Expression, len(record.Fields))
+		instantiated.FieldOrder = make([]ast.RecordField, 0, len(record.FieldOrder))
+		for _, field := range record.FieldOrder {
+			fieldType, ok := typechecker.SubstituteTypeAST(field.Value, bindings)
+			if !ok {
+				return semir.Representation{}, false, fmt.Errorf("generic struct %q field %q cannot be specialized", name, field.Name)
+			}
+			copyField := field
+			copyField.Value = fieldType
+			instantiated.Fields[field.Name] = fieldType
+			instantiated.FieldOrder = append(instantiated.FieldOrder, copyField)
+		}
+		layout, spec, ok, err := resolveRecordLayout(&instantiated, resolved, options, program)
+		if err != nil || !ok {
+			return semir.Representation{}, ok, err
+		}
+		resolved[key] = resolvedRecordLayout{representation: layout, spec: spec}
+		return layout, true, nil
+	}
+	return semir.Representation{}, false, nil
+}
+
+func flattenGenericApplication(expression ast.Expression) (string, []ast.Expression, bool) {
+	switch value := expression.(type) {
+	case *ast.Identifier:
+		if value == nil || value.Value == "" {
+			return "", nil, false
+		}
+		return value.Value, nil, true
+	case *ast.IndexExpression:
+		name, arguments, ok := flattenGenericApplication(value.Left)
+		if !ok || value.Index == nil {
+			return "", nil, false
+		}
+		return name, append(arguments, value.Index), true
+	default:
+		return "", nil, false
+	}
 }
 
 func canonicalRecordABI(representation semir.Representation, spec semir.RecordLayoutSpec) string {

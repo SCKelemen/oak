@@ -93,3 +93,29 @@ Slot[T]: type = struct(align: 16) { value: T, tag: u8 }
 		t.Fatalf("generic struct ABI = %q", got.ABI)
 	}
 }
+
+func TestAPISnapshotIncludesMethodsGenericFieldsAndLiteralADTs(t *testing.T) {
+	snapshot, err := New().WithSource("surface.oak", `
+Reader: interface = fn (self) read() -> i32
+Uart: type = { port: u32 }
+fn (u: *Uart) read() -> i32 { 0 }
+
+Slot[T]: type = struct { value: T }
+Holder: type = struct { slot: Slot[u8], tail: u32 }
+
+Comparison: type = Less: i8 = -1 | Equal: i8 = 0 | Greater: i8 = 1
+`).APISnapshot("1.0.0").Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	method, ok := snapshot.Exports["*Uart::read"]
+	if !ok || method.Kind != "method" || !strings.Contains(method.Type, "receiver[*Uart]") {
+		t.Fatalf("receiver method missing from API: %#v", method)
+	}
+	if got := snapshot.Exports["Holder"].ABI; got != "size=8;align=4;packed=false;declared-align=0;slot@0:1;tail@4:4" {
+		t.Fatalf("generic field layout was not resolved: %q", got)
+	}
+	if got := snapshot.Exports["Comparison"].Type; got != "sum{Less(i8)=-1|Equal(i8)=0|Greater(i8)=1}" {
+		t.Fatalf("literal ADT identity = %q", got)
+	}
+}
