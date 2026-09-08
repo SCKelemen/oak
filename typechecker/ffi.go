@@ -350,8 +350,17 @@ func (tc *TypeChecker) checkLibraryInvocation(expr *ast.InvocationExpression) (T
 		return tc.checkCatalogCall(expr, "arm64", member, arm64Intrinsics,
 			"the arm64 library has no instruction function arm64.%s"), true
 	case "simd":
-		return tc.checkCatalogCall(expr, "simd", member, simdOps,
-			"the simd library has no operation simd.%s"), true
+		typ := tc.checkCatalogCall(expr, "simd", member, simdOps,
+			"the simd library has no operation simd.%s")
+		if _, known := simdOps[member]; known {
+			if info := tc.env.borrowMetadata(); info != nil {
+				if info.simdCalls == nil {
+					info.simdCalls = make(map[*ast.InvocationExpression]string)
+				}
+				info.simdCalls[expr] = member
+			}
+		}
+		return typ, true
 	}
 	return nil, false
 }

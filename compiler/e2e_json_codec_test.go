@@ -131,3 +131,35 @@ main: (): i32 {
 		t.Fatal("missing NEON block load/store lowering")
 	}
 }
+
+func TestE2EJsonCodecScanner(t *testing.T) {
+	source := `import(std)
+main: (): i32 {
+ data: [65]u8
+ byte: u32 = 0
+ while byte < u32(256) {
+  position: u32 = 0
+  while position < u32(65) {
+   i: u32 = 0
+   while i < u32(65) { data[i] = u8(65)
+    i = i + u32(1)
+   }
+   data[position] = u8_trunc_u32(byte)
+   true ? {
+    input: []u8 = view(&data)
+    expected: u32 = byte < u32(32) || byte == u32(34) || byte == u32(92) ? position | u32(65)
+    assert(json_string_run(input, u32(0)) == expected)
+    assert(json_string_run(input, position) == expected)
+    assert(json_string_run(input, u32(65)) == u32(65))
+   }
+   position = position + u32(1)
+  }
+  byte = byte + u32(1)
+ }
+ 42
+}`
+	_, code, abnormal := buildAndRunOutput(t, "json_scan", source, "-DOAK_PORTABLE_INTRINSICS", "-fsanitize=address,undefined")
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
