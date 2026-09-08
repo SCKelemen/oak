@@ -523,6 +523,12 @@ type TypeChecker struct {
 	functionTemplates          map[string]*ast.FunctionStatement
 	functionInstantiations     map[string]*ast.FunctionStatement
 	functionInstantiationOrder []string
+	// rowFunctionTemplates marks source functions whose extensible-record
+	// parameters are representation-polymorphic. They share the ordinary
+	// function monomorphizer after rowfn.go replaces each open parameter
+	// with a private synthetic type parameter.
+	rowFunctionTemplates            map[string]bool
+	functionTemplateRowRequirements map[string]map[string]*RecordType
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -732,8 +738,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	if len(tc.functionTemplates) > 0 {
 		kept := make([]ast.Statement, 0, len(program.Statements)+len(tc.functionInstantiationOrder))
 		for _, stmt := range program.Statements {
-			if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil && len(fn.TypeParams) > 0 {
-				if _, isTemplate := tc.functionTemplates[fn.Name.Value]; isTemplate {
+			if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil {
+				_, isTemplate := tc.functionTemplates[fn.Name.Value]
+				if isTemplate && (len(fn.TypeParams) > 0 || tc.rowFunctionTemplates[fn.Name.Value]) {
 					continue
 				}
 			}
@@ -751,6 +758,10 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 // depend on constraint machinery that runs during the full check.
 func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
 	if fn == nil || fn.Name == nil || fn.Receiver != nil || len(fn.TypeParams) > 0 {
+		return
+	}
+	if hasOpenRowParameters(fn) {
+		tc.registerRowFunctionTemplate(fn)
 		return
 	}
 	// Extern bindings are validated and registered by their own path
@@ -2893,6 +2904,14 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			tc.checkedExterns[stmt] = true
 			tc.checkExternFunction(stmt)
 		}
+		return
+	}
+
+	// An extensible-record parameter describes a family of concrete ABIs,
+	// not one layout. Register a representation template and check each
+	// concrete call-site specialization through the ordinary safety gates.
+	if stmt.Receiver == nil && hasOpenRowParameters(stmt) {
+		tc.registerRowFunctionTemplate(stmt)
 		return
 	}
 

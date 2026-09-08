@@ -444,8 +444,10 @@ Struct-representation proof targets:
 The semantic record proof must not assume a specific ABI. ABI-specific theorems belong to representation/backend models.
 
 
-## 13. Extensible record types
+## 15. Extensible record types
 
 An extensible record type writes a row variable before `|`: `{ r | name: string, age: u8 }`. It denotes every record or struct containing at least the listed fields at the listed types. The row name is diagnostic metadata: it creates no runtime field, does not affect field order, and does not participate in representation.
 
-An extensible record is a structural constraint, never a concrete storage layout. A concrete value still has a record or struct type, and lowering must specialize or erase the open row before code generation. Closed record types continue to use exact shape matching where exact identity is requested. Extensible syntax in value position is ill-formed; it is not record-update syntax.
+An extensible record is a structural constraint, never a concrete storage layout. A concrete value still has a record or struct type. Every function with an extensible-record parameter is a representation template: calls are monomorphized for the concrete argument struct, the call is rewritten to that specialization, and only closed-layout functions reach borrowing, discipline analysis, lowering, and code generation. Two structs with the same required fields but different order therefore produce distinct native specializations without copying, boxing, or runtime field-offset dispatch.
+
+Closed record types continue to use exact shape matching where exact identity is requested. Extensible syntax in value position is ill-formed; it is not record-update syntax.

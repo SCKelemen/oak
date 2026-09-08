@@ -237,6 +237,9 @@ func (tc *TypeChecker) bindTypeParams(paramType ast.Expression, argType Type, pa
 // invokeInstantiated monomorphizes the template for the given arguments,
 // rewrites the call site to the mangled name, and returns the call's type.
 func (tc *TypeChecker) invokeInstantiated(expr *ast.InvocationExpression, template *ast.FunctionStatement, args []Type) Type {
+	if !tc.validateTemplateRowArguments(expr, template, args) {
+		return nil
+	}
 	mangled, ok := tc.instantiateFunctionTemplate(template, args)
 	if !ok {
 		tc.addError(expr, "cannot instantiate %s: type arguments must be mangleable concrete types", template.Name.Value)
