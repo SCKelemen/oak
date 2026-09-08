@@ -21,7 +21,7 @@ jobs:
       - name: Test JSON codecs
         run: go test ./compiler -run 'Test.*JsonCodec' -count=1
       - name: Test borrow storage boundaries
-        run: go test -race ./typechecker ./borrowchecker ./lsp -count=1
+        run: go test -race ./parser ./typechecker ./borrowchecker ./lsp -count=1
       - name: Check golden corpus
         run: go test ./serialize -run TestGoldenCorpusMatches -count=1
       - name: Test runtime string views
