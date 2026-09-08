@@ -45,3 +45,29 @@ test infrastructure. Full text-grammar and compiler refinement remain open.
 Next: replay real certificates through the new certified stream and connect the
 text/range decoder to its initial-database representation without a supplied
 per-index equation.
+
+## Validation
+
+[The soundness gate passed](https://github.com/SCKelemen/oak/actions/runs/34238014168/job/102100656518)
+on commit `ff79a91ca19a37d75d7601d3bf9a52d1668d45a9`. All five theorem reports
+and seven executable-definition reports passed with warnings as errors, without
+proof holes or project-specific axioms. The reports use only standard `propext`,
+`Quot.sound`, and `Classical.choice`.
+
+Oak, Go, the new certified stream, and the original Lean stream agreed on all
+887 layouts: 308 accepted and 579 rejected. All 256 constructed publish/delete
+and suffix cases behaved as expected. Native comparison took 43.82 seconds
+without the race detector. The canonical corpus and proof/comparison logs are
+retained for 30 days; `../validation-certified-stream.json` records the exact
+scope and tested commit.
+
+The native comparison also passed with Go's race detector in 72.79 seconds. The
+full native suite and existing external/certificate gates passed, including
+11 accepted Lean certificates and 22 rejected corruptions, the Boolean proof
+bridge, and the invariant-model gate. These existing certificate gates still use
+the original stream path; direct real-certificate replay through this new stream
+is the next integration step.
+
+Repository CI, standard-library, formal-verification, golden-file, and AArch64
+memory-refinement checks all passed on the tested commit. Existing gates, corpus
+coverage, and timeout limits were preserved.

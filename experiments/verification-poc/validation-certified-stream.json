@@ -1,0 +1,125 @@
+{
+  "artifacts": "CertifiedStream.lean, certified-stream-proof.log, certified-stream-cases.json, certified-stream-go.log, certified-stream-agreement.log; retained 30 days",
+  "commit": "ff79a91ca19a37d75d7601d3bf9a52d1668d45a9",
+  "comparison": {
+    "accepted": 308,
+    "compared": [
+      "Actual Oak stream",
+      "Go LRAT oracle",
+      "New certified Lean stream",
+      "Original Lean range/stream checker"
+    ],
+    "constructed_live_chain_cases": 256,
+    "layouts": 887,
+    "maximum_variables_in_chain": 64,
+    "native_seconds_with_race": 72.79,
+    "native_seconds_without_race": 43.82,
+    "prior_raw_layouts": 631,
+    "rejected": 579,
+    "variants": [
+      "Publish units and delete predecessors",
+      "Derive and delete empty clause then continue validly",
+      "Reused addition ID after refutation",
+      "Hint to deleted empty clause on tautological addition",
+      "Duplicate deletion after refutation"
+    ]
+  },
+  "date": "2026-09-08",
+  "existing_gates": {
+    "boolean_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "boolean_model": {
+      "accepted_safe": 1,
+      "rejected_corruptions": 2,
+      "rejected_malformed": 3,
+      "rejected_unsafe": 1,
+      "rejected_wrong": 1
+    },
+    "lean_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "oak_ascii_certificate": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    }
+  },
+  "format": "oak-certified-stream-validation-1",
+  "implementation": {
+    "actual": "Uninstrumented Oak rup_stream_check and rup_check",
+    "formal_model": "Lean certified live-range-table proof stream",
+    "host_harness": "Go",
+    "old_stream_replaced": false,
+    "production_checker_changed": false,
+    "python_runtime": false
+  },
+  "next_step": "Replay real certificates through the new stream and connect text/range decoding to its initial database without a supplied per-index equation.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.CertifiedStream.empty_database' depends on axioms: [propext]",
+      "'OakVerification.CertifiedStream.initialState' depends on axioms: [propext]",
+      "'OakVerification.CertifiedStream.publishCertified' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertifiedStream.eraseOne' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertifiedStream.deletion_keeps_refutation' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertifiedStream.deletion_keeps_last' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertifiedStream.deleteIDs' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertifiedStream.command' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CertifiedStream.commands' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CertifiedStream.run' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CertifiedStream.check_sound' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CertifiedStream.decoded_sound' depends on axioms: [propext, Classical.choice, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Every state preserves all initial models in its current live-table database",
+      "Only chain-certified clauses are published",
+      "Clearing corresponds to logical deletion",
+      "Deletion preserves refutation and the last addition ID",
+      "Every suffix command must succeed before acceptance",
+      "Accepted raw layouts imply unsatisfiability of their initial table projection",
+      "Decoded initialDatabase soundness follows under the per-index range equation"
+    ],
+    "reported_executable_definitions": 7,
+    "reported_theorems": 5,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Universal Oak executor refinement",
+      "Universal equality with original Lean stream",
+      "Automatic derivation of the per-index initial decoding equation",
+      "Full text grammar and compiler semantics"
+    ],
+    "proved": [
+      "Whole-stream acceptance soundness for the new Lean raw-layout model",
+      "Certified chain composition with table publication and deletion",
+      "Persistent refutation certificate"
+    ],
+    "rejected_deletion_states": "No certified state is returned; partial mutations remain covered by existing native table trace tests",
+    "tested": [
+      "Acceptance agreement with compiled Oak and the original Lean stream"
+    ],
+    "trusted_infrastructure": [
+      "JSON adapter",
+      "Go harness",
+      "Oak compiler",
+      "Generated C",
+      "C compiler/runtime"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34238014168",
+  "solvers_job": 102100656454,
+  "soundness_job": 102100656518,
+  "repository_ci": {
+    "Verification experiment (opt-in)": "success",
+    "Formal Verification": "success",
+    "Golden File Verification": "success",
+    "Standard library": "success",
+    "CI": "success"
+  },
+  "aarch64_memory_refinement": "success"
+}

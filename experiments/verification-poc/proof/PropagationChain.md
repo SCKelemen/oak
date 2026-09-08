@@ -43,8 +43,9 @@ The new checker is isolated and does not replace the existing stream checker or
 production Oak implementation. The JSON adapter, Go harness, Oak compiler,
 generated C, and C compiler/runtime remain trusted test infrastructure.
 
-Next: connect certified chain results to live-table publication and whole
-proof-stream acceptance, preserving the same small removable experiment boundary.
+The [certified-stream milestone](CertifiedStream.md) now connects chain results
+to live-table publication and deletion and proves whole-stream acceptance
+soundness. The implementation remains an isolated alternative.
 
 ## Validation
 
