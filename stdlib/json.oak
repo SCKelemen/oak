@@ -261,3 +261,152 @@ json_bool_encode_at: (dst: [*]u8, offset: u32, value: Bool): Result[u32, JsonErr
   .Ok(size)
  }
 }
+
+
+// Decoder results contain only concrete values and byte offsets, never boxes.
+JsonDecodeError: type = InvalidEncoding | InvalidSyntax | TypeMismatch | NumericOverflow | MissingField | DuplicateField | UnknownField
+JsonDecoded[T]: type = struct { value: T, next: u32 }
+JsonToken: type = struct { kind: u32, start: u32, end: u32 }
+JsonInteger: type = struct { magnitude: u64, negative: Bool, next: u32 }
+json_decode_error_code: (reason: JsonDecodeError): u32 = reason ?
+ | .InvalidEncoding => u32(1)
+ | .InvalidSyntax => u32(2)
+ | .TypeMismatch => u32(3)
+ | .NumericOverflow => u32(4)
+ | .MissingField => u32(5)
+ | .DuplicateField => u32(6)
+ | .UnknownField => u32(7)
+json_decode_error: (code: u32): JsonDecodeError = code == u32(1) ? { .InvalidEncoding } | code == u32(3) ? { .TypeMismatch } | code == u32(4) ? { .NumericOverflow } | code == u32(5) ? { .MissingField } | code == u32(6) ? { .DuplicateField } | code == u32(7) ? { .UnknownField } | { .InvalidSyntax }
+json_space: (unit: u8): Bool = unit == u8(32) || unit == u8(9) || unit == u8(10) || unit == u8(13)
+json_digit: (unit: u8): Bool = unit >= u8(48) && unit <= u8(57)
+json_skip_space: (src: []u8, offset: u32): u32 {
+ assert(offset <= len(src))
+ at: u32 = offset
+ scanning: Bool = true
+ while at < len(src) && scanning {
+  json_space(src[at]) ? { at = at + u32(1) } | { scanning = false }
+ }
+ at
+}
+json_value_boundary: (src: []u8, at: u32): Bool = at == len(src) || (at < len(src) && (json_space(src[at]) || src[at] == u8(44) || src[at] == u8(93) || src[at] == u8(125)))
+// Token kinds: 0 end, 1 invalid, 2 {, 3 }, 4 :, 5 comma, 6 string,
+// 7 number, 8 true, 9 false, 10 null, 11 [, 12 ]. No token allocation.
+json_token: (src: []u8, offset: u32): JsonToken {
+ assert(offset <= len(src))
+ start: u32 = json_skip_space(src, offset)
+ at: u32 = start
+ kind: u32 = 0
+ start < len(src) ? {
+  unit: u8 = src[start]
+  kind = unit == u8(123) ? u32(2) | unit == u8(125) ? u32(3) | unit == u8(58) ? u32(4) | unit == u8(44) ? u32(5) | unit == u8(91) ? u32(11) | unit == u8(93) ? u32(12) | u32(1)
+  at = start + u32(1)
+  unit == u8(34) ? {
+   valid: Bool = true
+   done: Bool = false
+   while at < len(src) && valid && !done {
+    at = json_string_run(src, at)
+    at < len(src) ? {
+     src[at] == u8(34) ? { at = at + u32(1)
+      done = true
+     } | src[at] == u8(92) ? {
+      item: TextScalar = json_escape(src, at)
+      valid = item.next <= len(src)
+      valid ? { at = item.next }
+     } | { valid = false }
+    }
+   }
+   kind = valid && done ? u32(6) | u32(1)
+  } | unit == u8(45) || json_digit(unit) ? {
+   at = start
+   unit == u8(45) ? { at = at + u32(1) }
+   valid: Bool = at < len(src)
+   valid ? { valid = json_digit(src[at]) }
+   valid ? {
+    src[at] == u8(48) ? {
+     at = at + u32(1)
+     at < len(src) ? { valid = !json_digit(src[at]) }
+    } | {
+     while at < len(src) && json_digit(src[at]) { at = at + u32(1) }
+    }
+    at < len(src) && src[at] == u8(46) ? {
+     at = at + u32(1)
+     digits: u32 = at
+     while at < len(src) && json_digit(src[at]) { at = at + u32(1) }
+     valid = valid && at > digits
+    }
+    at < len(src) && (src[at] == u8(101) || src[at] == u8(69)) ? {
+     at = at + u32(1)
+     at < len(src) && (src[at] == u8(43) || src[at] == u8(45)) ? { at = at + u32(1) }
+     digits: u32 = at
+     while at < len(src) && json_digit(src[at]) { at = at + u32(1) }
+     valid = valid && at > digits
+    }
+   }
+   kind = valid && json_value_boundary(src, at) ? u32(7) | u32(1)
+  } | {
+   unit == u8(116) && len(src) - start >= u32(4) ? {
+    src[start + u32(1)] == u8(114) && src[start + u32(2)] == u8(117) && src[start + u32(3)] == u8(101) ? { kind = u32(8)
+     at = start + u32(4)
+    }
+   }
+   unit == u8(102) && len(src) - start >= u32(5) ? {
+    src[start + u32(1)] == u8(97) && src[start + u32(2)] == u8(108) && src[start + u32(3)] == u8(115) && src[start + u32(4)] == u8(101) ? { kind = u32(9)
+     at = start + u32(5)
+    }
+   }
+   unit == u8(110) && len(src) - start >= u32(4) ? {
+    src[start + u32(1)] == u8(117) && src[start + u32(2)] == u8(108) && src[start + u32(3)] == u8(108) ? { kind = u32(10)
+     at = start + u32(4)
+    }
+   }
+   kind >= u32(8) && kind <= u32(10) && !json_value_boundary(src, at) ? { kind = u32(1) }
+  }
+ }
+ JsonToken { kind: kind, start: start, end: at }
+}
+// Escaped and unescaped keys compare by Unicode scalar, without scratch text.
+json_key_equal: (src: []u8, key: JsonToken, expected: []u8): Bool {
+ valid: Bool = key.kind == u32(6) && key.start < key.end && key.end <= len(src)
+ at: u32 = key.start + u32(1)
+ other: u32 = 0
+ valid ? {
+  while valid && at < key.end - u32(1) {
+   item: TextScalar = src[at] == u8(92) ? json_escape(src, at) | text_decoded(utf8_decode(src, at))
+   reference: Result[TextScalar, TextError] = utf8_decode(expected, other)
+   valid = item.next <= key.end - u32(1) && text_decode_ok(reference)
+   valid ? {
+    target: TextScalar = text_decoded(reference)
+    valid = item.value == target.value
+    at = item.next
+    other = target.next
+   }
+  }
+ }
+ valid && other == len(expected)
+}
+json_read_integer: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError] {
+ item: JsonToken = json_token(src, offset)
+ item.kind <= u32(1) ? { .Err(.InvalidSyntax) } | item.kind != u32(7) ? { .Err(.TypeMismatch) } | {
+  at: u32 = item.start
+  negative: Bool = src[at] == u8(45)
+  negative ? { at = at + u32(1) }
+  integral: Bool = true
+  scan: u32 = at
+  while scan < item.end { integral = integral && json_digit(src[scan])
+   scan = scan + u32(1)
+  }
+  !integral ? { .Err(.TypeMismatch) } | {
+   magnitude: u64 = 0
+   valid: Bool = true
+   maximum: u64 = u64(9223372036854775807) * u64(2) + u64(1)
+   while at < item.end && valid {
+    digit: u64 = u64(src[at] - u8(48))
+    valid = magnitude <= (maximum - digit) / u64(10)
+    valid ? { magnitude = magnitude * u64(10) + digit
+     at = at + u32(1)
+    }
+   }
+   valid ? { .Ok(JsonInteger { magnitude: magnitude, negative: negative, next: item.end }) } | { .Err(.NumericOverflow) }
+  }
+ }
+}

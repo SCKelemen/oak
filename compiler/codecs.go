@@ -55,18 +55,31 @@ func lowerDerivedCodecs(program *ast.Program) error {
 			if !ok || producerName != "from" {
 				return expr, nil
 			}
-			if len(producerTypes) != 1 || len(producer.Arguments) != 1 || len(values) != 1 {
+			if len(producerTypes) != 1 || len(producer.Arguments) != 1 {
 				return nil, fmt.Errorf("codec: expected from[T](value).to[Json](output)")
 			}
-			name = "encode"
-			args = []ast.Expression{producerTypes[0], index.Index}
-			values = []ast.Expression{producer.Arguments[0], values[0]}
+			producerType, named := producerTypes[0].(*ast.Identifier)
+			if named && producerType.Value == "Json" {
+				if len(values) != 0 {
+					return nil, fmt.Errorf("codec: expected from[Json](input).to[T]()")
+				}
+				name = "decode"
+				args = []ast.Expression{index.Index, producerTypes[0]}
+				values = producer.Arguments
+			} else {
+				if len(values) != 1 {
+					return nil, fmt.Errorf("codec: expected from[T](value).to[Json](output)")
+				}
+				name = "encode"
+				args = []ast.Expression{producerTypes[0], index.Index}
+				values = []ast.Expression{producer.Arguments[0], values[0]}
+			}
 		}
-		if name != "encode" && name != "encoded_size" {
+		if name != "encode" && name != "encoded_size" && name != "decode" {
 			return expr, nil
 		}
 		arity := 2
-		if name == "encoded_size" {
+		if name == "encoded_size" || name == "decode" {
 			arity = 1
 		}
 		if len(args) != 2 || len(values) != arity {
@@ -77,7 +90,11 @@ func lowerDerivedCodecs(program *ast.Program) error {
 		if !typeOK || !formatOK || format.Value != "Json" {
 			return nil, fmt.Errorf("codec: requires a concrete named type and the Json format")
 		}
-		if err := d.derive(typ.Value); err != nil {
+		if name == "decode" {
+			if err := d.deriveDecoder(typ.Value); err != nil {
+				return nil, err
+			}
+		} else if err := d.derive(typ.Value); err != nil {
 			return nil, err
 		}
 		lowered := *call
@@ -89,7 +106,7 @@ func lowerDerivedCodecs(program *ast.Program) error {
 	}
 	// Reserved producers cannot escape as values or be shadowed by binders.
 	if err := transformSyntax(reflect.ValueOf(program), func(expr ast.Expression) (ast.Expression, error) {
-		if id, ok := expr.(*ast.Identifier); ok && (id.Value == "from" || id.Value == "encode" || id.Value == "encoded_size") {
+		if id, ok := expr.(*ast.Identifier); ok && (id.Value == "from" || id.Value == "encode" || id.Value == "encoded_size" || id.Value == "decode") {
 			return nil, fmt.Errorf("codec: %s is reserved for an immediately consumed, explicitly typed codec call", id.Value)
 		}
 		return expr, nil
@@ -116,6 +133,8 @@ func codecApplication(expr ast.Expression) (string, []ast.Expression, bool) {
 func codecName(operation, typ string) string { return "__oak_json_" + operation + "_" + typ }
 
 type codecDeriver struct {
+	decodeGenerated map[string]bool
+	decodeActive    map[string]bool
 	records   map[string]*ast.ADTType
 	schemas   map[string]*ast.TagDeclaration
 	names     map[string]bool
@@ -251,6 +270,14 @@ func (d *codecDeriver) derive(typ string) error {
 	source := fmt.Sprintf("%s: (value: %s): Result[u32, JsonError] {\n%s}\n", codecName("encoded_size", typ), typ, size.String())
 	source += fmt.Sprintf("%s: (value: %s, dst: [*]u8, offset: u32): Result[u32, JsonError] {\nmeasured: Result[u32, JsonError] = %s(value)\n!json_result_ok(measured) ? { measured } | !bytes_range_fits(len(dst), offset, json_result_value(measured)) ? { .Err(.DestinationTooSmall) } | {\n%s}\n}\n", codecName("write", typ), typ, codecName("encoded_size", typ), write.String())
 	source += fmt.Sprintf("%s: (value: %s, dst: [*]u8): Result[u32, JsonError] = %s(value, dst, u32(0))\n", codecName("encode", typ), typ, codecName("write", typ))
+	if err := d.appendCodecSource(typ, source); err != nil {
+		return err
+	}
+	d.generated[typ] = true
+	return nil
+}
+
+func (d *codecDeriver) appendCodecSource(typ, source string) error {
 	tree, err := New().WithSource("derived_json.oak", source).Parse().Get()
 	if err != nil {
 		return fmt.Errorf("codec: generated %s: %w", typ, err)
@@ -269,7 +296,6 @@ func (d *codecDeriver) derive(typ string) error {
 	}); err != nil {
 		return err
 	}
-	d.generated[typ] = true
 	d.output = append(d.output, tree.Root.Statements...)
 	return nil
 }
