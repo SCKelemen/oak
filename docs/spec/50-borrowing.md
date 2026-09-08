@@ -193,6 +193,23 @@ Unmarked resource parameters retain their ordinary semantics until a semantic or
 ABI contract explicitly assigns an authority mode. `OAK-B0112` reports violations
 of this call-local exclusivity rule.
 
+The executable model normalizes consumed modes and legacy consumption metadata to
+one contract. Conflicting metadata is rejected. A successfully checked call whose
+contract establishes fresh result authority may be passed directly as a resource
+argument; naming that result first does not change its exclusivity semantics.
+Rejected calls do not establish fresh results. Valid nested-call effects are not
+rolled back when a surrounding call is rejected.
+
+Resource reassignment is currently rejected with `OAK-B0112` until destination
+provenance is tracked; it must not retain a stale independent alias class. Unknown
+provenance and known consumed authority are distinct diagnostic causes. A conflict
+involving an unknown argument must identify that argument, including when it is a
+shared participant paired with a tracked exclusive participant.
+
+The callable-boundary audit and proposed result provenance/lifetime relationships
+are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).
+These proposals do not relax the current borrowed-return restriction.
+
 The checker should track alias classes or equivalent provenance so that consumption invalidates the relevant authority rather than merely one variable name. Copyable values remain outside this rule unless their type/protocol explicitly opts into resource semantics.
 
 `OAK-B0111` is reserved for use after consumption. Its diagnostic must show the consume site, the later use, and any relevant alias/provenance chain that explains why the later name lost authority (`15-diagnostics` section 6).
@@ -278,4 +295,5 @@ models consumption and alias classes, while `Oak.ResourceCall` models call-local
 parameter-mode compatibility. Symbolic-extent lemmas should extend that proof
 surface as the checker representation lands. Temporal ownership transfer across
 asynchronous actors may additionally use TLA+ when introduced.
+
 
