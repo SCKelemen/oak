@@ -541,8 +541,9 @@ func (tc *TypeChecker) Env() *TypeEnvironment {
 // TypeEnvironment stores type information for variables
 // In HM-style inference, we store TypeSchemes (polymorphic types) for let-bound variables
 type TypeEnvironment struct {
-	store map[string]*TypeScheme // Store schemes, not monomorphic types
-	outer *TypeEnvironment
+	store      map[string]*TypeScheme // Store schemes, not monomorphic types
+	outer      *TypeEnvironment
+	borrowInfo *borrowTypeInfo
 }
 
 func NewTypeEnvironment() *TypeEnvironment {
@@ -611,6 +612,12 @@ func NewWithPlatformSizes(env *object.Environment, intSize, ptrSize int) *TypeCh
 		checkedExterns:  make(map[*ast.FunctionStatement]bool),
 	}
 	// Add builtin type aliases
+	tc.env.borrowInfo = &borrowTypeInfo{
+		payloads:     tc.adtPayloadTypes,
+		adts:         tc.adtTypes,
+		expressions:  make(map[ast.Expression]Type),
+		declarations: make(map[*ast.VariableDeclaration]Type),
+	}
 	tc.addBuiltinTypeAliases()
 	return tc
 }
@@ -1065,7 +1072,12 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 
 // checkExpression type checks an expression and returns its type
 // expectedType is optional - if provided, it's used for context-based type inference (e.g., for literals)
-func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type) Type {
+func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type) (result Type) {
+	defer func() {
+		if info := tc.env.borrowMetadata(); info != nil && expr != nil && result != nil {
+			info.expressions[expr] = result
+		}
+	}()
 	var expected Type
 	if len(expectedType) > 0 {
 		expected = expectedType[0]
@@ -2943,6 +2955,15 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 }
 
 func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
+	defer func() {
+		if stmt != nil && stmt.Name != nil {
+			if info := tc.env.borrowMetadata(); info != nil {
+				if scheme, ok := tc.env.Get(stmt.Name.Value); ok && scheme != nil {
+					info.declarations[stmt] = scheme.Type
+				}
+			}
+		}
+	}()
 	beforeDeclaration := len(tc.Errors())
 	tc.beginMonomorphicTransaction()
 	defer func() {

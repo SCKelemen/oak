@@ -210,10 +210,20 @@ No special string escape rule is needed if semantic wrappers preserve ownership 
 The bootstrap return check recursively rejects views/spans stored in resolved
 records, fixed arrays, unions, and intersections with `OAK-B0109`. Owning the
 outer container does not give it ownership of storage referenced by an element.
-This check does not yet resolve nominal ADT payloads or track aggregate borrow
-provenance through assignments. General runtime `Str[E]` construction remains
-unavailable until those paths preserve the same lifetime and aliasing facts.
-Existing literal strings are unaffected.
+The check also follows nominal and generic ADT payloads. Phantom type
+parameters do not count as stored borrows; GADT variants are considered
+conservatively even if index equations might make them unreachable. Recursive
+ADTs are analyzed using finite borrow-presence states for their type arguments.
+
+Until field-sensitive provenance and destination lifetimes are represented,
+aggregate initializers, parameters, arguments, assignments, and field/element
+writes containing borrowed storage are rejected with `OAK-B0109`. This is a
+conservative restriction, not support for storing safe aggregate borrows. Direct
+views/spans of borrow-free elements, owned records/ADTs, and literal strings
+remain supported. Typechecking retains resolved local expression/declaration
+types so this boundary cannot depend on a local scope remaining in the global
+environment. General runtime `Str[E]` construction remains unavailable; it still
+requires provenance-preserving conversions and region-aware wrapper storage.
 
 ## 13. Formal verification targets
 
@@ -233,3 +243,4 @@ The core borrow/resource model must prove:
 - extent propagation preserves the semantic length equations introduced by array views, slices, and proved splits.
 
 `spec/lean/Oak/Borrowing.lean` models the local borrow-state laws. Consumption/alias-class and symbolic-extent lemmas should extend that proof surface as the checker representation lands. Temporal ownership transfer across asynchronous actors may additionally use TLA+ when introduced.
+
