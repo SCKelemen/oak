@@ -145,8 +145,8 @@ theorem scanTail_range (pos : Nat) (tail : List Nat) :
     have hw := countWhile_bounds wordByte bs
     simp only [List.length_cons] at hl
     by_cases hb : b = 10
-    · simp only [hr, if_pos hb]; dsimp only; omega
-    · simp only [hr, if_neg hb]; dsimp only; omega
+    · simp only [hr, if_pos hb]; omega
+    · simp only [hr, if_neg hb]; omega
 
 theorem scan_range (bytes : List Nat) (pos : Nat) (hp : pos ≤ bytes.length) :
     InRange pos bytes.length (scan bytes pos) := by
