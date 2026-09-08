@@ -87,7 +87,7 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			}
 			fmt.Fprintf(&body, "key%d: []u8 = view(&key%d_data)\n", i, i)
 		}
-		body.WriteString("first: JsonToken = json_token(src, at)\nfirst.kind == u32(3) ? { done = true\nat = first.end\n}\nwhile !done && status == u32(0) {\nkey: JsonToken = json_token(src, at)\nkey.kind != u32(6) ? { status = u32(2) } | {\ncolon: JsonToken = json_token(src, key.end)\ncolon.kind != u32(4) ? { status = u32(2) } | {\n")
+		body.WriteString("first: u32 = json_skip_space(src, at)\nfirst < len(src) && src[first] == u8(125) ? { done = true\nat = first + u32(1)\n}\nwhile !done && status == u32(0) {\nkey: JsonToken = json_token(src, at)\nkey.kind != u32(6) ? { status = u32(2) } | {\ncolon: JsonToken = json_token(src, key.end)\ncolon.kind != u32(4) ? { status = u32(2) } | {\n")
 		for i, field := range fields {
 			fmt.Fprintf(&body, "json_key_equal(src, key, key%d) ? {\nseen%d ? { status = u32(6) } | {\n", i, i)
 			if field.nullable {
@@ -97,7 +97,7 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			} else {
 				body.WriteString("array_start: JsonToken = json_token(src, colon.end)\narray_start.kind <= u32(1) ? { status = u32(2) } | array_start.kind != u32(11) ? { status = u32(3) } | {\nat = array_start.end\nindex: u32 = 0\n")
 				fmt.Fprintf(&body, "while index < u32(%d) && status == u32(0) {\nlookahead: u32 = json_skip_space(src, at)\nlookahead < len(src) && src[lookahead] == u8(93) ? { status = u32(8) } | {\npart: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, at)\npart ?\n | .Err(reason) => { status = json_decode_error_code(reason) }\n | .Ok(decoded) => { value.%s[index] = decoded.value\nat = decoded.next\nindex = index + u32(1)\n}\n}\n", field.length, field.typ, codecName("read", field.typ), field.name)
-				fmt.Fprintf(&body, "status == u32(0) ? {\nseparator: JsonToken = json_token(src, at)\nindex == u32(%d) ? {\nseparator.kind == u32(12) ? { at = separator.end } | separator.kind == u32(5) ? {\nextra: JsonToken = json_token(src, separator.end)\nextra.kind <= u32(1) || extra.kind == u32(12) ? { status = u32(2) } | { status = u32(8) }\n} | { status = u32(2) }\n} | separator.kind == u32(12) ? { status = u32(8) } | separator.kind == u32(5) ? {\nat = separator.end\nfollowing: JsonToken = json_token(src, at)\nfollowing.kind == u32(12) ? { status = u32(2) }\n} | { status = u32(2) }\n}\n}\nseen%d = status == u32(0)\n}\n", field.length, i)
+				fmt.Fprintf(&body, "status == u32(0) ? {\nseparator: JsonToken = json_token(src, at)\nindex == u32(%d) ? {\nseparator.kind == u32(12) ? { at = separator.end } | separator.kind == u32(5) ? {\nextra: JsonToken = json_token(src, separator.end)\nextra.kind <= u32(1) || extra.kind == u32(12) ? { status = u32(2) } | { status = u32(8) }\n} | { status = u32(2) }\n} | separator.kind == u32(12) ? { status = u32(8) } | separator.kind == u32(5) ? {\nat = separator.end\nfollowing: u32 = json_skip_space(src, at)\nfollowing < len(src) && src[following] == u8(93) ? { status = u32(2) }\n} | { status = u32(2) }\n}\n}\nseen%d = status == u32(0)\n}\n", field.length, i)
 			}
 			body.WriteString("}\n} | ")
 		}

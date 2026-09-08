@@ -1,7 +1,7 @@
 name: JSON benchmark smoke
 on:
   push:
-    branches: [specification, codex/json-benchmark, codex/json-optimize]
+    branches: [specification, codex/json-benchmark, codex/json-optimize, codex/json-speed]
     paths: ['benchmarks/json/**', '.github/workflows/json-benchmark.yml', 'compiler/**', 'codegen/**', 'stdlib/**']
   pull_request:
     branches: [specification]
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: SCKelemen/oak
-          ref: bb8932260e444d56f2d009fdefcde16ddbdcd0e4
+          ref: 01f4ca73cc737b15c7bf5f0a237a0cdbff3b56a2
           path: benchmark-baseline
           persist-credentials: false
       - name: Baseline release measurement
@@ -37,10 +37,10 @@ jobs:
       - name: Sanitizer correctness
         run: python3 benchmarks/json/run.py --simdjson benchmark-simdjson --documents 16 --rounds 1 --samples 1 --sanitize --output benchmark-results/sanitizer.json
       - name: Release correctness and timing smoke
-        run: python3 benchmarks/json/run.py --simdjson benchmark-simdjson --documents 1024 --rounds 1000 --samples 5 --output benchmark-results/release.json
+        run: python3 benchmarks/json/run.py --simdjson benchmark-simdjson --documents 1024 --rounds 1000 --samples 5 --output benchmark-results/release.json --inspect benchmark-results/native
       - name: Report paired measurements
         run: python3 benchmarks/json/compare.py benchmark-results/baseline.json benchmark-results/release.json --output benchmark-results/comparison.json
       - uses: actions/upload-artifact@v4
         with:
           name: json-benchmark-${{ matrix.os }}
-          path: benchmark-results/*.json
+          path: benchmark-results/
