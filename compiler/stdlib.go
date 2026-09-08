@@ -45,7 +45,7 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 	}); err != nil {
 		return err
 	}
-	exports := map[string]bool{}
+	exports := map[string]bool{"text_literal": true}
 	for _, stmt := range lib.Root.Statements {
 		if name := declarationName(stmt); name != "" {
 			exports[name] = true
@@ -57,6 +57,9 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 		}
 	}
 	tree.Root.Statements = append(lib.Root.Statements, user...)
+	if err := lowerTextLiterals(tree.Root); err != nil {
+		return err
+	}
 	return lowerStdlibFluent(tree.Root)
 }
 

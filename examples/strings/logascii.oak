@@ -1,48 +1,9 @@
-package logascii
-
-import strings
-import encoding/utf8
-import encoding/ascii
-import io
-
-// Backing buffer owned by someone (on stack, global, whatever).
-buf: [1024]u8 = {}
-
-// ASCII-only writer that writes to a UART, syslog, etc.
-// This wraps a concrete writer type with an encoding tag.
-// The concrete writer type implements io.Writer[u8] constraint.
-//
-// Note: In a real implementation, we'd have a concrete writer struct that
-// implements io.Writer[u8], and wrap it here. For now, this is a placeholder.
-ascii_writer: strings.Writer[strings.Ascii] = {
-    out: null  // Placeholder - would be a concrete type implementing io.Writer[u8]
+// Build a log record; pass the completed view to the application's I/O layer.
+import(std)
+main: (): i32 {
+  storage: [32]u8
+  dst: [*]u8 = span(&storage)
+  builder: TextBuilder = text_builder().append_text(dst, text_literal("request=")).append_u64(dst, u64(42))
+  assert(text_result_value(builder.finish_text()) == u32(10))
+  42
 }
-
-// Internal helper: create a string buffer over a span of our backing buf.
-fn make_buf() -> strings.string_buf =
-    // Borrow a mutable span from the owner; your language already supports:
-    //    span(&buf): [*]u8
-    strings.buf_from_span[strings.Utf8](span(&buf))
-
-// Helper: write ASCII string and discard the outcome, returning ().
-fn write_ascii_ignore_outcome(w: strings.Writer[strings.Ascii], s: strings.ascii_string) -> () =
-    strings.write[strings.Ascii](w, s)
-
-// Public: log a canonical UTF-8 string, but *only* if it's ASCII.
-fn log(msg: strings.string) -> () =
-    if strings.is_ascii_string(msg) then
-        // Type tagged call-site:
-        //
-        //   - ascii_writer: Writer[Ascii]
-        //   - msg: string (StrView[Utf8])
-        //
-        // We write the string using the Writer interface.
-        write_ascii_ignore_outcome(ascii_writer, strings.as_ascii_view(msg))
-    else
-        // maybe drop, or call utf8 logger
-        ()
-    end
-
-// Sugar: explicitly "I want ASCII".
-fn log_ascii(msg: strings.string) -> () =
-    write_ascii_ignore_outcome(ascii_writer, strings.as_ascii_view(msg))

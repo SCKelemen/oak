@@ -1,74 +1,17 @@
-package encoding/utf16
-
-import strings
-
-//
-// 1. Construction & conversion
-//
-
-// Encode canonical utf8 string into utf16 code units.
-//
-// In practice this would allocate [N]u16 somewhere (owned array),
-// then expose a view onto it as utf16_string.
-fn from_string(s: strings.string) -> strings.utf16_string =
-    // utf8 -> utf16 decode; fill [N]u16; return view
-    { units: []u16{} }  // placeholder
-
-// Decode utf16 code units back into canonical utf8 string.
-fn to_string(s: strings.utf16_string) -> strings.string =
-    // utf16 -> utf8; may error on ill-formed surrogates
-    { units: []u8{} }   // placeholder
-
-// Convert utf16 to a rune_string (one code point per unit).
-fn to_runes(s: strings.utf16_string) -> strings.rune_string =
-    // utf16 -> scalar decode; each scalar -> rune (u32)
-    { units: []strings.rune{} }
-
-// Build utf16 from rune_string.
-fn from_runes(rs: strings.rune_string) -> strings.utf16_string =
-    // scalar -> utf16 encode
-    { units: []u16{} }
-
-//
-// 2. Code-unit-level operations
-//    (these are fast, but *not* scalar-aware)
-//
-
-fn len_units(s: strings.utf16_string) -> u32 =
-    strings.len_units[strings.Utf16, u16](s)
-
-// Index in code units (0-based) – does *not* validate surrogate pairs.
-fn unit_at(s: strings.utf16_string, idx: u32) -> u16 =
-    s.units[idx]
-
-// Cheap slicing: (this is basically your view/subslice over u16).
-fn slice_units(s: strings.utf16_string, start: u32, len: u32) -> strings.utf16_string =
-    {
-        units: s.units[start .. start + len]
-    }
-
-//
-// 3. Scalar-aware helpers (go through rune_string)
-//
-
-fn len_runes(s: strings.utf16_string) -> u32 =
-    // scalar-aware length: uses proper utf16 decoding.
-    strings.len_units[strings.Utf32, strings.rune](to_runes(s))
-
-fn rune_at(s: strings.utf16_string, idx: u32) -> strings.rune =
-    to_runes(s).units[idx]
-
-//
-// 4. IO / wire format
-//
-
-Utf16LE: type = {}
-Utf16BE: type = {}
-
-// Encode utf16_string to LE bytes.
-fn encode_le(s: strings.utf16_string) -> []u8 =
-    []u8{}
-
-// Write LE bytes to a Writer[Utf16LE].
-fn write_le(w: strings.Writer[Utf16LE], s: strings.utf16_string) -> () =
-    strings.write_bytes[Utf16LE](w, encode_le(s))
+import(std)
+main: (): i32 {
+  src: []u8 = text_literal("A😀")
+  storage: [3]u16
+  true ? {
+    dst: [*]u16 = span(&storage)
+    assert(text_result_value(utf8_to_utf16(dst, src)) == u32(3))
+  }
+  true ? {
+    units: []u16 = view(&storage)
+    assert(text_result_value(utf16_count(units)) == u32(2))
+    output: [5]u8
+    dst: [*]u8 = span(&output)
+    assert(text_result_value(utf16_to_utf8(dst, units)) == u32(5))
+  }
+  42
+}

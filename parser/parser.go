@@ -808,7 +808,7 @@ func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression
 				return nil
 			}
 		}
-		if !p.expectPeek(token.RBRACK) {
+		if high != nil && !p.expectPeek(token.RBRACK) {
 			return nil
 		}
 		return &ast.SliceExpression{
@@ -848,7 +848,7 @@ func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression
 				return nil
 			}
 		}
-		if !p.expectPeek(token.RBRACK) {
+		if high != nil && !p.expectPeek(token.RBRACK) {
 			return nil
 		}
 		return &ast.SliceExpression{

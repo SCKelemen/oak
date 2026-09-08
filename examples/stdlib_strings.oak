@@ -1,0 +1,23 @@
+import(std)
+
+main: (): i32 {
+  // Literal bytes live in static storage; transformations use explicit buffers.
+  src: []u8 = text_literal("Straße")
+  assert(utf8_validate(src))
+  upper: [7]u8
+  true ? {
+    dst: [*]u8 = span(&upper)
+    assert(text_result_value(text_to_upper(dst, src)) == u32(7))
+    assert(dst[4] == u8(83) && dst[5] == u8(83))
+  }
+  true ? {
+    text: []u8 = view(&upper)
+    assert(text_equal_fold(src, text))
+    output: [16]u8
+    dst: [*]u8 = span(&output)
+    builder: TextBuilder = text_builder().append_text(dst, text).append_rune(dst, u32(32)).append_u64(dst, u64(42))
+    assert(text_result_value(builder.finish_text()) == u32(10))
+    assert(dst[8] == u8(52) && dst[9] == u8(50))
+  }
+  42
+}

@@ -1,27 +1,8 @@
-package encoding/utf8
-
-import strings
-
-// Decode utf8 string into rune_string.
-fn to_runes(s: strings.string) -> strings.rune_string =
-    { units: []strings.rune{} }  // placeholder; real impl decodes UTF-8
-
-// Encode rune_string into utf8 string.
-fn from_runes(rs: strings.rune_string) -> strings.string =
-    { units: []u8{} }            // placeholder; real impl encodes UTF-8
-
-// Count codepoints (scalar values) in a UTF-8 string.
-fn len_runes(s: strings.string) -> u32 =
-    strings.len_units[strings.Utf32, strings.rune](to_runes(s))
-
-// Does this utf8 string consist of only ASCII bytes?
-fn is_ascii(s: strings.string) -> Bool =
-    strings.is_ascii_string(s)
-
-// Fast reinterpret to ASCII (checks first).
-fn as_ascii_view(s: strings.string) -> strings.ascii_string =
-    strings.as_ascii_view(s)
-
-// Explicitly expose the generic view form.
-fn as_utf8_view(s: strings.string) -> strings.StrView[strings.Utf8] =
-    { units: s.units }
+import(std)
+main: (): i32 {
+  src: []u8 = text_literal("A😀")
+  scalar: TextScalar = text_decoded(utf8_decode(src, u32(1)))
+  assert(scalar.value == u32(128512) && scalar.next == u32(5))
+  assert(text_result_value(utf8_count(src)) == u32(2))
+  42
+}

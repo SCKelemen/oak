@@ -1,41 +1,17 @@
-package encoding/utf32
-
-import strings
-import encoding/utf16
-
-//
-// 1. Construction & conversion
-//
-
-// utf8 -> utf32/rune_string
-fn from_string(s: strings.string) -> strings.rune_string =
-    // utf8 decode, each scalar into a rune
-    { units: []strings.rune{} }
-
-// utf32/rune_string -> utf8 string
-fn to_string(rs: strings.rune_string) -> strings.string =
-    // encode each rune as utf8
-    { units: []u8{} }
-
-// Via UTF-16
-fn from_utf16(s: strings.utf16_string) -> strings.rune_string =
-    encoding/utf16.to_runes(s)
-
-fn to_utf16(rs: strings.rune_string) -> strings.utf16_string =
-    encoding/utf16.from_runes(rs)
-
-//
-// 2. Scalar-level operations
-//
-
-fn len_runes(rs: strings.rune_string) -> u32 =
-    strings.len_units[strings.Utf32, strings.rune](rs)
-
-fn at(rs: strings.rune_string, idx: u32) -> strings.rune =
-    rs.units[idx]
-
-// Fixed-width slicing in runes.
-fn slice(rs: strings.rune_string, start: u32, len: u32) -> strings.rune_string =
-    {
-        units: rs.units[start .. start + len]
-    }
+import(std)
+main: (): i32 {
+  src: []u8 = text_literal("A😀")
+  storage: [2]u32
+  true ? {
+    dst: [*]u32 = span(&storage)
+    assert(text_result_value(utf8_to_utf32(dst, src)) == u32(2))
+  }
+  true ? {
+    units: []u32 = view(&storage)
+    assert(text_result_value(utf32_count(units)) == u32(2))
+    output: [5]u8
+    dst: [*]u8 = span(&output)
+    assert(text_result_value(utf32_to_utf8(dst, units)) == u32(5))
+  }
+  42
+}

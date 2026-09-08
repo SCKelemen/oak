@@ -465,6 +465,16 @@ record-valued deque with an ID pool. Both structures operate without allocation.
 Further AK-inspired work includes hash tables/maps, intrusive ordered trees, and
 segmented/disjoint storage; these are not implemented by this addition.
 
+## Strings and Unicode text
+
+The [strings API](STRINGS.md) is executable through `import(std)`: strict
+UTF-8/16/32 codecs, ASCII validation, Unicode 17 full casing and case folding,
+searching, trimming, split/fields iteration, range-based joining, replacement,
+repetition, unsigned parsing, and a bounded fluent text builder. All outputs use
+caller-provided storage. `text_literal("hello")` supplies readable static UTF-8
+byte views through ordinary borrowing. The placeholder string examples have been
+replaced with compiled programs; see `examples/stdlib_strings.oak`.
+
 ## Verification and remaining work
 
 `compiler/e2e_stdlib_test.go` compiles real imported Oak through the compiler and
@@ -511,4 +521,3 @@ The standard-library workflow runs the full Go suite with the race detector. The
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
 allocator-backed pools, intrusive trees/hash tables, concurrent rings, broader collections and persistence
 protocols remain separate work; importing this module does not implement them.
-

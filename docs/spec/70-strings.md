@@ -162,3 +162,23 @@ Initial proof targets:
 - reported output length equals produced code units.
 
 Encoding algorithm proofs can be added independently of the language type-system proofs and then connected through refinement tests.
+
+
+## 12. Executable bootstrap library
+
+The current `import(std)` text implementation is documented in
+[`stdlib/STRINGS.md`](../../stdlib/STRINGS.md). It operates on explicitly borrowed
+code-unit views and uses fallible validation/transcoding plus caller-owned output
+spans. UTF-8 read helpers validate and trap on invalid bytes; their fallible input
+boundary counterparts report `TextError`. `text_literal` constructs static UTF-8
+byte storage through ordinary borrowing. It is not a runtime `[]u8 -> Str[Utf8]`
+cast and does not expose a representation-preserving validity bypass.
+
+Unicode default full case conversion/folding is pinned to Unicode 17.0.0. Byte
+search results, scalar search results and grapheme counts remain explicitly
+distinct. Scalar-boundary slicing returns ranges whose actual views are created
+by the caller. No normalization, collation, grapheme segmentation, locale tailoring
+or hidden allocator is implied. The semantic `Str[E]`/writer examples above remain
+target interfaces; the executable checked-code-unit API does not claim to provide
+a general borrow-preserving runtime string wrapper before that compiler contract
+exists.

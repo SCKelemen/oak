@@ -1,0 +1,897 @@
+// Text algorithms over explicitly borrowed code units. No allocation.
+TextError: type = InvalidEncoding | InvalidScalar | OutOfBounds | DestinationTooSmall | SizeOverflow | EmptySeparator | Empty
+TextScalar: type = struct { value: u32, next: u32 }
+TextRange: type = struct { start: u32, end: u32 }
+TextSplitCursor: type = struct { next: u32, done: Bool }
+
+unicode_is_scalar: (value: u32): Bool = value <= u32(1114111) && (value < u32(55296) || value > u32(57343))
+unicode_is_space: (value: u32): Bool = (value >= u32(9) && value <= u32(13)) || value == u32(32) || value == u32(133) || value == u32(160) || value == u32(5760) || (value >= u32(8192) && value <= u32(8202)) || value == u32(8232) || value == u32(8233) || value == u32(8239) || value == u32(8287) || value == u32(12288)
+ascii_lower: (value: u8): u8 = value >= u8(65) && value <= u8(90) ? value + u8(32) | value
+ascii_upper: (value: u8): u8 = value >= u8(97) && value <= u8(122) ? value - u8(32) | value
+text_is_ascii: (src: []u8): Bool {
+  valid: Bool = true
+  i: u32 = 0
+  while i < len(src) { src[i] > u8(127) ? { valid = false }
+    i = i + u32(1)
+  }
+  valid
+}
+utf8_width: (value: u32): u32 = value < u32(128) ? u32(1) | value < u32(2048) ? u32(2) | value < u32(65536) ? u32(3) | u32(4)
+utf16_width: (value: u32): u32 = value < u32(65536) ? u32(1) | u32(2)
+utf32_width: (value: u32): u32 = u32(1)
+
+utf8_decode: (src: []u8, offset: u32): Result[TextScalar, TextError] {
+  offset > len(src) ? { .Err(.OutOfBounds) } | offset == len(src) ? { .Err(.Empty) } | {
+    first: u32 = u32(src[offset])
+    width: u32 = first < u32(128) ? u32(1) | first >= u32(194) && first <= u32(223) ? u32(2) | first >= u32(224) && first <= u32(239) ? u32(3) | first >= u32(240) && first <= u32(244) ? u32(4) | u32(0)
+    width == u32(0) || width > len(src) - offset ? { .Err(.InvalidEncoding) } | {
+      value: u32 = width == u32(1) ? first | width == u32(2) ? first & u32(31) | width == u32(3) ? first & u32(15) | first & u32(7)
+      valid: Bool = true
+      i: u32 = 1
+      while i < width {
+        unit: u32 = u32(src[offset + i])
+        unit < u32(128) || unit > u32(191) ? { valid = false }
+        value = ((value << u32(6)) | (unit & u32(63)))
+        i = i + u32(1)
+      }
+      valid = valid && unicode_is_scalar(value) && utf8_width(value) == width
+      valid ? { .Ok(TextScalar { value: value, next: offset + width }) } | { .Err(.InvalidEncoding) }
+    }
+  }
+}
+utf16_decode: (src: []u16, offset: u32): Result[TextScalar, TextError] {
+  offset > len(src) ? { .Err(.OutOfBounds) } | offset == len(src) ? { .Err(.Empty) } | {
+    first: u32 = u32(src[offset])
+    first < u32(55296) || first > u32(57343) ? { .Ok(TextScalar { value: first, next: offset + u32(1) }) } | {
+      first > u32(56319) || len(src) - offset < u32(2) ? { .Err(.InvalidEncoding) } | {
+        second: u32 = u32(src[offset + u32(1)])
+        second < u32(56320) || second > u32(57343) ? { .Err(.InvalidEncoding) } | {
+          value: u32 = u32(65536) + ((first - u32(55296)) << u32(10)) + second - u32(56320)
+          .Ok(TextScalar { value: value, next: offset + u32(2) })
+        }
+      }
+    }
+  }
+}
+utf32_decode: (src: []u32, offset: u32): Result[TextScalar, TextError] {
+  offset > len(src) ? { .Err(.OutOfBounds) } | offset == len(src) ? { .Err(.Empty) } | {
+    value: u32 = src[offset]
+    unicode_is_scalar(value) ? { .Ok(TextScalar { value: value, next: offset + u32(1) }) } | { .Err(.InvalidEncoding) }
+  }
+}
+text_decode_ok: (result: Result[TextScalar, TextError]): Bool = result ? | .Ok(value) => true | .Err(reason) => false
+// Internal helper: callers establish success before extracting.
+text_decoded: (result: Result[TextScalar, TextError]): TextScalar = result ?
+  | .Ok(value) => value
+  | .Err(reason) => TextScalar { value: u32(4294967295), next: u32(4294967295) }
+text_result_ok: (result: Result[u32, TextError]): Bool = result ? | .Ok(value) => true | .Err(reason) => false
+text_result_value: (result: Result[u32, TextError]): u32 = result ? | .Ok(value) => value | .Err(reason) => u32(4294967295)
+
+utf8_encode: (dst: [*]u8, offset: u32, value: u32): Result[u32, TextError] {
+  !unicode_is_scalar(value) ? { .Err(.InvalidScalar) } | {
+    width: u32 = utf8_width(value)
+    !bytes_range_fits(len(dst), offset, width) ? { .Err(.DestinationTooSmall) } | {
+      width == u32(1) ? { dst[offset] = u8_trunc_u32(value) } | {
+        width == u32(2) ? { dst[offset] = u8_trunc_u32(u32(192) | (value >> u32(6))) } | {
+          width == u32(3) ? { dst[offset] = u8_trunc_u32(u32(224) | (value >> u32(12))) } | {
+            dst[offset] = u8_trunc_u32(u32(240) | (value >> u32(18)))
+          }
+        }
+        i: u32 = 1
+        while i < width {
+          shift: u32 = (width - i - u32(1)) * u32(6)
+          dst[offset + i] = u8_trunc_u32(u32(128) | ((value >> shift) & u32(63)))
+          i = i + u32(1)
+        }
+      }
+      .Ok(width)
+    }
+  }
+}
+utf16_encode: (dst: [*]u16, offset: u32, value: u32): Result[u32, TextError] {
+  !unicode_is_scalar(value) ? { .Err(.InvalidScalar) } | {
+    width: u32 = utf16_width(value)
+    !bytes_range_fits(len(dst), offset, width) ? { .Err(.DestinationTooSmall) } | {
+      width == u32(1) ? { dst[offset] = u16_trunc_u32(value) } | {
+        rest: u32 = value - u32(65536)
+        dst[offset] = u16_trunc_u32(u32(55296) + (rest >> u32(10)))
+        dst[offset + u32(1)] = u16_trunc_u32(u32(56320) + (rest & u32(1023)))
+      }
+      .Ok(width)
+    }
+  }
+}
+utf32_encode: (dst: [*]u32, offset: u32, value: u32): Result[u32, TextError] {
+  !unicode_is_scalar(value) ? { .Err(.InvalidScalar) } | {
+    !bytes_range_fits(len(dst), offset, u32(1)) ? { .Err(.DestinationTooSmall) } | {
+      dst[offset] = value
+      .Ok(u32(1))
+    }
+  }
+}
+
+utf8_count: (src: []u8): Result[u32, TextError] {
+  at: u32 = 0
+  count: u32 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf8_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? { item: TextScalar = text_decoded(decoded)
+      at = item.next
+      count = count + u32(1)
+    }
+  }
+  valid ? { .Ok(count) } | { .Err(.InvalidEncoding) }
+}
+utf8_validate: (src: []u8): Bool = text_result_ok(utf8_count(src))
+
+utf8_to_utf16_size: (src: []u8): Result[u32, TextError] {
+  at: u32 = 0
+  total: u64 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf8_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? { item: TextScalar = text_decoded(decoded)
+      at = item.next
+      total = total + u64(utf16_width(item.value))
+    }
+  }
+  !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
+}
+utf8_to_utf16: (dst: [*]u16, src: []u8): Result[u32, TextError] {
+  measured: Result[u32, TextError] = utf8_to_utf16_size(src)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      at: u32 = 0
+      out: u32 = 0
+      while at < len(src) {
+        item: TextScalar = text_decoded(utf8_decode(src, at))
+        written: Result[u32, TextError] = utf16_encode(dst, out, item.value)
+        assert(text_result_ok(written))
+        out = out + text_result_value(written)
+        at = item.next
+      }
+      .Ok(out)
+    }
+  }
+}
+
+utf8_to_utf32_size: (src: []u8): Result[u32, TextError] {
+  at: u32 = 0
+  total: u64 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf8_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? { item: TextScalar = text_decoded(decoded)
+      at = item.next
+      total = total + u64(utf32_width(item.value))
+    }
+  }
+  !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
+}
+utf8_to_utf32: (dst: [*]u32, src: []u8): Result[u32, TextError] {
+  measured: Result[u32, TextError] = utf8_to_utf32_size(src)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      at: u32 = 0
+      out: u32 = 0
+      while at < len(src) {
+        item: TextScalar = text_decoded(utf8_decode(src, at))
+        written: Result[u32, TextError] = utf32_encode(dst, out, item.value)
+        assert(text_result_ok(written))
+        out = out + text_result_value(written)
+        at = item.next
+      }
+      .Ok(out)
+    }
+  }
+}
+
+utf16_count: (src: []u16): Result[u32, TextError] {
+  at: u32 = 0
+  count: u32 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf16_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? { item: TextScalar = text_decoded(decoded)
+      at = item.next
+      count = count + u32(1)
+    }
+  }
+  valid ? { .Ok(count) } | { .Err(.InvalidEncoding) }
+}
+utf16_validate: (src: []u16): Bool = text_result_ok(utf16_count(src))
+
+utf16_to_utf8_size: (src: []u16): Result[u32, TextError] {
+  at: u32 = 0
+  total: u64 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf16_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? { item: TextScalar = text_decoded(decoded)
+      at = item.next
+      total = total + u64(utf8_width(item.value))
+    }
+  }
+  !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
+}
+utf16_to_utf8: (dst: [*]u8, src: []u16): Result[u32, TextError] {
+  measured: Result[u32, TextError] = utf16_to_utf8_size(src)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      at: u32 = 0
+      out: u32 = 0
+      while at < len(src) {
+        item: TextScalar = text_decoded(utf16_decode(src, at))
+        written: Result[u32, TextError] = utf8_encode(dst, out, item.value)
+        assert(text_result_ok(written))
+        out = out + text_result_value(written)
+        at = item.next
+      }
+      .Ok(out)
+    }
+  }
+}
+
+utf16_to_utf32_size: (src: []u16): Result[u32, TextError] {
+  at: u32 = 0
+  total: u64 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf16_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? { item: TextScalar = text_decoded(decoded)
+      at = item.next
+      total = total + u64(utf32_width(item.value))
+    }
+  }
+  !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
+}
+utf16_to_utf32: (dst: [*]u32, src: []u16): Result[u32, TextError] {
+  measured: Result[u32, TextError] = utf16_to_utf32_size(src)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      at: u32 = 0
+      out: u32 = 0
+      while at < len(src) {
+        item: TextScalar = text_decoded(utf16_decode(src, at))
+        written: Result[u32, TextError] = utf32_encode(dst, out, item.value)
+        assert(text_result_ok(written))
+        out = out + text_result_value(written)
+        at = item.next
+      }
+      .Ok(out)
+    }
+  }
+}
+
+utf32_count: (src: []u32): Result[u32, TextError] {
+  at: u32 = 0
+  count: u32 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf32_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? { item: TextScalar = text_decoded(decoded)
+      at = item.next
+      count = count + u32(1)
+    }
+  }
+  valid ? { .Ok(count) } | { .Err(.InvalidEncoding) }
+}
+utf32_validate: (src: []u32): Bool = text_result_ok(utf32_count(src))
+
+utf32_to_utf8_size: (src: []u32): Result[u32, TextError] {
+  at: u32 = 0
+  total: u64 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf32_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? { item: TextScalar = text_decoded(decoded)
+      at = item.next
+      total = total + u64(utf8_width(item.value))
+    }
+  }
+  !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
+}
+utf32_to_utf8: (dst: [*]u8, src: []u32): Result[u32, TextError] {
+  measured: Result[u32, TextError] = utf32_to_utf8_size(src)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      at: u32 = 0
+      out: u32 = 0
+      while at < len(src) {
+        item: TextScalar = text_decoded(utf32_decode(src, at))
+        written: Result[u32, TextError] = utf8_encode(dst, out, item.value)
+        assert(text_result_ok(written))
+        out = out + text_result_value(written)
+        at = item.next
+      }
+      .Ok(out)
+    }
+  }
+}
+
+utf32_to_utf16_size: (src: []u32): Result[u32, TextError] {
+  at: u32 = 0
+  total: u64 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf32_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? { item: TextScalar = text_decoded(decoded)
+      at = item.next
+      total = total + u64(utf16_width(item.value))
+    }
+  }
+  !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
+}
+utf32_to_utf16: (dst: [*]u16, src: []u32): Result[u32, TextError] {
+  measured: Result[u32, TextError] = utf32_to_utf16_size(src)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      at: u32 = 0
+      out: u32 = 0
+      while at < len(src) {
+        item: TextScalar = text_decoded(utf32_decode(src, at))
+        written: Result[u32, TextError] = utf16_encode(dst, out, item.value)
+        assert(text_result_ok(written))
+        out = out + text_result_value(written)
+        at = item.next
+      }
+      .Ok(out)
+    }
+  }
+}
+
+// Read operations require well-formed UTF-8 and trap on invalid input.
+text_require: (src: []u8): () { assert(is_valid_utf8(src)) }
+text_equal: (left: []u8, right: []u8): Bool {
+  text_require(left)
+  text_require(right)
+  bytes_equal(left, right)
+}
+text_compare: (left: []u8, right: []u8): i32 {
+  text_require(left)
+  text_require(right)
+  bytes_compare(left, right)
+}
+text_equal_ascii_fold: (left: []u8, right: []u8): Bool {
+  text_require(left)
+  text_require(right)
+  same: Bool = len(left) == len(right)
+  i: u32 = 0
+  while i < len(left) && same {
+    same = ascii_lower(left[i]) == ascii_lower(right[i])
+    i = i + u32(1)
+  }
+  same
+}
+text_match_at: (src: []u8, needle: []u8, offset: u32): Bool {
+  same: Bool = bytes_range_fits(len(src), offset, len(needle))
+  i: u32 = 0
+  while i < len(needle) && same {
+    same = src[offset + i] == needle[i]
+    i = i + u32(1)
+  }
+  same
+}
+text_has_prefix: (src: []u8, prefix: []u8): Bool {
+  text_require(src)
+  text_require(prefix)
+  text_match_at(src, prefix, u32(0))
+}
+text_has_suffix: (src: []u8, suffix: []u8): Bool {
+  text_require(src)
+  text_require(suffix)
+  len(suffix) > len(src) ? false | text_match_at(src, suffix, len(src) - len(suffix))
+}
+text_find_from: (src: []u8, needle: []u8, start: u32): Option[u32] {
+  found: Bool = false
+  at: u32 = start
+  while !found && bytes_range_fits(len(src), at, len(needle)) {
+    found = text_match_at(src, needle, at)
+    !found ? { at = at + u32(1) }
+  }
+  found ? { .Some(at) } | { .None }
+}
+text_index: (src: []u8, needle: []u8): Option[u32] {
+  text_require(src)
+  text_require(needle)
+  text_find_from(src, needle, u32(0))
+}
+text_contains: (src: []u8, needle: []u8): Bool {
+  found: Option[u32] = text_index(src, needle)
+  found ? | .Some(at) => true | .None => false
+}
+text_last_index: (src: []u8, needle: []u8): Option[u32] {
+  text_require(src)
+  text_require(needle)
+  len(needle) > len(src) ? { .None } | {
+    at: u32 = len(src) - len(needle)
+    searching: Bool = true
+    found: Bool = false
+    while searching {
+      found = text_match_at(src, needle, at)
+      searching = !found && at > u32(0)
+      searching ? { at = at - u32(1) }
+    }
+    found ? { .Some(at) } | { .None }
+  }
+}
+text_index_byte: (src: []u8, value: u8): Option[u32] {
+  text_require(src)
+  bytes_find(src, value)
+}
+// Rune search returns a scalar index, never a byte index.
+text_index_rune: (src: []u8, value: u32): Option[u32] {
+  text_require(src)
+  assert(unicode_is_scalar(value))
+  at: u32 = 0
+  index: u32 = 0
+  found: Bool = false
+  while at < len(src) && !found {
+    item: TextScalar = text_decoded(utf8_decode(src, at))
+    found = item.value == value
+    at = item.next
+    !found ? { index = index + u32(1) }
+  }
+  found ? { .Some(index) } | { .None }
+}
+text_contains_rune: (src: []u8, value: u32): Bool {
+  found: Option[u32] = text_index_rune(src, value)
+  found ? | .Some(at) => true | .None => false
+}
+text_is_boundary: (src: []u8, offset: u32): Bool {
+  offset > len(src) ? false | offset == len(src) ? true | (src[offset] & u8(192)) != u8(128)
+}
+text_slice_range: (src: []u8, start: u32, end: u32): Result[TextRange, TextError] {
+  !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {
+    start > end || !text_is_boundary(src, start) || !text_is_boundary(src, end) ? { .Err(.OutOfBounds) } | {
+      .Ok(TextRange { start: start, end: end })
+    }
+  }
+}
+text_trim_prefix: (src: []u8, prefix: []u8): TextRange {
+  matched: Bool = text_has_prefix(src, prefix)
+  TextRange { start: matched ? len(prefix) | u32(0), end: len(src) }
+}
+text_trim_suffix: (src: []u8, suffix: []u8): TextRange {
+  matched: Bool = text_has_suffix(src, suffix)
+  TextRange { start: u32(0), end: matched ? len(src) - len(suffix) | len(src) }
+}
+// Trim Unicode White_Space; ranges are half-open byte offsets into src.
+text_trim_space: (src: []u8): TextRange {
+  text_require(src)
+  start: u32 = len(src)
+  end: u32 = len(src)
+  at: u32 = 0
+  while at < len(src) {
+    item: TextScalar = text_decoded(utf8_decode(src, at))
+    !unicode_is_space(item.value) ? {
+      start == len(src) ? { start = at }
+      end = item.next
+    }
+    at = item.next
+  }
+  TextRange { start: start, end: end }
+}
+// Cutsets contain scalars, not individual UTF-8 bytes.
+text_trim: (src: []u8, cutset: []u8): TextRange {
+  text_require(src)
+  text_require(cutset)
+  start: u32 = len(src)
+  end: u32 = len(src)
+  at: u32 = 0
+  while at < len(src) {
+    item: TextScalar = text_decoded(utf8_decode(src, at))
+    !text_contains_rune(cutset, item.value) ? {
+      start == len(src) ? { start = at }
+      end = item.next
+    }
+    at = item.next
+  }
+  TextRange { start: start, end: end }
+}
+// Empty separators are rejected. Empty input and a trailing separator emit empty fields.
+text_split_next: (cursor: [*]TextSplitCursor, src: []u8, separator: []u8): Result[TextRange, TextError] {
+  assert(len(cursor) == u32(1))
+  !is_valid_utf8(src) || !is_valid_utf8(separator) ? { .Err(.InvalidEncoding) } | len(separator) == u32(0) ? { .Err(.EmptySeparator) } | {
+    cursor[0].next > len(src) || !text_is_boundary(src, cursor[0].next) ? { .Err(.OutOfBounds) } | {
+      cursor[0].done ? { .Err(.Empty) } | {
+        start: u32 = cursor[0].next
+        found: Option[u32] = text_find_from(src, separator, start)
+        end: u32 = option_or(found, len(src))
+        end == len(src) ? { cursor[0].done = true } | { cursor[0].next = end + len(separator) }
+        .Ok(TextRange { start: start, end: end })
+      }
+    }
+  }
+}
+
+text_copy: (dst: [*]u8, src: []u8): Result[u32, TextError] {
+  !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | len(src) > len(dst) ? { .Err(.DestinationTooSmall) } | {
+    i: u32 = 0
+    while i < len(src) { dst[i] = src[i]
+      i = i + u32(1)
+    }
+    .Ok(len(src))
+  }
+}
+text_repeat: (dst: [*]u8, src: []u8, count: u32): Result[u32, TextError] {
+  !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {
+    total: u64 = u64(len(src)) * u64(count)
+    total > u64(4294967295) ? { .Err(.SizeOverflow) } | total > u64(len(dst)) ? { .Err(.DestinationTooSmall) } | {
+      needed: u32 = u32_trunc_u64(total)
+      out: u32 = 0
+      while out < needed { dst[out] = src[out % len(src)]
+        out = out + u32(1)
+      }
+      .Ok(needed)
+    }
+  }
+}
+// Join selected ranges of one source. This avoids allocating/storing borrowed views.
+text_join: (dst: [*]u8, src: []u8, parts: []TextRange, separator: []u8): Result[u32, TextError] {
+  !is_valid_utf8(src) || !is_valid_utf8(separator) ? { .Err(.InvalidEncoding) } | {
+    total: u64 = 0
+    valid: Bool = true
+    i: u32 = 0
+    while i < len(parts) {
+      part: TextRange = parts[i]
+      fits: Bool = part.start <= part.end && text_is_boundary(src, part.start) && text_is_boundary(src, part.end)
+      !fits ? { valid = false } | { total = total + u64(part.end - part.start) }
+      total <= u64(4294967295) ? {
+        i > u32(0) ? { total = total + u64(len(separator)) }
+      }
+      total > u64(4294967295) ? { total = u64(4294967296) }
+      i = i + u32(1)
+    }
+    !valid ? { .Err(.OutOfBounds) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | total > u64(len(dst)) ? { .Err(.DestinationTooSmall) } | {
+      out: u32 = 0
+      i = u32(0)
+      while i < len(parts) {
+        i > u32(0) ? {
+          j: u32 = 0
+          while j < len(separator) { dst[out] = separator[j]
+            out = out + u32(1)
+            j = j + u32(1)
+          }
+        }
+        at: u32 = parts[i].start
+        while at < parts[i].end { dst[out] = src[at]
+          at = at + u32(1)
+          out = out + u32(1)
+        }
+        i = i + u32(1)
+      }
+      .Ok(out)
+    }
+  }
+}
+text_ascii_case: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, TextError] {
+  !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | len(src) > len(dst) ? { .Err(.DestinationTooSmall) } | {
+    i: u32 = 0
+    while i < len(src) { dst[i] = upper ? ascii_upper(src[i]) | ascii_lower(src[i])
+      i = i + u32(1)
+    }
+    .Ok(len(src))
+  }
+}
+text_to_lower_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_ascii_case(dst, src, false)
+text_to_upper_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_ascii_case(dst, src, true)
+
+// Unicode default (non-locale) full casing. Mode: lower=0, upper=1, fold=2.
+text_followed_by_cased: (src: []u8, offset: u32): Bool {
+  at: u32 = offset
+  searching: Bool = true
+  cased: Bool = false
+  while at < len(src) && searching {
+    item: TextScalar = text_decoded(utf8_decode(src, at))
+    !unicode_is_case_ignorable(item.value) ? {
+      cased = unicode_is_cased(item.value)
+      searching = false
+    }
+    at = item.next
+  }
+  cased
+}
+text_case_mapping: (src: []u8, item: TextScalar, preceded: Bool, mode: u32): UnicodeMapping {
+  mode == u32(1) ? { unicode_upper(item.value) } | mode == u32(2) ? { unicode_fold(item.value) } | {
+    item.value == u32(931) && preceded && !text_followed_by_cased(src, item.next) ? {
+      UnicodeMapping { count: u32(1), first: u32(962), second: u32(0), third: u32(0) }
+    } | { unicode_lower(item.value) }
+  }
+}
+text_case_size: (src: []u8, mode: u32): Result[u32, TextError] {
+  assert(mode <= u32(2))
+  !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {
+    at: u32 = 0
+    total: u64 = 0
+    preceded: Bool = false
+    while at < len(src) {
+      item: TextScalar = text_decoded(utf8_decode(src, at))
+      mapping: UnicodeMapping = text_case_mapping(src, item, preceded, mode)
+      i: u32 = 0
+      while i < mapping.count {
+        total = total + u64(utf8_width(unicode_mapping_at(mapping, i)))
+        i = i + u32(1)
+      }
+      !unicode_is_case_ignorable(item.value) ? { preceded = unicode_is_cased(item.value) }
+      at = item.next
+    }
+    total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
+  }
+}
+text_case_into: (dst: [*]u8, src: []u8, mode: u32): Result[u32, TextError] {
+  measured: Result[u32, TextError] = text_case_size(src, mode)
+  !text_result_ok(measured) ? { measured } | text_result_value(measured) > len(dst) ? { .Err(.DestinationTooSmall) } | {
+    at: u32 = 0
+    out: u32 = 0
+    preceded: Bool = false
+    while at < len(src) {
+      item: TextScalar = text_decoded(utf8_decode(src, at))
+      mapping: UnicodeMapping = text_case_mapping(src, item, preceded, mode)
+      i: u32 = 0
+      while i < mapping.count {
+        encoded: Result[u32, TextError] = utf8_encode(dst, out, unicode_mapping_at(mapping, i))
+        assert(text_result_ok(encoded))
+        out = out + text_result_value(encoded)
+        i = i + u32(1)
+      }
+      !unicode_is_case_ignorable(item.value) ? { preceded = unicode_is_cased(item.value) }
+      at = item.next
+    }
+    .Ok(out)
+  }
+}
+text_to_lower: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(0))
+text_to_upper: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(1))
+text_case_fold: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(2))
+TextFoldCursor: type = struct { next: u32, index: u32, mapping: UnicodeMapping }
+text_fold_next: (cursor: [*]TextFoldCursor, src: []u8): Option[u32] {
+  assert(len(cursor) == u32(1))
+  assert(cursor[0].next <= len(src))
+  cursor[0].index == cursor[0].mapping.count && cursor[0].next < len(src) ? {
+    item: TextScalar = text_decoded(utf8_decode(src, cursor[0].next))
+    cursor[0].next = item.next
+    cursor[0].mapping = unicode_fold(item.value)
+    cursor[0].index = u32(0)
+  }
+  cursor[0].index == cursor[0].mapping.count ? { .None } | {
+    value: u32 = unicode_mapping_at(cursor[0].mapping, cursor[0].index)
+    cursor[0].index = cursor[0].index + u32(1)
+    .Some(value)
+  }
+}
+text_equal_fold: (left: []u8, right: []u8): Bool {
+  text_require(left)
+  text_require(right)
+  left_state: [1]TextFoldCursor
+  right_state: [1]TextFoldCursor
+  a: [*]TextFoldCursor = span(&left_state)
+  b: [*]TextFoldCursor = span(&right_state)
+  same: Bool = true
+  finished: Bool = false
+  while same && !finished {
+    x: u32 = option_or(text_fold_next(a, left), u32(4294967295))
+    y: u32 = option_or(text_fold_next(b, right), u32(4294967295))
+    same = x == y
+    finished = x == u32(4294967295)
+  }
+  same
+}
+
+// Replace non-overlapping matches; empty old text is rejected explicitly.
+text_replace: (dst: [*]u8, src: []u8, old: []u8, replacement: []u8): Result[u32, TextError] {
+  !is_valid_utf8(src) || !is_valid_utf8(old) || !is_valid_utf8(replacement) ? { .Err(.InvalidEncoding) } | len(old) == u32(0) ? { .Err(.EmptySeparator) } | {
+    total: u64 = 0
+    at: u32 = 0
+    while at < len(src) {
+      text_match_at(src, old, at) ? {
+        total = total + u64(len(replacement))
+        at = at + len(old)
+      } | { total = total + u64(1)
+        at = at + u32(1)
+      }
+    }
+    total > u64(4294967295) ? { .Err(.SizeOverflow) } | total > u64(len(dst)) ? { .Err(.DestinationTooSmall) } | {
+      out: u32 = 0
+      at = u32(0)
+      while at < len(src) {
+        text_match_at(src, old, at) ? {
+          i: u32 = 0
+          while i < len(replacement) { dst[out] = replacement[i]
+            out = out + u32(1)
+            i = i + u32(1)
+          }
+          at = at + len(old)
+        } | { dst[out] = src[at]
+          at = at + u32(1)
+          out = out + u32(1)
+        }
+      }
+      .Ok(out)
+    }
+  }
+}
+
+TextBuilder: type = struct { length: u32, status: u32 }
+text_builder: (): TextBuilder = TextBuilder { length: u32(0), status: u32(0) }
+text_builder_error: (builder: TextBuilder, reason: TextError): TextBuilder {
+  next: TextBuilder = builder
+  next.status == u32(0) ? { next.status = text_error_code(reason)
+  }
+  next
+}
+append_text: (builder: TextBuilder, dst: [*]u8, src: []u8): TextBuilder {
+  assert(builder.length <= len(dst))
+  builder.status != u32(0) ? { builder } | !is_valid_utf8(src) ? { text_builder_error(builder, .InvalidEncoding) } | len(src) > len(dst) - builder.length ? { text_builder_error(builder, .DestinationTooSmall) } | {
+    next: TextBuilder = builder
+    i: u32 = 0
+    while i < len(src) { dst[builder.length + i] = src[i]
+      i = i + u32(1)
+    }
+    next.length = next.length + len(src)
+    next
+  }
+}
+append_rune: (builder: TextBuilder, dst: [*]u8, value: u32): TextBuilder {
+  assert(builder.length <= len(dst))
+  builder.status != u32(0) ? { builder } | !unicode_is_scalar(value) ? { text_builder_error(builder, .InvalidScalar) } | {
+    encoded: Result[u32, TextError] = utf8_encode(dst, builder.length, value)
+    !text_result_ok(encoded) ? { text_builder_error(builder, .DestinationTooSmall) } | {
+      next: TextBuilder = builder
+      next.length = next.length + text_result_value(encoded)
+      next
+    }
+  }
+}
+append_u64: (builder: TextBuilder, dst: [*]u8, value: u64): TextBuilder {
+  assert(builder.length <= len(dst))
+  builder.status != u32(0) ? { builder } | {
+    digits: [20]u8
+    count: u32 = 0
+    remaining: u64 = value
+    more: Bool = true
+    while more {
+      digits[count] = u8(48) + u8_trunc_u64(remaining % u64(10))
+      count = count + u32(1)
+      remaining = remaining / u64(10)
+      more = remaining != u64(0)
+    }
+    count > len(dst) - builder.length ? { text_builder_error(builder, .DestinationTooSmall) } | {
+      next: TextBuilder = builder
+      i: u32 = 0
+      while i < count { dst[builder.length + i] = digits[count - i - u32(1)]
+        i = i + u32(1)
+      }
+      next.length = next.length + count
+      next
+    }
+  }
+}
+finish_text: (builder: TextBuilder): Result[u32, TextError] = builder.status != u32(0) ? .Err(text_error_from_code(builder.status)) | .Ok(builder.length)
+
+text_error_code: (reason: TextError): u32 = reason ?
+ | .InvalidEncoding => u32(1)
+ | .InvalidScalar => u32(2)
+ | .OutOfBounds => u32(3)
+ | .DestinationTooSmall => u32(4)
+ | .SizeOverflow => u32(5)
+ | .EmptySeparator => u32(6)
+ | .Empty => u32(7)
+text_error_from_code: (status: u32): TextError = status ?
+ | 1 => .InvalidEncoding
+ | 2 => .InvalidScalar
+ | 3 => .OutOfBounds
+ | 4 => .DestinationTooSmall
+ | 5 => .SizeOverflow
+ | 6 => .EmptySeparator
+ | _ => .Empty
+
+ascii_to_utf8: (dst: [*]u8, src: []u8): Result[u32, TextError] {
+  !text_is_ascii(src) ? { .Err(.InvalidEncoding) } | { text_copy(dst, src) }
+}
+utf8_to_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = ascii_to_utf8(dst, src)
+
+utf8_decode_previous: (src: []u8, end: u32): Result[TextScalar, TextError] {
+  end > len(src) ? { .Err(.OutOfBounds) } | end == u32(0) ? { .Err(.Empty) } | {
+    start: u32 = end - u32(1)
+    steps: u32 = 1
+    while start > u32(0) && steps < u32(4) && (src[start] & u8(192)) == u8(128) {
+      start = start - u32(1)
+      steps = steps + u32(1)
+    }
+    decoded: Result[TextScalar, TextError] = utf8_decode(src, start)
+    !text_decode_ok(decoded) ? { .Err(.InvalidEncoding) } | {
+      item: TextScalar = text_decoded(decoded)
+      item.next != end ? { .Err(.InvalidEncoding) } | {
+        .Ok(TextScalar { value: item.value, next: start })
+      }
+    }
+  }
+}
+text_split: (dst: [*]TextRange, src: []u8, separator: []u8): Result[u32, TextError] {
+  !is_valid_utf8(src) || !is_valid_utf8(separator) ? { .Err(.InvalidEncoding) } | len(separator) == u32(0) ? { .Err(.EmptySeparator) } | {
+    total: u64 = 1
+    at: u32 = 0
+    searching: Bool = true
+    while searching {
+      found: u32 = option_or(text_find_from(src, separator, at), len(src))
+      searching = found != len(src)
+      searching ? { total = total + u64(1)
+        at = found + len(separator)
+      }
+    }
+    total > u64(4294967295) ? { .Err(.SizeOverflow) } | total > u64(len(dst)) ? { .Err(.DestinationTooSmall) } | {
+      state: [1]TextSplitCursor
+      cursor: [*]TextSplitCursor = span(&state)
+      i: u32 = 0
+      while i < u32_trunc_u64(total) {
+        start: u32 = cursor[0].next
+        end_offset: u32 = option_or(text_find_from(src, separator, start), len(src))
+        dst[i] = TextRange { start: start, end: end_offset }
+        end_offset != len(src) ? { cursor[0].next = end_offset + len(separator) }
+        i = i + u32(1)
+      }
+      .Ok(u32_trunc_u64(total))
+    }
+  }
+}
+text_fields_next: (cursor: [*]TextSplitCursor, src: []u8): Result[TextRange, TextError] {
+  assert(len(cursor) == u32(1))
+  !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | !text_is_boundary(src, cursor[0].next) ? { .Err(.OutOfBounds) } | cursor[0].done ? { .Err(.Empty) } | {
+    at: u32 = cursor[0].next
+    start: u32 = len(src)
+    end: u32 = len(src)
+    searching: Bool = true
+    while at < len(src) && searching {
+      item: TextScalar = text_decoded(utf8_decode(src, at))
+      unicode_is_space(item.value) ? {
+        start != len(src) ? { end = at
+          searching = false
+        }
+      } | { start == len(src) ? { start = at } }
+      at = item.next
+    }
+    cursor[0].next = at
+    start == len(src) ? { cursor[0].done = true
+      .Err(.Empty)
+    } | { .Ok(TextRange { start: start, end: end }) }
+  }
+}
+
+TextParseError: type = InvalidRadix | InvalidDigit | NumberOverflow | EmptyNumber
+text_parse_u64: (src: []u8, radix: u32): Result[u64, TextParseError] {
+  radix < u32(2) || radix > u32(36) ? { .Err(.InvalidRadix) } | len(src) == u32(0) ? { .Err(.EmptyNumber) } | {
+    maximum: u64 = ((u64(1) << u64(63)) | ((u64(1) << u64(63)) - u64(1)))
+    value: u64 = 0
+    i: u32 = 0
+    valid: Bool = true
+    overflowed: Bool = false
+    while i < len(src) && valid && !overflowed {
+      unit: u32 = u32(ascii_lower(src[i]))
+      digit: u32 = unit >= u32(48) && unit <= u32(57) ? unit - u32(48) | unit >= u32(97) && unit <= u32(122) ? unit - u32(97) + u32(10) | u32(36)
+      valid = digit < radix
+      valid ? {
+        overflowed = value > (maximum - u64(digit)) / u64(radix)
+        !overflowed ? { value = value * u64(radix) + u64(digit) }
+      }
+      i = i + u32(1)
+    }
+    !valid ? { .Err(.InvalidDigit) } | overflowed ? { .Err(.NumberOverflow) } | { .Ok(value) }
+  }
+}
