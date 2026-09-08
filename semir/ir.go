@@ -130,9 +130,10 @@ type TagLayout struct {
 }
 
 // Authority describes what code holding a value may do with it. Ownership,
-// capabilities, and effects are semantic facts, not comments or tags.
+// resource liveness, capabilities, and effects are semantic facts, not comments.
 type Authority struct {
 	Ownership        Ownership
+	Resource         ResourceAuthority
 	Capabilities     []Capability
 	RequiredEffects  []Effect
 	ForbiddenEffects []Effect
@@ -148,6 +149,18 @@ const (
 	OwnershipUniqueWrite Ownership = "unique-write"
 	OwnershipMoved       Ownership = "moved"
 	OwnershipExternal    Ownership = "external"
+)
+
+// ResourceAuthority is the path-sensitive resource-flow summary. It is
+// orthogonal to Ownership: temporary UniqueWrite may be released, while
+// consumed resource authority never returns to the old value.
+type ResourceAuthority string
+
+const (
+	ResourceAuthorityUnspecified   ResourceAuthority = ""
+	ResourceAuthorityLive          ResourceAuthority = "live"
+	ResourceAuthorityConsumed      ResourceAuthority = "consumed"
+	ResourceAuthorityMaybeConsumed ResourceAuthority = "maybe-consumed"
 )
 
 type Capability struct {

@@ -146,4 +146,63 @@ theorem consumed_authority_cannot_be_consumed (borrow : Oak.Borrowing.State) :
     ¬ CanConsume borrow .consumed := by
   simp [CanConsume]
 
+/-- A control-flow summary represents all reachable incoming paths. `maybeConsumed`
+is the conservative join of a path where authority is live and one where it has
+been consumed. It carries no usable authority. -/
+inductive Summary where
+  | live
+  | consumed
+  | maybeConsumed
+  deriving DecidableEq, Repr
+
+/-- Path join is set union over the concrete states {live} and {consumed}.
+`maybeConsumed` therefore absorbs either concrete state. -/
+def joinSummary : Summary → Summary → Summary
+  | .live, .live => .live
+  | .consumed, .consumed => .consumed
+  | _, _ => .maybeConsumed
+
+/-- Only authority proven live on every incoming path is usable after a join. -/
+def SummaryUsable : Summary → Prop
+  | .live => True
+  | .consumed => False
+  | .maybeConsumed => False
+
+/-- The summary reached by one straight-line concrete state. -/
+def summarize : Authority → Summary
+  | .live => .live
+  | .consumed => .consumed
+
+theorem joinSummary_idem (a : Summary) : joinSummary a a = a := by
+  cases a <;> rfl
+
+theorem joinSummary_comm (a b : Summary) :
+    joinSummary a b = joinSummary b a := by
+  cases a <;> cases b <;> rfl
+
+theorem joinSummary_assoc (a b c : Summary) :
+    joinSummary (joinSummary a b) c = joinSummary a (joinSummary b c) := by
+  cases a <;> cases b <;> cases c <;> rfl
+
+/-- The canonical conditional-consume case is unavailable after the join. -/
+theorem live_join_consumed_is_maybe :
+    joinSummary .live .consumed = .maybeConsumed := by
+  rfl
+
+theorem live_join_consumed_not_usable :
+    ¬ SummaryUsable (joinSummary .live .consumed) := by
+  simp [SummaryUsable, joinSummary]
+
+/-- A join is usable exactly when both incoming summaries are definitely live.
+This is the fail-closed rule implemented by the executable checker. -/
+theorem join_usable_iff (a b : Summary) :
+    SummaryUsable (joinSummary a b) ↔
+      SummaryUsable a ∧ SummaryUsable b := by
+  cases a <;> cases b <;> simp [SummaryUsable, joinSummary]
+
+/-- Joining a state with itself loses no authority information. -/
+theorem summarize_join_self (a : Authority) :
+    joinSummary (summarize a) (summarize a) = summarize a := by
+  cases a <;> rfl
+
 end Oak.ResourceFlow
