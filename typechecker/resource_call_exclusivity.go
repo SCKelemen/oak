@@ -13,6 +13,7 @@ type resourceCallArgument struct {
 	name    string
 	node    ast.Node
 	tracked bool
+	fresh   bool
 }
 
 func resourceParameterModesCompatible(left, right ResourceParameterMode) bool {
@@ -30,7 +31,9 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 	participants := make([]resourceCallArgument, 0, len(op.Parameters))
 	for _, parameter := range op.Parameters {
 		if parameter.Index < 0 || parameter.Index >= len(expr.Arguments) {
-			continue
+			a.tc.addResourceDiagnosticWithCode(expr, CodeResourceCallAliasConflict,
+				"resource contract refers to an argument outside this call")
+			return false
 		}
 		argument := expr.Arguments[parameter.Index]
 		if !a.isResourceValue(argument) {
@@ -42,9 +45,20 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 			mode:  parameter.Mode,
 			node:  argument,
 		}
-		if ident, ok := argument.(*ast.Identifier); ok && ident != nil && a.flow.Registered(ident.Value) && a.flow.CanUse(ident.Value) {
+		if ident, ok := argument.(*ast.Identifier); ok && ident != nil && a.flow.Registered(ident.Value) {
+			if !a.flow.CanUse(ident.Value) {
+				// Ordinary argument evaluation owns the use-after-consume diagnostic.
+				a.use(ident.Value, ident)
+				return false
+			}
 			participant.name = ident.Value
+			participant.tracked = !a.unknownResources[ident.Value]
+		}
+		if call, ok := argument.(*ast.InvocationExpression); ok && a.freshCalls[call] {
+			// Each successfully evaluated fresh result has independent authority.
+			// It needs no source binding and cannot revive an input authority class.
 			participant.tracked = true
+			participant.fresh = true
 		}
 		participants = append(participants, participant)
 
@@ -65,7 +79,7 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 				continue
 			}
 			if left.tracked && right.tracked {
-				if !a.flow.Aliases(left.name, right.name) {
+				if left.fresh || right.fresh || !a.flow.Aliases(left.name, right.name) {
 					continue
 				}
 				a.reportCallAliasConflict(expr, left, right)
@@ -80,7 +94,11 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 			if left.mode == ResourceParameterBorrowed && right.mode != ResourceParameterBorrowed {
 				primary = right
 			}
-			a.reportUntrackedResourceArgument(expr, primary, resourceParameterModeAccess(primary.mode))
+			unknown := left
+			if left.tracked {
+				unknown = right
+			}
+			a.reportUntrackedResourcePair(expr, primary, unknown)
 			return false
 		}
 	}
@@ -152,4 +170,16 @@ func resourceParameterModeAccess(mode ResourceParameterMode) string {
 	default:
 		return "resource"
 	}
+}
+
+
+func (a *typedResourceAnalysis) reportUntrackedResourcePair(expr *ast.InvocationExpression, exclusive, unknown resourceCallArgument) {
+	callable, _ := a.callableIdentity(expr)
+	d := a.tc.addResourceDiagnosticWithCode(exclusive.node, CodeResourceCallAliasConflict,
+		fmt.Sprintf("resource argument %d to %q requires %s authority, but argument %d resource provenance is not traceable",
+			exclusive.index+1, callable, resourceParameterModeAccess(exclusive.mode), unknown.index+1))
+	d.AddSecondary(diagnostic.NodeToRange(unknown.node),
+		fmt.Sprintf("argument %d has unknown resource provenance", unknown.index+1))
+	d.AddNote("unknown provenance cannot establish distinct resource authority classes")
+	d.AddHelp("provide traceable resource provenance; introducing a local name alone does not establish independence")
 }
