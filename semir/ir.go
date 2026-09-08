@@ -130,7 +130,7 @@ type TagLayout struct {
 }
 
 // Authority describes what code holding a value may do with it. Ownership,
-// resource liveness, capabilities, and effects are independent semantic facts.
+// resource liveness, capabilities, and effects are semantic facts, not comments.
 type Authority struct {
 	Ownership        Ownership
 	Resource         ResourceAuthority
@@ -151,9 +151,9 @@ const (
 	OwnershipExternal    Ownership = "external"
 )
 
-// ResourceAuthority is the path-sensitive authority summary projected by
-// semantic resource-flow analysis. It is deliberately separate from Ownership:
-// a UniqueWrite borrow can end, while consumed resource authority never returns.
+// ResourceAuthority is the path-sensitive resource-flow summary. It is
+// orthogonal to Ownership: temporary UniqueWrite may be released, while
+// consumed resource authority never returns to the old value.
 type ResourceAuthority string
 
 const (
@@ -237,41 +237,73 @@ const (
 	OpMod Operator = "mod"
 )
 
-// Protocol describes legal state transitions independently of representation.
+func Ref(name string) Expr { return Expr{Kind: ExprRef, Ref: name} }
+func Int(value int64) Expr { return Expr{Kind: ExprInt, Int: value} }
+func Bool(value bool) Expr { return Expr{Kind: ExprBool, Bool: value} }
+func Apply(op Operator, args ...Expr) Expr {
+	return Expr{Kind: ExprApply, Op: op, Args: args}
+}
+
+// Protocol describes legal state evolution. Local typestate, temporal-model
+// projection, generated DST actions, and debugger state diagrams should all use
+// the same transition vocabulary.
 type Protocol struct {
 	Name        string
-	States      []string
+	States      []State
+	Initial     string
 	Transitions []Transition
+	Invariants  []Proposition
+	Assumptions []TemporalProperty
+	Guarantees  []TemporalProperty
+}
+
+type State struct {
+	Name string
 }
 
 type Transition struct {
-	Name          string
-	From          string
-	To            string
-	Requires      []Proposition
-	Effects       []Effect
-	ConsumesInput bool
-	ReturnsFresh  bool
+	Name     string
+	From     string
+	To       string
+	Requires []Proposition
+	Effects  []Effect
 }
 
-// Allocator captures the contract required by a pluggable allocator. Region
-// and lifetime facts are semantic constraints, not runtime allocation policy.
-type Allocator struct {
-	Name          string
-	Allocate      string
-	Deallocate    string
-	Region        string
-	Lifetime      string
-	ThreadSafe    bool
-	Required      []Effect
-	Forbidden     []Effect
-	Propositions  []Proposition
+type TemporalProperty struct {
+	Name    string
+	Formula TemporalExpr
 }
 
-// Attribute is structured metadata that does not change value type or
-// representation unless a specific semantic rule says otherwise.
+type TemporalExpr struct {
+	Kind TemporalKind
+	Atom string
+	Args []TemporalExpr
+}
+
+type TemporalKind string
+
+const (
+	TemporalInvalid    TemporalKind = ""
+	TemporalAtom       TemporalKind = "atom"
+	TemporalNot        TemporalKind = "not"
+	TemporalAnd        TemporalKind = "and"
+	TemporalOr         TemporalKind = "or"
+	TemporalAlways     TemporalKind = "always"
+	TemporalEventually TemporalKind = "eventually"
+	TemporalNext       TemporalKind = "next"
+	TemporalUntil      TemporalKind = "until"
+	TemporalImplies    TemporalKind = "implies"
+)
+
+func Atom(name string) TemporalExpr { return TemporalExpr{Kind: TemporalAtom, Atom: name} }
+func Temporal(kind TemporalKind, args ...TemporalExpr) TemporalExpr {
+	return TemporalExpr{Kind: kind, Args: args}
+}
+
+// Attribute is extensible metadata. Correctness-critical semantics belong in
+// the typed axes above rather than in this escape hatch.
 type Attribute struct {
-	Namespace  string
-	Name       string
-	Parameters []string
+	Namespace string
+	Name      string
+	Value     string
 }
