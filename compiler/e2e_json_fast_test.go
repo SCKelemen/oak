@@ -162,12 +162,12 @@ main: (): i32 {
   fill = fill + u32(1)
  }
  data[20] = u8(44)
- input: []u8 = view(&data)
  position: u32 = 1
  while position < u32(20) {
   byte_value: u32 = 0
   while byte_value < u32(256) {
    data[position] = u8_trunc_u32(byte_value)
+   input: []u8 = view(&data)
    assert(check(input))
    byte_value = byte_value + u32(1)
   }
