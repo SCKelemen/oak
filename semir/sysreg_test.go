@@ -4,8 +4,8 @@ import "testing"
 
 func TestArm64SysRegCatalogIsLegalAndUnique(t *testing.T) {
 	regs := Arm64SysRegs()
-	if len(regs) != 20 {
-		t.Fatalf("system-register catalog has %d entries, want 20", len(regs))
+	if len(regs) != 24 {
+		t.Fatalf("system-register catalog has %d entries, want 24", len(regs))
 	}
 	seenReg := map[string]bool{}
 	seenMember := map[string]bool{}
@@ -37,7 +37,7 @@ func TestArm64SysRegCatalogIsLegalAndUnique(t *testing.T) {
 }
 
 func TestReadOnlySysRegsHaveNoWriteSurface(t *testing.T) {
-	for _, name := range []string{"currentel", "esr_el2", "far_el2", "hpfar_el2", "cntvct_el0"} {
+	for _, name := range []string{"currentel", "esr_el2", "far_el2", "hpfar_el2", "cntvct_el0", "cntpct_el0", "cntfrq_el0"} {
 		if _, found, _ := LookupArm64SysRegMember("write_" + name); found {
 			t.Fatalf("read-only register %s unexpectedly exposes a write member", name)
 		}
