@@ -1,0 +1,151 @@
+{
+  "artifacts": {
+    "retention_days": 30,
+    "solvers": "Existing real-certificate layouts, source hashes, replay logs and backend provenance",
+    "soundness": "CommandAssembly.lean, command-assembly-proof.log, command-assembly-agreement.log, assembly-cases.json and native assembly logs"
+  },
+  "commit": "ae5043e2b10d64d00aeed16259c5fef032b45e5ae",
+  "comparison": {
+    "assembly_cases": 95,
+    "compared": [
+      "Compiled Oak decoder observations with explicit identifier words",
+      "Go oracle with bounded 31-bit identifier parsing",
+      "New Lean command-assembly adapter"
+    ],
+    "decoded": 45,
+    "existing_buffer_cases": 72,
+    "existing_buffer_decoded": 52,
+    "existing_buffer_rejected": 20,
+    "existing_packing_accepted": 104,
+    "existing_packing_cases": 425,
+    "existing_packing_rejected": 321,
+    "existing_stream_accepted": 308,
+    "existing_stream_layouts": 887,
+    "existing_stream_rejected": 579,
+    "identifier_spellings": [
+      "3", "+3", "0", "-0", "+0", "-00", "007", "\t7", "7\t", "1", "9", "256", "257", "2147483647",
+      "-1", "-3", "2147483648", "4294967295", "4294967296", "x", "3x", "d", "+", "-", "1e3", "3.0"
+    ],
+    "native_seconds_with_race": 6.73,
+    "native_seconds_without_race": 4.17,
+    "rejected": 50,
+    "stream_native_seconds_with_race": 86.21
+  },
+  "date": "2026-09-09",
+  "existing_gates": {
+    "boolean_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "boolean_model": {
+      "corruptions_rejected": 2,
+      "malformed_rejected": 3,
+      "safe_accepted": 1,
+      "unsafe_rejected": 1,
+      "wrong_model_rejected": 1
+    },
+    "bounded_certificate_replay": {
+      "accepted": 9,
+      "outside_profile": 2,
+      "rejected_corruptions": 18
+    },
+    "external_solver_suite": "success",
+    "lean_text_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "native_race_suite": "success"
+  },
+  "format": "oak-command-assembly-validation-1",
+  "implementation": {
+    "decoder_reused": "SegmentPublication.publish and Scanner.scan",
+    "host_harness": "Go; added TestSelfHostedCommandAssembly and a shared decoder observer, buffer corpus unchanged",
+    "native_Oak_changed": false,
+    "new_formal_module": "CommandAssembly.lean",
+    "production_language_changed": false,
+    "python_introduced": false,
+    "reference_packer": "ProofPacking.pack and ProofPacking.commands"
+  },
+  "next_step": "Model proof-line splitting and the deletion marker in the byte adapter, then connect the DIMACS header and clause-count checks to cover the complete file state machine.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.CommandAssembly.identifier' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.encode_decoded' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.positive_decoded' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.assembled_append' depends on axioms: [propext]",
+      "'OakVerification.CommandAssembly.start_represents' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.addition_represents' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.deletion_represents' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.step_represents' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.assemble_represents' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.decodeCommand_deletion' does not depend on any axioms",
+      "'OakVerification.CommandAssembly.assembled_decodes' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.toLayout_fields' depends on axioms: [propext]",
+      "'OakVerification.CommandAssembly.assembled_resources' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CommandAssembly.assembled_decoded' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CommandAssembly.assembled_sound' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CommandAssembly.zip_projections' depends on axioms: [propext]",
+      "'OakVerification.CommandAssembly.assembled_clauses' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CommandAssembly.assemble_sound' depends on axioms: [propext, Classical.choice, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Starting the proof phase from any valid literal publication state represents the decoded initial clauses with no instructions",
+      "Every successful addition or deletion preserves the representation invariant and appends one instruction whose ID or stamp is the scanned identifier",
+      "Assembled command metadata decodes identically to the proved packer's commands; deletion clause ranges are ignored",
+      "Under the packer's support conditions the assembled layout decodes to exactly the published clauses and instructions",
+      "Certified acceptance of the assembled layout refutes the published initial clauses, with no support hypothesis when the executable decoder-plus-stream checker accepts"
+    ],
+    "reported_theorems": 18,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Splitting a proof line into identifier, deletion marker and segments",
+      "DIMACS header, clause-count and complete file state machine",
+      "Universal refinement of the concrete Oak text decoder",
+      "Compiler and C runtime correctness"
+    ],
+    "proved": [
+      "Identifier and stamp acceptance via the proved executable scanner",
+      "Representation invariant for additions, deletions and whole proof phases",
+      "Decode equivalence of assembled and packed command metadata",
+      "Soundness of certified acceptance for assembled layouts"
+    ],
+    "rejected_states": "No assembly is returned on failure; exact partial native mutations are outside this theorem",
+    "tested": [
+      "Compiled Oak and Go agreement with the Lean assembly adapter on explicit identifier spellings, repeated and descending IDs, deletion offsets, malformed trailing segments and the 256-command boundary"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34289063128",
+  "solvers_job": 102271267739,
+  "soundness_job": 102271267459,
+  "repository_ci": {
+    "Oak testing tools": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34289063121"
+    },
+    "Formal Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34289063262"
+    },
+    "Golden File Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34289063157"
+    },
+    "Verification experiment (opt-in)": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34289063128"
+    },
+    "CI": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34289063143"
+    },
+    "Standard library": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34289063123"
+    }
+  }
+}
