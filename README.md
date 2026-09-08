@@ -75,7 +75,14 @@ pub make: (x: i32, y: i32): Point = Point { x: x, y: y }
 abs: (v: i32): i32 = v < 0 ? 0 - v | v                // private to the package
 ```
 
-Build a package with `oak build [dir]`; see `examples/modules`.
+Build a package with `oak build [dir]`; fetch pinned dependencies with
+`oak mod download`; see `examples/modules`. Derived operations are ordinary
+declarations whose body the compiler synthesizes from the type:
+
+```oak
+point_eq: (a: Point, b: Point): Bool = derive.equal
+point_hash: (v: Point): u64 = derive.hash
+```
 
 ### Comments
 

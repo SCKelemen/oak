@@ -38,12 +38,10 @@ type Package struct {
 }
 
 // symbol is the C name the generated translation unit gives a top-level
-// function: the root package of a module build is injectively renamed unless
-// it is package main, matching compiler/modules.go.
+// function of the root package: root declarations keep their source names
+// whatever the package clause says (docs/spec/83-modules.md section 7,
+// compiler/modules.go merge); only imported packages are renamed.
 func (p Package) symbol(name string) string {
-	if p.Module && p.Name != "main" {
-		return "oak_" + p.Name + "_" + name
-	}
 	return "oak_" + name
 }
 

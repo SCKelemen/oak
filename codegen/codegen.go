@@ -2856,9 +2856,13 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 	var varType string
 	if stmt.Type != nil {
 		varType = cg.parseTypeExpression(stmt.Type)
+	} else if inferred, ok := cg.inferLocalType(stmt.Value); ok {
+		varType = inferred
 	} else {
-		// Type inference - try to infer from value
-		// For now, default to i32
+		// Untyped scalar initializers default to i32 (integer literals and
+		// arithmetic); everything the checker knows more about is handled
+		// by inferLocalType, which fails closed to this default only for
+		// shapes it does not recognize.
 		varType = "i32"
 	}
 
@@ -3088,4 +3092,40 @@ func (cg *CodeGenerator) emitRecordType(typeName string, recordLit *ast.RecordLi
 	cg.indentLevel--
 	cg.write(fmt.Sprintf("} %s;\n", cName))
 	cg.write("\n")
+}
+
+// inferLocalType determines the C type of an untyped local from its
+// initializer where the declaration surface makes it unambiguous: a call to
+// a program function takes the callee's declared return type, a typed record
+// literal its type, and a type-qualified variant its ADT. Other shapes report
+// false and keep the scalar default.
+func (cg *CodeGenerator) inferLocalType(value ast.Expression) (string, bool) {
+	switch v := value.(type) {
+	case *ast.InvocationExpression:
+		callee, ok := v.Function.(*ast.Identifier)
+		if !ok {
+			return "", false
+		}
+		fn := cg.programFunctions[callee.Value]
+		if fn == nil || fn.ReturnType == nil || fn.ExternSymbol != "" {
+			return "", false
+		}
+		if _, isFnType := fn.ReturnType.(*ast.FunctionTypeExpression); isFnType {
+			return "", false
+		}
+		cType := cg.parseTypeExpression(fn.ReturnType)
+		if cType == "" || cType == "void" || strings.Contains(cType, "[") {
+			return "", false
+		}
+		return cType, true
+	case *ast.RecordLiteral:
+		if v.TypeName != nil {
+			return cg.cTypeName(v.TypeName.Value), true
+		}
+	case *ast.VariantExpression:
+		if v.TypeName != nil {
+			return cg.cTypeName(v.TypeName.Value), true
+		}
+	}
+	return "", false
 }

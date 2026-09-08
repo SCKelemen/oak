@@ -33,6 +33,7 @@ import (
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
 	"github.com/SCKelemen/oak/source"
+	"github.com/SCKelemen/oak/stdlib"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -81,6 +82,10 @@ const (
 	// module that cannot be located, or a module whose manifest disagrees
 	// with the path it was required under.
 	CodeManifest = "OAK-M0112"
+	// CodeMethodOrphan rejects a method whose receiver type belongs to
+	// another package: methods are declared where their type is declared
+	// (the orphan rule, section 6.5).
+	CodeMethodOrphan = "OAK-M0114"
 )
 
 // ModuleInfo is what elaboration hands the later phases.
@@ -94,6 +99,9 @@ type ModuleInfo struct {
 	// Obligations are the sealed-import member types the type checker must
 	// verify after checking the program.
 	Obligations []typechecker.SignatureObligation
+	// SealedOpaque maps an internal type name to the packages (root "")
+	// that sealed it as an abstract type member.
+	SealedOpaque map[string]map[string]bool
 	// Packages lists the loaded package paths in compile order (root last).
 	Packages []string
 }
@@ -117,23 +125,25 @@ type importBinding struct {
 	File      string
 	Used      bool
 	// resolved signature members (nil when unsealed)
-	sig       *modules.Signature
-	sigOrder  []string
-	sigTypes  map[string]ast.Expression
-	sigKinds  map[string]modules.MemberKind
-	sigFields map[string]ast.RecordField
+	sig      *modules.Signature
+	sigOrder []string
+	sigKinds map[string]modules.MemberKind
+	shape    *ast.RecordLiteral
 }
 
 type loadedPackage struct {
-	Path      string
-	Dir       string
-	Name      string
-	IsRoot    bool
-	Files     []*packageFile
-	Imports   map[string]*importBinding // by alias
-	Edges     []string                  // imported package paths
-	Exports   modules.Exports
-	Renames   map[string]string
+	Path    string
+	Dir     string
+	Name    string
+	IsRoot  bool
+	Files   []*packageFile
+	Imports map[string]*importBinding // by alias
+	Edges   []string                  // imported package paths
+	Exports modules.Exports
+	Renames map[string]string
+	// IsView marks a standard library package view (section 9): flat
+	// prelude declarations exposed under a qualifier, never renamed.
+	IsView    bool
 	Bootstrap map[string]*ast.ImportStatement
 	// statements after elaboration, in source order across files
 	Statements []ast.Statement
@@ -153,6 +163,7 @@ type moduleLoader struct {
 	diagnostics []*diagnostic.Diagnostic
 	nextFileID  source.ID
 	opaque      map[string]string
+	sealed      map[string]map[string]bool
 	obligations []typechecker.SignatureObligation
 }
 
@@ -185,6 +196,7 @@ func (comp Compilation) parsePackageBuild() (*SyntaxTree, error) {
 		located:  map[string]*moduleRoot{},
 		packages: map[string]*loadedPackage{},
 		opaque:   map[string]string{},
+		sealed:   map[string]map[string]bool{},
 	}
 	if loader.cache == "" {
 		loader.cache = os.Getenv("OAKMODCACHE")
@@ -525,6 +537,15 @@ func (l *moduleLoader) loadPackage(dir, path string, isRoot bool) *loadedPackage
 		if _, loaded := l.packages[binding.Path]; loaded {
 			continue
 		}
+		if viewSource, isView := stdlib.Packages[binding.Path]; isView {
+			// A standard library package view (section 9) rides on the
+			// bootstrap prelude.
+			if _, present := pkg.Bootstrap["std"]; !present {
+				pkg.Bootstrap["std"] = &ast.ImportStatement{Token: binding.Statement.Token, Path: &ast.Identifier{Token: binding.Statement.Token, Value: "std"}}
+			}
+			l.loadStdlibView(binding.Path, viewSource)
+			continue
+		}
 		depDir, found := l.resolveImportDir(binding.Path)
 		if !found {
 			d := l.reportAt(CodeImportUnresolvable, binding.File, binding.Statement, "cannot resolve import %q", binding.Path)
@@ -559,15 +580,29 @@ func sortedAliases(imports map[string]*importBinding) []string {
 func (l *moduleLoader) checkPackageClause(pkg *loadedPackage) bool {
 	ok := true
 	for _, file := range pkg.Files {
-		if len(file.Root.Statements) == 0 {
-			l.reportAt(CodePackageClause, file.Path, nil, "file has no package clause")
-			ok = false
-			continue
+		var clause *ast.PackageStatement
+		if len(file.Root.Statements) != 0 {
+			clause, _ = file.Root.Statements[0].(*ast.PackageStatement)
 		}
-		clause, isClause := file.Root.Statements[0].(*ast.PackageStatement)
-		if !isClause {
-			l.reportAt(CodePackageClause, file.Path, file.Root.Statements[0], "a file must begin with a package clause")
-			ok = false
+		if clause == nil {
+			// The root package may omit the clause: a clause-less file is
+			// `package main`, the single-file rule (section 2). Imported
+			// packages must declare theirs.
+			if !pkg.IsRoot {
+				var node ast.Node
+				if len(file.Root.Statements) != 0 {
+					node = file.Root.Statements[0]
+				}
+				l.reportAt(CodePackageClause, file.Path, node, "an imported package's file must begin with a package clause")
+				ok = false
+				continue
+			}
+			if pkg.Name == "" {
+				pkg.Name = "main"
+			} else if pkg.Name != "main" {
+				l.reportAt(CodePackageClause, file.Path, nil, "file without a package clause is package main, but a sibling declares %q", pkg.Name)
+				ok = false
+			}
 			continue
 		}
 		name := clause.Name.Value
@@ -582,7 +617,7 @@ func (l *moduleLoader) checkPackageClause(pkg *loadedPackage) bool {
 			l.reportAt(CodePackageClause, file.Path, clause, "package clause %q disagrees with %q in a sibling file", name, pkg.Name)
 			ok = false
 		}
-		for _, stmt := range file.Root.Statements[1:] {
+		for _, stmt := range declarationsOf(file) {
 			if _, again := stmt.(*ast.PackageStatement); again {
 				l.reportAt(CodePackageClause, file.Path, stmt, "duplicate package clause")
 				ok = false
@@ -601,6 +636,45 @@ func (l *moduleLoader) checkPackageClause(pkg *loadedPackage) bool {
 		return false
 	}
 	return true
+}
+
+// declarationsOf returns a file's statements after its package clause.
+func declarationsOf(file *packageFile) []ast.Statement {
+	if len(file.Root.Statements) != 0 {
+		if _, isClause := file.Root.Statements[0].(*ast.PackageStatement); isClause {
+			return file.Root.Statements[1:]
+		}
+	}
+	return file.Root.Statements
+}
+
+// loadStdlibView registers a standard library package view: the
+// declarations of one embedded library file, all exported, resolved to their
+// flat prelude names (section 9).
+func (l *moduleLoader) loadStdlibView(path, text string) *loadedPackage {
+	tree, err := New().WithSource(path+".oak", text).Parse().Get()
+	if err != nil {
+		l.report(CodeImportUnresolvable, nil, "standard library package %s: %v", path, err)
+		return nil
+	}
+	pkg := &loadedPackage{
+		Path:      path,
+		Name:      path,
+		IsView:    true,
+		Imports:   map[string]*importBinding{},
+		Exports:   modules.Exports{},
+		Renames:   map[string]string{},
+		Bootstrap: map[string]*ast.ImportStatement{},
+	}
+	for _, stmt := range tree.Root.Statements {
+		name, kind, _, _, _ := declarationMember(stmt)
+		if name == "" {
+			continue
+		}
+		pkg.Exports[name] = modules.Member{Name: name, Kind: kind, Exported: true}
+	}
+	l.packages[path] = pkg
+	return pkg
 }
 
 // collectDeclarations builds the export table and the rename map.
@@ -675,7 +749,7 @@ func (l *moduleLoader) collectImports(pkg *loadedPackage) bool {
 	ok := true
 	for _, file := range pkg.Files {
 		declarationsStarted := false
-		for _, stmt := range file.Root.Statements[1:] {
+		for _, stmt := range declarationsOf(file) {
 			imp, isImport := stmt.(*ast.ImportStatement)
 			if !isImport {
 				declarationsStarted = true
@@ -719,7 +793,7 @@ func (l *moduleLoader) collectImports(pkg *loadedPackage) bool {
 				ok = false
 				continue
 			}
-			if typechecker.CompilerKnownLibrary(alias) {
+			if typechecker.CompilerKnownLibrary(alias) || alias == "derive" {
 				l.reportAt(CodeImportAlias, file.Path, imp, "import alias %q is a compiler-known library name", alias)
 				ok = false
 				continue
@@ -758,7 +832,27 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 			}
 		}}).walk(reflect.ValueOf(file.Root), false)
 	}
-	// Sealed imports: check membership/kind and prepare obligations.
+	// Methods live with their receiver type (section 6.5).
+	for _, file := range pkg.Files {
+		for _, stmt := range declarationsOf(file) {
+			fn, isFn := stmt.(*ast.FunctionStatement)
+			if !isFn || fn.Receiver == nil || fn.Receiver.Type == nil {
+				continue
+			}
+			base := firstIdentifier(fn.Receiver.Type)
+			if base == nil {
+				continue
+			}
+			if library, _, qualified := splitDotted(base.Value); qualified {
+				if binding := pkg.Imports[library]; binding != nil {
+					d := l.reportAt(CodeMethodOrphan, file.Path, fn.Receiver.Type, "method %s declared on %s, a type of package %s", fn.Name.Value, base.Value, binding.Path)
+					d.AddNote("methods are declared in the package that declares their receiver type; write a function taking the value instead")
+				}
+			}
+		}
+	}
+	// Sealed imports: resolve the signature shape, check membership and
+	// kind, and substitute type members before names are rewritten.
 	for _, alias := range sortedAliases(pkg.Imports) {
 		l.prepareSignature(pkg, pkg.Imports[alias])
 	}
@@ -816,6 +910,7 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 			d := l.reportAt(CodeImportAlias, binding.File, binding.Statement, "import %q is unused", binding.Path)
 			d.AddHelp("remove the import or use one of its members")
 		}
+		l.collectObligations(pkg, binding)
 	}
 	if !pkg.IsRoot {
 		for _, file := range pkg.Files {
@@ -828,9 +923,33 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 			case *ast.PackageStatement, *ast.ImportStatement:
 				continue
 			}
+			// Signature shapes (`Name: type = { Key: type, ... }`) are
+			// compile-time interfaces, never runtime records.
+			if isSignatureShape(stmt) {
+				continue
+			}
 			pkg.Statements = append(pkg.Statements, stmt)
 		}
 	}
+}
+
+// isSignatureShape reports whether a declaration is a record shape with an
+// abstract type member, i.e. a named import signature (section 6.3).
+func isSignatureShape(stmt ast.Statement) bool {
+	adt, isADT := stmt.(*ast.ADTType)
+	if !isADT || len(adt.Variants) != 1 {
+		return false
+	}
+	shape, isShape := adt.Variants[0].Literal.(*ast.RecordLiteral)
+	if !isShape {
+		return false
+	}
+	for _, field := range shape.FieldOrder {
+		if ident, isIdent := field.Value.(*ast.Identifier); isIdent && ident.Value == "type" {
+			return true
+		}
+	}
+	return false
 }
 
 // stampSemanticContext sets every token's SemanticContext so position-keyed
@@ -884,6 +1003,9 @@ func (l *moduleLoader) resolveMember(pkg *loadedPackage, file *packageFile, bind
 	if target == nil {
 		return internal
 	}
+	if target.IsView {
+		internal = member
+	}
 	found, outcome := modules.Lookup(target.Exports, binding.sig, member)
 	switch outcome {
 	case modules.Resolved:
@@ -904,34 +1026,46 @@ func (l *moduleLoader) resolveMember(pkg *loadedPackage, file *packageFile, bind
 	return internal
 }
 
-// prepareSignature validates a sealed import's signature against the
-// package's export table (membership and kind) and records the type
-// obligations for the checker (section 6.3).
+// prepareSignature resolves a sealed import's signature shape (inline, a
+// shape declared in this package, or an exported shape of an imported
+// package), validates membership and kind against the package's export
+// table, marks abstract type members opaque for this package, and
+// substitutes type members in place before renaming (section 6.3).
 func (l *moduleLoader) prepareSignature(pkg *loadedPackage, binding *importBinding) {
 	if binding.Signature == nil {
-		return
-	}
-	shape, isShape := binding.Signature.(*ast.RecordLiteral)
-	if !isShape || shape.TypeName != nil {
-		l.reportAt(CodeSignatureMismatch, binding.File, binding.Statement, "an import signature must be an inline record shape { member: Type, Name: type, ... }")
 		return
 	}
 	target := l.packages[binding.Path]
 	if target == nil {
 		return
 	}
+	shape := l.signatureShape(pkg, binding)
+	if shape == nil {
+		return
+	}
+	binding.shape = shape
 	binding.sigKinds = map[string]modules.MemberKind{}
-	binding.sigTypes = map[string]ast.Expression{}
 	typeMembers := map[string]string{}
+	usingKey := pkg.Path
+	if pkg.IsRoot {
+		usingKey = ""
+	}
 	for _, field := range shape.FieldOrder {
 		binding.sigOrder = append(binding.sigOrder, field.Name)
 		if ident, isIdent := field.Value.(*ast.Identifier); isIdent && ident.Value == "type" {
 			binding.sigKinds[field.Name] = modules.KindType
-			typeMembers[field.Name] = modules.Mangle(binding.Path, field.Name)
+			internal := modules.Mangle(binding.Path, field.Name)
+			if target.IsView {
+				internal = field.Name
+			}
+			typeMembers[field.Name] = internal
+			if l.sealed[internal] == nil {
+				l.sealed[internal] = map[string]bool{}
+			}
+			l.sealed[internal][usingKey] = true
 			continue
 		}
 		binding.sigKinds[field.Name] = modules.KindValue
-		binding.sigTypes[field.Name] = field.Value
 	}
 	binding.sig = &modules.Signature{Members: binding.sigKinds}
 	problems := modules.Conforms(target.Exports, *binding.sig, binding.sigOrder)
@@ -946,15 +1080,16 @@ func (l *moduleLoader) prepareSignature(pkg *loadedPackage, binding *importBindi
 		}
 	}
 	if len(problems) != 0 {
+		binding.shape = nil
 		return
 	}
-	// Value members: the checker compares the declaration's type with the
-	// signature's, where sibling type members denote the package's types.
-	for _, name := range binding.sigOrder {
-		typeExpr, isValue := binding.sigTypes[name]
-		if !isValue {
+	// Sibling type members denote the package's types. Substituted names
+	// are internal (or prelude) names, which the renaming walk leaves alone.
+	for _, field := range shape.FieldOrder {
+		if binding.sigKinds[field.Name] != modules.KindValue {
 			continue
 		}
+		value := field.Value
 		(&syntaxVisitor{ident: func(id *ast.Identifier, label bool) {
 			if label {
 				return
@@ -962,14 +1097,99 @@ func (l *moduleLoader) prepareSignature(pkg *loadedPackage, binding *importBindi
 			if internal, isTypeMember := typeMembers[id.Value]; isTypeMember {
 				id.Value = internal
 			}
-		}}).walk(reflect.ValueOf(&typeExpr).Elem(), false)
+		}}).walk(reflect.ValueOf(&value).Elem(), false)
+	}
+}
+
+// signatureShape resolves the signature expression to a record shape:
+// inline `{ ... }`, `Name` declared in this package, or `alias.Name`
+// exported by an imported package.
+func (l *moduleLoader) signatureShape(pkg *loadedPackage, binding *importBinding) *ast.RecordLiteral {
+	switch sig := binding.Signature.(type) {
+	case *ast.RecordLiteral:
+		if sig.TypeName == nil {
+			return sig
+		}
+	case *ast.Identifier:
+		if library, member, qualified := splitDotted(sig.Value); qualified {
+			other := pkg.Imports[library]
+			if other == nil {
+				break
+			}
+			other.Used = true
+			source := l.packages[other.Path]
+			if source == nil || source.IsView {
+				break
+			}
+			if _, outcome := modules.Lookup(source.Exports, other.sig, member); outcome != modules.Resolved {
+				l.reportAt(CodeSignatureMismatch, binding.File, binding.Statement, "signature %s is not an exported shape of package %s", sig.Value, other.Path)
+				return nil
+			}
+			if shape := declaredShape(source, modules.Mangle(other.Path, member)); shape != nil {
+				return shape
+			}
+			break
+		}
+		if shape := declaredShape(pkg, sig.Value); shape != nil {
+			return shape
+		}
+	}
+	l.reportAt(CodeSignatureMismatch, binding.File, binding.Statement, "an import signature must be a record shape { member: Type, Name: type, ... }, inline or declared as Name: type = { ... }")
+	return nil
+}
+
+// declaredShape finds `name: type = { ... }` in a package's files. Imported
+// packages have already been renamed, so name is their internal name.
+func declaredShape(pkg *loadedPackage, name string) *ast.RecordLiteral {
+	for _, file := range pkg.Files {
+		for _, stmt := range file.Root.Statements {
+			adt, isADT := stmt.(*ast.ADTType)
+			if !isADT || adt.Name == nil || adt.Name.Value != name || len(adt.Variants) != 1 {
+				continue
+			}
+			if shape, isShape := adt.Variants[0].Literal.(*ast.RecordLiteral); isShape && shape.TypeName == nil {
+				return shape
+			}
+		}
+	}
+	return nil
+}
+
+// collectObligations records, after renaming, the member types the checker
+// must verify for a sealed import.
+func (l *moduleLoader) collectObligations(pkg *loadedPackage, binding *importBinding) {
+	if binding.shape == nil {
+		return
+	}
+	target := l.packages[binding.Path]
+	for _, field := range binding.shape.FieldOrder {
+		if binding.sigKinds[field.Name] != modules.KindValue {
+			continue
+		}
+		internal := modules.Mangle(binding.Path, field.Name)
+		if target != nil && target.IsView {
+			internal = field.Name
+		}
 		l.obligations = append(l.obligations, typechecker.SignatureObligation{
-			Internal: modules.Mangle(binding.Path, name),
-			Member:   binding.Alias + "." + name,
-			Type:     typeExpr,
+			Internal: internal,
+			Member:   binding.Alias + "." + field.Name,
+			Type:     field.Value,
 			Node:     binding.Statement,
 		})
 	}
+}
+
+// firstIdentifier returns the leftmost identifier of a type expression.
+func firstIdentifier(expr ast.Expression) *ast.Identifier {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return e
+	case *ast.IndexExpression:
+		return firstIdentifier(e.Left)
+	case *ast.PrefixExpression:
+		return firstIdentifier(e.Right)
+	}
+	return nil
 }
 
 // merge assembles the flat program: bootstrap imports first, dependencies
@@ -989,12 +1209,10 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 			program.Statements = append(program.Statements, imp)
 		}
 	}
-	for _, file := range root.Files {
-		if clause, ok := file.Root.Statements[0].(*ast.PackageStatement); ok {
-			program.Statements = append(program.Statements, clause)
-			break
-		}
-	}
+	// The root package's clause is not forwarded: root declarations keep
+	// their source names in the emitted C (oak_<name>) whatever the package
+	// is called, so single-file programs, `oak build` roots, and the test
+	// runner's harness agree on one naming rule.
 	for _, path := range order {
 		if path == root.Path {
 			continue
@@ -1003,7 +1221,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	}
 	program.Statements = append(program.Statements, root.Statements...)
 	public := &ast.Program{Statements: append([]ast.Statement(nil), root.Statements...)}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Obligations: l.obligations, Packages: order}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Obligations: l.obligations, Packages: order}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,
@@ -1058,12 +1276,15 @@ func (sv *syntaxVisitor) walk(v reflect.Value, label bool) {
 		sv.walk(v.Elem(), label)
 	case reflect.Struct:
 		t := v.Type()
-		if t == tokenType || t == importStmtType || t == packageStmtType {
+		if t == tokenType || t == packageStmtType {
 			return
 		}
 		for i := 0; i < v.NumField(); i++ {
 			field := t.Field(i)
 			if !field.IsExported() {
+				continue
+			}
+			if t == importStmtType && field.Name != "Signature" {
 				continue
 			}
 			sv.walk(v.Field(i), label || isLabelSlot(t, field.Name, v))

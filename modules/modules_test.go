@@ -251,8 +251,8 @@ replace example.com/dep => ../dep
 func TestSelectIsMaximumOfRequirements(t *testing.T) {
 	v := func(a, b, c int) packageapi.Version { return packageapi.Version{Major: a, Minor: b, Patch: c} }
 	selected := Select([]Requirement{
-		{"example.com/a", v(1, 2, 0)}, {"example.com/b", v(0, 1, 0)},
-		{"example.com/a", v(1, 10, 0)}, {"example.com/a", v(1, 9, 9)},
+		{Path: "example.com/a", Version: v(1, 2, 0)}, {Path: "example.com/b", Version: v(0, 1, 0)},
+		{Path: "example.com/a", Version: v(1, 10, 0)}, {Path: "example.com/a", Version: v(1, 9, 9)},
 	})
 	if selected["example.com/a"] != v(1, 10, 0) || selected["example.com/b"] != v(0, 1, 0) {
 		t.Fatalf("selected = %v", selected)

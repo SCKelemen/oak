@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/user"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/compiler"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/repl"
 	"github.com/SCKelemen/oak/testrunner"
 )
@@ -18,6 +20,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "build" {
 		os.Exit(buildPackage(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "mod" {
+		os.Exit(modCommand(os.Args[2:]))
 	}
 
 	if len(os.Args) > 1 {
@@ -102,5 +107,39 @@ func buildPackage(args []string) int {
 		return 1
 	}
 	fmt.Printf("Built %s -> %s\n", dir, output)
+	return 0
+}
+
+// modCommand implements `oak mod download [dir]`: fetch every requirement of
+// the module's oak.mod that pins an archive location and digest into the
+// module cache ($OAKMODCACHE), verifying the digest before extraction
+// (docs/spec/83-modules.md section 4.4). The compiler itself never fetches.
+func modCommand(args []string) int {
+	if len(args) == 0 || args[0] != "download" {
+		fmt.Fprintln(os.Stderr, "usage: oak mod download [dir]")
+		return 2
+	}
+	dir := "."
+	if len(args) > 1 {
+		dir = args[1]
+	}
+	text, err := os.ReadFile(filepath.Join(dir, modules.ManifestFile))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	manifest, err := modules.ParseManifest(string(text))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	fetcher := &modules.Fetcher{
+		Cache: os.Getenv("OAKMODCACHE"),
+		Log:   func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
+	}
+	if err := fetcher.Download(context.Background(), manifest); err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
 	return 0
 }
