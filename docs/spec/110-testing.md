@@ -279,8 +279,9 @@ mapped to this fixed three-word carrier; arbitrary type derivation is not yet
 provided. Share one legality predicate between the generator and the target so
 the generator never emits a history the target would reject.
 
-Shrinking deletes whole commands and reduces unsigned target/value fields.
-Kinds remain fixed. A candidate is retained only when execution reports the
+Shrinking deletes whole commands and reduces unsigned target/value fields,
+repeating both passes until a round makes no progress or the budget ends, so a
+command made redundant by a smaller field is removed too. Kinds remain fixed. A candidate is retained only when execution reports the
 same invariant. Model preconditions therefore preserve dependencies: deleting
 a create operation must invalidate a later use of that object. The reducer does
 not infer references or rewrite IDs. Its bounded greedy search does not promise
