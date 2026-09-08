@@ -1,0 +1,37 @@
+{
+  "schema": "oak-json-optimization-results-v1",
+  "workflow_url": "https://github.com/SCKelemen/oak/actions/runs/34284042286",
+  "samples_per_backend": 5,
+  "documents_per_sample": 1024000,
+  "simdjson_revision": "f5de14f09256982933af2849beb43778bd421ca7",
+  "results": [
+    {
+      "machine": "arm64",
+      "cpu": "Apple M1 (Virtual)",
+      "baseline_sha": "bb8932260e444d56f2d009fdefcde16ddbdcd0e4",
+      "candidate_sha": "e9b0201226b2ce69b54ab60ae2a191ff1c910fe8",
+      "baseline_ns_per_document": 819.3430986328125,
+      "candidate_ns_per_document": 438.530111328125,
+      "oak_speedup": 1.868385037805873,
+      "simdjson_ns_per_document": 120.5856123046875,
+      "oak_over_simdjson_time": 3.6366702705798515,
+      "simdjson_time_drift": 0.8250495597341801,
+      "limitation": "One hosted runner, one schema, resident corpus. No affinity/frequency control; no statistical or universal parity claim.",
+      "job_url": "https://github.com/SCKelemen/oak/actions/runs/34284042286/job/102255327119"
+    },
+    {
+      "machine": "x86_64",
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "baseline_sha": "bb8932260e444d56f2d009fdefcde16ddbdcd0e4",
+      "candidate_sha": "e9b0201226b2ce69b54ab60ae2a191ff1c910fe8",
+      "baseline_ns_per_document": 835.2127626953124,
+      "candidate_ns_per_document": 491.8485029296875,
+      "oak_speedup": 1.6981097995020444,
+      "simdjson_ns_per_document": 122.09869921875,
+      "oak_over_simdjson_time": 4.028286182218043,
+      "simdjson_time_drift": 1.0002120676585509,
+      "limitation": "One hosted runner, one schema, resident corpus. No affinity/frequency control; no statistical or universal parity claim.",
+      "job_url": "https://github.com/SCKelemen/oak/actions/runs/34284042286/job/102255327366"
+    }
+  ]
+}

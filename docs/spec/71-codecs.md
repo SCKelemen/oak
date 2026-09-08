@@ -325,8 +325,9 @@ any order. All declared fields are required; duplicate and unknown fields
 are errors. The `json` name tag from §12 governs both directions. Matching
 compares decoded Unicode scalars: an escaped spelling of a field name is
 the same field, including surrogate-pair spellings. No normalization or
-case folding is implied. Matching uses scalar comparison with bounded
-SIMD runs in string tokenization, and fixed local schema-key arrays; no
+case folding is implied. Plain ASCII keys use direct byte comparison;
+escaped and non-ASCII keys use Unicode-scalar comparison. Tokenization uses
+bounded SIMD string runs and fixed local schema-key arrays; no
 unescaped key buffer is constructed. Field dispatch is currently linear
 in the number of declared fields, not a hash lookup or a fused scan.
 
@@ -465,3 +466,46 @@ now implements a first integer/Bool/fixed-array workload against pinned
 simdjson On-Demand, with preflight validation and consumed checksums.
 Its CI runs are correctness smoke tests, not native M-series results.
 Allocation instrumentation and additional schemas remain future work.
+
+## 17. Measured decoder fast paths
+
+The common integer path validates and accumulates decimal digits in one
+scan. Target-width checking remains in the concrete derived reader. For
+`M = UINT64_MAX = 10q + 5`, multiplying magnitude `m` by ten and adding digit
+`d` is safe exactly when `m < q` or (`m == q` and `d <= 5`). The implementation
+uses `q = 1844674407370955161` and performs multiplication only after this
+check. Overflow is sticky while the rest of the digit sequence is scanned.
+Leading zeros, decimals, exponents, non-number tokens, and malformed suffixes
+fall back to the original reader, preserving syntax/type/overflow precedence.
+The original implementation remains available as `json_read_integer_slow`
+for differential checks, not as a separate relaxed parsing policy.
+
+Fixed-array lookahead now checks only for a closing bracket after whitespace;
+it no longer parses an element token before the element reader parses it.
+Punctuation has a small token wrapper; other tokens retain the full parser.
+ASCII keys avoid per-scalar Unicode decoding, while escapes and non-ASCII
+keys retain the existing semantic comparison.
+
+Root UTF-8 validation has a bounded 16-byte SIMD ASCII fast path. An entirely
+ASCII input is valid UTF-8; any high bit delegates to the original complete
+validator. Incomplete tails use scalar reads. This does not fuse UTF-8 with
+JSON syntax checking, relax JSON control-character rules, or assume readable
+padding. The portable SIMD fallback remains available when NEON is disabled.
+
+Differential sanitizer tests compare values, signs, offsets, and exact error
+categories against the original integer reader. Tests cover every one-byte
+input, u64 bounds, signed forms, malformed suffixes, long overflow sequences,
+and deterministic random integers. Key tests compare escaped and Unicode
+spellings against the original semantic matcher. UTF-8 tests sweep every byte
+value at every position of a 65-byte buffer and valid/invalid sequences across
+vector boundaries. These checks accompany the arithmetic argument above;
+no new machine-checked proof of the complete parser is claimed.
+
+The benchmark workflow now compares a pinned pre-optimization Oak revision
+with the candidate on the same Linux and ARM64 macOS runner, using five
+samples of 1,024,000 documents per backend. Paired reports check compatible
+metadata and report simdjson timing drift as a noise indicator. Raw samples
+remain in workflow artifacts. See [recorded measurements](../../benchmarks/json/RESULTS.md).
+Field dispatch remains linear, numeric accumulation remains scalar, and
+aggregate copy elimination is not guaranteed. These results support specific
+improvements on this schema, not universal parser or language superiority.

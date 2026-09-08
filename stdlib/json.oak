@@ -294,6 +294,15 @@ json_value_boundary: (src: []u8, at: u32): Bool = at == len(src) || (at < len(sr
 // 7 number, 8 true, 9 false, 10 null, 11 [, 12 ]. No token allocation.
 json_token: (src: []u8, offset: u32): JsonToken {
  assert(offset <= len(src))
+ at: u32 = json_skip_space(src, offset)
+ at == len(src) ? { JsonToken { kind: u32(0), start: at, end: at } } | {
+  unit: u8 = src[at]
+  kind: u32 = unit == u8(123) ? u32(2) | unit == u8(125) ? u32(3) | unit == u8(58) ? u32(4) | unit == u8(44) ? u32(5) | unit == u8(91) ? u32(11) | unit == u8(93) ? u32(12) | u32(0)
+  kind != u32(0) ? { JsonToken { kind: kind, start: at, end: at + u32(1) } } | { json_token_full(src, at) }
+ }
+}
+json_token_full: (src: []u8, offset: u32): JsonToken {
+ assert(offset <= len(src))
  start: u32 = json_skip_space(src, offset)
  at: u32 = start
  kind: u32 = 0
@@ -368,6 +377,23 @@ json_token: (src: []u8, offset: u32): JsonToken {
 // Escaped and unescaped keys compare by Unicode scalar, without scratch text.
 json_key_equal: (src: []u8, key: JsonToken, expected: []u8): Bool {
  valid: Bool = key.kind == u32(6) && key.start < key.end && key.end <= len(src)
+ !valid ? { false } | {
+  at: u32 = key.start + u32(1)
+  other: u32 = 0
+  plain: Bool = true
+  same: Bool = key.end - key.start - u32(2) == len(expected)
+  while at < key.end - u32(1) && plain {
+   unit: u8 = src[at]
+   plain = unit >= u8(32) && unit < u8(128) && unit != u8(92)
+   same ? { same = other < len(expected) && unit == expected[other] }
+   at = at + u32(1)
+   other = other + u32(1)
+  }
+  plain ? { same } | { json_key_equal_unicode(src, key, expected) }
+ }
+}
+json_key_equal_unicode: (src: []u8, key: JsonToken, expected: []u8): Bool {
+ valid: Bool = key.kind == u32(6) && key.start < key.end && key.end <= len(src)
  at: u32 = key.start + u32(1)
  other: u32 = 0
  valid ? {
@@ -386,6 +412,34 @@ json_key_equal: (src: []u8, key: JsonToken, expected: []u8): Bool {
  valid && other == len(expected)
 }
 json_read_integer: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError] {
+ assert(offset <= len(src))
+ start: u32 = json_skip_space(src, offset)
+ at: u32 = start
+ negative: Bool = at < len(src) && src[at] == u8(45)
+ negative ? { at = at + u32(1) }
+ at >= len(src) || !json_digit(src[at]) ? { json_read_integer_slow(src, offset) } | {
+  leading_zero: Bool = src[at] == u8(48)
+  magnitude: u64 = u64(src[at] - u8(48))
+  at = at + u32(1)
+  overflow: Bool = false
+  while at < len(src) && json_digit(src[at]) {
+   digit: u64 = u64(src[at] - u8(48))
+   // floor(UINT64_MAX / 10), remainder 5: no per-digit division.
+   overflow = overflow || magnitude > u64(1844674407370955161) || (magnitude == u64(1844674407370955161) && digit > u64(5))
+   !overflow ? { magnitude = magnitude * u64(10) + digit }
+   at = at + u32(1)
+  }
+  digits_start: u32 = negative ? start + u32(1) | start
+  leading_zero && at - digits_start != u32(1) ? { json_read_integer_slow(src, offset) } | !json_value_boundary(src, at) ? {
+   // Preserve syntax/type precedence for decimals, exponents and malformed
+   // suffixes, even when the integral prefix exceeded u64.
+   json_read_integer_slow(src, offset)
+  } | overflow ? { .Err(.NumericOverflow) } | {
+   .Ok(JsonInteger { magnitude: magnitude, negative: negative, next: at })
+  }
+ }
+}
+json_read_integer_slow: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError] {
  item: JsonToken = json_token(src, offset)
  item.kind <= u32(1) ? { .Err(.InvalidSyntax) } | item.kind != u32(7) ? { .Err(.TypeMismatch) } | {
   at: u32 = item.start
@@ -410,4 +464,22 @@ json_read_integer: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError
    valid ? { .Ok(JsonInteger { magnitude: magnitude, negative: negative, next: item.end }) } | { .Err(.NumericOverflow) }
   }
  }
+}
+
+// Every ASCII byte is a valid UTF-8 scalar. Probe only complete vectors;
+// any non-ASCII byte delegates to the full validator, including sequences
+// that straddle a vector boundary. JSON syntax is checked separately.
+json_valid_utf8: (src: []u8): Bool {
+ at: u32 = 0
+ ascii: Bool = true
+ while len(src) - at >= u32(16) && ascii {
+  chunk: simd.U8x16 = simd.load_u8x16(src, at)
+  ascii = !simd.any_u8x16(simd.and_u8x16(chunk, simd.splat_u8x16(u8(128))))
+  at = at + u32(16)
+ }
+ while at < len(src) && ascii {
+  ascii = src[at] < u8(128)
+  at = at + u32(1)
+ }
+ ascii || is_valid_utf8(src)
 }

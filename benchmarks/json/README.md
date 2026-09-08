@@ -41,8 +41,13 @@ are still repeated resident-memory traversal, not disk/network throughput or
 guaranteed cold-cache measurements. Record external machine controls alongside
 results when publishing. Do not compare sanitizer timing with release timing.
 
-CI runs correctness smoke checks under sanitizers and in release mode. Its
-Linux timing is not an M-series measurement or a performance gate. No parity
+CI runs sanitizer checks and paired release measurements on Linux and ARM64
+macOS. Each job compares the workflow's pinned baseline with the candidate
+using 1,024 documents, 1,000 rounds and five samples per backend. The two
+revisions run in separate processes, baseline first, on the same runner.
+`compare.py` checks metadata compatibility and reports simdjson timing drift.
+These hosted measurements are not a performance gate. Results and limitations
+are recorded in [RESULTS.md](RESULTS.md). No parity
 claim should be made from this harness alone: additional schemas, long strings,
 floats, large arrays, and selective extraction need separate workloads.
 

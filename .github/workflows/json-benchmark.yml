@@ -1,7 +1,7 @@
 name: JSON benchmark smoke
 on:
   push:
-    branches: [specification, codex/json-benchmark]
+    branches: [specification, codex/json-benchmark, codex/json-optimize]
     paths: ['benchmarks/json/**', '.github/workflows/json-benchmark.yml', 'compiler/**', 'codegen/**', 'stdlib/**']
   pull_request:
     branches: [specification]
@@ -9,7 +9,11 @@ on:
   workflow_dispatch:
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -22,11 +26,21 @@ jobs:
           ref: f5de14f09256982933af2849beb43778bd421ca7 # v4.6.11
           path: benchmark-simdjson
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: SCKelemen/oak
+          ref: bb8932260e444d56f2d009fdefcde16ddbdcd0e4
+          path: benchmark-baseline
+          persist-credentials: false
+      - name: Baseline release measurement
+        run: python3 benchmark-baseline/benchmarks/json/run.py --simdjson benchmark-simdjson --documents 1024 --rounds 1000 --samples 5 --output benchmark-results/baseline.json
       - name: Sanitizer correctness
         run: python3 benchmarks/json/run.py --simdjson benchmark-simdjson --documents 16 --rounds 1 --samples 1 --sanitize --output benchmark-results/sanitizer.json
       - name: Release correctness and timing smoke
-        run: python3 benchmarks/json/run.py --simdjson benchmark-simdjson --documents 64 --rounds 2 --samples 2 --output benchmark-results/release.json
+        run: python3 benchmarks/json/run.py --simdjson benchmark-simdjson --documents 1024 --rounds 1000 --samples 5 --output benchmark-results/release.json
+      - name: Report paired measurements
+        run: python3 benchmarks/json/compare.py benchmark-results/baseline.json benchmark-results/release.json --output benchmark-results/comparison.json
       - uses: actions/upload-artifact@v4
         with:
-          name: json-benchmark-smoke
+          name: json-benchmark-${{ matrix.os }}
           path: benchmark-results/*.json
