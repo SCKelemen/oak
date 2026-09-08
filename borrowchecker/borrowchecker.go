@@ -298,17 +298,12 @@ func (bc *BorrowChecker) checkBorrowEscape(stmt *ast.FunctionStatement, env *typ
 	if !ok {
 		return
 	}
-	arrType, ok := fnType.ReturnType.(*typechecker.ArrayType)
-	if !ok || (!arrType.IsSlice && !arrType.IsSpan) {
+	kind := returnedBorrowKind(fnType.ReturnType, make(map[typechecker.Type]bool))
+	if kind == "" {
 		return
 	}
-
-	kind := "view"
-	if arrType.IsSpan {
-		kind = "span"
-	}
 	d := bc.reportBorrow(stmt.ReturnType, CodeBorrowEscape,
-		fmt.Sprintf("function %q returns a %s, which would let a borrow escape its owner's scope", stmt.Name.Value, kind))
+		fmt.Sprintf("function %q returns a value containing a %s, which would let a borrow escape its owner's scope", stmt.Name.Value, kind))
 	d.AddNote("borrows are lexically scoped: a view or span may not outlive the function that proves its owner's lifetime")
 	d.AddHelp("return owned data, or take a caller-provided span to fill; region-indexed signatures that prove the owner outlives the call are a planned extension")
 }

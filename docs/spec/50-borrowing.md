@@ -207,6 +207,14 @@ A type containing a view/span inherits its borrow lifetime. Wrapping `[]u8` in `
 
 No special string escape rule is needed if semantic wrappers preserve ownership facts.
 
+The bootstrap return check recursively rejects views/spans stored in resolved
+records, fixed arrays, unions, and intersections with `OAK-B0109`. Owning the
+outer container does not give it ownership of storage referenced by an element.
+This check does not yet resolve nominal ADT payloads or track aggregate borrow
+provenance through assignments. General runtime `Str[E]` construction remains
+unavailable until those paths preserve the same lifetime and aliasing facts.
+Existing literal strings are unaffected.
+
 ## 13. Formal verification targets
 
 The core borrow/resource model must prove:
