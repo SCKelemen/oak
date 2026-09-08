@@ -234,6 +234,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	// Register receiver if present
 	if stmt.Receiver != nil && stmt.Receiver.Name != nil {
 		receiverType := bc.parseTypeFromAST(stmt.Receiver.Type, funcEnv)
+		bc.checkAggregateType(stmt.Receiver.Type, receiverType, env, false)
 		if receiverType != nil {
 			if arrType, ok := receiverType.(*typechecker.ArrayType); ok {
 				if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
@@ -246,8 +247,14 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	}
 
 	// Register parameters
-	for _, param := range stmt.Parameters {
+	for index, param := range stmt.Parameters {
 		paramType := bc.parseTypeFromAST(param.Type, funcEnv)
+		if scheme, ok := env.Get(stmt.Name.Value); ok && scheme != nil {
+			if fn, ok := scheme.Type.(*typechecker.FunctionType); ok && index < len(fn.Parameters) {
+				paramType = fn.Parameters[index]
+			}
+		}
+		bc.checkAggregateType(param.Type, paramType, env, false)
 		if paramType != nil {
 			if arrType, ok := paramType.(*typechecker.ArrayType); ok {
 				if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
@@ -287,22 +294,25 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 // a scope-local owner dangles) and that escapes of longer-lived owners are
 // the sound headroom future region-indexed signatures can claim.
 func (bc *BorrowChecker) checkBorrowEscape(stmt *ast.FunctionStatement, env *typechecker.TypeEnvironment) {
-	if stmt.ReturnType == nil {
-		return
-	}
+	resultType := env.CheckedExpressionType(stmt.Body)
 	scheme, ok := env.Get(stmt.Name.Value)
-	if !ok || scheme == nil {
-		return
+	if ok && scheme != nil {
+		if fnType, ok := scheme.Type.(*typechecker.FunctionType); ok {
+			resultType = fnType.ReturnType
+		}
 	}
-	fnType, ok := scheme.Type.(*typechecker.FunctionType)
-	if !ok {
-		return
+	kind := returnedBorrowKind(resultType, make(map[typechecker.Type]bool))
+	if kind == "" && env.ContainsBorrowStorage(resultType) {
+		kind = "borrow"
 	}
-	kind := returnedBorrowKind(fnType.ReturnType, make(map[typechecker.Type]bool))
 	if kind == "" {
 		return
 	}
-	d := bc.reportBorrow(stmt.ReturnType, CodeBorrowEscape,
+	var origin ast.Node = stmt.ReturnType
+	if origin == nil {
+		origin = stmt.Name
+	}
+	d := bc.reportBorrow(origin, CodeBorrowEscape,
 		fmt.Sprintf("function %q returns a value containing a %s, which would let a borrow escape its owner's scope", stmt.Name.Value, kind))
 	d.AddNote("borrows are lexically scoped: a view or span may not outlive the function that proves its owner's lifetime")
 	d.AddHelp("return owned data, or take a caller-provided span to fill; region-indexed signatures that prove the owner outlives the call are a planned extension")
@@ -392,6 +402,7 @@ func (bc *BorrowChecker) checkIfStatement(stmt *ast.IfStatement, env *typechecke
 
 // checkAssignmentStatement handles assignments
 func (bc *BorrowChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement, env *typechecker.TypeEnvironment) {
+	bc.checkAggregateStorage(stmt.Value, env, false)
 	// Borrows are immutable bindings - cannot reassign a variable that currently holds a view/span
 	if info, exists := bc.activeBorrows[stmt.Name.Value]; exists {
 		d := bc.reportBorrow(stmt.Name, CodeBorrowReassign,
@@ -421,6 +432,7 @@ func (bc *BorrowChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignment
 	if stmt == nil || stmt.Target == nil {
 		return
 	}
+	bc.checkAggregateStorage(stmt.Value, env, true)
 	bc.checkExpression(stmt.Value, env)
 	bc.checkExpression(stmt.Target.Index, env)
 	if ident, ok := stmt.Target.Left.(*ast.Identifier); ok {
@@ -508,6 +520,7 @@ func (bc *BorrowChecker) recomputeOwnerStatesFromActiveBorrows() {
 // checkVariableDeclaration checks variable declarations for borrow creation
 func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, env *typechecker.TypeEnvironment) {
 	varName := vd.Name.Value
+	bc.checkAggregateType(vd.Name, env.CheckedDeclarationType(vd), env, false)
 
 	// Check if the value expression creates a borrow (check before we register the variable)
 	if vd.Value != nil {
@@ -573,6 +586,16 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		for _, arm := range e.Arms {
 			bc.checkExpression(arm.Body, env)
 		}
+	case *ast.RecordLiteral:
+		for _, field := range e.Fields {
+			bc.checkExpression(field, env)
+		}
+	case *ast.ArrayLiteral:
+		for _, element := range e.Elements {
+			bc.checkExpression(element, env)
+		}
+	case *ast.VariantExpression:
+		bc.checkExpression(e.Payload, env)
 	case *ast.BlockExpression:
 		// A block in expression position (most importantly a function block
 		// body): statements are checked under block scoping, so borrows
@@ -794,6 +817,7 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 	// 1. Check arguments FIRST under the pre-call state
 	// This ensures that argument validation happens before any borrow state changes
 	for i, arg := range call.Arguments {
+		bc.checkAggregateStorage(arg, env, false)
 		if i == 0 && skipDerivationSource {
 			continue
 		}

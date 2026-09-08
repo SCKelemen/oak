@@ -10,7 +10,7 @@ func TestFunctionReturningBorrowInRecordReportsEscape(t *testing.T) {
 	for _, source := range []string{
 		"Wrapped: type = struct { bytes: []u8 }\nleak: (buf: [16]u8): Wrapped { v: []u8 = buf[0:8]\nWrapped { bytes: v } }",
 		"Wrapped: type = struct { bytes: [*]u8 }\nleak: (buf: [16]u8): Wrapped { v: [*]u8 = span(&buf)\nWrapped { bytes: v } }",
-		"Inner: type = struct { bytes: []u8 }\nOuter: type = struct { inner: Inner }\nleak: (buf: [16]u8): Outer { v: []u8 = buf[0:8]\ni: Inner = Inner { bytes: v }\nOuter { inner: i } }",
+		"Inner: type = struct { bytes: []u8 }\nOuter: type = struct { inner: Inner }\nleak: (buf: [16]u8): Outer { v: []u8 = buf[0:8]\nOuter { inner: Inner { bytes: v } } }",
 	} {
 		bc, program, tc := setupBorrowCheckerForTest(source)
 		if program == nil {

@@ -1,7 +1,7 @@
 name: Standard library
 on:
   push:
-    branches: [specification, codex/stdlib-foundation, codex/stdlib-bits-endian, codex/stdlib-buffers, codex/stdlib-collections, codex/stdlib-splice, codex/stdlib-heap, codex/stdlib-serenity, codex/stdlib-strings]
+    branches: [specification, codex/stdlib-foundation, codex/stdlib-bits-endian, codex/stdlib-buffers, codex/stdlib-collections, codex/stdlib-splice, codex/stdlib-heap, codex/stdlib-serenity, codex/stdlib-strings, codex/borrow-storage]
   pull_request:
     branches: [specification]
 jobs:
@@ -16,6 +16,8 @@ jobs:
         run: |
           python3 stdlib/generate_unicode.py
           git diff --exit-code -- stdlib/unicode.oak
+      - name: Test borrow storage boundaries
+        run: go test -race ./typechecker ./borrowchecker -count=1
       - name: Test strings
         run: go test ./compiler -run 'TestE2EStdlibText' -count=1
       - name: Test deque and ID pool
@@ -25,4 +27,5 @@ jobs:
       - name: Check formatting
         if: always()
         run: |
-          gofmt -d compiler/stdlib.go compiler/text_literals.go compiler/e2e_stdlib_text_test.go codegen/slices.go compiler/fluent.go compiler/syntax_walk.go compiler/e2e_stdlib_test.go compiler/e2e_stdlib_bits_endian_test.go compiler/e2e_stdlib_buffer_test.go compiler/e2e_stdlib_collections_test.go compiler/e2e_stdlib_splice_test.go compiler/e2e_stdlib_heap_test.go compiler/e2e_stdlib_deque_id_test.go compiler/compilation.go stdlib/source.go codegen/codegen.go typechecker/typechecker.go typechecker/mono.go token/token.go lowering/lowering.go
+          gofmt -d typechecker/borrow_storage.go typechecker/borrow_storage_test.go borrowchecker/borrowchecker.go borrowchecker/escape.go borrowchecker/aggregate_escape_test.go borrowchecker/aggregate_storage.go borrowchecker/aggregate_storage_test.go compiler/stdlib.go compiler/text_literals.go compiler/e2e_stdlib_text_test.go codegen/slices.go compiler/fluent.go compiler/syntax_walk.go compiler/e2e_stdlib_test.go compiler/e2e_stdlib_bits_endian_test.go compiler/e2e_stdlib_buffer_test.go compiler/e2e_stdlib_collections_test.go compiler/e2e_stdlib_splice_test.go compiler/e2e_stdlib_heap_test.go compiler/e2e_stdlib_deque_id_test.go compiler/compilation.go stdlib/source.go codegen/codegen.go typechecker/typechecker.go typechecker/mono.go token/token.go lowering/lowering.go
+
