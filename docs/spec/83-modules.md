@@ -1,9 +1,10 @@
 # Modules and Packages
 
-Status: normative; implemented for user packages (`compiler/modules.go`,
+Status: normative; implemented (`compiler/modules.go`, `compiler/derive.go`,
 `modules/`), Lean model and proofs in `spec/lean/Oak/Modules.lean`. The
 bootstrap standard library keeps its prelude-style `import(std)` /
-`import(testing)` splice (section 9) until it is re-cut into packages.
+`import(testing)` splice and is importable as qualified views (section 9)
+until it is re-cut into packages.
 
 Oak takes the **unit structure of Go** — a package is a directory, a module is
 a versioned tree of packages with one manifest, imports are explicit and
@@ -59,7 +60,10 @@ package geometry
 
 Rules (diagnostic `OAK-M0103`):
 
-- every file of the directory carries the same package name;
+- every file of the directory carries the same package name; a file of the
+  **root** package (the directory being built) may omit the clause and is then
+  `package main` — the single-file rule — while files of imported packages
+  must declare it;
 - the name is a lowercase ASCII identifier without `__`;
 - an importable package is named after the last segment of its import path
   (`example.com/hello/geometry` is `package geometry`) — there is no Go-style
@@ -134,9 +138,11 @@ geo.Point { x: 1, y: 2 }        // typed record literal (transparent types only)
 s: geo.Shape = .Line(3)         // variant construction with expected type
 ```
 
-`alias.Type.Variant(payload)` in call position is not yet lowered (a recorded
-gap shared with unqualified `Type.Variant(payload)`); bare `.Variant` with an
-expected type is the working spelling.
+`alias.Type.Variant(payload)` and `alias.Type.Variant` construct variants of
+an imported ADT exactly like the unqualified `Type.Variant(payload)` form:
+after elaboration a pass rewrites both into variant expressions
+(`compiler/variants.go`), so the checker, lowering, and backend see one
+construction form.
 
 ## 4. Modules
 
@@ -188,6 +194,29 @@ root manifest's `replace` directive, else in the module cache directory
 `<cache>/<path>@v<version>/`. Both must contain the module's `oak.mod`. No
 other source exists in v1; fetching into the cache is external tooling
 (`OAK-M0112` when absent).
+
+### 4.4 Fetching pinned dependencies
+
+A `require` line may pin the archive that provides the module:
+
+```text
+require example.com/dep 1.2.0 https://example.com/dep-1.2.0.tar.gz sha256:<64 hex digits>
+```
+
+`oak mod download [dir]` populates the module cache from such lines. The
+compiler never fetches. The tool downloads over HTTPS only (redirects may not
+leave HTTPS; locations carry no credentials), bounds the archive at 256 MiB,
+computes the SHA-256 of the whole archive and compares it with the pinned
+digest **before** extracting anything, extracts the gzip-compressed tar into
+a staging directory admitting only regular files and directories (no
+symlinks, hard links, or devices; no absolute or `..` paths; at most 100 000
+members and 1 GiB decompressed), verifies that the extracted `oak.mod`
+declares the required module path, and only then renames the staging
+directory into `<cache>/<path>@v<version>`. A single top-level wrapper
+directory carrying the manifest is stripped. Identity is the module path, the
+URL is a location hint, the digest is the trust anchor: the manifests alone
+reproduce a build, as with Zig's pinned dependencies, without Go's proxy
+protocol or version-control execution.
 
 An import path is mapped to a directory by the longest module path that is a
 segment-wise prefix of it. The resulting directory must exist, contain at least
@@ -267,11 +296,20 @@ k: h.Key = h.key(2)
 ```
 
 Sealing never widens: whatever resolves through a sealed import resolves to
-the same declaration through the unsealed import (`lookup_sealed_narrows`). In
-v1 a type member is satisfied by any exported type and is transparent unless
-the package declared it `pub(opaque)`; generating a fresh abstract type per
-sealed binding (ML's opaque ascription) is a recorded direction (section 11).
-Signature types are monomorphic in v1.
+the same declaration through the unsealed import (`lookup_sealed_narrows`).
+
+A signature may be written inline, declared in the importing package
+(`Hasher: type = { Key: type, hash: (Key) -> u64 }`), or exported by another
+package and named as `alias.Hasher`. Signature shapes are compile-time
+interfaces: they are never emitted as runtime records.
+
+**Sealed opacity.** A `Name: type` member makes the package's type abstract
+*for the importing package*: even when the package exported it transparently,
+constructing, reading fields of, or matching `h.Name` values in the importer
+is rejected (`OAK-M0110`) — ML's opaque ascription as a per-package rule
+rather than a fresh type. Alias types (`Key: type = u64`) remain structurally
+transparent; `with type` sharing constraints are a recorded direction
+(section 11). Signature types are monomorphic in v1.
 
 ### 6.4 What privacy means
 
@@ -280,6 +318,47 @@ translation unit, so a private function is present in the emitted C; it is
 unreachable from Oak source outside its package because the elaborator refuses
 to resolve it, and unspellable because its internal name is reserved (section
 7). Privacy is encapsulation for correctness and evolution, not secrecy.
+
+### 6.5 Methods stay with their type
+
+A method (`fn (r: T) m()`) may be declared only in the package that declares
+its receiver type (`OAK-M0114`). Oak's interfaces are implicit, so there are
+no instances to collide, but two packages attaching same-named methods to one
+imported type would make method lookup depend on which package is compiled —
+Go's rule, adopted for the same reason.
+
+### 6.6 Derived declarations
+
+A declaration-form function whose definition is `derive.<kind>` receives a
+compiler-synthesized body computed from its parameter type's declaration, the
+pattern of `c.extern("symbol")` (a typed interface whose body the compiler
+supplies):
+
+```oak
+Point: type = struct { x: i32, y: i32 }
+point_eq: (a: Point, b: Point): Bool = derive.equal
+point_hash: (v: Point): u64 = derive.hash
+```
+
+- `derive.equal` requires `(a: T, b: T): Bool` and compares field by field
+  (records) or variant by variant with payloads (ADTs).
+- `derive.hash` requires `(v: T): u64` and mixes fields, or the variant index
+  and payload, with shift-xor steps that never overflow-trap.
+- Members may be fixed-width integers, `Bool`, and declared records or ADTs,
+  recursively (helpers are generated once per type); anything else is
+  rejected (`OAK-M0203`). Generic types are not derivable over (`OAK-M0203`).
+- Derivation is admitted only in the package declaring the type
+  (`OAK-M0204`): it reads the definition, so `pub(opaque)` types derive their
+  operations at home and export them as ordinary `pub` functions.
+- Unknown kinds (`OAK-M0201`) and mismatched signatures (`OAK-M0202`) are
+  rejected. `derive` is a reserved qualifier, never an import alias.
+
+The body is generated as Oak source from the declaration's field order and
+variant list — one fact, one generator — parsed by the ordinary parser, and
+checked by every gate like handwritten code. This is the same mechanism as
+tag-driven codec derivation (`71-codecs.md`), generalized: Haskell's
+`deriving` and Rust's `#[derive]` without a new syntax axis. Generated helper
+names carry the reserved `__`, so they cannot collide with user identifiers.
 
 ## 7. Elaboration and naming
 
@@ -340,6 +419,11 @@ Family `M` (`15-diagnostics.md`). Structural tests assert each code.
 | `OAK-M0111` | `import(...)` in an illegal position; imports after declarations; bootstrap import bound or sealed |
 | `OAK-M0112` | manifest error: malformed `oak.mod`, dependency module not locatable, module path disagreement |
 | `OAK-M0113` | sealed import: member type differs from the signature |
+| `OAK-M0114` | method declared outside the package of its receiver type |
+| `OAK-M0201` | `derive.<kind>`: unknown kind |
+| `OAK-M0202` | derived declaration: signature does not match the kind |
+| `OAK-M0203` | derivation over an unsupported type or member |
+| `OAK-M0204` | derivation outside the type's declaring package |
 
 Module diagnostics carry the file path in their title; multi-file source
 mapping of every downstream diagnostic remains the recorded debt of
@@ -354,11 +438,17 @@ They cannot be bound or sealed (`OAK-M0111`). Their names are not `pub` and
 are not renamed; a user declaration colliding with a bootstrap export is
 rejected as before.
 
-Re-cutting the standard library into importable packages (`strings`,
-`encoding/utf8`, ...) under the rules of this chapter — with `pub` exports and
-qualified access — is the recorded migration; `docs/notes/standard-library-design.md`
-section 4 sketches the module graph. Until then a non-bootstrap standard
-library path is unresolvable (`OAK-M0102`).
+**Standard library package views.** The library's files are importable as
+qualified packages today: `import("strings")`, `import("unicode")`,
+`import("json")`, `import("filters")`, `import("hash_table")`,
+`import("bitset_algebra")`, `import("causal_frontier")`. A view exposes the
+declarations of its file under the qualifier (`strings.ascii_upper(b)`),
+resolved to their flat prelude names; importing a view loads the bootstrap
+prelude. Views export every declaration of their file until the library
+carries `pub` marks. Re-cutting the library into real packages with `pub`
+exports and qualified cross-references is the recorded migration;
+`docs/notes/standard-library-design.md` section 4 sketches the module graph.
+Any other standard library path is unresolvable (`OAK-M0102`).
 
 ## 10. Interaction with other chapters
 
@@ -366,10 +456,10 @@ library path is unresolvable (`OAK-M0102`).
   exactly its `pub` declarations; `Compilation.APISnapshot` projects only
   those. `pub(opaque)` types contribute their semantic identity but no ABI.
   `oak-api` accepts a package directory as well as a single file.
-- **Testing (`110-testing.md`).** `oak test` still concatenates the files of
-  one directory into a bootstrap package; routing the runner through the
-  package loader so test packages can import other packages is a recorded next
-  step. Trust-by-import for the testing reporter is unaffected: the reporter
+- **Testing (`110-testing.md`).** `oak test` compiles each test directory
+  through the package loader with `*_test.oak` files included, so test
+  packages import other packages of their module and diagnostics name real
+  files. Trust-by-import for the testing reporter is unaffected: the reporter
   declarations still enter only through `import(testing)`.
 - **FFI/SIMD (`92-ffi.md`, `93-simd.md`).** `c`, `arm64`, and `simd` remain
   compiler-known libraries, not packages; an import alias may not reuse their
@@ -382,19 +472,14 @@ library path is unresolvable (`OAK-M0102`).
 - **Generic packages / functors**: `package ring[T, N: u32]` instantiated at
   import; today parameterized code is written with generic declarations inside
   ordinary packages.
-- **Opaque ascription**: a sealed import's `Name: type` member becoming a
-  fresh abstract type per binding, and `with type` sharing constraints.
-- **Named signatures**: `Hasher: type = { ... }` declarations reusable across
-  sealed imports (blocked on function types in record-literal expressions).
+- **Opaque ascription as fresh types** and `with type` sharing constraints
+  (sealed opacity is a per-package rule today, section 6.3).
 - **Selective and unqualified imports**, **nested modules**.
-- **Package-qualified variant construction in call position**
-  (`geo.Shape.Line(3)`), shared with the unqualified gap.
-- **Codegen type inference for `x := call()` returning a record**: annotate
-  the binding today; a pre-existing backend limitation the module tests expose.
-- **Standard library packages** (section 9), **`oak test` through the loader**
-  (section 10), **source-mapped multi-file diagnostics**, **network fetch and
-  a lock file** (the manifests alone already make selection reproducible),
-  **evaluator support** (the interpreter still ignores imports).
+- **Standard library as real packages** (views today, section 9),
+  **source-mapped multi-file diagnostics**, **a lock file** (the manifests
+  alone already make selection reproducible), **evaluator support** (the
+  interpreter still ignores imports), **more derivable operations**
+  (ordering, formatting) and derivation over generic instantiations.
 
 ## 12. Required laws
 

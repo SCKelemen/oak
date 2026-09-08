@@ -48,6 +48,15 @@ func (tc *TypeChecker) SetModuleContext(opaque map[string]string, packages []str
 	}
 }
 
+// SetSealedOpaque records, per importing package (the root spelled ""),
+// the types that a sealed import's `Name: type` member made abstract for
+// that package: projections are rejected there even though the declaring
+// package exported the type transparently (docs/spec/83-modules.md
+// section 6.3).
+func (tc *TypeChecker) SetSealedOpaque(sealed map[string]map[string]bool) {
+	tc.sealedOpaque = sealed
+}
+
 // packageOf reads the package that owns a token. Tokens of imported
 // packages are stamped with their package path (optionally followed by
 // `|<instantiation>` for monomorphized clones); everything else belongs to
@@ -81,8 +90,14 @@ func (tc *TypeChecker) opaqueOwner(typeName string) (string, bool) {
 // variant naming, matching) of typeName from the code that owns tok exactly
 // when modules.ProjectionAllowed does. It returns false after reporting.
 func (tc *TypeChecker) checkOpaqueProjection(tok token.Token, typeName string, node ast.Node, action string) bool {
-	if len(tc.opaqueTypes) == 0 {
+	if len(tc.opaqueTypes) == 0 && len(tc.sealedOpaque) == 0 {
 		return true
+	}
+	if users, sealed := tc.sealedOpaque[typeName]; sealed && users[tc.packageOf(tok)] {
+		d := tc.addTypeDiagnostic(node, CodeOpaqueProjection,
+			fmt.Sprintf("cannot %s type %s: this package sealed it as an abstract type member", action, modules.DemangleText(typeName)))
+		d.AddNote("a sealed import's `Name: type` member hides the definition from the importing package")
+		return false
 	}
 	owner, opaque := tc.opaqueOwner(typeName)
 	if !opaque {

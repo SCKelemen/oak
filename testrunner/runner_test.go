@@ -320,3 +320,21 @@ TestEncode: (): () { test_check(encode(u32(7)) == u32(7), u32(1)) }
 		t.Fatalf("testing import reserved a production name: %d %+v %s", code, results, stderr)
 	}
 }
+
+// A test package inside a module imports a sibling package through the
+// module loader (docs/spec/83-modules.md section 10).
+func TestRunnerCompilesTestPackageThroughModuleLoader(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"oak.mod":            "module example.com/app\n",
+		"math/math.oak":      "package math\n\npub square: (v: u32): u32 = v * v\n",
+		"calc/calc.oak":      "package calc\n\nimport(\"example.com/app/math\")\n\npub area: (side: u32): u32 = math.square(side)\n",
+		"calc/calc_test.oak": "package calc\n\nimport(testing)\n\nTestArea: (): () {\n  test_check(area(6) == 36, 1)\n}\n",
+	})
+	code, results, stderr := runCLI(t, filepath.Join(dir, "calc"))
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	if len(results) != 1 || results[0].Status != "pass" {
+		t.Fatalf("results = %+v", results)
+	}
+}

@@ -497,6 +497,7 @@ type TypeChecker struct {
 	// name and the loaded package paths.
 	opaqueTypes             map[string]string
 	packagePaths            map[string]bool
+	sealedOpaque            map[string]map[string]bool
 	adtPayloadTypes         map[string]map[string]Type
 	monomorphicTransactions [][]Substitution
 	diagnostics             *diagnostic.DiagnosticCollector

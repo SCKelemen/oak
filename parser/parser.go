@@ -902,6 +902,45 @@ func (p *Parser) parseBoolean() ast.Expression {
 	return &ast.Boolean{Token: p.currentToken, Value: p.currentTokenIs(token.TRUE)}
 }
 
+// functionTypeAhead reports whether the parenthesized group at currentToken
+// is followed by `->`, i.e. spells a function type `(T1, T2) -> R`.
+func (p *Parser) functionTypeAhead() bool {
+	cursor, ok := p.source.(*token.Cursor)
+	if !ok {
+		return false
+	}
+	depth := 1
+	next := func(i int) token.Token {
+		if i == 0 {
+			return p.peekToken
+		}
+		return cursor.Peek(i - 1)
+	}
+	const lookaheadLimit = 4096
+	for i := 0; i < lookaheadLimit; i++ {
+		tok := next(i)
+		switch tok.TokenKind {
+		case token.LPAREN:
+			depth++
+		case token.RPAREN:
+			depth--
+			if depth == 0 {
+				for rest := i + 1; rest < i+16; rest++ {
+					after := next(rest)
+					if after.TokenKind == token.TRIVIA || after.TokenKind == token.COMMENT {
+						continue
+					}
+					return after.TokenKind == token.ARROW
+				}
+				return false
+			}
+		case token.EOF:
+			return false
+		}
+	}
+	return false
+}
+
 // qualifiedTypeReceiver reports whether leftExp is `pkg.Type` immediately
 // followed (same line) by `{`: a package-qualified typed record literal
 // (docs/spec/83-modules.md section 3.4). The same-line rule keeps a field
@@ -2414,7 +2453,15 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 
 		// Parse field value
 		p.nextToken() // Advance past colon to the value
-		fieldValue := p.parseExpression(LOWEST)
+		var fieldValue ast.Expression
+		if p.currentTokenIs(token.LPAREN) && p.functionTypeAhead() {
+			// A function-typed member of a signature shape declared as
+			// `Name: type = { hash: (Key) -> u64 }` (docs/spec/83-modules.md
+			// section 6.3): the group is a type, not a value.
+			fieldValue = p.parseTypeExpression()
+		} else {
+			fieldValue = p.parseExpression(LOWEST)
+		}
 		if fieldValue == nil {
 			return nil
 		}

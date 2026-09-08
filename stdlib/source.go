@@ -39,3 +39,17 @@ var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "
 //
 //go:embed testing.oak
 var TestingSource string
+
+// Packages are the standard library files importable as qualified package
+// views (docs/spec/83-modules.md section 9): `import("strings")` exposes the
+// declarations of strings.oak as `strings.member`. The views share the flat
+// bootstrap prelude, which the loader splices in alongside them.
+var Packages = map[string]string{
+	"strings":         stringsSource,
+	"unicode":         unicodeSource,
+	"json":            jsonSource,
+	"filters":         filtersSource,
+	"hash_table":      hashTableSource,
+	"bitset_algebra":  bitsetAlgebraSource,
+	"causal_frontier": causalFrontierSource,
+}

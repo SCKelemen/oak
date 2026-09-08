@@ -223,6 +223,15 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := loadStandardLibrary(tree); err != nil {
 			return nil, err
 		}
+		// Type-qualified variant construction (compiler/variants.go) and
+		// derived declarations (compiler/derive.go) are resolved once the
+		// whole program, imports included, is in one tree.
+		if err := lowerQualifiedVariants(tree.Root); err != nil {
+			return nil, err
+		}
+		if err := lowerDerived(tree, comp); err != nil {
+			return nil, err
+		}
 		if comp.simulation {
 			if err := checkSimulation(tree.Root, comp.simulationBindings); err != nil {
 				return nil, err
@@ -239,6 +248,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		if tree.Modules != nil {
 			tc.SetModuleContext(tree.Modules.OpaqueTypes, tree.Modules.Packages)
+			tc.SetSealedOpaque(tree.Modules.SealedOpaque)
 		}
 		tc.CheckProgram(tree.Root)
 		if tree.Modules != nil {

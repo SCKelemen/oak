@@ -273,11 +273,23 @@ func TestE2EModulesPackageClauseRules(t *testing.T) {
 	})
 	expectModuleError(t, root, ".", CodePackageClause)
 
+	// An imported package must declare its clause; the root may omit it
+	// (single-file rule: package main).
+	root = writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"util/util.oak": "pub f: (): i32 = 1\n",
+		"main.oak":      "package main\n\nimport(\"example.com/hello/util\")\n\nmain: (): i32 = util.f()\n",
+	})
+	expectModuleError(t, root, ".", CodePackageClause)
+
 	root = writeModule(t, map[string]string{
 		"oak.mod":  helloManifest,
 		"main.oak": "main: (): i32 = 42\n",
 	})
-	expectModuleError(t, root, ".", CodePackageClause)
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("clause-less root: exit=(%d,%v)", code, abnormal)
+	}
 }
 
 func TestE2EModulesImportPathAndResolution(t *testing.T) {
@@ -293,9 +305,16 @@ func TestE2EModulesImportPathAndResolution(t *testing.T) {
 	})
 	expectModuleError(t, root, ".", CodeImportUnresolvable)
 
+	// Standard library views resolve their file's declarations; an
+	// unknown member is a member error, an unknown library an import error.
 	root = writeModule(t, map[string]string{
 		"oak.mod":  helloManifest,
 		"main.oak": "package main\n\nimport(\"strings\")\n\nmain: (): i32 = strings.f()\n",
+	})
+	expectModuleError(t, root, ".", CodeNoSuchMember)
+	root = writeModule(t, map[string]string{
+		"oak.mod":  helloManifest,
+		"main.oak": "package main\n\nimport(\"encoding/utf8\")\n\nmain: (): i32 = utf8.f()\n",
 	})
 	expectModuleError(t, root, ".", CodeImportUnresolvable)
 
@@ -495,5 +514,176 @@ func TestE2EModulesExampleDirectory(t *testing.T) {
 	code, abnormal := buildPackageAndRun(t, New().WithPackageDir("../examples/modules"))
 	if abnormal || code != 42 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
+// Standard library package views: qualified access to a bootstrap file.
+func TestE2EModulesStdlibView(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"main.oak": `package main
+
+import("strings")
+
+main: (): i32 = {
+  upper := strings.ascii_upper(u8(97))
+  lower := strings.ascii_lower(u8(65))
+  upper == u8(65) && lower == u8(97) ? 42 | 1
+}
+`,
+	})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
+// Type-qualified variant construction in call position, across packages and
+// within one; and untyped locals initialized by record-returning calls.
+func TestE2EModulesQualifiedVariantsAndInference(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"geometry/shape.oak": `package geometry
+
+pub Shape: type = Dot | Line: i32
+pub(opaque) Point: type = struct { x: i32, y: i32 }
+pub make: (x: i32, y: i32): Point = Point { x: x, y: y }
+pub sum: (p: Point): i32 = p.x + p.y
+pub length: (s: Shape): i32 = s ? .Dot => 0 | .Line(n) => n
+`,
+		"main.oak": `package main
+
+geo := import("example.com/hello/geometry")
+
+Local: type = A | B: i32
+
+pick: (v: Local): i32 = v ? .A => 1 | .B(n) => n
+
+main: (): i32 = {
+  p := geo.make(20, 15)
+  line := geo.Shape.Line(4)
+  dot := geo.Shape.Dot
+  geo.sum(p) + geo.length(line) + geo.length(dot) + pick(Local.B(2)) + pick(Local.A)
+}
+`,
+	})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
+// Named signatures: a shape declared in the root package and one exported by
+// another package both seal an import; a sealed `Name: type` member is
+// opaque for the importing package even though the package exported it
+// transparently.
+func TestE2EModulesNamedSignatureAndSealedOpacity(t *testing.T) {
+	files := map[string]string{
+		"oak.mod": helloManifest,
+		"fnv/fnv.oak": `package fnv
+
+pub Key: type = struct { bits: u64 }
+pub key: (v: u64): Key = Key { bits: v }
+pub hash: (k: Key): u64 = k.bits * 3
+`,
+		"hashing/hashing.oak": `package hashing
+
+pub Hasher: type = { Key: type, key: (u64) -> Key, hash: (Key) -> u64 }
+`,
+		"main.oak": `package main
+
+import("example.com/hello/hashing")
+h: hashing.Hasher = import("example.com/hello/fnv")
+l: Local = import("example.com/hello/fnv")
+
+Local: type = { Key: type, key: (u64) -> Key }
+
+main: (): i32 = {
+  k: h.Key = h.key(14)
+  m: l.Key = l.key(1)
+  h.hash(k) == 42 ? 42 | 1
+}
+`,
+	}
+	root := writeModule(t, files)
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+
+	// Key is transparent in fnv but sealed abstract here: no field access.
+	files["main.oak"] = `package main
+
+import("example.com/hello/hashing")
+
+h: hashing.Hasher = import("example.com/hello/fnv")
+
+main: (): i32 = {
+  k: h.Key = h.key(14)
+  k.bits == 14 ? 42 | 1
+}
+`
+	root = writeModule(t, files)
+	expectModuleError(t, root, ".", "OAK-M0110")
+}
+
+// Methods are declared with their receiver type.
+func TestE2EModulesMethodOrphanRejected(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"util/util.oak": "package util\n\npub Box: type = struct { v: i32 }\npub make: (v: i32): Box = Box { v: v }\n",
+		"main.oak":      "package main\n\nimport(\"example.com/hello/util\")\n\nfn (b: util.Box) twice(): i32 = 2\n\nmain: (): i32 = util.make(1).twice()\n",
+	})
+	expectModuleError(t, root, ".", CodeMethodOrphan)
+}
+
+// Derived equality and hashing over records (nested) and ADTs, executed.
+func TestE2EModulesDeriveEqualAndHash(t *testing.T) {
+	src := `package main
+
+Inner: type = struct { a: u8, flag: Bool }
+Outer: type = struct { id: u32, inner: Inner }
+Kind: type = Plain | Tagged: u16
+
+outer_eq: (a: Outer, b: Outer): Bool = derive.equal
+outer_hash: (v: Outer): u64 = derive.hash
+kind_eq: (a: Kind, b: Kind): Bool = derive.equal
+kind_hash: (v: Kind): u64 = derive.hash
+
+main: (): i32 = {
+  x := Outer { id: 7, inner: Inner { a: 1, flag: true } }
+  y := Outer { id: 7, inner: Inner { a: 1, flag: true } }
+  z := Outer { id: 7, inner: Inner { a: 2, flag: true } }
+  w := Outer { id: 7, inner: Inner { a: 1, flag: false } }
+  same := outer_eq(x, y) && !outer_eq(x, z) && !outer_eq(x, w)
+  kinds := kind_eq(Kind.Plain, Kind.Plain) && kind_eq(Kind.Tagged(3), Kind.Tagged(3)) && !kind_eq(Kind.Plain, Kind.Tagged(1)) && !kind_eq(Kind.Tagged(1), Kind.Tagged(2))
+  hashes := outer_hash(x) == outer_hash(y) && outer_hash(x) != outer_hash(z) && outer_hash(x) != outer_hash(w) && kind_hash(Kind.Plain) != kind_hash(Kind.Tagged(1))
+  same && kinds && hashes ? 42 | 1
+}
+`
+	code, abnormal := buildAndRun(t, "derive", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
+func TestE2EModulesDeriveRules(t *testing.T) {
+	// Orphan: deriving for another package's type.
+	root := writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"util/util.oak": "package util\n\npub Box: type = struct { v: i32 }\n",
+		"main.oak":      "package main\n\nimport(\"example.com/hello/util\")\n\nbox_eq: (a: util.Box, b: util.Box): Bool = derive.equal\n\nmain: (): i32 = 42\n",
+	})
+	expectModuleError(t, root, ".", CodeDeriveOrphan)
+
+	for name, src := range map[string]string{
+		CodeDeriveUnknown:     "P: type = struct { v: i32 }\np_show: (v: P): u64 = derive.show\nmain: (): i32 = 42\n",
+		CodeDeriveSignature:   "P: type = struct { v: i32 }\np_eq: (a: P, b: u32): Bool = derive.equal\nmain: (): i32 = 42\n",
+		CodeDeriveUnsupported: "P: type = struct { v: []u8 }\np_hash: (v: P): u64 = derive.hash\nmain: (): i32 = 42\n",
+	} {
+		_, err := New().WithSource("derive.oak", src).EmitC().Get()
+		if err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("%s: got %v", name, err)
+		}
 	}
 }
