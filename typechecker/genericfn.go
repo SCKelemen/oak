@@ -120,12 +120,27 @@ func (tc *TypeChecker) resolveGenericInvocation(expr *ast.InvocationExpression) 
 		paramSet[tp.Name.Value] = true
 	}
 	bindings := make(map[string]Type)
+	// First infer from ordinary arguments. A field accessor has no concrete
+	// input type on its own, so it is resolved in the second pass after the
+	// value/container arguments have established the record type.
 	for i, param := range template.Parameters {
+		if _, accessor := expr.Arguments[i].(*ast.FieldAccessorExpression); accessor {
+			continue
+		}
 		argType := tc.checkExpression(expr.Arguments[i])
 		if argType == nil {
 			return nil, true
 		}
 		if !tc.bindTypeParams(param.Type, argType, paramSet, bindings, expr, i+1) {
+			return nil, true
+		}
+	}
+	for i, param := range template.Parameters {
+		accessor, ok := expr.Arguments[i].(*ast.FieldAccessorExpression)
+		if !ok {
+			continue
+		}
+		if !tc.bindFieldAccessorTypeParams(param.Type, accessor, paramSet, bindings, expr, i+1) {
 			return nil, true
 		}
 	}
@@ -139,6 +154,43 @@ func (tc *TypeChecker) resolveGenericInvocation(expr *ast.InvocationExpression) 
 		args = append(args, bound)
 	}
 	return tc.invokeInstantiated(expr, template, args), true
+}
+
+// bindFieldAccessorTypeParams relates .field to a generic unary function
+// parameter (T) -> U. Bindings learned from other arguments resolve T to a
+// concrete record; the selected field then binds U. This makes calls such
+// as project(.name, person) independent of argument order.
+func (tc *TypeChecker) bindFieldAccessorTypeParams(paramType ast.Expression, accessor *ast.FieldAccessorExpression, paramSet map[string]bool, bindings map[string]Type, at ast.Node, argPosition int) bool {
+	fn, ok := paramType.(*ast.FunctionTypeExpression)
+	if !ok || len(fn.Parameters) != 1 || fn.Return == nil {
+		tc.addError(at, "argument %d: field accessor .%s requires a unary function parameter", argPosition, accessor.Field.Value)
+		return false
+	}
+	spellings := make(map[string]ast.Expression, len(bindings))
+	for name, bound := range bindings {
+		spelling, ok := ArgumentSpelling(bound)
+		if !ok {
+			tc.addError(at, "argument %d: cannot specialize field accessor .%s for %s", argPosition, accessor.Field.Value, bound)
+			return false
+		}
+		spellings[name] = spelling
+	}
+	inputExpr, ok := SubstituteTypeAST(fn.Parameters[0], spellings)
+	if !ok {
+		return false
+	}
+	inputType := tc.parseTypeExpression(inputExpr)
+	record, ok := inputType.(*RecordType)
+	if !ok || record.Name == "" || !record.Struct {
+		tc.addError(at, "argument %d: cannot infer a concrete record input for .%s", argPosition, accessor.Field.Value)
+		return false
+	}
+	fieldType, found := record.Fields[accessor.Field.Value]
+	if !found {
+		tc.addError(at, "argument %d: field %s not found in record type %s", argPosition, accessor.Field.Value, record)
+		return false
+	}
+	return tc.bindTypeParams(fn.Return, fieldType, paramSet, bindings, at, argPosition)
 }
 
 // bindTypeParams walks a parameter's type expression beside the concrete
@@ -167,6 +219,17 @@ func (tc *TypeChecker) bindTypeParams(paramType ast.Expression, argType Type, pa
 			return tc.bindTypeParams(t.Left, arr.ElementType, paramSet, bindings, at, argPosition)
 		}
 		return true
+	case *ast.FunctionTypeExpression:
+		fn, ok := argType.(*FunctionType)
+		if !ok || len(t.Parameters) != len(fn.Parameters) {
+			return true
+		}
+		for i := range t.Parameters {
+			if !tc.bindTypeParams(t.Parameters[i], fn.Parameters[i], paramSet, bindings, at, argPosition) {
+				return false
+			}
+		}
+		return tc.bindTypeParams(t.Return, fn.ReturnType, paramSet, bindings, at, argPosition)
 	}
 	return true
 }
@@ -174,6 +237,9 @@ func (tc *TypeChecker) bindTypeParams(paramType ast.Expression, argType Type, pa
 // invokeInstantiated monomorphizes the template for the given arguments,
 // rewrites the call site to the mangled name, and returns the call's type.
 func (tc *TypeChecker) invokeInstantiated(expr *ast.InvocationExpression, template *ast.FunctionStatement, args []Type) Type {
+	if !tc.validateTemplateRowArguments(expr, template, args) {
+		return nil
+	}
 	mangled, ok := tc.instantiateFunctionTemplate(template, args)
 	if !ok {
 		tc.addError(expr, "cannot instantiate %s: type arguments must be mangleable concrete types", template.Name.Value)
@@ -413,6 +479,13 @@ func substituteExpr(expr ast.Expression, bindings map[string]ast.Expression) (as
 		return &clone, true
 	case *ast.Boolean:
 		clone := *e
+		return &clone, true
+	case *ast.FieldAccessorExpression:
+		clone := *e
+		if e.Field != nil {
+			field := *e.Field
+			clone.Field = &field
+		}
 		return &clone, true
 	case *ast.PrefixExpression:
 		right, ok := substituteExpr(e.Right, bindings)

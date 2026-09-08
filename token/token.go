@@ -51,13 +51,14 @@ const (
 	ARROW        // ->
 	FAT_ARROW    // =>
 
-	PIPE  // |
-	AMP   // &
-	BANG  // !
-	QMARK // ?
-	CARET // ^ (infix xor, prefix complement)
-	SHL   // <<
-	SHR   // >>
+	PIPE         // |
+	PIPE_FORWARD // |>
+	AMP          // &
+	BANG         // !
+	QMARK        // ?
+	CARET        // ^ (infix xor, prefix complement)
+	SHL          // <<
+	SHR          // >>
 
 	// arithmeticy bits
 	NEG // -
@@ -118,13 +119,14 @@ var tokens = [...]string{
 	ARROW:        "->",
 	FAT_ARROW:    "=>",
 
-	PIPE:  "|",
-	AMP:   "&",
-	CARET: "^",
-	SHL:   "<<",
-	SHR:   ">>",
-	BANG:  "!",
-	QMARK: "?",
+	PIPE:         "|",
+	PIPE_FORWARD: "|>",
+	AMP:          "&",
+	CARET:        "^",
+	SHL:          "<<",
+	SHR:          ">>",
+	BANG:         "!",
+	QMARK:        "?",
 
 	NEG: "-",
 	SUM: "+",

@@ -235,6 +235,9 @@ type RecordType struct {
 	// it); named semantic records remain structural shapes any struct with
 	// those fields satisfies, whatever its field order.
 	Struct bool
+	// Open marks { r | ... }; Row is diagnostic metadata only.
+	Open bool
+	Row  string
 }
 
 // DisplayName is the nominal name when declared, else the structural shape.
@@ -302,6 +305,9 @@ func (t *RecordType) Equals(other Type) bool {
 	// they are shapes, satisfied by any record with those fields in any
 	// order, including either ordered struct over them.
 	if otherRecord, ok := other.(*RecordType); ok {
+		if t.Open != otherRecord.Open {
+			return false
+		}
 		if t.Name != "" && otherRecord.Name != "" && t.Struct && otherRecord.Struct {
 			return t.Name == otherRecord.Name
 		}
@@ -434,6 +440,15 @@ func (t *IntersectionType) Equals(other Type) bool {
 	return false
 }
 
+// FieldAccessorType is the zero-storage callable denoted by .field.
+type FieldAccessorType struct{ Field string }
+
+func (t *FieldAccessorType) String() string { return "." + t.Field }
+func (t *FieldAccessorType) Equals(other Type) bool {
+	o, ok := other.(*FieldAccessorType)
+	return ok && t.Field == o.Field
+}
+
 // FunctionType represents a function type
 type FunctionType struct {
 	Parameters []Type
@@ -508,6 +523,12 @@ type TypeChecker struct {
 	functionTemplates          map[string]*ast.FunctionStatement
 	functionInstantiations     map[string]*ast.FunctionStatement
 	functionInstantiationOrder []string
+	// rowFunctionTemplates marks source functions whose extensible-record
+	// parameters are representation-polymorphic. They share the ordinary
+	// function monomorphizer after rowfn.go replaces each open parameter
+	// with a private synthetic type parameter.
+	rowFunctionTemplates            map[string]bool
+	functionTemplateRowRequirements map[string]map[string]*RecordType
 }
 
 // Env returns the type environment (for use by borrow checker)
@@ -717,8 +738,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	if len(tc.functionTemplates) > 0 {
 		kept := make([]ast.Statement, 0, len(program.Statements)+len(tc.functionInstantiationOrder))
 		for _, stmt := range program.Statements {
-			if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil && len(fn.TypeParams) > 0 {
-				if _, isTemplate := tc.functionTemplates[fn.Name.Value]; isTemplate {
+			if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil {
+				_, isTemplate := tc.functionTemplates[fn.Name.Value]
+				if isTemplate && (len(fn.TypeParams) > 0 || tc.rowFunctionTemplates[fn.Name.Value]) {
 					continue
 				}
 			}
@@ -736,6 +758,10 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 // depend on constraint machinery that runs during the full check.
 func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
 	if fn == nil || fn.Name == nil || fn.Receiver != nil || len(fn.TypeParams) > 0 {
+		return
+	}
+	if hasOpenRowParameters(fn) {
+		tc.registerRowFunctionTemplate(fn)
 		return
 	}
 	// Extern bindings are validated and registered by their own path
@@ -868,6 +894,8 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		return tc.checkInfixExpression(e, expected)
 	case *ast.FunctionLiteral:
 		return tc.checkFunctionLiteral(e)
+	case *ast.FieldAccessorExpression:
+		return tc.checkFieldAccessorExpression(e, expected)
 	case *ast.InvocationExpression:
 		return tc.checkInvocationExpression(e)
 	case *ast.MatchExpression:
@@ -892,6 +920,43 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		tc.addError(expr, "unknown expression type: %T", expr)
 		return nil
 	}
+}
+
+// checkFieldAccessorExpression specializes Elm-style .field when context
+// supplies a concrete unary function type. The source construct remains
+// structurally polymorphic; only its zero-storage backend representation is
+// tied to the concrete record layout selected at this use site.
+func (tc *TypeChecker) checkFieldAccessorExpression(expr *ast.FieldAccessorExpression, expected Type) Type {
+	if expected == nil {
+		return &FieldAccessorType{Field: expr.Field.Value}
+	}
+	fn, ok := expected.(*FunctionType)
+	if !ok || fn.Variadic || len(fn.Parameters) != 1 {
+		tc.addError(expr, "field accessor .%s requires a unary function context, got %s", expr.Field.Value, expected)
+		return nil
+	}
+	record, ok := fn.Parameters[0].(*RecordType)
+	if !ok {
+		tc.addError(expr, "field accessor .%s requires a record parameter, got %s", expr.Field.Value, fn.Parameters[0])
+		return nil
+	}
+	fieldType, found := record.Fields[expr.Field.Value]
+	if !found {
+		tc.addError(expr, "field %s not found in record type %s", expr.Field.Value, record)
+		return nil
+	}
+	if record.Name == "" || !record.Struct {
+		tc.addError(expr, "first-class field accessor .%s needs a concrete declared struct context", expr.Field.Value)
+		return nil
+	}
+	// Function-pointer ABIs are invariant: even a value-level numeric
+	// widening would give the helper a different C function type.
+	if !fieldType.Equals(fn.ReturnType) {
+		tc.addError(expr, "field accessor .%s returns %s, not %s", expr.Field.Value, fieldType, fn.ReturnType)
+		return nil
+	}
+	expr.ResolvedRecord = record.Name
+	return fn
 }
 
 // Helper functions for type checking specific expression types
@@ -1215,6 +1280,32 @@ func (tc *TypeChecker) checkSubsliceBuiltin(expr *ast.InvocationExpression) Type
 	return srcType
 }
 
+func (tc *TypeChecker) checkFieldAccessorInvocation(field string, expr *ast.InvocationExpression) Type {
+	if len(expr.Arguments) != 1 {
+		tc.addError(expr, "field accessor .%s expects exactly one record argument", field)
+		return nil
+	}
+	argType := tc.checkExpression(expr.Arguments[0])
+	if record, ok := argType.(*RecordType); ok {
+		if result, found := record.Fields[field]; found {
+			return result
+		}
+		tc.addError(expr, "field %s not found in record type %s", field, record)
+		return nil
+	}
+	if typeVar, ok := argType.(*TypeVar); ok {
+		if result, guaranteed := tc.constrainedFieldType(typeVar, field); guaranteed {
+			return result
+		}
+		tc.addError(expr, "field %s is not guaranteed by constraints on type parameter %s", field, typeVar.Name)
+		return nil
+	}
+	if argType != nil {
+		tc.addError(expr, "field accessor .%s requires a record, got %s", field, argType)
+	}
+	return nil
+}
+
 func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Capture discipline (docs/spec/60-effects-allocation.md section 10):
 	// capturing closures need explicitly justified environment storage,
@@ -1258,6 +1349,9 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 }
 
 func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
+	if accessor, ok := expr.Function.(*ast.FieldAccessorExpression); ok {
+		return tc.checkFieldAccessorInvocation(accessor.Field.Value, expr)
+	}
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
 		if atomicType, recognized := tc.checkAtomicInvocation(ident.Value, expr); recognized {
 			return atomicType
@@ -1376,6 +1470,9 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return nil
 	}
 
+	if accessor, ok := funcType.(*FieldAccessorType); ok {
+		return tc.checkFieldAccessorInvocation(accessor.Field, expr)
+	}
 	fnType, ok := funcType.(*FunctionType)
 	if !ok {
 		tc.addError(expr, "attempting to call non-function type: %s", funcType)
@@ -2355,6 +2452,10 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expec
 }
 
 func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType ...Type) Type {
+	if expr.Extension != nil {
+		tc.addError(expr, "extensible record syntax is a type constraint, not a record value")
+		return nil
+	}
 	// If this is a type-qualified literal (TypeName{ ... }), look up the type
 	if expr.TypeName != nil {
 		typeName := expr.TypeName.Value
@@ -2683,6 +2784,10 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		if stmt.Value != nil {
 			inferredType := tc.checkExpression(stmt.Value)
 			if inferredType != nil {
+				if accessor, unresolved := inferredType.(*FieldAccessorType); unresolved {
+					tc.addError(stmt.Value, "field accessor .%s needs an explicit function type or a contextual function argument", accessor.Field)
+					return
+				}
 				if ContainsAtomicStorage(inferredType) {
 					tc.addError(stmt.Value, "Atomic[T] storage cannot be inferred/copied into a value binding; declare a named Atomic[T] cell")
 					return
@@ -2700,6 +2805,19 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 // isAssignable checks if a value type can be assigned to a variable type
 // Allows widening conversions (u8 -> u16, etc.) but not narrowing or sign changes
 func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
+	// Open targets use width matching; source representation remains intact.
+	if target, ok := varType.(*RecordType); ok && target.Open {
+		if source, ok := valueType.(*RecordType); ok {
+			for name, required := range target.Fields {
+				actual, present := source.Fields[name]
+				if !present || !actual.Equals(required) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+
 	// Exact match
 	if valueType.Equals(varType) {
 		return true
@@ -2786,6 +2904,14 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			tc.checkedExterns[stmt] = true
 			tc.checkExternFunction(stmt)
 		}
+		return
+	}
+
+	// An extensible-record parameter describes a family of concrete ABIs,
+	// not one layout. Register a representation template and check each
+	// concrete call-site specialization through the ordinary safety gates.
+	if stmt.Receiver == nil && hasOpenRowParameters(stmt) {
+		tc.registerRowFunctionTemplate(stmt)
 		return
 	}
 
@@ -3653,7 +3779,11 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 			}
 			fields[name] = fieldType
 		}
-		return &RecordType{Fields: fields}
+		row := ""
+		if recordLit.Extension != nil {
+			row = recordLit.Extension.Value
+		}
+		return &RecordType{Fields: fields, Open: recordLit.Extension != nil, Row: row}
 	}
 
 	// Handle function types: fn(Type1, Type2) -> Type3
@@ -3819,7 +3949,11 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 			}
 			fields[name] = fieldType
 		}
-		return &RecordType{Fields: fields}
+		row := ""
+		if recordLit.Extension != nil {
+			row = recordLit.Extension.Value
+		}
+		return &RecordType{Fields: fields, Open: recordLit.Extension != nil, Row: row}
 	}
 
 	return nil

@@ -58,6 +58,13 @@ func (f *Function) Inspect() string {
 }
 
 // BuiltinFunction is a function signature for built-in functions
+// FieldAccessor is the runtime form of .field and captures no environment.
+type FieldAccessor struct{ Field string }
+
+func (f *FieldAccessor) Kind() ObjectKind { return FUNCTION }
+func (f *FieldAccessor) Type() ObjectType { return FUNCTION_OBJ }
+func (f *FieldAccessor) Inspect() string  { return "." + f.Field }
+
 type BuiltinFunction func(args ...Object) Object
 
 // Builtin represents a built-in function

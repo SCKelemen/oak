@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
@@ -64,6 +65,7 @@ func New(source token.Source) *Parser {
 	p.registerInfix(token.SUM, p.parseInfixExpression)
 	p.registerInfix(token.AMP, p.parseInfixExpression)   // bitwise and
 	p.registerInfix(token.PIPE, p.parseInfixExpression)  // bitwise or (arm-separator rule: parenthesize inside ? arms)
+	p.registerInfix(token.PIPE_FORWARD, p.parsePipelineExpression)
 	p.registerInfix(token.CARET, p.parseInfixExpression) // bitwise xor
 	p.registerInfix(token.SHL, p.parseInfixExpression)
 	p.registerInfix(token.SHR, p.parseInfixExpression)
@@ -417,6 +419,7 @@ func (p *Parser) parseExpression(precendece Precedence) ast.Expression {
 	if p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.SEMI) ||
 		p.currentTokenIs(token.RPAREN) || p.currentTokenIs(token.RBRACE) ||
 		p.currentTokenIs(token.RBRACK) || p.currentTokenIs(token.PIPE) ||
+		p.currentTokenIs(token.PIPE_FORWARD) ||
 		p.currentTokenIs(token.COLON) || p.currentTokenIs(token.COLON_ASSIGN) {
 		// COLON_ASSIGN (:=) can't start an expression - it's an assignment operator
 		return nil
@@ -540,6 +543,14 @@ func (p *Parser) parseDotVariantExpression() ast.Expression {
 	dotToken := p.currentToken
 	if !p.expectPeek(token.IDENT) {
 		return nil
+	}
+	name := p.currentToken.Literal
+	first, _ := firstRune(name)
+	if unicode.IsLower(first) {
+		return &ast.FieldAccessorExpression{
+			Token: dotToken,
+			Field: &ast.Identifier{Token: p.currentToken, Value: name},
+		}
 	}
 	expr := &ast.VariantExpression{Token: dotToken}
 	expr.Variant = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
@@ -984,6 +995,7 @@ const (
 	_ Precedence = iota
 	LOWEST
 	CONDITION   // ? (match binds looser than any operator: x < 2 ? a | b)
+	PIPELINE    // |>
 	LOGICAL_OR  // ||
 	LOGICAL_AND // &&
 	EQUALITY    // ==
@@ -1009,6 +1021,33 @@ func (p *Parser) parsePrefixExpression() ast.Expression {
 	p.nextToken()
 	exp.Right = p.parseExpression(PREFIX)
 	return exp
+}
+
+func firstRune(s string) (rune, int) {
+	for _, r := range s {
+		return r, len(string(r))
+	}
+	return 0, 0
+}
+
+// Pipelines lower to ordinary calls. A pre-applied right side receives the
+// piped value last: value |> f(a) becomes f(a, value).
+func (p *Parser) parsePipelineExpression(left ast.Expression) ast.Expression {
+	tok := p.currentToken
+	precedence := p.currentPrecedence()
+	p.nextToken()
+	right := p.parseExpression(precedence)
+	if right == nil {
+		return nil
+	}
+	if accessor, ok := right.(*ast.FieldAccessorExpression); ok {
+		return &ast.IndexExpression{Token: tok, Left: left, Index: accessor.Field, Dot: true}
+	}
+	if call, ok := right.(*ast.InvocationExpression); ok {
+		call.Arguments = append(call.Arguments, left)
+		return call
+	}
+	return &ast.InvocationExpression{Token: tok, Function: right, Arguments: []ast.Expression{left}}
 }
 
 func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
@@ -1044,6 +1083,7 @@ func (p *Parser) parseExpressionGroup() ast.Expression {
 
 // all of these should probably move down to the lexer/scanner
 var precedences = map[token.TokenKind]Precedence{
+	token.PIPE_FORWARD: PIPELINE,
 	token.LOR:    LOGICAL_OR,
 	token.LAND:   LOGICAL_AND,
 	token.EQL:    EQUALITY,
@@ -1673,8 +1713,13 @@ func (p *Parser) parseRecordType() ast.Expression {
 		return record
 	}
 
-	// Move to first field name
+	// Move to first field name or row variable.
 	p.nextToken() // currentToken should be IDENT, RBRACE, or COMMA (leading comma)
+	if p.currentTokenIs(token.IDENT) && p.peekTokenIs(token.PIPE) {
+		record.Extension = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		p.nextToken() // move to |
+		p.nextToken() // move to first required field
+	}
 
 	for {
 		// Skip leading comma if present (allows: { , A: u32, B: u32 })
@@ -2183,6 +2228,13 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 	// Contract: leaves currentToken ON the closing '}' (the last token of
 	// the literal), like every other prefix/infix expression parser — the
 	// Pratt loop and statement loop advance past it themselves.
+
+	// Extensible record type: { r | field: Type, ... }.
+	if p.currentTokenIs(token.IDENT) && p.peekTokenIs(token.PIPE) {
+		record.Extension = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		p.nextToken()
+		p.nextToken()
+	}
 
 	// Handle empty record: {}
 	if p.currentTokenIs(token.RBRACE) {

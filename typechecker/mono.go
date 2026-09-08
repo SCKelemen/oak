@@ -70,6 +70,21 @@ func SubstituteTypeAST(expr ast.Expression, bindings map[string]ast.Expression) 
 			return nil, false
 		}
 		return &ast.IndexExpression{Token: t.Token, Left: left, Index: index, Dot: t.Dot}, true
+	case *ast.FunctionTypeExpression:
+		out := &ast.FunctionTypeExpression{Token: t.Token}
+		for _, parameter := range t.Parameters {
+			substituted, ok := SubstituteTypeAST(parameter, bindings)
+			if !ok {
+				return nil, false
+			}
+			out.Parameters = append(out.Parameters, substituted)
+		}
+		result, ok := SubstituteTypeAST(t.Return, bindings)
+		if !ok {
+			return nil, false
+		}
+		out.Return = result
+		return out, true
 	case *ast.IntegerLiteral:
 		return t, true
 	}

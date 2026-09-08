@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -25,6 +26,9 @@ type CodeGenerator struct {
 	stringLiterals   []string                    // Track string literals to emit as static arrays
 	stringLiteralMap map[string]int              // Map string value to index
 	adtTypes         map[string]*ast.ADTType     // Map ADT name to AST definition
+	// fieldAccessors are context-specialized .field values. Each becomes a
+	// static inline C function for one concrete record layout.
+	fieldAccessors map[string]*ast.FieldAccessorExpression
 	// scrutineeCounter names hoisted match-scrutinee temporaries.
 	scrutineeCounter int
 	// globalTypes classifies top-level bindings (static globals) the same
@@ -83,6 +87,7 @@ func New(packageName string, tc *typechecker.TypeChecker) *CodeGenerator {
 		stringLiterals:   []string{},
 		stringLiteralMap: make(map[string]int),
 		adtTypes:         make(map[string]*ast.ADTType),
+		fieldAccessors:   make(map[string]*ast.FieldAccessorExpression),
 	}
 }
 
@@ -103,6 +108,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.stringLiterals = []string{}
 	cg.stringLiteralMap = make(map[string]int)
 	cg.recordLayouts = make(map[string]semir.Representation)
+	cg.fieldAccessors = make(map[string]*ast.FieldAccessorExpression)
 
 	// Extract package name from program
 	for _, stmt := range program.Statements {
@@ -172,6 +178,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// as payloads.
 	cg.emitTypesInDependencyOrder(program, tc)
 	cg.preEmitContainerTypes(program)
+	cg.emitFieldAccessorHelpers()
 
 	// Static globals come after type emission (record/ADT globals need
 	// their typedefs) and before functions.
@@ -224,6 +231,10 @@ func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 
 	collectFromExpr = func(expr ast.Expression) {
 		switch e := expr.(type) {
+		case *ast.FieldAccessorExpression:
+			if e.ResolvedRecord != "" {
+				cg.fieldAccessors[e.ResolvedRecord+"\x00"+e.Field.Value] = e
+			}
 		case *ast.StringLiteral:
 			if _, exists := cg.stringLiteralMap[e.Value]; !exists {
 				idx := len(cg.stringLiterals)
@@ -1338,6 +1349,9 @@ func (cg *CodeGenerator) emitVariadicCall(fn *ast.FunctionStatement, call *ast.I
 // decay to pointers; the explicit-cost copy semantics of 50-borrowing
 // section 8 for owned aggregates is tracked as backend debt.
 func (cg *CodeGenerator) cParameter(typeExpr ast.Expression, name string) string {
+	if fn, ok := typeExpr.(*ast.FunctionTypeExpression); ok {
+		return cg.cFunctionPointer(fn, name)
+	}
 	if indexExpr, ok := typeExpr.(*ast.IndexExpression); ok {
 		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
 			element := cg.parseTypeExpression(indexExpr.Left)
@@ -1345,6 +1359,58 @@ func (cg *CodeGenerator) cParameter(typeExpr ast.Expression, name string) string
 		}
 	}
 	return fmt.Sprintf("%s %s", cg.parseTypeExpression(typeExpr), name)
+}
+
+// cFunctionPointer renders a named C declarator for an Oak function type.
+// Field accessors use ordinary function pointers: no closure environment,
+// boxing, dispatch table, or allocation is introduced.
+func (cg *CodeGenerator) cFunctionPointer(fn *ast.FunctionTypeExpression, name string) string {
+	parameters := make([]string, 0, len(fn.Parameters))
+	for _, parameter := range fn.Parameters {
+		parameters = append(parameters, cg.parseTypeExpression(parameter))
+	}
+	if len(parameters) == 0 {
+		parameters = append(parameters, "void")
+	}
+	return fmt.Sprintf("%s (*%s)(%s)", cg.parseTypeExpression(fn.Return), name, strings.Join(parameters, ", "))
+}
+
+func (cg *CodeGenerator) fieldAccessorCName(record, field string) string {
+	return fmt.Sprintf("oak_field_%s_%s", cg.cTypeName(record), field)
+}
+
+// emitFieldAccessorHelpers materializes each context-specialized accessor
+// as a tiny typed function. Sorting keeps generated C deterministic.
+func (cg *CodeGenerator) emitFieldAccessorHelpers() {
+	keys := make([]string, 0, len(cg.fieldAccessors))
+	for key := range cg.fieldAccessors {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return
+	}
+	cg.write("/* context-specialized Elm field accessors */\n")
+	for _, key := range keys {
+		accessor := cg.fieldAccessors[key]
+		recordDecl := cg.adtTypes[accessor.ResolvedRecord]
+		record, ok := recordDefinitionShape(recordDecl)
+		if !ok {
+			cg.write("OAK_UNRESOLVED_FIELD_ACCESSOR_RECORD;\n")
+			continue
+		}
+		fieldType, found := record.Fields[accessor.Field.Value]
+		if !found {
+			cg.write("OAK_UNRESOLVED_FIELD_ACCESSOR_FIELD;\n")
+			continue
+		}
+		cg.write(fmt.Sprintf("static inline %s %s(%s value) { return value.%s; }\n",
+			cg.parseTypeExpression(fieldType),
+			cg.fieldAccessorCName(accessor.ResolvedRecord, accessor.Field.Value),
+			cg.cTypeName(accessor.ResolvedRecord),
+			accessor.Field.Value))
+	}
+	cg.write("\n")
 }
 
 // runtimeBuiltins maps Oak builtins to the C runtime helpers emitted with
@@ -1787,6 +1853,13 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(")")
 		}
 	case *ast.InvocationExpression:
+		if accessor, ok := e.Function.(*ast.FieldAccessorExpression); ok && len(e.Arguments) == 1 {
+			cg.output.WriteString("( ")
+			cg.emitExpressionFragment(e.Arguments[0], tc)
+			cg.output.WriteString(" ).")
+			cg.output.WriteString(accessor.Field.Value)
+			return
+		}
 		if cg.emitAtomicInvocation(e, tc) {
 			return
 		}
@@ -1866,6 +1939,12 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		cg.emitArrayLiteral(e, tc)
 	case *ast.RecordLiteral:
 		cg.emitRecordLiteral(e, tc)
+	case *ast.FieldAccessorExpression:
+		if e.ResolvedRecord == "" {
+			cg.output.WriteString("OAK_CONTEXTUAL_FIELD_ACCESSOR")
+		} else {
+			cg.output.WriteString(cg.fieldAccessorCName(e.ResolvedRecord, e.Field.Value))
+		}
 	case *ast.FunctionLiteral:
 		// Function literal (closure) - emit as function pointer
 		cg.emitFunctionLiteral(e, tc)
@@ -2532,6 +2611,16 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 			cg.write(fmt.Sprintf("  %s %s = 0;\n", cType, varName))
 			return
 		}
+	}
+
+	if fn, ok := stmt.Type.(*ast.FunctionTypeExpression); ok {
+		cg.write("  " + cg.cFunctionPointer(fn, varName))
+		if stmt.Value != nil {
+			cg.write(" = ")
+			cg.emitExpressionFragment(stmt.Value, tc)
+		}
+		cg.write(";\n")
+		return
 	}
 
 	// Owned arrays use C declarator syntax; value-less arrays are

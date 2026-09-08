@@ -108,7 +108,7 @@ func (sub Substitution) Apply(typ Type) Type {
 		for name, fieldType := range t.Fields {
 			newFields[name] = sub.Apply(fieldType)
 		}
-		return &RecordType{Fields: newFields, Name: t.Name, Order: t.Order, Struct: t.Struct}
+		return &RecordType{Fields: newFields, Name: t.Name, Order: t.Order, Struct: t.Struct, Open: t.Open, Row: t.Row}
 	case *FunctionType:
 		// Apply substitution to parameter and return types
 		newParams := make([]Type, len(t.Parameters))
