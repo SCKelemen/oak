@@ -41,6 +41,7 @@ jobs:
           export LEAN_PATH="$PWD/proof"
           lean -DwarningAsError=true -o proof/BoundedDecimal.olean proof/BoundedDecimal.lean 2>&1 | tee build/soundness/bounded-decimal-proof.log
           lean -DwarningAsError=true -o proof/ScannerState.olean proof/ScannerState.lean 2>&1 | tee build/soundness/scanner-proof.log
+          lean -DwarningAsError=true -o proof/PackedBuffers.olean proof/PackedBuffers.lean 2>&1 | tee build/soundness/packed-buffers-proof.log
       - name: Compare Go and Lean checker decisions
         working-directory: experiments/verification-poc
         shell: bash
@@ -93,6 +94,15 @@ jobs:
           export OAK_SCANNER_CORPUS_OUT="$PWD/build/soundness/scanner-cases.json"
           go test -count=1 -v . -run '^TestScannerOracle$|^TestSelfHostedScanner$' 2>&1 | tee build/soundness/scanner-go.log
           lean -DwarningAsError=true --run proof/ScannerStateCompare.lean "$OAK_SCANNER_CORPUS_OUT" 2>&1 | tee build/soundness/scanner-agreement.log
+      - name: Compare decoded clause and hint buffer layouts
+        working-directory: experiments/verification-poc
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LEAN_PATH="$PWD/proof"
+          export OAK_BUFFER_CORPUS_OUT="$PWD/build/soundness/buffer-cases.json"
+          go test -count=1 -v . -run '^TestSelfHostedBufferLayouts$' 2>&1 | tee build/soundness/buffers-go.log
+          lean -DwarningAsError=true --run proof/PackedBuffersCompare.lean "$OAK_BUFFER_CORPUS_OUT" 2>&1 | tee build/soundness/buffers-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
