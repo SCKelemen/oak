@@ -10,8 +10,8 @@ import (
 const (
 	// ResourceEffectNamespace owns semantic effects that change resource
 	// authority. These are SemIR facts, not source syntax.
-	ResourceEffectNamespace = "resource"
-	ResourceEffectConsume   = "consume"
+	ResourceEffectNamespace   = "resource"
+	ResourceEffectConsume     = "consume"
 	ResourceEffectReturnFresh = "return-fresh"
 )
 
