@@ -229,3 +229,47 @@ func TestE2EJsonFastBytePack(t *testing.T) {
 		}
 	}
 }
+
+func TestE2EJsonFastEncodingPrecedence(t *testing.T) {
+	var source strings.Builder
+	source.WriteString(`import(std)
+EncodingRecord: type = struct { id: u64, active: Bool, samples: [2]i32 }
+check_encoding: (src: []u8): Bool {
+ decoded: Result[EncodingRecord, JsonDecodeError] = decode[EncodingRecord, Json](src)
+ valid: Bool = is_valid_utf8(src)
+ decoded ?
+ | .Ok(value) => valid
+ | .Err(reason) => { (json_decode_error_code(reason) == u32(1)) == !valid }
+}
+main: (): i32 {
+`)
+	input := `{"id":1,"active":true,"samples":[2,3]}`
+	fmt.Fprintf(&source, "data: [%d]u8\n", len(input))
+	for i, b := range []byte(input) {
+		fmt.Fprintf(&source, "data[%d] = u8(%d)\n", i, b)
+	}
+	fmt.Fprintf(&source, `position: u32 = 0
+while position < u32(%d) {
+ original: u8 = data[position]
+ byte_value: u32 = 0
+ while byte_value < u32(256) {
+  data[position] = u8_trunc_u32(byte_value)
+  input: []u8 = view(&data)
+  assert(check_encoding(input))
+  byte_value = byte_value + u32(1)
+ }
+ data[position] = original
+ position = position + u32(1)
+}
+`, len(input))
+	for _, input := range []string{"{bad\xc0\x80", `{"id":1,"active":true,"samples":[2,3]}` + "\xed\xa0\x80", `{"\ud800":1}`, `{"\u0069d":1,"active":true,"samples":[2,3]}`} {
+		source.WriteString("true ? {\n")
+		writeTextView(&source, "input", input)
+		source.WriteString("assert(check_encoding(input))\n}\n")
+	}
+	source.WriteString("42\n}\n")
+	_, code, abnormal := buildAndRunOutput(t, "json_fast_encoding_precedence", source.String(), "-fsanitize=address,undefined")
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
