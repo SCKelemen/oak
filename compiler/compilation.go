@@ -46,9 +46,11 @@ type Options struct {
 // modified copies so callers can cheaply derive configurations without hidden
 // mutation between compiler phases.
 type Compilation struct {
-	source            SourceText
-	options           Options
-	resourceProtocols []typechecker.ResourceProtocolDeclaration
+	source             SourceText
+	options            Options
+	resourceProtocols  []typechecker.ResourceProtocolDeclaration
+	simulation         bool
+	simulationBindings []SimulationBinding
 }
 
 // SyntaxTree is a parsed Oak source file.
@@ -187,6 +189,11 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		}
 		if err := loadStandardLibrary(tree); err != nil {
 			return nil, err
+		}
+		if comp.simulation {
+			if err := checkSimulation(tree.Root, comp.simulationBindings); err != nil {
+				return nil, err
+			}
 		}
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)

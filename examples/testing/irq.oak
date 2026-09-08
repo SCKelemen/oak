@@ -1,0 +1,24 @@
+// Single-IRQ Oak pilot of SCKelemen/os core/src/virq.zig. This is an executable
+// adaptation, not a claim that these tests execute or refine the Zig EL2 core.
+Irq: type = struct {
+  enabled: Bool
+  latched: Bool
+  active: Bool
+  level: Bool
+}
+
+irq_deliverable: (irq: Irq): Bool = irq.enabled && !irq.active && (irq.latched || irq.level)
+
+irq_apply: (state: [*]Irq, action: u32): () {
+  assert(len(state) == u32(1))
+  action == u32(0) ? { state[0].enabled = true }
+  action == u32(1) ? { state[0].enabled = false }
+  action == u32(2) ? { state[0].latched = true }
+  action == u32(3) ? { state[0].level = true }
+  action == u32(4) ? { state[0].level = false }
+  action == u32(5) && irq_deliverable(state[0]) ? {
+    state[0].latched = false
+    state[0].active = true
+  }
+  action == u32(6) ? { state[0].active = false }
+}

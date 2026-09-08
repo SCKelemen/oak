@@ -8,9 +8,14 @@ import (
 
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/repl"
+	"github.com/SCKelemen/oak/testrunner"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "test" {
+		os.Exit(testrunner.Main(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	if len(os.Args) > 1 {
 		// Compile mode: oak file.oak
 		filename := os.Args[1]

@@ -104,3 +104,7 @@ explicit refinement for load-bearing compiler/runtime components
 ```
 
 The first refinement targets should be small and foundational: the type lattice, delimited parser cursor contract, borrow-state transitions, effect subsumption, exact source-span conversions, and first-class diagnostic structure.
+
+
+- [Native testing and simulation](110-testing.md): `oak test`, generated inputs,
+  shrinking, corpus/replay, libFuzzer export, and bounded virtual-time events.

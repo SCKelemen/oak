@@ -14,21 +14,36 @@ import (
 func loadStandardLibrary(tree *SyntaxTree) error {
 	var user []ast.Statement
 	imported := false
+	testingImported := false
 	for _, stmt := range tree.Root.Statements {
 		imp, ok := stmt.(*ast.ImportStatement)
 		if !ok {
 			user = append(user, stmt)
 			continue
 		}
-		if imp.Path == nil || imp.Path.Value != "std" || imp.Alias != nil {
-			return fmt.Errorf("import: only unaliased import(std) is supported by the bootstrap module loader")
+		if imp.Path == nil || imp.Alias != nil {
+			return fmt.Errorf("import: only unaliased import(std) and import(testing) are supported")
 		}
-		imported = true
+		switch imp.Path.Value {
+		case "std":
+			imported = true
+		case "testing":
+			testingImported = true
+		default:
+			return fmt.Errorf("import: unsupported module %q", imp.Path.Value)
+		}
 	}
-	if !imported {
+	if !imported && !testingImported {
 		return nil
 	}
-	lib, err := New().WithSource("std.oak", stdlib.Source).Parse().Get()
+	librarySource := ""
+	if imported {
+		librarySource = stdlib.Source
+	}
+	if testingImported {
+		librarySource += "\n" + stdlib.TestingSource
+	}
+	lib, err := New().WithSource("stdlib.oak", librarySource).Parse().Get()
 	if err != nil {
 		return fmt.Errorf("standard library: %w", err)
 	}
@@ -45,18 +60,29 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 	}); err != nil {
 		return err
 	}
-	exports := map[string]bool{"text_literal": true, "encode": true, "decode": true, "encoded_size": true, "from": true}
+	exports := map[string]bool{}
+	if imported {
+		for _, name := range []string{"text_literal", "encode", "decode", "encoded_size", "from"} {
+			exports[name] = true
+		}
+	}
 	for _, stmt := range lib.Root.Statements {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.ExternSymbol != "" && testingImported {
+			fn.Token.SemanticContext = "testing-host"
+		}
 		if name := declarationName(stmt); name != "" {
 			exports[name] = true
 		}
 	}
 	for _, stmt := range user {
 		if name := declarationName(stmt); exports[name] {
-			return fmt.Errorf("import(std): declaration %q conflicts with a standard library export", name)
+			return fmt.Errorf("import: declaration %q conflicts with a standard library export", name)
 		}
 	}
 	tree.Root.Statements = append(lib.Root.Statements, user...)
+	if !imported {
+		return nil
+	}
 	if err := lowerDerivedCodecs(tree.Root); err != nil {
 		return err
 	}

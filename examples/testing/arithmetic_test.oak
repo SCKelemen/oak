@@ -1,0 +1,32 @@
+import(testing)
+
+TestClamp: (): () {
+  test_check(clamp(u32(2), u32(5), u32(10)) == u32(5), u32(1001))
+  test_check(clamp(u32(20), u32(5), u32(10)) == u32(10), u32(1002))
+}
+
+PropertyClamp: (data: []u8): () {
+  state: [1]TestChoices
+  choices: [*]TestChoices = span(&state)
+  low: u32 = test_range(choices, data, u32(0), u32(1000))
+  high: u32 = test_range(choices, data, low, u32(2000))
+  value: u32 = test_u32(choices, data)
+  result: u32 = clamp(value, low, high)
+  test_check(result >= low && result <= high, u32(1010))
+  test_check(clamp(result, low, high) == result, u32(1011))
+  result == low ? { testing_classify(u32(1)) }
+  result == high ? { testing_classify(u32(2)) }
+}
+
+// Malformed inputs are ordinary input, not rejected by the generator.
+FuzzUtf8: (data: []u8): () {
+  valid: Bool = is_valid_utf8(data)
+  len(data) == u32(0) ? { test_check(valid, u32(1020)) }
+  ascii: Bool = true
+  i: u32 = u32(0)
+  while i < len(data) {
+    data[i] >= u8(128) ? { ascii = false }
+    i = i + u32(1)
+  }
+  ascii ? { test_check(valid, u32(1021)) }
+}

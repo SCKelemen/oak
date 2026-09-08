@@ -1,0 +1,112 @@
+import(testing)
+
+TestEdgeDuringActive: (): () {
+  storage: [1]Irq
+  state: [*]Irq = span(&storage)
+  irq_apply(state, u32(0))
+  irq_apply(state, u32(2))
+  irq_apply(state, u32(5))
+  test_check(state[0].active && !state[0].latched, u32(2001))
+  irq_apply(state, u32(2))
+  test_check(!irq_deliverable(state[0]), u32(2002))
+  irq_apply(state, u32(6))
+  test_check(irq_deliverable(state[0]), u32(2003))
+}
+
+// Independently represented reference state: enabled=1, latched=2,
+// active=4, level=8. Invalid acknowledgement is a no-op in this pilot.
+irq_model: (bits: u8, action: u32): u8 {
+  result: u8 = bits
+  action == u32(0) ? { result = bits | u8(1) }
+  action == u32(1) ? { result = bits & u8(14) }
+  action == u32(2) ? { result = bits | u8(2) }
+  action == u32(3) ? { result = bits | u8(8) }
+  action == u32(4) ? { result = bits & u8(7) }
+  action == u32(5) && (bits & u8(5)) == u8(1) && (bits & u8(10)) != u8(0) ? {
+    result = (bits & u8(13)) | u8(4)
+  }
+  action == u32(6) ? { result = bits & u8(11) }
+  result
+}
+
+PropertyIrqHistory: (data: []u8): () {
+  storage: [1]Irq
+  state: [*]Irq = span(&storage)
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  model: u8 = u8(0)
+  step: u32 = u32(0)
+  while step < u32(64) {
+    action: u32 = u32(test_byte(choices, data)) % u32(8)
+    before: Irq = state[0]
+    irq_apply(state, action)
+    model = irq_model(model, action)
+    after: Irq = state[0]
+    test_check(after.enabled == ((model & u8(1)) != u8(0)), u32(2010))
+    test_check(after.latched == ((model & u8(2)) != u8(0)), u32(2011))
+    test_check(after.active == ((model & u8(4)) != u8(0)), u32(2012))
+    test_check(after.level == ((model & u8(8)) != u8(0)), u32(2013))
+    before.latched && !after.latched ? {
+      test_check(action == u32(5) && before.enabled && !before.active && after.active, u32(2014))
+    }
+    !before.active && after.active ? {
+      test_check(irq_deliverable(before), u32(2015))
+    }
+    after.active ? { test_check(!irq_deliverable(after), u32(2016)) }
+    testing_classify(action)
+    step = step + u32(1)
+  }
+}
+
+// Virtual timer composition. Random events delay/reorder timer programming,
+// masking, acknowledgement, EOI and edge injection. The recovery suffix
+// restores explicit progress assumptions instead of asserting liveness
+// under permanent faults.
+SimTimerIrq: (data: []u8): () {
+  storage: [1]Irq
+  state: [*]Irq = span(&storage)
+  irq_apply(state, u32(0))
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  clock_storage: [1]SimClock
+  clock: [*]SimClock = span(&clock_storage)
+  queue_storage: [1]SimQueue
+  queue: [*]SimQueue = span(&queue_storage)
+  event_storage: [12]SimEvent
+  events: [*]SimEvent = span(&event_storage)
+  i: u32 = u32(0)
+  while i < u32(12) {
+    at: u64 = u64(test_range(choices, data, u32(0), u32(100)))
+    kind: u32 = test_range(choices, data, u32(0), u32(5))
+    value: u32 = test_range(choices, data, u32(0), u32(100))
+    test_check(sim_schedule(queue, events, clock, SimEvent { at: at, kind: kind, value: value }), u32(2020))
+    i = i + u32(1)
+  }
+  compare: u64 = u64(10)
+  masked: Bool = false
+  while queue[0].count > u32(0) {
+    previous: u64 = clock[0].now
+    event: SimEvent = sim_next(queue, events, clock, choices, data)
+    test_check(clock[0].now >= previous, u32(2021))
+    event.kind == u32(0) ? { compare = u64(event.value) }
+    event.kind == u32(1) ? { masked = true }
+    event.kind == u32(2) ? { masked = false }
+    // Sample timer level at every scheduling boundary before delivery.
+    state[0].level = clock[0].now >= compare && !masked
+    event.kind == u32(3) ? { irq_apply(state, u32(5)) }
+    event.kind == u32(4) ? { irq_apply(state, u32(6)) }
+    event.kind == u32(5) ? { irq_apply(state, u32(2)) }
+    state[0].active ? { test_check(!irq_deliverable(state[0]), u32(2022)) }
+    masked && !state[0].latched ? { test_check(!irq_deliverable(state[0]), u32(2023)) }
+    testing_classify(event.kind)
+  }
+  // Heal: time passes compare, source unmasked, handler finishes its IRQ.
+  clock[0].now = u64(101)
+  state[0].level = clock[0].now >= compare
+  irq_apply(state, u32(6))
+  test_check(irq_deliverable(state[0]), u32(2030))
+  irq_apply(state, u32(5))
+  test_check(state[0].active, u32(2031))
+  irq_apply(state, u32(6))
+  test_check(irq_deliverable(state[0]), u32(2032))
+}

@@ -1,0 +1,42 @@
+name: Oak testing tools
+on:
+  push:
+    branches: [specification, codex/oak-testing-tools]
+  pull_request:
+    branches: [specification]
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Build Oak CLI
+        run: |
+          mkdir -p build
+          go build -o build/oak .
+          cp "$(go env GOROOT)/bin/gofmt" build/gofmt
+      - name: Test runner and failure replay
+        run: go test -race ./testrunner -count=1 -v
+      - name: Run Oak test suite
+        run: ./build/oak test -runs 20 examples/testing
+      - name: Exercise coverage-guided native fuzz harness
+        run: |
+          ./build/oak test -fuzz '^FuzzUtf8$' -emit-fuzz-harness build/fuzz.c examples/testing
+          clang -std=c11 -g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all build/fuzz.c -o build/fuzz
+          ./build/fuzz -runs=100 -max_len=256
+      - name: Fuzz runner internals
+        run: |
+          go test ./testrunner -run '^$' -fuzz '^FuzzMinimize$' -fuzztime 5s
+          go test ./testrunner -run '^$' -fuzz '^FuzzMutationBounds$' -fuzztime 5s
+      - name: Formatting patch
+        if: always()
+        run: |
+          mkdir -p build
+          gofmt -d main.go compiler/compilation.go compiler/stdlib.go compiler/simulation.go stdlib/source.go testrunner/*.go > build/format.patch
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oak-testing-linux
+          path: build/
