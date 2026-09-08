@@ -298,7 +298,7 @@ eliminate every aggregate copy or repeated measurement.
 
 This first projection requires explicit concrete names at expansion time.
 Type aliases, generic record applications, codec calls depending on an
-unspecialized type variable, arrays, floats, ADT variants, and borrowed
+unspecialized type variable, top-level arrays, floats, ADT variants, and borrowed
 record fields are not yet derived. `FromTo[T]`, generic visitor dictionaries, custom format implementations,
 and derivation-time omission policies are not implemented by this subset.
 Derived decoding is specified in §13. Failures are compile
@@ -319,7 +319,8 @@ value, so there is no separate output-storage argument. Input is borrowed
 read-only; no reference to its bytes escapes in the result.
 
 Supported targets are fixed-width integers, Bool, and closed concrete
-records recursively containing those types. Record fields may appear in
+records recursively containing those types, including fixed-size array fields
+(§14). Record fields may appear in
 any order. All declared fields are required; duplicate and unknown fields
 are errors. The `json` name tag from §12 governs both directions. Matching
 compares decoded Unicode scalars: an escaped spelling of a field name is
@@ -340,7 +341,7 @@ before conversion; no number passes through floating point.
 
 `JsonDecodeError` distinguishes `InvalidEncoding`, `InvalidSyntax`,
 `TypeMismatch`, `NumericOverflow`, `MissingField`, `DuplicateField`, and
-`UnknownField`. UTF-8 validation runs first. Subsequent errors are fail-fast:
+`UnknownField`, plus `LengthMismatch` for fixed arrays. UTF-8 validation runs first. Subsequent errors are fail-fast:
 unknown/duplicate fields can be reported before their values are parsed.
 Errors do not contain a partly constructed output record. The decoder does
 not mutate caller storage. Returning `Result[T, JsonDecodeError]` still uses
@@ -353,7 +354,7 @@ ordinary bounds checks, and out-of-range explicit helper offsets trap.
 The root wrapper is the whole-document validation boundary; offset helpers
 are not independently validated-input capabilities.
 
-Borrowed strings, arrays, general ADTs, floats, dynamic schemas, and aliases
+Borrowed strings, top-level arrays, general ADTs, floats, dynamic schemas, and aliases
 are not derived yet. `decode[string, Json]` fails with guidance to use the
 existing `json_string_decode` into a caller-provided span. Relaxing that
 restriction requires explicit storage/lifetime contracts, not boxing.
@@ -362,3 +363,41 @@ Tests cover integer limits in every width, nested and reordered records,
 escaped Unicode keys, malformed inputs, missing/duplicate/unknown fields,
 trailing content, and C address/undefined-behavior sanitizers. Fluent/direct
 C equality and allocator absence are checked alongside encoder regressions.
+
+## 14. Fixed-size array fields (implemented subset)
+
+```oak
+Sample: type = struct { readings: [4]i32, flags: [2]Bool }
+// input: []u8; output: [*]u8
+value: Result[Sample, JsonDecodeError] = decode[Sample, Json](input)
+// encode[Sample, Json](sample, output) and both fluent spellings also work.
+```
+
+Closed records may contain nonempty `[N]T` fields where T is a supported
+integer, Bool, or concrete record. Records inside arrays may themselves
+contain array fields. Arrays remain inline in the owning record and concrete
+Result payload. No box, heap allocation, token tree, or separate array buffer
+is introduced. Generated bounded loops have code size independent of N.
+The ordinary record layout and borrow checks still apply.
+
+JSON uses ordinary arrays, including for `[N]u8` (numbers, not base64).
+Decoding requires exactly N elements; shorter or longer arrays report
+`LengthMismatch`. Trailing commas, missing separators, and truncation are
+syntax errors. Element errors propagate unchanged. Error reporting remains
+fail-fast: an excess element can trigger a length error before its contents
+are validated. No partial output is returned. Encoding measures the entire
+record before writing, retaining destination-too-small atomicity.
+
+Array lengths must be positive integer literals representable by u32 and
+fit the backend's supported record layout. Zero-length arrays, slices,
+spans, direct multidimensional array fields, and top-level array codec
+arguments are not part of this subset. Use a named record around each
+array level. Borrowed string elements still require explicit storage and
+lifetime work. Record passing/returning may copy the inline arrays under
+the existing value ABI; large arrays therefore have real stack and copy
+costs. These loops do not introduce numeric SIMD parsing or guarantee
+vectorization; bounded SIMD string scanning remains available to keys.
+
+Sanitizer tests cover nested record arrays, scalar boundaries, length and
+syntax errors, round trips, and unchanged short destinations. Fluent/direct
+C equality and allocator absence are checked for array-bearing records.

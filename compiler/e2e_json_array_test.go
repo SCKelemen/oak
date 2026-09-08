@@ -1,0 +1,124 @@
+package compiler
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
+
+const jsonArrayPrelude = `import(std)
+json: tag = { name: string }
+ArrayPoint: type = struct { lanes: [2]i16 }
+ArrayRecord: type = struct { points(json: "items"): [2]ArrayPoint, flags: [1]Bool, ids: [2]u64 }
+`
+
+func TestE2EJsonArrayRoundTrip(t *testing.T) {
+	var source strings.Builder
+	source.WriteString(jsonArrayPrelude + "main: (): i32 {\n")
+	writeTextView(&source, "input", ` { "ids": [0,18446744073709551615], "flags": [true], "\u0069tems": [{"lanes":[-32768,32767]},{"lanes":[0,-1]}] } `)
+	writeTextView(&source, "expected", `{"items":[{"lanes":[-32768,32767]},{"lanes":[0,-1]}],"flags":[true],"ids":[0,18446744073709551615]}`)
+	source.WriteString(`
+ result: Result[ArrayRecord, JsonDecodeError] = from[Json](input).to[ArrayRecord]()
+ result ?
+  | .Err(reason) => { assert(false) }
+  | .Ok(value) => {
+   assert(value.points[0].lanes[0] == i16(0) - i16(32767) - i16(1))
+   assert(value.points[1].lanes[1] == i16(0) - i16(1))
+   assert(value.flags[0])
+   assert(value.ids[1] == (u64(9223372036854775807) * u64(2) + u64(1)))
+   assert(json_result_value(encoded_size[ArrayRecord, Json](value)) == len(expected))
+   data: [128]u8
+   dst: [*]u8 = span(&data)
+   written: Result[u32, JsonError] = from[ArrayRecord](value).to[Json](dst)
+   assert(json_result_ok(written) && json_result_value(written) == len(expected))
+   i: u32 = 0
+   while i < len(expected) { assert(dst[i] == expected[i])
+    i = i + u32(1)
+   }
+   small: [4]u8
+   short: [*]u8 = span(&small)
+   bytes_fill(short, u8(77))
+   assert(!json_result_ok(encode[ArrayRecord, Json](value, short)))
+   assert(short[0] == u8(77) && short[1] == u8(77) && short[2] == u8(77) && short[3] == u8(77))
+  }
+ 42
+}
+`)
+	_, code, abnormal := buildAndRunOutput(t, "json_array_roundtrip", source.String(), "-fsanitize=address,undefined", "-DOAK_PORTABLE_INTRINSICS")
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
+func TestE2EJsonArrayErrors(t *testing.T) {
+	var source strings.Builder
+	source.WriteString(jsonArrayPrelude + "main: (): i32 {\n")
+	for _, fixture := range []struct {
+		input string
+		code  int
+	}{
+		{`{"lanes":[]}`, 8},
+		{`{"lanes":[1]}`, 8},
+		{`{"lanes":[1,2,3]}`, 8},
+		{`{"lanes":[1,]}`, 2},
+		{`{"lanes":[1,2,]}`, 2},
+		{`{"lanes":[1 2]}`, 2},
+		{`{"lanes":[1,2}`, 2},
+		{`{"lanes":[1,`, 2},
+		{`{"lanes":[1,2`, 2},
+		{`{"lanes":[32768,0]}`, 4},
+		{`{"lanes":[0,-32769]}`, 4},
+		{`{"lanes":[true,0]}`, 3},
+		{`{"lanes":[[1],0]}`, 3},
+		{`{"lanes":null}`, 3},
+		{`{"lanes":0}`, 3},
+		{`{}`, 5},
+		{`{"lanes":[1,2],"lanes":[3,4]}`, 6},
+	} {
+		source.WriteString("true ? {\n")
+		writeTextView(&source, "input", fixture.input)
+		fmt.Fprintf(&source, "result: Result[ArrayPoint, JsonDecodeError] = decode[ArrayPoint, Json](input)\nresult ? | .Ok(value) => { assert(false) } | .Err(reason) => { assert(json_decode_error_code(reason) == u32(%d)) }\n}\n", fixture.code)
+	}
+	source.WriteString("42\n}\n")
+	_, code, abnormal := buildAndRunOutput(t, "json_array_errors", source.String(), "-fsanitize=address,undefined", "-DOAK_PORTABLE_INTRINSICS")
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
+func TestJsonArrayLowering(t *testing.T) {
+	source := jsonArrayPrelude + `read: (input: []u8): Result[ArrayRecord, JsonDecodeError] = from[Json](input).to[ArrayRecord]()
+write: (value: ArrayRecord, dst: [*]u8): Result[u32, JsonError] = from[ArrayRecord](value).to[Json](dst)
+main: (): i32 = 0
+`
+	fluent, err := New().WithSource("array.oak", source).EmitC().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directSource := strings.ReplaceAll(source, "from[Json](input).to[ArrayRecord]()", "decode[ArrayRecord, Json](input)")
+	directSource = strings.ReplaceAll(directSource, "from[ArrayRecord](value).to[Json](dst)", "encode[ArrayRecord, Json](value, dst)")
+	direct, err := New().WithSource("array.oak", directSource).EmitC().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fluent != direct {
+		t.Fatal("array fluent and direct codecs differ")
+	}
+	for _, forbidden := range []string{"malloc(", "calloc(", "realloc(", "OAK_UNSUPPORTED"} {
+		if strings.Contains(fluent, forbidden) {
+			t.Fatalf("unexpected allocation or unsupported lowering: %s", forbidden)
+		}
+	}
+	for _, typ := range []string{"[0]u8", "[]u8", "[*]u8", "[2]string", "[2][2]u8"} {
+		for _, operation := range []string{"encode", "decode"} {
+			body := "f: (value: Bad, dst: [*]u8): Result[u32, JsonError] = encode[Bad, Json](value, dst)"
+			if operation == "decode" {
+				body = "f: (src: []u8): Result[Bad, JsonDecodeError] = decode[Bad, Json](src)"
+			}
+			_, err := New().WithSource("bad_array.oak", "import(std)\nBad: type = struct { data: "+typ+" }\n"+body).EmitC().Get()
+			if err == nil || !strings.Contains(err.Error(), "codec:") {
+				t.Fatalf("%s %s: expected codec rejection, got %v", operation, typ, err)
+			}
+		}
+	}
+}
