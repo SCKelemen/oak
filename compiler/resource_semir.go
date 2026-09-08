@@ -20,29 +20,14 @@ type ResourceSemanticIR struct {
 // declarations against the checked type environment, emits canonical SemIR,
 // and runs the path-sensitive resource checker from that emitted module.
 //
-// Resource declarations remain an internal semantic input until Oak freezes a
-// source or ABI spelling. The projection below is therefore reusable by either
-// future frontend without teaching the AST to guess ownership semantics.
+// The declarations passed to this explicit stage are authoritative for the
+// stage. Compilation-level resource configuration is intentionally not run a
+// second time. Resource declarations remain an internal semantic input until
+// Oak freezes a source or ABI spelling.
 func (comp Compilation) ResourceSemIR(declarations []typechecker.ResourceProtocolDeclaration) Stage[*ResourceSemanticIR] {
-	return comp.Check().Then(func(model *SemanticModel) (*ResourceSemanticIR, error) {
-		resolved, err := model.TypeChecker.ResolveResourceDeclarations(declarations)
+	return comp.check(nil).Then(func(model *SemanticModel) (*ResourceSemanticIR, error) {
+		resolved, module, err := comp.checkResourceProtocols(model, declarations)
 		if err != nil {
-			return nil, fmt.Errorf("resource resolution failed: %w", err)
-		}
-
-		module, err := emitResourceSemIR(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("resource SemIR emission failed: %w", err)
-		}
-
-		resourceModel, err := typechecker.ResourceModelFromSemIR(module)
-		if err != nil {
-			return nil, fmt.Errorf("resource SemIR projection failed: %w", err)
-		}
-		// Check() already performed ordinary type checking. Run only resource
-		// flow here so diagnostics are not duplicated by a second CheckProgram.
-		model.TypeChecker.CheckResourceFlow(model.Tree.Root, resourceModel)
-		if err := comp.gate("resource", model.TypeChecker.Diagnostics()); err != nil {
 			return nil, err
 		}
 
@@ -52,6 +37,52 @@ func (comp Compilation) ResourceSemIR(declarations []typechecker.ResourceProtoco
 			Resources: resolved,
 		}, nil
 	})
+}
+
+func (comp Compilation) checkResourceProtocols(
+	model *SemanticModel,
+	declarations []typechecker.ResourceProtocolDeclaration,
+) (typechecker.ResolvedResourceProgram, semir.Module, error) {
+	resolved, err := model.TypeChecker.ResolveResourceDeclarations(declarations)
+	if err != nil {
+		return typechecker.ResolvedResourceProgram{}, semir.Module{}, fmt.Errorf("resource resolution failed: %w", err)
+	}
+
+	module, err := emitResourceSemIR(resolved)
+	if err != nil {
+		return typechecker.ResolvedResourceProgram{}, semir.Module{}, fmt.Errorf("resource SemIR emission failed: %w", err)
+	}
+
+	resourceModel, err := typechecker.ResourceModelFromSemIR(module)
+	if err != nil {
+		return typechecker.ResolvedResourceProgram{}, semir.Module{}, fmt.Errorf("resource SemIR projection failed: %w", err)
+	}
+	// Ordinary type checking has already populated the environment. Run only
+	// resource flow here so diagnostics are not duplicated by CheckProgram.
+	model.TypeChecker.CheckResourceFlow(model.Tree.Root, resourceModel)
+	if err := comp.gate("resource", model.TypeChecker.Diagnostics()); err != nil {
+		return typechecker.ResolvedResourceProgram{}, semir.Module{}, err
+	}
+
+	return resolved, module, nil
+}
+
+func cloneResourceProtocolDeclarations(declarations []typechecker.ResourceProtocolDeclaration) []typechecker.ResourceProtocolDeclaration {
+	if len(declarations) == 0 {
+		return nil
+	}
+	cloned := make([]typechecker.ResourceProtocolDeclaration, len(declarations))
+	for i, declaration := range declarations {
+		cloned[i] = declaration
+		cloned[i].ResourceTypes = append([]string(nil), declaration.ResourceTypes...)
+		cloned[i].States = append([]string(nil), declaration.States...)
+		cloned[i].Transitions = make([]typechecker.ResourceTransitionDeclaration, len(declaration.Transitions))
+		for j, transition := range declaration.Transitions {
+			cloned[i].Transitions[j] = transition
+			cloned[i].Transitions[j].Consumes = append([]int(nil), transition.Consumes...)
+		}
+	}
+	return cloned
 }
 
 func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Module, error) {
