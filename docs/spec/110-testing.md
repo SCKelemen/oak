@@ -33,8 +33,16 @@ simulation campaigns. No matching tests is an error, including empty discovery.
 Bootstrap package source is concatenated in filename order with source-boundary
 comments. Test registrations retain original filename and line. Compiler errors
 currently refer to positions in the assembled `<oak-test-package>` source.
-General package resolution and fully source-mapped multi-file diagnostics are
-separate compiler work; this runner does not invent a second module system.
+
+A directory whose `.oak` files all open with the same package clause is a
+module package (`83-modules.md`). It compiles through the module loader with
+the root package's `*_test.oak` files included, so tests may use `pub` members,
+imported packages resolved through the enclosing `oak.mod`, and the simulation
+profile. Mixing files with and without a clause in one directory rejects. The
+root package's C symbols carry the package prefix (`oak_<package>_<Name>`)
+unless it is `package main`; the harness uses the same renaming as
+`compiler/modules.go`. Only the root package's test files join the build:
+imported packages are compiled as their clients see them.
 
 ## Isolation, outcomes, and reporting
 

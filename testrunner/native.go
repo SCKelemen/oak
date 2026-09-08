@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
  switch (strtol(argv[1], NULL, 10)) {
 `, cfg.MaxBytes, cfg.MaxBytes, cfg.MaxBytes)
 	for i, test := range pkg.Registry {
-		fmt.Fprintf(&source, "case %d: oak_test_generating = %d; oak_%s(", i, map[bool]int{true: 1, false: 0}[test.Kind == "generator"], test.Name)
+		fmt.Fprintf(&source, "case %d: oak_test_generating = %d; %s(", i, map[bool]int{true: 1, false: 0}[test.Kind == "generator"], pkg.symbol(test.Name))
 		if test.Kind != "unit" {
 			source.WriteString("(oak_view_u8){data, (u32)size}")
 		}
