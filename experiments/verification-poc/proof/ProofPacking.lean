@@ -104,6 +104,7 @@ theorem command_ranges (before refsBefore after refsAfter : List Nat)
       have idsGuard : hints.all (fun id => decide (0 < id ∧ id ≤ 256)) = true := by simpa using ids
       have clauseRead := read_encoded before clause ((cs.map literals).flatten ++ after) positive
       have refsRead := range_contents refsBefore hints ((cs.map references).flatten ++ refsAfter)
+      simp only [List.append_assoc] at clauseRead refsRead
       have tail := ih (before ++ encodeClause clause) (refsBefore ++ hints) tailOK
       simp only [commands, List.map_cons, literals, references, List.flatten_cons, List.mapM_cons]
       have head : decodeCommand (before ++ (encodeClause clause ++ (cs.map literals).flatten) ++ after)
@@ -113,12 +114,15 @@ theorem command_ranges (before refsBefore after refsAfter : List Nat)
         simp [decodeCommand, stampBound, idGuard, hintsGuard, List.append_assoc,
           refsRead, idsGuard, clauseRead]
       rw [head]
-      simpa [encodeClause, List.append_assoc] using congrArg (Option.map (Instruction.add id clause hints :: ·)) tail
+      simp only [List.append_assoc, List.length_append, encodeClause, List.length_map] at tail ⊢
+      rw [tail]
+      rfl
     | delete stamp ids =>
       obtain ⟨stampBound, refsOK⟩ := headOK
       have stampGuard : ¬ stamp > 2147483647 := by omega
       have idsGuard : ids.all (fun id => decide (0 < id ∧ id ≤ 256)) = true := by simpa using refsOK
       have refsRead := range_contents refsBefore ids ((cs.map references).flatten ++ refsAfter)
+      simp only [List.append_assoc] at refsRead
       have tail := ih before (refsBefore ++ ids) tailOK
       simp only [commands, List.map_cons, literals, references, List.flatten_cons, List.nil_append, List.mapM_cons]
       have head : decodeCommand (before ++ (cs.map literals).flatten ++ after)
@@ -126,7 +130,9 @@ theorem command_ranges (before refsBefore after refsAfter : List Nat)
           ⟨false, stamp, 0, 0, refsBefore.length, ids.length⟩ = some (.delete stamp ids) := by
         simp [decodeCommand, stampGuard, List.append_assoc, refsRead, idsGuard]
       rw [head]
-      simpa [List.append_assoc] using congrArg (Option.map (Instruction.delete stamp ids :: ·)) tail
+      simp only [List.append_assoc, List.length_append] at tail ⊢
+      rw [tail]
+      rfl
 
 theorem roundtrip (variables : Nat) (clauses : List Clause) (instructions : List Instruction)
     (supported : Supported variables clauses instructions) :
