@@ -54,7 +54,7 @@ type CodeGenerator struct {
 	// localTypes maps in-scope names to their container kind while a
 	// function body is being emitted, so element access lowers to the right
 	// bounds-checked form. Unknown containers fail closed.
-	localTypes map[string]localContainer
+	localTypes   map[string]localContainer
 	sliceHelpers map[string]string
 }
 

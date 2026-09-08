@@ -808,7 +808,7 @@ func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression
 				return nil
 			}
 		}
-		if !p.expectPeek(token.RBRACK) {
+		if !p.currentTokenIs(token.RBRACK) && !p.expectPeek(token.RBRACK) {
 			return nil
 		}
 		return &ast.SliceExpression{
@@ -829,7 +829,7 @@ func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression
 	switch {
 	case p.peekTokenIs(token.RBRACK):
 		// a[expr] — index
-		if !p.expectPeek(token.RBRACK) {
+		if !p.currentTokenIs(token.RBRACK) && !p.expectPeek(token.RBRACK) {
 			return nil
 		}
 		return &ast.IndexExpression{
@@ -848,7 +848,7 @@ func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression
 				return nil
 			}
 		}
-		if !p.expectPeek(token.RBRACK) {
+		if !p.currentTokenIs(token.RBRACK) && !p.expectPeek(token.RBRACK) {
 			return nil
 		}
 		return &ast.SliceExpression{

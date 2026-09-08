@@ -1,14 +1,14 @@
 package compiler
 
 import (
- "encoding/json"
- "fmt"
- "os"
- "strconv"
- "strings"
- "testing"
- "unicode/utf16"
- "unicode/utf8"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 func TestE2EStdlibTextSmoke(t *testing.T) {
@@ -368,7 +368,9 @@ func TestE2EStdlibTextBuilder(t *testing.T) {
 func TestE2EStdlibTextExample(t *testing.T) {
 	for _, path := range []string{"stdlib_strings.oak", "strings/strings.oak", "strings/encoding/ascii.oak", "strings/encoding/utf8.oak", "strings/encoding/utf16.oak", "strings/encoding/utf32.oak", "strings/logascii.oak", "strings_encoding.oak"} {
 		source, err := os.ReadFile("../examples/" + path)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		runTextTest(t, "textexample", string(source))
 	}
 }
@@ -462,7 +464,7 @@ func TestE2EStdlibTextUnicodeTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	var fixture struct {
-		Version string                       `json:"version"`
+		Version string                         `json:"version"`
 		Maps    map[string]map[string][]uint32 `json:"maps"`
 	}
 	if err := json.Unmarshal(data, &fixture); err != nil {
