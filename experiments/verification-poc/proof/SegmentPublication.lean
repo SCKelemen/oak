@@ -28,8 +28,7 @@ theorem nonzero_push (mode : Mode) (variables : Nat) (before after : Buffer) (t 
     ∃ item, push before item = some after := by
   unfold tokenStep at stepped
   split at stepped
-  · simp only [nonzero, ↓reduceIte] at stepped
-    split at stepped
+  · split at stepped
     · split at stepped
       · exact ⟨_, stepped⟩
       · simp at stepped
@@ -69,7 +68,7 @@ theorem segmentLoop_completes (mode : Mode) (variables : Nat) (bytes : List Nat)
             · rename_i zero
               split at decoded
               · cases Option.some.inj decoded
-                rw [zero_closes mode variables before next (scan bytes pos) zero stepped]
+                rw [zero_closes mode variables before after (scan bytes pos) zero stepped]
                 exact close_completes before
               · simp at decoded
             · rename_i nonzero
