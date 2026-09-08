@@ -4,6 +4,7 @@ import (
  "testing"
  "strings"
  "github.com/SCKelemen/oak/ast"
+ "github.com/SCKelemen/oak/object"
  "github.com/SCKelemen/oak/stdlib"
  "github.com/SCKelemen/oak/typechecker"
 )
@@ -49,7 +50,7 @@ func TestE2EStdlibTextSyntax(t *testing.T) {
  tree, err := New().WithSource("std.oak", stdlib.Source).Parse().Get()
  if err != nil { t.Fatal(err) }
  for i, stmt := range tree.Root.Statements {
-  tc := typechecker.New()
+  tc := typechecker.New(object.NewEnvironment())
   tc.CheckProgram(&ast.Program{Statements: tree.Root.Statements[:i+1]})
   for _, e := range tc.Errors() {
    if strings.Contains(e, "nil expression") { t.Fatalf("first nil expression at declaration %d %s", i, declarationName(stmt)) }
