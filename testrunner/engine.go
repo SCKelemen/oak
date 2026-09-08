@@ -133,6 +133,7 @@ func Minimize(ctx context.Context, input []byte, budget int, fails func([]byte) 
 }
 
 type Artifact struct {
+	InputFormat    string       `json:"input_format,omitempty"`
 	TraceVersion   int          `json:"trace_version,omitempty"`
 	Trace          []TraceEvent `json:"trace,omitempty"`
 	TraceTruncated bool         `json:"trace_truncated,omitempty"`
@@ -178,6 +179,9 @@ func readArtifact(path string, max int) (Artifact, error) {
 	}
 	if _, err := hex.DecodeString(a.Build); err != nil {
 		return a, fmt.Errorf("invalid build fingerprint in %s", path)
+	}
+	if a.InputFormat != "" && (a.InputFormat != commandFormat || len(a.Input)%commandWidth != 0 || len(a.Input)/commandWidth > commandLimit) {
+		return a, fmt.Errorf("invalid command input format in %s", path)
 	}
 	if a.TraceVersion != 0 && a.TraceVersion != traceVersion || len(a.Trace) > traceLimit || a.TraceTruncated && len(a.Trace) != traceLimit || a.TraceVersion == 0 && (len(a.Trace) != 0 || a.TraceTruncated) {
 		return a, fmt.Errorf("invalid or unsupported trace in %s", path)
@@ -237,7 +241,11 @@ func loadCorpus(pkg Package, test Test, max int) ([][]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			if a.Test != test.Name || a.Kind != test.Kind {
+			expectedFormat := ""
+			if test.Generator != "" {
+				expectedFormat = commandFormat
+			}
+			if a.Test != test.Name || a.Kind != test.Kind || a.InputFormat != expectedFormat {
 				return nil, fmt.Errorf("corpus identity mismatch: %s", path)
 			}
 			inputs = append(inputs, a.Input)
