@@ -175,7 +175,7 @@ func runOakStream(t *testing.T,source string) {
     fmt.Fprintf(&traced,"fprintf(stderr, \"enter %s\\n\");\n",strings.TrimSpace(line[at:end]))
    }
   };generated=traced.String()
-  start:=strings.Index(generated,"rup_space( u8 b ) {");end:=strings.LastIndex(generated,"text_case_0( void ) {");if start>=0&&end>start {t.Logf("decoder C:\n%s",generated[start:end])}
+  start:=strings.Index(generated,"rup_space( u8 b ) {");end:=-1;if start>=0 {if offset:=strings.Index(generated[start:],"text_case_0(");offset>=0 {end=start+offset}};if start>=0&&end>start {t.Logf("decoder C:\n%s",generated[start:end])}
  }
  dir:=t.TempDir();cpath:=filepath.Join(dir,"stream.c");bin:=filepath.Join(dir,"stream")
  if err:=os.WriteFile(cpath,[]byte(generated),0644);err!=nil {t.Fatal(err)}
