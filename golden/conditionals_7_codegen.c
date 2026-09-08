@@ -146,10 +146,9 @@ i32 oak_classify( i32 n, Bool urgent ) {
     if ( ( ( n < 0 ) && !( urgent ) )   ) {
       result     = ( 0 - 1 )    ;
     } else {
-      if ( ( ( n == 0 ) || urgent ) == oak_Bool_True ) {
+      if ( ( ( n == 0 ) || urgent ) ) {
         result       = oak_conv_i32_bits_u32( ((u32)( 1 )) )      ;
-      }
-      if ( ( ( n == 0 ) || urgent ) == oak_Bool_False ) {
+      } else {
       }
     }
     return result  ;

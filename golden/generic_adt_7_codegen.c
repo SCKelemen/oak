@@ -265,7 +265,7 @@ i32 oak_main(  ) {
       u8 v = oak_scrutinee_0.payload.Ok;
       byteRange     = ((i32)( v ))    ;
     }
-    if ( oak_scrutinee_0.tag == oak_Result_u8_Overflow_tag_Err ) {
+    else if ( oak_scrutinee_0.tag == oak_Result_u8_Overflow_tag_Err ) {
       oak_Overflow e = oak_scrutinee_0.payload.Err;
       byteRange     = ( 0 - 1 )    ;
     }

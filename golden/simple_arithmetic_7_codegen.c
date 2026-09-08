@@ -189,10 +189,12 @@ i32 oak_main(  ) {
     if ( status1.tag == oak_Status_tag_Ok ) {
       code     = 200    ;
     }
-    if ( status1.tag == oak_Status_tag_NotFound ) {
+    else if ( status1.tag == oak_Status_tag_NotFound ) {
       code     = 404    ;
     }
-    code   = 0  ;
+    else {
+      code     = 0    ;
+    }
     return ( y + code )  ;
 }
 
