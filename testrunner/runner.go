@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,10 +24,12 @@ type Config struct {
 	Run, Fuzz, Sim, Replay               string
 	JSON, List, Verbose, Sanitize        bool
 	Cover                                string
+	Workers                              int
+	Campaign                             string
 }
 
 func Defaults() Config {
-	return Config{CC: "cc", Runs: 100, MaxBytes: 256, Shrink: 200, Seed: 1, Timeout: 2 * time.Second, BuildTimeout: time.Minute, ShrinkTimeout: 10 * time.Second, MaxDiscards: 1000}
+	return Config{CC: "cc", Runs: 100, MaxBytes: 256, Shrink: 200, Seed: 1, Timeout: 2 * time.Second, BuildTimeout: time.Minute, ShrinkTimeout: 10 * time.Second, MaxDiscards: 1000, Workers: 1}
 }
 
 type Result struct {
@@ -47,7 +50,10 @@ type Result struct {
 	Artifact   string           `json:"artifact,omitempty"`
 	Output     string           `json:"output,omitempty"`
 	Classes    map[uint32]int   `json:"classes,omitempty"`
-	schema     *TraceSchema
+	// Attempts is how far the deterministic attempt sequence was consumed,
+	// including attempts carried over from a resumed campaign.
+	Attempts int `json:"attempts,omitempty"`
+	schema   *TraceSchema
 }
 
 // setTrace records a trace with its decoded text when the package has a schema.
@@ -77,6 +83,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&cfg.Sim, "sim", "", "simulation name regular expression")
 	flags.StringVar(&cfg.Replay, "replay", "", "replay one saved artifact against its exact build")
 	flags.StringVar(&cfg.Cover, "cover", "", "required class sample counts, e.g. 10:5,20:1 (per selected generated test)")
+	flags.IntVar(&cfg.Workers, "workers", cfg.Workers, "concurrent case executions (1..64); results are identical for every value")
+	flags.StringVar(&cfg.Campaign, "campaign", "", "directory of resumable campaign state per test; rerun with a larger -runs to continue")
 	flags.BoolVar(&cfg.JSON, "json", false, "emit one JSON result per test")
 	flags.BoolVar(&cfg.List, "list", false, "list matching tests without compilation")
 	flags.BoolVar(&cfg.Verbose, "v", false, "include successful test output")
@@ -91,7 +99,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	if cfg.Runs < 1 || cfg.Runs > 1000000 || cfg.MaxBytes < 0 || cfg.MaxBytes > 1<<20 || cfg.Shrink < 0 || cfg.MaxDiscards < 0 || cfg.Timeout <= 0 || cfg.BuildTimeout <= 0 || cfg.ShrinkTimeout <= 0 || cfg.Fuzz != "" && cfg.Sim != "" || cfg.Replay != "" && (cfg.Fuzz != "" || cfg.Sim != "" || cfg.Run != "" || cfg.List || cfg.Cover != "") {
+	if cfg.Workers < 1 || cfg.Workers > 64 || cfg.Campaign != "" && cfg.Replay != "" || cfg.Runs < 1 || cfg.Runs > 1000000 || cfg.MaxBytes < 0 || cfg.MaxBytes > 1<<20 || cfg.Shrink < 0 || cfg.MaxDiscards < 0 || cfg.Timeout <= 0 || cfg.BuildTimeout <= 0 || cfg.ShrinkTimeout <= 0 || cfg.Fuzz != "" && cfg.Sim != "" || cfg.Replay != "" && (cfg.Fuzz != "" || cfg.Sim != "" || cfg.Run != "" || cfg.List || cfg.Cover != "") {
 		fmt.Fprintln(stderr, "invalid test configuration")
 		return 2
 	}
@@ -356,12 +364,11 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		result.Failure = err.Error()
 		return result
 	}
-	execute := func(input []byte, attempt int) bool {
-		if format != "" && (len(input)%commandWidth != 0 || len(input)/commandWidth > commandLimit) {
-			result.Status, result.Failure = "error", "invalid concrete command corpus: expected at most 256 complete 12-byte commands"
-			return false
-		}
-		out := native.run(index, input)
+	// consume records one executed case in attempt order; execute runs and
+	// consumes sequentially (unit tests, corpus). Generated attempts are
+	// prepared by workers and consumed in order, so the reported outcome,
+	// counts and minimized failure are the same for every worker count.
+	consume := func(input []byte, out outcome, attempt int) bool {
 		if out.status == "discard" {
 			result.Discards++
 			if test.Kind == "unit" || result.Discards > cfg.MaxDiscards {
@@ -431,6 +438,13 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		}
 		return false
 	}
+	execute := func(input []byte, attempt int) bool {
+		if format != "" && (len(input)%commandWidth != 0 || len(input)/commandWidth > commandLimit) {
+			result.Status, result.Failure = "error", "invalid concrete command corpus: expected at most 256 complete 12-byte commands"
+			return false
+		}
+		return consume(input, native.run(index, input), attempt)
+	}
 	if test.Kind == "unit" {
 		execute(nil, 0)
 		return result
@@ -454,24 +468,18 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 			}
 		}
 	} else {
-		accepted := 0
-		for attempt := 0; accepted < cfg.Runs; attempt++ {
+		type prepared struct {
+			input     []byte
+			out       outcome
+			generated *outcome
+		}
+		prepare := func(attempt int) prepared {
 			r := randomFor(cfg.Seed, test.Name, attempt)
 			input := generate(&r, attempt, cfg.MaxBytes)
 			if generator >= 0 {
 				generated := native.run(generator, input)
-				if generated.status == "discard" {
-					result.Discards++
-					if result.Discards > cfg.MaxDiscards {
-						result.Status, result.Failure = "fail", "generator discard budget exhausted"
-						return result
-					}
-					continue
-				}
 				if generated.status != "pass" {
-					result.Status, result.Failure, result.Output = "error", "command generator failed: "+generated.signature, generated.output
-					result.setTrace(generated.trace, generated.traceTruncated)
-					return result
+					return prepared{generated: &generated}
 				}
 				input = encodeCommands(generated.commands)
 			}
@@ -480,14 +488,90 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 			} else if test.Kind == "fuzz" {
 				input = seeds[attempt]
 			}
-			before := result.Cases
-			if !execute(input, attempt) {
+			return prepared{input: input, out: native.run(index, input)}
+		}
+		accepted := 0
+		attempt := 0
+		state := campaignState{Version: 1, Engine: engineVersion, Build: native.build, Test: test.Name, Kind: test.Kind, Seed: cfg.Seed, MaxBytes: cfg.MaxBytes, Sanitize: cfg.Sanitize}
+		statePath := ""
+		if cfg.Campaign != "" {
+			statePath = campaignPath(cfg.Campaign, pkg, test)
+			saved, err := loadCampaign(statePath, state)
+			if err != nil {
+				result.Status, result.Failure = "error", err.Error()
 				return result
 			}
-			if result.Cases > before {
-				accepted++
+			if saved != nil {
+				attempt, accepted = saved.NextAttempt, saved.Accepted
+				result.Cases, result.Discards = saved.Cases, saved.Discards
+				for key, count := range saved.Classes {
+					id, _ := strconv.ParseUint(key, 10, 32)
+					result.Classes[uint32(id)] += count
+				}
 			}
 		}
+		checkpoint := func() {
+			result.Attempts = attempt
+			if statePath == "" {
+				return
+			}
+			state.NextAttempt, state.Accepted, state.Cases, state.Discards = attempt, accepted, result.Cases, result.Discards
+			state.Classes = map[string]int{}
+			for id, count := range result.Classes {
+				state.Classes[strconv.FormatUint(uint64(id), 10)] = count
+			}
+			if err := saveCampaign(statePath, state); err != nil {
+				result.Status, result.Failure = "error", "cannot save campaign state: "+err.Error()
+			}
+		}
+		for accepted < cfg.Runs && result.Status != "error" {
+			batch := make([]prepared, cfg.Workers)
+			var wg sync.WaitGroup
+			for i := range batch {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					batch[i] = prepare(attempt + i)
+				}(i)
+			}
+			wg.Wait()
+			stop := false
+			for i := range batch {
+				if accepted >= cfg.Runs {
+					break
+				}
+				item := batch[i]
+				attempt++
+				if item.generated != nil {
+					if item.generated.status == "discard" {
+						result.Discards++
+						if result.Discards > cfg.MaxDiscards {
+							result.Status, result.Failure = "fail", "generator discard budget exhausted"
+							stop = true
+							break
+						}
+						continue
+					}
+					result.Status, result.Failure, result.Output = "error", "command generator failed: "+item.generated.signature, item.generated.output
+					result.setTrace(item.generated.trace, item.generated.traceTruncated)
+					stop = true
+					break
+				}
+				before := result.Cases
+				if !consume(item.input, item.out, attempt-1) {
+					stop = true
+					break
+				}
+				if result.Cases > before {
+					accepted++
+				}
+			}
+			checkpoint()
+			if stop {
+				return result
+			}
+		}
+		result.Attempts = attempt
 	}
 	if result.Cases == 0 {
 		result.Status = "fail"
