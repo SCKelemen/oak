@@ -57,16 +57,14 @@ func (comp Compilation) ResourceSemIR(declarations []typechecker.ResourceProtoco
 func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Module, error) {
 	module := semir.Module{}
 	for _, resourceType := range resources.Types {
-		// The resource projection asserts semantic identity/authority only. It
-		// intentionally leaves representation and detailed shape unspecified;
-		// those axes need their own production projection rather than guessed
-		// facts smuggled in with ownership metadata.
+		// This projection asserts only the axes established by resource
+		// resolution. Type shape, representation, and temporary ownership stay
+		// unspecified: permanent resource liveness is orthogonal to them.
 		module.Definitions = append(module.Definitions, semir.Definition{
 			Name: resourceType.Name,
 			Type: semir.Type{Kind: semir.TypeOpaque},
 			Authority: semir.Authority{
-				Ownership: semir.OwnershipOwned,
-				Resource:  semir.ResourceAuthorityLive,
+				Resource: semir.ResourceAuthorityLive,
 			},
 			Protocol: resourceType.Protocol,
 		})
