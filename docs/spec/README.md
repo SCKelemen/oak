@@ -61,6 +61,7 @@ Use these terms precisely:
 - `60-effects-allocation.md` — effects, arenas, slabs, handles, realtime prohibitions
 - `70-strings.md` — encoded text, validation, borrowing and representation
 - `80-metadata.md` — typed attributes/tags and phantom semantic types
+- `71-codecs.md` — phantom-typed producer/consumer codecs: formats, encodings, policies, and validation state as erased type parameters (normative design)
 - `90-backend.md` — executable lowering and C-backend requirements
 - `92-ffi.md` — the `c` interface library, extern bindings, and the abstract assembly interface
 - `93-simd.md` — portable SIMD vectors and architecture vector instruction functions
