@@ -264,7 +264,7 @@ json_bool_encode_at: (dst: [*]u8, offset: u32, value: Bool): Result[u32, JsonErr
 
 
 // Decoder results contain only concrete values and byte offsets, never boxes.
-JsonDecodeError: type = InvalidEncoding | InvalidSyntax | TypeMismatch | NumericOverflow | MissingField | DuplicateField | UnknownField
+JsonDecodeError: type = InvalidEncoding | InvalidSyntax | TypeMismatch | NumericOverflow | MissingField | DuplicateField | UnknownField | LengthMismatch
 JsonDecoded[T]: type = struct { value: T, next: u32 }
 JsonToken: type = struct { kind: u32, start: u32, end: u32 }
 JsonInteger: type = struct { magnitude: u64, negative: Bool, next: u32 }
@@ -276,7 +276,8 @@ json_decode_error_code: (reason: JsonDecodeError): u32 = reason ?
  | .MissingField => u32(5)
  | .DuplicateField => u32(6)
  | .UnknownField => u32(7)
-json_decode_error: (code: u32): JsonDecodeError = code == u32(1) ? { .InvalidEncoding } | code == u32(3) ? { .TypeMismatch } | code == u32(4) ? { .NumericOverflow } | code == u32(5) ? { .MissingField } | code == u32(6) ? { .DuplicateField } | code == u32(7) ? { .UnknownField } | { .InvalidSyntax }
+ | .LengthMismatch => u32(8)
+json_decode_error: (code: u32): JsonDecodeError = code == u32(1) ? { .InvalidEncoding } | code == u32(3) ? { .TypeMismatch } | code == u32(4) ? { .NumericOverflow } | code == u32(5) ? { .MissingField } | code == u32(6) ? { .DuplicateField } | code == u32(7) ? { .UnknownField } | code == u32(8) ? { .LengthMismatch } | { .InvalidSyntax }
 json_space: (unit: u8): Bool = unit == u8(32) || unit == u8(9) || unit == u8(10) || unit == u8(13)
 json_digit: (unit: u8): Bool = unit >= u8(48) && unit <= u8(57)
 json_skip_space: (src: []u8, offset: u32): u32 {

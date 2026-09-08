@@ -834,11 +834,13 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 			cg.write("  if ( ")
 			cg.emitExpressionFragment(match.Scrutinee, tc)
 			cg.output.WriteString(fmt.Sprintf(".tag == %s_tag_%s ) {\n", cName, variantName))
+			restorePayload := func() {}
 			if binding, ok := pattern.Payload.(*ast.BindingPattern); ok && binding.Name != nil {
 				payloadType := "OAK_UNKNOWN_PAYLOAD"
 				for _, variant := range adt.Variants {
 					if variant.Name.Value == variantName && variant.Payload != nil {
 						payloadType = cg.parsePayloadType(variant.Payload)
+						restorePayload = cg.bindMatchContainer(binding.Name.Value, variant.Payload)
 					}
 				}
 				cg.write(fmt.Sprintf("    %s %s = ", payloadType, binding.Name.Value))
@@ -846,6 +848,7 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 				cg.output.WriteString(fmt.Sprintf(".payload.%s;\n", variantName))
 			}
 			cg.emitMatchArmReturn(arm.Body, tc)
+			restorePayload()
 			cg.write("  }\n")
 			continue
 		}
@@ -970,11 +973,13 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 			emitGuard()
 			cg.emitExpressionFragment(match.Scrutinee, tc)
 			cg.output.WriteString(fmt.Sprintf(".tag == %s_tag_%s ) {\n", cName, variantName))
+			restorePayload := func() {}
 			if binding, ok := pattern.Payload.(*ast.BindingPattern); ok && binding.Name != nil {
 				payloadType := "OAK_UNKNOWN_PAYLOAD"
 				for _, variant := range adt.Variants {
 					if variant.Name.Value == variantName && variant.Payload != nil {
 						payloadType = cg.parsePayloadType(variant.Payload)
+						restorePayload = cg.bindMatchContainer(binding.Name.Value, variant.Payload)
 					}
 				}
 				cg.write(fmt.Sprintf("    %s %s = ", payloadType, binding.Name.Value))
@@ -984,6 +989,7 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 			cg.indentLevel++
 			emitBody(arm.Body)
 			cg.indentLevel--
+			restorePayload()
 			cg.write("  }\n")
 			continue
 		}
@@ -998,6 +1004,23 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 			cg.write("  }\n")
 		}
 		return
+	}
+}
+
+// Match payloads are scoped locals too. Preserve their declared container
+// shape so record array fields keep bounds-checked indexing in each arm.
+func (cg *CodeGenerator) bindMatchContainer(name string, typ ast.Expression) func() {
+	if cg.localTypes == nil {
+		cg.localTypes = make(map[string]localContainer)
+	}
+	previous, existed := cg.localTypes[name]
+	cg.localTypes[name] = cg.classifyContainer(typ)
+	return func() {
+		if existed {
+			cg.localTypes[name] = previous
+		} else {
+			delete(cg.localTypes, name)
+		}
 	}
 }
 
