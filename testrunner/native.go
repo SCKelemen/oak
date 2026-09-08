@@ -51,6 +51,7 @@ type outcome struct {
 	classes                   map[uint32]bool
 	trace                     []TraceEvent
 	traceTruncated            bool
+	commands                  []Command
 }
 
 func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
@@ -73,6 +74,7 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 		return nil, err
 	}
 	var source strings.Builder
+	fmt.Fprintf(&source, "#define OAK_COMMAND_LIMIT %d\n", min(commandLimit, cfg.MaxBytes/commandWidth))
 	source.WriteString(nativePreamble)
 	source.WriteString("\n#define main oak_test_application_entry\n")
 	source.WriteString(generated)
@@ -89,7 +91,7 @@ int main(int argc, char **argv) {
  switch (strtol(argv[1], NULL, 10)) {
 `, cfg.MaxBytes, cfg.MaxBytes, cfg.MaxBytes)
 	for i, test := range pkg.Registry {
-		fmt.Fprintf(&source, "case %d: oak_%s(", i, test.Name)
+		fmt.Fprintf(&source, "case %d: oak_test_generating = %d; oak_%s(", i, map[bool]int{true: 1, false: 0}[test.Kind == "generator"], test.Name)
 		if test.Kind != "unit" {
 			source.WriteString("(oak_view_u8){data, (u32)size}")
 		}
@@ -146,6 +148,16 @@ const nativePreamble = `
 #include <stdlib.h>
 #include <stdint.h>
 static FILE *oak_test_report;
+static unsigned oak_test_generating, oak_test_command_count;
+uint32_t oak_test_host_command_limit(void) { return OAK_COMMAND_LIMIT; }
+void oak_test_host_command(uint32_t kind, uint32_t target, uint32_t value) {
+ if (!oak_test_report) exit(125);
+ if (!oak_test_generating || oak_test_command_count >= OAK_COMMAND_LIMIT) {
+  fputs("error command-mode-or-limit\n", oak_test_report); fflush(oak_test_report); exit(125);
+ }
+ fprintf(oak_test_report, "command %u %u %u\n", (unsigned)kind, (unsigned)target, (unsigned)value);
+ oak_test_command_count++;
+}
 static unsigned oak_test_trace_count;
 void oak_test_host_trace(uint32_t id, uint64_t a, uint64_t b) {
  if (!oak_test_report) return;
@@ -212,7 +224,19 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 		if len(fields) == 0 {
 			continue
 		}
-		if len(fields) == 4 && fields[0] == "trace" {
+		if len(fields) == 2 && fields[0] == "error" {
+			result.signature = "harness:" + fields[1]
+			return result
+		} else if len(fields) == 4 && fields[0] == "command" {
+			kind, e1 := strconv.ParseUint(fields[1], 10, 32)
+			target, e2 := strconv.ParseUint(fields[2], 10, 32)
+			value, e3 := strconv.ParseUint(fields[3], 10, 32)
+			if e1 != nil || e2 != nil || e3 != nil || len(result.commands) >= min(commandLimit, p.maxBytes/commandWidth) {
+				result.signature = "harness:bad-command-report"
+				return result
+			}
+			result.commands = append(result.commands, Command{Kind: uint32(kind), Target: uint32(target), Value: uint32(value)})
+		} else if len(fields) == 4 && fields[0] == "trace" {
 			id, e1 := strconv.ParseUint(fields[1], 10, 32)
 			a, e2 := strconv.ParseUint(fields[2], 10, 64)
 			b, e3 := strconv.ParseUint(fields[3], 10, 64)

@@ -254,3 +254,41 @@ pilot and requires the model to detect invariant 2011 with the four-command
 counterexample `enable, inject, acknowledge, inject`. Go fuzz targets exercise
 reducer invariants and mutation bounds. The dedicated workflow
 runs the native Oak examples and a coverage-guided libFuzzer smoke campaign.
+
+## Stateful command properties
+
+A `GeneratePropertyName(data: []u8): ()` companion in a `*_test.oak` file
+opts `PropertyName` into concrete command histories. `GenerateSimName` works the
+same way for `SimName`. Companions are not separately registered tests. Unit and
+fuzz targets cannot have companions in this version.
+
+Use `TestChoices` to select legal operations against an independent model, then
+emit each operation with `testing_command(TestCommand { kind: ..., target: ...,
+value: ... })`. Emit at most `testing_command_limit()` commands, which is
+`min(256, -max-bytes / 12)`. Exceeding the limit or emitting during execution is
+a harness error. Generation runs in its own isolated process; target execution
+starts in a fresh process. Generator discards consume the discard budget.
+
+The target receives concrete commands, not the generator's random tape.
+`test_command_count(data)` validates alignment; `test_command_at(data, index)`
+decodes a command. Validate the **entire** history against model preconditions
+with `test_assume` before exercising the implementation. Reject unknown kinds,
+invalid identifiers and missing prerequisites. Then reset the model and compare
+each real operation with its model transition. Domain structs/enums can be
+mapped to this fixed three-word carrier; arbitrary type derivation is not yet
+provided.
+
+Shrinking deletes whole commands and reduces unsigned target/value fields.
+Kinds remain fixed. A candidate is retained only when execution reports the
+same invariant. Model preconditions therefore preserve dependencies: deleting
+a create operation must invalidate a later use of that object. The reducer does
+not infer references or rewrite IDs. Its bounded greedy search does not promise
+a globally minimal history.
+
+Artifacts record `input_format: "commands-v1-u32x3le"` and the concrete input as
+three little-endian u32 words per command. JSON results include decoded commands;
+terminal failures print them. Corpus runs, shrinking and strict replay bypass
+generation entirely. Raw `.bin` corpus entries must already have this encoding;
+JSON corpus entries must match the input format. Trace replay retains the same
+build and semantic-trace checks as byte properties. A generator failure is a
+harness error, not a minimized target counterexample.

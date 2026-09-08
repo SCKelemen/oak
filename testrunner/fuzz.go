@@ -23,6 +23,7 @@ func emitFuzzHarness(pkg Package, test Test, maxBytes int, adapter *nativeAdapte
 		return "", err
 	}
 	var out strings.Builder
+	fmt.Fprintf(&out, "#define OAK_COMMAND_LIMIT %d\n", min(commandLimit, maxBytes/commandWidth))
 	if adapter != nil {
 		fmt.Fprintf(&out, "/* Trusted adapter manifest identity SHA-256: %x; link its pinned objects explicitly. */\n", sha256.Sum256([]byte(adapter.identity)))
 	}
@@ -39,6 +40,8 @@ void oak_test_host_fail(uint32_t id) {
 void oak_test_host_discard(void) { longjmp(oak_fuzz_discard, 1); }
 void oak_test_host_classify(uint32_t id) { (void)id; }
 void oak_test_host_trace(uint32_t id, uint64_t a, uint64_t b) { (void)id; (void)a; (void)b; }
+uint32_t oak_test_host_command_limit(void) { return OAK_COMMAND_LIMIT; }
+void oak_test_host_command(uint32_t kind, uint32_t target, uint32_t value) { (void)kind; (void)target; (void)value; abort(); }
 #define main oak_fuzz_application_entry
 `)
 	out.WriteString(generated)

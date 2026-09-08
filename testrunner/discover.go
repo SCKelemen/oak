@@ -16,10 +16,11 @@ import (
 )
 
 type Test struct {
-	Name string `json:"name"`
-	File string `json:"file"`
-	Line int    `json:"line"`
-	Kind string `json:"kind"`
+	Generator string `json:"generator,omitempty"`
+	Name      string `json:"name"`
+	File      string `json:"file"`
+	Line      int    `json:"line"`
+	Kind      string `json:"kind"`
 }
 
 type Package struct {
@@ -94,6 +95,7 @@ func Discover(paths []string) ([]Package, error) {
 		}
 		var pkg Package
 		pkg.Dir = dir
+		generators := map[string]*ast.FunctionStatement{}
 		var src strings.Builder
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".oak") || strings.HasPrefix(entry.Name(), ".") {
@@ -119,6 +121,12 @@ func Discover(paths []string) ([]Package, error) {
 					continue
 				}
 				kind := testKind(fn.Name.Value)
+				if strings.HasPrefix(fn.Name.Value, "Generate") && testKind(strings.TrimPrefix(fn.Name.Value, "Generate")) != "" {
+					if _, exists := generators[fn.Name.Value]; exists {
+						return nil, fmt.Errorf("duplicate generator %s", fn.Name.Value)
+					}
+					generators[fn.Name.Value] = fn
+				}
 				if kind == "" {
 					continue
 				}
@@ -135,7 +143,28 @@ func Discover(paths []string) ([]Package, error) {
 				return nil, fmt.Errorf("duplicate test %s in %s", pkg.Tests[i].Name, dir)
 			}
 		}
+		for i := range pkg.Tests {
+			name := "Generate" + pkg.Tests[i].Name
+			if fn := generators[name]; fn != nil {
+				if pkg.Tests[i].Kind != "property" && pkg.Tests[i].Kind != "simulation" {
+					return nil, fmt.Errorf("%s: command generators require a Property or Sim target", name)
+				}
+				if err := validateTest(fn, "generator"); err != nil {
+					return nil, err
+				}
+				pkg.Tests[i].Generator = name
+				delete(generators, name)
+			}
+		}
+		if len(generators) != 0 {
+			return nil, fmt.Errorf("command generator has no registered target in %s", dir)
+		}
 		pkg.Registry = append([]Test(nil), pkg.Tests...)
+		for _, test := range pkg.Tests {
+			if test.Generator != "" {
+				pkg.Registry = append(pkg.Registry, Test{Name: test.Generator, Kind: "generator"})
+			}
+		}
 		if len(pkg.Tests) != 0 {
 			packages = append(packages, pkg)
 		}
