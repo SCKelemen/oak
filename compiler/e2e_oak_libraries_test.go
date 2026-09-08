@@ -123,7 +123,7 @@ func TestE2EOakLibrariesFilterFailures(t *testing.T) {
 main: (): i32 {
  cfg: BloomConfig = BloomConfig { cells: u32(1), probes: u32(64), seed: u64(0), blocked: false }
  bad: BloomConfig = BloomConfig { cells: u32(0), probes: u32(0), seed: u64(0), blocked: false }
- short: BloomConfig = BloomConfig { cells: u32(17), probes: u32(6), seed: u64(0), blocked: false }
+ undersized: BloomConfig = BloomConfig { cells: u32(17), probes: u32(6), seed: u64(0), blocked: false }
  blocked: BloomConfig = BloomConfig { cells: u32(1), probes: u32(6), seed: u64(0), blocked: true }
  data: [2]u8
  s: [*]u8 = span(&data)
@@ -135,8 +135,8 @@ main: (): i32 {
  assert(s[0] == u8(255))
  assert(filter_code(bloom_insert(s, bad, u64(9))) == u32(1))
  assert(filter_code(bloom_insert(s, blocked, u64(9))) == u32(1))
- assert(filter_code(bloom_insert(s, short, u64(9))) == u32(2))
- assert(filter_code(counting_bloom_update(s, short, u64(9), true)) == u32(2))
+ assert(filter_code(bloom_insert(s, undersized, u64(9))) == u32(2))
+ assert(filter_code(counting_bloom_update(s, undersized, u64(9), true)) == u32(2))
  assert(s[0] == u8(255))
  assert(s[1] == u8(165))
  assert(filter_ok(bloom_clear(s, cfg)))
@@ -281,4 +281,54 @@ main: (): i32 {
  42
 }
 `)
+}
+
+func TestE2EOakLibrariesBoundaries(t *testing.T) {
+	var src strings.Builder
+	src.WriteString(oakLibraryPrelude)
+	src.WriteString(`
+main: (): i32 {
+ high: u64 = u64(1) << u64(63)
+`)
+	for _, value := range []uint64{0, 1, 0x8000000000000000, 0xffffffffffffffff, 0x123456789abcdef0} {
+		want := oakFilterMix(value)
+		fmt.Fprintf(&src, "assert(filter_mix((u64(%d) << u64(32)) | u64(%d)) == ((u64(%d) << u64(32)) | u64(%d)))\n", value>>32, uint32(value), want>>32, uint32(want))
+	}
+	src.WriteString(`
+ cfg: BloomConfig = BloomConfig { cells: u32(17), probes: u32(6), seed: u64(17), blocked: false }
+ counters: [18]u8
+ s: [*]u8 = span(&counters)
+ i: u32 = 0
+ while i < u32(18) { s[i] = u8(7); i = i + u32(1) }
+ last: u32 = filter_index(cfg, u64(0), u32(5))
+ s[last] = u8(255)
+ assert(filter_code(counting_bloom_update(s, cfg, u64(0), true)) == u32(3))
+ i = u32(0)
+ while i < u32(18) {
+  expected: u8 = i == last ? u8(255) | u8(7)
+  assert(s[i] == expected)
+  i = i + u32(1)
+ }
+ s[last] = u8(0)
+ assert(filter_code(counting_bloom_update(s, cfg, u64(0), false)) == u32(4))
+ i = u32(0)
+ while i < u32(18) {
+  after: u8 = i == last ? u8(0) | u8(7)
+  assert(s[i] == after)
+  i = i + u32(1)
+ }
+ one: [1]HashSetSlot
+ q: [*]HashSetSlot = span(&one)
+ assert(table_code(hash_set_insert(q, high)) == u32(1))
+ assert(table_code(hash_set_insert(q, high)) == u32(2))
+ assert(table_code(hash_set_insert(q, u64(0))) == u32(3))
+ assert(q[0].key == high)
+ assert(hash_set_remove(q, high))
+ assert(table_code(hash_set_insert(q, u64(0))) == u32(1))
+ assert(hash_set_remove(q, u64(0)))
+ assert(!hash_set_remove(q, u64(0)))
+ 42
+}
+`)
+	oakLibraryRun(t, src.String())
 }
