@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/borrowchecker"
+	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -101,6 +102,7 @@ func TestDiagnosticCorpusCoversStableSourceDiagnostics(t *testing.T) {
 		typechecker.CodeGADTResultInvalid,
 		typechecker.CodeGADTResultMismatch,
 		typechecker.CodeClosureCaptureStorage,
+		typechecker.CodeGlobalInitializerNotConstant,
 		typechecker.CodeExternSignatureNotC,
 		typechecker.CodeExternSymbolInvalid,
 		typechecker.CodeExternOutsideDefinition,
@@ -114,6 +116,9 @@ func TestDiagnosticCorpusCoversStableSourceDiagnostics(t *testing.T) {
 		string(borrowchecker.CodeReborrowOverlap),
 		string(borrowchecker.CodeBorrowEscape),
 		string(borrowchecker.CodeUnsafeAssumption),
+		string(discipline.CodeStackRecursion),
+		string(discipline.CodeTailRecursionObligation),
+		string(discipline.CodeUnboundedLoop),
 	}
 	for _, code := range stable {
 		if !covered[code] {

@@ -1,0 +1,3 @@
+compute: (): i32 = 41
+bad: i32 = compute()
+main: (): i32 = bad
