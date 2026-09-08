@@ -1,0 +1,118 @@
+// Open-addressed tables with exact u64 key equality and linear probing.
+// T supplies key:u64 and state:u8 plus any inline payload fields.
+// state is reserved: 0=empty, 1=occupied, 2=tombstone.
+// Start with zeroed storage; keep its length fixed until clear/rebuild.
+HashSetSlot: type = struct { key: u64, state: u8 }
+HashTableError: type = | Full
+
+hash_table_next: (index: u32, capacity: u32): u32 {
+  index == capacity - u32(1) ? u32(0) | index + u32(1)
+}
+
+hash_table_find[T]: (storage: []T, key: u64): Option[u32] {
+  capacity: u32 = len(storage)
+  capacity == u32(0) ? { .None } | {
+    index: u32 = u32_trunc_u64(filter_mix(key) % u64(capacity))
+    visited: u32 = 0
+    found: Bool = false
+    stop: Bool = false
+    answer: u32 = 0
+    while visited < capacity && !stop {
+      storage[index].state == u8(0) ? { stop = true } | {
+        storage[index].state == u8(1) && storage[index].key == key ? {
+          found = true
+          answer = index
+          stop = true
+        }
+      }
+      index = hash_table_next(index, capacity)
+      visited = visited + u32(1)
+    }
+    found ? { .Some(answer) } | { .None }
+  }
+}
+
+// Ok(true) inserts; Ok(false) replaces an existing key, including in a full table.
+// A tombstone is remembered, but probing continues to avoid duplicate keys.
+hash_table_put[T]: (storage: [*]T, item: T): Result[Bool, HashTableError] {
+  capacity: u32 = len(storage)
+  capacity == u32(0) ? { .Err(.Full) } | {
+    index: u32 = u32_trunc_u64(filter_mix(item.key) % u64(capacity))
+    visited: u32 = 0
+    target: u32 = capacity
+    found: Bool = false
+    stop: Bool = false
+    while visited < capacity && !stop {
+      storage[index].state == u8(1) ? {
+        storage[index].key == item.key ? {
+          target = index
+          found = true
+          stop = true
+        }
+      } | {
+        target == capacity ? { target = index }
+        storage[index].state == u8(0) ? { stop = true }
+      }
+      index = hash_table_next(index, capacity)
+      visited = visited + u32(1)
+    }
+    target == capacity ? { .Err(.Full) } | {
+      storage[target] = item
+      storage[target].state = u8(1)
+      .Ok(!found)
+    }
+  }
+}
+
+hash_table_remove[T]: (storage: [*]T, key: u64): Bool {
+  capacity: u32 = len(storage)
+  removed: Bool = false
+  capacity > u32(0) ? {
+    index: u32 = u32_trunc_u64(filter_mix(key) % u64(capacity))
+    visited: u32 = 0
+    stop: Bool = false
+    while visited < capacity && !stop {
+      storage[index].state == u8(0) ? { stop = true } | {
+        storage[index].state == u8(1) && storage[index].key == key ? {
+          storage[index].state = u8(2)
+          removed = true
+          stop = true
+        }
+      }
+      index = hash_table_next(index, capacity)
+      visited = visited + u32(1)
+    }
+  }
+  removed
+}
+
+hash_table_count[T]: (storage: []T): u32 {
+  count: u32 = 0
+  i: u32 = 0
+  while i < len(storage) {
+    storage[i].state == u8(1) ? { count = count + u32(1) }
+    i = i + u32(1)
+  }
+  count
+}
+
+hash_table_clear[T]: (storage: [*]T): () {
+  i: u32 = 0
+  while i < len(storage) {
+    storage[i].state = u8(0)
+    i = i + u32(1)
+  }
+}
+
+hash_set_insert: (storage: [*]HashSetSlot, key: u64): Result[Bool, HashTableError] {
+  item: HashSetSlot = HashSetSlot { key: key, state: u8(1) }
+  hash_table_put(storage, item)
+}
+
+hash_set_contains: (storage: []HashSetSlot, key: u64): Bool {
+  hash_table_find(storage, key) ? | .Some(index) => true | .None => false
+}
+
+hash_set_remove: (storage: [*]HashSetSlot, key: u64): Bool {
+  hash_table_remove(storage, key)
+}

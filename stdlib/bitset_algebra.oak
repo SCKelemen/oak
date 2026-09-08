@@ -1,0 +1,67 @@
+// Bitset algebra preserves bits outside the logical domain, including padding.
+BitSetOperation: type = Union | Intersection | Difference | SymmetricDifference
+
+bitset_combine: (dst: [*]u8, src: []u8, bits: u32, operation: BitSetOperation): Result[Bool, BitSetError] {
+  n: u32 = bitset_storage_bytes(bits)
+  len(dst) < n || len(src) < n ? { .Err(.StorageTooSmall) } | {
+    changed: Bool = false
+    i: u32 = 0
+    while i < n {
+      mask: u8 = u8(255)
+      i == n - u32(1) && bits % u32(8) != u32(0) ? {
+        mask = u8_trunc_u32((u32(1) << (bits % u32(8))) - u32(1))
+      }
+      left: u8 = dst[i]
+      right: u8 = src[i]
+      combined: u8 = operation ?
+        | .Union => (left | right)
+        | .Intersection => left & right
+        | .Difference => left & (right ^ u8(255))
+        | .SymmetricDifference => left ^ right
+      next: u8 = (left & (mask ^ u8(255))) | (combined & mask)
+      changed = changed || next != left
+      dst[i] = next
+      i = i + u32(1)
+    }
+    .Ok(changed)
+  }
+}
+
+bitset_find_next: (storage: []u8, bits: u32, start: u32, value: Bool): Result[Option[u32], BitSetError] {
+  len(storage) < bitset_storage_bytes(bits) ? { .Err(.StorageTooSmall) } | {
+    index: u32 = start
+    found: Bool = false
+    while index < bits && !found {
+      mask: u8 = u8(1) << u8_trunc_u32(index % u32(8))
+      found = ((storage[index / u32(8)] & mask) != u8(0)) == value
+      !found ? { index = index + u32(1) }
+    }
+    found ? { .Ok(.Some(index)) } | { .Ok(.None) }
+  }
+}
+
+// Runtime-validated u64 flag domain. For nominal domains wrap FlagBits in a
+// domain-specific record; this base type does not distinguish two equal masks.
+FlagBits: type = struct { bits: u64, allowed: u64 }
+FlagError: type = | UnknownBits
+
+flags_create: (bits: u64, allowed: u64): Result[FlagBits, FlagError] {
+  (bits & ^allowed) != u64(0) ? { .Err(.UnknownBits) } | {
+    .Ok(FlagBits { bits: bits, allowed: allowed })
+  }
+}
+
+flags_contains_all: (flags: FlagBits, mask: u64): Bool {
+  (mask & ^flags.allowed) == u64(0) && (flags.bits & mask) == mask
+}
+
+flags_contains_any: (flags: FlagBits, mask: u64): Bool {
+  (mask & ^flags.allowed) == u64(0) && (flags.bits & mask) != u64(0)
+}
+
+flags_update: (flags: FlagBits, mask: u64, enabled: Bool): Result[FlagBits, FlagError] {
+  ((flags.bits | mask) & ^flags.allowed) != u64(0) ? { .Err(.UnknownBits) } | {
+    next: u64 = enabled ? (flags.bits | mask) | (flags.bits & ^mask)
+    .Ok(FlagBits { bits: next, allowed: flags.allowed })
+  }
+}

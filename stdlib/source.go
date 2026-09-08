@@ -23,4 +23,13 @@ var unicodeSource string
 //go:embed json.oak
 var jsonSource string
 
-var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "\n" + stringsSource + "\n" + jsonSource
+//go:embed filters.oak
+var filtersSource string
+
+//go:embed hash_table.oak
+var hashTableSource string
+
+//go:embed bitset_algebra.oak
+var bitsetAlgebraSource string
+
+var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "\n" + stringsSource + "\n" + jsonSource + "\n" + filtersSource + "\n" + hashTableSource + "\n" + bitsetAlgebraSource

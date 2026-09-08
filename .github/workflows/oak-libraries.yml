@@ -1,0 +1,18 @@
+name: Oak libraries
+on:
+  push:
+    branches: [codex/oak-library-ports]
+  pull_request:
+    branches: [specification]
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Native Oak library models
+        run: go test ./compiler -run '^TestE2EOakLibraries' -count=1
+      - name: Check formatting
+        run: test -z "$(gofmt -l stdlib/source.go compiler/e2e_oak_libraries_test.go)"

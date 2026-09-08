@@ -1,0 +1,139 @@
+// Allocator-free filters over caller-supplied 64-bit key hashes.
+// Hash collisions contribute to false positives. This mixer is not cryptographic.
+FilterError: type = InvalidConfig | StorageTooSmall | CounterOverflow | NotPresent | Incompatible
+BloomConfig: type = struct { cells: u32, probes: u32, seed: u64, blocked: Bool }
+
+filter_mix: (input: u64): u64 {
+  x: u64 = input
+  multiplier1: u64 = (u64(3210233709) << u64(32)) | u64(484763065)
+  multiplier2: u64 = (u64(2496678331) << u64(32)) | u64(321982955)
+  x = (x ^ (x >> u64(30))) * multiplier1
+  x = (x ^ (x >> u64(27))) * multiplier2
+  x ^ (x >> u64(31))
+}
+
+filter_config_valid: (config: BloomConfig): Bool {
+  config.cells > u32(0) && config.probes > u32(0) && config.probes <= u32(64) &&
+    (!config.blocked || config.cells % u32(512) == u32(0))
+}
+
+// u64 arithmetic wraps modulo 2^64; the C backend uses uint64_t.
+filter_index: (config: BloomConfig, hash: u64, probe: u32): u32 {
+  a: u64 = filter_mix(hash ^ config.seed)
+  increment: u64 = (u64(2654435769) << u64(32)) | u64(2135587861)
+  b: u64 = filter_mix(a + increment) | u64(1)
+  combined: u64 = a + b * u64(probe)
+  config.blocked ? {
+    block: u64 = (a >> u64(32)) % u64(config.cells / u32(512))
+    u32_trunc_u64(block * u64(512) + combined % u64(512))
+  } | {
+    u32_trunc_u64(combined % u64(config.cells))
+  }
+}
+
+bloom_insert: (storage: [*]u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
+  !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
+    len(storage) < bitset_storage_bytes(config.cells) ? { .Err(.StorageTooSmall) } | {
+      changed: Bool = false
+      p: u32 = 0
+      while p < config.probes {
+        index: u32 = filter_index(config, hash, p)
+        mask: u8 = u8(1) << u8_trunc_u32(index % u32(8))
+        slot: u32 = index / u32(8)
+        changed = changed || (storage[slot] & mask) == u8(0)
+        storage[slot] = storage[slot] | mask
+        p = p + u32(1)
+      }
+      .Ok(changed)
+    }
+  }
+}
+
+bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
+  !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
+    len(storage) < bitset_storage_bytes(config.cells) ? { .Err(.StorageTooSmall) } | {
+      present: Bool = true
+      p: u32 = 0
+      while p < config.probes && present {
+        index: u32 = filter_index(config, hash, p)
+        mask: u8 = u8(1) << u8_trunc_u32(index % u32(8))
+        present = (storage[index / u32(8)] & mask) != u8(0)
+        p = p + u32(1)
+      }
+      .Ok(present)
+    }
+  }
+}
+
+bloom_clear: (storage: [*]u8, config: BloomConfig): Result[Bool, FilterError] {
+  !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
+    n: u32 = bitset_storage_bytes(config.cells)
+    len(storage) < n ? { .Err(.StorageTooSmall) } | {
+      i: u32 = 0
+      while i < n {
+        // Preserve padding and spare bytes, like the other Oak bitset functions.
+        last: Bool = i == n - u32(1) && config.cells % u32(8) != u32(0)
+        last ? {
+          mask: u8 = u8_trunc_u32((u32(1) << (config.cells % u32(8))) - u32(1))
+          storage[i] = storage[i] & (mask ^ u8(255))
+        } | { storage[i] = u8(0) }
+        i = i + u32(1)
+      }
+      .Ok(true)
+    }
+  }
+}
+
+// Deduplicate probes: small filters may map several probes to the same cell.
+filter_first_probe: (config: BloomConfig, hash: u64, probe: u32, index: u32): Bool {
+  first: Bool = true
+  previous: u32 = 0
+  while previous < probe && first {
+    first = filter_index(config, hash, previous) != index
+    previous = previous + u32(1)
+  }
+  first
+}
+
+counting_bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
+  !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
+    len(storage) < config.cells ? { .Err(.StorageTooSmall) } | {
+      present: Bool = true
+      p: u32 = 0
+      while p < config.probes && present {
+        present = storage[filter_index(config, hash, p)] != u8(0)
+        p = p + u32(1)
+      }
+      .Ok(present)
+    }
+  }
+}
+
+// Removal requires caller proof of a successful, unmatched insertion.
+// A positive query alone is not proof: false positives are possible.
+counting_bloom_update: (storage: [*]u8, config: BloomConfig, hash: u64, insert: Bool): Result[Bool, FilterError] {
+  !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
+    len(storage) < config.cells ? { .Err(.StorageTooSmall) } | {
+      allowed: Bool = true
+      p: u32 = 0
+      while p < config.probes {
+        check_index: u32 = filter_index(config, hash, p)
+        allowed = allowed && (insert ? storage[check_index] < u8(255) | storage[check_index] > u8(0))
+        p = p + u32(1)
+      }
+      !allowed ? {
+        insert ? { .Err(.CounterOverflow) } | { .Err(.NotPresent) }
+      } | {
+        p = u32(0)
+        while p < config.probes {
+          index: u32 = filter_index(config, hash, p)
+          filter_first_probe(config, hash, p, index) ? {
+            storage[index] = insert ? storage[index] + u8(1) | storage[index] - u8(1)
+          }
+          p = p + u32(1)
+        }
+        .Ok(true)
+      }
+    }
+  }
+}
