@@ -124,8 +124,19 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fluent != direct {
-		a, b := strings.Split(fluent, "\n"), strings.Split(direct, "\n")
+	// Different source spellings may carry different source-range comments.
+	// Compare every executable line, preserving declarations and checks.
+	withoutLocations := func(code string) string {
+		lines := []string{}
+		for _, line := range strings.Split(code, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "// @source:") {
+				lines = append(lines, line)
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	if withoutLocations(fluent) != withoutLocations(direct) {
+		a, b := strings.Split(withoutLocations(fluent), "\n"), strings.Split(withoutLocations(direct), "\n")
 		for i := 0; i < len(a) && i < len(b); i++ {
 			if a[i] != b[i] {
 				t.Fatalf("array fluent/direct C differs at line %d:\nfluent: %s\ndirect: %s", i+1, a[i], b[i])

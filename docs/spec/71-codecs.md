@@ -400,4 +400,5 @@ vectorization; bounded SIMD string scanning remains available to keys.
 
 Sanitizer tests cover nested record arrays, scalar boundaries, length and
 syntax errors, round trips, and unchanged short destinations. Fluent/direct
-C equality and allocator absence are checked for array-bearing records.
+C equality (excluding source-location comments) and allocator absence are
+checked for array-bearing records.
