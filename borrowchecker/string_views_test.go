@@ -8,6 +8,10 @@ func TestStringViewProvenance(t *testing.T) {
 		source string
 		reject bool
 	}{
+		{"global helper mutation", "data: [1]u8\nmutate: (): u32 { data[0] = u8(255)\nu32(0) }\nf: (): u32 { bytes: []u8 = view(&data)\ntext: string = str_from_utf8(bytes)\nmutate()\nlen(text) }", true},
+		{"transitive global mutation", "data: [1]u8\nmutate: (): u32 { data[0] = u8(255)\nu32(0) }\nhelper: (): u32 = mutate()\nf: (): u32 { bytes: []u8 = view(&data)\ntext: string = str_from_utf8(bytes)\nhelper()\nlen(text) }", true},
+		{"global parameter mutation", "data: [1]u8\nmutate: (): u32 { data[0] = u8(255)\nu32(0) }\nuse: (bytes: []u8): u32 { text: string = str_from_utf8(bytes)\nmutate()\nlen(text) }\nf: (): u32 { bytes: []u8 = view(&data)\nuse(bytes) }", true},
+		{"global readonly helper", "data: [1]u8\nread: (): u8 = data[0]\nf: (): u32 { bytes: []u8 = view(&data)\ntext: string = str_from_utf8(bytes)\nread()\nlen(text) }", false},
 		{"parameter bridge", "f: (bytes: []u8): u32 { text: string = str_from_utf8(bytes)\nback: []u8 = str_bytes(text)\nlen(back) }", false},
 		{"string parameter", "f: (text: string): u32 { back: []u8 = str_bytes(text)\nlen(back) }", false},
 		{"literal return", "f: (): string { \"literal\" }", false},

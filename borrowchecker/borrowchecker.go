@@ -67,6 +67,8 @@ type borrowInfo struct {
 // BorrowChecker tracks borrow states and enforces borrowing rules
 type BorrowChecker struct {
 	staticStringFunctions map[string]bool
+	globalWrites          map[string]map[string]bool
+	globalOwners          map[string]bool
 	// ownerStates maps owned array variable names to their current borrow state
 	ownerStates map[string]BorrowState
 
@@ -127,6 +129,7 @@ func (bc *BorrowChecker) CheckProgram(program *ast.Program, env *typechecker.Typ
 	bc.currentBlockDepth = 0
 	bc.unsafeDepth = 0
 	bc.staticStringFunctions = make(map[string]bool)
+	bc.collectGlobalWrites(program, env)
 	for _, statement := range program.Statements {
 		if fn, ok := statement.(*ast.FunctionStatement); ok && fn.Name != nil && literalStringResult(fn.Body) {
 			bc.staticStringFunctions[fn.Name.Value] = true
@@ -835,6 +838,7 @@ func (bc *BorrowChecker) checkIndexExpression(index *ast.IndexExpression, env *t
 
 // checkInvocationExpression checks function calls for borrow operations
 func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
+	bc.checkCallGlobalWrites(call, env)
 	// A borrow named as the first argument of a bound derive builtin is a
 	// derivation source, not a direct use; createSubsliceWithRegion is the
 	// single authority for whether the derivation is allowed.

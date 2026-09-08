@@ -1,0 +1,26 @@
+import(std)
+
+main: (): i32 {
+  // Runtime input remains in caller-owned storage.
+  input: [2]u8
+  input[0] = u8(104)
+  input[1] = u8(105)
+  bytes: []u8 = view(&input)
+  assert(is_valid_utf8(bytes))
+  text: string = str_from_utf8(bytes)
+  source: []u8 = str_bytes(text)
+
+  output: [16]u8
+  written: u32 = 0
+  true ? {
+    destination: [*]u8 = span(&output)
+    builder: TextBuilder = text_builder().append_text(destination, source).append_u64(destination, u64(42))
+    written = text_result_value(builder.finish_text())
+  }
+  result_bytes: []u8 = output[0:written]
+  result: string = str_from_utf8(result_bytes)
+  readable: []u8 = str_bytes(result)
+  expected: []u8 = text_literal("hi42")
+  assert(text_equal(readable, expected))
+  42
+}

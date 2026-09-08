@@ -1,9 +1,21 @@
 package compiler
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestE2EStringViewsBuilderExample(t *testing.T) {
+	source, err := os.ReadFile("../examples/strings/runtime_utf8.oak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, abnormal := buildAndRun(t, "runtime_utf8_builder", string(source))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
 
 func TestE2EStringViews(t *testing.T) {
 	source := `

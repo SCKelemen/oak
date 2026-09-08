@@ -178,7 +178,21 @@ Unicode default full case conversion/folding is pinned to Unicode 17.0.0. Byte
 search results, scalar search results and grapheme counts remain explicitly
 distinct. Scalar-boundary slicing returns ranges whose actual views are created
 by the caller. No normalization, collation, grapheme segmentation, locale tailoring
-or hidden allocator is implied. The semantic `Str[E]`/writer examples above remain
-target interfaces; the executable checked-code-unit API does not claim to provide
-a general borrow-preserving runtime string wrapper before that compiler contract
-exists.
+or hidden allocator is implied. General encoding-polymorphic `Str[E]` and writer
+interfaces above remain target interfaces.
+
+## 13. Scoped runtime UTF-8 views
+
+`str_from_utf8(named_view)` validates a read-only `[]u8` and returns a borrowed
+`string` (`Str[Utf8]`) over the same bytes. Invalid input traps; callers needing
+recoverable validation use `is_valid_utf8` before construction. `str_bytes` maps a
+named UTF-8 string or literal back to a read-only byte view in constant time.
+Both results require explicit new bindings. Neither operation allocates, copies
+bytes, or appends a terminator. Other encoding tags are rejected by `str_bytes`.
+
+The borrow checker tracks the owner and region across view/string aliases and
+parameters. String rebinding, unproved borrow returns, and storage in aggregates
+are rejected. Direct literal-string returns remain legal because their data has
+static lifetime. No region-aware aggregate or closure capture support is implied.
+The executable restrictions and examples are in `stdlib/STRINGS.md`.
+
