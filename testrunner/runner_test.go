@@ -190,3 +190,65 @@ func TestNoTestsAndInvalidFlagsFail(t *testing.T) {
 		}
 	}
 }
+
+func TestFuzzHarnessExportAndNativeExecution(t *testing.T) {
+ dir := fixture(t, map[string]string{"a_test.oak": `import(testing)
+FuzzExport: (data: []u8): () {
+  test_assume(len(data) > u32(0))
+  test_check(data[0] != u8(7), u32(8080))
+}
+`})
+ output := filepath.Join(t.TempDir(), "fuzz.c")
+ var stdout, stderr bytes.Buffer
+ code := Main([]string{"-fuzz", "^FuzzExport$", "-emit-fuzz-harness", output, dir}, &stdout, &stderr)
+ if code != 0 { t.Fatalf("export: %d %s", code, stderr.String()) }
+ if Main([]string{"-fuzz", "^FuzzExport$", "-emit-fuzz-harness", output, dir}, &stdout, &stderr) != 2 { t.Fatal("overwrote existing harness") }
+ clang, err := exec.LookPath("clang")
+ if err != nil { t.Skip("requires clang") }
+ binary := filepath.Join(t.TempDir(), "fuzz")
+ cmd := exec.Command(clang, "-std=c11", "-g", "-O1", "-fsanitize=fuzzer,address,undefined", "-fno-sanitize-recover=all", output, "-o", binary)
+ if out,err:=cmd.CombinedOutput();err!=nil{t.Fatalf("clang: %v\n%s",err,out)}
+ seed:=filepath.Join(t.TempDir(),"seed")
+ os.WriteFile(seed,[]byte{1},0600)
+ if out,err:=exec.Command(binary,"-runs=1",seed).CombinedOutput();err!=nil{t.Fatalf("valid seed: %v\n%s",err,out)}
+ os.WriteFile(seed,[]byte{},0600)
+ if out,err:=exec.Command(binary,"-runs=1",seed).CombinedOutput();err!=nil{t.Fatalf("discard: %v\n%s",err,out)}
+ os.WriteFile(seed,[]byte{7},0600)
+ if out,err:=exec.Command(binary,"-runs=1",seed).CombinedOutput();err==nil || !strings.Contains(string(out),"Oak invariant 8080 failed"){t.Fatalf("missed invariant: %v\n%s",err,out)}
+}
+
+func TestTestingLibraryBoundaries(t *testing.T) {
+ dir:=fixture(t,map[string]string{"a_test.oak":`import(testing)
+fill_four: (writable: [*]u8): () {
+  writable[0] = u8(255)
+  writable[1] = u8(255)
+  writable[2] = u8(255)
+  writable[3] = u8(255)
+}
+TestChoicesAndCapacity: (): () {
+  bytes: [4]u8
+  fill_four(span(&bytes))
+  data: []u8 = view(&bytes)
+  state: [1]TestChoices
+  choices: [*]TestChoices = span(&state)
+  test_check(test_range(choices, data, u32(0), u32(4294967295)) == u32(4294967295), u32(9001))
+  test_check(test_byte(choices, data) == u8(0), u32(9002))
+  test_check(choices[0].offset == u32(4), u32(9003))
+  test_check(test_range(choices, data, u32(7), u32(7)) == u32(7), u32(9004))
+  q: [1]SimQueue
+  e: [1]SimEvent
+  c: [1]SimClock
+  queue: [*]SimQueue = span(&q)
+  events: [*]SimEvent = span(&e)
+  clock: [*]SimClock = span(&c)
+  event: SimEvent = SimEvent { at: u64(5), kind: u32(2), value: u32(3) }
+  test_check(sim_schedule(queue, events, clock, event), u32(9005))
+  test_check(!sim_schedule(queue, events, clock, event), u32(9006))
+  test_check(queue[0].count == u32(1) && events[0].at == u64(5), u32(9007))
+  result: SimEvent = sim_next(queue, events, clock, choices, data)
+  test_check(result.value == u32(3) && queue[0].count == u32(0) && clock[0].now == u64(5), u32(9008))
+}
+`})
+ code,results,stderr:=runCLI(t,dir)
+ if code!=0{t.Fatalf("boundaries: %d %+v %s",code,results,stderr)}
+}

@@ -1,0 +1,177 @@
+# Native testing, generated inputs, fuzzing, and simulation
+
+Status: initial executable host tooling and Oak helper library. `tested` is not
+`proved`, `model-checked`, or a refinement witness. This document specifies the
+implemented bootstrap contract and explicitly identifies its limits.
+
+## Entry points and discovery
+
+`oak test [flags] [directory | ./... ...]` compiles each selected directory as
+one bootstrap package through the ordinary checked C backend. Flags precede
+paths. An omitted path means the current directory. Recursive discovery skips
+hidden directories, `vendor`, and `testdata`. Discovery and execution order are
+stable, and overlapping directory arguments are deduplicated.
+
+All immediate `.oak` siblings participate in the compilation. Only top-level
+functions in `*_test.oak` register tests. Names have an ASCII identifier spelling
+and start with a prefix followed by an uppercase ASCII letter or underscore:
+
+| Prefix | Signature | Ordinary `oak test` behavior |
+| --- | --- | --- |
+| `Test` | `(): ()` | One execution |
+| `Property` | `(data: []u8): ()` | Corpus plus generated cases |
+| `Fuzz` | `(data: []u8): ()` | Corpus plus four built-in seeds |
+| `Sim` | `(data: []u8): ()` | Corpus plus generated simulation inputs |
+
+Methods, generic tests, extern tests, variadics, and other signatures reject.
+All functions still undergo the normal type, borrow, and discipline checks.
+The application `main` is compiled but is not used as the test entry point.
+`-run` filters all kinds; `-fuzz` selects mutation fuzz campaigns; `-sim` selects
+simulation campaigns. No matching tests is an error, including empty discovery.
+`-list` discovers and validates registrations without native compilation.
+
+Bootstrap package source is concatenated in filename order with source-boundary
+comments. Test registrations retain original filename and line. Compiler errors
+currently refer to positions in the assembled `<oak-test-package>` source.
+General package resolution and fully source-mapped multi-file diagnostics are
+separate compiler work; this runner does not invent a second module system.
+
+## Isolation, outcomes, and reporting
+
+Every normal runner case starts a fresh native child process. Assertions and
+bounds traps cannot terminate the host runner. `-timeout` bounds each execution;
+`-build-timeout` bounds C compilation. Native stdout/stderr and the control
+report are independently bounded to 64 KiB. Excess user output is truncated;
+control-report overflow fails the case. The control report is separate from
+stdout, so ordinary test output cannot corrupt `-json` results.
+
+This is process isolation for trusted development tests, not a security sandbox.
+Tests may use the host permissions available to them. Sanitizers are opt-in via
+`-sanitize` and require a supporting C compiler/runtime.
+
+`import(testing)` provides:
+
+- `test_check(condition, id)`: fail with an author-assigned stable `u32` invariant
+  ID. The explicit C reporting boundary is supplied by the host harness.
+- `test_assume(condition)`: reject an input. Rejections do not count as passing
+  cases; exceeding `-max-discards` fails. A unit test cannot discard.
+- `testing_classify(id)`: mark a class reached in this execution. Each accepted
+  execution counts once per class, even if a loop emits it repeatedly.
+- `-cover 10:5,20:1`: require minimum accepted-case counts for these class IDs in
+  each selected non-unit test. These are semantic labels, not code coverage.
+
+Ordinary `assert` remains always enabled. A generic trap has an exit/signal
+signature; `test_check` provides stronger failure identity for minimization.
+Source-specific assertion diffs, subtests, cleanup callbacks, expected-trap
+annotations, and compile-fail registration are not yet part of this API.
+
+## Choice tapes and property testing
+
+A `TestChoices` cursor consumes a caller-supplied byte view through `test_byte`,
+`test_bool`, `test_u32`, and `test_range`. Unsigned words consume four bytes in
+little-endian order. Exhaustion supplies zero without advancing the cursor.
+Thus every finite tape describes a complete run. There is no hidden target
+allocation. Separate the host's storage needs from the effects of tested code.
+
+Generators are ordinary composable Oak functions over the cursor and tape.
+Dependent generators construct valid values from previous choices. Stateful
+tests construct legal command sequences and compare execution with a separately
+represented model; see `examples/testing/irq_test.oak`. Do not repair arbitrary
+raw-memory encodings into unsafe values or assume every proposition admits an
+efficient generator. Automatic ADT/refinement derivation is future work.
+
+`test_range` is inclusive and handles the entire `u32` domain without overflow.
+Its modulo mapping is deliberately biased; no uniform or cryptographic sampling
+claim is made. The runner includes empty, zero-filled, 0xff-filled and ascending
+byte seeds, then variable-length generated tapes. Root seed, target name, and
+attempt independently derive a fixed SplitMix64 stream. There is no dependence
+on Go's random implementation or earlier tests consuming random numbers.
+
+Failure minimization deletes chunks and then reduces bytes. Every accepted
+candidate is smaller by length or lexicographic order and must reproduce the
+same failure signature. Both an execution budget and a time budget apply. One
+in-flight execution may extend the shrink deadline by at most its case timeout.
+An initial repeat checks failure stability. Timeouts and harness failures are
+saved but not minimized. The result is budget-minimized, not globally minimal.
+A generic signal signature cannot distinguish two unrelated traps with the same
+signal; stable invariant IDs are preferred for stateful properties.
+
+## Corpus and replay
+
+Failures are atomically saved in `testdata/oak/<TestName>/<digest>.json` with:
+
+- schema and engine versions;
+- test name and kind;
+- native build fingerprint;
+- root seed and attempt;
+- maximum input size and sanitizer mode;
+- failure signature and concrete minimized input (JSON base64).
+
+The build fingerprint covers generated C, the harness, native compilation flags,
+and C compiler version output. It is a useful drift check, not an attestation of
+all host libraries, environment variables, CPU features, or external effects.
+Exact replay still requires preserving the relevant execution environment.
+
+`-replay artifact.json directory` executes exactly one concrete input and checks
+both the build fingerprint and failure signature. A reproduced failure exits
+nonzero. Divergence is reported explicitly, including a now-passing input.
+Filtering does not change the compiled registration table, so selecting one test
+for replay does not itself invalidate a multi-test failure artifact.
+
+Ordinary test runs replay corpus inputs before generating new ones and do not
+require the historical build fingerprint: checked-in regressions must survive
+source changes. `.bin` files in the same directory are additional raw seeds.
+Unknown/malformed artifact schemas, mismatched test identities, and oversized
+inputs reject. Commit valuable minimized failures, not random campaign output.
+
+## Fuzzing
+
+`-fuzz` uses deterministic byte insertion, deletion, bit flips, replacement and
+fresh-input exploration over corpus/built-in seeds. This portable engine is
+mutation fuzzing, not coverage-guided fuzzing. `-runs` is a finite accepted-case
+budget, making it usable in CI.
+
+`-fuzz '^FuzzName$' -emit-fuzz-harness path.c` emits one checked translation unit
+with `LLVMFuzzerTestOneInput`. Compile it with Clang's
+`-fsanitize=fuzzer,address,undefined` for coverage-guided native fuzzing. Export
+requires one target and refuses to overwrite an existing file. The emitted
+harness preserves invariant IDs, skips oversized input, and translates rejected
+inputs to a return to libFuzzer. libFuzzer owns its corpus, crash files and
+minimization. Copy useful raw crash files into the runner's `.bin` corpus to
+reproduce and reduce them with `oak test`.
+
+libFuzzer is persistent: all tested state must be constructed/reset inside the
+fuzz function. Target-side state must not escape across calls. Avoid nontrivial
+resource cleanup obligations around `test_assume` in this mode: rejection uses
+a host `setjmp`/`longjmp` boundary. The ordinary isolated runner does not require
+persistent-process reset discipline.
+
+## Deterministic event simulation
+
+`SimClock`, `SimQueue`, and caller-owned `SimEvent` storage implement a bounded
+discrete-event queue. Scheduling in the past rejects; full capacity returns
+false without altering the queue. `sim_next` advances to the earliest event and
+uses a choice to select among equal-time events. Removing an event swaps in the
+last slot; this deterministic storage order is part of this version's replay
+contract. Queue operations are bounded linear scans. Empty dequeue rejects.
+
+Scenario code owns production state, independent models, allowed fault actions,
+and invariants. It also owns finite step budgets. The IRQ/timer pilot checks
+state transitions and a recovery suffix with explicit progress assumptions.
+The host additionally applies a watchdog to runaway test code.
+
+This first implementation does not intercept arbitrary clocks, entropy, FFI,
+MMIO, threads, or atomics. Determinism is conditional on the scenario routing
+all relevant inputs through modeled boundaries. Compiler-enforced simulation
+effect closure, storage persistence/fault models, general scheduling adapters,
+and integration with the OS's replay/debug event schema remain future work.
+Single-thread event interleavings are not an ARM weak-memory model and do not
+replace the existing memory-model litmus tests or hardware validation.
+
+## Validation
+
+Go tests execute compiled Oak programs for registration, native unit/property/
+fuzz/simulation modes, rejection budgets, coverage labels, crash and timeout
+isolation, minimization, strict replay, source drift, and corpus reuse. Go fuzz
+targets exercise reducer invariants and mutation bounds. The dedicated workflow
+runs the native Oak examples and a coverage-guided libFuzzer smoke campaign.

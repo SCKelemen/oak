@@ -14,7 +14,7 @@ import (
 )
 
 type Config struct {
- EmitFuzz string
+	EmitFuzz                             string
 	CC                                   string
 	Runs, MaxBytes, Shrink, MaxDiscards  int
 	Seed                                 uint64
@@ -57,7 +57,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	flags.DurationVar(&cfg.ShrinkTimeout, "shrink-timeout", cfg.ShrinkTimeout, "minimization time budget (plus at most one case timeout)")
 	flags.StringVar(&cfg.Run, "run", "", "test name regular expression")
 	flags.StringVar(&cfg.EmitFuzz, "emit-fuzz-harness", "", "export one -fuzz target as a libFuzzer C harness (new file)")
- flags.StringVar(&cfg.Fuzz, "fuzz", "", "fuzz target regular expression; enables mutation")
+	flags.StringVar(&cfg.Fuzz, "fuzz", "", "fuzz target regular expression; enables mutation")
 	flags.StringVar(&cfg.Sim, "sim", "", "simulation name regular expression")
 	flags.StringVar(&cfg.Replay, "replay", "", "replay one saved artifact against its exact build")
 	flags.StringVar(&cfg.Cover, "cover", "", "required class sample counts, e.g. 10:5,20:1 (per selected generated test)")
@@ -79,8 +79,11 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid test configuration")
 		return 2
 	}
-	if cfg.EmitFuzz!="" && (cfg.Fuzz=="" || cfg.Replay!="" || cfg.List) {fmt.Fprintln(stderr,"-emit-fuzz-harness requires -fuzz and cannot combine with replay/list");return 2}
- run, err := regexp.Compile(cfg.Run)
+	if cfg.EmitFuzz != "" && (cfg.Fuzz == "" || cfg.Replay != "" || cfg.List) {
+		fmt.Fprintln(stderr, "-emit-fuzz-harness requires -fuzz and cannot combine with replay/list")
+		return 2
+	}
+	run, err := regexp.Compile(cfg.Run)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
@@ -139,17 +142,33 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "replay requires exactly one matching test; select its package directory")
 		return 2
 	}
-	if cfg.EmitFuzz!="" {
-  if matched!=1 {fmt.Fprintln(stderr,"fuzz export requires exactly one matching target");return 2}
-  for _,pkg:=range packages {if len(pkg.Tests)==1 {
-   content,err:=EmitFuzzHarness(pkg,pkg.Tests[0],cfg.MaxBytes)
-   if err==nil {err=writeHarness(cfg.EmitFuzz,content)}
-   if err!=nil {fmt.Fprintln(stderr,err);return 2}
-   if cfg.JSON {if err:=json.NewEncoder(stdout).Encode(map[string]string{"status":"exported","path":cfg.EmitFuzz});err!=nil{return 2}} else {fmt.Fprintln(stdout,"Exported "+cfg.EmitFuzz)}
-  }}
-  return 0
- }
- code := 0
+	if cfg.EmitFuzz != "" {
+		if matched != 1 {
+			fmt.Fprintln(stderr, "fuzz export requires exactly one matching target")
+			return 2
+		}
+		for _, pkg := range packages {
+			if len(pkg.Tests) == 1 {
+				content, err := EmitFuzzHarness(pkg, pkg.Tests[0], cfg.MaxBytes)
+				if err == nil {
+					err = writeHarness(cfg.EmitFuzz, content)
+				}
+				if err != nil {
+					fmt.Fprintln(stderr, err)
+					return 2
+				}
+				if cfg.JSON {
+					if err := json.NewEncoder(stdout).Encode(map[string]string{"status": "exported", "path": cfg.EmitFuzz}); err != nil {
+						return 2
+					}
+				} else {
+					fmt.Fprintln(stdout, "Exported "+cfg.EmitFuzz)
+				}
+			}
+		}
+		return 0
+	}
+	code := 0
 	emit := func(result Result) {
 		if cfg.JSON {
 			if err := json.NewEncoder(stdout).Encode(result); err != nil {
@@ -194,7 +213,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 				}
 			}
 			result := runTest(pkg, test, index, native, cfg, cover, replay)
-			if result.Status != "pass" && code == 0 {
+			if result.Status == "error" { code = 2 }
+   if result.Status != "pass" && code == 0 {
 				code = 1
 			}
 			emit(result)

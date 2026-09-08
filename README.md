@@ -1062,3 +1062,11 @@ fn schedule[T: IntrusiveListNode[T, ReadyQueue]](
 ---
 
 *Oak is actively developed. Check the latest documentation for updates and new features.*
+
+
+## Native test tooling
+
+`oak test` runs compiled unit tests, property tests, fuzz targets, and bounded
+deterministic event simulations. See [the runner guide](testrunner/README.md)
+and [the testing contract](docs/spec/110-testing.md) for examples, shrinking,
+corpus replay, and Clang/libFuzzer harness export.

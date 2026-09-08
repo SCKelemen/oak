@@ -131,15 +131,15 @@ const nativePreamble = `
 #include <stdlib.h>
 #include <stdint.h>
 static FILE *oak_test_report;
-void oak_testing_fail(uint32_t id) {
+void oak_test_host_fail(uint32_t id) {
  if (oak_test_report) { fprintf(oak_test_report, "fail %u\n", (unsigned)id); fflush(oak_test_report); }
  exit(101);
 }
-void oak_testing_discard(void) {
+void oak_test_host_discard(void) {
  if (oak_test_report) { fputs("discard\n", oak_test_report); fflush(oak_test_report); }
  exit(102);
 }
-void oak_testing_classify(uint32_t id) {
+void oak_test_host_classify(uint32_t id) {
  if (oak_test_report) { fprintf(oak_test_report, "class %u\n", (unsigned)id); fflush(oak_test_report); }
 }
 `

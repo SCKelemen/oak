@@ -134,3 +134,13 @@ A green Lean build means the stated theorems type-check against the pinned proof
 Do not mark a feature **R** merely because Go/Zig tests mirror theorem examples.
 
 `R` requires an explicit formal relation between concrete implementation state/operations and the formal model, with preservation proved by the proof system.
+
+
+## Native testing tools
+
+`oak test` and `import(testing)` implement the bootstrap contract in
+`110-testing.md`: native isolated cases, choice-tape properties/minimization,
+mutation fuzzing, libFuzzer export, persistent corpus/replay, and bounded
+discrete-event simulation. These are execution-tested tools, not a formal
+refinement claim. Whole-machine simulation, compiler-enforced effect closure,
+and automatic generator derivation remain unimplemented.

@@ -22,4 +22,11 @@ PropertyClamp: (data: []u8): () {
 FuzzUtf8: (data: []u8): () {
   valid: Bool = is_valid_utf8(data)
   len(data) == u32(0) ? { test_check(valid, u32(1020)) }
+  ascii: Bool = true
+  i: u32 = u32(0)
+  while i < len(data) {
+    data[i] >= u8(128) ? { ascii = false }
+    i = i + u32(1)
+  }
+  ascii ? { test_check(valid, u32(1021)) }
 }
