@@ -85,6 +85,11 @@ print named operations and fields (`command kind=tick target=1 ticks=9`)
 instead of raw payloads; JSON results add `trace_text`, and a diverging replay
 names the first event that differed. See the specification for the format.
 
+Long campaigns: `-workers 8` runs cases in parallel with results identical to a
+sequential run; `-campaign build/campaign -runs 1000000` checkpoints progress
+per test so the next invocation continues where the last one stopped; distinct
+`-seed` values shard a campaign across machines.
+
 `-timeout`, `-max-bytes`, `-max-discards`, `-shrink`, and `-shrink-timeout` make
 campaign costs explicit. `-cover 1:10,2:1` requires sample counts for IDs emitted
 by `testing_classify`. Rejected inputs never count as passes. Use `-sanitize`

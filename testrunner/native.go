@@ -189,8 +189,15 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 		result.signature = "harness:input-too-large"
 		return result
 	}
-	reportPath := filepath.Join(p.dir, "report")
-	_ = os.Remove(reportPath)
+	// One report file per execution: workers run cases concurrently.
+	reportFile, err := os.CreateTemp(p.dir, "report-*")
+	if err != nil {
+		result.signature = "harness:report-file"
+		return result
+	}
+	reportPath := reportFile.Name()
+	_ = reportFile.Close()
+	defer os.Remove(reportPath)
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, p.bin, strconv.Itoa(index), reportPath)
@@ -199,7 +206,7 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 	cmd.Stdout, cmd.Stderr = &output, &output
 	// Bound pipe draining too: a descendant must not keep the runner waiting.
 	cmd.WaitDelay = 100 * time.Millisecond
-	err := cmd.Run()
+	err = cmd.Run()
 	result.output = output.text()
 	timedOut := ctx.Err() != nil
 	// Read the flushed prefix even when a watchdog killed the process. A

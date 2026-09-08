@@ -112,6 +112,28 @@ the reduction budget and each uses the ordinary per-case watchdog.
 A generic signal signature cannot distinguish two unrelated traps with the same
 signal; stable invariant IDs are preferred for stateful properties.
 
+## Campaigns
+
+Every generated attempt is a pure function of the root seed, the test name and
+the attempt index, so a campaign is the prefix of one deterministic sequence.
+`-workers N` (1..64) prepares and executes up to `N` attempts concurrently and
+then consumes their outcomes in attempt order: counts, discards, coverage, the
+failing attempt and its minimized input are identical for every worker count.
+Attempts prepared beyond the stopping point are executed but never counted.
+Each execution writes its own control report, so concurrent cases never share a
+file. Minimization and corpus replay remain sequential.
+
+`-campaign dir` makes a campaign resumable. After every batch the runner writes
+`<dir>/<Test>-<package digest>.json` with the engine and build identity, seed,
+input limit, sanitizer mode, next attempt, and the accepted, case, discard and
+class counts. A later invocation with the same identity continues from the next
+attempt with those counts, so `-runs 1000000` can be split across many jobs
+over time; a satisfied campaign does no new work. State from a different build,
+test, seed or configuration rejects rather than mixing sequences. Results report
+`attempts`, the consumed prefix length including resumed attempts. Sharding
+across machines needs no extra mechanism: give each shard a distinct `-seed`.
+`-replay` never combines with a campaign.
+
 ## Corpus and replay
 
 Failures are atomically saved in `testdata/oak/<TestName>/<digest>.json` with:
