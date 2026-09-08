@@ -193,3 +193,8 @@ remains unproved.
 [MatchLowering.md](MatchLowering.md) records the compiler correction prompted by
 the ASCII decoder: Boolean statement guards evaluate once and statement matches
 select only one arm. Native regressions and the parser corpus cover the fix.
+
+[BoundedDecimal.md](BoundedDecimal.md) proves the bounded decimal model equivalent
+to unbounded decimal evaluation with a final magnitude check, along with
+nonwrapping arithmetic, range/cursor guards, and bounded-prefix append
+invariants. A separate Go/Oak/Lean corpus compares actual token parsing.

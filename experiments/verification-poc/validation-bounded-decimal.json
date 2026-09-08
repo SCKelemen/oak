@@ -1,0 +1,101 @@
+{
+  "artifacts": "Soundness artifact retains bounded-decimal-proof.log, decimal-cases.json, decimal-go.log, and decimal-agreement.log for 30 days.",
+  "commit": "445dba182e429ce9c02df8ea80cde54fe9f24ed3",
+  "comparison": {
+    "accepted": 431,
+    "all_byte_values": 256,
+    "cases": 1338,
+    "checks": [
+      "Acceptance or rejection",
+      "Accepted magnitude",
+      "Accepted sign including negative zero"
+    ],
+    "execution": "Actual Oak frontend -> generated C -> native assertions",
+    "oracles": [
+      "Go strconv.ParseInt restricted to 31-bit magnitude",
+      "Lean parseSigned"
+    ],
+    "random_inputs": 400,
+    "rejected": 907,
+    "seed": 918273,
+    "transport": "JSON numeric byte arrays preserve invalid UTF-8"
+  },
+  "date": "2026-09-08",
+  "format": "oak-bounded-decimal-validation-1",
+  "implementation": {
+    "actual_implementation": "Oak: rup_token in self_hosted_text.oak",
+    "formal_model": "Lean 4: proof/BoundedDecimal.lean",
+    "host_harness": "Go: self_hosted_decimal_test.go",
+    "python_runtime": false
+  },
+  "next_step": "Scanner-state relation for cursors, token ranges, partial accumulators, and rejection states.",
+  "passed": true,
+  "profile": {
+    "cursor_input_bound": 65536,
+    "maximum_magnitude": 2147483647,
+    "word_modulus": 4294967296
+  },
+  "proof": {
+    "arithmetic": "Accepted multiplication/addition fit below 2^32 and agree with reduction modulo 2^32.",
+    "axiom_reports": [
+      "'OakVerification.Decimal.step_refines' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Decimal.step_bounds' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Decimal.step_no_wrap' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Decimal.run_refines' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Decimal.decodeDigit_refines' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Decimal.parseUnsigned_refines' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Decimal.parseSigned_refines' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Decimal.rangeSafe_refines' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Decimal.range_index' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Decimal.append_bounds' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Decimal.append_no_wrap' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Decimal.cursor_progress' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Decimal.appendBuffer_invariant' depends on axioms: [propext, Quot.sound]"
+    ],
+    "buffers": "Subtraction-based range guards, index bounds, append bounds, nonwrapping cursor/count increments, and initialized-prefix preservation.",
+    "custom_axioms": false,
+    "refinement": "Executable bounded decimal model equals unbounded decimal evaluation followed by a final magnitude check, including optional sign and signed zero.",
+    "reported_theorems": 13,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Complete Oak scanner-state representation relation",
+      "Concrete Oak array correspondence with logical initialized prefixes",
+      "Full DIMACS/LRAT decoder refinement",
+      "Oak compiler semantics preservation"
+    ],
+    "proved": [
+      "Lean model-to-mathematical-specification equivalence",
+      "Arithmetic safety of accepted model steps",
+      "Local logical buffer invariants"
+    ],
+    "tested": [
+      "Compiled Oak-to-Lean model correspondence on the corpus"
+    ],
+    "trusted_execution": [
+      "Oak compiler",
+      "Generated C",
+      "C compiler/runtime",
+      "Go harness"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34205238981",
+  "solvers_job": 101993080352,
+  "soundness_job": 101993080194,
+  "repository_ci": {
+    "Golden File Verification": "success",
+    "Verification experiment (opt-in)": "success",
+    "Formal Verification": "success",
+    "Standard library": "success",
+    "CI": "success"
+  },
+  "existing_certificate_gate": {
+    "accepted": 11,
+    "rejected_corruptions": 22,
+    "oak_ascii_replay": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    }
+  }
+}

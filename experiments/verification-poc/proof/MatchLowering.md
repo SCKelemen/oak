@@ -63,5 +63,6 @@ universal refinement of the Oak checker or verify the entire compiler.
 workaround-based implementation. `validation-match-lowering.json` records this
 subsequent correction and the new tested commit.
 
-The next proof milestone is a refinement specification for bounded decimal
-parsing and its buffer invariants, followed by the complete Oak decoder.
+The subsequent [bounded decimal milestone](BoundedDecimal.md) proves decimal
+model refinement and local buffer invariants. A complete Oak scanner-state
+relation and decoder proof remain future work.

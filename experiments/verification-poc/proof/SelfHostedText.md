@@ -109,7 +109,8 @@ remain hosted outside Oak. The existing solver gates continue using Go and Lean
 alongside this bounded Oak replay. RAT, binary LRAT, extension variables, and
 theory lemmas remain unsupported.
 
-A useful next step is to state and prove a refinement relation for the bounded
-Oak scanner and decoder, starting with decimal parsing and buffer invariants.
-This would strengthen the trust boundary before making Oak’s checker an
-authoritative evidence path.
+The [bounded decimal milestone](BoundedDecimal.md) now proves model-level
+decimal refinement and local buffer invariants. Correspondence between compiled
+Oak and that model remains tested rather than universally proved. The next step
+is a scanner-state relation covering cursors, token ranges, partial values, and
+rejection states.
