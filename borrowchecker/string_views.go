@@ -11,6 +11,16 @@ func literalStringResult(expr ast.Expression) bool {
 		return true
 	case *ast.BlockExpression:
 		return literalStringResult(value.Result())
+	case *ast.MatchExpression:
+		if len(value.Arms) == 0 {
+			return false
+		}
+		for _, arm := range value.Arms {
+			if !literalStringResult(arm.Body) {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }

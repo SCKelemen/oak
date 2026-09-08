@@ -15,6 +15,7 @@ func TestStringViewProvenance(t *testing.T) {
 		{"parameter bridge", "f: (bytes: []u8): u32 { text: string = str_from_utf8(bytes)\nback: []u8 = str_bytes(text)\nlen(back) }", false},
 		{"string parameter", "f: (text: string): u32 { back: []u8 = str_bytes(text)\nlen(back) }", false},
 		{"literal return", "f: (): string { \"literal\" }", false},
+		{"literal selection", "f: (n: u32): u32 { text: string = n ? | 0 => \"zero\" | _ => \"other\"\nbytes: []u8 = str_bytes(text)\nlen(bytes) }", false},
 		{"borrowed return", "f: (bytes: []u8): string { text: string = str_from_utf8(bytes)\ntext }", true},
 		{"alias return", "f: (text: string): string { alias: string = text\nalias }", true},
 		{"owner write", "f: (): u32 { data: [1]u8\nbytes: []u8 = view(&data)\ntext: string = str_from_utf8(bytes)\nback: []u8 = str_bytes(text)\ndata[0] = u8(1)\nlen(back) }", true},

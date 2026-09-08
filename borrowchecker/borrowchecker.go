@@ -546,7 +546,10 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 		bc.checkExpression(vd.Value, env, varName)
 	}
 	if _, text := env.CheckedDeclarationType(vd).(*typechecker.StringType); text {
-		if _, tracked := bc.activeBorrows[varName]; !tracked {
+		valueType := env.CheckedExpressionType(vd.Value)
+		_, stringValue := valueType.(*typechecker.StringType)
+		// Do not cascade lifetime errors from an already ill-typed initializer.
+		if _, tracked := bc.activeBorrows[varName]; !tracked && (valueType == nil || stringValue) {
 			bc.reportBorrow(vd.Name, CodeBorrowEscape, "string binding requires a literal or a tracked string borrow")
 		}
 	}
@@ -618,6 +621,9 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		bc.checkExpression(e.Scrutinee, env)
 		for _, arm := range e.Arms {
 			bc.checkExpression(arm.Body, env)
+		}
+		if targetVar != "" && literalStringResult(e) {
+			bc.createViewBorrowWithRegion("$literal-match:"+targetVar, targetVar, nil, e)
 		}
 	case *ast.RecordLiteral:
 		for _, field := range e.Fields {

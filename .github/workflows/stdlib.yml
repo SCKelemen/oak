@@ -18,6 +18,8 @@ jobs:
           git diff --exit-code -- stdlib/unicode.oak
       - name: Test borrow storage boundaries
         run: go test -race ./typechecker ./borrowchecker ./lsp -count=1
+      - name: Check golden corpus
+        run: go test ./serialize -run TestGoldenCorpusMatches -count=1
       - name: Test runtime string views
         run: go test ./compiler -run '(TestE2EStringViews|TestStringViews)' -count=1
       - name: Test strings
