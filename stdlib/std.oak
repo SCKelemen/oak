@@ -1220,3 +1220,180 @@ min_heap_validate[T]: (cursor: [*]MinHeapCursor, storage: []T): () {
     index = index + u32(1)
   }
 }
+
+
+// Bounded double-ended queue. The cursor and initialized storage stay paired.
+DequeCursor: type = struct { head: u32, count: u32 }
+
+deque_check: (cursor: [*]DequeCursor, capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(cursor[0].count <= capacity)
+  capacity == u32(0) ? { assert(cursor[0].head == u32(0)) } | {
+    assert(cursor[0].head < capacity)
+  }
+}
+
+// offset < capacity; subtraction avoids overflow of head + offset.
+deque_offset: (head: u32, capacity: u32, offset: u32): u32 {
+  assert(head < capacity && offset < capacity)
+  remaining: u32 = capacity - head
+  offset < remaining ? head + offset | offset - remaining
+}
+
+deque_push_back[T]: (cursor: [*]DequeCursor, storage: [*]T, value: T): Result[u32, CollectionError] {
+  capacity: u32 = len(storage)
+  deque_check(cursor, capacity)
+  cursor[0].count == capacity ? { .Err(.Full) } | {
+    index: u32 = deque_offset(cursor[0].head, capacity, cursor[0].count)
+    storage[index] = value
+    cursor[0].count = cursor[0].count + u32(1)
+    .Ok(cursor[0].count)
+  }
+}
+
+deque_push_front[T]: (cursor: [*]DequeCursor, storage: [*]T, value: T): Result[u32, CollectionError] {
+  capacity: u32 = len(storage)
+  deque_check(cursor, capacity)
+  cursor[0].count == capacity ? { .Err(.Full) } | {
+    head: u32 = cursor[0].head == u32(0) ? capacity - u32(1) | cursor[0].head - u32(1)
+    storage[head] = value
+    cursor[0].head = head
+    cursor[0].count = cursor[0].count + u32(1)
+    .Ok(cursor[0].count)
+  }
+}
+
+deque_pop_front[T]: (cursor: [*]DequeCursor, storage: [*]T): Result[T, CollectionError] {
+  capacity: u32 = len(storage)
+  deque_check(cursor, capacity)
+  cursor[0].count == u32(0) ? { .Err(.Empty) } | {
+    value: T = storage[cursor[0].head]
+    cursor[0].head = cursor[0].head == capacity - u32(1) ? u32(0) | cursor[0].head + u32(1)
+    cursor[0].count = cursor[0].count - u32(1)
+    .Ok(value)
+  }
+}
+
+deque_pop_back[T]: (cursor: [*]DequeCursor, storage: [*]T): Result[T, CollectionError] {
+  capacity: u32 = len(storage)
+  deque_check(cursor, capacity)
+  cursor[0].count == u32(0) ? { .Err(.Empty) } | {
+    index: u32 = deque_offset(cursor[0].head, capacity, cursor[0].count - u32(1))
+    value: T = storage[index]
+    cursor[0].count = cursor[0].count - u32(1)
+    .Ok(value)
+  }
+}
+
+deque_get[T]: (cursor: [*]DequeCursor, storage: []T, index: u32): Result[T, CollectionError] {
+  deque_check(cursor, len(storage))
+  index >= cursor[0].count ? { .Err(.OutOfBounds) } | {
+    .Ok(storage[deque_offset(cursor[0].head, len(storage), index)])
+  }
+}
+
+deque_set[T]: (cursor: [*]DequeCursor, storage: [*]T, index: u32, value: T): Result[T, CollectionError] {
+  deque_check(cursor, len(storage))
+  index >= cursor[0].count ? { .Err(.OutOfBounds) } | {
+    slot: u32 = deque_offset(cursor[0].head, len(storage), index)
+    old: T = storage[slot]
+    storage[slot] = value
+    .Ok(old)
+  }
+}
+
+deque_front[T]: (cursor: [*]DequeCursor, storage: []T): Result[T, CollectionError] {
+  deque_check(cursor, len(storage))
+  cursor[0].count == u32(0) ? { .Err(.Empty) } | { .Ok(storage[cursor[0].head]) }
+}
+
+deque_back[T]: (cursor: [*]DequeCursor, storage: []T): Result[T, CollectionError] {
+  deque_check(cursor, len(storage))
+  cursor[0].count == u32(0) ? { .Err(.Empty) } | {
+    .Ok(storage[deque_offset(cursor[0].head, len(storage), cursor[0].count - u32(1))])
+  }
+}
+
+deque_clear: (cursor: [*]DequeCursor, capacity: u32): () {
+  deque_check(cursor, capacity)
+  cursor[0].head = u32(0)
+  cursor[0].count = u32(0)
+}
+
+// Dense reusable IDs in [0, limit). One occupied bit per ID, no hidden state.
+// Initialize with zeroed storage or id_pool_clear before first use.
+IdPoolError: type = StorageTooSmall | Full | OutOfBounds | AlreadyAllocated | NotAllocated
+
+id_pool_contains: (storage: []u8, limit: u32, id: u32): Result[Bool, IdPoolError] {
+  len(storage) < bitset_storage_bytes(limit) ? { .Err(.StorageTooSmall) } | {
+    id >= limit ? { .Err(.OutOfBounds) } | {
+      mask: u8 = u8(1) << u8_trunc_u32(id % u32(8))
+      .Ok((storage[id / u32(8)] & mask) != u8(0))
+    }
+  }
+}
+
+id_pool_reserve: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError] {
+  len(storage) < bitset_storage_bytes(limit) ? { .Err(.StorageTooSmall) } | {
+    id >= limit ? { .Err(.OutOfBounds) } | {
+      index: u32 = id / u32(8)
+      mask: u8 = u8(1) << u8_trunc_u32(id % u32(8))
+      (storage[index] & mask) != u8(0) ? { .Err(.AlreadyAllocated) } | {
+        storage[index] = (storage[index] | mask)
+        .Ok(id)
+      }
+    }
+  }
+}
+
+id_pool_release: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError] {
+  len(storage) < bitset_storage_bytes(limit) ? { .Err(.StorageTooSmall) } | {
+    id >= limit ? { .Err(.OutOfBounds) } | {
+      index: u32 = id / u32(8)
+      mask: u8 = u8(1) << u8_trunc_u32(id % u32(8))
+      (storage[index] & mask) == u8(0) ? { .Err(.NotAllocated) } | {
+        storage[index] = storage[index] & (mask ^ u8(255))
+        .Ok(id)
+      }
+    }
+  }
+}
+
+// Lowest free ID; full bytes are skipped. Full pools remain unchanged.
+id_pool_allocate: (storage: [*]u8, limit: u32): Result[u32, IdPoolError] {
+  needed: u32 = bitset_storage_bytes(limit)
+  len(storage) < needed ? { .Err(.StorageTooSmall) } | {
+    byte: u32 = 0
+    id: u32 = limit
+    while byte < needed && id == limit {
+      storage[byte] != u8(255) ? {
+        bit: u32 = 0
+        while bit < u32(8) && id == limit {
+          candidate: u32 = byte * u32(8) + bit
+          mask: u8 = u8(1) << u8_trunc_u32(bit)
+          candidate < limit && (storage[byte] & mask) == u8(0) ? { id = candidate }
+          bit = bit + u32(1)
+        }
+      }
+      byte = byte + u32(1)
+    }
+    id == limit ? { .Err(.Full) } | { id_pool_reserve(storage, limit, id) }
+  }
+}
+
+// Clear logical bits only; preserve unused tail bits and spare backing bytes.
+id_pool_clear: (storage: [*]u8, limit: u32): Result[u32, IdPoolError] {
+  len(storage) < bitset_storage_bytes(limit) ? { .Err(.StorageTooSmall) } | {
+    whole: u32 = limit / u32(8)
+    i: u32 = 0
+    while i < whole { storage[i] = u8(0)
+      i = i + u32(1)
+    }
+    tail: u32 = limit % u32(8)
+    tail != u32(0) ? {
+      mask: u8 = (u8(1) << u8_trunc_u32(tail)) - u8(1)
+      storage[whole] = storage[whole] & (mask ^ u8(255))
+    }
+    .Ok(limit)
+  }
+}

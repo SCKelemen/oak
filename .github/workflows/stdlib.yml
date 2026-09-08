@@ -1,7 +1,7 @@
 name: Standard library
 on:
   push:
-    branches: [specification, codex/stdlib-foundation, codex/stdlib-bits-endian, codex/stdlib-buffers, codex/stdlib-collections, codex/stdlib-splice, codex/stdlib-heap]
+    branches: [specification, codex/stdlib-foundation, codex/stdlib-bits-endian, codex/stdlib-buffers, codex/stdlib-collections, codex/stdlib-splice, codex/stdlib-heap, codex/stdlib-serenity]
   pull_request:
     branches: [specification]
 jobs:
@@ -12,9 +12,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'
+      - name: Test deque and ID pool
+        run: go test ./compiler -run 'TestE2EStdlib(Deque|IdPool|Serenity)' -count=1
       - name: Test standard library and compiler
         run: go test -race ./...
       - name: Check formatting
         if: always()
         run: |
-          gofmt -d compiler/stdlib.go compiler/fluent.go compiler/syntax_walk.go compiler/e2e_stdlib_test.go compiler/e2e_stdlib_bits_endian_test.go compiler/e2e_stdlib_buffer_test.go compiler/e2e_stdlib_collections_test.go compiler/e2e_stdlib_splice_test.go compiler/e2e_stdlib_heap_test.go compiler/compilation.go stdlib/source.go codegen/codegen.go typechecker/typechecker.go typechecker/mono.go token/token.go lowering/lowering.go
+          gofmt -d compiler/stdlib.go compiler/fluent.go compiler/syntax_walk.go compiler/e2e_stdlib_test.go compiler/e2e_stdlib_bits_endian_test.go compiler/e2e_stdlib_buffer_test.go compiler/e2e_stdlib_collections_test.go compiler/e2e_stdlib_splice_test.go compiler/e2e_stdlib_heap_test.go compiler/e2e_stdlib_deque_id_test.go compiler/compilation.go stdlib/source.go codegen/codegen.go typechecker/typechecker.go typechecker/mono.go token/token.go lowering/lowering.go
+

@@ -1,0 +1,50 @@
+import(std)
+
+Request: type = struct { id: u32, value: u64 }
+request_value: (result: Result[Request, CollectionError]): u64 = result ?
+  | .Ok(request) => request.value
+  | .Err(reason) => u64(0)
+allocated_id: (result: Result[u32, IdPoolError]): u32 = result ?
+  | .Ok(id) => id
+  | .Err(reason) => u32(4294967295)
+inserted: (result: Result[u32, CollectionError]): Bool = result ?
+  | .Ok(count) => true
+  | .Err(reason) => false
+
+main: (): i32 {
+  ids: [1]u8
+  bits: [*]u8 = span(&ids)
+  first: u32 = allocated_id(id_pool_allocate(bits, u32(3)))
+  second: u32 = allocated_id(id_pool_allocate(bits, u32(3)))
+  assert(first == u32(0) && second == u32(1))
+  data: [3]Request
+  state: [1]DequeCursor
+  queue: [*]DequeCursor = span(&state)
+  true ? {
+    storage: [*]Request = span(&data)
+    ordinary: Request = Request { id: first, value: u64(7) }
+    urgent: Request = Request { id: second, value: u64(42) }
+    assert(inserted(deque_push_back(queue, storage, ordinary)))
+    assert(inserted(deque_push_front(queue, storage, urgent)))
+  }
+  true ? {
+    storage: []Request = view(&data)
+    assert(request_value(deque_front(queue, storage)) == u64(42))
+    assert(request_value(deque_back(queue, storage)) == u64(7))
+    assert(request_value(deque_get(queue, storage, u32(1))) == u64(7))
+  }
+  true ? {
+    storage: [*]Request = span(&data)
+    replacement: Request = Request { id: first, value: u64(8) }
+    assert(request_value(deque_set(queue, storage, u32(1), replacement)) == u64(7))
+    assert(request_value(deque_pop_front(queue, storage)) == u64(42))
+    assert(request_value(deque_pop_back(queue, storage)) == u64(8))
+  }
+  assert(queue[0].count == u32(0))
+  assert(allocated_id(id_pool_release(bits, u32(3), second)) == second)
+  assert(allocated_id(id_pool_allocate(bits, u32(3))) == second)
+  // Arithmetic boundary checks require no enormous allocation.
+  assert(deque_offset(u32(4294967294), u32(4294967295), u32(4294967294)) == u32(4294967293))
+  assert(deque_offset(u32(4294967294), u32(4294967295), u32(1)) == u32(0))
+  42
+}
