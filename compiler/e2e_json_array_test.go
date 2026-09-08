@@ -12,6 +12,25 @@ ArrayPoint: type = struct { lanes: [2]i16 }
 ArrayRecord: type = struct { points(json: "items"): [2]ArrayPoint, flags: [1]Bool, ids: [2]u64 }
 `
 
+func TestE2EJsonArrayMatchPayload(t *testing.T) {
+	source := `Pair: type = struct { lanes: [2]i32 }
+Wrapped: type = Present: Pair | Absent
+read: (wrapped: Wrapped): i32 = wrapped ?
+ | .Present(pair) => pair.lanes[0] + pair.lanes[1]
+ | .Absent => 0
+main: (): i32 {
+ pair: Pair
+ pair.lanes[0] = 20
+ pair.lanes[1] = 22
+ wrapped: Wrapped = .Present(pair)
+ read(wrapped)
+}`
+	code, abnormal := buildAndRun(t, "array_match_payload", source)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
 func TestE2EJsonArrayRoundTrip(t *testing.T) {
 	var source strings.Builder
 	source.WriteString(jsonArrayPrelude + "main: (): i32 {\n")
@@ -36,10 +55,10 @@ func TestE2EJsonArrayRoundTrip(t *testing.T) {
     i = i + u32(1)
    }
    small: [4]u8
-   short: [*]u8 = span(&small)
-   bytes_fill(short, u8(77))
-   assert(!json_result_ok(encode[ArrayRecord, Json](value, short)))
-   assert(short[0] == u8(77) && short[1] == u8(77) && short[2] == u8(77) && short[3] == u8(77))
+   tiny: [*]u8 = span(&small)
+   bytes_fill(tiny, u8(77))
+   assert(!json_result_ok(encode[ArrayRecord, Json](value, tiny)))
+   assert(tiny[0] == u8(77) && tiny[1] == u8(77) && tiny[2] == u8(77) && tiny[3] == u8(77))
   }
  42
 }
@@ -87,8 +106,12 @@ func TestE2EJsonArrayErrors(t *testing.T) {
 }
 
 func TestJsonArrayLowering(t *testing.T) {
-	source := jsonArrayPrelude + `read: (input: []u8): Result[ArrayRecord, JsonDecodeError] = from[Json](input).to[ArrayRecord]()
-write: (value: ArrayRecord, dst: [*]u8): Result[u32, JsonError] = from[ArrayRecord](value).to[Json](dst)
+	source := jsonArrayPrelude + `read: (input: []u8): Result[ArrayRecord, JsonDecodeError] {
+ from[Json](input).to[ArrayRecord]()
+}
+write: (value: ArrayRecord, dst: [*]u8): Result[u32, JsonError] {
+ from[ArrayRecord](value).to[Json](dst)
+}
 main: (): i32 = 0
 `
 	fluent, err := New().WithSource("array.oak", source).EmitC().Get()
