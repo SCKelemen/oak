@@ -165,8 +165,10 @@ func runOakStream(t *testing.T,source string) {
  // Trace text-case entry in the native harness so traps identify their input.
  // This instrumentation is outside the Oak checker and does not alter decisions.
  if strings.Contains(source,"text_case_") {
-  var traced strings.Builder;traced.WriteString("#include <stdio.h>\n")
+  var traced strings.Builder;traced.WriteString("#include <stdio.h>\nstatic int oak_text_trace_left = 80;\n")
   for _,line:=range strings.Split(generated,"\n") {
+   if strings.TrimSpace(line)=="return kind;" {traced.WriteString("if (oak_text_trace_left-- > 0) fprintf(stderr, \"token kind=%u begin=%u end=%u magnitude=%u sign=%u\\n\", kind, begin, pos, magnitude, sign);\n")}
+   if strings.TrimSpace(line)=="return accepted;" {traced.WriteString("if (oak_text_trace_left-- > 0) fprintf(stderr, \"decoded valid=%d accepted=%d stage=%u vars=%u clauses=%u expected=%u literals=%u commands=%u refs=%u\\n\", valid, accepted, stage, variables, clauses, expected, literals, count, references);\n")}
    traced.WriteString(line);traced.WriteByte('\n')
    if at:=strings.Index(line,"text_case_");at>=0 && strings.HasSuffix(strings.TrimSpace(line),"{") {
     end:=at;for end<len(line)&&line[end]!='(' {end++}
