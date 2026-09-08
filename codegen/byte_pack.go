@@ -9,7 +9,7 @@ import (
 )
 
 // emitBytePack recognizes a complete little-endian byte pack over one u8
-// view and a side-effect-free u32 offset. One range check subsumes the original
+// view and a side-effect-free offset. One range check subsumes the original
 // per-byte checks. Byte accesses retain portable alignment and alias semantics;
 // the native compiler can combine them into an unaligned word load.
 func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker.TypeChecker) bool {
@@ -76,8 +76,8 @@ func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker
 	}
 	name := "oak_byte_pack_le_" + width
 	var body strings.Builder
-	fmt.Fprintf(&body, "static inline %s %s(oak_view_u8 src, u32 off) {\n", width, name)
-	fmt.Fprintf(&body, "  if ((u64)off + %du > (u64)src.len) { __builtin_trap(); }\n", len(terms))
+	fmt.Fprintf(&body, "static inline %s %s(oak_view_u8 src, u64 off) {\n", width, name)
+	fmt.Fprintf(&body, "  if (off > (u64)src.len || %du > (u64)src.len - off) { __builtin_trap(); }\n", len(terms))
 	body.WriteString("  const u8 *p = src.base + off;\n  return ")
 	for lane := range terms {
 		if lane != 0 {

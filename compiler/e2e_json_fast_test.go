@@ -181,3 +181,51 @@ main: (): i32 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }
+
+func TestE2EJsonFastBytePack(t *testing.T) {
+	var source strings.Builder
+	source.WriteString("import(std)\n")
+	for _, bits := range []int{32, 64} {
+		fmt.Fprintf(&source, "pack%d: (src: []u8, at: u32): u%d = (", bits, bits)
+		for lane := 0; lane < bits/8; lane++ {
+			if lane != 0 {
+				source.WriteString(" | ")
+			}
+			fmt.Fprintf(&source, "(u%d(src[at + u32(%d)]) << u%d(%d))", bits, lane, bits, lane*8)
+		}
+		source.WriteString(")\n")
+	}
+	source.WriteString(`main: (): i32 {
+ data: [33]u8
+ position: u32 = 0
+ while position < u32(33) {
+  data[position] = u8_trunc_u32(position * u32(73) + u32(219))
+  position = position + u32(1)
+ }
+ src: []u8 = view(&data)
+ offset: u32 = 0
+ while offset <= u32(25) {
+  reference: u64 = u64(0)
+  lane: u32 = 0
+  while lane < u32(8) {
+   reference = reference | (u64(src[offset + lane]) << (u64(lane) * u64(8)))
+   lane = lane + u32(1)
+  }
+  assert(pack64(src, offset) == reference)
+  assert(pack32(src, offset) == u32_trunc_u64(reference))
+  offset = offset + u32(1)
+ }
+ 42
+}`)
+	_, code, abnormal := buildAndRunOutput(t, "json_fast_byte_pack", source.String(), "-fsanitize=address,undefined")
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	for _, offset := range []string{"u32(1)", "u32(4294967295)"} {
+		input := "import(std)\nread: (src: []u8, at: u32): u32 = ((u32(src[at + u32(0)]) << u32(0)) | (u32(src[at + u32(1)]) << u32(8)) | (u32(src[at + u32(2)]) << u32(16)) | (u32(src[at + u32(3)]) << u32(24)))\nmain: (): i32 {\ndata: [4]u8\nsrc: []u8 = view(&data)\nread(src, " + offset + ")\n42\n}"
+		_, _, abnormal := buildAndRunOutput(t, "json_fast_byte_pack_bounds", input, "-fsanitize=address,undefined")
+		if !abnormal {
+			t.Fatal("out-of-bounds byte pack did not trap")
+		}
+	}
+}
