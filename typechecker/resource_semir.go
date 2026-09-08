@@ -10,7 +10,7 @@ import (
 // ResourceModelFromSemIR derives the typechecker's executable resource model
 // from checked semantic facts. Resource-bearing definitions are identified by
 // their Authority.Resource axis; consuming/fresh-return operations come from
-// structured resource effects on protocol transitions.
+// structured resource effects bound to resolved protocol callables.
 func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 	if err := module.Validate(); err != nil {
 		return ResourceModel{}, fmt.Errorf("invalid semantic module: %w", err)
@@ -56,16 +56,17 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 				Consumes:     append([]int(nil), semantics.Consumes...),
 				ReturnsFresh: semantics.ReturnsFresh,
 			}
-			if existing, exists := model.Operations[transition.Name]; exists {
+			callable := transition.Callable
+			if existing, exists := model.Operations[callable]; exists {
 				if !sameResourceOperation(existing, operation) {
 					return ResourceModel{}, fmt.Errorf(
-						"resource operation %q has conflicting semantics across protocols",
-						transition.Name,
+						"resource callable %q has conflicting semantics across protocols",
+						callable,
 					)
 				}
 				continue
 			}
-			model.MarkOperation(transition.Name, operation)
+			model.MarkOperation(callable, operation)
 		}
 	}
 
