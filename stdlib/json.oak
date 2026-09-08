@@ -420,7 +420,14 @@ json_read_integer: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError
  at >= len(src) || !json_digit(src[at]) ? { json_read_integer_slow(src, offset) } | {
   leading_zero: Bool = src[at] == u8(48)
   magnitude: u64 = u64(src[at] - u8(48))
+  // Every sequence of at most 19 decimal digits fits in u64. Keep the
+  // common loop free of overflow state; check the twentieth and later digits.
+  fast_end: u32 = len(src) - at > u32(19) ? at + u32(19) | len(src)
   at = at + u32(1)
+  while at < fast_end && json_digit(src[at]) {
+   magnitude = magnitude * u64(10) + u64(src[at] - u8(48))
+   at = at + u32(1)
+  }
   overflow: Bool = false
   while at < len(src) && json_digit(src[at]) {
    digit: u64 = u64(src[at] - u8(48))
