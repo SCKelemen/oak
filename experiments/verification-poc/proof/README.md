@@ -207,3 +207,8 @@ sequences, including partial values on rejection and repeated scans.
 invariants for clause and hint pools, including zero-token closure and composition
 with the scanner. Native observation checks complete decoder layouts against Go
 and Lean while existing proof-acceptance gates remain separate.
+
+[RangeBridge.md](RangeBridge.md) connects completed ranges to logical clauses and
+reference lists, proves literal round trips, and composes the range decoder with
+the proved proof-stream checker. Raw-layout comparisons check decoded meaning
+and the actual Oak stream checker's acceptance decisions.

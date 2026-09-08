@@ -52,6 +52,35 @@ unused pool data, ignored deletion literal fields, pool limits, hint limits,
 and deletion-stamp limits. Crashes, timeouts, and compilation errors fail the
 test. The existing text and actual-certificate gates remain in place.
 
+The growing native corpora are compiled in batches of at most 64 independent
+cases. This avoids repeated source-position conversion across one enormous
+translation unit. Each case body and assertion is preserved; the splitter rejects
+missing, duplicated, reordered, or additional main assertions. Coverage tests
+check that every case appears exactly once across batches. Per-compilation and
+native-execution time limits are unchanged. Batching affects only the Go test
+harness; no compiler optimization or checker behavior change is required.
+
+[The soundness gate passed](https://github.com/SCKelemen/oak/actions/runs/34222134683/job/102047501554):
+all nine reported theorems were checked without proof holes or project-specific
+axioms. All 631 layouts agreed on acceptance (244 accepted, 387 rejected).
+Go and Lean also agreed on representation decoding and on the complete meaning
+of all 522 decodable layouts. Of the rejected layouts, 109 fail representation
+guards and 278 decode but fail proof checking. The axiom reports contain only
+`propext`, `Classical.choice`, and `Quot.sound`; the canonical corpus and logs are
+retained with the CI artifact. `../validation-range-bridge.json` records the
+tested commit and exact scope.
+
+The complete native suite and batching coverage tests passed with Go's race
+detector. The range comparison took 10.94 seconds and the scanner corpus 29.37
+seconds in that run. External solver and certificate gates passed, including
+11 accepted Lean certificate checks with 22 rejected corruptions and one
+accepted Oak ASCII replay with two rejected corruptions. Boolean proof and
+invariant-model gates passed as well.
+
+Repository CI and the standard-library suite also passed after batching, as did
+formal-verification and golden-file checks. No package or subprocess timeout
+limits were increased, and no corpus cases or assertions were removed.
+
 ## Remaining boundary
 
 The bridge and its soundness theorem are Lean model results. Universal refinement

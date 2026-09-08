@@ -65,5 +65,7 @@ proofs. The byte adapter
 checks one segment, not the entire DIMACS/LRAT grammar; the layout adapter and JSON
 transport are test infrastructure. Agreement with compiled Oak remains tested.
 
-Next: relate completed clause and command ranges to the decoded proof-stream
-checker, preserving the meaning of each stored literal and reference.
+The [range-bridge milestone](RangeBridge.md) now relates completed ranges to
+logical clauses and references and composes the range decoder with the proved
+proof-stream checker. Next: relate the mutable live-clause table and its
+add/delete transitions to the checker's functional database.

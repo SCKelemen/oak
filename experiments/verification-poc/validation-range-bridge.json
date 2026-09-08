@@ -1,0 +1,163 @@
+{
+  "artifacts": "Soundness artifact retains range-bridge-proof.log, range-cases.json, ranges-go.log, and ranges-agreement.log for 30 days.",
+  "batching": {
+    "compiler_timeout_seconds": 90,
+    "coverage_tests": [
+      "TestNativeCorpusBatchCoverage",
+      "TestNativeCorpusBatchRejectsLostAssertions"
+    ],
+    "maximum_cases_per_translation_unit": 64,
+    "native_execution_timeout_seconds": 15,
+    "preservation": "Case bodies and their assertions are copied unchanged; the main must assert every case exactly once in declaration order.",
+    "reason": "Broad repository runs hit the package timeout while repeatedly converting source positions in large generated corpora.",
+    "scanner_with_race_seconds": 29.37,
+    "scope": "Go experiment harness only",
+    "timeout_limits_changed": false
+  },
+  "commit": "45e84107dd99d22a3e0e093a1c22aa078a5cb013",
+  "comparison": {
+    "accepted": 244,
+    "capacity_cases": 6,
+    "coverage": [
+      "Completed decoder layouts",
+      "All 128 supported literal encodings",
+      "Overlapping and reordered initial ranges",
+      "Empty end ranges",
+      "Invalid starts and counts without unsigned wrap",
+      "Unused valid and invalid literal pool elements",
+      "Unused reference pool data",
+      "Ignored deletion literal ranges",
+      "4096/4097 pool sizes",
+      "256/257 addition hint counts",
+      "Deletion stamp maximum and overflow"
+    ],
+    "decoded": 522,
+    "decoded_but_proof_rejected": 278,
+    "execution": "Normal Oak frontend -> generated C -> native rup_stream_check; no observation instrumentation.",
+    "existing_stream_cases": 425,
+    "go_lean_checks": [
+      "Representation/profile decoding success",
+      "Every decoded initial clause literal, including order and polarity",
+      "Every decoded command kind, ID, clause, hint list, and deletion list",
+      "Final proof-checker acceptance"
+    ],
+    "independent_acceptance_check": "Initial truth table over mentioned variables, or an explicit initial empty clause.",
+    "layouts": 631,
+    "literal_encoding_cases": 128,
+    "native_checks": [
+      "Final acceptance of the actual Oak proof-stream checker"
+    ],
+    "oracles": [
+      "Go wide-sum bounds, literal conversion, and existing LRAT checker",
+      "Lean range decoder composed with the proved decoded checker"
+    ],
+    "prior_decoder_layouts": 52,
+    "raw_mutation_cases": 20,
+    "rejected": 387,
+    "representation_rejected": 109
+  },
+  "date": "2026-09-08",
+  "existing_certificate_gate": {
+    "accepted": 11,
+    "boolean_model_gate": {
+      "accepted_safe": 1,
+      "rejected_corruptions": 2,
+      "rejected_malformed": 3,
+      "rejected_unsafe": 1,
+      "rejected_wrong_model": 1
+    },
+    "boolean_proof_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "oak_ascii_replay": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    },
+    "rejected_corruptions": 22
+  },
+  "format": "oak-range-bridge-validation-1",
+  "implementation": {
+    "actual_implementation": "Oak: uninstrumented rup_stream_check in self_hosted_stream.oak",
+    "formal_model": "Lean 4: proof/RangeBridge.lean",
+    "host_harness": "Go: self_hosted_ranges_test.go",
+    "python_runtime": false
+  },
+  "native_range_seconds": {
+    "with_race_detector": 10.94,
+    "without_race_detector": 4.83
+  },
+  "next_step": "Relate mutable live-clause table updates to the proved checker's functional database.",
+  "passed": true,
+  "profile": {
+    "addition_hint_limit": 256,
+    "command_limit": 256,
+    "initial_clause_limit": 256,
+    "literal_pool_capacity": 4096,
+    "maximum_deletion_stamp": 2147483647,
+    "reference_pool_capacity": 4096,
+    "variables": 64
+  },
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.Ranges.decode_encode' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Ranges.encode_decode' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.Ranges.decoded_bounds' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Ranges.readRange_refines' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Ranges.range_contents' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Ranges.completed_pending' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Ranges.clause_contents' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Ranges.reference_contents' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.Ranges.checkLayout_sound' depends on axioms: [propext, Classical.choice, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Positive-index logical literals round-trip through their pool encoding",
+      "Every natural pool encoding round-trips through its logical literal",
+      "Encoded variable bounds imply positive bounded logical indices",
+      "Subtraction range guards equal mathematical sum bounds",
+      "Selected ranges retain exactly their items under later appends",
+      "Packed segment closure connects to the selected pending suffix",
+      "Decoded clauses preserve selected literal meaning",
+      "References preserve ID order and duplicates",
+      "Acceptance implies unsatisfiability of the reconstructed initial database"
+    ],
+    "reported_theorems": 9,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Universal Oak array-to-model refinement",
+      "Mutable live-clause table refinement",
+      "Propagation scratch-state refinement",
+      "Complete DIMACS/LRAT grammar refinement",
+      "Compiler semantics preservation"
+    ],
+    "proved": [
+      "Lean literal and range representation semantics",
+      "Lean range-decoder/proof-checker composition soundness"
+    ],
+    "tested": [
+      "Compiled Oak acceptance agrees on the corpus",
+      "Go and Lean decoded meaning agree on the corpus"
+    ],
+    "trusted_execution": [
+      "Oak compiler",
+      "Generated C",
+      "C compiler/runtime",
+      "Go harness",
+      "JSON comparison adapters"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34222134683",
+  "solvers_job": 102047501294,
+  "soundness_job": 102047501554,
+  "repository_ci": {
+    "Golden File Verification": "success",
+    "Formal Verification": "success",
+    "Verification experiment (opt-in)": "success",
+    "CI": "success",
+    "Standard library": "success"
+  }
+}
