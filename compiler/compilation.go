@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -59,6 +60,11 @@ type SyntaxTree struct {
 // SemanticModel owns type information for a syntax tree.
 type SemanticModel struct {
 	Tree        *SyntaxTree
+	// PublicRoot preserves the package's source declarations before stdlib
+	// loading and generic/row specialization rewrite the executable tree.
+	// Tooling that describes the package API must project from this surface,
+	// never from compiler-generated declarations.
+	PublicRoot  *ast.Program
 	TypeChecker *typechecker.TypeChecker
 }
 
@@ -159,6 +165,10 @@ func (comp Compilation) SyntaxTree() Stage[*SyntaxTree] {
 // obligations, unnecessary-code warnings) reject too (85-discipline §7).
 func (comp Compilation) Check() Stage[*SemanticModel] {
 	return comp.Parse().Then(func(tree *SyntaxTree) (*SemanticModel, error) {
+		publicRoot, ok := cloneSyntax(reflect.ValueOf(tree.Root)).Interface().(*ast.Program)
+		if !ok || publicRoot == nil {
+			return nil, fmt.Errorf("compiler: cannot preserve public syntax surface")
+		}
 		if err := loadStandardLibrary(tree); err != nil {
 			return nil, err
 		}
@@ -179,7 +189,7 @@ func (comp Compilation) Check() Stage[*SemanticModel] {
 			return nil, err
 		}
 
-		return &SemanticModel{Tree: tree, TypeChecker: tc}, nil
+		return &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc}, nil
 	})
 }
 
