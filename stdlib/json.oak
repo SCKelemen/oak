@@ -1,6 +1,6 @@
 // Strict JSON string codecs. All storage is supplied by the caller.
 JsonError: type = InvalidEncoding | InvalidSyntax | DestinationTooSmall | SizeOverflow
-JsonStrict: type = StrictJson
+JsonStrict: type = | StrictJson
 // Policy is phantom: only cursor and sticky error state occupy storage.
 JsonEncoder[Policy]: type = struct { written: u32, status: u32 }
 json_encoder: (): JsonEncoder[JsonStrict] {

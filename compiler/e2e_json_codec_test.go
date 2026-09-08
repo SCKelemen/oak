@@ -136,30 +136,46 @@ func TestE2EJsonCodecScanner(t *testing.T) {
 	source := `import(std)
 main: (): i32 {
  data: [65]u8
- byte: u32 = 0
- while byte < u32(256) {
+ unitValue: u32 = 0
+ while unitValue < u32(256) {
   position: u32 = 0
   while position < u32(65) {
    i: u32 = 0
    while i < u32(65) { data[i] = u8(65)
     i = i + u32(1)
    }
-   data[position] = u8_trunc_u32(byte)
+   data[position] = u8_trunc_u32(unitValue)
    true ? {
     input: []u8 = view(&data)
-    expected: u32 = byte < u32(32) || byte == u32(34) || byte == u32(92) ? position | u32(65)
+    expected: u32 = unitValue < u32(32) || unitValue == u32(34) || unitValue == u32(92) ? position | u32(65)
     assert(json_string_run(input, u32(0)) == expected)
     assert(json_string_run(input, position) == expected)
     assert(json_string_run(input, u32(65)) == u32(65))
    }
    position = position + u32(1)
   }
-  byte = byte + u32(1)
+  unitValue = unitValue + u32(1)
  }
  42
 }`
 	_, code, abnormal := buildAndRunOutput(t, "json_scan", source, "-DOAK_PORTABLE_INTRINSICS", "-fsanitize=address,undefined")
 	if abnormal || code != 42 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
+
+func TestJsonCodecRejectsPolicyMismatch(t *testing.T) {
+	source := `import(std)
+Other: type = | OtherPolicy
+main: (): i32 {
+ encoder: JsonEncoder[Other]
+ encoder.written = u32(0)
+ encoder.status = u32(0)
+ finish_json(encoder)
+ 42
+}`
+	_, err := New().WithSource("json_policy.oak", source).EmitC().Get()
+	if err == nil || !strings.Contains(err.Error(), "JsonEncoder") {
+		t.Fatalf("expected nominal policy mismatch, got %v", err)
 	}
 }
