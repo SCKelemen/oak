@@ -133,12 +133,12 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 	// Explicit architecture-vector calls must not silently become scalar on
 	// an AArch64 target that disables NEON. Portable simd calls may fall back.
 	if len(arm64Vector) != 0 {
-		cg.write("#if defined(__aarch64__) && !defined(__ARM_NEON) && !defined(OAK_PORTABLE_INTRINSICS)\n")
+		cg.write("#if defined(__aarch64__) && !defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)\n")
 		cg.write("#error \"arm64 vector intrinsics require NEON\"\n")
 		cg.write("#endif\n")
 	}
 	cg.write("/* portable SIMD vectors: docs/spec/93-simd.md */\n")
-	cg.write("#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_PORTABLE_INTRINSICS)\n")
+	cg.write("#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)\n")
 	cg.write("#include <arm_neon.h>\n")
 	cg.write("#endif\n")
 	for _, shape := range typechecker.SimdShapes {
@@ -217,7 +217,7 @@ func (cg *CodeGenerator) programMentionsSimdLocals(program *ast.Program) bool {
 	return found
 }
 
-const neonGuard = "#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_PORTABLE_INTRINSICS)"
+const neonGuard = "#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)"
 
 // simdHelperSource builds the helper for one operation of one vector shape.
 // Inputs come only from the fixed catalogs above.
@@ -312,7 +312,7 @@ func neonReduction(op, vec, neon string) string {
 // helpers (docs/spec/93-simd.md section 2).
 var arm64VectorIntrinsicSources = map[string]string{
 	"uaddlv_u8x16": `static inline u32 oak_arm64_uaddlv_u8x16( u8x16 x ) {
-#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_PORTABLE_INTRINSICS)
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   return (u32)vaddlvq_u8(vld1q_u8(x.lanes));
 #else
   u32 sum = 0;
@@ -322,7 +322,7 @@ var arm64VectorIntrinsicSources = map[string]string{
 }
 `,
 	"umaxv_u8x16": `static inline u8 oak_arm64_umaxv_u8x16( u8x16 x ) {
-#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_PORTABLE_INTRINSICS)
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   return vmaxvq_u8(vld1q_u8(x.lanes));
 #else
   u8 best = 0;
@@ -332,7 +332,7 @@ var arm64VectorIntrinsicSources = map[string]string{
 }
 `,
 	"uminv_u8x16": `static inline u8 oak_arm64_uminv_u8x16( u8x16 x ) {
-#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_PORTABLE_INTRINSICS)
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   return vminvq_u8(vld1q_u8(x.lanes));
 #else
   u8 best = 255;
@@ -343,7 +343,7 @@ var arm64VectorIntrinsicSources = map[string]string{
 `,
 	"cnt_u8x16": `static inline u8x16 oak_arm64_cnt_u8x16( u8x16 x ) {
   u8x16 r;
-#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_PORTABLE_INTRINSICS)
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(r.lanes, vcntq_u8(vld1q_u8(x.lanes)));
 #else
   for (int i = 0; i < 16; i++) {

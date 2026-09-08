@@ -27,16 +27,18 @@ fn probe(address: u64, input: simd.U8x16) -> u64 {
 	if err := os.WriteFile(cPath, []byte(generated), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, neon := range []bool{false, true} {
-		name := "scalar"
-		if neon {
-			name = "neon"
-		}
+	for _, name := range []string{"scalar", "forced-scalar", "neon"} {
+		neon := name == "neon"
 		t.Run(name, func(t *testing.T) {
 			sPath := filepath.Join(dir, name+".s")
 			args := []string{"--target=aarch64-none-elf", "-march=armv8-a", "-std=c11", "-O2", "-ffreestanding", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function"}
 			if !neon {
 				args = append(args, "-mgeneral-regs-only", "-mstrict-align")
+			}
+			if name == "forced-scalar" {
+				// Some build drivers advertise NEON to preprocessing despite
+				// disabling it for code generation. The kernel override wins.
+				args = append(args, "-D__ARM_NEON=1", "-DOAK_SCALAR_SIMD=1")
 			}
 			args = append(args, "-S", cPath, "-o", sPath)
 			if output, err := exec.Command(clang, args...).CombinedOutput(); err != nil {
