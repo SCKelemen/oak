@@ -173,6 +173,26 @@ Exact surface syntax is not frozen. The normative semantics are:
 - consumption does not imply allocation, copying, or destruction unless the operation separately specifies those effects;
 - safe control flow must establish that every reachable use occurs before consumption or on a path where consumption did not occur.
 
+Resource callable metadata may additionally classify parameters as shared-borrowed,
+mutable-borrowed, or consumed without freezing source syntax. These modes impose a
+call-local alias compatibility rule over explicitly mode-marked resource arguments:
+
+- two shared-borrowed arguments may identify the same resource authority class;
+- if either marked argument is mutable-borrowed or consumed, those two arguments
+  must identify distinct resource authority classes;
+- mutable-borrowed exclusivity ends when the call ends and does not consume the
+  caller's resource authority;
+- a consuming parameter invalidates its authority class only after the call has
+  passed all call-local authority checks;
+- a call rejected because marked arguments alias has not occurred semantically,
+  so it must not consume any argument or cause derivative use-after-consume errors.
+
+This rule is defined over resource provenance/alias classes rather than variable
+spelling: passing two different names for one authority is still an alias conflict.
+Unmarked resource parameters retain their ordinary semantics until a semantic or
+ABI contract explicitly assigns an authority mode. `OAK-B0112` reports violations
+of this call-local exclusivity rule.
+
 The checker should track alias classes or equivalent provenance so that consumption invalidates the relevant authority rather than merely one variable name. Copyable values remain outside this rule unless their type/protocol explicitly opts into resource semantics.
 
 `OAK-B0111` is reserved for use after consumption. Its diagnostic must show the consume site, the later use, and any relevant alias/provenance chain that explains why the later name lost authority (`15-diagnostics` section 6).
@@ -249,8 +269,13 @@ The core borrow/resource model must prove:
 - consumption permanently removes the consumed resource authority on that control-flow path;
 - live aliases in the consumed alias class cannot retain resource authority;
 - temporary `UniqueWrite` borrowing and permanent consumption remain distinct transitions;
+- shared resource-call parameters are alias-compatible while mutable-borrowed and consumed parameters require exclusive authority classes;
+- rejecting a resource-call alias conflict leaves permanent resource authority unchanged;
 - extent propagation preserves the semantic length equations introduced by array views, slices, and proved splits.
 
-`spec/lean/Oak/Borrowing.lean` models the local borrow-state laws. Consumption/alias-class and symbolic-extent lemmas should extend that proof surface as the checker representation lands. Temporal ownership transfer across asynchronous actors may additionally use TLA+ when introduced.
-
+`spec/lean/Oak/Borrowing.lean` models the local borrow-state laws. `Oak.ResourceFlow`
+models consumption and alias classes, while `Oak.ResourceCall` models call-local
+parameter-mode compatibility. Symbolic-extent lemmas should extend that proof
+surface as the checker representation lands. Temporal ownership transfer across
+asynchronous actors may additionally use TLA+ when introduced.
 

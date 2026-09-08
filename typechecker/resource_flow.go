@@ -15,16 +15,17 @@ import (
 const CodeResourceUsedAfterConsume = "OAK-B0111"
 
 // ResourceOperation is internal semantic metadata for a callable. It freezes
-// no source syntax: frontends/protocol lowering can mark which arguments lose
-// old authority, and whether the result denotes fresh authority.
+// no source syntax: frontends/protocol lowering can describe call-local
+// authority modes, permanent consumption, and fresh result authority.
 type ResourceOperation struct {
+	Parameters   []ResourceParameterDeclaration
 	Consumes     []int
 	ReturnsFresh bool
 }
 
 // ResourceModel is the syntax-independent bridge from resolved types/callables
 // to resource-flow analysis. ResourceTypes contains nominal source type names;
-// Operations contains semantic consuming operations by resolved callable name.
+// Operations contains semantic resource operations by resolved callable name.
 type ResourceModel struct {
 	ResourceTypes map[string]bool
 	Operations    map[string]ResourceOperation
@@ -49,7 +50,21 @@ func (m *ResourceModel) MarkOperation(name string, operation ResourceOperation) 
 		m.Operations = make(map[string]ResourceOperation)
 	}
 	copyOperation := operation
+	copyOperation.Parameters = append([]ResourceParameterDeclaration(nil), operation.Parameters...)
 	copyOperation.Consumes = append([]int(nil), operation.Consumes...)
+	// Compatibility for pre-parameter-mode callers: a legacy consume list is
+	// equivalent to explicit consumed parameters when no richer modes exist.
+	if len(copyOperation.Parameters) == 0 {
+		for _, index := range copyOperation.Consumes {
+			copyOperation.Parameters = append(copyOperation.Parameters, ResourceParameterDeclaration{
+				Index: index,
+				Mode:  ResourceParameterConsumed,
+			})
+		}
+	}
+	sort.Slice(copyOperation.Parameters, func(i, j int) bool {
+		return copyOperation.Parameters[i].Index < copyOperation.Parameters[j].Index
+	})
 	m.Operations[name] = copyOperation
 }
 
@@ -74,10 +89,11 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			continue
 		}
 		analysis := &typedResourceAnalysis{
-			tc:       tc,
-			model:    model,
-			flow:     resourceflow.New(),
-			reported: make(map[string]bool),
+			tc:               tc,
+			model:            model,
+			flow:             resourceflow.New(),
+			reported:         make(map[string]bool),
+			unknownResources: make(map[string]bool),
 		}
 		analysis.pushScope()
 		if fn.Receiver != nil && fn.Receiver.Name != nil {
@@ -100,11 +116,12 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 }
 
 type typedResourceAnalysis struct {
-	tc       *TypeChecker
-	model    ResourceModel
-	flow     *resourceflow.Flow
-	reported map[string]bool
-	scopes   []map[string]struct{}
+	tc               *TypeChecker
+	model            ResourceModel
+	flow             *resourceflow.Flow
+	reported         map[string]bool
+	unknownResources map[string]bool
+	scopes           []map[string]struct{}
 }
 
 func (m ResourceModel) isResourceType(expr ast.Expression) bool {
@@ -165,6 +182,16 @@ func (a *typedResourceAnalysis) isLocalBinding(name string) bool {
 		}
 	}
 	return false
+}
+
+func cloneResourceProvenance(source map[string]bool) map[string]bool {
+	cloned := make(map[string]bool, len(source))
+	for name, unknown := range source {
+		if unknown {
+			cloned[name] = true
+		}
+	}
+	return cloned
 }
 
 // callableIdentity resolves a checked invocation to the semantic callable key
@@ -256,8 +283,12 @@ func (a *typedResourceAnalysis) block(block *ast.BlockStatement) {
 	if block == nil {
 		return
 	}
+	incomingProvenance := cloneResourceProvenance(a.unknownResources)
 	a.pushScope()
-	defer a.popScope()
+	defer func() {
+		a.popScope()
+		a.unknownResources = incomingProvenance
+	}()
 	for _, stmt := range block.Statements {
 		a.statement(stmt)
 	}
@@ -274,25 +305,49 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 	if stmt.Value != nil {
 		a.expression(stmt.Value)
 	}
-	isResource := a.model.isResourceType(stmt.Type)
+
+	fresh := false
+	if call, ok := stmt.Value.(*ast.InvocationExpression); ok {
+		if op, exists := a.operation(call); exists && op.ReturnsFresh {
+			fresh = true
+		}
+	}
+	isResource := a.model.isResourceType(stmt.Type) || fresh
 	if !isResource {
-		if call, ok := stmt.Value.(*ast.InvocationExpression); ok {
-			if op, exists := a.operation(call); exists && op.ReturnsFresh {
-				isResource = true
+		return
+	}
+
+	if source, ok := stmt.Value.(*ast.Identifier); ok {
+		if a.flow.Registered(source.Value) {
+			if a.flow.CanUse(source.Value) {
+				a.flow.Alias(stmt.Name.Value, source.Value, stmt.Name)
 			}
+			return
+		}
+		if a.unknownResources[source.Value] {
+			a.unknownResources[stmt.Name.Value] = true
+			return
 		}
 	}
-	if !isResource {
+
+	if fresh {
+		// Only an explicit semantic fresh-return fact introduces a new authority
+		// class for an initialized local resource. This is never revival of an
+		// input resource consumed by the operation.
+		a.flow.Register(stmt.Name.Value, stmt.Name)
 		return
 	}
-	if source, ok := stmt.Value.(*ast.Identifier); ok && a.flow.Registered(source.Value) {
-		if a.flow.CanUse(source.Value) {
-			a.flow.Alias(stmt.Name.Value, source.Value, stmt.Name)
-		}
+
+	if stmt.Value != nil && a.isResourceValue(stmt.Value) {
+		// A projection or other resource-valued expression without a tracked
+		// authority source is not fresh merely because it receives a new name.
+		// Preserve unknown provenance so a later exclusive/consuming call fails
+		// closed instead of synthesizing a distinct authority class.
+		a.unknownResources[stmt.Name.Value] = true
 		return
 	}
-	// A resource-returning transition/constructor creates a new authority
-	// class. This is never revival of the consumed input binding.
+
+	// An uninitialized resource binding is an independent local authority root.
 	a.flow.Register(stmt.Name.Value, stmt.Name)
 }
 
@@ -405,8 +460,10 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 		// are still checked without lending outer authority to the closure.
 		outerFlow := a.flow
 		outerScopes := a.scopes
+		outerUnknown := a.unknownResources
 		a.flow = resourceflow.New()
 		a.scopes = nil
+		a.unknownResources = make(map[string]bool)
 		a.pushScope()
 		for _, argument := range e.Arguments {
 			if argument != nil {
@@ -416,6 +473,7 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 		a.block(e.Body)
 		a.flow = outerFlow
 		a.scopes = outerScopes
+		a.unknownResources = outerUnknown
 	}
 }
 
@@ -432,8 +490,14 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 		a.expression(argument)
 	}
 
-	op, consuming := a.operation(expr)
-	if !consuming {
+	op, present := a.operation(expr)
+	if !present {
+		return
+	}
+	// Call-local resource modes are checked after ordinary argument uses and
+	// before permanent consumption. Invalid calls therefore do not mutate
+	// authority state and cannot create cascading use-after-consume errors.
+	if !a.checkCallResourceExclusivity(expr, op) {
 		return
 	}
 	for _, index := range op.Consumes {
