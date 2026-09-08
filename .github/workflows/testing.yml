@@ -1,7 +1,7 @@
 name: Oak testing tools
 on:
   push:
-    branches: [specification, codex/oak-testing-tools]
+    branches: [specification]
   pull_request:
     branches: [specification]
 jobs:
@@ -12,12 +12,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'
-      - name: Test runner and failure replay
-        run: go test -race ./testrunner -count=1 -v
       - name: Build Oak CLI
         run: |
           mkdir -p build
           go build -o build/oak .
+      - name: Test runner and failure replay
+        run: go test -race ./testrunner -count=1 -v
       - name: Run Oak test suite
         run: ./build/oak test -runs 20 examples/testing
       - name: Exercise coverage-guided native fuzz harness

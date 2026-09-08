@@ -110,6 +110,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 2
 		}
+		cfg.Timeout = time.Duration(a.TimeoutNanos)
 		cfg.MaxBytes = a.MaxBytes
 		cfg.Sanitize = a.Sanitize
 		replay = &a
@@ -213,8 +214,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 				}
 			}
 			result := runTest(pkg, test, index, native, cfg, cover, replay)
-			if result.Status == "error" { code = 2 }
-   if result.Status != "pass" && code == 0 {
+			if result.Status == "error" {
+				code = 2
+			}
+			if result.Status != "pass" && code == 0 {
 				code = 1
 			}
 			emit(result)
@@ -313,7 +316,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 				cancel()
 			}
 		}
-		artifact := Artifact{Version: 1, Engine: engineVersion, Test: test.Name, Kind: test.Kind, Build: native.build, Seed: cfg.Seed, Attempt: attempt, MaxBytes: cfg.MaxBytes, Sanitize: cfg.Sanitize, Signature: out.signature, Input: best}
+		artifact := Artifact{TimeoutNanos: int64(cfg.Timeout), Version: 1, Engine: engineVersion, Test: test.Name, Kind: test.Kind, Build: native.build, Seed: cfg.Seed, Attempt: attempt, MaxBytes: cfg.MaxBytes, Sanitize: cfg.Sanitize, Signature: out.signature, Input: best}
 		path, err := saveArtifact(pkg, test, artifact)
 		if err != nil {
 			result.Failure += "; cannot save failure: " + err.Error()

@@ -192,33 +192,47 @@ func TestNoTestsAndInvalidFlagsFail(t *testing.T) {
 }
 
 func TestFuzzHarnessExportAndNativeExecution(t *testing.T) {
- dir := fixture(t, map[string]string{"a_test.oak": `import(testing)
+	dir := fixture(t, map[string]string{"a_test.oak": `import(testing)
 FuzzExport: (data: []u8): () {
   test_assume(len(data) > u32(0))
   test_check(data[0] != u8(7), u32(8080))
 }
 `})
- output := filepath.Join(t.TempDir(), "fuzz.c")
- var stdout, stderr bytes.Buffer
- code := Main([]string{"-fuzz", "^FuzzExport$", "-emit-fuzz-harness", output, dir}, &stdout, &stderr)
- if code != 0 { t.Fatalf("export: %d %s", code, stderr.String()) }
- if Main([]string{"-fuzz", "^FuzzExport$", "-emit-fuzz-harness", output, dir}, &stdout, &stderr) != 2 { t.Fatal("overwrote existing harness") }
- clang, err := exec.LookPath("clang")
- if err != nil { t.Skip("requires clang") }
- binary := filepath.Join(t.TempDir(), "fuzz")
- cmd := exec.Command(clang, "-std=c11", "-g", "-O1", "-fsanitize=fuzzer,address,undefined", "-fno-sanitize-recover=all", output, "-o", binary)
- if out,err:=cmd.CombinedOutput();err!=nil{t.Fatalf("clang: %v\n%s",err,out)}
- seed:=filepath.Join(t.TempDir(),"seed")
- os.WriteFile(seed,[]byte{1},0600)
- if out,err:=exec.Command(binary,"-runs=1",seed).CombinedOutput();err!=nil{t.Fatalf("valid seed: %v\n%s",err,out)}
- os.WriteFile(seed,[]byte{},0600)
- if out,err:=exec.Command(binary,"-runs=1",seed).CombinedOutput();err!=nil{t.Fatalf("discard: %v\n%s",err,out)}
- os.WriteFile(seed,[]byte{7},0600)
- if out,err:=exec.Command(binary,"-runs=1",seed).CombinedOutput();err==nil || !strings.Contains(string(out),"Oak invariant 8080 failed"){t.Fatalf("missed invariant: %v\n%s",err,out)}
+	output := filepath.Join(t.TempDir(), "fuzz.c")
+	var stdout, stderr bytes.Buffer
+	code := Main([]string{"-fuzz", "^FuzzExport$", "-emit-fuzz-harness", output, dir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("export: %d %s", code, stderr.String())
+	}
+	if Main([]string{"-fuzz", "^FuzzExport$", "-emit-fuzz-harness", output, dir}, &stdout, &stderr) != 2 {
+		t.Fatal("overwrote existing harness")
+	}
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("requires clang")
+	}
+	binary := filepath.Join(t.TempDir(), "fuzz")
+	cmd := exec.Command(clang, "-std=c11", "-g", "-O1", "-fsanitize=fuzzer,address,undefined", "-fno-sanitize-recover=all", output, "-o", binary)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("clang: %v\n%s", err, out)
+	}
+	seed := filepath.Join(t.TempDir(), "seed")
+	os.WriteFile(seed, []byte{1}, 0600)
+	if out, err := exec.Command(binary, "-runs=1", seed).CombinedOutput(); err != nil {
+		t.Fatalf("valid seed: %v\n%s", err, out)
+	}
+	os.WriteFile(seed, []byte{}, 0600)
+	if out, err := exec.Command(binary, "-runs=1", seed).CombinedOutput(); err != nil {
+		t.Fatalf("discard: %v\n%s", err, out)
+	}
+	os.WriteFile(seed, []byte{7}, 0600)
+	if out, err := exec.Command(binary, "-runs=1", seed).CombinedOutput(); err == nil || !strings.Contains(string(out), "Oak invariant 8080 failed") {
+		t.Fatalf("missed invariant: %v\n%s", err, out)
+	}
 }
 
 func TestTestingLibraryBoundaries(t *testing.T) {
- dir:=fixture(t,map[string]string{"a_test.oak":`import(testing)
+	dir := fixture(t, map[string]string{"a_test.oak": `import(testing)
 fill_four: (writable: [*]u8): () {
   writable[0] = u8(255)
   writable[1] = u8(255)
@@ -249,6 +263,40 @@ TestChoicesAndCapacity: (): () {
   test_check(result.value == u32(3) && queue[0].count == u32(0) && clock[0].now == u64(5), u32(9008))
 }
 `})
- code,results,stderr:=runCLI(t,dir)
- if code!=0{t.Fatalf("boundaries: %d %+v %s",code,results,stderr)}
+	code, results, stderr := runCLI(t, dir)
+	if code != 0 {
+		t.Fatalf("boundaries: %d %+v %s", code, results, stderr)
+	}
+}
+
+// Prove that the independent model detects a deliberately injected lost-edge
+// bug in the Oak IRQ pilot, and that its operation history can be minimized.
+func TestIRQMutationDetected(t *testing.T) {
+	files := map[string]string{}
+	for _, name := range []string{"irq.oak", "irq_test.oak"} {
+		data, err := os.ReadFile(filepath.Join("..", "examples", "testing", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[name] = string(data)
+	}
+	original := "action == u32(2) ? { state[0].latched = true }"
+	mutant := "action == u32(2) && !state[0].active ? { state[0].latched = true }"
+	if !strings.Contains(files["irq.oak"], original) {
+		t.Fatal("mutation site changed")
+	}
+	files["irq.oak"] = strings.Replace(files["irq.oak"], original, mutant, 1)
+	files["testdata/oak/PropertyIrqHistory/lost-edge.bin"] = string([]byte{0, 2, 5, 2})
+	dir := fixture(t, files)
+	code, results, stderr := runCLI(t, "-run", "^PropertyIrqHistory$", "-runs", "1", dir)
+	if code != 1 || len(results) != 1 || results[0].Failure != "invariant:2011" {
+		t.Fatalf("mutation escaped: %d %+v %s", code, results, stderr)
+	}
+	a, err := readArtifact(results[0].Artifact, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a.Input, []byte{0, 2, 5, 2}) {
+		t.Fatalf("unexpected minimized history: %v", a.Input)
+	}
 }

@@ -104,7 +104,7 @@ Failures are atomically saved in `testdata/oak/<TestName>/<digest>.json` with:
 - test name and kind;
 - native build fingerprint;
 - root seed and attempt;
-- maximum input size and sanitizer mode;
+- maximum input size, execution timeout, and sanitizer mode;
 - failure signature and concrete minimized input (JSON base64).
 
 The build fingerprint covers generated C, the harness, native compilation flags,
@@ -172,6 +172,8 @@ replace the existing memory-model litmus tests or hardware validation.
 
 Go tests execute compiled Oak programs for registration, native unit/property/
 fuzz/simulation modes, rejection budgets, coverage labels, crash and timeout
-isolation, minimization, strict replay, source drift, and corpus reuse. Go fuzz
-targets exercise reducer invariants and mutation bounds. The dedicated workflow
+isolation, minimization, strict replay, source drift, and corpus reuse. A mutation test deliberately drops edges arriving while active in the IRQ
+pilot and requires the model to detect invariant 2011 with the four-command
+counterexample `enable, inject, acknowledge, inject`. Go fuzz targets exercise
+reducer invariants and mutation bounds. The dedicated workflow
 runs the native Oak examples and a coverage-guided libFuzzer smoke campaign.

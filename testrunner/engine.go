@@ -133,17 +133,18 @@ func Minimize(ctx context.Context, input []byte, budget int, fails func([]byte) 
 }
 
 type Artifact struct {
-	Version   int    `json:"version"`
-	Engine    string `json:"engine"`
-	Test      string `json:"test"`
-	Kind      string `json:"kind"`
-	Build     string `json:"build"`
-	Seed      uint64 `json:"seed"`
-	Attempt   int    `json:"attempt"`
-	MaxBytes  int    `json:"max_bytes"`
-	Sanitize  bool   `json:"sanitize"`
-	Signature string `json:"signature"`
-	Input     []byte `json:"input"` // JSON base64, including arbitrary invalid UTF-8.
+	TimeoutNanos int64  `json:"timeout_nanos"`
+	Version      int    `json:"version"`
+	Engine       string `json:"engine"`
+	Test         string `json:"test"`
+	Kind         string `json:"kind"`
+	Build        string `json:"build"`
+	Seed         uint64 `json:"seed"`
+	Attempt      int    `json:"attempt"`
+	MaxBytes     int    `json:"max_bytes"`
+	Sanitize     bool   `json:"sanitize"`
+	Signature    string `json:"signature"`
+	Input        []byte `json:"input"` // JSON base64, including arbitrary invalid UTF-8.
 }
 
 func readArtifact(path string, max int) (Artifact, error) {
@@ -169,8 +170,11 @@ func readArtifact(path string, max int) (Artifact, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return a, fmt.Errorf("trailing data in %s", path)
 	}
-	if a.Version != 1 || a.Engine != engineVersion || !cIdentifier.MatchString(a.Test) || a.Kind != testKind(a.Test) || len(a.Input) > max || a.MaxBytes < 0 || a.MaxBytes > 1<<20 || len(a.Build) != 64 || a.Signature == "" {
+	if a.TimeoutNanos <= 0 || a.Version != 1 || a.Engine != engineVersion || !cIdentifier.MatchString(a.Test) || testKind(a.Test) == "" || a.Kind != testKind(a.Test) || len(a.Input) > a.MaxBytes || len(a.Input) > max || a.MaxBytes < 0 || a.MaxBytes > 1<<20 || len(a.Build) != 64 || a.Signature == "" {
 		return a, fmt.Errorf("invalid or unsupported replay artifact %s", path)
+	}
+	if _, err := hex.DecodeString(a.Build); err != nil {
+		return a, fmt.Errorf("invalid build fingerprint in %s", path)
 	}
 	return a, nil
 }
