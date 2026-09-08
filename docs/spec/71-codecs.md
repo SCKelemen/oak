@@ -1,10 +1,11 @@
 # Codecs: Phantom-Typed Producers and Consumers
 
-**Status: normative design with a first concrete JSON string codec.**
+**Status: normative design with JSON strings and derived record encoding.**
 `stdlib/json.oak` implements strict string encoding/decoding, bounded SIMD
-runs, and a phantom-policy encoder cursor (§10). Generic `From`/`To`,
-record derivation, borrowed decode results, and fusion remain design work.
-Prerequisites are listed in §9.
+runs, and a phantom-policy encoder cursor (§10). The compiler derives
+concrete JSON encoders and lowers immediate `from[T](value).to[Json](out)`
+composition (§12). General codec interfaces, derived decoding, borrowed
+decode results, and fusion remain design work. Prerequisites are listed in §9.
 
 ## 1. What is borrowed from weePickle, and what is not
 
@@ -246,3 +247,59 @@ References: [weePickle](https://github.com/rallyhealth/weePickle),
 [Futhark scan-scatter fusion](https://futhark-lang.org/blog/2026-03-24-scan-scatter-fusion.html),
 [Futhark uniqueness and updates](https://futhark-lang.org/blog/2022-06-13-uniqueness-types.html).
 
+
+## 12. Derived JSON encoding (implemented subset)
+
+With `import(std)`:
+
+```oak
+json: tag = { name: string }
+Point: type = struct { x: i32, y: i32 }
+Sample: type = struct {
+  id(json: "sample_id"): u64
+  active: Bool
+  position: Point
+}
+
+// value: Sample; output: [*]u8
+encoded_size[Sample, Json](value)
+encode[Sample, Json](value, output)
+from[Sample](value).to[Json](output)
+```
+
+All three operations return `Result[u32, JsonError]`; lengths are bytes.
+`Json` is a compile-time format marker. The fluent form emits identical C
+to the direct form and evaluates the source expression once. `from` is an
+immediate producer expression, not a storable codec object or borrowed
+aggregate. `from`, `encode`, and `encoded_size` are reserved under
+`import(std)`; no implicit codec search or runtime format dispatch occurs.
+
+Supported values are all fixed-width signed/unsigned integers, `Bool`,
+top-level `string`, and closed concrete records recursively containing
+supported integer, boolean, or record fields. Fields emit in declaration
+order. Integers use exact decimal text, including i64 minimum and u64
+maximum; they never pass through floating point. JSON string encoding
+uses the bounded SIMD implementation in §10.
+
+A declared `json` tag schema can rename a field with a string literal,
+either the bare first `name` property or `{ name: "wire_name" }`. Duplicate
+wire names and unimplemented projection properties (including `omit`)
+are errors. Ordinary type checking still validates the tag schema and all
+generated field accesses. Unknown tags are not silently accepted.
+
+The compiler generates ordinary Oak size, write, and encode functions;
+they pass the same type, borrow, resource, and discipline checks as source
+functions. Full size preflight precedes output mutation. Insufficient
+space leaves output unchanged. Generated helpers retain capacity checks
+because the bootstrap namespace does not yet provide private functions.
+The input record follows Oak's existing value-passing ABI; this feature
+does not introduce a borrowed-record ABI or claim that native compilers
+eliminate every aggregate copy or repeated measurement.
+
+This first projection requires explicit concrete names at expansion time.
+Type aliases, generic record applications, codec calls depending on an
+unspecialized type variable, arrays, floats, ADT variants, and borrowed
+record fields are not yet derived. `decode[T, Json]`, `FromTo[T]`, generic
+visitor dictionaries, custom format implementations, and derivation-time
+omission policies are not implemented by this subset. Failures are compile
+errors, not serialization fallbacks or runtime reflection.
