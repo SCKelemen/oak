@@ -120,7 +120,7 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
-#if defined(__aarch64__) && !defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+#if defined(__aarch64__) && (!defined(__ARM_NEON) || defined(OAK_SCALAR_SIMD)) && !defined(OAK_PORTABLE_INTRINSICS)
 #error "arm64 vector intrinsics require NEON"
 #endif
 /* portable SIMD vectors: docs/spec/93-simd.md */

@@ -133,7 +133,7 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 	// Explicit architecture-vector calls must not silently become scalar on
 	// an AArch64 target that disables NEON. Portable simd calls may fall back.
 	if len(arm64Vector) != 0 {
-		cg.write("#if defined(__aarch64__) && !defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)\n")
+		cg.write("#if defined(__aarch64__) && (!defined(__ARM_NEON) || defined(OAK_SCALAR_SIMD)) && !defined(OAK_PORTABLE_INTRINSICS)\n")
 		cg.write("#error \"arm64 vector intrinsics require NEON\"\n")
 		cg.write("#endif\n")
 	}

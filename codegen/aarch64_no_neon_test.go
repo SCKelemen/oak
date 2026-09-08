@@ -77,8 +77,15 @@ fn sum(input: simd.U8x16) -> u32 { arm64.uaddlv_u8x16(input) }
 	if err := os.WriteFile(cPath, []byte(generated), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	output, err := exec.Command(clang, "--target=aarch64-none-elf", "-mgeneral-regs-only", "-ffreestanding", "-std=c11", "-c", cPath, "-o", filepath.Join(dir, "vector.o")).CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "arm64 vector intrinsics require NEON") {
-		t.Fatalf("expected explicit NEON target error, got %v:\n%s", err, output)
+	for _, extra := range [][]string{
+		{"-mgeneral-regs-only"},
+		{"-DOAK_SCALAR_SIMD=1"},
+	} {
+		args := append([]string{"--target=aarch64-none-elf"}, extra...)
+		args = append(args, "-ffreestanding", "-std=c11", "-c", cPath, "-o", filepath.Join(dir, "vector.o"))
+		output, err := exec.Command(clang, args...).CombinedOutput()
+		if err == nil || !strings.Contains(string(output), "arm64 vector intrinsics require NEON") {
+			t.Fatalf("expected explicit NEON target error, got %v:\n%s", err, output)
+		}
 	}
 }
