@@ -25,17 +25,24 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 			return fmt.Errorf("import: only unaliased import(std) and import(testing) are supported")
 		}
 		switch imp.Path.Value {
-		case "std": imported = true
-		case "testing": testingImported = true
-		default: return fmt.Errorf("import: unsupported module %q", imp.Path.Value)
+		case "std":
+			imported = true
+		case "testing":
+			testingImported = true
+		default:
+			return fmt.Errorf("import: unsupported module %q", imp.Path.Value)
 		}
 	}
 	if !imported && !testingImported {
 		return nil
 	}
 	librarySource := ""
-	if imported { librarySource = stdlib.Source }
-	if testingImported { librarySource += "\n" + stdlib.TestingSource }
+	if imported {
+		librarySource = stdlib.Source
+	}
+	if testingImported {
+		librarySource += "\n" + stdlib.TestingSource
+	}
 	lib, err := New().WithSource("stdlib.oak", librarySource).Parse().Get()
 	if err != nil {
 		return fmt.Errorf("standard library: %w", err)
@@ -65,7 +72,9 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 		}
 	}
 	tree.Root.Statements = append(lib.Root.Statements, user...)
-	if !imported { return nil }
+	if !imported {
+		return nil
+	}
 	if err := lowerDerivedCodecs(tree.Root); err != nil {
 		return err
 	}
@@ -88,4 +97,3 @@ func declarationName(stmt ast.Statement) string {
 	}
 	return ""
 }
-

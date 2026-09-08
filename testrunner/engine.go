@@ -81,9 +81,10 @@ func Minimize(ctx context.Context, input []byte, budget int, fails func([]byte) 
   candidate := append([]byte(nil), best...); candidate[i] = 0
   if try(candidate) { continue }
   for step:=int(original)/2; step>0 && budget>0 && ctx.Err()==nil; step/=2 {
-   if int(best[i]) < step { continue }
-   candidate = append([]byte(nil), best...); candidate[i] -= byte(step)
-   try(candidate)
+   for int(best[i]) >= step && budget>0 && ctx.Err()==nil {
+    candidate = append([]byte(nil), best...); candidate[i] -= byte(step)
+    if !try(candidate) { break }
+   }
   }
  }
  return best

@@ -1,8 +1,11 @@
 // Test reporting is an explicit host boundary, supplied by oak test.
 // Numeric invariant IDs are chosen by the test author and must keep their meaning.
-testing_fail: (id: u32): () = c.extern("oak_testing_fail")
+testing_fail_host: (id: c.UInt32): () = c.extern("oak_testing_fail")
 testing_discard: (): () = c.extern("oak_testing_discard")
-testing_classify: (id: u32): () = c.extern("oak_testing_classify")
+testing_classify_host: (id: c.UInt32): () = c.extern("oak_testing_classify")
+
+testing_fail: (id: u32): () { testing_fail_host(c.UInt32(id)) }
+testing_classify: (id: u32): () { testing_classify_host(c.UInt32(id)) }
 
 test_check: (condition: Bool, id: u32): () {
   !condition ? { testing_fail(id) }

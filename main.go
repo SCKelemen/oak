@@ -60,4 +60,3 @@ func main() {
 	fmt.Printf("Type Oak code or 'exit' to quit\n")
 	repl.Start(os.Stdin, os.Stdout)
 }
-

@@ -34,8 +34,8 @@ var bitsetAlgebraSource string
 
 var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "\n" + stringsSource + "\n" + jsonSource + "\n" + filtersSource + "\n" + hashTableSource + "\n" + bitsetAlgebraSource
 
-
 // TestingSource is the opt-in import(testing) module. Its reporting boundary
 // is supplied by oak test; generated target helpers use caller-owned storage.
+//
 //go:embed testing.oak
 var TestingSource string

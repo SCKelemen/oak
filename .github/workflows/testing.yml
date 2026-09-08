@@ -20,6 +20,11 @@ jobs:
           go build -o build/oak .
       - name: Run Oak test suite
         run: ./build/oak test -runs 20 examples/testing
+      - name: Exercise coverage-guided native fuzz harness
+        run: |
+          ./build/oak test -fuzz '^FuzzUtf8$' -emit-fuzz-harness build/fuzz.c examples/testing
+          clang -std=c11 -g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all build/fuzz.c -o build/fuzz
+          ./build/fuzz -runs=100 -max_len=256
       - name: Fuzz runner internals
         run: |
           go test ./testrunner -run '^$' -fuzz '^FuzzMinimize$' -fuzztime 5s
