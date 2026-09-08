@@ -71,3 +71,36 @@ or separately compiled Oak code can observe its representation. Reordering,
 packing, alignment, or carrier changes are then major. Choosing AoS, SoA, or
 AoSoA behind a semantic-record abstraction does not change the package API and
 is patch-compatible.
+
+## 5. Compiler snapshot production
+
+`Compilation.APISnapshot(version)` is the authoritative snapshot boundary. It
+runs the complete semantic safety gates, preserves the package's source-level
+declaration surface, and excludes imported standard-library declarations and
+compiler-generated generic or extensible-record specializations.
+
+Publication CI can produce the candidate snapshot directly from Oak source:
+
+```sh
+go run ./cmd/oak-api example/net 1.3.0 src/net.oak > current-api.json
+go run ./cmd/oak-semver previous-api.json current-api.json
+```
+
+Record fields are sorted only in canonical semantic identity, because record
+meaning is structural and order-free. Struct fields remain in declaration order
+in the ABI identity, together with computed size, alignment, offsets, packing,
+and declared alignment. Consequently, two structs can satisfy the same record
+type while retaining different public layouts.
+
+For a generic struct, no single numeric size exists before instantiation. Its
+public ABI therefore records the ordered symbolic field types, packing policy,
+declared record alignment, and per-field alignment. Each concrete instantiation
+is still resolved and verified by ordinary lowering.
+
+Until Oak gains an explicit visibility modifier, every named package-level type,
+interface, function, receiver method, and value declaration is public. Receiver
+methods use a receiver-qualified export name and include the receiver in their
+canonical signature. Literal/default ADT variants retain their checked literal
+in type identity. A future visibility feature must change this projection and is
+itself a language-version decision; the compiler must never infer visibility
+from capitalization or spelling.

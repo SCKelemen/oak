@@ -2454,9 +2454,9 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 		if !p.expectPeek(token.IDENT) {
 			return nil
 		}
-		// Save the identifier token before consuming it
-		recvIdentToken := p.peekToken
-		p.nextToken() // consume identifier, now currentToken is IDENT
+		// expectPeek consumed the identifier and left it current. Advancing here
+		// would skip ':' and corrupt every receiver declaration into a nil AST.
+		recvIdentToken := p.currentToken
 		if p.peekTokenIs(token.COLON) {
 			// This is a receiver: fn (recv: Type)
 			receiver := &ast.FunctionParameter{

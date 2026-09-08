@@ -127,6 +127,3 @@ func TestParser_InterfaceMethod_ReceiverType(t *testing.T) {
 	}
 }
 
-
-
-

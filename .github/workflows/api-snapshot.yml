@@ -1,0 +1,14 @@
+name: API snapshots
+on:
+  pull_request:
+    branches: [specification]
+jobs:
+  snapshots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Test API publication and receiver parsing
+        run: go test -race ./compiler ./parser ./packageapi -run 'TestAPISnapshot|TestParser_FunctionReceiver' -count=1
