@@ -480,7 +480,7 @@ push: (v: u8): () {
 
 main: (): i32 {
   push(u8(7))
-  i32(events.buffer[events.head]) + i32(events.count)
+  i32(events.buffer[events.head]) + i32_bits_u32(events.count)
 }
 `,
 		},

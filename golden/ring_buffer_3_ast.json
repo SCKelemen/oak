@@ -367,9 +367,9 @@
                                       },
                                       "position": {
                                         "line": 17,
-                                        "column": 48,
-                                        "byte_start": 291,
-                                        "byte_end": 296
+                                        "column": 57,
+                                        "byte_start": 300,
+                                        "byte_end": 305
                                       }
                                     },
                                     "left": {
@@ -379,38 +379,38 @@
                                       },
                                       "position": {
                                         "line": 17,
-                                        "column": 41,
-                                        "byte_start": 284,
-                                        "byte_end": 290
+                                        "column": 50,
+                                        "byte_start": 293,
+                                        "byte_end": 299
                                       }
                                     }
                                   },
                                   "position": {
                                     "line": 17,
-                                    "column": 47,
-                                    "byte_start": 290,
-                                    "byte_end": 291
+                                    "column": 56,
+                                    "byte_start": 299,
+                                    "byte_end": 300
                                   }
                                 }
                               ],
                               "function": {
                                 "type": "Identifier",
                                 "data": {
-                                  "value": "i32"
+                                  "value": "i32_bits_u32"
                                 },
                                 "position": {
                                   "line": 17,
                                   "column": 37,
                                   "byte_start": 280,
-                                  "byte_end": 283
+                                  "byte_end": 292
                                 }
                               }
                             },
                             "position": {
                               "line": 17,
-                              "column": 40,
-                              "byte_start": 283,
-                              "byte_end": 284
+                              "column": 49,
+                              "byte_start": 292,
+                              "byte_end": 293
                             }
                           }
                         },

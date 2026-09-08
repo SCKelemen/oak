@@ -1,6 +1,1 @@
-{"error_index":0,"message":"[type error] cannot widen u32 to i32 (must be same signedness and source must be narrower or equal)","type":"error"}
-{"error_index":1,"message":"[type error] undefined variable: i32","type":"error"}
-{"error_index":2,"message":"[type error] function main: expected return type i32, got ()","type":"error"}
-{"code":"OAK-T0000","index":0,"message":"[type error] cannot widen u32 to i32 (must be same signedness and source must be narrower or equal)","range":{"end":{"character":47,"line":16},"start":{"character":46,"line":16}},"severity":"error","source":"typechecker","type":"diagnostic"}
-{"code":"OAK-T0000","index":1,"message":"[type error] undefined variable: i32","range":{"end":{"character":39,"line":16},"start":{"character":36,"line":16}},"severity":"error","source":"typechecker","type":"diagnostic"}
-{"code":"OAK-T0000","index":2,"message":"[type error] function main: expected return type i32, got ()","range":{"end":{"character":4,"line":14},"start":{"character":0,"line":14}},"severity":"error","source":"typechecker","type":"diagnostic"}
+{"message":"Type checking passed with no errors","type":"success"}
