@@ -46,7 +46,7 @@ main: (): i32 {
 	if abnormal || code != 42 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
-	emitted, err := New().WithSource(source).EmitC().Get()
+	emitted, err := New().WithSource("string_views.oak", source).EmitC().Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestStringViewsRejectUnsafeSourcesAndEscapes(t *testing.T) {
 		"main: (): i32 { text: string = str_from_utf8()\n0 }",
 		"main: (): i32 { bytes: []u8 = str_bytes(u32(0))\n0 }",
 	} {
-		if _, err := New().WithSource(source).Check().Get(); err == nil {
+		if _, err := New().WithSource("string_views.oak", source).Check().Get(); err == nil {
 			t.Fatalf("unsafe string program accepted:\n%s", source)
 		}
 	}

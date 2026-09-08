@@ -18,6 +18,7 @@ type CodeGenerator struct {
 	packageName      string
 	sourceFile       string // Source file path for source location comments
 	sourceText       string // Full source text for UTF-8 to UTF-16 conversion
+	sourceIndex      *lsp.PositionIndex
 	output           strings.Builder
 	indentLevel      int
 	types            map[string]bool // Track emitted types to avoid duplicates
@@ -100,6 +101,7 @@ func (cg *CodeGenerator) SetSourceFile(file string) {
 // SetSourceText sets the full source text for UTF-8 to UTF-16 conversion
 func (cg *CodeGenerator) SetSourceText(text string) {
 	cg.sourceText = text
+	cg.sourceIndex = nil
 }
 
 // Generate generates C code from an Oak program
@@ -2441,8 +2443,11 @@ func (cg *CodeGenerator) formatSourceRange(loc SourceLocation) string {
 
 	if cg.sourceText != "" && loc.ByteStart >= 0 && loc.ByteEnd >= 0 {
 		// Use actual byte offsets from tokens for accurate conversion
-		startPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, loc.ByteStart, loc.Line)
-		endPos = lsp.ConvertUTF8PositionToUTF16(cg.sourceText, loc.ByteEnd, loc.EndLine)
+		if cg.sourceIndex == nil {
+			cg.sourceIndex = lsp.NewPositionIndex(cg.sourceText)
+		}
+		startPos = cg.sourceIndex.Position(loc.ByteStart, loc.Line)
+		endPos = cg.sourceIndex.Position(loc.ByteEnd, loc.EndLine)
 	} else {
 		// Fallback: use column directly (assumes 1:1 mapping, which is true for ASCII)
 		// This is less accurate but works when source text isn't available
