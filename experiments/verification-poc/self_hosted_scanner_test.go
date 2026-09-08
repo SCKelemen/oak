@@ -81,6 +81,11 @@ func TestSelfHostedScanner(t *testing.T) {
  cases:=scannerCorpus();transitions:=0
  var source,main strings.Builder
  for _,path:=range []string{"self_hosted_rup.oak","self_hosted_stream.oak","self_hosted_text.oak"} {data,err:=os.ReadFile(path);if err!=nil {t.Fatal(err)};source.Write(data);source.WriteByte('\n')}
+ source.WriteString(`scanner_expect: (bytes: []u8, state: [*]u32, want_kind: u32, want_next: u32, want_start: u32, want_stop: u32, want_magnitude: u32, want_sign: u32): Bool {
+ kind: u32 = rup_token(bytes, state)
+ kind == want_kind && state[0] == want_next && state[1] == want_start && state[2] == want_stop && state[3] == want_magnitude && state[4] == want_sign
+}
+`)
  main.WriteString("main: (): i32 {\n")
  for i,c:=range cases {
   fmt.Fprintf(&source,"scanner_case_%d: (): Bool {\n",i)
@@ -94,10 +99,9 @@ func TestSelfHostedScanner(t *testing.T) {
   fmt.Fprintf(&source,"bytes: []u8 = input[0:%d]\nstate: [5]u32\nstate[0] = u32(%d)\n",len(c.Bytes),c.Cursor)
   // Poison fields the scanner must overwrite, then preserve state across calls.
   source.WriteString("state[1] = u32(999)\nstate[2] = u32(998)\nstate[3] = u32(997)\nstate[4] = u32(996)\nok: Bool = true\n")
-  for j,r:=range c.Tokens {
+  for _,r:=range c.Tokens {
    transitions++
-   fmt.Fprintf(&source,"kind_%d: u32 = rup_token(bytes, span(&state))\n",j)
-   fmt.Fprintf(&source,"ok = ok && kind_%d == u32(%d) && state[0] == u32(%d) && state[1] == u32(%d) && state[2] == u32(%d) && state[3] == u32(%d) && state[4] == u32(%d)\n",j,r.Kind,r.Next,r.Start,r.Stop,r.Magnitude,r.Sign)
+   fmt.Fprintf(&source,"ok = scanner_expect(bytes, span(&state), u32(%d), u32(%d), u32(%d), u32(%d), u32(%d), u32(%d)) && ok\n",r.Kind,r.Next,r.Start,r.Stop,r.Magnitude,r.Sign)
   }
   source.WriteString("ok\n}\n");fmt.Fprintf(&main,"assert(scanner_case_%d())\n",i)
  }

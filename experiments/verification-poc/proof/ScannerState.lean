@@ -114,16 +114,16 @@ structure Token where
   sign : Nat
   deriving BEq, Repr
 
-def scanTail (pos : Nat) (tail : List Nat) : Token :=
-  let skipped := countWhile space tail
-  let start := pos + skipped
-  match tail.drop skipped with
+def tokenAt (start : Nat) : List Nat → Token
   | [] => ⟨0, start, start, start, 0, 1⟩
   | b :: bs =>
     if b = 10 then ⟨1, start + 1, start, start + 1, 0, 1⟩ else
       let size := 1 + countWhile wordByte bs
       let number := numeric ((b :: bs).take size)
       ⟨2, start + size, start, start + size, number.1, number.2⟩
+
+def scanTail (pos : Nat) (tail : List Nat) : Token :=
+  tokenAt (pos + countWhile space tail) (tail.drop (countWhile space tail))
 
 def scan (bytes : List Nat) (pos : Nat) : Token := scanTail pos (bytes.drop pos)
 
@@ -132,21 +132,24 @@ def InRange (pos size : Nat) (t : Token) : Prop :=
   pos ≤ t.start ∧ t.start ≤ t.next ∧ t.next ≤ size ∧ t.stop = t.next ∧
     (t.kind ≠ 0 → pos < t.next)
 
+theorem tokenAt_range (start : Nat) (rest : List Nat) :
+    InRange start (start + rest.length) (tokenAt start rest) := by
+  cases rest with
+  | nil => simp [InRange, tokenAt]
+  | cons b bs =>
+    have hw := countWhile_bounds wordByte bs
+    by_cases hb : b = 10
+    · simp [InRange, tokenAt, hb]
+    · simp [InRange, tokenAt, hb]; omega
+
 theorem scanTail_range (pos : Nat) (tail : List Nat) :
     InRange pos (pos + tail.length) (scanTail pos tail) := by
   have hc := countWhile_bounds space tail
   have hl : (tail.drop (countWhile space tail)).length + countWhile space tail = tail.length := by
     rw [List.length_drop]; omega
-  unfold scanTail InRange
-  generalize hr : tail.drop (countWhile space tail) = rest at *
-  cases rest with
-  | nil => simp_all
-  | cons b bs =>
-    have hw := countWhile_bounds wordByte bs
-    simp only [List.length_cons] at hl
-    by_cases hb : b = 10
-    · simp only [hr, if_pos hb]; omega
-    · simp only [hr, if_neg hb]; omega
+  have h := tokenAt_range (pos + countWhile space tail) (tail.drop (countWhile space tail))
+  unfold scanTail InRange at *
+  omega
 
 theorem scan_range (bytes : List Nat) (pos : Nat) (hp : pos ≤ bytes.length) :
     InRange pos bytes.length (scan bytes pos) := by
