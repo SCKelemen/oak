@@ -1735,3 +1735,28 @@ func TestConditionalUnsafeBodyContributesGeneralizationBarrier(t *testing.T) {
 		t.Fatalf("conditional hid unsafe evidence: capture=%v initializer=%v", capture, initializer)
 	}
 }
+
+func TestWritesThroughParametersDoNotCaptureAuthority(t *testing.T) {
+	tc := New(nilObjectEnvironment())
+	fn := &ast.FunctionLiteral{
+		Arguments: []*ast.Identifier{{Value: "buffer"}},
+		Body: &ast.BlockStatement{Statements: []ast.Statement{
+			&ast.IndexAssignmentStatement{
+				Target: &ast.IndexExpression{
+					Left:  &ast.Identifier{Value: "buffer"},
+					Index: &ast.IntegerLiteral{Value: 0},
+				},
+				Value: &ast.IntegerLiteral{Value: 1},
+			},
+		}},
+	}
+	if facts := functionCaptureFacts(fn, tc.env); !facts.Safe() {
+		t.Fatalf("parameter write treated as captured authority: %v", facts)
+	}
+	fn.Arguments = nil
+	tc.env.SetType("buffer", &ArrayType{Length: -1, IsSpan: true, ElementType: &PrimitiveType{Name: "i32"}})
+	facts := functionCaptureFacts(fn, tc.env)
+	if !facts.Has(GeneralizationMutableAuthority) || !facts.Has(GeneralizationRegionBound) {
+		t.Fatalf("outer buffer write lost capture authority: %v", facts)
+	}
+}

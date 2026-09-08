@@ -12,6 +12,13 @@ jobs:
           go-version: '1.27.1'
       - name: Test typechecker
         run: go test -race ./typechecker
+      - name: Test generic ring integration
+        run: go test ./compiler -run '^TestE2EStdlibRing
+        if: always()
+        run: |
+          gofmt -d typechecker/typechecker.go typechecker/hm.go typechecker/generalization.go typechecker/generalization_test.go typechecker/pattern_generalization_test.go typechecker/genericfn.go typechecker/generic_constraints.go typechecker/gadt.go
+          test -z "$(gofmt -l typechecker/typechecker.go typechecker/hm.go typechecker/generalization.go typechecker/generalization_test.go typechecker/pattern_generalization_test.go typechecker/genericfn.go typechecker/generic_constraints.go typechecker/gadt.go)"
+ -count=1
       - name: Check formatting
         if: always()
         run: |

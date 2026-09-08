@@ -328,9 +328,11 @@ func functionCaptureFactsWithBound(fn *ast.FunctionLiteral, env *TypeEnvironment
 			}
 			walkExpr(s.Value)
 		case *ast.IndexAssignmentStatement:
-			// An indexed store exercises mutation authority even when the owner is
-			// otherwise mentioned nowhere in the function body.
-			facts = facts.With(GeneralizationMutableAuthority).With(GeneralizationEffectfulCapture)
+			// Writes through parameters or fresh locals do not capture storage.
+			// Writes rooted outside this function retain the outer authority.
+			if s.Target == nil || !locallyBoundStorage(s.Target.Left, bound) {
+				facts = facts.With(GeneralizationMutableAuthority).With(GeneralizationEffectfulCapture)
+			}
 			if s.Target != nil {
 				walkExpr(s.Target.Left)
 				walkExpr(s.Target.Index)
@@ -982,4 +984,17 @@ func deriveGeneralizationFacts(typ Type, initializer ast.Expression, env *TypeEn
 	}
 	visitExpr(initializer)
 	return facts
+}
+
+func locallyBoundStorage(expr ast.Expression, bound map[string]bool) bool {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return bound[e.Value]
+	case *ast.IndexExpression:
+		return locallyBoundStorage(e.Left, bound)
+	case *ast.SliceExpression:
+		return locallyBoundStorage(e.Seq, bound)
+	default:
+		return false
+	}
 }

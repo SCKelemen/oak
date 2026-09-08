@@ -228,6 +228,12 @@ not count as captured authority; only the function value's environment does.
 This rule is deliberately fail-closed while effect summaries and compiler-wide
 region identities are being threaded through type schemes.
 
+Writes through a function's parameters or fresh local storage do not by themselves
+capture authority at the function binding. Such helpers may specialize for
+multiple concrete input types; each caller still supplies separately checked
+storage and borrowing obligations. Writes rooted in outer bindings retain the
+corresponding captured-authority barriers.
+
 ## 8. Constraints and refinements extend inference
 
 Inference may produce obligations in addition to equalities.
