@@ -282,19 +282,28 @@ func (d *codecDeriver) appendCodecSource(typ, source string) error {
 	if err != nil {
 		return fmt.Errorf("codec: generated %s: %w", typ, err)
 	}
-	// Generated matches use the same stdlib semantic context as loaded helpers.
-	if err := transformSyntax(reflect.ValueOf(tree.Root), func(expr ast.Expression) (ast.Expression, error) {
-		switch node := expr.(type) {
-		case *ast.InfixExpression:
-			node.Token.SemanticContext = "std"
-		case *ast.MatchExpression:
-			node.Token.SemanticContext = "std"
-		case *ast.VariantExpression:
-			node.Token.SemanticContext = "std"
+	// Every generated function needs a distinct resolution context. Source
+	// offsets repeat across independently parsed codec instantiations, whose
+	// Result types differ; sharing the std context aliases those records.
+	for _, stmt := range tree.Root.Statements {
+		fn, ok := stmt.(*ast.FunctionStatement)
+		if !ok {
+			continue
 		}
-		return expr, nil
-	}); err != nil {
-		return err
+		context := "codec:" + fn.Name.Value
+		if err := transformSyntax(reflect.ValueOf(fn), func(expr ast.Expression) (ast.Expression, error) {
+			switch node := expr.(type) {
+			case *ast.InfixExpression:
+				node.Token.SemanticContext = context
+			case *ast.MatchExpression:
+				node.Token.SemanticContext = context
+			case *ast.VariantExpression:
+				node.Token.SemanticContext = context
+			}
+			return expr, nil
+		}); err != nil {
+			return err
+		}
 	}
 	d.output = append(d.output, tree.Root.Statements...)
 	return nil

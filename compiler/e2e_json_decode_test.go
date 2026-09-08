@@ -156,3 +156,35 @@ f: (src: []u8): Result[Bad, JsonDecodeError] = decode[Bad, Json](src)`,
 		}
 	}
 }
+
+func TestE2EJsonDecodeControlFlow(t *testing.T) {
+	source := `Item: type = Value: i32 | Empty
+read: (item: Item): i32 = item ?
+ | .Value(n) => {
+  n > 0 ? { incremented: i32 = n + 1
+   incremented
+  } | { replacement: i32 = 10
+   replacement
+  }
+ }
+ | .Empty => 0
+classify: (n: i32): i32 {
+ result: i32 = 0
+ n == 0 ? { result = 1 } | n == 1 ? {
+  chosen: i32 = 2
+  result = chosen
+ } | { result = 3 }
+ result
+}
+main: (): i32 {
+ positive: Item = .Value(20)
+ negative: Item = .Value(0 - 1)
+ empty: Item = .Empty
+ assert(read(empty) == 0)
+ read(positive) + read(negative) + classify(0) + classify(1) + classify(2) + 5
+}`
+	code, abnormal := buildAndRun(t, "decoder_control_flow", source)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
