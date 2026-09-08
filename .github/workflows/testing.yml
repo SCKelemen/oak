@@ -30,6 +30,7 @@ jobs:
         run: |
           go test ./testrunner -run '^$' -fuzz '^FuzzMinimize$' -fuzztime 5s
           go test ./testrunner -run '^$' -fuzz '^FuzzMutationBounds$' -fuzztime 5s
+          go test ./testrunner -run '^$' -fuzz '^FuzzMinimizeCommands$' -fuzztime 5s
       - name: Formatting patch
         if: always()
         run: |

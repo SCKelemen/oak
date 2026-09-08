@@ -44,6 +44,39 @@ compares both the failure and its recorded trace. JSON payloads are decimal
 strings so tools can preserve every 64-bit value. Trace calls are no-ops in
 libFuzzer exports; rerun a raw crash input with `oak test` to collect its trace.
 
+For stateful systems, add a `Generate<Name>` companion to a `Property` or `Sim`
+test. The generator selects legal operations against your model and emits
+concrete commands; the target validates the whole history with `test_assume`,
+then compares the implementation with the model step by step:
+
+```oak
+GeneratePropertyStack: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  depth: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < u32(16) {
+    depth > u32(0) && test_bool(choices, data) ? {
+      testing_command(TestCommand { kind: u32(1), target: u32(0), value: u32(0) })
+      depth = depth - u32(1)
+    } | {
+      testing_command(TestCommand { kind: u32(0), target: u32(0), value: test_range(choices, data, u32(0), u32(9)) })
+      depth = depth + u32(1)
+    }
+    i = i + u32(1)
+  }
+}
+
+PropertyStack: (data: []u8): () {
+  count: u32 = test_command_count(data)
+  // ... test_assume every pop has a matching earlier push, then execute ...
+}
+```
+
+Failures shrink by deleting whole commands and reducing their fields; a pop
+whose push was deleted is rejected by the precondition instead of becoming a
+misleading counterexample. Results and artifacts carry the decoded commands.
+
 `-timeout`, `-max-bytes`, `-max-discards`, `-shrink`, and `-shrink-timeout` make
 campaign costs explicit. `-cover 1:10,2:1` requires sample counts for IDs emitted
 by `testing_classify`. Rejected inputs never count as passes. Use `-sanitize`

@@ -276,7 +276,8 @@ with `test_assume` before exercising the implementation. Reject unknown kinds,
 invalid identifiers and missing prerequisites. Then reset the model and compare
 each real operation with its model transition. Domain structs/enums can be
 mapped to this fixed three-word carrier; arbitrary type derivation is not yet
-provided.
+provided. Share one legality predicate between the generator and the target so
+the generator never emits a history the target would reject.
 
 Shrinking deletes whole commands and reduces unsigned target/value fields.
 Kinds remain fixed. A candidate is retained only when execution reports the
@@ -292,3 +293,12 @@ generation entirely. Raw `.bin` corpus entries must already have this encoding;
 JSON corpus entries must match the input format. Trace replay retains the same
 build and semantic-trace checks as byte properties. A generator failure is a
 harness error, not a minimized target counterexample.
+
+`examples/testing/irq_test.oak` contains `PropertyIrqCommands`: acknowledgement
+is legal only in a deliverable model state and EOI only in an active one. The
+Go mutation test injects the lost-edge bug into a nine-command legal history and
+requires the reducer to reach exactly `enable, inject, acknowledge, inject`;
+every intermediate candidate that removed the enabling command was rejected by
+the target's preconditions rather than accepted as a spurious shorter failure.
+A Go fuzz target checks that command minimization preserves alignment, never
+introduces a command kind, never grows, and never loses a reported failure.
