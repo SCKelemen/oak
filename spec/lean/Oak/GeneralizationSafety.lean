@@ -77,4 +77,16 @@ theorem unknown_authority_blocks (inferredType : Nat) (facts : Facts)
     (decideGeneralization inferredType facts).generalized = false := by
   simp [decideGeneralization, h]
 
+/-- Capturing effect authority forbids generalization. -/
+theorem effectful_capture_blocks (inferredType : Nat) (facts : Facts)
+    (h : facts.effectfulCapture = true) :
+    (decideGeneralization inferredType facts).generalized = false := by
+  simp [decideGeneralization, h]
+
+/-- A lexically admitted unsafe assumption cannot be generalized away. -/
+theorem unsafe_assumption_blocks (inferredType : Nat) (facts : Facts)
+    (h : facts.unsafeAssumption = true) :
+    (decideGeneralization inferredType facts).generalized = false := by
+  simp [decideGeneralization, h]
+
 end Oak.GeneralizationSafety

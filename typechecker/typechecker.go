@@ -493,11 +493,13 @@ func (t *FunctionType) Equals(other Type) bool {
 
 // TypeChecker performs type checking on AST nodes
 type TypeChecker struct {
-	diagnostics *diagnostic.DiagnosticCollector
-	env         *TypeEnvironment
-	adtTypes    map[string]*object.ADTType // ADT type definitions
-	intSize     int                        // Platform size for int/uint (default: 64)
-	ptrSize     int                        // Platform size for ptr/uptr (default: 64)
+	adtPayloadTypes         map[string]map[string]Type
+	monomorphicTransactions [][]Substitution
+	diagnostics             *diagnostic.DiagnosticCollector
+	env                     *TypeEnvironment
+	adtTypes                map[string]*object.ADTType // ADT type definitions
+	intSize                 int                        // Platform size for int/uint (default: 64)
+	ptrSize                 int                        // Platform size for ptr/uptr (default: 64)
 	// checkedExterns marks extern bindings already validated, so the
 	// predeclare pass and the statement pass never double-report.
 	checkedExterns map[*ast.FunctionStatement]bool
@@ -600,13 +602,13 @@ func New(env *object.Environment) *TypeChecker {
 
 func NewWithPlatformSizes(env *object.Environment, intSize, ptrSize int) *TypeChecker {
 	tc := &TypeChecker{
-		diagnostics: diagnostic.NewDiagnosticCollector(),
-		env:         NewTypeEnvironment(),
-		adtTypes:    env.GetAllADTTypes(),
-		intSize:     intSize,
-		ptrSize:     ptrSize,
-
-		checkedExterns: make(map[*ast.FunctionStatement]bool),
+		diagnostics:     diagnostic.NewDiagnosticCollector(),
+		env:             NewTypeEnvironment(),
+		adtTypes:        env.GetAllADTTypes(),
+		adtPayloadTypes: make(map[string]map[string]Type),
+		intSize:         intSize,
+		ptrSize:         ptrSize,
+		checkedExterns:  make(map[*ast.FunctionStatement]bool),
 	}
 	// Add builtin type aliases
 	tc.addBuiltinTypeAliases()
@@ -716,8 +718,15 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok {
 			tc.predeclareFunctionSignature(fn)
+			if len(fn.TypeParams) > 0 && fn.Receiver == nil && !typeParamsConstrained(fn.TypeParams) {
+				if tc.functionTemplates == nil {
+					tc.functionTemplates = make(map[string]*ast.FunctionStatement)
+				}
+				tc.functionTemplates[fn.Name.Value] = fn
+			}
 		}
 	}
+	tc.resolvePredeclaredFunctionBarriers(program)
 	for _, stmt := range program.Statements {
 		switch stmt.(type) {
 		case *ast.ADTType, *ast.TagDeclaration:
@@ -757,7 +766,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 // body is checked. Generic functions and methods are skipped: their schemes
 // depend on constraint machinery that runs during the full check.
 func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
-	if fn == nil || fn.Name == nil || fn.Receiver != nil || len(fn.TypeParams) > 0 {
+	if fn == nil || fn.Name == nil || fn.Receiver != nil {
 		return
 	}
 	if hasOpenRowParameters(fn) {
@@ -777,9 +786,32 @@ func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
 	if _, exists := tc.env.Get(fn.Name.Value); exists {
 		return
 	}
+
+	// Bind declared type parameters in an isolated signature environment so
+	// generic callables participate in forward-reference summary resolution.
+	typeVars := make([]string, 0, len(fn.TypeParams))
+	constraints := make([]Constraint, 0, len(fn.TypeParams))
+	for _, parameter := range fn.TypeParams {
+		if parameter == nil || parameter.Name == nil {
+			return // full check reports the malformed declaration
+		}
+		typeVars = append(typeVars, parameter.Name.Value)
+		if parameter.Constraint != nil {
+			interfaces := tc.extractInterfacesFromConstraint(parameter.Constraint)
+			if len(interfaces) > 0 {
+				constraints = append(constraints, Constraint{
+					Var:        parameter.Name.Value,
+					Interfaces: interfaces,
+				})
+			}
+		}
+	}
+	signatureEnv := NewEnclosedTypeEnvironment(tc.env)
+	bindConstrainedTypeVars(signatureEnv, typeVars, constraints)
+
 	paramTypes := make([]Type, 0, len(fn.Parameters))
 	for _, param := range fn.Parameters {
-		paramType := tc.parseTypeExpression(param.Type)
+		paramType := tc.parseTypeExpressionInEnv(param.Type, signatureEnv)
 		if paramType == nil {
 			return // full check reports the error with context
 		}
@@ -788,19 +820,185 @@ func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
 		}
 		paramTypes = append(paramTypes, paramType)
 	}
-	returnType := tc.parseTypeExpression(fn.ReturnType)
+	returnType := tc.parseTypeExpressionInEnv(fn.ReturnType, signatureEnv)
 	if returnType == nil {
 		returnType = &UnitType{}
 	}
 	isVariadic := len(fn.Parameters) > 0 && fn.Parameters[len(fn.Parameters)-1].Variadic
 	tc.env.Set(fn.Name.Value, &TypeScheme{
-		Type: &FunctionType{Parameters: paramTypes, ReturnType: returnType, Variadic: isVariadic},
+		TypeVars:    typeVars,
+		Constraints: constraints,
+		Type: &FunctionType{
+			Parameters: paramTypes,
+			ReturnType: returnType,
+			Variadic:   isVariadic,
+		},
 	})
+}
+
+// resolvePredeclaredFunctionBarriers computes transitive authority summaries
+// for every function whose signature can be predeclared. Barriers
+// only accumulate, so iteration terminates over the finite barrier bitset.
+func (tc *TypeChecker) resolvePredeclaredFunctionBarriers(program *ast.Program) {
+	if program == nil {
+		return
+	}
+	// Methods are not ordinary forward-call bindings, but their authority
+	// summaries must exist while function bodies containing selectors are
+	// analyzed. Full method checking later replaces these placeholders.
+	for _, statement := range program.Statements {
+		fn, ok := statement.(*ast.FunctionStatement)
+		if !ok || fn == nil || fn.Name == nil || fn.Receiver == nil {
+			continue
+		}
+		if key := methodBarrierKey(fn); key != "" {
+			if _, exists := tc.env.Get(key); !exists {
+				if scheme := tc.predeclaredMethodBarrierScheme(fn); scheme != nil {
+					tc.env.Set(key, scheme)
+				}
+			}
+		}
+	}
+	for {
+		changed := false
+		for _, statement := range program.Statements {
+			fn, ok := statement.(*ast.FunctionStatement)
+			if !ok || fn == nil || fn.Name == nil {
+				continue
+			}
+			key := fn.Name.Value
+			if fn.Receiver != nil {
+				key = methodBarrierKey(fn)
+			}
+			if key == "" {
+				continue
+			}
+			scheme, ok := tc.env.Get(key)
+			if !ok || scheme == nil {
+				continue
+			}
+			factsEnv := NewEnclosedTypeEnvironment(tc.env)
+			if signature, ok := scheme.Type.(*FunctionType); ok &&
+				len(signature.Parameters) == len(fn.Parameters) {
+				for i, parameter := range fn.Parameters {
+					if parameter != nil && parameter.Name != nil {
+						factsEnv.SetType(parameter.Name.Value, signature.Parameters[i])
+					}
+				}
+			}
+			if fn.Receiver != nil && fn.Receiver.Name != nil {
+				if receiverName, ok := fn.Receiver.Type.(*ast.Identifier); ok {
+					factsEnv.SetType(fn.Receiver.Name.Value, &ADTType{Name: receiverName.Value})
+				}
+			}
+			facts := functionStatementCaptureFacts(fn, factsEnv)
+			joined := scheme.GeneralizationBarriers | facts.Barriers
+			if joined != scheme.GeneralizationBarriers {
+				scheme.GeneralizationBarriers = joined
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+
+	// Forward callers run before the declaration's full check. Barred generic
+	// schemes must therefore share one persistent substitution now; retaining
+	// quantified TypeVars here would freshen every forward use independently.
+	for _, statement := range program.Statements {
+		fn, ok := statement.(*ast.FunctionStatement)
+		if !ok || fn == nil || fn.Name == nil || fn.Receiver != nil {
+			continue
+		}
+		scheme, ok := tc.env.Get(fn.Name.Value)
+		if !ok || scheme == nil || scheme.GeneralizationBarriers == 0 ||
+			len(scheme.TypeVars) == 0 || scheme.Monomorphic != nil {
+			continue
+		}
+		wanted := make(map[string]bool, len(scheme.TypeVars))
+		for _, name := range scheme.TypeVars {
+			wanted[name] = true
+		}
+		variables := make([]*TypeVar, 0, len(scheme.TypeVars))
+		for _, variable := range typeVarsIn(scheme.Type) {
+			if wanted[variable.Name] {
+				variables = append(variables, variable)
+			}
+		}
+		monomorphic := makeMonomorphicSchemeFor(scheme.Type, scheme.Constraints, variables)
+		monomorphic.GeneralizationBarriers = scheme.GeneralizationBarriers
+		tc.env.Set(fn.Name.Value, monomorphic)
+	}
+}
+
+func (tc *TypeChecker) predeclaredMethodBarrierScheme(fn *ast.FunctionStatement) *TypeScheme {
+	typeVars := make([]string, 0, len(fn.TypeParams))
+	constraints := make([]Constraint, 0, len(fn.TypeParams))
+	for _, parameter := range fn.TypeParams {
+		if parameter == nil || parameter.Name == nil {
+			return nil
+		}
+		typeVars = append(typeVars, parameter.Name.Value)
+		if parameter.Constraint != nil {
+			interfaces := tc.extractInterfacesFromConstraint(parameter.Constraint)
+			if len(interfaces) > 0 {
+				constraints = append(constraints, Constraint{
+					Var: parameter.Name.Value, Interfaces: interfaces,
+				})
+			}
+		}
+	}
+	signatureEnv := NewEnclosedTypeEnvironment(tc.env)
+	bindConstrainedTypeVars(signatureEnv, typeVars, constraints)
+
+	parameters := make([]Type, 0, len(fn.Parameters))
+	for _, parameter := range fn.Parameters {
+		if parameter == nil {
+			return nil
+		}
+		typ := tc.parseTypeExpressionInEnv(parameter.Type, signatureEnv)
+		if typ == nil {
+			return nil
+		}
+		if parameter.Variadic {
+			typ = &ArrayType{Length: -1, IsSlice: true, ElementType: typ}
+		}
+		parameters = append(parameters, typ)
+	}
+	result := tc.parseTypeExpressionInEnv(fn.ReturnType, signatureEnv)
+	if result == nil {
+		result = &UnitType{}
+	}
+	return &TypeScheme{
+		TypeVars: typeVars, Constraints: constraints,
+		Type: &FunctionType{
+			Parameters: parameters,
+			ReturnType: result,
+			Variadic:   len(fn.Parameters) > 0 && fn.Parameters[len(fn.Parameters)-1].Variadic,
+		},
+	}
+}
+
+func methodBarrierKey(fn *ast.FunctionStatement) string {
+	if fn == nil || fn.Name == nil || fn.Receiver == nil {
+		return ""
+	}
+	receiver, ok := fn.Receiver.Type.(*ast.Identifier)
+	if !ok || receiver.Value == "" {
+		return ""
+	}
+	return receiver.Value + "::" + fn.Name.Value
 }
 
 // CheckExpression type checks a single expression and returns its type
 // This is useful for REPL inspection commands like :typeof()
-func (tc *TypeChecker) CheckExpression(expr ast.Expression) Type {
+func (tc *TypeChecker) CheckExpression(expr ast.Expression) (result Type) {
+	before := len(tc.Errors())
+	tc.beginMonomorphicTransaction()
+	defer func() {
+		tc.finishMonomorphicTransaction(result != nil && len(tc.Errors()) == before)
+	}()
 	return tc.checkExpression(expr)
 }
 
@@ -812,6 +1010,12 @@ func (tc *TypeChecker) ParseTypeExpression(expr ast.Expression) Type {
 
 // checkStatement type checks a statement
 func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
+	before := len(tc.Errors())
+	tc.beginMonomorphicTransaction()
+	defer func() {
+		tc.finishMonomorphicTransaction(len(tc.Errors()) == before)
+	}()
+
 	switch s := stmt.(type) {
 	case *ast.VariableDeclaration:
 		tc.checkVariableDeclaration(s)
@@ -974,9 +1178,10 @@ func (tc *TypeChecker) checkIdentifier(ident *ast.Identifier) Type {
 		tc.addError(ident, "undefined variable: %s", ident.Value)
 		return nil
 	}
-	// Instantiate the scheme to get a fresh type
+	// Instantiate the scheme to get a fresh type, then overlay equations staged
+	// by enclosing transactions so sibling uses share one monomorphic view.
 	unifier := NewUnifier()
-	return Instantiate(scheme, unifier)
+	return tc.applyPendingMonomorphic(Instantiate(scheme, unifier))
 }
 
 func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
@@ -1348,7 +1553,12 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	}
 }
 
-func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) Type {
+func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression) (result Type) {
+	beforeInvocation := len(tc.Errors())
+	tc.beginMonomorphicTransaction()
+	defer func() {
+		tc.finishMonomorphicTransaction(result != nil && len(tc.Errors()) == beforeInvocation)
+	}()
 	if accessor, ok := expr.Function.(*ast.FieldAccessorExpression); ok {
 		return tc.checkFieldAccessorInvocation(accessor.Field.Value, expr)
 	}
@@ -1465,6 +1675,7 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		}
 	}
 
+	beforeCall := len(tc.Errors())
 	funcType := tc.checkExpression(expr.Function)
 	if funcType == nil {
 		return nil
@@ -1503,6 +1714,8 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	argTypes := make([]Type, len(expr.Arguments))
 	bindings := make(Substitution)
 	unifier := NewUnifier()
+	validCall := len(tc.Errors()) == beforeCall
+	beforeArguments := len(tc.Errors())
 	for i, arg := range expr.Arguments {
 		var parameterType Type
 		if fnType.Variadic && i >= fixedParams {
@@ -1516,22 +1729,43 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		expectedType := bindings.Apply(parameterType)
 		argType := tc.checkExpression(arg, expectedType)
 		if argType == nil {
+			validCall = false
 			continue
 		}
 		argTypes[i] = argType
 
 		if argSub := unifier.Unify(expectedType, argType); argSub != nil {
-			bindings = bindings.Compose(argSub)
+			merged, compatible := mergeMonomorphicBindings([]Substitution{bindings, argSub})
+			if !compatible {
+				validCall = false
+				tc.addError(expr.Arguments[i], "argument %d conflicts with an earlier type specialization", i+1)
+				continue
+			}
+			bindings = merged
 			continue
 		}
 
 		if !tc.isAssignable(argType, expectedType) {
+			validCall = false
 			tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
 		}
 	}
+	if len(tc.Errors()) != beforeArguments {
+		validCall = false
+	}
 
 	if funcScheme != nil && len(funcScheme.Constraints) > 0 {
+		before := len(tc.Errors())
 		tc.checkFunctionConstraintBindings(funcScheme, bindings, expr)
+		if len(tc.Errors()) != before {
+			validCall = false
+		}
+	}
+
+	// Commit every tagged variable participating in this direct or indirect
+	// use only after the entire call, including constraints, succeeds.
+	if validCall {
+		tc.stageMonomorphicBindings(bindings)
 	}
 
 	return bindings.Apply(fnType.ReturnType)
@@ -2126,9 +2360,6 @@ func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName strin
 	return fnType.ReturnType
 }
 
-// checkIndexAssignmentStatement types s[i] = value: the target sequence must
-// be writable (a span [*]T or an owned array [N]T — views are read-only), the
-// index an integer, and the value assignable to the element type.
 func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentStatement) {
 	if stmt == nil || stmt.Target == nil {
 		return
@@ -2341,7 +2572,7 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 					tc.addError(p, "variant %s of ADT %s does not accept a payload", variant.Name, adtName)
 					return nil
 				}
-				expectedPayload := tc.instantiateStoredType(variant.Payload, bindings)
+				expectedPayload := tc.instantiatedVariantPayload(adtName, variant, bindings)
 				if expectedPayload == nil || tc.checkPattern(p.Payload, expectedPayload) == nil {
 					return nil
 				}
@@ -2437,7 +2668,7 @@ func (tc *TypeChecker) checkVariantExpression(expr *ast.VariantExpression, expec
 			tc.addError(expr, "variant %s of ADT %s does not accept a payload", variant.Name, adtTypeName)
 			return nil
 		}
-		expectedPayload := tc.instantiateStoredType(variant.Payload, bindings)
+		expectedPayload := tc.instantiatedVariantPayload(adtTypeName, variant, bindings)
 		actualPayload := tc.checkExpression(expr.Payload, expectedPayload)
 		if expectedPayload == nil || actualPayload == nil || !tc.isAssignable(actualPayload, expectedPayload) {
 			tc.addError(expr.Payload, "variant %s payload: expected %s, got %s", variant.Name, expectedPayload, actualPayload)
@@ -2712,6 +2943,12 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 }
 
 func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
+	beforeDeclaration := len(tc.Errors())
+	tc.beginMonomorphicTransaction()
+	defer func() {
+		tc.finishMonomorphicTransaction(len(tc.Errors()) == beforeDeclaration)
+	}()
+
 	if stmt == nil || stmt.Name == nil {
 		// Defense in depth against parser error-recovery artifacts.
 		return
@@ -2758,6 +2995,8 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 
 		// If there's an initializer, check that it matches the type (with coercion)
 		// Pass expected type for context-based inference (e.g., for integer literals)
+		var initializerBindings Substitution
+		beforeInitializer := len(tc.Errors())
 		if stmt.Value != nil {
 			valueType := tc.checkExpression(stmt.Value, varType)
 			if valueType != nil {
@@ -2770,14 +3009,20 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 						tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 					}
 				} else {
-					// Apply substitution to get the unified type
+					// Apply substitution to get the unified type. Commit equations
+					// for a blocked initializer only after the complete declaration succeeds.
 					varType = sub.Apply(varType)
+					initializerBindings = sub
 				}
 			}
 		}
 
+		if initializerBindings != nil && len(tc.Errors()) == beforeInitializer {
+			tc.stageMonomorphicBindings(initializerBindings)
+		}
+
 		// Generalize the type (quantify over free type variables)
-		scheme := Generalize(varType, tc.env)
+		scheme := GeneralizeWithFacts(varType, tc.env, deriveGeneralizationFacts(varType, stmt.Value, tc.env, tc))
 		tc.env.Set(stmt.Name.Value, scheme)
 	} else {
 		// Type inference from initializer (HM-style)
@@ -2793,7 +3038,7 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 					return
 				}
 				// Generalize: convert to a type scheme
-				scheme := Generalize(inferredType, tc.env)
+				scheme := GeneralizeWithFacts(inferredType, tc.env, deriveGeneralizationFacts(inferredType, stmt.Value, tc.env, tc))
 				tc.env.Set(stmt.Name.Value, scheme)
 			}
 		} else {
@@ -2841,6 +3086,12 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 }
 
 func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
+	before := len(tc.Errors())
+	tc.beginMonomorphicTransaction()
+	defer func() {
+		tc.finishMonomorphicTransaction(len(tc.Errors()) == before)
+	}()
+
 	// Assignment: x = expr
 	// Rule: x must already be bound in the current scope, otherwise it's a compile-time error
 	// This prevents accidental "silent declaration by typo" (e.g., cont = 1 vs count = 1)
@@ -2885,6 +3136,12 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 }
 
 func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
+	before := len(tc.Errors())
+	tc.beginMonomorphicTransaction()
+	defer func() {
+		tc.finishMonomorphicTransaction(len(tc.Errors()) == before)
+	}()
+
 	// Check for nil function statement
 	if stmt == nil {
 		return
@@ -3044,6 +3301,10 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	// Restore environment
 	tc.env = oldEnv
 
+	// Preserve any persistent state committed by callers that appeared before
+	// this declaration; finalization must not reopen a barred generic.
+	predeclared, _ := tc.env.Get(stmt.Name.Value)
+
 	// Store function type in environment
 	funcType := &FunctionType{
 		Parameters: paramTypes,
@@ -3051,18 +3312,33 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		Variadic:   isVariadic,
 	}
 
-	// Generalize function type to a scheme with constraints
-	funcScheme := Generalize(funcType, tc.env)
+	// A named function is a closure binding too. Captured authority and unsafe
+	// assumptions gate both inferred and explicitly declared quantification.
+	functionFacts := functionStatementCaptureFacts(stmt, funcEnv)
+	funcScheme := GeneralizeWithFacts(funcType, tc.env, functionFacts)
 
-	// Add type parameters and constraints to the scheme
+	// Explicit type parameters remain quantified only when the closure evidence
+	// permits generalization; annotations never erase authority barriers.
 	if len(typeVars) > 0 || len(constraints) > 0 {
+		quantified := typeVars
+		if !functionFacts.Safe() {
+			quantified = nil
+		}
 		funcScheme = &TypeScheme{
-			TypeVars:    typeVars,
-			Constraints: constraints,
-			Type:        funcScheme.Type,
+			TypeVars:               quantified,
+			Constraints:            constraints,
+			Type:                   funcScheme.Type,
+			GeneralizationBarriers: funcScheme.GeneralizationBarriers,
+			Monomorphic:            funcScheme.Monomorphic,
 		}
 	}
 
+	if predeclared != nil && predeclared.Monomorphic != nil &&
+		funcScheme.GeneralizationBarriers != 0 {
+		predeclared.Constraints = constraints
+		predeclared.GeneralizationBarriers |= funcScheme.GeneralizationBarriers
+		funcScheme = predeclared
+	}
 	tc.env.Set(stmt.Name.Value, funcScheme)
 
 	// If this is a method, also store it with TypeName::methodName key
@@ -3175,6 +3451,7 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 	}
 
 	tc.adtTypes[stmt.Name.Value] = adtType
+	tc.adtPayloadTypes[stmt.Name.Value] = make(map[string]Type)
 
 	// Now verify the ADT is well-formed (after registration)
 	variantNames := make(map[string]bool)
@@ -3197,6 +3474,8 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 			}
 			if payloadType == nil {
 				tc.addError(variant.Payload, "ADT %s variant %s: invalid payload type", stmt.Name.Value, variantName)
+			} else {
+				tc.adtPayloadTypes[stmt.Name.Value][variantName] = payloadType
 			}
 		}
 
@@ -3369,6 +3648,12 @@ func (tc *TypeChecker) checkIfStatement(stmt *ast.IfStatement) {
 }
 
 func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
+	before := len(tc.Errors())
+	tc.beginMonomorphicTransaction()
+	defer func() {
+		tc.finishMonomorphicTransaction(len(tc.Errors()) == before)
+	}()
+
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError(stmt.Condition, "while condition must be bool, got %s", conditionType)
@@ -3464,6 +3749,24 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 			}
 		}
 
+		return expectedArray
+	}
+
+	// An untyped literal inherits an expected array/view shape. This gives
+	// every element the declared context (notably sized integer literals) and
+	// preserves owned-array length instead of degrading [N]T to []T.
+	if expectedArray, ok := expected.(*ArrayType); ok {
+		if !expectedArray.IsSlice && !expectedArray.IsSpan &&
+			int64(len(expr.Elements)) != expectedArray.Length {
+			tc.addError(expr, "array literal has %d elements, expected %d", len(expr.Elements), expectedArray.Length)
+			return nil
+		}
+		for i, elem := range expr.Elements {
+			elemType := tc.checkExpression(elem, expectedArray.ElementType)
+			if elemType != nil && !tc.isAssignable(elemType, expectedArray.ElementType) {
+				tc.addError(elem, "array element %d: expected type %s, got %s", i, expectedArray.ElementType, elemType)
+			}
+		}
 		return expectedArray
 	}
 
@@ -3828,8 +4131,8 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 	}
 
 	// Handle all other type expressions (same as parseTypeExpression but without intersection handling)
+	// Library-qualified types (c.Int32, ...): docs/spec/92-ffi.md.
 	if ident, ok := expr.(*ast.Identifier); ok {
-		// Library-qualified types (c.Int32, ...): docs/spec/92-ffi.md.
 		if libraryType, isLibrary := tc.libraryQualifiedType(ident); isLibrary {
 			return libraryType
 		}

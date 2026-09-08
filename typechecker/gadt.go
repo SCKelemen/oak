@@ -111,6 +111,62 @@ func (tc *TypeChecker) instantiateStoredType(spelling string, bindings map[strin
 	return tc.storedIndexType(spelling)
 }
 
+func substituteNamedADTParameters(typ Type, bindings map[string]Type) Type {
+	if typ == nil {
+		return nil
+	}
+	switch t := typ.(type) {
+	case *ADTType:
+		if bound, ok := bindings[t.Name]; ok {
+			return bound
+		}
+		return t
+	case *ArrayType:
+		return &ArrayType{
+			Length: t.Length, IsSlice: t.IsSlice, IsSpan: t.IsSpan,
+			ElementType: substituteNamedADTParameters(t.ElementType, bindings),
+		}
+	case *GenericType:
+		arguments := make([]Type, len(t.TypeArgs))
+		for i, argument := range t.TypeArgs {
+			arguments[i] = substituteNamedADTParameters(argument, bindings)
+		}
+		return &GenericType{Name: t.Name, TypeArgs: arguments}
+	case *RecordType:
+		fields := make(map[string]Type, len(t.Fields))
+		for name, field := range t.Fields {
+			fields[name] = substituteNamedADTParameters(field, bindings)
+		}
+		result := *t
+		result.Fields = fields
+		return &result
+	case *FunctionType:
+		parameters := make([]Type, len(t.Parameters))
+		for i, parameter := range t.Parameters {
+			parameters[i] = substituteNamedADTParameters(parameter, bindings)
+		}
+		return &FunctionType{
+			Parameters: parameters,
+			ReturnType: substituteNamedADTParameters(t.ReturnType, bindings),
+			Variadic:   t.Variadic,
+		}
+	default:
+		return typ
+	}
+}
+
+func (tc *TypeChecker) instantiatedVariantPayload(adtName string, variant *object.ADTVariantDef, bindings map[string]Type) Type {
+	if variant == nil || variant.Payload == "" {
+		return nil
+	}
+	if variants := tc.adtPayloadTypes[adtName]; variants != nil {
+		if checked := variants[variant.Name]; checked != nil {
+			return substituteNamedADTParameters(checked, bindings)
+		}
+	}
+	return tc.instantiateStoredType(variant.Payload, bindings)
+}
+
 // variantIndexBindings is the first concrete GADT solver. Constructor-result
 // equations are solved under one accumulated substitution. Named result
 // parameters and fixed positional indices must agree with every prior equation.

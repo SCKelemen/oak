@@ -15,6 +15,12 @@ type TypeScheme struct {
 	Constraints []Constraint
 	// The underlying type (τ)
 	Type Type
+	// GeneralizationBarriers preserves authority/effect evidence independently
+	// of whether this scheme has any locally free variables to specialize.
+	GeneralizationBarriers GeneralizationBarrier
+	// Monomorphic is non-nil for a generalization-blocked scheme with locally
+	// free variables. Its substitution is shared by every use.
+	Monomorphic Substitution
 }
 
 // Constraint represents an interface constraint on a type variable
@@ -61,11 +67,21 @@ func (s *TypeScheme) String() string {
 	return out
 }
 
+// monomorphicGroup is deliberately non-zero-sized so distinct allocations
+// have distinct pointer identity under the Go specification.
+type monomorphicGroup struct{ identity byte }
+
 // TypeVar represents a type variable (α, β, γ, ...)
 // Used during type inference
 type TypeVar struct {
 	Name string // e.g., "α", "β", or "T", "U"
 	ID   int    // Unique identifier for fresh type variables
+
+	// Monomorphic is shared by every occurrence descended from a blocked
+	// binding. It makes the variable participate persistently in unification
+	// even through aliases and higher-order arguments.
+	Monomorphic      Substitution
+	monomorphicGroup *monomorphicGroup
 }
 
 func (tv *TypeVar) String() string {
@@ -88,7 +104,18 @@ func (sub Substitution) Apply(typ Type) Type {
 	switch t := typ.(type) {
 	case *TypeVar:
 		if replacement, ok := sub[t]; ok {
-			return replacement
+			if replacement == t {
+				return t
+			}
+			return sub.Apply(replacement)
+		}
+		if t.Monomorphic != nil {
+			if replacement, ok := t.Monomorphic[t]; ok {
+				if replacement == t {
+					return t
+				}
+				return t.Monomorphic.Apply(replacement)
+			}
 		}
 		return t
 	case *PrimitiveType:
@@ -121,8 +148,6 @@ func (sub Substitution) Apply(typ Type) Type {
 			Variadic:   t.Variadic,
 		}
 	case *ArrayType:
-		// IsSpan must survive substitution: dropping it silently strips
-		// write authority from span-typed bindings (docs/spec/50-borrowing).
 		return &ArrayType{
 			Length:      t.Length,
 			IsSlice:     t.IsSlice,
@@ -179,6 +204,16 @@ func (sub1 Substitution) Compose(sub2 Substitution) Substitution {
 	return result
 }
 
+// Commit composes bindings into this substitution without replacing the map.
+// Blocked schemes and their type variables share the same map identity.
+func (sub Substitution) Commit(bindings Substitution) {
+	composed := sub.Compose(bindings)
+	clear(sub)
+	for variable, typ := range composed {
+		sub[variable] = typ
+	}
+}
+
 // Unifier performs unification of types
 type Unifier struct {
 	nextVarID int
@@ -207,8 +242,15 @@ func (u *Unifier) FreshTypeVar(name string) *TypeVar {
 }
 
 // Unify attempts to unify two types, returning a substitution
-// that makes them equal, or nil if unification fails
+// that makes them equal, or nil if unification fails. It does not mutate
+// persistent scheme state: the enclosing successful use commits the complete
+// accumulated substitution transactionally.
 func (u *Unifier) Unify(t1, t2 Type) Substitution {
+	// Resolve solutions learned by earlier uses before solving this equation.
+	empty := make(Substitution)
+	t1 = empty.Apply(t1)
+	t2 = empty.Apply(t2)
+
 	// If types are equal, no substitution needed
 	if t1.Equals(t2) {
 		return make(Substitution)
@@ -408,6 +450,11 @@ func (u *Unifier) unifyGeneric(gen1, gen2 *GenericType) Substitution {
 // Generalize converts a type to a type scheme by quantifying over free type variables
 // This is used for let-bound variables in HM inference
 func Generalize(typ Type, env *TypeEnvironment) *TypeScheme {
+	// Aliasing a blocked value cannot re-generalize its persistent variables.
+	if persistent := findMonomorphicSubstitution(typ); persistent != nil {
+		return makeMonomorphicScheme(typ, nil)
+	}
+
 	// Find all free type variables in typ that are not bound in env
 	freeVars := findFreeTypeVars(typ, env)
 
@@ -419,6 +466,283 @@ func Generalize(typ Type, env *TypeEnvironment) *TypeScheme {
 		TypeVars:    freeVars,
 		Constraints: constraints,
 		Type:        typ,
+	}
+}
+
+func (tc *TypeChecker) beginMonomorphicTransaction() {
+	tc.monomorphicTransactions = append(tc.monomorphicTransactions, nil)
+}
+
+func (tc *TypeChecker) stageMonomorphicBindings(bindings Substitution) {
+	if len(bindings) == 0 {
+		return
+	}
+	if len(tc.monomorphicTransactions) == 0 {
+		commitMonomorphicBindings(bindings)
+		return
+	}
+	last := len(tc.monomorphicTransactions) - 1
+	tc.monomorphicTransactions[last] = append(tc.monomorphicTransactions[last], bindings)
+}
+
+func (tc *TypeChecker) applyPendingMonomorphic(typ Type) Type {
+	for _, transaction := range tc.monomorphicTransactions {
+		for _, bindings := range transaction {
+			typ = bindings.Apply(typ)
+		}
+	}
+	return typ
+}
+
+func mergeMonomorphicBindings(pending []Substitution) (Substitution, bool) {
+	combined := make(Substitution)
+	unifier := NewUnifier()
+	for _, bindings := range pending {
+		for variable, typ := range bindings {
+			left := combined.Apply(variable)
+			right := combined.Apply(typ)
+			next := unifier.Unify(left, right)
+			if next == nil {
+				return nil, false
+			}
+			combined = combined.Compose(next)
+		}
+	}
+	return combined, true
+}
+
+func (tc *TypeChecker) finishMonomorphicTransaction(success bool) {
+	last := len(tc.monomorphicTransactions) - 1
+	pending := tc.monomorphicTransactions[last]
+	tc.monomorphicTransactions = tc.monomorphicTransactions[:last]
+	if !success {
+		return
+	}
+	if len(tc.monomorphicTransactions) > 0 {
+		parent := len(tc.monomorphicTransactions) - 1
+		tc.monomorphicTransactions[parent] = append(tc.monomorphicTransactions[parent], pending...)
+		return
+	}
+	merged, compatible := mergeMonomorphicBindings(pending)
+	if !compatible {
+		tc.addError(nil, "conflicting monomorphic specializations in one expression")
+		return
+	}
+	commitMonomorphicBindings(merged)
+}
+
+func commitMonomorphicBindings(bindings Substitution) {
+	committed := make(map[*monomorphicGroup]bool)
+	for variable := range bindings {
+		if variable == nil || variable.Monomorphic == nil || variable.monomorphicGroup == nil {
+			continue
+		}
+		group := variable.monomorphicGroup
+		if committed[group] {
+			continue
+		}
+		local := make(Substitution)
+		pending := make(map[*TypeVar]bool)
+		for candidate := range bindings {
+			if candidate != nil && candidate.monomorphicGroup == group {
+				pending[candidate] = true
+			}
+		}
+		for len(pending) > 0 {
+			var current *TypeVar
+			for candidate := range pending {
+				current = candidate
+				break
+			}
+			delete(pending, current)
+			if _, included := local[current]; included {
+				continue
+			}
+			value, ok := bindings[current]
+			if !ok {
+				continue
+			}
+			local[current] = value
+			for _, dependency := range typeVarsIn(value) {
+				// A fresh variable that escapes through a blocked solution becomes
+				// part of the same persistent identity. Otherwise a later binding
+				// keyed only by that variable would be discarded and reopen the
+				// authority-bearing value polymorphically.
+				if dependency.Monomorphic == nil {
+					dependency.Monomorphic = variable.Monomorphic
+					dependency.monomorphicGroup = group
+				}
+				if dependency.monomorphicGroup != group {
+					continue
+				}
+				if _, bound := bindings[dependency]; bound {
+					pending[dependency] = true
+				}
+			}
+		}
+		variable.Monomorphic.Commit(local)
+		committed[group] = true
+	}
+}
+
+func typeVarsIn(typ Type) []*TypeVar {
+	var variables []*TypeVar
+	seen := make(map[*TypeVar]bool)
+	var visit func(Type)
+	visit = func(current Type) {
+		switch t := current.(type) {
+		case *TypeVar:
+			if !seen[t] {
+				seen[t] = true
+				variables = append(variables, t)
+			}
+		case *RecordType:
+			for _, field := range t.Fields {
+				visit(field)
+			}
+		case *FunctionType:
+			for _, parameter := range t.Parameters {
+				visit(parameter)
+			}
+			visit(t.ReturnType)
+		case *ArrayType:
+			visit(t.ElementType)
+		case *GenericType:
+			for _, argument := range t.TypeArgs {
+				visit(argument)
+			}
+		}
+	}
+	visit(typ)
+	return variables
+}
+
+func findMonomorphicSubstitution(typ Type) Substitution {
+	var found Substitution
+	var visit func(Type)
+	visit = func(current Type) {
+		switch t := current.(type) {
+		case *TypeVar:
+			if found == nil && t.Monomorphic != nil {
+				found = t.Monomorphic
+			}
+		case *RecordType:
+			for _, field := range t.Fields {
+				visit(field)
+			}
+		case *FunctionType:
+			for _, parameter := range t.Parameters {
+				visit(parameter)
+			}
+			visit(t.ReturnType)
+		case *ArrayType:
+			visit(t.ElementType)
+		case *GenericType:
+			for _, argument := range t.TypeArgs {
+				visit(argument)
+			}
+		}
+	}
+	visit(typ)
+	return found
+}
+
+func findMonomorphicGroup(typ Type) *monomorphicGroup {
+	for _, variable := range typeVarsIn(typ) {
+		if variable.monomorphicGroup != nil {
+			return variable.monomorphicGroup
+		}
+	}
+	return nil
+}
+
+func markMonomorphicTypeVars(typ Type, persistent Substitution, group *monomorphicGroup) {
+	var visit func(Type)
+	visit = func(current Type) {
+		switch t := current.(type) {
+		case *TypeVar:
+			if t.Monomorphic == nil {
+				t.Monomorphic = persistent
+				t.monomorphicGroup = group
+			}
+		case *RecordType:
+			for _, field := range t.Fields {
+				visit(field)
+			}
+		case *FunctionType:
+			for _, parameter := range t.Parameters {
+				visit(parameter)
+			}
+			visit(t.ReturnType)
+		case *ArrayType:
+			visit(t.ElementType)
+		case *GenericType:
+			for _, argument := range t.TypeArgs {
+				visit(argument)
+			}
+		}
+	}
+	visit(typ)
+}
+
+func makeMonomorphicScheme(typ Type, constraints []Constraint) *TypeScheme {
+	return makeMonomorphicSchemeFor(typ, constraints, typeVarsIn(typ))
+}
+
+func makeMonomorphicSchemeInEnv(typ Type, constraints []Constraint, env *TypeEnvironment) *TypeScheme {
+	bound := make(map[*TypeVar]bool)
+	for current := env; current != nil; current = current.outer {
+		for _, scheme := range current.store {
+			if scheme == nil {
+				continue
+			}
+			for _, variable := range typeVarsIn(scheme.Type) {
+				bound[variable] = true
+			}
+		}
+	}
+	var free []*TypeVar
+	for _, variable := range typeVarsIn(typ) {
+		if !bound[variable] {
+			free = append(free, variable)
+		}
+	}
+	return makeMonomorphicSchemeFor(typ, constraints, free)
+}
+
+func makeMonomorphicSchemeFor(typ Type, constraints []Constraint, variables []*TypeVar) *TypeScheme {
+	var persistent Substitution
+	var group *monomorphicGroup
+	for _, variable := range variables {
+		if persistent == nil && variable.Monomorphic != nil {
+			persistent = variable.Monomorphic
+			group = variable.monomorphicGroup
+		}
+	}
+	if len(variables) == 0 {
+		return &TypeScheme{
+			TypeVars:    []string{},
+			Constraints: constraints,
+			Type:        typ,
+		}
+	}
+	if persistent == nil {
+		persistent = make(Substitution)
+	}
+	if group == nil {
+		group = &monomorphicGroup{}
+	}
+	for _, variable := range variables {
+		if variable.Monomorphic == nil {
+			variable.Monomorphic = persistent
+			variable.monomorphicGroup = group
+		}
+	}
+	return &TypeScheme{
+		TypeVars:    []string{},
+		Constraints: constraints,
+		Type:        typ,
+		Monomorphic: persistent,
 	}
 }
 
@@ -548,6 +872,9 @@ func quantifiedSubstitution(typ Type, quantified []string, replacements map[stri
 // For qualified types (with constraints), constraints are checked but not enforced here
 // (They will be checked when the instantiated type is actually used)
 func Instantiate(scheme *TypeScheme, unifier *Unifier) Type {
+	if scheme.Monomorphic != nil {
+		return scheme.Monomorphic.Apply(scheme.Type)
+	}
 	if len(scheme.TypeVars) == 0 && len(scheme.Constraints) == 0 {
 		return scheme.Type
 	}
