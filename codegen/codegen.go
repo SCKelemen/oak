@@ -810,7 +810,7 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 			cg.output.WriteString(" == ")
 			cg.emitExpressionFragment(pattern.Value, tc)
 			cg.output.WriteString(" ) {\n")
-			cg.emitExpression(arm.Body, tc)
+			cg.emitMatchArmReturn(arm.Body, tc)
 			cg.write("  }\n")
 			continue
 		case *ast.VariantPattern:
@@ -845,18 +845,39 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 				cg.emitExpressionFragment(match.Scrutinee, tc)
 				cg.output.WriteString(fmt.Sprintf(".payload.%s;\n", variantName))
 			}
-			cg.emitExpression(arm.Body, tc)
+			cg.emitMatchArmReturn(arm.Body, tc)
 			cg.write("  }\n")
 			continue
 		}
 		// Wildcard: unconditional; later arms are unreachable by
 		// exhaustiveness analysis.
-		cg.emitExpression(arm.Body, tc)
+		cg.emitMatchArmReturn(arm.Body, tc)
 		return
 	}
 	// Exhaustiveness is checked upstream; if control ever falls through the
 	// guards, that impossibility is a fail-stop, never undefined behavior.
 	cg.write("  __builtin_trap(); /* unreachable: exhaustive match */\n")
+}
+
+// Keep simple value arms in their existing expression form. A compound arm
+// or a nested match needs statements; C99 has no block-valued expression.
+func (cg *CodeGenerator) emitMatchArmReturn(body ast.Expression, tc *typechecker.TypeChecker) {
+	if block, ok := body.(*ast.BlockExpression); ok && block.Block != nil {
+		statements := block.Block.Statements
+		compound := len(statements) != 1
+		if len(statements) == 1 {
+			if expr, ok := statements[0].(*ast.ExpressionStatement); ok {
+				_, compound = expr.Expression.(*ast.MatchExpression)
+			} else {
+				compound = true
+			}
+		}
+		if compound {
+			cg.emitFunctionBody(body, tc)
+			return
+		}
+	}
+	cg.emitExpression(body, tc)
 }
 
 // emitMatchStatement emits a statement-position match (side-effecting
@@ -1737,6 +1758,10 @@ func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.Typ
 
 // emitStatementExpression emits C code for an expression used as a statement
 func (cg *CodeGenerator) emitStatementExpression(expr ast.Expression, tc *typechecker.TypeChecker) {
+	if match, ok := expr.(*ast.MatchExpression); ok {
+		cg.emitMatchStatement(match, tc)
+		return
+	}
 	cg.emitExpressionFragment(expr, tc)
 	cg.write(";\n")
 }
