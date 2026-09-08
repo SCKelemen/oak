@@ -6,141 +6,98 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/resourceflow"
 )
 
 // CodeResourceUsedAfterConsume is the stable diagnostic for a resource name
 // (including any alias in the same authority class) used after consumption.
 const CodeResourceUsedAfterConsume diagnostic.Code = "OAK-B0111"
 
-type resourceClassID uint64
-
-type resourceAliasInfo struct {
-	class  resourceClassID
-	parent string
-	origin ast.Node
-}
-
-type resourceConsumption struct {
-	name string
-	site ast.Node
-}
-
-type resourceClassState struct {
-	consumed *resourceConsumption
-}
-
-// ResourceFlow is the executable counterpart of Oak.ResourceFlow. It tracks
-// resource authority separately from temporary borrow state: a UniqueWrite
-// borrow can be released, while a consumed alias class never regains authority.
-//
-// Surface syntax is intentionally not part of this type. The semantic layer
-// should register resource-typed values/aliases and invoke Use/Consume after
-// type resolution, once Oak's consume spelling is frozen.
+// ResourceFlow is the borrow-checker projection of Oak's shared path-sensitive
+// resource authority state. Temporary borrow conflicts remain borrow-checker
+// policy; alias classes, consumption, snapshots, and joins live in resourceflow.
 type ResourceFlow struct {
-	checker   *BorrowChecker
-	nextClass resourceClassID
-	aliases   map[string]resourceAliasInfo
-	classes   map[resourceClassID]*resourceClassState
+	checker *BorrowChecker
+	flow    *resourceflow.Flow
 }
 
 // NewResourceFlow creates an empty resource-flow analysis associated with a
 // borrow checker. The association lets consumption reject any live view/span
 // whose backing owner belongs to the same resource alias class.
 func NewResourceFlow(checker *BorrowChecker) *ResourceFlow {
-	return &ResourceFlow{
-		checker: checker,
-		aliases: make(map[string]resourceAliasInfo),
-		classes: make(map[resourceClassID]*resourceClassState),
+	return &ResourceFlow{checker: checker, flow: resourceflow.New()}
+}
+
+// Clone creates an independent control-flow branch state.
+func (rf *ResourceFlow) Clone() *ResourceFlow {
+	if rf == nil {
+		return NewResourceFlow(nil)
 	}
+	return &ResourceFlow{checker: rf.checker, flow: rf.flow.Clone()}
+}
+
+// JoinResourceFlows joins reachable branch exits. Only authority definitely
+// live on every incoming path remains usable after the join.
+func JoinResourceFlows(flows ...*ResourceFlow) *ResourceFlow {
+	if len(flows) == 0 {
+		return NewResourceFlow(nil)
+	}
+	checker := flows[0].checker
+	cores := make([]*resourceflow.Flow, 0, len(flows))
+	for _, flow := range flows {
+		if flow == nil {
+			cores = append(cores, nil)
+			continue
+		}
+		cores = append(cores, flow.flow)
+	}
+	return &ResourceFlow{checker: checker, flow: resourceflow.Join(cores...)}
 }
 
 // Register introduces a new independently-owned resource authority class.
-// Duplicate registrations are rejected without mutating existing provenance.
 func (rf *ResourceFlow) Register(name string, origin ast.Node) bool {
-	if rf == nil || name == "" {
-		return false
-	}
-	if _, exists := rf.aliases[name]; exists {
-		return false
-	}
-
-	classID := rf.nextClass
-	rf.nextClass++
-	rf.aliases[name] = resourceAliasInfo{class: classID, origin: origin}
-	rf.classes[classID] = &resourceClassState{}
-	return true
+	return rf != nil && rf.flow != nil && rf.flow.Register(name, origin)
 }
 
 // Alias records that alias derives resource authority from source. Alias
-// creation itself uses source authority, so it is rejected if source was
-// already consumed. The parent edge is retained for programmer-facing
-// provenance diagnostics; authority remains class-wide.
+// creation itself uses source authority, so consumed/maybe-consumed sources
+// produce the same OAK-B0111 diagnostic as any later use.
 func (rf *ResourceFlow) Alias(alias, source string, origin ast.Node) bool {
-	if rf == nil || alias == "" || source == "" || alias == source {
-		return false
-	}
-	if _, exists := rf.aliases[alias]; exists {
-		return false
-	}
-	sourceInfo, exists := rf.aliases[source]
-	if !exists {
+	if rf == nil || rf.flow == nil || alias == "" || source == "" {
 		return false
 	}
 	if !rf.Use(source, origin) {
 		return false
 	}
-
-	rf.aliases[alias] = resourceAliasInfo{
-		class:  sourceInfo.class,
-		parent: source,
-		origin: origin,
-	}
-	return true
+	return rf.flow.Alias(alias, source, origin)
 }
 
 // Use validates one resource access. Non-resource names are ignored so the
-// caller can invoke this after ordinary identifier classification. A consumed
-// class produces OAK-B0111 with the original consume site and the shortest
-// available programmer-visible alias chain.
+// caller can invoke this after ordinary identifier classification.
 func (rf *ResourceFlow) Use(name string, node ast.Node) bool {
-	if rf == nil || name == "" {
+	if rf == nil || rf.flow == nil || name == "" || !rf.flow.Registered(name) {
 		return true
 	}
-	info, exists := rf.aliases[name]
-	if !exists {
+	if rf.flow.CanUse(name) {
 		return true
 	}
-	classState := rf.classes[info.class]
-	if classState == nil || classState.consumed == nil {
-		return true
-	}
-
-	rf.reportConsumedUse(name, node, classState.consumed)
+	rf.reportUnavailableUse(name, node)
 	return false
 }
 
-// Consume permanently removes authority from name's entire alias class.
-// Consumption is rejected while any live borrow depends on a class member.
-// A second consume is itself a use-after-consume and therefore reports
-// OAK-B0111.
+// Consume permanently removes authority from name's entire alias class on the
+// current path. Consumption is rejected while a dependent temporary borrow is
+// live, and also when authority is already consumed or only maybe live.
 func (rf *ResourceFlow) Consume(name string, site ast.Node) bool {
-	if rf == nil || name == "" {
+	if rf == nil || rf.flow == nil || name == "" || !rf.flow.Registered(name) {
 		return false
 	}
-	info, exists := rf.aliases[name]
-	if !exists {
-		return false
-	}
-	classState := rf.classes[info.class]
-	if classState == nil {
-		return false
-	}
-	if classState.consumed != nil {
-		rf.reportConsumedUse(name, site, classState.consumed)
+	if !rf.flow.CanUse(name) {
+		rf.reportUnavailableUse(name, site)
 		return false
 	}
 
-	if borrowName, borrow, ok := rf.firstDependentBorrow(info.class); ok {
+	if borrowName, borrow, ok := rf.firstDependentBorrow(name); ok {
 		if rf.checker != nil {
 			d := rf.checker.reportBorrow(site, CodeBorrowGeneric,
 				fmt.Sprintf("resource %q cannot be consumed while borrow %q is live", name, borrowName))
@@ -151,62 +108,70 @@ func (rf *ResourceFlow) Consume(name string, site ast.Node) bool {
 		}
 		return false
 	}
-
-	classState.consumed = &resourceConsumption{name: name, site: site}
-	return true
+	return rf.flow.Consume(name, site)
 }
 
-// Consumed reports whether name is a registered resource whose alias class has
-// already lost authority. It is primarily useful to semantic pipeline tests
-// and later control-flow joining.
+// Authority reports the path summary for a registered resource.
+func (rf *ResourceFlow) Authority(name string) (resourceflow.Authority, bool) {
+	if rf == nil || rf.flow == nil {
+		return resourceflow.AuthorityInvalid, false
+	}
+	return rf.flow.AuthorityOf(name)
+}
+
+// Consumed is true only when every incoming path has consumed the authority.
+// Maybe-consumed remains unavailable, but is not definitely consumed.
 func (rf *ResourceFlow) Consumed(name string) bool {
-	if rf == nil {
-		return false
-	}
-	info, exists := rf.aliases[name]
-	if !exists {
-		return false
-	}
-	classState := rf.classes[info.class]
-	return classState != nil && classState.consumed != nil
+	authority, exists := rf.Authority(name)
+	return exists && authority == resourceflow.AuthorityConsumed
 }
 
-func (rf *ResourceFlow) reportConsumedUse(name string, node ast.Node, consumed *resourceConsumption) {
-	if rf == nil || rf.checker == nil || consumed == nil {
+func (rf *ResourceFlow) reportUnavailableUse(name string, node ast.Node) {
+	if rf == nil || rf.flow == nil || rf.checker == nil {
+		return
+	}
+	authority, exists := rf.flow.AuthorityOf(name)
+	if !exists || authority == resourceflow.AuthorityLive {
 		return
 	}
 
-	d := rf.checker.reportBorrow(node, CodeResourceUsedAfterConsume,
-		fmt.Sprintf("resource %q cannot be used after its authority was consumed", name))
-	if consumed.site != nil {
-		d.AddSecondary(diagnostic.NodeToRange(consumed.site),
-			fmt.Sprintf("resource authority was consumed here through %q", consumed.name))
-	} else {
-		d.AddNote(fmt.Sprintf("resource authority was previously consumed through %q", consumed.name))
+	title := fmt.Sprintf("resource %q cannot be used after its authority was consumed", name)
+	if authority == resourceflow.AuthorityMaybeConsumed {
+		title = fmt.Sprintf("resource %q cannot be used because its authority may have been consumed", name)
 	}
+	d := rf.checker.reportBorrow(node, CodeResourceUsedAfterConsume, title)
 
-	path := rf.aliasPath(consumed.name, name)
-	for i := 0; i+1 < len(path); i++ {
-		left, right := path[i], path[i+1]
-		child, parent, origin, ok := rf.aliasEdge(left, right)
-		if !ok {
-			continue
-		}
-		message := fmt.Sprintf("resource alias %q derives authority from %q", child, parent)
-		if origin != nil {
-			d.AddSecondary(diagnostic.NodeToRange(origin), message)
+	consumptions := rf.flow.Consumptions(name)
+	for _, consumed := range consumptions {
+		if consumed.Site != nil {
+			message := fmt.Sprintf("resource authority was consumed on this path through %q", consumed.Name)
+			if authority == resourceflow.AuthorityConsumed && len(consumptions) == 1 {
+				message = fmt.Sprintf("resource authority was consumed here through %q", consumed.Name)
+			}
+			d.AddSecondary(diagnostic.NodeToRange(consumed.Site), message)
 		} else {
-			d.AddNote(message)
+			d.AddNote(fmt.Sprintf("resource authority was consumed through %q on an incoming path", consumed.Name))
 		}
+
+		for _, edge := range rf.flow.AliasPath(consumed.Name, name) {
+			message := fmt.Sprintf("resource alias %q derives authority from %q", edge.Child, edge.Parent)
+			if edge.Origin != nil {
+				d.AddSecondary(diagnostic.NodeToRange(edge.Origin), message)
+			} else {
+				d.AddNote(message)
+			}
+		}
+	}
+	if authority == resourceflow.AuthorityMaybeConsumed {
+		d.AddNote("the control-flow join includes both a live path and a consumed path; authority must be live on every path")
 	}
 	d.AddHelp("use the resource value returned by the consuming operation, if it transfers authority back")
 }
 
 // firstDependentBorrow finds the earliest source-causal live borrow whose
-// owner belongs to classID. Sorting makes diagnostics independent of Go map
-// iteration order.
-func (rf *ResourceFlow) firstDependentBorrow(classID resourceClassID) (string, borrowInfo, bool) {
-	if rf == nil || rf.checker == nil {
+// owner aliases resourceName. Sorting keeps diagnostics deterministic.
+func (rf *ResourceFlow) firstDependentBorrow(resourceName string) (string, borrowInfo, bool) {
+	if rf == nil || rf.flow == nil || rf.checker == nil {
 		return "", borrowInfo{}, false
 	}
 	type candidate struct {
@@ -215,8 +180,7 @@ func (rf *ResourceFlow) firstDependentBorrow(classID resourceClassID) (string, b
 	}
 	candidates := make([]candidate, 0)
 	for borrowName, info := range rf.checker.activeBorrows {
-		ownerInfo, ok := rf.aliases[info.owner]
-		if !ok || ownerInfo.class != classID {
+		if !rf.flow.Aliases(info.owner, resourceName) {
 			continue
 		}
 		candidates = append(candidates, candidate{name: borrowName, info: info})
@@ -244,73 +208,4 @@ func (rf *ResourceFlow) firstDependentBorrow(classID resourceClassID) (string, b
 		return left.name < right.name
 	})
 	return candidates[0].name, candidates[0].info, true
-}
-
-// aliasPath returns the deterministic shortest path between two names in one
-// alias class. Alias registration forms a tree today, but BFS deliberately
-// treats the graph generically so future provenance edges do not change the
-// diagnostic contract.
-func (rf *ResourceFlow) aliasPath(from, to string) []string {
-	if rf == nil || from == "" || to == "" {
-		return nil
-	}
-	if from == to {
-		return []string{from}
-	}
-	fromInfo, fromOK := rf.aliases[from]
-	toInfo, toOK := rf.aliases[to]
-	if !fromOK || !toOK || fromInfo.class != toInfo.class {
-		return nil
-	}
-
-	neighbors := make(map[string][]string)
-	for name, info := range rf.aliases {
-		if info.class != fromInfo.class || info.parent == "" {
-			continue
-		}
-		neighbors[name] = append(neighbors[name], info.parent)
-		neighbors[info.parent] = append(neighbors[info.parent], name)
-	}
-	for name := range neighbors {
-		sort.Strings(neighbors[name])
-	}
-
-	queue := []string{from}
-	seen := map[string]bool{from: true}
-	prev := make(map[string]string)
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		for _, next := range neighbors[current] {
-			if seen[next] {
-				continue
-			}
-			seen[next] = true
-			prev[next] = current
-			if next == to {
-				path := []string{to}
-				for cursor := to; cursor != from; {
-					cursor = prev[cursor]
-					path = append(path, cursor)
-				}
-				for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
-					path[i], path[j] = path[j], path[i]
-				}
-				return path
-			}
-			queue = append(queue, next)
-		}
-	}
-	return nil
-}
-
-// aliasEdge recovers the directed provenance edge between adjacent names.
-func (rf *ResourceFlow) aliasEdge(left, right string) (child, parent string, origin ast.Node, ok bool) {
-	if info, exists := rf.aliases[left]; exists && info.parent == right {
-		return left, right, info.origin, true
-	}
-	if info, exists := rf.aliases[right]; exists && info.parent == left {
-		return right, left, info.origin, true
-	}
-	return "", "", nil, false
 }
