@@ -12,7 +12,18 @@ theorem decode_encode (l : Literal) (h : 0 < l.index) :
     decodeLiteral (encodeLiteral l) = l := by
   cases l with
   | mk index positive =>
-    cases positive <;> simp [encodeLiteral, decodeLiteral] <;> omega
+    change 0 < index at h
+    cases positive
+    · have hd : (index - 1) * 2 / 2 + 1 = index := by omega
+      have hm : ((index - 1) * 2) % 2 = 0 := by omega
+      change (⟨(index - 1) * 2 / 2 + 1, decide (((index - 1) * 2) % 2 = 1)⟩ : Literal) = ⟨index, false⟩
+      rw [hd, hm]
+      rfl
+    · have hd : ((index - 1) * 2 + 1) / 2 + 1 = index := by omega
+      have hm : ((index - 1) * 2 + 1) % 2 = 1 := by omega
+      change (⟨((index - 1) * 2 + 1) / 2 + 1, decide (((index - 1) * 2 + 1) % 2 = 1)⟩ : Literal) = ⟨index, true⟩
+      rw [hd, hm]
+      rfl
 
 theorem encode_decode (n : Nat) : encodeLiteral (decodeLiteral n) = n := by
   by_cases h : n % 2 = 1 <;> simp [encodeLiteral, decodeLiteral, h] <;> omega
@@ -22,6 +33,9 @@ theorem decoded_bounds (n variables : Nat) (h : n / 2 < variables) :
   simp only [decodeLiteral]
   omega
 
+instance (start count size : Nat) : Decidable (rangeSafe start count size) :=
+  inferInstanceAs (Decidable (start ≤ size ∧ count ≤ size - start))
+
 def readRange (pool : List Nat) (start count : Nat) : Option (List Nat) :=
   if rangeSafe start count pool.length then some ((pool.drop start).take count) else none
 
@@ -30,21 +44,17 @@ theorem readRange_refines (pool : List Nat) (start count : Nat) :
       if start + count ≤ pool.length then some ((pool.drop start).take count) else none := by
   simp only [readRange, rangeSafe_refines]
 
-theorem drop_prefix (prefix tail : List Nat) : (prefix ++ tail).drop prefix.length = tail := by
-  induction prefix with
-  | nil => rfl
-  | cons x xs ih => simpa using ih
+theorem drop_prefix (before tail : List Nat) : (before ++ tail).drop before.length = tail := by
+  simp
 
 theorem take_prefix (items suffix : List Nat) : (items ++ suffix).take items.length = items := by
-  induction items with
-  | nil => rfl
-  | cons x xs ih => simpa using ih
+  simp
 
 -- Closed ranges survive all subsequent appends to the same initialized pool.
-theorem range_contents (prefix items suffix : List Nat) :
-    readRange (prefix ++ items ++ suffix) prefix.length items.length = some items := by
+theorem range_contents (before items suffix : List Nat) :
+    readRange (before ++ items ++ suffix) before.length items.length = some items := by
   rw [readRange_refines]
-  have h : prefix.length + items.length ≤ (prefix ++ items ++ suffix).length := by simp
+  have h : before.length + items.length ≤ (before ++ items ++ suffix).length := by simp
   rw [if_pos h, List.append_assoc, drop_prefix, take_prefix]
 
 theorem completed_pending (b : Packed.Buffer) (h : Packed.WellFormed b) :
@@ -58,13 +68,13 @@ theorem completed_pending (b : Packed.Buffer) (h : Packed.WellFormed b) :
 def readClause (pool : List Nat) (start count : Nat) : Option Clause :=
   (readRange pool start count).map (List.map decodeLiteral)
 
-theorem clause_contents (prefix items suffix : List Nat) :
-    readClause (prefix ++ items ++ suffix) prefix.length items.length = some (items.map decodeLiteral) := by
+theorem clause_contents (before items suffix : List Nat) :
+    readClause (before ++ items ++ suffix) before.length items.length = some (items.map decodeLiteral) := by
   simp [readClause, range_contents]
 
-theorem reference_contents (prefix ids suffix : List Nat) :
-    readRange (prefix ++ ids ++ suffix) prefix.length ids.length = some ids :=
-  range_contents prefix ids suffix
+theorem reference_contents (before ids suffix : List Nat) :
+    readRange (before ++ ids ++ suffix) before.length ids.length = some ids :=
+  range_contents before ids suffix
 
 structure Command where
   addition : Bool
@@ -118,7 +128,7 @@ theorem checkLayout_sound (raw : Layout) (h : checkLayout raw = true) :
   cases hd : decodeLayout raw with
   | none => simp [checkLayout, hd] at h
   | some d =>
-    exact ⟨d, hd, checkProof_sound (by simpa [checkLayout, hd] using h)⟩
+    exact ⟨d, rfl, checkProof_sound (by simpa [checkLayout, hd] using h)⟩
 
 #print axioms decode_encode
 #print axioms encode_decode
