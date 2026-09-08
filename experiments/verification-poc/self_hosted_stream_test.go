@@ -162,6 +162,18 @@ func runOakStream(t *testing.T,source string) {
  t.Helper();cc,err:=exec.LookPath("cc");if err!=nil {t.Fatal("C compiler required for Oak stream checks")}
  generated,err:=compiler.New().WithSource("self_hosted_stream_test.oak",source).EmitC().Get();if err!=nil {t.Fatalf("Oak stream compile: %v",err)}
  for _,bad:=range []string{"malloc(","calloc(","realloc(","OAK_UNSUPPORTED"} {if at:=strings.Index(generated,bad);at>=0 {start:=at-180;if start<0 {start=0};end:=at+400;if end>len(generated) {end=len(generated)};t.Fatalf("unexpected %s in generated checker: %s",bad,generated[start:end])}}
+ // Trace text-case entry in the native harness so traps identify their input.
+ // This instrumentation is outside the Oak checker and does not alter decisions.
+ if strings.Contains(source,"text_case_") {
+  var traced strings.Builder;traced.WriteString("#include <stdio.h>\n")
+  for _,line:=range strings.Split(generated,"\n") {
+   traced.WriteString(line);traced.WriteByte('\n')
+   if at:=strings.Index(line,"text_case_");at>=0 && strings.HasSuffix(strings.TrimSpace(line),"{") {
+    end:=at;for end<len(line)&&line[end]!='(' {end++}
+    fmt.Fprintf(&traced,"fprintf(stderr, \"enter %s\\n\");\n",strings.TrimSpace(line[at:end]))
+   }
+  };generated=traced.String()
+ }
  dir:=t.TempDir();cpath:=filepath.Join(dir,"stream.c");bin:=filepath.Join(dir,"stream")
  if err:=os.WriteFile(cpath,[]byte(generated),0644);err!=nil {t.Fatal(err)}
  ctx,cancel:=context.WithTimeout(context.Background(),90*time.Second);defer cancel()
