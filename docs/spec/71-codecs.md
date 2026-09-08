@@ -402,3 +402,62 @@ Sanitizer tests cover nested record arrays, scalar boundaries, length and
 syntax errors, round trips, and unchanged short destinations. Fluent/direct
 C equality (excluding source-location comments) and allocator absence are
 checked for array-bearing records.
+
+## 15. Nullable record fields (implemented subset)
+
+A field `id: Option[u64]` encodes `.Some(n)` as a JSON integer and `.None`
+as `null`. The same rule applies to Bool and supported concrete records,
+including records with fixed array fields or other nullable fields. These
+are required nullable fields: an absent key is still `MissingField`, and
+null is distinct from an absent key. No omission/defaulting policy is
+inferred. Duplicate and unknown field rules remain unchanged.
+
+The concrete Option tag and payload live inline in their owning record;
+no boxing, heap storage, or pointer tagging is introduced. The backend
+places the tag and single-payload union with checked layout arithmetic
+and C size/alignment/offset assertions. Aggregate copies remain possible.
+Nested Option applications, Option of a bare array or borrowed string,
+and arrays of Option are outside this initial derivation subset. A named
+record can wrap an array. Nullable values do not weaken input validation
+or encoding's complete preflight before modifying the output buffer.
+
+## 16. Two API levels and the simdjson performance target
+
+Oak offers a typed convenience layer and explicit lower-level operations.
+The intended producer/consumer split follows
+[weePickle](https://github.com/rallyhealth/weePickle), with static concrete
+composition in Oak. High-level `decode[T, Json]`, `encode[T, Json]`, and
+immediate `from[...](...).to[...]` calls derive typed operations; they must
+not require an intermediate document tree or erased visitor allocation.
+
+Low-level users control input views, output spans, offsets, and reusable
+storage. Current building blocks include `json_token`, `json_read_integer`,
+`json_string_decode`, and `JsonEncoder[JsonStrict]`. These helpers are not
+interchangeable with complete-document validation: token and offset helpers
+do not establish that a whole input is valid JSON. A general streaming
+reader/writer and public typed visitor protocol are still design work.
+Future streaming APIs must state chunk boundaries, incomplete-input
+behavior, output exhaustion, lifetime rules, and validation coverage.
+Both API levels should share scanning/conversion kernels; high-level
+convenience must not force scalar processing or hidden allocations.
+
+Matching simdjson on Apple M-series is a target, not a measured result.
+Current key scanning uses bounded SIMD runs, but numeric conversion and
+schema dispatch are scalar, field lookup is linear, and root UTF-8
+validation performs a separate pass. Removing abstraction overhead alone
+does not close those algorithmic gaps. Investigate fused structural/UTF-8
+scanning, faster checked numeric conversion, schema-specialized field
+matching, and reusable bounded work buffers based on profiles. Any padded
+input fast path requires an explicit verified readable-capacity contract;
+the ordinary view API must retain bounded reads at its tail.
+
+Follow [simdjson's performance guidance](https://github.com/simdjson/simdjson/blob/master/doc/performance.md)
+when comparing: reuse parser/work buffers, distinguish setup from steady
+state, and report number-heavy workloads separately. Measure on the same
+M-series machine, compiler settings, and core configuration. Record exact
+versions, bytes/s, time/document, allocations, and scratch/output capacity;
+use consumed checksums and both warm-cache and streaming-sized workloads.
+Compare full validated typed materialization with equivalent work; selective
+extraction is a separate benchmark with its validation coverage stated.
+No parity claim or Apple Silicon throughput measurement accompanies this
+implementation. A native benchmark harness remains to be built.

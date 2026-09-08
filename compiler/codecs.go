@@ -146,6 +146,7 @@ type codecDeriver struct {
 type codecField struct {
 	name, wire, typ string
 	length          int64 // Zero denotes a scalar field; fixed arrays must be nonempty.
+	nullable        bool
 }
 
 func (d *codecDeriver) fields(name string) ([]codecField, error) {
@@ -162,12 +163,17 @@ func (d *codecDeriver) fields(name string) ([]codecField, error) {
 	for _, field := range record.OrderedFields() {
 		element := field.Value
 		length := int64(0)
+		nullable := false
 		if array, ok := element.(*ast.IndexExpression); ok && !array.Dot {
-			count, fixed := array.Index.(*ast.IntegerLiteral)
-			if !fixed || count.Value <= 0 || count.Value > 4294967295 {
-				return nil, fmt.Errorf("codec: %s.%s requires a fixed array length in 1..4294967295", name, field.Name)
+			if base, named := array.Left.(*ast.Identifier); named && base.Value == "Option" {
+				nullable, element = true, array.Index
+			} else {
+				count, fixed := array.Index.(*ast.IntegerLiteral)
+				if !fixed || count.Value <= 0 || count.Value > 4294967295 {
+					return nil, fmt.Errorf("codec: %s.%s requires a fixed array length in 1..4294967295", name, field.Name)
+				}
+				length, element = count.Value, array.Left
 			}
-			length, element = count.Value, array.Left
 		}
 		typ, ok := element.(*ast.Identifier)
 		if !ok || typ.Value == "string" {
@@ -206,7 +212,7 @@ func (d *codecDeriver) fields(name string) ([]codecField, error) {
 			return nil, fmt.Errorf("codec: %s has duplicate JSON field name %q", name, wire)
 		}
 		seen[wire] = true
-		fields = append(fields, codecField{field.Name, wire, typ.Value, length})
+		fields = append(fields, codecField{field.Name, wire, typ.Value, length, nullable})
 	}
 	return fields, nil
 }
@@ -267,7 +273,9 @@ func (d *codecDeriver) derive(typ string) error {
 			if i != 0 {
 				prefix = append([]byte{','}, prefix...)
 			}
-			if field.length == 0 {
+			if field.nullable {
+				fmt.Fprintf(&size, "total = total + u64(%d)\noptional%d: Option[%s] = value.%s\noptional%d ?\n | .None => { total = total + u64(4) }\n | .Some(present) => {\npart%d: Result[u32, JsonError] = %s(present)\nvalid = valid && json_result_ok(part%d)\ntotal = total + u64(json_result_value(part%d))\n}\n", len(prefix), i, field.typ, field.name, i, i, codecName("encoded_size", field.typ), i, i)
+			} else if field.length == 0 {
 				fmt.Fprintf(&size, "part%d: Result[u32, JsonError] = %s(value.%s)\nvalid = valid && json_result_ok(part%d)\ntotal = total + u64(%d) + u64(json_result_value(part%d))\n", i, codecName("encoded_size", field.typ), field.name, i, len(prefix), i)
 			} else {
 				// Include brackets and commas once; the loop does not expand with N.
@@ -276,7 +284,9 @@ func (d *codecDeriver) derive(typ string) error {
 			for _, b := range prefix {
 				fmt.Fprintf(&write, "dst[out] = u8(%d)\nout = out + u32(1)\n", b)
 			}
-			if field.length == 0 {
+			if field.nullable {
+				fmt.Fprintf(&write, "optional%d: Option[%s] = value.%s\noptional%d ?\n | .None => {\ndst[out] = u8(110)\ndst[out + u32(1)] = u8(117)\ndst[out + u32(2)] = u8(108)\ndst[out + u32(3)] = u8(108)\nout = out + u32(4)\n}\n | .Some(present) => {\npart%d: Result[u32, JsonError] = %s(present, dst, out)\nassert(json_result_ok(part%d))\nout = out + json_result_value(part%d)\n}\n", i, field.typ, field.name, i, i, codecName("write", field.typ), i, i)
+			} else if field.length == 0 {
 				fmt.Fprintf(&write, "part%d: Result[u32, JsonError] = %s(value.%s, dst, out)\nassert(json_result_ok(part%d))\nout = out + json_result_value(part%d)\n", i, codecName("write", field.typ), field.name, i, i)
 			} else {
 				fmt.Fprintf(&write, "dst[out] = u8(91)\nout = out + u32(1)\nindex%d: u32 = 0\nwhile index%d < u32(%d) {\nindex%d != u32(0) ? { dst[out] = u8(44)\nout = out + u32(1)\n}\npart%d: Result[u32, JsonError] = %s(value.%s[index%d], dst, out)\nassert(json_result_ok(part%d))\nout = out + json_result_value(part%d)\nindex%d = index%d + u32(1)\n}\ndst[out] = u8(93)\nout = out + u32(1)\n", i, i, field.length, i, i, codecName("write", field.typ), field.name, i, i, i, i, i)
