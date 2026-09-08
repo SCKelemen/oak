@@ -1104,3 +1104,119 @@ dlist_splice_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: 
 intrusive_queue_append[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
   slist_splice_back(dst, src, nodes)
 }
+
+// Bounded min-priority heap. T is a copyable record with priority: u64.
+MinHeapCursor: type = struct { length: u32 }
+
+min_heap_check: (cursor: [*]MinHeapCursor, capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(cursor[0].length <= capacity)
+}
+
+min_heap_key[T]: (entry: T): u64 = entry.priority
+
+min_heap_sift_up[T]: (storage: [*]T, start: u32): () {
+  assert(start < len(storage))
+  index: u32 = start
+  moving: Bool = true
+  while index > u32(0) && moving {
+    parent: u32 = (index - u32(1)) / u32(2)
+    min_heap_key(storage[index]) < min_heap_key(storage[parent]) ? {
+      saved: T = storage[parent]
+      storage[parent] = storage[index]
+      storage[index] = saved
+      index = parent
+    } | { moving = false }
+  }
+}
+
+min_heap_sift_down[T]: (storage: [*]T, start: u32, count: u32): () {
+  assert(count <= len(storage) && start < count)
+  index: u32 = start
+  moving: Bool = true
+  // index < count/2 proves that 2*index+1 is in range without overflow.
+  while index < count / u32(2) && moving {
+    child: u32 = index * u32(2) + u32(1)
+    right: u32 = child + u32(1)
+    right < count ? {
+      min_heap_key(storage[right]) < min_heap_key(storage[child]) ? { child = right }
+    }
+    min_heap_key(storage[child]) < min_heap_key(storage[index]) ? {
+      saved: T = storage[index]
+      storage[index] = storage[child]
+      storage[child] = saved
+      index = child
+    } | { moving = false }
+  }
+}
+
+// Success returns the new length, not an unstable heap-array position.
+min_heap_push[T]: (cursor: [*]MinHeapCursor, storage: [*]T, entry: T): Result[u32, CollectionError] {
+  min_heap_check(cursor, len(storage))
+  cursor[0].length == len(storage) ? { .Err(.Full) } | {
+    index: u32 = cursor[0].length
+    storage[index] = entry
+    min_heap_sift_up(storage, index)
+    cursor[0].length = index + u32(1)
+    .Ok(cursor[0].length)
+  }
+}
+
+min_heap_peek[T]: (cursor: [*]MinHeapCursor, storage: []T): Result[T, CollectionError] {
+  min_heap_check(cursor, len(storage))
+  cursor[0].length == u32(0) ? { .Err(.Empty) } | { .Ok(storage[0]) }
+}
+
+min_heap_pop[T]: (cursor: [*]MinHeapCursor, storage: [*]T): Result[T, CollectionError] {
+  min_heap_check(cursor, len(storage))
+  cursor[0].length == u32(0) ? { .Err(.Empty) } | {
+    result: T = storage[0]
+    count: u32 = cursor[0].length - u32(1)
+    count > u32(0) ? {
+      storage[0] = storage[count]
+      min_heap_sift_down(storage, u32(0), count)
+    }
+    cursor[0].length = count
+    .Ok(result)
+  }
+}
+
+// Replaces the minimum and returns the old entry; Empty does not insert.
+min_heap_replace_top[T]: (cursor: [*]MinHeapCursor, storage: [*]T, entry: T): Result[T, CollectionError] {
+  min_heap_check(cursor, len(storage))
+  cursor[0].length == u32(0) ? { .Err(.Empty) } | {
+    result: T = storage[0]
+    storage[0] = entry
+    min_heap_sift_down(storage, u32(0), cursor[0].length)
+    .Ok(result)
+  }
+}
+
+// Heapify an initialized prefix. Count may be zero; errors write nothing.
+min_heap_build[T]: (cursor: [*]MinHeapCursor, storage: [*]T, count: u32): Result[u32, CollectionError] {
+  min_heap_check(cursor, len(storage))
+  count > len(storage) ? { .Err(.OutOfBounds) } | {
+    remaining: u32 = count / u32(2)
+    while remaining > u32(0) {
+      remaining = remaining - u32(1)
+      min_heap_sift_down(storage, remaining, count)
+    }
+    cursor[0].length = count
+    .Ok(count)
+  }
+}
+
+min_heap_clear: (cursor: [*]MinHeapCursor, capacity: u32): () {
+  min_heap_check(cursor, capacity)
+  cursor[0].length = u32(0)
+}
+
+min_heap_validate[T]: (cursor: [*]MinHeapCursor, storage: []T): () {
+  min_heap_check(cursor, len(storage))
+  index: u32 = 1
+  while index < cursor[0].length {
+    parent: u32 = (index - u32(1)) / u32(2)
+    assert(min_heap_key(storage[parent]) <= min_heap_key(storage[index]))
+    index = index + u32(1)
+  }
+}

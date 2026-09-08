@@ -21,10 +21,11 @@ Explicit calls such as `identity[u32](x)` and `ring_push[u8](cursor, data, x)`
 specialize first-order unconstrained functions. Each concrete signature and body
 passes type checking, borrow checking and discipline analysis. Specializations
 use direct calls and inline values, with no boxes, vtables or allocation.
+The compiler also infers type arguments when call arguments determine them.
 
 The initial argument set is fixed-width integers, Bool and concrete named types.
-Const parameters on functions, composite type arguments, inferred generic calls,
-generic methods, and first-class generic function values are not implemented.
+Const parameters on functions, composite type arguments, generic methods,
+and first-class generic function values are not implemented.
 Constrained functions retain the existing type-checking path; unsupported generic
 bodies are rejected before C emission. Programs are limited to 256 specializations.
 Unused unconstrained templates are not emitted or universally body-checked.
@@ -328,6 +329,64 @@ They are not atomic publication primitives: callers must provide any required
 synchronization. For an executable scheduler-style batch transfer, see
 `examples/stdlib_queue_transfer.oak`.
 
+## Bounded min-priority heap
+
+The `min_heap_*` functions implement a binary min-heap in caller-owned storage.
+Entries are initialized, copyable records with a `priority: u64` field; other
+fields carry the payload. The smallest priority is returned first. Calls
+specialize for the concrete entry type, with direct comparisons and inline values.
+No allocator, boxing, callback dispatch or automatic growth is involved.
+
+```oak
+Job: type = struct {
+  priority: u64
+  value: u32
+}
+```
+
+Use an initialized `[N]Job` array and a zero-initialized `[1]MinHeapCursor`.
+Keep that cursor paired with its storage. `cursor[0].length` is the live heap
+prefix. Unlike intrusive lists, this heap reorders whole entries, so array
+positions are not stable handles. Do not put linked intrusive nodes or unique
+resources into it; a small entry containing a priority and an external pool
+index can refer to a separately stored payload.
+
+| Function | Success / error | Work |
+| --- | --- | --- |
+| `min_heap_push(cursor, storage, entry)` | New length, or `Full` | O(log n) |
+| `min_heap_peek(cursor, view)` | Copy of minimum entry, or `Empty` | O(1) |
+| `min_heap_pop(cursor, storage)` | Removes and returns minimum entry, or `Empty` | O(log n) |
+| `min_heap_replace_top(cursor, storage, entry)` | Replaces and returns old minimum, or `Empty` | O(log n) |
+| `min_heap_build(cursor, storage, count)` | Heapifies initialized prefix, returns count; `OutOfBounds` if count exceeds capacity | O(count) |
+| `min_heap_clear(cursor, capacity)` | Logical reset without erasing storage | O(1) |
+| `min_heap_validate(cursor, view)` | Checks cursor and every parent/child ordering relation | O(n) |
+
+Push/build return `Result[u32,CollectionError]`; peek/pop/replace return
+`Result[Entry,CollectionError]`. Mutating entry operations use `[*]Entry`; peek
+and validate use `[]Entry`. Use lexical scopes to release a mutable borrow before
+creating a read view. Metadata-only clear takes the actual backing capacity.
+
+Full/empty/out-of-range failures preserve cursor length and every backing entry.
+Replacing the top of an empty heap returns `Empty`; it does not insert. Build
+permits count zero, discards the old logical heap, and rearranges only the given
+initialized prefix; backing entries after that prefix remain unchanged. Removal
+and clear leave stale entries outside the live prefix. Equal priorities have no
+stable order; use unique priorities or encode a tie-breaker in the key when order
+among ties matters. Priorities cover the full unsigned 64-bit range.
+
+Entry copies contribute their ordinary value-copy cost to the bounds above.
+The child-index calculation checks that a node has children before multiplying,
+so u32 index arithmetic cannot wrap for a valid heap length. Cursor bounds are
+checked on each operation. The heap-order invariant must hold before push/pop/
+replace/peek; use build after externally changing priorities. Full validation is
+explicit, and corrupted cursors or invalid ordering found by validation trap.
+The sift helpers are implementation operations with bounds preconditions; direct
+callers must establish the appropriate partial-heap invariant themselves.
+
+This is a sequential queue: synchronization, stable handles, decrease-key,
+arbitrary removal and intrusive heap membership are not implemented by this API.
+See `examples/stdlib_priority_queue.oak` for an executable example.
+
 ## Verification and remaining work
 
 `compiler/e2e_stdlib_test.go` compiles real imported Oak through the compiler and
@@ -355,6 +414,12 @@ Transfer tests compare 120 mixed operations per hook family against three
 sequence models sharing a pool. They check every cursor, owner, link and payload,
 including an independent live membership through the other hook family. Additional
 tests cover FIFO batch order, old-owner rejection, detach/reuse and corrupt chains.
+
+Heap tests compare mixed push/pop/replace/clear operations with sorted sequences
+at capacities 1, 4 and 9. They check every expected live entry, minimum, ordering
+invariant and failed-operation snapshot. Additional cases exercise prefix heapify,
+zero count, even/odd sizes, invalid counts, equal/high unsigned priorities,
+independent heaps, missing/wrong priority fields and corruption traps.
 
 The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,

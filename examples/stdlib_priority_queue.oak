@@ -1,0 +1,25 @@
+import(std)
+
+Job: type = struct {
+  priority: u64
+  value: u32
+}
+
+main: (): i32 {
+  data: [4]Job
+  state: [1]MinHeapCursor
+  storage: [*]Job = span(&data)
+  queue: [*]MinHeapCursor = span(&state)
+  later: Job = Job { priority: u64(100), value: u32(7) }
+  sooner: Job = Job { priority: u64(10), value: u32(42) }
+  first: Result[u32, CollectionError] = min_heap_push(queue, storage, later)
+  second: Result[u32, CollectionError] = min_heap_push(queue, storage, sooner)
+  first_ok: Bool = first ? | .Ok(count) => true | .Err(reason) => false
+  second_ok: Bool = second ? | .Ok(count) => true | .Err(reason) => false
+  assert(first_ok && second_ok)
+  next: Result[Job, CollectionError] = min_heap_pop(queue, storage)
+  value: u32 = next ? | .Ok(job) => job.value | .Err(reason) => u32(0)
+  assert(value == u32(42))
+  assert(queue[0].length == u32(1))
+  42
+}
