@@ -45,7 +45,7 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 	}); err != nil {
 		return err
 	}
-	exports := map[string]bool{"text_literal": true, "encode": true, "encoded_size": true, "from": true}
+	exports := map[string]bool{"text_literal": true, "encode": true, "decode": true, "encoded_size": true, "from": true}
 	for _, stmt := range lib.Root.Statements {
 		if name := declarationName(stmt); name != "" {
 			exports[name] = true
