@@ -54,3 +54,8 @@ floats, large arrays, and selective extraction need separate workloads.
 The API and reuse choices follow simdjson's
 [basics](https://github.com/simdjson/simdjson/blob/v4.6.11/doc/basics.md) and
 [performance guidance](https://github.com/simdjson/simdjson/blob/v4.6.11/doc/performance.md).
+
+Use `--inspect results/native` to retain the generated `schema.c` and
+optimized `oak.s`. Assembly is produced with the same C flags as the timed
+Oak object. Selected scanner/reader functions are also printed for inspection
+in remote CI logs. The workflow uploads these files alongside raw JSON samples.

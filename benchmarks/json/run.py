@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--cc", default="cc")
     parser.add_argument("--cxx", default="c++")
     parser.add_argument("--sanitize", action="store_true", help="correctness run; not a performance result")
+    parser.add_argument("--inspect", type=Path, help="save generated C and assembly for inspection")
     args = parser.parse_args()
     if not (1 <= args.documents <= 1000000 and 1 <= args.rounds <= 1000000 and 1 <= args.samples <= 100):
         parser.error("documents/rounds must be 1..1000000; samples 1..100")
@@ -80,6 +81,20 @@ def main():
         metadata["generated_c_sha256"] = hashlib.sha256((build / "schema.c").read_bytes()).hexdigest()
         commands.append([args.cc, "-std=c99", *flags, "-I" + str(build), "-c", str(HERE / "bridge.c"), "-o", str(build / "oak.o")])
         subprocess.run(commands[-1], check=True)
+        if args.inspect:
+            args.inspect.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(build / "schema.c", args.inspect / "schema.c")
+            commands.append([args.cc, "-std=c99", *flags, "-I" + str(build), "-S", str(HERE / "bridge.c"), "-o", str(args.inspect / "oak.s")])
+            subprocess.run(commands[-1], check=True)
+            assembly = (args.inspect / "oak.s").read_text()
+            # Print the derived reader and its callees for remote inspection.
+            for name in ("oak___oak_json_read_BenchRecord", "oak___oak_json_read_i32", "oak_json_read_integer", "oak_json_scan_integer", "oak_json_key_equal"):
+                start = assembly.find("\n_" + name + ":")
+                if start < 0:
+                    start = assembly.find("\n" + name + ":")
+                if start >= 0:
+                    end = assembly.find(".cfi_endproc", start)
+                    print(assembly[start:end + len(".cfi_endproc")])
         commands.append([args.cxx, "-std=c++17", *flags, "-pthread", "-I" + str(simdjson / "singleheader"), str(HERE / "runner.cpp"), str(simdjson / "singleheader/simdjson.cpp"), str(build / "oak.o"), "-o", str(build / "benchmark")])
         subprocess.run(commands[-1], check=True)
         commands.append([str(build / "benchmark"), str(args.documents), str(args.rounds), str(args.samples)])

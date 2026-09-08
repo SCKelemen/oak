@@ -41,13 +41,13 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 	switch primitive {
 	case "u64", "i64":
 		bits, _ := strconv.Atoi(typ[1:])
-		body.WriteString("parsed: Result[JsonInteger, JsonDecodeError] = json_read_integer(src, offset)\nparsed ?\n | .Err(reason) => { .Err(reason) }\n | .Ok(raw) => {\n")
+		body.WriteString("raw: JsonIntegerScan = json_scan_integer(src, offset)\nnegative: Bool = raw.status == u32(1)\nraw.status > u32(1) ? { .Err(json_decode_error(raw.status - u32(1))) } | {\n")
 		if primitive == "u64" {
 			maximum := ^uint64(0)
 			if bits < 64 {
 				maximum = (uint64(1) << bits) - 1
 			}
-			fmt.Fprintf(&body, "raw.negative ? { .Err(.TypeMismatch) } | raw.magnitude > %s ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(maximum))
+			fmt.Fprintf(&body, "negative ? { .Err(.TypeMismatch) } | raw.magnitude > %s ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(maximum))
 			conversion := "raw.magnitude"
 			if bits < 64 {
 				conversion = typ + "_trunc_u64(raw.magnitude)"
@@ -55,8 +55,8 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			fmt.Fprintf(&body, "item: JsonDecoded[%s]\nitem.value = %s\nitem.next = raw.next\n.Ok(item)\n}\n", typ, conversion)
 		} else {
 			negativeMax := uint64(1) << (bits - 1)
-			fmt.Fprintf(&body, "limit: u64 = raw.negative ? %s | %s\nraw.magnitude > limit ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(negativeMax), codecU64Literal(negativeMax-1))
-			body.WriteString("number: i64 = i64(0)\nraw.negative && raw.magnitude > u64(0) ? { number = i64(0) - i64_bits_u64(raw.magnitude - u64(1)) - i64(1) } | { number = i64_bits_u64(raw.magnitude) }\n")
+			fmt.Fprintf(&body, "limit: u64 = negative ? %s | %s\nraw.magnitude > limit ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(negativeMax), codecU64Literal(negativeMax-1))
+			body.WriteString("number: i64 = i64(0)\nnegative && raw.magnitude > u64(0) ? { number = i64(0) - i64_bits_u64(raw.magnitude - u64(1)) - i64(1) } | { number = i64_bits_u64(raw.magnitude) }\n")
 			conversion := "number"
 			if bits < 64 {
 				conversion = typ + "_trunc_i64(number)"
@@ -87,9 +87,31 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			}
 			fmt.Fprintf(&body, "key%d: []u8 = view(&key%d_data)\n", i, i)
 		}
-		body.WriteString("first: JsonToken = json_token(src, at)\nfirst.kind == u32(3) ? { done = true\nat = first.end\n}\nwhile !done && status == u32(0) {\nkey: JsonToken = json_token(src, at)\nkey.kind != u32(6) ? { status = u32(2) } | {\ncolon: JsonToken = json_token(src, key.end)\ncolon.kind != u32(4) ? { status = u32(2) } | {\n")
+		body.WriteString("first: u32 = json_skip_space(src, at)\nfirst < len(src) && src[first] == u8(125) ? { done = true\nat = first + u32(1)\n}\nwhile !done && status == u32(0) {\nat = json_skip_space(src, at)\nkey: JsonToken\nfield_index: u32 = 0\n")
+		// Match bounded literal spellings directly. Escaped and unusual keys
+		// retain the full tokenizer and Unicode comparison path.
 		for i, field := range fields {
-			fmt.Fprintf(&body, "json_key_equal(src, key, key%d) ? {\nseen%d ? { status = u32(6) } | {\n", i, i)
+			literal := []byte("\"" + field.wire + "\"")
+			plain := len(literal) <= 34
+			for _, b := range []byte(field.wire) {
+				plain = plain && b >= 32 && b < 127 && b != '\\' && b != '"'
+			}
+			if !plain {
+				continue
+			}
+			fmt.Fprintf(&body, "len(src) - at >= u32(%d)", len(literal))
+			for j, b := range literal {
+				fmt.Fprintf(&body, " && src[at + u32(%d)] == u8(%d)", j, b)
+			}
+			fmt.Fprintf(&body, " ? { field_index = u32(%d)\nkey = JsonToken { kind: u32(6), start: at, end: at + u32(%d) }\n} | ", i+1, len(literal))
+		}
+		body.WriteString("true ? {\nkey = json_token(src, at)\n")
+		for i := range fields {
+			fmt.Fprintf(&body, "json_key_equal(src, key, key%d) ? { field_index = u32(%d) } | ", i, i+1)
+		}
+		body.WriteString("{}\n}\nkey.kind != u32(6) ? { status = u32(2) } | {\ncolon_at: u32 = json_skip_space(src, key.end)\ncolon: JsonToken = JsonToken { kind: u32(4), start: colon_at, end: colon_at }\ncolon_at >= len(src) || src[colon_at] != u8(58) ? { status = u32(2) } | {\ncolon.end = colon_at + u32(1)\n")
+		for i, field := range fields {
+			fmt.Fprintf(&body, "field_index == u32(%d) ? {\nseen%d ? { status = u32(6) } | {\n", i+1, i)
 			if field.nullable {
 				fmt.Fprintf(&body, "token: JsonToken = json_token(src, colon.end)\ntoken.kind == u32(10) ? {\nabsent: Option[%s] = .None\nvalue.%s = absent\nat = token.end\nseen%d = true\n} | {\npart%d: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, colon.end)\npart%d ?\n | .Err(reason) => { status = json_decode_error_code(reason) }\n | .Ok(decoded) => {\npresent: Option[%s] = .Some(decoded.value)\nvalue.%s = present\nat = decoded.next\nseen%d = true\n}\n}\n", field.typ, field.name, i, i, field.typ, codecName("read", field.typ), i, field.typ, field.name, i)
 			} else if field.length == 0 {
@@ -97,11 +119,11 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			} else {
 				body.WriteString("array_start: JsonToken = json_token(src, colon.end)\narray_start.kind <= u32(1) ? { status = u32(2) } | array_start.kind != u32(11) ? { status = u32(3) } | {\nat = array_start.end\nindex: u32 = 0\n")
 				fmt.Fprintf(&body, "while index < u32(%d) && status == u32(0) {\nlookahead: u32 = json_skip_space(src, at)\nlookahead < len(src) && src[lookahead] == u8(93) ? { status = u32(8) } | {\npart: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, at)\npart ?\n | .Err(reason) => { status = json_decode_error_code(reason) }\n | .Ok(decoded) => { value.%s[index] = decoded.value\nat = decoded.next\nindex = index + u32(1)\n}\n}\n", field.length, field.typ, codecName("read", field.typ), field.name)
-				fmt.Fprintf(&body, "status == u32(0) ? {\nseparator: JsonToken = json_token(src, at)\nindex == u32(%d) ? {\nseparator.kind == u32(12) ? { at = separator.end } | separator.kind == u32(5) ? {\nextra: JsonToken = json_token(src, separator.end)\nextra.kind <= u32(1) || extra.kind == u32(12) ? { status = u32(2) } | { status = u32(8) }\n} | { status = u32(2) }\n} | separator.kind == u32(12) ? { status = u32(8) } | separator.kind == u32(5) ? {\nat = separator.end\nfollowing: JsonToken = json_token(src, at)\nfollowing.kind == u32(12) ? { status = u32(2) }\n} | { status = u32(2) }\n}\n}\nseen%d = status == u32(0)\n}\n", field.length, i)
+				fmt.Fprintf(&body, "status == u32(0) ? {\nseparator_at: u32 = json_skip_space(src, at)\nseparator: JsonToken = JsonToken { kind: u32(1), start: separator_at, end: separator_at }\nseparator_at < len(src) ? {\nunit: u8 = src[separator_at]\nseparator.kind = unit == u8(44) ? u32(5) | unit == u8(93) ? u32(12) | unit == u8(125) ? u32(3) | u32(1)\nseparator.end = separator_at + u32(1)\n}\nindex == u32(%d) ? {\nseparator.kind == u32(12) ? { at = separator.end } | separator.kind == u32(5) ? {\nextra: JsonToken = json_token(src, separator.end)\nextra.kind <= u32(1) || extra.kind == u32(12) ? { status = u32(2) } | { status = u32(8) }\n} | { status = u32(2) }\n} | separator.kind == u32(12) ? { status = u32(8) } | separator.kind == u32(5) ? {\nat = separator.end\nfollowing: u32 = json_skip_space(src, at)\nfollowing < len(src) && src[following] == u8(93) ? { status = u32(2) }\n} | { status = u32(2) }\n}\n}\nseen%d = status == u32(0)\n}\n", field.length, i)
 			}
 			body.WriteString("}\n} | ")
 		}
-		body.WriteString("{ status = u32(7) }\n}\n}\nstatus == u32(0) ? {\nseparator: JsonToken = json_token(src, at)\nseparator.kind == u32(3) ? { done = true\nat = separator.end\n} | separator.kind == u32(5) ? { at = separator.end } | { status = u32(2) }\n}\n}\n")
+		body.WriteString("{ status = u32(7) }\n}\n}\nstatus == u32(0) ? {\nseparator_at: u32 = json_skip_space(src, at)\nseparator: JsonToken = JsonToken { kind: u32(1), start: separator_at, end: separator_at }\nseparator_at < len(src) ? {\nunit: u8 = src[separator_at]\nseparator.kind = unit == u8(44) ? u32(5) | unit == u8(93) ? u32(12) | unit == u8(125) ? u32(3) | u32(1)\nseparator.end = separator_at + u32(1)\n}\nseparator.kind == u32(3) ? { done = true\nat = separator.end\n} | separator.kind == u32(5) ? { at = separator.end } | { status = u32(2) }\n}\n}\n")
 		required := []string{"true"}
 		for i := range fields {
 			required = append(required, fmt.Sprintf("seen%d", i))

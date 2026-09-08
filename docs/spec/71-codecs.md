@@ -460,11 +460,11 @@ versions, bytes/s, time/document, allocations, and scratch/output capacity;
 use consumed checksums and both warm-cache and streaming-sized workloads.
 Compare full validated typed materialization with equivalent work; selective
 extraction is a separate benchmark with its validation coverage stated.
-No parity claim or Apple Silicon throughput measurement accompanies this
-implementation. The native [typed JSON comparison](../../benchmarks/json/README.md)
+No general parity claim accompanies this implementation. The native [typed JSON comparison](../../benchmarks/json/README.md)
 now implements a first integer/Bool/fixed-array workload against pinned
 simdjson On-Demand, with preflight validation and consumed checksums.
-Its CI runs are correctness smoke tests, not native M-series results.
+Its CI includes native ARM64 execution on hosted virtual Apple M1 machines;
+these are not controlled dedicated-hardware results.
 Allocation instrumentation and additional schemas remain future work.
 
 ## 17. Measured decoder fast paths
@@ -473,8 +473,9 @@ The common integer path validates and accumulates decimal digits in one
 scan. Target-width checking remains in the concrete derived reader. For
 `M = UINT64_MAX = 10q + 5`, multiplying magnitude `m` by ten and adding digit
 `d` is safe exactly when `m < q` or (`m == q` and `d <= 5`). The implementation
-uses `q = 1844674407370955161` and performs multiplication only after this
-check. Overflow is sticky while the rest of the digit sequence is scanned.
+uses `q = 1844674407370955161`. The first 19 digits need no overflow
+check because `10^19 - 1 < UINT64_MAX`; subsequent digits multiply only
+after the cutoff check. Overflow is sticky while the rest of the digit sequence is scanned.
 Leading zeros, decimals, exponents, non-number tokens, and malformed suffixes
 fall back to the original reader, preserving syntax/type/overflow precedence.
 The original implementation remains available as `json_read_integer_slow`
@@ -509,3 +510,34 @@ remain in workflow artifacts. See [recorded measurements](../../benchmarks/json/
 Field dispatch remains linear, numeric accumulation remains scalar, and
 aggregate copy elimination is not guaranteed. These results support specific
 improvements on this schema, not universal parser or language superiority.
+
+## 18. Schema matching and compact integer scans
+
+Derived records compare bounded literal key spellings directly when the wire
+name contains at most 32 printable ASCII bytes without quotes or backslashes.
+The comparison includes both quotes and verifies the readable length before
+indexing. Other spellings fall back to the full tokenizer and Unicode matcher,
+including escaped equivalents of known fields. Duplicate, unknown, missing,
+and malformed-key behavior remains unchanged. This is linear schema dispatch,
+not a structural index or a general SIMD JSON parser.
+
+Empty-object and post-comma array lookahead inspect only the relevant closing
+byte after whitespace. Colons and separators use direct bounded checks where
+every other token must produce InvalidSyntax. Positions requiring distinctions
+between malformed syntax and a valid value of the wrong type retain token
+classification. Root UTF-8 validation remains a separate complete pass.
+
+The implementation-only JsonIntegerScan contains magnitude:u64, next:u32, and
+status:u32. Status 0/1 denotes positive/negative success; larger values encode
+json_decode_error_code + 1. Its 16-byte C layout permits register returns on
+AArch64, avoiding the indirect aggregate return of Result[JsonInteger,
+JsonDecodeError] in the hot scanner. Derived readers perform target-width
+checks on this concrete value. The public json_read_integer API still returns
+Result[JsonInteger, JsonDecodeError]; no pointer encoding, boxing, allocator,
+or change to public error categories is involved. This layout is an internal
+optimization, not a stable public wire format or a promise for every backend.
+
+The native benchmark can retain generated C and assembly with --inspect.
+Sanitizer coverage includes every truncated prefix of a representative record,
+escaped key aliases and duplicates, malformed separators, and numeric error
+precedence. Updated measurements and their scope are in the benchmark results.
