@@ -78,8 +78,14 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 			if resourceParameterModesCompatible(left.mode, right.mode) {
 				continue
 			}
+			// A checked fresh result establishes independent authority even when
+			// the other participant's provenance is unknown. Unknown consuming
+			// participants have already been rejected above.
+			if left.fresh || right.fresh {
+				continue
+			}
 			if left.tracked && right.tracked {
-				if left.fresh || right.fresh || !a.flow.Aliases(left.name, right.name) {
+				if !a.flow.Aliases(left.name, right.name) {
 					continue
 				}
 				a.reportCallAliasConflict(expr, left, right)

@@ -380,3 +380,52 @@ func TestResourceModelConflictingModesFailClosed(t *testing.T) {
 		t.Fatalf("conflicting legacy and canonical metadata must fail closed: %v", got)
 	}
 }
+
+func TestResourceCallFreshResultIsDistinctFromUnknownBorrow(t *testing.T) {
+	for _, arguments := range []string{"renew(h), holder.handle", "holder.handle, renew(h)"} {
+		t.Run(arguments, func(t *testing.T) {
+			input := `
+Handle: type = struct { id: u32 }
+Holder: type = struct { handle: Handle }
+renew: (h: Handle): Handle = h
+update_pair: (left: Handle, right: Handle): () = {}
+f: (h: Handle, holder: Holder): u32 {
+  update_pair(` + arguments + `)
+  h.id
+}`
+			model := resourceCallModel("update_pair",
+				ResourceParameterDeclaration{Index: 0, Mode: ResourceParameterBorrowedMut},
+				ResourceParameterDeclaration{Index: 1, Mode: ResourceParameterBorrowed})
+			model.MarkOperation("renew", ResourceOperation{ReturnsFresh: true})
+			tc := setupTypeChecker(input)
+			tc.CheckProgramWithResources(parseProgram(input), model)
+			if len(tc.Errors()) != 0 {
+				t.Fatalf("fresh authority must be distinct from unknown borrowed authority: %v", tc.Errors())
+			}
+		})
+	}
+}
+
+func TestResourceCallFreshResultDoesNotAuthorizeUnknownConsumption(t *testing.T) {
+	input := `
+Handle: type = struct { id: u32 }
+Holder: type = struct { handle: Handle }
+renew: (h: Handle): Handle = h
+close_pair: (left: Handle, right: Handle): () = {}
+f: (h: Handle, holder: Holder): u32 {
+  close_pair(renew(h), holder.handle)
+  h.id
+}`
+	model := resourceCallModel("close_pair",
+		ResourceParameterDeclaration{Index: 0, Mode: ResourceParameterConsumed},
+		ResourceParameterDeclaration{Index: 1, Mode: ResourceParameterConsumed})
+	model.MarkOperation("renew", ResourceOperation{ReturnsFresh: true})
+	tc := setupTypeChecker(input)
+	tc.CheckProgramWithResources(parseProgram(input), model)
+	if got := resourceCallDiagnostics(tc, CodeResourceCallAliasConflict); len(got) != 1 {
+		t.Fatalf("fresh peer must not permit consumption of an unknown class: %v", got)
+	}
+	if got := resourceCallDiagnostics(tc, CodeResourceUsedAfterConsume); len(got) != 0 {
+		t.Fatalf("rejected call must preserve input authority: %v", got)
+	}
+}
