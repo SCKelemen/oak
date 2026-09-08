@@ -87,9 +87,31 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			}
 			fmt.Fprintf(&body, "key%d: []u8 = view(&key%d_data)\n", i, i)
 		}
-		body.WriteString("first: u32 = json_skip_space(src, at)\nfirst < len(src) && src[first] == u8(125) ? { done = true\nat = first + u32(1)\n}\nwhile !done && status == u32(0) {\nkey: JsonToken = json_token(src, at)\nkey.kind != u32(6) ? { status = u32(2) } | {\ncolon: JsonToken = json_token(src, key.end)\ncolon.kind != u32(4) ? { status = u32(2) } | {\n")
+		body.WriteString("first: u32 = json_skip_space(src, at)\nfirst < len(src) && src[first] == u8(125) ? { done = true\nat = first + u32(1)\n}\nwhile !done && status == u32(0) {\nat = json_skip_space(src, at)\nkey: JsonToken\nfield_index: u32 = 0\n")
+		// Match bounded literal spellings directly. Escaped and unusual keys
+		// retain the full tokenizer and Unicode comparison path.
 		for i, field := range fields {
-			fmt.Fprintf(&body, "json_key_equal(src, key, key%d) ? {\nseen%d ? { status = u32(6) } | {\n", i, i)
+			literal := []byte("\"" + field.wire + "\"")
+			plain := len(literal) <= 34
+			for _, b := range []byte(field.wire) {
+				plain = plain && b >= 32 && b < 127 && b != '\\' && b != '"'
+			}
+			if !plain {
+				continue
+			}
+			fmt.Fprintf(&body, "len(src) - at >= u32(%d)", len(literal))
+			for j, b := range literal {
+				fmt.Fprintf(&body, " && src[at + u32(%d)] == u8(%d)", j, b)
+			}
+			fmt.Fprintf(&body, " ? { field_index = u32(%d)\nkey = JsonToken { kind: u32(6), start: at, end: at + u32(%d) }\n} | ", i+1, len(literal))
+		}
+		body.WriteString("{\nkey = json_token(src, at)\n")
+		for i := range fields {
+			fmt.Fprintf(&body, "json_key_equal(src, key, key%d) ? { field_index = u32(%d) } | ", i, i+1)
+		}
+		body.WriteString("{}\n}\nkey.kind != u32(6) ? { status = u32(2) } | {\ncolon: JsonToken = json_token(src, key.end)\ncolon.kind != u32(4) ? { status = u32(2) } | {\n")
+		for i, field := range fields {
+			fmt.Fprintf(&body, "field_index == u32(%d) ? {\nseen%d ? { status = u32(6) } | {\n", i+1, i)
 			if field.nullable {
 				fmt.Fprintf(&body, "token: JsonToken = json_token(src, colon.end)\ntoken.kind == u32(10) ? {\nabsent: Option[%s] = .None\nvalue.%s = absent\nat = token.end\nseen%d = true\n} | {\npart%d: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, colon.end)\npart%d ?\n | .Err(reason) => { status = json_decode_error_code(reason) }\n | .Ok(decoded) => {\npresent: Option[%s] = .Some(decoded.value)\nvalue.%s = present\nat = decoded.next\nseen%d = true\n}\n}\n", field.typ, field.name, i, i, field.typ, codecName("read", field.typ), i, field.typ, field.name, i)
 			} else if field.length == 0 {
