@@ -89,8 +89,14 @@ func emitBufferArray(out *strings.Builder,name,typ string,values []uint32) {
  }
  fmt.Fprintf(out,"%s_view: []%s = %s[0:%d]\n",name,typ,name,len(values))
 }
-func TestSelfHostedBufferLayouts(t *testing.T) {
- cases:=bufferCorpus();accepted:=0
+// One decoder observation: the texts fed to the actual Oak decoder and the
+// flat layout the oracle expects it to publish, or a decoder rejection.
+type layoutObservation struct { CNF,Proof string; Layout []uint32; Accepted bool }
+
+// Instrument only the decoder's entry signature and final handoff, then compare
+// every published pool item, range, and command field in compiled Oak.
+func observeDecoderLayouts(t *testing.T,prefix string,cases []layoutObservation) {
+ t.Helper()
  var source,main strings.Builder
  for _,path:=range []string{"self_hosted_rup.oak","self_hosted_stream.oak"} {data,err:=os.ReadFile(path);if err!=nil {t.Fatal(err)};source.Write(data);source.WriteByte('\n')}
  data,err:=os.ReadFile("self_hosted_text.oak");if err!=nil {t.Fatal(err)};decoder:=string(data)
@@ -126,12 +132,17 @@ buffer_observe: (pool: []u32, starts: []u32, sizes: []u32, refs: []u32, commands
 `)
  main.WriteString("main: (): i32 {\n")
  for i,c:=range cases {
-  fmt.Fprintf(&source,"buffer_case_%d: (): Bool {\n",i);cnf,proof:=bufferTexts(c)
-  for _,a:=range []struct{name,text string}{{"cnf",cnf},{"proof",proof}} {values:=[]uint32{};for _,b:=range []byte(a.text) {values=append(values,uint32(b))};emitBufferArray(&source,a.name,"u8",values)}
-  emitBufferArray(&source,"expected","u32",c.Layout);status:=0;if c.Accepted {status=2;accepted++}
-  fmt.Fprintf(&source,"rup_text_check(cnf_view, proof_view, expected_view) == u32(%d)\n}\n",status);fmt.Fprintf(&main,"assert(buffer_case_%d())\n",i)
+  fmt.Fprintf(&source,"%s_case_%d: (): Bool {\n",prefix,i)
+  for _,a:=range []struct{name,text string}{{"cnf",c.CNF},{"proof",c.Proof}} {values:=[]uint32{};for _,b:=range []byte(a.text) {values=append(values,uint32(b))};emitBufferArray(&source,a.name,"u8",values)}
+  emitBufferArray(&source,"expected","u32",c.Layout);status:=0;if c.Accepted {status=2}
+  fmt.Fprintf(&source,"rup_text_check(cnf_view, proof_view, expected_view) == u32(%d)\n}\n",status);fmt.Fprintf(&main,"assert(%s_case_%d())\n",prefix,i)
  }
  main.WriteString("42\n}\n");source.WriteString(main.String());runOakStream(t,source.String())
+}
+func TestSelfHostedBufferLayouts(t *testing.T) {
+ cases:=bufferCorpus();accepted:=0;observations:=[]layoutObservation{}
+ for _,c:=range cases {cnf,proof:=bufferTexts(c);observations=append(observations,layoutObservation{cnf,proof,c.Layout,c.Accepted});if c.Accepted {accepted++}}
+ observeDecoderLayouts(t,"buffer",observations)
  if path:=os.Getenv("OAK_BUFFER_CORPUS_OUT");path!="" {data,err:=json.MarshalIndent(cases,"","  ");if err!=nil {t.Fatal(err)};if err:=os.WriteFile(path,append(data,'\n'),0644);err!=nil {t.Fatal(err)}}
  t.Logf("Oak/Go buffer layouts: %d cases (%d decoded, %d rejected)",len(cases),accepted,len(cases)-accepted)
 }

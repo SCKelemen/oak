@@ -243,3 +243,7 @@ and the composed parsed-text acceptance theorem.
 
 See [Decoder segment publication](SegmentPublication.md) for the proved connection
 from the byte-reading segment state to the packer's published ranges.
+
+See [Command assembly from published ranges](CommandAssembly.md) for the proved
+assembly of addition IDs, deletion stamps, and command metadata from published
+clause and hint ranges, and its composition with the certified stream checker.

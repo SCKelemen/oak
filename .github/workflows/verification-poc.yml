@@ -52,6 +52,8 @@ jobs:
           lean -DwarningAsError=true -o proof/ProofPacking.olean proof/ProofPacking.lean 2>&1 | tee build/soundness/proof-packing.log
           lean -DwarningAsError=true -o proof/SegmentPublication.olean proof/SegmentPublication.lean 2>&1 | tee build/soundness/segment-publication-proof.log
           lean -DwarningAsError=true proof/SegmentPublicationCompare.lean
+          lean -DwarningAsError=true -o proof/CommandAssembly.olean proof/CommandAssembly.lean 2>&1 | tee build/soundness/command-assembly-proof.log
+          lean -DwarningAsError=true proof/CommandAssemblyCompare.lean
           lean -DwarningAsError=true -o proof/PackedText.olean proof/PackedText.lean 2>&1 | tee build/soundness/packed-text-proof.log
           lean -DwarningAsError=true proof/CertificateReplay.lean
       - name: Compare Go and Lean checker decisions
@@ -117,6 +119,9 @@ jobs:
           go test -count=1 -v . -run '^TestSelfHostedBufferLayouts$' 2>&1 | tee build/soundness/buffers-go.log
           lean -DwarningAsError=true --run proof/PackedBuffersCompare.lean "$OAK_BUFFER_CORPUS_OUT" 2>&1 | tee build/soundness/buffers-agreement.log
           lean -DwarningAsError=true --run proof/SegmentPublicationCompare.lean "$OAK_BUFFER_CORPUS_OUT" 2>&1 | tee build/soundness/segment-publication-agreement.log
+          export OAK_ASSEMBLY_CORPUS_OUT="$PWD/build/soundness/assembly-cases.json"
+          go test -count=1 -v . -run '^TestSelfHostedCommandAssembly$' 2>&1 | tee build/soundness/assembly-go.log
+          lean -DwarningAsError=true --run proof/CommandAssemblyCompare.lean "$OAK_ASSEMBLY_CORPUS_OUT" 2>&1 | tee build/soundness/command-assembly-agreement.log
       - name: Compare range decoding and proof-stream semantics
         working-directory: experiments/verification-poc
         shell: bash

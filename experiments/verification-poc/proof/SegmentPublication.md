@@ -62,5 +62,7 @@ Repository CI, standard-library race tests, Oak testing tools, formal verificati
 golden files, and AArch64 memory refinement all passed on the tested commit.
 `../validation-segment-publication.json` records the exact scope and job links.
 
-Next: prove command assembly from published clause and hint ranges, including
-addition IDs and deletion stamps, before connecting the complete file state machine.
+The subsequent [command-assembly milestone](CommandAssembly.md) builds addition
+IDs, deletion stamps, and command metadata on this publication state and connects
+the assembled layout to the certified stream checker. The complete file state
+machine remains open.
