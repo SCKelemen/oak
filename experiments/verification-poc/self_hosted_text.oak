@@ -1,0 +1,218 @@
+// Bounded ASCII DIMACS/LRAT decoding. Append after the RUP and stream kernels.
+rup_space: (b: u8): Bool {
+  b == u8(32) || b == u8(9) || b == u8(13) || b == u8(11) || b == u8(12)
+}
+
+// state: next byte, token start, token end, magnitude, numeric sign tag.
+// Sign tags: 0 invalid integer, 1 nonnegative, 2 negative (including -0).
+// Result: 0 EOF, 1 newline, 2 word. Decimal overflow rejects before arithmetic.
+rup_token: (text: []u8, state: [*]u32): u32 {
+  pos: u32 = state[0]
+  while pos < len(text) && rup_space(text[pos]) { pos = pos + u32(1) }
+  kind: u32 = 0
+  begin: u32 = pos
+  magnitude: u32 = 0
+  sign: u32 = 1
+  pos < len(text) ? {
+    text[pos] == u8(10) ? { kind = u32(1); pos = pos + u32(1) }
+    | {
+      kind = u32(2)
+      while pos < len(text) && text[pos] != u8(10) && !rup_space(text[pos]) { pos = pos + u32(1) }
+      digit: u32 = begin
+      text[digit] == u8(43) || text[digit] == u8(45) ? {
+        text[digit] == u8(45) ? { sign = u32(2) }
+        digit = digit + u32(1)
+      }
+      digit == pos ? { sign = u32(0) }
+      while digit < pos && sign != u32(0) {
+        ch: u8 = text[digit]
+        ch < u8(48) || ch > u8(57) ? { sign = u32(0) }
+        | {
+          value: u32 = u32(ch) - u32(48)
+          magnitude > u32(214748364) || (magnitude == u32(214748364) && value > u32(7)) ? { sign = u32(0) }
+          | { magnitude = magnitude * u32(10) + value }
+        }
+        digit = digit + u32(1)
+      }
+    }
+  }
+  state[0] = pos
+  state[1] = begin
+  state[2] = pos
+  state[3] = magnitude
+  state[4] = sign
+  kind
+}
+
+rup_word: (text: []u8, state: []u32, ch: u8): Bool {
+  state[2] - state[1] == u32(1) && text[state[1]] == ch
+}
+rup_encoded: (magnitude: u32, sign: u32): u32 {
+  encoded: u32 = (magnitude - u32(1)) * u32(2)
+  sign == u32(1) ? { encoded = encoded + u32(1) }
+  encoded
+}
+
+rup_text_check: (cnf: []u8, proof: []u8): Bool {
+  pool: [4096]u32
+  initial: [256]u32
+  sizes: [256]u32
+  refs: [4096]u32
+  commands: [256]RUPCommand
+  scan: [5]u32
+  valid: Bool = len(cnf) <= u32(65536) && len(proof) <= u32(65536)
+  b: u32 = 0
+  while b < len(cnf) && valid { valid = cnf[b] <= u8(127); b = b + u32(1) }
+  b = u32(0)
+  while b < len(proof) && valid { valid = proof[b] <= u8(127); b = b + u32(1) }
+  scan[0] = u32(0)
+  stage: u32 = 0
+  variables: u32 = 0
+  expected: u32 = 0
+  clauses: u32 = 0
+  literals: u32 = 0
+  pending: u32 = 0
+  first: Bool = true
+  comment: Bool = false
+  done: Bool = false
+  while !done && valid {
+    kind: u32 = rup_token(cnf, span(&scan))
+    kind != u32(2) ? {
+      valid = stage == u32(0) || stage >= u32(4)
+      stage == u32(4) ? { stage = u32(5) }
+      first = true
+      comment = false
+      done = kind == u32(0)
+    }
+    | {
+      first && rup_word(cnf, view(&scan), u8(99)) ? { comment = true }
+      first = false
+      !comment ? {
+        stage == u32(0) ? {
+          valid = rup_word(cnf, view(&scan), u8(112))
+          stage = u32(1)
+        }
+        | {
+          stage == u32(1) ? {
+            valid = scan[2] - scan[1] == u32(3)
+            valid = valid && cnf[scan[1]] == u8(99) && cnf[scan[1] + u32(1)] == u8(110) && cnf[scan[1] + u32(2)] == u8(102)
+            stage = u32(2)
+          }
+          | {
+            valid = scan[4] != u32(0)
+            stage == u32(2) ? {
+              variables = scan[3]
+              valid = valid && scan[4] == u32(1) && variables > u32(0) && variables <= u32(64)
+              stage = u32(3)
+            }
+            | {
+              stage == u32(3) ? {
+                expected = scan[3]
+                valid = valid && (scan[4] == u32(1) || expected == u32(0)) && expected <= u32(256)
+                stage = u32(4)
+              }
+              | {
+                valid = valid && stage == u32(5)
+                scan[3] == u32(0) ? {
+                  valid = valid && clauses < expected
+                  valid ? {
+                    initial[clauses] = pending
+                    sizes[clauses] = literals - pending
+                    clauses = clauses + u32(1)
+                    pending = literals
+                  }
+                }
+                | {
+                  valid = valid && scan[3] <= variables && literals < u32(4096)
+                  valid ? { pool[literals] = rup_encoded(scan[3], scan[4]); literals = literals + u32(1) }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  valid = valid && stage == u32(5) && clauses == expected && pending == literals
+  scan[0] = u32(0)
+  stage = u32(0)
+  first = true
+  comment = false
+  done = false
+  count: u32 = 0
+  references: u32 = 0
+  command: RUPCommand = RUPCommand { addition: true, id: u32(0), start: u32(0), count: u32(0), refs_start: u32(0), refs_count: u32(0) }
+  while !done && valid {
+    proof_kind: u32 = rup_token(proof, span(&scan))
+    proof_kind != u32(2) ? {
+      valid = stage == u32(0) || stage == u32(5)
+      stage == u32(5) ? {
+        valid = valid && count < u32(256)
+        valid ? { commands[count] = command; count = count + u32(1) }
+      }
+      stage = u32(0)
+      first = true
+      comment = false
+      done = proof_kind == u32(0)
+    }
+    | {
+      first && rup_word(proof, view(&scan), u8(99)) ? { comment = true }
+      first = false
+      !comment ? {
+        stage == u32(0) ? {
+          valid = scan[4] != u32(0) && (scan[4] == u32(1) || scan[3] == u32(0))
+          command.id = scan[3]
+          command.addition = true
+          command.start = literals
+          command.count = u32(0)
+          command.refs_start = references
+          command.refs_count = u32(0)
+          stage = u32(1)
+        }
+        | {
+          stage == u32(1) && rup_word(proof, view(&scan), u8(100)) ? {
+            command.addition = false
+            stage = u32(4)
+          }
+          | {
+            stage == u32(1) ? { stage = u32(2) }
+            valid = scan[4] != u32(0) && stage != u32(5)
+            stage == u32(2) ? {
+              scan[3] == u32(0) ? { stage = u32(3) }
+              | {
+                valid = valid && scan[3] <= variables && literals < u32(4096)
+                valid ? {
+                  pool[literals] = rup_encoded(scan[3], scan[4])
+                  literals = literals + u32(1)
+                  command.count = command.count + u32(1)
+                }
+              }
+            }
+            | {
+              scan[3] == u32(0) ? {
+                stage == u32(4) ? { valid = valid && rup_word(proof, view(&scan), u8(48)) }
+                stage = u32(5)
+              }
+              | {
+                valid = valid && scan[4] == u32(1) && references < u32(4096)
+                valid ? {
+                  refs[references] = scan[3]
+                  references = references + u32(1)
+                  command.refs_count = command.refs_count + u32(1)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  pool_view: []u32 = pool[0:literals]
+  initial_view: []u32 = initial[0:clauses]
+  sizes_view: []u32 = sizes[0:clauses]
+  refs_view: []u32 = refs[0:references]
+  commands_view: []RUPCommand = commands[0:count]
+  accepted: Bool = false
+  valid ? { accepted = rup_stream_check(pool_view, initial_view, sizes_view, refs_view, commands_view, variables) }
+  accepted
+}

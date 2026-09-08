@@ -32,6 +32,12 @@ count=0
 while IFS=$'\t' read -r cnf proof; do
   count=$((count + 1))
   check true "$cnf" "$proof" "$attempt/$count-accepted.json"
+  if [[ "$count" -eq 1 ]]; then
+    OAK_SELF_HOSTED_TEXT_CNF="$cnf" OAK_SELF_HOSTED_TEXT_PROOF="$proof" \
+      OAK_SELF_HOSTED_TEXT_CORPUS_OUT="$attempt/oak-text-certificate.json" \
+      go test -count=1 -v . -run '^TestSelfHostedTextCertificate$' 2>&1 | tee "$attempt/oak-text-certificate.log"
+    lean -DwarningAsError=true --run proof/RUPTextCompare.lean "$attempt/oak-text-certificate.json" | tee "$attempt/oak-text-certificate-lean.log"
+  fi
   # The suite requires SAT for each project's initial query.
   initial="$(dirname "$cnf")/initial.cnf"
   check false "$initial" "$proof" "$attempt/$count-wrong-formula.json"
