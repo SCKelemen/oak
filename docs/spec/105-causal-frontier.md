@@ -1,6 +1,8 @@
 # 105 — Bounded causal frontiers
 
-Status: specified; Lean model/proofs in `spec/lean/Oak/CausalFrontier.lean`.
+Status: specified, implemented, tested, and source-refined; Lean model/proofs in
+`spec/lean/Oak/CausalFrontier.lean` and source-algorithm correspondence in
+`spec/lean/Oak/CausalFrontierRefinement.lean`.
 
 ## Purpose
 
@@ -98,17 +100,24 @@ unless a future explicitly concurrent wrapper states otherwise.
 
 ## Verification maturity
 
-Current intended ladder:
+Current ladder:
 
-1. **specified** — this chapter;
-2. **modeled/proved** — generic Lean frontier and semilattice laws;
-3. **implemented** — fixed-capacity Oak source representation using existing
-   array/borrowing constructs;
-4. **tested** — executable merge/coverage/observe tests plus allocation/cost
-   regression checks;
-5. **refined** — explicit correspondence between the executable operations and
-   the Lean pointwise model.
+1. **specified — complete**: this chapter defines semantics, bounds, effects,
+   ordering, and non-goals;
+2. **modeled/proved — complete**: `Oak.CausalFrontier` proves the generic
+   pointwise order and join-semilattice laws;
+3. **implemented — complete**: `stdlib/causal_frontier.oak` implements bounded
+   join/comparison/coverage/observe over caller-owned views/spans;
+4. **tested — complete**: compiler E2E tests execute real fixed arrays natively,
+   exercise error/non-mutation behavior, and reject generated heap/runtime
+   dependencies;
+5. **source-refined — complete**: `Oak.CausalFrontierRefinement` proves the
+   executable branch expressions used by join/observe correspond to `max`, and
+   that comparison/coverage correspond to the pointwise model;
+6. **backend-refined — not yet complete**: there is not yet a machine-checked
+   proof that arbitrary generated C preserves the Oak source semantics.
 
-Do not call an executable frontier formally verified until the refinement step
-exists. The Lean laws prove the mathematical model, not arbitrary generated
-code by themselves.
+Accordingly, it is accurate to say the mathematical model and source algorithm
+are formally related. It is not yet accurate to claim end-to-end formal
+verification through the C backend. Native/generated-code E2E tests remain the
+backend evidence until that refinement layer exists.
