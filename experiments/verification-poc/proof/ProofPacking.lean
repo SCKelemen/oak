@@ -101,7 +101,6 @@ theorem command_ranges (before refsBefore after refsAfter : List Nat)
       have stampBound : ¬ id > 2147483647 := by omega
       have idGuard : ¬ id > 256 := by omega
       have hintsGuard : ¬ hints.length > 256 := by omega
-      have idsGuard : hints.all (fun id => decide (0 < id ∧ id ≤ 256)) = true := by simpa using ids
       have clauseRead := read_encoded before clause ((cs.map literals).flatten ++ after) positive
       have refsRead := range_contents refsBefore hints ((cs.map references).flatten ++ refsAfter)
       simp only [List.append_assoc] at clauseRead refsRead
@@ -111,8 +110,8 @@ theorem command_ranges (before refsBefore after refsAfter : List Nat)
           (refsBefore ++ (hints ++ (cs.map references).flatten) ++ refsAfter)
           ⟨true, id, before.length, clause.length, refsBefore.length, hints.length⟩ =
           some (.add id clause hints) := by
-        simp [decodeCommand, stampBound, idGuard, hintsGuard, List.append_assoc,
-          refsRead, idsGuard, clauseRead]
+        simpa [decodeCommand, stampBound, idGuard, hintsGuard, List.append_assoc,
+          refsRead, clauseRead] using ids
       rw [head]
       simp only [List.append_assoc, List.length_append, encodeClause, List.length_map] at tail ⊢
       rw [tail]
@@ -120,7 +119,6 @@ theorem command_ranges (before refsBefore after refsAfter : List Nat)
     | delete stamp ids =>
       obtain ⟨stampBound, refsOK⟩ := headOK
       have stampGuard : ¬ stamp > 2147483647 := by omega
-      have idsGuard : ids.all (fun id => decide (0 < id ∧ id ≤ 256)) = true := by simpa using refsOK
       have refsRead := range_contents refsBefore ids ((cs.map references).flatten ++ refsAfter)
       simp only [List.append_assoc] at refsRead
       have tail := ih before (refsBefore ++ ids) tailOK
@@ -128,7 +126,7 @@ theorem command_ranges (before refsBefore after refsAfter : List Nat)
       have head : decodeCommand (before ++ (cs.map literals).flatten ++ after)
           (refsBefore ++ (ids ++ (cs.map references).flatten) ++ refsAfter)
           ⟨false, stamp, 0, 0, refsBefore.length, ids.length⟩ = some (.delete stamp ids) := by
-        simp [decodeCommand, stampGuard, List.append_assoc, refsRead, idsGuard]
+        simpa [decodeCommand, stampGuard, List.append_assoc, refsRead] using refsOK
       rw [head]
       simp only [List.append_assoc, List.length_append] at tail ⊢
       rw [tail]

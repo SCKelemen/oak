@@ -1,5 +1,4 @@
-import ProofPacking
-import RUPText
+import PackedText
 import Lean
 
 open Lean OakVerification OakVerification.Ranges
@@ -73,8 +72,10 @@ def main (args : List String) : IO Unit := do
   let mut results : Array Json := #[]
   let mut accepted := 0
   for input in inputs do
-    let formula ← IO.ofExcept (Text.parseDIMACS (← IO.FS.readFile input.cnf))
-    let instructions ← IO.ofExcept (Text.parseLRAT (← IO.FS.readFile input.proof))
+    let cnfText ← IO.FS.readFile input.cnf
+    let proofText ← IO.FS.readFile input.proof
+    let formula ← IO.ofExcept (Text.parseDIMACS cnfText)
+    let instructions ← IO.ofExcept (Text.parseLRAT proofText)
     let raw := pack formula instructions
     if !(decide (raw = packReference formula instructions)) then
       throw (IO.userError s!"{input.cnf}: proved and reference packing differ")
@@ -88,6 +89,12 @@ def main (args : List String) : IO Unit := do
         throw (IO.userError s!"{input.cnf}: packing changed decoded formula or commands")
       if !(ProofPacking.check formula.variables formula.clauses instructions) then
         throw (IO.userError s!"{input.cnf}: certified packing composition rejected")
+      if (PackedText.check cnfText proofText) != .ok true then
+        throw (IO.userError s!"{input.cnf}: packed text composition rejected")
+      if (PackedText.check s!"p cnf {formula.variables} 1\n1 0\n" proofText) != .ok false then
+        throw (IO.userError s!"{input.cnf}: packed text accepted wrong formula")
+      if (PackedText.check cnfText (proofText ++ "\n1 0 0\n")) != .ok false then
+        throw (IO.userError s!"{input.cnf}: packed text accepted invalid suffix")
       cases := cases.push (← checkCase input.cnf raw true)
       -- Keep the variable domain while replacing the database by a SAT unit.
       let wrong := pack ⟨formula.variables, [[⟨1, true⟩]]⟩ instructions

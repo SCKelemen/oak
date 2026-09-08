@@ -50,6 +50,7 @@ jobs:
           lean -DwarningAsError=true -o proof/CertifiedStream.olean proof/CertifiedStream.lean 2>&1 | tee build/soundness/certified-stream-proof.log
           lean -DwarningAsError=true -o proof/InitialDecoder.olean proof/InitialDecoder.lean 2>&1 | tee build/soundness/initial-decoder-proof.log
           lean -DwarningAsError=true -o proof/ProofPacking.olean proof/ProofPacking.lean 2>&1 | tee build/soundness/proof-packing.log
+          lean -DwarningAsError=true -o proof/PackedText.olean proof/PackedText.lean 2>&1 | tee build/soundness/packed-text-proof.log
           lean -DwarningAsError=true proof/CertificateReplay.lean
       - name: Compare Go and Lean checker decisions
         working-directory: experiments/verification-poc

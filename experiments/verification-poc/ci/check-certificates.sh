@@ -56,7 +56,7 @@ test "$count" -gt 0
 test "$count" -eq "$expected"
 # Replay every real certificate that fits the fixed Oak profile. Exclusions are
 # retained explicitly; malformed text and in-profile disagreement fail the gate.
-for module in BoundedDecimal ScannerState PackedBuffers RangeBridge LiveTable PropagationState ClauseClassifier PropagationChain CertifiedStream InitialDecoder ProofPacking; do
+for module in BoundedDecimal ScannerState PackedBuffers RangeBridge LiveTable PropagationState ClauseClassifier PropagationChain CertifiedStream InitialDecoder ProofPacking PackedText; do
   lean -DwarningAsError=true -o "$attempt/$module.olean" "proof/$module.lean" 2>&1 | tee "$attempt/$module.log"
 done
 jq '[.models[].cadical.logs[] | select(.exit_code == 20 and .command[0] == "cadical") | {cnf:.command[-2],proof:.command[-1]}]' \

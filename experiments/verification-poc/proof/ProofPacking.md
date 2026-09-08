@@ -32,3 +32,9 @@ grammar or universal refinement of Oak's concrete text parser. The existing Lean
 text parser supplies the decoded data in the replay gate. JSON adapters, the Go
 harness, and Oak/compiler/C-runtime correspondence remain tested infrastructure.
 No Python or production language changes are introduced.
+
+`PackedText.check` composes the existing executable text parsers with the proved
+packing checker. Its acceptance theorem supplies the actual parser results and
+unsatisfiability of that parsed initial formula. Real certificates and both
+corruptions must also pass this text-entry comparison. This theorem concerns the
+parser's returned data; it does not establish external grammar conformance.
