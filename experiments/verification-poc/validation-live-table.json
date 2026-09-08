@@ -1,0 +1,125 @@
+{
+  "artifacts": "Proof module, live-table-proof.log, table-cases.json, table-go.log, table-agreement.log; retained for 30 days",
+  "commit": "d6e1d24b576e6dbec6a37cd7ca44f9b20ec6c1df",
+  "comparison": {
+    "control_fields": [
+      "last addition ID",
+      "refuted",
+      "valid"
+    ],
+    "exact_trace_length": true,
+    "fields_per_slot": [
+      "start",
+      "count",
+      "live"
+    ],
+    "layouts": 631,
+    "native_seconds_with_race": 31.56,
+    "native_seconds_without_race": 10.64,
+    "observation_points": [
+      "after initialization",
+      "after every attempted command including rejection"
+    ],
+    "observer_corruptions_rejected": 7,
+    "oracles": [
+      "Go logical clause map with compacted live IDs and existing RUP checker",
+      "Lean functional live table and proof-producing RUP checker"
+    ],
+    "slot_observations": 457984,
+    "slots_per_snapshot": 256,
+    "snapshots": 1789
+  },
+  "date": "2026-09-08",
+  "existing_gates": {
+    "boolean_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "boolean_model": {
+      "accepted_safe": 1,
+      "rejected_corruptions": 2,
+      "rejected_malformed": 3,
+      "rejected_unsafe": 1,
+      "rejected_wrong": 1
+    },
+    "lean_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "oak_ascii_certificate": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    },
+    "range_acceptance": {
+      "accepted": 244,
+      "rejected": 387
+    }
+  },
+  "format": "oak-live-table-validation-1",
+  "implementation": {
+    "actual": "Oak rup_stream_check, observed through test-only source seams",
+    "formal_model": "Lean 4",
+    "host_harness": "Go",
+    "production_checker_changed": false,
+    "python_runtime": false
+  },
+  "next_step": "Propagation scratch-state model: encoded assignment updates and conflict detection.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.LiveTable.initialize_lookup' depends on axioms: [propext]",
+      "'OakVerification.LiveTable.initialize_refines' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.LiveTable.publish_refines' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.LiveTable.clear_refines' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.LiveTable.clear_metadata' depends on axioms: [propext]",
+      "'OakVerification.LiveTable.publish_other' depends on axioms: [propext]",
+      "'OakVerification.LiveTable.clear_twice' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.LiveTable.add_step' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.LiveTable.delete_step' depends on axioms: [propext, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Initial table lookup is per-index range decoding",
+      "Per-index decoding implies equality with initialDatabase",
+      "Publishing a decoded range corresponds to functional insert",
+      "Clearing live corresponds to functional erase",
+      "Deletion preserves start/count metadata",
+      "Publication leaves other slots unchanged",
+      "Repeated clearing is idempotent",
+      "Publication with a RUP derivation is a logical add step",
+      "Clearing is a logical delete step"
+    ],
+    "reported_theorems": 9,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Universal refinement of the complete bounded table executor",
+      "Imperative initialization establishes the per-index decoding premise",
+      "Universal Oak array-to-model refinement",
+      "Propagation scratch-state refinement",
+      "Complete DIMACS/LRAT grammar refinement",
+      "Compiler semantics preservation"
+    ],
+    "proved": [
+      "Lean table-operation/database equations",
+      "Composition of justified publication and deletion with logical Step"
+    ],
+    "tested": [
+      "Bounded Lean trace executor agrees with Go and compiled Oak on complete snapshots",
+      "Uninstrumented acceptance still agrees on the range corpus"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34224350851",
+  "solvers_job": 102054712145,
+  "soundness_job": 102054711805,
+  "repository_ci": {
+    "Golden File Verification": "success",
+    "Formal Verification": "success",
+    "Verification experiment (opt-in)": "success",
+    "Standard library": "success",
+    "CI": "success"
+  },
+  "aarch64_memory_refinement": "success"
+}

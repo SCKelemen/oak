@@ -38,3 +38,30 @@ infrastructure. CI runs with warnings as errors and records axiom reports.
 
 Next: propagation scratch-state refinement, beginning with encoded assignment
 updates and conflict detection.
+
+## Validation
+
+[The soundness gate passed](https://github.com/SCKelemen/oak/actions/runs/34224350851/job/102054711805)
+on commit `d6e1d24b576e6dbec6a37cd7ca44f9b20ec6c1df`. All nine reported theorems
+were checked with warnings as errors and no proof holes. Their axiom reports
+contain only `propext` and `Quot.sound`.
+
+All 631 layouts agreed across Oak, Go, and Lean on 1,789 complete snapshots:
+457,984 slot observations, each comparing start, count, and live status, plus
+all control flags and exact trace length. Seven corrupted traces were rejected.
+The native comparison took 10.64 seconds without the race detector. The unchanged
+range-acceptance gate also passed (244 accepted, 387 rejected). CI retains the
+canonical corpus, proof reports, and comparison logs for 30 days.
+
+`../validation-live-table.json` records the tested commit, gates, and exact proof
+boundary. The initial-table theorem assumes per-index range decoding, including
+out-of-range lookups; it does not yet prove that the imperative initialization
+loop establishes that premise for every possible input.
+
+The complete native suite passed with Go's race detector; the live-table comparison
+took 31.56 seconds. External verification, real certificate checks (11 accepted,
+22 corruptions rejected), the Boolean proof bridge, and the invariant-model gate
+also passed on the tested commit.
+
+Repository CI, standard-library, formal-verification, golden-file, and AArch64
+memory-refinement checks all passed. No timeouts or corpus coverage were reduced.

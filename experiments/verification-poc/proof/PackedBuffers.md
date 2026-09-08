@@ -67,5 +67,5 @@ transport are test infrastructure. Agreement with compiled Oak remains tested.
 
 The [range-bridge milestone](RangeBridge.md) now relates completed ranges to
 logical clauses and references and composes the range decoder with the proved
-proof-stream checker. Next: relate the mutable live-clause table and its
-add/delete transitions to the checker's functional database.
+proof-stream checker. The [live-table milestone](LiveTable.md) connects modeled
+publication and deletion to the functional database and checks native table traces.

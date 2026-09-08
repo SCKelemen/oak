@@ -89,5 +89,6 @@ and compiler output remains unproved. The complete external file grammar and
 JSON adapters are outside these theorems. This is not a claim of a self-verified
 Oak compiler or universal Oak checker soundness.
 
-Next: relate the mutable live-clause table and its add/delete transitions to the
-functional database used by the proved checker.
+The [live-table milestone](LiveTable.md) now proves the model's publication and
+deletion equations against the functional database and compares complete native
+table snapshots. Whole-run and concrete array refinement remain open.
