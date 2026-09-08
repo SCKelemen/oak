@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
 )
 
 const engineVersion = "oak-test-v1-splitmix64-choice-bytes"
@@ -64,7 +63,9 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 		}
 	}()
 	adapter, err := loadAdapter(cfg.Adapter)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	generated, err := packageCompilation(pkg, adapter).EmitC().Get()
 	if err != nil {
 		return nil, err
@@ -111,7 +112,9 @@ int main(int argc, char **argv) {
 		adapterIdentity = adapter.identity
 		for i, data := range adapter.objects {
 			path := filepath.Join(dir, fmt.Sprintf("adapter-%d%s", i, filepath.Ext(adapter.manifest.Objects[i].Path)))
-			if err := os.WriteFile(path, data, 0600); err != nil { return nil, err }
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				return nil, err
+			}
 			args = append(args, path)
 		}
 	}

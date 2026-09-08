@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
@@ -14,10 +15,10 @@ import (
 // implementations remain a trust boundary: the compiler cannot prove their
 // determinism. Names, symbols and exact ABI types must all match.
 type SimulationBinding struct {
-	Name string `json:"name"`
-	Symbol string `json:"symbol"`
+	Name       string   `json:"name"`
+	Symbol     string   `json:"symbol"`
 	Parameters []string `json:"parameters"`
-	Return string `json:"return"`
+	Return     string   `json:"return"`
 }
 
 // WithSimulation enables a conservative whole-package boundary check before
@@ -34,23 +35,22 @@ func (comp Compilation) WithSimulation(bindings []SimulationBinding) Compilation
 }
 
 func simulationABI(expr ast.Expression) string {
-	if id, ok := expr.(*ast.Identifier); ok && id.Value == "()" { return "()" }
-	// Qualified type syntax currently uses IndexExpression without setting
-	// Dot. Ordinary type checking remains the authority for legal C types.
-	if member, ok := expr.(*ast.IndexExpression); ok {
-		base, bok := member.Left.(*ast.Identifier)
-		name, nok := member.Index.(*ast.Identifier)
-		if bok && nok && base.Value == "c" {
-			return "c." + name.Value
-		}
+	// Type-position qualification is stored as a single identifier; value
+	// member access uses IndexExpression. CheckProgram validates legal types.
+	if id, ok := expr.(*ast.Identifier); ok && (id.Value == "()" || strings.HasPrefix(id.Value, "c.")) {
+		return id.Value
 	}
 	return ""
 }
 
 func matchesSimulationBinding(fn *ast.FunctionStatement, b SimulationBinding) bool {
-	if fn.Name == nil || fn.Name.Value != b.Name || fn.ExternSymbol != b.Symbol || fn.Receiver != nil || len(fn.TypeParams) != 0 || len(fn.Parameters) != len(b.Parameters) || simulationABI(fn.ReturnType) != b.Return || b.Return == "" { return false }
+	if fn.Name == nil || fn.Name.Value != b.Name || fn.ExternSymbol != b.Symbol || fn.Receiver != nil || len(fn.TypeParams) != 0 || len(fn.Parameters) != len(b.Parameters) || simulationABI(fn.ReturnType) != b.Return || b.Return == "" {
+		return false
+	}
 	for i, p := range fn.Parameters {
-		if p.Variadic || b.Parameters[i] == "" || simulationABI(p.Type) != b.Parameters[i] { return false }
+		if p.Variadic || b.Parameters[i] == "" || simulationABI(p.Type) != b.Parameters[i] {
+			return false
+		}
 	}
 	return true
 }
@@ -73,11 +73,21 @@ func checkSimulation(root *ast.Program, bindings []SimulationBinding) error {
 				return fmt.Errorf("simulation boundary: %s requires an explicit simulated adapter", n.Value)
 			}
 		case *ast.FunctionStatement:
-			if n.ExternSymbol == "" { return nil }
-			if n.Token.SemanticContext == "testing-host" {
-				for _, b := range reporters { if matchesSimulationBinding(n, b) { return nil } }
+			if n.ExternSymbol == "" {
+				return nil
 			}
-			for _, b := range bindings { if matchesSimulationBinding(n, b) { return nil } }
+			if n.Token.SemanticContext == "testing-host" {
+				for _, b := range reporters {
+					if matchesSimulationBinding(n, b) {
+						return nil
+					}
+				}
+			}
+			for _, b := range bindings {
+				if matchesSimulationBinding(n, b) {
+					return nil
+				}
+			}
 			return fmt.Errorf("simulation boundary: undeclared extern %s (%s), or adapter ABI mismatch", n.Name.Value, n.ExternSymbol)
 		}
 		return nil
@@ -87,26 +97,42 @@ func checkSimulation(root *ast.Program, bindings []SimulationBinding) error {
 // Unlike transformSyntax this visits statements as well as expressions. Only
 // exported AST data is walked; no trivia, semantic environments or cycles.
 func walkSimulation(v reflect.Value, visit func(any) error) error {
-	if !v.IsValid() { return nil }
+	if !v.IsValid() {
+		return nil
+	}
 	switch v.Kind() {
 	case reflect.Interface, reflect.Pointer:
-		if v.IsNil() { return nil }
+		if v.IsNil() {
+			return nil
+		}
 		if v.Kind() == reflect.Pointer && v.CanInterface() {
-			if err := visit(v.Interface()); err != nil { return err }
+			if err := visit(v.Interface()); err != nil {
+				return err
+			}
 		}
 		return walkSimulation(v.Elem(), visit)
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
 			if v.Type().Field(i).IsExported() {
-				if err := walkSimulation(v.Field(i), visit); err != nil { return err }
+				if err := walkSimulation(v.Field(i), visit); err != nil {
+					return err
+				}
 			}
 		}
 	case reflect.Slice:
-		for i := 0; i < v.Len(); i++ { if err := walkSimulation(v.Index(i), visit); err != nil { return err } }
+		for i := 0; i < v.Len(); i++ {
+			if err := walkSimulation(v.Index(i), visit); err != nil {
+				return err
+			}
+		}
 	case reflect.Map:
 		keys := v.MapKeys()
 		sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
-		for _, key := range keys { if err := walkSimulation(v.MapIndex(key), visit); err != nil { return err } }
+		for _, key := range keys {
+			if err := walkSimulation(v.MapIndex(key), visit); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

@@ -46,10 +46,10 @@ type Options struct {
 // modified copies so callers can cheaply derive configurations without hidden
 // mutation between compiler phases.
 type Compilation struct {
-	source            SourceText
-	options           Options
-	resourceProtocols []typechecker.ResourceProtocolDeclaration
-	simulation        bool
+	source             SourceText
+	options            Options
+	resourceProtocols  []typechecker.ResourceProtocolDeclaration
+	simulation         bool
 	simulationBindings []SimulationBinding
 }
 

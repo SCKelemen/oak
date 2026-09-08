@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
 )
 
 // EmitFuzzHarness exports the checked C translation unit with a libFuzzer

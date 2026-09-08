@@ -108,7 +108,7 @@ Failures are atomically saved in `testdata/oak/<TestName>/<digest>.json` with:
 - failure signature and concrete minimized input (JSON base64).
 
 The build fingerprint covers generated C, the harness, native compilation flags,
-and C compiler version output. It is a useful drift check, not an attestation of
+C compiler version output, and any adapter manifest and object hashes. It is a useful drift check, not an attestation of
 all host libraries, environment variables, CPU features, or external effects.
 Exact replay still requires preserving the relevant execution environment.
 
@@ -160,13 +160,63 @@ and invariants. It also owns finite step budgets. The IRQ/timer pilot checks
 state transitions and a recovery suffix with explicit progress assumptions.
 The host additionally applies a watchdog to runaway test code.
 
-This first implementation does not intercept arbitrary clocks, entropy, FFI,
-MMIO, threads, or atomics. Determinism is conditional on the scenario routing
-all relevant inputs through modeled boundaries. Compiler-enforced simulation
-effect closure, storage persistence/fault models, general scheduling adapters,
-and integration with the OS's replay/debug event schema remain future work.
+Packages containing any registered `Sim` test compile with `WithSimulation`.
+The compiler checks the complete imported syntax tree before specialization,
+including unused functions, generic templates, closures and global initializers.
+Unsafe blocks, `Atomic` storage/operations, machine library names, and undeclared
+extern functions reject. C scalar conversions and portable SIMD remain available.
+This deliberately conservative check also rejects shadowed machine names; it is
+a whole-package boundary restriction, not a reachability-based effect proof.
+The same profile applies when selecting another test or exporting fuzz code from
+that package, preserving replay identities across filtering.
+
+Only the actual imported testing reporter declarations are automatically
+trusted. User declarations cannot obtain that trust by copying a reporter name
+or symbol. Other foreign boundaries require an explicit native adapter.
+No arbitrary clocks, entropy, MMIO, threads or atomics are automatically
+intercepted. Storage persistence/fault models, general scheduling adapters, and
+integration with the OS's replay/debug event schema remain future work.
 Single-thread event interleavings are not an ARM weak-memory model and do not
 replace the existing memory-model litmus tests or hardware validation.
+
+## Trusted native adapters
+
+`-adapter manifest.json` links a prebuilt native adapter. The version-1 manifest
+requires a name, `deterministic: true`, exact Oak binding names/C symbols, scalar
+ABI signatures, and 1..32 `.a`/`.o` objects with SHA-256 digests. Parameters and
+results are fixed-width signed/unsigned `c.Int8` through `c.UInt64`; `()` is also
+allowed as a result. Pointer/variadic interfaces are intentionally excluded.
+`oak_` symbols are reserved for generated code and the testing harness.
+
+```json
+{
+  "version": 1,
+  "name": "my-device-v1",
+  "deterministic": true,
+  "bindings": [
+    {"name": "device_step", "symbol": "device_step_native",
+     "parameters": ["c.UInt32"], "return": "c.UInt32"}
+  ],
+  "objects": [{"path": "build/device.a", "sha256": "<64 lowercase hex digits>"}]
+}
+```
+
+Object paths resolve relative to the manifest. The runner verifies and snapshots
+their bytes before linking. Thin archives, shared libraries and linker scripts
+reject; accepted inputs are self-contained archives or ELF relocatable objects,
+at most 64 MiB each. Manifest/object identities enter the replay fingerprint;
+locator paths do not. Supply `-adapter` again for replay and preserve the original
+objects. Replay artifacts never cause automatic native-code loading.
+
+The manifest is an explicit assertion of trust, **not proof of native code's
+determinism**. Adapter code must route time/entropy/scheduling through explicit
+inputs, reset state for each scenario, and avoid unmodeled host effects. Normal
+type/borrow/discipline checks still apply to the Oak program. This is not a
+security sandbox or runtime syscall filter.
+
+Fuzz export validates the adapter and records its manifest identity in the C
+file; link the pinned objects explicitly when compiling that export. The external
+link command and any instrumentation of the adapter are the caller's responsibility.
 
 ## Validation
 

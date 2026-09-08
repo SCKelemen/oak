@@ -55,6 +55,19 @@ Use a new output path for each export. libFuzzer executes many inputs in one
 process, so reset all tested state per call. Copy useful libFuzzer crash files
 to `testdata/oak/FuzzUtf8/*.bin` for the ordinary runner to replay.
 
+Packages with `Sim` tests reject unsafe blocks, machine/atomic operations and
+unlisted FFI across the whole package. For native OS components, use an explicit
+adapter manifest with exact scalar ABI declarations and hash-pinned objects:
+
+```sh
+./build/oak test -adapter path/to/adapter.json -sim '^SimDevice$' path/to/tests
+./build/oak test -adapter path/to/adapter.json -replay path/to/failure.json path/to/tests
+```
+
+The adapter itself is trusted code; the compiler does not prove its determinism.
+Retain the original manifest and native archive for exact replay. Fuzz exports
+also accept `-adapter`; link the archive explicitly alongside the exported C.
+
 The [testing specification](../docs/spec/110-testing.md) records exact semantics
 and limits. The event simulator is an explicit bounded foundation; whole-OS
 simulation and automatic external-effect interception are not implemented.

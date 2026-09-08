@@ -154,7 +154,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			if len(pkg.Tests) == 1 {
 				adapter, err := loadAdapter(cfg.Adapter)
 				content := ""
-				if err == nil { content, err = emitFuzzHarness(pkg, pkg.Tests[0], cfg.MaxBytes, adapter) }
+				if err == nil {
+					content, err = emitFuzzHarness(pkg, pkg.Tests[0], cfg.MaxBytes, adapter)
+				}
 				if err == nil {
 					err = writeHarness(cfg.EmitFuzz, content)
 				}
@@ -187,7 +189,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			}
 			if result.Artifact != "" {
 				adapterFlag := ""
-				if cfg.Adapter != "" { adapterFlag = fmt.Sprintf(" -adapter %q", cfg.Adapter) }
+				if cfg.Adapter != "" {
+					adapterFlag = fmt.Sprintf(" -adapter %q", cfg.Adapter)
+				}
 				fmt.Fprintf(stdout, "  replay: oak test%s -replay %q %q\n", adapterFlag, result.Artifact, result.Package)
 			}
 			if result.Output != "" {
