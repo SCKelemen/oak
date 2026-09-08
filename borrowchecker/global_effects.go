@@ -2,6 +2,7 @@ package borrowchecker
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/typechecker"
@@ -157,11 +158,26 @@ func (bc *BorrowChecker) collectGlobalWrites(program *ast.Program, env *typechec
 }
 
 func pureBorrowBuiltin(name string) bool {
+	parts := strings.Split(name, "_")
+	if len(parts) == 3 && scalarIntegerName(parts[0]) && scalarIntegerName(parts[2]) {
+		switch parts[1] {
+		case "trunc", "checked", "saturating", "bits":
+			return true
+		}
+	}
 	switch name {
 	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
 		"int", "uint", "uptr", "iptr", "f32", "f64", "byte", "rune",
 		"len", "assert", "is_valid_utf8", "str_from_utf8", "str_bytes",
 		"view", "span", "subslice", "view_as", "span_as":
+		return true
+	}
+	return false
+}
+
+func scalarIntegerName(name string) bool {
+	switch name {
+	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
 		return true
 	}
 	return false
