@@ -1,0 +1,103 @@
+// Test reporting is an explicit host boundary, supplied by oak test.
+// Numeric invariant IDs are chosen by the test author and must keep their meaning.
+testing_fail: (id: u32): () = c.extern("oak_testing_fail")
+testing_discard: (): () = c.extern("oak_testing_discard")
+testing_classify: (id: u32): () = c.extern("oak_testing_classify")
+
+test_check: (condition: Bool, id: u32): () {
+  !condition ? { testing_fail(id) }
+}
+
+test_assume: (condition: Bool): () {
+  !condition ? { testing_discard() }
+}
+
+// The choice tape is shared by property testing, fuzzing and simulation.
+// Exhaustion supplies zero, so every finite tape describes a complete run.
+// Construct domain values from choices; shrinking reruns the construction.
+TestChoices: type = struct { offset: u32 }
+
+test_byte: (choices: [*]TestChoices, data: []u8): u8 {
+  assert(len(choices) == u32(1))
+  offset: u32 = choices[0].offset
+  offset < len(data) ? {
+    choices[0].offset = offset + u32(1)
+    data[offset]
+  } | { u8(0) }
+}
+
+test_bool: (choices: [*]TestChoices, data: []u8): Bool =
+  (test_byte(choices, data) & u8(1)) == u8(1)
+
+test_u32: (choices: [*]TestChoices, data: []u8): u32 {
+  a: u32 = u32(test_byte(choices, data))
+  b: u32 = u32(test_byte(choices, data))
+  c: u32 = u32(test_byte(choices, data))
+  d: u32 = u32(test_byte(choices, data))
+  a | (b << u32(8)) | (c << u32(16)) | (d << u32(24))
+}
+
+// Inclusive range. Modulo bias is intentional and documented; this is a
+// shrink-friendly testing distribution, not a cryptographic random source.
+test_range: (choices: [*]TestChoices, data: []u8, low: u32, high: u32): u32 {
+  assert(low <= high)
+  value: u32 = test_u32(choices, data)
+  width: u32 = high - low
+  width == u32(4294967295) ? { value } | { low + value % (width + u32(1)) }
+}
+
+// Bounded discrete-event simulator. The caller owns event storage and the
+// model/production state. Each successful next removes one enabled event.
+SimClock: type = struct { now: u64 }
+SimEvent: type = struct { at: u64, kind: u32, value: u32 }
+SimQueue: type = struct { count: u32 }
+
+sim_schedule: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, event: SimEvent): Bool {
+  assert(len(queue) == u32(1))
+  assert(len(clock) == u32(1))
+  assert(queue[0].count <= len(events))
+  assert(event.at >= clock[0].now)
+  queue[0].count == len(events) ? { false } | {
+    events[queue[0].count] = event
+    queue[0].count = queue[0].count + u32(1)
+    true
+  }
+}
+
+// Advance only to the earliest timestamp. A choice controls ordering among
+// simultaneous events; the model chooses which faults/actions are legal.
+sim_next: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, choices: [*]TestChoices, data: []u8): SimEvent {
+  assert(len(queue) == u32(1))
+  assert(len(clock) == u32(1))
+  count: u32 = queue[0].count
+  assert(count > u32(0) && count <= len(events))
+  earliest: u64 = events[0].at
+  i: u32 = u32(1)
+  while i < count {
+    events[i].at < earliest ? { earliest = events[i].at }
+    i = i + u32(1)
+  }
+  ties: u32 = u32(0)
+  i = u32(0)
+  while i < count {
+    events[i].at == earliest ? { ties = ties + u32(1) }
+    i = i + u32(1)
+  }
+  selected: u32 = test_range(choices, data, u32(0), ties - u32(1))
+  index: u32 = u32(0)
+  seen: u32 = u32(0)
+  i = u32(0)
+  while i < count {
+    events[i].at == earliest ? {
+      seen == selected ? { index = i }
+      seen = seen + u32(1)
+    }
+    i = i + u32(1)
+  }
+  result: SimEvent = events[index]
+  assert(result.at >= clock[0].now)
+  clock[0].now = result.at
+  queue[0].count = count - u32(1)
+  events[index] = events[count - u32(1)]
+  result
+}

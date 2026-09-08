@@ -14,21 +14,29 @@ import (
 func loadStandardLibrary(tree *SyntaxTree) error {
 	var user []ast.Statement
 	imported := false
+	testingImported := false
 	for _, stmt := range tree.Root.Statements {
 		imp, ok := stmt.(*ast.ImportStatement)
 		if !ok {
 			user = append(user, stmt)
 			continue
 		}
-		if imp.Path == nil || imp.Path.Value != "std" || imp.Alias != nil {
-			return fmt.Errorf("import: only unaliased import(std) is supported by the bootstrap module loader")
+		if imp.Path == nil || imp.Alias != nil {
+			return fmt.Errorf("import: only unaliased import(std) and import(testing) are supported")
 		}
-		imported = true
+		switch imp.Path.Value {
+		case "std": imported = true
+		case "testing": testingImported = true
+		default: return fmt.Errorf("import: unsupported module %q", imp.Path.Value)
+		}
 	}
-	if !imported {
+	if !imported && !testingImported {
 		return nil
 	}
-	lib, err := New().WithSource("std.oak", stdlib.Source).Parse().Get()
+	librarySource := ""
+	if imported { librarySource = stdlib.Source }
+	if testingImported { librarySource += "\n" + stdlib.TestingSource }
+	lib, err := New().WithSource("stdlib.oak", librarySource).Parse().Get()
 	if err != nil {
 		return fmt.Errorf("standard library: %w", err)
 	}
@@ -53,10 +61,11 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 	}
 	for _, stmt := range user {
 		if name := declarationName(stmt); exports[name] {
-			return fmt.Errorf("import(std): declaration %q conflicts with a standard library export", name)
+			return fmt.Errorf("import: declaration %q conflicts with a standard library export", name)
 		}
 	}
 	tree.Root.Statements = append(lib.Root.Statements, user...)
+	if !imported { return nil }
 	if err := lowerDerivedCodecs(tree.Root); err != nil {
 		return err
 	}
@@ -79,3 +88,4 @@ func declarationName(stmt ast.Statement) string {
 	}
 	return ""
 }
+

@@ -1,0 +1,36 @@
+name: Oak testing tools
+on:
+  push:
+    branches: [specification, codex/oak-testing-tools]
+  pull_request:
+    branches: [specification]
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Test runner and failure replay
+        run: go test -race ./testrunner -count=1 -v
+      - name: Build Oak CLI
+        run: |
+          mkdir -p build
+          go build -o build/oak .
+      - name: Run Oak test suite
+        run: ./build/oak test -runs 20 examples/testing
+      - name: Fuzz runner internals
+        run: |
+          go test ./testrunner -run '^$' -fuzz '^FuzzMinimize$' -fuzztime 5s
+          go test ./testrunner -run '^$' -fuzz '^FuzzMutationBounds$' -fuzztime 5s
+      - name: Formatting patch
+        if: always()
+        run: |
+          mkdir -p build
+          gofmt -d main.go compiler/stdlib.go stdlib/source.go testrunner/*.go > build/format.patch
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oak-testing-linux
+          path: build/
