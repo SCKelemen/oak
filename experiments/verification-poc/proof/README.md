@@ -189,3 +189,7 @@ with separate malformed-layout and resource rejection tests.
 Oak, text-level Go/Lean comparisons, resource-boundary tests, and replay of an
 actual solver certificate. Universal refinement of the Oak implementation
 remains unproved.
+
+[MatchLowering.md](MatchLowering.md) records the compiler correction prompted by
+the ASCII decoder: Boolean statement guards evaluate once and statement matches
+select only one arm. Native regressions and the parser corpus cover the fix.

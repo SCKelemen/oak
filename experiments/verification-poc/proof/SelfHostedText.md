@@ -27,14 +27,11 @@ command. The complete inputs are decoded before invoking the stream checker.
 No heap allocation, compiler changes, Python runtime, or production-language
 integration is introduced.
 
-The decoder snapshots the current byte and dispatch phase before a nested
-match. During native validation, the existing backend emitted some nested
-Boolean matches as two independent guard checks. Mutating a guard's inputs in
-the first arm could therefore activate the second arm for the same token.
-Immutable `current`, `cnf_phase`, `proof_phase`, and `payload_phase` values avoid
-that behavior here. This experiment does not fix the compiler's general
-single-evaluation requirement; that defect needs a separate compiler regression
-and fix before broader reliance on mutable-state matches.
+The [statement-match compiler correction](MatchLowering.md) fixes the nested
+Boolean guard re-evaluation and multiple-arm selection discovered during this
+work. The decoder now uses ordinary state-dependent guards without snapshot
+workarounds. The original validation record below remains historical;
+`../validation-match-lowering.json` records the corrected compiler and parser.
 
 ## Text rules
 
@@ -112,8 +109,7 @@ remain hosted outside Oak. The existing solver gates continue using Go and Lean
 alongside this bounded Oak replay. RAT, binary LRAT, extension variables, and
 theory lemmas remain unsupported.
 
-A useful next step is to fix the compiler's nested-match single-evaluation
-defect with a focused regression, then state and prove a refinement relation
-for the bounded Oak scanner and decoder, starting with decimal parsing and
-buffer invariants. These would strengthen the trust boundary before making
-Oak's checker an authoritative evidence path.
+A useful next step is to state and prove a refinement relation for the bounded
+Oak scanner and decoder, starting with decimal parsing and buffer invariants.
+This would strengthen the trust boundary before making Oak’s checker an
+authoritative evidence path.

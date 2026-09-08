@@ -1,0 +1,70 @@
+{
+  "changes": {
+    "compiler": "Boolean statement matches use one if/else; other statement matches use an exclusive if/else-if/else chain.",
+    "goldens": [
+      "simple_arithmetic",
+      "conditionals",
+      "generic_adt"
+    ],
+    "parser": "Removed current-byte and dispatch-phase snapshot workarounds from the Oak ASCII decoder."
+  },
+  "commit": "a2a537618c25b5d1520272737ab8f389132546c2",
+  "date": "2026-09-08",
+  "differential_validation": {
+    "ascii_accepted": 119,
+    "ascii_cases": 729,
+    "ascii_rejected": 610,
+    "parser_workaround_present": false,
+    "profile_cases": 14,
+    "references": [
+      "Go internal/lrat",
+      "Lean checkText and checkProof"
+    ],
+    "rup_step_cases": 400,
+    "stream_cases": 425
+  },
+  "format": "oak-match-lowering-validation-1",
+  "historical_record": "validation-self-hosted-text.json retains evidence for the preceding workaround-based version.",
+  "native_regression_job": 101987823389,
+  "native_regressions": {
+    "cases": 6,
+    "coverage": [
+      "Nested mutable Boolean guard",
+      "Side-effecting false condition called once",
+      "Byte guard that advances cursor to the view boundary",
+      "Scalar mutation with later arm and fallback",
+      "ADT tag mutation",
+      "ADT payload binding and fallback"
+    ],
+    "failures": "Compilation errors, unsupported C markers, timeouts, traps, and exits other than 42 fail.",
+    "pipeline": "Oak compiler frontend -> C99 at -O2 -> native assertions",
+    "test": "TestStatementMatchSelectsOneArm"
+  },
+  "passed": true,
+  "proof_boundary": {
+    "claim": "Native regression and differential validation of this compiler correction.",
+    "new_formal_theorem": false,
+    "not_claimed": [
+      "Universal compiler semantics preservation",
+      "Universal refinement of Oak to Lean",
+      "A self-verified toolchain"
+    ]
+  },
+  "real_certificate": {
+    "accepted": 1,
+    "lean_agreement": true,
+    "producer": "CaDiCaL (suite-pinned)",
+    "rejected_corruptions": 2
+  },
+  "repository_ci_run": "https://github.com/SCKelemen/oak/actions/runs/34203595218",
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34203595256",
+  "solvers_job": 101987822991,
+  "soundness_job": 101987823643,
+  "repository_ci": {
+    "Verification experiment (opt-in)": "success",
+    "Formal Verification": "success",
+    "Golden File Verification": "success",
+    "Standard library": "success",
+    "CI": "success"
+  }
+}
