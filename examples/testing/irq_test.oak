@@ -39,6 +39,7 @@ PropertyIrqHistory: (data: []u8): () {
   while step < u32(64) {
     action: u32 = u32(test_byte(choices, data)) % u32(8)
     before: Irq = state[0]
+    testing_trace(u32(200), u64(action), u64(step))
     irq_apply(state, action)
     model = irq_model(model, action)
     after: Irq = state[0]
@@ -87,6 +88,7 @@ SimTimerIrq: (data: []u8): () {
   while queue[0].count > u32(0) {
     previous: u64 = clock[0].now
     event: SimEvent = sim_next(queue, events, clock, choices, data)
+    testing_trace(u32(201), (u64(event.kind) << u64(32)) | u64(event.value), clock[0].now)
     test_check(clock[0].now >= previous, u32(2021))
     event.kind == u32(0) ? { compare = u64(event.value) }
     event.kind == u32(1) ? { masked = true }

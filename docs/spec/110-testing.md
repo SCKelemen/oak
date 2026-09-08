@@ -57,6 +57,9 @@ Tests may use the host permissions available to them. Sanitizers are opt-in via
   cases; exceeding `-max-discards` fails. A unit test cannot discard.
 - `testing_classify(id)`: mark a class reached in this execution. Each accepted
   execution counts once per class, even if a loop emits it repeatedly.
+- `testing_trace(id, a, b)`: record an author-defined semantic event with a
+  stable `u32` ID and two `u64` payloads. Values are observations, not choices:
+  the call consumes no choice-tape bytes and does not affect scheduling.
 - `-cover 10:5,20:1`: require minimum accepted-case counts for these class IDs in
   each selected non-unit test. These are semantic labels, not code coverage.
 
@@ -93,6 +96,11 @@ same failure signature. Both an execution budget and a time budget apply. One
 in-flight execution may extend the shrink deadline by at most its case timeout.
 An initial repeat checks failure stability. Timeouts and harness failures are
 saved but not minimized. The result is budget-minimized, not globally minimal.
+Stability confirmation compares recorded traces too. A final execution confirms
+the minimized input and supplies its trace and output; it must match the last
+accepted reduction's trace. If it diverges, retain the original input/evidence
+and report instability. Initial/final confirmation executions are additional to
+the reduction budget and each uses the ordinary per-case watchdog.
 A generic signal signature cannot distinguish two unrelated traps with the same
 signal; stable invariant IDs are preferred for stateful properties.
 
@@ -106,6 +114,7 @@ Failures are atomically saved in `testdata/oak/<TestName>/<digest>.json` with:
 - root seed and attempt;
 - maximum input size, execution timeout, and sanitizer mode;
 - failure signature and concrete minimized input (JSON base64).
+- optional trace schema version, recorded semantic events and truncation flag.
 
 The build fingerprint covers generated C, the harness, native compilation flags,
 C compiler version output, and any adapter manifest and object hashes. It is a useful drift check, not an attestation of
@@ -117,6 +126,20 @@ both the build fingerprint and failure signature. A reproduced failure exits
 nonzero. Divergence is reported explicitly, including a now-passing input.
 Filtering does not change the compiled registration table, so selecting one test
 for replay does not itself invalidate a multi-test failure artifact.
+
+New artifacts carry trace version 1. The first 256 events are retained in order;
+an additional event sets `trace_truncated` without changing the test outcome.
+Each event has `id`, `a`, and `b`; the 64-bit payloads are JSON decimal strings
+to avoid precision loss in JavaScript tooling. Events are flushed immediately,
+preserving an available prefix after a trap or watchdog termination. Trace
+storage shares the existing bounded control report. The terminal prints the
+last eight retained events; the artifact and JSON result contain the entire
+retained prefix. Successful/discarded cases do not expose traces in results.
+
+Strict replay requires the same trace prefix and truncation flag, even when the
+invariant ID matches. This detects observed divergence; it does not prove that
+unrecorded behavior or a truncated suffix was identical. Legacy artifacts with
+no trace version retain their original input/build/signature replay contract.
 
 Ordinary test runs replay corpus inputs before generating new ones and do not
 require the historical build fingerprint: checked-in regressions must survive
@@ -139,6 +162,9 @@ harness preserves invariant IDs, skips oversized input, and translates rejected
 inputs to a return to libFuzzer. libFuzzer owns its corpus, crash files and
 minimization. Copy useful raw crash files into the runner's `.bin` corpus to
 reproduce and reduce them with `oak test`.
+
+Trace calls are no-ops in persistent libFuzzer exports. Replay a raw crash input
+through the isolated runner to collect a bounded semantic history.
 
 libFuzzer is persistent: all tested state must be constructed/reset inside the
 fuzz function. Target-side state must not escape across calls. Avoid nontrivial
