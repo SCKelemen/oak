@@ -148,6 +148,29 @@ Strict replay requires the same trace prefix and truncation flag, even when the
 invariant ID matches. This detects observed divergence; it does not prove that
 unrecorded behavior or a truncated suffix was identical. Legacy artifacts with
 no trace version retain their original input/build/signature replay contract.
+A diverging replay reports the index of the first recorded event the observed
+trace did not reproduce, with both events; a trace that ends early reports the
+missing side. JSON results carry it as `trace_divergence`.
+
+## Trace schema
+
+A package may describe its events in `oak-trace.json` next to its tests:
+
+```json
+{"version": 1, "events": {"401": {"name": "command",
+  "a": [{"name": "kind", "shift": 32, "bits": 32, "names": {"0": "admit"}},
+        {"name": "target", "shift": 16, "bits": 16}],
+  "b": [{"name": "ticks"}]}}}
+```
+
+Each field selects `(payload >> shift) & mask(bits)`; omitting both takes the
+whole payload, and `names` maps decimal values to labels. The schema decodes
+terminal output, the `trace_text` array of JSON results, and divergence
+reports. It never changes what is recorded, compared, or replayed: artifacts
+keep raw events, unknown IDs print raw, and a package without a schema behaves
+as before. A present schema must be valid (version 1, u32 event keys,
+identifier names, fields inside 64 bits, at most 1 MiB), because decoded output
+that silently fell back to raw values would mislead.
 
 Ordinary test runs replay corpus inputs before generating new ones and do not
 require the historical build fingerprint: checked-in regressions must survive

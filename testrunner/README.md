@@ -80,6 +80,11 @@ Failures shrink by deleting whole commands and reducing their fields; a pop
 whose push was deleted is rejected by the precondition instead of becoming a
 misleading counterexample. Results and artifacts carry the decoded commands.
 
+Describe your trace events in `oak-trace.json` beside the tests and failures
+print named operations and fields (`command kind=tick target=1 ticks=9`)
+instead of raw payloads; JSON results add `trace_text`, and a diverging replay
+names the first event that differed. See the specification for the format.
+
 `-timeout`, `-max-bytes`, `-max-discards`, `-shrink`, and `-shrink-timeout` make
 campaign costs explicit. `-cover 1:10,2:1` requires sample counts for IDs emitted
 by `testing_classify`. Rejected inputs never count as passes. Use `-sanitize`

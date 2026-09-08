@@ -32,6 +32,9 @@ type Package struct {
 	Source   string
 	Tests    []Test
 	Registry []Test
+	// Schema decodes semantic trace events for people and tools; nil when the
+	// directory has no oak-trace.json.
+	Schema *TraceSchema
 }
 
 // symbol is the C name the generated translation unit gives a top-level
@@ -125,6 +128,11 @@ func Discover(paths []string) ([]Package, error) {
 		}
 		var pkg Package
 		pkg.Dir = dir
+		schema, err := loadTraceSchema(dir)
+		if err != nil {
+			return nil, err
+		}
+		pkg.Schema = schema
 		generators := map[string]*ast.FunctionStatement{}
 		var src strings.Builder
 		clauses := 0
