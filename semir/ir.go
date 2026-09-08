@@ -130,9 +130,10 @@ type TagLayout struct {
 }
 
 // Authority describes what code holding a value may do with it. Ownership,
-// capabilities, and effects are semantic facts, not comments or tags.
+// resource liveness, capabilities, and effects are independent semantic facts.
 type Authority struct {
 	Ownership        Ownership
+	Resource         ResourceAuthority
 	Capabilities     []Capability
 	RequiredEffects  []Effect
 	ForbiddenEffects []Effect
@@ -148,6 +149,18 @@ const (
 	OwnershipUniqueWrite Ownership = "unique-write"
 	OwnershipMoved       Ownership = "moved"
 	OwnershipExternal    Ownership = "external"
+)
+
+// ResourceAuthority is the path-sensitive authority summary projected by
+// semantic resource-flow analysis. It is deliberately separate from Ownership:
+// a UniqueWrite borrow can end, while consumed resource authority never returns.
+type ResourceAuthority string
+
+const (
+	ResourceAuthorityUnspecified   ResourceAuthority = ""
+	ResourceAuthorityLive          ResourceAuthority = "live"
+	ResourceAuthorityConsumed      ResourceAuthority = "consumed"
+	ResourceAuthorityMaybeConsumed ResourceAuthority = "maybe-consumed"
 )
 
 type Capability struct {
@@ -224,73 +237,41 @@ const (
 	OpMod Operator = "mod"
 )
 
-func Ref(name string) Expr { return Expr{Kind: ExprRef, Ref: name} }
-func Int(value int64) Expr { return Expr{Kind: ExprInt, Int: value} }
-func Bool(value bool) Expr { return Expr{Kind: ExprBool, Bool: value} }
-func Apply(op Operator, args ...Expr) Expr {
-	return Expr{Kind: ExprApply, Op: op, Args: args}
-}
-
-// Protocol describes legal state evolution. Local typestate, temporal-model
-// projection, generated DST actions, and debugger state diagrams should all use
-// the same transition vocabulary.
+// Protocol describes legal state transitions independently of representation.
 type Protocol struct {
 	Name        string
-	States      []State
-	Initial     string
+	States      []string
 	Transitions []Transition
-	Invariants  []Proposition
-	Assumptions []TemporalProperty
-	Guarantees  []TemporalProperty
-}
-
-type State struct {
-	Name string
 }
 
 type Transition struct {
-	Name     string
-	From     string
-	To       string
-	Requires []Proposition
-	Effects  []Effect
+	Name          string
+	From          string
+	To            string
+	Requires      []Proposition
+	Effects       []Effect
+	ConsumesInput bool
+	ReturnsFresh  bool
 }
 
-type TemporalProperty struct {
-	Name    string
-	Formula TemporalExpr
+// Allocator captures the contract required by a pluggable allocator. Region
+// and lifetime facts are semantic constraints, not runtime allocation policy.
+type Allocator struct {
+	Name          string
+	Allocate      string
+	Deallocate    string
+	Region        string
+	Lifetime      string
+	ThreadSafe    bool
+	Required      []Effect
+	Forbidden     []Effect
+	Propositions  []Proposition
 }
 
-type TemporalExpr struct {
-	Kind TemporalKind
-	Atom string
-	Args []TemporalExpr
-}
-
-type TemporalKind string
-
-const (
-	TemporalInvalid    TemporalKind = ""
-	TemporalAtom       TemporalKind = "atom"
-	TemporalNot        TemporalKind = "not"
-	TemporalAnd        TemporalKind = "and"
-	TemporalOr         TemporalKind = "or"
-	TemporalAlways     TemporalKind = "always"
-	TemporalEventually TemporalKind = "eventually"
-	TemporalNext       TemporalKind = "next"
-	TemporalUntil      TemporalKind = "until"
-	TemporalImplies    TemporalKind = "implies"
-)
-
-func Atom(name string) TemporalExpr { return TemporalExpr{Kind: TemporalAtom, Atom: name} }
-func Temporal(kind TemporalKind, args ...TemporalExpr) TemporalExpr {
-	return TemporalExpr{Kind: kind, Args: args}
-}
-
-// Attribute is extensible metadata. Correctness-critical semantics belong in
-// the typed axes above rather than in this escape hatch.
+// Attribute is structured metadata that does not change value type or
+// representation unless a specific semantic rule says otherwise.
 type Attribute struct {
-	Namespace string
-	Name      string
-	Value     string
+	Namespace  string
+	Name       string
+	Parameters []string
 }
