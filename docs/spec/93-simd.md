@@ -227,10 +227,17 @@ explicit completed element count. Its contract must state:
 - which memory effects occurred before the returned count;
 - that inaccessible elements past the completed count are not semantically
   loaded;
+- that `completed` is progress, not merely a fault index: a backend may
+  complete fewer elements than requested even without a synchronous fault;
+  for a nonzero request it must either trap at element 0 or report positive
+  progress;
 - that non-idempotent/device/MMIO memory is excluded unless a machine-specific
   contract proves restart/partial-access behavior safe;
 - that partial progress is represented as a result, never hidden mutable vector
-  restart state.
+  restart state;
+- that privileged fault-first access is authority-sensitive because completion
+  length can reveal where addressability changes; callers must not gain a
+  mapping-probe capability merely by using a SIMD primitive.
 
 Architecture-specific fault-first instructions may be exposed earlier through
 a target library if their machine contract is explicit.
@@ -249,7 +256,9 @@ must cover at least:
   comparisons, control flow, or returned Oak values;
 - call boundaries that clobber target vector configuration and require correct
   re-establishment;
-- fault-first behavior separately from ordinary total vector loads.
+- fault-first behavior separately from ordinary total vector loads, including
+  legal short completion without a synchronous fault and zero-progress
+  rejection for nonzero requests.
 
 A scalable implementation is not considered portable merely because it runs on
 one VLEN. The same Oak source must retain its semantics across every supported
