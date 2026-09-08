@@ -1,0 +1,114 @@
+{
+  "actual_certificates": {
+    "exclusions": "Explicit full layouts retained in certified-report.json; never counted as accepted",
+    "in_profile_accepted": 9,
+    "input_certificates": 11,
+    "mutations": [
+      "Satisfiable unit formula retaining variable domain",
+      "Reused ID 1 empty addition after refutation; decoder must still succeed"
+    ],
+    "native_harness": "Go; no Python",
+    "native_layouts": 27,
+    "native_seconds": 2.08,
+    "outside_profile": 2,
+    "packing_roundtrip": "Exact parsed clause and instruction equality checked for every supported certificate",
+    "rejected_corruptions": 18
+  },
+  "artifacts": {
+    "retention_days": 30,
+    "solvers": "build/lean-gate/attempt-*: certified-manifest.json, certified-cases.json, certified-report.json, source certificate hashes and Lean/Oak/Go logs",
+    "soundness": "proof modules, initial-decoder-proof.log, certified-stream-cases.json and agreement logs"
+  },
+  "commit": "f63fbfb0ce4bc3ea817d17e4042d6520baae6c96",
+  "comparison": {
+    "accepted": 308,
+    "compared": [
+      "Compiled Oak rup_stream_check",
+      "Go LRAT oracle",
+      "CertifiedStream.check",
+      "InitialDecoder.check",
+      "Ranges.checkLayout"
+    ],
+    "layouts": 887,
+    "native_seconds_with_race": 86.91,
+    "native_seconds_without_race": 44.06,
+    "rejected": 579
+  },
+  "date": "2026-09-08",
+  "existing_gates": {
+    "boolean_bridge": "success",
+    "boolean_model": "success",
+    "lean_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "oak_ascii_certificate": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    }
+  },
+  "format": "oak-initial-decoder-validation-1",
+  "next_step": "Prove packing roundtrip for all in-profile inputs, then connect that theorem to the Oak text decoder.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.InitialDecoder.mapM_lookup' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.InitialDecoder.clauses_decoded' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.InitialDecoder.origin_refines' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.InitialDecoder.decoded_sound' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.InitialDecoder.check' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.InitialDecoder.check_sound' depends on axioms: [propext, Classical.choice, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Successful decodeLayout determines every initial range lookup",
+      "CertifiedStream.origin equals the decoded initialDatabase",
+      "Composed decoder/certified-stream acceptance implies decoded formula unsatisfiability without a supplied per-index equation"
+    ],
+    "reported_executable_definitions": 1,
+    "reported_theorems": 5,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Universal text-to-layout packing refinement",
+      "External DIMACS/LRAT grammar correctness",
+      "Universal Oak executor equivalence",
+      "Oak compiler and C runtime correctness"
+    ],
+    "proved": [
+      "Executable initial range-decoder refinement",
+      "Decoded formula unsatisfiability from certified stream acceptance"
+    ],
+    "tested": [
+      "Packing roundtrip on real certificates",
+      "Agreement of Oak, Go, original Lean stream and new composition"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34241678960",
+  "solvers_job": 102113157970,
+  "soundness_job": 102113157882,
+  "repository_ci": {
+    "Golden File Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34241679000"
+    },
+    "Formal Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34241678999"
+    },
+    "Verification experiment (opt-in)": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34241678960"
+    },
+    "CI": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34241679058"
+    },
+    "Standard library": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34241679034"
+    }
+  },
+  "aarch64_memory_refinement": "success"
+}

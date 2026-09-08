@@ -46,3 +46,30 @@ generated C, and C runtime remain trusted test infrastructure.
 
 This remains entirely within the removable verification experiment. The harness
 is Go; no Python or production language changes are introduced.
+
+## Validation
+
+[The soundness gate passed](https://github.com/SCKelemen/oak/actions/runs/34241678960/job/102113157882)
+on commit `f63fbfb0ce4bc3ea817d17e4042d6520baae6c96`. All five theorem reports
+and the executable-definition report passed with warnings as errors, without
+proof holes or project-specific axioms. Dependencies are limited to standard
+`propext`, `Quot.sound`, and `Classical.choice`.
+
+The decoder composition, certified stream, original Lean checker, Go oracle,
+and compiled Oak agreed on 887 layouts: 308 accepted and 579 rejected. Native
+comparison took 44.06 seconds without the race detector.
+
+[The solver gate passed](https://github.com/SCKelemen/oak/actions/runs/34241678960/job/102113157970).
+Nine actual certificates fit the profile and were accepted across all replay
+paths; their 18 corruptions were rejected. Two certificates were explicitly
+outside the bounded profile. All 11 original certificates and their 22 corruptions
+still passed the existing Lean text gate. Native replay of the 27 new layouts
+took 2.08 seconds. The 887-layout suite also passed with the race detector in
+86.91 seconds. Existing Boolean proof and model-certificate gates passed.
+
+Repository CI, standard-library tests with the race detector, formal verification,
+golden files, and AArch64 memory refinement all passed on the tested commit.
+`../validation-initial-decoder.json` records the exact proof and testing scope.
+
+Next: prove packing roundtrip for all supported inputs, then connect that theorem
+to the Oak text decoder. Universal Oak and compiler refinement remain open.

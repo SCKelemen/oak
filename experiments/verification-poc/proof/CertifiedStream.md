@@ -64,9 +64,9 @@ scope and tested commit.
 The native comparison also passed with Go's race detector in 72.79 seconds. The
 full native suite and existing external/certificate gates passed, including
 11 accepted Lean certificates and 22 rejected corruptions, the Boolean proof
-bridge, and the invariant-model gate. These existing certificate gates still use
-the original stream path; direct real-certificate replay through this new stream
-is the next integration step.
+bridge, and the invariant-model gate. At that milestone these certificate gates used
+the original stream path. The subsequent [decoder milestone](InitialDecoder.md)
+adds direct real-certificate replay through the certified stream.
 
 Repository CI, standard-library, formal-verification, golden-file, and AArch64
 memory-refinement checks all passed on the tested commit. Existing gates, corpus
