@@ -66,7 +66,8 @@ theorem walk_trace (n : Nat) (bs : List Nat) : Trace n bs (walk n bs) := by
     simp only [walk]
     cases h : advance n b with
     | none => exact Trace.reject n b bs (by rwa [advance_refines] at h)
-    | some next => exact Trace.digit n b next bs (walk next bs)
+    | some next =>
+      exact Trace.digit n b next bs (walk next bs)
         (by rwa [advance_refines] at h) (ih next)
 
 theorem trace_bounds {n : Nat} {bs : List Nat} {r : Digits}
@@ -143,9 +144,9 @@ theorem scanTail_range (pos : Nat) (tail : List Nat) :
   | cons b bs =>
     have hw := countWhile_bounds wordByte bs
     simp only [List.length_cons] at hl
-    split <;> simp only [Token.start, Token.next, Token.stop, Token.kind]
-    · omega
-    · dsimp only; omega
+    by_cases hb : b = 10
+    · simp only [hr, if_pos hb]; dsimp only; omega
+    · simp only [hr, if_neg hb]; dsimp only; omega
 
 theorem scan_range (bytes : List Nat) (pos : Nat) (hp : pos ≤ bytes.length) :
     InRange pos bytes.length (scan bytes pos) := by
