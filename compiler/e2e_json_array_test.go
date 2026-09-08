@@ -125,7 +125,13 @@ main: (): i32 = 0
 		t.Fatal(err)
 	}
 	if fluent != direct {
-		t.Fatal("array fluent and direct codecs differ")
+		a, b := strings.Split(fluent, "\n"), strings.Split(direct, "\n")
+		for i := 0; i < len(a) && i < len(b); i++ {
+			if a[i] != b[i] {
+				t.Fatalf("array fluent/direct C differs at line %d:\nfluent: %s\ndirect: %s", i+1, a[i], b[i])
+			}
+		}
+		t.Fatal("array fluent/direct C lengths differ")
 	}
 	for _, forbidden := range []string{"malloc(", "calloc(", "realloc(", "OAK_UNSUPPORTED"} {
 		if strings.Contains(fluent, forbidden) {
