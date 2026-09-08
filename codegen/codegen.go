@@ -835,6 +835,29 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 // emitMatchReturn with bodies in statement position. Produced by the
 // lowering hoist for value matches and by statement-position ADT matches.
 func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *typechecker.TypeChecker) {
+	emitBody := func(body ast.Expression) {
+		if block, ok := body.(*ast.BlockExpression); ok && block.Block != nil {
+			cg.emitBlockStatement(block.Block, tc, false)
+		} else {
+			cg.emitStatementExpression(body, tc)
+		}
+	}
+	// Nested statement matches can reach codegen without IfStatement lowering.
+	// Evaluate a Boolean condition once, before either arm can mutate its inputs.
+	if trueBody, falseBody, isBool := boolMatchBranches(match); isBool {
+		cg.write("  if ( ")
+		cg.emitExpressionFragment(match.Scrutinee, tc)
+		cg.output.WriteString(" ) {\n")
+		cg.indentLevel++
+		emitBody(trueBody)
+		cg.indentLevel--
+		cg.write("  } else {\n")
+		cg.indentLevel++
+		emitBody(falseBody)
+		cg.indentLevel--
+		cg.write("  }\n")
+		return
+	}
 	// A non-identifier scrutinee (matching on a call result) evaluates
 	// exactly once: hoist it into a temporary, then guard on the
 	// temporary — never re-evaluate per arm.
@@ -859,23 +882,25 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 			}
 		}
 	}
-	for _, arm := range match.Arms {
-		emitBody := func() {
-			if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock && block.Block != nil {
-				cg.emitBlockStatement(block.Block, tc, false)
-			} else {
-				cg.emitStatementExpression(arm.Body, tc)
-			}
+	guarded := false
+	emitGuard := func() {
+		if guarded {
+			cg.write("  else if ( ")
+		} else {
+			cg.write("  if ( ")
 		}
+		guarded = true
+	}
+	for _, arm := range match.Arms {
 		switch pattern := arm.Pattern.(type) {
 		case *ast.LiteralPattern:
-			cg.write("  if ( ")
+			emitGuard()
 			cg.emitExpressionFragment(match.Scrutinee, tc)
 			cg.output.WriteString(" == ")
 			cg.emitExpressionFragment(pattern.Value, tc)
 			cg.output.WriteString(" ) {\n")
 			cg.indentLevel++
-			emitBody()
+			emitBody(arm.Body)
 			cg.indentLevel--
 			cg.write("  }\n")
 			continue
@@ -892,7 +917,7 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 			adt := cg.adtTypes[info.adtName]
 			cName := cg.cTypeName(info.adtName)
 			variantName := pattern.Variant.Value
-			cg.write("  if ( ")
+			emitGuard()
 			cg.emitExpressionFragment(match.Scrutinee, tc)
 			cg.output.WriteString(fmt.Sprintf(".tag == %s_tag_%s ) {\n", cName, variantName))
 			if binding, ok := pattern.Payload.(*ast.BindingPattern); ok && binding.Name != nil {
@@ -907,13 +932,21 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 				cg.output.WriteString(fmt.Sprintf(".payload.%s;\n", variantName))
 			}
 			cg.indentLevel++
-			emitBody()
+			emitBody(arm.Body)
 			cg.indentLevel--
 			cg.write("  }\n")
 			continue
 		}
-		// Wildcard: unconditional; later arms unreachable by exhaustiveness.
-		emitBody()
+		// A fallback executes only when no preceding arm matched.
+		if guarded {
+			cg.write("  else {\n")
+			cg.indentLevel++
+		}
+		emitBody(arm.Body)
+		if guarded {
+			cg.indentLevel--
+			cg.write("  }\n")
+		}
 		return
 	}
 }
