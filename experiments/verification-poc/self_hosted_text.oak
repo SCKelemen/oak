@@ -14,7 +14,8 @@ rup_token: (text: []u8, state: [*]u32): u32 {
   magnitude: u32 = 0
   sign: u32 = 1
   pos < len(text) ? {
-    text[pos] == u8(10) ? { kind = u32(1); pos = pos + u32(1) }
+    current: u8 = text[pos]
+    current == u8(10) ? { kind = u32(1); pos = pos + u32(1) }
     | {
       kind = u32(2)
       while pos < len(text) && text[pos] != u8(10) && !rup_space(text[pos]) { pos = pos + u32(1) }
@@ -77,9 +78,11 @@ rup_text_check: (cnf: []u8, proof: []u8): Bool {
   done: Bool = false
   while !done && valid {
     kind: u32 = rup_token(cnf, span(&scan))
+    // Keep dispatch stable across state updates in nested matches.
+    cnf_phase: u32 = stage
     kind != u32(2) ? {
-      valid = stage == u32(0) || stage >= u32(4)
-      stage == u32(4) ? { stage = u32(5) }
+      valid = cnf_phase == u32(0) || cnf_phase >= u32(4)
+      cnf_phase == u32(4) ? { stage = u32(5) }
       first = true
       comment = false
       done = kind == u32(0)
@@ -88,25 +91,25 @@ rup_text_check: (cnf: []u8, proof: []u8): Bool {
       first && rup_word(cnf, view(&scan), u8(99)) ? { comment = true }
       first = false
       !comment ? {
-        stage == u32(0) ? {
+        cnf_phase == u32(0) ? {
           valid = rup_word(cnf, view(&scan), u8(112))
           stage = u32(1)
         }
         | {
-          stage == u32(1) ? {
+          cnf_phase == u32(1) ? {
             valid = scan[2] - scan[1] == u32(3)
             valid = valid && cnf[scan[1]] == u8(99) && cnf[scan[1] + u32(1)] == u8(110) && cnf[scan[1] + u32(2)] == u8(102)
             stage = u32(2)
           }
           | {
             valid = scan[4] != u32(0)
-            stage == u32(2) ? {
+            cnf_phase == u32(2) ? {
               variables = scan[3]
               valid = valid && scan[4] == u32(1) && variables > u32(0) && variables <= u32(64)
               stage = u32(3)
             }
             | {
-              stage == u32(3) ? {
+              cnf_phase == u32(3) ? {
                 expected = scan[3]
                 valid = valid && (scan[4] == u32(1) || expected == u32(0)) && expected <= u32(256)
                 stage = u32(4)
@@ -144,9 +147,10 @@ rup_text_check: (cnf: []u8, proof: []u8): Bool {
   command: RUPCommand = RUPCommand { addition: true, id: u32(0), start: u32(0), count: u32(0), refs_start: u32(0), refs_count: u32(0) }
   while !done && valid {
     proof_kind: u32 = rup_token(proof, span(&scan))
+    proof_phase: u32 = stage
     proof_kind != u32(2) ? {
-      valid = stage == u32(0) || stage == u32(5)
-      stage == u32(5) ? {
+      valid = proof_phase == u32(0) || proof_phase == u32(5)
+      proof_phase == u32(5) ? {
         valid = valid && count < u32(256)
         valid ? { commands[count] = command; count = count + u32(1) }
       }
@@ -159,7 +163,7 @@ rup_text_check: (cnf: []u8, proof: []u8): Bool {
       first && rup_word(proof, view(&scan), u8(99)) ? { comment = true }
       first = false
       !comment ? {
-        stage == u32(0) ? {
+        proof_phase == u32(0) ? {
           valid = scan[4] != u32(0) && (scan[4] == u32(1) || scan[3] == u32(0))
           command.id = scan[3]
           command.addition = true
@@ -170,14 +174,15 @@ rup_text_check: (cnf: []u8, proof: []u8): Bool {
           stage = u32(1)
         }
         | {
-          stage == u32(1) && rup_word(proof, view(&scan), u8(100)) ? {
+          proof_phase == u32(1) && rup_word(proof, view(&scan), u8(100)) ? {
             command.addition = false
             stage = u32(4)
           }
           | {
-            stage == u32(1) ? { stage = u32(2) }
-            valid = scan[4] != u32(0) && stage != u32(5)
-            stage == u32(2) ? {
+            proof_phase == u32(1) ? { stage = u32(2) }
+            payload_phase: u32 = stage
+            valid = scan[4] != u32(0) && payload_phase != u32(5)
+            payload_phase == u32(2) ? {
               scan[3] == u32(0) ? { stage = u32(3) }
               | {
                 valid = valid && scan[3] <= variables && literals < u32(4096)
@@ -190,7 +195,7 @@ rup_text_check: (cnf: []u8, proof: []u8): Bool {
             }
             | {
               scan[3] == u32(0) ? {
-                stage == u32(4) ? { valid = valid && rup_word(proof, view(&scan), u8(48)) }
+                payload_phase == u32(4) ? { valid = valid && rup_word(proof, view(&scan), u8(48)) }
                 stage = u32(5)
               }
               | {
