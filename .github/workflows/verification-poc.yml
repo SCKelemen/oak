@@ -45,6 +45,7 @@ jobs:
           lean -DwarningAsError=true -o proof/RangeBridge.olean proof/RangeBridge.lean 2>&1 | tee build/soundness/range-bridge-proof.log
           lean -DwarningAsError=true -o proof/LiveTable.olean proof/LiveTable.lean 2>&1 | tee build/soundness/live-table-proof.log
           lean -DwarningAsError=true -o proof/PropagationState.olean proof/PropagationState.lean 2>&1 | tee build/soundness/propagation-proof.log
+          lean -DwarningAsError=true -o proof/ClauseClassifier.olean proof/ClauseClassifier.lean 2>&1 | tee build/soundness/classifier-proof.log
       - name: Compare Go and Lean checker decisions
         working-directory: experiments/verification-poc
         shell: bash
@@ -121,6 +122,9 @@ jobs:
           export OAK_PROPAGATION_CORPUS_OUT="$PWD/build/soundness/propagation-cases.json"
           go test -count=1 -v . -run '^TestSelfHostedPropagationState$' 2>&1 | tee build/soundness/propagation-go.log
           lean -DwarningAsError=true --run proof/PropagationStateCompare.lean "$OAK_PROPAGATION_CORPUS_OUT" 2>&1 | tee build/soundness/propagation-agreement.log
+          export OAK_CLASSIFIER_CORPUS_OUT="$PWD/build/soundness/classifier-cases.json"
+          go test -count=1 -v . -run '^TestSelfHostedClauseClassifier$' 2>&1 | tee build/soundness/classifier-go.log
+          lean -DwarningAsError=true --run proof/ClauseClassifierCompare.lean "$OAK_CLASSIFIER_CORPUS_OUT" 2>&1 | tee build/soundness/classifier-agreement.log
       - name: Retain proof and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

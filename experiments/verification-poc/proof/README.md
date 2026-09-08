@@ -220,3 +220,8 @@ after initialization and each attempted command against Go and Lean models.
 [PropagationState.md](PropagationState.md) proves partial-assignment representation
 and the semantics of falsified clauses and forced unit writes. Native traces check
 all scratch cells and propagation control flags against Go and Lean models.
+
+[ClauseClassifier.md](ClauseClassifier.md) derives unit and conflict premises from
+a computed duplicate-aware classification and composes them with scratch-state
+semantics. The Go harness compares the actual extracted Oak clause scan with the
+proved Lean classifier over exhaustive small clauses and all variable boundaries.
