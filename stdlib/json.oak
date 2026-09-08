@@ -368,6 +368,23 @@ json_token: (src: []u8, offset: u32): JsonToken {
 // Escaped and unescaped keys compare by Unicode scalar, without scratch text.
 json_key_equal: (src: []u8, key: JsonToken, expected: []u8): Bool {
  valid: Bool = key.kind == u32(6) && key.start < key.end && key.end <= len(src)
+ !valid ? { false } | {
+  at: u32 = key.start + u32(1)
+  other: u32 = 0
+  plain: Bool = true
+  same: Bool = key.end - key.start - u32(2) == len(expected)
+  while at < key.end - u32(1) && plain {
+   unit: u8 = src[at]
+   plain = unit >= u8(32) && unit < u8(128) && unit != u8(92)
+   same ? { same = other < len(expected) && unit == expected[other] }
+   at = at + u32(1)
+   other = other + u32(1)
+  }
+  plain ? { same } | { json_key_equal_unicode(src, key, expected) }
+ }
+}
+json_key_equal_unicode: (src: []u8, key: JsonToken, expected: []u8): Bool {
+ valid: Bool = key.kind == u32(6) && key.start < key.end && key.end <= len(src)
  at: u32 = key.start + u32(1)
  other: u32 = 0
  valid ? {
@@ -386,6 +403,34 @@ json_key_equal: (src: []u8, key: JsonToken, expected: []u8): Bool {
  valid && other == len(expected)
 }
 json_read_integer: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError] {
+ assert(offset <= len(src))
+ start: u32 = json_skip_space(src, offset)
+ at: u32 = start
+ negative: Bool = at < len(src) && src[at] == u8(45)
+ negative ? { at = at + u32(1) }
+ at >= len(src) || !json_digit(src[at]) ? { json_read_integer_slow(src, offset) } | {
+  leading_zero: Bool = src[at] == u8(48)
+  magnitude: u64 = u64(src[at] - u8(48))
+  at = at + u32(1)
+  overflow: Bool = false
+  while at < len(src) && json_digit(src[at]) {
+   digit: u64 = u64(src[at] - u8(48))
+   // floor(UINT64_MAX / 10), remainder 5: no per-digit division.
+   overflow = overflow || magnitude > u64(1844674407370955161) || (magnitude == u64(1844674407370955161) && digit > u64(5))
+   !overflow ? { magnitude = magnitude * u64(10) + digit }
+   at = at + u32(1)
+  }
+  digits_start: u32 = negative ? start + u32(1) | start
+  leading_zero && at - digits_start != u32(1) ? { json_read_integer_slow(src, offset) } | !json_value_boundary(src, at) ? {
+   // Preserve syntax/type precedence for decimals, exponents and malformed
+   // suffixes, even when the integral prefix exceeded u64.
+   json_read_integer_slow(src, offset)
+  } | overflow ? { .Err(.NumericOverflow) } | {
+   .Ok(JsonInteger { magnitude: magnitude, negative: negative, next: at })
+  }
+ }
+}
+json_read_integer_slow: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError] {
  item: JsonToken = json_token(src, offset)
  item.kind <= u32(1) ? { .Err(.InvalidSyntax) } | item.kind != u32(7) ? { .Err(.TypeMismatch) } | {
   at: u32 = item.start
