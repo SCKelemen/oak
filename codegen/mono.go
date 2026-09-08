@@ -216,6 +216,7 @@ func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *ty
 
 	// Records: fixpoint on field placeability.
 	pending := records
+	emittedOptions := map[string]bool{}
 	for len(pending) > 0 {
 		progressed := false
 		var stuck []typeEmissionUnit
@@ -225,7 +226,7 @@ func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *ty
 				// Nullable record fields depend on a concrete Option union.
 				// Emit only those dependencies here, preserving existing order
 				// for programs without nullable record fields.
-				if cg.emitRecordOptions(recordLit, unions, tc) {
+				if cg.emitRecordOptions(recordLit, unions, emittedOptions, tc) {
 					progressed = true
 				}
 			}
@@ -248,14 +249,16 @@ func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *ty
 
 	// Tagged unions after every record they might carry.
 	for _, unit := range unions {
-		cg.emitTypeUnit(unit, tc)
+		if !emittedOptions[unit.name] {
+			cg.emitTypeUnit(unit, tc)
+		}
 	}
 }
 
 // The supported Option shape has one payload, so its C union has exactly
 // that payload's size/alignment. Place the enum tag and union as an ordered
 // record and have the C compiler verify the selected ABI, never guess it.
-func (cg *CodeGenerator) emitRecordOptions(record *ast.RecordLiteral, unions []typeEmissionUnit, tc *typechecker.TypeChecker) bool {
+func (cg *CodeGenerator) emitRecordOptions(record *ast.RecordLiteral, unions []typeEmissionUnit, emitted map[string]bool, tc *typechecker.TypeChecker) bool {
 	progressed := false
 	for _, field := range record.FieldOrder {
 		name, generic := cg.genericAnnotationName(field.Value)
@@ -282,6 +285,7 @@ func (cg *CodeGenerator) emitRecordOptions(record *ast.RecordLiteral, unions []t
 				continue
 			}
 			cg.emitTypeUnit(unit, tc)
+			emitted[unit.name] = true
 			cName := cg.cTypeName(name)
 			cg.write(fmt.Sprintf("typedef char oak_option_layout_%s[ (sizeof(%s) == %du && _Alignof(%s) == %du && sizeof(%s_tag) == 4 && offsetof(%s, payload) == %du) ? 1 : -1 ];\n\n", name, cName, layout.Size, cName, layout.Alignment, cName, cName, layout.Fields[1].Offset))
 			cg.recordLayouts[name] = layout
