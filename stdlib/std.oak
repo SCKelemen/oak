@@ -884,3 +884,223 @@ dlist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
   cursor[0].count = u32(0)
   count
 }
+
+
+// Cross-list operations require distinct IDs and the same node pool/hook family.
+// Expected errors leave both cursors and every node unchanged.
+ListTransferError: type = SameList | OutOfBounds | NotMember
+
+slist_transfer_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
+  slist_check(dst, nodes)
+  slist_check(src, nodes)
+  dst[0].id == src[0].id ? { .Err(.SameList) } | {
+    index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+      nodes[index].slist.owner != src[0].id ? { .Err(.NotMember) } | {
+        assert(src[0].count <= len(nodes) - dst[0].count)
+        removed: Result[u32, CollectionError] = slist_remove(src, nodes, index)
+        removed_ok: Bool = removed ? | .Ok(value) => value == index | .Err(reason) => false
+        assert(removed_ok)
+        inserted: Result[u32, CollectionError] = slist_push_front(dst, nodes, index)
+        inserted_ok: Bool = inserted ? | .Ok(value) => value == index | .Err(reason) => false
+        assert(inserted_ok)
+        .Ok(index)
+      }
+    }
+  }
+}
+
+// Preserve source order. Retagging membership is O(source count), not O(1).
+slist_splice_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+  slist_check(dst, nodes)
+  slist_check(src, nodes)
+  dst[0].id == src[0].id ? { .Err(.SameList) } | {
+    slist_validate(src, nodes)
+    count: u32 = src[0].count
+    assert(count <= len(nodes) - dst[0].count)
+    count > u32(0) ? {
+      current: u32 = src[0].head
+      visited: u32 = 0
+      while visited < count {
+        index: u32 = current - u32(1)
+        nodes[index].slist.owner = dst[0].id
+        current = nodes[index].slist.next
+        visited = visited + u32(1)
+      }
+      dst[0].count == u32(0) ? {
+        dst[0].head = src[0].head
+        dst[0].tail = src[0].tail
+      } | {
+        nodes[src[0].tail - u32(1)].slist.next = dst[0].head
+        dst[0].head = src[0].head
+      }
+      dst[0].count = dst[0].count + count
+      src[0].head = u32(0)
+      src[0].tail = u32(0)
+      src[0].count = u32(0)
+    }
+    .Ok(count)
+  }
+}
+
+slist_transfer_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
+  slist_check(dst, nodes)
+  slist_check(src, nodes)
+  dst[0].id == src[0].id ? { .Err(.SameList) } | {
+    index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+      nodes[index].slist.owner != src[0].id ? { .Err(.NotMember) } | {
+        assert(src[0].count <= len(nodes) - dst[0].count)
+        removed: Result[u32, CollectionError] = slist_remove(src, nodes, index)
+        removed_ok: Bool = removed ? | .Ok(value) => value == index | .Err(reason) => false
+        assert(removed_ok)
+        inserted: Result[u32, CollectionError] = slist_push_back(dst, nodes, index)
+        inserted_ok: Bool = inserted ? | .Ok(value) => value == index | .Err(reason) => false
+        assert(inserted_ok)
+        .Ok(index)
+      }
+    }
+  }
+}
+
+// Preserve source order. Retagging membership is O(source count), not O(1).
+slist_splice_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+  slist_check(dst, nodes)
+  slist_check(src, nodes)
+  dst[0].id == src[0].id ? { .Err(.SameList) } | {
+    slist_validate(src, nodes)
+    count: u32 = src[0].count
+    assert(count <= len(nodes) - dst[0].count)
+    count > u32(0) ? {
+      current: u32 = src[0].head
+      visited: u32 = 0
+      while visited < count {
+        index: u32 = current - u32(1)
+        nodes[index].slist.owner = dst[0].id
+        current = nodes[index].slist.next
+        visited = visited + u32(1)
+      }
+      dst[0].count == u32(0) ? {
+        dst[0].head = src[0].head
+        dst[0].tail = src[0].tail
+      } | {
+        nodes[dst[0].tail - u32(1)].slist.next = src[0].head
+        dst[0].tail = src[0].tail
+      }
+      dst[0].count = dst[0].count + count
+      src[0].head = u32(0)
+      src[0].tail = u32(0)
+      src[0].count = u32(0)
+    }
+    .Ok(count)
+  }
+}
+
+dlist_transfer_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
+  dlist_check(dst, nodes)
+  dlist_check(src, nodes)
+  dst[0].id == src[0].id ? { .Err(.SameList) } | {
+    index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+      nodes[index].dlist.owner != src[0].id ? { .Err(.NotMember) } | {
+        assert(src[0].count <= len(nodes) - dst[0].count)
+        removed: Result[u32, CollectionError] = dlist_remove(src, nodes, index)
+        removed_ok: Bool = removed ? | .Ok(value) => value == index | .Err(reason) => false
+        assert(removed_ok)
+        inserted: Result[u32, CollectionError] = dlist_push_front(dst, nodes, index)
+        inserted_ok: Bool = inserted ? | .Ok(value) => value == index | .Err(reason) => false
+        assert(inserted_ok)
+        .Ok(index)
+      }
+    }
+  }
+}
+
+// Preserve source order. Retagging membership is O(source count), not O(1).
+dlist_splice_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+  dlist_check(dst, nodes)
+  dlist_check(src, nodes)
+  dst[0].id == src[0].id ? { .Err(.SameList) } | {
+    dlist_validate(src, nodes)
+    count: u32 = src[0].count
+    assert(count <= len(nodes) - dst[0].count)
+    count > u32(0) ? {
+      current: u32 = src[0].head
+      visited: u32 = 0
+      while visited < count {
+        index: u32 = current - u32(1)
+        nodes[index].dlist.owner = dst[0].id
+        current = nodes[index].dlist.next
+        visited = visited + u32(1)
+      }
+      dst[0].count == u32(0) ? {
+        dst[0].head = src[0].head
+        dst[0].tail = src[0].tail
+      } | {
+        nodes[src[0].tail - u32(1)].dlist.next = dst[0].head
+        nodes[dst[0].head - u32(1)].dlist.prev = src[0].tail
+        dst[0].head = src[0].head
+      }
+      dst[0].count = dst[0].count + count
+      src[0].head = u32(0)
+      src[0].tail = u32(0)
+      src[0].count = u32(0)
+    }
+    .Ok(count)
+  }
+}
+
+dlist_transfer_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
+  dlist_check(dst, nodes)
+  dlist_check(src, nodes)
+  dst[0].id == src[0].id ? { .Err(.SameList) } | {
+    index >= len(nodes) ? { .Err(.OutOfBounds) } | {
+      nodes[index].dlist.owner != src[0].id ? { .Err(.NotMember) } | {
+        assert(src[0].count <= len(nodes) - dst[0].count)
+        removed: Result[u32, CollectionError] = dlist_remove(src, nodes, index)
+        removed_ok: Bool = removed ? | .Ok(value) => value == index | .Err(reason) => false
+        assert(removed_ok)
+        inserted: Result[u32, CollectionError] = dlist_push_back(dst, nodes, index)
+        inserted_ok: Bool = inserted ? | .Ok(value) => value == index | .Err(reason) => false
+        assert(inserted_ok)
+        .Ok(index)
+      }
+    }
+  }
+}
+
+// Preserve source order. Retagging membership is O(source count), not O(1).
+dlist_splice_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+  dlist_check(dst, nodes)
+  dlist_check(src, nodes)
+  dst[0].id == src[0].id ? { .Err(.SameList) } | {
+    dlist_validate(src, nodes)
+    count: u32 = src[0].count
+    assert(count <= len(nodes) - dst[0].count)
+    count > u32(0) ? {
+      current: u32 = src[0].head
+      visited: u32 = 0
+      while visited < count {
+        index: u32 = current - u32(1)
+        nodes[index].dlist.owner = dst[0].id
+        current = nodes[index].dlist.next
+        visited = visited + u32(1)
+      }
+      dst[0].count == u32(0) ? {
+        dst[0].head = src[0].head
+        dst[0].tail = src[0].tail
+      } | {
+        nodes[dst[0].tail - u32(1)].dlist.next = src[0].head
+        nodes[src[0].head - u32(1)].dlist.prev = dst[0].tail
+        dst[0].tail = src[0].tail
+      }
+      dst[0].count = dst[0].count + count
+      src[0].head = u32(0)
+      src[0].tail = u32(0)
+      src[0].count = u32(0)
+    }
+    .Ok(count)
+  }
+}
+
+// FIFO batch transfer appends the source queue in order and empties it.
+intrusive_queue_append[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+  slist_splice_back(dst, src, nodes)
+}
