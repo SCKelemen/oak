@@ -54,8 +54,9 @@ possible Oak execution.
 This kernel implements one decoded RUP addition. The subsequent
 [stream checker](SelfHostedStream.md) now implements complete bounded decoded
 addition/deletion streams, database updates, increasing IDs, and persistent
-refutation in Oak. ASCII parsing, source-CNF reconstruction, and receipts still
-run in Go or Lean. RAT, binary LRAT, extension variables, and theory lemmas
+refutation in Oak. The [ASCII decoder](SelfHostedText.md) adds bounded DIMACS/LRAT
+parsing in Oak. Source-CNF reconstruction and receipts still run in Go or Lean.
+RAT, binary LRAT, extension variables, and theory lemmas
 remain unsupported throughout this prototype.
 
 The trusted path for the Oak result includes the Oak parser, typechecker, lowering,
@@ -64,8 +65,8 @@ proved that `self_hosted_rup.oak` refines Lean's checker, nor that the Oak compi
 preserves its semantics. Calling this kernel self-hosted means the checker logic
 is authored and executed as Oak code; it does not mean Oak is self-verified.
 
-The bounded proof-stream milestone builds on this kernel without changing its
-API. The ASCII decoder can move across the boundary separately.
+The bounded proof-stream and ASCII milestones build on this kernel without
+changing its API.
 
 [The Oak, Go, and Lean comparison passed](https://github.com/SCKelemen/oak/actions/runs/34165110343):
 65 accepted and 335 rejected decisions agreed across all three implementations.

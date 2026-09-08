@@ -1,0 +1,112 @@
+{
+  "actual_certificate": {
+    "accepted": 1,
+    "corruptions": [
+      "Invalid suffix",
+      "Satisfiable wrong formula"
+    ],
+    "lean_comparison": "RUPTextCompare.lean checks all three saved cases",
+    "producer": "CaDiCaL (suite-pinned)",
+    "rejected_corruptions": 2,
+    "selection": "First actual accepted certificate from the suite report; missing or oversized input fails rather than skips"
+  },
+  "artifacts": "Soundness retains self-hosted-text-cases.json and comparison logs; the solver artifact retains the actual certificate corpus and Oak/Lean replay logs under build/lean-gate/attempt-*/.",
+  "commit": "9ade383f694238fbdc69977bc5aa44e516221e95",
+  "comparison": {
+    "accepted": 119,
+    "ascii_byte_class_cases": 256,
+    "cases": 729,
+    "oracles": [
+      "Go internal/lrat.Check",
+      "Lean OakVerification.Text.checkText"
+    ],
+    "profile_boundary_cases": 14,
+    "rejected": 610,
+    "serialized_stream_cases": 425,
+    "targeted_parser_cases": 48
+  },
+  "compiler_limitation": {
+    "local_workaround": "Snapshot current byte and dispatch phases before matches; guard inputs remain unchanged.",
+    "next_step": "Add a compiler regression and restore single-evaluation lowering.",
+    "observed": "Some nested Boolean matches emit separate true and false guard evaluations, so a mutation in the first arm can activate the second arm.",
+    "production_compiler_fixed": false
+  },
+  "date": "2026-09-08",
+  "formal_reference": {
+    "claim": "Acceptance by Lean implies unsatisfiability of the initial database returned by Lean's DIMACS parser.",
+    "qualification": "Neither corpus agreement nor real certificate replay proves universal refinement of Oak or external-format parser correspondence.",
+    "theorem": "OakVerification.Text.checkText_sound"
+  },
+  "format": "oak-self-hosted-text-validation-1",
+  "implementation": {
+    "allocation_free_check": [
+      "No malloc, calloc, or realloc in emitted C",
+      "No OAK_UNSUPPORTED marker in emitted C"
+    ],
+    "api": "rup_text_check(cnf: []u8, proof: []u8): Bool",
+    "component": "Bounded ASCII DIMACS/LRAT decoding and complete proof-stream checking",
+    "formal_reference": "Lean 4",
+    "host_harness": "Go",
+    "language": "Oak",
+    "native_validation": "Actual Oak frontend, emitted C, system C compiler, native assertions; no diagnostic C instrumentation",
+    "python_runtime": false,
+    "storage": "Read-only input byte views; bounded local stack arrays"
+  },
+  "passed": true,
+  "profile": {
+    "ascii_only": true,
+    "maximum_addition_hints": 256,
+    "maximum_addition_id": 256,
+    "maximum_bytes_per_input": 65536,
+    "maximum_commands": 256,
+    "maximum_initial_clauses": 256,
+    "maximum_integer_magnitude": 2147483647,
+    "maximum_literals": 4096,
+    "maximum_references": 4096,
+    "maximum_variables": 64,
+    "minimum_variables": 1
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34198926460",
+  "scope": {
+    "implemented_in_oak": [
+      "ASCII token scanning",
+      "Checked signed decimal conversion",
+      "DIMACS header and clause decoding",
+      "Line-sensitive LRAT addition/deletion decoding",
+      "Resource and full-input validation",
+      "Decoded proof-stream and RUP checking"
+    ],
+    "not_claimed": [
+      "Universal refinement of Oak to Lean",
+      "External-format parser correspondence proof",
+      "Compiler semantics preservation",
+      "A self-verified toolchain"
+    ],
+    "not_yet_in_oak": [
+      "Solver integration",
+      "Source-to-CNF reconstruction",
+      "Evidence receipts"
+    ],
+    "trusted_execution": [
+      "Oak parser and typechecker",
+      "Oak lowering and generated C",
+      "C compiler and runtime",
+      "Go differential harness"
+    ],
+    "unsupported": [
+      "RAT",
+      "Binary LRAT",
+      "Extension variables",
+      "Theory lemmas"
+    ]
+  },
+  "solvers_job": 101972997463,
+  "soundness_job": 101972997727,
+  "repository_ci": {
+    "CI": "success",
+    "Standard library": "success",
+    "Formal Verification": "success",
+    "Golden File Verification": "success",
+    "Verification experiment (opt-in)": "success"
+  }
+}

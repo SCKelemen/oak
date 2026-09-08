@@ -239,5 +239,7 @@ checking algorithm into Oak source. It checks one decoded RUP step with bounded,
 caller-owned storage and is compared against both the Go checker and Lean's
 proved checker. The [complete bounded stream checker](proof/SelfHostedStream.md)
 adds insertion, deletion, increasing IDs, and persistent refutation state in Oak.
-It is compared with Go and Lean on 425 complete streams. Text decoding remains
-in Go and Lean.
+It is compared with Go and Lean on 425 complete streams. The
+[bounded ASCII decoder](proof/SelfHostedText.md) now parses DIMACS/LRAT bytes in
+Oak and feeds that checker. Its text decisions are compared with Go and Lean;
+the solver gate also replays a real CaDiCaL certificate through compiled Oak.

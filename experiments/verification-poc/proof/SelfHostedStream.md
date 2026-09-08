@@ -103,12 +103,12 @@ The trusted execution path still includes Oak's compiler and generated C, the C
 compiler/runtime, and the Go harness. No new formal theorem is claimed for the
 Oak implementation itself.
 
-ASCII DIMACS/LRAT parsing, source-to-CNF correspondence, and evidence receipts
-remain in Go or Lean. The existing solver certificate gates still use those
-implementations. This milestone does not route arbitrary solver files into Oak
-or claim that the toolchain is self-verified. RAT, binary LRAT, extension
-variables, and theory lemmas remain unsupported.
+The subsequent [ASCII decoder](SelfHostedText.md) now feeds this stream checker
+from bounded DIMACS/LRAT byte inputs. Source-to-CNF correspondence and evidence
+receipts remain in Go or Lean. The existing solver certificate gates still use
+those implementations alongside bounded Oak replay. The toolchain is not
+self-verified. RAT, binary LRAT, extension variables, and theory lemmas remain
+unsupported.
 
-The next self-hosting boundary is a bounded ASCII decoder that feeds this stream
-checker, followed by differential replay of real solver certificates within the
-supported resource profile.
+The ASCII milestone preserves this decoded API and its resource profile. Formal
+refinement of the Oak implementation remains a separate task.
