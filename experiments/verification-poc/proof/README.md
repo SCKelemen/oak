@@ -212,3 +212,7 @@ and Lean while existing proof-acceptance gates remain separate.
 reference lists, proves literal round trips, and composes the range decoder with
 the proved proof-stream checker. Raw-layout comparisons check decoded meaning
 and the actual Oak stream checker's acceptance decisions.
+
+[LiveTable.md](LiveTable.md) relates live range-table publication and deletion to
+functional database updates. Native snapshots compare every slot and control flag
+after initialization and each attempted command against Go and Lean models.
