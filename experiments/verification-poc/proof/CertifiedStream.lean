@@ -41,7 +41,7 @@ def publishCertified {pool : List Nat} {initial : Database} (s : State pool init
   if empty : clause = [] then
     ⟨table, id, true, preserves, fun _ a model => by
       obtain ⟨l, impossible, _⟩ := certificate.entails a (s.preserves a model)
-      simpa [empty] using impossible⟩
+      simp [empty] at impossible⟩
   else ⟨table, id, s.refuted, preserves, s.sound⟩
 
 def eraseOne {pool : List Nat} {initial : Database} (s : State pool initial)
