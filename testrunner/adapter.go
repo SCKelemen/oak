@@ -124,6 +124,11 @@ func loadAdapter(path string) (*nativeAdapter, error) {
 
 func packageCompilation(pkg Package, adapter *nativeAdapter) compiler.Compilation {
 	comp := compiler.New().WithSource(filepath.Join(pkg.Dir, "<oak-test-package>"), pkg.Source)
+	if pkg.Module {
+		// Module packages resolve imports through the enclosing oak.mod; the
+		// root package's *_test.oak files join it only in this test build.
+		comp = compiler.New().WithPackageDir(pkg.Dir).WithTestFiles(true)
+	}
 	// All invocations of a package containing Sim tests use the same profile,
 	// preserving fingerprints across test selection and exact replay.
 	for _, test := range pkg.Registry {

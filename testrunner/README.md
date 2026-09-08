@@ -13,7 +13,10 @@ compiler (`cc` by default) is required. Then:
 ```
 
 Flags precede directory arguments. Put tests in `*_test.oak` alongside the
-production `.oak` sources they exercise:
+production `.oak` sources they exercise. A directory whose files begin with a
+`package` clause is built as a module package through its `oak.mod`, so tests
+can import sibling packages and use `pub` members; a directory without clauses
+is a bootstrap package assembled by concatenation:
 
 ```oak
 import(testing)
