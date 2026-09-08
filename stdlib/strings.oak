@@ -55,7 +55,8 @@ utf16_decode: (src: []u16, offset: u32): Result[TextScalar, TextError] {
 }
 utf32_decode: (src: []u32, offset: u32): Result[TextScalar, TextError] {
   offset > len(src) ? { .Err(.OutOfBounds) } | offset == len(src) ? { .Err(.Empty) } | {
-    unicode_is_scalar(src[offset]) ? { .Ok(TextScalar { value: src[offset], next: offset + u32(1) }) } | { .Err(.InvalidEncoding) }
+    value: u32 = src[offset]
+    unicode_is_scalar(value) ? { .Ok(TextScalar { value: value, next: offset + u32(1) }) } | { .Err(.InvalidEncoding) }
   }
 }
 text_decode_ok: (result: Result[TextScalar, TextError]): Bool = result ? | .Ok(value) => true | .Err(reason) => false
@@ -727,18 +728,17 @@ text_replace: (dst: [*]u8, src: []u8, old: []u8, replacement: []u8): Result[u32,
   }
 }
 
-TextBuilder: type = struct { length: u32, failed: Bool, reason: TextError }
-text_builder: (): TextBuilder = TextBuilder { length: u32(0), failed: false, reason: .Empty }
+TextBuilder: type = struct { length: u32, status: u32 }
+text_builder: (): TextBuilder = TextBuilder { length: u32(0), status: u32(0) }
 text_builder_error: (builder: TextBuilder, reason: TextError): TextBuilder {
   next: TextBuilder = builder
-  !next.failed ? { next.failed = true
-    next.reason = reason
+  next.status == u32(0) ? { next.status = text_error_code(reason)
   }
   next
 }
 append_text: (builder: TextBuilder, dst: [*]u8, src: []u8): TextBuilder {
   assert(builder.length <= len(dst))
-  builder.failed ? { builder } | !is_valid_utf8(src) ? { text_builder_error(builder, .InvalidEncoding) } | len(src) > len(dst) - builder.length ? { text_builder_error(builder, .DestinationTooSmall) } | {
+  builder.status != u32(0) ? { builder } | !is_valid_utf8(src) ? { text_builder_error(builder, .InvalidEncoding) } | len(src) > len(dst) - builder.length ? { text_builder_error(builder, .DestinationTooSmall) } | {
     next: TextBuilder = builder
     i: u32 = 0
     while i < len(src) { dst[builder.length + i] = src[i]
@@ -750,7 +750,7 @@ append_text: (builder: TextBuilder, dst: [*]u8, src: []u8): TextBuilder {
 }
 append_rune: (builder: TextBuilder, dst: [*]u8, value: u32): TextBuilder {
   assert(builder.length <= len(dst))
-  builder.failed ? { builder } | !unicode_is_scalar(value) ? { text_builder_error(builder, .InvalidScalar) } | {
+  builder.status != u32(0) ? { builder } | !unicode_is_scalar(value) ? { text_builder_error(builder, .InvalidScalar) } | {
     encoded: Result[u32, TextError] = utf8_encode(dst, builder.length, value)
     !text_result_ok(encoded) ? { text_builder_error(builder, .DestinationTooSmall) } | {
       next: TextBuilder = builder
@@ -761,7 +761,7 @@ append_rune: (builder: TextBuilder, dst: [*]u8, value: u32): TextBuilder {
 }
 append_u64: (builder: TextBuilder, dst: [*]u8, value: u64): TextBuilder {
   assert(builder.length <= len(dst))
-  builder.failed ? { builder } | {
+  builder.status != u32(0) ? { builder } | {
     digits: [20]u8
     count: u32 = 0
     remaining: u64 = value
@@ -783,4 +783,21 @@ append_u64: (builder: TextBuilder, dst: [*]u8, value: u64): TextBuilder {
     }
   }
 }
-finish_text: (builder: TextBuilder): Result[u32, TextError] = builder.failed ? .Err(builder.reason) | .Ok(builder.length)
+finish_text: (builder: TextBuilder): Result[u32, TextError] = builder.status != u32(0) ? .Err(text_error_from_code(builder.status)) | .Ok(builder.length)
+
+text_error_code: (reason: TextError): u32 = reason ?
+ | .InvalidEncoding => u32(1)
+ | .InvalidScalar => u32(2)
+ | .OutOfBounds => u32(3)
+ | .DestinationTooSmall => u32(4)
+ | .SizeOverflow => u32(5)
+ | .EmptySeparator => u32(6)
+ | .Empty => u32(7)
+text_error_from_code: (status: u32): TextError = status ?
+ | 1 => .InvalidEncoding
+ | 2 => .InvalidScalar
+ | 3 => .OutOfBounds
+ | 4 => .DestinationTooSmall
+ | 5 => .SizeOverflow
+ | 6 => .EmptySeparator
+ | _ => .Empty

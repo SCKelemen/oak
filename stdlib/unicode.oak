@@ -48,7 +48,11 @@ unicode_lookup: (table: []u32, value: u32): UnicodeMapping {
   }
   at: u32 = low * u32(5)
   at < len(table) && table[at] == value ? {
-    UnicodeMapping { count: table[at + u32(1)], first: table[at + u32(2)], second: table[at + u32(3)], third: table[at + u32(4)] }
+    count: u32 = table[at + u32(1)]
+    first: u32 = table[at + u32(2)]
+    second: u32 = table[at + u32(3)]
+    third: u32 = table[at + u32(4)]
+    UnicodeMapping { count: count, first: first, second: second, third: third }
   } | { UnicodeMapping { count: u32(1), first: value, second: u32(0), third: u32(0) } }
 }
 unicode_in_ranges: (table: []u32, value: u32): Bool {
