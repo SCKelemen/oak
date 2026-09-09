@@ -178,7 +178,10 @@ main: (): i32 {
 	if err := os.WriteFile(cPath, []byte(output), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	build := exec.Command(cc, "-std=c99", "-O1", "-Wall", "-Wextra", "-Wuninitialized", "-Wsometimes-uninitialized", "-Wmaybe-uninitialized", "-Wno-unknown-warning-option", "-c", cPath, "-o", filepath.Join(dir, "pick.o"))
+	// Portable flags only: gcc rejects clang's -Wsometimes-uninitialized as an
+	// error, and -Wall already enables each compiler's own uninitialized-use
+	// analysis (-Wmaybe-uninitialized on gcc, -Wsometimes-uninitialized on clang).
+	build := exec.Command(cc, "-std=c99", "-O1", "-Wall", "-Wextra", "-Wuninitialized", "-c", cPath, "-o", filepath.Join(dir, "pick.o"))
 	out, err := build.CombinedOutput()
 	if err != nil {
 		t.Fatalf("cc failed: %v\n%s", err, out)
