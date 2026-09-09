@@ -238,6 +238,17 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   (`arm64.write_vbar_el2(address_of(vectors))`). Ordinary Oak functions
   have no exposed address.
 
-Pending: the operand-stack shorthand
-(`push left / push right / add`); the semantic
+- **The operand-stack shorthand** (§2) is implemented as desugaring
+  (`asm/stack.go`): `push <param>` writes the parameter's contract binding
+  for the author, `push #imm` pushes an immediate, an operand-less
+  data-processing mnemonic (`add sub and orr eor lsl lsr`) pops two values
+  and pushes its result in a compiler-chosen scratch register (`x9`–`x15`,
+  declared as clobbers for the author), and the single value left at the
+  end moves into the result register before `ret`. The desugared body is
+  then checked exactly like a handwritten one. Refused: underflow, a
+  leftover value, mixing explicit operands or explicit `bind` lines into a
+  shorthand body, vector parameters. Executed: the spec's own
+  `add_asm` example and a chained `push a / push #2 / add / push #3 / lsl`.
+
+Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.

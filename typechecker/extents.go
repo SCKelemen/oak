@@ -34,6 +34,7 @@ type extentFact struct {
 	container string
 	other     string // factIndexBound: the index binding; factSameLen: the other container
 	bound     int64  // factMinLen
+	offset    int64  // factIndexBound: i + offset < len(container) (0 for a plain bound)
 }
 
 // IndexProven reports whether the element access at tok was proven in range.
@@ -97,6 +98,28 @@ func lenOf(expr ast.Expression) (string, bool) {
 	return arg.Value, true
 }
 
+// offsetIndex recognizes `i` or `i + K` (either order) with K a literal.
+func offsetIndex(expr ast.Expression) (name string, offset int64, ok bool) {
+	if ident, isIdent := expr.(*ast.Identifier); isIdent {
+		return ident.Value, 0, true
+	}
+	infix, isInfix := expr.(*ast.InfixExpression)
+	if !isInfix || infix.Operator != "+" {
+		return "", 0, false
+	}
+	if ident, isIdent := infix.Left.(*ast.Identifier); isIdent {
+		if k, isConst := constantIndex(infix.Right); isConst && k >= 0 {
+			return ident.Value, k, true
+		}
+	}
+	if ident, isIdent := infix.Right.(*ast.Identifier); isIdent {
+		if k, isConst := constantIndex(infix.Left); isConst && k >= 0 {
+			return ident.Value, k, true
+		}
+	}
+	return "", 0, false
+}
+
 // factsFromCondition derives the facts a TRUE condition establishes:
 // len(v) >= K, len(v) > K, K <= len(v), K < len(v); i < len(v), len(v) > i;
 // len(a) == len(b); conjunctions of these.
@@ -112,8 +135,8 @@ func (tc *TypeChecker) factsFromCondition(cond ast.Expression) []extentFact {
 	rightLen, rightIsLen := lenOf(infix.Right)
 	leftConst, leftIsConst := constantIndex(infix.Left)
 	rightConst, rightIsConst := constantIndex(infix.Right)
-	leftIdent, leftIsIdent := infix.Left.(*ast.Identifier)
-	rightIdent, rightIsIdent := infix.Right.(*ast.Identifier)
+	leftIndex, leftOffset, leftIsIndex := offsetIndex(infix.Left)
+	rightIndex, rightOffset, rightIsIndex := offsetIndex(infix.Right)
 
 	local := func(names ...string) bool {
 		for _, name := range names {
@@ -133,8 +156,8 @@ func (tc *TypeChecker) factsFromCondition(cond ast.Expression) []extentFact {
 		if leftIsLen && rightIsConst && rightConst >= 0 && local(leftLen) {
 			return []extentFact{{kind: factMinLen, container: leftLen, bound: rightConst + 1}}
 		}
-		if leftIsLen && rightIsIdent && local(leftLen, rightIdent.Value) {
-			return []extentFact{{kind: factIndexBound, container: leftLen, other: rightIdent.Value}}
+		if leftIsLen && rightIsIndex && !rightIsConst && local(leftLen, rightIndex) {
+			return []extentFact{{kind: factIndexBound, container: leftLen, other: rightIndex, offset: rightOffset}}
 		}
 	case "<=":
 		if leftIsConst && rightIsLen && leftConst >= 0 && local(rightLen) {
@@ -144,8 +167,8 @@ func (tc *TypeChecker) factsFromCondition(cond ast.Expression) []extentFact {
 		if leftIsConst && rightIsLen && leftConst >= 0 && local(rightLen) {
 			return []extentFact{{kind: factMinLen, container: rightLen, bound: leftConst + 1}}
 		}
-		if leftIsIdent && rightIsLen && local(leftIdent.Value, rightLen) {
-			return []extentFact{{kind: factIndexBound, container: rightLen, other: leftIdent.Value}}
+		if leftIsIndex && !leftIsConst && rightIsLen && local(leftIndex, rightLen) {
+			return []extentFact{{kind: factIndexBound, container: rightLen, other: leftIndex, offset: leftOffset}}
 		}
 	case "==":
 		if leftIsLen && rightIsLen && local(leftLen, rightLen) {
@@ -251,9 +274,11 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 				proven = true // Oak.Extents.constant_under_min_length
 			}
 		}
-	} else if index, isIndexIdent := expr.Index.(*ast.Identifier); isIndexIdent {
+	} else if index, offset, isIndex := offsetIndex(expr.Index); isIndex {
 		for _, fact := range tc.extentFacts {
-			if fact.kind != factIndexBound || fact.other != index.Value {
+			// i + K < len(c) bounds v[i + j] for every j <= K
+			// (Oak.Extents.offset_under_bound).
+			if fact.kind != factIndexBound || fact.other != index || offset > fact.offset {
 				continue
 			}
 			if fact.container == name {
@@ -274,6 +299,50 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 		tc.provenIndices = make(map[string]bool)
 	}
 	tc.provenIndices[positionKey(expr.Token)] = true
+}
+
+// declarationFacts derives the fact a local view/span declaration
+// establishes for the rest of its block: `s: []T = subslice(v, lo, hi)` or
+// `s: []T = v[lo:hi]` with literal bounds has exactly hi - lo elements once
+// the (bounds-checked) construction succeeds (Oak.Extents.subslice_extent).
+func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentFact {
+	if decl == nil || decl.Name == nil || decl.Value == nil || !tc.localBinding(decl.Name.Value) {
+		return nil
+	}
+	var low, high ast.Expression
+	switch value := decl.Value.(type) {
+	case *ast.InvocationExpression:
+		fn, isIdent := value.Function.(*ast.Identifier)
+		if !isIdent || fn.Value != "subslice" || len(value.Arguments) != 3 {
+			return nil
+		}
+		low, high = value.Arguments[1], value.Arguments[2]
+	case *ast.SliceExpression:
+		low, high = value.Low, value.High
+	default:
+		return nil
+	}
+	lo, loConst := constantIndex(low)
+	hi, hiConst := constantIndex(high)
+	if !loConst || !hiConst || lo < 0 || hi < lo {
+		return nil
+	}
+	return []extentFact{{kind: factMinLen, container: decl.Name.Value, bound: hi - lo}}
+}
+
+// enterDeclarationFacts pushes a declaration's fact when the remaining
+// statements of the block never reassign the binding.
+func (tc *TypeChecker) enterDeclarationFacts(decl *ast.VariableDeclaration, rest []ast.Statement) {
+	facts := tc.declarationFacts(decl)
+	if len(facts) == 0 {
+		return
+	}
+	for _, stmt := range rest {
+		if assignsAny(stmt, factNames(facts), false) {
+			return
+		}
+	}
+	tc.pushExtentFacts(facts)
 }
 
 // enterArmFacts gives the TRUE arm of a Bool ?-match the facts its

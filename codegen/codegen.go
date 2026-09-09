@@ -939,7 +939,7 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 	if _, isIdent := match.Scrutinee.(*ast.Identifier); !isIdent {
 		if mangled, resolved := tc.MatchResolution(match); resolved {
 			if _, known := cg.adtTypes[mangled]; known {
-				tmp := fmt.Sprintf("oak_scrutinee_%d", cg.scrutineeCounter)
+				tmp := fmt.Sprintf("oak__scrutinee_%d", cg.scrutineeCounter)
 				cg.scrutineeCounter++
 				// The temporary is used through the identifier path, so its
 				// declaration must carry the same C spelling.
@@ -1912,7 +1912,7 @@ func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.Typ
 		if _, isIdent := match.Scrutinee.(*ast.Identifier); !isIdent {
 			if mangled, resolved := tc.MatchResolution(match); resolved {
 				if _, known := cg.adtTypes[mangled]; known {
-					tmp := fmt.Sprintf("oak_scrutinee_%d", cg.scrutineeCounter)
+					tmp := fmt.Sprintf("oak__scrutinee_%d", cg.scrutineeCounter)
 					cg.scrutineeCounter++
 					cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), cIdent(tmp)))
 					cg.emitExpressionFragment(match.Scrutinee, tc)

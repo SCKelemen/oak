@@ -336,8 +336,16 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   only as its final statement — the canonical increment — so every access
   before it executes under the most recent evaluation of the condition
   (`loop_invariant`).
+- **Offset bound**: `i + K < len(v)` (K a literal) proves `v[i + j]` for
+  every literal `j <= K` and `v[i]` itself (`offset_under_bound`) — the
+  shape of pairwise and multi-byte scans.
 - **Same length**: `len(a) == len(b)` transfers an index bound from one
   container to the other (`bound_transfers`).
+- **Subslice extent**: `s: []T = subslice(v, lo, hi)` or `s: []T = v[lo:hi]`
+  with literal bounds establishes `len(s) == hi - lo` for the rest of the
+  enclosing block (the construction is bounds-checked, so once it succeeds
+  the extent is exact), unless the block later reassigns `s`
+  (`subslice_extent`).
 - **Static extent**: a constant index below an owned array's declared
   length needs no fact (`static_extent`).
 - Conjunctions (`&&`) contribute every fact of both sides.

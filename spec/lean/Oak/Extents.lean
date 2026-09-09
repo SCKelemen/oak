@@ -40,4 +40,15 @@ theorem facts_monotone {α : Type} (stack extra : List α) :
     (stack ++ extra).take stack.length = stack := by
   simp
 
+/-- An offset bound covers every smaller offset: from `i + K < len` and
+    `j ≤ K`, `i + j < len` (`recordIndexProof` with `offsetIndex`). -/
+theorem offset_under_bound (i K j len : Nat) (hbound : i + K < len) (hj : j ≤ K) :
+    i + j < len := by omega
+
+/-- A subslice with literal bounds has exactly `hi - lo` elements once its
+    bounds-checked construction succeeds (`lo ≤ hi ≤ len`), so a constant
+    below `hi - lo` addresses an element of the parent as well. -/
+theorem subslice_extent (lo hi len c : Nat) (hlo : lo ≤ hi) (hhi : hi ≤ len)
+    (hc : c < hi - lo) : lo + c < len := by omega
+
 end Oak.Extents

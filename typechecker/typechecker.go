@@ -3836,9 +3836,16 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 }
 
 func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
-	// Type check all statements in the block
-	for _, stmt := range block.Statements {
+	// Type check all statements in the block. A view/span declaration with
+	// literal bounds establishes its extent for the rest of the block
+	// (typechecker/extents.go); the facts pop with the block.
+	mark := len(tc.extentFacts)
+	defer tc.popExtentFacts(mark)
+	for i, stmt := range block.Statements {
 		tc.checkStatement(stmt)
+		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {
+			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
+		}
 	}
 }
 
@@ -3853,9 +3860,16 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 		return &UnitType{}
 	}
 
-	// Type check all statements except the last
+	// Type check all statements except the last. Declarations with literal
+	// extents establish facts for the rest of the block, tail included
+	// (typechecker/extents.go); the facts pop with the block.
+	mark := len(tc.extentFacts)
+	defer tc.popExtentFacts(mark)
 	for i := 0; i < len(block.Statements)-1; i++ {
 		tc.checkStatement(block.Statements[i])
+		if decl, isDecl := block.Statements[i].(*ast.VariableDeclaration); isDecl {
+			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
+		}
 	}
 
 	// The last statement should be an expression statement

@@ -219,6 +219,11 @@ func ParseUnit(path, text string) (*Unit, []error) {
 		}
 
 		if line == "}" {
+			if usesOperandStack(current) {
+				if err := desugarOperandStack(current); err != nil {
+					fail(lineNo, "%v", err)
+				}
+			}
 			unit.Functions = append(unit.Functions, current)
 			current = nil
 			continue
@@ -366,6 +371,23 @@ func parseInstruction(fields []string, line int) (Instruction, error) {
 		if !conditionCodes[instr.Cond] {
 			return instr, fmt.Errorf("unknown condition code %q", instr.Cond)
 		}
+	}
+	// `push` belongs to the operand-stack shorthand (asm/stack.go): its one
+	// operand is a parameter name or an immediate, resolved at desugaring.
+	if instr.Mnemonic == "push" {
+		if len(fields) != 2 {
+			return instr, fmt.Errorf("push takes one parameter name or #immediate")
+		}
+		if fields[1][0] == '#' {
+			value, err := parseImmediate(fields[1][1:])
+			if err != nil {
+				return instr, err
+			}
+			instr.Operands = []Operand{Immediate{Value: value}}
+		} else {
+			instr.Operands = []Operand{Symbol{Name: fields[1]}}
+		}
+		return instr, nil
 	}
 	spec, known := instructionTable[instr.Mnemonic]
 	if !known {

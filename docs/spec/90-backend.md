@@ -175,4 +175,7 @@ already carry the `oak_` (or package) prefix. The mapping is one function
 (`codegen/identifiers.go`, `cIdent`) and idempotent, so nested emitters
 cannot double-mangle. Oak keywords (`struct`, `type`) cannot be
 identifiers at all, and Oak's own type spellings (`int`, `u32`) lower
-through the type table, never through this mapping.
+through the type table, never through this mapping. Compiler temporaries
+live in the reserved `__` namespace (`oak__scrutinee_0`, `__oak_tail_0`),
+which user identifiers can never spell (`83-modules.md`), so the mapping
+passes them through untouched.

@@ -23,10 +23,14 @@ var cReservedWords = map[string]bool{
 	"main": false, "int": false, // Oak's own `int` type spelling lowers by the type table, never mangled
 }
 
-// cIdent maps an Oak value/field identifier to its C spelling.
+// cIdent maps an Oak value/field identifier to its C spelling. Names
+// containing `__` are the compiler's own (docs/spec/83-modules.md: user
+// identifiers can never contain the reserved sequence), so compiler
+// temporaries such as `oak__scrutinee_0` and `__oak_tail_0` pass through
+// untouched.
 func cIdent(name string) string {
-	if strings.HasPrefix(name, "oak_id_") {
-		return name // already mangled (idempotent through nested emitters)
+	if strings.HasPrefix(name, "oak_id_") || strings.Contains(name, "__") {
+		return name // already mangled, or a compiler-internal name
 	}
 	if cReservedWords[name] || strings.HasPrefix(name, "_") || strings.HasPrefix(name, "oak_") {
 		return "oak_id_" + name
