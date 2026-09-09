@@ -183,7 +183,9 @@ fn sum(buf: [8]u8) -> u32 {
 		"oak_view_index_u8( v, (u64)( i ) )",
 		"if (i >= (u64)v.len) { __builtin_trap(); }",
 		"((u32)( v ).len)",
-		"oak_index( buf, 8, (u64)( 0 ) )",
+		// A constant index below an owned array's static extent is proven
+		// (typechecker/extents.go, Oak.Extents.static_extent): direct access.
+		"buf[ 0 ]",
 		"((u32)( ",
 	} {
 		if !strings.Contains(output, wanted) {

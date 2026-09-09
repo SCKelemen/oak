@@ -297,3 +297,62 @@ surface as the checker representation lands. Temporal ownership transfer across
 asynchronous actors may additionally use TLA+ when introduced.
 
 
+
+## Extent facts and proof-based bounds-check elision (implemented subset)
+
+A runtime check the program already performs establishes an **extent fact**
+for exactly the scope it dominates, and an element access inside that scope
+whose index the fact bounds is emitted without its bounds check. Every
+access the checker cannot prove stays checked — elision is the reward for
+a check that is already there, never a relaxation.
+
+```oak
+sum: (v: []u64): u64 {
+  total: u64 = 0
+  i: u32 = 0
+  while i < len(v) {          // fact for the body: i < len(v)
+    total = total + v[i]      // proven: direct element access
+    i = i + u32(1)            // the canonical increment, last statement
+  }
+  total
+}
+
+len(a) == len(b) ? {          // fact: len(a) == len(b)
+  while i < len(a) { acc = acc + a[i] * b[i] }   // b[i] proven by transfer
+}
+
+len(v) >= u32(4) ? v[u32(3)] | u64(0)            // proven: 3 < 4 <= len(v)
+regs: [4]u64
+regs[u32(1)] = u64(2)                            // proven: static extent
+```
+
+Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
+
+- **Min-length**: `len(v) >= K`, `len(v) > K`, `K <= len(v)`, `K < len(v)`
+  with `K` a literal (bare or `u32(K)`) proves constant indices below `K`
+  (`constant_under_min_length`).
+- **Index bound**: `i < len(v)` (or `len(v) > i`) as a `?` condition or a
+  `while` condition proves `v[i]`. For the loop, the body must change `i`
+  only as its final statement — the canonical increment — so every access
+  before it executes under the most recent evaluation of the condition
+  (`loop_invariant`).
+- **Same length**: `len(a) == len(b)` transfers an index bound from one
+  container to the other (`bound_transfers`).
+- **Static extent**: a constant index below an owned array's declared
+  length needs no fact (`static_extent`).
+- Conjunctions (`&&`) contribute every fact of both sides.
+
+Facts are refused, not weakened, whenever soundness would need dataflow
+the checker does not perform: a participating binding that is a global (a
+callee could reassign it), a scope that reassigns a participating binding
+(except the loop's trailing increment), a non-literal bound, or a
+condition of any other shape. The true arm of the `?` sugar is the
+fall-through under the check; the false arm receives nothing.
+
+In the emitted C a proven access is `( v ).base[ i ]` or `regs[ i ]`; an
+unproven one keeps `oak_view_index_*`, `oak_span_index_*`, `oak_index`, or
+`oak_store` — asserted by tests on both sides, with an out-of-range
+unproven access still trapping. This is roadmap milestone 8's first
+increment (`docs/notes/roadmap-authority-resources.md`) and the seed of
+milestone 9's bounds-check elimination; the assembler's span guards
+(`94-assembler.md` §7) are the same doctrine in hand-written code.

@@ -1279,6 +1279,25 @@ var primitiveCasts = map[string]string{
 func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
 	seq, index := call.Arguments[0], call.Arguments[1]
 	info := cg.localContainerOf(seq)
+	// A proven access (typechecker/extents.go) needs no runtime check: the
+	// fact that bounds it dominates this position.
+	if tc.IndexProven(call.Token) {
+		switch info.kind {
+		case containerView, containerSpan:
+			cg.output.WriteString("( ")
+			cg.emitExpressionFragment(seq, tc)
+			cg.output.WriteString(" ).base[ ")
+			cg.emitExpressionFragment(index, tc)
+			cg.output.WriteString(" ]")
+			return
+		case containerOwnedArray:
+			cg.emitExpressionFragment(seq, tc)
+			cg.output.WriteString("[ ")
+			cg.emitExpressionFragment(index, tc)
+			cg.output.WriteString(" ]")
+			return
+		}
+	}
 	switch info.kind {
 	case containerView:
 		cg.output.WriteString(fmt.Sprintf("oak_view_index_%s( ", info.element))
@@ -2797,6 +2816,23 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 	}
 
 	info := cg.localContainerOf(stmt.Target.Left)
+	if tc.IndexProven(stmt.Target.Token) && (info.kind == containerSpan || info.kind == containerOwnedArray) {
+		// Proven store (typechecker/extents.go): direct element assignment.
+		cg.write("  ")
+		if info.kind == containerSpan {
+			cg.output.WriteString("( ")
+			cg.emitExpressionFragment(stmt.Target.Left, tc)
+			cg.output.WriteString(" ).base")
+		} else {
+			cg.emitLvaluePath(stmt.Target.Left, tc)
+		}
+		cg.output.WriteString("[ ")
+		cg.emitExpressionFragment(stmt.Target.Index, tc)
+		cg.output.WriteString(" ] = ")
+		cg.emitExpressionFragment(stmt.Value, tc)
+		cg.output.WriteString(";\n")
+		return
+	}
 	switch info.kind {
 	case containerSpan:
 		cg.write(fmt.Sprintf("  oak_span_store_%s( ", info.element))

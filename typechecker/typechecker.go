@@ -530,6 +530,8 @@ type TypeChecker struct {
 	globalEnv                  *TypeEnvironment
 	layoutQueries              map[string]LayoutQuery
 	checkingSpecialization     bool
+	extentFacts                []extentFact
+	provenIndices              map[string]bool
 	asmBackedFunctions         map[string]bool
 	functionTemplates          map[string]*ast.FunctionStatement
 	functionInstantiations     map[string]*ast.FunctionStatement
@@ -2465,6 +2467,9 @@ func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentSt
 	if seqType == nil {
 		return
 	}
+	if arr, isArray := seqType.(*ArrayType); isArray && !stmt.Target.Dot {
+		tc.recordIndexProof(stmt.Target, arr)
+	}
 	// Record field assignment: p.x = value (docs/spec/40-records.md).
 	if stmt.Target.Dot {
 		record, isRecord := seqType.(*RecordType)
@@ -2575,9 +2580,13 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		// inferring literals against the expected result type.
 		var armType Type
 		if expected != nil {
+			armMark := tc.enterArmFacts(expr, arm)
 			armType = tc.checkExpression(arm.Body, expected)
+			tc.popExtentFacts(armMark)
 		} else {
+			armMark := tc.enterArmFacts(expr, arm)
 			armType = tc.checkExpression(arm.Body)
+			tc.popExtentFacts(armMark)
 		}
 		if armType == nil {
 			// Unreachable or error - use never type
@@ -2935,6 +2944,9 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 	leftType := tc.checkExpression(expr.Left)
 	if leftType == nil {
 		return nil
+	}
+	if arr, isArray := leftType.(*ArrayType); isArray && !expr.Dot {
+		tc.recordIndexProof(expr, arr)
 	}
 
 	// A constrained type variable exposes only fields guaranteed by its semantic
@@ -3812,8 +3824,12 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 		tc.addError(stmt.Condition, "while condition must be bool, got %s", conditionType)
 	}
 
-	// Type check body
+	// The loop condition dominates the body on every iteration: `i < len(v)`
+	// bounds v[i] when i changes only as the body's final statement
+	// (typechecker/extents.go).
+	mark := tc.enterFactScope(stmt.Condition, stmt.Body, true)
 	tc.checkBlockStatement(stmt.Body)
+	tc.popExtentFacts(mark)
 }
 
 func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
