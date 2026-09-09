@@ -1380,7 +1380,17 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		leftType = tc.checkExpression(expr.Left, peerContext(rightType))
 	} else {
 		leftType = tc.checkExpression(expr.Left, operandExpected)
+		// The right operand of && runs only when the left held, so it sees
+		// the facts the left establishes (typechecker/extents.go); no
+		// expression can reassign a local in between.
+		var guard int
+		if expr.Operator == "&&" {
+			guard = tc.enterFactScope(expr.Left)
+		}
 		rightType = tc.checkExpression(expr.Right, peerContext(leftType))
+		if expr.Operator == "&&" {
+			tc.popExtentFacts(guard)
+		}
 	}
 	if leftType == nil || rightType == nil {
 		return nil
@@ -2619,6 +2629,8 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 	// Redundant or refinement-impossible arms are semantically never and
 	// must not widen the result type or create cascaded body errors.
 	armTypes := []Type{}
+	armsBefore := tc.deadSnapshot()
+	armsAfter := armsBefore
 	for armIndex, arm := range expr.Arms {
 		// Create a new scoped environment for this match arm to support type narrowing
 		armEnv := NewEnclosedTypeEnvironment(tc.env)
@@ -2653,15 +2665,17 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		// Type check arm body expression with narrowed type context,
 		// inferring literals against the expected result type.
 		var armType Type
+		// Arms are alternatives: each starts from the facts live before the
+		// match, and the union of their kills applies afterwards.
+		tc.restoreDead(armsBefore)
+		armMark := tc.enterArmFacts(expr, arm)
 		if expected != nil {
-			armMark := tc.enterArmFacts(expr, arm)
 			armType = tc.checkExpression(arm.Body, expected)
-			tc.popExtentFacts(armMark)
 		} else {
-			armMark := tc.enterArmFacts(expr, arm)
 			armType = tc.checkExpression(arm.Body)
-			tc.popExtentFacts(armMark)
 		}
+		tc.popExtentFacts(armMark)
+		armsAfter = unionDead(armsAfter, tc.deadSnapshot())
 		if armType == nil {
 			// Unreachable or error - use never type
 			armType = &NeverType{}
@@ -2673,6 +2687,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 	}
 
 	// Compute join of all arm types (lattice-based)
+	tc.restoreDead(armsAfter)
 	returnType := Join(armTypes...)
 
 	// Strict mode: if join is any and we didn't explicitly request any, it's an error
@@ -3872,8 +3887,16 @@ func (tc *TypeChecker) checkIfStatement(stmt *ast.IfStatement) {
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError(stmt.Condition, "if condition must be Bool, got %s", conditionType)
 	}
+	// Each branch starts from the same fact state; kills in one branch do
+	// not reach the other, and their union applies after the statement.
+	before := tc.deadSnapshot()
+	after := before
 	if stmt.Consequence != nil {
+		mark := tc.enterFactScope(stmt.Condition)
 		tc.checkBlockStatement(stmt.Consequence)
+		tc.popExtentFacts(mark)
+		after = unionDead(after, tc.deadSnapshot())
+		tc.restoreDead(before)
 	}
 	switch alternative := stmt.Alternative.(type) {
 	case nil:
@@ -3884,6 +3907,7 @@ func (tc *TypeChecker) checkIfStatement(stmt *ast.IfStatement) {
 	default:
 		tc.addError(stmt, "if statement: invalid else branch %T", stmt.Alternative)
 	}
+	tc.restoreDead(unionDead(after, tc.deadSnapshot()))
 }
 
 func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
@@ -3893,15 +3917,18 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 		tc.finishMonomorphicTransaction(len(tc.Errors()) == before)
 	}()
 
+	// A loop that assigns a binding anywhere invalidates the enclosing
+	// facts about it before the condition runs: an earlier statement of
+	// the body executes again after the assignment (typechecker/extents.go).
+	tc.killFactsAssignedBy(stmt)
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError(stmt.Condition, "while condition must be bool, got %s", conditionType)
 	}
 
 	// The loop condition dominates the body on every iteration: `i < len(v)`
-	// bounds v[i] when i changes only as the body's final statement
-	// (typechecker/extents.go).
-	mark := tc.enterFactScope(stmt.Condition, stmt.Body, true)
+	// bounds v[i] until the body assigns i (typechecker/extents.go).
+	mark := tc.enterFactScope(stmt.Condition)
 	tc.checkBlockStatement(stmt.Body)
 	tc.popExtentFacts(mark)
 }
@@ -3914,9 +3941,21 @@ func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
 	defer tc.popExtentFacts(mark)
 	for i, stmt := range block.Statements {
 		tc.checkStatement(stmt)
+		tc.killFactsAfterStatement(stmt)
 		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {
 			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
 		}
+	}
+}
+
+// killFactsAfterStatement invalidates the facts an assignment statement
+// breaks, once its right-hand side (which still saw them) is checked.
+// Loops kill on entry (checkWhileStatement) and branches kill inside their
+// own blocks, so only direct assignments are handled here.
+func (tc *TypeChecker) killFactsAfterStatement(stmt ast.Statement) {
+	switch stmt.(type) {
+	case *ast.AssignmentStatement, *ast.VariableDeclaration, *ast.IndexAssignmentStatement:
+		tc.killFactsAssignedBy(stmt)
 	}
 }
 
@@ -3938,6 +3977,7 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 	defer tc.popExtentFacts(mark)
 	for i := 0; i < len(block.Statements)-1; i++ {
 		tc.checkStatement(block.Statements[i])
+		tc.killFactsAfterStatement(block.Statements[i])
 		if decl, isDecl := block.Statements[i].(*ast.VariableDeclaration); isDecl {
 			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
 		}
@@ -3954,6 +3994,7 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 
 	// If the last statement is not an expression, return unit
 	tc.checkStatement(lastStmt)
+	tc.killFactsAfterStatement(lastStmt)
 	return &UnitType{}
 }
 

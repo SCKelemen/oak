@@ -5,17 +5,19 @@ import (
 	"testing"
 )
 
-// Extent facts, second increment: offset bounds (`i + 1 < len(v)` proves
-// v[i] and v[i + 1]) and subslice extents (`subslice(v, 1, 3)` has exactly
-// two elements for the rest of its block).
+// Extent facts, second increment: offset bounds and subslice extents
+// (`subslice(v, 1, 3)` has exactly two elements for the rest of its block).
+// An offset bound needs the wrap-free spelling: `len(v) >= 1 && i < len(v) - 1`
+// proves v[i] and v[i + 1], whereas `i + 1 < len(v)` proves nothing because
+// fixed-width `i + 1` may have wrapped (typechecker/extents.go).
 func TestE2EExtentOffsetsAndSubslice(t *testing.T) {
 	src := `
 pair_sum: (v: []u64): u64 {
   total: u64 = 0
   i: u32 = 0
-  while i + u32(1) < len(v) {
-    total = total + v[i] + v[i + u32(1)]
-    i = i + u32(2)
+  while len(v) >= 1 && i < len(v) - 1 {
+    total = total + v[i] + v[i + 1]
+    i = i + 2
   }
   total
 }
@@ -55,9 +57,9 @@ main: (): i32 {
 beyond: (v: []u64): u64 {
   total: u64 = 0
   i: u32 = 0
-  while i + u32(1) < len(v) {
-    total = total + v[i + u32(2)]
-    i = i + u32(1)
+  while len(v) >= 1 && i < len(v) - 1 {
+    total = total + v[i + 2]
+    i = i + 1
   }
   total
 }

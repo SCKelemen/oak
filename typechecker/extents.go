@@ -9,8 +9,19 @@ package typechecker
 // the resolution pattern of typechecker/mono.go), and the backend emits it
 // as direct element access instead of the checked helper. Every access the
 // checker cannot prove stays checked; facts are never derived from anything
-// a callee could invalidate (globals are excluded), and a scope that
-// reassigns a participating binding receives no facts at all.
+// a callee could invalidate (globals are excluded).
+//
+// Facts are flow-sensitive (third increment): an assignment to a
+// participating binding kills the fact from that statement on, for the
+// rest of every enclosing scope; a loop that assigns a participating
+// binding anywhere kills the fact before its condition is even evaluated
+// (an earlier statement of its body runs again after the assignment);
+// kills inside one match arm reach the statements after the match but not
+// the sibling arms. The right operand of `&&` and the consequence of `if`
+// see the facts their guard establishes. Offset bounds come only from the
+// wrap-free spelling `i < len(v) - K` (or `<=`) under a known
+// `len(v) >= K`: fixed-width `i + K` wraps, so `i + K < len(v)` proves
+// nothing about `i`.
 //
 // Discharge laws are Oak.Extents (Lean): a constant below a min-length
 // bound is in range; an index bound transfers across a same-length fact; a
@@ -35,6 +46,10 @@ type extentFact struct {
 	other     string // factIndexBound: the index binding; factSameLen: the other container
 	bound     int64  // factMinLen
 	offset    int64  // factIndexBound: i + offset < len(container) (0 for a plain bound)
+	// dead marks a fact invalidated by a later assignment to one of its
+	// bindings (flow-sensitive kill); a dead fact proves nothing but keeps
+	// its stack position so scope marks stay valid.
+	dead bool
 }
 
 // IndexProven reports whether the element access at tok was proven in range.
@@ -98,6 +113,23 @@ func lenOf(expr ast.Expression) (string, bool) {
 	return arg.Value, true
 }
 
+// lenMinus recognizes `len(name) - K` with K a literal.
+func lenMinus(expr ast.Expression) (name string, k int64, ok bool) {
+	infix, isInfix := expr.(*ast.InfixExpression)
+	if !isInfix || infix.Operator != "-" {
+		return "", 0, false
+	}
+	name, isLen := lenOf(infix.Left)
+	if !isLen {
+		return "", 0, false
+	}
+	k, isConst := constantIndex(infix.Right)
+	if !isConst || k < 0 {
+		return "", 0, false
+	}
+	return name, k, true
+}
+
 // offsetIndex recognizes `i` or `i + K` (either order) with K a literal.
 func offsetIndex(expr ast.Expression) (name string, offset int64, ok bool) {
 	if ident, isIdent := expr.(*ast.Identifier); isIdent {
@@ -124,12 +156,30 @@ func offsetIndex(expr ast.Expression) (name string, offset int64, ok bool) {
 // len(v) >= K, len(v) > K, K <= len(v), K < len(v); i < len(v), len(v) > i;
 // len(a) == len(b); conjunctions of these.
 func (tc *TypeChecker) factsFromCondition(cond ast.Expression) []extentFact {
+	return tc.factsFromConditionWith(cond, nil)
+}
+
+// minLengthKnown reports whether len(container) >= k is established by the
+// live fact stack or by facts already derived from earlier conjuncts.
+func (tc *TypeChecker) minLengthKnown(container string, k int64, earlier []extentFact) bool {
+	for _, facts := range [][]extentFact{tc.extentFacts, earlier} {
+		for _, fact := range facts {
+			if !fact.dead && fact.kind == factMinLen && fact.container == container && fact.bound >= k {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (tc *TypeChecker) factsFromConditionWith(cond ast.Expression, earlier []extentFact) []extentFact {
 	infix, ok := cond.(*ast.InfixExpression)
 	if !ok {
 		return nil
 	}
 	if infix.Operator == "&&" {
-		return append(tc.factsFromCondition(infix.Left), tc.factsFromCondition(infix.Right)...)
+		left := tc.factsFromConditionWith(infix.Left, earlier)
+		return append(left, tc.factsFromConditionWith(infix.Right, append(append([]extentFact{}, earlier...), left...))...)
 	}
 	leftLen, leftIsLen := lenOf(infix.Left)
 	rightLen, rightIsLen := lenOf(infix.Right)
@@ -147,6 +197,8 @@ func (tc *TypeChecker) factsFromCondition(cond ast.Expression) []extentFact {
 		return true
 	}
 
+	minusLen, minusK, rightIsLenMinus := lenMinus(infix.Right)
+
 	switch infix.Operator {
 	case ">=":
 		if leftIsLen && rightIsConst && rightConst >= 0 && local(leftLen) {
@@ -156,19 +208,33 @@ func (tc *TypeChecker) factsFromCondition(cond ast.Expression) []extentFact {
 		if leftIsLen && rightIsConst && rightConst >= 0 && local(leftLen) {
 			return []extentFact{{kind: factMinLen, container: leftLen, bound: rightConst + 1}}
 		}
-		if leftIsLen && rightIsIndex && !rightIsConst && local(leftLen, rightIndex) {
-			return []extentFact{{kind: factIndexBound, container: leftLen, other: rightIndex, offset: rightOffset}}
+		// len(v) > i: a plain index bound. An offset form (len(v) > i + K)
+		// proves nothing, because fixed-width i + K may have wrapped.
+		if leftIsLen && rightIsIndex && !rightIsConst && rightOffset == 0 && local(leftLen, rightIndex) {
+			return []extentFact{{kind: factIndexBound, container: leftLen, other: rightIndex}}
 		}
 	case "<=":
 		if leftIsConst && rightIsLen && leftConst >= 0 && local(rightLen) {
 			return []extentFact{{kind: factMinLen, container: rightLen, bound: leftConst}}
 		}
+		// i <= len(v) - K with len(v) >= K known: i + (K - 1) < len(v),
+		// and the subtraction cannot wrap (Oak.Extents.guard_without_wrap).
+		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsLenMinus && minusK >= 1 &&
+			local(leftIndex, minusLen) && tc.minLengthKnown(minusLen, minusK, earlier) {
+			return []extentFact{{kind: factIndexBound, container: minusLen, other: leftIndex, offset: minusK - 1}}
+		}
 	case "<":
 		if leftIsConst && rightIsLen && leftConst >= 0 && local(rightLen) {
 			return []extentFact{{kind: factMinLen, container: rightLen, bound: leftConst + 1}}
 		}
-		if leftIsIndex && !leftIsConst && rightIsLen && local(leftIndex, rightLen) {
-			return []extentFact{{kind: factIndexBound, container: rightLen, other: leftIndex, offset: leftOffset}}
+		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsLen && local(leftIndex, rightLen) {
+			return []extentFact{{kind: factIndexBound, container: rightLen, other: leftIndex}}
+		}
+		// i < len(v) - K with len(v) >= K known: i + K < len(v)
+		// (Oak.Extents.guard_without_wrap).
+		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsLenMinus &&
+			local(leftIndex, minusLen) && tc.minLengthKnown(minusLen, minusK, earlier) {
+			return []extentFact{{kind: factIndexBound, container: minusLen, other: leftIndex, offset: minusK}}
 		}
 	case "==":
 		if leftIsLen && rightIsLen && local(leftLen, rightLen) {
@@ -243,17 +309,114 @@ func assignsAny(node ast.Node, names map[string]bool, exceptLast bool) bool {
 	return false
 }
 
-// enterFactScope pushes the facts a dominating condition establishes for a
-// scope, unless the scope reassigns a participating binding (then none).
-func (tc *TypeChecker) enterFactScope(cond ast.Expression, scope ast.Node, loopIncrement bool) int {
+// enterFactScope pushes the facts a dominating condition establishes for
+// the scope that follows; assignments inside the scope kill them from the
+// assignment on (killFacts), so no whole-scope rejection is needed.
+func (tc *TypeChecker) enterFactScope(cond ast.Expression) int {
 	facts := tc.factsFromCondition(cond)
 	if len(facts) == 0 {
 		return len(tc.extentFacts)
 	}
-	if assignsAny(scope, factNames(facts), loopIncrement) {
-		return len(tc.extentFacts)
-	}
 	return tc.pushExtentFacts(facts)
+}
+
+// assignedNames collects every binding the node (recursively) assigns or
+// declares, in any branch or loop it contains.
+func assignedNames(node ast.Node, into map[string]bool) {
+	switch n := node.(type) {
+	case nil:
+	case *ast.BlockStatement:
+		for _, stmt := range n.Statements {
+			assignedNames(stmt, into)
+		}
+	case *ast.BlockExpression:
+		assignedNames(n.Block, into)
+	case *ast.UnsafeBlock:
+		assignedNames(n.Body, into)
+	case *ast.AssignmentStatement:
+		if n.Name != nil {
+			into[n.Name.Value] = true
+		}
+		assignedNames(n.Value, into)
+	case *ast.VariableDeclaration:
+		if n.Name != nil {
+			into[n.Name.Value] = true
+		}
+		assignedNames(n.Value, into)
+	case *ast.WhileStatement:
+		assignedNames(n.Condition, into)
+		assignedNames(n.Body, into)
+	case *ast.IfStatement:
+		assignedNames(n.Condition, into)
+		assignedNames(n.Consequence, into)
+		assignedNames(n.Alternative, into)
+	case *ast.ExpressionStatement:
+		assignedNames(n.Expression, into)
+	case *ast.IndexAssignmentStatement:
+		assignedNames(n.Value, into)
+	case *ast.MatchExpression:
+		assignedNames(n.Scrutinee, into)
+		for _, arm := range n.Arms {
+			assignedNames(arm.Body, into)
+		}
+	case *ast.InvocationExpression:
+		for _, arg := range n.Arguments {
+			assignedNames(arg, into)
+		}
+	case *ast.InfixExpression:
+		assignedNames(n.Left, into)
+		assignedNames(n.Right, into)
+	case *ast.PrefixExpression:
+		assignedNames(n.Right, into)
+	}
+}
+
+// killFacts marks every live fact that depends on one of the names dead,
+// for the rest of every enclosing scope.
+func (tc *TypeChecker) killFacts(names map[string]bool) {
+	if len(names) == 0 {
+		return
+	}
+	for i := range tc.extentFacts {
+		fact := &tc.extentFacts[i]
+		if names[fact.container] || (fact.other != "" && names[fact.other]) {
+			fact.dead = true
+		}
+	}
+}
+
+// killFactsAssignedBy kills the facts a statement or loop invalidates.
+func (tc *TypeChecker) killFactsAssignedBy(node ast.Node) {
+	names := map[string]bool{}
+	assignedNames(node, names)
+	tc.killFacts(names)
+}
+
+// deadSnapshot records which facts are dead, so alternatives (match arms,
+// if branches) can each start from the same state and the union of their
+// kills applies after the construct.
+func (tc *TypeChecker) deadSnapshot() []bool {
+	dead := make([]bool, len(tc.extentFacts))
+	for i, fact := range tc.extentFacts {
+		dead[i] = fact.dead
+	}
+	return dead
+}
+
+func (tc *TypeChecker) restoreDead(snapshot []bool) {
+	for i := range snapshot {
+		if i < len(tc.extentFacts) {
+			tc.extentFacts[i].dead = snapshot[i]
+		}
+	}
+}
+
+func unionDead(a, b []bool) []bool {
+	out := make([]bool, len(a))
+	for i := range a {
+		out[i] = a[i] || (i < len(b) && b[i])
+	}
+	return out
 }
 
 // recordIndexProof marks v[index] proven when a fact or a static extent
@@ -270,6 +433,9 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 			proven = true // static extent (Oak.Extents.static_extent)
 		}
 		for _, fact := range tc.extentFacts {
+			if fact.dead {
+				continue
+			}
 			if fact.kind == factMinLen && fact.container == name && constant < fact.bound {
 				proven = true // Oak.Extents.constant_under_min_length
 			}
@@ -278,7 +444,7 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 		for _, fact := range tc.extentFacts {
 			// i + K < len(c) bounds v[i + j] for every j <= K
 			// (Oak.Extents.offset_under_bound).
-			if fact.kind != factIndexBound || fact.other != index || offset > fact.offset {
+			if fact.dead || fact.kind != factIndexBound || fact.other != index || offset > fact.offset {
 				continue
 			}
 			if fact.container == name {
@@ -286,7 +452,7 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 				continue
 			}
 			for _, same := range tc.extentFacts {
-				if same.kind == factSameLen && ((same.container == fact.container && same.other == name) || (same.other == fact.container && same.container == name)) {
+				if !same.dead && same.kind == factSameLen && ((same.container == fact.container && same.other == name) || (same.other == fact.container && same.container == name)) {
 					proven = true // Oak.Extents.bound_transfers
 				}
 			}
@@ -362,5 +528,5 @@ func (tc *TypeChecker) enterArmFacts(match *ast.MatchExpression, arm *ast.MatchA
 	if !isBool || !flag.Value {
 		return len(tc.extentFacts)
 	}
-	return tc.enterFactScope(match.Scrutinee, arm.Body, false)
+	return tc.enterFactScope(match.Scrutinee)
 }

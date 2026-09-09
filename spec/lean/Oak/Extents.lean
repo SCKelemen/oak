@@ -45,6 +45,27 @@ theorem facts_monotone {α : Type} (stack extra : List α) :
 theorem offset_under_bound (i K j len : Nat) (hbound : i + K < len) (hj : j ≤ K) :
     i + j < len := by omega
 
+/-- The wrap-free offset guard: with `K ≤ len` known, `i < len - K` is exactly
+    `i + K < len`, so the guard establishes an offset bound of `K`
+    (`factsFromCondition`, `i < len(v) - K`). The subtraction cannot wrap
+    because `K ≤ len`; the checker never derives an offset bound from
+    `i + K < len`, whose fixed-width sum may have wrapped. -/
+theorem guard_without_wrap (i K len : Nat) (hK : K ≤ len) (h : i < len - K) :
+    i + K < len := by omega
+
+/-- The inclusive spelling: with `1 ≤ K ≤ len`, `i ≤ len - K` establishes an
+    offset bound of `K - 1` (`factsFromCondition`, `i <= len(v) - K`). -/
+theorem inclusive_guard_without_wrap (i K len : Nat) (hK : K ≤ len) (hpos : 1 ≤ K)
+    (h : i ≤ len - K) : i + (K - 1) < len := by omega
+
+/-- Flow-sensitive kill: a fact established before an assignment says nothing
+    about the assigned binding afterwards, and stating the proof obligation
+    for an access as `index value at the access < len` makes the kill the
+    conservative choice — the law an unkilled fact would need, `i' = i`, is
+    exactly what the assignment breaks. -/
+theorem kill_is_conservative (i i' len : Nat) (hfact : i < len) (hsame : i' = i) :
+    i' < len := hsame ▸ hfact
+
 /-- `subslice(v, start, n)` has exactly `n` elements once its bounds-checked
     construction succeeds (`start + n ≤ len`), so a constant below `n`
     addresses an element of the parent as well; the slice form `v[lo:hi]`
