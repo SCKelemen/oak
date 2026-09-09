@@ -2802,7 +2802,10 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 		cg.output.WriteString(" );\n")
 	case containerOwnedArray:
 		cg.write("  oak_store( ")
-		cg.emitExpressionFragment(stmt.Target.Left, tc)
+		// Preserve the owning storage through nested record/span paths.
+		// Rvalue indexing returns a record copy, so projecting its array
+		// here would silently store into a temporary.
+		cg.emitLvaluePath(stmt.Target.Left, tc)
 		cg.output.WriteString(fmt.Sprintf(", %d, (u64)( ", info.length))
 		cg.emitExpressionFragment(stmt.Target.Index, tc)
 		cg.output.WriteString(" ), ")

@@ -27,6 +27,9 @@ jobs:
     - name: Verify dependencies
       run: go mod verify
 
+    - name: Check nested array store regression
+      run: go test -v ./compiler -run '^TestE2ENestedArrayFieldStores$' -count=1
+
     - name: Run tests
       run: go test -v -race -timeout 20m ./...
 
