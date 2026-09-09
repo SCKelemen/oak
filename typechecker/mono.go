@@ -243,6 +243,18 @@ func (tc *TypeChecker) recordArithmetic(expr *ast.InfixExpression, result Type) 
 	return result
 }
 
+// recordNegation notes the fixed-width type of one unary minus, so the
+// backend emits the total negation helper for that width.
+func (tc *TypeChecker) recordNegation(expr *ast.PrefixExpression, prim *PrimitiveType) Type {
+	if name := tc.FixedWidthName(prim.Name); name != "" {
+		if tc.arithmeticTypes == nil {
+			tc.arithmeticTypes = make(map[string]string)
+		}
+		tc.arithmeticTypes[positionKey(expr.Token)] = name
+	}
+	return prim
+}
+
 // ArithmeticType reports the recorded fixed-width result type of an
 // arithmetic expression.
 func (tc *TypeChecker) ArithmeticType(tok token.Token) (string, bool) {

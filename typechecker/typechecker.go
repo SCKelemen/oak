@@ -1270,16 +1270,12 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression, expecte
 		tc.addError(expr, "operator ^ (complement) requires an unsigned fixed-width operand, got %s", rightType)
 		return nil
 	case "-":
-		// Negation: promote unsigned to signed, or keep signed
-		if prim, ok := rightType.(*PrimitiveType); ok {
-			if prim.Name[0] == 'i' { // signed integer
-				return rightType
-			} else if prim.Name[0] == 'u' {
-				// Unsigned: promote to corresponding signed type
-				// u8 -> i8, u16 -> i16, u32 -> i32, u64 -> i64
-				signedName := "i" + prim.Name[1:]
-				return &PrimitiveType{Name: signedName}
-			}
+		// Negation is total in the operand's own width: two's-complement
+		// negation mod 2^N for signed and unsigned alike (docs/spec/20-types.md
+		// section 11.1). No implicit move between signednesses: `-x` with
+		// x: u32 is a u32, and `i32_bits_u32(x)` is the explicit route.
+		if prim, ok := rightType.(*PrimitiveType); ok && tc.isNumericType(prim) {
+			return tc.recordNegation(expr, prim)
 		}
 		tc.addError(expr, "operator - requires integer type, got %s", rightType)
 		return nil
@@ -1349,7 +1345,14 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		}
 		return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 	case "==", "!=":
-		// Equality operators work on compatible types
+		// Equality on machine integers follows the arithmetic rule: one
+		// signedness, widths promote; otherwise operands must be compatible.
+		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
+			if tc.promoteNumericTypes(expr, leftType, rightType) == nil {
+				return nil
+			}
+			return &BoolType{}
+		}
 		if !tc.areCompatibleTypes(leftType, rightType) {
 			tc.addError(expr, "operator %s requires compatible types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
@@ -1392,9 +1395,13 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		}
 		return leftType
 	case "<", ">", "<=", ">=":
-		// Comparison operators require numeric types
+		// Ordering compares machine integers of one signedness; widths
+		// promote as in arithmetic, mixed signedness is rejected.
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
+			return nil
+		}
+		if tc.promoteNumericTypes(expr, leftType, rightType) == nil {
 			return nil
 		}
 		return &BoolType{}

@@ -289,9 +289,15 @@ on a fixed-width type wrap mod `2^N` in that width at the expression itself
 (so `full + 1` with `full: u8 = 255` is `0` before any store, and
 `u16 * u16` never overflows an intermediate `int`); `/` and `%` trap on a
 zero divisor and give the two's-complement result for `MIN / -1` (quotient
-`MIN`, remainder `0`). The C lowering realizes this with width-specific
-helpers (unsigned computation, union punning for signed results), never with
-C's promoted operators, whose signed overflow would be undefined.
+`MIN`, remainder `0`). Unary minus is total in the operand's own width: `-x` has the type of `x`
+for signed and unsigned alike (two's-complement negation mod `2^N`, so
+`-MIN` is `MIN` and `-x` for `x: u8 = 1` is `255`); moving between
+signednesses stays explicit through `bits`. Ordering and equality on machine
+integers follow the same operand rule as arithmetic: one signedness, with
+widths promoting, and mixed signedness rejected. The C lowering realizes all
+of this with width-specific helpers (unsigned computation, union punning for
+signed results), never with C's promoted operators, whose signed overflow
+would be undefined.
 
 ### 11.2 Generic functions monomorphize
 
