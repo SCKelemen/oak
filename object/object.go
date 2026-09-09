@@ -3,6 +3,7 @@ package object
 import (
 	"bytes"
 	"fmt"
+	"github.com/SCKelemen/oak/token"
 	"strconv"
 
 	"github.com/SCKelemen/oak/ast"
@@ -223,6 +224,10 @@ type Environment struct {
 	recordDecls     map[string]*ast.RecordLiteral
 	recordTemplates map[string]recordTemplate
 	outer           *Environment
+	// arithmeticWidths, when set, reports the checker's recorded fixed-width
+	// result type of an arithmetic or negation token, so the interpreter
+	// wraps exactly as compiled code does. Inherited through enclosures.
+	arithmeticWidths func(token.Token) (string, bool)
 }
 
 func NewEnvironment() *Environment {
@@ -236,6 +241,9 @@ func NewEnvironment() *Environment {
 func NewEnclosedEnvironment(outer *Environment) *Environment {
 	env := NewEnvironment()
 	env.outer = outer
+	if outer != nil {
+		env.arithmeticWidths = outer.arithmeticWidths
+	}
 	// Copy ADT types from outer environment
 	if outer != nil {
 		for name, adtType := range outer.GetAllADTTypes() {
@@ -401,4 +409,23 @@ func (kind ObjectKind) String() string {
 		s = "object(" + strconv.Itoa(int(kind)) + ")"
 	}
 	return s
+}
+
+// SetArithmeticWidths installs the checker's width oracle (typically
+// TypeChecker.ArithmeticType) so evaluation wraps fixed-width arithmetic
+// like the compiled backend. Without one the interpreter computes on
+// untyped 64-bit integers.
+func (e *Environment) SetArithmeticWidths(oracle func(token.Token) (string, bool)) {
+	e.arithmeticWidths = oracle
+}
+
+// ArithmeticWidth reports the recorded fixed-width type of a token, if an
+// oracle is installed in this environment or an enclosing one.
+func (e *Environment) ArithmeticWidth(tok token.Token) (string, bool) {
+	for env := e; env != nil; env = env.outer {
+		if env.arithmeticWidths != nil {
+			return env.arithmeticWidths(tok)
+		}
+	}
+	return "", false
 }

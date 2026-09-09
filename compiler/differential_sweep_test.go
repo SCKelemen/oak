@@ -20,6 +20,7 @@ func interpretChecked(t *testing.T, src string) int64 {
 		t.Fatalf("check failed: %v", err)
 	}
 	env := object.NewEnvironment()
+	env.SetArithmeticWidths(model.TypeChecker.ArithmeticType)
 	result := evaluator.Eval(model.Tree.Root, env)
 	if e, isErr := result.(*object.Error); isErr {
 		t.Fatalf("interpreter error evaluating program: %s", e.Message)

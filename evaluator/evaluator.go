@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/token"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -58,7 +59,7 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if isError(right) {
 			return right
 		}
-		return evalPrefixExpression(node.Operator, right)
+		return wrapToWidth(evalPrefixExpression(node.Operator, right), node.Token, env)
 
 	case *ast.InfixExpression:
 		left := Eval(node.Left, env)
@@ -92,7 +93,7 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if isError(right) {
 			return right
 		}
-		return evalInfixExpression(node.Operator, left, right)
+		return wrapToWidth(evalInfixExpression(node.Operator, left, right), node.Token, env)
 
 	case *ast.IndexAssignmentStatement:
 		return evalIndexAssignmentStatement(node, env)
@@ -508,6 +509,44 @@ func evalBangOperatorExpression(right object.Object) object.Object {
 	default:
 		return FALSE
 	}
+}
+
+// wrapToWidth folds an integer result into the fixed width the checker
+// recorded for this operator token (docs/spec/20-types.md section 11.1):
+// unsigned by masking, signed by masking and sign extension. Without a
+// record, or without an oracle, the value stays as computed.
+func wrapToWidth(result object.Object, tok token.Token, env *object.Environment) object.Object {
+	integer, isInt := result.(*object.Integer)
+	if !isInt {
+		return result
+	}
+	width, known := env.ArithmeticWidth(tok)
+	if !known || len(width) < 2 {
+		return result
+	}
+	bits, ok := primitiveWidthBits(width)
+	if !ok {
+		return result
+	}
+	pattern := uint64(integer.Value) & widthMask(bits)
+	if width[0] == 'i' {
+		return &object.Integer{Value: signExtend(pattern, bits)}
+	}
+	return &object.Integer{Value: int64(pattern)}
+}
+
+func primitiveWidthBits(width string) (uint, bool) {
+	switch width {
+	case "u8", "i8":
+		return 8, true
+	case "u16", "i16":
+		return 16, true
+	case "u32", "i32":
+		return 32, true
+	case "u64", "i64":
+		return 64, true
+	}
+	return 0, false
 }
 
 func evalMinusPrefixOperatorExpression(right object.Object) object.Object {

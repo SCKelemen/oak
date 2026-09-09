@@ -134,6 +134,7 @@ func (s *Session) Submit(input string) (Outcome, error) {
 		outcome.Type = scheme.Type
 	}
 	env := object.NewEnvironment()
+	env.SetArithmeticWidths(model.TypeChecker.ArithmeticType)
 	if result := evaluator.Eval(model.Tree.Root, env); result != nil && result.Type() == object.ERROR_OBJ {
 		return outcome, fmt.Errorf("%s", result.Inspect())
 	}
