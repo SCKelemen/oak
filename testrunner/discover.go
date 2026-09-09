@@ -27,9 +27,12 @@ type Package struct {
 	Dir string
 	// Name is the package clause of a module package (docs/spec/83-modules.md);
 	// empty for a bootstrap package assembled by concatenation.
-	Name     string
-	Module   bool
-	Source   string
+	Name   string
+	Module bool
+	Source string
+	// Profile is the discipline profile the test build is judged under
+	// ("" or "default", or "strict"; docs/spec/85-discipline.md section 1).
+	Profile  string
 	Tests    []Test
 	Registry []Test
 	// Schema decodes semantic trace events for people and tools; nil when the
