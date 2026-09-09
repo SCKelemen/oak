@@ -253,7 +253,7 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
 Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.
 
-## 8. Semantic verification of acyclic bodies (four increments implemented)
+## 8. Semantic verification of asm bodies (five increments implemented)
 
 **Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
 with both an asm unit and an Oak fallback body, the asm gate runs the
@@ -344,8 +344,29 @@ frame memory, moving bases, and loads whose width differs from the element
 guarded `pair_sum` over `[]u32` proven and run both ways; reading element 0
 twice refuted with the elements named in the counterexample; a guard
 constant of 3 for Oak's 2 refuted at `len(v) = 2`; a 64-bit first-or-default
-and a signed head max proven. What remains is the design for loops
-(invariants, or bounded unrolling under `BoundedLoop`).
+and a signed head max proven.
+
+**Counted loops (fifth increment).** The term constructors fold constants,
+so a comparison of a counter that is a constant on every iteration decides
+itself. The asm executor follows a backward branch whose condition folds
+(and an unconditional `b`) instead of refusing it, bounded by a global
+instruction-step budget; a backward branch whose condition is not constant,
+or one closing a loop in which the path forked on the inputs, is a loop
+with a data-dependent trip count — trusted. On the Oak side the fallback
+body may now be a statement block: typed locals with initializers,
+assignments (at the local's declared width), and `while` loops whose
+condition folds to a constant before every iteration (unrolled under a
+budget; a data-dependent condition is trusted), ending in the result
+expression. `Oak.AssemblerSemantics.counted_loop_unrolls` is the law: a
+counter from 0 to N under fuel N + 1 runs exactly N times, so the loop is
+the N-fold iterate of its body — the term both sides compute. Executed:
+`3*a` by a three-iteration accumulate proven (linear form); four iterations
+refuted; an eight-step popcount of the low byte proven at the bit level
+against its Oak `while`, and run both ways; seven steps refuted with a
+concrete input; data-dependent trip counts on either side, and a constant
+loop whose body branches on the inputs, trusted. What remains: loops with
+data-dependent trip counts (invariants, or `BoundedLoop` bounds as the
+unrolling limit) and register-offset addressing for spans inside loops.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
@@ -368,8 +389,9 @@ specification** — and three layers:
    functions and asm table entries cite the same semantics) and
    transliterated into a Go symbolic executor.
 
-3. **Postcondition discharge.** For an **acyclic** body (straight-line,
-   conditional selects, and forward branches all landed; loops remain), the symbolic executor produces
+3. **Postcondition discharge.** For a body the executor can unfold
+   (straight-line, conditional selects, forward branches, span loads, and
+   counted loops all landed; data-dependent loops remain), the symbolic executor produces
    the result register's value as a bitvector term over the bound
    parameters. The Oak fallback body, when it is a pure expression over the
    same parameters (the `add_asm: ... = left + right` shape), lowers to a

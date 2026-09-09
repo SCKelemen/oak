@@ -361,4 +361,53 @@ theorem loadElem_at {w : Nat} (s : Span w) (elem k : Nat) (h : 0 < elem) :
 theorem guarded_index_in_bounds (len N k : Nat) (hguard : ¬ len < N) (hk : k < N) : k < len := by
   omega
 
+/-! ## Counted loops unroll
+
+Both executors run a `while` under fuel (the unrolling budget): the body is
+applied while the condition holds, and the loop is outside the subset when
+the fuel runs out or the condition is not a constant. A counted loop —
+a counter from 0 to N incremented once per iteration — makes exactly N
+iterations under fuel N + 1, so its unfolding is the N-fold iterate of the
+body: the term both sides compute. -/
+
+/-- `while cond { body }` under fuel; `none` when the fuel is exhausted. -/
+def whileFuel {σ : Type} (cond : σ → Bool) (body : σ → σ) : Nat → σ → Option σ
+  | 0, _ => none
+  | fuel + 1, s => if cond s then whileFuel cond body fuel (body s) else some s
+
+/-- The n-fold iterate, in the tail form the unrolling produces. -/
+def iter {α : Type} (f : α → α) : Nat → α → α
+  | 0, a => a
+  | n + 1, a => iter f n (f a)
+
+/-- The invariant of the counted loop: from counter `N - m` with fuel
+    `m + 1`, the loop ends at counter `N` having applied the body `m`
+    times. -/
+theorem whileFuel_counted {α : Type} (N : Nat) (f : α → α) :
+    ∀ (m : Nat) (a : α), m ≤ N →
+      whileFuel (fun s : Nat × α => decide (s.1 < N)) (fun s => (s.1 + 1, f s.2)) (m + 1) (N - m, a)
+        = some (N, iter f m a) := by
+  intro m
+  induction m with
+  | zero =>
+    intro a _
+    simp [whileFuel, iter]
+  | succ m ih =>
+    intro a hm
+    have hlt : decide (N - (m + 1) < N) = true := by
+      rw [decide_eq_true_eq]
+      omega
+    have hstep : N - (m + 1) + 1 = N - m := by omega
+    rw [whileFuel]
+    simp only [hlt, ↓reduceIte, iter]
+    rw [hstep]
+    exact ih (f a) (by omega)
+
+/-- A counted loop from 0 runs exactly N times: its result is `iter f N`. -/
+theorem counted_loop_unrolls {α : Type} (N : Nat) (f : α → α) (a : α) :
+    whileFuel (fun s : Nat × α => decide (s.1 < N)) (fun s => (s.1 + 1, f s.2)) (N + 1) (0, a)
+      = some (N, iter f N a) := by
+  have h := whileFuel_counted N f N a (Nat.le_refl N)
+  simpa using h
+
 end Oak.AssemblerSemantics
