@@ -54,6 +54,12 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 	if err != nil {
 		return fmt.Errorf("standard library: %w", err)
 	}
+	// The spliced library is its own package for scoping and diagnostics
+	// (docs/spec/83-modules.md section 7): every token is stamped
+	// `std#stdlib.oak`, so a local in the prelude is checked against the
+	// prelude's scope rather than the root's, and a discipline diagnostic
+	// inside the prelude names its file and line.
+	stampSemanticContext(reflect.ValueOf(lib.Root), "std#stdlib.oak")
 	if err := transformSyntax(reflect.ValueOf(lib.Root), func(e ast.Expression) (ast.Expression, error) {
 		switch n := e.(type) {
 		case *ast.InfixExpression:

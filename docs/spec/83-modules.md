@@ -474,6 +474,24 @@ internal names back to `path.name`.
 never spell — or capture — an internal name. This is the capture-freedom
 argument for the whole-program elaboration.
 
+**Scope is per package.** The flattened program is an implementation device,
+not a scoping rule. The names legal inside a package — its locals,
+parameters, and receivers — are determined by that package's own
+declarations and its imports, never by which package happens to be the build
+root. Concretely, the no-shadowing rule (`20-types.md`, "Oak does not allow
+shadowing") is checked against the **declaring package's** scope: a local in
+package `view` may be named `rank` even though the root package exports
+`rank`, and a local inside the standard prelude may be named `maximum` even
+though the program that imports the prelude declares `maximum`. The root
+package keeps the whole rule, because everything visible to the root — its
+own declarations and the prelude's unqualified exports — is unqualified
+there. Imported packages' renamed declarations can never collide with a
+local (no user identifier contains `__`), so the rule bites only in the two
+directions just named. This is law 6 of section 12. The spliced bootstrap
+library is its own package for this purpose (identity `std`), and the
+tokens of every package are stamped with their package, so the checker
+reads the declaring package of any binding from the binding itself.
+
 **Methods** are looked up by label through their receiver type and are not
 renamed themselves (the receiver type is). Everything else a package declares
 — functions, values, types, interfaces, tag schemas — is renamed; field tag
@@ -626,8 +644,14 @@ naming the import to add (`encode` needs `import("json")`, text needs
 - Opaque projection is admitted exactly inside the declaring package.
 - Version selection satisfies every requirement, is the least such version,
   and is one of the requirements.
+- The set of legal local names in a package is a function of that package's
+  declarations and imports alone; in particular it does not change when a
+  different package becomes the build root (section 7, "Scope is per
+  package"). Checked by executable tests (`compiler/e2e_ml_feedback_test.go`),
+  not yet modeled in Lean.
 
-These laws are mechanically checked in Lean (`spec/lean/Oak/Modules.lean`).
+These laws are mechanically checked in Lean (`spec/lean/Oak/Modules.lean`),
+except the scoping law, whose formal model is a recorded gap.
 `spec/lean/Oak/ModulesRefinement.lean` states the correspondence in
 refinement form: `lookup` resolves exactly the abstractly reachable members
 (`lookup_iff_reachable`), a complete Kahn run is a valid compile order and a

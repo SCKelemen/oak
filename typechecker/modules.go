@@ -55,6 +55,19 @@ func (tc *TypeChecker) SetModuleContext(opaque map[string]string, packages []str
 	}
 }
 
+// AddPackagePaths registers further package identities that tokens may be
+// stamped with — the spliced bootstrap prelude (`std`) in particular, which
+// is not a loaded package but is not the root package either
+// (docs/spec/83-modules.md section 7).
+func (tc *TypeChecker) AddPackagePaths(packages ...string) {
+	if tc.packagePaths == nil {
+		tc.packagePaths = map[string]bool{}
+	}
+	for _, path := range packages {
+		tc.packagePaths[path] = true
+	}
+}
+
 // SetSealedOpaque records, per importing package (the root spelled ""),
 // the types that a sealed import's `Name: type` member made abstract for
 // that package: projections are rejected there even though the declaring

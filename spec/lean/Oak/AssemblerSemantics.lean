@@ -1,3 +1,5 @@
+import Std.Tactic.BVDecide
+
 /-!
 # Assembler semantics: registers, width views, data processing
 
@@ -247,12 +249,33 @@ theorem hi_holds_iff {w : Nat} (l r : BitVec w) : condHolds .hi l r = true ↔ r
     exact Nat.lt_irrefl _ hlt
 
 /-- The signed codes agree with `BitVec.slt`, checked exhaustively at width
-    4 — the executable cross-check the spec asks of the normalizer; the
-    general law is the standard N ≠ V reading, transliterated. -/
+    4 (the kernel evaluates every case) — the executable cross-check the
+    spec asks of the normalizer. -/
 theorem lt_holds_eq_slt_w4 : ∀ l r : BitVec 4, condHolds .lt l r = l.slt r := by decide
 theorem ge_holds_eq_not_slt_w4 : ∀ l r : BitVec 4, condHolds .ge l r = !(l.slt r) := by decide
 theorem gt_holds_eq_slt_w4 : ∀ l r : BitVec 4, condHolds .gt l r = r.slt l := by decide
 theorem le_holds_eq_not_slt_w4 : ∀ l r : BitVec 4, condHolds .le l r = !(r.slt l) := by decide
+
+/-- At the contract widths the signed codes are proved by bit-blasting
+    (`bv_decide`: a SAT certificate checked by the kernel) — the same
+    decision the Go verifier makes, now as a theorem about the flag
+    definitions for every 32- and 64-bit operand pair. -/
+theorem lt_holds_eq_slt_w32 (l r : BitVec 32) : condHolds .lt l r = l.slt r := by
+  simp only [condHolds, Cond.holds, flagsOf]; bv_decide
+theorem ge_holds_eq_not_slt_w32 (l r : BitVec 32) : condHolds .ge l r = !(l.slt r) := by
+  simp only [condHolds, Cond.holds, flagsOf]; bv_decide
+theorem gt_holds_eq_slt_w32 (l r : BitVec 32) : condHolds .gt l r = r.slt l := by
+  simp only [condHolds, Cond.holds, flagsOf]; bv_decide
+theorem le_holds_eq_not_slt_w32 (l r : BitVec 32) : condHolds .le l r = !(r.slt l) := by
+  simp only [condHolds, Cond.holds, flagsOf]; bv_decide
+theorem lt_holds_eq_slt_w64 (l r : BitVec 64) : condHolds .lt l r = l.slt r := by
+  simp only [condHolds, Cond.holds, flagsOf]; bv_decide
+theorem ge_holds_eq_not_slt_w64 (l r : BitVec 64) : condHolds .ge l r = !(l.slt r) := by
+  simp only [condHolds, Cond.holds, flagsOf]; bv_decide
+theorem gt_holds_eq_slt_w64 (l r : BitVec 64) : condHolds .gt l r = r.slt l := by
+  simp only [condHolds, Cond.holds, flagsOf]; bv_decide
+theorem le_holds_eq_not_slt_w64 (l r : BitVec 64) : condHolds .le l r = !(r.slt l) := by
+  simp only [condHolds, Cond.holds, flagsOf]; bv_decide
 
 /-- `csel d, n, m, cond`: the first operand when the condition holds. -/
 def csel {w : Nat} (c : Cond) (f : Flags) (a b : BitVec w) : BitVec w :=
@@ -281,5 +304,61 @@ def execCsel (c : Cond) (r : Regs) (d n m a b : Fin 32) : Regs :=
 theorem csel_lo_max {w : Nat} (a b : BitVec w) :
     csel .lo (flagsOf a b) b a = if a.ult b then b else a := by
   simp [csel, Cond.holds, flagsOf, BitVec.ult_iff_toNat_lt]
+
+/-! ## Acyclic branches
+
+A conditional branch splits the machine's future: the path executor of
+`asm/verify.go` continues at the label under the branch condition and at
+the next instruction under its negation, and the two results meet as a
+select. `branch_as_select` is the law that makes the unfolding sound: the
+value a body computes is the select, on the branch condition, of the values
+its two continuations compute. -/
+
+/-- The result of `b.cond L` followed by continuations `taken` (at L) and
+    `fall` (next instruction), each already a function of the state. -/
+def branch {α : Type} (c : Cond) (f : Flags) (taken fall : α) : α :=
+  if c.holds f then taken else fall
+
+theorem branch_as_select {w : Nat} (c : Cond) (f : Flags) (taken fall : BitVec w) :
+    branch c f taken fall = csel c f taken fall := rfl
+
+/-- The branch is transparent to any later computation: continuing the
+    paths and selecting is selecting and continuing (the executor may fork
+    early and rejoin at a shared tail). -/
+theorem branch_map {α β : Type} (c : Cond) (f : Flags) (taken fall : α) (k : α → β) :
+    k (branch c f taken fall) = branch c f (k taken) (k fall) := by
+  unfold branch
+  split <;> rfl
+
+/-! ## Span memory
+
+A span or view parameter arrives as its `{base, len}` pair (`Oak.Assembler`
+§7). The verifier models it as the executor does: an opaque base, a 32-bit
+length, and one element value per index — unconstrained, since the seam
+checker has already placed every load under a dominating guard proving the
+index inside the length (`Oak.Assembler.span_access`). A load at byte offset
+`off` over `elem`-byte elements reads element `off / elem` when `off` is a
+whole number of elements; the Oak body's `v[k]` is the same element. -/
+
+structure Span (w : Nat) where
+  len : BitVec 32
+  elems : Nat → BitVec w
+
+/-- `ldr rD, [base, #off]` through a span base, when the offset is a whole
+    element. -/
+def loadElem {w : Nat} (s : Span w) (elem off : Nat) : BitVec w :=
+  s.elems (off / elem)
+
+/-- A load at offset `k * elem` is element `k` — the executor's element
+    naming `v[k]`. -/
+theorem loadElem_at {w : Nat} (s : Span w) (elem k : Nat) (h : 0 < elem) :
+    loadElem s elem (k * elem) = s.elems k := by
+  simp [loadElem, Nat.mul_div_cancel _ h]
+
+/-- Under the guard `¬ (len < N)` every element index below `N` is inside
+    the span: the Oak side's `len(v) < N ? default | ...v[k]...` and the
+    asm's `cmp wL, #N; b.lo` read the same elements on the same inputs. -/
+theorem guarded_index_in_bounds (len N k : Nat) (hguard : ¬ len < N) (hk : k < N) : k < len := by
+  omega
 
 end Oak.AssemblerSemantics

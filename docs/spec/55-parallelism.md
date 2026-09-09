@@ -77,7 +77,7 @@ A `par.reduce`-like operation therefore requires a contract that makes regroupin
 - a programmer-selected numeric mode that permits reassociation;
 - a specified deterministic reduction tree whose grouping is itself the operation's semantics.
 
-In particular, ordinary IEEE floating-point addition must not be silently treated as mathematically associative under default strict machine semantics.
+In particular, ordinary IEEE floating-point addition must not be silently treated as mathematically associative under default strict machine semantics. `20-types.md` §11.3 fixes those semantics (no reassociation, no contraction, in any backend) and takes the fourth option for the one reduction it defines: `simd.reduce_add` over a float vector is a specified pairwise tree.
 
 The identity element, if required by the operation, is likewise a semantic law and not merely an optimization hint.
 

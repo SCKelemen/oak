@@ -146,3 +146,104 @@ func TestVerifyConditionalSelects(t *testing.T) {
 		t.Fatalf("condition mi must be trusted, got %s: %s", single.Kind, single.Message)
 	}
 }
+
+// Acyclic branches (§8, third increment): a conditional branch forks the
+// symbolic state under its condition; the paths' results meet as a select.
+func TestVerifyAcyclicBranches(t *testing.T) {
+	maxDecl := "max32: (a, b: u32) -> u32"
+	maxBody := "a < b ? b | a"
+	branchy := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  b.lo take\n  ret\ntake:\n  mov w0, w1\n  ret")
+	if branchy.Kind != VerdictProven {
+		t.Fatalf("max via b.lo must be proven, got %s: %s", branchy.Kind, branchy.Message)
+	}
+	wrongBranch := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  b.hs take\n  ret\ntake:\n  mov w0, w1\n  ret")
+	if wrongBranch.Kind != VerdictMismatch {
+		t.Fatalf("b.hs for a < b must be a mismatch, got %s: %s", wrongBranch.Kind, wrongBranch.Message)
+	}
+	// Two branches, three paths: a clamp.
+	clamp := verifyCase(t, "clamp: (v, lo, hi: u32) -> u32", "v < lo ? lo | (v > hi ? hi | v)",
+		"  bind w0 = v\n  bind w1 = lo\n  bind w2 = hi\n  cmp w0, w1\n  b.lo low\n  cmp w0, w2\n  b.hi high\n  ret\nlow:\n  mov w0, w1\n  ret\nhigh:\n  mov w0, w2\n  ret")
+	if clamp.Kind != VerdictProven {
+		t.Fatalf("clamp must be proven, got %s: %s", clamp.Kind, clamp.Message)
+	}
+	// Paths rejoining through an unconditional branch into a shared tail.
+	rejoin := verifyCase(t, maxDecl, "(a < b ? b | a) + u32(1)",
+		"  bind w0 = a\n  bind w1 = b\n  clobber w9\n  cmp w0, w1\n  b.lo take\n  mov w9, w0\n  b done\ntake:\n  mov w9, w1\ndone:\n  add w0, w9, #1\n  ret")
+	if rejoin.Kind != VerdictProven {
+		t.Fatalf("rejoining paths must be proven, got %s: %s", rejoin.Kind, rejoin.Message)
+	}
+	// A backward branch is a loop: outside the subset, trusted.
+	loop := verifyCase(t, "cd: (n: u32) -> u32", "u32(0)", "  bind w0 = n\nagain:\n  cmp w0, #0\n  b.eq done\n  sub w0, w0, #1\n  b again\ndone:\n  ret")
+	if loop.Kind != VerdictTrusted || !strings.Contains(loop.Message, "loop") {
+		t.Fatalf("a loop must be trusted, got %s: %s", loop.Kind, loop.Message)
+	}
+	// Bool results and compound conditions: `&&` over two comparisons is the
+	// branch chain, and a Bool-typed body is its 0/1 representation.
+	inRange := verifyCase(t, "in_range: (v, lo, hi: u32) -> Bool", "lo <= v && v < hi",
+		"  bind w0 = v\n  bind w1 = lo\n  bind w2 = hi\n  cmp w0, w1\n  b.lo no\n  cmp w0, w2\n  b.hs no\n  mov w0, #1\n  ret\nno:\n  mov w0, #0\n  ret")
+	if inRange.Kind != VerdictProven {
+		t.Fatalf("a range test must be proven, got %s: %s", inRange.Kind, inRange.Message)
+	}
+	inRangeWrong := verifyCase(t, "in_range: (v, lo, hi: u32) -> Bool", "lo <= v && v < hi",
+		"  bind w0 = v\n  bind w1 = lo\n  bind w2 = hi\n  cmp w0, w1\n  b.lo no\n  cmp w0, w2\n  b.hi no\n  mov w0, #1\n  ret\nno:\n  mov w0, #0\n  ret")
+	if inRangeWrong.Kind != VerdictMismatch {
+		t.Fatalf("an inclusive upper bound for an exclusive one must be a mismatch, got %s: %s", inRangeWrong.Kind, inRangeWrong.Message)
+	}
+	either := verifyCase(t, "either: (a, b: u32) -> Bool", "a == u32(0) || b == u32(0)",
+		"  bind w0 = a\n  bind w1 = b\n  cmp w0, #0\n  b.eq yes\n  cmp w1, #0\n  b.eq yes\n  mov w0, #0\n  ret\nyes:\n  mov w0, #1\n  ret")
+	if either.Kind != VerdictProven {
+		t.Fatalf("a disjunction must be proven, got %s: %s", either.Kind, either.Message)
+	}
+}
+
+// Span memory (§8, fourth increment): a span parameter is its length and
+// its elements; a guarded load at a whole-element offset is the element
+// parameter, and the Oak body indexes the view under the same guard.
+func TestVerifySpanMemory(t *testing.T) {
+	decl := "pair_sum: (v: []u32) -> u32"
+	body := "len(v) < u32(2) ? u32(0) | v[0] + v[1]"
+	asm := "  bind x0, w1 = v\n  clobber w9\n  cmp w1, #2\n  b.lo short\n  ldr w9, [x0]\n  ldr w0, [x0, #4]\n  add w0, w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret"
+	proven := verifyCase(t, decl, body, asm)
+	if proven.Kind != VerdictProven {
+		t.Fatalf("pair_sum must be proven, got %s: %s", proven.Kind, proven.Message)
+	}
+	// The guard spelled the other way round on the Oak side is the same function.
+	flipped := verifyCase(t, decl, "len(v) >= u32(2) ? v[0] + v[1] | u32(0)", asm)
+	if flipped.Kind != VerdictProven {
+		t.Fatalf("flipped guard must be proven, got %s: %s", flipped.Kind, flipped.Message)
+	}
+	// Reading element 0 twice is a different function: a mismatch naming the elements.
+	wrongElem := verifyCase(t, decl, body, "  bind x0, w1 = v\n  clobber w9\n  cmp w1, #2\n  b.lo short\n  ldr w9, [x0]\n  ldr w0, [x0]\n  add w0, w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if wrongElem.Kind != VerdictMismatch || !strings.Contains(wrongElem.Message, "v[1]=") {
+		t.Fatalf("a wrong element must be a mismatch naming the element, got %s: %s", wrongElem.Kind, wrongElem.Message)
+	}
+	// A wrong guard constant is a mismatch too: the asm returns 0 for a
+	// two-element span where Oak reads it.
+	wrongGuard := verifyCase(t, decl, body, "  bind x0, w1 = v\n  clobber w9\n  cmp w1, #3\n  b.lo short\n  ldr w9, [x0]\n  ldr w0, [x0, #4]\n  add w0, w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if wrongGuard.Kind != VerdictMismatch || !strings.Contains(wrongGuard.Message, "len(v)=2") {
+		t.Fatalf("a wrong guard must be a mismatch at len 2, got %s: %s", wrongGuard.Kind, wrongGuard.Message)
+	}
+	// 64-bit elements load through x registers; a signed element type
+	// compares signed.
+	wide := verifyCase(t, "first_or: (v: []u64, d: u64) -> u64", "len(v) == u32(0) ? d | v[0]",
+		"  bind x0, w1 = v\n  bind x2 = d\n  cmp w1, #1\n  b.lo empty\n  ldr x0, [x0]\n  ret\nempty:\n  mov x0, x2\n  ret")
+	if wide.Kind != VerdictProven {
+		t.Fatalf("64-bit element load must be proven, got %s: %s", wide.Kind, wide.Message)
+	}
+	signedMax := verifyCase(t, "head_max: (v: []i32) -> i32", "len(v) < u32(2) ? i32(0) | (v[0] < v[1] ? v[1] | v[0])",
+		"  bind x0, w1 = v\n  clobber w9\n  cmp w1, #2\n  b.lo short\n  ldr w9, [x0]\n  ldr w0, [x0, #4]\n  cmp w9, w0\n  csel w0, w0, w9, lt\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if signedMax.Kind != VerdictProven {
+		t.Fatalf("signed element max must be proven, got %s: %s", signedMax.Kind, signedMax.Message)
+	}
+	// Outside the subset: a byte span read as a word, a store through a span.
+	bytes := verifyCase(t, "b0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | u32(v[0])",
+		"  bind x0, w1 = v\n  cmp w1, #4\n  b.lo short\n  ldr w0, [x0]\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if bytes.Kind != VerdictTrusted {
+		t.Fatalf("a word load over bytes must be trusted, got %s: %s", bytes.Kind, bytes.Message)
+	}
+	store := verifyCase(t, "bump: (v: [*]u32) -> u32", "len(v) < u32(1) ? u32(0) | v[0]",
+		"  bind x0, w1 = v\n  clobber w9\n  cmp w1, #1\n  b.lo short\n  ldr w9, [x0]\n  add w9, w9, #1\n  str w9, [x0]\n  mov w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if store.Kind != VerdictTrusted {
+		t.Fatalf("a store through a span must be trusted, got %s: %s", store.Kind, store.Message)
+	}
+}

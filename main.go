@@ -84,19 +84,27 @@ func main() {
 func buildPackage(args []string) int {
 	dir := "."
 	output := ""
+	profile := ""
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "-o" && i+1 < len(args):
 			output = args[i+1]
 			i++
+		case args[i] == "-profile" && i+1 < len(args):
+			profile = args[i+1]
+			i++
 		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out.c] [dir]\n", args[i])
+			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out.c] [-profile default|strict] [dir]\n", args[i])
 			return 2
 		default:
 			dir = args[i]
 		}
 	}
-	code, err := compiler.New().WithPackageDir(dir).EmitC().Get()
+	if !validProfile(profile) {
+		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
+		return 2
+	}
+	code, err := compiler.New().WithPackageDir(dir).WithProfile(profile).EmitC().Get()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
@@ -297,17 +305,37 @@ func readManifest(dir string) (modules.Manifest, error) {
 	return modules.ParseManifest(string(text))
 }
 
-// runPackage implements `oak run [dir]`: build the package through the module
+// validProfile accepts the discipline profiles of docs/spec/85-discipline.md
+// section 1; "" selects the default profile.
+func validProfile(profile string) bool {
+	return profile == "" || profile == "default" || profile == "strict"
+}
+
+// runPackage implements `oak run [-profile p] [dir]`: build the package through the module
 // loader, compile the emitted C with the system C compiler into a temporary
 // directory, execute the binary with this process's stdio, and propagate its
 // exit status. This is a development convenience over trusted local source,
 // not a sandbox.
 func runPackage(args []string) int {
 	dir := "."
-	if len(args) > 0 {
-		dir = args[0]
+	profile := ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-profile" && i+1 < len(args):
+			profile = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-"):
+			fmt.Fprintf(os.Stderr, "oak run: unknown flag %s\nusage: oak run [-profile default|strict] [dir]\n", args[i])
+			return 2
+		default:
+			dir = args[i]
+		}
 	}
-	code, err := compiler.New().WithPackageDir(dir).EmitC().Get()
+	if !validProfile(profile) {
+		fmt.Fprintf(os.Stderr, "oak run: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
+		return 2
+	}
+	code, err := compiler.New().WithPackageDir(dir).WithProfile(profile).EmitC().Get()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1

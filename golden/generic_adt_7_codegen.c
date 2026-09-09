@@ -299,6 +299,7 @@ i32 oak_main(  ) {
       oak_Overflow e = oak__scrutinee_0.payload.Err;
       byteRange     = ( 0 - 1 )    ;
     }
+    else { __builtin_trap(); /* unreachable: exhaustive match */ }
     if ( found.tag == oak_Option_u32_tag_Some ) {
       u32 n = found.payload.Some;
     return oak_add_i32( oak_conv_i32_bits_u32( n ), byteRange )  ;

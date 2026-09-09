@@ -172,7 +172,10 @@ code-unit views and uses fallible validation/transcoding plus caller-owned outpu
 spans. UTF-8 read helpers validate and trap on invalid bytes; their fallible input
 boundary counterparts report `TextError`. `text_literal` constructs static UTF-8
 byte storage through ordinary borrowing. It is not a runtime `[]u8 -> Str[Utf8]`
-cast and does not expose a representation-preserving validity bypass.
+cast and does not expose a representation-preserving validity bypass. It
+performs no escape processing of its own: the scanner has already decoded the
+literal's escape sequences (`10-syntax.md` §2a), so `text_literal("a\n")` is
+two bytes, and the same holds for every string literal in every position.
 
 Unicode default full case conversion/folding is pinned to Unicode 17.0.0. Byte
 search results, scalar search results and grapheme counts remain explicitly

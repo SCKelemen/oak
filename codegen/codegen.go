@@ -1032,6 +1032,14 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 		}
 		return
 	}
+	// Every arm was guarded and none was a fallback. Exhaustiveness is
+	// checked upstream, so the trailing branch is unreachable; emitting it
+	// makes the C data flow total (a binding assigned in every arm is
+	// assigned on every path the C compiler can see, so -Wall stays clean)
+	// and turns the impossible fallthrough into a fail-stop, never UB.
+	if guarded {
+		cg.write("  else { __builtin_trap(); /* unreachable: exhaustive match */ }\n")
+	}
 }
 
 // Match payloads are scoped locals too. Preserve their declared container

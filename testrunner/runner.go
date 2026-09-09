@@ -18,6 +18,7 @@ type Config struct {
 	Adapter                              string
 	EmitFuzz                             string
 	CC                                   string
+	Profile                              string // discipline profile: "", "default", or "strict"
 	Runs, MaxBytes, Shrink, MaxDiscards  int
 	Seed                                 uint64
 	Timeout, BuildTimeout, ShrinkTimeout time.Duration
@@ -68,6 +69,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("oak test", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&cfg.CC, "cc", cfg.CC, "C compiler executable")
+	flags.StringVar(&cfg.Profile, "profile", "", "discipline profile: default or strict (docs/spec/85-discipline.md)")
 	flags.StringVar(&cfg.Adapter, "adapter", "", "trusted deterministic native adapter manifest (also required for replay)")
 	flags.IntVar(&cfg.Runs, "runs", cfg.Runs, "accepted generated cases per property/simulation/fuzz campaign")
 	flags.IntVar(&cfg.MaxBytes, "max-bytes", cfg.MaxBytes, "maximum input/choice-tape bytes (0..1048576)")
@@ -101,6 +103,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	if cfg.Workers < 1 || cfg.Workers > 64 || cfg.Campaign != "" && cfg.Replay != "" || cfg.Runs < 1 || cfg.Runs > 1000000 || cfg.MaxBytes < 0 || cfg.MaxBytes > 1<<20 || cfg.Shrink < 0 || cfg.MaxDiscards < 0 || cfg.Timeout <= 0 || cfg.BuildTimeout <= 0 || cfg.ShrinkTimeout <= 0 || cfg.Fuzz != "" && cfg.Sim != "" || cfg.Replay != "" && (cfg.Fuzz != "" || cfg.Sim != "" || cfg.Run != "" || cfg.List || cfg.Cover != "") {
 		fmt.Fprintln(stderr, "invalid test configuration")
+		return 2
+	}
+	if cfg.Profile != "" && cfg.Profile != "default" && cfg.Profile != "strict" {
+		fmt.Fprintf(stderr, "unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", cfg.Profile)
 		return 2
 	}
 	if cfg.EmitFuzz != "" && (cfg.Fuzz == "" || cfg.Replay != "" || cfg.List) {
@@ -146,6 +152,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	matched := 0
 	for i := range packages {
+		packages[i].Profile = cfg.Profile
 		var selected []Test
 		for _, test := range packages[i].Tests {
 			if !run.MatchString(test.Name) || cfg.Fuzz != "" && (test.Kind != "fuzz" || !fuzz.MatchString(test.Name)) || cfg.Sim != "" && (test.Kind != "simulation" || !sim.MatchString(test.Name)) {

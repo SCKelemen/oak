@@ -1,6 +1,7 @@
 package discipline
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/SCKelemen/oak/ast"
@@ -209,6 +210,12 @@ func TestBoundedLoopShapes(t *testing.T) {
 		{"decrementing advance", "i: i32 = 0\nwhile i < 10 {\ni = i - 1\n}", 1},
 		{"double assignment to counter", "i: i32 = 0\nwhile i < 10 {\ni = i + 1\ni = i + 1\n}", 1},
 		{"bound mutated in body", "n: i32 = 8\ni: i32 = 0\nwhile i < n {\ni = i + 1\nn = n + 1\n}", 1},
+		// ml finding F6: `u32(1)` is the same constant as `1` (docs/spec/25-type-inference.md
+		// section 3a), so a constructor-typed step or bound certifies the loop.
+		{"constructor-typed step", "k: u32 = u32(0)\nwhile k < 10 {\nk = k + u32(1)\n}", 0},
+		{"constructor-typed bound and step", "k: u32 = u32(0)\nwhile k < u32(10) {\nk = k + u32(1)\n}", 0},
+		{"constructor-typed zero step", "k: u32 = u32(0)\nwhile k < 10 {\nk = k + u32(0)\n}", 1},
+		{"constructor over a non-literal step", "s: u32 = 1\nk: u32 = u32(0)\nwhile k < 10 {\nk = k + u32(s)\n}", 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -218,6 +225,36 @@ func TestBoundedLoopShapes(t *testing.T) {
 					tt.input, got, CodeUnboundedLoop, tt.wantD0103, result.Diagnostics())
 			}
 		})
+	}
+}
+
+// ml finding F8: an OAK-D0103 record names the enclosing function, carries
+// the loop's position, and explains which part of the canonical shape the
+// loop misses, so a rejected loop is found by reading rather than bisection.
+func TestUnboundedLoopDiagnosticNamesFunctionAndPosition(t *testing.T) {
+	result := analyze(t, "spin: (n: u32): u32 {\n  i: u32 = 0\n  while i < n {\n    i = i + 1\n    n = n - 1\n  }\n  i\n}\n")
+	var found bool
+	for _, d := range result.Diagnostics() {
+		if string(d.Code) != string(CodeUnboundedLoop) {
+			continue
+		}
+		found = true
+		if !strings.Contains(d.Title, "spin") {
+			t.Errorf("title must name the enclosing function: %q", d.Title)
+		}
+		if d.Range.Start.Line != 2 {
+			t.Errorf("primary range must point at the while statement (line 3), got line %d", d.Range.Start.Line+1)
+		}
+		text := d.PlainText()
+		if !strings.Contains(text, "3:3:") {
+			t.Errorf("rendered diagnostic must carry the loop position even without a file:\n%s", text)
+		}
+		if !strings.Contains(text, "reassigned inside the loop body") {
+			t.Errorf("primary label must explain the missing shape:\n%s", text)
+		}
+	}
+	if !found {
+		t.Fatalf("expected one %s record: %#v", CodeUnboundedLoop, result.Diagnostics())
 	}
 }
 

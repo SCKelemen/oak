@@ -82,6 +82,76 @@ max32: (a, b: u32) -> u32 = {
 			t.Fatalf("flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
 		}
 	}
+	// Acyclic branches: a clamp with two conditional branches and three
+	// paths, proven against its nested Oak conditional and run both ways.
+	clamp := New().WithSource("clamp.oak", `
+clamp: (v, lo, hi: u32) -> u32 = v < lo ? lo | (v > hi ? hi | v)
+
+main: (): i32 {
+  assert(clamp(u32(5), u32(10), u32(20)) == u32(10))
+  assert(clamp(u32(50), u32(10), u32(20)) == u32(20))
+  assert(clamp(u32(15), u32(10), u32(20)) == u32(15))
+  42
+}
+`).WithAsmUnit("clamp.arm64.oakasm", `
+clamp: (v, lo, hi: u32) -> u32 = {
+  bind w0 = v
+  bind w1 = lo
+  bind w2 = hi
+  cmp w0, w1
+  b.lo low
+  cmp w0, w2
+  b.hi high
+  ret
+low:
+  mov w0, w1
+  ret
+high:
+  mov w0, w2
+  ret
+}
+`)
+	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
+		_, code, abnormal := buildAndRunFrom(t, "verified_clamp", clamp, flags...)
+		if abnormal || code != 42 {
+			t.Fatalf("clamp, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
+		}
+	}
+	// Span memory: a guarded pair sum over a view, proven against the Oak
+	// body that indexes the view under the same length guard.
+	pairSum := New().WithSource("pair.oak", `
+pair_sum: (v: []u32) -> u32 = len(v) < u32(2) ? u32(0) | v[0] + v[1]
+
+main: (): i32 {
+  buf: [4]u32
+  buf[0] = u32(40)
+  buf[1] = u32(2)
+  assert(pair_sum(view(&buf)) == u32(42))
+  one: [1]u32
+  assert(pair_sum(view(&one)) == u32(0))
+  42
+}
+`).WithAsmUnit("pair.arm64.oakasm", `
+pair_sum: (v: []u32) -> u32 = {
+  bind x0, w1 = v
+  clobber w9
+  cmp w1, #2
+  b.lo short
+  ldr w9, [x0]
+  ldr w0, [x0, #4]
+  add w0, w0, w9
+  ret
+short:
+  mov w0, #0
+  ret
+}
+`)
+	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
+		_, code, abnormal := buildAndRunFrom(t, "verified_pair", pairSum, flags...)
+		if abnormal || code != 42 {
+			t.Fatalf("pair_sum, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
+		}
+	}
 	// The wrong condition never compiles.
 	_, err := New().WithSource("max.oak", `
 max32: (a, b: u32) -> u32 = a < b ? b | a

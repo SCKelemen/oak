@@ -18,10 +18,30 @@ the compiler with stable diagnostic codes (`OAK-D01xx`), not new syntax.
   as rejections (zero-warning policy).
 
 Profile selection is a build-level concern, carried by
-`compiler.Options.Profile` (`WithProfile("strict")`); the CLI surface is not
-yet frozen. The compile pipeline gates on type checking, borrow checking,
-and discipline analysis: error diagnostics always reject, and the strict
-profile also rejects every warning (section 7).
+`compiler.Options.Profile` (`WithProfile("strict")`) and on the command line
+by `-profile`:
+
+```text
+oak build -profile strict [-o out.c] [dir]
+oak run   -profile strict [dir]
+oak test  -profile strict [flags] [dir]
+```
+
+The flag accepts `default` and `strict`; anything else is a usage error. The
+REPL's `:strict` toggles the same option for a session. The compile pipeline
+gates on type checking, borrow checking, and discipline analysis: error
+diagnostics always reject, and the strict profile also rejects every warning
+(section 7).
+
+**Direction: profiles per module.** A profile is a property of the code
+being judged, and a dependency's discipline is its own business: a strict
+root should not be blocked by a warning inside a library it imports, and a
+library should be able to promise strictness to its importers. The planned
+shape is a `profile <name>` directive in `oak.mod` (`83-modules.md` §4.1)
+that sets the profile every package of that module is judged under, with
+the command-line flag overriding it for the root module only. Until it
+lands, `-profile strict` judges the whole program, prelude included, and
+section 3's canonical shape must hold in every loop the build reaches.
 
 ## 2. Bounded call depth: safe recursion
 
@@ -76,12 +96,31 @@ mismatched-signature groups, and lowering for binding/variant-pattern arms.
 Every loop must have a statically evident bound (Power of Ten rule 2).
 Enforced: the canonical bounded counter shape — `while i < bound` (or `<=`)
 advancing `i` exactly once per iteration by a positive constant, with the
-bound a literal or an identifier the body never reassigns — is recognized as
-carrying its own bound (`Oak.BoundedLoop` proves such a loop runs at most
-`bound - i` iterations). Every other `while` records the obligation
-`OAK-D0103` (warning), which the strict profile rejects. Planned
-extensions: declared bounds with checked runtime guards, and structural
-iteration over finite sequences.
+bound an integer constant or an identifier the body never reassigns — is
+recognized as carrying its own bound (`Oak.BoundedLoop` proves such a loop
+runs at most `bound - i` iterations). Every other `while` records the
+obligation `OAK-D0103` (warning), which the strict profile rejects.
+
+An **integer constant** in the step or the bound is an integer literal or an
+integer-type constructor applied to one integer literal: `k = k + 1` and
+`k = k + u32(1)` are the same step, and `while k < 10` and
+`while k < u32(10)` the same bound, exactly as `25-type-inference.md` §3a
+makes them the same expression. The discipline analysis runs before
+literal typing would fold the constructor, so it recognizes the constructor
+itself; a constructor over anything but a literal is not a constant.
+
+The `OAK-D0103` record names the enclosing function in its title, points its
+primary label at the `while` statement, and says which part of the canonical
+shape the loop misses — the condition, the bound, a missing or doubled
+advance, or a non-constant step:
+
+```text
+warning[OAK-D0103]: stdlib.oak:348:7: loop in bytes_move_within has no statically evident bound
+  = primary: the step is not `i = i + k` with k a positive constant
+```
+
+Planned extensions: declared bounds with checked runtime guards, and
+structural iteration over finite sequences.
 
 ## 4. Allocation phase
 
@@ -107,8 +146,24 @@ strict-profile density lint.
 ## 6. Checked results
 
 A non-unit result must be consumed or explicitly discarded (Power of Ten
-rule 7). Planned: unused-result diagnostic with an explicit discard form.
-Not yet enforced.
+rule 7).
+
+**The discard form** is implemented: `_ = expr` evaluates `expr` for its
+effects and drops its result on purpose. `_` binds nothing and is never a
+variable; the statement is an expression statement marked as a discard.
+Discarding a unit-typed expression is rejected (the form would say nothing),
+so every `_ =` in a program marks a real value the author chose to ignore —
+typically the status result of an extern binding:
+
+```oak
+_ = putchar(c.Int(10))       // putchar returns c.Int; we do not care
+```
+
+**The unused-result rule** is planned: `OAK-D0104` (warning) for an
+expression statement whose non-unit result is neither consumed nor
+discarded, rejected by the strict profile. The discard form exists first so
+that the rule, when it lands, has an answer to point at. Until then a bare
+`putchar(c.Int(10))` is accepted silently.
 
 ## 7. Zero warnings
 
