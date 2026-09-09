@@ -9,7 +9,7 @@ func TestE2ENestedArrayFieldStores(t *testing.T) {
 Leaf: type = struct { values: [3]u32 }
 Root: type = struct { ready: [3]u32, leaves: [2]Leaf }
 
-store: (roots: [*]Root, row: u32, slot: u32, value: u32): () {
+write_slots: (roots: [*]Root, row: u32, slot: u32, value: u32): () {
   roots[row].ready[slot] = value
   roots[row].leaves[u32(1)].values[slot] = value + u32(1)
 }
@@ -18,7 +18,7 @@ main: (): i32 = {
   storage: [2]Root
   storage[0].leaves[0].values[1] = u32(42)
   roots: [*]Root = span(&storage)
-  store(roots, u32(1), u32(2), u32(20))
+  write_slots(roots, u32(1), u32(2), u32(20))
   assert(roots[1].ready[2] == u32(20))
   assert(roots[1].leaves[1].values[2] == u32(21))
   assert(roots[0].ready[2] == u32(0))

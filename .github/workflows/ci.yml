@@ -27,6 +27,38 @@ jobs:
     - name: Verify dependencies
       run: go mod verify
 
+    - name: Check nested array store regression
+      run: go test -v ./compiler -run '^TestE2ENestedArrayFieldStores      run: go test -v -race -timeout 20m ./...
+
+  aarch64-memory-refinement:
+    name: AArch64 Memory Refinement
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.27.1'
+
+    - name: Verify Clang cross-target support
+      run: |
+        clang --version
+        clang --target=aarch64-none-elf -ffreestanding -x c -S -o /tmp/oak-aarch64-smoke.s - <<'EOF'
+        _Atomic(unsigned long long) oak_atomic_smoke;
+        EOF
+
+    - name: Verify AArch64 atomic lowering
+      env:
+        OAK_REQUIRE_AARCH64_CLANG: '1'
+      run: go test -v ./codegen -run '^TestAArch64'
+
+    - name: Verify memory-model litmus outcomes
+      run: go test -v ./semir -run '^TestLitmus'
+ -count=1
+
     - name: Run tests
       run: go test -v -race -timeout 20m ./...
 
