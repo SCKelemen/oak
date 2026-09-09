@@ -991,3 +991,88 @@ main: (): i32 = others.first_key(Other { weight: 1 }) == u32(1) ? 42 | 1
 	root = writeModule(t, files)
 	expectModuleError(t, root, ".", "OAK-M0303")
 }
+
+// Library sugar on package spellings: derived codecs, text literals and
+// fluent calls resolve to the imported packages' internal names, and a
+// missing package fails closed naming the import to add.
+func TestE2EModulesLibrarySugarOnPackages(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"main.oak": `package main
+
+import("json")
+import("strings")
+
+Point: type = struct { x: u32, y: u32 }
+
+main: (): i32 = {
+  out: [64]u8
+  dst: [*]u8 = span(&out)
+  written: Result[u32, json.JsonError] = encode[Point, Json](Point { x: 4, y: 2 }, dst)
+  b: strings.TextBuilder = strings.text_builder()
+  b = b.append_text(dst, text_literal("ok"))
+  json.json_result_ok(written) && json.json_result_value(written) == u32(13) && b.length == u32(2) ? 42 | 1
+}
+`,
+	})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	root = writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"main.oak": `package main
+
+import("strings")
+
+Point: type = struct { x: u32 }
+
+main: (): i32 = {
+  out: [64]u8
+  dst: [*]u8 = span(&out)
+  b: strings.TextBuilder = strings.text_builder()
+  written: Result[u32, u8] = encode[Point, Json](Point { x: 4 }, dst)
+  b.length == u32(0) ? 42 | 1
+}
+`,
+	})
+	_, err := New().WithPackageDir(root).EmitC().Get()
+	if err == nil || !strings.Contains(err.Error(), `import("json")`) {
+		t.Fatalf("expected a fail-closed hint to import json, got %v", err)
+	}
+}
+
+// derive.format renders records and ADTs into a caller-owned span.
+func TestE2EModulesDeriveFormat(t *testing.T) {
+	src := `import(std)
+
+Point: type = struct { x: i32, y: u8, on: Bool }
+Shape: type = Dot | Line: i32 | At: Point
+
+point_format: (v: Point, dst: [*]u8): Result[u32, TextError] = derive.format
+shape_format: (v: Shape, dst: [*]u8): Result[u32, TextError] = derive.format
+
+check: (dst: [*]u8, written: Result[u32, TextError], expected: []u8): Bool = {
+  ok: Bool = text_result_ok(written) && text_result_value(written) == len(expected)
+  i: u32 = 0
+  while i < len(expected) && ok {
+    ok = dst[i] == expected[i]
+    i = i + 1
+  }
+  ok
+}
+
+main: (): i32 = {
+  out: [96]u8
+  dst: [*]u8 = span(&out)
+  first: Bool = check(dst, point_format(Point { x: -3, y: 42, on: true }, dst), text_literal("Point { x: -3, y: 42, on: true }"))
+  second: Bool = check(dst, shape_format(Shape.At(Point { x: 7, y: 1, on: false }), dst), text_literal("At(Point { x: 7, y: 1, on: false })"))
+  third: Bool = check(dst, shape_format(Shape.Dot, dst), text_literal("Dot"))
+  first && second && third ? 42 | 1
+}
+`
+	code, abnormal := buildAndRun(t, "derive_format", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}

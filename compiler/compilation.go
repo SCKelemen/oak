@@ -72,6 +72,9 @@ type SyntaxTree struct {
 	// Modules carries the elaborator's facts for a package build; nil for a
 	// single-source compilation.
 	Modules *ModuleInfo
+	// Prelude records which standard library prelude was spliced: "full"
+	// (import(std)), "core" (library packages imported), or "".
+	Prelude string
 }
 
 // SemanticModel owns type information for a syntax tree.
@@ -83,6 +86,10 @@ type SemanticModel struct {
 	// never from compiler-generated declarations.
 	PublicRoot  *ast.Program
 	TypeChecker *typechecker.TypeChecker
+	// Diagnostics are every diagnostic the phases recorded, warnings
+	// included, whether or not the profile rejected them: the recorded
+	// assumptions and undischarged checks a proof-aware tool can surface.
+	Diagnostics []*diagnostic.Diagnostic
 	// AsmFunctions are the checked asm-unit functions the backend emits as
 	// top-level assembly blocks.
 	AsmFunctions []*asm.Function
@@ -230,6 +237,9 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := lowerDerived(tree, comp); err != nil {
 			return nil, err
 		}
+		if err := lowerLibrarySugar(tree); err != nil {
+			return nil, err
+		}
 		if err := lowerQualifiedVariants(tree.Root); err != nil {
 			return nil, err
 		}
@@ -263,9 +273,11 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		}
 
 		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions}
+		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)
 
 		bc := borrowchecker.New()
 		bc.CheckProgram(tree.Root, tc.Env())
+		model.Diagnostics = append(model.Diagnostics, bc.Diagnostics()...)
 		if err := comp.gate("borrowcheck", bc.Diagnostics()); err != nil {
 			return nil, err
 		}
@@ -276,7 +288,9 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			}
 		}
 
-		if err := comp.gate("discipline", discipline.AnalyzeProgram(tree.Root).Diagnostics()); err != nil {
+		disciplineDiagnostics := discipline.AnalyzeProgram(tree.Root).Diagnostics()
+		model.Diagnostics = append(model.Diagnostics, disciplineDiagnostics...)
+		if err := comp.gate("discipline", disciplineDiagnostics); err != nil {
 			return nil, err
 		}
 

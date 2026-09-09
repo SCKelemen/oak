@@ -168,13 +168,18 @@ func (d *deriver) lowerRequest(fn *ast.FunctionStatement) {
 			d.report(CodeDeriveSignature, fn.Name, "derive.compare requires the signature (a: T, b: T): Ordering, with Ordering: type = Less | Equal | Greater in scope")
 			return
 		}
+	case "format":
+		if len(fn.Parameters) != 2 || fn.Receiver != nil || len(fn.TypeParams) != 0 || !isSpanOfU8(fn.Parameters[1].Type) || !d.isTextResult(fn.ReturnType) {
+			d.report(CodeDeriveSignature, fn.Name, "derive.format requires the signature (v: T, dst: [*]u8): Result[u32, TextError] (the strings library's TextError)")
+			return
+		}
 	case "test_generate", "test_encode", "test_decode":
 		// Signature and target type are checked together: the type is the
 		// return type (generate), the parameter (encode), or Option's
 		// argument (decode).
 	default:
 		diag := d.report(CodeDeriveUnknown, fn.Body, "derive.%s is not a derivable operation", kind)
-		diag.AddHelp("derivable operations: derive.equal, derive.hash, derive.compare, derive.test_generate, derive.test_encode, derive.test_decode")
+		diag.AddHelp("derivable operations: derive.equal, derive.hash, derive.compare, derive.format, derive.test_generate, derive.test_encode, derive.test_decode")
 		return
 	}
 	var typeName *ast.Identifier
@@ -211,15 +216,22 @@ func (d *deriver) lowerRequest(fn *ast.FunctionStatement) {
 		return
 	}
 	var call strings.Builder
-	call.WriteString(helper)
-	call.WriteString("(")
-	for i, param := range fn.Parameters {
-		if i > 0 {
-			call.WriteString(", ")
+	if kind == "format" {
+		// The formatter threads a text builder over the caller's span and
+		// finishes it: derived bodies use the library's flat spellings, which
+		// the library sugar resolves afterwards (compiler/stdlib.go).
+		fmt.Fprintf(&call, "finish_text(%s(text_builder(), %s, %s))", helper, fn.Parameters[1].Name.Value, fn.Parameters[0].Name.Value)
+	} else {
+		call.WriteString(helper)
+		call.WriteString("(")
+		for i, param := range fn.Parameters {
+			if i > 0 {
+				call.WriteString(", ")
+			}
+			call.WriteString(param.Name.Value)
 		}
-		call.WriteString(param.Name.Value)
+		call.WriteString(")")
 	}
-	call.WriteString(")")
 	body, err := parseGeneratedExpression(call.String())
 	if err != nil {
 		d.report(CodeDeriveUnsupported, fn.Body, "derive.%s: %v", kind, err)
@@ -251,6 +263,8 @@ func (d *deriver) helper(kind, typeName string, node ast.Node) (string, bool) {
 		text, ok = d.hashHelper(name, typeName, decl, node)
 	case "compare":
 		text, ok = d.compareHelper(name, typeName, decl, node)
+	case "format":
+		text, ok = d.formatHelper(name, typeName, decl, node)
 	case "test_generate":
 		text, ok = d.testGenerateHelper(name, typeName, decl, node)
 	case "test_encode":
@@ -266,7 +280,7 @@ func (d *deriver) helper(kind, typeName string, node ast.Node) (string, bool) {
 }
 
 func (d *deriver) helperOwner(helper string) (string, bool) {
-	for _, prefix := range []string{"__derive_equal_", "__derive_hash_", "__derive_compare_", "__derive_test_generate_", "__derive_test_encode_", "__derive_test_decode_"} {
+	for _, prefix := range []string{"__derive_equal_", "__derive_hash_", "__derive_compare_", "__derive_format_", "__derive_test_generate_", "__derive_test_encode_", "__derive_test_decode_"} {
 		if strings.HasPrefix(helper, prefix) {
 			if decl := d.types[strings.TrimPrefix(helper, prefix)]; decl != nil {
 				return decl.Name.Token.SemanticContext, true
@@ -561,4 +575,127 @@ func (d *deriver) compareTerm(left, right string, typeExpr ast.Expression, node 
 		return "", false
 	}
 	return fmt.Sprintf("%s(%s, %s)", helper, left, right), true
+}
+
+// isSpanOfU8 recognizes the `[*]u8` destination parameter.
+func isSpanOfU8(expr ast.Expression) bool {
+	index, ok := expr.(*ast.IndexExpression)
+	if !ok {
+		return false
+	}
+	element, okElement := index.Left.(*ast.Identifier)
+	marker, okMarker := index.Index.(*ast.Identifier)
+	return okElement && okMarker && element.Value == "u8" && marker.Value == "*"
+}
+
+// isTextResult recognizes `Result[u32, TextError]`, TextError being the
+// strings library's error type under its flat or internal spelling.
+func (d *deriver) isTextResult(expr ast.Expression) bool {
+	outer, ok := expr.(*ast.IndexExpression)
+	if !ok {
+		return false
+	}
+	inner, ok := outer.Left.(*ast.IndexExpression)
+	if !ok {
+		return false
+	}
+	base, okBase := inner.Left.(*ast.Identifier)
+	first, okFirst := inner.Index.(*ast.Identifier)
+	second, okSecond := outer.Index.(*ast.Identifier)
+	if !okBase || !okFirst || !okSecond || base.Value != "Result" || first.Value != "u32" {
+		return false
+	}
+	return second.Value == "TextError" || strings.HasSuffix(modules.DemangleText(second.Value), ".TextError")
+}
+
+// signedFormatHelper is generated once: a two's-complement-safe decimal
+// rendering of any signed width widened to i64.
+const signedFormatHelper = "__derive_format_signed"
+
+func (d *deriver) formatHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (string, bool) {
+	if !d.generated[signedFormatHelper] {
+		d.generated[signedFormatHelper] = true
+		d.helpers = append(d.helpers, signedFormatHelper+": (b: TextBuilder, dst: [*]u8, v: i64): TextBuilder = v < 0 ? append_u64(append_rune(b, dst, u32(45)), dst, u64_bits_i64(0 - (v + 1)) + u64(1)) | append_u64(b, dst, u64_bits_i64(v))")
+	}
+	short := modules.DemangleText(typeName)
+	if index := strings.LastIndexByte(short, '.'); index >= 0 {
+		short = short[index+1:]
+	}
+	var body strings.Builder
+	step := 0
+	current := "b"
+	emit := func(expr string) {
+		fmt.Fprintf(&body, "  s%d: TextBuilder = %s\n", step, expr)
+		current = fmt.Sprintf("s%d", step)
+		step++
+	}
+	literal := func(text string) string {
+		return fmt.Sprintf("append_text(%s, dst, text_literal(%q))", current, text)
+	}
+	if shape, isRecord := recordShape(decl); isRecord {
+		body.WriteString("{\n")
+		emit(literal(short + " {"))
+		for i, field := range shape.FieldOrder {
+			separator := " "
+			if i > 0 {
+				separator = ", "
+			}
+			emit(literal(separator + field.Name + ": "))
+			term, ok := d.formatTerm(current, "v."+field.Name, field.Value, node, typeName, field.Name)
+			if !ok {
+				return "", false
+			}
+			emit(term)
+		}
+		emit(literal(" }"))
+		fmt.Fprintf(&body, "  %s\n}", current)
+	} else {
+		body.WriteString("v ?")
+		for i, variant := range decl.Variants {
+			if variant.Name == nil {
+				return "", false
+			}
+			if i > 0 {
+				body.WriteString(" |")
+			}
+			if variant.Payload == nil {
+				fmt.Fprintf(&body, " .%s => append_text(b, dst, text_literal(%q))", variant.Name.Value, variant.Name.Value)
+				continue
+			}
+			opened := fmt.Sprintf("append_text(b, dst, text_literal(%q))", variant.Name.Value+"(")
+			term, ok := d.formatTerm(opened, "x", variant.Payload, node, typeName, variant.Name.Value)
+			if !ok {
+				return "", false
+			}
+			fmt.Fprintf(&body, " .%s(x) => append_rune(%s, dst, u32(41))", variant.Name.Value, term)
+		}
+	}
+	return fmt.Sprintf("%s: (b: TextBuilder, dst: [*]u8, v: %s): TextBuilder = %s", name, typeName, body.String()), true
+}
+
+var signedFormatTypes = map[string]bool{"i8": true, "i16": true, "i32": true, "i64": true, "int": true, "ptr": true}
+
+// formatTerm renders one member onto the builder expression `builder`.
+func (d *deriver) formatTerm(builder, value string, typeExpr ast.Expression, node ast.Node, typeName, member string) (string, bool) {
+	primitive, declared, ok := d.fieldKind(typeExpr)
+	if !ok {
+		d.report(CodeDeriveUnsupported, node, "derive.format for %s: member %s has a type the generator cannot render (fixed-width integers, Bool, and declared records/ADTs are supported)", typeName, member)
+		return "", false
+	}
+	if primitive {
+		ident, _ := typeExpr.(*ast.Identifier)
+		switch {
+		case ident.Value == "Bool":
+			return fmt.Sprintf("(%s ? append_text(%s, dst, text_literal(\"true\")) | append_text(%s, dst, text_literal(\"false\")))", value, builder, builder), true
+		case signedFormatTypes[ident.Value]:
+			return fmt.Sprintf("%s(%s, dst, i64(%s))", signedFormatHelper, builder, value), true
+		default:
+			return fmt.Sprintf("append_u64(%s, dst, u64(%s))", builder, value), true
+		}
+	}
+	helper, ok := d.helper("format", declared, node)
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("%s(%s, dst, %s)", helper, builder, value), true
 }
