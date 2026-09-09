@@ -152,6 +152,51 @@ short:
 			t.Fatalf("pair_sum, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
 		}
 	}
+	// A counted loop: popcount of the low byte, the Oak `while` and the asm
+	// loop both unrolled eight times and proven equal bit by bit.
+	popcount := New().WithSource("pop.oak", `
+popcount8: (v: u32) -> u32 {
+  x: u32 = v
+  count: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < u32(8) {
+    count = count + (x & u32(1))
+    x = x >> u32(1)
+    i = i + u32(1)
+  }
+  count
+}
+
+main: (): i32 {
+  assert(popcount8(u32(0xFF)) == u32(8))
+  assert(popcount8(u32(0x1FF)) == u32(8))
+  assert(popcount8(u32(0xA5)) == u32(4))
+  assert(popcount8(u32(0)) == u32(0))
+  42
+}
+`).WithAsmUnit("pop.arm64.oakasm", `
+popcount8: (v: u32) -> u32 = {
+  bind w0 = v
+  clobber w9, w10, w11
+  mov w9, #0
+  mov w10, #8
+loop:
+  and w11, w0, #1
+  add w9, w9, w11
+  lsr w0, w0, #1
+  sub w10, w10, #1
+  cmp w10, #0
+  b.ne loop
+  mov w0, w9
+  ret
+}
+`)
+	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
+		_, code, abnormal := buildAndRunFrom(t, "verified_popcount", popcount, flags...)
+		if abnormal || code != 42 {
+			t.Fatalf("popcount8, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
+		}
+	}
 	// The wrong condition never compiles.
 	_, err := New().WithSource("max.oak", `
 max32: (a, b: u32) -> u32 = a < b ? b | a

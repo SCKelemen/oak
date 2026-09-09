@@ -247,3 +247,51 @@ func TestVerifySpanMemory(t *testing.T) {
 		t.Fatalf("a store through a span must be trusted, got %s: %s", store.Kind, store.Message)
 	}
 }
+
+// Counted loops (§8, fifth increment): constant folding lets a loop whose
+// trip count is a constant decide its own exit on both sides, so the body
+// unrolls into a straight-line term.
+func TestVerifyCountedLoops(t *testing.T) {
+	triple := "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < u32(3) {\n    acc = acc + a\n    i = i + u32(1)\n  }\n  acc\n}"
+	loop3 := "  bind w0 = a\n  clobber w9, w10\n  mov w9, #0\n  mov w10, #3\nloop:\n  add w9, w9, w0\n  sub w10, w10, #1\n  cmp w10, #0\n  b.ne loop\n  mov w0, w9\n  ret"
+	proven := verifyCase(t, "triple: (a: u32) -> u32", triple, loop3)
+	if proven.Kind != VerdictProven || !strings.Contains(proven.Message, "3*a") {
+		t.Fatalf("a 3-iteration loop must be proven as 3*a, got %s: %s", proven.Kind, proven.Message)
+	}
+	// One iteration too many is a mismatch.
+	loop4 := strings.Replace(loop3, "mov w10, #3", "mov w10, #4", 1)
+	wrong := verifyCase(t, "triple: (a: u32) -> u32", triple, loop4)
+	if wrong.Kind != VerdictMismatch {
+		t.Fatalf("a 4-iteration loop for 3*a must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
+	}
+	// A data-dependent trip count is outside the subset on either side.
+	dataLoop := "  bind w0 = a\n  bind w1 = n\n  clobber w9\n  mov w9, #0\nloop:\n  cmp w1, #0\n  b.eq done\n  add w9, w9, w0\n  sub w1, w1, #1\n  b loop\ndone:\n  mov w0, w9\n  ret"
+	trusted := verifyCase(t, "times: (a, n: u32) -> u32", "a", dataLoop)
+	if trusted.Kind != VerdictTrusted || !strings.Contains(trusted.Message, "trip count") {
+		t.Fatalf("a data-dependent loop must be trusted, got %s: %s", trusted.Kind, trusted.Message)
+	}
+	oakDataLoop := verifyCase(t, "times: (a, n: u32) -> u32", "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < n {\n    acc = acc + a\n    i = i + u32(1)\n  }\n  acc\n}", "  bind w0 = a\n  bind w1 = n\n  ret")
+	if oakDataLoop.Kind != VerdictTrusted || !strings.Contains(oakDataLoop.Message, "trip count") {
+		t.Fatalf("an Oak loop with a data-dependent count must be trusted, got %s: %s", oakDataLoop.Kind, oakDataLoop.Message)
+	}
+	// A bit loop: popcount of the low byte, eight unrolled shift-and-mask
+	// steps on each side, proven at the bit level.
+	popcount := "{\n  x: u32 = v\n  count: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < u32(8) {\n    count = count + (x & u32(1))\n    x = x >> u32(1)\n    i = i + u32(1)\n  }\n  count\n}"
+	popAsm := "  bind w0 = v\n  clobber w9, w10, w11\n  mov w9, #0\n  mov w10, #8\nloop:\n  and w11, w0, #1\n  add w9, w9, w11\n  lsr w0, w0, #1\n  sub w10, w10, #1\n  cmp w10, #0\n  b.ne loop\n  mov w0, w9\n  ret"
+	bits := verifyCase(t, "popcount8: (v: u32) -> u32", popcount, popAsm)
+	if bits.Kind != VerdictProven || !strings.Contains(bits.Message, "bit level") {
+		t.Fatalf("popcount8 must be proven at the bit level, got %s: %s", bits.Kind, bits.Message)
+	}
+	// Seven iterations for eight is a mismatch with a concrete input.
+	popAsm7 := strings.Replace(popAsm, "mov w10, #8", "mov w10, #7", 1)
+	short := verifyCase(t, "popcount8: (v: u32) -> u32", popcount, popAsm7)
+	if short.Kind != VerdictMismatch || !strings.Contains(short.Message, "v=") {
+		t.Fatalf("a 7-step popcount must be a mismatch with a counterexample, got %s: %s", short.Kind, short.Message)
+	}
+	// A constant loop whose body forks on the inputs is not unrolled.
+	forkInLoop := "  bind w0 = a\n  clobber w9, w10\n  mov w9, #0\n  mov w10, #3\nloop:\n  cmp w0, #5\n  b.lo skip\n  add w9, w9, w0\nskip:\n  sub w10, w10, #1\n  cmp w10, #0\n  b.ne loop\n  mov w0, w9\n  ret"
+	forked := verifyCase(t, "triple: (a: u32) -> u32", triple, forkInLoop)
+	if forked.Kind != VerdictTrusted {
+		t.Fatalf("a loop with a data-dependent branch inside must be trusted, got %s: %s", forked.Kind, forked.Message)
+	}
+}

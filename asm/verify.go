@@ -117,11 +117,24 @@ func conditionHolds(code string, left, right uint64, width int) bool {
 	return false
 }
 
+// The constructors fold constants: a term over constants is the constant
+// its total evaluation yields. Folding is what lets a counted loop decide
+// its own exit (the counter's comparison becomes a constant) on both sides.
 func cmpTerm(code string, left, right *term) *term {
-	return &term{kind: termCmp, width: left.width, op: code, left: left, right: right}
+	t := &term{kind: termCmp, width: left.width, op: code, left: left, right: right}
+	if left.kind == termConst && right.kind == termConst {
+		return constTerm(t.eval(nil), left.width)
+	}
+	return t
 }
 
 func iteTerm(cond, left, right *term) *term {
+	if cond.kind == termConst {
+		if cond.value != 0 {
+			return left
+		}
+		return right
+	}
 	return &term{kind: termIte, width: left.width, cond: cond, left: left, right: right}
 }
 
@@ -141,7 +154,20 @@ func paramTerm(name string, width int) *term {
 }
 
 func binaryTerm(op string, left, right *term) *term {
-	return &term{kind: termBinary, width: left.width, op: op, left: left, right: right}
+	t := &term{kind: termBinary, width: left.width, op: op, left: left, right: right}
+	if left.kind == termConst && right.kind == termConst {
+		return constTerm(t.eval(nil), left.width)
+	}
+	return t
+}
+
+// adaptWidth views a term at another width: a narrower term zero-extends,
+// a wider one truncates (the machine's and Oak's conversions alike).
+func adaptWidth(t *term, width int) *term {
+	if t.width < width {
+		return zeroExtend(t, width)
+	}
+	return truncate(t, width)
 }
 
 // eval computes the term for a parameter assignment (Oak.AssemblerSemantics
@@ -315,6 +341,12 @@ func (f *linearForm) equal(g *linearForm) bool {
 type symbolicState struct {
 	regs  map[int]*term // physical register -> 64-bit term
 	flags *flagsFact    // NZCV as the operands that produced them; nil until set
+	// Loop accounting along this path: the step at which each label was
+	// last passed and the step of the last fork. A backward branch whose
+	// target was passed before the last fork closes a loop containing a
+	// data-dependent exit — its trip count is not constant.
+	labelStep map[int]int
+	forkStep  int
 }
 
 // flagsFact records what produced the flags: cmp/subs leave NZCV as the
@@ -458,21 +490,30 @@ func spanBaseName(param string) string          { return "&" + param }
 func spanLenName(param string) string           { return "len(" + param + ")" }
 func spanElemName(param string, k int64) string { return fmt.Sprintf("%s[%d]", param, k) }
 
-// pathBudget bounds the number of paths an acyclic body may unfold into.
-const pathBudget = 256
+// pathBudget bounds the number of paths a body may unfold into; stepBudget
+// bounds the instructions executed across all paths, which is what bounds
+// the unrolling of counted loops.
+const (
+	pathBudget = 256
+	stepBudget = 1 << 16
+)
 
-// pathExecutor unfolds an acyclic body into its paths: a conditional
-// branch forks the state, the taken path continuing at the label under the
-// branch's condition and the fall-through under its negation, and the two
-// results meet as a select. Every branch target must lie ahead of the
-// branch (a backward target is a loop, outside the subset), so the
-// unfolding terminates; the path budget bounds its size.
+// pathExecutor unfolds a body into its paths: a conditional branch forks
+// the state, the taken path continuing at the label under the branch's
+// condition and the fall-through under its negation, and the two results
+// meet as a select. A branch whose condition folds to a constant follows
+// only the decided path — which is how a counted loop unrolls: its
+// backward branch compares a counter that is a constant on every
+// iteration. A backward branch whose condition is not constant is a loop
+// with a data-dependent trip count, outside the subset. The path and step
+// budgets bound the unfolding.
 type pathExecutor struct {
 	items       []Item
 	labels      map[string]int
 	resultClass RegClass
 	spans       map[string]int64 // span parameter -> element size in bytes
 	paths       int
+	steps       int
 }
 
 func (s *symbolicState) clone() *symbolicState {
@@ -480,7 +521,22 @@ func (s *symbolicState) clone() *symbolicState {
 	for reg, value := range s.regs {
 		regs[reg] = value
 	}
-	return &symbolicState{regs: regs, flags: s.flags}
+	labels := make(map[int]int, len(s.labelStep))
+	for label, step := range s.labelStep {
+		labels[label] = step
+	}
+	return &symbolicState{regs: regs, flags: s.flags, labelStep: labels, forkStep: s.forkStep}
+}
+
+// backward reports whether a branch to target from pc closes a loop the
+// path can unroll: the target lies behind, and no fork happened since the
+// path last passed it.
+func (s *symbolicState) backwardAllowed(target, pc int) (backward bool, allowed bool) {
+	if target > pc {
+		return false, true
+	}
+	passed, seen := s.labelStep[target]
+	return true, seen && passed >= s.forkStep
 }
 
 // run executes from item index pc to a ret on every path.
@@ -489,10 +545,18 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 	if x.paths > pathBudget {
 		return nil, "more paths than the verifier's budget", false
 	}
+	if state.labelStep == nil {
+		state.labelStep = map[int]int{}
+	}
 	for ; pc < len(x.items); pc++ {
 		instr, isInstr := x.items[pc].(Instruction)
 		if !isInstr {
-			continue // a label is a position
+			state.labelStep[pc] = x.steps // a label is a position
+			continue
+		}
+		x.steps++
+		if x.steps > stepBudget {
+			return nil, "more instructions than the verifier's unrolling budget", false
 		}
 		switch instr.Mnemonic {
 		case "ret":
@@ -503,8 +567,11 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			return result, "", true
 		case "b":
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
-			if !ok || target <= pc {
-				return nil, "a backward branch (loop)", false
+			if !ok {
+				return nil, "a branch to an unknown label", false
+			}
+			if _, allowed := state.backwardAllowed(target, pc); !allowed {
+				return nil, "a loop whose trip count depends on the inputs", false
 			}
 			pc = target - 1
 			continue
@@ -516,10 +583,25 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 				return nil, fmt.Sprintf("condition code %s", instr.Cond), false
 			}
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
-			if !ok || target <= pc {
-				return nil, "a backward branch (loop)", false
+			if !ok {
+				return nil, "a branch to an unknown label", false
 			}
 			cond := cmpTerm(instr.Cond, state.flags.left, state.flags.right)
+			if cond.kind == termConst {
+				// Decided: one continuation. A counted loop's backward
+				// branch always lands here.
+				if cond.value != 0 {
+					if _, allowed := state.backwardAllowed(target, pc); !allowed {
+						return nil, "a loop whose trip count depends on the inputs", false
+					}
+					pc = target - 1
+				}
+				continue
+			}
+			if backward, _ := state.backwardAllowed(target, pc); backward {
+				return nil, "a loop whose trip count depends on the inputs", false
+			}
+			state.forkStep = x.steps
 			taken, reason, ok := x.run(target, state.clone())
 			if !ok {
 				return nil, reason, false
@@ -669,6 +751,126 @@ type oakLowering struct {
 	params map[string]int
 	signed map[string]bool
 	spans  map[string]spanContract
+	locals map[string]*oakLocal // statement-body locals, in declaration scope
+}
+
+// oakLocal is a typed local of a statement body: its current symbolic
+// value (assignments replace it) at its declared width and signedness.
+type oakLocal struct {
+	value  *term
+	width  int
+	signed bool
+}
+
+// loopBudget bounds the iterations a `while` may unroll.
+const loopBudget = 4096
+
+// lowerBlock executes a statement body symbolically: typed local
+// declarations and assignments update the locals, a `while` whose
+// condition folds to a constant unrolls (a data-dependent condition is
+// outside the subset), and the final expression statement is the result.
+func (lo *oakLowering) lowerBlock(block *ast.BlockStatement, width int) (*term, string, bool) {
+	if block == nil || len(block.Statements) == 0 {
+		return nil, "an empty block", false
+	}
+	if lo.locals == nil {
+		lo.locals = map[string]*oakLocal{}
+	}
+	for i, stmt := range block.Statements {
+		last := i == len(block.Statements)-1
+		switch s := stmt.(type) {
+		case *ast.ExpressionStatement:
+			if !last {
+				return nil, "an expression statement before the end of a block", false
+			}
+			return lo.lower(s.Expression, width)
+		case *ast.VariableDeclaration:
+			if s.Value == nil || s.Type == nil {
+				return nil, "a local without both a type and an initializer", false
+			}
+			w, signed, ok := scalarType(s.Type)
+			if !ok {
+				return nil, fmt.Sprintf("a local of type %s", typeText(s.Type)), false
+			}
+			value, reason, ok := lo.lower(s.Value, w)
+			if !ok {
+				return nil, reason, false
+			}
+			lo.locals[s.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
+		case *ast.AssignmentStatement:
+			local, isLocal := lo.locals[s.Name.Value]
+			if !isLocal {
+				return nil, fmt.Sprintf("an assignment to %s (not a local)", s.Name.Value), false
+			}
+			value, reason, ok := lo.lower(s.Value, local.width)
+			if !ok {
+				return nil, reason, false
+			}
+			local.value = value
+		case *ast.WhileStatement:
+			if reason, ok := lo.lowerWhile(s); !ok {
+				return nil, reason, false
+			}
+		default:
+			return nil, fmt.Sprintf("%T", stmt), false
+		}
+	}
+	return nil, "a block that does not end in an expression", false
+}
+
+// lowerWhile unrolls a counted loop: the condition must fold to a
+// constant before every iteration.
+func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
+	for iteration := 0; ; iteration++ {
+		if iteration > loopBudget {
+			return "a loop beyond the verifier's unrolling budget", false
+		}
+		cond, reason, ok := lo.lowerCondition(loop.Condition)
+		if !ok {
+			return reason, false
+		}
+		if cond.kind != termConst {
+			return "a loop whose trip count depends on the inputs", false
+		}
+		if cond.value == 0 {
+			return "", true
+		}
+		for _, stmt := range loop.Body.Statements {
+			switch s := stmt.(type) {
+			case *ast.AssignmentStatement:
+				local, isLocal := lo.locals[s.Name.Value]
+				if !isLocal {
+					return fmt.Sprintf("an assignment to %s (not a local)", s.Name.Value), false
+				}
+				value, reason, ok := lo.lower(s.Value, local.width)
+				if !ok {
+					return reason, false
+				}
+				local.value = value
+			case *ast.WhileStatement:
+				if reason, ok := lo.lowerWhile(s); !ok {
+					return reason, false
+				}
+			default:
+				return fmt.Sprintf("%T in a loop body", stmt), false
+			}
+		}
+	}
+}
+
+// scalarType reads a local's declared fixed-width integer type.
+func scalarType(expr ast.Expression) (width int, signed bool, ok bool) {
+	switch typeText(expr) {
+	case "u8", "u16", "u32", "Bool", "byte", "rune":
+		return 32, false, true
+	case "i8", "i16", "i32":
+		return 32, true, true
+	case "u64":
+		return 64, false, true
+	case "i64":
+		return 64, true, true
+	}
+	return 0, false, false
 }
 
 type spanContract struct {
@@ -735,6 +937,9 @@ func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, bool) {
 	switch e := expr.(type) {
 	case *ast.Identifier:
+		if local, isLocal := lo.locals[e.Value]; isLocal {
+			return adaptWidth(local.value, width), "", true
+		}
 		if w, isParam := lo.params[e.Value]; isParam {
 			return truncate(paramTerm(e.Value, w), width), "", true
 		}
@@ -794,13 +999,7 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		return binaryTerm(op, left, right), "", true
 	case *ast.BlockExpression:
-		if e.Block == nil || len(e.Block.Statements) != 1 {
-			return nil, "a block with statements", false
-		}
-		if stmt, isExpr := e.Block.Statements[0].(*ast.ExpressionStatement); isExpr {
-			return lo.lower(stmt.Expression, width)
-		}
-		return nil, "a block with statements", false
+		return lo.lowerBlock(e.Block, width)
 	case *ast.MatchExpression:
 		// A value-position Bool conditional over a comparison of parameters:
 		// `a < b ? b | a`. The comparison happens at the operands' own width
@@ -879,6 +1078,9 @@ func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool)
 func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 	switch e := expr.(type) {
 	case *ast.Identifier:
+		if local, isLocal := lo.locals[e.Value]; isLocal {
+			return local.width, local.signed, true
+		}
 		if w, isParam := lo.params[e.Value]; isParam {
 			return w, lo.signed[e.Value], true
 		}
