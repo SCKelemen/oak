@@ -123,6 +123,20 @@ type ModuleInfo struct {
 	Abstract map[string]string
 	// Packages lists the loaded package paths in compile order (root last).
 	Packages []string
+	// ModuleOf maps each loaded package path to the path of the module that
+	// contains it. Standard library packages and the spliced prelude have no
+	// module and are absent.
+	ModuleOf map[string]string
+	// ModuleProfiles maps a module path to the discipline profile its
+	// manifest declares ("" when it declares none).
+	ModuleProfiles map[string]string
+	// RootModule is the module path of the build root ("" outside a module).
+	RootModule string
+	// RootPackage is the import path of the build root package.
+	RootPackage string
+	// StandardLibrary marks the loaded standard library packages, which have
+	// no module and are judged under the default profile.
+	StandardLibrary map[string]bool
 }
 
 // bootstrapImports are the prelude-style imports the standard-library
@@ -539,6 +553,19 @@ func (l *moduleLoader) locateModule(path string, version packageapi.Version) (*m
 }
 
 // resolveImportDir maps an import path to the directory of its package.
+// moduleOfPath returns the located module whose path is the longest prefix
+// of the import path — the module that contains the package.
+func (l *moduleLoader) moduleOfPath(path string) (*moduleRoot, bool) {
+	var best *moduleRoot
+	bestLen := -1
+	for modulePath, root := range l.located {
+		if modules.HasPathPrefix(path, modulePath) && len(modulePath) > bestLen {
+			best, bestLen = root, len(modulePath)
+		}
+	}
+	return best, best != nil
+}
+
 func (l *moduleLoader) resolveImportDir(path string) (string, bool) {
 	var candidates []string
 	for modulePath := range l.located {
@@ -1572,7 +1599,34 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 			}
 		}
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames}
+	// Module ownership of every loaded package, for per-module discipline
+	// profiles (docs/spec/85-discipline.md section 1): the module whose path
+	// is the longest prefix of the package's import path, the same rule
+	// resolveImportDir applies when locating the directory.
+	moduleOf := map[string]string{}
+	moduleProfiles := map[string]string{}
+	standardLibrary := map[string]bool{}
+	for _, path := range order {
+		pkg := l.packages[path]
+		if pkg.Dir == "<stdlib>" {
+			standardLibrary[path] = true
+			continue
+		}
+		importPath := path
+		if pkg.TemplatePath != "" {
+			importPath = pkg.TemplatePath
+		}
+		if module, ok := l.moduleOfPath(importPath); ok {
+			moduleOf[path] = module.Manifest.Path
+			moduleProfiles[module.Manifest.Path] = module.Manifest.Profile
+		}
+	}
+	rootModule := ""
+	if l.root != nil {
+		rootModule = l.root.Manifest.Path
+		moduleProfiles[rootModule] = l.root.Manifest.Profile
+	}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,

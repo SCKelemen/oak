@@ -33,15 +33,28 @@ gates on type checking, borrow checking, and discipline analysis: error
 diagnostics always reject, and the strict profile also rejects every warning
 (section 7).
 
-**Direction: profiles per module.** A profile is a property of the code
-being judged, and a dependency's discipline is its own business: a strict
-root should not be blocked by a warning inside a library it imports, and a
-library should be able to promise strictness to its importers. The planned
-shape is a `profile <name>` directive in `oak.mod` (`83-modules.md` §4.1)
-that sets the profile every package of that module is judged under, with
-the command-line flag overriding it for the root module only. Until it
-lands, `-profile strict` judges the whole program, prelude included, and
-section 3's canonical shape must hold in every loop the build reaches.
+**Profiles are per module.** A profile is a property of the code being
+judged, and a dependency's discipline is its own business: a strict root is
+not blocked by a warning inside a library it imports, and a library can
+promise strictness to its importers. The manifest directive
+`profile <default|strict>` (`83-modules.md` §4.1) sets the profile every
+package of that module is judged under. The rule the pipeline gate applies
+to a warning is: **find the package that owns the warning's primary cause,
+then that package's module, then that module's profile**; the warning
+rejects exactly when the profile is strict. Concretely:
+
+| Owner of the warning | Effective profile |
+| --- | --- |
+| the root package, a package of the root module, or any package outside every module (a single-source build, a REPL session without `oak.mod`) | `-profile` when given, else the root manifest's `profile`, else `default` |
+| a package of a dependency module | that module's `profile`, else `default` |
+| the spliced bootstrap library (`import(std)`, `import(testing)`) or a standard library package | `default` — the standard library has no manifest and is judged by its own tests |
+| a monomorphized clone of a generic function (stamped with its instantiation, not a package) | the root profile, so a strict root never loses a warning to a missing stamp |
+
+Errors reject regardless of profile. `-profile strict` on a program that
+imports the prelude therefore judges the program's own packages strictly
+while the prelude's remaining non-canonical loops (section 3) are reported,
+not fatal; making the prelude itself strict-clean is the standard library's
+own obligation and is tracked in `docs/notes/ml-feedback-2026-09.md`.
 
 ## 2. Bounded call depth: safe recursion
 

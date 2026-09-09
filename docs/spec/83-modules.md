@@ -178,6 +178,10 @@ replace example.com/dep => ../dep
 - `replace <path> => <dir>` — provide a required module from a local
   directory, relative to the manifest's directory unless absolute. Only the
   root module's replace directives apply.
+- `profile <default|strict>` — at most once; the discipline profile every
+  package of this module is judged under (`85-discipline.md` section 1). A
+  module that declares none is judged under `default`. The command-line
+  `-profile` flag overrides the declaration for the root module only.
 
 Unknown directives, duplicates, malformed lines, replaces without a matching
 require, and manifests over 1 MiB fail closed (`OAK-M0112`).
