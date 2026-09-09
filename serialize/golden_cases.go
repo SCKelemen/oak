@@ -343,6 +343,27 @@ main: (): i32 {
 `,
 		},
 		{
+			// Spans at the boundary (docs/spec/92-ffi.md section 2.5): a view
+			// crosses as its base pointer and element count for one call,
+			// and c.String hands C a NUL-terminated literal.
+			Name: "c_ffi_spans",
+			SourceCode: `
+write: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern("write")
+puts: (s: c.String): c.Int = c.extern("puts")
+
+emit: (bytes: []u8): () {
+  _ = write(c.Int(1), c.span_of(bytes))
+}
+
+main: (): i32 {
+  text: []u8 = str_bytes("OK")
+  emit(text)
+  _ = puts(c.String(""))
+  0
+}
+`,
+		},
+		{
 			// arm64 instruction functions (docs/spec/92-ffi.md section 3):
 			// the instruction on AArch64 targets, the proven-equivalent
 			// portable sequence elsewhere, one helper per intrinsic.

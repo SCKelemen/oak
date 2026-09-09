@@ -71,7 +71,11 @@ phase must land together for the STATUS row to gain I.
 
 ## Tier 3 — spans across the FFI
 
-**Specified, not implemented.** `92-ffi.md` §2.5: `c.span_of(v: []T)` and
+**Implemented** for fixed-width integer and `Bool` elements, executed end to
+end against libc `write`, `getcwd`, and `puts`
+(`compiler/e2e_ffi_spans_test.go`, golden `c_ffi_spans`); structs with
+proven layouts are the recorded gap. This closes revisit criterion O2. The
+design, `92-ffi.md` §2.5: `c.span_of(v: []T)` and
 `c.span_mut_of(s: [*]T)` occupy a `c.Ptr, c.Size` parameter pair of an
 extern binding for the duration of that call and nowhere else; the borrow
 checker treats the call as a read or write use of the owner, so the
@@ -96,8 +100,10 @@ the allocation-phase partition of `85-discipline.md` §4 and
 Recorded, not changed here, in the order the ask proposed and this note
 endorses:
 
-1. Implement the pipeline operator and field accessors already specified in
-   `10-syntax.md` §12. Largest win for no new semantics.
+1. The pipeline operator and field accessors of `10-syntax.md` §12 are
+   **already implemented** on this branch: `p |> .x |> double |> add(u32(1))`
+   compiles under the strict profile and runs. The survey's "not
+   implemented" was stale; ml can use them now.
 2. Uniform call syntax `x.matmul(w).relu()` as sugar for `relu(matmul(x, w))`
    when the receiver's package exports the function; no dispatch, no
    vtables. Needs a normative section before implementation.
@@ -121,8 +127,8 @@ changed here.
 | Item | Criterion | State |
 | --- | --- | --- |
 | O1 | `f32`/`f64` with literals, arithmetic, core intrinsics, `f32 ↔ c.Float` | specified (`20-types.md` §11.3) |
-| O2 | `c.Ptr` plus length constructible from `[*]T`/`[]T`, checked at the boundary | specified (`92-ffi.md` §2.5) |
+| O2 | `c.Ptr` plus length constructible from `[*]T`/`[]T`, checked at the boundary | **implemented** (`92-ffi.md` §2.5; integer and `Bool` elements) |
 | O3 | Any runtime-sized allocation surface | direction |
 | O4 | Views or spans in records or as return values | roadmap |
 | O5 | `F32x4` with `mul` and `fma` | specified (`20-types.md` §11.3.7) |
-| O6 | A frontend surface for `x.matmul(w).relu()` | direction; pipeline operator already specified |
+| O6 | A frontend surface for `x.matmul(w).relu()` | pipeline operator and field accessors implemented (`x \|> matmul(w) \|> relu`); uniform call syntax and operator definitions remain direction |

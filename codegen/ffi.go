@@ -46,6 +46,24 @@ func libraryCallTarget(fn ast.Expression) (library, member string, ok bool) {
 	return base.Value, memberIdent.Value, true
 }
 
+// boundarySpanArgument recognizes `c.span_of(v)` / `c.span_mut_of(s)` in the
+// argument list of an extern call (docs/spec/92-ffi.md section 2.5) and
+// returns the view or span operand. The typechecker has already confirmed the
+// callee is an extern binding and the operand a named view or span; a local
+// `c` would have made this an ordinary call that never typechecks as a
+// library access.
+func boundarySpanArgument(arg ast.Expression) (operand ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, false
+	}
+	library, member, isLibrary := libraryCallTarget(call.Function)
+	if !isLibrary || library != "c" || (member != "span_of" && member != "span_mut_of") {
+		return nil, false
+	}
+	return call.Arguments[0], true
+}
+
 // emitLibraryCall lowers a compiler-known library call. The typechecker owns
 // the arm64 signature catalog, so codegen queries arity rather than maintaining
 // a second table. This supports both ordinary one-operand intrinsics and
@@ -57,8 +75,29 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 	}
 	switch library {
 	case "c":
-		if member == "extern" || len(call.Arguments) != 1 {
+		if member == "extern" || member == "span_of" || member == "span_mut_of" || len(call.Arguments) != 1 {
+			// Boundary spans are expanded at their extern call site
+			// (emitExpressionFragment); anywhere else they are not
+			// expressions and the typechecker has already rejected them.
 			cg.output.WriteString("OAK_UNSUPPORTED_C_CALL")
+			return true
+		}
+		if member == "String" {
+			// c.String("literal"): the interned literal array is a C string
+			// initializer, so it carries the trailing NUL
+			// (docs/spec/92-ffi.md section 2.5.3).
+			literal, isLiteral := call.Arguments[0].(*ast.StringLiteral)
+			if !isLiteral {
+				cg.output.WriteString("OAK_UNSUPPORTED_C_CALL")
+				return true
+			}
+			idx, exists := cg.stringLiteralMap[literal.Value]
+			if !exists {
+				idx = len(cg.stringLiterals)
+				cg.stringLiterals = append(cg.stringLiterals, literal.Value)
+				cg.stringLiteralMap[literal.Value] = idx
+			}
+			cg.output.WriteString(fmt.Sprintf("((const char *)str_lit_%d)", idx))
 			return true
 		}
 		spelling, known := typechecker.CTypeSpelling(member)

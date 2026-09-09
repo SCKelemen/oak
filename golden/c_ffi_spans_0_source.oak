@@ -1,0 +1,14 @@
+
+write: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern("write")
+puts: (s: c.String): c.Int = c.extern("puts")
+
+emit: (bytes: []u8): () {
+  _ = write(c.Int(1), c.span_of(bytes))
+}
+
+main: (): i32 {
+  text: []u8 = str_bytes("OK")
+  emit(text)
+  _ = puts(c.String(""))
+  0
+}

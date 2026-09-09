@@ -2294,7 +2294,18 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		}
 		cg.output.WriteString("( ")
 		for i, arg := range e.Arguments {
-			cg.emitExpressionFragment(arg, tc)
+			if operand, isSpan := boundarySpanArgument(arg); isSpan {
+				// A boundary span lowers to the pointer and the element
+				// count of the view or span, for this call only
+				// (docs/spec/92-ffi.md section 2.5.4). No copy, no thunk.
+				cg.output.WriteString("(void *)( ")
+				cg.emitExpressionFragment(operand, tc)
+				cg.output.WriteString(" ).base, (size_t)( ")
+				cg.emitExpressionFragment(operand, tc)
+				cg.output.WriteString(" ).len")
+			} else {
+				cg.emitExpressionFragment(arg, tc)
+			}
 			if i < len(e.Arguments)-1 {
 				cg.output.WriteString(", ")
 			}
@@ -2862,8 +2873,9 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 	case *ast.AssignmentStatement:
 		cg.emitAssignmentStatement(s, tc)
 	case *ast.ExpressionStatement:
-		if isLastInFunction {
-			// Last statement in function - emit as return
+		if isLastInFunction && !s.Discard {
+			// Last statement in function - emit as return. A trailing
+			// discard (`_ = expr`) is a statement, never the result.
 			cg.emitExpression(s.Expression, tc)
 		} else if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
 			// Statement-position match with side-effecting arms
