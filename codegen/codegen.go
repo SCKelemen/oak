@@ -16,6 +16,10 @@ import (
 
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
+	// constantContext is set while emitting C integer constant expressions
+	// (file-scope initializers, static_assert), where arithmetic must stay
+	// a plain operator rather than a helper call.
+	constantContext  bool
 	asmFunctions     []*asm.Function
 	packageName      string
 	sourceFile       string // Source file path for source location comments
@@ -1397,7 +1401,7 @@ func (cg *CodeGenerator) emitLayoutBuiltin(ident *ast.Identifier, e *ast.Invocat
 			return false
 		}
 		cg.output.WriteString("((void)sizeof(char[ (")
-		cg.emitExpressionFragment(e.Arguments[0], tc)
+		cg.emitConstantExpression(e.Arguments[0], tc)
 		cg.output.WriteString(") ? 1 : -1 ]))")
 		return true
 	case "size_of", "align_of", "offset_of":
@@ -1423,6 +1427,15 @@ func (cg *CodeGenerator) emitLayoutBuiltin(ident *ast.Identifier, e *ast.Invocat
 	return false
 }
 
+// emitConstantExpression emits an expression that C must accept as an
+// integer constant expression: arithmetic stays a plain operator there.
+func (cg *CodeGenerator) emitConstantExpression(expr ast.Expression, tc *typechecker.TypeChecker) {
+	previous := cg.constantContext
+	cg.constantContext = true
+	cg.emitExpressionFragment(expr, tc)
+	cg.constantContext = previous
+}
+
 // emitStaticAsserts emits top-level static_assert statements as typedef
 // assertions once every type and global they may mention exists.
 func (cg *CodeGenerator) emitStaticAsserts(program *ast.Program, tc *typechecker.TypeChecker) {
@@ -1443,7 +1456,7 @@ func (cg *CodeGenerator) emitStaticAsserts(program *ast.Program, tc *typechecker
 			cg.write("/* static_assert: the C compiler ratifies each layout claim */\n")
 		}
 		cg.write(fmt.Sprintf("typedef char oak_static_assert_%d[ (", count))
-		cg.emitExpressionFragment(call.Arguments[0], tc)
+		cg.emitConstantExpression(call.Arguments[0], tc)
 		cg.write(") ? 1 : -1 ];\n")
 		count++
 	}
@@ -1647,7 +1660,7 @@ var runtimeBuiltins = map[string]string{
 // can wrap them; the helper reads only v.len bytes and fails closed.
 func (cg *CodeGenerator) emitUtf8Helper() {
 	viewType := cg.emitViewType("u8")
-	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n\n/* checked shifts: a count reaching the operand width traps, never UB\n   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */\n#define OAK_SHIFT_HELPERS(T, W) \\\n  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \\\n  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }\nOAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n\n/* checked shifts: a count reaching the operand width traps, never UB\n   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */\n#define OAK_SHIFT_HELPERS(T, W) \\\n  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \\\n  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }\nOAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)\n\n/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md\n   section 7): results wrap mod 2^N, computed in unsigned space so no C\n   promotion overflows; signed results come back through a union pun (defined\n   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */\n#define OAK_ARITH_U(T) \\\n  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \\\n  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \\\n  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }\n#define OAK_ARITH_I(T, U, MIN) \\\n  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \\\n  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \\\n  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \\\n  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }\nOAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)\nOAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
 	cg.write(fmt.Sprintf("static Bool oak_is_valid_utf8(%s v) {\n", viewType))
 	cg.write("  u64 i = 0;\n")
 	cg.write("  u64 n = (u64)v.len;\n")
@@ -1933,6 +1946,11 @@ func (cg *CodeGenerator) emitStatementExpression(expr ast.Expression, tc *typech
 	cg.write(";\n")
 }
 
+// arithmeticHelpers names the prelude helper family for each total operator.
+var arithmeticHelpers = map[string]string{
+	"+": "oak_add", "-": "oak_sub", "*": "oak_mul", "/": "oak_div", "%": "oak_rem",
+}
+
 // emitInfixExpression emits C code for an infix expression (as fragment)
 func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *typechecker.TypeChecker) {
 	if cg.emitBytePack(expr, tc) {
@@ -1957,6 +1975,21 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 		cg.emitExpressionFragment(expr.Right, tc)
 		cg.output.WriteString(" )")
 		return
+	}
+	// Fixed-width arithmetic routes through the total helpers (oak_add_u8
+	// and friends): the checker recorded the result width. Constant contexts
+	// and literal-only operands keep the plain operator so C integer constant
+	// expressions stay constant; an unrecorded expression also stays plain.
+	if helper, isArithmetic := arithmeticHelpers[expr.Operator]; isArithmetic && !cg.constantContext &&
+		!(typechecker.IsLiteralOnlyExpression(expr.Left) && typechecker.IsLiteralOnlyExpression(expr.Right)) {
+		if width, known := tc.ArithmeticType(expr.Token); known {
+			cg.output.WriteString(fmt.Sprintf("%s_%s( ", helper, width))
+			cg.emitExpressionFragment(expr.Left, tc)
+			cg.output.WriteString(", ")
+			cg.emitExpressionFragment(expr.Right, tc)
+			cg.output.WriteString(" )")
+			return
+		}
 	}
 	// C style: space around operators, parentheses for grouping
 	cg.output.WriteString("( ")

@@ -284,6 +284,15 @@ produced by union type punning, defined since C99 TC3):
 `bits` is the explicit path between `u32` and `i32` that widening and
 narrowing deliberately lack: honest at the call site, free at runtime.
 
+The same totality rule governs the arithmetic operators. `+`, `-`, and `*`
+on a fixed-width type wrap mod `2^N` in that width at the expression itself
+(so `full + 1` with `full: u8 = 255` is `0` before any store, and
+`u16 * u16` never overflows an intermediate `int`); `/` and `%` trap on a
+zero divisor and give the two's-complement result for `MIN / -1` (quotient
+`MIN`, remainder `0`). The C lowering realizes this with width-specific
+helpers (unsigned computation, union punning for signed results), never with
+C's promoted operators, whose signed overflow would be undefined.
+
 ### 11.2 Generic functions monomorphize
 
 ```oak

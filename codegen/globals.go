@@ -147,7 +147,8 @@ func (cg *CodeGenerator) emitFileScopeInitializer(expr ast.Expression, tc *typec
 		}
 		cg.output.WriteString(" }")
 	default:
-		// Scalar constant expressions share the ordinary fragment emitter.
-		cg.emitExpressionFragment(expr, tc)
+		// Scalar constant expressions share the ordinary fragment emitter,
+		// in constant context so arithmetic stays a C constant expression.
+		cg.emitConstantExpression(expr, tc)
 	}
 }

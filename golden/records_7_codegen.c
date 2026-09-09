@@ -64,6 +64,26 @@ static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap();
   static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \
   static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }
 OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)
+
+/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md
+   section 7): results wrap mod 2^N, computed in unsigned space so no C
+   promotion overflows; signed results come back through a union pun (defined
+   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */
+#define OAK_ARITH_U(T) \
+  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \
+  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \
+  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \
+  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \
+  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }
+#define OAK_ARITH_I(T, U, MIN) \
+  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \
+  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \
+  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \
+  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \
+  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \
+  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }
+OAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)
+OAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)
 #define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
@@ -146,7 +166,7 @@ i32 oak_main( void );
 // @identifier: shift
 // @signature: fn shift(p: Point, dx: i32) -> Point
 oak_Point oak_shift( oak_Point p, i32 dx ) {
-    return ((oak_Point){ .x = ( p.x + dx ), .y = p.y })  ;
+    return ((oak_Point){ .x = oak_add_i32( p.x, dx ), .y = p.y })  ;
 }
 
 // @source: unknown.oak:13:0-17:0
@@ -157,7 +177,7 @@ oak_Point oak_shift( oak_Point p, i32 dx ) {
 i32 oak_main(  ) {
     oak_Point p   = ((oak_Point){ .x = 11, .y = 31 })  ;
     oak_Pair pair   = ((oak_Pair){ .first = oak_shift( p, 9 ), .tag = ((u8)( 3 )) })  ;
-    return ( pair.first.x + ((i32)( pair.tag )) )  ;
+    return oak_add_i32( pair.first.x, ((i32)( pair.tag )) )  ;
 }
 
 int main(void) {

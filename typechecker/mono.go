@@ -200,6 +200,56 @@ func (tc *TypeChecker) ShiftWidth(tok token.Token) (int, bool) {
 	return width, ok
 }
 
+// FixedWidthName resolves an integer type name to its fixed-width spelling:
+// aliases and the platform-sized int/uint/ptr/uptr map onto u8..i64, and any
+// other name yields "" (not a machine integer the backend can wrap).
+func (tc *TypeChecker) FixedWidthName(name string) string {
+	switch name {
+	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
+		return name
+	case "byte":
+		return "u8"
+	case "rune":
+		return "u32"
+	case "int":
+		return fmt.Sprintf("i%d", tc.intSize)
+	case "uint":
+		return fmt.Sprintf("u%d", tc.intSize)
+	case "ptr":
+		return fmt.Sprintf("i%d", tc.ptrSize)
+	case "uptr":
+		return fmt.Sprintf("u%d", tc.ptrSize)
+	}
+	return ""
+}
+
+// recordArithmetic notes the fixed-width result type of one arithmetic
+// expression, so the backend emits the total (two's-complement, never-UB)
+// helper for that width instead of C's promoted operator. It returns the
+// result type unchanged for the caller.
+func (tc *TypeChecker) recordArithmetic(expr *ast.InfixExpression, result Type) Type {
+	prim, ok := result.(*PrimitiveType)
+	if !ok {
+		return result
+	}
+	name := tc.FixedWidthName(prim.Name)
+	if name == "" {
+		return result
+	}
+	if tc.arithmeticTypes == nil {
+		tc.arithmeticTypes = make(map[string]string)
+	}
+	tc.arithmeticTypes[positionKey(expr.Token)] = name
+	return result
+}
+
+// ArithmeticType reports the recorded fixed-width result type of an
+// arithmetic expression.
+func (tc *TypeChecker) ArithmeticType(tok token.Token) (string, bool) {
+	name, ok := tc.arithmeticTypes[positionKey(tok)]
+	return name, ok
+}
+
 // recordMatchResolution notes which instantiation a match scrutinee has.
 func (tc *TypeChecker) recordMatchResolution(match *ast.MatchExpression, name string, args []Type) {
 	if match == nil {

@@ -64,6 +64,26 @@ static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap();
   static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \
   static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }
 OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)
+
+/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md
+   section 7): results wrap mod 2^N, computed in unsigned space so no C
+   promotion overflows; signed results come back through a union pun (defined
+   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */
+#define OAK_ARITH_U(T) \
+  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \
+  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \
+  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \
+  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \
+  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }
+#define OAK_ARITH_I(T, U, MIN) \
+  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \
+  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \
+  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \
+  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \
+  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \
+  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }
+OAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)
+OAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)
 #define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
@@ -241,10 +261,10 @@ i32 oak_main( void );
 // @identifier: first_even
 // @signature: fn first_even(a: u32, b: u32) -> /* type */
 oak_Option_u32 oak_first_even( u32 a, u32 b ) {
-    if ( ( ( a - ( ( a / ((u32)( 2 )) ) * ((u32)( 2 )) ) ) == ((u32)( 0 )) ) ) {
+    if ( ( oak_sub_u32( a, oak_mul_u32( oak_div_u32( a, ((u32)( 2 )) ), ((u32)( 2 )) ) ) == ((u32)( 0 )) ) ) {
       return oak_Option_u32_Some(a)    ;
     } else {
-      if ( ( ( b - ( ( b / ((u32)( 2 )) ) * ((u32)( 2 )) ) ) == ((u32)( 0 )) ) ) {
+      if ( ( oak_sub_u32( b, oak_mul_u32( oak_div_u32( b, ((u32)( 2 )) ), ((u32)( 2 )) ) ) == ((u32)( 0 )) ) ) {
         return oak_Option_u32_Some(b)      ;
       } else {
         return oak_Option_u32_None()      ;
@@ -261,17 +281,17 @@ i32 oak_main(  ) {
     oak_Option_u32 found   = oak_first_even( ((u32)( 3 )), ((u32)( 8 )) )  ;
     i32 byteRange  ;
     oak_Result_u8_Overflow oak_scrutinee_0 = oak_conv_u8_checked_u32( ((u32)( 300 )) );
-    if ( oak_scrutinee_0.tag == oak_Result_u8_Overflow_tag_Ok ) {
-      u8 v = oak_scrutinee_0.payload.Ok;
+    if ( oak_id_oak_scrutinee_0.tag == oak_Result_u8_Overflow_tag_Ok ) {
+      u8 v = oak_id_oak_scrutinee_0.payload.Ok;
       byteRange     = ((i32)( v ))    ;
     }
-    else if ( oak_scrutinee_0.tag == oak_Result_u8_Overflow_tag_Err ) {
-      oak_Overflow e = oak_scrutinee_0.payload.Err;
+    else if ( oak_id_oak_scrutinee_0.tag == oak_Result_u8_Overflow_tag_Err ) {
+      oak_Overflow e = oak_id_oak_scrutinee_0.payload.Err;
       byteRange     = ( 0 - 1 )    ;
     }
     if ( found.tag == oak_Option_u32_tag_Some ) {
       u32 n = found.payload.Some;
-    return ( oak_conv_i32_bits_u32( n ) + byteRange )  ;
+    return oak_add_i32( oak_conv_i32_bits_u32( n ), byteRange )  ;
     }
     if ( found.tag == oak_Option_u32_tag_None ) {
     return byteRange  ;

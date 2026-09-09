@@ -522,6 +522,9 @@ type TypeChecker struct {
 	// tagSchemas holds declared tag schemas (json: tag = { name: string }) —
 	// the closed namespace field tags check against (typechecker/tags.go).
 	tagSchemas map[string]*RecordType
+	// arithmeticTypes records the fixed-width result type of each arithmetic
+	// expression (position-keyed), so the backend emits the total helper.
+	arithmeticTypes map[string]string
 	// shiftWidths records the operand width of each shift expression
 	// (position-keyed), consumed by the backend's checked-shift emission.
 	shiftWidths map[string]int
@@ -1312,7 +1315,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		return operandExpected
 	}
 	var leftType, rightType Type
-	if isLiteralOnlyExpression(expr.Left) && !isLiteralOnlyExpression(expr.Right) {
+	if IsLiteralOnlyExpression(expr.Left) && !IsLiteralOnlyExpression(expr.Right) {
 		rightType = tc.checkExpression(expr.Right, operandExpected)
 		leftType = tc.checkExpression(expr.Left, peerContext(rightType))
 	} else {
@@ -1334,7 +1337,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			return &StringType{}
 		}
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
-			return tc.promoteNumericTypes(expr, leftType, rightType)
+			return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 		}
 		tc.addError(expr, "operator + requires numeric types or strings, got %s and %s", leftType, rightType)
 		return nil
@@ -1344,7 +1347,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
-		return tc.promoteNumericTypes(expr, leftType, rightType)
+		return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 	case "==", "!=":
 		// Equality operators work on compatible types
 		if !tc.areCompatibleTypes(leftType, rightType) {
@@ -1408,19 +1411,19 @@ func (tc *TypeChecker) isNumericType(typ Type) bool {
 	return false
 }
 
-// isLiteralOnlyExpression reports whether an expression is built only from
+// IsLiteralOnlyExpression reports whether an expression is built only from
 // integer literals, unary signs, arithmetic, and bitwise operators, so its
 // type comes entirely from context rather than from any typed operand.
-func isLiteralOnlyExpression(expr ast.Expression) bool {
+func IsLiteralOnlyExpression(expr ast.Expression) bool {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return true
 	case *ast.PrefixExpression:
-		return (e.Operator == "-" || e.Operator == "+") && isLiteralOnlyExpression(e.Right)
+		return (e.Operator == "-" || e.Operator == "+") && IsLiteralOnlyExpression(e.Right)
 	case *ast.InfixExpression:
 		switch e.Operator {
 		case "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>":
-			return isLiteralOnlyExpression(e.Left) && isLiteralOnlyExpression(e.Right)
+			return IsLiteralOnlyExpression(e.Left) && IsLiteralOnlyExpression(e.Right)
 		}
 	}
 	return false
