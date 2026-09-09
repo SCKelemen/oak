@@ -114,7 +114,7 @@ Install the versions in `tools.lock.json`, put Lean, Z3, CaDiCaL, and Java on
 `PATH`, and supply the exact SHA-256-pinned TLC jar. No tools are auto-installed.
 
 ```sh
-./build/oak-verify suite --tla-jar /absolute/path/to/tla2tools.jar --out build/integration
+./build/oak-verify suite --tla-jar "$PWD/tools/tla2tools.jar" --out build/integration
 ```
 
 The suite covers seven safe/broken enum, byte, and publication models. It checks tool versions,

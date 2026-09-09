@@ -37,7 +37,9 @@ if [[ "$mode" == all ]]; then
     (cd "$task_tools/cadical-src" && ./configure && make -j2)
   fi
   paths+=("$task_tools/cadical-src/build")
-  if [[ ! -f "$task_tools/tla2tools.jar" ]]; then fetch "$(jq -r '.tlc.source' "$lock")" "$task_tools/tla2tools.jar"; fi
+  # TLC is vendored (tools.lock.json records the upstream asset it was taken
+  # from); the copy is still checked against the pinned digest.
+  cp "$experiment_root/$(jq -r '.tlc.source' "$lock")" "$task_tools/tla2tools.jar"
   check_hash "$(jq -r '.tlc.sha256' "$lock")" "$task_tools/tla2tools.jar"
   jq -n --arg lean "$(sha256sum "$lean_archive" | cut -d' ' -f1)" \
     --arg z3 "$(sha256sum "$z3_archive" | cut -d' ' -f1)" \
