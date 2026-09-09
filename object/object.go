@@ -220,8 +220,9 @@ type Environment struct {
 	// recordDecls retains record type declarations' field structure
 	// (name/order/type expressions) for zero-value construction of
 	// storage-identity records in the interpreter.
-	recordDecls map[string]*ast.RecordLiteral
-	outer       *Environment
+	recordDecls     map[string]*ast.RecordLiteral
+	recordTemplates map[string]recordTemplate
+	outer           *Environment
 }
 
 func NewEnvironment() *Environment {
@@ -255,6 +256,47 @@ func (e *Environment) Get(name string) (Object, bool) {
 func (e *Environment) Set(name string, val Object) Object {
 	e.store[name] = val
 	return val
+}
+
+// Assign updates an existing binding in the scope that declares it, so an
+// assignment inside a nested block (a match arm, a loop body) reaches the
+// outer variable instead of shadowing it. Reports false when no scope
+// holds the name.
+func (e *Environment) Assign(name string, val Object) bool {
+	for scope := e; scope != nil; scope = scope.outer {
+		if _, ok := scope.store[name]; ok {
+			scope.store[name] = val
+			return true
+		}
+	}
+	return false
+}
+
+// SetRecordTemplate retains a generic record declaration (Idx[P]) with its
+// type-parameter names, for zero-value construction of instantiations.
+func (e *Environment) SetRecordTemplate(name string, params []string, decl *ast.RecordLiteral) {
+	if e.recordTemplates == nil {
+		e.recordTemplates = make(map[string]recordTemplate)
+	}
+	e.recordTemplates[name] = recordTemplate{params: params, decl: decl}
+}
+
+// GetRecordTemplate returns a generic record declaration and its
+// type-parameter names.
+func (e *Environment) GetRecordTemplate(name string) ([]string, *ast.RecordLiteral, bool) {
+	template, ok := e.recordTemplates[name]
+	if !ok && e.outer != nil {
+		return e.outer.GetRecordTemplate(name)
+	}
+	if !ok {
+		return nil, nil, false
+	}
+	return template.params, template.decl, true
+}
+
+type recordTemplate struct {
+	params []string
+	decl   *ast.RecordLiteral
 }
 
 func (e *Environment) GetADTType(name string) (*ADTType, bool) {

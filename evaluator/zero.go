@@ -3,7 +3,54 @@ package evaluator
 import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
+	"github.com/SCKelemen/oak/typechecker"
 )
+
+// isRecordObject reports a record value.
+func isRecordObject(obj object.Object) bool {
+	_, ok := obj.(*object.Record)
+	return ok
+}
+
+// copyValue realizes Oak's value semantics for aggregates: records and
+// owned arrays copy on declaration, assignment, and argument passing
+// (the backend copies structs and arrays by value); views and spans alias
+// by design and atomic cells are storage identities, so both pass through.
+func copyValue(obj object.Object) object.Object {
+	switch v := obj.(type) {
+	case *object.Record:
+		fields := make(map[string]object.Object, len(v.Fields))
+		for name, value := range v.Fields {
+			fields[name] = copyValue(value)
+		}
+		return &object.Record{Fields: fields}
+	case *object.Array:
+		elements := make([]object.Object, len(v.Elements))
+		for i, element := range v.Elements {
+			elements[i] = copyValue(element)
+		}
+		return &object.Array{Elements: elements}
+	}
+	return obj
+}
+
+// flattenApplication decodes Name[A][B] into (Name, [A, B]).
+func flattenApplication(expr ast.Expression) (string, []ast.Expression, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return e.Value, nil, e.Value != ""
+	case *ast.IndexExpression:
+		if e.Dot {
+			return "", nil, false
+		}
+		name, args, ok := flattenApplication(e.Left)
+		if !ok {
+			return "", nil, false
+		}
+		return name, append(args, e.Index), true
+	}
+	return "", nil, false
+}
 
 // zeroValue is the interpreter's zero for a value-less typed declaration
 // (`regs: [4]u64`), mirroring the backend's zero-initialized storage: fixed
@@ -31,6 +78,31 @@ func zeroValue(typeExpr ast.Expression, env *object.Environment) (object.Object,
 			return record, true
 		}
 	case *ast.IndexExpression:
+		// A generic record instantiation (Idx[Thread], Ring[u8, 4]) zeroes the
+		// template's fields under the argument bindings; the template
+		// registry disambiguates it from an owned array [4]Thread, which
+		// shares the syntactic shape.
+		if name, args, ok := flattenApplication(t); ok {
+			if params, decl, isTemplate := env.GetRecordTemplate(name); isTemplate && len(params) == len(args) {
+				bindings := make(map[string]ast.Expression, len(params))
+				for i, param := range params {
+					bindings[param] = args[i]
+				}
+				record := &object.Record{Fields: map[string]object.Object{}}
+				for _, field := range decl.FieldOrder {
+					substituted, ok := typechecker.SubstituteTypeAST(field.Value, bindings)
+					if !ok {
+						return nil, false
+					}
+					value, known := zeroValue(substituted, env)
+					if !known {
+						return nil, false
+					}
+					record.Fields[field.Name] = value
+				}
+				return record, true
+			}
+		}
 		length, isFixed := t.Index.(*ast.IntegerLiteral)
 		if !isFixed || length.Value < 0 {
 			return nil, false

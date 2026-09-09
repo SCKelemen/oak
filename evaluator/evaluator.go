@@ -679,7 +679,7 @@ func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Enviro
 
 	for paramIdx, param := range fn.Parameters {
 		if paramIdx < len(args) {
-			env.Set(param.Value, args[paramIdx])
+			env.Set(param.Value, copyValue(args[paramIdx])) // aggregates pass by value
 		}
 	}
 
@@ -826,8 +826,19 @@ func evalADTType(adt *ast.ADTType, env *object.Environment) object.Object {
 				// Just store a marker that this is a record type
 				variantDef.Literal = &object.Record{Fields: make(map[string]object.Object)}
 				// Retain the field structure for zero-value construction of
-				// storage-identity records (evaluator/memory.go).
+				// storage-identity records (evaluator/memory.go); generic
+				// records keep their parameter names for instantiation
+				// (evaluator/zero.go).
 				env.SetRecordDecl(adt.Name.Value, recordLit)
+				if len(adt.TypeParams) > 0 {
+					params := make([]string, 0, len(adt.TypeParams))
+					for _, param := range adt.TypeParams {
+						if param != nil && param.Name != nil {
+							params = append(params, param.Name.Value)
+						}
+					}
+					env.SetRecordTemplate(adt.Name.Value, params, recordLit)
+				}
 			} else {
 				// Regular literal (for ADT variants with literal tags)
 				variantDef.Literal = Eval(variant.Literal, env)
@@ -1010,6 +1021,7 @@ func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environmen
 		if isError(val) {
 			return val
 		}
+		val = copyValue(val) // records and owned arrays are values
 		env.Set(vd.Name.Value, val)
 		return val
 	} else {
@@ -1036,7 +1048,13 @@ func evalAssignmentStatement(as *ast.AssignmentStatement, env *object.Environmen
 		return val
 	}
 
-	env.Set(as.Name.Value, val)
+	// Update the declaring scope: an assignment inside a match arm or loop
+	// body must reach the outer variable, never shadow it. Records and
+	// owned arrays are values: assignment copies (views alias by design).
+	val = copyValue(val)
+	if !env.Assign(as.Name.Value, val) {
+		env.Set(as.Name.Value, val)
+	}
 	return val
 }
 
@@ -1153,6 +1171,24 @@ func evalIndexAssignmentStatement(stmt *ast.IndexAssignmentStatement, env *objec
 	if isError(seq) {
 		return seq
 	}
+	// Record field store: p.x = v, pool[i].next.raw = v. The receiver
+	// evaluates to the stored record itself (records live in their owner's
+	// storage), so the field update is visible through the owner.
+	if fieldName, isField := stmt.Target.Index.(*ast.Identifier); isField && (stmt.Target.Dot || isRecordObject(seq)) {
+		record, isRecord := seq.(*object.Record)
+		if !isRecord {
+			return newError("field store into %s", seq.Type())
+		}
+		if _, exists := record.Fields[fieldName.Value]; !exists {
+			return newError("field '%s' not found in record", fieldName.Value)
+		}
+		value := Eval(stmt.Value, env)
+		if isError(value) {
+			return value
+		}
+		record.Fields[fieldName.Value] = copyValue(value)
+		return NULL
+	}
 	index := Eval(stmt.Target.Index, env)
 	if isError(index) {
 		return index
@@ -1214,12 +1250,16 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 
 	// Check if this is record field access (index is identifier) or array indexing
 	if fieldName, ok := ie.Index.(*ast.Identifier); ok {
-		// Special case: raw() method on ADT values
+		// Special case: raw() method on ADT values. A record may declare a
+		// field of its own named raw (Idx[P]: type = struct { raw: u32 }),
+		// which is plain field access.
 		if fieldName.Value == "raw" {
 			if adtValue, ok := left.(*object.ADTValue); ok {
 				return evalRawAccessor(adtValue, env)
 			}
-			return newError("raw() only works on ADT values, got %s", left.Type())
+			if _, isRecord := left.(*object.Record); !isRecord {
+				return newError("raw() only works on ADT values, got %s", left.Type())
+			}
 		}
 
 		// Record field access: record.field
