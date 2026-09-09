@@ -152,15 +152,29 @@ func (d *deriver) lowerRequest(fn *ast.FunctionStatement) {
 			d.report(CodeDeriveSignature, fn.Name, "derive.compare requires the signature (a: T, b: T): Ordering, with Ordering: type = Less | Equal | Greater in scope")
 			return
 		}
+	case "test_generate", "test_encode", "test_decode":
+		// Signature and target type are checked together: the type is the
+		// return type (generate), the parameter (encode), or Option's
+		// argument (decode).
 	default:
 		diag := d.report(CodeDeriveUnknown, fn.Body, "derive.%s is not a derivable operation", kind)
-		diag.AddHelp("derivable operations: derive.equal, derive.hash, derive.compare")
+		diag.AddHelp("derivable operations: derive.equal, derive.hash, derive.compare, derive.test_generate, derive.test_encode, derive.test_decode")
 		return
 	}
-	typeName, ok := fn.Parameters[0].Type.(*ast.Identifier)
-	if !ok {
-		d.report(CodeDeriveUnsupported, fn.Parameters[0].Type, "derive.%s: the parameter type must be a declared record or ADT", kind)
-		return
+	var typeName *ast.Identifier
+	if strings.HasPrefix(kind, "test_") {
+		ident, ok := d.testCommandType(kind, fn)
+		if !ok {
+			return
+		}
+		typeName = ident
+	} else {
+		ident, ok := fn.Parameters[0].Type.(*ast.Identifier)
+		if !ok {
+			d.report(CodeDeriveUnsupported, fn.Parameters[0].Type, "derive.%s: the parameter type must be a declared record or ADT", kind)
+			return
+		}
+		typeName = ident
 	}
 	decl, declared := d.types[typeName.Value]
 	if !declared {
@@ -176,7 +190,7 @@ func (d *deriver) lowerRequest(fn *ast.FunctionStatement) {
 		diag.AddNote("derivation reads the type's definition; only its own package may do that (opaque types stay opaque)")
 		return
 	}
-	helper, ok := d.helper(kind, typeName.Value, fn.Parameters[0].Type)
+	helper, ok := d.helper(kind, typeName.Value, typeName)
 	if !ok {
 		return
 	}
@@ -221,6 +235,12 @@ func (d *deriver) helper(kind, typeName string, node ast.Node) (string, bool) {
 		text, ok = d.hashHelper(name, typeName, decl, node)
 	case "compare":
 		text, ok = d.compareHelper(name, typeName, decl, node)
+	case "test_generate":
+		text, ok = d.testGenerateHelper(name, typeName, decl, node)
+	case "test_encode":
+		text, ok = d.testEncodeHelper(name, typeName, decl, node)
+	case "test_decode":
+		text, ok = d.testDecodeHelper(name, typeName, decl, node)
 	}
 	if !ok {
 		return "", false
@@ -230,7 +250,7 @@ func (d *deriver) helper(kind, typeName string, node ast.Node) (string, bool) {
 }
 
 func (d *deriver) helperOwner(helper string) (string, bool) {
-	for _, prefix := range []string{"__derive_equal_", "__derive_hash_", "__derive_compare_"} {
+	for _, prefix := range []string{"__derive_equal_", "__derive_hash_", "__derive_compare_", "__derive_test_generate_", "__derive_test_encode_", "__derive_test_decode_"} {
 		if strings.HasPrefix(helper, prefix) {
 			if decl := d.types[strings.TrimPrefix(helper, prefix)]; decl != nil {
 				return decl.Name.Token.SemanticContext, true

@@ -348,6 +348,33 @@ JSON corpus entries must match the input format. Trace replay retains the same
 build and semantic-trace checks as byte properties. A generator failure is a
 harness error, not a minimized target counterexample.
 
+### Typed commands
+
+A command sum type derives its generator, carrier encoding, and decoder
+(`83-modules.md` section 6.6): each variant carries Unit, one carrier scalar
+(`u8`, `u16`, `u32`, `Bool`), or a closed record of at most two carrier
+scalars. The type's own package declares:
+
+```oak
+SleepArg: type = struct { task: u8, ticks: u8 }
+Cmd: type = Admit: u8 | Sleep: SleepArg | Tick
+cmd_generate: (choices: [*]TestChoices, data: []u8): Cmd = derive.test_generate
+cmd_encode: (v: Cmd): TestCommand = derive.test_encode
+cmd_decode: (command: TestCommand): Option[Cmd] = derive.test_decode
+```
+
+`test_generate` draws the variant with `test_range` and each scalar from its
+full range; `test_encode` packs the variant index as `kind`, the first scalar
+as `target`, the second as `value`, with unused words zero; `test_decode`
+accepts exactly the encodings `test_encode` produces (range-checked, unused
+words zero) and returns `None` otherwise. The encoding is injective and
+canonical, so the command reducer moves through decodable commands toward the
+smallest payloads, and a target that rejects `None` with `test_assume` never
+executes an undecodable history. `Option` requires `import(std)`. Any other
+payload shape rejects (`OAK-M0203`); a wrong signature rejects (`OAK-M0202`).
+Model preconditions and legality remain the author's: derivation supplies the
+plumbing, not the semantics.
+
 `examples/testing/irq_test.oak` contains `PropertyIrqCommands`: acknowledgement
 is legal only in a deliverable model state and EOI only in an active one. The
 Go mutation test injects the lost-edge bug into a nine-command legal history and

@@ -366,6 +366,11 @@ point_hash: (v: Point): u64 = derive.hash
 - `derive.compare` requires `(a: T, b: T): Ordering` with
   `Ordering: type = Less | Equal | Greater` in scope, and orders records
   lexicographically by field and ADTs by variant index then payload.
+- `derive.test_generate`, `derive.test_encode`, and `derive.test_decode`
+  derive a test-command sum type's tape generator, `TestCommand` packing, and
+  range-checked decoder (`110-testing.md`, "Typed commands"); the type is the
+  return type, the parameter, or `Option`'s argument respectively, and they
+  require `import(testing)` (and `import(std)` for `Option`).
 - Members may be fixed-width integers, `Bool`, and declared records or ADTs,
   recursively (helpers are generated once per type); anything else is
   rejected (`OAK-M0203`). Generic types are not derivable over (`OAK-M0203`).
