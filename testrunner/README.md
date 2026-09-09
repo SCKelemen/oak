@@ -80,6 +80,21 @@ Failures shrink by deleting whole commands and reducing their fields; a pop
 whose push was deleted is rejected by the precondition instead of becoming a
 misleading counterexample. Results and artifacts carry the decoded commands.
 
+Declare commands as a sum type and derive the plumbing instead of packing
+words by hand:
+
+```oak
+Cmd: type = Push: u8 | Pop
+cmd_generate: (choices: [*]TestChoices, data: []u8): Cmd = derive.test_generate
+cmd_encode: (v: Cmd): TestCommand = derive.test_encode
+cmd_decode: (command: TestCommand): Option[Cmd] = derive.test_decode
+```
+
+The generator emits `cmd_encode(cmd_generate(choices, data))`; the target
+decodes each carrier command, rejects `None` with `test_assume`, and works
+with `Cmd` values. Variants may carry Unit, one of `u8`/`u16`/`u32`/`Bool`, or
+a record of at most two of those.
+
 Describe your trace events in `oak-trace.json` beside the tests and failures
 print named operations and fields (`command kind=tick target=1 ticks=9`)
 instead of raw payloads; JSON results add `trace_text`, and a diverging replay
