@@ -16,13 +16,13 @@ store: (roots: [*]Root, row: u32, slot: u32, value: u32): () {
 
 main: (): i32 = {
   storage: [2]Root
+  storage[0].leaves[0].values[1] = u32(42)
   roots: [*]Root = span(&storage)
   store(roots, u32(1), u32(2), u32(20))
   assert(roots[1].ready[2] == u32(20))
   assert(roots[1].leaves[1].values[2] == u32(21))
   assert(roots[0].ready[2] == u32(0))
   assert(roots[1].leaves[0].values[2] == u32(0))
-  storage[0].leaves[0].values[1] = u32(42)
   assert(roots[0].leaves[0].values[1] == u32(42))
   42
 }
