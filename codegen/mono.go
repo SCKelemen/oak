@@ -253,6 +253,7 @@ func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *ty
 			cg.emitTypeUnit(unit, tc)
 		}
 	}
+	cg.emitAbstractAliases()
 }
 
 // The supported Option shape has one payload, so its C union has exactly

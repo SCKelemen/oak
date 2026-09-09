@@ -498,6 +498,7 @@ type TypeChecker struct {
 	opaqueTypes             map[string]string
 	packagePaths            map[string]bool
 	sealedOpaque            map[string]map[string]bool
+	abstractTypes           map[string]string
 	adtPayloadTypes         map[string]map[string]Type
 	monomorphicTransactions [][]Substitution
 	diagnostics             *diagnostic.DiagnosticCollector
@@ -723,6 +724,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.checkStatement(stmt)
 		}
 	}
+	// Fresh abstract types of sealed imports take their identity from the
+	// declarations just resolved (typechecker/modules.go).
+	tc.registerAbstractTypes()
 	// The global scope is the closure of top-level declarations; template
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
@@ -1585,6 +1589,9 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
 		if atomicType, recognized := tc.checkAtomicInvocation(ident.Value, expr); recognized {
 			return atomicType
+		}
+		if coerced, recognized := tc.checkAbstractCoercion(ident.Value, expr); recognized {
+			return coerced
 		}
 	}
 	// Compiler-known library calls: c conversions, misplaced c.extern, and

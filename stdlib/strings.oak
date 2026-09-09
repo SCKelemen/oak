@@ -1,14 +1,14 @@
 // Text algorithms over explicitly borrowed code units. No allocation.
-TextError: type = InvalidEncoding | InvalidScalar | OutOfBounds | DestinationTooSmall | SizeOverflow | EmptySeparator | Empty
-TextScalar: type = struct { value: u32, next: u32 }
-TextRange: type = struct { start: u32, end: u32 }
-TextSplitCursor: type = struct { next: u32, done: Bool }
+pub TextError: type = InvalidEncoding | InvalidScalar | OutOfBounds | DestinationTooSmall | SizeOverflow | EmptySeparator | Empty
+pub TextScalar: type = struct { value: u32, next: u32 }
+pub TextRange: type = struct { start: u32, end: u32 }
+pub TextSplitCursor: type = struct { next: u32, done: Bool }
 
-unicode_is_scalar: (value: u32): Bool = value <= u32(1114111) && (value < u32(55296) || value > u32(57343))
-unicode_is_space: (value: u32): Bool = (value >= u32(9) && value <= u32(13)) || value == u32(32) || value == u32(133) || value == u32(160) || value == u32(5760) || (value >= u32(8192) && value <= u32(8202)) || value == u32(8232) || value == u32(8233) || value == u32(8239) || value == u32(8287) || value == u32(12288)
-ascii_lower: (value: u8): u8 = value >= u8(65) && value <= u8(90) ? value + u8(32) | value
-ascii_upper: (value: u8): u8 = value >= u8(97) && value <= u8(122) ? value - u8(32) | value
-text_is_ascii: (src: []u8): Bool {
+pub unicode_is_scalar: (value: u32): Bool = value <= u32(1114111) && (value < u32(55296) || value > u32(57343))
+pub unicode_is_space: (value: u32): Bool = (value >= u32(9) && value <= u32(13)) || value == u32(32) || value == u32(133) || value == u32(160) || value == u32(5760) || (value >= u32(8192) && value <= u32(8202)) || value == u32(8232) || value == u32(8233) || value == u32(8239) || value == u32(8287) || value == u32(12288)
+pub ascii_lower: (value: u8): u8 = value >= u8(65) && value <= u8(90) ? value + u8(32) | value
+pub ascii_upper: (value: u8): u8 = value >= u8(97) && value <= u8(122) ? value - u8(32) | value
+pub text_is_ascii: (src: []u8): Bool {
   valid: Bool = true
   i: u32 = 0
   while i < len(src) { src[i] > u8(127) ? { valid = false }
@@ -16,11 +16,11 @@ text_is_ascii: (src: []u8): Bool {
   }
   valid
 }
-utf8_width: (value: u32): u32 = value < u32(128) ? u32(1) | value < u32(2048) ? u32(2) | value < u32(65536) ? u32(3) | u32(4)
-utf16_width: (value: u32): u32 = value < u32(65536) ? u32(1) | u32(2)
-utf32_width: (value: u32): u32 = u32(1)
+pub utf8_width: (value: u32): u32 = value < u32(128) ? u32(1) | value < u32(2048) ? u32(2) | value < u32(65536) ? u32(3) | u32(4)
+pub utf16_width: (value: u32): u32 = value < u32(65536) ? u32(1) | u32(2)
+pub utf32_width: (value: u32): u32 = u32(1)
 
-utf8_decode: (src: []u8, offset: u32): Result[TextScalar, TextError] {
+pub utf8_decode: (src: []u8, offset: u32): Result[TextScalar, TextError] {
   offset > len(src) ? { .Err(.OutOfBounds) } | offset == len(src) ? { .Err(.Empty) } | {
     first: u32 = u32(src[offset])
     width: u32 = first < u32(128) ? u32(1) | first >= u32(194) && first <= u32(223) ? u32(2) | first >= u32(224) && first <= u32(239) ? u32(3) | first >= u32(240) && first <= u32(244) ? u32(4) | u32(0)
@@ -39,7 +39,7 @@ utf8_decode: (src: []u8, offset: u32): Result[TextScalar, TextError] {
     }
   }
 }
-utf16_decode: (src: []u16, offset: u32): Result[TextScalar, TextError] {
+pub utf16_decode: (src: []u16, offset: u32): Result[TextScalar, TextError] {
   offset > len(src) ? { .Err(.OutOfBounds) } | offset == len(src) ? { .Err(.Empty) } | {
     first: u32 = u32(src[offset])
     first < u32(55296) || first > u32(57343) ? { .Ok(TextScalar { value: first, next: offset + u32(1) }) } | {
@@ -53,21 +53,21 @@ utf16_decode: (src: []u16, offset: u32): Result[TextScalar, TextError] {
     }
   }
 }
-utf32_decode: (src: []u32, offset: u32): Result[TextScalar, TextError] {
+pub utf32_decode: (src: []u32, offset: u32): Result[TextScalar, TextError] {
   offset > len(src) ? { .Err(.OutOfBounds) } | offset == len(src) ? { .Err(.Empty) } | {
     value: u32 = src[offset]
     unicode_is_scalar(value) ? { .Ok(TextScalar { value: value, next: offset + u32(1) }) } | { .Err(.InvalidEncoding) }
   }
 }
-text_decode_ok: (result: Result[TextScalar, TextError]): Bool = result ? | .Ok(value) => true | .Err(reason) => false
+pub text_decode_ok: (result: Result[TextScalar, TextError]): Bool = result ? | .Ok(value) => true | .Err(reason) => false
 // Internal helper: callers establish success before extracting.
-text_decoded: (result: Result[TextScalar, TextError]): TextScalar = result ?
+pub text_decoded: (result: Result[TextScalar, TextError]): TextScalar = result ?
   | .Ok(value) => value
   | .Err(reason) => TextScalar { value: u32(4294967295), next: u32(4294967295) }
-text_result_ok: (result: Result[u32, TextError]): Bool = result ? | .Ok(value) => true | .Err(reason) => false
-text_result_value: (result: Result[u32, TextError]): u32 = result ? | .Ok(value) => value | .Err(reason) => u32(4294967295)
+pub text_result_ok: (result: Result[u32, TextError]): Bool = result ? | .Ok(value) => true | .Err(reason) => false
+pub text_result_value: (result: Result[u32, TextError]): u32 = result ? | .Ok(value) => value | .Err(reason) => u32(4294967295)
 
-utf8_encode: (dst: [*]u8, offset: u32, value: u32): Result[u32, TextError] {
+pub utf8_encode: (dst: [*]u8, offset: u32, value: u32): Result[u32, TextError] {
   !unicode_is_scalar(value) ? { .Err(.InvalidScalar) } | {
     width: u32 = utf8_width(value)
     !bytes_range_fits(len(dst), offset, width) ? { .Err(.DestinationTooSmall) } | {
@@ -88,7 +88,7 @@ utf8_encode: (dst: [*]u8, offset: u32, value: u32): Result[u32, TextError] {
     }
   }
 }
-utf16_encode: (dst: [*]u16, offset: u32, value: u32): Result[u32, TextError] {
+pub utf16_encode: (dst: [*]u16, offset: u32, value: u32): Result[u32, TextError] {
   !unicode_is_scalar(value) ? { .Err(.InvalidScalar) } | {
     width: u32 = utf16_width(value)
     !bytes_range_fits(len(dst), offset, width) ? { .Err(.DestinationTooSmall) } | {
@@ -101,7 +101,7 @@ utf16_encode: (dst: [*]u16, offset: u32, value: u32): Result[u32, TextError] {
     }
   }
 }
-utf32_encode: (dst: [*]u32, offset: u32, value: u32): Result[u32, TextError] {
+pub utf32_encode: (dst: [*]u32, offset: u32, value: u32): Result[u32, TextError] {
   !unicode_is_scalar(value) ? { .Err(.InvalidScalar) } | {
     !bytes_range_fits(len(dst), offset, u32(1)) ? { .Err(.DestinationTooSmall) } | {
       dst[offset] = value
@@ -110,7 +110,7 @@ utf32_encode: (dst: [*]u32, offset: u32, value: u32): Result[u32, TextError] {
   }
 }
 
-utf8_count: (src: []u8): Result[u32, TextError] {
+pub utf8_count: (src: []u8): Result[u32, TextError] {
   at: u32 = 0
   count: u32 = 0
   valid: Bool = true
@@ -124,9 +124,9 @@ utf8_count: (src: []u8): Result[u32, TextError] {
   }
   valid ? { .Ok(count) } | { .Err(.InvalidEncoding) }
 }
-utf8_validate: (src: []u8): Bool = text_result_ok(utf8_count(src))
+pub utf8_validate: (src: []u8): Bool = text_result_ok(utf8_count(src))
 
-utf8_to_utf16_size: (src: []u8): Result[u32, TextError] {
+pub utf8_to_utf16_size: (src: []u8): Result[u32, TextError] {
   at: u32 = 0
   total: u64 = 0
   valid: Bool = true
@@ -140,7 +140,7 @@ utf8_to_utf16_size: (src: []u8): Result[u32, TextError] {
   }
   !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
 }
-utf8_to_utf16: (dst: [*]u16, src: []u8): Result[u32, TextError] {
+pub utf8_to_utf16: (dst: [*]u16, src: []u8): Result[u32, TextError] {
   measured: Result[u32, TextError] = utf8_to_utf16_size(src)
   !text_result_ok(measured) ? { measured } | {
     needed: u32 = text_result_value(measured)
@@ -159,7 +159,7 @@ utf8_to_utf16: (dst: [*]u16, src: []u8): Result[u32, TextError] {
   }
 }
 
-utf8_to_utf32_size: (src: []u8): Result[u32, TextError] {
+pub utf8_to_utf32_size: (src: []u8): Result[u32, TextError] {
   at: u32 = 0
   total: u64 = 0
   valid: Bool = true
@@ -173,7 +173,7 @@ utf8_to_utf32_size: (src: []u8): Result[u32, TextError] {
   }
   !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
 }
-utf8_to_utf32: (dst: [*]u32, src: []u8): Result[u32, TextError] {
+pub utf8_to_utf32: (dst: [*]u32, src: []u8): Result[u32, TextError] {
   measured: Result[u32, TextError] = utf8_to_utf32_size(src)
   !text_result_ok(measured) ? { measured } | {
     needed: u32 = text_result_value(measured)
@@ -192,7 +192,7 @@ utf8_to_utf32: (dst: [*]u32, src: []u8): Result[u32, TextError] {
   }
 }
 
-utf16_count: (src: []u16): Result[u32, TextError] {
+pub utf16_count: (src: []u16): Result[u32, TextError] {
   at: u32 = 0
   count: u32 = 0
   valid: Bool = true
@@ -206,9 +206,9 @@ utf16_count: (src: []u16): Result[u32, TextError] {
   }
   valid ? { .Ok(count) } | { .Err(.InvalidEncoding) }
 }
-utf16_validate: (src: []u16): Bool = text_result_ok(utf16_count(src))
+pub utf16_validate: (src: []u16): Bool = text_result_ok(utf16_count(src))
 
-utf16_to_utf8_size: (src: []u16): Result[u32, TextError] {
+pub utf16_to_utf8_size: (src: []u16): Result[u32, TextError] {
   at: u32 = 0
   total: u64 = 0
   valid: Bool = true
@@ -222,7 +222,7 @@ utf16_to_utf8_size: (src: []u16): Result[u32, TextError] {
   }
   !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
 }
-utf16_to_utf8: (dst: [*]u8, src: []u16): Result[u32, TextError] {
+pub utf16_to_utf8: (dst: [*]u8, src: []u16): Result[u32, TextError] {
   measured: Result[u32, TextError] = utf16_to_utf8_size(src)
   !text_result_ok(measured) ? { measured } | {
     needed: u32 = text_result_value(measured)
@@ -241,7 +241,7 @@ utf16_to_utf8: (dst: [*]u8, src: []u16): Result[u32, TextError] {
   }
 }
 
-utf16_to_utf32_size: (src: []u16): Result[u32, TextError] {
+pub utf16_to_utf32_size: (src: []u16): Result[u32, TextError] {
   at: u32 = 0
   total: u64 = 0
   valid: Bool = true
@@ -255,7 +255,7 @@ utf16_to_utf32_size: (src: []u16): Result[u32, TextError] {
   }
   !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
 }
-utf16_to_utf32: (dst: [*]u32, src: []u16): Result[u32, TextError] {
+pub utf16_to_utf32: (dst: [*]u32, src: []u16): Result[u32, TextError] {
   measured: Result[u32, TextError] = utf16_to_utf32_size(src)
   !text_result_ok(measured) ? { measured } | {
     needed: u32 = text_result_value(measured)
@@ -274,7 +274,7 @@ utf16_to_utf32: (dst: [*]u32, src: []u16): Result[u32, TextError] {
   }
 }
 
-utf32_count: (src: []u32): Result[u32, TextError] {
+pub utf32_count: (src: []u32): Result[u32, TextError] {
   at: u32 = 0
   count: u32 = 0
   valid: Bool = true
@@ -288,9 +288,9 @@ utf32_count: (src: []u32): Result[u32, TextError] {
   }
   valid ? { .Ok(count) } | { .Err(.InvalidEncoding) }
 }
-utf32_validate: (src: []u32): Bool = text_result_ok(utf32_count(src))
+pub utf32_validate: (src: []u32): Bool = text_result_ok(utf32_count(src))
 
-utf32_to_utf8_size: (src: []u32): Result[u32, TextError] {
+pub utf32_to_utf8_size: (src: []u32): Result[u32, TextError] {
   at: u32 = 0
   total: u64 = 0
   valid: Bool = true
@@ -304,7 +304,7 @@ utf32_to_utf8_size: (src: []u32): Result[u32, TextError] {
   }
   !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
 }
-utf32_to_utf8: (dst: [*]u8, src: []u32): Result[u32, TextError] {
+pub utf32_to_utf8: (dst: [*]u8, src: []u32): Result[u32, TextError] {
   measured: Result[u32, TextError] = utf32_to_utf8_size(src)
   !text_result_ok(measured) ? { measured } | {
     needed: u32 = text_result_value(measured)
@@ -323,7 +323,7 @@ utf32_to_utf8: (dst: [*]u8, src: []u32): Result[u32, TextError] {
   }
 }
 
-utf32_to_utf16_size: (src: []u32): Result[u32, TextError] {
+pub utf32_to_utf16_size: (src: []u32): Result[u32, TextError] {
   at: u32 = 0
   total: u64 = 0
   valid: Bool = true
@@ -337,7 +337,7 @@ utf32_to_utf16_size: (src: []u32): Result[u32, TextError] {
   }
   !valid ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
 }
-utf32_to_utf16: (dst: [*]u16, src: []u32): Result[u32, TextError] {
+pub utf32_to_utf16: (dst: [*]u16, src: []u32): Result[u32, TextError] {
   measured: Result[u32, TextError] = utf32_to_utf16_size(src)
   !text_result_ok(measured) ? { measured } | {
     needed: u32 = text_result_value(measured)
@@ -357,18 +357,18 @@ utf32_to_utf16: (dst: [*]u16, src: []u32): Result[u32, TextError] {
 }
 
 // Read operations require well-formed UTF-8 and trap on invalid input.
-text_require: (src: []u8): () { assert(is_valid_utf8(src)) }
-text_equal: (left: []u8, right: []u8): Bool {
+pub text_require: (src: []u8): () { assert(is_valid_utf8(src)) }
+pub text_equal: (left: []u8, right: []u8): Bool {
   text_require(left)
   text_require(right)
   bytes_equal(left, right)
 }
-text_compare: (left: []u8, right: []u8): i32 {
+pub text_compare: (left: []u8, right: []u8): i32 {
   text_require(left)
   text_require(right)
   bytes_compare(left, right)
 }
-text_equal_ascii_fold: (left: []u8, right: []u8): Bool {
+pub text_equal_ascii_fold: (left: []u8, right: []u8): Bool {
   text_require(left)
   text_require(right)
   same: Bool = len(left) == len(right)
@@ -379,7 +379,7 @@ text_equal_ascii_fold: (left: []u8, right: []u8): Bool {
   }
   same
 }
-text_match_at: (src: []u8, needle: []u8, offset: u32): Bool {
+pub text_match_at: (src: []u8, needle: []u8, offset: u32): Bool {
   same: Bool = bytes_range_fits(len(src), offset, len(needle))
   i: u32 = 0
   while i < len(needle) && same {
@@ -388,17 +388,17 @@ text_match_at: (src: []u8, needle: []u8, offset: u32): Bool {
   }
   same
 }
-text_has_prefix: (src: []u8, prefix: []u8): Bool {
+pub text_has_prefix: (src: []u8, prefix: []u8): Bool {
   text_require(src)
   text_require(prefix)
   text_match_at(src, prefix, u32(0))
 }
-text_has_suffix: (src: []u8, suffix: []u8): Bool {
+pub text_has_suffix: (src: []u8, suffix: []u8): Bool {
   text_require(src)
   text_require(suffix)
   len(suffix) > len(src) ? false | text_match_at(src, suffix, len(src) - len(suffix))
 }
-text_find_from: (src: []u8, needle: []u8, start: u32): Option[u32] {
+pub text_find_from: (src: []u8, needle: []u8, start: u32): Option[u32] {
   found: Bool = false
   at: u32 = start
   while !found && bytes_range_fits(len(src), at, len(needle)) {
@@ -407,16 +407,16 @@ text_find_from: (src: []u8, needle: []u8, start: u32): Option[u32] {
   }
   found ? { .Some(at) } | { .None }
 }
-text_index: (src: []u8, needle: []u8): Option[u32] {
+pub text_index: (src: []u8, needle: []u8): Option[u32] {
   text_require(src)
   text_require(needle)
   text_find_from(src, needle, u32(0))
 }
-text_contains: (src: []u8, needle: []u8): Bool {
+pub text_contains: (src: []u8, needle: []u8): Bool {
   found: Option[u32] = text_index(src, needle)
   found ? | .Some(at) => true | .None => false
 }
-text_last_index: (src: []u8, needle: []u8): Option[u32] {
+pub text_last_index: (src: []u8, needle: []u8): Option[u32] {
   text_require(src)
   text_require(needle)
   len(needle) > len(src) ? { .None } | {
@@ -431,12 +431,12 @@ text_last_index: (src: []u8, needle: []u8): Option[u32] {
     found ? { .Some(at) } | { .None }
   }
 }
-text_index_byte: (src: []u8, value: u8): Option[u32] {
+pub text_index_byte: (src: []u8, value: u8): Option[u32] {
   text_require(src)
   bytes_find(src, value)
 }
 // Rune search returns a scalar index, never a byte index.
-text_index_rune: (src: []u8, value: u32): Option[u32] {
+pub text_index_rune: (src: []u8, value: u32): Option[u32] {
   text_require(src)
   assert(unicode_is_scalar(value))
   at: u32 = 0
@@ -450,30 +450,30 @@ text_index_rune: (src: []u8, value: u32): Option[u32] {
   }
   found ? { .Some(index) } | { .None }
 }
-text_contains_rune: (src: []u8, value: u32): Bool {
+pub text_contains_rune: (src: []u8, value: u32): Bool {
   found: Option[u32] = text_index_rune(src, value)
   found ? | .Some(at) => true | .None => false
 }
-text_is_boundary: (src: []u8, offset: u32): Bool {
+pub text_is_boundary: (src: []u8, offset: u32): Bool {
   offset > len(src) ? false | offset == len(src) ? true | (src[offset] & u8(192)) != u8(128)
 }
-text_slice_range: (src: []u8, start: u32, end: u32): Result[TextRange, TextError] {
+pub text_slice_range: (src: []u8, start: u32, end: u32): Result[TextRange, TextError] {
   !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {
     start > end || !text_is_boundary(src, start) || !text_is_boundary(src, end) ? { .Err(.OutOfBounds) } | {
       .Ok(TextRange { start: start, end: end })
     }
   }
 }
-text_trim_prefix: (src: []u8, prefix: []u8): TextRange {
+pub text_trim_prefix: (src: []u8, prefix: []u8): TextRange {
   matched: Bool = text_has_prefix(src, prefix)
   TextRange { start: matched ? len(prefix) | u32(0), end: len(src) }
 }
-text_trim_suffix: (src: []u8, suffix: []u8): TextRange {
+pub text_trim_suffix: (src: []u8, suffix: []u8): TextRange {
   matched: Bool = text_has_suffix(src, suffix)
   TextRange { start: u32(0), end: matched ? len(src) - len(suffix) | len(src) }
 }
 // Trim Unicode White_Space; ranges are half-open byte offsets into src.
-text_trim_space: (src: []u8): TextRange {
+pub text_trim_space: (src: []u8): TextRange {
   text_require(src)
   start: u32 = len(src)
   end: u32 = len(src)
@@ -489,7 +489,7 @@ text_trim_space: (src: []u8): TextRange {
   TextRange { start: start, end: end }
 }
 // Cutsets contain scalars, not individual UTF-8 bytes.
-text_trim: (src: []u8, cutset: []u8): TextRange {
+pub text_trim: (src: []u8, cutset: []u8): TextRange {
   text_require(src)
   text_require(cutset)
   start: u32 = len(src)
@@ -506,7 +506,7 @@ text_trim: (src: []u8, cutset: []u8): TextRange {
   TextRange { start: start, end: end }
 }
 // Empty separators are rejected. Empty input and a trailing separator emit empty fields.
-text_split_next: (cursor: [*]TextSplitCursor, src: []u8, separator: []u8): Result[TextRange, TextError] {
+pub text_split_next: (cursor: [*]TextSplitCursor, src: []u8, separator: []u8): Result[TextRange, TextError] {
   assert(len(cursor) == u32(1))
   !is_valid_utf8(src) || !is_valid_utf8(separator) ? { .Err(.InvalidEncoding) } | len(separator) == u32(0) ? { .Err(.EmptySeparator) } | {
     cursor[0].next > len(src) || !text_is_boundary(src, cursor[0].next) ? { .Err(.OutOfBounds) } | {
@@ -521,7 +521,7 @@ text_split_next: (cursor: [*]TextSplitCursor, src: []u8, separator: []u8): Resul
   }
 }
 
-text_copy: (dst: [*]u8, src: []u8): Result[u32, TextError] {
+pub text_copy: (dst: [*]u8, src: []u8): Result[u32, TextError] {
   !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | len(src) > len(dst) ? { .Err(.DestinationTooSmall) } | {
     i: u32 = 0
     while i < len(src) { dst[i] = src[i]
@@ -530,7 +530,7 @@ text_copy: (dst: [*]u8, src: []u8): Result[u32, TextError] {
     .Ok(len(src))
   }
 }
-text_repeat: (dst: [*]u8, src: []u8, count: u32): Result[u32, TextError] {
+pub text_repeat: (dst: [*]u8, src: []u8, count: u32): Result[u32, TextError] {
   !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {
     total: u64 = u64(len(src)) * u64(count)
     total > u64(4294967295) ? { .Err(.SizeOverflow) } | total > u64(len(dst)) ? { .Err(.DestinationTooSmall) } | {
@@ -544,7 +544,7 @@ text_repeat: (dst: [*]u8, src: []u8, count: u32): Result[u32, TextError] {
   }
 }
 // Join selected ranges of one source. This avoids allocating/storing borrowed views.
-text_join: (dst: [*]u8, src: []u8, parts: []TextRange, separator: []u8): Result[u32, TextError] {
+pub text_join: (dst: [*]u8, src: []u8, parts: []TextRange, separator: []u8): Result[u32, TextError] {
   !is_valid_utf8(src) || !is_valid_utf8(separator) ? { .Err(.InvalidEncoding) } | {
     total: u64 = 0
     valid: Bool = true
@@ -581,7 +581,7 @@ text_join: (dst: [*]u8, src: []u8, parts: []TextRange, separator: []u8): Result[
     }
   }
 }
-text_ascii_case: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, TextError] {
+pub text_ascii_case: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, TextError] {
   !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | len(src) > len(dst) ? { .Err(.DestinationTooSmall) } | {
     i: u32 = 0
     while i < len(src) { dst[i] = upper ? ascii_upper(src[i]) | ascii_lower(src[i])
@@ -590,11 +590,11 @@ text_ascii_case: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, TextError] {
     .Ok(len(src))
   }
 }
-text_to_lower_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_ascii_case(dst, src, false)
-text_to_upper_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_ascii_case(dst, src, true)
+pub text_to_lower_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_ascii_case(dst, src, false)
+pub text_to_upper_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_ascii_case(dst, src, true)
 
 // Unicode default (non-locale) full casing. Mode: lower=0, upper=1, fold=2.
-text_followed_by_cased: (src: []u8, offset: u32): Bool {
+pub text_followed_by_cased: (src: []u8, offset: u32): Bool {
   at: u32 = offset
   searching: Bool = true
   cased: Bool = false
@@ -608,14 +608,14 @@ text_followed_by_cased: (src: []u8, offset: u32): Bool {
   }
   cased
 }
-text_case_mapping: (src: []u8, item: TextScalar, preceded: Bool, mode: u32): UnicodeMapping {
+pub text_case_mapping: (src: []u8, item: TextScalar, preceded: Bool, mode: u32): UnicodeMapping {
   mode == u32(1) ? { unicode_upper(item.value) } | mode == u32(2) ? { unicode_fold(item.value) } | {
     item.value == u32(931) && preceded && !text_followed_by_cased(src, item.next) ? {
       UnicodeMapping { count: u32(1), first: u32(962), second: u32(0), third: u32(0) }
     } | { unicode_lower(item.value) }
   }
 }
-text_case_size: (src: []u8, mode: u32): Result[u32, TextError] {
+pub text_case_size: (src: []u8, mode: u32): Result[u32, TextError] {
   assert(mode <= u32(2))
   !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {
     at: u32 = 0
@@ -635,7 +635,7 @@ text_case_size: (src: []u8, mode: u32): Result[u32, TextError] {
     total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
   }
 }
-text_case_into: (dst: [*]u8, src: []u8, mode: u32): Result[u32, TextError] {
+pub text_case_into: (dst: [*]u8, src: []u8, mode: u32): Result[u32, TextError] {
   measured: Result[u32, TextError] = text_case_size(src, mode)
   !text_result_ok(measured) ? { measured } | text_result_value(measured) > len(dst) ? { .Err(.DestinationTooSmall) } | {
     at: u32 = 0
@@ -657,11 +657,11 @@ text_case_into: (dst: [*]u8, src: []u8, mode: u32): Result[u32, TextError] {
     .Ok(out)
   }
 }
-text_to_lower: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(0))
-text_to_upper: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(1))
-text_case_fold: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(2))
-TextFoldCursor: type = struct { next: u32, index: u32, mapping: UnicodeMapping }
-text_fold_next: (cursor: [*]TextFoldCursor, src: []u8): Option[u32] {
+pub text_to_lower: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(0))
+pub text_to_upper: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(1))
+pub text_case_fold: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(2))
+pub TextFoldCursor: type = struct { next: u32, index: u32, mapping: UnicodeMapping }
+pub text_fold_next: (cursor: [*]TextFoldCursor, src: []u8): Option[u32] {
   assert(len(cursor) == u32(1))
   assert(cursor[0].next <= len(src))
   cursor[0].index == cursor[0].mapping.count && cursor[0].next < len(src) ? {
@@ -676,7 +676,7 @@ text_fold_next: (cursor: [*]TextFoldCursor, src: []u8): Option[u32] {
     .Some(value)
   }
 }
-text_equal_fold: (left: []u8, right: []u8): Bool {
+pub text_equal_fold: (left: []u8, right: []u8): Bool {
   text_require(left)
   text_require(right)
   left_state: [1]TextFoldCursor
@@ -695,7 +695,7 @@ text_equal_fold: (left: []u8, right: []u8): Bool {
 }
 
 // Replace non-overlapping matches; empty old text is rejected explicitly.
-text_replace: (dst: [*]u8, src: []u8, old: []u8, replacement: []u8): Result[u32, TextError] {
+pub text_replace: (dst: [*]u8, src: []u8, old: []u8, replacement: []u8): Result[u32, TextError] {
   !is_valid_utf8(src) || !is_valid_utf8(old) || !is_valid_utf8(replacement) ? { .Err(.InvalidEncoding) } | len(old) == u32(0) ? { .Err(.EmptySeparator) } | {
     total: u64 = 0
     at: u32 = 0
@@ -728,15 +728,15 @@ text_replace: (dst: [*]u8, src: []u8, old: []u8, replacement: []u8): Result[u32,
   }
 }
 
-TextBuilder: type = struct { length: u32, status: u32 }
-text_builder: (): TextBuilder = TextBuilder { length: u32(0), status: u32(0) }
-text_builder_error: (builder: TextBuilder, reason: TextError): TextBuilder {
+pub TextBuilder: type = struct { length: u32, status: u32 }
+pub text_builder: (): TextBuilder = TextBuilder { length: u32(0), status: u32(0) }
+pub text_builder_error: (builder: TextBuilder, reason: TextError): TextBuilder {
   next: TextBuilder = builder
   next.status == u32(0) ? { next.status = text_error_code(reason)
   }
   next
 }
-append_text: (builder: TextBuilder, dst: [*]u8, src: []u8): TextBuilder {
+pub append_text: (builder: TextBuilder, dst: [*]u8, src: []u8): TextBuilder {
   assert(builder.length <= len(dst))
   builder.status != u32(0) ? { builder } | !is_valid_utf8(src) ? { text_builder_error(builder, .InvalidEncoding) } | len(src) > len(dst) - builder.length ? { text_builder_error(builder, .DestinationTooSmall) } | {
     next: TextBuilder = builder
@@ -748,7 +748,7 @@ append_text: (builder: TextBuilder, dst: [*]u8, src: []u8): TextBuilder {
     next
   }
 }
-append_rune: (builder: TextBuilder, dst: [*]u8, value: u32): TextBuilder {
+pub append_rune: (builder: TextBuilder, dst: [*]u8, value: u32): TextBuilder {
   assert(builder.length <= len(dst))
   builder.status != u32(0) ? { builder } | !unicode_is_scalar(value) ? { text_builder_error(builder, .InvalidScalar) } | {
     encoded: Result[u32, TextError] = utf8_encode(dst, builder.length, value)
@@ -759,7 +759,7 @@ append_rune: (builder: TextBuilder, dst: [*]u8, value: u32): TextBuilder {
     }
   }
 }
-append_u64: (builder: TextBuilder, dst: [*]u8, value: u64): TextBuilder {
+pub append_u64: (builder: TextBuilder, dst: [*]u8, value: u64): TextBuilder {
   assert(builder.length <= len(dst))
   builder.status != u32(0) ? { builder } | {
     digits: [20]u8
@@ -783,9 +783,9 @@ append_u64: (builder: TextBuilder, dst: [*]u8, value: u64): TextBuilder {
     }
   }
 }
-finish_text: (builder: TextBuilder): Result[u32, TextError] = builder.status != u32(0) ? .Err(text_error_from_code(builder.status)) | .Ok(builder.length)
+pub finish_text: (builder: TextBuilder): Result[u32, TextError] = builder.status != u32(0) ? .Err(text_error_from_code(builder.status)) | .Ok(builder.length)
 
-text_error_code: (reason: TextError): u32 = reason ?
+pub text_error_code: (reason: TextError): u32 = reason ?
  | .InvalidEncoding => u32(1)
  | .InvalidScalar => u32(2)
  | .OutOfBounds => u32(3)
@@ -793,7 +793,7 @@ text_error_code: (reason: TextError): u32 = reason ?
  | .SizeOverflow => u32(5)
  | .EmptySeparator => u32(6)
  | .Empty => u32(7)
-text_error_from_code: (status: u32): TextError = status ?
+pub text_error_from_code: (status: u32): TextError = status ?
  | 1 => .InvalidEncoding
  | 2 => .InvalidScalar
  | 3 => .OutOfBounds
@@ -802,12 +802,12 @@ text_error_from_code: (status: u32): TextError = status ?
  | 6 => .EmptySeparator
  | _ => .Empty
 
-ascii_to_utf8: (dst: [*]u8, src: []u8): Result[u32, TextError] {
+pub ascii_to_utf8: (dst: [*]u8, src: []u8): Result[u32, TextError] {
   !text_is_ascii(src) ? { .Err(.InvalidEncoding) } | { text_copy(dst, src) }
 }
-utf8_to_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = ascii_to_utf8(dst, src)
+pub utf8_to_ascii: (dst: [*]u8, src: []u8): Result[u32, TextError] = ascii_to_utf8(dst, src)
 
-utf8_decode_previous: (src: []u8, end: u32): Result[TextScalar, TextError] {
+pub utf8_decode_previous: (src: []u8, end: u32): Result[TextScalar, TextError] {
   end > len(src) ? { .Err(.OutOfBounds) } | end == u32(0) ? { .Err(.Empty) } | {
     start: u32 = end - u32(1)
     steps: u32 = 1
@@ -824,7 +824,7 @@ utf8_decode_previous: (src: []u8, end: u32): Result[TextScalar, TextError] {
     }
   }
 }
-text_split: (dst: [*]TextRange, src: []u8, separator: []u8): Result[u32, TextError] {
+pub text_split: (dst: [*]TextRange, src: []u8, separator: []u8): Result[u32, TextError] {
   !is_valid_utf8(src) || !is_valid_utf8(separator) ? { .Err(.InvalidEncoding) } | len(separator) == u32(0) ? { .Err(.EmptySeparator) } | {
     total: u64 = 1
     at: u32 = 0
@@ -851,7 +851,7 @@ text_split: (dst: [*]TextRange, src: []u8, separator: []u8): Result[u32, TextErr
     }
   }
 }
-text_fields_next: (cursor: [*]TextSplitCursor, src: []u8): Result[TextRange, TextError] {
+pub text_fields_next: (cursor: [*]TextSplitCursor, src: []u8): Result[TextRange, TextError] {
   assert(len(cursor) == u32(1))
   !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | !text_is_boundary(src, cursor[0].next) ? { .Err(.OutOfBounds) } | cursor[0].done ? { .Err(.Empty) } | {
     at: u32 = cursor[0].next
@@ -874,8 +874,8 @@ text_fields_next: (cursor: [*]TextSplitCursor, src: []u8): Result[TextRange, Tex
   }
 }
 
-TextParseError: type = InvalidRadix | InvalidDigit | NumberOverflow | EmptyNumber
-text_parse_u64: (src: []u8, radix: u32): Result[u64, TextParseError] {
+pub TextParseError: type = InvalidRadix | InvalidDigit | NumberOverflow | EmptyNumber
+pub text_parse_u64: (src: []u8, radix: u32): Result[u64, TextParseError] {
   radix < u32(2) || radix > u32(36) ? { .Err(.InvalidRadix) } | len(src) == u32(0) ? { .Err(.EmptyNumber) } | {
     maximum: u64 = ((u64(1) << u64(63)) | ((u64(1) << u64(63)) - u64(1)))
     value: u64 = 0

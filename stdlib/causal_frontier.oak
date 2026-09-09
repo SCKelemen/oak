@@ -1,8 +1,8 @@
 // Bounded causal frontier operations. Storage is always supplied by the caller
 // as fixed arrays exposed through views/spans; these functions allocate nothing.
-CausalFrontierError: type = LengthMismatch | ActorOutOfRange
+pub CausalFrontierError: type = LengthMismatch | ActorOutOfRange
 
-causal_frontier_join_into: (dst: [*]u64, left: []u64, right: []u64): Result[u32, CausalFrontierError] {
+pub causal_frontier_join_into: (dst: [*]u64, left: []u64, right: []u64): Result[u32, CausalFrontierError] {
   n: u32 = len(left)
   len(right) != n || len(dst) != n ? {
     .Err(.LengthMismatch)
@@ -16,7 +16,7 @@ causal_frontier_join_into: (dst: [*]u64, left: []u64, right: []u64): Result[u32,
   }
 }
 
-causal_frontier_le: (left: []u64, right: []u64): Result[Bool, CausalFrontierError] {
+pub causal_frontier_le: (left: []u64, right: []u64): Result[Bool, CausalFrontierError] {
   n: u32 = len(left)
   len(right) != n ? {
     .Err(.LengthMismatch)
@@ -31,7 +31,7 @@ causal_frontier_le: (left: []u64, right: []u64): Result[Bool, CausalFrontierErro
   }
 }
 
-causal_frontier_covers: (frontier: []u64, actor: u32, seq: u64): Result[Bool, CausalFrontierError] {
+pub causal_frontier_covers: (frontier: []u64, actor: u32, seq: u64): Result[Bool, CausalFrontierError] {
   actor >= len(frontier) ? {
     .Err(.ActorOutOfRange)
   } | {
@@ -40,7 +40,7 @@ causal_frontier_covers: (frontier: []u64, actor: u32, seq: u64): Result[Bool, Ca
 }
 
 // Observe one event dot. Returns true exactly when the frontier advanced.
-causal_frontier_observe: (frontier: [*]u64, actor: u32, seq: u64): Result[Bool, CausalFrontierError] {
+pub causal_frontier_observe: (frontier: [*]u64, actor: u32, seq: u64): Result[Bool, CausalFrontierError] {
   actor >= len(frontier) ? {
     .Err(.ActorOutOfRange)
   } | {

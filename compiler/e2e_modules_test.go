@@ -687,3 +687,221 @@ func TestE2EModulesDeriveRules(t *testing.T) {
 		}
 	}
 }
+
+// Fresh abstract types: two sealed imports of one package yield distinct
+// Key types; values cross only through each sealed alias; sharing
+// (`Key: type = ...`) keeps a member transparent.
+func TestE2EModulesFreshAbstractTypes(t *testing.T) {
+	files := map[string]string{
+		"oak.mod": helloManifest,
+		"fnv/fnv.oak": `package fnv
+
+pub Key: type = struct { bits: u64 }
+pub key: (v: u64): Key = Key { bits: v }
+pub hash: (k: Key): u64 = k.bits * 3
+pub zero: Key = Key { bits: 0 }
+`,
+		"main.oak": `package main
+
+h: { Key: type, key: (u64) -> Key, hash: (Key) -> u64, zero: Key } = import("example.com/hello/fnv")
+g: { Key: type, key: (u64) -> Key, hash: (Key) -> u64 } = import("example.com/hello/fnv")
+s: { Key: type = fnv.Key, key: (u64) -> Key } = import("example.com/hello/fnv")
+import("example.com/hello/fnv")
+
+main: (): i32 = {
+  k: h.Key = h.key(14)
+  z: h.Key = h.zero
+  m: g.Key = g.key(14)
+  shared: fnv.Key = s.key(1)
+  h.hash(k) + h.hash(z) + g.hash(m) + fnv.hash(shared) == 87 ? 42 | 1
+}
+`,
+	}
+	root := writeModule(t, files)
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+
+	// h.Key and g.Key are distinct: a value of one cannot cross the other's
+	// boundary, nor be used where the underlying fnv.Key is expected.
+	files["main.oak"] = `package main
+
+h: { Key: type, key: (u64) -> Key, hash: (Key) -> u64 } = import("example.com/hello/fnv")
+g: { Key: type, key: (u64) -> Key, hash: (Key) -> u64 } = import("example.com/hello/fnv")
+
+main: (): i32 = {
+  k: h.Key = h.key(14)
+  g.hash(k) == 42 ? 42 | 1
+}
+`
+	root = writeModule(t, files)
+	expectModuleError(t, root, ".", "OAK-M0113")
+
+	files["main.oak"] = `package main
+
+h: { Key: type, key: (u64) -> Key } = import("example.com/hello/fnv")
+import("example.com/hello/fnv")
+
+main: (): i32 = {
+  k: h.Key = h.key(14)
+  fnv.hash(k) == 42 ? 42 | 1
+}
+`
+	root = writeModule(t, files)
+	_, err := New().WithPackageDir(root).EmitC().Get()
+	if err == nil {
+		t.Fatal("an abstract value must not be accepted as the underlying type")
+	}
+
+	// A shared type member must be the package's type exactly.
+	files["main.oak"] = `package main
+
+s: { Key: type = u64, key: (u64) -> Key } = import("example.com/hello/fnv")
+
+main: (): i32 = {
+  k: s.Key = s.key(1)
+  42
+}
+`
+	root = writeModule(t, files)
+	expectModuleError(t, root, ".", "OAK-M0113")
+}
+
+// Generic packages: one template instantiated twice with different
+// arguments, each instance a distinct package.
+func TestE2EModulesGenericPackage(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"pair/pair.oak": `package pair[T, N: u32]
+
+pub Pair: type = struct { first: T, second: T }
+pub make: (a: T, b: T): Pair = Pair { first: a, second: b }
+pub scaled_first: (p: Pair): T = p.first * T(N)
+pub capacity: (): u32 = N
+`,
+		"main.oak": `package main
+
+bytes := import("example.com/hello/pair")[u8, 3]
+words := import("example.com/hello/pair")[u32, 10]
+
+main: (): i32 = {
+  b := bytes.make(u8(2), u8(1))
+  w := words.make(u32(4), u32(1))
+  total := u32(bytes.scaled_first(b)) + words.scaled_first(w) + bytes.capacity() + words.capacity()
+  total == u32(59) ? 42 | 1
+}
+`,
+	})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+
+	// Arity mismatches fail closed.
+	for name, main := range map[string]string{
+		"no arguments": "package main\n\nimport(\"example.com/hello/pair\")\n\nmain: (): i32 = pair.capacity()\n",
+		"too many":     "package main\n\np := import(\"example.com/hello/pair\")[u8, 3, 4]\n\nmain: (): i32 = p.capacity()\n",
+	} {
+		root := writeModule(t, map[string]string{
+			"oak.mod":       helloManifest,
+			"pair/pair.oak": "package pair[T, N: u32]\n\npub capacity: (): u32 = N\n",
+			"main.oak":      main,
+		})
+		diag := expectModuleError(t, root, ".", CodeGenericPackageArity)
+		_ = name
+		_ = diag
+	}
+	root = writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"util/util.oak": "package util\n\npub f: (): i32 = 1\n",
+		"main.oak":      "package main\n\nu := import(\"example.com/hello/util\")[u8]\n\nmain: (): i32 = u.f()\n",
+	})
+	expectModuleError(t, root, ".", CodeGenericPackageArity)
+}
+
+// Selective imports bind unqualified names through the visibility rule.
+func TestE2EModulesSelectiveImport(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"util/util.oak": `package util
+
+pub twice: (v: i32): i32 = v * 2
+pub Box: type = struct { v: i32 }
+pub boxed: (v: i32): Box = Box { v: v }
+hidden: (v: i32): i32 = v
+`,
+		"main.oak": `package main
+
+{ twice, Box, boxed } := import("example.com/hello/util")
+
+open_box: (b: Box): i32 = b.v
+
+main: (): i32 = {
+  b := boxed(twice(10))
+  open_box(b) + 22
+}
+`,
+	})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	root = writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"util/util.oak": "package util\n\npub twice: (v: i32): i32 = v * 2\nhidden: (v: i32): i32 = v\n",
+		"main.oak":      "package main\n\n{ hidden } := import(\"example.com/hello/util\")\n\nmain: (): i32 = hidden(42)\n",
+	})
+	expectModuleError(t, root, ".", CodeMemberNotExported)
+	root = writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"util/util.oak": "package util\n\npub twice: (v: i32): i32 = v * 2\n",
+		"main.oak":      "package main\n\n{ twice } := import(\"example.com/hello/util\")\n\nmain: (): i32 = 42\n",
+	})
+	expectModuleError(t, root, ".", CodeImportAlias)
+}
+
+// Diagnostics from checked code name the file they come from.
+func TestE2EModulesDiagnosticsNameFiles(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod":            helloManifest,
+		"geometry/point.oak": "package geometry\n\npub make: (x: i32): i32 = x\n",
+		"geometry/bad.oak":   "package geometry\n\npub broken: (x: i32): i32 = x + true\n",
+		"main.oak":           "package main\n\nimport(\"example.com/hello/geometry\")\n\nmain: (): i32 = geometry.make(42)\n",
+	})
+	_, err := New().WithPackageDir(root).EmitC().Get()
+	if err == nil || !strings.Contains(err.Error(), "bad.oak:3:") {
+		t.Fatalf("expected the diagnostic to name geometry/bad.oak with a position, got: %v", err)
+	}
+}
+
+// derive.compare orders records lexicographically and ADTs by variant then
+// payload.
+func TestE2EModulesDeriveCompare(t *testing.T) {
+	src := `package main
+
+Ordering: type = Less | Equal | Greater
+
+Version: type = struct { major: u32, minor: u32 }
+Kind: type = Plain | Tagged: u16
+
+version_cmp: (a: Version, b: Version): Ordering = derive.compare
+kind_cmp: (a: Kind, b: Kind): Ordering = derive.compare
+
+is_less: (o: Ordering): Bool = o ? .Less => true | .Equal => false | .Greater => false
+is_equal: (o: Ordering): Bool = o ? .Less => false | .Equal => true | .Greater => false
+
+main: (): i32 = {
+  a := Version { major: 1, minor: 9 }
+  b := Version { major: 2, minor: 0 }
+  c := Version { major: 1, minor: 9 }
+  ok := is_less(version_cmp(a, b)) && is_equal(version_cmp(a, c)) && !is_less(version_cmp(b, a))
+  kinds := is_less(kind_cmp(Kind.Plain, Kind.Tagged(1))) && is_less(kind_cmp(Kind.Tagged(1), Kind.Tagged(2))) && is_equal(kind_cmp(Kind.Tagged(5), Kind.Tagged(5)))
+  ok && kinds ? 42 | 1
+}
+`
+	code, abnormal := buildAndRun(t, "derive_compare", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}

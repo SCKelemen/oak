@@ -31,11 +31,13 @@ module is the unit of versioning; neither adds runtime work.**
   (`{ Key: type, hash: (Key) -> u64 }`). One construct — the record shape of
   `40-records.md` — serves as the module interface (one fact, many
   projections).
-- **No functors, no `open`, no nested modules in v1.** Parameterized
-  abstraction is expressed with Oak's monomorphized generics and constraints;
-  package-level type parameters (generic packages) are a recorded direction
-  (section 11). Unqualified import of another package's names is not
-  provided: readers always see where a name comes from.
+- **Functors are generic packages, monomorphized at import.**
+  `package pair[T, N: u32]` is instantiated by `import("...")[u8, 3]`; each
+  argument list is a distinct concrete package (section 6.7). There is no
+  runtime module object.
+- **Names come from somewhere visible.** Members are qualified
+  (`alias.member`) or imported by name (`{ f, g } := import(...)`); there is
+  no whole-package `open`, so readers always see where a name comes from.
 - **Whole-program, one translation unit.** The compiler resolves every package
   of the build into one flat program before type checking. Encapsulation is a
   static rule enforced by the elaborator, not a link-time property; the C
@@ -104,6 +106,13 @@ import(std)                                     // bootstrap, unqualified (secti
 - The **binding form** `name := import(path)` chooses the alias.
 - The **sealed form** `name: Sig = import(path)` chooses the alias and seals
   the import to the signature `Sig` (section 6.3).
+- The **selective form** `{ f, g } := import(path)` binds the named exported
+  members unqualified; each name is resolved by the visibility rule of
+  section 6 and follows the alias rules (no collision with declarations or
+  other imports, unused names are errors). A selective import cannot be
+  sealed.
+- The **instantiating form** `import(path)[u8, 8]` (in any of the above)
+  instantiates a generic package (section 6.7).
 - A bare identifier path (`import(std)`) is sugar for a single-segment path.
 
 `import(...)` is legal only as a top-level import statement or as the entire
@@ -303,13 +312,23 @@ A signature may be written inline, declared in the importing package
 package and named as `alias.Hasher`. Signature shapes are compile-time
 interfaces: they are never emitted as runtime records.
 
-**Sealed opacity.** A `Name: type` member makes the package's type abstract
-*for the importing package*: even when the package exported it transparently,
-constructing, reading fields of, or matching `h.Name` values in the importer
-is rejected (`OAK-M0110`) — ML's opaque ascription as a per-package rule
-rather than a fresh type. Alias types (`Key: type = u64`) remain structurally
-transparent; `with type` sharing constraints are a recorded direction
-(section 11). Signature types are monomorphic in v1.
+**Abstract type members are fresh types.** A `Name: type` member is ML's
+opaque ascription: each sealed binding gets a *fresh nominal type*
+`h.Name`, distinct from the package's own type and from every other sealed
+binding's (`h.Key` and `g.Key` of two seals of one package do not unify).
+Values acquire and shed the fresh type only at the sealed boundary: the
+elaborator rewrites `h.f(args)` so that arguments in abstract positions of
+`f`'s signature are unwrapped and an abstract result is wrapped by
+compiler-only coercions (`__abstract_<fresh>`, `__concrete_<fresh>`) that the
+checker admits exactly between the fresh type and its underlying type
+(`OAK-M0113` otherwise) and the backend emits as identities over a typedef
+alias. Function-valued members with abstract types must be called directly.
+Inside the importer the fresh type is opaque (`OAK-M0110`): its definition is
+unreachable. Only declared records and ADTs can be sealed abstract.
+
+**Sharing.** `Name: type = T` shares a type member: it stays transparent and
+the package's type must be exactly `T` (`OAK-M0113`) — the `with type`
+constraint. Signature types are monomorphic in v1.
 
 ### 6.4 What privacy means
 
@@ -344,6 +363,9 @@ point_hash: (v: Point): u64 = derive.hash
   (records) or variant by variant with payloads (ADTs).
 - `derive.hash` requires `(v: T): u64` and mixes fields, or the variant index
   and payload, with shift-xor steps that never overflow-trap.
+- `derive.compare` requires `(a: T, b: T): Ordering` with
+  `Ordering: type = Less | Equal | Greater` in scope, and orders records
+  lexicographically by field and ADTs by variant index then payload.
 - Members may be fixed-width integers, `Bool`, and declared records or ADTs,
   recursively (helpers are generated once per type); anything else is
   rejected (`OAK-M0203`). Generic types are not derivable over (`OAK-M0203`).
@@ -359,6 +381,35 @@ checked by every gate like handwritten code. This is the same mechanism as
 tag-driven codec derivation (`71-codecs.md`), generalized: Haskell's
 `deriving` and Rust's `#[derive]` without a new syntax axis. Generated helper
 names carry the reserved `__`, so they cannot collide with user identifiers.
+### 6.7 Generic packages
+
+A package may declare parameters after its name and is then a template that
+every import instantiates:
+
+```oak
+package pair[T, N: u32]
+
+pub Pair: type = struct { first: T, second: T }
+pub capacity: (): u32 = N
+```
+
+```oak
+bytes := import("example.com/hello/pair")[u8, 3]
+words := import("example.com/hello/pair")[u32, 10]
+```
+
+Each distinct argument list is a distinct package (identity
+`path@atom,atom`, section 7): its declarations are substituted copies, its
+imports resolve normally, and its exports are looked up like any other
+package's. Arguments are primitive types, integer constants, the importer's
+own declared types, or imported types, resolved as the importer would resolve
+them (`OAK-M0302` otherwise); the import must supply exactly the declared
+arity, a non-generic package takes none, and a generic package cannot be the
+root of a build (`OAK-M0301`). Parameter constraints are checked structurally
+per instantiation by the ordinary type checker: the instance is concrete code.
+This is Oak's functor: monomorphized at import, with the package as the unit
+of parameterization and no runtime object.
+
 
 ## 7. Elaboration and naming
 
@@ -395,10 +446,17 @@ schema as a string; tag namespaces are consequently program-wide, a recorded
 limitation). Renaming is consistent across a package — binders and uses alike
 — so shadowing inside function bodies is preserved.
 
-Every token of an imported package is stamped with the package path in its
+Every token of every package is stamped with `package#file` in its
 `SemanticContext`, keeping position-keyed resolution records distinct across
-packages (the mechanism the stdlib and generic instantiation already use) and
-telling the type checker which package a projection comes from.
+packages (the mechanism the stdlib and generic instantiation already use),
+telling the type checker which package a projection comes from, and letting
+every diagnostic name the file and position of its primary cause.
+
+A generic package instance has identity `path@atom,atom` (arguments resolved
+to primitive names, constants, or internal type names). Import paths contain
+no `@` and atoms no `,`, so the identity decodes uniquely and mangles
+injectively like any package path. A sealed binding's fresh abstract type
+`h.Key` has internal name `mangle(importer@h, Key)`.
 
 ## 8. Diagnostics
 
@@ -424,6 +482,8 @@ Family `M` (`15-diagnostics.md`). Structural tests assert each code.
 | `OAK-M0202` | derived declaration: signature does not match the kind |
 | `OAK-M0203` | derivation over an unsupported type or member |
 | `OAK-M0204` | derivation outside the type's declaring package |
+| `OAK-M0301` | generic package arity: arguments missing, unexpected, or wrong in number; generic package as build root |
+| `OAK-M0302` | generic package argument not resolvable to a type or constant |
 
 Module diagnostics carry the file path in their title; multi-file source
 mapping of every downstream diagnostic remains the recorded debt of
@@ -444,8 +504,8 @@ qualified packages today: `import("strings")`, `import("unicode")`,
 `import("bitset_algebra")`, `import("causal_frontier")`. A view exposes the
 declarations of its file under the qualifier (`strings.ascii_upper(b)`),
 resolved to their flat prelude names; importing a view loads the bootstrap
-prelude. Views export every declaration of their file until the library
-carries `pub` marks. Re-cutting the library into real packages with `pub`
+prelude. The library files carry explicit `pub` marks; a view exports exactly the
+`pub` declarations of its file. Re-cutting the library into real packages with `pub`
 exports and qualified cross-references is the recorded migration;
 `docs/notes/standard-library-design.md` section 4 sketches the module graph.
 Any other standard library path is unresolvable (`OAK-M0102`).
@@ -459,7 +519,9 @@ Any other standard library path is unresolvable (`OAK-M0102`).
 - **Testing (`110-testing.md`).** `oak test` compiles each test directory
   through the package loader with `*_test.oak` files included, so test
   packages import other packages of their module and diagnostics name real
-  files. Trust-by-import for the testing reporter is unaffected: the reporter
+  files. `oak run [dir]` builds a package, compiles the C with the system
+  compiler into a temporary directory, runs it, and propagates its exit
+  status — a development convenience over trusted local source. Trust-by-import for the testing reporter is unaffected: the reporter
   declarations still enter only through `import(testing)`.
 - **FFI/SIMD (`92-ffi.md`, `93-simd.md`).** `c`, `arm64`, and `simd` remain
   compiler-known libraries, not packages; an import alias may not reuse their
@@ -469,17 +531,15 @@ Any other standard library path is unresolvable (`OAK-M0102`).
 
 ## 11. Direction (not part of v1)
 
-- **Generic packages / functors**: `package ring[T, N: u32]` instantiated at
-  import; today parameterized code is written with generic declarations inside
-  ordinary packages.
-- **Opaque ascription as fresh types** and `with type` sharing constraints
-  (sealed opacity is a per-package rule today, section 6.3).
-- **Selective and unqualified imports**, **nested modules**.
-- **Standard library as real packages** (views today, section 9),
-  **source-mapped multi-file diagnostics**, **a lock file** (the manifests
+- **Unqualified `open` of a whole package** and **nested modules** (selective
+  imports of named members exist, section 3.2).
+- **Standard library as real packages** with qualified cross-references
+  (views with `pub` marks today, section 9), **a lock file** (the manifests
   alone already make selection reproducible), **evaluator support** (the
-  interpreter still ignores imports), **more derivable operations**
-  (ordering, formatting) and derivation over generic instantiations.
+  interpreter still ignores imports; `oak run` executes natively), **more
+  derivable operations** (formatting) and derivation over generic
+  instantiations, **generic-package parameter constraints as declared
+  contracts** (checked structurally per instantiation today).
 
 ## 12. Required laws
 
@@ -497,8 +557,15 @@ Any other standard library path is unresolvable (`OAK-M0102`).
   and is one of the requirements.
 
 These laws are mechanically checked in Lean (`spec/lean/Oak/Modules.lean`).
-The Go procedures (`modules/`) are maintained as line-for-line transliterations
-of the Lean definitions and tested against the same laws, including a
-randomized injectivity witness; an explicit refinement theorem relating the Go
-representation to the model is pending, so the STATUS matrix records M and P
-but not R.
+`spec/lean/Oak/ModulesRefinement.lean` states the correspondence in
+refinement form: `lookup` resolves exactly the abstractly reachable members
+(`lookup_iff_reachable`), a complete Kahn run is a valid compile order and a
+stuck set is a cycle witness (`order_complete_refines`,
+`order_stuck_refines`), decoding is a left inverse of mangling and user
+identifiers are never internal names (`naming_refines`,
+`user_identifier_not_internal`), and `select` yields exactly the abstract
+minimal version (`select_iff_minimal`). The Go procedures (`modules/`) are
+maintained as line-for-line transliterations of the Lean definitions and
+tested against the same laws, including a randomized injectivity witness.
+**R is scoped to these pure decision procedures**, not to the loader's
+filesystem traversal, syntax rewriting, or diagnostics.

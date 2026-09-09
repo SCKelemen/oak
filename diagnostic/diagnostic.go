@@ -2,6 +2,7 @@ package diagnostic
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"unicode/utf16"
 
@@ -14,10 +15,10 @@ import (
 type DiagnosticSeverity int
 
 const (
-	SeverityError DiagnosticSeverity = 1
-	SeverityWarning DiagnosticSeverity = 2
+	SeverityError       DiagnosticSeverity = 1
+	SeverityWarning     DiagnosticSeverity = 2
 	SeverityInformation DiagnosticSeverity = 3
-	SeverityHint DiagnosticSeverity = 4
+	SeverityHint        DiagnosticSeverity = 4
 )
 
 func (s DiagnosticSeverity) String() string {
@@ -56,13 +57,13 @@ const (
 type Code string
 
 const (
-	CodeUnknown        Code = "OAK-0000"
-	CodeParserGeneric  Code = "OAK-P0000"
-	CodeTypeGeneric    Code = "OAK-T0000"
-	CodeBorrowGeneric  Code = "OAK-B0000"
-	CodeEffectGeneric  Code = "OAK-E0000"
-	CodeReprGeneric    Code = "OAK-R0000"
-	CodeSourceGeneric  Code = "OAK-S0000"
+	CodeUnknown         Code = "OAK-0000"
+	CodeParserGeneric   Code = "OAK-P0000"
+	CodeTypeGeneric     Code = "OAK-T0000"
+	CodeBorrowGeneric   Code = "OAK-B0000"
+	CodeEffectGeneric   Code = "OAK-E0000"
+	CodeReprGeneric     Code = "OAK-R0000"
+	CodeSourceGeneric   Code = "OAK-S0000"
 	CodeCompilerGeneric Code = "OAK-C0000"
 	CodeInternalGeneric Code = "OAK-I0000"
 )
@@ -71,7 +72,7 @@ type DiagnosticTag int
 
 const (
 	TagUnnecessary DiagnosticTag = 1
-	TagDeprecated DiagnosticTag = 2
+	TagDeprecated  DiagnosticTag = 2
 )
 
 type DiagnosticRelatedInformation struct {
@@ -118,8 +119,12 @@ type Advice struct {
 // retained as LSP-compatible compatibility fields; Title, Labels, and Advice
 // are the richer compiler-facing structure. New constructors populate both.
 type Diagnostic struct {
-	Range              lsp.Range
-	Severity           DiagnosticSeverity
+	Range    lsp.Range
+	Severity DiagnosticSeverity
+	// File is the source file the primary cause lives in, when the node's
+	// tokens carry one (package builds stamp `package#file` into token
+	// contexts, docs/spec/83-modules.md section 7); empty otherwise.
+	File               string
 	Code               string
 	CodeDescription    *CodeDescription
 	Source             string
@@ -293,7 +298,11 @@ func (d *Diagnostic) PlainText() string {
 		return ""
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "%s[%s]: %s", d.Severity.String(), d.Code, d.Title)
+	if d.File != "" {
+		fmt.Fprintf(&out, "%s[%s]: %s:%d:%d: %s", d.Severity.String(), d.Code, d.File, d.Range.Start.Line+1, d.Range.Start.Character+1, d.Title)
+	} else {
+		fmt.Fprintf(&out, "%s[%s]: %s", d.Severity.String(), d.Code, d.Title)
+	}
 	for _, label := range d.Labels {
 		if label.Message == "" {
 			continue
@@ -449,11 +458,63 @@ func NodeToRange(node ast.Node) lsp.Range {
 }
 
 func NewDiagnosticFromNode(node ast.Node, source, message string) *Diagnostic {
-	return NewDiagnostic(NodeToRange(node), source, message)
+	d := NewDiagnostic(NodeToRange(node), source, message)
+	d.File = NodeFile(node)
+	return d
 }
 
 func NewDiagnosticFromNodeWithCode(node ast.Node, source, code, message string) *Diagnostic {
-	return NewDiagnosticWithCode(NodeToRange(node), source, code, message)
+	d := NewDiagnosticWithCode(NodeToRange(node), source, code, message)
+	d.File = NodeFile(node)
+	return d
+}
+
+// NodeFile reads the source file a node's first token was stamped with
+// (`package#file` in SemanticContext); "" when unknown.
+func NodeFile(node ast.Node) string {
+	if node == nil {
+		return ""
+	}
+	tok, ok := firstToken(reflect.ValueOf(node), 0)
+	if !ok {
+		return ""
+	}
+	context := tok.SemanticContext
+	if index := strings.IndexByte(context, '|'); index >= 0 {
+		context = context[:index]
+	}
+	if index := strings.IndexByte(context, '#'); index >= 0 {
+		return context[index+1:]
+	}
+	return ""
+}
+
+var tokenReflectType = reflect.TypeOf(token.Token{})
+
+func firstToken(v reflect.Value, depth int) (token.Token, bool) {
+	if depth > 3 {
+		return token.Token{}, false
+	}
+	switch v.Kind() {
+	case reflect.Interface, reflect.Pointer:
+		if v.IsNil() {
+			return token.Token{}, false
+		}
+		return firstToken(v.Elem(), depth)
+	case reflect.Struct:
+		if v.Type() == tokenReflectType {
+			return v.Interface().(token.Token), true
+		}
+		for i := 0; i < v.NumField(); i++ {
+			if !v.Type().Field(i).IsExported() {
+				continue
+			}
+			if tok, ok := firstToken(v.Field(i), depth+1); ok {
+				return tok, true
+			}
+		}
+	}
+	return token.Token{}, false
 }
 
 func utf16Width(text string) int {

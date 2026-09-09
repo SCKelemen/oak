@@ -281,6 +281,14 @@ func (p *Parser) parseStatement() ast.Statement {
 			return stmt
 		}
 		return nil
+	case token.LBRACE:
+		if p.selectiveImportAhead() {
+			if stmt := p.parseSelectiveImport(); stmt != nil {
+				return stmt
+			}
+			return nil
+		}
+		return p.parseExpressionStatementOrIndexAssignment()
 	case token.IDENT:
 		// Variable declarations and assignments:
 		// - x := expr -> declaration with type inference (short declaration)
@@ -389,24 +397,30 @@ func (p *Parser) parseStatement() ast.Statement {
 		}
 		fallthrough
 	default:
-		stmt := p.parseExpressionStatement()
-		if stmt == nil {
+		return p.parseExpressionStatementOrIndexAssignment()
+	}
+}
+
+// parseExpressionStatementOrIndexAssignment is the statement fallback: an
+// expression statement, or an index/field assignment when '=' follows.
+func (p *Parser) parseExpressionStatementOrIndexAssignment() ast.Statement {
+	stmt := p.parseExpressionStatement()
+	if stmt == nil {
+		return nil
+	}
+	// Index assignment: s[i] = value (docs/spec/50-borrowing.md: spans
+	// and owners are writable; views are read-only).
+	if target, ok := stmt.Expression.(*ast.IndexExpression); ok && p.peekTokenIs(token.ASSIGN) {
+		p.nextToken() // move to '='
+		assignToken := p.currentToken
+		p.nextToken() // move to the value
+		value := p.parseExpression(LOWEST)
+		if value == nil {
 			return nil
 		}
-		// Index assignment: s[i] = value (docs/spec/50-borrowing.md: spans
-		// and owners are writable; views are read-only).
-		if target, ok := stmt.Expression.(*ast.IndexExpression); ok && p.peekTokenIs(token.ASSIGN) {
-			p.nextToken() // move to '='
-			assignToken := p.currentToken
-			p.nextToken() // move to the value
-			value := p.parseExpression(LOWEST)
-			if value == nil {
-				return nil
-			}
-			return &ast.IndexAssignmentStatement{Token: assignToken, Target: target, Value: value}
-		}
-		return stmt
+		return &ast.IndexAssignmentStatement{Token: assignToken, Target: target, Value: value}
 	}
+	return stmt
 }
 
 func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
@@ -971,7 +985,7 @@ func (p *Parser) foldImportBinding(stmt ast.Statement) ast.Statement {
 		p.addErrorAtToken(&decl.Token, "an import binding cannot be pub")
 		return stmt
 	}
-	return &ast.ImportStatement{BaseNode: decl.BaseNode, Token: imp.Token, Path: imp.Path, Alias: decl.Name, Signature: decl.Type}
+	return &ast.ImportStatement{BaseNode: decl.BaseNode, Token: imp.Token, Path: imp.Path, Alias: decl.Name, Signature: decl.Type, Arguments: imp.Arguments}
 }
 
 func (p *Parser) ParseProgram() *ast.Program {
@@ -1245,26 +1259,34 @@ func (p *Parser) parsePackageStatement() *ast.PackageStatement {
 	}
 
 	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	// A generic package declares its parameters after the name
+	// (docs/spec/83-modules.md section 6.7).
+	if p.peekTokenIs(token.LBRACK) {
+		stmt.TypeParams = p.parseTypeParameters()
+		if stmt.TypeParams == nil {
+			return nil
+		}
+	}
 	return stmt
 }
 
 // Import statement (docs/spec/83-modules.md section 3): import(path).
 func (p *Parser) parseImportStatement() *ast.ImportStatement {
 	stmt := &ast.ImportStatement{Token: p.currentToken}
-	path := p.parseImportPath()
-	if path == nil {
+	path, arguments, ok := p.parseImportPath()
+	if !ok {
 		return nil
 	}
-	stmt.Path = path
+	stmt.Path, stmt.Arguments = path, arguments
 	return stmt
 }
 
 // parseImportPath parses `( path )` after `import`. The path is a string
 // literal; a bare identifier is sugar for a single-segment path
 // (`import(std)`).
-func (p *Parser) parseImportPath() *ast.Identifier {
+func (p *Parser) parseImportPath() (*ast.Identifier, []ast.Expression, bool) {
 	if !p.expectPeek(token.LPAREN) {
-		return nil
+		return nil, nil, false
 	}
 	p.nextToken()
 	var path *ast.Identifier
@@ -1273,12 +1295,112 @@ func (p *Parser) parseImportPath() *ast.Identifier {
 		path = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 	default:
 		p.addErrorAtCurrentToken(fmt.Sprintf("import path must be a string literal or identifier, got %s", p.currentToken.TokenKind))
-		return nil
+		return nil, nil, false
 	}
 	if !p.expectPeek(token.RPAREN) {
+		return nil, nil, false
+	}
+	// Generic package instantiation: import("...")[u8, 8].
+	var arguments []ast.Expression
+	if p.peekTokenIs(token.LBRACK) {
+		p.nextToken()
+		args, ok := p.parseDelimited[ast.Expression](
+			token.LBRACK, token.RBRACK, token.COMMA, false,
+			func() (ast.Expression, bool) {
+				if p.currentTokenIs(token.INT) {
+					return p.parseIntegerLiteral(), true
+				}
+				arg := p.parseTypeExpression()
+				return arg, arg != nil
+			},
+		)
+		if !ok {
+			return nil, nil, false
+		}
+		arguments = args
+	}
+	return path, arguments, true
+}
+
+// selectiveImportAhead reports whether currentToken `{` opens
+// `{ name, name } := import(...)` (docs/spec/83-modules.md section 3.2).
+func (p *Parser) selectiveImportAhead() bool {
+	cursor, ok := p.source.(*token.Cursor)
+	if !ok {
+		return false
+	}
+	next := func(i int) token.Token {
+		if i == 0 {
+			return p.peekToken
+		}
+		return cursor.Peek(i - 1)
+	}
+	i := 0
+	expectIdent := true
+	for ; i < 256; i++ {
+		tok := next(i)
+		if tok.TokenKind == token.TRIVIA || tok.TokenKind == token.COMMENT {
+			continue
+		}
+		if expectIdent {
+			if tok.TokenKind != token.IDENT {
+				return false
+			}
+			expectIdent = false
+			continue
+		}
+		switch tok.TokenKind {
+		case token.COMMA:
+			expectIdent = true
+		case token.RBRACE:
+			// `:=` then `import`, skipping trivia.
+			seen := 0
+			for j := i + 1; j < i+64; j++ {
+				after := next(j)
+				if after.TokenKind == token.TRIVIA || after.TokenKind == token.COMMENT {
+					continue
+				}
+				if seen == 0 {
+					if after.TokenKind != token.COLON_ASSIGN {
+						return false
+					}
+					seen++
+					continue
+				}
+				return after.TokenKind == token.IMPORT
+			}
+			return false
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// parseSelectiveImport parses `{ f, g } := import(path)`.
+func (p *Parser) parseSelectiveImport() ast.Statement {
+	var names []*ast.Identifier
+	for {
+		if !p.expectPeek(token.IDENT) {
+			return nil
+		}
+		names = append(names, &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal})
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	if !p.expectPeek(token.RBRACE) || !p.expectPeek(token.COLON_ASSIGN) || !p.expectPeek(token.IMPORT) {
 		return nil
 	}
-	return path
+	stmt := &ast.ImportStatement{Token: p.currentToken, Names: names}
+	path, arguments, ok := p.parseImportPath()
+	if !ok {
+		return nil
+	}
+	stmt.Path, stmt.Arguments = path, arguments
+	return stmt
 }
 
 // parseImportExpression parses `import(path)` in expression position. Only a
@@ -1286,11 +1408,11 @@ func (p *Parser) parseImportPath() *ast.Identifier {
 // ImportStatement); the loader rejects any other placement.
 func (p *Parser) parseImportExpression() ast.Expression {
 	expr := &ast.ImportExpression{Token: p.currentToken}
-	path := p.parseImportPath()
-	if path == nil {
+	path, arguments, ok := p.parseImportPath()
+	if !ok {
 		return nil
 	}
-	expr.Path = path
+	expr.Path, expr.Arguments = path, arguments
 	return expr
 }
 
@@ -1963,11 +2085,23 @@ func (p *Parser) parseRecordType() ast.Expression {
 		if fieldType == nil {
 			return nil
 		}
+		// A shared type member of a signature: `Key: type = u64`
+		// (docs/spec/83-modules.md section 6.3).
+		var manifest ast.Expression
+		if kind, isKind := fieldType.(*ast.Identifier); isKind && kind.Value == "type" && p.peekTokenIs(token.ASSIGN) {
+			p.nextToken() // to '='
+			p.nextToken() // to the shared type
+			manifest = p.parseTypeExpression()
+			if manifest == nil {
+				return nil
+			}
+		}
 		for _, fieldToken := range fieldTokens {
 			if !record.AddField(fieldToken, fieldToken.Literal, fieldType) {
 				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldToken.Literal))
 				return nil
 			}
+			record.FieldOrder[len(record.FieldOrder)-1].Manifest = manifest
 			// The declared alignment and tags ride on the ordered entry
 			// AddField just appended; AddField's proven construction
 			// contract (Oak.SemanticRecord) covers name/value, not

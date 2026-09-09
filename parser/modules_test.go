@@ -168,3 +168,29 @@ func TestParsePubLayoutEquivalence(t *testing.T) {
 		t.Fatalf("braced pub lost: %+v", fn)
 	}
 }
+
+func TestParseGenericPackagesSelectiveImportsAndSharing(t *testing.T) {
+	program := parseModuleSource(t, `package ring[T, N: u32]
+
+{ f, g } := import("example.com/x")
+bytes := import("example.com/hello/pair")[u8, 3]
+h: { Key: type = u64, hash: (Key) -> u64 } = import("example.com/hello/fnv")
+`)
+	clause := program.Statements[0].(*ast.PackageStatement)
+	if len(clause.TypeParams) != 2 || clause.TypeParams[1].Name.Value != "N" {
+		t.Fatalf("package params = %+v", clause.TypeParams)
+	}
+	selective := program.Statements[1].(*ast.ImportStatement)
+	if len(selective.Names) != 2 || selective.Names[1].Value != "g" || selective.Alias != nil {
+		t.Fatalf("selective import = %+v", selective)
+	}
+	generic := program.Statements[2].(*ast.ImportStatement)
+	if len(generic.Arguments) != 2 || generic.Alias.Value != "bytes" {
+		t.Fatalf("generic import = %+v", generic)
+	}
+	sealed := program.Statements[3].(*ast.ImportStatement)
+	shape := sealed.Signature.(*ast.RecordLiteral)
+	if shape.FieldOrder[0].Manifest == nil || shape.FieldOrder[1].Manifest != nil {
+		t.Fatalf("shared type member not recorded: %+v", shape.FieldOrder)
+	}
+}
