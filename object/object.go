@@ -138,6 +138,28 @@ type Array struct {
 	Elements []Object
 }
 
+// View is a borrowed window over an Array's storage (docs/spec/50-borrowing.md):
+// Start and Len select the elements, Writable distinguishes a span ([*]T)
+// from a read-only view ([]T). Element access goes through the array, so
+// writes through a span are visible to the owner — the interpreter's
+// counterpart of the backend's {base, len} pair.
+type View struct {
+	Array    *Array
+	Start    int
+	Len      int
+	Writable bool
+}
+
+func (v *View) Type() ObjectType { return VIEW_OBJ }
+func (v *View) Kind() ObjectKind { return ARRAY }
+func (v *View) Inspect() string {
+	kind := "view"
+	if v.Writable {
+		kind = "span"
+	}
+	return kind + "[" + strconv.Itoa(v.Start) + ":" + strconv.Itoa(v.Start+v.Len) + "]"
+}
+
 func (a *Array) Type() ObjectType { return ARRAY_OBJ }
 func (a *Array) Kind() ObjectKind { return ARRAY }
 func (a *Array) Inspect() string {
@@ -292,6 +314,7 @@ const (
 	ADT_OBJ          = "ADT"
 	RECORD_OBJ       = "RECORD"
 	ARRAY_OBJ        = "ARRAY"
+	VIEW_OBJ         = "VIEW"
 	VECTOR_OBJ       = "VECTOR"
 )
 

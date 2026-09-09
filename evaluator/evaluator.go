@@ -97,6 +97,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.IndexAssignmentStatement:
 		return evalIndexAssignmentStatement(node, env)
 
+	case *ast.SliceExpression:
+		return evalSliceExpression(node, env)
+
 	case *ast.BlockStatement:
 		return evalBlockStatement(node, env)
 
@@ -122,6 +125,11 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.InvocationExpression:
 		if ident, ok := node.Function.(*ast.Identifier); ok {
 			if result, recognized := evalAtomicInvocation(ident.Value, node.Arguments, env); recognized {
+				return result
+			}
+			// Borrow construction and derivation (docs/spec/50-borrowing.md):
+			// view(&owner), span(&owner), subslice(v, start, n).
+			if result, recognized := evalBorrowInvocation(ident.Value, node.Arguments, env); recognized {
 				return result
 			}
 			// Sealed-boundary coercions (docs/spec/83-modules.md section
@@ -369,6 +377,8 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			switch arg := args[0].(type) {
 			case *object.Array:
 				return &object.Integer{Value: int64(len(arg.Elements))}
+			case *object.View:
+				return &object.Integer{Value: int64(arg.Len)}
 			case *object.String:
 				return &object.Integer{Value: int64(len(arg.Value))}
 			default:
@@ -972,6 +982,12 @@ func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environmen
 			env.Set(vd.Name.Value, zero)
 			return zero
 		}
+		// Value-less typed declarations are zero-initialized storage, as in
+		// the backend (evaluator/zero.go).
+		if zero, known := zeroValue(vd.Type, env); known {
+			env.Set(vd.Name.Value, zero)
+			return zero
+		}
 	}
 	// Check if variable already exists - if so, treat as assignment
 	if _, exists := env.Get(vd.Name.Value); exists && vd.Type == nil {
@@ -1145,13 +1161,23 @@ func evalIndexAssignmentStatement(stmt *ast.IndexAssignmentStatement, env *objec
 	if isError(value) {
 		return value
 	}
-	array, ok := seq.(*object.Array)
-	if !ok {
-		return newError("cannot index-assign into %s", seq.Type())
-	}
 	idx, ok := index.(*object.Integer)
 	if !ok {
 		return newError("index must be an integer, got %s", index.Type())
+	}
+	if view, isView := seq.(*object.View); isView {
+		if !view.Writable {
+			return newError("cannot store through a read-only view")
+		}
+		if idx.Value < 0 || idx.Value >= int64(view.Len) {
+			return newError("span index out of bounds: %d (length: %d)", idx.Value, view.Len)
+		}
+		view.Array.Elements[view.Start+int(idx.Value)] = value
+		return NULL
+	}
+	array, ok := seq.(*object.Array)
+	if !ok {
+		return newError("cannot index-assign into %s", seq.Type())
 	}
 	if idx.Value < 0 || idx.Value >= int64(len(array.Elements)) {
 		return newError("array index out of bounds: %d (length: %d)", idx.Value, len(array.Elements))
@@ -1209,7 +1235,13 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 			return evalFieldLifting(adtValue, fieldName.Value, env)
 		}
 
-		return newError("field access not supported for type %s", left.Type())
+		// An identifier index into an array or view is a variable index
+		// (v[i]), not a field: fall through to element indexing.
+		_, isArray := left.(*object.Array)
+		_, isView := left.(*object.View)
+		if !isArray && !isView {
+			return newError("field access not supported for type %s", left.Type())
+		}
 	}
 
 	// Array indexing: array[index]
@@ -1232,6 +1264,17 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 		}
 
 		return array.Elements[idx]
+	}
+
+	if view, ok := left.(*object.View); ok {
+		idx, isInt := indexObj.(*object.Integer)
+		if !isInt {
+			return newError("view index must be integer, got %s", indexObj.Type())
+		}
+		if idx.Value < 0 || idx.Value >= int64(view.Len) {
+			return newError("view index out of bounds: %d (length: %d)", idx.Value, view.Len)
+		}
+		return view.Array.Elements[view.Start+int(idx.Value)]
 	}
 
 	return newError("index operator not supported for type %s", left.Type())
