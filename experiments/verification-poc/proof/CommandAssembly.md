@@ -78,6 +78,7 @@ Repository CI, standard-library race tests, Oak testing tools, formal
 verification, and golden files all passed on the tested commit.
 `../validation-command-assembly.json` records the exact scope and job links.
 
-Next: model line splitting and the `d` marker in the byte adapter, then
-connect the DIMACS header and clause-count checks so the whole file state
-machine is covered.
+The subsequent [certificate-file milestone](CertificateFile.md) models line
+splitting, the `d` marker, the DIMACS header, and clause counts as one
+executable file state machine and composes it with the certified stream.
+Universal Oak refinement remains open.

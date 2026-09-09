@@ -247,3 +247,7 @@ from the byte-reading segment state to the packer's published ranges.
 See [Command assembly from published ranges](CommandAssembly.md) for the proved
 assembly of addition IDs, deletion stamps, and command metadata from published
 clause and hint ranges, and its composition with the certified stream checker.
+
+See [The complete certificate-file state machine](CertificateFile.md) for the
+executable whole-file model that composes scanning, segment publication,
+command assembly, and the certified stream, with its acceptance theorem.

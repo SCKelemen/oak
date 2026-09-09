@@ -370,6 +370,35 @@ theorem assemble_sound (variables capacity : Nat) (initial : State) (lines : Lis
   rw [← assembled_clauses variables a _ instructions rep d decoded]
   exact unsatisfiable
 
+-- The certified stream's live table starts from exactly the published clauses,
+-- whatever the command metadata later decodes to.
+theorem represented_origin (variables : Nat) (a : Assembly)
+    (clauses : List Clause) (instructions : List Instruction) (rep : Represents a clauses instructions) :
+    CertifiedStream.origin (toLayout variables a) = initialDatabase clauses := by
+  have expected := ProofPacking.initial_ranges [] (instructions.map ProofPacking.literals).flatten clauses rep.positive
+  simp only [List.nil_append, List.length_nil] at expected
+  rw [toLayout_fields variables a clauses instructions rep]
+  unfold CertifiedStream.origin
+  simp only [ProofPacking.pack, zip_projections]
+  exact LiveTable.initialize_refines _ _ clauses (InitialDecoder.mapM_lookup _ _ _ expected)
+
+-- Acceptance by the certified stream alone refutes the published clauses.
+theorem represented_sound (variables : Nat) (a : Assembly)
+    (clauses : List Clause) (instructions : List Instruction) (rep : Represents a clauses instructions)
+    (accepted : CertifiedStream.check (toLayout variables a) = true) :
+    Unsatisfiable (initialDatabase clauses) := by
+  rw [← represented_origin variables a clauses instructions rep]
+  exact CertifiedStream.check_sound _ accepted
+
+theorem assemble_certified_sound (variables capacity : Nat) (initial : State) (lines : List Line)
+    (a : Assembly) (valid : Valid initial)
+    (built : assemble variables (start initial capacity) lines = some a)
+    (accepted : CertifiedStream.check (toLayout variables a) = true) :
+    Unsatisfiable (initialDatabase (initial.buffer.closed.map (List.map decodeLiteral))) := by
+  obtain ⟨instructions, rep⟩ := assemble_represents variables lines (start initial capacity) a _ []
+    (start_represents initial capacity valid) built
+  exact represented_sound variables a _ instructions rep accepted
+
 #print axioms identifier
 #print axioms encode_decoded
 #print axioms positive_decoded
@@ -388,4 +417,7 @@ theorem assemble_sound (variables capacity : Nat) (initial : State) (lines : Lis
 #print axioms zip_projections
 #print axioms assembled_clauses
 #print axioms assemble_sound
+#print axioms represented_origin
+#print axioms represented_sound
+#print axioms assemble_certified_sound
 end OakVerification.CommandAssembly
