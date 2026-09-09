@@ -356,17 +356,13 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			if len(args) != 1 {
 				return newError("is_valid_utf8 expects exactly one []u8 argument, got %d", len(args))
 			}
-			arr, ok := args[0].(*object.Array)
+			w, ok := elementWindow(args[0])
 			if !ok {
 				return newError("is_valid_utf8 requires a []u8 view, got %s", args[0].Type())
 			}
-			bytes := make([]byte, 0, len(arr.Elements))
-			for _, element := range arr.Elements {
-				integer, ok := element.(*object.Integer)
-				if !ok || integer.Value < 0 || integer.Value > 255 {
-					return newError("is_valid_utf8 requires byte elements")
-				}
-				bytes = append(bytes, byte(integer.Value))
+			bytes, isBytes := w.bytes()
+			if !isBytes {
+				return newError("is_valid_utf8 requires byte elements")
 			}
 			_, valid := source.ValidateUTF8(string(bytes))
 			return nativeBoolToBooleanObject(valid)
@@ -390,7 +386,7 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			if len(args) != 2 {
 				return newError("wrong number of arguments. got=%d, want=2", len(args))
 			}
-			arr, ok := args[0].(*object.Array)
+			w, ok := elementWindow(args[0])
 			if !ok {
 				return newError("first argument to `get` must be array, got %s", args[0].Type())
 			}
@@ -398,12 +394,12 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			if !ok {
 				return newError("second argument to `get` must be integer, got %s", args[1].Type())
 			}
-			if idx.Value < 0 || int64(len(arr.Elements)) <= idx.Value {
+			if idx.Value < 0 || int64(w.length) <= idx.Value {
 				// Return None
 				return makeOptionNone()
 			}
 			// Return Some(value)
-			return makeOptionSome(arr.Elements[idx.Value])
+			return makeOptionSome(w.get(int(idx.Value)))
 		},
 		"try_slice": func(args ...object.Object) object.Object {
 			if len(args) != 3 {

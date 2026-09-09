@@ -288,10 +288,24 @@ func TestVerifyCountedLoops(t *testing.T) {
 	if short.Kind != VerdictMismatch || !strings.Contains(short.Message, "v=") {
 		t.Fatalf("a 7-step popcount must be a mismatch with a counterexample, got %s: %s", short.Kind, short.Message)
 	}
-	// A constant loop whose body forks on the inputs is not unrolled.
+	// A counted loop whose body forks on the inputs still unrolls: the
+	// closing branch is decided on every path (2^3 paths here). Against the
+	// unconditional Oak accumulate it is a mismatch; against the matching
+	// conditional accumulate it is proven.
 	forkInLoop := "  bind w0 = a\n  clobber w9, w10\n  mov w9, #0\n  mov w10, #3\nloop:\n  cmp w0, #5\n  b.lo skip\n  add w9, w9, w0\nskip:\n  sub w10, w10, #1\n  cmp w10, #0\n  b.ne loop\n  mov w0, w9\n  ret"
 	forked := verifyCase(t, "triple: (a: u32) -> u32", triple, forkInLoop)
-	if forked.Kind != VerdictTrusted {
-		t.Fatalf("a loop with a data-dependent branch inside must be trusted, got %s: %s", forked.Kind, forked.Message)
+	if forked.Kind != VerdictMismatch {
+		t.Fatalf("a forking loop against the unconditional accumulate must be a mismatch, got %s: %s", forked.Kind, forked.Message)
+	}
+	guardedTriple := strings.Replace(triple, "acc = acc + a", "acc = acc + (a < u32(5) ? u32(0) | a)", 1)
+	forkedOK := verifyCase(t, "triple: (a: u32) -> u32", guardedTriple, forkInLoop)
+	if forkedOK.Kind != VerdictProven {
+		t.Fatalf("a forking counted loop must be proven against its conditional accumulate, got %s: %s", forkedOK.Kind, forkedOK.Message)
+	}
+	// Past the path budget (2^9 paths) the unfolding stops: trusted.
+	manyForks := strings.Replace(forkInLoop, "mov w10, #3", "mov w10, #9", 1)
+	budget := verifyCase(t, "triple: (a: u32) -> u32", guardedTriple, manyForks)
+	if budget.Kind != VerdictTrusted || !strings.Contains(budget.Message, "budget") {
+		t.Fatalf("exceeding the path budget must be trusted, got %s: %s", budget.Kind, budget.Message)
 	}
 }

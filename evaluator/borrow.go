@@ -62,6 +62,43 @@ func evalBorrowInvocation(name string, args []ast.Expression, env *object.Enviro
 	return nil, false
 }
 
+// window is the element storage a builtin operates on: an owned array
+// whole, or the elements a view/span selects. Builtins that take []T or
+// [*]T (is_valid_utf8, simd loads and stores, get) go through it so that
+// borrowed windows and owned arrays are one case.
+type window struct {
+	array    *object.Array
+	start    int
+	length   int
+	writable bool
+}
+
+func elementWindow(obj object.Object) (window, bool) {
+	switch v := obj.(type) {
+	case *object.Array:
+		return window{array: v, start: 0, length: len(v.Elements), writable: true}, true
+	case *object.View:
+		return window{array: v.Array, start: v.Start, length: v.Len, writable: v.Writable}, true
+	}
+	return window{}, false
+}
+
+func (w window) get(i int) object.Object       { return w.array.Elements[w.start+i] }
+func (w window) set(i int, value object.Object) { w.array.Elements[w.start+i] = value }
+
+// bytes reads the window as byte values; false when an element is not a byte.
+func (w window) bytes() ([]byte, bool) {
+	out := make([]byte, 0, w.length)
+	for i := 0; i < w.length; i++ {
+		integer, ok := w.get(i).(*object.Integer)
+		if !ok || integer.Value < 0 || integer.Value > 255 {
+			return nil, false
+		}
+		out = append(out, byte(integer.Value))
+	}
+	return out, true
+}
+
 // evalSliceExpression realizes v[lo:hi] over an owned array or a view: a
 // window [lo, hi) with 0 <= lo <= hi <= len, sharing the source's storage.
 // Read-only versus writable is the declared type's business, enforced by

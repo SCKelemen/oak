@@ -350,9 +350,12 @@ and a signed head max proven.
 so a comparison of a counter that is a constant on every iteration decides
 itself. The asm executor follows a backward branch whose condition folds
 (and an unconditional `b`) instead of refusing it, bounded by a global
-instruction-step budget; a backward branch whose condition is not constant,
-or one closing a loop in which the path forked on the inputs, is a loop
-with a data-dependent trip count — trusted. On the Oak side the fallback
+instruction-step budget; a backward branch whose condition is not constant
+is a loop with a data-dependent trip count — trusted (so is an unconditional
+`b` closing a loop in which the path forked on the inputs: the exit is the
+fork). A counted loop whose body forks on the inputs still unrolls — its
+closing branch is decided on every path — into up to 2^K paths, bounded by
+the path budget (beyond it, trusted). On the Oak side the fallback
 body may now be a statement block: typed locals with initializers,
 assignments (at the local's declared width), and `while` loops whose
 condition folds to a constant before every iteration (unrolled under a
@@ -363,8 +366,10 @@ the N-fold iterate of its body — the term both sides compute. Executed:
 `3*a` by a three-iteration accumulate proven (linear form); four iterations
 refuted; an eight-step popcount of the low byte proven at the bit level
 against its Oak `while`, and run both ways; seven steps refuted with a
-concrete input; data-dependent trip counts on either side, and a constant
-loop whose body branches on the inputs, trusted. What remains: loops with
+concrete input; data-dependent trip counts on either side trusted; a
+three-iteration loop that branches on the input inside proven against its
+conditional accumulate (eight paths) and refuted against the unconditional
+one; nine such iterations exceed the path budget and are trusted. What remains: loops with
 data-dependent trip counts (invariants, or `BoundedLoop` bounds as the
 unrolling limit) and register-offset addressing for spans inside loops.
 

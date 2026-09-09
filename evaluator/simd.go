@@ -102,13 +102,13 @@ func evalSimdOp(member string, args []ast.Expression, env *object.Environment) o
 		if !ok {
 			return newError("simd.%s requires a view and a u32 offset", member)
 		}
-		if offset+layout.Lanes > len(buffer.Elements) || offset < 0 {
+		if offset+layout.Lanes > buffer.length || offset < 0 {
 			return newError("simd.%s out of bounds: offset %d, %d lanes, length %d",
-				member, offset, layout.Lanes, len(buffer.Elements))
+				member, offset, layout.Lanes, buffer.length)
 		}
 		result := &object.Vector{VectorKind: layout.VectorKind}
 		for i := 0; i < layout.Lanes; i++ {
-			element, isInt := buffer.Elements[offset+i].(*object.Integer)
+			element, isInt := buffer.get(offset + i).(*object.Integer)
 			if !isInt {
 				return newError("simd.%s requires integer elements", member)
 			}
@@ -121,16 +121,19 @@ func evalSimdOp(member string, args []ast.Expression, env *object.Environment) o
 		if !ok {
 			return newError("simd.%s requires a span and a u32 offset", member)
 		}
+		if !buffer.writable {
+			return newError("simd.%s requires a writable span, got a read-only view", member)
+		}
 		vec, isVec := evaluated[2].(*object.Vector)
 		if !isVec || vec.VectorKind != layout.VectorKind {
 			return newError("simd.%s requires a simd.%s value", member, layout.VectorKind)
 		}
-		if offset+layout.Lanes > len(buffer.Elements) || offset < 0 {
+		if offset+layout.Lanes > buffer.length || offset < 0 {
 			return newError("simd.%s out of bounds: offset %d, %d lanes, length %d",
-				member, offset, layout.Lanes, len(buffer.Elements))
+				member, offset, layout.Lanes, buffer.length)
 		}
 		for i := 0; i < layout.Lanes; i++ {
-			buffer.Elements[offset+i] = &object.Integer{Value: int64(layout.getLane(vec, i))}
+			buffer.set(offset+i, &object.Integer{Value: int64(layout.getLane(vec, i))})
 		}
 		return NULL
 
@@ -210,14 +213,16 @@ func argInteger(args []object.Object, i int) (int64, bool) {
 	return integer.Value, true
 }
 
-func argArrayOffset(args []object.Object) (*object.Array, int, bool) {
+// argArrayOffset reads a (view-or-array, offset) argument pair as an
+// element window: owned arrays and borrowed views/spans alike.
+func argArrayOffset(args []object.Object) (window, int, bool) {
 	if len(args) < 2 {
-		return nil, 0, false
+		return window{}, 0, false
 	}
-	buffer, isArray := args[0].(*object.Array)
+	buffer, isWindow := elementWindow(args[0])
 	offset, isInt := argInteger(args, 1)
-	if !isArray || !isInt {
-		return nil, 0, false
+	if !isWindow || !isInt {
+		return window{}, 0, false
 	}
 	return buffer, int(offset), true
 }

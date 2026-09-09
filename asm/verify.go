@@ -589,11 +589,11 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			cond := cmpTerm(instr.Cond, state.flags.left, state.flags.right)
 			if cond.kind == termConst {
 				// Decided: one continuation. A counted loop's backward
-				// branch always lands here.
+				// branch always lands here — on every path, since the
+				// counter it compares is constant whatever the inputs did
+				// inside the loop; the path and step budgets bound the
+				// unfolding of forks inside it.
 				if cond.value != 0 {
-					if _, allowed := state.backwardAllowed(target, pc); !allowed {
-						return nil, "a loop whose trip count depends on the inputs", false
-					}
 					pc = target - 1
 				}
 				continue
