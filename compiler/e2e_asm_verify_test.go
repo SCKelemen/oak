@@ -82,6 +82,41 @@ max32: (a, b: u32) -> u32 = {
 			t.Fatalf("flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
 		}
 	}
+	// Acyclic branches: a clamp with two conditional branches and three
+	// paths, proven against its nested Oak conditional and run both ways.
+	clamp := New().WithSource("clamp.oak", `
+clamp: (v, lo, hi: u32) -> u32 = v < lo ? lo | (v > hi ? hi | v)
+
+main: (): i32 {
+  assert(clamp(u32(5), u32(10), u32(20)) == u32(10))
+  assert(clamp(u32(50), u32(10), u32(20)) == u32(20))
+  assert(clamp(u32(15), u32(10), u32(20)) == u32(15))
+  42
+}
+`).WithAsmUnit("clamp.arm64.oakasm", `
+clamp: (v, lo, hi: u32) -> u32 = {
+  bind w0 = v
+  bind w1 = lo
+  bind w2 = hi
+  cmp w0, w1
+  b.lo low
+  cmp w0, w2
+  b.hi high
+  ret
+low:
+  mov w0, w1
+  ret
+high:
+  mov w0, w2
+  ret
+}
+`)
+	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
+		_, code, abnormal := buildAndRunFrom(t, "verified_clamp", clamp, flags...)
+		if abnormal || code != 42 {
+			t.Fatalf("clamp, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
+		}
+	}
 	// The wrong condition never compiles.
 	_, err := New().WithSource("max.oak", `
 max32: (a, b: u32) -> u32 = a < b ? b | a

@@ -146,3 +146,52 @@ func TestVerifyConditionalSelects(t *testing.T) {
 		t.Fatalf("condition mi must be trusted, got %s: %s", single.Kind, single.Message)
 	}
 }
+
+// Acyclic branches (§8, third increment): a conditional branch forks the
+// symbolic state under its condition; the paths' results meet as a select.
+func TestVerifyAcyclicBranches(t *testing.T) {
+	maxDecl := "max32: (a, b: u32) -> u32"
+	maxBody := "a < b ? b | a"
+	branchy := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  b.lo take\n  ret\ntake:\n  mov w0, w1\n  ret")
+	if branchy.Kind != VerdictProven {
+		t.Fatalf("max via b.lo must be proven, got %s: %s", branchy.Kind, branchy.Message)
+	}
+	wrongBranch := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  b.hs take\n  ret\ntake:\n  mov w0, w1\n  ret")
+	if wrongBranch.Kind != VerdictMismatch {
+		t.Fatalf("b.hs for a < b must be a mismatch, got %s: %s", wrongBranch.Kind, wrongBranch.Message)
+	}
+	// Two branches, three paths: a clamp.
+	clamp := verifyCase(t, "clamp: (v, lo, hi: u32) -> u32", "v < lo ? lo | (v > hi ? hi | v)",
+		"  bind w0 = v\n  bind w1 = lo\n  bind w2 = hi\n  cmp w0, w1\n  b.lo low\n  cmp w0, w2\n  b.hi high\n  ret\nlow:\n  mov w0, w1\n  ret\nhigh:\n  mov w0, w2\n  ret")
+	if clamp.Kind != VerdictProven {
+		t.Fatalf("clamp must be proven, got %s: %s", clamp.Kind, clamp.Message)
+	}
+	// Paths rejoining through an unconditional branch into a shared tail.
+	rejoin := verifyCase(t, maxDecl, "(a < b ? b | a) + u32(1)",
+		"  bind w0 = a\n  bind w1 = b\n  clobber w9\n  cmp w0, w1\n  b.lo take\n  mov w9, w0\n  b done\ntake:\n  mov w9, w1\ndone:\n  add w0, w9, #1\n  ret")
+	if rejoin.Kind != VerdictProven {
+		t.Fatalf("rejoining paths must be proven, got %s: %s", rejoin.Kind, rejoin.Message)
+	}
+	// A backward branch is a loop: outside the subset, trusted.
+	loop := verifyCase(t, "cd: (n: u32) -> u32", "u32(0)", "  bind w0 = n\nagain:\n  cmp w0, #0\n  b.eq done\n  sub w0, w0, #1\n  b again\ndone:\n  ret")
+	if loop.Kind != VerdictTrusted || !strings.Contains(loop.Message, "loop") {
+		t.Fatalf("a loop must be trusted, got %s: %s", loop.Kind, loop.Message)
+	}
+	// Bool results and compound conditions: `&&` over two comparisons is the
+	// branch chain, and a Bool-typed body is its 0/1 representation.
+	inRange := verifyCase(t, "in_range: (v, lo, hi: u32) -> Bool", "lo <= v && v < hi",
+		"  bind w0 = v\n  bind w1 = lo\n  bind w2 = hi\n  cmp w0, w1\n  b.lo no\n  cmp w0, w2\n  b.hs no\n  mov w0, #1\n  ret\nno:\n  mov w0, #0\n  ret")
+	if inRange.Kind != VerdictProven {
+		t.Fatalf("a range test must be proven, got %s: %s", inRange.Kind, inRange.Message)
+	}
+	inRangeWrong := verifyCase(t, "in_range: (v, lo, hi: u32) -> Bool", "lo <= v && v < hi",
+		"  bind w0 = v\n  bind w1 = lo\n  bind w2 = hi\n  cmp w0, w1\n  b.lo no\n  cmp w0, w2\n  b.hi no\n  mov w0, #1\n  ret\nno:\n  mov w0, #0\n  ret")
+	if inRangeWrong.Kind != VerdictMismatch {
+		t.Fatalf("an inclusive upper bound for an exclusive one must be a mismatch, got %s: %s", inRangeWrong.Kind, inRangeWrong.Message)
+	}
+	either := verifyCase(t, "either: (a, b: u32) -> Bool", "a == u32(0) || b == u32(0)",
+		"  bind w0 = a\n  bind w1 = b\n  cmp w0, #0\n  b.eq yes\n  cmp w1, #0\n  b.eq yes\n  mov w0, #0\n  ret\nyes:\n  mov w0, #1\n  ret")
+	if either.Kind != VerdictProven {
+		t.Fatalf("a disjunction must be proven, got %s: %s", either.Kind, either.Message)
+	}
+}

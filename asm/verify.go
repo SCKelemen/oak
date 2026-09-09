@@ -154,7 +154,9 @@ func (t *term) eval(env map[string]uint64) uint64 {
 	case termConst:
 		return t.value & m
 	case termCmp:
-		if conditionHolds(t.op, t.left.eval(env), t.right.eval(env), t.width) {
+		// The comparison happens at the operands' width; t.width is only
+		// the width the 1/0 result is used at.
+		if conditionHolds(t.op, t.left.eval(env), t.right.eval(env), t.left.width) {
 			return 1
 		}
 		return 0
@@ -395,10 +397,10 @@ func zeroExtend(t *term, width int) *term {
 
 var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add", "subs": "sub", "and": "and", "orr": "or", "eor": "xor", "lsl": "shl", "lsr": "shr"}
 
-// executeStraightLine symbolically executes the body; reports (result
+// executeBody symbolically executes the body along every path; reports (result
 // term, "", true) or ("", reason, false) when the body is outside the
 // verified subset.
-func executeStraightLine(fn *Function, sig *ast.FunctionStatement) (*term, string, bool) {
+func executeBody(fn *Function, sig *ast.FunctionStatement) (*term, string, bool) {
 	state := &symbolicState{regs: map[int]*term{}}
 	params := map[string]RegClass{}
 	for _, param := range sig.Parameters {
@@ -422,23 +424,106 @@ func executeStraightLine(fn *Function, sig *ast.FunctionStatement) (*term, strin
 	if !hasResult || resultClass == ClassV {
 		return nil, "no integer result", false
 	}
-	for _, item := range fn.Items {
-		instr, ok := item.(Instruction)
-		if !ok {
-			return nil, "labels or alignment directives", false
+	labels := map[string]int{}
+	for index, item := range fn.Items {
+		switch it := item.(type) {
+		case Label:
+			labels[it.Name] = index
+		case Align:
+			return nil, "alignment directives", false
+		}
+	}
+	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass}
+	return exec.run(0, state)
+}
+
+// pathBudget bounds the number of paths an acyclic body may unfold into.
+const pathBudget = 256
+
+// pathExecutor unfolds an acyclic body into its paths: a conditional
+// branch forks the state, the taken path continuing at the label under the
+// branch's condition and the fall-through under its negation, and the two
+// results meet as a select. Every branch target must lie ahead of the
+// branch (a backward target is a loop, outside the subset), so the
+// unfolding terminates; the path budget bounds its size.
+type pathExecutor struct {
+	items       []Item
+	labels      map[string]int
+	resultClass RegClass
+	paths       int
+}
+
+func (s *symbolicState) clone() *symbolicState {
+	regs := make(map[int]*term, len(s.regs))
+	for reg, value := range s.regs {
+		regs[reg] = value
+	}
+	return &symbolicState{regs: regs, flags: s.flags}
+}
+
+// run executes from item index pc to a ret on every path.
+func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
+	x.paths++
+	if x.paths > pathBudget {
+		return nil, "more paths than the verifier's budget", false
+	}
+	for ; pc < len(x.items); pc++ {
+		instr, isInstr := x.items[pc].(Instruction)
+		if !isInstr {
+			continue // a label is a position
 		}
 		switch instr.Mnemonic {
 		case "ret":
-			result, ok := state.read(Register{Class: resultClass, Num: 0})
+			result, ok := state.read(Register{Class: x.resultClass, Num: 0})
 			if !ok {
 				return nil, "result register never written", false
 			}
 			return result, "", true
+		case "b":
+			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
+			if !ok || target <= pc {
+				return nil, "a backward branch (loop)", false
+			}
+			pc = target - 1
+			continue
+		case "b.":
+			if state.flags == nil || state.flags.unknown {
+				return nil, "b.cond reading flags not produced by cmp/subs", false
+			}
+			if !verifiableConditions[instr.Cond] {
+				return nil, fmt.Sprintf("condition code %s", instr.Cond), false
+			}
+			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
+			if !ok || target <= pc {
+				return nil, "a backward branch (loop)", false
+			}
+			cond := cmpTerm(instr.Cond, state.flags.left, state.flags.right)
+			taken, reason, ok := x.run(target, state.clone())
+			if !ok {
+				return nil, reason, false
+			}
+			fallThrough, reason, ok := x.run(pc+1, state)
+			if !ok {
+				return nil, reason, false
+			}
+			return iteTerm(cond, taken, fallThrough), "", true
+		}
+		if reason, ok := step(instr, state); !ok {
+			return nil, reason, false
+		}
+	}
+	return nil, "no ret reached", false
+}
+
+// step executes one data-processing instruction on the state.
+func step(instr Instruction, state *symbolicState) (string, bool) {
+	{
+		switch instr.Mnemonic {
 		case "mov":
 			dest := instr.Operands[0].(Register)
 			value, ok := operandTerm(state, instr.Operands[1], widthOf(dest.Class))
 			if !ok {
-				return nil, "unbound register read", false
+				return "unbound register read", false
 			}
 			state.write(dest, value)
 		case "cmp":
@@ -447,17 +532,17 @@ func executeStraightLine(fn *Function, sig *ast.FunctionStatement) (*term, strin
 			l, okL := operandTerm(state, left, width)
 			r, okR := operandTerm(state, instr.Operands[1], width)
 			if !okL || !okR {
-				return nil, "unbound register read", false
+				return "unbound register read", false
 			}
 			state.flags = &flagsFact{left: l, right: r, width: width}
 		case "csel", "cset":
 			// The select reads the flags as the comparison that produced them.
 			if state.flags == nil || state.flags.unknown {
-				return nil, fmt.Sprintf("%s reading flags not produced by cmp/subs", instr.Mnemonic), false
+				return fmt.Sprintf("%s reading flags not produced by cmp/subs", instr.Mnemonic), false
 			}
 			code := instr.Operands[len(instr.Operands)-1].(Condition).Code
 			if !verifiableConditions[code] {
-				return nil, fmt.Sprintf("condition code %s", code), false
+				return fmt.Sprintf("condition code %s", code), false
 			}
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
@@ -468,23 +553,23 @@ func executeStraightLine(fn *Function, sig *ast.FunctionStatement) (*term, strin
 				whenTrue, okT = operandTerm(state, instr.Operands[1], width)
 				whenFalse, okF = operandTerm(state, instr.Operands[2], width)
 				if !okT || !okF {
-					return nil, "unbound register read", false
+					return "unbound register read", false
 				}
 			}
 			state.write(dest, iteTerm(cond, whenTrue, whenFalse))
 		default:
 			op, verifiable := verifiableOps[instr.Mnemonic]
 			if !verifiable || len(instr.Operands) != 3 {
-				return nil, fmt.Sprintf("instruction %s", instr.Mnemonic), false
+				return fmt.Sprintf("instruction %s", instr.Mnemonic), false
 			}
 			dest := instr.Operands[0].(Register)
 			if dest.Class == ClassSP {
-				return nil, "stack pointer arithmetic", false
+				return "stack pointer arithmetic", false
 			}
 			left, okL := operandTerm(state, instr.Operands[1], widthOf(dest.Class))
 			right, okR := operandTerm(state, instr.Operands[2], widthOf(dest.Class))
 			if !okL || !okR {
-				return nil, "unbound register read", false
+				return "unbound register read", false
 			}
 			switch instr.Mnemonic {
 			case "subs":
@@ -495,7 +580,7 @@ func executeStraightLine(fn *Function, sig *ast.FunctionStatement) (*term, strin
 			state.write(dest, binaryTerm(op, left, right))
 		}
 	}
-	return nil, "no ret reached", false
+	return "", true
 }
 
 func operandTerm(state *symbolicState, operand Operand, width int) (*term, bool) {
@@ -537,6 +622,12 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
 	case *ast.IntegerLiteral:
 		return constTerm(uint64(e.Value), width), "", true
+	case *ast.Boolean:
+		// Bool lowers to its C representation: 1 or 0 at the result width.
+		if e.Value {
+			return constTerm(1, width), "", true
+		}
+		return constTerm(0, width), "", true
 	case *ast.InvocationExpression:
 		// Primitive constructors over constants: u32(15).
 		ident, isIdent := e.Function.(*ast.Identifier)
@@ -549,6 +640,15 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		return nil, fmt.Sprintf("call to %s", ident.Value), false
 	case *ast.InfixExpression:
+		// A comparison or a condition in value position is a Bool result:
+		// 1 or 0 at the result width (`is_zero: (v: u64) -> Bool = v == 0`).
+		if _, isComparison := oakComparisons[e.Operator]; isComparison || e.Operator == "&&" || e.Operator == "||" {
+			cond, reason, ok := lo.lowerCondition(e)
+			if !ok {
+				return nil, reason, false
+			}
+			return zeroExtend(truncate(cond, width), width), "", true
+		}
 		op, ok := oakOps[e.Operator]
 		if !ok {
 			return nil, fmt.Sprintf("operator %s", e.Operator), false
@@ -582,7 +682,7 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		if !isBool {
 			return nil, "a match that is not a two-armed Bool conditional", false
 		}
-		cond, reason, ok := lo.lowerComparison(e.Scrutinee)
+		cond, reason, ok := lo.lowerCondition(e.Scrutinee)
 		if !ok {
 			return nil, reason, false
 		}
@@ -599,11 +699,29 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 	return nil, fmt.Sprintf("%T", expr), false
 }
 
-// lowerComparison lowers `left OP right` to a condition term.
-func (lo *oakLowering) lowerComparison(expr ast.Expression) (*term, string, bool) {
+// lowerCondition lowers a Bool condition — a comparison, or comparisons
+// joined by && and || — to a 0/1 term. Oak's && and || short-circuit, but
+// over pure comparisons of parameters evaluation order is unobservable, so
+// the strict and/or is the same function.
+func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool) {
 	infix, isInfix := expr.(*ast.InfixExpression)
 	if !isInfix {
 		return nil, fmt.Sprintf("a condition that is not a comparison (%T)", expr), false
+	}
+	if infix.Operator == "&&" || infix.Operator == "||" {
+		left, reason, okL := lo.lowerCondition(infix.Left)
+		if !okL {
+			return nil, reason, false
+		}
+		right, reason, okR := lo.lowerCondition(infix.Right)
+		if !okR {
+			return nil, reason, false
+		}
+		op := "and"
+		if infix.Operator == "||" {
+			op = "or"
+		}
+		return binaryTerm(op, truncate(left, 1), truncate(right, 1)), "", true
 	}
 	codes, isComparison := oakComparisons[infix.Operator]
 	if !isComparison {
@@ -728,7 +846,7 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 
 // Verify checks one asm function against its Oak fallback body.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
-	asmTerm, reason, ok := executeStraightLine(fn, sig)
+	asmTerm, reason, ok := executeBody(fn, sig)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
