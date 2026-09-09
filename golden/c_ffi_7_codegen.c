@@ -51,6 +51,11 @@ static inline u8 oak_view_index_u8(oak_view_u8 v, u64 i) {
   return v.base[i];
 }
 
+static inline oak_view_u8 oak_view_subslice_u8(oak_view_u8 v, u64 start, u64 n) {
+  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }
+  return (oak_view_u8){ v.base + start, (u32)n };
+}
+
 /* core_slice: view construction as a brace initializer (declaration
    position); field order matches the view/span structs {base, len} */
 #define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }

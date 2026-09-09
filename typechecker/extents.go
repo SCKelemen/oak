@@ -302,32 +302,37 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 }
 
 // declarationFacts derives the fact a local view/span declaration
-// establishes for the rest of its block: `s: []T = subslice(v, lo, hi)` or
-// `s: []T = v[lo:hi]` with literal bounds has exactly hi - lo elements once
-// the (bounds-checked) construction succeeds (Oak.Extents.subslice_extent).
+// establishes for the rest of its block: `s: []T = subslice(v, start, n)`
+// with a literal n has exactly n elements, and `s: []T = v[lo:hi]` with
+// literal bounds exactly hi - lo, once the (bounds-checked) construction
+// succeeds (Oak.Extents.subslice_extent).
 func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentFact {
 	if decl == nil || decl.Name == nil || decl.Value == nil || !tc.localBinding(decl.Name.Value) {
 		return nil
 	}
-	var low, high ast.Expression
+	var length int64
 	switch value := decl.Value.(type) {
 	case *ast.InvocationExpression:
 		fn, isIdent := value.Function.(*ast.Identifier)
 		if !isIdent || fn.Value != "subslice" || len(value.Arguments) != 3 {
 			return nil
 		}
-		low, high = value.Arguments[1], value.Arguments[2]
+		n, isConst := constantIndex(value.Arguments[2])
+		if !isConst || n < 0 {
+			return nil
+		}
+		length = n
 	case *ast.SliceExpression:
-		low, high = value.Low, value.High
+		lo, loConst := constantIndex(value.Low)
+		hi, hiConst := constantIndex(value.High)
+		if !loConst || !hiConst || lo < 0 || hi < lo {
+			return nil
+		}
+		length = hi - lo
 	default:
 		return nil
 	}
-	lo, loConst := constantIndex(low)
-	hi, hiConst := constantIndex(high)
-	if !loConst || !hiConst || lo < 0 || hi < lo {
-		return nil
-	}
-	return []extentFact{{kind: factMinLen, container: decl.Name.Value, bound: hi - lo}}
+	return []extentFact{{kind: factMinLen, container: decl.Name.Value, bound: length}}
 }
 
 // enterDeclarationFacts pushes a declaration's fact when the remaining

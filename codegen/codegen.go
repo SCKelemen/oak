@@ -2182,6 +2182,30 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.emitBorrowConstruction(ident.Value, e, tc)
 				return
 			}
+			if ident.Value == "subslice" && len(e.Arguments) == 3 {
+				// subslice(v, start, n) derives a view/span of the same kind
+				// (docs/spec/50-borrowing.md); the helper traps past the end.
+				info := cg.localContainerOf(e.Arguments[0])
+				helper := ""
+				switch info.kind {
+				case containerView:
+					helper = fmt.Sprintf("oak_view_subslice_%s", info.element)
+				case containerSpan:
+					helper = fmt.Sprintf("oak_span_subslice_%s", info.element)
+				}
+				if helper == "" {
+					cg.output.WriteString("OAK_UNSUPPORTED_SUBSLICE_SOURCE")
+					return
+				}
+				cg.output.WriteString(helper + "( ")
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(", (u64)( ")
+				cg.emitExpressionFragment(e.Arguments[1], tc)
+				cg.output.WriteString(" ), (u64)( ")
+				cg.emitExpressionFragment(e.Arguments[2], tc)
+				cg.output.WriteString(" ) )")
+				return
+			}
 			if target, isCast := primitiveCasts[ident.Value]; isCast && len(e.Arguments) == 1 {
 				cg.output.WriteString(fmt.Sprintf("((%s)( ", target))
 				cg.emitExpressionFragment(e.Arguments[0], tc)
@@ -2551,6 +2575,14 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 	cg.write("  return v.base[i];\n")
 	cg.write("}\n\n")
 
+	// subslice(v, start, n): the derived view is exactly n elements starting
+	// at start, admitted only when start + n <= len (no overflow: both
+	// comparisons stay within u64 without adding).
+	cg.write(fmt.Sprintf("static inline %s oak_view_subslice_%s(%s v, u64 start, u64 n) {\n", viewTypeName, elementType, viewTypeName))
+	cg.write("  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }\n")
+	cg.write(fmt.Sprintf("  return (%s){ v.base + start, (u32)n };\n", viewTypeName))
+	cg.write("}\n\n")
+
 	return viewTypeName
 }
 
@@ -2584,6 +2616,11 @@ func (cg *CodeGenerator) emitSpanType(elementType string) string {
 	cg.write(fmt.Sprintf("static inline void oak_span_store_%s(%s v, u64 i, %s value) {\n", elementType, spanTypeName, elementType))
 	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
 	cg.write("  v.base[i] = value;\n")
+	cg.write("}\n\n")
+
+	cg.write(fmt.Sprintf("static inline %s oak_span_subslice_%s(%s v, u64 start, u64 n) {\n", spanTypeName, elementType, spanTypeName))
+	cg.write("  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }\n")
+	cg.write(fmt.Sprintf("  return (%s){ v.base + start, (u32)n };\n", spanTypeName))
 	cg.write("}\n\n")
 
 	return spanTypeName

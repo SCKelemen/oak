@@ -45,10 +45,16 @@ theorem facts_monotone {α : Type} (stack extra : List α) :
 theorem offset_under_bound (i K j len : Nat) (hbound : i + K < len) (hj : j ≤ K) :
     i + j < len := by omega
 
-/-- A subslice with literal bounds has exactly `hi - lo` elements once its
-    bounds-checked construction succeeds (`lo ≤ hi ≤ len`), so a constant
-    below `hi - lo` addresses an element of the parent as well. -/
-theorem subslice_extent (lo hi len c : Nat) (hlo : lo ≤ hi) (hhi : hi ≤ len)
-    (hc : c < hi - lo) : lo + c < len := by omega
+/-- `subslice(v, start, n)` has exactly `n` elements once its bounds-checked
+    construction succeeds (`start + n ≤ len`), so a constant below `n`
+    addresses an element of the parent as well; the slice form `v[lo:hi]`
+    is the instance `start = lo`, `n = hi - lo`. -/
+theorem subslice_extent (start n len c : Nat) (hfits : start + n ≤ len)
+    (hc : c < n) : start + c < len := by omega
+
+/-- The construction check never overflows: `start ≤ len ∧ n ≤ len - start`
+    is exactly `start + n ≤ len` (the helper compares without adding). -/
+theorem subslice_check_iff (start n len : Nat) :
+    (start ≤ len ∧ n ≤ len - start) ↔ start + n ≤ len := by omega
 
 end Oak.Extents

@@ -252,3 +252,53 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
 
 Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.
+
+## 8. Semantic verification of straight-line bodies (normative design)
+
+§5 named the roadmap: shrink the trust in an asm unit from "the author's
+algorithm" to "a stated postcondition". With Oak fallback bodies landed
+(§7), the design has a natural anchor — **the Oak body is the
+specification** — and three layers:
+
+1. **Differential witness (landed).** A function with both an asm unit
+   and an Oak fallback executes both realizations under the test harness
+   (`-DOAK_PORTABLE_INTRINSICS` selects the fallback), the SIMD convention
+   of `93-simd.md`. This is evidence, not proof: it covers the inputs the
+   tests reach.
+
+2. **Instruction semantics (next).** Each data-processing entry of the
+   instruction table (`mov add sub adds subs and orr eor lsl lsr`, later
+   `cmp` and the conditional branches) carries a semantic definition as a
+   function on machine state — general registers as `w`/`x` bitvectors with
+   the `wN`/`xN` aliasing law of `Oak.Assembler`, the flags as the ARM
+   `NZCV` computation — written once in Lean (`Oak.Assembler.Semantics`,
+   compatible with `Oak.Intrinsics`/`Oak.Simd` so `arm64.*` instruction
+   functions and asm table entries cite the same semantics) and
+   transliterated into a Go symbolic executor.
+
+3. **Postcondition discharge.** For a **straight-line** body (no labels;
+   later: acyclic with conditional selects), the symbolic executor produces
+   the result register's value as a bitvector term over the bound
+   parameters. The Oak fallback body, when it is a pure expression over the
+   same parameters (the `add_asm: ... = left + right` shape), lowers to a
+   bitvector term too. The obligation is term equality, decided by
+   normalization over the total fixed-width semantics of `20-types.md`
+   §11.1 (wrapping arithmetic), with bounded exhaustive evaluation at
+   8-bit width as the executable cross-check of the normalizer itself.
+   Bodies the executor cannot reduce (memory, calls, system registers,
+   loops) keep §5's trust boundary and say so in diagnostics — the same
+   fail-closed shape as every other checker here.
+
+What this buys: the pilot's hot leaf functions (bitfield extraction,
+counter reads wrapped in arithmetic, saturating adds) become *proven equal*
+to their Oak specification, not tested equal; register-allocation-critical
+inner loops remain trusted until the acyclic extension lands. What it does
+not claim: liveness, timing, or anything about the frame beyond the §7
+seam checks, which remain the frame's only guarantee.
+
+Dependencies: the semantics table is independent work; the normalizer can
+reuse the total-arithmetic helpers' definitions; the executor needs the
+checker's binding and clobber facts, already computed. Acceptance: the
+spec's `add_asm` and a shift/mask extractor verify; a deliberately wrong
+body (`sub` for `add`) is rejected with the differing term printed; a body
+with memory or a call reports "not verified: trusted per §5".

@@ -341,11 +341,14 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   shape of pairwise and multi-byte scans.
 - **Same length**: `len(a) == len(b)` transfers an index bound from one
   container to the other (`bound_transfers`).
-- **Subslice extent**: `s: []T = subslice(v, lo, hi)` or `s: []T = v[lo:hi]`
-  with literal bounds establishes `len(s) == hi - lo` for the rest of the
-  enclosing block (the construction is bounds-checked, so once it succeeds
-  the extent is exact), unless the block later reassigns `s`
-  (`subslice_extent`).
+- **Subslice extent**: `s: []T = subslice(v, start, n)` with a literal `n`
+  establishes `len(s) == n`, and `s: []T = v[lo:hi]` with literal bounds
+  `len(s) == hi - lo`, for the rest of the enclosing block (the
+  construction is bounds-checked — `start + n <= len(v)`, compared without
+  overflow — so once it succeeds the extent is exact), unless the block
+  later reassigns `s` (`subslice_extent`, `subslice_check_iff`).
+  `subslice` lowers to a per-element-type helper that traps past the end
+  and otherwise returns `{base + start, n}` — zero copies, one check.
 - **Static extent**: a constant index below an owned array's declared
   length needs no fact (`static_extent`).
 - Conjunctions (`&&`) contribute every fact of both sides.
