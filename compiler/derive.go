@@ -24,6 +24,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/modules"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 // Diagnostic codes of the derive subfamily (docs/spec/83-modules.md
@@ -61,13 +62,16 @@ type deriver struct {
 	generated map[string]bool
 	helpers   []string
 	diags     []*diagnostic.Diagnostic
+	// spellings maps an instantiation's mangled name to the type
+	// application text generated signatures must use (`Ring[u8, 8]`).
+	spellings map[string]string
 }
 
 // lowerDerived replaces every `derive.<kind>` definition with a call to a
 // generated helper and appends the helpers to the program.
 func lowerDerived(tree *SyntaxTree, comp Compilation) error {
 	program := tree.Root
-	d := &deriver{program: program, types: map[string]*ast.ADTType{}, generated: map[string]bool{}}
+	d := &deriver{program: program, types: map[string]*ast.ADTType{}, generated: map[string]bool{}, spellings: map[string]string{}}
 	for _, stmt := range program.Statements {
 		if adt, ok := stmt.(*ast.ADTType); ok && adt.Name != nil {
 			d.types[adt.Name.Value] = adt
@@ -192,8 +196,14 @@ func (d *deriver) lowerRequest(fn *ast.FunctionStatement) {
 	} else {
 		ident, ok := fn.Parameters[0].Type.(*ast.Identifier)
 		if !ok {
-			d.report(CodeDeriveUnsupported, fn.Parameters[0].Type, "derive.%s: the parameter type must be a declared record or ADT", kind)
-			return
+			// A generic instantiation (`Ring[u8, 8]`): derive over the
+			// substituted shape under the instantiation's identity.
+			mangled, instantiated := d.instantiate(fn.Parameters[0].Type)
+			if !instantiated {
+				d.report(CodeDeriveUnsupported, fn.Parameters[0].Type, "derive.%s: the parameter type must be a declared record or ADT, or a concrete instantiation of a generic one", kind)
+				return
+			}
+			ident = &ast.Identifier{Token: fn.Token, Value: mangled}
 		}
 		typeName = ident
 	}
@@ -203,7 +213,7 @@ func (d *deriver) lowerRequest(fn *ast.FunctionStatement) {
 		return
 	}
 	if len(decl.TypeParams) != 0 {
-		d.report(CodeDeriveUnsupported, typeName, "derive.%s: generic type %s cannot be derived over; derive for a concrete instantiation is not supported", kind, typeName.Value)
+		d.report(CodeDeriveUnsupported, typeName, "derive.%s: %s is a generic template; derive over a concrete instantiation such as %s[u8]", kind, typeName.Value, typeName.Value)
 		return
 	}
 	if owner, user := packageContext(decl.Name.Token.SemanticContext), packageContext(fn.Token.SemanticContext); owner != user {
@@ -303,6 +313,9 @@ func recordShape(decl *ast.ADTType) (*ast.RecordLiteral, bool) {
 func (d *deriver) fieldKind(expr ast.Expression) (primitive bool, declared string, ok bool) {
 	ident, isIdent := expr.(*ast.Identifier)
 	if !isIdent {
+		if mangled, instantiated := d.instantiate(expr); instantiated {
+			return false, mangled, true
+		}
 		return false, "", false
 	}
 	if derivePrimitives[ident.Value] {
@@ -350,7 +363,7 @@ func (d *deriver) equalHelper(name, typeName string, decl *ast.ADTType, node ast
 			fmt.Fprintf(&body, " .%s(x) => (b ? .%s(y) => %s | _ => false)", variant.Name.Value, variant.Name.Value, term)
 		}
 	}
-	return fmt.Sprintf("%s: (a: %s, b: %s): Bool = %s", name, typeName, typeName, body.String()), true
+	return fmt.Sprintf("%s: (a: %s, b: %s): Bool = %s", name, d.spell(typeName), d.spell(typeName), body.String()), true
 }
 
 func (d *deriver) equalTerm(left, right string, typeExpr ast.Expression, node ast.Node, typeName, member string) (string, bool) {
@@ -401,7 +414,7 @@ func (d *deriver) hashHelper(name, typeName string, decl *ast.ADTType, node ast.
 			fmt.Fprintf(&body, " .%s(x) => (%s ^ u64(%d))", variant.Name.Value, term, (i+1)*2654435761%4294967296)
 		}
 	}
-	return fmt.Sprintf("%s: (v: %s): u64 = %s", name, typeName, body.String()), true
+	return fmt.Sprintf("%s: (v: %s): u64 = %s", name, d.spell(typeName), body.String()), true
 }
 
 func (d *deriver) hashTerm(value string, typeExpr ast.Expression, node ast.Node, typeName, member string) (string, bool) {
@@ -426,7 +439,16 @@ func (d *deriver) hashTerm(value string, typeExpr ast.Expression, node ast.Node,
 func sameIdentifierType(a, b ast.Expression) bool {
 	left, okLeft := a.(*ast.Identifier)
 	right, okRight := b.(*ast.Identifier)
-	return okLeft && okRight && left.Value == right.Value
+	if okLeft && okRight {
+		return left.Value == right.Value
+	}
+	// Instantiations compare by their spelled application.
+	if _, okApp := a.(*ast.IndexExpression); okApp {
+		if _, okApp2 := b.(*ast.IndexExpression); okApp2 {
+			return spellType(a) == spellType(b)
+		}
+	}
+	return false
 }
 
 func isIdentifierType(expr ast.Expression, name string) bool {
@@ -555,7 +577,7 @@ func (d *deriver) compareHelper(name, typeName string, decl *ast.ADTType, node a
 		}
 		body = sb.String()
 	}
-	return fmt.Sprintf("%s: (a: %s, b: %s): %s = %s", name, typeName, typeName, ordering, body), true
+	return fmt.Sprintf("%s: (a: %s, b: %s): %s = %s", name, d.spell(typeName), d.spell(typeName), ordering, body), true
 }
 
 func (d *deriver) compareTerm(left, right string, typeExpr ast.Expression, node ast.Node, typeName, member, less, equal, greater string) (string, bool) {
@@ -617,8 +639,8 @@ func (d *deriver) formatHelper(name, typeName string, decl *ast.ADTType, node as
 		d.generated[signedFormatHelper] = true
 		d.helpers = append(d.helpers, signedFormatHelper+": (b: TextBuilder, dst: [*]u8, v: i64): TextBuilder = v < 0 ? append_u64(append_rune(b, dst, u32(45)), dst, u64_bits_i64(0 - (v + 1)) + u64(1)) | append_u64(b, dst, u64_bits_i64(v))")
 	}
-	short := modules.DemangleText(typeName)
-	if index := strings.LastIndexByte(short, '.'); index >= 0 {
+	short := modules.DemangleText(d.spell(typeName))
+	if index := strings.LastIndexByte(short, '.'); index >= 0 && !strings.Contains(short[:index], "[") {
 		short = short[index+1:]
 	}
 	var body strings.Builder
@@ -670,7 +692,7 @@ func (d *deriver) formatHelper(name, typeName string, decl *ast.ADTType, node as
 			fmt.Fprintf(&body, " .%s(x) => append_rune(%s, dst, u32(41))", variant.Name.Value, term)
 		}
 	}
-	return fmt.Sprintf("%s: (b: TextBuilder, dst: [*]u8, v: %s): TextBuilder = %s", name, typeName, body.String()), true
+	return fmt.Sprintf("%s: (b: TextBuilder, dst: [*]u8, v: %s): TextBuilder = %s", name, d.spell(typeName), body.String()), true
 }
 
 var signedFormatTypes = map[string]bool{"i8": true, "i16": true, "i32": true, "i64": true, "int": true, "ptr": true}
@@ -698,4 +720,141 @@ func (d *deriver) formatTerm(builder, value string, typeExpr ast.Expression, nod
 		return "", false
 	}
 	return fmt.Sprintf("%s(%s, dst, %s)", helper, builder, value), true
+}
+
+// spell returns the type text a generated signature uses for a type name:
+// the application text for an instantiation, the name otherwise.
+func (d *deriver) spell(typeName string) string {
+	if text, ok := d.spellings[typeName]; ok {
+		return text
+	}
+	return typeName
+}
+
+// instantiate resolves a generic application `Template[args]` to a
+// synthetic concrete declaration registered under the instantiation's
+// mangled name (typechecker.Instantiation), substituting the arguments into
+// the template's shape with the single substitution authority.
+func (d *deriver) instantiate(expr ast.Expression) (string, bool) {
+	base, args, ok := flattenApplication(expr)
+	if !ok {
+		return "", false
+	}
+	template, declared := d.types[base]
+	if !declared || len(template.TypeParams) != len(args) || len(args) == 0 {
+		return "", false
+	}
+	atoms := make([]string, 0, len(args))
+	for _, arg := range args {
+		atom, ok := d.argumentAtom(arg)
+		if !ok {
+			return "", false
+		}
+		atoms = append(atoms, atom)
+	}
+	mangled := typechecker.Instantiation{ADT: base, Args: atoms}.MangledName()
+	if _, exists := d.types[mangled]; exists {
+		return mangled, true
+	}
+	bindings := map[string]ast.Expression{}
+	for i, param := range template.TypeParams {
+		if param.Name == nil {
+			return "", false
+		}
+		bindings[param.Name.Value] = args[i]
+	}
+	clone, ok := cloneSyntax(reflect.ValueOf(template)).Interface().(*ast.ADTType)
+	if !ok {
+		return "", false
+	}
+	clone.TypeParams = nil
+	clone.Name = &ast.Identifier{Token: template.Name.Token, Value: mangled}
+	for _, variant := range clone.Variants {
+		if variant.Payload != nil {
+			substituted, ok := typechecker.SubstituteTypeAST(variant.Payload, bindings)
+			if !ok {
+				return "", false
+			}
+			variant.Payload = substituted
+		}
+		if shape, isShape := variant.Literal.(*ast.RecordLiteral); isShape {
+			for i := range shape.FieldOrder {
+				substituted, ok := typechecker.SubstituteTypeAST(shape.FieldOrder[i].Value, bindings)
+				if !ok {
+					return "", false
+				}
+				shape.FieldOrder[i].Value = substituted
+				shape.Fields[shape.FieldOrder[i].Name] = substituted
+			}
+		}
+	}
+	d.types[mangled] = clone
+	spelled := make([]string, 0, len(args))
+	for _, arg := range args {
+		spelled = append(spelled, spellType(arg))
+	}
+	d.spellings[mangled] = base + "[" + strings.Join(spelled, ", ") + "]"
+	return mangled, true
+}
+
+// argumentAtom names an instantiation argument: primitives and declared
+// types by name, constants by value, nested instantiations by their mangled
+// name.
+func (d *deriver) argumentAtom(arg ast.Expression) (string, bool) {
+	switch a := arg.(type) {
+	case *ast.IntegerLiteral:
+		return fmt.Sprintf("%d", a.Value), true
+	case *ast.Identifier:
+		if derivePrimitives[a.Value] || a.Value == "string" {
+			return a.Value, true
+		}
+		if decl, declared := d.types[a.Value]; declared && len(decl.TypeParams) == 0 {
+			return a.Value, true
+		}
+		return "", false
+	case *ast.IndexExpression:
+		return d.instantiate(a)
+	}
+	return "", false
+}
+
+// flattenApplication decodes `F[A][B]` (the parser's spelling of `F[A, B]`).
+func flattenApplication(expr ast.Expression) (string, []ast.Expression, bool) {
+	index, ok := expr.(*ast.IndexExpression)
+	if !ok || index.Dot || index.Index == nil {
+		return "", nil, false
+	}
+	if marker, isMarker := index.Index.(*ast.Identifier); isMarker && (marker.Value == "" || marker.Value == "*") {
+		return "", nil, false
+	}
+	switch left := index.Left.(type) {
+	case *ast.Identifier:
+		return left.Value, []ast.Expression{index.Index}, true
+	case *ast.IndexExpression:
+		base, args, ok := flattenApplication(left)
+		if !ok {
+			return "", nil, false
+		}
+		return base, append(args, index.Index), true
+	}
+	return "", nil, false
+}
+
+// spellType renders a type argument as source text.
+func spellType(expr ast.Expression) string {
+	switch t := expr.(type) {
+	case *ast.Identifier:
+		return t.Value
+	case *ast.IntegerLiteral:
+		return fmt.Sprintf("%d", t.Value)
+	case *ast.IndexExpression:
+		if base, args, ok := flattenApplication(t); ok {
+			spelled := make([]string, 0, len(args))
+			for _, arg := range args {
+				spelled = append(spelled, spellType(arg))
+			}
+			return base + "[" + strings.Join(spelled, ", ") + "]"
+		}
+	}
+	return expr.String()
 }

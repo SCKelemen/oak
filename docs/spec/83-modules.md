@@ -375,9 +375,13 @@ point_hash: (v: Point): u64 = derive.hash
   range-checked decoder (`110-testing.md`, "Typed commands"); the type is the
   return type, the parameter, or `Option`'s argument respectively, and they
   require `import(testing)` (and `import(std)` for `Option`).
-- Members may be fixed-width integers, `Bool`, and declared records or ADTs,
-  recursively (helpers are generated once per type); anything else is
-  rejected (`OAK-M0203`). Generic types are not derivable over (`OAK-M0203`).
+- Members may be fixed-width integers, `Bool`, declared records or ADTs, and
+  concrete instantiations of generic ones (`Pair[u8]`, `Wrap[u16]`),
+  recursively; helpers are generated once per type or instantiation, the
+  instantiation's shape obtained through the same substitution authority the
+  type checker uses (`typechecker.SubstituteTypeAST`). Anything else is
+  rejected (`OAK-M0203`); a generic template itself is not derivable over,
+  only its instantiations.
 - Derivation is admitted only in the package declaring the type
   (`OAK-M0204`): it reads the definition, so `pub(opaque)` types derive their
   operations at home and export them as ordinary `pub` functions.
@@ -423,6 +427,15 @@ This is Oak's functor: monomorphized at import, with the package as the unit
 of parameterization and no runtime object.
 
 
+### 6.8 Tag schemas are package members
+
+A tag schema (`json: tag = { name: string }`, `40-records.md` §12) is an
+ordinary package-level declaration: private unless `pub`, renamed to its
+internal name like any other, and named from another package as
+`alias.schema` in a field's tag list (`x(wire.json: "px"): u32`). Two
+packages may each declare a `json` schema without colliding. Codec
+derivation recognizes the json schema under any package's spelling.
+
 ## 7. Elaboration and naming
 
 The elaborator (`compiler/modules.go`) is the single resolution authority for
@@ -451,12 +464,12 @@ internal names back to `path.name`.
 never spell — or capture — an internal name. This is the capture-freedom
 argument for the whole-program elaboration.
 
-Two kinds of declarations are looked up by label rather than by name and are
-therefore not renamed: **methods** (`fn (r: T) m()` is selected through the
-receiver type, which is renamed) and **tag schemas** (field tags name their
-schema as a string; tag namespaces are consequently program-wide, a recorded
-limitation). Renaming is consistent across a package — binders and uses alike
-— so shadowing inside function bodies is preserved.
+**Methods** are looked up by label through their receiver type and are not
+renamed themselves (the receiver type is). Everything else a package declares
+— functions, values, types, interfaces, tag schemas — is renamed; field tag
+namespaces are strings on record fields and are rewritten through the same
+lookup. Renaming is consistent across a package — binders and uses alike — so
+shadowing inside function bodies is preserved.
 
 Every token of every package is stamped with `package#file` in its
 `SemanticContext`, keeping position-keyed resolution records distinct across
@@ -548,6 +561,8 @@ naming the import to add (`encode` needs `import("json")`, text needs
   files. `oak run [dir]` builds a package, compiles the C with the system
   compiler into a temporary directory, runs it, and propagates its exit
   status — a development convenience over trusted local source.
+  Trust-by-import for the testing reporter is unaffected: the reporter
+  declarations still enter only through `import(testing)`.
 - **REPL.** A REPL session is an in-memory root package compiled through the
   loader (`Compilation.WithSessionSources`): imports resolve through the
   module enclosing the working directory, every input passes the type,
@@ -559,10 +574,11 @@ naming the import to add (`encode` needs `import("json")`, text needs
   the pipeline left standing for the session program — unsafe admissions,
   unbounded loops, unlowered tail cycles, runtime-initialized globals — the
   exact inputs a proof step would take; `:strict` judges declarations under
-  the strict profile, where those assumptions reject. The REPL is not a proof
-  assistant: proofs live in Lean (`spec/lean`), and handing listed obligations
-  to Lean as theorem skeletons is a recorded direction. Trust-by-import for the testing reporter is unaffected: the reporter
-  declarations still enter only through `import(testing)`.
+  the strict profile, where those assumptions reject; `:lean` names, for each
+  listed assumption, the Lean module and law that govern it and what
+  discharges it (`OAK-D0103` → `Oak.BoundedLoop`, `OAK-B0110` → `Oak.Unsafe`,
+  ...). The REPL is not a proof assistant: proofs live in Lean (`spec/lean`);
+  it records assumptions and points at the law, it does not prove them.
 - **FFI/SIMD (`92-ffi.md`, `93-simd.md`).** `c`, `arm64`, and `simd` remain
   compiler-known libraries, not packages; an import alias may not reuse their
   names.
@@ -574,8 +590,10 @@ naming the import to add (`encode` needs `import("json")`, text needs
 - **Unqualified `open` of a whole package** and **nested modules** (selective
   imports of named members exist, section 3.2).
 - **A lock file** (the manifests alone already make selection
-  reproducible), **derivation over generic instantiations**, and **Lean
-  theorem skeletons for the REPL's listed obligations** (section 10).
+  reproducible) and **generating Lean theorem statements from a session's
+  listed obligations** (section 10) — the compiler cannot state an Oak
+  program's termination or disjointness in Lean's terms without an Oak
+  semantics in Lean, which is the larger direction.
 
 ## 12. Required laws
 

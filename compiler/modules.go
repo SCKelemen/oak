@@ -902,7 +902,7 @@ func declarationMember(stmt ast.Statement) (name string, kind modules.MemberKind
 		if s.Name == nil {
 			return "", 0, false, false, false
 		}
-		return s.Name.Value, modules.KindTag, s.Exported, false, false
+		return s.Name.Value, modules.KindTag, s.Exported, false, true
 	}
 	return "", 0, false, false, false
 }
@@ -1137,6 +1137,21 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 					id.Value = internal
 				}
 			},
+			tag: func(name *string) {
+				if library, member, qualified := splitDotted(*name); qualified {
+					if binding := pkg.Imports[library]; binding != nil {
+						binding.Used = true
+						*name = l.resolveMember(pkg, file, binding, member, nil)
+					}
+					return
+				}
+				if binding := pkg.Selective[*name]; binding != nil {
+					binding.Used = true
+				}
+				if internal, renamed := pkg.Renames[*name]; renamed {
+					*name = internal
+				}
+			},
 		}
 		visitor.walk(reflect.ValueOf(file.Root), false)
 	}
@@ -1243,10 +1258,7 @@ func (l *moduleLoader) resolveMember(pkg *loadedPackage, file *packageFile, bind
 	found, outcome := modules.Lookup(target.Exports, binding.sig, member)
 	switch outcome {
 	case modules.Resolved:
-		if found.Kind == modules.KindTag {
-			// Tag schemas are looked up by label program-wide (section 7).
-			return member
-		}
+		_ = found
 		if fresh, abstract := binding.abstractNames[member]; abstract {
 			// A sealed `Name: type` member is a fresh abstract type.
 			return fresh
@@ -1576,6 +1588,9 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 type syntaxVisitor struct {
 	expr  func(slot reflect.Value)
 	ident func(id *ast.Identifier, label bool)
+	// tag is called on every field tag namespace (a string, not an
+	// identifier node): package-scoped tag schemas rename through it.
+	tag func(name *string)
 }
 
 var (
@@ -1589,6 +1604,7 @@ var (
 	functionStmtType    = reflect.TypeOf(ast.FunctionStatement{})
 	fieldAccessorType   = reflect.TypeOf(ast.FieldAccessorExpression{})
 	importStmtType      = reflect.TypeOf(ast.ImportStatement{})
+	fieldTagType        = reflect.TypeOf(ast.FieldTag{})
 	packageStmtType     = reflect.TypeOf(ast.PackageStatement{})
 )
 
@@ -1617,6 +1633,9 @@ func (sv *syntaxVisitor) walk(v reflect.Value, label bool) {
 		t := v.Type()
 		if t == tokenType || t == packageStmtType {
 			return
+		}
+		if t == fieldTagType && sv.tag != nil && v.CanAddr() {
+			sv.tag(v.FieldByName("Name").Addr().Interface().(*string))
 		}
 		for i := 0; i < v.NumField(); i++ {
 			field := t.Field(i)

@@ -248,3 +248,28 @@ func (s *Session) Obligations() ([]*diagnostic.Diagnostic, error) {
 	})
 	return open, nil
 }
+
+// Law describes where a recorded obligation is modeled and what discharges
+// it: the REPL's `:lean` hands the reader to the governing Lean module.
+type Law struct {
+	Module    string
+	Statement string
+	Discharge string
+}
+
+// laws maps recorded-assumption codes to their governing formal law.
+var laws = map[string]Law{
+	"OAK-D0103": {"Oak.BoundedLoop", "the canonical counter loop has a static iteration bound", "rewrite the loop in the canonical counter shape, or prove a ranking function for it"},
+	"OAK-D0102": {"Oak.Discipline", "a rank certificate bounds stack depth and forces cycles to be tail-only", "make the cycle same-signature tail calls so the backend lowers it to a trampoline"},
+	"OAK-B0110": {"Oak.Unsafe", "an unsafe assumption discharges exactly its own writable-disjointness obligation", "prove the regions disjoint statically, or keep the unsafe block and audit the recorded admission"},
+	"OAK-B0109": {"Oak.Escape", "an escaping borrow of a scope-local owner dangles", "return an owned value; region-indexed signatures are the recorded headroom"},
+	"OAK-T0501": {"Oak constitution (no hidden work)", "static storage is initialized before any code runs", "initialize at the top of main, or make the initializer a compile-time constant"},
+	"OAK-T0202": {"Oak.PatternAnalysis", "a redundant arm is subsumed by earlier arms", "remove the arm"},
+	"OAK-T0203": {"Oak.PatternAnalysis", "an impossible arm has no reachable case", "remove the arm"},
+}
+
+// LawFor returns the governing law of an obligation code, if modeled.
+func LawFor(code string) (Law, bool) {
+	law, ok := laws[code]
+	return law, ok
+}
