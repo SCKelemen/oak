@@ -110,7 +110,23 @@ func lowerDerived(tree *SyntaxTree, comp Compilation) error {
 			stampSemanticContext(reflect.ValueOf(fn), owner)
 		}
 	}
-	program.Statements = append(program.Statements, helperTree.Root.Statements...)
+	// Helpers precede the declarations that call them so that a
+	// sequential evaluator (the REPL's interpreter) sees definitions before
+	// uses; the checker and backend are order-independent.
+	head := 0
+	for head < len(program.Statements) {
+		switch program.Statements[head].(type) {
+		case *ast.PackageStatement, *ast.ImportStatement:
+			head++
+			continue
+		}
+		break
+	}
+	merged := make([]ast.Statement, 0, len(program.Statements)+len(helperTree.Root.Statements))
+	merged = append(merged, program.Statements[:head]...)
+	merged = append(merged, helperTree.Root.Statements...)
+	merged = append(merged, program.Statements[head:]...)
+	program.Statements = merged
 	return nil
 }
 

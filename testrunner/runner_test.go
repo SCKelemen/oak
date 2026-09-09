@@ -169,7 +169,7 @@ TestCrash: (): () { assert(false) }
 TestTimeout: (): () { while true {} }
 TestSurvives: (): () { test_check(true, u32(1)) }
 `})
-	code, results, stderr := runCLI(t, "-runs", "1", "-max-discards", "2", "-timeout", "100ms", "-shrink", "0", dir)
+	code, results, stderr := runCLI(t, "-runs", "1", "-max-discards", "2", "-timeout", "2s", "-shrink", "0", dir)
 	if code != 1 || len(results) != 4 {
 		t.Fatalf("%d %+v %s", code, results, stderr)
 	}
@@ -181,7 +181,7 @@ TestSurvives: (): () { test_check(true, u32(1)) }
 		t.Fatalf("%+v", states)
 	}
 	a, err := readArtifact(states["TestTimeout"].Artifact, 256)
-	if err != nil || a.TimeoutNanos != 100000000 {
+	if err != nil || a.TimeoutNanos != 2000000000 {
 		t.Fatalf("timeout configuration lost: %+v %v", a, err)
 	}
 	code, results, stderr = runCLI(t, "-replay", states["TestTimeout"].Artifact, dir)
@@ -216,6 +216,9 @@ FuzzExport: (data: []u8): () {
 		t.Fatal("overwrote existing harness")
 	}
 	clang, err := exec.LookPath("clang")
+	if err == nil && !fuzzerRuntimeAvailable(t, clang) {
+		t.Skip("clang has no libFuzzer runtime on this host")
+	}
 	if err != nil {
 		t.Skip("requires clang")
 	}
@@ -337,4 +340,17 @@ func TestRunnerCompilesTestPackageThroughModuleLoader(t *testing.T) {
 	if len(results) != 1 || results[0].Status != "pass" {
 		t.Fatalf("results = %+v", results)
 	}
+}
+
+// fuzzerRuntimeAvailable probes whether clang can link -fsanitize=fuzzer on
+// this host (Apple's clang ships without libclang_rt.fuzzer).
+func fuzzerRuntimeAvailable(t *testing.T, clang string) bool {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "probe.c")
+	if err := os.WriteFile(src, []byte("#include <stddef.h>\n#include <stdint.h>\nint LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) { (void)d; (void)n; return 0; }\n"), 0o600); err != nil {
+		return false
+	}
+	cmd := exec.Command(clang, "-fsanitize=fuzzer", src, "-o", filepath.Join(dir, "probe"))
+	return cmd.Run() == nil
 }

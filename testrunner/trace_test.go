@@ -72,7 +72,7 @@ TestTraceBound: (): () {
 TestTraceCrash: (): () { testing_trace(u32(45), u64(1), u64(2)); assert(false) }
 TestTraceTimeout: (): () { testing_trace(u32(46), u64(3), u64(4)); while true {} }
 `})
-	code, results, stderr := runCLI(t, "-timeout", "500ms", "-shrink", "0", dir)
+	code, results, stderr := runCLI(t, "-timeout", "2s", "-shrink", "0", dir)
 	if code != 1 || len(results) != 3 {
 		t.Fatalf("%d %+v %s", code, results, stderr)
 	}

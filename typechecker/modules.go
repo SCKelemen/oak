@@ -26,6 +26,9 @@ const (
 	// CodeSignatureType rejects a sealed import whose member has a type
 	// other than the one the signature promises.
 	CodeSignatureType = "OAK-M0113"
+	// CodeParameterConstraint rejects a generic package instantiation whose
+	// argument does not satisfy the parameter's declared constraint.
+	CodeParameterConstraint = "OAK-M0303"
 )
 
 // SignatureObligation asks the checker to verify that the declaration
@@ -262,5 +265,41 @@ func (tc *TypeChecker) checkSharedTypeMember(obligation SignatureObligation) {
 		d := tc.addTypeDiagnostic(obligation.Node, CodeSignatureType,
 			fmt.Sprintf("signature type member %s is %s, but the signature shares it as %s", obligation.Member, modules.DemangleText(fmt.Sprint(got)), modules.DemangleText(fmt.Sprint(want))))
 		d.AddNote("`Name: type = T` requires the package's type to be exactly T")
+	}
+}
+
+// ParameterObligation asks the checker to verify that a generic package
+// instantiation argument satisfies the declared parameter constraint
+// (docs/spec/83-modules.md section 6.7).
+type ParameterObligation struct {
+	Package    string
+	Param      string
+	Constraint ast.Expression
+	Argument   ast.Expression
+	Node       ast.Node
+}
+
+// CheckParameterObligations discharges instantiation constraints with the
+// same predicate generic functions use (SatisfiesConstraint): the argument
+// must satisfy every requirement the parameter names.
+func (tc *TypeChecker) CheckParameterObligations(obligations []ParameterObligation) {
+	for _, obligation := range obligations {
+		interfaces := tc.extractInterfacesFromConstraint(obligation.Constraint)
+		constraint := Constraint{Var: obligation.Param, Interfaces: interfaces}
+		if !tc.validateGenericConstraints([]Constraint{constraint}, tc.env, obligation.Node) {
+			continue
+		}
+		argument := tc.parseTypeExpression(obligation.Argument)
+		if argument == nil {
+			continue
+		}
+		if !tc.SatisfiesConstraint(argument, constraint) {
+			d := tc.addTypeDiagnostic(obligation.Node, CodeParameterConstraint,
+				fmt.Sprintf("instantiation of %s: argument %s for parameter %s does not satisfy %s", obligation.Package, modules.DemangleText(fmt.Sprint(argument)), obligation.Param, strings.Join(interfaces, " & ")))
+			if detail := tc.constraintMismatchDetail(argument, constraint); detail != "" {
+				d.AddNote(detail)
+			}
+			d.AddHelp("instantiate the package with a type that satisfies its declared parameter contract")
+		}
 	}
 }

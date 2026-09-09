@@ -137,6 +137,6 @@ u32 oak_sum( u8 buf[8] ) {
       total     = ( total + ((u32)( oak_view_index_u8( v, (u64)( i ) ) )) )    ;
       i     = ( i + 1 )    ;
     }
-    return ( ( total + ((u32)( oak_index( buf, 8, (u64)( 0 ) ) )) ) + 8 )  ;
+    return ( ( total + ((u32)( buf[ 0 ] )) ) + 8 )  ;
 }
 

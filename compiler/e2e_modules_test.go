@@ -905,3 +905,89 @@ main: (): i32 = {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }
+
+// Standard library packages are real packages: importing one loads only it,
+// its library dependencies, and the core prelude; mixing with the legacy
+// flat prelude stays consistent.
+func TestE2EModulesStdlibRealPackages(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"main.oak": `package main
+
+import("json")
+import("strings")
+
+main: (): i32 = {
+  upper := strings.ascii_upper(u8(97))
+  bytes: [2]u8 = [2]u8{92, 110}
+  esc: strings.TextScalar = json.json_escape(view(&bytes), 0)
+  upper == u8(65) && esc.value == u32(10) ? 42 | 1
+}
+`,
+	})
+	output, err := New().WithPackageDir(root).EmitC().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output, "oak_hash_table_") || strings.Contains(output, "oak_filter_") {
+		t.Fatalf("unrelated library packages were linked into a program importing json and strings")
+	}
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+
+	// The legacy flat prelude and a real package coexist and agree on the
+	// prelude's core types.
+	root = writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"main.oak": `package main
+
+import(std)
+import("strings")
+
+main: (): i32 = strings.ascii_upper(u8(97)) == ascii_upper(u8(97)) ? 42 | 1
+`,
+	})
+	code, abnormal = buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("mixed exit=(%d,%v)", code, abnormal)
+	}
+}
+
+// A generic package's declared parameter contract is checked where it is
+// instantiated.
+func TestE2EModulesGenericPackageConstraint(t *testing.T) {
+	files := map[string]string{
+		"oak.mod": helloManifest,
+		"pair/pair.oak": `package pair[T: Keyed]
+
+pub Keyed: type = { key: u32 }
+pub first_key: (v: T): u32 = v.key
+`,
+		"main.oak": `package main
+
+items := import("example.com/hello/pair")[Item]
+
+Item: type = struct { key: u32, weight: u8 }
+Other: type = struct { weight: u8 }
+
+main: (): i32 = items.first_key(Item { key: 42, weight: 1 }) == u32(42) ? 42 | 1
+`,
+	}
+	root := writeModule(t, files)
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	files["main.oak"] = `package main
+
+others := import("example.com/hello/pair")[Other]
+
+Other: type = struct { weight: u8 }
+
+main: (): i32 = others.first_key(Other { weight: 1 }) == u32(1) ? 42 | 1
+`
+	root = writeModule(t, files)
+	expectModuleError(t, root, ".", "OAK-M0303")
+}

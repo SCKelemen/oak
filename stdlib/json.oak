@@ -1,4 +1,8 @@
 // Strict JSON string codecs. All storage is supplied by the caller.
+package json
+
+import("strings")
+
 pub JsonError: type = InvalidEncoding | InvalidSyntax | DestinationTooSmall | SizeOverflow
 pub JsonStrict: type = | StrictJson
 // Policy is phantom: only cursor and sticky error state occupy storage.
@@ -120,7 +124,7 @@ pub json_string_encode_at: (dst: [*]u8, offset: u32, src: []u8): Result[u32, Jso
 pub json_string_encode: (dst: [*]u8, src: []u8): Result[u32, JsonError] = json_string_encode_at(dst, u32(0), src)
 
 // Decode one escape at a backslash; sentinel next denotes invalid syntax.
-pub json_escape: (src: []u8, at: u32): TextScalar {
+pub json_escape: (src: []u8, at: u32): strings.TextScalar {
  value: u32 = 4294967295
  next: u32 = 4294967295
  at < len(src) && len(src) - at >= u32(2) ? {
@@ -142,10 +146,10 @@ pub json_escape: (src: []u8, at: u32): TextScalar {
     }
     !valid ? { value = u32(4294967295) }
    }
-   !unicode_is_scalar(value) ? { next = u32(4294967295) }
+   !strings.unicode_is_scalar(value) ? { next = u32(4294967295) }
   }
  }
- TextScalar { value: value, next: next }
+ strings.TextScalar { value: value, next: next }
 }
 // Exactly one quoted token; surrounding whitespace belongs to the parser.
 pub json_string_decode_size: (src: []u8): Result[u32, JsonError] {
@@ -161,9 +165,9 @@ pub json_string_decode_size: (src: []u8): Result[u32, JsonError] {
    at < limit ? {
     valid = src[at] == u8(92)
     valid ? {
-     item: TextScalar = json_escape(src, at)
+     item: strings.TextScalar = json_escape(src, at)
      valid = item.next <= limit
-     valid ? { total = total + utf8_width(item.value)
+     valid ? { total = total + strings.utf8_width(item.value)
       at = item.next
      }
     }
@@ -184,10 +188,10 @@ pub json_string_decode: (dst: [*]u8, src: []u8): Result[u32, JsonError] {
    out = out + (end - at)
    at = end
    at < limit ? {
-    item: TextScalar = json_escape(src, at)
-    written: Result[u32, TextError] = utf8_encode(dst, out, item.value)
-    assert(text_result_ok(written))
-    out = out + text_result_value(written)
+    item: strings.TextScalar = json_escape(src, at)
+    written: Result[u32, strings.TextError] = strings.utf8_encode(dst, out, item.value)
+    assert(strings.text_result_ok(written))
+    out = out + strings.text_result_value(written)
     at = item.next
    }
   }
@@ -318,7 +322,7 @@ pub json_token_full: (src: []u8, offset: u32): JsonToken {
      src[at] == u8(34) ? { at = at + u32(1)
       done = true
      } | src[at] == u8(92) ? {
-      item: TextScalar = json_escape(src, at)
+      item: strings.TextScalar = json_escape(src, at)
       valid = item.next <= len(src)
       valid ? { at = item.next }
      } | { valid = false }
@@ -397,11 +401,11 @@ pub json_key_equal_unicode: (src: []u8, key: JsonToken, expected: []u8): Bool {
  other: u32 = 0
  valid ? {
   while valid && at < key.end - u32(1) {
-   item: TextScalar = src[at] == u8(92) ? json_escape(src, at) | text_decoded(utf8_decode(src, at))
-   reference: Result[TextScalar, TextError] = utf8_decode(expected, other)
-   valid = item.next <= key.end - u32(1) && text_decode_ok(reference)
+   item: strings.TextScalar = src[at] == u8(92) ? json_escape(src, at) | strings.text_decoded(strings.utf8_decode(src, at))
+   reference: Result[strings.TextScalar, strings.TextError] = strings.utf8_decode(expected, other)
+   valid = item.next <= key.end - u32(1) && strings.text_decode_ok(reference)
    valid ? {
-    target: TextScalar = text_decoded(reference)
+    target: strings.TextScalar = strings.text_decoded(reference)
     valid = item.value == target.value
     at = item.next
     other = target.next
