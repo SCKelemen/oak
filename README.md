@@ -60,8 +60,15 @@ import("example.com/hello/geometry")
 // Import under an explicit alias
 geo := import("example.com/hello/geometry")
 
-// Import sealed to a signature: only Key, key and hash are visible
+// Import sealed to a signature: only Key, key and hash are visible, and
+// h.Key is a fresh abstract type (share it with `Key: type = fnv.Key`)
 h: { Key: type, key: (u64) -> Key, hash: (Key) -> u64 } = import("example.com/hello/fnv")
+
+// Import named members unqualified
+{ twice, Box } := import("example.com/hello/util")
+
+// Instantiate a generic package (`package pair[T, N: u32]`)
+bytes := import("example.com/hello/pair")[u8, 3]
 
 // Bootstrap standard library (unqualified prelude, see the spec)
 import(std)
@@ -75,13 +82,14 @@ pub make: (x: i32, y: i32): Point = Point { x: x, y: y }
 abs: (v: i32): i32 = v < 0 ? 0 - v | v                // private to the package
 ```
 
-Build a package with `oak build [dir]`; fetch pinned dependencies with
-`oak mod download`; see `examples/modules`. Derived operations are ordinary
+Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
+pinned dependencies with `oak mod download`; see `examples/modules`. Derived operations are ordinary
 declarations whose body the compiler synthesizes from the type:
 
 ```oak
 point_eq: (a: Point, b: Point): Bool = derive.equal
 point_hash: (v: Point): u64 = derive.hash
+point_cmp: (a: Point, b: Point): Ordering = derive.compare
 ```
 
 ### Comments

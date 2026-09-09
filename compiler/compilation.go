@@ -226,10 +226,10 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// Type-qualified variant construction (compiler/variants.go) and
 		// derived declarations (compiler/derive.go) are resolved once the
 		// whole program, imports included, is in one tree.
-		if err := lowerQualifiedVariants(tree.Root); err != nil {
+		if err := lowerDerived(tree, comp); err != nil {
 			return nil, err
 		}
-		if err := lowerDerived(tree, comp); err != nil {
+		if err := lowerQualifiedVariants(tree.Root); err != nil {
 			return nil, err
 		}
 		if comp.simulation {
@@ -249,6 +249,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if tree.Modules != nil {
 			tc.SetModuleContext(tree.Modules.OpaqueTypes, tree.Modules.Packages)
 			tc.SetSealedOpaque(tree.Modules.SealedOpaque)
+			tc.SetAbstractTypes(tree.Modules.Abstract)
 		}
 		tc.CheckProgram(tree.Root)
 		if tree.Modules != nil {
@@ -324,6 +325,9 @@ func (comp Compilation) EmitC() Stage[string] {
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
+		if lowered.Model.Tree.Modules != nil {
+			generator.SetAbstractAliases(lowered.Model.Tree.Modules.Abstract)
+		}
 		generator.SetSourceText(lowered.Model.Tree.Source.Text)
 		return generator.Generate(lowered.Root, lowered.Model.TypeChecker)
 	})

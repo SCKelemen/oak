@@ -139,6 +139,10 @@ type RecordField struct {
 	Token token.Token
 	Name  string
 	Value Expression
+	// Manifest is the shared definition of a signature type member
+	// (`Key: type = u64`, docs/spec/83-modules.md section 6.3); nil for an
+	// abstract member or an ordinary field.
+	Manifest Expression
 	// Align is the field's declared alignment (head(align: 64): Atomic[u32]),
 	// 0 for natural. A representation detail, never shape identity
 	// (docs/spec/40-records.md §6a).
@@ -886,11 +890,14 @@ func (v *ADTVariant) String() string {
 	return out.String()
 }
 
-// Package declaration
+// Package declaration. TypeParams make the package generic
+// (`package ring[T, N: u32]`, docs/spec/83-modules.md section 6.7); each
+// import instantiates it with arguments.
 type PackageStatement struct {
 	BaseNode
-	Token token.Token // 'package' token
-	Name  *Identifier
+	Token      token.Token // 'package' token
+	Name       *Identifier
+	TypeParams []*TypeParameter
 }
 
 func (ps *PackageStatement) statementNode()       {}
@@ -915,6 +922,11 @@ type ImportStatement struct {
 	// Signature is the sealing type of `alias: Sig = import(path)`; nil
 	// for an unsealed import.
 	Signature Expression
+	// Arguments instantiate a generic package: import("...")[u8, 8].
+	Arguments []Expression
+	// Names are the unqualified bindings of a selective import
+	// `{ f, g } := import(path)`; Alias is nil for those.
+	Names []*Identifier
 }
 
 func (is *ImportStatement) statementNode()       {}
@@ -944,8 +956,9 @@ func (is *ImportStatement) String() string {
 // folds it into an ImportStatement; anywhere else the loader rejects it.
 type ImportExpression struct {
 	BaseNode
-	Token token.Token // 'import' token
-	Path  *Identifier
+	Token     token.Token // 'import' token
+	Path      *Identifier
+	Arguments []Expression
 }
 
 func (ie *ImportExpression) expressionNode()      {}

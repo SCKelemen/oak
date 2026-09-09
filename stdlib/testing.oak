@@ -1,60 +1,60 @@
 // Test reporting is an explicit host boundary, supplied by oak test.
 // Numeric invariant IDs are chosen by the test author and must keep their meaning.
-testing_fail_host: (id: c.UInt32): () = c.extern("oak_test_host_fail")
-testing_discard: (): () = c.extern("oak_test_host_discard")
-testing_classify_host: (id: c.UInt32): () = c.extern("oak_test_host_classify")
-testing_trace_host: (id: c.UInt32, a: c.UInt64, b: c.UInt64): () = c.extern("oak_test_host_trace")
-testing_command_host: (kind: c.UInt32, target: c.UInt32, value: c.UInt32): () = c.extern("oak_test_host_command")
-testing_command_limit_host: (): c.UInt32 = c.extern("oak_test_host_command_limit")
+pub testing_fail_host: (id: c.UInt32): () = c.extern("oak_test_host_fail")
+pub testing_discard: (): () = c.extern("oak_test_host_discard")
+pub testing_classify_host: (id: c.UInt32): () = c.extern("oak_test_host_classify")
+pub testing_trace_host: (id: c.UInt32, a: c.UInt64, b: c.UInt64): () = c.extern("oak_test_host_trace")
+pub testing_command_host: (kind: c.UInt32, target: c.UInt32, value: c.UInt32): () = c.extern("oak_test_host_command")
+pub testing_command_limit_host: (): c.UInt32 = c.extern("oak_test_host_command_limit")
 
 // A generator emits concrete commands; execution never reruns random choices.
-TestCommand: type = struct { kind: u32, target: u32, value: u32 }
-testing_command_limit: (): u32 = u32(testing_command_limit_host())
-testing_command: (command: TestCommand): () {
+pub TestCommand: type = struct { kind: u32, target: u32, value: u32 }
+pub testing_command_limit: (): u32 = u32(testing_command_limit_host())
+pub testing_command: (command: TestCommand): () {
   testing_command_host(c.UInt32(command.kind), c.UInt32(command.target), c.UInt32(command.value))
 }
 
-test_command_count: (data: []u8): u32 {
+pub test_command_count: (data: []u8): u32 {
   test_assume(len(data) % u32(12) == u32(0))
   len(data) / u32(12)
 }
 
-test_command_word: (data: []u8, offset: u32): u32 {
+pub test_command_word: (data: []u8, offset: u32): u32 {
   assert(offset <= len(data) && len(data) - offset >= u32(4))
   u32(data[offset]) | (u32(data[offset + u32(1)]) << u32(8)) |
     (u32(data[offset + u32(2)]) << u32(16)) | (u32(data[offset + u32(3)]) << u32(24))
 }
 
-test_command_at: (data: []u8, index: u32): TestCommand {
+pub test_command_at: (data: []u8, index: u32): TestCommand {
   count: u32 = test_command_count(data)
   assert(index < count)
   offset: u32 = index * u32(12)
   TestCommand { kind: test_command_word(data, offset), target: test_command_word(data, offset + u32(4)), value: test_command_word(data, offset + u32(8)) }
 }
 
-testing_fail: (id: u32): () { testing_fail_host(c.UInt32(id)) }
-testing_classify: (id: u32): () { testing_classify_host(c.UInt32(id)) }
+pub testing_fail: (id: u32): () { testing_fail_host(c.UInt32(id)) }
+pub testing_classify: (id: u32): () { testing_classify_host(c.UInt32(id)) }
 
 // Bounded semantic trace: stable event ID and two domain-defined payloads.
 // The native runner retains the first 256 events and marks truncation.
-testing_trace: (id: u32, a: u64, b: u64): () {
+pub testing_trace: (id: u32, a: u64, b: u64): () {
   testing_trace_host(c.UInt32(id), c.UInt64(a), c.UInt64(b))
 }
 
-test_check: (condition: Bool, id: u32): () {
+pub test_check: (condition: Bool, id: u32): () {
   !condition ? { testing_fail(id) }
 }
 
-test_assume: (condition: Bool): () {
+pub test_assume: (condition: Bool): () {
   !condition ? { testing_discard() }
 }
 
 // The choice tape is shared by property testing, fuzzing and simulation.
 // Exhaustion supplies zero, so every finite tape describes a complete run.
 // Construct domain values from choices; shrinking reruns the construction.
-TestChoices: type = struct { offset: u32 }
+pub TestChoices: type = struct { offset: u32 }
 
-test_byte: (choices: [*]TestChoices, data: []u8): u8 {
+pub test_byte: (choices: [*]TestChoices, data: []u8): u8 {
   assert(len(choices) == u32(1))
   offset: u32 = choices[0].offset
   offset < len(data) ? {
@@ -63,10 +63,10 @@ test_byte: (choices: [*]TestChoices, data: []u8): u8 {
   } | { u8(0) }
 }
 
-test_bool: (choices: [*]TestChoices, data: []u8): Bool =
+pub test_bool: (choices: [*]TestChoices, data: []u8): Bool =
   (test_byte(choices, data) & u8(1)) == u8(1)
 
-test_u32: (choices: [*]TestChoices, data: []u8): u32 {
+pub test_u32: (choices: [*]TestChoices, data: []u8): u32 {
   a: u32 = u32(test_byte(choices, data))
   b: u32 = u32(test_byte(choices, data))
   c: u32 = u32(test_byte(choices, data))
@@ -76,7 +76,7 @@ test_u32: (choices: [*]TestChoices, data: []u8): u32 {
 
 // Inclusive range. Modulo bias is intentional and documented; this is a
 // shrink-friendly testing distribution, not a cryptographic random source.
-test_range: (choices: [*]TestChoices, data: []u8, low: u32, high: u32): u32 {
+pub test_range: (choices: [*]TestChoices, data: []u8, low: u32, high: u32): u32 {
   assert(low <= high)
   value: u32 = test_u32(choices, data)
   width: u32 = high - low
@@ -85,11 +85,11 @@ test_range: (choices: [*]TestChoices, data: []u8, low: u32, high: u32): u32 {
 
 // Bounded discrete-event simulator. The caller owns event storage and the
 // model/production state. Each successful next removes one enabled event.
-SimClock: type = struct { now: u64 }
-SimEvent: type = struct { at: u64, kind: u32, value: u32 }
-SimQueue: type = struct { count: u32 }
+pub SimClock: type = struct { now: u64 }
+pub SimEvent: type = struct { at: u64, kind: u32, value: u32 }
+pub SimQueue: type = struct { count: u32 }
 
-sim_schedule: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, event: SimEvent): Bool {
+pub sim_schedule: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, event: SimEvent): Bool {
   assert(len(queue) == u32(1))
   assert(len(clock) == u32(1))
   assert(queue[0].count <= len(events))
@@ -103,7 +103,7 @@ sim_schedule: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, even
 
 // Advance only to the earliest timestamp. A choice controls ordering among
 // simultaneous events; the model chooses which faults/actions are legal.
-sim_next: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, choices: [*]TestChoices, data: []u8): SimEvent {
+pub sim_next: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, choices: [*]TestChoices, data: []u8): SimEvent {
   assert(len(queue) == u32(1))
   assert(len(clock) == u32(1))
   count: u32 = queue[0].count

@@ -86,6 +86,13 @@ const (
 	// another package: methods are declared where their type is declared
 	// (the orphan rule, section 6.5).
 	CodeMethodOrphan = "OAK-M0114"
+	// CodeGenericPackageArity rejects importing a generic package without
+	// arguments, a non-generic package with arguments, or with the wrong
+	// number of arguments (section 6.7).
+	CodeGenericPackageArity = "OAK-M0301"
+	// CodeGenericPackageArgument rejects an instantiation argument the
+	// loader cannot resolve to a type or constant.
+	CodeGenericPackageArgument = "OAK-M0302"
 )
 
 // ModuleInfo is what elaboration hands the later phases.
@@ -99,9 +106,12 @@ type ModuleInfo struct {
 	// Obligations are the sealed-import member types the type checker must
 	// verify after checking the program.
 	Obligations []typechecker.SignatureObligation
-	// SealedOpaque maps an internal type name to the packages (root "")
-	// that sealed it as an abstract type member.
+	// SealedOpaque maps an internal type name to the packages that sealed
+	// it as an abstract type member.
 	SealedOpaque map[string]map[string]bool
+	// Abstract maps each fresh abstract type (one per sealed binding and
+	// type member) to the internal name of its underlying type.
+	Abstract map[string]string
 	// Packages lists the loaded package paths in compile order (root last).
 	Packages []string
 }
@@ -124,11 +134,31 @@ type importBinding struct {
 	Statement *ast.ImportStatement
 	File      string
 	Used      bool
+	// Selective lists the unqualified names of `{ f, g } := import(path)`.
+	Selective []*ast.Identifier
+	// Arguments instantiate a generic package; Template is the generic
+	// package's path when Path names an instance.
+	Arguments []ast.Expression
+	Template  string
 	// resolved signature members (nil when unsealed)
 	sig      *modules.Signature
 	sigOrder []string
 	sigKinds map[string]modules.MemberKind
 	shape    *ast.RecordLiteral
+	// abstract type members: source name -> fresh internal type name
+	abstractNames map[string]string
+	// value members whose signature mentions abstract members: coercions
+	// to insert at call sites (parameter positions and result)
+	coerce map[string]*memberCoercion
+}
+
+// memberCoercion records where a sealed value member's signature uses
+// abstract type members: params[i] and result name the fresh type or "".
+type memberCoercion struct {
+	params []string
+	result string
+	// value is the fresh type of a non-function member of abstract type.
+	value string
 }
 
 type loadedPackage struct {
@@ -143,7 +173,12 @@ type loadedPackage struct {
 	Renames map[string]string
 	// IsView marks a standard library package view (section 9): flat
 	// prelude declarations exposed under a qualifier, never renamed.
-	IsView    bool
+	IsView bool
+	// TemplatePath is the generic package's import path when this package
+	// is an instantiation (Path carries the arguments after '@').
+	TemplatePath string
+	// Selective maps unqualified selective-import names to their binding.
+	Selective map[string]*importBinding
 	Bootstrap map[string]*ast.ImportStatement
 	// statements after elaboration, in source order across files
 	Statements []ast.Statement
@@ -164,6 +199,7 @@ type moduleLoader struct {
 	nextFileID  source.ID
 	opaque      map[string]string
 	sealed      map[string]map[string]bool
+	abstract    map[string]string
 	obligations []typechecker.SignatureObligation
 }
 
@@ -197,6 +233,7 @@ func (comp Compilation) parsePackageBuild() (*SyntaxTree, error) {
 		packages: map[string]*loadedPackage{},
 		opaque:   map[string]string{},
 		sealed:   map[string]map[string]bool{},
+		abstract: map[string]string{},
 	}
 	if loader.cache == "" {
 		loader.cache = os.Getenv("OAKMODCACHE")
@@ -469,17 +506,26 @@ func (l *moduleLoader) parseFile(path, text string) (*packageFile, bool) {
 // loadPackage reads a package directory, checks its clause and imports, and
 // recursively loads what it imports. It returns nil after reporting.
 func (l *moduleLoader) loadPackage(dir, path string, isRoot bool) *loadedPackage {
+	return l.loadPackageInstance(dir, path, path, nil, nil, isRoot)
+}
+
+// loadPackageInstance loads a package directory as the package `path`; when
+// arguments are given, `template` is the generic package's path and the
+// files are instantiated by substituting its parameters (section 6.7).
+func (l *moduleLoader) loadPackageInstance(dir, path, template string, arguments []ast.Expression, importer *importBinding, isRoot bool) *loadedPackage {
 	if existing, loaded := l.packages[path]; loaded {
 		return existing
 	}
 	pkg := &loadedPackage{
-		Path:      path,
-		Dir:       dir,
-		IsRoot:    isRoot,
-		Imports:   map[string]*importBinding{},
-		Exports:   modules.Exports{},
-		Renames:   map[string]string{},
-		Bootstrap: map[string]*ast.ImportStatement{},
+		Path:         path,
+		Dir:          dir,
+		IsRoot:       isRoot,
+		TemplatePath: template,
+		Imports:      map[string]*importBinding{},
+		Selective:    map[string]*importBinding{},
+		Exports:      modules.Exports{},
+		Renames:      map[string]string{},
+		Bootstrap:    map[string]*ast.ImportStatement{},
 	}
 	// Register before recursing so cycles terminate; Order reports them.
 	l.packages[path] = pkg
@@ -522,6 +568,9 @@ func (l *moduleLoader) loadPackage(dir, path string, isRoot bool) *loadedPackage
 	if !ok {
 		return nil
 	}
+	if !l.instantiate(pkg, arguments, importer) {
+		return nil
+	}
 	if !l.checkPackageClause(pkg) {
 		return nil
 	}
@@ -535,6 +584,15 @@ func (l *moduleLoader) loadPackage(dir, path string, isRoot bool) *loadedPackage
 			continue
 		}
 		if _, loaded := l.packages[binding.Path]; loaded {
+			continue
+		}
+		if len(binding.Arguments) != 0 {
+			depDir, found := l.resolveImportDir(binding.Template)
+			if !found {
+				l.reportAt(CodeImportUnresolvable, binding.File, binding.Statement, "cannot resolve import %q", binding.Template)
+				continue
+			}
+			l.loadPackageInstance(depDir, binding.Path, binding.Template, binding.Arguments, binding, false)
 			continue
 		}
 		if viewSource, isView := stdlib.Packages[binding.Path]; isView {
@@ -627,8 +685,8 @@ func (l *moduleLoader) checkPackageClause(pkg *loadedPackage) bool {
 	if !ok {
 		return false
 	}
-	if !pkg.IsRoot && pkg.Name != modules.LastSegment(pkg.Path) {
-		l.reportAt(CodePackageClause, pkg.Files[0].Path, pkg.Files[0].Root.Statements[0], "package %q must be named after its import path segment %q (import path %s)", pkg.Name, modules.LastSegment(pkg.Path), pkg.Path)
+	if !pkg.IsRoot && pkg.Name != modules.LastSegment(pkg.TemplatePath) {
+		l.reportAt(CodePackageClause, pkg.Files[0].Path, pkg.Files[0].Root.Statements[0], "package %q must be named after its import path segment %q (import path %s)", pkg.Name, modules.LastSegment(pkg.TemplatePath), pkg.TemplatePath)
 		return false
 	}
 	if !pkg.IsRoot && pkg.Name == "main" {
@@ -667,11 +725,11 @@ func (l *moduleLoader) loadStdlibView(path, text string) *loadedPackage {
 		Bootstrap: map[string]*ast.ImportStatement{},
 	}
 	for _, stmt := range tree.Root.Statements {
-		name, kind, _, _, _ := declarationMember(stmt)
+		name, kind, exported, opaque, _ := declarationMember(stmt)
 		if name == "" {
 			continue
 		}
-		pkg.Exports[name] = modules.Member{Name: name, Kind: kind, Exported: true}
+		pkg.Exports[name] = modules.Member{Name: name, Kind: kind, Exported: exported, Opaque: opaque}
 	}
 	l.packages[path] = pkg
 	return pkg
@@ -779,6 +837,43 @@ func (l *moduleLoader) collectImports(pkg *loadedPackage) bool {
 				pkg.Bootstrap[path] = imp
 				continue
 			}
+			if len(imp.Names) != 0 {
+				if imp.Signature != nil {
+					l.reportAt(CodeImportPlacement, file.Path, imp, "a selective import cannot be sealed")
+					ok = false
+					continue
+				}
+				binding := &importBinding{Path: path, Template: path, Statement: imp, File: file.Path, Selective: imp.Names, Arguments: imp.Arguments}
+				if len(imp.Arguments) != 0 {
+					binding.Path = l.instancePath(pkg, imp.Path.Value, imp.Arguments, file, imp)
+				}
+				for _, name := range imp.Names {
+					if modules.Reserved(name.Value) {
+						l.reportAt(CodeReservedIdentifier, file.Path, name, "identifier %q contains the reserved sequence __", name.Value)
+						ok = false
+						continue
+					}
+					if _, declared := pkg.Exports[name.Value]; declared {
+						l.reportAt(CodeImportAlias, file.Path, name, "selective import %q collides with a package-level declaration", name.Value)
+						ok = false
+						continue
+					}
+					if _, dup := pkg.Selective[name.Value]; dup {
+						l.reportAt(CodeImportAlias, file.Path, name, "selective import %q is bound twice", name.Value)
+						ok = false
+						continue
+					}
+					if _, isAlias := pkg.Imports[name.Value]; isAlias {
+						l.reportAt(CodeImportAlias, file.Path, name, "selective import %q collides with an import alias", name.Value)
+						ok = false
+						continue
+					}
+					pkg.Selective[name.Value] = binding
+				}
+				pkg.Imports["{"+binding.Path] = binding
+				pkg.Edges = append(pkg.Edges, binding.Path)
+				continue
+			}
 			alias := modules.LastSegment(path)
 			if imp.Alias != nil {
 				alias = imp.Alias.Value
@@ -813,8 +908,17 @@ func (l *moduleLoader) collectImports(pkg *loadedPackage) bool {
 				}
 				continue
 			}
-			pkg.Imports[alias] = &importBinding{Alias: alias, Path: path, Signature: imp.Signature, Statement: imp, File: file.Path}
-			pkg.Edges = append(pkg.Edges, path)
+			binding := &importBinding{Alias: alias, Path: path, Template: path, Signature: imp.Signature, Statement: imp, File: file.Path, Arguments: imp.Arguments}
+			if len(imp.Arguments) != 0 {
+				binding.Path = l.instancePath(pkg, imp.Path.Value, imp.Arguments, file, imp)
+			}
+			if _, selective := pkg.Selective[alias]; selective {
+				l.reportAt(CodeImportAlias, file.Path, imp, "import alias %q collides with a selective import", alias)
+				ok = false
+				continue
+			}
+			pkg.Imports[alias] = binding
+			pkg.Edges = append(pkg.Edges, binding.Path)
 		}
 	}
 	sort.Strings(pkg.Edges)
@@ -856,30 +960,52 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 	for _, alias := range sortedAliases(pkg.Imports) {
 		l.prepareSignature(pkg, pkg.Imports[alias])
 	}
+	// Selective imports bind unqualified names through the same lookup.
+	for name, binding := range pkg.Selective {
+		target := l.packages[binding.Path]
+		if target == nil {
+			continue
+		}
+		internal := l.resolveMember(pkg, nil, binding, name, binding.Statement)
+		pkg.Renames[name] = internal
+	}
 	for _, file := range pkg.Files {
 		visitor := &syntaxVisitor{
 			expr: func(slot reflect.Value) {
-				access, isAccess := slot.Interface().(*ast.IndexExpression)
-				if !isAccess || !access.Dot {
-					return
+				switch node := slot.Interface().(type) {
+				case *ast.InvocationExpression:
+					if replacement := l.rewriteSealedCall(pkg, file, node); replacement != nil {
+						slot.Set(reflect.ValueOf(ast.Expression(replacement)))
+					}
+				case *ast.IndexExpression:
+					if !node.Dot {
+						return
+					}
+					base, isIdent := node.Left.(*ast.Identifier)
+					if !isIdent {
+						return
+					}
+					binding := pkg.Imports[base.Value]
+					if binding == nil {
+						return
+					}
+					member, isMember := node.Index.(*ast.Identifier)
+					if !isMember {
+						return
+					}
+					binding.Used = true
+					internal := l.resolveMember(pkg, file, binding, member.Value, node)
+					replacement := &ast.Identifier{Token: base.Token, Value: internal}
+					replacement.Token.Literal = internal
+					if coercion := binding.coerce[member.Value]; coercion != nil {
+						if coercion.value != "" {
+							slot.Set(reflect.ValueOf(ast.Expression(coerceCall("__abstract_"+coercion.value, base.Token, replacement))))
+							return
+						}
+						l.reportAt(CodeSignatureMismatch, file.Path, node, "%s.%s uses abstract types in its signature and must be called directly", binding.Alias, member.Value)
+					}
+					slot.Set(reflect.ValueOf(ast.Expression(replacement)))
 				}
-				base, isIdent := access.Left.(*ast.Identifier)
-				if !isIdent {
-					return
-				}
-				binding := pkg.Imports[base.Value]
-				if binding == nil {
-					return
-				}
-				member, isMember := access.Index.(*ast.Identifier)
-				if !isMember {
-					return
-				}
-				binding.Used = true
-				internal := l.resolveMember(pkg, file, binding, member.Value, access)
-				replacement := &ast.Identifier{Token: base.Token, Value: internal}
-				replacement.Token.Literal = internal
-				slot.Set(reflect.ValueOf(ast.Expression(replacement)))
 			},
 			ident: func(id *ast.Identifier, label bool) {
 				if label {
@@ -897,6 +1023,9 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 					d.AddNote("import aliases are package-scoped names and cannot be redeclared or passed around")
 					return
 				}
+				if binding := pkg.Selective[id.Value]; binding != nil {
+					binding.Used = true
+				}
 				if internal, renamed := pkg.Renames[id.Value]; renamed {
 					id.Value = internal
 				}
@@ -912,10 +1041,11 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 		}
 		l.collectObligations(pkg, binding)
 	}
-	if !pkg.IsRoot {
-		for _, file := range pkg.Files {
-			stampSemanticContext(reflect.ValueOf(file.Root), pkg.Path)
-		}
+	// Every token records its package and file: position-keyed resolution
+	// records stay distinct across packages, the checker reads the owning
+	// package back for opacity, and diagnostics name the file (section 7).
+	for _, file := range pkg.Files {
+		stampSemanticContext(reflect.ValueOf(file.Root), pkg.Path+"#"+file.Path)
 	}
 	for _, file := range pkg.Files {
 		for _, stmt := range file.Root.Statements {
@@ -1013,17 +1143,76 @@ func (l *moduleLoader) resolveMember(pkg *loadedPackage, file *packageFile, bind
 			// Tag schemas are looked up by label program-wide (section 7).
 			return member
 		}
+		if fresh, abstract := binding.abstractNames[member]; abstract {
+			// A sealed `Name: type` member is a fresh abstract type.
+			return fresh
+		}
 		return internal
 	case modules.NotInSignature:
-		d := l.reportAt(CodeSignatureMismatch, file.Path, node, "%s.%s is outside the signature %s was sealed with", binding.Alias, member, binding.Alias)
+		d := l.reportAt(CodeSignatureMismatch, fileName(file, binding), node, "%s.%s is outside the signature %s was sealed with", binding.Alias, member, binding.Alias)
 		d.AddNote("a sealed import exposes exactly the members its signature lists")
 	case modules.NoSuchMember:
-		l.reportAt(CodeNoSuchMember, file.Path, node, "package %s has no member %s", binding.Path, member)
+		l.reportAt(CodeNoSuchMember, fileName(file, binding), node, "package %s has no member %s", binding.Template, member)
 	case modules.NotExported:
-		d := l.reportAt(CodeMemberNotExported, file.Path, node, "%s is not exported by package %s", member, binding.Path)
-		d.AddHelp(fmt.Sprintf("mark the declaration pub in package %s to export it", binding.Path))
+		d := l.reportAt(CodeMemberNotExported, fileName(file, binding), node, "%s is not exported by package %s", member, binding.Template)
+		d.AddHelp(fmt.Sprintf("mark the declaration pub in package %s to export it", binding.Template))
 	}
 	return internal
+}
+
+func fileName(file *packageFile, binding *importBinding) string {
+	if file != nil {
+		return file.Path
+	}
+	return binding.File
+}
+
+// coerceCall wraps expr in a compiler-only coercion builtin between a fresh
+// abstract type and its underlying type (typechecker/modules.go).
+func coerceCall(builtin string, tok token.Token, expr ast.Expression) ast.Expression {
+	callee := &ast.Identifier{Token: tok, Value: builtin}
+	callee.Token.Literal = builtin
+	return &ast.InvocationExpression{Token: tok, Function: callee, Arguments: []ast.Expression{expr}}
+}
+
+// rewriteSealedCall rewrites `alias.member(args)` through a sealed import
+// whose member signature mentions abstract type members: arguments in
+// abstract positions are unwrapped to the underlying type and an abstract
+// result is wrapped, so the fresh type is introduced and eliminated only at
+// the sealed boundary (section 6.3).
+func (l *moduleLoader) rewriteSealedCall(pkg *loadedPackage, file *packageFile, call *ast.InvocationExpression) ast.Expression {
+	access, isAccess := call.Function.(*ast.IndexExpression)
+	if !isAccess || !access.Dot {
+		return nil
+	}
+	base, isIdent := access.Left.(*ast.Identifier)
+	member, isMember := access.Index.(*ast.Identifier)
+	if !isIdent || !isMember {
+		return nil
+	}
+	binding := pkg.Imports[base.Value]
+	if binding == nil || binding.coerce == nil {
+		return nil
+	}
+	coercion := binding.coerce[member.Value]
+	if coercion == nil || coercion.value != "" {
+		return nil
+	}
+	binding.Used = true
+	internal := l.resolveMember(pkg, file, binding, member.Value, access)
+	callee := &ast.Identifier{Token: base.Token, Value: internal}
+	callee.Token.Literal = internal
+	rewritten := &ast.InvocationExpression{BaseNode: call.BaseNode, Token: call.Token, Function: callee}
+	for i, arg := range call.Arguments {
+		if i < len(coercion.params) && coercion.params[i] != "" {
+			arg = coerceCall("__concrete_"+coercion.params[i], base.Token, arg)
+		}
+		rewritten.Arguments = append(rewritten.Arguments, arg)
+	}
+	if coercion.result != "" {
+		return coerceCall("__abstract_"+coercion.result, base.Token, rewritten)
+	}
+	return rewritten
 }
 
 // prepareSignature resolves a sealed import's signature shape (inline, a
@@ -1045,11 +1234,10 @@ func (l *moduleLoader) prepareSignature(pkg *loadedPackage, binding *importBindi
 	}
 	binding.shape = shape
 	binding.sigKinds = map[string]modules.MemberKind{}
+	binding.abstractNames = map[string]string{}
+	binding.coerce = map[string]*memberCoercion{}
 	typeMembers := map[string]string{}
 	usingKey := pkg.Path
-	if pkg.IsRoot {
-		usingKey = ""
-	}
 	for _, field := range shape.FieldOrder {
 		binding.sigOrder = append(binding.sigOrder, field.Name)
 		if ident, isIdent := field.Value.(*ast.Identifier); isIdent && ident.Value == "type" {
@@ -1059,13 +1247,55 @@ func (l *moduleLoader) prepareSignature(pkg *loadedPackage, binding *importBindi
 				internal = field.Name
 			}
 			typeMembers[field.Name] = internal
-			if l.sealed[internal] == nil {
-				l.sealed[internal] = map[string]bool{}
+			if field.Manifest != nil {
+				// `Key: type = T`: shared, transparent; T must be the
+				// package's definition (checked by the type checker).
+				l.obligations = append(l.obligations, typechecker.SignatureObligation{
+					Internal: internal, Member: binding.Alias + "." + field.Name, Type: field.Manifest, Node: binding.Statement, TypeMember: true,
+				})
+				continue
 			}
-			l.sealed[internal][usingKey] = true
+			// An abstract member is a fresh nominal type for this binding;
+			// its definition is unreachable here (sealed opacity).
+			fresh := modules.Mangle(pkg.Path+"@"+binding.Alias, field.Name)
+			binding.abstractNames[field.Name] = fresh
+			l.abstract[fresh] = internal
+			if l.sealed[fresh] == nil {
+				l.sealed[fresh] = map[string]bool{}
+			}
+			l.sealed[fresh][usingKey] = true
 			continue
 		}
 		binding.sigKinds[field.Name] = modules.KindValue
+	}
+	// Value members mentioning abstract members need boundary coercions.
+	for _, field := range shape.FieldOrder {
+		if binding.sigKinds[field.Name] != modules.KindValue {
+			continue
+		}
+		abstractOf := func(expr ast.Expression) string {
+			if ident, isIdent := expr.(*ast.Identifier); isIdent {
+				return binding.abstractNames[ident.Value]
+			}
+			return ""
+		}
+		switch t := field.Value.(type) {
+		case *ast.FunctionTypeExpression:
+			coercion := &memberCoercion{result: abstractOf(t.Return)}
+			mentions := coercion.result != ""
+			for _, param := range t.Parameters {
+				fresh := abstractOf(param)
+				mentions = mentions || fresh != ""
+				coercion.params = append(coercion.params, fresh)
+			}
+			if mentions {
+				binding.coerce[field.Name] = coercion
+			}
+		default:
+			if fresh := abstractOf(field.Value); fresh != "" {
+				binding.coerce[field.Name] = &memberCoercion{value: fresh}
+			}
+		}
 	}
 	binding.sig = &modules.Signature{Members: binding.sigKinds}
 	problems := modules.Conforms(target.Exports, *binding.sig, binding.sigOrder)
@@ -1221,7 +1451,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	}
 	program.Statements = append(program.Statements, root.Statements...)
 	public := &ast.Program{Statements: append([]ast.Statement(nil), root.Statements...)}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Obligations: l.obligations, Packages: order}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Packages: order}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,
@@ -1322,4 +1552,185 @@ func isLabelSlot(t reflect.Type, field string, v reflect.Value) bool {
 		return field == "Name" && !v.FieldByName("Receiver").IsNil()
 	}
 	return false
+}
+
+// instancePath is the identity of a generic package instantiation: the
+// template path, '@', and the resolved argument atoms joined by ','. Import
+// paths contain no '@' and atoms no ',', so the identity decodes uniquely
+// and mangles injectively (section 6.7).
+func (l *moduleLoader) instancePath(pkg *loadedPackage, template string, arguments []ast.Expression, file *packageFile, node ast.Node) string {
+	atoms := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		atom, ok := l.argumentAtom(pkg, argument)
+		if !ok {
+			l.reportAt(CodeGenericPackageArgument, file.Path, node, "instantiation argument %s is not a primitive type, an integer constant, a declared type, or an imported type", argument.String())
+			atom = "?"
+		}
+		atoms = append(atoms, atom)
+	}
+	return template + "@" + strings.Join(atoms, ",")
+}
+
+// argumentAtom resolves an instantiation argument as the importer would
+// resolve it: primitives and constants stand for themselves, the importer's
+// own types and imported types become their internal names.
+func (l *moduleLoader) argumentAtom(pkg *loadedPackage, argument ast.Expression) (string, bool) {
+	switch a := argument.(type) {
+	case *ast.IntegerLiteral:
+		return fmt.Sprintf("%d", a.Value), true
+	case *ast.Identifier:
+		if primitiveTypeNames[a.Value] {
+			return a.Value, true
+		}
+		if library, member, qualified := splitDotted(a.Value); qualified {
+			binding := pkg.Imports[library]
+			if binding == nil {
+				return "", false
+			}
+			binding.Used = true
+			if bootstrapImports[binding.Path] {
+				return member, true
+			}
+			if _, isView := stdlib.Packages[binding.Path]; isView {
+				return member, true
+			}
+			return modules.Mangle(binding.Path, member), true
+		}
+		if member, declared := pkg.Exports[a.Value]; declared && member.Kind == modules.KindType {
+			if pkg.IsRoot {
+				return a.Value, true
+			}
+			return modules.Mangle(pkg.Path, a.Value), true
+		}
+		if internal, renamed := pkg.Renames[a.Value]; renamed {
+			return internal, true
+		}
+	case *ast.IndexExpression:
+		if a.Dot {
+			return "", false
+		}
+		left, ok := l.argumentAtom(pkg, a.Left)
+		if !ok {
+			return "", false
+		}
+		right, ok := l.argumentAtom(pkg, a.Index)
+		if !ok {
+			return "", false
+		}
+		return left + "_" + right, true
+	}
+	return "", false
+}
+
+var primitiveTypeNames = map[string]bool{
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"u8": true, "u16": true, "u32": true, "u64": true,
+	"int": true, "uint": true, "ptr": true, "uptr": true,
+	"byte": true, "rune": true, "Bool": true, "string": true,
+}
+
+// instantiate substitutes a generic package's parameters with the import's
+// arguments (or checks that a non-generic package received none).
+func (l *moduleLoader) instantiate(pkg *loadedPackage, arguments []ast.Expression, importer *importBinding) bool {
+	var params []*ast.TypeParameter
+	var clause *ast.PackageStatement
+	for _, file := range pkg.Files {
+		if len(file.Root.Statements) == 0 {
+			continue
+		}
+		if c, ok := file.Root.Statements[0].(*ast.PackageStatement); ok && len(c.TypeParams) != 0 {
+			if clause != nil && len(c.TypeParams) != len(clause.TypeParams) {
+				l.reportAt(CodeGenericPackageArity, file.Path, c, "package parameter lists disagree between files")
+				return false
+			}
+			clause, params = c, c.TypeParams
+		}
+	}
+	if len(params) == 0 && len(arguments) == 0 {
+		return true
+	}
+	if importer == nil {
+		l.reportAt(CodeGenericPackageArity, pkg.Files[0].Path, clause, "generic package %s cannot be the root of a build", pkg.TemplatePath)
+		return false
+	}
+	if len(params) != len(arguments) {
+		l.reportAt(CodeGenericPackageArity, importer.File, importer.Statement, "package %s takes %d parameters but the import supplies %d arguments", pkg.TemplatePath, len(params), len(arguments))
+		return false
+	}
+	bindings := map[string]ast.Expression{}
+	for i, param := range params {
+		if param.Name == nil {
+			return false
+		}
+		bindings[param.Name.Value] = arguments[i]
+	}
+	// Arguments are spelled in the importer; resolve them to what the
+	// importer's own elaboration would produce so the instance and its
+	// importer agree on every name.
+	resolved := map[string]ast.Expression{}
+	for name, argument := range bindings {
+		resolved[name] = l.resolvedArgument(importer, argument)
+	}
+	for _, file := range pkg.Files {
+		for _, stmt := range file.Root.Statements {
+			if c, ok := stmt.(*ast.PackageStatement); ok {
+				c.TypeParams = nil
+			}
+		}
+		(&syntaxVisitor{
+			expr: func(slot reflect.Value) {
+				if ident, isIdent := slot.Interface().(*ast.Identifier); isIdent {
+					if argument, bound := resolved[ident.Value]; bound {
+						clone := cloneSyntax(reflect.ValueOf(argument)).Interface().(ast.Expression)
+						slot.Set(reflect.ValueOf(clone))
+					}
+				}
+			},
+			ident: func(id *ast.Identifier, label bool) {
+				if label {
+					return
+				}
+				if argument, bound := resolved[id.Value]; bound {
+					if argIdent, isIdent := argument.(*ast.Identifier); isIdent {
+						id.Value = argIdent.Value
+					} else if lit, isLit := argument.(*ast.IntegerLiteral); isLit {
+						id.Value = fmt.Sprintf("%d", lit.Value)
+					} else {
+						l.reportAt(CodeGenericPackageArgument, file.Path, id, "parameter %s is used where only a type name can appear, but the argument %s is not a name", id.Value, argument.String())
+					}
+				}
+			},
+		}).walk(reflect.ValueOf(file.Root), false)
+	}
+	return true
+}
+
+// resolvedArgument rewrites an instantiation argument into the importer's
+// resolved spelling (internal names for its own and imported types).
+func (l *moduleLoader) resolvedArgument(importer *importBinding, argument ast.Expression) ast.Expression {
+	pkg := l.packageOfBinding(importer)
+	if pkg == nil {
+		return argument
+	}
+	clone := cloneSyntax(reflect.ValueOf(argument)).Interface().(ast.Expression)
+	(&syntaxVisitor{ident: func(id *ast.Identifier, label bool) {
+		if label {
+			return
+		}
+		if atom, ok := l.argumentAtom(pkg, id); ok {
+			id.Value = atom
+		}
+	}}).walk(reflect.ValueOf(&clone).Elem(), false)
+	return clone
+}
+
+func (l *moduleLoader) packageOfBinding(binding *importBinding) *loadedPackage {
+	for _, pkg := range l.packages {
+		for _, candidate := range pkg.Imports {
+			if candidate == binding {
+				return pkg
+			}
+		}
+	}
+	return nil
 }

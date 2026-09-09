@@ -498,6 +498,7 @@ type TypeChecker struct {
 	opaqueTypes             map[string]string
 	packagePaths            map[string]bool
 	sealedOpaque            map[string]map[string]bool
+	abstractTypes           map[string]string
 	adtPayloadTypes         map[string]map[string]Type
 	monomorphicTransactions [][]Substitution
 	diagnostics             *diagnostic.DiagnosticCollector
@@ -528,6 +529,7 @@ type TypeChecker struct {
 	// (typechecker/genericfn.go).
 	globalEnv                  *TypeEnvironment
 	layoutQueries              map[string]LayoutQuery
+	checkingSpecialization     bool
 	asmBackedFunctions         map[string]bool
 	functionTemplates          map[string]*ast.FunctionStatement
 	functionInstantiations     map[string]*ast.FunctionStatement
@@ -722,6 +724,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.checkStatement(stmt)
 		}
 	}
+	// Fresh abstract types of sealed imports take their identity from the
+	// declarations just resolved (typechecker/modules.go).
+	tc.registerAbstractTypes()
 	// The global scope is the closure of top-level declarations; template
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
@@ -1585,6 +1590,9 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if atomicType, recognized := tc.checkAtomicInvocation(ident.Value, expr); recognized {
 			return atomicType
 		}
+		if coerced, recognized := tc.checkAbstractCoercion(ident.Value, expr); recognized {
+			return coerced
+		}
 	}
 	// Compiler-known library calls: c conversions, misplaced c.extern, and
 	// arm64 instruction functions (docs/spec/92-ffi.md).
@@ -1787,6 +1795,16 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		tc.checkFunctionConstraintBindings(funcScheme, bindings, expr)
 		if len(tc.Errors()) != before {
 			validCall = false
+		}
+	}
+
+	// A satisfied call to a constrained generic specializes it for emission
+	// and is rewritten to the instantiation (typechecker/genericfn.go).
+	if validCall && funcScheme != nil && len(funcScheme.Constraints) > 0 {
+		if funcIdent, ok := expr.Function.(*ast.Identifier); ok {
+			if template, isTemplate := tc.functionTemplates[funcIdent.Value]; isTemplate {
+				tc.specializeConstrainedCall(expr, template, funcScheme, bindings)
+			}
 		}
 	}
 
@@ -3251,6 +3269,14 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		tc.registerFunctionTemplate(stmt)
 		return
 	}
+	// A CONSTRAINED generic function keeps the contract path below — its
+	// body is checked once against the constraint (a field outside the
+	// contract is a declaration-time error) and every call checks its
+	// argument (OAK-T0104) — and is additionally a template: each satisfied
+	// call specializes it for emission (typechecker/genericfn.go).
+	if len(stmt.TypeParams) > 0 && stmt.Receiver == nil {
+		tc.registerFunctionTemplate(stmt)
+	}
 
 	// Extract type parameters and constraints
 	typeVars := []string{}
@@ -3302,8 +3328,11 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	paramTypes := []Type{}
 	paramNames := make(map[string]bool)
 	for _, param := range stmt.Parameters {
-		// Check for shadowing: parameter name must not conflict with outer scope or other parameters
-		if _, exists := tc.env.Get(param.Name.Value); exists {
+		// Check for shadowing: parameter name must not conflict with outer scope or other parameters.
+		// A specialization re-checks a template body that already passed
+		// this rule in its own declaration scope; globals declared between
+		// the template and the instantiating call are not shadowing.
+		if _, exists := tc.env.Get(param.Name.Value); exists && !tc.checkingSpecialization {
 			tc.addError(param.Name, "parameter '%s' already declared in outer scope; Oak does not allow shadowing", param.Name.Value)
 			return
 		}

@@ -20,6 +20,7 @@ type CodeGenerator struct {
 	packageName      string
 	sourceFile       string // Source file path for source location comments
 	sourceText       string // Full source text for UTF-8 to UTF-16 conversion
+	abstractAliases  map[string]string
 	sourceIndex      *lsp.PositionIndex
 	output           strings.Builder
 	indentLevel      int
@@ -2053,6 +2054,14 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(")")
 		}
 	case *ast.InvocationExpression:
+		// Sealed-boundary coercions are identities: the fresh abstract type is
+		// a typedef alias of its underlying type (docs/spec/83-modules.md
+		// section 6.3).
+		if callee, ok := e.Function.(*ast.Identifier); ok && len(e.Arguments) == 1 &&
+			(strings.HasPrefix(callee.Value, "__abstract_") || strings.HasPrefix(callee.Value, "__concrete_")) {
+			cg.emitExpressionFragment(e.Arguments[0], tc)
+			return
+		}
 		if accessor, ok := e.Function.(*ast.FieldAccessorExpression); ok && len(e.Arguments) == 1 {
 			cg.output.WriteString("( ")
 			cg.emitExpressionFragment(e.Arguments[0], tc)
@@ -3131,4 +3140,27 @@ func (cg *CodeGenerator) inferLocalType(value ast.Expression) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// SetAbstractAliases records the fresh abstract types of sealed imports
+// (fresh internal name -> underlying internal name); each is emitted as a
+// typedef alias of its underlying C type after the types.
+func (cg *CodeGenerator) SetAbstractAliases(aliases map[string]string) {
+	cg.abstractAliases = aliases
+}
+
+func (cg *CodeGenerator) emitAbstractAliases() {
+	if len(cg.abstractAliases) == 0 {
+		return
+	}
+	names := make([]string, 0, len(cg.abstractAliases))
+	for fresh := range cg.abstractAliases {
+		names = append(names, fresh)
+	}
+	sort.Strings(names)
+	cg.write("/* sealed abstract types: aliases of their underlying representation */\n")
+	for _, fresh := range names {
+		cg.write(fmt.Sprintf("typedef %s %s;\n", cg.cTypeName(cg.abstractAliases[fresh]), cg.cTypeName(fresh)))
+	}
+	cg.write("\n")
 }

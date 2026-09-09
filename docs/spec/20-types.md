@@ -314,9 +314,17 @@ functions terminate; generic functions calling generic functions
 re-resolve concretely inside the specialized body. Uninferable parameters
 demand explicit instantiation; unmangleable arguments fail closed.
 
-Constraint-carrying generics (`fn [T: Position] sum_xy(p: T)`) keep the
-structural constraint-checking path and its structured diagnostics
-(`OAK-T0104`); their monomorphization is the recorded next step.
+Constraint-carrying generics (`fn [T: Position] sum_xy(p: T)`,
+constraints being record shapes, interfaces, or intersections) take the
+same road with one addition: **the contract is checked at the
+declaration** — the body is validated once against the constraint, so
+reading a field the constraint does not grant is an error even if every
+caller happens to provide it — and **every call checks its argument**
+against the constraint (`OAK-T0104`, naming the inferred binding and the
+missing requirement). A call that satisfies the contract specializes the
+body exactly as an unconstrained call does, and the specialization is
+checked again with the concrete type before emission. Constrained and
+unconstrained templates are one mechanism with one emission path.
 
 ## 12. Formal obligations
 
