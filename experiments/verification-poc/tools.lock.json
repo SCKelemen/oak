@@ -22,11 +22,11 @@
   "tlc": {
     "version": "1.8.0",
     "source": "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar",
-    "sha256": "a1fc0bfe391d99fdd86f579a63ff68c0950010e9dde551f1192b867d5c8f4efd",
-    "note": "Mutable upstream prerelease. Explicitly refreshed from GitHub's published asset digest on 2026-09-09 after upstream rebuilt the v1.8.0 jar; the digest was also recomputed from a fresh download. Checksum verification remains mandatory.",
-    "asset_id": 551753628,
-    "asset_updated_at": "2026-09-09T01:52:26Z",
+    "sha256": "1a2d48d60fe1417e0d50f045da927221d83eb7be935fbd36eee11ac80f053621",
+    "note": "Mutable upstream prerelease: the v1.8.0 tla2tools.jar is rebuilt on upstream commits (three rebuilds on 2026-09-09). Explicitly refreshed from GitHub's published asset digest and recomputed from a fresh download; checksum verification remains mandatory. Moving to an immutable source (the v1.7.4 release asset or a vendored jar) would end this churn.",
+    "asset_id": 553004562,
+    "asset_updated_at": "2026-09-09T15:10:02Z",
     "source_commit": "b123b22654942bd7f8b1bcadcc47da4ee2cf4c0e",
-    "digest_source": "https://api.github.com/repos/tlaplus/tlaplus/releases/assets/551753628"
+    "digest_source": "https://api.github.com/repos/tlaplus/tlaplus/releases/assets/553004562"
   }
 }
