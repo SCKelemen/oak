@@ -341,6 +341,225 @@ body exactly as an unconstrained call does, and the specialization is
 checked again with the concrete type before emission. Constrained and
 unconstrained templates are one mechanism with one emission path.
 
+### 11.3 Floating-point types
+
+**Status: specified, not implemented.** This section is normative for the
+first floating-point increment; `STATUS.md` records it as S-only until the
+scanner, checker, interpreter, and C backend implement it together. It was
+motivated by the ml project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
+tier 2), whose numeric core cannot move into Oak without it.
+
+#### 11.3.1 Types
+
+| Type | IEEE 754 format | Role |
+| --- | --- | --- |
+| `f32` | binary32 | arithmetic type |
+| `f64` | binary64 | arithmetic type |
+| `f16` | binary16 | **storage** type |
+| `bf16` | bfloat16 (8 exponent bits, 7 fraction bits) | **storage** type |
+
+`f32` and `f64` support arithmetic, comparison, conversion, and the
+intrinsics of §11.3.5. `f16` and `bf16` support exactly four operations:
+load, store, widening to `f32` (`f32(x: f16)`, `f32(x: bf16)`, exact), and
+narrowing from `f32` (`f16_round_f32`, `bf16_round_f32`, round to nearest
+even). They have no arithmetic, no comparison, and no literals. This is the
+surface that half-precision device buffers and quantized inference need,
+and it keeps the arithmetic surface at two types.
+
+Floating-point types are machine types in the sense of this chapter: they
+are distinct from every integer type and from each other, they participate
+in records, arrays, views, spans, ADT payloads, and generic instantiation
+like any other scalar, and their layout is the IEEE interchange width
+(2, 4, or 8 bytes) with natural alignment.
+
+#### 11.3.2 Literals
+
+A floating-point literal has a fraction, an exponent, or both:
+
+```text
+1.5    2.0e-5    1e3    0x1.8p1    0x1p-126
+```
+
+Decimal literals are converted to the target format by correct rounding
+(round to nearest, ties to even) from the exact decimal value; hexadecimal
+literals (`0x` mantissa with `p` binary exponent, C99 §6.4.4.2) are exact
+when representable and otherwise correctly rounded. A literal never has a
+sign of its own; `-1.5` is unary minus applied to `1.5`.
+
+Like integer literals (`25-type-inference.md` §3a), a floating-point literal
+has no type of its own and takes the floating-point type its context
+requires: `x: f32 = 1.5`, `y = 2.0e-5` for `y: f64`, `scale * 0.5` for
+`scale: f32`. A floating-point literal in an integer context, or an integer
+literal in a floating-point context, is an error at the literal: `x: f32 = 1`
+is rejected and spelled `1.0`. A literal with no context at all is `f64`.
+A literal that overflows its target format (`x: f32 = 1e39`) is rejected;
+one that underflows rounds to a subnormal or zero by the same rule as any
+other value.
+
+#### 11.3.3 Semantics fixed in the specification
+
+Floating-point behavior is part of Oak's semantics, not of the backend's
+optimization level. The following hold in every backend, every profile, and
+the interpreter:
+
+- **Rounding.** Every arithmetic operation and conversion rounds to nearest,
+  ties to even. There is no way to change the rounding mode.
+- **Subnormals.** Subnormal values are produced and consumed exactly; no
+  flush-to-zero, no denormals-are-zero.
+- **No rewriting.** A backend may not reassociate, distribute, commute
+  across a rounding, or contract floating-point operations. `a * b + c` is
+  two roundings; the single-rounding form is spelled `fma(a, b, c)`.
+  `x / y` is never rewritten as `x * (1 / y)`; `x - x` is not `0`; `x * 0` is
+  not `0`; `x + 0.0` is not `x` (the sign of zero differs). This extends the
+  no-hidden-work rule of `90-backend.md` §3 to numeric semantics: the
+  written expression is the executed expression.
+- **Comparison.** `<`, `<=`, `>`, `>=` are false when either operand is NaN.
+  `==` is false and `!=` is true when either operand is NaN, so `x == x` is
+  the portable NaN test in expression form; `is_nan(x)` names it.
+  `+0.0 == -0.0` is true. Because `==` is not an equivalence relation on
+  floats, `derive.equal`, `derive.hash`, and `derive.compare`
+  (`83-modules.md` §6.6) are **not derivable** over a type containing a
+  floating-point field; the program writes the ordering it means
+  (`total_order(x, y)` below is the IEEE 754-2019 `totalOrder`).
+- **Exceptional results.** Division by zero, overflow, invalid operations,
+  and inexact results yield the IEEE default result — an infinity, a NaN, or
+  a rounded value. They never trap. Oak has no floating-point exception
+  flags; a program that needs to detect these conditions tests the result
+  (`is_finite`, `is_nan`).
+- **NaN payloads.** A NaN produced by an operation is a quiet NaN; the
+  payload and sign of an operation's NaN result are unspecified. Programs
+  observing NaN payloads through `f32_bits_u32` see *some* quiet NaN.
+  Everything else about the bit pattern of every non-NaN result is
+  determined.
+
+Consequently, two Oak programs computing the same sequence of operations of
+§11.3.5 produce bit-identical results on every conforming implementation.
+Only the transcendental library of §11.3.6 is allowed to differ, and it says
+by how much.
+
+#### 11.3.4 Conversions
+
+Widening between floating-point types is implicit and exact:
+`f64(x: f32)`, `f32(x: f16)`, `f32(x: bf16)`. Every other move is an
+explicit named conversion in the `{target}_{op}_{source}` scheme of §11.1;
+every operation is total:
+
+| Op | Pairs | Semantics |
+| --- | --- | --- |
+| `round` | `f32_round_f64`, `f16_round_f32`, `bf16_round_f32`; `fN_round_iM` for every integer type `iM`/`uM` | round to nearest even; integers not exactly representable round like any other value (`f32_round_i32(16777217)` is `16777216.0`) |
+| `bits` | `f32_bits_u32`, `u32_bits_f32`, `f64_bits_u64`, `u64_bits_f64`, `f16_bits_u16`, `u16_bits_f16`, `bf16_bits_u16`, `u16_bits_bf16` | bit-pattern reinterpretation, total in both directions; every bit pattern is a valid float |
+| `trunc` | `iM_trunc_fN`, `uM_trunc_fN` | toward zero; **traps** when the truncated value is outside the target range or the source is NaN |
+| `saturating` | `iM_saturating_fN`, `uM_saturating_fN` | toward zero, clamped to the target range; NaN yields `0` |
+| `checked` | `iM_checked_fN`, `uM_checked_fN` | `Result[target, Overflow]`; `Err(Overflow)` for out of range and for NaN |
+
+The integer constructor form `f32(x: i32)` is **not** provided, because it
+would be exact for some widths and rounding for others; the program spells
+the rounding (`f32_round_i32`). `f64_round_i32` and `f64_round_u32` happen
+to be exact for every input and are still spelled `round`, so the reader
+never has to know which pairs are lossless.
+
+`f32 ↔ c.Float` and `f64 ↔ c.Double` are the bit-preserving constructor
+rows already in `92-ffi.md` §2.2 and become implementable with this section.
+`f16` and `bf16` have no `c` counterpart; they cross the boundary as
+`u16` bit patterns.
+
+#### 11.3.5 Intrinsics under the three-witness rule
+
+The intrinsics below are **correctly rounded**: the result is the exact
+mathematical result rounded once by §11.3.3. Only correctly rounded
+operations can satisfy Oak's three-witness rule (`92-ffi.md` §3.1) — the
+interpreter, the target lowering, and the portable lowering must agree
+bit for bit — so this set is exactly the set that admits three equal
+witnesses.
+
+| Operation | Spelling | Notes |
+| --- | --- | --- |
+| add, sub, mul, div | `+ - * /` | operators; `%` is not defined on floats |
+| negate | `-x` | flips the sign bit, including of NaN and zero |
+| fused multiply-add | `fma(a, b, c)` | one rounding of `a * b + c` |
+| square root | `sqrt(x)` | `sqrt(-0.0)` is `-0.0`; negative input yields NaN |
+| absolute value, copy sign | `abs(x)`, `copysign(x, y)` | bit operations; total on NaN |
+| integer rounding | `floor(x)`, `ceil(x)`, `trunc(x)`, `round(x)` | `round` is ties away from zero (C `roundf`), `round_even(x)` is ties to even; results are floats |
+| minimum, maximum | `min(x, y)`, `max(x, y)` | IEEE 754-2019 `minimum`/`maximum`: a NaN operand yields NaN, and `-0.0` is less than `+0.0`. The 2008 `minNum`/`maxNum` behavior (NaN loses) is spelled `min_num`/`max_num` |
+| classification | `is_nan(x)`, `is_finite(x)`, `is_infinite(x)`, `is_normal(x)` | return `Bool`; total |
+| total order | `total_order(x, y)` | IEEE 754-2019 `totalOrder` as a `Bool`; the ordering `derive.compare` would otherwise need |
+
+Each intrinsic is generic over `f32` and `f64` and monomorphizes like
+§11.2; there are no `f16`/`bf16` forms. `Oak.Float` (Lean, planned with the
+implementation) states the correctly-rounded contract for each row and
+proves the algebraic laws that do hold — `neg` and `abs` are total bit
+operations, `copysign` composes, `min`/`max` are commutative on non-NaN
+inputs — and does not attempt to prove anything about a transcendental
+value.
+
+#### 11.3.6 Transcendentals: a fourth witness
+
+`exp`, `exp2`, `log`, `log2`, `pow`, `sin`, `cos`, `tan`, `tanh`, and their
+relatives are **not** intrinsics. They live in a `math` package of the
+standard library, and each function documents an error bound in ulps
+(units in the last place) relative to the correctly rounded result. The
+bound is part of the function's contract; a bound of 1 ulp is the target
+for the v1 library and no function ships without a stated bound.
+
+Their verification rule is the **fourth witness**: the interpreter, target
+lowering, and portable lowering are each compared to a correctly rounded
+reference (an arbitrary-precision evaluation in the test harness) and must
+lie within the documented bound. They are *not* required to agree with each
+other bit for bit, because libm implementations legitimately differ in the
+last place — the ml project observed one ulp of disagreement between two
+`exp2f` implementations linked into one process — and pretending otherwise
+would make the three-witness rule unsatisfiable. A program that needs
+bit-exact transcendental results across implementations must use one
+implementation (the `math` package's own, once it exists) and must not
+call through `c.extern` to a system libm for the same function.
+
+#### 11.3.7 Floating-point SIMD
+
+`93-simd.md` reserves `simd.F32x4` and `simd.F64x2`. With this section they
+acquire the operations `add sub mul div fma min max sqrt neg abs` (lane-wise,
+each lane obeying §11.3.3 and §11.3.5), `splat`, `load`, `store`,
+`extract_E(v, lane)`, `insert_E(v, lane, x)`, and the horizontal reduction
+`simd.reduce_add_E`. Because floating-point addition is not associative, the
+reduction's grouping is its semantics (`55-parallelism.md` §4, last option):
+`reduce_add_f32x4(v)` is `(v[0] + v[1]) + (v[2] + v[3])` and
+`reduce_add_f64x2(v)` is `v[0] + v[1]`, each `+` rounded by §11.3.3. A
+backend that has a horizontal-add instruction may use it only if the
+instruction produces exactly this grouping. Loads and stores trap on
+out-of-range offsets like the integer vectors.
+
+#### 11.3.8 Lowering and interpretation
+
+- **C backend.** `f32` lowers to `float` and `f64` to `double`; `f16` and
+  `bf16` lower to `uint16_t` storage with conversion helpers. Every emitted
+  translation unit begins with `#pragma STDC FP_CONTRACT OFF`, and the
+  `oak run`/`oak test` drivers pass `-ffp-contract=off` (and never
+  `-ffast-math`, `-Ofast`, `-ffinite-math-only`, or `-fno-signed-zeros`) to
+  the system compiler, so §11.3.3 holds through the C compiler as well.
+  Intrinsics lower to the C99 `<math.h>` functions that C99 §F.9 requires to
+  be correctly rounded or that are single instructions on every supported
+  target (`sqrtf`, `fmaf`, `fabsf`, `copysignf`, `floorf`, `ceilf`,
+  `truncf`, `roundf`, `rintf`); `min`/`max` lower to a branch-free helper
+  with the 2019 NaN semantics, because `fminf`/`fmaxf` implement the 2008
+  ones. Trapping `trunc` conversions lower to a range-checked helper, never
+  to C's undefined out-of-range cast.
+- **Interpreter.** Go's `float32`/`float64` arithmetic is correctly rounded
+  for the operator set and `math.Sqrt`, `math.FMA`, `math.Floor`, `math.Ceil`,
+  `math.Trunc`, `math.Round`, `math.RoundToEven`, `math.Copysign`, and
+  `math.Abs` are exact or correctly rounded, so the interpreter is a valid
+  first witness for every row of §11.3.5. `f32` intrinsics are evaluated in
+  `float32` (not via `float64` with a final narrowing, which double-rounds);
+  `fma` on `f32` uses the exact `math.FMA` on widened operands, which is
+  correct because a binary64 product of two binary32 values is exact.
+- **Assembler.** The typed assembler (`94-assembler.md`) does not gain
+  floating-point registers in this increment.
+
+#### 11.3.9 What this section does not decide
+
+Declared numeric modes that permit reassociation (`55-parallelism.md` §4,
+third option), floating-point atomics, a decimal type, and `f128` are not
+part of v1. Each is a separate proposal; none may weaken §11.3.3 for
+programs that do not opt in.
+
 ## 12. Formal obligations
 
 The executable type lattice must satisfy the laws in §3.

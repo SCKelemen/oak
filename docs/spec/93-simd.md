@@ -34,7 +34,11 @@ endianness at the semantic level).
 
 Signed, float, and wider vectors are reserved for later revisions; the
 naming (`I32x4`, `F32x4`, 256-bit `U8x32`) is fixed now so programs and
-backends do not fork conventions.
+backends do not fork conventions. The floating-point vectors `F32x4` and
+`F64x2` are specified with the floating-point types themselves
+(`20-types.md` §11.3.7): lane-wise `add sub mul div fma min max sqrt neg abs`
+under the fixed IEEE semantics of §11.3.3, lane extract and insert, and a
+horizontal `reduce_add` whose pairwise-tree grouping is its semantics.
 
 ### 1.2 Operations
 

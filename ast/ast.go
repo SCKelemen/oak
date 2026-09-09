@@ -102,6 +102,10 @@ type ExpressionStatement struct {
 	BaseNode
 	Token      token.Token // the first token of the expression
 	Expression Expression
+	// Discard marks the explicit discard form `_ = expr`
+	// (docs/spec/85-discipline.md section 6): the expression is evaluated
+	// for its effects and its non-unit result is deliberately dropped.
+	Discard bool
 }
 
 func (es *ExpressionStatement) statementNode()       {}

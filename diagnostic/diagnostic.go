@@ -298,9 +298,15 @@ func (d *Diagnostic) PlainText() string {
 		return ""
 	}
 	var out strings.Builder
-	if d.File != "" {
+	switch {
+	case d.File != "":
 		fmt.Fprintf(&out, "%s[%s]: %s:%d:%d: %s", d.Severity.String(), d.Code, d.File, d.Range.Start.Line+1, d.Range.Start.Character+1, d.Title)
-	} else {
+	case d.Range.Start.Line != 0 || d.Range.Start.Character != 0:
+		// A known position is rendered even when the file is unknown
+		// (single-source compilations): docs/spec/15-diagnostics.md
+		// section 10 — never drop an exact location the value carries.
+		fmt.Fprintf(&out, "%s[%s]: %d:%d: %s", d.Severity.String(), d.Code, d.Range.Start.Line+1, d.Range.Start.Character+1, d.Title)
+	default:
 		fmt.Fprintf(&out, "%s[%s]: %s", d.Severity.String(), d.Code, d.Title)
 	}
 	for _, label := range d.Labels {

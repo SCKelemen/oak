@@ -239,8 +239,13 @@ func (s *Scanner) NextToken() token.Token {
 	case '?':
 		tok = newTokenWithPos(token.QMARK, s.current, line, column)
 	case '"':
-		tok.Literal = s.readString()
+		literal, valid := s.readString()
+		tok.Literal = literal
 		tok.TokenKind = token.STRING
+		if !valid {
+			tok.TokenKind = token.ILLEGAL
+			tok.Literal = "invalid escape sequence in string literal (docs/spec/10-syntax.md section 2a: \\n \\t \\r \\0 \\\\ \\\" \\xHH)"
+		}
 		tok.Line = line
 		tok.Column = column
 		return s.finishToken(tok, byteStart)
@@ -385,28 +390,84 @@ func (s *Scanner) isRadixTailChar(ch rune) bool {
 	return ('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z')
 }
 
-func (s *Scanner) readString() string {
-	position := s.head + 1
+// readString scans the body of a string literal and returns its decoded
+// bytes. The escape sequences of docs/spec/10-syntax.md section 2a are
+// processed here, once, so every later phase (the evaluator, `text_literal`,
+// the C backend's own re-escaping) sees the bytes the program means:
+//
+//	\n \t \r \0 \\ \"    the usual C set
+//	\xHH                 one byte, two hex digits
+//
+// Any other character after a backslash is an invalid escape: the literal is
+// still consumed to its closing quote so the token span stays right, and
+// ok is false so the caller reports the token as ILLEGAL.
+func (s *Scanner) readString() (literal string, ok bool) {
+	var out bytes.Buffer
+	ok = true
+scan:
 	for {
 		s.readChar()
-		if s.current == '"' || s.current == 0 {
-			break
+		switch s.current {
+		case '"', 0:
+			break scan
+		case '\\':
+			s.readChar()
+			switch s.current {
+			case 'n':
+				out.WriteByte('\n')
+			case 't':
+				out.WriteByte('\t')
+			case 'r':
+				out.WriteByte('\r')
+			case '0':
+				out.WriteByte(0)
+			case '\\':
+				out.WriteByte('\\')
+			case '"':
+				out.WriteByte('"')
+			case 'x':
+				value := 0
+				for digits := 0; digits < 2; digits++ {
+					s.readChar()
+					d, isHex := hexDigitValue(s.current)
+					if !isHex {
+						ok = false
+						if s.current == '"' || s.current == 0 {
+							break scan
+						}
+						continue scan
+					}
+					value = value*16 + d
+				}
+				out.WriteByte(byte(value))
+			case 0:
+				// A backslash at end of input: unterminated literal.
+				ok = false
+				break scan
+			default:
+				ok = false
+			}
+		default:
+			out.WriteRune(s.current)
 		}
 	}
 	if s.current == '"' {
 		s.readChar()
 	}
-	end := s.head - 1
-	if end < position {
-		end = position
+	return out.String(), ok
+}
+
+// hexDigitValue decodes one hexadecimal digit.
+func hexDigitValue(ch rune) (int, bool) {
+	switch {
+	case '0' <= ch && ch <= '9':
+		return int(ch - '0'), true
+	case 'a' <= ch && ch <= 'f':
+		return int(ch-'a') + 10, true
+	case 'A' <= ch && ch <= 'F':
+		return int(ch-'A') + 10, true
 	}
-	if end > len(s.input) {
-		end = len(s.input)
-	}
-	if position > len(s.input) {
-		position = len(s.input)
-	}
-	return s.input[position:end]
+	return 0, false
 }
 
 func (s *Scanner) peekRune() rune {
