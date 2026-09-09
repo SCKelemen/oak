@@ -534,7 +534,10 @@ type TypeChecker struct {
 	// globalOwners maps each package-level declaration to the package that
 	// declares it ("" for the root), so the no-shadowing rule is checked
 	// against the declaring package's scope (docs/spec/83-modules.md section 7).
-	globalOwners               map[string]string
+	globalOwners map[string]string
+	// externFunctions names the extern bindings (docs/spec/92-ffi.md section 2.3),
+	// whose calls may carry boundary spans (section 2.5).
+	externFunctions            map[string]bool
 	layoutQueries              map[string]LayoutQuery
 	checkingSpecialization     bool
 	extentFacts                []extentFact
@@ -1863,6 +1866,40 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return nil
 	}
 
+	// Boundary spans (docs/spec/92-ffi.md section 2.5): in a call to an
+	// extern binding, c.span_of(v) / c.span_mut_of(s) stands for two
+	// consecutive parameters (c.Ptr, c.Size). paramPos maps each argument to
+	// the parameter position it starts at; effectiveArgs counts positions.
+	isExtern := false
+	if funcIdent, ok := expr.Function.(*ast.Identifier); ok {
+		isExtern = tc.externFunctions[funcIdent.Value]
+	}
+	paramPos := make([]int, len(expr.Arguments))
+	effectiveArgs := 0
+	spansValid := true
+	for i, arg := range expr.Arguments {
+		paramPos[i] = effectiveArgs
+		if member, operand, isSpan := tc.BoundarySpanArgument(arg); isSpan {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					fmt.Sprintf("c.%s is only an argument to an extern binding", member))
+				d.AddNote("a boundary span yields a c.Ptr, c.Size pair for the duration of one foreign call; Oak functions take the view or span itself (docs/spec/92-ffi.md section 2.5.2)")
+				return nil
+			}
+			// The pair rule is checked before the arity, so a misplaced span
+			// is reported as such rather than as a count mismatch.
+			if !tc.checkBoundarySpan(arg, member, operand, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs += 2
+			continue
+		}
+		effectiveArgs++
+	}
+	if !spansValid {
+		return nil
+	}
+
 	// Check argument count. A variadic function requires at least its fixed
 	// arity; every trailing argument checks against the element type.
 	fixedParams := len(fnType.Parameters)
@@ -1876,8 +1913,8 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			tc.addError(expr, "function expects at least %d arguments, got %d", fixedParams, len(expr.Arguments))
 			return nil
 		}
-	} else if len(expr.Arguments) != len(fnType.Parameters) {
-		tc.addError(expr, "function expects %d arguments, got %d", len(fnType.Parameters), len(expr.Arguments))
+	} else if effectiveArgs != len(fnType.Parameters) {
+		tc.addError(expr, "function expects %d arguments, got %d", len(fnType.Parameters), effectiveArgs)
 		return nil
 	}
 
@@ -1890,14 +1927,20 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	validCall := len(tc.Errors()) == beforeCall
 	beforeArguments := len(tc.Errors())
 	for i, arg := range expr.Arguments {
+		if _, _, isSpan := tc.BoundarySpanArgument(arg); isSpan {
+			// Validated in the pre-pass above; it stands for the pair.
+			argTypes[i] = &CType{Name: "Ptr"}
+			continue
+		}
+		pos := paramPos[i]
 		var parameterType Type
-		if fnType.Variadic && i >= fixedParams {
+		if fnType.Variadic && pos >= fixedParams {
 			if variadicElement == nil {
 				continue
 			}
 			parameterType = variadicElement
 		} else {
-			parameterType = fnType.Parameters[i]
+			parameterType = fnType.Parameters[pos]
 		}
 		expectedType := bindings.Apply(parameterType)
 		argType := tc.checkExpression(arg, expectedType)
@@ -3983,9 +4026,11 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 		}
 	}
 
-	// The last statement should be an expression statement
+	// The last statement should be an expression statement. A trailing
+	// discard (`_ = expr`, docs/spec/85-discipline.md section 6) is a
+	// statement, never the block's value: the block is unit.
 	lastStmt := block.Statements[len(block.Statements)-1]
-	if exprStmt, ok := lastStmt.(*ast.ExpressionStatement); ok {
+	if exprStmt, ok := lastStmt.(*ast.ExpressionStatement); ok && !exprStmt.Discard {
 		if expected != nil {
 			return tc.checkExpression(exprStmt.Expression, expected)
 		}

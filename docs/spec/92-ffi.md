@@ -121,10 +121,11 @@ rows are unconditional.
 
 ### 2.5 Spans at the boundary
 
-**Status: specified, not implemented** (`STATUS.md`). Motivated by the ml
-project's pilot, where every byte of kernel source left the process through
-one `putchar` call because no buffer could cross the boundary
-(`docs/notes/ml-feedback-2026-09.md`, tier 3).
+**Status: implemented and tested** for fixed-width integer and `Bool`
+elements (`STATUS.md`; the implemented subset is stated in §2.5.4).
+Motivated by the ml project's pilot, where every byte of kernel source left
+the process through one `putchar` call because no buffer could cross the
+boundary (`docs/notes/ml-feedback-2026-09.md`, tier 3).
 
 §2.1 makes `c.Ptr` and `c.String` opaque and constructor-less, which is the
 right rule for pointers that come *from* C. It leaves no way to hand C a
@@ -215,10 +216,15 @@ C function that takes a pointer and a length.
 
 #### 2.5.4 Lowering
 
-`c.span_of(v)` lowers to the two C arguments `(void *)v.data, (size_t)v.len`
-and `c.span_mut_of(s)` to `(void *)s.data, (size_t)s.len`. No copy, no
-allocation, no thunk. The interpreter cannot call externs (§4) and rejects
+`c.span_of(v)` lowers to the two C arguments `(void *)v.base, (size_t)v.len`
+and `c.span_mut_of(s)` to `(void *)s.base, (size_t)s.len` — the base pointer
+and element count of the view/span struct the backend already uses. No copy,
+no allocation, no thunk. The interpreter cannot call externs (§4) and rejects
 these forms with the same diagnostic it gives an extern call.
+
+**Implemented subset.** Element types admitted today are the fixed-width
+integers and `Bool`; structs with proven layouts are specified above and are
+a recorded implementation gap (`STATUS.md`).
 
 #### 2.5.5 Diagnostics
 

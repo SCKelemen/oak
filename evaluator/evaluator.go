@@ -28,6 +28,15 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalProgram(node, env)
 
 	case *ast.ExpressionStatement:
+		if node.Discard {
+			// `_ = expr` evaluates for its effects and yields nothing
+			// (docs/spec/85-discipline.md section 6); errors still surface.
+			result := Eval(node.Expression, env)
+			if isError(result) {
+				return result
+			}
+			return NULL
+		}
 		return Eval(node.Expression, env)
 
 	case *ast.IntegerLiteral:

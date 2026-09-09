@@ -866,6 +866,15 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 	// 1. Check arguments FIRST under the pre-call state
 	// This ensures that argument validation happens before any borrow state changes
 	for i, arg := range call.Arguments {
+		// A boundary span (docs/spec/92-ffi.md section 2.5.2) is a read use
+		// of the view's owner, or a write use of the span's owner, for the
+		// extent of the foreign call — the rule an Oak callee taking []T or
+		// [*]T already gets. The pointer never outlives the call: the form
+		// has no type and the typechecker admits it in no other position.
+		if operand, mutable, isSpan := boundarySpanOperand(arg, env); isSpan {
+			bc.checkIdentifierUse(operand, operand.Value, env, mutable)
+			continue
+		}
 		bc.checkAggregateStorage(arg, env, false)
 		if i == 0 && skipDerivationSource {
 			continue
@@ -896,6 +905,39 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 	}
 
 	// For non-builtin functions, the arg walk above is all we need.
+}
+
+// boundarySpanOperand recognizes `c.span_of(v)` / `c.span_mut_of(s)` in
+// argument position (docs/spec/92-ffi.md section 2.5): the named operand and
+// whether the foreign callee may write through it. A local binding named `c`
+// shadows the library, as for every library call.
+func boundarySpanOperand(arg ast.Expression, env *typechecker.TypeEnvironment) (operand *ast.Identifier, mutable, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, false, false
+	}
+	access, isAccess := call.Function.(*ast.IndexExpression)
+	if !isAccess {
+		return nil, false, false
+	}
+	library, isIdent := access.Left.(*ast.Identifier)
+	member, memberIsIdent := access.Index.(*ast.Identifier)
+	if !isIdent || !memberIsIdent || library.Value != "c" {
+		return nil, false, false
+	}
+	if _, bound := env.Get("c"); bound {
+		return nil, false, false
+	}
+	switch member.Value {
+	case "span_of", "span_mut_of":
+	default:
+		return nil, false, false
+	}
+	operand, isIdent = call.Arguments[0].(*ast.Identifier)
+	if !isIdent {
+		return nil, false, false
+	}
+	return operand, member.Value == "span_mut_of", true
 }
 
 // checkViewCall handles view() calls: creates a read-only borrow

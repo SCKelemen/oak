@@ -41,6 +41,7 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 			BaseNode:   s.BaseNode,
 			Token:      s.Token,
 			Expression: lowerExpression(s.Expression, tc),
+			Discard:    s.Discard,
 		}
 	case *ast.FunctionStatement:
 		return lowerFunctionStatement(s, tc)
@@ -265,6 +266,7 @@ func lowerFunctionBodyBlock(body *ast.BlockExpression, tc *typechecker.TypeCheck
 			BaseNode:   exprStmt.BaseNode,
 			Token:      exprStmt.Token,
 			Expression: lowerExpression(exprStmt.Expression, tc),
+			Discard:    exprStmt.Discard,
 		})
 	} else {
 		lowered = append(lowered, lowerStatement(last, tc))
