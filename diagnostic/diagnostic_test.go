@@ -50,7 +50,7 @@ func TestDiagnosticSupportsSecondaryContextNotesAndHelp(t *testing.T) {
 
 	text := d.PlainText()
 	for _, want := range []string{
-		"error[OAK-B0001]: view escapes its backing storage",
+		"error[OAK-B0001]: 2:4: view escapes its backing storage",
 		"primary: returned view escapes here",
 		"secondary: backing storage ends here",
 		"note: the view does not own the referenced bytes",
