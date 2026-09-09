@@ -93,7 +93,12 @@ declarations whose body the compiler synthesizes from the type:
 point_eq: (a: Point, b: Point): Bool = derive.equal
 point_hash: (v: Point): u64 = derive.hash
 point_cmp: (a: Point, b: Point): Ordering = derive.compare
+point_format: (v: Point, dst: [*]u8): Result[u32, TextError] = derive.format
 ```
+
+The REPL is module-aware: it compiles every input through the same pipeline,
+resolves imports through the working directory's `oak.mod`, and `:obligations`
+lists the recorded assumptions the checker could not discharge.
 
 ### Comments
 

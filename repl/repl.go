@@ -434,6 +434,8 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "  :ptrsize()       - Print current ptr/uptr size\n")
 					fmt.Fprintf(out, "  :intsize(size)   - Set size of int/uint (32 or 64)\n")
 					fmt.Fprintf(out, "  :intsize()       - Print current int/uint size\n")
+					fmt.Fprintf(out, "  :obligations     - List the recorded assumptions the checker could not discharge\n")
+					fmt.Fprintf(out, "  :strict          - Toggle the strict profile (assumptions reject)\n")
 					fmt.Fprintf(out, "\n")
 					fmt.Fprintf(out, "Inputs are checked by the full compiler pipeline. Imports resolve through\n")
 					fmt.Fprintf(out, "the module (oak.mod) enclosing the working directory: import(\"...\"), pub,\n")
@@ -446,6 +448,29 @@ func Start(in io.Reader, out io.Writer) {
 					continue
 				case "clear":
 					fmt.Fprintf(out, "\033[2J\033[H")
+					continue
+				case "obligations":
+					open, err := session.Obligations()
+					if err != nil {
+						fmt.Fprintf(out, "%s\n", strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "\n\t"))
+						continue
+					}
+					if len(open) == 0 {
+						fmt.Fprintf(out, "no recorded assumptions: every check in the session is discharged statically or trapped at runtime\n")
+						continue
+					}
+					for _, d := range open {
+						fmt.Fprintf(out, "%s\n", modules.DemangleText(d.PlainText()))
+					}
+					fmt.Fprintf(out, "%d recorded assumption(s); :strict rejects them, Lean (spec/lean) is where they are proved\n", len(open))
+					continue
+				case "strict":
+					session.Strict = !session.Strict
+					if session.Strict {
+						fmt.Fprintf(out, "strict profile on: recorded assumptions reject\n")
+					} else {
+						fmt.Fprintf(out, "strict profile off\n")
+					}
 					continue
 				case "reset":
 					session.Reset()

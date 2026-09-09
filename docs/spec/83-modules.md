@@ -366,6 +366,10 @@ point_hash: (v: Point): u64 = derive.hash
 - `derive.compare` requires `(a: T, b: T): Ordering` with
   `Ordering: type = Less | Equal | Greater` in scope, and orders records
   lexicographically by field and ADTs by variant index then payload.
+- `derive.format` requires `(v: T, dst: [*]u8): Result[u32, TextError]`
+  (the strings library's `TextError`) and renders `Point { x: -3, y: 42 }`
+  or `Line(3)` into the caller's span through the library's text builder —
+  bounds-checked writes, no allocation, decimal integers, `true`/`false`.
 - `derive.test_generate`, `derive.test_encode`, and `derive.test_decode`
   derive a test-command sum type's tape generator, `TestCommand` packing, and
   range-checked decoder (`110-testing.md`, "Typed commands"); the type is the
@@ -520,9 +524,17 @@ clauses and imports dropped, cross-references de-qualified, concatenated in
 dependency order. One source, two spellings; the flat one cannot drift from
 the packages. A program may use both: the core types are shared, so a value
 from `strings.utf8_decode` and one from the flat `utf8_decode` have the same
-`Result` type. Qualified cross-references inside the library and moving the
-codec, text-literal, and fluent sugar (today enabled only by `import(std)`)
-onto the package spellings are the recorded remainder of the migration.
+`Result` type.
+
+**Library sugar on package spellings.** Derived JSON codecs
+(`encode[T, Json]`, `from[T](v).to[Json](dst)`), typed text literals
+(`text_literal("...")`), fluent builder calls (`b.append_text(dst, s)`), and
+derived formatting generate calls to library functions by their flat names.
+The sugar runs after module elaboration and derivation and resolves those
+names to the imported packages' internal names; a name belonging to a
+library package the program did not import fails closed with a diagnostic
+naming the import to add (`encode` needs `import("json")`, text needs
+`import("strings")`). The flat prelude keeps the flat names.
 
 ## 10. Interaction with other chapters
 
@@ -543,9 +555,13 @@ onto the package spellings are the recorded remainder of the migration.
   tree-walking evaluator over the elaborated program. `pub`, sealed imports,
   fresh abstract types, generic packages, and derived declarations behave as
   in a build; the only session-specific rule is that an import may be
-  submitted before it is used. The REPL is not a proof assistant: proofs live
-  in Lean (`spec/lean`). A proof-aware REPL that surfaces the obligations the
-  checker could not discharge and hands them to Lean is a recorded direction. Trust-by-import for the testing reporter is unaffected: the reporter
+  submitted before it is used. `:obligations` lists the recorded assumptions
+  the pipeline left standing for the session program — unsafe admissions,
+  unbounded loops, unlowered tail cycles, runtime-initialized globals — the
+  exact inputs a proof step would take; `:strict` judges declarations under
+  the strict profile, where those assumptions reject. The REPL is not a proof
+  assistant: proofs live in Lean (`spec/lean`), and handing listed obligations
+  to Lean as theorem skeletons is a recorded direction. Trust-by-import for the testing reporter is unaffected: the reporter
   declarations still enter only through `import(testing)`.
 - **FFI/SIMD (`92-ffi.md`, `93-simd.md`).** `c`, `arm64`, and `simd` remain
   compiler-known libraries, not packages; an import alias may not reuse their
@@ -557,12 +573,9 @@ onto the package spellings are the recorded remainder of the migration.
 
 - **Unqualified `open` of a whole package** and **nested modules** (selective
   imports of named members exist, section 3.2).
-- **Library sugar on package spellings**: codec derivation, text literals,
-  and fluent calls are enabled by `import(std)` only (section 9).
 - **A lock file** (the manifests alone already make selection
-  reproducible), **more derivable operations** (formatting) and derivation
-  over generic instantiations, **a proof-aware REPL** surfacing undischarged
-  obligations to Lean (section 10).
+  reproducible), **derivation over generic instantiations**, and **Lean
+  theorem skeletons for the REPL's listed obligations** (section 10).
 
 ## 12. Required laws
 

@@ -115,6 +115,9 @@ type ModuleInfo struct {
 	// PreludeCore requests the core prelude (std.oak) because a standard
 	// library package was imported; `import(std)` requests the full one.
 	PreludeCore bool
+	// LibraryNames maps the flat names of imported standard library
+	// packages' exports to their internal names, for the library sugar.
+	LibraryNames map[string]string
 	// Abstract maps each fresh abstract type (one per sealed binding and
 	// type member) to the internal name of its underlying type.
 	Abstract map[string]string
@@ -1545,7 +1548,19 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	}
 	program.Statements = append(program.Statements, root.Statements...)
 	public := &ast.Program{Statements: append([]ast.Statement(nil), root.Statements...)}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore}
+	libraryNames := map[string]string{}
+	for _, path := range order {
+		pkg := l.packages[path]
+		if pkg.Dir != "<stdlib>" {
+			continue
+		}
+		for name, member := range pkg.Exports {
+			if member.Exported {
+				libraryNames[name] = modules.Mangle(path, name)
+			}
+		}
+	}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,

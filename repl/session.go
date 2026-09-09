@@ -11,10 +11,12 @@ package repl
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/compiler"
+	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/evaluator"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
@@ -34,6 +36,9 @@ type Session struct {
 	ModuleDir string
 	IntSize   int
 	PtrSize   int
+	// Strict checks the session under the strict discipline profile, where
+	// every recorded assumption is a rejection (docs/spec/85-discipline.md).
+	Strict bool
 
 	imports      []string
 	declarations []string
@@ -106,10 +111,10 @@ func (s *Session) Submit(input string) (Outcome, error) {
 		}
 	}
 	source := s.compose(imports, declarations, expression)
-	comp := compiler.New().
-		WithSessionSources(s.ModuleDir, map[string]string{"repl.oak": source}).
-		WithPlatformSizes(s.IntSize, s.PtrSize)
-	model, err := comp.SemanticModel().Get()
+	// The strict profile judges declarations; an expression's wrapper
+	// binding is runtime-initialized by construction and is checked in the
+	// default profile.
+	model, err := s.compileWith(source, s.Strict && expression == "")
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -140,11 +145,7 @@ func (s *Session) Submit(input string) (Outcome, error) {
 
 // TypeOf checks an expression or type expression against the session.
 func (s *Session) TypeOf(text string) (typechecker.Type, error) {
-	source := s.compose(nil, nil, text)
-	comp := compiler.New().
-		WithSessionSources(s.ModuleDir, map[string]string{"repl.oak": source}).
-		WithPlatformSizes(s.IntSize, s.PtrSize)
-	model, err := comp.SemanticModel().Get()
+	model, err := s.compile(s.compose(nil, nil, text))
 	if err != nil {
 		return nil, err
 	}
@@ -201,4 +202,49 @@ func declarationBinding(stmt ast.Statement) string {
 		}
 	}
 	return ""
+}
+
+func (s *Session) compile(source string) (*compiler.SemanticModel, error) {
+	return s.compileWith(source, false)
+}
+
+func (s *Session) compileWith(source string, strict bool) (*compiler.SemanticModel, error) {
+	comp := compiler.New().
+		WithSessionSources(s.ModuleDir, map[string]string{"repl.oak": source}).
+		WithPlatformSizes(s.IntSize, s.PtrSize)
+	if strict {
+		comp = comp.WithProfile("strict")
+	}
+	return comp.SemanticModel().Get()
+}
+
+// Obligations lists what the checker could not discharge for the session
+// program: the recorded assumptions and warnings every phase left standing
+// (unsafe admissions, unbounded loops, unlowered tail cycles, runtime-
+// initialized globals, ...). These are the inputs a proof-aware step would
+// hand to Lean; the REPL surfaces them, it does not prove them.
+func (s *Session) Obligations() ([]*diagnostic.Diagnostic, error) {
+	if len(s.imports) == 0 && len(s.declarations) == 0 {
+		return nil, nil
+	}
+	comp := compiler.New().
+		WithSessionSources(s.ModuleDir, map[string]string{"repl.oak": s.Source()}).
+		WithPlatformSizes(s.IntSize, s.PtrSize)
+	model, err := comp.SemanticModel().Get()
+	if err != nil {
+		return nil, err
+	}
+	var open []*diagnostic.Diagnostic
+	for _, d := range model.Diagnostics {
+		if d != nil && d.Severity != diagnostic.SeverityError {
+			open = append(open, d)
+		}
+	}
+	sort.SliceStable(open, func(i, j int) bool {
+		if open[i].Code != open[j].Code {
+			return open[i].Code < open[j].Code
+		}
+		return open[i].Range.Start.Line < open[j].Range.Start.Line
+	})
+	return open, nil
 }

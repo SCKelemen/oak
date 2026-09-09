@@ -105,3 +105,37 @@ func TestSessionOutsideAModuleUsesTheBootstrapLibrary(t *testing.T) {
 		t.Fatal("an unresolvable import must be rejected")
 	}
 }
+
+func TestSessionObligationsAndStrict(t *testing.T) {
+	session := NewSession(t.TempDir())
+	if _, err := session.Submit("spin: (n: u32): u32 = { i: u32 = 0\n  while i < n { i = i + 1 }\n  i }"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Submit("loop: (): u32 = { i: u32 = 0\n  running: Bool = true\n  while running { i = i + 1\n    running = i < 10 }\n  i }"); err != nil {
+		t.Fatal(err)
+	}
+	open, err := session.Obligations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range open {
+		if d.Code == "OAK-D0103" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the unbounded-loop assumption among obligations, got %d: %+v", len(open), open)
+	}
+	// Under the strict profile the same declaration is rejected.
+	strict := NewSession(t.TempDir())
+	strict.Strict = true
+	if _, err := strict.Submit("loop: (): u32 = { i: u32 = 0\n  running: Bool = true\n  while running { i = i + 1\n    running = i < 10 }\n  i }"); err == nil || !strings.Contains(err.Error(), "OAK-D0103") {
+		t.Fatalf("strict profile must reject the recorded assumption, got %v", err)
+	}
+	// Expressions still evaluate under strict: their wrapper is judged in the
+	// default profile.
+	if _, err := session.Submit("spin(3)"); err != nil {
+		t.Fatal(err)
+	}
+}
