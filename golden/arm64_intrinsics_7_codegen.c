@@ -179,7 +179,10 @@ static inline u32 oak_arm64_rev32( u32 x ) {
 #endif
 }
 
-/* forward declarations */
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
 i32 oak_main( void );
 
 // @source: unknown.oak:1:0-6:0

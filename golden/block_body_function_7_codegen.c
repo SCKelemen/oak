@@ -147,8 +147,11 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
-/* forward declarations */
-i32 oak_scale( i32 a, i32 b );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE i32 oak_scale( i32 a, i32 b );
 i32 oak_main( void );
 
 // @source: unknown.oak:1:0-4:0
@@ -156,7 +159,7 @@ i32 oak_main( void );
 // @kind: function
 // @identifier: scale
 // @signature: fn scale(a: i32, b: i32) -> i32
-i32 oak_scale( i32 a, i32 b ) {
+OAK_INLINE i32 oak_scale( i32 a, i32 b ) {
     i32 doubled   = oak_mul_i32( a, 2 )  ;
     return oak_add_i32( doubled, b )  ;
 }

@@ -171,6 +171,8 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			ReturnType: fn.ReturnType,
 			Body:       loweredBody,
 			AsmBacked:  fn.AsmBacked,
+			Exported:   fn.Exported,
+			Opaque:     fn.Opaque,
 		}
 	}
 	return fn

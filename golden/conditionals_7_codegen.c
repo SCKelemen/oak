@@ -159,8 +159,11 @@ static inline u8 oak_conv_u8_saturating_u32( u32 x ) {
   return x > (u32)255u ? (u8)255u : (u8)x;
 }
 
-/* forward declarations */
-i32 oak_classify( i32 n, Bool urgent );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE i32 oak_classify( i32 n, Bool urgent );
 i32 oak_main( void );
 
 // @source: unknown.oak:1:0-11:0
@@ -168,7 +171,7 @@ i32 oak_main( void );
 // @kind: function
 // @identifier: classify
 // @signature: fn classify(n: i32, urgent: Bool) -> i32
-i32 oak_classify( i32 n, Bool urgent ) {
+OAK_INLINE i32 oak_classify( i32 n, Bool urgent ) {
     i32 result   = ((i32)( oak_conv_u8_saturating_u32( ((u32)( 300 )) ) ))  ;
     if ( ( ( n < 0 ) && !( urgent ) )   ) {
       result     = ( 0 - 1 )    ;

@@ -19,7 +19,10 @@ type CodeGenerator struct {
 	// constantContext is set while emitting C integer constant expressions
 	// (file-scope initializers, static_assert), where arithmetic must stay
 	// a plain operator rather than a helper call.
-	constantContext  bool
+	constantContext bool
+	// inlineHelpers names the functions emitted as forced-inline helpers
+	// (OAK_INLINE): private, leaf, loop-free, and short.
+	inlineHelpers    map[string]bool
 	asmFunctions     []*asm.Function
 	packageName      string
 	sourceFile       string // Source file path for source location comments
@@ -710,7 +713,7 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	}
 
 	// Emit function signature (C style: space inside parentheses)
-	cg.write(fmt.Sprintf("%s %s( ", returnType, cFuncName))
+	cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(funcName), returnType, cFuncName))
 
 	// If method, add receiver as first parameter
 	if fn.Receiver != nil {
@@ -1487,7 +1490,53 @@ func (cg *CodeGenerator) emitAsmUnits() {
 
 // emitFunctionPrototypes forward-declares every top-level function so calls
 // are order-independent in the emitted C.
+// inlineHelperLines bounds the source span of a forced-inline helper.
+const inlineHelperLines = 12
+
+// computeInlineHelpers decides which functions are emitted as forced-inline
+// helpers (docs/spec/90-backend.md section 9): private (not pub), named,
+// non-generic, non-method, with an Oak body, calling no user function,
+// containing no loop, and at most inlineHelperLines long. Exported and
+// extern/asm-backed functions keep external linkage.
+func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
+	cg.inlineHelpers = make(map[string]bool)
+	functions := make(map[string]*ast.FunctionStatement)
+	for _, stmt := range program.Statements {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil {
+			functions[fn.Name.Value] = fn
+		}
+	}
+	for name, fn := range functions {
+		if fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked || fn.Body == nil ||
+			fn.Exported || len(fn.TypeParams) > 0 || name == "main" {
+			continue
+		}
+		if fn.EndToken.Line <= 0 || fn.EndToken.Line-fn.Token.Line > inlineHelperLines {
+			continue
+		}
+		if _, isMember := cg.trampolineMember[name]; isMember {
+			continue
+		}
+		if discipline.InlineHelperShape(fn, functions) {
+			cg.inlineHelpers[name] = true
+		}
+	}
+}
+
+// linkage returns the storage-class prefix for a function's prototype and
+// definition. Forced-inline helpers are C99 `extern inline` with the
+// always-inline attribute: every call inlines at every optimization level
+// and the external definition is still emitted, so the symbol stays
+// available to linkers and to assembly inspection.
+func (cg *CodeGenerator) linkage(name string) string {
+	if cg.inlineHelpers[name] {
+		return "OAK_INLINE "
+	}
+	return ""
+}
+
 func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
+	cg.computeInlineHelpers(program)
 	emitted := false
 	for _, stmt := range program.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
@@ -1495,7 +1544,8 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			continue
 		}
 		if !emitted {
-			cg.write("/* forward declarations */\n")
+			cg.write("/* forward declarations; OAK_INLINE marks private leaf helpers the C\n   compiler must inline at every optimization level (the external\n   definition is still emitted: C99 extern inline) */\n")
+			cg.write("#define OAK_INLINE extern inline __attribute__((always_inline))\n")
 			emitted = true
 		}
 		// An extern binding declares the foreign symbol it asserts
@@ -1505,7 +1555,7 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			continue
 		}
 		returnType := cg.parseTypeExpression(fn.ReturnType)
-		cg.write(fmt.Sprintf("%s %s( ", returnType, cg.cFunctionName(fn.Name.Value)))
+		cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(fn.Name.Value), returnType, cg.cFunctionName(fn.Name.Value)))
 		if len(fn.Parameters) == 0 {
 			cg.write("void")
 		}

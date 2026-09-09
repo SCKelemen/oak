@@ -179,3 +179,19 @@ through the type table, never through this mapping. Compiler temporaries
 live in the reserved `__` namespace (`oak__scrutinee_0`, `__oak_tail_0`),
 which user identifiers can never spell (`83-modules.md`), so the mapping
 passes them through untouched.
+
+## 9. Small helpers
+
+Naming an operation must not cost a call. A private (not `pub`), named,
+non-generic, non-method function with an Oak body that calls no user-defined
+function, contains no loop, and spans at most twelve source lines is emitted
+as a forced-inline helper (`OAK_INLINE`: C99 `extern inline` with the
+always-inline attribute) in both its prototype and definition. The C
+compiler then inlines every call at every optimization level, including
+`-O0`, rather than by heuristic, while the external definition is still
+emitted so the symbol remains available to linkers and assembly inspection. Exported, extern, and asm-backed functions
+keep external linkage; recursive and looping functions are never marked, so
+the C compiler is never asked to inline what it cannot. The judgment is the
+discipline analyzer's call-graph and loop walk (`InlineHelperShape`), so the
+backend and the recursion policy share one authority.
+

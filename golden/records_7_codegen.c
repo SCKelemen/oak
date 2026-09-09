@@ -163,8 +163,11 @@ typedef char oak_layout_size_Pair[ (sizeof(oak_Pair) == 12u) ? 1 : -1 ];
 typedef char oak_layout_off_Pair_first[ (offsetof(oak_Pair, first) == 0u) ? 1 : -1 ];
 typedef char oak_layout_off_Pair_tag[ (offsetof(oak_Pair, tag) == 8u) ? 1 : -1 ];
 
-/* forward declarations */
-oak_Point oak_shift( oak_Point p, i32 dx );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE oak_Point oak_shift( oak_Point p, i32 dx );
 i32 oak_main( void );
 
 // @source: unknown.oak:11:0-11:62
@@ -172,7 +175,7 @@ i32 oak_main( void );
 // @kind: function
 // @identifier: shift
 // @signature: fn shift(p: Point, dx: i32) -> Point
-oak_Point oak_shift( oak_Point p, i32 dx ) {
+OAK_INLINE oak_Point oak_shift( oak_Point p, i32 dx ) {
     return ((oak_Point){ .x = oak_add_i32( p.x, dx ), .y = p.y })  ;
 }
 

@@ -22,7 +22,7 @@ func checkerSources(t *testing.T) string {
  t.Helper()
  var source strings.Builder
  for _,path:=range []string{"self_hosted_rup.oak","self_hosted_stream.oak","self_hosted_text.oak"} {data,err:=os.ReadFile(path);if err!=nil {t.Fatal(err)};source.Write(data);source.WriteByte('\n')}
- source.WriteString("main: (): i32 {\n cnf: [1]u8\n proof: [1]u8\n rup_text_check(cnf[0:0], proof[0:0]) ? { 1 } | { 0 }\n}\n")
+ source.WriteString("main: (): i32 {\n cnf: [1]u8\n proof: [1]u8\n cv: []u8 = cnf[0:0]\n pv: []u8 = proof[0:0]\n rup_text_check(cv, pv) ? { 1 } | { 0 }\n}\n")
  return source.String()
 }
 func emitChecker(t *testing.T,name,source string) string {

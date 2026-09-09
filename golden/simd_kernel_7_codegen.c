@@ -241,8 +241,11 @@ static inline u32 oak_arm64_uaddlv_u8x16( u8x16 x ) {
 #endif
 }
 
-/* forward declarations */
-Bool oak_contains16( oak_view_u8 v, u8 needle );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE Bool oak_contains16( oak_view_u8 v, u8 needle );
 i32 oak_main( void );
 
 // @source: unknown.oak:1:0-5:0
@@ -250,7 +253,7 @@ i32 oak_main( void );
 // @kind: function
 // @identifier: contains16
 // @signature: fn contains16(v: /* type */, needle: u8) -> Bool
-Bool oak_contains16( oak_view_u8 v, u8 needle ) {
+OAK_INLINE Bool oak_contains16( oak_view_u8 v, u8 needle ) {
     u8x16 chunk   = oak_simd_load_u8x16( v, ((u32)( 0 )) )  ;
     u8x16 hits   = oak_simd_eq_u8x16( chunk, oak_simd_splat_u8x16( needle ) )  ;
     return oak_simd_any_u8x16( hits )  ;

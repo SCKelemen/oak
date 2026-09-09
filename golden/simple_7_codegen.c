@@ -151,7 +151,10 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 static i32 x = 5;
 static i32 y = 10;
 
-/* forward declarations */
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
 i32 oak_main( void );
 
 // @source: unknown.oak:4:0-7:0

@@ -258,8 +258,11 @@ static inline oak_Result_u8_Overflow oak_conv_u8_checked_u32( u32 x ) {
   return oak_Result_u8_Overflow_Ok((u8)x);
 }
 
-/* forward declarations */
-oak_Option_u32 oak_first_even( u32 a, u32 b );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE oak_Option_u32 oak_first_even( u32 a, u32 b );
 i32 oak_main( void );
 
 // @source: unknown.oak:7:0-11:0
@@ -267,7 +270,7 @@ i32 oak_main( void );
 // @kind: function
 // @identifier: first_even
 // @signature: fn first_even(a: u32, b: u32) -> /* type */
-oak_Option_u32 oak_first_even( u32 a, u32 b ) {
+OAK_INLINE oak_Option_u32 oak_first_even( u32 a, u32 b ) {
     if ( ( oak_sub_u32( a, oak_mul_u32( oak_div_u32( a, ((u32)( 2 )) ), ((u32)( 2 )) ) ) == ((u32)( 0 )) ) ) {
       return oak_Option_u32_Some(a)    ;
     } else {

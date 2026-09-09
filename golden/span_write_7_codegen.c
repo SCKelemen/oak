@@ -167,7 +167,10 @@ static inline oak_span_u8 oak_span_subslice_u8(oak_span_u8 v, u64 start, u64 n) 
   return (oak_span_u8){ v.base + start, (u32)n };
 }
 
-/* forward declarations */
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
 i32 oak_fill( oak_span_u8 s );
 i32 oak_main( void );
 

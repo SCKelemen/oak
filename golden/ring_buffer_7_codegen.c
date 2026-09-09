@@ -168,8 +168,11 @@ static inline i32 oak_conv_i32_bits_u32( u32 x ) {
   return pun.to;
 }
 
-/* forward declarations */
-void oak_push( u8 v );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE void oak_push( u8 v );
 i32 oak_main( void );
 
 // @source: unknown.oak:9:0-12:0
@@ -177,7 +180,7 @@ i32 oak_main( void );
 // @kind: function
 // @identifier: push
 // @signature: fn push(v: u8) -> ()
-void oak_push( u8 v ) {
+OAK_INLINE void oak_push( u8 v ) {
     oak_store( events.buffer, 8, (u64)( oak_rem_u32( oak_add_u32( events.head, events.count ), ((u32)( 8 )) ) ), v );
     events.count = oak_add_u32( events.count, 1 );
 }

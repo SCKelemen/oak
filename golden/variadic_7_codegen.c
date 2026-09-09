@@ -162,8 +162,11 @@ static inline oak_view_i32 oak_view_subslice_i32(oak_view_i32 v, u64 start, u64 
   return (oak_view_i32){ v.base + start, (u32)n };
 }
 
-/* forward declarations */
-i32 oak_total( i32 base, oak_view_i32 rest );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE i32 oak_total( i32 base, oak_view_i32 rest );
 i32 oak_caller( void );
 
 // @source: unknown.oak:1:0-3:0
@@ -171,7 +174,7 @@ i32 oak_caller( void );
 // @kind: function
 // @identifier: total
 // @signature: fn total(base: i32, rest: i32) -> i32
-i32 oak_total( i32 base, oak_view_i32 rest ) {
+OAK_INLINE i32 oak_total( i32 base, oak_view_i32 rest ) {
     return base  ;
 }
 

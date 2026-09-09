@@ -147,15 +147,18 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
-/* forward declarations */
-Bool oak_all_text( u8 buf[16] );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE Bool oak_all_text( u8 buf[16] );
 
 // @source: unknown.oak:1:0-4:0
 // @package: main
 // @kind: function
 // @identifier: all_text
 // @signature: fn all_text(buf: /* type */) -> Bool
-Bool oak_all_text( u8 buf[16] ) {
+OAK_INLINE Bool oak_all_text( u8 buf[16] ) {
     oak_view_u8 v   = core_slice( buf, 0, 16 )  ;
     return oak_is_valid_utf8( v )  ;
 }

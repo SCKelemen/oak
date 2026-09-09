@@ -197,8 +197,11 @@ static inline oak_Shape oak_Shape_Empty(  ) {
     return res;
 }
 
-/* forward declarations */
-i32 oak_area2( oak_Shape s );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE i32 oak_area2( oak_Shape s );
 i32 oak_main( void );
 
 // @source: unknown.oak:6:0-9:14
@@ -206,7 +209,7 @@ i32 oak_main( void );
 // @kind: function
 // @identifier: area2
 // @signature: fn area2(s: Shape) -> i32
-i32 oak_area2( oak_Shape s ) {
+OAK_INLINE i32 oak_area2( oak_Shape s ) {
     if ( s.tag == oak_Shape_tag_Circle ) {
       i32 r = s.payload.Circle;
     return oak_mul_i32( r, 3 )  ;

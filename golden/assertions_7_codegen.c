@@ -147,8 +147,11 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
-/* forward declarations */
-i32 oak_checked_double( i32 n );
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE i32 oak_checked_double( i32 n );
 i32 oak_main( void );
 
 // @source: unknown.oak:1:0-4:0
@@ -156,7 +159,7 @@ i32 oak_main( void );
 // @kind: function
 // @identifier: checked_double
 // @signature: fn checked_double(n: i32) -> i32
-i32 oak_checked_double( i32 n ) {
+OAK_INLINE i32 oak_checked_double( i32 n ) {
 oak_assert( ( n < 100 ) )  ;
     return oak_mul_i32( n, 2 )  ;
 }
