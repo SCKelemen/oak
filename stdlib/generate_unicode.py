@@ -6,6 +6,7 @@ Locale-specific casing is deliberately excluded. Default Final_Sigma is handled
 in strings.oak. Run python stdlib/generate_unicode.py from any working directory.
 """
 import json
+import re
 from pathlib import Path
 
 root = Path(__file__).resolve().parent
@@ -65,4 +66,19 @@ unicode_mapping_at: (mapping: UnicodeMapping, index: u32): u32 {
   index == u32(0) ? mapping.first | index == u32(1) ? mapping.second | mapping.third
 }
 ''')
-(root / 'unicode.oak').write_text('\n\n'.join(out))
+# Every generated top-level declaration is an explicit export
+# (docs/spec/83-modules.md section 9): the standard library carries pub marks.
+_DECL = re.compile(r'^(?:fn |[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\s*(?::|\(|:=))')
+
+
+def mark_pub(text):
+    lines = []
+    for line in text.split('\n'):
+        if line and not line.startswith(('pub ', ' ', '\t', '//')) and _DECL.match(line):
+            lines.append('pub ' + line)
+        else:
+            lines.append(line)
+    return '\n'.join(lines)
+
+
+(root / 'unicode.oak').write_text(mark_pub('\n\n'.join(out)))
