@@ -381,6 +381,9 @@ func (p *Parser) parseStatement() ast.Statement {
 			// Without the trailing ':', IDENT "[" starts an index or slice
 			// expression statement (e.g. buf[0:8]) and falls through below.
 			return p.parseIdentLedStatement()
+		} else if p.peekTokenIs(token.ASSIGN) && p.currentToken.Literal == "_" {
+			// Explicit discard: _ = expr (docs/spec/85-discipline.md §6)
+			return p.parseDiscardStatement()
 		} else if p.peekTokenIs(token.ASSIGN) {
 			// Assignment: x = expr (must refer to existing variable)
 			return p.parseAssignmentStatement()
@@ -4164,6 +4167,23 @@ func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 		p.nextToken()
 	}
 
+	return stmt
+}
+
+// parseDiscardStatement parses the explicit discard form `_ = expr`
+// (docs/spec/85-discipline.md section 6). It is an expression statement
+// marked Discard: the value is evaluated and its result deliberately
+// dropped; `_` binds nothing and is never a variable.
+func (p *Parser) parseDiscardStatement() *ast.ExpressionStatement {
+	stmt := &ast.ExpressionStatement{Token: p.currentToken, Discard: true}
+	if !p.expectPeek(token.ASSIGN) {
+		return nil
+	}
+	p.nextToken() // consume =, now at the first token of the value
+	stmt.Expression = p.parseExpression(LOWEST)
+	if p.peekTokenIs(token.SEMI) {
+		p.nextToken()
+	}
 	return stmt
 }
 

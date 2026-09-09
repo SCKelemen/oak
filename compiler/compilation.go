@@ -262,6 +262,9 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			tc.SetSealedOpaque(tree.Modules.SealedOpaque)
 			tc.SetAbstractTypes(tree.Modules.Abstract)
 		}
+		// The spliced bootstrap library is stamped `std` (compiler/stdlib.go)
+		// and is a package of its own for scoping purposes.
+		tc.AddPackagePaths("std")
 		tc.CheckProgram(tree.Root)
 		if tree.Modules != nil {
 			// Sealed-import member types (docs/spec/83-modules.md section 6.3).

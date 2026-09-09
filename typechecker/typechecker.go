@@ -530,7 +530,11 @@ type TypeChecker struct {
 	shiftWidths map[string]int
 	// Generic function templates and their monomorphized instantiations
 	// (typechecker/genericfn.go).
-	globalEnv                  *TypeEnvironment
+	globalEnv *TypeEnvironment
+	// globalOwners maps each package-level declaration to the package that
+	// declares it ("" for the root), so the no-shadowing rule is checked
+	// against the declaring package's scope (docs/spec/83-modules.md section 7).
+	globalOwners               map[string]string
 	layoutQueries              map[string]LayoutQuery
 	checkingSpecialization     bool
 	extentFacts                []extentFact
@@ -735,6 +739,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	// The global scope is the closure of top-level declarations; template
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
+	tc.recordGlobalOwners(program)
 	// Pre-declare top-level non-generic function signatures so functions can
 	// reference one another regardless of declaration order (mutual
 	// recursion included); each signature is finalized when its declaration
@@ -784,6 +789,57 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 		program.Statements = kept
 	}
+}
+
+// recordGlobalOwners notes, for every package-level function and binding,
+// the package that declares it (docs/spec/83-modules.md section 7: the root
+// package is spelled "").
+func (tc *TypeChecker) recordGlobalOwners(program *ast.Program) {
+	tc.globalOwners = make(map[string]string)
+	for _, stmt := range program.Statements {
+		switch s := stmt.(type) {
+		case *ast.FunctionStatement:
+			if s.Name != nil {
+				tc.globalOwners[s.Name.Value] = tc.packageOf(s.Name.Token)
+			}
+		case *ast.VariableDeclaration:
+			if s.Name != nil {
+				tc.globalOwners[s.Name.Value] = tc.packageOf(s.Name.Token)
+			}
+		}
+	}
+}
+
+// shadowsVisibleBinding reports whether declaring name at tok would shadow
+// a binding that is in scope at that declaration.
+//
+// The elaborated program is one flat tree (docs/spec/83-modules.md section
+// 7): imported packages' declarations carry their mangled internal names,
+// which no user identifier can spell, but the root package keeps its source
+// names. Without this rule a root `pub rank` would make `rank: u32 = ...`
+// illegal in every other package, the prelude included, so a package's
+// legal local names would depend on which package happens to be the build
+// root (ml finding F5). A package-level declaration of a *different*
+// package is therefore not in scope for a local declaration in a non-root
+// package. Root-package code keeps the whole rule: everything visible to
+// the root is unqualified there, prelude exports included.
+func (tc *TypeChecker) shadowsVisibleBinding(name string, tok token.Token) bool {
+	if _, exists := tc.env.Get(name); !exists {
+		return false
+	}
+	owner, isGlobal := tc.globalOwners[name]
+	if !isGlobal || tc.globalEnv == nil {
+		return true
+	}
+	// Only the package-level binding may be out of scope: a local of the
+	// same name in an enclosing block still shadows.
+	for env := tc.env; env != nil && env != tc.globalEnv; env = env.outer {
+		if _, local := env.store[name]; local {
+			return true
+		}
+	}
+	declaring := tc.packageOf(tok)
+	return declaring == "" || declaring == owner
 }
 
 // predeclareFunctionSignature registers a function's declared type before any
@@ -1060,6 +1116,14 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		resultType := tc.checkExpression(s.Expression)
 		if ContainsAtomicStorage(resultType) {
 			tc.addError(s.Expression, "Atomic[T] is storage identity, not a value; use an atomic_load_* operation")
+		}
+		if s.Discard {
+			// `_ = expr` exists to drop a result on purpose
+			// (docs/spec/85-discipline.md section 6); discarding unit
+			// says nothing and is rejected so the form stays meaningful.
+			if _, isUnit := resultType.(*UnitType); isUnit {
+				tc.addError(s.Expression, "discard of a unit value: `_ = expr` drops a non-unit result; write the expression alone")
+			}
 		}
 	case *ast.WhileStatement:
 		tc.checkWhileStatement(s)
@@ -3096,9 +3160,9 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		// Defense in depth against parser error-recovery artifacts.
 		return
 	}
-	// Check if variable already exists
-	_, exists := tc.env.Get(stmt.Name.Value)
-	if exists {
+	// Check if variable already exists in the declaring package's scope
+	// (docs/spec/83-modules.md section 7; shadowsVisibleBinding).
+	if tc.shadowsVisibleBinding(stmt.Name.Value, stmt.Name.Token) {
 		// Variable already exists - redefinition is not allowed
 		// Use assignment statement (x = value) instead of variable declaration (x: type = value)
 		if stmt.Type != nil {
@@ -3390,7 +3454,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	// If this is a method, add receiver to the environment
 	if stmt.Receiver != nil {
 		// Check for shadowing: receiver name must not conflict with outer scope
-		if _, exists := tc.env.Get(stmt.Receiver.Name.Value); exists {
+		if tc.shadowsVisibleBinding(stmt.Receiver.Name.Value, stmt.Receiver.Name.Token) {
 			tc.addError(stmt.Receiver.Name, "receiver '%s' already declared in outer scope; Oak does not allow shadowing", stmt.Receiver.Name.Value)
 			return
 		}
@@ -3410,7 +3474,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		// A specialization re-checks a template body that already passed
 		// this rule in its own declaration scope; globals declared between
 		// the template and the instantiating call are not shadowing.
-		if _, exists := tc.env.Get(param.Name.Value); exists && !tc.checkingSpecialization {
+		if !tc.checkingSpecialization && tc.shadowsVisibleBinding(param.Name.Value, param.Name.Token) {
 			tc.addError(param.Name, "parameter '%s' already declared in outer scope; Oak does not allow shadowing", param.Name.Value)
 			return
 		}
