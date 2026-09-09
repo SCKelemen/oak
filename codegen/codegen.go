@@ -941,7 +941,9 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 			if _, known := cg.adtTypes[mangled]; known {
 				tmp := fmt.Sprintf("oak_scrutinee_%d", cg.scrutineeCounter)
 				cg.scrutineeCounter++
-				cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), tmp))
+				// The temporary is used through the identifier path, so its
+				// declaration must carry the same C spelling.
+				cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), cIdent(tmp)))
 				cg.emitExpressionFragment(match.Scrutinee, tc)
 				cg.output.WriteString(";\n")
 				if cg.localTypes == nil {
@@ -1912,7 +1914,7 @@ func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.Typ
 				if _, known := cg.adtTypes[mangled]; known {
 					tmp := fmt.Sprintf("oak_scrutinee_%d", cg.scrutineeCounter)
 					cg.scrutineeCounter++
-					cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), tmp))
+					cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), cIdent(tmp)))
 					cg.emitExpressionFragment(match.Scrutinee, tc)
 					cg.output.WriteString(";\n")
 					if cg.localTypes == nil {

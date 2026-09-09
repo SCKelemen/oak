@@ -280,7 +280,7 @@ oak_Option_u32 oak_first_even( u32 a, u32 b ) {
 i32 oak_main(  ) {
     oak_Option_u32 found   = oak_first_even( ((u32)( 3 )), ((u32)( 8 )) )  ;
     i32 byteRange  ;
-    oak_Result_u8_Overflow oak_scrutinee_0 = oak_conv_u8_checked_u32( ((u32)( 300 )) );
+    oak_Result_u8_Overflow oak_id_oak_scrutinee_0 = oak_conv_u8_checked_u32( ((u32)( 300 )) );
     if ( oak_id_oak_scrutinee_0.tag == oak_Result_u8_Overflow_tag_Ok ) {
       u8 v = oak_id_oak_scrutinee_0.payload.Ok;
       byteRange     = ((i32)( v ))    ;
