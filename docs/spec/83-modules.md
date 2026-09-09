@@ -410,8 +410,11 @@ package's. Arguments are primitive types, integer constants, the importer's
 own declared types, or imported types, resolved as the importer would resolve
 them (`OAK-M0302` otherwise); the import must supply exactly the declared
 arity, a non-generic package takes none, and a generic package cannot be the
-root of a build (`OAK-M0301`). Parameter constraints are checked structurally
-per instantiation by the ordinary type checker: the instance is concrete code.
+root of a build (`OAK-M0301`). A declared parameter contract
+(`package pair[T: Keyed]`, naming a record shape or interface of the package)
+is checked **at the import site**: the argument must satisfy it
+(`OAK-M0303`), the same predicate generic functions use, before the instance
+body is checked as concrete code.
 This is Oak's functor: monomorphized at import, with the package as the unit
 of parameterization and no runtime object.
 
@@ -489,6 +492,7 @@ Family `M` (`15-diagnostics.md`). Structural tests assert each code.
 | `OAK-M0204` | derivation outside the type's declaring package |
 | `OAK-M0301` | generic package arity: arguments missing, unexpected, or wrong in number; generic package as build root |
 | `OAK-M0302` | generic package argument not resolvable to a type or constant |
+| `OAK-M0303` | generic package argument does not satisfy the parameter's declared contract |
 
 Module diagnostics carry the file path in their title; multi-file source
 mapping of every downstream diagnostic remains the recorded debt of
@@ -503,17 +507,22 @@ They cannot be bound or sealed (`OAK-M0111`). Their names are not `pub` and
 are not renamed; a user declaration colliding with a bootstrap export is
 rejected as before.
 
-**Standard library package views.** The library's files are importable as
-qualified packages today: `import("strings")`, `import("unicode")`,
-`import("json")`, `import("filters")`, `import("hash_table")`,
-`import("bitset_algebra")`, `import("causal_frontier")`. A view exposes the
-declarations of its file under the qualifier (`strings.ascii_upper(b)`),
-resolved to their flat prelude names; importing a view loads the bootstrap
-prelude. The library files carry explicit `pub` marks; a view exports exactly the
-`pub` declarations of its file. Re-cutting the library into real packages with `pub`
-exports and qualified cross-references is the recorded migration;
-`docs/notes/standard-library-design.md` section 4 sketches the module graph.
-Any other standard library path is unresolvable (`OAK-M0102`).
+**Standard library packages.** The library files are real packages:
+`strings`, `unicode`, `json`, `filters`, `hash_table`, `bitset_algebra`, and
+`causal_frontier` each carry a package clause, import the library packages
+they use (`strings` imports `unicode`, `json` imports `strings`, `hash_table`
+imports `filters`), qualify their cross-references, and mark their exports
+`pub`. `import("json")` loads json, strings, unicode, and the **core prelude**
+(`std.oak`: Option, Result, Overflow, byte and ring helpers), which every
+library package builds on unqualified — and nothing else. The legacy flat
+prelude of `import(std)` is *derived* from the same sources at build time:
+clauses and imports dropped, cross-references de-qualified, concatenated in
+dependency order. One source, two spellings; the flat one cannot drift from
+the packages. A program may use both: the core types are shared, so a value
+from `strings.utf8_decode` and one from the flat `utf8_decode` have the same
+`Result` type. Qualified cross-references inside the library and moving the
+codec, text-literal, and fluent sugar (today enabled only by `import(std)`)
+onto the package spellings are the recorded remainder of the migration.
 
 ## 10. Interaction with other chapters
 
@@ -526,7 +535,17 @@ Any other standard library path is unresolvable (`OAK-M0102`).
   packages import other packages of their module and diagnostics name real
   files. `oak run [dir]` builds a package, compiles the C with the system
   compiler into a temporary directory, runs it, and propagates its exit
-  status — a development convenience over trusted local source. Trust-by-import for the testing reporter is unaffected: the reporter
+  status — a development convenience over trusted local source.
+- **REPL.** A REPL session is an in-memory root package compiled through the
+  loader (`Compilation.WithSessionSources`): imports resolve through the
+  module enclosing the working directory, every input passes the type,
+  borrow, and discipline gates, and expressions are evaluated by the
+  tree-walking evaluator over the elaborated program. `pub`, sealed imports,
+  fresh abstract types, generic packages, and derived declarations behave as
+  in a build; the only session-specific rule is that an import may be
+  submitted before it is used. The REPL is not a proof assistant: proofs live
+  in Lean (`spec/lean`). A proof-aware REPL that surfaces the obligations the
+  checker could not discharge and hands them to Lean is a recorded direction. Trust-by-import for the testing reporter is unaffected: the reporter
   declarations still enter only through `import(testing)`.
 - **FFI/SIMD (`92-ffi.md`, `93-simd.md`).** `c`, `arm64`, and `simd` remain
   compiler-known libraries, not packages; an import alias may not reuse their
@@ -538,13 +557,12 @@ Any other standard library path is unresolvable (`OAK-M0102`).
 
 - **Unqualified `open` of a whole package** and **nested modules** (selective
   imports of named members exist, section 3.2).
-- **Standard library as real packages** with qualified cross-references
-  (views with `pub` marks today, section 9), **a lock file** (the manifests
-  alone already make selection reproducible), **evaluator support** (the
-  interpreter still ignores imports; `oak run` executes natively), **more
-  derivable operations** (formatting) and derivation over generic
-  instantiations, **generic-package parameter constraints as declared
-  contracts** (checked structurally per instantiation today).
+- **Library sugar on package spellings**: codec derivation, text literals,
+  and fluent calls are enabled by `import(std)` only (section 9).
+- **A lock file** (the manifests alone already make selection
+  reproducible), **more derivable operations** (formatting) and derivation
+  over generic instantiations, **a proof-aware REPL** surfacing undischarged
+  obligations to Lean (section 10).
 
 ## 12. Required laws
 

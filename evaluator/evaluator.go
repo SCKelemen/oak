@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
@@ -122,6 +123,12 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if ident, ok := node.Function.(*ast.Identifier); ok {
 			if result, recognized := evalAtomicInvocation(ident.Value, node.Arguments, env); recognized {
 				return result
+			}
+			// Sealed-boundary coercions (docs/spec/83-modules.md section
+			// 6.3) are identities on values; the type checker has already
+			// enforced them.
+			if len(node.Arguments) == 1 && (strings.HasPrefix(ident.Value, "__abstract_") || strings.HasPrefix(ident.Value, "__concrete_")) {
+				return Eval(node.Arguments[0], env)
 			}
 		}
 		// Check if this is a primitive type constructor: u32(x), u64(y), etc.

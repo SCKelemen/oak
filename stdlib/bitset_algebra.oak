@@ -1,4 +1,7 @@
 // Bitset algebra preserves bits outside the logical domain, including padding.
+package bitset_algebra
+
+
 pub BitSetOperation: type = Union | Intersection | Difference | SymmetricDifference
 
 pub bitset_combine: (dst: [*]u8, src: []u8, bits: u32, operation: BitSetOperation): Result[Bool, BitSetError] {

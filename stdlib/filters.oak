@@ -1,5 +1,8 @@
 // Allocator-free filters over caller-supplied 64-bit key hashes.
 // Hash collisions contribute to false positives. This mixer is not cryptographic.
+package filters
+
+
 pub FilterError: type = InvalidConfig | StorageTooSmall | CounterOverflow | NotPresent | Incompatible
 pub BloomConfig: type = struct { cells: u32, probes: u32, seed: u64, blocked: Bool }
 

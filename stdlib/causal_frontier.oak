@@ -1,5 +1,8 @@
 // Bounded causal frontier operations. Storage is always supplied by the caller
 // as fixed arrays exposed through views/spans; these functions allocate nothing.
+package causal_frontier
+
+
 pub CausalFrontierError: type = LengthMismatch | ActorOutOfRange
 
 pub causal_frontier_join_into: (dst: [*]u64, left: []u64, right: []u64): Result[u32, CausalFrontierError] {

@@ -61,6 +61,7 @@ type Compilation struct {
 	packageDir   string
 	includeTests bool
 	moduleCache  string
+	sessionFiles map[string]string
 }
 
 // SyntaxTree is a parsed Oak source file.
@@ -255,6 +256,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if tree.Modules != nil {
 			// Sealed-import member types (docs/spec/83-modules.md section 6.3).
 			tc.CheckSignatureObligations(tree.Modules.Obligations)
+			tc.CheckParameterObligations(tree.Modules.Parameters)
 		}
 		if err := comp.gate("typecheck", tc.Diagnostics()); err != nil {
 			return nil, err

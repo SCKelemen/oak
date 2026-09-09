@@ -2,6 +2,10 @@
 // T supplies key:u64 and state:u8 plus any inline payload fields.
 // state is reserved: 0=empty, 1=occupied, 2=tombstone.
 // Start with zeroed storage; keep its length fixed until clear/rebuild.
+package hash_table
+
+import("filters")
+
 pub HashSetSlot: type = struct { key: u64, state: u8 }
 pub HashTableError: type = | Full
 
@@ -12,7 +16,7 @@ pub hash_table_next: (index: u32, capacity: u32): u32 {
 pub hash_table_find[T]: (storage: []T, key: u64): Option[u32] {
   capacity: u32 = len(storage)
   capacity == u32(0) ? { .None } | {
-    index: u32 = u32_trunc_u64(filter_mix(key) % u64(capacity))
+    index: u32 = u32_trunc_u64(filters.filter_mix(key) % u64(capacity))
     visited: u32 = 0
     found: Bool = false
     stop: Bool = false
@@ -37,7 +41,7 @@ pub hash_table_find[T]: (storage: []T, key: u64): Option[u32] {
 pub hash_table_put[T]: (storage: [*]T, item: T): Result[Bool, HashTableError] {
   capacity: u32 = len(storage)
   capacity == u32(0) ? { .Err(.Full) } | {
-    index: u32 = u32_trunc_u64(filter_mix(item.key) % u64(capacity))
+    index: u32 = u32_trunc_u64(filters.filter_mix(item.key) % u64(capacity))
     visited: u32 = 0
     target: u32 = capacity
     found: Bool = false
@@ -68,7 +72,7 @@ pub hash_table_remove[T]: (storage: [*]T, key: u64): Bool {
   capacity: u32 = len(storage)
   removed: Bool = false
   capacity > u32(0) ? {
-    index: u32 = u32_trunc_u64(filter_mix(key) % u64(capacity))
+    index: u32 = u32_trunc_u64(filters.filter_mix(key) % u64(capacity))
     visited: u32 = 0
     stop: Bool = false
     while visited < capacity && !stop {

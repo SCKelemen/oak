@@ -70,7 +70,10 @@ h: { Key: type, key: (u64) -> Key, hash: (Key) -> u64 } = import("example.com/he
 // Instantiate a generic package (`package pair[T, N: u32]`)
 bytes := import("example.com/hello/pair")[u8, 3]
 
-// Bootstrap standard library (unqualified prelude, see the spec)
+// Standard library packages (json loads strings, unicode and the core prelude)
+import("json")
+
+// Legacy flat prelude: every library name unqualified
 import(std)
 ```
 

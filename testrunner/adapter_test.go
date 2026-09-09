@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -65,6 +66,11 @@ func compileAdapterFixture(t *testing.T, dir, source string) string {
 }
 
 func TestNativeAdapterReplayPinsImplementation(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		// The adapter contract admits self-contained archives and ELF
+		// relocatable objects; Apple's toolchain produces Mach-O objects.
+		t.Skip("native adapters require an ELF toolchain")
+	}
 	dir := fixture(t, map[string]string{"a_test.oak": `import(testing)
 adapt: (x: c.UInt32): c.UInt32 = c.extern("fixture_apply")
 SimNative: (data: []u8): () {

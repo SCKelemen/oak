@@ -33,12 +33,17 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 			return fmt.Errorf("import: unsupported module %q", imp.Path.Value)
 		}
 	}
-	if !imported && !testingImported {
+	coreOnly := !imported && tree.Modules != nil && tree.Modules.PreludeCore
+	if !imported && !testingImported && !coreOnly {
 		return nil
 	}
 	librarySource := ""
 	if imported {
 		librarySource = stdlib.Source
+	} else if coreOnly {
+		// Standard library packages build on the core prelude (std.oak)
+		// unqualified (docs/spec/83-modules.md section 9).
+		librarySource = stdlib.Prelude
 	}
 	if testingImported {
 		librarySource += "\n" + stdlib.TestingSource

@@ -1,7 +1,10 @@
 // Package stdlib embeds Oak source, not host-language implementations.
 package stdlib
 
-import _ "embed"
+import (
+	_ "embed"
+	"regexp"
+)
 
 // baseSource is the opt-in bootstrap module loaded by import(std).
 //
@@ -32,7 +35,34 @@ var hashTableSource string
 //go:embed bitset_algebra.oak
 var bitsetAlgebraSource string
 
-var Source = baseSource + "\n" + causalFrontierSource + "\n" + unicodeSource + "\n" + stringsSource + "\n" + jsonSource + "\n" + filtersSource + "\n" + hashTableSource + "\n" + bitsetAlgebraSource
+// Prelude is the core library (std.oak): Option, Result, Overflow, byte and
+// ring helpers. Every standard library package builds on it unqualified, and
+// the loader splices it into any program that imports a library package.
+var Prelude = baseSource
+
+// Source is the legacy flat prelude of `import(std)`: the core plus every
+// library package flattened — package clauses and imports dropped, qualified
+// cross-references de-qualified — in dependency order. Library sources are
+// written once as real packages (docs/spec/83-modules.md section 9); the
+// flat spelling is derived here so the two views cannot drift.
+var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
+	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
+	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource)
+
+var (
+	clauseLine    = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
+	importLine    = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
+	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier)\.`)
+)
+
+// flatten derives the prelude spelling of a library package: no clause, no
+// imports, unqualified references. Library identifiers are unique across
+// files (they were one namespace), so de-qualification is unambiguous.
+func flatten(text string) string {
+	text = clauseLine.ReplaceAllString(text, "")
+	text = importLine.ReplaceAllString(text, "")
+	return qualification.ReplaceAllString(text, "")
+}
 
 // TestingSource is the opt-in import(testing) module. Its reporting boundary
 // is supplied by oak test; generated target helpers use caller-owned storage.

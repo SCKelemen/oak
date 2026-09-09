@@ -1,4 +1,8 @@
 // Text algorithms over explicitly borrowed code units. No allocation.
+package strings
+
+import("unicode")
+
 pub TextError: type = InvalidEncoding | InvalidScalar | OutOfBounds | DestinationTooSmall | SizeOverflow | EmptySeparator | Empty
 pub TextScalar: type = struct { value: u32, next: u32 }
 pub TextRange: type = struct { start: u32, end: u32 }
@@ -600,19 +604,19 @@ pub text_followed_by_cased: (src: []u8, offset: u32): Bool {
   cased: Bool = false
   while at < len(src) && searching {
     item: TextScalar = text_decoded(utf8_decode(src, at))
-    !unicode_is_case_ignorable(item.value) ? {
-      cased = unicode_is_cased(item.value)
+    !unicode.unicode_is_case_ignorable(item.value) ? {
+      cased = unicode.unicode_is_cased(item.value)
       searching = false
     }
     at = item.next
   }
   cased
 }
-pub text_case_mapping: (src: []u8, item: TextScalar, preceded: Bool, mode: u32): UnicodeMapping {
-  mode == u32(1) ? { unicode_upper(item.value) } | mode == u32(2) ? { unicode_fold(item.value) } | {
+pub text_case_mapping: (src: []u8, item: TextScalar, preceded: Bool, mode: u32): unicode.UnicodeMapping {
+  mode == u32(1) ? { unicode.unicode_upper(item.value) } | mode == u32(2) ? { unicode.unicode_fold(item.value) } | {
     item.value == u32(931) && preceded && !text_followed_by_cased(src, item.next) ? {
-      UnicodeMapping { count: u32(1), first: u32(962), second: u32(0), third: u32(0) }
-    } | { unicode_lower(item.value) }
+      unicode.UnicodeMapping { count: u32(1), first: u32(962), second: u32(0), third: u32(0) }
+    } | { unicode.unicode_lower(item.value) }
   }
 }
 pub text_case_size: (src: []u8, mode: u32): Result[u32, TextError] {
@@ -623,13 +627,13 @@ pub text_case_size: (src: []u8, mode: u32): Result[u32, TextError] {
     preceded: Bool = false
     while at < len(src) {
       item: TextScalar = text_decoded(utf8_decode(src, at))
-      mapping: UnicodeMapping = text_case_mapping(src, item, preceded, mode)
+      mapping: unicode.UnicodeMapping = text_case_mapping(src, item, preceded, mode)
       i: u32 = 0
       while i < mapping.count {
-        total = total + u64(utf8_width(unicode_mapping_at(mapping, i)))
+        total = total + u64(utf8_width(unicode.unicode_mapping_at(mapping, i)))
         i = i + u32(1)
       }
-      !unicode_is_case_ignorable(item.value) ? { preceded = unicode_is_cased(item.value) }
+      !unicode.unicode_is_case_ignorable(item.value) ? { preceded = unicode.unicode_is_cased(item.value) }
       at = item.next
     }
     total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
@@ -643,15 +647,15 @@ pub text_case_into: (dst: [*]u8, src: []u8, mode: u32): Result[u32, TextError] {
     preceded: Bool = false
     while at < len(src) {
       item: TextScalar = text_decoded(utf8_decode(src, at))
-      mapping: UnicodeMapping = text_case_mapping(src, item, preceded, mode)
+      mapping: unicode.UnicodeMapping = text_case_mapping(src, item, preceded, mode)
       i: u32 = 0
       while i < mapping.count {
-        encoded: Result[u32, TextError] = utf8_encode(dst, out, unicode_mapping_at(mapping, i))
+        encoded: Result[u32, TextError] = utf8_encode(dst, out, unicode.unicode_mapping_at(mapping, i))
         assert(text_result_ok(encoded))
         out = out + text_result_value(encoded)
         i = i + u32(1)
       }
-      !unicode_is_case_ignorable(item.value) ? { preceded = unicode_is_cased(item.value) }
+      !unicode.unicode_is_case_ignorable(item.value) ? { preceded = unicode.unicode_is_cased(item.value) }
       at = item.next
     }
     .Ok(out)
@@ -660,18 +664,18 @@ pub text_case_into: (dst: [*]u8, src: []u8, mode: u32): Result[u32, TextError] {
 pub text_to_lower: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(0))
 pub text_to_upper: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(1))
 pub text_case_fold: (dst: [*]u8, src: []u8): Result[u32, TextError] = text_case_into(dst, src, u32(2))
-pub TextFoldCursor: type = struct { next: u32, index: u32, mapping: UnicodeMapping }
+pub TextFoldCursor: type = struct { next: u32, index: u32, mapping: unicode.UnicodeMapping }
 pub text_fold_next: (cursor: [*]TextFoldCursor, src: []u8): Option[u32] {
   assert(len(cursor) == u32(1))
   assert(cursor[0].next <= len(src))
   cursor[0].index == cursor[0].mapping.count && cursor[0].next < len(src) ? {
     item: TextScalar = text_decoded(utf8_decode(src, cursor[0].next))
     cursor[0].next = item.next
-    cursor[0].mapping = unicode_fold(item.value)
+    cursor[0].mapping = unicode.unicode_fold(item.value)
     cursor[0].index = u32(0)
   }
   cursor[0].index == cursor[0].mapping.count ? { .None } | {
-    value: u32 = unicode_mapping_at(cursor[0].mapping, cursor[0].index)
+    value: u32 = unicode.unicode_mapping_at(cursor[0].mapping, cursor[0].index)
     cursor[0].index = cursor[0].index + u32(1)
     .Some(value)
   }

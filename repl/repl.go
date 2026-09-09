@@ -10,11 +10,10 @@ import (
 	"golang.org/x/term"
 
 	"github.com/SCKelemen/oak/ast"
-	"github.com/SCKelemen/oak/evaluator"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
-	"github.com/SCKelemen/oak/typechecker"
 )
 
 const PROMPT = "🌳> "
@@ -268,8 +267,11 @@ func removeLineContinuation(line string) string {
 
 func Start(in io.Reader, out io.Writer) {
 	history := NewHistory()
-	env := object.NewEnvironment()
-	typeChecker := typechecker.New(env)
+	moduleDir, err := os.Getwd()
+	if err != nil {
+		moduleDir = "."
+	}
+	session := NewSession(moduleDir)
 
 	// Try to get file descriptors for terminal control
 	var inFile *os.File
@@ -355,6 +357,14 @@ func Start(in io.Reader, out io.Writer) {
 
 			// Try parsing to see if input is complete
 			currentInput := fullInput.String()
+			// REPL directives are complete once their parentheses balance;
+			// their arguments are handled textually (see :typeof below).
+			if strings.HasPrefix(strings.TrimSpace(currentInput), ":") {
+				if strings.Count(currentInput, "(") <= strings.Count(currentInput, ")") {
+					break
+				}
+				continue
+			}
 			lxr := scanner.New(currentInput)
 			p := parser.New(lxr)
 			_ = p.ParseProgram()
@@ -376,6 +386,23 @@ func Start(in io.Reader, out io.Writer) {
 
 		input := fullInput.String()
 		if strings.TrimSpace(input) == "" {
+			continue
+		}
+
+		// :typeof takes an arbitrary expression; resolve it against the
+		// session textually before the directive parser sees it.
+		if trimmed := strings.TrimSpace(input); strings.HasPrefix(trimmed, ":typeof(") && strings.HasSuffix(trimmed, ")") {
+			text := strings.TrimSuffix(strings.TrimPrefix(trimmed, ":typeof("), ")")
+			exprType, err := session.TypeOf(text)
+			switch {
+			case err != nil:
+				fmt.Fprintf(out, "Type errors:\n  %s\n", strings.ReplaceAll(err.Error(), "\n", "\n  "))
+			case exprType != nil:
+				fmt.Fprintf(out, "%s\n", modules.DemangleText(exprType.String()))
+			default:
+				fmt.Fprintf(out, "unknown type\n")
+			}
+			history.Reset()
 			continue
 		}
 
@@ -408,6 +435,11 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "  :intsize(size)   - Set size of int/uint (32 or 64)\n")
 					fmt.Fprintf(out, "  :intsize()       - Print current int/uint size\n")
 					fmt.Fprintf(out, "\n")
+					fmt.Fprintf(out, "Inputs are checked by the full compiler pipeline. Imports resolve through\n")
+					fmt.Fprintf(out, "the module (oak.mod) enclosing the working directory: import(\"...\"), pub,\n")
+					fmt.Fprintf(out, "sealed imports and derive work as in a build. Submit imports and\n")
+					fmt.Fprintf(out, "declarations as separate inputs; an expression may follow declarations.\n")
+					fmt.Fprintf(out, "\n")
 					fmt.Fprintf(out, "Multiline input: End a line with \\ to continue on the next line\n")
 					fmt.Fprintf(out, "  Example: Color: type = \\\n")
 					fmt.Fprintf(out, "            | Red | Green | Blue\n")
@@ -416,8 +448,7 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "\033[2J\033[H")
 					continue
 				case "reset":
-					env = object.NewEnvironment()
-					typeChecker = typechecker.New(env)
+					session.Reset()
 					fmt.Fprintf(out, "Environment reset.\n")
 					continue
 				case "typeof":
@@ -425,33 +456,26 @@ func Start(in io.Reader, out io.Writer) {
 						fmt.Fprintf(out, "Usage: :typeof(expression)\n")
 						continue
 					}
-					expr := replCmd.Args[0]
-					typeChecker.ClearErrors()
-					var exprType typechecker.Type
-					exprType = typeChecker.ParseTypeExpression(expr)
-					if exprType == nil {
-						typeChecker.ClearErrors()
-						exprType = typeChecker.CheckExpression(expr)
-					}
-					if len(typeChecker.Errors()) > 0 {
-						fmt.Fprintf(out, "Type errors:\n")
-						for _, err := range typeChecker.Errors() {
-							fmt.Fprintf(out, "  %s\n", err)
-						}
+					text := strings.TrimSpace(input)
+					text = strings.TrimPrefix(text, ":typeof(")
+					text = strings.TrimSuffix(text, ")")
+					exprType, err := session.TypeOf(text)
+					if err != nil {
+						fmt.Fprintf(out, "Type errors:\n  %s\n", strings.ReplaceAll(err.Error(), "\n", "\n  "))
 					} else if exprType != nil {
-						fmt.Fprintf(out, "%s\n", exprType.String())
+						fmt.Fprintf(out, "%s\n", modules.DemangleText(exprType.String()))
 					} else {
 						fmt.Fprintf(out, "unknown type\n")
 					}
 					continue
 				case "ptrsize":
 					if len(replCmd.Args) == 0 {
-						fmt.Fprintf(out, "ptr/uptr size: %d bits\n", typeChecker.GetPtrSize())
+						fmt.Fprintf(out, "ptr/uptr size: %d bits\n", session.PtrSize)
 					} else if len(replCmd.Args) == 1 {
 						if intLit, ok := replCmd.Args[0].(*ast.IntegerLiteral); ok {
 							size := int(intLit.Value)
 							if size == 32 || size == 64 {
-								typeChecker.SetPtrSize(size)
+								session.PtrSize = size
 								fmt.Fprintf(out, "ptr/uptr size set to %d bits\n", size)
 							} else {
 								fmt.Fprintf(out, "Error: ptrsize must be 32 or 64, got %d\n", size)
@@ -465,12 +489,12 @@ func Start(in io.Reader, out io.Writer) {
 					continue
 				case "intsize":
 					if len(replCmd.Args) == 0 {
-						fmt.Fprintf(out, "int/uint size: %d bits\n", typeChecker.GetIntSize())
+						fmt.Fprintf(out, "int/uint size: %d bits\n", session.IntSize)
 					} else if len(replCmd.Args) == 1 {
 						if intLit, ok := replCmd.Args[0].(*ast.IntegerLiteral); ok {
 							size := int(intLit.Value)
 							if size == 32 || size == 64 {
-								typeChecker.SetIntSize(size)
+								session.IntSize = size
 								fmt.Fprintf(out, "int/uint size set to %d bits\n", size)
 							} else {
 								fmt.Fprintf(out, "Error: intsize must be 32 or 64, got %d\n", size)
@@ -486,24 +510,19 @@ func Start(in io.Reader, out io.Writer) {
 			}
 		}
 
-		typeChecker.ClearErrors()
-		typeChecker.CheckProgram(program)
-		if len(typeChecker.Errors()) != 0 {
-			for _, msg := range typeChecker.Errors() {
-				io.WriteString(out, "\t[type error] "+msg+"\n")
-			}
+		// Every input goes through the compiler pipeline (module loader,
+		// type/borrow/discipline gates) and expressions are evaluated over
+		// the elaborated program (repl/session.go).
+		outcome, err := session.Submit(input)
+		if err != nil {
+			io.WriteString(out, strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "\n\t")+"\n")
 			continue
 		}
-
-		val := evaluator.Eval(program, env)
-		if val != nil {
-			if val.Type() == object.ERROR_OBJ {
-				io.WriteString(out, val.Inspect())
-				io.WriteString(out, "\n")
-			} else if val.Type() != object.NULL_OBJ {
-				io.WriteString(out, val.Inspect())
-				io.WriteString(out, "\n")
-			}
+		if outcome.Value != nil && outcome.Value.Type() != object.NULL_OBJ {
+			io.WriteString(out, outcome.Value.Inspect())
+			io.WriteString(out, "\n")
+		} else if outcome.Committed && outcome.Type != nil {
+			fmt.Fprintf(out, ": %s\n", modules.DemangleText(outcome.Type.String()))
 		}
 		// When there's no output, readLineWithHistory already printed \n
 		// The next call to readLineWithHistory will print the prompt on a fresh line

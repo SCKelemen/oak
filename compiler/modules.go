@@ -106,9 +106,15 @@ type ModuleInfo struct {
 	// Obligations are the sealed-import member types the type checker must
 	// verify after checking the program.
 	Obligations []typechecker.SignatureObligation
+	// Parameters are the generic package instantiation constraints the
+	// type checker must verify.
+	Parameters []typechecker.ParameterObligation
 	// SealedOpaque maps an internal type name to the packages that sealed
 	// it as an abstract type member.
 	SealedOpaque map[string]map[string]bool
+	// PreludeCore requests the core prelude (std.oak) because a standard
+	// library package was imported; `import(std)` requests the full one.
+	PreludeCore bool
 	// Abstract maps each fresh abstract type (one per sealed binding and
 	// type member) to the internal name of its underlying type.
 	Abstract map[string]string
@@ -171,15 +177,15 @@ type loadedPackage struct {
 	Edges   []string                  // imported package paths
 	Exports modules.Exports
 	Renames map[string]string
-	// IsView marks a standard library package view (section 9): flat
-	// prelude declarations exposed under a qualifier, never renamed.
-	IsView bool
 	// TemplatePath is the generic package's import path when this package
 	// is an instantiation (Path carries the arguments after '@').
 	TemplatePath string
 	// Selective maps unqualified selective-import names to their binding.
 	Selective map[string]*importBinding
-	Bootstrap map[string]*ast.ImportStatement
+	// pendingParams are instantiation constraints awaiting the instance's
+	// rename table (finishPackage).
+	pendingParams []typechecker.ParameterObligation
+	Bootstrap     map[string]*ast.ImportStatement
 	// statements after elaboration, in source order across files
 	Statements []ast.Statement
 }
@@ -200,6 +206,11 @@ type moduleLoader struct {
 	opaque      map[string]string
 	sealed      map[string]map[string]bool
 	abstract    map[string]string
+	preludeCore bool
+	parameters  []typechecker.ParameterObligation
+	// session relaxes the unused-import rule for the root package: a REPL
+	// imports first and uses later.
+	session     bool
 	obligations []typechecker.SignatureObligation
 }
 
@@ -225,6 +236,16 @@ func (comp Compilation) WithModuleCache(dir string) Compilation {
 	return comp
 }
 
+// WithSessionSources configures an in-memory root package (the REPL's
+// session): files are named sources, and imports resolve through the module
+// enclosing moduleDir (the working directory, typically) as if the package
+// lived at `<module path>/repl`. Nothing is written to disk.
+func (comp Compilation) WithSessionSources(moduleDir string, files map[string]string) Compilation {
+	comp.packageDir = moduleDir
+	comp.sessionFiles = files
+	return comp
+}
+
 func (comp Compilation) parsePackageBuild() (*SyntaxTree, error) {
 	loader := &moduleLoader{
 		comp:     comp,
@@ -237,6 +258,16 @@ func (comp Compilation) parsePackageBuild() (*SyntaxTree, error) {
 	}
 	if loader.cache == "" {
 		loader.cache = os.Getenv("OAKMODCACHE")
+	}
+	if comp.sessionFiles != nil {
+		tree, ok := loader.loadSession(comp.packageDir, comp.sessionFiles)
+		if !ok || len(loader.diagnostics) != 0 {
+			if len(loader.diagnostics) == 0 {
+				return nil, fmt.Errorf("modules failed")
+			}
+			return nil, &DiagnosticError{Phase: "modules", Diagnostics: loader.diagnostics}
+		}
+		return tree, nil
 	}
 	tree, ok := loader.load(comp.packageDir)
 	if !ok || len(loader.diagnostics) != 0 {
@@ -304,6 +335,12 @@ func (l *moduleLoader) load(dir string) (*SyntaxTree, bool) {
 	if len(l.diagnostics) != 0 {
 		return nil, false
 	}
+	return l.orderAndElaborate(rootPkg)
+}
+
+// orderAndElaborate orders the loaded graph, elaborates every package in
+// dependency order, and merges the program.
+func (l *moduleLoader) orderAndElaborate(rootPkg *loadedPackage) (*SyntaxTree, bool) {
 	// Order the closed graph.
 	nodes := make([]string, 0, len(l.packages))
 	graph := map[string][]string{}
@@ -334,6 +371,58 @@ func (l *moduleLoader) load(dir string) (*SyntaxTree, bool) {
 		return nil, false
 	}
 	return l.merge(order, rootPkg), true
+}
+
+// loadSession builds an in-memory root package (the REPL session) inside the
+// module enclosing moduleDir, or outside any module when there is none.
+func (l *moduleLoader) loadSession(moduleDir string, files map[string]string) (*SyntaxTree, bool) {
+	absDir, err := filepath.Abs(moduleDir)
+	if err != nil {
+		l.report(CodeManifest, nil, "session directory %s: %v", moduleDir, err)
+		return nil, false
+	}
+	l.session = true
+	rootPath := "main"
+	if root, found := l.findModuleRoot(absDir); found {
+		if !l.locateDependencies() {
+			return nil, false
+		}
+		rootPath = root.Manifest.Path + "/repl"
+	} else if len(l.diagnostics) != 0 {
+		return nil, false
+	}
+	pkg := &loadedPackage{
+		Path:         rootPath,
+		Dir:          absDir,
+		IsRoot:       true,
+		TemplatePath: rootPath,
+		Imports:      map[string]*importBinding{},
+		Selective:    map[string]*importBinding{},
+		Exports:      modules.Exports{},
+		Renames:      map[string]string{},
+		Bootstrap:    map[string]*ast.ImportStatement{},
+	}
+	l.packages[rootPath] = pkg
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		file, parsed := l.parseFile(name, files[name])
+		if !parsed {
+			return nil, false
+		}
+		pkg.Files = append(pkg.Files, file)
+	}
+	if len(pkg.Files) == 0 {
+		l.report(CodeManifest, nil, "session has no source")
+		return nil, false
+	}
+	if l.finishPackage(pkg, nil, nil) == nil || len(l.diagnostics) != 0 {
+		return nil, false
+	}
+	return l.orderAndElaborate(pkg)
 }
 
 // findModuleRoot walks up from dir looking for oak.mod.
@@ -568,6 +657,41 @@ func (l *moduleLoader) loadPackageInstance(dir, path, template string, arguments
 	if !ok {
 		return nil
 	}
+	return l.finishPackage(pkg, arguments, importer)
+}
+
+// loadStdlibPackage loads an embedded standard library file as a real
+// package (docs/spec/83-modules.md section 9): its declarations are renamed
+// like any dependency, its own library imports resolve recursively, and the
+// core prelude is spliced into the program for the names it uses unqualified.
+func (l *moduleLoader) loadStdlibPackage(path, text string) *loadedPackage {
+	if existing, loaded := l.packages[path]; loaded {
+		return existing
+	}
+	pkg := &loadedPackage{
+		Path:         path,
+		Dir:          "<stdlib>",
+		TemplatePath: path,
+		Imports:      map[string]*importBinding{},
+		Selective:    map[string]*importBinding{},
+		Exports:      modules.Exports{},
+		Renames:      map[string]string{},
+		Bootstrap:    map[string]*ast.ImportStatement{},
+	}
+	l.packages[path] = pkg
+	l.preludeCore = true
+	file, parsed := l.parseFile("<stdlib>/"+path+".oak", text)
+	if !parsed {
+		return nil
+	}
+	pkg.Files = []*packageFile{file}
+	return l.finishPackage(pkg, nil, nil)
+}
+
+// finishPackage runs the per-package steps after its files are parsed:
+// instantiation, clause check, declaration and import tables, and the
+// recursive load of what it imports.
+func (l *moduleLoader) finishPackage(pkg *loadedPackage, arguments []ast.Expression, importer *importBinding) *loadedPackage {
 	if !l.instantiate(pkg, arguments, importer) {
 		return nil
 	}
@@ -575,6 +699,20 @@ func (l *moduleLoader) loadPackageInstance(dir, path, template string, arguments
 		return nil
 	}
 	l.collectDeclarations(pkg)
+	// Parameter constraints name the template's own declarations; resolve
+	// them to the instance's internal names now that the rename table exists.
+	for _, obligation := range pkg.pendingParams {
+		(&syntaxVisitor{ident: func(id *ast.Identifier, label bool) {
+			if label {
+				return
+			}
+			if internal, renamed := pkg.Renames[id.Value]; renamed {
+				id.Value = internal
+			}
+		}}).walk(reflect.ValueOf(&obligation.Constraint).Elem(), false)
+		l.parameters = append(l.parameters, obligation)
+	}
+	pkg.pendingParams = nil
 	if !l.collectImports(pkg) {
 		return nil
 	}
@@ -595,13 +733,8 @@ func (l *moduleLoader) loadPackageInstance(dir, path, template string, arguments
 			l.loadPackageInstance(depDir, binding.Path, binding.Template, binding.Arguments, binding, false)
 			continue
 		}
-		if viewSource, isView := stdlib.Packages[binding.Path]; isView {
-			// A standard library package view (section 9) rides on the
-			// bootstrap prelude.
-			if _, present := pkg.Bootstrap["std"]; !present {
-				pkg.Bootstrap["std"] = &ast.ImportStatement{Token: binding.Statement.Token, Path: &ast.Identifier{Token: binding.Statement.Token, Value: "std"}}
-			}
-			l.loadStdlibView(binding.Path, viewSource)
+		if librarySource, isLibrary := stdlib.Packages[binding.Path]; isLibrary {
+			l.loadStdlibPackage(binding.Path, librarySource)
 			continue
 		}
 		depDir, found := l.resolveImportDir(binding.Path)
@@ -704,35 +837,6 @@ func declarationsOf(file *packageFile) []ast.Statement {
 		}
 	}
 	return file.Root.Statements
-}
-
-// loadStdlibView registers a standard library package view: the
-// declarations of one embedded library file, all exported, resolved to their
-// flat prelude names (section 9).
-func (l *moduleLoader) loadStdlibView(path, text string) *loadedPackage {
-	tree, err := New().WithSource(path+".oak", text).Parse().Get()
-	if err != nil {
-		l.report(CodeImportUnresolvable, nil, "standard library package %s: %v", path, err)
-		return nil
-	}
-	pkg := &loadedPackage{
-		Path:      path,
-		Name:      path,
-		IsView:    true,
-		Imports:   map[string]*importBinding{},
-		Exports:   modules.Exports{},
-		Renames:   map[string]string{},
-		Bootstrap: map[string]*ast.ImportStatement{},
-	}
-	for _, stmt := range tree.Root.Statements {
-		name, kind, exported, opaque, _ := declarationMember(stmt)
-		if name == "" {
-			continue
-		}
-		pkg.Exports[name] = modules.Member{Name: name, Kind: kind, Exported: exported, Opaque: opaque}
-	}
-	l.packages[path] = pkg
-	return pkg
 }
 
 // collectDeclarations builds the export table and the rename map.
@@ -1035,7 +1139,7 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 	}
 	for _, alias := range sortedAliases(pkg.Imports) {
 		binding := pkg.Imports[alias]
-		if !binding.Used {
+		if !binding.Used && !(l.session && pkg.IsRoot) {
 			d := l.reportAt(CodeImportAlias, binding.File, binding.Statement, "import %q is unused", binding.Path)
 			d.AddHelp("remove the import or use one of its members")
 		}
@@ -1132,9 +1236,6 @@ func (l *moduleLoader) resolveMember(pkg *loadedPackage, file *packageFile, bind
 	internal := modules.Mangle(binding.Path, member)
 	if target == nil {
 		return internal
-	}
-	if target.IsView {
-		internal = member
 	}
 	found, outcome := modules.Lookup(target.Exports, binding.sig, member)
 	switch outcome {
@@ -1243,9 +1344,6 @@ func (l *moduleLoader) prepareSignature(pkg *loadedPackage, binding *importBindi
 		if ident, isIdent := field.Value.(*ast.Identifier); isIdent && ident.Value == "type" {
 			binding.sigKinds[field.Name] = modules.KindType
 			internal := modules.Mangle(binding.Path, field.Name)
-			if target.IsView {
-				internal = field.Name
-			}
 			typeMembers[field.Name] = internal
 			if field.Manifest != nil {
 				// `Key: type = T`: shared, transparent; T must be the
@@ -1348,7 +1446,7 @@ func (l *moduleLoader) signatureShape(pkg *loadedPackage, binding *importBinding
 			}
 			other.Used = true
 			source := l.packages[other.Path]
-			if source == nil || source.IsView {
+			if source == nil {
 				break
 			}
 			if _, outcome := modules.Lookup(source.Exports, other.sig, member); outcome != modules.Resolved {
@@ -1391,15 +1489,11 @@ func (l *moduleLoader) collectObligations(pkg *loadedPackage, binding *importBin
 	if binding.shape == nil {
 		return
 	}
-	target := l.packages[binding.Path]
 	for _, field := range binding.shape.FieldOrder {
 		if binding.sigKinds[field.Name] != modules.KindValue {
 			continue
 		}
 		internal := modules.Mangle(binding.Path, field.Name)
-		if target != nil && target.IsView {
-			internal = field.Name
-		}
 		l.obligations = append(l.obligations, typechecker.SignatureObligation{
 			Internal: internal,
 			Member:   binding.Alias + "." + field.Name,
@@ -1451,7 +1545,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	}
 	program.Statements = append(program.Statements, root.Statements...)
 	public := &ast.Program{Statements: append([]ast.Statement(nil), root.Statements...)}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Packages: order}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,
@@ -1591,9 +1685,6 @@ func (l *moduleLoader) argumentAtom(pkg *loadedPackage, argument ast.Expression)
 			if bootstrapImports[binding.Path] {
 				return member, true
 			}
-			if _, isView := stdlib.Packages[binding.Path]; isView {
-				return member, true
-			}
 			return modules.Mangle(binding.Path, member), true
 		}
 		if member, declared := pkg.Exports[a.Value]; declared && member.Kind == modules.KindType {
@@ -1670,6 +1761,30 @@ func (l *moduleLoader) instantiate(pkg *loadedPackage, arguments []ast.Expressio
 	resolved := map[string]ast.Expression{}
 	for name, argument := range bindings {
 		resolved[name] = l.resolvedArgument(importer, argument)
+	}
+	// Declared parameter contracts are checked at the import site by the
+	// type checker, against the resolved argument (section 6.7).
+	for _, param := range params {
+		if param.Constraint == nil {
+			continue
+		}
+		// `N: u32` is a const parameter: its argument must be an integer
+		// constant, which the substitution already requires literally.
+		if kind, isIdent := param.Constraint.(*ast.Identifier); isIdent && primitiveTypeNames[kind.Value] {
+			if _, isLiteral := resolved[param.Name.Value].(*ast.IntegerLiteral); !isLiteral {
+				l.reportAt(CodeGenericPackageArgument, importer.File, importer.Statement, "parameter %s: %s takes an integer constant, got %s", param.Name.Value, kind.Value, resolved[param.Name.Value].String())
+				return false
+			}
+			continue
+		}
+		constraint := cloneSyntax(reflect.ValueOf(param.Constraint)).Interface().(ast.Expression)
+		pkg.pendingParams = append(pkg.pendingParams, typechecker.ParameterObligation{
+			Package:    pkg.TemplatePath,
+			Param:      param.Name.Value,
+			Constraint: constraint,
+			Argument:   resolved[param.Name.Value],
+			Node:       importer.Statement,
+		})
 	}
 	for _, file := range pkg.Files {
 		for _, stmt := range file.Root.Statements {
