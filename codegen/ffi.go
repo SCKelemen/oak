@@ -404,7 +404,7 @@ func (cg *CodeGenerator) emitExternPrototype(fn *ast.FunctionStatement) {
 		cg.write("void")
 	}
 	for i, param := range fn.Parameters {
-		cg.write(fmt.Sprintf("%s %s", cg.parseTypeExpression(param.Type), param.Name.Value))
+		cg.write(fmt.Sprintf("%s %s", cg.parseTypeExpression(param.Type), cIdent(param.Name.Value)))
 		if i < len(fn.Parameters)-1 {
 			cg.write(", ")
 		}

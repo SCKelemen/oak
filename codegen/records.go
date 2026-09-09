@@ -181,11 +181,11 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 		// Array fields need the C declarator form: u8 buffer[ 16 ];
 		if indexExpr, isIndex := field.Value.(*ast.IndexExpression); isIndex {
 			if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed {
-				cg.write(fmt.Sprintf("  %s %s[ %d ]%s;\n", cg.parseTypeExpression(indexExpr.Left), field.Name, length.Value, memberAlign))
+				cg.write(fmt.Sprintf("  %s %s[ %d ]%s;\n", cg.parseTypeExpression(indexExpr.Left), cIdent(field.Name), length.Value, memberAlign))
 				continue
 			}
 		}
-		cg.write(fmt.Sprintf("  %s %s%s;\n", cg.parseTypeExpression(field.Value), field.Name, memberAlign))
+		cg.write(fmt.Sprintf("  %s %s%s;\n", cg.parseTypeExpression(field.Value), cIdent(field.Name), memberAlign))
 	}
 	// GNU attribute syntax (GCC/Clang, the recorded C targets): the layout
 	// attributes sit between the member list and the typedef name.
@@ -209,7 +209,7 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 	}
 	for _, placed := range layout.Fields {
 		cg.write(fmt.Sprintf("typedef char oak_layout_off_%s_%s[ (offsetof(%s, %s) == %du) ? 1 : -1 ];\n",
-			typeName, placed.Name, cName, placed.Name, placed.Offset))
+			typeName, cIdent(placed.Name), cName, cIdent(placed.Name), placed.Offset))
 	}
 	cg.write("\n")
 }

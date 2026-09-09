@@ -161,3 +161,18 @@ Early formal-refinement candidates:
 - effect-free generic specialization.
 
 The C backend should maintain golden/compile/run tests in addition to formal models. Formal models do not replace generated-code testing.
+
+## C identifier mangling
+
+An Oak value or field identifier is emitted verbatim into C unless its
+spelling is a C keyword (`short`, `signed`, `default`, `register`, …), a
+leading-underscore name (reserved to the C implementation), or a name in
+the emitter's own `oak_` namespace (`oak_assert`); those emit as
+`oak_id_<name>` at every site — locals, parameters, globals, record field
+declarators and accesses, designated initializers, `offsetof` operands,
+match binders. Function names are not routed through this mapping: they
+already carry the `oak_` (or package) prefix. The mapping is one function
+(`codegen/identifiers.go`, `cIdent`) and idempotent, so nested emitters
+cannot double-mangle. Oak keywords (`struct`, `type`) cannot be
+identifiers at all, and Oak's own type spellings (`int`, `u32`) lower
+through the type table, never through this mapping.

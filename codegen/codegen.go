@@ -724,7 +724,7 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 			// The body sees a read-only view of the caller-owned argument
 			// array (docs/spec/10-syntax.md, variadic parameters).
 			viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
-			cg.write(fmt.Sprintf("%s %s", viewType, param.Name.Value))
+			cg.write(fmt.Sprintf("%s %s", viewType, cIdent(param.Name.Value)))
 		} else {
 			cg.write(cg.cParameter(param.Type, param.Name.Value))
 		}
@@ -861,7 +861,7 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 						restorePayload = cg.bindMatchContainer(binding.Name.Value, variant.Payload)
 					}
 				}
-				cg.write(fmt.Sprintf("    %s %s = ", payloadType, binding.Name.Value))
+				cg.write(fmt.Sprintf("    %s %s = ", payloadType, cIdent(binding.Name.Value)))
 				cg.emitExpressionFragment(match.Scrutinee, tc)
 				cg.output.WriteString(fmt.Sprintf(".payload.%s;\n", variantName))
 			}
@@ -1000,7 +1000,7 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 						restorePayload = cg.bindMatchContainer(binding.Name.Value, variant.Payload)
 					}
 				}
-				cg.write(fmt.Sprintf("    %s %s = ", payloadType, binding.Name.Value))
+				cg.write(fmt.Sprintf("    %s %s = ", payloadType, cIdent(binding.Name.Value)))
 				cg.emitExpressionFragment(match.Scrutinee, tc)
 				cg.output.WriteString(fmt.Sprintf(".payload.%s;\n", variantName))
 			}
@@ -1416,7 +1416,7 @@ func (cg *CodeGenerator) emitLayoutBuiltin(ident *ast.Identifier, e *ast.Invocat
 		case "align_of":
 			cg.output.WriteString(fmt.Sprintf("((u32)_Alignof(%s))", typeName))
 		case "offset_of":
-			cg.output.WriteString(fmt.Sprintf("((u32)offsetof(%s, %s))", typeName, query.Field))
+			cg.output.WriteString(fmt.Sprintf("((u32)offsetof(%s, %s))", typeName, cIdent(query.Field)))
 		}
 		return true
 	}
@@ -1497,7 +1497,7 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 		for i, param := range fn.Parameters {
 			if param.Variadic {
 				viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
-				cg.write(fmt.Sprintf("%s %s", viewType, param.Name.Value))
+				cg.write(fmt.Sprintf("%s %s", viewType, cIdent(param.Name.Value)))
 			} else {
 				cg.write(cg.cParameter(param.Type, param.Name.Value))
 			}
@@ -1568,6 +1568,7 @@ func (cg *CodeGenerator) emitVariadicCall(fn *ast.FunctionStatement, call *ast.I
 // decay to pointers; the explicit-cost copy semantics of 50-borrowing
 // section 8 for owned aggregates is tracked as backend debt.
 func (cg *CodeGenerator) cParameter(typeExpr ast.Expression, name string) string {
+	name = cIdent(name)
 	if fn, ok := typeExpr.(*ast.FunctionTypeExpression); ok {
 		return cg.cFunctionPointer(fn, name)
 	}
@@ -1775,7 +1776,7 @@ func (cg *CodeGenerator) emitTrampolineGroup(members []string, tc *typechecker.T
 		cg.write(" ) {\n")
 		cg.write(fmt.Sprintf("  return %s( %s_%s", engine, engine, member))
 		for _, param := range fn.Parameters {
-			cg.write(", " + param.Name.Value)
+			cg.write(", " + cIdent(param.Name.Value))
 		}
 		cg.write(" );\n")
 		cg.write("}\n\n")
@@ -1801,7 +1802,7 @@ func (cg *CodeGenerator) emitTailGroupContinue(call *ast.InvocationExpression, s
 		if i >= len(call.Arguments) {
 			break
 		}
-		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", param.Name.Value, i))
+		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", cIdent(param.Name.Value), i))
 	}
 	cg.write(fmt.Sprintf("    __oak_state = %s;\n", stateTag))
 	cg.write("    continue;\n")
@@ -1827,7 +1828,7 @@ func (cg *CodeGenerator) emitTailLoopContinue(call *ast.InvocationExpression, tc
 		if i >= len(call.Arguments) {
 			break
 		}
-		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", param.Name.Value, i))
+		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", cIdent(param.Name.Value), i))
 	}
 	cg.write("    continue;\n")
 	cg.write("  }\n")
@@ -1988,7 +1989,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString("oak_Bool_False")
 		}
 	case *ast.Identifier:
-		cg.output.WriteString(e.Value)
+		cg.output.WriteString(cIdent(e.Value))
 	case *ast.InfixExpression:
 		cg.emitInfixExpression(e, tc)
 	case *ast.PrefixExpression:
@@ -2008,7 +2009,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		if e.Dot {
 			cg.emitExpressionFragment(e.Left, tc)
 			if ident, ok := e.Index.(*ast.Identifier); ok {
-				cg.output.WriteString(fmt.Sprintf(".%s", ident.Value))
+				cg.output.WriteString(fmt.Sprintf(".%s", cIdent(ident.Value)))
 			} else {
 				cg.output.WriteString(".OAK_UNSUPPORTED_FIELD")
 			}
@@ -2272,7 +2273,7 @@ func (cg *CodeGenerator) emitADTMatch(expr *ast.MatchExpression, tc *typechecker
 			if variantPattern.Payload != nil {
 				// Check if payload is a binding pattern
 				if bindingPattern, ok := variantPattern.Payload.(*ast.BindingPattern); ok {
-					payloadName := bindingPattern.Name.Value
+					payloadName := cIdent(bindingPattern.Name.Value)
 					// Try to determine payload type from ADT definition
 					payloadType := cg.inferPayloadType(adtDef, variantName, tc)
 					cg.write(fmt.Sprintf("      %s %s = scrutinee.payload.%s;\n", payloadType, payloadName, variantName))
@@ -2754,12 +2755,12 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 func (cg *CodeGenerator) emitLvaluePath(expr ast.Expression, tc *typechecker.TypeChecker) {
 	switch e := expr.(type) {
 	case *ast.Identifier:
-		cg.output.WriteString(e.Value)
+		cg.output.WriteString(cIdent(e.Value))
 	case *ast.IndexExpression:
 		if e.Dot {
 			cg.emitLvaluePath(e.Left, tc)
 			if ident, ok := e.Index.(*ast.Identifier); ok {
-				cg.output.WriteString(fmt.Sprintf(".%s", ident.Value))
+				cg.output.WriteString(fmt.Sprintf(".%s", cIdent(ident.Value)))
 			} else {
 				cg.output.WriteString(".OAK_UNSUPPORTED_FIELD")
 			}
@@ -2806,7 +2807,7 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 		cg.write("  ")
 		cg.emitLvaluePath(stmt.Target.Left, tc)
 		if fieldIdent, isIdent := stmt.Target.Index.(*ast.Identifier); isIdent {
-			cg.output.WriteString(fmt.Sprintf(".%s = ", fieldIdent.Value))
+			cg.output.WriteString(fmt.Sprintf(".%s = ", cIdent(fieldIdent.Value)))
 		} else {
 			cg.output.WriteString(".OAK_UNSUPPORTED_FIELD = ")
 		}
@@ -2874,13 +2875,13 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 				cg.write("  OAK_ATOMIC_INITIALIZER_MUST_BE_ZERO_INIT;\n")
 				return
 			}
-			cg.write(fmt.Sprintf("  %s %s = 0;\n", cType, varName))
+			cg.write(fmt.Sprintf("  %s %s = 0;\n", cType, cIdent(varName)))
 			return
 		}
 	}
 
 	if fn, ok := stmt.Type.(*ast.FunctionTypeExpression); ok {
-		cg.write("  " + cg.cFunctionPointer(fn, varName))
+		cg.write("  " + cg.cFunctionPointer(fn, cIdent(varName)))
 		if stmt.Value != nil {
 			cg.write(" = ")
 			cg.emitExpressionFragment(stmt.Value, tc)
@@ -2894,7 +2895,7 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 	// never leaves storage uninitialized).
 	if stmt.Type != nil {
 		if info := cg.classifyContainer(stmt.Type); info.kind == containerOwnedArray {
-			cg.write(fmt.Sprintf("  %s %s[%d]", info.element, varName, info.length))
+			cg.write(fmt.Sprintf("  %s %s[%d]", info.element, cIdent(varName), info.length))
 			if stmt.Value == nil {
 				cg.output.WriteString(" = {0}")
 			} else {
@@ -2921,7 +2922,7 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 	}
 
 	// C style: type name;
-	cg.write(fmt.Sprintf("  %s %s", varType, varName))
+	cg.write(fmt.Sprintf("  %s %s", varType, cIdent(varName)))
 
 	if stmt.Value != nil {
 		cg.write(" = ")
@@ -3012,7 +3013,7 @@ func (cg *CodeGenerator) emitRecordLiteral(expr *ast.RecordLiteral, tc *typechec
 		if !first {
 			cg.output.WriteString(", ")
 		}
-		cg.output.WriteString(fmt.Sprintf(".%s = ", field.Name))
+		cg.output.WriteString(fmt.Sprintf(".%s = ", cIdent(field.Name)))
 		cg.emitExpressionFragment(field.Value, tc)
 		first = false
 	}

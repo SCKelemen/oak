@@ -44,7 +44,7 @@ func (cg *CodeGenerator) emitGlobals(program *ast.Program, tc *typechecker.TypeC
 }
 
 func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
-	name := decl.Name.Value
+	name := cIdent(decl.Name.Value)
 
 	// Declarator: owned arrays put the length after the name.
 	declarator := ""
@@ -133,7 +133,7 @@ func (cg *CodeGenerator) emitFileScopeInitializer(expr ast.Expression, tc *typec
 			if i > 0 {
 				cg.output.WriteString(", ")
 			}
-			cg.output.WriteString(fmt.Sprintf(".%s = ", field.Name))
+			cg.output.WriteString(fmt.Sprintf(".%s = ", cIdent(field.Name)))
 			cg.emitFileScopeInitializer(field.Value, tc)
 		}
 		cg.output.WriteString(" }")
