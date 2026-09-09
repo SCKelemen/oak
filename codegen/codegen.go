@@ -648,8 +648,14 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	// emitted with the prototypes (docs/spec/92-ffi.md section 2.3).
 	// Asm-backed declarations have their body emitted as an assembly
 	// block beside the prototypes (docs/spec/94-assembler.md).
-	if fn.ExternSymbol != "" || fn.AsmBacked || fn.Body == nil {
+	if fn.ExternSymbol != "" || fn.Body == nil {
 		return
+	}
+	if fn.AsmBacked {
+		// The Oak fallback body realizes the signature where the asm unit
+		// does not apply (non-AArch64, or the portable lowering).
+		cg.write("#if !defined(__aarch64__) || defined(OAK_PORTABLE_INTRINSICS)\n")
+		defer cg.write("#endif\n")
 	}
 
 	funcName := fn.Name.Value

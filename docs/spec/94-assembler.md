@@ -215,13 +215,29 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   of `x1` is not a guard. This is the bounds-check doctrine made explicit
   in assembly: the runtime check is written by the author, its dominance
   is verified by the checker, and the offsets under it are proven.
+- **Callee-saved obligations.** `x19`–`x30` carry the caller's values on
+  entry (readable without a write), may be written only after being
+  **saved** into the declared frame (a `str`/`stp` from the still-untouched
+  register records its absolute slot), and every `ret` requires each
+  written callee-saved register **restored** from that same slot (`ldr`/
+  `ldp`, matched by absolute address relative to entry sp, not by textual
+  offset) with no write after the restore. `bl` in a returning function
+  requires the link register saved first (`stp x29, x30, [sp, #-16]!`) —
+  the call clobbers it, so the same restore obligation covers it before
+  `ret`; never-returning functions keep the clobber-only rule.
+- **Oak fallback bodies.** A declaration may carry both an Oak body and an
+  asm unit of identical signature: the asm block emits under
+  `__aarch64__` (and not `OAK_PORTABLE_INTRINSICS`), the compiled Oak body
+  under the complementary condition, so programs with asm units build on
+  non-AArch64 hosts and the Oak body is the portable semantics the asm
+  must agree with — the differential-witness convention of `93-simd.md`
+  extended to hand-written assembly. Without a fallback, a non-AArch64
+  target still fails closed with `#error`.
 - **`address_of(f)`** yields the `u64` code address of an asm-backed
   function and nothing else — the `VBAR_EL2` install path
   (`arm64.write_vbar_el2(address_of(vectors))`). Ordinary Oak functions
   have no exposed address.
 
-Pending, in the order the pilot needs them: callee-saved
-clobbers with save/restore obligations; the operand-stack shorthand
-(`push left / push right / add`); an Oak fallback body for non-AArch64
-targets; the semantic
+Pending: the operand-stack shorthand
+(`push left / push right / add`); the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.

@@ -3257,6 +3257,11 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		tc.addError(stmt, "function %s needs a definition ('= expression', a brace block) or an asm unit providing its body", stmt.Name.Value)
 		return
 	}
+	if stmt.AsmBacked {
+		// An Oak fallback body beside an asm unit: the signature must still
+		// be an asm-boundary signature; the body is checked as usual below.
+		tc.checkAsmBoundary(stmt)
+	}
 
 	// An UNCONSTRAINED generic function declaration is a template:
 	// registered, never checked generically — each instantiation is

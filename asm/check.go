@@ -63,6 +63,10 @@ type checker struct {
 	spans      map[int]*spanFact
 	spanParams map[string]spanParam
 	pendingCmp cmpFact
+	// calleeSaved tracks x19–x30: the caller's state, readable on entry,
+	// writable only after being saved to the frame, and restored from the
+	// same absolute slot before every ret (docs/spec/94-assembler.md §7).
+	calleeSaved map[int]*savedState
 
 	// state
 	written      map[int]bool
@@ -78,6 +82,18 @@ type checker struct {
 	regionInstrs int64 // instructions since the region's align directive
 	alignLine    int
 }
+
+// savedState is one callee-saved register's obligation: saved at an
+// absolute frame address (relative to entry sp), written since, restored
+// since the last write.
+type savedState struct {
+	saved    bool
+	slot     int64
+	written  bool
+	restored bool
+}
+
+func calleeSavedRegister(num int) bool { return num >= 19 && num <= 30 }
 
 // spanParam is a span/view parameter's contract: two consecutive general
 // registers (base pointer, then the 32-bit length in the low half of the
@@ -313,10 +329,6 @@ func (c *checker) declareClobbers() {
 				c.errorf(c.fn.Line, "clobber: the zero register cannot be clobbered")
 				continue
 			}
-			if reg.Num >= 19 && reg.Num <= 29 {
-				c.errorf(c.fn.Line, "clobber: x%d is callee-saved; v1 has no save/restore obligation tracking — use x9–x17", reg.Num)
-				continue
-			}
 			c.clobbered[reg.Num] = true
 		}
 	}
@@ -331,6 +343,10 @@ func (c *checker) walk() {
 	c.pendingDisp = map[string]int64{}
 	c.labels = map[string]bool{}
 	c.dispKnown = true
+	c.calleeSaved = map[int]*savedState{}
+	for num := 19; num <= 30; num++ {
+		c.calleeSaved[num] = &savedState{}
+	}
 
 	// Labels are known up front so forward branches resolve.
 	for _, item := range c.fn.Items {
@@ -565,8 +581,8 @@ func (c *checker) read(instr Instruction, reg Register) {
 		}
 		return
 	}
-	if reg.ZeroRegister() {
-		return
+	if reg.ZeroRegister() || calleeSavedRegister(reg.Num) {
+		return // callee-saved registers carry the caller's values on entry
 	}
 	if !c.bound[reg.Num] && !c.written[reg.Num] {
 		c.errorf(instr.Line, "read of %s before any write or binding (uninitialized register)", reg.Text)
@@ -605,6 +621,14 @@ func (c *checker) write(instr Instruction, reg Register) {
 	if !c.bound[reg.Num] && !c.clobbered[reg.Num] && !isResult {
 		c.errorf(instr.Line, "write to undeclared register %s: bind it, or declare it with `clobber %s`", reg.Text, reg.Text)
 		return
+	}
+	if state, isSaved := c.calleeSaved[reg.Num]; isSaved {
+		if !state.saved {
+			c.errorf(instr.Line, "write to callee-saved %s before saving it to the frame (str/stp it into the declared frame first)", reg.Text)
+			return
+		}
+		state.written = true
+		state.restored = false
 	}
 	c.written[reg.Num] = true
 	// Moving a span base forgets the span; touching a length register
@@ -659,19 +683,36 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 		return
 	}
 	size := accessBytes(instr.Mnemonic, matched[0])
+	var slotBase int64
 	switch mem.Mode {
 	case MemPreIndex:
 		c.moveSP(instr, -mem.Offset)
 		c.checkAccess(instr, 0, size)
+		slotBase = -c.disp
 	case MemPostIndex:
 		c.checkAccess(instr, 0, size)
+		slotBase = -c.disp
 		c.moveSP(instr, -mem.Offset)
 	default:
 		c.checkAccess(instr, mem.Offset, size)
+		slotBase = -c.disp + mem.Offset
 	}
-	if !isStore {
-		for _, reg := range regs {
-			c.write(instr, reg)
+	width := size / int64(len(regs))
+	if isStore {
+		// Saving a still-untouched callee-saved register records its slot.
+		for i, reg := range regs {
+			if state, isSaved := c.calleeSaved[reg.Num]; isSaved && !state.written && !state.saved && reg.Class == ClassX {
+				state.saved = true
+				state.slot = slotBase + int64(i)*width
+			}
+		}
+		return
+	}
+	for i, reg := range regs {
+		c.write(instr, reg)
+		// Loading a callee-saved register back from its own slot restores it.
+		if state, isSaved := c.calleeSaved[reg.Num]; isSaved && state.saved && reg.Class == ClassX && state.slot == slotBase+int64(i)*width {
+			state.restored = true
 		}
 	}
 }
@@ -754,7 +795,14 @@ func (c *checker) call(instr Instruction) {
 		c.errorf(instr.Line, "bl target %s is not an Oak-visible function", target)
 	}
 	if !c.clobbered[30] {
-		c.errorf(instr.Line, "bl writes the link register: declare `clobber x30` (and save it in the frame if this function returns)")
+		c.errorf(instr.Line, "bl writes the link register: declare `clobber x30`")
+	}
+	if lr := c.calleeSaved[30]; lr != nil {
+		if !c.never && !lr.saved {
+			c.errorf(instr.Line, "bl in a returning function before saving the link register: stp x29, x30 (or str x30) into the frame first")
+		}
+		lr.written = true
+		lr.restored = false
 	}
 	// The callee owns x0–x17, v0–v7, and the flags under AAPCS64.
 	for num := 0; num <= 17; num++ {
@@ -776,6 +824,11 @@ func (c *checker) ret(instr Instruction) bool {
 	}
 	if c.disp != 0 {
 		c.errorf(instr.Line, "ret with sp displacement %d: the frame must be fully released", c.disp)
+	}
+	for num := 19; num <= 30; num++ {
+		if state := c.calleeSaved[num]; state.written && !state.restored {
+			c.errorf(instr.Line, "ret without restoring callee-saved x%d from its frame slot (ldr/ldp it from the slot it was saved to)", num)
+		}
 	}
 	if c.hasResult {
 		if c.resultClass == ClassV {

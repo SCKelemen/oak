@@ -23,15 +23,21 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 	}
 
 	declarations := map[string]*ast.FunctionStatement{}
+	fallbacks := map[string]*ast.FunctionStatement{}
 	symbols := map[string]bool{}
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
-		if !ok || fn.Name == nil {
+		if !ok || fn.Name == nil || fn.ExternSymbol != "" || len(fn.TypeParams) > 0 || fn.Receiver != nil {
+			if ok && fn.Name != nil {
+				symbols[fn.Name.Value] = true
+			}
 			continue
 		}
 		symbols[fn.Name.Value] = true
-		if fn.Body == nil && fn.ExternSymbol == "" {
+		if fn.Body == nil {
 			declarations[fn.Name.Value] = fn
+		} else {
+			fallbacks[fn.Name.Value] = fn
 		}
 	}
 
@@ -53,12 +59,15 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 			seen[fn.Name] = unitText.Path
 			decl, declared := declarations[fn.Name]
 			if !declared {
-				if symbols[fn.Name] {
-					report("%s: asm function %s: the Oak declaration already has a body; an asm-backed function is declared without one", unitText.Path, fn.Name)
+				// A declaration WITH a body is the Oak fallback: the asm
+				// realizes the same signature on AArch64, the body elsewhere.
+				if fallback, hasFallback := fallbacks[fn.Name]; hasFallback {
+					decl = fallback
+					fn.Fallback = true
 				} else {
-					report("%s: asm function %s has no definition-less Oak declaration", unitText.Path, fn.Name)
+					report("%s: asm function %s has no Oak declaration", unitText.Path, fn.Name)
+					continue
 				}
-				continue
 			}
 			decl.AsmBacked = true
 			for _, finding := range asm.Check(fn, decl, symbols) {

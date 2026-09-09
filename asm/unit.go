@@ -42,6 +42,11 @@ type Function struct {
 	Frame    int64 // declared stack frame in bytes, 0 when none
 	System   bool  // capability for mrs/msr/eret
 	Align    int64 // function entry alignment, 0 for the default
+	// Fallback marks that the Oak declaration also carries an Oak body: the
+	// backend emits it for non-AArch64 targets (and under
+	// OAK_PORTABLE_INTRINSICS), so the asm and the Oak body are two
+	// realizations of one signature.
+	Fallback bool
 }
 
 // Item is one line of the block: a label, an align directive, or an

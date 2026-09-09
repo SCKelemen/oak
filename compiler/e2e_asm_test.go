@@ -209,7 +209,7 @@ func TestAsmStitchingRejections(t *testing.T) {
 	}
 	_, err = New().WithSource("nodecl.oak", "main: (): i32 = 0\n").
 		WithAsmUnit("orphan.arm64.oakasm", "orphan: (x: u32) -> u32 = {\n  bind w0 = x\n  ret\n}\n").EmitC().Get()
-	if err == nil || !strings.Contains(err.Error(), "no definition-less Oak declaration") {
+	if err == nil || !strings.Contains(err.Error(), "has no Oak declaration") {
 		t.Fatalf("unit function without a declaration must be rejected, got %v", err)
 	}
 	_, err = New().WithSource("mismatch.oak", "f: (x: u32) -> u32\nmain: (): i32 = 0\n").
@@ -271,5 +271,84 @@ short:
 	_, code, abnormal := buildAndRunFrom(t, "asmspan", comp)
 	if abnormal || code != 42 {
 		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
+
+// Callee-saved obligations: x19/x20 saved before use and restored before
+// ret; a bl with the link register saved in the frame, calling an Oak
+// function and returning its result.
+func TestE2EAsmCalleeSavedAndCall(t *testing.T) {
+	requireArm64Host(t)
+	comp := New().WithSource("asmsaved.oak", `
+scratch: (a: u64) -> u64
+caller: (a: u64) -> u64
+helper: (a: u64): u64 = a + u64(2)
+
+main: (): i32 {
+  assert(scratch(u64(0)) == u64(42))
+  assert(caller(u64(40)) == u64(42))
+  42
+}
+`).WithAsmUnit("saved.arm64.oakasm", `
+scratch: (a: u64) -> u64 = {
+  bind x0 = a
+  clobber x19, x20
+  frame 16
+  stp x19, x20, [sp, #-16]!
+  mov x19, #40
+  mov x20, #2
+  add x0, x19, x20
+  ldp x19, x20, [sp], #16
+  ret
+}
+
+caller: (a: u64) -> u64 = {
+  bind x0 = a
+  clobber x29, x30
+  frame 16
+  stp x29, x30, [sp, #-16]!
+  bl helper
+  ldp x29, x30, [sp], #16
+  ret
+}
+`)
+	_, code, abnormal := buildAndRunFrom(t, "asmsaved", comp)
+	if abnormal || code != 42 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
+
+// An Oak fallback body beside the asm unit: the asm realizes the signature
+// on AArch64, the Oak body everywhere else (and under the portable
+// lowering) — executed both ways on this host.
+func TestE2EAsmFallbackBody(t *testing.T) {
+	requireArm64Host(t)
+	comp := New().WithSource("asmfallback.oak", `
+add_asm: (left, right: u32) -> u32 = left + right
+
+main: (): i32 {
+  assert(add_asm(u32(40), u32(2)) == u32(42))
+  42
+}
+`).WithAsmUnit("add.arm64.oakasm", `
+add_asm: (left, right: u32) -> u32 = {
+  bind w0 = left
+  bind w1 = right
+  add w0, w0, w1
+  ret
+}
+`)
+	output, err := comp.EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	if !strings.Contains(output, "#if !defined(__aarch64__) || defined(OAK_PORTABLE_INTRINSICS)") || strings.Contains(output, "#error") {
+		t.Fatalf("fallback body not emitted under the complementary condition:\n%s", output)
+	}
+	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
+		_, code, abnormal := buildAndRunFrom(t, "asmfallback", comp, flags...)
+		if abnormal || code != 42 {
+			t.Fatalf("flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
+		}
 	}
 }
