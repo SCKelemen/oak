@@ -2232,11 +2232,21 @@ func (p *Parser) parseFieldSpec() (uint32, []ast.FieldTag, bool) {
 			p.nextToken()
 		default:
 			namespace := p.currentToken
-			if seen[namespace.Literal] {
-				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate tag namespace %q in field spec", namespace.Literal))
+			name := namespace.Literal
+			// A tag schema of an imported package: alias.schema
+			// (docs/spec/83-modules.md section 6.8).
+			if p.peekTokenIs(token.DOT) {
+				p.nextToken()
+				if !p.expectPeek(token.IDENT) {
+					return 0, nil, false
+				}
+				name = name + "." + p.currentToken.Literal
+			}
+			if seen[name] {
+				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate tag namespace %q in field spec", name))
 				return 0, nil, false
 			}
-			seen[namespace.Literal] = true
+			seen[name] = true
 			if !p.expectPeek(token.COLON) {
 				return 0, nil, false
 			}
@@ -2245,7 +2255,7 @@ func (p *Parser) parseFieldSpec() (uint32, []ast.FieldTag, bool) {
 			if value == nil {
 				return 0, nil, false
 			}
-			tags = append(tags, ast.FieldTag{Token: namespace, Name: namespace.Literal, Value: value})
+			tags = append(tags, ast.FieldTag{Token: namespace, Name: name, Value: value})
 			p.nextToken() // past the value's last token
 		}
 		if p.currentTokenIs(token.COMMA) {
@@ -3038,17 +3048,20 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 	commandName := p.currentToken.Literal
 	// Validate command name
 	validCommands := map[string]bool{
-		"exit":    true,
-		"quit":    true,
-		"help":    true,
-		"clear":   true,
-		"reset":   true,
-		"typeof":  true,
-		"ptrsize": true,
-		"intsize": true,
+		"exit":        true,
+		"quit":        true,
+		"help":        true,
+		"clear":       true,
+		"reset":       true,
+		"typeof":      true,
+		"ptrsize":     true,
+		"obligations": true,
+		"strict":      true,
+		"lean":        true,
+		"intsize":     true,
 	}
 	if !validCommands[commandName] {
-		p.addErrorAtCurrentToken(fmt.Sprintf("unknown REPL command: %s (valid: exit, quit, help, clear, reset, typeof, ptrsize, intsize)", commandName))
+		p.addErrorAtCurrentToken(fmt.Sprintf("unknown REPL command: %s (valid: exit, quit, help, clear, reset, typeof, ptrsize, intsize, obligations, strict, lean)", commandName))
 		return nil
 	}
 

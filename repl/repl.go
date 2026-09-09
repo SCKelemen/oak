@@ -436,6 +436,7 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "  :intsize()       - Print current int/uint size\n")
 					fmt.Fprintf(out, "  :obligations     - List the recorded assumptions the checker could not discharge\n")
 					fmt.Fprintf(out, "  :strict          - Toggle the strict profile (assumptions reject)\n")
+					fmt.Fprintf(out, "  :lean            - Name the Lean law governing each recorded assumption\n")
 					fmt.Fprintf(out, "\n")
 					fmt.Fprintf(out, "Inputs are checked by the full compiler pipeline. Imports resolve through\n")
 					fmt.Fprintf(out, "the module (oak.mod) enclosing the working directory: import(\"...\"), pub,\n")
@@ -463,6 +464,26 @@ func Start(in io.Reader, out io.Writer) {
 						fmt.Fprintf(out, "%s\n", modules.DemangleText(d.PlainText()))
 					}
 					fmt.Fprintf(out, "%d recorded assumption(s); :strict rejects them, Lean (spec/lean) is where they are proved\n", len(open))
+					continue
+				case "lean":
+					open, err := session.Obligations()
+					if err != nil {
+						fmt.Fprintf(out, "%s\n", strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "\n\t"))
+						continue
+					}
+					if len(open) == 0 {
+						fmt.Fprintf(out, "nothing to prove: no recorded assumptions in the session\n")
+						continue
+					}
+					for _, d := range open {
+						law, known := LawFor(d.Code)
+						if !known {
+							fmt.Fprintf(out, "%s: no formal model governs this code yet (docs/spec/STATUS.md)\n", d.Code)
+							continue
+						}
+						fmt.Fprintf(out, "%s at %s:%d\n  law: %s — %s\n  discharge: %s\n", d.Code, d.File, d.Range.Start.Line+1, law.Module, law.Statement, law.Discharge)
+					}
+					fmt.Fprintf(out, "laws are proved in spec/lean; the compiler records these assumptions, it does not prove them\n")
 					continue
 				case "strict":
 					session.Strict = !session.Strict

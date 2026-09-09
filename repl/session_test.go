@@ -139,3 +139,14 @@ func TestSessionObligationsAndStrict(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLawsCoverRecordedAssumptionCodes(t *testing.T) {
+	for _, code := range []string{"OAK-D0103", "OAK-D0102", "OAK-B0110", "OAK-T0501"} {
+		if _, ok := LawFor(code); !ok {
+			t.Fatalf("no law recorded for %s", code)
+		}
+	}
+	if _, ok := LawFor("OAK-X9999"); ok {
+		t.Fatal("unknown codes must not claim a law")
+	}
+}

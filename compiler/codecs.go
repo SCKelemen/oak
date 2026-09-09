@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/modules"
 )
 
 // This closed first codec projection generates ordinary Oak before semantic
@@ -181,10 +182,10 @@ func (d *codecDeriver) fields(name string) ([]codecField, error) {
 		}
 		wire := field.Name
 		for _, tag := range field.Tags {
-			if tag.Name != "json" {
+			if !isJSONTag(tag.Name) {
 				continue
 			}
-			schema := d.schemas["json"]
+			schema := d.schemas[tag.Name]
 			if schema == nil || len(schema.Schema.OrderedFields()) == 0 {
 				return nil, fmt.Errorf("codec: json field tags require a declared tag schema")
 			}
@@ -338,4 +339,14 @@ func (d *codecDeriver) appendCodecSource(typ, source string) error {
 	}
 	d.output = append(d.output, tree.Root.Statements...)
 	return nil
+}
+
+// isJSONTag recognizes the json tag schema under its flat name or a
+// package-scoped internal name (docs/spec/83-modules.md section 6.8).
+func isJSONTag(name string) bool {
+	if name == "json" {
+		return true
+	}
+	demangled := modules.DemangleText(name)
+	return strings.HasSuffix(demangled, ".json")
 }

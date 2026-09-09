@@ -1076,3 +1076,85 @@ main: (): i32 = {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }
+
+// Tag schemas are package-scoped: two packages declare a json schema, an
+// importer names another package's schema as alias.schema, and codec
+// derivation still finds the json schema under its internal name.
+func TestE2EModulesPackageScopedTags(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"wire/wire.oak": `package wire
+
+pub json: tag = { name: string }
+pub pb: tag = { field: u32 }
+pub Header: type = struct { id(json: "header_id", pb: 1): u32 }
+pub header_id: (h: Header): u32 = h.id
+`,
+		"main.oak": `package main
+
+import("json")
+import("example.com/hello/wire")
+
+json_tag_local: tag = { name: string }
+Point: type = struct { x(wire.json: "px"): u32, y(json_tag_local: "py"): u32 }
+
+main: (): i32 = {
+  out: [64]u8
+  dst: [*]u8 = span(&out)
+  written: Result[u32, json.JsonError] = encode[Point, Json](Point { x: 4, y: 2 }, dst)
+  h := wire.Header { id: 40 }
+  json.json_result_ok(written) && json.json_result_value(written) == u32(14) && wire.header_id(h) == u32(40) ? 42 | 1
+}
+`,
+	})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	// A private tag schema of another package is not reachable.
+	root = writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"wire/wire.oak": "package wire\n\nsecret: tag = { name: string }\npub f: (): i32 = 1\n",
+		"main.oak":      "package main\n\nimport(\"example.com/hello/wire\")\n\nP: type = struct { x(wire.secret: \"px\"): u32 }\n\nmain: (): i32 = wire.f()\n",
+	})
+	expectModuleError(t, root, ".", CodeMemberNotExported)
+}
+
+// Derivation over generic instantiations: the template's shape is
+// substituted per instantiation and each instance gets its own helpers.
+func TestE2EModulesDeriveOverInstantiations(t *testing.T) {
+	src := `Pair[T]: type = struct { first: T, second: T }
+Wrap[T]: type = Empty | Full: T
+
+pair_eq: (a: Pair[u8], b: Pair[u8]): Bool = derive.equal
+wide_eq: (a: Pair[u32], b: Pair[u32]): Bool = derive.equal
+pair_hash: (v: Pair[u8]): u64 = derive.hash
+wrap_eq: (a: Wrap[u16], b: Wrap[u16]): Bool = derive.equal
+
+a: Pair[u8]
+b: Pair[u8]
+c: Pair[u8]
+w: Pair[u32]
+
+main: (): i32 = {
+  a.first = u8(1)
+  a.second = u8(2)
+  b.first = u8(1)
+  b.second = u8(2)
+  c.first = u8(2)
+  c.second = u8(2)
+  w.first = u32(70000)
+  w.second = u32(1)
+  full: Wrap[u16] = .Full(5)
+  other: Wrap[u16] = .Full(5)
+  empty: Wrap[u16] = .Empty
+  same := pair_eq(a, b) && !pair_eq(a, c) && wide_eq(w, w) && pair_hash(a) == pair_hash(b) && pair_hash(a) != pair_hash(c)
+  wraps := wrap_eq(full, other) && !wrap_eq(empty, full)
+  same && wraps ? 42 | 1
+}
+`
+	code, abnormal := buildAndRun(t, "derive_generic", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
