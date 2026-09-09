@@ -106,7 +106,7 @@ func (tc *TypeChecker) resolveGenericInvocation(expr *ast.InvocationExpression) 
 			return nil, false
 		}
 		template, isTemplate := tc.functionTemplates[name]
-		if !isTemplate {
+		if !isTemplate || typeParamsConstrained(template.TypeParams) {
 			return nil, false
 		}
 		if len(argExprs) != len(template.TypeParams) {
@@ -130,7 +130,7 @@ func (tc *TypeChecker) resolveGenericInvocation(expr *ast.InvocationExpression) 
 		return nil, false
 	}
 	template, isTemplate := tc.functionTemplates[ident.Value]
-	if !isTemplate {
+	if !isTemplate || typeParamsConstrained(template.TypeParams) {
 		return nil, false
 	}
 
@@ -356,8 +356,11 @@ func (tc *TypeChecker) instantiateFunctionTemplate(template *ast.FunctionStateme
 	if tc.globalEnv != nil {
 		tc.env = tc.globalEnv
 	}
+	wasSpecializing := tc.checkingSpecialization
+	tc.checkingSpecialization = true
 	tc.predeclareFunctionSignature(specialized)
 	tc.checkFunctionStatement(specialized)
+	tc.checkingSpecialization = wasSpecializing
 	tc.env = callerEnv
 	return mangled, true
 }
@@ -618,4 +621,30 @@ func substituteExpr(expr ast.Expression, bindings map[string]ast.Expression) (as
 		return &ast.SliceExpression{Token: e.Token, Seq: seq, Low: low, High: high}, true
 	}
 	return nil, false
+}
+
+// specializeConstrainedCall monomorphizes a constrained generic function
+// after the ordinary contract path has inferred the bindings and
+// discharged every constraint: the concrete types are read from the same
+// substitution the diagnostics used, so a call that satisfies its contract
+// is exactly a call that specializes.
+func (tc *TypeChecker) specializeConstrainedCall(expr *ast.InvocationExpression, template *ast.FunctionStatement, scheme *TypeScheme, bindings Substitution) {
+	args := make([]Type, 0, len(template.TypeParams))
+	for _, tp := range template.TypeParams {
+		concrete, ok := bindings.LookupName(tp.Name.Value)
+		if scheme.Monomorphic != nil {
+			concrete, ok = tc.monomorphicConstraintBinding(scheme, bindings, tp.Name.Value)
+		}
+		if !ok || concrete == nil || len(typeVarsIn(concrete)) != 0 {
+			tc.addError(expr, "cannot determine a concrete type for %s of %s to specialize this call; instantiate with a concrete argument", tp.Name.Value, template.Name.Value)
+			return
+		}
+		args = append(args, concrete)
+	}
+	mangled, ok := tc.instantiateFunctionTemplate(template, args)
+	if !ok {
+		tc.addError(expr, "cannot instantiate %s: type arguments must be mangleable concrete types", template.Name.Value)
+		return
+	}
+	expr.Function = &ast.Identifier{Token: template.Name.Token, Value: mangled}
 }
