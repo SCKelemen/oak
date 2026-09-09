@@ -9,11 +9,11 @@ func TestTypeChecker_IntegerLiteral(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"5", "u8"},    // Small positive literal infers u8
-		{"42", "u8"},   // Small positive literal infers u8
-		{"300", "u16"}, // Larger positive literal infers u16
-		// Note: -5 is parsed as prefix expression, not negative literal
-		// So we test positive literals only for now
+		// A literal with no context is int; typed contexts are exercised by
+		// the compiler's literal inference tests.
+		{"5", "int"},
+		{"42", "int"},
+		{"300", "int"},
 	}
 
 	for _, tt := range tests {

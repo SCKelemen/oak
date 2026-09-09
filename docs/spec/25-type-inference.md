@@ -115,6 +115,34 @@ spelled manually.
 Exact lambda syntax remains governed by the syntax specification; the semantic
 rule here is independent of punctuation.
 
+## 3a. Integer literals take their type from context
+
+An integer literal has no type of its own. It takes the integer type its
+context requires, and the checker reports an error at the literal when the
+value does not fit that type. The contexts, in the order the checker consults
+them:
+
+1. A declared or assigned type: `x: u8 = 255`, `x = 0`, record fields, array
+   elements, call arguments, and the return type of the enclosing body.
+2. An array index or slice bound, which is `u32`.
+3. The typed operand of an arithmetic, comparison, equality, or bitwise
+   operator. The typed operand types the literal-only operand in either
+   order: `at + 1`, `2 * at`, `1 < at`, `at * 2 + 1`, and `hcr & 0x19` all
+   infer without annotation. A literal-only operand is a literal, a signed
+   literal, or arithmetic over literal-only operands.
+
+The result is that `at + 1` and `at + u32(1)` are the same expression: the
+same precise type, the same range check, and the same wraparound rule. A
+literal with no context at all is `int`. Inference never widens a literal to
+escape a range error; `n + 300` with `n: u8` is rejected, as is `at + -1` with
+`at: u32`, and mixing a typed `int` variable with a fixed-width unsigned
+operand remains an error.
+
+Formally: literal typing is a checked coercion at elaboration time, not a
+subtyping rule. The elaborated program contains only precisely typed
+constants, so later phases (lowering, the C backend, and the machine-integer
+refinement obligations in §13) never see an untyped literal.
+
 ## 4. Explicit module and library boundaries
 
 Externally visible declarations require explicit contracts.

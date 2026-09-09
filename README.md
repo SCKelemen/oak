@@ -172,14 +172,22 @@ Oak has four platform-dependent sized types that adapt to the target architectur
 
 **Literal inference:**
 
-Untyped integer literals default to `int`:
+Integer literals take their type from context: a declared or assigned type, a
+parameter or return type, an array index, or the typed operand next to them in
+an arithmetic, comparison, or bitwise expression. Only a literal with no
+context defaults to `int`:
 
 ```oak
-a := 5        // a: int (i32 on 32-bit, i64 on 64-bit)
-b: uint = 6   // b: uint (u32 on 32-bit, u64 on 64-bit)
-c: i32 = 5    // c: i32 (explicit fixed-width)
-d: u32 = 6    // d: u32 (explicit fixed-width)
+a := 5          // a: int (i32 on 32-bit, i64 on 64-bit)
+b: uint = 6     // b: uint (u32 on 32-bit, u64 on 64-bit)
+d: u32 = 6      // d: u32 (explicit fixed-width)
+e: u32 = d + 1  // 1 is u32: same type and wrap rule as d + u32(1)
+f: Bool = 2 * d < 4096
+n: u8 = d8 + 300  // error: literal 300 does not fit in type u8
 ```
+
+A literal that does not fit the type its context requires is an error at the
+literal; it never silently widens to `int`.
 
 ### Pointers
 

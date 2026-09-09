@@ -1097,14 +1097,22 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
-		// Integer literals: use context-based inference if expected type is provided
+		// Integer literals take the expected integer type from their context:
+		// declarations, assignments, arguments, returns, indices, and the peer
+		// operand of an arithmetic, comparison, or bitwise operator. A literal
+		// that does not fit that type is an error rather than a silent
+		// fallback to int, so `at + 1` has exactly the range and overflow
+		// rules of `at + u32(1)`.
 		if expected != nil {
 			if primType, ok := expected.(*PrimitiveType); ok {
-				// Check if literal fits in the expected primitive type
 				if tc.literalFitsInType(e.Value, primType.Name) {
 					return primType
 				}
-				// Literal doesn't fit - fall through to default inference
+				if tc.isNumericType(primType) {
+					tc.addError(e, "literal %d does not fit in type %s", e.Value, primType.Name)
+					return primType
+				}
+				// Non-integer primitive context: fall through to default inference
 			}
 		}
 		// No context: default to int (signed native word integer)
@@ -1117,7 +1125,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.Identifier:
 		return tc.checkIdentifier(e)
 	case *ast.PrefixExpression:
-		return tc.checkPrefixExpression(e)
+		return tc.checkPrefixExpression(e, expected)
 	case *ast.InfixExpression:
 		return tc.checkInfixExpression(e, expected)
 	case *ast.FunctionLiteral:
@@ -1208,8 +1216,32 @@ func (tc *TypeChecker) checkIdentifier(ident *ast.Identifier) Type {
 	return tc.applyPendingMonomorphic(Instantiate(scheme, unifier))
 }
 
-func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
-	rightType := tc.checkExpression(expr.Right)
+func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression, expectedType ...Type) Type {
+	var expected Type
+	if len(expectedType) > 0 {
+		expected = expectedType[0]
+	}
+	// A negated literal is one constant: range-check the negated value against
+	// the expected integer type so `x: i8 = -128` types as i8 and `at + -1`
+	// with at: u32 is rejected as a literal that does not fit.
+	if expr.Operator == "-" {
+		if lit, isLiteral := expr.Right.(*ast.IntegerLiteral); isLiteral {
+			if prim, ok := expected.(*PrimitiveType); ok && tc.isNumericType(prim) {
+				if tc.literalFitsInType(-lit.Value, prim.Name) {
+					return prim
+				}
+				tc.addError(expr, "literal -%d does not fit in type %s", lit.Value, prim.Name)
+				return prim
+			}
+		}
+	}
+	var operandExpected Type
+	if prim, ok := expected.(*PrimitiveType); ok && tc.isNumericType(prim) {
+		// Negation keeps a signed type and complement keeps an unsigned type, so
+		// the operand shares the expected type in both well-typed cases.
+		operandExpected = prim
+	}
+	rightType := tc.checkExpression(expr.Right, operandExpected)
 	if rightType == nil {
 		return nil
 	}
@@ -1258,31 +1290,33 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		expected = expectedType[0]
 	}
 
-	// Bitwise operands infer through the operator: the outer expected type
-	// flows into the left operand, and the left operand's type types the
-	// right (so hcr & 0x19 and v << 3 need no literal annotations).
+	// Operands infer through the operator. For arithmetic and bitwise
+	// operators the outer expected type flows into both operands, and for
+	// every numeric operator the typed operand types a literal-only peer, in
+	// either order: `at + 1`, `2 * at`, `1 < at`, `at * 2 + 1`, and
+	// `hcr & 0x19` need no literal annotations and keep the precise type.
 	bitwise := expr.Operator == "&" || expr.Operator == "|" || expr.Operator == "^" ||
 		expr.Operator == "<<" || expr.Operator == ">>"
-	var leftType Type
-	if bitwise && expected != nil && tc.isNumericType(expected) {
-		leftType = tc.checkExpression(expr.Left, expected)
-	} else {
-		leftType = tc.checkExpression(expr.Left)
+	arithmetic := expr.Operator == "+" || expr.Operator == "-" || expr.Operator == "*" ||
+		expr.Operator == "/" || expr.Operator == "%"
+	var operandExpected Type
+	if (arithmetic || bitwise) && expected != nil && tc.isNumericType(expected) {
+		operandExpected = expected
 	}
-	// For right side, if expected type is numeric and we're doing arithmetic,
-	// use it for context-based inference of literals
-	var rightExpected Type
-	if expected != nil {
-		if prim, ok := expected.(*PrimitiveType); ok {
-			if tc.isNumericType(prim) {
-				rightExpected = expected
-			}
+	peerContext := func(typ Type) Type {
+		if typ != nil && tc.isNumericType(typ) {
+			return typ
 		}
+		return operandExpected
 	}
-	if bitwise && leftType != nil && tc.isNumericType(leftType) {
-		rightExpected = leftType
+	var leftType, rightType Type
+	if isLiteralOnlyExpression(expr.Left) && !isLiteralOnlyExpression(expr.Right) {
+		rightType = tc.checkExpression(expr.Right, operandExpected)
+		leftType = tc.checkExpression(expr.Left, peerContext(rightType))
+	} else {
+		leftType = tc.checkExpression(expr.Left, operandExpected)
+		rightType = tc.checkExpression(expr.Right, peerContext(leftType))
 	}
-	rightType := tc.checkExpression(expr.Right, rightExpected)
 	if leftType == nil || rightType == nil {
 		return nil
 	}
@@ -1298,7 +1332,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			return &StringType{}
 		}
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
-			return tc.promoteNumericTypes(leftType, rightType)
+			return tc.promoteNumericTypes(expr, leftType, rightType)
 		}
 		tc.addError(expr, "operator + requires numeric types or strings, got %s and %s", leftType, rightType)
 		return nil
@@ -1308,7 +1342,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
-		return tc.promoteNumericTypes(leftType, rightType)
+		return tc.promoteNumericTypes(expr, leftType, rightType)
 	case "==", "!=":
 		// Equality operators work on compatible types
 		if !tc.areCompatibleTypes(leftType, rightType) {
@@ -1372,10 +1406,28 @@ func (tc *TypeChecker) isNumericType(typ Type) bool {
 	return false
 }
 
+// isLiteralOnlyExpression reports whether an expression is built only from
+// integer literals, unary signs, arithmetic, and bitwise operators, so its
+// type comes entirely from context rather than from any typed operand.
+func isLiteralOnlyExpression(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.IntegerLiteral:
+		return true
+	case *ast.PrefixExpression:
+		return (e.Operator == "-" || e.Operator == "+") && isLiteralOnlyExpression(e.Right)
+	case *ast.InfixExpression:
+		switch e.Operator {
+		case "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>":
+			return isLiteralOnlyExpression(e.Left) && isLiteralOnlyExpression(e.Right)
+		}
+	}
+	return false
+}
+
 // promoteNumericTypes returns the wider of two numeric types
 // Implements widening conversions: u8 -> u16 -> u32 -> u64, i8 -> i16 -> i32 -> i64
 // No implicit conversion between signed and unsigned
-func (tc *TypeChecker) promoteNumericTypes(left, right Type) Type {
+func (tc *TypeChecker) promoteNumericTypes(node ast.Node, left, right Type) Type {
 	leftPrim, leftOk := left.(*PrimitiveType)
 	rightPrim, rightOk := right.(*PrimitiveType)
 
@@ -1394,8 +1446,7 @@ func (tc *TypeChecker) promoteNumericTypes(left, right Type) Type {
 
 	// No implicit conversion between signed and unsigned
 	if leftIsSigned != rightIsSigned {
-		// Note: This function doesn't have access to the expression, so we pass nil
-		tc.addError(nil, "cannot mix signed and unsigned types: %s and %s", left, right)
+		tc.addError(node, "cannot mix signed and unsigned types: %s and %s", left, right)
 		return left
 	}
 
@@ -2920,7 +2971,7 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 
 	// Handle array indexing: array[index]
 	if arrayType, ok := leftType.(*ArrayType); ok {
-		indexType := tc.checkExpression(expr.Index)
+		indexType := tc.checkExpression(expr.Index, &PrimitiveType{Name: "u32"})
 		if indexType == nil {
 			return nil
 		}
@@ -2946,7 +2997,7 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 
 	// Check low and high bounds if provided
 	if expr.Low != nil {
-		lowType := tc.checkExpression(expr.Low)
+		lowType := tc.checkExpression(expr.Low, &PrimitiveType{Name: "u32"})
 		if lowType == nil {
 			return nil
 		}
@@ -2957,7 +3008,7 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 	}
 
 	if expr.High != nil {
-		highType := tc.checkExpression(expr.High)
+		highType := tc.checkExpression(expr.High, &PrimitiveType{Name: "u32"})
 		if highType == nil {
 			return nil
 		}
@@ -3920,7 +3971,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 		if !elemType.Equals(commonType) {
 			// Try to find a common type (promotion)
 			if tc.isNumericType(elemType) && tc.isNumericType(commonType) {
-				commonType = tc.promoteNumericTypes(commonType, elemType)
+				commonType = tc.promoteNumericTypes(expr.Elements[i], commonType, elemType)
 				if commonType == nil {
 					if i+1 < len(expr.Elements) {
 						tc.addError(expr.Elements[i+1], "array element %d: incompatible types %s and %s", i+1, firstType, elemType)
