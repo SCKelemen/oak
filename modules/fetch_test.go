@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -102,6 +103,48 @@ func TestFetchDownloadsVerifiesAndExtracts(t *testing.T) {
 	// Idempotent: a second download finds the cache.
 	if err := fetcher.Download(context.Background(), manifest); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A failing Verify hook runs against the staged tree and keeps the module out
+// of the cache; a passing one sees the extracted files.
+func TestFetchVerifyHookGatesInstallation(t *testing.T) {
+	archive := buildTarGz(t, []archiveEntry{
+		{name: "oak.mod", body: "module example.com/dep\n"},
+		{name: "api.json", body: "{}"},
+	})
+	server := serve(t, archive)
+	cache := t.TempDir()
+	manifest := Manifest{Path: "example.com/app", Requires: []Requirement{{
+		Path: "example.com/dep", Version: packageapi.Version{Major: 1},
+		Location: server.URL + "/dep.tar.gz", Digest: digestOf(archive),
+	}}}
+	seen := ""
+	fetcher := &Fetcher{Client: server.Client(), Cache: cache, Verify: func(dir string, version packageapi.Version) error {
+		data, err := os.ReadFile(filepath.Join(dir, APIFile))
+		if err != nil {
+			return err
+		}
+		seen = string(data)
+		return errors.New("api.json rejected")
+	}}
+	err := fetcher.Download(context.Background(), manifest)
+	if err == nil || !strings.Contains(err.Error(), "api.json rejected") {
+		t.Fatalf("verify failure must abort the download: %v", err)
+	}
+	if seen != "{}" {
+		t.Fatalf("verify hook did not see the staged tree: %q", seen)
+	}
+	target := CacheDir(cache, "example.com/dep", packageapi.Version{Major: 1})
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("a rejected module must not be installed")
+	}
+	fetcher.Verify = func(string, packageapi.Version) error { return nil }
+	if err := fetcher.Download(context.Background(), manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "oak.mod")); err != nil {
+		t.Fatal("accepted module must be installed")
 	}
 }
 

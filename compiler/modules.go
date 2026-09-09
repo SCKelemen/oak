@@ -118,6 +118,11 @@ type ModuleInfo struct {
 	// LibraryNames maps the flat names of imported standard library
 	// packages' exports to their internal names, for the library sugar.
 	LibraryNames map[string]string
+	// Sealed lists every sealed import of the build with the canonical
+	// member contract each signature demands, for offline compatibility
+	// checks against a dependency's API snapshot
+	// (docs/spec/82-package-semver.md section 8).
+	Sealed []SealedImport
 	// Abstract maps each fresh abstract type (one per sealed binding and
 	// type member) to the internal name of its underlying type.
 	Abstract map[string]string
@@ -193,6 +198,24 @@ type loadedPackage struct {
 	Statements []ast.Statement
 }
 
+// SealedImport is one sealed import's contract: the dependency package and
+// the members the importing package relies on.
+type SealedImport struct {
+	Importer string
+	Alias    string
+	Package  string
+	Members  []SealedMember
+}
+
+// SealedMember is one signature member: a type member (Kind "type") or a
+// value member with the canonical type text the signature requires, spelled
+// as the dependency's own snapshot spells it.
+type SealedMember struct {
+	Name string
+	Kind string
+	Type string
+}
+
 type moduleRoot struct {
 	Dir      string
 	Manifest modules.Manifest
@@ -209,6 +232,7 @@ type moduleLoader struct {
 	opaque      map[string]string
 	sealed      map[string]map[string]bool
 	abstract    map[string]string
+	sealedList  []SealedImport
 	preludeCore bool
 	parameters  []typechecker.ParameterObligation
 	// session relaxes the unused-import rule for the root package: a REPL
@@ -1499,11 +1523,23 @@ func declaredShape(pkg *loadedPackage, name string) *ast.RecordLiteral {
 }
 
 // collectObligations records, after renaming, the member types the checker
-// must verify for a sealed import.
+// must verify for a sealed import, and the contract for offline checks.
 func (l *moduleLoader) collectObligations(pkg *loadedPackage, binding *importBinding) {
 	if binding.shape == nil {
 		return
 	}
+	sealed := SealedImport{Importer: pkg.Path, Alias: binding.Alias, Package: binding.Template}
+	for _, field := range binding.shape.FieldOrder {
+		member := SealedMember{Name: field.Name, Kind: "type"}
+		if binding.sigKinds[field.Name] == modules.KindValue {
+			member.Kind = "value"
+			if canonical, err := canonicalTypeExpression(field.Value); err == nil {
+				member.Type = dependencySpelling(canonical, binding.Path)
+			}
+		}
+		sealed.Members = append(sealed.Members, member)
+	}
+	l.sealedList = append(l.sealedList, sealed)
 	for _, field := range binding.shape.FieldOrder {
 		if binding.sigKinds[field.Name] != modules.KindValue {
 			continue
@@ -1572,7 +1608,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 			}
 		}
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, Sealed: l.sealedList}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,
@@ -1882,4 +1918,12 @@ func (l *moduleLoader) packageOfBinding(binding *importBinding) *loadedPackage {
 		}
 	}
 	return nil
+}
+
+// dependencySpelling rewrites canonical type text containing internal names
+// of package `path` into the spelling that package's own API snapshot uses:
+// its declarations by bare name.
+func dependencySpelling(canonical, path string) string {
+	text := modules.DemangleText(canonical)
+	return strings.ReplaceAll(text, path+".", "")
 }
