@@ -147,9 +147,14 @@ func (d *deriver) lowerRequest(fn *ast.FunctionStatement) {
 			d.report(CodeDeriveSignature, fn.Name, "derive.hash requires the signature (v: T): u64")
 			return
 		}
+	case "compare":
+		if len(fn.Parameters) != 2 || fn.Receiver != nil || len(fn.TypeParams) != 0 || !sameIdentifierType(fn.Parameters[0].Type, fn.Parameters[1].Type) || !isIdentifierType(fn.ReturnType, d.orderingName()) {
+			d.report(CodeDeriveSignature, fn.Name, "derive.compare requires the signature (a: T, b: T): Ordering, with Ordering: type = Less | Equal | Greater in scope")
+			return
+		}
 	default:
 		diag := d.report(CodeDeriveUnknown, fn.Body, "derive.%s is not a derivable operation", kind)
-		diag.AddHelp("derivable operations: derive.equal, derive.hash")
+		diag.AddHelp("derivable operations: derive.equal, derive.hash, derive.compare")
 		return
 	}
 	typeName, ok := fn.Parameters[0].Type.(*ast.Identifier)
@@ -214,6 +219,8 @@ func (d *deriver) helper(kind, typeName string, node ast.Node) (string, bool) {
 		text, ok = d.equalHelper(name, typeName, decl, node)
 	case "hash":
 		text, ok = d.hashHelper(name, typeName, decl, node)
+	case "compare":
+		text, ok = d.compareHelper(name, typeName, decl, node)
 	}
 	if !ok {
 		return "", false
@@ -223,7 +230,7 @@ func (d *deriver) helper(kind, typeName string, node ast.Node) (string, bool) {
 }
 
 func (d *deriver) helperOwner(helper string) (string, bool) {
-	for _, prefix := range []string{"__derive_equal_", "__derive_hash_"} {
+	for _, prefix := range []string{"__derive_equal_", "__derive_hash_", "__derive_compare_"} {
 		if strings.HasPrefix(helper, prefix) {
 			if decl := d.types[strings.TrimPrefix(helper, prefix)]; decl != nil {
 				return decl.Name.Token.SemanticContext, true
@@ -382,6 +389,9 @@ func packageContext(context string) string {
 	if index := strings.IndexByte(context, '|'); index >= 0 {
 		context = context[:index]
 	}
+	if index := strings.IndexByte(context, '#'); index >= 0 {
+		context = context[:index]
+	}
 	if context == "std" {
 		return ""
 	}
@@ -402,4 +412,117 @@ func parseGeneratedExpression(text string) (ast.Expression, error) {
 		return nil, fmt.Errorf("generated expression did not parse as a value")
 	}
 	return decl.Value, nil
+}
+
+// orderingName finds the ADT `Ordering: type = Less | Equal | Greater` in
+// scope — the program's own or the standard library's; "" when absent.
+func (d *deriver) orderingName() string {
+	best := ""
+	for name, decl := range d.types {
+		if len(decl.Variants) != 3 {
+			continue
+		}
+		names := map[string]bool{}
+		for _, variant := range decl.Variants {
+			if variant.Name != nil && variant.Payload == nil {
+				names[variant.Name.Value] = true
+			}
+		}
+		if !(names["Less"] && names["Equal"] && names["Greater"]) {
+			continue
+		}
+		demangled := modules.DemangleText(name)
+		if demangled == "Ordering" || strings.HasSuffix(demangled, ".Ordering") {
+			if best == "" || name < best {
+				best = name
+			}
+		}
+	}
+	return best
+}
+
+func (d *deriver) compareHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (string, bool) {
+	ordering := d.orderingName()
+	if ordering == "" {
+		d.report(CodeDeriveUnsupported, node, "derive.compare requires Ordering: type = Less | Equal | Greater in scope")
+		return "", false
+	}
+	less, equal, greater := ordering+".Less", ordering+".Equal", ordering+".Greater"
+	var body string
+	if shape, isRecord := recordShape(decl); isRecord {
+		// Lexicographic: the first non-Equal field decides. Each field's
+		// comparison is bound to a local and matched; the Equal arm nests
+		// the next field.
+		body = equal
+		for i := len(shape.FieldOrder) - 1; i >= 0; i-- {
+			field := shape.FieldOrder[i]
+			term, ok := d.compareTerm("a."+field.Name, "b."+field.Name, field.Value, node, typeName, field.Name, less, equal, greater)
+			if !ok {
+				return "", false
+			}
+			body = fmt.Sprintf("{\n  c%d: %s = %s\n  c%d ? .Less => %s | .Greater => %s | .Equal => %s\n}", i, ordering, term, i, less, greater, body)
+		}
+	} else {
+		// Variants order by declaration index, then by payload.
+		var sb strings.Builder
+		sb.WriteString("a ?")
+		for i, variant := range decl.Variants {
+			if variant.Name == nil {
+				return "", false
+			}
+			if i > 0 {
+				sb.WriteString(" |")
+			}
+			if variant.Payload == nil {
+				fmt.Fprintf(&sb, " .%s => (b ?", variant.Name.Value)
+			} else {
+				fmt.Fprintf(&sb, " .%s(x) => (b ?", variant.Name.Value)
+			}
+			for j, other := range decl.Variants {
+				if j > 0 {
+					sb.WriteString(" |")
+				}
+				pattern := "." + other.Name.Value
+				if other.Payload != nil {
+					pattern += "(y)"
+				}
+				switch {
+				case j < i:
+					fmt.Fprintf(&sb, " %s => %s", pattern, greater)
+				case j > i:
+					fmt.Fprintf(&sb, " %s => %s", pattern, less)
+				case variant.Payload == nil:
+					fmt.Fprintf(&sb, " %s => %s", pattern, equal)
+				default:
+					term, ok := d.compareTerm("x", "y", variant.Payload, node, typeName, variant.Name.Value, less, equal, greater)
+					if !ok {
+						return "", false
+					}
+					fmt.Fprintf(&sb, " %s => %s", pattern, term)
+				}
+			}
+			sb.WriteString(")")
+		}
+		body = sb.String()
+	}
+	return fmt.Sprintf("%s: (a: %s, b: %s): %s = %s", name, typeName, typeName, ordering, body), true
+}
+
+func (d *deriver) compareTerm(left, right string, typeExpr ast.Expression, node ast.Node, typeName, member, less, equal, greater string) (string, bool) {
+	primitive, declared, ok := d.fieldKind(typeExpr)
+	if !ok {
+		d.report(CodeDeriveUnsupported, node, "derive.compare for %s: member %s has a type the generator cannot order (fixed-width integers, Bool, and declared records/ADTs are supported)", typeName, member)
+		return "", false
+	}
+	if primitive {
+		if ident, _ := typeExpr.(*ast.Identifier); ident.Value == "Bool" {
+			left, right = fmt.Sprintf("u64(%s ? 1 | 0)", left), fmt.Sprintf("u64(%s ? 1 | 0)", right)
+		}
+		return fmt.Sprintf("(%s < %s ? %s | (%s > %s ? %s | %s))", left, right, less, left, right, greater, equal), true
+	}
+	helper, ok := d.helper("compare", declared, node)
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("%s(%s, %s)", helper, left, right), true
 }

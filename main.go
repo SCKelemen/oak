@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -23,6 +25,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "mod" {
 		os.Exit(modCommand(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "run" {
+		os.Exit(runPackage(os.Args[2:]))
 	}
 
 	if len(os.Args) > 1 {
@@ -139,6 +144,57 @@ func modCommand(args []string) int {
 	}
 	if err := fetcher.Download(context.Background(), manifest); err != nil {
 		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runPackage implements `oak run [dir]`: build the package through the module
+// loader, compile the emitted C with the system C compiler into a temporary
+// directory, execute the binary with this process's stdio, and propagate its
+// exit status. This is a development convenience over trusted local source,
+// not a sandbox.
+func runPackage(args []string) int {
+	dir := "."
+	if len(args) > 0 {
+		dir = args[0]
+	}
+	code, err := compiler.New().WithPackageDir(dir).EmitC().Get()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "oak run: no C compiler (cc) on PATH")
+		return 1
+	}
+	work, err := os.MkdirTemp("", "oak-run-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
+		return 1
+	}
+	defer os.RemoveAll(work)
+	cPath := filepath.Join(work, "program.c")
+	binary := filepath.Join(work, "program")
+	if err := os.WriteFile(cPath, []byte(code), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
+		return 1
+	}
+	build := exec.Command(cc, "-std=c99", "-O1", "-o", binary, cPath)
+	build.Stdout, build.Stderr = os.Stdout, os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "oak run: C compilation failed: %v\n", err)
+		return 1
+	}
+	program := exec.Command(binary)
+	program.Stdin, program.Stdout, program.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := program.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
+		}
+		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
 		return 1
 	}
 	return 0
