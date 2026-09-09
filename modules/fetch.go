@@ -33,6 +33,10 @@ import (
 	"github.com/SCKelemen/oak/packageapi"
 )
 
+// APIFile is the module-level API snapshot an archive may carry at its
+// root; `oak mod download` verifies it against the extracted sources.
+const APIFile = "api.json"
+
 // Fetch limits. They bound the work an oak.mod can make the tool do.
 const (
 	// MaxArchiveBytes caps the downloaded (compressed) archive.
@@ -95,6 +99,11 @@ type Fetcher struct {
 	Cache string
 	// Log receives one line per action; nil discards.
 	Log func(format string, args ...interface{})
+	// Verify, when set, checks an extracted module before it is installed:
+	// it receives the staging directory and the required version and may
+	// refuse (the API-honesty check of docs/spec/82-package-semver.md
+	// section 7 compares the archive's carried api.json with the code).
+	Verify func(dir string, version packageapi.Version) error
 }
 
 func (f *Fetcher) client() *http.Client {
@@ -197,6 +206,11 @@ func (f *Fetcher) fetchOne(ctx context.Context, requirement Requirement, target 
 	}
 	if parsed.Path != requirement.Path {
 		return fmt.Errorf("archive declares module %q, required as %q", parsed.Path, requirement.Path)
+	}
+	if f.Verify != nil {
+		if err := f.Verify(staging, requirement.Version); err != nil {
+			return fmt.Errorf("archive verification failed: %w", err)
+		}
 	}
 	if err := os.Rename(staging, target); err != nil {
 		return err

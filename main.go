@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/modules"
+	"github.com/SCKelemen/oak/packageapi"
 	"github.com/SCKelemen/oak/repl"
 	"github.com/SCKelemen/oak/testrunner"
 )
@@ -115,38 +117,184 @@ func buildPackage(args []string) int {
 	return 0
 }
 
-// modCommand implements `oak mod download [dir]`: fetch every requirement of
-// the module's oak.mod that pins an archive location and digest into the
-// module cache ($OAKMODCACHE), verifying the digest before extraction
-// (docs/spec/83-modules.md section 4.4). The compiler itself never fetches.
+// modCommand implements the module tooling (docs/spec/82-package-semver.md
+// sections 6-8, docs/spec/83-modules.md section 4.4):
+//
+//	oak mod download [dir]            fetch pinned requirements into $OAKMODCACHE,
+//	                                  verifying digests and carried api.json
+//	oak mod api [dir]                 print the module's API snapshot (JSON)
+//	oak mod diff previous.json [dir]  classify the API change since previous.json
+//	oak mod bump previous.json [dir]  print the required version; with a
+//	                                  `version` directive, enforce it
+//	oak mod compat dep-api.json [dir] check sealed imports against a
+//	                                  dependency's snapshot
+//
+// The compiler itself never fetches; every input here is a local file.
 func modCommand(args []string) int {
-	if len(args) == 0 || args[0] != "download" {
-		fmt.Fprintln(os.Stderr, "usage: oak mod download [dir]")
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat ...")
 		return 2
 	}
+	switch args[0] {
+	case "download":
+		return modDownload(args[1:])
+	case "api":
+		return modAPI(args[1:])
+	case "diff":
+		return modDiff(args[1:], false)
+	case "bump":
+		return modDiff(args[1:], true)
+	case "compat":
+		return modCompat(args[1:])
+	}
+	fmt.Fprintf(os.Stderr, "oak mod: unknown subcommand %q\n", args[0])
+	return 2
+}
+
+func modDownload(args []string) int {
 	dir := "."
-	if len(args) > 1 {
-		dir = args[1]
+	if len(args) > 0 {
+		dir = args[0]
 	}
-	text, err := os.ReadFile(filepath.Join(dir, modules.ManifestFile))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
-		return 1
-	}
-	manifest, err := modules.ParseManifest(string(text))
+	manifest, err := readManifest(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
 		return 1
 	}
 	fetcher := &modules.Fetcher{
-		Cache: os.Getenv("OAKMODCACHE"),
-		Log:   func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
+		Cache:  os.Getenv("OAKMODCACHE"),
+		Log:    func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
+		Verify: compiler.VerifyArchiveAPI,
 	}
 	if err := fetcher.Download(context.Background(), manifest); err != nil {
 		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+func modAPI(args []string) int {
+	dir := "."
+	if len(args) > 0 {
+		dir = args[0]
+	}
+	manifest, err := readManifest(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	version := manifest.Version
+	if version == "" {
+		version = "0.0.0"
+	}
+	snapshot, err := compiler.ModuleAPISnapshot(dir, version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(snapshot); err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func modDiff(args []string, enforce bool) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: oak mod diff|bump previous.json [dir]")
+		return 2
+	}
+	dir := "."
+	if len(args) > 1 {
+		dir = args[1]
+	}
+	previous, err := compiler.ReadModuleSnapshot(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	manifest, err := readManifest(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	candidate := manifest.Version
+	if candidate == "" {
+		candidate = previous.Version
+	}
+	current, err := compiler.ModuleAPISnapshot(dir, candidate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	required, report, err := packageapi.RequiredVersion(previous, current)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	for _, pkg := range report.Packages {
+		if pkg.Reason != "" {
+			fmt.Printf("%s: %s (%s)\n", pkg.Package, pkg.Reason, pkg.Level)
+		}
+		for _, change := range pkg.Changes {
+			fmt.Printf("%s: %s: %s (%s)\n", pkg.Package, change.Name, change.Reason, change.Level)
+		}
+	}
+	fmt.Printf("required change: %s; required version: %s\n", report.Required, required)
+	if !enforce {
+		return 0
+	}
+	if manifest.Version == "" {
+		fmt.Fprintf(os.Stderr, "oak mod bump: add `version %s` to %s\n", required, modules.ManifestFile)
+		return 1
+	}
+	if _, err := packageapi.EnforceModule(previous, current); err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod bump: %v\n", err)
+		return 1
+	}
+	fmt.Printf("version %s is the exact required bump\n", manifest.Version)
+	return 0
+}
+
+func modCompat(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: oak mod compat dep-api.json [dir]")
+		return 2
+	}
+	dir := "."
+	if len(args) > 1 {
+		dir = args[1]
+	}
+	snapshot, err := compiler.ReadModuleSnapshot(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	problems, err := compiler.CheckSealedCompatibility(dir, snapshot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+		return 1
+	}
+	for _, problem := range problems {
+		fmt.Println(problem.String())
+	}
+	if len(problems) != 0 {
+		fmt.Printf("%d sealed member(s) incompatible with %s %s\n", len(problems), snapshot.Module, snapshot.Version)
+		return 1
+	}
+	fmt.Printf("every sealed import of %s is satisfied by %s\n", snapshot.Module, snapshot.Version)
+	return 0
+}
+
+func readManifest(dir string) (modules.Manifest, error) {
+	text, err := os.ReadFile(filepath.Join(dir, modules.ManifestFile))
+	if err != nil {
+		return modules.Manifest{}, err
+	}
+	return modules.ParseManifest(string(text))
 }
 
 // runPackage implements `oak run [dir]`: build the package through the module

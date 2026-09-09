@@ -86,7 +86,13 @@ abs: (v: i32): i32 = v < 0 ? 0 - v | v                // private to the package
 ```
 
 Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
-pinned dependencies with `oak mod download`; see `examples/modules`. Derived operations are ordinary
+pinned dependencies with `oak mod download`; see `examples/modules`. Versions
+are enforced Elm-style at module granularity: `oak mod api` snapshots a
+module's public API, `oak mod bump previous.json` requires the `version` in
+`oak.mod` to be the exact bump the API diff implies, `oak mod compat
+dep-api.json` checks a module's sealed imports against a dependency snapshot,
+and `oak mod download` refuses an archive whose carried `api.json` its source
+does not honor (`docs/spec/82-package-semver.md`). Derived operations are ordinary
 declarations whose body the compiler synthesizes from the type:
 
 ```oak

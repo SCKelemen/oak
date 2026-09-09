@@ -1,0 +1,104 @@
+package compiler
+
+// Sealed-signature compatibility (docs/spec/82-package-semver.md section 8):
+// a client that sealed an import depends only on the members its signature
+// lists, so whether a new version of the dependency is safe for the client is
+// decidable from the dependency's API snapshot alone — no source, no build of
+// the dependency. This is the client-side counterpart of the exact-bump rule.
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/SCKelemen/oak/modules"
+	"github.com/SCKelemen/oak/packageapi"
+)
+
+// Incompatibility is one sealed member the snapshot cannot satisfy.
+type Incompatibility struct {
+	Importer string
+	Alias    string
+	Package  string
+	Member   string
+	Reason   string
+}
+
+func (i Incompatibility) String() string {
+	return fmt.Sprintf("%s: %s.%s (package %s): %s", i.Importer, i.Alias, i.Member, i.Package, i.Reason)
+}
+
+// CheckSealedCompatibility builds every package of the module at moduleDir,
+// collects the sealed imports of packages provided by snapshot.Module, and
+// reports each signature member the snapshot fails to provide with the
+// demanded kind and type. An empty result means every sealed client of the
+// dependency compiles against that version's API.
+func CheckSealedCompatibility(moduleDir string, snapshot packageapi.ModuleSnapshot) ([]Incompatibility, error) {
+	_, packages, err := ModulePackages(moduleDir)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(packages))
+	for path := range packages {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	var problems []Incompatibility
+	for _, path := range paths {
+		tree, err := New().WithPackageDir(packages[path]).Parse().Get()
+		if err != nil {
+			return nil, fmt.Errorf("package %s: %w", path, err)
+		}
+		if tree.Modules == nil {
+			continue
+		}
+		for _, sealed := range tree.Modules.Sealed {
+			if !modules.HasPathPrefix(sealed.Package, snapshot.Module) {
+				continue
+			}
+			provided, present := snapshot.Packages[sealed.Package]
+			if !present {
+				problems = append(problems, Incompatibility{sealed.Importer, sealed.Alias, sealed.Package, "*", "package absent from the snapshot"})
+				continue
+			}
+			for _, member := range sealed.Members {
+				export, exported := provided.Exports[member.Name]
+				if !exported {
+					problems = append(problems, Incompatibility{sealed.Importer, sealed.Alias, sealed.Package, member.Name, "not exported"})
+					continue
+				}
+				switch member.Kind {
+				case "type":
+					if !isTypeKind(export.Kind) {
+						problems = append(problems, Incompatibility{sealed.Importer, sealed.Alias, sealed.Package, member.Name, "signature needs a type, snapshot exports a " + export.Kind})
+					}
+				default:
+					if export.Kind != "function" && export.Kind != "value" {
+						problems = append(problems, Incompatibility{sealed.Importer, sealed.Alias, sealed.Package, member.Name, "signature needs a value, snapshot exports a " + export.Kind})
+						continue
+					}
+					if member.Type != "" && !sameCanonicalType(member.Type, export.Type) {
+						problems = append(problems, Incompatibility{sealed.Importer, sealed.Alias, sealed.Package, member.Name, fmt.Sprintf("signature requires %s, snapshot exports %s", member.Type, export.Type)})
+					}
+				}
+			}
+		}
+	}
+	return problems, nil
+}
+
+func isTypeKind(kind string) bool {
+	switch kind {
+	case "record", "struct", "alias", "sum", "opaque type", "interface":
+		return true
+	}
+	return strings.HasPrefix(kind, "sum")
+}
+
+// sameCanonicalType compares a signature's canonical type text with a
+// snapshot export's, tolerating the checked/expression spelling difference
+// of whitespace only.
+func sameCanonicalType(want, got string) bool {
+	normalize := func(text string) string { return strings.ReplaceAll(text, " ", "") }
+	return normalize(want) == normalize(got)
+}

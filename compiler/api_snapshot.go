@@ -8,6 +8,7 @@ import (
 	"unicode"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/packageapi"
 	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
@@ -48,6 +49,13 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 				continue
 			}
 			name = declaration.Name.Value
+			if declaration.Opaque {
+				// pub(opaque) exports the name only: neither the definition
+				// nor the layout is public API, so changing them is a patch
+				// (docs/spec/83-modules.md section 6.2).
+				kind, typeIdentity, concreteStruct = "opaque type", "opaque", false
+				break
+			}
 			kind, typeIdentity, concreteStruct, err = canonicalADTDeclaration(declaration, model.TypeChecker)
 		case *ast.InterfaceType:
 			if declaration.Name == nil || !declaration.Exported {
@@ -467,6 +475,13 @@ func canonicalCheckedType(typ typechecker.Type) string {
 		}
 		return application + "::" + value.VariantName
 	case *typechecker.RecordType:
+		// A declared record or struct is part of the API by name; its shape
+		// is the named export's own definition (and for pub(opaque) types, no
+		// part of the API at all). Spelling it structurally here would leak
+		// opaque representations through every signature mentioning them.
+		if value.Name != "" {
+			return modules.DemangleText(value.Name)
+		}
 		names := make([]string, 0, len(value.Fields))
 		for name := range value.Fields {
 			names = append(names, name)

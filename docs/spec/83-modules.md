@@ -220,7 +220,9 @@ digest **before** extracting anything, extracts the gzip-compressed tar into
 a staging directory admitting only regular files and directories (no
 symlinks, hard links, or devices; no absolute or `..` paths; at most 100 000
 members and 1 GiB decompressed), verifies that the extracted `oak.mod`
-declares the required module path, and only then renames the staging
+declares the required module path, checks an archive-carried `api.json`
+against the API the extracted source actually exposes at the required
+version (`82-package-semver.md` section 7), and only then renames the staging
 directory into `<cache>/<path>@v<version>`. A single top-level wrapper
 directory carrying the manifest is stripped. Identity is the module path, the
 URL is a location hint, the digest is the trust anchor: the manifests alone
@@ -279,7 +281,8 @@ pub make: (x: i32, y: i32): Point = Point { x: x, y: y }   // the only construct
 ```
 
 An opaque type's representation is not public ABI: changing it is a patch
-change (`82-package-semver.md` section 2, last row). `pub(opaque)` applies to
+change (`82-package-semver.md` section 2), and signatures mentioning the type
+spell it by name, so the representation never leaks into the snapshot. `pub(opaque)` applies to
 type declarations only; on a value or function it is a parse error.
 
 ### 6.3 Signatures and sealing
@@ -298,6 +301,13 @@ signature does three things:
    type of that name (`OAK-M0113`, checked by the type checker after the
    program). No widening, no narrowing — the explicit-contract rule of
    `25-type-inference.md` section 4.
+
+Because a sealed client depends on exactly its signature, whether a new
+version of the dependency still satisfies it is decidable from the
+dependency's API snapshot alone: `oak mod compat dep-api.json` checks every
+sealed import of a module against a snapshot (`82-package-semver.md` section
+8). The loader records each sealed import's members and canonical types for
+this purpose (`ModuleInfo.Sealed`).
 
 ```oak
 h: { Key: type, key: (u64) -> Key, hash: (Key) -> u64 } = import("example.com/hello/fnv")
@@ -553,8 +563,15 @@ naming the import to add (`encode` needs `import("json")`, text needs
 
 - **API snapshots (`82-package-semver.md`).** The public API of a package is
   exactly its `pub` declarations; `Compilation.APISnapshot` projects only
-  those. `pub(opaque)` types contribute their semantic identity but no ABI.
-  `oak-api` accepts a package directory as well as a single file.
+  those. `pub(opaque)` types contribute their name but no definition or ABI,
+  and named types are spelled by name inside every signature.
+  `oak-api` accepts a package directory as well as a single file. Versions
+  attach to modules: `oak.mod` may declare `version`, `oak mod api` snapshots
+  every package of the module, `oak mod diff`/`oak mod bump` classify the
+  change and enforce the exact bump, `oak mod download` refuses an archive
+  whose carried `api.json` its source does not honor, and `oak mod compat`
+  decides from a dependency snapshot alone whether the module's sealed
+  imports still hold.
 - **Testing (`110-testing.md`).** `oak test` compiles each test directory
   through the package loader with `*_test.oak` files included, so test
   packages import other packages of their module and diagnostics name real
