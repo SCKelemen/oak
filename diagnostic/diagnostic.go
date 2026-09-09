@@ -124,7 +124,12 @@ type Diagnostic struct {
 	// File is the source file the primary cause lives in, when the node's
 	// tokens carry one (package builds stamp `package#file` into token
 	// contexts, docs/spec/83-modules.md section 7); empty otherwise.
-	File               string
+	File string
+	// Package is the import path of the package the primary cause lives in,
+	// read from the same token context ("" for the root package or when
+	// unknown). Discipline profiles are applied per package
+	// (docs/spec/85-discipline.md section 1).
+	Package            string
 	Code               string
 	CodeDescription    *CodeDescription
 	Source             string
@@ -465,34 +470,44 @@ func NodeToRange(node ast.Node) lsp.Range {
 
 func NewDiagnosticFromNode(node ast.Node, source, message string) *Diagnostic {
 	d := NewDiagnostic(NodeToRange(node), source, message)
-	d.File = NodeFile(node)
+	d.Package, d.File = NodeOrigin(node)
 	return d
 }
 
 func NewDiagnosticFromNodeWithCode(node ast.Node, source, code, message string) *Diagnostic {
 	d := NewDiagnosticWithCode(NodeToRange(node), source, code, message)
-	d.File = NodeFile(node)
+	d.Package, d.File = NodeOrigin(node)
 	return d
 }
 
 // NodeFile reads the source file a node's first token was stamped with
 // (`package#file` in SemanticContext); "" when unknown.
 func NodeFile(node ast.Node) string {
+	_, file := NodeOrigin(node)
+	return file
+}
+
+// NodeOrigin reads the package and source file a node's first token was
+// stamped with (`package#file`, optionally `|instantiation`, in
+// SemanticContext; docs/spec/83-modules.md section 7). A context without
+// `#` names a package only (the spliced prelude's `std`); a missing context
+// yields two empty strings, the root package of a single-source build.
+func NodeOrigin(node ast.Node) (pkg, file string) {
 	if node == nil {
-		return ""
+		return "", ""
 	}
 	tok, ok := firstToken(reflect.ValueOf(node), 0)
 	if !ok {
-		return ""
+		return "", ""
 	}
 	context := tok.SemanticContext
 	if index := strings.IndexByte(context, '|'); index >= 0 {
 		context = context[:index]
 	}
 	if index := strings.IndexByte(context, '#'); index >= 0 {
-		return context[index+1:]
+		return context[:index], context[index+1:]
 	}
-	return ""
+	return context, ""
 }
 
 var tokenReflectType = reflect.TypeOf(token.Token{})

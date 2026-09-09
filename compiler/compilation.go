@@ -252,7 +252,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// assembler's seam checker before type checking sees the program
 		// (docs/spec/94-assembler.md).
 		asmFunctions, asmDiagnostics := comp.stitchAsmUnits(tree.Root)
-		if err := comp.gate("asm", asmDiagnostics); err != nil {
+		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
 		env := object.NewEnvironment()
@@ -271,7 +271,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			tc.CheckSignatureObligations(tree.Modules.Obligations)
 			tc.CheckParameterObligations(tree.Modules.Parameters)
 		}
-		if err := comp.gate("typecheck", tc.Diagnostics()); err != nil {
+		if err := comp.gate("typecheck", tc.Diagnostics(), tree.Modules); err != nil {
 			return nil, err
 		}
 
@@ -281,7 +281,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		bc := borrowchecker.New()
 		bc.CheckProgram(tree.Root, tc.Env())
 		model.Diagnostics = append(model.Diagnostics, bc.Diagnostics()...)
-		if err := comp.gate("borrowcheck", bc.Diagnostics()); err != nil {
+		if err := comp.gate("borrowcheck", bc.Diagnostics(), tree.Modules); err != nil {
 			return nil, err
 		}
 
@@ -293,7 +293,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 
 		disciplineDiagnostics := discipline.AnalyzeProgram(tree.Root).Diagnostics()
 		model.Diagnostics = append(model.Diagnostics, disciplineDiagnostics...)
-		if err := comp.gate("discipline", disciplineDiagnostics); err != nil {
+		if err := comp.gate("discipline", disciplineDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
 
@@ -301,21 +301,63 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 	})
 }
 
-// gate rejects on error diagnostics, and on warnings too in the strict
-// profile (zero-warning rule).
-func (comp Compilation) gate(phase string, diagnostics []*diagnostic.Diagnostic) error {
+// gate rejects on error diagnostics, and on warnings too where the strict
+// profile applies (zero-warning rule). Profiles are per module
+// (docs/spec/85-discipline.md section 1): a warning rejects when the
+// effective profile of the package owning its primary cause is strict.
+func (comp Compilation) gate(phase string, diagnostics []*diagnostic.Diagnostic, info *ModuleInfo) error {
 	rejecting := diagnosticErrors(diagnostics)
-	if comp.options.Profile == "strict" {
-		for _, d := range diagnostics {
-			if d.Severity == diagnostic.SeverityWarning {
-				rejecting = append(rejecting, d)
-			}
+	for _, d := range diagnostics {
+		if d.Severity == diagnostic.SeverityWarning && comp.profileFor(d.Package, info) == "strict" {
+			rejecting = append(rejecting, d)
 		}
 	}
 	if len(rejecting) != 0 {
 		return &DiagnosticError{Phase: phase, Diagnostics: rejecting}
 	}
 	return nil
+}
+
+// profileFor resolves the discipline profile a package is judged under.
+//
+//   - Root-module packages, the root of a single-source build, and any
+//     diagnostic whose package is unknown take the root profile: the
+//     command-line/Options profile when given, else the root manifest's
+//     declaration, else "default". Unknown is treated as root deliberately —
+//     monomorphized clones of generic functions carry their instantiation
+//     name rather than a package — so a strict root never loses a warning to
+//     a missing stamp.
+//   - Packages of a dependency module take that module's declared profile,
+//     "default" when it declares none.
+//   - The spliced bootstrap library (`std`, `testing-host`) and standard
+//     library packages, which have no manifest, are judged under "default".
+func (comp Compilation) profileFor(pkg string, info *ModuleInfo) string {
+	rootProfile := comp.options.Profile
+	if rootProfile == "" && info != nil {
+		rootProfile = info.ModuleProfiles[info.RootModule]
+	}
+	if rootProfile == "" {
+		rootProfile = "default"
+	}
+	switch pkg {
+	case "":
+		return rootProfile
+	case "std", "testing-host":
+		return "default"
+	}
+	if info == nil || pkg == info.RootPackage {
+		return rootProfile
+	}
+	if info.StandardLibrary[pkg] {
+		return "default" // no module, no manifest
+	}
+	if module, owned := info.ModuleOf[pkg]; owned && module != info.RootModule {
+		if declared := info.ModuleProfiles[module]; declared != "" {
+			return declared
+		}
+		return "default"
+	}
+	return rootProfile
 }
 
 // SemanticModel is the Roslyn-style spelling for Check.
