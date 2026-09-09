@@ -253,7 +253,7 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
 Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.
 
-## 8. Semantic verification of straight-line and conditional bodies (two increments implemented)
+## 8. Semantic verification of acyclic bodies (three increments implemented)
 
 **Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
 with both an asm unit and an Oak fallback body, the asm gate runs the
@@ -304,8 +304,29 @@ the four signed codes are checked exhaustively at width 4 against
 remain outside the subset (trusted). Executed: `max32` via `cmp`/`csel lo`
 proven and run both ways; `csel hi` for `a < b` refuted at the gate with a
 concrete counterexample; `lo` for a signed comparison refuted at
-`a = -1, b = 0`. The layers below remain the design for the rest (branches
-and loops).
+`a = -1, b = 0`.
+
+**Acyclic branches (third increment).** The executor unfolds a body into
+its paths: `b.cond L` forks the symbolic state — the taken path continues
+at `L` under the branch's condition (read off the flags exactly as `csel`
+does), the fall-through under its negation — and the two results meet as a
+select (`Oak.AssemblerSemantics.branch_as_select`; `branch_map` is the law
+that lets paths rejoin at a shared tail through an unconditional `b`).
+Every branch target must lie ahead of the branch: a backward target is a
+loop, outside the subset, and the body is trusted, as is a body exceeding
+the path budget. On the Oak side, nested conditionals lower to nested
+selects, comparisons joined by `&&`/`||` lower to the strict and/or of their
+0/1 terms (over pure comparisons of parameters, short-circuiting is
+unobservable), Bool literals are `1`/`0`, and a Bool-typed body is its C
+representation — so a range test `lo <= v && v < hi` is the specification
+of a two-branch chain. The signed condition codes are now theorems at the
+contract widths: `lt_holds_eq_slt_w32`/`_w64` (and `ge`/`gt`/`le`) prove
+the N ≠ V reading against `BitVec.slt` for every 32- and 64-bit operand pair
+by `bv_decide` (a SAT certificate the kernel checks). Executed: a clamp
+with two branches and three paths proven and run both ways; `b.hs` for a
+`<` branch refuted; an inclusive bound for an exclusive one refuted; a loop
+trusted. What remains is the design for loops (invariants, or bounded
+unrolling under `BoundedLoop`).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
@@ -328,8 +349,8 @@ specification** — and three layers:
    functions and asm table entries cite the same semantics) and
    transliterated into a Go symbolic executor.
 
-3. **Postcondition discharge.** For a **straight-line** body (no labels;
-   conditional selects landed; later: acyclic branches), the symbolic executor produces
+3. **Postcondition discharge.** For an **acyclic** body (straight-line,
+   conditional selects, and forward branches all landed; loops remain), the symbolic executor produces
    the result register's value as a bitvector term over the bound
    parameters. The Oak fallback body, when it is a pure expression over the
    same parameters (the `add_asm: ... = left + right` shape), lowers to a
