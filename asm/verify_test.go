@@ -195,3 +195,55 @@ func TestVerifyAcyclicBranches(t *testing.T) {
 		t.Fatalf("a disjunction must be proven, got %s: %s", either.Kind, either.Message)
 	}
 }
+
+// Span memory (§8, fourth increment): a span parameter is its length and
+// its elements; a guarded load at a whole-element offset is the element
+// parameter, and the Oak body indexes the view under the same guard.
+func TestVerifySpanMemory(t *testing.T) {
+	decl := "pair_sum: (v: []u32) -> u32"
+	body := "len(v) < u32(2) ? u32(0) | v[0] + v[1]"
+	asm := "  bind x0, w1 = v\n  clobber w9\n  cmp w1, #2\n  b.lo short\n  ldr w9, [x0]\n  ldr w0, [x0, #4]\n  add w0, w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret"
+	proven := verifyCase(t, decl, body, asm)
+	if proven.Kind != VerdictProven {
+		t.Fatalf("pair_sum must be proven, got %s: %s", proven.Kind, proven.Message)
+	}
+	// The guard spelled the other way round on the Oak side is the same function.
+	flipped := verifyCase(t, decl, "len(v) >= u32(2) ? v[0] + v[1] | u32(0)", asm)
+	if flipped.Kind != VerdictProven {
+		t.Fatalf("flipped guard must be proven, got %s: %s", flipped.Kind, flipped.Message)
+	}
+	// Reading element 0 twice is a different function: a mismatch naming the elements.
+	wrongElem := verifyCase(t, decl, body, "  bind x0, w1 = v\n  clobber w9\n  cmp w1, #2\n  b.lo short\n  ldr w9, [x0]\n  ldr w0, [x0]\n  add w0, w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if wrongElem.Kind != VerdictMismatch || !strings.Contains(wrongElem.Message, "v[1]=") {
+		t.Fatalf("a wrong element must be a mismatch naming the element, got %s: %s", wrongElem.Kind, wrongElem.Message)
+	}
+	// A wrong guard constant is a mismatch too: the asm returns 0 for a
+	// two-element span where Oak reads it.
+	wrongGuard := verifyCase(t, decl, body, "  bind x0, w1 = v\n  clobber w9\n  cmp w1, #3\n  b.lo short\n  ldr w9, [x0]\n  ldr w0, [x0, #4]\n  add w0, w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if wrongGuard.Kind != VerdictMismatch || !strings.Contains(wrongGuard.Message, "len(v)=2") {
+		t.Fatalf("a wrong guard must be a mismatch at len 2, got %s: %s", wrongGuard.Kind, wrongGuard.Message)
+	}
+	// 64-bit elements load through x registers; a signed element type
+	// compares signed.
+	wide := verifyCase(t, "first_or: (v: []u64, d: u64) -> u64", "len(v) == u32(0) ? d | v[0]",
+		"  bind x0, w1 = v\n  bind x2 = d\n  cmp w1, #1\n  b.lo empty\n  ldr x0, [x0]\n  ret\nempty:\n  mov x0, x2\n  ret")
+	if wide.Kind != VerdictProven {
+		t.Fatalf("64-bit element load must be proven, got %s: %s", wide.Kind, wide.Message)
+	}
+	signedMax := verifyCase(t, "head_max: (v: []i32) -> i32", "len(v) < u32(2) ? i32(0) | (v[0] < v[1] ? v[1] | v[0])",
+		"  bind x0, w1 = v\n  clobber w9\n  cmp w1, #2\n  b.lo short\n  ldr w9, [x0]\n  ldr w0, [x0, #4]\n  cmp w9, w0\n  csel w0, w0, w9, lt\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if signedMax.Kind != VerdictProven {
+		t.Fatalf("signed element max must be proven, got %s: %s", signedMax.Kind, signedMax.Message)
+	}
+	// Outside the subset: a byte span read as a word, a store through a span.
+	bytes := verifyCase(t, "b0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | u32(v[0])",
+		"  bind x0, w1 = v\n  cmp w1, #4\n  b.lo short\n  ldr w0, [x0]\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if bytes.Kind != VerdictTrusted {
+		t.Fatalf("a word load over bytes must be trusted, got %s: %s", bytes.Kind, bytes.Message)
+	}
+	store := verifyCase(t, "bump: (v: [*]u32) -> u32", "len(v) < u32(1) ? u32(0) | v[0]",
+		"  bind x0, w1 = v\n  clobber w9\n  cmp w1, #1\n  b.lo short\n  ldr w9, [x0]\n  add w9, w9, #1\n  str w9, [x0]\n  mov w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if store.Kind != VerdictTrusted {
+		t.Fatalf("a store through a span must be trusted, got %s: %s", store.Kind, store.Message)
+	}
+}

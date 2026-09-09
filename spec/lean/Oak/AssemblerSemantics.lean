@@ -330,4 +330,35 @@ theorem branch_map {α β : Type} (c : Cond) (f : Flags) (taken fall : α) (k : 
   unfold branch
   split <;> rfl
 
+/-! ## Span memory
+
+A span or view parameter arrives as its `{base, len}` pair (`Oak.Assembler`
+§7). The verifier models it as the executor does: an opaque base, a 32-bit
+length, and one element value per index — unconstrained, since the seam
+checker has already placed every load under a dominating guard proving the
+index inside the length (`Oak.Assembler.span_access`). A load at byte offset
+`off` over `elem`-byte elements reads element `off / elem` when `off` is a
+whole number of elements; the Oak body's `v[k]` is the same element. -/
+
+structure Span (w : Nat) where
+  len : BitVec 32
+  elems : Nat → BitVec w
+
+/-- `ldr rD, [base, #off]` through a span base, when the offset is a whole
+    element. -/
+def loadElem {w : Nat} (s : Span w) (elem off : Nat) : BitVec w :=
+  s.elems (off / elem)
+
+/-- A load at offset `k * elem` is element `k` — the executor's element
+    naming `v[k]`. -/
+theorem loadElem_at {w : Nat} (s : Span w) (elem k : Nat) (h : 0 < elem) :
+    loadElem s elem (k * elem) = s.elems k := by
+  simp [loadElem, Nat.mul_div_cancel _ h]
+
+/-- Under the guard `¬ (len < N)` every element index below `N` is inside
+    the span: the Oak side's `len(v) < N ? default | ...v[k]...` and the
+    asm's `cmp wL, #N; b.lo` read the same elements on the same inputs. -/
+theorem guarded_index_in_bounds (len N k : Nat) (hguard : ¬ len < N) (hk : k < N) : k < len := by
+  omega
+
 end Oak.AssemblerSemantics

@@ -253,7 +253,7 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
 Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.
 
-## 8. Semantic verification of acyclic bodies (three increments implemented)
+## 8. Semantic verification of acyclic bodies (four increments implemented)
 
 **Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
 with both an asm unit and an Oak fallback body, the asm gate runs the
@@ -325,8 +325,27 @@ the N ≠ V reading against `BitVec.slt` for every 32- and 64-bit operand pair
 by `bv_decide` (a SAT certificate the kernel checks). Executed: a clamp
 with two branches and three paths proven and run both ways; `b.hs` for a
 `<` branch refuted; an inclusive bound for an exclusive one refuted; a loop
-trusted. What remains is the design for loops (invariants, or bounded
-unrolling under `BoundedLoop`).
+trusted.
+
+**Span memory (fourth increment).** A span or view parameter enters the
+executor as its `{base, len}` pair: the base register holds an opaque
+address term (no Oak spelling — a result depending on it can never match),
+the length register the 32-bit parameter `len(v)`. A load `ldr rD, [xB,
+#off]` whose base term is a span base reads the element parameter `v[k]`
+with `k = off / elem`, admitted only when the offset is a whole element and
+the register width is the element width; the seam checker has already
+placed the load under a dominating `cmp wL, #N; b.lo` guard, so the
+verifier asks only *which* element is read (`Oak.AssemblerSemantics.Span`,
+`loadElem_at`, `guarded_index_in_bounds`). The Oak side lowers `len(v)` and
+constant-index `v[k]` to the same parameters, with the element type's width
+and signedness (`[]i32` elements compare signed). Stores through a span,
+frame memory, moving bases, and loads whose width differs from the element
+(`ldr w` over `[]u8`) stay outside the subset (trusted). Executed: a
+guarded `pair_sum` over `[]u32` proven and run both ways; reading element 0
+twice refuted with the elements named in the counterexample; a guard
+constant of 3 for Oak's 2 refuted at `len(v) = 2`; a 64-bit first-or-default
+and a signed head max proven. What remains is the design for loops
+(invariants, or bounded unrolling under `BoundedLoop`).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

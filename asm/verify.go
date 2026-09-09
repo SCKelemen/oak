@@ -403,7 +403,12 @@ var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add",
 func executeBody(fn *Function, sig *ast.FunctionStatement) (*term, string, bool) {
 	state := &symbolicState{regs: map[int]*term{}}
 	params := map[string]RegClass{}
+	spans := map[string]int64{} // span/view parameter -> element size in bytes
 	for _, param := range sig.Parameters {
+		if elem, _, isSpan := spanShape(param.Type); isSpan {
+			spans[param.Name.Value] = elem
+			continue
+		}
 		class, ok := contractClass(param.Type)
 		if !ok || class == ClassV {
 			return nil, "vector or non-integer parameters", false
@@ -412,7 +417,15 @@ func executeBody(fn *Function, sig *ast.FunctionStatement) (*term, string, bool)
 	}
 	for _, binding := range fn.Bindings {
 		if binding.Length != nil {
-			return nil, "span parameters (memory)", false
+			// A span arrives as its {base, len} pair: the base is the opaque
+			// address term `&v` (memory through it resolves to element
+			// parameters), the length the 32-bit parameter len(v).
+			if _, isSpan := spans[binding.Param]; !isSpan {
+				return nil, "span binding of a non-span parameter", false
+			}
+			state.regs[binding.Register.Num] = paramTerm(spanBaseName(binding.Param), 64)
+			state.regs[binding.Length.Num] = zeroExtend(paramTerm(spanLenName(binding.Param), 32), 64)
+			continue
 		}
 		class := params[binding.Param]
 		state.regs[binding.Register.Num] = zeroExtend(paramTerm(binding.Param, widthOf(class)), 64)
@@ -433,9 +446,17 @@ func executeBody(fn *Function, sig *ast.FunctionStatement) (*term, string, bool)
 			return nil, "alignment directives", false
 		}
 	}
-	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass}
+	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans}
 	return exec.run(0, state)
 }
+
+// Span parameters appear in terms under three names: the opaque base
+// address `&v`, the length `len(v)`, and the elements `v[k]`. The Oak
+// lowering produces the same names for len(v) and v[k]; the base has no
+// Oak spelling (a result depending on it can never match).
+func spanBaseName(param string) string          { return "&" + param }
+func spanLenName(param string) string           { return "len(" + param + ")" }
+func spanElemName(param string, k int64) string { return fmt.Sprintf("%s[%d]", param, k) }
 
 // pathBudget bounds the number of paths an acyclic body may unfold into.
 const pathBudget = 256
@@ -450,6 +471,7 @@ type pathExecutor struct {
 	items       []Item
 	labels      map[string]int
 	resultClass RegClass
+	spans       map[string]int64 // span parameter -> element size in bytes
 	paths       int
 }
 
@@ -508,11 +530,47 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			}
 			return iteTerm(cond, taken, fallThrough), "", true
 		}
+		if instr.Mnemonic == "ldr" {
+			if reason, ok := x.load(instr, state); !ok {
+				return nil, reason, false
+			}
+			continue
+		}
 		if reason, ok := step(instr, state); !ok {
 			return nil, reason, false
 		}
 	}
 	return nil, "no ret reached", false
+}
+
+// load executes `ldr rD, [xB, #off]` through a span base: the seam checker
+// has already placed the access under a dominating length guard, so the
+// verifier's only question is which element it reads. The offset must be a
+// whole element and the register width the element's width; loads from the
+// frame, stores, and moving bases are outside the subset.
+func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bool) {
+	dest := instr.Operands[0].(Register)
+	mem := instr.Operands[1].(Memory)
+	if mem.Base.Class == ClassSP {
+		return "frame memory", false
+	}
+	base, bound := state.regs[mem.Base.Num]
+	if !bound || base.kind != termParam || !strings.HasPrefix(base.name, "&") {
+		return "a load through a register that is not a span base", false
+	}
+	param := strings.TrimPrefix(base.name, "&")
+	elem := x.spans[param]
+	if mem.Mode != MemOffset {
+		return "a span base moved by pre/post-index", false
+	}
+	if int64(widthOf(dest.Class)/8) != elem {
+		return fmt.Sprintf("a %d-bit load over %d-byte elements", widthOf(dest.Class), elem), false
+	}
+	if mem.Offset < 0 || mem.Offset%elem != 0 {
+		return "a load not aligned to an element", false
+	}
+	state.write(dest, paramTerm(spanElemName(param, mem.Offset/elem), widthOf(dest.Class)))
+	return "", true
 }
 
 // step executes one data-processing instruction on the state.
@@ -605,10 +663,71 @@ var oakComparisons = map[string][2]string{
 }
 
 // oakLowering carries the parameter contract: declared widths and
-// signedness (i8/i16/i32/i64 compare signed, everything else unsigned).
+// signedness (i8/i16/i32/i64 compare signed, everything else unsigned),
+// and the span/view parameters with their element widths.
 type oakLowering struct {
 	params map[string]int
 	signed map[string]bool
+	spans  map[string]spanContract
+}
+
+type spanContract struct {
+	elemWidth int
+	signed    bool
+}
+
+// spanElement recognizes v[k] over a span parameter with a constant index
+// (a literal, or a primitive constructor over one: v[u32(1)]).
+func (lo *oakLowering) spanElement(expr ast.Expression) (name string, contract spanContract, ok bool) {
+	index, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return "", spanContract{}, false
+	}
+	ident, isIdent := index.Left.(*ast.Identifier)
+	if !isIdent {
+		return "", spanContract{}, false
+	}
+	contract, isSpan := lo.spans[ident.Value]
+	if !isSpan {
+		return "", spanContract{}, false
+	}
+	k, isConst := constantIndexValue(index.Index)
+	if !isConst || k < 0 {
+		return "", spanContract{}, false
+	}
+	return spanElemName(ident.Value, k), contract, true
+}
+
+func constantIndexValue(expr ast.Expression) (int64, bool) {
+	switch e := expr.(type) {
+	case *ast.IntegerLiteral:
+		return e.Value, true
+	case *ast.InvocationExpression:
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && len(e.Arguments) == 1 {
+			switch ident.Value {
+			case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
+				return constantIndexValue(e.Arguments[0])
+			}
+		}
+	}
+	return 0, false
+}
+
+// spanLength recognizes len(v) over a span parameter.
+func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
+	call, isCall := expr.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return "", false
+	}
+	fn, isIdent := call.Function.(*ast.Identifier)
+	arg, argIsIdent := call.Arguments[0].(*ast.Identifier)
+	if !isIdent || !argIsIdent || fn.Value != "len" {
+		return "", false
+	}
+	if _, isSpan := lo.spans[arg.Value]; !isSpan {
+		return "", false
+	}
+	return spanLenName(arg.Value), true
 }
 
 // lower turns a pure expression over the parameters into a term of the
@@ -628,7 +747,15 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			return constTerm(1, width), "", true
 		}
 		return constTerm(0, width), "", true
+	case *ast.IndexExpression:
+		if name, contract, isElem := lo.spanElement(e); isElem {
+			return truncate(paramTerm(name, contract.elemWidth), width), "", true
+		}
+		return nil, "an index that is not a constant element of a span parameter", false
 	case *ast.InvocationExpression:
+		if name, isLen := lo.spanLength(e); isLen {
+			return zeroExtend(truncate(paramTerm(name, 32), width), width), "", true
+		}
 		// Primitive constructors over constants: u32(15).
 		ident, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent || len(e.Arguments) != 1 {
@@ -755,12 +882,19 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 		if w, isParam := lo.params[e.Value]; isParam {
 			return w, lo.signed[e.Value], true
 		}
+	case *ast.IndexExpression:
+		if _, contract, isElem := lo.spanElement(e); isElem {
+			return contract.elemWidth, contract.signed, true
+		}
 	case *ast.InfixExpression:
 		if w, s, ok := lo.operandContract(e.Left); ok {
 			return w, s, true
 		}
 		return lo.operandContract(e.Right)
 	case *ast.InvocationExpression:
+		if _, isLen := lo.spanLength(e); isLen {
+			return 32, false, true
+		}
 		if len(e.Arguments) == 1 {
 			return lo.operandContract(e.Arguments[0])
 		}
@@ -850,23 +984,38 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
-	params := map[string]int{}
-	signed := map[string]bool{}
-	var names []string
+	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}}
 	for _, param := range sig.Parameters {
+		if elem, _, isSpan := spanShape(param.Type); isSpan {
+			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
+			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+			continue
+		}
 		class, _ := contractClass(param.Type)
-		params[param.Name.Value] = widthOf(class)
-		signed[param.Name.Value] = strings.HasPrefix(typeText(param.Type), "i")
-		names = append(names, param.Name.Value)
+		lowering.params[param.Name.Value] = widthOf(class)
+		lowering.signed[param.Name.Value] = strings.HasPrefix(typeText(param.Type), "i")
 	}
 	resultClass, _ := contractClass(sig.ReturnType)
 	width := widthOf(resultClass)
-	lowering := &oakLowering{params: params, signed: signed}
 	oakTerm, reason, ok := lowering.lower(oakBody, width)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
 	asmTerm = truncate(asmTerm, width)
+
+	// The unknowns are every parameter either side mentions: scalars, span
+	// lengths, span elements, and span bases — at the width each is
+	// declared (a span element's width is its element type's).
+	mentioned := map[string]bool{}
+	collectParams(asmTerm, mentioned)
+	collectParams(oakTerm, mentioned)
+	params := map[string]int{}
+	names := make([]string, 0, len(mentioned))
+	for name := range mentioned {
+		names = append(names, name)
+		params[name] = lowering.declaredWidth(name)
+	}
+	sort.Strings(names)
 
 	// Witnesses first: a disagreement is a definite mismatch regardless of
 	// what normalization would say.
@@ -898,6 +1047,47 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		}
 	}
 	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, %d BDD nodes)", fn.Name, width, len(bl.bdd.nodes))}
+}
+
+// collectParams gathers every parameter name a term mentions. Widths come
+// from the declaration (declaredWidth), never from the use: truncation and
+// zero-extension copy a parameter node at the use width while the value
+// stays bounded by its declared width.
+func collectParams(t *term, into map[string]bool) {
+	if t == nil {
+		return
+	}
+	switch t.kind {
+	case termParam:
+		into[t.name] = true
+		return
+	case termConst:
+		return
+	}
+	collectParams(t.cond, into)
+	collectParams(t.left, into)
+	collectParams(t.right, into)
+}
+
+// declaredWidth is the width a parameter's values are bounded by: a scalar
+// parameter's contract width, 64 for a span base, 32 for a span length, the
+// element width for a span element.
+func (lo *oakLowering) declaredWidth(name string) int {
+	if w, isScalar := lo.params[name]; isScalar {
+		return w
+	}
+	if strings.HasPrefix(name, "&") {
+		return 64
+	}
+	if strings.HasPrefix(name, "len(") {
+		return 32
+	}
+	if bracket := strings.IndexByte(name, '['); bracket > 0 {
+		if contract, isSpan := lo.spans[name[:bracket]]; isSpan {
+			return contract.elemWidth
+		}
+	}
+	return 64
 }
 
 func describeEnv(names []string, env map[string]uint64) string {
