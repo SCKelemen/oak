@@ -119,6 +119,119 @@ bits, `size_t` is at least 32 bits. Targets outside this model (16-bit `int`)
 are not supported by the v1 `c.Int`/`c.Size` conversion rows; the fixed-width
 rows are unconditional.
 
+### 2.5 Spans at the boundary
+
+**Status: specified, not implemented** (`STATUS.md`). Motivated by the ml
+project's pilot, where every byte of kernel source left the process through
+one `putchar` call because no buffer could cross the boundary
+(`docs/notes/ml-feedback-2026-09.md`, tier 3).
+
+§2.1 makes `c.Ptr` and `c.String` opaque and constructor-less, which is the
+right rule for pointers that come *from* C. It leaves no way to hand C a
+buffer that Oak owns. This section adds exactly that, in the only shape the
+borrow checker can vouch for: **a borrowed view or span becomes a pointer
+and a length for the duration of one extern call, and for nothing else.**
+
+#### 2.5.1 Argument forms
+
+Two compiler-known functions exist only in argument position of a call to an
+extern binding:
+
+| Form | Oak operand | Yields (two consecutive parameters) | Access |
+| --- | --- | --- | --- |
+| `c.span_of(v)` | `v: []T` | `c.Ptr, c.Size` | C may read `len(v)` elements |
+| `c.span_mut_of(s)` | `s: [*]T` | `c.Ptr, c.Size` | C may read and write `len(s)` elements |
+
+`T` must be a fixed-width integer, a floating-point type (`20-types.md`
+§11.3), `Bool`, or a `struct` whose layout is proven (`40-records.md`) and
+whose fields are recursively of these types — the types with one meaning on
+both sides of the boundary. Views of records without a selected
+representation, of ADTs, of views, or of anything carrying a borrow are
+rejected (`OAK-F0104`).
+
+The extern binding's signature declares the pair explicitly, so the trust
+boundary (§2.3) stays honest about what C receives:
+
+```oak
+write: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern("write")
+fread: (into: c.Ptr, size: c.Size, count: c.Size, stream: c.Ptr): c.Size = c.extern("fread")
+
+emit: (fd: i32, bytes: []u8): i64 {
+  i64(write(c.Int(fd), c.span_of(bytes)))
+}
+
+fill: (buffer: [*]u8, stream: c.Ptr): u32 {
+  n: c.Size = fread(c.span_mut_of(buffer), c.Size(u32(1)), stream)
+  ...
+}
+```
+
+`c.span_of(bytes)` occupies **two** parameter positions — `data` and
+`count` — and the checker matches them as a unit: the parameter at the
+span's position must be `c.Ptr` and the next must be `c.Size`
+(`OAK-F0105` otherwise). The length passed is the element count, not the
+byte count; `T`'s size is known to both sides.
+
+#### 2.5.2 Borrowing rule
+
+For the borrow checker (`50-borrowing.md`), an extern call whose arguments
+include `c.span_of(v)` is a **read use** of `v` and one including
+`c.span_mut_of(s)` is a **write use** of `s`, for the extent of the call
+expression: exactly the rule an ordinary Oak call taking `[]T` or `[*]T`
+already gets. Consequently:
+
+- a `span_mut_of` argument excludes every other borrow of the same owner in
+  the same call (`OAK-B0104`, the existing exclusivity rule), so C never
+  receives two writable aliases of one buffer, and never a writable alias
+  together with a readable one;
+- the pointer **cannot escape**: `c.span_of` is not an expression, has no
+  type, and cannot be bound, stored, returned, or passed anywhere but an
+  extern parameter position (`OAK-F0103` extended). The foreign function
+  may, of course, retain the pointer — that is a foreign-contract violation
+  under the trust rule of §2.3, exactly like a wrong prototype, and the
+  binding's author asserts it does not happen;
+- the owner outlives the call trivially, because the call is inside the
+  region that proves the owner alive.
+
+Nothing changes in the reverse direction: a `c.Ptr` returned by C is still
+opaque. Oak never dereferences a foreign pointer. A program that wants C to
+fill Oak memory passes Oak memory with `span_mut_of`; a program that wants
+to keep a C-allocated buffer keeps the handle and asks C to operate on it.
+The stronger design — a `Buffer[CpuOwned] -> Buffer[DeviceOwned]` typestate
+that lets a foreign runtime *own* Oak storage for a while
+(`50-borrowing.md` §11) — is the later increment, and this section is the
+shape it will generalize.
+
+#### 2.5.3 `c.String` from Oak text
+
+A `c.String` may be constructed from a `string` **literal**: the backend
+emits the literal with a trailing NUL, so `c.String("kernel_main")` is
+well-formed by construction. A non-literal `string` is rejected
+(`OAK-F0106`): Oak strings are not NUL-terminated and carry a length, so a
+runtime `string` would need a copy the language does not perform silently
+(`00-constitution.md`, no hidden work). Programs that build text at runtime
+for C terminate it themselves and pass `c.span_of` over the bytes, or call a
+C function that takes a pointer and a length.
+
+#### 2.5.4 Lowering
+
+`c.span_of(v)` lowers to the two C arguments `(void *)v.data, (size_t)v.len`
+and `c.span_mut_of(s)` to `(void *)s.data, (size_t)s.len`. No copy, no
+allocation, no thunk. The interpreter cannot call externs (§4) and rejects
+these forms with the same diagnostic it gives an extern call.
+
+#### 2.5.5 Diagnostics
+
+| Code | Meaning |
+| --- | --- |
+| `OAK-F0104` | element type of a boundary span is not representable across the C ABI |
+| `OAK-F0105` | `c.span_of`/`c.span_mut_of` argument does not line up with a `c.Ptr, c.Size` parameter pair |
+| `OAK-F0106` | `c.String` constructed from a non-literal string |
+
+The test runner's native adapter rules (`110-testing.md`) continue to exclude
+pointer interfaces from the adapters themselves; a test may nonetheless call
+an extern with a boundary span, since the span never outlives the call.
+
 ## 3. The abstract assembly interface
 
 ### 3.1 Shape

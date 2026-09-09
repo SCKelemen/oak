@@ -110,6 +110,10 @@ C undefined/implementation-defined behavior must not leak into safe Oak semantic
 
 The formal specification of overflow/division/shifts/conversions must precede relying on them for verification.
 
+### 7a. Floating-point semantics
+
+The same rule governs floating point once `20-types.md` §11.3 is implemented: the backend realizes IEEE 754 round-to-nearest-even with subnormals, never reassociates, distributes, or contracts, and never enables a fast-math mode. The C backend emits `#pragma STDC FP_CONTRACT OFF` at the top of every translation unit and the `oak run`/`oak test` drivers pass `-ffp-contract=off` to the system compiler; `-ffast-math`, `-Ofast`, `-ffinite-math-only`, and `-fno-signed-zeros` are never passed. Out-of-range float-to-integer conversions lower to range-checked helpers, never to C's undefined cast. The "no hidden runtime" rule of §3 extends to numeric semantics: the written expression is the executed expression.
+
 ## 8. Bounds
 
 When the compiler proves an index/range safe, a backend may eliminate the corresponding dynamic check.

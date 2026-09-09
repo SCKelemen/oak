@@ -52,6 +52,37 @@ x: T
 
 is not part of the safe core until definite-initialization semantics are specified and mechanically checked. Prefer initialization at declaration or an explicit `Option[T]`/state ADT.
 
+## 2a. String literals
+
+A string literal is delimited by double quotes and holds UTF-8 text
+(`70-strings.md`). The scanner decodes the following escape sequences, once,
+so every later phase — the evaluator, `text_literal`, the C backend's own
+re-escaping — sees the bytes the program means:
+
+| Escape | Byte |
+| --- | --- |
+| `\n` `\t` `\r` | line feed, horizontal tab, carriage return |
+| `\0` | NUL |
+| `\\` `\"` | backslash, double quote |
+| `\xHH` | one byte, exactly two hexadecimal digits |
+
+Any other character after a backslash is an invalid escape and the literal
+is a parse error; there is no silent fallback. `\xHH` may produce a byte
+that is not valid UTF-8 on its own; the literal as a whole must still be
+valid UTF-8 where a `string` is required, and a `[]u8` context accepts any
+bytes. There is no raw-string form in v1: a literal that must contain a
+backslash spells it `\\`.
+
+Motivation recorded in `docs/notes/ml-feedback-2026-09.md` (finding F1): a
+code emitter cannot write a newline into its output without it.
+
+## 2b. Discard statements
+
+`_ = expr` evaluates `expr` and drops its non-unit result on purpose
+(`85-discipline.md` §6). `_` is not a variable and binds nothing;
+`_: T = expr` and `_ := expr` are not declarations and are rejected as
+they are today. The form is a statement, never an expression.
+
 ## 3. Functions
 
 A function is an ordinary declaration: a name bound to a function interface
