@@ -86,4 +86,22 @@ theorem add_comm' {w : Nat} (a b : BitVec w) : apply .add a b = apply .add b a :
 theorem sub_as_add {w : Nat} (a b : BitVec w) : apply .sub a b = apply .add a (-b) := by
   simp [apply, BitVec.sub_eq_add_neg]
 
+/-- The bit-blaster's justification: two bitvectors are equal exactly when
+    every bit agrees, so equality of every bit's canonical decision diagram
+    is equality of the values (`asm/blast.go`). -/
+theorem eq_of_bits {w : Nat} (a b : BitVec w) (h : ∀ i : Nat, a.getLsbD i = b.getLsbD i) : a = b := by
+  apply BitVec.eq_of_getLsbD_eq
+  intros
+  exact h _
+
+/-- The pointwise laws the blaster applies for `and`, `orr`, `eor`. -/
+theorem and_bit {w : Nat} (a b : BitVec w) (i : Nat) :
+    (a &&& b).getLsbD i = (a.getLsbD i && b.getLsbD i) := BitVec.getLsbD_and
+
+theorem or_bit {w : Nat} (a b : BitVec w) (i : Nat) :
+    (a ||| b).getLsbD i = (a.getLsbD i || b.getLsbD i) := BitVec.getLsbD_or
+
+theorem xor_bit {w : Nat} (a b : BitVec w) (i : Nat) :
+    (a ^^^ b).getLsbD i = (a.getLsbD i ^^ b.getLsbD i) := BitVec.getLsbD_xor
+
 end Oak.AssemblerSemantics

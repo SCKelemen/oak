@@ -49,9 +49,28 @@ func TestVerifyVerdicts(t *testing.T) {
 		t.Fatalf("sub for add must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
 	}
 
+	// Beyond the linear form the bit-blaster decides: shift-and-mask,
+	// flag composition with or/xor, and a subtraction are proven; a wrong
+	// mask is a mismatch with a concrete counterexample.
 	masked := verifyCase(t, "low_nibble: (v: u32) -> u32", "(v >> 4) & u32(15)", "  bind w0 = v\n  clobber w9\n  lsr w9, w0, #4\n  and w0, w9, #15\n  ret")
-	if masked.Kind != VerdictWitnessed {
-		t.Fatalf("shift-and-mask is outside the linear form and must be witness-checked, got %s: %s", masked.Kind, masked.Message)
+	if masked.Kind != VerdictProven || !strings.Contains(masked.Message, "bit level") {
+		t.Fatalf("shift-and-mask must be proven at the bit level, got %s: %s", masked.Kind, masked.Message)
+	}
+	flags := verifyCase(t, "compose: (a, b: u64) -> u64", "(a | (b << 8)) ^ u64(255)", "  bind x0 = a\n  bind x1 = b\n  clobber x9\n  lsl x9, x1, #8\n  orr x0, x0, x9\n  eor x0, x0, #255\n  ret")
+	if flags.Kind != VerdictProven {
+		t.Fatalf("or/xor composition must be proven, got %s: %s", flags.Kind, flags.Message)
+	}
+	wrongMask := verifyCase(t, "low_nibble: (v: u32) -> u32", "(v >> 4) & u32(31)", "  bind w0 = v\n  clobber w9\n  lsr w9, w0, #4\n  and w0, w9, #15\n  ret")
+	if wrongMask.Kind != VerdictMismatch || !strings.Contains(wrongMask.Message, "v=") {
+		t.Fatalf("a wrong mask must be a mismatch with a counterexample, got %s: %s", wrongMask.Kind, wrongMask.Message)
+	}
+	// A register shift count: the barrel shifter blasts it and the machine's
+	// modulo-width count agrees with Oak only when the Oak side is also a
+	// constant shift — so the Oak lowering refuses, and the verdict is
+	// trusted rather than a false proof.
+	variableShift := verifyCase(t, "shift_by: (v, n: u32) -> u32", "v << n", "  bind w0 = v\n  bind w1 = n\n  lsl w0, w0, w1\n  ret")
+	if variableShift.Kind != VerdictTrusted {
+		t.Fatalf("a variable shift count must be trusted (Oak traps, the machine wraps), got %s: %s", variableShift.Kind, variableShift.Message)
 	}
 
 	memory := verifyCase(t, "spill: (a: u64) -> u64", "a", "  bind x0 = a\n  frame 16\n  str x0, [sp, #-16]!\n  ldr x0, [sp], #16\n  ret")

@@ -522,7 +522,24 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if a, o := asmTerm.linearAt(width), oakTerm.linearAt(width); a != nil && o != nil && a.equal(o) {
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (linear normal form %s)", fn.Name, a)}
 	}
-	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the terms are outside the linear normal form)", fn.Name)}
+
+	// Beyond the linear form: bit-blast both sides. Equal canonical nodes
+	// for every bit is a proof at the bit level; a differing bit gives a
+	// concrete counterexample; exceeding the node budget keeps the labeled
+	// evidence verdict.
+	bl := newBlaster(names, params)
+	asmBits := bl.blast(asmTerm)
+	oakBits := bl.blast(oakTerm)
+	if asmBits == nil || oakBits == nil || bl.bdd.exceeded {
+		return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
+	}
+	for i := 0; i < width; i++ {
+		if asmBits[i] != oakBits[i] {
+			env := bl.counterexample(asmBits[i], oakBits[i])
+			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}
+		}
+	}
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, %d BDD nodes)", fn.Name, width, len(bl.bdd.nodes))}
 }
 
 func describeEnv(names []string, env map[string]uint64) string {

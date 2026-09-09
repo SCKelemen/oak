@@ -262,11 +262,20 @@ the same linear form modulo the result width (sums of parameters and
 constants; `lsl` by a constant as multiplication; the `wN` write/read masks
 are transparent modulo 32), **mismatch** when any witness input disagrees
 (a hard error naming the input and both values — a wrong body never
-compiles), **witness-checked** when every witness agrees but the terms are
-outside the linear form (evidence, labeled so), and **trusted** when the
-body or the Oak expression is outside the executable subset (labels,
-calls, memory, system instructions, non-constant shift counts). The layers
-below remain the design for the rest.
+compiles), **proven at the bit level** when, beyond the linear form, both sides
+bit-blast (`asm/blast.go`, a small ROBDD with interleaved variable order)
+to the same canonical decision diagram for every result bit — the complete
+decision for the term language (`and`/`orr`/`eor`, shifts by constants and
+by registers as a mux barrel, `add`/`sub` as a ripple-carry chain), with a
+differing bit reported as a **mismatch** carrying a concrete counterexample
+(`Oak.AssemblerSemantics.eq_of_bits` is the justification; the ripple-carry
+chain's correspondence to `BitVec` addition is the standard transliterated
+definition, not yet Lean-refined), **witness-checked** only when the
+bit-level decision exceeds its node budget (evidence, labeled so), and
+**trusted** when the body or the Oak expression is outside the executable
+subset (labels, calls, memory, system instructions, non-constant shift
+counts on the Oak side — Oak traps where the machine wraps the count). The
+layers below remain the design for the rest.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
