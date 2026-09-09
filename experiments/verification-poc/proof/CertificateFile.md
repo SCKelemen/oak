@@ -53,17 +53,41 @@ fuel, and agreement with Oak on the corpora covers the inputs exercised.
 
 ## Validation
 
-Local runs on the tested commit: 19 theorem and definition reports passed with
-warnings treated as errors, without proof holes or project-specific axioms.
-Dependencies are limited to standard `propext`, `Quot.sound`, and
-`Classical.choice`. The file model agreed with Go and compiled Oak on all 743
-text cases: 729 corpus cases (comments, whitespace classes, line endings,
-every byte value as a token and as a separator, malformed headers and
-terminators, deletion spellings) and 14 boundary cases (variable, clause,
-command, pool, and byte limits). The comparison took under four seconds.
+[The soundness job passed](https://github.com/SCKelemen/oak/actions/runs/34327988773/job/102389628358)
+on commit `17b2ffcc57a9b375ab95da278d22dfe2e258b8aa`. All 19 theorem and
+definition reports in this module, plus the three new command-assembly
+lemmas, passed with warnings treated as errors, without proof holes or
+project-specific axioms. Dependencies are limited to standard `propext`,
+`Quot.sound`, and `Classical.choice`.
 
-CI results are recorded in `../validation-certificate-file.json` once the
-opt-in workflow has run on the pushed commit.
+The file model agreed with Go and compiled Oak on all 743 text cases: 729
+corpus cases (comments, whitespace classes, line endings, every byte value as
+a token and as a separator, malformed headers and terminators, deletion
+spellings) and 14 boundary cases (variable, clause, command, pool, and byte
+limits). The comparison took under three seconds by the log timestamps.
+Existing command-assembly, buffer, packing, and certified-stream comparisons
+passed unchanged.
+
+[The solver job passed](https://github.com/SCKelemen/oak/actions/runs/34327988773/job/102389628032).
+The file model accepted the replayed actual Oak text certificate and rejected
+its invalid-suffix and wrong-formula corruptions. Existing real-certificate
+replay accepted nine bounded certificates and rejected 18 corruptions, with
+two certificates explicitly outside the bounded profile. All 11 source
+certificates and 22 corruptions passed the earlier Lean text gate. Boolean
+proof/model checks, the native race suite, and the full external solver suite
+passed.
+
+An earlier attempt on commit `429e8199b11ff899a5a81231f13200ae79eaad77`
+produced identical soundness results but stopped at backend installation:
+upstream had removed the pinned TLC 1.8.0 asset and published a rebuilt jar.
+The pin was refreshed to GitHub's published SHA-256
+`a1fc0bfe391d99fdd86f579a63ff68c0950010e9dde551f1192b867d5c8f4efd` for asset
+`551753628`, and the digest was recomputed from a fresh download before
+committing. Download checksum enforcement remains mandatory.
+
+Repository CI, standard-library race tests, Oak testing tools, formal
+verification, and golden files all passed on the tested commit.
+`../validation-certificate-file.json` records the exact scope and job links.
 
 Next: relate the compiled Oak decoder's states to this model for every input,
 starting with a precise semantics for the Oak fragment it uses, so that Oak
