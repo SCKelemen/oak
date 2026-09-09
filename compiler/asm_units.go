@@ -70,8 +70,21 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 				}
 			}
 			decl.AsmBacked = true
-			for _, finding := range asm.Check(fn, decl, symbols) {
+			findings := asm.Check(fn, decl, symbols)
+			for _, finding := range findings {
 				report("%s: %s", unitText.Path, finding)
+			}
+			// With an Oak fallback body as the specification, verify the
+			// asm against it (docs/spec/94-assembler.md §8): a definite
+			// mismatch rejects; proof, evidence, and trust are reported as
+			// labeled information.
+			if len(findings) == 0 && fn.Fallback && decl.Body != nil {
+				verdict := asm.Verify(fn, decl, decl.Body)
+				if verdict.Kind == asm.VerdictMismatch {
+					report("%s: %s", unitText.Path, verdict.Message)
+				} else {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "asm", verdict.Message))
+				}
 			}
 			functions = append(functions, fn)
 		}

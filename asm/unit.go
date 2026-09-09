@@ -310,6 +310,24 @@ func ParseUnit(path, text string) (*Unit, []error) {
 	return unit, errs
 }
 
+// parseSignatureWithBody parses an Oak function declaration that may carry
+// a body — the specification side of §8 verification in tests.
+func parseSignatureWithBody(source string) (*ast.FunctionStatement, error) {
+	p := parser.New(layout.New(scanner.New(source)))
+	program := p.ParseProgram()
+	if errors := p.Errors(); len(errors) != 0 {
+		return nil, fmt.Errorf("%s", strings.Join(errors, "; "))
+	}
+	if program == nil || len(program.Statements) != 1 {
+		return nil, fmt.Errorf("expected exactly one function declaration")
+	}
+	fn, ok := program.Statements[0].(*ast.FunctionStatement)
+	if !ok || fn.Name == nil {
+		return nil, fmt.Errorf("not a function declaration")
+	}
+	return fn, nil
+}
+
 // parseSignature runs the Oak parser over the header so the asm side and
 // the Oak declaration are compared structurally, never textually.
 func parseSignature(header string) (*ast.FunctionStatement, error) {
