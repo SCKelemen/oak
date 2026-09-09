@@ -64,6 +64,8 @@ const (
 	termParam termKind = iota
 	termConst
 	termBinary
+	termCmp // a condition code over two operands; the value is 1 or 0
+	termIte // cond ? left : right
 )
 
 // term is a fixed-width bitvector expression. Width is 32 or 64.
@@ -72,9 +74,55 @@ type term struct {
 	width int
 	name  string // termParam
 	value uint64 // termConst (already masked to width)
-	op    string // termBinary: add sub and or xor shl shr
+	op    string // termBinary: add sub and or xor shl shr; termCmp: condition code
 	left  *term
 	right *term
+	cond  *term // termIte
+}
+
+// conditionHolds is the ARM condition-code semantics over the NZCV flags
+// of `left - right` (Oak.AssemblerSemantics.condHolds), stated as the
+// comparisons those flags encode: eq/ne on equality, hs/lo/hi/ls unsigned,
+// ge/lt/gt/le signed. mi/pl/vs/vc read a single flag and are outside the
+// verified subset.
+var verifiableConditions = map[string]bool{"eq": true, "ne": true, "hs": true, "cs": true, "lo": true, "cc": true, "hi": true, "ls": true, "ge": true, "lt": true, "gt": true, "le": true}
+
+func conditionHolds(code string, left, right uint64, width int) bool {
+	m := mask(width)
+	l, r := left&m, right&m
+	shift := uint(64 - width)
+	sl, sr := int64(l<<shift)>>shift, int64(r<<shift)>>shift
+	switch code {
+	case "eq":
+		return l == r
+	case "ne":
+		return l != r
+	case "hs", "cs":
+		return l >= r
+	case "lo", "cc":
+		return l < r
+	case "hi":
+		return l > r
+	case "ls":
+		return l <= r
+	case "ge":
+		return sl >= sr
+	case "lt":
+		return sl < sr
+	case "gt":
+		return sl > sr
+	case "le":
+		return sl <= sr
+	}
+	return false
+}
+
+func cmpTerm(code string, left, right *term) *term {
+	return &term{kind: termCmp, width: left.width, op: code, left: left, right: right}
+}
+
+func iteTerm(cond, left, right *term) *term {
+	return &term{kind: termIte, width: left.width, cond: cond, left: left, right: right}
 }
 
 func mask(width int) uint64 {
@@ -105,6 +153,16 @@ func (t *term) eval(env map[string]uint64) uint64 {
 		return env[t.name] & m
 	case termConst:
 		return t.value & m
+	case termCmp:
+		if conditionHolds(t.op, t.left.eval(env), t.right.eval(env), t.width) {
+			return 1
+		}
+		return 0
+	case termIte:
+		if t.cond.eval(env) != 0 {
+			return t.left.eval(env) & m
+		}
+		return t.right.eval(env) & m
 	}
 	// Operands evaluate at their own widths (a mask node's inner term keeps
 	// its width and modulus); the operation wraps to this term's width.
@@ -135,6 +193,10 @@ func (t *term) String() string {
 		return t.name
 	case termConst:
 		return fmt.Sprintf("%d", t.value)
+	case termCmp:
+		return fmt.Sprintf("(%s %s %s)", t.left, t.op, t.right)
+	case termIte:
+		return fmt.Sprintf("(%s ? %s : %s)", t.cond, t.left, t.right)
 	}
 	return fmt.Sprintf("(%s %s %s)", t.left, t.op, t.right)
 }
@@ -159,6 +221,8 @@ func (t *term) linearAt(w int) *linearForm {
 		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
+	case termCmp, termIte:
+		return nil
 	}
 	switch t.op {
 	case "and":
@@ -247,7 +311,18 @@ func (f *linearForm) equal(g *linearForm) bool {
 // --- symbolic execution of the asm body ------------------------------------
 
 type symbolicState struct {
-	regs map[int]*term // physical register -> 64-bit term
+	regs  map[int]*term // physical register -> 64-bit term
+	flags *flagsFact    // NZCV as the operands that produced them; nil until set
+}
+
+// flagsFact records what produced the flags: cmp/subs leave NZCV as the
+// flags of `left - right` at width, which every condition code reads as a
+// comparison of the two operands. adds sets flags the comparison reading
+// does not describe (unknown).
+type flagsFact struct {
+	left, right *term
+	width       int
+	unknown     bool
 }
 
 func (s *symbolicState) read(reg Register) (*term, bool) {
@@ -296,6 +371,8 @@ func truncate(t *term, width int) *term {
 		return constTerm(t.value, width)
 	case termParam:
 		return &term{kind: termParam, width: width, name: t.name}
+	case termCmp:
+		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
 	}
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(width), width)}
 }
@@ -309,12 +386,14 @@ func zeroExtend(t *term, width int) *term {
 		return constTerm(t.value&mask(t.width), width)
 	case termParam:
 		return &term{kind: termParam, width: width, name: t.name}
+	case termCmp:
+		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
 	}
 	// The narrow computation's wrap is preserved by masking to its width.
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(t.width), width)}
 }
 
-var verifiableOps = map[string]string{"add": "add", "sub": "sub", "and": "and", "orr": "or", "eor": "xor", "lsl": "shl", "lsr": "shr"}
+var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add", "subs": "sub", "and": "and", "orr": "or", "eor": "xor", "lsl": "shl", "lsr": "shr"}
 
 // executeStraightLine symbolically executes the body; reports (result
 // term, "", true) or ("", reason, false) when the body is outside the
@@ -362,6 +441,37 @@ func executeStraightLine(fn *Function, sig *ast.FunctionStatement) (*term, strin
 				return nil, "unbound register read", false
 			}
 			state.write(dest, value)
+		case "cmp":
+			left := instr.Operands[0].(Register)
+			width := widthOf(left.Class)
+			l, okL := operandTerm(state, left, width)
+			r, okR := operandTerm(state, instr.Operands[1], width)
+			if !okL || !okR {
+				return nil, "unbound register read", false
+			}
+			state.flags = &flagsFact{left: l, right: r, width: width}
+		case "csel", "cset":
+			// The select reads the flags as the comparison that produced them.
+			if state.flags == nil || state.flags.unknown {
+				return nil, fmt.Sprintf("%s reading flags not produced by cmp/subs", instr.Mnemonic), false
+			}
+			code := instr.Operands[len(instr.Operands)-1].(Condition).Code
+			if !verifiableConditions[code] {
+				return nil, fmt.Sprintf("condition code %s", code), false
+			}
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			cond := cmpTerm(code, state.flags.left, state.flags.right)
+			whenTrue, whenFalse := constTerm(1, width), constTerm(0, width)
+			if instr.Mnemonic == "csel" {
+				var okT, okF bool
+				whenTrue, okT = operandTerm(state, instr.Operands[1], width)
+				whenFalse, okF = operandTerm(state, instr.Operands[2], width)
+				if !okT || !okF {
+					return nil, "unbound register read", false
+				}
+			}
+			state.write(dest, iteTerm(cond, whenTrue, whenFalse))
 		default:
 			op, verifiable := verifiableOps[instr.Mnemonic]
 			if !verifiable || len(instr.Operands) != 3 {
@@ -375,6 +485,12 @@ func executeStraightLine(fn *Function, sig *ast.FunctionStatement) (*term, strin
 			right, okR := operandTerm(state, instr.Operands[2], widthOf(dest.Class))
 			if !okL || !okR {
 				return nil, "unbound register read", false
+			}
+			switch instr.Mnemonic {
+			case "subs":
+				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class)}
+			case "adds":
+				state.flags = &flagsFact{unknown: true}
 			}
 			state.write(dest, binaryTerm(op, left, right))
 		}
@@ -396,12 +512,26 @@ func operandTerm(state *symbolicState, operand Operand, width int) (*term, bool)
 
 var oakOps = map[string]string{"+": "add", "-": "sub", "&": "and", "|": "or", "^": "xor", "<<": "shl", ">>": "shr"}
 
-// lowerOakExpression turns a pure expression over the parameters into a
-// term of the result width; reports the construct it cannot express.
-func lowerOakExpression(expr ast.Expression, params map[string]int, width int) (*term, string, bool) {
+// oakComparisons maps Oak's comparison operators to the condition code
+// whose flag reading is that comparison, per signedness of the operands.
+var oakComparisons = map[string][2]string{
+	"==": {"eq", "eq"}, "!=": {"ne", "ne"},
+	"<": {"lo", "lt"}, "<=": {"ls", "le"}, ">": {"hi", "gt"}, ">=": {"hs", "ge"},
+}
+
+// oakLowering carries the parameter contract: declared widths and
+// signedness (i8/i16/i32/i64 compare signed, everything else unsigned).
+type oakLowering struct {
+	params map[string]int
+	signed map[string]bool
+}
+
+// lower turns a pure expression over the parameters into a term of the
+// result width; reports the construct it cannot express.
+func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, bool) {
 	switch e := expr.(type) {
 	case *ast.Identifier:
-		if w, isParam := params[e.Value]; isParam {
+		if w, isParam := lo.params[e.Value]; isParam {
 			return truncate(paramTerm(e.Value, w), width), "", true
 		}
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
@@ -415,7 +545,7 @@ func lowerOakExpression(expr ast.Expression, params map[string]int, width int) (
 		}
 		switch ident.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
-			return lowerOakExpression(e.Arguments[0], params, width)
+			return lo.lower(e.Arguments[0], width)
 		}
 		return nil, fmt.Sprintf("call to %s", ident.Value), false
 	case *ast.InfixExpression:
@@ -423,11 +553,11 @@ func lowerOakExpression(expr ast.Expression, params map[string]int, width int) (
 		if !ok {
 			return nil, fmt.Sprintf("operator %s", e.Operator), false
 		}
-		left, reason, okL := lowerOakExpression(e.Left, params, width)
+		left, reason, okL := lo.lower(e.Left, width)
 		if !okL {
 			return nil, reason, false
 		}
-		right, reason, okR := lowerOakExpression(e.Right, params, width)
+		right, reason, okR := lo.lower(e.Right, width)
 		if !okR {
 			return nil, reason, false
 		}
@@ -441,11 +571,118 @@ func lowerOakExpression(expr ast.Expression, params map[string]int, width int) (
 			return nil, "a block with statements", false
 		}
 		if stmt, isExpr := e.Block.Statements[0].(*ast.ExpressionStatement); isExpr {
-			return lowerOakExpression(stmt.Expression, params, width)
+			return lo.lower(stmt.Expression, width)
 		}
 		return nil, "a block with statements", false
+	case *ast.MatchExpression:
+		// A value-position Bool conditional over a comparison of parameters:
+		// `a < b ? b | a`. The comparison happens at the operands' own width
+		// and signedness; the arms are lowered at the result width.
+		whenTrue, whenFalse, isBool := boolConditional(e)
+		if !isBool {
+			return nil, "a match that is not a two-armed Bool conditional", false
+		}
+		cond, reason, ok := lo.lowerComparison(e.Scrutinee)
+		if !ok {
+			return nil, reason, false
+		}
+		left, reason, okL := lo.lower(whenTrue, width)
+		if !okL {
+			return nil, reason, false
+		}
+		right, reason, okR := lo.lower(whenFalse, width)
+		if !okR {
+			return nil, reason, false
+		}
+		return iteTerm(cond, left, right), "", true
 	}
 	return nil, fmt.Sprintf("%T", expr), false
+}
+
+// lowerComparison lowers `left OP right` to a condition term.
+func (lo *oakLowering) lowerComparison(expr ast.Expression) (*term, string, bool) {
+	infix, isInfix := expr.(*ast.InfixExpression)
+	if !isInfix {
+		return nil, fmt.Sprintf("a condition that is not a comparison (%T)", expr), false
+	}
+	codes, isComparison := oakComparisons[infix.Operator]
+	if !isComparison {
+		return nil, fmt.Sprintf("condition operator %s", infix.Operator), false
+	}
+	width, signed, ok := lo.operandContract(infix)
+	if !ok {
+		return nil, "a comparison with no parameter operand (its width is unknown)", false
+	}
+	left, reason, okL := lo.lower(infix.Left, width)
+	if !okL {
+		return nil, reason, false
+	}
+	right, reason, okR := lo.lower(infix.Right, width)
+	if !okR {
+		return nil, reason, false
+	}
+	code := codes[0]
+	if signed {
+		code = codes[1]
+	}
+	return cmpTerm(code, left, right), "", true
+}
+
+// operandContract finds the width and signedness of a comparison from the
+// parameters it mentions (Oak's type checker has already made both sides
+// one type; the verifier only needs to read it off a parameter).
+func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if w, isParam := lo.params[e.Value]; isParam {
+			return w, lo.signed[e.Value], true
+		}
+	case *ast.InfixExpression:
+		if w, s, ok := lo.operandContract(e.Left); ok {
+			return w, s, true
+		}
+		return lo.operandContract(e.Right)
+	case *ast.InvocationExpression:
+		if len(e.Arguments) == 1 {
+			return lo.operandContract(e.Arguments[0])
+		}
+	}
+	return 0, false, false
+}
+
+// boolConditional recognizes the two-armed Bool match the front end
+// produces for `cond ? a | b`: literal true/false patterns, or one literal
+// and a trailing wildcard.
+func boolConditional(match *ast.MatchExpression) (whenTrue, whenFalse ast.Expression, ok bool) {
+	if match.Scrutinee == nil || len(match.Arms) != 2 {
+		return nil, nil, false
+	}
+	for i, arm := range match.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			boolLit, isBool := pattern.Value.(*ast.Boolean)
+			if !isBool {
+				return nil, nil, false
+			}
+			if boolLit.Value {
+				whenTrue = arm.Body
+			} else {
+				whenFalse = arm.Body
+			}
+		case *ast.WildcardPattern:
+			if i != 1 {
+				return nil, nil, false
+			}
+			if whenTrue == nil {
+				whenTrue = arm.Body
+			} else {
+				whenFalse = arm.Body
+			}
+		default:
+			return nil, nil, false
+		}
+	}
+	return whenTrue, whenFalse, whenTrue != nil && whenFalse != nil
 }
 
 // --- witnesses -----------------------------------------------------------
@@ -496,15 +733,18 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
 	params := map[string]int{}
+	signed := map[string]bool{}
 	var names []string
 	for _, param := range sig.Parameters {
 		class, _ := contractClass(param.Type)
 		params[param.Name.Value] = widthOf(class)
+		signed[param.Name.Value] = strings.HasPrefix(typeText(param.Type), "i")
 		names = append(names, param.Name.Value)
 	}
 	resultClass, _ := contractClass(sig.ReturnType)
 	width := widthOf(resultClass)
-	oakTerm, reason, ok := lowerOakExpression(oakBody, params, width)
+	lowering := &oakLowering{params: params, signed: signed}
+	oakTerm, reason, ok := lowering.lower(oakBody, width)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}

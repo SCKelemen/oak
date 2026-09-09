@@ -85,3 +85,64 @@ func TestVerifyVerdicts(t *testing.T) {
 		t.Fatalf("32-bit wrapping add must be proven, got %s: %s", wrap.Kind, wrap.Message)
 	}
 }
+
+// Conditional bodies (docs/spec/94-assembler.md §8, second increment): cmp
+// sets NZCV as the flags of left - right, csel/cset read them as the
+// comparison those flags encode, and the Oak side's `cond ? a | b` lowers
+// to the same select — decided at the bit level through the subtraction
+// chain.
+func TestVerifyConditionalSelects(t *testing.T) {
+	maxDecl := "max32: (a, b: u32) -> u32"
+	maxBody := "a < b ? b | a"
+	proven := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  csel w0, w1, w0, lo\n  ret")
+	if proven.Kind != VerdictProven || !strings.Contains(proven.Message, "bit level") {
+		t.Fatalf("unsigned max via csel lo must be proven, got %s: %s", proven.Kind, proven.Message)
+	}
+	// The reversed comparison with swapped select operands is the same function.
+	swapped := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w1, w0\n  csel w0, w0, w1, ls\n  ret")
+	if swapped.Kind != VerdictProven {
+		t.Fatalf("max via cmp b,a / csel ls must be proven, got %s: %s", swapped.Kind, swapped.Message)
+	}
+	// The wrong condition is a mismatch with a concrete counterexample.
+	wrongCond := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  csel w0, w1, w0, hi\n  ret")
+	if wrongCond.Kind != VerdictMismatch || !strings.Contains(wrongCond.Message, "a=") {
+		t.Fatalf("csel hi for a < b must be a mismatch with a counterexample, got %s: %s", wrongCond.Kind, wrongCond.Message)
+	}
+	// Signedness is read off the parameter types: i32 compares signed, so
+	// `lt` proves and `lo` is refuted (at a = -1, b = 0 they disagree).
+	signedDecl := "max_i32: (a, b: i32) -> i32"
+	signedOK := verifyCase(t, signedDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  csel w0, w1, w0, lt\n  ret")
+	if signedOK.Kind != VerdictProven {
+		t.Fatalf("signed max via csel lt must be proven, got %s: %s", signedOK.Kind, signedOK.Message)
+	}
+	signedWrong := verifyCase(t, signedDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  csel w0, w1, w0, lo\n  ret")
+	if signedWrong.Kind != VerdictMismatch {
+		t.Fatalf("unsigned lo for a signed comparison must be a mismatch, got %s: %s", signedWrong.Kind, signedWrong.Message)
+	}
+	// cset materializes the comparison; the 64-bit width goes through x
+	// registers; an immediate compare works too.
+	isZero := verifyCase(t, "is_zero: (v: u64) -> u64", "v == u64(0) ? u64(1) | u64(0)", "  bind x0 = v\n  cmp x0, #0\n  cset x0, eq\n  ret")
+	if isZero.Kind != VerdictProven {
+		t.Fatalf("cset eq must be proven, got %s: %s", isZero.Kind, isZero.Message)
+	}
+	// A select feeding arithmetic: saturating decrement.
+	satDec := verifyCase(t, "sat_dec: (v: u32) -> u32", "v == u32(0) ? v | v - u32(1)", "  bind w0 = v\n  clobber w9\n  sub w9, w0, #1\n  cmp w0, #0\n  csel w0, w0, w9, eq\n  ret")
+	if satDec.Kind != VerdictProven {
+		t.Fatalf("saturating decrement must be proven, got %s: %s", satDec.Kind, satDec.Message)
+	}
+	// subs produces flags the select may read; adds does not describe a
+	// comparison, so a select after it is trusted, not falsely proven.
+	viaSubs := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  clobber w9\n  subs w9, w0, w1\n  csel w0, w1, w0, lo\n  ret")
+	if viaSubs.Kind != VerdictProven {
+		t.Fatalf("flags from subs must verify, got %s: %s", viaSubs.Kind, viaSubs.Message)
+	}
+	viaAdds := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  clobber w9\n  adds w9, w0, w1\n  csel w0, w1, w0, lo\n  ret")
+	if viaAdds.Kind != VerdictTrusted {
+		t.Fatalf("flags from adds are outside the subset and must be trusted, got %s: %s", viaAdds.Kind, viaAdds.Message)
+	}
+	// Single-flag conditions (mi/pl/vs/vc) are outside the verified subset.
+	single := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  csel w0, w1, w0, mi\n  ret")
+	if single.Kind != VerdictTrusted {
+		t.Fatalf("condition mi must be trusted, got %s: %s", single.Kind, single.Message)
+	}
+}

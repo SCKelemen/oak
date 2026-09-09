@@ -22,6 +22,8 @@ func TestCheckerRejections(t *testing.T) {
 		{"uninitialized read", "f: (x: u32) -> u32", "  bind w0 = x\n  clobber w9\n  add w0, w0, w9\n  ret", "uninitialized register"},
 		{"flags without producer", "f: (x: u32) -> u32", "  bind w0 = x\n  b.eq done\ndone:\n  ret", "consumes flags"},
 		{"flags invalidated by label", "f: (x: u32) -> u32", "  bind w0 = x\n  cmp w0, #0\nagain:\n  b.eq again\n  ret", "consumes flags"},
+		{"csel without producer", "f: (x, y: u32) -> u32", "  bind w0 = x\n  bind w1 = y\n  csel w0, w0, w1, lo\n  ret", "consumes flags"},
+		{"csel width mismatch", "f: (x, y: u32) -> u32", "  bind w0 = x\n  bind w1 = y\n  cmp w0, w1\n  csel w0, x1, w0, lo\n  ret", "width discipline"},
 		{"memory without frame", "f: (x: u64) -> u64", "  bind x0 = x\n  str x0, [sp, #-16]!\n  ldr x0, [sp], #16\n  ret", "without a declared frame"},
 		{"memory outside frame", "f: (x: u64) -> u64", "  bind x0 = x\n  frame 16\n  str x0, [sp, #-32]!\n  ldr x0, [sp], #32\n  ret", "leaves the declared"},
 		{"ret with live frame", "f: (x: u64) -> u64", "  bind x0 = x\n  frame 16\n  str x0, [sp, #-16]!\n  ret", "frame must be fully released"},

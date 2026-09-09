@@ -253,7 +253,7 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
 Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.
 
-## 8. Semantic verification of straight-line bodies (first increment implemented)
+## 8. Semantic verification of straight-line and conditional bodies (two increments implemented)
 
 **Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
 with both an asm unit and an Oak fallback body, the asm gate runs the
@@ -269,13 +269,43 @@ decision for the term language (`and`/`orr`/`eor`, shifts by constants and
 by registers as a mux barrel, `add`/`sub` as a ripple-carry chain), with a
 differing bit reported as a **mismatch** carrying a concrete counterexample
 (`Oak.AssemblerSemantics.eq_of_bits` is the justification; the ripple-carry
-chain's correspondence to `BitVec` addition is the standard transliterated
-definition, not yet Lean-refined), **witness-checked** only when the
-bit-level decision exceeds its node budget (evidence, labeled so), and
-**trusted** when the body or the Oak expression is outside the executable
-subset (labels, calls, memory, system instructions, non-constant shift
-counts on the Oak side — Oak traps where the machine wraps the count). The
-layers below remain the design for the rest.
+chain is now **Lean-refined**: `rippleCarry`/`rippleSum` are the blaster's
+recurrences verbatim, `rippleCarry_eq_carry` identifies the chain's carry
+with `BitVec.carry`, `rippleSum_eq_add` gives bit i of `a + b`, and
+`rippleSum_eq_sub` gives bit i of `a - b` through the complement chain with
+carry-in 1), **witness-checked** only when the bit-level decision exceeds
+its node budget (evidence, labeled so), and **trusted** when the body or the
+Oak expression is outside the executable subset (labels, calls, memory,
+system instructions, non-constant shift counts on the Oak side — Oak traps
+where the machine wraps the count).
+
+**Conditional bodies (second increment).** `csel` and `cset` join the
+instruction table (`csel wD, wN, wM, cond` / `cset wD, cond`; a condition
+code is an operand; both consume flags under the same dominance rule as
+`b.cond`). The executor tracks the flags as *the operands that produced
+them*: `cmp l, r` and `subs` leave NZCV as the flags of `l - r` at the
+operands' width; `adds` leaves flags no comparison describes (a select
+after it is trusted, never falsely proven). A select lowers to `cond ? a :
+b` over a comparison term; on the Oak side a two-armed Bool conditional
+`x < y ? a | b` whose scrutinee compares parameters lowers to the same
+shape, with the condition code chosen from the operator *and the parameter
+type's signedness* (`<` on `u32` is `lo`, on `i32` it is `lt`). Deciding
+the comparison is the flag computation itself: the blaster runs the
+complement chain, takes C as its carry-out, Z from the difference, N its
+sign, V the subtraction's signed overflow, and applies ARM's condition table
+(`asm/blast.go`'s `condition`); the witness evaluator computes the
+comparison directly. `Oak.AssemblerSemantics` ties the two readings:
+`flagsOf`, `Cond.holds`, and `condHolds` are the table; `c_eq_carry` proves
+C is the chain's carry-out; `eq_holds_iff`, `hs_holds_iff`, `lo_holds_iff`,
+`hi_holds_iff` prove the unsigned codes are the comparisons Oak lowers to;
+the four signed codes are checked exhaustively at width 4 against
+`BitVec.slt`; `csel_lo_max` is the unsigned maximum on the semantics. `mi`,
+`pl`, `vs`, `vc` (single-flag reads) and conditions composed with `&&`/`||`
+remain outside the subset (trusted). Executed: `max32` via `cmp`/`csel lo`
+proven and run both ways; `csel hi` for `a < b` refuted at the gate with a
+concrete counterexample; `lo` for a signed comparison refuted at
+`a = -1, b = 0`. The layers below remain the design for the rest (branches
+and loops).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
@@ -299,7 +329,7 @@ specification** — and three layers:
    transliterated into a Go symbolic executor.
 
 3. **Postcondition discharge.** For a **straight-line** body (no labels;
-   later: acyclic with conditional selects), the symbolic executor produces
+   conditional selects landed; later: acyclic branches), the symbolic executor produces
    the result register's value as a bitvector term over the bound
    parameters. The Oak fallback body, when it is a pure expression over the
    same parameters (the `add_asm: ... = left + right` shape), lowers to a

@@ -104,4 +104,182 @@ theorem or_bit {w : Nat} (a b : BitVec w) (i : Nat) :
 theorem xor_bit {w : Nat} (a b : BitVec w) (i : Nat) :
     (a ^^^ b).getLsbD i = (a.getLsbD i ^^ b.getLsbD i) := BitVec.getLsbD_xor
 
+/-! ## The ripple-carry chain is `BitVec` addition
+
+`asm/blast.go` blasts `add` as sum_i = a_i ⊕ b_i ⊕ c_i with
+c_{i+1} = (a_i ∧ b_i) ∨ (c_i ∧ (a_i ⊕ b_i)), and `sub` as the same chain over
+the complement with carry-in 1. These are the definitions below; the
+theorems refine them to `BitVec.add`/`BitVec.sub` bit by bit, so equality
+of the blasted bits is equality of the machine's results. -/
+
+/-- The blaster's carry recurrence, verbatim. -/
+def rippleCarry {w : Nat} (a b : BitVec w) (c₀ : Bool) : Nat → Bool
+  | 0 => c₀
+  | i + 1 => (a.getLsbD i && b.getLsbD i) || (rippleCarry a b c₀ i && (a.getLsbD i ^^ b.getLsbD i))
+
+/-- The blaster's sum bit, verbatim. -/
+def rippleSum {w : Nat} (a b : BitVec w) (c₀ : Bool) (i : Nat) : Bool :=
+  (a.getLsbD i ^^ b.getLsbD i) ^^ rippleCarry a b c₀ i
+
+/-- The chain's carry is the arithmetic carry of the standard library's
+    bit-blasting theory. -/
+theorem rippleCarry_eq_carry {w : Nat} (a b : BitVec w) (c₀ : Bool) (i : Nat) :
+    rippleCarry a b c₀ i = BitVec.carry i a b c₀ := by
+  induction i with
+  | zero => simp [rippleCarry]
+  | succ i ih =>
+    rw [BitVec.carry_succ, rippleCarry, ih]
+    cases a.getLsbD i <;> cases b.getLsbD i <;> cases BitVec.carry i a b c₀ <;>
+      simp [Bool.atLeastTwo]
+
+/-- Bit i of the chain with carry-in 0 is bit i of `a + b`. -/
+theorem rippleSum_eq_add {w : Nat} (a b : BitVec w) (i : Nat) (h : i < w) :
+    rippleSum a b false i = (a + b).getLsbD i := by
+  rw [BitVec.getLsbD_add h, rippleSum, rippleCarry_eq_carry]
+  cases a.getLsbD i <;> cases b.getLsbD i <;> cases BitVec.carry i a b false <;> rfl
+
+/-- `a - b` is `a + ~~~b + 1`: the subtraction chain's justification. -/
+theorem sub_eq_add_not_add_one {w : Nat} (a b : BitVec w) :
+    a - b = a + ~~~b + BitVec.setWidth w (BitVec.ofBool true) := by
+  rw [BitVec.sub_eq_add_neg, BitVec.neg_eq_not_add, BitVec.add_assoc]
+  congr 2
+  apply BitVec.eq_of_toNat_eq
+  simp
+
+/-- Bit i of the complement chain with carry-in 1 is bit i of `a - b`. -/
+theorem rippleSum_eq_sub {w : Nat} (a b : BitVec w) (i : Nat) (h : i < w) :
+    rippleSum a (~~~b) true i = (a - b).getLsbD i := by
+  rw [sub_eq_add_not_add_one, BitVec.getLsbD_add_add_bool h, rippleSum, rippleCarry_eq_carry]
+  cases a.getLsbD i <;> cases (~~~b).getLsbD i <;> cases BitVec.carry i a (~~~b) true <;> rfl
+
+/-! ## Flags and conditional selects
+
+`cmp l, r` sets NZCV as the flags of `l - r`; `csel`/`cset` read a condition
+code as a comparison of the two operands. The verifier's `condition`
+(`asm/blast.go`) computes the flags from the subtraction chain — N the
+result's sign, Z its zero test, C the chain's carry-out, V the signed
+overflow — and applies the ARM condition table; `conditionHolds`
+(`asm/verify.go`) evaluates the comparison directly. The theorems below tie
+the two readings together. -/
+
+structure Flags where
+  n : Bool
+  z : Bool
+  c : Bool
+  v : Bool
+  deriving DecidableEq, Repr
+
+/-- The flags of `l - r`. C is "no borrow": `r ≤ l` unsigned. V is a signed
+    overflow of the subtraction: operand signs differ and the result's sign
+    differs from the left operand's. -/
+def flagsOf {w : Nat} (l r : BitVec w) : Flags :=
+  { n := (l - r).msb
+    z := decide (l - r = 0)
+    c := decide (r.toNat ≤ l.toNat)
+    v := (l.msb != r.msb) && ((l - r).msb != l.msb) }
+
+/-- The verified condition codes (mi/pl/vs/vc read one flag and are
+    outside the subset). -/
+inductive Cond where
+  | eq | ne | hs | lo | hi | ls | ge | lt | gt | le
+  deriving DecidableEq, Repr
+
+/-- The ARM condition table. -/
+def Cond.holds (f : Flags) : Cond → Bool
+  | .eq => f.z
+  | .ne => !f.z
+  | .hs => f.c
+  | .lo => !f.c
+  | .hi => f.c && !f.z
+  | .ls => !f.c || f.z
+  | .ge => f.n == f.v
+  | .lt => f.n != f.v
+  | .gt => !f.z && (f.n == f.v)
+  | .le => f.z || (f.n != f.v)
+
+def condHolds {w : Nat} (c : Cond) (l r : BitVec w) : Bool := c.holds (flagsOf l r)
+
+/-- The C flag is the carry-out of the complement chain — what
+    `asm/blast.go` computes. -/
+theorem c_eq_carry {w : Nat} (l r : BitVec w) :
+    (flagsOf l r).c = BitVec.carry w l (~~~r) true := by
+  have hl := l.isLt
+  have hr := r.isLt
+  simp only [flagsOf, BitVec.carry, BitVec.toNat_not, Bool.toNat_true]
+  rw [Nat.mod_eq_of_lt hl, Nat.mod_eq_of_lt (by omega)]
+  by_cases h : r.toNat ≤ l.toNat
+  · simp [h]; omega
+  · simp [h]; omega
+
+/-- `eq` is equality. -/
+theorem eq_holds_iff {w : Nat} (l r : BitVec w) : condHolds .eq l r = true ↔ l = r := by
+  simp only [condHolds, Cond.holds, flagsOf, decide_eq_true_eq]
+  constructor
+  · intro h
+    have hc := BitVec.sub_add_cancel l r
+    rw [h] at hc
+    simpa using hc.symm
+  · intro h
+    subst h
+    exact BitVec.sub_self l
+
+/-- `hs` (`cs`) is unsigned ≥ — the Oak `>=` on unsigned operands. -/
+theorem hs_holds_iff {w : Nat} (l r : BitVec w) : condHolds .hs l r = true ↔ r.toNat ≤ l.toNat := by
+  simp [condHolds, Cond.holds, flagsOf]
+
+/-- `lo` (`cc`) is unsigned < — the Oak `<` on unsigned operands. -/
+theorem lo_holds_iff {w : Nat} (l r : BitVec w) : condHolds .lo l r = true ↔ l.ult r := by
+  simp [condHolds, Cond.holds, flagsOf, BitVec.ult_iff_toNat_lt]
+
+/-- `hi` is unsigned >: C set and Z clear. -/
+theorem hi_holds_iff {w : Nat} (l r : BitVec w) : condHolds .hi l r = true ↔ r.ult l := by
+  simp only [condHolds, Cond.holds, flagsOf, Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq,
+    decide_eq_false_iff_not, BitVec.ult_iff_toNat_lt]
+  constructor
+  · rintro ⟨hle, hne⟩
+    rcases Nat.lt_or_eq_of_le hle with hlt | heq
+    · exact hlt
+    · exact absurd (BitVec.eq_of_toNat_eq heq.symm ▸ BitVec.sub_self l) hne
+  · intro hlt
+    refine ⟨Nat.le_of_lt hlt, fun hz => ?_⟩
+    have := (eq_holds_iff l r).mp (by simp [condHolds, Cond.holds, flagsOf, hz])
+    subst this
+    exact Nat.lt_irrefl _ hlt
+
+/-- The signed codes agree with `BitVec.slt`, checked exhaustively at width
+    4 — the executable cross-check the spec asks of the normalizer; the
+    general law is the standard N ≠ V reading, transliterated. -/
+theorem lt_holds_eq_slt_w4 : ∀ l r : BitVec 4, condHolds .lt l r = l.slt r := by decide
+theorem ge_holds_eq_not_slt_w4 : ∀ l r : BitVec 4, condHolds .ge l r = !(l.slt r) := by decide
+theorem gt_holds_eq_slt_w4 : ∀ l r : BitVec 4, condHolds .gt l r = r.slt l := by decide
+theorem le_holds_eq_not_slt_w4 : ∀ l r : BitVec 4, condHolds .le l r = !(r.slt l) := by decide
+
+/-- `csel d, n, m, cond`: the first operand when the condition holds. -/
+def csel {w : Nat} (c : Cond) (f : Flags) (a b : BitVec w) : BitVec w :=
+  if c.holds f then a else b
+
+/-- `cset d, cond`: 1 when the condition holds, else 0. -/
+def cset (_w : Nat) (c : Cond) (f : Flags) : BitVec _w :=
+  if c.holds f then 1 else 0
+
+theorem csel_of_holds {w : Nat} (c : Cond) (f : Flags) (a b : BitVec w) (h : c.holds f = true) :
+    csel c f a b = a := by simp [csel, h]
+
+theorem csel_of_not_holds {w : Nat} (c : Cond) (f : Flags) (a b : BitVec w) (h : c.holds f = false) :
+    csel c f a b = b := by simp [csel, h]
+
+/-- `cset` is `csel` between the constants 1 and 0 — the executor lowers it
+    so. -/
+theorem cset_eq_csel {w : Nat} (c : Cond) (f : Flags) : cset w c f = csel c f 1 0 := rfl
+
+/-- A cmp/csel pair on registers: `cmp n, m; csel d, a, b, cond`. -/
+def execCsel (c : Cond) (r : Regs) (d n m a b : Fin 32) : Regs :=
+  writeX r d (csel c (flagsOf (readX r n) (readX r m)) (readX r a) (readX r b))
+
+/-- Unsigned maximum: `cmp a, b; csel a, b, a, lo` yields `b` exactly when
+    `a < b` — the verifier's first conditional theorem, on the semantics. -/
+theorem csel_lo_max {w : Nat} (a b : BitVec w) :
+    csel .lo (flagsOf a b) b a = if a.ult b then b else a := by
+  simp [csel, Cond.holds, flagsOf, BitVec.ult_iff_toNat_lt]
+
 end Oak.AssemblerSemantics

@@ -122,6 +122,10 @@ type SysReg struct{ Name string }
 // Option is a barrier option word (sy, ish, ...).
 type Option struct{ Name string }
 
+// Condition is the condition-code operand of csel/cset (eq, lo, ge, ...).
+type Condition struct{ Code string }
+
+func (Condition) operandKind() string { return "condition" }
 func (Register) operandKind() string  { return "register" }
 func (Immediate) operandKind() string { return "immediate" }
 func (Memory) operandKind() string    { return "memory" }
@@ -453,6 +457,9 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 	}
 	if spec.barrier {
 		return Option{Name: lower}, nil
+	}
+	if spec.readsFlags && conditionCodes[lower] {
+		return Condition{Code: lower}, nil
 	}
 	return nil, fmt.Errorf("unrecognized operand %q", text)
 }

@@ -498,6 +498,10 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.memoryAccess(instr, matched)
 		return false
 	}
+	// csel/cset consume flags under the same dominance rule as b.cond.
+	if spec.readsFlags && !c.flagsValid {
+		c.errorf(instr.Line, "%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Mnemonic)
+	}
 
 	// Data processing: reads then write; sp arithmetic moves the frame.
 	regs := registerOperands(instr.Operands)

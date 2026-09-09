@@ -119,6 +119,8 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 		return o.Name
 	case Option:
 		return o.Name
+	case Condition:
+		return o.Code
 	}
 	return "?"
 }

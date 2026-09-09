@@ -62,6 +62,35 @@ func (bl *blaster) blast(t *term) []int {
 			}
 		}
 		return out
+	case termCmp:
+		// The comparison is the flag reading of `left - right` at the
+		// operands' width: NZCV from the subtraction chain, then the ARM
+		// condition table (Oak.AssemblerSemantics.condHolds).
+		left := bl.blast(t.left)
+		right := bl.blast(t.right)
+		if left == nil || right == nil {
+			return nil
+		}
+		holds := bl.condition(t.op, left, right)
+		for i := range out {
+			out[i] = bddFalse
+		}
+		out[0] = holds
+		return out
+	case termIte:
+		cond := bl.blast(t.cond)
+		left := bl.adapt(bl.blast(t.left), t.width)
+		right := bl.adapt(bl.blast(t.right), t.width)
+		if cond == nil || left == nil || right == nil {
+			return nil
+		}
+		for i := range out {
+			out[i] = bl.bdd.ite(cond[0], left[i], right[i])
+		}
+		if bl.bdd.exceeded {
+			return nil
+		}
+		return out
 	}
 	left := bl.adapt(bl.blast(t.left), t.width)
 	right := bl.adapt(bl.blast(t.right), t.width)
@@ -118,15 +147,69 @@ func (bl *blaster) adapt(bitsIn []int, width int) []int {
 }
 
 // add is the ripple-carry chain: sum_i = a_i ⊕ b_i ⊕ c_i,
-// c_{i+1} = (a_i ∧ b_i) ∨ (c_i ∧ (a_i ⊕ b_i)).
+// c_{i+1} = (a_i ∧ b_i) ∨ (c_i ∧ (a_i ⊕ b_i)) — `Oak.AssemblerSemantics.
+// rippleCarry`, proved equal to `BitVec.carry` so that `rippleSum` is
+// exactly `BitVec.add` bit by bit.
 func (bl *blaster) add(a, b []int, carry int) []int {
+	out, _ := bl.addCarry(a, b, carry)
+	return out
+}
+
+// addCarry is the chain with its carry-out — the C flag of the machine.
+func (bl *blaster) addCarry(a, b []int, carry int) ([]int, int) {
 	out := make([]int, len(a))
 	for i := range a {
 		axb := bl.bdd.apply(opXor, a[i], b[i])
 		out[i] = bl.bdd.apply(opXor, axb, carry)
 		carry = bl.bdd.apply(opOr, bl.bdd.apply(opAnd, a[i], b[i]), bl.bdd.apply(opAnd, carry, axb))
 	}
-	return out
+	return out, carry
+}
+
+// condition computes a condition code over the NZCV flags of `left -
+// right` (the machine's cmp: left + ~right + 1). N is the result's sign bit,
+// Z its zero test, C the chain's carry-out (no borrow), V the signed
+// overflow of a subtraction (operand signs differ and the result's sign
+// differs from left's). The condition table is ARM's, transliterated from
+// Oak.AssemblerSemantics.condHolds.
+func (bl *blaster) condition(code string, left, right []int) int {
+	b := bl.bdd
+	negated := make([]int, len(right))
+	for i := range right {
+		negated[i] = b.not(right[i])
+	}
+	diff, c := bl.addCarry(left, negated, bddTrue)
+	msb := len(diff) - 1
+	n := diff[msb]
+	z := bddTrue
+	for _, bit := range diff {
+		z = b.apply(opAnd, z, b.not(bit))
+	}
+	v := b.apply(opAnd, b.apply(opXor, left[msb], right[msb]), b.apply(opXor, diff[msb], left[msb]))
+	nEqV := b.not(b.apply(opXor, n, v))
+	switch code {
+	case "eq":
+		return z
+	case "ne":
+		return b.not(z)
+	case "hs", "cs":
+		return c
+	case "lo", "cc":
+		return b.not(c)
+	case "hi":
+		return b.apply(opAnd, c, b.not(z))
+	case "ls":
+		return b.apply(opOr, b.not(c), z)
+	case "ge":
+		return nEqV
+	case "lt":
+		return b.not(nEqV)
+	case "gt":
+		return b.apply(opAnd, b.not(z), nEqV)
+	case "le":
+		return b.apply(opOr, z, b.not(nEqV))
+	}
+	return bddFalse
 }
 
 func shiftConst(a []int, k int, left bool) []int {

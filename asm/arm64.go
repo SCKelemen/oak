@@ -45,6 +45,7 @@ const (
 	opSym                        // label or Oak function symbol
 	opSysReg                     // system register name
 	opOption                     // barrier option
+	opCond                       // condition code operand of csel/cset
 	opNone                       // no operands
 )
 
@@ -70,6 +71,8 @@ var instructionTable = map[string]instructionSpec{
 	"lsl":  {forms: []form{{opX, opX, opImm}, {opW, opW, opImm}, {opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
 	"lsr":  {forms: []form{{opX, opX, opImm}, {opW, opW, opImm}, {opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
 	"cmp":  {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}}, setsFlags: true, sysregOperand: -1},
+	"csel": {forms: []form{{opX, opX, opX, opCond}, {opW, opW, opW, opCond}}, readsFlags: true, sysregOperand: -1},
+	"cset": {forms: []form{{opX, opCond}, {opW, opCond}}, readsFlags: true, sysregOperand: -1},
 	"ldr":  {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
 	"str":  {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
 	"ldp":  {forms: []form{{opX, opX, opMem}, {opW, opW, opMem}}, memory: true, sysregOperand: -1},
@@ -142,6 +145,9 @@ func operandMatches(class operandClass, operand Operand) bool {
 		return ok
 	case opOption:
 		_, ok := operand.(Option)
+		return ok
+	case opCond:
+		_, ok := operand.(Condition)
 		return ok
 	}
 	return false
