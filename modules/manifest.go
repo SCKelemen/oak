@@ -34,6 +34,9 @@ type Manifest struct {
 	Path string
 	// Oak is the declared language version (informational in v1).
 	Oak string
+	// Version is the module's own SemVer version (`version 1.2.0`), the
+	// candidate `oak mod bump` checks against the previous API snapshot.
+	Version string
 	// Requires lists dependency modules in source order.
 	Requires []Requirement
 	// Replaces maps a required module path to a local directory (relative
@@ -98,6 +101,17 @@ func ParseManifest(text string) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("oak.mod:%d: %v", lineNumber, err)
 			}
 			manifest.Oak = fields[1]
+		case "version":
+			if len(fields) != 2 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: version directive takes exactly one version", lineNumber)
+			}
+			if manifest.Version != "" {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate version directive", lineNumber)
+			}
+			if _, err := packageapi.ParseVersion(fields[1]); err != nil {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: %v", lineNumber, err)
+			}
+			manifest.Version = fields[1]
 		case "require":
 			if len(fields) != 3 && len(fields) != 5 {
 				return Manifest{}, fmt.Errorf("oak.mod:%d: require directive takes a path and a version, optionally followed by an archive URL and sha256:<hex> digest", lineNumber)

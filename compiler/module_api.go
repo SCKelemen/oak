@@ -1,0 +1,143 @@
+package compiler
+
+// Module-level API snapshots (docs/spec/82-package-semver.md section 6): the
+// checked public API of every package in an oak.mod module, keyed by import
+// path, produced through the ordinary package build so visibility, opacity,
+// and the semantic gates apply exactly as they do when compiling.
+
+import (
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/SCKelemen/oak/modules"
+	"github.com/SCKelemen/oak/packageapi"
+)
+
+// ModulePackages lists the import paths and directories of every package in
+// the module rooted at moduleDir (directories holding .oak files, excluding
+// hidden directories, vendor, and testdata), in sorted path order.
+func ModulePackages(moduleDir string) (modules.Manifest, map[string]string, error) {
+	root, err := filepath.Abs(moduleDir)
+	if err != nil {
+		return modules.Manifest{}, nil, err
+	}
+	text, err := os.ReadFile(filepath.Join(root, modules.ManifestFile))
+	if err != nil {
+		return modules.Manifest{}, nil, fmt.Errorf("%s: %w", moduleDir, err)
+	}
+	manifest, err := modules.ParseManifest(string(text))
+	if err != nil {
+		return modules.Manifest{}, nil, err
+	}
+	packages := map[string]string{}
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			name := entry.Name()
+			if path != root && (strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), ".oak") || strings.HasSuffix(entry.Name(), "_test.oak") {
+			return nil
+		}
+		dir := filepath.Dir(path)
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			return err
+		}
+		importPath := manifest.Path
+		if rel != "." {
+			importPath = manifest.Path + "/" + filepath.ToSlash(rel)
+		}
+		packages[importPath] = dir
+		return nil
+	})
+	if err != nil {
+		return manifest, nil, err
+	}
+	return manifest, packages, nil
+}
+
+// ModuleAPISnapshot snapshots every package of a module at the given
+// version. Each package is built as a root package, so its declarations keep
+// their source names and only pub declarations are projected.
+func ModuleAPISnapshot(moduleDir, version string) (packageapi.ModuleSnapshot, error) {
+	if _, err := packageapi.ParseVersion(version); err != nil {
+		return packageapi.ModuleSnapshot{}, err
+	}
+	manifest, packages, err := ModulePackages(moduleDir)
+	if err != nil {
+		return packageapi.ModuleSnapshot{}, err
+	}
+	snapshot := packageapi.ModuleSnapshot{Module: manifest.Path, Version: version, Packages: map[string]packageapi.Snapshot{}}
+	paths := make([]string, 0, len(packages))
+	for path := range packages {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		one, err := New().WithPackageName(path).WithPackageDir(packages[path]).APISnapshot(version).Get()
+		if err != nil {
+			return packageapi.ModuleSnapshot{}, fmt.Errorf("package %s: %w", path, err)
+		}
+		snapshot.Packages[path] = one
+	}
+	return snapshot, nil
+}
+
+// ReadModuleSnapshot decodes a module API snapshot file, bounded in size so a
+// hostile archive cannot make the decoder allocate without limit.
+func ReadModuleSnapshot(path string) (packageapi.ModuleSnapshot, error) {
+	const limit = 64 << 20
+	info, err := os.Stat(path)
+	if err != nil {
+		return packageapi.ModuleSnapshot{}, err
+	}
+	if info.Size() > limit {
+		return packageapi.ModuleSnapshot{}, fmt.Errorf("%s exceeds %d bytes", path, limit)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return packageapi.ModuleSnapshot{}, err
+	}
+	var snapshot packageapi.ModuleSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return packageapi.ModuleSnapshot{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return snapshot, nil
+}
+
+// VerifyArchiveAPI is the API-honesty check run by `oak mod download` on an
+// extracted archive before it is installed (docs/spec/82-package-semver.md
+// section 7): when the archive carries api.json, that snapshot must name the
+// required version and equal the API the module's source actually exposes.
+// An archive without api.json is accepted; the digest already pins its bytes.
+func VerifyArchiveAPI(dir string, version packageapi.Version) error {
+	carried, err := ReadModuleSnapshot(filepath.Join(dir, modules.APIFile))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if carried.Version != version.String() {
+		return fmt.Errorf("%s declares version %s, required %s", modules.APIFile, carried.Version, version)
+	}
+	actual, err := ModuleAPISnapshot(dir, version.String())
+	if err != nil {
+		return err
+	}
+	if !packageapi.SameAPI(carried, actual) {
+		return fmt.Errorf("%s does not match the API the module's source exposes", modules.APIFile)
+	}
+	return nil
+}
