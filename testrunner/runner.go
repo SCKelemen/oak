@@ -388,6 +388,13 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 			}
 			return true
 		}
+		// A report file that could not be created is the runner's failure,
+		// not the case's: nothing ran. Report it as an error and stop
+		// instead of saving an unreproducible artifact.
+		if out.signature == "harness:report-file" {
+			result.Status, result.Failure = "error", "cannot create report file: "+out.output
+			return false
+		}
 		result.Status = "fail"
 		result.Failure = out.signature
 		result.Output = out.output

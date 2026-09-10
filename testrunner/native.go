@@ -193,6 +193,7 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 	reportFile, err := os.CreateTemp(p.dir, "report-*")
 	if err != nil {
 		result.signature = "harness:report-file"
+		result.output = err.Error()
 		return result
 	}
 	reportPath := reportFile.Name()
