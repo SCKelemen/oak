@@ -174,6 +174,8 @@ typedef struct oak_u8x16 { u8 lanes[16]; } u8x16;
 typedef struct oak_u16x8 { u16 lanes[8]; } u16x8;
 typedef struct oak_u32x4 { u32 lanes[4]; } u32x4;
 typedef struct oak_u64x2 { u64 lanes[2]; } u64x2;
+typedef struct oak_f32x4 { f32 lanes[4]; } f32x4;
+typedef struct oak_f64x2 { f64 lanes[2]; } f64x2;
 
 static inline Bool oak_simd_any_u8x16( u8x16 v ) {
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)

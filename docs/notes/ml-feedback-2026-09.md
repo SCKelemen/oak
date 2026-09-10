@@ -45,8 +45,12 @@ golden `floats`). The second increment added the `f16`/`bf16` storage
 formats (bit-exact round-to-nearest-even into the formats and exact widening,
 in C and in the interpreter, fuzzed through random round trips), hexadecimal
 float literals, and the `f32 <-> c.Float` / `f64 <-> c.Double` rows (tested
-against libm's `sqrtf`). Not yet: float SIMD, the `math` library of
-transcendentals, and the Lean model. The design:
+against libm's `sqrtf`). The third increment added the float vectors
+`simd.F32x4`/`simd.F64x2` with `fma`, the 2019 `min`/`max`, lane access, and
+the pairwise `reduce_add` (`93-simd.md` §1.2a), agreeing across NEON, the
+portable lane loop, and the interpreter — this closes revisit criterion O5.
+Not yet: the `math` library of transcendentals and the Lean model. The
+design:
 
 - `f32`/`f64` arithmetic; `f16`/`bf16` storage-only with exactly four
   operations; contextual literals with `f64` as the no-context default;
@@ -152,5 +156,5 @@ disposition, in the order to work them:
 | O2 | `c.Ptr` plus length constructible from `[*]T`/`[]T`, checked at the boundary | **implemented** (`92-ffi.md` §2.5; integer and `Bool` elements) |
 | O3 | Any runtime-sized allocation surface | direction |
 | O4 | Views or spans in records or as return values | roadmap |
-| O5 | `F32x4` with `mul` and `fma` | specified (`20-types.md` §11.3.7) |
+| O5 | `F32x4` with `mul` and `fma` | **implemented** (`93-simd.md` §1.2a; NEON and portable lowerings agree with the interpreter) |
 | O6 | A frontend surface for `x.matmul(w).relu()` | pipeline operator and field accessors implemented (`x \|> matmul(w) \|> relu`); uniform call syntax and operator definitions remain direction |

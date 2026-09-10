@@ -49,6 +49,23 @@ func simdOpSplit(member string) (op string, shape typechecker.SimdShape, ok bool
 	if !known {
 		return "", shape, false
 	}
+	if shape.Float {
+		switch op {
+		case "splat", "load", "store", "fma", "extract", "insert", "reduce_add":
+			return op, shape, true
+		}
+		for _, name := range typechecker.SimdFloatBinaryOps {
+			if name == op {
+				return op, shape, true
+			}
+		}
+		for _, name := range typechecker.SimdFloatUnaryOps {
+			if name == op {
+				return op, shape, true
+			}
+		}
+		return "", shape, false
+	}
 	switch op {
 	case "splat", "load", "store", "any", "all":
 		return op, shape, true
@@ -160,7 +177,11 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 		if op == "store" {
 			cg.emitSpanType(shape.ElemName)
 		}
-		cg.writeRaw(simdHelperSource(op, shape.Suffix, shape.ElemName, shape.Lanes))
+		if shape.Float {
+			cg.writeRaw(simdFloatHelperSource(op, shape.Suffix, shape.ElemName, shape.Lanes))
+		} else {
+			cg.writeRaw(simdHelperSource(op, shape.Suffix, shape.ElemName, shape.Lanes))
+		}
 		cg.write("\n")
 	}
 	for _, member := range arm64Vector {
@@ -357,4 +378,79 @@ var arm64VectorIntrinsicSources = map[string]string{
   return r;
 }
 `,
+}
+
+// simdFloatHelperSource builds the helper for one operation of a
+// floating-point vector shape (docs/spec/20-types.md section 11.3.7). Every
+// lane obeys the scalar rules: NEON vminq/vmaxq have the IEEE 754-2019
+// minimum/maximum semantics (a NaN operand yields NaN, -0.0 below +0.0), the
+// portable branch uses the float preamble's helpers; fma is one rounding
+// per lane (vfmaq / fma); reduce_add is the explicit pairwise tree in both
+// branches, so the grouping is identical on every target; lane indices of
+// extract/insert are range-checked before any access.
+func simdFloatHelperSource(op, vec, elem string, lanes int) string {
+	neon := elem
+	suffix := ""
+	if elem == "f32" {
+		suffix = "f"
+	}
+	var b strings.Builder
+	switch op {
+	case "splat":
+		fmt.Fprintf(&b, "static inline %s oak_simd_splat_%s( %s x ) {\n", vec, vec, elem)
+		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+		fmt.Fprintf(&b, "  vst1q_%s(r.lanes, vdupq_n_%s(x));\n#else\n", neon, neon)
+		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = x; }\n#endif\n  return r;\n}\n", lanes)
+	case "load":
+		fmt.Fprintf(&b, "static inline %s oak_simd_load_%s( oak_view_%s v, u32 off ) {\n", vec, vec, elem)
+		fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)v.len) { __builtin_trap(); }\n", lanes)
+		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+		fmt.Fprintf(&b, "  vst1q_%s(r.lanes, vld1q_%s(v.base + off));\n#else\n", neon, neon)
+		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = v.base[off + (u32)i]; }\n#endif\n  return r;\n}\n", lanes)
+	case "store":
+		fmt.Fprintf(&b, "static inline void oak_simd_store_%s( oak_span_%s s, u32 off, %s val ) {\n", vec, elem, vec)
+		fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)s.len) { __builtin_trap(); }\n", lanes)
+		fmt.Fprintf(&b, "%s\n  vst1q_%s(s.base + off, vld1q_%s(val.lanes));\n#else\n", neonGuard, neon, neon)
+		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { s.base[off + (u32)i] = val.lanes[i]; }\n#endif\n}\n", lanes)
+	case "add", "sub", "mul", "div", "min", "max":
+		neonName := map[string]string{"add": "vaddq", "sub": "vsubq", "mul": "vmulq", "div": "vdivq", "min": "vminq", "max": "vmaxq"}[op]
+		lane := map[string]string{"add": "x + y", "sub": "x - y", "mul": "x * y", "div": "x / y",
+			"min": "oak_fmin_" + elem + "(x, y)", "max": "oak_fmax_" + elem + "(x, y)"}[op]
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s_%s( %s a, %s b ) {\n", vec, op, vec, vec, vec)
+		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+		fmt.Fprintf(&b, "  vst1q_%s(r.lanes, %s_%s(vld1q_%s(a.lanes), vld1q_%s(b.lanes)));\n#else\n", neon, neonName, neon, neon, neon)
+		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { %s x = a.lanes[i]; %s y = b.lanes[i]; r.lanes[i] = %s; }\n#endif\n  return r;\n}\n", lanes, elem, elem, lane)
+	case "sqrt", "neg", "abs":
+		neonName := map[string]string{"sqrt": "vsqrtq", "neg": "vnegq", "abs": "vabsq"}[op]
+		lane := map[string]string{"sqrt": "sqrt" + suffix + "(x)", "neg": "-x", "abs": "fabs" + suffix + "(x)"}[op]
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s_%s( %s a ) {\n", vec, op, vec, vec)
+		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+		fmt.Fprintf(&b, "  vst1q_%s(r.lanes, %s_%s(vld1q_%s(a.lanes)));\n#else\n", neon, neonName, neon, neon)
+		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { %s x = a.lanes[i]; r.lanes[i] = %s; }\n#endif\n  return r;\n}\n", lanes, elem, lane)
+	case "fma":
+		// vfmaq(c, a, b) is c + a*b in one rounding; the portable branch is
+		// the correctly rounded C99 fma.
+		fmt.Fprintf(&b, "static inline %s oak_simd_fma_%s( %s a, %s b, %s c ) {\n", vec, vec, vec, vec, vec)
+		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+		fmt.Fprintf(&b, "  vst1q_%s(r.lanes, vfmaq_%s(vld1q_%s(c.lanes), vld1q_%s(a.lanes), vld1q_%s(b.lanes)));\n#else\n", neon, neon, neon, neon, neon)
+		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = fma%s(a.lanes[i], b.lanes[i], c.lanes[i]); }\n#endif\n  return r;\n}\n", lanes, suffix)
+	case "extract":
+		fmt.Fprintf(&b, "static inline %s oak_simd_extract_%s( %s v, u32 lane ) {\n", elem, vec, vec)
+		fmt.Fprintf(&b, "  if (lane >= %du) { __builtin_trap(); }\n  return v.lanes[lane];\n}\n", lanes)
+	case "insert":
+		fmt.Fprintf(&b, "static inline %s oak_simd_insert_%s( %s v, u32 lane, %s x ) {\n", vec, vec, vec, elem)
+		fmt.Fprintf(&b, "  if (lane >= %du) { __builtin_trap(); }\n  v.lanes[lane] = x;\n  return v;\n}\n", lanes)
+	case "reduce_add":
+		// The pairwise tree is the semantics (docs/spec/20-types.md section
+		// 11.3.7, 55-parallelism.md section 4): identical on every target.
+		fmt.Fprintf(&b, "static inline %s oak_simd_reduce_add_%s( %s v ) {\n", elem, vec, vec)
+		if lanes == 4 {
+			fmt.Fprintf(&b, "  return (v.lanes[0] + v.lanes[1]) + (v.lanes[2] + v.lanes[3]);\n}\n")
+		} else {
+			fmt.Fprintf(&b, "  return v.lanes[0] + v.lanes[1];\n}\n")
+		}
+	default:
+		return "OAK_UNSUPPORTED_SIMD_OP\n"
+	}
+	return b.String()
 }
