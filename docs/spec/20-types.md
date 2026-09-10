@@ -371,9 +371,10 @@ unconstrained templates are one mechanism with one emission path.
 ### 11.3 Floating-point types
 
 **Status: §11.3.1–§11.3.8 implemented and tested, including the `f16`/`bf16`
-storage formats, hexadecimal literals, the float vectors, and the first
-`math` package (`exp exp2 expm1 log log2 tanh`); the Lean model is the
-recorded gap** (`STATUS.md` lists the implemented subset precisely). This section is
+storage formats, hexadecimal literals, the float vectors, float fields in
+records with `size_of`/`align_of`/`offset_of` over float types, and the
+`math` package (`exp exp2 expm1 log log2 log1p sin cos tan tanh pow`); the
+Lean model is the recorded gap** (`STATUS.md` lists the implemented subset precisely). This section is
 normative for the whole floating-point design. It was motivated by the ml
 project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
 tier 2), whose numeric core cannot move into Oak without it.
@@ -561,17 +562,29 @@ bound is part of the function's contract; a bound of 1 ulp is the target
 for the v1 library and no function ships without a stated bound.
 
 **Implemented** (`stdlib/math.oak`, `import("math")`): `exp`, `exp2`,
-`expm1`, `log`, `log2`, `tanh` over `f64` and their `_f32` forms, written in
-Oak itself — the fdlibm algorithms over the correctly rounded primitives of
-§11.3.5, with Cody–Waite split constants spelled as hexadecimal literals.
-Because every operation they use is bit-exact across implementations, the
-interpreter and every backend produce **identical bits**; this is the
-bit-exact implementation the last paragraph of this section asks for, and
-the one a program that reproduces training runs should use. Documented
-bounds: 1 ulp for `exp exp2 expm1 log log2`, 2 ulp for `tanh` (it composes
-`expm1` with a division). The `_f32` forms compute at `f64` and round once
-and are within 0.5 ulp on the witness corpus. Not yet: `pow`, `sin`, `cos`,
-`tan`, `log1p`, and the remaining relatives.
+`expm1`, `log`, `log2`, `log1p`, `sin`, `cos`, `tan`, `tanh`, and `pow`
+over `f64` and their `_f32` forms, written in Oak itself — the fdlibm
+algorithms over the correctly rounded primitives of §11.3.5, with
+Cody–Waite split constants spelled as hexadecimal literals. The
+trigonometric functions reduce by fdlibm's three-round Cody–Waite
+subtraction for |x| < 2^20 π/2 and by a Payne–Hanek reduction beyond it:
+the 53-bit significand of x times the 32-bit limbs of 2/π that matter,
+exact in integer arithmetic, modulo 4, with the 192-bit remainder converted
+to a double-double before the kernels; `sin(1e22)`, the largest finite
+`f64`, and Kahan's hardest argument (6381956970095103 · 2^797) are all
+within the bound. Because every operation they use is bit-exact across
+implementations, the interpreter and every backend produce **identical
+bits**; this is the bit-exact implementation the last paragraph of this
+section asks for, and the one a program that reproduces training runs
+should use. Documented bounds: 1 ulp for `exp exp2 expm1 log log2 log1p sin
+cos tan pow`, 2 ulp for `tanh` (it composes `expm1` with a division; the
+witness observes up to about 1.5 ulp). `pow` follows IEEE 754-2019 and C99
+Annex F.9.4.4 for its special values — x^0 and 1^y are 1 even for NaN,
+signed zeros and infinities follow the parity of an integer exponent, a
+negative base with a non-integer exponent is NaN — and representable
+integer powers are exact. The `_f32` forms compute at `f64` and round once
+and are within 0.5 ulp on the witness corpus. Not yet: the remaining
+relatives (`asin acos atan atan2 sinh cosh` and the inverse hyperbolics).
 
 Their verification rule is the **fourth witness**: the interpreter, target
 lowering, and portable lowering are each compared to a correctly rounded
@@ -589,7 +602,12 @@ implementation (the `math` package's own) and must not call through
 function and width; it reports the worst observed error per function and
 fails on any case beyond the documented bound, and it additionally
 requires the compiled and interpreted results to be bit-identical, which
-the Oak-source implementation guarantees.
+the Oak-source implementation guarantees. The trigonometric corpus includes
+the `f64` nearest to k π/2 for random k (arguments whose true remainder is
+far below their own ulp), arguments up to the largest finite `f64`, and
+Kahan's hardest reduction case; the `pow` corpus covers every Annex F
+special case, both signs of base with integer and non-integer exponents,
+and results at the overflow and subnormal boundaries.
 
 #### 11.3.7 Floating-point SIMD
 

@@ -49,13 +49,15 @@ against libm's `sqrtf`). The third increment added the float vectors
 `simd.F32x4`/`simd.F64x2` with `fma`, the 2019 `min`/`max`, lane access, and
 the pairwise `reduce_add` (`93-simd.md` §1.2a), agreeing across NEON, the
 portable lane loop, and the interpreter — this closes revisit criterion O5.
-The fourth increment added the `math` package (`import("math")`): `exp exp2
-expm1 log log2 tanh` and their `_f32` forms written in Oak over the
-correctly rounded primitives, so every implementation computes identical
-bits — the answer to ml's `exp2f` finding is that the library is the one
-implementation — with documented bounds (1 ulp, 2 for `tanh`) checked by an
-arbitrary-precision fourth witness (`compiler/e2e_math_test.go`). Not yet:
-`pow sin cos tan log1p`, and the Lean model. The design:
+The fourth and fifth increments added the `math` package
+(`import("math")`): `exp exp2 expm1 log log2 log1p sin cos tan tanh pow`
+and their `_f32` forms written in Oak over the correctly rounded
+primitives, so every implementation computes identical bits — the answer to
+ml's `exp2f` finding is that the library is the one implementation — with
+documented bounds (1 ulp, 2 for `tanh`) checked by an arbitrary-precision
+fourth witness (`compiler/e2e_math_test.go`), and placed float fields in
+records with `size_of` over float types. Not yet: the remaining `math`
+relatives and the Lean model. The design:
 
 - `f32`/`f64` arithmetic; `f16`/`bf16` storage-only with exactly four
   operations; contextual literals with `f64` as the no-context default;
@@ -157,7 +159,7 @@ disposition, in the order to work them:
 
 | Item | Criterion | State |
 | --- | --- | --- |
-| O1 | `f32`/`f64` with literals, arithmetic, core intrinsics, `f32 ↔ c.Float` | **implemented**, `c.Float`/`c.Double` rows included (`20-types.md` §11.3); `math.exp2`/`math.log2` implemented bit-exactly, `sin` awaits the next `math` increment |
+| O1 | `f32`/`f64` with literals, arithmetic, core intrinsics, `f32 ↔ c.Float` | **implemented**, `c.Float`/`c.Double` rows included (`20-types.md` §11.3); the `math` package (`exp exp2 expm1 log log2 log1p sin cos tan tanh pow`) implemented bit-exactly |
 | O2 | `c.Ptr` plus length constructible from `[*]T`/`[]T`, checked at the boundary | **implemented** (`92-ffi.md` §2.5; integer and `Bool` elements) |
 | O3 | Any runtime-sized allocation surface | direction |
 | O4 | Views or spans in records or as return values | roadmap |

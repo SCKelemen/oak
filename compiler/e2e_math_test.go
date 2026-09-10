@@ -16,6 +16,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SCKelemen/oak/evaluator"
@@ -26,6 +27,11 @@ import (
 )
 
 const referencePrecision = 320
+
+// reductionPrecision covers the argument reduction of the trigonometric
+// functions for the largest f64: x 2/pi needs about 1024 bits before the
+// binary point plus the reference precision after it.
+const reductionPrecision = 1700
 
 // ln2 to 100 digits.
 const ln2Digits = "0.6931471805599453094172321214581765680755001343602552541206800094933936219696947156058633269964186875"
@@ -39,6 +45,47 @@ func bigLn2() *big.Float {
 }
 
 func newBig(v float64) *big.Float { return new(big.Float).SetPrec(referencePrecision).SetFloat64(v) }
+
+func bigAt(prec uint) *big.Float { return new(big.Float).SetPrec(prec) }
+
+// atanInverse is atan(1/n) by its Taylor series at the given precision.
+func atanInverse(n int64, prec uint) *big.Float {
+	x := bigAt(prec).Quo(bigAt(prec).SetInt64(1), bigAt(prec).SetInt64(n))
+	x2 := bigAt(prec).Mul(x, x)
+	sum := bigAt(prec).Set(x)
+	power := bigAt(prec).Set(x)
+	for k := int64(1); ; k++ {
+		power.Mul(power, x2)
+		term := bigAt(prec).Quo(power, bigAt(prec).SetInt64(2*k+1))
+		if term.Sign() == 0 || term.MantExp(nil)-sum.MantExp(nil) < -int(prec)-8 {
+			break
+		}
+		if k%2 == 1 {
+			sum.Sub(sum, term)
+		} else {
+			sum.Add(sum, term)
+		}
+	}
+	return sum
+}
+
+var (
+	bigPiOnce  sync.Once
+	bigPiValue *big.Float
+)
+
+// bigPi is pi at reductionPrecision by Machin's formula
+// pi = 16 atan(1/5) - 4 atan(1/239).
+func bigPi() *big.Float {
+	bigPiOnce.Do(func() {
+		a := atanInverse(5, reductionPrecision)
+		b := atanInverse(239, reductionPrecision)
+		pi := bigAt(reductionPrecision).Mul(a, bigAt(reductionPrecision).SetInt64(16))
+		pi.Sub(pi, bigAt(reductionPrecision).Mul(b, bigAt(reductionPrecision).SetInt64(4)))
+		bigPiValue = pi
+	})
+	return bigPiValue
+}
 
 // refExp is e^x by argument reduction with the high-precision ln 2 and a
 // Taylor series on the remainder.
@@ -87,20 +134,100 @@ func refLog(x *big.Float) *big.Float {
 	return sum.Add(sum, new(big.Float).SetPrec(referencePrecision).Mul(bigLn2(), newBig(float64(e))))
 }
 
-// mathReference evaluates one library function at x in high precision, or
-// reports the exact special-value result as a float64 (NaN, infinities,
-// exact zeros) when the mathematics is not a finite non-zero real.
-func mathReference(name string, x float64) (exact float64, ref *big.Float, isExact bool) {
-	switch {
-	case math.IsNaN(x):
+// refSinCos is (sin x, cos x) for finite x: x is reduced by the nearest
+// multiple of pi/2 at reductionPrecision, the remainder's sine and cosine
+// come from their Taylor series, and the quadrant selects and signs them.
+func refSinCos(x float64) (*big.Float, *big.Float) {
+	bx := bigAt(reductionPrecision).SetFloat64(x)
+	halfPi := bigAt(reductionPrecision).Quo(bigPi(), bigAt(reductionPrecision).SetInt64(2))
+	q := bigAt(reductionPrecision).Quo(bx, halfPi)
+	// k = round(q)
+	half := bigAt(reductionPrecision).SetFloat64(0.5)
+	if q.Sign() < 0 {
+		half.Neg(half)
+	}
+	k := new(big.Int)
+	bigAt(reductionPrecision).Add(q, half).Int(k)
+	r := bigAt(reductionPrecision).Sub(bx, bigAt(reductionPrecision).Mul(halfPi, bigAt(reductionPrecision).SetInt(k)))
+	r = bigAt(referencePrecision).Set(r)
+	r2 := bigAt(referencePrecision).Mul(r, r)
+	// sin r = r - r^3/3! + ..., cos r = 1 - r^2/2! + ...
+	sinR := bigAt(referencePrecision).Set(r)
+	cosR := bigAt(referencePrecision).SetInt64(1)
+	sinTerm := bigAt(referencePrecision).Set(r)
+	cosTerm := bigAt(referencePrecision).SetInt64(1)
+	for n := 1; n < 400; n++ {
+		cosTerm.Mul(cosTerm, r2)
+		cosTerm.Quo(cosTerm, bigAt(referencePrecision).SetInt64(int64((2*n-1)*(2*n))))
+		cosTerm.Neg(cosTerm)
+		cosR.Add(cosR, cosTerm)
+		sinTerm.Mul(sinTerm, r2)
+		sinTerm.Quo(sinTerm, bigAt(referencePrecision).SetInt64(int64((2*n)*(2*n+1))))
+		sinTerm.Neg(sinTerm)
+		sinR.Add(sinR, sinTerm)
+		if sinTerm.Sign() == 0 || sinTerm.MantExp(nil) < -referencePrecision-8 {
+			break
+		}
+	}
+	quadrant := new(big.Int).Mod(k, big.NewInt(4)).Int64()
+	negSin := bigAt(referencePrecision).Neg(sinR)
+	negCos := bigAt(referencePrecision).Neg(cosR)
+	switch quadrant {
+	case 0:
+		return sinR, cosR
+	case 1:
+		return cosR, negSin
+	case 2:
+		return negSin, negCos
+	default:
+		return negCos, sinR
+	}
+}
+
+// refPow is x^y for finite x > 0 and finite y as exp(y ln x); results
+// beyond every format's range are reported exactly.
+func refPow(x, y float64) (exact float64, ref *big.Float, isExact bool) {
+	l := bigAt(referencePrecision).Mul(newBig(y), refLog(newBig(x)))
+	lf, _ := l.Float64()
+	if lf > 1100 {
+		return math.Inf(1), nil, true
+	}
+	if lf < -1100 {
+		return 0, nil, true
+	}
+	return 0, refExp(l), false
+}
+
+// isOddInteger reports whether y is an odd integer (IEEE 754 pow rules).
+func isOddInteger(y float64) bool {
+	if y != math.Trunc(y) || math.IsInf(y, 0) {
+		return false
+	}
+	return math.Abs(math.Mod(y, 2)) == 1
+}
+
+// mathReference evaluates one library function at (x, y) in high
+// precision, or reports the exact special-value result as a float64 (NaN,
+// infinities, exact zeros) when the mathematics is not a finite non-zero
+// real.
+func mathReference(name string, x, y float64) (exact float64, ref *big.Float, isExact bool) {
+	if name == "pow" {
+		return powReference(x, y)
+	}
+	if math.IsNaN(x) {
 		return math.NaN(), nil, true
 	}
 	bx := newBig(x)
-	// For |x| below 2^-60 the correctly rounded expm1(x) and tanh(x) are x
-	// itself (the next series term is below half an ulp), and the
-	// high-precision evaluation would lose x against 1.
-	if (name == "expm1" || name == "tanh") && x != 0 && math.Abs(x) < 0x1p-60 {
-		return x, nil, true
+	// For |x| below 2^-60 the correctly rounded expm1, tanh, log1p, sin,
+	// and tan of x are x itself (the next series term is below half an
+	// ulp), and cos x is 1.
+	if x != 0 && math.Abs(x) < 0x1p-60 {
+		switch name {
+		case "expm1", "tanh", "log1p", "sin", "tan":
+			return x, nil, true
+		case "cos":
+			return 1, nil, true
+		}
 	}
 	switch name {
 	case "exp", "exp2", "expm1":
@@ -143,6 +270,20 @@ func mathReference(name string, x float64) (exact float64, ref *big.Float, isExa
 			v.Quo(v, bigLn2())
 		}
 		return 0, v, false
+	case "log1p":
+		if x == -1 {
+			return math.Inf(-1), nil, true
+		}
+		if x < -1 {
+			return math.NaN(), nil, true
+		}
+		if math.IsInf(x, 1) {
+			return math.Inf(1), nil, true
+		}
+		if x == 0 {
+			return x, nil, true
+		}
+		return 0, refLog(new(big.Float).SetPrec(referencePrecision).Add(bx, newBig(1))), false
 	case "tanh":
 		if math.IsInf(x, 0) {
 			return math.Copysign(1, x), nil, true
@@ -157,8 +298,83 @@ func mathReference(name string, x float64) (exact float64, ref *big.Float, isExa
 		num := new(big.Float).SetPrec(referencePrecision).Sub(e2, newBig(1))
 		den := new(big.Float).SetPrec(referencePrecision).Add(e2, newBig(1))
 		return 0, num.Quo(num, den), false
+	case "sin", "cos", "tan":
+		if math.IsInf(x, 0) {
+			return math.NaN(), nil, true
+		}
+		if x == 0 {
+			if name == "cos" {
+				return 1, nil, true
+			}
+			return x, nil, true
+		}
+		s, c := refSinCos(x)
+		switch name {
+		case "sin":
+			return 0, s, false
+		case "cos":
+			return 0, c, false
+		default:
+			return 0, bigAt(referencePrecision).Quo(s, c), false
+		}
 	}
 	panic("unknown function " + name)
+}
+
+// powReference applies the IEEE 754-2019 / C99 Annex F.9.4.4 special cases
+// of pow before delegating finite positive bases to refPow.
+func powReference(x, y float64) (exact float64, ref *big.Float, isExact bool) {
+	switch {
+	case y == 0 || x == 1:
+		return 1, nil, true
+	case math.IsNaN(x) || math.IsNaN(y):
+		return math.NaN(), nil, true
+	case x == 0:
+		if y < 0 {
+			if isOddInteger(y) {
+				return math.Copysign(math.Inf(1), x), nil, true
+			}
+			return math.Inf(1), nil, true
+		}
+		if isOddInteger(y) {
+			return x, nil, true
+		}
+		return 0, nil, true
+	case math.IsInf(y, 0):
+		if x == -1 {
+			return 1, nil, true
+		}
+		if (math.Abs(x) < 1) == (y < 0) {
+			return math.Inf(1), nil, true
+		}
+		return 0, nil, true
+	case math.IsInf(x, -1):
+		if y < 0 {
+			if isOddInteger(y) {
+				return math.Copysign(0, -1), nil, true
+			}
+			return 0, nil, true
+		}
+		if isOddInteger(y) {
+			return math.Inf(-1), nil, true
+		}
+		return math.Inf(1), nil, true
+	case math.IsInf(x, 1):
+		if y < 0 {
+			return 0, nil, true
+		}
+		return math.Inf(1), nil, true
+	case x < 0 && y != math.Trunc(y):
+		return math.NaN(), nil, true
+	}
+	exact, ref, isExact = refPow(math.Abs(x), y)
+	if x < 0 && isOddInteger(y) {
+		if isExact {
+			return -exact, nil, true
+		}
+		return 0, ref.Neg(ref), false
+	}
+	return exact, ref, isExact
 }
 
 // ulpError measures |got - ref| in units of the last place of the target
@@ -188,14 +404,26 @@ func ulpError(got float64, ref *big.Float, width int) float64 {
 	}
 	diff := new(big.Float).SetPrec(referencePrecision).Sub(newBig(got), ref)
 	diff.Abs(diff)
-	d, _ := diff.Float64()
-	return d / ulp
+	// The ratio is formed in high precision: a difference at subnormal
+	// scale would itself round if converted to float64 first.
+	ratio, _ := diff.Quo(diff, newBig(ulp)).Float64()
+	return ratio
 }
 
 type mathCase struct {
 	function string
 	width    int
 	x        float64
+	y        float64 // second argument of pow only
+}
+
+// nearestMultipleOfHalfPi is the f64 nearest to k pi/2: the hardest
+// arguments for the reduction, whose true remainders are far smaller than
+// the argument's ulp.
+func nearestMultipleOfHalfPi(k float64) float64 {
+	halfPi := bigAt(reductionPrecision).Quo(bigPi(), bigAt(reductionPrecision).SetInt64(2))
+	v, _ := bigAt(reductionPrecision).Mul(halfPi, bigAt(reductionPrecision).SetFloat64(k)).Float64()
+	return v
 }
 
 // mathCorpus: the special points of each function plus log-uniform random
@@ -209,14 +437,25 @@ func mathCorpus(rng *rand.Rand) []mathCase {
 				// reference must see exactly that argument.
 				x = float64(float32(x))
 			}
-			cases = append(cases, mathCase{function, width, x})
+			cases = append(cases, mathCase{function: function, width: width, x: x})
 		}
+	}
+	addPow := func(width int, x, y float64) {
+		if width == 32 {
+			x = float64(float32(x))
+			y = float64(float32(y))
+		}
+		cases = append(cases, mathCase{function: "pow", width: width, x: x, y: y})
 	}
 	nan := math.NaN()
 	inf := math.Inf(1)
+	negZero := math.Copysign(0, -1)
 	tiny := 1e-300
+	// Kahan's hardest f64 for pi/2 reduction: 6381956970095103 2^797 lies
+	// within 4.7e-19 of a multiple of pi/2.
+	kahan := math.Ldexp(6381956970095103, 797)
 	for _, width := range []int{64, 32} {
-		expPoints := []float64{0, math.Copysign(0, -1), 1, -1, 0.5, -0.5, 0.1, 2, 10, -10, 100, -100, 0.6931471805599453, 1.0397207708399179,
+		expPoints := []float64{0, negZero, 1, -1, 0.5, -0.5, 0.1, 2, 10, -10, 100, -100, 0.6931471805599453, 1.0397207708399179,
 			709.7, -708, -745, 710, 1e-10, -1e-10, tiny, nan, inf, -inf, 3.5, 20.25, -37.9}
 		if width == 32 {
 			expPoints = append(expPoints, 88.7, -87.3, -103.9)
@@ -225,10 +464,30 @@ func mathCorpus(rng *rand.Rand) []mathCase {
 		add("expm1", width, expPoints...)
 		add("exp2", width, 0, 0.5, -0.5, 1, 3, -3, 10.75, -10.75, 0.1, 1023.5, -1074, 1025, 1e-9, nan, inf, -inf, 127.5, -149.5)
 		logPoints := []float64{1, 2, 0.5, 10, 0.1, 1e-300, 1e300, 5e-324, 1.0000001, 0.9999999, 4, 0.75, 1.4142135623730951, 0.7071067811865476,
-			0, math.Copysign(0, -1), -1, nan, inf, 1e-45, 3.4028234663852886e38, 123456.789}
+			0, negZero, -1, nan, inf, 1e-45, 3.4028234663852886e38, 123456.789}
 		add("log", width, logPoints...)
 		add("log2", width, logPoints...)
-		add("tanh", width, 0, math.Copysign(0, -1), 1e-10, -1e-10, 0.25, -0.25, 0.5, 1, 2, -2, 10, 22, -22, 30, nan, inf, -inf, 1e-30)
+		add("log1p", width, 0, negZero, 1e-10, -1e-10, 1e-20, 0.5, -0.5, 1, -0.9999999, -1, -2, 0.29, -0.29, 0.42, 0.41421356, 3, 1e10, 1e300,
+			nan, inf, -inf, 2.220446049250313e-16, -2.220446049250313e-16, 5e-324, 1e-45, 3.4e38)
+		add("tanh", width, 0, negZero, 1e-10, -1e-10, 0.25, -0.25, 0.5, 1, 2, -2, 10, 22, -22, 30, nan, inf, -inf, 1e-30)
+		trigPoints := []float64{0, negZero, 1e-10, -1e-10, 1e-20, 0.25, 0.5, 0.67, 0.68, 0.6744, 0.7853981633974483, 0.7853981633974484,
+			1, -1, 1.5707963267948966, 2, 3, 3.141592653589793, 4.71238898038469, 6.283185307179586, 10, 100, -100, 1e6, 1647099.3, 1.7e6,
+			1e10, 1e16, 4.5e15, 1e22, -1e22, 1e100, 1e300, 1.7976931348623157e308, kahan, -kahan, 5e-324, nan, inf, -inf, 2.5e-8, 1e-8}
+		if width == 32 {
+			trigPoints = append(trigPoints, 3.4028234663852886e38, 1e30, 16777215, 33554430)
+		}
+		add("sin", width, trigPoints...)
+		add("cos", width, trigPoints...)
+		add("tan", width, trigPoints...)
+		powPairs := [][2]float64{{2, 10}, {2, -1074}, {2, 0.5}, {10, 308}, {10, -320}, {0.5, 1075}, {-2, 3}, {-2, 4}, {-2, 0.5}, {-8, 1.0 / 3},
+			{0, -1}, {negZero, -1}, {negZero, -2}, {0, 0.5}, {0, 3}, {negZero, 3}, {negZero, 4}, {inf, -1}, {inf, 2}, {-inf, 3}, {-inf, 2}, {-inf, -3}, {-inf, -2},
+			{1, nan}, {nan, 0}, {nan, 1}, {1, inf}, {2, inf}, {0.5, inf}, {-1, inf}, {-1, -inf}, {0.5, -inf}, {2, -inf}, {-0.5, inf},
+			{1.0000001, 1e9}, {0.9999999, -1e9}, {1.0000001, 2.5e9}, {1 + 0x1p-40, 1e15}, {1e-300, 2}, {1e300, 2}, {3, 0.3333333333333333},
+			{7.5, 2.5}, {1.5, 1e5}, {2, 1023.5}, {2, 1024}, {2, -1075}, {2.5, -1070}, {-3, 7}, {-3, 8}, {-1.5, -3}, {10, 22}, {10, -22},
+			{3, 40}, {0.1, 3}, {1e-5, -60}, {123.456, 7.89}, {0.9, 5000}, {1.1, -5000}, {2, 1e100}, {0.5, 1e100}, {-2, 1e100}, {1e-320, 0.5}, {1e-320, 2}}
+		for _, p := range powPairs {
+			addPow(width, p[0], p[1])
+		}
 		for i := 0; i < 40; i++ {
 			// log-uniform magnitudes with random sign
 			mag := math.Pow(10, rng.Float64()*8-4)
@@ -244,13 +503,47 @@ func mathCorpus(rng *rand.Rand) []mathCase {
 			}
 			add("log", width, math.Pow(10, rng.Float64()*logRange-logRange/2))
 			add("log2", width, math.Pow(10, rng.Float64()*logRange-logRange/2))
+			if mag > -1 {
+				add("log1p", width, mag)
+			}
 			add("tanh", width, mag*math.Min(1, 25/math.Abs(mag)))
+			// trigonometric: medium arguments, huge arguments through the
+			// Payne-Hanek path, and near-multiples of pi/2
+			trigRange := 300.0
+			if width == 32 {
+				trigRange = 38
+			}
+			huge := math.Pow(10, 8+rng.Float64()*(trigRange-8))
+			near := nearestMultipleOfHalfPi(float64(1 + rng.Intn(1000000)))
+			if width == 32 {
+				near = nearestMultipleOfHalfPi(float64(1 + rng.Intn(4000)))
+			}
+			for _, function := range []string{"sin", "cos", "tan"} {
+				add(function, width, mag*math.Min(1, 1e8/math.Abs(mag)), huge, near)
+			}
+			// pow: bases around 1 with exponents kept inside the format
+			base := math.Pow(10, rng.Float64()*6-3)
+			limit := 700.0
+			if width == 32 {
+				limit = 85
+			}
+			maxExponent := math.Min(60, limit/math.Abs(math.Log(base)))
+			exponent := (rng.Float64()*2 - 1) * maxExponent
+			addPow(width, base, exponent)
+			addPow(width, -base, math.Trunc(exponent))
+			addPow(width, 1+(rng.Float64()*2-1)*1e-6, (rng.Float64()*2-1)*1e6)
 		}
 	}
 	return cases
 }
 
 func (c mathCase) call() string {
+	if c.function == "pow" {
+		if c.width == 32 {
+			return fmt.Sprintf("math.pow_f32(f32_bits_u32(u32(%d)), f32_bits_u32(u32(%d)))", math.Float32bits(float32(c.x)), math.Float32bits(float32(c.y)))
+		}
+		return fmt.Sprintf("math.pow(f64_bits_u64(u64(%d)), f64_bits_u64(u64(%d)))", math.Float64bits(c.x), math.Float64bits(c.y))
+	}
 	if c.width == 32 {
 		return fmt.Sprintf("math.%s_f32(f32_bits_u32(u32(%d)))", c.function, math.Float32bits(float32(c.x)))
 	}
@@ -264,10 +557,20 @@ func (c mathCase) bitsExpression() string {
 	return "u64_bits_f64(" + c.call() + ")"
 }
 
+func (c mathCase) String() string {
+	if c.function == "pow" {
+		return fmt.Sprintf("pow/f%d(%v, %v)", c.width, c.x, c.y)
+	}
+	return fmt.Sprintf("%s/f%d(%v)", c.function, c.width, c.x)
+}
+
 // mathBounds are the documented error bounds in ulps (stdlib/math.oak).
 // tanh composes expm1 with a division and reaches about 1.5 ulp in the
 // |x| < 1 path (fdlibm), so its contract is 2.
-var mathBounds = map[string]float64{"exp": 1, "exp2": 1, "expm1": 1, "log": 1, "log2": 1, "tanh": 2}
+var mathBounds = map[string]float64{
+	"exp": 1, "exp2": 1, "expm1": 1, "log": 1, "log2": 1, "log1p": 1, "tanh": 2,
+	"sin": 1, "cos": 1, "tan": 1, "pow": 1,
+}
 
 func TestMathLibraryFourthWitness(t *testing.T) {
 	seed := int64(20260910)
@@ -334,6 +637,7 @@ func TestMathLibraryFourthWitness(t *testing.T) {
 	}
 
 	worst := map[string]float64{}
+	worstCase := map[string]mathCase{}
 	failures := 0
 	for k, c := range cases {
 		compiled, err := strconv.ParseUint(lines[k], 16, 64)
@@ -343,7 +647,7 @@ func TestMathLibraryFourthWitness(t *testing.T) {
 		call := parser.New(layout.New(scanner.New(fmt.Sprintf("case_%d()", k)))).ParseProgram()
 		result := evaluator.Eval(call, env)
 		if e, isErr := result.(*object.Error); isErr {
-			t.Fatalf("interpreter error in case %d (%s %d %v): %s", k, c.function, c.width, c.x, e.Message)
+			t.Fatalf("interpreter error in case %d (%s): %s", k, c, e.Message)
 		}
 		integer, ok := result.(*object.Integer)
 		if !ok {
@@ -355,32 +659,33 @@ func TestMathLibraryFourthWitness(t *testing.T) {
 		got := fromBits(compiled, c.width)
 		if !sameFloatBits(compiled, interpreted, c.width) {
 			failures++
-			t.Errorf("%s(%v): compiled %016x, interpreter %016x differ", key, c.x, compiled, interpreted)
+			t.Errorf("%s: compiled %016x, interpreter %016x differ", c, compiled, interpreted)
 			continue
 		}
-		exact, ref, isExact := mathReference(c.function, c.x)
+		exact, ref, isExact := mathReference(c.function, c.x, c.y)
 		if isExact {
 			want := toBits(exact, c.width)
 			if !sameFloatBits(want, compiled, c.width) {
 				failures++
-				t.Errorf("%s(%v): got %v (%016x), want exactly %v", key, c.x, got, compiled, exact)
+				t.Errorf("%s: got %v (%016x), want exactly %v", c, got, compiled, exact)
 			}
 			continue
 		}
-		err32 := ulpError(got, ref, c.width)
-		if err32 > worst[key] {
-			worst[key] = err32
+		errUlps := ulpError(got, ref, c.width)
+		if errUlps > worst[key] {
+			worst[key] = errUlps
+			worstCase[key] = c
 		}
-		if err32 > mathBounds[c.function] {
+		if errUlps > mathBounds[c.function] {
 			failures++
 			refValue, _ := ref.Float64()
-			t.Errorf("%s(%v): got %v, reference %v, error %.3f ulp exceeds the bound of %g", key, c.x, got, refValue, err32, mathBounds[c.function])
+			t.Errorf("%s: got %v, reference %v, error %.3f ulp exceeds the bound of %g", c, got, refValue, errUlps, mathBounds[c.function])
 		}
 	}
 	if failures != 0 {
 		t.Fatalf("%d of %d math cases failed", failures, len(cases))
 	}
 	for key, w := range worst {
-		t.Logf("%-10s worst error %.3f ulp", key, w)
+		t.Logf("%-10s worst error %.3f ulp at %s", key, w, worstCase[key])
 	}
 }
