@@ -180,6 +180,137 @@ record. Views in records that cross a call, are returned, or live in
 storage remain the field-sensitive provenance work of
 `roadmap-authority-resources.md` milestone 4 (e).
 
+## 8c. Region-indexed borrowed returns (design, not implemented)
+
+Section 5's conservative rule rejects every function whose return type is
+a view or span (`OAK-B0109`). Section 8b lets a record hold views, but only
+inside the function that built it. Together they mean a zero-copy cursor
+over a frame can exist but cannot be *handed back*: a decoder that finds a
+record inside a buffer must copy it out or return indices for the caller
+to re-index. The storage-engine evaluation named this first among the
+features it needs, and the codecs spec lists borrowed decoded views as its
+own pending relaxation of the same rule. This section records the design
+so the implementation has a normative text to be checked against.
+
+### What the proof already allows
+
+`Oak.Escape` models scopes by lexical depth and proves two things about an
+escaping borrow: `escape_local_owner_dangles` — a borrow whose owner lives
+in the exiting scope cannot survive it — and
+`escape_outer_owner_preserves_wf` — a borrow of a strictly longer-lived
+owner may leave the scope rebound at the enclosing depth, and every
+invariant holds. A function's parameters are exactly the owners that
+outlive its body. A returned borrow whose provenance is a parameter is the
+second theorem; a returned borrow of a local is the first. The rule below
+is that distinction made syntactic, and nothing else changes in the
+ownership model.
+
+### Signatures
+
+A borrowed return names the parameter region it borrows from. The
+region is a type parameter written where type parameters go, and views and
+spans take it as a second argument:
+
+```oak
+frame[R]: (buf: View[u8, R], at: u32): View[u8, R]
+tail[R]: (buf: Span[u8, R], from: u32): Span[u8, R]
+```
+
+`[]T` and `[*]T` stay the ordinary spellings and mean "a fresh region no
+one else names". A signature that returns a view or span **elides** the
+region when exactly one parameter is a view, span, or record carrying a
+region of a matching element type: the return borrows from it.
+
+```oak
+frame: (buf: []u8, at: u32): []u8          // elided: borrows buf
+split: (a: []u8, b: []u8): []u8            // rejected: name the region
+```
+
+Two or more candidate parameters, or none, require the explicit form.
+Nothing is inferred from the body; the signature is the contract the caller
+sees, and the body is checked against it.
+
+### The callee's obligation
+
+The returned expression must be a borrow whose provenance is the named
+region: the parameter itself, a `subslice`/`v[lo:hi]` of it, a view field
+of a record parameter carrying `R`, or a view of the same provenance
+threaded through a local binding. Returning a borrow of a local owner, a
+borrow of a different parameter, or a borrow of unknown provenance is a
+new diagnostic, `OAK-B0112` (returned borrow escapes its declared region),
+with the provenance chain in the message as the other borrow diagnostics
+do. `OAK-B0109` remains for signatures with no region at all — a view
+return in a function with no candidate parameter has nothing to borrow
+from and is rejected as today.
+
+A span return is exclusive: while the result is live at the caller, the
+argument's owner is suspended as by a reborrow (section 7). A view return
+keeps the owner readable and unwritable.
+
+### The caller's obligation
+
+At a call whose return is region-indexed, the result is a **reborrow of
+the argument** passed in that region's position: same owner, same kind
+(view or span), and the argument's region when the callee's return is the
+whole parameter or a subslice with folded bounds; otherwise the region is
+unknown and fails closed for disjointness decisions (section 7). It is
+bound at the caller's block depth and ends with the block, like any local
+borrow. Storing it in a global, returning it from a function without a
+matching region, or letting it outlive the argument's owner are the
+existing rules applied to a borrow the checker already knows how to
+track.
+
+### Records carrying regions
+
+A record type may take a region parameter and use it in its view and span
+fields:
+
+```oak
+Cursor[R]: type = struct { data: View[u8, R], pos: u32 }
+open: (buf: []u8): Cursor[R]               // elided: R is buf's region
+advance: (c: Cursor[R], n: u32): Cursor[R]
+```
+
+Such a record is a borrow of `R`'s owner (section 8b) and now may be
+passed to and returned from functions whose signatures carry the same
+region, with the caller-side rule above applied per view field. `Cursor`
+without a region argument is the section 8b local form: it cannot cross a
+call. Storing a region-carrying record into a global or into a record
+without the region stays rejected: there is no static region.
+
+### Interpreter and backend
+
+Nothing changes at run time. A view or span is the `{base, len}` pair it
+is today, and a region is erased like a phantom type parameter. The
+interpreter's view object already carries its owner; the backend's
+`oak_view_T` already carries the base. The work is entirely in the borrow
+checker's provenance tracking across the call boundary and in the
+signature grammar.
+
+### Proof obligations
+
+`Oak.Escape` gains region labels: a live borrow records the region it was
+drawn from, a function boundary is a scope whose parameters are the
+outer-depth owners, and the theorem the rule instantiates is
+`escape_outer_owner_preserves_wf` applied to a borrow whose region is a
+parameter's. The new lemma is that the caller-side reborrow is
+well-formed whenever the argument's borrow was: the result is bound no
+deeper than the caller's scope and its owner is the argument's owner.
+Subslices carry the region-coordinate translation of section 7 unchanged.
+
+### Increments
+
+1. Elided single-candidate view returns, `OAK-B0112`, the caller-side
+   reborrow; `Oak.Escape` region labels. This alone unblocks the frame
+   cursor and the codecs' borrowed decoded views.
+2. Explicit `[R]` regions on functions, `View[T, R]`/`Span[T, R]`
+   spellings, span returns with the reborrow suspension.
+3. Region-carrying records: section 8b aggregates that cross calls.
+
+What stays rejected after all three: borrows in globals and statics,
+borrows in records without a region, a returned borrow whose provenance
+the checker cannot establish, and any borrow outliving its owner.
+
 ## 9. Move/consume and resource flow
 
 Owned aggregates (`[N]T` and resolved records) retain explicit value semantics in v1: binding or passing one is an explicit-cost copy, never a hidden allocation and never an ownership transfer.

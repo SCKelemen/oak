@@ -67,6 +67,17 @@ type Compilation struct {
 	includeTests bool
 	moduleCache  string
 	sessionFiles map[string]string
+	// diagnosticSink observes every diagnostic a stage gate sees, rejecting
+	// or not — how a driver surfaces informational findings such as the
+	// assembler's verification verdicts (docs/spec/94-assembler.md §8).
+	diagnosticSink func(*diagnostic.Diagnostic)
+}
+
+// WithDiagnosticSink returns a compilation that reports every diagnostic
+// (including informational ones that never reject) to sink.
+func (comp Compilation) WithDiagnosticSink(sink func(*diagnostic.Diagnostic)) Compilation {
+	comp.diagnosticSink = sink
+	return comp
 }
 
 // SyntaxTree is a parsed Oak source file.
@@ -318,6 +329,13 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 // (docs/spec/85-discipline.md section 1): a warning rejects when the
 // effective profile of the package owning its primary cause is strict.
 func (comp Compilation) gate(phase string, diagnostics []*diagnostic.Diagnostic, info *ModuleInfo) error {
+	if comp.diagnosticSink != nil {
+		for _, d := range diagnostics {
+			if d != nil {
+				comp.diagnosticSink(d)
+			}
+		}
+	}
 	rejecting := diagnosticErrors(diagnostics)
 	for _, d := range diagnostics {
 		if d.Severity == diagnostic.SeverityWarning && comp.profileFor(d.Package, info) == "strict" {
