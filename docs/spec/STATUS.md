@@ -164,7 +164,7 @@ Do not mark a feature **R** merely because Go/Zig tests mirror theorem examples.
 ## Native testing tools
 
 `oak test` and `import(testing)` implement the bootstrap contract in
-`110-testing.md`: native isolated cases, choice-tape properties/minimization,
+`110-testing.md`: native isolated cases, choice-tape properties/minimization, table targets (one case per row file, row-named failures, ULP and bit-exact float checks; ml tier 7.4),
 mutation fuzzing, libFuzzer export, persistent corpus/replay, bounded
 discrete-event simulation, and simulated storage (a deterministic two-copy
 block device with tape-driven torn, misdirected, dropped, lost-fsync, bit-flip

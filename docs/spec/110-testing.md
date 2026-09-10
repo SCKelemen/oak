@@ -22,6 +22,7 @@ and start with a prefix followed by an uppercase ASCII letter or underscore:
 | `Property` | `(data: []u8): ()` | Corpus plus generated cases |
 | `Fuzz` | `(data: []u8): ()` | Corpus plus four built-in seeds |
 | `Sim` | `(data: []u8): ()` | Corpus plus generated simulation inputs |
+| `Table` | `(row: []u8): ()` | One execution per row file under `testdata/oak/<Test>/rows` |
 
 Methods, generic tests, extern tests, variadics, and other signatures reject.
 All functions still undergo the normal type, borrow, and discipline checks.
@@ -173,6 +174,42 @@ no trace version retain their original input/build/signature replay contract.
 A diverging replay reports the index of the first recorded event the observed
 trace did not reproduce, with both events; a trace that ends early reports the
 missing side. JSON results carry it as `trace_divergence`.
+
+## Table targets
+
+A `Table` target is data-driven conformance: the inputs are not generated,
+they are the files of `testdata/oak/<TestName>/rows/`, and each file is one
+row. The runner executes the rows once each in file-name order, skipping
+directories and dotfiles, and counts each executed row as a case. `-runs`,
+seeds, and the failure corpus do not apply: the rows are the corpus. A target
+whose rows directory is missing or empty is an error, never a vacuous pass;
+a row larger than `-max-bytes` is an error rather than a truncated case.
+
+The row's bytes reach the test as the `[]u8` argument. The row format is the
+test's own; `import(testing)` provides little-endian readers `test_row_u32`,
+`test_row_u64`, `test_row_f32`, and `test_row_f64` at a byte offset, which
+trap on a short row, so a row of fixed-width fields is decoded by offset
+without a codec. The ordinary `test_check`, `testing_classify`, and
+`testing_trace` apply; `test_assume` discards the row.
+
+Failure identity is the row: the result names the failing row (`row` in the
+JSON result, `row <file>: <signature>` in the failure text), the saved
+artifact carries the row name and the row bytes as its input, and the row is
+never minimized (a shrunk row is no longer the row). `-replay` of such an
+artifact executes the saved row. Execution stops at the first failing row so
+the reported row is the first in name order; name rows so that the order is
+the one the table's author wants read first.
+
+Floating-point fields compare by ULP distance or by exact bits, never by
+`==`: `test_ulp_distance_f32`/`test_ulp_distance_f64` count the representable
+values between two numbers (`+0` and `-0` are one value, two NaNs are at
+distance 0, a NaN against a number is the maximum distance),
+`test_check_ulps_*(got, want, ulps, id)` fails the row unless the distance
+is within `ulps`, and `test_check_bits_*(got, want, id)` demands identical
+bit patterns — the check for a bit-exact contract such as the `math`
+package's (`20-types.md` §11.3.6). A numeric conformance table produced by
+another implementation is therefore a directory of rows and a `Table`
+function of a few lines, and its report says which row disagreed.
 
 ## Trace schema
 
