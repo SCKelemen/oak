@@ -2,6 +2,7 @@ package main
 
 import (
     "fmt"
+    "github.com/SCKelemen/oak/experiments/verification-poc/frontend"
     "github.com/SCKelemen/oak/experiments/verification-poc/internal/lrat"
 )
 const evidenceFormat="oak-evidence-3"
@@ -13,8 +14,11 @@ const evidenceFormat="oak-evidence-3"
 // recorded trust boundary (README, "Go packages and trust").
 type Verdict struct {
     Accepted bool `json:"accepted"`
-    // Claim is the property the evidence supports, in the model's terms.
-    Claim string `json:"claim"`
+    // Claim is the property the evidence supports, about the identified
+    // Oak declarations (roadmap step 3): the claim names the state record and
+    // the initial, step, and invariant predicates by name and position in the
+    // source the verdict binds by hash and semantic digest.
+    Claim Claim `json:"claim"`
     // Established is the fact this checker verified about the evidence.
     Established string `json:"established"`
     // Assumptions are trusted, not checked, by this verdict.
@@ -25,6 +29,37 @@ type Verdict struct {
     Unsupported []string `json:"unsupported,omitempty"`
     // Details carries the evidence-specific numbers and sub-results.
     Details map[string]any `json:"details,omitempty"`
+}
+
+// Claim is a property about identified Oak source declarations.
+type Claim struct {
+    Property string `json:"property"`
+    Source string `json:"source"`
+    SourceHash string `json:"source_sha256"`
+    SemanticDigest string `json:"semantic_digest"`
+    State frontend.Declaration `json:"state"`
+    Initial frontend.Declaration `json:"initial"`
+    Step frontend.Declaration `json:"step"`
+    Invariant frontend.Declaration `json:"invariant"`
+}
+
+// claimFor names the declarations a property is about. A declaration the
+// frontend did not locate keeps its name with no position.
+func claimFor(m *Model,property string) Claim {
+    locate:=func(name string) frontend.Declaration {
+        if d,ok:=m.Declarations[name];ok{return d}
+        return frontend.Declaration{Name:name}
+    }
+    return Claim{
+        Property:property,
+        Source:m.Config.Source,
+        SourceHash:m.Document.SourceHash,
+        SemanticDigest:m.Digest,
+        State:locate(m.Document.State),
+        Initial:locate(m.Config.Initial),
+        Step:locate(m.Config.Step),
+        Invariant:locate(m.Config.Invariant),
+    }
 }
 
 // The recorded trust boundary shared by every verdict: the model is exported
@@ -41,10 +76,10 @@ var sharedTrustPath=[]string{
     "frontend/ model export",
 }
 
-func closedSetVerdict(states int) *Verdict {
+func closedSetVerdict(m *Model,states int) *Verdict {
     return &Verdict{
         Accepted:true,
-        Claim:"nonvacuous reachable safety",
+        Claim:claimFor(m,"nonvacuous reachable safety"),
         Established:"a finite set of states that contains every initial state (at least one), is closed under the step relation, and satisfies the invariant in every member",
         Assumptions:sharedAssumptions,
         TrustPath:append(append([]string{},sharedTrustPath...),"Go closed-set checker (evidence.go)"),
@@ -52,10 +87,10 @@ func closedSetVerdict(states int) *Verdict {
     }
 }
 
-func traceVerdict(states int) *Verdict {
+func traceVerdict(m *Model,states int) *Verdict {
     return &Verdict{
         Accepted:true,
-        Claim:"reachable safety counterexample",
+        Claim:claimFor(m,"reachable safety counterexample"),
         Established:"a trace that starts in an initial state, follows legal transitions or stutters, and ends in a state violating the invariant",
         Assumptions:sharedAssumptions,
         TrustPath:append(append([]string{},sharedTrustPath...),"Go trace replay (evidence.go)"),
@@ -63,10 +98,10 @@ func traceVerdict(states int) *Verdict {
     }
 }
 
-func lratVerdict(checks map[string]lrat.Result) *Verdict {
+func lratVerdict(m *Model,checks map[string]lrat.Result) *Verdict {
     return &Verdict{
         Accepted:true,
-        Claim:"nonvacuous inductive safety",
+        Claim:claimFor(m,"nonvacuous inductive safety"),
         Established:"an initial-state witness, and LRAT refutations of the initialization and preservation counterexample formulas reconstructed from the source (their SHA-256 matched)",
         Assumptions:append(append([]string{},sharedAssumptions...),
             "the Go CNF translation (encode) is faithful to the model; it is compared, not proved"),
@@ -96,19 +131,19 @@ func verify(m *Model,c *Certificate)(*Verdict,error){
         for _,s:=range all{if truth(m.Terms["initial"],s,nil){initials++;if !members[stateKey(s)]{return nil,fmt.Errorf("closed set omits an initial state")}}}
         if initials==0{return nil,fmt.Errorf("empty initial set")}
         for _,s:=range c.States{for _,target:=range all{if truth(m.Terms["step"],s,target)&&!members[stateKey(target)]{return nil,fmt.Errorf("closed set omits a successor")}}}
-        return closedSetVerdict(len(c.States)),nil
+        return closedSetVerdict(m,len(c.States)),nil
     }
     if c.Kind=="trace"{
         if c.Initial!=nil||c.Proofs!=nil{return nil,fmt.Errorf("unexpected trace fields")}
         if e:=replay(m,c.States);e!=nil{return nil,e}
         if truth(m.Terms["invariant"],c.States[len(c.States)-1],nil){return nil,fmt.Errorf("trace does not end in safety violation")}
-        return traceVerdict(len(c.States)),nil
+        return traceVerdict(m,len(c.States)),nil
     }
     if c.Kind!="lrat"||c.States!=nil||len(c.Proofs)!=2{return nil,fmt.Errorf("invalid proof evidence")}
     if e:=m.valid(c.Initial);e!=nil{return nil,e};if !truth(m.Terms["initial"],c.Initial,nil){return nil,fmt.Errorf("invalid initial witness")}
     checks:=map[string]lrat.Result{}
     for _,role:=range []string{"base","step"}{proof,ok:=c.Proofs[role];if !ok{return nil,fmt.Errorf("missing %s proof",role)};circuit,r:=encode(m,role);cnf:=circuit.dimacs(r);if proof.SHA!=digest(cnf){return nil,fmt.Errorf("proof CNF differs from reconstructed %s obligation",role)};result,e:=lrat.Check(cnf,proof.LRAT);if e!=nil{return nil,fmt.Errorf("%s: %w",role,e)};checks[role]=result}
-    return lratVerdict(checks),nil
+    return lratVerdict(m,checks),nil
 }
 func replay(m *Model,states []State)error{
     if len(states)==0||len(states)>4096{return fmt.Errorf("invalid trace length")}

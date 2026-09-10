@@ -96,6 +96,34 @@ func expression(e ast.Expression) (any, error) {
     }
 }
 
+// Declaration identifies a top-level Oak declaration by name and source
+// position, so a verdict can name the declarations its claim is about
+// (roadmap step 3). Positions are outside the exported document and the
+// semantic digest: they locate a claim, they do not change its identity.
+type Declaration struct {
+    Name string `json:"name"`
+    Line int `json:"line"`
+    Column int `json:"column"`
+}
+
+// Declarations lists the top-level declarations of an Oak source by name.
+func Declarations(path string, source []byte) (map[string]Declaration, error) {
+    parsed, err := compiler.New().WithSource(path, string(source)).Parse().Get()
+    if err != nil { return nil, err }
+    out := map[string]Declaration{}
+    for _, statement := range parsed.Root.Statements {
+        switch s := statement.(type) {
+        case *ast.ADTType:
+            out[s.Name.Value] = Declaration{s.Name.Value, s.Name.Token.Line, s.Name.Token.Column}
+        case *ast.VariableDeclaration:
+            out[s.Name.Value] = Declaration{s.Name.Value, s.Name.Token.Line, s.Name.Token.Column}
+        case *ast.FunctionStatement:
+            if s.Name != nil { out[s.Name.Value] = Declaration{s.Name.Value, s.Name.Token.Line, s.Name.Token.Column} }
+        }
+    }
+    return out, nil
+}
+
 func Export(path string, source []byte) (*Document, error) {
     checked, err := compiler.New().WithSource(path, string(source)).Check().Get()
     if err != nil { return nil, err }

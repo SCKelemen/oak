@@ -94,7 +94,11 @@ Trace evidence must begin initially, follow legal transitions
 or stutter, and end unsafe.
 
 Every accepted `verify` result is a **verdict** (`evidence.go`, roadmap step
-4's evidence contract): `claim` is the property in the model's terms,
+4's evidence contract): `claim` is the property about identified Oak
+declarations — the state record and the initial, step, and invariant
+predicates by name and source position (roadmap step 3's first increment:
+the claim names the Oak source it is about, bound by source hash and
+semantic digest, not only an exported formula),
 `established` the fact this checker verified about the evidence, `assumptions`
 what the verdict trusts rather than checks, `trust_path` the components the
 result passed through in order, `unsupported` what the checker refuses, and

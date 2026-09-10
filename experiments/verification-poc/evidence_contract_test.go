@@ -21,8 +21,17 @@ func TestEvidenceContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !verdict.Accepted || verdict.Claim == "" || verdict.Established == "" || len(verdict.Assumptions) == 0 || len(verdict.TrustPath) == 0 {
+		if !verdict.Accepted || verdict.Claim.Property == "" || verdict.Established == "" || len(verdict.Assumptions) == 0 || len(verdict.TrustPath) == 0 {
 			t.Fatalf("%s: incomplete verdict %+v", name, verdict)
+		}
+		// The claim names the Oak declarations it is about, located in the
+		// source it binds by hash and digest.
+		claim := verdict.Claim
+		if claim.Invariant.Name != m.Config.Invariant || claim.Invariant.Line == 0 || claim.Initial.Line == 0 || claim.Step.Line == 0 || claim.State.Name != m.Document.State || claim.State.Line == 0 {
+			t.Fatalf("%s: claim does not locate its declarations: %+v", name, claim)
+		}
+		if len(claim.SourceHash) != 64 || claim.SemanticDigest != m.Digest || claim.Source != m.Config.Source {
+			t.Fatalf("%s: claim does not bind its source: %+v", name, claim)
 		}
 		joined := strings.Join(verdict.TrustPath, " ")
 		for _, want := range []string{"internal/lrat", "CertificateFile.check", "check_refines", "frontend/"} {
@@ -52,7 +61,7 @@ func TestEvidenceContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if verdict.Claim != "reachable safety counterexample" || verdict.Details["states"] != len(trace.States) {
+	if verdict.Claim.Property != "reachable safety counterexample" || verdict.Details["states"] != len(trace.States) {
 		t.Fatalf("trace verdict %+v", verdict)
 	}
 }
