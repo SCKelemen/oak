@@ -1,0 +1,233 @@
+// Simulated block storage for deterministic simulation (docs/spec/110-testing.md,
+// "Simulated storage"). A fixed-capacity device over caller-owned storage with
+// two copies of every block — the volatile copy reads see while the device is
+// running, and the durable copy that survives a crash — plus a provenance flag
+// word per copy that records which injected fault touched it. Every fault is
+// an explicit, tape-driven action, so shrinking removes faults and strict replay
+// reproduces them; the tape's exhaustion value (zero) never injects one.
+//
+// Fault kinds (the `faults` mask enables them; the ledger counts them):
+//   1 torn        a write persists only a prefix of the block (crash mid-write)
+//   2 misdirected a write lands in another block; the target keeps its content
+//   4 dropped     a write is acknowledged but never lands
+//   8 lost        an fsync is acknowledged but one dirty block stays undurable
+//  16 flipped     a read flips one bit of the block, in both copies
+//  32 latent      a read fails; the block reads as failed until rewritten
+//
+// Provenance flags, one word per copy (`flags[2 * block]` volatile,
+// `flags[2 * block + 1]` durable): 1 dirty (written since last persisted),
+// 2 torn, 4 misdirected (holds another block's write), 8 stale (an
+// acknowledged write never landed here), 16 corrupted, 32 latent. A block is
+// trusted when no fault bit is set on the copy in question; a scenario's
+// durability obligations apply to trusted blocks, and its detection
+// obligations (checksums, sequence numbers) to the others.
+pub SimDisk: type = struct {
+  blocks: u32
+  words: u32
+  running: Bool
+  torn: u32
+  misdirected: u32
+  dropped: u32
+  lost: u32
+  flipped: u32
+  latent: u32
+}
+
+pub sim_disk_init: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags: [*]u32, blocks: u32, words: u32): () {
+  assert(len(disk) == u32(1))
+  assert(blocks > u32(0) && words > u32(0))
+  assert(len(durable) == blocks * words && len(volatile) == blocks * words)
+  assert(len(flags) == blocks * u32(2))
+  disk[0] = SimDisk { blocks: blocks, words: words, running: true, torn: u32(0), misdirected: u32(0), dropped: u32(0), lost: u32(0), flipped: u32(0), latent: u32(0) }
+  i: u32 = u32(0)
+  while i < blocks * words {
+    durable[i] = u64(0)
+    volatile[i] = u64(0)
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < blocks * u32(2) {
+    flags[i] = u32(0)
+    i = i + u32(1)
+  }
+}
+
+// No fault bit on the volatile copy (dirty is not a fault).
+pub sim_disk_trusted: (flags: [*]u32, block: u32): Bool = (flags[block * u32(2)] & u32(62)) == u32(0)
+
+// No fault bit on the durable copy: what a crash would leave behind.
+pub sim_disk_durable_trusted: (flags: [*]u32, block: u32): Bool = (flags[block * u32(2) + u32(1)] & u32(62)) == u32(0)
+
+pub sim_disk_dirty: (flags: [*]u32, block: u32): Bool = (flags[block * u32(2)] & u32(1)) != u32(0)
+
+// One roll in eight injects a fault, chosen uniformly among the enabled kinds
+// that apply to the operation. Zero (tape exhausted, or a shrunk tape) never
+// injects: a shorter tape is a run with fewer faults.
+sim_disk_pick_fault: (choices: [*]TestChoices, data: []u8, faults: u32, applicable: u32): u32 {
+  enabled: u32 = faults & applicable
+  roll: u32 = test_range(choices, data, u32(0), u32(7))
+  count: u32 = u32(0)
+  bit: u32 = u32(1)
+  while bit <= u32(32) {
+    (enabled & bit) != u32(0) ? { count = count + u32(1) }
+    bit = bit << u32(1)
+  }
+  chosen: u32 = u32(0)
+  roll == u32(7) && count > u32(0) ? {
+    pick: u32 = test_range(choices, data, u32(0), count - u32(1))
+    seen: u32 = u32(0)
+    bit = u32(1)
+    while bit <= u32(32) {
+      (enabled & bit) != u32(0) ? {
+        seen == pick ? { chosen = bit }
+        seen = seen + u32(1)
+      }
+      bit = bit << u32(1)
+    }
+  }
+  chosen
+}
+
+sim_disk_copy: (dst: [*]u64, dst_base: u32, src: [*]u64, src_base: u32, count: u32): () {
+  i: u32 = u32(0)
+  while i < count {
+    dst[dst_base + i] = src[src_base + i]
+    i = i + u32(1)
+  }
+}
+
+// Write one block from `src` (exactly `words` words). Returns the injected
+// fault (0 none, 1 torn, 2 misdirected, 4 dropped). A clean write heals every
+// fault bit on the volatile copy; the block is dirty until the next fsync.
+pub sim_disk_write: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags: [*]u32, block: u32, src: [*]u64, choices: [*]TestChoices, data: []u8, faults: u32): u32 {
+  assert(len(disk) == u32(1) && disk[0].running)
+  assert(block < disk[0].blocks && len(src) == disk[0].words)
+  words: u32 = disk[0].words
+  fault: u32 = sim_disk_pick_fault(choices, data, faults, u32(7))
+  fault == u32(0) ? {
+    sim_disk_copy(volatile, block * words, src, u32(0), words)
+    flags[block * u32(2)] = u32(1)
+  }
+  fault == u32(1) ? {
+    kept: u32 = test_range(choices, data, u32(0), words - u32(1))
+    sim_disk_copy(volatile, block * words, src, u32(0), kept)
+    flags[block * u32(2)] = u32(3)
+    disk[0].torn = disk[0].torn + u32(1)
+  }
+  fault == u32(2) ? {
+    victim: u32 = test_range(choices, data, u32(0), disk[0].blocks - u32(1))
+    victim == block ? { victim = (victim + u32(1)) % disk[0].blocks }
+    victim == block ? {
+      // A one-block device has nowhere else to land: the write is dropped.
+      fault = u32(4)
+    } | {
+      sim_disk_copy(volatile, victim * words, src, u32(0), words)
+      flags[victim * u32(2)] = u32(5)
+      flags[block * u32(2)] = flags[block * u32(2)] | u32(8)
+      disk[0].misdirected = disk[0].misdirected + u32(1)
+    }
+  }
+  fault == u32(4) ? {
+    flags[block * u32(2)] = flags[block * u32(2)] | u32(8)
+    disk[0].dropped = disk[0].dropped + u32(1)
+  }
+  fault
+}
+
+// Persist every dirty block. Returns the injected fault (0 none, 8 lost: one
+// dirty block is acknowledged but stays undurable, its durable copy marked
+// stale — the volatile copy too, since the acknowledgement is a lie).
+pub sim_disk_fsync: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags: [*]u32, choices: [*]TestChoices, data: []u8, faults: u32): u32 {
+  assert(len(disk) == u32(1) && disk[0].running)
+  words: u32 = disk[0].words
+  dirty: u32 = u32(0)
+  b: u32 = u32(0)
+  while b < disk[0].blocks {
+    sim_disk_dirty(flags, b) ? { dirty = dirty + u32(1) }
+    b = b + u32(1)
+  }
+  fault: u32 = u32(0)
+  dirty > u32(0) ? { fault = sim_disk_pick_fault(choices, data, faults, u32(8)) }
+  lose: u32 = disk[0].blocks
+  fault == u32(8) ? {
+    pick: u32 = test_range(choices, data, u32(0), dirty - u32(1))
+    seen: u32 = u32(0)
+    b = u32(0)
+    while b < disk[0].blocks {
+      sim_disk_dirty(flags, b) ? {
+        seen == pick ? { lose = b }
+        seen = seen + u32(1)
+      }
+      b = b + u32(1)
+    }
+    disk[0].lost = disk[0].lost + u32(1)
+  }
+  b = u32(0)
+  while b < disk[0].blocks {
+    sim_disk_dirty(flags, b) ? {
+      b == lose ? {
+        flags[b * u32(2) + u32(1)] = flags[b * u32(2) + u32(1)] | u32(8)
+        flags[b * u32(2)] = (flags[b * u32(2)] & u32(62)) | u32(8)
+      } | {
+        sim_disk_copy(durable, b * words, volatile, b * words, words)
+        flags[b * u32(2) + u32(1)] = flags[b * u32(2)] & u32(62)
+        flags[b * u32(2)] = flags[b * u32(2)] & u32(62)
+      }
+    } | {
+      // A dropped or misdirected write left this block undirtied but stale:
+      // the fsync acknowledges it as durable, so the durable copy is stale
+      // too (found by the WAL simulation: the mark vanished at the crash).
+      flags[b * u32(2) + u32(1)] = flags[b * u32(2) + u32(1)] | (flags[b * u32(2)] & u32(8))
+    }
+    b = b + u32(1)
+  }
+  fault
+}
+
+// Read one block into `dst` (exactly `words` words). Returns false on a read
+// failure (a latent sector error, injected now or left by an earlier read);
+// `dst` is then untouched. A bit flip corrupts one bit in both copies before
+// the read and is reported through the flags, never through the result.
+pub sim_disk_read: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags: [*]u32, block: u32, dst: [*]u64, choices: [*]TestChoices, data: []u8, faults: u32): Bool {
+  assert(len(disk) == u32(1) && disk[0].running)
+  assert(block < disk[0].blocks && len(dst) == disk[0].words)
+  words: u32 = disk[0].words
+  fault: u32 = sim_disk_pick_fault(choices, data, faults, u32(48))
+  fault == u32(32) ? {
+    flags[block * u32(2)] = flags[block * u32(2)] | u32(32)
+    flags[block * u32(2) + u32(1)] = flags[block * u32(2) + u32(1)] | u32(32)
+    disk[0].latent = disk[0].latent + u32(1)
+  }
+  fault == u32(16) ? {
+    word: u32 = test_range(choices, data, u32(0), words - u32(1))
+    bit: u32 = test_range(choices, data, u32(0), u32(63))
+    mask: u64 = u64(1) << u64(bit)
+    volatile[block * words + word] = volatile[block * words + word] ^ mask
+    durable[block * words + word] = durable[block * words + word] ^ mask
+    flags[block * u32(2)] = flags[block * u32(2)] | u32(16)
+    flags[block * u32(2) + u32(1)] = flags[block * u32(2) + u32(1)] | u32(16)
+    disk[0].flipped = disk[0].flipped + u32(1)
+  }
+  ok: Bool = (flags[block * u32(2)] & u32(32)) == u32(0)
+  ok ? { sim_disk_copy(dst, u32(0), volatile, block * words, words) }
+  ok
+}
+
+// Power loss: every unpersisted write vanishes, each block reverts to its
+// durable copy and durable provenance. The device stays down until restart.
+pub sim_disk_crash: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags: [*]u32): () {
+  assert(len(disk) == u32(1) && disk[0].running)
+  words: u32 = disk[0].words
+  b: u32 = u32(0)
+  while b < disk[0].blocks {
+    sim_disk_copy(volatile, b * words, durable, b * words, words)
+    flags[b * u32(2)] = flags[b * u32(2) + u32(1)]
+    b = b + u32(1)
+  }
+  disk[0].running = false
+}
+
+pub sim_disk_restart: (disk: [*]SimDisk): () {
+  assert(len(disk) == u32(1) && !disk[0].running)
+  disk[0].running = true
+}

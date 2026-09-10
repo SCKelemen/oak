@@ -253,10 +253,48 @@ Only the actual imported testing reporter declarations are automatically
 trusted. User declarations cannot obtain that trust by copying a reporter name
 or symbol. Other foreign boundaries require an explicit native adapter.
 No arbitrary clocks, entropy, MMIO, threads or atomics are automatically
-intercepted. Storage persistence/fault models, general scheduling adapters, and
-integration with the OS's replay/debug event schema remain future work.
+intercepted. General scheduling adapters and integration with the OS's
+replay/debug event schema remain future work; simulated storage is below.
 Single-thread event interleavings are not an ARM weak-memory model and do not
 replace the existing memory-model litmus tests or hardware validation.
+
+## Simulated storage
+
+`SimDisk` and the `sim_disk_*` functions are a deterministic block device for
+simulation scenarios: pure Oak in the testing module, over caller-owned
+storage, with no native adapter. A device has `blocks × words` `u64` words in
+two copies — the volatile copy that reads see while the device is running and
+the durable copy that survives a crash — and two provenance flag words per
+block, one per copy. `sim_disk_init` sizes and zeroes it; `sim_disk_write`
+writes one block from a caller span and marks it dirty; `sim_disk_fsync`
+persists every dirty block; `sim_disk_read` copies one block into a caller
+span and reports failure; `sim_disk_crash` drops every unpersisted write and
+reverts each block to its durable copy and provenance; `sim_disk_restart`
+brings the device back.
+
+Faults are explicit actions drawn from the choice tape, never ambient. A
+`faults` mask enables them per operation: torn write (a prefix of the block
+persists), misdirected write (it lands in another block; the target keeps its
+content), dropped write (acknowledged, never landed), lost fsync (acknowledged,
+one dirty block stays undurable), bit flip on read (one bit, both copies), and
+latent sector error (the read fails until the block is rewritten). One roll in
+eight injects a fault, chosen among the enabled kinds that apply; the tape's
+exhaustion value never injects one, so a shrunk tape is a run with fewer
+faults and strict replay reproduces each one. Every fault increments its
+counter on the device and marks the copies it touched: 2 torn, 4 misdirected,
+8 stale (an acknowledged write never landed here), 16 corrupted, 32 latent,
+with 1 for dirty. `sim_disk_trusted` and `sim_disk_durable_trusted` report a
+block with no fault mark on the volatile or durable copy. A clean rewrite
+heals the volatile copy; an fsync that acknowledges a stale block makes its
+durable copy stale too.
+
+The ledger is the scenario's contract. Durability obligations apply to trusted
+blocks; detection obligations — checksums, sequence numbers, epochs — apply to
+the rest. The bundled write-ahead-log scenario (`examples/testing`) states the
+three a single-disk log can honestly keep: no phantom record unless its block
+is untrusted, recovery is a prefix of what was appended, and every acknowledged
+record on a trusted block is recovered up to the first untrusted acknowledged
+block. Without faults the device is exact against a two-copy model.
 
 ## Trusted native adapters
 
