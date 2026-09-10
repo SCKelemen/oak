@@ -8,6 +8,7 @@ package evaluator
 
 import (
 	"math"
+	"math/big"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
@@ -208,8 +209,9 @@ func checkedResult(name, target string, value int64, inRange bool, env *object.E
 
 // evalFloatIntrinsic evaluates a float intrinsic (section 11.3.5) at the
 // width the checker recorded for the call; f32 results round to float32.
-// fma on f32 uses the exact math.FMA on widened operands, which is correct
-// because a binary64 product of two binary32 values is exact.
+// sqrt on f32 rounds the binary64 root once to binary32, which is correct
+// (53 bits exceed the 2p+2 = 50 an innocuous double rounding needs); fma on
+// f32 is formed exactly and rounded once (fma32).
 func evalFloatIntrinsic(name string, call *ast.InvocationExpression, env *object.Environment) (object.Object, bool) {
 	if !typechecker.FloatIntrinsicName(name) {
 		return nil, false
@@ -238,7 +240,12 @@ func evalFloatIntrinsic(name string, call *ast.InvocationExpression, env *object
 	switch name {
 	case "fma":
 		if width == 32 {
-			return num(float64(float32(math.FMA(float64(float32(values[0])), float64(float32(values[1])), float64(float32(values[2])))))), true
+			// One rounding, computed exactly: rounding a*b+c to binary64
+			// first and to binary32 second can double-round (53 bits is
+			// short of the 2p+2 = 50 needed only for p-bit *operands*, and
+			// the exact product has 48 bits), so the sum is formed exactly
+			// in arbitrary precision and rounded once to float32.
+			return num(fma32(float32(values[0]), float32(values[1]), float32(values[2]))), true
 		}
 		return num(math.FMA(values[0], values[1], values[2])), true
 	case "sqrt":
@@ -371,4 +378,29 @@ func totalOrder(a, b float64, width int) bool {
 		return bits
 	}
 	return key(a) <= key(b)
+}
+
+// fma32 is the correctly rounded binary32 fused multiply-add: the exact
+// value of a*b + c is formed in arbitrary precision (the product needs 48
+// bits and the alignment with c at most the exponent range more) and
+// rounded once, to nearest even, to float32. Non-finite operands follow
+// the IEEE rules through the double FMA, whose special-value behavior is
+// the same and which cannot double-round on them.
+func fma32(a, b, c float32) float64 {
+	if math.IsNaN(float64(a)) || math.IsNaN(float64(b)) || math.IsNaN(float64(c)) ||
+		math.IsInf(float64(a), 0) || math.IsInf(float64(b), 0) || math.IsInf(float64(c), 0) {
+		return float64(float32(math.FMA(float64(a), float64(b), float64(c))))
+	}
+	const precision = 2048
+	product := new(big.Float).SetPrec(precision).SetFloat64(float64(a))
+	product.Mul(product, new(big.Float).SetPrec(precision).SetFloat64(float64(b)))
+	sum := new(big.Float).SetPrec(precision).Add(product, new(big.Float).SetPrec(precision).SetFloat64(float64(c)))
+	if sum.Sign() == 0 {
+		// An exact zero takes the sign IEEE gives it: the sign of the
+		// rounded product plus c under round to nearest, which the double
+		// FMA reproduces exactly for zero results.
+		return float64(float32(math.FMA(float64(a), float64(b), float64(c))))
+	}
+	rounded, _ := sum.Float32()
+	return float64(rounded)
 }

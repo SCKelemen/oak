@@ -455,6 +455,18 @@ Consequently, two Oak programs computing the same sequence of operations of
 Only the transcendental library of §11.3.6 is allowed to differ, and it says
 by how much.
 
+**Reproducibility is tested, not assumed.** The witness for the rules above
+is a differential fuzz (`compiler/differential_float_test.go`): random `f32`
+and `f64` expression trees over every grouping of `+ - * /`, unary minus,
+and the intrinsics of §11.3.5, with leaves drawn from the IEEE special
+values (signed zeros, infinities, NaN, subnormals, the largest finite value,
+the 2^53 boundary, non-representable decimals), must agree bit for bit
+between an independent reference, the compiled C program, and the
+interpreter — on every host the continuous integration runs, which spans
+two architectures and two C compilers. A NaN result compares as a class,
+since its payload is unspecified. Any proposed backend, optimization, or
+host must pass this witness before it is called conforming.
+
 #### 11.3.4 Conversions
 
 Widening between floating-point types is implicit and exact:
