@@ -79,6 +79,22 @@ pub length: (s: Shape): i32 = s ? .Dot => 0 | .Line(n) => n
 	if _, err := session.Submit("geo.make(1, 2).x"); err == nil || !strings.Contains(err.Error(), "OAK-M0110") {
 		t.Fatalf("opaque projection must be rejected: %v", err)
 	}
+	// Whole-package open and nested modules work as in a build.
+	opened := NewSession(filepath.Join(root, "geometry"))
+	if _, err := opened.Submit(`open import("example.com/hello/geometry")`); err != nil {
+		t.Fatalf("open import: %v", err)
+	}
+	outcome, err = opened.Submit("sum(make(20, 22))")
+	if err != nil || outcome.Value == nil || outcome.Value.Inspect() != "42" {
+		t.Fatalf("opened call: %+v %v", outcome, err)
+	}
+	if _, err := opened.Submit("module units {\n  pub scale: (v: i32): i32 = v * 2\n}"); err != nil {
+		t.Fatalf("nested module: %v", err)
+	}
+	outcome, err = opened.Submit("units.scale(21)")
+	if err != nil || outcome.Value == nil || outcome.Value.Inspect() != "42" {
+		t.Fatalf("nested module call: %+v %v", outcome, err)
+	}
 	// Derived declarations and sealed imports work as in a build.
 	if _, err := session.Submit("P: type = struct { a: u8 }"); err != nil {
 		t.Fatal(err)

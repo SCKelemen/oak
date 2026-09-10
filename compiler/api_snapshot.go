@@ -25,6 +25,13 @@ func (comp Compilation) APISnapshot(version string) Stage[packageapi.Snapshot] {
 		if _, err := packageapi.ParseVersion(version); err != nil {
 			return packageapi.Snapshot{}, err
 		}
+		if model.Tree != nil && model.Tree.Modules != nil && len(model.Tree.Modules.NestedModules) != 0 {
+			// Fail closed: a nested module's pub surface is part of the
+			// module's API but is not yet projected as its own snapshot, so
+			// an API claim over this package would be incomplete
+			// (docs/spec/82-package-semver.md section 6).
+			return packageapi.Snapshot{}, fmt.Errorf("package %s declares nested modules (%s); API snapshots do not yet cover nested modules — move them to directories to publish", comp.options.PackageName, strings.Join(model.Tree.Modules.NestedModules, ", "))
+		}
 		return buildAPISnapshot(comp.options.PackageName, version, model, comp.options)
 	})
 }

@@ -148,7 +148,11 @@ and `oak mod` never contacts a registry:
 
 Both `diff` and `bump` snapshot the module through the ordinary package build,
 so a module that does not type check has no API and is rejected before any
-comparison. The compiler snapshot boundary is `compiler.ModuleAPISnapshot`.
+comparison. A package that declares nested modules (`83-modules.md`
+section 3.5) is refused: a nested module's `pub` surface is part of the
+module's API, and until it is projected as its own snapshot an API claim
+over the enclosing package would be incomplete. Publishing a module today
+means keeping its packages in directories. The compiler snapshot boundary is `compiler.ModuleAPISnapshot`.
 
 ## 7. Archive-carried snapshots
 
