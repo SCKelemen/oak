@@ -415,6 +415,22 @@ the interpreter:
   not `0`; `x + 0.0` is not `x` (the sign of zero differs). This extends the
   no-hidden-work rule of `90-backend.md` §3 to numeric semantics: the
   written expression is the executed expression.
+- **Grouping and evaluation order are semantics.** IEEE addition and
+  multiplication are commutative but not associative and not distributive,
+  so *which* operations are performed, in *which* grouping, is part of a
+  program's meaning. The grouping of a floating-point expression is exactly
+  its parse tree: the arithmetic operators are left-associative
+  (`a + b + c` is `(a + b) + c`), parentheses group, and no phase may
+  regroup. Operands evaluate left to right. Every operation rounds its
+  result to its own type before the next operation consumes it — there is
+  no excess intermediate precision, so an `f32` expression is computed in
+  binary32 at every step even on a target whose registers are wider. Any
+  operation over a sequence (a reduction, a dot product, a sum in a library)
+  states the order in which it combines its elements, and that order is its
+  contract (`55-parallelism.md` §4); `simd.reduce_add` in §11.3.7 is the
+  first such statement. Commutativity may be relied on for values;
+  `a + b` and `b + a` differ at most in the payload of a NaN result, which
+  is unspecified anyway.
 - **Comparison.** `<`, `<=`, `>`, `>=` are false when either operand is NaN.
   `==` is false and `!=` is true when either operand is NaN, so `x == x` is
   the portable NaN test in expression form; `is_nan(x)` names it.

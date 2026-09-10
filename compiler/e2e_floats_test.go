@@ -91,6 +91,14 @@ checks: (): u32 {
   // copysign and abs are bit operations.
   score = u32_bits_f32(copysign(1.5, negzero)) == u32(3217031168) ? score + 1 | score
   score = abs(-1.5) == 1.5 ? score + 1 | score
+  // Grouping is the parse tree (section 11.3.3): addition is not
+  // associative, and the left-associative reading is the one that runs.
+  // 2^53 + 1.0 rounds back to 2^53 (ties to even), while 1.0 + -2^53 is
+  // exact, so the two groupings differ by exactly one.
+  large: f64 = 9007199254740992.0
+  one: f64 = 1.0
+  score = large + one + -large == 0.0 ? score + 1 | score
+  score = large + (one + -large) == 1.0 ? score + 1 | score
   score
 }
 
@@ -102,9 +110,9 @@ main: (): i32 {
 }
 `
 
-// floatProgramScore is the number of checks in floatProgram: 32 in checks,
+// floatProgramScore is the number of checks in floatProgram: 34 in checks,
 // one for sum_f32, two in residual.
-const floatProgramScore = 35
+const floatProgramScore = 37
 
 func TestE2EFloatSemantics(t *testing.T) {
 	code, abnormal := buildAndRun(t, "floats", floatProgram)
@@ -142,6 +150,10 @@ scale: (x: f32, k: f64): f64 {
   f64(y) + k * 0.5
 }
 
+chain: (a: f32, b: f32, c: f32): f32 {
+  a + b + c
+}
+
 main: (): i32 { 0 }
 `).EmitC().Get()
 	if err != nil {
@@ -150,9 +162,13 @@ main: (): i32 { 0 }
 	for _, want := range []string{
 		"#pragma STDC FP_CONTRACT OFF",
 		"#include <math.h>",
+		"#if FLT_EVAL_METHOD != 0",
 		"typedef float  f32;",
 		"( x * ((f32)0x1.8p+00f) )",
 		"( k * ((f64)0x1p-01) )",
+		// Grouping is the parse tree: left-associative, every operation
+		// parenthesized (docs/spec/20-types.md section 11.3.3).
+		"( ( a + b ) + c )",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("emitted C lacks %q:\n%s", want, output)
