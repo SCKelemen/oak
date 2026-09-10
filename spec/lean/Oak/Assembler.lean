@@ -159,4 +159,25 @@ theorem spanAccessCheck_sound (elem minLen off size : Nat)
   unfold SpanAccessOk
   exact of_decide_eq_true h
 
+/-- **Indexed span access**: an element access `[base, wI, uxtw #s]` with
+    `1 << s = elem` touches bytes `[i*elem, (i+1)*elem)`; under the index
+    guard `i < len` every one of them lies inside the span's `elem * len`
+    bytes. The constant-bound form composes this with the length guard:
+    `i < K` and `K ≤ len` give `i < len`. -/
+theorem index_access (elem len i : Nat) (hguard : i < len) :
+    (i + 1) * elem ≤ elem * len := by
+  have h : i + 1 ≤ len := hguard
+  calc (i + 1) * elem = elem * (i + 1) := Nat.mul_comm _ _
+    _ ≤ elem * len := Nat.mul_le_mul_left elem h
+
+theorem index_access_const (elem len i K : Nat) (hidx : i < K) (hlen : K ≤ len) :
+    (i + 1) * elem ≤ elem * len :=
+  index_access elem len i (Nat.lt_of_lt_of_le hidx hlen)
+
+/-- Every byte of an admitted indexed access lies inside the span. -/
+theorem index_access_bytes (elem len i b : Nat) (hguard : i < len)
+    (hb : i * elem ≤ b ∧ b < (i + 1) * elem) : b < elem * len := by
+  have h := index_access elem len i hguard
+  omega
+
 end Oak.Assembler

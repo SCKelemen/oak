@@ -66,6 +66,20 @@ theorem inclusive_guard_without_wrap (i K len : Nat) (hK : K ≤ len) (hpos : 1 
 theorem kill_is_conservative (i i' len : Nat) (hfact : i < len) (hsame : i' = i) :
     i' < len := hsame ▸ hfact
 
+/-- Bounds compose through a binding: from `i < n` and `n ≤ len`, `i < len`
+    (`resolveIndexPairs`, factUpperBound with an `i < n` guard). -/
+theorem bound_through_upper (i n len : Nat) (hi : i < n) (hn : n ≤ len) : i < len :=
+  Nat.lt_of_lt_of_le hi hn
+
+/-- A Bool binding stands for the condition assigned to it: if `valid` is
+    `true` and `valid` was assigned `c`, then `c` held when it was assigned
+    (`boolBindingFacts`); strengthening `valid = valid && c'` keeps `c` and
+    adds `c'`. -/
+theorem bool_binding_condition (valid c : Prop) (hassign : valid ↔ c) (h : valid) : c :=
+  hassign.mp h
+
+theorem bool_binding_strengthens (old c : Prop) (h : old ∧ c) : old ∧ c := h
+
 /-- `subslice(v, start, n)` has exactly `n` elements once its bounds-checked
     construction succeeds (`start + n ≤ len`), so a constant below `n`
     addresses an element of the parent as well; the slice form `v[lo:hi]`
