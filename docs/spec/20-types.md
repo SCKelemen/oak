@@ -370,10 +370,10 @@ unconstrained templates are one mechanism with one emission path.
 
 ### 11.3 Floating-point types
 
-**Status: §11.3.1–§11.3.5, §11.3.7, and §11.3.8 implemented and tested,
-including the `f16`/`bf16` storage formats, hexadecimal literals, and the
-float vectors; the `math` library (§11.3.6) and the Lean model are recorded
-gaps** (`STATUS.md` lists the implemented subset precisely). This section is
+**Status: §11.3.1–§11.3.8 implemented and tested, including the `f16`/`bf16`
+storage formats, hexadecimal literals, the float vectors, and the first
+`math` package (`exp exp2 expm1 log log2 tanh`); the Lean model is the
+recorded gap** (`STATUS.md` lists the implemented subset precisely). This section is
 normative for the whole floating-point design. It was motivated by the ml
 project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
 tier 2), whose numeric core cannot move into Oak without it.
@@ -560,6 +560,19 @@ standard library, and each function documents an error bound in ulps
 bound is part of the function's contract; a bound of 1 ulp is the target
 for the v1 library and no function ships without a stated bound.
 
+**Implemented** (`stdlib/math.oak`, `import("math")`): `exp`, `exp2`,
+`expm1`, `log`, `log2`, `tanh` over `f64` and their `_f32` forms, written in
+Oak itself — the fdlibm algorithms over the correctly rounded primitives of
+§11.3.5, with Cody–Waite split constants spelled as hexadecimal literals.
+Because every operation they use is bit-exact across implementations, the
+interpreter and every backend produce **identical bits**; this is the
+bit-exact implementation the last paragraph of this section asks for, and
+the one a program that reproduces training runs should use. Documented
+bounds: 1 ulp for `exp exp2 expm1 log log2`, 2 ulp for `tanh` (it composes
+`expm1` with a division). The `_f32` forms compute at `f64` and round once
+and are within 0.5 ulp on the witness corpus. Not yet: `pow`, `sin`, `cos`,
+`tan`, `log1p`, and the remaining relatives.
+
 Their verification rule is the **fourth witness**: the interpreter, target
 lowering, and portable lowering are each compared to a correctly rounded
 reference (an arbitrary-precision evaluation in the test harness) and must
@@ -569,8 +582,14 @@ last place — the ml project observed one ulp of disagreement between two
 `exp2f` implementations linked into one process — and pretending otherwise
 would make the three-witness rule unsatisfiable. A program that needs
 bit-exact transcendental results across implementations must use one
-implementation (the `math` package's own, once it exists) and must not
-call through `c.extern` to a system libm for the same function.
+implementation (the `math` package's own) and must not call through
+`c.extern` to a system libm for the same function. The witness is
+`compiler/e2e_math_test.go`: an arbitrary-precision reference (`math/big`,
+320 bits) over a corpus of special points and random arguments per
+function and width; it reports the worst observed error per function and
+fails on any case beyond the documented bound, and it additionally
+requires the compiled and interpreted results to be bit-identical, which
+the Oak-source implementation guarantees.
 
 #### 11.3.7 Floating-point SIMD
 

@@ -35,6 +35,13 @@ var hashTableSource string
 //go:embed bitset_algebra.oak
 var bitsetAlgebraSource string
 
+// math is a library package only (import("math")), never spliced into the
+// flat prelude: its names (exp, log, ...) are too common to land
+// unqualified in every program (docs/spec/20-types.md section 11.3.6).
+//
+//go:embed math.oak
+var mathSource string
+
 // Prelude is the core library (std.oak): Option, Result, Overflow, byte and
 // ring helpers. Every standard library package builds on it unqualified, and
 // the loader splices it into any program that imports a library package.
@@ -82,4 +89,5 @@ var Packages = map[string]string{
 	"hash_table":      hashTableSource,
 	"bitset_algebra":  bitsetAlgebraSource,
 	"causal_frontier": causalFrontierSource,
+	"math":            mathSource,
 }

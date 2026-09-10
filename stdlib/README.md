@@ -526,3 +526,21 @@ protocols remain separate work; importing this module does not implement them.
 See [Oak collection ports](COLLECTION_PORTS.md) for Bloom/counting Bloom filters,
 u64-key hash maps and sets, bitset algebra, validated flags, and the remaining OS
 library parity work.
+
+## `math`: transcendental functions (`import("math")`)
+
+`stdlib/math.oak` implements `exp`, `exp2`, `expm1`, `log`, `log2`, and
+`tanh` over `f64`, plus `exp_f32` … `tanh_f32` over `f32`, entirely in Oak
+(docs/spec/20-types.md section 11.3.6). The algorithms are fdlibm's, with
+the Cody-Waite split constants spelled as hexadecimal literals so they are
+the original bit patterns. Because every primitive they use is correctly
+rounded, the interpreter and every backend compute identical bits — the
+bit-exact transcendental implementation a reproducible training run needs.
+
+Contract: error within 1 ulp of the correctly rounded result for
+`exp exp2 expm1 log log2`, within 2 ulp for `tanh`; the `_f32` forms
+compute at `f64` and round once. `compiler/e2e_math_test.go` is the fourth
+witness: an arbitrary-precision reference over special points and random
+arguments, failing on any case beyond the bound and on any difference
+between compiled and interpreted results. `pow`, `sin`, `cos`, `tan`, and
+`log1p` are not implemented yet.

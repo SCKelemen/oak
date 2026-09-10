@@ -1,0 +1,316 @@
+// Transcendental functions (docs/spec/20-types.md section 11.3.6).
+//
+// Every function here is written in Oak over the correctly rounded core
+// operations, so the interpreter and every backend compute the same bits:
+// there is no libm variance to speak of. Accuracy is the contract instead:
+// each function documents its error bound in ulps against the correctly
+// rounded result, and the fourth-witness harness
+// (compiler/e2e_math_test.go) checks it against an arbitrary-precision
+// reference on every run.
+//
+// The algorithms are the fdlibm ones (Sun Microsystems, 1993, as carried by
+// FreeBSD and musl): Cody-Waite argument reduction with split constants
+// whose high parts have trailing zero bits so the products are exact, then
+// short minimax polynomials. Constants are spelled as hexadecimal floating
+// literals so they are the fdlibm bit patterns exactly.
+package math
+
+LN2_HI: f64 = 0x1.62e42feep-1          // 6.93147180369123816490e-01, 32 significant bits
+LN2_LO: f64 = 0x1.a39ef35793c76p-33    // 1.90821492927058770002e-10
+INV_LN2: f64 = 0x1.71547652b82fep+0    // 1.44269504088896338700e+00
+HALF_LN2: f64 = 0x1.62e42fefa39efp-2   // 0.5 * ln 2
+LN2_1_5: f64 = 0x1.0a2b23f3bab73p+0    // 1.5 * ln 2
+TWO54: f64 = 0x1p54
+TWOM1000: f64 = 0x1p-1000
+EXP_OVERFLOW: f64 = 0x1.62e42fefa39efp+9    // 7.09782712893383973096e+02
+EXP_UNDERFLOW: f64 = -0x1.74910d52d3051p+9  // -7.45133219101941108420e+02
+
+// exp polynomial (fdlibm e_exp.c), |error| < 2^-59 on [-0.35, 0.35]
+EXP_P1: f64 = 0x1.555555555553ep-3
+EXP_P2: f64 = -0x1.6c16c16bebd93p-9
+EXP_P3: f64 = 0x1.1566aaf25de2cp-14
+EXP_P4: f64 = -0x1.bbd41c5d26bf1p-20
+EXP_P5: f64 = 0x1.6376972bea4d0p-25
+
+// log polynomial (fdlibm e_log.c)
+LG1: f64 = 0x1.5555555555593p-1
+LG2: f64 = 0x1.999999997fa04p-2
+LG3: f64 = 0x1.2492494229359p-2
+LG4: f64 = 0x1.c71c51d8e78afp-3
+LG5: f64 = 0x1.7466496cb03dep-3
+LG6: f64 = 0x1.39a09d078c69fp-3
+LG7: f64 = 0x1.2f112df3e5244p-3
+
+// 1 / ln 2 split for log2 (FreeBSD e_log2.c)
+IVLN2_HI: f64 = 0x1.71547652p+0
+IVLN2_LO: f64 = 0x1.705fc2eefa200p-33
+
+// expm1 polynomial (fdlibm s_expm1.c)
+EXPM1_Q1: f64 = -0x1.11111111110f4p-5
+EXPM1_Q2: f64 = 0x1.a01a01b32b633p-10
+EXPM1_Q3: f64 = -0x1.4ce199eaadbb7p-14
+EXPM1_Q4: f64 = 0x1.0cfca86e65239p-18
+EXPM1_Q5: f64 = -0x1.afdb76e09c32dp-23
+
+infinity: (): f64 { f64_bits_u64(u64(9218868437227405312)) }
+nan: (): f64 { f64_bits_u64(u64(9221120237041090560)) }
+
+high_word: (x: f64): u64 { u64_bits_f64(x) >> 32 }
+low_word: (x: f64): u64 { u64_bits_f64(x) & u64(4294967295) }
+with_high_word: (x: f64, hi: u64): f64 { f64_bits_u64((hi << 32) | low_word(x)) }
+
+// scale_pow2 is fdlibm's final scaling: y * 2^k for y near 1 and
+// -1075 <= k <= 1024, by adding k to the exponent field, with the two-step
+// path that keeps subnormal results exact.
+scale_pow2: (y: f64, k: i64): f64 {
+  k > -1021 ?
+    f64_bits_u64(u64_bits_f64(y) + (u64_bits_i64(k) << 52)) |
+    f64_bits_u64(u64_bits_f64(y) + (u64_bits_i64(k + 1000) << 52)) * TWOM1000
+}
+
+// exp_kernel evaluates exp(hi - lo) * 2^k for a reduced argument
+// |hi - lo| <= 0.5 ln 2 (fdlibm e_exp.c); lo carries the low part of the
+// reduction so the sum is accurate to well below an ulp.
+exp_kernel: (hi: f64, lo: f64, k: i64): f64 {
+  x: f64 = hi - lo
+  t: f64 = x * x
+  c: f64 = x - t * (EXP_P1 + t * (EXP_P2 + t * (EXP_P3 + t * (EXP_P4 + t * EXP_P5))))
+  k == 0 ?
+    1.0 - ((x * c) / (c - 2.0) - x) |
+    scale_pow2(1.0 - ((lo - (x * c) / (2.0 - c)) - hi), k)
+}
+
+// exp: e^x, error < 1 ulp (fdlibm). Overflow gives +inf, underflow 0.
+pub exp: (x: f64): f64 {
+  is_nan(x) ? x | (x > EXP_OVERFLOW ? infinity() | (x < EXP_UNDERFLOW ? 0.0 | exp_finite(x)))
+}
+
+exp_finite: (x: f64): f64 {
+  ax: f64 = abs(x)
+  ax <= HALF_LN2 ?
+    (ax < 0x1p-28 ? 1.0 + x | exp_kernel(x, 0.0, 0)) |
+    (ax < LN2_1_5 ?
+      (x < 0.0 ? exp_kernel(x + LN2_HI, -LN2_LO, -1) | exp_kernel(x - LN2_HI, LN2_LO, 1)) |
+      exp_wide(x))
+}
+
+exp_wide: (x: f64): f64 {
+  k: i64 = i64_trunc_f64(INV_LN2 * x + (x < 0.0 ? -0.5 | 0.5))
+  t: f64 = f64_round_i64(k)
+  exp_kernel(x - t * LN2_HI, t * LN2_LO, k)
+}
+
+// exp2: 2^x, error < 1 ulp. k = round(x) is exact; r = x - k is exact;
+// r ln 2 is formed as hi - lo with the rounding error of the product
+// recovered by fma, so the kernel sees the reduced argument to ~2^-70.
+pub exp2: (x: f64): f64 {
+  is_nan(x) ? x | (x > 1024.0 ? infinity() | (x < -1075.0 ? 0.0 | exp2_finite(x)))
+}
+
+exp2_finite: (x: f64): f64 {
+  k: i64 = i64_trunc_f64(round(x))
+  r: f64 = x - f64_round_i64(k)
+  hi: f64 = r * LN2_HI
+  residual: f64 = fma(r, LN2_HI, -hi)
+  lo: f64 = -(r * LN2_LO) - residual
+  abs(r) < 0x1p-54 ? scale_pow2(1.0, k) | exp_kernel(hi, lo, k)
+}
+
+// log: natural logarithm, error < 1 ulp (fdlibm e_log.c). log(0) is -inf,
+// log of a negative number is NaN.
+pub log: (x: f64): f64 {
+  bits: u64 = u64_bits_f64(x)
+  hx: u64 = bits >> 32
+  magnitude: u64 = bits & u64(9223372036854775807)
+  negative: Bool = (hx & u64(2147483648)) != u64(0) && magnitude != u64(0)
+  negative ? nan() |
+  (magnitude == u64(0) ? -infinity() |
+  (hx >= u64(2146435072) ? x + x |
+  log_normalized(x, 0)))
+}
+
+// log_normalized handles subnormals by scaling up, then splits x into
+// 2^k (1 + f) with f in [sqrt(2)/2 - 1, sqrt(2) - 1).
+log_normalized: (x0: f64, k0: i64): f64 {
+  // One scaling by 2^54 makes any positive subnormal normal.
+  subnormal: Bool = high_word(x0) < u64(1048576)
+  x: f64 = subnormal ? x0 * TWO54 | x0
+  hx: u64 = high_word(x)
+  k: i64 = (subnormal ? k0 - 54 | k0) + i64_bits_u64(hx >> 20) - 1023
+  mant: u64 = hx & u64(1048575)
+  i: u64 = (mant + u64(614244)) & u64(1048576)
+  xn: f64 = with_high_word(x, mant | (i ^ u64(1072693248)))
+  log_reduced(xn, k + i64_bits_u64(i >> 20), mant)
+}
+
+log_reduced: (x: f64, k: i64, mant: u64): f64 {
+  f: f64 = x - 1.0
+  dk: f64 = f64_round_i64(k)
+  tiny: Bool = (u64(1048575) & (u64(2) + mant)) < u64(3)
+  tiny ?
+    log_tiny(f, k, dk) | {
+      s: f64 = f / (2.0 + f)
+      z: f64 = s * s
+      w: f64 = z * z
+      t1: f64 = w * (LG2 + w * (LG4 + w * LG6))
+      t2: f64 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)))
+      r: f64 = t2 + t1
+      // fdlibm chooses between two evaluation orders by the position of x
+      // in its interval (both accurate to < 1 ulp): the hfsq form for
+      // mantissas in [0x6147a, 0x6b851], the direct form elsewhere
+      mant >= u64(398458) && mant <= u64(440401) ? log_hfsq(f, s, r, k, dk) | log_direct(f, s, r, k, dk)
+    }
+}
+
+log_tiny: (f: f64, k: i64, dk: f64): f64 {
+  f == 0.0 ?
+    (k == 0 ? 0.0 | dk * LN2_HI + dk * LN2_LO) | {
+      r: f64 = f * f * (0.5 - 0x1.5555555555555p-2 * f)
+      k == 0 ? f - r | dk * LN2_HI - ((r - dk * LN2_LO) - f)
+    }
+}
+
+log_hfsq: (f: f64, s: f64, r: f64, k: i64, dk: f64): f64 {
+  hfsq: f64 = 0.5 * f * f
+  k == 0 ? f - (hfsq - s * (hfsq + r)) | dk * LN2_HI - ((hfsq - (s * (hfsq + r) + dk * LN2_LO)) - f)
+}
+
+log_direct: (f: f64, s: f64, r: f64, k: i64, dk: f64): f64 {
+  k == 0 ? f - s * (f - r) | dk * LN2_HI - ((s * (f - r) - dk * LN2_LO) - f)
+}
+
+// log2: base-2 logarithm, error < 1 ulp (FreeBSD e_log2.c): the same
+// reduction as log, then k + log(1 + f) / ln 2 assembled in two parts.
+pub log2: (x: f64): f64 {
+  bits: u64 = u64_bits_f64(x)
+  hx: u64 = bits >> 32
+  magnitude: u64 = bits & u64(9223372036854775807)
+  negative: Bool = (hx & u64(2147483648)) != u64(0) && magnitude != u64(0)
+  negative ? nan() |
+  (magnitude == u64(0) ? -infinity() |
+  (hx >= u64(2146435072) ? x + x |
+  (bits == u64(4607182418800017408) ? 0.0 |
+  log2_normalized(x, 0))))
+}
+
+log2_normalized: (x0: f64, k0: i64): f64 {
+  subnormal: Bool = high_word(x0) < u64(1048576)
+  x: f64 = subnormal ? x0 * TWO54 | x0
+  hx: u64 = high_word(x)
+  k: i64 = (subnormal ? k0 - 54 | k0) + i64_bits_u64(hx >> 20) - 1023
+  mant: u64 = hx & u64(1048575)
+  i: u64 = (mant + u64(614244)) & u64(1048576)
+  xn: f64 = with_high_word(x, mant | (i ^ u64(1072693248)))
+  log2_reduced(xn, k + i64_bits_u64(i >> 20))
+}
+
+log2_reduced: (x: f64, k: i64): f64 {
+  f: f64 = x - 1.0
+  hfsq: f64 = 0.5 * f * f
+  s: f64 = f / (2.0 + f)
+  z: f64 = s * s
+  w: f64 = z * z
+  t1: f64 = w * (LG2 + w * (LG4 + w * LG6))
+  t2: f64 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)))
+  r: f64 = s * (hfsq + (t2 + t1))
+  hi: f64 = f64_bits_u64(u64_bits_f64(f - hfsq) & u64(18446744069414584320))
+  lo: f64 = (f - hi) - hfsq + r
+  val_hi: f64 = hi * IVLN2_HI
+  val_lo: f64 = (lo + hi) * IVLN2_LO + lo * IVLN2_HI
+  y: f64 = f64_round_i64(k)
+  w2: f64 = y + val_hi
+  lo2: f64 = val_lo + ((y - w2) + val_hi)
+  lo2 + w2
+}
+
+// expm1: e^x - 1 accurately near zero, error < 1 ulp (fdlibm s_expm1.c).
+pub expm1: (x: f64): f64 {
+  is_nan(x) ? x | (x > EXP_OVERFLOW ? infinity() | (x < -56.0 * LN2_HI ? -1.0 | expm1_finite(x)))
+}
+
+expm1_finite: (x: f64): f64 {
+  ax: f64 = abs(x)
+  ax < 0x1p-54 ? x | (ax > HALF_LN2 ? expm1_reduce(x) | expm1_kernel(x, 0.0, 0))
+}
+
+expm1_reduce: (x: f64): f64 {
+  ax: f64 = abs(x)
+  ax < LN2_1_5 ?
+    (x < 0.0 ? expm1_kernel(x + LN2_HI, -LN2_LO, -1) | expm1_kernel(x - LN2_HI, LN2_LO, 1)) | {
+      k: i64 = i64_trunc_f64(INV_LN2 * x + (x < 0.0 ? -0.5 | 0.5))
+      t: f64 = f64_round_i64(k)
+      hi: f64 = x - t * LN2_HI
+      lo: f64 = t * LN2_LO
+      expm1_kernel(hi, lo, k)
+    }
+}
+
+expm1_kernel: (hi: f64, lo: f64, k: i64): f64 {
+  x: f64 = hi - lo
+  c: f64 = (hi - x) - lo
+  hfx: f64 = 0.5 * x
+  hxs: f64 = x * hfx
+  r1: f64 = 1.0 + hxs * (EXPM1_Q1 + hxs * (EXPM1_Q2 + hxs * (EXPM1_Q3 + hxs * (EXPM1_Q4 + hxs * EXPM1_Q5))))
+  t: f64 = 3.0 - r1 * hfx
+  e0: f64 = hxs * ((r1 - t) / (6.0 - x * t))
+  k == 0 ?
+    x - (x * e0 - hxs) |
+    expm1_scale(x, c, hxs, e0, k)
+}
+
+// expm1_scale assembles e^x - 1 = 2^k (1 - (e - x)) - 1 in the form fdlibm
+// picks per k so that the subtraction of 1 loses nothing.
+expm1_scale: (x: f64, c: f64, hxs: f64, e0: f64, k: i64): f64 {
+  e: f64 = x * (e0 - c) - c - hxs
+  k == -1 ? 0.5 * (x - e) - 0.5 |
+  (k == 1 ? (x < -0.25 ? -2.0 * (e - (x + 0.5)) | 1.0 + 2.0 * (x - e)) |
+  (k <= -2 || k > 56 ? expm1_large(x, e, k) |
+  (k < 20 ? expm1_mid_small(x, e, k) | expm1_mid_large(x, e, k))))
+}
+
+// k <= -2 or k > 56: 2^k (1 - (e - x)) - 1, scaling twice at k == 1024.
+expm1_large: (x: f64, e: f64, k: i64): f64 {
+  y: f64 = 1.0 - (e - x)
+  k == 1024 ? scale_pow2(y * 2.0, 1023) - 1.0 | scale_pow2(y, k) - 1.0
+}
+
+// 2 <= k < 20: t = 1 - 2^-k is exact; result = 2^k (t - (e - x)).
+expm1_mid_small: (x: f64, e: f64, k: i64): f64 {
+  t: f64 = 1.0 - scale_pow2(1.0, -k)
+  scale_pow2(t - (e - x), k)
+}
+
+// 20 <= k <= 56: t = 2^-k is exact; result = 2^k ((x - (e + t)) + 1).
+expm1_mid_large: (x: f64, e: f64, k: i64): f64 {
+  t: f64 = scale_pow2(1.0, -k)
+  scale_pow2((x - (e + t)) + 1.0, k)
+}
+
+// tanh: hyperbolic tangent, error < 2 ulp (fdlibm s_tanh.c: expm1 composed
+// with a division reaches about 1.5 ulp for |x| < 1), computed through
+// expm1 so small arguments keep their precision.
+pub tanh: (x: f64): f64 {
+  is_nan(x) ? x | {
+    ax: f64 = abs(x)
+    z: f64 = ax < 22.0 ?
+      (ax < 0x1p-28 ? ax | (ax >= 1.0 ? 1.0 - 2.0 / (expm1(2.0 * ax) + 2.0) | tanh_small(ax))) |
+      1.0
+    copysign(z, x)
+  }
+}
+
+tanh_small: (ax: f64): f64 {
+  t: f64 = expm1(-2.0 * ax)
+  negated: f64 = -t
+  negated / (t + 2.0)
+}
+
+// f32 versions: computed at f64 and rounded once. The f64 result is within
+// an ulp of f64, so the f32 result is within an ulp of f32 and correctly
+// rounded except within 2^-29 relative of a rounding boundary.
+pub exp_f32: (x: f32): f32 { f32_round_f64(exp(f64(x))) }
+pub exp2_f32: (x: f32): f32 { f32_round_f64(exp2(f64(x))) }
+pub expm1_f32: (x: f32): f32 { f32_round_f64(expm1(f64(x))) }
+pub log_f32: (x: f32): f32 { f32_round_f64(log(f64(x))) }
+pub log2_f32: (x: f32): f32 { f32_round_f64(log2(f64(x))) }
+pub tanh_f32: (x: f32): f32 { f32_round_f64(tanh(f64(x))) }

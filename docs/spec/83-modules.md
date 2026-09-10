@@ -557,11 +557,13 @@ are not renamed; a user declaration colliding with a bootstrap export is
 rejected as before.
 
 **Standard library packages.** The library files are real packages:
-`strings`, `unicode`, `json`, `filters`, `hash_table`, `bitset_algebra`, and
-`causal_frontier` each carry a package clause, import the library packages
-they use (`strings` imports `unicode`, `json` imports `strings`, `hash_table`
-imports `filters`), qualify their cross-references, and mark their exports
-`pub`. `import("json")` loads json, strings, unicode, and the **core prelude**
+`strings`, `unicode`, `json`, `filters`, `hash_table`, `bitset_algebra`,
+`causal_frontier`, and `math` each carry a package clause, import the
+library packages they use (`strings` imports `unicode`, `json` imports
+`strings`, `hash_table` imports `filters`), qualify their cross-references,
+and mark their exports `pub`. `math` (`20-types.md` §11.3.6) is a package
+only: its names (`exp`, `log`, …) are too common to enter every program
+unqualified, so it is never part of the flat prelude below. `import("json")` loads json, strings, unicode, and the **core prelude**
 (`std.oak`: Option, Result, Overflow, byte and ring helpers), which every
 library package builds on unqualified — and nothing else. The legacy flat
 prelude of `import(std)` is *derived* from the same sources at build time:
