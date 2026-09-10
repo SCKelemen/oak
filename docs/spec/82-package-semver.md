@@ -148,11 +148,12 @@ and `oak mod` never contacts a registry:
 
 Both `diff` and `bump` snapshot the module through the ordinary package build,
 so a module that does not type check has no API and is rejected before any
-comparison. A package that declares nested modules (`83-modules.md`
-section 3.5) is refused: a nested module's `pub` surface is part of the
-module's API, and until it is projected as its own snapshot an API claim
-over the enclosing package would be incomplete. Publishing a module today
-means keeping its packages in directories. The compiler snapshot boundary is `compiler.ModuleAPISnapshot`.
+comparison. Nested modules (`83-modules.md` section 3.5) are packages
+of the module: each is snapshotted under its own path from its elaborated
+declarations, with every name spelled as a directory package would spell it
+(its own types bare, other packages' types by path), so a nested module's
+API changes classify exactly like a directory's. Only `oak-api`, the
+single-package tool, refuses a package that declares nested modules. The compiler snapshot boundary is `compiler.ModuleAPISnapshot`.
 
 ## 7. Archive-carried snapshots
 

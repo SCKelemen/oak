@@ -18,9 +18,12 @@ const sessionObligationsFile = "../spec/lean/Oak/SessionObligations.lean"
 var exampleSession = []string{
 	"loop: (): u32 = { i: u32 = 0\n  running: Bool = true\n  while running { i = i + 1\n    running = i < 10 }\n  i }",
 	"countdown: (n: u32): u32 = { k: u32 = n\n  while k > 0 { k > 5 ? { k = k - 2 } | { k = k - 1 } }\n  k }",
+	"step: (v: u32): u32 = v + 1",
+	"mystery: (v: u32): u32 = { w: u32 = v\n  w * 2 }",
+	"fill: (n: u32): u32 = { buf: [8]u8 = [0, 0, 0, 0, 0, 0, 0, 0]\n  i: u32 = 0\n  while i != n { j: u32 = step(i)\n    buf[i % 8] = u8_trunc_u32(j)\n    i = i + u32(buf[0]) + mystery(1) }\n  i }",
 	"ping: (n: u32): u32 = n == 0 ? 0 | pong(n - 1)\n\npong: (n: u32): u32 = n == 0 ? 1 | ping(n - 1)",
-	"buf: [16]u8",
-	"unsafe {\n  a: [*]u8 = span(&buf)\n  b: [*]u8 = span(&buf)\n}",
+	"shared: [16]u8",
+	"unsafe {\n  a: [*]u8 = span(&shared)\n  b: [*]u8 = span(&shared)\n}",
 }
 
 func TestLeanObligationsMatchCheckedInFile(t *testing.T) {
@@ -36,8 +39,16 @@ func TestLeanObligationsMatchCheckedInFile(t *testing.T) {
 	}
 	for _, want := range []string{
 		"def loop_loop_1 : Oak.Loops.Loop",
-		"{ var := 0, ty := .b, value := (.bin .lt (.wrap (.u 32) (.bin .add (.var 1) (.lit 1))) (.lit 10)) }",
-		"(.cond (.bin .gt (.var 0) (.lit 5)) (.bin .sub (.var 0) (.lit 2)) (.bin .sub (.var 0) (.lit 1)))",
+		"{ var := 0, ty := .b, value := (.bin .lt (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.var 1) (.lit 1)))) (.lit 10)) }",
+		"(.cond (.bin .gt (.var 0) (.lit 5)) (.wrap (.u 32) (.bin .sub (.var 0) (.lit 2))) (.wrap (.u 32) (.bin .sub (.var 0) (.lit 1))))",
+		// fill: the local j is substituted with step inlined, the store is
+		// a write, the read sees it, and mystery (a block body) is
+		// uninterpreted.
+		"-- arrays: 0 ↦ `buf`",
+		"-- uninterpreted functions (constrain F with hypotheses): 0 ↦ `mystery`",
+		"writes := [{ arr := 0, ty := (.u 8), index := (.wrap (.u 32) (.bin .rem (.var 0) (.lit 8))), value := (.wrap (.u 8) (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.var 0) (.lit 1))))) }]",
+		"(.cond (.bin .eq (.lit 0) (.wrap (.u 32) (.bin .rem (.var 0) (.lit 8)))) (.wrap (.u 8) (.wrap (.u 8) (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.var 0) (.lit 1)))))) (.index 0 (.lit 0)))",
+		"(.call 0 [(.lit 1)])",
 		"Oak.Discipline.Ranked [] [(0, 1), (1, 0)] rank :=\n  ⟨fun _ => 0, by simp [Oak.Discipline.Ranked]⟩",
 		"theorem unsafe_1_overlaps : ¬ Oak.Regions.Disjoint ⟨0, 16⟩ ⟨0, 16⟩ := by decide",
 	} {
@@ -64,8 +75,8 @@ func TestLeanObligationsMatchCheckedInFile(t *testing.T) {
 func TestLeanObligationsReportUntranslatableLoops(t *testing.T) {
 	session := NewSession(t.TempDir())
 	for _, input := range []string{
-		"step: (v: u32): u32 = v + 1",
-		"spin: (n: u32): u32 = { i: u32 = 0\n  while i != n { i = step(i) }\n  i }",
+		"P: type = struct { v: u32 }",
+		"spin: (n: u32): u32 = { p: P = P { v: 0 }\n  while p.v != n { p.v = p.v + 1 }\n  p.v }",
 	} {
 		if _, err := session.Submit(input); err != nil {
 			t.Fatal(err)
@@ -75,8 +86,8 @@ func TestLeanObligationsReportUntranslatableLoops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "Not translatable into Oak.Loops: the loop calls a function") {
-		t.Fatalf("call inside the loop must be reported:\n%s", text)
+	if !strings.Contains(text, "Not translatable into Oak.Loops:") {
+		t.Fatalf("a field-mutating loop must be reported:\n%s", text)
 	}
 	if strings.Contains(text, "def loop_spin") {
 		t.Fatal("an untranslatable loop must not be approximated")

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/packageapi"
 )
@@ -85,13 +86,56 @@ func ModuleAPISnapshot(moduleDir, version string) (packageapi.ModuleSnapshot, er
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
-		one, err := New().WithPackageName(path).WithPackageDir(packages[path]).APISnapshot(version).Get()
+		comp := New().WithPackageName(path).WithPackageDir(packages[path])
+		model, err := comp.SemanticModel().Get()
+		if err != nil {
+			return packageapi.ModuleSnapshot{}, fmt.Errorf("package %s: %w", path, err)
+		}
+		one, err := buildAPISnapshot(path, version, model, comp.options)
 		if err != nil {
 			return packageapi.ModuleSnapshot{}, fmt.Errorf("package %s: %w", path, err)
 		}
 		snapshot.Packages[path] = one
+		// Nested modules (83-modules.md section 3.5) are packages of the
+		// module too: each is projected from its elaborated declarations,
+		// spelled as a directory package would spell itself.
+		nested, err := nestedAPISnapshots(model, version, comp.options)
+		if err != nil {
+			return packageapi.ModuleSnapshot{}, fmt.Errorf("package %s: %w", path, err)
+		}
+		for nestedPath, one := range nested {
+			if _, dup := snapshot.Packages[nestedPath]; dup {
+				return packageapi.ModuleSnapshot{}, fmt.Errorf("package %s is both a directory and a nested module", nestedPath)
+			}
+			snapshot.Packages[nestedPath] = one
+		}
 	}
 	return snapshot, nil
+}
+
+// nestedAPISnapshots snapshots every nested module of a checked package.
+// Their declarations carry internal names after elaboration; every emitted
+// name and type is demangled and the module's own path prefix dropped, so
+// `Box` reads as `Box` and another package's type as `path.Name`, exactly as
+// in a root build. Instances of generic packages carry no separate API.
+func nestedAPISnapshots(model *SemanticModel, version string, options Options) (map[string]packageapi.Snapshot, error) {
+	out := map[string]packageapi.Snapshot{}
+	if model.Tree == nil || model.Tree.Modules == nil {
+		return out, nil
+	}
+	for _, nestedPath := range model.Tree.Modules.NestedModules {
+		if strings.Contains(nestedPath, "@") {
+			continue
+		}
+		program := &ast.Program{Statements: model.Tree.Modules.NestedDeclarations[nestedPath]}
+		spell := func(text string) string { return dependencySpelling(text, nestedPath) }
+		one, err := snapshotDeclarations(nestedPath, version, program, model.TypeChecker, options, spell)
+		if err != nil {
+			return nil, fmt.Errorf("nested module %s: %w", nestedPath, err)
+		}
+		out[nestedPath] = one
+	}
+	return out, nil
 }
 
 // ReadModuleSnapshot decodes a module API snapshot file, bounded in size so a

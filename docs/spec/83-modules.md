@@ -192,10 +192,12 @@ subdirectory of the same name, is rejected (`OAK-M0116`). `module` is a
 contextual word: outside this form it is an ordinary identifier.
 
 Nested modules are for a package that wants an internal abstraction
-boundary without a directory; the directory rule of section 2 is unchanged
-and remains the unit of publication: **API snapshots do not yet cover
-nested modules** (`82-package-semver.md` section 6), so `oak mod api`
-refuses a package that declares one rather than emit an incomplete claim.
+boundary without a directory; the directory rule of section 2 is unchanged.
+A module snapshot (`82-package-semver.md` section 6) covers nested modules
+as packages under their own paths, spelled exactly as a directory package
+would spell itself, so publishing and the exact-bump rule see them; a
+single-package snapshot (`oak-api`) of a package that declares nested
+modules still refuses rather than emit an incomplete claim.
 
 ## 4. Modules
 
@@ -675,16 +677,25 @@ naming the import to add (`encode` needs `import("json")`, text needs
   listed assumption as a Lean theorem over the formal models, so the REPL is
   the front end of a proof exchange with Lean:
   - an unbounded loop (`OAK-D0103`) is translated into `Oak.Loops` — the
-    guard, each assigned variable's representation (`u8..i64`, `Bool`), and
-    the body as one simultaneous assignment obtained by symbolically
-    executing the sequential Oak body, with wrap-around inserted where the
-    program stores a value — and the theorem is its termination from every
-    environment (`Oak.Loops.Terminates`), discharged by a ranking function
-    through `Oak.Loops.ranking_terminates`. The fragment is integer and
-    Boolean locals, arithmetic, comparison, connectives, `?` conditionals,
-    and assignments; a loop outside it (a call, a nested loop, a local
-    declaration, an unknown representation) is reported as untranslatable,
-    never approximated;
+    guard, each assigned variable's representation (`u8..i64`, `Bool`), the
+    body as one simultaneous assignment plus an ordered list of array
+    writes, obtained by symbolically executing the sequential Oak body — and
+    the theorem is its termination from every state
+    (`Oak.Loops.Terminates`), discharged by a ranking function through
+    `Oak.Loops.ranking_terminates`. The fragment is integer and Boolean
+    locals, arithmetic (wrapped at every operation, as Oak's total
+    fixed-width arithmetic is), comparison, connectives, `?` conditionals,
+    assignments, loop-local declarations (substituted where read, never part
+    of the state), array reads and writes (the state carries a memory; a
+    read sees the iteration's earlier writes; each write stores the
+    pre-iteration index and value in program order), explicit narrowing
+    (`u8_trunc_u32`, `_bits_`), and calls: an expression-bodied,
+    non-recursive, non-generic callee whose body is in the fragment is
+    inlined, and any other callee is an uninterpreted function of the
+    statement (`Oak.Loops.Funs`, the parameter `F` the programmer constrains
+    with hypotheses). A loop outside the fragment (a nested loop, a field
+    store, an unknown representation) is reported as untranslatable, never
+    approximated;
   - a tail-only cycle (`OAK-D0102`) is stated over `Oak.Discipline.Ranked`
     with the cycle's call edges, and emitted **proved** by the compiler's own
     constant rank certificate;
