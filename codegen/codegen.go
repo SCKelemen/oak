@@ -3305,6 +3305,25 @@ func (cg *CodeGenerator) emitArrayLiteral(expr *ast.ArrayLiteral, tc *typechecke
 	if expr.Type != nil {
 		if _, _, isArray := ownedArrayParameter(expr.Type, cg); isArray {
 			cg.output.WriteString(fmt.Sprintf("(%s)", cg.parseTypeExpression(expr.Type)))
+		} else if info := cg.classifyContainer(expr.Type); info.kind == containerView || info.kind == containerSpan {
+			// A view or span literal ([]T{ ... }, or a bare literal in a
+			// []T context): a view over a C99 array compound literal, whose
+			// automatic storage lives to the end of the enclosing block —
+			// long enough for the call or initializer it appears in
+			// (docs/spec/10-syntax.md section 2c).
+			viewType := fmt.Sprintf("oak_view_%s", info.element)
+			if info.kind == containerSpan {
+				viewType = fmt.Sprintf("oak_span_%s", info.element)
+			}
+			cg.output.WriteString(fmt.Sprintf("(%s){ (%s[]){ ", viewType, info.element))
+			for i, elem := range expr.Elements {
+				if i > 0 {
+					cg.output.WriteString(", ")
+				}
+				cg.emitExpressionFragment(elem, tc)
+			}
+			cg.output.WriteString(fmt.Sprintf(" }, %d }", len(expr.Elements)))
+			return
 		}
 	}
 	cg.emitArrayInitializer(expr, tc)

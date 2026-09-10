@@ -4200,6 +4200,41 @@ func (tc *TypeChecker) checkUnsafeBlock(stmt *ast.UnsafeBlock) {
 	tc.checkBlockStatement(stmt.Body)
 }
 
+// typeExpressionFor renders a checked type back into the type-annotation
+// syntax the backend reads: primitive and declared names as identifiers,
+// arrays as [N]T, views as []T, spans as [*]T. Types with no annotation
+// spelling (anonymous records, functions, generics) yield nil, and the
+// caller leaves the literal untyped.
+func typeExpressionFor(t Type, tok token.Token) ast.Expression {
+	switch t := t.(type) {
+	case *PrimitiveType:
+		return &ast.Identifier{Token: tok, Value: t.Name}
+	case *BoolType:
+		return &ast.Identifier{Token: tok, Value: "Bool"}
+	case *RecordType:
+		if t.Name == "" {
+			return nil
+		}
+		return &ast.Identifier{Token: tok, Value: t.Name}
+	case *ADTType:
+		return &ast.Identifier{Token: tok, Value: t.Name}
+	case *ArrayType:
+		element := typeExpressionFor(t.ElementType, tok)
+		if element == nil {
+			return nil
+		}
+		switch {
+		case t.IsSlice:
+			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: ""}}
+		case t.IsSpan:
+			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: "*"}}
+		default:
+			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.IntegerLiteral{Token: tok, Value: t.Length}}
+		}
+	}
+	return nil
+}
+
 func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ...Type) Type {
 	var expected Type
 	if len(expectedType) > 0 {
@@ -4248,7 +4283,11 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 
 	// An untyped literal inherits an expected array/view shape. This gives
 	// every element the declared context (notably sized integer literals) and
-	// preserves owned-array length instead of degrading [N]T to []T.
+	// preserves owned-array length instead of degrading [N]T to []T. The
+	// resolved shape is stamped onto the literal as its type annotation, so
+	// the backend emits a compound literal usable in any expression position
+	// (argument, return, field) exactly as if the author had written
+	// [N]T{ ... } or []T{ ... } (docs/spec/10-syntax.md section 2c).
 	if expectedArray, ok := expected.(*ArrayType); ok {
 		if !expectedArray.IsSlice && !expectedArray.IsSpan &&
 			int64(len(expr.Elements)) != expectedArray.Length {
@@ -4259,6 +4298,15 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 			elemType := tc.checkExpression(elem, expectedArray.ElementType)
 			if elemType != nil && !tc.isAssignable(elemType, expectedArray.ElementType) {
 				tc.addError(elem, "array element %d: expected type %s, got %s", i, expectedArray.ElementType, elemType)
+			}
+		}
+		if expr.Type == nil {
+			if shape := typeExpressionFor(expectedArray, expr.Token); shape != nil {
+				if expectedArray.IsSlice || expectedArray.IsSpan {
+					expr.Type = shape
+				} else {
+					expr.Type = &ast.IndexExpression{Token: expr.Token, Left: typeExpressionFor(expectedArray.ElementType, expr.Token), Index: &ast.IntegerLiteral{Token: expr.Token, Value: int64(len(expr.Elements))}}
+				}
 			}
 		}
 		return expectedArray

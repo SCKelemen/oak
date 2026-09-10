@@ -149,6 +149,7 @@ type position. All of the following resolve through one rule (section 6):
 
 ```oak
 geo.make(1, 2)                  // exported function
+limit: u32 = geo.MAX_POINTS     // exported constant, read as a value
 p: geo.Point = geo.origin()     // exported type
 r: ring.Ring[u8, 8]             // exported generic type with arguments
 geo.Point { x: 1, y: 2 }        // typed record literal (transparent types only)
