@@ -61,10 +61,16 @@ func (s *Session) LeanObligations() (string, error) {
 			fmt.Fprintf(&out, "-- Not translatable into Oak.Loops: %s.\n-- State the loop's termination by hand over Oak.Loops or Oak.BoundedLoop.\n\n", reason)
 			continue
 		}
-		fmt.Fprintf(&out, "-- variables: %s\n", translation.variableLegend())
-		fmt.Fprintf(&out, "def %s : Oak.Loops.Loop :=\n  { guard := %s,\n    body := [%s] }\n\n", name, translation.guard, strings.Join(translation.assigns, ",\n            "))
-		fmt.Fprintf(&out, "theorem %s_terminates : ∀ env, Oak.Loops.Terminates %s env := by\n", name, name)
-		fmt.Fprintf(&out, "  -- Discharge: exact Oak.Loops.ranking_terminates %s (fun env => <rank>) (by intro env h; <decrease>)\n", name)
+		fmt.Fprintf(&out, "-- variables: %s\n", legend(translation.variables))
+		if len(translation.arrays) != 0 {
+			fmt.Fprintf(&out, "-- arrays: %s\n", legend(translation.arrays))
+		}
+		if len(translation.functions) != 0 {
+			fmt.Fprintf(&out, "-- uninterpreted functions (constrain F with hypotheses): %s\n", legend(translation.functions))
+		}
+		fmt.Fprintf(&out, "def %s : Oak.Loops.Loop :=\n  { guard := %s,\n    body := [%s],\n    writes := [%s] }\n\n", name, translation.guard, strings.Join(translation.assigns, ",\n            "), strings.Join(translation.writes, ",\n              "))
+		fmt.Fprintf(&out, "theorem %s_terminates : ∀ (F : Oak.Loops.Funs) (s : Oak.Loops.State), Oak.Loops.Terminates F %s s := by\n", name, name)
+		fmt.Fprintf(&out, "  -- Discharge: intro F; exact Oak.Loops.ranking_terminates F %s (fun s => <rank>) (by intro s h; <decrease>)\n", name)
 		out.WriteString("  sorry\n\n")
 	}
 
@@ -176,47 +182,97 @@ func identifierPart(name string) string {
 type loopTranslation struct {
 	guard     string
 	assigns   []string
-	variables []string // index -> source name
+	writes    []string
+	variables []string // variable index -> source name
+	arrays    []string // array index -> source name
+	functions []string // uninterpreted function index -> source name
 }
 
-func (t *loopTranslation) variableLegend() string {
-	parts := make([]string, 0, len(t.variables))
-	for i, name := range t.variables {
-		parts = append(parts, fmt.Sprintf("%d ↦ `%s`", i, name))
+func legend(names []string) string {
+	parts := make([]string, 0, len(names))
+	for i, name := range names {
+		parts = append(parts, fmt.Sprintf("%d ↦ `%s`", i, modules.DemangleText(name)))
 	}
 	return strings.Join(parts, ", ")
 }
 
 // translator symbolically executes a loop body over the fragment Oak.Loops
-// models. Every variable is an index; state maps each assigned index to
-// the Lean expression of its value in terms of pre-iteration values.
+// models. Variables and arrays are indices; the symbolic state maps each
+// assigned variable to the Lean expression of its value in terms of the
+// pre-iteration state, and each written array to its pending writes.
 type translator struct {
 	program   *ast.Program
 	function  string
 	names     map[string]int
 	variables []string
+	arrayIDs  map[string]int
+	arrays    []string
+	funcIDs   map[string]int
+	functions []string
 	types     map[string]string // Lean Ty per variable, "" unknown
+	elements  map[string]string // Lean Ty per array element, "" unknown
+	inlining  map[string]bool   // callees on the inlining stack
 	err       string
 }
 
+// symbolicState is the in-iteration view: variable values as the program
+// stored them (wrapped), loop-local declarations, and pending array writes
+// in program order.
+type symbolicState struct {
+	vars   map[string]string
+	locals map[string]string // loop-local declaration -> Lean type
+	writes map[string][]pendingWrite
+}
+
+type pendingWrite struct {
+	index, value, ty string
+}
+
+func newSymbolicState() *symbolicState {
+	return &symbolicState{vars: map[string]string{}, locals: map[string]string{}, writes: map[string][]pendingWrite{}}
+}
+
+func (st *symbolicState) clone() *symbolicState {
+	copy := newSymbolicState()
+	for k, v := range st.vars {
+		copy.vars[k] = v
+	}
+	for k, v := range st.locals {
+		copy.locals[k] = v
+	}
+	for k, v := range st.writes {
+		copy.writes[k] = append([]pendingWrite(nil), v...)
+	}
+	return copy
+}
+
+// results collects what a body (or an arm) assigned: the unwrapped final
+// value of each variable in order, and the writes it performed.
+type results struct {
+	order    []string
+	assigned map[string]string
+	writes   []string
+}
+
+func newResults() *results { return &results{assigned: map[string]string{}} }
+
 // translateLoop returns the translation or the reason none exists.
 func translateLoop(loop *ast.WhileStatement, function string, program *ast.Program) (*loopTranslation, string) {
-	t := &translator{program: program, function: function, names: map[string]int{}, types: map[string]string{}}
-	guard := t.expr(loop.Condition, nil)
+	t := &translator{program: program, function: function, names: map[string]int{}, arrayIDs: map[string]int{}, funcIDs: map[string]int{}, types: map[string]string{}, elements: map[string]string{}, inlining: map[string]bool{}}
+	guard, _ := t.expr(loop.Condition, newSymbolicState())
 	if t.err != "" {
 		return nil, t.err
 	}
-	state, assigned := map[string]string{}, map[string]string{}
-	var order []string
-	t.block(loop.Body, state, &order, assigned)
+	state, out := newSymbolicState(), newResults()
+	t.block(loop.Body, state, out)
 	if t.err != "" {
 		return nil, t.err
 	}
-	translation := &loopTranslation{guard: guard}
-	for _, name := range order {
-		translation.assigns = append(translation.assigns, fmt.Sprintf("{ var := %d, ty := %s, value := %s }", t.names[name], t.typeOf(name), assigned[name]))
+	translation := &loopTranslation{guard: guard, writes: out.writes}
+	for _, name := range out.order {
+		translation.assigns = append(translation.assigns, fmt.Sprintf("{ var := %d, ty := %s, value := %s }", t.names[name], t.typeOf(name), out.assigned[name]))
 	}
-	translation.variables = t.variables
+	translation.variables, translation.arrays, translation.functions = t.variables, t.arrays, t.functions
 	return translation, ""
 }
 
@@ -236,13 +292,31 @@ func (t *translator) index(name string) int {
 	return t.names[name]
 }
 
+func (t *translator) arrayIndex(name string) int {
+	if i, ok := t.arrayIDs[name]; ok {
+		return i
+	}
+	t.arrayIDs[name] = len(t.arrays)
+	t.arrays = append(t.arrays, name)
+	return t.arrayIDs[name]
+}
+
+func (t *translator) functionIndex(name string) int {
+	if i, ok := t.funcIDs[name]; ok {
+		return i
+	}
+	t.funcIDs[name] = len(t.functions)
+	t.functions = append(t.functions, name)
+	return t.funcIDs[name]
+}
+
 // block executes statements sequentially, threading the symbolic state.
-func (t *translator) block(block *ast.BlockStatement, state map[string]string, order *[]string, assigned map[string]string) {
+func (t *translator) block(block *ast.BlockStatement, state *symbolicState, out *results) {
 	if block == nil {
 		return
 	}
 	for _, stmt := range block.Statements {
-		t.statement(stmt, state, order, assigned)
+		t.statement(stmt, state, out)
 		if t.err != "" {
 			return
 		}
@@ -251,22 +325,26 @@ func (t *translator) block(block *ast.BlockStatement, state map[string]string, o
 
 // assign records a variable's new symbolic value. Later reads in the same
 // iteration see the value as the program stored it, wrapped to the
-// variable's representation (Oak.Loops.Expr.wrap); the emitted assignment
-// carries the unwrapped expression, which Loop.step wraps.
-func (t *translator) assign(name, value string, state map[string]string, order *[]string, assigned map[string]string) {
+// variable's representation; the emitted assignment carries the unwrapped
+// expression, which Loop.step wraps.
+func (t *translator) assign(name, value string, state *symbolicState, out *results) {
+	if _, local := state.locals[name]; local {
+		t.fail("the loop-local `%s` is reassigned; loop-local declarations are single-assignment in the fragment", name)
+		return
+	}
 	ty := t.typeOf(name)
 	if ty == "" {
 		t.fail("the representation of `%s` is not evident (declare it with an integer or Bool type)", name)
 		return
 	}
-	if _, seen := state[name]; !seen {
-		*order = append(*order, name)
+	if _, seen := out.assigned[name]; !seen {
+		out.order = append(out.order, name)
 	}
-	state[name] = fmt.Sprintf("(.wrap %s %s)", ty, value)
-	assigned[name] = value
+	state.vars[name] = fmt.Sprintf("(.wrap %s %s)", ty, value)
+	out.assigned[name] = value
 }
 
-func (t *translator) statement(stmt ast.Statement, state map[string]string, order *[]string, assigned map[string]string) {
+func (t *translator) statement(stmt ast.Statement, state *symbolicState, out *results) {
 	switch s := stmt.(type) {
 	case *ast.AssignmentStatement:
 		if s.Name == nil {
@@ -274,18 +352,37 @@ func (t *translator) statement(stmt ast.Statement, state map[string]string, orde
 			return
 		}
 		t.index(s.Name.Value)
-		t.assign(s.Name.Value, t.expr(s.Value, state), state, order, assigned)
+		value, _ := t.expr(s.Value, state)
+		t.assign(s.Name.Value, value, state, out)
+	case *ast.VariableDeclaration:
+		// A loop-local declaration is substituted where it is read; it is
+		// never part of the loop's state.
+		if s.Name == nil {
+			t.fail("a declaration without a name")
+			return
+		}
+		value, inferred := t.expr(s.Value, state)
+		ty := leanType(s.Type)
+		if ty == "" {
+			ty = inferred
+		}
+		if ty == "" {
+			t.fail("the representation of the loop-local `%s` is not evident (annotate it)", s.Name.Value)
+			return
+		}
+		state.locals[s.Name.Value] = ty
+		state.vars[s.Name.Value] = fmt.Sprintf("(.wrap %s %s)", ty, value)
+	case *ast.IndexAssignmentStatement:
+		t.store(s, state, out)
 	case *ast.ExpressionStatement:
 		match, isMatch := s.Expression.(*ast.MatchExpression)
 		if !isMatch {
 			t.fail("the body contains a statement outside the fragment (%T)", s.Expression)
 			return
 		}
-		t.conditional(match, state, order, assigned)
+		t.conditional(match, state, out)
 	case *ast.BlockStatement:
-		t.block(s, state, order, assigned)
-	case *ast.VariableDeclaration:
-		t.fail("the body declares `%s`; loop-local declarations are outside the fragment", s.Name.Value)
+		t.block(s, state, out)
 	case *ast.WhileStatement:
 		t.fail("the body contains a nested loop")
 	default:
@@ -293,43 +390,68 @@ func (t *translator) statement(stmt ast.Statement, state map[string]string, orde
 	}
 }
 
+// store executes `arr[index] = value`: the write joins the iteration's
+// writes, and later reads of the array in the same iteration see it.
+func (t *translator) store(s *ast.IndexAssignmentStatement, state *symbolicState, out *results) {
+	if s.Target == nil || s.Target.Dot {
+		t.fail("the body assigns through a field access; only array element stores are in the fragment")
+		return
+	}
+	array, ok := s.Target.Left.(*ast.Identifier)
+	if !ok {
+		t.fail("the body stores into an expression that is not an array variable")
+		return
+	}
+	ty := t.elementType(array.Value)
+	if ty == "" {
+		t.fail("the element representation of `%s` is not evident (declare it as [N]T with an integer or Bool element type)", array.Value)
+		return
+	}
+	id := t.arrayIndex(array.Value)
+	index, _ := t.expr(s.Target.Index, state)
+	value, _ := t.expr(s.Value, state)
+	if t.err != "" {
+		return
+	}
+	write := pendingWrite{index: index, value: value, ty: ty}
+	state.writes[array.Value] = append(state.writes[array.Value], write)
+	out.writes = append(out.writes, fmt.Sprintf("{ arr := %d, ty := %s, index := %s, value := %s }", id, ty, index, value))
+}
+
 // conditional executes `c ? { A } | { B }`: both arms run from the current
-// state and each assigned variable becomes cond(c, A-value, B-value).
-func (t *translator) conditional(match *ast.MatchExpression, state map[string]string, order *[]string, assigned map[string]string) {
+// state; each assigned variable becomes cond(c, A-value, B-value) and each
+// arm's writes are conditioned on c (a write the arm does not perform is a
+// write of the cell's own value).
+func (t *translator) conditional(match *ast.MatchExpression, state *symbolicState, out *results) {
 	arms := boolArms(match)
 	if arms == nil {
 		t.fail("the body contains a match that is not a Boolean conditional")
 		return
 	}
-	condition := t.expr(match.Scrutinee, state)
-	// Each arm runs from the current state; its unwrapped results are the
-	// candidate values of the variables it assigns.
-	branch := func(body ast.Expression) map[string]string {
-		copy, results := map[string]string{}, map[string]string{}
-		for k, v := range state {
-			copy[k] = v
-		}
+	condition, _ := t.expr(match.Scrutinee, state)
+	branch := func(body ast.Expression) (*symbolicState, *results) {
+		copy, results := state.clone(), newResults()
 		if body == nil {
-			return results
+			return copy, results
 		}
 		block, isBlock := body.(*ast.BlockExpression)
 		if !isBlock {
 			t.fail("a conditional arm in statement position is not a block")
-			return results
+			return copy, results
 		}
-		var local []string
-		t.block(block.Block, copy, &local, results)
-		return results
+		t.block(block.Block, copy, results)
+		return copy, results
 	}
-	whenTrue, whenFalse := branch(arms[0]), branch(arms[1])
+	yesState, yes := branch(arms[0])
+	noState, no := branch(arms[1])
 	if t.err != "" {
 		return
 	}
 	names := map[string]bool{}
-	for name := range whenTrue {
+	for name := range yes.assigned {
 		names[name] = true
 	}
-	for name := range whenFalse {
+	for name := range no.assigned {
 		names[name] = true
 	}
 	sorted := make([]string, 0, len(names))
@@ -340,23 +462,45 @@ func (t *translator) conditional(match *ast.MatchExpression, state map[string]st
 	for _, name := range sorted {
 		// A variable one arm leaves alone keeps its current (already
 		// wrapped) value; wrapping it again is the identity.
-		before, had := state[name]
+		before, had := state.vars[name]
 		if !had {
 			before = fmt.Sprintf("(.var %d)", t.index(name))
 		}
-		yes, no := before, before
-		if v, ok := whenTrue[name]; ok {
-			yes = v
+		whenTrue, whenFalse := before, before
+		if v, ok := yes.assigned[name]; ok {
+			whenTrue = v
 		}
-		if v, ok := whenFalse[name]; ok {
-			no = v
+		if v, ok := no.assigned[name]; ok {
+			whenFalse = v
 		}
-		if yes == no {
-			t.assign(name, yes, state, order, assigned)
+		if whenTrue == whenFalse {
+			t.assign(name, whenTrue, state, out)
 			continue
 		}
-		t.assign(name, fmt.Sprintf("(.cond %s %s %s)", condition, yes, no), state, order, assigned)
+		t.assign(name, fmt.Sprintf("(.cond %s %s %s)", condition, whenTrue, whenFalse), state, out)
 	}
+	// Writes: an arm's writes happen only when its condition holds. A write
+	// under a false condition stores the cell's current value back, which
+	// is the identity on memory.
+	conditionWrites := func(from *symbolicState, guardTrue bool, arm *results) {
+		for _, write := range arm.writes {
+			_ = write
+		}
+		for array, pending := range from.writes {
+			already := len(state.writes[array])
+			for _, w := range pending[already:] {
+				cell := fmt.Sprintf("(.index %d %s)", t.arrayIndex(array), w.index)
+				value := fmt.Sprintf("(.cond %s %s %s)", condition, w.value, cell)
+				if !guardTrue {
+					value = fmt.Sprintf("(.cond %s %s %s)", condition, cell, w.value)
+				}
+				state.writes[array] = append(state.writes[array], pendingWrite{index: w.index, value: value, ty: w.ty})
+				out.writes = append(out.writes, fmt.Sprintf("{ arr := %d, ty := %s, index := %s, value := %s }", t.arrayIndex(array), w.ty, w.index, value))
+			}
+		}
+	}
+	conditionWrites(yesState, true, yes)
+	conditionWrites(noState, false, no)
 }
 
 // boolArms returns the true and false arm bodies of a Boolean conditional
@@ -387,71 +531,235 @@ func boolArms(match *ast.MatchExpression) []ast.Expression {
 	return arms
 }
 
-var infixOps = map[string]string{
-	"+": ".add", "-": ".sub", "*": ".mul", "/": ".div", "%": ".rem",
+var arithmeticOps = map[string]string{"+": ".add", "-": ".sub", "*": ".mul", "/": ".div", "%": ".rem"}
+
+var comparisonOps = map[string]string{
 	"<": ".lt", "<=": ".le", ">": ".gt", ">=": ".ge", "==": ".eq", "!=": ".ne",
 	"&&": ".and", "||": ".or",
 }
 
-// expr renders an expression; state supplies the symbolic value of
-// variables assigned earlier in the body (nil for the guard).
-func (t *translator) expr(expr ast.Expression, state map[string]string) string {
+// expr renders an expression and its representation ("" when not evident);
+// state supplies the symbolic value of variables assigned earlier in the
+// body and the pending writes reads must see. Arithmetic wraps to its
+// representation, as Oak's total fixed-width arithmetic does.
+func (t *translator) expr(expr ast.Expression, state *symbolicState) (string, string) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
-		return literal(e.Value)
+		return literal(e.Value), ""
 	case *ast.Boolean:
 		if e.Value {
-			return "(.lit 1)"
+			return "(.lit 1)", ".b"
 		}
-		return "(.lit 0)"
+		return "(.lit 0)", ".b"
 	case *ast.Identifier:
 		if strings.Contains(e.Value, ".") {
-			return t.fail("`%s` is a qualified name; only locals are in the fragment", e.Value)
+			return t.fail("`%s` is a qualified name; only locals are in the fragment", e.Value), ""
 		}
-		if state != nil {
-			if value, assigned := state[e.Value]; assigned {
-				return value
-			}
+		if ty, local := state.locals[e.Value]; local {
+			return state.vars[e.Value], ty
 		}
-		return fmt.Sprintf("(.var %d)", t.index(e.Value))
+		if value, assigned := state.vars[e.Value]; assigned {
+			return value, t.typeOf(e.Value)
+		}
+		return fmt.Sprintf("(.var %d)", t.index(e.Value)), t.typeOf(e.Value)
 	case *ast.InfixExpression:
-		op, ok := infixOps[e.Operator]
-		if !ok {
-			return t.fail("operator `%s` is outside the fragment", e.Operator)
+		left, leftTy := t.expr(e.Left, state)
+		right, rightTy := t.expr(e.Right, state)
+		if op, ok := arithmeticOps[e.Operator]; ok {
+			ty := leftTy
+			if ty == "" {
+				ty = rightTy
+			}
+			if ty == "" {
+				return t.fail("the representation of `%s` is not evident", e.String()), ""
+			}
+			return fmt.Sprintf("(.wrap %s (.bin %s %s %s))", ty, op, left, right), ty
 		}
-		return fmt.Sprintf("(.bin %s %s %s)", op, t.expr(e.Left, state), t.expr(e.Right, state))
+		if op, ok := comparisonOps[e.Operator]; ok {
+			return fmt.Sprintf("(.bin %s %s %s)", op, left, right), ".b"
+		}
+		return t.fail("operator `%s` is outside the fragment", e.Operator), ""
 	case *ast.PrefixExpression:
+		operand, ty := t.expr(e.Right, state)
 		switch e.Operator {
 		case "!":
-			return fmt.Sprintf("(.not %s)", t.expr(e.Right, state))
+			return fmt.Sprintf("(.not %s)", operand), ".b"
 		case "-":
-			return fmt.Sprintf("(.neg %s)", t.expr(e.Right, state))
-		}
-		return t.fail("prefix operator `%s` is outside the fragment", e.Operator)
-	case *ast.InvocationExpression:
-		// T(literal) is the constant literal (docs/spec/25-type-inference.md
-		// section 3a); any other call is outside the fragment.
-		if name, ok := e.Function.(*ast.Identifier); ok && integerTypes[name.Value] != "" && len(e.Arguments) == 1 {
-			if lit, ok := e.Arguments[0].(*ast.IntegerLiteral); ok {
-				return literal(lit.Value)
+			if ty == "" {
+				return t.fail("the representation of `%s` is not evident", e.String()), ""
 			}
+			return fmt.Sprintf("(.wrap %s (.neg %s))", ty, operand), ty
 		}
-		return t.fail("the loop calls a function; calls are outside the fragment")
+		return t.fail("prefix operator `%s` is outside the fragment", e.Operator), ""
+	case *ast.IndexExpression:
+		if e.Dot {
+			return t.fail("field access `%s` is outside the fragment", e.String()), ""
+		}
+		array, ok := e.Left.(*ast.Identifier)
+		if !ok {
+			return t.fail("indexing an expression that is not an array variable is outside the fragment"), ""
+		}
+		ty := t.elementType(array.Value)
+		if ty == "" {
+			return t.fail("the element representation of `%s` is not evident", array.Value), ""
+		}
+		index, _ := t.expr(e.Index, state)
+		return t.read(array.Value, index, state), ty
+	case *ast.InvocationExpression:
+		return t.call(e, state)
 	case *ast.MatchExpression:
 		arms := boolArms(e)
 		if arms == nil || arms[0] == nil || arms[1] == nil {
-			return t.fail("a match that is not a two-armed Boolean conditional is outside the fragment")
+			return t.fail("a match that is not a two-armed Boolean conditional is outside the fragment"), ""
 		}
-		return fmt.Sprintf("(.cond %s %s %s)", t.expr(e.Scrutinee, state), t.expr(arms[0], state), t.expr(arms[1], state))
+		condition, _ := t.expr(e.Scrutinee, state)
+		yes, yesTy := t.expr(arms[0], state)
+		no, noTy := t.expr(arms[1], state)
+		ty := yesTy
+		if ty == "" {
+			ty = noTy
+		}
+		return fmt.Sprintf("(.cond %s %s %s)", condition, yes, no), ty
 	case *ast.BlockExpression:
 		if e.Block != nil && len(e.Block.Statements) == 1 {
 			if inner, ok := e.Block.Statements[0].(*ast.ExpressionStatement); ok {
 				return t.expr(inner.Expression, state)
 			}
 		}
-		return t.fail("a block expression with statements is outside the fragment")
+		return t.fail("a block expression with statements is outside the fragment"), ""
 	}
-	return t.fail("expression %T is outside the fragment", expr)
+	return t.fail("expression %T is outside the fragment", expr), ""
+}
+
+// read renders `arr[index]` seeing the iteration's pending writes to the
+// array, latest first.
+func (t *translator) read(array, index string, state *symbolicState) string {
+	value := fmt.Sprintf("(.index %d %s)", t.arrayIndex(array), index)
+	pending := state.writes[array]
+	for i := len(pending) - 1; i >= 0; i-- {
+		w := pending[i]
+		value = fmt.Sprintf("(.cond (.bin .eq %s %s) (.wrap %s %s) %s)", index, w.index, w.ty, w.value, value)
+	}
+	return value
+}
+
+// call renders a call: `T(literal)` is the constant; an expression-bodied,
+// non-recursive, non-generic function of the program whose body is in the
+// fragment is inlined with its arguments substituted; any other callee is
+// an uninterpreted function of the statement.
+func (t *translator) call(e *ast.InvocationExpression, state *symbolicState) (string, string) {
+	name, ok := e.Function.(*ast.Identifier)
+	if !ok {
+		return t.fail("calling an expression that is not a function name is outside the fragment"), ""
+	}
+	if ty := integerTypes[name.Value]; ty != "" && len(e.Arguments) == 1 {
+		// An integer conversion: the value at the target representation.
+		if lit, ok := e.Arguments[0].(*ast.IntegerLiteral); ok {
+			return literal(lit.Value), ty
+		}
+		operand, _ := t.expr(e.Arguments[0], state)
+		return fmt.Sprintf("(.wrap %s %s)", ty, operand), ty
+	}
+	// Explicit narrowing (docs/spec/20-types.md section 11.1): `T_trunc_S(x)`
+	// wraps to T and `T_bits_S(x)` reinterprets same-width bits, which is
+	// the same wrap in two's complement; saturating and checked forms are
+	// outside the fragment.
+	if target, ok := conversionTarget(name.Value); ok && len(e.Arguments) == 1 {
+		operand, _ := t.expr(e.Arguments[0], state)
+		return fmt.Sprintf("(.wrap %s %s)", target, operand), target
+	}
+	if name.Value == "Bool" && len(e.Arguments) == 1 {
+		operand, _ := t.expr(e.Arguments[0], state)
+		return fmt.Sprintf("(.wrap .b %s)", operand), ".b"
+	}
+	callee := t.functionNamed(name.Value)
+	if callee == nil {
+		return t.fail("`%s` is not a function of the program", name.Value), ""
+	}
+	if len(callee.Parameters) != len(e.Arguments) {
+		return t.fail("call to `%s` passes %d arguments for %d parameters", name.Value, len(e.Arguments), len(callee.Parameters)), ""
+	}
+	args := make([]string, 0, len(e.Arguments))
+	for _, argument := range e.Arguments {
+		value, _ := t.expr(argument, state)
+		args = append(args, value)
+	}
+	if t.err != "" {
+		return "sorry", ""
+	}
+	returnTy := leanType(callee.ReturnType)
+	if inlined, ok := t.inline(callee, args); ok {
+		return inlined, returnTy
+	}
+	if returnTy == "" {
+		return t.fail("the result representation of `%s` is not evident", name.Value), ""
+	}
+	return fmt.Sprintf("(.call %d [%s])", t.functionIndex(name.Value), strings.Join(args, ", ")), returnTy
+}
+
+// conversionTarget recognizes `T_trunc_S` and `T_bits_S` and returns T's
+// representation.
+func conversionTarget(name string) (string, bool) {
+	for _, op := range []string{"_trunc_", "_bits_"} {
+		if i := strings.Index(name, op); i > 0 {
+			target, source := name[:i], name[i+len(op):]
+			if integerTypes[target] != "" && integerTypes[source] != "" {
+				return integerTypes[target], true
+			}
+		}
+	}
+	return "", false
+}
+
+// inline substitutes the arguments into an expression-bodied callee whose
+// body is in the fragment. Recursion and generics are not inlined.
+func (t *translator) inline(callee *ast.FunctionStatement, args []string) (string, bool) {
+	if callee.Name == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || t.inlining[callee.Name.Value] {
+		return "", false
+	}
+	body := callee.Body
+	if block, isBlock := body.(*ast.BlockExpression); isBlock {
+		if block.Block == nil || len(block.Block.Statements) != 1 {
+			return "", false
+		}
+		inner, ok := block.Block.Statements[0].(*ast.ExpressionStatement)
+		if !ok {
+			return "", false
+		}
+		body = inner.Expression
+	}
+	// Parameters are loop-locals of the callee's own scope.
+	scope := newSymbolicState()
+	for i, parameter := range callee.Parameters {
+		if parameter == nil || parameter.Name == nil {
+			return "", false
+		}
+		ty := leanType(parameter.Type)
+		if ty == "" {
+			return "", false
+		}
+		scope.locals[parameter.Name.Value] = ty
+		scope.vars[parameter.Name.Value] = args[i]
+	}
+	saved := t.err
+	t.inlining[callee.Name.Value] = true
+	value, _ := t.expr(body, scope)
+	delete(t.inlining, callee.Name.Value)
+	if t.err != saved {
+		// The body left the fragment: fall back to an uninterpreted call.
+		t.err = saved
+		return "", false
+	}
+	return value, true
+}
+
+func (t *translator) functionNamed(name string) *ast.FunctionStatement {
+	for _, stmt := range t.program.Statements {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil && fn.Name.Value == name {
+			return fn
+		}
+	}
+	return nil
 }
 
 func literal(v int64) string {
@@ -477,13 +785,7 @@ func (t *translator) typeOf(name string) string {
 		return ty
 	}
 	ty := ""
-	var fn *ast.FunctionStatement
-	for _, stmt := range t.program.Statements {
-		if f, ok := stmt.(*ast.FunctionStatement); ok && f.Name != nil && f.Name.Value == t.function {
-			fn = f
-		}
-	}
-	if fn != nil {
+	if fn := t.functionNamed(t.function); fn != nil {
 		for _, parameter := range fn.Parameters {
 			if parameter != nil && parameter.Name != nil && parameter.Name.Value == name {
 				ty = leanType(parameter.Type)
@@ -504,6 +806,31 @@ func (t *translator) typeOf(name string) string {
 	return ty
 }
 
+// elementType finds the element representation of an array variable from
+// its `[N]T` (or `[]T`, `[*]T`) declaration in the enclosing function.
+func (t *translator) elementType(name string) string {
+	if ty, done := t.elements[name]; done {
+		return ty
+	}
+	ty := ""
+	if fn := t.functionNamed(t.function); fn != nil {
+		for _, parameter := range fn.Parameters {
+			if parameter != nil && parameter.Name != nil && parameter.Name.Value == name {
+				ty = elementLeanType(parameter.Type)
+			}
+		}
+		if ty == "" {
+			forEachDeclaration(fn.Body, func(decl *ast.VariableDeclaration) {
+				if decl.Name != nil && decl.Name.Value == name && ty == "" {
+					ty = elementLeanType(decl.Type)
+				}
+			})
+		}
+	}
+	t.elements[name] = ty
+	return ty
+}
+
 func leanType(expr ast.Expression) string {
 	id, ok := expr.(*ast.Identifier)
 	if !ok {
@@ -513,6 +840,18 @@ func leanType(expr ast.Expression) string {
 		return ".b"
 	}
 	return integerTypes[id.Value]
+}
+
+// elementLeanType reads the element representation off an array type: the
+// parser spells `[N]T` as an index of the element type by the length.
+func elementLeanType(expr ast.Expression) string {
+	switch e := expr.(type) {
+	case *ast.IndexExpression:
+		return leanType(e.Left)
+	case *ast.PrefixExpression:
+		return elementLeanType(e.Right)
+	}
+	return ""
 }
 
 // evidentType reads the representation off an initializer: a Boolean

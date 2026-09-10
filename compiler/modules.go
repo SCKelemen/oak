@@ -110,6 +110,9 @@ type ModuleInfo struct {
 	// until nested packages are projected separately (82-package-semver.md
 	// section 6).
 	NestedModules []string
+	// NestedDeclarations are each nested module's elaborated declarations
+	// (internal names), for API snapshots of nested packages.
+	NestedDeclarations map[string][]ast.Statement
 	// Public is the root package's own syntax, the surface API tooling
 	// projects from.
 	Public *ast.Program
@@ -1902,12 +1905,18 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 			moduleProfiles[module.Manifest.Path] = module.Manifest.Profile
 		}
 	}
+	nestedDeclarations := map[string][]ast.Statement{}
+	for _, path := range l.nested {
+		if pkg := l.packages[path]; pkg != nil {
+			nestedDeclarations[path] = pkg.Statements
+		}
+	}
 	rootModule := ""
 	if l.root != nil {
 		rootModule = l.root.Manifest.Path
 		moduleProfiles[rootModule] = l.root.Manifest.Profile
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,

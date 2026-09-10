@@ -7,16 +7,23 @@ a `while` loop the discipline analysis could not bound by shape — into a
 Lean theorem statement. Stating termination needs a semantics for the loop,
 and this module is that semantics for the fragment the compiler translates:
 integer and Boolean locals, arithmetic and comparison, Boolean connectives,
-`?` conditionals, and assignments. Anything outside the fragment is reported
-as untranslatable rather than approximated.
+`?` conditionals, assignments, loop-local declarations, array reads and
+writes, and calls (inlined when the callee is an expression-bodied function
+of the fragment, otherwise uninterpreted). Anything outside the fragment is
+reported as untranslatable rather than approximated.
 
-An `Env` maps variable indices to unbounded integers; every assignment wraps
-its value to the variable's declared width (`Ty.wrap`), so the modeled loop
-overflows exactly where the compiled program does. A `Loop` is a guard and a
-*simultaneous* assignment: the translator symbolically executes the
-sequential Oak body so every right-hand side reads the pre-iteration
-environment (`Loop.step`). `Run L env m` is a run of `m` guarded iterations
-ending with the guard false; `Terminates L env` says such a run exists.
+A `State` is the variables (index ↦ unbounded integer) and the memory
+(array ↦ index ↦ value). Oak's fixed-width arithmetic is total and wraps at
+every operation (docs/spec/20-types.md section 11.1), so the translator wraps
+each arithmetic result and each stored value to its representation
+(`Expr.wrap`, `Ty.wrap`); intermediate values are unbounded only where the
+program's are. A `Loop` is a guard, a *simultaneous* assignment of variables,
+and an ordered list of array writes; the translator symbolically executes
+the sequential Oak body so every right-hand side reads the pre-iteration
+state (`Loop.step`). Calls the translator could not inline are uninterpreted
+functions `Funs`, a parameter of every statement: the programmer constrains
+them with hypotheses. `Run F L s m` is a run of `m` guarded iterations ending
+with the guard false; `Terminates F L s` says such a run exists.
 
 The discharge law is `ranking_terminates`: a function into `Nat` that
 strictly decreases across every guarded step proves termination from every
@@ -26,12 +33,22 @@ profile asks for.
 
 namespace Oak.Loops
 
-/-- Variable environments: index ↦ value. Values are unbounded; wrapping
-happens at assignment. -/
-abbrev Env := Nat → Int
+/-- Variables: index ↦ value. Values are unbounded; wrapping happens at
+arithmetic and at storage. -/
+abbrev Vars := Nat → Int
 
-/-- Declared representation of a loop variable: unsigned or signed of a bit
-width, or Boolean. -/
+/-- Memory: array ↦ element index ↦ value. -/
+abbrev Mem := Nat → Int → Int
+
+/-- Uninterpreted functions the loop calls: function ↦ arguments ↦ result. -/
+abbrev Funs := Nat → List Int → Int
+
+structure State where
+  vars : Vars
+  mem : Mem
+
+/-- Declared representation of a value: unsigned or signed of a bit width, or
+Boolean. -/
 inductive Ty
   | u (w : Nat)
   | s (w : Nat)
@@ -55,10 +72,10 @@ inductive Op
   deriving Repr, DecidableEq
 
 /-- Expressions of the translated fragment. Booleans are integers: `0` is
-false, anything else true. `wrap` is the value of a variable assigned earlier
-in the same iteration, as the sequential program stored it — the translator
-inserts it when substituting, so wrap-around happens where the compiled code
-wraps. -/
+false, anything else true. `wrap` is a value at its representation — an
+arithmetic result, or a variable assigned earlier in the same iteration as
+the program stored it. `index` reads memory; `call` is an uninterpreted
+function. -/
 inductive Expr
   | lit (v : Int)
   | var (i : Nat)
@@ -67,6 +84,8 @@ inductive Expr
   | neg (a : Expr)
   | cond (c t e : Expr)
   | wrap (ty : Ty) (a : Expr)
+  | index (arr : Nat) (i : Expr)
+  | call (f : Nat) (args : List Expr)
   deriving Repr
 
 def ofBool (b : Bool) : Int := if b then 1 else 0
@@ -89,14 +108,23 @@ def Op.apply : Op → Int → Int → Int
   | .and, a, b => ofBool (decide (a ≠ 0 ∧ b ≠ 0))
   | .or, a, b => ofBool (decide (a ≠ 0 ∨ b ≠ 0))
 
-def Expr.eval (env : Env) : Expr → Int
+def Expr.eval (F : Funs) (s : State) : Expr → Int
   | .lit v => v
-  | .var i => env i
-  | .bin op a b => op.apply (a.eval env) (b.eval env)
-  | .not a => ofBool (decide (a.eval env = 0))
-  | .neg a => - a.eval env
-  | .cond c t e => if c.eval env ≠ 0 then t.eval env else e.eval env
-  | .wrap ty a => ty.wrap (a.eval env)
+  | .var i => s.vars i
+  | .bin op a b => op.apply (a.eval F s) (b.eval F s)
+  | .not a => ofBool (decide (a.eval F s = 0))
+  | .neg a => - a.eval F s
+  | .cond c t e => if c.eval F s ≠ 0 then t.eval F s else e.eval F s
+  | .wrap ty a => ty.wrap (a.eval F s)
+  | .index arr i => s.mem arr (i.eval F s)
+  | .call f args => F f (args.attach.map fun ⟨a, _⟩ => a.eval F s)
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals try omega
+  · rename_i h
+    have := List.sizeOf_lt_of_mem h
+    omega
 
 /-- One variable's new value per iteration, wrapped to its representation. -/
 structure Assign where
@@ -105,68 +133,88 @@ structure Assign where
   value : Expr
   deriving Repr
 
-/-- A loop: guard plus the simultaneous assignment one iteration performs.
-Variables the body does not assign keep their value. -/
+/-- One array store per iteration: `arr[index] = value`, the value wrapped
+to the element representation. Index and value read the pre-iteration
+state. -/
+structure Write where
+  arr : Nat
+  ty : Ty
+  index : Expr
+  value : Expr
+  deriving Repr
+
+/-- A loop: guard, the simultaneous assignment one iteration performs, and
+its array writes in program order (a later write to the same cell wins).
+Variables the body does not assign and cells it does not write keep their
+values. -/
 structure Loop where
   guard : Expr
   body : List Assign
+  writes : List Write
   deriving Repr
 
-/-- The environment after one iteration. Every right-hand side reads the
-pre-iteration environment. -/
-def Loop.step (L : Loop) (env : Env) : Env := fun i =>
-  match L.body.find? (fun a => a.var == i) with
-  | some a => a.ty.wrap (a.value.eval env)
-  | none => env i
+/-- Apply one write, evaluated against the pre-iteration state `s`, to
+memory `m`. -/
+def Write.apply (F : Funs) (s : State) (w : Write) (m : Mem) : Mem :=
+  fun a j => if a = w.arr ∧ j = w.index.eval F s then w.ty.wrap (w.value.eval F s) else m a j
+
+/-- The state after one iteration. Every right-hand side reads the
+pre-iteration state. -/
+def Loop.step (F : Funs) (L : Loop) (s : State) : State :=
+  { vars := fun i =>
+      match L.body.find? (fun a => a.var == i) with
+      | some a => a.ty.wrap (a.value.eval F s)
+      | none => s.vars i,
+    mem := L.writes.foldl (fun m w => w.apply F s m) s.mem }
 
 /-- The guard holds: its value is nonzero. -/
-def Loop.holds (L : Loop) (env : Env) : Prop := L.guard.eval env ≠ 0
+def Loop.holds (F : Funs) (L : Loop) (s : State) : Prop := L.guard.eval F s ≠ 0
 
-instance (L : Loop) (env : Env) : Decidable (L.holds env) := by
+instance (F : Funs) (L : Loop) (s : State) : Decidable (L.holds F s) := by
   unfold Loop.holds; infer_instance
 
-/-- `Run L env m`: `m` guarded iterations from `env`, after which the guard
-is false. -/
-inductive Run (L : Loop) : Env → Nat → Prop
-  | done {env : Env} (h : ¬ L.holds env) : Run L env 0
-  | step {env : Env} {m : Nat} (h : L.holds env) (rest : Run L (L.step env) m) :
-      Run L env (m + 1)
+/-- `Run F L s m`: `m` guarded iterations from `s`, after which the guard is
+false. -/
+inductive Run (F : Funs) (L : Loop) : State → Nat → Prop
+  | done {s : State} (h : ¬ L.holds F s) : Run F L s 0
+  | step {s : State} {m : Nat} (h : L.holds F s) (rest : Run F L (L.step F s) m) :
+      Run F L s (m + 1)
 
-/-- The loop terminates from `env`: some finite run exists. -/
-def Terminates (L : Loop) (env : Env) : Prop := ∃ m, Run L env m
+/-- The loop terminates from `s`: some finite run exists. -/
+def Terminates (F : Funs) (L : Loop) (s : State) : Prop := ∃ m, Run F L s m
 
 /-- A ranking function that strictly decreases across guarded steps bounds
-every run from an environment of rank at most `n`. -/
-theorem terminates_of_rank_le (L : Loop) (rank : Env → Nat)
-    (h : ∀ env, L.holds env → rank (L.step env) < rank env) :
-    ∀ n env, rank env ≤ n → Terminates L env := by
+every run from a state of rank at most `n`. -/
+theorem terminates_of_rank_le (F : Funs) (L : Loop) (rank : State → Nat)
+    (h : ∀ s, L.holds F s → rank (L.step F s) < rank s) :
+    ∀ n s, rank s ≤ n → Terminates F L s := by
   intro n
   induction n with
   | zero =>
-    intro env hle
-    by_cases hg : L.holds env
-    · have := h env hg
+    intro s hle
+    by_cases hg : L.holds F s
+    · have := h s hg
       omega
     · exact ⟨0, Run.done hg⟩
   | succ n ih =>
-    intro env hle
-    by_cases hg : L.holds env
-    · obtain ⟨m, r⟩ := ih (L.step env) (by have := h env hg; omega)
+    intro s hle
+    by_cases hg : L.holds F s
+    · obtain ⟨m, r⟩ := ih (L.step F s) (by have := h s hg; omega)
       exact ⟨m + 1, Run.step hg r⟩
     · exact ⟨0, Run.done hg⟩
 
 /-- **Discharge law.** A ranking function into `Nat` that strictly
 decreases across every guarded step proves termination from every start. -/
-theorem ranking_terminates (L : Loop) (rank : Env → Nat)
-    (h : ∀ env, L.holds env → rank (L.step env) < rank env) :
-    ∀ env, Terminates L env :=
-  fun env => terminates_of_rank_le L rank h (rank env) env (Nat.le_refl _)
+theorem ranking_terminates (F : Funs) (L : Loop) (rank : State → Nat)
+    (h : ∀ s, L.holds F s → rank (L.step F s) < rank s) :
+    ∀ s, Terminates F L s :=
+  fun s => terminates_of_rank_le F L rank h (rank s) s (Nat.le_refl _)
 
-/-- **Static bound.** Under a ranking function, no run from `env` is longer
-than `rank env`. -/
-theorem run_le_rank (L : Loop) (rank : Env → Nat)
-    (h : ∀ env, L.holds env → rank (L.step env) < rank env)
-    {env : Env} {m : Nat} (r : Run L env m) : m ≤ rank env := by
+/-- **Static bound.** Under a ranking function, no run from `s` is longer
+than `rank s`. -/
+theorem run_le_rank (F : Funs) (L : Loop) (rank : State → Nat)
+    (h : ∀ s, L.holds F s → rank (L.step F s) < rank s)
+    {s : State} {m : Nat} (r : Run F L s m) : m ≤ rank s := by
   induction r with
   | done _ => exact Nat.zero_le _
   | step hg _ ih =>
@@ -174,8 +222,14 @@ theorem run_le_rank (L : Loop) (rank : Env → Nat)
     omega
 
 /-- A loop whose guard is false everywhere terminates immediately. -/
-theorem terminates_of_never_holds (L : Loop) (h : ∀ env, ¬ L.holds env) :
-    ∀ env, Terminates L env :=
-  fun env => ⟨0, Run.done (h env)⟩
+theorem terminates_of_never_holds (F : Funs) (L : Loop) (h : ∀ s, ¬ L.holds F s) :
+    ∀ s, Terminates F L s :=
+  fun s => ⟨0, Run.done (h s)⟩
+
+/-- Reading a variable the body does not assign is the identity: the step
+changes only assigned variables. -/
+theorem step_vars_unassigned (F : Funs) (L : Loop) (s : State) (i : Nat)
+    (h : L.body.find? (fun a => a.var == i) = none) : (L.step F s).vars i = s.vars i := by
+  simp [Loop.step, h]
 
 end Oak.Loops
