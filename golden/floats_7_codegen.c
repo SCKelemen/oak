@@ -2,6 +2,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
+#include <float.h>
+#if FLT_EVAL_METHOD != 0
+#error "Oak floating point requires FLT_EVAL_METHOD == 0: every operation rounds to its own type"
+#endif
 #if defined(__clang__)
 #pragma STDC FP_CONTRACT OFF
 #endif

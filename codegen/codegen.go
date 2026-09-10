@@ -430,6 +430,12 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	usesFloats := programUsesFloats(program)
 	if usesFloats {
 		cg.write("#include <math.h>\n")
+		cg.write("#include <float.h>\n")
+		// Every operation rounds to its own type: no excess intermediate
+		// precision (docs/spec/20-types.md section 11.3.3). A target that
+		// evaluates in wider registers (x87) fails the build instead of
+		// silently changing results.
+		cg.write("#if FLT_EVAL_METHOD != 0\n#error \"Oak floating point requires FLT_EVAL_METHOD == 0: every operation rounds to its own type\"\n#endif\n")
 		// Floating-point semantics are part of Oak's semantics, not of the
 		// C compiler's optimization level: no contraction of a * b + c into
 		// an fma, ever (docs/spec/20-types.md section 11.3.3, 90-backend.md
