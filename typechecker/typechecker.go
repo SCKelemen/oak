@@ -762,6 +762,10 @@ func constParameterKind(param *ast.TypeParameter) string {
 }
 
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
+	// Region parameters are erased first (typechecker/regions.go): every
+	// later phase sees View[T, R] as []T and a region-only type parameter as
+	// absent; the borrow checker reads the recorded structure.
+	tc.eraseRegions(program)
 	// Resolve declared types before caching function signatures. Otherwise a
 	// span of a named record can retain an unresolved type variable.
 	for _, stmt := range program.Statements {

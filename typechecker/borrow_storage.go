@@ -13,6 +13,9 @@ type borrowTypeInfo struct {
 	expressions  map[ast.Expression]Type
 	declarations map[*ast.VariableDeclaration]Type
 	simdCalls    map[*ast.InvocationExpression]string
+	// regions is the erased region structure of functions and records
+	// (typechecker/regions.go), read by the borrow checker.
+	regions *regionInfo
 }
 
 func (e *TypeEnvironment) borrowMetadata() *borrowTypeInfo {

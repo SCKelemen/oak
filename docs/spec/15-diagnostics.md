@@ -221,7 +221,7 @@ The first stable borrow-conflict family is:
 | `OAK-B0110` | unsafe code assumes mutable-region disjointness that safe analysis could not prove |
 | `OAK-B0111` | a resource or alias is used after its authority was consumed |
 | `OAK-B0112` | a resource call requires exclusive authority but two mode-marked arguments alias the same resource |
-| `OAK-B0113` | a region-indexed function returns a view that does not borrow from its region parameter, or a call's region argument is not a traceable read-only view |
+| `OAK-B0113` | a region-indexed signature is invalid (its return region names no parameter or two, or a view from a span region), its body returns a borrow outside the region, or a call's region argument is not a traceable borrow |
 
 For `OAK-B0106`, known regions use half-open interval semantics. The diagnostic
 should show the requested region and one earliest causal conflicting span. If a

@@ -180,7 +180,7 @@ record. Views in records that cross a call, are returned, or live in
 storage remain the field-sensitive provenance work of
 `roadmap-authority-resources.md` milestone 4 (e).
 
-## 8c. Region-indexed borrowed returns (increment 1 implemented)
+## 8c. Region-indexed borrowed returns (implemented)
 
 Section 5's conservative rule rejects every function whose return type is
 a view or span (`OAK-B0109`). Section 8b lets a record hold views, but only
@@ -209,7 +209,13 @@ ownership model.
 
 A borrowed return names the parameter region it borrows from. The
 region is a type parameter written where type parameters go, and views and
-spans take it as a second argument:
+spans take it as a second argument. Regions are **erased** before type
+checking (`typechecker/regions.go`): a type parameter that occurs only in
+region positions leaves the declaration, `View[T, R]` becomes `[]T`,
+`Span[T, R]` becomes `[*]T`, and a region argument to a region-carrying
+record is dropped; the structure is kept for the borrow checker. Nothing
+at run time depends on a region, and a region-parameterized function is not
+a template — it has one body and one C definition.
 
 ```oak
 frame[R]: (buf: View[u8, R], at: u32): View[u8, R]
@@ -227,8 +233,12 @@ split: (a: []u8, b: []u8): []u8            // rejected: name the region
 ```
 
 Two or more candidate parameters, or none, require the explicit form.
-Nothing is inferred from the body; the signature is the contract the caller
-sees, and the body is checked against it.
+The same elision holds for spans: a `[*]T` return with exactly one `[*]T`
+parameter of that element type. Nothing is inferred from the body; the
+signature is the contract the caller sees, and the body is checked against
+it. A region names exactly one parameter; a view result cannot come from a
+span region (that would place a read-only borrow beside a writable one on
+one owner), and a span result cannot come from a view region.
 
 ### The callee's obligation
 
@@ -300,7 +310,10 @@ Subslices carry the region-coordinate translation of section 7 unchanged.
 
 ### Increments
 
-1. **Implemented.** Elided single-candidate view returns: a `[]T` return
+All three increments below are implemented; the list records the order
+they landed and the shape each admits.
+
+1. Elided single-candidate view returns: a `[]T` return
    with exactly one `[]T` parameter of the same element type (variadic
    functions excluded — the bundled view is call-lifetime storage). The
    callee's result must trace to that parameter — the parameter, a local
@@ -315,13 +328,31 @@ Subslices carry the region-coordinate translation of section 7 unchanged.
    candidates or none keep `OAK-B0109`. `Oak.Escape.return_param_borrow_wf`
    is the callee's theorem and `Oak.Escape.reborrow_wf` the caller's.
    Executed in both realizations (`compiler/e2e_borrowed_returns_test.go`).
-2. Explicit `[R]` regions on functions, `View[T, R]`/`Span[T, R]`
-   spellings, span returns with the reborrow suspension.
-3. Region-carrying records: section 8b aggregates that cross calls.
+2. Explicit `[R]` regions on functions with the `View[T, R]`/`Span[T, R]`
+   spellings, choosing among several candidate parameters
+   (`pick[R]: (a: View[u8, R], b: []u8): View[u8, R]`); span returns, elided
+   or explicit, whose result at the caller is a reborrow of the argument
+   span — the argument is suspended while the result lives (`OAK-B0107`)
+   and usable again when it leaves scope. Signature validation is
+   `OAK-B0113`: a return region naming no parameter, or two, or a view
+   result from a span region. Executed: `compiler/e2e_region_returns_test.go`.
+3. Region-carrying records (`Cursor[R]: type = struct { data: View[u8, R],
+   pos: u32 }`, exactly one region per record): a function whose signature
+   gives a record parameter a region receives its borrow fields as borrows
+   (`c.data`) and may pass them on, subslice them, or build and return a
+   record in the same region; a returned record's borrow fields are traced
+   like any result, and at the caller each field of the bound result is a
+   reborrow of the region argument's sources of that field's kind. A
+   section 8b local record whose borrows are tracked may be passed to a
+   region-declared parameter; a record parameter without a region keeps
+   `OAK-B0109`. Executed: a cursor opened, advanced through nested calls,
+   and read, with the owner write while it lives rejected.
 
-What stays rejected after all three: borrows in globals and statics,
-borrows in records without a region, a returned borrow whose provenance
-the checker cannot establish, and any borrow outliving its owner.
+What stays rejected: borrows in globals and statics, borrows in records
+without a region crossing a call, a returned borrow whose provenance the
+checker cannot establish, a region naming more than one parameter, a record
+with more than one region, region functions called across package
+boundaries by qualified name, and any borrow outliving its owner.
 
 ## 9. Move/consume and resource flow
 
