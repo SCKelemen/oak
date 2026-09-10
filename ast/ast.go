@@ -121,7 +121,14 @@ type IntegerLiteral struct {
 	BaseNode
 	Token token.Token
 	Value int64
+	// Wide marks a literal above the signed 64-bit range (2^63 .. 2^64-1):
+	// Value then holds the unsigned magnitude's two's-complement bit
+	// pattern, and only u64/uint/uptr contexts admit the literal.
+	Wide bool
 }
+
+// Magnitude returns the literal's unsigned value (the full u64 range).
+func (lit *IntegerLiteral) Magnitude() uint64 { return uint64(lit.Value) }
 
 func (lit *IntegerLiteral) expressionNode()      {}
 func (lit *IntegerLiteral) TokenLiteral() string { return lit.Token.Literal }

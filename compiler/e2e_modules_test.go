@@ -1131,24 +1131,24 @@ wide_eq: (a: Pair[u32], b: Pair[u32]): Bool = derive.equal
 pair_hash: (v: Pair[u8]): u64 = derive.hash
 wrap_eq: (a: Wrap[u16], b: Wrap[u16]): Bool = derive.equal
 
-a: Pair[u8]
-b: Pair[u8]
-c: Pair[u8]
+left: Pair[u8]
+right: Pair[u8]
+third: Pair[u8]
 w: Pair[u32]
 
 main: (): i32 = {
-  a.first = u8(1)
-  a.second = u8(2)
-  b.first = u8(1)
-  b.second = u8(2)
-  c.first = u8(2)
-  c.second = u8(2)
+  left.first = u8(1)
+  left.second = u8(2)
+  right.first = u8(1)
+  right.second = u8(2)
+  third.first = u8(2)
+  third.second = u8(2)
   w.first = u32(70000)
   w.second = u32(1)
   full: Wrap[u16] = .Full(5)
   other: Wrap[u16] = .Full(5)
   empty: Wrap[u16] = .Empty
-  same := pair_eq(a, b) && !pair_eq(a, c) && wide_eq(w, w) && pair_hash(a) == pair_hash(b) && pair_hash(a) != pair_hash(c)
+  same := pair_eq(left, right) && !pair_eq(left, third) && wide_eq(w, w) && pair_hash(left) == pair_hash(right) && pair_hash(left) != pair_hash(third)
   wraps := wrap_eq(full, other) && !wrap_eq(empty, full)
   same && wraps ? 42 | 1
 }

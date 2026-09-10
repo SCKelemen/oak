@@ -148,6 +148,11 @@ enforced.
 
 ## 5. Assertions
 
+A failed assertion is attributable: the C lowering passes the Oak source
+file and line, and a hosted build prints `oak: assertion failed at file:line`
+to stderr before the trap. Freestanding builds (`-ffreestanding`, or
+`-DOAK_FREESTANDING`) keep the bare trap and take no libc dependency.
+
 TigerStyle assertion density: functions assert their arguments, results, and
 invariants; assertions are compiled in, not compiled out. The `assert`
 builtin exists: it takes one `Bool`, returns unit, evaluates in the

@@ -1780,11 +1780,26 @@ func (cg *CodeGenerator) emitUtf8Helper() {
 // (docs/spec/85-discipline.md section 5).
 func (cg *CodeGenerator) emitAssertHelper() {
 	cg.write("/* assert: always compiled in (docs/spec/85-discipline.md section 5) */\n")
-	cg.write("static inline void oak_assert(Bool cond) {\n")
+	// A failed assertion names its Oak source position before trapping
+	// (docs/spec/85-discipline.md section 5). Hosted builds print it to
+	// stderr; freestanding builds (-ffreestanding, or -DOAK_FREESTANDING)
+	// keep the bare trap and no libc dependency.
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("#include <stdio.h>\n")
+	cg.write("static inline void oak_assert(Bool cond, const char *file, u32 line) {\n")
+	cg.write("  if (!cond) {\n")
+	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u\\n\", file, (unsigned)line);\n")
+	cg.write("    __builtin_trap();\n")
+	cg.write("  }\n")
+	cg.write("}\n")
+	cg.write("#else\n")
+	cg.write("static inline void oak_assert(Bool cond, const char *file, u32 line) {\n")
+	cg.write("  (void)file; (void)line;\n")
 	cg.write("  if (!cond) {\n")
 	cg.write("    __builtin_trap();\n")
 	cg.write("  }\n")
-	cg.write("}\n\n")
+	cg.write("}\n")
+	cg.write("#endif\n\n")
 }
 
 // emitTrampolineGroup merges one mutual-tail cycle into a state-machine
@@ -2063,7 +2078,11 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typechecker.TypeChecker) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
-		cg.output.WriteString(fmt.Sprintf("%d", e.Value))
+		if e.Wide {
+			cg.output.WriteString(fmt.Sprintf("%dULL", e.Magnitude()))
+		} else {
+			cg.output.WriteString(fmt.Sprintf("%d", e.Value))
+		}
 	case *ast.StringLiteral:
 		// Emit string literal as a string struct
 		idx, exists := cg.stringLiteralMap[e.Value]
@@ -2309,6 +2328,10 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			if i < len(e.Arguments)-1 {
 				cg.output.WriteString(", ")
 			}
+		}
+		// assert carries its source position so a trap can be attributed.
+		if ident, ok := e.Function.(*ast.Identifier); ok && ident.Value == "assert" && len(e.Arguments) == 1 {
+			cg.output.WriteString(fmt.Sprintf(", %q, %d", cg.sourceFile, ident.Token.Line))
 		}
 		cg.output.WriteString(" )")
 	case *ast.BlockExpression:

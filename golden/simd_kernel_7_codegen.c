@@ -32,11 +32,22 @@ typedef enum oak_Comparison {
 } Comparison;
 
 /* assert: always compiled in (docs/spec/85-discipline.md section 5) */
-static inline void oak_assert(Bool cond) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  if (!cond) {
+    fprintf(stderr, "oak: assertion failed at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+}
+#else
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  (void)file; (void)line;
   if (!cond) {
     __builtin_trap();
   }
 }
+#endif
 
 typedef struct oak_view_u8 {
     const u8* base;
@@ -268,7 +279,7 @@ i32 oak_main(  ) {
     u8 out[16] = {0};
     oak_span_u8 s   = (oak_span_u8){ out, 16 }  ;
 oak_simd_store_u8x16( s, ((u32)( 0 )), oak_simd_splat_u8x16( ((u8)( 66 )) ) )  ;
-oak_assert( ( oak_arm64_uaddlv_u8x16( oak_simd_splat_u8x16( ((u8)( 1 )) ) ) == ((u32)( 16 )) ) )  ;
+oak_assert( ( oak_arm64_uaddlv_u8x16( oak_simd_splat_u8x16( ((u8)( 1 )) ) ) == ((u32)( 16 )) ), "unknown.oak", 12 )  ;
     return ((i32)( oak_span_index_u8( s, (u64)( 0 ) ) ))  ;
 }
 
