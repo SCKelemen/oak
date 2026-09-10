@@ -278,6 +278,19 @@ parameter cannot be bound to two lengths, and a type argument in a const
 position is an error. Const parameters carry no resource authority, so
 instantiating at two lengths in one scope is ordinary reuse.
 
+A length may be **arithmetic over const parameters**: `[M*K]T`, `[N+1]T`,
+with `+ - * / %` and literals. The expression is folded to a literal when
+the function is instantiated, so no specialization carries a symbolic
+extent — `matmul[M: u32, N: u32, K: u32]: (a: [M*K]f32, b: [K*N]f32):
+[M*N]f32` at `matmul[2, 1, 3]` is a function over `[6]f32` and `[3]f32`
+returning `[2]f32`, and `out: [M*N]f32` inside its body is a plain owned
+array. An arithmetic length binds no parameter by inference (a product does
+not determine its factors): each parameter it mentions must be bound from a
+plain `[N]T` position or given explicitly, and the folded length is then
+checked against the argument like any other type. A fold that is not a
+valid length (negative, division by zero, above the `u32` range) rejects
+the instantiation.
+
 ### 11.1 Explicit integer conversions
 
 Implicit conversion is limited to value-preserving widening within one

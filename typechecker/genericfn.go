@@ -266,6 +266,9 @@ func (tc *TypeChecker) bindTypeParams(paramType ast.Expression, argType Type, pa
 					return false
 				}
 			}
+			// An arithmetic length ([M*K]T) binds nothing: its parameters
+			// come from a plain position or an explicit argument, and the
+			// folded length is checked against the argument afterwards.
 			return tc.bindTypeParams(t.Left, arr.ElementType, paramSet, bindings, at, argPosition)
 		}
 		// Ring[T, N] against a record instantiation Ring_u8_8: recover the

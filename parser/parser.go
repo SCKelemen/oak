@@ -2439,6 +2439,16 @@ func (p *Parser) parseStructLiteral() ast.Expression {
 	return record
 }
 
+// peekTokenIsArithmetic reports whether the next token is an arithmetic
+// operator, the start of a const-arithmetic array length.
+func (p *Parser) peekTokenIsArithmetic() bool {
+	switch p.peekToken.TokenKind {
+	case token.SUM, token.NEG, token.MUL, token.QUO, token.REM:
+		return true
+	}
+	return false
+}
+
 // Parse array type: [Type] or [N]Type
 func (p *Parser) parseArrayType() ast.Expression {
 	// Skip opening bracket (currentToken is [)
@@ -2467,6 +2477,27 @@ func (p *Parser) parseArrayType() ast.Expression {
 			Token: p.currentToken,
 			Left:  elementType,
 			Index: &ast.Identifier{Token: p.currentToken, Value: "*"},
+		}
+	}
+
+	// Arithmetic length: [M*K]T or [N+1]T over const parameters, folded to
+	// a literal at instantiation (docs/spec/20-types.md section 11.0). Type
+	// position has no literal ambiguity, so the length is an ordinary
+	// expression up to the closing bracket.
+	if (p.currentTokenIs(token.IDENT) || p.currentTokenIs(token.INT)) && p.peekTokenIsArithmetic() {
+		length := p.parseExpression(LOWEST)
+		if length == nil || !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		p.nextToken() // move to the element type
+		elementType := p.parseTypeExpression()
+		if elementType == nil {
+			return nil
+		}
+		return &ast.IndexExpression{
+			Token: p.currentToken,
+			Left:  elementType,
+			Index: length,
 		}
 	}
 

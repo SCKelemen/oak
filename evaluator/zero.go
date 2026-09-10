@@ -109,11 +109,20 @@ func zeroValue(typeExpr ast.Expression, env *object.Environment) (object.Object,
 				return record, true
 			}
 		}
-		length, isFixed := t.Index.(*ast.IntegerLiteral)
-		if !isFixed || length.Value < 0 {
+		// A const-arithmetic length ([M*N]T inside a generic body) evaluates
+		// under the const parameters bound as integers in the environment.
+		var count int64
+		if length, isFixed := t.Index.(*ast.IntegerLiteral); isFixed {
+			count = length.Value
+		} else if evaluated, isInt := Eval(t.Index, env).(*object.Integer); isInt {
+			count = evaluated.Value
+		} else {
 			return nil, false
 		}
-		elements := make([]object.Object, length.Value)
+		if count < 0 {
+			return nil, false
+		}
+		elements := make([]object.Object, count)
 		for i := range elements {
 			element, known := zeroValue(t.Left, env)
 			if !known {

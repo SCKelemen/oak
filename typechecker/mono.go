@@ -88,8 +88,63 @@ func SubstituteTypeAST(expr ast.Expression, bindings map[string]ast.Expression) 
 		return out, true
 	case *ast.IntegerLiteral:
 		return t, true
+	case *ast.InfixExpression:
+		// Const arithmetic in a length position ([M*K]T, [N+1]T): once both
+		// operands are literals the length folds to one, so an instantiation
+		// never carries a symbolic extent (docs/spec/20-types.md section
+		// 11.0). A fold that is not a valid length fails closed.
+		left, okLeft := SubstituteTypeAST(t.Left, bindings)
+		right, okRight := SubstituteTypeAST(t.Right, bindings)
+		if !okLeft || !okRight {
+			return nil, false
+		}
+		leftLit, leftIsLit := left.(*ast.IntegerLiteral)
+		rightLit, rightIsLit := right.(*ast.IntegerLiteral)
+		if leftIsLit && rightIsLit {
+			value, ok := foldConstLength(t.Operator, leftLit.Value, rightLit.Value)
+			if !ok {
+				return nil, false
+			}
+			return &ast.IntegerLiteral{Token: token.Token{TokenKind: token.INT, Literal: strconv.FormatInt(value, 10), Line: t.Token.Line, Column: t.Token.Column}, Value: value}, true
+		}
+		return &ast.InfixExpression{Token: t.Token, Left: left, Operator: t.Operator, Right: right}, true
 	}
 	return nil, false
+}
+
+// foldConstLength evaluates one arithmetic step of a const length. The
+// result must be a representable non-negative length: division by zero,
+// a negative result, and overflow past the u32 range all fail.
+func foldConstLength(operator string, left, right int64) (int64, bool) {
+	const maxLength = int64(^uint32(0))
+	var value int64
+	switch operator {
+	case "+":
+		value = left + right
+	case "-":
+		value = left - right
+	case "*":
+		if left != 0 && right != 0 && (left > maxLength/right || right > maxLength/left) {
+			return 0, false
+		}
+		value = left * right
+	case "/":
+		if right == 0 {
+			return 0, false
+		}
+		value = left / right
+	case "%":
+		if right == 0 {
+			return 0, false
+		}
+		value = left % right
+	default:
+		return 0, false
+	}
+	if value < 0 || value > maxLength {
+		return 0, false
+	}
+	return value, true
 }
 
 // ArgumentSpelling renders a concrete type argument back to type-expression
