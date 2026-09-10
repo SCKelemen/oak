@@ -553,9 +553,10 @@ points, interval boundaries, random arguments, the nearest doubles to
 multiples of pi/2, and the Annex F cases, failing on any case beyond the
 bound and on any difference between compiled and interpreted results.
 
-## `hash`: SHA-256 and CRC-32C (`import("hash")`)
+## `hash`: SHA-256, BLAKE3, and CRC-32C (`import("hash")`)
 
-`stdlib/hash.oak` implements SHA-256 (FIPS 180-4) and CRC-32C (the
+`stdlib/hash.oak` implements SHA-256 (FIPS 180-4), BLAKE3 (hash mode,
+32-byte output), and CRC-32C (the
 Castagnoli polynomial `0x82F63B78`, reflected, all-ones initial value,
 final complement — RFC 3720 appendix B.4) in Oak over the total fixed-width
 arithmetic, so the interpreter and every backend compute the same bits and
@@ -569,15 +570,25 @@ view): Sha256State` over any number of pieces, `sha256_final(state, out:
 is shorter; `sha256(view, out)` is the one-shot form. CRC-32C is a running
 value: `crc32c(view): u32`, and `crc32c_update(crc, view)` continues a
 finished checksum across pieces, so `crc32c_update(crc32c(a), b)` is the
-checksum of `a ++ b`. Both are bit-serial today (eight steps per byte for
-the CRC, one byte per step into the SHA block); a word-at-a-time or table
-path is a measured change for later.
+checksum of `a ++ b`. BLAKE3 has the same incremental shape —
+`blake3_init`, `blake3_update`, `blake3_final(state, out)` — and a one-shot
+`blake3(view, out)`; the state carries the open chunk and the chaining-value
+stack (room for the 54 levels a 64-bit length can need), and the tree is the
+specification's: 1024-byte chunks, parents merged by the chunk counter's
+trailing zeros, the last parent taking the root flag. All three are
+bit-serial or byte-serial today; word-at-a-time and table paths are measured
+changes for later.
 
 `compiler/e2e_hash_test.go` checks the FIPS known-answer vectors, the
 RFC 3720 CRC-32C check value (`0xE3069283` for `"123456789"`), and random
 inputs at every length class around the 64-byte block and 56-byte padding
 boundary against Go's `crypto/sha256` and `hash/crc32`, compiled and
-interpreted, one-shot and split across an update boundary.
+interpreted, one-shot and split across an update boundary. BLAKE3 is checked
+against a compact reference written from the specification in the test,
+itself anchored to the official vectors for the empty and one-byte inputs,
+at every tree shape that matters: partial and full blocks, one chunk, the
+first parent, an odd chunk count, a full power-of-two tree, and larger
+random inputs.
 
 For the big-endian frame header, the core prelude already has
 `bytes_read_u16_be/u32_be/u64_be(view, offset): Result[T, EndianError]` and

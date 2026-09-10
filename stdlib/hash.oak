@@ -176,3 +176,223 @@ pub crc32c_update: (crc: u32, src: []u8): u32 {
 }
 
 pub crc32c: (src: []u8): u32 = crc32c_update(u32(0), src)
+
+// BLAKE3 (Aumasson, Neves, O'Connor, Wilcox-O'Hearn, 2020), 32-byte output
+// in hash mode. The tree is the standard one: 1024-byte chunks of sixteen
+// 64-byte blocks, chaining values combined pairwise into parents with the
+// stack discipline of the reference implementation, so any input length
+// hashes exactly as the specification says. State lives in the record; the
+// chaining-value stack has room for the 54 levels a 64-bit length can need.
+
+BLAKE3_IV: [8]u32 = [8]u32{ 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 }
+BLAKE3_CHUNK_START: u32 = 1
+BLAKE3_CHUNK_END: u32 = 2
+BLAKE3_PARENT: u32 = 4
+BLAKE3_ROOT: u32 = 8
+
+blake3_g: (v: [16]u32, a: u32, b: u32, c: u32, d: u32, mx: u32, my: u32): [16]u32 {
+  state: [16]u32 = v
+  state[a] = state[a] + state[b] + mx
+  state[d] = rotr32(state[d] ^ state[a], u32(16))
+  state[c] = state[c] + state[d]
+  state[b] = rotr32(state[b] ^ state[c], u32(12))
+  state[a] = state[a] + state[b] + my
+  state[d] = rotr32(state[d] ^ state[a], u32(8))
+  state[c] = state[c] + state[d]
+  state[b] = rotr32(state[b] ^ state[c], u32(7))
+  state
+}
+
+// The message permutation applied between rounds (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8).
+blake3_permute: (m: [16]u32): [16]u32 = [16]u32{ m[2], m[6], m[3], m[10], m[7], m[0], m[4], m[13], m[1], m[11], m[12], m[5], m[9], m[14], m[15], m[8] }
+
+// The compression function: seven rounds over the chaining value, the
+// block words, the counter, the block length, and the domain flags,
+// returning the full 16-word state (the first eight words are the output
+// chaining value in every mode used here).
+blake3_compress: (cv: [8]u32, block: [16]u32, counter: u64, block_len: u32, flags: u32): [16]u32 {
+  v: [16]u32 = [16]u32{
+    cv[0], cv[1], cv[2], cv[3], cv[4], cv[5], cv[6], cv[7],
+    BLAKE3_IV[0], BLAKE3_IV[1], BLAKE3_IV[2], BLAKE3_IV[3],
+    u32_trunc_u64(counter), u32_trunc_u64(counter >> u64(32)), block_len, flags
+  }
+  m: [16]u32 = block
+  round: u32 = 0
+  while round < u32(7) {
+    v = blake3_g(v, u32(0), u32(4), u32(8), u32(12), m[0], m[1])
+    v = blake3_g(v, u32(1), u32(5), u32(9), u32(13), m[2], m[3])
+    v = blake3_g(v, u32(2), u32(6), u32(10), u32(14), m[4], m[5])
+    v = blake3_g(v, u32(3), u32(7), u32(11), u32(15), m[6], m[7])
+    v = blake3_g(v, u32(0), u32(5), u32(10), u32(15), m[8], m[9])
+    v = blake3_g(v, u32(1), u32(6), u32(11), u32(12), m[10], m[11])
+    v = blake3_g(v, u32(2), u32(7), u32(8), u32(13), m[12], m[13])
+    v = blake3_g(v, u32(3), u32(4), u32(9), u32(14), m[14], m[15])
+    round < u32(6) ? { m = blake3_permute(m) }
+    round = round + u32(1)
+  }
+  i: u32 = 0
+  while i < u32(8) {
+    v[i] = v[i] ^ v[i + u32(8)]
+    v[i + u32(8)] = v[i + u32(8)] ^ cv[i]
+    i = i + u32(1)
+  }
+  v
+}
+
+// Sixteen little-endian words from a 64-byte block.
+blake3_words: (block: [64]u8): [16]u32 {
+  m: [16]u32
+  i: u32 = 0
+  while i < u32(16) {
+    at: u32 = i * u32(4)
+    m[i] = u32(block[at]) | (u32(block[at + u32(1)]) << u32(8)) | (u32(block[at + u32(2)]) << u32(16)) | (u32(block[at + u32(3)]) << u32(24))
+    i = i + u32(1)
+  }
+  m
+}
+
+blake3_first8: (v: [16]u32): [8]u32 = [8]u32{ v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7] }
+
+// The incremental state: the current chunk's chaining value, block buffer,
+// how much of the block is filled and how many blocks of the chunk have
+// been compressed, the chunk counter, and the chaining-value stack.
+pub Blake3State: type = struct {
+  cv: [8]u32
+  block: [64]u8
+  block_len: u32
+  blocks_compressed: u32
+  chunk_counter: u64
+  stack: [432]u32
+  stack_len: u32
+}
+
+pub blake3_init: (): Blake3State {
+  state: Blake3State
+  state.cv = BLAKE3_IV
+  state.block_len = u32(0)
+  state.blocks_compressed = u32(0)
+  state.chunk_counter = u64(0)
+  state.stack_len = u32(0)
+  state
+}
+
+blake3_start_flag: (state: Blake3State): u32 = state.blocks_compressed == u32(0) ? { BLAKE3_CHUNK_START } | { u32(0) }
+
+// Compress one full buffered block of the current chunk.
+blake3_absorb_block: (state: Blake3State): Blake3State {
+  next: Blake3State = state
+  out: [16]u32 = blake3_compress(next.cv, blake3_words(next.block), next.chunk_counter, u32(64), blake3_start_flag(next))
+  next.cv = blake3_first8(out)
+  next.blocks_compressed = next.blocks_compressed + u32(1)
+  next.block_len = u32(0)
+  next
+}
+
+// Finish the current chunk into its chaining value (no root flag).
+blake3_chunk_cv: (state: Blake3State): [8]u32 {
+  block: [64]u8 = state.block
+  i: u32 = state.block_len
+  while i < u32(64) {
+    block[i] = u8(0)
+    i = i + u32(1)
+  }
+  out: [16]u32 = blake3_compress(state.cv, blake3_words(block), state.chunk_counter, state.block_len, blake3_start_flag(state) | BLAKE3_CHUNK_END)
+  blake3_first8(out)
+}
+
+blake3_parent_words: (left: [8]u32, right: [8]u32): [16]u32 = [16]u32{
+  left[0], left[1], left[2], left[3], left[4], left[5], left[6], left[7],
+  right[0], right[1], right[2], right[3], right[4], right[5], right[6], right[7]
+}
+
+// Push a finished chunk's chaining value, merging parents as the chunk
+// counter's trailing zero bits dictate (the reference's stack discipline).
+blake3_push_chunk: (state: Blake3State, cv: [8]u32): Blake3State {
+  next: Blake3State = state
+  merged: [8]u32 = cv
+  total: u64 = next.chunk_counter + u64(1)
+  while total % u64(2) == u64(0) && next.stack_len > u32(0) {
+    top: u32 = (next.stack_len - u32(1)) * u32(8)
+    left: [8]u32 = [8]u32{ next.stack[top], next.stack[top + u32(1)], next.stack[top + u32(2)], next.stack[top + u32(3)], next.stack[top + u32(4)], next.stack[top + u32(5)], next.stack[top + u32(6)], next.stack[top + u32(7)] }
+    parent: [16]u32 = blake3_compress(BLAKE3_IV, blake3_parent_words(left, merged), u64(0), u32(64), BLAKE3_PARENT)
+    merged = blake3_first8(parent)
+    next.stack_len = next.stack_len - u32(1)
+    total = total / u64(2)
+  }
+  at: u32 = next.stack_len * u32(8)
+  k: u32 = 0
+  while k < u32(8) {
+    next.stack[at + k] = merged[k]
+    k = k + u32(1)
+  }
+  next.stack_len = next.stack_len + u32(1)
+  next.chunk_counter = next.chunk_counter + u64(1)
+  next.cv = BLAKE3_IV
+  next.blocks_compressed = u32(0)
+  next.block_len = u32(0)
+  next
+}
+
+// Absorb a view. A chunk is closed only when more input follows it, so the
+// final chunk stays open for the root computation.
+pub blake3_update: (state: Blake3State, src: []u8): Blake3State {
+  next: Blake3State = state
+  i: u32 = 0
+  while i < len(src) {
+    next.block_len == u32(64) && next.blocks_compressed == u32(15) ? {
+      next = blake3_push_chunk(next, blake3_chunk_cv(next))
+    } | {
+      next.block_len == u32(64) ? { next = blake3_absorb_block(next) }
+    }
+    next.block[next.block_len] = src[i]
+    next.block_len = next.block_len + u32(1)
+    i = i + u32(1)
+  }
+  next
+}
+
+// The 32-byte hash into caller storage: the open chunk is finished as the
+// root when the stack is empty, else it is merged upward and the last
+// parent takes the root flag. False when `out` holds fewer than 32 bytes.
+pub blake3_final: (state: Blake3State, out: [*]u8): Bool {
+  len(out) < u32(32) ? { false } | {
+    block: [64]u8 = state.block
+    i: u32 = state.block_len
+    while i < u32(64) {
+      block[i] = u8(0)
+      i = i + u32(1)
+    }
+    words: [16]u32 = blake3_words(block)
+    root: [16]u32
+    state.stack_len == u32(0) ? {
+      root = blake3_compress(state.cv, words, state.chunk_counter, state.block_len, blake3_start_flag(state) | BLAKE3_CHUNK_END | BLAKE3_ROOT)
+    } | {
+      chunk: [16]u32 = blake3_compress(state.cv, words, state.chunk_counter, state.block_len, blake3_start_flag(state) | BLAKE3_CHUNK_END)
+      merged: [8]u32 = blake3_first8(chunk)
+      level: u32 = state.stack_len
+      while level > u32(1) {
+        top: u32 = (level - u32(1)) * u32(8)
+        left: [8]u32 = [8]u32{ state.stack[top], state.stack[top + u32(1)], state.stack[top + u32(2)], state.stack[top + u32(3)], state.stack[top + u32(4)], state.stack[top + u32(5)], state.stack[top + u32(6)], state.stack[top + u32(7)] }
+        parent: [16]u32 = blake3_compress(BLAKE3_IV, blake3_parent_words(left, merged), u64(0), u32(64), BLAKE3_PARENT)
+        merged = blake3_first8(parent)
+        level = level - u32(1)
+      }
+      bottom: [8]u32 = [8]u32{ state.stack[0], state.stack[1], state.stack[2], state.stack[3], state.stack[4], state.stack[5], state.stack[6], state.stack[7] }
+      root = blake3_compress(BLAKE3_IV, blake3_parent_words(bottom, merged), u64(0), u32(64), BLAKE3_PARENT | BLAKE3_ROOT)
+    }
+    j: u32 = 0
+    while j < u32(8) {
+      word: u32 = root[j]
+      at: u32 = j * u32(4)
+      out[at] = u8_trunc_u32(word)
+      out[at + u32(1)] = u8_trunc_u32(word >> u32(8))
+      out[at + u32(2)] = u8_trunc_u32(word >> u32(16))
+      out[at + u32(3)] = u8_trunc_u32(word >> u32(24))
+      j = j + u32(1)
+    }
+    true
+  }
+}
+
+// One-shot BLAKE3 hash of a view into 32 bytes of caller storage.
+pub blake3: (src: []u8, out: [*]u8): Bool = blake3_final(blake3_update(blake3_init(), src), out)
