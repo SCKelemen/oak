@@ -267,11 +267,11 @@ func TestVerifyCountedLoops(t *testing.T) {
 	// A data-dependent trip count is outside the subset on either side.
 	dataLoop := "  bind w0 = a\n  bind w1 = n\n  clobber w9\n  mov w9, #0\nloop:\n  cmp w1, #0\n  b.eq done\n  add w9, w9, w0\n  sub w1, w1, #1\n  b loop\ndone:\n  mov w0, w9\n  ret"
 	trusted := verifyCase(t, "times: (a, n: u32) -> u32", "a", dataLoop)
-	if trusted.Kind != VerdictTrusted || !strings.Contains(trusted.Message, "trip count") {
+	if trusted.Kind != VerdictTrusted || !strings.Contains(trusted.Message, "data-dependent loop") {
 		t.Fatalf("a data-dependent loop must be trusted, got %s: %s", trusted.Kind, trusted.Message)
 	}
 	oakDataLoop := verifyCase(t, "times: (a, n: u32) -> u32", "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < n {\n    acc = acc + a\n    i = i + u32(1)\n  }\n  acc\n}", "  bind w0 = a\n  bind w1 = n\n  ret")
-	if oakDataLoop.Kind != VerdictTrusted || !strings.Contains(oakDataLoop.Message, "trip count") {
+	if oakDataLoop.Kind != VerdictTrusted || !strings.Contains(oakDataLoop.Message, "data-dependent loop") {
 		t.Fatalf("an Oak loop with a data-dependent count must be trusted, got %s: %s", oakDataLoop.Kind, oakDataLoop.Message)
 	}
 	// A bit loop: popcount of the low byte, eight unrolled shift-and-mask

@@ -271,7 +271,7 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
 Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.
 
-## 8. Semantic verification of asm bodies (five increments implemented)
+## 8. Semantic verification of asm bodies (six increments implemented)
 
 **Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
 with both an asm unit and an Oak fallback body, the asm gate runs the
@@ -395,9 +395,38 @@ against its Oak `while`, and run both ways; seven steps refuted with a
 concrete input; data-dependent trip counts on either side trusted; a
 three-iteration loop that branches on the input inside proven against its
 conditional accumulate (eight paths) and refuted against the unconditional
-one; nine such iterations exceed the path budget and are trusted. What remains: loops with
-data-dependent trip counts (invariants, or `BoundedLoop` bounds as the
-unrolling limit) and register-offset addressing for spans inside loops.
+one; nine such iterations exceed the path budget and are trusted. **Data-dependent loops (sixth increment).** A loop whose trip count depends
+on the inputs is summarized rather than unrolled: on meeting a `while`
+whose condition does not fold (Oak) or a recognized loop — header label,
+`cmp` + `b.cond` exit, straight-line body, unconditional back edge — whose
+exit does not fold (asm), the executor records a **loop event**: the
+loop-carried variables' values at the header, fresh symbols standing for
+them on an arbitrary iteration, the continue condition over those symbols,
+and their values after one iteration; it then continues past the loop on
+the fresh symbols (the exit sees the header values of the exiting
+iteration; asm scratch registers are unbound after the loop). Element reads
+at a symbolic index become **select** terms — evaluated through a fixed
+element-content function, and bit-blasted as uninterpreted values shared by
+selects with identical index bits (sound for equality: equal under
+independent element values means equal under every memory). Verification
+then has two layers. **Witnesses**: both sides are re-executed on small
+concrete inputs, under which the loops become counted and unroll; a
+disagreement is a mismatch with a concrete input (a stride-2 walk, summing
+indices instead of elements, returning the counter — all refuted). **The
+coupling proof** (`Oak.AssemblerSemantics.whileFuel_coupled`): each Oak
+loop variable is paired with a register of the same width whose header
+value is bit-level equal — a small search, since two zeroed counters start
+alike — and the pairing is accepted when the continue conditions are
+proven equal and one iteration provably preserves every pair; the results
+after the loops are then compared as usual over the fresh symbols. The sum
+over a view of any length, and an n-fold 64-bit accumulate, are **proven**;
+the commuted body is the same loop; a count-down asm loop against a
+count-up Oak loop cannot be coupled and is **witness-checked** (evidence,
+never a false mismatch); a loop on one side only is trusted. Executed:
+`sum` over views of length 5, 2, and 0, both ways. What remains: loops with
+forks inside their bodies, nested data-dependent loops, and loops whose
+variables the coupling cannot pair (count-down vs count-up needs an
+affine relation rather than equality).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
@@ -421,8 +450,8 @@ specification** — and three layers:
    transliterated into a Go symbolic executor.
 
 3. **Postcondition discharge.** For a body the executor can unfold
-   (straight-line, conditional selects, forward branches, span loads, and
-   counted loops all landed; data-dependent loops remain), the symbolic executor produces
+   (straight-line, conditional selects, forward branches, span loads,
+   counted loops, and coupled data-dependent loops all landed), the symbolic executor produces
    the result register's value as a bitvector term over the bound
    parameters. The Oak fallback body, when it is a pure expression over the
    same parameters (the `add_asm: ... = left + right` shape), lowers to a
