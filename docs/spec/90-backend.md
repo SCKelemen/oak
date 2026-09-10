@@ -199,14 +199,27 @@ the C compiler is never asked to inline what it cannot. The judgment is the
 discipline analyzer's call-graph and loop walk (`InlineHelperShape`), so the
 backend and the recursion policy share one authority.
 
-## 10. Owned arrays across calls
+## 10. Owned arrays as values
 
-An owned array `[N]T` is a value. A parameter of that type is received as
-const storage under a private name and copied element-wise into the named
-local before the body runs, so callee stores never alias the caller; a typed
-array literal in argument position is a C99 compound literal. Returning an
-owned array by value and copying an array binding into a record field have
-no lowering yet and are rejected by the checker with a pointer at the record
-wrapper; the by-value array representation (a struct carrying the array,
-C's own idiom) is the planned completion.
+An owned array `[N]T` is a value, and its C representation is a struct
+carrying the array: `typedef struct oak_arr_T_N { T v[ N ]; } oak_arr_T_N;`
+(`codegen/arrays.go`). The wrapper has exactly the raw array's size and
+alignment, so record layouts and the emitted `sizeof`/`offsetof` assertions
+are unchanged, and C's own struct semantics supply every copy the language
+specifies: a parameter is the callee's own copy (no copy-in prologue), a
+return is a copy, whole-array assignment and initializing a record field
+from an array binding are plain assignments, and a tagged-union payload of
+array type is stored and matched like any other. Element access spells
+`.v` before the index and keeps its bounds check (`oak_index`, `oak_store`,
+`oak_lv_idx` take the array member); `view(&a)` / `span(&a)` borrow `a.v`
+with the static length; `a[lo:hi]` over an owned array is a compound-literal
+view whose bounds are checked against the static length before the pointer
+is formed, so a slice is a value in argument position too. A typed array
+literal is a compound literal of the wrapper, `(oak_arr_u32_4){ { 1, 2, 3, 4 } }`,
+in any expression position; a declaration initializer is the brace form. The
+typedef name mangles element spellings that are not identifiers (`_Atomic u32`,
+`void *`, a nested `oak_arr_u8_16`); wrapper typedefs are placed before the
+first record, union, global, or prototype that names them, and a type that
+first appears inside a function body fails closed with an `OAK_UNSUPPORTED`
+marker rather than emitting a typedef where C forbids one.
 

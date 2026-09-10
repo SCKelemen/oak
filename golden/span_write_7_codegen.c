@@ -183,6 +183,8 @@ static inline oak_span_u8 oak_span_subslice_u8(oak_span_u8 v, u64 start, u64 n) 
   return (oak_span_u8){ v.base + start, (u32)n };
 }
 
+typedef struct oak_arr_u8_4 { u8 v[ 4 ]; } oak_arr_u8_4;
+
 /* forward declarations; OAK_INLINE marks private leaf helpers the C
    compiler must inline at every optimization level (the external
    definition is still emitted: C99 extern inline) */
@@ -211,8 +213,8 @@ i32 oak_fill( oak_span_u8 s ) {
 // @identifier: main
 // @signature: fn main() -> i32
 i32 oak_main(  ) {
-    u8 data[4] = {0};
-    oak_span_u8 s   = (oak_span_u8){ data, 4 }  ;
+    oak_arr_u8_4 data = {0};
+    oak_span_u8 s   = (oak_span_u8){ data.v, 4 }  ;
     return oak_fill( s )  ;
 }
 

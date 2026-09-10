@@ -67,6 +67,10 @@ type CodeGenerator struct {
 	// bounds-checked form. Unknown containers fail closed.
 	localTypes   map[string]localContainer
 	sliceHelpers map[string]string
+	// emittingBodies is set once function definitions begin: a type that
+	// first appears there cannot receive a file-scope typedef any more
+	// (codegen/arrays.go fails closed instead).
+	emittingBodies bool
 }
 
 // localContainer classifies a local binding for element-access lowering.
@@ -205,6 +209,9 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// Forward declarations: C requires declaration before use, and Oak
 	// functions are order-independent.
 	sliceHelperOffset := cg.output.Len()
+	// Every type a body can name has a typedef by now; a wrapper typedef
+	// requested past this point would land inside a function.
+	cg.emittingBodies = true
 	cg.emitFunctionPrototypes(program)
 	cg.emitStaticAsserts(program, tc)
 	cg.emitAsmUnits()
@@ -583,6 +590,15 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 
 	cg.types[cName] = true
 
+	// Payload types resolve before the enum opens, so a payload that is an
+	// owned array places its wrapper typedef at file scope
+	// (codegen/arrays.go) rather than inside the union.
+	for _, variant := range adt.Variants {
+		if variant.Payload != nil {
+			cg.parsePayloadType(variant.Payload)
+		}
+	}
+
 	// Emit tag enum (with proper C style spacing)
 	tagEnumName := fmt.Sprintf("%s_tag", cName)
 	cg.write(fmt.Sprintf("typedef enum %s {\n", tagEnumName))
@@ -752,22 +768,15 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		}
 	}
 
-	// Emit parameters. Owned-array parameters arrive as const storage under
-	// a private name and are copied into the named local below.
-	type arrayCopy struct {
-		element, name string
-		length        int64
-	}
-	var copies []arrayCopy
+	// Emit parameters. An owned-array parameter is a wrapper-struct value
+	// (codegen/arrays.go): C's by-value passing is the copy the language
+	// specifies, so a store in the callee never reaches the caller.
 	for i, param := range fn.Parameters {
 		if param.Variadic {
 			// The body sees a read-only view of the caller-owned argument
 			// array (docs/spec/10-syntax.md, variadic parameters).
 			viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
 			cg.write(fmt.Sprintf("%s %s", viewType, cIdent(param.Name.Value)))
-		} else if element, length, isArray := ownedArrayParameter(param.Type, cg); isArray {
-			cg.write(fmt.Sprintf("const %s oak_in_%s[%d]", element, cIdent(param.Name.Value), length))
-			copies = append(copies, arrayCopy{element: element, name: cIdent(param.Name.Value), length: length})
 		} else {
 			cg.write(cg.cParameter(param.Type, param.Name.Value))
 		}
@@ -778,11 +787,6 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	cg.write(" ) {\n")
 	cg.indentLevel++
-	for _, c := range copies {
-		// Value semantics for [N]T parameters: an element-wise copy, no libc.
-		cg.write(fmt.Sprintf("  %s %s[%d];\n", c.element, c.name, c.length))
-		cg.write(fmt.Sprintf("  for (u64 oak_k = 0; oak_k < %du; oak_k++) { %s[oak_k] = oak_in_%s[oak_k]; }\n", c.length, c.name, c.name))
-	}
 
 	cg.localTypes = cg.buildLocalTypes(fn)
 	defer func() { cg.localTypes = nil }()
@@ -1104,62 +1108,39 @@ func (cg *CodeGenerator) bindMatchContainer(name string, typ ast.Expression) fun
 // for every container type expression in the program, so later per-function
 // emission never writes a typedef mid-function.
 func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
-	emit := func(typeExpr ast.Expression) {
-		info := cg.classifyContainer(typeExpr)
-		switch info.kind {
-		case containerView:
-			cg.emitViewType(info.element)
-		case containerSpan:
-			cg.emitSpanType(info.element)
-		}
-	}
-	var walkStmt func(stmt ast.Statement)
-	walkStmt = func(stmt ast.Statement) {
-		switch s := stmt.(type) {
-		case *ast.VariableDeclaration:
-			if s.Type != nil {
-				emit(s.Type)
+	var emit func(typeExpr ast.Expression)
+	emit = func(typeExpr ast.Expression) {
+		switch t := typeExpr.(type) {
+		case *ast.FunctionTypeExpression:
+			for _, parameter := range t.Parameters {
+				emit(parameter)
 			}
-		case *ast.FunctionStatement:
-			for _, param := range s.Parameters {
-				if param.Variadic {
-					cg.emitViewType(cg.parseTypeExpression(param.Type))
-				} else if param.Type != nil {
-					emit(param.Type)
-				}
-			}
-			if block, ok := s.Body.(*ast.BlockExpression); ok && block.Block != nil {
-				for _, inner := range block.Block.Statements {
-					walkStmt(inner)
-				}
-			}
-		case *ast.WhileStatement:
-			if s.Body != nil {
-				for _, inner := range s.Body.Statements {
-					walkStmt(inner)
-				}
-			}
-		case *ast.IfStatement:
-			if s.Consequence != nil {
-				walkStmt(s.Consequence)
-			}
-			if s.Alternative != nil {
-				walkStmt(s.Alternative)
-			}
-		case *ast.BlockStatement:
-			for _, inner := range s.Statements {
-				walkStmt(inner)
-			}
-		case *ast.UnsafeBlock:
-			if s.Body != nil {
-				for _, inner := range s.Body.Statements {
-					walkStmt(inner)
-				}
+			emit(t.Return)
+		case *ast.IndexExpression:
+			info := cg.classifyContainer(t)
+			switch info.kind {
+			case containerView:
+				cg.emitViewType(info.element)
+			case containerSpan:
+				cg.emitSpanType(info.element)
+			case containerOwnedArray:
+				// Resolving the spelling places the wrapper typedef (and
+				// the typedefs of nested element arrays) at file scope.
+				cg.parseTypeExpression(t)
 			}
 		}
 	}
+	walkTypePositions(program, emit)
 	for _, stmt := range program.Statements {
-		walkStmt(stmt)
+		fn, isFunction := stmt.(*ast.FunctionStatement)
+		if !isFunction {
+			continue
+		}
+		for _, param := range fn.Parameters {
+			if param.Variadic {
+				cg.emitViewType(cg.parseTypeExpression(param.Type))
+			}
+		}
 	}
 }
 
@@ -1353,7 +1334,7 @@ func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typec
 			return
 		case containerOwnedArray:
 			cg.emitExpressionFragment(seq, tc)
-			cg.output.WriteString("[ ")
+			cg.output.WriteString(".v[ ")
 			cg.emitExpressionFragment(index, tc)
 			cg.output.WriteString(" ]")
 			return
@@ -1375,7 +1356,7 @@ func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typec
 	case containerOwnedArray:
 		cg.output.WriteString("oak_index( ")
 		cg.emitExpressionFragment(seq, tc)
-		cg.output.WriteString(fmt.Sprintf(", %d, (u64)( ", info.length))
+		cg.output.WriteString(fmt.Sprintf(".v, %d, (u64)( ", info.length))
 		cg.emitExpressionFragment(index, tc)
 		cg.output.WriteString(" ) )")
 	default:
@@ -1405,7 +1386,7 @@ func (cg *CodeGenerator) emitBorrowConstruction(kind string, call *ast.Invocatio
 	}
 	cg.output.WriteString(fmt.Sprintf("(%s){ ", structName))
 	cg.emitExpressionFragment(prefix.Right, tc)
-	cg.output.WriteString(fmt.Sprintf(", %d }", info.length))
+	cg.output.WriteString(fmt.Sprintf(".v, %d }", info.length))
 }
 
 // emitLen lowers len(x): static length for owned arrays, the len field for
@@ -1689,12 +1670,8 @@ func (cg *CodeGenerator) cParameter(typeExpr ast.Expression, name string) string
 	if fn, ok := typeExpr.(*ast.FunctionTypeExpression); ok {
 		return cg.cFunctionPointer(fn, name)
 	}
-	if element, length, isArray := ownedArrayParameter(typeExpr, cg); isArray {
-		// An owned array is a value: the caller's storage arrives const and
-		// the definition copies it in (emitFunction), so a store in the
-		// callee never reaches the caller.
-		return fmt.Sprintf("const %s %s[%d]", element, name, length)
-	}
+	// An owned array is a wrapper-struct value (codegen/arrays.go): the
+	// parameter is the callee's own copy, mutable like any local.
 	return fmt.Sprintf("%s %s", cg.parseTypeExpression(typeExpr), name)
 }
 
@@ -2209,7 +2186,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			info := cg.localContainerOf(e.Left)
 			if info.kind == containerOwnedArray {
 				cg.emitExpressionFragment(e.Left, tc)
-				cg.output.WriteString("[ oak_lv_idx( (u64)( ")
+				cg.output.WriteString(".v[ oak_lv_idx( (u64)( ")
 				cg.emitExpressionFragment(e.Index, tc)
 				cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
 			} else {
@@ -2403,13 +2380,6 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.emitExpressionFragment(operand, tc)
 				cg.output.WriteString(" ).len")
 			} else {
-				// A typed array literal in argument position is a C99
-				// compound literal, so it passes like any owned array.
-				if literal, isArray := arg.(*ast.ArrayLiteral); isArray && literal.Type != nil {
-					if element, length, ok := ownedArrayParameter(literal.Type, cg); ok {
-						cg.output.WriteString(fmt.Sprintf("(%s[%d])", element, length))
-					}
-				}
 				cg.emitExpressionFragment(arg, tc)
 			}
 			if i < len(e.Arguments)-1 {
@@ -2701,9 +2671,10 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 		}
 		// Check if this is an array type annotation
 		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
-			// Fixed-size array: [N]T
+			// Fixed-size array: [N]T is a wrapper-struct value
+			// (codegen/arrays.go), never a raw C array.
 			elementType := cg.parseTypeExpression(indexExpr.Left)
-			return fmt.Sprintf("%s[ %d ]", elementType, intLit.Value)
+			return cg.arrayTypeName(elementType, intLit.Value)
 		} else if marker, ok := indexExpr.Index.(*ast.Identifier); ok {
 			// The parser represents []T as IndexExpression{Left: T, Index: ""}
 			// and [*]T as IndexExpression{Left: T, Index: "*"}.
@@ -3033,7 +3004,7 @@ func (cg *CodeGenerator) emitLvaluePath(expr ast.Expression, tc *typechecker.Typ
 		switch info.kind {
 		case containerOwnedArray:
 			cg.emitLvaluePath(e.Left, tc)
-			cg.output.WriteString("[ oak_lv_idx( (u64)( ")
+			cg.output.WriteString(".v[ oak_lv_idx( (u64)( ")
 			cg.emitExpressionFragment(e.Index, tc)
 			cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
 		case containerSpan:
@@ -3089,6 +3060,7 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 			cg.output.WriteString(" ).base")
 		} else {
 			cg.emitLvaluePath(stmt.Target.Left, tc)
+			cg.output.WriteString(".v")
 		}
 		cg.output.WriteString("[ ")
 		cg.emitExpressionFragment(stmt.Target.Index, tc)
@@ -3112,7 +3084,7 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 		// Rvalue indexing returns a record copy, so projecting its array
 		// here would silently store into a temporary.
 		cg.emitLvaluePath(stmt.Target.Left, tc)
-		cg.output.WriteString(fmt.Sprintf(", %d, (u64)( ", info.length))
+		cg.output.WriteString(fmt.Sprintf(".v, %d, (u64)( ", info.length))
 		cg.emitExpressionFragment(stmt.Target.Index, tc)
 		cg.output.WriteString(" ), ")
 		cg.emitExpressionFragment(stmt.Value, tc)
@@ -3153,14 +3125,20 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 		return
 	}
 
-	// Owned arrays use C declarator syntax; value-less arrays are
-	// zero-filled (definite-initialization semantics pending — the backend
-	// never leaves storage uninitialized).
+	// Owned arrays are wrapper-struct values (codegen/arrays.go); value-less
+	// arrays are zero-filled (definite-initialization semantics pending —
+	// the backend never leaves storage uninitialized). A literal initializer
+	// is a brace initializer; any other initializer is a struct copy.
 	if stmt.Type != nil {
 		if info := cg.classifyContainer(stmt.Type); info.kind == containerOwnedArray {
-			cg.write(fmt.Sprintf("  %s %s[%d]", info.element, cIdent(varName), info.length))
+			cg.write(fmt.Sprintf("  %s %s", cg.parseTypeExpression(stmt.Type), cIdent(varName)))
 			if stmt.Value == nil {
-				cg.output.WriteString(" = {0}")
+				// A zero-length array has no element to zero: its wrapper
+				// takes the empty initializer ({0} names an element).
+				cg.output.WriteString(zeroArrayInitializer(info.length))
+			} else if literal, isLiteral := stmt.Value.(*ast.ArrayLiteral); isLiteral {
+				cg.output.WriteString(" = ")
+				cg.emitArrayInitializer(literal, tc)
 			} else {
 				cg.output.WriteString(" = ")
 				cg.emitExpressionFragment(stmt.Value, tc)
@@ -3253,16 +3231,29 @@ func (cg *CodeGenerator) emitIfStatement(stmt *ast.IfStatement, tc *typechecker.
 
 // emitArrayLiteral emits an array literal
 func (cg *CodeGenerator) emitArrayLiteral(expr *ast.ArrayLiteral, tc *typechecker.TypeChecker) {
-	// For now, emit as array initializer
-	// In full implementation, we'd need to determine the element type and size
-	cg.output.WriteString("{ ")
+	// A typed literal is a C99 compound literal of the wrapper struct, so it
+	// is a value in any expression position (argument, return, assignment,
+	// record field); an untyped literal is a bare initializer.
+	if expr.Type != nil {
+		if _, _, isArray := ownedArrayParameter(expr.Type, cg); isArray {
+			cg.output.WriteString(fmt.Sprintf("(%s)", cg.parseTypeExpression(expr.Type)))
+		}
+	}
+	cg.emitArrayInitializer(expr, tc)
+}
+
+// emitArrayInitializer emits the brace initializer of an owned array: the
+// outer braces initialize the wrapper struct, the inner ones its array
+// member (explicit, so no brace-elision warning is ever emitted).
+func (cg *CodeGenerator) emitArrayInitializer(expr *ast.ArrayLiteral, tc *typechecker.TypeChecker) {
+	cg.output.WriteString("{ { ")
 	for i, elem := range expr.Elements {
 		if i > 0 {
 			cg.output.WriteString(", ")
 		}
 		cg.emitExpressionFragment(elem, tc)
 	}
-	cg.output.WriteString(" }")
+	cg.output.WriteString(" } }")
 }
 
 // emitRecordLiteral emits a record literal
@@ -3436,7 +3427,7 @@ func (cg *CodeGenerator) inferLocalType(value ast.Expression) (string, bool) {
 			return "", false
 		}
 		cType := cg.parseTypeExpression(fn.ReturnType)
-		if cType == "" || cType == "void" || strings.Contains(cType, "[") {
+		if cType == "" || cType == "void" {
 			return "", false
 		}
 		return cType, true

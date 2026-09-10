@@ -163,21 +163,26 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
+typedef struct oak_arr_u8_16 { u8 v[ 16 ]; } oak_arr_u8_16;
+
+static inline u64 oak_arr_slice_low(u64 low, u64 high, u64 len) {
+  if (low > high || high > len) { __builtin_trap(); }
+  return low;
+}
+
 /* forward declarations; OAK_INLINE marks private leaf helpers the C
    compiler must inline at every optimization level (the external
    definition is still emitted: C99 extern inline) */
 #define OAK_INLINE extern inline __attribute__((always_inline))
-OAK_INLINE Bool oak_all_text( const u8 buf[16] );
+OAK_INLINE Bool oak_all_text( oak_arr_u8_16 buf );
 
 // @source: unknown.oak:1:0-4:0
 // @package: main
 // @kind: function
 // @identifier: all_text
 // @signature: fn all_text(buf: /* type */) -> Bool
-OAK_INLINE Bool oak_all_text( const u8 oak_in_buf[16] ) {
-    u8 buf[16];
-    for (u64 oak_k = 0; oak_k < 16u; oak_k++) { buf[oak_k] = oak_in_buf[oak_k]; }
-    oak_view_u8 v   = core_slice( buf, 0, 16 )  ;
+OAK_INLINE Bool oak_all_text( oak_arr_u8_16 buf ) {
+    oak_view_u8 v   = (oak_view_u8){ ( buf ).v + oak_arr_slice_low( (u64)( 0 ), (u64)( 16 ), 16 ), (u32)( (u64)( 16 ) - (u64)( 0 ) ) }  ;
     return oak_is_valid_utf8( v )  ;
 }
 

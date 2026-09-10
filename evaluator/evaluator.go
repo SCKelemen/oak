@@ -1213,6 +1213,7 @@ func evalVariantExpression(ve *ast.VariantExpression, env *object.Environment) o
 		if isError(payload) {
 			return payload
 		}
+		payload = copyValue(payload) // an aggregate payload is a value
 	}
 
 	// Create ADT value
@@ -1281,7 +1282,9 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 		if isError(fieldValue) {
 			return fieldValue
 		}
-		fields[fieldName] = fieldValue
+		// Records and owned arrays are values: the field holds its own
+		// copy, as the backend's struct member does.
+		fields[fieldName] = copyValue(fieldValue)
 	}
 
 	return &object.Record{Fields: fields}
@@ -1453,7 +1456,7 @@ func evalArrayLiteral(al *ast.ArrayLiteral, env *object.Environment) object.Obje
 		if isError(elem) {
 			return elem
 		}
-		elements = append(elements, elem)
+		elements = append(elements, copyValue(elem)) // nested aggregates are values
 	}
 
 	return &object.Array{Elements: elements}

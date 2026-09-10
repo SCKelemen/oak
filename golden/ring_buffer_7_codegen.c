@@ -163,8 +163,10 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
+typedef struct oak_arr_u8_8 { u8 v[ 8 ]; } oak_arr_u8_8;
+
 typedef struct oak_Ring_u8_8 {
-  u8 buffer[ 8 ];
+  oak_arr_u8_8 buffer;
   u32 head;
   u32 count;
 } oak_Ring_u8_8;
@@ -197,7 +199,7 @@ i32 oak_main( void );
 // @identifier: push
 // @signature: fn push(v: u8) -> ()
 OAK_INLINE void oak_push( u8 v ) {
-    oak_store( events.buffer, 8, (u64)( oak_rem_u32( oak_add_u32( events.head, events.count ), ((u32)( 8 )) ) ), v );
+    oak_store( events.buffer.v, 8, (u64)( oak_rem_u32( oak_add_u32( events.head, events.count ), ((u32)( 8 )) ) ), v );
     events.count = oak_add_u32( events.count, 1 );
 }
 
@@ -208,7 +210,7 @@ OAK_INLINE void oak_push( u8 v ) {
 // @signature: fn main() -> i32
 i32 oak_main(  ) {
 oak_push( ((u8)( 7 )) )  ;
-    return oak_add_i32( ((i32)( oak_index( events.buffer, 8, (u64)( events.head ) ) )), oak_conv_i32_bits_u32( events.count ) )  ;
+    return oak_add_i32( ((i32)( oak_index( events.buffer.v, 8, (u64)( events.head ) ) )), oak_conv_i32_bits_u32( events.count ) )  ;
 }
 
 int main(void) {

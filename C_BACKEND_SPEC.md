@@ -147,19 +147,23 @@ Notes:
 
 ### 5.1 Arrays `[N]T`
 
-Oak fixed-size arrays map directly to C arrays:
+Oak fixed-size arrays are values, carried by a wrapper struct so that C's
+struct semantics supply parameter, return, and assignment copies
+(docs/spec/90-backend.md section 10). The wrapper has the raw array's size
+and alignment:
 
 ```oak
 buf: [256]u8
-rows: [8][16]u8
 ```
 
 → C:
 
 ```c
-u8 buf[ 256 ];
-u8 rows[ 8 ][ 16 ];
+typedef struct oak_arr_u8_256 { u8 v[ 256 ]; } oak_arr_u8_256;
+oak_arr_u8_256 buf = {0};
 ```
+
+Element access spells the member: `buf.v[ i ]` under the bounds check.
 
 ### 5.2 View and Span types
 

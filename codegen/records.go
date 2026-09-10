@@ -169,8 +169,16 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 	}
 	cg.recordLayouts[typeName] = layout
 
+	// Member types resolve before the struct opens: an owned-array field's
+	// wrapper typedef (codegen/arrays.go) and a view field's typedef must
+	// precede the record that embeds them.
+	fieldTypes := make([]string, len(recordLit.FieldOrder))
+	for i, field := range recordLit.FieldOrder {
+		fieldTypes[i] = cg.parseTypeExpression(field.Value)
+	}
+
 	cg.write(fmt.Sprintf("typedef struct %s {\n", cName))
-	for _, field := range recordLit.FieldOrder {
+	for i, field := range recordLit.FieldOrder {
 		// Declared per-field alignment lands on the member declarator
 		// (GNU attribute form, valid in every mode of the recorded C
 		// targets); the offsetof assertions below make cc ratify it.
@@ -178,14 +186,7 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 		if field.Align != 0 {
 			memberAlign = fmt.Sprintf(" __attribute__((aligned(%d)))", field.Align)
 		}
-		// Array fields need the C declarator form: u8 buffer[ 16 ];
-		if indexExpr, isIndex := field.Value.(*ast.IndexExpression); isIndex {
-			if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed {
-				cg.write(fmt.Sprintf("  %s %s[ %d ]%s;\n", cg.parseTypeExpression(indexExpr.Left), cIdent(field.Name), length.Value, memberAlign))
-				continue
-			}
-		}
-		cg.write(fmt.Sprintf("  %s %s%s;\n", cg.parseTypeExpression(field.Value), cIdent(field.Name), memberAlign))
+		cg.write(fmt.Sprintf("  %s %s%s;\n", fieldTypes[i], cIdent(field.Name), memberAlign))
 	}
 	// GNU attribute syntax (GCC/Clang, the recorded C targets): the layout
 	// attributes sit between the member list and the typedef name.

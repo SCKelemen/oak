@@ -185,7 +185,7 @@ fn sum(buf: [8]u8) -> u32 {
 		"((u32)( v ).len)",
 		// A constant index below an owned array's static extent is proven
 		// (typechecker/extents.go, Oak.Extents.static_extent): direct access.
-		"buf[ 0 ]",
+		"buf.v[ 0 ]",
 		"((u32)( ",
 	} {
 		if !strings.Contains(output, wanted) {

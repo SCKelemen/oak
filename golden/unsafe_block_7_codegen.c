@@ -163,6 +163,8 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
+typedef struct oak_arr_u8_16 { u8 v[ 16 ]; } oak_arr_u8_16;
+
 typedef struct oak_span_u8 {
     u8* base;
     u32 len;
@@ -184,5 +186,5 @@ static inline oak_span_u8 oak_span_subslice_u8(oak_span_u8 v, u64 start, u64 n) 
 }
 
 /* static globals: constant-initialized, zero otherwise */
-static u8 buf[ 16 ] = {0};
+static oak_arr_u8_16 buf = {0};
 
