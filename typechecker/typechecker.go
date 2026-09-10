@@ -504,8 +504,8 @@ type TypeChecker struct {
 	// declaration bound (docs/spec/10-syntax.md section 14), and
 	// operatorCalls records, position-keyed by the operator token, the
 	// callee of every infix expression that resolved through a binding.
-	operatorBindings        map[string]string
-	operatorCalls           map[string]string
+	operatorBindings map[string]string
+	operatorCalls    map[string]string
 	// packageExports is every loaded package's member table, for uniform
 	// call syntax (docs/spec/10-syntax.md section 13).
 	packageExports          map[string]modules.Exports
