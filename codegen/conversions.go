@@ -68,40 +68,10 @@ func (cg *CodeGenerator) checkedConversionHelperSource(oakName string) string {
 	if !ok {
 		return "OAK_UNSUPPORTED_CONVERSION\n"
 	}
-	resultADT, hasResult := cg.adtTypes["Result_"+target+"_Overflow"]
-	overflowADT, hasOverflow := cg.adtTypes["Overflow"]
-	if !hasResult || !hasOverflow || len(overflowADT.Variants) == 0 {
+	resultC, okName, errName, overflowC, overflowCtor, shaped := cg.checkedResultShape(target)
+	if !shaped {
 		return fmt.Sprintf("OAK_CHECKED_CONVERSION_NEEDS_RESULT_AND_OVERFLOW(%s);\n", oakName)
 	}
-	okName, errName := "", ""
-	for _, variant := range resultADT.Variants {
-		if variant.Payload == nil {
-			continue
-		}
-		payload, isIdent := variant.Payload.(*ast.Identifier)
-		if !isIdent {
-			continue
-		}
-		if payload.Value == target {
-			okName = variant.Name.Value
-		}
-		if payload.Value == "Overflow" {
-			errName = variant.Name.Value
-		}
-	}
-	overflowCtor := ""
-	for _, variant := range overflowADT.Variants {
-		if variant.Payload == nil {
-			overflowCtor = variant.Name.Value
-			break
-		}
-	}
-	if okName == "" || errName == "" || overflowCtor == "" {
-		return fmt.Sprintf("OAK_CHECKED_CONVERSION_NEEDS_RESULT_AND_OVERFLOW(%s);\n", oakName)
-	}
-
-	resultC := cg.cTypeName("Result_" + target + "_Overflow")
-	overflowC := cg.cTypeName("Overflow")
 	targetBits := typechecker.PrimitiveBits(target)
 	var b strings.Builder
 	fmt.Fprintf(&b, "static inline %s %s( %s x ) {\n", resultC, conversionHelperName(oakName), source)

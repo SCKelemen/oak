@@ -165,6 +165,11 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 			if result, isConversion := evalConversionCall(ident.Value, node.Arguments, env); isConversion {
 				return result
 			}
+			// Checked and saturating arithmetic (docs/spec/20-types.md
+			// section 11.1a).
+			if result, isArithmetic := evalArithmeticCall(ident.Value, node.Arguments, env); isArithmetic {
+				return result
+			}
 			// Floating-point intrinsics (docs/spec/20-types.md section
 			// 11.3.5), unless a program binding shadows the name.
 			if result, isIntrinsic := evalFloatIntrinsic(ident.Value, node, env); isIntrinsic {

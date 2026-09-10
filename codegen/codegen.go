@@ -214,6 +214,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// Conversion helpers come after ADT emission: checked narrowing returns
 	// a monomorphized Result (docs/spec/20-types.md §11.1).
 	cg.emitConversionHelpers(program)
+	cg.emitArithmeticHelpers(program)
 
 	// Forward declarations: C requires declaration before use, and Oak
 	// functions are order-independent.
@@ -2297,6 +2298,11 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		// Explicit integer conversions ({target}_{op}_{source}) lower to
 		// their total two's-complement helpers.
 		if cg.emitConversionCall(e, tc) {
+			return
+		}
+		// Checked and saturating arithmetic (docs/spec/20-types.md
+		// section 11.1a) lower to their overflow-detecting helpers.
+		if cg.emitArithmeticCall(e, tc) {
 			return
 		}
 		// Floating-point intrinsics lower to their correctly rounded C99

@@ -1844,6 +1844,11 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if narrowingType := tc.checkNarrowingFunction(ident.Value, expr.Arguments); narrowingType != nil {
 			return narrowingType
 		}
+		// Checked and saturating arithmetic: u32_checked_add(a, b),
+		// i64_saturating_mul(a, b) (docs/spec/20-types.md section 11.1a).
+		if arithmeticType := tc.checkArithmeticFunction(ident.Value, expr.Arguments, expr); arithmeticType != nil {
+			return arithmeticType
+		}
 		// Floating-point intrinsics (docs/spec/20-types.md section 11.3.5):
 		// fma, sqrt, min, max, is_nan, ... unless a program binding shadows
 		// the name.

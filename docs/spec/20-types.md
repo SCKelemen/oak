@@ -326,6 +326,39 @@ of this with width-specific helpers (unsigned computation, union punning for
 signed results), never with C's promoted operators, whose signed overflow
 would be undefined.
 
+### 11.1a Checked and saturating arithmetic
+
+Wrapping is the operators' contract, not always the program's. Offsets,
+lengths, sequence numbers, and epochs must *notice* the wrap, and a guard
+written by hand before every `+` is the kind of code that is right in the
+common case and wrong at the boundary. The arithmetic family makes the
+intent a spelling, in the same `{type}_{op}_{kind}` grammar as the
+conversions:
+
+| Function | Result | Semantics |
+| --- | --- | --- |
+| `{type}_checked_add(a, b)`, `_sub`, `_mul` | `Result[type, Overflow]` | `Ok(exact)` when the mathematical result is in the type's range, `Err(Overflow)` otherwise |
+| `{type}_saturating_add(a, b)`, `_sub`, `_mul` | `type` | the exact result clamped to the type's range, on the side it left |
+
+`type` is any fixed-width integer (`u8`..`u64`, `i8`..`i64`); both operands
+have that type (untyped literals infer against it) and there is no implicit
+widening between operands — the width is stated once, in the name. The
+checked forms need the program to declare `Result[T, E]` (Ok/Err) and
+`Overflow` like the checked conversions; `import(std)` provides both.
+Saturation is defined by the exact result, so `i8_saturating_mul(-128, -1)`
+is `127` and `u32_saturating_sub(1, 2)` is `0`. There is no `wrapping`
+spelling: the operator is it.
+
+The interpreter computes the exact result in arbitrary precision and
+compares it with the range; the C backend uses the type-generic overflow
+builtins (`__builtin_add_overflow` and friends), which report whether the
+exact result fits without evaluating a signed overflow in C — the same
+gcc/clang baseline the trapping helpers already assume. Both realizations
+are exercised at every boundary value of every width by
+`compiler/e2e_checked_arithmetic_test.go`, and the differential witness
+requires them to agree. Division has no checked form: `/` and `%` already
+trap on zero and are total otherwise (`MIN / -1` is `MIN`).
+
 ### 11.2 Generic functions monomorphize
 
 ```oak
