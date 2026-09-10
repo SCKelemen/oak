@@ -11,6 +11,7 @@ package typechecker
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -95,7 +96,8 @@ func SubstituteTypeAST(expr ast.Expression, bindings map[string]ast.Expression) 
 // syntax, for substitution into templates.
 func ArgumentSpelling(arg Type) (ast.Expression, bool) {
 	if constInt, isConst := arg.(*ConstIntType); isConst {
-		return &ast.IntegerLiteral{Value: constInt.Value}, true
+		digits := strconv.FormatInt(constInt.Value, 10)
+		return &ast.IntegerLiteral{Token: token.Token{TokenKind: token.INT, Literal: digits}, Value: constInt.Value}, true
 	}
 	atom, ok := typeAtom(arg)
 	if !ok {
@@ -328,15 +330,25 @@ func (tc *TypeChecker) resolveRecordTemplateApplication(expr ast.Expression) (Ty
 		return nil, false
 	}
 	args := make([]Type, 0, len(argExprs))
+	open := false
 	for _, argExpr := range argExprs {
 		arg := tc.parseTypeExpression(argExpr)
 		if arg == nil {
 			return nil, true
 		}
+		if _, isVar := arg.(*TypeVar); isVar {
+			open = true
+		}
 		args = append(args, arg)
 	}
 	if instantiated := tc.instantiateRecordTemplate(template, args); instantiated != nil {
 		return instantiated, true
+	}
+	if open {
+		// An application over a generic function's own parameters
+		// (Ring[T, N] in a template signature) instantiates per call, once
+		// the arguments are known; nothing to report here.
+		return nil, true
 	}
 	tc.addError(expr, "cannot instantiate %s with these arguments", name)
 	return nil, true

@@ -1702,6 +1702,11 @@ func ownedArrayParameter(typeExpr ast.Expression, cg *CodeGenerator) (element st
 	if !isIndex {
 		return "", 0, false
 	}
+	// A generic application (Ring[u8, 8]) is a record, not an array whose
+	// element type happens to be indexed.
+	if _, isGeneric := cg.genericAnnotationName(typeExpr); isGeneric {
+		return "", 0, false
+	}
 	intLit, isLit := indexExpr.Index.(*ast.IntegerLiteral)
 	if !isLit {
 		return "", 0, false

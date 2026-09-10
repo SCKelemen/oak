@@ -727,11 +727,38 @@ func (tc *TypeChecker) addError(node ast.Node, format string, args ...interface{
 // CheckProgram type checks a program
 func typeParamsConstrained(params []*ast.TypeParameter) bool {
 	for _, param := range params {
-		if param != nil && param.Constraint != nil {
+		if param != nil && param.Constraint != nil && !isConstParameter(param) {
 			return true
 		}
 	}
 	return false
+}
+
+// constParameterKinds are the integer kinds a const parameter may declare
+// (docs/spec/20-types.md section 11.0): `N: u32` is a value parameter, not
+// an interface constraint.
+var constParameterKinds = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true,
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"int": true, "uint": true, "ptr": true, "uptr": true, "byte": true, "rune": true,
+}
+
+// isConstParameter reports whether a type parameter declares an integer
+// kind and so ranges over integer constants.
+func isConstParameter(param *ast.TypeParameter) bool {
+	if param == nil || param.Constraint == nil {
+		return false
+	}
+	kind, isIdent := param.Constraint.(*ast.Identifier)
+	return isIdent && constParameterKinds[kind.Value]
+}
+
+// constParameterKind returns the declared integer kind of a const parameter.
+func constParameterKind(param *ast.TypeParameter) string {
+	if kind, isIdent := param.Constraint.(*ast.Identifier); isIdent {
+		return kind.Value
+	}
+	return ""
 }
 
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
@@ -902,7 +929,7 @@ func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
 			return // full check reports the malformed declaration
 		}
 		typeVars = append(typeVars, parameter.Name.Value)
-		if parameter.Constraint != nil {
+		if parameter.Constraint != nil && !isConstParameter(parameter) {
 			interfaces := tc.extractInterfacesFromConstraint(parameter.Constraint)
 			if len(interfaces) > 0 {
 				constraints = append(constraints, Constraint{
@@ -1046,7 +1073,7 @@ func (tc *TypeChecker) predeclaredMethodBarrierScheme(fn *ast.FunctionStatement)
 			return nil
 		}
 		typeVars = append(typeVars, parameter.Name.Value)
-		if parameter.Constraint != nil {
+		if parameter.Constraint != nil && !isConstParameter(parameter) {
 			interfaces := tc.extractInterfacesFromConstraint(parameter.Constraint)
 			if len(interfaces) > 0 {
 				constraints = append(constraints, Constraint{
@@ -3595,7 +3622,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 			// Extract constraint if present
 			// Constraints can be single interfaces or intersections (A & B & C)
-			if tp.Constraint != nil {
+			if tp.Constraint != nil && !isConstParameter(tp) {
 				interfaces := tc.extractInterfacesFromConstraint(tp.Constraint)
 				if len(interfaces) > 0 {
 					constraints = append(constraints, Constraint{

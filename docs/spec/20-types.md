@@ -264,6 +264,20 @@ emitted `sizeof`/`offsetof` assertions). Template knowledge disambiguates
 applications from array syntax, so a const parameter cannot be the sole
 argument of an unknown name; `%` is the modulo operator these shapes want.
 
+Const parameters also range over **functions**. A type parameter declared
+with an integer kind is a value parameter: `sum[N: u32]: (v: [N]u32): u32`
+takes one instantiation per length. The argument is inferred from an owned
+array's static length (`sum(a)` with `a: [3]u32` binds `N := 3`) or from a
+const-parameterized record's instantiation (`size[T, N: u32]: (r: Ring[T,
+N])` recovers both arguments from a `Ring[u8, 8]`), or given explicitly
+(`sum[3](a)`). Each instantiation is its own monomorphized function, named
+like a record instantiation (`sum_3`); inside the body `N` is an integer
+constant of the declared kind, typed by literal-in-context inference. An
+explicit argument must be an integer constant within the kind, one const
+parameter cannot be bound to two lengths, and a type argument in a const
+position is an error. Const parameters carry no resource authority, so
+instantiating at two lengths in one scope is ordinary reuse.
+
 ### 11.1 Explicit integer conversions
 
 Implicit conversion is limited to value-preserving widening within one
