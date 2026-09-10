@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/compiler"
+	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/packageapi"
 	"github.com/SCKelemen/oak/repl"
@@ -81,6 +82,17 @@ func main() {
 	repl.Start(os.Stdin, os.Stdout)
 }
 
+// reportAsmVerdict prints the assembler's verification verdicts
+// (docs/spec/94-assembler.md §8) — proven, witness-checked, or trusted —
+// which never reject a build but are the reader's evidence that an asm
+// unit matches its Oak fallback body. Mismatches are errors and arrive
+// through the compilation's error instead.
+func reportAsmVerdict(d *diagnostic.Diagnostic) {
+	if d.Source == "asm" && d.Severity == diagnostic.SeverityInformation {
+		fmt.Fprintf(os.Stderr, "asm: %s\n", d.Message)
+	}
+}
+
 // buildPackage implements `oak build [-o out.c] [dir]`: the package at dir
 // (default ".") and everything it imports, resolved through the enclosing
 // module's oak.mod (docs/spec/83-modules.md), compile to one C translation
@@ -119,7 +131,7 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
 		return 2
 	}
-	comp := compiler.New().WithPackageDir(dir).WithProfile(profile)
+	comp := compiler.New().WithPackageDir(dir).WithProfile(profile).WithDiagnosticSink(reportAsmVerdict)
 	if lines {
 		comp = comp.WithLineDirectives()
 	}
@@ -508,7 +520,7 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak run: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
 		return 2
 	}
-	code, err := compiler.New().WithPackageDir(dir).WithProfile(profile).EmitC().Get()
+	code, err := compiler.New().WithPackageDir(dir).WithProfile(profile).WithDiagnosticSink(reportAsmVerdict).EmitC().Get()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1

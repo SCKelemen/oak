@@ -200,6 +200,13 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   under `frame 160`, a flags/label loop, and a 2 KiB-aligned sixteen-entry
   `eret` vector table (assembled, its extents checked statically).
 
+- **Units beside the sources.** A package build (`oak build`, `oak run`,
+  `Compilation.WithPackageDir`) picks up every `*.oakasm` in the root
+  package's directory; each unit function pairs with the package's
+  definition-less declaration of the same name, or with a defined function
+  as its fallback body. Verification verdicts (§8) are informational
+  diagnostics the CLI prints as `asm: …` lines; a mismatch is an error.
+  `examples/asm` is the reference: four kernels, all proven, run both ways.
 - **Typed pointer memory.** A span (`[*]T`) or view (`[]T`) parameter of
   fixed-width elements crosses as its `{base, u32 len}` pair and binds
   both registers explicitly — `bind x0, w1 = frame` (the base pointer,
@@ -447,8 +454,21 @@ The exit comparison in loop mode never reports a symbolic disagreement as a
 mismatch (the state may be unreachable); only the concrete layer refutes.
 A count-down asm loop (`w1 = n - i`, under `i ≤ n`) and an inclusive
 1-based counter (`w9 = i + 1`) are now proven against the count-up Oak
-loop. What remains: nested data-dependent loops, and relations beyond
-affine ones (scaled counters, byte offsets).
+loop. **Nested loops**: the events form a tree in creation order with
+parent links on both sides — an inner loop met while executing the outer
+body is summarized in place, with fresh symbols namespaced per event
+(`loop2.j`), and the body continues at its exit; the asm shape admits
+recognized inner loops inside a body, and Oak loop bodies admit local
+declarations (a body-local counter is the body's own, not an outer
+loop-carried variable). The coupling pairs every event's variables in one
+search (an inner header mentions the outer symbols, so candidates are read
+under the substitution so far) and checks each event under its premise:
+its invariant and guard, its ancestors' invariants and guards, and its
+children's exit premises — an outer body's successors mention the inner
+loops' exit symbols. The nested `n × m` counter and row sums over a view
+are proven; an inner stride of two is refuted on a concrete input; loops
+that nest differently on the two sides are trusted. What remains:
+relations beyond affine ones (scaled counters, byte offsets).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

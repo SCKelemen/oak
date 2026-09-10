@@ -581,7 +581,8 @@ type pathExecutor struct {
 	declared    map[string]int   // parameter -> declared width
 	concrete    bool             // a witness run: every input is a constant
 	loopExits   map[int]loopShape
-	loop        *loopEvent // the one data-dependent loop met, if any
+	loops       []*loopEvent // data-dependent loops met, in creation order
+	loopStack   []int        // indices of the loops whose bodies are being executed
 	paths       int
 	steps       int
 }
@@ -823,13 +824,14 @@ var oakComparisons = map[string][2]string{
 // signedness (i8/i16/i32/i64 compare signed, everything else unsigned),
 // and the span/view parameters with their element widths.
 type oakLowering struct {
-	params   map[string]int
-	signed   map[string]bool
-	spans    map[string]spanContract
-	locals   map[string]*oakLocal // statement-body locals, in declaration scope
-	concrete map[string]uint64    // a witness run: parameters are these constants
-	loop     *loopEvent           // the one data-dependent loop met, if any
-	fresh    map[string]int       // loop-carried fresh symbols -> width
+	params    map[string]int
+	signed    map[string]bool
+	spans     map[string]spanContract
+	locals    map[string]*oakLocal // statement-body locals, in declaration scope
+	concrete  map[string]uint64    // a witness run: parameters are these constants
+	loops     []*loopEvent         // data-dependent loops met, in creation order
+	loopStack []int                // indices of the loops whose bodies are being lowered
+	fresh     map[string]int       // loop-carried fresh symbols -> width
 }
 
 // oakLocal is a typed local of a statement body: its current symbolic
@@ -946,6 +948,20 @@ func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
 			if reason, ok := lo.lowerWhile(s); !ok {
 				return reason, false
 			}
+		case *ast.VariableDeclaration:
+			// A body-local (the inner loop's counter), redeclared each iteration.
+			if s.Value == nil || s.Type == nil {
+				return "a local without both a type and an initializer", false
+			}
+			w, signed, ok := scalarType(s.Type)
+			if !ok {
+				return fmt.Sprintf("a local of type %s", typeText(s.Type)), false
+			}
+			value, reason, ok := lo.lower(s.Value, w)
+			if !ok {
+				return reason, false
+			}
+			lo.locals[s.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
 		case *ast.ExpressionStatement:
 			match, isMatch := s.Expression.(*ast.MatchExpression)
 			if !isMatch {
@@ -1400,7 +1416,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
-	if exec.loop != nil || lowering.loop != nil {
+	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
 		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 	}
 	return decideEqual(fn, lowering, asmTerm, oakTerm, width, "")

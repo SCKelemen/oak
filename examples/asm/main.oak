@@ -1,0 +1,45 @@
+// Verified assembly units (docs/spec/94-assembler.md).
+//
+// Each function below has an Oak body — the specification, and the
+// portable fallback — and an AArch64 body in kernels.arm64.oakasm. The
+// build pairs them by name, the seam checker admits the asm (bindings,
+// widths, clobbers, the span guard), and the verifier proves the asm equal
+// to the Oak body: `oak run examples/asm` prints one verdict per function.
+
+// A bit-field extractor: the two bits above bit 3 of a system register value.
+field: (hcr: u64) -> u64 = (hcr >> 3) & u64(3)
+
+// Saturating add: the sum, or the maximum on wrap-around.
+sat_add: (a, b: u32) -> u32 = a + b < a ? u32(0xFFFFFFFF) | a + b
+
+// Unsigned maximum.
+max32: (a, b: u32) -> u32 = a < b ? b | a
+
+// A checksum over a view of any length: the data-dependent loop is proven
+// by coupling the Oak locals to the asm registers.
+checksum: (v: []u32) -> u32 {
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < len(v) {
+    acc = acc + v[i]
+    i = i + u32(1)
+  }
+  acc
+}
+
+main: (): i32 {
+  assert(field(u64(0x18)) == u64(3))
+  assert(field(u64(0x8000009)) == u64(1))
+  assert(sat_add(u32(40), u32(2)) == u32(42))
+  assert(sat_add(u32(0xFFFFFFF0), u32(0x20)) == u32(0xFFFFFFFF))
+  assert(max32(u32(7), u32(42)) == u32(42))
+  buf: [4]u32
+  buf[0] = u32(10)
+  buf[1] = u32(20)
+  buf[2] = u32(5)
+  buf[3] = u32(7)
+  whole: []u32 = view(&buf)
+  assert(checksum(whole) == u32(42))
+  assert(checksum(subslice(whole, u32(0), u32(0))) == u32(0))
+  42
+}

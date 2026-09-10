@@ -106,7 +106,12 @@ point_format: (v: Point, dst: [*]u8): Result[u32, TextError] = derive.format
 
 The REPL is module-aware: it compiles every input through the same pipeline,
 resolves imports through the working directory's `oak.mod`, and `:obligations`
-lists the recorded assumptions the checker could not discharge.
+lists the recorded assumptions the checker could not discharge. `:lean
+obligations.lean` states those assumptions as Lean theorems over the models in
+`spec/lean` (loop termination over `Oak.Loops`, tail cycles over
+`Oak.Discipline`, region disjointness over `Oak.Regions`) for you to prove
+there; see `spec/lean/Oak/SessionObligationsProved.lean` for the discharged
+example.
 
 ### Comments
 

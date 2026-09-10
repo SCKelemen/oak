@@ -184,6 +184,53 @@ func refSinCos(x float64) (*big.Float, *big.Float) {
 	}
 }
 
+// refPi is pi at the reference precision.
+func refPi() *big.Float { return bigAt(referencePrecision).Set(bigPi()) }
+
+// refAtan is atan x: |x| > 1 goes through pi/2 - atan(1/|x|), the argument
+// is halved by atan t = 2 atan(t / (1 + sqrt(1 + t^2))) until |t| < 2^-8,
+// and the Taylor series finishes.
+func refAtan(x *big.Float) *big.Float {
+	t := bigAt(referencePrecision).Abs(x)
+	invert := t.Cmp(bigAt(referencePrecision).SetInt64(1)) > 0
+	if invert {
+		t.Quo(bigAt(referencePrecision).SetInt64(1), t)
+	}
+	halvings := 0
+	threshold := bigAt(referencePrecision).SetMantExp(bigAt(referencePrecision).SetInt64(1), -8)
+	for t.Sign() != 0 && t.Cmp(threshold) > 0 {
+		t2 := bigAt(referencePrecision).Mul(t, t)
+		root := bigAt(referencePrecision).Sqrt(t2.Add(t2, bigAt(referencePrecision).SetInt64(1)))
+		t.Quo(t, root.Add(root, bigAt(referencePrecision).SetInt64(1)))
+		halvings++
+	}
+	t2 := bigAt(referencePrecision).Mul(t, t)
+	sum := bigAt(referencePrecision).Set(t)
+	power := bigAt(referencePrecision).Set(t)
+	for k := 1; k < 400; k++ {
+		power.Mul(power, t2)
+		term := bigAt(referencePrecision).Quo(power, bigAt(referencePrecision).SetInt64(int64(2*k+1)))
+		if k%2 == 1 {
+			sum.Sub(sum, term)
+		} else {
+			sum.Add(sum, term)
+		}
+		if term.Sign() == 0 || term.MantExp(nil)-sum.MantExp(nil) < -referencePrecision-8 {
+			break
+		}
+	}
+	sum.SetMantExp(sum, halvings)
+	if invert {
+		halfPi := refPi()
+		halfPi.Quo(halfPi, bigAt(referencePrecision).SetInt64(2))
+		sum.Sub(halfPi, sum)
+	}
+	if x.Sign() < 0 {
+		sum.Neg(sum)
+	}
+	return sum
+}
+
 // refPow is x^y for finite x > 0 and finite y as exp(y ln x); results
 // beyond every format's range are reported exactly.
 func refPow(x, y float64) (exact float64, ref *big.Float, isExact bool) {
@@ -214,6 +261,9 @@ func mathReference(name string, x, y float64) (exact float64, ref *big.Float, is
 	if name == "pow" {
 		return powReference(x, y)
 	}
+	if name == "atan2" {
+		return atan2Reference(x, y)
+	}
 	if math.IsNaN(x) {
 		return math.NaN(), nil, true
 	}
@@ -223,9 +273,9 @@ func mathReference(name string, x, y float64) (exact float64, ref *big.Float, is
 	// ulp), and cos x is 1.
 	if x != 0 && math.Abs(x) < 0x1p-60 {
 		switch name {
-		case "expm1", "tanh", "log1p", "sin", "tan":
+		case "expm1", "tanh", "log1p", "sin", "tan", "atan", "asin", "sinh", "asinh", "atanh":
 			return x, nil, true
-		case "cos":
+		case "cos", "cosh":
 			return 1, nil, true
 		}
 	}
@@ -317,8 +367,164 @@ func mathReference(name string, x, y float64) (exact float64, ref *big.Float, is
 		default:
 			return 0, bigAt(referencePrecision).Quo(s, c), false
 		}
+	case "atan":
+		if math.IsInf(x, 0) {
+			half := refPi()
+			half.Quo(half, bigAt(referencePrecision).SetInt64(2))
+			if x < 0 {
+				half.Neg(half)
+			}
+			return 0, half, false
+		}
+		if x == 0 {
+			return x, nil, true
+		}
+		return 0, refAtan(bx), false
+	case "asin", "acos":
+		if math.Abs(x) > 1 {
+			return math.NaN(), nil, true
+		}
+		if name == "acos" && x == 1 {
+			return 0, nil, true
+		}
+		if name == "asin" && x == 0 {
+			return x, nil, true
+		}
+		// asin x = atan(x / sqrt(1 - x^2)); acos x = pi/2 - asin x
+		var asin *big.Float
+		if math.Abs(x) == 1 {
+			asin = refPi()
+			asin.Quo(asin, bigAt(referencePrecision).SetInt64(2))
+			if x < 0 {
+				asin.Neg(asin)
+			}
+		} else {
+			one := bigAt(referencePrecision).SetInt64(1)
+			den := bigAt(referencePrecision).Sqrt(one.Sub(one, bigAt(referencePrecision).Mul(bx, bx)))
+			asin = refAtan(bigAt(referencePrecision).Quo(bx, den))
+		}
+		if name == "asin" {
+			return 0, asin, false
+		}
+		half := refPi()
+		half.Quo(half, bigAt(referencePrecision).SetInt64(2))
+		return 0, half.Sub(half, asin), false
+	case "sinh", "cosh":
+		if math.IsInf(x, 0) {
+			if name == "sinh" {
+				return x, nil, true
+			}
+			return math.Inf(1), nil, true
+		}
+		if x == 0 {
+			if name == "sinh" {
+				return x, nil, true
+			}
+			return 1, nil, true
+		}
+		if math.Abs(x) > 712 {
+			if name == "sinh" {
+				return math.Copysign(math.Inf(1), x), nil, true
+			}
+			return math.Inf(1), nil, true
+		}
+		e := refExp(bx)
+		inverse := bigAt(referencePrecision).Quo(bigAt(referencePrecision).SetInt64(1), e)
+		v := bigAt(referencePrecision)
+		if name == "sinh" {
+			v.Sub(e, inverse)
+		} else {
+			v.Add(e, inverse)
+		}
+		return 0, v.Quo(v, bigAt(referencePrecision).SetInt64(2)), false
+	case "asinh":
+		if math.IsInf(x, 0) || x == 0 {
+			return x, nil, true
+		}
+		ax := bigAt(referencePrecision).Abs(bx)
+		root := bigAt(referencePrecision).Mul(ax, ax)
+		root.Sqrt(root.Add(root, bigAt(referencePrecision).SetInt64(1)))
+		v := refLog(root.Add(root, ax))
+		if x < 0 {
+			v.Neg(v)
+		}
+		return 0, v, false
+	case "acosh":
+		if x < 1 {
+			return math.NaN(), nil, true
+		}
+		if x == 1 {
+			return 0, nil, true
+		}
+		if math.IsInf(x, 1) {
+			return math.Inf(1), nil, true
+		}
+		root := bigAt(referencePrecision).Mul(bx, bx)
+		root.Sqrt(root.Sub(root, bigAt(referencePrecision).SetInt64(1)))
+		return 0, refLog(root.Add(root, bx)), false
+	case "atanh":
+		if math.Abs(x) > 1 {
+			return math.NaN(), nil, true
+		}
+		if math.Abs(x) == 1 {
+			return math.Copysign(math.Inf(1), x), nil, true
+		}
+		if x == 0 {
+			return x, nil, true
+		}
+		one := bigAt(referencePrecision).SetInt64(1)
+		num := bigAt(referencePrecision).Add(one, bx)
+		den := bigAt(referencePrecision).Sub(one, bx)
+		v := refLog(num.Quo(num, den))
+		return 0, v.Quo(v, bigAt(referencePrecision).SetInt64(2)), false
 	}
 	panic("unknown function " + name)
+}
+
+// atan2Reference applies the C99 Annex F.9.1.4 special cases of atan2(y, x)
+// before delegating to refAtan; the arguments arrive as (x=y, y=x) in the
+// case's field order, that is, the case's x is the first argument y.
+func atan2Reference(y, x float64) (exact float64, ref *big.Float, isExact bool) {
+	pi := func(scale float64, sign float64) (float64, *big.Float, bool) {
+		v := refPi()
+		v.Mul(v, bigAt(referencePrecision).SetFloat64(scale))
+		if sign < 0 || (sign == 0 && math.Signbit(sign)) {
+			v.Neg(v)
+		}
+		return 0, v, false
+	}
+	switch {
+	case math.IsNaN(x) || math.IsNaN(y):
+		return math.NaN(), nil, true
+	case y == 0:
+		if x > 0 || (x == 0 && !math.Signbit(x)) {
+			return y, nil, true
+		}
+		return pi(1, y)
+	case x == 0:
+		return pi(0.5, y)
+	case math.IsInf(x, 1):
+		if math.IsInf(y, 0) {
+			return pi(0.25, y)
+		}
+		return math.Copysign(0, y), nil, true
+	case math.IsInf(x, -1):
+		if math.IsInf(y, 0) {
+			return pi(0.75, y)
+		}
+		return pi(1, y)
+	case math.IsInf(y, 0):
+		return pi(0.5, y)
+	}
+	ratio := bigAt(referencePrecision).Quo(bigAt(referencePrecision).SetFloat64(math.Abs(y)), bigAt(referencePrecision).SetFloat64(math.Abs(x)))
+	a := refAtan(ratio)
+	if x < 0 {
+		a.Sub(refPi(), a)
+	}
+	if y < 0 {
+		a.Neg(a)
+	}
+	return 0, a, false
 }
 
 // powReference applies the IEEE 754-2019 / C99 Annex F.9.4.4 special cases
@@ -414,8 +620,12 @@ type mathCase struct {
 	function string
 	width    int
 	x        float64
-	y        float64 // second argument of pow only
+	y        float64 // second argument of the two-argument functions only
 }
+
+// twoArgument names the library functions of two arguments; for pow the
+// arguments are (x, y), for atan2 they are (y, x) in that order.
+var twoArgument = map[string]bool{"pow": true, "atan2": true}
 
 // nearestMultipleOfHalfPi is the f64 nearest to k pi/2: the hardest
 // arguments for the reduction, whose true remainders are far smaller than
@@ -488,6 +698,35 @@ func mathCorpus(rng *rand.Rand) []mathCase {
 		for _, p := range powPairs {
 			addPow(width, p[0], p[1])
 		}
+		atanPoints := []float64{0, negZero, 1e-10, -1e-10, 1e-20, 0.4374, 0.4375, 0.4376, 0.6875, 0.6874, 1, -1, 1.1875, 1.1874, 2.4375, 2.4374, 3, 10, 1e6,
+			1e10, 7.378697629483821e19, 1e300, inf, -inf, nan, 5e-324, 0.5, 1.5, -2.5}
+		add("atan", width, atanPoints...)
+		asinPoints := []float64{0, negZero, 1e-10, -1e-10, 1e-20, 0.25, -0.25, 0.5, -0.5, 0.4999999, 0.75, 0.975, 0.9750001, 0.9749999, 0.99, 0.999999, 0.9999999999999999,
+			-0.9999999999999999, 1, -1, 1.0000001, -1.5, inf, -inf, nan, 5e-324, 6.938893903907228e-18, 0.7071067811865476}
+		add("asin", width, asinPoints...)
+		add("acos", width, asinPoints...)
+		atan2Pairs := [][2]float64{{0, 1}, {negZero, 1}, {0, -1}, {negZero, -1}, {0, 0}, {0, negZero}, {negZero, 0}, {negZero, negZero}, {1, 0}, {-1, 0}, {1, negZero}, {-1, negZero},
+			{1, inf}, {-1, inf}, {1, -inf}, {-1, -inf}, {inf, 1}, {-inf, 1}, {inf, -1}, {inf, inf}, {-inf, inf}, {inf, -inf}, {-inf, -inf}, {nan, 1}, {1, nan},
+			{1, 1}, {-1, 1}, {1, -1}, {-1, -1}, {3, 4}, {-3, 4}, {3, -4}, {-3, -4}, {1e-300, 1}, {1, 1e-300}, {1e300, 1e-300}, {1e-300, -1}, {1e-20, -1e10}, {2, 1},
+			{0.5, 2}, {7, -0.001}, {-1e10, 1e-10}, {1e-320, 1e-320}, {1, 1.0000000000000002}, {0.1, 0.3}}
+		for _, p := range atan2Pairs {
+			x, y := p[0], p[1]
+			if width == 32 {
+				x = float64(float32(x))
+				y = float64(float32(y))
+			}
+			cases = append(cases, mathCase{function: "atan2", width: width, x: x, y: y})
+		}
+		hyperbolicPoints := []float64{0, negZero, 1e-10, -1e-10, 1e-20, 0.1, -0.1, 0.5, 0.6931471805599453, 0.7, 1, -1, 2, 10, 22, 22.5, 30, -30, 100, 700, 709.7, 710.4, 710.5, 711, -711,
+			1000, inf, -inf, nan, 5e-324, 1.4901161193847656e-08}
+		if width == 32 {
+			hyperbolicPoints = append(hyperbolicPoints, 88.7, 89.5, -89.5, 90)
+		}
+		add("sinh", width, hyperbolicPoints...)
+		add("cosh", width, hyperbolicPoints...)
+		add("asinh", width, 0, negZero, 1e-10, -1e-10, 1e-20, 0.1, 0.125, 0.3, 0.5, -0.5, 1, -1, 1.5, 2, 3, 10, 67108864, 67108863, 1e10, 1e300, -1e300, inf, -inf, nan, 5e-324, 1.4901161193847656e-08)
+		add("acosh", width, 1, 1.0000001, 1.0000000000000002, 1.05, 1.125, 1.126, 1.5, 2, 3, 10, 67108864, 67108863, 1e10, 1e300, inf, 0.5, 0, -1, -inf, nan)
+		add("atanh", width, 0, negZero, 1e-10, -1e-10, 1e-20, 0.1, 0.25, 0.4999999, 0.5, 0.5000001, 0.75, 0.9, 0.999, 0.9999999, 0.9999999999999999, 1, -1, 1.5, -1.5, inf, nan, 5e-324, 2.3283064365386963e-10)
 		for i := 0; i < 40; i++ {
 			// log-uniform magnitudes with random sign
 			mag := math.Pow(10, rng.Float64()*8-4)
@@ -532,17 +771,48 @@ func mathCorpus(rng *rand.Rand) []mathCase {
 			addPow(width, base, exponent)
 			addPow(width, -base, math.Trunc(exponent))
 			addPow(width, 1+(rng.Float64()*2-1)*1e-6, (rng.Float64()*2-1)*1e6)
+			// inverse trigonometric and hyperbolic
+			add("atan", width, mag)
+			unit := rng.Float64()*2 - 1
+			nearOne := math.Copysign(1-math.Pow(10, -rng.Float64()*15), unit)
+			if width == 32 {
+				nearOne = math.Copysign(1-math.Pow(10, -rng.Float64()*7), unit)
+			}
+			add("asin", width, unit, nearOne)
+			add("acos", width, unit, nearOne)
+			add("atanh", width, unit, nearOne)
+			other := math.Pow(10, rng.Float64()*8-4)
+			if rng.Intn(2) == 1 {
+				other = -other
+			}
+			second := other
+			if width == 32 {
+				second = float64(float32(other))
+			}
+			cases = append(cases, mathCase{function: "atan2", width: width, x: magAsWidth(mag, width), y: second})
+			add("sinh", width, mag*math.Min(1, 700/math.Abs(mag)))
+			add("cosh", width, mag*math.Min(1, 700/math.Abs(mag)))
+			add("asinh", width, mag)
+			add("acosh", width, 1+math.Abs(mag))
 		}
 	}
 	return cases
 }
 
+// magAsWidth rounds an argument to the case's width.
+func magAsWidth(v float64, width int) float64 {
+	if width == 32 {
+		return float64(float32(v))
+	}
+	return v
+}
+
 func (c mathCase) call() string {
-	if c.function == "pow" {
+	if twoArgument[c.function] {
 		if c.width == 32 {
-			return fmt.Sprintf("math.pow_f32(f32_bits_u32(u32(%d)), f32_bits_u32(u32(%d)))", math.Float32bits(float32(c.x)), math.Float32bits(float32(c.y)))
+			return fmt.Sprintf("math.%s_f32(f32_bits_u32(u32(%d)), f32_bits_u32(u32(%d)))", c.function, math.Float32bits(float32(c.x)), math.Float32bits(float32(c.y)))
 		}
-		return fmt.Sprintf("math.pow(f64_bits_u64(u64(%d)), f64_bits_u64(u64(%d)))", math.Float64bits(c.x), math.Float64bits(c.y))
+		return fmt.Sprintf("math.%s(f64_bits_u64(u64(%d)), f64_bits_u64(u64(%d)))", c.function, math.Float64bits(c.x), math.Float64bits(c.y))
 	}
 	if c.width == 32 {
 		return fmt.Sprintf("math.%s_f32(f32_bits_u32(u32(%d)))", c.function, math.Float32bits(float32(c.x)))
@@ -558,18 +828,22 @@ func (c mathCase) bitsExpression() string {
 }
 
 func (c mathCase) String() string {
-	if c.function == "pow" {
-		return fmt.Sprintf("pow/f%d(%v, %v)", c.width, c.x, c.y)
+	if twoArgument[c.function] {
+		return fmt.Sprintf("%s/f%d(%v, %v)", c.function, c.width, c.x, c.y)
 	}
 	return fmt.Sprintf("%s/f%d(%v)", c.function, c.width, c.x)
 }
 
 // mathBounds are the documented error bounds in ulps (stdlib/math.oak).
 // tanh composes expm1 with a division and reaches about 1.5 ulp in the
-// |x| < 1 path (fdlibm), so its contract is 2.
+// |x| < 1 path (fdlibm), so its contract is 2; atan2 adds the pi correction
+// to atan's error and is observed near 1 ulp; the hyperbolics and their
+// inverses are compositions of exp, expm1, log, and log1p.
 var mathBounds = map[string]float64{
 	"exp": 1, "exp2": 1, "expm1": 1, "log": 1, "log2": 1, "log1p": 1, "tanh": 2,
 	"sin": 1, "cos": 1, "tan": 1, "pow": 1,
+	"atan": 1, "atan2": 2, "asin": 1, "acos": 1,
+	"sinh": 2, "cosh": 2, "asinh": 2, "acosh": 2, "atanh": 2,
 }
 
 func TestMathLibraryFourthWitness(t *testing.T) {
