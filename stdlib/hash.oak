@@ -1,0 +1,178 @@
+// Hashes in Oak: SHA-256 (FIPS 180-4) and CRC-32C (Castagnoli, the iSCSI and
+// ext4 polynomial). Both are written over Oak's total fixed-width
+// arithmetic — wrapping adds, checked shifts, rotations built from shifts —
+// so the interpreter and every backend compute the same bits, and both work
+// entirely in caller-owned or bounded local storage: no allocation, every
+// store bounds-checked. A storage engine's frame check and hash chain need
+// exactly these two, and `oak test` can check its conformance vectors
+// without calling out to a foreign implementation.
+//
+// SHA-256 is incremental: `sha256_init`, `sha256_update` over any number of
+// byte views, `sha256_final` into 32 bytes of caller storage; `sha256` is the
+// one-shot form. CRC-32C is a running value: `crc32c` over a view, and
+// `crc32c_update(crc, view)` to continue a checksum across pieces, so
+// `crc32c_update(crc32c(a), b)` is the checksum of the concatenation.
+package hash
+
+// The SHA-256 round constants: the first 32 bits of the fractional parts of
+// the cube roots of the first 64 primes (FIPS 180-4 section 4.2.2).
+SHA256_K: [64]u32 = [64]u32{
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+}
+
+// Rotate right by 1..31 bits; both shifts stay below the width, so neither traps.
+rotr32: (x: u32, n: u32): u32 = (x >> n) | (x << (u32(32) - n))
+
+// One compression of a 64-byte block into the eight working words
+// (FIPS 180-4 section 6.2.2). The block and the state pass by value.
+sha256_compress: (h: [8]u32, block: [64]u8): [8]u32 {
+  w: [64]u32
+  i: u32 = 0
+  while i < u32(16) {
+    at: u32 = i * u32(4)
+    w[i] = (u32(block[at]) << u32(24)) | (u32(block[at + u32(1)]) << u32(16)) | (u32(block[at + u32(2)]) << u32(8)) | u32(block[at + u32(3)])
+    i = i + u32(1)
+  }
+  while i < u32(64) {
+    w15: u32 = w[i - u32(15)]
+    w2: u32 = w[i - u32(2)]
+    s0: u32 = rotr32(w15, u32(7)) ^ rotr32(w15, u32(18)) ^ (w15 >> u32(3))
+    s1: u32 = rotr32(w2, u32(17)) ^ rotr32(w2, u32(19)) ^ (w2 >> u32(10))
+    w[i] = w[i - u32(16)] + s0 + w[i - u32(7)] + s1
+    i = i + u32(1)
+  }
+  a: u32 = h[0]
+  b: u32 = h[1]
+  c: u32 = h[2]
+  d: u32 = h[3]
+  e: u32 = h[4]
+  f: u32 = h[5]
+  g: u32 = h[6]
+  hh: u32 = h[7]
+  i = u32(0)
+  while i < u32(64) {
+    big1: u32 = rotr32(e, u32(6)) ^ rotr32(e, u32(11)) ^ rotr32(e, u32(25))
+    choose: u32 = (e & f) ^ ((^e) & g)
+    temp1: u32 = hh + big1 + choose + SHA256_K[i] + w[i]
+    big0: u32 = rotr32(a, u32(2)) ^ rotr32(a, u32(13)) ^ rotr32(a, u32(22))
+    majority: u32 = (a & b) ^ (a & c) ^ (b & c)
+    temp2: u32 = big0 + majority
+    hh = g
+    g = f
+    f = e
+    e = d + temp1
+    d = c
+    c = b
+    b = a
+    a = temp1 + temp2
+    i = i + u32(1)
+  }
+  [8]u32{ h[0] + a, h[1] + b, h[2] + c, h[3] + d, h[4] + e, h[5] + f, h[6] + g, h[7] + hh }
+}
+
+// The incremental state: the chaining value, the partial block, how much of
+// it is filled, and the total byte count for the length padding.
+pub Sha256State: type = struct {
+  h: [8]u32
+  block: [64]u8
+  filled: u32
+  total: u64
+}
+
+pub sha256_init: (): Sha256State {
+  state: Sha256State
+  state.h = [8]u32{ 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 }
+  state.filled = u32(0)
+  state.total = u64(0)
+  state
+}
+
+// Absorb a view. Blocks compress as they fill; the partial tail waits.
+pub sha256_update: (state: Sha256State, src: []u8): Sha256State {
+  next: Sha256State = state
+  i: u32 = 0
+  while i < len(src) {
+    next.block[next.filled] = src[i]
+    next.filled = next.filled + u32(1)
+    next.filled == u32(64) ? {
+      next.h = sha256_compress(next.h, next.block)
+      next.filled = u32(0)
+    }
+    i = i + u32(1)
+  }
+  next.total = next.total + u64(len(src))
+  next
+}
+
+// Pad, compress the last block or two, and write the 32-byte digest
+// big-endian into `out`. False when `out` holds fewer than 32 bytes; the
+// state is not consumed, so a caller may keep absorbing.
+pub sha256_final: (state: Sha256State, out: [*]u8): Bool {
+  len(out) < u32(32) ? { false } | {
+    tail: Sha256State = state
+    bits: u64 = tail.total * u64(8)
+    tail.block[tail.filled] = u8(128)
+    tail.filled = tail.filled + u32(1)
+    tail.filled > u32(56) ? {
+      while tail.filled < u32(64) {
+        tail.block[tail.filled] = u8(0)
+        tail.filled = tail.filled + u32(1)
+      }
+      tail.h = sha256_compress(tail.h, tail.block)
+      tail.filled = u32(0)
+    }
+    while tail.filled < u32(56) {
+      tail.block[tail.filled] = u8(0)
+      tail.filled = tail.filled + u32(1)
+    }
+    k: u32 = 0
+    while k < u32(8) {
+      tail.block[u32(56) + k] = u8_trunc_u64(bits >> (u64(56) - u64(8) * u64(k)))
+      k = k + u32(1)
+    }
+    tail.h = sha256_compress(tail.h, tail.block)
+    j: u32 = 0
+    while j < u32(8) {
+      word: u32 = tail.h[j]
+      at: u32 = j * u32(4)
+      out[at] = u8_trunc_u32(word >> u32(24))
+      out[at + u32(1)] = u8_trunc_u32(word >> u32(16))
+      out[at + u32(2)] = u8_trunc_u32(word >> u32(8))
+      out[at + u32(3)] = u8_trunc_u32(word)
+      j = j + u32(1)
+    }
+    true
+  }
+}
+
+// One-shot digest of a view into 32 bytes of caller storage.
+pub sha256: (src: []u8, out: [*]u8): Bool = sha256_final(sha256_update(sha256_init(), src), out)
+
+// CRC-32C: reflected polynomial 0x82F63B78, initial value all ones, final
+// complement (RFC 3720 appendix B.4, RFC 3385). Bit-serial: eight steps per
+// byte, no table, no allocation. `crc` is a finished checksum to continue
+// from; pass 0 to start.
+pub crc32c_update: (crc: u32, src: []u8): u32 {
+  state: u32 = crc ^ u32(4294967295)
+  i: u32 = 0
+  while i < len(src) {
+    state = state ^ u32(src[i])
+    bit: u32 = 0
+    while bit < u32(8) {
+      mask: u32 = u32(0) - (state & u32(1))
+      state = (state >> u32(1)) ^ (u32(0x82f63b78) & mask)
+      bit = bit + u32(1)
+    }
+    i = i + u32(1)
+  }
+  state ^ u32(4294967295)
+}
+
+pub crc32c: (src: []u8): u32 = crc32c_update(u32(0), src)

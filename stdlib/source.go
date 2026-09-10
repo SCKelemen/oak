@@ -42,6 +42,12 @@ var bitsetAlgebraSource string
 //go:embed math.oak
 var mathSource string
 
+// hash is a library package only (import("hash")): SHA-256 and CRC-32C in
+// Oak (stdlib/README.md), bit-identical across the interpreter and backends.
+//
+//go:embed hash.oak
+var hashSource string
+
 // Prelude is the core library (std.oak): Option, Result, Overflow, byte and
 // ring helpers. Every standard library package builds on it unqualified, and
 // the loader splices it into any program that imports a library package.
@@ -104,4 +110,5 @@ var Packages = map[string]string{
 	"bitset_algebra":  bitsetAlgebraSource,
 	"causal_frontier": causalFrontierSource,
 	"math":            mathSource,
+	"hash":            hashSource,
 }
