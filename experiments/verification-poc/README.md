@@ -243,3 +243,9 @@ It is compared with Go and Lean on 425 complete streams. The
 [bounded ASCII decoder](proof/SelfHostedText.md) now parses DIMACS/LRAT bytes in
 Oak and feeds that checker. Its text decisions are compared with Go and Lean;
 the solver gate also replays a real CaDiCaL certificate through compiled Oak.
+
+Roadmap step 2 has begun: [`proof/OakText.lean`](proof/OakText.md) transliterates
+the Oak decoder structure for structure over the proved scanner, `OakTextCompare`
+requires it, the proved file model, and compiled Oak to agree on every corpus
+case, and its `check_sound` refutes the layout it builds; the refinement theorem
+to the file model is the next increment.
