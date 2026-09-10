@@ -109,6 +109,12 @@ itself. The LRAT verdict's trust path names the corpus gates behind
 case, the model's `check_sound`, and the Oak decoder's `check_refines`), and
 its assumptions state that the CNF translation is compared, not proved.
 
+The integration suite's backend rows carry the same contract: each passed row
+states what the tool established, what the row trusts (Z3 and TLC answers are
+tool claims, the projections are compared, not proved), and the path the
+result took; the CaDiCaL row attaches the LRAT verdict itself, the one row whose
+refutations are independently checked.
+
 `oak-evidence-3` binds source bytes, project settings, the checked frontend
 model, and a Go-adapter semantics version. Earlier certificate identities are
 rejected. The migration tests explicitly rebind old fixture identities only

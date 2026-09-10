@@ -50,7 +50,7 @@ func probe(name,folder,jar string,timeout time.Duration)ToolStatus{
     exe,e:=exec.LookPath(name);if e!=nil{return fail(name+" unavailable")};arg:="--version";if name=="z3"{arg="-version"};r:=execute([]string{exe,arg},folder,timeout)
     if r.ExitCode==nil||*r.ExitCode!=0{return fail("version probe failed")};if !versionMatches(name,r.Stdout+"\n"+r.Stderr){return ToolStatus{Reason:"version mismatch",Probe:&r}};return ToolStatus{Available:true,Probe:&r}
 }
-type BackendResult struct{Passed bool `json:"passed"`;ExpectedSafety bool `json:"expected_safety"`;Reason string `json:"reason,omitempty"`;Logs []Execution `json:"logs,omitempty"`}
+type BackendResult struct{Passed bool `json:"passed"`;ExpectedSafety bool `json:"expected_safety"`;Reason string `json:"reason,omitempty"`;Claim *Claim `json:"claim,omitempty"`;Established string `json:"established,omitempty"`;Assumptions []string `json:"assumptions,omitempty"`;TrustPath []string `json:"trust_path,omitempty"`;Verdict *Verdict `json:"verdict,omitempty"`;Logs []Execution `json:"logs,omitempty"`}
 func runBackend(m *Model,name,out string,safe bool,bound int,timeout time.Duration,jar string,run func([]string,string,time.Duration)Execution)(result BackendResult){
     result.ExpectedSafety=safe
     defer func(){if e:=recover();e!=nil{result.Passed=false;result.Reason=fmt.Sprint(e)}}()
@@ -72,9 +72,37 @@ func runBackend(m *Model,name,out string,safe bool,bound int,timeout time.Durati
     case "cadical":
         proofs:=map[string]Proof{};step:=20;if !safe{step=10}
         for _,pair:=range []struct{role string;code int}{{"initial",10},{"base",20},{"step",step}}{r:=call("cadical","--lrat","--no-binary",filepath.Join(out,pair.role+".cnf"),filepath.Join(out,pair.role+".cadical.lrat"));demand(*r.ExitCode==pair.code,"unexpected CaDiCaL "+pair.role+" outcome");if pair.code==20{cnf,proof:=read(pair.role+".cnf"),read(pair.role+".cadical.lrat");_,e:=lrat.Check(cnf,proof);demand(e==nil,fmt.Sprintf("LRAT rejected: %v",e));proofs[pair.role]=Proof{digest(cnf),proof}}}
-        if safe{states,e:=m.states();demand(e==nil,"initial witness enumeration limit");var initial State;for _,s:=range states{if truth(m.Terms["initial"],s,nil){initial=s;break}};c:=&Certificate{Format:evidenceFormat,Digest:m.Digest,Kind:"lrat",Initial:initial,Proofs:proofs};_,e=verify(m,c);demand(e==nil,fmt.Sprintf("evidence rejected: %v",e));write("cadical-evidence.json",jsonText(c))}
+        if safe{states,e:=m.states();demand(e==nil,"initial witness enumeration limit");var initial State;for _,s:=range states{if truth(m.Terms["initial"],s,nil){initial=s;break}};c:=&Certificate{Format:evidenceFormat,Digest:m.Digest,Kind:"lrat",Initial:initial,Proofs:proofs};verdict,e:=verify(m,c);result.Verdict=verdict;demand(e==nil,fmt.Sprintf("evidence rejected: %v",e));write("cadical-evidence.json",jsonText(c))}
     default:panic("unsupported backend")
-    };result.Passed=true;return result
+    };result.Passed=true;result.contract(m,name,safe,bound);return result
+}
+
+// contract states, for a passed backend row, what the tool established, what
+// the row trusts, and the path the result took (roadmap step 4). External
+// answers are the tools' claims: only CaDiCaL's LRAT refutations are checked
+// independently, and that row carries the checker's verdict.
+func (result *BackendResult) contract(m *Model,name string,safe bool,bound int){
+    property:="nonvacuous inductive safety";if !safe{property="reachable safety counterexample"}
+    claim:=claimFor(m,property);result.Claim=&claim
+    path:=append([]string{},sharedTrustPath...)
+    switch name{
+    case "z3":
+        if safe{result.Established=fmt.Sprintf("Z3 answered sat for the initial query, unsat for the base and step obligations, and unsat for the bounded model check to bound %d",bound)}else{result.Established=fmt.Sprintf("Z3 answered sat for the initial query and unsat for the base obligation, sat for the step obligation and for the bounded model check to bound %d, and its violating values replayed as a legal trace",bound)}
+        result.Assumptions=append(append([]string{},sharedAssumptions...),"Z3's answers are solver claims, not independently checked proofs","the SMT projection of the model is compared, not proved","a bounded unsat covers only its bound")
+        result.TrustPath=append(path,"Go SMT projection (projections.go)","Z3","Go trace replay of counterexample values (import_trace.go)")
+    case "tlc":
+        if safe{result.Established="TLC completed exhaustive model checking of the projected TLA+ model and found no error"}else{result.Established="TLC reported the expected invariant violation and its trace replayed as a legal trace"}
+        result.Assumptions=append(append([]string{},sharedAssumptions...),"TLC's exploration is a tool claim over the projected TLA+ model","the TLA+ projection of the model is compared, not proved")
+        result.TrustPath=append(path,"Go TLA+ projection (projections.go)","TLC (pinned tla2tools.jar)","Go trace replay (import_trace.go)")
+    case "lean":
+        if safe{result.Established="the projected Lean definitions compile and the theorems base and step check"}else{result.Established="the projected Lean definitions compile and the theorems base and step fail to check, as the violation requires"}
+        result.Assumptions=append(append([]string{},sharedAssumptions...),"the Lean projection of the model and its theorem statements are compared, not proved","Lean's kernel")
+        result.TrustPath=append(path,"Go Lean projection (projections.go)","Lean")
+    case "cadical":
+        if safe{result.Established="CaDiCaL answered sat for the initial query and produced LRAT refutations of the base and step obligations, which the evidence checker accepted as LRAT evidence: the attached verdict is the claim"}else{result.Established="CaDiCaL answered sat for the initial query, produced an LRAT refutation of the base obligation, and answered sat for the step obligation"}
+        result.Assumptions=append(append([]string{},sharedAssumptions...),"CaDiCaL is untrusted search; only its LRAT refutations are checked, by internal/lrat","the Go CNF translation (encode) is compared, not proved")
+        result.TrustPath=append(path,"Go CNF encoder (circuit.go)","CaDiCaL (untrusted search)","internal/lrat checker and its corpus gates (compiled Oak, the Lean file model, check_sound, check_refines)")
+    }
 }
 type SuiteResult struct{Format string `json:"format"`;Passed bool `json:"passed"`;Attempt string `json:"attempt"`;Tools map[string]ToolStatus `json:"tools"`;Models map[string]map[string]BackendResult `json:"models"`}
 func runSuite(examples,out,jar string,timeout time.Duration)(*SuiteResult,error){
