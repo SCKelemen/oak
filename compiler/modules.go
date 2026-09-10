@@ -86,6 +86,14 @@ const (
 	// another package: methods are declared where their type is declared
 	// (the orphan rule, section 6.5).
 	CodeMethodOrphan = "OAK-M0114"
+	// CodeOpenCollision rejects an `open import` whose exported names collide
+	// with a declaration, an alias, a selective import, or another open
+	// (section 3.2).
+	CodeOpenCollision = "OAK-M0115"
+	// CodeNestedModule rejects an ill-formed nested module: an invalid or
+	// reserved name, a name declared twice in one package, or a name that a
+	// subdirectory package also claims (section 3.5).
+	CodeNestedModule = "OAK-M0116"
 	// CodeGenericPackageArity rejects importing a generic package without
 	// arguments, a non-generic package with arguments, or with the wrong
 	// number of arguments (section 6.7).
@@ -97,6 +105,11 @@ const (
 
 // ModuleInfo is what elaboration hands the later phases.
 type ModuleInfo struct {
+	// NestedModules lists the packages declared as `module name { ... }`
+	// blocks (section 3.5), in load order. API snapshots fail closed on them
+	// until nested packages are projected separately (82-package-semver.md
+	// section 6).
+	NestedModules []string
 	// Public is the root package's own syntax, the surface API tooling
 	// projects from.
 	Public *ast.Program
@@ -164,6 +177,9 @@ type importBinding struct {
 	Used      bool
 	// Selective lists the unqualified names of `{ f, g } := import(path)`.
 	Selective []*ast.Identifier
+	// Open marks `open import(path)`: every exported member is bound
+	// unqualified once the package is loaded (elaborate).
+	Open bool
 	// Arguments instantiate a generic package; Template is the generic
 	// package's path when Path names an instance.
 	Arguments []ast.Expression
@@ -236,6 +252,8 @@ type moduleRoot struct {
 }
 
 type moduleLoader struct {
+	// nested are the packages declared by nested-module blocks.
+	nested      []string
 	comp        Compilation
 	cache       string
 	root        *moduleRoot
@@ -749,6 +767,9 @@ func (l *moduleLoader) finishPackage(pkg *loadedPackage, arguments []ast.Express
 	if !l.instantiate(pkg, arguments, importer) {
 		return nil
 	}
+	if !l.extractNestedModules(pkg) {
+		return nil
+	}
 	if !l.checkPackageClause(pkg) {
 		return nil
 	}
@@ -792,6 +813,9 @@ func (l *moduleLoader) finishPackage(pkg *loadedPackage, arguments []ast.Express
 			continue
 		}
 		depDir, found := l.resolveImportDir(binding.Path)
+		if !found && l.loadEnclosingPackage(binding.Path) {
+			continue
+		}
 		if !found {
 			d := l.reportAt(CodeImportUnresolvable, binding.File, binding.Statement, "cannot resolve import %q", binding.Path)
 			if modules.IsStandardLibraryPath(binding.Path) {
@@ -808,6 +832,145 @@ func (l *moduleLoader) finishPackage(pkg *loadedPackage, arguments []ast.Express
 		}
 	}
 	return pkg
+}
+
+// loadEnclosingPackage resolves an import of a nested module from outside
+// its file: the path's parent is a directory package whose loading declares
+// the nested module. It reports whether the path is now loaded.
+func (l *moduleLoader) loadEnclosingPackage(path string) bool {
+	slash := strings.LastIndexByte(path, '/')
+	if slash <= 0 {
+		return false
+	}
+	parent := path[:slash]
+	if _, loaded := l.packages[parent]; !loaded {
+		parentDir, found := l.resolveImportDir(parent)
+		if !found {
+			if _, nested := l.packages[path]; nested {
+				return true
+			}
+			return l.loadEnclosingPackage(parent) && l.packages[path] != nil
+		}
+		if l.loadPackage(parentDir, parent, false) == nil {
+			return false
+		}
+	}
+	_, loaded := l.packages[path]
+	return loaded
+}
+
+// extractNestedModules turns every `module name { ... }` block of the
+// package into the package `<path>/name` (section 3.5): the block's
+// statements become that package's single file under a synthesized package
+// clause, it is loaded like any other package (its own nested modules
+// included), and the enclosing package binds `name` through an implicit
+// import placed with the file's imports. A nested module is a package in
+// every respect — its own `pub` boundary, its own internal names, an
+// ordinary node of the import graph — so nothing downstream distinguishes
+// it from a directory.
+func (l *moduleLoader) extractNestedModules(pkg *loadedPackage) bool {
+	ok := true
+	seen := map[string]string{}
+	for _, file := range pkg.Files {
+		var kept []ast.Statement
+		var implicit []ast.Statement
+		for _, stmt := range file.Root.Statements {
+			decl, isModule := stmt.(*ast.ModuleDeclaration)
+			if !isModule {
+				kept = append(kept, stmt)
+				continue
+			}
+			if decl.Name == nil || decl.Body == nil {
+				l.reportAt(CodeNestedModule, file.Path, decl, "nested module without a name or body")
+				ok = false
+				continue
+			}
+			name := decl.Name.Value
+			switch {
+			case !modules.ValidPackageName(name):
+				l.reportAt(CodeNestedModule, file.Path, decl.Name, "%q is not a valid package name", name)
+				ok = false
+				continue
+			case modules.Reserved(name):
+				l.reportAt(CodeReservedIdentifier, file.Path, decl.Name, "identifier %q contains the reserved sequence __", name)
+				ok = false
+				continue
+			}
+			if prior, dup := seen[name]; dup {
+				l.reportAt(CodeNestedModule, file.Path, decl.Name, "nested module %s declared twice (first in %s)", name, prior)
+				ok = false
+				continue
+			}
+			seen[name] = file.Path
+			childDir := filepath.Join(pkg.Dir, name)
+			if pkg.Dir != "<stdlib>" && directoryHasSources(childDir) {
+				d := l.reportAt(CodeNestedModule, file.Path, decl.Name, "nested module %s and directory %s both claim the package %s/%s", name, childDir, pkg.Path, name)
+				d.AddHelp("keep one of them")
+				ok = false
+				continue
+			}
+			childPath := pkg.Path + "/" + name
+			if _, loaded := l.packages[childPath]; loaded {
+				l.reportAt(CodeNestedModule, file.Path, decl.Name, "package %s is already loaded", childPath)
+				ok = false
+				continue
+			}
+			clause := &ast.PackageStatement{Token: decl.Token, Name: decl.Name}
+			child := &loadedPackage{
+				Path:         childPath,
+				Dir:          childDir,
+				TemplatePath: childPath,
+				Imports:      map[string]*importBinding{},
+				Selective:    map[string]*importBinding{},
+				Exports:      modules.Exports{},
+				Renames:      map[string]string{},
+				Bootstrap:    map[string]*ast.ImportStatement{},
+				Files: []*packageFile{{
+					Path: file.Path,
+					Text: file.Text,
+					Root: &ast.Program{Statements: append([]ast.Statement{clause}, decl.Body.Statements...)},
+					File: file.File,
+				}},
+			}
+			l.packages[childPath] = child
+			l.nested = append(l.nested, childPath)
+			if l.finishPackage(child, nil, nil) == nil {
+				ok = false
+				continue
+			}
+			// The enclosing package sees the module as `name.member`.
+			imp := &ast.ImportStatement{Token: decl.Token, Path: &ast.Identifier{Token: decl.Name.Token, Value: childPath}, Alias: decl.Name, Implicit: true}
+			implicit = append(implicit, imp)
+		}
+		if len(implicit) == 0 {
+			continue
+		}
+		// Implicit imports join the file's imports, after the clause.
+		var rebuilt []ast.Statement
+		if len(kept) != 0 {
+			if _, isClause := kept[0].(*ast.PackageStatement); isClause {
+				rebuilt = append(rebuilt, kept[0])
+				kept = kept[1:]
+			}
+		}
+		rebuilt = append(rebuilt, implicit...)
+		file.Root.Statements = append(rebuilt, kept...)
+	}
+	return ok
+}
+
+// directoryHasSources reports whether dir holds any .oak file.
+func directoryHasSources(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".oak") {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedAliases(imports map[string]*importBinding) []string {
@@ -995,6 +1158,25 @@ func (l *moduleLoader) collectImports(pkg *loadedPackage) bool {
 				pkg.Bootstrap[path] = imp
 				continue
 			}
+			if imp.Open {
+				if imp.Signature != nil || imp.Alias != nil {
+					l.reportAt(CodeImportPlacement, file.Path, imp, "an open import cannot be bound or sealed")
+					ok = false
+					continue
+				}
+				binding := &importBinding{Path: path, Template: path, Statement: imp, File: file.Path, Open: true, Arguments: imp.Arguments}
+				if len(imp.Arguments) != 0 {
+					binding.Path = l.instancePath(pkg, imp.Path.Value, imp.Arguments, file, imp)
+				}
+				if existing, dup := pkg.Imports["*"+binding.Path]; dup {
+					l.reportAt(CodeImportAlias, file.Path, imp, "package %q is already opened (in %s)", path, existing.File)
+					ok = false
+					continue
+				}
+				pkg.Imports["*"+binding.Path] = binding
+				pkg.Edges = append(pkg.Edges, binding.Path)
+				continue
+			}
 			if len(imp.Names) != 0 {
 				if imp.Signature != nil {
 					l.reportAt(CodeImportPlacement, file.Path, imp, "a selective import cannot be sealed")
@@ -1066,7 +1248,7 @@ func (l *moduleLoader) collectImports(pkg *loadedPackage) bool {
 				}
 				continue
 			}
-			binding := &importBinding{Alias: alias, Path: path, Template: path, Signature: imp.Signature, Statement: imp, File: file.Path, Arguments: imp.Arguments}
+			binding := &importBinding{Alias: alias, Path: path, Template: path, Signature: imp.Signature, Statement: imp, File: file.Path, Arguments: imp.Arguments, Used: imp.Implicit}
 			if len(imp.Arguments) != 0 {
 				binding.Path = l.instancePath(pkg, imp.Path.Value, imp.Arguments, file, imp)
 			}
@@ -1117,6 +1299,50 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 	// kind, and substitute type members before names are rewritten.
 	for _, alias := range sortedAliases(pkg.Imports) {
 		l.prepareSignature(pkg, pkg.Imports[alias])
+	}
+	// Open imports bind every exported member of the package unqualified,
+	// exactly as a selective import naming them all would; the names are
+	// known now that the dependency is loaded. A name bound twice — by a
+	// declaration, an alias, a selective import, or another open — is
+	// rejected rather than resolved by precedence, so what an identifier
+	// means never depends on what a dependency adds later.
+	for _, alias := range sortedAliases(pkg.Imports) {
+		binding := pkg.Imports[alias]
+		if !binding.Open {
+			continue
+		}
+		target := l.packages[binding.Path]
+		if target == nil {
+			continue
+		}
+		names := make([]string, 0, len(target.Exports))
+		for name, member := range target.Exports {
+			if member.Exported {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			collision := ""
+			switch {
+			case pkg.Exports[name].Name != "":
+				collision = "a package-level declaration"
+			case pkg.Imports[name] != nil:
+				collision = "an import alias"
+			case pkg.Selective[name] != nil && pkg.Selective[name] != binding:
+				if other := pkg.Selective[name]; other.Open {
+					collision = fmt.Sprintf("the open import of %q", other.Template)
+				} else {
+					collision = fmt.Sprintf("the selective import from %q", other.Template)
+				}
+			}
+			if collision != "" {
+				d := l.reportAt(CodeOpenCollision, binding.File, binding.Statement, "open import of %q binds %q, which collides with %s", binding.Template, name, collision)
+				d.AddHelp("import the package under an alias, or select the members you need: { f, g } := import(...)")
+				continue
+			}
+			pkg.Selective[name] = binding
+		}
 	}
 	// Selective imports bind unqualified names through the same lookup.
 	for name, binding := range pkg.Selective {
@@ -1662,7 +1888,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 		rootModule = l.root.Manifest.Path
 		moduleProfiles[rootModule] = l.root.Manifest.Profile
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,

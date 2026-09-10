@@ -917,6 +917,33 @@ func (ps *PackageStatement) String() string {
 	return "package " + ps.Name.String()
 }
 
+// ModuleDeclaration is a nested module (docs/spec/83-modules.md section
+// 3.5): `module name { declarations }` inside a package file declares the
+// package `<enclosing path>/name` with its own `pub` boundary. The loader
+// extracts the body into that package and binds `name` in the enclosing
+// package as an implicit import.
+type ModuleDeclaration struct {
+	BaseNode
+	Token token.Token // the contextual 'module' identifier
+	Name  *Identifier
+	Body  *BlockStatement
+}
+
+func (md *ModuleDeclaration) statementNode()       {}
+func (md *ModuleDeclaration) TokenLiteral() string { return md.Token.Literal }
+func (md *ModuleDeclaration) String() string {
+	var out bytes.Buffer
+	out.WriteString("module ")
+	if md.Name != nil {
+		out.WriteString(md.Name.String())
+	}
+	out.WriteString(" ")
+	if md.Body != nil {
+		out.WriteString(md.Body.String())
+	}
+	return out.String()
+}
+
 // ImportStatement is a package import (docs/spec/83-modules.md section 3).
 // The statement form `import("example.com/net")` binds the path's last
 // segment; the binding forms `net := import("example.com/net")` and
@@ -938,12 +965,21 @@ type ImportStatement struct {
 	// Names are the unqualified bindings of a selective import
 	// `{ f, g } := import(path)`; Alias is nil for those.
 	Names []*Identifier
+	// Open marks `open import(path)`: every exported member of the package
+	// is bound unqualified (docs/spec/83-modules.md section 3.2).
+	Open bool
+	// Implicit marks an import the loader synthesized for a nested module
+	// (section 3.5); it is never reported unused.
+	Implicit bool
 }
 
 func (is *ImportStatement) statementNode()       {}
 func (is *ImportStatement) TokenLiteral() string { return is.Token.Literal }
 func (is *ImportStatement) String() string {
 	var out bytes.Buffer
+	if is.Open {
+		out.WriteString("open ")
+	}
 	if is.Alias != nil {
 		out.WriteString(is.Alias.String())
 		if is.Signature != nil {

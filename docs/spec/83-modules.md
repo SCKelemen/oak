@@ -37,7 +37,8 @@ module is the unit of versioning; neither adds runtime work.**
   runtime module object.
 - **Names come from somewhere visible.** Members are qualified
   (`alias.member`) or imported by name (`{ f, g } := import(...)`); there is
-  no whole-package `open`, so readers always see where a name comes from.
+  `open import(...)` is available but a name it binds may never be bound by
+  anything else, so what an identifier means never depends on precedence.
 - **Whole-program, one translation unit.** The compiler resolves every package
   of the build into one flat program before type checking. Encapsulation is a
   static rule enforced by the elaborator, not a link-time property; the C
@@ -111,8 +112,15 @@ import(std)                                     // bootstrap, unqualified (secti
   section 6 and follows the alias rules (no collision with declarations or
   other imports, unused names are errors). A selective import cannot be
   sealed.
-- The **instantiating form** `import(path)[u8, 8]` (in any of the above)
-  instantiates a generic package (section 6.7).
+- The **open form** `open import(path)` binds **every** exported member of
+  the package unqualified, exactly as a selective import naming them all
+  would. The names are those the package exports when it is loaded, so the
+  set can grow with the dependency; to keep that growth from silently
+  changing meaning, a name an open binds may not also be bound by a
+  package-level declaration, an import alias, a selective import, or another
+  open (`OAK-M0115`, checked at the importer, never resolved by precedence).
+  An open cannot be bound, sealed, or repeated for one package; an open none
+  of whose names is used is an unused import.
 - A bare identifier path (`import(std)`) is sugar for a single-segment path.
 
 `import(...)` is legal only as a top-level import statement or as the entire
@@ -152,6 +160,42 @@ an imported ADT exactly like the unqualified `Type.Variant(payload)` form:
 after elaboration a pass rewrites both into variant expressions
 (`compiler/variants.go`), so the checker, lowering, and backend see one
 construction form.
+
+### 3.5 Nested modules
+
+A file may declare a package inside itself:
+
+```oak
+package geometry
+
+module units {
+  pub scale: (v: i32): i32 = v * 2
+}
+
+pub(opaque) Point: type = struct { x: i32, y: i32 }
+pub doubled: (p: Point): i32 = units.scale(p.x + p.y)
+```
+
+`module name { declarations }` declares the package `<enclosing path>/name`
+— here `example.com/hello/geometry/units` — with the block's statements as
+its single file. A nested module is a package in every respect: it has its
+own `pub` boundary (the enclosing package sees only its exported members,
+and `pub(opaque)` hides definitions from it as from anyone), its own
+internal names, and an ordinary place in the import graph. The enclosing
+package binds `name` as if it had written `name := import("<path>/name")`
+(the binding is never reported unused), and any other package imports the
+module by its path. The block may itself import packages and declare
+modules; importing the enclosing package from inside is a cycle
+(`OAK-M0104`). The name follows the package-name grammar and may not be
+reserved; declaring one name twice in a package, or alongside a
+subdirectory of the same name, is rejected (`OAK-M0116`). `module` is a
+contextual word: outside this form it is an ordinary identifier.
+
+Nested modules are for a package that wants an internal abstraction
+boundary without a directory; the directory rule of section 2 is unchanged
+and remains the unit of publication: **API snapshots do not yet cover
+nested modules** (`82-package-semver.md` section 6), so `oak mod api`
+refuses a package that declares one rather than emit an incomplete claim.
 
 ## 4. Modules
 
@@ -662,8 +706,6 @@ naming the import to add (`encode` needs `import("json")`, text needs
 
 ## 11. Direction (not part of v1)
 
-- **Unqualified `open` of a whole package** and **nested modules** (selective
-  imports of named members exist, section 3.2).
 - **A lock file** (the manifests alone already make selection
   reproducible).
 - **A full Oak semantics in Lean.** `:lean <file>` states obligations over
