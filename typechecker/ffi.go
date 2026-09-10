@@ -665,12 +665,40 @@ func (tc *TypeChecker) checkBoundarySpan(arg ast.Expression, member string, oper
 		representable = boundarySpanElementTypes[element.Name]
 	case *BoolType:
 		representable = true
+	case *ADTType:
+		representable = tc.boundaryTaggedUnion(element.Name, map[string]bool{})
 	}
 	if !representable {
 		d := tc.addTypeDiagnostic(operand, CodeSpanElementNotABI,
 			fmt.Sprintf("element type %s cannot cross the C boundary in a span", array.ElementType))
-		d.AddNote("boundary spans carry fixed-width integers and Bool; other element types have no single meaning on both sides (docs/spec/92-ffi.md section 2.5.1)")
+		d.AddNote("boundary spans carry fixed-width integers, Bool, and tagged unions whose payloads are those; other element types have no single meaning on both sides (docs/spec/92-ffi.md sections 2.5.1 and 2.6)")
 		return false
+	}
+	return true
+}
+
+// boundaryTaggedUnion reports whether a declared tagged union has one
+// meaning on both sides of the C boundary (docs/spec/92-ffi.md section
+// 2.6): it is not generic, and every payload is a fixed-width integer,
+// Bool, or such a union. The emitted shape is a u32 tag followed by the
+// payload union, with its layout asserted at C compile time.
+func (tc *TypeChecker) boundaryTaggedUnion(name string, visiting map[string]bool) bool {
+	adt, declared := tc.adtTypes[name]
+	if !declared || len(adt.TypeParams) > 0 {
+		return false
+	}
+	if visiting[name] {
+		return true
+	}
+	visiting[name] = true
+	for _, variant := range adt.Variants {
+		switch {
+		case variant.Payload == "":
+		case boundarySpanElementTypes[variant.Payload], variant.Payload == "Bool":
+		case tc.boundaryTaggedUnion(variant.Payload, visiting):
+		default:
+			return false
+		}
 	}
 	return true
 }

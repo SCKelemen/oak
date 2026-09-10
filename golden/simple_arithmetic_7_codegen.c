@@ -179,8 +179,10 @@ typedef enum oak_Status_tag {
 } oak_Status_tag;
 
 typedef struct oak_Status {
-    oak_Status_tag tag;
+    u32 tag;
 } oak_Status;
+
+typedef char oak_union_layout_Status[ (sizeof(oak_Status) == 4u && _Alignof(oak_Status) == 4u && offsetof(oak_Status, tag) == 0u) ? 1 : -1 ];
 
 // @source: unknown.oak:6:4
 // @package: main

@@ -568,8 +568,14 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 		}
 	} else if vd.Type != nil {
 		// Function-local declarations are not in the surviving global
-		// environment; classify owners from the declared type instead.
-		if arrType, ok := bc.parseTypeFromAST(vd.Type, env).(*typechecker.ArrayType); ok {
+		// environment; classify owners from the checker's recorded
+		// declaration type (which resolves every element type, tagged
+		// unions included), falling back to the declared type's syntax.
+		declared := env.CheckedDeclarationType(vd)
+		if declared == nil {
+			declared = bc.parseTypeFromAST(vd.Type, env)
+		}
+		if arrType, ok := declared.(*typechecker.ArrayType); ok {
 			if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
 				bc.ownerStates[varName] = Free
 			}

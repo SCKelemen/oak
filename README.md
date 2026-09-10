@@ -952,7 +952,7 @@ typedef enum oak_Option_i32_tag {
 } oak_Option_i32_tag;
 
 typedef struct oak_Option_i32 {
-  oak_Option_i32_tag tag;
+  u32 tag;
   union {
     i32 Some;
   } data;

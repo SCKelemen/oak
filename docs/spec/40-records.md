@@ -280,8 +280,9 @@ static_assert(align_of[Line]() == u32(64))
 - `size_of[T]()`, `align_of[T]()`, `offset_of[T](field)` type as `u32` and
   lower to `sizeof`/`_Alignof`/`offsetof` over the **emitted** type — the C
   compiler is the authority on the numbers, not a second model of them.
-  `T` is a declared record (or instantiation) or a primitive; `field` is a
-  declared field name.
+  `T` is a declared record (or instantiation), a declared tagged union
+  (whose fields are `tag` and `payload`, `92-ffi.md` §2.6), or a primitive;
+  `field` is a declared field name.
 - `static_assert(cond)` requires `cond` to be a compile-time constant over
   those builtins, literals, primitive constructors, and operators (a
   runtime condition is an error: use `assert`). It lowers to a C99

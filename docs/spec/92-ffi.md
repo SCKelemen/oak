@@ -226,8 +226,9 @@ no allocation, no thunk. The interpreter cannot call externs (§4) and rejects
 these forms with the same diagnostic it gives an extern call.
 
 **Implemented subset.** Element types admitted today are the fixed-width
-integers and `Bool`; structs with proven layouts are specified above and are
-a recorded implementation gap (`STATUS.md`).
+integers, `Bool`, and tagged unions whose payloads are those (§2.6); structs
+with proven layouts are specified above and are a recorded implementation
+gap (`STATUS.md`).
 
 #### 2.5.5 Diagnostics
 
@@ -240,6 +241,62 @@ a recorded implementation gap (`STATUS.md`).
 The test runner's native adapter rules (`110-testing.md`) continue to exclude
 pointer interfaces from the adapters themselves; a test may nonetheless call
 an extern with a boundary span, since the span never outlives the call.
+
+### 2.6 Tagged unions at the boundary
+
+**Status: implemented and tested.** Motivated by the hypervisor ports, whose
+effect-returning modules (`ipc`, `virtio_mmio`) flattened a union with data
+into a status code plus out-parameter globals because the union had no shape
+C could be told about.
+
+A declared tagged union (`30-adts-patterns.md`) has exactly one C
+representation, and the backend asserts it at C compile time:
+
+```c
+typedef struct oak_Effect {
+  u32 tag;                       /* the variant's declaration index */
+  union { u32 Send; u8 Yield; } payload;
+} oak_Effect;
+typedef char oak_union_layout_Effect[ (sizeof(oak_Effect) == 8u && _Alignof(oak_Effect) == 4u
+  && offsetof(oak_Effect, tag) == 0u && offsetof(oak_Effect, payload) == 4u) ? 1 : -1 ];
+```
+
+- The **tag** is a fixed-width `u32` holding the variant's declaration index
+  (`None | Send: u32 | Yield: u8` numbers them 0, 1, 2). A C `enum` is still
+  emitted to name the values, but the member is not of enum type: an enum's
+  width is implementation-defined, and the tag's is not.
+- The **payload** is a C union of the payloads, named by variant, at the
+  first offset aligned for its strictest member. A union without payloads is
+  the tag alone.
+- The **layout** is `semir.TaggedUnionLayout`: the union is the largest
+  payload rounded up to the strictest alignment, and tag plus union are
+  placed by the natural record layout (`40-records.md` §6, the Lean-refined
+  algorithm). The typedef assertion makes cc ratify the numbers, exactly as
+  for records. A union with a payload the layout model cannot place (a
+  `string`, a view, a record without a proven layout) is emitted without an
+  assertion: it is fine inside Oak and has no proven shape at the boundary.
+
+What the proven shape buys:
+
+- **Exported functions.** A `pub` function returning or taking a tagged union
+  is C-callable as is: the C side declares a mirror `struct { uint32_t tag;
+  union { ... } payload; }` with the same member types and reads `e.tag` and
+  `e.payload.Send`. Two structs with identical layout are ABI-identical on
+  the recorded targets; no generated header is required (one may come later).
+- **Layout builtins.** `size_of[Effect]()`, `align_of[Effect]()`, and
+  `offset_of[Effect](tag)` / `offset_of[Effect](payload)` are admitted
+  (`40-records.md` §6b) so a C mirror can be pinned with `static_assert`.
+- **Records.** A record field of tagged-union type is placeable once the
+  union's layout is proven, and the union is emitted ahead of the record
+  (`codegen/mono.go`); this is the same mechanism nullable fields
+  (`Option[T]`) already used, generalized to every declared union.
+- **Boundary spans.** `c.span_of` / `c.span_mut_of` admit views and spans of
+  tagged unions whose payloads are fixed-width integers, `Bool`, or such
+  unions (§2.5.1); other payloads are rejected with `OAK-F0104`.
+
+Generic unions cross only as concrete instantiations named by a declared
+alias or field; a template has no representation. The interpreter has no
+struct layout and treats the builtins as compiled-backend facts (§6b).
 
 ## 3. The abstract assembly interface
 

@@ -14,7 +14,6 @@ import (
 	"fmt"
 
 	"github.com/SCKelemen/oak/ast"
-	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -216,17 +215,17 @@ func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *ty
 
 	// Records: fixpoint on field placeability.
 	pending := records
-	emittedOptions := map[string]bool{}
+	emittedUnions := map[string]bool{}
 	for len(pending) > 0 {
 		progressed := false
 		var stuck []typeEmissionUnit
 		for _, unit := range pending {
 			recordLit, ok := cg.emissionRecordLiteral(unit)
 			if ok && !cg.recordPlaceable(recordLit) {
-				// Nullable record fields depend on a concrete Option union.
-				// Emit only those dependencies here, preserving existing order
-				// for programs without nullable record fields.
-				if cg.emitRecordOptions(recordLit, unions, emittedOptions, tc) {
+				// A record field of tagged-union type depends on that union
+				// and its proven layout. Emit only those dependencies here,
+				// preserving existing order for programs without such fields.
+				if cg.emitRecordUnions(recordLit, unions, emittedUnions, tc) {
 					progressed = true
 				}
 			}
@@ -249,47 +248,50 @@ func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *ty
 
 	// Tagged unions after every record they might carry.
 	for _, unit := range unions {
-		if !emittedOptions[unit.name] {
+		if !emittedUnions[unit.name] {
 			cg.emitTypeUnit(unit, tc)
 		}
 	}
 	cg.emitAbstractAliases()
 }
 
-// The supported Option shape has one payload, so its C union has exactly
-// that payload's size/alignment. Place the enum tag and union as an ordered
-// record and have the C compiler verify the selected ABI, never guess it.
-func (cg *CodeGenerator) emitRecordOptions(record *ast.RecordLiteral, unions []typeEmissionUnit, emitted map[string]bool, tc *typechecker.TypeChecker) bool {
+// emitRecordUnions emits, ahead of a stuck record, the tagged unions its
+// fields name — a nullable field's concrete Option, or any declared union —
+// provided every payload is placeable, so the union's proven layout
+// (semir.TaggedUnionLayout, asserted by emitUnionLayout) makes the record
+// placeable in turn. A union with an unplaceable payload is left for the
+// ordinary emission pass and the record fails closed as before.
+func (cg *CodeGenerator) emitRecordUnions(record *ast.RecordLiteral, unions []typeEmissionUnit, emitted map[string]bool, tc *typechecker.TypeChecker) bool {
 	progressed := false
 	for _, field := range record.FieldOrder {
 		name, generic := cg.genericAnnotationName(field.Value)
 		if !generic {
-			continue
+			ident, isIdent := field.Value.(*ast.Identifier)
+			if !isIdent {
+				continue
+			}
+			name = ident.Value
 		}
 		if _, placed := cg.recordLayouts[name]; placed {
 			continue
 		}
 		for _, unit := range unions {
-			if unit.name != name || unit.instantiation == nil || unit.instantiation.ADT != "Option" {
+			if unit.name != name || emitted[unit.name] {
 				continue
 			}
-			adt, ok := specializeADT(cg.adtTypes["Option"], *unit.instantiation)
-			if !ok || len(adt.Variants) != 2 || adt.Variants[0].Name.Value != "Some" || adt.Variants[0].Payload == nil || adt.Variants[1].Name.Value != "None" || adt.Variants[1].Payload != nil {
-				continue
+			adt := unit.declared
+			if adt == nil {
+				specialized, ok := specializeADT(cg.adtTypes[unit.instantiation.ADT], *unit.instantiation)
+				if !ok {
+					continue
+				}
+				adt = specialized
 			}
-			payload, ok := cg.naturalFieldRepresentation("payload", adt.Variants[0].Payload)
-			if !ok {
-				continue
-			}
-			layout, err := semir.NaturalRecordLayout([]semir.RecordFieldRepresentation{{Name: "tag", Size: 4, Alignment: 4}, payload})
-			if err != nil {
+			if _, ok := cg.unionPayloadRepresentations(adt); !ok {
 				continue
 			}
 			cg.emitTypeUnit(unit, tc)
 			emitted[unit.name] = true
-			cName := cg.cTypeName(name)
-			cg.write(fmt.Sprintf("typedef char oak_option_layout_%s[ (sizeof(%s) == %du && _Alignof(%s) == %du && sizeof(%s_tag) == 4 && offsetof(%s, payload) == %du) ? 1 : -1 ];\n\n", name, cName, layout.Size, cName, layout.Alignment, cName, cName, layout.Fields[1].Offset))
-			cg.recordLayouts[name] = layout
 			progressed = true
 		}
 	}

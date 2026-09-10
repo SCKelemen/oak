@@ -279,7 +279,7 @@ typedef enum oak_Error_tag {
 } oak_Error_tag;
 
 typedef struct oak_Error {
-  oak_Error_tag tag;
+  u32 tag;
 } oak_Error;
 ```
 
@@ -302,7 +302,7 @@ typedef enum oak_Option_u8_tag {
 } oak_Option_u8_tag;
 
 typedef struct oak_Option_u8 {
-  oak_Option_u8_tag tag;
+  u32 tag;
   union {
     u8 Some;
   } payload;
@@ -328,7 +328,7 @@ typedef enum oak_Result_u8_Error_tag {
 } oak_Result_u8_Error_tag;
 
 typedef struct oak_Result_u8_Error {
-  oak_Result_u8_Error_tag tag;
+  u32 tag;
   union {
     u8        Ok;
     oak_Error Err;
@@ -563,7 +563,7 @@ typedef enum oak_Error_tag {
 } oak_Error_tag;
 
 typedef struct oak_Error {
-  oak_Error_tag tag;
+  u32 tag;
 } oak_Error;
 
 static inline oak_Error oak_Error_Eof( void ) {
@@ -594,7 +594,7 @@ typedef enum oak_Result_u32_Error_tag {
 } oak_Result_u32_Error_tag;
 
 typedef struct oak_Result_u32_Error {
-  oak_Result_u32_Error_tag tag;
+  u32 tag;
   union {
     u32        Ok;
     oak_Error  Err;
@@ -771,7 +771,7 @@ oak_Result_u32_Error oak_read_exact_Uart( oak_Uart* reader, oak_span_u8 buf ) {
  * @brief Result of operations returning either a u32 value or an Error.
  */
 typedef struct oak_Result_u32_Error {
-  oak_Result_u32_Error_tag tag;
+  u32 tag;
   union {
     u32       Ok;
     oak_Error Err;

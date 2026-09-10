@@ -33,7 +33,10 @@ preserves the variant count and every tag in order — so the tag-guarded
 dispatch laws of `Oak.ADTSemantics` transfer to every instantiation — and
 that payloads are substituted exactly. Templates themselves are never
 emitted; instantiations whose arguments cannot be named (views, functions,
-anonymous shapes) fail closed.
+anonymous shapes) fail closed. The C shape of every emitted union — a
+fixed-width `u32` tag holding the declaration index, then the payload union,
+with its layout asserted at C compile time — is specified in `92-ffi.md`
+§2.6, which is what lets a `pub` function hand a union to C directly.
 
 ## 2. Construction
 

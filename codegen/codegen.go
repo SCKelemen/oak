@@ -627,10 +627,13 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 		}
 	}
 
-	// Emit struct
+	// Emit struct. The tag is a fixed-width u32 holding the variant's
+	// declaration index (the enum above names the values), so the union
+	// has one shape on both sides of the C boundary (docs/spec/92-ffi.md
+	// section 2.6); a C enum's width is implementation-defined.
 	cg.write(fmt.Sprintf("typedef struct %s {\n", cName))
 	cg.indentLevel++
-	cg.write(fmt.Sprintf("  %s tag;\n", tagEnumName))
+	cg.write("  u32 tag;\n")
 
 	if hasPayload {
 		cg.write("  union {\n")
@@ -649,6 +652,7 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 	cg.indentLevel--
 	cg.write(fmt.Sprintf("} %s;\n", cName))
 	cg.write("\n")
+	cg.emitUnionLayout(typeName, cName, adt)
 
 	// Emit constructors
 	for _, variant := range adt.Variants {

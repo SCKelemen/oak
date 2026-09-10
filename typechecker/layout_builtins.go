@@ -78,8 +78,13 @@ func (tc *TypeChecker) resolveLayoutBuiltin(expr *ast.InvocationExpression) (Typ
 		query.Record = true
 	case *PrimitiveType:
 		query.TypeName = normalizePrimitiveName(t.Name)
+	case *ADTType:
+		// A tagged union is an emitted struct too: a u32 tag, then the
+		// payload union (docs/spec/92-ffi.md section 2.6).
+		query.TypeName = t.Name
+		query.Record = true
 	default:
-		tc.addError(expr, "%s requires a declared record or primitive type, got %s", callee.Value, queried)
+		tc.addError(expr, "%s requires a declared record, tagged union, or primitive type, got %s", callee.Value, queried)
 		return nil, true
 	}
 	switch callee.Value {
@@ -90,8 +95,9 @@ func (tc *TypeChecker) resolveLayoutBuiltin(expr *ast.InvocationExpression) (Typ
 		}
 	case "offset_of":
 		record, isRecord := queried.(*RecordType)
-		if !isRecord {
-			tc.addError(expr, "offset_of requires a declared record type")
+		adt, isADT := queried.(*ADTType)
+		if !isRecord && !isADT {
+			tc.addError(expr, "offset_of requires a declared record or tagged union type")
 			return nil, true
 		}
 		if len(expr.Arguments) != 1 {
@@ -103,7 +109,12 @@ func (tc *TypeChecker) resolveLayoutBuiltin(expr *ast.InvocationExpression) (Typ
 			tc.addError(expr.Arguments[0], "offset_of[T] takes a bare field name")
 			return nil, true
 		}
-		if _, exists := record.Fields[fieldIdent.Value]; !exists {
+		if isADT {
+			if fieldIdent.Value != "tag" && fieldIdent.Value != "payload" {
+				tc.addError(expr.Arguments[0], "offset_of: tagged union %s has the fields tag and payload (docs/spec/92-ffi.md section 2.6), not %s", adt.Name, fieldIdent.Value)
+				return nil, true
+			}
+		} else if _, exists := record.Fields[fieldIdent.Value]; !exists {
 			tc.addError(expr.Arguments[0], "offset_of: %s has no field %s", record.Name, fieldIdent.Value)
 			return nil, true
 		}

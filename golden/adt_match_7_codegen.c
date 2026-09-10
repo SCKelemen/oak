@@ -174,12 +174,14 @@ typedef enum oak_Shape_tag {
 } oak_Shape_tag;
 
 typedef struct oak_Shape {
-    oak_Shape_tag tag;
+    u32 tag;
     union {
         i32 Circle;
         i32 Square;
     } payload;
 } oak_Shape;
+
+typedef char oak_union_layout_Shape[ (sizeof(oak_Shape) == 8u && _Alignof(oak_Shape) == 4u && offsetof(oak_Shape, tag) == 0u && offsetof(oak_Shape, payload) == 4u) ? 1 : -1 ];
 
 // @source: unknown.oak:2:4
 // @package: main

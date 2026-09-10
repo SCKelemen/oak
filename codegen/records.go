@@ -113,6 +113,51 @@ func (cg *CodeGenerator) naturalFieldRepresentation(name string, typeExpr ast.Ex
 	return semir.RecordFieldRepresentation{}, false
 }
 
+// unionPayloadRepresentations resolves the size and alignment of every
+// payload of a tagged union, reporting failure when one has no placeable
+// representation (a string, a view, a record whose layout is unknown).
+func (cg *CodeGenerator) unionPayloadRepresentations(adt *ast.ADTType) ([]semir.RecordFieldRepresentation, bool) {
+	payloads := []semir.RecordFieldRepresentation{}
+	for _, variant := range adt.Variants {
+		if variant.Payload == nil {
+			continue
+		}
+		rep, ok := cg.naturalFieldRepresentation(variant.Name.Value, variant.Payload)
+		if !ok {
+			return nil, false
+		}
+		payloads = append(payloads, rep)
+	}
+	return payloads, true
+}
+
+// emitUnionLayout binds an emitted tagged union to its proven layout
+// (semir.TaggedUnionLayout): the u32 tag, then the payload union, as a C
+// compile-time assertion cc ratifies. The layout is registered so records
+// may embed the union and the boundary may rely on it
+// (docs/spec/92-ffi.md section 2.6). A union with an unplaceable payload
+// gets no assertion and no registration: it is fine inside Oak and simply
+// has no proven shape at the boundary.
+func (cg *CodeGenerator) emitUnionLayout(typeName, cName string, adt *ast.ADTType) {
+	payloads, ok := cg.unionPayloadRepresentations(adt)
+	if !ok {
+		return
+	}
+	layout, err := semir.TaggedUnionLayout(payloads)
+	if err != nil {
+		return
+	}
+	if cg.recordLayouts == nil {
+		cg.recordLayouts = make(map[string]semir.Representation)
+	}
+	cg.recordLayouts[typeName] = layout
+	claims := fmt.Sprintf("sizeof(%s) == %du && _Alignof(%s) == %du && offsetof(%s, tag) == 0u", cName, layout.Size, cName, layout.Alignment, cName)
+	if len(payloads) > 0 {
+		claims += fmt.Sprintf(" && offsetof(%s, payload) == %du", cName, layout.Fields[1].Offset)
+	}
+	cg.write(fmt.Sprintf("typedef char oak_union_layout_%s[ (%s) ? 1 : -1 ];\n\n", cIdent(typeName), claims))
+}
+
 // emitRecordTypeDef emits the struct typedef for a declared record type and
 // the layout assertions binding the emitted C to the proven placement.
 func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.RecordLiteral) {
