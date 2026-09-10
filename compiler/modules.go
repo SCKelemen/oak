@@ -1842,7 +1842,7 @@ var primitiveTypeNames = map[string]bool{
 	"u8": true, "u16": true, "u32": true, "u64": true,
 	"int": true, "uint": true, "ptr": true, "uptr": true,
 	"byte": true, "rune": true, "Bool": true, "string": true,
-	"f32": true, "f64": true,
+	"f32": true, "f64": true, "f16": true, "bf16": true,
 }
 
 // instantiate substitutes a generic package's parameters with the import's

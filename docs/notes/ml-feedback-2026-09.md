@@ -41,9 +41,12 @@ literals, operators, comparisons, every conversion row, the full intrinsic
 set, the C lowering with `FP_CONTRACT OFF` and exact hexadecimal literal
 constants, and the Go `float32`/`float64` interpreter as first witness; a
 35-check program agrees bit for bit between the two (`compiler/e2e_floats_test.go`,
-golden `floats`). Not yet: `f16`/`bf16` storage types, hexadecimal float
-literals, the `f32 <-> c.Float` conversion rows, float SIMD, the `math`
-library of transcendentals, and the Lean model. The design:
+golden `floats`). The second increment added the `f16`/`bf16` storage
+formats (bit-exact round-to-nearest-even into the formats and exact widening,
+in C and in the interpreter, fuzzed through random round trips), hexadecimal
+float literals, and the `f32 <-> c.Float` / `f64 <-> c.Double` rows (tested
+against libm's `sqrtf`). Not yet: float SIMD, the `math` library of
+transcendentals, and the Lean model. The design:
 
 - `f32`/`f64` arithmetic; `f16`/`bf16` storage-only with exactly four
   operations; contextual literals with `f64` as the no-context default;

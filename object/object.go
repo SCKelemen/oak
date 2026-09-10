@@ -439,6 +439,9 @@ func (e *Environment) ArithmeticWidth(tok token.Token) (string, bool) {
 type Float struct {
 	Value float64
 	Bits  int
+	// Format names a 16-bit storage kind ("f16" or "bf16") when Bits is 16;
+	// Value then holds the exactly representable widened number.
+	Format string
 }
 
 func (f *Float) Kind() ObjectKind { return FLOAT }

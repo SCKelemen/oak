@@ -92,6 +92,8 @@ func evalFloatConstructor(typeName string, arg object.Object) object.Object {
 	if !isFloat {
 		return newError("primitive constructor %s requires a floating-point argument, got %s", typeName, arg.Type())
 	}
+	// A storage format widens exactly: its Value already is the widened
+	// number (section 11.3.1).
 	return floatOf(value.Value, typechecker.FloatBits(typeName))
 }
 
@@ -99,6 +101,17 @@ func evalFloatConstructor(typeName string, arg object.Object) object.Object {
 func evalFloatConversion(name, target, op, source string, operand object.Object, env *object.Environment) object.Object {
 	switch op {
 	case "round":
+		if typechecker.IsStorageFloatName(target) {
+			// f16_round_f32 / bf16_round_f32: nearest even into the storage
+			// format, kept as its exact widened value.
+			if v, isFloat := operand.(*object.Float); isFloat {
+				if target == "f16" {
+					return storageFloat("f16", float32ToHalf(float32(v.Value)))
+				}
+				return storageFloat("bf16", float32ToBfloat16(float32(v.Value)))
+			}
+			break
+		}
 		bits := typechecker.FloatBits(target)
 		switch v := operand.(type) {
 		case *object.Integer:
@@ -112,12 +125,18 @@ func evalFloatConversion(name, target, op, source string, operand object.Object,
 	case "bits":
 		switch v := operand.(type) {
 		case *object.Integer:
-			if target == "f32" {
+			switch target {
+			case "f32":
 				return &object.Float{Value: float64(math.Float32frombits(uint32(v.Value))), Bits: 32}
+			case "f16", "bf16":
+				return storageFloat(target, uint16(v.Value))
 			}
 			return &object.Float{Value: math.Float64frombits(uint64(v.Value)), Bits: 64}
 		case *object.Float:
-			if v.Bits == 32 {
+			switch v.Bits {
+			case 16:
+				return &object.Integer{Value: int64(storageBits(v))}
+			case 32:
 				return &object.Integer{Value: int64(math.Float32bits(float32(v.Value)))}
 			}
 			return &object.Integer{Value: int64(math.Float64bits(v.Value))}
@@ -403,4 +422,107 @@ func fma32(a, b, c float32) float64 {
 	}
 	rounded, _ := sum.Float32()
 	return float64(rounded)
+}
+
+// Storage formats (docs/spec/20-types.md section 11.3.1): binary16 and
+// bfloat16 as bit patterns, widened exactly and rounded to nearest even —
+// the same arithmetic as the C helpers, bit for bit.
+
+// halfToFloat32 widens a binary16 bit pattern exactly.
+func halfToFloat32(h uint16) float32 {
+	sign := uint32(h&0x8000) << 16
+	exp := uint32(h>>10) & 0x1F
+	mant := uint32(h & 0x3FF)
+	switch {
+	case exp == 0x1F:
+		return math.Float32frombits(sign | 0x7F800000 | mant<<13)
+	case exp == 0:
+		if mant == 0 {
+			return math.Float32frombits(sign)
+		}
+		e := int32(1)
+		for mant&0x400 == 0 {
+			mant <<= 1
+			e--
+		}
+		mant &= 0x3FF
+		return math.Float32frombits(sign | uint32(e+112)<<23 | mant<<13)
+	}
+	return math.Float32frombits(sign | (exp+112)<<23 | mant<<13)
+}
+
+// float32ToHalf rounds a binary32 value to binary16, nearest even, with
+// subnormals, overflow to infinity, and quiet NaN preserved.
+func float32ToHalf(x float32) uint16 {
+	u := math.Float32bits(x)
+	sign := uint32(u>>16) & 0x8000
+	exp := (u >> 23) & 0xFF
+	mant := u & 0x7FFFFF
+	if exp == 0xFF {
+		if mant != 0 {
+			return uint16(sign | 0x7C00 | 0x200 | mant>>13)
+		}
+		return uint16(sign | 0x7C00)
+	}
+	e := int32(exp) - 127 + 15
+	if e >= 0x1F {
+		return uint16(sign | 0x7C00)
+	}
+	if e <= 0 {
+		if e < -10 {
+			return uint16(sign)
+		}
+		mant |= 0x800000
+		shift := uint32(14 - e)
+		half := mant >> shift
+		rem := mant & (1<<shift - 1)
+		midpoint := uint32(1) << (shift - 1)
+		if rem > midpoint || (rem == midpoint && half&1 == 1) {
+			half++
+		}
+		return uint16(sign | half)
+	}
+	half := uint32(e)<<10 | mant>>13
+	rem := mant & 0x1FFF
+	if rem > 0x1000 || (rem == 0x1000 && half&1 == 1) {
+		half++
+	}
+	return uint16(sign | half)
+}
+
+// bfloat16ToFloat32 widens a bfloat16 bit pattern exactly.
+func bfloat16ToFloat32(h uint16) float32 { return math.Float32frombits(uint32(h) << 16) }
+
+// float32ToBfloat16 rounds a binary32 value to bfloat16, nearest even,
+// quiet NaN preserved.
+func float32ToBfloat16(x float32) uint16 {
+	u := math.Float32bits(x)
+	if (u>>23)&0xFF == 0xFF && u&0x7FFFFF != 0 {
+		return uint16(u>>16 | 0x40)
+	}
+	upper := u >> 16
+	rem := u & 0xFFFF
+	if rem > 0x8000 || (rem == 0x8000 && upper&1 == 1) {
+		upper++
+	}
+	return uint16(upper)
+}
+
+// storageFloat builds the storage-format object for a bit pattern.
+func storageFloat(format string, bits uint16) *object.Float {
+	var value float32
+	if format == "f16" {
+		value = halfToFloat32(bits)
+	} else {
+		value = bfloat16ToFloat32(bits)
+	}
+	return &object.Float{Value: float64(value), Bits: 16, Format: format}
+}
+
+// storageBits recovers the bit pattern of a storage-format value.
+func storageBits(f *object.Float) uint16 {
+	if f.Format == "f16" {
+		return float32ToHalf(float32(f.Value))
+	}
+	return float32ToBfloat16(float32(f.Value))
 }

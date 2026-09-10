@@ -467,6 +467,8 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("\n")
 	cg.write("typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */\n")
 	cg.write("typedef double f64; /* IEEE 754 binary64 */\n")
+	cg.write("typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */\n")
+	cg.write("typedef uint16_t bf16; /* bfloat16 storage */\n")
 	cg.write("\n")
 	if usesFloats {
 		cg.writeRaw(floatPreamble)
@@ -2353,6 +2355,15 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				return
 			}
 			if target, isCast := primitiveCasts[ident.Value]; isCast && len(e.Arguments) == 1 {
+				// f32(x) over a storage format is an exact widening through
+				// its helper, never a C cast of the uint16_t carrier
+				// (docs/spec/20-types.md section 11.3.1).
+				if source, recorded := tc.ArithmeticType(e.Token); recorded && strings.HasPrefix(source, "widen_") {
+					cg.output.WriteString(fmt.Sprintf("oak_%s( ", source))
+					cg.emitExpressionFragment(e.Arguments[0], tc)
+					cg.output.WriteString(" )")
+					return
+				}
 				cg.output.WriteString(fmt.Sprintf("((%s)( ", target))
 				cg.emitExpressionFragment(e.Arguments[0], tc)
 				cg.output.WriteString(" ))")
@@ -2642,7 +2653,7 @@ func (cg *CodeGenerator) cFunctionName(oakName string) string {
 func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	if ident, ok := expr.(*ast.Identifier); ok {
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
 			return ident.Value
 		case "string":
 			return "string"

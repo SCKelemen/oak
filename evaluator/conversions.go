@@ -17,7 +17,8 @@ func evalConversionCall(name string, args []ast.Expression, env *object.Environm
 	if !ok {
 		return nil, false
 	}
-	if typechecker.IsFloatName(target) || typechecker.IsFloatName(source) {
+	if typechecker.IsFloatName(target) || typechecker.IsFloatName(source) ||
+		typechecker.IsStorageFloatName(target) || typechecker.IsStorageFloatName(source) {
 		// Floating-point rows (docs/spec/20-types.md section 11.3.4).
 		if len(args) != 1 {
 			return newError("%s takes exactly one argument", name), true

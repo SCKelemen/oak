@@ -68,9 +68,19 @@ func genFloatNode(rng *rand.Rand, width, depth int) *floatNode {
 		pool := floatPool(width)
 		return &floatNode{kind: "leaf", bits: toBits(pool[rng.Intn(len(pool))], width), width: width}
 	}
-	switch rng.Intn(10) {
+	switch rng.Intn(11) {
 	case 0:
 		return &floatNode{kind: "neg", args: []*floatNode{genFloatNode(rng, width, depth-1)}, width: width}
+	case 10:
+		if width == 32 {
+			// A round trip through a storage format (section 11.3.1):
+			// f32(f16_round_f32(x)) or f32(bf16_round_f32(x)).
+			format := "f16"
+			if rng.Intn(2) == 1 {
+				format = "bf16"
+			}
+			return &floatNode{kind: "via", op: format, args: []*floatNode{genFloatNode(rng, width, depth-1)}, width: width}
+		}
 	case 1:
 		return &floatNode{kind: "call", op: floatUnaryCalls[rng.Intn(len(floatUnaryCalls))],
 			args: []*floatNode{genFloatNode(rng, width, depth-1)}, width: width}
@@ -99,6 +109,8 @@ func (n *floatNode) render() string {
 		return "(-" + n.args[0].render() + ")"
 	case "op":
 		return "(" + n.args[0].render() + " " + n.op + " " + n.args[1].render() + ")"
+	case "via":
+		return "f32(" + n.op + "_round_f32(" + n.args[0].render() + "))"
 	}
 	parts := make([]string, len(n.args))
 	for i, arg := range n.args {
@@ -122,6 +134,8 @@ func (n *floatNode) reference() float64 {
 		return fromBits(n.bits, n.width)
 	case "neg":
 		return -n.args[0].reference()
+	case "via":
+		return referenceStorageRoundTrip(n.op, float32(n.args[0].reference()))
 	case "op":
 		a, b := n.args[0].reference(), n.args[1].reference()
 		if n.width == 32 {
@@ -380,4 +394,79 @@ hex: (v: u64): () {
 		t.Fatalf("%d of %d differential float cases disagree", mismatches, 2*count)
 	}
 	t.Logf("floating point: %d expression trees agree bit for bit across reference, compiled C, and interpreter", count)
+}
+
+// referenceStorageRoundTrip is the reference for f32(<format>_round_f32(x)):
+// round to nearest even into the 16-bit format and widen exactly. The C
+// helpers in the emitted preamble are the independent witness.
+func referenceStorageRoundTrip(format string, x float32) float64 {
+	u := math.Float32bits(x)
+	if format == "bf16" {
+		if (u>>23)&0xFF == 0xFF && u&0x7FFFFF != 0 {
+			return float64(math.Float32frombits((u>>16 | 0x40) << 16))
+		}
+		upper := u >> 16
+		rem := u & 0xFFFF
+		if rem > 0x8000 || (rem == 0x8000 && upper&1 == 1) {
+			upper++
+		}
+		return float64(math.Float32frombits(upper << 16))
+	}
+	// binary16
+	sign := uint32(u>>16) & 0x8000
+	exp := (u >> 23) & 0xFF
+	mant := u & 0x7FFFFF
+	var half uint32
+	switch {
+	case exp == 0xFF:
+		half = sign | 0x7C00
+		if mant != 0 {
+			half |= 0x200 | mant>>13
+		}
+	default:
+		e := int32(exp) - 127 + 15
+		switch {
+		case e >= 0x1F:
+			half = sign | 0x7C00
+		case e < -10:
+			half = sign
+		case e <= 0:
+			mant |= 0x800000
+			shift := uint32(14 - e)
+			h := mant >> shift
+			rem := mant & (1<<shift - 1)
+			midpoint := uint32(1) << (shift - 1)
+			if rem > midpoint || (rem == midpoint && h&1 == 1) {
+				h++
+			}
+			half = sign | h
+		default:
+			h := uint32(e)<<10 | mant>>13
+			rem := mant & 0x1FFF
+			if rem > 0x1000 || (rem == 0x1000 && h&1 == 1) {
+				h++
+			}
+			half = sign | h
+		}
+	}
+	// widen
+	hs := half & 0x8000
+	he := (half >> 10) & 0x1F
+	hm := half & 0x3FF
+	switch {
+	case he == 0x1F:
+		return float64(math.Float32frombits(hs<<16 | 0x7F800000 | hm<<13))
+	case he == 0:
+		if hm == 0 {
+			return float64(math.Float32frombits(hs << 16))
+		}
+		e := int32(1)
+		for hm&0x400 == 0 {
+			hm <<= 1
+			e--
+		}
+		hm &= 0x3FF
+		return float64(math.Float32frombits(hs<<16 | uint32(e+112)<<23 | hm<<13))
+	}
+	return float64(math.Float32frombits(hs<<16 | (he+112)<<23 | hm<<13))
 }

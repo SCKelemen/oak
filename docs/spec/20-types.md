@@ -357,8 +357,9 @@ unconstrained templates are one mechanism with one emission path.
 
 ### 11.3 Floating-point types
 
-**Status: `f32`/`f64` implemented and tested; `f16`/`bf16`, hexadecimal
-literals, float SIMD, and the `math` library are recorded gaps**
+**Status: §11.3.1–§11.3.5 and §11.3.8 implemented and tested, including the
+`f16`/`bf16` storage formats and hexadecimal literals; float SIMD (§11.3.7),
+the `math` library (§11.3.6), and the Lean model are recorded gaps**
 (`STATUS.md` lists the implemented subset precisely). This section is
 normative for the whole floating-point design. It was motivated by the ml
 project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
@@ -398,9 +399,10 @@ A floating-point literal has a fraction, an exponent, or both:
 Decimal literals are converted to the target format by correct rounding
 (round to nearest, ties to even) from the exact decimal value; hexadecimal
 literals (`0x` mantissa with `p` binary exponent, C99 §6.4.4.2) are exact
-when representable and otherwise correctly rounded. Hexadecimal float
-literals are specified but not yet scanned (`STATUS.md`). A literal never
-has a sign of its own; `-1.5` is unary minus applied to `1.5`.
+when representable and otherwise correctly rounded; a hexadecimal literal
+needs its `p` exponent, since a bare `0x1.8` would be ambiguous with
+member access. A literal never has a sign of its own; `-1.5` is unary minus
+applied to `1.5`.
 
 Like integer literals (`25-type-inference.md` §3a), a floating-point literal
 has no type of its own and takes the floating-point type its context

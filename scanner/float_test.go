@@ -24,6 +24,12 @@ func TestFloatLiterals(t *testing.T) {
 		{"42", token.INT, "42"},
 		{"0xFF", token.INT, "16rFF"},
 		{"16rFF", token.INT, "16rFF"},
+		// Hexadecimal floating-point literals (C99 6.4.4.2): exact.
+		{"0x1.8p1", token.FLOAT, "0x1.8p1"},
+		{"0x1p-126", token.FLOAT, "0x1p-126"},
+		{"0x1P+3", token.FLOAT, "0x1P+3"},
+		{"0xA.Fp0", token.FLOAT, "0xA.Fp0"},
+		{"0x1_0p1", token.FLOAT, "0x10p1"},
 	}
 	for _, tt := range tests {
 		tok := New(tt.input).NextToken()

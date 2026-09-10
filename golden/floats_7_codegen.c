@@ -25,6 +25,8 @@ typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
 
 typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
 typedef double f64; /* IEEE 754 binary64 */
+typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */
+typedef uint16_t bf16; /* bfloat16 storage */
 
 /* floating point (docs/spec/20-types.md section 11.3): IEEE 754 binary32/64,
    round to nearest even, no contraction (see the FP_CONTRACT pragma above),
@@ -39,6 +41,46 @@ static inline int32_t oak_total_key_f32(f32 x) { union { f32 f; int32_t i; } pun
 static inline int64_t oak_total_key_f64(f64 x) { union { f64 f; int64_t i; } pun; pun.f = x; return pun.i < 0 ? (int64_t)(pun.i ^ 0x7FFFFFFFFFFFFFFFLL) : pun.i; }
 static inline int oak_total_order_f32(f32 a, f32 b) { return oak_total_key_f32(a) <= oak_total_key_f32(b); }
 static inline int oak_total_order_f64(f64 a, f64 b) { return oak_total_key_f64(a) <= oak_total_key_f64(b); }
+/* storage formats (section 11.3.1): binary16 and bfloat16 as uint16_t carriers.
+   Widening is exact; rounding from f32 is to nearest even with subnormals,
+   overflow to infinity, and quiet NaN preserved — pure integer bit work over
+   a union pun, no dependence on compiler half-precision support. */
+static inline f32 oak_widen_f16(f16 h) {
+  uint32_t sign = ((uint32_t)h & 0x8000u) << 16, exp = ((uint32_t)h >> 10) & 0x1Fu, mant = (uint32_t)h & 0x3FFu;
+  union { uint32_t u; f32 f; } pun;
+  if (exp == 0x1Fu) { pun.u = sign | 0x7F800000u | (mant << 13); return pun.f; }
+  if (exp == 0u) {
+    if (mant == 0u) { pun.u = sign; return pun.f; }
+    exp = 1u; while ((mant & 0x400u) == 0u) { mant <<= 1; exp--; } mant &= 0x3FFu;
+    pun.u = sign | ((exp + 112u) << 23) | (mant << 13); return pun.f;
+  }
+  pun.u = sign | ((exp + 112u) << 23) | (mant << 13); return pun.f;
+}
+static inline f16 oak_f16_round_f32(f32 x) {
+  union { f32 f; uint32_t u; } pun; pun.f = x;
+  uint32_t u = pun.u, sign = (u >> 16) & 0x8000u, exp = (u >> 23) & 0xFFu, mant = u & 0x7FFFFFu;
+  if (exp == 0xFFu) { return (f16)(sign | 0x7C00u | (mant != 0u ? (0x200u | (mant >> 13)) : 0u)); }
+  int32_t e = (int32_t)exp - 127 + 15;
+  if (e >= 0x1F) { return (f16)(sign | 0x7C00u); }
+  if (e <= 0) {
+    if (e < -10) { return (f16)sign; }
+    mant |= 0x800000u;
+    uint32_t shift = (uint32_t)(14 - e), half = mant >> shift, rem = mant & ((1u << shift) - 1u), midpoint = 1u << (shift - 1u);
+    if (rem > midpoint || (rem == midpoint && (half & 1u))) { half++; }
+    return (f16)(sign | half);
+  }
+  uint32_t half = ((uint32_t)e << 10) | (mant >> 13), rem = mant & 0x1FFFu;
+  if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) { half++; }
+  return (f16)(sign | half);
+}
+static inline f32 oak_widen_bf16(bf16 h) { union { uint32_t u; f32 f; } pun; pun.u = (uint32_t)h << 16; return pun.f; }
+static inline bf16 oak_bf16_round_f32(f32 x) {
+  union { f32 f; uint32_t u; } pun; pun.f = x; uint32_t u = pun.u;
+  if (((u >> 23) & 0xFFu) == 0xFFu && (u & 0x7FFFFFu) != 0u) { return (bf16)((u >> 16) | 0x40u); }
+  uint32_t upper = u >> 16, rem = u & 0xFFFFu;
+  if (rem > 0x8000u || (rem == 0x8000u && (upper & 1u))) { upper++; }
+  return (bf16)upper;
+}
 
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */
