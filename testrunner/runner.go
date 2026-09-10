@@ -44,13 +44,16 @@ type Result struct {
 	Divergence *TraceDivergence `json:"trace_divergence,omitempty"`
 	Package    string           `json:"package"`
 	Status     string           `json:"status"`
-	Cases      int              `json:"cases"`
-	Discards   int              `json:"discards"`
-	Seed       uint64           `json:"seed"`
-	Failure    string           `json:"failure,omitempty"`
-	Artifact   string           `json:"artifact,omitempty"`
-	Output     string           `json:"output,omitempty"`
-	Classes    map[uint32]int   `json:"classes,omitempty"`
+	// Row names the failing row of a table target (docs/spec/110-testing.md,
+	// "Table targets"): the file under testdata/oak/<Test>/rows.
+	Row      string         `json:"row,omitempty"`
+	Cases    int            `json:"cases"`
+	Discards int            `json:"discards"`
+	Seed     uint64         `json:"seed"`
+	Failure  string         `json:"failure,omitempty"`
+	Artifact string         `json:"artifact,omitempty"`
+	Output   string         `json:"output,omitempty"`
+	Classes  map[uint32]int `json:"classes,omitempty"`
 	// Attempts is how far the deterministic attempt sequence was consumed,
 	// including attempts carried over from a resumed campaign.
 	Attempts int `json:"attempts,omitempty"`
@@ -365,7 +368,17 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		}
 		return result
 	}
-	corpus, err := loadCorpus(pkg, test, cfg.MaxBytes)
+	// A table target's inputs are its rows, executed once each in name
+	// order; the failure corpus is not replayed for it (the rows are the
+	// corpus) and rows are never minimized (a row is its own identity).
+	var corpus [][]byte
+	var rows []tableRow
+	var err error
+	if test.Kind == "table" {
+		rows, err = loadRows(pkg, test, cfg.MaxBytes)
+	} else {
+		corpus, err = loadCorpus(pkg, test, cfg.MaxBytes)
+	}
 	if err != nil {
 		result.Status = "error"
 		result.Failure = err.Error()
@@ -407,7 +420,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		result.Output = out.output
 		best := input
 		// Timeouts and infrastructure failures are not stable shrink predicates.
-		if test.Kind != "unit" && cfg.Shrink > 0 && out.signature != "timeout" && !strings.HasPrefix(out.signature, "harness:") {
+		if test.Kind != "unit" && test.Kind != "table" && cfg.Shrink > 0 && out.signature != "timeout" && !strings.HasPrefix(out.signature, "harness:") {
 			confirmation := native.run(index, input)
 			if confirmation.status != "fail" || confirmation.signature != out.signature || !sameTrace(confirmation, out) {
 				result.Failure = "non-reproducible failure: " + out.signature
@@ -441,7 +454,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		if format != "" {
 			result.Commands = decodeCommands(best)
 		}
-		artifact := Artifact{TimeoutNanos: int64(cfg.Timeout), Version: 1, Engine: engineVersion, Test: test.Name, Kind: test.Kind, Build: native.build, Seed: cfg.Seed, Attempt: attempt, MaxBytes: cfg.MaxBytes, Sanitize: cfg.Sanitize, Signature: out.signature, Input: best}
+		artifact := Artifact{TimeoutNanos: int64(cfg.Timeout), Version: 1, Engine: engineVersion, Test: test.Name, Kind: test.Kind, Build: native.build, Seed: cfg.Seed, Attempt: attempt, MaxBytes: cfg.MaxBytes, Sanitize: cfg.Sanitize, Signature: out.signature, Input: best, Row: result.Row}
 		artifact.InputFormat = format
 		artifact.TraceVersion, artifact.Trace, artifact.TraceTruncated = traceVersion, out.trace, out.traceTruncated
 		path, err := saveArtifact(pkg, test, artifact)
@@ -461,6 +474,17 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 	}
 	if test.Kind == "unit" {
 		execute(nil, 0)
+		return result
+	}
+	if test.Kind == "table" {
+		for i, row := range rows {
+			result.Row = row.name
+			if !execute(row.data, i) {
+				result.Failure = "row " + row.name + ": " + result.Failure
+				return result
+			}
+		}
+		result.Row = ""
 		return result
 	}
 	// Regression corpus is always run before new inputs. Build identities are

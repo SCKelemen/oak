@@ -138,3 +138,79 @@ pub sim_next: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, choi
   events[index] = events[count - u32(1)]
   result
 }
+
+// Table rows and floating-point comparison (docs/spec/110-testing.md,
+// "Table targets"). A row is the bytes of one file under
+// testdata/oak/<Test>/rows; these readers decode little-endian fields at a
+// byte offset and trap on a short row. Floating-point results are compared
+// by ULP distance or by exact bits, never by ==: two values an ulp apart
+// are distinct doubles that == would call unequal, and NaN == NaN is false.
+pub test_row_u32: (row: []u8, offset: u32): u32 {
+  assert(offset <= len(row) && len(row) - offset >= u32(4))
+  u32(row[offset]) | (u32(row[offset + u32(1)]) << u32(8)) |
+    (u32(row[offset + u32(2)]) << u32(16)) | (u32(row[offset + u32(3)]) << u32(24))
+}
+
+pub test_row_u64: (row: []u8, offset: u32): u64 {
+  assert(offset <= len(row) && len(row) - offset >= u32(8))
+  u64(test_row_u32(row, offset)) | (u64(test_row_u32(row, offset + u32(4))) << u64(32))
+}
+
+pub test_row_f32: (row: []u8, offset: u32): f32 { f32_bits_u32(test_row_u32(row, offset)) }
+
+pub test_row_f64: (row: []u8, offset: u32): f64 { f64_bits_u64(test_row_u64(row, offset)) }
+
+// test_ulp_distance_f64: the number of representable f64 values between a
+// and b, counting +0 and -0 as one value, infinities as the values beyond
+// the largest finite ones, and two NaNs as equal; a NaN against a non-NaN is
+// the maximum distance.
+pub test_ulp_distance_f64: (a: f64, b: f64): u64 {
+  is_nan(a) && is_nan(b) ? u64(0) |
+  (is_nan(a) || is_nan(b) ? u64(18446744073709551615) | {
+    ka: u64 = test_ordered_key_f64(a)
+    kb: u64 = test_ordered_key_f64(b)
+    ka >= kb ? ka - kb | kb - ka
+  })
+}
+
+// test_ordered_key_f64 maps a non-NaN f64 to a u64 that orders as the
+// number does, so neighbors in the format are neighbors as integers.
+pub test_ordered_key_f64: (x: f64): u64 {
+  bits: u64 = u64_bits_f64(x)
+  magnitude: u64 = bits & u64(9223372036854775807)
+  bits >= u64(9223372036854775808) ? u64(9223372036854775808) - magnitude | u64(9223372036854775808) + magnitude
+}
+
+pub test_ulp_distance_f32: (a: f32, b: f32): u32 {
+  is_nan(a) && is_nan(b) ? u32(0) |
+  (is_nan(a) || is_nan(b) ? u32(4294967295) | {
+    ka: u32 = test_ordered_key_f32(a)
+    kb: u32 = test_ordered_key_f32(b)
+    ka >= kb ? ka - kb | kb - ka
+  })
+}
+
+pub test_ordered_key_f32: (x: f32): u32 {
+  bits: u32 = u32_bits_f32(x)
+  magnitude: u32 = bits & u32(2147483647)
+  bits >= u32(2147483648) ? u32(2147483648) - magnitude | u32(2147483648) + magnitude
+}
+
+// test_check_ulps_*: fail with the invariant id unless got is within ulps of
+// want (NaN matches only NaN). test_check_bits_*: fail unless the bit
+// patterns are identical, the check for a bit-exact contract.
+pub test_check_ulps_f64: (got: f64, want: f64, ulps: u64, id: u32): () {
+  test_check(test_ulp_distance_f64(got, want) <= ulps, id)
+}
+
+pub test_check_ulps_f32: (got: f32, want: f32, ulps: u32, id: u32): () {
+  test_check(test_ulp_distance_f32(got, want) <= ulps, id)
+}
+
+pub test_check_bits_f64: (got: f64, want: f64, id: u32): () {
+  test_check(u64_bits_f64(got) == u64_bits_f64(want), id)
+}
+
+pub test_check_bits_f32: (got: f32, want: f32, id: u32): () {
+  test_check(u32_bits_f32(got) == u32_bits_f32(want), id)
+}
