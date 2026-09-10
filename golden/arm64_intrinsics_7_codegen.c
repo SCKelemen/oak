@@ -36,11 +36,22 @@ typedef enum oak_Comparison {
 } Comparison;
 
 /* assert: always compiled in (docs/spec/85-discipline.md section 5) */
-static inline void oak_assert(Bool cond) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  if (!cond) {
+    fprintf(stderr, "oak: assertion failed at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+}
+#else
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  (void)file; (void)line;
   if (!cond) {
     __builtin_trap();
   }
 }
+#endif
 
 typedef struct oak_view_u8 {
     const u8* base;
@@ -195,9 +206,9 @@ i32 oak_main( void );
 // @identifier: main
 // @signature: fn main() -> i32
 i32 oak_main(  ) {
-oak_assert( ( oak_arm64_clz32( ((u32)( 0 )) ) == ((u32)( 32 )) ) )  ;
-oak_assert( ( oak_arm64_rev32( oak_arm64_rev32( ((u32)( 287454020 )) ) ) == ((u32)( 287454020 )) ) )  ;
-oak_assert( ( oak_arm64_rbit64( oak_arm64_rbit64( ((u64)( 9 )) ) ) == ((u64)( 9 )) ) )  ;
+oak_assert( ( oak_arm64_clz32( ((u32)( 0 )) ) == ((u32)( 32 )) ), "unknown.oak", 3 )  ;
+oak_assert( ( oak_arm64_rev32( oak_arm64_rev32( ((u32)( 287454020 )) ) ) == ((u32)( 287454020 )) ), "unknown.oak", 4 )  ;
+oak_assert( ( oak_arm64_rbit64( oak_arm64_rbit64( ((u64)( 9 )) ) ) == ((u64)( 9 )) ), "unknown.oak", 5 )  ;
     return 0  ;
 }
 

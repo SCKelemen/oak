@@ -105,6 +105,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if isError(right) {
 			return right
 		}
+		if unsigned := evalUnsignedInfix(node.Operator, left, right, node.Token, env); unsigned != nil {
+			return unsigned
+		}
 		return wrapToWidth(evalInfixExpression(node.Operator, left, right), node.Token, env)
 
 	case *ast.IndexAssignmentStatement:
@@ -528,6 +531,52 @@ func evalBangOperatorExpression(right object.Object) object.Object {
 	}
 }
 
+// evalUnsignedInfix evaluates division, modulo, and ordering in the
+// unsigned width the checker recorded for the operator, so u64 values above
+// 2^63 divide and compare as the compiled code does; it returns nil when the
+// operator or the recorded width does not call for it.
+func evalUnsignedInfix(operator string, left, right object.Object, tok token.Token, env *object.Environment) object.Object {
+	switch operator {
+	case "/", "%", "<", ">", "<=", ">=":
+	default:
+		return nil
+	}
+	width, known := env.ArithmeticWidth(tok)
+	if !known || len(width) == 0 || width[0] != 'u' {
+		return nil
+	}
+	l, lok := left.(*object.Integer)
+	r, rok := right.(*object.Integer)
+	if !lok || !rok {
+		return nil
+	}
+	bits, ok := primitiveWidthBits(width)
+	if !ok {
+		return nil
+	}
+	a, b := uint64(l.Value)&widthMask(bits), uint64(r.Value)&widthMask(bits)
+	switch operator {
+	case "/":
+		if b == 0 {
+			return newError("division by zero")
+		}
+		return &object.Integer{Value: int64(a / b)}
+	case "%":
+		if b == 0 {
+			return newError("modulo by zero")
+		}
+		return &object.Integer{Value: int64(a % b)}
+	case "<":
+		return nativeBoolToBooleanObject(a < b)
+	case ">":
+		return nativeBoolToBooleanObject(a > b)
+	case "<=":
+		return nativeBoolToBooleanObject(a <= b)
+	default:
+		return nativeBoolToBooleanObject(a >= b)
+	}
+}
+
 // wrapToWidth folds an integer result into the fixed width the checker
 // recorded for this operator token (docs/spec/20-types.md section 11.1):
 // unsigned by masking, signed by masking and sign extension. Without a
@@ -734,6 +783,16 @@ func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Enviro
 	if fn.Variadic && len(fn.Parameters) > 0 {
 		fixed := len(fn.Parameters) - 1
 		for paramIdx := 0; paramIdx < fixed && paramIdx < len(args); paramIdx++ {
+			// Owned arrays are values: a parameter receives its own copy, as
+			// compiled code copies in (views and spans stay borrowed windows).
+			if owned, isArray := args[paramIdx].(*object.Array); isArray {
+				env.Set(fn.Parameters[paramIdx].Value, &object.Array{Elements: append([]object.Object(nil), owned.Elements...)})
+				continue
+			}
+			if owned, isArray := args[paramIdx].(*object.Array); isArray {
+				env.Set(fn.Parameters[paramIdx].Value, &object.Array{Elements: append([]object.Object(nil), owned.Elements...)})
+				continue
+			}
 			env.Set(fn.Parameters[paramIdx].Value, args[paramIdx])
 		}
 		// Bundle the trailing arguments (possibly none) for the last name.

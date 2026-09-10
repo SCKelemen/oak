@@ -199,3 +199,14 @@ the C compiler is never asked to inline what it cannot. The judgment is the
 discipline analyzer's call-graph and loop walk (`InlineHelperShape`), so the
 backend and the recursion policy share one authority.
 
+## 10. Owned arrays across calls
+
+An owned array `[N]T` is a value. A parameter of that type is received as
+const storage under a private name and copied element-wise into the named
+local before the body runs, so callee stores never alias the caller; a typed
+array literal in argument position is a C99 compound literal. Returning an
+owned array by value and copying an array binding into a record field have
+no lowering yet and are rejected by the checker with a pointer at the record
+wrapper; the by-value array representation (a struct carrying the array,
+C's own idiom) is the planned completion.
+

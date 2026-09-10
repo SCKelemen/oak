@@ -525,6 +525,10 @@ type TypeChecker struct {
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[string]string
+	// predeclaredGlobals names package-level bindings registered before any
+	// body is checked, so functions may mention globals declared later in
+	// the file; the defining declaration consumes its entry.
+	predeclaredGlobals map[string]bool
 	// shiftWidths records the operand width of each shift expression
 	// (position-keyed), consumed by the backend's checked-shift emission.
 	shiftWidths map[string]int
@@ -759,6 +763,22 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 	}
 	tc.resolvePredeclaredFunctionBarriers(program)
+	// Package scope is order-independent for annotated globals: register
+	// their declared types now so a body checked earlier may name them.
+	tc.predeclaredGlobals = make(map[string]bool)
+	for _, stmt := range program.Statements {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Type == nil {
+			continue
+		}
+		if _, exists := tc.env.Get(decl.Name.Value); exists {
+			continue // the full check reports the duplicate
+		}
+		if varType := tc.parseTypeExpression(decl.Type); varType != nil {
+			tc.env.SetType(decl.Name.Value, varType)
+			tc.predeclaredGlobals[decl.Name.Value] = true
+		}
+	}
 	for _, stmt := range program.Statements {
 		switch stmt.(type) {
 		case *ast.ADTType, *ast.TagDeclaration:
@@ -1183,11 +1203,11 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 					tc.addError(e, "integer literal %d in floating-point context %s; spell it %d.0", e.Value, primType.Name, e.Value)
 					return primType
 				}
-				if tc.literalFitsInType(e.Value, primType.Name) {
+				if tc.literalFits(e, primType.Name) {
 					return primType
 				}
 				if tc.isNumericType(primType) {
-					tc.addError(e, "literal %d does not fit in type %s", e.Value, primType.Name)
+					tc.addError(e, "literal %s does not fit in type %s", e.Token.Literal, primType.Name)
 					return primType
 				}
 				// Non-integer primitive context: fall through to default inference
@@ -1309,10 +1329,10 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression, expecte
 	if expr.Operator == "-" {
 		if lit, isLiteral := expr.Right.(*ast.IntegerLiteral); isLiteral {
 			if prim, ok := expected.(*PrimitiveType); ok && tc.isNumericType(prim) {
-				if tc.literalFitsInType(-lit.Value, prim.Name) {
+				if !lit.Wide && tc.literalFitsInType(-lit.Value, prim.Name) {
 					return prim
 				}
-				tc.addError(expr, "literal -%d does not fit in type %s", lit.Value, prim.Name)
+				tc.addError(expr, "literal -%s does not fit in type %s", lit.Token.Literal, prim.Name)
 				return prim
 			}
 		}
@@ -1450,7 +1470,9 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		// Equality on machine integers follows the arithmetic rule: one
 		// signedness, widths promote; otherwise operands must be compatible.
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
-			if tc.promoteNumericTypes(expr, leftType, rightType) == nil {
+			// Recorded so the interpreter compares in the operands' width
+			// and signedness, as the compiled comparison does.
+			if tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType)) == nil {
 				return nil
 			}
 			return &BoolType{}
@@ -1506,7 +1528,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
-		if tc.promoteNumericTypes(expr, leftType, rightType) == nil {
+		if tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType)) == nil {
 			return nil
 		}
 		return &BoolType{}
@@ -2123,8 +2145,8 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 	// Check if argument is an integer literal (untyped)
 	if intLit, ok := args[0].(*ast.IntegerLiteral); ok {
 		// Check if literal fits in target type
-		if !tc.literalFitsInType(intLit.Value, typeName) {
-			tc.addError(intLit, "literal %d does not fit in type %s", intLit.Value, typeName)
+		if !tc.literalFits(intLit, typeName) {
+			tc.addError(intLit, "literal %s does not fit in type %s", intLit.Token.Literal, typeName)
 			return nil
 		}
 		// Literal fits - return target type
@@ -2169,12 +2191,28 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 
 	// Check if widening is valid (same signedness, source is narrower or equal)
 	if !tc.isValidWidening(argPrim.Name, normalizedTarget) {
-		tc.addError(args[0], "cannot widen %s to %s (must be same signedness and source must be narrower or equal)", argPrim.Name, typeName)
+		tc.addError(args[0], "cannot widen %s to %s (must be same signedness and source must be narrower or equal); narrowing is explicit: %s_trunc_%s(x) wraps, %s_saturating_%s(x) clamps, %s_checked_%s(x) returns Result, and %s_bits_%s(x) reinterprets same-width bits",
+			argPrim.Name, typeName, typeName, argPrim.Name, typeName, argPrim.Name, typeName, argPrim.Name, typeName, argPrim.Name)
 		return nil
 	}
 
 	// Return the target type (preserve alias name if used)
 	return &PrimitiveType{Name: typeName}
+}
+
+// literalFits checks whether an integer literal node fits the given primitive
+// type; a wide literal (above 2^63 - 1) fits only the 64-bit unsigned types.
+func (tc *TypeChecker) literalFits(lit *ast.IntegerLiteral, typeName string) bool {
+	if lit.Wide {
+		switch typeName {
+		case "u64":
+			return true
+		case "uint", "uptr":
+			return tc.intSize == 64
+		}
+		return false
+	}
+	return tc.literalFitsInType(lit.Value, typeName)
 }
 
 // literalFitsInType checks if an integer literal value fits in the given primitive type
@@ -2821,7 +2859,7 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 		// like expression literals infer from their expected type.
 		if intLit, ok := p.Value.(*ast.IntegerLiteral); ok {
 			if prim, ok := expectedType.(*PrimitiveType); ok {
-				if tc.literalFitsInType(intLit.Value, prim.Name) {
+				if tc.literalFits(intLit, prim.Name) {
 					return expectedType
 				}
 				tc.addError(p.Value, "pattern literal %d does not fit in scrutinee type %s", intLit.Value, expectedType)
@@ -3041,6 +3079,15 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 		if expectedRecord != nil {
 			if fieldType, ok := expectedRecord.Fields[name]; ok {
 				expectedFieldType = fieldType
+			}
+		}
+		// An owned-array field is initialized from an array literal; copying
+		// an array binding into a record has no C lowering yet (by-value
+		// arrays, roadmap item 4), so it is rejected instead of emitted.
+		if arr, isArray := expectedFieldType.(*ArrayType); isArray && arr.Length >= 0 && !arr.IsSlice && !arr.IsSpan {
+			if _, isLiteral := fieldExpr.(*ast.ArrayLiteral); !isLiteral {
+				tc.addError(fieldExpr, "record field %s: an owned array field must be initialized from an array literal; copying an array binding into a record is not lowered yet (wrap the array in a record to pass it by value)", name)
+				continue
 			}
 		}
 		fieldType := tc.checkExpression(fieldExpr, expectedFieldType)
@@ -3272,9 +3319,12 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		// Defense in depth against parser error-recovery artifacts.
 		return
 	}
-	// Check if variable already exists in the declaring package's scope
-	// (docs/spec/83-modules.md section 7; shadowsVisibleBinding).
-	if tc.shadowsVisibleBinding(stmt.Name.Value, stmt.Name.Token) {
+	// The defining declaration of a predeclared global is not a redeclaration.
+	if tc.env == tc.globalEnv && tc.predeclaredGlobals[stmt.Name.Value] {
+		delete(tc.predeclaredGlobals, stmt.Name.Value)
+	} else if tc.shadowsVisibleBinding(stmt.Name.Value, stmt.Name.Token) {
+		// Check if variable already exists in the declaring package's scope
+		// (docs/spec/83-modules.md section 7; shadowsVisibleBinding).
 		// Variable already exists - redefinition is not allowed
 		// Use assignment statement (x = value) instead of variable declaration (x: type = value)
 		if stmt.Type != nil {
@@ -3636,6 +3686,13 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	// Save current environment and switch to function environment
 	oldEnv := tc.env
 	tc.env = funcEnv
+
+	// An owned array cannot be returned by value yet (C returns no arrays;
+	// by-value arrays are roadmap item 4): say so instead of emitting
+	// invalid C, and point at the record wrapper that works today.
+	if arr, isArray := returnType.(*ArrayType); isArray && arr.Length >= 0 && !arr.IsSlice && !arr.IsSpan {
+		tc.addError(stmt.ReturnType, "function %s: returning an owned array by value is not lowered yet; return it inside a record", stmt.Name.Value)
+	}
 
 	// Type check function body, inferring literals against the declared
 	// return type.
@@ -4026,7 +4083,12 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	// The loop condition dominates the body on every iteration: `i < len(v)`
 	// bounds v[i] until the body assigns i (typechecker/extents.go).
 	mark := tc.enterFactScope(stmt.Condition)
+	// The body is its own scope: a name declared inside the loop is not
+	// visible after it, so a later block may declare the same name.
+	outerEnv := tc.env
+	tc.env = NewEnclosedTypeEnvironment(outerEnv)
 	tc.checkBlockStatement(stmt.Body)
+	tc.env = outerEnv
 	tc.popExtentFacts(mark)
 }
 

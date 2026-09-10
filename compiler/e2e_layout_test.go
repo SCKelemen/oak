@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -240,8 +241,10 @@ main: (): i32 {
 	if err != nil {
 		t.Fatalf("untagged compilation failed: %v", err)
 	}
-	// Source-position provenance comments necessarily differ (the tag
-	// declarations occupy lines); everything else must be byte-identical.
+	// Source-position provenance necessarily differs (the tag declarations
+	// occupy lines): the @source comments and the line each assertion
+	// reports on trap. Everything else must be byte-identical.
+	assertSite := regexp.MustCompile(`, "tagged\.oak", [0-9]+ \)`)
 	stripProvenance := func(c string) string {
 		lines := strings.Split(c, "\n")
 		kept := lines[:0]
@@ -249,7 +252,7 @@ main: (): i32 {
 			if strings.HasPrefix(strings.TrimSpace(line), "// @source:") {
 				continue
 			}
-			kept = append(kept, line)
+			kept = append(kept, assertSite.ReplaceAllString(line, `, "tagged.oak", L )`))
 		}
 		return strings.Join(kept, "\n")
 	}

@@ -51,11 +51,22 @@ typedef enum oak_Comparison {
 } Comparison;
 
 /* assert: always compiled in (docs/spec/85-discipline.md section 5) */
-static inline void oak_assert(Bool cond) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  if (!cond) {
+    fprintf(stderr, "oak: assertion failed at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+}
+#else
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  (void)file; (void)line;
   if (!cond) {
     __builtin_trap();
   }
 }
+#endif
 
 typedef struct oak_view_u8 {
     const u8* base;

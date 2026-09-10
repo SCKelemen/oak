@@ -148,12 +148,7 @@ func (p *Parser) nextToken() {
 	// Skip ILLEGAL tokens and report errors
 	// Note: zero-initialized tokens have TokenKind == 0 (ILLEGAL), but Line == 0 indicates uninitialized
 	for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
-		// Use the literal from the token (e.g., "unterminated block comment")
-		errorMsg := p.currentToken.Literal
-		if errorMsg == "" {
-			errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.currentToken.Line, p.currentToken.Column)
-		}
-		p.addErrorAtToken(&p.currentToken, errorMsg)
+		p.addErrorAtToken(&p.currentToken, illegalTokenMessage(p.currentToken))
 		// Skip the illegal token and continue
 		p.currentToken = p.peekToken
 		p.peekToken = p.source.NextToken()
@@ -167,11 +162,7 @@ func (p *Parser) nextToken() {
 
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
-			errorMsg := p.currentToken.Literal
-			if errorMsg == "" {
-				errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.currentToken.Line, p.currentToken.Column)
-			}
-			p.addErrorAtToken(&p.currentToken, errorMsg)
+			p.addErrorAtToken(&p.currentToken, illegalTokenMessage(p.currentToken))
 			p.currentToken = p.peekToken
 			p.peekToken = p.source.NextToken()
 		}
@@ -180,11 +171,7 @@ func (p *Parser) nextToken() {
 	// Skip ILLEGAL tokens in peekToken
 	// Note: zero-initialized tokens have TokenKind == 0 (ILLEGAL), but Line == 0 indicates uninitialized
 	for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
-		errorMsg := p.peekToken.Literal
-		if errorMsg == "" {
-			errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.peekToken.Line, p.peekToken.Column)
-		}
-		p.addErrorAtToken(&p.peekToken, errorMsg)
+		p.addErrorAtToken(&p.peekToken, illegalTokenMessage(p.peekToken))
 		// Skip the illegal token
 		p.peekToken = p.source.NextToken()
 	}
@@ -196,11 +183,7 @@ func (p *Parser) nextToken() {
 
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
-			errorMsg := p.peekToken.Literal
-			if errorMsg == "" {
-				errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.peekToken.Line, p.peekToken.Column)
-			}
-			p.addErrorAtToken(&p.peekToken, errorMsg)
+			p.addErrorAtToken(&p.peekToken, illegalTokenMessage(p.peekToken))
 			p.peekToken = p.source.NextToken()
 		}
 	}
@@ -656,18 +639,32 @@ func (p *Parser) parseFloatLiteral() ast.Expression {
 	return lit
 }
 
+// illegalTokenMessage explains an illegal token; the scanner's own message
+// (e.g. "unterminated block comment") wins, known foreign spellings get a
+// hint, and anything else names its position.
+func illegalTokenMessage(tok token.Token) string {
+	switch tok.Literal {
+	case "":
+		return fmt.Sprintf("illegal token at line %d, column %d", tok.Line, tok.Column)
+	case "~":
+		return "unexpected ~: bitwise complement is the prefix operator ^ in Oak (Go style), e.g. x & ^mask"
+	}
+	return tok.Literal
+}
+
 func (p *Parser) parseIntegerLiteral() ast.Expression {
 	lit := &ast.IntegerLiteral{Token: p.currentToken}
 
 	// Check if this is a radix literal (e.g., "16r1000", "2r1010")
 	literal := p.currentToken.Literal
 	if strings.ContainsAny(literal, "rR") {
-		value, err := p.parseRadixLiteral(literal)
+		value, wide, err := p.parseRadixLiteral(literal)
 		if err != nil {
 			p.addErrorAtCurrentToken(fmt.Sprintf("invalid radix literal %q: %v", literal, err))
 			return nil
 		}
 		lit.Value = value
+		lit.Wide = wide
 		return lit
 	}
 
@@ -676,6 +673,13 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 		var msg string
 		numErr, ok := err.(*strconv.NumError)
 		if ok && numErr.Err == strconv.ErrRange {
+			// Above the signed range: the full u64 range is still a literal
+			// (docs/spec/20-types.md), carried as its bit pattern.
+			if wide, wideErr := strconv.ParseUint(literal, 10, 64); wideErr == nil {
+				lit.Value = int64(wide)
+				lit.Wide = true
+				return lit
+			}
 			msg = fmt.Sprintf("integer literal out of range: %q", literal)
 		} else {
 			msg = fmt.Sprintf("could not parse %q as integer", literal)
@@ -690,7 +694,7 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 
 // parseRadixLiteral parses a radix literal like "16r1000" or "2r1010"
 // Returns the integer value and nil error if successful, or 0 and error if not a radix literal or invalid
-func (p *Parser) parseRadixLiteral(literal string) (int64, error) {
+func (p *Parser) parseRadixLiteral(literal string) (int64, bool, error) {
 	// Find the 'r' or 'R' separator
 	rIndex := -1
 	for i, ch := range literal {
@@ -700,42 +704,46 @@ func (p *Parser) parseRadixLiteral(literal string) (int64, error) {
 		}
 	}
 	if rIndex == -1 {
-		return 0, fmt.Errorf("not a radix literal")
+		return 0, false, fmt.Errorf("not a radix literal")
 	}
 
 	// Parse the radix (base)
 	radixStr := util.NormalizeDigits(literal[:rIndex])
 	radix, err := strconv.Atoi(radixStr)
 	if err != nil {
-		return 0, fmt.Errorf("invalid radix: %s", radixStr)
+		return 0, false, fmt.Errorf("invalid radix: %s", radixStr)
 	}
 	if radix < 2 || radix > 16 {
-		return 0, fmt.Errorf("radix must be between 2 and 16, got %d", radix)
+		return 0, false, fmt.Errorf("radix must be between 2 and 16, got %d", radix)
 	}
 
 	// Parse the digits after 'r' (skip the 'r' itself)
 	digitsStr := util.NormalizeDigits(literal[rIndex+1:])
 	if digitsStr == "" {
-		return 0, fmt.Errorf("missing digits after radix separator")
+		return 0, false, fmt.Errorf("missing digits after radix separator")
 	}
 	if err := validateDigitSeparators(digitsStr); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	digitsStrClean := strings.ReplaceAll(digitsStr, "_", "")
 	if digitsStrClean == "" {
-		return 0, fmt.Errorf("missing digits after radix separator")
+		return 0, false, fmt.Errorf("missing digits after radix separator")
 	}
 
-	// Convert from the given radix to int64
+	// Convert from the given radix: the full u64 range is admitted, values
+	// above the signed range travel as their bit pattern with Wide set.
 	value, err := strconv.ParseInt(digitsStrClean, radix, 64)
 	if err != nil {
 		if numErr, ok := err.(*strconv.NumError); ok && numErr.Err == strconv.ErrRange {
-			return 0, fmt.Errorf("integer literal out of range for radix %d", radix)
+			if wide, wideErr := strconv.ParseUint(digitsStrClean, radix, 64); wideErr == nil {
+				return int64(wide), true, nil
+			}
+			return 0, false, fmt.Errorf("integer literal out of range for radix %d", radix)
 		}
-		return 0, fmt.Errorf("invalid digits for radix %d: %s", radix, digitsStrClean)
+		return 0, false, fmt.Errorf("invalid digits for radix %d: %s", radix, digitsStrClean)
 	}
 
-	return value, nil
+	return value, false, nil
 }
 
 func validateDigitSeparators(digits string) error {
