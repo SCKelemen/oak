@@ -28,6 +28,9 @@ type Model struct {
     Enums map[string][]string
     Terms map[string]*Node
     Digest string
+    // Declarations locate the source declarations by name (frontend.Declarations);
+    // they are not part of the semantic identity.
+    Declarations map[string]frontend.Declaration
 }
 func demand(ok bool,why string){if !ok{panic(fmt.Errorf("%s",why))}}
 func array(v any) []any {a,ok:=v.([]any);demand(ok,"expected expression array");return a}
@@ -130,7 +133,10 @@ func loadModel(path string)(*Model,error){
     sourcePath,e:=filepath.EvalSymlinks(filepath.Join(filepath.Dir(path),cfg.Source));if e!=nil{return nil,e}
     rel,e:=filepath.Rel(filepath.Dir(path),sourcePath);if e!=nil||rel==".."||strings.HasPrefix(rel,".."+string(filepath.Separator)){return nil,fmt.Errorf("source must remain inside project directory")}
     source,e:=os.ReadFile(sourcePath);if e!=nil{return nil,e};if len(source)>2_000_000{return nil,fmt.Errorf("source limit")}
-    doc,e:=frontend.Export(sourcePath,source);if e!=nil{return nil,e};if doc.SourceHash!=digest(string(source)){return nil,fmt.Errorf("frontend source mismatch")};return newModel(doc,cfg)
+    doc,e:=frontend.Export(sourcePath,source);if e!=nil{return nil,e};if doc.SourceHash!=digest(string(source)){return nil,fmt.Errorf("frontend source mismatch")}
+    m,e:=newModel(doc,cfg);if e!=nil{return nil,e}
+    if declarations,e:=frontend.Declarations(sourcePath,source);e==nil{m.Declarations=declarations}
+    return m,nil
 }
 func value(n *Node,env map[string]State)any{
     switch n.Op{

@@ -852,6 +852,13 @@ func (lo *oakLowering) lowerBlock(block *ast.BlockStatement, width int) (*term, 
 		switch s := stmt.(type) {
 		case *ast.ExpressionStatement:
 			if !last {
+				// A statement-level conditional: `c ? { x = e } | { }`.
+				if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+					if reason, ok := lo.lowerConditionalStatement(match); !ok {
+						return nil, reason, false
+					}
+					continue
+				}
 				return nil, "an expression statement before the end of a block", false
 			}
 			return lo.lower(s.Expression, width)
@@ -932,11 +939,78 @@ func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
 			if reason, ok := lo.lowerWhile(s); !ok {
 				return reason, false
 			}
+		case *ast.ExpressionStatement:
+			match, isMatch := s.Expression.(*ast.MatchExpression)
+			if !isMatch {
+				return "an expression statement in a loop body", false
+			}
+			if reason, ok := lo.lowerConditionalStatement(match); !ok {
+				return reason, false
+			}
 		default:
 			return fmt.Sprintf("%T in a loop body", stmt), false
 		}
 	}
 	return "", true
+}
+
+// lowerConditionalStatement executes `cond ? { ... } | { ... }` in
+// statement position: each arm runs on a snapshot of the locals, and every
+// local either arm assigns becomes a select on the condition — the
+// statement-level counterpart of the value-position conditional, and of a
+// branch that rejoins inside an asm loop body.
+func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (string, bool) {
+	whenTrue, whenFalse, isBool := boolConditional(match)
+	if !isBool {
+		return "a statement-level match that is not a two-armed Bool conditional", false
+	}
+	cond, reason, ok := lo.lowerCondition(match.Scrutinee)
+	if !ok {
+		return reason, false
+	}
+	before := lo.snapshotLocals()
+	if reason, ok := lo.lowerArm(whenTrue); !ok {
+		return reason, false
+	}
+	afterTrue := lo.snapshotLocals()
+	lo.restoreLocals(before)
+	if reason, ok := lo.lowerArm(whenFalse); !ok {
+		return reason, false
+	}
+	for name, local := range lo.locals {
+		t, f := afterTrue[name], local.value
+		if t != f {
+			local.value = iteTerm(truncate(cond, 1), t, f)
+		}
+	}
+	return "", true
+}
+
+// lowerArm executes a conditional arm as statements: a block of
+// assignments (possibly empty), or nothing.
+func (lo *oakLowering) lowerArm(arm ast.Expression) (string, bool) {
+	block, isBlock := arm.(*ast.BlockExpression)
+	if !isBlock {
+		return "a conditional arm in statement position that is not a block", false
+	}
+	if block.Block == nil {
+		return "", true
+	}
+	return lo.lowerLoopBody(block.Block)
+}
+
+func (lo *oakLowering) snapshotLocals() map[string]*term {
+	out := make(map[string]*term, len(lo.locals))
+	for name, local := range lo.locals {
+		out[name] = local.value
+	}
+	return out
+}
+
+func (lo *oakLowering) restoreLocals(values map[string]*term) {
+	for name, value := range values {
+		lo.locals[name].value = value
+	}
 }
 
 // scalarType reads a local's declared fixed-width integer type.

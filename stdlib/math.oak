@@ -1,0 +1,945 @@
+// Transcendental functions (docs/spec/20-types.md section 11.3.6).
+//
+// Every function here is written in Oak over the correctly rounded core
+// operations, so the interpreter and every backend compute the same bits:
+// there is no libm variance to speak of. Accuracy is the contract instead:
+// each function documents its error bound in ulps against the correctly
+// rounded result, and the fourth-witness harness
+// (compiler/e2e_math_test.go) checks it against an arbitrary-precision
+// reference on every run.
+//
+// The algorithms are the fdlibm ones (Sun Microsystems, 1993, as carried by
+// FreeBSD and musl): Cody-Waite argument reduction with split constants
+// whose high parts have trailing zero bits so the products are exact, then
+// short minimax polynomials. Constants are spelled as hexadecimal floating
+// literals so they are the fdlibm bit patterns exactly.
+package math
+
+LN2_HI: f64 = 0x1.62e42feep-1          // 6.93147180369123816490e-01, 32 significant bits
+LN2_LO: f64 = 0x1.a39ef35793c76p-33    // 1.90821492927058770002e-10
+INV_LN2: f64 = 0x1.71547652b82fep+0    // 1.44269504088896338700e+00
+HALF_LN2: f64 = 0x1.62e42fefa39efp-2   // 0.5 * ln 2
+LN2_1_5: f64 = 0x1.0a2b23f3bab73p+0    // 1.5 * ln 2
+TWO54: f64 = 0x1p54
+TWOM1000: f64 = 0x1p-1000
+EXP_OVERFLOW: f64 = 0x1.62e42fefa39efp+9    // 7.09782712893383973096e+02
+EXP_UNDERFLOW: f64 = -0x1.74910d52d3051p+9  // -7.45133219101941108420e+02
+
+// exp polynomial (fdlibm e_exp.c), |error| < 2^-59 on [-0.35, 0.35]
+EXP_P1: f64 = 0x1.555555555553ep-3
+EXP_P2: f64 = -0x1.6c16c16bebd93p-9
+EXP_P3: f64 = 0x1.1566aaf25de2cp-14
+EXP_P4: f64 = -0x1.bbd41c5d26bf1p-20
+EXP_P5: f64 = 0x1.6376972bea4d0p-25
+
+// log polynomial (fdlibm e_log.c)
+LG1: f64 = 0x1.5555555555593p-1
+LG2: f64 = 0x1.999999997fa04p-2
+LG3: f64 = 0x1.2492494229359p-2
+LG4: f64 = 0x1.c71c51d8e78afp-3
+LG5: f64 = 0x1.7466496cb03dep-3
+LG6: f64 = 0x1.39a09d078c69fp-3
+LG7: f64 = 0x1.2f112df3e5244p-3
+
+// 1 / ln 2 split for log2 (FreeBSD e_log2.c)
+IVLN2_HI: f64 = 0x1.71547652p+0
+IVLN2_LO: f64 = 0x1.705fc2eefa200p-33
+
+// expm1 polynomial (fdlibm s_expm1.c)
+EXPM1_Q1: f64 = -0x1.11111111110f4p-5
+EXPM1_Q2: f64 = 0x1.a01a019fe5585p-10
+EXPM1_Q3: f64 = -0x1.4ce199eaadbb7p-14
+EXPM1_Q4: f64 = 0x1.0cfca86e65239p-18
+EXPM1_Q5: f64 = -0x1.afdb76e09c32dp-23
+
+infinity: (): f64 { f64_bits_u64(u64(9218868437227405312)) }
+nan: (): f64 { f64_bits_u64(u64(9221120237041090560)) }
+
+high_word: (x: f64): u64 { u64_bits_f64(x) >> 32 }
+low_word: (x: f64): u64 { u64_bits_f64(x) & u64(4294967295) }
+with_high_word: (x: f64, hi: u64): f64 { f64_bits_u64((hi << 32) | low_word(x)) }
+
+// scale_pow2 is fdlibm's final scaling: y * 2^k for y near 1 and
+// -1075 <= k <= 1024, by adding k to the exponent field, with the two-step
+// path that keeps subnormal results exact.
+scale_pow2: (y: f64, k: i64): f64 {
+  k > -1021 ?
+    f64_bits_u64(u64_bits_f64(y) + (u64_bits_i64(k) << 52)) |
+    f64_bits_u64(u64_bits_f64(y) + (u64_bits_i64(k + 1000) << 52)) * TWOM1000
+}
+
+// exp_kernel evaluates exp(hi - lo) * 2^k for a reduced argument
+// |hi - lo| <= 0.5 ln 2 (fdlibm e_exp.c); lo carries the low part of the
+// reduction so the sum is accurate to well below an ulp.
+exp_kernel: (hi: f64, lo: f64, k: i64): f64 {
+  x: f64 = hi - lo
+  t: f64 = x * x
+  c: f64 = x - t * (EXP_P1 + t * (EXP_P2 + t * (EXP_P3 + t * (EXP_P4 + t * EXP_P5))))
+  k == 0 ?
+    1.0 - ((x * c) / (c - 2.0) - x) |
+    scale_pow2(1.0 - ((lo - (x * c) / (2.0 - c)) - hi), k)
+}
+
+// exp: e^x, error < 1 ulp (fdlibm). Overflow gives +inf, underflow 0.
+pub exp: (x: f64): f64 {
+  is_nan(x) ? x | (x > EXP_OVERFLOW ? infinity() | (x < EXP_UNDERFLOW ? 0.0 | exp_finite(x)))
+}
+
+exp_finite: (x: f64): f64 {
+  ax: f64 = abs(x)
+  ax <= HALF_LN2 ?
+    (ax < 0x1p-28 ? 1.0 + x | exp_kernel(x, 0.0, 0)) |
+    (ax < LN2_1_5 ?
+      (x < 0.0 ? exp_kernel(x + LN2_HI, -LN2_LO, -1) | exp_kernel(x - LN2_HI, LN2_LO, 1)) |
+      exp_wide(x))
+}
+
+exp_wide: (x: f64): f64 {
+  k: i64 = i64_trunc_f64(INV_LN2 * x + (x < 0.0 ? -0.5 | 0.5))
+  t: f64 = f64_round_i64(k)
+  exp_kernel(x - t * LN2_HI, t * LN2_LO, k)
+}
+
+// exp2: 2^x, error < 1 ulp. k = round(x) is exact; r = x - k is exact;
+// r ln 2 is formed as hi - lo with the rounding error of the product
+// recovered by fma, so the kernel sees the reduced argument to ~2^-70.
+pub exp2: (x: f64): f64 {
+  is_nan(x) ? x | (x > 1024.0 ? infinity() | (x < -1075.0 ? 0.0 | exp2_finite(x)))
+}
+
+exp2_finite: (x: f64): f64 {
+  k: i64 = i64_trunc_f64(round(x))
+  r: f64 = x - f64_round_i64(k)
+  hi: f64 = r * LN2_HI
+  residual: f64 = fma(r, LN2_HI, -hi)
+  lo: f64 = -(r * LN2_LO) - residual
+  abs(r) < 0x1p-54 ? scale_pow2(1.0, k) | exp_kernel(hi, lo, k)
+}
+
+// log: natural logarithm, error < 1 ulp (fdlibm e_log.c). log(0) is -inf,
+// log of a negative number is NaN.
+pub log: (x: f64): f64 {
+  bits: u64 = u64_bits_f64(x)
+  hx: u64 = bits >> 32
+  magnitude: u64 = bits & u64(9223372036854775807)
+  negative: Bool = (hx & u64(2147483648)) != u64(0) && magnitude != u64(0)
+  negative ? nan() |
+  (magnitude == u64(0) ? -infinity() |
+  (hx >= u64(2146435072) ? x + x |
+  log_normalized(x, 0)))
+}
+
+// log_normalized handles subnormals by scaling up, then splits x into
+// 2^k (1 + f) with f in [sqrt(2)/2 - 1, sqrt(2) - 1).
+log_normalized: (x0: f64, k0: i64): f64 {
+  // One scaling by 2^54 makes any positive subnormal normal.
+  subnormal: Bool = high_word(x0) < u64(1048576)
+  x: f64 = subnormal ? x0 * TWO54 | x0
+  hx: u64 = high_word(x)
+  k: i64 = (subnormal ? k0 - 54 | k0) + i64_bits_u64(hx >> 20) - 1023
+  mant: u64 = hx & u64(1048575)
+  i: u64 = (mant + u64(614244)) & u64(1048576)
+  xn: f64 = with_high_word(x, mant | (i ^ u64(1072693248)))
+  log_reduced(xn, k + i64_bits_u64(i >> 20), mant)
+}
+
+log_reduced: (x: f64, k: i64, mant: u64): f64 {
+  f: f64 = x - 1.0
+  dk: f64 = f64_round_i64(k)
+  tiny: Bool = (u64(1048575) & (u64(2) + mant)) < u64(3)
+  tiny ?
+    log_tiny(f, k, dk) | {
+      s: f64 = f / (2.0 + f)
+      z: f64 = s * s
+      w: f64 = z * z
+      t1: f64 = w * (LG2 + w * (LG4 + w * LG6))
+      t2: f64 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)))
+      r: f64 = t2 + t1
+      // fdlibm chooses between two evaluation orders by the position of x
+      // in its interval (both accurate to < 1 ulp): the hfsq form for
+      // mantissas in [0x6147a, 0x6b851], the direct form elsewhere
+      mant >= u64(398458) && mant <= u64(440401) ? log_hfsq(f, s, r, k, dk) | log_direct(f, s, r, k, dk)
+    }
+}
+
+log_tiny: (f: f64, k: i64, dk: f64): f64 {
+  f == 0.0 ?
+    (k == 0 ? 0.0 | dk * LN2_HI + dk * LN2_LO) | {
+      r: f64 = f * f * (0.5 - 0x1.5555555555555p-2 * f)
+      k == 0 ? f - r | dk * LN2_HI - ((r - dk * LN2_LO) - f)
+    }
+}
+
+log_hfsq: (f: f64, s: f64, r: f64, k: i64, dk: f64): f64 {
+  hfsq: f64 = 0.5 * f * f
+  k == 0 ? f - (hfsq - s * (hfsq + r)) | dk * LN2_HI - ((hfsq - (s * (hfsq + r) + dk * LN2_LO)) - f)
+}
+
+log_direct: (f: f64, s: f64, r: f64, k: i64, dk: f64): f64 {
+  k == 0 ? f - s * (f - r) | dk * LN2_HI - ((s * (f - r) - dk * LN2_LO) - f)
+}
+
+// log2: base-2 logarithm, error < 1 ulp (FreeBSD e_log2.c): the same
+// reduction as log, then k + log(1 + f) / ln 2 assembled in two parts.
+pub log2: (x: f64): f64 {
+  bits: u64 = u64_bits_f64(x)
+  hx: u64 = bits >> 32
+  magnitude: u64 = bits & u64(9223372036854775807)
+  negative: Bool = (hx & u64(2147483648)) != u64(0) && magnitude != u64(0)
+  negative ? nan() |
+  (magnitude == u64(0) ? -infinity() |
+  (hx >= u64(2146435072) ? x + x |
+  (bits == u64(4607182418800017408) ? 0.0 |
+  log2_normalized(x, 0))))
+}
+
+log2_normalized: (x0: f64, k0: i64): f64 {
+  subnormal: Bool = high_word(x0) < u64(1048576)
+  x: f64 = subnormal ? x0 * TWO54 | x0
+  hx: u64 = high_word(x)
+  k: i64 = (subnormal ? k0 - 54 | k0) + i64_bits_u64(hx >> 20) - 1023
+  mant: u64 = hx & u64(1048575)
+  i: u64 = (mant + u64(614244)) & u64(1048576)
+  xn: f64 = with_high_word(x, mant | (i ^ u64(1072693248)))
+  log2_reduced(xn, k + i64_bits_u64(i >> 20))
+}
+
+log2_reduced: (x: f64, k: i64): f64 {
+  f: f64 = x - 1.0
+  hfsq: f64 = 0.5 * f * f
+  s: f64 = f / (2.0 + f)
+  z: f64 = s * s
+  w: f64 = z * z
+  t1: f64 = w * (LG2 + w * (LG4 + w * LG6))
+  t2: f64 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)))
+  r: f64 = s * (hfsq + (t2 + t1))
+  hi: f64 = f64_bits_u64(u64_bits_f64(f - hfsq) & u64(18446744069414584320))
+  lo: f64 = (f - hi) - hfsq + r
+  val_hi: f64 = hi * IVLN2_HI
+  val_lo: f64 = (lo + hi) * IVLN2_LO + lo * IVLN2_HI
+  y: f64 = f64_round_i64(k)
+  w2: f64 = y + val_hi
+  lo2: f64 = val_lo + ((y - w2) + val_hi)
+  lo2 + w2
+}
+
+// expm1: e^x - 1 accurately near zero, error < 1 ulp (fdlibm s_expm1.c).
+pub expm1: (x: f64): f64 {
+  is_nan(x) ? x | (x > EXP_OVERFLOW ? infinity() | (x < -56.0 * LN2_HI ? -1.0 | expm1_finite(x)))
+}
+
+expm1_finite: (x: f64): f64 {
+  ax: f64 = abs(x)
+  ax < 0x1p-54 ? x | (ax > HALF_LN2 ? expm1_reduce(x) | expm1_kernel(x, 0.0, 0))
+}
+
+expm1_reduce: (x: f64): f64 {
+  ax: f64 = abs(x)
+  ax < LN2_1_5 ?
+    (x < 0.0 ? expm1_kernel(x + LN2_HI, -LN2_LO, -1) | expm1_kernel(x - LN2_HI, LN2_LO, 1)) | {
+      k: i64 = i64_trunc_f64(INV_LN2 * x + (x < 0.0 ? -0.5 | 0.5))
+      t: f64 = f64_round_i64(k)
+      hi: f64 = x - t * LN2_HI
+      lo: f64 = t * LN2_LO
+      expm1_kernel(hi, lo, k)
+    }
+}
+
+expm1_kernel: (hi: f64, lo: f64, k: i64): f64 {
+  x: f64 = hi - lo
+  c: f64 = (hi - x) - lo
+  hfx: f64 = 0.5 * x
+  hxs: f64 = x * hfx
+  r1: f64 = 1.0 + hxs * (EXPM1_Q1 + hxs * (EXPM1_Q2 + hxs * (EXPM1_Q3 + hxs * (EXPM1_Q4 + hxs * EXPM1_Q5))))
+  t: f64 = 3.0 - r1 * hfx
+  e0: f64 = hxs * ((r1 - t) / (6.0 - x * t))
+  k == 0 ?
+    x - (x * e0 - hxs) |
+    expm1_scale(x, c, hxs, e0, k)
+}
+
+// expm1_scale assembles e^x - 1 = 2^k (1 - (e - x)) - 1 in the form fdlibm
+// picks per k so that the subtraction of 1 loses nothing.
+expm1_scale: (x: f64, c: f64, hxs: f64, e0: f64, k: i64): f64 {
+  e: f64 = x * (e0 - c) - c - hxs
+  k == -1 ? 0.5 * (x - e) - 0.5 |
+  (k == 1 ? (x < -0.25 ? -2.0 * (e - (x + 0.5)) | 1.0 + 2.0 * (x - e)) |
+  (k <= -2 || k > 56 ? expm1_large(x, e, k) |
+  (k < 20 ? expm1_mid_small(x, e, k) | expm1_mid_large(x, e, k))))
+}
+
+// k <= -2 or k > 56: 2^k (1 - (e - x)) - 1, scaling twice at k == 1024.
+expm1_large: (x: f64, e: f64, k: i64): f64 {
+  y: f64 = 1.0 - (e - x)
+  k == 1024 ? scale_pow2(y * 2.0, 1023) - 1.0 | scale_pow2(y, k) - 1.0
+}
+
+// 2 <= k < 20: t = 1 - 2^-k is exact; result = 2^k (t - (e - x)).
+expm1_mid_small: (x: f64, e: f64, k: i64): f64 {
+  t: f64 = 1.0 - scale_pow2(1.0, -k)
+  scale_pow2(t - (e - x), k)
+}
+
+// 20 <= k <= 56: t = 2^-k is exact; result = 2^k ((x - (e + t)) + 1).
+expm1_mid_large: (x: f64, e: f64, k: i64): f64 {
+  t: f64 = scale_pow2(1.0, -k)
+  scale_pow2((x - (e + t)) + 1.0, k)
+}
+
+// tanh: hyperbolic tangent, error < 2 ulp (fdlibm s_tanh.c: expm1 composed
+// with a division reaches about 1.5 ulp for |x| < 1), computed through
+// expm1 so small arguments keep their precision.
+pub tanh: (x: f64): f64 {
+  is_nan(x) ? x | {
+    ax: f64 = abs(x)
+    z: f64 = ax < 22.0 ?
+      (ax < 0x1p-28 ? ax | (ax >= 1.0 ? 1.0 - 2.0 / (expm1(2.0 * ax) + 2.0) | tanh_small(ax))) |
+      1.0
+    copysign(z, x)
+  }
+}
+
+tanh_small: (ax: f64): f64 {
+  t: f64 = expm1(-2.0 * ax)
+  negated: f64 = -t
+  negated / (t + 2.0)
+}
+
+// log1p: log(1 + x) accurately near zero, error < 1 ulp (fdlibm
+// s_log1p.c): the argument 1 + x is split into 2^k u with u in
+// [sqrt(2)/2, sqrt(2)] and the rounding error of forming 1 + x is carried
+// as the correction c = log(1 + x) - log(u).
+pub log1p: (x: f64): f64 {
+  hx: u64 = high_word(x)
+  negative: Bool = hx >= u64(2147483648)
+  ax: u64 = hx & u64(2147483647)
+  hx >= u64(3220176896) ? (x == -1.0 ? -infinity() | nan()) |
+  (ax < u64(1017118720) ? x |
+  (!negative && hx >= u64(2146435072) ? x |
+  ((!negative && hx < u64(1071284858)) || (negative && hx <= u64(3218259652)) ?
+    log1p_tail(x, 0, 0.0) |
+    log1p_scaled(x))))
+}
+
+// log1p_scaled: 1 + x is outside [sqrt(2)/2, sqrt(2)); form u = 1 + x,
+// take its exponent k, and reduce u into the interval.
+log1p_scaled: (x: f64): f64 {
+  u: f64 = 1.0 + x
+  hu0: u64 = high_word(u) + u64(614242)
+  k: i64 = i64_bits_u64(hu0 >> 20) - 1023
+  c: f64 = k < 54 ? (k >= 2 ? 1.0 - (u - x) | x - (u - 1.0)) / u | 0.0
+  hu: u64 = (hu0 & u64(1048575)) + u64(1072079006)
+  f: f64 = with_high_word(u, hu) - 1.0
+  log1p_tail(f, k, c)
+}
+
+log1p_tail: (f: f64, k: i64, c: f64): f64 {
+  hfsq: f64 = 0.5 * f * f
+  s: f64 = f / (2.0 + f)
+  z: f64 = s * s
+  w: f64 = z * z
+  r1: f64 = w * (LG2 + w * (LG4 + w * LG6))
+  r2: f64 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)))
+  r: f64 = r2 + r1
+  dk: f64 = f64_round_i64(k)
+  s * (hfsq + r) + (dk * LN2_LO + c) - hfsq + f + dk * LN2_HI
+}
+
+// ---------------------------------------------------------------------------
+// Trigonometric functions (fdlibm k_sin.c, k_cos.c, k_tan.c, e_rem_pio2.c).
+//
+// The argument is reduced to y = x - n pi/2 with |y| <= pi/4, carried as a
+// double-double (hi, lo), and the kernels evaluate sin, cos, or tan on the
+// reduced argument. For |x| < 2^20 pi/2 the reduction is fdlibm's three-round
+// Cody-Waite subtraction with pi/2 split into 33-bit pieces. Beyond that a
+// Payne-Hanek reduction multiplies the 53-bit significand of x by the bits
+// of 2/pi that matter (positions e - 1 through e + 224 for x = m 2^e),
+// takes the result modulo 4, and converts the 192-bit remainder to a
+// double-double. Both paths are exact integer or correctly rounded work, so
+// every implementation computes identical bits.
+
+Reduced: type = struct { n: u64, hi: f64, lo: f64 }
+
+INVPIO2: f64 = 0x1.45f306dc9c883p-1     // 2/pi, 0x3FE45F306DC9C883
+PIO2_1: f64 = 0x1.921fb544p0            // first 33 bits of pi/2
+PIO2_1T: f64 = 0x1.0b4611a626331p-34    // pi/2 - PIO2_1
+PIO2_2: f64 = 0x1.0b4611a6p-34          // second 33 bits of pi/2
+PIO2_2T: f64 = 0x1.3198a2e037073p-69    // pi/2 - (PIO2_1 + PIO2_2)
+PIO2_3: f64 = 0x1.3198a2ep-69           // third 33 bits of pi/2
+PIO2_3T: f64 = 0x1.b839a252049c1p-104   // pi/2 - (PIO2_1 + PIO2_2 + PIO2_3)
+PIO2_HI: f64 = 0x1.921fb54442d18p0      // pi/2 rounded to f64
+PIO2_LO: f64 = 0x1.1a62633145c07p-54    // pi/2 - PIO2_HI
+PIO4: f64 = 0x1.921fb54442d18p-1        // pi/4 rounded to f64
+PIO4_LO: f64 = 0x1.1a62633145c07p-55    // pi/4 - PIO4
+
+SIN_S1: f64 = -0x1.5555555555549p-3
+SIN_S2: f64 = 0x1.111111110f8a6p-7
+SIN_S3: f64 = -0x1.a01a019c161d5p-13
+SIN_S4: f64 = 0x1.71de357b1fe7dp-19
+SIN_S5: f64 = -0x1.ae5e68a2b9cebp-26
+SIN_S6: f64 = 0x1.5d93a5acfd57cp-33
+
+COS_C1: f64 = 0x1.555555555554cp-5
+COS_C2: f64 = -0x1.6c16c16c15177p-10
+COS_C3: f64 = 0x1.a01a019cb159p-16
+COS_C4: f64 = -0x1.27e4f809c52adp-22
+COS_C5: f64 = 0x1.1ee9ebdb4b1c4p-29
+COS_C6: f64 = -0x1.8fae9be8838d4p-37
+
+TAN_T0: f64 = 0x1.5555555555563p-2
+TAN_T1: f64 = 0x1.111111110fe7ap-3
+TAN_T2: f64 = 0x1.ba1ba1bb341fep-5
+TAN_T3: f64 = 0x1.664f48406d637p-6
+TAN_T4: f64 = 0x1.226e3e96e8493p-7
+TAN_T5: f64 = 0x1.d6d22c9560328p-9
+TAN_T6: f64 = 0x1.7dbc8fee08315p-10
+TAN_T7: f64 = 0x1.344d8f2f26501p-11
+TAN_T8: f64 = 0x1.026f71a8d1068p-12
+TAN_T9: f64 = 0x1.47e88a03792a6p-14
+TAN_T10: f64 = 0x1.2b80f32f0a7e9p-14
+TAN_T11: f64 = -0x1.375cbdb605373p-16
+TAN_T12: f64 = 0x1.b2a7074bf7ad4p-16
+
+exponent_field: (x: f64): i64 { i64_bits_u64((u64_bits_f64(x) >> 52) & u64(2047)) }
+
+with_low_word_zero: (x: f64): f64 { f64_bits_u64(u64_bits_f64(x) & u64(18446744069414584320)) }
+
+// two_sum_error is the exact rounding error of s = a + b (Knuth's TwoSum),
+// exact in round-to-nearest for any a and b.
+two_sum_error: (a: f64, b: f64, s: f64): f64 {
+  bb: f64 = s - a
+  err: f64 = (a - (s - bb)) + (b - bb)
+  err
+}
+
+// rem_pio2 reduces a finite x with |x| >= pi/4: x = n pi/2 + (hi + lo),
+// |hi| <= pi/4. The reduction runs on |x| and negates, which gives the
+// same bits as reducing x directly (every step is sign-symmetric).
+rem_pio2: (x: f64): Reduced {
+  ax: f64 = abs(x)
+  r: Reduced = high_word(ax) < u64(1094263291) ? rem_pio2_medium(ax) | rem_pio2_large(ax)
+  x < 0.0 ? Reduced { n: (u64(4) - r.n) & u64(3), hi: -r.hi, lo: -r.lo } | r
+}
+
+// rem_pio2_medium: pi/4 <= x < 2^20 pi/2. n = round(x 2/pi) is exact, and
+// x - n pi/2 is formed with one, two, or three 33-bit pieces of pi/2 until
+// the result keeps enough bits (fdlibm's ex - ey tests).
+rem_pio2_medium: (x: f64): Reduced {
+  nearest: f64 = round_even(x * INVPIO2)
+  n: u64 = u64_bits_i64(i64_trunc_f64(nearest))
+  r: f64 = x - nearest * PIO2_1
+  w: f64 = nearest * PIO2_1T
+  y0: f64 = r - w
+  ex: i64 = exponent_field(x)
+  ex - exponent_field(y0) > 16 ?
+    rem_pio2_second(nearest, n, r, ex) |
+    Reduced { n: n, hi: y0, lo: (r - y0) - w }
+}
+
+rem_pio2_second: (nearest: f64, n: u64, t: f64, ex: i64): Reduced {
+  w: f64 = nearest * PIO2_2
+  r: f64 = t - w
+  w2: f64 = nearest * PIO2_2T - ((t - r) - w)
+  y0: f64 = r - w2
+  ex - exponent_field(y0) > 49 ?
+    rem_pio2_third(nearest, n, r) |
+    Reduced { n: n, hi: y0, lo: (r - y0) - w2 }
+}
+
+rem_pio2_third: (nearest: f64, n: u64, t: f64): Reduced {
+  w: f64 = nearest * PIO2_3
+  r: f64 = t - w
+  w2: f64 = nearest * PIO2_3T - ((t - r) - w)
+  y0: f64 = r - w2
+  Reduced { n: n, hi: y0, lo: (r - y0) - w2 }
+}
+
+// two_over_pi_word: the fraction bits of 2/pi as 64-bit words, word q
+// holding bit positions 64q + 1 through 64q + 64 (1280 bits in all, enough
+// for the largest f64 plus 224 guard bits).
+two_over_pi_word: (q: i64): u64 {
+  q < 10 ? two_over_pi_word_low(q) | two_over_pi_word_high(q)
+}
+
+two_over_pi_word_low: (q: i64): u64 {
+  q == 0 ? u64(11743562013128004905) |
+  (q == 1 ? u64(18169587780923219392) |
+  (q == 2 ? u64(15808362127397457985) |
+  (q == 3 ? u64(18325537948574664033) |
+  (q == 4 ? u64(13196794004601950944) |
+  (q == 5 ? u64(452944820249399836) |
+  (q == 6 ? u64(18311050168422213438) |
+  (q == 7 ? u64(16754012890938950788) |
+  (q == 8 ? u64(16833452818741296705) |
+  (q == 9 ? u64(4148332274289687028) | u64(0))))))))))
+}
+
+two_over_pi_word_high: (q: i64): u64 {
+  q == 10 ? u64(11278244420634880059) |
+  (q == 11 ? u64(2303758334597371919) |
+  (q == 12 ? u64(17235013589178936607) |
+  (q == 13 ? u64(7869616827067468215) |
+  (q == 14 ? u64(5712322887342352941) |
+  (q == 15 ? u64(8441921394348257659) |
+  (q == 16 ? u64(4397547296490951402) |
+  (q == 17 ? u64(7780917995555872008) |
+  (q == 18 ? u64(6197850593633725355) |
+  (q == 19 ? u64(17352294737506481693) | u64(0))))))))))
+}
+
+// two_over_pi_bits: the 32 fraction bits of 2/pi at positions start
+// through start + 31; positions at or before zero (the integer part) are
+// zero bits.
+two_over_pi_bits: (start: i64): u64 {
+  start <= -31 ? u64(0) |
+  (start <= 0 ? (two_over_pi_word(0) >> 32) >> u64_bits_i64(1 - start) |
+  two_over_pi_aligned(start - 1))
+}
+
+two_over_pi_aligned: (p: i64): u64 {
+  q: i64 = p / 64
+  off: u64 = u64_bits_i64(p - q * 64)
+  off <= u64(32) ?
+    (two_over_pi_word(q) >> (u64(32) - off)) & u64(4294967295) |
+    ((two_over_pi_word(q) << (off - u64(32))) | (two_over_pi_word(q + 1) >> (u64(96) - off))) & u64(4294967295)
+}
+
+// rem_pio2_large: Payne-Hanek reduction for x >= 2^20 pi/2. With x = m 2^e
+// (m the 53-bit significand), x 2/pi mod 4 = m V mod 4 where V is 2/pi
+// shifted by e bits and cut to two integer bits and seven 32-bit fraction
+// limbs; the product is schoolbook multiplication in 32-bit limbs with u64
+// columns, exact. The dropped tail of 2/pi contributes less than 2^-171.
+rem_pio2_large: (x: f64): Reduced {
+  bits: u64 = u64_bits_f64(x)
+  e: i64 = i64_bits_u64(bits >> 52) - 1075
+  m: u64 = (bits & u64(4503599627370495)) | u64(4503599627370496)
+  m0: u64 = m & u64(4294967295)
+  m1: u64 = m >> 32
+  v0: u64 = two_over_pi_bits(e - 31) & u64(3)
+  v1: u64 = two_over_pi_bits(e + 1)
+  v2: u64 = two_over_pi_bits(e + 33)
+  v3: u64 = two_over_pi_bits(e + 65)
+  v4: u64 = two_over_pi_bits(e + 97)
+  v5: u64 = two_over_pi_bits(e + 129)
+  v6: u64 = two_over_pi_bits(e + 161)
+  v7: u64 = two_over_pi_bits(e + 193)
+  a0: u64 = m0 * v0
+  a1: u64 = m0 * v1
+  a2: u64 = m0 * v2
+  a3: u64 = m0 * v3
+  a4: u64 = m0 * v4
+  a5: u64 = m0 * v5
+  a6: u64 = m0 * v6
+  a7: u64 = m0 * v7
+  c0: u64 = m1 * v1
+  c1: u64 = m1 * v2
+  c2: u64 = m1 * v3
+  c3: u64 = m1 * v4
+  c4: u64 = m1 * v5
+  c5: u64 = m1 * v6
+  c6: u64 = m1 * v7
+  // column k collects the low halves of its own products, the high halves
+  // of column k + 1, and the carry out of column k + 1
+  t6: u64 = (a6 & u64(4294967295)) + (c6 & u64(4294967295)) + (a7 >> 32)
+  t5: u64 = (a5 & u64(4294967295)) + (c5 & u64(4294967295)) + (a6 >> 32) + (c6 >> 32) + (t6 >> 32)
+  t4: u64 = (a4 & u64(4294967295)) + (c4 & u64(4294967295)) + (a5 >> 32) + (c5 >> 32) + (t5 >> 32)
+  t3: u64 = (a3 & u64(4294967295)) + (c3 & u64(4294967295)) + (a4 >> 32) + (c4 >> 32) + (t4 >> 32)
+  t2: u64 = (a2 & u64(4294967295)) + (c2 & u64(4294967295)) + (a3 >> 32) + (c3 >> 32) + (t3 >> 32)
+  t1: u64 = (a1 & u64(4294967295)) + (c1 & u64(4294967295)) + (a2 >> 32) + (c2 >> 32) + (t2 >> 32)
+  t0: u64 = (a0 & u64(4294967295)) + (c0 & u64(4294967295)) + (a1 >> 32) + (c1 >> 32) + (t1 >> 32)
+  quadrant: u64 = t0 & u64(3)
+  p1: u64 = t1 & u64(4294967295)
+  p2: u64 = t2 & u64(4294967295)
+  p3: u64 = t3 & u64(4294967295)
+  p4: u64 = t4 & u64(4294967295)
+  p5: u64 = t5 & u64(4294967295)
+  p6: u64 = t6 & u64(4294967295)
+  // a fraction of 0.5 or more rounds the quadrant up and the remainder
+  // becomes negative: negate the 192-bit fraction exactly
+  p1 >= u64(2147483648) ?
+    rem_pio2_negated(quadrant, p1, p2, p3, p4, p5, p6) |
+    reduced_from_limbs(quadrant, 1.0, p1, p2, p3, p4, p5, p6)
+}
+
+rem_pio2_negated: (quadrant: u64, p1: u64, p2: u64, p3: u64, p4: u64, p5: u64, p6: u64): Reduced {
+  q6: u64 = (u64(4294967295) ^ p6) + u64(1)
+  q5: u64 = (u64(4294967295) ^ p5) + (q6 >> 32)
+  q4: u64 = (u64(4294967295) ^ p4) + (q5 >> 32)
+  q3: u64 = (u64(4294967295) ^ p3) + (q4 >> 32)
+  q2: u64 = (u64(4294967295) ^ p2) + (q3 >> 32)
+  q1: u64 = (u64(4294967295) ^ p1) + (q2 >> 32)
+  reduced_from_limbs((quadrant + u64(1)) & u64(3), -1.0,
+    q1 & u64(4294967295), q2 & u64(4294967295), q3 & u64(4294967295),
+    q4 & u64(4294967295), q5 & u64(4294967295), q6 & u64(4294967295))
+}
+
+// reduced_from_limbs converts the 192-bit fraction g = 0.q1 q2 ... q6 (each
+// limb a 32-bit integer) to a double-double by exact scaling and TwoSum
+// accumulation from the least significant limb, then multiplies by pi/2
+// (as PIO2_HI + PIO2_LO, using fma for the exact product error). After up
+// to 61 leading zero bits (the closest an f64 comes to a multiple of pi/2)
+// at least 131 significant bits remain, more than the 106 the double-double
+// carries.
+reduced_from_limbs: (n: u64, sign: f64, q1: u64, q2: u64, q3: u64, q4: u64, q5: u64, q6: u64): Reduced {
+  t1: f64 = f64_round_u64(q1) * 0x1p-32
+  t2: f64 = f64_round_u64(q2) * 0x1p-64
+  t3: f64 = f64_round_u64(q3) * 0x1p-96
+  t4: f64 = f64_round_u64(q4) * 0x1p-128
+  t5: f64 = f64_round_u64(q5) * 0x1p-160
+  t6: f64 = f64_round_u64(q6) * 0x1p-192
+  s5: f64 = t6 + t5
+  e5: f64 = two_sum_error(t6, t5, s5)
+  s4: f64 = s5 + t4
+  e4: f64 = e5 + two_sum_error(s5, t4, s4)
+  s3: f64 = s4 + t3
+  e3: f64 = e4 + two_sum_error(s4, t3, s3)
+  s2: f64 = s3 + t2
+  e2: f64 = e3 + two_sum_error(s3, t2, s2)
+  s1: f64 = s2 + t1
+  e1: f64 = e2 + two_sum_error(s2, t1, s1)
+  g_hi: f64 = s1 + e1
+  g_lo: f64 = e1 - (g_hi - s1)
+  p: f64 = g_hi * PIO2_HI
+  residual: f64 = fma(g_hi, PIO2_HI, -p)
+  low: f64 = residual + (g_hi * PIO2_LO + g_lo * PIO2_HI)
+  y0: f64 = p + low
+  y1: f64 = low - (y0 - p)
+  Reduced { n: n, hi: sign * y0, lo: sign * y1 }
+}
+
+// sin_kernel: sin(x + y) for |x| <= pi/4 with y the low part of the
+// reduced argument (fdlibm k_sin.c); has_tail is false when y is zero.
+sin_kernel: (x: f64, y: f64, has_tail: Bool): f64 {
+  z: f64 = x * x
+  w: f64 = z * z
+  r: f64 = SIN_S2 + z * (SIN_S3 + z * SIN_S4) + z * w * (SIN_S5 + z * SIN_S6)
+  v: f64 = z * x
+  has_tail ?
+    x - ((z * (0.5 * y - v * r) - y) - v * SIN_S1) |
+    x + v * (SIN_S1 + z * r)
+}
+
+// cos_kernel: cos(x + y) for |x| <= pi/4 (fdlibm k_cos.c).
+cos_kernel: (x: f64, y: f64): f64 {
+  z: f64 = x * x
+  w: f64 = z * z
+  r: f64 = z * (COS_C1 + z * (COS_C2 + z * COS_C3)) + w * w * (COS_C4 + z * (COS_C5 + z * COS_C6))
+  hz: f64 = 0.5 * z
+  w2: f64 = 1.0 - hz
+  w2 + (((1.0 - w2) - hz) + (z * r - x * y))
+}
+
+// tan_kernel: tan(x + y) for |x| <= pi/4 (fdlibm k_tan.c); odd selects
+// -1/tan for odd quadrants. Arguments at or above 0.6744 are reflected
+// through pi/4 first.
+tan_kernel: (x: f64, y: f64, odd: Bool): f64 {
+  big: Bool = (high_word(x) & u64(2147483647)) >= u64(1072010280)
+  big ? tan_kernel_big(x, y, odd) | tan_kernel_small(x, y, odd)
+}
+
+// tan_poly is the odd polynomial r with tan(x + y) ~ x + r.
+tan_poly: (x: f64, y: f64): f64 {
+  z: f64 = x * x
+  w: f64 = z * z
+  r: f64 = TAN_T1 + w * (TAN_T3 + w * (TAN_T5 + w * (TAN_T7 + w * (TAN_T9 + w * TAN_T11))))
+  v: f64 = z * (TAN_T2 + w * (TAN_T4 + w * (TAN_T6 + w * (TAN_T8 + w * (TAN_T10 + w * TAN_T12)))))
+  s: f64 = z * x
+  y + z * (s * (r + v) + y) + s * TAN_T0
+}
+
+tan_kernel_small: (x: f64, y: f64, odd: Bool): f64 {
+  r: f64 = tan_poly(x, y)
+  w: f64 = x + r
+  odd ? tan_reciprocal(x, r, w) | w
+}
+
+// tan_reciprocal computes -1 / (x + r) to within an ulp: the naive
+// division has up to 2 ulp of error, so the quotient is corrected by one
+// Newton step on split operands.
+tan_reciprocal: (x: f64, r: f64, w: f64): f64 {
+  w0: f64 = with_low_word_zero(w)
+  v: f64 = r - (w0 - x)
+  a: f64 = -1.0 / w
+  a0: f64 = with_low_word_zero(a)
+  a0 + a * (1.0 + a0 * w0 + a0 * v)
+}
+
+tan_kernel_big: (x0: f64, y0: f64, odd: Bool): f64 {
+  negative: Bool = x0 < 0.0
+  xa: f64 = negative ? -x0 | x0
+  ya: f64 = negative ? -y0 | y0
+  x: f64 = (PIO4 - xa) + (PIO4_LO - ya)
+  r: f64 = tan_poly(x, 0.0)
+  w: f64 = x + r
+  s: f64 = odd ? -1.0 | 1.0
+  v: f64 = s - 2.0 * (x + (r - w * w / (w + s)))
+  negative ? -v | v
+}
+
+// sin: error < 1 ulp (fdlibm). sin of an infinity or NaN is NaN.
+pub sin: (x: f64): f64 {
+  ix: u64 = high_word(x) & u64(2147483647)
+  ix <= u64(1072243195) ?
+    (ix < u64(1045430272) ? x | sin_kernel(x, 0.0, false)) |
+    (ix >= u64(2146435072) ? x - x | sin_reduced(rem_pio2(x)))
+}
+
+sin_reduced: (r: Reduced): f64 {
+  q: u64 = r.n & u64(3)
+  q == u64(0) ? sin_kernel(r.hi, r.lo, true) |
+  (q == u64(1) ? cos_kernel(r.hi, r.lo) |
+  (q == u64(2) ? -sin_kernel(r.hi, r.lo, true) | -cos_kernel(r.hi, r.lo)))
+}
+
+// cos: error < 1 ulp (fdlibm). cos of an infinity or NaN is NaN.
+pub cos: (x: f64): f64 {
+  ix: u64 = high_word(x) & u64(2147483647)
+  ix <= u64(1072243195) ?
+    (ix < u64(1044816030) ? 1.0 | cos_kernel(x, 0.0)) |
+    (ix >= u64(2146435072) ? x - x | cos_reduced(rem_pio2(x)))
+}
+
+cos_reduced: (r: Reduced): f64 {
+  q: u64 = r.n & u64(3)
+  q == u64(0) ? cos_kernel(r.hi, r.lo) |
+  (q == u64(1) ? -sin_kernel(r.hi, r.lo, true) |
+  (q == u64(2) ? -cos_kernel(r.hi, r.lo) | sin_kernel(r.hi, r.lo, true)))
+}
+
+// tan: error < 1 ulp (fdlibm). tan of an infinity or NaN is NaN.
+pub tan: (x: f64): f64 {
+  ix: u64 = high_word(x) & u64(2147483647)
+  ix <= u64(1072243195) ?
+    (ix < u64(1044381696) ? x | tan_kernel(x, 0.0, false)) |
+    (ix >= u64(2146435072) ? x - x | tan_reduced(rem_pio2(x)))
+}
+
+tan_reduced: (r: Reduced): f64 { tan_kernel(r.hi, r.lo, (r.n & u64(1)) == u64(1)) }
+
+// ---------------------------------------------------------------------------
+// pow (fdlibm e_pow.c): x^y as 2^(y log2 x) with log2 x carried as a
+// double-double t1 + t2 (the log of x reduced toward 1 or 1.5 by the
+// (x - b)/(x + b) series) and the product y (t1 + t2) split again before
+// the exponential. Error < 1 ulp, and integer powers that are representable
+// are exact. Special values follow IEEE 754-2019 / C99 Annex F.9.4.4.
+
+Pair: type = struct { hi: f64, lo: f64 }
+
+POW_DP_H: f64 = 0x1.2b8034p-1              // log2(1.5) high, 0x3FE2B80340000000
+POW_DP_L: f64 = 0x1.cfdeb43cfd006p-27      // log2(1.5) low
+POW_L1: f64 = 0x1.3333333333303p-1
+POW_L2: f64 = 0x1.b6db6db6fabffp-2
+POW_L3: f64 = 0x1.55555518f264dp-2
+POW_L4: f64 = 0x1.17460a91d4101p-2
+POW_L5: f64 = 0x1.d864a93c9db65p-3
+POW_L6: f64 = 0x1.a7e284a454eefp-3
+POW_LG2: f64 = 0x1.62e42fefa39efp-1        // ln 2
+POW_LG2_H: f64 = 0x1.62e43p-1              // ln 2 high, 0x3FE62E4300000000
+POW_LG2_L: f64 = -0x1.05c610ca86c39p-29    // ln 2 - POW_LG2_H
+POW_OVT: f64 = 0x1.71547652b82fep-54       // -(1024 - log2(overflow + 0.5 ulp))
+POW_CP: f64 = 0x1.ec709dc3a03fdp-1         // 2 / (3 ln 2)
+POW_CP_H: f64 = 0x1.ec709ep-1              // 2 / (3 ln 2) high
+POW_CP_L: f64 = -0x1.e2fe0145b01f5p-28     // 2 / (3 ln 2) - POW_CP_H
+POW_IVLN2: f64 = 0x1.71547652b82fep0       // 1 / ln 2
+POW_IVLN2_H: f64 = 0x1.715476p0            // 1 / ln 2 high (24 bits)
+POW_IVLN2_L: f64 = 0x1.4ae0bf85ddf44p-26   // 1 / ln 2 - POW_IVLN2_H
+THIRD: f64 = 0x1.5555555555555p-2
+TWO53: f64 = 0x1p53
+
+pub pow: (x: f64, y: f64): f64 {
+  bx: u64 = u64_bits_f64(x)
+  by: u64 = u64_bits_f64(y)
+  hx: u64 = bx >> 32
+  lx: u64 = bx & u64(4294967295)
+  hy: u64 = by >> 32
+  ly: u64 = by & u64(4294967295)
+  ix: u64 = hx & u64(2147483647)
+  iy: u64 = hy & u64(2147483647)
+  x_nan: Bool = ix > u64(2146435072) || (ix == u64(2146435072) && lx != u64(0))
+  y_nan: Bool = iy > u64(2146435072) || (iy == u64(2146435072) && ly != u64(0))
+  yisint: i64 = pow_yisint(hx, iy, ly)
+  y_zero: Bool = (iy | ly) == u64(0)
+  s: f64 = hx >= u64(2147483648) && yisint == 1 ? -1.0 | 1.0
+  // x^0 is 1 and 1^y is 1, even for NaN; otherwise NaN propagates
+  y_zero ? 1.0 |
+  (bx == u64(4607182418800017408) ? 1.0 |
+  (x_nan || y_nan ? x + y |
+  (ly == u64(0) && iy == u64(2146435072) ? pow_y_infinite(y, hy, ix, lx) |
+  (ly == u64(0) && iy == u64(1072693248) ? (hy < u64(2147483648) ? x | 1.0 / x) |
+  (ly == u64(0) && hy == u64(1073741824) ? x * x |
+  (ly == u64(0) && hy == u64(1071644672) && hx < u64(2147483648) ? sqrt(x) |
+  (lx == u64(0) && (ix == u64(2146435072) || ix == u64(0) || ix == u64(1072693248)) ?
+    pow_x_special(abs(x), hx, hy, ix, yisint) |
+  (hx >= u64(2147483648) && yisint == 0 ? nan() |
+  pow_core(abs(x), y, s)))))))))
+}
+
+// pow_yisint classifies y when x is negative: 0 not an integer, 1 an odd
+// integer, 2 an even integer.
+pow_yisint: (hx: u64, iy: u64, ly: u64): i64 {
+  hx < u64(2147483648) ? 0 |
+  (iy >= u64(1128267776) ? 2 |
+  (iy >= u64(1072693248) ? pow_yisint_exponent(iy, ly, i64_bits_u64(iy >> 20) - 1023) | 0))
+}
+
+pow_yisint_exponent: (iy: u64, ly: u64, k: i64): i64 {
+  k > 20 ?
+    pow_yisint_word(ly, u64_bits_i64(52 - k)) |
+    (ly == u64(0) ? pow_yisint_word(iy, u64_bits_i64(20 - k)) | 0)
+}
+
+pow_yisint_word: (word: u64, shift: u64): i64 {
+  j: u64 = word >> shift
+  back: u64 = j << shift
+  back == word ? 2 - i64_bits_u64(j & u64(1)) | 0
+}
+
+// y is an infinity: (-1)^inf is 1, |x| > 1 goes to inf or 0 by the sign of
+// y, |x| < 1 the other way.
+pow_y_infinite: (y: f64, hy: u64, ix: u64, lx: u64): f64 {
+  ix == u64(1072693248) && lx == u64(0) ? 1.0 |
+  (ix >= u64(1072693248) ? (hy < u64(2147483648) ? y | 0.0) | (hy < u64(2147483648) ? 0.0 | -y))
+}
+
+// x is 0, an infinity, or 1 in magnitude: the result is |x| or 1/|x| with
+// the sign of an odd integer y; (-1)^(non-integer) is NaN.
+pow_x_special: (ax: f64, hx: u64, hy: u64, ix: u64, yisint: i64): f64 {
+  z: f64 = hy >= u64(2147483648) ? 1.0 / ax | ax
+  hx >= u64(2147483648) ?
+    (ix == u64(1072693248) && yisint == 0 ? nan() | (yisint == 1 ? -z | z)) |
+    z
+}
+
+pow_core: (ax: f64, y: f64, s: f64): f64 {
+  hy: u64 = high_word(y)
+  iy: u64 = hy & u64(2147483647)
+  ix: u64 = high_word(ax)
+  iy > u64(1105199104) ? pow_huge_y(ax, y, s, hy, ix, iy) | pow_finish(s, y, pow_log2(ax, ix))
+}
+
+// |y| > 2^31: the result overflows or underflows unless x is within 2^-20
+// of 1, where log2 x is a short series.
+pow_huge_y: (ax: f64, y: f64, s: f64, hy: u64, ix: u64, iy: u64): f64 {
+  y_negative: Bool = hy >= u64(2147483648)
+  iy > u64(1139802112) ?
+    (ix <= u64(1072693247) ? (y_negative ? infinity() | 0.0) | (y_negative ? 0.0 | infinity())) |
+  (ix < u64(1072693247) ? (y_negative ? s * infinity() | s * 0.0) |
+  (ix > u64(1072693248) ? (y_negative ? s * 0.0 | s * infinity()) |
+  pow_finish(s, y, pow_log2_near_one(ax))))
+}
+
+pow_log2_near_one: (ax: f64): Pair {
+  t: f64 = ax - 1.0
+  w: f64 = (t * t) * (0.5 - t * (THIRD - t * 0.25))
+  u: f64 = POW_IVLN2_H * t
+  v: f64 = t * POW_IVLN2_L - w * POW_IVLN2
+  t1: f64 = with_low_word_zero(u + v)
+  Pair { hi: t1, lo: v - (t1 - u) }
+}
+
+// pow_log2: log2(ax) = n + dp_h + z_h + z_l as a double-double, with ax
+// reduced to [sqrt(3/2)/..., sqrt(3)) around b = 1 or 1.5.
+pow_log2: (ax0: f64, ix0: u64): Pair {
+  subnormal: Bool = ix0 < u64(1048576)
+  ax1: f64 = subnormal ? ax0 * TWO53 | ax0
+  ix1: u64 = high_word(ax1)
+  n0: i64 = (subnormal ? -53 | 0) + i64_bits_u64(ix1 >> 20) - 1023
+  j: u64 = ix1 & u64(1048575)
+  k: u64 = j <= u64(235662) ? u64(0) | (j < u64(767610) ? u64(1) | u64(0))
+  bump: Bool = j >= u64(767610)
+  n: i64 = bump ? n0 + 1 | n0
+  ixn: u64 = j | u64(1072693248)
+  ix: u64 = bump ? ixn - u64(1048576) | ixn
+  ax: f64 = with_high_word(ax1, ix)
+  bp: f64 = k == u64(1) ? 1.5 | 1.0
+  dp_h: f64 = k == u64(1) ? POW_DP_H | 0.0
+  dp_l: f64 = k == u64(1) ? POW_DP_L | 0.0
+  u: f64 = ax - bp
+  v: f64 = 1.0 / (ax + bp)
+  ss: f64 = u * v
+  s_h: f64 = with_low_word_zero(ss)
+  t_h: f64 = f64_bits_u64((((ix >> 1) | u64(536870912)) + u64(524288) + (k << 18)) << 32)
+  t_l: f64 = ax - (t_h - bp)
+  s_l: f64 = v * ((u - s_h * t_h) - s_h * t_l)
+  s2: f64 = ss * ss
+  r0: f64 = s2 * s2 * (POW_L1 + s2 * (POW_L2 + s2 * (POW_L3 + s2 * (POW_L4 + s2 * (POW_L5 + s2 * POW_L6)))))
+  r: f64 = r0 + s_l * (s_h + ss)
+  s2h: f64 = s_h * s_h
+  t_h2: f64 = with_low_word_zero(3.0 + s2h + r)
+  t_l2: f64 = r - ((t_h2 - 3.0) - s2h)
+  u2: f64 = s_h * t_h2
+  v2: f64 = s_l * t_h2 + t_l2 * ss
+  p_h: f64 = with_low_word_zero(u2 + v2)
+  p_l: f64 = v2 - (p_h - u2)
+  z_h: f64 = POW_CP_H * p_h
+  z_l: f64 = POW_CP_L * p_h + p_l * POW_CP + dp_l
+  t: f64 = f64_round_i64(n)
+  t1: f64 = with_low_word_zero(((z_h + z_l) + dp_h) + t)
+  Pair { hi: t1, lo: z_l - (((t1 - t) - dp_h) - z_h) }
+}
+
+// pow_finish: z = y log2 x as p_h + p_l, then overflow and underflow
+// checks before 2^z.
+pow_finish: (s: f64, y: f64, t: Pair): f64 {
+  y1: f64 = with_low_word_zero(y)
+  p_l: f64 = (y - y1) * t.hi + y * t.lo
+  p_h: f64 = y1 * t.hi
+  z: f64 = p_l + p_h
+  zb: u64 = u64_bits_f64(z)
+  j: u64 = zb >> 32
+  i: u64 = zb & u64(4294967295)
+  j_negative: Bool = j >= u64(2147483648)
+  overflow_side: Bool = !j_negative && j >= u64(1083179008)
+  overflow_side ?
+    (((j - u64(1083179008)) | i) != u64(0) || p_l + POW_OVT > z - p_h ? s * infinity() | pow_exp2(s, p_h, p_l, j)) |
+  (j_negative && (j & u64(2147483647)) >= u64(1083231232) ?
+    (((j - u64(3230714880)) | i) != u64(0) || p_l <= z - p_h ? s * 0.0 | pow_exp2(s, p_h, p_l, j)) |
+  pow_exp2(s, p_h, p_l, j))
+}
+
+// pow_exp2: 2^(p_h + p_l) for |p_h + p_l| <= 1075: the integer part n is
+// split off when |z| > 0.5, the rest goes through the exp kernel.
+pow_exp2: (s: f64, p_h: f64, p_l: f64, j: u64): f64 {
+  i: u64 = j & u64(2147483647)
+  k: i64 = i64_bits_u64(i >> 20) - 1023
+  i > u64(1071644672) ? pow_exp2_big(s, p_h, p_l, j, k) | pow_exp2_scaled(s, p_h, p_l, 0)
+}
+
+pow_exp2_big: (s: f64, p_h: f64, p_l: f64, j: u64, k: i64): f64 {
+  n0: u64 = (j + (u64(1048576) >> u64_bits_i64(k + 1))) & u64(4294967295)
+  k2: u64 = ((n0 & u64(2147483647)) >> 20) - u64(1023)
+  t: f64 = f64_bits_u64((n0 & (u64(4294967295) ^ (u64(1048575) >> k2))) << 32)
+  n1: u64 = ((n0 & u64(1048575)) | u64(1048576)) >> (u64(20) - k2)
+  n: i64 = j >= u64(2147483648) ? -i64_bits_u64(n1) | i64_bits_u64(n1)
+  pow_exp2_scaled(s, p_h - t, p_l, n)
+}
+
+pow_exp2_scaled: (s: f64, p_h: f64, p_l: f64, n: i64): f64 {
+  t: f64 = with_low_word_zero(p_l + p_h)
+  u: f64 = t * POW_LG2_H
+  v: f64 = (p_l - (t - p_h)) * POW_LG2 + t * POW_LG2_L
+  z: f64 = u + v
+  w: f64 = v - (z - u)
+  t2: f64 = z * z
+  t1: f64 = z - t2 * (EXP_P1 + t2 * (EXP_P2 + t2 * (EXP_P3 + t2 * (EXP_P4 + t2 * EXP_P5))))
+  r: f64 = (z * t1) / (t1 - 2.0) - (w + z * w)
+  z2: f64 = 1.0 - (r - z)
+  jz: u64 = (high_word(z2) + (u64_bits_i64(n) << 20)) & u64(4294967295)
+  field: u64 = jz >> 20
+  field == u64(0) || field >= u64(2048) ? s * scale_pow2(z2, n) | s * with_high_word(z2, jz)
+}
+
+// f32 versions: computed at f64 and rounded once. The f64 result is within
+// an ulp of f64, so the f32 result is within an ulp of f32 and correctly
+// rounded except within 2^-29 relative of a rounding boundary.
+pub exp_f32: (x: f32): f32 { f32_round_f64(exp(f64(x))) }
+pub exp2_f32: (x: f32): f32 { f32_round_f64(exp2(f64(x))) }
+pub expm1_f32: (x: f32): f32 { f32_round_f64(expm1(f64(x))) }
+pub log_f32: (x: f32): f32 { f32_round_f64(log(f64(x))) }
+pub log2_f32: (x: f32): f32 { f32_round_f64(log2(f64(x))) }
+pub log1p_f32: (x: f32): f32 { f32_round_f64(log1p(f64(x))) }
+pub tanh_f32: (x: f32): f32 { f32_round_f64(tanh(f64(x))) }
+pub sin_f32: (x: f32): f32 { f32_round_f64(sin(f64(x))) }
+pub cos_f32: (x: f32): f32 { f32_round_f64(cos(f64(x))) }
+pub tan_f32: (x: f32): f32 { f32_round_f64(tan(f64(x))) }
+pub pow_f32: (x: f32, y: f32): f32 { f32_round_f64(pow(f64(x), f64(y))) }

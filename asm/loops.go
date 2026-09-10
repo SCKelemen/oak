@@ -55,19 +55,25 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 		if !ok || exitLabel <= back {
 			continue
 		}
-		straight := true
+		// The body may branch, but only forward and only within itself: its
+		// paths all rejoin at the back edge.
+		wellFormed := true
 		for i := header + 3; i < back; i++ {
 			instr, isInstr := items[i].(Instruction)
 			if !isInstr {
-				straight = false
-				break
+				continue // an inner label
 			}
 			switch instr.Mnemonic {
-			case "b", "b.", "bl", "ret", "eret":
-				straight = false
+			case "bl", "ret", "eret":
+				wellFormed = false
+			case "b", "b.":
+				target, ok := labels[instr.Operands[0].(Symbol).Name]
+				if !ok || target <= i || target >= back {
+					wellFormed = false
+				}
 			}
 		}
-		if !straight {
+		if !wellFormed {
 			continue
 		}
 		loops[header+2] = loopShape{header: header, cmp: header + 1, exit: header + 2, exitLabel: exitLabel, bodyStart: header + 3, bodyEnd: back}
@@ -102,8 +108,8 @@ func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbol
 	written := map[int]bool{}
 	allW := map[int]bool{}
 	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
-		instr := x.items[i].(Instruction)
-		if instr.Mnemonic == "cmp" || len(instr.Operands) == 0 {
+		instr, isInstr := x.items[i].(Instruction)
+		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "b" || instr.Mnemonic == "b." || len(instr.Operands) == 0 {
 			continue
 		}
 		dest, isReg := instr.Operands[0].(Register)
@@ -164,25 +170,21 @@ func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbol
 		return nil, fmt.Sprintf("condition code %s", exitCond), false
 	}
 	ev.cond = cmpTerm(continueCode, condState.flags.left, condState.flags.right)
-	// One iteration of the body on the fresh state.
-	bodyState := freshState.clone()
-	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
-		instr := x.items[i].(Instruction)
-		var reason string
-		var ok bool
-		if instr.Mnemonic == "ldr" {
-			reason, ok = x.load(instr, bodyState)
-		} else {
-			reason, ok = step(instr, bodyState)
-		}
-		if !ok {
-			return nil, reason + " (in a loop body)", false
-		}
+	// One iteration of the body on the fresh state: its paths (a branch
+	// inside the body forks on its condition) all reach the back edge and
+	// merge register by register into selects on the path conditions.
+	ends, reason, ok := x.runBody(shape, freshState.clone())
+	if !ok {
+		return nil, reason + " (in a loop body)", false
 	}
 	for _, name := range ev.vars {
 		var reg int
 		fmt.Sscanf(name, "r%d", &reg)
-		ev.next[name] = truncate(bodyState.regs[reg], ev.width[name])
+		merged := ends[len(ends)-1].valueOf(reg, freshState)
+		for i := len(ends) - 2; i >= 0; i-- {
+			merged = iteTerm(ends[i].cond, ends[i].valueOf(reg, freshState), merged)
+		}
+		ev.next[name] = truncate(merged, ev.width[name])
 	}
 	x.loop = ev
 	// Past the exit the loop-carried registers hold their fresh symbols and
@@ -192,6 +194,95 @@ func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbol
 	}
 	freshState.flags = nil
 	return x.run(shape.exitLabel, freshState)
+}
+
+// bodyEnd is one path through a loop body: the condition under which the
+// path is taken and the state it reaches the back edge with.
+type bodyEnd struct {
+	cond  *term
+	state *symbolicState
+}
+
+// valueOf is a register's value at the end of the path; a register the
+// path never wrote keeps its header symbol.
+func (e bodyEnd) valueOf(reg int, header *symbolicState) *term {
+	if value, written := e.state.regs[reg]; written {
+		return value
+	}
+	return header.regs[reg]
+}
+
+// bodyPathBudget bounds the paths one loop body may fork into.
+const bodyPathBudget = 64
+
+// runBody executes a loop body from its first instruction to the back edge
+// along every path.
+func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd, string, bool) {
+	type frontier struct {
+		pc    int
+		cond  *term
+		state *symbolicState
+	}
+	work := []frontier{{pc: shape.bodyStart, cond: constTerm(1, 1), state: state}}
+	var ends []bodyEnd
+	for len(work) > 0 {
+		cur := work[len(work)-1]
+		work = work[:len(work)-1]
+		pc, cond, st := cur.pc, cur.cond, cur.state
+		for pc < shape.bodyEnd {
+			instr, isInstr := x.items[pc].(Instruction)
+			if !isInstr {
+				pc++
+				continue
+			}
+			x.steps++
+			if x.steps > stepBudget {
+				return nil, "more instructions than the verifier's unrolling budget", false
+			}
+			switch instr.Mnemonic {
+			case "b":
+				pc = x.labels[instr.Operands[0].(Symbol).Name]
+				continue
+			case "b.":
+				if st.flags == nil || st.flags.unknown {
+					return nil, "b.cond reading flags not produced by cmp/subs", false
+				}
+				if !verifiableConditions[instr.Cond] {
+					return nil, fmt.Sprintf("condition code %s", instr.Cond), false
+				}
+				target := x.labels[instr.Operands[0].(Symbol).Name]
+				branch := cmpTerm(instr.Cond, st.flags.left, st.flags.right)
+				if branch.kind == termConst {
+					if branch.value != 0 {
+						pc = target
+					} else {
+						pc++
+					}
+					continue
+				}
+				if len(ends)+len(work) >= bodyPathBudget {
+					return nil, "more paths in a loop body than the verifier's budget", false
+				}
+				taken := truncate(branch, 1)
+				notTaken := binaryTerm("xor", taken, constTerm(1, 1))
+				work = append(work, frontier{pc: target, cond: binaryTerm("and", cond, taken), state: st.clone()})
+				cond = binaryTerm("and", cond, notTaken)
+				pc++
+				continue
+			case "ldr":
+				if reason, ok := x.load(instr, st); !ok {
+					return nil, reason, false
+				}
+			default:
+				if reason, ok := step(instr, st); !ok {
+					return nil, reason, false
+				}
+			}
+			pc++
+		}
+		ends = append(ends, bodyEnd{cond: cond, state: st})
+	}
+	return ends, "", true
 }
 
 // upperClear reports whether a 64-bit term is provably zero in its upper
@@ -281,6 +372,15 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 			into[s.Name.Value] = true
 		case *ast.WhileStatement:
 			assignedLocals(s.Body, into)
+		case *ast.ExpressionStatement:
+			// A statement-level conditional assigns in its arms.
+			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+				for _, arm := range match.Arms {
+					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
+						assignedLocals(block.Block, into)
+					}
+				}
+			}
 		}
 	}
 }

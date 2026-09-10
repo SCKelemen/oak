@@ -526,3 +526,27 @@ protocols remain separate work; importing this module does not implement them.
 See [Oak collection ports](COLLECTION_PORTS.md) for Bloom/counting Bloom filters,
 u64-key hash maps and sets, bitset algebra, validated flags, and the remaining OS
 library parity work.
+
+## `math`: transcendental functions (`import("math")`)
+
+`stdlib/math.oak` implements `exp`, `exp2`, `expm1`, `log`, `log2`, `log1p`,
+`sin`, `cos`, `tan`, `tanh`, and `pow` over `f64`, plus `exp_f32` …
+`pow_f32` over `f32`, entirely in Oak (docs/spec/20-types.md section
+11.3.6). The algorithms are fdlibm's, with the Cody-Waite split constants
+spelled as hexadecimal literals so they are the original bit patterns; the
+trigonometric functions reduce huge arguments (at or beyond 2^20 pi/2) by a
+Payne-Hanek multiplication against the relevant limbs of 2/pi in exact
+integer arithmetic. Because every primitive they use is correctly rounded,
+the interpreter and every backend compute identical bits — the bit-exact
+transcendental implementation a reproducible training run needs.
+
+Contract: error within 1 ulp of the correctly rounded result for
+`exp exp2 expm1 log log2 log1p sin cos tan pow`, within 2 ulp for `tanh`;
+the `_f32` forms compute at `f64` and round once. `pow` follows IEEE
+754-2019 / C99 Annex F for its special values and is exact for
+representable integer powers. `compiler/e2e_math_test.go` is the fourth
+witness: an arbitrary-precision reference over special points, random
+arguments, the nearest doubles to multiples of pi/2, and the Annex F `pow`
+cases, failing on any case beyond the bound and on any difference between
+compiled and interpreted results. The remaining relatives (`asin acos atan
+atan2 sinh cosh`) are not implemented yet.
