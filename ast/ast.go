@@ -1243,20 +1243,25 @@ type ProtocolDeclaration struct {
 	Token       token.Token // the protocol name token
 	EndToken    token.Token // closing brace
 	Name        *Identifier
-	Resources   []*Identifier // `resource T`: nominal types governed by the protocol
-	Initial     *Identifier   // `initial S`
+	Resources   []*Identifier  // `resource T`: nominal types governed by the protocol
+	Initial     *Identifier    // `initial S`
+	Data        *RecordLiteral // `data { field: T, ... }`: the machine's data record, or nil
+	Init        *RecordLiteral // `init { field: value, ... }`: the initial data, required with Data
 	Transitions []*ProtocolTransition
 	Exported    bool
 }
 
-// ProtocolTransition is one `name(param: T)?: From -> To (via callable)?` line.
+// ProtocolTransition is one
+// `name(param: T)?: From -> To (when guard)? (then { effects })? (via callable)?` line.
 type ProtocolTransition struct {
 	Token    token.Token
 	Name     *Identifier
 	Param    *FunctionParameter // optional payload: one fixed-width scalar or Bool
 	From     *Identifier
 	To       *Identifier
-	Callable *Identifier // optional `via f`: the function that performs it
+	Guard    Expression      // optional `when` expression over data.field and the payload
+	Effects  *BlockStatement // optional `then { ... }` statements over data.field and the payload
+	Callable *Identifier     // optional `via f`: the function that performs it
 }
 
 func (pd *ProtocolDeclaration) statementNode()       {}
@@ -1287,6 +1292,14 @@ func (pd *ProtocolDeclaration) String() string {
 		out.WriteString(t.From.String())
 		out.WriteString(" -> ")
 		out.WriteString(t.To.String())
+		if t.Guard != nil {
+			out.WriteString(" when ")
+			out.WriteString(t.Guard.String())
+		}
+		if t.Effects != nil {
+			out.WriteString(" then ")
+			out.WriteString(t.Effects.String())
+		}
 		if t.Callable != nil {
 			out.WriteString(" via ")
 			out.WriteString(t.Callable.String())

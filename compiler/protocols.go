@@ -11,6 +11,7 @@ package compiler
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"unicode"
@@ -36,6 +37,7 @@ type protocolStep struct {
 	payload *ast.FunctionParameter
 	from    []string
 	to      []string
+	lines   []*ast.ProtocolTransition
 	node    *ast.ProtocolTransition
 }
 
@@ -101,8 +103,31 @@ func analyzeProtocol(decl *ast.ProtocolDeclaration, report func(code string, nod
 		report(CodeProtocolShape, decl.Name, "protocol %s declares no transitions", decl.Name.Value)
 		ok = false
 	}
+	if (decl.Data == nil) != (decl.Init == nil) {
+		report(CodeProtocolShape, decl.Name, "protocol %s declares `data` and `init` together or not at all", decl.Name.Value)
+		ok = false
+	}
+	if decl.Data != nil && decl.Init != nil {
+		fields := map[string]bool{}
+		for _, f := range decl.Data.FieldOrder {
+			fields[f.Name] = true
+		}
+		for _, f := range decl.Init.FieldOrder {
+			if !fields[f.Name] {
+				report(CodeProtocolShape, decl.Init, "protocol %s: init names %s, which data does not declare", decl.Name.Value, f.Name)
+				ok = false
+			}
+		}
+		for _, f := range decl.Data.FieldOrder {
+			if _, set := decl.Init.Fields[f.Name]; !set {
+				report(CodeProtocolShape, decl.Init, "protocol %s: init does not set %s", decl.Name.Value, f.Name)
+				ok = false
+			}
+		}
+	}
 	steps := map[string]*protocolStep{}
 	pairs := map[string]bool{}
+	guarded := map[string]bool{}
 	for _, t := range decl.Transitions {
 		addState(t.From)
 		addState(t.To)
@@ -120,13 +145,18 @@ func analyzeProtocol(decl *ast.ProtocolDeclaration, report func(code string, nod
 			report(CodeProtocolShape, t.Callable, "transition %s names a callable, but protocol %s governs no resource type (`resource T`)", t.Name.Value, decl.Name.Value)
 			ok = false
 		}
+		if decl.Data == nil && mentionsIdentifier(t.Guard, "data") || decl.Data == nil && t.Effects != nil && mentionsIdentifier(t.Effects, "data") {
+			report(CodeProtocolShape, t.Name, "transition %s refers to data, but protocol %s declares none", t.Name.Value, decl.Name.Value)
+			ok = false
+		}
 		key := t.Name.Value + "\x00" + t.From.Value
-		if pairs[key] {
-			report(CodeProtocolShape, t.Name, "transition %s from %s is declared twice", t.Name.Value, t.From.Value)
+		if pairs[key] && (!guarded[key] || t.Guard == nil) {
+			report(CodeProtocolShape, t.Name, "transition %s from %s is declared twice; several lines from one state must each carry a `when` guard", t.Name.Value, t.From.Value)
 			ok = false
 			continue
 		}
 		pairs[key] = true
+		guarded[key] = t.Guard != nil
 		step, exists := steps[t.Name.Value]
 		if !exists {
 			step = &protocolStep{name: t.Name.Value, payload: t.Param, node: t}
@@ -138,6 +168,7 @@ func analyzeProtocol(decl *ast.ProtocolDeclaration, report func(code string, nod
 		}
 		step.from = append(step.from, t.From.Value)
 		step.to = append(step.to, t.To.Value)
+		step.lines = append(step.lines, t)
 	}
 	if ok && decl.Initial != nil {
 		reachable := false
@@ -240,14 +271,18 @@ func (m *protocolMachine) resourceFacts() (typechecker.ResourceProtocolDeclarati
 }
 
 // project builds the Oak declarations: NameState, NameStep, name_initial,
-// name_legal, name_next.
+// name_legal, name_next — and, with data, NameData, name_initial_data, a
+// legality predicate that reads the data record and a transition function
+// that mutates it through a span.
 func (m *protocolMachine) project() []ast.Statement {
 	ctx := m.decl.Name.Token.SemanticContext
 	s := newSynth(helperContext(ctx, m.name))
 	stateType := m.name + "State"
 	stepType := m.name + "Step"
+	dataType := m.name + "Data"
 	prefix := snakeCase(m.name)
 	exported := m.decl.Exported
+	withData := m.decl.Data != nil
 
 	adt := func(name string, variants []*ast.ADTVariant) *ast.ADTType {
 		return &ast.ADTType{Token: s.tok(0, "type"), EndToken: s.tok(0, ""), Name: s.id(name), Variants: variants, Exported: exported}
@@ -264,42 +299,219 @@ func (m *protocolMachine) project() []ast.Statement {
 		}
 		stepVariants = append(stepVariants, v)
 	}
+	out := []ast.Statement{adt(stateType, stateVariants), adt(stepType, stepVariants)}
 
-	// name_legal: step ? | .T => (state ? | .From => true | _ => false) ...
-	// name_next:  step ? | .T => (state ? | .From => .To | _ => state) ...
 	stateParam := func() *ast.FunctionParameter { return s.param("state", s.id(stateType)) }
 	stepParam := func() *ast.FunctionParameter { return s.param("step", s.id(stepType)) }
+	// The payload binding is the declared parameter name when any line of
+	// the step mentions it, else the discard binding.
 	binding := func(step *protocolStep) string {
 		if step.payload == nil {
 			return ""
 		}
+		for _, line := range step.lines {
+			if mentionsIdentifier(line.Guard, step.payload.Name.Value) || line.Effects != nil && mentionsIdentifier(line.Effects, step.payload.Name.Value) {
+				return step.payload.Name.Value
+			}
+		}
 		return "_"
 	}
-	covers := func(step *protocolStep) bool { return len(step.from) == len(m.states) }
+	isState := func(from string) ast.Expression {
+		return s.match(s.id("state"), s.arm(from, "", s.boolean(true)), s.wildcardArm(s.boolean(false)))
+	}
 
-	var legalArms, nextArms []*ast.MatchArm
-	for _, step := range m.steps {
-		var legalInner, nextInner []*ast.MatchArm
-		for i, from := range step.from {
-			legalInner = append(legalInner, s.arm(from, "", s.boolean(true)))
-			nextInner = append(nextInner, s.arm(from, "", s.variant(step.to[i], nil)))
-		}
-		if !covers(step) {
-			legalInner = append(legalInner, s.wildcardArm(s.boolean(false)))
-			nextInner = append(nextInner, s.wildcardArm(s.id("state")))
-		}
-		legalArms = append(legalArms, s.arm(variantName(step.name), binding(step), s.match(s.id("state"), legalInner...)))
-		nextArms = append(nextArms, s.arm(variantName(step.name), binding(step), s.match(s.id("state"), nextInner...)))
-	}
 	initial := s.fnExpr(prefix+"_initial", nil, s.id(stateType), s.variant(m.initial, nil))
-	legal := s.fnExpr(prefix+"_legal", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id("Bool"), s.match(s.id("step"), legalArms...))
-	next := s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
-		s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.id("step")))),
-		s.expr(s.match(s.id("step"), nextArms...)))
-	for _, fn := range []*ast.FunctionStatement{initial, legal, next} {
-		fn.Exported = exported
+	initial.Exported = exported
+	out = append(out, initial)
+
+	if !withData {
+		covers := func(step *protocolStep) bool { return len(step.from) == len(m.states) }
+		var legalArms, nextArms []*ast.MatchArm
+		for _, step := range m.steps {
+			var legalInner, nextInner []*ast.MatchArm
+			for i, from := range step.from {
+				legalInner = append(legalInner, s.arm(from, "", s.boolean(true)))
+				nextInner = append(nextInner, s.arm(from, "", s.variant(step.to[i], nil)))
+			}
+			if !covers(step) {
+				legalInner = append(legalInner, s.wildcardArm(s.boolean(false)))
+				nextInner = append(nextInner, s.wildcardArm(s.id("state")))
+			}
+			legalArms = append(legalArms, s.arm(variantName(step.name), binding(step), s.match(s.id("state"), legalInner...)))
+			nextArms = append(nextArms, s.arm(variantName(step.name), binding(step), s.match(s.id("state"), nextInner...)))
+		}
+		legal := s.fnExpr(prefix+"_legal", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id("Bool"), s.match(s.id("step"), legalArms...))
+		next := s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
+			s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.id("step")))),
+			s.expr(s.match(s.id("step"), nextArms...)))
+		legal.Exported, next.Exported = exported, exported
+		return append(out, legal, next)
 	}
-	return []ast.Statement{adt(stateType, stateVariants), adt(stepType, stepVariants), initial, legal, next}
+
+	// NameData and its initial value.
+	dataShape := cloneSyntax(reflect.ValueOf(m.decl.Data)).Interface().(*ast.RecordLiteral)
+	out = append(out, adt(dataType, []*ast.ADTVariant{{Token: s.tok(0, dataType), Name: s.id(dataType), Literal: dataShape}}))
+	initValues := cloneSyntax(reflect.ValueOf(m.decl.Init)).Interface().(*ast.RecordLiteral)
+	initValues.TypeName = s.id(dataType)
+	initialData := s.fnExpr(prefix+"_initial_data", nil, s.id(dataType), initValues)
+	initialData.Exported = exported
+	out = append(out, initialData)
+
+	// name_legal(state, data, step): per step, OR over its lines of
+	// (state is From) && guard; the guard reads the data record by value.
+	dataValue := func() *ast.FunctionParameter { return s.param("data", s.id(dataType)) }
+	// A match expression cannot be an operand in the backend, so every
+	// "state is From" test is hoisted into a Bool binding first; names are
+	// unique across the whole function (one declaration per name).
+	var legalArms []*ast.MatchArm
+	for si, step := range m.steps {
+		var body []ast.Statement
+		var terms []ast.Expression
+		for k, line := range step.lines {
+			fromName := fmt.Sprintf("from_%d_%d", si, k)
+			body = append(body, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
+			var term ast.Expression = s.id(fromName)
+			if line.Guard != nil {
+				term = s.and(term, cloneExpression(line.Guard))
+			}
+			terms = append(terms, term)
+		}
+		body = append(body, s.expr(s.or(terms...)))
+		legalArms = append(legalArms, s.arm(variantName(step.name), binding(step), s.block(body...)))
+	}
+	legal := s.fnExpr(prefix+"_legal", []*ast.FunctionParameter{stateParam(), dataValue(), stepParam()}, s.id("Bool"), s.match(s.id("step"), legalArms...))
+	legal.Exported = exported
+	out = append(out, legal)
+
+	// name_next(state, data: [*]NameData, step): the first line whose state
+	// and guard hold applies its effects (over data[0]) and names the target.
+	var nextArms []*ast.MatchArm
+	for si, step := range m.steps {
+		var body []ast.Statement
+		for k, line := range step.lines {
+			fromName := fmt.Sprintf("from_%d_%d", si, k)
+			body = append(body, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
+			condition := s.and(s.not(s.id("done")), s.id(fromName))
+			if line.Guard != nil {
+				condition = s.and(condition, rewriteDataRefs(cloneExpression(line.Guard)).(ast.Expression))
+			}
+			var effects []ast.Statement
+			if line.Effects != nil {
+				rewritten := rewriteDataRefs(cloneSyntax(reflect.ValueOf(line.Effects)).Interface().(*ast.BlockStatement)).(*ast.BlockStatement)
+				effects = append(effects, rewritten.Statements...)
+			}
+			effects = append(effects, s.assign("result", s.variant(line.To.Value, nil)), s.assign("done", s.boolean(true)))
+			body = append(body, s.expr(s.cond(condition, s.block(effects...), nil)))
+		}
+		nextArms = append(nextArms, s.arm(variantName(step.name), binding(step), s.block(body...)))
+	}
+	next := s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), s.param("data", s.span(s.id(dataType))), stepParam()}, s.id(stateType),
+		s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.index(s.id("data"), s.intLit(0)), s.id("step")))),
+		s.decl("result", s.id(stateType), s.id("state")),
+		s.decl("done", s.id("Bool"), s.boolean(false)),
+		s.expr(s.match(s.id("step"), nextArms...)),
+		s.expr(s.id("result")))
+	next.Exported = exported
+	return append(out, next)
+}
+
+// cloneExpression deep-copies an expression so a guard can appear in more
+// than one projection.
+func cloneExpression(e ast.Expression) ast.Expression {
+	return cloneSyntax(reflect.ValueOf(e)).Interface().(ast.Expression)
+}
+
+// mentionsIdentifier reports whether a syntax subtree names `name`.
+func mentionsIdentifier(node ast.Node, name string) bool {
+	if node == nil {
+		return false
+	}
+	found := false
+	var walk func(v reflect.Value)
+	walk = func(v reflect.Value) {
+		if found {
+			return
+		}
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			if id, ok := v.Interface().(*ast.Identifier); ok {
+				if id.Value == name {
+					found = true
+				}
+				return
+			}
+			walk(v.Elem())
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				if v.Type().Field(i).IsExported() {
+					walk(v.Field(i))
+				}
+			}
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i))
+			}
+		case reflect.Map:
+			iter := v.MapRange()
+			for iter.Next() {
+				walk(iter.Value())
+			}
+		}
+	}
+	walk(reflect.ValueOf(node))
+	return found
+}
+
+// rewriteDataRefs turns every `data.field` in a (freshly cloned) subtree into
+// `data[0].field`, the spelling the transition function needs to write
+// through its span. Returns the (possibly replaced) root.
+func rewriteDataRefs(node ast.Node) ast.Node {
+	replacement := func(idx *ast.IndexExpression) *ast.IndexExpression {
+		base, ok := idx.Left.(*ast.Identifier)
+		if !ok || !idx.Dot || base.Value != "data" {
+			return nil
+		}
+		zero := &ast.IntegerLiteral{Token: idx.Token, Value: 0}
+		return &ast.IndexExpression{Token: idx.Token, Left: &ast.IndexExpression{Token: idx.Token, Left: base, Index: zero}, Index: idx.Index, Dot: true}
+	}
+	if idx, ok := node.(*ast.IndexExpression); ok {
+		if r := replacement(idx); r != nil {
+			return r
+		}
+	}
+	var walk func(v reflect.Value)
+	walk = func(v reflect.Value) {
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			if idx, ok := v.Interface().(*ast.IndexExpression); ok {
+				if r := replacement(idx); r != nil {
+					if v.CanSet() {
+						v.Set(reflect.ValueOf(r).Convert(v.Type()))
+					}
+					return
+				}
+			}
+			walk(v.Elem())
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				if v.Type().Field(i).IsExported() && v.Field(i).CanSet() {
+					walk(v.Field(i))
+				}
+			}
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i))
+			}
+		}
+	}
+	walk(reflect.ValueOf(node))
+	return node
 }
 
 // Protocols returns the protocol declarations of a parsed tree, in order.

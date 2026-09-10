@@ -2417,6 +2417,35 @@ func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.Pro
 			return nil
 		}
 		switch p.currentToken.Literal {
+		case "data", "init":
+			keyword := p.currentToken.Literal
+			if !p.expectPeek(token.LBRACE) {
+				return nil
+			}
+			if keyword == "data" {
+				if decl.Data != nil {
+					p.addErrorAtCurrentToken("protocol declares its data record once")
+					return nil
+				}
+				shape := p.parseRecordType()
+				record, ok := shape.(*ast.RecordLiteral)
+				if !ok || record == nil {
+					return nil
+				}
+				decl.Data = record
+			} else {
+				if decl.Init != nil {
+					p.addErrorAtCurrentToken("protocol declares its initial data once")
+					return nil
+				}
+				values := p.parseRecordLiteral()
+				record, ok := values.(*ast.RecordLiteral)
+				if !ok || record == nil {
+					return nil
+				}
+				decl.Init = record
+			}
+			p.nextToken()
 		case "resource", "initial":
 			keyword := p.currentToken.Literal
 			if !p.expectPeek(token.IDENT) {
@@ -2468,6 +2497,24 @@ func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.Pro
 				return nil
 			}
 			transition.To = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "when" {
+				p.nextToken() // when
+				p.nextToken() // first token of the guard
+				transition.Guard = p.parseExpression(LOWEST)
+				if transition.Guard == nil {
+					return nil
+				}
+			}
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "then" {
+				p.nextToken() // then
+				if !p.expectPeek(token.LBRACE) {
+					return nil
+				}
+				transition.Effects = p.parseBlockStatement()
+				if transition.Effects == nil {
+					return nil
+				}
+			}
 			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "via" {
 				p.nextToken() // via
 				if !p.expectPeek(token.IDENT) {
