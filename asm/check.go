@@ -63,6 +63,10 @@ type checker struct {
 	spans      map[int]*spanFact
 	spanParams map[string]spanParam
 	pendingCmp cmpFact
+	// idxFacts: index register -> the bound a dominating guard proved it
+	// below (`cmp wI, wL` / `cmp wI, #K` then `b.hs <exit>`); they die with
+	// any write to the index or bound register, any label, and any call.
+	idxFacts map[int]idxFact
 	// calleeSaved tracks x19–x30: the caller's state, readable on entry,
 	// writable only after being saved to the frame, and restored from the
 	// same absolute slot before every ret (docs/spec/94-assembler.md §7).
@@ -116,12 +120,22 @@ type spanFact struct {
 	minLen   int64
 }
 
-// cmpFact remembers a `cmp wL, #N` on a span length register for exactly
-// the next instruction, which must be the guarding branch.
+// cmpFact remembers a 32-bit `cmp wA, #N` or `cmp wA, wB` for exactly the
+// next instruction, which must be the guarding branch: `b.lo` after
+// comparing a span length with N proves len >= N; `b.hs` after comparing
+// an index with N or with a length register proves index < N / index < len.
 type cmpFact struct {
-	valid  bool
-	lenReg int
-	imm    int64
+	valid    bool
+	left     int   // the compared register
+	rightReg int   // the register compared against, or -1 for an immediate
+	imm      int64 // the immediate compared against
+}
+
+// idxFact: the register is below an immediate bound (boundReg == -1) or
+// below the value of another register (a span length register).
+type idxFact struct {
+	boundReg int
+	bound    int64
 }
 
 // spanShape recognizes span ([*]T) and view ([]T) parameter types of
@@ -208,6 +222,7 @@ func (c *checker) bindContract() {
 	c.paramRegister = map[string]int{}
 	c.bound = map[int]bool{}
 	c.spans = map[int]*spanFact{}
+	c.idxFacts = map[int]idxFact{}
 	c.spanParams = map[string]spanParam{}
 	nextGeneral, nextVector := 0, 0
 	for _, param := range c.fn.Signature.Parameters {
@@ -437,6 +452,7 @@ func (c *checker) forgetGuards() {
 		fact.hasMin = false
 	}
 	c.pendingCmp = cmpFact{}
+	c.idxFacts = map[int]idxFact{}
 }
 
 // instruction checks one instruction and reports whether it ends control.
@@ -464,13 +480,19 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.branch(instr, false)
 		// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
 		// len >= N for every span whose length register is wL.
-		if guard.valid && (instr.Cond == "lo" || instr.Cond == "cc") {
+		if guard.valid && guard.rightReg < 0 && (instr.Cond == "lo" || instr.Cond == "cc") {
 			for _, fact := range c.spans {
-				if fact.lenReg == guard.lenReg {
+				if fact.lenReg == guard.left {
 					fact.hasMin = true
 					fact.minLen = guard.imm
 				}
 			}
+		}
+		// `cmp wI, wL` / `cmp wI, #K` then `b.hs exit`: the fall-through
+		// path knows wI < len / wI < K — the index guard of a loop walking
+		// a span (Oak.Assembler.index_access).
+		if guard.valid && (instr.Cond == "hs" || instr.Cond == "cs") {
+			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
 		}
 		return false
 	case "bl":
@@ -515,12 +537,16 @@ func (c *checker) instruction(instr Instruction) bool {
 	if instr.Mnemonic == "cmp" {
 		c.read(instr, dest) // cmp's first operand is a source
 		c.flagsValid = true
-		// Only the 32-bit view of a span length register guards: the upper
-		// half of the register is padding the contract never defines.
-		if imm, isImm := instr.Operands[1].(Immediate); isImm && dest.Class == ClassW {
-			for _, fact := range c.spans {
-				if fact.lenReg == dest.Num {
-					c.pendingCmp = cmpFact{valid: true, lenReg: dest.Num, imm: imm.Value}
+		// Only 32-bit comparisons guard: a span length lives in the low half
+		// of its register (the upper half is padding the contract never
+		// defines), and an index is a 32-bit element count.
+		if dest.Class == ClassW {
+			switch right := instr.Operands[1].(type) {
+			case Immediate:
+				c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: -1, imm: right.Value}
+			case Register:
+				if right.Class == ClassW && !right.ZeroRegister() {
+					c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: right.Num}
 				}
 			}
 		}
@@ -636,11 +662,18 @@ func (c *checker) write(instr Instruction, reg Register) {
 	}
 	c.written[reg.Num] = true
 	// Moving a span base forgets the span; touching a length register
-	// forgets its guard.
+	// forgets its guard; touching an index or its bound forgets the
+	// index fact.
 	delete(c.spans, reg.Num)
 	for _, fact := range c.spans {
 		if fact.lenReg == reg.Num {
 			fact.hasMin = false
+		}
+	}
+	delete(c.idxFacts, reg.Num)
+	for index, fact := range c.idxFacts {
+		if fact.boundReg == reg.Num {
+			delete(c.idxFacts, index)
 		}
 	}
 }
@@ -680,6 +713,10 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 	}
 	if mem.Base.Class != ClassSP {
 		c.errorf(instr.Line, "memory operands go through the declared sp frame or a bound span base; %s is neither", mem.Base.Text)
+		return
+	}
+	if mem.Index != nil {
+		c.errorf(instr.Line, "%s: register-offset addressing walks a span, not the frame", instr.Mnemonic)
 		return
 	}
 	if c.fn.Frame == 0 {
@@ -734,6 +771,10 @@ func (c *checker) spanAccess(instr Instruction, matched form, mem Memory, fact *
 		return
 	}
 	size := accessBytes(instr.Mnemonic, matched[0])
+	if mem.Index != nil {
+		c.indexedSpanAccess(instr, mem, fact, size, regs, isStore)
+		return
+	}
 	if mem.Offset < 0 {
 		c.errorf(instr.Line, "%s: negative offset %d reaches before the span", instr.Mnemonic, mem.Offset)
 		return
@@ -754,6 +795,51 @@ func (c *checker) spanAccess(instr Instruction, matched form, mem Memory, fact *
 			c.write(instr, reg)
 		}
 	}
+}
+
+// indexedSpanAccess admits [base, wI, uxtw #s] on a bound span: the access
+// is one whole element (1<<s == size == elem) at element index wI, and a
+// dominating guard proved wI below the span's length — directly (`cmp wI,
+// wL; b.hs`) or through a constant the length guard covers (`cmp wI, #K;
+// b.hs` with len >= K established). Then (wI+1)*elem <= elem*len
+// (Oak.Assembler.index_access).
+func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFact, size int64, regs []Register, isStore bool) {
+	index := *mem.Index
+	c.read(instr, index)
+	if size != fact.elem || int64(1)<<uint(mem.Shift) != size {
+		c.errorf(instr.Line, "%s: indexed access must move by whole elements: a %d-byte access over %d-byte elements needs `uxtw #%d` and a matching register width", instr.Mnemonic, size, fact.elem, log2(fact.elem))
+		return
+	}
+	bound, guarded := c.idxFacts[index.Num]
+	switch {
+	case !guarded:
+		c.errorf(instr.Line, "%s indexed by %s without a dominating index guard: `cmp %s, w%d` then `b.hs <exit>` proves the index below the span's length for the fall-through path", instr.Mnemonic, index.Text, index.Text, fact.lenReg)
+		return
+	case bound.boundReg == fact.lenReg:
+		// index < len: in bounds.
+	case bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen:
+		// index < K <= len.
+	case bound.boundReg < 0:
+		c.errorf(instr.Line, "%s: the guard proves %s < %d but the span's proven minimum length is %d", instr.Mnemonic, index.Text, bound.bound, fact.minLen)
+		return
+	default:
+		c.errorf(instr.Line, "%s: %s is guarded against w%d, which is not this span's length register (w%d)", instr.Mnemonic, index.Text, bound.boundReg, fact.lenReg)
+		return
+	}
+	if !isStore {
+		for _, reg := range regs {
+			c.write(instr, reg)
+		}
+	}
+}
+
+func log2(n int64) int {
+	shift := 0
+	for n > 1 {
+		n >>= 1
+		shift++
+	}
+	return shift
 }
 
 func (c *checker) checkAccess(instr Instruction, offset, size int64) {

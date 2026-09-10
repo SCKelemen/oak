@@ -197,6 +197,61 @@ loop:
 			t.Fatalf("popcount8, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
 		}
 	}
+	// Register-offset addressing: a counted loop walking a view by element
+	// index, proven against the Oak loop and run both ways.
+	sum4 := New().WithSource("sum4.oak", `
+sum4: (v: []u32) -> u32 {
+  len(v) < u32(4) ? { u32(0) } | {
+    acc: u32 = u32(0)
+    i: u32 = u32(0)
+    while i < u32(4) {
+      acc = acc + v[i]
+      i = i + u32(1)
+    }
+    acc
+  }
+}
+
+main: (): i32 {
+  buf: [4]u32
+  buf[0] = u32(10)
+  buf[1] = u32(20)
+  buf[2] = u32(5)
+  buf[3] = u32(7)
+  assert(sum4(view(&buf)) == u32(42))
+  short: [2]u32
+  assert(sum4(view(&short)) == u32(0))
+  42
+}
+`).WithAsmUnit("sum4.arm64.oakasm", `
+sum4: (v: []u32) -> u32 = {
+  bind x0, w1 = v
+  clobber w9, w10, w11
+  mov w9, #0
+  mov w10, #0
+loop:
+  cmp w9, #4
+  b.hs done
+  cmp w1, #4
+  b.lo short
+  ldr w11, [x0, w9, uxtw #2]
+  add w10, w10, w11
+  add w9, w9, #1
+  b loop
+done:
+  mov w0, w10
+  ret
+short:
+  mov w0, #0
+  ret
+}
+`)
+	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
+		_, code, abnormal := buildAndRunFrom(t, "verified_sum4", sum4, flags...)
+		if abnormal || code != 42 {
+			t.Fatalf("sum4, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
+		}
+	}
 	// The wrong condition never compiles.
 	_, err := New().WithSource("max.oak", `
 max32: (a, b: u32) -> u32 = a < b ? b | a

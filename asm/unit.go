@@ -103,6 +103,11 @@ type Memory struct {
 	Base   Register
 	Offset int64
 	Mode   MemMode
+	// Index is the scaled register-offset form [base, wI, uxtw #Shift]: the
+	// 32-bit index register zero-extended and shifted by Shift (the access
+	// size's log2) — how a loop walks a span by element index.
+	Index *Register
+	Shift int
 }
 
 type MemMode int
@@ -511,7 +516,31 @@ func parseMemory(text string) (Operand, error) {
 			return nil, err
 		}
 		mem.Offset = offset
-	} else if len(parts) > 2 {
+	} else if len(parts) == 3 {
+		// [base, wI, uxtw #s]: a scaled 32-bit index.
+		index, ok := parseRegister(strings.TrimSpace(parts[1]))
+		if !ok || index.Class != ClassW {
+			return nil, fmt.Errorf("memory index must be a w register, got %q", strings.TrimSpace(parts[1]))
+		}
+		extend := strings.Fields(strings.ToLower(strings.TrimSpace(parts[2])))
+		if len(extend) == 0 || extend[0] != "uxtw" || len(extend) > 2 {
+			return nil, fmt.Errorf("memory index extension must be `uxtw #s`, got %q", strings.TrimSpace(parts[2]))
+		}
+		if len(extend) == 2 {
+			if !strings.HasPrefix(extend[1], "#") {
+				return nil, fmt.Errorf("index shift must be an immediate, got %q", extend[1])
+			}
+			shift, err := parseImmediate(extend[1][1:])
+			if err != nil || shift < 0 || shift > 4 {
+				return nil, fmt.Errorf("bad index shift %q", extend[1])
+			}
+			mem.Shift = int(shift)
+		}
+		if pre {
+			return nil, fmt.Errorf("register-offset addressing has no pre-index form")
+		}
+		mem.Index = &index
+	} else if len(parts) > 3 {
 		return nil, fmt.Errorf("bad memory operand %q", text)
 	}
 	if pre {
