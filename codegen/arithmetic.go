@@ -1,14 +1,16 @@
 package codegen
 
-// C backend lowering for checked and saturating integer arithmetic
-// (docs/spec/20-types.md section 11.1a): one static inline helper per used
-// function. Overflow is detected with the type-generic
+// C backend lowering for checked, saturating and trapping integer
+// arithmetic (docs/spec/20-types.md section 11.1a): one static inline
+// helper per used function. Overflow is detected with the type-generic
 // __builtin_{add,sub,mul}_overflow, which compute the exact result and
 // report whether it fits the result type without ever evaluating a signed
 // overflow in C — the same baseline (gcc/clang builtins) the trapping
 // helpers already require. checked_* returns the monomorphized
 // Result[T, Overflow]; saturating_* clamps toward the side the exact result
-// left the range on.
+// left the range on; trapping_* returns the exact result or stops at a
+// located trap (oak_overflow_trap, the assertion machinery of
+// 85-discipline.md section 5) whose file and line the call site supplies.
 
 import (
 	"fmt"
@@ -49,8 +51,17 @@ func (cg *CodeGenerator) emitArithmeticHelpers(program *ast.Program) {
 	if len(used) == 0 {
 		return
 	}
-	cg.write("/* checked and saturating arithmetic: exact overflow detection via the\n")
-	cg.write("   type-generic overflow builtins; no signed overflow is ever evaluated */\n")
+	cg.write("/* checked, saturating and trapping arithmetic: exact overflow detection\n")
+	cg.write("   via the type-generic overflow builtins; no signed overflow is ever\n")
+	cg.write("   evaluated. A trapping overflow names its Oak source position. */\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("static inline void oak_overflow_trap(const char *file, u32 line) {\n")
+	cg.write("  fprintf(stderr, \"oak: arithmetic overflow at %s:%u\\n\", file, (unsigned)line);\n")
+	cg.write("  __builtin_trap();\n}\n")
+	cg.write("#else\n")
+	cg.write("static inline void oak_overflow_trap(const char *file, u32 line) {\n")
+	cg.write("  (void)file; (void)line;\n  __builtin_trap();\n}\n")
+	cg.write("#endif\n")
 	for _, name := range used {
 		cg.writeRaw(cg.arithmeticHelperSource(name))
 		cg.write("\n")
@@ -81,6 +92,11 @@ func (cg *CodeGenerator) arithmeticHelperSource(oakName string) string {
 	}
 
 	var b strings.Builder
+	if op == "trapping" {
+		fmt.Fprintf(&b, "static inline %s %s( %s a, %s b, const char *file, u32 line ) {\n  %s r;\n", prim, arithmeticHelperName(oakName), prim, prim, prim)
+		fmt.Fprintf(&b, "  if (%s(a, b, &r)) { oak_overflow_trap(file, line); }\n  return r;\n}\n", builtin)
+		return b.String()
+	}
 	if op == "saturating" {
 		fmt.Fprintf(&b, "static inline %s %s( %s a, %s b ) {\n  %s r;\n", prim, arithmeticHelperName(oakName), prim, prim, prim)
 		fmt.Fprintf(&b, "  if (%s(a, b, &r)) {\n", builtin)
@@ -175,6 +191,10 @@ func (cg *CodeGenerator) emitArithmeticCall(call *ast.InvocationExpression, tc *
 	cg.emitExpressionFragment(call.Arguments[0], tc)
 	cg.output.WriteString(", ")
 	cg.emitExpressionFragment(call.Arguments[1], tc)
+	if op == "trapping" {
+		// Like assert: the trap names the Oak call site.
+		cg.output.WriteString(fmt.Sprintf(", %q, %d", cg.sourceFile, ident.Token.Line))
+	}
 	cg.output.WriteString(" )")
 	return true
 }
