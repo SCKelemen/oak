@@ -418,6 +418,33 @@ theorem loadElem_at {w : Nat} (s : Span w) (elem k : Nat) (h : 0 < elem) :
 theorem guarded_index_in_bounds (len N k : Nat) (hguard : ¬ len < N) (hk : k < N) : k < len := by
   omega
 
+/-! ## Frame memory
+
+The executor models the sp frame as a partial map from entry-relative slot
+addresses to stored values (`asm/verify.go`, `frameAccess`): a store writes
+a slot, a load reads back exactly what the last store of that width put
+there, and a slot never stored is outside the subset. The laws below are
+the map's read-after-write behavior. -/
+
+/-- Frame slots: entry-relative address to the stored value, if any. -/
+def Frame := Int → Option (BitVec 64)
+
+def storeSlot (f : Frame) (a : Int) (v : BitVec 64) : Frame :=
+  fun b => if b = a then some v else f b
+
+theorem loadSlot_storeSlot (f : Frame) (a : Int) (v : BitVec 64) :
+    storeSlot f a v a = some v := by
+  simp [storeSlot]
+
+theorem loadSlot_storeSlot_other (f : Frame) (a b : Int) (v : BitVec 64) (h : b ≠ a) :
+    storeSlot f a v b = f b := by
+  simp [storeSlot, h]
+
+/-- A save then restore of a callee-saved register through one slot returns
+    the caller's value. -/
+theorem save_restore (f : Frame) (a : Int) (callerValue : BitVec 64) :
+    storeSlot f a callerValue a = some callerValue := loadSlot_storeSlot f a callerValue
+
 /-! ## Counted loops unroll
 
 Both executors run a `while` under fuel (the unrolling budget): the body is

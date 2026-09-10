@@ -331,7 +331,13 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				cond = binaryTerm("and", cond, notTaken)
 				pc++
 				continue
-			case "ldr", "ldrb", "ldrh":
+			case "ldr", "ldrb", "ldrh", "str", "strb", "strh", "ldp", "stp":
+				if isFrameMemory(instr) {
+					return nil, "frame memory in a loop body", false
+				}
+				if !isLoad(instr.Mnemonic) {
+					return nil, "a store in a loop body", false
+				}
 				if reason, ok := x.load(instr, st); !ok {
 					return nil, reason, false
 				}

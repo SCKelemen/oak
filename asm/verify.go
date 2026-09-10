@@ -482,6 +482,17 @@ func (f *linearForm) equal(g *linearForm) bool {
 type symbolicState struct {
 	regs  map[int]*term // physical register -> 64-bit term
 	flags *flagsFact    // NZCV as the operands that produced them; nil until set
+	// The frame: sp's displacement below its entry value (the seam checker
+	// tracks the same number exactly) and the slots written so far, keyed
+	// by entry-relative address. A load reads back exactly the term a store
+	// of the same width put there; anything else is outside the subset.
+	disp  int64
+	frame map[int64]frameSlot
+}
+
+type frameSlot struct {
+	value *term
+	width int // bytes
 }
 
 // flagsFact records what produced the flags: cmp/subs leave NZCV as the
@@ -500,6 +511,13 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 		return constTerm(0, widthOf(reg.Class)), true
 	}
 	value, ok := s.regs[reg.Num]
+	if !ok && calleeSavedRegister(reg.Num) {
+		// A callee-saved register carries the caller's value on entry: an
+		// opaque symbol, which a save/restore pair round-trips unchanged.
+		value = paramTerm(fmt.Sprintf("entry.x%d", reg.Num), 64)
+		s.regs[reg.Num] = value
+		ok = true
+	}
 	if !ok {
 		return nil, false
 	}
@@ -676,7 +694,77 @@ func (s *symbolicState) clone() *symbolicState {
 	for reg, value := range s.regs {
 		regs[reg] = value
 	}
-	return &symbolicState{regs: regs, flags: s.flags}
+	frame := make(map[int64]frameSlot, len(s.frame))
+	for addr, slot := range s.frame {
+		frame[addr] = slot
+	}
+	return &symbolicState{regs: regs, flags: s.flags, disp: s.disp, frame: frame}
+}
+
+// frameAccess executes a load or store through the sp frame: the address
+// is entry-relative (-disp + offset), pre-index moves sp first and
+// post-index after, exactly as the seam checker computes it. Stores record
+// the term at the slot; loads read back a slot stored with the same width.
+func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (string, bool) {
+	mem := instr.Operands[len(instr.Operands)-1].(Memory)
+	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
+	if mem.Index != nil {
+		return "indexed frame access", false
+	}
+	size := int64(widthOf(regs[0].Class) / 8)
+	switch instr.Mnemonic {
+	case "ldrb", "strb":
+		size = 1
+	case "ldrh", "strh":
+		size = 2
+	}
+	var addr int64
+	switch mem.Mode {
+	case MemPreIndex:
+		state.disp -= mem.Offset
+		addr = -state.disp
+	case MemPostIndex:
+		addr = -state.disp
+		defer func() { state.disp -= mem.Offset }()
+	default:
+		addr = -state.disp + mem.Offset
+	}
+	if state.frame == nil {
+		state.frame = map[int64]frameSlot{}
+	}
+	if isStoreMnemonic(instr.Mnemonic) {
+		for i, reg := range regs {
+			value, ok := state.read(reg)
+			if !ok {
+				return "unbound register read", false
+			}
+			state.frame[addr+int64(i)*size] = frameSlot{value: value, width: int(size)}
+		}
+		return "", true
+	}
+	for i, reg := range regs {
+		slot, stored := state.frame[addr+int64(i)*size]
+		if !stored {
+			return "a load from a frame slot never stored on this path", false
+		}
+		if slot.width != int(size) {
+			return "a load whose width differs from the slot's store", false
+		}
+		if int(size) < widthOf(reg.Class)/8 {
+			return "a narrow frame load", false
+		}
+		state.write(reg, slot.value)
+	}
+	return "", true
+}
+
+// isFrameMemory reports a memory instruction through sp.
+func isFrameMemory(instr Instruction) bool {
+	if len(instr.Operands) == 0 {
+		return false
+	}
+	mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory)
+	return isMem && mem.Base.Class == ClassSP
 }
 
 // run executes from item index pc to a ret on every path.
@@ -745,6 +833,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 				return nil, reason, false
 			}
 			return iteTerm(cond, taken, fallThrough), "", true
+		}
+		if isFrameMemory(instr) {
+			if reason, ok := x.frameAccess(instr, state); !ok {
+				return nil, reason, false
+			}
+			continue
 		}
 		if isLoad(instr.Mnemonic) {
 			if reason, ok := x.load(instr, state); !ok {
@@ -896,7 +990,18 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			}
 			dest := instr.Operands[0].(Register)
 			if dest.Class == ClassSP {
-				return "stack pointer arithmetic", false
+				// sub/add sp, sp, #imm moves the frame (the checker keeps it
+				// inside the declared frame and 16-byte aligned).
+				imm, isImm := instr.Operands[2].(Immediate)
+				if !isImm || (instr.Mnemonic != "add" && instr.Mnemonic != "sub") {
+					return "stack pointer arithmetic that is not an immediate add/sub", false
+				}
+				if instr.Mnemonic == "sub" {
+					state.disp += imm.Value
+				} else {
+					state.disp -= imm.Value
+				}
+				return "", true
 			}
 			left, okL := operandTerm(state, instr.Operands[1], widthOf(dest.Class))
 			right, okR := operandTerm(state, instr.Operands[2], widthOf(dest.Class))
