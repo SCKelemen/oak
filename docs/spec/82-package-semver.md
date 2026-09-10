@@ -145,6 +145,7 @@ and `oak mod` never contacts a registry:
 | `oak mod compat dep-api.json [dir]` | Check this module's sealed imports against a dependency's snapshot (section 8). |
 | `oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]` | Build the archive `oak mod download` consumes, carrying `api.json`; with `-previous`, enforce the exact bump first (section 7). |
 | `oak mod upgrade [-dir dir] dep-api.json...` | Among candidate snapshots of one dependency, pick the highest version that satisfies the module's sealed imports (section 8). |
+| `oak mod try path candidate-dir [-dir dir]` | Build every package of the module with `path` replaced by the local candidate, deciding unsealed imports (section 8). |
 
 Both `diff` and `bump` snapshot the module through the ordinary package build,
 so a module that does not type check has no API and is rejected before any
@@ -215,6 +216,16 @@ freely — which is the point of sealing. Unsealed imports (`geo := import(...)`
 are not covered; they depend on whatever they reference, and only a build
 against the new version decides them. The compiler entry point is
 `compiler.CheckSealedCompatibility`.
+
+Unsealed imports (`geo := import(...)`) depend on whatever they reference,
+so no snapshot decides them; a build does. `oak mod try path candidate-dir
+[-dir module]` builds every package of the module with the dependency `path`
+replaced by the local `candidate-dir` — an in-memory `replace` laid over the
+manifest, which is never rewritten — and reports each package as compatible
+or not with the first diagnostics. The candidate must be a module whose
+`oak.mod` declares `path`; nothing is fetched. Together with `oak mod
+upgrade` this covers both halves: sealed imports are decided from the
+published snapshot, unsealed ones from a local build of the candidate.
 
 Elm's package manager derives the required bump from the API diff and refuses
 to publish otherwise; Oak does the same at module granularity (`oak mod

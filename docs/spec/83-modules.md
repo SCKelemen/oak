@@ -672,9 +672,11 @@ naming the import to add (`encode` needs `import("json")`, text needs
   change and enforce the exact bump, `oak mod download` refuses an archive
   whose carried `api.json` its source does not honor, and `oak mod compat`
   decides from a dependency snapshot alone whether the module's sealed
-  imports still hold, and `oak mod upgrade` picks the highest compatible
-  candidate. `oak mod pack` closes the producer side. `Oak.Modules.Semver`
-  proves the classification and exact-bump laws.
+  imports still hold, `oak mod upgrade` picks the highest compatible
+  candidate, and `oak mod try` decides unsealed imports by building against
+  a local candidate through an in-memory `replace`. `oak mod pack` closes
+  the producer side. `Oak.Modules.Semver` proves the classification and
+  exact-bump laws.
 - **Testing (`110-testing.md`).** `oak test` compiles each test directory
   through the package loader with `*_test.oak` files included, so test
   packages import other packages of their module and diagnostics name real
