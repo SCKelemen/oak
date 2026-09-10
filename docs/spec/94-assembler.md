@@ -507,7 +507,19 @@ outside the subset (trusted — never a fresh value that could match by
 accident). Callee-saved registers read before any write are the caller's
 opaque values, so a save/use/restore body round-trips them and is proven;
 spills and reloads are proven; reloading the wrong slot is refuted. Frame
-memory inside a loop body stays outside the subset.
+memory inside a loop body stays outside the subset. **Bit fields,
+conditional compare, conditional increment/negate, multiply-add.**
+`ubfx`/`ubfiz`/`sbfx`/`bfi` (the checker bounds the field inside the
+register) lower to shift/mask/or terms — `ubfx` is the extractor spelled
+directly, `bfi` keeps the destination's other bits, `sbfx` shifts the field
+to the top and arithmetic-shifts it down. `ccmp` reads and sets flags: the
+new flags are the comparison's when the prior condition holds and the
+immediate NZCV otherwise (`Oak.AssemblerSemantics.ccmpFlags`), so the
+range-check chain `cmp v, lo; ccmp v, hi, #2, hs; cset lo` is proven
+against `lo <= v && v < hi` and the wrong immediate (`#0`, which leaves
+`lo` true on the failing path) is refuted. `cinc`/`cneg` are selects
+(`cinc_eq_csel`), `madd`/`msub` multiply-add terms (a constant factor stays
+linear). The Oak side gained the prefix `^` (bitwise not).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

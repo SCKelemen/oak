@@ -207,10 +207,23 @@ func conditionFromFlags(code string, n, z, c, v bool) bool {
 // flagsCondition is the condition term for a code read from the flags a
 // cmp/subs (subtraction) or adds (addition) produced.
 func flagsCondition(code string, flags *flagsFact) *term {
+	bare := code
 	if flags.kind != "" {
 		code = flags.kind + ":" + code
 	}
-	return cmpTerm(code, flags.left, flags.right)
+	compared := cmpTerm(code, flags.left, flags.right)
+	if flags.cond == nil {
+		return compared
+	}
+	// ccmp: under the prior condition the flags are the comparison's,
+	// otherwise the immediate pattern N=bit3 Z=bit2 C=bit1 V=bit0.
+	imm := flags.elseNZCV
+	otherwise := conditionFromFlags(bare, imm>>3&1 == 1, imm>>2&1 == 1, imm>>1&1 == 1, imm&1 == 1)
+	other := constTerm(0, compared.width)
+	if otherwise {
+		other = constTerm(1, compared.width)
+	}
+	return iteTerm(flags.cond, compared, other)
 }
 
 // The constructors fold constants: a term over constants is the constant
@@ -504,6 +517,9 @@ type flagsFact struct {
 	width       int
 	kind        string // "" (cmp/subs: left - right), "add" (adds: left + right), "and" (tst: left & right)
 	unknown     bool
+	// ccmp: the comparison's flags when cond holds, else the immediate NZCV.
+	cond     *term
+	elseNZCV int64
 }
 
 func (s *symbolicState) read(reg Register) (*term, bool) {
@@ -971,6 +987,89 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				return "unbound register read", false
 			}
 			state.flags = &flagsFact{left: l, right: r, width: width, kind: "and"}
+		case "ubfx", "ubfiz", "sbfx", "bfi":
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			source, ok := operandTerm(state, instr.Operands[1], width)
+			if !ok {
+				return "unbound register read", false
+			}
+			lsb := instr.Operands[2].(Immediate).Value
+			fieldWidth := instr.Operands[3].(Immediate).Value
+			if lsb < 0 || fieldWidth < 1 || lsb+fieldWidth > int64(width) {
+				return "a bit field outside the register", false
+			}
+			fieldMask := constTerm(mask(int(fieldWidth)), width)
+			switch instr.Mnemonic {
+			case "ubfx":
+				state.write(dest, binaryTerm("and", binaryTerm("shr", source, constTerm(uint64(lsb), width)), fieldMask))
+			case "ubfiz":
+				state.write(dest, binaryTerm("shl", binaryTerm("and", source, fieldMask), constTerm(uint64(lsb), width)))
+			case "sbfx":
+				// Shift the field to the top, then arithmetic-shift it down.
+				up := constTerm(uint64(int64(width)-lsb-fieldWidth), width)
+				down := constTerm(uint64(int64(width)-fieldWidth), width)
+				state.write(dest, binaryTerm("sar", binaryTerm("shl", source, up), down))
+			case "bfi":
+				current, ok := state.read(dest)
+				if !ok {
+					return "unbound register read", false
+				}
+				placed := binaryTerm("shl", binaryTerm("and", source, fieldMask), constTerm(uint64(lsb), width))
+				hole := constTerm(^(mask(int(fieldWidth))<<uint(lsb))&mask(width), width)
+				state.write(dest, binaryTerm("or", binaryTerm("and", current, hole), placed))
+			}
+		case "madd", "msub":
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			n, okN := operandTerm(state, instr.Operands[1], width)
+			m, okM := operandTerm(state, instr.Operands[2], width)
+			a, okA := operandTerm(state, instr.Operands[3], width)
+			if !okN || !okM || !okA {
+				return "unbound register read", false
+			}
+			product := binaryTerm("mul", n, m)
+			if instr.Mnemonic == "madd" {
+				state.write(dest, binaryTerm("add", a, product))
+			} else {
+				state.write(dest, binaryTerm("sub", a, product))
+			}
+		case "cinc", "cneg":
+			if state.flags == nil || state.flags.unknown {
+				return fmt.Sprintf("%s reading flags not produced by cmp/subs", instr.Mnemonic), false
+			}
+			code := instr.Operands[2].(Condition).Code
+			if !verifiableConditions[code] {
+				return fmt.Sprintf("condition code %s", code), false
+			}
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			source, ok := operandTerm(state, instr.Operands[1], width)
+			if !ok {
+				return "unbound register read", false
+			}
+			changed := binaryTerm("add", source, constTerm(1, width))
+			if instr.Mnemonic == "cneg" {
+				changed = binaryTerm("sub", constTerm(0, width), source)
+			}
+			state.write(dest, iteTerm(flagsCondition(code, state.flags), changed, source))
+		case "ccmp":
+			if state.flags == nil || state.flags.unknown {
+				return "ccmp reading flags not produced by cmp/subs", false
+			}
+			code := instr.Operands[3].(Condition).Code
+			if !verifiableConditions[code] {
+				return fmt.Sprintf("condition code %s", code), false
+			}
+			left := instr.Operands[0].(Register)
+			width := widthOf(left.Class)
+			l, okL := operandTerm(state, left, width)
+			r, okR := operandTerm(state, instr.Operands[1], width)
+			if !okL || !okR {
+				return "unbound register read", false
+			}
+			prior := flagsCondition(code, state.flags)
+			state.flags = &flagsFact{left: l, right: r, width: width, cond: prior, elseNZCV: instr.Operands[2].(Immediate).Value}
 		case "neg", "mvn":
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
@@ -1429,6 +1528,15 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
 	case *ast.IntegerLiteral:
 		return constTerm(uint64(e.Value), width), "", true
+	case *ast.PrefixExpression:
+		if e.Operator != "^" {
+			return nil, fmt.Sprintf("prefix operator %s", e.Operator), false
+		}
+		operand, reason, ok := lo.lower(e.Right, width)
+		if !ok {
+			return nil, reason, false
+		}
+		return binaryTerm("xor", operand, constTerm(mask(width), width)), "", true
 	case *ast.Boolean:
 		// Bool lowers to its C representation: 1 or 0 at the result width.
 		if e.Value {

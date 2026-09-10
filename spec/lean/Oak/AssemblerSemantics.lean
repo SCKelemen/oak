@@ -244,6 +244,28 @@ def andFlagsOf {w : Nat} (l r : BitVec w) : Flags :=
 theorem tst_ne_iff {w : Nat} (l r : BitVec w) : Cond.holds (andFlagsOf l r) .ne = true ↔ l &&& r ≠ 0 := by
   simp [Cond.holds, andFlagsOf]
 
+/-- `ccmp l, r, #nzcv, c`: the flags of `l - r` when `c` holds on the prior
+    flags, else the immediate pattern. -/
+def ccmpFlags {w : Nat} (c : Cond) (prior : Flags) (l r : BitVec w) (imm : Flags) : Flags :=
+  if c.holds prior then flagsOf l r else imm
+
+theorem ccmp_of_holds {w : Nat} (c : Cond) (prior : Flags) (l r : BitVec w) (imm : Flags)
+    (h : c.holds prior = true) : ccmpFlags c prior l r imm = flagsOf l r := by
+  simp [ccmpFlags, h]
+
+theorem ccmp_of_not_holds {w : Nat} (c : Cond) (prior : Flags) (l r : BitVec w) (imm : Flags)
+    (h : c.holds prior = false) : ccmpFlags c prior l r imm = imm := by
+  simp [ccmpFlags, h]
+
+/-- `ubfx x, #lsb, #width` is the shift-and-mask extractor. -/
+def ubfx {w : Nat} (x : BitVec w) (lsb width : Nat) : BitVec w :=
+  (x >>> lsb) &&& (BitVec.allOnes width).setWidth w
+
+/-- `cinc` and `cneg` are selects on the condition. -/
+def cinc {w : Nat} (c : Cond) (f : Flags) (x : BitVec w) : BitVec w := if c.holds f then x + 1 else x
+def cneg {w : Nat} (c : Cond) (f : Flags) (x : BitVec w) : BitVec w := if c.holds f then -x else x
+
+
 /-- `mi` after `cmp l, r` is the sign bit of the difference. -/
 theorem mi_iff_msb {w : Nat} (l r : BitVec w) : Cond.holds (flagsOf l r) .mi = (l - r).msb := rfl
 
@@ -351,6 +373,10 @@ theorem csel_of_not_holds {w : Nat} (c : Cond) (f : Flags) (a b : BitVec w) (h :
 /-- `cset` is `csel` between the constants 1 and 0 — the executor lowers it
     so. -/
 theorem cset_eq_csel {w : Nat} (c : Cond) (f : Flags) : cset w c f = csel c f 1 0 := rfl
+
+/-- `cinc` and `cneg` are selects too. -/
+theorem cinc_eq_csel {w : Nat} (c : Cond) (f : Flags) (x : BitVec w) : cinc c f x = csel c f (x + 1) x := rfl
+theorem cneg_eq_csel {w : Nat} (c : Cond) (f : Flags) (x : BitVec w) : cneg c f x = csel c f (-x) x := rfl
 
 /-- A cmp/csel pair on registers: `cmp n, m; csel d, a, b, cond`. -/
 def execCsel (c : Cond) (r : Regs) (d n m a b : Fin 32) : Regs :=

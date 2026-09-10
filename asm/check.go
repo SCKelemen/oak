@@ -687,6 +687,26 @@ func (c *checker) instruction(instr Instruction) bool {
 	for _, source := range regs[1:] {
 		c.read(instr, source)
 	}
+	switch instr.Mnemonic {
+	case "ubfx", "ubfiz", "sbfx", "bfi":
+		// Bit-field immediates: a field of width >= 1 starting at lsb >= 0,
+		// inside the register.
+		lsb, width := instr.Operands[2].(Immediate).Value, instr.Operands[3].(Immediate).Value
+		if lsb < 0 || width < 1 || lsb+width > int64(widthOf(dest.Class)) {
+			c.errorf(instr.Line, "%s: field [%d, %d) is not inside %s", instr.Mnemonic, lsb, lsb+width, dest.Text)
+		}
+		if instr.Mnemonic == "bfi" {
+			c.read(instr, dest) // the insert keeps the destination's other bits
+		}
+	case "ccmp":
+		// A conditional compare reads its first operand and an nzcv immediate.
+		if nzcv := instr.Operands[2].(Immediate).Value; nzcv < 0 || nzcv > 15 {
+			c.errorf(instr.Line, "ccmp: nzcv immediate %d is not a 4-bit flag pattern", nzcv)
+		}
+		c.read(instr, dest)
+		c.flagsValid = true
+		return false
+	}
 	if instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" {
 		c.read(instr, dest) // cmp/tst: the first operand is a source
 		c.flagsValid = true
