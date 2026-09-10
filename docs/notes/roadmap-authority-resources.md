@@ -51,6 +51,15 @@ rejected; shared-to-mutable forwarding is rejected; permitted reads and
 mutable operations pass; consumed parameters stay usable until their next
 valid transfer; violations name the declaration and the offending use.
 
+**Landed (first increment, 2026-09-11):** callee-entry authority for
+forwarding (`50-borrowing.md` §9, `OAK-B0114`): each mode-marked resource
+parameter enters with its contract's authority, aliases carry it, and
+forwarding beyond it to a resource operation is rejected without
+consuming; consumed parameters keep full authority; unmarked parameters are
+unchanged. Still open in this milestone: retention (storing a borrowed
+parameter in a record or returning it), imported/external contracts' trust
+boundary, and the migration rule for unmarked parameters.
+
 ## 2. Preserve contracts across every callable boundary
 
 Stable semantic identities for resolved contracts, carried through function

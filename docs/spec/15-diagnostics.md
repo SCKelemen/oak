@@ -221,6 +221,7 @@ The first stable borrow-conflict family is:
 | `OAK-B0110` | unsafe code assumes mutable-region disjointness that safe analysis could not prove |
 | `OAK-B0111` | a resource or alias is used after its authority was consumed |
 | `OAK-B0112` | a resource call requires exclusive authority but two mode-marked arguments alias the same resource |
+| `OAK-B0114` | a callee forwards one of its own mode-marked resource parameters beyond its entry authority (borrowed to borrowed-mut or consumed, borrowed-mut to consumed) |
 | `OAK-B0113` | a region-indexed signature is invalid (its return region names no parameter or two, or a view from a span region), its body returns a borrow outside the region, or a call's region argument is not a traceable borrow |
 
 For `OAK-B0106`, known regions use half-open interval semantics. The diagnostic
@@ -242,6 +243,12 @@ provenance chain showing why they identify one resource authority class. A call
 rejected for this conflict has not occurred semantically, so the diagnostic must
 not trigger a derivative use-after-consume error merely because one of its
 parameters was marked consuming.
+
+For `OAK-B0114`, the primary label is the argument forwarded beyond its entry
+authority, the parameter declaration is a secondary label, and an alias chain
+is included when the argument is not the parameter's own name. The rejected
+call has not occurred semantically: it consumes nothing and must not cascade
+into `OAK-B0111`.
 
 For `OAK-B0113` (`50-borrowing.md` section 8c), the primary label is the returned expression in the callee, or the region argument at the caller. A note names what the returned view borrows instead (a local owner, another parameter, a temporary) or why the source cannot be traced, and the help names the parameter the signature commits to.
 

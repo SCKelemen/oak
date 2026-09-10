@@ -64,7 +64,10 @@ Specialization must project the template contract under the same type substituti
 that produces the specialized signature. Wrappers must either have a checked
 explicit contract or acquire a sound inferred summary. Borrowed parameters cannot
 be forwarded to consuming operations merely because their local bindings are
-live. A borrowed parameter's authority is also a callee-body obligation.
+live. A borrowed parameter's authority is also a callee-body obligation — now
+enforced for forwarding by `OAK-B0114` (`50-borrowing.md` §9, callee-entry
+authority): a body's calls are checked against the entry authority of the
+parameters and their aliases; retention and escape remain open.
 
 Acceptance cases:
 
