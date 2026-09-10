@@ -18,6 +18,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/evaluator"
+	"github.com/SCKelemen/oak/layout"
+	"github.com/SCKelemen/oak/object"
+	"github.com/SCKelemen/oak/parser"
+	"github.com/SCKelemen/oak/scanner"
 )
 
 type floatNode struct {
@@ -337,18 +343,31 @@ hex: (v: u64): () {
 		}
 	}
 
-	// Witness three: the interpreter, one small program per case (its main
-	// returns an i32, so a 64-bit pattern is read back in two halves).
+	// Witness three: the interpreter evaluates the same checked program once
+	// and each case_k() is called for its u64 bit pattern.
+	model, err := New().WithSource("floatdiff.oak", src.String()).Check().Get()
+	if err != nil {
+		t.Fatalf("check failed: %v", err)
+	}
+	env := object.NewEnvironment()
+	env.SetArithmeticWidths(model.TypeChecker.ArithmeticType)
+	if result := evaluator.Eval(model.Tree.Root, env); result != nil {
+		if e, isErr := result.(*object.Error); isErr {
+			t.Fatalf("interpreter error evaluating program: %s", e.Message)
+		}
+	}
 	for k, node := range cases {
 		want := toBits(node.reference(), node.width)
-		low := uint64(uint32(interpretChecked(t, fmt.Sprintf("main: (): i32 {\n  v: u64 = %s\n  i32_bits_u32(u32_trunc_u64(v))\n}\n", node.bitsExpression()))))
-		var got uint64
-		if node.width == 32 {
-			got = low
-		} else {
-			high := uint64(uint32(interpretChecked(t, fmt.Sprintf("main: (): i32 {\n  v: u64 = %s\n  i32_bits_u32(u32_trunc_u64(v >> 32))\n}\n", node.bitsExpression()))))
-			got = high<<32 | low
+		call := parser.New(layout.New(scanner.New(fmt.Sprintf("case_%d()", k)))).ParseProgram()
+		result := evaluator.Eval(call, env)
+		if e, isErr := result.(*object.Error); isErr {
+			t.Fatalf("interpreter error in case %d: %s", k, e.Message)
 		}
+		integer, ok := result.(*object.Integer)
+		if !ok {
+			t.Fatalf("case %d returned %s", k, result.Inspect())
+		}
+		got := uint64(integer.Value)
 		if !sameFloatBits(want, got, node.width) {
 			mismatches++
 			if mismatches <= 10 {
