@@ -227,7 +227,7 @@ func Discover(paths []string) ([]Package, error) {
 }
 
 func testKind(name string) string {
-	for _, p := range []struct{ prefix, kind string }{{"Property", "property"}, {"Fuzz", "fuzz"}, {"Sim", "simulation"}, {"Test", "unit"}} {
+	for _, p := range []struct{ prefix, kind string }{{"Property", "property"}, {"Fuzz", "fuzz"}, {"Sim", "simulation"}, {"Table", "table"}, {"Test", "unit"}} {
 		if strings.HasPrefix(name, p.prefix) && len(name) > len(p.prefix) {
 			next := name[len(p.prefix)]
 			if next == '_' || next >= 'A' && next <= 'Z' {
