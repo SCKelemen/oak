@@ -91,8 +91,10 @@ are enforced Elm-style at module granularity: `oak mod api` snapshots a
 module's public API, `oak mod bump previous.json` requires the `version` in
 `oak.mod` to be the exact bump the API diff implies, `oak mod compat
 dep-api.json` checks a module's sealed imports against a dependency snapshot,
-and `oak mod download` refuses an archive whose carried `api.json` its source
-does not honor (`docs/spec/82-package-semver.md`). Derived operations are ordinary
+`oak mod download` refuses an archive whose carried `api.json` its source
+does not honor, `oak mod pack` builds that archive and prints its `require`
+line, and `oak mod upgrade` picks the highest candidate snapshot a module's
+sealed imports accept (`docs/spec/82-package-semver.md`). Derived operations are ordinary
 declarations whose body the compiler synthesizes from the type:
 
 ```oak
