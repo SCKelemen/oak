@@ -524,6 +524,48 @@ A leading-dot lowercase identifier is a structurally polymorphic field accessor:
 
 An accessor is also a first-class function when a concrete unary function type supplies its layout: `getter: (Person) -> string = .name` and `map(.name, people)` specialize `.name` to the selected struct at that use site. Generic-call inference first learns the record type from the other arguments, then learns the accessor result from that record's field. A bare inferred binding such as `getter := .name` is rejected because it supplies no concrete layout. Native lowering uses a typed static field-projection function and an ordinary function pointer; it introduces no closure environment, dispatch table, allocation, or boxing.
 
+## 13. Uniform call syntax
+
+`recv.f(args)` is a call of `f` with `recv` as its first argument whenever
+`recv` is a value (not a package alias) and its type has no method or field
+named `f`. It is syntax, not dispatch: the callee is fixed at compile time,
+named by `f`, and the form lowers to the plain call `f(recv, args...)` in
+every backend and in the interpreter — no vtable, no thunk, no allocation.
+
+```oak
+Vec: type = struct { x: f32, y: f32 }
+scale: (v: Vec, k: f32): Vec = Vec { x: v.x * k, y: v.y * k }
+norm1: (v: Vec): f32 = v.x + v.y
+
+n: f32 = v.scale(2.0).norm1()      // norm1(scale(v, 2.0))
+h: u32 = view(&xs).first()         // first[u32](view(&xs)): generics infer as usual
+```
+
+Resolution of `recv.f(args)`, in order:
+
+1. If `recv` is an ADT and a method `fn (r: T) f` is declared, the call is
+   that method (`83-modules.md` §6.5).
+2. If `recv`'s type has a field `f`, the form is an error: fields are read,
+   never called through this syntax, so `p.callback(1)` cannot silently
+   change meaning when a function named `callback` appears.
+3. Otherwise `f` is a function visible at the call site — the enclosing
+   package's own, a selective or open import, the prelude — or, when
+   `recv`'s type is declared by an imported package, an **exported**
+   function `f` of that package, as if written `alias.f(recv, args)`.
+   Unexported functions of other packages are not reachable: the `pub`
+   boundary is the same as for a qualified call.
+4. Nothing found is an error naming `f` and the receiver's type.
+
+The rewritten call is then checked exactly as `f(recv, args...)`: arity,
+argument types, generic inference, borrow and effect rules, and the
+discipline profile all apply to the plain call, and their diagnostics name
+it. Chaining is left-associative because `.` binds tightest (§1):
+`x.matmul(w).relu()` is `relu(matmul(x, w))`.
+
+The receiver is the **first** argument. The pipeline operator of §12 puts
+its value **last** (`v |> f(a)` is `f(a, v)`); both conventions are stated
+so that `x.f(a)` and `x |> f(a)` are never confused — the former matches
+method calls, the latter a data-last pipeline.
 ## 14. Operator definitions
 
 An `operator(SYM)` marker before a function declaration binds the symbol

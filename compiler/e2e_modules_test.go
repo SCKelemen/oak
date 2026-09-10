@@ -1273,6 +1273,15 @@ main: (): i32 = geometry.doubled(geometry.make(10, 11))
 	if abnormal || code != 42 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
+	// A nested module belongs to its parent's module
+	// (Oak.Modules.NestedPaths.moduleOf_nested).
+	tree, err := New().WithPackageDir(root).Parse().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner := tree.Modules.ModuleOf["example.com/hello/util/inner"]; owner != "example.com/hello" {
+		t.Fatalf("nested module owner = %q, want the parent's module", owner)
+	}
 	// A nested module importing its enclosing package is a cycle.
 	root = writeModule(t, map[string]string{
 		"oak.mod":       helloManifest,

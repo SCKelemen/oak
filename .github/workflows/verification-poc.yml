@@ -58,6 +58,7 @@ jobs:
           lean -DwarningAsError=true proof/CertificateFileCompare.lean
           lean -DwarningAsError=true -o proof/OakText.olean proof/OakText.lean 2>&1 | tee build/soundness/oak-text-proof.log
           lean -DwarningAsError=true -o proof/OakTextExtracted.olean proof/OakTextExtracted.lean 2>&1 | tee build/soundness/oak-text-extracted.log
+          lean -DwarningAsError=true -o proof/ExtractionScanner.olean proof/ExtractionScanner.lean 2>&1 | tee build/soundness/extraction-scanner-proof.log
           lean -DwarningAsError=true proof/OakTextCompare.lean
           lean -DwarningAsError=true -o proof/OakTextRefinement.olean proof/OakTextRefinement.lean 2>&1 | tee build/soundness/oak-text-refinement-proof.log
           lean -DwarningAsError=true -o proof/PackedText.olean proof/PackedText.lean 2>&1 | tee build/soundness/packed-text-proof.log

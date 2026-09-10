@@ -129,9 +129,11 @@ endorses:
    **already implemented** on this branch: `p |> .x |> double |> add(u32(1))`
    compiles under the strict profile and runs. The survey's "not
    implemented" was stale; ml can use them now.
-2. Uniform call syntax `x.matmul(w).relu()` as sugar for `relu(matmul(x, w))`
-   when the receiver's package exports the function; no dispatch, no
-   vtables. Needs a normative section before implementation.
+2. **Done.** Uniform call syntax (`10-syntax.md` §13): `x.matmul(w).relu()`
+   is `relu(matmul(x, w))` when the receiver has no method or field of that
+   name — a function visible at the call site or an exported function of
+   the package declaring the receiver's type. The checker rewrites the call
+   in place; nothing is dispatched. Closes revisit criterion O6.
 3. **Done.** Operator definitions (`10-syntax.md` §14): `operator(+) add:
    (a: Vec, b: Vec): Vec` binds `+` for a left operand of `Vec`, declared
    only in `Vec`'s package, one binding per type and symbol; `a + b` is

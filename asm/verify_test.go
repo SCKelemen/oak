@@ -73,9 +73,15 @@ func TestVerifyVerdicts(t *testing.T) {
 		t.Fatalf("a variable shift count must be trusted (Oak traps, the machine wraps), got %s: %s", variableShift.Kind, variableShift.Message)
 	}
 
+	// Frame memory is modeled: a spill and reload is the identity, proven
+	// (system-register bodies remain the trusted example).
 	memory := verifyCase(t, "spill: (a: u64) -> u64", "a", "  bind x0 = a\n  frame 16\n  str x0, [sp, #-16]!\n  ldr x0, [sp], #16\n  ret")
-	if memory.Kind != VerdictTrusted || !strings.Contains(memory.Message, "trusted") {
-		t.Fatalf("a memory body must be trusted, got %s: %s", memory.Kind, memory.Message)
+	if memory.Kind != VerdictProven {
+		t.Fatalf("a spill/reload body must be proven, got %s: %s", memory.Kind, memory.Message)
+	}
+	sysreg := verifyCase(t, "ticks: () -> u64", "u64(0)", "  system\n  mrs x0, cntvct_el0\n  ret")
+	if sysreg.Kind != VerdictTrusted || !strings.Contains(sysreg.Message, "trusted") {
+		t.Fatalf("a system-register body must be trusted, got %s: %s", sysreg.Kind, sysreg.Message)
 	}
 
 	// The 32-bit width law: a w-register add wraps at 32 bits, so the
