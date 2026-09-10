@@ -5,7 +5,7 @@ package compiler
 // closed record of at most two scalars derives its generator over the choice
 // tape, its packing into the three-word TestCommand carrier, and its
 // range-checked decoder. Three kinds, one fact (the declaration), the same
-// mechanism as derive.equal: generated Oak text, ordinary parser, every gate.
+// mechanism as derive.equal: typed syntax (compiler/synth.go), every gate.
 //
 //   cmd_generate: (choices: [*]TestChoices, data: []u8): Cmd = derive.test_generate
 //   cmd_encode:   (v: Cmd): TestCommand = derive.test_encode
@@ -17,9 +17,6 @@ package compiler
 // moves through decodable commands toward the smallest variant payloads.
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/SCKelemen/oak/ast"
 )
 
@@ -153,124 +150,135 @@ func (d *deriver) commandVariants(kind, typeName string, decl *ast.ADTType, node
 }
 
 // scalarGenerate draws one scalar of the given type from the choice tape.
-func scalarGenerate(typ string) string {
+func scalarGenerate(s *synth, typ string) ast.Expression {
 	switch typ {
 	case "u8":
-		return "u8_trunc_u32(test_range(choices, data, u32(0), u32(255)))"
+		return s.call("u8_trunc_u32", s.call("test_range", s.id("choices"), s.id("data"), s.u32(0), s.u32(255)))
 	case "u16":
-		return "u16_trunc_u32(test_range(choices, data, u32(0), u32(65535)))"
+		return s.call("u16_trunc_u32", s.call("test_range", s.id("choices"), s.id("data"), s.u32(0), s.u32(65535)))
 	case "Bool":
-		return "test_bool(choices, data)"
+		return s.call("test_bool", s.id("choices"), s.id("data"))
 	}
-	return "test_u32(choices, data)"
+	return s.call("test_u32", s.id("choices"), s.id("data"))
 }
 
 // scalarToWord widens one scalar to a carrier word.
-func scalarToWord(typ, expr string) string {
+func scalarToWord(s *synth, typ string, value ast.Expression) ast.Expression {
 	if typ == "Bool" {
-		return "(" + expr + " ? u32(1) | u32(0))"
+		return s.cond(value, s.u32(1), s.u32(0))
 	}
-	return "u32(" + expr + ")"
+	return s.conv("u32", value)
 }
 
 // scalarFromWord narrows one carrier word to a scalar; the caller has already
 // checked the range.
-func scalarFromWord(typ, word string) string {
+func scalarFromWord(s *synth, typ string, word ast.Expression) ast.Expression {
 	switch typ {
 	case "u8":
-		return "u8_trunc_u32(" + word + ")"
+		return s.call("u8_trunc_u32", word)
 	case "u16":
-		return "u16_trunc_u32(" + word + ")"
+		return s.call("u16_trunc_u32", word)
 	case "Bool":
-		return word + " == u32(1)"
+		return s.eq(word, s.u32(1))
 	}
 	return word
 }
 
-func (v commandVariant) construct(typeName string, fields []string) string {
+// construct builds the variant value Type.Variant, Type.Variant(scalar), or
+// Type.Variant(Record { field: value, ... }).
+func (v commandVariant) construct(s *synth, typeName string, fields []ast.Expression) ast.Expression {
 	switch {
 	case len(v.fields) == 0:
-		return typeName + "." + v.name
+		return s.qualified(typeName, v.name, nil)
 	case v.record == "":
-		return fmt.Sprintf("%s.%s(%s)", typeName, v.name, fields[0])
+		return s.qualified(typeName, v.name, fields[0])
 	}
-	var parts []string
+	inits := make([]recordInit, 0, len(v.fields))
 	for i, field := range v.fields {
-		parts = append(parts, field.name+": "+fields[i])
+		inits = append(inits, s.set(field.name, fields[i]))
 	}
-	return fmt.Sprintf("%s.%s(%s { %s })", typeName, v.name, v.record, strings.Join(parts, ", "))
+	return s.qualified(typeName, v.name, s.record(v.record, inits...))
 }
 
-func (d *deriver) testGenerateHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (string, bool) {
+func (d *deriver) testGenerateHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (*ast.FunctionStatement, bool) {
 	variants, ok := d.commandVariants("test_generate", typeName, decl, node)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	var body strings.Builder
-	fmt.Fprintf(&body, "%s: (choices: [*]TestChoices, data: []u8): %s {\n  variant: u32 = test_range(choices, data, u32(0), u32(%d))\n", name, typeName, len(variants)-1)
-	for i, v := range variants {
-		var fields []string
+	s := newSynth(d.helperContext(decl, name))
+	// variant == u32(0) ? { v0 } | variant == u32(1) ? { v1 } | ... | { vlast }
+	var chain ast.Expression
+	for i := len(variants) - 1; i >= 0; i-- {
+		v := variants[i]
+		fields := make([]ast.Expression, 0, len(v.fields))
 		for _, field := range v.fields {
-			fields = append(fields, scalarGenerate(field.typ))
+			fields = append(fields, scalarGenerate(s, field.typ))
 		}
-		value := v.construct(typeName, fields)
-		if i == len(variants)-1 {
-			fmt.Fprintf(&body, "  { %s }\n}", value)
-		} else {
-			fmt.Fprintf(&body, "  variant == u32(%d) ? { %s } |\n", i, value)
+		value := s.block(s.expr(v.construct(s, typeName, fields)))
+		if chain == nil {
+			chain = value
+			continue
 		}
+		chain = s.cond(s.eq(s.id("variant"), s.u32(int64(i))), value, chain)
 	}
-	return body.String(), true
+	return s.fn(name,
+		[]*ast.FunctionParameter{s.param("choices", s.span(s.id("TestChoices"))), s.param("data", s.view(s.id("u8")))},
+		s.id(typeName),
+		s.decl("variant", s.id("u32"), s.call("test_range", s.id("choices"), s.id("data"), s.u32(0), s.u32(int64(len(variants)-1)))),
+		s.expr(chain)), true
 }
 
-func (d *deriver) testEncodeHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (string, bool) {
+func (d *deriver) testEncodeHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (*ast.FunctionStatement, bool) {
 	variants, ok := d.commandVariants("test_encode", typeName, decl, node)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	var body strings.Builder
-	fmt.Fprintf(&body, "%s: (v: %s): TestCommand = v ?", name, typeName)
+	s := newSynth(d.helperContext(decl, name))
+	arms := make([]*ast.MatchArm, 0, len(variants))
 	for i, v := range variants {
-		words := []string{"u32(0)", "u32(0)"}
-		pattern := "." + v.name
+		words := []ast.Expression{s.u32(0), s.u32(0)}
+		binding := ""
 		if len(v.fields) != 0 {
-			pattern += "(x)"
+			binding = "x"
 		}
 		for j, field := range v.fields {
-			access := "x"
+			var access ast.Expression = s.id("x")
 			if v.record != "" {
-				access = "x." + field.name
+				access = s.field(s.id("x"), field.name)
 			}
-			words[j] = scalarToWord(field.typ, access)
+			words[j] = scalarToWord(s, field.typ, access)
 		}
-		fmt.Fprintf(&body, "\n | %s => TestCommand { kind: u32(%d), target: %s, value: %s }", pattern, i, words[0], words[1])
+		arms = append(arms, s.arm(v.name, binding, s.record("TestCommand", s.set("kind", s.u32(int64(i))), s.set("target", words[0]), s.set("value", words[1]))))
 	}
-	return body.String(), true
+	return s.fn(name, []*ast.FunctionParameter{s.param("v", s.id(typeName))}, s.id("TestCommand"), s.expr(s.match(s.id("v"), arms...))), true
 }
 
-func (d *deriver) testDecodeHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (string, bool) {
+func (d *deriver) testDecodeHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (*ast.FunctionStatement, bool) {
 	variants, ok := d.commandVariants("test_decode", typeName, decl, node)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	var body strings.Builder
-	fmt.Fprintf(&body, "%s: (command: TestCommand): Option[%s] {\n", name, typeName)
-	for i, v := range variants {
-		words := []string{"command.target", "command.value"}
-		conditions := []string{fmt.Sprintf("command.kind == u32(%d)", i)}
-		var fields []string
+	s := newSynth(d.helperContext(decl, name))
+	var chain ast.Expression = s.block(s.expr(s.variant("None", nil)))
+	for i := len(variants) - 1; i >= 0; i-- {
+		v := variants[i]
+		words := []func() ast.Expression{
+			func() ast.Expression { return s.field(s.id("command"), "target") },
+			func() ast.Expression { return s.field(s.id("command"), "value") },
+		}
+		conditions := []ast.Expression{s.eq(s.field(s.id("command"), "kind"), s.u32(int64(i)))}
+		var fields []ast.Expression
 		for j, word := range words {
 			if j < len(v.fields) {
 				if bound := commandScalars[v.fields[j].typ]; bound < 4294967295 {
-					conditions = append(conditions, fmt.Sprintf("%s <= u32(%d)", word, bound))
+					conditions = append(conditions, s.le(word(), s.u32(int64(bound))))
 				}
-				fields = append(fields, scalarFromWord(v.fields[j].typ, word))
+				fields = append(fields, scalarFromWord(s, v.fields[j].typ, word()))
 			} else {
-				conditions = append(conditions, word+" == u32(0)")
+				conditions = append(conditions, s.eq(word(), s.u32(0)))
 			}
 		}
-		fmt.Fprintf(&body, "  %s ? { .Some(%s) } |\n", strings.Join(conditions, " && "), v.construct(typeName, fields))
+		chain = s.cond(s.and(conditions...), s.block(s.expr(s.variant("Some", v.construct(s, typeName, fields)))), chain)
 	}
-	body.WriteString("  { .None }\n}")
-	return body.String(), true
+	return s.fn(name, []*ast.FunctionParameter{s.param("command", s.id("TestCommand"))}, s.app("Option", s.id(typeName)), s.expr(chain)), true
 }

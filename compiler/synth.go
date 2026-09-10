@@ -58,8 +58,27 @@ func (s *synth) boolean(value bool) *ast.Boolean {
 	return &ast.Boolean{Token: s.tok(token.IDENT, strconv.FormatBool(value)), Value: value}
 }
 
+func (s *synth) str(value string) *ast.StringLiteral {
+	return &ast.StringLiteral{Token: s.tok(token.STRING, value), Value: value}
+}
+
 func (s *synth) call(fn string, args ...ast.Expression) *ast.InvocationExpression {
-	return &ast.InvocationExpression{Token: s.tok(token.LPAREN, "("), Function: s.id(fn), Arguments: args}
+	return s.callExpr(s.id(fn), args...)
+}
+
+func (s *synth) callExpr(fn ast.Expression, args ...ast.Expression) *ast.InvocationExpression {
+	return &ast.InvocationExpression{Token: s.tok(token.LPAREN, "("), Function: fn, Arguments: args}
+}
+
+// qualified is a type-qualified variant reference Type.Variant, the Dot
+// index the parser produces; a payload makes it the constructor call
+// Type.Variant(payload).
+func (s *synth) qualified(typeName, variant string, payload ast.Expression) ast.Expression {
+	reference := s.field(s.id(typeName), variant)
+	if payload == nil {
+		return reference
+	}
+	return s.callExpr(reference, payload)
 }
 
 // conv is a primitive constructor call: u32(x), u64(x), i64(x).
@@ -188,6 +207,11 @@ func (s *synth) arm(variant, binding string, body ast.Expression) *ast.MatchArm 
 	return &ast.MatchArm{Token: s.tok(token.PIPE, "|"), Pattern: pattern, Body: body}
 }
 
+// wildcardArm is the catch-all arm | _ => body, a binding named "_".
+func (s *synth) wildcardArm(body ast.Expression) *ast.MatchArm {
+	return &ast.MatchArm{Token: s.tok(token.PIPE, "|"), Pattern: &ast.BindingPattern{Token: s.tok(token.IDENT, "_"), Name: s.id("_")}, Body: body}
+}
+
 // ---- types
 
 // app is a generic type application Name[A, B]: the index chain the parser
@@ -210,6 +234,33 @@ func (s *synth) span(element ast.Expression) ast.Expression {
 
 func (s *synth) array(length int64, element ast.Expression) ast.Expression {
 	return &ast.IndexExpression{Token: s.tok(token.LBRACK, "["), Left: element, Index: s.intLit(length)}
+}
+
+// rebuildType copies a type expression written in the program (a name, a
+// constant, a generic application, a view, span, or array) into fresh nodes
+// of this builder, so no syntax is shared between declarations. Shapes the
+// derivations never meet report false.
+func (s *synth) rebuildType(expr ast.Expression) (ast.Expression, bool) {
+	switch t := expr.(type) {
+	case *ast.Identifier:
+		return s.id(t.Value), true
+	case *ast.IntegerLiteral:
+		return s.intLit(t.Value), true
+	case *ast.IndexExpression:
+		if t.Dot {
+			return nil, false
+		}
+		left, ok := s.rebuildType(t.Left)
+		if !ok {
+			return nil, false
+		}
+		index, ok := s.rebuildType(t.Index)
+		if !ok {
+			return nil, false
+		}
+		return &ast.IndexExpression{Token: s.tok(token.LBRACK, "["), Left: left, Index: index}, true
+	}
+	return nil, false
 }
 
 // ---- statements
@@ -238,6 +289,20 @@ func (s *synth) loop(condition ast.Expression, body ...ast.Statement) *ast.While
 
 func (s *synth) param(name string, typ ast.Expression) *ast.FunctionParameter {
 	return &ast.FunctionParameter{Token: s.tok(token.IDENT, name), Name: s.id(name), Type: typ}
+}
+
+// fnExpr is a declaration-form function whose definition is one expression
+// (name: (params): T = body), the block form included: a block body is the
+// function body itself, not a statement inside another block.
+func (s *synth) fnExpr(name string, params []*ast.FunctionParameter, returns ast.Expression, body ast.Expression) *ast.FunctionStatement {
+	return &ast.FunctionStatement{
+		Token:      s.tok(token.IDENT, name),
+		EndToken:   s.tok(token.RBRACE, "}"),
+		Name:       s.id(name),
+		Parameters: params,
+		ReturnType: returns,
+		Body:       body,
+	}
 }
 
 // fn is a declaration-form function with a block body whose last statement
