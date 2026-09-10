@@ -329,6 +329,13 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := comp.gate("discipline", disciplineDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
+		// Effect clauses (compiler/effects.go): forbids is checked over the
+		// specialized call graph, so every callee here is concrete.
+		effectDiagnostics := analyzeEffects(tree.Root)
+		model.Diagnostics = append(model.Diagnostics, effectDiagnostics...)
+		if err := comp.gate("effects", effectDiagnostics, tree.Modules); err != nil {
+			return nil, err
+		}
 
 		return model, nil
 	})
