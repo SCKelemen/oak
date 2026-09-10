@@ -762,6 +762,16 @@ func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Enviro
 	if fn.Variadic && len(fn.Parameters) > 0 {
 		fixed := len(fn.Parameters) - 1
 		for paramIdx := 0; paramIdx < fixed && paramIdx < len(args); paramIdx++ {
+			// Owned arrays are values: a parameter receives its own copy, as
+			// compiled code copies in (views and spans stay borrowed windows).
+			if owned, isArray := args[paramIdx].(*object.Array); isArray {
+				env.Set(fn.Parameters[paramIdx].Value, &object.Array{Elements: append([]object.Object(nil), owned.Elements...)})
+				continue
+			}
+			if owned, isArray := args[paramIdx].(*object.Array); isArray {
+				env.Set(fn.Parameters[paramIdx].Value, &object.Array{Elements: append([]object.Object(nil), owned.Elements...)})
+				continue
+			}
 			env.Set(fn.Parameters[paramIdx].Value, args[paramIdx])
 		}
 		// Bundle the trailing arguments (possibly none) for the last name.

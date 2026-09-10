@@ -725,13 +725,22 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		}
 	}
 
-	// Emit parameters
+	// Emit parameters. Owned-array parameters arrive as const storage under
+	// a private name and are copied into the named local below.
+	type arrayCopy struct {
+		element, name string
+		length        int64
+	}
+	var copies []arrayCopy
 	for i, param := range fn.Parameters {
 		if param.Variadic {
 			// The body sees a read-only view of the caller-owned argument
 			// array (docs/spec/10-syntax.md, variadic parameters).
 			viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
 			cg.write(fmt.Sprintf("%s %s", viewType, cIdent(param.Name.Value)))
+		} else if element, length, isArray := ownedArrayParameter(param.Type, cg); isArray {
+			cg.write(fmt.Sprintf("const %s oak_in_%s[%d]", element, cIdent(param.Name.Value), length))
+			copies = append(copies, arrayCopy{element: element, name: cIdent(param.Name.Value), length: length})
 		} else {
 			cg.write(cg.cParameter(param.Type, param.Name.Value))
 		}
@@ -742,6 +751,11 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	cg.write(" ) {\n")
 	cg.indentLevel++
+	for _, c := range copies {
+		// Value semantics for [N]T parameters: an element-wise copy, no libc.
+		cg.write(fmt.Sprintf("  %s %s[%d];\n", c.element, c.name, c.length))
+		cg.write(fmt.Sprintf("  for (u64 oak_k = 0; oak_k < %du; oak_k++) { %s[oak_k] = oak_in_%s[oak_k]; }\n", c.length, c.name, c.name))
+	}
 
 	cg.localTypes = cg.buildLocalTypes(fn)
 	defer func() { cg.localTypes = nil }()
@@ -1645,13 +1659,26 @@ func (cg *CodeGenerator) cParameter(typeExpr ast.Expression, name string) string
 	if fn, ok := typeExpr.(*ast.FunctionTypeExpression); ok {
 		return cg.cFunctionPointer(fn, name)
 	}
-	if indexExpr, ok := typeExpr.(*ast.IndexExpression); ok {
-		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
-			element := cg.parseTypeExpression(indexExpr.Left)
-			return fmt.Sprintf("%s %s[%d]", element, name, intLit.Value)
-		}
+	if element, length, isArray := ownedArrayParameter(typeExpr, cg); isArray {
+		// An owned array is a value: the caller's storage arrives const and
+		// the definition copies it in (emitFunction), so a store in the
+		// callee never reaches the caller.
+		return fmt.Sprintf("const %s %s[%d]", element, name, length)
 	}
 	return fmt.Sprintf("%s %s", cg.parseTypeExpression(typeExpr), name)
+}
+
+// ownedArrayParameter recognizes a fixed-length owned array type [N]T.
+func ownedArrayParameter(typeExpr ast.Expression, cg *CodeGenerator) (element string, length int64, ok bool) {
+	indexExpr, isIndex := typeExpr.(*ast.IndexExpression)
+	if !isIndex {
+		return "", 0, false
+	}
+	intLit, isLit := indexExpr.Index.(*ast.IntegerLiteral)
+	if !isLit {
+		return "", 0, false
+	}
+	return cg.parseTypeExpression(indexExpr.Left), intLit.Value, true
 }
 
 // cFunctionPointer renders a named C declarator for an Oak function type.
@@ -2323,6 +2350,13 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.emitExpressionFragment(operand, tc)
 				cg.output.WriteString(" ).len")
 			} else {
+				// A typed array literal in argument position is a C99
+				// compound literal, so it passes like any owned array.
+				if literal, isArray := arg.(*ast.ArrayLiteral); isArray && literal.Type != nil {
+					if element, length, ok := ownedArrayParameter(literal.Type, cg); ok {
+						cg.output.WriteString(fmt.Sprintf("(%s[%d])", element, length))
+					}
+				}
 				cg.emitExpressionFragment(arg, tc)
 			}
 			if i < len(e.Arguments)-1 {

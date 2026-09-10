@@ -162,14 +162,16 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
    compiler must inline at every optimization level (the external
    definition is still emitted: C99 extern inline) */
 #define OAK_INLINE extern inline __attribute__((always_inline))
-u32 oak_sum( u8 buf[8] );
+u32 oak_sum( const u8 buf[8] );
 
 // @source: unknown.oak:1:0-11:0
 // @package: main
 // @kind: function
 // @identifier: sum
 // @signature: fn sum(buf: /* type */) -> u32
-u32 oak_sum( u8 buf[8] ) {
+u32 oak_sum( const u8 oak_in_buf[8] ) {
+    u8 buf[8];
+    for (u64 oak_k = 0; oak_k < 8u; oak_k++) { buf[oak_k] = oak_in_buf[oak_k]; }
     oak_view_u8 v   = core_slice( buf, 0, 8 )  ;
     u32 n   = ((u32)( v ).len)  ;
     u32 total   = 0  ;

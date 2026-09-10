@@ -3027,6 +3027,15 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 				expectedFieldType = fieldType
 			}
 		}
+		// An owned-array field is initialized from an array literal; copying
+		// an array binding into a record has no C lowering yet (by-value
+		// arrays, roadmap item 4), so it is rejected instead of emitted.
+		if arr, isArray := expectedFieldType.(*ArrayType); isArray && arr.Length >= 0 && !arr.IsSlice && !arr.IsSpan {
+			if _, isLiteral := fieldExpr.(*ast.ArrayLiteral); !isLiteral {
+				tc.addError(fieldExpr, "record field %s: an owned array field must be initialized from an array literal; copying an array binding into a record is not lowered yet (wrap the array in a record to pass it by value)", name)
+				continue
+			}
+		}
 		fieldType := tc.checkExpression(fieldExpr, expectedFieldType)
 		if fieldType == nil {
 			continue
@@ -3623,6 +3632,13 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	// Save current environment and switch to function environment
 	oldEnv := tc.env
 	tc.env = funcEnv
+
+	// An owned array cannot be returned by value yet (C returns no arrays;
+	// by-value arrays are roadmap item 4): say so instead of emitting
+	// invalid C, and point at the record wrapper that works today.
+	if arr, isArray := returnType.(*ArrayType); isArray && arr.Length >= 0 && !arr.IsSlice && !arr.IsSpan {
+		tc.addError(stmt.ReturnType, "function %s: returning an owned array by value is not lowered yet; return it inside a record", stmt.Name.Value)
+	}
 
 	// Type check function body, inferring literals against the declared
 	// return type.
