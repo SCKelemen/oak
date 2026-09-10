@@ -228,7 +228,9 @@ declares the required module path, checks an archive-carried `api.json`
 against the API the extracted source actually exposes at the required
 version (`82-package-semver.md` section 7), and only then renames the staging
 directory into `<cache>/<path>@v<version>`. A single top-level wrapper
-directory carrying the manifest is stripped. Identity is the module path, the
+directory carrying the manifest is stripped. `oak mod pack` produces such an
+archive from a module directory, with `api.json` inside and the matching
+`require` line printed (`82-package-semver.md` section 7). Identity is the module path, the
 URL is a location hint, the digest is the trust anchor: the manifests alone
 reproduce a build, as with Zig's pinned dependencies, without Go's proxy
 protocol or version-control execution.
@@ -309,8 +311,9 @@ signature does three things:
 Because a sealed client depends on exactly its signature, whether a new
 version of the dependency still satisfies it is decidable from the
 dependency's API snapshot alone: `oak mod compat dep-api.json` checks every
-sealed import of a module against a snapshot (`82-package-semver.md` section
-8). The loader records each sealed import's members and canonical types for
+sealed import of a module against a snapshot, and `oak mod upgrade` picks the
+highest of several candidate snapshots that does (`82-package-semver.md`
+section 8). The loader records each sealed import's members and canonical types for
 this purpose (`ModuleInfo.Sealed`).
 
 ```oak
@@ -597,7 +600,9 @@ naming the import to add (`encode` needs `import("json")`, text needs
   change and enforce the exact bump, `oak mod download` refuses an archive
   whose carried `api.json` its source does not honor, and `oak mod compat`
   decides from a dependency snapshot alone whether the module's sealed
-  imports still hold.
+  imports still hold, and `oak mod upgrade` picks the highest compatible
+  candidate. `oak mod pack` closes the producer side. `Oak.Modules.Semver`
+  proves the classification and exact-bump laws.
 - **Testing (`110-testing.md`).** `oak test` compiles each test directory
   through the package loader with `*_test.oak` files included, so test
   packages import other packages of their module and diagnostics name real

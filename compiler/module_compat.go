@@ -102,3 +102,54 @@ func sameCanonicalType(want, got string) bool {
 	normalize := func(text string) string { return strings.ReplaceAll(text, " ", "") }
 	return normalize(want) == normalize(got)
 }
+
+// CandidateResult is one candidate snapshot's verdict for a module.
+type CandidateResult struct {
+	Snapshot packageapi.ModuleSnapshot
+	Version  packageapi.Version
+	Problems []Incompatibility
+}
+
+// HighestCompatible checks each candidate snapshot of one dependency against
+// the sealed imports of the module at moduleDir and returns the compatible
+// candidate with the highest version (nil when none is), with every
+// candidate's verdict in ascending version order. Candidates must agree on
+// the module they describe and carry parseable versions.
+func HighestCompatible(moduleDir string, candidates []packageapi.ModuleSnapshot) (*packageapi.ModuleSnapshot, []CandidateResult, error) {
+	if len(candidates) == 0 {
+		return nil, nil, fmt.Errorf("no candidate snapshots")
+	}
+	results := make([]CandidateResult, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Module != candidates[0].Module {
+			return nil, nil, fmt.Errorf("candidates describe different modules: %q and %q", candidates[0].Module, candidate.Module)
+		}
+		version, err := packageapi.ParseVersion(candidate.Version)
+		if err != nil {
+			return nil, nil, fmt.Errorf("candidate %s: %w", candidate.Module, err)
+		}
+		problems, err := CheckSealedCompatibility(moduleDir, candidate)
+		if err != nil {
+			return nil, nil, err
+		}
+		results = append(results, CandidateResult{Snapshot: candidate, Version: version, Problems: problems})
+	}
+	sort.SliceStable(results, func(i, j int) bool { return versionLess(results[i].Version, results[j].Version) })
+	var best *packageapi.ModuleSnapshot
+	for i := range results {
+		if len(results[i].Problems) == 0 {
+			best = &results[i].Snapshot
+		}
+	}
+	return best, results, nil
+}
+
+func versionLess(a, b packageapi.Version) bool {
+	if a.Major != b.Major {
+		return a.Major < b.Major
+	}
+	if a.Minor != b.Minor {
+		return a.Minor < b.Minor
+	}
+	return a.Patch < b.Patch
+}

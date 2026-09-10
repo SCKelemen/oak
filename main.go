@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -162,11 +163,17 @@ func buildPackage(args []string) int {
 //	                                  `version` directive, enforce it
 //	oak mod compat dep-api.json [dir] check sealed imports against a
 //	                                  dependency's snapshot
+//	oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]
+//	                                  build the module archive carrying api.json
+//	                                  and print its `require` line
+//	oak mod upgrade [-dir dir] dep-api.json...
+//	                                  pick the highest candidate version whose
+//	                                  snapshot satisfies the module's sealed imports
 //
 // The compiler itself never fetches; every input here is a local file.
 func modCommand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat ...")
+		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat|pack|upgrade ...")
 		return 2
 	}
 	switch args[0] {
@@ -180,6 +187,10 @@ func modCommand(args []string) int {
 		return modDiff(args[1:], true)
 	case "compat":
 		return modCompat(args[1:])
+	case "pack":
+		return modPack(args[1:])
+	case "upgrade":
+		return modUpgrade(args[1:])
 	}
 	fmt.Fprintf(os.Stderr, "oak mod: unknown subcommand %q\n", args[0])
 	return 2
@@ -320,6 +331,139 @@ func modCompat(args []string) int {
 		return 1
 	}
 	fmt.Printf("every sealed import of %s is satisfied by %s\n", snapshot.Module, snapshot.Version)
+	return 0
+}
+
+// modPack builds the archive `oak mod download` consumes (docs/spec/
+// 82-package-semver.md section 7): the module's files under one
+// `<name>-<version>/` wrapper plus api.json, the snapshot at the manifest's
+// `version`. With -previous the exact-bump rule is enforced first, so an
+// archive whose version lies about its API change is never produced.
+func modPack(args []string) int {
+	dir, output, previousPath, location := ".", "", "", "<url>"
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-o" && i+1 < len(args):
+			output = args[i+1]
+			i++
+		case args[i] == "-previous" && i+1 < len(args):
+			previousPath = args[i+1]
+			i++
+		case args[i] == "-url" && i+1 < len(args):
+			location = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-"):
+			fmt.Fprintf(os.Stderr, "oak mod pack: unknown flag %s\nusage: oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]\n", args[i])
+			return 2
+		default:
+			dir = args[i]
+		}
+	}
+	manifest, err := readManifest(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod pack: %v\n", err)
+		return 1
+	}
+	if manifest.Version == "" {
+		fmt.Fprintf(os.Stderr, "oak mod pack: %s declares no `version`; a packed module must name the version it publishes\n", modules.ManifestFile)
+		return 1
+	}
+	if location != "<url>" {
+		if err := modules.ValidateLocation(location); err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod pack: %v\n", err)
+			return 1
+		}
+	}
+	snapshot, err := compiler.ModuleAPISnapshot(dir, manifest.Version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod pack: %v\n", err)
+		return 1
+	}
+	if previousPath != "" {
+		previous, err := compiler.ReadModuleSnapshot(previousPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod pack: %v\n", err)
+			return 1
+		}
+		if _, err := packageapi.EnforceModule(previous, snapshot); err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod pack: %v\n", err)
+			return 1
+		}
+	}
+	api, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod pack: %v\n", err)
+		return 1
+	}
+	wrapper := path.Base(manifest.Path) + "-" + manifest.Version
+	archive, digest, err := modules.Pack(dir, wrapper, api)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod pack: %v\n", err)
+		return 1
+	}
+	if output == "" {
+		output = wrapper + ".tar.gz"
+	}
+	if err := os.WriteFile(output, archive, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod pack: %v\n", err)
+		return 1
+	}
+	fmt.Printf("wrote %s (%d bytes, %d packages)\n", output, len(archive), len(snapshot.Packages))
+	fmt.Printf("require %s %s %s %s\n", manifest.Path, manifest.Version, location, digest)
+	return 0
+}
+
+// modUpgrade picks, among candidate snapshots of one dependency, the highest
+// version whose API satisfies every sealed import of the module
+// (docs/spec/82-package-semver.md section 8). Every input is a local file.
+func modUpgrade(args []string) int {
+	dir := "."
+	var files []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-dir" && i+1 < len(args):
+			dir = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-"):
+			fmt.Fprintf(os.Stderr, "oak mod upgrade: unknown flag %s\nusage: oak mod upgrade [-dir dir] dep-api.json...\n", args[i])
+			return 2
+		default:
+			files = append(files, args[i])
+		}
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: oak mod upgrade [-dir dir] dep-api.json...")
+		return 2
+	}
+	candidates := make([]packageapi.ModuleSnapshot, 0, len(files))
+	for _, file := range files {
+		snapshot, err := compiler.ReadModuleSnapshot(file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod upgrade: %v\n", err)
+			return 1
+		}
+		candidates = append(candidates, snapshot)
+	}
+	best, results, err := compiler.HighestCompatible(dir, candidates)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod upgrade: %v\n", err)
+		return 1
+	}
+	for _, result := range results {
+		if len(result.Problems) == 0 {
+			fmt.Printf("%s %s: compatible\n", result.Snapshot.Module, result.Snapshot.Version)
+			continue
+		}
+		fmt.Printf("%s %s: %d incompatible sealed member(s)\n", result.Snapshot.Module, result.Snapshot.Version, len(result.Problems))
+		for _, problem := range result.Problems {
+			fmt.Printf("  %s\n", problem)
+		}
+	}
+	if best == nil {
+		fmt.Fprintf(os.Stderr, "oak mod upgrade: no candidate satisfies the module's sealed imports\n")
+		return 1
+	}
+	fmt.Printf("require %s %s\n", best.Module, best.Version)
 	return 0
 }
 
