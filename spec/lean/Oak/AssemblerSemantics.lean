@@ -410,7 +410,11 @@ A loop whose trip count depends on the inputs is verified by coupling
 registers that holds at the header, under which the two continue
 conditions agree and one iteration of each body preserves R. Then the two
 loops, run under the same fuel, produce related results — both exhaust the
-fuel together or both stop together, at related states. -/
+fuel together or both stop together, at related states. R is arbitrary
+here; the verifier instantiates it as a conjunction of affine relations
+between paired variables (`r = x + b`, `r = b - x`) and an invariant read
+off the Oak guard (`i ≤ n` from `i < n`), which is why the hypotheses
+below only ask for agreement and preservation on R-related states. -/
 
 /-- Related optional results: both absent, or both present and related. -/
 def optionRel {σ τ : Type} (R : σ → τ → Prop) : Option σ → Option τ → Prop

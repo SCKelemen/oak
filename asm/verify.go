@@ -197,6 +197,13 @@ func binaryTerm(op string, left, right *term) *term {
 	if left.kind == termConst && right.kind == termConst {
 		return constTerm(t.eval(nil), left.width)
 	}
+	// Additive identities: x + 0, x - 0, 0 + x are x (at the same width).
+	if right.kind == termConst && right.value == 0 && (op == "add" || op == "sub") && left.width == t.width {
+		return left
+	}
+	if left.kind == termConst && left.value == 0 && op == "add" && right.width == t.width {
+		return right
+	}
 	return t
 }
 

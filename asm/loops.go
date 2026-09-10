@@ -385,59 +385,6 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 	}
 }
 
-// rename substitutes parameter names (the Oak fresh symbols for the
-// coupled registers').
-func rename(t *term, sigma map[string]string) *term {
-	if t == nil {
-		return nil
-	}
-	switch t.kind {
-	case termConst:
-		return t
-	case termParam:
-		if to, renamed := sigma[t.name]; renamed {
-			return &term{kind: termParam, width: t.width, name: to}
-		}
-		return t
-	}
-	out := *t
-	out.cond = rename(t.cond, sigma)
-	out.left = rename(t.left, sigma)
-	out.right = rename(t.right, sigma)
-	return &out
-}
-
-// bitEqual decides two terms equal at a common width by bit-blasting;
-// decided is false past the node budget.
-func bitEqual(a, b *term, widthOf func(string) int) (equal bool, decided bool) {
-	width := a.width
-	if b.width > width {
-		width = b.width
-	}
-	a, b = adaptWidth(a, width), adaptWidth(b, width)
-	mentioned := map[string]bool{}
-	collectParams(a, mentioned)
-	collectParams(b, mentioned)
-	names := make([]string, 0, len(mentioned))
-	widths := map[string]int{}
-	for name := range mentioned {
-		names = append(names, name)
-		widths[name] = widthOf(name)
-	}
-	sort.Strings(names)
-	bl := newBlaster(names, widths)
-	aBits, bBits := bl.blast(a), bl.blast(b)
-	if aBits == nil || bBits == nil || bl.bdd.exceeded {
-		return false, false
-	}
-	for i := 0; i < width; i++ {
-		if aBits[i] != bBits[i] {
-			return false, true
-		}
-	}
-	return true, true
-}
-
 // loopWitnessInputs are small concrete inputs: under them the loops
 // unroll within budget. Scalars and span lengths vary; elements come from
 // the fixed memory.
@@ -518,81 +465,238 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return lowering.declaredWidth(name)
 	}
-	// Candidates: registers of the local's width whose header value is the
-	// local's. Several locals may start alike (two zeroed counters), so the
-	// pairing is a small search: an assignment is accepted when the
-	// continue conditions agree and one iteration preserves every pair.
-	candidates := map[string][]string{}
+	// Coupling. Candidates pair an Oak loop variable x with a register r of
+	// the same width through an affine relation r = a*x + b, a ∈ {+1, -1},
+	// with b read off the header values (b = header_r ∓ header_x) and
+	// required to be loop-invariant (no loop-carried symbol). Equality is
+	// the a = +1, b = 0 case. Several locals may start alike, so the
+	// pairing is a small search, accepted when — under an invariant read
+	// off the Oak guard — the continue conditions agree and one iteration
+	// preserves every pair (Oak.AssemblerSemantics.whileFuel_coupled, with R
+	// the conjunction of the affine relations and the invariant).
+	type candidate struct {
+		reg  string
+		a    int
+		b    *term
+		show string
+	}
+	candidates := map[string][]candidate{}
 	for _, local := range oakLoop.vars {
+		hx := oakLoop.header[local]
 		for _, reg := range asmLoop.vars {
 			if asmLoop.width[reg] != oakLoop.width[local] {
 				continue
 			}
-			if equal, decided := bitEqual(oakLoop.header[local], asmLoop.header[reg], widthOfName); decided && equal {
-				candidates[local] = append(candidates[local], reg)
+			hr := asmLoop.header[reg]
+			for _, a := range []int{1, -1} {
+				var b *term
+				if a == 1 {
+					b = binaryTerm("sub", hr, hx)
+				} else {
+					b = binaryTerm("add", hr, hx)
+				}
+				mentioned := map[string]bool{}
+				collectParams(b, mentioned)
+				invariant := true
+				for name := range mentioned {
+					if strings.HasPrefix(name, "loop.") {
+						invariant = false
+					}
+				}
+				if !invariant {
+					continue
+				}
+				show := local + "↔" + reg
+				switch {
+				case a == 1 && b.kind == termConst && b.value == 0:
+				case a == 1:
+					show = fmt.Sprintf("%s = %s + %s", reg, local, b)
+				default:
+					show = fmt.Sprintf("%s = %s - %s", reg, b, local)
+				}
+				candidates[local] = append(candidates[local], candidate{reg: reg, a: a, b: b, show: show})
 			}
 		}
 		if len(candidates[local]) == 0 {
-			return evidence(fmt.Sprintf("no register carries the loop variable %s at the loop header", local))
+			return evidence(fmt.Sprintf("no register is an affine image of the loop variable %s at the loop header", local))
 		}
 	}
-	sigma := map[string]string{}
-	used := map[string]bool{}
+	// Invariant candidates: none, then the guard weakened to its closure
+	// (`x < e` gives `x ≤ e`). Each must hold at the header and be
+	// preserved by one iteration under the guard.
+	invariants := []*term{constTerm(1, 1)}
+	if guard := oakLoop.cond; guard.kind == termCmp {
+		weakened := map[string]string{"lo": "ls", "ls": "ls", "hi": "hs", "hs": "hs", "lt": "le", "le": "le", "gt": "ge", "ge": "ge"}
+		if code, ok := weakened[guard.op]; ok {
+			inv := cmpTerm(code, guard.left, guard.right)
+			atHeader := map[string]*term{}
+			afterBody := map[string]*term{}
+			for _, local := range oakLoop.vars {
+				atHeader["loop."+local] = oakLoop.header[local]
+				afterBody["loop."+local] = oakLoop.next[local]
+			}
+			holdsAtEntry, decidedEntry := impliesEqual(constTerm(1, 1), substitute(inv, atHeader), constTerm(1, 1), widthOfName)
+			preserved, decidedStep := impliesEqual(binaryTerm("and", truncate(inv, 1), truncate(guard, 1)), substitute(inv, afterBody), constTerm(1, 1), widthOfName)
+			if decidedEntry && holdsAtEntry && decidedStep && preserved {
+				invariants = append(invariants, truncate(inv, 1))
+			}
+		}
+	}
+	var sigma map[string]*term
 	var pairs []string
 	var failure string
-	var search func(i int) bool
-	search = func(i int) bool {
-		if i == len(oakLoop.vars) {
-			if equal, decided := bitEqual(rename(oakLoop.cond, sigma), asmLoop.cond, widthOfName); !decided || !equal {
-				failure = "the loops' continue conditions were not proven equal"
-				return false
-			}
-			for _, local := range oakLoop.vars {
-				reg := strings.TrimPrefix(sigma["loop."+local], "loop.")
-				if equal, decided := bitEqual(rename(oakLoop.next[local], sigma), asmLoop.next[reg], widthOfName); !decided || !equal {
-					failure = fmt.Sprintf("one iteration was not proven to preserve %s↔%s", local, reg)
+	var invariantUsed *term
+	for _, inv := range invariants {
+		chosen := map[string]candidate{}
+		used := map[string]bool{}
+		var search func(i int) bool
+		search = func(i int) bool {
+			if i == len(oakLoop.vars) {
+				trial := map[string]*term{}
+				for local, c := range chosen {
+					// x = a*(r - b): the register's fresh symbol expressed for x.
+					r := paramTerm("loop."+c.reg, oakLoop.width[local])
+					if c.a == 1 {
+						trial["loop."+local] = binaryTerm("sub", r, c.b)
+					} else {
+						trial["loop."+local] = binaryTerm("sub", c.b, r)
+					}
+				}
+				premise := substitute(inv, trial)
+				if equal, decided := impliesEqual(premise, substitute(oakLoop.cond, trial), asmLoop.cond, widthOfName); !decided || !equal {
+					failure = "the loops' continue conditions were not proven equal"
 					return false
 				}
-			}
-			return true
-		}
-		local := oakLoop.vars[i]
-		for _, reg := range candidates[local] {
-			if used[reg] {
-				continue
-			}
-			used[reg] = true
-			sigma["loop."+local] = "loop." + reg
-			if search(i + 1) {
+				underGuard := binaryTerm("and", premise, truncate(substitute(oakLoop.cond, trial), 1))
+				for local, c := range chosen {
+					// r' = a*x' + b must hold after one iteration.
+					next := substitute(oakLoop.next[local], trial)
+					if c.a == 1 {
+						next = binaryTerm("add", next, c.b)
+					} else {
+						next = binaryTerm("sub", c.b, next)
+					}
+					if equal, decided := impliesEqual(underGuard, next, asmLoop.next[c.reg], widthOfName); !decided || !equal {
+						failure = fmt.Sprintf("one iteration was not proven to preserve %s", c.show)
+						return false
+					}
+				}
+				sigma = trial
+				invariantUsed = inv
 				return true
 			}
-			delete(used, reg)
-			delete(sigma, "loop."+local)
+			local := oakLoop.vars[i]
+			for _, c := range candidates[local] {
+				if used[c.reg] {
+					continue
+				}
+				used[c.reg] = true
+				chosen[local] = c
+				if search(i + 1) {
+					return true
+				}
+				delete(used, c.reg)
+				delete(chosen, local)
+			}
+			return false
 		}
-		return false
+		if search(0) {
+			for _, local := range oakLoop.vars {
+				pairs = append(pairs, chosen[local].show)
+			}
+			break
+		}
 	}
-	if !search(0) {
+	if sigma == nil {
 		return evidence(failure)
 	}
-	for _, local := range oakLoop.vars {
-		pairs = append(pairs, local+"↔"+strings.TrimPrefix(sigma["loop."+local], "loop."))
+	// The fresh symbols are free parameters of the exit comparison, under
+	// the invariant and the negated guard. A result reading a loop-carried
+	// register no Oak variable is coupled to is beyond the method (its exit
+	// value has no Oak counterpart). Symbolic disagreement here is never
+	// reported as a mismatch — the states may be unreachable — only the
+	// concrete layer refutes.
+	coupled := map[string]bool{}
+	for local := range sigma {
+		mentioned := map[string]bool{}
+		collectParams(sigma[local], mentioned)
+		for name := range mentioned {
+			coupled[name] = true
+		}
 	}
-	// The fresh symbols are free parameters of the final comparison. A
-	// result reading a loop-carried register no Oak variable is coupled to
-	// is beyond the method (its exit value has no Oak counterpart).
 	mentioned := map[string]bool{}
 	collectParams(asmTerm, mentioned)
 	for name := range mentioned {
-		if reg := strings.TrimPrefix(name, "loop."); strings.HasPrefix(name, "loop.r") && !used[reg] {
-			return evidence(fmt.Sprintf("the result reads loop-carried register %s, which no Oak variable is coupled to", reg))
+		if strings.HasPrefix(name, "loop.r") && !coupled[name] {
+			return evidence(fmt.Sprintf("the result reads loop-carried register %s, which no Oak variable is coupled to", strings.TrimPrefix(name, "loop.")))
 		}
 	}
-	for reg, w := range asmLoop.width {
-		lowering.fresh["loop."+reg] = w
+	exitPremise := binaryTerm("and", substitute(invariantUsed, sigma), binaryTerm("xor", truncate(substitute(oakLoop.cond, sigma), 1), constTerm(1, 1)))
+	equal, decided := impliesEqual(exitPremise, substitute(oakTerm, sigma), truncate(asmTerm, width), widthOfName)
+	if !decided || !equal {
+		return evidence("the results after the loops were not proven equal")
 	}
-	verdict := decideEqual(fn, lowering, asmTerm, rename(oakTerm, sigma), width, fmt.Sprintf(" — data-dependent loop coupled inductively (%s), %d concrete inputs agree", strings.Join(pairs, ", "), checked))
-	if verdict.Kind == VerdictWitnessed {
-		return evidence("the results after the loops exceeded the bit-level budget")
+	invariantNote := ""
+	if invariantUsed.kind != termConst {
+		invariantNote = fmt.Sprintf(" under the invariant %s", substitute(invariantUsed, sigma))
 	}
-	return verdict
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (%s)%s, %d concrete inputs agree", fn.Name, strings.Join(pairs, ", "), invariantNote, checked)}
+}
+
+// substitute replaces parameters by terms (the Oak loop symbols by their
+// expression in the coupled registers' symbols).
+func substitute(t *term, sigma map[string]*term) *term {
+	if t == nil {
+		return nil
+	}
+	switch t.kind {
+	case termConst:
+		return t
+	case termParam:
+		if to, bound := sigma[t.name]; bound {
+			return adaptWidth(to, t.width)
+		}
+		return t
+	}
+	out := *t
+	out.cond = substitute(t.cond, sigma)
+	out.left = substitute(t.left, sigma)
+	out.right = substitute(t.right, sigma)
+	return &out
+}
+
+// impliesEqual decides premise → (a = b) at the terms' common width by
+// bit-blasting; decided is false past the node budget.
+func impliesEqual(premise, a, b *term, widthOf func(string) int) (holds bool, decided bool) {
+	width := a.width
+	if b.width > width {
+		width = b.width
+	}
+	a, b = adaptWidth(a, width), adaptWidth(b, width)
+	mentioned := map[string]bool{}
+	collectParams(premise, mentioned)
+	collectParams(a, mentioned)
+	collectParams(b, mentioned)
+	names := make([]string, 0, len(mentioned))
+	widths := map[string]int{}
+	for name := range mentioned {
+		names = append(names, name)
+		widths[name] = widthOf(name)
+	}
+	sort.Strings(names)
+	bl := newBlaster(names, widths)
+	pBits := bl.blast(premise)
+	aBits, bBits := bl.blast(a), bl.blast(b)
+	if pBits == nil || aBits == nil || bBits == nil || bl.bdd.exceeded {
+		return false, false
+	}
+	allEqual := bddTrue
+	for i := 0; i < width; i++ {
+		allEqual = bl.bdd.apply(opAnd, allEqual, bl.bdd.not(bl.bdd.apply(opXor, aBits[i], bBits[i])))
+	}
+	implication := bl.bdd.apply(opOr, bl.bdd.not(pBits[0]), allEqual)
+	if bl.bdd.exceeded {
+		return false, false
+	}
+	return implication == bddTrue, true
 }

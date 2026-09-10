@@ -433,9 +433,22 @@ the locals either arm assigns as selects — so the branchy asm, the
 `cset`-based asm, the value-position Oak spelling, and the statement-level
 Oak spelling of "count the elements above a threshold" are all one loop,
 and a running maximum by conditional move is proven; the wrong branch sense
-is refuted on a concrete input. What remains: nested data-dependent loops,
-and loops whose variables the coupling cannot pair (count-down vs count-up
-needs an affine relation rather than equality).
+is refuted on a concrete input. **Affine couplings with invariants**: a
+pairing may relate a register to an Oak variable by `r = x + b` or
+`r = b - x` with `b` read off the header values and required to be
+loop-invariant (equality is `b = 0`); the Oak symbols are substituted by
+the inverse expressions. The Oak guard weakened to its closure (`i < n`
+gives `i ≤ n`) is a candidate invariant — admitted when it holds at the
+header and one iteration preserves it under the guard — and every check
+(condition agreement, body preservation, and the exit comparison under the
+negated guard) is a bit-level implication from the invariant, so R in
+`whileFuel_coupled` is the affine relations conjoined with the invariant.
+The exit comparison in loop mode never reports a symbolic disagreement as a
+mismatch (the state may be unreachable); only the concrete layer refutes.
+A count-down asm loop (`w1 = n - i`, under `i ≤ n`) and an inclusive
+1-based counter (`w9 = i + 1`) are now proven against the count-up Oak
+loop. What remains: nested data-dependent loops, and relations beyond
+affine ones (scaled counters, byte offsets).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

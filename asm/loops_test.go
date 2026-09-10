@@ -52,14 +52,31 @@ func TestVerifyDataDependentLoops(t *testing.T) {
 	if times.Kind != VerdictProven {
 		t.Fatalf("the scalar-count accumulate must be proven, got %s: %s", times.Kind, times.Message)
 	}
-	// Counting down in the asm against counting up in Oak: the loop
-	// variables cannot be coupled, so the verdict is evidence, not proof —
-	// and not a false mismatch.
+	// Counting down in the asm against counting up in Oak: the coupling is
+	// affine (w1 = n - i) and needs the invariant i <= n read off the Oak
+	// guard, under which `w1 != 0` is `i < n`.
 	down := verifyCase(t, "times: (a: u64, n: u32) -> u64",
 		"{\n  acc: u64 = u64(0)\n  i: u32 = u32(0)\n  while i < n {\n    acc = acc + a\n    i = i + u32(1)\n  }\n  acc\n}",
 		"  bind x0 = a\n  bind w1 = n\n  clobber x10\n  mov x10, #0\nloop:\n  cmp w1, #0\n  b.eq done\n  add x10, x10, x0\n  sub w1, w1, #1\n  b loop\ndone:\n  mov x0, x10\n  ret")
-	if down.Kind != VerdictWitnessed {
-		t.Fatalf("an uncoupled but equivalent loop must be witness-checked, got %s: %s", down.Kind, down.Message)
+	if down.Kind != VerdictProven || !strings.Contains(down.Message, "r1 = ") || !strings.Contains(down.Message, "invariant") {
+		t.Fatalf("a count-down loop must be proven by an affine coupling under an invariant, got %s: %s", down.Kind, down.Message)
+	}
+	// An offset accumulator: the asm keeps acc + a and subtracts a at the
+	// exit; the coupling is r10 = acc + a with a loop-invariant offset.
+	offset := verifyCase(t, "times: (a: u64, n: u32) -> u64",
+		"{\n  acc: u64 = u64(0)\n  i: u32 = u32(0)\n  while i < n {\n    acc = acc + a\n    i = i + u32(1)\n  }\n  acc\n}",
+		"  bind x0 = a\n  bind w1 = n\n  clobber w9, x10\n  mov w9, #0\n  mov x10, x0\nloop:\n  cmp w9, w1\n  b.hs done\n  add x10, x10, x0\n  add w9, w9, #1\n  b loop\ndone:\n  sub x0, x10, x0\n  ret")
+	if offset.Kind != VerdictProven || !strings.Contains(offset.Message, "r10 = acc + a") {
+		t.Fatalf("an offset accumulator must be proven by r10 = acc + a, got %s: %s", offset.Kind, offset.Message)
+	}
+	// A 1-based inclusive counter (`cmp w9, w1; b.hi`) is NOT the count-up
+	// loop: at n = 0xFFFFFFFF the asm counter wraps and never exits. The
+	// verifier must not prove it — witness-checked is the honest verdict.
+	inclusive := verifyCase(t, "times: (a: u64, n: u32) -> u64",
+		"{\n  acc: u64 = u64(0)\n  i: u32 = u32(0)\n  while i < n {\n    acc = acc + a\n    i = i + u32(1)\n  }\n  acc\n}",
+		"  bind x0 = a\n  bind w1 = n\n  clobber w9, x10\n  mov w9, #1\n  mov x10, #0\nloop:\n  cmp w9, w1\n  b.hi done\n  add x10, x10, x0\n  add w9, w9, #1\n  b loop\ndone:\n  mov x0, x10\n  ret")
+	if inclusive.Kind != VerdictWitnessed {
+		t.Fatalf("the wrapping inclusive counter must not be proven, got %s: %s", inclusive.Kind, inclusive.Message)
 	}
 }
 
