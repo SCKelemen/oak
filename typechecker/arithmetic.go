@@ -1,19 +1,21 @@
 package typechecker
 
-// Checked and saturating integer arithmetic (docs/spec/20-types.md
+// Checked, saturating and trapping integer arithmetic (docs/spec/20-types.md
 // section 11.1a): `{type}_checked_{add|sub|mul}(a, b)` returns
 // `Result[type, Overflow]`, `{type}_saturating_{add|sub|mul}(a, b)` clamps
-// to the type's range. The operators themselves wrap; these are the
-// explicit spellings for code that must notice the wrap — offsets, lengths,
-// sequence numbers — without a manual guard on every operation.
+// to the type's range, `{type}_trapping_{add|sub|mul}(a, b)` returns the
+// exact result or stops the program with a located trap, like a failed
+// assertion. The operators themselves wrap; these are the explicit
+// spellings for code that must notice the wrap — offsets, lengths, sequence
+// numbers — without a manual guard on every operation.
 
 import "github.com/SCKelemen/oak/ast"
 
 var arithmeticKinds = map[string]bool{"add": true, "sub": true, "mul": true}
-var arithmeticOperations = map[string]bool{"checked": true, "saturating": true}
+var arithmeticOperations = map[string]bool{"checked": true, "saturating": true, "trapping": true}
 
 // ArithmeticParts parses `{type}_{op}_{kind}` with a fixed-width integer
-// type, op in checked/saturating, and kind in add/sub/mul. The grammar is
+// type, op in checked/saturating/trapping, and kind in add/sub/mul. The grammar is
 // disjoint from the conversion family's `{target}_{op}_{source}`: a kind is
 // never a primitive type name.
 func ArithmeticParts(name string) (prim, op, kind string, ok bool) {
@@ -31,11 +33,11 @@ func ArithmeticParts(name string) (prim, op, kind string, ok bool) {
 	return prim, op, kind, true
 }
 
-// checkArithmeticFunction types a checked or saturating arithmetic call.
-// Both operands must have the named type (untyped literals infer against
-// it); the result is the type itself for saturating and
-// `Result[type, Overflow]` for checked, recorded as an ADT instantiation
-// like the checked conversions so the backend monomorphizes it.
+// checkArithmeticFunction types a checked, saturating or trapping
+// arithmetic call. Both operands must have the named type (untyped literals
+// infer against it); the result is the type itself for saturating and
+// trapping and `Result[type, Overflow]` for checked, recorded as an ADT
+// instantiation like the checked conversions so the backend monomorphizes it.
 func (tc *TypeChecker) checkArithmeticFunction(funcName string, args []ast.Expression, call ast.Node) Type {
 	prim, op, kind, ok := ArithmeticParts(funcName)
 	if !ok {
@@ -57,7 +59,7 @@ func (tc *TypeChecker) checkArithmeticFunction(funcName string, args []ast.Expre
 			return nil
 		}
 	}
-	if op == "saturating" {
+	if op == "saturating" || op == "trapping" {
 		return primType
 	}
 	overflowType := &ADTType{Name: "Overflow"}

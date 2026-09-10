@@ -1,9 +1,10 @@
 package evaluator
 
-// Interpreter semantics for checked and saturating integer arithmetic
-// (docs/spec/20-types.md section 11.1a). The exact mathematical result is
-// computed in arbitrary precision and compared with the type's range, so
-// the interpreter and the C helpers agree at every boundary.
+// Interpreter semantics for checked, saturating and trapping integer
+// arithmetic (docs/spec/20-types.md section 11.1a). The exact mathematical
+// result is computed in arbitrary precision and compared with the type's
+// range, so the interpreter and the C helpers agree at every boundary; a
+// trapping overflow is the interpreter's error, as a failed assertion is.
 
 import (
 	"math/big"
@@ -13,7 +14,7 @@ import (
 	"github.com/SCKelemen/oak/typechecker"
 )
 
-// evalArithmeticCall evaluates {type}_{checked|saturating}_{add|sub|mul}(a, b)
+// evalArithmeticCall evaluates {type}_{checked|saturating|trapping}_{add|sub|mul}(a, b)
 // when the name is one; reports whether it was.
 func evalArithmeticCall(name string, args []ast.Expression, env *object.Environment) (object.Object, bool) {
 	prim, op, kind, ok := typechecker.ArithmeticParts(name)
@@ -49,6 +50,12 @@ func evalArithmeticCall(name string, args []ast.Expression, env *object.Environm
 	low, high := integerRange(bits, signed)
 	inRange := exact.Cmp(low) >= 0 && exact.Cmp(high) <= 0
 
+	if op == "trapping" {
+		if !inRange {
+			return newError("arithmetic overflow in %s", name), true
+		}
+		return &object.Integer{Value: storedValue(exact)}, true
+	}
 	if op == "saturating" {
 		if exact.Cmp(low) < 0 {
 			exact = low
