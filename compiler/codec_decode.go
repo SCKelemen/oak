@@ -3,18 +3,15 @@ package compiler
 import (
 	"fmt"
 	"strconv"
-	"strings"
-)
 
-func codecU64Literal(value uint64) string {
-	if value <= 9223372036854775807 {
-		return fmt.Sprintf("u64(%d)", value)
-	}
-	return fmt.Sprintf("(u64(%d) * u64(4294967296) + u64(%d))", value>>32, value&4294967295)
-}
+	"github.com/SCKelemen/oak/ast"
+)
 
 // Decoder helpers return concrete values plus offsets, not a token tree or
 // borrowed aggregate. Recursive calls follow the statically bounded schema.
+// The functions are built as typed syntax (compiler/synth.go):
+// __oak_json_key_T classifies an object key, __oak_json_read_T reads one
+// value at an offset, __oak_json_decode_T reads a whole document.
 func (d *codecDeriver) deriveDecoder(typ string) error {
 	if d.decodeGenerated == nil {
 		d.decodeGenerated = map[string]bool{}
@@ -36,37 +33,15 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			return fmt.Errorf("codec: generated name %s conflicts with a declaration", codecName(operation, typ))
 		}
 	}
-	var body strings.Builder
-	var keys strings.Builder
-	primitive, _ := codecPrimitive(typ)
-	switch primitive {
+	readName, decodeName := codecName("read", typ), codecName("decode", typ)
+	s := newSynth("codec:" + readName)
+	var body []ast.Statement
+	var keyFn *ast.FunctionStatement
+	switch codecPrimitive(typ) {
 	case "u64", "i64":
-		bits, _ := strconv.Atoi(typ[1:])
-		body.WriteString("raw: JsonIntegerScan = json_scan_integer(src, offset)\nnegative: Bool = raw.status == u32(1)\nraw.status > u32(1) ? { .Err(json_decode_error(raw.status - u32(1))) } | {\n")
-		if primitive == "u64" {
-			maximum := ^uint64(0)
-			if bits < 64 {
-				maximum = (uint64(1) << bits) - 1
-			}
-			fmt.Fprintf(&body, "negative ? { .Err(.TypeMismatch) } | raw.magnitude > %s ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(maximum))
-			conversion := "raw.magnitude"
-			if bits < 64 {
-				conversion = typ + "_trunc_u64(raw.magnitude)"
-			}
-			fmt.Fprintf(&body, "item: JsonDecoded[%s]\nitem.value = %s\nitem.next = raw.next\n.Ok(item)\n}\n", typ, conversion)
-		} else {
-			negativeMax := uint64(1) << (bits - 1)
-			fmt.Fprintf(&body, "limit: u64 = negative ? %s | %s\nraw.magnitude > limit ? { .Err(.NumericOverflow) } | {\n", codecU64Literal(negativeMax), codecU64Literal(negativeMax-1))
-			body.WriteString("number: i64 = i64(0)\nnegative && raw.magnitude > u64(0) ? { number = i64(0) - i64_bits_u64(raw.magnitude - u64(1)) - i64(1) } | { number = i64_bits_u64(raw.magnitude) }\n")
-			conversion := "number"
-			if bits < 64 {
-				conversion = typ + "_trunc_i64(number)"
-			}
-			fmt.Fprintf(&body, "item: JsonDecoded[%s]\nitem.value = %s\nitem.next = raw.next\n.Ok(item)\n}\n", typ, conversion)
-		}
-		body.WriteString("}\n")
+		body = integerReader(s, typ)
 	case "bool":
-		body.WriteString("at: u32 = json_skip_space(src, offset)\npart: JsonToken\nlen(src) - at >= u32(4) && ((u32(src[at + u32(0)]) << u32(0)) | (u32(src[at + u32(1)]) << u32(8)) | (u32(src[at + u32(2)]) << u32(16)) | (u32(src[at + u32(3)]) << u32(24))) == u32(1702195828) && json_value_boundary(src, at + u32(4)) ? { part = JsonToken { kind: u32(8), start: at, end: at + u32(4) } } | len(src) - at >= u32(5) && ((u32(src[at + u32(0)]) << u32(0)) | (u32(src[at + u32(1)]) << u32(8)) | (u32(src[at + u32(2)]) << u32(16)) | (u32(src[at + u32(3)]) << u32(24))) == u32(1936482662) && src[at + u32(4)] == u8(101) && json_value_boundary(src, at + u32(5)) ? { part = JsonToken { kind: u32(9), start: at, end: at + u32(5) } } | { part = json_token(src, at) }\npart.kind <= u32(1) ? { .Err(.InvalidSyntax) } | part.kind != u32(8) && part.kind != u32(9) ? { .Err(.TypeMismatch) } | {\nitem: JsonDecoded[Bool]\nitem.value = part.kind == u32(8)\nitem.next = part.end\n.Ok(item)\n}\n")
+		body = boolReader(s)
 	default:
 		fields, err := d.fields(typ)
 		if err != nil {
@@ -77,86 +52,355 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 				return fmt.Errorf("codec field %s.%s: %w", typ, field.name, err)
 			}
 		}
-		body.WriteString("opening: JsonToken = json_token(src, offset)\nopening.kind <= u32(1) ? { .Err(.InvalidSyntax) } | opening.kind != u32(2) ? { .Err(.TypeMismatch) } | {\n")
-		fmt.Fprintf(&body, "value: %s\nat: u32 = opening.end\nstatus: u32 = 0\ndone: Bool = false\n", typ)
-		if d.names[codecName("key", typ)] {
-			return fmt.Errorf("codec: generated name %s conflicts with a declaration", codecName("key", typ))
+		keyName := codecName("key", typ)
+		if d.names[keyName] {
+			return fmt.Errorf("codec: generated name %s conflicts with a declaration", keyName)
 		}
-		fmt.Fprintf(&keys, "%s: (src: []u8, key: JsonToken): u32 {\n", codecName("key", typ))
-		for i, field := range fields {
-			fmt.Fprintf(&body, "seen%d: Bool = false\n", i)
-			// Keep fallback key storage out of the record reader's live state.
-			fmt.Fprintf(&keys, "key%d_data: [%d]u8\n", i, len(field.wire))
-			for j, b := range []byte(field.wire) {
-				fmt.Fprintf(&keys, "key%d_data[%d] = u8(%d)\n", i, j, b)
-			}
-			fmt.Fprintf(&keys, "key%d: []u8 = view(&key%d_data)\n", i, i)
-		}
-		for i := range fields {
-			fmt.Fprintf(&keys, "json_key_equal(src, key, key%d) ? u32(%d) | ", i, i+1)
-		}
-		keys.WriteString("u32(0)\n}\n")
-		body.WriteString("first: u32 = json_skip_space(src, at)\nfirst < len(src) && src[first] == u8(125) ? { done = true\nat = first + u32(1)\n}\nwhile !done && status == u32(0) {\nat = json_skip_space(src, at)\nkey: JsonToken\nfield_index: u32 = 0\n")
-		// Match bounded literal spellings directly. Escaped and unusual keys
-		// retain the full tokenizer and Unicode comparison path.
-		for i, field := range fields {
-			literal := []byte("\"" + field.wire + "\"")
-			plain := len(literal) <= 34
-			for _, b := range []byte(field.wire) {
-				plain = plain && b >= 32 && b < 127 && b != '\\' && b != '"'
-			}
-			if !plain {
-				continue
-			}
-			fmt.Fprintf(&body, "len(src) - at >= u32(%d)", len(literal))
-			for j := 0; j < len(literal); {
-				if len(literal)-j >= 4 {
-					var word uint32
-					parts := make([]string, 4)
-					for k := 0; k < 4; k++ {
-						word |= uint32(literal[j+k]) << (8 * k)
-						parts[k] = fmt.Sprintf("(u32(src[at + u32(%d)]) << u32(%d))", j+k, 8*k)
-					}
-					fmt.Fprintf(&body, " && (%s) == u32(%d)", strings.Join(parts, " | "), word)
-					j += 4
-				} else {
-					fmt.Fprintf(&body, " && src[at + u32(%d)] == u8(%d)", j, literal[j])
-					j++
-				}
-			}
-			fmt.Fprintf(&body, " ? { field_index = u32(%d)\nkey = JsonToken { kind: u32(6), start: at, end: at + u32(%d) }\n} | ", i+1, len(literal))
-		}
-		fmt.Fprintf(&body, "true ? {\nkey = json_token(src, at)\nfield_index = %s(src, key)\n}\n", codecName("key", typ))
-		body.WriteString("key.kind != u32(6) ? { status = u32(2) } | {\ncolon_at: u32 = json_skip_space(src, key.end)\ncolon: JsonToken = JsonToken { kind: u32(4), start: colon_at, end: colon_at }\ncolon_at >= len(src) || src[colon_at] != u8(58) ? { status = u32(2) } | {\ncolon.end = colon_at + u32(1)\n")
-		for i, field := range fields {
-			fmt.Fprintf(&body, "field_index == u32(%d) ? {\nseen%d ? { status = u32(6) } | {\n", i+1, i)
-			if field.nullable {
-				fmt.Fprintf(&body, "token: JsonToken = json_token(src, colon.end)\ntoken.kind == u32(10) ? {\nabsent: Option[%s] = .None\nvalue.%s = absent\nat = token.end\nseen%d = true\n} | {\npart%d: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, colon.end)\npart%d ?\n | .Err(reason) => { status = json_decode_error_code(reason) }\n | .Ok(decoded) => {\npresent: Option[%s] = .Some(decoded.value)\nvalue.%s = present\nat = decoded.next\nseen%d = true\n}\n}\n", field.typ, field.name, i, i, field.typ, codecName("read", field.typ), i, field.typ, field.name, i)
-			} else if field.length == 0 {
-				fmt.Fprintf(&body, "part%d: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, colon.end)\npart%d ?\n | .Err(reason) => { status = json_decode_error_code(reason) }\n | .Ok(decoded) => { value.%s = decoded.value\nat = decoded.next\nseen%d = true\n}\n", i, field.typ, codecName("read", field.typ), i, field.name, i)
-			} else {
-				body.WriteString("array_start: JsonToken = json_token(src, colon.end)\narray_start.kind <= u32(1) ? { status = u32(2) } | array_start.kind != u32(11) ? { status = u32(3) } | {\nat = array_start.end\nindex: u32 = 0\n")
-				fmt.Fprintf(&body, "while index < u32(%d) && status == u32(0) {\nlookahead: u32 = json_skip_space(src, at)\nlookahead < len(src) && src[lookahead] == u8(93) ? { status = index == u32(0) ? u32(8) | u32(2) } | {\npart: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, at)\npart ?\n | .Err(reason) => { status = json_decode_error_code(reason) }\n | .Ok(decoded) => { value.%s[index] = decoded.value\nat = decoded.next\nindex = index + u32(1)\n}\n}\n", field.length, field.typ, codecName("read", field.typ), field.name)
-				fmt.Fprintf(&body, "status == u32(0) ? {\nseparator_at: u32 = json_skip_space(src, at)\nseparator: JsonToken = JsonToken { kind: u32(1), start: separator_at, end: separator_at }\nseparator_at < len(src) ? {\nunit: u8 = src[separator_at]\nseparator.kind = unit == u8(44) ? u32(5) | unit == u8(93) ? u32(12) | unit == u8(125) ? u32(3) | u32(1)\nseparator.end = separator_at + u32(1)\n}\nindex == u32(%d) ? {\nseparator.kind == u32(12) ? { at = separator.end } | separator.kind == u32(5) ? {\nextra: JsonToken = json_token(src, separator.end)\nextra.kind <= u32(1) || extra.kind == u32(12) ? { status = u32(2) } | { status = u32(8) }\n} | { status = u32(2) }\n} | separator.kind == u32(12) ? { status = u32(8) } | separator.kind == u32(5) ? {\nat = separator.end\n} | { status = u32(2) }\n}\n}\nseen%d = status == u32(0)\n}\n", field.length, i)
-			}
-			body.WriteString("}\n} | ")
-		}
-		body.WriteString("{ status = u32(7) }\n}\n}\nstatus == u32(0) ? {\nseparator_at: u32 = json_skip_space(src, at)\nseparator: JsonToken = JsonToken { kind: u32(1), start: separator_at, end: separator_at }\nseparator_at < len(src) ? {\nunit: u8 = src[separator_at]\nseparator.kind = unit == u8(44) ? u32(5) | unit == u8(93) ? u32(12) | unit == u8(125) ? u32(3) | u32(1)\nseparator.end = separator_at + u32(1)\n}\nseparator.kind == u32(3) ? { done = true\nat = separator.end\n} | separator.kind == u32(5) ? { at = separator.end } | { status = u32(2) }\n}\n}\n")
-		required := []string{"true"}
-		for i := range fields {
-			required = append(required, fmt.Sprintf("seen%d", i))
-		}
-		fmt.Fprintf(&body, "status != u32(0) ? { .Err(json_decode_error(status)) } | !(%s) ? { .Err(.MissingField) } | {\nitem: JsonDecoded[%s]\nitem.value = value\nitem.next = at\n.Ok(item)\n}\n}\n", strings.Join(required, " && "), typ)
+		keyFn = keyClassifier(newSynth("codec:"+keyName), keyName, fields)
+		body = recordReader(s, typ, keyName, fields)
 	}
-	source := keys.String() + fmt.Sprintf("%s: (src: []u8, offset: u32): Result[JsonDecoded[%s], JsonDecodeError] {\n%s}\n", codecName("read", typ), typ, body.String())
-	// For this derivation subset, successful complete parsing establishes UTF-8:
-	// scalar values and delimiters are ASCII, and matched keys are validated
-	// literals or pass Unicode decoding. On failure, scan the full input to
-	// retain InvalidEncoding precedence even beyond the first syntax error.
-	source += fmt.Sprintf("%s: (src: []u8): Result[%s, JsonDecodeError] {\nresult: Result[JsonDecoded[%s], JsonDecodeError] = %s(src, u32(0))\nresult ?\n | .Err(reason) => { json_valid_utf8(src) ? { .Err(reason) } | { .Err(.InvalidEncoding) } }\n | .Ok(item) => { json_skip_space(src, item.next) != len(src) ? { json_valid_utf8(src) ? { .Err(.InvalidSyntax) } | { .Err(.InvalidEncoding) } } | { .Ok(item.value) } }\n}\n", codecName("decode", typ), typ, typ, codecName("read", typ))
-	if err := d.appendCodecSource(typ, source); err != nil {
-		return err
+	readFn := s.fn(readName,
+		[]*ast.FunctionParameter{s.param("src", s.view(s.id("u8"))), s.param("offset", s.id("u32"))},
+		decodedResult(s, typ), body...)
+
+	// For this derivation subset, successful complete parsing establishes
+	// UTF-8: scalar values and delimiters are ASCII, and matched keys are
+	// validated literals or pass Unicode decoding. On failure, scan the full
+	// input to retain InvalidEncoding precedence even beyond the first
+	// syntax error.
+	dec := newSynth("codec:" + decodeName)
+	decodeFn := dec.fn(decodeName,
+		[]*ast.FunctionParameter{dec.param("src", dec.view(dec.id("u8")))},
+		dec.app("Result", dec.id(typ), dec.id("JsonDecodeError")),
+		dec.decl("result", decodedResult(dec, typ), dec.call(readName, dec.id("src"), dec.u32(0))),
+		dec.expr(dec.match(dec.id("result"),
+			dec.arm("Err", "reason", dec.block(dec.expr(dec.cond(
+				dec.call("json_valid_utf8", dec.id("src")),
+				dec.block(dec.expr(dec.variant("Err", dec.id("reason")))),
+				dec.block(dec.expr(errVariant(dec, "InvalidEncoding"))))))),
+			dec.arm("Ok", "item", dec.block(dec.expr(dec.cond(
+				dec.ne(dec.call("json_skip_space", dec.id("src"), dec.field(dec.id("item"), "next")), dec.call("len", dec.id("src"))),
+				dec.block(dec.expr(dec.cond(
+					dec.call("json_valid_utf8", dec.id("src")),
+					dec.block(dec.expr(errVariant(dec, "InvalidSyntax"))),
+					dec.block(dec.expr(errVariant(dec, "InvalidEncoding")))))),
+				dec.block(dec.expr(dec.variant("Ok", dec.field(dec.id("item"), "value")))))))))))
+	if keyFn != nil {
+		d.output = append(d.output, keyFn)
 	}
+	d.output = append(d.output, readFn, decodeFn)
 	d.decodeGenerated[typ] = true
 	return nil
+}
+
+// decodedResult is Result[JsonDecoded[T], JsonDecodeError].
+func decodedResult(s *synth, typ string) ast.Expression {
+	return s.app("Result", s.app("JsonDecoded", s.id(typ)), s.id("JsonDecodeError"))
+}
+
+// errBlock is { .Err(.Name) }.
+func errBlock(s *synth, name string) ast.Expression {
+	return s.block(s.expr(errVariant(s, name)))
+}
+
+// decodedItem completes a reader: item: JsonDecoded[T]; item.value = value;
+// item.next = next; .Ok(item), after the leading statements.
+func decodedItem(s *synth, typ string, value, next ast.Expression, leading ...ast.Statement) ast.Expression {
+	statements := append(leading,
+		s.decl("item", s.app("JsonDecoded", s.id(typ)), nil),
+		s.store(s.field(s.id("item"), "value"), value),
+		s.store(s.field(s.id("item"), "next"), next),
+		s.expr(s.variant("Ok", s.id("item"))))
+	return s.block(statements...)
+}
+
+// integerReader scans an integer token and range-checks its magnitude for
+// the fixed width: unsigned types reject a sign, signed types accept one
+// more magnitude when negative.
+func integerReader(s *synth, typ string) []ast.Statement {
+	bits, _ := strconv.Atoi(typ[1:])
+	magnitude := func() ast.Expression { return s.field(s.id("raw"), "magnitude") }
+	var success ast.Expression
+	if codecPrimitive(typ) == "u64" {
+		maximum := ^uint64(0)
+		if bits < 64 {
+			maximum = (uint64(1) << bits) - 1
+		}
+		conversion := magnitude()
+		if bits < 64 {
+			conversion = s.call(typ+"_trunc_u64", magnitude())
+		}
+		success = s.cond(s.id("negative"), errBlock(s, "TypeMismatch"),
+			s.cond(s.gt(magnitude(), s.u64(maximum)), errBlock(s, "NumericOverflow"),
+				decodedItem(s, typ, conversion, s.field(s.id("raw"), "next"))))
+	} else {
+		negativeMax := uint64(1) << (bits - 1)
+		conversion := ast.Expression(s.id("number"))
+		if bits < 64 {
+			conversion = s.call(typ+"_trunc_i64", s.id("number"))
+		}
+		// number = negative ? -(magnitude - 1) - 1 : magnitude, so the most
+		// negative value never overflows the positive range on the way.
+		sign := s.expr(s.cond(s.and(s.id("negative"), s.gt(magnitude(), s.u64(0))),
+			s.block(s.assign("number", s.sub(s.sub(s.i64(0), s.call("i64_bits_u64", s.sub(magnitude(), s.u64(1)))), s.i64(1)))),
+			s.block(s.assign("number", s.call("i64_bits_u64", magnitude())))))
+		success = s.block(
+			s.decl("limit", s.id("u64"), s.cond(s.id("negative"), s.u64(negativeMax), s.u64(negativeMax-1))),
+			s.expr(s.cond(s.gt(magnitude(), s.id("limit")), errBlock(s, "NumericOverflow"),
+				decodedItem(s, typ, conversion, s.field(s.id("raw"), "next"),
+					s.decl("number", s.id("i64"), s.i64(0)),
+					sign))))
+	}
+	return []ast.Statement{
+		s.decl("raw", s.id("JsonIntegerScan"), s.call("json_scan_integer", s.id("src"), s.id("offset"))),
+		s.decl("negative", s.id("Bool"), s.eq(s.field(s.id("raw"), "status"), s.u32(1))),
+		s.expr(s.cond(s.gt(s.field(s.id("raw"), "status"), s.u32(1)),
+			s.block(s.expr(s.variant("Err", s.call("json_decode_error", s.sub(s.field(s.id("raw"), "status"), s.u32(1)))))),
+			success)),
+	}
+}
+
+// srcWord is the little-endian u32 of src[at+base .. at+base+3], as the
+// or of four shifted bytes.
+func srcWord(s *synth, at func() ast.Expression, base int) ast.Expression {
+	terms := make([]ast.Expression, 0, 4)
+	for k := 0; k < 4; k++ {
+		terms = append(terms, s.infix(s.conv("u32", s.index(s.id("src"), s.add(at(), s.u32(int64(base+k))))), "<<", s.u32(int64(8*k))))
+	}
+	return s.chain("|", terms...)
+}
+
+// srcRemaining is len(src) - at >= n.
+func srcRemaining(s *synth, at func() ast.Expression, n int) ast.Expression {
+	return s.ge(s.sub(s.call("len", s.id("src")), at()), s.u32(int64(n)))
+}
+
+// tokenAt is JsonToken { kind, start: at, end: at + n }.
+func tokenAt(s *synth, kind int64, at func() ast.Expression, n int) ast.Expression {
+	return s.record("JsonToken", s.set("kind", s.u32(kind)), s.set("start", at()), s.set("end", s.add(at(), s.u32(int64(n)))))
+}
+
+// boolReader matches the literals true and false by their packed bytes
+// before falling back to the tokenizer.
+func boolReader(s *synth) []ast.Statement {
+	at := func() ast.Expression { return s.id("at") }
+	kind := func() ast.Expression { return s.field(s.id("part"), "kind") }
+	return []ast.Statement{
+		s.decl("at", s.id("u32"), s.call("json_skip_space", s.id("src"), s.id("offset"))),
+		s.decl("part", s.id("JsonToken"), nil),
+		s.expr(s.cond(
+			s.and(srcRemaining(s, at, 4), s.eq(srcWord(s, at, 0), s.u32(1702195828)), s.call("json_value_boundary", s.id("src"), s.add(at(), s.u32(4)))),
+			s.block(s.assign("part", tokenAt(s, 8, at, 4))),
+			s.cond(
+				s.and(srcRemaining(s, at, 5), s.eq(srcWord(s, at, 0), s.u32(1936482662)), s.eq(s.index(s.id("src"), s.add(at(), s.u32(4))), s.u8(101)), s.call("json_value_boundary", s.id("src"), s.add(at(), s.u32(5)))),
+				s.block(s.assign("part", tokenAt(s, 9, at, 5))),
+				s.block(s.assign("part", s.call("json_token", s.id("src"), at())))))),
+		s.expr(s.cond(s.le(kind(), s.u32(1)), errBlock(s, "InvalidSyntax"),
+			s.cond(s.and(s.ne(kind(), s.u32(8)), s.ne(kind(), s.u32(9))), errBlock(s, "TypeMismatch"),
+				decodedItem(s, "Bool", s.eq(kind(), s.u32(8)), s.field(s.id("part"), "end"))))),
+	}
+}
+
+// keyClassifier maps an object key token to its 1-based field index, 0 for
+// an unknown key. Key storage stays out of the record reader's live state.
+func keyClassifier(k *synth, name string, fields []codecField) *ast.FunctionStatement {
+	body := []ast.Statement{}
+	for i, field := range fields {
+		data := fmt.Sprintf("key%d_data", i)
+		body = append(body, k.decl(data, k.array(int64(len(field.wire)), k.id("u8")), nil))
+		for j, b := range []byte(field.wire) {
+			body = append(body, k.store(k.index(k.id(data), k.intLit(int64(j))), k.u8(int64(b))))
+		}
+		body = append(body, k.decl(fmt.Sprintf("key%d", i), k.view(k.id("u8")), k.call("view", k.addressOf(data))))
+	}
+	var result ast.Expression = k.u32(0)
+	for i := len(fields) - 1; i >= 0; i-- {
+		result = k.cond(k.call("json_key_equal", k.id("src"), k.id("key"), k.id(fmt.Sprintf("key%d", i))), k.u32(int64(i+1)), result)
+	}
+	body = append(body, k.expr(result))
+	return k.fn(name, []*ast.FunctionParameter{k.param("src", k.view(k.id("u8"))), k.param("key", k.id("JsonToken"))}, k.id("u32"), body...)
+}
+
+// separatorScan reads the byte after a value into separator.kind: 5 for a
+// comma, 12 for a closing bracket, 3 for a closing brace, 1 otherwise.
+func separatorScan(s *synth) []ast.Statement {
+	return []ast.Statement{
+		s.decl("separator_at", s.id("u32"), s.call("json_skip_space", s.id("src"), s.id("at"))),
+		s.decl("separator", s.id("JsonToken"), s.record("JsonToken", s.set("kind", s.u32(1)), s.set("start", s.id("separator_at")), s.set("end", s.id("separator_at")))),
+		s.expr(s.cond(s.lt(s.id("separator_at"), s.call("len", s.id("src"))), s.block(
+			s.decl("unit", s.id("u8"), s.index(s.id("src"), s.id("separator_at"))),
+			s.store(s.field(s.id("separator"), "kind"),
+				s.cond(s.eq(s.id("unit"), s.u8(44)), s.u32(5),
+					s.cond(s.eq(s.id("unit"), s.u8(93)), s.u32(12),
+						s.cond(s.eq(s.id("unit"), s.u8(125)), s.u32(3), s.u32(1))))),
+			s.store(s.field(s.id("separator"), "end"), s.add(s.id("separator_at"), s.u32(1)))), nil)),
+	}
+}
+
+// recordReader reads an object: braces, keys classified by the fast path
+// or the classifier, each field decoded once, separators checked, and
+// every field required.
+func recordReader(s *synth, typ, keyName string, fields []codecField) []ast.Statement {
+	at := func() ast.Expression { return s.id("at") }
+	status := func() ast.Expression { return s.id("status") }
+	srcLen := func() ast.Expression { return s.call("len", s.id("src")) }
+	setStatus := func(code int64) ast.Statement { return s.assign("status", s.u32(code)) }
+	fieldOf := func(name string) *ast.IndexExpression { return s.field(s.id("value"), name) }
+	readCall := func(field codecField, from ast.Expression) ast.Expression {
+		return s.call(codecName("read", field.typ), s.id("src"), from)
+	}
+	failArm := func() *ast.MatchArm {
+		return s.arm("Err", "reason", s.block(s.assign("status", s.call("json_decode_error_code", s.id("reason")))))
+	}
+
+	inner := []ast.Statement{
+		s.decl("value", s.id(typ), nil),
+		s.decl("at", s.id("u32"), s.field(s.id("opening"), "end")),
+		s.decl("status", s.id("u32"), s.intLit(0)),
+		s.decl("done", s.id("Bool"), s.boolean(false)),
+	}
+	for i := range fields {
+		inner = append(inner, s.decl(fmt.Sprintf("seen%d", i), s.id("Bool"), s.boolean(false)))
+	}
+	inner = append(inner,
+		s.decl("first", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
+		s.expr(s.cond(s.and(s.lt(s.id("first"), srcLen()), s.eq(s.index(s.id("src"), s.id("first")), s.u8(125))),
+			s.block(s.assign("done", s.boolean(true)), s.assign("at", s.add(s.id("first"), s.u32(1)))), nil)))
+
+	// Key detection: match bounded literal spellings directly; escaped and
+	// unusual keys retain the full tokenizer and Unicode comparison path.
+	var detect ast.Expression = s.cond(s.boolean(true), s.block(
+		s.assign("key", s.call("json_token", s.id("src"), at())),
+		s.assign("field_index", s.call(keyName, s.id("src"), s.id("key")))), nil)
+	for i := len(fields) - 1; i >= 0; i-- {
+		literal := []byte("\"" + fields[i].wire + "\"")
+		plain := len(literal) <= 34
+		for _, b := range []byte(fields[i].wire) {
+			plain = plain && b >= 32 && b < 127 && b != '\\' && b != '"'
+		}
+		if !plain {
+			continue
+		}
+		terms := []ast.Expression{srcRemaining(s, at, len(literal))}
+		for j := 0; j < len(literal); {
+			if len(literal)-j >= 4 {
+				var word uint32
+				for k := 0; k < 4; k++ {
+					word |= uint32(literal[j+k]) << (8 * k)
+				}
+				terms = append(terms, s.eq(srcWord(s, at, j), s.u32(int64(word))))
+				j += 4
+			} else {
+				terms = append(terms, s.eq(s.index(s.id("src"), s.add(at(), s.u32(int64(j)))), s.u8(int64(literal[j]))))
+				j++
+			}
+		}
+		detect = s.cond(s.and(terms...), s.block(
+			s.assign("field_index", s.u32(int64(i+1))),
+			s.assign("key", tokenAt(s, 6, at, len(literal)))), detect)
+	}
+
+	// Field dispatch on field_index, innermost first.
+	var dispatch ast.Expression = s.block(setStatus(7))
+	for i := len(fields) - 1; i >= 0; i-- {
+		field := fields[i]
+		seen := fmt.Sprintf("seen%d", i)
+		part := fmt.Sprintf("part%d", i)
+		colonEnd := func() ast.Expression { return s.field(s.id("colon"), "end") }
+		var decode ast.Expression
+		switch {
+		case field.nullable:
+			decode = s.block(
+				s.decl("token", s.id("JsonToken"), s.call("json_token", s.id("src"), colonEnd())),
+				s.expr(s.cond(s.eq(s.field(s.id("token"), "kind"), s.u32(10)),
+					s.block(
+						s.decl("absent", s.app("Option", s.id(field.typ)), s.variant("None", nil)),
+						s.store(fieldOf(field.name), s.id("absent")),
+						s.assign("at", s.field(s.id("token"), "end")),
+						s.assign(seen, s.boolean(true))),
+					s.block(
+						s.decl(part, decodedResult(s, field.typ), readCall(field, colonEnd())),
+						s.expr(s.match(s.id(part), failArm(), s.arm("Ok", "decoded", s.block(
+							s.decl("present", s.app("Option", s.id(field.typ)), s.variant("Some", s.field(s.id("decoded"), "value"))),
+							s.store(fieldOf(field.name), s.id("present")),
+							s.assign("at", s.field(s.id("decoded"), "next")),
+							s.assign(seen, s.boolean(true))))))))))
+		case field.length == 0:
+			decode = s.block(
+				s.decl(part, decodedResult(s, field.typ), readCall(field, colonEnd())),
+				s.expr(s.match(s.id(part), failArm(), s.arm("Ok", "decoded", s.block(
+					s.store(fieldOf(field.name), s.field(s.id("decoded"), "value")),
+					s.assign("at", s.field(s.id("decoded"), "next")),
+					s.assign(seen, s.boolean(true)))))))
+		default:
+			sepKind := func() ast.Expression { return s.field(s.id("separator"), "kind") }
+			sepEnd := func() ast.Expression { return s.field(s.id("separator"), "end") }
+			afterElement := append(separatorScan(s),
+				s.expr(s.cond(s.eq(s.id("index"), s.u32(field.length)),
+					s.block(s.expr(s.cond(s.eq(sepKind(), s.u32(12)), s.block(s.assign("at", sepEnd())),
+						s.cond(s.eq(sepKind(), s.u32(5)), s.block(
+							s.decl("extra", s.id("JsonToken"), s.call("json_token", s.id("src"), sepEnd())),
+							s.expr(s.cond(s.or(s.le(s.field(s.id("extra"), "kind"), s.u32(1)), s.eq(s.field(s.id("extra"), "kind"), s.u32(12))),
+								s.block(setStatus(2)), s.block(setStatus(8))))),
+							s.block(setStatus(2)))))),
+					s.cond(s.eq(sepKind(), s.u32(12)), s.block(setStatus(8)),
+						s.cond(s.eq(sepKind(), s.u32(5)), s.block(s.assign("at", sepEnd())), s.block(setStatus(2)))))))
+			decode = s.block(
+				s.decl("array_start", s.id("JsonToken"), s.call("json_token", s.id("src"), colonEnd())),
+				s.expr(s.cond(s.le(s.field(s.id("array_start"), "kind"), s.u32(1)), s.block(setStatus(2)),
+					s.cond(s.ne(s.field(s.id("array_start"), "kind"), s.u32(11)), s.block(setStatus(3)),
+						s.block(
+							s.assign("at", s.field(s.id("array_start"), "end")),
+							s.decl("index", s.id("u32"), s.intLit(0)),
+							s.loop(s.and(s.lt(s.id("index"), s.u32(field.length)), s.eq(status(), s.u32(0))),
+								s.decl("lookahead", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
+								s.expr(s.cond(s.and(s.lt(s.id("lookahead"), srcLen()), s.eq(s.index(s.id("src"), s.id("lookahead")), s.u8(93))),
+									s.block(s.assign("status", s.cond(s.eq(s.id("index"), s.u32(0)), s.u32(8), s.u32(2)))),
+									s.block(
+										s.decl("part", decodedResult(s, field.typ), readCall(field, at())),
+										s.expr(s.match(s.id("part"), failArm(), s.arm("Ok", "decoded", s.block(
+											s.store(s.index(fieldOf(field.name), s.id("index")), s.field(s.id("decoded"), "value")),
+											s.assign("at", s.field(s.id("decoded"), "next")),
+											s.assign("index", s.add(s.id("index"), s.u32(1)))))))))),
+								s.expr(s.cond(s.eq(status(), s.u32(0)), s.block(afterElement...), nil))),
+							s.assign(seen, s.eq(status(), s.u32(0))))))))
+		}
+		dispatch = s.cond(s.eq(s.id("field_index"), s.u32(int64(i+1))),
+			s.block(s.expr(s.cond(s.id(seen), s.block(setStatus(6)), decode))),
+			dispatch)
+	}
+
+	sepKind := func() ast.Expression { return s.field(s.id("separator"), "kind") }
+	afterValue := append(separatorScan(s),
+		s.expr(s.cond(s.eq(sepKind(), s.u32(3)), s.block(s.assign("done", s.boolean(true)), s.assign("at", s.field(s.id("separator"), "end"))),
+			s.cond(s.eq(sepKind(), s.u32(5)), s.block(s.assign("at", s.field(s.id("separator"), "end"))), s.block(setStatus(2))))))
+
+	inner = append(inner, s.loop(s.and(s.not(s.id("done")), s.eq(status(), s.u32(0))),
+		s.assign("at", s.call("json_skip_space", s.id("src"), at())),
+		s.decl("key", s.id("JsonToken"), nil),
+		s.decl("field_index", s.id("u32"), s.intLit(0)),
+		s.expr(detect),
+		s.expr(s.cond(s.ne(s.field(s.id("key"), "kind"), s.u32(6)), s.block(setStatus(2)), s.block(
+			s.decl("colon_at", s.id("u32"), s.call("json_skip_space", s.id("src"), s.field(s.id("key"), "end"))),
+			s.decl("colon", s.id("JsonToken"), s.record("JsonToken", s.set("kind", s.u32(4)), s.set("start", s.id("colon_at")), s.set("end", s.id("colon_at")))),
+			s.expr(s.cond(s.or(s.ge(s.id("colon_at"), srcLen()), s.ne(s.index(s.id("src"), s.id("colon_at")), s.u8(58))), s.block(setStatus(2)), s.block(
+				s.store(s.field(s.id("colon"), "end"), s.add(s.id("colon_at"), s.u32(1))),
+				s.expr(dispatch))))))),
+		s.expr(s.cond(s.eq(status(), s.u32(0)), s.block(afterValue...), nil))))
+
+	required := []ast.Expression{s.boolean(true)}
+	for i := range fields {
+		required = append(required, s.id(fmt.Sprintf("seen%d", i)))
+	}
+	inner = append(inner, s.expr(s.cond(s.ne(status(), s.u32(0)),
+		s.block(s.expr(s.variant("Err", s.call("json_decode_error", status())))),
+		s.cond(s.not(s.and(required...)), errBlock(s, "MissingField"),
+			decodedItem(s, typ, s.id("value"), at())))))
+
+	return []ast.Statement{
+		s.decl("opening", s.id("JsonToken"), s.call("json_token", s.id("src"), s.id("offset"))),
+		s.expr(s.cond(s.le(s.field(s.id("opening"), "kind"), s.u32(1)), errBlock(s, "InvalidSyntax"),
+			s.cond(s.ne(s.field(s.id("opening"), "kind"), s.u32(2)), errBlock(s, "TypeMismatch"),
+				s.block(inner...)))),
+	}
 }
