@@ -1544,8 +1544,10 @@ func (p *Parser) parsePubDeclaration() ast.Statement {
 		decl.Exported, decl.Opaque = true, opaque
 	case *ast.TagDeclaration:
 		decl.Exported, decl.Opaque = true, opaque
+	case *ast.ProtocolDeclaration:
+		decl.Exported = true
 	default:
-		p.addErrorAtToken(&pubToken, "pub applies only to package-level declarations (functions, values, types, interfaces, tag schemas)")
+		p.addErrorAtToken(&pubToken, "pub applies only to package-level declarations (functions, values, types, interfaces, tag schemas, protocols)")
 		return nil
 	}
 	if opaque && !isType {
@@ -2376,6 +2378,107 @@ func (p *Parser) parseTagDeclarationFromName(name *ast.Identifier) *ast.TagDecla
 	}
 	decl.Schema = recordLit
 	decl.EndToken = recordLit.EndToken
+	return decl
+}
+
+// parseProtocolDeclarationFromName parses the body of `Name: protocol = {
+// ... }`: `resource T`, `initial S`, and transition lines
+// `name(param: T)?: From -> To (via callable)?`, separated by newlines or
+// commas. The cursor is on `protocol`. Structure only: states are the
+// names the transitions and `initial` mention, and the compiler checks
+// that the initial state exists and that names are unique.
+func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.ProtocolDeclaration {
+	decl := &ast.ProtocolDeclaration{Token: name.Token, Name: name}
+	p.nextToken() // consume `protocol`; currentToken is '='
+	if !p.currentTokenIs(token.ASSIGN) {
+		p.peekError(token.ASSIGN)
+		return nil
+	}
+	p.nextToken() // to '{'
+	if !p.currentTokenIs(token.LBRACE) {
+		p.peekError(token.LBRACE)
+		return nil
+	}
+	p.nextToken() // first entry, or '}'
+	for {
+		for p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.SEMI) {
+			p.nextToken()
+		}
+		if p.currentTokenIs(token.RBRACE) {
+			decl.EndToken = p.currentToken
+			break
+		}
+		if p.currentTokenIs(token.EOF) {
+			p.addErrorAtCurrentToken("protocol declaration is missing its closing brace")
+			return nil
+		}
+		if !p.currentTokenIs(token.IDENT) {
+			p.addErrorAtCurrentToken("protocol entries are `resource T`, `initial S`, or `name: From -> To`")
+			return nil
+		}
+		switch p.currentToken.Literal {
+		case "resource", "initial":
+			keyword := p.currentToken.Literal
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			ident := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if keyword == "resource" {
+				decl.Resources = append(decl.Resources, ident)
+			} else {
+				if decl.Initial != nil {
+					p.addErrorAtCurrentToken("protocol declares its initial state once")
+					return nil
+				}
+				decl.Initial = ident
+			}
+			p.nextToken()
+		default:
+			transition := &ast.ProtocolTransition{Token: p.currentToken, Name: &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}}
+			if p.peekTokenIs(token.LPAREN) {
+				p.nextToken() // (
+				if !p.expectPeek(token.IDENT) {
+					return nil
+				}
+				param := &ast.FunctionParameter{Token: p.currentToken, Name: &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}}
+				if !p.expectPeek(token.COLON) {
+					return nil
+				}
+				p.nextToken()
+				param.Type = p.parseTypeExpression()
+				if param.Type == nil {
+					return nil
+				}
+				if !p.expectPeek(token.RPAREN) {
+					return nil
+				}
+				transition.Param = param
+			}
+			if !p.expectPeek(token.COLON) {
+				return nil
+			}
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			transition.From = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if !p.expectPeek(token.ARROW) {
+				return nil
+			}
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			transition.To = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "via" {
+				p.nextToken() // via
+				if !p.expectPeek(token.IDENT) {
+					return nil
+				}
+				transition.Callable = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			}
+			decl.Transitions = append(decl.Transitions, transition)
+			p.nextToken()
+		}
+	}
 	return decl
 }
 
@@ -4000,6 +4103,14 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 	// shape IDENT ':' tag '=' '{' reads as a declaration.
 	if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "tag" && p.peekTokenIs(token.ASSIGN) {
 		return p.parseTagDeclarationFromName(name)
+	}
+	// Protocol declaration: Name: protocol = { ... } (docs/spec/112-protocols.md).
+	// `protocol` is contextual too.
+	if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "protocol" && p.peekTokenIs(token.ASSIGN) {
+		if decl := p.parseProtocolDeclarationFromName(name); decl != nil {
+			return decl
+		}
+		return nil
 	}
 
 	if p.currentTokenIs(token.TYPE) {

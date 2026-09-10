@@ -254,6 +254,16 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := loadStandardLibrary(tree); err != nil {
 			return nil, err
 		}
+		// Protocol declarations (compiler/protocols.go) project into the
+		// types and functions the rest of the pipeline sees, and into the
+		// resource facts checked after typing.
+		protocolFacts, err := lowerProtocols(tree)
+		if err != nil {
+			return nil, err
+		}
+		if len(protocolFacts) != 0 {
+			resourceProtocols = append(cloneResourceProtocolDeclarations(resourceProtocols), protocolFacts...)
+		}
 		// Type-qualified variant construction (compiler/variants.go) and
 		// derived declarations (compiler/derive.go) are resolved once the
 		// whole program, imports included, is in one tree.
