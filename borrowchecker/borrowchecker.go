@@ -539,7 +539,13 @@ func (bc *BorrowChecker) recomputeOwnerStatesFromActiveBorrows() {
 // checkVariableDeclaration checks variable declarations for borrow creation
 func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, env *typechecker.TypeEnvironment) {
 	varName := vd.Name.Value
-	bc.checkAggregateType(vd.Name, env.CheckedDeclarationType(vd), env, false)
+	// A local record holding views or spans is admitted when every borrow
+	// it carries is accounted for (borrowchecker/aggregate_storage.go); the
+	// binding then borrows those owners itself. Anything else fails closed.
+	declared := env.CheckedDeclarationType(vd)
+	if !bc.bindAggregateBorrows(varName, declared, vd.Value, env) {
+		bc.checkAggregateType(vd.Name, declared, env, false)
+	}
 
 	// Check if the value expression creates a borrow (check before we register the variable)
 	if vd.Value != nil {

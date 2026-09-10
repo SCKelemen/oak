@@ -151,6 +151,35 @@ The initial extent theory should remain intentionally small and decidable. Equal
 
 Extent facts may discharge bounds checks, establish same-shape preconditions, and strengthen disjoint-region proofs. Failure to prove an extent relationship must fail closed; the compiler must not guess from runtime coincidence.
 
+## 8b. Borrows inside aggregates (implemented subset)
+
+A record whose fields hold views or spans is itself a borrow. The first
+increment admits exactly the lexical case the escape rule can already prove:
+
+- A **local binding** of such a record type, initialized from a record
+  literal whose borrow-carrying fields are each `view(&owner)` or
+  `span(&owner)` of an owner in scope, a tracked read-only view binding (a
+  local view or a view parameter), or a nested record literal of the same
+  shape — or initialized as a copy of a binding admitted this way.
+- The binding then **borrows every such owner**, one borrow per field path
+  (`cursor.data`), with the same kind, region, and block depth a direct
+  `view`/`span` binding would have: the owner cannot be written while a view
+  field lives, a span field is exclusive, and the borrows end with the block.
+- Every escape rule keeps the record in place: it is not returned, stored
+  into an aggregate or global, reassigned, or passed to a function, and its
+  borrow fields are not reassigned (`OAK-B0109` in each case). Its fields may
+  be read and indexed (with the ordinary bounds check), and a view field may
+  itself be passed on as a view.
+- A span field taken from an existing span *binding* is not admitted (it
+  would be a second exclusive path); take it from the owner directly.
+
+In the C backend a view or span field is the `{base, len}` struct the views
+already lower to, placed by the natural layout with the emitted `offsetof`
+and `sizeof` assertions. The interpreter stores the view object in the
+record. Views in records that cross a call, are returned, or live in
+storage remain the field-sensitive provenance work of
+`roadmap-authority-resources.md` milestone 4 (e).
+
 ## 9. Move/consume and resource flow
 
 Owned aggregates (`[N]T` and resolved records) retain explicit value semantics in v1: binding or passing one is an explicit-cost copy, never a hidden allocation and never an ownership transfer.

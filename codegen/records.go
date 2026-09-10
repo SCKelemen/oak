@@ -82,6 +82,19 @@ func (cg *CodeGenerator) naturalFieldRepresentation(name string, typeExpr ast.Ex
 		}
 		return semir.RecordFieldRepresentation{}, false
 	}
+	// View and span fields are the {base, len} structs the backend emits: a
+	// pointer and a u32 on the recorded LP64 target model, placed by the
+	// natural layout (docs/spec/92-ffi.md section 2.4); the emitted
+	// assertions make cc ratify the numbers.
+	if indexExpr, isIndex := typeExpr.(*ast.IndexExpression); isIndex {
+		if marker, isMarker := indexExpr.Index.(*ast.Identifier); isMarker && (marker.Value == "" || marker.Value == "*") {
+			layout, err := semir.NaturalRecordLayout([]semir.RecordFieldRepresentation{{Name: "base", Size: 8, Alignment: 8}, {Name: "len", Size: 4, Alignment: 4}})
+			if err != nil {
+				return semir.RecordFieldRepresentation{}, false
+			}
+			return semir.RecordFieldRepresentation{Name: name, Size: layout.Size, Alignment: layout.Alignment}, true
+		}
+	}
 	// Owned-array fields: [N]T occupies N contiguous elements at the
 	// element's alignment (buffer: [16]u8 — the Ring shape).
 	if indexExpr, isIndex := typeExpr.(*ast.IndexExpression); isIndex {
