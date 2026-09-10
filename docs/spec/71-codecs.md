@@ -178,8 +178,10 @@ establish memory safety (ownership does that) or hardware privilege
 2. **Tag-driven derivation** as generated Oak code (§5).
 3. **Borrowed decoded views**: relaxing `OAK-B0109` so a decoded view can
    be returned tied to its input region — the sound headroom `Oak.Escape`
-   already proves. Until then, v1 decode copies into caller storage, which
-   is honest and allocation-free.
+   already proves. The design is `50-borrowing.md` §8c (region-indexed
+   borrowed returns); its first increment is what decode needs. Until
+   then, v1 decode copies into caller storage, which is honest and
+   allocation-free.
 4. Then the first codec: JSON over declared records, verified zero-cost
    per §4.
 
