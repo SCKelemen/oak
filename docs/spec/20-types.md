@@ -370,10 +370,10 @@ unconstrained templates are one mechanism with one emission path.
 
 ### 11.3 Floating-point types
 
-**Status: §11.3.1–§11.3.5 and §11.3.8 implemented and tested, including the
-`f16`/`bf16` storage formats and hexadecimal literals; float SIMD (§11.3.7),
-the `math` library (§11.3.6), and the Lean model are recorded gaps**
-(`STATUS.md` lists the implemented subset precisely). This section is
+**Status: §11.3.1–§11.3.5, §11.3.7, and §11.3.8 implemented and tested,
+including the `f16`/`bf16` storage formats, hexadecimal literals, and the
+float vectors; the `math` library (§11.3.6) and the Lean model are recorded
+gaps** (`STATUS.md` lists the implemented subset precisely). This section is
 normative for the whole floating-point design. It was motivated by the ml
 project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
 tier 2), whose numeric core cannot move into Oak without it.
@@ -574,8 +574,8 @@ call through `c.extern` to a system libm for the same function.
 
 #### 11.3.7 Floating-point SIMD
 
-`93-simd.md` reserves `simd.F32x4` and `simd.F64x2`. With this section they
-acquire the operations `add sub mul div fma min max sqrt neg abs` (lane-wise,
+`93-simd.md` §1.2a defines `simd.F32x4` and `simd.F64x2` (implemented). With
+this section they carry the operations `add sub mul div fma min max sqrt neg abs` (lane-wise,
 each lane obeying §11.3.3 and §11.3.5), `splat`, `load`, `store`,
 `extract_E(v, lane)`, `insert_E(v, lane, x)`, and the horizontal reduction
 `simd.reduce_add_E`. Because floating-point addition is not associative, the

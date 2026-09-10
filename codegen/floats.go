@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/token"
@@ -303,6 +304,13 @@ func programUsesFloats(program *ast.Program) bool {
 			}
 			if ident, ok := value.Interface().(*ast.Identifier); ok && ident != nil {
 				if typechecker.IsFloatName(ident.Value) || typechecker.IsStorageFloatName(ident.Value) {
+					found = true
+					return
+				}
+				// Floating-point vectors (section 11.3.7): the type members
+				// and any operation suffixed with a float shape.
+				if ident.Value == "simd.F32x4" || ident.Value == "simd.F64x2" ||
+					strings.HasSuffix(ident.Value, "_f32x4") || strings.HasSuffix(ident.Value, "_f64x2") {
 					found = true
 					return
 				}

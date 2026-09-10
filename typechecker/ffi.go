@@ -130,6 +130,9 @@ type SimdShape struct {
 	Suffix   string // op suffix: "u8x16"
 	ElemName string // lane primitive: "u8"
 	Lanes    int    // lane count
+	// Float marks the floating-point vectors (docs/spec/20-types.md
+	// section 11.3.7), whose operation set differs from the integer one.
+	Float bool
 }
 
 // SimdShapes is the v1 vector catalog, shared with the backend and the
@@ -139,7 +142,15 @@ var SimdShapes = []SimdShape{
 	{TypeName: "U16x8", Suffix: "u16x8", ElemName: "u16", Lanes: 8},
 	{TypeName: "U32x4", Suffix: "u32x4", ElemName: "u32", Lanes: 4},
 	{TypeName: "U64x2", Suffix: "u64x2", ElemName: "u64", Lanes: 2},
+	{TypeName: "F32x4", Suffix: "f32x4", ElemName: "f32", Lanes: 4, Float: true},
+	{TypeName: "F64x2", Suffix: "f64x2", ElemName: "f64", Lanes: 2, Float: true},
 }
+
+// SimdFloatBinaryOps, SimdFloatUnaryOps: the lane-wise operations of the
+// floating-point vectors (section 11.3.7); each lane obeys the scalar rules
+// of sections 11.3.3 and 11.3.5 (min/max are IEEE 754-2019 minimum/maximum).
+var SimdFloatBinaryOps = []string{"add", "sub", "mul", "div", "min", "max"}
+var SimdFloatUnaryOps = []string{"sqrt", "neg", "abs"}
 
 // SimdShapeBySuffix resolves an op suffix ("u8x16") to its shape.
 func SimdShapeBySuffix(suffix string) (SimdShape, bool) {
@@ -174,6 +185,22 @@ var simdOps = func() map[string]*FunctionType {
 		ops["splat_"+shape.Suffix] = &FunctionType{Parameters: []Type{elem}, ReturnType: vector}
 		ops["load_"+shape.Suffix] = &FunctionType{Parameters: []Type{view, offset}, ReturnType: vector}
 		ops["store_"+shape.Suffix] = &FunctionType{Parameters: []Type{span, offset, vector}, ReturnType: &UnitType{}}
+		if shape.Float {
+			// Floating-point vectors (docs/spec/20-types.md section 11.3.7):
+			// lane-wise arithmetic, fma, lane access, and the pairwise
+			// reduce_add whose grouping is its semantics.
+			for _, binary := range SimdFloatBinaryOps {
+				ops[binary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
+			}
+			for _, unary := range SimdFloatUnaryOps {
+				ops[unary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: vector}
+			}
+			ops["fma_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector, vector}, ReturnType: vector}
+			ops["extract_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, offset}, ReturnType: elem}
+			ops["insert_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, offset, elem}, ReturnType: vector}
+			ops["reduce_add_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: elem}
+			continue
+		}
 		for _, binary := range []string{"add", "sub", "and", "or", "xor", "min", "max", "eq"} {
 			ops[binary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
 		}
