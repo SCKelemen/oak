@@ -63,6 +63,36 @@ func TestFFIBoundaryRules(t *testing.T) {
 			true, "OAK-F0104",
 		},
 		{
+			"span of f64 crosses the boundary",
+			"write: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern(\"write\")\nemit: (xs: []f64): () { _ = write(c.Int(1), c.span_of(xs)) }",
+			false, "",
+		},
+		{
+			"span of f16 storage crosses the boundary as its carrier",
+			"write: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern(\"write\")\nemit: (xs: []f16): () { _ = write(c.Int(1), c.span_of(xs)) }",
+			false, "",
+		},
+		{
+			"span of a declared struct with float fields crosses the boundary",
+			"Point: type = struct { x: f32, y: f32 }\nwrite: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern(\"write\")\nemit: (points: []Point): () { _ = write(c.Int(1), c.span_of(points)) }",
+			false, "",
+		},
+		{
+			"span of a nested struct crosses the boundary",
+			"Point: type = struct { x: f32, y: f32 }\nSegment: type = struct { from: Point, to: Point, tag: u8, ok: Bool }\nwrite: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern(\"write\")\nemit: (s: []Segment): () { _ = write(c.Int(1), c.span_of(s)) }",
+			false, "",
+		},
+		{
+			"span of a struct with a string field is rejected",
+			"Named: type = struct { name: string, id: u32 }\nwrite: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern(\"write\")\nemit: (s: []Named): () { _ = write(c.Int(1), c.span_of(s)) }",
+			true, "OAK-F0104",
+		},
+		{
+			"span of a struct with a view field is rejected",
+			"Holder: type = struct { bytes: []u8, id: u32 }\nwrite: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern(\"write\")\nemit: (s: []Holder): () { _ = write(c.Int(1), c.span_of(s)) }",
+			true, "OAK-F0104",
+		},
+		{
 			"span_of is not an expression",
 			"emit: (bytes: []u8): c.Ptr { c.span_of(bytes) }",
 			true, "OAK-F0103",

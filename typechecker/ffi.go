@@ -636,15 +636,59 @@ func (tc *TypeChecker) BoundarySpanArgument(arg ast.Expression) (member string, 
 	return member, call.Arguments[0], true
 }
 
-// boundarySpanElementTypes are the element types with one meaning on both
-// sides of the C boundary in this increment: fixed-width integers and Bool.
-// Records with proven layouts are admitted by the specification and are a
-// recorded implementation gap.
+// boundarySpanElementTypes are the primitive element types with one meaning
+// on both sides of the C boundary (docs/spec/92-ffi.md section 2.5.1):
+// fixed-width integers, the IEEE binary32/binary64 types, and the f16/bf16
+// storage formats, which cross as their uint16_t carriers
+// (docs/spec/20-types.md section 11.3.8). Bool, tagged unions, and structs
+// with proven layouts are admitted by boundarySpanElement.
 var boundarySpanElementTypes = map[string]bool{
 	"u8": true, "u16": true, "u32": true, "u64": true,
 	"i8": true, "i16": true, "i32": true, "i64": true,
 	"byte": true,
-	"f32":  true, "f64": true,
+	"f32":  true, "f64": true, "f16": true, "bf16": true,
+}
+
+// boundarySpanElement reports whether an element type has one meaning on
+// both sides of the C boundary: a whitelisted primitive, Bool, a boundary
+// tagged union (section 2.6), or a declared struct whose fields are
+// recursively such types (section 2.5.1). Everything else — semantic
+// records without a committed representation, strings, views, generic
+// shapes — is rejected, so C never receives a pointer to storage whose
+// layout the backend did not assert.
+func (tc *TypeChecker) boundarySpanElement(element Type, visiting map[string]bool) bool {
+	switch element := element.(type) {
+	case *PrimitiveType:
+		return boundarySpanElementTypes[element.Name]
+	case *BoolType:
+		return true
+	case *ADTType:
+		return tc.boundaryTaggedUnion(element.Name, visiting)
+	case *RecordType:
+		return tc.boundaryStruct(element, visiting)
+	}
+	return false
+}
+
+// boundaryStruct reports whether a declared struct has one meaning on both
+// sides of the C boundary: it is representation-committed (the struct
+// keyword, so the backend emits it with C compile-time layout assertions),
+// named, and every field is a boundary element type. Semantic records
+// ({ x: u32 }) have no committed layout and are rejected.
+func (tc *TypeChecker) boundaryStruct(record *RecordType, visiting map[string]bool) bool {
+	if !record.Struct || record.Name == "" || record.Open || len(record.Fields) == 0 {
+		return false
+	}
+	if visiting[record.Name] {
+		return true
+	}
+	visiting[record.Name] = true
+	for _, name := range record.orderedFieldNames() {
+		if !tc.boundarySpanElement(record.Fields[name], visiting) {
+			return false
+		}
+	}
+	return true
 }
 
 // checkBoundarySpan validates one boundary-span argument of an extern call:
@@ -686,19 +730,10 @@ func (tc *TypeChecker) checkBoundarySpan(arg ast.Expression, member string, oper
 		tc.addError(operand, "c.span_mut_of takes a writable span [*]T, got %s", operandType)
 		return false
 	}
-	representable := false
-	switch element := array.ElementType.(type) {
-	case *PrimitiveType:
-		representable = boundarySpanElementTypes[element.Name]
-	case *BoolType:
-		representable = true
-	case *ADTType:
-		representable = tc.boundaryTaggedUnion(element.Name, map[string]bool{})
-	}
-	if !representable {
+	if !tc.boundarySpanElement(array.ElementType, map[string]bool{}) {
 		d := tc.addTypeDiagnostic(operand, CodeSpanElementNotABI,
 			fmt.Sprintf("element type %s cannot cross the C boundary in a span", array.ElementType))
-		d.AddNote("boundary spans carry fixed-width integers, Bool, and tagged unions whose payloads are those; other element types have no single meaning on both sides (docs/spec/92-ffi.md sections 2.5.1 and 2.6)")
+		d.AddNote("boundary spans carry fixed-width integers, floating-point types, Bool, declared structs whose fields are those, and tagged unions whose payloads are those; other element types have no single meaning on both sides (docs/spec/92-ffi.md sections 2.5.1 and 2.6)")
 		return false
 	}
 	return true
