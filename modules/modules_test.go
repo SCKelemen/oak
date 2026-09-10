@@ -216,6 +216,8 @@ require example.com/dep 1.2.0
 require example.com/other 0.3.1 // trailing comment
 replace example.com/dep => ../dep
 profile strict
+steady example.com/hello serve
+steady example.com/hello/net poll
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -232,6 +234,9 @@ profile strict
 	if manifest.Replaces["example.com/dep"] != "../dep" {
 		t.Fatalf("replaces = %v", manifest.Replaces)
 	}
+	if len(manifest.Steady) != 2 || manifest.Steady[0] != (SteadyEntry{Path: "example.com/hello", Name: "serve"}) || manifest.Steady[1].Name != "poll" {
+		t.Fatalf("steady = %+v", manifest.Steady)
+	}
 	bad := map[string]string{
 		"missing module":     "oak 0.1.0\n",
 		"unknown directive":  "module example.com/x\nfetch y\n",
@@ -245,6 +250,10 @@ profile strict
 		"unknown profile":    "module example.com/x\nprofile lenient\n",
 		"profile arity":      "module example.com/x\nprofile\n",
 		"duplicate profile":  "module example.com/x\nprofile strict\nprofile default\n",
+		"steady arity":       "module example.com/x\nsteady example.com/x\n",
+		"steady bad path":    "module example.com/x\nsteady strings serve\n",
+		"steady bad name":    "module example.com/x\nsteady example.com/x 9serve\n",
+		"duplicate steady":   "module example.com/x\nsteady example.com/x serve\nsteady example.com/x serve\n",
 	}
 	for name, text := range bad {
 		if _, err := ParseManifest(text); err == nil {

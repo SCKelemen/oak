@@ -30,7 +30,13 @@ const (
 	// effects the compiler cannot know: an extern or asm-backed declaration
 	// without an effects clause, or a call through a function value.
 	CodeEffectUnknown = "OAK-E0103"
+	// CodeSteadyAllocation reports a steady-state entry point (oak.mod
+	// `steady`, docs/spec/85-discipline.md section 4) that reaches an
+	// allocation, or code whose effects cannot be known.
+	CodeSteadyAllocation = "OAK-E0104"
 )
+
+const allocateEffect = "Memory.Allocate"
 
 type effectSet map[string]bool
 
@@ -46,8 +52,41 @@ type effectFacts struct {
 	callees      []string
 }
 
-// analyzeEffects checks every forbids clause in the program.
-func analyzeEffects(program *ast.Program) []*diagnostic.Diagnostic {
+// applySteadyEntries gives each steady-state entry point (internal name ->
+// source spelling) the implicit forbids { Memory.Allocate }, keeping any
+// clause it declares itself. Returns the entry points found.
+func applySteadyEntries(program *ast.Program, steady map[string]string) map[string]string {
+	found := map[string]string{}
+	if len(steady) == 0 {
+		return found
+	}
+	for _, stmt := range program.Statements {
+		fn, ok := stmt.(*ast.FunctionStatement)
+		if !ok || fn.Name == nil || fn.Receiver != nil {
+			continue
+		}
+		label, isEntry := steady[fn.Name.Value]
+		if !isEntry {
+			continue
+		}
+		found[fn.Name.Value] = label
+		declared := false
+		for _, e := range fn.Forbids {
+			if effectKey(e) == allocateEffect {
+				declared = true
+			}
+		}
+		if !declared {
+			fn.Forbids = append(fn.Forbids, &ast.EffectName{Token: fn.Name.Token, Namespace: "Memory", Name: "Allocate"})
+		}
+	}
+	return found
+}
+
+// analyzeEffects checks every forbids clause in the program. `steady` names
+// the entry points whose Memory.Allocate clause the manifest implied; their
+// findings carry the steady-state diagnostic and spelling.
+func analyzeEffects(program *ast.Program, steady map[string]string) []*diagnostic.Diagnostic {
 	functions := map[string]*ast.FunctionStatement{}
 	var order []string
 	anyForbids := false
@@ -82,18 +121,31 @@ func analyzeEffects(program *ast.Program) []*diagnostic.Diagnostic {
 			continue
 		}
 		own := facts[name]
+		label, isSteady := steady[name]
 		for _, forbidden := range fn.Forbids {
 			key := effectKey(forbidden)
 			if own.declared[key] {
-				report(CodeEffectContradiction, forbidden, "%s declares %s and forbids it", name, key)
+				if isSteady && key == allocateEffect {
+					report(CodeSteadyAllocation, forbidden, "steady-state entry point %s (oak.mod: steady %s) declares %s itself", name, label, key)
+				} else {
+					report(CodeEffectContradiction, forbidden, "%s declares %s and forbids it", name, key)
+				}
 				continue
 			}
 			if path := effectPath(name, key, facts); path != nil {
-				report(CodeEffectForbidden, forbidden, "%s forbids %s, which %s performs: %s", name, key, path[len(path)-1], strings.Join(path, " -> "))
+				if isSteady && key == allocateEffect {
+					report(CodeSteadyAllocation, forbidden, "steady-state entry point %s (oak.mod: steady %s) reaches %s, which %s performs: %s", name, label, key, path[len(path)-1], strings.Join(path, " -> "))
+				} else {
+					report(CodeEffectForbidden, forbidden, "%s forbids %s, which %s performs: %s", name, key, path[len(path)-1], strings.Join(path, " -> "))
+				}
 			}
 		}
 		if site, path := unknownPath(name, facts); site != "" {
-			report(CodeEffectUnknown, fn.Name, "%s forbids effects, but the compiler cannot know the effects of %s (%s); declare them with an effects clause", name, site, strings.Join(path, " -> "))
+			if isSteady {
+				report(CodeSteadyAllocation, fn.Name, "steady-state entry point %s (oak.mod: steady %s) reaches %s (%s), whose effects the compiler cannot know; declare them with an effects clause", name, label, site, strings.Join(path, " -> "))
+			} else {
+				report(CodeEffectUnknown, fn.Name, "%s forbids effects, but the compiler cannot know the effects of %s (%s); declare them with an effects clause", name, site, strings.Join(path, " -> "))
+			}
 		}
 	}
 	return diags
