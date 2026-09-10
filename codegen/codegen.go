@@ -430,11 +430,14 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	usesFloats := programUsesFloats(program)
 	if usesFloats {
 		cg.write("#include <math.h>\n")
+		// Floating-point semantics are part of Oak's semantics, not of the
+		// C compiler's optimization level: no contraction of a * b + c into
+		// an fma, ever (docs/spec/20-types.md section 11.3.3, 90-backend.md
+		// 7a). Clang honors the standard pragma; gcc does not implement it
+		// (and warns under -Wunknown-pragmas), but never contracts in strict
+		// ISO mode, and the drivers pass -ffp-contract=off besides.
+		cg.write("#if defined(__clang__)\n#pragma STDC FP_CONTRACT OFF\n#endif\n")
 	}
-	// Floating-point semantics are part of Oak's semantics, not of the C
-	// compiler's optimization level: no contraction of a * b + c into an
-	// fma, ever (docs/spec/20-types.md section 11.3.3, 90-backend.md 7a).
-	cg.write("#pragma STDC FP_CONTRACT OFF\n")
 	cg.write("\n")
 
 	// Emit primitive type aliases

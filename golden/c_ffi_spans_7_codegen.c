@@ -1,7 +1,6 @@
 /* Generated C code from Oak */
 #include <stdint.h>
 #include <stddef.h>
-#pragma STDC FP_CONTRACT OFF
 
 typedef uint8_t  u8;
 typedef uint16_t u16;

@@ -2,7 +2,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
+#if defined(__clang__)
 #pragma STDC FP_CONTRACT OFF
+#endif
 
 typedef uint8_t  u8;
 typedef uint16_t u16;
