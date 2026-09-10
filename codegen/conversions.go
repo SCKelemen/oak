@@ -105,6 +105,14 @@ func (cg *CodeGenerator) checkedConversionHelperSource(oakName string) string {
 	targetBits := typechecker.PrimitiveBits(target)
 	var b strings.Builder
 	fmt.Fprintf(&b, "static inline %s %s( %s x ) {\n", resultC, conversionHelperName(oakName), source)
+	if typechecker.IsFloatName(source) {
+		// Float source (docs/spec/20-types.md section 11.3.4): out of range
+		// and NaN are Err(Overflow); the same exact bounds as trunc.
+		low, high := floatIntegerBounds(target)
+		fmt.Fprintf(&b, "  if (!(x %s && x %s)) { return %s_%s(%s_%s()); }\n", low, high, resultC, errName, overflowC, overflowCtor)
+		fmt.Fprintf(&b, "  return %s_%s((%s)x);\n}\n", resultC, okName, target)
+		return b.String()
+	}
 	if strings.HasPrefix(target, "u") {
 		max := (uint64(1) << uint(targetBits)) - 1
 		fmt.Fprintf(&b, "  if (x > (%s)%du) { return %s_%s(%s_%s()); }\n", source, max, resultC, errName, overflowC, overflowCtor)
@@ -123,6 +131,10 @@ func conversionHelperSource(oakName string) string {
 	target, op, source, ok := typechecker.ConversionParts(oakName)
 	if !ok || op == "checked" {
 		return "OAK_UNSUPPORTED_CONVERSION\n"
+	}
+	if typechecker.IsFloatName(target) || typechecker.IsFloatName(source) ||
+		typechecker.IsStorageFloatName(target) || typechecker.IsStorageFloatName(source) {
+		return floatConversionHelperSource(oakName, target, op, source)
 	}
 	targetBits := typechecker.PrimitiveBits(target)
 	unsignedOf := func(prim string) string { return "u" + prim[1:] }

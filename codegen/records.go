@@ -113,6 +113,51 @@ func (cg *CodeGenerator) naturalFieldRepresentation(name string, typeExpr ast.Ex
 	return semir.RecordFieldRepresentation{}, false
 }
 
+// unionPayloadRepresentations resolves the size and alignment of every
+// payload of a tagged union, reporting failure when one has no placeable
+// representation (a string, a view, a record whose layout is unknown).
+func (cg *CodeGenerator) unionPayloadRepresentations(adt *ast.ADTType) ([]semir.RecordFieldRepresentation, bool) {
+	payloads := []semir.RecordFieldRepresentation{}
+	for _, variant := range adt.Variants {
+		if variant.Payload == nil {
+			continue
+		}
+		rep, ok := cg.naturalFieldRepresentation(variant.Name.Value, variant.Payload)
+		if !ok {
+			return nil, false
+		}
+		payloads = append(payloads, rep)
+	}
+	return payloads, true
+}
+
+// emitUnionLayout binds an emitted tagged union to its proven layout
+// (semir.TaggedUnionLayout): the u32 tag, then the payload union, as a C
+// compile-time assertion cc ratifies. The layout is registered so records
+// may embed the union and the boundary may rely on it
+// (docs/spec/92-ffi.md section 2.6). A union with an unplaceable payload
+// gets no assertion and no registration: it is fine inside Oak and simply
+// has no proven shape at the boundary.
+func (cg *CodeGenerator) emitUnionLayout(typeName, cName string, adt *ast.ADTType) {
+	payloads, ok := cg.unionPayloadRepresentations(adt)
+	if !ok {
+		return
+	}
+	layout, err := semir.TaggedUnionLayout(payloads)
+	if err != nil {
+		return
+	}
+	if cg.recordLayouts == nil {
+		cg.recordLayouts = make(map[string]semir.Representation)
+	}
+	cg.recordLayouts[typeName] = layout
+	claims := fmt.Sprintf("sizeof(%s) == %du && _Alignof(%s) == %du && offsetof(%s, tag) == 0u", cName, layout.Size, cName, layout.Alignment, cName)
+	if len(payloads) > 0 {
+		claims += fmt.Sprintf(" && offsetof(%s, payload) == %du", cName, layout.Fields[1].Offset)
+	}
+	cg.write(fmt.Sprintf("typedef char oak_union_layout_%s[ (%s) ? 1 : -1 ];\n\n", cIdent(typeName), claims))
+}
+
 // emitRecordTypeDef emits the struct typedef for a declared record type and
 // the layout assertions binding the emitted C to the proven placement.
 func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.RecordLiteral) {
@@ -169,8 +214,16 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 	}
 	cg.recordLayouts[typeName] = layout
 
+	// Member types resolve before the struct opens: an owned-array field's
+	// wrapper typedef (codegen/arrays.go) and a view field's typedef must
+	// precede the record that embeds them.
+	fieldTypes := make([]string, len(recordLit.FieldOrder))
+	for i, field := range recordLit.FieldOrder {
+		fieldTypes[i] = cg.parseTypeExpression(field.Value)
+	}
+
 	cg.write(fmt.Sprintf("typedef struct %s {\n", cName))
-	for _, field := range recordLit.FieldOrder {
+	for i, field := range recordLit.FieldOrder {
 		// Declared per-field alignment lands on the member declarator
 		// (GNU attribute form, valid in every mode of the recorded C
 		// targets); the offsetof assertions below make cc ratify it.
@@ -178,14 +231,7 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 		if field.Align != 0 {
 			memberAlign = fmt.Sprintf(" __attribute__((aligned(%d)))", field.Align)
 		}
-		// Array fields need the C declarator form: u8 buffer[ 16 ];
-		if indexExpr, isIndex := field.Value.(*ast.IndexExpression); isIndex {
-			if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed {
-				cg.write(fmt.Sprintf("  %s %s[ %d ]%s;\n", cg.parseTypeExpression(indexExpr.Left), cIdent(field.Name), length.Value, memberAlign))
-				continue
-			}
-		}
-		cg.write(fmt.Sprintf("  %s %s%s;\n", cg.parseTypeExpression(field.Value), cIdent(field.Name), memberAlign))
+		cg.write(fmt.Sprintf("  %s %s%s;\n", fieldTypes[i], cIdent(field.Name), memberAlign))
 	}
 	// GNU attribute syntax (GCC/Clang, the recorded C targets): the layout
 	// attributes sit between the member list and the typedef name.

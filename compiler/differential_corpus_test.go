@@ -18,6 +18,7 @@ import (
 // design (native-only FFI, asm units, multi-file modules) with the reason.
 var corpusSkips = map[string]string{
 	"c_ffi":          "extern FFI is native-backend only (docs/spec/92-ffi.md)",
+	"c_ffi_spans":    "extern FFI and boundary spans are native-backend only (docs/spec/92-ffi.md section 2.5.4)",
 	"tail_recursion": "non-terminating by design: exercises the tail-call lowering shape, never runs to completion",
 }
 

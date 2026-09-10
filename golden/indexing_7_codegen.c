@@ -15,6 +15,11 @@ typedef int64_t i64;
 typedef u8  byte;
 typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
 
+typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
+typedef double f64; /* IEEE 754 binary64 */
+typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */
+typedef uint16_t bf16; /* bfloat16 storage */
+
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */
     u32 len;   /* number of bytes */
@@ -32,11 +37,22 @@ typedef enum oak_Comparison {
 } Comparison;
 
 /* assert: always compiled in (docs/spec/85-discipline.md section 5) */
-static inline void oak_assert(Bool cond) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  if (!cond) {
+    fprintf(stderr, "oak: assertion failed at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+}
+#else
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  (void)file; (void)line;
   if (!cond) {
     __builtin_trap();
   }
 }
+#endif
 
 typedef struct oak_view_u8 {
     const u8* base;
@@ -147,19 +163,26 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
   return oak_Bool_True;
 }
 
+typedef struct oak_arr_u8_8 { u8 v[ 8 ]; } oak_arr_u8_8;
+
+static inline u64 oak_arr_slice_low(u64 low, u64 high, u64 len) {
+  if (low > high || high > len) { __builtin_trap(); }
+  return low;
+}
+
 /* forward declarations; OAK_INLINE marks private leaf helpers the C
    compiler must inline at every optimization level (the external
    definition is still emitted: C99 extern inline) */
 #define OAK_INLINE extern inline __attribute__((always_inline))
-u32 oak_sum( u8 buf[8] );
+u32 oak_sum( oak_arr_u8_8 buf );
 
 // @source: unknown.oak:1:0-11:0
 // @package: main
 // @kind: function
 // @identifier: sum
 // @signature: fn sum(buf: /* type */) -> u32
-u32 oak_sum( u8 buf[8] ) {
-    oak_view_u8 v   = core_slice( buf, 0, 8 )  ;
+u32 oak_sum( oak_arr_u8_8 buf ) {
+    oak_view_u8 v   = (oak_view_u8){ ( buf ).v + oak_arr_slice_low( (u64)( 0 ), (u64)( 8 ), 8 ), (u32)( (u64)( 8 ) - (u64)( 0 ) ) }  ;
     u32 n   = ((u32)( v ).len)  ;
     u32 total   = 0  ;
     u32 i   = 0  ;
@@ -167,6 +190,6 @@ u32 oak_sum( u8 buf[8] ) {
       total     = oak_add_u32( total, ((u32)( oak_view_index_u8( v, (u64)( i ) ) )) )    ;
       i     = oak_add_u32( i, 1 )    ;
     }
-    return oak_add_u32( oak_add_u32( total, ((u32)( buf[ 0 ] )) ), 8 )  ;
+    return oak_add_u32( oak_add_u32( total, ((u32)( buf.v[ 0 ] )) ), 8 )  ;
 }
 

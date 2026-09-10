@@ -106,11 +106,13 @@ int main(int argc, char **argv) {
 	if err != nil {
 		return nil, err
 	}
-	flags := []string{"-std=c11", "-O1", "-g"}
+	// -ffp-contract=off keeps floating-point semantics exactly as written
+	// (docs/spec/90-backend.md section 7a).
+	flags := []string{"-std=c11", "-O1", "-g", "-ffp-contract=off"}
 	if cfg.Sanitize {
 		flags = append(flags, "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer")
 	}
-	args := append(append([]string{}, flags...), "-o", filepath.Join(dir, "test"), cpath)
+	args := append(append([]string{}, flags...), "-o", filepath.Join(dir, "test"), cpath, "-lm")
 	adapterIdentity := ""
 	if adapter != nil {
 		adapterIdentity = adapter.identity
@@ -193,6 +195,7 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 	reportFile, err := os.CreateTemp(p.dir, "report-*")
 	if err != nil {
 		result.signature = "harness:report-file"
+		result.output = err.Error()
 		return result
 	}
 	reportPath := reportFile.Name()

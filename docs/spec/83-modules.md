@@ -178,6 +178,10 @@ replace example.com/dep => ../dep
 - `replace <path> => <dir>` — provide a required module from a local
   directory, relative to the manifest's directory unless absolute. Only the
   root module's replace directives apply.
+- `profile <default|strict>` — at most once; the discipline profile every
+  package of this module is judged under (`85-discipline.md` section 1). A
+  module that declares none is judged under `default`. The command-line
+  `-profile` flag overrides the declaration for the root module only.
 
 Unknown directives, duplicates, malformed lines, replaces without a matching
 require, and manifests over 1 MiB fail closed (`OAK-M0112`).
@@ -401,12 +405,16 @@ point_hash: (v: Point): u64 = derive.hash
 - Unknown kinds (`OAK-M0201`) and mismatched signatures (`OAK-M0202`) are
   rejected. `derive` is a reserved qualifier, never an import alias.
 
-The body is generated as Oak source from the declaration's field order and
-variant list — one fact, one generator — parsed by the ordinary parser, and
-checked by every gate like handwritten code. This is the same mechanism as
-tag-driven codec derivation (`71-codecs.md`), generalized: Haskell's
-`deriving` and Rust's `#[derive]` without a new syntax axis. Generated helper
-names carry the reserved `__`, so they cannot collide with user identifiers.
+The body is built as typed Oak syntax from the declaration's field order and
+variant list — one fact, one generator — the same nodes the parser produces
+(`compiler/synth.go`), and checked by every gate like handwritten code; no
+source text is templated and reparsed. Each generated helper carries the
+owning type's package in its resolution context, so the opaque-projection
+rule sees it as the type's own package, and a distinct position per node, so
+position-keyed records never alias. This is the same mechanism as tag-driven
+codec derivation (`71-codecs.md`), generalized: Haskell's `deriving` and
+Rust's `#[derive]` without a new syntax axis. Generated helper names carry
+the reserved `__`, so they cannot collide with user identifiers.
 ### 6.7 Generic packages
 
 A package may declare parameters after its name and is then a template that

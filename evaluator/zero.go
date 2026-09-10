@@ -63,6 +63,12 @@ func zeroValue(typeExpr ast.Expression, env *object.Environment) (object.Object,
 		switch t.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "int", "uint", "byte", "rune":
 			return &object.Integer{Value: 0}, true
+		case "f32":
+			return &object.Float{Value: 0, Bits: 32}, true
+		case "f64":
+			return &object.Float{Value: 0, Bits: 64}, true
+		case "f16", "bf16":
+			return &object.Float{Value: 0, Bits: 16, Format: t.Value}, true
 		case "Bool":
 			return FALSE, true
 		}
@@ -103,11 +109,20 @@ func zeroValue(typeExpr ast.Expression, env *object.Environment) (object.Object,
 				return record, true
 			}
 		}
-		length, isFixed := t.Index.(*ast.IntegerLiteral)
-		if !isFixed || length.Value < 0 {
+		// A const-arithmetic length ([M*N]T inside a generic body) evaluates
+		// under the const parameters bound as integers in the environment.
+		var count int64
+		if length, isFixed := t.Index.(*ast.IntegerLiteral); isFixed {
+			count = length.Value
+		} else if evaluated, isInt := Eval(t.Index, env).(*object.Integer); isInt {
+			count = evaluated.Value
+		} else {
 			return nil, false
 		}
-		elements := make([]object.Object, length.Value)
+		if count < 0 {
+			return nil, false
+		}
+		elements := make([]object.Object, count)
 		for i := range elements {
 			element, known := zeroValue(t.Left, env)
 			if !known {

@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -47,6 +48,7 @@ func New(source token.Source) *Parser {
 	p.prefixParseFns = make(map[token.TokenKind]prefixParseFn)
 	p.registerPrefix(token.IDENT, p.parseIdentifier)
 	p.registerPrefix(token.INT, p.parseIntegerLiteral)
+	p.registerPrefix(token.FLOAT, p.parseFloatLiteral)
 	p.registerPrefix(token.STRING, p.parseStringLiteral)
 	p.registerPrefix(token.BANG, p.parsePrefixExpression)
 	p.registerPrefix(token.NEG, p.parsePrefixExpression)
@@ -146,12 +148,7 @@ func (p *Parser) nextToken() {
 	// Skip ILLEGAL tokens and report errors
 	// Note: zero-initialized tokens have TokenKind == 0 (ILLEGAL), but Line == 0 indicates uninitialized
 	for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
-		// Use the literal from the token (e.g., "unterminated block comment")
-		errorMsg := p.currentToken.Literal
-		if errorMsg == "" {
-			errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.currentToken.Line, p.currentToken.Column)
-		}
-		p.addErrorAtToken(&p.currentToken, errorMsg)
+		p.addErrorAtToken(&p.currentToken, illegalTokenMessage(p.currentToken))
 		// Skip the illegal token and continue
 		p.currentToken = p.peekToken
 		p.peekToken = p.source.NextToken()
@@ -165,11 +162,7 @@ func (p *Parser) nextToken() {
 
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
-			errorMsg := p.currentToken.Literal
-			if errorMsg == "" {
-				errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.currentToken.Line, p.currentToken.Column)
-			}
-			p.addErrorAtToken(&p.currentToken, errorMsg)
+			p.addErrorAtToken(&p.currentToken, illegalTokenMessage(p.currentToken))
 			p.currentToken = p.peekToken
 			p.peekToken = p.source.NextToken()
 		}
@@ -178,11 +171,7 @@ func (p *Parser) nextToken() {
 	// Skip ILLEGAL tokens in peekToken
 	// Note: zero-initialized tokens have TokenKind == 0 (ILLEGAL), but Line == 0 indicates uninitialized
 	for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
-		errorMsg := p.peekToken.Literal
-		if errorMsg == "" {
-			errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.peekToken.Line, p.peekToken.Column)
-		}
-		p.addErrorAtToken(&p.peekToken, errorMsg)
+		p.addErrorAtToken(&p.peekToken, illegalTokenMessage(p.peekToken))
 		// Skip the illegal token
 		p.peekToken = p.source.NextToken()
 	}
@@ -194,11 +183,7 @@ func (p *Parser) nextToken() {
 
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
-			errorMsg := p.peekToken.Literal
-			if errorMsg == "" {
-				errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.peekToken.Line, p.peekToken.Column)
-			}
-			p.addErrorAtToken(&p.peekToken, errorMsg)
+			p.addErrorAtToken(&p.peekToken, illegalTokenMessage(p.peekToken))
 			p.peekToken = p.source.NextToken()
 		}
 	}
@@ -635,18 +620,51 @@ func (p *Parser) parseVariantExpression() ast.Expression {
 	return expr
 }
 
+// parseFloatLiteral parses a FLOAT token (docs/spec/20-types.md section
+// 11.3.2). The text is kept for width-correct rounding in the typechecker;
+// a literal that does not even fit f64 is rejected here.
+func (p *Parser) parseFloatLiteral() ast.Expression {
+	lit := &ast.FloatLiteral{Token: p.currentToken, Text: p.currentToken.Literal}
+	value, err := strconv.ParseFloat(lit.Text, 64)
+	if err != nil {
+		if numErr, ok := err.(*strconv.NumError); ok && numErr.Err == strconv.ErrRange && !math.IsInf(value, 0) {
+			// Underflow to zero or a subnormal is the IEEE result, not an error.
+			lit.Value = value
+			return lit
+		}
+		p.addErrorAtCurrentToken(fmt.Sprintf("floating-point literal out of range: %q", lit.Text))
+		return nil
+	}
+	lit.Value = value
+	return lit
+}
+
+// illegalTokenMessage explains an illegal token; the scanner's own message
+// (e.g. "unterminated block comment") wins, known foreign spellings get a
+// hint, and anything else names its position.
+func illegalTokenMessage(tok token.Token) string {
+	switch tok.Literal {
+	case "":
+		return fmt.Sprintf("illegal token at line %d, column %d", tok.Line, tok.Column)
+	case "~":
+		return "unexpected ~: bitwise complement is the prefix operator ^ in Oak (Go style), e.g. x & ^mask"
+	}
+	return tok.Literal
+}
+
 func (p *Parser) parseIntegerLiteral() ast.Expression {
 	lit := &ast.IntegerLiteral{Token: p.currentToken}
 
 	// Check if this is a radix literal (e.g., "16r1000", "2r1010")
 	literal := p.currentToken.Literal
 	if strings.ContainsAny(literal, "rR") {
-		value, err := p.parseRadixLiteral(literal)
+		value, wide, err := p.parseRadixLiteral(literal)
 		if err != nil {
 			p.addErrorAtCurrentToken(fmt.Sprintf("invalid radix literal %q: %v", literal, err))
 			return nil
 		}
 		lit.Value = value
+		lit.Wide = wide
 		return lit
 	}
 
@@ -655,6 +673,13 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 		var msg string
 		numErr, ok := err.(*strconv.NumError)
 		if ok && numErr.Err == strconv.ErrRange {
+			// Above the signed range: the full u64 range is still a literal
+			// (docs/spec/20-types.md), carried as its bit pattern.
+			if wide, wideErr := strconv.ParseUint(literal, 10, 64); wideErr == nil {
+				lit.Value = int64(wide)
+				lit.Wide = true
+				return lit
+			}
 			msg = fmt.Sprintf("integer literal out of range: %q", literal)
 		} else {
 			msg = fmt.Sprintf("could not parse %q as integer", literal)
@@ -669,7 +694,7 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 
 // parseRadixLiteral parses a radix literal like "16r1000" or "2r1010"
 // Returns the integer value and nil error if successful, or 0 and error if not a radix literal or invalid
-func (p *Parser) parseRadixLiteral(literal string) (int64, error) {
+func (p *Parser) parseRadixLiteral(literal string) (int64, bool, error) {
 	// Find the 'r' or 'R' separator
 	rIndex := -1
 	for i, ch := range literal {
@@ -679,42 +704,46 @@ func (p *Parser) parseRadixLiteral(literal string) (int64, error) {
 		}
 	}
 	if rIndex == -1 {
-		return 0, fmt.Errorf("not a radix literal")
+		return 0, false, fmt.Errorf("not a radix literal")
 	}
 
 	// Parse the radix (base)
 	radixStr := util.NormalizeDigits(literal[:rIndex])
 	radix, err := strconv.Atoi(radixStr)
 	if err != nil {
-		return 0, fmt.Errorf("invalid radix: %s", radixStr)
+		return 0, false, fmt.Errorf("invalid radix: %s", radixStr)
 	}
 	if radix < 2 || radix > 16 {
-		return 0, fmt.Errorf("radix must be between 2 and 16, got %d", radix)
+		return 0, false, fmt.Errorf("radix must be between 2 and 16, got %d", radix)
 	}
 
 	// Parse the digits after 'r' (skip the 'r' itself)
 	digitsStr := util.NormalizeDigits(literal[rIndex+1:])
 	if digitsStr == "" {
-		return 0, fmt.Errorf("missing digits after radix separator")
+		return 0, false, fmt.Errorf("missing digits after radix separator")
 	}
 	if err := validateDigitSeparators(digitsStr); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	digitsStrClean := strings.ReplaceAll(digitsStr, "_", "")
 	if digitsStrClean == "" {
-		return 0, fmt.Errorf("missing digits after radix separator")
+		return 0, false, fmt.Errorf("missing digits after radix separator")
 	}
 
-	// Convert from the given radix to int64
+	// Convert from the given radix: the full u64 range is admitted, values
+	// above the signed range travel as their bit pattern with Wide set.
 	value, err := strconv.ParseInt(digitsStrClean, radix, 64)
 	if err != nil {
 		if numErr, ok := err.(*strconv.NumError); ok && numErr.Err == strconv.ErrRange {
-			return 0, fmt.Errorf("integer literal out of range for radix %d", radix)
+			if wide, wideErr := strconv.ParseUint(digitsStrClean, radix, 64); wideErr == nil {
+				return int64(wide), true, nil
+			}
+			return 0, false, fmt.Errorf("integer literal out of range for radix %d", radix)
 		}
-		return 0, fmt.Errorf("invalid digits for radix %d: %s", radix, digitsStrClean)
+		return 0, false, fmt.Errorf("invalid digits for radix %d: %s", radix, digitsStrClean)
 	}
 
-	return value, nil
+	return value, false, nil
 }
 
 func validateDigitSeparators(digits string) error {
@@ -2410,6 +2439,16 @@ func (p *Parser) parseStructLiteral() ast.Expression {
 	return record
 }
 
+// peekTokenIsArithmetic reports whether the next token is an arithmetic
+// operator, the start of a const-arithmetic array length.
+func (p *Parser) peekTokenIsArithmetic() bool {
+	switch p.peekToken.TokenKind {
+	case token.SUM, token.NEG, token.MUL, token.QUO, token.REM:
+		return true
+	}
+	return false
+}
+
 // Parse array type: [Type] or [N]Type
 func (p *Parser) parseArrayType() ast.Expression {
 	// Skip opening bracket (currentToken is [)
@@ -2438,6 +2477,27 @@ func (p *Parser) parseArrayType() ast.Expression {
 			Token: p.currentToken,
 			Left:  elementType,
 			Index: &ast.Identifier{Token: p.currentToken, Value: "*"},
+		}
+	}
+
+	// Arithmetic length: [M*K]T or [N+1]T over const parameters, folded to
+	// a literal at instantiation (docs/spec/20-types.md section 11.0). Type
+	// position has no literal ambiguity, so the length is an ordinary
+	// expression up to the closing bracket.
+	if (p.currentTokenIs(token.IDENT) || p.currentTokenIs(token.INT)) && p.peekTokenIsArithmetic() {
+		length := p.parseExpression(LOWEST)
+		if length == nil || !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		p.nextToken() // move to the element type
+		elementType := p.parseTypeExpression()
+		if elementType == nil {
+			return nil
+		}
+		return &ast.IndexExpression{
+			Token: p.currentToken,
+			Left:  elementType,
+			Index: length,
 		}
 	}
 
@@ -2670,6 +2730,25 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 		p.nextToken() // element type
 		elementType := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 		return p.parseTypedArrayLiteralWithToken(open, nil, elementType)
+	}
+
+	// Typed nested array literal: [N][M]Type{ ... } — the element type is
+	// itself an array type, parsed by the type grammar.
+	if p.lookaheadSignificant(1).TokenKind == token.INT &&
+		p.lookaheadSignificant(2).TokenKind == token.RBRACK &&
+		p.lookaheadSignificant(3).TokenKind == token.LBRACK {
+		p.nextToken() // N
+		size, isInt := p.parseIntegerLiteral().(*ast.IntegerLiteral)
+		if !isInt {
+			return nil
+		}
+		p.nextToken() // ]
+		p.nextToken() // [ opening the element type
+		elementType := p.parseArrayType()
+		if elementType == nil {
+			return nil
+		}
+		return p.parseTypedArrayLiteralWithToken(open, size, elementType)
 	}
 
 	// Typed fixed array literal: [N]Type{ ... }.

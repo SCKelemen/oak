@@ -53,8 +53,8 @@ func buildAndRunFrom(t *testing.T, name string, comp Compilation, ccFlags ...str
 	if err := os.WriteFile(cPath, []byte(output), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	args := append([]string{"-std=c99", "-O1"}, ccFlags...)
-	args = append(args, "-o", binPath, cPath)
+	args := append([]string{"-std=c99", "-O1", "-ffp-contract=off"}, ccFlags...)
+	args = append(args, "-o", binPath, cPath, "-lm")
 	compile := exec.Command(cc, args...)
 	if combined, err := compile.CombinedOutput(); err != nil {
 		t.Fatalf("cc failed: %v\n%s\n--- generated C ---\n%s", err, combined, output)

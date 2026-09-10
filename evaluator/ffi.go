@@ -22,8 +22,14 @@ func evalLibraryCall(library, member string, args []ast.Expression, env *object.
 	case "arm64":
 		return evalArm64Intrinsic(member, args, env)
 	case "c":
-		if member == "extern" {
+		switch member {
+		case "extern":
 			return newError("extern bindings require the native backend; the interpreter cannot call foreign code")
+		case "span_of", "span_mut_of":
+			// Boundary spans exist only inside a foreign call
+			// (docs/spec/92-ffi.md section 2.5.4), which the interpreter
+			// cannot make.
+			return newError("c.%s requires the native backend; the interpreter cannot call foreign code", member)
 		}
 		if len(args) != 1 {
 			return newError("c.%s takes exactly one argument", member)

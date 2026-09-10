@@ -94,6 +94,9 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 	case Immediate:
 		return fmt.Sprintf("#%d", o.Value)
 	case Memory:
+		if o.Index != nil {
+			return fmt.Sprintf("[%s, %s, uxtw #%d]", o.Base.Text, o.Index.Text, o.Shift)
+		}
 		switch o.Mode {
 		case MemPreIndex:
 			return fmt.Sprintf("[%s, #%d]!", o.Base.Text, o.Offset)

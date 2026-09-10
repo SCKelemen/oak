@@ -15,6 +15,11 @@ typedef int64_t i64;
 typedef u8  byte;
 typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
 
+typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
+typedef double f64; /* IEEE 754 binary64 */
+typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */
+typedef uint16_t bf16; /* bfloat16 storage */
+
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */
     u32 len;   /* number of bytes */
@@ -32,11 +37,22 @@ typedef enum oak_Comparison {
 } Comparison;
 
 /* assert: always compiled in (docs/spec/85-discipline.md section 5) */
-static inline void oak_assert(Bool cond) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  if (!cond) {
+    fprintf(stderr, "oak: assertion failed at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+}
+#else
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  (void)file; (void)line;
   if (!cond) {
     __builtin_trap();
   }
 }
+#endif
 
 typedef struct oak_view_u8 {
     const u8* base;
@@ -156,8 +172,10 @@ typedef enum oak_Overflow_tag {
 } oak_Overflow_tag;
 
 typedef struct oak_Overflow {
-    oak_Overflow_tag tag;
+    u32 tag;
 } oak_Overflow;
+
+typedef char oak_union_layout_Overflow[ (sizeof(oak_Overflow) == 4u && _Alignof(oak_Overflow) == 4u && offsetof(oak_Overflow, tag) == 0u) ? 1 : -1 ];
 
 // @source: unknown.oak:1:19
 // @package: main
@@ -179,11 +197,13 @@ typedef enum oak_Option_u32_tag {
 } oak_Option_u32_tag;
 
 typedef struct oak_Option_u32 {
-    oak_Option_u32_tag tag;
+    u32 tag;
     union {
         u32 Some;
     } payload;
 } oak_Option_u32;
+
+typedef char oak_union_layout_Option_u32[ (sizeof(oak_Option_u32) == 8u && _Alignof(oak_Option_u32) == 4u && offsetof(oak_Option_u32, tag) == 0u && offsetof(oak_Option_u32, payload) == 4u) ? 1 : -1 ];
 
 // @source: unknown.oak:5:18
 // @package: main
@@ -216,12 +236,14 @@ typedef enum oak_Result_u8_Overflow_tag {
 } oak_Result_u8_Overflow_tag;
 
 typedef struct oak_Result_u8_Overflow {
-    oak_Result_u8_Overflow_tag tag;
+    u32 tag;
     union {
         u8 Ok;
         oak_Overflow Err;
     } payload;
 } oak_Result_u8_Overflow;
+
+typedef char oak_union_layout_Result_u8_Overflow[ (sizeof(oak_Result_u8_Overflow) == 8u && _Alignof(oak_Result_u8_Overflow) == 4u && offsetof(oak_Result_u8_Overflow, tag) == 0u && offsetof(oak_Result_u8_Overflow, payload) == 4u) ? 1 : -1 ];
 
 // @source: unknown.oak:3:21
 // @package: main

@@ -218,18 +218,43 @@ func (d *codecDeriver) fields(name string) ([]codecField, error) {
 	return fields, nil
 }
 
-func codecPrimitive(typ string) (string, string) {
+// codecPrimitive classifies a scalar codec type: "u64" and "i64" for the
+// fixed-width integers (the JSON helpers work at 64 bits), "bool" for Bool,
+// and "" for anything else.
+func codecPrimitive(typ string) string {
 	switch typ {
 	case "u8", "u16", "u32", "u64":
-		return "u64", "u64(value)"
+		return "u64"
 	case "i8", "i16", "i32", "i64":
-		return "i64", "i64(value)"
+		return "i64"
 	case "Bool":
-		return "bool", "value"
+		return "bool"
 	}
-	return "", ""
+	return ""
 }
 
+// codecConversion widens the value to the JSON helper's width: u64(value),
+// i64(value), or the Bool itself.
+func codecConversion(s *synth, primitive string) ast.Expression {
+	if primitive == "bool" {
+		return s.id("value")
+	}
+	return s.conv(primitive, s.id("value"))
+}
+
+// jsonResult is the Result[u32, JsonError] every encoder returns.
+func jsonResult(s *synth) ast.Expression {
+	return s.app("Result", s.id("u32"), s.id("JsonError"))
+}
+
+// errVariant is the .Err(.Name) result.
+func errVariant(s *synth, name string) ast.Expression {
+	return s.variant("Err", s.variant(name, nil))
+}
+
+// derive builds the three encoder functions of one type as typed syntax
+// (compiler/synth.go): __oak_json_encoded_size_T measures, __oak_json_write_T
+// checks capacity then writes at an offset, __oak_json_encode_T writes at 0.
 func (d *codecDeriver) derive(typ string) error {
 	if d.generated[typ] {
 		return nil
@@ -244,15 +269,24 @@ func (d *codecDeriver) derive(typ string) error {
 			return fmt.Errorf("codec: generated name %s conflicts with a declaration", codecName(operation, typ))
 		}
 	}
-	var size, write strings.Builder
-	primitive, conversion := codecPrimitive(typ)
+	sizeName, writeName, encodeName := codecName("encoded_size", typ), codecName("write", typ), codecName("encode", typ)
+	size := newSynth("codec:" + sizeName)
+	write := newSynth("codec:" + writeName)
+	var sizeBody, writeBody []ast.Statement
+	primitive := codecPrimitive(typ)
 	switch {
 	case primitive != "":
-		fmt.Fprintf(&size, ".Ok(json_%s_size(%s))\n", primitive, conversion)
-		fmt.Fprintf(&write, "json_%s_encode_at(dst, offset, %s)\n", primitive, conversion)
+		sizeBody = []ast.Statement{size.expr(size.variant("Ok", size.call("json_"+primitive+"_size", codecConversion(size, primitive))))}
+		writeBody = []ast.Statement{write.expr(write.call("json_"+primitive+"_encode_at", write.id("dst"), write.id("offset"), codecConversion(write, primitive)))}
 	case typ == "string":
-		size.WriteString("bytes: []u8 = str_bytes(value)\njson_string_encode_size(bytes)\n")
-		write.WriteString("bytes: []u8 = str_bytes(value)\njson_string_encode_at(dst, offset, bytes)\n")
+		sizeBody = []ast.Statement{
+			size.decl("bytes", size.view(size.id("u8")), size.call("str_bytes", size.id("value"))),
+			size.expr(size.call("json_string_encode_size", size.id("bytes"))),
+		}
+		writeBody = []ast.Statement{
+			write.decl("bytes", write.view(write.id("u8")), write.call("str_bytes", write.id("value"))),
+			write.expr(write.call("json_string_encode_at", write.id("dst"), write.id("offset"), write.id("bytes"))),
+		}
 	default:
 		fields, err := d.fields(typ)
 		if err != nil {
@@ -263,82 +297,152 @@ func (d *codecDeriver) derive(typ string) error {
 				return fmt.Errorf("codec field %s.%s: %w", typ, field.name, err)
 			}
 		}
-		size.WriteString("total: u64 = 2\nvalid: Bool = true\n")
-		write.WriteString("out: u32 = offset\ndst[out] = u8(123)\nout = out + u32(1)\n")
-		for i, field := range fields {
-			key, err := json.Marshal(field.wire)
-			if err != nil {
-				return err
-			}
-			prefix := append(key, ':')
-			if i != 0 {
-				prefix = append([]byte{','}, prefix...)
-			}
-			if field.nullable {
-				fmt.Fprintf(&size, "total = total + u64(%d)\noptional%d: Option[%s] = value.%s\noptional%d ?\n | .None => { total = total + u64(4) }\n | .Some(present) => {\npart%d: Result[u32, JsonError] = %s(present)\nvalid = valid && json_result_ok(part%d)\ntotal = total + u64(json_result_value(part%d))\n}\n", len(prefix), i, field.typ, field.name, i, i, codecName("encoded_size", field.typ), i, i)
-			} else if field.length == 0 {
-				fmt.Fprintf(&size, "part%d: Result[u32, JsonError] = %s(value.%s)\nvalid = valid && json_result_ok(part%d)\ntotal = total + u64(%d) + u64(json_result_value(part%d))\n", i, codecName("encoded_size", field.typ), field.name, i, len(prefix), i)
-			} else {
-				// Include brackets and commas once; the loop does not expand with N.
-				fmt.Fprintf(&size, "total = total + u64(%d)\nindex%d: u32 = 0\nwhile index%d < u32(%d) && valid {\npart%d: Result[u32, JsonError] = %s(value.%s[index%d])\nvalid = json_result_ok(part%d)\ntotal = total + u64(json_result_value(part%d))\nvalid = valid && total <= u64(4294967295)\nindex%d = index%d + u32(1)\n}\n", int64(len(prefix))+field.length+1, i, i, field.length, i, codecName("encoded_size", field.typ), field.name, i, i, i, i, i)
-			}
-			for _, b := range prefix {
-				fmt.Fprintf(&write, "dst[out] = u8(%d)\nout = out + u32(1)\n", b)
-			}
-			if field.nullable {
-				fmt.Fprintf(&write, "optional%d: Option[%s] = value.%s\noptional%d ?\n | .None => {\ndst[out] = u8(110)\ndst[out + u32(1)] = u8(117)\ndst[out + u32(2)] = u8(108)\ndst[out + u32(3)] = u8(108)\nout = out + u32(4)\n}\n | .Some(present) => {\npart%d: Result[u32, JsonError] = %s(present, dst, out)\nassert(json_result_ok(part%d))\nout = out + json_result_value(part%d)\n}\n", i, field.typ, field.name, i, i, codecName("write", field.typ), i, i)
-			} else if field.length == 0 {
-				fmt.Fprintf(&write, "part%d: Result[u32, JsonError] = %s(value.%s, dst, out)\nassert(json_result_ok(part%d))\nout = out + json_result_value(part%d)\n", i, codecName("write", field.typ), field.name, i, i)
-			} else {
-				fmt.Fprintf(&write, "dst[out] = u8(91)\nout = out + u32(1)\nindex%d: u32 = 0\nwhile index%d < u32(%d) {\nindex%d != u32(0) ? { dst[out] = u8(44)\nout = out + u32(1)\n}\npart%d: Result[u32, JsonError] = %s(value.%s[index%d], dst, out)\nassert(json_result_ok(part%d))\nout = out + json_result_value(part%d)\nindex%d = index%d + u32(1)\n}\ndst[out] = u8(93)\nout = out + u32(1)\n", i, i, field.length, i, i, codecName("write", field.typ), field.name, i, i, i, i, i)
-			}
+		sizeBody, writeBody, err = recordEncoder(size, write, fields)
+		if err != nil {
+			return err
 		}
-		size.WriteString("!valid || total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }\n")
-		write.WriteString("dst[out] = u8(125)\n.Ok(out - offset + u32(1))\n")
 	}
-	// The write function independently checks capacity, even if called by name.
-	// This retains fail-closed behavior for generated helpers exposed by the
-	// bootstrap's flat namespace; callers need no unsafe preflight capability.
-	source := fmt.Sprintf("%s: (value: %s): Result[u32, JsonError] {\n%s}\n", codecName("encoded_size", typ), typ, size.String())
-	source += fmt.Sprintf("%s: (value: %s, dst: [*]u8, offset: u32): Result[u32, JsonError] {\nmeasured: Result[u32, JsonError] = %s(value)\n!json_result_ok(measured) ? { measured } | !bytes_range_fits(len(dst), offset, json_result_value(measured)) ? { .Err(.DestinationTooSmall) } | {\n%s}\n}\n", codecName("write", typ), typ, codecName("encoded_size", typ), write.String())
-	source += fmt.Sprintf("%s: (value: %s, dst: [*]u8): Result[u32, JsonError] = %s(value, dst, u32(0))\n", codecName("encode", typ), typ, codecName("write", typ))
-	if err := d.appendCodecSource(typ, source); err != nil {
-		return err
-	}
+	sizeFn := size.fn(sizeName, []*ast.FunctionParameter{size.param("value", size.id(typ))}, jsonResult(size), sizeBody...)
+	// The write function independently checks capacity, even if called by
+	// name. This retains fail-closed behavior for generated helpers exposed
+	// by the bootstrap's flat namespace; callers need no unsafe preflight
+	// capability.
+	writeFn := write.fn(writeName,
+		[]*ast.FunctionParameter{write.param("value", write.id(typ)), write.param("dst", write.span(write.id("u8"))), write.param("offset", write.id("u32"))},
+		jsonResult(write),
+		write.decl("measured", jsonResult(write), write.call(sizeName, write.id("value"))),
+		write.expr(write.cond(
+			write.not(write.call("json_result_ok", write.id("measured"))),
+			write.block(write.expr(write.id("measured"))),
+			write.cond(
+				write.not(write.call("bytes_range_fits", write.call("len", write.id("dst")), write.id("offset"), write.call("json_result_value", write.id("measured")))),
+				write.block(write.expr(errVariant(write, "DestinationTooSmall"))),
+				write.block(writeBody...)))))
+	encode := newSynth("codec:" + encodeName)
+	encodeFn := encode.fn(encodeName,
+		[]*ast.FunctionParameter{encode.param("value", encode.id(typ)), encode.param("dst", encode.span(encode.id("u8")))},
+		jsonResult(encode),
+		encode.expr(encode.call(writeName, encode.id("value"), encode.id("dst"), encode.u32(0))))
+	d.output = append(d.output, sizeFn, writeFn, encodeFn)
 	d.generated[typ] = true
 	return nil
 }
 
-func (d *codecDeriver) appendCodecSource(typ, source string) error {
-	tree, err := New().WithSource("derived_json.oak", source).Parse().Get()
-	if err != nil {
-		return fmt.Errorf("codec: generated %s: %w", typ, err)
+// recordEncoder builds the measuring and writing bodies of a record's
+// encoder: the object braces, each field's key prefix (a leading comma
+// after the first), and the field value — scalar, nullable, or a fixed
+// array element by element.
+func recordEncoder(size, write *synth, fields []codecField) ([]ast.Statement, []ast.Statement, error) {
+	sizeBody := []ast.Statement{
+		size.decl("total", size.id("u64"), size.intLit(2)),
+		size.decl("valid", size.id("Bool"), size.boolean(true)),
 	}
-	// Every generated function needs a distinct resolution context. Source
-	// offsets repeat across independently parsed codec instantiations, whose
-	// Result types differ; sharing the std context aliases those records.
-	for _, stmt := range tree.Root.Statements {
-		fn, ok := stmt.(*ast.FunctionStatement)
-		if !ok {
-			continue
+	writeBody := []ast.Statement{
+		write.decl("out", write.id("u32"), write.id("offset")),
+		write.store(write.index(write.id("dst"), write.id("out")), write.u8(123)),
+		write.assign("out", write.add(write.id("out"), write.u32(1))),
+	}
+	for i, field := range fields {
+		key, err := json.Marshal(field.wire)
+		if err != nil {
+			return nil, nil, err
 		}
-		context := "codec:" + fn.Name.Value
-		if err := transformSyntax(reflect.ValueOf(fn), func(expr ast.Expression) (ast.Expression, error) {
-			switch node := expr.(type) {
-			case *ast.InfixExpression:
-				node.Token.SemanticContext = context
-			case *ast.MatchExpression:
-				node.Token.SemanticContext = context
-			case *ast.VariantExpression:
-				node.Token.SemanticContext = context
+		prefix := append(key, ':')
+		if i != 0 {
+			prefix = append([]byte{','}, prefix...)
+		}
+		part := fmt.Sprintf("part%d", i)
+		optional := fmt.Sprintf("optional%d", i)
+		index := fmt.Sprintf("index%d", i)
+		sizeCall := codecName("encoded_size", field.typ)
+		writeCall := codecName("write", field.typ)
+		// value.field, rebuilt per use: nodes are never shared.
+		fieldOf := func(s *synth) ast.Expression { return s.field(s.id("value"), field.name) }
+
+		switch {
+		case field.nullable:
+			sizeBody = append(sizeBody,
+				size.assign("total", size.add(size.id("total"), size.u64(uint64(len(prefix))))),
+				size.decl(optional, size.app("Option", size.id(field.typ)), fieldOf(size)),
+				size.expr(size.match(size.id(optional),
+					size.arm("None", "", size.block(size.assign("total", size.add(size.id("total"), size.u64(4))))),
+					size.arm("Some", "present", size.block(
+						size.decl(part, jsonResult(size), size.call(sizeCall, size.id("present"))),
+						size.assign("valid", size.and(size.id("valid"), size.call("json_result_ok", size.id(part)))),
+						size.assign("total", size.add(size.id("total"), size.conv("u64", size.call("json_result_value", size.id(part))))))))))
+		case field.length == 0:
+			sizeBody = append(sizeBody,
+				size.decl(part, jsonResult(size), size.call(sizeCall, fieldOf(size))),
+				size.assign("valid", size.and(size.id("valid"), size.call("json_result_ok", size.id(part)))),
+				size.assign("total", size.add(size.add(size.id("total"), size.u64(uint64(len(prefix)))), size.conv("u64", size.call("json_result_value", size.id(part))))))
+		default:
+			// Include brackets and commas once; the loop does not expand with N.
+			sizeBody = append(sizeBody,
+				size.assign("total", size.add(size.id("total"), size.u64(uint64(int64(len(prefix))+field.length+1)))),
+				size.decl(index, size.id("u32"), size.intLit(0)),
+				size.loop(size.and(size.lt(size.id(index), size.u32(field.length)), size.id("valid")),
+					size.decl(part, jsonResult(size), size.call(sizeCall, size.index(fieldOf(size), size.id(index)))),
+					size.assign("valid", size.call("json_result_ok", size.id(part))),
+					size.assign("total", size.add(size.id("total"), size.conv("u64", size.call("json_result_value", size.id(part))))),
+					size.assign("valid", size.and(size.id("valid"), size.le(size.id("total"), size.u64(4294967295)))),
+					size.assign(index, size.add(size.id(index), size.u32(1)))))
+		}
+
+		for _, b := range prefix {
+			writeBody = append(writeBody,
+				write.store(write.index(write.id("dst"), write.id("out")), write.u8(int64(b))),
+				write.assign("out", write.add(write.id("out"), write.u32(1))))
+		}
+		emitPart := func(value ast.Expression) []ast.Statement {
+			return []ast.Statement{
+				write.decl(part, jsonResult(write), write.call(writeCall, value, write.id("dst"), write.id("out"))),
+				write.expr(write.call("assert", write.call("json_result_ok", write.id(part)))),
+				write.assign("out", write.add(write.id("out"), write.call("json_result_value", write.id(part)))),
 			}
-			return expr, nil
-		}); err != nil {
-			return err
+		}
+		switch {
+		case field.nullable:
+			null := []ast.Statement{}
+			for k, b := range []byte("null") {
+				at := ast.Expression(write.id("out"))
+				if k != 0 {
+					at = write.add(write.id("out"), write.u32(int64(k)))
+				}
+				null = append(null, write.store(write.index(write.id("dst"), at), write.u8(int64(b))))
+			}
+			null = append(null, write.assign("out", write.add(write.id("out"), write.u32(4))))
+			writeBody = append(writeBody,
+				write.decl(optional, write.app("Option", write.id(field.typ)), fieldOf(write)),
+				write.expr(write.match(write.id(optional),
+					write.arm("None", "", write.block(null...)),
+					write.arm("Some", "present", write.block(emitPart(write.id("present"))...)))))
+		case field.length == 0:
+			writeBody = append(writeBody, emitPart(fieldOf(write))...)
+		default:
+			loopBody := []ast.Statement{
+				write.expr(write.cond(write.ne(write.id(index), write.u32(0)), write.block(
+					write.store(write.index(write.id("dst"), write.id("out")), write.u8(44)),
+					write.assign("out", write.add(write.id("out"), write.u32(1)))), nil)),
+			}
+			loopBody = append(loopBody, emitPart(write.index(fieldOf(write), write.id(index)))...)
+			loopBody = append(loopBody, write.assign(index, write.add(write.id(index), write.u32(1))))
+			writeBody = append(writeBody,
+				write.store(write.index(write.id("dst"), write.id("out")), write.u8(91)),
+				write.assign("out", write.add(write.id("out"), write.u32(1))),
+				write.decl(index, write.id("u32"), write.intLit(0)),
+				write.loop(write.lt(write.id(index), write.u32(field.length)), loopBody...),
+				write.store(write.index(write.id("dst"), write.id("out")), write.u8(93)),
+				write.assign("out", write.add(write.id("out"), write.u32(1))))
 		}
 	}
-	d.output = append(d.output, tree.Root.Statements...)
-	return nil
+	sizeBody = append(sizeBody, size.expr(size.cond(
+		size.or(size.not(size.id("valid")), size.gt(size.id("total"), size.u64(4294967295))),
+		size.block(size.expr(errVariant(size, "SizeOverflow"))),
+		size.block(size.expr(size.variant("Ok", size.call("u32_trunc_u64", size.id("total"))))))))
+	writeBody = append(writeBody,
+		write.store(write.index(write.id("dst"), write.id("out")), write.u8(125)),
+		write.expr(write.variant("Ok", write.add(write.sub(write.id("out"), write.id("offset")), write.u32(1)))))
+	return sizeBody, writeBody, nil
 }
 
 // isJSONTag recognizes the json tag schema under its flat name or a

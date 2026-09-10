@@ -68,6 +68,11 @@ func (tc *TypeChecker) parseGenericTypeApplication(expr ast.Expression) (Type, b
 		if instantiated := tc.instantiateRecordTemplate(template, args); instantiated != nil {
 			return instantiated, true
 		}
+		for _, arg := range args {
+			if _, isVar := arg.(*TypeVar); isVar {
+				return nil, true // open application inside a template signature
+			}
+		}
 		tc.addError(expr, "cannot instantiate %s with these arguments", name)
 		return nil, true
 	}

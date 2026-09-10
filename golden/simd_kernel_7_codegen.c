@@ -15,6 +15,11 @@ typedef int64_t i64;
 typedef u8  byte;
 typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
 
+typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
+typedef double f64; /* IEEE 754 binary64 */
+typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */
+typedef uint16_t bf16; /* bfloat16 storage */
+
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */
     u32 len;   /* number of bytes */
@@ -32,11 +37,22 @@ typedef enum oak_Comparison {
 } Comparison;
 
 /* assert: always compiled in (docs/spec/85-discipline.md section 5) */
-static inline void oak_assert(Bool cond) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  if (!cond) {
+    fprintf(stderr, "oak: assertion failed at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+}
+#else
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  (void)file; (void)line;
   if (!cond) {
     __builtin_trap();
   }
 }
+#endif
 
 typedef struct oak_view_u8 {
     const u8* base;
@@ -158,6 +174,8 @@ typedef struct oak_u8x16 { u8 lanes[16]; } u8x16;
 typedef struct oak_u16x8 { u16 lanes[8]; } u16x8;
 typedef struct oak_u32x4 { u32 lanes[4]; } u32x4;
 typedef struct oak_u64x2 { u64 lanes[2]; } u64x2;
+typedef struct oak_f32x4 { f32 lanes[4]; } f32x4;
+typedef struct oak_f64x2 { f64 lanes[2]; } f64x2;
 
 static inline Bool oak_simd_any_u8x16( u8x16 v ) {
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
@@ -241,6 +259,8 @@ static inline u32 oak_arm64_uaddlv_u8x16( u8x16 x ) {
 #endif
 }
 
+typedef struct oak_arr_u8_16 { u8 v[ 16 ]; } oak_arr_u8_16;
+
 /* forward declarations; OAK_INLINE marks private leaf helpers the C
    compiler must inline at every optimization level (the external
    definition is still emitted: C99 extern inline) */
@@ -265,10 +285,10 @@ OAK_INLINE Bool oak_contains16( oak_view_u8 v, u8 needle ) {
 // @identifier: main
 // @signature: fn main() -> i32
 i32 oak_main(  ) {
-    u8 out[16] = {0};
-    oak_span_u8 s   = (oak_span_u8){ out, 16 }  ;
+    oak_arr_u8_16 out = {0};
+    oak_span_u8 s   = (oak_span_u8){ out.v, 16 }  ;
 oak_simd_store_u8x16( s, ((u32)( 0 )), oak_simd_splat_u8x16( ((u8)( 66 )) ) )  ;
-oak_assert( ( oak_arm64_uaddlv_u8x16( oak_simd_splat_u8x16( ((u8)( 1 )) ) ) == ((u32)( 16 )) ) )  ;
+oak_assert( ( oak_arm64_uaddlv_u8x16( oak_simd_splat_u8x16( ((u8)( 1 )) ) ) == ((u32)( 16 )) ), "unknown.oak", 12 )  ;
     return ((i32)( oak_span_index_u8( s, (u64)( 0 ) ) ))  ;
 }
 

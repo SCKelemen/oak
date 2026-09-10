@@ -341,12 +341,6 @@ func (f *linearForm) equal(g *linearForm) bool {
 type symbolicState struct {
 	regs  map[int]*term // physical register -> 64-bit term
 	flags *flagsFact    // NZCV as the operands that produced them; nil until set
-	// Loop accounting along this path: the step at which each label was
-	// last passed and the step of the last fork. A backward branch whose
-	// target was passed before the last fork closes a loop containing a
-	// data-dependent exit — its trip count is not constant.
-	labelStep map[int]int
-	forkStep  int
 }
 
 // flagsFact records what produced the flags: cmp/subs leave NZCV as the
@@ -521,42 +515,23 @@ func (s *symbolicState) clone() *symbolicState {
 	for reg, value := range s.regs {
 		regs[reg] = value
 	}
-	labels := make(map[int]int, len(s.labelStep))
-	for label, step := range s.labelStep {
-		labels[label] = step
-	}
-	return &symbolicState{regs: regs, flags: s.flags, labelStep: labels, forkStep: s.forkStep}
-}
-
-// backward reports whether a branch to target from pc closes a loop the
-// path can unroll: the target lies behind, and no fork happened since the
-// path last passed it.
-func (s *symbolicState) backwardAllowed(target, pc int) (backward bool, allowed bool) {
-	if target > pc {
-		return false, true
-	}
-	passed, seen := s.labelStep[target]
-	return true, seen && passed >= s.forkStep
+	return &symbolicState{regs: regs, flags: s.flags}
 }
 
 // run executes from item index pc to a ret on every path.
 func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 	x.paths++
 	if x.paths > pathBudget {
-		return nil, "more paths than the verifier's budget", false
-	}
-	if state.labelStep == nil {
-		state.labelStep = map[int]int{}
+		return nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
 	}
 	for ; pc < len(x.items); pc++ {
 		instr, isInstr := x.items[pc].(Instruction)
 		if !isInstr {
-			state.labelStep[pc] = x.steps // a label is a position
-			continue
+			continue // a label is a position
 		}
 		x.steps++
 		if x.steps > stepBudget {
-			return nil, "more instructions than the verifier's unrolling budget", false
+			return nil, "more instructions than the verifier's unrolling budget (a loop whose trip count depends on the inputs)", false
 		}
 		switch instr.Mnemonic {
 		case "ret":
@@ -570,10 +545,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			if !ok {
 				return nil, "a branch to an unknown label", false
 			}
-			if _, allowed := state.backwardAllowed(target, pc); !allowed {
-				return nil, "a loop whose trip count depends on the inputs", false
-			}
-			pc = target - 1
+			pc = target - 1 // backward: a loop, bounded by the budgets
 			continue
 		case "b.":
 			if state.flags == nil || state.flags.unknown {
@@ -598,10 +570,8 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 				}
 				continue
 			}
-			if backward, _ := state.backwardAllowed(target, pc); backward {
-				return nil, "a loop whose trip count depends on the inputs", false
-			}
-			state.forkStep = x.steps
+			// An undecided branch forks; backward or forward alike — a
+			// data-dependent loop exit unfolds until the budgets stop it.
 			taken, reason, ok := x.run(target, state.clone())
 			if !ok {
 				return nil, reason, false
@@ -647,6 +617,23 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	}
 	if int64(widthOf(dest.Class)/8) != elem {
 		return fmt.Sprintf("a %d-bit load over %d-byte elements", widthOf(dest.Class), elem), false
+	}
+	if mem.Index != nil {
+		// [base, wI, uxtw #s]: element wI. Along an unrolled counted loop the
+		// index register is a constant on every iteration; a data-dependent
+		// index names no single element.
+		if int64(1)<<uint(mem.Shift) != elem {
+			return "an indexed load whose scale is not the element size", false
+		}
+		index, ok := state.read(*mem.Index)
+		if !ok {
+			return "unbound register read", false
+		}
+		if index.kind != termConst {
+			return "a load at a data-dependent index", false
+		}
+		state.write(dest, paramTerm(spanElemName(param, int64(index.value)), widthOf(dest.Class)))
+		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
@@ -893,22 +880,29 @@ func (lo *oakLowering) spanElement(expr ast.Expression) (name string, contract s
 	if !isSpan {
 		return "", spanContract{}, false
 	}
-	k, isConst := constantIndexValue(index.Index)
+	k, isConst := lo.constantIndexValue(index.Index)
 	if !isConst || k < 0 {
 		return "", spanContract{}, false
 	}
 	return spanElemName(ident.Value, k), contract, true
 }
 
-func constantIndexValue(expr ast.Expression) (int64, bool) {
+// constantIndexValue reads a constant index: a literal, a primitive
+// constructor over one, or a local whose value has folded to a constant
+// (the counter of an unrolled loop).
+func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
+	case *ast.Identifier:
+		if local, isLocal := lo.locals[e.Value]; isLocal && local.value.kind == termConst {
+			return int64(local.value.value), true
+		}
 	case *ast.InvocationExpression:
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && len(e.Arguments) == 1 {
 			switch ident.Value {
 			case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
-				return constantIndexValue(e.Arguments[0])
+				return lo.constantIndexValue(e.Arguments[0])
 			}
 		}
 	}

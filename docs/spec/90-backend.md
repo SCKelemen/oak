@@ -112,7 +112,7 @@ The formal specification of overflow/division/shifts/conversions must precede re
 
 ### 7a. Floating-point semantics
 
-The same rule governs floating point once `20-types.md` §11.3 is implemented: the backend realizes IEEE 754 round-to-nearest-even with subnormals, never reassociates, distributes, or contracts, and never enables a fast-math mode. The C backend emits `#pragma STDC FP_CONTRACT OFF` at the top of every translation unit and the `oak run`/`oak test` drivers pass `-ffp-contract=off` to the system compiler; `-ffast-math`, `-Ofast`, `-ffinite-math-only`, and `-fno-signed-zeros` are never passed. Out-of-range float-to-integer conversions lower to range-checked helpers, never to C's undefined cast. The "no hidden runtime" rule of §3 extends to numeric semantics: the written expression is the executed expression.
+The same rule governs floating point (`20-types.md` §11.3): the backend realizes IEEE 754 round-to-nearest-even with subnormals, never reassociates, distributes, or contracts, and never enables a fast-math mode. The C backend emits `#pragma STDC FP_CONTRACT OFF` at the top of every translation unit that uses floating point (under clang, which honors the standard pragma; gcc does not implement it and never contracts in strict ISO mode, which the drivers select with `-std=c99`/`-std=c11`), spells `f32`/`f64` as `float`/`double`, emits literals as exact hexadecimal floating constants of the checked width so the C compiler performs no decimal conversion of its own, keeps `+ - * /` and comparisons as the plain C operators with every operation parenthesized so C's grouping is Oak's parse tree (`20-types.md` §11.3.3), requires `FLT_EVAL_METHOD == 0` of the target (the emitted unit fails to compile on a target that evaluates in excess precision, such as x87, rather than silently changing results), and lowers intrinsics to the correctly rounded C99 `<math.h>` functions (with its own helpers for the IEEE 754-2019 `min`/`max` and `totalOrder`). The `oak run`/`oak test` drivers pass `-ffp-contract=off` and link `-lm`; `-ffast-math`, `-Ofast`, `-ffinite-math-only`, and `-fno-signed-zeros` are never passed. Out-of-range float-to-integer conversions lower to range-checked helpers that trap, saturate, or report, never to C's undefined cast. The "no hidden runtime" rule of §3 extends to numeric semantics: the written expression is the executed expression.
 
 ## 8. Bounds
 
@@ -131,6 +131,16 @@ The backend may not silently heap-promote escaping captures.
 ## 10. Source/debug information
 
 Backend output should preserve mappings from generated operations to canonical Oak source spans and stable semantic identities.
+
+**Implemented:** every emitted function and statement is preceded by a
+`// @source:` comment, and with `oak build -lines` (the `LineDirectives`
+compilation option) also by a C `#line N "file"` directive naming its Oak
+source line, so C compiler diagnostics and debuggers attribute generated
+code to the Oak line that produced it. Spliced standard-library syntax is
+not from that file and receives no directive; a generic specialization's
+lines are its template's. Directives are off by default so the generated
+C stands on its own lines for backend inspection, and the golden corpus is
+recorded without them.
 
 The compiler's source model should power:
 
@@ -198,4 +208,31 @@ keep external linkage; recursive and looping functions are never marked, so
 the C compiler is never asked to inline what it cannot. The judgment is the
 discipline analyzer's call-graph and loop walk (`InlineHelperShape`), so the
 backend and the recursion policy share one authority.
+
+## 10. Owned arrays as values
+
+An owned array `[N]T` is a value, and its C representation is a struct
+carrying the array: `typedef struct oak_arr_T_N { T v[ N ]; } oak_arr_T_N;`
+(`codegen/arrays.go`). The wrapper has exactly the raw array's size and
+alignment, so record layouts and the emitted `sizeof`/`offsetof` assertions
+are unchanged, and C's own struct semantics supply every copy the language
+specifies: a parameter is the callee's own copy (no copy-in prologue), a
+return is a copy, whole-array assignment and initializing a record field
+from an array binding are plain assignments, and a tagged-union payload of
+array type is stored and matched like any other. Element access spells
+`.v` before the index and keeps its bounds check (`oak_index`, `oak_store`,
+`oak_lv_idx` take the array member); `view(&a)` / `span(&a)` borrow `a.v`
+with the static length; `a[lo:hi]` over an owned array is a compound-literal
+view whose bounds are checked against the static length before the pointer
+is formed, so a slice is a value in argument position too. A typed array
+literal is a compound literal of the wrapper, `(oak_arr_u32_4){ { 1, 2, 3, 4 } }`,
+in any expression position; a declaration initializer is the brace form. A nested
+array `[N][M]T` is an array of wrapper values (`oak_arr_oak_arr_T_M_N`): a row
+copied out is its own storage and a store through `grid[i][j]` reaches the
+grid, each hop keeping its bounds check. The
+typedef name mangles element spellings that are not identifiers (`_Atomic u32`,
+`void *`, a nested `oak_arr_u8_16`); wrapper typedefs are placed before the
+first record, union, global, or prototype that names them, and a type that
+first appears inside a function body fails closed with an `OAK_UNSUPPORTED`
+marker rather than emitting a typedef where C forbids one.
 

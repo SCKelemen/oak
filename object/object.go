@@ -355,6 +355,7 @@ type ObjectType string
 
 const (
 	INTEGER_OBJ      = "INTEGER"
+	FLOAT_OBJ        = "FLOAT"
 	BOOLEAN_OBJ      = "BOOLEAN"
 	STRING_OBJ       = "STRING"
 	NULL_OBJ         = "NULL"
@@ -382,6 +383,7 @@ const (
 	RECORD
 	ARRAY
 	VECTOR
+	FLOAT
 )
 
 var types = [...]string{
@@ -398,6 +400,7 @@ var types = [...]string{
 	RECORD:       "RECORD",
 	ARRAY:        "ARRAY",
 	VECTOR:       "VECTOR",
+	FLOAT:        "FLOAT",
 }
 
 func (kind ObjectKind) String() string {
@@ -428,4 +431,25 @@ func (e *Environment) ArithmeticWidth(tok token.Token) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// Float is a floating-point value of one width (docs/spec/20-types.md
+// section 11.3): Bits is 32 or 64, and Value holds the exactly representable
+// number of that width (an f32 value is stored widened, which is exact).
+type Float struct {
+	Value float64
+	Bits  int
+	// Format names a 16-bit storage kind ("f16" or "bf16") when Bits is 16;
+	// Value then holds the exactly representable widened number.
+	Format string
+}
+
+func (f *Float) Kind() ObjectKind { return FLOAT }
+func (f *Float) Type() ObjectType { return FLOAT_OBJ }
+func (f *Float) Inspect() string {
+	bits := f.Bits
+	if bits != 32 {
+		bits = 64
+	}
+	return strconv.FormatFloat(f.Value, 'g', -1, bits)
 }

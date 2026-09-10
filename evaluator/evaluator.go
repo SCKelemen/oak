@@ -28,10 +28,22 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalProgram(node, env)
 
 	case *ast.ExpressionStatement:
+		if node.Discard {
+			// `_ = expr` evaluates for its effects and yields nothing
+			// (docs/spec/85-discipline.md section 6); errors still surface.
+			result := Eval(node.Expression, env)
+			if isError(result) {
+				return result
+			}
+			return NULL
+		}
 		return Eval(node.Expression, env)
 
 	case *ast.IntegerLiteral:
 		return &object.Integer{Value: node.Value}
+
+	case *ast.FloatLiteral:
+		return evalFloatLiteral(node, env)
 
 	case *ast.StringLiteral:
 		return &object.String{Value: node.Value}
@@ -93,6 +105,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if isError(right) {
 			return right
 		}
+		if unsigned := evalUnsignedInfix(node.Operator, left, right, node.Token, env); unsigned != nil {
+			return unsigned
+		}
 		return wrapToWidth(evalInfixExpression(node.Operator, left, right), node.Token, env)
 
 	case *ast.IndexAssignmentStatement:
@@ -148,6 +163,11 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 			// Explicit integer conversions: {target}_{op}_{source}
 			// (docs/spec/20-types.md), total two's-complement semantics.
 			if result, isConversion := evalConversionCall(ident.Value, node.Arguments, env); isConversion {
+				return result
+			}
+			// Floating-point intrinsics (docs/spec/20-types.md section
+			// 11.3.5), unless a program binding shadows the name.
+			if result, isIntrinsic := evalFloatIntrinsic(ident.Value, node, env); isIntrinsic {
 				return result
 			}
 		}
@@ -444,8 +464,9 @@ func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *objec
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
-		"byte": true, // alias of u8
-		"rune": true, // alias of u32 (docs/spec/70-strings.md section 9)
+		"byte": true,              // alias of u8
+		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
+		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -460,6 +481,9 @@ func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *objec
 	arg := Eval(args[0], env)
 	if isError(arg) {
 		return arg
+	}
+	if typechecker.IsFloatName(typeName) {
+		return evalFloatConstructor(typeName, arg)
 	}
 
 	// Get the integer value
@@ -507,6 +531,52 @@ func evalBangOperatorExpression(right object.Object) object.Object {
 	}
 }
 
+// evalUnsignedInfix evaluates division, modulo, and ordering in the
+// unsigned width the checker recorded for the operator, so u64 values above
+// 2^63 divide and compare as the compiled code does; it returns nil when the
+// operator or the recorded width does not call for it.
+func evalUnsignedInfix(operator string, left, right object.Object, tok token.Token, env *object.Environment) object.Object {
+	switch operator {
+	case "/", "%", "<", ">", "<=", ">=":
+	default:
+		return nil
+	}
+	width, known := env.ArithmeticWidth(tok)
+	if !known || len(width) == 0 || width[0] != 'u' {
+		return nil
+	}
+	l, lok := left.(*object.Integer)
+	r, rok := right.(*object.Integer)
+	if !lok || !rok {
+		return nil
+	}
+	bits, ok := primitiveWidthBits(width)
+	if !ok {
+		return nil
+	}
+	a, b := uint64(l.Value)&widthMask(bits), uint64(r.Value)&widthMask(bits)
+	switch operator {
+	case "/":
+		if b == 0 {
+			return newError("division by zero")
+		}
+		return &object.Integer{Value: int64(a / b)}
+	case "%":
+		if b == 0 {
+			return newError("modulo by zero")
+		}
+		return &object.Integer{Value: int64(a % b)}
+	case "<":
+		return nativeBoolToBooleanObject(a < b)
+	case ">":
+		return nativeBoolToBooleanObject(a > b)
+	case "<=":
+		return nativeBoolToBooleanObject(a <= b)
+	default:
+		return nativeBoolToBooleanObject(a >= b)
+	}
+}
+
 // wrapToWidth folds an integer result into the fixed width the checker
 // recorded for this operator token (docs/spec/20-types.md section 11.1):
 // unsigned by masking, signed by masking and sign extension. Without a
@@ -546,6 +616,11 @@ func primitiveWidthBits(width string) (uint, bool) {
 }
 
 func evalMinusPrefixOperatorExpression(right object.Object) object.Object {
+	if f, isFloat := right.(*object.Float); isFloat {
+		// Sign-bit flip, including of NaN and zero (docs/spec/20-types.md
+		// section 11.3.5).
+		return &object.Float{Value: -f.Value, Bits: f.Bits}
+	}
 	if right.Type() != object.INTEGER_OBJ {
 		return newError("unknown operator: -%s", right.Type())
 	}
@@ -558,6 +633,10 @@ func evalInfixExpression(operator string, left, right object.Object) object.Obje
 	switch {
 	case left.Type() == object.INTEGER_OBJ && right.Type() == object.INTEGER_OBJ:
 		return evalIntegerInfixExpression(operator, left, right)
+	case left.Type() == object.FLOAT_OBJ && right.Type() == object.FLOAT_OBJ:
+		// Before the identity fallbacks below: float equality is IEEE
+		// (NaN != NaN, +0.0 == -0.0), never object identity.
+		return evalFloatInfixExpression(operator, left.(*object.Float), right.(*object.Float))
 	case left.Type() == object.STRING_OBJ && right.Type() == object.STRING_OBJ:
 		return evalStringInfixExpression(operator, left, right)
 	case operator == "==":
@@ -704,6 +783,16 @@ func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Enviro
 	if fn.Variadic && len(fn.Parameters) > 0 {
 		fixed := len(fn.Parameters) - 1
 		for paramIdx := 0; paramIdx < fixed && paramIdx < len(args); paramIdx++ {
+			// Owned arrays are values: a parameter receives its own copy, as
+			// compiled code copies in (views and spans stay borrowed windows).
+			if owned, isArray := args[paramIdx].(*object.Array); isArray {
+				env.Set(fn.Parameters[paramIdx].Value, &object.Array{Elements: append([]object.Object(nil), owned.Elements...)})
+				continue
+			}
+			if owned, isArray := args[paramIdx].(*object.Array); isArray {
+				env.Set(fn.Parameters[paramIdx].Value, &object.Array{Elements: append([]object.Object(nil), owned.Elements...)})
+				continue
+			}
 			env.Set(fn.Parameters[paramIdx].Value, args[paramIdx])
 		}
 		// Bundle the trailing arguments (possibly none) for the last name.
@@ -1124,6 +1213,7 @@ func evalVariantExpression(ve *ast.VariantExpression, env *object.Environment) o
 		if isError(payload) {
 			return payload
 		}
+		payload = copyValue(payload) // an aggregate payload is a value
 	}
 
 	// Create ADT value
@@ -1192,7 +1282,9 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 		if isError(fieldValue) {
 			return fieldValue
 		}
-		fields[fieldName] = fieldValue
+		// Records and owned arrays are values: the field holds its own
+		// copy, as the backend's struct member does.
+		fields[fieldName] = copyValue(fieldValue)
 	}
 
 	return &object.Record{Fields: fields}
@@ -1364,7 +1456,7 @@ func evalArrayLiteral(al *ast.ArrayLiteral, env *object.Environment) object.Obje
 		if isError(elem) {
 			return elem
 		}
-		elements = append(elements, elem)
+		elements = append(elements, copyValue(elem)) // nested aggregates are values
 	}
 
 	return &object.Array{Elements: elements}

@@ -209,10 +209,28 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   guard**: `cmp w1, #N` immediately followed by `b.lo <fail>` proves
   `len >= N` on the fall-through path, and the checker then proves each
   access `[off, off+size)` lies within `N * elem` bytes
-  (`Oak.Assembler.span_access`). Guards die at labels, at calls, and on
-  any write to the base or length register; a span base is never moved
+  (`Oak.Assembler.span_access`). Guards die at calls and on any write to
+  the base or length register, and at a label they survive only when every
+  predecessor carries them (below); a span base is never moved
   (no pre/post-index); stores through a view are refused; a comparison
-  of `x1` is not a guard. This is the bounds-check doctrine made explicit
+  of `x1` is not a guard. **Walking a span by index** uses the scaled
+  register-offset form `ldr w11, [x0, w9, uxtw #2]` — element `w9`, the
+  shift the element size's log2 and the register the element's width —
+  admitted only under a **dominating index guard**: `cmp w9, w1` then
+  `b.hs <exit>` proves `w9 < len` on the fall-through path (or `cmp w9,
+  #K` then `b.hs` with `len >= K` already established), so the access lies
+  inside the span (`Oak.Assembler.index_access`). Index facts die like
+  length guards: at calls, and on any write to the index or the register
+  it was compared against. **At a label a fact survives exactly when every
+  predecessor carries it** — fall-through and every branch targeting the
+  label, forward or backward — computed as a fixpoint over checker passes
+  (assume everything, record the meet of what arrives, repeat until
+  stable; proven minimum lengths meet at the smaller value,
+  `Oak.Assembler.meet_sound`). So the loop idiom is one length guard
+  before the loop, then guard the index, load, advance, branch back: the
+  outer `len >= N` holds at the header because both the fall-through and
+  the back edge carry it, and a back edge that wrote the length register
+  drops it. This is the bounds-check doctrine made explicit
   in assembly: the runtime check is written by the author, its dominance
   is verified by the checker, and the offsets under it are proven.
 - **Callee-saved obligations.** `x19`–`x30` carry the caller's values on
@@ -325,6 +343,14 @@ the N ≠ V reading against `BitVec.slt` for every 32- and 64-bit operand pair
 by `bv_decide` (a SAT certificate the kernel checks). Executed: a clamp
 with two branches and three paths proven and run both ways; `b.hs` for a
 `<` branch refuted; an inclusive bound for an exclusive one refuted; a loop
+trusted. **Register-offset span addressing** (`[x0, w9, uxtw #2]`, §7)
+reaches the verifier as an element load whose index is the index register's
+term: along an unrolled counted loop that term is a constant, so the load
+is `v[k]` exactly as a constant offset would be; a data-dependent index
+names no single element and is trusted. Executed: a four-element sum loop
+walking a view by index proven against its Oak `while` (and against the
+flat `v[0] + … + v[3]`), run both ways; three iterations refuted with
+`v[3]` named; the data-dependent `while i < len(v)` walk checked but
 trusted.
 
 **Span memory (fourth increment).** A span or view parameter enters the

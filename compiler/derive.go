@@ -5,16 +5,16 @@ package compiler
 // `derive.hash` receives a compiler-synthesized body computed from the
 // structure of its parameter type — the same pattern as `c.extern("sym")`
 // (a typed interface whose body the compiler supplies) and the tag-driven
-// codec derivation of docs/spec/71-codecs.md. The body is generated as Oak
-// source text from the type's field order and variant list (one fact: the
-// declaration), parsed by the ordinary parser, and checked by every gate
-// like handwritten code. Derivation is admitted only in the package that
-// declares the type (the orphan rule), so opaque types stay opaque and a
-// derived operation always has exactly one definition.
+// codec derivation of docs/spec/71-codecs.md. The body is built as typed
+// syntax (compiler/synth.go) from the type's field order and variant list
+// (one fact: the declaration) and checked by every gate like handwritten
+// code. Derivation is admitted only in the package that declares the type
+// (the orphan rule), so opaque types stay opaque and a derived operation
+// always has exactly one definition.
 //
 // Generated helper names contain `__`, the reserved sequence, so they can
 // never collide with user identifiers; only validated identifiers and
-// integer constants enter the generated text.
+// integer constants enter the generated syntax.
 
 import (
 	"fmt"
@@ -60,18 +60,20 @@ type deriver struct {
 	program   *ast.Program
 	types     map[string]*ast.ADTType
 	generated map[string]bool
-	helpers   []string
+	helpers   []*ast.FunctionStatement
 	diags     []*diagnostic.Diagnostic
 	// spellings maps an instantiation's mangled name to the type
-	// application text generated signatures must use (`Ring[u8, 8]`).
-	spellings map[string]string
+	// application text (`Ring[u8, 8]`) a rendered type name shows, and
+	// applications to the application syntax generated signatures rebuild.
+	spellings    map[string]string
+	applications map[string]ast.Expression
 }
 
 // lowerDerived replaces every `derive.<kind>` definition with a call to a
 // generated helper and appends the helpers to the program.
 func lowerDerived(tree *SyntaxTree, comp Compilation) error {
 	program := tree.Root
-	d := &deriver{program: program, types: map[string]*ast.ADTType{}, generated: map[string]bool{}, spellings: map[string]string{}}
+	d := &deriver{program: program, types: map[string]*ast.ADTType{}, generated: map[string]bool{}, spellings: map[string]string{}, applications: map[string]ast.Expression{}}
 	for _, stmt := range program.Statements {
 		if adt, ok := stmt.(*ast.ADTType); ok && adt.Name != nil {
 			d.types[adt.Name.Value] = adt
@@ -99,24 +101,11 @@ func lowerDerived(tree *SyntaxTree, comp Compilation) error {
 	if len(d.helpers) == 0 {
 		return nil
 	}
-	helperTree, err := New().WithSource("<derived>", strings.Join(d.helpers, "\n\n")).Parse().Get()
-	if err != nil {
-		return fmt.Errorf("derive: generated helpers failed to parse: %w", err)
-	}
-	// Helpers project the fields of their type: they belong to the type's
-	// package for the opaque-projection rule.
-	for _, stmt := range helperTree.Root.Statements {
-		fn, ok := stmt.(*ast.FunctionStatement)
-		if !ok || fn.Name == nil {
-			continue
-		}
-		if owner, known := d.helperOwner(fn.Name.Value); known {
-			stampSemanticContext(reflect.ValueOf(fn), owner)
-		}
-	}
-	// Helpers precede the declarations that call them so that a
-	// sequential evaluator (the REPL's interpreter) sees definitions before
-	// uses; the checker and backend are order-independent.
+	// Helpers carry their owning type's package in their resolution
+	// context (helperContext), so the opaque-projection rule sees them as
+	// the type's own package. They precede the declarations that call them
+	// so that a sequential evaluator (the REPL's interpreter) sees
+	// definitions before uses; the checker and backend are order-independent.
 	head := 0
 	for head < len(program.Statements) {
 		switch program.Statements[head].(type) {
@@ -126,9 +115,11 @@ func lowerDerived(tree *SyntaxTree, comp Compilation) error {
 		}
 		break
 	}
-	merged := make([]ast.Statement, 0, len(program.Statements)+len(helperTree.Root.Statements))
+	merged := make([]ast.Statement, 0, len(program.Statements)+len(d.helpers))
 	merged = append(merged, program.Statements[:head]...)
-	merged = append(merged, helperTree.Root.Statements...)
+	for _, helper := range d.helpers {
+		merged = append(merged, helper)
+	}
 	merged = append(merged, program.Statements[head:]...)
 	program.Statements = merged
 	return nil
@@ -225,30 +216,48 @@ func (d *deriver) lowerRequest(fn *ast.FunctionStatement) {
 	if !ok {
 		return
 	}
-	var call strings.Builder
+	// The body is one call, in the request's own package context (its
+	// name keeps positions distinct from other requests' bodies).
+	s := newSynth(helperContext(fn.Token.SemanticContext, "derive-body:"+fn.Name.Value))
 	if kind == "format" {
 		// The formatter threads a text builder over the caller's span and
 		// finishes it: derived bodies use the library's flat spellings, which
 		// the library sugar resolves afterwards (compiler/stdlib.go).
-		fmt.Fprintf(&call, "finish_text(%s(text_builder(), %s, %s))", helper, fn.Parameters[1].Name.Value, fn.Parameters[0].Name.Value)
-	} else {
-		call.WriteString(helper)
-		call.WriteString("(")
-		for i, param := range fn.Parameters {
-			if i > 0 {
-				call.WriteString(", ")
-			}
-			call.WriteString(param.Name.Value)
-		}
-		call.WriteString(")")
-	}
-	body, err := parseGeneratedExpression(call.String())
-	if err != nil {
-		d.report(CodeDeriveUnsupported, fn.Body, "derive.%s: %v", kind, err)
+		fn.Body = s.call("finish_text", s.call(helper, s.call("text_builder"), s.id(fn.Parameters[1].Name.Value), s.id(fn.Parameters[0].Name.Value)))
 		return
 	}
-	stampSemanticContext(reflect.ValueOf(body), fn.Token.SemanticContext)
-	fn.Body = body
+	args := make([]ast.Expression, 0, len(fn.Parameters))
+	for _, param := range fn.Parameters {
+		args = append(args, s.id(param.Name.Value))
+	}
+	fn.Body = s.call(helper, args...)
+}
+
+// helperContext is the resolution context of generated syntax: the owning
+// package's context (the checker reads the package before the first `|` or
+// `#`, typechecker/modules.go) qualified by a name, so position-keyed
+// records never alias between generated functions.
+func helperContext(owner, name string) string {
+	if owner == "" {
+		return "#" + name
+	}
+	return owner + "|" + name
+}
+
+// helperContext for a helper of a declared type: the type's own package.
+func (d *deriver) helperContext(decl *ast.ADTType, helper string) string {
+	return helperContext(decl.Name.Token.SemanticContext, helper)
+}
+
+// typeExpr is the type a generated signature names for typeName: the
+// rebuilt application for an instantiation, the name otherwise.
+func (d *deriver) typeExpr(s *synth, typeName string) ast.Expression {
+	if application, ok := d.applications[typeName]; ok {
+		if rebuilt, ok := s.rebuildType(application); ok {
+			return rebuilt
+		}
+	}
+	return s.id(typeName)
 }
 
 // helper returns the generated helper's name for (kind, type), generating it
@@ -264,40 +273,29 @@ func (d *deriver) helper(kind, typeName string, node ast.Node) (string, bool) {
 		d.report(CodeDeriveUnsupported, node, "derive.%s: %s is not a declared record or ADT", kind, typeName)
 		return "", false
 	}
-	var text string
+	var fn *ast.FunctionStatement
 	var ok bool
 	switch kind {
 	case "equal":
-		text, ok = d.equalHelper(name, typeName, decl, node)
+		fn, ok = d.equalHelper(name, typeName, decl, node)
 	case "hash":
-		text, ok = d.hashHelper(name, typeName, decl, node)
+		fn, ok = d.hashHelper(name, typeName, decl, node)
 	case "compare":
-		text, ok = d.compareHelper(name, typeName, decl, node)
+		fn, ok = d.compareHelper(name, typeName, decl, node)
 	case "format":
-		text, ok = d.formatHelper(name, typeName, decl, node)
+		fn, ok = d.formatHelper(name, typeName, decl, node)
 	case "test_generate":
-		text, ok = d.testGenerateHelper(name, typeName, decl, node)
+		fn, ok = d.testGenerateHelper(name, typeName, decl, node)
 	case "test_encode":
-		text, ok = d.testEncodeHelper(name, typeName, decl, node)
+		fn, ok = d.testEncodeHelper(name, typeName, decl, node)
 	case "test_decode":
-		text, ok = d.testDecodeHelper(name, typeName, decl, node)
+		fn, ok = d.testDecodeHelper(name, typeName, decl, node)
 	}
 	if !ok {
 		return "", false
 	}
-	d.helpers = append(d.helpers, text)
+	d.helpers = append(d.helpers, fn)
 	return name, true
-}
-
-func (d *deriver) helperOwner(helper string) (string, bool) {
-	for _, prefix := range []string{"__derive_equal_", "__derive_hash_", "__derive_compare_", "__derive_format_", "__derive_test_generate_", "__derive_test_encode_", "__derive_test_decode_"} {
-		if strings.HasPrefix(helper, prefix) {
-			if decl := d.types[strings.TrimPrefix(helper, prefix)]; decl != nil {
-				return decl.Name.Token.SemanticContext, true
-			}
-		}
-	}
-	return "", false
 }
 
 // recordShape returns the record literal of a record declaration.
@@ -327,113 +325,120 @@ func (d *deriver) fieldKind(expr ast.Expression) (primitive bool, declared strin
 	return false, "", false
 }
 
-func (d *deriver) equalHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (string, bool) {
-	var body strings.Builder
+func (d *deriver) equalHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (*ast.FunctionStatement, bool) {
+	s := newSynth(d.helperContext(decl, name))
+	var body ast.Expression
 	if shape, isRecord := recordShape(decl); isRecord {
-		if len(shape.FieldOrder) == 0 {
-			body.WriteString("true")
-		}
-		for i, field := range shape.FieldOrder {
-			if i > 0 {
-				body.WriteString(" && ")
-			}
-			term, ok := d.equalTerm("a."+field.Name, "b."+field.Name, field.Value, node, typeName, field.Name)
+		terms := make([]ast.Expression, 0, len(shape.FieldOrder))
+		for _, field := range shape.FieldOrder {
+			term, ok := d.equalTerm(s, s.field(s.id("a"), field.Name), s.field(s.id("b"), field.Name), field.Value, node, typeName, field.Name)
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			body.WriteString(term)
+			terms = append(terms, term)
+		}
+		if len(terms) == 0 {
+			body = s.boolean(true)
+		} else {
+			body = s.and(terms...)
 		}
 	} else {
-		body.WriteString("a ?")
-		for i, variant := range decl.Variants {
+		// a ? .V => (b ? .V => true | _ => false) | .W(x) => (b ? .W(y) => x == y | _ => false)
+		arms := make([]*ast.MatchArm, 0, len(decl.Variants))
+		for _, variant := range decl.Variants {
 			if variant.Name == nil {
-				return "", false
-			}
-			if i > 0 {
-				body.WriteString(" |")
+				return nil, false
 			}
 			if variant.Payload == nil {
-				fmt.Fprintf(&body, " .%s => (b ? .%s => true | _ => false)", variant.Name.Value, variant.Name.Value)
+				arms = append(arms, s.arm(variant.Name.Value, "", s.match(s.id("b"), s.arm(variant.Name.Value, "", s.boolean(true)), s.wildcardArm(s.boolean(false)))))
 				continue
 			}
-			term, ok := d.equalTerm("x", "y", variant.Payload, node, typeName, variant.Name.Value)
+			term, ok := d.equalTerm(s, s.id("x"), s.id("y"), variant.Payload, node, typeName, variant.Name.Value)
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			fmt.Fprintf(&body, " .%s(x) => (b ? .%s(y) => %s | _ => false)", variant.Name.Value, variant.Name.Value, term)
+			arms = append(arms, s.arm(variant.Name.Value, "x", s.match(s.id("b"), s.arm(variant.Name.Value, "y", term), s.wildcardArm(s.boolean(false)))))
 		}
+		body = s.match(s.id("a"), arms...)
 	}
-	return fmt.Sprintf("%s: (a: %s, b: %s): Bool = %s", name, d.spell(typeName), d.spell(typeName), body.String()), true
+	return s.fnExpr(name, []*ast.FunctionParameter{s.param("a", d.typeExpr(s, typeName)), s.param("b", d.typeExpr(s, typeName))}, s.id("Bool"), body), true
 }
 
-func (d *deriver) equalTerm(left, right string, typeExpr ast.Expression, node ast.Node, typeName, member string) (string, bool) {
+func (d *deriver) equalTerm(s *synth, left, right ast.Expression, typeExpr ast.Expression, node ast.Node, typeName, member string) (ast.Expression, bool) {
 	primitive, declared, ok := d.fieldKind(typeExpr)
 	if !ok {
 		d.report(CodeDeriveUnsupported, node, "derive.equal for %s: member %s has a type the generator cannot compare (fixed-width integers, Bool, and declared records/ADTs are supported)", typeName, member)
-		return "", false
+		return nil, false
 	}
 	if primitive {
-		return fmt.Sprintf("%s == %s", left, right), true
+		return s.eq(left, right), true
 	}
 	helper, ok := d.helper("equal", declared, node)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	return fmt.Sprintf("%s(%s, %s)", helper, left, right), true
+	return s.call(helper, left, right), true
 }
 
-func (d *deriver) hashHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (string, bool) {
-	var body strings.Builder
+func (d *deriver) hashHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (*ast.FunctionStatement, bool) {
+	s := newSynth(d.helperContext(decl, name))
+	var body ast.Expression
 	if shape, isRecord := recordShape(decl); isRecord {
-		body.WriteString("{\n  h: u64 = 1469598103934665603\n")
+		// FNV offset basis, then per field: mix in, then xorshift.
+		statements := []ast.Statement{s.decl("h", s.id("u64"), s.intLit(1469598103934665603))}
+		h := func() ast.Expression { return s.id("h") }
 		for _, field := range shape.FieldOrder {
-			term, ok := d.hashTerm("v."+field.Name, field.Value, node, typeName, field.Name)
+			term, ok := d.hashTerm(s, s.field(s.id("v"), field.Name), field.Value, node, typeName, field.Name)
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			fmt.Fprintf(&body, "  h = h ^ %s\n  h = h ^ (h << 13)\n  h = h ^ (h >> 7)\n  h = h ^ (h << 17)\n", term)
+			statements = append(statements,
+				s.assign("h", s.infix(h(), "^", term)),
+				s.assign("h", s.infix(h(), "^", s.infix(h(), "<<", s.intLit(13)))),
+				s.assign("h", s.infix(h(), "^", s.infix(h(), ">>", s.intLit(7)))),
+				s.assign("h", s.infix(h(), "^", s.infix(h(), "<<", s.intLit(17)))))
 		}
-		body.WriteString("  h\n}")
+		statements = append(statements, s.expr(h()))
+		body = s.block(statements...)
 	} else {
-		body.WriteString("v ?")
+		arms := make([]*ast.MatchArm, 0, len(decl.Variants))
 		for i, variant := range decl.Variants {
 			if variant.Name == nil {
-				return "", false
-			}
-			if i > 0 {
-				body.WriteString(" |")
+				return nil, false
 			}
 			if variant.Payload == nil {
-				fmt.Fprintf(&body, " .%s => u64(%d)", variant.Name.Value, i+1)
+				arms = append(arms, s.arm(variant.Name.Value, "", s.conv("u64", s.intLit(int64(i+1)))))
 				continue
 			}
-			term, ok := d.hashTerm("x", variant.Payload, node, typeName, variant.Name.Value)
+			term, ok := d.hashTerm(s, s.id("x"), variant.Payload, node, typeName, variant.Name.Value)
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			fmt.Fprintf(&body, " .%s(x) => (%s ^ u64(%d))", variant.Name.Value, term, (i+1)*2654435761%4294967296)
+			salt := int64((i + 1) * 2654435761 % 4294967296)
+			arms = append(arms, s.arm(variant.Name.Value, "x", s.infix(term, "^", s.conv("u64", s.intLit(salt)))))
 		}
+		body = s.match(s.id("v"), arms...)
 	}
-	return fmt.Sprintf("%s: (v: %s): u64 = %s", name, d.spell(typeName), body.String()), true
+	return s.fnExpr(name, []*ast.FunctionParameter{s.param("v", d.typeExpr(s, typeName))}, s.id("u64"), body), true
 }
 
-func (d *deriver) hashTerm(value string, typeExpr ast.Expression, node ast.Node, typeName, member string) (string, bool) {
+func (d *deriver) hashTerm(s *synth, value ast.Expression, typeExpr ast.Expression, node ast.Node, typeName, member string) (ast.Expression, bool) {
 	primitive, declared, ok := d.fieldKind(typeExpr)
 	if !ok {
 		d.report(CodeDeriveUnsupported, node, "derive.hash for %s: member %s has a type the generator cannot hash (fixed-width integers, Bool, and declared records/ADTs are supported)", typeName, member)
-		return "", false
+		return nil, false
 	}
 	if primitive {
 		if ident, _ := typeExpr.(*ast.Identifier); ident.Value == "Bool" {
-			return fmt.Sprintf("u64(%s ? 1 | 0)", value), true
+			return s.conv("u64", s.cond(value, s.intLit(1), s.intLit(0))), true
 		}
-		return fmt.Sprintf("u64(%s)", value), true
+		return s.conv("u64", value), true
 	}
 	helper, ok := d.helper("hash", declared, node)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	return fmt.Sprintf("%s(%s)", helper, value), true
+	return s.call(helper, value), true
 }
 
 func sameIdentifierType(a, b ast.Expression) bool {
@@ -470,22 +475,6 @@ func packageContext(context string) string {
 	return context
 }
 
-// parseGeneratedExpression parses a single generated expression.
-func parseGeneratedExpression(text string) (ast.Expression, error) {
-	tree, err := New().WithSource("<derived>", "__derive_value := "+text+"\n").Parse().Get()
-	if err != nil {
-		return nil, err
-	}
-	if len(tree.Root.Statements) != 1 {
-		return nil, fmt.Errorf("generated expression parsed to %d statements", len(tree.Root.Statements))
-	}
-	decl, ok := tree.Root.Statements[0].(*ast.VariableDeclaration)
-	if !ok || decl.Value == nil {
-		return nil, fmt.Errorf("generated expression did not parse as a value")
-	}
-	return decl.Value, nil
-}
-
 // orderingName finds the ADT `Ordering: type = Less | Equal | Greater` in
 // scope — the program's own or the standard library's; "" when absent.
 func (d *deriver) orderingName() string {
@@ -513,90 +502,104 @@ func (d *deriver) orderingName() string {
 	return best
 }
 
-func (d *deriver) compareHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (string, bool) {
+func (d *deriver) compareHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (*ast.FunctionStatement, bool) {
 	ordering := d.orderingName()
 	if ordering == "" {
 		d.report(CodeDeriveUnsupported, node, "derive.compare requires Ordering: type = Less | Equal | Greater in scope")
-		return "", false
+		return nil, false
 	}
-	less, equal, greater := ordering+".Less", ordering+".Equal", ordering+".Greater"
-	var body string
+	s := newSynth(d.helperContext(decl, name))
+	outcome := func(variant string) ast.Expression { return s.qualified(ordering, variant, nil) }
+	var body ast.Expression
 	if shape, isRecord := recordShape(decl); isRecord {
 		// Lexicographic: the first non-Equal field decides. Each field's
 		// comparison is bound to a local and matched; the Equal arm nests
 		// the next field.
-		body = equal
+		body = outcome("Equal")
 		for i := len(shape.FieldOrder) - 1; i >= 0; i-- {
 			field := shape.FieldOrder[i]
-			term, ok := d.compareTerm("a."+field.Name, "b."+field.Name, field.Value, node, typeName, field.Name, less, equal, greater)
+			term, ok := d.compareTerm(s, ordering,
+				func() ast.Expression { return s.field(s.id("a"), field.Name) },
+				func() ast.Expression { return s.field(s.id("b"), field.Name) },
+				field.Value, node, typeName, field.Name)
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			body = fmt.Sprintf("{\n  c%d: %s = %s\n  c%d ? .Less => %s | .Greater => %s | .Equal => %s\n}", i, ordering, term, i, less, greater, body)
+			local := fmt.Sprintf("c%d", i)
+			body = s.block(
+				s.decl(local, s.id(ordering), term),
+				s.expr(s.match(s.id(local),
+					s.arm("Less", "", outcome("Less")),
+					s.arm("Greater", "", outcome("Greater")),
+					s.arm("Equal", "", body))))
 		}
 	} else {
 		// Variants order by declaration index, then by payload.
-		var sb strings.Builder
-		sb.WriteString("a ?")
+		arms := make([]*ast.MatchArm, 0, len(decl.Variants))
 		for i, variant := range decl.Variants {
 			if variant.Name == nil {
-				return "", false
+				return nil, false
 			}
-			if i > 0 {
-				sb.WriteString(" |")
-			}
-			if variant.Payload == nil {
-				fmt.Fprintf(&sb, " .%s => (b ?", variant.Name.Value)
-			} else {
-				fmt.Fprintf(&sb, " .%s(x) => (b ?", variant.Name.Value)
-			}
+			inner := make([]*ast.MatchArm, 0, len(decl.Variants))
 			for j, other := range decl.Variants {
-				if j > 0 {
-					sb.WriteString(" |")
-				}
-				pattern := "." + other.Name.Value
+				binding := ""
 				if other.Payload != nil {
-					pattern += "(y)"
+					binding = "y"
 				}
+				var result ast.Expression
 				switch {
 				case j < i:
-					fmt.Fprintf(&sb, " %s => %s", pattern, greater)
+					result = outcome("Greater")
 				case j > i:
-					fmt.Fprintf(&sb, " %s => %s", pattern, less)
+					result = outcome("Less")
 				case variant.Payload == nil:
-					fmt.Fprintf(&sb, " %s => %s", pattern, equal)
+					result = outcome("Equal")
 				default:
-					term, ok := d.compareTerm("x", "y", variant.Payload, node, typeName, variant.Name.Value, less, equal, greater)
+					term, ok := d.compareTerm(s, ordering,
+						func() ast.Expression { return s.id("x") },
+						func() ast.Expression { return s.id("y") },
+						variant.Payload, node, typeName, variant.Name.Value)
 					if !ok {
-						return "", false
+						return nil, false
 					}
-					fmt.Fprintf(&sb, " %s => %s", pattern, term)
+					result = term
 				}
+				inner = append(inner, s.arm(other.Name.Value, binding, result))
 			}
-			sb.WriteString(")")
+			binding := ""
+			if variant.Payload != nil {
+				binding = "x"
+			}
+			arms = append(arms, s.arm(variant.Name.Value, binding, s.match(s.id("b"), inner...)))
 		}
-		body = sb.String()
+		body = s.match(s.id("a"), arms...)
 	}
-	return fmt.Sprintf("%s: (a: %s, b: %s): %s = %s", name, d.spell(typeName), d.spell(typeName), ordering, body), true
+	return s.fnExpr(name, []*ast.FunctionParameter{s.param("a", d.typeExpr(s, typeName)), s.param("b", d.typeExpr(s, typeName))}, s.id(ordering), body), true
 }
 
-func (d *deriver) compareTerm(left, right string, typeExpr ast.Expression, node ast.Node, typeName, member, less, equal, greater string) (string, bool) {
+// compareTerm orders one member: primitives by <, > (Bool as 0/1), declared
+// types by their derived comparison. The operands are rebuilt per use.
+func (d *deriver) compareTerm(s *synth, ordering string, left, right func() ast.Expression, typeExpr ast.Expression, node ast.Node, typeName, member string) (ast.Expression, bool) {
 	primitive, declared, ok := d.fieldKind(typeExpr)
 	if !ok {
 		d.report(CodeDeriveUnsupported, node, "derive.compare for %s: member %s has a type the generator cannot order (fixed-width integers, Bool, and declared records/ADTs are supported)", typeName, member)
-		return "", false
+		return nil, false
 	}
 	if primitive {
 		if ident, _ := typeExpr.(*ast.Identifier); ident.Value == "Bool" {
-			left, right = fmt.Sprintf("u64(%s ? 1 | 0)", left), fmt.Sprintf("u64(%s ? 1 | 0)", right)
+			asWord := func(operand func() ast.Expression) func() ast.Expression {
+				return func() ast.Expression { return s.conv("u64", s.cond(operand(), s.intLit(1), s.intLit(0))) }
+			}
+			left, right = asWord(left), asWord(right)
 		}
-		return fmt.Sprintf("(%s < %s ? %s | (%s > %s ? %s | %s))", left, right, less, left, right, greater, equal), true
+		return s.cond(s.lt(left(), right()), s.qualified(ordering, "Less", nil),
+			s.cond(s.gt(left(), right()), s.qualified(ordering, "Greater", nil), s.qualified(ordering, "Equal", nil))), true
 	}
 	helper, ok := d.helper("compare", declared, node)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	return fmt.Sprintf("%s(%s, %s)", helper, left, right), true
+	return s.call(helper, left(), right()), true
 }
 
 // isSpanOfU8 recognizes the `[*]u8` destination parameter.
@@ -634,92 +637,110 @@ func (d *deriver) isTextResult(expr ast.Expression) bool {
 // rendering of any signed width widened to i64.
 const signedFormatHelper = "__derive_format_signed"
 
-func (d *deriver) formatHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (string, bool) {
+func (d *deriver) formatHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (*ast.FunctionStatement, bool) {
 	if !d.generated[signedFormatHelper] {
 		d.generated[signedFormatHelper] = true
-		d.helpers = append(d.helpers, signedFormatHelper+": (b: TextBuilder, dst: [*]u8, v: i64): TextBuilder = v < 0 ? append_u64(append_rune(b, dst, u32(45)), dst, u64_bits_i64(0 - (v + 1)) + u64(1)) | append_u64(b, dst, u64_bits_i64(v))")
+		g := newSynth(helperContext("", signedFormatHelper))
+		// v < 0 ? append_u64(append_rune(b, dst, '-'), dst, u64_bits_i64(0 - (v + 1)) + 1) | append_u64(b, dst, u64_bits_i64(v))
+		d.helpers = append(d.helpers, g.fnExpr(signedFormatHelper,
+			[]*ast.FunctionParameter{g.param("b", g.id("TextBuilder")), g.param("dst", g.span(g.id("u8"))), g.param("v", g.id("i64"))},
+			g.id("TextBuilder"),
+			g.cond(g.lt(g.id("v"), g.intLit(0)),
+				g.call("append_u64", g.call("append_rune", g.id("b"), g.id("dst"), g.u32(45)), g.id("dst"),
+					g.add(g.call("u64_bits_i64", g.sub(g.intLit(0), g.add(g.id("v"), g.intLit(1)))), g.conv("u64", g.intLit(1)))),
+				g.call("append_u64", g.id("b"), g.id("dst"), g.call("u64_bits_i64", g.id("v"))))))
 	}
 	short := modules.DemangleText(d.spell(typeName))
 	if index := strings.LastIndexByte(short, '.'); index >= 0 && !strings.Contains(short[:index], "[") {
 		short = short[index+1:]
 	}
-	var body strings.Builder
-	step := 0
-	current := "b"
-	emit := func(expr string) {
-		fmt.Fprintf(&body, "  s%d: TextBuilder = %s\n", step, expr)
-		current = fmt.Sprintf("s%d", step)
-		step++
+	s := newSynth(d.helperContext(decl, name))
+	literal := func(builder func() ast.Expression, text string) ast.Expression {
+		return s.call("append_text", builder(), s.id("dst"), s.call("text_literal", s.str(text)))
 	}
-	literal := func(text string) string {
-		return fmt.Sprintf("append_text(%s, dst, text_literal(%q))", current, text)
-	}
+	var body ast.Expression
 	if shape, isRecord := recordShape(decl); isRecord {
-		body.WriteString("{\n")
-		emit(literal(short + " {"))
+		// s0: TextBuilder = append_text(b, ...); s1 = ...; the last step is
+		// the result.
+		statements := []ast.Statement{}
+		current := "b"
+		step := 0
+		builder := func() ast.Expression { return s.id(current) }
+		emit := func(expr ast.Expression) {
+			next := fmt.Sprintf("s%d", step)
+			statements = append(statements, s.decl(next, s.id("TextBuilder"), expr))
+			current = next
+			step++
+		}
+		emit(literal(builder, short+" {"))
 		for i, field := range shape.FieldOrder {
 			separator := " "
 			if i > 0 {
 				separator = ", "
 			}
-			emit(literal(separator + field.Name + ": "))
-			term, ok := d.formatTerm(current, "v."+field.Name, field.Value, node, typeName, field.Name)
+			emit(literal(builder, separator+field.Name+": "))
+			term, ok := d.formatTerm(s, builder, s.field(s.id("v"), field.Name), field.Value, node, typeName, field.Name)
 			if !ok {
-				return "", false
+				return nil, false
 			}
 			emit(term)
 		}
-		emit(literal(" }"))
-		fmt.Fprintf(&body, "  %s\n}", current)
+		emit(literal(builder, " }"))
+		statements = append(statements, s.expr(builder()))
+		body = s.block(statements...)
 	} else {
-		body.WriteString("v ?")
-		for i, variant := range decl.Variants {
+		arms := make([]*ast.MatchArm, 0, len(decl.Variants))
+		for _, variant := range decl.Variants {
 			if variant.Name == nil {
-				return "", false
+				return nil, false
 			}
-			if i > 0 {
-				body.WriteString(" |")
-			}
+			plain := func() ast.Expression { return s.id("b") }
 			if variant.Payload == nil {
-				fmt.Fprintf(&body, " .%s => append_text(b, dst, text_literal(%q))", variant.Name.Value, variant.Name.Value)
+				arms = append(arms, s.arm(variant.Name.Value, "", literal(plain, variant.Name.Value)))
 				continue
 			}
-			opened := fmt.Sprintf("append_text(b, dst, text_literal(%q))", variant.Name.Value+"(")
-			term, ok := d.formatTerm(opened, "x", variant.Payload, node, typeName, variant.Name.Value)
+			opened := func() ast.Expression { return literal(plain, variant.Name.Value+"(") }
+			term, ok := d.formatTerm(s, opened, s.id("x"), variant.Payload, node, typeName, variant.Name.Value)
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			fmt.Fprintf(&body, " .%s(x) => append_rune(%s, dst, u32(41))", variant.Name.Value, term)
+			arms = append(arms, s.arm(variant.Name.Value, "x", s.call("append_rune", term, s.id("dst"), s.u32(41))))
 		}
+		body = s.match(s.id("v"), arms...)
 	}
-	return fmt.Sprintf("%s: (b: TextBuilder, dst: [*]u8, v: %s): TextBuilder = %s", name, d.spell(typeName), body.String()), true
+	return s.fnExpr(name,
+		[]*ast.FunctionParameter{s.param("b", s.id("TextBuilder")), s.param("dst", s.span(s.id("u8"))), s.param("v", d.typeExpr(s, typeName))},
+		s.id("TextBuilder"), body), true
 }
 
 var signedFormatTypes = map[string]bool{"i8": true, "i16": true, "i32": true, "i64": true, "int": true, "ptr": true}
 
-// formatTerm renders one member onto the builder expression `builder`.
-func (d *deriver) formatTerm(builder, value string, typeExpr ast.Expression, node ast.Node, typeName, member string) (string, bool) {
+// formatTerm renders one member onto the builder; the builder expression is
+// rebuilt per use.
+func (d *deriver) formatTerm(s *synth, builder func() ast.Expression, value ast.Expression, typeExpr ast.Expression, node ast.Node, typeName, member string) (ast.Expression, bool) {
 	primitive, declared, ok := d.fieldKind(typeExpr)
 	if !ok {
 		d.report(CodeDeriveUnsupported, node, "derive.format for %s: member %s has a type the generator cannot render (fixed-width integers, Bool, and declared records/ADTs are supported)", typeName, member)
-		return "", false
+		return nil, false
 	}
 	if primitive {
 		ident, _ := typeExpr.(*ast.Identifier)
 		switch {
 		case ident.Value == "Bool":
-			return fmt.Sprintf("(%s ? append_text(%s, dst, text_literal(\"true\")) | append_text(%s, dst, text_literal(\"false\")))", value, builder, builder), true
+			return s.cond(value,
+				s.call("append_text", builder(), s.id("dst"), s.call("text_literal", s.str("true"))),
+				s.call("append_text", builder(), s.id("dst"), s.call("text_literal", s.str("false")))), true
 		case signedFormatTypes[ident.Value]:
-			return fmt.Sprintf("%s(%s, dst, i64(%s))", signedFormatHelper, builder, value), true
+			return s.call(signedFormatHelper, builder(), s.id("dst"), s.conv("i64", value)), true
 		default:
-			return fmt.Sprintf("append_u64(%s, dst, u64(%s))", builder, value), true
+			return s.call("append_u64", builder(), s.id("dst"), s.conv("u64", value)), true
 		}
 	}
 	helper, ok := d.helper("format", declared, node)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	return fmt.Sprintf("%s(%s, dst, %s)", helper, builder, value), true
+	return s.call(helper, builder(), s.id("dst"), value), true
 }
 
 // spell returns the type text a generated signature uses for a type name:
@@ -794,6 +815,7 @@ func (d *deriver) instantiate(expr ast.Expression) (string, bool) {
 		spelled = append(spelled, spellType(arg))
 	}
 	d.spellings[mangled] = base + "[" + strings.Join(spelled, ", ") + "]"
+	d.applications[mangled] = expr
 	return mangled, true
 }
 

@@ -522,9 +522,16 @@ type TypeChecker struct {
 	// tagSchemas holds declared tag schemas (json: tag = { name: string }) —
 	// the closed namespace field tags check against (typechecker/tags.go).
 	tagSchemas map[string]*RecordType
+	// boolFacts remembers, per Bool binding, the extent facts of the
+	// condition assigned to it (typechecker/extents.go).
+	boolFacts map[string][]extentFact
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[string]string
+	// predeclaredGlobals names package-level bindings registered before any
+	// body is checked, so functions may mention globals declared later in
+	// the file; the defining declaration consumes its entry.
+	predeclaredGlobals map[string]bool
 	// shiftWidths records the operand width of each shift expression
 	// (position-keyed), consumed by the backend's checked-shift emission.
 	shiftWidths map[string]int
@@ -534,7 +541,10 @@ type TypeChecker struct {
 	// globalOwners maps each package-level declaration to the package that
 	// declares it ("" for the root), so the no-shadowing rule is checked
 	// against the declaring package's scope (docs/spec/83-modules.md section 7).
-	globalOwners               map[string]string
+	globalOwners map[string]string
+	// externFunctions names the extern bindings (docs/spec/92-ffi.md section 2.3),
+	// whose calls may carry boundary spans (section 2.5).
+	externFunctions            map[string]bool
 	layoutQueries              map[string]LayoutQuery
 	checkingSpecialization     bool
 	extentFacts                []extentFact
@@ -717,11 +727,38 @@ func (tc *TypeChecker) addError(node ast.Node, format string, args ...interface{
 // CheckProgram type checks a program
 func typeParamsConstrained(params []*ast.TypeParameter) bool {
 	for _, param := range params {
-		if param != nil && param.Constraint != nil {
+		if param != nil && param.Constraint != nil && !isConstParameter(param) {
 			return true
 		}
 	}
 	return false
+}
+
+// constParameterKinds are the integer kinds a const parameter may declare
+// (docs/spec/20-types.md section 11.0): `N: u32` is a value parameter, not
+// an interface constraint.
+var constParameterKinds = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true,
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"int": true, "uint": true, "ptr": true, "uptr": true, "byte": true, "rune": true,
+}
+
+// isConstParameter reports whether a type parameter declares an integer
+// kind and so ranges over integer constants.
+func isConstParameter(param *ast.TypeParameter) bool {
+	if param == nil || param.Constraint == nil {
+		return false
+	}
+	kind, isIdent := param.Constraint.(*ast.Identifier)
+	return isIdent && constParameterKinds[kind.Value]
+}
+
+// constParameterKind returns the declared integer kind of a const parameter.
+func constParameterKind(param *ast.TypeParameter) string {
+	if kind, isIdent := param.Constraint.(*ast.Identifier); isIdent {
+		return kind.Value
+	}
+	return ""
 }
 
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
@@ -756,6 +793,22 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 	}
 	tc.resolvePredeclaredFunctionBarriers(program)
+	// Package scope is order-independent for annotated globals: register
+	// their declared types now so a body checked earlier may name them.
+	tc.predeclaredGlobals = make(map[string]bool)
+	for _, stmt := range program.Statements {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Type == nil {
+			continue
+		}
+		if _, exists := tc.env.Get(decl.Name.Value); exists {
+			continue // the full check reports the duplicate
+		}
+		if varType := tc.parseTypeExpression(decl.Type); varType != nil {
+			tc.env.SetType(decl.Name.Value, varType)
+			tc.predeclaredGlobals[decl.Name.Value] = true
+		}
+	}
 	for _, stmt := range program.Statements {
 		switch stmt.(type) {
 		case *ast.ADTType, *ast.TagDeclaration:
@@ -876,7 +929,7 @@ func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
 			return // full check reports the malformed declaration
 		}
 		typeVars = append(typeVars, parameter.Name.Value)
-		if parameter.Constraint != nil {
+		if parameter.Constraint != nil && !isConstParameter(parameter) {
 			interfaces := tc.extractInterfacesFromConstraint(parameter.Constraint)
 			if len(interfaces) > 0 {
 				constraints = append(constraints, Constraint{
@@ -1020,7 +1073,7 @@ func (tc *TypeChecker) predeclaredMethodBarrierScheme(fn *ast.FunctionStatement)
 			return nil
 		}
 		typeVars = append(typeVars, parameter.Name.Value)
-		if parameter.Constraint != nil {
+		if parameter.Constraint != nil && !isConstParameter(parameter) {
 			interfaces := tc.extractInterfacesFromConstraint(parameter.Constraint)
 			if len(interfaces) > 0 {
 				constraints = append(constraints, Constraint{
@@ -1174,11 +1227,17 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		// rules of `at + u32(1)`.
 		if expected != nil {
 			if primType, ok := expected.(*PrimitiveType); ok {
-				if tc.literalFitsInType(e.Value, primType.Name) {
+				if IsFloatName(primType.Name) {
+					// An integer literal is not a float (docs/spec/20-types.md
+					// section 11.3.2): the program spells `1.0`.
+					tc.addError(e, "integer literal %d in floating-point context %s; spell it %d.0", e.Value, primType.Name, e.Value)
+					return primType
+				}
+				if tc.literalFits(e, primType.Name) {
 					return primType
 				}
 				if tc.isNumericType(primType) {
-					tc.addError(e, "literal %d does not fit in type %s", e.Value, primType.Name)
+					tc.addError(e, "literal %s does not fit in type %s", e.Token.Literal, primType.Name)
 					return primType
 				}
 				// Non-integer primitive context: fall through to default inference
@@ -1187,6 +1246,10 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		// No context: default to int (signed native word integer)
 		// This matches the platform-dependent default integer type
 		return &PrimitiveType{Name: "int"}
+	case *ast.FloatLiteral:
+		// Floating-point literals take the float type of their context and
+		// are f64 without one (docs/spec/20-types.md section 11.3.2).
+		return tc.checkFloatLiteral(e, expected)
 	case *ast.StringLiteral:
 		return &StringType{}
 	case *ast.Boolean:
@@ -1296,16 +1359,16 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression, expecte
 	if expr.Operator == "-" {
 		if lit, isLiteral := expr.Right.(*ast.IntegerLiteral); isLiteral {
 			if prim, ok := expected.(*PrimitiveType); ok && tc.isNumericType(prim) {
-				if tc.literalFitsInType(-lit.Value, prim.Name) {
+				if !lit.Wide && tc.literalFitsInType(-lit.Value, prim.Name) {
 					return prim
 				}
-				tc.addError(expr, "literal -%d does not fit in type %s", lit.Value, prim.Name)
+				tc.addError(expr, "literal -%s does not fit in type %s", lit.Token.Literal, prim.Name)
 				return prim
 			}
 		}
 	}
 	var operandExpected Type
-	if prim, ok := expected.(*PrimitiveType); ok && tc.isNumericType(prim) {
+	if prim, ok := expected.(*PrimitiveType); ok && (tc.isNumericType(prim) || IsFloatName(prim.Name)) {
 		// Negation keeps a signed type and complement keeps an unsigned type, so
 		// the operand shares the expected type in both well-typed cases.
 		operandExpected = prim
@@ -1341,7 +1404,13 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression, expecte
 		if prim, ok := rightType.(*PrimitiveType); ok && tc.isNumericType(prim) {
 			return tc.recordNegation(expr, prim)
 		}
-		tc.addError(expr, "operator - requires integer type, got %s", rightType)
+		if prim, ok := rightType.(*PrimitiveType); ok && IsFloatName(prim.Name) {
+			// Negation flips the sign bit, including of NaN and zero
+			// (docs/spec/20-types.md section 11.3.5); the backend's plain
+			// unary minus is exactly that.
+			return prim
+		}
+		tc.addError(expr, "operator - requires a numeric type, got %s", rightType)
 		return nil
 	default:
 		tc.addError(expr, "unknown prefix operator: %s", expr.Operator)
@@ -1365,11 +1434,11 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 	arithmetic := expr.Operator == "+" || expr.Operator == "-" || expr.Operator == "*" ||
 		expr.Operator == "/" || expr.Operator == "%"
 	var operandExpected Type
-	if (arithmetic || bitwise) && expected != nil && tc.isNumericType(expected) {
+	if (arithmetic || bitwise) && expected != nil && (tc.isNumericType(expected) || tc.isFloatType(expected)) {
 		operandExpected = expected
 	}
 	peerContext := func(typ Type) Type {
-		if typ != nil && tc.isNumericType(typ) {
+		if typ != nil && (tc.isNumericType(typ) || tc.isFloatType(typ)) {
 			return typ
 		}
 		return operandExpected
@@ -1406,12 +1475,18 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		if leftType.Equals(&StringType{}) && rightType.Equals(&StringType{}) {
 			return &StringType{}
 		}
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
+			return tc.checkFloatArithmetic(expr, leftType, rightType)
+		}
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
 			return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 		}
 		tc.addError(expr, "operator + requires numeric types or strings, got %s and %s", leftType, rightType)
 		return nil
 	case "-", "*", "/", "%":
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
+			return tc.checkFloatArithmetic(expr, leftType, rightType)
+		}
 		// Arithmetic operators require numeric types
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
@@ -1419,10 +1494,15 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		}
 		return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 	case "==", "!=":
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
+			return tc.checkFloatComparison(expr, leftType, rightType)
+		}
 		// Equality on machine integers follows the arithmetic rule: one
 		// signedness, widths promote; otherwise operands must be compatible.
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
-			if tc.promoteNumericTypes(expr, leftType, rightType) == nil {
+			// Recorded so the interpreter compares in the operands' width
+			// and signedness, as the compiled comparison does.
+			if tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType)) == nil {
 				return nil
 			}
 			return &BoolType{}
@@ -1469,13 +1549,16 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		}
 		return leftType
 	case "<", ">", "<=", ">=":
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
+			return tc.checkFloatComparison(expr, leftType, rightType)
+		}
 		// Ordering compares machine integers of one signedness; widths
 		// promote as in arithmetic, mixed signedness is rejected.
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
-		if tc.promoteNumericTypes(expr, leftType, rightType) == nil {
+		if tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType)) == nil {
 			return nil
 		}
 		return &BoolType{}
@@ -1497,7 +1580,7 @@ func (tc *TypeChecker) isNumericType(typ Type) bool {
 // type comes entirely from context rather than from any typed operand.
 func IsLiteralOnlyExpression(expr ast.Expression) bool {
 	switch e := expr.(type) {
-	case *ast.IntegerLiteral:
+	case *ast.IntegerLiteral, *ast.FloatLiteral:
 		return true
 	case *ast.PrefixExpression:
 		return (e.Operator == "-" || e.Operator == "+") && IsLiteralOnlyExpression(e.Right)
@@ -1570,8 +1653,11 @@ func (tc *TypeChecker) areCompatibleTypes(left, right Type) bool {
 		return true
 	}
 
-	// Numeric types can be compared (with coercion)
+	// Numeric types can be compared (with coercion); floats only with floats
 	if tc.isNumericType(left) && tc.isNumericType(right) {
+		return true
+	}
+	if tc.isFloatType(left) && tc.isFloatType(right) {
 		return true
 	}
 
@@ -1751,12 +1837,18 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 
 	// Check if this is a primitive type constructor: u32(x), u64(y), etc.
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
-		if constructorType := tc.checkPrimitiveConstructor(ident.Value, expr.Arguments); constructorType != nil {
+		if constructorType := tc.checkPrimitiveConstructor(ident.Value, expr.Arguments, expr); constructorType != nil {
 			return constructorType
 		}
 		// Check if this is a narrowing function: u8_trunc_u32(x), u8_checked_u32(x), etc.
 		if narrowingType := tc.checkNarrowingFunction(ident.Value, expr.Arguments); narrowingType != nil {
 			return narrowingType
+		}
+		// Floating-point intrinsics (docs/spec/20-types.md section 11.3.5):
+		// fma, sqrt, min, max, is_nan, ... unless a program binding shadows
+		// the name.
+		if floatType := tc.checkFloatIntrinsic(ident.Value, expr); floatType != nil {
+			return floatType
 		}
 		// Check if this is a Castable constructor: string(x), byte(x), etc.
 		if castableType := tc.checkCastableConstructor(ident.Value, expr.Arguments); castableType != nil {
@@ -1863,6 +1955,40 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return nil
 	}
 
+	// Boundary spans (docs/spec/92-ffi.md section 2.5): in a call to an
+	// extern binding, c.span_of(v) / c.span_mut_of(s) stands for two
+	// consecutive parameters (c.Ptr, c.Size). paramPos maps each argument to
+	// the parameter position it starts at; effectiveArgs counts positions.
+	isExtern := false
+	if funcIdent, ok := expr.Function.(*ast.Identifier); ok {
+		isExtern = tc.externFunctions[funcIdent.Value]
+	}
+	paramPos := make([]int, len(expr.Arguments))
+	effectiveArgs := 0
+	spansValid := true
+	for i, arg := range expr.Arguments {
+		paramPos[i] = effectiveArgs
+		if member, operand, isSpan := tc.BoundarySpanArgument(arg); isSpan {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					fmt.Sprintf("c.%s is only an argument to an extern binding", member))
+				d.AddNote("a boundary span yields a c.Ptr, c.Size pair for the duration of one foreign call; Oak functions take the view or span itself (docs/spec/92-ffi.md section 2.5.2)")
+				return nil
+			}
+			// The pair rule is checked before the arity, so a misplaced span
+			// is reported as such rather than as a count mismatch.
+			if !tc.checkBoundarySpan(arg, member, operand, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs += 2
+			continue
+		}
+		effectiveArgs++
+	}
+	if !spansValid {
+		return nil
+	}
+
 	// Check argument count. A variadic function requires at least its fixed
 	// arity; every trailing argument checks against the element type.
 	fixedParams := len(fnType.Parameters)
@@ -1876,8 +2002,8 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			tc.addError(expr, "function expects at least %d arguments, got %d", fixedParams, len(expr.Arguments))
 			return nil
 		}
-	} else if len(expr.Arguments) != len(fnType.Parameters) {
-		tc.addError(expr, "function expects %d arguments, got %d", len(fnType.Parameters), len(expr.Arguments))
+	} else if effectiveArgs != len(fnType.Parameters) {
+		tc.addError(expr, "function expects %d arguments, got %d", len(fnType.Parameters), effectiveArgs)
 		return nil
 	}
 
@@ -1890,14 +2016,20 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	validCall := len(tc.Errors()) == beforeCall
 	beforeArguments := len(tc.Errors())
 	for i, arg := range expr.Arguments {
+		if _, _, isSpan := tc.BoundarySpanArgument(arg); isSpan {
+			// Validated in the pre-pass above; it stands for the pair.
+			argTypes[i] = &CType{Name: "Ptr"}
+			continue
+		}
+		pos := paramPos[i]
 		var parameterType Type
-		if fnType.Variadic && i >= fixedParams {
+		if fnType.Variadic && pos >= fixedParams {
 			if variadicElement == nil {
 				continue
 			}
 			parameterType = variadicElement
 		} else {
-			parameterType = fnType.Parameters[i]
+			parameterType = fnType.Parameters[pos]
 		}
 		expectedType := bindings.Apply(parameterType)
 		argType := tc.checkExpression(arg, expectedType)
@@ -2012,14 +2144,16 @@ func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expressi
 
 // checkPrimitiveConstructor checks if an invocation is a primitive type constructor
 // (e.g., u32(x), u64(y)) and returns the target type if valid
-func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Expression) Type {
+func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Expression, call *ast.InvocationExpression) Type {
 	// Check if it's a primitive type name (including aliases and platform types)
 	primitiveTypes := map[string]bool{
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
-		"byte": true, // alias of u8
-		"rune": true, // alias of u32 (docs/spec/70-strings.md section 9)
+		"byte": true,              // alias of u8
+		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
+		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
+		"f16": true, "bf16": true, // storage formats: rejected with the spelling to use
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -2035,11 +2169,15 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		return nil
 	}
 
+	if IsFloatName(typeName) || IsStorageFloatName(typeName) {
+		return tc.checkFloatConstructor(typeName, args[0], call)
+	}
+
 	// Check if argument is an integer literal (untyped)
 	if intLit, ok := args[0].(*ast.IntegerLiteral); ok {
 		// Check if literal fits in target type
-		if !tc.literalFitsInType(intLit.Value, typeName) {
-			tc.addError(intLit, "literal %d does not fit in type %s", intLit.Value, typeName)
+		if !tc.literalFits(intLit, typeName) {
+			tc.addError(intLit, "literal %s does not fit in type %s", intLit.Token.Literal, typeName)
 			return nil
 		}
 		// Literal fits - return target type
@@ -2084,12 +2222,28 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 
 	// Check if widening is valid (same signedness, source is narrower or equal)
 	if !tc.isValidWidening(argPrim.Name, normalizedTarget) {
-		tc.addError(args[0], "cannot widen %s to %s (must be same signedness and source must be narrower or equal)", argPrim.Name, typeName)
+		tc.addError(args[0], "cannot widen %s to %s (must be same signedness and source must be narrower or equal); narrowing is explicit: %s_trunc_%s(x) wraps, %s_saturating_%s(x) clamps, %s_checked_%s(x) returns Result, and %s_bits_%s(x) reinterprets same-width bits",
+			argPrim.Name, typeName, typeName, argPrim.Name, typeName, argPrim.Name, typeName, argPrim.Name, typeName, argPrim.Name)
 		return nil
 	}
 
 	// Return the target type (preserve alias name if used)
 	return &PrimitiveType{Name: typeName}
+}
+
+// literalFits checks whether an integer literal node fits the given primitive
+// type; a wide literal (above 2^63 - 1) fits only the 64-bit unsigned types.
+func (tc *TypeChecker) literalFits(lit *ast.IntegerLiteral, typeName string) bool {
+	if lit.Wide {
+		switch typeName {
+		case "u64":
+			return true
+		case "uint", "uptr":
+			return tc.intSize == 64
+		}
+		return false
+	}
+	return tc.literalFitsInType(lit.Value, typeName)
 }
 
 // literalFitsInType checks if an integer literal value fits in the given primitive type
@@ -2245,18 +2399,22 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 	}
-	if !primitiveTypes[targetType] || !primitiveTypes[sourceType] {
+	targetFloat := IsFloatName(targetType) || IsStorageFloatName(targetType)
+	sourceFloat := IsFloatName(sourceType) || IsStorageFloatName(sourceType)
+	if (!primitiveTypes[targetType] && !targetFloat) || (!primitiveTypes[sourceType] && !sourceFloat) {
 		return nil
 	}
 
 	// Validate operation. `bits` is the same-width cross-sign
 	// reinterpretation (two's complement bit pattern, total): the explicit
 	// path between u32 and i32 that widening/narrowing deliberately lack.
+	// `round` belongs to the floating-point rows (section 11.3.4).
 	validOperations := map[string]bool{
 		"trunc":      true,
 		"checked":    true,
 		"saturating": true,
 		"bits":       true,
+		"round":      true,
 	}
 	if !validOperations[operation] {
 		return nil
@@ -2269,6 +2427,14 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 			node = args[0]
 		}
 		tc.addError(node, "narrowing function %s expects 1 argument, got %d", funcName, len(args))
+		return nil
+	}
+
+	if targetFloat || sourceFloat {
+		return tc.checkFloatConversion(funcName, targetType, operation, sourceType, args[0])
+	}
+	if operation == "round" {
+		tc.addError(args[0], "%s: round converts to a floating-point type; integers narrow with trunc, saturating, or checked", funcName)
 		return nil
 	}
 
@@ -2725,7 +2891,7 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 		// like expression literals infer from their expected type.
 		if intLit, ok := p.Value.(*ast.IntegerLiteral); ok {
 			if prim, ok := expectedType.(*PrimitiveType); ok {
-				if tc.literalFitsInType(intLit.Value, prim.Name) {
+				if tc.literalFits(intLit, prim.Name) {
 					return expectedType
 				}
 				tc.addError(p.Value, "pattern literal %d does not fit in scrutinee type %s", intLit.Value, expectedType)
@@ -2927,6 +3093,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 			primitiveTypes := map[string]bool{
 				"i8": true, "i16": true, "i32": true, "i64": true,
 				"u8": true, "u16": true, "u32": true, "u64": true,
+				"f32": true, "f64": true, "f16": true, "bf16": true,
 				"string": true, "Bool": true, "byte": true, "()": true,
 			}
 			if primitiveTypes[ident.Value] {
@@ -3175,9 +3342,12 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		// Defense in depth against parser error-recovery artifacts.
 		return
 	}
-	// Check if variable already exists in the declaring package's scope
-	// (docs/spec/83-modules.md section 7; shadowsVisibleBinding).
-	if tc.shadowsVisibleBinding(stmt.Name.Value, stmt.Name.Token) {
+	// The defining declaration of a predeclared global is not a redeclaration.
+	if tc.env == tc.globalEnv && tc.predeclaredGlobals[stmt.Name.Value] {
+		delete(tc.predeclaredGlobals, stmt.Name.Value)
+	} else if tc.shadowsVisibleBinding(stmt.Name.Value, stmt.Name.Token) {
+		// Check if variable already exists in the declaring package's scope
+		// (docs/spec/83-modules.md section 7; shadowsVisibleBinding).
 		// Variable already exists - redefinition is not allowed
 		// Use assignment statement (x = value) instead of variable declaration (x: type = value)
 		if stmt.Type != nil {
@@ -3445,7 +3615,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 			// Extract constraint if present
 			// Constraints can be single interfaces or intersections (A & B & C)
-			if tp.Constraint != nil {
+			if tp.Constraint != nil && !isConstParameter(tp) {
 				interfaces := tc.extractInterfacesFromConstraint(tp.Constraint)
 				if len(interfaces) > 0 {
 					constraints = append(constraints, Constraint{
@@ -3917,9 +4087,12 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 		tc.finishMonomorphicTransaction(len(tc.Errors()) == before)
 	}()
 
-	// A loop that assigns a binding anywhere invalidates the enclosing
-	// facts about it before the condition runs: an earlier statement of
-	// the body executes again after the assignment (typechecker/extents.go).
+	// The condition's facts are derived with the bindings as they are on
+	// entry; a loop that assigns a binding anywhere then invalidates the
+	// enclosing facts about it before the condition runs, because an
+	// earlier statement of the body executes again after the assignment
+	// (typechecker/extents.go).
+	conditionFacts := tc.loopConditionFacts(stmt)
 	tc.killFactsAssignedBy(stmt)
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
@@ -3928,8 +4101,13 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 
 	// The loop condition dominates the body on every iteration: `i < len(v)`
 	// bounds v[i] until the body assigns i (typechecker/extents.go).
-	mark := tc.enterFactScope(stmt.Condition)
+	mark := tc.pushExtentFacts(conditionFacts)
+	// The body is its own scope: a name declared inside the loop is not
+	// visible after it, so a later block may declare the same name.
+	outerEnv := tc.env
+	tc.env = NewEnclosedTypeEnvironment(outerEnv)
 	tc.checkBlockStatement(stmt.Body)
+	tc.env = outerEnv
 	tc.popExtentFacts(mark)
 }
 
@@ -3953,8 +4131,19 @@ func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
 // Loops kill on entry (checkWhileStatement) and branches kill inside their
 // own blocks, so only direct assignments are handled here.
 func (tc *TypeChecker) killFactsAfterStatement(stmt ast.Statement) {
-	switch stmt.(type) {
-	case *ast.AssignmentStatement, *ast.VariableDeclaration, *ast.IndexAssignmentStatement:
+	switch s := stmt.(type) {
+	case *ast.AssignmentStatement:
+		remembered := tc.factsFromCondition(s.Value) // the right-hand side saw the old binding
+		tc.killFactsAssignedBy(stmt)
+		tc.rememberBoolFacts(s.Name, remembered)
+	case *ast.VariableDeclaration:
+		var remembered []extentFact
+		if s.Value != nil {
+			remembered = tc.factsFromCondition(s.Value)
+		}
+		tc.killFactsAssignedBy(stmt)
+		tc.rememberBoolFacts(s.Name, remembered)
+	case *ast.IndexAssignmentStatement:
 		tc.killFactsAssignedBy(stmt)
 	}
 }
@@ -3983,9 +4172,11 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 		}
 	}
 
-	// The last statement should be an expression statement
+	// The last statement should be an expression statement. A trailing
+	// discard (`_ = expr`, docs/spec/85-discipline.md section 6) is a
+	// statement, never the block's value: the block is unit.
 	lastStmt := block.Statements[len(block.Statements)-1]
-	if exprStmt, ok := lastStmt.(*ast.ExpressionStatement); ok {
+	if exprStmt, ok := lastStmt.(*ast.ExpressionStatement); ok && !exprStmt.Discard {
 		if expected != nil {
 			return tc.checkExpression(exprStmt.Expression, expected)
 		}
@@ -4261,7 +4452,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types
@@ -4436,7 +4627,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types

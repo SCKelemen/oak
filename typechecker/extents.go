@@ -38,6 +38,7 @@ const (
 	factMinLen     extentFactKind = iota // len(container) >= bound
 	factIndexBound                       // index < len(container)
 	factSameLen                          // len(container) == len(other)
+	factUpperBound                       // other <= len(container), other a local binding
 )
 
 type extentFact struct {
@@ -50,6 +51,18 @@ type extentFact struct {
 	// bindings (flow-sensitive kill); a dead fact proves nothing but keeps
 	// its stack position so scope marks stay valid.
 	dead bool
+	// via names the intermediate binding a bound was composed through
+	// (`i < n` with `n <= len(v)`): an assignment to it kills the fact.
+	via string
+	// indexDirect marks a composed index bound whose index comes from the
+	// guard's own comparison (`i < n`), so a loop re-checks the index each
+	// iteration even though the upper bound came through a binding.
+	indexDirect bool
+	// viaBinding marks a fact recovered through a Bool binding's remembered
+	// condition rather than from the guard's own comparisons. A loop that
+	// assigns one of its participants cannot carry it into the body: the
+	// re-evaluated binding does not re-check the remembered condition.
+	viaBinding bool
 }
 
 // IndexProven reports whether the element access at tok was proven in range.
@@ -156,7 +169,43 @@ func offsetIndex(expr ast.Expression) (name string, offset int64, ok bool) {
 // len(v) >= K, len(v) > K, K <= len(v), K < len(v); i < len(v), len(v) > i;
 // len(a) == len(b); conjunctions of these.
 func (tc *TypeChecker) factsFromCondition(cond ast.Expression) []extentFact {
-	return tc.factsFromConditionWith(cond, nil)
+	facts, pairs := tc.factsFromConditionWith(cond, nil)
+	return tc.resolveIndexPairs(facts, pairs)
+}
+
+// indexPair is a guard `i < n` between two local bindings, resolved against
+// upper-bound facts once the whole condition is known.
+type indexPair struct{ index, bound string }
+
+// resolveIndexPairs turns each `i < n` into `i < len(v)` for every live or
+// just-derived fact `n <= len(v)` (Oak.Extents.bound_through_upper).
+func (tc *TypeChecker) resolveIndexPairs(facts []extentFact, pairs []indexPair) []extentFact {
+	for _, pair := range pairs {
+		for _, source := range [][]extentFact{tc.extentFacts, facts} {
+			for _, fact := range source {
+				if fact.dead || fact.kind != factUpperBound || fact.other != pair.bound {
+					continue
+				}
+				facts = append(facts, extentFact{kind: factIndexBound, container: fact.container, other: pair.index, via: pair.bound, viaBinding: fact.viaBinding, indexDirect: true})
+			}
+		}
+	}
+	return facts
+}
+
+// boolBindingFacts returns the facts a Bool binding remembers, marked as
+// recovered through the binding.
+func (tc *TypeChecker) boolBindingFacts(name string) []extentFact {
+	stored := tc.boolFacts[name]
+	facts := make([]extentFact, 0, len(stored))
+	for _, fact := range stored {
+		if fact.dead {
+			continue
+		}
+		fact.viaBinding = true
+		facts = append(facts, fact)
+	}
+	return facts
 }
 
 // minLengthKnown reports whether len(container) >= k is established by the
@@ -172,14 +221,19 @@ func (tc *TypeChecker) minLengthKnown(container string, k int64, earlier []exten
 	return false
 }
 
-func (tc *TypeChecker) factsFromConditionWith(cond ast.Expression, earlier []extentFact) []extentFact {
+func (tc *TypeChecker) factsFromConditionWith(cond ast.Expression, earlier []extentFact) ([]extentFact, []indexPair) {
+	if ident, isIdent := cond.(*ast.Identifier); isIdent {
+		// A Bool binding stands for the condition assigned to it.
+		return tc.boolBindingFacts(ident.Value), nil
+	}
 	infix, ok := cond.(*ast.InfixExpression)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	if infix.Operator == "&&" {
-		left := tc.factsFromConditionWith(infix.Left, earlier)
-		return append(left, tc.factsFromConditionWith(infix.Right, append(append([]extentFact{}, earlier...), left...))...)
+		left, leftPairs := tc.factsFromConditionWith(infix.Left, earlier)
+		right, rightPairs := tc.factsFromConditionWith(infix.Right, append(append([]extentFact{}, earlier...), left...))
+		return append(left, right...), append(leftPairs, rightPairs...)
 	}
 	leftLen, leftIsLen := lenOf(infix.Left)
 	rightLen, rightIsLen := lenOf(infix.Right)
@@ -202,46 +256,68 @@ func (tc *TypeChecker) factsFromConditionWith(cond ast.Expression, earlier []ext
 	switch infix.Operator {
 	case ">=":
 		if leftIsLen && rightIsConst && rightConst >= 0 && local(leftLen) {
-			return []extentFact{{kind: factMinLen, container: leftLen, bound: rightConst}}
+			return []extentFact{{kind: factMinLen, container: leftLen, bound: rightConst}}, nil
+		}
+		// len(v) >= n: n bounds indices into v (Oak.Extents.bound_through_upper).
+		if leftIsLen && rightIsIndex && !rightIsConst && rightOffset == 0 && local(leftLen, rightIndex) {
+			return []extentFact{{kind: factUpperBound, container: leftLen, other: rightIndex}}, nil
 		}
 	case ">":
 		if leftIsLen && rightIsConst && rightConst >= 0 && local(leftLen) {
-			return []extentFact{{kind: factMinLen, container: leftLen, bound: rightConst + 1}}
+			return []extentFact{{kind: factMinLen, container: leftLen, bound: rightConst + 1}}, nil
 		}
 		// len(v) > i: a plain index bound. An offset form (len(v) > i + K)
 		// proves nothing, because fixed-width i + K may have wrapped.
 		if leftIsLen && rightIsIndex && !rightIsConst && rightOffset == 0 && local(leftLen, rightIndex) {
-			return []extentFact{{kind: factIndexBound, container: leftLen, other: rightIndex}}
+			// len(v) > n is both an index bound and an upper bound for n.
+			return []extentFact{
+				{kind: factIndexBound, container: leftLen, other: rightIndex},
+				{kind: factUpperBound, container: leftLen, other: rightIndex},
+			}, nil
 		}
 	case "<=":
 		if leftIsConst && rightIsLen && leftConst >= 0 && local(rightLen) {
-			return []extentFact{{kind: factMinLen, container: rightLen, bound: leftConst}}
+			return []extentFact{{kind: factMinLen, container: rightLen, bound: leftConst}}, nil
+		}
+		// n <= len(v): n bounds indices into v.
+		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsLen && local(leftIndex, rightLen) {
+			return []extentFact{{kind: factUpperBound, container: rightLen, other: leftIndex}}, nil
 		}
 		// i <= len(v) - K with len(v) >= K known: i + (K - 1) < len(v),
 		// and the subtraction cannot wrap (Oak.Extents.guard_without_wrap).
 		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsLenMinus && minusK >= 1 &&
 			local(leftIndex, minusLen) && tc.minLengthKnown(minusLen, minusK, earlier) {
-			return []extentFact{{kind: factIndexBound, container: minusLen, other: leftIndex, offset: minusK - 1}}
+			return []extentFact{{kind: factIndexBound, container: minusLen, other: leftIndex, offset: minusK - 1}}, nil
 		}
 	case "<":
 		if leftIsConst && rightIsLen && leftConst >= 0 && local(rightLen) {
-			return []extentFact{{kind: factMinLen, container: rightLen, bound: leftConst + 1}}
+			return []extentFact{{kind: factMinLen, container: rightLen, bound: leftConst + 1}}, nil
 		}
 		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsLen && local(leftIndex, rightLen) {
-			return []extentFact{{kind: factIndexBound, container: rightLen, other: leftIndex}}
+			// i < len(v) bounds i, and makes i an upper bound for indices into v.
+			return []extentFact{
+				{kind: factIndexBound, container: rightLen, other: leftIndex},
+				{kind: factUpperBound, container: rightLen, other: leftIndex},
+			}, nil
+		}
+		// i < n between two local bindings: resolved against upper bounds
+		// once the whole condition is known.
+		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsIndex && !rightIsConst && rightOffset == 0 &&
+			!rightIsLen && local(leftIndex, rightIndex) {
+			return nil, []indexPair{{index: leftIndex, bound: rightIndex}}
 		}
 		// i < len(v) - K with len(v) >= K known: i + K < len(v)
 		// (Oak.Extents.guard_without_wrap).
 		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsLenMinus &&
 			local(leftIndex, minusLen) && tc.minLengthKnown(minusLen, minusK, earlier) {
-			return []extentFact{{kind: factIndexBound, container: minusLen, other: leftIndex, offset: minusK}}
+			return []extentFact{{kind: factIndexBound, container: minusLen, other: leftIndex, offset: minusK}}, nil
 		}
 	case "==":
 		if leftIsLen && rightIsLen && local(leftLen, rightLen) {
-			return []extentFact{{kind: factSameLen, container: leftLen, other: rightLen}}
+			return []extentFact{{kind: factSameLen, container: leftLen, other: rightLen}}, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // factNames lists every binding a fact set depends on.
@@ -252,8 +328,57 @@ func factNames(facts []extentFact) map[string]bool {
 		if fact.other != "" {
 			names[fact.other] = true
 		}
+		if fact.via != "" {
+			names[fact.via] = true
+		}
 	}
 	return names
+}
+
+// dependsOn reports whether a fact mentions any of the names.
+func (fact extentFact) dependsOn(names map[string]bool) bool {
+	return names[fact.container] || (fact.other != "" && names[fact.other]) || (fact.via != "" && names[fact.via])
+}
+
+// rememberBoolFacts records the facts a Bool binding's new value carries
+// (none clears any earlier association).
+func (tc *TypeChecker) rememberBoolFacts(name *ast.Identifier, facts []extentFact) {
+	if name == nil {
+		return
+	}
+	if tc.boolFacts == nil {
+		tc.boolFacts = make(map[string][]extentFact)
+	}
+	if len(facts) == 0 {
+		delete(tc.boolFacts, name.Value)
+		return
+	}
+	tc.boolFacts[name.Value] = facts
+}
+
+// loopConditionFacts derives the facts a while condition establishes for
+// its body, with bindings as they are on entry. A fact composed through a
+// binding the loop assigns, or recovered through a Bool binding when the
+// loop assigns any of its participants, is dropped: the re-evaluated
+// condition does not re-check it, while a direct comparison does.
+func (tc *TypeChecker) loopConditionFacts(loop *ast.WhileStatement) []extentFact {
+	assigned := map[string]bool{}
+	assignedNames(loop, assigned)
+	kept := make([]extentFact, 0)
+	for _, fact := range tc.factsFromCondition(loop.Condition) {
+		if fact.via != "" && assigned[fact.via] {
+			continue
+		}
+		if fact.viaBinding {
+			// The container and the composed-through binding came from the
+			// remembered condition; a directly compared index is re-checked.
+			if assigned[fact.container] || (!fact.indexDirect && fact.other != "" && assigned[fact.other]) {
+				continue
+			}
+		}
+		kept = append(kept, fact)
+	}
+	return kept
 }
 
 // assignsAny reports whether the node (recursively) assigns to any of the
@@ -379,9 +504,23 @@ func (tc *TypeChecker) killFacts(names map[string]bool) {
 	}
 	for i := range tc.extentFacts {
 		fact := &tc.extentFacts[i]
-		if names[fact.container] || (fact.other != "" && names[fact.other]) {
+		if fact.dependsOn(names) {
 			fact.dead = true
 		}
+	}
+	// Remembered Bool conditions die with their bindings or participants.
+	for bound, facts := range tc.boolFacts {
+		if names[bound] {
+			delete(tc.boolFacts, bound)
+			continue
+		}
+		kept := facts[:0]
+		for _, fact := range facts {
+			if !fact.dependsOn(names) {
+				kept = append(kept, fact)
+			}
+		}
+		tc.boolFacts[bound] = kept
 	}
 }
 

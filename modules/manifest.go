@@ -42,7 +42,14 @@ type Manifest struct {
 	// Replaces maps a required module path to a local directory (relative
 	// to the manifest's directory unless absolute).
 	Replaces map[string]string
+	// Profile is the discipline profile the module's packages are judged
+	// under (docs/spec/85-discipline.md section 1): "default", "strict", or
+	// "" when the manifest does not say.
+	Profile string
 }
+
+// Profiles are the discipline profiles a manifest may declare.
+var Profiles = map[string]bool{"default": true, "strict": true}
 
 // ParseManifest parses oak.mod text. The grammar is line-oriented:
 //
@@ -145,6 +152,17 @@ func ParseManifest(text string) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate replace of %q", lineNumber, fields[1])
 			}
 			manifest.Replaces[fields[1]] = fields[3]
+		case "profile":
+			if len(fields) != 2 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: profile directive takes exactly one name (default or strict)", lineNumber)
+			}
+			if manifest.Profile != "" {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate profile directive", lineNumber)
+			}
+			if !Profiles[fields[1]] {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)", lineNumber, fields[1])
+			}
+			manifest.Profile = fields[1]
 		default:
 			return Manifest{}, fmt.Errorf("oak.mod:%d: unknown directive %q", lineNumber, fields[0])
 		}

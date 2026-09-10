@@ -215,12 +215,16 @@ oak 0.1.0
 require example.com/dep 1.2.0
 require example.com/other 0.3.1 // trailing comment
 replace example.com/dep => ../dep
+profile strict
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Path != "example.com/hello" || manifest.Oak != "0.1.0" {
+	if manifest.Path != "example.com/hello" || manifest.Oak != "0.1.0" || manifest.Profile != "strict" {
 		t.Fatalf("manifest = %+v", manifest)
+	}
+	if plain, err := ParseManifest("module example.com/x\n"); err != nil || plain.Profile != "" {
+		t.Fatalf("manifest without profile = %+v, %v", plain, err)
 	}
 	if len(manifest.Requires) != 2 || manifest.Requires[0].Path != "example.com/dep" || manifest.Requires[0].Version != (packageapi.Version{Major: 1, Minor: 2}) {
 		t.Fatalf("requires = %+v", manifest.Requires)
@@ -238,6 +242,9 @@ replace example.com/dep => ../dep
 		"replace unrequired": "module example.com/x\nreplace example.com/y => ../y\n",
 		"replace shape":      "module example.com/x\nrequire example.com/y 1.0.0\nreplace example.com/y ../y\n",
 		"require stdlib":     "module example.com/x\nrequire strings 1.0.0\n",
+		"unknown profile":    "module example.com/x\nprofile lenient\n",
+		"profile arity":      "module example.com/x\nprofile\n",
+		"duplicate profile":  "module example.com/x\nprofile strict\nprofile default\n",
 	}
 	for name, text := range bad {
 		if _, err := ParseManifest(text); err == nil {

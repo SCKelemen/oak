@@ -121,7 +121,14 @@ type IntegerLiteral struct {
 	BaseNode
 	Token token.Token
 	Value int64
+	// Wide marks a literal above the signed 64-bit range (2^63 .. 2^64-1):
+	// Value then holds the unsigned magnitude's two's-complement bit
+	// pattern, and only u64/uint/uptr contexts admit the literal.
+	Wide bool
 }
+
+// Magnitude returns the literal's unsigned value (the full u64 range).
+func (lit *IntegerLiteral) Magnitude() uint64 { return uint64(lit.Value) }
 
 func (lit *IntegerLiteral) expressionNode()      {}
 func (lit *IntegerLiteral) TokenLiteral() string { return lit.Token.Literal }
@@ -1172,3 +1179,19 @@ func (rc *REPLCommand) String() string {
 	}
 	return ":" + rc.Name
 }
+
+// FloatLiteral is a floating-point literal (docs/spec/20-types.md section
+// 11.3.2): `1.5`, `2.0e-5`, `1e3`. Text keeps the source spelling so the
+// typechecker can round it correctly to the width its context requires
+// (f32 or f64) from the exact decimal value, never through an intermediate
+// width; Value is the f64 reading for phases that only need a number.
+type FloatLiteral struct {
+	BaseNode
+	Token token.Token
+	Text  string
+	Value float64
+}
+
+func (fl *FloatLiteral) expressionNode()      {}
+func (fl *FloatLiteral) TokenLiteral() string { return fl.Token.Literal }
+func (fl *FloatLiteral) String() string       { return fl.Text }

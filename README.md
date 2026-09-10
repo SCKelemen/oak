@@ -203,7 +203,8 @@ n: u8 = d8 + 300  // error: literal 300 does not fit in type u8
 ```
 
 A literal that does not fit the type its context requires is an error at the
-literal; it never silently widens to `int`.
+literal; it never silently widens to `int`. Literals span the full `u64`
+range: `0xFFFFFFFFFFFFFFFF` and `14695981039346656037` are `u64` constants.
 
 ### Pointers
 
@@ -953,7 +954,7 @@ typedef enum oak_Option_i32_tag {
 } oak_Option_i32_tag;
 
 typedef struct oak_Option_i32 {
-  oak_Option_i32_tag tag;
+  u32 tag;
   union {
     i32 Some;
   } data;

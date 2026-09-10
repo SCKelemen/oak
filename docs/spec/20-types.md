@@ -264,6 +264,33 @@ emitted `sizeof`/`offsetof` assertions). Template knowledge disambiguates
 applications from array syntax, so a const parameter cannot be the sole
 argument of an unknown name; `%` is the modulo operator these shapes want.
 
+Const parameters also range over **functions**. A type parameter declared
+with an integer kind is a value parameter: `sum[N: u32]: (v: [N]u32): u32`
+takes one instantiation per length. The argument is inferred from an owned
+array's static length (`sum(a)` with `a: [3]u32` binds `N := 3`) or from a
+const-parameterized record's instantiation (`size[T, N: u32]: (r: Ring[T,
+N])` recovers both arguments from a `Ring[u8, 8]`), or given explicitly
+(`sum[3](a)`). Each instantiation is its own monomorphized function, named
+like a record instantiation (`sum_3`); inside the body `N` is an integer
+constant of the declared kind, typed by literal-in-context inference. An
+explicit argument must be an integer constant within the kind, one const
+parameter cannot be bound to two lengths, and a type argument in a const
+position is an error. Const parameters carry no resource authority, so
+instantiating at two lengths in one scope is ordinary reuse.
+
+A length may be **arithmetic over const parameters**: `[M*K]T`, `[N+1]T`,
+with `+ - * / %` and literals. The expression is folded to a literal when
+the function is instantiated, so no specialization carries a symbolic
+extent — `matmul[M: u32, N: u32, K: u32]: (a: [M*K]f32, b: [K*N]f32):
+[M*N]f32` at `matmul[2, 1, 3]` is a function over `[6]f32` and `[3]f32`
+returning `[2]f32`, and `out: [M*N]f32` inside its body is a plain owned
+array. An arithmetic length binds no parameter by inference (a product does
+not determine its factors): each parameter it mentions must be bound from a
+plain `[N]T` position or given explicitly, and the folded length is then
+checked against the argument like any other type. A fold that is not a
+valid length (negative, division by zero, above the `u32` range) rejects
+the instantiation.
+
 ### 11.1 Explicit integer conversions
 
 Implicit conversion is limited to value-preserving widening within one
@@ -343,10 +370,12 @@ unconstrained templates are one mechanism with one emission path.
 
 ### 11.3 Floating-point types
 
-**Status: specified, not implemented.** This section is normative for the
-first floating-point increment; `STATUS.md` records it as S-only until the
-scanner, checker, interpreter, and C backend implement it together. It was
-motivated by the ml project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
+**Status: §11.3.1–§11.3.5, §11.3.7, and §11.3.8 implemented and tested,
+including the `f16`/`bf16` storage formats, hexadecimal literals, and the
+float vectors; the `math` library (§11.3.6) and the Lean model are recorded
+gaps** (`STATUS.md` lists the implemented subset precisely). This section is
+normative for the whole floating-point design. It was motivated by the ml
+project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
 tier 2), whose numeric core cannot move into Oak without it.
 
 #### 11.3.1 Types
@@ -383,8 +412,10 @@ A floating-point literal has a fraction, an exponent, or both:
 Decimal literals are converted to the target format by correct rounding
 (round to nearest, ties to even) from the exact decimal value; hexadecimal
 literals (`0x` mantissa with `p` binary exponent, C99 §6.4.4.2) are exact
-when representable and otherwise correctly rounded. A literal never has a
-sign of its own; `-1.5` is unary minus applied to `1.5`.
+when representable and otherwise correctly rounded; a hexadecimal literal
+needs its `p` exponent, since a bare `0x1.8` would be ambiguous with
+member access. A literal never has a sign of its own; `-1.5` is unary minus
+applied to `1.5`.
 
 Like integer literals (`25-type-inference.md` §3a), a floating-point literal
 has no type of its own and takes the floating-point type its context
@@ -413,6 +444,22 @@ the interpreter:
   not `0`; `x + 0.0` is not `x` (the sign of zero differs). This extends the
   no-hidden-work rule of `90-backend.md` §3 to numeric semantics: the
   written expression is the executed expression.
+- **Grouping and evaluation order are semantics.** IEEE addition and
+  multiplication are commutative but not associative and not distributive,
+  so *which* operations are performed, in *which* grouping, is part of a
+  program's meaning. The grouping of a floating-point expression is exactly
+  its parse tree: the arithmetic operators are left-associative
+  (`a + b + c` is `(a + b) + c`), parentheses group, and no phase may
+  regroup. Operands evaluate left to right. Every operation rounds its
+  result to its own type before the next operation consumes it — there is
+  no excess intermediate precision, so an `f32` expression is computed in
+  binary32 at every step even on a target whose registers are wider. Any
+  operation over a sequence (a reduction, a dot product, a sum in a library)
+  states the order in which it combines its elements, and that order is its
+  contract (`55-parallelism.md` §4); `simd.reduce_add` in §11.3.7 is the
+  first such statement. Commutativity may be relied on for values;
+  `a + b` and `b + a` differ at most in the payload of a NaN result, which
+  is unspecified anyway.
 - **Comparison.** `<`, `<=`, `>`, `>=` are false when either operand is NaN.
   `==` is false and `!=` is true when either operand is NaN, so `x == x` is
   the portable NaN test in expression form; `is_nan(x)` names it.
@@ -436,6 +483,18 @@ Consequently, two Oak programs computing the same sequence of operations of
 §11.3.5 produce bit-identical results on every conforming implementation.
 Only the transcendental library of §11.3.6 is allowed to differ, and it says
 by how much.
+
+**Reproducibility is tested, not assumed.** The witness for the rules above
+is a differential fuzz (`compiler/differential_float_test.go`): random `f32`
+and `f64` expression trees over every grouping of `+ - * /`, unary minus,
+and the intrinsics of §11.3.5, with leaves drawn from the IEEE special
+values (signed zeros, infinities, NaN, subnormals, the largest finite value,
+the 2^53 boundary, non-representable decimals), must agree bit for bit
+between an independent reference, the compiled C program, and the
+interpreter — on every host the continuous integration runs, which spans
+two architectures and two C compilers. A NaN result compares as a class,
+since its payload is unspecified. Any proposed backend, optimization, or
+host must pass this witness before it is called conforming.
 
 #### 11.3.4 Conversions
 
@@ -515,8 +574,8 @@ call through `c.extern` to a system libm for the same function.
 
 #### 11.3.7 Floating-point SIMD
 
-`93-simd.md` reserves `simd.F32x4` and `simd.F64x2`. With this section they
-acquire the operations `add sub mul div fma min max sqrt neg abs` (lane-wise,
+`93-simd.md` §1.2a defines `simd.F32x4` and `simd.F64x2` (implemented). With
+this section they carry the operations `add sub mul div fma min max sqrt neg abs` (lane-wise,
 each lane obeying §11.3.3 and §11.3.5), `splat`, `load`, `store`,
 `extract_E(v, lane)`, `insert_E(v, lane, x)`, and the horizontal reduction
 `simd.reduce_add_E`. Because floating-point addition is not associative, the

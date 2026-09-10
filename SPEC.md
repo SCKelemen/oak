@@ -795,18 +795,18 @@ fn counter(start: i32) -> fn() -> i32
 
 ```lang
 buf: [256]u8
-rows: [8][16]u8
 ```
 
 * Own storage.
 * Length `N` is part of the type.
 * Layout = `N * sizeof(T)` contiguous bytes.
 * Stack, static, or inside other structs.
-* Maps directly to C:
+* A value: passing, returning, and assigning copy.
+* Maps to a C struct carrying the array, so C copies it as a value:
 
 ```c
-uint8_t buf[256];
-uint8_t rows[8][16];
+typedef struct oak_arr_u8_256 { uint8_t v[256]; } oak_arr_u8_256;
+oak_arr_u8_256 buf;
 ```
 
 #### Read-only slices: `[]T` (views)

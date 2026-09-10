@@ -85,17 +85,28 @@ func main() {
 func buildPackage(args []string) int {
 	dir := "."
 	output := ""
+	header := ""
 	profile := ""
+	lines := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "-o" && i+1 < len(args):
 			output = args[i+1]
 			i++
+		case args[i] == "-header" && i+1 < len(args):
+			// The C header of the package's exported surface
+			// (docs/spec/92-ffi.md section 2.6).
+			header = args[i+1]
+			i++
 		case args[i] == "-profile" && i+1 < len(args):
 			profile = args[i+1]
 			i++
+		case args[i] == "-lines":
+			// #line directives: C diagnostics and debuggers point at Oak
+			// source (docs/spec/90-backend.md section 10).
+			lines = true
 		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out.c] [-profile default|strict] [dir]\n", args[i])
+			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out.c] [-header out.h] [-profile default|strict] [-lines] [dir]\n", args[i])
 			return 2
 		default:
 			dir = args[i]
@@ -105,10 +116,25 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
 		return 2
 	}
-	code, err := compiler.New().WithPackageDir(dir).WithProfile(profile).EmitC().Get()
+	comp := compiler.New().WithPackageDir(dir).WithProfile(profile)
+	if lines {
+		comp = comp.WithLineDirectives()
+	}
+	code, err := comp.EmitC().Get()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
+	}
+	if header != "" {
+		api, err := comp.EmitHeader().Get()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
+		if err := os.WriteFile(header, []byte(api), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
 	}
 	if output == "" {
 		abs, err := filepath.Abs(dir)
@@ -501,7 +527,10 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
 		return 1
 	}
-	build := exec.Command(cc, "-std=c99", "-O1", "-o", binary, cPath)
+	// -ffp-contract=off keeps floating-point semantics exactly as written
+	// (docs/spec/90-backend.md section 7a); -lm links the C99 math library
+	// the float intrinsics lower to.
+	build := exec.Command(cc, "-std=c99", "-O1", "-ffp-contract=off", "-o", binary, cPath, "-lm")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "oak run: C compilation failed: %v\n", err)

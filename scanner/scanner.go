@@ -3,6 +3,7 @@ package scanner
 import (
 	"bytes"
 	"strconv"
+	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -13,16 +14,19 @@ import (
 
 // Scanner is the Oak lexer.
 type Scanner struct {
-	file    *source.File
-	input   string
-	head    int // Current byte position (start of current token)
-	read    int // Look-ahead byte position
-	current rune
-	width   int
-	line    int // Current line number (1-based)
-	column  int // Current UTF-16 column number (1-based)
-	nextLn  int
-	nextCol int
+	// lastNumberWasFloat reports whether the most recent readNumber saw a
+	// fraction or exponent, so the caller emits FLOAT rather than INT.
+	lastNumberWasFloat bool
+	file               *source.File
+	input              string
+	head               int // Current byte position (start of current token)
+	read               int // Look-ahead byte position
+	current            rune
+	width              int
+	line               int // Current line number (1-based)
+	column             int // Current UTF-16 column number (1-based)
+	nextLn             int
+	nextCol            int
 }
 
 func New(input string) *Scanner {
@@ -267,6 +271,9 @@ func (s *Scanner) NextToken() token.Token {
 		} else if util.IsDigit(s.current) {
 			tok.Literal = s.readNumber()
 			tok.TokenKind = token.INT
+			if s.lastNumberWasFloat {
+				tok.TokenKind = token.FLOAT
+			}
 			tok.Line = line
 			tok.Column = column
 			return s.finishToken(tok, byteStart)
@@ -340,6 +347,31 @@ func (s *Scanner) readNumber() string {
 			s.readChar()
 		}
 		digits := stripUnderscores(s.input[digitsStart:s.head])
+		// A hexadecimal floating-point literal (docs/spec/20-types.md section
+		// 11.3.2, C99 6.4.4.2): 0x1.8p1, 0x1p-126 — a fraction and/or a
+		// binary exponent introduced by p. The exponent is what makes it a
+		// float; without one the dot is not consumed. Exact by construction.
+		// The tail loop above already consumed a `p` (a letter) and any
+		// unsigned exponent digits; a fraction starts at a dot followed by a
+		// hex digit.
+		_, dotStartsFraction := hexDigitValue(s.peekRune())
+		if radix == "16" && (strings.ContainsAny(digits, "pP") || (s.current == '.' && dotStartsFraction)) {
+			if s.current == '.' {
+				s.readChar()
+				for s.isRadixTailChar(s.current) {
+					s.readChar()
+				}
+			}
+			consumed := s.input[digitsStart:s.head]
+			if (s.current == '+' || s.current == '-') && (strings.HasSuffix(consumed, "p") || strings.HasSuffix(consumed, "P")) {
+				s.readChar()
+				for util.IsDigit(s.current) {
+					s.readChar()
+				}
+			}
+			s.lastNumberWasFloat = true
+			return stripUnderscores(s.input[position:s.head])
+		}
 		if len(digits) == 0 {
 			return s.input[position:s.head]
 		}
@@ -366,7 +398,49 @@ func (s *Scanner) readNumber() string {
 	for util.IsNumericChar(s.current) {
 		s.readChar()
 	}
+	// A fraction (`1.5`) or an exponent (`1e3`, `2.0e-5`) makes the literal
+	// a floating-point literal (docs/spec/20-types.md section 11.3.2). The
+	// dot is taken only when a digit follows, so `x.field`-style member
+	// access after an integer index is untouched.
+	isFloat := false
+	if s.current == '.' && util.IsDigit(s.peekRune()) {
+		isFloat = true
+		s.readChar() // past '.'
+		for util.IsNumericChar(s.current) {
+			s.readChar()
+		}
+	}
+	if (s.current == 'e' || s.current == 'E') && (util.IsDigit(s.peekRune()) || ((s.peekRune() == '+' || s.peekRune() == '-') && util.IsDigit(s.peekRuneAt(2)))) {
+		isFloat = true
+		s.readChar() // past 'e'
+		if s.current == '+' || s.current == '-' {
+			s.readChar()
+		}
+		for util.IsNumericChar(s.current) {
+			s.readChar()
+		}
+	}
+	s.lastNumberWasFloat = isFloat
 	return stripUnderscores(s.input[position:s.head])
+}
+
+// peekRuneAt decodes the rune n runes ahead of the current one without
+// consuming input.
+func (s *Scanner) peekRuneAt(n int) rune {
+	offset := s.read
+	var r rune
+	for i := 0; i < n; i++ {
+		if offset >= len(s.input) {
+			return 0
+		}
+		var size int
+		r, size = utf8.DecodeRuneInString(s.input[offset:])
+		if i == n-1 {
+			return r
+		}
+		offset += size
+	}
+	return 0
 }
 
 func stripUnderscores(s string) string {

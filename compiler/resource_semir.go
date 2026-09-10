@@ -60,7 +60,7 @@ func (comp Compilation) checkResourceProtocols(
 	// Ordinary type checking has already populated the environment. Run only
 	// resource flow here so diagnostics are not duplicated by CheckProgram.
 	model.TypeChecker.CheckResourceFlow(model.Tree.Root, resourceModel)
-	if err := comp.gate("resource", model.TypeChecker.Diagnostics()); err != nil {
+	if err := comp.gate("resource", model.TypeChecker.Diagnostics(), model.Tree.Modules); err != nil {
 		return typechecker.ResolvedResourceProgram{}, semir.Module{}, err
 	}
 

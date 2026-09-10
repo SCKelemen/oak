@@ -30,15 +30,132 @@ import (
 //   - the result register written before every `ret`; no `ret` from a
 //     `never` function; no fall-through past the end.
 func Check(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
-	c := &checker{fn: fn, symbols: symbols}
+	// Guard facts across labels are a dataflow fixpoint: each pass assumes
+	// a guard state at every label, records the meet of the states that
+	// actually arrive there (by fall-through and by every branch, forward
+	// or backward), and the passes repeat until the assumptions are exactly
+	// the arrivals. The first pass assumes everything (top); facts only
+	// shrink, so the iteration terminates. Only the stable pass reports.
+	var labelIn map[string]*guardState
+	for pass := 0; pass < maxGuardPasses; pass++ {
+		c := runPass(fn, decl, symbols, labelIn, false)
+		if len(c.errors) != 0 && c.labelArrive == nil {
+			return c.errors // signature errors: nothing to iterate
+		}
+		if labelIn != nil && guardStatesEqual(labelIn, c.labelArrive) {
+			return c.errors
+		}
+		labelIn = c.labelArrive
+	}
+	// Past the cap: the conservative pass forgets every guard at every
+	// label (a sound assumption, the pre-fixpoint behavior).
+	return runPass(fn, decl, symbols, nil, true).errors
+}
+
+// maxGuardPasses caps the fixpoint iteration.
+const maxGuardPasses = 16
+
+func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, forgetAtLabels bool) *checker {
+	c := &checker{fn: fn, symbols: symbols, labelIn: labelIn, forgetAtLabels: forgetAtLabels}
 	c.checkSignature(decl)
 	if len(c.errors) != 0 {
-		return c.errors
+		return c
 	}
+	c.labelArrive = map[string]*guardState{}
 	c.bindContract()
 	c.declareClobbers()
 	c.walk()
-	return c.errors
+	return c
+}
+
+// guardState is the guard knowledge at a program point: per span base
+// register the proven minimum length, per index register its bound.
+type guardState struct {
+	mins map[int]int64
+	idx  map[int]idxFact
+}
+
+func (c *checker) guardSnapshot() *guardState {
+	gs := &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}}
+	for base, fact := range c.spans {
+		if fact.hasMin {
+			gs.mins[base] = fact.minLen
+		}
+	}
+	for reg, fact := range c.idxFacts {
+		gs.idx[reg] = fact
+	}
+	return gs
+}
+
+// applyGuards installs a label's guard state: exactly the facts it holds,
+// on the spans that still exist.
+func (c *checker) applyGuards(gs *guardState) {
+	for base, fact := range c.spans {
+		minLen, has := gs.mins[base]
+		fact.hasMin = has
+		fact.minLen = minLen
+	}
+	c.idxFacts = map[int]idxFact{}
+	for reg, fact := range gs.idx {
+		c.idxFacts[reg] = fact
+	}
+	c.pendingCmp = cmpFact{}
+}
+
+// meetGuards is the intersection of two states: a length bound holds after
+// a merge only at the smaller of the two proven minimums
+// (Oak.Assembler.meet_sound), an index fact only when both sides agree.
+func meetGuards(a, b *guardState) *guardState {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}}
+	for base, minA := range a.mins {
+		if minB, ok := b.mins[base]; ok {
+			out.mins[base] = min(minA, minB)
+		}
+	}
+	for reg, factA := range a.idx {
+		if factB, ok := b.idx[reg]; ok && factA == factB {
+			out.idx[reg] = factA
+		}
+	}
+	return out
+}
+
+// arrive records a state reaching a label.
+func (c *checker) arrive(label string) {
+	if c.labelArrive == nil {
+		return
+	}
+	c.labelArrive[label] = meetGuards(c.labelArrive[label], c.guardSnapshot())
+}
+
+func guardStatesEqual(a, b map[string]*guardState) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, ga := range a {
+		gb, ok := b[name]
+		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) {
+			return false
+		}
+		for base, m := range ga.mins {
+			if gb.mins[base] != m {
+				return false
+			}
+		}
+		for reg, f := range ga.idx {
+			if gb.idx[reg] != f {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type checker struct {
@@ -63,6 +180,16 @@ type checker struct {
 	spans      map[int]*spanFact
 	spanParams map[string]spanParam
 	pendingCmp cmpFact
+	// idxFacts: index register -> the bound a dominating guard proved it
+	// below (`cmp wI, wL` / `cmp wI, #K` then `b.hs <exit>`); they die with
+	// any write to the index or bound register, any label, and any call.
+	idxFacts map[int]idxFact
+	// The label fixpoint: assumed guard states entering each label (nil on
+	// the first, optimistic pass), the meet of the states arriving there
+	// during this pass, and the conservative fallback that forgets all.
+	labelIn        map[string]*guardState
+	labelArrive    map[string]*guardState
+	forgetAtLabels bool
 	// calleeSaved tracks x19–x30: the caller's state, readable on entry,
 	// writable only after being saved to the frame, and restored from the
 	// same absolute slot before every ret (docs/spec/94-assembler.md §7).
@@ -116,12 +243,22 @@ type spanFact struct {
 	minLen   int64
 }
 
-// cmpFact remembers a `cmp wL, #N` on a span length register for exactly
-// the next instruction, which must be the guarding branch.
+// cmpFact remembers a 32-bit `cmp wA, #N` or `cmp wA, wB` for exactly the
+// next instruction, which must be the guarding branch: `b.lo` after
+// comparing a span length with N proves len >= N; `b.hs` after comparing
+// an index with N or with a length register proves index < N / index < len.
 type cmpFact struct {
-	valid  bool
-	lenReg int
-	imm    int64
+	valid    bool
+	left     int   // the compared register
+	rightReg int   // the register compared against, or -1 for an immediate
+	imm      int64 // the immediate compared against
+}
+
+// idxFact: the register is below an immediate bound (boundReg == -1) or
+// below the value of another register (a span length register).
+type idxFact struct {
+	boundReg int
+	bound    int64
 }
 
 // spanShape recognizes span ([*]T) and view ([]T) parameter types of
@@ -208,6 +345,7 @@ func (c *checker) bindContract() {
 	c.paramRegister = map[string]int{}
 	c.bound = map[int]bool{}
 	c.spans = map[int]*spanFact{}
+	c.idxFacts = map[int]idxFact{}
 	c.spanParams = map[string]spanParam{}
 	nextGeneral, nextVector := 0, 0
 	for _, param := range c.fn.Signature.Parameters {
@@ -413,6 +551,9 @@ func (c *checker) closeRegion(line int) {
 func (c *checker) enterLabel(label Label) {
 	// A label merges control: its sp displacement must agree with every
 	// branch that targets it, and flags are conservatively unknown.
+	if !c.unreachable {
+		c.arrive(label.Name) // the fall-through predecessor
+	}
 	if expected, pending := c.pendingDisp[label.Name]; pending {
 		if c.dispKnown && !c.unreachable && expected != c.disp {
 			c.errorf(label.Line, "label %s reached with sp displacement %d by fall-through and %d by branch", label.Name, c.disp, expected)
@@ -427,7 +568,22 @@ func (c *checker) enterLabel(label Label) {
 	c.labelDisp[label.Name] = c.disp
 	c.flagsValid = false
 	c.unreachable = false
-	c.forgetGuards()
+	// Guard facts at the label: the fixpoint's assumption for it — the meet
+	// of every predecessor's facts — or, on the first pass (no assumption
+	// yet) the optimistic carry-over, or under the conservative fallback
+	// nothing at all.
+	switch {
+	case c.forgetAtLabels:
+		c.forgetGuards()
+	case c.labelIn == nil:
+		c.pendingCmp = cmpFact{}
+	default:
+		if assumed, known := c.labelIn[label.Name]; known {
+			c.applyGuards(assumed)
+		} else {
+			c.forgetGuards() // no predecessor reached it: unreachable label
+		}
+	}
 }
 
 // forgetGuards drops every span length guard: control merged (label) or
@@ -437,6 +593,7 @@ func (c *checker) forgetGuards() {
 		fact.hasMin = false
 	}
 	c.pendingCmp = cmpFact{}
+	c.idxFacts = map[int]idxFact{}
 }
 
 // instruction checks one instruction and reports whether it ends control.
@@ -464,13 +621,19 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.branch(instr, false)
 		// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
 		// len >= N for every span whose length register is wL.
-		if guard.valid && (instr.Cond == "lo" || instr.Cond == "cc") {
+		if guard.valid && guard.rightReg < 0 && (instr.Cond == "lo" || instr.Cond == "cc") {
 			for _, fact := range c.spans {
-				if fact.lenReg == guard.lenReg {
+				if fact.lenReg == guard.left {
 					fact.hasMin = true
 					fact.minLen = guard.imm
 				}
 			}
+		}
+		// `cmp wI, wL` / `cmp wI, #K` then `b.hs exit`: the fall-through
+		// path knows wI < len / wI < K — the index guard of a loop walking
+		// a span (Oak.Assembler.index_access).
+		if guard.valid && (instr.Cond == "hs" || instr.Cond == "cs") {
+			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
 		}
 		return false
 	case "bl":
@@ -515,12 +678,16 @@ func (c *checker) instruction(instr Instruction) bool {
 	if instr.Mnemonic == "cmp" {
 		c.read(instr, dest) // cmp's first operand is a source
 		c.flagsValid = true
-		// Only the 32-bit view of a span length register guards: the upper
-		// half of the register is padding the contract never defines.
-		if imm, isImm := instr.Operands[1].(Immediate); isImm && dest.Class == ClassW {
-			for _, fact := range c.spans {
-				if fact.lenReg == dest.Num {
-					c.pendingCmp = cmpFact{valid: true, lenReg: dest.Num, imm: imm.Value}
+		// Only 32-bit comparisons guard: a span length lives in the low half
+		// of its register (the upper half is padding the contract never
+		// defines), and an index is a 32-bit element count.
+		if dest.Class == ClassW {
+			switch right := instr.Operands[1].(type) {
+			case Immediate:
+				c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: -1, imm: right.Value}
+			case Register:
+				if right.Class == ClassW && !right.ZeroRegister() {
+					c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: right.Num}
 				}
 			}
 		}
@@ -636,11 +803,18 @@ func (c *checker) write(instr Instruction, reg Register) {
 	}
 	c.written[reg.Num] = true
 	// Moving a span base forgets the span; touching a length register
-	// forgets its guard.
+	// forgets its guard; touching an index or its bound forgets the
+	// index fact.
 	delete(c.spans, reg.Num)
 	for _, fact := range c.spans {
 		if fact.lenReg == reg.Num {
 			fact.hasMin = false
+		}
+	}
+	delete(c.idxFacts, reg.Num)
+	for index, fact := range c.idxFacts {
+		if fact.boundReg == reg.Num {
+			delete(c.idxFacts, index)
 		}
 	}
 }
@@ -680,6 +854,10 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 	}
 	if mem.Base.Class != ClassSP {
 		c.errorf(instr.Line, "memory operands go through the declared sp frame or a bound span base; %s is neither", mem.Base.Text)
+		return
+	}
+	if mem.Index != nil {
+		c.errorf(instr.Line, "%s: register-offset addressing walks a span, not the frame", instr.Mnemonic)
 		return
 	}
 	if c.fn.Frame == 0 {
@@ -734,6 +912,10 @@ func (c *checker) spanAccess(instr Instruction, matched form, mem Memory, fact *
 		return
 	}
 	size := accessBytes(instr.Mnemonic, matched[0])
+	if mem.Index != nil {
+		c.indexedSpanAccess(instr, mem, fact, size, regs, isStore)
+		return
+	}
 	if mem.Offset < 0 {
 		c.errorf(instr.Line, "%s: negative offset %d reaches before the span", instr.Mnemonic, mem.Offset)
 		return
@@ -756,6 +938,51 @@ func (c *checker) spanAccess(instr Instruction, matched form, mem Memory, fact *
 	}
 }
 
+// indexedSpanAccess admits [base, wI, uxtw #s] on a bound span: the access
+// is one whole element (1<<s == size == elem) at element index wI, and a
+// dominating guard proved wI below the span's length — directly (`cmp wI,
+// wL; b.hs`) or through a constant the length guard covers (`cmp wI, #K;
+// b.hs` with len >= K established). Then (wI+1)*elem <= elem*len
+// (Oak.Assembler.index_access).
+func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFact, size int64, regs []Register, isStore bool) {
+	index := *mem.Index
+	c.read(instr, index)
+	if size != fact.elem || int64(1)<<uint(mem.Shift) != size {
+		c.errorf(instr.Line, "%s: indexed access must move by whole elements: a %d-byte access over %d-byte elements needs `uxtw #%d` and a matching register width", instr.Mnemonic, size, fact.elem, log2(fact.elem))
+		return
+	}
+	bound, guarded := c.idxFacts[index.Num]
+	switch {
+	case !guarded:
+		c.errorf(instr.Line, "%s indexed by %s without a dominating index guard: `cmp %s, w%d` then `b.hs <exit>` proves the index below the span's length for the fall-through path", instr.Mnemonic, index.Text, index.Text, fact.lenReg)
+		return
+	case bound.boundReg == fact.lenReg:
+		// index < len: in bounds.
+	case bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen:
+		// index < K <= len.
+	case bound.boundReg < 0:
+		c.errorf(instr.Line, "%s: the guard proves %s < %d but the span's proven minimum length is %d", instr.Mnemonic, index.Text, bound.bound, fact.minLen)
+		return
+	default:
+		c.errorf(instr.Line, "%s: %s is guarded against w%d, which is not this span's length register (w%d)", instr.Mnemonic, index.Text, bound.boundReg, fact.lenReg)
+		return
+	}
+	if !isStore {
+		for _, reg := range regs {
+			c.write(instr, reg)
+		}
+	}
+}
+
+func log2(n int64) int {
+	shift := 0
+	for n > 1 {
+		n >>= 1
+		shift++
+	}
+	return shift
+}
+
 func (c *checker) checkAccess(instr Instruction, offset, size int64) {
 	addr := -c.disp + offset
 	if addr < -c.fn.Frame || addr+size > 0 {
@@ -769,6 +996,7 @@ func (c *checker) checkAccess(instr Instruction, offset, size int64) {
 func (c *checker) branch(instr Instruction, unconditional bool) bool {
 	target := instr.Operands[0].(Symbol).Name
 	if c.labels[target] {
+		c.arrive(target) // the branch-taken predecessor, with the facts held here
 		if recorded, seen := c.labelDisp[target]; seen {
 			if recorded != c.disp {
 				c.errorf(instr.Line, "branch to %s with sp displacement %d, label recorded %d", target, c.disp, recorded)

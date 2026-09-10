@@ -25,6 +25,15 @@ const (
 	// CodeExternOutsideDefinition rejects `c.extern` anywhere other than
 	// as the whole definition of a declaration-form function.
 	CodeExternOutsideDefinition = "OAK-F0103"
+	// CodeSpanElementNotABI rejects a boundary span whose element type has
+	// no single meaning on both sides of the C boundary (section 2.5.1).
+	CodeSpanElementNotABI = "OAK-F0104"
+	// CodeSpanParameterPair rejects c.span_of/c.span_mut_of that does not
+	// line up with a `c.Ptr, c.Size` parameter pair (section 2.5.1).
+	CodeSpanParameterPair = "OAK-F0105"
+	// CodeCStringNotLiteral rejects c.String over anything but a string
+	// literal (section 2.5.3).
+	CodeCStringNotLiteral = "OAK-F0106"
 )
 
 // CType is a member of the `c` interface library (docs/spec/92-ffi.md
@@ -85,6 +94,9 @@ var cConversionOakOperand = map[string]string{
 	"Char": "u8",
 	"Int":  "i32", "UInt": "u32",
 	"Size": "u32",
+	// Bit-preserving float rows (docs/spec/92-ffi.md section 2.2,
+	// 20-types.md section 11.3.4).
+	"Float": "f32", "Double": "f64",
 }
 
 // oakConversionCOperands is the reverse direction: which c members an Oak
@@ -93,6 +105,7 @@ var cConversionOakOperand = map[string]string{
 var oakConversionCOperands = map[string][]string{
 	"i8": {"Int8"}, "i16": {"Int16"}, "i32": {"Int32", "Int"}, "i64": {"Int64"},
 	"u8": {"UInt8", "Char"}, "u16": {"UInt16"}, "u32": {"UInt32", "UInt"}, "u64": {"UInt64"},
+	"f32": {"Float"}, "f64": {"Double"},
 }
 
 // SimdType is a member of the `simd` portable vector library
@@ -117,6 +130,9 @@ type SimdShape struct {
 	Suffix   string // op suffix: "u8x16"
 	ElemName string // lane primitive: "u8"
 	Lanes    int    // lane count
+	// Float marks the floating-point vectors (docs/spec/20-types.md
+	// section 11.3.7), whose operation set differs from the integer one.
+	Float bool
 }
 
 // SimdShapes is the v1 vector catalog, shared with the backend and the
@@ -126,7 +142,15 @@ var SimdShapes = []SimdShape{
 	{TypeName: "U16x8", Suffix: "u16x8", ElemName: "u16", Lanes: 8},
 	{TypeName: "U32x4", Suffix: "u32x4", ElemName: "u32", Lanes: 4},
 	{TypeName: "U64x2", Suffix: "u64x2", ElemName: "u64", Lanes: 2},
+	{TypeName: "F32x4", Suffix: "f32x4", ElemName: "f32", Lanes: 4, Float: true},
+	{TypeName: "F64x2", Suffix: "f64x2", ElemName: "f64", Lanes: 2, Float: true},
 }
+
+// SimdFloatBinaryOps, SimdFloatUnaryOps: the lane-wise operations of the
+// floating-point vectors (section 11.3.7); each lane obeys the scalar rules
+// of sections 11.3.3 and 11.3.5 (min/max are IEEE 754-2019 minimum/maximum).
+var SimdFloatBinaryOps = []string{"add", "sub", "mul", "div", "min", "max"}
+var SimdFloatUnaryOps = []string{"sqrt", "neg", "abs"}
 
 // SimdShapeBySuffix resolves an op suffix ("u8x16") to its shape.
 func SimdShapeBySuffix(suffix string) (SimdShape, bool) {
@@ -161,6 +185,22 @@ var simdOps = func() map[string]*FunctionType {
 		ops["splat_"+shape.Suffix] = &FunctionType{Parameters: []Type{elem}, ReturnType: vector}
 		ops["load_"+shape.Suffix] = &FunctionType{Parameters: []Type{view, offset}, ReturnType: vector}
 		ops["store_"+shape.Suffix] = &FunctionType{Parameters: []Type{span, offset, vector}, ReturnType: &UnitType{}}
+		if shape.Float {
+			// Floating-point vectors (docs/spec/20-types.md section 11.3.7):
+			// lane-wise arithmetic, fma, lane access, and the pairwise
+			// reduce_add whose grouping is its semantics.
+			for _, binary := range SimdFloatBinaryOps {
+				ops[binary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
+			}
+			for _, unary := range SimdFloatUnaryOps {
+				ops[unary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: vector}
+			}
+			ops["fma_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector, vector}, ReturnType: vector}
+			ops["extract_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, offset}, ReturnType: elem}
+			ops["insert_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, offset, elem}, ReturnType: vector}
+			ops["reduce_add_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: elem}
+			continue
+		}
 		for _, binary := range []string{"add", "sub", "and", "or", "xor", "min", "max", "eq"} {
 			ops[binary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
 		}
@@ -207,7 +247,7 @@ func KnownLibraryMember(library, member string) bool {
 	switch library {
 	case "c":
 		_, isType := cTypeSpellings[member]
-		return isType || member == "extern"
+		return isType || member == "extern" || member == "span_of" || member == "span_mut_of"
 	case "arm64":
 		_, isIntrinsic := arm64Intrinsics[member]
 		return isIntrinsic
@@ -224,10 +264,16 @@ func KnownLibraryMember(library, member string) bool {
 var conversionPrimitives = map[string]int{
 	"u8": 8, "u16": 16, "u32": 32, "u64": 64,
 	"i8": 8, "i16": 16, "i32": 32, "i64": 64,
+	// Floating-point rows (docs/spec/20-types.md section 11.3.4); the
+	// backend and interpreter branch on IsFloatName before treating a
+	// width as an integer width.
+	"f32": 32, "f64": 64,
+	// Storage formats (section 11.3.1): round from f32, bits with u16.
+	"f16": 16, "bf16": 16,
 }
 
 var conversionOperations = map[string]bool{
-	"trunc": true, "saturating": true, "checked": true, "bits": true,
+	"trunc": true, "saturating": true, "checked": true, "bits": true, "round": true,
 }
 
 // ConversionParts destructures an explicit-conversion function name for the
@@ -371,6 +417,31 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 			"c.extern is only a definition, not an expression")
 		d.AddHelp("bind it as a whole function definition: name: (params): c.Ret = c.extern(\"symbol\")")
 		return nil
+	}
+	switch member {
+	case "span_of", "span_mut_of":
+		// Boundary spans are not expressions: they exist only as arguments
+		// of a call to an extern binding, where checkInvocationExpression
+		// consumes them (docs/spec/92-ffi.md section 2.5.2).
+		d := tc.addTypeDiagnostic(expr, CodeExternOutsideDefinition,
+			fmt.Sprintf("c.%s is only an argument to an extern binding, not an expression", member))
+		d.AddNote("a boundary span yields a c.Ptr, c.Size pair for the duration of one foreign call and cannot be bound, stored, returned, or passed to Oak code")
+		return nil
+	case "String":
+		// c.String is constructible from a literal only: the backend emits
+		// the literal NUL-terminated, and a runtime string would need a
+		// copy the language does not perform silently (section 2.5.3).
+		if len(expr.Arguments) != 1 {
+			tc.addError(expr, "c.String takes exactly one string literal argument")
+			return nil
+		}
+		if _, isLiteral := expr.Arguments[0].(*ast.StringLiteral); !isLiteral {
+			d := tc.addTypeDiagnostic(expr.Arguments[0], CodeCStringNotLiteral,
+				"c.String requires a string literal")
+			d.AddNote("Oak strings carry a length and are not NUL-terminated; terminate runtime text yourself and pass c.span_of over its bytes (docs/spec/92-ffi.md section 2.5.3)")
+			return nil
+		}
+		return &CType{Name: member}
 	}
 	oakOperand, convertible := cConversionOakOperand[member]
 	if !convertible {
@@ -533,8 +604,128 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 	if !valid {
 		return
 	}
+	if tc.externFunctions == nil {
+		tc.externFunctions = make(map[string]bool)
+	}
+	tc.externFunctions[stmt.Name.Value] = true
 	tc.env.Set(stmt.Name.Value, Generalize(&FunctionType{
 		Parameters: paramTypes,
 		ReturnType: returnType,
 	}, tc.env))
+}
+
+// BoundarySpanArgument recognizes `c.span_of(v)` / `c.span_mut_of(s)` in
+// argument position (docs/spec/92-ffi.md section 2.5), returning the member
+// and the operand. A local binding named `c` shadows the library, exactly as
+// for every other library call.
+func (tc *TypeChecker) BoundarySpanArgument(arg ast.Expression) (member string, operand ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall {
+		return "", nil, false
+	}
+	library, member, isLibrary := libraryAccess(call.Function)
+	if !isLibrary || library != "c" || (member != "span_of" && member != "span_mut_of") {
+		return "", nil, false
+	}
+	if _, bound := tc.env.Get("c"); bound {
+		return "", nil, false
+	}
+	if len(call.Arguments) != 1 {
+		return member, nil, true
+	}
+	return member, call.Arguments[0], true
+}
+
+// boundarySpanElementTypes are the element types with one meaning on both
+// sides of the C boundary in this increment: fixed-width integers and Bool.
+// Records with proven layouts are admitted by the specification and are a
+// recorded implementation gap.
+var boundarySpanElementTypes = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true,
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"byte": true,
+	"f32":  true, "f64": true,
+}
+
+// checkBoundarySpan validates one boundary-span argument of an extern call:
+// the operand is a named read-only view (span_of) or writable span
+// (span_mut_of) over an ABI-representable element type, and the parameters
+// at pos and pos+1 are exactly c.Ptr and c.Size (section 2.5.1).
+func (tc *TypeChecker) checkBoundarySpan(arg ast.Expression, member string, operand ast.Expression, parameters []Type, pos int) bool {
+	if operand == nil {
+		tc.addError(arg, "c.%s takes exactly one view or span argument", member)
+		return false
+	}
+	pairOK := pos+1 < len(parameters)
+	if pairOK {
+		ptr, isPtr := parameters[pos].(*CType)
+		size, isSize := parameters[pos+1].(*CType)
+		pairOK = isPtr && isSize && ptr.Name == "Ptr" && size.Name == "Size"
+	}
+	if !pairOK {
+		d := tc.addTypeDiagnostic(arg, CodeSpanParameterPair,
+			fmt.Sprintf("c.%s must stand for a `c.Ptr, c.Size` parameter pair of the extern binding", member))
+		d.AddNote("a boundary span occupies two consecutive parameter positions: the pointer, then the element count (docs/spec/92-ffi.md section 2.5.1)")
+		return false
+	}
+	ident, isIdent := operand.(*ast.Identifier)
+	if !isIdent {
+		tc.addError(operand, "c.%s takes a named view or span binding", member)
+		return false
+	}
+	operandType := tc.checkExpression(ident)
+	if operandType == nil {
+		return false
+	}
+	array, isArray := operandType.(*ArrayType)
+	switch {
+	case member == "span_of" && (!isArray || !array.IsSlice):
+		tc.addError(operand, "c.span_of takes a read-only view []T, got %s", operandType)
+		return false
+	case member == "span_mut_of" && (!isArray || !array.IsSpan):
+		tc.addError(operand, "c.span_mut_of takes a writable span [*]T, got %s", operandType)
+		return false
+	}
+	representable := false
+	switch element := array.ElementType.(type) {
+	case *PrimitiveType:
+		representable = boundarySpanElementTypes[element.Name]
+	case *BoolType:
+		representable = true
+	case *ADTType:
+		representable = tc.boundaryTaggedUnion(element.Name, map[string]bool{})
+	}
+	if !representable {
+		d := tc.addTypeDiagnostic(operand, CodeSpanElementNotABI,
+			fmt.Sprintf("element type %s cannot cross the C boundary in a span", array.ElementType))
+		d.AddNote("boundary spans carry fixed-width integers, Bool, and tagged unions whose payloads are those; other element types have no single meaning on both sides (docs/spec/92-ffi.md sections 2.5.1 and 2.6)")
+		return false
+	}
+	return true
+}
+
+// boundaryTaggedUnion reports whether a declared tagged union has one
+// meaning on both sides of the C boundary (docs/spec/92-ffi.md section
+// 2.6): it is not generic, and every payload is a fixed-width integer,
+// Bool, or such a union. The emitted shape is a u32 tag followed by the
+// payload union, with its layout asserted at C compile time.
+func (tc *TypeChecker) boundaryTaggedUnion(name string, visiting map[string]bool) bool {
+	adt, declared := tc.adtTypes[name]
+	if !declared || len(adt.TypeParams) > 0 {
+		return false
+	}
+	if visiting[name] {
+		return true
+	}
+	visiting[name] = true
+	for _, variant := range adt.Variants {
+		switch {
+		case variant.Payload == "":
+		case boundarySpanElementTypes[variant.Payload], variant.Payload == "Bool":
+		case tc.boundaryTaggedUnion(variant.Payload, visiting):
+		default:
+			return false
+		}
+	}
+	return true
 }
