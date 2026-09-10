@@ -96,7 +96,12 @@ calls and the presence of the direct form.
 
 `encode[T, F]` and `decode[T, F]` for a declared record are **derived**:
 generated Oak code, checkable like any other, read from the record's
-declared fields and typed tags (`40-records.md` §12):
+declared fields and typed tags (`40-records.md` §12). The generation is a
+structured compiler transformation: the derivation builds typed syntax
+(`compiler/synth.go`, the same nodes the parser produces) with a fresh
+resolution context per generated function and a distinct position per node,
+so no Oak source text is templated and reparsed, and every generated shape
+is a node the checker, lowering, backend, and interpreter already know:
 
 ```oak
 json: tag = { name: string, omit: Bool }
