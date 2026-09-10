@@ -9,6 +9,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/borrowchecker"
 	"github.com/SCKelemen/oak/codegen"
+	"github.com/SCKelemen/oak/codegen/lean"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/layout"
@@ -457,6 +458,33 @@ func (comp Compilation) EmitHeader() Stage[string] {
 			generator.SetAbstractAliases(lowered.Model.Tree.Modules.Abstract)
 		}
 		return generator.GenerateHeader(lowered.Root, lowered.Model.TypeChecker)
+	})
+}
+
+// EmitLean extracts the program's own declarations (never the spliced
+// standard library) into Lean 4 definitions under the given namespace
+// (docs/spec/95-extraction.md, codegen/lean). The extraction reads the
+// type-checked tree before lowering, so it sees the program as written.
+func (comp Compilation) EmitLean(namespace string) Stage[string] {
+	return comp.Check().Then(func(model *SemanticModel) (string, error) {
+		names := map[string]bool{}
+		if model.PublicRoot != nil {
+			for _, stmt := range model.PublicRoot.Statements {
+				switch s := stmt.(type) {
+				case *ast.FunctionStatement:
+					if s.Name != nil {
+						names[s.Name.Value] = true
+					}
+				case *ast.ADTType:
+					if s.Name != nil {
+						names[s.Name.Value] = true
+					}
+				}
+			}
+		} else {
+			names = nil
+		}
+		return lean.Emit(model.Tree.Root, model.TypeChecker, namespace, names)
 	})
 }
 

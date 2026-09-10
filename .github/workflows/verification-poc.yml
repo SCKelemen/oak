@@ -57,6 +57,7 @@ jobs:
           lean -DwarningAsError=true -o proof/CertificateFile.olean proof/CertificateFile.lean 2>&1 | tee build/soundness/certificate-file-proof.log
           lean -DwarningAsError=true proof/CertificateFileCompare.lean
           lean -DwarningAsError=true -o proof/OakText.olean proof/OakText.lean 2>&1 | tee build/soundness/oak-text-proof.log
+          lean -DwarningAsError=true -o proof/OakTextExtracted.olean proof/OakTextExtracted.lean 2>&1 | tee build/soundness/oak-text-extracted.log
           lean -DwarningAsError=true proof/OakTextCompare.lean
           lean -DwarningAsError=true -o proof/OakTextRefinement.olean proof/OakTextRefinement.lean 2>&1 | tee build/soundness/oak-text-refinement-proof.log
           lean -DwarningAsError=true -o proof/PackedText.olean proof/PackedText.lean 2>&1 | tee build/soundness/packed-text-proof.log
@@ -95,7 +96,7 @@ jobs:
           lean -DwarningAsError=true --run proof/ProofPackingCompare.lean "$OAK_SELF_HOSTED_STREAM_CORPUS_OUT" 2>&1 | tee build/soundness/proof-packing-agreement.log
           export OAK_SELF_HOSTED_TEXT_CORPUS_OUT="$PWD/build/soundness/self-hosted-text-cases.json"
           export OAK_SELF_HOSTED_TEXT_PROFILE_OUT="$PWD/build/soundness/self-hosted-text-profile-cases.json"
-          go test -count=1 -v . -run '^TestSelfHostedText$|^TestSelfHostedTextProfile$' 2>&1 | tee build/soundness/self-hosted-text-go.log
+          go test -count=1 -v . -run '^TestSelfHostedText$|^TestSelfHostedTextProfile$|^TestLeanExtractionMatchesCommitted$' 2>&1 | tee build/soundness/self-hosted-text-go.log
           lean -DwarningAsError=true --run proof/RUPTextCompare.lean "$OAK_SELF_HOSTED_TEXT_CORPUS_OUT" 2>&1 | tee build/soundness/self-hosted-text-agreement.log
           lean -DwarningAsError=true --run proof/CertificateFileCompare.lean "$OAK_SELF_HOSTED_TEXT_CORPUS_OUT" "$OAK_SELF_HOSTED_TEXT_PROFILE_OUT" 2>&1 | tee build/soundness/certificate-file-agreement.log
           lean -DwarningAsError=true --run proof/OakTextCompare.lean "$OAK_SELF_HOSTED_TEXT_CORPUS_OUT" "$OAK_SELF_HOSTED_TEXT_PROFILE_OUT" 2>&1 | tee build/soundness/oak-text-agreement.log

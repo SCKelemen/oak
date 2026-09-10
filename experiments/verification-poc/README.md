@@ -272,5 +272,12 @@ requires it, the proved file model, and compiled Oak to agree on every corpus
 case, and `proof/OakTextRefinement.lean` proves `check_refines` (every
 acceptance by the transliteration is an acceptance by the file model) and
 `check_refutes` (the model's soundness transferred to the Oak decoder).
-Transliteration fidelity is the stated remaining assumption; a checked
-translation of Oak's semantics is step 3.
+Roadmap step 3: [`proof/OakTextExtracted.lean`](../../docs/spec/95-extraction.md)
+is not written by hand — the compiler extracts it from the same three Oak
+sources (`codegen/lean`, `TestLeanExtractionMatchesCommitted` regenerates it
+and fails on drift), and `OakTextCompare` requires the extraction, the
+transliteration, the file model, and compiled Oak to agree on every corpus
+case. The assumption between compiled Oak and the model is now the
+correctness of the compiler and a small translator rather than a reading of
+two sources; the theorem that the extraction equals the transliteration, so
+`check_refines` transfers to it directly, is the next increment.
