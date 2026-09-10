@@ -2,6 +2,7 @@ package repl
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,5 +111,54 @@ func TestLeanObligationsReportUntranslatableLoops(t *testing.T) {
 	text, err = empty.LeanObligations()
 	if err != nil || !strings.Contains(text, "No recorded assumptions") {
 		t.Fatalf("empty obligations = %v\n%s", err, text)
+	}
+}
+
+// :lean check elaborates the emitted file with the repository's toolchain
+// and attributes Lean's verdicts to theorems. Skipped without lake.
+func TestLeanCheckReportsVerdicts(t *testing.T) {
+	if _, err := exec.LookPath("lake"); err != nil {
+		t.Skip("lake not on PATH")
+	}
+	session := NewSession(".")
+	for _, input := range exampleSession {
+		if _, err := session.Submit(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text, err := session.LeanObligations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A deliberately false statement joins the file so the error path is
+	// exercised.
+	text = strings.Replace(text, "end Oak.Session", "theorem broken_disjoint : Oak.Regions.Disjoint ⟨0, 4⟩ ⟨2, 6⟩ := by decide\n\nend Oak.Session", 1)
+	report, err := session.LeanCheck(text, filepath.Join(t.TempDir(), "check.lean"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdicts := map[string]Verdict{}
+	for _, theorem := range report.Theorems {
+		verdicts[theorem.Name] = theorem.Verdict
+	}
+	for name, want := range map[string]Verdict{
+		"loop_loop_1_terminates": Open,
+		"cycle_1_ranked":         Proved,
+		"unsafe_1_overlaps":      Proved,
+		"broken_disjoint":        Failed,
+	} {
+		if verdicts[name] != want {
+			t.Fatalf("%s = %s, want %s\n%s", name, verdicts[name], want, report)
+		}
+	}
+}
+
+// classify attributes messages by line range without running Lean.
+func TestClassifyAttributesMessages(t *testing.T) {
+	text := "theorem a : True := trivial\n\n/-- doc -/\ntheorem b : True := by\n  sorry\n\ntheorem c : False := by\n  decide\n"
+	output := "{\"severity\":\"warning\",\"pos\":{\"line\":4},\"data\":\"declaration uses sorry\"}\n{\"severity\":\"error\",\"pos\":{\"line\":8},\"data\":\"failed to synthesize Decidable False\"}\n"
+	report := classify(text, []byte(output))
+	if len(report.Theorems) != 3 || report.Theorems[0].Verdict != Proved || report.Theorems[1].Verdict != Open || report.Theorems[2].Verdict != Failed {
+		t.Fatalf("report = %+v", report.Theorems)
 	}
 }
