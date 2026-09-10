@@ -62,3 +62,36 @@ func TestVerifyDataDependentLoops(t *testing.T) {
 		t.Fatalf("an uncoupled but equivalent loop must be witness-checked, got %s: %s", down.Kind, down.Message)
 	}
 }
+
+// Forks inside a data-dependent loop body: the asm body's paths merge into
+// selects at the back edge, and Oak's statement-level conditional merges
+// its arms the same way — both couple to the value-position spelling.
+func TestVerifyLoopBodyForks(t *testing.T) {
+	decl := "count_gt: (v: []u32, t: u32) -> u32"
+	valueForm := "{\n  n: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < len(v) {\n    n = n + (v[i] > t ? u32(1) | u32(0))\n    i = i + u32(1)\n  }\n  n\n}"
+	statementForm := "{\n  n: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < len(v) {\n    v[i] > t ? { n = n + u32(1) } | { }\n    i = i + u32(1)\n  }\n  n\n}"
+	branchy := "  bind x0, w1 = v\n  bind w2 = t\n  clobber w9, w10, w11\n  mov w9, #0\n  mov w10, #0\nloop:\n  cmp w9, w1\n  b.hs done\n  ldr w11, [x0, w9, uxtw #2]\n  cmp w11, w2\n  b.ls skip\n  add w10, w10, #1\nskip:\n  add w9, w9, #1\n  b loop\ndone:\n  mov w0, w10\n  ret"
+	for name, body := range map[string]string{"value form": valueForm, "statement form": statementForm} {
+		verdict := verifyCase(t, decl, body, branchy)
+		if verdict.Kind != VerdictProven {
+			t.Fatalf("%s: a branchy count loop must be proven, got %s: %s", name, verdict.Kind, verdict.Message)
+		}
+	}
+	// The conditional select spelling of the same asm is the same function.
+	selecting := "  bind x0, w1 = v\n  bind w2 = t\n  clobber w9, w10, w11, w12\n  mov w9, #0\n  mov w10, #0\nloop:\n  cmp w9, w1\n  b.hs done\n  ldr w11, [x0, w9, uxtw #2]\n  cmp w11, w2\n  cset w12, hi\n  add w10, w10, w12\n  add w9, w9, #1\n  b loop\ndone:\n  mov w0, w10\n  ret"
+	if verdict := verifyCase(t, decl, statementForm, selecting); verdict.Kind != VerdictProven {
+		t.Fatalf("cset spelling must be proven, got %s: %s", verdict.Kind, verdict.Message)
+	}
+	// The wrong branch sense counts v[i] <= t instead: refuted on a concrete input.
+	wrong := verifyCase(t, decl, valueForm, strings.Replace(branchy, "b.ls skip", "b.hi skip", 1))
+	if wrong.Kind != VerdictMismatch {
+		t.Fatalf("the wrong branch sense must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
+	}
+	// A running maximum by conditional move.
+	maxDecl := "max_of: (v: []u32) -> u32"
+	oakMax := "{\n  best: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < len(v) {\n    v[i] > best ? { best = v[i] } | { }\n    i = i + u32(1)\n  }\n  best\n}"
+	asmMax := "  bind x0, w1 = v\n  clobber w9, w10, w11\n  mov w9, #0\n  mov w10, #0\nloop:\n  cmp w9, w1\n  b.hs done\n  ldr w11, [x0, w9, uxtw #2]\n  cmp w11, w10\n  b.ls keep\n  mov w10, w11\nkeep:\n  add w9, w9, #1\n  b loop\ndone:\n  mov w0, w10\n  ret"
+	if verdict := verifyCase(t, maxDecl, oakMax, asmMax); verdict.Kind != VerdictProven {
+		t.Fatalf("running maximum must be proven, got %s: %s", verdict.Kind, verdict.Message)
+	}
+}
