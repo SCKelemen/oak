@@ -92,6 +92,52 @@ Verification is the SIMD/intrinsics precedent (`93-simd.md`): golden and
 differential tests over the emitted C, asserting the absence of wrapper
 calls and the presence of the direct form.
 
+### 4a. One bounds check per record, one validation per string
+
+Two costs handwritten code does not pay, and derived code did: a derived
+record writer preflighted the whole value once and then every field writer
+measured and checked capacity again, at every nesting level; and a string
+was validated as UTF-8 in one pass and scanned for escapes in another. Both
+are removed the way a scheduler removes redundant work — by making the
+boundary explicit — and both keep the pre-fusion form as the oracle.
+
+- **Checked entry, unchecked interior.** For each type the derivation
+  emits `__oak_json_write_unchecked_T(value, dst, offset): u32`, which
+  writes a value the caller has measured into storage the caller has
+  checked and returns the count, and `__oak_json_write_T`, the entry
+  callers reach by name: measure once, `bytes_range_fits` once, then the
+  unchecked writer. Field writes inside a record's unchecked body call the
+  fields' unchecked writers; the primitives have the same pair
+  (`json_u64_write_at`, `json_i64_write_at`, `json_bool_write_at`,
+  `json_string_write_at` under `json_*_encode_at`). Every store the
+  unchecked form makes is still a bounds-checked Oak store, so a caller that
+  broke the contract traps rather than writes out of range; the contract
+  that failure leaves the output unchanged holds because the checked entry
+  never calls the writer unless the whole value fits. The generated C is the
+  witness: the unchecked body of a record contains no capacity check, no
+  size call, and no assertion, and the checked entry contains exactly one of
+  each (`compiler/e2e_codec_fusion_test.go`).
+- **Fused validation lane.** `json_string_scan` is the escape scan with one
+  more accumulator: the same sixteen-byte loads that classify escape bytes
+  OR the high bits, and the scalar tail does the same, so the run comes
+  back with an ASCII verdict. `json_string_encode_size` runs the full UTF-8
+  validator only when some run or escape byte was not ASCII. Every ASCII
+  byte is a valid scalar, so the verdict is exact; the encoding error keeps
+  its precedence over the size error because the decision is taken before
+  any result is returned. `json_string_encode_size_reference` is the
+  unfused form, and a differential test requires the two to agree on ASCII,
+  escapes, long runs, valid multibyte, and invalid UTF-8 at every position
+  class, compiled and interpreted.
+
+Not taken from the scheduler: tile choice as semantics (byte codecs are
+exact, so a block size carries no meaning), predicated zero-fill tails (no
+semantic zero, no overread — section 11), and fusing the size pass into the
+write pass (a single speculative pass would need rollback and break the
+unchanged-on-failure contract; the two passes stay, and the redundancy
+between them is what 4a removes). The remaining candidate is a
+classification pass over the field list so a statically sized record skips
+the size pass entirely (`docs/notes/codec-fusion-lessons-2026-09.md`).
+
 ## 5. Derivation from typed tags
 
 `encode[T, F]` and `decode[T, F]` for a declared record are **derived**:

@@ -1,7 +1,10 @@
 # Note: what the ml scheduler's fusion and tiling teach the codecs
 
-**Status: assessment, no decisions taken.** 2026-09-10, `specification`
-branch. Source: a read of `github.com/SCKelemen/ml` (fusion boundaries in
+**Status: taken up.** 2026-09-10, `specification` branch. The first three
+items of "If taken up" landed the same day as `71-codecs.md` §4a: the
+oracle-and-counter discipline, the per-record bounds check with the unchecked
+inner form, and the fused validation lane. The classification pass that lets
+statically sized records skip the size pass is the remaining item. Source: a read of `github.com/SCKelemen/ml` (fusion boundaries in
 `graph/graph.oak`, kernel assembly in `schedule/schedule.oak`, emission in
 `emit/emit.oak`, RFC 0001 and design-log entries 0020–0039, the license
 theorem `spec/lean/Ml/Schedule.lean`) against `docs/spec/71-codecs.md`,
