@@ -1550,6 +1550,12 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 				}
 			}
 			tc.recordShiftWidth(expr, width)
+			// A shift's result wraps to the operand width like any other
+			// fixed-width operation: recorded so the interpreter's width
+			// oracle covers it (the backend reads ShiftWidth for its
+			// checked helper; found by the generated-program differential
+			// witness: `u8(100) << u8(2)` is 144, not 400).
+			tc.recordArithmetic(expr, leftType)
 		}
 		return leftType
 	case "<", ">", "<=", ">=":

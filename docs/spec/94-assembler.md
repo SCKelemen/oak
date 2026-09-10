@@ -493,10 +493,11 @@ linearly; two symbolic operands blast as a shift-and-add product within the
 budget or stay evidence), `neg` and `mvn` are subtraction from zero and
 exclusive-or with all ones, `asr` is the arithmetic shift, and `tst` sets
 the flags of the AND (a third flags kind; C and V clear), so `tst; cset ne`
-is a bit test. Note Oak's `>>` is the logical shift at every integer type
-(the backend's `oak_shr_u` helpers), so `asr` never implements an Oak
-body: the verifier refutes it at a negative input rather than assuming
-arithmetic semantics.
+is a bit test. Note Oak's shift and bitwise operators take unsigned
+operands only (`20-types.md`: bitwise on signed values is refused), so
+`asr` never implements an Oak body; should a signed shift ever be spelled,
+the verifier refutes the arithmetic reading at a negative input rather than
+assuming it.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
