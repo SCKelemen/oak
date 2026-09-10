@@ -1280,8 +1280,13 @@ func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string
 			if !allDisjoint {
 				// Oak.Unsafe: inside an unsafe boundary the unprovable
 				// writable-disjointness obligation is admitted, not proven.
+				var existingRegion *Region
+				if conflict.owner != "" {
+					existingRegion = conflict.region
+				}
 				d := bc.reportUnsafeAssumption(origin,
-					fmt.Sprintf("unsafe assumption: writable span %q is assumed disjoint from existing writable access to %q", borrowName, ownerName))
+					fmt.Sprintf("unsafe assumption: writable span %q is assumed disjoint from existing writable access to %q", borrowName, ownerName),
+					borrowName, region, conflictName, existingRegion)
 				d.AddNote(fmt.Sprintf("requested region: %s", describeRegion(region)))
 				if conflictName != "" {
 					bc.addBorrowContext(d, conflictName, conflict,
@@ -1375,7 +1380,8 @@ func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName
 				// Oak.Unsafe: the unprovable sibling-disjointness obligation
 				// is admitted inside an unsafe boundary, not proven.
 				d := bc.reportUnsafeAssumption(origin,
-					fmt.Sprintf("unsafe assumption: writable reborrow %q is assumed disjoint from live reborrow %q of span %q", subsliceName, siblingName, sourceBorrowName))
+					fmt.Sprintf("unsafe assumption: writable reborrow %q is assumed disjoint from live reborrow %q of span %q", subsliceName, siblingName, sourceBorrowName),
+					subsliceName, newRegion, siblingName, sibling.region)
 				d.AddNote(fmt.Sprintf("requested region: %s", describeRegion(newRegion)))
 				bc.addBorrowContext(d, siblingName, sibling,
 					fmt.Sprintf("reborrow %q is still live here", siblingName))

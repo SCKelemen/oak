@@ -58,7 +58,27 @@ type Result struct {
 	// the C backend merges each group into one state-machine loop, so the
 	// whole cycle runs in a single frame. Members are sorted.
 	TrampolineGroups [][]string
-	diagnostics      []*diagnostic.Diagnostic
+	// TailCycles are the all-tail call cycles recorded as OAK-D0102
+	// obligations, in analysis order; the REPL states them in Lean's terms
+	// (Oak.Discipline.Ranked over the cycle's edges).
+	TailCycles  []TailCycle
+	diagnostics []*diagnostic.Diagnostic
+}
+
+// TailCycle is one recorded tail-only cycle: its members (sorted) and the
+// internal call edges, all of them tail calls.
+type TailCycle struct {
+	Members []string
+	Edges   []CallEdge
+	Site    ast.Node
+}
+
+// CallEdge is one call in a cycle: Caller invokes Callee; Tail reports tail
+// position.
+type CallEdge struct {
+	Caller string
+	Callee string
+	Tail   bool
 }
 
 // Diagnostics returns the discipline findings, errors first.
@@ -178,6 +198,11 @@ func (r *Result) classifyComponent(component []string, functions map[string]*ast
 	}
 
 	first := internalTail[0]
+	cycle := TailCycle{Members: sorted, Site: first.edge.site}
+	for _, call := range internalTail {
+		cycle.Edges = append(cycle.Edges, CallEdge{Caller: call.caller, Callee: call.edge.callee, Tail: true})
+	}
+	r.TailCycles = append(r.TailCycles, cycle)
 	d := diagnostic.NewDiagnosticFromNodeWithCode(first.edge.site, "discipline", string(CodeTailRecursionObligation),
 		fmt.Sprintf("tail recursion through %v relies on tail-call elimination the backend does not guarantee yet", sorted))
 	d.Severity = diagnostic.SeverityWarning

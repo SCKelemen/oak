@@ -406,6 +406,28 @@ func Start(in io.Reader, out io.Writer) {
 			continue
 		}
 
+		// :lean <file.lean> writes the session's obligations as Lean theorem
+		// statements over the models in spec/lean (Oak.Loops, Oak.Discipline,
+		// Oak.Regions) for the programmer to prove there; `-` prints them.
+		if target, isLean := strings.CutPrefix(strings.TrimSpace(input), ":lean "); isLean && strings.TrimSpace(target) != "" {
+			target = strings.TrimSpace(target)
+			text, err := session.LeanObligations()
+			if err != nil {
+				fmt.Fprintf(out, "%s\n", strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "\n\t"))
+				continue
+			}
+			if target == "-" {
+				fmt.Fprint(out, text)
+				continue
+			}
+			if err := os.WriteFile(target, []byte(text), 0o644); err != nil {
+				fmt.Fprintf(out, "%v\n", err)
+				continue
+			}
+			fmt.Fprintf(out, "wrote %s; import it from spec/lean and `lake build` to check the statements, replace each sorry to discharge\n", target)
+			continue
+		}
+
 		// Parse and evaluate
 		lxr := scanner.New(input)
 		p := parser.New(lxr)
@@ -437,6 +459,7 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "  :obligations     - List the recorded assumptions the checker could not discharge\n")
 					fmt.Fprintf(out, "  :strict          - Toggle the strict profile (assumptions reject)\n")
 					fmt.Fprintf(out, "  :lean            - Name the Lean law governing each recorded assumption\n")
+					fmt.Fprintf(out, "  :lean <file>     - Write the recorded assumptions as Lean theorem statements (- for stdout)\n")
 					fmt.Fprintf(out, "\n")
 					fmt.Fprintf(out, "Inputs are checked by the full compiler pipeline. Imports resolve through\n")
 					fmt.Fprintf(out, "the module (oak.mod) enclosing the working directory: import(\"...\"), pub,\n")
@@ -483,7 +506,7 @@ func Start(in io.Reader, out io.Writer) {
 						}
 						fmt.Fprintf(out, "%s at %s:%d\n  law: %s — %s\n  discharge: %s\n", d.Code, d.File, d.Range.Start.Line+1, law.Module, law.Statement, law.Discharge)
 					}
-					fmt.Fprintf(out, "laws are proved in spec/lean; the compiler records these assumptions, it does not prove them\n")
+					fmt.Fprintf(out, "laws are proved in spec/lean; the compiler records these assumptions, it does not prove them; :lean <file.lean> states them\n")
 					continue
 				case "strict":
 					session.Strict = !session.Strict
