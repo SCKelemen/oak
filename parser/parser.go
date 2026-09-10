@@ -275,6 +275,16 @@ func (p *Parser) parseStatement() ast.Statement {
 		}
 		return p.parseExpressionStatementOrIndexAssignment()
 	case token.IDENT:
+		// `open import(path)` binds every exported member unqualified
+		// (docs/spec/83-modules.md section 3.2); `open` is contextual.
+		if p.currentToken.Literal == "open" && p.peekTokenIs(token.IMPORT) {
+			return p.parseOpenImport()
+		}
+		// `module name { ... }` declares a nested module (section 3.5);
+		// `module` is contextual, so `module := 1` stays an ordinary binding.
+		if p.currentToken.Literal == "module" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.LBRACE {
+			return p.parseModuleDeclaration()
+		}
 		// Variable declarations and assignments:
 		// - x := expr -> declaration with type inference (short declaration)
 		// - x: T = expr -> declaration with type annotation
@@ -1427,6 +1437,42 @@ func (p *Parser) parseSelectiveImport() ast.Statement {
 		return nil
 	}
 	stmt := &ast.ImportStatement{Token: p.currentToken, Names: names}
+	path, arguments, ok := p.parseImportPath()
+	if !ok {
+		return nil
+	}
+	stmt.Path, stmt.Arguments = path, arguments
+	return stmt
+}
+
+// parseModuleDeclaration parses `module name { declarations }`.
+func (p *Parser) parseModuleDeclaration() ast.Statement {
+	stmt := &ast.ModuleDeclaration{Token: p.currentToken}
+	if !p.expectPeek(token.IDENT) {
+		return nil
+	}
+	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	if !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+	stmt.Body = p.parseBlockStatement()
+	if stmt.Body == nil {
+		return nil
+	}
+	// The block is a package body: `x := import(...)` and `x: Sig = import(...)`
+	// are import statements there, as at the top of a file.
+	for i, inner := range stmt.Body.Statements {
+		stmt.Body.Statements[i] = p.foldImportBinding(inner)
+	}
+	return stmt
+}
+
+// parseOpenImport parses `open import(path)`.
+func (p *Parser) parseOpenImport() ast.Statement {
+	if !p.expectPeek(token.IMPORT) {
+		return nil
+	}
+	stmt := &ast.ImportStatement{Token: p.currentToken, Open: true}
 	path, arguments, ok := p.parseImportPath()
 	if !ok {
 		return nil

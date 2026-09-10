@@ -85,7 +85,9 @@ pub make: (x: i32, y: i32): Point = Point { x: x, y: y }
 abs: (v: i32): i32 = v < 0 ? 0 - v | v                // private to the package
 ```
 
-Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
+`open import("...")` binds every exported member unqualified (collisions are
+errors, never precedence), and `module name { ... }` declares a nested package
+inside a file with its own `pub` boundary. Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
 pinned dependencies with `oak mod download`; see `examples/modules`. Versions
 are enforced Elm-style at module granularity: `oak mod api` snapshots a
 module's public API, `oak mod bump previous.json` requires the `version` in
