@@ -93,6 +93,22 @@ unsafe member, and include all successors; an empty initial set is rejected.
 Trace evidence must begin initially, follow legal transitions
 or stutter, and end unsafe.
 
+Every accepted `verify` result is a **verdict** (`evidence.go`, roadmap step
+4's evidence contract): `claim` is the property about identified Oak
+declarations — the state record and the initial, step, and invariant
+predicates by name and source position (roadmap step 3's first increment:
+the claim names the Oak source it is about, bound by source hash and
+semantic digest, not only an exported formula),
+`established` the fact this checker verified about the evidence, `assumptions`
+what the verdict trusts rather than checks, `trust_path` the components the
+result passed through in order, `unsupported` what the checker refuses, and
+`details` the evidence-specific numbers. The three kinds — closed set, trace,
+LRAT — fix these fields; nothing in a verdict is inferred from the evidence
+itself. The LRAT verdict's trust path names the corpus gates behind
+`internal/lrat` (agreement with compiled Oak and the Lean file model on every
+case, the model's `check_sound`, and the Oak decoder's `check_refines`), and
+its assumptions state that the CNF translation is compared, not proved.
+
 `oak-evidence-3` binds source bytes, project settings, the checked frontend
 model, and a Go-adapter semantics version. Earlier certificate identities are
 rejected. The migration tests explicitly rebind old fixture identities only
@@ -244,8 +260,11 @@ It is compared with Go and Lean on 425 complete streams. The
 Oak and feeds that checker. Its text decisions are compared with Go and Lean;
 the solver gate also replays a real CaDiCaL certificate through compiled Oak.
 
-Roadmap step 2 has begun: [`proof/OakText.lean`](proof/OakText.md) transliterates
-the Oak decoder structure for structure over the proved scanner, `OakTextCompare`
+Roadmap step 2: [`proof/OakText.lean`](proof/OakText.md) transliterates the Oak
+decoder structure for structure over the proved scanner, `OakTextCompare`
 requires it, the proved file model, and compiled Oak to agree on every corpus
-case, and its `check_sound` refutes the layout it builds; the refinement theorem
-to the file model is the next increment.
+case, and `proof/OakTextRefinement.lean` proves `check_refines` (every
+acceptance by the transliteration is an acceptance by the file model) and
+`check_refutes` (the model's soundness transferred to the Oak decoder).
+Transliteration fidelity is the stated remaining assumption; a checked
+translation of Oak's semantics is step 3.

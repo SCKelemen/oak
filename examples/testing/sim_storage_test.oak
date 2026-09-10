@@ -1,0 +1,351 @@
+import(testing)
+
+// Simulated storage (stdlib sim_storage.oak): a four-block, four-word device.
+// Unit histories pin the crash contract and the fault ledger; the property
+// checks the device against an exact model with no faults enabled; the
+// simulation drives a write-ahead log through every fault kind and asks only
+// what a real WAL can promise: no phantom records, a prefix, and durability
+// of every acknowledged block the ledger calls trusted.
+
+sim_disk_fill: (rec: [*]u64, seq: u64, a: u64, b: u64): () {
+  rec[0] = seq
+  rec[1] = a
+  rec[2] = b
+  rec[3] = wal_checksum(seq, a, b)
+}
+
+wal_checksum: (seq: u64, a: u64, b: u64): u64 {
+  h: u64 = u64(0x2545F4914F6CDD1D)
+  h = (h ^ seq) * u64(0x3F58476D1CE4E5B9)
+  h = (h ^ a) * u64(0x14D049BB133111EB)
+  h = (h ^ b) * u64(0x3F58476D1CE4E5B9)
+  h ^ (h >> u64(31))
+}
+
+TestSimDiskCrashContract: (): () {
+  d: [1]SimDisk
+  dur: [16]u64
+  vol: [16]u64
+  fl: [8]u32
+  tape: [1]TestChoices
+  zeros: [4]u8
+  rec: [4]u64
+  out: [4]u64
+  disk: [*]SimDisk = span(&d)
+  durable: [*]u64 = span(&dur)
+  volatile: [*]u64 = span(&vol)
+  flags: [*]u32 = span(&fl)
+  choices: [*]TestChoices = span(&tape)
+  data: []u8 = view(&zeros)
+  record: [*]u64 = span(&rec)
+  read: [*]u64 = span(&out)
+  sim_disk_init(disk, durable, volatile, flags, u32(4), u32(4))
+  sim_disk_fill(record, u64(1), u64(10), u64(20))
+  ignored: u32 = sim_disk_write(disk, durable, volatile, flags, u32(1), record, choices, data, u32(0))
+  test_check(sim_disk_dirty(flags, u32(1)) && sim_disk_trusted(flags, u32(1)), u32(5000))
+  // Visible before fsync, gone after a crash without one.
+  ok: Bool = sim_disk_read(disk, durable, volatile, flags, u32(1), read, choices, data, u32(0))
+  test_check(ok && read[0] == u64(1) && read[3] == wal_checksum(u64(1), u64(10), u64(20)), u32(5001))
+  sim_disk_crash(disk, durable, volatile, flags)
+  sim_disk_restart(disk)
+  ok = sim_disk_read(disk, durable, volatile, flags, u32(1), read, choices, data, u32(0))
+  test_check(ok && read[0] == u64(0) && read[3] == u64(0), u32(5002))
+  test_check(!sim_disk_dirty(flags, u32(1)), u32(5003))
+  // Persisted, it survives the crash.
+  ignored = sim_disk_write(disk, durable, volatile, flags, u32(1), record, choices, data, u32(0))
+  ignored = sim_disk_fsync(disk, durable, volatile, flags, choices, data, u32(0))
+  test_check(!sim_disk_dirty(flags, u32(1)), u32(5004))
+  sim_disk_crash(disk, durable, volatile, flags)
+  sim_disk_restart(disk)
+  ok = sim_disk_read(disk, durable, volatile, flags, u32(1), read, choices, data, u32(0))
+  test_check(ok && read[0] == u64(1) && read[1] == u64(10) && read[2] == u64(20), u32(5005))
+  test_check(sim_disk_trusted(flags, u32(1)) && sim_disk_durable_trusted(flags, u32(1)), u32(5006))
+}
+
+// A tape that forces one fault: roll 7 (fault), pick 0 (the only enabled
+// kind), then the fault's own choices.
+TestSimDiskTornWriteIsLedgered: (): () {
+  d: [1]SimDisk
+  dur: [16]u64
+  vol: [16]u64
+  fl: [8]u32
+  tape: [1]TestChoices
+  bytes: [12]u8
+  rec: [4]u64
+  out: [4]u64
+  disk: [*]SimDisk = span(&d)
+  durable: [*]u64 = span(&dur)
+  volatile: [*]u64 = span(&vol)
+  flags: [*]u32 = span(&fl)
+  choices: [*]TestChoices = span(&tape)
+  record: [*]u64 = span(&rec)
+  read: [*]u64 = span(&out)
+  bytes[0] = u8(7)
+  bytes[8] = u8(2)
+  data: []u8 = view(&bytes)
+  sim_disk_init(disk, durable, volatile, flags, u32(4), u32(4))
+  sim_disk_fill(record, u64(3), u64(30), u64(60))
+  fault: u32 = sim_disk_write(disk, durable, volatile, flags, u32(2), record, choices, data, u32(1))
+  test_check(fault == u32(1) && disk[0].torn == u32(1), u32(5010))
+  test_check(!sim_disk_trusted(flags, u32(2)) && sim_disk_dirty(flags, u32(2)), u32(5011))
+  ok: Bool = sim_disk_read(disk, durable, volatile, flags, u32(2), read, choices, data, u32(0))
+  // Two words kept, two words still zero: the checksum no longer matches.
+  test_check(ok && read[0] == u64(3) && read[1] == u64(30) && read[2] == u64(0) && read[3] == u64(0), u32(5012))
+  test_check(wal_checksum(read[0], read[1], read[2]) != read[3], u32(5013))
+  // A clean rewrite heals the provenance.
+  ignored: u32 = sim_disk_write(disk, durable, volatile, flags, u32(2), record, choices, data, u32(0))
+  test_check(sim_disk_trusted(flags, u32(2)), u32(5014))
+}
+
+TestSimDiskLostFsyncIsLedgered: (): () {
+  d: [1]SimDisk
+  dur: [16]u64
+  vol: [16]u64
+  fl: [8]u32
+  tape: [1]TestChoices
+  bytes: [12]u8
+  rec: [4]u64
+  out: [4]u64
+  disk: [*]SimDisk = span(&d)
+  durable: [*]u64 = span(&dur)
+  volatile: [*]u64 = span(&vol)
+  flags: [*]u32 = span(&fl)
+  choices: [*]TestChoices = span(&tape)
+  record: [*]u64 = span(&rec)
+  read: [*]u64 = span(&out)
+  bytes[0] = u8(7)
+  data: []u8 = view(&bytes)
+  sim_disk_init(disk, durable, volatile, flags, u32(4), u32(4))
+  sim_disk_fill(record, u64(5), u64(50), u64(100))
+  // The write is clean (faults mask excludes write faults) and consumes no
+  // fault choices beyond its roll; the fsync rolls next.
+  zeros: [4]u8
+  quiet: []u8 = view(&zeros)
+  ignored: u32 = sim_disk_write(disk, durable, volatile, flags, u32(0), record, choices, quiet, u32(0))
+  choices[0].offset = u32(0)
+  fault: u32 = sim_disk_fsync(disk, durable, volatile, flags, choices, data, u32(8))
+  test_check(fault == u32(8) && disk[0].lost == u32(1), u32(5020))
+  test_check(!sim_disk_dirty(flags, u32(0)) && !sim_disk_trusted(flags, u32(0)) && !sim_disk_durable_trusted(flags, u32(0)), u32(5021))
+  sim_disk_crash(disk, durable, volatile, flags)
+  sim_disk_restart(disk)
+  ok: Bool = sim_disk_read(disk, durable, volatile, flags, u32(0), read, choices, quiet, u32(0))
+  test_check(ok && read[0] == u64(0), u32(5022))
+}
+
+// Without faults the device is exact: reads see the last write, a crash
+// reverts every block to its last persisted content.
+PropertySimDiskExact: (data: []u8): () {
+  d: [1]SimDisk
+  dur: [16]u64
+  vol: [16]u64
+  fl: [8]u32
+  mvol: [16]u64
+  mdur: [16]u64
+  tape: [1]TestChoices
+  rec: [4]u64
+  out: [4]u64
+  disk: [*]SimDisk = span(&d)
+  durable: [*]u64 = span(&dur)
+  volatile: [*]u64 = span(&vol)
+  flags: [*]u32 = span(&fl)
+  choices: [*]TestChoices = span(&tape)
+  record: [*]u64 = span(&rec)
+  read: [*]u64 = span(&out)
+  sim_disk_init(disk, durable, volatile, flags, u32(4), u32(4))
+  step: u32 = u32(0)
+  while step < u32(48) {
+    op: u32 = test_range(choices, data, u32(0), u32(4))
+    block: u32 = test_range(choices, data, u32(0), u32(3))
+    testing_trace(u32(500), u64(op), u64(block))
+    op <= u32(1) ? {
+      value: u64 = u64(test_u32(choices, data))
+      sim_disk_fill(record, u64(step), value, u64(block))
+      ignored: u32 = sim_disk_write(disk, durable, volatile, flags, block, record, choices, data, u32(0))
+      w: u32 = u32(0)
+      while w < u32(4) {
+        mvol[block * u32(4) + w] = record[w]
+        w = w + u32(1)
+      }
+      testing_classify(u32(50))
+    }
+    op == u32(2) ? {
+      ignored2: u32 = sim_disk_fsync(disk, durable, volatile, flags, choices, data, u32(0))
+      i: u32 = u32(0)
+      while i < u32(16) {
+        mdur[i] = mvol[i]
+        i = i + u32(1)
+      }
+      testing_classify(u32(51))
+    }
+    op == u32(3) ? {
+      sim_disk_crash(disk, durable, volatile, flags)
+      sim_disk_restart(disk)
+      j: u32 = u32(0)
+      while j < u32(16) {
+        mvol[j] = mdur[j]
+        j = j + u32(1)
+      }
+      testing_classify(u32(52))
+    }
+    op == u32(4) ? {
+      ok: Bool = sim_disk_read(disk, durable, volatile, flags, block, read, choices, data, u32(0))
+      test_check(ok, u32(5030))
+      k: u32 = u32(0)
+      while k < u32(4) {
+        test_check(read[k] == mvol[block * u32(4) + k], u32(5031))
+        k = k + u32(1)
+      }
+      testing_classify(u32(53))
+    }
+    test_check(sim_disk_trusted(flags, block), u32(5032))
+    step = step + u32(1)
+  }
+  test_check(disk[0].torn + disk[0].misdirected + disk[0].dropped + disk[0].lost + disk[0].flipped + disk[0].latent == u32(0), u32(5033))
+}
+
+// A write-ahead log over the device: block i holds record i (seq, a, b,
+// checksum). Appends are unacknowledged until an fsync; recovery after a
+// crash scans blocks in order and stops at the first unreadable or invalid
+// record, then truncates by invalidating the tail durably (the simulation
+// found the alternative: a stale valid record beyond the truncation point
+// resurfaces after a later unacknowledged append vanishes). Every fault kind
+// may be enabled; the invariants are the ones a single-disk WAL can honestly
+// keep:
+//   5040 no phantom: a recovered record is what was written for that
+//        sequence number, unless the ledger marks its block untrusted (a
+//        dropped or misdirected write can leave an old valid record in
+//        place — the silent case only replication repairs; class 92);
+//   5041 prefix: recovery never yields more records than were appended;
+//   5042 durability: every acknowledged record on a trusted block is
+//        recovered, up to the first untrusted acknowledged block — a
+//        prefix scan cannot see past a record it cannot validate (class 93
+//        when a fault truncated acknowledged history).
+SimWalRecovery: (data: []u8): () {
+  d: [1]SimDisk
+  dur: [32]u64
+  vol: [32]u64
+  fl: [16]u32
+  tape: [1]TestChoices
+  rec: [4]u64
+  out: [4]u64
+  expected_a: [8]u64
+  expected_b: [8]u64
+  blank: [4]u64
+  disk: [*]SimDisk = span(&d)
+  durable: [*]u64 = span(&dur)
+  volatile: [*]u64 = span(&vol)
+  flags: [*]u32 = span(&fl)
+  choices: [*]TestChoices = span(&tape)
+  record: [*]u64 = span(&rec)
+  read: [*]u64 = span(&out)
+  blank_record: [*]u64 = span(&blank)
+  faults: u32 = u32(test_byte(choices, data)) & u32(63)
+  sim_disk_init(disk, durable, volatile, flags, u32(8), u32(4))
+  next: u32 = u32(0)
+  acked: u32 = u32(0)
+  epoch: u64 = u64(0)
+  step: u32 = u32(0)
+  while step < u32(32) {
+    op: u32 = test_range(choices, data, u32(0), u32(5))
+    testing_trace(u32(510), u64(op), (u64(next) << u64(32)) | u64(acked))
+    op <= u32(2) && next < u32(8) ? {
+      a: u64 = u64(test_u32(choices, data))
+      b: u64 = epoch
+      sim_disk_fill(record, u64(next), a, b)
+      expected_a[next] = a
+      expected_b[next] = b
+      f: u32 = sim_disk_write(disk, durable, volatile, flags, next, record, choices, data, faults)
+      f != u32(0) ? { testing_classify(u32(80) + f) }
+      next = next + u32(1)
+    }
+    op == u32(3) ? {
+      f2: u32 = sim_disk_fsync(disk, durable, volatile, flags, choices, data, faults)
+      f2 != u32(0) ? { testing_classify(u32(88)) }
+      acked = next
+    }
+    op == u32(4) && next > u32(0) ? {
+      // A read of a random appended record: the device may corrupt or fail.
+      which: u32 = test_range(choices, data, u32(0), next - u32(1))
+      before_flip: u32 = disk[0].flipped
+      before_latent: u32 = disk[0].latent
+      ignored: Bool = sim_disk_read(disk, durable, volatile, flags, which, read, choices, data, faults)
+      disk[0].flipped > before_flip ? { testing_classify(u32(89)) }
+      disk[0].latent > before_latent ? { testing_classify(u32(90)) }
+    }
+    op == u32(5) ? {
+      sim_disk_crash(disk, durable, volatile, flags)
+      sim_disk_restart(disk)
+      epoch = epoch + u64(1)
+      recovered: u32 = u32(0)
+      scanning: Bool = true
+      while scanning && recovered < u32(8) {
+        ok: Bool = sim_disk_read(disk, durable, volatile, flags, recovered, read, choices, data, u32(0))
+        valid: Bool = ok && read[0] == u64(recovered) && read[3] == wal_checksum(read[0], read[1], read[2])
+        valid ? {
+          matches: Bool = read[1] == expected_a[recovered] && read[2] == expected_b[recovered]
+          trusted: Bool = sim_disk_trusted(flags, recovered)
+          test_check(matches || !trusted, u32(5040))
+          !matches ? { testing_classify(u32(92)) }
+          recovered = recovered + u32(1)
+        } | { scanning = false }
+      }
+      testing_trace(u32(511), u64(recovered), (u64(next) << u64(32)) | u64(acked))
+      test_check(recovered <= next, u32(5041))
+      clean: Bool = true
+      i: u32 = u32(0)
+      while i < acked {
+        !sim_disk_trusted(flags, i) ? { clean = false }
+        clean ? { test_check(i < recovered, u32(5042)) }
+        i = i + u32(1)
+      }
+      recovered < acked ? { testing_classify(u32(93)) }
+      recovered < next && recovered >= acked ? { testing_classify(u32(94)) }
+      // Truncate: invalidate every block past the recovered prefix, durably.
+      q: u32 = recovered
+      while q < u32(8) {
+        fz: u32 = sim_disk_write(disk, durable, volatile, flags, q, blank_record, choices, data, faults)
+        fz != u32(0) ? { testing_classify(u32(80) + fz) }
+        q = q + u32(1)
+      }
+      fs: u32 = sim_disk_fsync(disk, durable, volatile, flags, choices, data, faults)
+      fs != u32(0) ? { testing_classify(u32(88)) }
+      next = recovered
+      acked = recovered
+      testing_classify(u32(95))
+    }
+    step = step + u32(1)
+  }
+  faults == u32(0) ? { testing_classify(u32(96)) }
+}
+
+// A nonzero fault mask with no fault roll is a clean write and fsync.
+TestSimDiskCleanUnderFaultMask: (): () {
+  d: [1]SimDisk
+  dur: [32]u64
+  vol: [32]u64
+  fl: [16]u32
+  tape: [1]TestChoices
+  zeros: [64]u8
+  rec: [4]u64
+  out: [4]u64
+  disk: [*]SimDisk = span(&d)
+  durable: [*]u64 = span(&dur)
+  volatile: [*]u64 = span(&vol)
+  flags: [*]u32 = span(&fl)
+  choices: [*]TestChoices = span(&tape)
+  data: []u8 = view(&zeros)
+  record: [*]u64 = span(&rec)
+  read: [*]u64 = span(&out)
+  sim_disk_init(disk, durable, volatile, flags, u32(8), u32(4))
+  sim_disk_fill(record, u64(0), u64(77), u64(0))
+  test_check(record[3] != u64(0), u32(5900))
+  f0: u32 = sim_disk_write(disk, durable, volatile, flags, u32(0), record, choices, data, u32(0))
+  test_check(f0 == u32(0) && volatile[3] == record[3], u32(5901))
+  sim_disk_fill(record, u64(1), u64(78), u64(0))
+  f4: u32 = sim_disk_write(disk, durable, volatile, flags, u32(1), record, choices, data, u32(4))
+  test_check(f4 == u32(0), u32(5902))
+  test_check(volatile[7] == record[3], u32(5903))
+  test_check(volatile[4] == u64(1), u32(5904))
+  ff: u32 = sim_disk_fsync(disk, durable, volatile, flags, choices, data, u32(4))
+  test_check(durable[3] == volatile[3] && durable[7] == volatile[7], u32(5905))
+}

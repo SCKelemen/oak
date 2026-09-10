@@ -71,11 +71,19 @@ func flatten(text string) string {
 	return qualification.ReplaceAllString(text, "")
 }
 
+//go:embed testing.oak
+var testingSource string
+
+// Simulated block storage with tape-driven faults (110-testing.md,
+// "Simulated storage"): pure Oak over caller-owned storage, part of the
+// testing module so simulation packages get it without a native adapter.
+//
+//go:embed sim_storage.oak
+var simStorageSource string
+
 // TestingSource is the opt-in import(testing) module. Its reporting boundary
 // is supplied by oak test; generated target helpers use caller-owned storage.
-//
-//go:embed testing.oak
-var TestingSource string
+var TestingSource = testingSource + "\n" + simStorageSource
 
 // Packages are the standard library files importable as qualified package
 // views (docs/spec/83-modules.md section 9): `import("strings")` exposes the
