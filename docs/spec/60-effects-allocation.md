@@ -26,27 +26,44 @@ Memory.Allocate
 
 therefore overlaps every `Memory.Allocate[x]`.
 
-## 2. Requires and forbids
+## 2. Effects and forbids (implemented subset)
 
-A function may require effects/authority and may forbid classes of effect.
-
-Conceptually:
-
-```oak
-fn build[R](arena: Arena[R]): Graph[R]
-  effects { Memory.Allocate[arena] }
-```
-
-Realtime code can prohibit broad classes:
+A function may declare the effects it performs and may forbid classes of
+effect. The v1 surface is two clauses after the signature, in either order,
+each at most once:
 
 ```oak
-realtime fn process(...)
-  forbids { Memory.Allocate, Thread.Block, Os.Syscall }
+grow: (n: u32): u32 effects { Memory.Allocate } = ...
+process: (frame: []u8): u32 forbids { Memory.Allocate, Thread.Block, Os.Syscall } = ...
+c_abs: (n: c.Int32): c.Int32 effects { } = c.extern("abs")
 ```
 
-Exact surface syntax is not yet frozen. The semantic rule is normative.
+An effect is a `Namespace.Name` class (`semir.Effect`); parameterized
+instances (`Memory.Allocate[arena]`) are direction and, per the semantic IR,
+an unparameterized name overlaps all of its instances.
 
-A required effect and a forbidden overlapping effect is a static contradiction.
+Rules, checked after specialization over the concrete call graph
+(compiler/effects.go):
+
+- The effects reachable from a function are its own `effects` clause and,
+  transitively, those of every function it calls by name. Builtins and width
+  conversions carry none.
+- `forbids { E }` rejects the program when `E` is reachable (`OAK-E0101`,
+  naming the call path that carries it), and when the function itself
+  declares `E` (`OAK-E0102`, the static contradiction).
+- Facts are never guessed. An extern (`c.extern`) or asm-backed declaration
+  without an `effects` clause has unknown effects, and so does a call
+  through a function value (a parameter or local of function type); a
+  `forbids` that reaches either is rejected (`OAK-E0103`). `effects { }` on
+  an extern asserts it performs none, on the author's authority.
+- Clauses have no runtime representation and no effect on layout or ABI.
+
+Ordinary Oak allocates nothing (section 3), so today `Memory.Allocate` and
+the other classes enter a program only through declared externs and
+declared Oak functions; the clauses make those entry points explicit and let
+a hot path prove, transitively, that it reaches none of them. Effect
+inference for undeclared Oak functions is exactly this closure; a function
+need not declare what its callees declare.
 
 ## 3. No hidden allocation
 

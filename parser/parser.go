@@ -3898,6 +3898,48 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		}
 	}
 
+	// Effect clauses (docs/spec/60-effects-allocation.md section 2), in
+	// either order, each at most once: effects { A.B, ... } forbids { ... }.
+	// `effects` and `forbids` are contextual: only this position reads them.
+	for p.peekTokenIs(token.IDENT) && (p.peekToken.Literal == "effects" || p.peekToken.Literal == "forbids") {
+		p.nextToken()
+		keyword := p.currentToken.Literal
+		if (keyword == "effects" && stmt.EffectsDeclared) || (keyword == "forbids" && stmt.Forbids != nil) {
+			p.addErrorAtCurrentToken(fmt.Sprintf("a function declares one %s clause", keyword))
+			return nil
+		}
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+		names := []*ast.EffectName{}
+		for !p.peekTokenIs(token.RBRACE) {
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			effect := &ast.EffectName{Token: p.currentToken, Namespace: p.currentToken.Literal}
+			if !p.expectPeek(token.DOT) {
+				return nil
+			}
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			effect.Name = p.currentToken.Literal
+			names = append(names, effect)
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+			} else if !p.peekTokenIs(token.RBRACE) {
+				p.peekError(token.RBRACE)
+				return nil
+			}
+		}
+		p.nextToken() // '}'
+		if keyword == "effects" {
+			stmt.Effects, stmt.EffectsDeclared = names, true
+		} else {
+			stmt.Forbids = names
+		}
+	}
+
 	// Body: '= expr', '= { block }', or a brace block.
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken()
