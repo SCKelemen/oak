@@ -423,10 +423,19 @@ over a view of any length, and an n-fold 64-bit accumulate, are **proven**;
 the commuted body is the same loop; a count-down asm loop against a
 count-up Oak loop cannot be coupled and is **witness-checked** (evidence,
 never a false mismatch); a loop on one side only is trusted. Executed:
-`sum` over views of length 5, 2, and 0, both ways. What remains: loops with
-forks inside their bodies, nested data-dependent loops, and loops whose
-variables the coupling cannot pair (count-down vs count-up needs an
-affine relation rather than equality).
+`sum` over views of length 5, 2, and 0, both ways. **Forks inside the
+body**: a recognized loop body may branch forward within itself; one
+iteration is then executed along every path (a body-path budget bounds
+them) and the paths merge register by register into selects on their path
+conditions at the back edge. On the Oak side a statement-level conditional
+`c ? { x = e } | { }` runs each arm on a snapshot of the locals and merges
+the locals either arm assigns as selects — so the branchy asm, the
+`cset`-based asm, the value-position Oak spelling, and the statement-level
+Oak spelling of "count the elements above a threshold" are all one loop,
+and a running maximum by conditional move is proven; the wrong branch sense
+is refuted on a concrete input. What remains: nested data-dependent loops,
+and loops whose variables the coupling cannot pair (count-down vs count-up
+needs an affine relation rather than equality).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

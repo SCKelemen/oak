@@ -302,6 +302,62 @@ done:
 			t.Fatalf("sum, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
 		}
 	}
+	// A data-dependent loop whose body branches: count the elements above a
+	// threshold, the Oak statement-level conditional against an asm branch
+	// that rejoins inside the loop.
+	count := New().WithSource("count.oak", `
+count_gt: (v: []u32, t: u32) -> u32 {
+  n: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < len(v) {
+    v[i] > t ? { n = n + u32(1) } | { }
+    i = i + u32(1)
+  }
+  n
+}
+
+main: (): i32 {
+  buf: [6]u32
+  buf[0] = u32(3)
+  buf[1] = u32(50)
+  buf[2] = u32(7)
+  buf[3] = u32(99)
+  buf[4] = u32(10)
+  buf[5] = u32(11)
+  whole: []u32 = view(&buf)
+  assert(count_gt(whole, u32(10)) == u32(3))
+  assert(count_gt(whole, u32(100)) == u32(0))
+  assert(count_gt(subslice(whole, u32(0), u32(0)), u32(0)) == u32(0))
+  42
+}
+`).WithAsmUnit("count.arm64.oakasm", `
+count_gt: (v: []u32, t: u32) -> u32 = {
+  bind x0, w1 = v
+  bind w2 = t
+  clobber w9, w10, w11
+  mov w9, #0
+  mov w10, #0
+loop:
+  cmp w9, w1
+  b.hs done
+  ldr w11, [x0, w9, uxtw #2]
+  cmp w11, w2
+  b.ls skip
+  add w10, w10, #1
+skip:
+  add w9, w9, #1
+  b loop
+done:
+  mov w0, w10
+  ret
+}
+`)
+	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
+		_, code, abnormal := buildAndRunFrom(t, "verified_count", count, flags...)
+		if abnormal || code != 42 {
+			t.Fatalf("count_gt, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
+		}
+	}
 	// The wrong condition never compiles.
 	_, err := New().WithSource("max.oak", `
 max32: (a, b: u32) -> u32 = a < b ? b | a
