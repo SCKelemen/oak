@@ -33,7 +33,7 @@ func TestIndexedSpanAccess(t *testing.T) {
 		{"no index guard", "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  ldr w0, [x0, w9, uxtw #2]\n  ret", "without a dominating index guard"},
 		{"guard against another register", "  bind x0, w1 = v\n  bind x2, w3 = w\n  clobber w9\n  mov w9, #0\n  cmp w9, w3\n  b.hs done\n  ldr w0, [x0, w9, uxtw #2]\n  ret\ndone:\n  mov w0, #0\n  ret", "not this span's length register"},
 		{"index written after guard", "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  cmp w9, w1\n  b.hs done\n  add w9, w9, #1\n  ldr w0, [x0, w9, uxtw #2]\n  ret\ndone:\n  mov w0, #0\n  ret", "without a dominating index guard"},
-		{"guard dies at label", "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  cmp w9, w1\n  b.hs done\nagain:\n  ldr w0, [x0, w9, uxtw #2]\n  ret\ndone:\n  mov w0, #0\n  ret", "without a dominating index guard"},
+		{"guard lost at merge", "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  cmp w9, w1\n  b.hs again\nagain:\n  ldr w0, [x0, w9, uxtw #2]\n  ret", "without a dominating index guard"},
 		{"wrong scale", "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  cmp w9, w1\n  b.hs done\n  ldr w0, [x0, w9, uxtw #1]\n  ret\ndone:\n  mov w0, #0\n  ret", "whole elements"},
 		{"wrong width", "  bind x0, w1 = v\n  clobber w9, x10\n  mov w9, #0\n  cmp w9, w1\n  b.hs done\n  ldr x10, [x0, w9, uxtw #3]\n  mov w0, w10\n  ret\ndone:\n  mov w0, #0\n  ret", "whole elements"},
 		{"constant bound above proven length", "  bind x0, w1 = v\n  clobber w9\n  cmp w1, #2\n  b.lo short\n  mov w9, #0\n  cmp w9, #4\n  b.hs short\n  ldr w0, [x0, w9, uxtw #2]\n  ret\nshort:\n  mov w0, #0\n  ret", "proven minimum length is 2"},

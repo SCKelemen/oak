@@ -11,7 +11,14 @@ func TestBorrowStorageBoundaries(t *testing.T) {
 		{"nominal return", "Wrapped: type = Bytes: []u8\nleak: (v: []u8): Wrapped = .Bytes(v)", true},
 		{"generic return", "Box[T]: type = Value: T\nleak: (v: []u8): Box[[]u8] = .Value(v)", true},
 		{"generic record payload", "Inner: type = struct { bytes: []u8 }\nBox[T]: type = Value: T\nleak: (v: []u8): Box[Inner] = .Value(Inner { bytes: v })", true},
-		{"record initialization", "Wrapped: type = struct { bytes: []u8 }\nf: (v: []u8): u32 { w: Wrapped = Wrapped { bytes: v }\nu32(0) }", true},
+		// A local record over a view parameter borrows through the parameter:
+		// admitted (docs/spec/50-borrowing.md, borrows inside aggregates).
+		{"record initialization", "Wrapped: type = struct { bytes: []u8 }\nf: (v: []u8): u32 { w: Wrapped = Wrapped { bytes: v }\nu32(0) }", false},
+		{"record over local view", "Wrapped: type = struct { bytes: []u8 }\nf: (): u32 { data: [4]u8\nv: []u8 = view(&data)\nw: Wrapped = Wrapped { bytes: v }\nlen(w.bytes) }", false},
+		{"record over direct view", "Wrapped: type = struct { bytes: []u8, at: u32 }\nf: (): u32 { data: [4]u8\nw: Wrapped = Wrapped { bytes: view(&data), at: u32(0) }\nlen(w.bytes) }", false},
+		{"record copy", "Wrapped: type = struct { bytes: []u8 }\nf: (v: []u8): u32 { w: Wrapped = Wrapped { bytes: v }\nx: Wrapped = w\nlen(x.bytes) }", false},
+		{"record returned", "Wrapped: type = struct { bytes: []u8 }\nf: (v: []u8): Wrapped = Wrapped { bytes: v }", true},
+		{"record passed", "Wrapped: type = struct { bytes: []u8 }\nsink: (w: Wrapped): u32 = u32(0)\nf: (v: []u8): u32 { w: Wrapped = Wrapped { bytes: v }\nsink(w) }", true},
 		{"uninitialized aggregate", "Wrapped: type = struct { bytes: []u8 }\nf: (): u32 { w: Wrapped\nu32(0) }", true},
 		{"field assignment", "Wrapped: type = struct { bytes: []u8 }\nf: (w: Wrapped, v: []u8): u32 { w.bytes = v\nu32(0) }", true},
 		{"array assignment", "f: (v: []u8): u32 { values: [2][]u8\nvalues[0] = v\nu32(0) }", true},

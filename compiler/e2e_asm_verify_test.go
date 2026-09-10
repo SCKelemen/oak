@@ -227,13 +227,13 @@ main: (): i32 {
 sum4: (v: []u32) -> u32 = {
   bind x0, w1 = v
   clobber w9, w10, w11
+  cmp w1, #4
+  b.lo short
   mov w9, #0
   mov w10, #0
 loop:
   cmp w9, #4
   b.hs done
-  cmp w1, #4
-  b.lo short
   ldr w11, [x0, w9, uxtw #2]
   add w10, w10, w11
   add w9, w9, #1

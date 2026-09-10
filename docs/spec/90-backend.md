@@ -226,7 +226,10 @@ with the static length; `a[lo:hi]` over an owned array is a compound-literal
 view whose bounds are checked against the static length before the pointer
 is formed, so a slice is a value in argument position too. A typed array
 literal is a compound literal of the wrapper, `(oak_arr_u32_4){ { 1, 2, 3, 4 } }`,
-in any expression position; a declaration initializer is the brace form. The
+in any expression position; a declaration initializer is the brace form. A nested
+array `[N][M]T` is an array of wrapper values (`oak_arr_oak_arr_T_M_N`): a row
+copied out is its own storage and a store through `grid[i][j]` reaches the
+grid, each hop keeping its bounds check. The
 typedef name mangles element spellings that are not identifiers (`_Atomic u32`,
 `void *`, a nested `oak_arr_u8_16`); wrapper typedefs are placed before the
 first record, union, global, or prototype that names them, and a type that

@@ -251,3 +251,10 @@ clause and hint ranges, and its composition with the certified stream checker.
 See [The complete certificate-file state machine](CertificateFile.md) for the
 executable whole-file model that composes scanning, segment publication,
 command assembly, and the certified stream, with its acceptance theorem.
+
+See [The Oak decoder, transliterated](OakText.md) for the first increment of
+roadmap step 2: `OakText.lean` restates `rup_text_check` structure for
+structure over the proved scanner, `OakTextCompare.lean` requires the
+transliteration, the file model, and compiled Oak to agree on every corpus
+case, and `check_sound` proves the transliteration refutes the layout it
+builds. The refinement theorem to the file model is the next increment.

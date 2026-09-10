@@ -30,15 +30,132 @@ import (
 //   - the result register written before every `ret`; no `ret` from a
 //     `never` function; no fall-through past the end.
 func Check(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
-	c := &checker{fn: fn, symbols: symbols}
+	// Guard facts across labels are a dataflow fixpoint: each pass assumes
+	// a guard state at every label, records the meet of the states that
+	// actually arrive there (by fall-through and by every branch, forward
+	// or backward), and the passes repeat until the assumptions are exactly
+	// the arrivals. The first pass assumes everything (top); facts only
+	// shrink, so the iteration terminates. Only the stable pass reports.
+	var labelIn map[string]*guardState
+	for pass := 0; pass < maxGuardPasses; pass++ {
+		c := runPass(fn, decl, symbols, labelIn, false)
+		if len(c.errors) != 0 && c.labelArrive == nil {
+			return c.errors // signature errors: nothing to iterate
+		}
+		if labelIn != nil && guardStatesEqual(labelIn, c.labelArrive) {
+			return c.errors
+		}
+		labelIn = c.labelArrive
+	}
+	// Past the cap: the conservative pass forgets every guard at every
+	// label (a sound assumption, the pre-fixpoint behavior).
+	return runPass(fn, decl, symbols, nil, true).errors
+}
+
+// maxGuardPasses caps the fixpoint iteration.
+const maxGuardPasses = 16
+
+func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, forgetAtLabels bool) *checker {
+	c := &checker{fn: fn, symbols: symbols, labelIn: labelIn, forgetAtLabels: forgetAtLabels}
 	c.checkSignature(decl)
 	if len(c.errors) != 0 {
-		return c.errors
+		return c
 	}
+	c.labelArrive = map[string]*guardState{}
 	c.bindContract()
 	c.declareClobbers()
 	c.walk()
-	return c.errors
+	return c
+}
+
+// guardState is the guard knowledge at a program point: per span base
+// register the proven minimum length, per index register its bound.
+type guardState struct {
+	mins map[int]int64
+	idx  map[int]idxFact
+}
+
+func (c *checker) guardSnapshot() *guardState {
+	gs := &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}}
+	for base, fact := range c.spans {
+		if fact.hasMin {
+			gs.mins[base] = fact.minLen
+		}
+	}
+	for reg, fact := range c.idxFacts {
+		gs.idx[reg] = fact
+	}
+	return gs
+}
+
+// applyGuards installs a label's guard state: exactly the facts it holds,
+// on the spans that still exist.
+func (c *checker) applyGuards(gs *guardState) {
+	for base, fact := range c.spans {
+		minLen, has := gs.mins[base]
+		fact.hasMin = has
+		fact.minLen = minLen
+	}
+	c.idxFacts = map[int]idxFact{}
+	for reg, fact := range gs.idx {
+		c.idxFacts[reg] = fact
+	}
+	c.pendingCmp = cmpFact{}
+}
+
+// meetGuards is the intersection of two states: a length bound holds after
+// a merge only at the smaller of the two proven minimums
+// (Oak.Assembler.meet_sound), an index fact only when both sides agree.
+func meetGuards(a, b *guardState) *guardState {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}}
+	for base, minA := range a.mins {
+		if minB, ok := b.mins[base]; ok {
+			out.mins[base] = min(minA, minB)
+		}
+	}
+	for reg, factA := range a.idx {
+		if factB, ok := b.idx[reg]; ok && factA == factB {
+			out.idx[reg] = factA
+		}
+	}
+	return out
+}
+
+// arrive records a state reaching a label.
+func (c *checker) arrive(label string) {
+	if c.labelArrive == nil {
+		return
+	}
+	c.labelArrive[label] = meetGuards(c.labelArrive[label], c.guardSnapshot())
+}
+
+func guardStatesEqual(a, b map[string]*guardState) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, ga := range a {
+		gb, ok := b[name]
+		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) {
+			return false
+		}
+		for base, m := range ga.mins {
+			if gb.mins[base] != m {
+				return false
+			}
+		}
+		for reg, f := range ga.idx {
+			if gb.idx[reg] != f {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type checker struct {
@@ -67,6 +184,12 @@ type checker struct {
 	// below (`cmp wI, wL` / `cmp wI, #K` then `b.hs <exit>`); they die with
 	// any write to the index or bound register, any label, and any call.
 	idxFacts map[int]idxFact
+	// The label fixpoint: assumed guard states entering each label (nil on
+	// the first, optimistic pass), the meet of the states arriving there
+	// during this pass, and the conservative fallback that forgets all.
+	labelIn        map[string]*guardState
+	labelArrive    map[string]*guardState
+	forgetAtLabels bool
 	// calleeSaved tracks x19–x30: the caller's state, readable on entry,
 	// writable only after being saved to the frame, and restored from the
 	// same absolute slot before every ret (docs/spec/94-assembler.md §7).
@@ -428,6 +551,9 @@ func (c *checker) closeRegion(line int) {
 func (c *checker) enterLabel(label Label) {
 	// A label merges control: its sp displacement must agree with every
 	// branch that targets it, and flags are conservatively unknown.
+	if !c.unreachable {
+		c.arrive(label.Name) // the fall-through predecessor
+	}
 	if expected, pending := c.pendingDisp[label.Name]; pending {
 		if c.dispKnown && !c.unreachable && expected != c.disp {
 			c.errorf(label.Line, "label %s reached with sp displacement %d by fall-through and %d by branch", label.Name, c.disp, expected)
@@ -442,7 +568,22 @@ func (c *checker) enterLabel(label Label) {
 	c.labelDisp[label.Name] = c.disp
 	c.flagsValid = false
 	c.unreachable = false
-	c.forgetGuards()
+	// Guard facts at the label: the fixpoint's assumption for it — the meet
+	// of every predecessor's facts — or, on the first pass (no assumption
+	// yet) the optimistic carry-over, or under the conservative fallback
+	// nothing at all.
+	switch {
+	case c.forgetAtLabels:
+		c.forgetGuards()
+	case c.labelIn == nil:
+		c.pendingCmp = cmpFact{}
+	default:
+		if assumed, known := c.labelIn[label.Name]; known {
+			c.applyGuards(assumed)
+		} else {
+			c.forgetGuards() // no predecessor reached it: unreachable label
+		}
+	}
 }
 
 // forgetGuards drops every span length guard: control merged (label) or
@@ -855,6 +996,7 @@ func (c *checker) checkAccess(instr Instruction, offset, size int64) {
 func (c *checker) branch(instr Instruction, unconditional bool) bool {
 	target := instr.Operands[0].(Symbol).Name
 	if c.labels[target] {
+		c.arrive(target) // the branch-taken predecessor, with the facts held here
 		if recorded, seen := c.labelDisp[target]; seen {
 			if recorded != c.disp {
 				c.errorf(instr.Line, "branch to %s with sp displacement %d, label recorded %d", target, c.disp, recorded)

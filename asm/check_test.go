@@ -115,7 +115,9 @@ func TestCheckerSpanAccess(t *testing.T) {
 		{"unguarded", decl, "  bind x0, w1 = frame\n  ldr x0, [x0]\n  ret", "without a dominating bounds guard"},
 		{"beyond guard", decl, "  bind x0, w1 = frame\n  cmp w1, #2\n  b.lo short\n  ldr x0, [x0, #16]\n  ret\nshort:\n  mov x0, #0\n  ret", "guard proves only 2 elements"},
 		{"padded x1 is no guard", decl, "  bind x0, w1 = frame\n  cmp x1, #2\n  b.lo short\n  ldr x0, [x0]\n  ret\nshort:\n  mov x0, #0\n  ret", "without a dominating bounds guard"},
-		{"guard dies at label", decl, "  bind x0, w1 = frame\n  cmp w1, #2\n  b.lo short\nagain:\n  ldr x0, [x0]\n  ret\nshort:\n  mov x0, #0\n  ret", "without a dominating bounds guard"},
+		// The guard's own failure branch lands on the label: one predecessor
+		// carries len >= 2, the other nothing, so the merge holds nothing.
+		{"guard lost at merge", decl, "  bind x0, w1 = frame\n  cmp w1, #2\n  b.lo again\nagain:\n  ldr x0, [x0]\n  ret", "without a dominating bounds guard"},
 		{"pre-index on span base", decl, "  bind x0, w1 = frame\n  cmp w1, #2\n  b.lo short\n  ldr x0, [x0, #8]!\n  ret\nshort:\n  mov x0, #0\n  ret", "never moved"},
 		{"store through view", "peek: (bytes: []u8) -> u64", "  bind x0, w1 = bytes\n  clobber w9\n  cmp w1, #4\n  b.lo short\n  mov w9, #1\n  str w9, [x0]\n  mov x0, #0\n  ret\nshort:\n  mov x0, #0\n  ret", "read-only view"},
 		{"scalar binding for span", decl, "  bind x0 = frame\n  mov x0, #0\n  ret", "binds a pair"},

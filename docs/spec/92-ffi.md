@@ -279,10 +279,16 @@ typedef char oak_union_layout_Effect[ (sizeof(oak_Effect) == 8u && _Alignof(oak_
 What the proven shape buys:
 
 - **Exported functions.** A `pub` function returning or taking a tagged union
-  is C-callable as is: the C side declares a mirror `struct { uint32_t tag;
-  union { ... } payload; }` with the same member types and reads `e.tag` and
-  `e.payload.Send`. Two structs with identical layout are ABI-identical on
-  the recorded targets; no generated header is required (one may come later).
+  is C-callable as is. `oak build -header out.h` (`Compilation.EmitHeader()`)
+  emits the C header of the exported surface: the generated C's typedefs,
+  every declared type in dependency order with its layout assertions —
+  records, tagged unions, array wrappers, views and spans — emitted by the
+  same emitters as the C file so the two cannot disagree, and one prototype
+  per `pub` function (private functions, helpers, globals, and bodies are not
+  part of the surface). A consumer includes the header and links the
+  generated C, reading `e.tag` (the enum constants `oak_Effect_tag_Send`
+  name the values) and `e.payload.Send`. A hand-written mirror struct with
+  the same member types remains ABI-identical on the recorded targets.
 - **Layout builtins.** `size_of[Effect]()`, `align_of[Effect]()`, and
   `offset_of[Effect](tag)` / `offset_of[Effect](payload)` are admitted
   (`40-records.md` §6b) so a C mirror can be pinned with `static_assert`.

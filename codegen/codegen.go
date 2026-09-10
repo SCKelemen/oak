@@ -84,6 +84,10 @@ type localContainer struct {
 	length  int64  // ownedArray only
 	element string // C element type for ownedArray/view/span
 	adtName string // declared ADT name for containerADT
+	// elementType is the element's type expression for ownedArray, view,
+	// and span, so an element that is itself a container (a row of a
+	// [N][M]T grid) classifies through the same path.
+	elementType ast.Expression
 }
 
 type containerKind int
@@ -1174,16 +1178,17 @@ func (cg *CodeGenerator) classifyContainer(typeExpr ast.Expression) localContain
 		switch index := t.Index.(type) {
 		case *ast.IntegerLiteral:
 			return localContainer{
-				kind:    containerOwnedArray,
-				length:  index.Value,
-				element: cg.parseTypeExpression(t.Left),
+				kind:        containerOwnedArray,
+				length:      index.Value,
+				element:     cg.parseTypeExpression(t.Left),
+				elementType: t.Left,
 			}
 		case *ast.Identifier:
 			if index.Value == "" {
-				return localContainer{kind: containerView, element: cg.parseTypeExpression(t.Left)}
+				return localContainer{kind: containerView, element: cg.parseTypeExpression(t.Left), elementType: t.Left}
 			}
 			if index.Value == "*" {
-				return localContainer{kind: containerSpan, element: cg.parseTypeExpression(t.Left)}
+				return localContainer{kind: containerSpan, element: cg.parseTypeExpression(t.Left), elementType: t.Left}
 			}
 		}
 	}
@@ -1276,6 +1281,13 @@ func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 	if index, ok := expr.(*ast.IndexExpression); ok && !index.Dot {
 		base := cg.localContainerOf(index.Left)
 		if base.kind == containerOwnedArray || base.kind == containerView || base.kind == containerSpan {
+			// An element that is itself a container (a row of a [N][M]T
+			// grid, a view of arrays) classifies by its declared type.
+			if base.elementType != nil {
+				if element := cg.classifyContainer(base.elementType); element.kind != containerUnknown {
+					return element
+				}
+			}
 			name := strings.TrimPrefix(base.element, "oak_")
 			if _, exists := cg.adtTypes[name]; exists {
 				return localContainer{kind: containerADT, adtName: name}

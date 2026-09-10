@@ -2732,6 +2732,25 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 		return p.parseTypedArrayLiteralWithToken(open, nil, elementType)
 	}
 
+	// Typed nested array literal: [N][M]Type{ ... } — the element type is
+	// itself an array type, parsed by the type grammar.
+	if p.lookaheadSignificant(1).TokenKind == token.INT &&
+		p.lookaheadSignificant(2).TokenKind == token.RBRACK &&
+		p.lookaheadSignificant(3).TokenKind == token.LBRACK {
+		p.nextToken() // N
+		size, isInt := p.parseIntegerLiteral().(*ast.IntegerLiteral)
+		if !isInt {
+			return nil
+		}
+		p.nextToken() // ]
+		p.nextToken() // [ opening the element type
+		elementType := p.parseArrayType()
+		if elementType == nil {
+			return nil
+		}
+		return p.parseTypedArrayLiteralWithToken(open, size, elementType)
+	}
+
 	// Typed fixed array literal: [N]Type{ ... }.
 	if p.lookaheadSignificant(1).TokenKind == token.INT &&
 		p.lookaheadSignificant(2).TokenKind == token.RBRACK &&
