@@ -42,7 +42,7 @@ compiler's internals, which move freely.
 | Assembler units and the AArch64 surfaces | `94-assembler.md`, `95`–`101` | stabilizing | verification-driven; instruction coverage grows |
 | Attributes other than the clauses above (layout `struct(packed)`, section names) | `40-records.md` §6b, `65-machine-memory.md` | stabilizing | no general attribute syntax exists; none is planned before the effect and protocol clauses settle |
 | Parameterized effects, typestate-indexed handles, `via` parameter modes | `60-effects-allocation.md`, `112-protocols.md` §7 | direction | |
-| IO surface (files, fsync, sockets, io_uring) | — | direction | `#106`; nothing to build on yet |
+| IO surface (files, fsync, sockets, io_uring) | `120-io.md` | direction | `#106`; interface designed, no realization yet |
 | Floating point beyond `f32`/`f64` arithmetic and the two float vectors | `20-types.md` §11.3 | stabilizing | |
 
 ## How marks change
