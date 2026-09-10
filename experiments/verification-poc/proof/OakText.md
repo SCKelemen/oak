@@ -29,14 +29,34 @@ the proved file model, and compiled Oak (whose verdicts the Go harness recorded)
 The solver gate replays the actual Oak text certificate the same way. 743 cases
 agree locally; CI repeats the comparison on every run.
 
-What remains for step 2, stated rather than implied:
+## The refinement theorem
 
-- **Transliteration fidelity.** That `OakText.check` is `rup_text_check` is a
-  reading of the two sources side by side plus the corpus agreement; a checked
-  translation of Oak's semantics is the general form (roadmap step 3).
-- **The refinement theorem.** `OakText.check cnf proof = true →
-  CertificateFile.check cnf proof = true`, relating the stage machine to the
-  model's `preamble`/`header`/`clauses`/`proofLines` decomposition token by
-  token. With it, `check_sound` of the file model transfers to the Oak decoder:
-  every acceptance by the Oak checker refutes the formula the input format
-  defines. This is the next increment.
+`OakTextRefinement.lean` proves that the transliteration implements the file
+model: `check_refines : OakText.check cnf proof = true →
+CertificateFile.check cnf proof = true`, and through the model's soundness
+theorem `check_refutes`: an acceptance by the Oak decoder refutes the formula
+the DIMACS text defines, with the declared clause count. Axioms: `propext`,
+`Classical.choice`, `Quot.sound`.
+
+The proof follows the decoder's structure. The LRAT phase is handled line by
+line: a stage-0 state at a line start corresponds to a command assembly
+(`Rel`); Oak's stage 2 is one literal `segmentAt` of the model
+(`literal_segment`), stages 3 and 4 one hint or deletion segment
+(`reference_segment`), the line's end stores the same command
+(`line_end`), and a whole line is `readCommand` (`command_line`); comment
+lines are `skipLine`; strong induction on the Oak loop's fuel gives
+`proof_refines`. The DIMACS phase is handled token by token: stage 0 is
+`preamble` (`preamble_phase`), the five header tokens are `header`
+(`header_line`), and stage 5 is `clauses` under the relation `CnfRel` between
+Oak's pool, pending index, clause count, and start/size arrays and the
+model's publication state (`clause_phase`, `cnf_refines`). Fuel
+monotonicity of the model's readers lets Oak's remaining fuel stand in for
+the model's fixed budget, and the scanner facts used are that a token's sign
+is 0, 1, or 2, its kind 0, 1, or 2, and that the scanner stays at the end of
+input.
+
+What remains for step 2, stated rather than implied: **transliteration
+fidelity**. That `OakText.check` is `rup_text_check` is a reading of the two
+sources side by side plus the corpus agreement (`OakTextCompare`, three
+identical verdicts on every case); a checked translation of Oak's semantics is
+the general form, and roadmap step 3.

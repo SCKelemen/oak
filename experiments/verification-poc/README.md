@@ -244,8 +244,11 @@ It is compared with Go and Lean on 425 complete streams. The
 Oak and feeds that checker. Its text decisions are compared with Go and Lean;
 the solver gate also replays a real CaDiCaL certificate through compiled Oak.
 
-Roadmap step 2 has begun: [`proof/OakText.lean`](proof/OakText.md) transliterates
-the Oak decoder structure for structure over the proved scanner, `OakTextCompare`
+Roadmap step 2: [`proof/OakText.lean`](proof/OakText.md) transliterates the Oak
+decoder structure for structure over the proved scanner, `OakTextCompare`
 requires it, the proved file model, and compiled Oak to agree on every corpus
-case, and its `check_sound` refutes the layout it builds; the refinement theorem
-to the file model is the next increment.
+case, and `proof/OakTextRefinement.lean` proves `check_refines` (every
+acceptance by the transliteration is an acceptance by the file model) and
+`check_refutes` (the model's soundness transferred to the Oak decoder).
+Transliteration fidelity is the stated remaining assumption; a checked
+translation of Oak's semantics is step 3.
