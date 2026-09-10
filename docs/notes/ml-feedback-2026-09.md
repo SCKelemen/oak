@@ -92,10 +92,14 @@ phase must land together for the STATUS row to gain I.
 
 ## Tier 3 — spans across the FFI
 
-**Implemented** for fixed-width integer and `Bool` elements, executed end to
-end against libc `write`, `getcwd`, and `puts`
-(`compiler/e2e_ffi_spans_test.go`, golden `c_ffi_spans`); structs with
-proven layouts are the recorded gap. This closes revisit criterion O2. The
+**Implemented** for every element type the design admits: fixed-width
+integers, `Bool`, `f32`/`f64` and the `f16`/`bf16` storage formats, boundary
+tagged unions, and declared `struct` types whose fields are recursively
+those, executed end to end against libc `write`, `getcwd`, and `puts`
+(`compiler/e2e_ffi_spans_test.go`, `e2e_ffi_float_spans_test.go`, golden
+`c_ffi_spans`). A `[]f32` weight buffer or a `[]Point` of float fields
+crosses to a C kernel as pointer and count with its layout asserted at C
+compile time. This closes revisit criterion O2. The
 design, `92-ffi.md` §2.5: `c.span_of(v: []T)` and
 `c.span_mut_of(s: [*]T)` occupy a `c.Ptr, c.Size` parameter pair of an
 extern binding for the duration of that call and nowhere else; the borrow
@@ -160,7 +164,7 @@ disposition, in the order to work them:
 | Item | Criterion | State |
 | --- | --- | --- |
 | O1 | `f32`/`f64` with literals, arithmetic, core intrinsics, `f32 ↔ c.Float` | **implemented**, `c.Float`/`c.Double` rows included (`20-types.md` §11.3); the complete v1 `math` package implemented bit-exactly |
-| O2 | `c.Ptr` plus length constructible from `[*]T`/`[]T`, checked at the boundary | **implemented** (`92-ffi.md` §2.5; integer and `Bool` elements) |
+| O2 | `c.Ptr` plus length constructible from `[*]T`/`[]T`, checked at the boundary | **implemented** (`92-ffi.md` §2.5; integer, float, `Bool`, tagged-union, and proven-layout struct elements) |
 | O3 | Any runtime-sized allocation surface | direction |
 | O4 | Views or spans in records or as return values | roadmap |
 | O5 | `F32x4` with `mul` and `fma` | **implemented** (`93-simd.md` §1.2a; NEON and portable lowerings agree with the interpreter) |
