@@ -407,6 +407,20 @@ func (comp Compilation) EmitC() Stage[string] {
 	})
 }
 
+// EmitHeader emits the C header of the program's exported surface: the
+// generated C's typedefs, every declared type with its layout assertions,
+// and a prototype per `pub` function (docs/spec/92-ffi.md section 2.6).
+func (comp Compilation) EmitHeader() Stage[string] {
+	return comp.Lower().Then(func(lowered *LoweredProgram) (string, error) {
+		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
+		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
+		if lowered.Model.Tree.Modules != nil {
+			generator.SetAbstractAliases(lowered.Model.Tree.Modules.Abstract)
+		}
+		return generator.GenerateHeader(lowered.Root, lowered.Model.TypeChecker)
+	})
+}
+
 func phaseError(phase string, errors []string) error {
 	return fmt.Errorf("%s failed: %s", phase, strings.Join(errors, "; "))
 }
