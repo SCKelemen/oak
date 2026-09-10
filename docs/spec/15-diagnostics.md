@@ -221,6 +221,7 @@ The first stable borrow-conflict family is:
 | `OAK-B0110` | unsafe code assumes mutable-region disjointness that safe analysis could not prove |
 | `OAK-B0111` | a resource or alias is used after its authority was consumed |
 | `OAK-B0112` | a resource call requires exclusive authority but two mode-marked arguments alias the same resource |
+| `OAK-B0113` | a region-indexed function returns a view that does not borrow from its region parameter, or a call's region argument is not a traceable read-only view |
 
 For `OAK-B0106`, known regions use half-open interval semantics. The diagnostic
 should show the requested region and one earliest causal conflicting span. If a
@@ -241,6 +242,8 @@ provenance chain showing why they identify one resource authority class. A call
 rejected for this conflict has not occurred semantically, so the diagnostic must
 not trigger a derivative use-after-consume error merely because one of its
 parameters was marked consuming.
+
+For `OAK-B0113` (`50-borrowing.md` section 8c), the primary label is the returned expression in the callee, or the region argument at the caller. A note names what the returned view borrows instead (a local owner, another parameter, a temporary) or why the source cannot be traced, and the help names the parameter the signature commits to.
 
 When several active borrows or aliases could explain the same conflict, the
 compiler should choose causal context deterministically, preferring the earliest
