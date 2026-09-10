@@ -30,11 +30,12 @@ import (
 	"github.com/SCKelemen/oak/ast"
 )
 
-// loopShape is a recognized asm loop: a header label, `cmp` then the exit
-// `b.cond`, a body branching only forward within itself (or through
-// recognized inner loops), and an unconditional back edge.
+// loopShape is a recognized asm loop: a header label, an exit test (`cmp`
+// then `b.cond`, or a compare-and-branch), a body branching only forward
+// within itself (or through recognized inner loops), and an unconditional
+// back edge.
 type loopShape struct {
-	header, cmp, exit, exitLabel int
+	header, cmp, exit, exitLabel int // cmp is -1 for a compare-and-branch exit
 	bodyStart, bodyEnd           int // body instructions are items [bodyStart, bodyEnd)
 }
 
@@ -53,17 +54,25 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 		if !ok || header >= back || header+2 >= back {
 			continue
 		}
-		cmp, isCmp := items[header+1].(Instruction)
-		exit, isExit := items[header+2].(Instruction)
-		if !isCmp || cmp.Mnemonic != "cmp" || !isExit || exit.Mnemonic != "b." {
+		// The exit test: `cmp` then `b.cond`, or a compare-and-branch
+		// (cbz/cbnz/tbz/tbnz) on its own.
+		cmpIndex, exitIndex := -1, header+1
+		if first, isInstr := items[header+1].(Instruction); isInstr && first.Mnemonic == "cmp" {
+			cmpIndex, exitIndex = header+1, header+2
+		}
+		if exitIndex >= back {
 			continue
 		}
-		exitLabel, ok := labels[exit.Operands[0].(Symbol).Name]
+		exit, isExit := items[exitIndex].(Instruction)
+		if !isExit || !isConditionalBranch(exit.Mnemonic) {
+			continue
+		}
+		exitLabel, ok := labels[exit.Operands[len(exit.Operands)-1].(Symbol).Name]
 		if !ok || exitLabel <= back {
 			continue
 		}
 		wellFormed := true
-		for i := header + 3; i < back; i++ {
+		for i := exitIndex + 1; i < back; i++ {
 			instr, isInstr := items[i].(Instruction)
 			if !isInstr {
 				continue // an inner label
@@ -71,8 +80,8 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 			switch instr.Mnemonic {
 			case "bl", "ret", "eret":
 				wellFormed = false
-			case "b", "b.":
-				target, ok := labels[instr.Operands[0].(Symbol).Name]
+			case "b", "b.", "cbz", "cbnz", "tbz", "tbnz":
+				target, ok := labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 				if !ok || target >= back {
 					wellFormed = false
 				} else if target <= i {
@@ -87,10 +96,18 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 		if !wellFormed {
 			continue
 		}
-		loops[header+2] = loopShape{header: header, cmp: header + 1, exit: header + 2, exitLabel: exitLabel, bodyStart: header + 3, bodyEnd: back}
+		loops[exitIndex] = loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: exitIndex + 1, bodyEnd: back}
 		innerHeaders[header] = back
 	}
 	return loops
+}
+
+func isConditionalBranch(mnemonic string) bool {
+	switch mnemonic {
+	case "b.", "cbz", "cbnz", "tbz", "tbnz":
+		return true
+	}
+	return false
 }
 
 // loopEvent is one side's summary of a data-dependent loop.
@@ -107,12 +124,10 @@ type loopEvent struct {
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
 
-var negatedCondition = map[string]string{"eq": "ne", "ne": "eq", "hs": "lo", "cs": "lo", "lo": "hs", "cc": "hs", "hi": "ls", "ls": "hi", "ge": "lt", "lt": "ge", "gt": "le", "le": "gt"}
-
 // loopEvent summarizes the top-level asm loop whose exit branch was just
 // reached with an undecided condition, then continues past the exit.
-func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbolicState) (*term, string, bool) {
-	post, reason, ok := x.summarizeLoop(shape, exitCond, state)
+func (x *pathExecutor) loopEvent(shape loopShape, exit Instruction, state *symbolicState) (*term, string, bool) {
+	post, reason, ok := x.summarizeLoop(shape, exit, state)
 	if !ok {
 		return nil, reason, false
 	}
@@ -122,7 +137,7 @@ func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbol
 // summarizeLoop records the loop event and returns the state past the
 // exit: the loop-carried registers hold their fresh symbols, scratch
 // registers are unbound.
-func (x *pathExecutor) summarizeLoop(shape loopShape, exitCond string, state *symbolicState) (*symbolicState, string, bool) {
+func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *symbolicState) (*symbolicState, string, bool) {
 	if x.concrete {
 		return nil, "a loop that a witness run could not decide", false
 	}
@@ -194,17 +209,18 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exitCond string, state *sy
 		x.declared[fresh.name] = width
 		freshState.regs[reg] = zeroExtend(fresh, 64)
 	}
-	// The continue condition: the header comparison on the fresh state,
-	// read with the negation of the exit code.
+	// The continue condition: the exit test on the fresh state, negated.
 	condState := freshState.clone()
-	if reason, ok := step(x.items[shape.cmp].(Instruction), condState); !ok {
+	if shape.cmp >= 0 {
+		if reason, ok := step(x.items[shape.cmp].(Instruction), condState); !ok {
+			return nil, reason, false
+		}
+	}
+	exitCond, reason, ok := branchCondition(exit, condState)
+	if !ok {
 		return nil, reason, false
 	}
-	continueCode, known := negatedCondition[exitCond]
-	if !known || !verifiableConditions[exitCond] {
-		return nil, fmt.Sprintf("condition code %s", exitCond), false
-	}
-	ev.cond = cmpTerm(continueCode, condState.flags.left, condState.flags.right)
+	ev.cond = binaryTerm("xor", truncate(exitCond, 1), constTerm(1, 1))
 	// One iteration of the body on the fresh state: its paths (a branch
 	// inside the body forks on its condition; an inner loop is summarized
 	// in place) all reach the back edge and merge register by register
@@ -281,15 +297,12 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 			case "b":
 				pc = x.labels[instr.Operands[0].(Symbol).Name]
 				continue
-			case "b.":
-				if st.flags == nil || st.flags.unknown {
-					return nil, "b.cond reading flags not produced by cmp/subs", false
+			case "b.", "cbz", "cbnz", "tbz", "tbnz":
+				branch, reason, ok := branchCondition(instr, st)
+				if !ok {
+					return nil, reason, false
 				}
-				if !verifiableConditions[instr.Cond] {
-					return nil, fmt.Sprintf("condition code %s", instr.Cond), false
-				}
-				target := x.labels[instr.Operands[0].(Symbol).Name]
-				branch := cmpTerm(instr.Cond, st.flags.left, st.flags.right)
+				target := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 				if branch.kind == termConst {
 					if branch.value != 0 {
 						pc = target
@@ -301,7 +314,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				// An undecided exit of an inner recognized loop: summarize
 				// it and continue past its exit, still inside this body.
 				if inner, isLoopExit := x.loopExits[pc]; isLoopExit {
-					post, reason, ok := x.summarizeLoop(inner, instr.Cond, st)
+					post, reason, ok := x.summarizeLoop(inner, instr, st)
 					if !ok {
 						return nil, reason, false
 					}
