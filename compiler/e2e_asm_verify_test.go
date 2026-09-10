@@ -252,6 +252,56 @@ short:
 			t.Fatalf("sum4, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
 		}
 	}
+	// A data-dependent loop: the sum over a view of any length, proven by
+	// coupling the Oak locals to the asm registers, run both ways.
+	sum := New().WithSource("sum.oak", `
+sum: (v: []u32) -> u32 {
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < len(v) {
+    acc = acc + v[i]
+    i = i + u32(1)
+  }
+  acc
+}
+
+main: (): i32 {
+  buf: [5]u32
+  buf[0] = u32(10)
+  buf[1] = u32(20)
+  buf[2] = u32(5)
+  buf[3] = u32(6)
+  buf[4] = u32(1)
+  whole: []u32 = view(&buf)
+  assert(sum(whole) == u32(42))
+  assert(sum(subslice(whole, u32(0), u32(2))) == u32(30))
+  assert(sum(subslice(whole, u32(0), u32(0))) == u32(0))
+  42
+}
+`).WithAsmUnit("sum.arm64.oakasm", `
+sum: (v: []u32) -> u32 = {
+  bind x0, w1 = v
+  clobber w9, w10, w11
+  mov w9, #0
+  mov w10, #0
+loop:
+  cmp w9, w1
+  b.hs done
+  ldr w11, [x0, w9, uxtw #2]
+  add w10, w10, w11
+  add w9, w9, #1
+  b loop
+done:
+  mov w0, w10
+  ret
+}
+`)
+	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
+		_, code, abnormal := buildAndRunFrom(t, "verified_sum", sum, flags...)
+		if abnormal || code != 42 {
+			t.Fatalf("sum, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
+		}
+	}
 	// The wrong condition never compiles.
 	_, err := New().WithSource("max.oak", `
 max32: (a, b: u32) -> u32 = a < b ? b | a

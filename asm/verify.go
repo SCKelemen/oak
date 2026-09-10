@@ -64,9 +64,48 @@ const (
 	termParam termKind = iota
 	termConst
 	termBinary
-	termCmp // a condition code over two operands; the value is 1 or 0
-	termIte // cond ? left : right
+	termCmp    // a condition code over two operands; the value is 1 or 0
+	termIte    // cond ? left : right
+	termSelect // name[left]: a span element at a symbolic 32-bit index
 )
+
+// selectTerm is the element of span at index: a constant index is the
+// element parameter v[k]; a symbolic one is a select node, evaluated
+// through the fixed element-content function and blasted as an
+// uninterpreted value shared by selects with the same index.
+func selectTerm(span string, index *term, width int) *term {
+	if index.kind == termConst {
+		return paramTerm(spanElemName(span, int64(index.value&mask(32))), width)
+	}
+	return &term{kind: termSelect, width: width, name: span, left: truncate(index, 32)}
+}
+
+// elementValue is the witness evaluator's fixed memory: element k of span
+// name, a deterministic mix so that v[k] and v[i] agree whenever i = k.
+func elementValue(span string, k uint64, width int) uint64 {
+	h := uint64(1469598103934665603)
+	for i := 0; i < len(span); i++ {
+		h = (h ^ uint64(span[i])) * 1099511628211
+	}
+	h ^= (k + 1) * 0x9E3779B97F4A7C15
+	h ^= h >> 29
+	h *= 0xBF58476D1CE4E5B9
+	h ^= h >> 32
+	return h & mask(width)
+}
+
+// elementParam decodes an element parameter name v[k].
+func elementParam(name string) (span string, k uint64, ok bool) {
+	open := strings.IndexByte(name, '[')
+	if open <= 0 || !strings.HasSuffix(name, "]") {
+		return "", 0, false
+	}
+	index, err := strconv.ParseUint(name[open+1:len(name)-1], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return name[:open], index, true
+}
 
 // term is a fixed-width bitvector expression. Width is 32 or 64.
 type term struct {
@@ -176,9 +215,19 @@ func (t *term) eval(env map[string]uint64) uint64 {
 	m := mask(t.width)
 	switch t.kind {
 	case termParam:
-		return env[t.name] & m
+		if value, bound := env[t.name]; bound {
+			return value & m
+		}
+		// An element parameter outside the witness environment reads the
+		// fixed memory, consistently with symbolic selects.
+		if span, k, isElement := elementParam(t.name); isElement {
+			return elementValue(span, k, t.width) & m
+		}
+		return 0
 	case termConst:
 		return t.value & m
+	case termSelect:
+		return elementValue(t.name, t.left.eval(env)&mask(32), t.width) & m
 	case termCmp:
 		// The comparison happens at the operands' width; t.width is only
 		// the width the 1/0 result is used at.
@@ -225,6 +274,8 @@ func (t *term) String() string {
 		return fmt.Sprintf("(%s %s %s)", t.left, t.op, t.right)
 	case termIte:
 		return fmt.Sprintf("(%s ? %s : %s)", t.cond, t.left, t.right)
+	case termSelect:
+		return fmt.Sprintf("%s[%s]", t.name, t.left)
 	}
 	return fmt.Sprintf("(%s %s %s)", t.left, t.op, t.right)
 }
@@ -249,7 +300,7 @@ func (t *term) linearAt(w int) *linearForm {
 		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
-	case termCmp, termIte:
+	case termCmp, termIte, termSelect:
 		return nil
 	}
 	switch t.op {
@@ -426,20 +477,32 @@ var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add",
 // executeBody symbolically executes the body along every path; reports (result
 // term, "", true) or ("", reason, false) when the body is outside the
 // verified subset.
-func executeBody(fn *Function, sig *ast.FunctionStatement) (*term, string, bool) {
+func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64) (*term, *pathExecutor, string, bool) {
 	state := &symbolicState{regs: map[int]*term{}}
 	params := map[string]RegClass{}
 	spans := map[string]int64{} // span/view parameter -> element size in bytes
+	declared := map[string]int{}
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			spans[param.Name.Value] = elem
+			declared[spanLenName(param.Name.Value)] = 32
+			declared[spanBaseName(param.Name.Value)] = 64
 			continue
 		}
 		class, ok := contractClass(param.Type)
 		if !ok || class == ClassV {
-			return nil, "vector or non-integer parameters", false
+			return nil, nil, "vector or non-integer parameters", false
 		}
 		params[param.Name.Value] = class
+		declared[param.Name.Value] = widthOf(class)
+	}
+	// input is a parameter's entry term: symbolic, or the witness value in
+	// a concrete run (which is what lets a data-dependent loop unroll).
+	input := func(name string, width int) *term {
+		if value, isConcrete := concrete[name]; isConcrete {
+			return constTerm(value, width)
+		}
+		return paramTerm(name, width)
 	}
 	for _, binding := range fn.Bindings {
 		if binding.Length != nil {
@@ -447,21 +510,21 @@ func executeBody(fn *Function, sig *ast.FunctionStatement) (*term, string, bool)
 			// address term `&v` (memory through it resolves to element
 			// parameters), the length the 32-bit parameter len(v).
 			if _, isSpan := spans[binding.Param]; !isSpan {
-				return nil, "span binding of a non-span parameter", false
+				return nil, nil, "span binding of a non-span parameter", false
 			}
 			state.regs[binding.Register.Num] = paramTerm(spanBaseName(binding.Param), 64)
-			state.regs[binding.Length.Num] = zeroExtend(paramTerm(spanLenName(binding.Param), 32), 64)
+			state.regs[binding.Length.Num] = zeroExtend(input(spanLenName(binding.Param), 32), 64)
 			continue
 		}
 		class := params[binding.Param]
-		state.regs[binding.Register.Num] = zeroExtend(paramTerm(binding.Param, widthOf(class)), 64)
+		state.regs[binding.Register.Num] = zeroExtend(input(binding.Param, widthOf(class)), 64)
 		if class == ClassX {
-			state.regs[binding.Register.Num] = paramTerm(binding.Param, 64)
+			state.regs[binding.Register.Num] = input(binding.Param, 64)
 		}
 	}
 	resultClass, hasResult := contractClass(sig.ReturnType)
 	if !hasResult || resultClass == ClassV {
-		return nil, "no integer result", false
+		return nil, nil, "no integer result", false
 	}
 	labels := map[string]int{}
 	for index, item := range fn.Items {
@@ -469,11 +532,13 @@ func executeBody(fn *Function, sig *ast.FunctionStatement) (*term, string, bool)
 		case Label:
 			labels[it.Name] = index
 		case Align:
-			return nil, "alignment directives", false
+			return nil, nil, "alignment directives", false
 		}
 	}
-	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans}
-	return exec.run(0, state)
+	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil}
+	exec.loopExits = findLoops(fn.Items, labels)
+	result, reason, ok := exec.run(0, state)
+	return result, exec, reason, ok
 }
 
 // Span parameters appear in terms under three names: the opaque base
@@ -506,6 +571,10 @@ type pathExecutor struct {
 	labels      map[string]int
 	resultClass RegClass
 	spans       map[string]int64 // span parameter -> element size in bytes
+	declared    map[string]int   // parameter -> declared width
+	concrete    bool             // a witness run: every input is a constant
+	loopExits   map[int]loopShape
+	loop        *loopEvent // the one data-dependent loop met, if any
 	paths       int
 	steps       int
 }
@@ -570,8 +639,14 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 				}
 				continue
 			}
-			// An undecided branch forks; backward or forward alike — a
-			// data-dependent loop exit unfolds until the budgets stop it.
+			// The exit branch of a recognized loop with an undecided
+			// condition: a data-dependent loop, summarized as a loop event
+			// and continued past its exit on fresh loop-carried symbols.
+			if shape, isLoopExit := x.loopExits[pc]; isLoopExit {
+				return x.loopEvent(shape, instr.Cond, state)
+			}
+			// Any other undecided branch forks; backward or forward alike —
+			// an unrecognized loop unfolds until the budgets stop it.
 			taken, reason, ok := x.run(target, state.clone())
 			if !ok {
 				return nil, reason, false
@@ -629,17 +704,23 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if !ok {
 			return "unbound register read", false
 		}
-		if index.kind != termConst {
-			return "a load at a data-dependent index", false
-		}
-		state.write(dest, paramTerm(spanElemName(param, int64(index.value)), widthOf(dest.Class)))
+		state.write(dest, x.element(param, index, widthOf(dest.Class)))
 		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
 	}
-	state.write(dest, paramTerm(spanElemName(param, mem.Offset/elem), widthOf(dest.Class)))
+	state.write(dest, x.element(param, constTerm(uint64(mem.Offset/elem), 32), widthOf(dest.Class)))
 	return "", true
+}
+
+// element is the span element at an index term; in a concrete run the
+// witness memory's value.
+func (x *pathExecutor) element(span string, index *term, width int) *term {
+	if x.concrete && index.kind == termConst {
+		return constTerm(elementValue(span, index.value&mask(32), width), width)
+	}
+	return selectTerm(span, index, width)
 }
 
 // step executes one data-processing instruction on the state.
@@ -735,10 +816,13 @@ var oakComparisons = map[string][2]string{
 // signedness (i8/i16/i32/i64 compare signed, everything else unsigned),
 // and the span/view parameters with their element widths.
 type oakLowering struct {
-	params map[string]int
-	signed map[string]bool
-	spans  map[string]spanContract
-	locals map[string]*oakLocal // statement-body locals, in declaration scope
+	params   map[string]int
+	signed   map[string]bool
+	spans    map[string]spanContract
+	locals   map[string]*oakLocal // statement-body locals, in declaration scope
+	concrete map[string]uint64    // a witness run: parameters are these constants
+	loop     *loopEvent           // the one data-dependent loop met, if any
+	fresh    map[string]int       // loop-carried fresh symbols -> width
 }
 
 // oakLocal is a typed local of a statement body: its current symbolic
@@ -817,32 +901,42 @@ func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
 			return reason, false
 		}
 		if cond.kind != termConst {
-			return "a loop whose trip count depends on the inputs", false
+			// Data-dependent: summarize the loop once and continue after it
+			// on fresh loop-carried symbols.
+			return lo.loopEvent(loop)
 		}
 		if cond.value == 0 {
 			return "", true
 		}
-		for _, stmt := range loop.Body.Statements {
-			switch s := stmt.(type) {
-			case *ast.AssignmentStatement:
-				local, isLocal := lo.locals[s.Name.Value]
-				if !isLocal {
-					return fmt.Sprintf("an assignment to %s (not a local)", s.Name.Value), false
-				}
-				value, reason, ok := lo.lower(s.Value, local.width)
-				if !ok {
-					return reason, false
-				}
-				local.value = value
-			case *ast.WhileStatement:
-				if reason, ok := lo.lowerWhile(s); !ok {
-					return reason, false
-				}
-			default:
-				return fmt.Sprintf("%T in a loop body", stmt), false
-			}
+		if reason, ok := lo.lowerLoopBody(loop.Body); !ok {
+			return reason, false
 		}
 	}
+}
+
+// lowerLoopBody executes one iteration of a loop body.
+func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
+	for _, stmt := range body.Statements {
+		switch s := stmt.(type) {
+		case *ast.AssignmentStatement:
+			local, isLocal := lo.locals[s.Name.Value]
+			if !isLocal {
+				return fmt.Sprintf("an assignment to %s (not a local)", s.Name.Value), false
+			}
+			value, reason, ok := lo.lower(s.Value, local.width)
+			if !ok {
+				return reason, false
+			}
+			local.value = value
+		case *ast.WhileStatement:
+			if reason, ok := lo.lowerWhile(s); !ok {
+				return reason, false
+			}
+		default:
+			return fmt.Sprintf("%T in a loop body", stmt), false
+		}
+	}
+	return "", true
 }
 
 // scalarType reads a local's declared fixed-width integer type.
@@ -885,6 +979,35 @@ func (lo *oakLowering) spanElement(expr ast.Expression) (name string, contract s
 		return "", spanContract{}, false
 	}
 	return spanElemName(ident.Value, k), contract, true
+}
+
+// spanElementTerm lowers v[e] over a span parameter with any index
+// expression: a constant index is the element parameter, a symbolic one a
+// select (the loop-carried counter of a data-dependent loop).
+func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanContract, string, bool) {
+	if name, contract, isConst := lo.spanElement(index); isConst {
+		if lo.concrete != nil {
+			_, k, _ := elementParam(name)
+			return constTerm(elementValue(index.Left.(*ast.Identifier).Value, k, contract.elemWidth), contract.elemWidth), contract, "", true
+		}
+		return paramTerm(name, contract.elemWidth), contract, "", true
+	}
+	ident, isIdent := index.Left.(*ast.Identifier)
+	if !isIdent || index.Dot {
+		return nil, spanContract{}, "an index that is not into a span parameter", false
+	}
+	contract, isSpan := lo.spans[ident.Value]
+	if !isSpan {
+		return nil, spanContract{}, fmt.Sprintf("an index into %s (not a span parameter)", ident.Value), false
+	}
+	idx, reason, ok := lo.lower(index.Index, 32)
+	if !ok {
+		return nil, spanContract{}, reason, false
+	}
+	if lo.concrete != nil && idx.kind == termConst {
+		return constTerm(elementValue(ident.Value, idx.value, contract.elemWidth), contract.elemWidth), contract, "", true
+	}
+	return selectTerm(ident.Value, idx, contract.elemWidth), contract, "", true
 }
 
 // constantIndexValue reads a constant index: a literal, a primitive
@@ -935,6 +1058,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			return adaptWidth(local.value, width), "", true
 		}
 		if w, isParam := lo.params[e.Value]; isParam {
+			if value, isConcrete := lo.concrete[e.Value]; isConcrete {
+				return constTerm(value&mask(w), width), "", true
+			}
 			return truncate(paramTerm(e.Value, w), width), "", true
 		}
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
@@ -947,12 +1073,16 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		return constTerm(0, width), "", true
 	case *ast.IndexExpression:
-		if name, contract, isElem := lo.spanElement(e); isElem {
-			return truncate(paramTerm(name, contract.elemWidth), width), "", true
+		element, _, reason, ok := lo.spanElementTerm(e)
+		if !ok {
+			return nil, reason, false
 		}
-		return nil, "an index that is not a constant element of a span parameter", false
+		return adaptWidth(element, width), "", true
 	case *ast.InvocationExpression:
 		if name, isLen := lo.spanLength(e); isLen {
+			if value, isConcrete := lo.concrete[name]; isConcrete {
+				return constTerm(value, width), "", true
+			}
 			return zeroExtend(truncate(paramTerm(name, 32), width), width), "", true
 		}
 		// Primitive constructors over constants: u32(15).
@@ -1079,8 +1209,10 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 			return w, lo.signed[e.Value], true
 		}
 	case *ast.IndexExpression:
-		if _, contract, isElem := lo.spanElement(e); isElem {
-			return contract.elemWidth, contract.signed, true
+		if ident, isIdent := e.Left.(*ast.Identifier); isIdent && !e.Dot {
+			if contract, isSpan := lo.spans[ident.Value]; isSpan {
+				return contract.elemWidth, contract.signed, true
+			}
 		}
 	case *ast.InfixExpression:
 		if w, s, ok := lo.operandContract(e.Left); ok {
@@ -1176,11 +1308,26 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 
 // Verify checks one asm function against its Oak fallback body.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
-	asmTerm, reason, ok := executeBody(fn, sig)
+	asmTerm, exec, reason, ok := executeBody(fn, sig, nil)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
-	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}}
+	lowering := newLowering(sig)
+	resultClass, _ := contractClass(sig.ReturnType)
+	width := widthOf(resultClass)
+	oakTerm, reason, ok := lowering.lower(oakBody, width)
+	if !ok {
+		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
+	}
+	if exec.loop != nil || lowering.loop != nil {
+		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
+	}
+	return decideEqual(fn, lowering, asmTerm, oakTerm, width, "")
+}
+
+// newLowering builds the Oak-side contract from the signature.
+func newLowering(sig *ast.FunctionStatement) *oakLowering {
+	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}}
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
@@ -1191,12 +1338,12 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		lowering.params[param.Name.Value] = widthOf(class)
 		lowering.signed[param.Name.Value] = strings.HasPrefix(typeText(param.Type), "i")
 	}
-	resultClass, _ := contractClass(sig.ReturnType)
-	width := widthOf(resultClass)
-	oakTerm, reason, ok := lowering.lower(oakBody, width)
-	if !ok {
-		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
-	}
+	return lowering
+}
+
+// decideEqual is the equality decision for two lowered terms: witnesses,
+// the linear normal form, then the bit level. note is appended to a proof.
+func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, width int, note string) Verdict {
 	asmTerm = truncate(asmTerm, width)
 
 	// The unknowns are every parameter either side mentions: scalars, span
@@ -1223,7 +1370,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		}
 	}
 	if a, o := asmTerm.linearAt(width), oakTerm.linearAt(width); a != nil && o != nil && a.equal(o) {
-		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (linear normal form %s)", fn.Name, a)}
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (linear normal form %s)%s", fn.Name, a, note)}
 	}
 
 	// Beyond the linear form: bit-blast both sides. Equal canonical nodes
@@ -1242,7 +1389,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}
 		}
 	}
-	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, %d BDD nodes)", fn.Name, width, len(bl.bdd.nodes))}
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, %d BDD nodes)%s", fn.Name, width, len(bl.bdd.nodes), note)}
 }
 
 // collectParams gathers every parameter name a term mentions. Widths come
@@ -1270,6 +1417,9 @@ func collectParams(t *term, into map[string]bool) {
 // element width for a span element.
 func (lo *oakLowering) declaredWidth(name string) int {
 	if w, isScalar := lo.params[name]; isScalar {
+		return w
+	}
+	if w, isFresh := lo.fresh[name]; isFresh {
 		return w
 	}
 	if strings.HasPrefix(name, "&") {

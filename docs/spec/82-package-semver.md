@@ -57,6 +57,18 @@ Oak source text is UTF-8. Package versions nevertheless use SemVer's lexical
 grammar: each `MAJOR`, `MINOR`, and `PATCH` component consists only of the ASCII
 digits `0` through `9`, without a leading zero unless the component is `0`.
 
+The classification and the exact-bump rule are modeled in
+`spec/lean/Oak/Semver.lean`: the level of a change set is the maximum over
+its members and never decreases when changes are added (`classify_ge`,
+`classify_le_bound`, `classify_mono`, `classify_patch_iff`); an export is
+unchanged exactly when kind, semantic type, and ABI are unchanged
+(`exportChange_none_iff`, `exportChange_cases`); the required version is
+strictly greater than the previous (`next_gt`), unique (`enforce_unique`),
+recoverable to its level at or after 1.0.0 (`next_injective_level`,
+`next_resets`), and before 1.0.0 breaking and additive changes coincide
+(`next_pre1_major_eq_minor`). `packageapi/semver_laws_test.go` checks the Go
+procedures against the same laws over randomized snapshots.
+
 The reference checker is:
 
 ```sh
@@ -117,7 +129,8 @@ version 1.1.0
 The directive is the module's claim; the tooling checks it. Classification of
 a module change is the maximum over its packages, where an added package is
 minor and a removed package is major, and the required version of the module
-is that of the highest-severity package change. Package identity within the
+is that of the highest-severity package change (`Oak.Modules.Semver.moduleLevel`;
+`moduleLevel_ge`, `moduleLevel_patch_iff`, `moduleLevel_removed`). Package identity within the
 module is the import path; a package may not change import path between two
 snapshots without counting as removed and added.
 
@@ -130,6 +143,8 @@ and `oak mod` never contacts a registry:
 | `oak mod diff previous.json [dir]` | List the public changes since `previous.json`, their levels, and the required version. |
 | `oak mod bump previous.json [dir]` | As `diff`, then enforce: the `version` directive must equal the exact required version. Without a directive the command fails and names the version to add. |
 | `oak mod compat dep-api.json [dir]` | Check this module's sealed imports against a dependency's snapshot (section 8). |
+| `oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]` | Build the archive `oak mod download` consumes, carrying `api.json`; with `-previous`, enforce the exact bump first (section 7). |
+| `oak mod upgrade [-dir dir] dep-api.json...` | Among candidate snapshots of one dependency, pick the highest version that satisfies the module's sealed imports (section 8). |
 
 Both `diff` and `bump` snapshot the module through the ordinary package build,
 so a module that does not type check has no API and is rejected before any
@@ -152,6 +167,20 @@ An archive without `api.json` is accepted — the digest already pins its bytes
 64 MiB and decoded before any of it is trusted; a malformed file rejects the
 archive.
 
+`oak mod pack` is the producer. It requires a `version` directive, snapshots
+the module at that version, optionally enforces the exact bump against a
+previous snapshot (`-previous`), and writes a gzip-compressed tar holding the
+module's files under one `<last-path-segment>-<version>/` wrapper directory
+plus `api.json`. The packer admits exactly what the extractor admits: regular
+files and directories on relative slash paths; hidden entries, `vendor`,
+`testdata`, symbolic links, and every other file kind are left out. Headers
+are written deterministically (fixed modes, no timestamps, sorted members), so
+the same tree yields the same archive and the same digest, and the command
+prints the `require path version location sha256:<hex>` line a client pastes
+into its manifest. The author-to-consumer loop is therefore closed by local
+files only: pack, publish the archive anywhere reachable over HTTPS, and the
+consumer's download verifies both the bytes and the API claim.
+
 ## 8. Sealed-signature compatibility
 
 A client that seals an import (`83-modules.md` section 6.3) depends on
@@ -170,7 +199,12 @@ dependency's source and without building it:
 `oak mod compat dep-api.json [dir]` performs this check for every package of
 the module at `dir` against the snapshot in `dep-api.json`, and lists each
 member the snapshot fails to provide as `importer: alias.member (package
-path): reason`. The check is exact in the same sense as `OAK-M0113`: no
+path): reason`. `oak mod upgrade dep-api-1.json dep-api-2.json ...` runs the same
+check against several candidate snapshots of one dependency and reports the
+highest version that satisfies every sealed import as a `require` line, with
+every candidate's verdict; it fails when no candidate does. This is the
+consumer side of Elm's rule: an upgrade decision made from published API
+artifacts alone, before any source is fetched or built. The check is exact in the same sense as `OAK-M0113`: no
 widening, no narrowing. A member the client did not seal may change or vanish
 freely — which is the point of sealing. Unsealed imports (`geo := import(...)`)
 are not covered; they depend on whatever they reference, and only a build
