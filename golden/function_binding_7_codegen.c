@@ -17,6 +17,8 @@ typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
 
 typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
 typedef double f64; /* IEEE 754 binary64 */
+typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */
+typedef uint16_t bf16; /* bfloat16 storage */
 
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */

@@ -73,7 +73,10 @@ back: i32 = i32(n)
 ```
 
 The fixed-width rows are total bijections in both directions;
-`Oak.CInterop` (Lean) proves the mapping is injective and round-trips.
+`Oak.CInterop` (Lean) proves the mapping is injective and round-trips. The
+`f32`/`f64` rows are implemented as bit-preserving casts between the same
+IEEE formats (`20-types.md` §11.3.4); `f16`/`bf16` have no `c` counterpart
+and cross as `u16` bit patterns.
 `c.Size(x: u32)` is injective but its inverse is a checked narrowing, which is
 not provided in v1 — keep lengths in `u32` on the Oak side.
 

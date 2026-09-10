@@ -94,6 +94,9 @@ var cConversionOakOperand = map[string]string{
 	"Char": "u8",
 	"Int":  "i32", "UInt": "u32",
 	"Size": "u32",
+	// Bit-preserving float rows (docs/spec/92-ffi.md section 2.2,
+	// 20-types.md section 11.3.4).
+	"Float": "f32", "Double": "f64",
 }
 
 // oakConversionCOperands is the reverse direction: which c members an Oak
@@ -102,6 +105,7 @@ var cConversionOakOperand = map[string]string{
 var oakConversionCOperands = map[string][]string{
 	"i8": {"Int8"}, "i16": {"Int16"}, "i32": {"Int32", "Int"}, "i64": {"Int64"},
 	"u8": {"UInt8", "Char"}, "u16": {"UInt16"}, "u32": {"UInt32", "UInt"}, "u64": {"UInt64"},
+	"f32": {"Float"}, "f64": {"Double"},
 }
 
 // SimdType is a member of the `simd` portable vector library
@@ -237,6 +241,8 @@ var conversionPrimitives = map[string]int{
 	// backend and interpreter branch on IsFloatName before treating a
 	// width as an integer width.
 	"f32": 32, "f64": 64,
+	// Storage formats (section 11.3.1): round from f32, bits with u16.
+	"f16": 16, "bf16": 16,
 }
 
 var conversionOperations = map[string]bool{

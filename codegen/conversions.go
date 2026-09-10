@@ -132,7 +132,8 @@ func conversionHelperSource(oakName string) string {
 	if !ok || op == "checked" {
 		return "OAK_UNSUPPORTED_CONVERSION\n"
 	}
-	if typechecker.IsFloatName(target) || typechecker.IsFloatName(source) {
+	if typechecker.IsFloatName(target) || typechecker.IsFloatName(source) ||
+		typechecker.IsStorageFloatName(target) || typechecker.IsStorageFloatName(source) {
 		return floatConversionHelperSource(oakName, target, op, source)
 	}
 	targetBits := typechecker.PrimitiveBits(target)

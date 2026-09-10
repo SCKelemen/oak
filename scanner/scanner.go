@@ -3,6 +3,7 @@ package scanner
 import (
 	"bytes"
 	"strconv"
+	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -346,6 +347,31 @@ func (s *Scanner) readNumber() string {
 			s.readChar()
 		}
 		digits := stripUnderscores(s.input[digitsStart:s.head])
+		// A hexadecimal floating-point literal (docs/spec/20-types.md section
+		// 11.3.2, C99 6.4.4.2): 0x1.8p1, 0x1p-126 — a fraction and/or a
+		// binary exponent introduced by p. The exponent is what makes it a
+		// float; without one the dot is not consumed. Exact by construction.
+		// The tail loop above already consumed a `p` (a letter) and any
+		// unsigned exponent digits; a fraction starts at a dot followed by a
+		// hex digit.
+		_, dotStartsFraction := hexDigitValue(s.peekRune())
+		if radix == "16" && (strings.ContainsAny(digits, "pP") || (s.current == '.' && dotStartsFraction)) {
+			if s.current == '.' {
+				s.readChar()
+				for s.isRadixTailChar(s.current) {
+					s.readChar()
+				}
+			}
+			consumed := s.input[digitsStart:s.head]
+			if (s.current == '+' || s.current == '-') && (strings.HasSuffix(consumed, "p") || strings.HasSuffix(consumed, "P")) {
+				s.readChar()
+				for util.IsDigit(s.current) {
+					s.readChar()
+				}
+			}
+			s.lastNumberWasFloat = true
+			return stripUnderscores(s.input[position:s.head])
+		}
 		if len(digits) == 0 {
 			return s.input[position:s.head]
 		}

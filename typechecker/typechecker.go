@@ -1445,7 +1445,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		if leftType.Equals(&StringType{}) && rightType.Equals(&StringType{}) {
 			return &StringType{}
 		}
-		if tc.isFloatType(leftType) || tc.isFloatType(rightType) {
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
 			return tc.checkFloatArithmetic(expr, leftType, rightType)
 		}
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
@@ -1454,7 +1454,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		tc.addError(expr, "operator + requires numeric types or strings, got %s and %s", leftType, rightType)
 		return nil
 	case "-", "*", "/", "%":
-		if tc.isFloatType(leftType) || tc.isFloatType(rightType) {
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
 			return tc.checkFloatArithmetic(expr, leftType, rightType)
 		}
 		// Arithmetic operators require numeric types
@@ -1464,7 +1464,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		}
 		return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 	case "==", "!=":
-		if tc.isFloatType(leftType) || tc.isFloatType(rightType) {
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
 			return tc.checkFloatComparison(expr, leftType, rightType)
 		}
 		// Equality on machine integers follows the arithmetic rule: one
@@ -1519,7 +1519,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		}
 		return leftType
 	case "<", ">", "<=", ">=":
-		if tc.isFloatType(leftType) || tc.isFloatType(rightType) {
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
 			return tc.checkFloatComparison(expr, leftType, rightType)
 		}
 		// Ordering compares machine integers of one signedness; widths
@@ -1807,7 +1807,7 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 
 	// Check if this is a primitive type constructor: u32(x), u64(y), etc.
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
-		if constructorType := tc.checkPrimitiveConstructor(ident.Value, expr.Arguments); constructorType != nil {
+		if constructorType := tc.checkPrimitiveConstructor(ident.Value, expr.Arguments, expr); constructorType != nil {
 			return constructorType
 		}
 		// Check if this is a narrowing function: u8_trunc_u32(x), u8_checked_u32(x), etc.
@@ -2114,7 +2114,7 @@ func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expressi
 
 // checkPrimitiveConstructor checks if an invocation is a primitive type constructor
 // (e.g., u32(x), u64(y)) and returns the target type if valid
-func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Expression) Type {
+func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Expression, call *ast.InvocationExpression) Type {
 	// Check if it's a primitive type name (including aliases and platform types)
 	primitiveTypes := map[string]bool{
 		"u8": true, "u16": true, "u32": true, "u64": true,
@@ -2123,6 +2123,7 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		"byte": true,              // alias of u8
 		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
 		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
+		"f16": true, "bf16": true, // storage formats: rejected with the spelling to use
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -2138,8 +2139,8 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		return nil
 	}
 
-	if IsFloatName(typeName) {
-		return tc.checkFloatConstructor(typeName, args[0])
+	if IsFloatName(typeName) || IsStorageFloatName(typeName) {
+		return tc.checkFloatConstructor(typeName, args[0], call)
 	}
 
 	// Check if argument is an integer literal (untyped)
@@ -2368,7 +2369,8 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 	}
-	targetFloat, sourceFloat := IsFloatName(targetType), IsFloatName(sourceType)
+	targetFloat := IsFloatName(targetType) || IsStorageFloatName(targetType)
+	sourceFloat := IsFloatName(sourceType) || IsStorageFloatName(sourceType)
 	if (!primitiveTypes[targetType] && !targetFloat) || (!primitiveTypes[sourceType] && !sourceFloat) {
 		return nil
 	}
@@ -3061,7 +3063,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 			primitiveTypes := map[string]bool{
 				"i8": true, "i16": true, "i32": true, "i64": true,
 				"u8": true, "u16": true, "u32": true, "u64": true,
-				"f32": true, "f64": true,
+				"f32": true, "f64": true, "f16": true, "bf16": true,
 				"string": true, "Bool": true, "byte": true, "()": true,
 			}
 			if primitiveTypes[ident.Value] {
@@ -4422,7 +4424,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types
@@ -4597,7 +4599,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types
