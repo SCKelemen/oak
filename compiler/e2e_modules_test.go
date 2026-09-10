@@ -1158,3 +1158,148 @@ main: (): i32 = {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }
+
+// Whole-package open (docs/spec/83-modules.md section 3.2): every exported
+// member is bound unqualified; collisions are errors, never precedence.
+func TestE2EModulesOpenImport(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"geometry/point.oak": `package geometry
+
+pub(opaque) Point: type = struct { x: i32, y: i32 }
+pub make: (x: i32, y: i32): Point = Point { x: x, y: y }
+pub sum: (p: Point): i32 = p.x + p.y
+hidden: (v: i32): i32 = v
+`,
+		"main.oak": `package main
+
+open import("example.com/hello/geometry")
+
+main: (): i32 = sum(make(20, 22))
+`,
+	})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	// Private members are not opened.
+	root = writeModule(t, map[string]string{
+		"oak.mod":            helloManifest,
+		"geometry/point.oak": "package geometry\n\npub make: (v: i32): i32 = v\nhidden: (v: i32): i32 = v\n",
+		"main.oak":           "package main\n\nopen import(\"example.com/hello/geometry\")\n\nmain: (): i32 = hidden(42)\n",
+	})
+	if _, err := New().WithPackageDir(root).EmitC().Get(); err == nil {
+		t.Fatal("a private member must not be opened")
+	}
+	// A local declaration with an opened name is a collision.
+	root = writeModule(t, map[string]string{
+		"oak.mod":            helloManifest,
+		"geometry/point.oak": "package geometry\n\npub sum: (v: i32): i32 = v\n",
+		"main.oak":           "package main\n\nopen import(\"example.com/hello/geometry\")\n\nsum: (v: i32): i32 = v + 1\n\nmain: (): i32 = sum(41)\n",
+	})
+	expectModuleError(t, root, ".", CodeOpenCollision)
+	// Two opens exporting the same name collide.
+	root = writeModule(t, map[string]string{
+		"oak.mod":            helloManifest,
+		"geometry/point.oak": "package geometry\n\npub sum: (v: i32): i32 = v\n",
+		"algebra/sum.oak":    "package algebra\n\npub sum: (v: i32): i32 = v * 2\n",
+		"main.oak":           "package main\n\nopen import(\"example.com/hello/geometry\")\nopen import(\"example.com/hello/algebra\")\n\nmain: (): i32 = sum(21)\n",
+	})
+	expectModuleError(t, root, ".", CodeOpenCollision)
+	// An open whose names are never used is an unused import.
+	root = writeModule(t, map[string]string{
+		"oak.mod":            helloManifest,
+		"geometry/point.oak": "package geometry\n\npub sum: (v: i32): i32 = v\n",
+		"main.oak":           "package main\n\nopen import(\"example.com/hello/geometry\")\n\nmain: (): i32 = 42\n",
+	})
+	expectModuleError(t, root, ".", CodeImportAlias)
+	// An open cannot be sealed or bound.
+	root = writeModule(t, map[string]string{
+		"oak.mod":            helloManifest,
+		"geometry/point.oak": "package geometry\n\npub sum: (v: i32): i32 = v\n",
+		"main.oak":           "package main\n\nopen import(\"example.com/hello/geometry\")\nopen import(\"example.com/hello/geometry\")\n\nmain: (): i32 = sum(42)\n",
+	})
+	expectModuleError(t, root, ".", CodeImportAlias)
+}
+
+// Nested modules (docs/spec/83-modules.md section 3.5): `module name { ... }`
+// is the package `<path>/name` with its own pub boundary, bound as `name`
+// in the enclosing package and importable from anywhere by its path.
+func TestE2EModulesNestedModules(t *testing.T) {
+	root := writeModule(t, map[string]string{
+		"oak.mod": helloManifest,
+		"main.oak": `package main
+
+module geometry {
+  pub(opaque) Point: type = struct { x: i32, y: i32 }
+  pub make: (x: i32, y: i32): Point = Point { x: x, y: y }
+  pub sum: (p: Point): i32 = p.x + p.y
+  hidden: (v: i32): i32 = v
+
+  module units {
+    pub scale: (v: i32): i32 = v * 2
+  }
+
+  pub doubled: (p: Point): i32 = units.scale(sum(p))
+}
+
+main: (): i32 = geometry.doubled(geometry.make(10, 11))
+`,
+	})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	// The enclosing package sees only the module's pub members.
+	root = writeModule(t, map[string]string{
+		"oak.mod":  helloManifest,
+		"main.oak": "package main\n\nmodule inner {\n  hidden: (v: i32): i32 = v\n}\n\nmain: (): i32 = inner.hidden(42)\n",
+	})
+	expectModuleError(t, root, ".", CodeMemberNotExported)
+	// Opacity holds across the nested boundary.
+	root = writeModule(t, map[string]string{
+		"oak.mod":  helloManifest,
+		"main.oak": "package main\n\nmodule inner {\n  pub(opaque) Box: type = struct { v: i32 }\n  pub box: (v: i32): Box = Box { v: v }\n}\n\nmain: (): i32 = inner.box(42).v\n",
+	})
+	expectModuleError(t, root, ".", "OAK-M0110")
+	// A nested module of a directory package is importable by its path from
+	// another package.
+	root = writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"util/util.oak": "package util\n\nmodule inner {\n  pub twice: (v: i32): i32 = v * 2\n}\n\npub quad: (v: i32): i32 = inner.twice(inner.twice(v))\n",
+		"main.oak":      "package main\n\nu := import(\"example.com/hello/util\")\ninner := import(\"example.com/hello/util/inner\")\n\nmain: (): i32 = u.quad(10) + inner.twice(1)\n",
+	})
+	code, abnormal = buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	// A nested module importing its enclosing package is a cycle.
+	root = writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"util/util.oak": "package util\n\nmodule inner {\n  u := import(\"example.com/hello/util\")\n  pub twice: (v: i32): i32 = u.one() * 2\n}\n\npub one: (): i32 = 1\npub two: (): i32 = inner.twice(1)\n",
+		"main.oak":      "package main\n\nu := import(\"example.com/hello/util\")\n\nmain: (): i32 = u.two()\n",
+	})
+	expectModuleError(t, root, ".", CodeImportCycle)
+	// Declaring a nested module twice, or alongside a directory of the same
+	// name, is rejected.
+	root = writeModule(t, map[string]string{
+		"oak.mod":  helloManifest,
+		"main.oak": "package main\n\nmodule inner {\n  pub a: (): i32 = 1\n}\nmodule inner {\n  pub b: (): i32 = 2\n}\n\nmain: (): i32 = inner.a()\n",
+	})
+	expectModuleError(t, root, ".", CodeNestedModule)
+	root = writeModule(t, map[string]string{
+		"oak.mod":         helloManifest,
+		"inner/inner.oak": "package inner\n\npub a: (): i32 = 1\n",
+		"main.oak":        "package main\n\nmodule inner {\n  pub a: (): i32 = 1\n}\n\nmain: (): i32 = inner.a()\n",
+	})
+	expectModuleError(t, root, ".", CodeNestedModule)
+	// `module` stays an ordinary identifier elsewhere.
+	root = writeModule(t, map[string]string{
+		"oak.mod":  helloManifest,
+		"main.oak": "package main\n\nmain: (): i32 = {\n  module: i32 = 40\n  module + 2\n}\n",
+	})
+	code, abnormal = buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}

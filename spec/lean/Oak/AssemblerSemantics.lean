@@ -180,10 +180,9 @@ def flagsOf {w : Nat} (l r : BitVec w) : Flags :=
     c := decide (r.toNat ≤ l.toNat)
     v := (l.msb != r.msb) && ((l - r).msb != l.msb) }
 
-/-- The verified condition codes (mi/pl/vs/vc read one flag and are
-    outside the subset). -/
+/-- The condition codes: the comparisons, and the single-flag reads. -/
 inductive Cond where
-  | eq | ne | hs | lo | hi | ls | ge | lt | gt | le
+  | eq | ne | hs | lo | hi | ls | ge | lt | gt | le | mi | pl | vs | vc
   deriving DecidableEq, Repr
 
 /-- The ARM condition table. -/
@@ -198,6 +197,47 @@ def Cond.holds (f : Flags) : Cond → Bool
   | .lt => f.n != f.v
   | .gt => !f.z && (f.n == f.v)
   | .le => f.z || (f.n != f.v)
+  | .mi => f.n
+  | .pl => !f.n
+  | .vs => f.v
+  | .vc => !f.v
+
+/-- The flags of `adds l, r`: those of `l + r` — C the carry out of the
+    addition, V a signed overflow (equal operand signs, a differing result
+    sign). -/
+def addFlagsOf {w : Nat} (l r : BitVec w) : Flags :=
+  { n := (l + r).msb
+    z := decide (l + r = 0)
+    c := decide (2 ^ w ≤ l.toNat + r.toNat)
+    v := (l.msb == r.msb) && ((l + r).msb != l.msb) }
+
+/-- The carry of an addition is its unsigned overflow: `cs` after `adds`
+    holds exactly when the wrapped sum is below the left operand — which is
+    how Oak spells a saturating add (`a + b < a ? max | a + b`). -/
+theorem add_carry_iff {w : Nat} (l r : BitVec w) :
+    (addFlagsOf l r).c = true ↔ (l + r).toNat < l.toNat := by
+  have hl := l.isLt
+  have hr := r.isLt
+  simp only [addFlagsOf, decide_eq_true_eq, BitVec.toNat_add]
+  rcases Nat.lt_or_ge (l.toNat + r.toNat) (2 ^ w) with hlt | hge
+  · rw [Nat.mod_eq_of_lt hlt]
+    omega
+  · have hsub : (l.toNat + r.toNat) % 2 ^ w = l.toNat + r.toNat - 2 ^ w := by
+      rw [Nat.mod_eq_sub_mod hge, Nat.mod_eq_of_lt (by omega)]
+    rw [hsub]
+    omega
+
+/-- `mi` after `cmp l, r` is the sign bit of the difference. -/
+theorem mi_iff_msb {w : Nat} (l r : BitVec w) : Cond.holds (flagsOf l r) .mi = (l - r).msb := rfl
+
+/-- Compare-and-branch: `cbz x` takes the branch exactly when `x = 0`,
+    `tbz x, #i` exactly when bit i is clear — conditions without flags. -/
+def cbz {w : Nat} (x : BitVec w) : Bool := decide (x = 0)
+def tbz {w : Nat} (x : BitVec w) (i : Nat) : Bool := !(x.getLsbD i)
+
+theorem cbz_iff {w : Nat} (x : BitVec w) : cbz x = true ↔ x = 0 := by simp [cbz]
+theorem tbz_iff {w : Nat} (x : BitVec w) (i : Nat) : tbz x i = true ↔ x.getLsbD i = false := by
+  simp [tbz]
 
 def condHolds {w : Nat} (c : Cond) (l r : BitVec w) : Bool := c.holds (flagsOf l r)
 

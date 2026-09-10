@@ -248,20 +248,30 @@ func (bl *blaster) addCarry(a, b []int, carry int) ([]int, int) {
 // Oak.AssemblerSemantics.condHolds.
 func (bl *blaster) condition(code string, left, right []int) int {
 	b := bl.bdd
-	negated := make([]int, len(right))
-	for i := range right {
-		negated[i] = b.not(right[i])
+	add, bare := splitFlagsKind(code)
+	var result []int
+	var c, v int
+	msb := len(left) - 1
+	if add {
+		// adds: the flags of left + right — C the carry out, V a signed
+		// overflow (equal operand signs, a differing result sign).
+		result, c = bl.addCarry(left, right, bddFalse)
+		v = b.apply(opAnd, b.not(b.apply(opXor, left[msb], right[msb])), b.apply(opXor, result[msb], left[msb]))
+	} else {
+		negated := make([]int, len(right))
+		for i := range right {
+			negated[i] = b.not(right[i])
+		}
+		result, c = bl.addCarry(left, negated, bddTrue)
+		v = b.apply(opAnd, b.apply(opXor, left[msb], right[msb]), b.apply(opXor, result[msb], left[msb]))
 	}
-	diff, c := bl.addCarry(left, negated, bddTrue)
-	msb := len(diff) - 1
-	n := diff[msb]
+	n := result[msb]
 	z := bddTrue
-	for _, bit := range diff {
+	for _, bit := range result {
 		z = b.apply(opAnd, z, b.not(bit))
 	}
-	v := b.apply(opAnd, b.apply(opXor, left[msb], right[msb]), b.apply(opXor, diff[msb], left[msb]))
 	nEqV := b.not(b.apply(opXor, n, v))
-	switch code {
+	switch bare {
 	case "eq":
 		return z
 	case "ne":
@@ -270,6 +280,14 @@ func (bl *blaster) condition(code string, left, right []int) int {
 		return c
 	case "lo", "cc":
 		return b.not(c)
+	case "mi":
+		return n
+	case "pl":
+		return b.not(n)
+	case "vs":
+		return v
+	case "vc":
+		return b.not(v)
 	case "hi":
 		return b.apply(opAnd, c, b.not(z))
 	case "ls":

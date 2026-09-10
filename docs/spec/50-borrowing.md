@@ -69,7 +69,7 @@ The compiler may later shorten borrows using liveness/NLL-style analysis without
 
 A borrowed value may not outlive its owner.
 
-Initially, returning/storing a borrow beyond the lexical region that proves the owner lifetime is rejected. The compiler enforces this conservatively today by rejecting any function signature whose return type is a view or span (`OAK-B0109`). `Oak.Escape` proves the discipline: dropping scope-local borrows on exit preserves owner liveness, an escaping borrow of a scope-local owner dangles, and an escape of a strictly longer-lived owner would be safe — the headroom the region-indexed forms below can claim without changing the ownership model.
+Initially, returning/storing a borrow beyond the lexical region that proves the owner lifetime is rejected. The compiler enforces this conservatively by rejecting any function signature whose return type is a view or span (`OAK-B0109`), except the region-indexed signatures of section 8c, whose returned view is proven to borrow a parameter's owner. `Oak.Escape` proves the discipline: dropping scope-local borrows on exit preserves owner liveness, an escaping borrow of a scope-local owner dangles, and an escape of a strictly longer-lived owner would be safe — the headroom the region-indexed forms below can claim without changing the ownership model.
 
 Future region-indexed forms can make escape explicit:
 
@@ -180,7 +180,7 @@ record. Views in records that cross a call, are returned, or live in
 storage remain the field-sensitive provenance work of
 `roadmap-authority-resources.md` milestone 4 (e).
 
-## 8c. Region-indexed borrowed returns (design, not implemented)
+## 8c. Region-indexed borrowed returns (increment 1 implemented)
 
 Section 5's conservative rule rejects every function whose return type is
 a view or span (`OAK-B0109`). Section 8b lets a record hold views, but only
@@ -189,8 +189,8 @@ over a frame can exist but cannot be *handed back*: a decoder that finds a
 record inside a buffer must copy it out or return indices for the caller
 to re-index. The storage-engine evaluation named this first among the
 features it needs, and the codecs spec lists borrowed decoded views as its
-own pending relaxation of the same rule. This section records the design
-so the implementation has a normative text to be checked against.
+own pending relaxation of the same rule. This section is the normative text; the
+"Increments" list at its end records what is implemented.
 
 ### What the proof already allows
 
@@ -237,7 +237,7 @@ region: the parameter itself, a `subslice`/`v[lo:hi]` of it, a view field
 of a record parameter carrying `R`, or a view of the same provenance
 threaded through a local binding. Returning a borrow of a local owner, a
 borrow of a different parameter, or a borrow of unknown provenance is a
-new diagnostic, `OAK-B0112` (returned borrow escapes its declared region),
+new diagnostic, `OAK-B0113` (returned borrow escapes its declared region),
 with the provenance chain in the message as the other borrow diagnostics
 do. `OAK-B0109` remains for signatures with no region at all — a view
 return in a function with no candidate parameter has nothing to borrow
@@ -300,9 +300,21 @@ Subslices carry the region-coordinate translation of section 7 unchanged.
 
 ### Increments
 
-1. Elided single-candidate view returns, `OAK-B0112`, the caller-side
-   reborrow; `Oak.Escape` region labels. This alone unblocks the frame
-   cursor and the codecs' borrowed decoded views.
+1. **Implemented.** Elided single-candidate view returns: a `[]T` return
+   with exactly one `[]T` parameter of the same element type (variadic
+   functions excluded — the bundled view is call-lifetime storage). The
+   callee's result must trace to that parameter — the parameter, a local
+   bound from it, `subslice`/`view_as` of one, a slice expression over one,
+   a conditional whose arms all trace to it, or another region-indexed call
+   through its region argument — or `OAK-B0113` names what it borrows
+   instead. At the caller, a binding initialized from such a call is a
+   read-only reborrow of the region argument (a tracked view binding,
+   `view(&owner)`, a subslice or slice of one, or a nested region-indexed
+   call; a span argument or an untraceable one is `OAK-B0113`), bound at
+   the caller's block depth with an unknown region. Signatures with two
+   candidates or none keep `OAK-B0109`. `Oak.Escape.return_param_borrow_wf`
+   is the callee's theorem and `Oak.Escape.reborrow_wf` the caller's.
+   Executed in both realizations (`compiler/e2e_borrowed_returns_test.go`).
 2. Explicit `[R]` regions on functions, `View[T, R]`/`Span[T, R]`
    spellings, span returns with the reborrow suspension.
 3. Region-carrying records: section 8b aggregates that cross calls.

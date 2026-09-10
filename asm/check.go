@@ -636,6 +636,18 @@ func (c *checker) instruction(instr Instruction) bool {
 			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
 		}
 		return false
+	case "cbz", "cbnz", "tbz", "tbnz":
+		// Compare-and-branch: reads its register, needs no flags; a bit
+		// test names a bit inside the register.
+		reg := instr.Operands[0].(Register)
+		c.read(instr, reg)
+		if imm, isBitTest := instr.Operands[1].(Immediate); isBitTest {
+			if imm.Value < 0 || imm.Value >= int64(widthOf(reg.Class)) {
+				c.errorf(instr.Line, "%s: bit %d is outside %s", instr.Mnemonic, imm.Value, reg.Text)
+			}
+		}
+		c.branch(instr, false)
+		return false
 	case "bl":
 		c.call(instr)
 		return false
@@ -994,7 +1006,7 @@ func (c *checker) checkAccess(instr Instruction, offset, size int64) {
 }
 
 func (c *checker) branch(instr Instruction, unconditional bool) bool {
-	target := instr.Operands[0].(Symbol).Name
+	target := instr.Operands[len(instr.Operands)-1].(Symbol).Name // b/b.cond: the only operand; cbz/tbz: the last
 	if c.labels[target] {
 		c.arrive(target) // the branch-taken predecessor, with the facts held here
 		if recorded, seen := c.labelDisp[target]; seen {

@@ -123,4 +123,45 @@ theorem escape_outer_owner_preserves_wf {s : State} {b : LiveBorrow}
     simp [escape]
     omega
 
+/-! ## Region-indexed returns (docs/spec/50-borrowing.md section 8c)
+
+A call enters the callee's scope from the caller's. The callee's parameters
+are borrows of owners that live at the caller's depth or shallower, so a
+returned borrow whose owner is a parameter's owner has `ownerDepth ≤ depth - 1`
+inside the callee: strictly shallower than the callee's scope. Returning it is
+`escape` in the safe case. The compiler's elision rule (one view parameter of
+the return's element type) and provenance check (`OAK-B0112`) establish
+exactly the hypothesis `hparam` below; a returned borrow of a callee-local
+owner is `escape_local_owner_dangles`. -/
+
+/-- The callee's obligation discharged: a returned borrow drawn from a
+    parameter's owner preserves well-formedness. -/
+theorem return_param_borrow_wf {s : State} {b : LiveBorrow}
+    (h : WF s) (hpos : 0 < s.depth) (hparam : b.ownerDepth ≤ s.depth - 1) :
+    WF (escape s b) :=
+  escape_outer_owner_preserves_wf h (by omega)
+
+/-- The caller's side: the result of a region-indexed call is a reborrow of
+    the argument — a new borrow of the argument's owner, bound at the
+    caller's current depth. -/
+def reborrow (s : State) (b : LiveBorrow) : State :=
+  { s with live := ⟨b.ownerDepth, s.depth⟩ :: s.live }
+
+/-- Reborrowing a live borrow preserves well-formedness: the argument's owner
+    is in scope because the argument's borrow was, and the result is bound
+    no deeper than the current scope. -/
+theorem reborrow_wf {s : State} {b : LiveBorrow} (h : WF s) (hb : b ∈ s.live) :
+    WF (reborrow s b) := by
+  intro c hc
+  unfold reborrow at hc
+  simp at hc
+  cases hc with
+  | inl heq =>
+    subst heq
+    obtain ⟨h1, h2⟩ := h b hb
+    simp [reborrow]
+    omega
+  | inr hmem =>
+    exact h c hmem
+
 end Oak.Escape

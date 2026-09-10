@@ -20,6 +20,10 @@ const (
 	CodeReborrowOverlap        diagnostic.Code = "OAK-B0108"
 	CodeBorrowEscape           diagnostic.Code = "OAK-B0109"
 	CodeUnsafeAssumption       diagnostic.Code = "OAK-B0110"
+	// OAK-B0111 and OAK-B0112 are the resource-flow codes of
+	// docs/spec/50-borrowing.md section 9 (use after consume, aliased
+	// exclusive arguments), reserved there.
+	CodeReturnedBorrowRegion diagnostic.Code = "OAK-B0113"
 )
 
 type diagnosticsState struct {

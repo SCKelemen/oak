@@ -467,8 +467,22 @@ its invariant and guard, its ancestors' invariants and guards, and its
 children's exit premises — an outer body's successors mention the inner
 loops' exit symbols. The nested `n × m` counter and row sums over a view
 are proven; an inner stride of two is refuted on a concrete input; loops
-that nest differently on the two sides are trusted. What remains:
-relations beyond affine ones (scaled counters, byte offsets).
+that nest differently on the two sides are trusted. **Flags from additions
+and compare-and-branch.** `adds` leaves NZCV as the flags of `left + right`
+(`Oak.AssemblerSemantics.addFlagsOf`; `add_carry_iff`: the carry is the
+unsigned overflow, `a + b < a`), so the idiomatic saturating add
+`adds; csel cs` is proven against `a + b < a ? max | a + b`; every code is
+read through one NZCV table for both flag kinds, which brings `mi`/`pl`/
+`vs`/`vc` into the verified subset (`mi` after `cmp` is the difference's
+sign bit, `vs` after `adds` the signed overflow). `cbz`/`cbnz` and
+`tbz`/`tbnz` join the instruction table as conditional branches without
+flags (the checker reads the register and bounds the bit index); the
+executor, the loop-body executor, and loop recognition treat them like
+`b.cond`, so a count-down loop exiting through `cbz` is proven by the
+affine coupling and a `tbz` bit test verifies. Byte-offset pointer walks
+(`[xB, xO]`) remain deliberately outside the subset: the scaled-index form
+is the idiom and costs nothing on AArch64, and a byte offset would need
+value tracking the seam checker fails closed on.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
