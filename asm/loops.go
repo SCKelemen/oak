@@ -8,15 +8,18 @@ package asm
 // them on an arbitrary iteration, the continue condition over those
 // symbols, and their values after one iteration — and continue past the
 // loop on the fresh symbols (the exit sees the header values of the
-// exiting iteration). Verification then has two layers:
+// exiting iteration). Loops nest: an inner loop met while executing an
+// outer body is summarized in place, so the events form a tree recorded
+// in creation order with parent links. Verification then has two layers:
 //
 //   - WITNESSES: both sides are re-executed on concrete inputs, under which
-//     the loops become counted and unroll; a disagreement is a definite
+//     every loop becomes counted and unrolls; a disagreement is a definite
 //     mismatch with a concrete input.
-//   - COUPLING (Oak.AssemblerSemantics.whileFuel_coupled): each Oak local
-//     is paired with a register whose header value is bit-level equal; the
-//     continue conditions must agree and one iteration must preserve every
-//     pairing; then the results after the loops are compared as usual. This
+//   - COUPLING (Oak.AssemblerSemantics.whileFuel_coupled): every event's
+//     Oak variables are paired with registers through affine relations
+//     that hold at the header; under invariants read off the Oak guards
+//     the continue conditions must agree and one iteration must preserve
+//     every pairing; then the results after the loops are compared. This
 //     is the inductive proof, so the verdict is proven.
 
 import (
@@ -28,15 +31,19 @@ import (
 )
 
 // loopShape is a recognized asm loop: a header label, `cmp` then the exit
-// `b.cond`, a straight-line body, and an unconditional back edge.
+// `b.cond`, a body branching only forward within itself (or through
+// recognized inner loops), and an unconditional back edge.
 type loopShape struct {
 	header, cmp, exit, exitLabel int
 	bodyStart, bodyEnd           int // body instructions are items [bodyStart, bodyEnd)
 }
 
 // findLoops recognizes loops by their back edges, keyed by the exit branch.
+// Back edges are met in item order, so an inner loop is recognized before
+// the outer body containing it is examined.
 func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 	loops := map[int]loopShape{}
+	innerHeaders := map[int]int{} // header index -> back edge index of a recognized loop
 	for back, item := range items {
 		branch, isBranch := item.(Instruction)
 		if !isBranch || branch.Mnemonic != "b" {
@@ -55,8 +62,6 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 		if !ok || exitLabel <= back {
 			continue
 		}
-		// The body may branch, but only forward and only within itself: its
-		// paths all rejoin at the back edge.
 		wellFormed := true
 		for i := header + 3; i < back; i++ {
 			instr, isInstr := items[i].(Instruction)
@@ -68,8 +73,14 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 				wellFormed = false
 			case "b", "b.":
 				target, ok := labels[instr.Operands[0].(Symbol).Name]
-				if !ok || target <= i || target >= back {
+				if !ok || target >= back {
 					wellFormed = false
+				} else if target <= i {
+					// A backward branch inside the body: admitted only as
+					// the back edge of a recognized inner loop lying inside.
+					if innerBack, isInner := innerHeaders[target]; !isInner || innerBack != i || target <= header {
+						wellFormed = false
+					}
 				}
 			}
 		}
@@ -77,12 +88,15 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 			continue
 		}
 		loops[header+2] = loopShape{header: header, cmp: header + 1, exit: header + 2, exitLabel: exitLabel, bodyStart: header + 3, bodyEnd: back}
+		innerHeaders[header] = back
 	}
 	return loops
 }
 
 // loopEvent is one side's summary of a data-dependent loop.
 type loopEvent struct {
+	index  int              // creation order, 1-based; fresh symbols are loop<index>.<var>
+	parent int              // the enclosing event's index, 0 at top level
 	vars   []string         // loop-carried variables, in a stable order
 	header map[string]*term // value at the header on entry
 	fresh  map[string]*term // the symbol standing for the value on an iteration
@@ -91,16 +105,29 @@ type loopEvent struct {
 	next   map[string]*term // value after one iteration, over the fresh symbols
 }
 
+func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
+
 var negatedCondition = map[string]string{"eq": "ne", "ne": "eq", "hs": "lo", "cs": "lo", "lo": "hs", "cc": "hs", "hi": "ls", "ls": "hi", "ge": "lt", "lt": "ge", "gt": "le", "le": "gt"}
 
-// loopEvent summarizes the asm loop whose exit branch was just reached
-// with an undecided condition, then continues past the exit.
+// loopEvent summarizes the top-level asm loop whose exit branch was just
+// reached with an undecided condition, then continues past the exit.
 func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbolicState) (*term, string, bool) {
+	post, reason, ok := x.summarizeLoop(shape, exitCond, state)
+	if !ok {
+		return nil, reason, false
+	}
+	return x.run(shape.exitLabel, post)
+}
+
+// summarizeLoop records the loop event and returns the state past the
+// exit: the loop-carried registers hold their fresh symbols, scratch
+// registers are unbound.
+func (x *pathExecutor) summarizeLoop(shape loopShape, exitCond string, state *symbolicState) (*symbolicState, string, bool) {
 	if x.concrete {
 		return nil, "a loop that a witness run could not decide", false
 	}
-	if x.loop != nil {
-		return nil, "a second data-dependent loop", false
+	if len(x.loops) >= loopEventBudget {
+		return nil, "more data-dependent loops than the verifier's budget", false
 	}
 	// The loop-carried registers are those the body writes; each is a
 	// fresh 32-bit symbol when the body only ever writes its w view and the
@@ -124,7 +151,11 @@ func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbol
 			allW[dest.Num] = false
 		}
 	}
-	ev := &loopEvent{header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
+	ev := &loopEvent{index: len(x.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
+	if n := len(x.loopStack); n > 0 {
+		ev.parent = x.loopStack[n-1]
+	}
+	x.loops = append(x.loops, ev)
 	regs := make([]int, 0, len(written))
 	for reg := range written {
 		regs = append(regs, reg)
@@ -138,7 +169,7 @@ func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbol
 		if allW[reg] {
 			width = 32
 		}
-		fresh := paramTerm("loop."+name, width)
+		fresh := paramTerm(ev.freshName(name), width)
 		value, bound := state.regs[reg]
 		if !bound {
 			// Written in the body but holding nothing at the header: a
@@ -146,17 +177,21 @@ func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbol
 			// is unbound after the loop (reading it there is outside the
 			// subset — the executor loses the last iteration's value).
 			scratch[reg] = true
+			x.declared[fresh.name] = width
 			freshState.regs[reg] = zeroExtend(fresh, 64)
 			continue
 		}
 		if width == 32 && !upperClear(value, x.declared) {
 			width = 64
-			fresh = paramTerm("loop."+name, width)
+			fresh = paramTerm(ev.freshName(name), width)
 		}
 		ev.vars = append(ev.vars, name)
 		ev.width[name] = width
 		ev.header[name] = truncate(value, width)
 		ev.fresh[name] = fresh
+		// The fresh symbol is declared at its width: an inner loop's header
+		// value built from it is then known to be zero-extended.
+		x.declared[fresh.name] = width
 		freshState.regs[reg] = zeroExtend(fresh, 64)
 	}
 	// The continue condition: the header comparison on the fresh state,
@@ -171,9 +206,12 @@ func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbol
 	}
 	ev.cond = cmpTerm(continueCode, condState.flags.left, condState.flags.right)
 	// One iteration of the body on the fresh state: its paths (a branch
-	// inside the body forks on its condition) all reach the back edge and
-	// merge register by register into selects on the path conditions.
+	// inside the body forks on its condition; an inner loop is summarized
+	// in place) all reach the back edge and merge register by register
+	// into selects on the path conditions.
+	x.loopStack = append(x.loopStack, ev.index)
 	ends, reason, ok := x.runBody(shape, freshState.clone())
+	x.loopStack = x.loopStack[:len(x.loopStack)-1]
 	if !ok {
 		return nil, reason + " (in a loop body)", false
 	}
@@ -186,15 +224,15 @@ func (x *pathExecutor) loopEvent(shape loopShape, exitCond string, state *symbol
 		}
 		ev.next[name] = truncate(merged, ev.width[name])
 	}
-	x.loop = ev
-	// Past the exit the loop-carried registers hold their fresh symbols and
-	// scratch registers are unbound.
 	for reg := range scratch {
 		delete(freshState.regs, reg)
 	}
 	freshState.flags = nil
-	return x.run(shape.exitLabel, freshState)
+	return freshState, "", true
 }
+
+// loopEventBudget bounds the data-dependent loops one body may hold.
+const loopEventBudget = 8
 
 // bodyEnd is one path through a loop body: the condition under which the
 // path is taken and the state it reaches the back edge with.
@@ -260,6 +298,17 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					}
 					continue
 				}
+				// An undecided exit of an inner recognized loop: summarize
+				// it and continue past its exit, still inside this body.
+				if inner, isLoopExit := x.loopExits[pc]; isLoopExit {
+					post, reason, ok := x.summarizeLoop(inner, instr.Cond, st)
+					if !ok {
+						return nil, reason, false
+					}
+					st = post
+					pc = inner.exitLabel
+					continue
+				}
 				if len(ends)+len(work) >= bodyPathBudget {
 					return nil, "more paths in a loop body than the verifier's budget", false
 				}
@@ -297,7 +346,7 @@ func upperClear(t *term, declared map[string]int) bool {
 		if w, known := declared[t.name]; known {
 			return w <= 32
 		}
-		return strings.HasPrefix(t.name, "loop.") && t.width <= 32
+		return strings.HasPrefix(t.name, "loop") && t.width <= 32
 	case termCmp:
 		return true
 	case termSelect:
@@ -324,14 +373,23 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	if lo.concrete != nil {
 		return "a loop that a witness run could not decide", false
 	}
-	if lo.loop != nil {
-		return "a second data-dependent loop", false
+	if len(lo.loops) >= loopEventBudget {
+		return "more data-dependent loops than the verifier's budget", false
 	}
+	// The loop-carried locals are those the body assigns and that exist
+	// before the loop; a local declared inside the body is the body's own.
 	assigned := map[string]bool{}
 	assignedLocals(loop.Body, assigned)
-	ev := &loopEvent{header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
+	declared := map[string]bool{}
+	declaredLocals(loop.Body, declared)
+	ev := &loopEvent{index: len(lo.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
+	if n := len(lo.loopStack); n > 0 {
+		ev.parent = lo.loopStack[n-1]
+	}
 	for name := range assigned {
-		ev.vars = append(ev.vars, name)
+		if !declared[name] {
+			ev.vars = append(ev.vars, name)
+		}
 	}
 	sort.Strings(ev.vars)
 	for _, name := range ev.vars {
@@ -341,7 +399,7 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		}
 		ev.width[name] = local.width
 		ev.header[name] = local.value
-		fresh := paramTerm("loop."+name, local.width)
+		fresh := paramTerm(ev.freshName(name), local.width)
 		lo.fresh[fresh.name] = local.width
 		ev.fresh[name] = fresh
 		local.value = fresh
@@ -351,8 +409,11 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		return reason, false
 	}
 	ev.cond = truncate(cond, 1)
-	lo.loop = ev // set first: a nested data-dependent loop is refused as a second one
-	if reason, ok := lo.lowerLoopBody(loop.Body); !ok {
+	lo.loops = append(lo.loops, ev)
+	lo.loopStack = append(lo.loopStack, ev.index)
+	reason, ok = lo.lowerLoopBody(loop.Body)
+	lo.loopStack = lo.loopStack[:len(lo.loopStack)-1]
+	if !ok {
 		return reason, false
 	}
 	for _, name := range ev.vars {
@@ -381,6 +442,20 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 					}
 				}
 			}
+		}
+	}
+}
+
+func declaredLocals(body *ast.BlockStatement, into map[string]bool) {
+	if body == nil {
+		return
+	}
+	for _, stmt := range body.Statements {
+		switch s := stmt.(type) {
+		case *ast.VariableDeclaration:
+			into[s.Name.Value] = true
+		case *ast.WhileStatement:
+			declaredLocals(s.Body, into)
 		}
 	}
 }
@@ -418,18 +493,36 @@ func loopWitnessInputs(sig *ast.FunctionStatement) []map[string]uint64 {
 	return inputs
 }
 
+// coupling is one Oak loop variable paired with a register: r = a*x + b.
+type coupling struct {
+	event int // event index
+	local string
+	reg   string
+	a     int
+	b     *term
+	show  string
+}
+
 // verifyLoops is the loop-mode verdict: witnesses, then the coupling proof.
 func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerm, oakTerm *term, width int) Verdict {
 	trusted := func(reason string) Verdict {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
+	asmLoops, oakLoops := exec.loops, lowering.loops
 	switch {
-	case exec.loop == nil:
+	case len(asmLoops) == 0:
 		return trusted("the Oak body has a data-dependent loop but the asm body does not")
-	case lowering.loop == nil:
+	case len(oakLoops) == 0:
 		return trusted("the asm body has a data-dependent loop but the Oak body does not")
+	case len(asmLoops) != len(oakLoops):
+		return trusted(fmt.Sprintf("the asm body has %d data-dependent loops, the Oak body %d", len(asmLoops), len(oakLoops)))
 	}
-	// Witnesses: concrete inputs decide both loops.
+	for k := range asmLoops {
+		if asmLoops[k].parent != oakLoops[k].parent {
+			return trusted("the data-dependent loops nest differently on the two sides")
+		}
+	}
+	// Witnesses: concrete inputs decide every loop.
 	checked := 0
 	for _, env := range loopWitnessInputs(sig) {
 		asmValue, _, _, okA := executeBody(fn, sig, env)
@@ -456,38 +549,113 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	evidence := func(reason string) Verdict {
 		return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on %d concrete inputs (evidence, not proof: %s)", fn.Name, checked, reason)}
 	}
-	// Coupling: pair each Oak loop-carried local with a register whose
-	// header value is the same.
-	asmLoop, oakLoop := exec.loop, lowering.loop
 	widthOfName := func(name string) int {
-		if w, isFresh := asmLoop.width[strings.TrimPrefix(name, "loop.")]; isFresh && strings.HasPrefix(name, "loop.r") {
-			return w
+		var k int
+		var reg string
+		if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && strings.HasPrefix(reg, "r") && k >= 1 && k <= len(asmLoops) {
+			if w, isReg := asmLoops[k-1].width[reg]; isReg {
+				return w
+			}
 		}
 		return lowering.declaredWidth(name)
 	}
-	// Coupling. Candidates pair an Oak loop variable x with a register r of
-	// the same width through an affine relation r = a*x + b, a ∈ {+1, -1},
-	// with b read off the header values (b = header_r ∓ header_x) and
-	// required to be loop-invariant (no loop-carried symbol). Equality is
-	// the a = +1, b = 0 case. Several locals may start alike, so the
-	// pairing is a small search, accepted when — under an invariant read
-	// off the Oak guard — the continue conditions agree and one iteration
-	// preserves every pair (Oak.AssemblerSemantics.whileFuel_coupled, with R
-	// the conjunction of the affine relations and the invariant).
-	type candidate struct {
-		reg  string
-		a    int
-		b    *term
-		show string
+
+	// Coupling. A candidate pairs an Oak loop variable x of event k with a
+	// register r of the same width of the matching asm event through an
+	// affine relation r = a*x + b, a ∈ {+1, -1}, with b read off the header
+	// values under the substitution chosen so far (an inner loop's header
+	// mentions the outer loop's symbols) and required to mention no symbol
+	// of the event itself. Equality is a = +1, b = 0. The search runs over
+	// every variable of every event; at the leaf, each event's condition
+	// agreement and preservation are bit-level implications from its
+	// premise — its invariant and guard, its ancestors' invariants and
+	// guards, and its children's exit premises (invariant and negated
+	// guard), since an outer body's successors mention the inner loops'
+	// exit symbols.
+	type slot struct {
+		event int
+		local string
 	}
-	candidates := map[string][]candidate{}
-	for _, local := range oakLoop.vars {
-		hx := oakLoop.header[local]
-		for _, reg := range asmLoop.vars {
-			if asmLoop.width[reg] != oakLoop.width[local] {
+	var slots []slot
+	for k, ev := range oakLoops {
+		for _, local := range ev.vars {
+			slots = append(slots, slot{event: k, local: local})
+		}
+	}
+	// Invariant candidates per event: the guard weakened to its closure
+	// (`x < e` gives `x ≤ e`) when it holds at the header and one iteration
+	// preserves it under the guard; else the trivial invariant.
+	invariants := make([]*term, len(oakLoops))
+	for k, ev := range oakLoops {
+		invariants[k] = constTerm(1, 1)
+		guard := ev.cond
+		if guard.kind != termCmp {
+			continue
+		}
+		weakened := map[string]string{"lo": "ls", "ls": "ls", "hi": "hs", "hs": "hs", "lt": "le", "le": "le", "gt": "ge", "ge": "ge"}
+		code, ok := weakened[guard.op]
+		if !ok {
+			continue
+		}
+		inv := cmpTerm(code, guard.left, guard.right)
+		atHeader := map[string]*term{}
+		afterBody := map[string]*term{}
+		for _, local := range ev.vars {
+			atHeader[ev.freshName(local)] = ev.header[local]
+			afterBody[ev.freshName(local)] = ev.next[local]
+		}
+		holds, decidedEntry := impliesEqual(constTerm(1, 1), substitute(inv, atHeader), constTerm(1, 1), widthOfName)
+		preserved, decidedStep := impliesEqual(binaryTerm("and", truncate(inv, 1), truncate(guard, 1)), substitute(inv, afterBody), constTerm(1, 1), widthOfName)
+		if decidedEntry && holds && decidedStep && preserved {
+			invariants[k] = truncate(inv, 1)
+		}
+	}
+	children := map[int][]int{}
+	for k, ev := range oakLoops {
+		children[ev.parent-1] = append(children[ev.parent-1], k)
+	}
+	// exitPremise of event k: its invariant and negated guard, and its
+	// children's exit premises.
+	var exitPremise func(k int, sigma map[string]*term) *term
+	exitPremise = func(k int, sigma map[string]*term) *term {
+		ev := oakLoops[k]
+		premise := binaryTerm("and", substitute(invariants[k], sigma), binaryTerm("xor", truncate(substitute(ev.cond, sigma), 1), constTerm(1, 1)))
+		for _, child := range children[k] {
+			premise = binaryTerm("and", premise, exitPremise(child, sigma))
+		}
+		return premise
+	}
+	// bodyPremise of event k: its invariant — and its guard only when
+	// checking one iteration, never when checking that the guards agree
+	// (assuming the Oak guard would make any asm guard it implies look
+	// equal) — the invariants and guards of its ancestors, and its
+	// children's exit premises.
+	bodyPremise := func(k int, sigma map[string]*term, underGuard bool) *term {
+		premise := substitute(invariants[k], sigma)
+		if underGuard {
+			premise = binaryTerm("and", premise, truncate(substitute(oakLoops[k].cond, sigma), 1))
+		}
+		for at := oakLoops[k].parent - 1; at >= 0; at = oakLoops[at].parent - 1 {
+			premise = binaryTerm("and", premise, binaryTerm("and", substitute(invariants[at], sigma), truncate(substitute(oakLoops[at].cond, sigma), 1)))
+		}
+		for _, child := range children[k] {
+			premise = binaryTerm("and", premise, exitPremise(child, sigma))
+		}
+		return premise
+	}
+	chosen := map[slot]coupling{}
+	used := map[string]bool{} // asm fresh symbol names already paired
+	sigma := map[string]*term{}
+	var failure string
+	candidatesFor := func(s slot) []coupling {
+		oakEv, asmEv := oakLoops[s.event], asmLoops[s.event]
+		hx := oakEv.header[s.local]
+		var out []coupling
+		for _, reg := range asmEv.vars {
+			if asmEv.width[reg] != oakEv.width[s.local] || used[asmEv.freshName(reg)] {
 				continue
 			}
-			hr := asmLoop.header[reg]
+			hr := substitute(asmEv.header[reg], sigma)
 			for _, a := range []int{1, -1} {
 				var b *term
 				if a == 1 {
@@ -497,154 +665,130 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				}
 				mentioned := map[string]bool{}
 				collectParams(b, mentioned)
+				own := fmt.Sprintf("loop%d.", oakEv.index)
 				invariant := true
 				for name := range mentioned {
-					if strings.HasPrefix(name, "loop.") {
+					if strings.HasPrefix(name, own) || strings.HasPrefix(name, fmt.Sprintf("loop%d.r", asmEv.index)) {
 						invariant = false
 					}
 				}
 				if !invariant {
 					continue
 				}
-				show := local + "↔" + reg
+				show := s.local + "↔" + reg
 				switch {
 				case a == 1 && b.kind == termConst && b.value == 0:
 				case a == 1:
-					show = fmt.Sprintf("%s = %s + %s", reg, local, b)
+					show = fmt.Sprintf("%s = %s + %s", reg, s.local, b)
 				default:
-					show = fmt.Sprintf("%s = %s - %s", reg, b, local)
+					show = fmt.Sprintf("%s = %s - %s", reg, b, s.local)
 				}
-				candidates[local] = append(candidates[local], candidate{reg: reg, a: a, b: b, show: show})
+				out = append(out, coupling{event: s.event, local: s.local, reg: reg, a: a, b: b, show: show})
 			}
 		}
-		if len(candidates[local]) == 0 {
-			return evidence(fmt.Sprintf("no register is an affine image of the loop variable %s at the loop header", local))
-		}
+		return out
 	}
-	// Invariant candidates: none, then the guard weakened to its closure
-	// (`x < e` gives `x ≤ e`). Each must hold at the header and be
-	// preserved by one iteration under the guard.
-	invariants := []*term{constTerm(1, 1)}
-	if guard := oakLoop.cond; guard.kind == termCmp {
-		weakened := map[string]string{"lo": "ls", "ls": "ls", "hi": "hs", "hs": "hs", "lt": "le", "le": "le", "gt": "ge", "ge": "ge"}
-		if code, ok := weakened[guard.op]; ok {
-			inv := cmpTerm(code, guard.left, guard.right)
-			atHeader := map[string]*term{}
-			afterBody := map[string]*term{}
-			for _, local := range oakLoop.vars {
-				atHeader["loop."+local] = oakLoop.header[local]
-				afterBody["loop."+local] = oakLoop.next[local]
-			}
-			holdsAtEntry, decidedEntry := impliesEqual(constTerm(1, 1), substitute(inv, atHeader), constTerm(1, 1), widthOfName)
-			preserved, decidedStep := impliesEqual(binaryTerm("and", truncate(inv, 1), truncate(guard, 1)), substitute(inv, afterBody), constTerm(1, 1), widthOfName)
-			if decidedEntry && holdsAtEntry && decidedStep && preserved {
-				invariants = append(invariants, truncate(inv, 1))
-			}
-		}
-	}
-	var sigma map[string]*term
-	var pairs []string
-	var failure string
-	var invariantUsed *term
-	for _, inv := range invariants {
-		chosen := map[string]candidate{}
-		used := map[string]bool{}
-		var search func(i int) bool
-		search = func(i int) bool {
-			if i == len(oakLoop.vars) {
-				trial := map[string]*term{}
-				for local, c := range chosen {
-					// x = a*(r - b): the register's fresh symbol expressed for x.
-					r := paramTerm("loop."+c.reg, oakLoop.width[local])
-					if c.a == 1 {
-						trial["loop."+local] = binaryTerm("sub", r, c.b)
-					} else {
-						trial["loop."+local] = binaryTerm("sub", c.b, r)
-					}
-				}
-				premise := substitute(inv, trial)
-				if equal, decided := impliesEqual(premise, substitute(oakLoop.cond, trial), asmLoop.cond, widthOfName); !decided || !equal {
-					failure = "the loops' continue conditions were not proven equal"
+	var search func(i int) bool
+	search = func(i int) bool {
+		if i == len(slots) {
+			for k := range oakLoops {
+				oakEv, asmEv := oakLoops[k], asmLoops[k]
+				if equal, decided := impliesEqual(bodyPremise(k, sigma, false), substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), widthOfName); !decided || !equal {
+					failure = fmt.Sprintf("loop %d's continue conditions were not proven equal", k+1)
 					return false
 				}
-				underGuard := binaryTerm("and", premise, truncate(substitute(oakLoop.cond, trial), 1))
-				for local, c := range chosen {
+				premise := bodyPremise(k, sigma, true)
+				for _, local := range oakEv.vars {
+					c := chosen[slot{event: k, local: local}]
 					// r' = a*x' + b must hold after one iteration.
-					next := substitute(oakLoop.next[local], trial)
+					next := substitute(oakEv.next[local], sigma)
 					if c.a == 1 {
 						next = binaryTerm("add", next, c.b)
 					} else {
 						next = binaryTerm("sub", c.b, next)
 					}
-					if equal, decided := impliesEqual(underGuard, next, asmLoop.next[c.reg], widthOfName); !decided || !equal {
-						failure = fmt.Sprintf("one iteration was not proven to preserve %s", c.show)
+					if equal, decided := impliesEqual(premise, next, substitute(asmEv.next[c.reg], sigma), widthOfName); !decided || !equal {
+						failure = fmt.Sprintf("one iteration of loop %d was not proven to preserve %s", k+1, c.show)
 						return false
 					}
 				}
-				sigma = trial
-				invariantUsed = inv
+			}
+			return true
+		}
+		s := slots[i]
+		for _, c := range candidatesFor(s) {
+			asmName := asmLoops[s.event].freshName(c.reg)
+			used[asmName] = true
+			chosen[s] = c
+			// r = a*x + b: the register's fresh symbol expressed for x.
+			x := paramTerm(oakLoops[s.event].freshName(s.local), oakLoops[s.event].width[s.local])
+			if c.a == 1 {
+				sigma[asmName] = binaryTerm("add", x, c.b)
+			} else {
+				sigma[asmName] = binaryTerm("sub", c.b, x)
+			}
+			if search(i + 1) {
 				return true
 			}
-			local := oakLoop.vars[i]
-			for _, c := range candidates[local] {
-				if used[c.reg] {
-					continue
-				}
-				used[c.reg] = true
-				chosen[local] = c
-				if search(i + 1) {
-					return true
-				}
-				delete(used, c.reg)
-				delete(chosen, local)
-			}
-			return false
+			delete(used, asmName)
+			delete(chosen, s)
+			delete(sigma, asmName)
 		}
-		if search(0) {
-			for _, local := range oakLoop.vars {
-				pairs = append(pairs, chosen[local].show)
-			}
-			break
+		if failure == "" {
+			failure = fmt.Sprintf("no register is an affine image of the loop variable %s of loop %d at its header", s.local, s.event+1)
 		}
+		return false
 	}
-	if sigma == nil {
+	if !search(0) {
 		return evidence(failure)
 	}
-	// The fresh symbols are free parameters of the exit comparison, under
-	// the invariant and the negated guard. A result reading a loop-carried
-	// register no Oak variable is coupled to is beyond the method (its exit
-	// value has no Oak counterpart). Symbolic disagreement here is never
-	// reported as a mismatch — the states may be unreachable — only the
-	// concrete layer refutes.
-	coupled := map[string]bool{}
-	for local := range sigma {
-		mentioned := map[string]bool{}
-		collectParams(sigma[local], mentioned)
-		for name := range mentioned {
-			coupled[name] = true
-		}
+	var pairs []string
+	for _, s := range slots {
+		pairs = append(pairs, chosen[s].show)
 	}
+	// The exit comparison, under every top-level loop's exit premise. A
+	// result reading a loop-carried register no Oak variable is coupled to
+	// is beyond the method. Symbolic disagreement here is never reported as
+	// a mismatch — the states may be unreachable — only the concrete layer
+	// refutes.
 	mentioned := map[string]bool{}
 	collectParams(asmTerm, mentioned)
 	for name := range mentioned {
-		if strings.HasPrefix(name, "loop.r") && !coupled[name] {
-			return evidence(fmt.Sprintf("the result reads loop-carried register %s, which no Oak variable is coupled to", strings.TrimPrefix(name, "loop.")))
+		var k int
+		var reg string
+		if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && strings.HasPrefix(reg, "r") && sigma[name] == nil {
+			return evidence(fmt.Sprintf("the result reads loop-carried register %s of loop %d, which no Oak variable is coupled to", reg, k))
 		}
 	}
-	exitPremise := binaryTerm("and", substitute(invariantUsed, sigma), binaryTerm("xor", truncate(substitute(oakLoop.cond, sigma), 1), constTerm(1, 1)))
-	equal, decided := impliesEqual(exitPremise, substitute(oakTerm, sigma), truncate(asmTerm, width), widthOfName)
+	premise := constTerm(1, 1)
+	for k, ev := range oakLoops {
+		if ev.parent == 0 {
+			premise = binaryTerm("and", premise, exitPremise(k, sigma))
+		}
+	}
+	equal, decided := impliesEqual(premise, oakTerm, substitute(truncate(asmTerm, width), sigma), widthOfName)
 	if !decided || !equal {
 		return evidence("the results after the loops were not proven equal")
 	}
-	invariantNote := ""
-	if invariantUsed.kind != termConst {
-		invariantNote = fmt.Sprintf(" under the invariant %s", substitute(invariantUsed, sigma))
+	var notes []string
+	for k, inv := range invariants {
+		if inv.kind != termConst {
+			notes = append(notes, fmt.Sprintf("loop %d under the invariant %s", k+1, inv))
+		}
 	}
-	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (%s)%s, %d concrete inputs agree", fn.Name, strings.Join(pairs, ", "), invariantNote, checked)}
+	invariantNote := ""
+	if len(notes) > 0 {
+		invariantNote = " (" + strings.Join(notes, "; ") + ")"
+	}
+	loopsNote := "data-dependent loop coupled inductively"
+	if len(oakLoops) > 1 {
+		loopsNote = fmt.Sprintf("%d nested data-dependent loops coupled inductively", len(oakLoops))
+	}
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — %s (%s)%s, %d concrete inputs agree", fn.Name, loopsNote, strings.Join(pairs, ", "), invariantNote, checked)}
 }
 
-// substitute replaces parameters by terms (the Oak loop symbols by their
-// expression in the coupled registers' symbols).
+// substitute replaces parameters by terms (the asm loop symbols by their
+// expression in the Oak variables' symbols).
 func substitute(t *term, sigma map[string]*term) *term {
 	if t == nil {
 		return nil

@@ -112,3 +112,34 @@ func TestVerifyLoopBodyForks(t *testing.T) {
 		t.Fatalf("running maximum must be proven, got %s: %s", verdict.Kind, verdict.Message)
 	}
 }
+
+// Nested data-dependent loops: the events form a tree on both sides, the
+// inner loop is summarized while executing the outer body, and the outer
+// preservation check runs under the inner loop's exit premise.
+func TestVerifyNestedLoops(t *testing.T) {
+	decl := "grid: (n, m: u32) -> u32"
+	oakGrid := "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < n {\n    j: u32 = u32(0)\n    while j < m {\n      acc = acc + u32(1)\n      j = j + u32(1)\n    }\n    i = i + u32(1)\n  }\n  acc\n}"
+	asmGrid := "  bind w0 = n\n  bind w1 = m\n  clobber w9, w10, w11\n  mov w9, #0\n  mov w11, #0\nouter:\n  cmp w9, w0\n  b.hs done\n  mov w10, #0\ninner:\n  cmp w10, w1\n  b.hs next\n  add w11, w11, #1\n  add w10, w10, #1\n  b inner\nnext:\n  add w9, w9, #1\n  b outer\ndone:\n  mov w0, w11\n  ret"
+	proven := verifyCase(t, decl, oakGrid, asmGrid)
+	if proven.Kind != VerdictProven || !strings.Contains(proven.Message, "2 nested data-dependent loops") {
+		t.Fatalf("the nested counter must be proven, got %s: %s", proven.Kind, proven.Message)
+	}
+	// The inner body advancing by two is refuted on a concrete input.
+	stride := verifyCase(t, decl, oakGrid, strings.Replace(asmGrid, "add w10, w10, #1", "add w10, w10, #2", 1))
+	if stride.Kind != VerdictMismatch {
+		t.Fatalf("an inner stride of two must be a mismatch, got %s: %s", stride.Kind, stride.Message)
+	}
+	// Row sums over a view: the inner loop reads memory by a two-level index.
+	rows := "rows: (v: []u32, w: u32) -> u32"
+	oakRows := "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < len(v) {\n    j: u32 = u32(0)\n    while j < w {\n      acc = acc + v[i]\n      j = j + u32(1)\n    }\n    i = i + u32(1)\n  }\n  acc\n}"
+	asmRows := "  bind x0, w1 = v\n  bind w2 = w\n  clobber w9, w10, w11, w12\n  mov w9, #0\n  mov w11, #0\nouter:\n  cmp w9, w1\n  b.hs done\n  ldr w12, [x0, w9, uxtw #2]\n  mov w10, #0\ninner:\n  cmp w10, w2\n  b.hs next\n  add w11, w11, w12\n  add w10, w10, #1\n  b inner\nnext:\n  add w9, w9, #1\n  b outer\ndone:\n  mov w0, w11\n  ret"
+	rowsVerdict := verifyCase(t, rows, oakRows, asmRows)
+	if rowsVerdict.Kind != VerdictProven {
+		t.Fatalf("row sums must be proven, got %s: %s", rowsVerdict.Kind, rowsVerdict.Message)
+	}
+	// A single Oak loop against nested asm loops: the shapes differ — trusted.
+	flat := verifyCase(t, decl, "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < n {\n    acc = acc + m\n    i = i + u32(1)\n  }\n  acc\n}", asmGrid)
+	if flat.Kind != VerdictTrusted || !strings.Contains(flat.Message, "data-dependent loops") {
+		t.Fatalf("differing loop counts must be trusted, got %s: %s", flat.Kind, flat.Message)
+	}
+}

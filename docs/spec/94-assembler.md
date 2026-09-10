@@ -454,8 +454,21 @@ The exit comparison in loop mode never reports a symbolic disagreement as a
 mismatch (the state may be unreachable); only the concrete layer refutes.
 A count-down asm loop (`w1 = n - i`, under `i ≤ n`) and an inclusive
 1-based counter (`w9 = i + 1`) are now proven against the count-up Oak
-loop. What remains: nested data-dependent loops, and relations beyond
-affine ones (scaled counters, byte offsets).
+loop. **Nested loops**: the events form a tree in creation order with
+parent links on both sides — an inner loop met while executing the outer
+body is summarized in place, with fresh symbols namespaced per event
+(`loop2.j`), and the body continues at its exit; the asm shape admits
+recognized inner loops inside a body, and Oak loop bodies admit local
+declarations (a body-local counter is the body's own, not an outer
+loop-carried variable). The coupling pairs every event's variables in one
+search (an inner header mentions the outer symbols, so candidates are read
+under the substitution so far) and checks each event under its premise:
+its invariant and guard, its ancestors' invariants and guards, and its
+children's exit premises — an outer body's successors mention the inner
+loops' exit symbols. The nested `n × m` counter and row sums over a view
+are proven; an inner stride of two is refuted on a concrete input; loops
+that nest differently on the two sides are trusted. What remains:
+relations beyond affine ones (scaled counters, byte offsets).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
