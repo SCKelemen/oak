@@ -1,0 +1,131 @@
+// Process lifecycle and scheduling adapters for deterministic simulation
+// (docs/spec/110-testing.md, "Crashes and scheduling"). Pure Oak over
+// caller-owned storage, spliced into import(testing) with the event queue.
+//
+// A crash is an event, not a call: `sim_process_schedule_crash` enqueues a
+// crash and its restart with tape-chosen delay and downtime, using event
+// kinds the scenario names; the scenario's event loop dispatches the restart
+// kind to its recovery code, so recovery runs inside the simulated timeline
+// like every other action. `SimProcess` records the lifecycle the scenario
+// must honor: no operation while down, an epoch per restart.
+pub SimProcess: type = struct { up: Bool, restarts: u32, down_since: u64 }
+
+pub sim_process_new: (): SimProcess = SimProcess { up: true, restarts: u32(0), down_since: u64(0) }
+
+pub sim_process_crash: (process: [*]SimProcess, clock: [*]SimClock): () {
+  assert(len(process) == u32(1) && len(clock) == u32(1))
+  assert(process[0].up)
+  process[0].up = false
+  process[0].down_since = clock[0].now
+}
+
+pub sim_process_restart: (process: [*]SimProcess): () {
+  assert(len(process) == u32(1))
+  assert(!process[0].up)
+  process[0].up = true
+  process[0].restarts = process[0].restarts + u32(1)
+}
+
+// Schedule a crash `delay` from now (tape, 0..max_delay) and its restart one
+// tick plus `downtime` (tape, 0..max_downtime) after it. Both events carry
+// value 0. Returns false without scheduling anything when the queue lacks
+// room for both, so a crash never lands without its restart.
+pub sim_process_schedule_crash: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, choices: [*]TestChoices, data: []u8, crash_kind: u32, restart_kind: u32, max_delay: u32, max_downtime: u32): Bool {
+  assert(len(queue) == u32(1) && len(clock) == u32(1))
+  queue[0].count + u32(2) > len(events) ? { false } | {
+    delay: u32 = test_range(choices, data, u32(0), max_delay)
+    downtime: u32 = test_range(choices, data, u32(0), max_downtime)
+    at: u64 = clock[0].now + u64(delay)
+    first: Bool = sim_schedule(queue, events, clock, SimEvent { at: at, kind: crash_kind, value: u32(0) })
+    second: Bool = sim_schedule(queue, events, clock, SimEvent { at: at + u64(1) + u64(downtime), kind: restart_kind, value: u32(0) })
+    assert(first && second)
+    true
+  }
+}
+
+// Delay an event by a tape-chosen 0..max_delay before scheduling it. Two
+// events scheduled for the same time are already reordered by `sim_next`'s
+// tie choice; a delay lets the tape reorder events that were not tied.
+pub sim_schedule_delayed: (queue: [*]SimQueue, events: [*]SimEvent, clock: [*]SimClock, choices: [*]TestChoices, data: []u8, event: SimEvent, max_delay: u32): Bool {
+  delayed: SimEvent = event
+  delayed.at = event.at + u64(test_range(choices, data, u32(0), max_delay))
+  sim_schedule(queue, events, clock, delayed)
+}
+
+// A fair scheduling adapter over up to 32 actors. Each pick is drawn from
+// the tape among the runnable actors (bit i of `runnable` set), except that
+// once a runnable actor has waited `bound` consecutive picks the longest
+// waiter is picked instead (ties to the lowest index). The tape can
+// therefore starve a runnable actor for at most `bound + actors - 2` picks —
+// several actors may reach the bound together and are served one per pick —
+// which is the fairness assumption liveness invariants rely on;
+// `sim_sched_max_wait` exposes it. `waits` is caller-owned, one counter per
+// actor; a non-runnable actor is not waiting.
+pub SimSched: type = struct { actors: u32, bound: u32, picks: u32, forced: u32 }
+
+pub sim_sched_init: (sched: [*]SimSched, waits: [*]u32, actors: u32, bound: u32): () {
+  assert(len(sched) == u32(1))
+  assert(actors > u32(0) && actors <= u32(32) && len(waits) == actors && bound > u32(0))
+  sched[0] = SimSched { actors: actors, bound: bound, picks: u32(0), forced: u32(0) }
+  i: u32 = u32(0)
+  while i < actors {
+    waits[i] = u32(0)
+    i = i + u32(1)
+  }
+}
+
+// Returns the chosen actor, or `actors` when nothing is runnable.
+pub sim_sched_pick: (sched: [*]SimSched, waits: [*]u32, choices: [*]TestChoices, data: []u8, runnable: u32): u32 {
+  assert(len(sched) == u32(1) && len(waits) == sched[0].actors)
+  actors: u32 = sched[0].actors
+  count: u32 = u32(0)
+  forced: u32 = actors
+  longest: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < actors {
+    ((runnable >> i) & u32(1)) != u32(0) ? {
+      count = count + u32(1)
+      waits[i] >= sched[0].bound && waits[i] > longest ? { forced = i; longest = waits[i] }
+    }
+    i = i + u32(1)
+  }
+  chosen: u32 = actors
+  count > u32(0) ? {
+    forced < actors ? {
+      chosen = forced
+      sched[0].forced = sched[0].forced + u32(1)
+    } | {
+      pick: u32 = test_range(choices, data, u32(0), count - u32(1))
+      seen: u32 = u32(0)
+      i = u32(0)
+      while i < actors {
+        ((runnable >> i) & u32(1)) != u32(0) ? {
+          seen == pick ? { chosen = i }
+          seen = seen + u32(1)
+        }
+        i = i + u32(1)
+      }
+    }
+    sched[0].picks = sched[0].picks + u32(1)
+    i = u32(0)
+    while i < actors {
+      i == chosen ? { waits[i] = u32(0) } |
+      ((runnable >> i) & u32(1)) != u32(0) ? { waits[i] = waits[i] + u32(1) } |
+      { waits[i] = u32(0) }
+      i = i + u32(1)
+    }
+  }
+  chosen
+}
+
+// The longest current wait: at most `bound + actors - 2` by construction.
+pub sim_sched_max_wait: (sched: [*]SimSched, waits: [*]u32): u32 {
+  assert(len(sched) == u32(1) && len(waits) == sched[0].actors)
+  longest: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < sched[0].actors {
+    waits[i] > longest ? { longest = waits[i] }
+    i = i + u32(1)
+  }
+  longest
+}
