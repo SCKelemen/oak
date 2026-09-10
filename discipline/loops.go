@@ -42,6 +42,29 @@ func (r *Result) analyzeLoops(program *ast.Program) {
 	})
 }
 
+// UnboundedLoop is one while loop recorded as an OAK-D0103 obligation: the
+// loop and the top-level function enclosing it ("" outside any function).
+type UnboundedLoop struct {
+	Loop     *ast.WhileStatement
+	Function string
+}
+
+// UnboundedLoops lists the loops analyzeLoops records, in source order, so a
+// proof-aware tool can state each one's termination in Lean's terms
+// (Oak.Loops) without re-deriving the shape rule.
+func UnboundedLoops(program *ast.Program) []UnboundedLoop {
+	var loops []UnboundedLoop
+	if program == nil {
+		return nil
+	}
+	forEachWhileInFunction(program, func(loop *ast.WhileStatement, function string) {
+		if !boundedWhileShape(loop) {
+			loops = append(loops, UnboundedLoop{Loop: loop, Function: function})
+		}
+	})
+	return loops
+}
+
 // describeLoopShape explains which part of the canonical shape a loop
 // misses, in programmer terms (docs/spec/15-diagnostics.md section 4).
 func describeLoopShape(loop *ast.WhileStatement) string {

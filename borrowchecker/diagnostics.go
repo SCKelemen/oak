@@ -80,12 +80,41 @@ func (bc *BorrowChecker) reportBorrow(node ast.Node, code diagnostic.Code, title
 	return d
 }
 
+// RegionFact is a region as the borrow checker knew it when it recorded an
+// assumption: the half-open element range [Lo, Hi) when Known, otherwise a
+// symbolic region.
+type RegionFact struct {
+	Lo, Hi int64
+	Known  bool
+}
+
+// UnsafeAssumptionData is the structured payload of an OAK-B0110
+// diagnostic (Diagnostic.Data): the two writable regions an unsafe block
+// assumed disjoint, so a proof-aware tool can state the assumption in
+// Lean's terms (Oak.Regions) without parsing the rendered text.
+type UnsafeAssumptionData struct {
+	// Requested is the new writable borrow; Existing the live one it is
+	// assumed disjoint from. Names are the borrow names in the source.
+	RequestedName, ExistingName string
+	Requested, Existing         RegionFact
+}
+
+func regionFact(region *Region) RegionFact {
+	end, ok := regionEnd(region)
+	if !ok {
+		return RegionFact{}
+	}
+	return RegionFact{Lo: region.Offset, Hi: end, Known: true}
+}
+
 // reportUnsafeAssumption records an admitted unsafe assumption as an
 // auditable warning (Oak.Unsafe): the obligation is not silently dropped,
-// it is visibly assumed.
-func (bc *BorrowChecker) reportUnsafeAssumption(node ast.Node, title string) *diagnostic.Diagnostic {
+// it is visibly assumed. The regions travel with the diagnostic as
+// UnsafeAssumptionData.
+func (bc *BorrowChecker) reportUnsafeAssumption(node ast.Node, title string, requestedName string, requested *Region, existingName string, existing *Region) *diagnostic.Diagnostic {
 	d := bc.reportBorrow(node, CodeUnsafeAssumption, title)
 	d.Severity = diagnostic.SeverityWarning
+	d.Data = UnsafeAssumptionData{RequestedName: requestedName, ExistingName: existingName, Requested: regionFact(requested), Existing: regionFact(existing)}
 	return d
 }
 

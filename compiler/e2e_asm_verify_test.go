@@ -358,6 +358,60 @@ done:
 			t.Fatalf("count_gt, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
 		}
 	}
+	// Nested data-dependent loops: an n × m counter, proven by coupling both
+	// levels, run both ways.
+	grid := New().WithSource("grid.oak", `
+grid: (n, m: u32) -> u32 {
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < n {
+    j: u32 = u32(0)
+    while j < m {
+      acc = acc + u32(1)
+      j = j + u32(1)
+    }
+    i = i + u32(1)
+  }
+  acc
+}
+
+main: (): i32 {
+  assert(grid(u32(6), u32(7)) == u32(42))
+  assert(grid(u32(0), u32(7)) == u32(0))
+  assert(grid(u32(5), u32(0)) == u32(0))
+  42
+}
+`).WithAsmUnit("grid.arm64.oakasm", `
+grid: (n, m: u32) -> u32 = {
+  bind w0 = n
+  bind w1 = m
+  clobber w9, w10, w11
+  mov w9, #0
+  mov w11, #0
+outer:
+  cmp w9, w0
+  b.hs done
+  mov w10, #0
+inner:
+  cmp w10, w1
+  b.hs next
+  add w11, w11, #1
+  add w10, w10, #1
+  b inner
+next:
+  add w9, w9, #1
+  b outer
+done:
+  mov w0, w11
+  ret
+}
+`)
+	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
+		_, code, abnormal := buildAndRunFrom(t, "verified_grid", grid, flags...)
+		if abnormal || code != 42 {
+			t.Fatalf("grid, flags %v: exit = (%d, abnormal=%v), want 42", flags, code, abnormal)
+		}
+	}
 	// The wrong condition never compiles.
 	_, err := New().WithSource("max.oak", `
 max32: (a, b: u32) -> u32 = a < b ? b | a

@@ -929,6 +929,251 @@ pow_exp2_scaled: (s: f64, p_h: f64, p_l: f64, n: i64): f64 {
   field == u64(0) || field >= u64(2048) ? s * scale_pow2(z2, n) | s * with_high_word(z2, jz)
 }
 
+// ---------------------------------------------------------------------------
+// Inverse trigonometric functions (fdlibm s_atan.c, e_atan2.c, e_asin.c,
+// e_acos.c). atan reduces its argument to |t| < 7/16 by one of four
+// tangent-subtraction identities and adds the table value of atan at 0.5,
+// 1, 1.5, or infinity carried as a double-double; asin and acos share one
+// rational approximation R(z) of (asin(sqrt z) - sqrt z) / z^(3/2) and go
+// through sqrt for |x| >= 0.5.
+
+ATAN_HI0: f64 = 0x1.dac670561bb4fp-2     // atan(0.5) high, 0x3FDDAC670561BB4F
+ATAN_HI2: f64 = 0x1.f730bd281f69bp-1     // atan(1.5) high, 0x3FEF730BD281F69B
+ATAN_LO0: f64 = 0x1.a2b7f222f65e2p-56    // atan(0.5) low
+ATAN_LO2: f64 = 0x1.007887af0cbbdp-56    // atan(1.5) low
+PI: f64 = 0x1.921fb54442d18p1            // pi rounded to f64
+PI_LO: f64 = 0x1.1a62633145c07p-53       // pi - PI
+THREE_PIO4: f64 = 0x1.2d97c7f3321d2p1    // 3 pi / 4 rounded to f64
+
+ATAN_T0: f64 = 0x1.555555555550dp-2
+ATAN_T1: f64 = -0x1.999999998ebc4p-3
+ATAN_T2: f64 = 0x1.24924920083ffp-3
+ATAN_T3: f64 = -0x1.c71c6fe231671p-4
+ATAN_T4: f64 = 0x1.745cdc54c206ep-4
+ATAN_T5: f64 = -0x1.3b0f2af749a6dp-4
+ATAN_T6: f64 = 0x1.10d66a0d03d51p-4
+ATAN_T7: f64 = -0x1.dde2d52defd9ap-5
+ATAN_T8: f64 = 0x1.97b4b24760debp-5
+ATAN_T9: f64 = -0x1.2b4442c6a6c2fp-5
+ATAN_T10: f64 = 0x1.0ad3ae322da11p-6
+
+ASIN_P0: f64 = 0x1.5555555555555p-3
+ASIN_P1: f64 = -0x1.4d61203eb6f7dp-2
+ASIN_P2: f64 = 0x1.9c1550e884455p-3
+ASIN_P3: f64 = -0x1.48228b5688f3bp-5
+ASIN_P4: f64 = 0x1.9efe07501b288p-11
+ASIN_P5: f64 = 0x1.23de10dfdf709p-15
+ASIN_Q1: f64 = -0x1.33a271c8a2d4bp1
+ASIN_Q2: f64 = 0x1.02ae59c598ac8p1
+ASIN_Q3: f64 = -0x1.6066c1b8d0159p-1
+ASIN_Q4: f64 = 0x1.3b8c5b12e9282p-4
+
+// atan_hi and atan_lo: atan at 0.5, 1, 1.5, and infinity (id 0..3) as
+// double-doubles.
+atan_hi: (id: i64): f64 { id == 0 ? ATAN_HI0 | (id == 1 ? PIO4 | (id == 2 ? ATAN_HI2 | PIO2_HI)) }
+atan_lo: (id: i64): f64 { id == 0 ? ATAN_LO0 | (id == 1 ? PIO4_LO | (id == 2 ? ATAN_LO2 | PIO2_LO)) }
+
+// atan_series is t (s1 + s2), the odd/even split of the polynomial
+// sum aT[i] t^(2i+3) for the reduced |t| < 7/16.
+atan_series: (t: f64): f64 {
+  z: f64 = t * t
+  w: f64 = z * z
+  s1: f64 = z * (ATAN_T0 + w * (ATAN_T2 + w * (ATAN_T4 + w * (ATAN_T6 + w * (ATAN_T8 + w * ATAN_T10)))))
+  s2: f64 = w * (ATAN_T1 + w * (ATAN_T3 + w * (ATAN_T5 + w * (ATAN_T7 + w * ATAN_T9))))
+  t * (s1 + s2)
+}
+
+atan_reduced: (t: f64, id: i64, negative: Bool): f64 {
+  z: f64 = atan_hi(id) - (atan_series(t) - atan_lo(id) - t)
+  negative ? -z | z
+}
+
+// atan: error < 1 ulp (fdlibm). atan of an infinity is +-pi/2.
+pub atan: (x: f64): f64 {
+  ix: u64 = high_word(x) & u64(2147483647)
+  negative: Bool = high_word(x) >= u64(2147483648)
+  ax: f64 = abs(x)
+  ix >= u64(1141899264) ? (is_nan(x) ? x | (negative ? -PIO2_HI | PIO2_HI)) |
+  (ix < u64(1071382528) ? (ix < u64(1044381696) ? x | x - atan_series(x)) |
+  (ix < u64(1072889856) ?
+    (ix < u64(1072037888) ?
+      atan_reduced((2.0 * ax - 1.0) / (2.0 + ax), 0, negative) |
+      atan_reduced((ax - 1.0) / (ax + 1.0), 1, negative)) |
+  (ix < u64(1073971200) ?
+    atan_reduced((ax - 1.5) / (1.0 + 1.5 * ax), 2, negative) |
+    atan_reduced(-1.0 / ax, 3, negative))))
+}
+
+// atan2: the angle of (x, y), error < 2 ulp away from the special values
+// (atan's error plus the pi correction; observed up to about 1 ulp),
+// which follow IEEE 754-2019 / C99 Annex F.9.1.4 (signed zeros, +-pi,
+// +-pi/2, +-pi/4, +-3pi/4 for infinities).
+pub atan2: (y: f64, x: f64): f64 {
+  is_nan(x) || is_nan(y) ? x + y | atan2_finite(y, x)
+}
+
+atan2_finite: (y: f64, x: f64): f64 {
+  bx: u64 = u64_bits_f64(x)
+  by: u64 = u64_bits_f64(y)
+  ix: u64 = (bx >> 32) & u64(2147483647)
+  iy: u64 = (by >> 32) & u64(2147483647)
+  lx: u64 = bx & u64(4294967295)
+  ly: u64 = by & u64(4294967295)
+  // m = 2 sign(x) + sign(y)
+  m: u64 = ((by >> 63) & u64(1)) | ((bx >> 62) & u64(2))
+  y_zero: Bool = (iy | ly) == u64(0)
+  x_zero: Bool = (ix | lx) == u64(0)
+  y_odd: Bool = (m & u64(1)) == u64(1)
+  bx == u64(4607182418800017408) ? atan(y) |
+  (y_zero ? (m <= u64(1) ? y | (m == u64(2) ? PI | -PI)) |
+  (x_zero ? (y_odd ? -PIO2_HI | PIO2_HI) |
+  (ix == u64(2146435072) ? atan2_infinite_x(iy, m) |
+  (ix + u64(67108864) < iy || iy == u64(2146435072) ? (y_odd ? -PIO2_HI | PIO2_HI) |
+  atan2_quadrant(atan2_ratio(y, x, ix, iy, m), m)))))
+}
+
+atan2_infinite_x: (iy: u64, m: u64): f64 {
+  iy == u64(2146435072) ?
+    (m == u64(0) ? PIO4 | (m == u64(1) ? -PIO4 | (m == u64(2) ? THREE_PIO4 | -THREE_PIO4))) |
+    (m == u64(0) ? 0.0 | (m == u64(1) ? -0.0 | (m == u64(2) ? PI | -PI)))
+}
+
+// atan2_ratio is atan(|y/x|), or 0 when x < 0 and |y/x| < 2^-64 so the
+// quotient cannot underflow spuriously.
+atan2_ratio: (y: f64, x: f64, ix: u64, iy: u64, m: u64): f64 {
+  negligible: Bool = (m & u64(2)) != u64(0) && iy + u64(67108864) < ix
+  negligible ? 0.0 | atan(abs(y / x))
+}
+
+atan2_quadrant: (z: f64, m: u64): f64 {
+  m == u64(0) ? z | (m == u64(1) ? -z | (m == u64(2) ? PI - (z - PI_LO) | (z - PI_LO) - PI))
+}
+
+// asin_ratio is fdlibm's R(z) = P(z) / Q(z).
+asin_ratio: (z: f64): f64 {
+  p: f64 = z * (ASIN_P0 + z * (ASIN_P1 + z * (ASIN_P2 + z * (ASIN_P3 + z * (ASIN_P4 + z * ASIN_P5)))))
+  q: f64 = 1.0 + z * (ASIN_Q1 + z * (ASIN_Q2 + z * (ASIN_Q3 + z * ASIN_Q4)))
+  p / q
+}
+
+// asin: error < 1 ulp (fdlibm); |x| > 1 is NaN.
+pub asin: (x: f64): f64 {
+  hx: u64 = high_word(x)
+  ix: u64 = hx & u64(2147483647)
+  ix >= u64(1072693248) ? (ix == u64(1072693248) && low_word(x) == u64(0) ? x * PIO2_HI | nan()) |
+  (ix < u64(1071644672) ? (ix < u64(1045430272) ? x | x + x * asin_ratio(x * x)) |
+  asin_large(x, hx, ix))
+}
+
+// 0.5 <= |x| < 1: asin(x) = pi/2 - 2 asin(sqrt((1 - |x|)/2)), with the
+// square root split into high and low parts below |x| = 0.975.
+asin_large: (x: f64, hx: u64, ix: u64): f64 {
+  z: f64 = (1.0 - abs(x)) * 0.5
+  s: f64 = sqrt(z)
+  r: f64 = asin_ratio(z)
+  v: f64 = ix >= u64(1072640819) ?
+    PIO2_HI - (2.0 * (s + s * r) - PIO2_LO) | {
+      f: f64 = with_low_word_zero(s)
+      c: f64 = (z - f * f) / (s + f)
+      0.5 * PIO2_HI - (2.0 * s * r - (PIO2_LO - 2.0 * c) - (0.5 * PIO2_HI - 2.0 * f))
+    }
+  hx >= u64(2147483648) ? -v | v
+}
+
+// acos: error < 1 ulp (fdlibm); |x| > 1 is NaN, acos(1) is 0, acos(-1) is pi.
+pub acos: (x: f64): f64 {
+  hx: u64 = high_word(x)
+  ix: u64 = hx & u64(2147483647)
+  negative: Bool = hx >= u64(2147483648)
+  ix >= u64(1072693248) ?
+    (ix == u64(1072693248) && low_word(x) == u64(0) ? (negative ? 2.0 * PIO2_HI | 0.0) | nan()) |
+  (ix < u64(1071644672) ?
+    (ix <= u64(1012924416) ? PIO2_HI | PIO2_HI - (x - (PIO2_LO - x * asin_ratio(x * x)))) |
+  (negative ? acos_negative(x) | acos_positive(x)))
+}
+
+acos_negative: (x: f64): f64 {
+  z: f64 = (1.0 + x) * 0.5
+  s: f64 = sqrt(z)
+  w: f64 = asin_ratio(z) * s - PIO2_LO
+  2.0 * (PIO2_HI - (s + w))
+}
+
+acos_positive: (x: f64): f64 {
+  z: f64 = (1.0 - x) * 0.5
+  s: f64 = sqrt(z)
+  df: f64 = with_low_word_zero(s)
+  c: f64 = (z - df * df) / (s + df)
+  w: f64 = asin_ratio(z) * s + c
+  2.0 * (df + w)
+}
+
+// ---------------------------------------------------------------------------
+// Hyperbolic functions and their inverses (musl sinh.c, cosh.c, asinh.c,
+// acosh.c, atanh.c, __expo2.c): compositions of exp, expm1, log, log1p, and
+// sqrt, so their bounds are those compositions' (2 ulp for the inverses).
+
+EXPO2_KLN2: f64 = 0x1.62066151add8bp10    // 2043 ln 2, chosen so x - k ln 2 stays above ln(DBL_MIN)
+EXPO2_SCALE: f64 = 0x1p1021               // 2^((k - 1) / 2)
+
+// expo2: exp(x) / 2 for x at or beyond ln(DBL_MAX), as exp(x - k ln 2) 2^(k-1).
+expo2: (x: f64): f64 { exp(x - EXPO2_KLN2) * EXPO2_SCALE * EXPO2_SCALE }
+
+// sinh: error < 2 ulp; overflows to +-inf beyond |x| ~ 710.5.
+pub sinh: (x: f64): f64 {
+  ax: f64 = abs(x)
+  w: u64 = high_word(ax)
+  h: f64 = high_word(x) >= u64(2147483648) ? -0.5 | 0.5
+  w < u64(1082535490) ? sinh_finite(x, ax, w, h) | 2.0 * h * expo2(ax)
+}
+
+sinh_finite: (x: f64, ax: f64, w: u64, h: f64): f64 {
+  t: f64 = expm1(ax)
+  w < u64(1072693248) ?
+    (w < u64(1045430272) ? x | h * (2.0 * t - t * t / (t + 1.0))) |
+    h * (t + t / (t + 1.0))
+}
+
+// cosh: error < 2 ulp; overflows to +inf beyond |x| ~ 710.5.
+pub cosh: (x: f64): f64 {
+  ax: f64 = abs(x)
+  w: u64 = high_word(ax)
+  w < u64(1072049730) ? (w < u64(1045430272) ? 1.0 | cosh_small(expm1(ax))) |
+  (w < u64(1082535490) ? cosh_mid(exp(ax)) | expo2(ax))
+}
+
+cosh_small: (t: f64): f64 { 1.0 + t * t / (2.0 * (1.0 + t)) }
+
+cosh_mid: (t: f64): f64 { 0.5 * (t + 1.0 / t) }
+
+// asinh: error < 2 ulp (musl notes up to 1.6 ulp in [0.125, 0.5]).
+pub asinh: (x: f64): f64 {
+  e: i64 = exponent_field(x)
+  ax: f64 = abs(x)
+  v: f64 = e >= 1049 ? log(ax) + POW_LG2 |
+    (e >= 1024 ? log(2.0 * ax + 1.0 / (sqrt(ax * ax + 1.0) + ax)) |
+    (e >= 997 ? log1p(ax + ax * ax / (sqrt(ax * ax + 1.0) + 1.0)) | ax))
+  high_word(x) >= u64(2147483648) ? -v | v
+}
+
+// acosh: error < 2 ulp (musl notes up to 2 ulp in [1, 1.125]); x < 1 is NaN.
+pub acosh: (x: f64): f64 {
+  e: i64 = exponent_field(x)
+  e < 1024 ? log1p(x - 1.0 + sqrt((x - 1.0) * (x - 1.0) + 2.0 * (x - 1.0))) |
+  (e < 1049 ? log(2.0 * x - 1.0 / (x + sqrt(x * x - 1.0))) | log(x) + POW_LG2)
+}
+
+// atanh: error < 2 ulp (musl notes up to 1.7 ulp below 0.5); |x| > 1 is
+// NaN and +-1 is +-inf.
+pub atanh: (x: f64): f64 {
+  e: i64 = exponent_field(x)
+  y: f64 = abs(x)
+  v: f64 = e < 1022 ?
+    (e < 991 ? y | 0.5 * log1p(2.0 * y + 2.0 * y * y / (1.0 - y))) |
+    0.5 * log1p(2.0 * (y / (1.0 - y)))
+  high_word(x) >= u64(2147483648) ? -v | v
+}
+
 // f32 versions: computed at f64 and rounded once. The f64 result is within
 // an ulp of f64, so the f32 result is within an ulp of f32 and correctly
 // rounded except within 2^-29 relative of a rounding boundary.
@@ -943,3 +1188,12 @@ pub sin_f32: (x: f32): f32 { f32_round_f64(sin(f64(x))) }
 pub cos_f32: (x: f32): f32 { f32_round_f64(cos(f64(x))) }
 pub tan_f32: (x: f32): f32 { f32_round_f64(tan(f64(x))) }
 pub pow_f32: (x: f32, y: f32): f32 { f32_round_f64(pow(f64(x), f64(y))) }
+pub atan_f32: (x: f32): f32 { f32_round_f64(atan(f64(x))) }
+pub atan2_f32: (y: f32, x: f32): f32 { f32_round_f64(atan2(f64(y), f64(x))) }
+pub asin_f32: (x: f32): f32 { f32_round_f64(asin(f64(x))) }
+pub acos_f32: (x: f32): f32 { f32_round_f64(acos(f64(x))) }
+pub sinh_f32: (x: f32): f32 { f32_round_f64(sinh(f64(x))) }
+pub cosh_f32: (x: f32): f32 { f32_round_f64(cosh(f64(x))) }
+pub asinh_f32: (x: f32): f32 { f32_round_f64(asinh(f64(x))) }
+pub acosh_f32: (x: f32): f32 { f32_round_f64(acosh(f64(x))) }
+pub atanh_f32: (x: f32): f32 { f32_round_f64(atanh(f64(x))) }
