@@ -8,9 +8,12 @@ Lean theorem statement. Stating termination needs a semantics for the loop,
 and this module is that semantics for the fragment the compiler translates:
 integer and Boolean locals, arithmetic and comparison, Boolean connectives,
 `?` conditionals, assignments, loop-local declarations, array reads and
-writes, and calls (inlined when the callee is an expression-bodied function
-of the fragment, otherwise uninterpreted). Anything outside the fragment is
-reported as untranslatable rather than approximated.
+writes, records, and calls (inlined when the callee is an expression-bodied
+function of the fragment, otherwise uninterpreted). Records never reach this
+semantics: the translator flattens a record into one variable per scalar
+leaf (`p.v`) and an array of records into one memory per leaf (`cs.v`), so a
+field store is a variable assignment and a field read a variable. Anything
+outside the fragment is reported as untranslatable rather than approximated.
 
 A `State` is the variables (index ↦ unbounded integer) and the memory
 (array ↦ index ↦ value). Oak's fixed-width arithmetic is total and wraps at

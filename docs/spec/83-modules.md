@@ -689,13 +689,17 @@ naming the import to add (`encode` needs `import("json")`, text needs
     of the state), array reads and writes (the state carries a memory; a
     read sees the iteration's earlier writes; each write stores the
     pre-iteration index and value in program order), explicit narrowing
-    (`u8_trunc_u32`, `_bits_`), and calls: an expression-bodied,
+    (`u8_trunc_u32`, `_bits_`), records (flattened: a record-typed local or
+    parameter is one variable per scalar leaf `p.v`, `q.p.k`, an array of
+    records one memory per leaf `cs.v`, and record literals, whole-record
+    copies, field stores, and record arguments expand per leaf; the Lean
+    semantics sees only scalars), and calls: an expression-bodied,
     non-recursive, non-generic callee whose body is in the fragment is
     inlined, and any other callee is an uninterpreted function of the
     statement (`Oak.Loops.Funs`, the parameter `F` the programmer constrains
-    with hypotheses). A loop outside the fragment (a nested loop, a field
-    store, an unknown representation) is reported as untranslatable, never
-    approximated;
+    with hypotheses). A loop outside the fragment (a nested loop, a
+    record-valued call, an unknown representation) is reported as
+    untranslatable, never approximated;
   - a tail-only cycle (`OAK-D0102`) is stated over `Oak.Discipline.Ranked`
     with the cycle's call edges, and emitted **proved** by the compiler's own
     constant rank certificate;

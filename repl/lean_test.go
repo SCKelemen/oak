@@ -21,6 +21,9 @@ var exampleSession = []string{
 	"step: (v: u32): u32 = v + 1",
 	"mystery: (v: u32): u32 = { w: u32 = v\n  w * 2 }",
 	"fill: (n: u32): u32 = { buf: [8]u8 = [0, 0, 0, 0, 0, 0, 0, 0]\n  i: u32 = 0\n  while i != n { j: u32 = step(i)\n    buf[i % 8] = u8_trunc_u32(j)\n    i = i + u32(buf[0]) + mystery(1) }\n  i }",
+	"P: type = struct { v: u32, on: Bool }\n\nQ: type = struct { p: P, k: u8 }",
+	"bump: (p: P): u32 = p.v + 1",
+	"walk: (n: u32, cs: [2]P): u32 = { p: P = P { v: 0, on: true }\n  q: Q = Q { p: p, k: 1 }\n  while p.on { r: P = p\n    p.v = bump(r)\n    q.p.v = p.v\n    cs[0].v = cs[0].v + q.p.v\n    p.on = cs[0].v < n }\n  p.v }",
 	"ping: (n: u32): u32 = n == 0 ? 0 | pong(n - 1)\n\npong: (n: u32): u32 = n == 0 ? 1 | ping(n - 1)",
 	"shared: [16]u8",
 	"unsafe {\n  a: [*]u8 = span(&shared)\n  b: [*]u8 = span(&shared)\n}",
@@ -37,6 +40,12 @@ func TestLeanObligationsMatchCheckedInFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	path := filepath.Clean(sessionObligationsFile)
+	if os.Getenv("OAK_UPDATE") != "" {
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, want := range []string{
 		"def loop_loop_1 : Oak.Loops.Loop",
 		"{ var := 0, ty := .b, value := (.bin .lt (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.var 1) (.lit 1)))) (.lit 10)) }",
@@ -49,17 +58,18 @@ func TestLeanObligationsMatchCheckedInFile(t *testing.T) {
 		"writes := [{ arr := 0, ty := (.u 8), index := (.wrap (.u 32) (.bin .rem (.var 0) (.lit 8))), value := (.wrap (.u 8) (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.var 0) (.lit 1))))) }]",
 		"(.cond (.bin .eq (.lit 0) (.wrap (.u 32) (.bin .rem (.var 0) (.lit 8)))) (.wrap (.u 8) (.wrap (.u 8) (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.var 0) (.lit 1)))))) (.index 0 (.lit 0)))",
 		"(.call 0 [(.lit 1)])",
+		// walk: records are flattened into per-field variables and memories;
+		// the loop-local record r copies p, bump inlines over r's leaves.
+		"-- variables: 0 ↦ `p.on`, 1 ↦ `p.v`, 2 ↦ `q.p.v`, 3 ↦ `n`",
+		"-- arrays: 0 ↦ `cs.v`",
+		"{ var := 1, ty := (.u 32), value := (.wrap (.u 32) (.bin .add (.wrap (.u 32) (.var 1)) (.lit 1))) }",
+		"{ var := 2, ty := (.u 32), value := (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.wrap (.u 32) (.var 1)) (.lit 1)))) }",
+		"writes := [{ arr := 0, ty := (.u 32), index := (.lit 0), value := (.wrap (.u 32) (.bin .add (.index 0 (.lit 0)) (.wrap (.u 32) (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.wrap (.u 32) (.var 1)) (.lit 1))))))) }]",
 		"Oak.Discipline.Ranked [] [(0, 1), (1, 0)] rank :=\n  ⟨fun _ => 0, by simp [Oak.Discipline.Ranked]⟩",
 		"theorem unsafe_1_overlaps : ¬ Oak.Regions.Disjoint ⟨0, 16⟩ ⟨0, 16⟩ := by decide",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("emitted Lean lacks %q:\n%s", want, text)
-		}
-	}
-	path := filepath.Clean(sessionObligationsFile)
-	if os.Getenv("OAK_UPDATE") != "" {
-		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
-			t.Fatal(err)
 		}
 	}
 	checked, err := os.ReadFile(path)
@@ -75,8 +85,7 @@ func TestLeanObligationsMatchCheckedInFile(t *testing.T) {
 func TestLeanObligationsReportUntranslatableLoops(t *testing.T) {
 	session := NewSession(t.TempDir())
 	for _, input := range []string{
-		"P: type = struct { v: u32 }",
-		"spin: (n: u32): u32 = { p: P = P { v: 0 }\n  while p.v != n { p.v = p.v + 1 }\n  p.v }",
+		"spin: (n: u32): u32 = { i: u32 = 0\n  while i != n { j: u32 = 0\n    while j != i { j = j + 1 }\n    i = i + 1 }\n  i }",
 	} {
 		if _, err := session.Submit(input); err != nil {
 			t.Fatal(err)
@@ -86,11 +95,13 @@ func TestLeanObligationsReportUntranslatableLoops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "Not translatable into Oak.Loops:") {
-		t.Fatalf("a field-mutating loop must be reported:\n%s", text)
+	if !strings.Contains(text, "Not translatable into Oak.Loops: the body contains a nested loop") {
+		t.Fatalf("a nested loop must be reported:\n%s", text)
 	}
-	if strings.Contains(text, "def loop_spin") {
-		t.Fatal("an untranslatable loop must not be approximated")
+	// The inner loop is itself an obligation and is translatable; only it
+	// gets a definition — the outer loop is reported, never approximated.
+	if strings.Count(text, "def loop_spin") != 1 {
+		t.Fatalf("exactly the inner loop must be translated:\n%s", text)
 	}
 	empty := NewSession(t.TempDir())
 	if _, err := empty.Submit("twice: (v: i32): i32 = v * 2"); err != nil {
