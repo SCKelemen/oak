@@ -1,39 +1,50 @@
 package borrowchecker
 
-// Region-indexed borrowed returns, increment 1 (docs/spec/50-borrowing.md
-// section 8c): a function whose return type is a read-only view and which
-// has exactly one view parameter of the same element type returns a view
-// borrowed from that parameter. The parameter's owner outlives the call, so
-// this is `Oak.Escape.return_param_borrow_wf`, the safe escape; a returned
-// borrow of anything else — a local owner, another parameter, an unknown
-// source — is OAK-B0113. At the caller the result is a reborrow of the
-// argument (`Oak.Escape.reborrow_wf`): same owner, read-only, bound at the
-// caller's block depth, so every owner-exclusivity and lexical-scope rule
-// applies to it as to a view the caller took directly.
+// Region-indexed borrowed returns (docs/spec/50-borrowing.md section 8c).
+// A function may return a view, a span, or a record carrying them when its
+// signature names the parameter region the result borrows from: elided —
+// a `[]T` return with exactly one `[]T` parameter of that element type, or
+// `[*]T` with one `[*]T` — or explicit through region parameters
+// (`frame[R]: (buf: View[u8, R]): View[u8, R]`, `Cursor[R]`), erased by the
+// type checker into the side table read here. The parameter's owner
+// outlives the call (`Oak.Escape.return_param_borrow_wf`), so the callee's
+// obligation is provenance: the result must borrow that parameter and
+// nothing else, or OAK-B0113 names what it borrows instead. At the caller
+// the result is a reborrow of the argument (`Oak.Escape.reborrow_wf`):
+// same owners, same kinds, bound at the caller's block depth, so every
+// exclusivity and scope rule applies to it as to a borrow taken directly.
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
-// regionCandidate is the elision rule: a `[]T` return and exactly one `[]T`
-// parameter with the same element type name that parameter as the region.
-// Variadic functions have no candidate — the bundled trailing view is
-// caller-stack storage that lives only for the call.
+const parameterOwnerPrefix = "$parameter:"
+
+// elidedRegion is the name of the region an elided signature implies.
+const elidedRegion = "$elided"
+
+// regionCandidate is the elision rule: a `[]T` return with exactly one
+// `[]T` parameter of the same element type, or `[*]T` with exactly one
+// `[*]T`, names that parameter as the region. Variadic functions have no
+// candidate — the bundled trailing view is caller-stack storage that lives
+// only for the call.
 func regionCandidate(fn *typechecker.FunctionType) (int, bool) {
 	if fn == nil || fn.Variadic {
 		return -1, false
 	}
 	ret, isArray := fn.ReturnType.(*typechecker.ArrayType)
-	if !isArray || !ret.IsSlice || ret.ElementType == nil {
+	if !isArray || (!ret.IsSlice && !ret.IsSpan) || ret.ElementType == nil {
 		return -1, false
 	}
 	candidate := -1
 	for i, param := range fn.Parameters {
 		p, ok := param.(*typechecker.ArrayType)
-		if !ok || !p.IsSlice || p.ElementType == nil || !p.ElementType.Equals(ret.ElementType) {
+		if !ok || p.IsSlice != ret.IsSlice || p.IsSpan != ret.IsSpan || p.ElementType == nil || !p.ElementType.Equals(ret.ElementType) {
 			continue
 		}
 		if candidate >= 0 {
@@ -42,14 +53,6 @@ func regionCandidate(fn *typechecker.FunctionType) (int, bool) {
 		candidate = i
 	}
 	return candidate, candidate >= 0
-}
-
-// returnContract is the region a function's returned view must come from.
-type returnContract struct {
-	function string
-	param    string
-	owner    string // the parameter's synthetic owner
-	checked  bool
 }
 
 // functionType looks up a declared function's checked type.
@@ -65,25 +68,203 @@ func functionType(name string, env *typechecker.TypeEnvironment) *typechecker.Fu
 	return fn
 }
 
-// returnContractFor computes a function's contract, or nil when its
-// signature is not region-indexed under the elision rule.
-func returnContractFor(stmt *ast.FunctionStatement, env *typechecker.TypeEnvironment) *returnContract {
+// regionSignatureFor is a function's effective region signature: the
+// declared one when it has region parameters, else the elided one.
+func regionSignatureFor(name string, env *typechecker.TypeEnvironment) (*typechecker.FunctionType, typechecker.RegionSignature, bool) {
+	fn := functionType(name, env)
+	if fn == nil {
+		return nil, typechecker.RegionSignature{}, false
+	}
+	if sig, declared := env.RegionSignature(name); declared {
+		return fn, sig, true
+	}
+	idx, ok := regionCandidate(fn)
+	if !ok {
+		return fn, typechecker.RegionSignature{}, false
+	}
+	sig := typechecker.RegionSignature{Regions: []string{elidedRegion}, Params: make([]string, len(fn.Parameters)), Return: elidedRegion}
+	sig.Params[idx] = elidedRegion
+	return fn, sig, true
+}
+
+// borrowField is one borrow-carrying field of a record type, flattened to
+// a dotted path.
+type borrowField struct {
+	path string
+	kind borrowKind
+}
+
+// recordBorrowFields lists a record type's view and span fields in
+// declaration order, nested records flattened.
+func recordBorrowFields(rt *typechecker.RecordType, prefix string) []borrowField {
+	var fields []borrowField
+	names := rt.Order
+	if len(names) == 0 {
+		for name := range rt.Fields {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+	}
+	for _, name := range names {
+		switch ft := rt.Fields[name].(type) {
+		case *typechecker.ArrayType:
+			if ft.IsSpan {
+				fields = append(fields, borrowField{path: prefix + name, kind: BorrowSpan})
+			} else if ft.IsSlice {
+				fields = append(fields, borrowField{path: prefix + name, kind: BorrowView})
+			}
+		case *typechecker.RecordType:
+			fields = append(fields, recordBorrowFields(ft, prefix+name+".")...)
+		}
+	}
+	return fields
+}
+
+// returnKind classifies a region-indexed return type.
+type returnKind int
+
+const (
+	returnsView returnKind = iota
+	returnsSpan
+	returnsRecord
+)
+
+// regionContract is what a function's body owes its signature: the owners
+// of the return region, and the shape of the returned value.
+type regionContract struct {
+	function string
+	region   string
+	kind     returnKind
+	owners   map[string]bool
+	checked  bool
+}
+
+// paramRegions reports the region each parameter of a declared function
+// carries (empty when the function has no region structure).
+func paramRegions(stmt *ast.FunctionStatement, env *typechecker.TypeEnvironment) []string {
 	if stmt == nil || stmt.Name == nil {
 		return nil
 	}
-	fn := functionType(stmt.Name.Value, env)
-	idx, ok := regionCandidate(fn)
-	if !ok || idx >= len(stmt.Parameters) || stmt.Parameters[idx].Name == nil {
+	_, sig, ok := regionSignatureFor(stmt.Name.Value, env)
+	if !ok {
 		return nil
 	}
-	param := stmt.Parameters[idx].Name.Value
-	return &returnContract{function: stmt.Name.Value, param: param, owner: "$parameter:" + param}
+	return sig.Params
 }
 
-// checkReturnedProvenance is the callee's obligation: the result expression
-// must be a borrow of the contract's parameter. Runs while the body's
-// borrows are still live.
-func (bc *BorrowChecker) checkReturnedProvenance(result ast.Expression, contract *returnContract, env *typechecker.TypeEnvironment) {
+// returnContractFor validates a function's region signature and builds
+// the contract its body is checked against. nil means the signature has no
+// region-indexed return and the conservative escape rule applies. An
+// invalid signature is reported here and yields a contract that is
+// already discharged, so the escape rule does not report it twice.
+func (bc *BorrowChecker) returnContractFor(stmt *ast.FunctionStatement, env *typechecker.TypeEnvironment) *regionContract {
+	if stmt == nil || stmt.Name == nil {
+		return nil
+	}
+	fn, sig, ok := regionSignatureFor(stmt.Name.Value, env)
+	if !ok || sig.Return == "" {
+		return nil
+	}
+	var origin ast.Node = stmt.ReturnType
+	if origin == nil {
+		origin = stmt.Name
+	}
+	contract := &regionContract{function: stmt.Name.Value, region: sig.Return, owners: map[string]bool{}}
+	invalid := func(title, note string) *regionContract {
+		d := bc.reportBorrow(origin, CodeReturnedBorrowRegion, title)
+		d.AddNote(note)
+		contract.checked = true
+		return contract
+	}
+	var recordFields []borrowField
+	switch ret := fn.ReturnType.(type) {
+	case *typechecker.ArrayType:
+		switch {
+		case ret.IsSpan:
+			contract.kind = returnsSpan
+		case ret.IsSlice:
+			contract.kind = returnsView
+		default:
+			return nil
+		}
+	case *typechecker.RecordType:
+		if !env.ContainsBorrowStorage(ret) {
+			return nil
+		}
+		rec, declared := env.RegionRecord(ret.Name)
+		if !declared || len(rec.Regions) != 1 {
+			return invalid(fmt.Sprintf("function %q returns record %q with borrows but no single declared region", stmt.Name.Value, ret.Name),
+				"a record that crosses a call carries its borrows in exactly one region parameter (Cursor[R]: type = struct { data: View[u8, R], ... })")
+		}
+		contract.kind = returnsRecord
+		recordFields = recordBorrowFields(ret, "")
+	default:
+		return nil
+	}
+	labeled := 0
+	for i, region := range sig.Params {
+		if region != sig.Return || i >= len(fn.Parameters) || i >= len(stmt.Parameters) || stmt.Parameters[i].Name == nil {
+			continue
+		}
+		labeled++
+		name := stmt.Parameters[i].Name.Value
+		switch pt := fn.Parameters[i].(type) {
+		case *typechecker.ArrayType:
+			if contract.kind == returnsView && !pt.IsSlice {
+				return invalid(fmt.Sprintf("function %q returns a view from region %s, but parameter %q gives that region a span", stmt.Name.Value, displayRegion(sig.Return), name),
+					"a read-only result cannot be derived from a writable span in this increment; return a span, or take a view")
+			}
+			if contract.kind == returnsSpan && !pt.IsSpan {
+				return invalid(fmt.Sprintf("function %q returns a span from region %s, but parameter %q gives that region a read-only view", stmt.Name.Value, displayRegion(sig.Return), name),
+					"writable access cannot be derived from a read-only view")
+			}
+			contract.owners[parameterOwnerPrefix+name] = true
+		case *typechecker.RecordType:
+			for _, field := range recordBorrowFields(pt, "") {
+				contract.owners[parameterOwnerPrefix+name+"."+field.path] = true
+			}
+		}
+	}
+	if labeled == 0 {
+		return invalid(fmt.Sprintf("function %q returns a borrow in region %s, which names no parameter", stmt.Name.Value, displayRegion(sig.Return)),
+			"a returned borrow must come from a parameter's owner; give a view, span, or record parameter this region")
+	}
+	if labeled > 1 {
+		return invalid(fmt.Sprintf("function %q gives region %s to %d parameters", stmt.Name.Value, displayRegion(sig.Return), labeled),
+			"a region names exactly one parameter in this increment; the caller must know which argument the result borrows")
+	}
+	if len(contract.owners) == 0 {
+		return invalid(fmt.Sprintf("function %q: region %s labels a parameter that carries no borrow", stmt.Name.Value, displayRegion(sig.Return)),
+			"only view, span, and region-carrying record parameters can be a region's source")
+	}
+	_ = recordFields
+	return contract
+}
+
+func displayRegion(region string) string {
+	if region == elidedRegion {
+		return "(elided)"
+	}
+	return region
+}
+
+// registerRegionRecordParameter registers a record parameter's borrow
+// fields as borrows of synthetic owners, one per field path.
+func (bc *BorrowChecker) registerRegionRecordParameter(name string, rt *typechecker.RecordType, origin ast.Node) {
+	for _, field := range recordBorrowFields(rt, "") {
+		owner := parameterOwnerPrefix + name + "." + field.path
+		if field.kind == BorrowSpan {
+			bc.createSpanBorrowWithRegion(owner, name+"."+field.path, nil, origin)
+		} else {
+			bc.createViewBorrowWithRegion(owner, name+"."+field.path, nil, origin)
+		}
+	}
+}
+
+// checkReturnedProvenance is the callee's obligation: every borrow the
+// result carries must come from the contract's region. Runs while the
+// body's borrows are still live.
+func (bc *BorrowChecker) checkReturnedProvenance(result ast.Expression, contract *regionContract, env *typechecker.TypeEnvironment) {
 	if contract == nil || contract.checked {
 		return
 	}
@@ -91,28 +272,40 @@ func (bc *BorrowChecker) checkReturnedProvenance(result ast.Expression, contract
 	if result == nil {
 		return
 	}
-	owner, ok := bc.provenanceOwner(result, env)
-	if ok && owner == contract.owner {
+	owners, ok := bc.provenanceOwners(result, env)
+	if ok && len(owners) > 0 {
+		outside := []string{}
+		for owner := range owners {
+			if !contract.owners[owner] {
+				outside = append(outside, owner)
+			}
+		}
+		if len(outside) == 0 {
+			return
+		}
+		sort.Strings(outside)
+		d := bc.reportBorrow(result, CodeReturnedBorrowRegion,
+			fmt.Sprintf("function %q returns a borrow outside its region %s", contract.function, displayRegion(contract.region)))
+		for _, owner := range outside {
+			d.AddNote(fmt.Sprintf("the result borrows %s, which does not outlive the call", describeOwner(owner)))
+		}
+		d.AddHelp("return borrows of the region's parameter only (the parameter, a subslice of it, a local bound from it, or its fields), or return owned data")
 		return
 	}
 	d := bc.reportBorrow(result, CodeReturnedBorrowRegion,
-		fmt.Sprintf("function %q returns a view that does not borrow from its parameter %q", contract.function, contract.param))
-	switch {
-	case !ok:
-		d.AddNote("the returned expression is not a view, subslice, slice, or conditional over one whose source the checker can trace")
-	case owner == "":
-		d.AddNote("the returned view has no tracked owner")
-	default:
-		d.AddNote(fmt.Sprintf("the returned view borrows %s, which does not outlive the call", describeOwner(owner)))
-	}
-	d.AddHelp(fmt.Sprintf("return a view of %q (the parameter, a subslice of it, or a local bound from it), or return owned data", contract.param))
+		fmt.Sprintf("function %q returns a borrow whose source the checker cannot trace", contract.function))
+	d.AddNote("the returned expression is not a view, span, subslice, slice, field, record literal, or conditional over those whose sources are tracked")
+	d.AddHelp("bind the borrow first and return the binding")
 }
 
 // describeOwner renders a synthetic or real owner name for a diagnostic.
 func describeOwner(owner string) string {
-	const parameterPrefix = "$parameter:"
-	if len(owner) > len(parameterPrefix) && owner[:len(parameterPrefix)] == parameterPrefix {
-		return fmt.Sprintf("parameter %q", owner[len(parameterPrefix):])
+	if strings.HasPrefix(owner, parameterOwnerPrefix) {
+		rest := owner[len(parameterOwnerPrefix):]
+		if dot := strings.IndexByte(rest, '.'); dot >= 0 {
+			return fmt.Sprintf("field %q of parameter %q", rest[dot+1:], rest[:dot])
+		}
+		return fmt.Sprintf("parameter %q", rest)
 	}
 	if owner != "" && owner[0] == '$' {
 		return "a temporary"
@@ -120,139 +313,331 @@ func describeOwner(owner string) string {
 	return fmt.Sprintf("local owner %q", owner)
 }
 
-// provenanceOwner traces a view-valued expression to the owner it borrows:
-// a tracked binding, `view(&owner)`, a subslice or reinterpretation of a
-// traced view, a slice expression over one, a conditional whose arms agree,
-// a block's result, or a region-indexed call traced through its candidate
-// argument. Reports false when the source cannot be traced.
-func (bc *BorrowChecker) provenanceOwner(expr ast.Expression, env *typechecker.TypeEnvironment) (string, bool) {
+// fieldPath renders a dotted field access chain rooted at an identifier.
+func fieldPath(expr ast.Expression) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return e.Value, true
+	case *ast.IndexExpression:
+		if !e.Dot {
+			return "", false
+		}
+		field, isIdent := e.Index.(*ast.Identifier)
+		if !isIdent {
+			return "", false
+		}
+		base, ok := fieldPath(e.Left)
+		if !ok {
+			return "", false
+		}
+		return base + "." + field.Value, true
+	}
+	return "", false
+}
+
+// aggregateBorrowNames lists the tracked borrows a record binding carries
+// (binding.field...), sorted.
+func (bc *BorrowChecker) aggregateBorrowNames(binding string) []string {
+	prefix := binding + "."
+	var names []string
+	for name := range bc.activeBorrows {
+		if strings.HasPrefix(name, prefix) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// provenanceOwners traces a borrow-valued expression to the set of owners
+// it borrows: a tracked binding or field, a record binding's fields,
+// `view(&owner)`/`span(&owner)`, a subslice or reinterpretation of a traced
+// borrow, a slice expression, a record literal (its borrow fields), a
+// conditional whose arms are all traced, a block's result, or a
+// region-indexed call through its region argument.
+func (bc *BorrowChecker) provenanceOwners(expr ast.Expression, env *typechecker.TypeEnvironment) (map[string]bool, bool) {
+	owners := map[string]bool{}
+	merge := func(sub map[string]bool) {
+		for owner := range sub {
+			owners[owner] = true
+		}
+	}
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		if info, tracked := bc.activeBorrows[e.Value]; tracked {
-			return info.owner, true
+			return map[string]bool{info.owner: true}, true
+		}
+		if names := bc.aggregateBorrowNames(e.Value); len(names) > 0 {
+			for _, name := range names {
+				owners[bc.activeBorrows[name].owner] = true
+			}
+			return owners, true
 		}
 		if _, isOwner := bc.ownerStates[e.Value]; isOwner {
-			return e.Value, true
+			return map[string]bool{e.Value: true}, true
 		}
-		return "", false
+		return nil, false
+	case *ast.IndexExpression:
+		if !e.Dot {
+			return nil, false
+		}
+		path, ok := fieldPath(e)
+		if !ok {
+			return nil, false
+		}
+		if info, tracked := bc.activeBorrows[path]; tracked {
+			return map[string]bool{info.owner: true}, true
+		}
+		if names := bc.aggregateBorrowNames(path); len(names) > 0 {
+			for _, name := range names {
+				owners[bc.activeBorrows[name].owner] = true
+			}
+			return owners, true
+		}
+		return nil, false
 	case *ast.SliceExpression:
 		if ident, isIdent := e.Seq.(*ast.Identifier); isIdent {
 			if _, isOwner := bc.ownerStates[ident.Value]; isOwner {
-				return ident.Value, true
+				return map[string]bool{ident.Value: true}, true
 			}
 		}
-		return bc.provenanceOwner(e.Seq, env)
+		return bc.provenanceOwners(e.Seq, env)
 	case *ast.BlockExpression:
-		return bc.provenanceOwner(e.Result(), env)
+		return bc.provenanceOwners(e.Result(), env)
 	case *ast.MatchExpression:
 		if len(e.Arms) == 0 {
-			return "", false
+			return nil, false
 		}
-		owner := ""
-		for i, arm := range e.Arms {
-			armOwner, ok := bc.provenanceOwner(arm.Body, env)
+		for _, arm := range e.Arms {
+			sub, ok := bc.provenanceOwners(arm.Body, env)
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			if i == 0 {
-				owner = armOwner
-			} else if armOwner != owner {
-				return "", false
-			}
+			merge(sub)
 		}
-		return owner, true
+		return owners, true
+	case *ast.RecordLiteral:
+		for _, field := range e.FieldOrder {
+			fieldType := env.CheckedExpressionType(field.Value)
+			if fieldType == nil || !env.ContainsBorrowStorage(fieldType) {
+				continue
+			}
+			sub, ok := bc.provenanceOwners(field.Value, env)
+			if !ok {
+				return nil, false
+			}
+			merge(sub)
+		}
+		return owners, true
 	case *ast.InvocationExpression:
 		callee, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent {
-			return "", false
+			return nil, false
 		}
 		switch callee.Value {
 		case "view", "span":
 			if len(e.Arguments) == 1 {
 				if owner := bc.extractOwnerName(e.Arguments[0]); owner != "" {
-					return owner, true
+					return map[string]bool{owner: true}, true
 				}
 			}
-			return "", false
-		case "subslice", "view_as":
+			return nil, false
+		case "subslice", "view_as", "span_as":
 			if len(e.Arguments) >= 1 {
-				return bc.provenanceOwner(e.Arguments[0], env)
+				return bc.provenanceOwners(e.Arguments[0], env)
 			}
-			return "", false
+			return nil, false
 		}
-		if idx, ok := regionCandidate(functionType(callee.Value, env)); ok && idx < len(e.Arguments) {
-			return bc.provenanceOwner(e.Arguments[idx], env)
+		if _, sig, ok := regionSignatureFor(callee.Value, env); ok && sig.Return != "" {
+			for i, region := range sig.Params {
+				if region == sig.Return && i < len(e.Arguments) {
+					return bc.provenanceOwners(e.Arguments[i], env)
+				}
+			}
 		}
-		return "", false
+		return nil, false
 	}
-	return "", false
+	return nil, false
 }
 
-// bindRegionCall is the caller's side: when a call to a region-indexed
-// function initializes a binding, the binding becomes a read-only reborrow
-// of the argument in the region position. An argument whose view the
-// checker cannot trace to a tracked read-only source fails closed.
-func (bc *BorrowChecker) bindRegionCall(call *ast.InvocationExpression, callee string, targetVar string, env *typechecker.TypeEnvironment) bool {
-	idx, ok := regionCandidate(functionType(callee, env))
-	if !ok || idx >= len(call.Arguments) {
-		return false
+// regionCallResult reports whether a call yields a region-indexed borrow
+// and, if so, its callee and the region argument.
+func regionCallResult(expr ast.Expression, env *typechecker.TypeEnvironment) (callee string, regionArg ast.Expression, fn *typechecker.FunctionType, ok bool) {
+	call, isCall := expr.(*ast.InvocationExpression)
+	if !isCall {
+		return "", nil, nil, false
 	}
-	if bc.bindDerivedView(targetVar, call.Arguments[idx], call, env) {
-		return true
+	ident, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent {
+		return "", nil, nil, false
 	}
-	d := bc.reportBorrow(call.Arguments[idx], CodeReturnedBorrowRegion,
-		fmt.Sprintf("cannot bind %q: the region argument of %q is not a traceable read-only view", targetVar, callee))
-	d.AddNote("the result of a region-indexed call borrows the argument's owner; the argument must be a tracked view binding, view(&owner), a subslice or slice of one, or another region-indexed call")
-	d.AddHelp("bind the view first, then pass the binding")
-	return true
+	fn, sig, has := regionSignatureFor(ident.Value, env)
+	if !has || sig.Return == "" {
+		return "", nil, nil, false
+	}
+	for i, region := range sig.Params {
+		if region == sig.Return && i < len(call.Arguments) {
+			return ident.Value, call.Arguments[i], fn, true
+		}
+	}
+	return "", nil, nil, false
 }
 
-// bindDerivedView makes targetVar a read-only borrow of the owner that
-// expr borrows. Regions are not propagated (unknown, fail-closed for
-// disjointness), which is exact for read-only borrows.
-func (bc *BorrowChecker) bindDerivedView(targetVar string, expr ast.Expression, origin ast.Node, env *typechecker.TypeEnvironment) bool {
+// regionParameterAccepts reports whether the callee's parameter at index i
+// carries a region, so a borrow-carrying record may be passed to it.
+func regionParameterAccepts(callee string, i int, env *typechecker.TypeEnvironment) bool {
+	_, sig, ok := regionSignatureFor(callee, env)
+	return ok && i < len(sig.Params) && sig.Params[i] != ""
+}
+
+// borrowSource is one live borrow, or an owner about to be borrowed, that
+// a region argument denotes at the caller.
+type borrowSource struct {
+	name    string // borrow name, or owner name when isOwner
+	kind    borrowKind
+	isOwner bool
+}
+
+// sourceBorrows resolves a region argument to the caller's live borrows
+// (or owners) it denotes.
+func (bc *BorrowChecker) sourceBorrows(expr ast.Expression, env *typechecker.TypeEnvironment) ([]borrowSource, bool) {
 	switch e := expr.(type) {
 	case *ast.Identifier:
-		info, tracked := bc.activeBorrows[e.Value]
-		if !tracked || info.kind != BorrowView {
-			return false
+		if info, tracked := bc.activeBorrows[e.Value]; tracked {
+			return []borrowSource{{name: e.Value, kind: info.kind}}, true
 		}
-		bc.createSubsliceWithRegion(e.Value, targetVar, nil, origin)
-		return true
+		names := bc.aggregateBorrowNames(e.Value)
+		if len(names) == 0 {
+			return nil, false
+		}
+		sources := make([]borrowSource, 0, len(names))
+		for _, name := range names {
+			sources = append(sources, borrowSource{name: name, kind: bc.activeBorrows[name].kind})
+		}
+		return sources, true
+	case *ast.IndexExpression:
+		if !e.Dot {
+			return nil, false
+		}
+		path, ok := fieldPath(e)
+		if !ok {
+			return nil, false
+		}
+		if info, tracked := bc.activeBorrows[path]; tracked {
+			return []borrowSource{{name: path, kind: info.kind}}, true
+		}
+		names := bc.aggregateBorrowNames(path)
+		if len(names) == 0 {
+			return nil, false
+		}
+		sources := make([]borrowSource, 0, len(names))
+		for _, name := range names {
+			sources = append(sources, borrowSource{name: name, kind: bc.activeBorrows[name].kind})
+		}
+		return sources, true
 	case *ast.SliceExpression:
 		if ident, isIdent := e.Seq.(*ast.Identifier); isIdent {
 			if _, isOwner := bc.ownerStates[ident.Value]; isOwner {
-				bc.createViewBorrowWithRegion(ident.Value, targetVar, nil, origin)
-				return true
+				return []borrowSource{{name: ident.Value, kind: BorrowView, isOwner: true}}, true
 			}
 		}
-		return bc.bindDerivedView(targetVar, e.Seq, origin, env)
+		return bc.sourceBorrows(e.Seq, env)
 	case *ast.InvocationExpression:
 		callee, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent {
-			return false
+			return nil, false
 		}
 		switch callee.Value {
-		case "view":
+		case "view", "span":
 			if len(e.Arguments) != 1 {
-				return false
+				return nil, false
 			}
 			owner := bc.extractOwnerName(e.Arguments[0])
 			if owner == "" {
-				return false
+				return nil, false
 			}
-			bc.createViewBorrowWithRegion(owner, targetVar, bc.wholeOwnerRegion(owner, env), origin)
-			return true
-		case "subslice", "view_as":
+			kind := BorrowView
+			if callee.Value == "span" {
+				kind = BorrowSpan
+			}
+			return []borrowSource{{name: owner, kind: kind, isOwner: true}}, true
+		case "subslice", "view_as", "span_as":
 			if len(e.Arguments) < 1 {
-				return false
+				return nil, false
 			}
-			return bc.bindDerivedView(targetVar, e.Arguments[0], origin, env)
+			return bc.sourceBorrows(e.Arguments[0], env)
 		}
-		if idx, ok := regionCandidate(functionType(callee.Value, env)); ok && idx < len(e.Arguments) {
-			return bc.bindDerivedView(targetVar, e.Arguments[idx], origin, env)
+		if _, regionArg, _, ok := regionCallResult(e, env); ok {
+			return bc.sourceBorrows(regionArg, env)
 		}
+		return nil, false
+	}
+	return nil, false
+}
+
+// bindRegionCall is the caller's side: a binding initialized from a
+// region-indexed call becomes a reborrow of the region argument — one
+// borrow per source of the result's kind, or per borrow field of a
+// returned record. Reports whether the call was region-indexed.
+func (bc *BorrowChecker) bindRegionCall(call *ast.InvocationExpression, targetVar string, env *typechecker.TypeEnvironment) bool {
+	callee, regionArg, fn, ok := regionCallResult(call, env)
+	if !ok {
 		return false
 	}
-	return false
+	fail := func(title string) bool {
+		d := bc.reportBorrow(regionArg, CodeReturnedBorrowRegion, title)
+		d.AddNote("the result of a region-indexed call borrows the argument's owners; the argument must be a tracked view, span, or record binding, view(&owner) or span(&owner), a subslice or slice of one, or another region-indexed call")
+		d.AddHelp("bind the borrow first, then pass the binding")
+		return true
+	}
+	sources, traced := bc.sourceBorrows(regionArg, env)
+	if !traced || len(sources) == 0 {
+		return fail(fmt.Sprintf("cannot bind %q: the region argument of %q is not a traceable borrow", targetVar, callee))
+	}
+	derive := func(name string, kind borrowKind) bool {
+		count := 0
+		for _, source := range sources {
+			if source.kind != kind {
+				continue
+			}
+			borrowName := name
+			if count > 0 {
+				borrowName = fmt.Sprintf("%s#%d", name, count)
+			}
+			count++
+			switch {
+			case source.isOwner && kind == BorrowSpan:
+				bc.createSpanBorrowWithRegion(source.name, borrowName, bc.wholeOwnerRegion(source.name, env), call)
+			case source.isOwner:
+				bc.createViewBorrowWithRegion(source.name, borrowName, bc.wholeOwnerRegion(source.name, env), call)
+			default:
+				bc.createSubsliceWithRegion(source.name, borrowName, nil, call)
+			}
+		}
+		return count > 0
+	}
+	switch ret := fn.ReturnType.(type) {
+	case *typechecker.ArrayType:
+		kind := BorrowView
+		if ret.IsSpan {
+			kind = BorrowSpan
+		}
+		if !derive(targetVar, kind) {
+			return fail(fmt.Sprintf("cannot bind %q: the region argument of %q carries no %s", targetVar, callee, kindName(kind)))
+		}
+	case *typechecker.RecordType:
+		for _, field := range recordBorrowFields(ret, "") {
+			if !derive(targetVar+"."+field.path, field.kind) {
+				return fail(fmt.Sprintf("cannot bind %q: field %q needs a %s and the region argument of %q carries none", targetVar, field.path, kindName(field.kind), callee))
+			}
+		}
+	}
+	return true
+}
+
+func kindName(kind borrowKind) string {
+	if kind == BorrowSpan {
+		return "span"
+	}
+	return "view"
 }

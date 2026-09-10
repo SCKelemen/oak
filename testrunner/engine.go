@@ -148,7 +148,56 @@ type Artifact struct {
 	MaxBytes       int          `json:"max_bytes"`
 	Sanitize       bool         `json:"sanitize"`
 	Signature      string       `json:"signature"`
-	Input          []byte       `json:"input"` // JSON base64, including arbitrary invalid UTF-8.
+	// Row names the failing row of a table target; empty for other kinds.
+	Row   string `json:"row,omitempty"`
+	Input []byte `json:"input"` // JSON base64, including arbitrary invalid UTF-8.
+}
+
+// tableRow is one input of a table target: the bytes of one file under
+// testdata/oak/<Test>/rows, identified by its file name.
+type tableRow struct {
+	name string
+	data []byte
+}
+
+// loadRows reads a table target's rows in file-name order
+// (docs/spec/110-testing.md, "Table targets"). Directories and dotfiles are
+// skipped; a row larger than the input limit is an error rather than a
+// silently truncated case, and a target without rows is an error rather
+// than a vacuous pass.
+func loadRows(pkg Package, test Test, max int) ([]tableRow, error) {
+	dir := filepath.Join(corpusDir(pkg, test), "rows")
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, fmt.Errorf("table target %s has no rows: expected files under %s", test.Name, dir)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var rows []tableRow
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
+		f.Close()
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > max {
+			return nil, fmt.Errorf("row %s exceeds the input limit of %d bytes", path, max)
+		}
+		rows = append(rows, tableRow{name: entry.Name(), data: data})
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("table target %s has no rows: expected files under %s", test.Name, dir)
+	}
+	return rows, nil
 }
 
 func readArtifact(path string, max int) (Artifact, error) {

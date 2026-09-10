@@ -40,6 +40,37 @@ pub json_string_run: (src: []u8, offset: u32): u32 {
  }
  at
 }
+// The run and whether it was all ASCII, from one pass: the same loads that
+// classify escape bytes also OR the high bits (docs/spec/71-codecs.md
+// section 4a). Every ASCII byte is a valid UTF-8 scalar, so a string whose
+// runs and escape bytes are all ASCII needs no separate validation pass.
+pub JsonRun: type = struct { end: u32, ascii: Bool }
+pub json_string_scan: (src: []u8, offset: u32): JsonRun {
+ assert(offset <= len(src))
+ at: u32 = offset
+ high: simd.U8x16 = simd.splat_u8x16(u8(0))
+ scanning: Bool = true
+ while scanning && len(src) - at >= u32(16) {
+  chunk: simd.U8x16 = simd.load_u8x16(src, at)
+  low: simd.U8x16 = simd.eq_u8x16(simd.min_u8x16(chunk, simd.splat_u8x16(u8(31))), chunk)
+  quote: simd.U8x16 = simd.eq_u8x16(chunk, simd.splat_u8x16(u8(34)))
+  slash: simd.U8x16 = simd.eq_u8x16(chunk, simd.splat_u8x16(u8(92)))
+  simd.any_u8x16(simd.or_u8x16(low, simd.or_u8x16(quote, slash))) ? { scanning = false } | {
+   high = simd.or_u8x16(high, chunk)
+   at = at + u32(16)
+  }
+ }
+ ascii: Bool = !simd.any_u8x16(simd.and_u8x16(high, simd.splat_u8x16(u8(128))))
+ scanning = true
+ while scanning && at < len(src) {
+  unit: u8 = src[at]
+  unit < u8(32) || unit == u8(34) || unit == u8(92) ? { scanning = false } | {
+   ascii = ascii && unit < u8(128)
+   at = at + u32(1)
+  }
+ }
+ JsonRun { end: at, ascii: ascii }
+}
 pub json_copy_run: (dst: [*]u8, output: u32, src: []u8, start: u32, end: u32): () {
  assert(start <= end && end <= len(src))
  assert(output <= len(dst) && end - start <= len(dst) - output)
@@ -72,7 +103,28 @@ pub json_hex4: (src: []u8, at: u32): u32 {
  }
  valid ? value | u32(4294967295)
 }
+// The measuring pass validates and sizes in one sweep: the scan's ASCII
+// lane decides whether the full UTF-8 validator runs at all, and encoding
+// errors keep precedence over the size check because the verdict is taken
+// before any result is returned. json_string_encode_size_reference is the
+// pre-fusion form kept as the oracle; the two must agree on every input.
 pub json_string_encode_size: (src: []u8): Result[u32, JsonError] {
+ total: u64 = 2
+ at: u32 = 0
+ ascii: Bool = true
+ while at < len(src) {
+  run: JsonRun = json_string_scan(src, at)
+  ascii = ascii && run.ascii
+  total = total + u64(run.end - at)
+  at = run.end
+  at < len(src) ? {
+   total = total + (src[at] < u8(32) ? u64(6) | u64(2))
+   at = at + u32(1)
+  }
+ }
+ !ascii && !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
+}
+pub json_string_encode_size_reference: (src: []u8): Result[u32, JsonError] {
  !is_valid_utf8(src) ? { .Err(.InvalidEncoding) } | {
   total: u64 = 2
   at: u32 = 0
@@ -88,36 +140,44 @@ pub json_string_encode_size: (src: []u8): Result[u32, JsonError] {
   total > u64(4294967295) ? { .Err(.SizeOverflow) } | { .Ok(u32_trunc_u64(total)) }
  }
 }
+// The unchecked writer: src has been measured by json_string_encode_size
+// and dst checked to fit at offset by the caller. Measures nothing, checks
+// no capacity, returns the byte count; every store is still bounds-checked.
+pub json_string_write_at: (dst: [*]u8, offset: u32, src: []u8): u32 {
+ dst[offset] = u8(34)
+ out: u32 = offset + u32(1)
+ at: u32 = 0
+ while at < len(src) {
+  end: u32 = json_string_run(src, at)
+  json_copy_run(dst, out, src, at, end)
+  out = out + (end - at)
+  at = end
+  at < len(src) ? {
+   unit: u8 = src[at]
+   dst[out] = u8(92)
+   unit < u8(32) ? {
+    dst[out + u32(1)] = u8(117)
+    dst[out + u32(2)] = u8(48)
+    dst[out + u32(3)] = u8(48)
+    dst[out + u32(4)] = json_hex_digit(unit >> u8(4))
+    dst[out + u32(5)] = json_hex_digit(unit & u8(15))
+    out = out + u32(6)
+   } | {
+    dst[out + u32(1)] = unit
+    out = out + u32(2)
+   }
+   at = at + u32(1)
+  }
+ }
+ dst[out] = u8(34)
+ out + u32(1) - offset
+}
 // Atomic on error, including at nonzero output offsets.
 pub json_string_encode_at: (dst: [*]u8, offset: u32, src: []u8): Result[u32, JsonError] {
  measured: Result[u32, JsonError] = json_string_encode_size(src)
  !json_result_ok(measured) ? { measured } | !bytes_range_fits(len(dst), offset, json_result_value(measured)) ? { .Err(.DestinationTooSmall) } | {
-  dst[offset] = u8(34)
-  out: u32 = offset + u32(1)
-  at: u32 = 0
-  while at < len(src) {
-   end: u32 = json_string_run(src, at)
-   json_copy_run(dst, out, src, at, end)
-   out = out + (end - at)
-   at = end
-   at < len(src) ? {
-    unit: u8 = src[at]
-    dst[out] = u8(92)
-    unit < u8(32) ? {
-     dst[out + u32(1)] = u8(117)
-     dst[out + u32(2)] = u8(48)
-     dst[out + u32(3)] = u8(48)
-     dst[out + u32(4)] = json_hex_digit(unit >> u8(4))
-     dst[out + u32(5)] = json_hex_digit(unit & u8(15))
-     out = out + u32(6)
-    } | {
-     dst[out + u32(1)] = unit
-     out = out + u32(2)
-    }
-    at = at + u32(1)
-   }
-  }
-  dst[out] = u8(34)
+  written: u32 = json_string_write_at(dst, offset, src)
+  assert(written == json_result_value(measured))
   measured
  }
 }
@@ -222,48 +282,54 @@ pub json_u64_size: (value: u64): u32 {
 pub json_i64_magnitude: (value: i64): u64 = value < i64(0) ? u64_bits_i64(i64(0) - (value + i64(1))) + u64(1) | u64_bits_i64(value)
 pub json_i64_size: (value: i64): u32 = json_u64_size(json_i64_magnitude(value)) + (value < i64(0) ? u32(1) | u32(0))
 pub json_bool_size: (value: Bool): u32 = value ? u32(4) | u32(5)
+// Unchecked writers (docs/spec/71-codecs.md section 4a): the caller has
+// sized the value and checked that dst fits it at offset; these write and
+// return the count. The checked encode_at forms are size, one fit check,
+// then the unchecked writer.
+pub json_u64_write_at: (dst: [*]u8, offset: u32, value: u64): u32 {
+ digits: u32 = json_u64_size(value)
+ remaining: u64 = value
+ i: u32 = digits
+ while i > u32(0) {
+  i = i - u32(1)
+  dst[offset + i] = u8(48) + u8_trunc_u64(remaining % u64(10))
+  remaining = remaining / u64(10)
+ }
+ digits
+}
+pub json_i64_write_at: (dst: [*]u8, offset: u32, value: i64): u32 {
+ at: u32 = offset
+ value < i64(0) ? { dst[at] = u8(45)
+  at = at + u32(1)
+ }
+ at - offset + json_u64_write_at(dst, at, json_i64_magnitude(value))
+}
+pub json_bool_write_at: (dst: [*]u8, offset: u32, value: Bool): u32 {
+ value ? {
+  dst[offset] = u8(116)
+  dst[offset + u32(1)] = u8(114)
+  dst[offset + u32(2)] = u8(117)
+  dst[offset + u32(3)] = u8(101)
+ } | {
+  dst[offset] = u8(102)
+  dst[offset + u32(1)] = u8(97)
+  dst[offset + u32(2)] = u8(108)
+  dst[offset + u32(3)] = u8(115)
+  dst[offset + u32(4)] = u8(101)
+ }
+ json_bool_size(value)
+}
 pub json_u64_encode_at: (dst: [*]u8, offset: u32, value: u64): Result[u32, JsonError] {
  digits: u32 = json_u64_size(value)
- !bytes_range_fits(len(dst), offset, digits) ? { .Err(.DestinationTooSmall) } | {
-  remaining: u64 = value
-  i: u32 = digits
-  while i > u32(0) {
-   i = i - u32(1)
-   dst[offset + i] = u8(48) + u8_trunc_u64(remaining % u64(10))
-   remaining = remaining / u64(10)
-  }
-  .Ok(digits)
- }
+ !bytes_range_fits(len(dst), offset, digits) ? { .Err(.DestinationTooSmall) } | { .Ok(json_u64_write_at(dst, offset, value)) }
 }
 pub json_i64_encode_at: (dst: [*]u8, offset: u32, value: i64): Result[u32, JsonError] {
  size: u32 = json_i64_size(value)
- !bytes_range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | {
-  at: u32 = offset
-  value < i64(0) ? { dst[at] = u8(45)
-   at = at + u32(1)
-  }
-  result: Result[u32, JsonError] = json_u64_encode_at(dst, at, json_i64_magnitude(value))
-  assert(json_result_ok(result))
-  .Ok(size)
- }
+ !bytes_range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | { .Ok(json_i64_write_at(dst, offset, value)) }
 }
 pub json_bool_encode_at: (dst: [*]u8, offset: u32, value: Bool): Result[u32, JsonError] {
  size: u32 = json_bool_size(value)
- !bytes_range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | {
-  value ? {
-   dst[offset] = u8(116)
-   dst[offset + u32(1)] = u8(114)
-   dst[offset + u32(2)] = u8(117)
-   dst[offset + u32(3)] = u8(101)
-  } | {
-   dst[offset] = u8(102)
-   dst[offset + u32(1)] = u8(97)
-   dst[offset + u32(2)] = u8(108)
-   dst[offset + u32(3)] = u8(115)
-   dst[offset + u32(4)] = u8(101)
-  }
-  .Ok(size)
- }
+ !bytes_range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | { .Ok(json_bool_write_at(dst, offset, value)) }
 }
 
 

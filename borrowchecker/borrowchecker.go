@@ -90,7 +90,7 @@ type BorrowChecker struct {
 	// pendingReturn is the region contract of the function being checked
 	// (borrowchecker/regions.go): its body's result must borrow from the
 	// named parameter, checked while the body's borrows are still live.
-	pendingReturn *returnContract
+	pendingReturn *regionContract
 
 	// unsafeDepth tracks lexical unsafe-block nesting (Oak.Unsafe.Scope).
 	// Inside an unsafe boundary the checker may admit exactly the
@@ -268,13 +268,22 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 		}
 	}
 
-	// Register parameters
+	// Register parameters. A record parameter carrying borrows is admitted
+	// when the signature gives it a region (docs/spec/50-borrowing.md
+	// section 8c): its fields become borrows of synthetic owners like a
+	// view parameter's; without a region it fails closed as any aggregate.
+	regions := paramRegions(stmt, env)
 	for index, param := range stmt.Parameters {
 		paramType := bc.parseTypeFromAST(param.Type, funcEnv)
 		if scheme, ok := env.Get(stmt.Name.Value); ok && scheme != nil {
 			if fn, ok := scheme.Type.(*typechecker.FunctionType); ok && index < len(fn.Parameters) {
 				paramType = fn.Parameters[index]
 			}
+		}
+		if record, isRecord := paramType.(*typechecker.RecordType); isRecord && index < len(regions) && regions[index] != "" && env.ContainsBorrowStorage(record) {
+			bc.registerRegionRecordParameter(param.Name.Value, record, param.Type)
+			funcEnv.SetType(param.Name.Value, paramType)
+			continue
 		}
 		bc.checkAggregateType(param.Type, paramType, env, false)
 		bc.registerBorrowParameter(param.Name.Value, paramType, param.Type)
@@ -294,7 +303,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	// region-indexed signature (section 8c, borrowchecker/regions.go) names
 	// the parameter whose owner outlives the call and is checked by
 	// provenance instead; every other view/span return is rejected.
-	bc.pendingReturn = returnContractFor(stmt, env)
+	bc.pendingReturn = bc.returnContractFor(stmt, env)
 	if bc.pendingReturn == nil {
 		bc.checkBorrowEscape(stmt, env)
 	}
@@ -565,7 +574,11 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 	// binding then borrows those owners itself. Anything else fails closed.
 	declared := env.CheckedDeclarationType(vd)
 	if !bc.bindAggregateBorrows(varName, declared, vd.Value, env) {
-		bc.checkAggregateType(vd.Name, declared, env, false)
+		// A region-indexed call binds its result through the call itself
+		// (borrowchecker/regions.go); anything else fails closed.
+		if _, _, _, isRegionCall := regionCallResult(vd.Value, env); !isRegionCall {
+			bc.checkAggregateType(vd.Name, declared, env, false)
+		}
 	}
 
 	// Check if the value expression creates a borrow (check before we register the variable)
@@ -908,7 +921,19 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			bc.checkIdentifierUse(operand, operand.Value, env, mutable)
 			continue
 		}
-		bc.checkAggregateStorage(arg, env, false)
+		// A borrow-carrying record may be passed to a parameter that
+		// declares its region (docs/spec/50-borrowing.md section 8c) when
+		// the argument's borrows are tracked; otherwise aggregates fail
+		// closed.
+		regionAccepted := false
+		if callee, isIdent := call.Function.(*ast.Identifier); isIdent && regionParameterAccepts(callee.Value, i, env) {
+			if _, traced := bc.sourceBorrows(arg, env); traced {
+				regionAccepted = true
+			}
+		}
+		if !regionAccepted {
+			bc.checkAggregateStorage(arg, env, false)
+		}
 		if i == 0 && skipDerivationSource {
 			continue
 		}
@@ -938,7 +963,7 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 		// A region-indexed function (docs/spec/50-borrowing.md section 8c):
 		// the binding reborrows the argument in the region position.
 		if targetVar != "" {
-			bc.bindRegionCall(call, ident.Value, targetVar, env)
+			bc.bindRegionCall(call, targetVar, env)
 		}
 	}
 
@@ -1045,7 +1070,9 @@ func (bc *BorrowChecker) checkSubsliceCall(call *ast.InvocationExpression, env *
 		return
 	}
 
-	ident, ok := call.Arguments[0].(*ast.Identifier)
+	// The source is a view/span binding, or a borrow field of a record
+	// binding (cursor.data — docs/spec/50-borrowing.md sections 8b, 8c).
+	sourceName, ok := fieldPath(call.Arguments[0])
 	if !ok {
 		bc.addError("subslice() first argument must be a view or span variable")
 		return
@@ -1053,9 +1080,9 @@ func (bc *BorrowChecker) checkSubsliceCall(call *ast.InvocationExpression, env *
 	if targetVar == "" {
 		return
 	}
-	sourceInfo, exists := bc.activeBorrows[ident.Value]
+	sourceInfo, exists := bc.activeBorrows[sourceName]
 	if !exists {
-		bc.createSubsliceWithRegion(ident.Value, targetVar, nil, call)
+		bc.createSubsliceWithRegion(sourceName, targetVar, nil, call)
 		return
 	}
 
@@ -1070,7 +1097,7 @@ func (bc *BorrowChecker) checkSubsliceCall(call *ast.InvocationExpression, env *
 			}
 		}
 	}
-	bc.createSubsliceWithRegion(ident.Value, targetVar, region, call)
+	bc.createSubsliceWithRegion(sourceName, targetVar, region, call)
 }
 
 // checkViewAsCall handles view_as() calls: creates a derived view borrow with different element type

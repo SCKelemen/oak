@@ -1278,6 +1278,16 @@ func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 		if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "core_index" && len(call.Arguments) == 2 {
 			return cg.localContainerOf(&ast.IndexExpression{Left: call.Arguments[0], Index: call.Arguments[1]})
 		}
+		// A call to a program function classifies by its declared return
+		// type: a region-indexed function returning a view
+		// (docs/spec/50-borrowing.md section 8c) is indexed like the view.
+		if id, ok := call.Function.(*ast.Identifier); ok && cg.programFunctions != nil {
+			if fn, declared := cg.programFunctions[id.Value]; declared && fn.ReturnType != nil {
+				if info := cg.classifyContainer(fn.ReturnType); info.kind != containerUnknown {
+					return info
+				}
+			}
+		}
 	}
 	if index, ok := expr.(*ast.IndexExpression); ok && !index.Dot {
 		base := cg.localContainerOf(index.Left)

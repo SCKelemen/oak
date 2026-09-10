@@ -1062,7 +1062,27 @@ type FunctionStatement struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// Effect clauses (docs/spec/60-effects-allocation.md section 2):
+	// `effects { Memory.Allocate, ... }` declares the effects this function
+	// itself performs (EffectsDeclared distinguishes an empty clause, an
+	// assertion of purity for an extern, from no clause); `forbids { ... }`
+	// rejects the program when any of these effects is reachable from the
+	// function through the call graph.
+	Effects         []*EffectName
+	EffectsDeclared bool
+	Forbids         []*EffectName
 }
+
+// EffectName is one `Namespace.Name` in an effect clause.
+type EffectName struct {
+	BaseNode
+	Token     token.Token
+	Namespace string
+	Name      string
+}
+
+func (e *EffectName) TokenLiteral() string { return e.Token.Literal }
+func (e *EffectName) String() string       { return e.Namespace + "." + e.Name }
 
 func (fs *FunctionStatement) statementNode()       {}
 func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
@@ -1087,6 +1107,22 @@ func (fs *FunctionStatement) String() string {
 	if fs.ReturnType != nil {
 		out.WriteString(" -> ")
 		out.WriteString(fs.ReturnType.String())
+	}
+	writeEffects := func(keyword string, names []*EffectName) {
+		out.WriteString(" " + keyword + " {")
+		for i, e := range names {
+			if i > 0 {
+				out.WriteString(",")
+			}
+			out.WriteString(" " + e.String())
+		}
+		out.WriteString(" }")
+	}
+	if fs.EffectsDeclared {
+		writeEffects("effects", fs.Effects)
+	}
+	if len(fs.Forbids) > 0 {
+		writeEffects("forbids", fs.Forbids)
 	}
 	out.WriteRune(' ')
 	out.WriteString(fs.Body.String())
