@@ -1177,6 +1177,12 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		// rules of `at + u32(1)`.
 		if expected != nil {
 			if primType, ok := expected.(*PrimitiveType); ok {
+				if IsFloatName(primType.Name) {
+					// An integer literal is not a float (docs/spec/20-types.md
+					// section 11.3.2): the program spells `1.0`.
+					tc.addError(e, "integer literal %d in floating-point context %s; spell it %d.0", e.Value, primType.Name, e.Value)
+					return primType
+				}
 				if tc.literalFitsInType(e.Value, primType.Name) {
 					return primType
 				}
@@ -1190,6 +1196,10 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		// No context: default to int (signed native word integer)
 		// This matches the platform-dependent default integer type
 		return &PrimitiveType{Name: "int"}
+	case *ast.FloatLiteral:
+		// Floating-point literals take the float type of their context and
+		// are f64 without one (docs/spec/20-types.md section 11.3.2).
+		return tc.checkFloatLiteral(e, expected)
 	case *ast.StringLiteral:
 		return &StringType{}
 	case *ast.Boolean:
@@ -1308,7 +1318,7 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression, expecte
 		}
 	}
 	var operandExpected Type
-	if prim, ok := expected.(*PrimitiveType); ok && tc.isNumericType(prim) {
+	if prim, ok := expected.(*PrimitiveType); ok && (tc.isNumericType(prim) || IsFloatName(prim.Name)) {
 		// Negation keeps a signed type and complement keeps an unsigned type, so
 		// the operand shares the expected type in both well-typed cases.
 		operandExpected = prim
@@ -1344,7 +1354,13 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression, expecte
 		if prim, ok := rightType.(*PrimitiveType); ok && tc.isNumericType(prim) {
 			return tc.recordNegation(expr, prim)
 		}
-		tc.addError(expr, "operator - requires integer type, got %s", rightType)
+		if prim, ok := rightType.(*PrimitiveType); ok && IsFloatName(prim.Name) {
+			// Negation flips the sign bit, including of NaN and zero
+			// (docs/spec/20-types.md section 11.3.5); the backend's plain
+			// unary minus is exactly that.
+			return prim
+		}
+		tc.addError(expr, "operator - requires a numeric type, got %s", rightType)
 		return nil
 	default:
 		tc.addError(expr, "unknown prefix operator: %s", expr.Operator)
@@ -1368,11 +1384,11 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 	arithmetic := expr.Operator == "+" || expr.Operator == "-" || expr.Operator == "*" ||
 		expr.Operator == "/" || expr.Operator == "%"
 	var operandExpected Type
-	if (arithmetic || bitwise) && expected != nil && tc.isNumericType(expected) {
+	if (arithmetic || bitwise) && expected != nil && (tc.isNumericType(expected) || tc.isFloatType(expected)) {
 		operandExpected = expected
 	}
 	peerContext := func(typ Type) Type {
-		if typ != nil && tc.isNumericType(typ) {
+		if typ != nil && (tc.isNumericType(typ) || tc.isFloatType(typ)) {
 			return typ
 		}
 		return operandExpected
@@ -1409,12 +1425,18 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		if leftType.Equals(&StringType{}) && rightType.Equals(&StringType{}) {
 			return &StringType{}
 		}
+		if tc.isFloatType(leftType) || tc.isFloatType(rightType) {
+			return tc.checkFloatArithmetic(expr, leftType, rightType)
+		}
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
 			return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 		}
 		tc.addError(expr, "operator + requires numeric types or strings, got %s and %s", leftType, rightType)
 		return nil
 	case "-", "*", "/", "%":
+		if tc.isFloatType(leftType) || tc.isFloatType(rightType) {
+			return tc.checkFloatArithmetic(expr, leftType, rightType)
+		}
 		// Arithmetic operators require numeric types
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
@@ -1422,6 +1444,9 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		}
 		return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 	case "==", "!=":
+		if tc.isFloatType(leftType) || tc.isFloatType(rightType) {
+			return tc.checkFloatComparison(expr, leftType, rightType)
+		}
 		// Equality on machine integers follows the arithmetic rule: one
 		// signedness, widths promote; otherwise operands must be compatible.
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
@@ -1472,6 +1497,9 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		}
 		return leftType
 	case "<", ">", "<=", ">=":
+		if tc.isFloatType(leftType) || tc.isFloatType(rightType) {
+			return tc.checkFloatComparison(expr, leftType, rightType)
+		}
 		// Ordering compares machine integers of one signedness; widths
 		// promote as in arithmetic, mixed signedness is rejected.
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
@@ -1500,7 +1528,7 @@ func (tc *TypeChecker) isNumericType(typ Type) bool {
 // type comes entirely from context rather than from any typed operand.
 func IsLiteralOnlyExpression(expr ast.Expression) bool {
 	switch e := expr.(type) {
-	case *ast.IntegerLiteral:
+	case *ast.IntegerLiteral, *ast.FloatLiteral:
 		return true
 	case *ast.PrefixExpression:
 		return (e.Operator == "-" || e.Operator == "+") && IsLiteralOnlyExpression(e.Right)
@@ -1573,8 +1601,11 @@ func (tc *TypeChecker) areCompatibleTypes(left, right Type) bool {
 		return true
 	}
 
-	// Numeric types can be compared (with coercion)
+	// Numeric types can be compared (with coercion); floats only with floats
 	if tc.isNumericType(left) && tc.isNumericType(right) {
+		return true
+	}
+	if tc.isFloatType(left) && tc.isFloatType(right) {
 		return true
 	}
 
@@ -1760,6 +1791,12 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		// Check if this is a narrowing function: u8_trunc_u32(x), u8_checked_u32(x), etc.
 		if narrowingType := tc.checkNarrowingFunction(ident.Value, expr.Arguments); narrowingType != nil {
 			return narrowingType
+		}
+		// Floating-point intrinsics (docs/spec/20-types.md section 11.3.5):
+		// fma, sqrt, min, max, is_nan, ... unless a program binding shadows
+		// the name.
+		if floatType := tc.checkFloatIntrinsic(ident.Value, expr); floatType != nil {
+			return floatType
 		}
 		// Check if this is a Castable constructor: string(x), byte(x), etc.
 		if castableType := tc.checkCastableConstructor(ident.Value, expr.Arguments); castableType != nil {
@@ -2061,8 +2098,9 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
-		"byte": true, // alias of u8
-		"rune": true, // alias of u32 (docs/spec/70-strings.md section 9)
+		"byte": true,              // alias of u8
+		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
+		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -2076,6 +2114,10 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		}
 		tc.addError(node, "primitive constructor %s expects 1 argument, got %d", typeName, len(args))
 		return nil
+	}
+
+	if IsFloatName(typeName) {
+		return tc.checkFloatConstructor(typeName, args[0])
 	}
 
 	// Check if argument is an integer literal (untyped)
@@ -2288,18 +2330,21 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 	}
-	if !primitiveTypes[targetType] || !primitiveTypes[sourceType] {
+	targetFloat, sourceFloat := IsFloatName(targetType), IsFloatName(sourceType)
+	if (!primitiveTypes[targetType] && !targetFloat) || (!primitiveTypes[sourceType] && !sourceFloat) {
 		return nil
 	}
 
 	// Validate operation. `bits` is the same-width cross-sign
 	// reinterpretation (two's complement bit pattern, total): the explicit
 	// path between u32 and i32 that widening/narrowing deliberately lack.
+	// `round` belongs to the floating-point rows (section 11.3.4).
 	validOperations := map[string]bool{
 		"trunc":      true,
 		"checked":    true,
 		"saturating": true,
 		"bits":       true,
+		"round":      true,
 	}
 	if !validOperations[operation] {
 		return nil
@@ -2312,6 +2357,14 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 			node = args[0]
 		}
 		tc.addError(node, "narrowing function %s expects 1 argument, got %d", funcName, len(args))
+		return nil
+	}
+
+	if targetFloat || sourceFloat {
+		return tc.checkFloatConversion(funcName, targetType, operation, sourceType, args[0])
+	}
+	if operation == "round" {
+		tc.addError(args[0], "%s: round converts to a floating-point type; integers narrow with trunc, saturating, or checked", funcName)
 		return nil
 	}
 
@@ -2970,6 +3023,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 			primitiveTypes := map[string]bool{
 				"i8": true, "i16": true, "i32": true, "i64": true,
 				"u8": true, "u16": true, "u32": true, "u64": true,
+				"f32": true, "f64": true,
 				"string": true, "Bool": true, "byte": true, "()": true,
 			}
 			if primitiveTypes[ident.Value] {
@@ -4306,7 +4360,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types
@@ -4481,7 +4535,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types

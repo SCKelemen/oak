@@ -233,10 +233,14 @@ func KnownLibraryMember(library, member string) bool {
 var conversionPrimitives = map[string]int{
 	"u8": 8, "u16": 16, "u32": 32, "u64": 64,
 	"i8": 8, "i16": 16, "i32": 32, "i64": 64,
+	// Floating-point rows (docs/spec/20-types.md section 11.3.4); the
+	// backend and interpreter branch on IsFloatName before treating a
+	// width as an integer width.
+	"f32": 32, "f64": 64,
 }
 
 var conversionOperations = map[string]bool{
-	"trunc": true, "saturating": true, "checked": true, "bits": true,
+	"trunc": true, "saturating": true, "checked": true, "bits": true, "round": true,
 }
 
 // ConversionParts destructures an explicit-conversion function name for the
@@ -607,6 +611,7 @@ var boundarySpanElementTypes = map[string]bool{
 	"u8": true, "u16": true, "u32": true, "u64": true,
 	"i8": true, "i16": true, "i32": true, "i64": true,
 	"byte": true,
+	"f32":  true, "f64": true,
 }
 
 // checkBoundarySpan validates one boundary-span argument of an extern call:

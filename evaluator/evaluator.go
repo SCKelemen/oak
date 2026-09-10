@@ -42,6 +42,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.IntegerLiteral:
 		return &object.Integer{Value: node.Value}
 
+	case *ast.FloatLiteral:
+		return evalFloatLiteral(node, env)
+
 	case *ast.StringLiteral:
 		return &object.String{Value: node.Value}
 
@@ -157,6 +160,11 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 			// Explicit integer conversions: {target}_{op}_{source}
 			// (docs/spec/20-types.md), total two's-complement semantics.
 			if result, isConversion := evalConversionCall(ident.Value, node.Arguments, env); isConversion {
+				return result
+			}
+			// Floating-point intrinsics (docs/spec/20-types.md section
+			// 11.3.5), unless a program binding shadows the name.
+			if result, isIntrinsic := evalFloatIntrinsic(ident.Value, node, env); isIntrinsic {
 				return result
 			}
 		}
@@ -453,8 +461,9 @@ func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *objec
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
-		"byte": true, // alias of u8
-		"rune": true, // alias of u32 (docs/spec/70-strings.md section 9)
+		"byte": true,              // alias of u8
+		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
+		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -469,6 +478,9 @@ func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *objec
 	arg := Eval(args[0], env)
 	if isError(arg) {
 		return arg
+	}
+	if typechecker.IsFloatName(typeName) {
+		return evalFloatConstructor(typeName, arg)
 	}
 
 	// Get the integer value
@@ -555,6 +567,11 @@ func primitiveWidthBits(width string) (uint, bool) {
 }
 
 func evalMinusPrefixOperatorExpression(right object.Object) object.Object {
+	if f, isFloat := right.(*object.Float); isFloat {
+		// Sign-bit flip, including of NaN and zero (docs/spec/20-types.md
+		// section 11.3.5).
+		return &object.Float{Value: -f.Value, Bits: f.Bits}
+	}
 	if right.Type() != object.INTEGER_OBJ {
 		return newError("unknown operator: -%s", right.Type())
 	}
@@ -567,6 +584,10 @@ func evalInfixExpression(operator string, left, right object.Object) object.Obje
 	switch {
 	case left.Type() == object.INTEGER_OBJ && right.Type() == object.INTEGER_OBJ:
 		return evalIntegerInfixExpression(operator, left, right)
+	case left.Type() == object.FLOAT_OBJ && right.Type() == object.FLOAT_OBJ:
+		// Before the identity fallbacks below: float equality is IEEE
+		// (NaN != NaN, +0.0 == -0.0), never object identity.
+		return evalFloatInfixExpression(operator, left.(*object.Float), right.(*object.Float))
 	case left.Type() == object.STRING_OBJ && right.Type() == object.STRING_OBJ:
 		return evalStringInfixExpression(operator, left, right)
 	case operator == "==":

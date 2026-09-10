@@ -17,6 +17,17 @@ func evalConversionCall(name string, args []ast.Expression, env *object.Environm
 	if !ok {
 		return nil, false
 	}
+	if typechecker.IsFloatName(target) || typechecker.IsFloatName(source) {
+		// Floating-point rows (docs/spec/20-types.md section 11.3.4).
+		if len(args) != 1 {
+			return newError("%s takes exactly one argument", name), true
+		}
+		operandObject := Eval(args[0], env)
+		if isError(operandObject) {
+			return operandObject, true
+		}
+		return evalFloatConversion(name, target, op, source, operandObject, env), true
+	}
 	if op == "checked" {
 		return evalCheckedConversion(name, target, args, env), true
 	}

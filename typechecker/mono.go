@@ -233,6 +233,12 @@ func (tc *TypeChecker) recordArithmetic(expr *ast.InfixExpression, result Type) 
 		return result
 	}
 	name := tc.FixedWidthName(prim.Name)
+	if name == "" && IsFloatName(prim.Name) {
+		// Floats are recorded too — not for a wrapping helper (the backend
+		// keeps the plain C operator, docs/spec/20-types.md section 11.3.8)
+		// but so untyped locals and the interpreter know the width.
+		name = prim.Name
+	}
 	if name == "" {
 		return result
 	}

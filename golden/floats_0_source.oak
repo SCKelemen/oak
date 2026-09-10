@@ -1,0 +1,11 @@
+
+norm: (x: f32, y: f32): f32 {
+  sqrt(x * x + y * y)
+}
+
+main: (): i32 {
+  n: f32 = norm(3.0, 4.0)
+  bits: u32 = u32_bits_f32(n)
+  half: f64 = f64(n) * 0.5
+  bits == u32(1084227584) && half == 2.5 ? 0 | 1
+}

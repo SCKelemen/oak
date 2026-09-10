@@ -1172,3 +1172,19 @@ func (rc *REPLCommand) String() string {
 	}
 	return ":" + rc.Name
 }
+
+// FloatLiteral is a floating-point literal (docs/spec/20-types.md section
+// 11.3.2): `1.5`, `2.0e-5`, `1e3`. Text keeps the source spelling so the
+// typechecker can round it correctly to the width its context requires
+// (f32 or f64) from the exact decimal value, never through an intermediate
+// width; Value is the f64 reading for phases that only need a number.
+type FloatLiteral struct {
+	BaseNode
+	Token token.Token
+	Text  string
+	Value float64
+}
+
+func (fl *FloatLiteral) expressionNode()      {}
+func (fl *FloatLiteral) TokenLiteral() string { return fl.Token.Literal }
+func (fl *FloatLiteral) String() string       { return fl.Text }

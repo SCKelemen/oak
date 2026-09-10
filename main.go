@@ -357,7 +357,10 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
 		return 1
 	}
-	build := exec.Command(cc, "-std=c99", "-O1", "-o", binary, cPath)
+	// -ffp-contract=off keeps floating-point semantics exactly as written
+	// (docs/spec/90-backend.md section 7a); -lm links the C99 math library
+	// the float intrinsics lower to.
+	build := exec.Command(cc, "-std=c99", "-O1", "-ffp-contract=off", "-o", binary, cPath, "-lm")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "oak run: C compilation failed: %v\n", err)

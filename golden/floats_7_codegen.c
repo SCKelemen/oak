@@ -1,6 +1,7 @@
 /* Generated C code from Oak */
 #include <stdint.h>
 #include <stddef.h>
+#include <math.h>
 #pragma STDC FP_CONTRACT OFF
 
 typedef uint8_t  u8;
@@ -18,6 +19,20 @@ typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
 
 typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
 typedef double f64; /* IEEE 754 binary64 */
+
+/* floating point (docs/spec/20-types.md section 11.3): IEEE 754 binary32/64,
+   round to nearest even, no contraction (see the FP_CONTRACT pragma above),
+   no fast-math. min/max take the IEEE 754-2019 minimum/maximum semantics:
+   a NaN operand yields NaN and -0.0 orders below +0.0; min_num/max_num are
+   fmin/fmax. total_order is IEEE 754-2019 totalOrder over the bit patterns. */
+static inline f32 oak_fmin_f32(f32 a, f32 b) { if (a != a || b != b) { return a + b; } if (a == b) { return signbit(a) ? a : b; } return a < b ? a : b; }
+static inline f32 oak_fmax_f32(f32 a, f32 b) { if (a != a || b != b) { return a + b; } if (a == b) { return signbit(a) ? b : a; } return a > b ? a : b; }
+static inline f64 oak_fmin_f64(f64 a, f64 b) { if (a != a || b != b) { return a + b; } if (a == b) { return signbit(a) ? a : b; } return a < b ? a : b; }
+static inline f64 oak_fmax_f64(f64 a, f64 b) { if (a != a || b != b) { return a + b; } if (a == b) { return signbit(a) ? b : a; } return a > b ? a : b; }
+static inline int32_t oak_total_key_f32(f32 x) { union { f32 f; int32_t i; } pun; pun.f = x; return pun.i < 0 ? (int32_t)(pun.i ^ 0x7FFFFFFF) : pun.i; }
+static inline int64_t oak_total_key_f64(f64 x) { union { f64 f; int64_t i; } pun; pun.f = x; return pun.i < 0 ? (int64_t)(pun.i ^ 0x7FFFFFFFFFFFFFFFLL) : pun.i; }
+static inline int oak_total_order_f32(f32 a, f32 b) { return oak_total_key_f32(a) <= oak_total_key_f32(b); }
+static inline int oak_total_order_f64(f64 a, f64 b) { return oak_total_key_f64(a) <= oak_total_key_f64(b); }
 
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */
@@ -153,48 +168,38 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 
 /* explicit integer conversions: total, two's complement, no
    implementation-defined C (signed results via union punning) */
-static inline i32 oak_conv_i32_bits_u32( u32 x ) {
-  union { u32 from; i32 to; } pun;
-  pun.from = x;
-  return pun.to;
-}
-
-static inline u8 oak_conv_u8_saturating_u32( u32 x ) {
-  return x > (u32)255u ? (u8)255u : (u8)x;
-}
+static inline u32 oak_conv_u32_bits_f32( f32 x ) { union { f32 from; u32 to; } pun; pun.from = x; return pun.to; }
 
 /* forward declarations; OAK_INLINE marks private leaf helpers the C
    compiler must inline at every optimization level (the external
    definition is still emitted: C99 extern inline) */
 #define OAK_INLINE extern inline __attribute__((always_inline))
-OAK_INLINE i32 oak_classify( i32 n, Bool urgent );
+OAK_INLINE f32 oak_norm( f32 x, f32 y );
 i32 oak_main( void );
 
-// @source: unknown.oak:1:0-11:0
+// @source: unknown.oak:1:0-3:0
 // @package: main
 // @kind: function
-// @identifier: classify
-// @signature: fn classify(n: i32, urgent: Bool) -> i32
-OAK_INLINE i32 oak_classify( i32 n, Bool urgent ) {
-    i32 result   = ((i32)( oak_conv_u8_saturating_u32( ((u32)( 300 )) ) ))  ;
-    if ( ( ( n < 0 ) && !( urgent ) )   ) {
-      result     = ( 0 - 1 )    ;
-    } else {
-      if ( ( ( n == 0 ) || urgent ) ) {
-        result       = oak_conv_i32_bits_u32( ((u32)( 1 )) )      ;
-      } else {
-      }
-    }
-    return result  ;
+// @identifier: norm
+// @signature: fn norm(x: f32, y: f32) -> f32
+OAK_INLINE f32 oak_norm( f32 x, f32 y ) {
+    return sqrtf( (f32)( ( ( x * x ) + ( y * y ) ) ) )  ;
 }
 
-// @source: unknown.oak:13:0-13:33
+// @source: unknown.oak:5:0-10:0
 // @package: main
 // @kind: function
 // @identifier: main
 // @signature: fn main() -> i32
 i32 oak_main(  ) {
-    return oak_classify( 5, oak_Bool_False )  ;
+    f32 n   = oak_norm( ((f32)0x1.8p+01f), ((f32)0x1p+02f) )  ;
+    u32 bits   = oak_conv_u32_bits_f32( n )  ;
+    f64 half   = ( ((f64)( n )) * ((f64)0x1p-01) )  ;
+    if ( ( ( bits == ((u32)( 1084227584 )) ) && ( half == ((f64)0x1.4p+01) ) ) ) {
+      return 0    ;
+    } else {
+      return 1    ;
+    }
 }
 
 int main(void) {
