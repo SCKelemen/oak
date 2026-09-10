@@ -200,6 +200,13 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   under `frame 160`, a flags/label loop, and a 2 KiB-aligned sixteen-entry
   `eret` vector table (assembled, its extents checked statically).
 
+- **Units beside the sources.** A package build (`oak build`, `oak run`,
+  `Compilation.WithPackageDir`) picks up every `*.oakasm` in the root
+  package's directory; each unit function pairs with the package's
+  definition-less declaration of the same name, or with a defined function
+  as its fallback body. Verification verdicts (§8) are informational
+  diagnostics the CLI prints as `asm: …` lines; a mismatch is an error.
+  `examples/asm` is the reference: four kernels, all proven, run both ways.
 - **Typed pointer memory.** A span (`[*]T`) or view (`[]T`) parameter of
   fixed-width elements crosses as its `{base, u32 len}` pair and binds
   both registers explicitly — `bind x0, w1 = frame` (the base pointer,

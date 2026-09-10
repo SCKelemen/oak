@@ -260,6 +260,25 @@ type moduleLoader struct {
 // enclosing module's oak.mod (docs/spec/83-modules.md section 4).
 func (comp Compilation) WithPackageDir(dir string) Compilation {
 	comp.packageDir = dir
+	// Assembler units live beside the root package's sources: every
+	// `*.oakasm` in dir joins the build (docs/spec/94-assembler.md §7), its
+	// functions pairing with the package's definition-less declarations.
+	if entries, err := os.ReadDir(dir); err == nil {
+		names := make([]string, 0)
+		for _, entry := range entries {
+			name := entry.Name()
+			if !entry.IsDir() && strings.HasSuffix(name, ".oakasm") && !strings.HasPrefix(name, ".") {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			path := filepath.Join(dir, name)
+			if text, err := os.ReadFile(path); err == nil {
+				comp = comp.WithAsmUnit(path, string(text))
+			}
+		}
+	}
 	return comp
 }
 
