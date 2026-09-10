@@ -9,6 +9,8 @@ int oak_benchmark_decode(const char *data, uint32_t length, BenchOutput *out) {
   if (result.tag != oak_Result_BenchRecord_JsonDecodeError_tag_Ok) return 0;
   out->id = result.payload.Ok.id;
   out->active = result.payload.Ok.active == oak_Bool_True;
-  for (unsigned i = 0; i < 4; ++i) out->samples[i] = result.payload.Ok.samples[i];
+  /* An Oak owned array is a struct carrying the array (docs/spec/90-backend.md
+     section 10): its elements sit in the .v member. */
+  for (unsigned i = 0; i < 4; ++i) out->samples[i] = result.payload.Ok.samples.v[i];
   return 1;
 }
