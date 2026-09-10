@@ -13,7 +13,7 @@ written in safe Oak without typestate and borrowed returns.
 | --- | --- | --- |
 | 1 | Fault-injected storage in simulation | **Done.** `110-testing.md` "Simulated storage", `stdlib/sim_storage.oak`: a deterministic two-copy block device with the six fault kinds the evaluation mapped onto its own model (torn, misdirected, dropped, lost fsync, bit flip, latent sector), tape-driven so shrinking removes faults and replay is exact, and a provenance ledger that splits durability obligations (trusted blocks) from detection obligations (the rest). STATUS row added. Caveats stand: the bundled scenario is a four-block write-ahead log; there is no object-store, network, or partition model. |
 | 2 | Checked add, subtract, multiply | **Done.** `20-types.md` §11.1a: `{type}_checked_{add\|sub\|mul}` returns `Result[type, Overflow]`, `{type}_saturating_{add\|sub\|mul}` clamps; one width per call, exact-result semantics, interpreter and C backend agree at every boundary. The operators keep wrapping; there is no `wrapping` spelling because `+` is it. |
-| 3 | Borrowed returns | **Designed, not implemented.** `50-borrowing.md` §8c: region-indexed returns — the region elided when one parameter can be its source, a `[R]` type parameter otherwise, `View[T, R]`/`Span[T, R]`, region-carrying records so §8b aggregates can cross calls, `OAK-B0112` for a return that escapes its declared region, and `Oak.Escape.escape_outer_owner_preserves_wf` as the theorem the rule instantiates. Three increments listed; the first alone unblocks the frame cursor. Awaiting review before code. |
+| 3 | Borrowed returns | **Increment 1 done; 2 and 3 designed.** `50-borrowing.md` §8c: a `[]T` return with one `[]T` parameter borrows from it, the region elided; the callee is checked by provenance (`OAK-B0113`), the caller's binding is a reborrow of the argument; `Oak.Escape.return_param_borrow_wf` and `reborrow_wf` are the theorems. A decoder can now hand back a zero-copy frame view. Explicit `[R]` regions, span returns, and region-carrying records (§8b aggregates crossing calls) remain designed, not implemented. |
 | 4 | Typestate axis | **Unchanged.** Still "direction, will receive its own normative spec before implementation." Sequenced after borrowed returns: a typestate over views depends on the region story. |
 | 5 | IO surface | **Absent, and not on the experiment's critical path.** The proposed port of the frame scan and recovery rule runs against `SimDisk` with conformance vectors entering through the FFI boundary (`92-ffi.md` §2.6 header, `c.span_of`) or as embedded arrays. A real IO surface is a separate design. |
 | 6 | Runtime SIMD dispatch, non-C backend | **Absent.** Recorded; neither gates the storage experiment. |
@@ -26,8 +26,8 @@ recovered state against the conformance vectors the Zig and Go
 implementations already agree on. A failing tape shrinks to a run with
 fewer faults and replays exactly, which neither the swarm's fault
 filesystem nor the VOPR gives today. Checked arithmetic covers the offsets
-and sequence numbers the recovery rule computes; borrowed returns are not
-needed until the scan hands frames back instead of indices.
+and sequence numbers the recovery rule computes; borrowed returns (increment 1)
+let the scan hand frames back as views instead of indices.
 
 ## Sent back to dbs
 

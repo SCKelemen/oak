@@ -136,14 +136,16 @@ func TestVerifyConditionalSelects(t *testing.T) {
 	if viaSubs.Kind != VerdictProven {
 		t.Fatalf("flags from subs must verify, got %s: %s", viaSubs.Kind, viaSubs.Message)
 	}
+	// adds sets the flags of a + b: reading them as `lo` (a + b carries) is
+	// not `a < b` — a mismatch at a = 1, b = 0.
 	viaAdds := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  clobber w9\n  adds w9, w0, w1\n  csel w0, w1, w0, lo\n  ret")
-	if viaAdds.Kind != VerdictTrusted {
-		t.Fatalf("flags from adds are outside the subset and must be trusted, got %s: %s", viaAdds.Kind, viaAdds.Message)
+	if viaAdds.Kind != VerdictMismatch {
+		t.Fatalf("selecting on the carry of adds is not a < b and must be a mismatch, got %s: %s", viaAdds.Kind, viaAdds.Message)
 	}
-	// Single-flag conditions (mi/pl/vs/vc) are outside the verified subset.
+	// mi reads the sign of a - b, which is not `a < b` for unsigned operands.
 	single := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  csel w0, w1, w0, mi\n  ret")
-	if single.Kind != VerdictTrusted {
-		t.Fatalf("condition mi must be trusted, got %s: %s", single.Kind, single.Message)
+	if single.Kind != VerdictMismatch {
+		t.Fatalf("mi for an unsigned comparison must be a mismatch, got %s: %s", single.Kind, single.Message)
 	}
 }
 

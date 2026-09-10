@@ -22,6 +22,7 @@ package asm
 
 import (
 	"fmt"
+	"math/bits"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,40 +121,97 @@ type term struct {
 }
 
 // conditionHolds is the ARM condition-code semantics over the NZCV flags
-// of `left - right` (Oak.AssemblerSemantics.condHolds), stated as the
-// comparisons those flags encode: eq/ne on equality, hs/lo/hi/ls unsigned,
-// ge/lt/gt/le signed. mi/pl/vs/vc read a single flag and are outside the
-// verified subset.
-var verifiableConditions = map[string]bool{"eq": true, "ne": true, "hs": true, "cs": true, "lo": true, "cc": true, "hi": true, "ls": true, "ge": true, "lt": true, "gt": true, "le": true}
+// (Oak.AssemblerSemantics.Cond.holds). The flags come from a subtraction
+// (`cmp`/`subs`: the flags of left - right) or, when the code carries the
+// `add:` prefix, from an addition (`adds`: the flags of left + right): N is
+// the result's sign, Z its zero test, C the carry out (for a subtraction,
+// "no borrow"), V the signed overflow. Every code reads those four bits.
+var verifiableConditions = map[string]bool{"eq": true, "ne": true, "hs": true, "cs": true, "lo": true, "cc": true, "hi": true, "ls": true, "ge": true, "lt": true, "gt": true, "le": true, "mi": true, "pl": true, "vs": true, "vc": true}
+
+// negatedCondition is the code that holds exactly when its argument does not.
+var negatedCondition = map[string]string{"eq": "ne", "ne": "eq", "hs": "lo", "cs": "lo", "lo": "hs", "cc": "hs", "hi": "ls", "ls": "hi", "ge": "lt", "lt": "ge", "gt": "le", "le": "gt", "mi": "pl", "pl": "mi", "vs": "vc", "vc": "vs"}
+
+// splitFlagsKind separates the `add:` prefix from a condition code.
+func splitFlagsKind(code string) (add bool, bare string) {
+	if strings.HasPrefix(code, "add:") {
+		return true, code[4:]
+	}
+	return false, code
+}
 
 func conditionHolds(code string, left, right uint64, width int) bool {
+	add, bare := splitFlagsKind(code)
 	m := mask(width)
 	l, r := left&m, right&m
-	shift := uint(64 - width)
-	sl, sr := int64(l<<shift)>>shift, int64(r<<shift)>>shift
+	top := uint(width - 1)
+	var result uint64
+	var c bool
+	if add {
+		sum, carry := bits.Add64(l, r, 0)
+		result = sum & m
+		if width < 64 {
+			c = sum>>uint(width)&1 == 1
+		} else {
+			c = carry == 1
+		}
+	} else {
+		result = (l - r) & m
+		c = l >= r // no borrow
+	}
+	n := result>>top&1 == 1
+	z := result == 0
+	lm, rm, resm := l>>top&1, r>>top&1, result>>top&1
+	var v bool
+	if add {
+		v = lm == rm && resm != lm
+	} else {
+		v = lm != rm && resm != lm
+	}
+	return conditionFromFlags(bare, n, z, c, v)
+}
+
+// conditionFromFlags is the ARM condition table.
+func conditionFromFlags(code string, n, z, c, v bool) bool {
 	switch code {
 	case "eq":
-		return l == r
+		return z
 	case "ne":
-		return l != r
+		return !z
 	case "hs", "cs":
-		return l >= r
+		return c
 	case "lo", "cc":
-		return l < r
+		return !c
+	case "mi":
+		return n
+	case "pl":
+		return !n
+	case "vs":
+		return v
+	case "vc":
+		return !v
 	case "hi":
-		return l > r
+		return c && !z
 	case "ls":
-		return l <= r
+		return !c || z
 	case "ge":
-		return sl >= sr
+		return n == v
 	case "lt":
-		return sl < sr
+		return n != v
 	case "gt":
-		return sl > sr
+		return !z && n == v
 	case "le":
-		return sl <= sr
+		return z || n != v
 	}
 	return false
+}
+
+// flagsCondition is the condition term for a code read from the flags a
+// cmp/subs (subtraction) or adds (addition) produced.
+func flagsCondition(code string, flags *flagsFact) *term {
+	if flags.add {
+		code = "add:" + code
+	}
+	return cmpTerm(code, flags.left, flags.right)
 }
 
 // The constructors fold constants: a term over constants is the constant
@@ -408,6 +466,7 @@ type symbolicState struct {
 type flagsFact struct {
 	left, right *term
 	width       int
+	add         bool // adds: the flags of left + right rather than left - right
 	unknown     bool
 }
 
@@ -624,18 +683,15 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			}
 			pc = target - 1 // backward: a loop, bounded by the budgets
 			continue
-		case "b.":
-			if state.flags == nil || state.flags.unknown {
-				return nil, "b.cond reading flags not produced by cmp/subs", false
+		case "b.", "cbz", "cbnz", "tbz", "tbnz":
+			cond, reason, ok := branchCondition(instr, state)
+			if !ok {
+				return nil, reason, false
 			}
-			if !verifiableConditions[instr.Cond] {
-				return nil, fmt.Sprintf("condition code %s", instr.Cond), false
-			}
-			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
+			target, ok := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 			if !ok {
 				return nil, "a branch to an unknown label", false
 			}
-			cond := cmpTerm(instr.Cond, state.flags.left, state.flags.right)
 			if cond.kind == termConst {
 				// Decided: one continuation. A counted loop's backward
 				// branch always lands here — on every path, since the
@@ -651,7 +707,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			// condition: a data-dependent loop, summarized as a loop event
 			// and continued past its exit on fresh loop-carried symbols.
 			if shape, isLoopExit := x.loopExits[pc]; isLoopExit {
-				return x.loopEvent(shape, instr.Cond, state)
+				return x.loopEvent(shape, instr, state)
 			}
 			// Any other undecided branch forks; backward or forward alike —
 			// an unrecognized loop unfolds until the budgets stop it.
@@ -762,7 +818,7 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			}
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
-			cond := cmpTerm(code, state.flags.left, state.flags.right)
+			cond := flagsCondition(code, state.flags)
 			whenTrue, whenFalse := constTerm(1, width), constTerm(0, width)
 			if instr.Mnemonic == "csel" {
 				var okT, okF bool
@@ -791,12 +847,57 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			case "subs":
 				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class)}
 			case "adds":
-				state.flags = &flagsFact{unknown: true}
+				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class), add: true}
 			}
 			state.write(dest, binaryTerm(op, left, right))
 		}
 	}
 	return "", true
+}
+
+// branchCondition is the taken-condition of a conditional branch: b.cond
+// reads the flags; cbz/cbnz compare a register with zero; tbz/tbnz test one
+// bit (Oak.AssemblerSemantics.cbz, tbz).
+func branchCondition(instr Instruction, state *symbolicState) (*term, string, bool) {
+	switch instr.Mnemonic {
+	case "b.":
+		if state.flags == nil || state.flags.unknown {
+			return nil, "b.cond reading flags no cmp/subs/adds produced", false
+		}
+		if !verifiableConditions[instr.Cond] {
+			return nil, fmt.Sprintf("condition code %s", instr.Cond), false
+		}
+		return flagsCondition(instr.Cond, state.flags), "", true
+	case "cbz", "cbnz":
+		reg := instr.Operands[0].(Register)
+		value, ok := state.read(reg)
+		if !ok {
+			return nil, "unbound register read", false
+		}
+		code := "eq"
+		if instr.Mnemonic == "cbnz" {
+			code = "ne"
+		}
+		return cmpTerm(code, value, constTerm(0, widthOf(reg.Class))), "", true
+	case "tbz", "tbnz":
+		reg := instr.Operands[0].(Register)
+		value, ok := state.read(reg)
+		if !ok {
+			return nil, "unbound register read", false
+		}
+		bit := instr.Operands[1].(Immediate).Value
+		width := widthOf(reg.Class)
+		if bit < 0 || bit >= int64(width) {
+			return nil, "a bit test past the register width", false
+		}
+		code := "eq"
+		if instr.Mnemonic == "tbnz" {
+			code = "ne"
+		}
+		masked := binaryTerm("and", value, constTerm(uint64(1)<<uint(bit), width))
+		return cmpTerm(code, masked, constTerm(0, width)), "", true
+	}
+	return nil, fmt.Sprintf("instruction %s", instr.Mnemonic), false
 }
 
 func operandTerm(state *symbolicState, operand Operand, width int) (*term, bool) {

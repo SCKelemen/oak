@@ -87,6 +87,11 @@ type BorrowChecker struct {
 	// In v1, borrows cannot escape their creation block
 	currentBlockDepth int
 
+	// pendingReturn is the region contract of the function being checked
+	// (borrowchecker/regions.go): its body's result must borrow from the
+	// named parameter, checked while the body's borrows are still live.
+	pendingReturn *returnContract
+
 	// unsafeDepth tracks lexical unsafe-block nesting (Oak.Unsafe.Scope).
 	// Inside an unsafe boundary the checker may admit exactly the
 	// writable-disjointness assumption, recording it as an auditable
@@ -192,6 +197,11 @@ func (bc *BorrowChecker) checkBlockStatement(block *ast.BlockStatement, env *typ
 	for _, stmt := range block.Statements {
 		bc.checkStatement(stmt, env)
 	}
+	// The function body block: its result's provenance is checked while the
+	// locals it may be bound through are still live.
+	if bc.pendingReturn != nil && bc.currentBlockDepth == 1 && !bc.pendingReturn.checked {
+		bc.checkReturnedProvenance((&ast.BlockExpression{Block: block}).Result(), bc.pendingReturn, env)
+	}
 }
 
 // checkFunctionStatement handles function definitions with local scope
@@ -226,6 +236,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 		savedOwnerOf[k] = v
 	}
 	savedBlockDepth := bc.currentBlockDepth
+	savedPendingReturn := bc.pendingReturn
 
 	// Reset to function-local state
 	// We keep the outer environment for type lookups, but start fresh for borrows
@@ -279,14 +290,23 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	}
 
 	// Escape discipline (docs/spec/50-borrowing.md section 5, Oak.Escape):
-	// a borrow may not outlive the owner that proves its lifetime, and no
-	// region-indexed signature form exists yet to prove a caller-side owner
-	// outlives the call. Conservatively reject every view/span return.
-	bc.checkBorrowEscape(stmt, env)
+	// a borrow may not outlive the owner that proves its lifetime. A
+	// region-indexed signature (section 8c, borrowchecker/regions.go) names
+	// the parameter whose owner outlives the call and is checked by
+	// provenance instead; every other view/span return is rejected.
+	bc.pendingReturn = returnContractFor(stmt, env)
+	if bc.pendingReturn == nil {
+		bc.checkBorrowEscape(stmt, env)
+	}
 
 	// Check function body. A block body arrives as an ast.BlockExpression
-	// carrying every statement; checkExpression applies block scoping to it.
+	// carrying every statement; checkExpression applies block scoping to it
+	// and checks the returned provenance before the block's borrows drop.
+	// An expression body is checked here, with the parameters still live.
 	bc.checkExpression(stmt.Body, funcEnv)
+	if bc.pendingReturn != nil {
+		bc.checkReturnedProvenance(stmt.Body, bc.pendingReturn, funcEnv)
+	}
 
 	// At function end, all borrows created in the function are dropped
 	// This happens automatically when we restore state
@@ -296,6 +316,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	bc.activeBorrows = savedActiveBorrows
 	bc.ownerOf = savedOwnerOf
 	bc.currentBlockDepth = savedBlockDepth
+	bc.pendingReturn = savedPendingReturn
 }
 
 // checkBorrowEscape rejects function signatures that would let a borrow
@@ -914,9 +935,14 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 		if targetVar != "" && bc.staticStringFunctions[ident.Value] {
 			bc.createViewBorrowWithRegion("$literal-call:"+targetVar, targetVar, nil, call)
 		}
+		// A region-indexed function (docs/spec/50-borrowing.md section 8c):
+		// the binding reborrows the argument in the region position.
+		if targetVar != "" {
+			bc.bindRegionCall(call, ident.Value, targetVar, env)
+		}
 	}
 
-	// For non-builtin functions, the arg walk above is all we need.
+	// For other non-builtin functions, the arg walk above is all we need.
 }
 
 // boundarySpanOperand recognizes `c.span_of(v)` / `c.span_mut_of(s)` in
