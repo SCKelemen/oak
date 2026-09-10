@@ -7,6 +7,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/token"
 )
@@ -495,7 +496,10 @@ func (t *FunctionType) Equals(other Type) bool {
 type TypeChecker struct {
 	// Module-system facts (typechecker/modules.go): opaque types by internal
 	// name and the loaded package paths.
-	opaqueTypes             map[string]string
+	opaqueTypes map[string]string
+	// packageExports is every loaded package's member table, for uniform
+	// call syntax (docs/spec/10-syntax.md section 13).
+	packageExports          map[string]modules.Exports
 	packagePaths            map[string]bool
 	sealedOpaque            map[string]map[string]bool
 	abstractTypes           map[string]string
@@ -1938,10 +1942,13 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		}
 	}
 
-	// Check if this is a method call: recv.method(args)
+	// recv.member(args): a method call or uniform call syntax
+	// (docs/spec/10-syntax.md section 13).
 	if indexExpr, ok := expr.Function.(*ast.IndexExpression); ok {
 		if methodName, ok := indexExpr.Index.(*ast.Identifier); ok {
-			// This is a method call
+			if indexExpr.Dot {
+				return tc.checkDotCall(expr, indexExpr, methodName)
+			}
 			return tc.checkMethodCall(indexExpr.Left, methodName.Value, expr.Arguments)
 		}
 	}
@@ -2670,6 +2677,71 @@ func (tc *TypeChecker) isValidNarrowing(sourceType, targetType string) bool {
 }
 
 // checkMethodCall type checks a method call: recv.method(args)
+// checkDotCall resolves recv.name(args) (docs/spec/10-syntax.md section
+// 13). A method declared for an ADT receiver wins. Otherwise the form is
+// uniform call syntax: name must be a function visible at the call site or
+// an exported function of the package that declares the receiver's type,
+// and the call is rewritten in place into name(recv, args...), an ordinary
+// invocation for every later phase. Fields are never callable this way,
+// and nothing is dispatched at run time: the callee is fixed here.
+func (tc *TypeChecker) checkDotCall(expr *ast.InvocationExpression, access *ast.IndexExpression, member *ast.Identifier) Type {
+	recvType := tc.checkExpression(access.Left)
+	if recvType == nil {
+		return nil
+	}
+	if adt, isADT := recvType.(*ADTType); isADT {
+		if _, declared := tc.env.Get(fmt.Sprintf("%s::%s", adt.Name, member.Value)); declared {
+			return tc.checkMethodCall(access.Left, member.Value, expr.Arguments)
+		}
+	}
+	if record, isRecord := recvType.(*RecordType); isRecord {
+		if _, isField := record.Fields[member.Value]; isField {
+			tc.addError(member, "%s is a field of %s, not a function: uniform call syntax never reads a field (docs/spec/10-syntax.md section 13); bind the field and call the value", member.Value, record.DisplayName())
+			return nil
+		}
+	}
+	callee, found := tc.uniformCallee(recvType, member.Value)
+	if !found {
+		tc.addError(member, "no method or function %s for %s: uniform call syntax needs a function %s visible here or exported by the package declaring %s (docs/spec/10-syntax.md section 13)", member.Value, recvType, member.Value, recvType)
+		return nil
+	}
+	expr.Function = &ast.Identifier{Token: member.Token, Value: callee}
+	expr.Arguments = append([]ast.Expression{access.Left}, expr.Arguments...)
+	return tc.checkInvocationExpression(expr)
+}
+
+// uniformCallee names the function recv.name(...) calls: name itself when
+// a binding of that name is visible at the call site (the receiver's own
+// package, selective and open imports, the prelude), else the exported
+// function name of the package that declares the receiver's named type,
+// under its internal name. Unexported functions of other packages are not
+// reachable: the same `pub` boundary as a qualified call.
+func (tc *TypeChecker) uniformCallee(recvType Type, name string) (string, bool) {
+	if _, visible := tc.env.Get(name); visible {
+		return name, true
+	}
+	typeName := ""
+	switch t := recvType.(type) {
+	case *RecordType:
+		typeName = t.Name
+	case *ADTType:
+		typeName = t.Name
+	}
+	path, _, mangled := modules.Demangle(typeName)
+	if !mangled {
+		return "", false
+	}
+	member, declared := tc.packageExports[path][name]
+	if !declared || !member.Exported || member.Kind != modules.KindValue {
+		return "", false
+	}
+	internal := modules.Mangle(path, name)
+	if _, present := tc.env.Get(internal); !present {
+		return "", false
+	}
+	return internal, true
+}
+
 func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName string, args []ast.Expression) Type {
 	// Check receiver type
 	recvType := tc.checkExpression(recvExpr)
