@@ -20,6 +20,16 @@ type blaster struct {
 	params []string       // parameter order
 	index  map[string]int // parameter -> position
 	widths map[string]int // parameter -> declared width
+	// selects are the uninterpreted element reads met so far: a select at
+	// an index whose bits are the same canonical nodes as an earlier one
+	// (over the same span) is the same value and shares its variables.
+	selects []selectAbstraction
+}
+
+type selectAbstraction struct {
+	span string
+	idx  []int // canonical index bits
+	vars []int // the fresh variable indices holding the value
 }
 
 const blastNodeBudget = 400000
@@ -32,9 +42,67 @@ func newBlaster(params []string, widths map[string]int) *blaster {
 	return &blaster{bdd: newBDD(blastNodeBudget), params: params, index: index, widths: widths}
 }
 
+// selectSlots is the number of distinct element reads that share the
+// interleaved variable order with the parameters (bit j of every operand
+// adjacent — what keeps adders linear-size). Further reads take variables
+// past every interleaved bit, where an adder over them may exceed the
+// budget (a labeled evidence verdict, never a false proof).
+const selectSlots = 8
+
+// stride is the number of interleaved operands: parameters plus select slots.
+func (bl *blaster) stride() int { return len(bl.params) + selectSlots }
+
 // variableIndex is the interleaved ordering position of parameter bit j.
 func (bl *blaster) variableIndex(param string, bit int) int {
-	return bit*len(bl.params) + bl.index[param]
+	return bit*bl.stride() + bl.index[param]
+}
+
+// selectVariable is the interleaved position of bit j of select slot s.
+func (bl *blaster) selectVariable(slot, bit int) int {
+	if slot < selectSlots {
+		return bit*bl.stride() + len(bl.params) + slot
+	}
+	return 64*bl.stride() + (slot-selectSlots)*64 + bit
+}
+
+// selectBits abstracts a select as fresh variables — one block per distinct
+// (span, index) — sound for equality proofs: terms equal under independent
+// element values are equal under every memory.
+func (bl *blaster) selectBits(span string, idx []int, width int) []int {
+	for _, known := range bl.selects {
+		if known.span != span || len(known.idx) != len(idx) {
+			continue
+		}
+		same := true
+		for i := range idx {
+			if idx[i] != known.idx[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return bl.varsBits(known.vars, width)
+		}
+	}
+	slot := len(bl.selects)
+	vars := make([]int, width)
+	for i := range vars {
+		vars[i] = bl.selectVariable(slot, i)
+	}
+	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars})
+	return bl.varsBits(vars, width)
+}
+
+func (bl *blaster) varsBits(vars []int, width int) []int {
+	out := make([]int, width)
+	for i := range out {
+		if i < len(vars) {
+			out[i] = bl.bdd.variable(vars[i])
+		} else {
+			out[i] = bddFalse
+		}
+	}
+	return out
 }
 
 // blast returns width nodes (LSB first), or nil when the budget is exceeded.
@@ -62,6 +130,12 @@ func (bl *blaster) blast(t *term) []int {
 			}
 		}
 		return out
+	case termSelect:
+		idx := bl.adapt(bl.blast(t.left), 32)
+		if idx == nil {
+			return nil
+		}
+		return bl.selectBits(t.name, idx, t.width)
 	case termCmp:
 		// The comparison is the flag reading of `left - right` at the
 		// operands' width: NZCV from the subtraction chain, then the ARM
@@ -249,11 +323,12 @@ func (bl *blaster) counterexample(x, y int) map[string]uint64 {
 	assignment := bl.bdd.satisfyingPath(diff)
 	env := make(map[string]uint64, len(bl.params))
 	for variable, value := range assignment {
-		if !value {
-			continue
+		position := variable % bl.stride()
+		if !value || variable >= 64*bl.stride() || position >= len(bl.params) {
+			continue // select variables have no parameter to report
 		}
-		param := bl.params[variable%len(bl.params)]
-		bit := variable / len(bl.params)
+		param := bl.params[position]
+		bit := variable / bl.stride()
 		env[param] |= uint64(1) << uint(bit)
 	}
 	return env

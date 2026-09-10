@@ -403,6 +403,59 @@ theorem whileFuel_counted {α : Type} (N : Nat) (f : α → α) :
     rw [hstep]
     exact ih (f a) (by omega)
 
+/-! ## Coupled loops
+
+A loop whose trip count depends on the inputs is verified by coupling
+(`asm/loops.go`): a relation R between the Oak locals and the asm
+registers that holds at the header, under which the two continue
+conditions agree and one iteration of each body preserves R. Then the two
+loops, run under the same fuel, produce related results — both exhaust the
+fuel together or both stop together, at related states. -/
+
+/-- Related optional results: both absent, or both present and related. -/
+def optionRel {σ τ : Type} (R : σ → τ → Prop) : Option σ → Option τ → Prop
+  | none, none => True
+  | some s, some t => R s t
+  | _, _ => False
+
+theorem whileFuel_coupled {σ τ : Type} (R : σ → τ → Prop)
+    (c₁ : σ → Bool) (c₂ : τ → Bool) (b₁ : σ → σ) (b₂ : τ → τ)
+    (hcond : ∀ s t, R s t → c₁ s = c₂ t)
+    (hbody : ∀ s t, R s t → c₁ s = true → R (b₁ s) (b₂ t)) :
+    ∀ (fuel : Nat) (s : σ) (t : τ), R s t →
+      optionRel R (whileFuel c₁ b₁ fuel s) (whileFuel c₂ b₂ fuel t) := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro s t _
+    simp [whileFuel, optionRel]
+  | succ fuel ih =>
+    intro s t hR
+    have hc := hcond s t hR
+    simp only [whileFuel]
+    rw [← hc]
+    cases h : c₁ s with
+    | true =>
+      simp only [if_true]
+      exact ih (b₁ s) (b₂ t) (hbody s t hR h)
+    | false =>
+      simp only [optionRel]
+      exact hR
+
+/-- The verifier's use: when R also fixes the results (`f s = g t`), the
+    two loops compute the same value whenever both finish. -/
+theorem whileFuel_coupled_result {σ τ α : Type} (R : σ → τ → Prop) (f : σ → α) (g : τ → α)
+    (c₁ : σ → Bool) (c₂ : τ → Bool) (b₁ : σ → σ) (b₂ : τ → τ)
+    (hcond : ∀ s t, R s t → c₁ s = c₂ t)
+    (hbody : ∀ s t, R s t → c₁ s = true → R (b₁ s) (b₂ t))
+    (hres : ∀ s t, R s t → f s = g t)
+    (fuel : Nat) (s : σ) (t : τ) (hR : R s t) (s' : σ) (t' : τ)
+    (hs : whileFuel c₁ b₁ fuel s = some s') (ht : whileFuel c₂ b₂ fuel t = some t') :
+    f s' = g t' := by
+  have h := whileFuel_coupled R c₁ c₂ b₁ b₂ hcond hbody fuel s t hR
+  rw [hs, ht] at h
+  exact hres s' t' h
+
 /-- A counted loop from 0 runs exactly N times: its result is `iter f N`. -/
 theorem counted_loop_unrolls {α : Type} (N : Nat) (f : α → α) (a : α) :
     whileFuel (fun s : Nat × α => decide (s.1 < N)) (fun s => (s.1 + 1, f s.2)) (N + 1) (0, a)
