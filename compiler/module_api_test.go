@@ -339,3 +339,40 @@ pub wrap: (v: i32): inner.Box = inner.box(v)
 		t.Fatal("a single-package snapshot of a package with nested modules must still fail closed")
 	}
 }
+
+// Unsealed imports are decided by building against a candidate through an
+// in-memory replace; the manifest on disk is untouched.
+func TestTryReplacementDecidesUnsealedImports(t *testing.T) {
+	dep := writeModule(t, map[string]string{
+		"oak.mod":       "module example.com/dep\nversion 1.0.0\n",
+		"math/math.oak": "package math\n\npub square: (v: i32): i32 = v * v\n",
+	})
+	compatible := writeModule(t, map[string]string{
+		"oak.mod":       "module example.com/dep\nversion 1.1.0\n",
+		"math/math.oak": "package math\n\npub square: (v: i32): i32 = v * v\npub cube: (v: i32): i32 = v * v * v\n",
+	})
+	breaking := writeModule(t, map[string]string{
+		"oak.mod":       "module example.com/dep\nversion 2.0.0\n",
+		"math/math.oak": "package math\n\npub square: (v: i64): i64 = v * v\n",
+	})
+	app := writeModule(t, map[string]string{
+		"oak.mod":  "module example.com/app\nrequire example.com/dep 1.0.0\nreplace example.com/dep => " + dep + "\n",
+		"main.oak": "package main\n\nm := import(\"example.com/dep/math\")\n\nmain: (): i32 = m.square(6) + 6\n",
+	})
+	manifestBefore, _ := os.ReadFile(filepath.Join(app, "oak.mod"))
+	results, err := TryReplacement(app, "example.com/dep", compatible)
+	if err != nil || len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("compatible candidate: %v %+v", err, results)
+	}
+	results, err = TryReplacement(app, "example.com/dep", breaking)
+	if err != nil || len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("breaking candidate must fail the build: %v %+v", err, results)
+	}
+	if _, err := TryReplacement(app, "example.com/other", breaking); err == nil {
+		t.Fatal("a candidate declaring another module must be rejected")
+	}
+	manifestAfter, _ := os.ReadFile(filepath.Join(app, "oak.mod"))
+	if string(manifestBefore) != string(manifestAfter) {
+		t.Fatal("oak mod try must never rewrite the manifest")
+	}
+}

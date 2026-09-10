@@ -68,6 +68,9 @@ type Compilation struct {
 	includeTests bool
 	moduleCache  string
 	sessionFiles map[string]string
+	// replaces overlays `replace` directives on the root manifest in memory
+	// (oak mod try, docs/spec/82-package-semver.md section 8).
+	replaces map[string]string
 	// diagnosticSink observes every diagnostic a stage gate sees, rejecting
 	// or not — how a driver surfaces informational findings such as the
 	// assembler's verification verdicts (docs/spec/94-assembler.md §8).

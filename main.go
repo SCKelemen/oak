@@ -198,6 +198,9 @@ func buildPackage(args []string) int {
 //	oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]
 //	                                  build the module archive carrying api.json
 //	                                  and print its `require` line
+//	oak mod try path candidate-dir [-dir dir]
+//	                                  build every package with `path` replaced
+//	                                  by a local candidate: decides unsealed imports
 //	oak mod upgrade [-dir dir] dep-api.json...
 //	                                  pick the highest candidate version whose
 //	                                  snapshot satisfies the module's sealed imports
@@ -205,7 +208,7 @@ func buildPackage(args []string) int {
 // The compiler itself never fetches; every input here is a local file.
 func modCommand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat|pack|upgrade ...")
+		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat|pack|upgrade|try ...")
 		return 2
 	}
 	switch args[0] {
@@ -223,6 +226,8 @@ func modCommand(args []string) int {
 		return modPack(args[1:])
 	case "upgrade":
 		return modUpgrade(args[1:])
+	case "try":
+		return modTry(args[1:])
 	}
 	fmt.Fprintf(os.Stderr, "oak mod: unknown subcommand %q\n", args[0])
 	return 2
@@ -496,6 +501,49 @@ func modUpgrade(args []string) int {
 		return 1
 	}
 	fmt.Printf("require %s %s\n", best.Module, best.Version)
+	return 0
+}
+
+// modTry decides the unsealed imports of a module against a local candidate
+// of a dependency by building (docs/spec/82-package-semver.md section 8).
+func modTry(args []string) int {
+	dir := "."
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-dir" && i+1 < len(args):
+			dir = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-"):
+			fmt.Fprintf(os.Stderr, "oak mod try: unknown flag %s\nusage: oak mod try path candidate-dir [-dir dir]\n", args[i])
+			return 2
+		default:
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: oak mod try path candidate-dir [-dir dir]")
+		return 2
+	}
+	results, err := compiler.TryReplacement(dir, positional[0], positional[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod try: %v\n", err)
+		return 1
+	}
+	failed := 0
+	for _, result := range results {
+		if result.Err == nil {
+			fmt.Printf("%s: compatible\n", result.Package)
+			continue
+		}
+		failed++
+		fmt.Printf("%s: incompatible\n  %s\n", result.Package, strings.ReplaceAll(strings.TrimSpace(result.Err.Error()), "\n", "\n  "))
+	}
+	if failed != 0 {
+		fmt.Printf("%d of %d package(s) do not build against %s\n", failed, len(results), positional[1])
+		return 1
+	}
+	fmt.Printf("every package builds against %s\n", positional[1])
 	return 0
 }
 
