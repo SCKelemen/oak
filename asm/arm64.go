@@ -75,6 +75,15 @@ var instructionTable = map[string]instructionSpec{
 	"cset": {forms: []form{{opX, opCond}, {opW, opCond}}, readsFlags: true, sysregOperand: -1},
 	"ldr":  {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
 	"str":  {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
+	"ldrb": {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
+	"ldrh": {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
+	"strb": {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
+	"strh": {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
+	"mul":  {forms: []form{{opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
+	"neg":  {forms: []form{{opX, opX}, {opW, opW}}, sysregOperand: -1},
+	"mvn":  {forms: []form{{opX, opX}, {opW, opW}}, sysregOperand: -1},
+	"asr":  {forms: []form{{opX, opX, opImm}, {opW, opW, opImm}, {opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
+	"tst":  {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}}, setsFlags: true, sysregOperand: -1},
 	"ldp":  {forms: []form{{opX, opX, opMem}, {opW, opW, opMem}}, memory: true, sysregOperand: -1},
 	"stp":  {forms: []form{{opX, opX, opMem}, {opW, opW, opMem}}, memory: true, sysregOperand: -1},
 	"b":    {forms: []form{{opSym}}, branch: branchUnconditional, sysregOperand: -1},
@@ -159,6 +168,12 @@ func operandMatches(class operandClass, operand Operand) bool {
 
 // accessBytes is the memory footprint of one load/store form.
 func accessBytes(mnemonic string, class operandClass) int64 {
+	switch mnemonic {
+	case "ldrb", "strb":
+		return 1
+	case "ldrh", "strh":
+		return 2
+	}
 	width := int64(8)
 	if class == opW {
 		width = 4

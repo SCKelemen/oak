@@ -191,6 +191,14 @@ func (bl *blaster) blast(t *term) []int {
 		} else {
 			out = bl.shiftBarrel(left, right, t.op == "shl")
 		}
+	case "sar":
+		if t.right.kind == termConst {
+			out = shiftRightArith(left, int(t.right.value%uint64(t.width)))
+		} else {
+			out = bl.shiftBarrelArith(left, right)
+		}
+	case "mul":
+		out = bl.multiply(left, right)
 	default:
 		return nil
 	}
@@ -248,16 +256,24 @@ func (bl *blaster) addCarry(a, b []int, carry int) ([]int, int) {
 // Oak.AssemblerSemantics.condHolds.
 func (bl *blaster) condition(code string, left, right []int) int {
 	b := bl.bdd
-	add, bare := splitFlagsKind(code)
+	kind, bare := splitFlagsKind(code)
 	var result []int
 	var c, v int
 	msb := len(left) - 1
-	if add {
+	switch kind {
+	case "add":
 		// adds: the flags of left + right — C the carry out, V a signed
 		// overflow (equal operand signs, a differing result sign).
 		result, c = bl.addCarry(left, right, bddFalse)
 		v = b.apply(opAnd, b.not(b.apply(opXor, left[msb], right[msb])), b.apply(opXor, result[msb], left[msb]))
-	} else {
+	case "and":
+		// tst: the flags of left & right; C and V are cleared.
+		result = make([]int, len(left))
+		for i := range left {
+			result[i] = b.apply(opAnd, left[i], right[i])
+		}
+		c, v = bddFalse, bddFalse
+	default:
 		negated := make([]int, len(right))
 		for i := range right {
 			negated[i] = b.not(right[i])
@@ -314,6 +330,62 @@ func shiftConst(a []int, k int, left bool) []int {
 			}
 		} else if i+k < len(a) {
 			out[i] = a[i+k]
+		}
+	}
+	return out
+}
+
+// shiftRightArith is the arithmetic right shift by a constant: the sign
+// bit fills from the top.
+func shiftRightArith(a []int, k int) []int {
+	out := make([]int, len(a))
+	sign := a[len(a)-1]
+	for i := range a {
+		if i+k < len(a) {
+			out[i] = a[i+k]
+		} else {
+			out[i] = sign
+		}
+	}
+	return out
+}
+
+// shiftBarrelArith is the arithmetic barrel shifter: one mux stage per
+// count bit, sign-filling.
+func (bl *blaster) shiftBarrelArith(a, count []int) []int {
+	stages := bits.Len(uint(len(a) - 1))
+	current := a
+	for s := 0; s < stages; s++ {
+		shifted := shiftRightArith(current, 1<<uint(s))
+		next := make([]int, len(a))
+		for i := range a {
+			next[i] = bl.bdd.ite(count[s], shifted[i], current[i])
+		}
+		current = next
+	}
+	return current
+}
+
+// multiply is the shift-and-add product modulo the width: for every set
+// bit of the right operand, the left operand shifted into place is added.
+// Two symbolic operands are BDD-hard (the budget yields an evidence
+// verdict); a constant operand folds to shifted adds.
+func (bl *blaster) multiply(a, b []int) []int {
+	out := make([]int, len(a))
+	for i := range out {
+		out[i] = bddFalse
+	}
+	for i := range b {
+		if b[i] == bddFalse {
+			continue
+		}
+		partial := shiftConst(a, i, true)
+		for j := range partial {
+			partial[j] = bl.bdd.apply(opAnd, partial[j], b[i])
+		}
+		out = bl.add(out, partial, bddFalse)
+		if bl.bdd.exceeded {
+			return out
 		}
 	}
 	return out

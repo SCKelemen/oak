@@ -95,6 +95,9 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 		return fmt.Sprintf("#%d", o.Value)
 	case Memory:
 		if o.Index != nil {
+			if o.Shift == 0 {
+				return fmt.Sprintf("[%s, %s, uxtw]", o.Base.Text, o.Index.Text)
+			}
 			return fmt.Sprintf("[%s, %s, uxtw #%d]", o.Base.Text, o.Index.Text, o.Shift)
 		}
 		switch o.Mode {

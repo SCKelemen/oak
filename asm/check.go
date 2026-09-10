@@ -687,13 +687,13 @@ func (c *checker) instruction(instr Instruction) bool {
 	for _, source := range regs[1:] {
 		c.read(instr, source)
 	}
-	if instr.Mnemonic == "cmp" {
-		c.read(instr, dest) // cmp's first operand is a source
+	if instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" {
+		c.read(instr, dest) // cmp/tst: the first operand is a source
 		c.flagsValid = true
 		// Only 32-bit comparisons guard: a span length lives in the low half
 		// of its register (the upper half is padding the contract never
 		// defines), and an index is a 32-bit element count.
-		if dest.Class == ClassW {
+		if instr.Mnemonic == "cmp" && dest.Class == ClassW {
 			switch right := instr.Operands[1].(type) {
 			case Immediate:
 				c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: -1, imm: right.Value}
@@ -852,7 +852,7 @@ func (c *checker) moveSP(instr Instruction, delta int64) {
 func (c *checker) memoryAccess(instr Instruction, matched form) {
 	mem, _ := instr.Operands[len(instr.Operands)-1].(Memory)
 	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
-	isStore := instr.Mnemonic == "str" || instr.Mnemonic == "stp"
+	isStore := isStoreMnemonic(instr.Mnemonic)
 	for _, reg := range regs {
 		if isStore {
 			c.read(instr, reg)
@@ -909,6 +909,17 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 			state.restored = true
 		}
 	}
+}
+
+// isStoreMnemonic: the instructions whose register operands are sources
+// written to memory (a view refuses them; the executor never treats their
+// register as written).
+func isStoreMnemonic(mnemonic string) bool {
+	switch mnemonic {
+	case "str", "stp", "strb", "strh":
+		return true
+	}
+	return false
 }
 
 // spanAccess admits [base, #off] on a bound span only under a dominating

@@ -49,7 +49,7 @@ theorem readX_writeX_other (r : Regs) (n m : Fin 32) (v : BitVec 64)
 
 /-- Data-processing operations, total and wrapping at the width. -/
 inductive Op where
-  | add | sub | and | orr | eor | lsl | lsr
+  | add | sub | and | orr | eor | lsl | lsr | asr | mul
   deriving DecidableEq, Repr
 
 def apply {w : Nat} (op : Op) (a b : BitVec w) : BitVec w :=
@@ -61,6 +61,15 @@ def apply {w : Nat} (op : Op) (a b : BitVec w) : BitVec w :=
   | .eor => a ^^^ b
   | .lsl => a <<< (b.toNat % w)
   | .lsr => a >>> (b.toNat % w)
+  | .asr => a.sshiftRight (b.toNat % w)
+  | .mul => a * b
+
+/-- `neg` and `mvn` are `sub` from zero and `eor` with all ones. -/
+theorem neg_as_sub {w : Nat} (a : BitVec w) : -a = apply .sub 0 a := by
+  simp [apply, BitVec.zero_sub]
+
+theorem mvn_as_eor {w : Nat} (a : BitVec w) : ~~~a = apply .eor a (BitVec.allOnes w) := by
+  simp [apply, BitVec.xor_allOnes]
 
 /-- A 64-bit data-processing instruction on registers. -/
 def execX (op : Op) (r : Regs) (d n m : Fin 32) : Regs :=
@@ -226,6 +235,14 @@ theorem add_carry_iff {w : Nat} (l r : BitVec w) :
       rw [Nat.mod_eq_sub_mod hge, Nat.mod_eq_of_lt (by omega)]
     rw [hsub]
     omega
+
+/-- The flags of `tst l, r`: those of `l &&& r`, with C and V cleared. -/
+def andFlagsOf {w : Nat} (l r : BitVec w) : Flags :=
+  { n := (l &&& r).msb, z := decide (l &&& r = 0), c := false, v := false }
+
+/-- `ne` after `tst` is the bit test: some tested bit is set. -/
+theorem tst_ne_iff {w : Nat} (l r : BitVec w) : Cond.holds (andFlagsOf l r) .ne = true ↔ l &&& r ≠ 0 := by
+  simp [Cond.holds, andFlagsOf]
 
 /-- `mi` after `cmp l, r` is the sign bit of the difference. -/
 theorem mi_iff_msb {w : Nat} (l r : BitVec w) : Cond.holds (flagsOf l r) .mi = (l - r).msb := rfl

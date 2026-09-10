@@ -151,8 +151,8 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	allW := map[int]bool{}
 	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
 		instr, isInstr := x.items[i].(Instruction)
-		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "b" || instr.Mnemonic == "b." || len(instr.Operands) == 0 {
-			continue
+		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || instr.Mnemonic == "b" || isStoreMnemonic(instr.Mnemonic) || len(instr.Operands) == 0 {
+			continue // no register written: compares, branches, stores
 		}
 		dest, isReg := instr.Operands[0].(Register)
 		if !isReg || dest.ZeroRegister() {
@@ -331,7 +331,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				cond = binaryTerm("and", cond, notTaken)
 				pc++
 				continue
-			case "ldr":
+			case "ldr", "ldrb", "ldrh":
 				if reason, ok := x.load(instr, st); !ok {
 					return nil, reason, false
 				}

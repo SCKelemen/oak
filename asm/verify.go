@@ -132,21 +132,23 @@ var verifiableConditions = map[string]bool{"eq": true, "ne": true, "hs": true, "
 var negatedCondition = map[string]string{"eq": "ne", "ne": "eq", "hs": "lo", "cs": "lo", "lo": "hs", "cc": "hs", "hi": "ls", "ls": "hi", "ge": "lt", "lt": "ge", "gt": "le", "le": "gt", "mi": "pl", "pl": "mi", "vs": "vc", "vc": "vs"}
 
 // splitFlagsKind separates the `add:` prefix from a condition code.
-func splitFlagsKind(code string) (add bool, bare string) {
-	if strings.HasPrefix(code, "add:") {
-		return true, code[4:]
+func splitFlagsKind(code string) (kind string, bare string) {
+	if colon := strings.IndexByte(code, ':'); colon > 0 {
+		return code[:colon], code[colon+1:]
 	}
-	return false, code
+	return "", code
 }
 
 func conditionHolds(code string, left, right uint64, width int) bool {
-	add, bare := splitFlagsKind(code)
+	kind, bare := splitFlagsKind(code)
 	m := mask(width)
 	l, r := left&m, right&m
 	top := uint(width - 1)
 	var result uint64
-	var c bool
-	if add {
+	var c, v bool
+	lm, rm := l>>top&1, r>>top&1
+	switch kind {
+	case "add":
 		sum, carry := bits.Add64(l, r, 0)
 		result = sum & m
 		if width < 64 {
@@ -154,19 +156,16 @@ func conditionHolds(code string, left, right uint64, width int) bool {
 		} else {
 			c = carry == 1
 		}
-	} else {
+		v = lm == rm && result>>top&1 != lm
+	case "and":
+		result = l & r // tst: C and V are cleared
+	default:
 		result = (l - r) & m
 		c = l >= r // no borrow
+		v = lm != rm && result>>top&1 != lm
 	}
 	n := result>>top&1 == 1
 	z := result == 0
-	lm, rm, resm := l>>top&1, r>>top&1, result>>top&1
-	var v bool
-	if add {
-		v = lm == rm && resm != lm
-	} else {
-		v = lm != rm && resm != lm
-	}
 	return conditionFromFlags(bare, n, z, c, v)
 }
 
@@ -208,8 +207,8 @@ func conditionFromFlags(code string, n, z, c, v bool) bool {
 // flagsCondition is the condition term for a code read from the flags a
 // cmp/subs (subtraction) or adds (addition) produced.
 func flagsCondition(code string, flags *flagsFact) *term {
-	if flags.add {
-		code = "add:" + code
+	if flags.kind != "" {
+		code = flags.kind + ":" + code
 	}
 	return cmpTerm(code, flags.left, flags.right)
 }
@@ -325,6 +324,11 @@ func (t *term) eval(env map[string]uint64) uint64 {
 		return (l << (r % uint64(t.width))) & m
 	case "shr":
 		return (l >> (r % uint64(t.width))) & m
+	case "sar":
+		shift := uint(64 - t.width)
+		return uint64(int64(l<<shift)>>shift>>(r%uint64(t.width))) & m
+	case "mul":
+		return (l * r) & m
 	}
 	return 0
 }
@@ -399,6 +403,27 @@ func (t *term) linearAt(w int) *linearForm {
 			out.constant = (l.constant - r.constant) & m
 		}
 		return out.trim()
+	case "mul":
+		// Scaling by a constant keeps the form linear.
+		if t.width < w {
+			return nil
+		}
+		variable, factor := t.left, t.right
+		if variable.kind == termConst {
+			variable, factor = t.right, t.left
+		}
+		if factor.kind != termConst {
+			return nil
+		}
+		l := variable.linearAt(w)
+		if l == nil {
+			return nil
+		}
+		out := &linearForm{width: w, coeffs: map[string]uint64{}, constant: (l.constant * factor.value) & m}
+		for name, c := range l.coeffs {
+			out.coeffs[name] = (c * factor.value) & m
+		}
+		return out.trim()
 	case "shl":
 		if t.right.kind != termConst || t.width < w {
 			return nil
@@ -466,7 +491,7 @@ type symbolicState struct {
 type flagsFact struct {
 	left, right *term
 	width       int
-	add         bool // adds: the flags of left + right rather than left - right
+	kind        string // "" (cmp/subs: left - right), "add" (adds: left + right), "and" (tst: left & right)
 	unknown     bool
 }
 
@@ -538,7 +563,7 @@ func zeroExtend(t *term, width int) *term {
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(t.width), width)}
 }
 
-var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add", "subs": "sub", "and": "and", "orr": "or", "eor": "xor", "lsl": "shl", "lsr": "shr"}
+var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add", "subs": "sub", "and": "and", "orr": "or", "eor": "xor", "lsl": "shl", "lsr": "shr", "asr": "sar", "mul": "mul"}
 
 // executeBody symbolically executes the body along every path; reports (result
 // term, "", true) or ("", reason, false) when the body is outside the
@@ -721,7 +746,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			}
 			return iteTerm(cond, taken, fallThrough), "", true
 		}
-		if instr.Mnemonic == "ldr" {
+		if isLoad(instr.Mnemonic) {
 			if reason, ok := x.load(instr, state); !ok {
 				return nil, reason, false
 			}
@@ -754,8 +779,17 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	if mem.Mode != MemOffset {
 		return "a span base moved by pre/post-index", false
 	}
-	if int64(widthOf(dest.Class)/8) != elem {
-		return fmt.Sprintf("a %d-bit load over %d-byte elements", widthOf(dest.Class), elem), false
+	// The access size is the element size; a byte or halfword load
+	// zero-extends the element into its w register.
+	size := int64(widthOf(dest.Class) / 8)
+	switch instr.Mnemonic {
+	case "ldrb":
+		size = 1
+	case "ldrh":
+		size = 2
+	}
+	if size != elem {
+		return fmt.Sprintf("a %d-byte load over %d-byte elements", size, elem), false
 	}
 	if mem.Index != nil {
 		// [base, wI, uxtw #s]: element wI. Along an unrolled counted loop the
@@ -768,14 +802,19 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if !ok {
 			return "unbound register read", false
 		}
-		state.write(dest, x.element(param, index, widthOf(dest.Class)))
+		state.write(dest, zeroExtend(x.element(param, index, int(elem)*8), widthOf(dest.Class)))
 		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
 	}
-	state.write(dest, x.element(param, constTerm(uint64(mem.Offset/elem), 32), widthOf(dest.Class)))
+	state.write(dest, zeroExtend(x.element(param, constTerm(uint64(mem.Offset/elem), 32), int(elem)*8), widthOf(dest.Class)))
 	return "", true
+}
+
+// isLoad reports the load mnemonics the executor resolves through a span.
+func isLoad(mnemonic string) bool {
+	return mnemonic == "ldr" || mnemonic == "ldrb" || mnemonic == "ldrh"
 }
 
 // element is the span element at an index term; in a concrete run the
@@ -829,6 +868,27 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				}
 			}
 			state.write(dest, iteTerm(cond, whenTrue, whenFalse))
+		case "tst":
+			left := instr.Operands[0].(Register)
+			width := widthOf(left.Class)
+			l, okL := operandTerm(state, left, width)
+			r, okR := operandTerm(state, instr.Operands[1], width)
+			if !okL || !okR {
+				return "unbound register read", false
+			}
+			state.flags = &flagsFact{left: l, right: r, width: width, kind: "and"}
+		case "neg", "mvn":
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			source, ok := operandTerm(state, instr.Operands[1], width)
+			if !ok {
+				return "unbound register read", false
+			}
+			if instr.Mnemonic == "neg" {
+				state.write(dest, binaryTerm("sub", constTerm(0, width), source))
+			} else {
+				state.write(dest, binaryTerm("xor", source, constTerm(mask(width), width)))
+			}
 		default:
 			op, verifiable := verifiableOps[instr.Mnemonic]
 			if !verifiable || len(instr.Operands) != 3 {
@@ -847,7 +907,7 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			case "subs":
 				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class)}
 			case "adds":
-				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class), add: true}
+				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class), kind: "add"}
 			}
 			state.write(dest, binaryTerm(op, left, right))
 		}
@@ -912,7 +972,7 @@ func operandTerm(state *symbolicState, operand Operand, width int) (*term, bool)
 
 // --- the Oak specification ----------------------------------------------
 
-var oakOps = map[string]string{"+": "add", "-": "sub", "&": "and", "|": "or", "^": "xor", "<<": "shl", ">>": "shr"}
+var oakOps = map[string]string{"+": "add", "-": "sub", "*": "mul", "&": "and", "|": "or", "^": "xor", "<<": "shl", ">>": "shr"}
 
 // oakComparisons maps Oak's comparison operators to the condition code
 // whose flag reading is that comparison, per signedness of the operands.

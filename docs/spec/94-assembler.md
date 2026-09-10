@@ -482,7 +482,21 @@ executor, the loop-body executor, and loop recognition treat them like
 affine coupling and a `tbz` bit test verifies. Byte-offset pointer walks
 (`[xB, xO]`) remain deliberately outside the subset: the scaled-index form
 is the idiom and costs nothing on AArch64, and a byte offset would need
-value tracking the seam checker fails closed on.
+value tracking the seam checker fails closed on. **Instruction breadth.**
+`ldrb`/`ldrh`/`strb`/`strh` access one- and two-byte elements (the span
+element size must match; the indexed form takes `uxtw #0`/`uxtw #1` and
+bytes emit as `[x0, w9, uxtw]`), and a narrower load zero-extends the
+element into its `w` register — so packet-buffer kernels over `[]u8` verify
+(a byte checksum by coupling, a big-endian 16-bit field). `mul` is a term
+operation (a constant factor keeps the linear form: `a * 10` is proven
+linearly; two symbolic operands blast as a shift-and-add product within the
+budget or stay evidence), `neg` and `mvn` are subtraction from zero and
+exclusive-or with all ones, `asr` is the arithmetic shift, and `tst` sets
+the flags of the AND (a third flags kind; C and V clear), so `tst; cset ne`
+is a bit test. Note Oak's `>>` is the logical shift at every integer type
+(the backend's `oak_shr_u` helpers), so `asr` never implements an Oak
+body: the verifier refutes it at a negative input rather than assuming
+arithmetic semantics.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
