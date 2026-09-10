@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -47,6 +48,7 @@ func New(source token.Source) *Parser {
 	p.prefixParseFns = make(map[token.TokenKind]prefixParseFn)
 	p.registerPrefix(token.IDENT, p.parseIdentifier)
 	p.registerPrefix(token.INT, p.parseIntegerLiteral)
+	p.registerPrefix(token.FLOAT, p.parseFloatLiteral)
 	p.registerPrefix(token.STRING, p.parseStringLiteral)
 	p.registerPrefix(token.BANG, p.parsePrefixExpression)
 	p.registerPrefix(token.NEG, p.parsePrefixExpression)
@@ -616,6 +618,25 @@ func (p *Parser) parseVariantExpression() ast.Expression {
 	}
 
 	return expr
+}
+
+// parseFloatLiteral parses a FLOAT token (docs/spec/20-types.md section
+// 11.3.2). The text is kept for width-correct rounding in the typechecker;
+// a literal that does not even fit f64 is rejected here.
+func (p *Parser) parseFloatLiteral() ast.Expression {
+	lit := &ast.FloatLiteral{Token: p.currentToken, Text: p.currentToken.Literal}
+	value, err := strconv.ParseFloat(lit.Text, 64)
+	if err != nil {
+		if numErr, ok := err.(*strconv.NumError); ok && numErr.Err == strconv.ErrRange && !math.IsInf(value, 0) {
+			// Underflow to zero or a subnormal is the IEEE result, not an error.
+			lit.Value = value
+			return lit
+		}
+		p.addErrorAtCurrentToken(fmt.Sprintf("floating-point literal out of range: %q", lit.Text))
+		return nil
+	}
+	lit.Value = value
+	return lit
 }
 
 // illegalTokenMessage explains an illegal token; the scanner's own message

@@ -63,6 +63,10 @@ func zeroValue(typeExpr ast.Expression, env *object.Environment) (object.Object,
 		switch t.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "int", "uint", "byte", "rune":
 			return &object.Integer{Value: 0}, true
+		case "f32":
+			return &object.Float{Value: 0, Bits: 32}, true
+		case "f64":
+			return &object.Float{Value: 0, Bits: 64}, true
 		case "Bool":
 			return FALSE, true
 		}

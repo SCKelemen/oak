@@ -27,6 +27,7 @@ const (
 
 	IDENT
 	INT    // for natural numbers
+	FLOAT  // decimal literal with a fraction and/or exponent (docs/spec/20-types.md section 11.3.2)
 	STRING // string literals
 
 	LBRACK // [
@@ -96,6 +97,7 @@ var tokens = [...]string{
 
 	IDENT:  "IDENTITY",
 	INT:    "INT",
+	FLOAT:  "FLOAT",
 	STRING: "STRING",
 
 	LBRACK: "[",

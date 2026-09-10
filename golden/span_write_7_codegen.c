@@ -15,6 +15,9 @@ typedef int64_t i64;
 typedef u8  byte;
 typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
 
+typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
+typedef double f64; /* IEEE 754 binary64 */
+
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */
     u32 len;   /* number of bytes */

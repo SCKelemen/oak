@@ -425,6 +425,19 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("/* Generated C code from Oak */\n")
 	cg.write("#include <stdint.h>\n")
 	cg.write("#include <stddef.h>\n")
+	// <math.h> and the float helpers only when the program uses floating
+	// point, so every other program stays freestanding.
+	usesFloats := programUsesFloats(program)
+	if usesFloats {
+		cg.write("#include <math.h>\n")
+		// Floating-point semantics are part of Oak's semantics, not of the
+		// C compiler's optimization level: no contraction of a * b + c into
+		// an fma, ever (docs/spec/20-types.md section 11.3.3, 90-backend.md
+		// 7a). Clang honors the standard pragma; gcc does not implement it
+		// (and warns under -Wunknown-pragmas), but never contracts in strict
+		// ISO mode, and the drivers pass -ffp-contract=off besides.
+		cg.write("#if defined(__clang__)\n#pragma STDC FP_CONTRACT OFF\n#endif\n")
+	}
 	cg.write("\n")
 
 	// Emit primitive type aliases
@@ -446,6 +459,12 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("typedef u8  byte;\n")
 	cg.write("typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */\n")
 	cg.write("\n")
+	cg.write("typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */\n")
+	cg.write("typedef double f64; /* IEEE 754 binary64 */\n")
+	cg.write("\n")
+	if usesFloats {
+		cg.writeRaw(floatPreamble)
+	}
 	// Emit string type definition
 	cg.write("typedef struct oak_string {\n")
 	cg.indentLevel++
@@ -1301,6 +1320,9 @@ var primitiveCasts = map[string]string{
 	"u8": "u8", "u16": "u16", "u32": "u32", "u64": "u64",
 	"i8": "i8", "i16": "i16", "i32": "i32", "i64": "i64",
 	"byte": "u8", "rune": "u32",
+	// f64(x: f32) is the one implicit floating-point move, an exact
+	// widening; f32(literal) types the literal (docs/spec/20-types.md 11.3.4).
+	"f32": "f32", "f64": "f64",
 }
 
 // emitCoreIndex lowers core_index(seq, i) to the bounds-checked access for
@@ -2084,7 +2106,9 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 	// expressions stay constant; an unrecorded expression also stays plain.
 	if helper, isArithmetic := arithmeticHelpers[expr.Operator]; isArithmetic && !cg.constantContext &&
 		!(typechecker.IsLiteralOnlyExpression(expr.Left) && typechecker.IsLiteralOnlyExpression(expr.Right)) {
-		if width, known := tc.ArithmeticType(expr.Token); known {
+		// Floats keep the plain C operator: their rounding is fixed by the
+		// FP_CONTRACT pragma and the absence of fast-math, not by a helper.
+		if width, known := tc.ArithmeticType(expr.Token); known && !typechecker.IsFloatName(width) {
 			cg.output.WriteString(fmt.Sprintf("%s_%s( ", helper, width))
 			cg.emitExpressionFragment(expr.Left, tc)
 			cg.output.WriteString(", ")
@@ -2110,6 +2134,8 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		} else {
 			cg.output.WriteString(fmt.Sprintf("%d", e.Value))
 		}
+	case *ast.FloatLiteral:
+		cg.emitFloatLiteral(e, tc)
 	case *ast.StringLiteral:
 		// Emit string literal as a string struct
 		idx, exists := cg.stringLiteralMap[e.Value]
@@ -2259,6 +2285,11 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		// Explicit integer conversions ({target}_{op}_{source}) lower to
 		// their total two's-complement helpers.
 		if cg.emitConversionCall(e, tc) {
+			return
+		}
+		// Floating-point intrinsics lower to their correctly rounded C99
+		// realizations (docs/spec/20-types.md section 11.3.8).
+		if cg.emitFloatIntrinsicCall(e, tc) {
 			return
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
@@ -2600,7 +2631,7 @@ func (cg *CodeGenerator) cFunctionName(oakName string) string {
 func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	if ident, ok := expr.(*ast.Identifier); ok {
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64":
 			return ident.Value
 		case "string":
 			return "string"
@@ -3123,6 +3154,10 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 		varType = cg.parseTypeExpression(stmt.Type)
 	} else if inferred, ok := cg.inferLocalType(stmt.Value); ok {
 		varType = inferred
+	} else if floatType, ok := cg.inferFloatLocalType(stmt.Value, tc); ok {
+		// The checker recorded a float width for the initializer
+		// (docs/spec/20-types.md section 11.3.2: no context means f64).
+		varType = floatType
 	} else {
 		// Untyped scalar initializers default to i32 (integer literals and
 		// arithmetic); everything the checker knows more about is handled

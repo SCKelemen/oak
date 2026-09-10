@@ -34,9 +34,16 @@ implementation, or a recorded direction.
 
 ## Tier 2 — floating point
 
-**Specified, not implemented.** `20-types.md` §11.3 is the normative section
-the ask proposed, taken nearly as written and tightened where the survey's
-evidence demanded it:
+**`f32`/`f64` implemented and tested; the rest specified.** `20-types.md`
+§11.3 is the normative section the ask proposed, taken nearly as written and
+tightened where the survey's evidence demanded it. The first increment lands
+literals, operators, comparisons, every conversion row, the full intrinsic
+set, the C lowering with `FP_CONTRACT OFF` and exact hexadecimal literal
+constants, and the Go `float32`/`float64` interpreter as first witness; a
+35-check program agrees bit for bit between the two (`compiler/e2e_floats_test.go`,
+golden `floats`). Not yet: `f16`/`bf16` storage types, hexadecimal float
+literals, the `f32 <-> c.Float` conversion rows, float SIMD, the `math`
+library of transcendentals, and the Lean model. The design:
 
 - `f32`/`f64` arithmetic; `f16`/`bf16` storage-only with exactly four
   operations; contextual literals with `f64` as the no-context default;
@@ -126,7 +133,7 @@ changed here.
 
 | Item | Criterion | State |
 | --- | --- | --- |
-| O1 | `f32`/`f64` with literals, arithmetic, core intrinsics, `f32 ↔ c.Float` | specified (`20-types.md` §11.3) |
+| O1 | `f32`/`f64` with literals, arithmetic, core intrinsics, `f32 ↔ c.Float` | **implemented** except the `c.Float`/`c.Double` conversion rows (`20-types.md` §11.3); `exp2`/`log2`/`sin` await the `math` library |
 | O2 | `c.Ptr` plus length constructible from `[*]T`/`[]T`, checked at the boundary | **implemented** (`92-ffi.md` §2.5; integer and `Bool` elements) |
 | O3 | Any runtime-sized allocation surface | direction |
 | O4 | Views or spans in records or as return values | roadmap |

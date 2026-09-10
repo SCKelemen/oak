@@ -343,10 +343,11 @@ unconstrained templates are one mechanism with one emission path.
 
 ### 11.3 Floating-point types
 
-**Status: specified, not implemented.** This section is normative for the
-first floating-point increment; `STATUS.md` records it as S-only until the
-scanner, checker, interpreter, and C backend implement it together. It was
-motivated by the ml project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
+**Status: `f32`/`f64` implemented and tested; `f16`/`bf16`, hexadecimal
+literals, float SIMD, and the `math` library are recorded gaps**
+(`STATUS.md` lists the implemented subset precisely). This section is
+normative for the whole floating-point design. It was motivated by the ml
+project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
 tier 2), whose numeric core cannot move into Oak without it.
 
 #### 11.3.1 Types
@@ -383,8 +384,9 @@ A floating-point literal has a fraction, an exponent, or both:
 Decimal literals are converted to the target format by correct rounding
 (round to nearest, ties to even) from the exact decimal value; hexadecimal
 literals (`0x` mantissa with `p` binary exponent, C99 §6.4.4.2) are exact
-when representable and otherwise correctly rounded. A literal never has a
-sign of its own; `-1.5` is unary minus applied to `1.5`.
+when representable and otherwise correctly rounded. Hexadecimal float
+literals are specified but not yet scanned (`STATUS.md`). A literal never
+has a sign of its own; `-1.5` is unary minus applied to `1.5`.
 
 Like integer literals (`25-type-inference.md` §3a), a floating-point literal
 has no type of its own and takes the floating-point type its context

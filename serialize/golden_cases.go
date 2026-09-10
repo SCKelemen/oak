@@ -343,6 +343,24 @@ main: (): i32 {
 `,
 		},
 		{
+			// Floating point (docs/spec/20-types.md section 11.3): contextual
+			// literals, plain-operator arithmetic under FP_CONTRACT OFF,
+			// correctly rounded intrinsics, and bit-pattern observation.
+			Name: "floats",
+			SourceCode: `
+norm: (x: f32, y: f32): f32 {
+  sqrt(x * x + y * y)
+}
+
+main: (): i32 {
+  n: f32 = norm(3.0, 4.0)
+  bits: u32 = u32_bits_f32(n)
+  half: f64 = f64(n) * 0.5
+  bits == u32(1084227584) && half == 2.5 ? 0 | 1
+}
+`,
+		},
+		{
 			// Spans at the boundary (docs/spec/92-ffi.md section 2.5): a view
 			// crosses as its base pointer and element count for one call,
 			// and c.String hands C a NUL-terminated literal.
