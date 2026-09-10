@@ -393,6 +393,10 @@ A command sum type derives its generator, carrier encoding, and decoder
 (`u8`, `u16`, `u32`, `Bool`), or a closed record of at most two carrier
 scalars. The type's own package declares:
 
+A protocol declaration's step type (`112-protocols.md`) satisfies this shape, so
+a generated history can be a sequence of protocol steps with the projected
+`name_legal` as the generator's legality predicate and `name_next` as the model.
+
 ```oak
 SleepArg: type = struct { task: u8, ticks: u8 }
 Cmd: type = Admit: u8 | Sleep: SleepArg | Tick

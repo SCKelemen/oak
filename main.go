@@ -32,6 +32,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "run" {
 		os.Exit(runPackage(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "protocol" {
+		os.Exit(protocolCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
 
 	if len(os.Args) > 1 {
 		// Compile mode: oak file.oak

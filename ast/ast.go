@@ -1195,3 +1195,67 @@ type FloatLiteral struct {
 func (fl *FloatLiteral) expressionNode()      {}
 func (fl *FloatLiteral) TokenLiteral() string { return fl.Token.Literal }
 func (fl *FloatLiteral) String() string       { return fl.Text }
+
+// ProtocolDeclaration is `Name: protocol = { ... }` (docs/spec/112-protocols.md):
+// a finite control-state machine declared once and projected into the
+// state and step types, the legality and transition functions, the
+// model-checker module, and (through `via`) the resource protocol facts.
+// `protocol` is contextual, like `tag`: only IDENT ':' protocol '=' '{'
+// reads as a declaration.
+type ProtocolDeclaration struct {
+	BaseNode
+	Token       token.Token // the protocol name token
+	EndToken    token.Token // closing brace
+	Name        *Identifier
+	Resources   []*Identifier // `resource T`: nominal types governed by the protocol
+	Initial     *Identifier   // `initial S`
+	Transitions []*ProtocolTransition
+	Exported    bool
+}
+
+// ProtocolTransition is one `name(param: T)?: From -> To (via callable)?` line.
+type ProtocolTransition struct {
+	Token    token.Token
+	Name     *Identifier
+	Param    *FunctionParameter // optional payload: one fixed-width scalar or Bool
+	From     *Identifier
+	To       *Identifier
+	Callable *Identifier // optional `via f`: the function that performs it
+}
+
+func (pd *ProtocolDeclaration) statementNode()       {}
+func (pd *ProtocolDeclaration) TokenLiteral() string { return pd.Token.Literal }
+func (pd *ProtocolDeclaration) String() string {
+	var out bytes.Buffer
+	out.WriteString(pd.Name.String())
+	out.WriteString(": protocol = {")
+	for _, r := range pd.Resources {
+		out.WriteString(" resource ")
+		out.WriteString(r.String())
+	}
+	if pd.Initial != nil {
+		out.WriteString(" initial ")
+		out.WriteString(pd.Initial.String())
+	}
+	for _, t := range pd.Transitions {
+		out.WriteString(" ")
+		out.WriteString(t.Name.String())
+		if t.Param != nil {
+			out.WriteString("(")
+			out.WriteString(t.Param.Name.String())
+			out.WriteString(": ")
+			out.WriteString(t.Param.Type.String())
+			out.WriteString(")")
+		}
+		out.WriteString(": ")
+		out.WriteString(t.From.String())
+		out.WriteString(" -> ")
+		out.WriteString(t.To.String())
+		if t.Callable != nil {
+			out.WriteString(" via ")
+			out.WriteString(t.Callable.String())
+		}
+	}
+	out.WriteString(" }")
+	return out.String()
+}
