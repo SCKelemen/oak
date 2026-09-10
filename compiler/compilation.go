@@ -331,7 +331,11 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		}
 		// Effect clauses (compiler/effects.go): forbids is checked over the
 		// specialized call graph, so every callee here is concrete.
-		effectDiagnostics := analyzeEffects(tree.Root)
+		steady := map[string]string{}
+		if tree.Modules != nil {
+			steady = applySteadyEntries(tree.Root, tree.Modules.Steady)
+		}
+		effectDiagnostics := analyzeEffects(tree.Root, steady)
 		model.Diagnostics = append(model.Diagnostics, effectDiagnostics...)
 		if err := comp.gate("effects", effectDiagnostics, tree.Modules); err != nil {
 			return nil, err

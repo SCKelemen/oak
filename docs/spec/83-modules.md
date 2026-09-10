@@ -229,6 +229,12 @@ replace example.com/dep => ../dep
   package of this module is judged under (`85-discipline.md` section 1). A
   module that declares none is judged under `default`. The command-line
   `-profile` flag overrides the declaration for the root module only.
+- `steady <package-path> <function>` — a steady-state entry point
+  (`85-discipline.md` section 4): a function of a package of this module
+  after which the program may not allocate. The compiler checks it as if it
+  declared `forbids { Memory.Allocate }`. Only the root module's `steady`
+  lines apply; the package must belong to this module and the function must
+  exist, or the manifest fails (`OAK-M0112`). Repeatable; duplicates fail.
 
 Unknown directives, duplicates, malformed lines, replaces without a matching
 require, and manifests over 1 MiB fail closed (`OAK-M0112`).
