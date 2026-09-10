@@ -212,6 +212,7 @@ type translator struct {
 	types     map[string]string // Lean Ty per variable, "" unknown
 	elements  map[string]string // Lean Ty per array element, "" unknown
 	inlining  map[string]bool   // callees on the inlining stack
+	shapes    map[string][]recordField
 	err       string
 }
 
@@ -219,9 +220,10 @@ type translator struct {
 // stored them (wrapped), loop-local declarations, and pending array writes
 // in program order.
 type symbolicState struct {
-	vars   map[string]string
-	locals map[string]string // loop-local declaration -> Lean type
-	writes map[string][]pendingWrite
+	vars    map[string]string
+	locals  map[string]string // loop-local declaration -> Lean type
+	records map[string]string // loop-local record declaration -> record type
+	writes  map[string][]pendingWrite
 }
 
 type pendingWrite struct {
@@ -229,7 +231,7 @@ type pendingWrite struct {
 }
 
 func newSymbolicState() *symbolicState {
-	return &symbolicState{vars: map[string]string{}, locals: map[string]string{}, writes: map[string][]pendingWrite{}}
+	return &symbolicState{vars: map[string]string{}, locals: map[string]string{}, records: map[string]string{}, writes: map[string][]pendingWrite{}}
 }
 
 func (st *symbolicState) clone() *symbolicState {
@@ -239,6 +241,9 @@ func (st *symbolicState) clone() *symbolicState {
 	}
 	for k, v := range st.locals {
 		copy.locals[k] = v
+	}
+	for k, v := range st.records {
+		copy.records[k] = v
 	}
 	for k, v := range st.writes {
 		copy.writes[k] = append([]pendingWrite(nil), v...)
@@ -258,7 +263,7 @@ func newResults() *results { return &results{assigned: map[string]string{}} }
 
 // translateLoop returns the translation or the reason none exists.
 func translateLoop(loop *ast.WhileStatement, function string, program *ast.Program) (*loopTranslation, string) {
-	t := &translator{program: program, function: function, names: map[string]int{}, arrayIDs: map[string]int{}, funcIDs: map[string]int{}, types: map[string]string{}, elements: map[string]string{}, inlining: map[string]bool{}}
+	t := &translator{program: program, function: function, names: map[string]int{}, arrayIDs: map[string]int{}, funcIDs: map[string]int{}, types: map[string]string{}, elements: map[string]string{}, inlining: map[string]bool{}, shapes: map[string][]recordField{}}
 	guard, _ := t.expr(loop.Condition, newSymbolicState())
 	if t.err != "" {
 		return nil, t.err
@@ -337,6 +342,7 @@ func (t *translator) assign(name, value string, state *symbolicState, out *resul
 		t.fail("the representation of `%s` is not evident (declare it with an integer or Bool type)", name)
 		return
 	}
+	t.index(name)
 	if _, seen := out.assigned[name]; !seen {
 		out.order = append(out.order, name)
 	}
@@ -351,14 +357,38 @@ func (t *translator) statement(stmt ast.Statement, state *symbolicState, out *re
 			t.fail("an assignment without a target")
 			return
 		}
+		if record := t.recordOf(s.Name.Value, state); record != "" {
+			t.assignRecord(place{name: s.Name.Value, record: record}, record, s.Value, state, out)
+			return
+		}
 		t.index(s.Name.Value)
 		value, _ := t.expr(s.Value, state)
 		t.assign(s.Name.Value, value, state, out)
 	case *ast.VariableDeclaration:
 		// A loop-local declaration is substituted where it is read; it is
-		// never part of the loop's state.
+		// never part of the loop's state. A record-typed local is one
+		// local per leaf.
 		if s.Name == nil {
 			t.fail("a declaration without a name")
+			return
+		}
+		record := ""
+		if id, ok := s.Type.(*ast.Identifier); ok && t.recordShape(id.Value) != nil {
+			record = id.Value
+		} else if literal, ok := s.Value.(*ast.RecordLiteral); ok && literal.TypeName != nil && t.recordShape(literal.TypeName.Value) != nil {
+			record = literal.TypeName.Value
+		}
+		if record != "" {
+			values := t.recordValue(s.Value, record, state)
+			if t.err != "" {
+				return
+			}
+			state.records[s.Name.Value] = record
+			for _, leaf := range t.recordShape(record) {
+				name := s.Name.Value + "." + leaf.path
+				state.locals[name] = leaf.ty
+				state.vars[name] = fmt.Sprintf("(.wrap %s %s)", leaf.ty, values[leaf.path])
+			}
 			return
 		}
 		value, inferred := t.expr(s.Value, state)
@@ -393,29 +423,325 @@ func (t *translator) statement(stmt ast.Statement, state *symbolicState, out *re
 // store executes `arr[index] = value`: the write joins the iteration's
 // writes, and later reads of the array in the same iteration see it.
 func (t *translator) store(s *ast.IndexAssignmentStatement, state *symbolicState, out *results) {
-	if s.Target == nil || s.Target.Dot {
-		t.fail("the body assigns through a field access; only array element stores are in the fragment")
+	if s.Target == nil {
+		t.fail("a store without a target")
 		return
 	}
-	array, ok := s.Target.Left.(*ast.Identifier)
-	if !ok {
-		t.fail("the body stores into an expression that is not an array variable")
+	place := t.place(s.Target, state)
+	if t.err != "" {
 		return
 	}
-	ty := t.elementType(array.Value)
+	if place.record != "" {
+		// A whole-record store assigns every field.
+		t.assignRecord(place, place.record, s.Value, state, out)
+		return
+	}
+	if place.array == "" {
+		// A field store is an assignment to the flattened variable.
+		value, _ := t.expr(s.Value, state)
+		t.assign(place.name, value, state, out)
+		return
+	}
+	ty := t.elementType(place.array)
 	if ty == "" {
-		t.fail("the element representation of `%s` is not evident (declare it as [N]T with an integer or Bool element type)", array.Value)
+		t.fail("the element representation of `%s` is not evident (declare it as [N]T with an integer, Bool, or record element type)", place.array)
 		return
 	}
-	id := t.arrayIndex(array.Value)
-	index, _ := t.expr(s.Target.Index, state)
+	id := t.arrayIndex(place.array)
 	value, _ := t.expr(s.Value, state)
 	if t.err != "" {
 		return
 	}
-	write := pendingWrite{index: index, value: value, ty: ty}
-	state.writes[array.Value] = append(state.writes[array.Value], write)
-	out.writes = append(out.writes, fmt.Sprintf("{ arr := %d, ty := %s, index := %s, value := %s }", id, ty, index, value))
+	write := pendingWrite{index: place.index, value: value, ty: ty}
+	state.writes[place.array] = append(state.writes[place.array], write)
+	out.writes = append(out.writes, fmt.Sprintf("{ arr := %d, ty := %s, index := %s, value := %s }", id, ty, place.index, value))
+}
+
+// place is a resolved lvalue or rvalue path: a (flattened) variable
+// `name`, an element `array[index]` of a (flattened) array, or a whole
+// record of type `record` rooted at `name`.
+type place struct {
+	name   string
+	array  string
+	index  string
+	record string
+}
+
+// place resolves `root.f.g`, `root[i]`, `root[i].f.g`, or a bare record
+// variable. Records are flattened: a field path is a variable or array named
+// by the path (docs/spec/83-modules.md section 10).
+func (t *translator) place(expr ast.Expression, state *symbolicState) place {
+	var fields []string
+	var root *ast.Identifier
+	var indexExpr ast.Expression
+	current := expr
+	for root == nil {
+		switch e := current.(type) {
+		case *ast.Identifier:
+			root = e
+		case *ast.IndexExpression:
+			if e.Dot {
+				field, ok := e.Index.(*ast.Identifier)
+				if !ok {
+					t.fail("field access `%s` is outside the fragment", e.String())
+					return place{}
+				}
+				fields = append([]string{field.Value}, fields...)
+				current = e.Left
+				continue
+			}
+			if indexExpr != nil {
+				t.fail("nested indexing `%s` is outside the fragment", e.String())
+				return place{}
+			}
+			indexExpr = e.Index
+			current = e.Left
+		default:
+			t.fail("`%s` is not a variable, field, or element in the fragment", expr.String())
+			return place{}
+		}
+	}
+	if strings.Contains(root.Value, ".") {
+		t.fail("`%s` is a qualified name; only locals are in the fragment", root.Value)
+		return place{}
+	}
+	path := strings.Join(append([]string{root.Value}, fields...), ".")
+	if indexExpr != nil {
+		index, _ := t.expr(indexExpr, state)
+		if t.elementType(path) == "" {
+			if shape := t.elementRecord(path); shape != "" {
+				t.fail("`%s` is a whole record element; read or store one of its fields", expr.String())
+				return place{}
+			}
+			t.fail("the element representation of `%s` is not evident", path)
+			return place{}
+		}
+		return place{array: path, index: index}
+	}
+	if record := t.recordOf(path, state); record != "" {
+		return place{name: path, record: record}
+	}
+	if t.typeOf(path) == "" && state.locals[path] == "" {
+		t.fail("the representation of `%s` is not evident", path)
+		return place{}
+	}
+	return place{name: path}
+}
+
+// variable renders a (flattened) variable's current value.
+func (t *translator) variable(name string, state *symbolicState) string {
+	if value, ok := state.vars[name]; ok {
+		return value
+	}
+	return fmt.Sprintf("(.var %d)", t.index(name))
+}
+
+// assignRecord assigns every field of the record `record` rooted at
+// place.name from a record literal or another record variable.
+func (t *translator) assignRecord(place place, record string, value ast.Expression, state *symbolicState, out *results) {
+	fields := t.recordValue(value, record, state)
+	if t.err != "" {
+		return
+	}
+	for _, field := range t.recordShape(record) {
+		t.assign(place.name+"."+field.path, fields[field.path], state, out)
+	}
+}
+
+// recordField is one scalar leaf of a flattened record: its dotted path
+// below the record and its representation.
+type recordField struct {
+	path string
+	ty   string
+}
+
+// recordShape flattens a struct declaration into its scalar leaves;
+// nested records contribute their own leaves under the field's name. It
+// returns nil for a type that is not a translatable record.
+func (t *translator) recordShape(typeName string) []recordField {
+	if shape, done := t.shapes[typeName]; done {
+		return shape
+	}
+	t.shapes[typeName] = nil // guards recursive shapes
+	var shape []recordField
+	for _, stmt := range t.program.Statements {
+		adt, ok := stmt.(*ast.ADTType)
+		if !ok || adt.Name == nil || adt.Name.Value != typeName || len(adt.Variants) != 1 || adt.Variants[0] == nil {
+			continue
+		}
+		literal, ok := adt.Variants[0].Literal.(*ast.RecordLiteral)
+		if !ok || literal.Extension != nil {
+			return nil
+		}
+		for _, field := range literal.FieldOrder {
+			if ty := leanType(field.Value); ty != "" {
+				shape = append(shape, recordField{path: field.Name, ty: ty})
+				continue
+			}
+			nested, ok := field.Value.(*ast.Identifier)
+			if !ok {
+				return nil
+			}
+			inner := t.recordShape(nested.Value)
+			if inner == nil {
+				return nil
+			}
+			for _, leaf := range inner {
+				shape = append(shape, recordField{path: field.Name + "." + leaf.path, ty: leaf.ty})
+			}
+		}
+	}
+	t.shapes[typeName] = shape
+	return shape
+}
+
+// recordOf returns the record type a variable path denotes, or "" for a
+// scalar or unknown path: the root's declared type followed through the
+// field path.
+func (t *translator) recordOf(path string, state *symbolicState) string {
+	parts := strings.Split(path, ".")
+	typeName := t.declaredRecord(parts[0], state)
+	for _, field := range parts[1:] {
+		if typeName == "" {
+			return ""
+		}
+		typeName = t.fieldRecord(typeName, field)
+	}
+	return typeName
+}
+
+// fieldRecord returns the record type of a field of a record type, or "".
+func (t *translator) fieldRecord(typeName, field string) string {
+	for _, stmt := range t.program.Statements {
+		adt, ok := stmt.(*ast.ADTType)
+		if !ok || adt.Name == nil || adt.Name.Value != typeName || len(adt.Variants) != 1 || adt.Variants[0] == nil {
+			continue
+		}
+		literal, ok := adt.Variants[0].Literal.(*ast.RecordLiteral)
+		if !ok {
+			return ""
+		}
+		for _, f := range literal.FieldOrder {
+			if f.Name == field {
+				if id, ok := f.Value.(*ast.Identifier); ok && t.recordShape(id.Value) != nil {
+					return id.Value
+				}
+				return ""
+			}
+		}
+	}
+	return ""
+}
+
+// declaredRecord returns the record type a root variable was declared with
+// (a parameter or local of the enclosing function, or a loop-local), or "".
+func (t *translator) declaredRecord(name string, state *symbolicState) string {
+	if record, local := state.records[name]; local {
+		return record
+	}
+	typeExpr := t.declaredType(name)
+	if typeExpr == nil {
+		return ""
+	}
+	id, ok := typeExpr.(*ast.Identifier)
+	if !ok || t.recordShape(id.Value) == nil {
+		return ""
+	}
+	return id.Value
+}
+
+// declaredType finds the declared type expression of a root variable: a
+// parameter, or a local declaration (its annotation, or the type name of
+// its record literal).
+func (t *translator) declaredType(name string) ast.Expression {
+	fn := t.functionNamed(t.function)
+	if fn == nil {
+		return nil
+	}
+	for _, parameter := range fn.Parameters {
+		if parameter != nil && parameter.Name != nil && parameter.Name.Value == name {
+			return parameter.Type
+		}
+	}
+	var found ast.Expression
+	forEachDeclaration(fn.Body, func(decl *ast.VariableDeclaration) {
+		if decl.Name == nil || decl.Name.Value != name || found != nil {
+			return
+		}
+		found = decl.Type
+		if found == nil {
+			if literal, ok := decl.Value.(*ast.RecordLiteral); ok && literal.TypeName != nil {
+				found = literal.TypeName
+			}
+		}
+	})
+	return found
+}
+
+// elementRecord returns the record element type of an array path, or "".
+func (t *translator) elementRecord(path string) string {
+	parts := strings.Split(path, ".")
+	typeExpr := t.declaredType(parts[0])
+	index, ok := typeExpr.(*ast.IndexExpression)
+	if !ok {
+		return ""
+	}
+	element, ok := index.Left.(*ast.Identifier)
+	if !ok || t.recordShape(element.Value) == nil {
+		return ""
+	}
+	typeName := element.Value
+	for _, field := range parts[1:] {
+		typeName = t.fieldRecord(typeName, field)
+		if typeName == "" {
+			return ""
+		}
+	}
+	return typeName
+}
+
+// recordValue renders every leaf of a record-typed expression: a record
+// literal (fields by name, nested literals or record variables inside) or
+// a record variable (its current leaves).
+func (t *translator) recordValue(expr ast.Expression, typeName string, state *symbolicState) map[string]string {
+	values := map[string]string{}
+	switch e := expr.(type) {
+	case *ast.RecordLiteral:
+		if e.TypeName != nil && e.TypeName.Value != typeName {
+			t.fail("record literal of type %s where %s is expected", e.TypeName.Value, typeName)
+			return values
+		}
+		for _, field := range e.FieldOrder {
+			if nested := t.fieldRecord(typeName, field.Name); nested != "" {
+				for path, value := range t.recordValue(field.Value, nested, state) {
+					values[field.Name+"."+path] = value
+				}
+				continue
+			}
+			value, _ := t.expr(field.Value, state)
+			values[field.Name] = value
+		}
+		for _, leaf := range t.recordShape(typeName) {
+			if _, ok := values[leaf.path]; !ok {
+				t.fail("record literal of %s leaves field %s unset", typeName, leaf.path)
+			}
+		}
+	case *ast.Identifier, *ast.IndexExpression:
+		source := t.place(e, state)
+		if t.err != "" {
+			return values
+		}
+		if source.record != typeName {
+			t.fail("`%s` is not a record of type %s", e.String(), typeName)
+			return values
+		}
+		for _, leaf := range t.recordShape(typeName) {
+			values[leaf.path] = t.variable(source.name+"."+leaf.path, state)
+		}
+	default:
+		t.fail("record-valued expression %T is outside the fragment", expr)
+	}
+	return values
 }
 
 // conditional executes `c ? { A } | { B }`: both arms run from the current
@@ -592,19 +918,21 @@ func (t *translator) expr(expr ast.Expression, state *symbolicState) (string, st
 		}
 		return t.fail("prefix operator `%s` is outside the fragment", e.Operator), ""
 	case *ast.IndexExpression:
-		if e.Dot {
-			return t.fail("field access `%s` is outside the fragment", e.String()), ""
+		place := t.place(e, state)
+		if t.err != "" {
+			return "sorry", ""
 		}
-		array, ok := e.Left.(*ast.Identifier)
-		if !ok {
-			return t.fail("indexing an expression that is not an array variable is outside the fragment"), ""
+		if place.record != "" {
+			return t.fail("`%s` is a whole record; read one of its fields", e.String()), ""
 		}
-		ty := t.elementType(array.Value)
-		if ty == "" {
-			return t.fail("the element representation of `%s` is not evident", array.Value), ""
+		if place.array == "" {
+			ty := state.locals[place.name]
+			if ty == "" {
+				ty = t.typeOf(place.name)
+			}
+			return t.variable(place.name, state), ty
 		}
-		index, _ := t.expr(e.Index, state)
-		return t.read(array.Value, index, state), ty
+		return t.read(place.array, place.index, state), t.elementType(place.array)
 	case *ast.InvocationExpression:
 		return t.call(e, state)
 	case *ast.MatchExpression:
@@ -679,16 +1007,32 @@ func (t *translator) call(e *ast.InvocationExpression, state *symbolicState) (st
 	if len(callee.Parameters) != len(e.Arguments) {
 		return t.fail("call to `%s` passes %d arguments for %d parameters", name.Value, len(e.Arguments), len(callee.Parameters)), ""
 	}
-	args := make([]string, 0, len(e.Arguments))
-	for _, argument := range e.Arguments {
+	// Arguments: scalars as values, records as their leaves in shape order.
+	var args []string
+	var scope []map[string]string
+	for i, argument := range e.Arguments {
+		parameter := callee.Parameters[i]
+		if parameter != nil {
+			if id, ok := parameter.Type.(*ast.Identifier); ok && t.recordShape(id.Value) != nil {
+				leaves := t.recordValue(argument, id.Value, state)
+				binding := map[string]string{}
+				for _, leaf := range t.recordShape(id.Value) {
+					args = append(args, leaves[leaf.path])
+					binding[leaf.path] = leaves[leaf.path]
+				}
+				scope = append(scope, binding)
+				continue
+			}
+		}
 		value, _ := t.expr(argument, state)
 		args = append(args, value)
+		scope = append(scope, map[string]string{"": value})
 	}
 	if t.err != "" {
 		return "sorry", ""
 	}
 	returnTy := leanType(callee.ReturnType)
-	if inlined, ok := t.inline(callee, args); ok {
+	if inlined, ok := t.inline(callee, scope); ok {
 		return inlined, returnTy
 	}
 	if returnTy == "" {
@@ -713,7 +1057,7 @@ func conversionTarget(name string) (string, bool) {
 
 // inline substitutes the arguments into an expression-bodied callee whose
 // body is in the fragment. Recursion and generics are not inlined.
-func (t *translator) inline(callee *ast.FunctionStatement, args []string) (string, bool) {
+func (t *translator) inline(callee *ast.FunctionStatement, args []map[string]string) (string, bool) {
 	if callee.Name == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || t.inlining[callee.Name.Value] {
 		return "", false
 	}
@@ -734,12 +1078,21 @@ func (t *translator) inline(callee *ast.FunctionStatement, args []string) (strin
 		if parameter == nil || parameter.Name == nil {
 			return "", false
 		}
+		if id, ok := parameter.Type.(*ast.Identifier); ok && t.recordShape(id.Value) != nil {
+			scope.records[parameter.Name.Value] = id.Value
+			for _, leaf := range t.recordShape(id.Value) {
+				name := parameter.Name.Value + "." + leaf.path
+				scope.locals[name] = leaf.ty
+				scope.vars[name] = args[i][leaf.path]
+			}
+			continue
+		}
 		ty := leanType(parameter.Type)
 		if ty == "" {
 			return "", false
 		}
 		scope.locals[parameter.Name.Value] = ty
-		scope.vars[parameter.Name.Value] = args[i]
+		scope.vars[parameter.Name.Value] = args[i][""]
 	}
 	saved := t.err
 	t.inlining[callee.Name.Value] = true
@@ -785,6 +1138,18 @@ func (t *translator) typeOf(name string) string {
 		return ty
 	}
 	ty := ""
+	if root, field, isField := strings.Cut(name, "."); isField {
+		// A flattened record field: the leaf's representation.
+		if id, ok := t.declaredType(root).(*ast.Identifier); ok {
+			for _, leaf := range t.recordShape(id.Value) {
+				if leaf.path == field {
+					ty = leaf.ty
+				}
+			}
+		}
+		t.types[name] = ty
+		return ty
+	}
 	if fn := t.functionNamed(t.function); fn != nil {
 		for _, parameter := range fn.Parameters {
 			if parameter != nil && parameter.Name != nil && parameter.Name.Value == name {
@@ -813,6 +1178,20 @@ func (t *translator) elementType(name string) string {
 		return ty
 	}
 	ty := ""
+	if root, field, isField := strings.Cut(name, "."); isField {
+		// An array of records flattened by field: the leaf's representation.
+		if index, ok := t.declaredType(root).(*ast.IndexExpression); ok {
+			if element, ok := index.Left.(*ast.Identifier); ok {
+				for _, leaf := range t.recordShape(element.Value) {
+					if leaf.path == field {
+						ty = leaf.ty
+					}
+				}
+			}
+		}
+		t.elements[name] = ty
+		return ty
+	}
 	if fn := t.functionNamed(t.function); fn != nil {
 		for _, parameter := range fn.Parameters {
 			if parameter != nil && parameter.Name != nil && parameter.Name.Value == name {

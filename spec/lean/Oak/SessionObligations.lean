@@ -44,13 +44,27 @@ theorem loop_fill_3_terminates : ∀ (F : Oak.Loops.Funs) (s : Oak.Loops.State),
   -- Discharge: intro F; exact Oak.Loops.ranking_terminates F loop_fill_3 (fun s => <rank>) (by intro s h; <decrease>)
   sorry
 
+/-- OAK-D0103: the loop in `walk` at repl.oak:31 has no statically evident bound. -/
+-- variables: 0 ↦ `p.on`, 1 ↦ `p.v`, 2 ↦ `q.p.v`, 3 ↦ `n`
+-- arrays: 0 ↦ `cs.v`
+def loop_walk_4 : Oak.Loops.Loop :=
+  { guard := (.var 0),
+    body := [{ var := 1, ty := (.u 32), value := (.wrap (.u 32) (.bin .add (.wrap (.u 32) (.var 1)) (.lit 1))) },
+            { var := 2, ty := (.u 32), value := (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.wrap (.u 32) (.var 1)) (.lit 1)))) },
+            { var := 0, ty := .b, value := (.bin .lt (.cond (.bin .eq (.lit 0) (.lit 0)) (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.index 0 (.lit 0)) (.wrap (.u 32) (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.wrap (.u 32) (.var 1)) (.lit 1)))))))) (.index 0 (.lit 0))) (.var 3)) }],
+    writes := [{ arr := 0, ty := (.u 32), index := (.lit 0), value := (.wrap (.u 32) (.bin .add (.index 0 (.lit 0)) (.wrap (.u 32) (.wrap (.u 32) (.wrap (.u 32) (.bin .add (.wrap (.u 32) (.var 1)) (.lit 1))))))) }] }
+
+theorem loop_walk_4_terminates : ∀ (F : Oak.Loops.Funs) (s : Oak.Loops.State), Oak.Loops.Terminates F loop_walk_4 s := by
+  -- Discharge: intro F; exact Oak.Loops.ranking_terminates F loop_walk_4 (fun s => <rank>) (by intro s h; <decrease>)
+  sorry
+
 /-- OAK-D0102: tail recursion through `ping`, `pong` relies on tail-call elimination.
 Functions: 0 ↦ `ping`, 1 ↦ `pong`. Every internal call is a tail call, so the constant rank
 certificate the compiler computed satisfies Oak.Discipline.Ranked. -/
 theorem cycle_1_ranked : ∃ rank : Nat → Nat, Oak.Discipline.Ranked [] [(0, 1), (1, 0)] rank :=
   ⟨fun _ => 0, by simp [Oak.Discipline.Ranked]⟩
 
-/-- OAK-B0110 at repl.oak:31: unsafe assumption: writable span "b" is assumed disjoint from existing writable access to "shared" -/
+/-- OAK-B0110 at repl.oak:46: unsafe assumption: writable span "b" is assumed disjoint from existing writable access to "shared" -/
 -- The regions overlap: the admitted assumption is false.
 theorem unsafe_1_overlaps : ¬ Oak.Regions.Disjoint ⟨0, 16⟩ ⟨0, 16⟩ := by decide
 
