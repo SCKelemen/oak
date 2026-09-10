@@ -163,7 +163,10 @@ Do not mark a feature **R** merely because Go/Zig tests mirror theorem examples.
 
 `oak test` and `import(testing)` implement the bootstrap contract in
 `110-testing.md`: native isolated cases, choice-tape properties/minimization,
-mutation fuzzing, libFuzzer export, persistent corpus/replay, and bounded
-discrete-event simulation. These are execution-tested tools, not a formal
+mutation fuzzing, libFuzzer export, persistent corpus/replay, bounded
+discrete-event simulation, and simulated storage (a deterministic two-copy
+block device with tape-driven torn, misdirected, dropped, lost-fsync, bit-flip
+and latent-error faults and a per-block provenance ledger; exercised by a
+write-ahead-log recovery scenario). These are execution-tested tools, not a formal
 refinement claim. Whole-machine simulation, compiler-enforced effect closure,
 and automatic generator derivation remain unimplemented.
