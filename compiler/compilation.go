@@ -292,6 +292,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		if tree.Modules != nil {
 			tc.SetModuleContext(tree.Modules.OpaqueTypes, tree.Modules.Packages)
+			tc.SetPackageExports(tree.Modules.Exports)
 			tc.SetSealedOpaque(tree.Modules.SealedOpaque)
 			tc.SetAbstractTypes(tree.Modules.Abstract)
 		}

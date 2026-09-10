@@ -402,7 +402,11 @@ to resolve it, and unspellable because its internal name is reserved (section
 ### 6.5 Methods stay with their type
 
 A method (`fn (r: T) m()`) may be declared only in the package that declares
-its receiver type (`OAK-M0114`). Oak's interfaces are implicit, so there are
+its receiver type (`OAK-M0114`). Uniform call syntax (`10-syntax.md` §13)
+gives every exported function of that package the same call shape —
+`p.shift(1)` for `geo.shift(p, 1)` when `p: geo.Point` — without declaring a
+method: the receiver type's package is the only other package searched, so
+a call's meaning never depends on which unrelated package is compiled. Oak's interfaces are implicit, so there are
 no instances to collide, but two packages attaching same-named methods to one
 imported type would make method lookup depend on which package is compiled —
 Go's rule, adopted for the same reason.

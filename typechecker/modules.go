@@ -55,6 +55,14 @@ func (tc *TypeChecker) SetModuleContext(opaque map[string]string, packages []str
 	}
 }
 
+// SetPackageExports hands the checker every loaded package's member table
+// (path -> exports). Uniform call syntax consults it: recv.f(args) on a
+// receiver whose type an imported package declares may name that package's
+// exported function f (docs/spec/10-syntax.md section 13).
+func (tc *TypeChecker) SetPackageExports(exports map[string]modules.Exports) {
+	tc.packageExports = exports
+}
+
 // AddPackagePaths registers further package identities that tokens may be
 // stamped with — the spliced bootstrap prelude (`std`) in particular, which
 // is not a loaded package but is not the root package either
