@@ -93,6 +93,18 @@ unsafe member, and include all successors; an empty initial set is rejected.
 Trace evidence must begin initially, follow legal transitions
 or stutter, and end unsafe.
 
+Every accepted `verify` result is a **verdict** (`evidence.go`, roadmap step
+4's evidence contract): `claim` is the property in the model's terms,
+`established` the fact this checker verified about the evidence, `assumptions`
+what the verdict trusts rather than checks, `trust_path` the components the
+result passed through in order, `unsupported` what the checker refuses, and
+`details` the evidence-specific numbers. The three kinds — closed set, trace,
+LRAT — fix these fields; nothing in a verdict is inferred from the evidence
+itself. The LRAT verdict's trust path names the corpus gates behind
+`internal/lrat` (agreement with compiled Oak and the Lean file model on every
+case, the model's `check_sound`, and the Oak decoder's `check_refines`), and
+its assumptions state that the CNF translation is compared, not proved.
+
 `oak-evidence-3` binds source bytes, project settings, the checked frontend
 model, and a Go-adapter semantics version. Earlier certificate identities are
 rejected. The migration tests explicitly rebind old fixture identities only
