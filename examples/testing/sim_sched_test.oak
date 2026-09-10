@@ -1,0 +1,243 @@
+import(testing)
+
+// Process crash/restart as events and the fair scheduling adapter (stdlib
+// sim_sched.oak), then the write-ahead log of sim_storage_test.oak driven as
+// an event-loop scenario with two writers scheduled through the adapter and
+// crashes scheduled with their restarts.
+
+// With an all-zero tape the pick is always the first runnable actor; the
+// bound forces the longest waiter once it has waited `bound` picks, and the
+// others follow one per pick, so no actor waits past bound + actors - 2.
+TestSimSchedForcedPick: (): () {
+  s: [1]SimSched
+  w: [3]u32
+  tape: [1]TestChoices
+  zeros: [4]u8
+  sched: [*]SimSched = span(&s)
+  waits: [*]u32 = span(&w)
+  choices: [*]TestChoices = span(&tape)
+  data: []u8 = view(&zeros)
+  sim_sched_init(sched, waits, u32(3), u32(2))
+  test_check(sim_sched_pick(sched, waits, choices, data, u32(7)) == u32(0), u32(5100))
+  test_check(sim_sched_pick(sched, waits, choices, data, u32(7)) == u32(0), u32(5101))
+  test_check(waits[1] == u32(2) && waits[2] == u32(2), u32(5102))
+  test_check(sim_sched_pick(sched, waits, choices, data, u32(7)) == u32(1), u32(5103))
+  test_check(sim_sched_pick(sched, waits, choices, data, u32(7)) == u32(2), u32(5104))
+  test_check(sched[0].forced == u32(2) && sched[0].picks == u32(4), u32(5105))
+  test_check(sim_sched_max_wait(sched, waits) <= u32(3), u32(5106))
+  // Nothing runnable: no pick, no accounting.
+  test_check(sim_sched_pick(sched, waits, choices, data, u32(0)) == u32(3), u32(5107))
+  test_check(sched[0].picks == u32(4), u32(5108))
+  // A non-runnable actor is not waiting.
+  ignored: u32 = sim_sched_pick(sched, waits, choices, data, u32(1))
+  test_check(waits[1] == u32(0) && waits[2] == u32(0), u32(5109))
+}
+
+TestSimProcessCrashThenRestart: (): () {
+  q: [1]SimQueue
+  e: [4]SimEvent
+  k: [1]SimClock
+  p: [1]SimProcess
+  tape: [1]TestChoices
+  zeros: [8]u8
+  queue: [*]SimQueue = span(&q)
+  events: [*]SimEvent = span(&e)
+  clock: [*]SimClock = span(&k)
+  process: [*]SimProcess = span(&p)
+  choices: [*]TestChoices = span(&tape)
+  data: []u8 = view(&zeros)
+  process[0] = sim_process_new()
+  clock[0].now = u64(5)
+  test_check(sim_process_schedule_crash(queue, events, clock, choices, data, u32(3), u32(4), u32(2), u32(2)), u32(5110))
+  test_check(queue[0].count == u32(2), u32(5111))
+  first: SimEvent = sim_next(queue, events, clock, choices, data)
+  test_check(first.kind == u32(3) && first.at == u64(5), u32(5112))
+  sim_process_crash(process, clock)
+  test_check(!process[0].up && process[0].down_since == u64(5), u32(5113))
+  second: SimEvent = sim_next(queue, events, clock, choices, data)
+  test_check(second.kind == u32(4) && second.at == u64(6), u32(5114))
+  sim_process_restart(process)
+  test_check(process[0].up && process[0].restarts == u32(1), u32(5115))
+  // No room for both: nothing is scheduled.
+  ignored: Bool = sim_schedule(queue, events, clock, SimEvent { at: u64(6), kind: u32(0), value: u32(0) })
+  ignored = sim_schedule(queue, events, clock, SimEvent { at: u64(6), kind: u32(0), value: u32(0) })
+  ignored = sim_schedule(queue, events, clock, SimEvent { at: u64(6), kind: u32(0), value: u32(0) })
+  test_check(!sim_process_schedule_crash(queue, events, clock, choices, data, u32(3), u32(4), u32(0), u32(0)), u32(5116))
+  test_check(queue[0].count == u32(3), u32(5117))
+}
+
+// The adapter never picks a non-runnable actor and never lets a runnable one
+// wait past the documented bound, whatever the tape does.
+PropertySimSchedFair: (data: []u8): () {
+  s: [1]SimSched
+  w: [4]u32
+  tape: [1]TestChoices
+  sched: [*]SimSched = span(&s)
+  waits: [*]u32 = span(&w)
+  choices: [*]TestChoices = span(&tape)
+  sim_sched_init(sched, waits, u32(4), u32(3))
+  step: u32 = u32(0)
+  while step < u32(64) {
+    runnable: u32 = u32(test_byte(choices, data)) & u32(15)
+    chosen: u32 = sim_sched_pick(sched, waits, choices, data, runnable)
+    runnable == u32(0) ? { test_check(chosen == u32(4), u32(5120)) } |
+    { test_check(chosen < u32(4) && ((runnable >> chosen) & u32(1)) != u32(0), u32(5121)) }
+    test_check(sim_sched_max_wait(sched, waits) <= u32(5), u32(5122))
+    step = step + u32(1)
+  }
+  sched[0].forced > u32(0) ? { testing_classify(u32(60)) }
+  sim_sched_max_wait(sched, waits) == u32(5) ? { testing_classify(u32(61)) }
+}
+
+// The write-ahead log as an event-loop scenario. Events: 0 a writer asks to
+// append (value: writer), 1 fsync, 2 a read of an appended block, 3 crash,
+// 4 restart. Requests that arrive while the process is down are lost (a
+// client would retry); overlapping crash windows collapse into one. After every event the adapter picks one writer with
+// pending requests to append one record, so the interleaving of the two
+// writers is the tape's within the fairness bound. Invariants as in
+// SimWalRecovery (5060 no phantom, 5061 prefix, 5062 durability up to the
+// first untrusted acknowledged block), plus 5063 fairness and 5064 a chosen
+// writer had a request pending.
+SimWalEvents: (data: []u8): () {
+  d: [1]SimDisk
+  dur: [32]u64
+  vol: [32]u64
+  fl: [16]u32
+  tape: [1]TestChoices
+  rec: [4]u64
+  out: [4]u64
+  blank: [4]u64
+  expected_a: [8]u64
+  expected_b: [8]u64
+  q: [1]SimQueue
+  e: [32]SimEvent
+  k: [1]SimClock
+  p: [1]SimProcess
+  s: [1]SimSched
+  w: [2]u32
+  pending: [2]u32
+  served: [2]u32
+  disk: [*]SimDisk = span(&d)
+  durable: [*]u64 = span(&dur)
+  volatile: [*]u64 = span(&vol)
+  flags: [*]u32 = span(&fl)
+  choices: [*]TestChoices = span(&tape)
+  record: [*]u64 = span(&rec)
+  read: [*]u64 = span(&out)
+  blank_record: [*]u64 = span(&blank)
+  queue: [*]SimQueue = span(&q)
+  events: [*]SimEvent = span(&e)
+  clock: [*]SimClock = span(&k)
+  process: [*]SimProcess = span(&p)
+  sched: [*]SimSched = span(&s)
+  waits: [*]u32 = span(&w)
+  faults: u32 = u32(test_byte(choices, data)) & u32(63)
+  sim_disk_init(disk, durable, volatile, flags, u32(8), u32(4))
+  process[0] = sim_process_new()
+  sim_sched_init(sched, waits, u32(2), u32(2))
+  // The workload: 20 requests, fsyncs and reads with tape-chosen delays, and
+  // up to two crash/restart pairs.
+  i: u32 = u32(0)
+  while i < u32(20) {
+    kind: u32 = u32(test_byte(choices, data)) % u32(3)
+    value: u32 = u32(test_byte(choices, data)) & u32(1)
+    at: u64 = u64(test_byte(choices, data) % u8(20))
+    ignored: Bool = sim_schedule_delayed(queue, events, clock, choices, data, SimEvent { at: at, kind: kind, value: value }, u32(3))
+    i = i + u32(1)
+  }
+  crashes: u32 = test_range(choices, data, u32(0), u32(2))
+  i = u32(0)
+  while i < crashes {
+    scheduled: Bool = sim_process_schedule_crash(queue, events, clock, choices, data, u32(3), u32(4), u32(22), u32(3))
+    scheduled ? { testing_classify(u32(100)) }
+    i = i + u32(1)
+  }
+  next: u32 = u32(0)
+  acked: u32 = u32(0)
+  while queue[0].count > u32(0) {
+    event: SimEvent = sim_next(queue, events, clock, choices, data)
+    testing_trace(u32(520), (u64(event.kind) << u64(32)) | u64(event.value), clock[0].now)
+    up: Bool = process[0].up
+    event.kind <= u32(2) && !up ? { testing_classify(u32(102)) }
+    event.kind == u32(0) && up ? { pending[event.value] = pending[event.value] + u32(1) }
+    event.kind == u32(1) && up ? {
+      f2: u32 = sim_disk_fsync(disk, durable, volatile, flags, choices, data, faults)
+      f2 != u32(0) ? { testing_classify(u32(88)) }
+      acked = next
+    }
+    event.kind == u32(2) && up && next > u32(0) ? {
+      which: u32 = test_range(choices, data, u32(0), next - u32(1))
+      ignored2: Bool = sim_disk_read(disk, durable, volatile, flags, which, read, choices, data, faults)
+    }
+    // Two crash windows may overlap: a crash while down and a restart while
+    // up are no-ops (the first restart brings the process back).
+    event.kind == u32(3) && !up ? { testing_classify(u32(106)) }
+    event.kind == u32(4) && up ? { testing_classify(u32(107)) }
+    event.kind == u32(3) && up ? {
+      sim_process_crash(process, clock)
+      sim_disk_crash(disk, durable, volatile, flags)
+      testing_classify(u32(101))
+    }
+    event.kind == u32(4) && !up ? {
+      sim_process_restart(process)
+      sim_disk_restart(disk)
+      // Recovery: the prefix of valid records, then durable truncation.
+      recovered: u32 = u32(0)
+      scanning: Bool = true
+      while scanning && recovered < u32(8) {
+        ok: Bool = sim_disk_read(disk, durable, volatile, flags, recovered, read, choices, data, u32(0))
+        valid: Bool = ok && read[0] == u64(recovered) && read[3] == wal_checksum(read[0], read[1], read[2])
+        valid ? {
+          matches: Bool = read[1] == expected_a[recovered] && read[2] == expected_b[recovered]
+          test_check(matches || !sim_disk_trusted(flags, recovered), u32(5060))
+          recovered = recovered + u32(1)
+        } | { scanning = false }
+      }
+      testing_trace(u32(521), u64(recovered), (u64(next) << u64(32)) | u64(acked))
+      test_check(recovered <= next, u32(5061))
+      clean: Bool = true
+      j: u32 = u32(0)
+      while j < acked {
+        !sim_disk_trusted(flags, j) ? { clean = false }
+        clean ? { test_check(j < recovered, u32(5062)) }
+        j = j + u32(1)
+      }
+      recovered < acked ? { testing_classify(u32(93)) }
+      t: u32 = recovered
+      while t < u32(8) {
+        fz: u32 = sim_disk_write(disk, durable, volatile, flags, t, blank_record, choices, data, faults)
+        fz != u32(0) ? { testing_classify(u32(80) + fz) }
+        t = t + u32(1)
+      }
+      fs: u32 = sim_disk_fsync(disk, durable, volatile, flags, choices, data, faults)
+      fs != u32(0) ? { testing_classify(u32(88)) }
+      next = recovered
+      acked = recovered
+    }
+    // One scheduling decision per event: a writer with a pending request
+    // appends one record while the log has room.
+    process[0].up && next < u32(8) ? {
+      runnable: u32 = u32(0)
+      pending[0] > u32(0) ? { runnable = runnable | u32(1) }
+      pending[1] > u32(0) ? { runnable = runnable | u32(2) }
+      chosen: u32 = sim_sched_pick(sched, waits, choices, data, runnable)
+      chosen < u32(2) ? {
+        test_check(pending[chosen] > u32(0), u32(5064))
+        served[chosen] = served[chosen] + u32(1)
+        a: u64 = (u64(chosen) << u64(32)) | u64(served[chosen])
+        b: u64 = u64(process[0].restarts)
+        sim_disk_fill(record, u64(next), a, b)
+        expected_a[next] = a
+        expected_b[next] = b
+        f: u32 = sim_disk_write(disk, durable, volatile, flags, next, record, choices, data, faults)
+        f != u32(0) ? { testing_classify(u32(80) + f) }
+        pending[chosen] = pending[chosen] - u32(1)
+        next = next + u32(1)
+      }
+      test_check(sim_sched_max_wait(sched, waits) <= u32(2), u32(5063))
+    }
+  }
+  sched[0].forced > u32(0) ? { testing_classify(u32(103)) }
+  served[0] > u32(0) && served[1] > u32(0) ? { testing_classify(u32(104)) }
+  next == u32(8) ? { testing_classify(u32(105)) }
+}

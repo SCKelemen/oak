@@ -253,8 +253,8 @@ Only the actual imported testing reporter declarations are automatically
 trusted. User declarations cannot obtain that trust by copying a reporter name
 or symbol. Other foreign boundaries require an explicit native adapter.
 No arbitrary clocks, entropy, MMIO, threads or atomics are automatically
-intercepted. General scheduling adapters and integration with the OS's
-replay/debug event schema remain future work; simulated storage is below.
+intercepted. Integration with the OS's replay/debug event schema remains
+future work; simulated storage, crashes and scheduling adapters are below.
 Single-thread event interleavings are not an ARM weak-memory model and do not
 replace the existing memory-model litmus tests or hardware validation.
 
@@ -295,6 +295,33 @@ three a single-disk log can honestly keep: no phantom record unless its block
 is untrusted, recovery is a prefix of what was appended, and every acknowledged
 record on a trusted block is recovered up to the first untrusted acknowledged
 block. Without faults the device is exact against a two-copy model.
+
+## Crashes and scheduling
+
+A crash is an event, not a call. `sim_process_schedule_crash` enqueues a
+crash and its restart with tape-chosen delay and downtime, as two events of
+kinds the scenario names; it schedules nothing when the queue lacks room for
+both, so a crash never lands without its restart. The scenario's event loop
+dispatches the crash kind to `sim_process_crash` (and, for a device,
+`sim_disk_crash`) and the restart kind to `sim_process_restart` followed by
+its own recovery code, so recovery runs inside the simulated timeline like
+every other action. `SimProcess` records what the scenario must honor: no
+operation while down, an epoch per restart (`restarts`), and when it went
+down. Overlapping crash windows are the scenario's to collapse.
+
+`sim_schedule_delayed` schedules an event a tape-chosen 0..max delay later
+than asked; with `sim_next`'s tie choice this lets the tape reorder events
+that were not simultaneous. `SimSched` is a fair scheduling adapter over up
+to 32 actors with caller-owned wait counters: `sim_sched_pick` draws the next
+actor from the tape among the runnable ones, except that once a runnable
+actor has waited `bound` consecutive picks the longest waiter is picked
+(ties to the lowest index). Several actors may reach the bound together and
+are served one per pick, so a runnable actor waits at most `bound + actors -
+2` picks — the fairness assumption liveness invariants rely on, exposed by
+`sim_sched_max_wait`. A non-runnable actor is not waiting. The bundled
+event-driven log scenario (`examples/testing`) schedules two writers through
+the adapter and crashes through the process helper, keeping the storage
+invariants above plus fairness.
 
 ## Trusted native adapters
 

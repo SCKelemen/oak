@@ -81,9 +81,15 @@ var testingSource string
 //go:embed sim_storage.oak
 var simStorageSource string
 
+// Process crash/restart as scheduled events and fair scheduling adapters
+// (110-testing.md, "Crashes and scheduling").
+//
+//go:embed sim_sched.oak
+var simSchedSource string
+
 // TestingSource is the opt-in import(testing) module. Its reporting boundary
 // is supplied by oak test; generated target helpers use caller-owned storage.
-var TestingSource = testingSource + "\n" + simStorageSource
+var TestingSource = testingSource + "\n" + simStorageSource + "\n" + simSchedSource
 
 // Packages are the standard library files importable as qualified package
 // views (docs/spec/83-modules.md section 9): `import("strings")` exposes the
