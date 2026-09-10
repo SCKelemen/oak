@@ -72,8 +72,10 @@ func TestVerifyInstructionBreadth(t *testing.T) {
 	if flip.Kind != VerdictProven {
 		t.Fatalf("mvn must be proven, got %s: %s", flip.Kind, flip.Message)
 	}
-	// Oak's >> is the logical shift at every type (the backend's oak_shr_u
-	// helpers), so asr does not implement it: a mismatch at a negative input.
+	// Oak's shifts take unsigned operands only (the type checker refuses a
+	// signed >>; this body is parsed, not checked), so asr never implements
+	// an Oak body: were it spelled, the arithmetic reading is refuted at a
+	// negative input rather than assumed.
 	arith := verifyCase(t, "half: (a: i32) -> i32", "a >> i32(1)", "  bind w0 = a\n  asr w0, w0, #1\n  ret")
 	if arith.Kind != VerdictMismatch {
 		t.Fatalf("asr for Oak's logical >> must be a mismatch, got %s: %s", arith.Kind, arith.Message)

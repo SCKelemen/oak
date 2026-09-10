@@ -1,0 +1,95 @@
+import(std)
+import(testing)
+
+// A protocol with a data record (docs/spec/112-protocols.md §1): a scheduling
+// quantum with a wake flag. Guards choose between the two `tick` lines,
+// effects rewrite the record; `oak protocol -tla Quantum` renders the same
+// machine for TLC. Generated histories are protocol steps; the invariants are
+// the data facts the guards and effects maintain.
+Quantum: protocol = {
+  data { budget: u32, pending: Bool }
+  init { budget: u32(2), pending: false }
+  initial Running
+  tick: Running -> Running when data.budget > u32(1) then { data.budget = data.budget - u32(1) }
+  tick: Running -> Yielded when data.budget <= u32(1) then { data.budget = u32(2) }
+  resume: Yielded -> Running
+  park: Running -> Parked when !data.pending
+  signal(on: Bool): Parked -> Parked then { data.pending = on }
+  signal(on: Bool): Running -> Running then { data.pending = on }
+  wake: Parked -> Running when data.pending then { data.pending = false }
+}
+
+quantum_step_generate: (choices: [*]TestChoices, data: []u8): QuantumStep = derive.test_generate
+quantum_step_encode: (v: QuantumStep): TestCommand = derive.test_encode
+quantum_step_decode: (command: TestCommand): Option[QuantumStep] = derive.test_decode
+
+quantum_is_running: (s: QuantumState): Bool = s ? | .Running => true | _ => false
+quantum_is_parked: (s: QuantumState): Bool = s ? | .Parked => true | _ => false
+
+TestQuantumProtocol: (): () {
+  store: [1]QuantumData
+  data: [*]QuantumData = span(&store)
+  data[0] = quantum_initial_data()
+  s: QuantumState = quantum_initial()
+  s = quantum_next(s, data, .Tick)
+  test_check(quantum_is_running(s) && data[0].budget == u32(1), u32(6100))
+  s = quantum_next(s, data, .Tick)
+  test_check(!quantum_is_running(s) && data[0].budget == u32(2), u32(6101))
+  test_check(!quantum_legal(s, data[0], .Tick) && quantum_legal(s, data[0], .Resume), u32(6102))
+  s = quantum_next(s, data, .Resume)
+  s = quantum_next(s, data, .Park)
+  test_check(quantum_is_parked(s) && !quantum_legal(s, data[0], .Wake), u32(6103))
+  s = quantum_next(s, data, .Signal(true))
+  test_check(quantum_legal(s, data[0], .Wake), u32(6104))
+  s = quantum_next(s, data, .Wake)
+  test_check(quantum_is_running(s) && !data[0].pending, u32(6105))
+}
+
+GeneratePropertyQuantumProtocol: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  store: [1]QuantumData
+  record: [*]QuantumData = span(&store)
+  record[0] = quantum_initial_data()
+  s: QuantumState = quantum_initial()
+  limit: u32 = testing_command_limit()
+  limit > u32(32) ? { limit = u32(32) }
+  count: u32 = test_range(choices, data, u32(0), limit)
+  i: u32 = u32(0)
+  while i < count {
+    step: QuantumStep = quantum_step_generate(choices, data)
+    quantum_legal(s, record[0], step) ? {
+      testing_command(quantum_step_encode(step))
+      s = quantum_next(s, record, step)
+    }
+    i = i + u32(1)
+  }
+}
+
+// 6110 the budget stays within the quantum, 6111 a yield resets it, 6112 a
+// parked machine never has its wake pending consumed silently: after Wake
+// the flag is clear and the machine runs, 6113 every replayed step is legal.
+PropertyQuantumProtocol: (data: []u8): () {
+  count: u32 = test_command_count(data)
+  store: [1]QuantumData
+  record: [*]QuantumData = span(&store)
+  record[0] = quantum_initial_data()
+  s: QuantumState = quantum_initial()
+  i: u32 = u32(0)
+  while i < count {
+    raw: TestCommand = test_command_at(data, i)
+    decoded: Option[QuantumStep] = quantum_step_decode(raw)
+    step: QuantumStep = decoded ? | .Some(v) => v | .None => .Tick
+    ok: Bool = decoded ? | .Some(v) => true | .None => false
+    test_assume(ok)
+    test_check(quantum_legal(s, record[0], step), u32(6113))
+    was_running: Bool = quantum_is_running(s)
+    s = quantum_next(s, record, step)
+    test_check(record[0].budget >= u32(1) && record[0].budget <= u32(2), u32(6110))
+    raw.kind == u32(0) && was_running && !quantum_is_running(s) ? { test_check(record[0].budget == u32(2), u32(6111)) }
+    raw.kind == u32(4) ? { test_check(quantum_is_running(s) && !record[0].pending, u32(6112)) }
+    testing_classify(u32(80) + raw.kind)
+    quantum_is_parked(s) ? { testing_classify(u32(86)) }
+    i = i + u32(1)
+  }
+}

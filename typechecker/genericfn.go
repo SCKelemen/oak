@@ -436,6 +436,7 @@ func (tc *TypeChecker) instantiateFunctionTemplate(template *ast.FunctionStateme
 	}
 	tc.functionInstantiations[mangled] = specialized
 	tc.functionInstantiationOrder = append(tc.functionInstantiationOrder, mangled)
+	tc.copyRegionSignature(template.Name.Value, mangled)
 
 	// The specialized declaration is an ordinary function checked in the
 	// GLOBAL scope (templates are top-level; a caller's locals must not

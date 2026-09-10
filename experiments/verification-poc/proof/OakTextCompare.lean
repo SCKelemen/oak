@@ -1,11 +1,21 @@
 import OakText
+import OakTextExtracted
 import Lean
 
 /-! Test adapter only. Each corpus file holds DIMACS/LRAT texts labelled by the
     Go harness, on which compiled Oak has already agreed. The transliteration of
-    the Oak decoder must return the same acceptance decision on every case, and
-    so must the proved file model: three executables, one verdict. -/
+    the Oak decoder must return the same acceptance decision on every case, so
+    must the proved file model, and so must the extraction the compiler produced
+    mechanically from the same Oak source (`OakTextExtracted.lean`,
+    docs/spec/95-extraction.md): four executables, one verdict. The extraction
+    is fuel-indexed; the fuel here exceeds any loop's iteration count on the
+    bounded inputs the decoder admits (65536 bytes), so exhaustion (`none`)
+    is itself a disagreement. -/
 open Lean OakVerification
+
+def extractionFuel : Nat := 1 <<< 20
+
+def bytesArray (text : String) : Array UInt8 := text.toUTF8.data
 
 structure TextCase where
   name : String
@@ -26,6 +36,11 @@ def compare (path : String) : IO (Nat × Nat) := do
     let model := CertificateFile.check c.cnf c.proof
     if model != transliterated then
       throw (IO.userError s!"{c.name}: file model={model}, Oak transliteration={transliterated}")
+    match Extracted.rup_text_check (bytesArray c.cnf) (bytesArray c.proof) extractionFuel with
+    | none => throw (IO.userError s!"{c.name}: extracted Oak ran out of fuel")
+    | some extracted =>
+      if extracted != transliterated then
+        throw (IO.userError s!"{c.name}: extracted Oak={extracted}, Oak transliteration={transliterated}")
     if transliterated then accepted := accepted + 1
   return (cases.size, accepted)
 
@@ -37,4 +52,4 @@ def main (args : List String) : IO Unit := do
     let (n, a) ← compare path
     total := total + n
     accepted := accepted + a
-  IO.println s!"Oak transliteration/file model/compiled Oak certificate files: {total} cases ({accepted} accepted, {total - accepted} rejected)"
+  IO.println s!"Extracted Oak/Oak transliteration/file model/compiled Oak certificate files: {total} cases ({accepted} accepted, {total - accepted} rejected)"

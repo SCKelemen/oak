@@ -3,11 +3,28 @@
 Status: implemented subset (this document is normative for it). The protocol
 axis of the constitution — *how state may legally evolve* — gets a source
 form whose single declaration drives the executable scaffolding, the typed
-test commands of `110-testing.md`, and the model-checker module. Typestate
-APIs over resources are bound through the same declaration (§5); guards and
-data over the control graph are direction (§7).
+test commands of `110-testing.md`, and the model-checker module, over a
+control graph with a declared data record, guards and effects. Typestate
+APIs over resources are bound through the same declaration (§5).
 
 ## 1. Declaration
+
+```oak
+Quantum: protocol = {
+  data { budget: u32, pending: Bool }
+  init { budget: u32(2), pending: false }
+  initial Running
+  tick: Running -> Running when data.budget > u32(1) then { data.budget = data.budget - u32(1) }
+  tick: Running -> Yielded when data.budget <= u32(1) then { data.budget = u32(2) }
+  resume: Yielded -> Running
+  park: Running -> Parked when !data.pending
+  signal(on: Bool): Parked -> Parked then { data.pending = on }
+  signal(on: Bool): Running -> Running then { data.pending = on }
+  wake: Parked -> Running when data.pending then { data.pending = false }
+}
+```
+
+A finite control graph alone:
 
 ```oak
 VirtualIrq: protocol = {
@@ -25,8 +42,20 @@ declaration, and `protocol` stays a legal identifier elsewhere. The body is a
 sequence of entries separated by newlines or commas:
 
 - `initial S` — exactly once. The initial control state.
+- `data { field: T, ... }` and `init { field: value, ... }` — together or not
+  at all: the machine's data record (an ordinary record type body; fields
+  may be fixed arrays `[N]T`) and its initial value (a record literal setting
+  every field; arrays as typed array literals).
 - `resource T` — zero or more nominal types the protocol governs (§5).
-- `name(param: T)?: From -> To (via callable)?` — one transition line.
+- `name(param: T)?: From -> To (when guard)? (then { effects })? (via callable)?`
+  — one transition line. The guard is a Bool expression over `data.field`
+  and `data.field[i]` reads and the payload; the effects are statements over
+  `data.field = e` and `data.field[i] = e` and the payload. Both use ordinary
+  Oak and are checked by every gate once projected. An index is checked at
+  run time like any Oak index, so a guard that indexes by the payload
+  bounds it first (`u32(who) < u32(2) && data.parked[u32(who)]`); the
+  model-checker module gets the same conjunct and a payload domain that
+  matches.
 
 States are the names `initial` and the transition lines mention, in order of
 first appearance with the initial state first; they are spelled like variants
@@ -34,13 +63,18 @@ first appearance with the initial state first; they are spelled like variants
 like functions; several lines may share a name (one step from several
 states), and all lines of one name carry the same payload or none. A payload
 is one fixed-width scalar or `Bool` — the shape typed test commands carry —
-named so the model-checker module can quantify over it.
+named so the model-checker module can quantify over it. Several lines may
+share both name and source state when every such line carries a guard: in
+Oak the first line whose guard holds is taken, in declaration order; the
+model checker explores every line whose guard holds.
 
 Shape errors (`OAK-M0301`): no `initial`, no transitions, a lowercase state,
 a payload that is not a scalar, a payload that changes between lines of one
-step, a `(name, from)` pair declared twice, a `via` without a `resource`, an
-initial state no transition leaves, and a projection whose name the program
-already declares.
+step, a `(name, from)` pair declared twice without guards, `data` without
+`init` or `init` without `data`, an `init` that misses or invents a field, a
+guard or effect that names `data` when none is declared, a `via` without a
+`resource`, an initial state no transition leaves, and a projection whose
+name the program already declares.
 
 ## 2. Projection into Oak
 
@@ -56,10 +90,20 @@ by every gate. For `Name` with `name` its snake_case:
 | `name_legal` | `(state: NameState, step: NameStep): Bool`, true exactly on declared `(from, step)` pairs |
 | `name_next` | `(state: NameState, step: NameStep): NameState`; asserts legality (a located trap), then the declared target |
 
+With `data`, the record joins the signatures:
+
+| Projection | Shape |
+| --- | --- |
+| `NameData` | the declared record type |
+| `name_initial_data` | `(): NameData`, the `init` value |
+| `name_legal` | `(state: NameState, data: NameData, step: NameStep): Bool`: some line of the step leaves `state` and its guard holds on `data` |
+| `name_next` | `(state: NameState, data: [*]NameData, step: NameStep): NameState`: asserts legality on `data[0]`, copies the record out, applies the first matching line's effects to the copy, writes it back through the span, returns its target |
+
 `pub` on the declaration exports every projection. The projections are the
-executable state-machine scaffolding: a scenario keeps a `NameState`, asks
-`name_legal` before acting, and moves with `name_next`; an illegal step is a
-bug in the caller and traps like any failed assertion.
+executable state-machine scaffolding: a scenario keeps a `NameState` (and a
+one-element `NameData` array it spans), asks `name_legal` before acting, and
+moves with `name_next`; an illegal step is a bug in the caller and traps like
+any failed assertion.
 
 ## 3. Deterministic-simulation actions
 
@@ -76,15 +120,24 @@ generated histories against a hand-written oracle of the same table.
 oak protocol -tla Name [-o out.tla] file.oak
 ```
 
-renders a TLA+ module from the parsed declaration alone: `VARIABLE state`,
-`States`, `Init`, one action per step name — the disjunction of its
-`state = "From" /\ state' = "To"` lines, with a parameter for the payload —
-`Next` as the disjunction of the actions with payloads quantified over a
-declared `CONSTANT` per payload name (`compare` -> `Compare`), `TypeOK`, and
-`Spec`. The module is complete for the control graph and checkable as is;
-scenarios that need data, guards or liveness extend it in a module of their
-own, so regenerating the control graph never overwrites hand-written
-properties. The generated header names the source it came from.
+renders a TLA+ module from the parsed declaration alone: one `VARIABLE` per
+data field plus `state`, `vars`, `States`, `Init` from `initial` and `init`,
+one action per step name — the disjunction of its lines, each
+`state = "From" /\ guard /\ state' = "To" /\ field' = value ... /\ UNCHANGED
+<<rest>>`, with a parameter for the payload — `Next` as the disjunction of
+the actions with payloads quantified over a declared `CONSTANT` per payload
+name (`on` -> `On`), `TypeOK` (`Nat`, `Int`, `BOOLEAN` by field type), and
+`Spec`. Guards and effects translate from the subset a line may use: field
+and element reads, the payload, literals, width conversions, `+ - * / %`,
+comparisons, `&& || !`, `data.field = expr`, and `data.field[i] = expr`
+(element stores on one array fold into one `[field EXCEPT ![i] = v, ...]`);
+an `[N]T` field is a function `[0..N-1 -> T]`, initialized as one arrow
+when every element agrees and as a `CASE` otherwise; anything else stops the
+export naming the line. The module is complete for what the declaration says and
+checkable as is (TLC checks the modules of both examples above); scenarios
+extend it for liveness and environment assumptions in a module of their own,
+so regenerating never overwrites hand-written properties. The generated
+header names the source it came from.
 
 ## 5. Resource protocols (`via`)
 
@@ -98,18 +151,17 @@ unspecified; declaring them is part of §7.
 
 ## 6. What is not derived
 
-Guards over data, effects on data, and liveness are the scenario's and the
-TLA+ extension module's; the protocol declares the control graph only. The
-declaration does not generate Lean definitions, state diagrams, or debugger
-decoding (constitution: the same fact should eventually drive them).
+Liveness and environment assumptions (fairness, device progress) are the
+TLA+ extension module's; the declaration states what may happen, not what
+must. Guards and effects beyond the translated subset — loops, calls into
+the program, indices computed from other fields — stay in hand-written
+models. The declaration does
+not generate Lean definitions, state diagrams, or debugger decoding
+(constitution: the same fact should eventually drive them).
 
 ## 7. Direction
 
-- Guards and effects over a declared data record, so the legality predicate
-  and the transition function carry data and the TLA+ actions carry the
-  same guards — the point at which the OS's scheduler, wakeup, wiring and
-  call-gate models stop being written three times.
 - Parameter modes on `via` lines (`borrowed`, `borrowed mut`, `consumed`) and
   typestate-indexed handle types.
 - Conformance checking of a hand-written TLA+ module against the projected
-  control graph, for modules that predate the declaration.
+  machine, for modules that predate the declaration.

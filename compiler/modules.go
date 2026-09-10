@@ -110,6 +110,9 @@ type ModuleInfo struct {
 	// until nested packages are projected separately (82-package-semver.md
 	// section 6).
 	NestedModules []string
+	// NestedDeclarations are each nested module's elaborated declarations
+	// (internal names), for API snapshots of nested packages.
+	NestedDeclarations map[string][]ast.Statement
 	// Public is the root package's own syntax, the surface API tooling
 	// projects from.
 	Public *ast.Program
@@ -155,6 +158,10 @@ type ModuleInfo struct {
 	ModuleProfiles map[string]string
 	// RootModule is the module path of the build root ("" outside a module).
 	RootModule string
+	// Steady maps the internal name of each steady-state entry point the
+	// root manifest names (`steady <package> <fn>`, 85-discipline.md section
+	// 4) to its source spelling, for the implicit forbids { Memory.Allocate }.
+	Steady map[string]string
 	// RootPackage is the import path of the build root package.
 	RootPackage string
 	// StandardLibrary marks the loaded standard library packages, which have
@@ -1907,16 +1914,44 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 			moduleProfiles[module.Manifest.Path] = module.Manifest.Profile
 		}
 	}
+	nestedDeclarations := map[string][]ast.Statement{}
+	for _, path := range l.nested {
+		if pkg := l.packages[path]; pkg != nil {
+			nestedDeclarations[path] = pkg.Statements
+		}
+	}
 	rootModule := ""
+	steady := map[string]string{}
 	if l.root != nil {
 		rootModule = l.root.Manifest.Path
 		moduleProfiles[rootModule] = l.root.Manifest.Profile
+		// Steady-state entry points must be functions of packages this
+		// module contains; the check happens here, where every package and
+		// its exports are known, so an entry that names nothing fails the
+		// build rather than silently forbidding nothing.
+		for _, entry := range l.root.Manifest.Steady {
+			pkg := l.packages[entry.Path]
+			if pkg == nil || moduleOf[entry.Path] != rootModule {
+				l.report(CodeManifest, nil, "oak.mod: steady entry %s %s names a package this module does not contain", entry.Path, entry.Name)
+				continue
+			}
+			member, ok := pkg.Exports[entry.Name]
+			if !ok || member.Kind != modules.KindValue {
+				l.report(CodeManifest, nil, "oak.mod: steady entry %s %s names no function of that package", entry.Path, entry.Name)
+				continue
+			}
+			internal := entry.Name
+			if !pkg.IsRoot {
+				internal = modules.Mangle(pkg.Path, entry.Name)
+			}
+			steady[internal] = entry.Path + " " + entry.Name
+		}
 	}
 	exports := map[string]modules.Exports{}
 	for path, pkg := range l.packages {
 		exports[path] = pkg.Exports
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,

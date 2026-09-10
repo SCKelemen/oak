@@ -139,8 +139,13 @@ endorses:
    the proposal must clear; an explicit marker that makes every `+` on a
    tensor name one findable function is the defensible middle, and the
    decision is open.
-4. Array literals and a variadic literal form; `pub` constants exported as
-   values; const parameters on functions.
+4. **Done.** Array literals take their shape from context (`10-syntax.md`
+   §2c): `[3]u32 = [1, 2, 3]`, `sum3([4, 5, 6])`, and `dims([28, 28])`
+   where `dims` takes a `[]u32` (the literal form of the variadic view;
+   previously such a literal typechecked in argument position but emitted
+   invalid C). `pub OP_ADD: u32 = 2` was already exported as a value readable
+   as `ops.OP_ADD` and is now locked in by `compiler/e2e_module_constants_test.go`;
+   const parameters on functions are 7.1 below.
 
 ## Tier 6 — verification and debugging
 

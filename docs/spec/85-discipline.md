@@ -148,10 +148,26 @@ No dynamic allocation after initialization (Power of Ten rule 3,
 TigerStyle static allocation). Oak's allocation story is already explicit —
 arenas, slabs, pools, and handles with declared capacities
 (`60-effects-allocation`) — and allocation is an effect
-(`Memory/Allocate`). Planned enforcement: the strict profile partitions the
-program into an initialization phase and a steady state; functions reachable
-from the steady state must not carry unscoped allocation effects. Not yet
-enforced.
+(`Memory.Allocate`). The phase split is expressed and enforced through
+effect clauses (`60-effects-allocation` §2): every steady-state entry point
+— the event loop, request handlers, interrupt paths — declares
+`forbids { Memory.Allocate }`, and the compiler rejects any allocation
+reachable from it through the call graph, naming the path. Initialization
+code is whatever those entry points do not reach; the compiler infers no
+phase. Externs that allocate must declare `effects { Memory.Allocate }`; an
+undeclared extern under a forbidding entry point is itself a rejection, so
+an allocation cannot hide behind a foreign call.
+
+The rule is stated once in the module manifest (`83-modules.md` section
+4.1): each `steady <package-path> <function>` line names a steady-state
+entry point of a package of this module, and the compiler checks it exactly
+as if it declared `forbids { Memory.Allocate }`, keeping any clause it
+declares itself. Findings carry `OAK-E0104` with the entry point, the
+directive spelling, and the call path to the allocation or to the site
+whose effects cannot be known. An entry that names a package outside the
+module or a function that does not exist fails the build (`OAK-M0112`)
+rather than forbidding nothing. The per-function clause remains the manual
+form for a hot path that is not an entry point.
 
 ## 5. Assertions
 

@@ -1062,7 +1062,27 @@ type FunctionStatement struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// Effect clauses (docs/spec/60-effects-allocation.md section 2):
+	// `effects { Memory.Allocate, ... }` declares the effects this function
+	// itself performs (EffectsDeclared distinguishes an empty clause, an
+	// assertion of purity for an extern, from no clause); `forbids { ... }`
+	// rejects the program when any of these effects is reachable from the
+	// function through the call graph.
+	Effects         []*EffectName
+	EffectsDeclared bool
+	Forbids         []*EffectName
 }
+
+// EffectName is one `Namespace.Name` in an effect clause.
+type EffectName struct {
+	BaseNode
+	Token     token.Token
+	Namespace string
+	Name      string
+}
+
+func (e *EffectName) TokenLiteral() string { return e.Token.Literal }
+func (e *EffectName) String() string       { return e.Namespace + "." + e.Name }
 
 func (fs *FunctionStatement) statementNode()       {}
 func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
@@ -1087,6 +1107,22 @@ func (fs *FunctionStatement) String() string {
 	if fs.ReturnType != nil {
 		out.WriteString(" -> ")
 		out.WriteString(fs.ReturnType.String())
+	}
+	writeEffects := func(keyword string, names []*EffectName) {
+		out.WriteString(" " + keyword + " {")
+		for i, e := range names {
+			if i > 0 {
+				out.WriteString(",")
+			}
+			out.WriteString(" " + e.String())
+		}
+		out.WriteString(" }")
+	}
+	if fs.EffectsDeclared {
+		writeEffects("effects", fs.Effects)
+	}
+	if len(fs.Forbids) > 0 {
+		writeEffects("forbids", fs.Forbids)
 	}
 	out.WriteRune(' ')
 	out.WriteString(fs.Body.String())
@@ -1243,20 +1279,25 @@ type ProtocolDeclaration struct {
 	Token       token.Token // the protocol name token
 	EndToken    token.Token // closing brace
 	Name        *Identifier
-	Resources   []*Identifier // `resource T`: nominal types governed by the protocol
-	Initial     *Identifier   // `initial S`
+	Resources   []*Identifier  // `resource T`: nominal types governed by the protocol
+	Initial     *Identifier    // `initial S`
+	Data        *RecordLiteral // `data { field: T, ... }`: the machine's data record, or nil
+	Init        *RecordLiteral // `init { field: value, ... }`: the initial data, required with Data
 	Transitions []*ProtocolTransition
 	Exported    bool
 }
 
-// ProtocolTransition is one `name(param: T)?: From -> To (via callable)?` line.
+// ProtocolTransition is one
+// `name(param: T)?: From -> To (when guard)? (then { effects })? (via callable)?` line.
 type ProtocolTransition struct {
 	Token    token.Token
 	Name     *Identifier
 	Param    *FunctionParameter // optional payload: one fixed-width scalar or Bool
 	From     *Identifier
 	To       *Identifier
-	Callable *Identifier // optional `via f`: the function that performs it
+	Guard    Expression      // optional `when` expression over data.field and the payload
+	Effects  *BlockStatement // optional `then { ... }` statements over data.field and the payload
+	Callable *Identifier     // optional `via f`: the function that performs it
 }
 
 func (pd *ProtocolDeclaration) statementNode()       {}
@@ -1287,6 +1328,14 @@ func (pd *ProtocolDeclaration) String() string {
 		out.WriteString(t.From.String())
 		out.WriteString(" -> ")
 		out.WriteString(t.To.String())
+		if t.Guard != nil {
+			out.WriteString(" when ")
+			out.WriteString(t.Guard.String())
+		}
+		if t.Effects != nil {
+			out.WriteString(" then ")
+			out.WriteString(t.Effects.String())
+		}
 		if t.Callable != nil {
 			out.WriteString(" via ")
 			out.WriteString(t.Callable.String())

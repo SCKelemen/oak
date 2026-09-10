@@ -46,6 +46,18 @@ type Manifest struct {
 	// under (docs/spec/85-discipline.md section 1): "default", "strict", or
 	// "" when the manifest does not say.
 	Profile string
+	// Steady lists the steady-state entry points (`steady <package> <fn>`,
+	// docs/spec/85-discipline.md section 4): functions after which the
+	// program may not allocate. The compiler checks each as if it declared
+	// `forbids { Memory.Allocate }`.
+	Steady []SteadyEntry
+}
+
+// SteadyEntry names one steady-state entry point: a function of a package of
+// this module.
+type SteadyEntry struct {
+	Path string
+	Name string
 }
 
 // Profiles are the discipline profiles a manifest may declare.
@@ -57,6 +69,8 @@ var Profiles = map[string]bool{"default": true, "strict": true}
 //	oak <version>
 //	require <path> <version>
 //	replace <path> => <directory>
+//	profile <default|strict>
+//	steady <package-path> <function>
 //	// comment
 //
 // Unknown directives, malformed lines, duplicate `module`/`oak`/`replace`
@@ -163,6 +177,25 @@ func ParseManifest(text string) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("oak.mod:%d: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)", lineNumber, fields[1])
 			}
 			manifest.Profile = fields[1]
+		case "steady":
+			if len(fields) != 3 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: steady directive has the form `steady <package-path> <function>`", lineNumber)
+			}
+			if err := ValidateImportPath(fields[1]); err != nil {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: %v", lineNumber, err)
+			}
+			if IsStandardLibraryPath(fields[1]) {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: steady entry names standard library path %q; entry points are this module's functions", lineNumber, fields[1])
+			}
+			if !validIdentifier(fields[2]) {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: steady entry %q is not a function name", lineNumber, fields[2])
+			}
+			for _, prior := range manifest.Steady {
+				if prior.Path == fields[1] && prior.Name == fields[2] {
+					return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate steady entry %s %s", lineNumber, fields[1], fields[2])
+				}
+			}
+			manifest.Steady = append(manifest.Steady, SteadyEntry{Path: fields[1], Name: fields[2]})
 		default:
 			return Manifest{}, fmt.Errorf("oak.mod:%d: unknown directive %q", lineNumber, fields[0])
 		}
@@ -187,4 +220,20 @@ func stripComment(line string) string {
 		}
 	}
 	return line
+}
+
+// validIdentifier accepts an Oak identifier: a letter or underscore followed
+// by letters, digits, or underscores.
+func validIdentifier(text string) bool {
+	if text == "" {
+		return false
+	}
+	for i, r := range text {
+		alpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
+		digit := r >= '0' && r <= '9'
+		if !alpha && !(digit && i > 0) {
+			return false
+		}
+	}
+	return true
 }

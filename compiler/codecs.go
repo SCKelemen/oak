@@ -253,8 +253,10 @@ func errVariant(s *synth, name string) ast.Expression {
 }
 
 // derive builds the three encoder functions of one type as typed syntax
-// (compiler/synth.go): __oak_json_encoded_size_T measures, __oak_json_write_T
-// checks capacity then writes at an offset, __oak_json_encode_T writes at 0.
+// (compiler/synth.go): __oak_json_encoded_size_T measures,
+// __oak_json_write_unchecked_T writes measured, checked storage at an offset
+// and returns the count, __oak_json_write_T measures and checks capacity
+// once then calls it, __oak_json_encode_T writes at 0.
 func (d *codecDeriver) derive(typ string) error {
 	if d.generated[typ] {
 		return nil
@@ -264,20 +266,27 @@ func (d *codecDeriver) derive(typ string) error {
 	}
 	d.active[typ] = true
 	defer delete(d.active, typ)
-	for _, operation := range []string{"encoded_size", "write", "encode"} {
+	for _, operation := range []string{"encoded_size", "write_unchecked", "write", "encode"} {
 		if d.names[codecName(operation, typ)] {
 			return fmt.Errorf("codec: generated name %s conflicts with a declaration", codecName(operation, typ))
 		}
 	}
-	sizeName, writeName, encodeName := codecName("encoded_size", typ), codecName("write", typ), codecName("encode", typ)
+	sizeName, uncheckedName, writeName, encodeName := codecName("encoded_size", typ), codecName("write_unchecked", typ), codecName("write", typ), codecName("encode", typ)
 	size := newSynth("codec:" + sizeName)
-	write := newSynth("codec:" + writeName)
+	// The unchecked writer (docs/spec/71-codecs.md section 4a) writes a
+	// value the caller has already measured into storage the caller has
+	// already checked, and returns the byte count. It measures nothing and
+	// checks no capacity: one bounds check per record, at the checked
+	// entry, instead of one per field at every nesting level. Every store
+	// it makes is still a bounds-checked Oak store, so a caller that broke
+	// the contract traps rather than writes out of range.
+	write := newSynth("codec:" + uncheckedName)
 	var sizeBody, writeBody []ast.Statement
 	primitive := codecPrimitive(typ)
 	switch {
 	case primitive != "":
 		sizeBody = []ast.Statement{size.expr(size.variant("Ok", size.call("json_"+primitive+"_size", codecConversion(size, primitive))))}
-		writeBody = []ast.Statement{write.expr(write.call("json_"+primitive+"_encode_at", write.id("dst"), write.id("offset"), codecConversion(write, primitive)))}
+		writeBody = []ast.Statement{write.expr(write.call("json_"+primitive+"_write_at", write.id("dst"), write.id("offset"), codecConversion(write, primitive)))}
 	case typ == "string":
 		sizeBody = []ast.Statement{
 			size.decl("bytes", size.view(size.id("u8")), size.call("str_bytes", size.id("value"))),
@@ -285,7 +294,7 @@ func (d *codecDeriver) derive(typ string) error {
 		}
 		writeBody = []ast.Statement{
 			write.decl("bytes", write.view(write.id("u8")), write.call("str_bytes", write.id("value"))),
-			write.expr(write.call("json_string_encode_at", write.id("dst"), write.id("offset"), write.id("bytes"))),
+			write.expr(write.call("json_string_write_at", write.id("dst"), write.id("offset"), write.id("bytes"))),
 		}
 	default:
 		fields, err := d.fields(typ)
@@ -303,27 +312,33 @@ func (d *codecDeriver) derive(typ string) error {
 		}
 	}
 	sizeFn := size.fn(sizeName, []*ast.FunctionParameter{size.param("value", size.id(typ))}, jsonResult(size), sizeBody...)
-	// The write function independently checks capacity, even if called by
-	// name. This retains fail-closed behavior for generated helpers exposed
-	// by the bootstrap's flat namespace; callers need no unsafe preflight
-	// capability.
-	writeFn := write.fn(writeName,
+	uncheckedFn := write.fn(uncheckedName,
 		[]*ast.FunctionParameter{write.param("value", write.id(typ)), write.param("dst", write.span(write.id("u8"))), write.param("offset", write.id("u32"))},
-		jsonResult(write),
-		write.decl("measured", jsonResult(write), write.call(sizeName, write.id("value"))),
-		write.expr(write.cond(
-			write.not(write.call("json_result_ok", write.id("measured"))),
-			write.block(write.expr(write.id("measured"))),
-			write.cond(
-				write.not(write.call("bytes_range_fits", write.call("len", write.id("dst")), write.id("offset"), write.call("json_result_value", write.id("measured")))),
-				write.block(write.expr(errVariant(write, "DestinationTooSmall"))),
-				write.block(writeBody...)))))
+		write.id("u32"),
+		writeBody...)
+	// The checked write function is the entry callers reach by name: it
+	// measures, checks capacity once, and hands the unchecked writer
+	// storage that fits. This retains fail-closed behavior for generated
+	// helpers exposed by the bootstrap's flat namespace; callers need no
+	// unsafe preflight capability, and the output is unchanged on failure.
+	checked := newSynth("codec:" + writeName)
+	writeFn := checked.fn(writeName,
+		[]*ast.FunctionParameter{checked.param("value", checked.id(typ)), checked.param("dst", checked.span(checked.id("u8"))), checked.param("offset", checked.id("u32"))},
+		jsonResult(checked),
+		checked.decl("measured", jsonResult(checked), checked.call(sizeName, checked.id("value"))),
+		checked.expr(checked.cond(
+			checked.not(checked.call("json_result_ok", checked.id("measured"))),
+			checked.block(checked.expr(checked.id("measured"))),
+			checked.cond(
+				checked.not(checked.call("bytes_range_fits", checked.call("len", checked.id("dst")), checked.id("offset"), checked.call("json_result_value", checked.id("measured")))),
+				checked.block(checked.expr(errVariant(checked, "DestinationTooSmall"))),
+				checked.block(checked.expr(checked.variant("Ok", checked.call(uncheckedName, checked.id("value"), checked.id("dst"), checked.id("offset")))))))))
 	encode := newSynth("codec:" + encodeName)
 	encodeFn := encode.fn(encodeName,
 		[]*ast.FunctionParameter{encode.param("value", encode.id(typ)), encode.param("dst", encode.span(encode.id("u8")))},
 		jsonResult(encode),
 		encode.expr(encode.call(writeName, encode.id("value"), encode.id("dst"), encode.u32(0))))
-	d.output = append(d.output, sizeFn, writeFn, encodeFn)
+	d.output = append(d.output, sizeFn, uncheckedFn, writeFn, encodeFn)
 	d.generated[typ] = true
 	return nil
 }
@@ -355,7 +370,9 @@ func recordEncoder(size, write *synth, fields []codecField) ([]ast.Statement, []
 		optional := fmt.Sprintf("optional%d", i)
 		index := fmt.Sprintf("index%d", i)
 		sizeCall := codecName("encoded_size", field.typ)
-		writeCall := codecName("write", field.typ)
+		// Fields write through the unchecked form: the record's checked
+		// entry measured the whole value and checked the destination once.
+		writeCall := codecName("write_unchecked", field.typ)
 		// value.field, rebuilt per use: nodes are never shared.
 		fieldOf := func(s *synth) ast.Expression { return s.field(s.id("value"), field.name) }
 
@@ -395,9 +412,7 @@ func recordEncoder(size, write *synth, fields []codecField) ([]ast.Statement, []
 		}
 		emitPart := func(value ast.Expression) []ast.Statement {
 			return []ast.Statement{
-				write.decl(part, jsonResult(write), write.call(writeCall, value, write.id("dst"), write.id("out"))),
-				write.expr(write.call("assert", write.call("json_result_ok", write.id(part)))),
-				write.assign("out", write.add(write.id("out"), write.call("json_result_value", write.id(part)))),
+				write.assign("out", write.add(write.id("out"), write.call(writeCall, value, write.id("dst"), write.id("out")))),
 			}
 		}
 		switch {
@@ -441,7 +456,7 @@ func recordEncoder(size, write *synth, fields []codecField) ([]ast.Statement, []
 		size.block(size.expr(size.variant("Ok", size.call("u32_trunc_u64", size.id("total"))))))))
 	writeBody = append(writeBody,
 		write.store(write.index(write.id("dst"), write.id("out")), write.u8(125)),
-		write.expr(write.variant("Ok", write.add(write.sub(write.id("out"), write.id("offset")), write.u32(1)))))
+		write.expr(write.add(write.sub(write.id("out"), write.id("offset")), write.u32(1))))
 	return sizeBody, writeBody, nil
 }
 

@@ -102,12 +102,12 @@ func TestProtocolTLAModule(t *testing.T) {
 		"MODULE VirtualIrq",
 		"CONSTANTS Compare",
 		`States == {"Idle", "Pending", "Active"}`,
-		`Init == state = "Idle"`,
+		"Init ==\n    state = \"Idle\"",
 		"Inject ==\n    state = \"Idle\" /\\ state' = \"Pending\"",
 		"Program(compare) ==\n    \\/ state = \"Idle\" /\\ state' = \"Idle\"\n    \\/ state = \"Pending\" /\\ state' = \"Pending\"",
 		"Next ==\n    Inject\n    \\/ Acknowledge\n    \\/ Eoi\n    \\/ (\\E compare \\in Compare : Program(compare))",
-		"TypeOK == state \\in States",
-		"Spec == Init /\\ [][Next]_state",
+		"TypeOK ==\n    state \\in States",
+		"Spec == Init /\\ [][Next]_vars",
 	} {
 		if !strings.Contains(module, want) {
 			t.Errorf("module lacks %q:\n%s", want, module)

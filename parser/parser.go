@@ -2417,6 +2417,35 @@ func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.Pro
 			return nil
 		}
 		switch p.currentToken.Literal {
+		case "data", "init":
+			keyword := p.currentToken.Literal
+			if !p.expectPeek(token.LBRACE) {
+				return nil
+			}
+			if keyword == "data" {
+				if decl.Data != nil {
+					p.addErrorAtCurrentToken("protocol declares its data record once")
+					return nil
+				}
+				shape := p.parseRecordType()
+				record, ok := shape.(*ast.RecordLiteral)
+				if !ok || record == nil {
+					return nil
+				}
+				decl.Data = record
+			} else {
+				if decl.Init != nil {
+					p.addErrorAtCurrentToken("protocol declares its initial data once")
+					return nil
+				}
+				values := p.parseRecordLiteral()
+				record, ok := values.(*ast.RecordLiteral)
+				if !ok || record == nil {
+					return nil
+				}
+				decl.Init = record
+			}
+			p.nextToken()
 		case "resource", "initial":
 			keyword := p.currentToken.Literal
 			if !p.expectPeek(token.IDENT) {
@@ -2468,6 +2497,24 @@ func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.Pro
 				return nil
 			}
 			transition.To = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "when" {
+				p.nextToken() // when
+				p.nextToken() // first token of the guard
+				transition.Guard = p.parseExpression(LOWEST)
+				if transition.Guard == nil {
+					return nil
+				}
+			}
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "then" {
+				p.nextToken() // then
+				if !p.expectPeek(token.LBRACE) {
+					return nil
+				}
+				transition.Effects = p.parseBlockStatement()
+				if transition.Effects == nil {
+					return nil
+				}
+			}
 			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "via" {
 				p.nextToken() // via
 				if !p.expectPeek(token.IDENT) {
@@ -3998,6 +4045,48 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		stmt.ReturnType = p.parseTypeExpression()
 		if stmt.ReturnType == nil {
 			return nil
+		}
+	}
+
+	// Effect clauses (docs/spec/60-effects-allocation.md section 2), in
+	// either order, each at most once: effects { A.B, ... } forbids { ... }.
+	// `effects` and `forbids` are contextual: only this position reads them.
+	for p.peekTokenIs(token.IDENT) && (p.peekToken.Literal == "effects" || p.peekToken.Literal == "forbids") {
+		p.nextToken()
+		keyword := p.currentToken.Literal
+		if (keyword == "effects" && stmt.EffectsDeclared) || (keyword == "forbids" && stmt.Forbids != nil) {
+			p.addErrorAtCurrentToken(fmt.Sprintf("a function declares one %s clause", keyword))
+			return nil
+		}
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+		names := []*ast.EffectName{}
+		for !p.peekTokenIs(token.RBRACE) {
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			effect := &ast.EffectName{Token: p.currentToken, Namespace: p.currentToken.Literal}
+			if !p.expectPeek(token.DOT) {
+				return nil
+			}
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			effect.Name = p.currentToken.Literal
+			names = append(names, effect)
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+			} else if !p.peekTokenIs(token.RBRACE) {
+				p.peekError(token.RBRACE)
+				return nil
+			}
+		}
+		p.nextToken() // '}'
+		if keyword == "effects" {
+			stmt.Effects, stmt.EffectsDeclared = names, true
+		} else {
+			stmt.Forbids = names
 		}
 	}
 

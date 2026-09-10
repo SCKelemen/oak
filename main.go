@@ -101,6 +101,7 @@ func buildPackage(args []string) int {
 	dir := "."
 	output := ""
 	header := ""
+	leanOut := ""
 	profile := ""
 	lines := false
 	for i := 0; i < len(args); i++ {
@@ -113,6 +114,11 @@ func buildPackage(args []string) int {
 			// (docs/spec/92-ffi.md section 2.6).
 			header = args[i+1]
 			i++
+		case args[i] == "-lean" && i+1 < len(args):
+			// The Lean 4 extraction of the package's own declarations
+			// (docs/spec/95-extraction.md).
+			leanOut = args[i+1]
+			i++
 		case args[i] == "-profile" && i+1 < len(args):
 			profile = args[i+1]
 			i++
@@ -121,7 +127,7 @@ func buildPackage(args []string) int {
 			// source (docs/spec/90-backend.md section 10).
 			lines = true
 		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out.c] [-header out.h] [-profile default|strict] [-lines] [dir]\n", args[i])
+			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out.c] [-header out.h] [-lean out.lean] [-profile default|strict] [-lines] [dir]\n", args[i])
 			return 2
 		default:
 			dir = args[i]
@@ -139,6 +145,17 @@ func buildPackage(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
+	}
+	if leanOut != "" {
+		extracted, err := comp.EmitLean("Oak." + leanNamespace(dir)).Get()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
+		if err := os.WriteFile(leanOut, []byte(extracted), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
 	}
 	if header != "" {
 		api, err := comp.EmitHeader().Get()
@@ -562,4 +579,32 @@ func runPackage(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// leanNamespace derives a Lean namespace component from a package
+// directory: its base name capitalized, with every character outside the
+// identifier alphabet spelled as an underscore.
+func leanNamespace(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	var out strings.Builder
+	for i, r := range filepath.Base(abs) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			if i == 0 {
+				r -= 'a' - 'A'
+			}
+			out.WriteRune(r)
+		case (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9' && i > 0):
+			out.WriteRune(r)
+		default:
+			out.WriteByte('_')
+		}
+	}
+	if out.Len() == 0 {
+		return "Package"
+	}
+	return out.String()
 }

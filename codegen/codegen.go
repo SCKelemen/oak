@@ -1278,6 +1278,16 @@ func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 		if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "core_index" && len(call.Arguments) == 2 {
 			return cg.localContainerOf(&ast.IndexExpression{Left: call.Arguments[0], Index: call.Arguments[1]})
 		}
+		// A call to a program function classifies by its declared return
+		// type: a region-indexed function returning a view
+		// (docs/spec/50-borrowing.md section 8c) is indexed like the view.
+		if id, ok := call.Function.(*ast.Identifier); ok && cg.programFunctions != nil {
+			if fn, declared := cg.programFunctions[id.Value]; declared && fn.ReturnType != nil {
+				if info := cg.classifyContainer(fn.ReturnType); info.kind != containerUnknown {
+					return info
+				}
+			}
+		}
 	}
 	if index, ok := expr.(*ast.IndexExpression); ok && !index.Dot {
 		base := cg.localContainerOf(index.Left)
@@ -3305,6 +3315,25 @@ func (cg *CodeGenerator) emitArrayLiteral(expr *ast.ArrayLiteral, tc *typechecke
 	if expr.Type != nil {
 		if _, _, isArray := ownedArrayParameter(expr.Type, cg); isArray {
 			cg.output.WriteString(fmt.Sprintf("(%s)", cg.parseTypeExpression(expr.Type)))
+		} else if info := cg.classifyContainer(expr.Type); info.kind == containerView || info.kind == containerSpan {
+			// A view or span literal ([]T{ ... }, or a bare literal in a
+			// []T context): a view over a C99 array compound literal, whose
+			// automatic storage lives to the end of the enclosing block —
+			// long enough for the call or initializer it appears in
+			// (docs/spec/10-syntax.md section 2c).
+			viewType := fmt.Sprintf("oak_view_%s", info.element)
+			if info.kind == containerSpan {
+				viewType = fmt.Sprintf("oak_span_%s", info.element)
+			}
+			cg.output.WriteString(fmt.Sprintf("(%s){ (%s[]){ ", viewType, info.element))
+			for i, elem := range expr.Elements {
+				if i > 0 {
+					cg.output.WriteString(", ")
+				}
+				cg.emitExpressionFragment(elem, tc)
+			}
+			cg.output.WriteString(fmt.Sprintf(" }, %d }", len(expr.Elements)))
+			return
 		}
 	}
 	cg.emitArrayInitializer(expr, tc)

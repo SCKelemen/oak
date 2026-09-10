@@ -122,3 +122,111 @@ func TestCallerBindingFromSpanArgumentFailsClosed(t *testing.T) {
 		t.Fatalf("span argument produced %d OAK-B0113, want 1: %#v", got, bc.Diagnostics())
 	}
 }
+
+// Increment 2: explicit region parameters and span returns.
+
+func TestExplicitRegionSelectsAmongCandidates(t *testing.T) {
+	src := "pick[R]: (a: View[u8, R], b: []u8): View[u8, R] = subslice(a, 0, 1)"
+	bc := checkSource(t, src)
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("explicit region must admit two view parameters, got %#v", bc.Diagnostics())
+	}
+	wrong := "pick[R]: (a: View[u8, R], b: []u8): View[u8, R] = subslice(b, 0, 1)"
+	bc = checkSource(t, wrong)
+	if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 1 {
+		t.Fatalf("returning the other parameter produced %d OAK-B0113, want 1: %#v", got, bc.Diagnostics())
+	}
+}
+
+func TestExplicitRegionSignatureValidation(t *testing.T) {
+	cases := map[string]string{
+		"names no parameter":   "orphan[R]: (a: []u8): View[u8, R] = a",
+		"names two parameters": "both[R]: (a: View[u8, R], b: View[u8, R]): View[u8, R] = a",
+		"view from span":       "narrow[R]: (a: Span[u8, R]): View[u8, R] = a",
+	}
+	for name, src := range cases {
+		bc := checkSource(t, src)
+		if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 1 {
+			t.Fatalf("%s: produced %d OAK-B0113, want 1: %#v", name, got, bc.Diagnostics())
+		}
+		if got := countDiagnosticsWithCode(bc, string(CodeBorrowEscape)); got != 0 {
+			t.Fatalf("%s: an invalid region signature must not also report OAK-B0109: %#v", name, bc.Diagnostics())
+		}
+	}
+}
+
+func TestSpanReturnIsAReborrow(t *testing.T) {
+	// Elided: one span parameter, span return. The result suspends the
+	// argument span while it lives (OAK-B0107), and ends with the block.
+	src := "fn tail(buf: [*]u8, from: u32) -> [*]u8 { subslice(buf, from, 1) }\n" +
+		"fn use() -> u8 { data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\ns: [*]u8 = span(&data)\nt: [*]u8 = tail(s, 2)\nt[0] = 9\ns[0] = 1\nt[0] }"
+	bc := checkSource(t, src)
+	if got := countDiagnosticsWithCode(bc, string(CodeBorrowSuspended)); got != 1 {
+		t.Fatalf("parent span use while the returned span lives produced %d OAK-B0107, want 1: %#v", got, bc.Diagnostics())
+	}
+	if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 0 {
+		t.Fatalf("unexpected OAK-B0113: %#v", bc.Diagnostics())
+	}
+	clean := "fn tail(buf: [*]u8, from: u32) -> [*]u8 { subslice(buf, from, 1) }\n" +
+		"fn use() -> u8 { data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\nt: [*]u8 = tail(span(&data), 2)\nt[0] = 9\nt[0] }"
+	bc = checkSource(t, clean)
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("span from an inline span(&owner) must be clean, got %#v", bc.Diagnostics())
+	}
+}
+
+func TestSpanReturnFromLocalIsRejected(t *testing.T) {
+	src := "fn dangle(buf: [*]u8) -> [*]u8 { local: [4]u8 = [4]u8{ 1, 2, 3, 4 }\nspan(&local) }"
+	bc := checkSource(t, src)
+	if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 1 {
+		t.Fatalf("span of a local produced %d OAK-B0113, want 1: %#v", got, bc.Diagnostics())
+	}
+}
+
+// Increment 3: records carrying a region cross calls.
+
+const cursorPrelude = "Cursor[R]: type = struct { data: View[u8, R], pos: u32 }\n" +
+	"open[R]: (buf: View[u8, R]): Cursor[R] = Cursor { data: buf, pos: 0 }\n" +
+	"advance[R]: (c: Cursor[R], n: u32): Cursor[R] = Cursor { data: c.data, pos: c.pos + n }\n" +
+	"rest[R]: (c: Cursor[R]): View[u8, R] = subslice(c.data, c.pos, 1)\n"
+
+func TestRegionRecordCrossesCalls(t *testing.T) {
+	src := cursorPrelude +
+		"fn use() -> u8 { data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\nv: []u8 = view(&data)\nc: Cursor = open(v)\nd: Cursor = advance(c, 2)\nr: []u8 = rest(d)\ndata[0] = 9\nr[0] }"
+	bc := checkSource(t, src)
+	if got := countDiagnosticsWithCode(bc, string(CodeOwnerWrittenDuringView)); got != 1 {
+		t.Fatalf("owner write while the cursor chain lives produced %d OAK-B0103, want 1: %#v", got, bc.Diagnostics())
+	}
+	for _, code := range []string{string(CodeReturnedBorrowRegion), string(CodeBorrowEscape)} {
+		if got := countDiagnosticsWithCode(bc, code); got != 0 {
+			t.Fatalf("unexpected %s: %#v", code, bc.Diagnostics())
+		}
+	}
+}
+
+func TestRegionRecordLocalMayBePassed(t *testing.T) {
+	// A section 8b local record whose borrows are tracked passes to a
+	// region-declared parameter; a plain record parameter still refuses.
+	src := cursorPrelude +
+		"fn use() -> u8 { data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\nc: Cursor = Cursor { data: view(&data), pos: 1 }\nr: []u8 = rest(c)\nr[0] }"
+	bc := checkSource(t, src)
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("passing a tracked local record to a region parameter must be clean, got %#v", bc.Diagnostics())
+	}
+	plain := "Cursor: type = struct { data: []u8, pos: u32 }\n" +
+		"fn peek(c: Cursor) -> u8 { c.data[0] }\n" +
+		"fn use() -> u8 { data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\nc: Cursor = Cursor { data: view(&data), pos: 1 }\npeek(c) }"
+	bc = checkSource(t, plain)
+	if got := countDiagnosticsWithCode(bc, string(CodeBorrowEscape)); got == 0 {
+		t.Fatalf("a record parameter without a region must still fail closed: %#v", bc.Diagnostics())
+	}
+}
+
+func TestRegionRecordReturnOfLocalIsRejected(t *testing.T) {
+	src := "Cursor[R]: type = struct { data: View[u8, R], pos: u32 }\n" +
+		"bad[R]: (buf: View[u8, R]): Cursor[R] {\n  local: [4]u8 = [4]u8{ 1, 2, 3, 4 }\n  Cursor { data: view(&local), pos: 0 }\n}"
+	bc := checkSource(t, src)
+	if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 1 {
+		t.Fatalf("record of a local produced %d OAK-B0113, want 1: %#v", got, bc.Diagnostics())
+	}
+}

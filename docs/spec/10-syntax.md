@@ -83,6 +83,50 @@ code emitter cannot write a newline into its output without it.
 `_: T = expr` and `_ := expr` are not declarations and are rejected as
 they are today. The form is a statement, never an expression.
 
+## 2c. List literals take their shape from context
+
+A bare list literal `[e1, e2, ...]` has no type of its own. It takes the
+array or view shape its context expects — a declaration's type, a
+parameter's type at a call, a function's return type, a record field's
+type, or the element type of an enclosing literal — and its elements are
+checked against that shape's element type, so `[1, 2, 3]` is a `[3]u32`
+where a `[3]u32` is expected, a `[]u32` view where a view is expected, and
+`[[1, 2], [3, 4]]` fills a `[2][2]u32`. The literal is then exactly the
+typed form `[N]T{ ... }` or `[]T{ ... }` the author could have written, in
+every position those are legal:
+
+```oak
+sum3: (xs: [3]u32): u32 = xs[0] + xs[1] + xs[2]
+dims: (shape: []u32): u32 = len(shape)
+
+xs: [3]u32 = [1, 2, 3]
+total: u32 = sum3([4, 5, 6])          // an owned [3]u32 argument
+rank: u32 = dims([28, 28])            // a view over two u32
+corners: (): [2]Point = [Point { x: 0.0, y: 0.0 }, Point { x: 1.0, y: 2.0 }]
+```
+
+Rules:
+
+- An owned-array context `[N]T` requires exactly `N` elements; a different
+  count is an error naming both counts. A view context `[]T` (or a span
+  `[*]T`) takes the literal's own length.
+- Every element is checked with the context's element type as its expected
+  type, so integer literals take that width and a float literal in an
+  integer context is an error, as anywhere else.
+- A literal with no array or view context (`xs = [1, 2]` with `xs`
+  undeclared, a literal passed where a scalar is expected) is rejected; the
+  compiler does not guess a shape.
+- A literal in a view or span context denotes call-local storage: the C
+  backend lowers it to a view over a C99 array compound literal, whose
+  lifetime is the enclosing block (`90-backend.md` §10), long enough for
+  the call or initializer it appears in and no longer. Such a view cannot be
+  returned or stored beyond that block — the borrow rules of
+  `50-borrowing.md` apply to it as to any view of a local.
+
+The variadic form of §3 is the other spelling of the same thing:
+`dims(28, 28)` and `dims([28, 28])` reach a `dims: (shape: ...u32)` or
+`dims: (shape: []u32)` callee as the same two-element view.
+
 ## 3. Functions
 
 A function is an ordinary declaration: a name bound to a function interface
