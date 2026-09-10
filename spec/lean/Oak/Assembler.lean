@@ -174,6 +174,23 @@ theorem index_access_const (elem len i K : Nat) (hidx : i < K) (hlen : K ≤ len
     (i + 1) * elem ≤ elem * len :=
   index_access elem len i (Nat.lt_of_lt_of_le hidx hlen)
 
+/-- **Guard facts across a merge.** A label holds the meet of its
+    predecessors' facts: for proven minimum lengths, the smaller of the
+    two — which is a valid minimum whichever predecessor control came
+    from — and for index bounds, only a fact both sides carry. -/
+theorem meet_sound_left (a b len : Nat) (h : a ≤ len) : min a b ≤ len :=
+  Nat.le_trans (Nat.min_le_left a b) h
+
+theorem meet_sound_right (a b len : Nat) (h : b ≤ len) : min a b ≤ len :=
+  Nat.le_trans (Nat.min_le_right a b) h
+
+/-- The merged minimum is a lower bound on the length however the label was
+    reached: from a predecessor proving `a ≤ len` or one proving `b ≤ len`. -/
+theorem meet_sound (a b len : Nat) (h : a ≤ len ∨ b ≤ len) : min a b ≤ len := by
+  rcases h with h | h
+  · exact meet_sound_left a b len h
+  · exact meet_sound_right a b len h
+
 /-- Every byte of an admitted indexed access lies inside the span. -/
 theorem index_access_bytes (elem len i b : Nat) (hguard : i < len)
     (hb : i * elem ≤ b ∧ b < (i + 1) * elem) : b < elem * len := by
