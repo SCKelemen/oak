@@ -384,7 +384,12 @@ func (m *protocolMachine) project() []ast.Statement {
 	out = append(out, legal)
 
 	// name_next(state, data: [*]NameData, step): the first line whose state
-	// and guard hold applies its effects (over data[0]) and names the target.
+	// and guard hold applies its effects and names the target. Effects run
+	// on a local copy of the record (`data.x` rewritten to `record.x`) that
+	// is written back through the span once: a plain local admits every
+	// field and element assignment, while an element store through a span
+	// into a record field does not lower yet (oak #80).
+	const local = "record"
 	var nextArms []*ast.MatchArm
 	for si, step := range m.steps {
 		var body []ast.Statement
@@ -393,11 +398,11 @@ func (m *protocolMachine) project() []ast.Statement {
 			body = append(body, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
 			condition := s.and(s.not(s.id("done")), s.id(fromName))
 			if line.Guard != nil {
-				condition = s.and(condition, rewriteDataRefs(cloneExpression(line.Guard)).(ast.Expression))
+				condition = s.and(condition, renameIdentifier(cloneExpression(line.Guard), "data", local).(ast.Expression))
 			}
 			var effects []ast.Statement
 			if line.Effects != nil {
-				rewritten := rewriteDataRefs(cloneSyntax(reflect.ValueOf(line.Effects)).Interface().(*ast.BlockStatement)).(*ast.BlockStatement)
+				rewritten := renameIdentifier(cloneSyntax(reflect.ValueOf(line.Effects)).Interface().(*ast.BlockStatement), "data", local).(*ast.BlockStatement)
 				effects = append(effects, rewritten.Statements...)
 			}
 			effects = append(effects, s.assign("result", s.variant(line.To.Value, nil)), s.assign("done", s.boolean(true)))
@@ -407,9 +412,11 @@ func (m *protocolMachine) project() []ast.Statement {
 	}
 	next := s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), s.param("data", s.span(s.id(dataType))), stepParam()}, s.id(stateType),
 		s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.index(s.id("data"), s.intLit(0)), s.id("step")))),
+		s.decl(local, s.id(dataType), s.index(s.id("data"), s.intLit(0))),
 		s.decl("result", s.id(stateType), s.id("state")),
 		s.decl("done", s.id("Bool"), s.boolean(false)),
 		s.expr(s.match(s.id("step"), nextArms...)),
+		s.store(s.index(s.id("data"), s.intLit(0)), s.id(local)),
 		s.expr(s.id("result")))
 	next.Exported = exported
 	return append(out, next)
@@ -465,23 +472,10 @@ func mentionsIdentifier(node ast.Node, name string) bool {
 	return found
 }
 
-// rewriteDataRefs turns every `data.field` in a (freshly cloned) subtree into
-// `data[0].field`, the spelling the transition function needs to write
-// through its span. Returns the (possibly replaced) root.
-func rewriteDataRefs(node ast.Node) ast.Node {
-	replacement := func(idx *ast.IndexExpression) *ast.IndexExpression {
-		base, ok := idx.Left.(*ast.Identifier)
-		if !ok || !idx.Dot || base.Value != "data" {
-			return nil
-		}
-		zero := &ast.IntegerLiteral{Token: idx.Token, Value: 0}
-		return &ast.IndexExpression{Token: idx.Token, Left: &ast.IndexExpression{Token: idx.Token, Left: base, Index: zero}, Index: idx.Index, Dot: true}
-	}
-	if idx, ok := node.(*ast.IndexExpression); ok {
-		if r := replacement(idx); r != nil {
-			return r
-		}
-	}
+// renameIdentifier rewrites every identifier `from` in a (freshly cloned)
+// subtree to `to`; the transition function's effects address the local copy
+// of the record this way.
+func renameIdentifier(node ast.Node, from, to string) ast.Node {
 	var walk func(v reflect.Value)
 	walk = func(v reflect.Value) {
 		switch v.Kind() {
@@ -489,24 +483,28 @@ func rewriteDataRefs(node ast.Node) ast.Node {
 			if v.IsNil() {
 				return
 			}
-			if idx, ok := v.Interface().(*ast.IndexExpression); ok {
-				if r := replacement(idx); r != nil {
-					if v.CanSet() {
-						v.Set(reflect.ValueOf(r).Convert(v.Type()))
-					}
-					return
+			if id, ok := v.Interface().(*ast.Identifier); ok {
+				if id.Value == from {
+					id.Value = to
+					id.Token.Literal = to
 				}
+				return
 			}
 			walk(v.Elem())
 		case reflect.Struct:
 			for i := 0; i < v.NumField(); i++ {
-				if v.Type().Field(i).IsExported() && v.Field(i).CanSet() {
+				if v.Type().Field(i).IsExported() {
 					walk(v.Field(i))
 				}
 			}
 		case reflect.Slice:
 			for i := 0; i < v.Len(); i++ {
 				walk(v.Index(i))
+			}
+		case reflect.Map:
+			iter := v.MapRange()
+			for iter.Next() {
+				walk(iter.Value())
 			}
 		}
 	}
