@@ -36,7 +36,13 @@ func ProtocolTLA(decl *ast.ProtocolDeclaration, origin string) (string, error) {
 	}
 	signed := false
 	for _, f := range fields {
-		if id, isIdent := f.Value.(*ast.Identifier); isIdent && strings.HasPrefix(id.Value, "i") {
+		element := ""
+		if id, isIdent := f.Value.(*ast.Identifier); isIdent {
+			element = id.Value
+		} else if _, e, ok := arrayShape(f.Value); ok {
+			element = e
+		}
+		if strings.HasPrefix(element, "i") {
 			signed = true
 		}
 	}
@@ -79,7 +85,7 @@ func ProtocolTLA(decl *ast.ProtocolDeclaration, origin string) (string, error) {
 	initTerms := []string{fmt.Sprintf("state = %q", m.initial)}
 	if decl.Init != nil {
 		for _, f := range fields {
-			value, err := tlaExpr(decl.Init.Fields[f.Name], "", true)
+			value, err := tlaInitValue(decl.Init.Fields[f.Name], f.Value)
 			if err != nil {
 				return "", fmt.Errorf("protocol %s: init %s: %v", m.name, f.Name, err)
 			}
@@ -111,17 +117,45 @@ func ProtocolTLA(decl *ast.ProtocolDeclaration, origin string) (string, error) {
 			terms = append(terms, fmt.Sprintf("state' = %q", line.To.Value))
 			assigned := map[string]bool{}
 			if line.Effects != nil {
+				// Whole-field stores become `field' = value`; element stores
+				// on one array field fold into one `[field EXCEPT ![i] = v, ...]`.
+				var fieldOrder []string
+				excepts := map[string][]string{}
 				for _, stmt := range line.Effects.Statements {
 					store, isStore := stmt.(*ast.IndexAssignmentStatement)
-					field, isField := dataField(store)
-					if !isStore || !isField {
-						return "", fmt.Errorf("protocol %s: %s from %s: effects: only `data.field = expr` translates", m.name, step.name, line.From.Value)
+					if !isStore {
+						return "", fmt.Errorf("protocol %s: %s from %s: effects: only `data.field = expr` and `data.field[i] = expr` translate", m.name, step.name, line.From.Value)
 					}
 					value, err := tlaExpr(store.Value, payload, false)
 					if err != nil {
-						return "", fmt.Errorf("protocol %s: %s from %s: effect %s: %v", m.name, step.name, line.From.Value, field, err)
+						return "", fmt.Errorf("protocol %s: %s from %s: effect: %v", m.name, step.name, line.From.Value, err)
 					}
-					terms = append(terms, fmt.Sprintf("%s' = %s", field, value))
+					if field, ok := dataField(store.Target); ok {
+						if assigned[field] {
+							return "", fmt.Errorf("protocol %s: %s from %s: effects assign %s twice", m.name, step.name, line.From.Value, field)
+						}
+						terms = append(terms, fmt.Sprintf("%s' = %s", field, value))
+						assigned[field] = true
+						continue
+					}
+					if field, indexExpr, ok := dataElement(store.Target); ok {
+						index, err := tlaExpr(indexExpr, payload, false)
+						if err != nil {
+							return "", fmt.Errorf("protocol %s: %s from %s: effect index: %v", m.name, step.name, line.From.Value, err)
+						}
+						if _, seen := excepts[field]; !seen {
+							fieldOrder = append(fieldOrder, field)
+						}
+						excepts[field] = append(excepts[field], fmt.Sprintf("![%s] = %s", index, value))
+						continue
+					}
+					return "", fmt.Errorf("protocol %s: %s from %s: effects: only `data.field = expr` and `data.field[i] = expr` translate", m.name, step.name, line.From.Value)
+				}
+				for _, field := range fieldOrder {
+					if assigned[field] {
+						return "", fmt.Errorf("protocol %s: %s from %s: effects assign %s whole and by element", m.name, step.name, line.From.Value, field)
+					}
+					terms = append(terms, fmt.Sprintf("%s' = [%s EXCEPT %s]", field, field, strings.Join(excepts[field], ", ")))
 					assigned[field] = true
 				}
 			}
@@ -162,8 +196,12 @@ func domainName(param string) string {
 	return strings.ToUpper(param[:1]) + param[1:]
 }
 
-// tlaDomain maps a field's Oak type to its TLA+ set.
+// tlaDomain maps a field's Oak type to its TLA+ set; an `[N]T` field is a
+// function from 0..N-1 into T's set.
 func tlaDomain(typ ast.Expression) string {
+	if length, element, ok := arrayShape(typ); ok {
+		return fmt.Sprintf("[0..%d -> %s]", length-1, tlaDomain(&ast.Identifier{Value: element}))
+	}
 	id, ok := typ.(*ast.Identifier)
 	if !ok {
 		return "Nat"
@@ -178,17 +216,82 @@ func tlaDomain(typ ast.Expression) string {
 	}
 }
 
-// dataField recognizes `data.field` as an assignment target.
-func dataField(store *ast.IndexAssignmentStatement) (string, bool) {
-	if store == nil || store.Target == nil || !store.Target.Dot {
+// dataField recognizes `data.field`.
+func dataField(target *ast.IndexExpression) (string, bool) {
+	if target == nil || !target.Dot {
 		return "", false
 	}
-	base, okBase := store.Target.Left.(*ast.Identifier)
-	field, okField := store.Target.Index.(*ast.Identifier)
+	base, okBase := target.Left.(*ast.Identifier)
+	field, okField := target.Index.(*ast.Identifier)
 	if !okBase || !okField || base.Value != "data" {
 		return "", false
 	}
 	return field.Value, true
+}
+
+// dataElement recognizes `data.field[index]`.
+func dataElement(target *ast.IndexExpression) (string, ast.Expression, bool) {
+	if target == nil || target.Dot {
+		return "", nil, false
+	}
+	inner, ok := target.Left.(*ast.IndexExpression)
+	if !ok {
+		return "", nil, false
+	}
+	field, isField := dataField(inner)
+	if !isField {
+		return "", nil, false
+	}
+	return field, target.Index, true
+}
+
+// arrayShape reads `[N]T` (an index expression over the element type).
+func arrayShape(typ ast.Expression) (length int64, element string, ok bool) {
+	idx, isIdx := typ.(*ast.IndexExpression)
+	if !isIdx || idx.Dot {
+		return 0, "", false
+	}
+	n, isLen := idx.Index.(*ast.IntegerLiteral)
+	elem, isElem := idx.Left.(*ast.Identifier)
+	if !isLen || !isElem {
+		return 0, "", false
+	}
+	return n.Value, elem.Value, true
+}
+
+// tlaInitValue renders an init value: a scalar, or an array literal as a
+// function over 0..N-1 (one arrow when every element is the same).
+func tlaInitValue(value ast.Expression, typ ast.Expression) (string, error) {
+	if lit, isArray := value.(*ast.ArrayLiteral); isArray {
+		length, _, ok := arrayShape(typ)
+		if !ok {
+			return "", fmt.Errorf("array init for a non-array field")
+		}
+		if int64(len(lit.Elements)) != length {
+			return "", fmt.Errorf("array init has %d elements, the field %d", len(lit.Elements), length)
+		}
+		var rendered []string
+		same := true
+		for _, e := range lit.Elements {
+			v, err := tlaExpr(e, "", true)
+			if err != nil {
+				return "", err
+			}
+			rendered = append(rendered, v)
+			if v != rendered[0] {
+				same = false
+			}
+		}
+		if same {
+			return fmt.Sprintf("[k \\in 0..%d |-> %s]", length-1, rendered[0]), nil
+		}
+		var cases []string
+		for i, v := range rendered {
+			cases = append(cases, fmt.Sprintf("k = %d -> %s", i, v))
+		}
+		return fmt.Sprintf("[k \\in 0..%d |-> CASE %s]", length-1, strings.Join(cases, " [] ")), nil
+	}
+	return tlaExpr(value, "", true)
 }
 
 var tlaOperators = map[string]string{
@@ -216,12 +319,17 @@ func tlaExpr(e ast.Expression, payload string, initial bool) (string, error) {
 		}
 		return "", fmt.Errorf("identifier %s is not the payload or a data field", n.Value)
 	case *ast.IndexExpression:
-		base, okBase := n.Left.(*ast.Identifier)
-		field, okField := n.Index.(*ast.Identifier)
-		if n.Dot && okBase && okField && base.Value == "data" {
-			return field.Value, nil
+		if field, ok := dataField(n); ok {
+			return field, nil
 		}
-		return "", fmt.Errorf("only data.field reads translate")
+		if field, indexExpr, ok := dataElement(n); ok {
+			index, err := tlaExpr(indexExpr, payload, initial)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s[%s]", field, index), nil
+		}
+		return "", fmt.Errorf("only data.field and data.field[i] reads translate")
 	case *ast.InvocationExpression:
 		fn, ok := n.Function.(*ast.Identifier)
 		if ok && conversionNames[fn.Value] && len(n.Arguments) == 1 {

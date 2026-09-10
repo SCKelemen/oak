@@ -43,14 +43,19 @@ sequence of entries separated by newlines or commas:
 
 - `initial S` — exactly once. The initial control state.
 - `data { field: T, ... }` and `init { field: value, ... }` — together or not
-  at all: the machine's data record (an ordinary record type body) and its
-  initial value (a record literal setting every field).
+  at all: the machine's data record (an ordinary record type body; fields
+  may be fixed arrays `[N]T`) and its initial value (a record literal setting
+  every field; arrays as typed array literals).
 - `resource T` — zero or more nominal types the protocol governs (§5).
 - `name(param: T)?: From -> To (when guard)? (then { effects })? (via callable)?`
   — one transition line. The guard is a Bool expression over `data.field`
-  reads and the payload; the effects are statements over `data.field`
-  assignments and the payload. Both use ordinary Oak and are checked by
-  every gate once projected.
+  and `data.field[i]` reads and the payload; the effects are statements over
+  `data.field = e` and `data.field[i] = e` and the payload. Both use ordinary
+  Oak and are checked by every gate once projected. An index is checked at
+  run time like any Oak index, so a guard that indexes by the payload
+  bounds it first (`u32(who) < u32(2) && data.parked[u32(who)]`); the
+  model-checker module gets the same conjunct and a payload domain that
+  matches.
 
 States are the names `initial` and the transition lines mention, in order of
 first appearance with the initial state first; they are spelled like variants
@@ -92,7 +97,7 @@ With `data`, the record joins the signatures:
 | `NameData` | the declared record type |
 | `name_initial_data` | `(): NameData`, the `init` value |
 | `name_legal` | `(state: NameState, data: NameData, step: NameStep): Bool`: some line of the step leaves `state` and its guard holds on `data` |
-| `name_next` | `(state: NameState, data: [*]NameData, step: NameStep): NameState`: asserts legality on `data[0]`, applies the first matching line's effects to `data[0]`, returns its target |
+| `name_next` | `(state: NameState, data: [*]NameData, step: NameStep): NameState`: asserts legality on `data[0]`, copies the record out, applies the first matching line's effects to the copy, writes it back through the span, returns its target |
 
 `pub` on the declaration exports every projection. The projections are the
 executable state-machine scaffolding: a scenario keeps a `NameState` (and a
@@ -123,9 +128,12 @@ one action per step name — the disjunction of its lines, each
 the actions with payloads quantified over a declared `CONSTANT` per payload
 name (`on` -> `On`), `TypeOK` (`Nat`, `Int`, `BOOLEAN` by field type), and
 `Spec`. Guards and effects translate from the subset a line may use: field
-reads, the payload, literals, width conversions, `+ - * / %`, comparisons,
-`&& || !`, and `data.field = expr`; anything else stops the export naming
-the line. The module is complete for what the declaration says and
+and element reads, the payload, literals, width conversions, `+ - * / %`,
+comparisons, `&& || !`, `data.field = expr`, and `data.field[i] = expr`
+(element stores on one array fold into one `[field EXCEPT ![i] = v, ...]`);
+an `[N]T` field is a function `[0..N-1 -> T]`, initialized as one arrow
+when every element agrees and as a `CASE` otherwise; anything else stops the
+export naming the line. The module is complete for what the declaration says and
 checkable as is (TLC checks the modules of both examples above); scenarios
 extend it for liveness and environment assumptions in a module of their own,
 so regenerating never overwrites hand-written properties. The generated
@@ -146,15 +154,13 @@ unspecified; declaring them is part of §7.
 Liveness and environment assumptions (fairness, device progress) are the
 TLA+ extension module's; the declaration states what may happen, not what
 must. Guards and effects beyond the translated subset — loops, calls into
-the program, array data — stay in hand-written models. The declaration does
+the program, indices computed from other fields — stay in hand-written
+models. The declaration does
 not generate Lean definitions, state diagrams, or debugger decoding
 (constitution: the same fact should eventually drive them).
 
 ## 7. Direction
 
-- Array-valued data (per-vCPU or per-slot state) with bounded indexing in
-  guards and effects, the shape the OS's two-vCPU and interrupt-routing
-  models need.
 - Parameter modes on `via` lines (`borrowed`, `borrowed mut`, `consumed`) and
   typestate-indexed handle types.
 - Conformance checking of a hand-written TLA+ module against the projected
