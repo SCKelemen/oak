@@ -497,7 +497,29 @@ is a bit test. Note Oak's shift and bitwise operators take unsigned
 operands only (`20-types.md`: bitwise on signed values is refused), so
 `asr` never implements an Oak body; should a signed shift ever be spelled,
 the verifier refutes the arithmetic reading at a negative input rather than
-assuming it.
+assuming it. **Frame memory.** The executor carries sp's displacement
+(exactly the checker's number, through `sub`/`add sp` and pre/post-index)
+and a map from entry-relative slot addresses to the stored terms
+(`Oak.AssemblerSemantics.storeSlot`, `loadSlot_storeSlot`): `str`/`stp`
+record, `ldr`/`ldp` read back a slot stored with the same width, and a load
+of a slot never stored on the path, a width mismatch, or a narrow reload is
+outside the subset (trusted — never a fresh value that could match by
+accident). Callee-saved registers read before any write are the caller's
+opaque values, so a save/use/restore body round-trips them and is proven;
+spills and reloads are proven; reloading the wrong slot is refuted. Frame
+memory inside a loop body stays outside the subset. **Bit fields,
+conditional compare, conditional increment/negate, multiply-add.**
+`ubfx`/`ubfiz`/`sbfx`/`bfi` (the checker bounds the field inside the
+register) lower to shift/mask/or terms — `ubfx` is the extractor spelled
+directly, `bfi` keeps the destination's other bits, `sbfx` shifts the field
+to the top and arithmetic-shifts it down. `ccmp` reads and sets flags: the
+new flags are the comparison's when the prior condition holds and the
+immediate NZCV otherwise (`Oak.AssemblerSemantics.ccmpFlags`), so the
+range-check chain `cmp v, lo; ccmp v, hi, #2, hs; cset lo` is proven
+against `lo <= v && v < hi` and the wrong immediate (`#0`, which leaves
+`lo` true on the failing path) is refuted. `cinc`/`cneg` are selects
+(`cinc_eq_csel`), `madd`/`msub` multiply-add terms (a constant factor stays
+linear). The Oak side gained the prefix `^` (bitwise not).
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

@@ -81,11 +81,29 @@ model, and compiled Oak to return one verdict on every corpus case and on
 the replayed real certificate (729 cases at the time of writing). The opt-in
 verification workflow and the certificate gate build and run it.
 
-## 6. Next
+## 6. Theorems about the extraction
+
+`proof/ExtractionScanner.lean` proves the scanner gate: `rup_token_scan`
+states that on any text of at most 65536 bytes, from any cursor inside it,
+with fuel above the text length, the extracted `rup_token` returns exactly
+the token the proved `Scanner.scan` returns — kind, next cursor, start,
+stop, magnitude, and sign — and that its five-word state has the model's
+values. The proof follows the extraction's shape: one lemma per loop
+(`loop1_spec` for whitespace against `countWhile space`, `loop2_spec` for
+the word against `countWhile wordByte`, `loop3_spec` for the digits against
+the bounded-decimal `walk`, including the pre-multiplication threshold
+guard), then the assembly against `tokenAt` and `numeric`. Every `UInt32`
+step is justified by a bound the guards establish, so no wrap occurs on
+the paths the theorem covers; the axioms are `propext`, `Classical.choice`,
+`Quot.sound` only. The scanner gate's corpus comparison remains as a
+regression check, no longer as the evidence.
+
+## 7. Next
 
 The theorem that the extraction equals the hand-written transliteration on
 the decoder (`OakText.check`), so `check_refines` transfers to the extracted
-model without a second corpus hop; then extraction of the scanner and the
-stream checker so their comparison gates become theorems too; then the
-constructs the verification programs need next (`subslice`, matches over
-records, more conversions), each added with its own fail-closed test.
+model without a second corpus hop — the DIMACS and LRAT phases against
+`cnfLoop` and `proofLoop` on top of `rup_token_scan`, and the stream checker
+against `CertifiedStream.check`; then the constructs the verification
+programs need next (`subslice`, matches over records, more conversions),
+each added with its own fail-closed test.

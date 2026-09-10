@@ -72,7 +72,7 @@ Shape errors (`OAK-M0301`): no `initial`, no transitions, a lowercase state,
 a payload that is not a scalar, a payload that changes between lines of one
 step, a `(name, from)` pair declared twice without guards, `data` without
 `init` or `init` without `data`, an `init` that misses or invents a field, a
-guard or effect that names `data` when none is declared, a `via` without a
+guard or effect that names `data` when none is declared, a data field named `state`, `step` or `data` (the projection's own names), a `via` without a
 `resource`, an initial state no transition leaves, and a projection whose
 name the program already declares.
 

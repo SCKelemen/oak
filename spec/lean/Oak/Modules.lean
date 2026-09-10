@@ -844,4 +844,121 @@ theorem select_mem (reqs : List Version) (s : Version) (h : select reqs = some s
 
 end Versions
 
+/-! ## Open imports (docs/spec/83-modules.md section 3.2)
+
+`open import(path)` binds every exported member of a package unqualified.
+The rule that keeps it honest: a name an open would bind may not already be
+bound by anything else — a declaration, an alias, a selective import, or
+another open. `openBind` is the loader's check: given the names already
+bound and the package's exports, it either rejects (some export is bound)
+or yields exactly the exports, none of them previously bound. Meaning
+therefore never depends on precedence, and a dependency that later adds an
+export can only make an open fail, never silently change what a name
+denotes. -/
+namespace OpenImports
+
+/-- Bind an open import's exports against the names already bound: `none`
+on any collision, otherwise the exports. -/
+def openBind (bound : Nat → Bool) (exports : List Nat) : Option (List Nat) :=
+  if exports.any bound then none else some exports
+
+/-- An open is rejected exactly when one of its exports is already bound. -/
+theorem openBind_none_iff (bound : Nat → Bool) (exports : List Nat) :
+    openBind bound exports = none ↔ ∃ n ∈ exports, bound n = true := by
+  unfold openBind
+  split <;> simp_all [List.any_eq_true]
+
+/-- An accepted open binds exactly the exports, and none of them was bound
+before: no precedence, no shadowing. -/
+theorem openBind_some (bound : Nat → Bool) (exports names : List Nat)
+    (h : openBind bound exports = some names) :
+    names = exports ∧ ∀ n ∈ names, bound n = false := by
+  unfold openBind at h
+  split at h
+  · cases h
+  · rename_i hany
+    simp only [Option.some.injEq] at h
+    subst h
+    refine ⟨rfl, fun n hn => ?_⟩
+    simp only [List.any_eq_true, not_exists, not_and] at hany
+    have := hany n hn
+    simpa using this
+
+/-- Growth is monotone toward rejection: adding exports never turns a
+rejected open into an accepted one. -/
+theorem openBind_none_mono (bound : Nat → Bool) (exports more : List Nat)
+    (h : openBind bound exports = none) : openBind bound (exports ++ more) = none := by
+  rw [openBind_none_iff] at *
+  obtain ⟨n, hn, hb⟩ := h
+  exact ⟨n, List.mem_append_left _ hn, hb⟩
+
+end OpenImports
+
+/-! ## Nested modules (docs/spec/83-modules.md section 3.5)
+
+A nested module `module name { ... }` inside package `parent` is the package
+`parent/name`. Packages belong to the module whose path is the longest
+prefix of theirs (`moduleOfPath`); a nested module's path extends its
+parent's by one segment, so unless some module's path is exactly that
+extension — which the loader rejects as a directory conflict — the nested
+module belongs to the same module as its parent, and so inherits its
+discipline profile and version. -/
+namespace NestedPaths
+
+/-- Import paths as segment lists. -/
+abbrev Path := List Nat
+
+/-- The longest module path that is a prefix of `p`, if any. -/
+def moduleOf (mods : List Path) (p : Path) : Option Path :=
+  (mods.filter (fun m => m.isPrefixOf p)).foldl
+    (fun best m => match best with
+      | none => some m
+      | some b => if b.length < m.length then some m else some b) none
+
+/-- A module path that is a prefix of the nested path is a prefix of the
+parent, or is the nested path itself. -/
+theorem prefix_of_nested (m parent : Path) (name : Nat)
+    (h : m.isPrefixOf (parent ++ [name]) = true) :
+    m.isPrefixOf parent = true ∨ m = parent ++ [name] := by
+  rw [List.isPrefixOf_iff_prefix] at *
+  obtain ⟨rest, hrest⟩ := h
+  rcases rest with _ | ⟨r, rest⟩
+  · right; simpa using hrest
+  · left
+    have hlen : m.length + (rest.length + 1) = parent.length + 1 := by
+      have := congrArg List.length hrest
+      simp at this
+      omega
+    have : m.length ≤ parent.length := by omega
+    have hpre : m <+: parent ++ [name] := ⟨r :: rest, hrest⟩
+    exact List.prefix_of_prefix_length_le hpre (List.prefix_append parent [name]) this
+
+/-- The candidate module set of a nested path is the parent's unless some
+module is exactly the nested path (the directory conflict the loader
+rejects). -/
+theorem candidates_nested (mods : List Path) (parent : Path) (name : Nat)
+    (h : parent ++ [name] ∉ mods) :
+    mods.filter (fun m => m.isPrefixOf (parent ++ [name])) =
+      mods.filter (fun m => m.isPrefixOf parent) := by
+  apply List.filter_congr
+  intro m hm
+  apply Bool.eq_iff_iff.mpr
+  constructor
+  · intro hp
+    rcases prefix_of_nested m parent name hp with hp' | heq
+    · exact hp'
+    · exact absurd (heq ▸ hm) h
+  · intro hp
+    rw [List.isPrefixOf_iff_prefix] at *
+    exact hp.trans (List.prefix_append parent [name])
+
+/-- **Nested modules keep their parent's module.** -/
+theorem moduleOf_nested (mods : List Path) (parent : Path) (name : Nat)
+    (h : parent ++ [name] ∉ mods) :
+    moduleOf mods (parent ++ [name]) = moduleOf mods parent := by
+  unfold moduleOf
+  rw [candidates_nested mods parent name h]
+
+end NestedPaths
+
 end Oak.Modules

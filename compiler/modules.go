@@ -119,6 +119,11 @@ type ModuleInfo struct {
 	// OpaqueTypes maps an internal type name to its declaring package path
 	// for every pub(opaque) declaration.
 	OpaqueTypes map[string]string
+	// Exports maps every loaded package path to its member table, so the
+	// type checker can resolve uniform call syntax against the exported
+	// functions of a receiver type's declaring package
+	// (docs/spec/10-syntax.md section 13).
+	Exports map[string]modules.Exports
 	// Obligations are the sealed-import member types the type checker must
 	// verify after checking the program.
 	Obligations []typechecker.SignatureObligation
@@ -1942,7 +1947,11 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 			steady[internal] = entry.Path + " " + entry.Name
 		}
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady}
+	exports := map[string]modules.Exports{}
+	for path, pkg := range l.packages {
+		exports[path] = pkg.Exports
+	}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,

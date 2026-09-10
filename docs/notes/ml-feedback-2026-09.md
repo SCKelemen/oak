@@ -131,9 +131,11 @@ endorses:
    **already implemented** on this branch: `p |> .x |> double |> add(u32(1))`
    compiles under the strict profile and runs. The survey's "not
    implemented" was stale; ml can use them now.
-2. Uniform call syntax `x.matmul(w).relu()` as sugar for `relu(matmul(x, w))`
-   when the receiver's package exports the function; no dispatch, no
-   vtables. Needs a normative section before implementation.
+2. **Done.** Uniform call syntax (`10-syntax.md` §13): `x.matmul(w).relu()`
+   is `relu(matmul(x, w))` when the receiver has no method or field of that
+   name — a function visible at the call site or an exported function of
+   the package declaring the receiver's type. The checker rewrites the call
+   in place; nothing is dispatched. Closes revisit criterion O6.
 3. Operator definitions bound only to functions marked `operator` in the
    receiver's package. The constitution's "no hidden work" rule is the bar
    the proposal must clear; an explicit marker that makes every `+` on a
@@ -175,4 +177,4 @@ disposition, in the order to work them:
 | O3 | Any runtime-sized allocation surface | direction |
 | O4 | Views or spans in records or as return values | roadmap |
 | O5 | `F32x4` with `mul` and `fma` | **implemented** (`93-simd.md` §1.2a; NEON and portable lowerings agree with the interpreter) |
-| O6 | A frontend surface for `x.matmul(w).relu()` | pipeline operator and field accessors implemented (`x \|> matmul(w) \|> relu`); uniform call syntax and operator definitions remain direction |
+| O6 | A frontend surface for `x.matmul(w).relu()` | **implemented**: uniform call syntax (`10-syntax.md` §13) and the pipeline operator (`x \|> matmul(w) \|> relu`); operator definitions remain direction |
