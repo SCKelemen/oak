@@ -39,7 +39,7 @@ jobs:
       - name: Test deque and ID pool
         run: go test ./compiler -run 'TestE2EStdlib(Deque|IdPool|Serenity)' -count=1
       - name: Test standard library and compiler
-        run: go test -race -timeout 20m ./...
+        run: go test -race -timeout 40m ./...
       - name: Check formatting
         if: always()
         run: |

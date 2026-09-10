@@ -522,6 +522,9 @@ type TypeChecker struct {
 	// tagSchemas holds declared tag schemas (json: tag = { name: string }) —
 	// the closed namespace field tags check against (typechecker/tags.go).
 	tagSchemas map[string]*RecordType
+	// boolFacts remembers, per Bool binding, the extent facts of the
+	// condition assigned to it (typechecker/extents.go).
+	boolFacts map[string][]extentFact
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[string]string
@@ -4071,9 +4074,12 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 		tc.finishMonomorphicTransaction(len(tc.Errors()) == before)
 	}()
 
-	// A loop that assigns a binding anywhere invalidates the enclosing
-	// facts about it before the condition runs: an earlier statement of
-	// the body executes again after the assignment (typechecker/extents.go).
+	// The condition's facts are derived with the bindings as they are on
+	// entry; a loop that assigns a binding anywhere then invalidates the
+	// enclosing facts about it before the condition runs, because an
+	// earlier statement of the body executes again after the assignment
+	// (typechecker/extents.go).
+	conditionFacts := tc.loopConditionFacts(stmt)
 	tc.killFactsAssignedBy(stmt)
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
@@ -4082,7 +4088,7 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 
 	// The loop condition dominates the body on every iteration: `i < len(v)`
 	// bounds v[i] until the body assigns i (typechecker/extents.go).
-	mark := tc.enterFactScope(stmt.Condition)
+	mark := tc.pushExtentFacts(conditionFacts)
 	// The body is its own scope: a name declared inside the loop is not
 	// visible after it, so a later block may declare the same name.
 	outerEnv := tc.env
@@ -4112,8 +4118,19 @@ func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
 // Loops kill on entry (checkWhileStatement) and branches kill inside their
 // own blocks, so only direct assignments are handled here.
 func (tc *TypeChecker) killFactsAfterStatement(stmt ast.Statement) {
-	switch stmt.(type) {
-	case *ast.AssignmentStatement, *ast.VariableDeclaration, *ast.IndexAssignmentStatement:
+	switch s := stmt.(type) {
+	case *ast.AssignmentStatement:
+		remembered := tc.factsFromCondition(s.Value) // the right-hand side saw the old binding
+		tc.killFactsAssignedBy(stmt)
+		tc.rememberBoolFacts(s.Name, remembered)
+	case *ast.VariableDeclaration:
+		var remembered []extentFact
+		if s.Value != nil {
+			remembered = tc.factsFromCondition(s.Value)
+		}
+		tc.killFactsAssignedBy(stmt)
+		tc.rememberBoolFacts(s.Name, remembered)
+	case *ast.IndexAssignmentStatement:
 		tc.killFactsAssignedBy(stmt)
 	}
 }
