@@ -414,7 +414,9 @@ A method (`fn (r: T) m()`) may be declared only in the package that declares
 its receiver type (`OAK-M0114`). Oak's interfaces are implicit, so there are
 no instances to collide, but two packages attaching same-named methods to one
 imported type would make method lookup depend on which package is compiled —
-Go's rule, adopted for the same reason.
+Go's rule, adopted for the same reason. Operator definitions
+(`10-syntax.md` §14) follow it too: an `operator(+)` binding for a type
+lives in the type's package and travels with the type to every importer.
 
 ### 6.6 Derived declarations
 

@@ -523,3 +523,63 @@ Oak admits the left-associative pipeline operator `|>`. `value |> f` is equivale
 A leading-dot lowercase identifier is a structurally polymorphic field accessor: `.name(record)` is equivalent to `record.name`, and `record |> .name` selects `record.name`. Leading-dot uppercase identifiers remain inferred ADT constructors (`.Ok`, `.Some(value)`). The accessor requires exactly one argument and works for every record or struct whose type guarantees that field; it captures no environment and causes no record boxing.
 
 An accessor is also a first-class function when a concrete unary function type supplies its layout: `getter: (Person) -> string = .name` and `map(.name, people)` specialize `.name` to the selected struct at that use site. Generic-call inference first learns the record type from the other arguments, then learns the accessor result from that record's field. A bare inferred binding such as `getter := .name` is rejected because it supplies no concrete layout. Native lowering uses a typed static field-projection function and an ordinary function pointer; it introduces no closure environment, dispatch table, allocation, or boxing.
+
+## 14. Operator definitions
+
+An `operator(SYM)` marker before a function declaration binds the symbol
+`SYM` for a left operand of the function's first parameter type:
+
+```oak
+Vec: type = struct { x: f32, y: f32 }
+operator(+) add: (a: Vec, b: Vec): Vec = Vec { x: a.x + b.x, y: a.y + b.y }
+operator(*) scale: (v: Vec, k: f32): Vec = Vec { x: v.x * k, y: v.y * k }
+operator(==) same: (a: Vec, b: Vec): Bool = a.x == b.x && a.y == b.y
+
+c: Vec = a + b * 2.0          // add(a, scale(b, 2.0))
+```
+
+The function keeps its name: it is called, exported, and found by that
+name, and `a + b` is exactly `add(a, b)` — a statically bound call with
+the same arity, argument, borrow, effect, and discipline checking as the
+spelled-out call, whose diagnostics name `add`. Nothing is dispatched and
+nothing is hidden: every `+` on a `Vec` names one function a reader can
+find in the package that declares `Vec` (`00-constitution.md`, no hidden
+work).
+
+Rules:
+
+- **Symbols.** `+ - * / % == != < <= > >=` may be bound. `&& || ! & | ^ <<
+  >>` keep their fixed Bool and bitwise meaning (§3b) and are not
+  bindable; there are no unary bindings, no new symbols, no user-defined
+  precedence, and no compound assignment. A bound symbol keeps its grammar
+  precedence, so `a + b * 2.0` groups as it always did.
+- **Left operand type.** The first parameter must be a declared record or
+  ADT type. Primitives, strings, arrays, views, and spans keep their
+  built-in operators and cannot be rebound. The second parameter may be
+  any type: `Vec * f32` is `scale`.
+- **Home package.** The declaration must live in the package that declares
+  the left operand's type (`83-modules.md` §6.5, the same rule as for
+  methods): a call's meaning never depends on which unrelated package is
+  compiled. A binding on an imported type is an error.
+- **One binding per type and symbol.** A second `operator(+)` for the same
+  left type is an error naming the first.
+- **Comparisons return Bool.** `== != < <= > >=` bindings must have a
+  `Bool` result. Nothing requires them to be consistent with one another;
+  `derive.equal` (`40-records.md`) remains the structural equality.
+- **Resolution.** In `a SYM b`, if the checked type of `a` is a declared
+  type with a binding for `SYM`, the expression is the bound call: `b` is
+  checked with the second parameter's type as its expected type (so a
+  literal takes it), and the result is the function's return type. A
+  declared type without a binding for `SYM` keeps today's error. Operands
+  evaluate left to right, as call arguments do.
+- **Generics.** v1 bindings are monomorphic: the left operand type is a
+  concrete declared type, not a generic instance or type parameter.
+
+Lowering: the checker records the callee of each bound infix expression,
+and an elaboration pass after type checking rewrites it into the ordinary
+invocation, so the borrow checker, discipline, lowering, both backends,
+and the interpreter never see an operator (`compiler/operators.go`). The
+declared operator properties of `docs/notes/ml-feedback-2026-09.md` item
+7.3 (`associative`, `commutative`, `neutral`) are a later refinement over
+these bindings and are not part of this section.
+

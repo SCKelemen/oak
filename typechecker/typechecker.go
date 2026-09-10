@@ -495,7 +495,16 @@ func (t *FunctionType) Equals(other Type) bool {
 type TypeChecker struct {
 	// Module-system facts (typechecker/modules.go): opaque types by internal
 	// name and the loaded package paths.
-	opaqueTypes             map[string]string
+	opaqueTypes map[string]string
+	// typeOwners maps each declared type to its declaring package, like
+	// globalOwners for functions and values.
+	typeOwners map[string]string
+	// operatorBindings maps "TypeName SYM" to the function an operator
+	// declaration bound (docs/spec/10-syntax.md section 14), and
+	// operatorCalls records, position-keyed by the operator token, the
+	// callee of every infix expression that resolved through a binding.
+	operatorBindings        map[string]string
+	operatorCalls           map[string]string
 	packagePaths            map[string]bool
 	sealedOpaque            map[string]map[string]bool
 	abstractTypes           map[string]string
@@ -788,6 +797,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok {
 			tc.predeclareFunctionSignature(fn)
+			if fn.Operator != "" && fn.Name != nil {
+				tc.registerOperator(fn)
+			}
 			if len(fn.TypeParams) > 0 && fn.Receiver == nil && !typeParamsConstrained(fn.TypeParams) {
 				if tc.functionTemplates == nil {
 					tc.functionTemplates = make(map[string]*ast.FunctionStatement)
@@ -863,8 +875,119 @@ func (tc *TypeChecker) recordGlobalOwners(program *ast.Program) {
 			if s.Name != nil {
 				tc.globalOwners[s.Name.Value] = tc.packageOf(s.Name.Token)
 			}
+		case *ast.ADTType:
+			if s.Name != nil {
+				if tc.typeOwners == nil {
+					tc.typeOwners = make(map[string]string)
+				}
+				tc.typeOwners[s.Name.Value] = tc.packageOf(s.Name.Token)
+			}
 		}
 	}
+}
+
+// registerOperator validates an `operator(SYM)` declaration and records
+// its binding (docs/spec/10-syntax.md section 14): two parameters, no
+// receiver or type parameters, a first parameter of a declared record or
+// ADT type declared in this function's own package, one binding per type
+// and symbol, and a Bool result for the comparison symbols.
+func (tc *TypeChecker) registerOperator(fn *ast.FunctionStatement) {
+	if fn.Receiver != nil || len(fn.TypeParams) > 0 || len(fn.Parameters) != 2 || fn.Parameters[1].Variadic {
+		tc.addError(fn.Name, "operator(%s) %s must be a non-generic function of exactly two parameters", fn.Operator, fn.Name.Value)
+		return
+	}
+	leftType := tc.parseTypeExpression(fn.Parameters[0].Type)
+	typeName := ""
+	switch t := leftType.(type) {
+	case *RecordType:
+		typeName = t.Name
+	case *ADTType:
+		typeName = t.Name
+	}
+	if typeName == "" {
+		tc.addError(fn.Parameters[0].Type, "operator(%s) %s: the first parameter must be a declared record or ADT type, got %s; primitives, strings, arrays, and views keep their built-in operators", fn.Operator, fn.Name.Value, leftType)
+		return
+	}
+	if owner, declared := tc.typeOwners[typeName]; declared && owner != tc.packageOf(fn.Name.Token) {
+		tc.addError(fn.Name, "operator(%s) %s must be declared in the package that declares %s (docs/spec/83-modules.md section 6.5)", fn.Operator, fn.Name.Value, typeName)
+		return
+	}
+	switch fn.Operator {
+	case "==", "!=", "<", "<=", ">", ">=":
+		if fn.ReturnType == nil {
+			tc.addError(fn.Name, "operator(%s) %s must return Bool", fn.Operator, fn.Name.Value)
+			return
+		}
+		if ret := tc.parseTypeExpression(fn.ReturnType); ret == nil || !ret.Equals(&BoolType{}) {
+			tc.addError(fn.ReturnType, "operator(%s) %s must return Bool, got %s", fn.Operator, fn.Name.Value, ret)
+			return
+		}
+	}
+	if tc.operatorBindings == nil {
+		tc.operatorBindings = make(map[string]string)
+	}
+	key := typeName + " " + fn.Operator
+	if prior, bound := tc.operatorBindings[key]; bound {
+		tc.addError(fn.Name, "operator(%s) is already bound for %s by %s; one binding per type and symbol", fn.Operator, typeName, prior)
+		return
+	}
+	tc.operatorBindings[key] = fn.Name.Value
+}
+
+// operatorBinding reports the function bound to SYM for a left operand of
+// the given type, if any.
+func (tc *TypeChecker) operatorBinding(leftType Type, symbol string) (string, bool) {
+	typeName := ""
+	switch t := leftType.(type) {
+	case *RecordType:
+		typeName = t.Name
+	case *ADTType:
+		typeName = t.Name
+	}
+	if typeName == "" {
+		return "", false
+	}
+	callee, bound := tc.operatorBindings[typeName+" "+symbol]
+	return callee, bound
+}
+
+// OperatorCallee reports the function an infix expression at tok resolved
+// to through an operator binding; the compiler's elaboration rewrites such
+// expressions into plain calls before any later phase runs.
+func (tc *TypeChecker) OperatorCallee(tok token.Token) (string, bool) {
+	callee, ok := tc.operatorCalls[positionKey(tok)]
+	return callee, ok
+}
+
+// checkOperatorCall checks `left SYM right` as the call callee(left, right)
+// and records it for rewriting.
+func (tc *TypeChecker) checkOperatorCall(expr *ast.InfixExpression, callee string, leftType Type) Type {
+	scheme, declared := tc.env.Get(callee)
+	if !declared {
+		return nil
+	}
+	fnType, isFunction := Instantiate(scheme, NewUnifier()).(*FunctionType)
+	if !isFunction || len(fnType.Parameters) != 2 {
+		tc.addError(expr, "operator %s: %s is not a two-parameter function", expr.Operator, callee)
+		return nil
+	}
+	if !tc.isAssignable(leftType, fnType.Parameters[0]) {
+		tc.addError(expr.Left, "operator %s (%s): left operand %s does not match %s", expr.Operator, callee, leftType, fnType.Parameters[0])
+		return nil
+	}
+	rightType := tc.checkExpression(expr.Right, fnType.Parameters[1])
+	if rightType == nil {
+		return nil
+	}
+	if !tc.isAssignable(rightType, fnType.Parameters[1]) {
+		tc.addError(expr.Right, "operator %s (%s): right operand %s does not match %s", expr.Operator, callee, rightType, fnType.Parameters[1])
+		return nil
+	}
+	if tc.operatorCalls == nil {
+		tc.operatorCalls = make(map[string]string)
+	}
+	tc.operatorCalls[positionKey(expr.Token)] = callee
+	return fnType.ReturnType
 }
 
 // shadowsVisibleBinding reports whether declaring name at tok would shadow
@@ -1453,6 +1576,14 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		leftType = tc.checkExpression(expr.Left, peerContext(rightType))
 	} else {
 		leftType = tc.checkExpression(expr.Left, operandExpected)
+		// A declared type with an operator binding for this symbol makes the
+		// expression the bound call (docs/spec/10-syntax.md section 14): the
+		// right operand is checked against the callee's second parameter.
+		if leftType != nil {
+			if callee, bound := tc.operatorBinding(leftType, expr.Operator); bound {
+				return tc.checkOperatorCall(expr, callee, leftType)
+			}
+		}
 		// The right operand of && runs only when the left held, so it sees
 		// the facts the left establishes (typechecker/extents.go); no
 		// expression can reassign a local in between.
