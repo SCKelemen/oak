@@ -85,6 +85,7 @@ func buildPackage(args []string) int {
 	dir := "."
 	output := ""
 	profile := ""
+	lines := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "-o" && i+1 < len(args):
@@ -93,8 +94,12 @@ func buildPackage(args []string) int {
 		case args[i] == "-profile" && i+1 < len(args):
 			profile = args[i+1]
 			i++
+		case args[i] == "-lines":
+			// #line directives: C diagnostics and debuggers point at Oak
+			// source (docs/spec/90-backend.md section 10).
+			lines = true
 		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out.c] [-profile default|strict] [dir]\n", args[i])
+			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out.c] [-profile default|strict] [-lines] [dir]\n", args[i])
 			return 2
 		default:
 			dir = args[i]
@@ -104,7 +109,11 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
 		return 2
 	}
-	code, err := compiler.New().WithPackageDir(dir).WithProfile(profile).EmitC().Get()
+	comp := compiler.New().WithPackageDir(dir).WithProfile(profile)
+	if lines {
+		comp = comp.WithLineDirectives()
+	}
+	code, err := comp.EmitC().Get()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1

@@ -132,6 +132,16 @@ The backend may not silently heap-promote escaping captures.
 
 Backend output should preserve mappings from generated operations to canonical Oak source spans and stable semantic identities.
 
+**Implemented:** every emitted function and statement is preceded by a
+`// @source:` comment, and with `oak build -lines` (the `LineDirectives`
+compilation option) also by a C `#line N "file"` directive naming its Oak
+source line, so C compiler diagnostics and debuggers attribute generated
+code to the Oak line that produced it. Spliced standard-library syntax is
+not from that file and receives no directive; a generic specialization's
+lines are its template's. Directives are off by default so the generated
+C stands on its own lines for backend inspection, and the golden corpus is
+recorded without them.
+
 The compiler's source model should power:
 
 - C `#line` / debug mappings where useful;

@@ -127,10 +127,10 @@ endorses:
 
 ## Tier 6 — verification and debugging
 
-`#line` directives in generated C (`90-backend.md` §10 already asks for
-them), per-module profiles (tier 1.2), and a trace schema for FFI calls so
-`oak test -sim` can replay a kernel launch sequence. All recorded, none
-changed here.
+`#line` directives in generated C are **done** (`oak build -lines`,
+`90-backend.md` §10: every function and statement maps to its Oak line).
+Per-module profiles (tier 1.2) and a trace schema for FFI calls so
+`oak test -sim` can replay a kernel launch sequence remain recorded.
 
 ## Tier 7 — the numeric-runtime asks (2026-09-10)
 

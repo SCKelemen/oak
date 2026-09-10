@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/SCKelemen/oak/asm"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -67,6 +68,10 @@ type CodeGenerator struct {
 	// bounds-checked form. Unknown containers fail closed.
 	localTypes   map[string]localContainer
 	sliceHelpers map[string]string
+	// lineDirectives enables #line directives before every function and
+	// statement (docs/spec/90-backend.md section 10), so C diagnostics and
+	// debuggers attribute generated code to the Oak source line.
+	lineDirectives bool
 	// emittingBodies is set once function definitions begin: a type that
 	// first appears there cannot receive a file-scope typedef any more
 	// (codegen/arrays.go fails closed instead).
@@ -760,6 +765,7 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	}
 
 	// Emit function signature (C style: space inside parentheses)
+	cg.emitLineDirective(fn.Token)
 	cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(funcName), returnType, cFuncName))
 
 	// If method, add receiver as first parameter
@@ -2864,6 +2870,45 @@ func (cg *CodeGenerator) emitSourceLocationComment(metadata SourceMetadata) {
 	}
 }
 
+// SetLineDirectives enables or disables #line directives in the output.
+func (cg *CodeGenerator) SetLineDirectives(enabled bool) {
+	cg.lineDirectives = enabled
+}
+
+// emitLineDirective writes `#line N "file"` for a token of the compiled
+// source, when directives are enabled. Spliced standard-library syntax
+// (SemanticContext "std") is not from that file and is left unattributed;
+// a specialization's tokens are the template's and map to it.
+func (cg *CodeGenerator) emitLineDirective(tok token.Token) {
+	if !cg.lineDirectives || tok.Line <= 0 || tok.SemanticContext == "std" {
+		return
+	}
+	cg.output.WriteString(fmt.Sprintf("#line %d %s\n", tok.Line, strconv.Quote(cg.sourceFile)))
+}
+
+// statementToken is the token that opens a statement, for source mapping.
+func statementToken(stmt ast.Statement) token.Token {
+	switch s := stmt.(type) {
+	case *ast.VariableDeclaration:
+		return s.Token
+	case *ast.AssignmentStatement:
+		return s.Token
+	case *ast.IndexAssignmentStatement:
+		return s.Token
+	case *ast.ExpressionStatement:
+		return s.Token
+	case *ast.WhileStatement:
+		return s.Token
+	case *ast.IfStatement:
+		return s.Token
+	case *ast.BlockStatement:
+		return s.Token
+	case *ast.UnsafeBlock:
+		return s.Token
+	}
+	return token.Token{}
+}
+
 // getSourceLocation extracts source location from a token
 func (cg *CodeGenerator) getSourceLocation(tok token.Token) SourceLocation {
 	return SourceLocation{
@@ -2952,6 +2997,7 @@ func (cg *CodeGenerator) emitBlockExpression(block *ast.BlockStatement, tc *type
 
 // emitStatement emits a statement
 func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeChecker, isLastInFunction bool) {
+	cg.emitLineDirective(statementToken(stmt))
 	switch s := stmt.(type) {
 	case *ast.VariableDeclaration:
 		cg.emitVariableDeclaration(s, tc)

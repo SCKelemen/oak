@@ -44,6 +44,11 @@ type Options struct {
 	// AsmUnits are the `.oakasm` translation units providing bodies for
 	// definition-less declarations (docs/spec/94-assembler.md).
 	AsmUnits []SourceText
+	// LineDirectives makes the C backend emit #line directives so C
+	// diagnostics and debuggers attribute generated code to Oak source
+	// (docs/spec/90-backend.md section 10). Off by default: the generated C
+	// then stands on its own lines for backend inspection.
+	LineDirectives bool
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -126,6 +131,13 @@ func (comp Compilation) WithSource(path, text string) Compilation {
 // declarations with identical signatures.
 func (comp Compilation) WithAsmUnit(path, text string) Compilation {
 	comp.options.AsmUnits = append(append([]SourceText(nil), comp.options.AsmUnits...), SourceText{Path: path, Text: text})
+	return comp
+}
+
+// WithLineDirectives returns a compilation whose generated C carries #line
+// directives mapping functions and statements to their Oak source lines.
+func (comp Compilation) WithLineDirectives() Compilation {
+	comp.options.LineDirectives = true
 	return comp
 }
 
@@ -386,6 +398,7 @@ func (comp Compilation) EmitC() Stage[string] {
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
+		generator.SetLineDirectives(comp.options.LineDirectives)
 		if lowered.Model.Tree.Modules != nil {
 			generator.SetAbstractAliases(lowered.Model.Tree.Modules.Abstract)
 		}
