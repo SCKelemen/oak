@@ -40,6 +40,11 @@ var fixedFieldRepresentations = map[string]semir.RecordFieldRepresentation{
 	// model (docs/spec/92-ffi.md section 2.4); the emitted sizeof/offsetof
 	// assertions verify this against the actual ABI at C compile time.
 	"Bool": {Size: 4, Alignment: 4},
+	// Floating-point fields (docs/spec/20-types.md section 11.3.1): the IEEE
+	// binary32 and binary64 formats at their natural LP64 alignment, and the
+	// f16/bf16 storage formats in their uint16_t carriers (section 11.3.8).
+	"f32": {Size: 4, Alignment: 4}, "f64": {Size: 8, Alignment: 8},
+	"f16": {Size: 2, Alignment: 2}, "bf16": {Size: 2, Alignment: 2},
 }
 
 // fieldRepresentation resolves one field's size and alignment, reporting
