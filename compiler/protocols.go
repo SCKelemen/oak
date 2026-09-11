@@ -55,6 +55,256 @@ type protocolMachine struct {
 	// templates with one type parameter: their handles carry the protocol
 	// state in the type (docs/spec/112-protocols.md section 5a).
 	typestate map[string]bool
+	// quantifiers are the count/all/any/none forms the guards and effects
+	// use over array data fields (docs/spec/112-protocols.md section 1),
+	// each projected as one bounded helper function.
+	quantifiers []quantifierUse
+	// records are the program's plain record declarations, for the element
+	// type of an array-of-records data field.
+	records map[string]*ast.RecordLiteral
+}
+
+// quantifierUse is one count/all/any/none form over a data field: the
+// field, its length, and for an array of records the Bool field read.
+type quantifierUse struct {
+	form   string
+	field  string
+	sub    string
+	length int64
+}
+
+func (q quantifierUse) helperName(prefix string) string {
+	name := prefix + "_" + q.form + "_" + q.field
+	if q.sub != "" {
+		name += "_" + q.sub
+	}
+	return name
+}
+
+var quantifierForms = map[string]bool{"count": true, "all": true, "any": true, "none": true}
+
+// RecordDeclarations collects a program's plain (non-generic) record
+// declarations by name: the element types array-of-records protocol data
+// may use.
+func RecordDeclarations(program *ast.Program) map[string]*ast.RecordLiteral {
+	records := map[string]*ast.RecordLiteral{}
+	if program == nil {
+		return records
+	}
+	for _, stmt := range program.Statements {
+		adt, isADT := stmt.(*ast.ADTType)
+		if !isADT || adt.Name == nil || len(adt.TypeParams) != 0 || len(adt.Variants) != 1 {
+			continue
+		}
+		if literal, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
+			records[adt.Name.Value] = literal
+		}
+	}
+	return records
+}
+
+// rewriteExpressions replaces every expression below node (and node's own
+// expression fields) with f's result, descending into the replacement.
+func rewriteExpressions(node ast.Node, f func(ast.Expression) ast.Expression) {
+	if node == nil {
+		return
+	}
+	rewriteValue(reflect.ValueOf(node), f)
+}
+
+var expressionType = reflect.TypeOf((*ast.Expression)(nil)).Elem()
+
+func rewriteValue(v reflect.Value, f func(ast.Expression) ast.Expression) {
+	switch v.Kind() {
+	case reflect.Ptr:
+		if !v.IsNil() {
+			rewriteValue(v.Elem(), f)
+		}
+	case reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		if v.Type() == expressionType && v.CanSet() {
+			replaced := f(v.Interface().(ast.Expression))
+			if replaced != nil {
+				v.Set(reflect.ValueOf(replaced))
+			}
+		}
+		rewriteValue(v.Elem(), f)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Field(i).CanSet() {
+				rewriteValue(v.Field(i), f)
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			rewriteValue(v.Index(i), f)
+		}
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			value := iter.Value()
+			if value.Kind() == reflect.Interface && value.Type() == expressionType && !value.IsNil() {
+				replaced := f(value.Interface().(ast.Expression))
+				if replaced != nil {
+					v.SetMapIndex(iter.Key(), reflect.ValueOf(replaced))
+					rewriteValue(reflect.ValueOf(replaced), f)
+					continue
+				}
+			}
+			rewriteValue(value, f)
+		}
+	}
+}
+
+// quantifierCall recognizes count/all/any/none over `data.field` or
+// `data.field, sub`; the shape is validated by analyzeProtocol.
+func quantifierCall(e ast.Expression) (form, field, sub string, ok bool) {
+	call, isCall := e.(*ast.InvocationExpression)
+	if !isCall || call == nil {
+		return "", "", "", false
+	}
+	fn, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent || fn == nil || !quantifierForms[fn.Value] || len(call.Arguments) == 0 || len(call.Arguments) > 2 {
+		return "", "", "", false
+	}
+	target, isIndex := call.Arguments[0].(*ast.IndexExpression)
+	if !isIndex {
+		return fn.Value, "", "", true
+	}
+	name, isField := dataField(target)
+	if !isField {
+		return fn.Value, "", "", true
+	}
+	if len(call.Arguments) == 2 {
+		subIdent, isSub := call.Arguments[1].(*ast.Identifier)
+		if !isSub || subIdent == nil {
+			return fn.Value, name, "", true
+		}
+		return fn.Value, name, subIdent.Value, true
+	}
+	return fn.Value, name, "", true
+}
+
+// checkQuantifiers validates the quantifier forms in a guard or effect
+// block and records each distinct use. A one-argument form needs an
+// [N]Bool field; a two-argument form needs an [N]R field with R a declared
+// record whose named field is Bool.
+func (m *protocolMachine) checkQuantifiers(node ast.Node, where string, report func(code string, node ast.Node, format string, args ...interface{})) bool {
+	ok := true
+	fieldTypes := map[string]ast.Expression{}
+	if m.decl.Data != nil {
+		for _, f := range m.decl.Data.FieldOrder {
+			fieldTypes[f.Name] = f.Value
+		}
+	}
+	seen := map[string]bool{}
+	for _, q := range m.quantifiers {
+		seen[q.helperName("")] = true
+	}
+	rewriteExpressions(node, func(e ast.Expression) ast.Expression {
+		call, isCall := e.(*ast.InvocationExpression)
+		if !isCall {
+			return nil
+		}
+		fn, isIdent := call.Function.(*ast.Identifier)
+		if !isIdent || fn == nil || !quantifierForms[fn.Value] {
+			return nil
+		}
+		form, field, sub, _ := quantifierCall(e)
+		if field == "" {
+			report(CodeProtocolShape, e, "%s: %s takes data.field (an [N]Bool field) or data.field, sub (an [N]R field and a Bool field of R)", where, form)
+			ok = false
+			return nil
+		}
+		typ, declared := fieldTypes[field]
+		if !declared {
+			report(CodeProtocolShape, e, "%s: %s over data.%s, which data does not declare", where, form, field)
+			ok = false
+			return nil
+		}
+		length, element, isArray := arrayShape(typ)
+		if !isArray {
+			report(CodeProtocolShape, e, "%s: %s over data.%s, which is not a fixed array", where, form, field)
+			ok = false
+			return nil
+		}
+		if sub == "" {
+			if element != "Bool" {
+				report(CodeProtocolShape, e, "%s: %s over data.%s needs an [N]Bool field; name the Bool field of its %s elements as a second argument", where, form, field, element)
+				ok = false
+				return nil
+			}
+		} else {
+			record, isRecord := m.records[element]
+			if !isRecord {
+				report(CodeProtocolShape, e, "%s: %s over data.%s, %s: %s is not a declared record", where, form, field, sub, element)
+				ok = false
+				return nil
+			}
+			subType, hasSub := record.Fields[sub]
+			subIdent, isIdent := subType.(*ast.Identifier)
+			if !hasSub || !isIdent || subIdent.Value != "Bool" {
+				report(CodeProtocolShape, e, "%s: %s over data.%s, %s: %s has no Bool field %s", where, form, field, sub, element, sub)
+				ok = false
+				return nil
+			}
+		}
+		use := quantifierUse{form: form, field: field, sub: sub, length: length}
+		if !seen[use.helperName("")] {
+			seen[use.helperName("")] = true
+			m.quantifiers = append(m.quantifiers, use)
+		}
+		return nil
+	})
+	return ok
+}
+
+// rewriteQuantifiers replaces quantifier forms in a cloned guard or effect
+// block with calls to the projected helpers, which take the data record.
+func (m *protocolMachine) rewriteQuantifiers(node ast.Node, prefix string, s *synth) {
+	rewriteExpressions(node, func(e ast.Expression) ast.Expression {
+		form, field, sub, isQuantifier := quantifierCall(e)
+		if !isQuantifier || field == "" {
+			return nil
+		}
+		use := quantifierUse{form: form, field: field, sub: sub}
+		return s.call(use.helperName(prefix), s.id("data"))
+	})
+}
+
+// quantifierHelpers projects one bounded helper per quantifier use, as
+// parsed Oak: `name_count_acks: (data: NameData): u32` folds the array.
+func (m *protocolMachine) quantifierHelpers(prefix, dataType string) []ast.Statement {
+	var out []ast.Statement
+	for _, q := range m.quantifiers {
+		element := fmt.Sprintf("data.%s[i]", q.field)
+		if q.sub != "" {
+			element += "." + q.sub
+		}
+		var src string
+		switch q.form {
+		case "count":
+			src = fmt.Sprintf("%s: (data: %s): u32 {\n  n: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    %s ? { n = n + u32(1) } | { }\n    i = i + u32(1)\n  }\n  n\n}\n", q.helperName(prefix), dataType, q.length, element)
+		case "all":
+			src = fmt.Sprintf("%s: (data: %s): Bool {\n  ok: Bool = true\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    ok = ok && %s\n    i = i + u32(1)\n  }\n  ok\n}\n", q.helperName(prefix), dataType, q.length, element)
+		case "any":
+			src = fmt.Sprintf("%s: (data: %s): Bool {\n  found: Bool = false\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    found = found || %s\n    i = i + u32(1)\n  }\n  found\n}\n", q.helperName(prefix), dataType, q.length, element)
+		case "none":
+			src = fmt.Sprintf("%s: (data: %s): Bool {\n  ok: Bool = true\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    ok = ok && !%s\n    i = i + u32(1)\n  }\n  ok\n}\n", q.helperName(prefix), dataType, q.length, element)
+		}
+		if m.decl.Exported {
+			src = "pub " + src
+		}
+		p := parser.New(layout.New(scanner.New(src)))
+		program := p.ParseProgram()
+		if len(p.Errors()) != 0 || program == nil || len(program.Statements) != 1 {
+			continue
+		}
+		out = append(out, program.Statements[0])
+	}
+	return out
 }
 
 // variantName spells a transition name as its step variant: inject -> Inject.
@@ -86,8 +336,18 @@ func snakeCase(name string) string {
 
 // analyzeProtocol checks one declaration and returns its machine.
 func analyzeProtocol(decl *ast.ProtocolDeclaration, report func(code string, node ast.Node, format string, args ...interface{})) (*protocolMachine, bool) {
+	return analyzeProtocolWith(decl, nil, report)
+}
+
+// analyzeProtocolWith is analyzeProtocol with the program's record
+// declarations, which array-of-records data and two-argument quantifier
+// forms need.
+func analyzeProtocolWith(decl *ast.ProtocolDeclaration, records map[string]*ast.RecordLiteral, report func(code string, node ast.Node, format string, args ...interface{})) (*protocolMachine, bool) {
 	ok := true
-	m := &protocolMachine{decl: decl, name: decl.Name.Value}
+	m := &protocolMachine{decl: decl, name: decl.Name.Value, records: records}
+	if m.records == nil {
+		m.records = map[string]*ast.RecordLiteral{}
+	}
 	seen := map[string]bool{}
 	addState := func(id *ast.Identifier) {
 		if !seen[id.Value] {
@@ -161,6 +421,12 @@ func analyzeProtocol(decl *ast.ProtocolDeclaration, report func(code string, nod
 		}
 		if decl.Data == nil && mentionsIdentifier(t.Guard, "data") || decl.Data == nil && t.Effects != nil && mentionsIdentifier(t.Effects, "data") {
 			report(CodeProtocolShape, t.Name, "transition %s refers to data, but protocol %s declares none", t.Name.Value, decl.Name.Value)
+			ok = false
+		}
+		if t.Guard != nil && !m.checkQuantifiers(&ast.ExpressionStatement{Expression: t.Guard}, fmt.Sprintf("transition %s: guard", t.Name.Value), report) {
+			ok = false
+		}
+		if t.Effects != nil && !m.checkQuantifiers(t.Effects, fmt.Sprintf("transition %s: effects", t.Name.Value), report) {
 			ok = false
 		}
 		key := t.Name.Value + "\x00" + t.From.Value
@@ -251,7 +517,7 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 			continue
 		}
 		found = true
-		machine, ok := analyzeProtocol(decl, report)
+		machine, ok := analyzeProtocolWith(decl, RecordDeclarations(program), report)
 		if !ok {
 			continue
 		}
@@ -264,6 +530,9 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 		projected := machine.project()
 		if len(machine.typestate) > 0 {
 			projected = append(projected, machine.stateMarkers()...)
+		}
+		if decl.Data != nil {
+			projected = append(projected, machine.quantifierHelpers(snakeCase(machine.name), machine.name+"Data")...)
 		}
 		for _, generated := range projected {
 			if name := declarationName(generated); declared[name] {
@@ -583,7 +852,10 @@ func (m *protocolMachine) project() []ast.Statement {
 			body = append(body, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
 			var term ast.Expression = s.id(fromName)
 			if line.Guard != nil {
-				term = s.and(term, cloneExpression(line.Guard))
+				guard := cloneExpression(line.Guard)
+				holder := &ast.ExpressionStatement{Expression: guard}
+				m.rewriteQuantifiers(holder, prefix, s)
+				term = s.and(term, holder.Expression)
 			}
 			terms = append(terms, term)
 		}
@@ -609,11 +881,15 @@ func (m *protocolMachine) project() []ast.Statement {
 			body = append(body, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
 			condition := s.and(s.not(s.id("done")), s.id(fromName))
 			if line.Guard != nil {
-				condition = s.and(condition, renameIdentifier(cloneExpression(line.Guard), "data", local).(ast.Expression))
+				guard := &ast.ExpressionStatement{Expression: cloneExpression(line.Guard)}
+				m.rewriteQuantifiers(guard, prefix, s)
+				condition = s.and(condition, renameIdentifier(guard.Expression, "data", local).(ast.Expression))
 			}
 			var effects []ast.Statement
 			if line.Effects != nil {
-				rewritten := renameIdentifier(cloneSyntax(reflect.ValueOf(line.Effects)).Interface().(*ast.BlockStatement), "data", local).(*ast.BlockStatement)
+				cloned := cloneSyntax(reflect.ValueOf(line.Effects)).Interface().(*ast.BlockStatement)
+				m.rewriteQuantifiers(cloned, prefix, s)
+				rewritten := renameIdentifier(cloned, "data", local).(*ast.BlockStatement)
 				effects = append(effects, rewritten.Statements...)
 			}
 			effects = append(effects, s.assign("result", s.variant(line.To.Value, nil)), s.assign("done", s.boolean(true)))
