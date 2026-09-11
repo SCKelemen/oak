@@ -809,8 +809,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 // substitute replaces parameters by terms (the asm loop symbols by their
 // expression in the Oak variables' symbols).
 func substitute(t *term, sigma map[string]*term) *term {
+	return substituteMemo(t, sigma, map[*term]*term{})
+}
+
+func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term {
 	if t == nil {
 		return nil
+	}
+	if done, seen := memo[t]; seen {
+		return done // shared subterms are substituted once
 	}
 	switch t.kind {
 	case termConst:
@@ -822,9 +829,10 @@ func substitute(t *term, sigma map[string]*term) *term {
 		return t
 	}
 	out := *t
-	out.cond = substitute(t.cond, sigma)
-	out.left = substitute(t.left, sigma)
-	out.right = substitute(t.right, sigma)
+	out.cond = substituteMemo(t.cond, sigma, memo)
+	out.left = substituteMemo(t.left, sigma, memo)
+	out.right = substituteMemo(t.right, sigma, memo)
+	memo[t] = &out
 	return &out
 }
 

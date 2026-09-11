@@ -1,11 +1,22 @@
 package borrowchecker
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Region-indexed borrowed returns, increment 1 (docs/spec/50-borrowing.md
 // section 8c): a `[]T` return with exactly one `[]T` parameter borrows from
 // that parameter; the body's result must trace to it (OAK-B0113 otherwise);
 // the caller's binding is a reborrow of the argument.
+
+func diagText(bc *BorrowChecker) string {
+	var out []string
+	for _, d := range bc.Diagnostics() {
+		out = append(out, d.PlainText())
+	}
+	return strings.Join(out, "\n")
+}
 
 func checkSource(t *testing.T, src string) *BorrowChecker {
 	t.Helper()
@@ -228,5 +239,61 @@ func TestRegionRecordReturnOfLocalIsRejected(t *testing.T) {
 	bc := checkSource(t, src)
 	if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 1 {
 		t.Fatalf("record of a local produced %d OAK-B0113, want 1: %#v", got, bc.Diagnostics())
+	}
+}
+
+// Increment 4: ADT payloads carry regions, and a match arm's payload binding
+// reborrows what the scrutinee carries under that variant.
+
+const framePrelude = "Frame[R]: type = struct { kind: u32, payload: View[u8, R] }\n" +
+	"FrameError: type = | Short | Bad\n" +
+	"Result[T, E]: type = Ok: T | Err: E\n" +
+	"Option[T]: type = Some: T | None\n" +
+	"parse[R]: (src: View[u8, R]): Result[Frame[R], FrameError] = len(src) < u32(2) ? { .Err(.Short) } | { .Ok(Frame { kind: u32(src[0]), payload: subslice(src, u32(1), len(src) - u32(1)) }) }\n" +
+	"first[R]: (src: View[u8, R]): Option[View[u8, R]] = len(src) == u32(0) ? { .None } | { .Some(subslice(src, u32(0), u32(1))) }\n" +
+	"body[R]: (f: Frame[R]): View[u8, R] = f.payload\n"
+
+func TestRegionADTPayloadsCrossCalls(t *testing.T) {
+	src := framePrelude +
+		"use: (data: []u8): u32 {\n  r: Result[Frame, FrameError] = parse(data)\n  r ? | .Ok(f) => { b: []u8 = body(f)\n u32(b[0]) + f.kind } | .Err(e) => u32(0)\n}"
+	bc := checkSource(t, src)
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("ADT payload crossing calls must be clean, got %s", diagText(bc))
+	}
+}
+
+func TestRegionADTPayloadKeepsOwnerBorrowed(t *testing.T) {
+	src := framePrelude +
+		"use: (): u32 {\n  data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\n  r: Result[Frame, FrameError] = parse(view(&data))\n  data[0] = 9\n  r ? | .Ok(f) => f.kind | .Err(e) => u32(0)\n}"
+	bc := checkSource(t, src)
+	if got := countDiagnosticsWithCode(bc, string(CodeOwnerWrittenDuringView)); got != 1 {
+		t.Fatalf("owner write while the Result lives produced %d OAK-B0103, want 1: %s", got, diagText(bc))
+	}
+}
+
+func TestRegionOptionViewPayload(t *testing.T) {
+	src := framePrelude +
+		"use: (): u32 {\n  data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\n  o: Option[[]u8] = first(view(&data))\n  o ? | .Some(v) => { data[1] = 7\n u32(v[0]) } | .None => u32(0)\n}"
+	bc := checkSource(t, src)
+	if got := countDiagnosticsWithCode(bc, string(CodeOwnerWrittenDuringView)); got != 1 {
+		t.Fatalf("owner write inside the Some arm produced %d OAK-B0103, want 1: %s", got, diagText(bc))
+	}
+	// The Option binding itself is lexical: hold it in a helper so the owner
+	// is free again after the call.
+	clean := framePrelude +
+		"pick: (data: []u8): u32 {\n  o: Option[[]u8] = first(data)\n  o ? | .Some(v) => u32(v[0]) | .None => u32(0)\n}\n" +
+		"use: (): u32 {\n  data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\n  n: u32 = pick(view(&data))\n  data[1] = 7\n  n\n}"
+	bc = checkSource(t, clean)
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("a payload borrow held in a helper ends with the helper; writing after the call must be clean: %s", diagText(bc))
+	}
+}
+
+func TestRegionADTReturnOfLocalIsRejected(t *testing.T) {
+	src := framePrelude +
+		"bad[R]: (src: View[u8, R]): Result[Frame[R], FrameError] {\n  local: [4]u8 = [4]u8{ 1, 2, 3, 4 }\n  .Ok(Frame { kind: u32(0), payload: view(&local) })\n}"
+	bc := checkSource(t, src)
+	if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 1 {
+		t.Fatalf("ADT payload of a local produced %d OAK-B0113, want 1: %s", got, diagText(bc))
 	}
 }

@@ -428,7 +428,9 @@ method: the receiver type's package is the only other package searched, so
 a call's meaning never depends on which unrelated package is compiled. Oak's interfaces are implicit, so there are
 no instances to collide, but two packages attaching same-named methods to one
 imported type would make method lookup depend on which package is compiled —
-Go's rule, adopted for the same reason.
+Go's rule, adopted for the same reason. Operator definitions
+(`10-syntax.md` §14) follow it too: an `operator(+)` binding for a type
+lives in the type's package and travels with the type to every importer.
 
 ### 6.6 Derived declarations
 
@@ -632,12 +634,13 @@ rejected as before.
 
 **Standard library packages.** The library files are real packages:
 `strings`, `unicode`, `json`, `filters`, `hash_table`, `bitset_algebra`,
-`causal_frontier`, and `math` each carry a package clause, import the
+`causal_frontier`, `math`, and `hash` each carry a package clause, import the
 library packages they use (`strings` imports `unicode`, `json` imports
 `strings`, `hash_table` imports `filters`), qualify their cross-references,
-and mark their exports `pub`. `math` (`20-types.md` §11.3.6) is a package
-only: its names (`exp`, `log`, …) are too common to enter every program
-unqualified, so it is never part of the flat prelude below. `import("json")` loads json, strings, unicode, and the **core prelude**
+and mark their exports `pub`. `math` (`20-types.md` §11.3.6) and `hash`
+(`stdlib/README.md`: SHA-256, CRC-32C) are packages only: their names
+(`exp`, `log`, `sha256`, …) are too common to enter every program
+unqualified, so they are never part of the flat prelude below. `import("json")` loads json, strings, unicode, and the **core prelude**
 (`std.oak`: Option, Result, Overflow, byte and ring helpers), which every
 library package builds on unqualified — and nothing else. The legacy flat
 prelude of `import(std)` is *derived* from the same sources at build time:
@@ -714,7 +717,13 @@ naming the import to add (`encode` needs `import("json")`, text needs
     parameter is one variable per scalar leaf `p.v`, `q.p.k`, an array of
     records one memory per leaf `cs.v`, and record literals, whole-record
     copies, field stores, and record arguments expand per leaf; the Lean
-    semantics sees only scalars), and calls: an expression-bodied,
+    semantics sees only scalars), sum types (flattened the same way: a
+    `tag` leaf in declaration order plus each constructor's payload leaves
+    under its name; a constructor sets the tag and its payload and zeroes
+    the unobservable rest; a match is the nested conditional on the tag
+    with the last arm as the checker-guaranteed default, and a payload
+    binding is a local over the payload leaves), and calls: an
+    expression-bodied,
     non-recursive, non-generic callee whose body is in the fragment is
     inlined, and any other callee is an uninterpreted function of the
     statement (`Oak.Loops.Funs`, the parameter `F` the programmer constrains

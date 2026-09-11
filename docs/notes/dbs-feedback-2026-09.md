@@ -18,6 +18,16 @@ written in safe Oak without typestate and borrowed returns.
 | 5 | IO surface | **Absent, and not on the experiment's critical path.** The proposed port of the frame scan and recovery rule runs against `SimDisk` with conformance vectors entering through the FFI boundary (`92-ffi.md` §2.6 header, `c.span_of`) or as embedded arrays. A real IO surface is a separate design. |
 | 6 | Runtime SIMD dispatch, non-C backend | **Absent.** Recorded; neither gates the storage experiment. |
 
+## Second round (2026-09-11)
+
+| # | Ask | Disposition |
+| --- | --- | --- |
+| 1 | SHA-256 and CRC-32C in pure Oak (and BLAKE3) | **Done.** `stdlib/hash.oak`, `import("hash")`: incremental and one-shot SHA-256 and BLAKE3 into caller storage, CRC-32C with a continuation form for chaining; known-answer vectors and a differential test against Go in both realizations. Bit-serial; faster paths are measured changes for later. |
+| 2 | Big-endian reads and writes from a byte view | **Already present.** The core prelude has `bytes_read_u16_be/u32_be/u64_be(view, offset): Result[T, EndianError]` and the `bytes_write_*_be(span, offset, value)` forms alongside the little-endian family (`stdlib/std.oak`). A binary codec derive is not needed for the header; it remains a direction if a whole frame format is to be derived. |
+| 3 | Array-valued protocol data | **In another session's hands.** The spec (`112-protocols.md` §1) admits fixed-array `data` fields; the manifest-wide invariant over N segments is the open part. No `sam/protocol-arrays` branch exists on the remote; `origin/sam/protocol-data-v2` carries protocol data work in progress and is the place to look. |
+| 4 | Conformance of a hand-written TLA+ module against a projected protocol | **Direction, not started** (`112-protocols.md` §7). Needs a design: which normal form the two modules are compared in, and whether TLC refinement or a syntactic check decides. |
+| 5 | Borrowed decoded views in codecs | **Done.** `71-codecs.md` §13a: a record with `View[u8, R]` fields decodes as views of the input's string tokens (quotes included, unescaped on demand), the derived reader and decoder carry the region, and the borrow checker's increment 4 (`50-borrowing.md` §8c) lets `Result[Frame[R], E]` and match bindings carry the borrow. The frame scan can hand a frame back as a view. |
+
 ## The experiment this enables
 
 Port the phase-1 frame scan and the recovery rule to Oak, drive them from

@@ -280,6 +280,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		if p.currentToken.Literal == "open" && p.peekTokenIs(token.IMPORT) {
 			return p.parseOpenImport()
 		}
+		// `operator(SYM) name: (a: T, b: U): R = ...` binds SYM for a left
+		// operand of type T (docs/spec/10-syntax.md section 14); `operator`
+		// is contextual, so `operator := 1` stays an ordinary binding.
+		if p.currentToken.Literal == "operator" && p.peekTokenIs(token.LPAREN) {
+			return p.parseOperatorDeclaration()
+		}
 		// `module name { ... }` declares a nested module (section 3.5);
 		// `module` is contextual, so `module := 1` stays an ordinary binding.
 		if p.currentToken.Literal == "module" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.LBRACE {
@@ -1505,6 +1511,46 @@ func (p *Parser) parseTypeKindExpression() ast.Expression {
 // parsePubDeclaration parses `pub decl` and `pub(opaque) decl`
 // (docs/spec/83-modules.md section 6). pub applies to package-level
 // declarations only; pub(opaque) applies to type declarations only.
+// operatorSymbols are the symbols an operator declaration may bind
+// (docs/spec/10-syntax.md section 14): arithmetic and comparison. Bool and
+// bitwise operators keep their fixed meaning and are not bindable.
+var operatorSymbols = map[token.TokenKind]string{
+	token.SUM: "+", token.NEG: "-", token.MUL: "*", token.QUO: "/", token.REM: "%",
+	token.EQL: "==", token.NEQL: "!=", token.LCHEV: "<", token.LEQ: "<=", token.RCHEV: ">", token.GEQ: ">=",
+}
+
+// parseOperatorDeclaration parses `operator(SYM)` followed by a function
+// declaration and records the bound symbol on it.
+func (p *Parser) parseOperatorDeclaration() ast.Statement {
+	marker := p.currentToken
+	p.nextToken() // (
+	p.nextToken() // the symbol
+	symbol, bindable := operatorSymbols[p.currentToken.TokenKind]
+	if !bindable {
+		p.addErrorAtCurrentToken(fmt.Sprintf("operator(%s): only + - * / %% == != < <= > >= can be bound (docs/spec/10-syntax.md section 14)", p.currentToken.Literal))
+		return nil
+	}
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+	if p.peekTokenIs(token.EOF) {
+		p.addErrorAtToken(&marker, "operator(%s) must be followed by a function declaration")
+		return nil
+	}
+	p.nextToken()
+	stmt := p.parseStatement()
+	if stmt == nil {
+		return nil
+	}
+	fn, isFunction := stmt.(*ast.FunctionStatement)
+	if !isFunction {
+		p.addErrorAtToken(&marker, "operator("+symbol+") must be followed by a function declaration")
+		return nil
+	}
+	fn.Operator = symbol
+	return fn
+}
+
 func (p *Parser) parsePubDeclaration() ast.Statement {
 	pubToken := p.currentToken
 	opaque := false

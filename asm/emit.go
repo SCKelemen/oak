@@ -92,7 +92,13 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 	case Register:
 		return o.Text
 	case Immediate:
+		if o.Shift != 0 {
+			return fmt.Sprintf("#%d, lsl #%d", o.Value, o.Shift)
+		}
 		return fmt.Sprintf("#%d", o.Value)
+	case Shifted, Extended:
+		text, _ := renderModified(o)
+		return text
 	case Memory:
 		if o.Index != nil {
 			if o.Shift == 0 {

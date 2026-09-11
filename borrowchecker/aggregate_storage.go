@@ -119,9 +119,24 @@ func (bc *BorrowChecker) collectAggregateBorrows(path string, value ast.Expressi
 			case *ast.Identifier:
 				// A tracked read-only view (a local binding or a view
 				// parameter) may be shared; a span binding would be a second
-				// exclusive path and is not admitted here.
+				// exclusive path and is not admitted here. A record binding
+				// whose borrows are tracked contributes them under the field.
 				info, tracked := bc.activeBorrows[fv.Value]
-				if !tracked || info.kind != BorrowView {
+				if !tracked {
+					names := bc.aggregateBorrowNames(fv.Value)
+					if len(names) == 0 {
+						return false
+					}
+					for _, name := range names {
+						nested := bc.activeBorrows[name]
+						if nested.kind != BorrowView {
+							return false
+						}
+						*borrows = append(*borrows, aggregateBorrow{path: fieldPath + name[len(fv.Value):], owner: nested.owner, kind: BorrowView, region: nested.region, origin: fv})
+					}
+					continue
+				}
+				if info.kind != BorrowView {
 					return false
 				}
 				*borrows = append(*borrows, aggregateBorrow{path: fieldPath, owner: info.owner, kind: BorrowView, region: info.region, origin: fv})
