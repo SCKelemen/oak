@@ -414,7 +414,7 @@ func generalizationDeclaredType(expr ast.Expression, env *TypeEnvironment) Type 
 		case "Bool":
 			return &BoolType{}
 		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-			"int", "uint", "ptr", "uptr", "byte", "rune", "f32", "f64", "f16", "bf16":
+			"int", "uint", "ptr", "uptr", "byte", "rune", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return &PrimitiveType{Name: e.Value}
 		default:
 			if e.Value != "" {
@@ -445,7 +445,7 @@ func isNonCapturingBuiltin(name string) bool {
 	switch name {
 	case "u8", "u16", "u32", "u64",
 		"i8", "i16", "i32", "i64",
-		"int", "uint", "ptr", "uptr", "byte", "rune", "string", "f32", "f64", "f16", "bf16",
+		"int", "uint", "ptr", "uptr", "byte", "rune", "string", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2",
 		"view_as", "span_as", "view", "span", "subslice",
 		"len", "is_valid_utf8", "assert":
 		return true

@@ -15,10 +15,12 @@ import (
 	"github.com/SCKelemen/oak/scanner"
 )
 
-// runHashProgram compiles and runs a program importing the hash library
-// package (library packages resolve through the module loader, so the
-// program is a module root), then interprets the same checked program.
-func runHashProgram(t *testing.T, name, src string) {
+// runHashProgram compiles and runs a program importing a library package
+// (library packages resolve through the module loader, so the program is
+// a module root), then interprets the same checked program — or, when a
+// second source is given, that variant (for programs whose compiled form
+// uses compile-time-only builtins).
+func runHashProgram(t *testing.T, name, src string, interpreted ...string) {
 	t.Helper()
 	root := writeModule(t, map[string]string{
 		"oak.mod":  "module example.com/" + name + "\noak 0.1.0\n",
@@ -27,6 +29,12 @@ func runHashProgram(t *testing.T, name, src string) {
 	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
 	if abnormal || code != 42 {
 		t.Fatalf("compiled hash program exited (%d, abnormal=%v)", code, abnormal)
+	}
+	if len(interpreted) > 0 {
+		root = writeModule(t, map[string]string{
+			"oak.mod":  "module example.com/" + name + "\noak 0.1.0\n",
+			"main.oak": "package main\n" + interpreted[0],
+		})
 	}
 	model, err := New().WithPackageDir(root).Check().Get()
 	if err != nil {

@@ -2318,7 +2318,7 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		"byte": true,              // alias of u8
 		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
 		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
-		"f16": true, "bf16": true, // storage formats: rejected with the spelling to use
+		"f16": true, "bf16": true, "f8e4m3": true, "f8e5m2": true, // storage formats: rejected with the spelling to use
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -3323,7 +3323,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 			primitiveTypes := map[string]bool{
 				"i8": true, "i16": true, "i32": true, "i64": true,
 				"u8": true, "u16": true, "u32": true, "u64": true,
-				"f32": true, "f64": true, "f16": true, "bf16": true,
+				"f32": true, "f64": true, "f16": true, "bf16": true, "f8e4m3": true, "f8e5m2": true,
 				"string": true, "Bool": true, "byte": true, "()": true,
 			}
 			if primitiveTypes[ident.Value] {
@@ -4735,7 +4735,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types
@@ -4910,7 +4910,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types

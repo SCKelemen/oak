@@ -153,7 +153,7 @@ extern binding:
 
 `T` must be a fixed-width integer, a floating-point type (`20-types.md`
 §11.3; the `f16`/`bf16` storage formats cross as their `uint16_t`
-carriers), `Bool`, a boundary tagged union (§2.6), or a `struct` whose
+carriers and `f8e4m3`/`f8e5m2` as `uint8_t`), `Bool`, a boundary tagged union (§2.6), or a `struct` whose
 layout is proven (`40-records.md`) and whose fields are recursively of
 these types — the types with one meaning on both sides of the boundary. Views of records without a selected
 representation, of ADTs, of views, or of anything carrying a borrow are
@@ -232,7 +232,8 @@ no allocation, no thunk. The interpreter cannot call externs (§4) and rejects
 these forms with the same diagnostic it gives an extern call.
 
 **Implemented.** Every element type of §2.5.1 is admitted: fixed-width
-integers, `f32`/`f64` and the `f16`/`bf16` storage formats, `Bool`, tagged
+integers, `f32`/`f64` and the `f16`/`bf16`/`f8e4m3`/`f8e5m2` storage
+formats, `Bool`, tagged
 unions whose payloads are boundary types (§2.6), and declared `struct`
 types whose fields are recursively boundary types (the backend emits these
 with C compile-time size and offset assertions, so the pointer C receives

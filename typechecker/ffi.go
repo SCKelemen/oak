@@ -270,6 +270,9 @@ var conversionPrimitives = map[string]int{
 	"f32": 32, "f64": 64,
 	// Storage formats (section 11.3.1): round from f32, bits with u16.
 	"f16": 16, "bf16": 16,
+	// The 8-bit storage formats (section 11.3.1): round and saturate from
+	// f32, bits with u8.
+	"f8e4m3": 8, "f8e5m2": 8,
 }
 
 var conversionOperations = map[string]bool{
@@ -662,6 +665,7 @@ var boundarySpanElementTypes = map[string]bool{
 	"i8": true, "i16": true, "i32": true, "i64": true,
 	"byte": true,
 	"f32":  true, "f64": true, "f16": true, "bf16": true,
+	"f8e4m3": true, "f8e5m2": true,
 }
 
 // boundarySpanElement reports whether an element type has one meaning on

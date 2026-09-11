@@ -190,6 +190,9 @@ func (p *Parser) nextToken() {
 }
 
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
+	// A brace block restores '|' as bitwise or, wherever it sits inside a
+	// ?-match arm (docs/spec/10-syntax.md section 3b).
+	defer p.operatorPipe()()
 	blocc := &ast.BlockStatement{Token: p.currentToken}
 	blocc.Statements = []ast.Statement{}
 	p.nextToken()
@@ -821,6 +824,7 @@ func (p *Parser) parseFunctionArgs() []*ast.Identifier {
 }
 func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expression {
 	exp := &ast.InvocationExpression{Token: p.currentToken, Function: function}
+	defer p.operatorPipe()()
 	// Inside parentheses a '{' can only be a composite literal, even when
 	// the call sits in a statement header (Go's rule).
 	wasDisabled := p.braceLiteralDisabled
@@ -863,7 +867,8 @@ func (p *Parser) parseFieldAccess(left ast.Expression) ast.Expression {
 // This is a unified Pratt hook for '[' that pattern-matches on ':' to choose index vs slice
 func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression {
 	tok := p.currentToken // '['
-	p.nextToken()         // move to first token after '['
+	defer p.operatorPipe()()
+	p.nextToken() // move to first token after '['
 
 	// Case 1: a[:...] or a[:]
 	if p.currentTokenIs(token.COLON) {
@@ -1235,12 +1240,20 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	return exp
 }
 
-func (p *Parser) parseExpressionGroup() ast.Expression {
-	// Skip opening paren - currentToken is LPAREN, advance to expression.
-	// Parens re-enable '|' as bitwise or inside ?-match arm bodies.
+// operatorPipe re-enables '|' as bitwise or for the extent of a bracketed
+// construct inside a ?-match arm body: parentheses, call arguments, index
+// brackets, and array and record literals all close before the arm can
+// (docs/spec/10-syntax.md section 3b). The returned function restores the
+// arm depth; callers defer it.
+func (p *Parser) operatorPipe() func() {
 	saved := p.armDepth
 	p.armDepth = 0
-	defer func() { p.armDepth = saved }()
+	return func() { p.armDepth = saved }
+}
+
+func (p *Parser) parseExpressionGroup() ast.Expression {
+	// Skip opening paren - currentToken is LPAREN, advance to expression.
+	defer p.operatorPipe()()
 	p.nextToken()
 	exp := p.parseExpression(LOWEST)
 	// After parseExpression, currentToken is the last token of the expression
@@ -2862,6 +2875,7 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 		Token:  p.currentToken,
 		Fields: make(map[string]ast.Expression),
 	}
+	defer p.operatorPipe()()
 
 	// Skip opening brace (currentToken is {)
 	p.nextToken()
@@ -3087,6 +3101,7 @@ func (p *Parser) parseTypedArrayLiteral(size *ast.IntegerLiteral, elementType as
 
 // parseTypedArrayLiteralWithToken is the internal implementation that takes the bracket token
 func (p *Parser) parseTypedArrayLiteralWithToken(bracketToken token.Token, size *ast.IntegerLiteral, elementType ast.Expression) ast.Expression {
+	defer p.operatorPipe()()
 	var index ast.Expression
 	if size == nil {
 		index = &ast.Identifier{Token: bracketToken, Value: ""}

@@ -486,6 +486,8 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("typedef double f64; /* IEEE 754 binary64 */\n")
 	cg.write("typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */\n")
 	cg.write("typedef uint16_t bf16; /* bfloat16 storage */\n")
+	cg.write("typedef uint8_t f8e4m3; /* OCP FP8 E4M3 storage: no infinities, NaN is S.1111.111 */\n")
+	cg.write("typedef uint8_t f8e5m2; /* OCP FP8 E5M2 storage: IEEE-like */\n")
 	cg.write("\n")
 	if usesFloats {
 		cg.writeRaw(floatPreamble)
@@ -2661,7 +2663,7 @@ func (cg *CodeGenerator) cFunctionName(oakName string) string {
 func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	if ident, ok := expr.(*ast.Identifier); ok {
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return ident.Value
 		case "string":
 			return "string"

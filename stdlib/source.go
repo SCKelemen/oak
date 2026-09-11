@@ -48,6 +48,13 @@ var mathSource string
 //go:embed hash.oak
 var hashSource string
 
+// mx is a library package only (import("mx")): the OCP Microscaling MXFP4
+// block format — E2M1 elements under an E8M0 block scale — in Oak
+// (docs/spec/20-types.md section 11.3.1a).
+//
+//go:embed mx.oak
+var mxSource string
+
 // Prelude is the core library (std.oak): Option, Result, Overflow, byte and
 // ring helpers. Every standard library package builds on it unqualified, and
 // the loader splices it into any program that imports a library package.
@@ -111,4 +118,5 @@ var Packages = map[string]string{
 	"causal_frontier": causalFrontierSource,
 	"math":            mathSource,
 	"hash":            hashSource,
+	"mx":              mxSource,
 }

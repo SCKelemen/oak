@@ -320,9 +320,13 @@ Rules:
   check away under optimization).
 - **The arm rule.** Inside a bare-expression `?`-match arm body, `|` is
   the arm separator; parenthesize to use bitwise or there
-  (`cond ? (a | b) | c` — first arm `(a | b)`, second arm `c`). Brace
-  blocks and parentheses restore `|` as an operator; everywhere else,
-  bare `|` is bitwise or. A Bool conditional has two arms, so a third
+  (`cond ? (a | b) | c` — first arm `(a | b)`, second arm `c`). Every
+  bracketed construct restores `|` as an operator for its extent —
+  parentheses, call arguments, index brackets, array and record
+  literals, and brace blocks, however deeply the arm nests them
+  (`cond ? f(a | b) | c` calls `f` with `a | b`; a block arm's
+  statements read `|` as the operator); everywhere else, bare `|` is
+  bitwise or. A Bool conditional has two arms, so a third
   bare `|` after them is a **parse error** that names the fix
   (`cond ? a | b | c` used to parse as `(cond ? a | b) | c`, an or over
   the whole conditional — the F16 misreading; it no longer parses).

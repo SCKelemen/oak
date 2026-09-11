@@ -594,3 +594,31 @@ For the big-endian frame header, the core prelude already has
 `bytes_read_u16_be/u32_be/u64_be(view, offset): Result[T, EndianError]` and
 `bytes_write_*_be(span, offset, value)`, alongside the little-endian forms.
 
+## `mx`: MXFP4 blocks (`import("mx")`)
+
+`stdlib/mx.oak` implements the OCP Microscaling (MX) MXFP4 block format
+in Oak (`docs/spec/20-types.md` §11.3.1a): thirty-two E2M1 elements — sign,
+two exponent bits, one fraction bit, the eight magnitudes 0, 0.5, 1, 1.5,
+2, 3, 4, 6 — packed two to a byte under one E8M0 scale (an unsigned
+exponent with bias 127; `0xFF` is NaN). `Fp4Block` is a proven 17-byte
+`struct { scale: u8, packed: [16]u8 }`; element `i` sits in `packed[i / 2]`,
+even indices in the low nibble.
+
+- `fp4_round_f32(x)` rounds to the nearest E2M1 code, ties to even;
+  magnitudes past 6 clamp to 6 (the format has no infinity), NaN is zero,
+  infinities clamp with their sign.
+- `fp4_widen(code)` and `e8m0_widen(code)` are exact.
+- `fp4_scale_of(values)` is the OCP MX v1.0 §6.3 block scale: the largest
+  power of two at or below the largest magnitude, divided by 4, clamped to
+  the E8M0 range; an all-zero block scales by 1.
+- `fp4_quantize(values: [32]f32)` divides by the scale (an exact power of
+  two) and rounds each element; `fp4_get(block, i)` and
+  `fp4_dequantize(block)` multiply back, exact except where the product
+  leaves the `f32` range.
+
+Everything is `f32` and `u32` bit work, so the interpreter and the backends
+agree bit for bit. `compiler/e2e_mx_test.go` checks every element code,
+every rounding tie, the scale range, the layout, and a 64-block
+pseudo-random sweep against a Go rendering of the same arithmetic,
+compiled and interpreted. Block arithmetic is deliberately absent: a
+kernel widens to `f32` and computes there.

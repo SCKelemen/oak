@@ -438,20 +438,66 @@ tier 2), whose numeric core cannot move into Oak without it.
 | `f64` | binary64 | arithmetic type |
 | `f16` | binary16 | **storage** type |
 | `bf16` | bfloat16 (8 exponent bits, 7 fraction bits) | **storage** type |
+| `f8e4m3` | OCP FP8 E4M3 (4 exponent bits, 3 fraction bits, bias 7; no infinities, NaN is `S.1111.111`, largest finite 448) | **storage** type |
+| `f8e5m2` | OCP FP8 E5M2 (5 exponent bits, 2 fraction bits, bias 15; infinities and NaN as IEEE, largest finite 57344) | **storage** type |
 
 `f32` and `f64` support arithmetic, comparison, conversion, and the
-intrinsics of §11.3.5. `f16` and `bf16` support exactly four operations:
-load, store, widening to `f32` (`f32(x: f16)`, `f32(x: bf16)`, exact), and
-narrowing from `f32` (`f16_round_f32`, `bf16_round_f32`, round to nearest
-even). They have no arithmetic, no comparison, and no literals. This is the
-surface that half-precision device buffers and quantized inference need,
-and it keeps the arithmetic surface at two types.
+intrinsics of §11.3.5. The storage types support exactly four operations:
+load, store, widening to `f32` (`f32(x: f16)`, `f32(x: bf16)`,
+`f32(x: f8e4m3)`, `f32(x: f8e5m2)`, exact), and narrowing from `f32`
+(`f16_round_f32`, `bf16_round_f32`, `f8e4m3_round_f32`,
+`f8e5m2_round_f32`, round to nearest even). They have no arithmetic, no
+comparison, and no literals. This is the surface that half-precision device
+buffers and quantized inference need, and it keeps the arithmetic surface
+at two types.
+
+The 8-bit formats follow the OCP 8-bit Floating Point Specification (OFP8)
+v1.0. Their overflow rules differ, and the `round` row keeps each format's
+own: a value beyond 448 in magnitude rounds to the E4M3 NaN (the format
+has no infinity to round to; 464, the tie between 448 and the NaN code,
+rounds to the even 448), and a value beyond 57344 rounds to the E5M2
+infinity. Every NaN narrows to the format's quiet NaN without payload and
+widens quiet. Because clamping is the common contract for activations and
+weights, the 8-bit formats also have a **saturating** narrowing,
+`f8e4m3_saturating_f32` and `f8e5m2_saturating_f32`: finite overflow
+clamps to the largest finite magnitude of the same sign, NaN stays NaN,
+and an infinity stays an E5M2 infinity. Both narrowings are executed
+bit for bit in the compiler's C helpers and in the interpreter, which the
+tests sweep against each other over every 8-bit pattern and every `f32`
+upper half (`compiler/e2e_f8_storage_test.go`).
 
 Floating-point types are machine types in the sense of this chapter: they
 are distinct from every integer type and from each other, they participate
 in records, arrays, views, spans, ADT payloads, and generic instantiation
 like any other scalar, and their layout is the IEEE interchange width
-(2, 4, or 8 bytes) with natural alignment.
+(1, 2, 4, or 8 bytes) with natural alignment.
+
+#### 11.3.1a Block formats: MXFP4 (`import("mx")`)
+
+Packed 4-bit with block scales is a block format, not a scalar, and it is
+a library package rather than a type: `stdlib/mx.oak` implements the OCP
+Microscaling (MX) MXFP4 block — thirty-two E2M1 elements (sign, two
+exponent bits, one fraction bit; the eight magnitudes 0, 0.5, 1, 1.5, 2,
+3, 4, 6) packed two to a byte under one E8M0 scale (an unsigned exponent
+with bias 127, `2^-127` through `2^127`; `0xFF` is NaN) — in Oak over the
+`f32` and `u32` bit operations, so it runs identically compiled and
+interpreted.
+
+| Name | Meaning |
+| --- | --- |
+| `mx.Fp4Block` | `struct { scale: u8, packed: [16]u8 }`, a proven 17-byte layout; element `i` is in `packed[i / 2]`, even indices in the low nibble |
+| `mx.fp4_round_f32(x)` | nearest E2M1 code, ties to even; magnitudes past 6 clamp to 6; NaN is zero; infinities clamp with their sign |
+| `mx.fp4_widen(code)` | the element's value as `f32`, exact |
+| `mx.e8m0_widen(code)` | the scale's value as `f32`, exact |
+| `mx.fp4_scale_of(values)` | the block scale: the largest power of two at or below the largest magnitude, divided by 4 (the largest E2M1 power of two), clamped to the E8M0 range; an all-zero block, or one whose largest magnitude is NaN or infinite, scales by 1 |
+| `mx.fp4_quantize(values: [32]f32)` | the block: each value divided by the scale (an exact power of two) and rounded by `fp4_round_f32` |
+| `mx.fp4_get(block, i)`, `mx.fp4_dequantize(block)` | the scale times the element, exact except where the product leaves the `f32` range |
+
+The scale rule is OCP MX v1.0 §6.3 for a single block; the tie and clamp
+rules are executed against a Go rendering of the same arithmetic over
+every element code, every rounding tie, and a sweep of pseudo-random
+blocks (`compiler/e2e_mx_test.go`). Element-wise arithmetic on a block is
+not provided: a kernel widens to `f32` and computes there.
 
 #### 11.3.2 Literals
 
@@ -557,10 +603,10 @@ every operation is total:
 
 | Op | Pairs | Semantics |
 | --- | --- | --- |
-| `round` | `f32_round_f64`, `f16_round_f32`, `bf16_round_f32`; `fN_round_iM` for every integer type `iM`/`uM` | round to nearest even; integers not exactly representable round like any other value (`f32_round_i32(16777217)` is `16777216.0`) |
-| `bits` | `f32_bits_u32`, `u32_bits_f32`, `f64_bits_u64`, `u64_bits_f64`, `f16_bits_u16`, `u16_bits_f16`, `bf16_bits_u16`, `u16_bits_bf16` | bit-pattern reinterpretation, total in both directions; every bit pattern is a valid float |
+| `round` | `f32_round_f64`, `f16_round_f32`, `bf16_round_f32`, `f8e4m3_round_f32`, `f8e5m2_round_f32`; `fN_round_iM` for every integer type `iM`/`uM` | round to nearest even; integers not exactly representable round like any other value (`f32_round_i32(16777217)` is `16777216.0`); the 8-bit formats overflow by their own rule (§11.3.1) |
+| `bits` | `f32_bits_u32`, `u32_bits_f32`, `f64_bits_u64`, `u64_bits_f64`, `f16_bits_u16`, `u16_bits_f16`, `bf16_bits_u16`, `u16_bits_bf16`, `f8e4m3_bits_u8`, `u8_bits_f8e4m3`, `f8e5m2_bits_u8`, `u8_bits_f8e5m2` | bit-pattern reinterpretation, total in both directions; every bit pattern is a valid float |
 | `trunc` | `iM_trunc_fN`, `uM_trunc_fN` | toward zero; **traps** when the truncated value is outside the target range or the source is NaN |
-| `saturating` | `iM_saturating_fN`, `uM_saturating_fN` | toward zero, clamped to the target range; NaN yields `0` |
+| `saturating` | `iM_saturating_fN`, `uM_saturating_fN`; `f8e4m3_saturating_f32`, `f8e5m2_saturating_f32` | toward zero, clamped to the target range; NaN yields `0`. Into the 8-bit formats: nearest even, finite overflow clamped to the largest finite magnitude, NaN kept |
 | `checked` | `iM_checked_fN`, `uM_checked_fN` | `Result[target, Overflow]`; `Err(Overflow)` for out of range and for NaN |
 
 The integer constructor form `f32(x: i32)` is **not** provided, because it
@@ -571,8 +617,8 @@ never has to know which pairs are lossless.
 
 `f32 ↔ c.Float` and `f64 ↔ c.Double` are the bit-preserving constructor
 rows already in `92-ffi.md` §2.2 and become implementable with this section.
-`f16` and `bf16` have no `c` counterpart; they cross the boundary as
-`u16` bit patterns.
+The storage formats have no `c` counterpart; `f16` and `bf16` cross the
+boundary as `u16` bit patterns, `f8e4m3` and `f8e5m2` as `u8`.
 
 #### 11.3.5 Intrinsics under the three-witness rule
 
@@ -686,7 +732,8 @@ out-of-range offsets like the integer vectors.
 #### 11.3.8 Lowering and interpretation
 
 - **C backend.** `f32` lowers to `float` and `f64` to `double`; `f16` and
-  `bf16` lower to `uint16_t` storage with conversion helpers. Every emitted
+  `bf16` lower to `uint16_t` storage and `f8e4m3` and `f8e5m2` to
+  `uint8_t`, each with conversion helpers. Every emitted
   translation unit begins with `#pragma STDC FP_CONTRACT OFF`, and the
   `oak run`/`oak test` drivers pass `-ffp-contract=off` (and never
   `-ffast-math`, `-Ofast`, `-ffinite-math-only`, or `-fno-signed-zeros`) to

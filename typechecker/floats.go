@@ -17,10 +17,23 @@ import (
 // floatTypeBits are the arithmetic floating-point types and their widths.
 var floatTypeBits = map[string]int{"f32": 32, "f64": 64}
 
-// storageFloatNames are the 16-bit storage-only formats (section 11.3.1):
-// load, store, exact widening to f32, and rounding from f32 — no
-// arithmetic, comparison, or literals.
-var storageFloatNames = map[string]bool{"f16": true, "bf16": true}
+// storageFloatNames are the storage-only formats (section 11.3.1): load,
+// store, exact widening to f32, and rounding from f32 — no arithmetic,
+// comparison, or literals. f16 and bf16 are the 16-bit ones; f8e4m3 and
+// f8e5m2 are the OCP FP8 formats (8 bits: E4M3 without infinities and
+// E5M2 with them), the storage the tensor emitters spelled by hand.
+var storageFloatNames = map[string]bool{"f16": true, "bf16": true, "f8e4m3": true, "f8e5m2": true}
+
+// storageCarrier is the unsigned integer a storage format reinterprets
+// with (`bits`) and crosses the boundary as.
+var storageCarrier = map[string]string{"f16": "u16", "bf16": "u16", "f8e4m3": "u8", "f8e5m2": "u8"}
+
+// StorageCarrier reports the carrier integer type of a storage format.
+func StorageCarrier(name string) string { return storageCarrier[name] }
+
+// saturatingStorage are the formats with a saturating narrowing: the 8-bit
+// formats, whose range is small enough that clamping is a common contract.
+var saturatingStorage = map[string]bool{"f8e4m3": true, "f8e5m2": true}
 
 // IsFloatName reports whether name is a floating-point arithmetic type.
 func IsFloatName(name string) bool {
@@ -246,8 +259,14 @@ func (tc *TypeChecker) checkFloatConversion(funcName, target, op, source string,
 		// Reinterpretation with the unsigned integer of the same width.
 		valid = (targetFloat && source == "u"+strconv.Itoa(floatTypeBits[target])) ||
 			(sourceFloat && target == "u"+strconv.Itoa(floatTypeBits[source])) ||
-			(targetStorage && source == "u16") || (sourceStorage && target == "u16")
-	case "trunc", "saturating", "checked":
+			(targetStorage && source == storageCarrier[target]) || (sourceStorage && target == storageCarrier[source])
+	case "saturating":
+		// f8e4m3_saturating_f32 / f8e5m2_saturating_f32 clamp finite values
+		// to the format's largest finite magnitude (section 11.3.1);
+		// otherwise the float-to-integer row.
+		valid = (targetStorage && saturatingStorage[target] && source == "f32") ||
+			(sourceFloat && !targetFloat && !targetStorage)
+	case "trunc", "checked":
 		valid = sourceFloat && !targetFloat && !targetStorage
 	}
 	if !valid {
