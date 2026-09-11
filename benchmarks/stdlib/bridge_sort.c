@@ -48,9 +48,14 @@ static uint64_t run_random(int backend) { return sort_run(sort_random, backend);
 static uint64_t run_sorted(int backend) { return sort_run(sort_sorted, backend); }
 static uint64_t run_reversed(int backend) { return sort_run(sort_reversed, backend); }
 
+static void teardown(void) {
+  free(sort_random); free(sort_sorted); free(sort_reversed); free(sort_work);
+  sort_random = sort_sorted = sort_reversed = sort_work = NULL;
+}
+
 BenchWorkload bench_workloads[] = {
-  { "sort/random", { "oak", "c_qsort" }, 2, setup_all, run_random, 0, 0 },
-  { "sort/sorted", { "oak", "c_qsort" }, 2, setup_all, run_sorted, 0, 0 },
-  { "sort/reversed", { "oak", "c_qsort" }, 2, setup_all, run_reversed, 0, 0 },
+  { "sort/random", { "oak", "c_qsort" }, 2, setup_all, run_random, teardown, 0, 0 },
+  { "sort/sorted", { "oak", "c_qsort" }, 2, setup_all, run_sorted, teardown, 0, 0 },
+  { "sort/reversed", { "oak", "c_qsort" }, 2, setup_all, run_reversed, teardown, 0, 0 },
 };
 const int bench_workload_count = 3;

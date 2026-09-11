@@ -21,7 +21,12 @@ static uint64_t run_uuid(int backend) {
   return bench_fnv_bytes(uuid_text, n);
 }
 
+static void teardown(void) {
+  free(uuid_text);
+  uuid_text = NULL;
+}
+
 BenchWorkload bench_workloads[] = {
-  { "uuid/v7_format", { "oak" }, 1, uuid_setup, run_uuid, 0, 0 },
+  { "uuid/v7_format", { "oak" }, 1, uuid_setup, run_uuid, teardown, 0, 0 },
 };
 const int bench_workload_count = 1;

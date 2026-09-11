@@ -13,13 +13,16 @@
 /* A workload is one measured operation over one corpus. `setup` builds the
    corpus for the given scale (1.0 is the documented size); `run` performs
    the operation with the named backend and returns the checksum the runner
-   compares with the preflight value. `items` and `bytes` describe one run. */
+   compares with the preflight value; `teardown` releases the corpus so the
+   sanitizer build (LeakSanitizer on Linux) exits clean and a leak inside
+   generated Oak code stays visible. `items` and `bytes` describe one run. */
 typedef struct {
   const char *name;            /* "package/operation" */
   const char *backends[3];     /* "oak" first, then optional C references */
   int backend_count;
   void (*setup)(double scale);
   uint64_t (*run)(int backend);
+  void (*teardown)(void);      /* frees what setup allocated */
   uint64_t items;
   uint64_t bytes;
 } BenchWorkload;

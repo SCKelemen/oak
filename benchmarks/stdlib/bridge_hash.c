@@ -29,8 +29,13 @@ static uint64_t run_crc32c(int backend) {
   return oak_bench_crc32c(src);
 }
 
+static void teardown(void) {
+  free(hash_input);
+  hash_input = NULL;
+}
+
 BenchWorkload bench_workloads[] = {
-  { "hash/sha256", { "oak" }, 1, hash_setup, run_sha256, 0, 0 },
-  { "hash/crc32c", { "oak" }, 1, hash_setup, run_crc32c, 0, 0 },
+  { "hash/sha256", { "oak" }, 1, hash_setup, run_sha256, teardown, 0, 0 },
+  { "hash/crc32c", { "oak" }, 1, hash_setup, run_crc32c, teardown, 0, 0 },
 };
 const int bench_workload_count = 2;

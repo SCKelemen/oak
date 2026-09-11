@@ -52,6 +52,7 @@ int main(int argc, char **argv) {
         fflush(stdout);
       }
     }
+    work->teardown();
   }
   return 0;
 }

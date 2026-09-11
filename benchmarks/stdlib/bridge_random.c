@@ -17,7 +17,10 @@ static uint64_t run_random(int backend) {
   return oak_bench_random(6, draw_count);
 }
 
+static void teardown(void) {
+}
+
 BenchWorkload bench_workloads[] = {
-  { "random/xoshiro", { "oak" }, 1, random_setup, run_random, 0, 0 },
+  { "random/xoshiro", { "oak" }, 1, random_setup, run_random, teardown, 0, 0 },
 };
 const int bench_workload_count = 1;

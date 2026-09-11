@@ -70,8 +70,14 @@ static uint64_t run_decode(int backend) {
   return c_decode(varint_reference, varint_encoded_length, varint_count, varint_decoded);
 }
 
+static void teardown(void) {
+  free(varint_values); free(varint_decoded); free(varint_bytes); free(varint_reference);
+  varint_values = varint_decoded = NULL;
+  varint_bytes = varint_reference = NULL;
+}
+
 BenchWorkload bench_workloads[] = {
-  { "varint/encode", { "oak", "c_loop" }, 2, varint_setup, run_encode, 0, 0 },
-  { "varint/decode", { "oak", "c_loop" }, 2, varint_setup, run_decode, 0, 0 },
+  { "varint/encode", { "oak", "c_loop" }, 2, varint_setup, run_encode, teardown, 0, 0 },
+  { "varint/decode", { "oak", "c_loop" }, 2, varint_setup, run_decode, teardown, 0, 0 },
 };
 const int bench_workload_count = 2;

@@ -50,10 +50,16 @@ static uint64_t run_append(int backend) {
   return bench_fnv_bytes(decimal_out, n);
 }
 
+static void teardown(void) {
+  free(utf8_text); free(decimal_text); free(decimal_out); free(decimal_values);
+  utf8_text = decimal_text = decimal_out = NULL;
+  decimal_values = NULL;
+}
+
 BenchWorkload bench_workloads[] = {
-  { "strings/utf8_validate", { "oak" }, 1, strings_setup, run_validate, 0, 0 },
-  { "strings/utf8_scan", { "oak" }, 1, strings_setup, run_scan, 0, 0 },
-  { "strings/parse_u64", { "oak" }, 1, strings_setup, run_parse, 0, 0 },
-  { "strings/append_u64", { "oak" }, 1, strings_setup, run_append, 0, 0 },
+  { "strings/utf8_validate", { "oak" }, 1, strings_setup, run_validate, teardown, 0, 0 },
+  { "strings/utf8_scan", { "oak" }, 1, strings_setup, run_scan, teardown, 0, 0 },
+  { "strings/parse_u64", { "oak" }, 1, strings_setup, run_parse, teardown, 0, 0 },
+  { "strings/append_u64", { "oak" }, 1, strings_setup, run_append, teardown, 0, 0 },
 };
 const int bench_workload_count = 4;

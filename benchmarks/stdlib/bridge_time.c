@@ -36,8 +36,14 @@ static uint64_t run_parse(int backend) {
   return oak_bench_parse_rfc3339(src, (u32)instant_count);
 }
 
+static void teardown(void) {
+  free(instants); free(rfc_text); free(rfc_reference);
+  instants = NULL;
+  rfc_text = rfc_reference = NULL;
+}
+
 BenchWorkload bench_workloads[] = {
-  { "time/format_rfc3339", { "oak" }, 1, time_setup, run_format, 0, 0 },
-  { "time/parse_rfc3339", { "oak" }, 1, time_setup, run_parse, 0, 0 },
+  { "time/format_rfc3339", { "oak" }, 1, time_setup, run_format, teardown, 0, 0 },
+  { "time/parse_rfc3339", { "oak" }, 1, time_setup, run_parse, teardown, 0, 0 },
 };
 const int bench_workload_count = 2;

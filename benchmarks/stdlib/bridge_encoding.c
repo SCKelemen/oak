@@ -71,11 +71,16 @@ static uint64_t run_percent_encode(int backend) {
   return bench_fnv_bytes(percent_text, n);
 }
 
+static void teardown(void) {
+  free(raw); free(base64_text); free(hex_text); free(decoded); free(percent_raw); free(percent_text);
+  raw = base64_text = hex_text = decoded = percent_raw = percent_text = NULL;
+}
+
 BenchWorkload bench_workloads[] = {
-  { "encoding/base64_encode", { "oak" }, 1, encoding_setup, run_base64_encode, 0, 0 },
-  { "encoding/base64_decode", { "oak" }, 1, encoding_setup, run_base64_decode, 0, 0 },
-  { "encoding/hex_encode", { "oak" }, 1, encoding_setup, run_hex_encode, 0, 0 },
-  { "encoding/hex_decode", { "oak" }, 1, encoding_setup, run_hex_decode, 0, 0 },
-  { "encoding/percent_encode", { "oak" }, 1, encoding_setup, run_percent_encode, 0, 0 },
+  { "encoding/base64_encode", { "oak" }, 1, encoding_setup, run_base64_encode, teardown, 0, 0 },
+  { "encoding/base64_decode", { "oak" }, 1, encoding_setup, run_base64_decode, teardown, 0, 0 },
+  { "encoding/hex_encode", { "oak" }, 1, encoding_setup, run_hex_encode, teardown, 0, 0 },
+  { "encoding/hex_decode", { "oak" }, 1, encoding_setup, run_hex_decode, teardown, 0, 0 },
+  { "encoding/percent_encode", { "oak" }, 1, encoding_setup, run_percent_encode, teardown, 0, 0 },
 };
 const int bench_workload_count = 5;
