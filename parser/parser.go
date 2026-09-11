@@ -287,7 +287,14 @@ func (p *Parser) parseStatement() ast.Statement {
 			}
 			return nil
 		}
-		return p.parseExpressionStatementOrIndexAssignment()
+		// A bare `{ ... }` in statement position is a block statement with
+		// a scope of its own (docs/spec/10-syntax.md section 4c), unless it
+		// reads as record syntax — `{ x: 1, y: 2 }`, `{ r | name: string }`
+		// — which the REPL and record tests evaluate as expressions.
+		if p.recordLiteralAhead() {
+			return p.parseExpressionStatementOrIndexAssignment()
+		}
+		return p.parseBlockStatement()
 	case token.IDENT:
 		// `open import(path)` binds every exported member unqualified
 		// (docs/spec/83-modules.md section 3.2); `open` is contextual.
@@ -804,6 +811,17 @@ func (p *Parser) parseStringLiteral() ast.Expression {
 	return lit
 }
 
+// parseFunctionLiteral parses a function literal in expression position
+// (docs/spec/10-syntax.md section 3c). Two shapes share the node:
+//
+//	fn(a, b) { ... }                       untyped names, block body
+//	fn(a: T, b: U): R { ... }              typed parameters, optional return
+//	fn(a: T): R = expr                     typed parameters, expression body
+//
+// The typed shape is recognized by `name :` (or `)` followed by a return
+// annotation) right after the opening parenthesis. Arguments always holds
+// the parameter names, so every walker that only needs names is unchanged;
+// Parameters and ReturnType carry the annotations.
 func (p *Parser) parseFunctionLiteral() ast.Expression {
 	lit := &ast.FunctionLiteral{Token: p.currentToken}
 
@@ -811,14 +829,64 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 		return nil
 	}
 
-	lit.Arguments = p.parseFunctionArgs()
-
-	if !p.expectPeek(token.LBRACE) {
-		return nil
+	second, third := p.lookaheadSignificant(1), p.lookaheadSignificant(2)
+	typed := (second.TokenKind == token.IDENT && third.TokenKind == token.COLON) ||
+		(second.TokenKind == token.RPAREN && (third.TokenKind == token.COLON || third.TokenKind == token.ARROW))
+	if !typed {
+		lit.Arguments = p.parseFunctionArgs()
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+		lit.Body = p.parseBlockStatement()
+		return lit
 	}
 
-	lit.Body = p.parseBlockStatement()
-
+	lit.Parameters = p.parseFunctionParameters()
+	if lit.Parameters == nil && !p.currentTokenIs(token.RPAREN) {
+		return nil
+	}
+	for _, param := range lit.Parameters {
+		if param == nil || param.Name == nil {
+			return nil
+		}
+		if param.Variadic {
+			p.addErrorAtToken(&param.Token, "a function literal takes no variadic parameter")
+			return nil
+		}
+		lit.Arguments = append(lit.Arguments, param.Name)
+	}
+	if p.peekTokenIs(token.COLON) || p.peekTokenIs(token.ARROW) {
+		p.nextToken()
+		p.nextToken()
+		lit.ReturnType = p.parseTypeExpression()
+		if lit.ReturnType == nil {
+			return nil
+		}
+	}
+	switch {
+	case p.peekTokenIs(token.LBRACE):
+		p.nextToken()
+		lit.Body = p.parseBlockStatement()
+	case p.peekTokenIs(token.ASSIGN):
+		p.nextToken() // =
+		p.nextToken() // first token of the expression
+		if p.currentTokenIs(token.LBRACE) {
+			lit.Body = p.parseBlockStatement()
+		} else {
+			value := p.parseExpression(LOWEST)
+			if value == nil {
+				return nil
+			}
+			lit.ExpressionBody = true
+			lit.Body = &ast.BlockStatement{Token: lit.Token, Statements: []ast.Statement{&ast.ExpressionStatement{Token: lit.Token, Expression: value}}}
+		}
+	default:
+		p.peekError(token.LBRACE)
+		return nil
+	}
+	if lit.Body == nil {
+		return nil
+	}
 	return lit
 }
 
@@ -1311,7 +1379,11 @@ func (p *Parser) peekPrecedence() Precedence {
 	// A call or an index never continues across a line break: a line that
 	// starts with '(' or '[' begins a new statement (F18). Go's rule, without
 	// the semicolon insertion.
-	if (p.peekToken.TokenKind == token.LPAREN || p.peekToken.TokenKind == token.LBRACK) &&
+	// The same holds for '-': a line that starts with a minus negates what
+	// follows, it does not subtract from the line above (an operator that
+	// continues an expression sits at the END of a line). '!' has no infix
+	// reading, so it already starts a statement.
+	if (p.peekToken.TokenKind == token.LPAREN || p.peekToken.TokenKind == token.LBRACK || p.peekToken.TokenKind == token.NEG) &&
 		p.peekToken.Line > p.currentToken.Line && p.currentToken.Line > 0 {
 		return LOWEST
 	}
@@ -2594,41 +2666,8 @@ func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.Pro
 			}
 			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "via" {
 				p.nextToken() // via
-				if !p.expectPeek(token.IDENT) {
+				if !p.parseViaClause(transition) {
 					return nil
-				}
-				transition.Callable = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-				// `via f(consumed h, borrowed other, borrowed mut receiver)`
-				// names the callable's resource parameter modes
-				// (docs/spec/112-protocols.md section 5).
-				if p.peekTokenIs(token.LPAREN) {
-					p.nextToken() // (
-					for !p.peekTokenIs(token.RPAREN) {
-						if !p.expectPeek(token.IDENT) {
-							return nil
-						}
-						mode := &ast.ProtocolParameterMode{Token: p.currentToken, Mode: p.currentToken.Literal}
-						switch mode.Mode {
-						case "borrowed":
-							if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "mut" {
-								p.nextToken()
-								mode.Mode = "borrowed mut"
-							}
-						case "consumed":
-						default:
-							p.addErrorAtCurrentToken(fmt.Sprintf("via: expected a parameter mode (borrowed, borrowed mut, consumed), got %s", mode.Mode))
-							return nil
-						}
-						if !p.expectPeek(token.IDENT) {
-							return nil
-						}
-						mode.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-						transition.Modes = append(transition.Modes, mode)
-						if p.peekTokenIs(token.COMMA) {
-							p.nextToken()
-						}
-					}
-					p.nextToken() // )
 				}
 			}
 			decl.Transitions = append(decl.Transitions, transition)
@@ -2636,6 +2675,225 @@ func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.Pro
 		}
 	}
 	return decl
+}
+
+// recordLiteralAhead decides, with the cursor on a statement-position `{`,
+// whether the braces hold record syntax rather than a block
+// (docs/spec/10-syntax.md section 4c). Record syntax is `IDENT :` followed
+// at nesting depth zero by `,` or `}` before any `=`, `:=`, or `;` — a
+// block's first statement `x: T = v` reaches `=` first — or `IDENT |`, the
+// extensible record type. Anything else (an empty brace, a call, an
+// assignment, a `:=` declaration, a nested block) is a block.
+func (p *Parser) recordLiteralAhead() bool {
+	first := p.peekToken
+	if first.TokenKind != token.IDENT {
+		return false
+	}
+	second := p.lookaheadSignificant(2)
+	if second.TokenKind == token.PIPE {
+		return true
+	}
+	if second.TokenKind != token.COLON {
+		return false
+	}
+	cursor, ok := p.source.(*token.Cursor)
+	if !ok {
+		return false
+	}
+	depth := 0
+	const lookaheadLimit = 4096
+	for offset, step := 0, 0; step < lookaheadLimit; step++ {
+		tok := cursor.Peek(offset)
+		offset++
+		switch tok.TokenKind {
+		case token.TRIVIA, token.COMMENT:
+			continue
+		case token.LPAREN, token.LBRACK, token.LBRACE:
+			depth++
+		case token.RPAREN, token.RBRACK:
+			depth--
+		case token.RBRACE:
+			if depth == 0 {
+				return true
+			}
+			depth--
+		case token.COMMA:
+			if depth == 0 {
+				return true
+			}
+		case token.ASSIGN, token.COLON_ASSIGN, token.SEMI:
+			if depth == 0 {
+				return false
+			}
+		case token.EOF:
+			return false
+		}
+	}
+	return false
+}
+
+// parseViaClause parses what follows `via` on a protocol transition line
+// (docs/spec/112-protocols.md section 5). The cursor is on `via`; on
+// success it rests on the last token of the clause.
+//
+//	via [unsafe] callable [ '(' entry {',' entry} ')' ] [ ':' result ]
+//	callable := IDENT | IDENT '.' IDENT            // a function, or Type.method
+//	entry    := mode IDENT                         // a resource parameter, or `receiver`
+//	          | IDENT '(' [cmode {',' cmode}] ')' [':' 'fresh']   // a callable contract
+//	mode     := 'borrowed' ['mut'] | 'consumed'
+//	cmode    := mode | '_'
+//	result   := 'fresh' | 'alias' IDENT | 'borrow' ['mut'] IDENT {',' IDENT}
+//
+// The vocabulary is closed: every word in a mode or result position must
+// be one of the words above, so a misspelling is a parse error here rather
+// than a silently weaker contract downstream.
+func (p *Parser) parseViaClause(transition *ast.ProtocolTransition) bool {
+	if p.peekTokenIs(token.UNSAFE) {
+		p.nextToken()
+		transition.Trusted = true
+		transition.TrustedToken = p.currentToken
+	}
+	if !p.expectPeek(token.IDENT) {
+		return false
+	}
+	transition.Callable = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	if p.peekTokenIs(token.DOT) {
+		p.nextToken() // .
+		if !p.expectPeek(token.IDENT) {
+			return false
+		}
+		transition.CallableType = transition.Callable
+		transition.Callable = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	}
+	// parseMode reads `borrowed`, `borrowed mut`, or `consumed` at the
+	// peek token, or `_` when underscore is admitted; it returns the
+	// spelling and whether a word was read.
+	parseMode := func(underscore bool) (string, token.Token, bool) {
+		if !p.peekTokenIs(token.IDENT) {
+			p.peekError(token.IDENT)
+			return "", token.Token{}, false
+		}
+		p.nextToken()
+		word := p.currentToken
+		switch word.Literal {
+		case "borrowed":
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "mut" {
+				p.nextToken()
+				return "borrowed mut", word, true
+			}
+			return "borrowed", word, true
+		case "consumed":
+			return "consumed", word, true
+		case "_":
+			if underscore {
+				return "_", word, true
+			}
+		}
+		expected := "borrowed, borrowed mut, consumed"
+		if underscore {
+			expected += ", _"
+		}
+		p.addErrorAtCurrentToken(fmt.Sprintf("via: expected a parameter mode (%s), got %s", expected, word.Literal))
+		return "", token.Token{}, false
+	}
+	if p.peekTokenIs(token.LPAREN) {
+		p.nextToken() // (
+		for !p.peekTokenIs(token.RPAREN) {
+			if !p.peekTokenIs(token.IDENT) {
+				p.peekError(token.IDENT)
+				return false
+			}
+			// A parameter name followed by `(` is a callable contract;
+			// anything else is a mode word.
+			if next := p.lookaheadSignificant(2); next.TokenKind == token.LPAREN {
+				p.nextToken() // the parameter name
+				entry := &ast.ProtocolParameterMode{Token: p.currentToken, Name: &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}}
+				p.nextToken() // (
+				contract := &ast.ProtocolCallableContract{Token: p.currentToken}
+				for !p.peekTokenIs(token.RPAREN) {
+					mode, word, ok := parseMode(true)
+					if !ok {
+						return false
+					}
+					contract.Modes = append(contract.Modes, mode)
+					contract.ModeTokens = append(contract.ModeTokens, word)
+					if p.peekTokenIs(token.COMMA) {
+						p.nextToken()
+					} else if !p.peekTokenIs(token.RPAREN) {
+						p.peekError(token.RPAREN)
+						return false
+					}
+				}
+				p.nextToken() // )
+				if p.peekTokenIs(token.COLON) {
+					p.nextToken() // :
+					if !p.expectPeek(token.IDENT) {
+						return false
+					}
+					if p.currentToken.Literal != "fresh" {
+						p.addErrorAtCurrentToken(fmt.Sprintf("via: a callable contract's result is `fresh`, got %s", p.currentToken.Literal))
+						return false
+					}
+					contract.ReturnsFresh = true
+				}
+				entry.Contract = contract
+				transition.Modes = append(transition.Modes, entry)
+			} else {
+				mode, word, ok := parseMode(false)
+				if !ok {
+					return false
+				}
+				entry := &ast.ProtocolParameterMode{Token: word, Mode: mode}
+				if !p.expectPeek(token.IDENT) {
+					return false
+				}
+				entry.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+				transition.Modes = append(transition.Modes, entry)
+			}
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+			} else if !p.peekTokenIs(token.RPAREN) {
+				p.peekError(token.RPAREN)
+				return false
+			}
+		}
+		p.nextToken() // )
+	}
+	if p.peekTokenIs(token.COLON) {
+		p.nextToken() // :
+		if !p.expectPeek(token.IDENT) {
+			return false
+		}
+		result := &ast.ProtocolResultClause{Token: p.currentToken, Kind: p.currentToken.Literal}
+		switch result.Kind {
+		case "fresh":
+		case "alias":
+			if !p.expectPeek(token.IDENT) {
+				return false
+			}
+			result.Names = append(result.Names, &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal})
+		case "borrow":
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "mut" {
+				p.nextToken()
+				result.Kind = "borrow mut"
+			}
+			for {
+				if !p.expectPeek(token.IDENT) {
+					return false
+				}
+				result.Names = append(result.Names, &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal})
+				if !p.peekTokenIs(token.COMMA) {
+					break
+				}
+				p.nextToken() // ,
+			}
+		default:
+			p.addErrorAtCurrentToken(fmt.Sprintf("via: expected a result identity (fresh, alias NAME, borrow NAME, borrow mut NAME), got %s", result.Kind))
+			return false
+		}
+		transition.Result = result
+	}
+	return true
 }
 
 // parseFieldTagValue parses one tag value in a field clause: a bare
@@ -3248,10 +3506,16 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 	// - { ... }
 	// - trailing expression (single-expression body)
 	if p.peekTokenIs(token.ASSIGN) {
-		// Expression body: fn name(...): Type = expr
+		// Expression body: fn name(...): Type = expr. `= {` opens a block
+		// body, as in the declaration form (docs/spec/10-syntax.md §3): a
+		// whole-body record literal must use its named form.
 		p.nextToken() // consume =
 		p.nextToken() // advance to body
-		stmt.Body = p.parseExpression(LOWEST)
+		if p.currentTokenIs(token.LBRACE) {
+			stmt.Body = p.parseBlockExpression()
+		} else {
+			stmt.Body = p.parseExpression(LOWEST)
+		}
 	} else if p.peekTokenIs(token.LBRACE) {
 		// Block body: fn name(...): Type { ... }
 		p.nextToken() // consume {

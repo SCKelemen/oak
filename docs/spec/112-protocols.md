@@ -164,14 +164,95 @@ Each entry is a mode — `borrowed`, `borrowed mut`, or `consumed` — followed
 by the name of one of the callable's parameters, or `receiver` for a
 method's receiver slot (`50-borrowing.md` §9). Names resolve against the
 callable's declaration: an unknown parameter, a name marked twice, or
-`receiver` on a function without one is `OAK-P0xxx`-class protocol shape
-error (`CodeProtocolShape`). A marked parameter must have a resource type,
-which resource resolution checks. Because protocol declarations are
+`receiver` on a function without one is a protocol shape error
+(`OAK-M0301`, `CodeProtocolShape`). A marked parameter must have a resource
+type, which resource resolution checks. Because protocol declarations are
 elaborated with the program's internal names, a protocol declared in one
 package binds the same contract in every importer — through a qualified
 call, an open or selective import, or a sealed signature — so imports and
-sealing cannot erase modes. Callable contracts on function-typed
-parameters (`50-borrowing.md` §9) have no source spelling yet.
+sealing cannot erase modes.
+
+### 5.1 The whole `via` clause
+
+The clause carries every fact of a callable's resource contract. Its
+grammar, with the callable's own declaration deciding what each name means:
+
+```text
+via [unsafe] callable [ '(' entry {',' entry} ')' ] [ ':' result ]
+
+callable := IDENT                  a function declared in the program
+          | IDENT '.' IDENT        Type.method — a method of the resource type
+entry    := mode IDENT             a resource parameter, or `receiver`
+          | IDENT '(' [cmode {',' cmode}] ')' [':' 'fresh']
+                                   a callable contract on a function-typed parameter
+mode     := 'borrowed' ['mut'] | 'consumed'
+cmode    := mode | '_'
+result   := 'fresh'                a new authority class no caller name shares
+          | 'alias' IDENT          the same class as that argument
+          | 'borrow' IDENT {',' IDENT}        a shared borrow of those arguments
+          | 'borrow' 'mut' IDENT {',' IDENT}  a mutable reborrow of them
+```
+
+```oak
+ArenaLifecycle: protocol = {
+  resource Arena
+  resource Cursor
+  initial Open
+  make:    Open -> Open   via open(): fresh
+  cursor:  Open -> Open   via cursor_of(borrowed a): borrow a
+  edit:    Open -> Open   via mut_cursor(borrowed mut a): borrow mut a
+  same:    Open -> Open   via peek(borrowed a): alias a
+  each:    Open -> Open   via with_each(op(borrowed), borrowed a)
+  look:    Open -> Open   via Cursor.read(borrowed receiver)
+  release: Open -> Closed via free(consumed a)
+  raw:     Open -> Open   via unsafe cursor_raw(borrowed a): alias a
+}
+```
+
+- **Methods** are spelled `Type.method`, the uniform-call spelling, and
+  resolve to the checker's `Type::method` identity; `receiver` in the
+  entry list marks the receiver slot (`50-borrowing.md` §9). A bare method
+  name is not a callable of the program (`OAK-M0301`).
+- **Result identities** are the `: result` clause. Its names must be
+  explicit parameters of the callable (identities over the receiver are
+  not admitted yet), listed at most once; `alias` takes exactly one. Their
+  semantics — validation of the body (`OAK-B0117`), the caller's
+  classification, dependency and suspension (`OAK-B0118`, `OAK-B0119`) —
+  are those of `50-borrowing.md` §9, and the resolution rules there apply
+  unchanged: an alias or borrow names a resource-typed parameter of a
+  resource-returning callable, a borrow's origins are `borrowed` or
+  `borrowed mut`, a mutable reborrow's origins are all `borrowed mut`.
+- **Callable contracts** are the `name(cmode, …)` entries on a
+  function-typed parameter. The modes are positional over the parameters
+  of the function type, one word per parameter, `_` leaving a position
+  unmarked; `: fresh` requires the callable to return fresh authority. A
+  contract that marks nothing, one whose count differs from the function
+  type's arity, or one on a parameter that is not function-typed is
+  `OAK-M0301`. A function value passed for the parameter must carry the
+  contract by exact agreement (`OAK-B0116`).
+- **`unsafe`** marks the result identity as **trusted**: the compiler
+  records the claim and does not validate the body against it
+  (`OAK-B0117` is not raised for that callable), so a primitive whose body
+  has no tracked provenance — a cursor built over an arena's storage, an
+  asm-backed accessor — can state what its result is. Everything else
+  about the callable is checked as before: entry authority and retention
+  (`OAK-B0114`), exclusivity (`OAK-B0112`), and the caller's reasoning,
+  which never depends on whether a claim was validated or trusted. The
+  marker requires a result clause (`OAK-M0301`); it is the visible unsafe
+  boundary of `00-constitution.md`, recorded in SemIR as the
+  `resource.return-trusted` effect beside the identity it trusts, so tools
+  and proofs can see where the assumption enters. `Oak.ResourceResult`
+  (`spec/lean/Oak/ResourceResult.lean`) states this precisely:
+  `Accepted true c p` holds for every body while `Accepted false c p` is
+  exactly `Admits c p`, and the caller's classification is definitionally
+  independent of the flag.
+
+Every word in a mode or result position must be one of the words above;
+anything else is a parse error naming the vocabulary, not a silently weaker
+contract downstream. The clause elaborates to the same
+`ResourceTransitionDeclaration` facts, callable by callable, that the
+compiler's internal declaration path carries, which the tests check by
+comparing the two (`compiler/e2e_protocol_via_results_test.go`).
 
 ### 5a. Typestate-indexed resources
 

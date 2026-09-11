@@ -128,6 +128,17 @@ A capturing closure requires an explicit environment representation whose storag
 
 The backend may not silently heap-promote escaping captures.
 
+A typed function literal (`10-syntax.md` §3c) is **lifted**: the backend
+emits it as a top-level C function, spliced after the forward declarations
+and before the first definition, and the expression is that function's
+name. The lifted function is named `oak_0lit_<n>` in emission order — a
+name beginning with a digit, which no Oak identifier can, so it never
+collides with a program function. A binding inferred from a literal
+(`inc := fn(x: u32): u32 = ...`) is a function pointer of the literal's own
+signature. Nested literals are lifted while the outer body is emitted, so
+their definitions precede it. There is no closure object and no
+allocation; the only indirection is the pointer the program wrote.
+
 ## 10. Source/debug information
 
 Backend output should preserve mappings from generated operations to canonical Oak source spans and stable semantic identities.
@@ -235,4 +246,28 @@ typedef name mangles element spellings that are not identifiers (`_Atomic u32`,
 first record, union, global, or prototype that names them, and a type that
 first appears inside a function body fails closed with an `OAK_UNSUPPORTED`
 marker rather than emitting a typedef where C forbids one.
+
+## 13. Methods on ADT receivers
+
+A method `fn (h: Handle) merge(other: Handle)` on an ADT receiver lowers to
+a C function taking the receiver as its first parameter, and a call
+`h.merge(g)` lowers to a direct call of that function with `h` first — no
+dispatch table, no thunk, no allocation. The type checker records the
+resolution on the call (`InvocationExpression.ResolvedMethod`, the
+`Type::method` identity) and the call keeps its dotted shape, so the
+receiver never becomes an argument and explicit argument indices never
+shift (`50-borrowing.md` §9, receiver authority). Methods are forward
+declared with the functions, so definition order is free.
+
+**Mangling.** The C name of `Type::method` is
+`oak_<len(Type)><Type>_<method>` (with the package prefix every function
+takes): `Handle::merge` is `oak_6Handle_merge`. The decimal length prefix
+begins with a digit, which no Oak identifier can, so a method never shares
+a symbol with a function (`Handle_merge` is `oak_Handle_merge`); and it
+fixes where the type name ends, so `A_b::c` and `A::b_c` differ.
+`Oak.MethodMangling` (`spec/lean/Oak/MethodMangling.lean`) proves both:
+`mangle_injective` and `mangle_ne_ident`, over any injective digit-only
+length rendering; decimal is one. Motivation recorded in
+`docs/notes/roadmap-authority-resources.md` (asks, tier 1): receiver
+contracts type-checked but could not execute compiled.
 

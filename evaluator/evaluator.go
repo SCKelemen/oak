@@ -294,6 +294,10 @@ func evalProgram(program *ast.Program, env *object.Environment) object.Object {
 func evalBlockStatement(block *ast.BlockStatement, env *object.Environment) object.Object {
 	var result object.Object
 
+	// A brace block is a scope (docs/spec/10-syntax.md section 4c): its
+	// declarations live in an enclosed environment; assignments reach the
+	// declaring scope through Environment.Assign.
+	env = object.NewEnclosedEnvironment(env)
 	for _, statement := range block.Statements {
 		result = Eval(statement, env)
 

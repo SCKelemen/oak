@@ -229,8 +229,14 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 		if name := declarationName(stmt); name != "" {
 			declared[name] = true
 		}
-		if fn, isFunction := stmt.(*ast.FunctionStatement); isFunction && fn.Name != nil && fn.Receiver == nil {
-			functions[fn.Name.Value] = fn
+		if fn, isFunction := stmt.(*ast.FunctionStatement); isFunction && fn.Name != nil {
+			if fn.Receiver == nil {
+				functions[fn.Name.Value] = fn
+			} else if receiver, isIdent := fn.Receiver.Type.(*ast.Identifier); isIdent {
+				// Methods are known to the checker as Type::method; a via
+				// clause spells them Type.method.
+				functions[receiver.Value+"::"+fn.Name.Value] = fn
+			}
 		}
 		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil && len(adt.TypeParams) > 0 && len(adt.Variants) == 1 {
 			if _, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
@@ -284,11 +290,14 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 
 // resourceFacts projects `via`-bound transitions into the typestate facts
 // the resource checker enforces (typechecker/resource_resolution.go). The
-// parameter modes written on the via clause resolve against the callable's
-// declaration in the elaborated program — parameter names to zero-based
-// indices, `receiver` to the receiver slot — so the same declaration reads
-// identically whether the callable lives in this package or an imported
-// one (internal names are already substituted by the module loader).
+// parameter modes, callable contracts, and result identity written on the
+// via clause resolve against the callable's declaration in the elaborated
+// program — parameter names to zero-based indices, `receiver` to the
+// receiver slot, `Type.method` to the checker's `Type::method` identity —
+// so the same declaration reads identically whether the callable lives in
+// this package or an imported one (internal names are already substituted
+// by the module loader). Every name is resolved here and every failure is
+// a protocol shape error: nothing reaches the checker half-resolved.
 func (m *protocolMachine) resourceFacts(functions map[string]*ast.FunctionStatement, report func(code string, node ast.Node, format string, args ...interface{})) (typechecker.ResourceProtocolDeclaration, bool) {
 	if len(m.decl.Resources) == 0 {
 		return typechecker.ResourceProtocolDeclaration{}, false
@@ -302,67 +311,170 @@ func (m *protocolMachine) resourceFacts(functions map[string]*ast.FunctionStatem
 		if t.Callable == nil {
 			continue
 		}
-		transition := typechecker.ResourceTransitionDeclaration{
-			Name: t.Name.Value + "@" + t.From.Value, Callable: t.Callable.Value, From: t.From.Value, To: t.To.Value,
+		callable := t.Callable.Value
+		if t.CallableType != nil {
+			callable = t.CallableType.Value + "::" + t.Callable.Value
 		}
+		spelled := strings.ReplaceAll(callable, "::", ".")
+		transition := typechecker.ResourceTransitionDeclaration{
+			Name: t.Name.Value + "@" + t.From.Value, Callable: callable, From: t.From.Value, To: t.To.Value, Trusted: t.Trusted,
+		}
+		// Typestate-indexed resources (112-protocols.md section 5a): a
+		// transition that consumes a Handle[From] and returns a Handle[To]
+		// hands back the same resource in its next state — an alias of the
+		// consumed argument by construction. A result clause written on the
+		// same line must agree with that.
+		typestateAlias := -1
 		if len(m.typestate) > 0 {
-			if fn := functions[t.Callable.Value]; fn != nil {
+			if fn := functions[callable]; fn != nil {
 				if !m.checkTypestateSignature(t, fn, report) {
 					ok = false
 					continue
 				}
-				// A transition that consumes a Segment[From] and returns a
-				// Segment[To] hands back the same resource in its next state:
-				// an alias of the consumed argument, by construction.
 				if index := m.typestateAliasIndex(t, fn); index >= 0 {
 					transition.ReturnsAlias, transition.AliasesArgument = true, index
+					typestateAlias = index
 				}
 			}
 		}
-		if len(t.Modes) > 0 {
-			fn := functions[t.Callable.Value]
-			if fn == nil {
-				report(CodeProtocolShape, t.Callable, "transition %s: via %s names parameter modes, but %s is not a function declared in this program", t.Name.Value, t.Callable.Value, t.Callable.Value)
+		if len(t.Modes) == 0 && t.Result == nil && !t.Trusted {
+			facts.Transitions = append(facts.Transitions, transition)
+			continue
+		}
+		fn := functions[callable]
+		if fn == nil {
+			if t.CallableType != nil {
+				report(CodeProtocolShape, t.Callable, "transition %s: via %s names a method, but %s declares no method %s in this program", t.Name.Value, spelled, t.CallableType.Value, t.Callable.Value)
+			} else {
+				report(CodeProtocolShape, t.Callable, "transition %s: via %s names parameter modes or a result identity, but %s is not a function declared in this program", t.Name.Value, spelled, spelled)
+			}
+			ok = false
+			continue
+		}
+		// parameterIndex resolves a parameter name of the callable; -1 when
+		// the name is not one of its parameters.
+		parameterIndex := func(name string) int {
+			for i, parameter := range fn.Parameters {
+				if parameter != nil && parameter.Name != nil && parameter.Name.Value == name {
+					return i
+				}
+			}
+			return -1
+		}
+		modeOf := func(word string) typechecker.ResourceParameterMode {
+			switch word {
+			case "borrowed mut":
+				return typechecker.ResourceParameterBorrowedMut
+			case "consumed":
+				return typechecker.ResourceParameterConsumed
+			}
+			return typechecker.ResourceParameterBorrowed
+		}
+		seen := map[string]bool{}
+		for _, entry := range t.Modes {
+			if seen[entry.Name.Value] {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s twice", t.Name.Value, spelled, entry.Name.Value)
 				ok = false
 				continue
 			}
-			seen := map[string]bool{}
-			for _, entry := range t.Modes {
-				mode := typechecker.ResourceParameterBorrowed
-				switch entry.Mode {
-				case "borrowed mut":
-					mode = typechecker.ResourceParameterBorrowedMut
-				case "consumed":
-					mode = typechecker.ResourceParameterConsumed
-				}
-				if seen[entry.Name.Value] {
-					report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s twice", t.Name.Value, t.Callable.Value, entry.Name.Value)
+			seen[entry.Name.Value] = true
+			if entry.Name.Value == "receiver" {
+				if entry.Contract != nil {
+					report(CodeProtocolShape, entry.Name, "transition %s: via %s gives the receiver a callable contract; a receiver carries a mode", t.Name.Value, spelled)
 					ok = false
 					continue
 				}
-				seen[entry.Name.Value] = true
-				if entry.Name.Value == "receiver" {
-					if fn.Receiver == nil {
-						report(CodeProtocolShape, entry.Name, "transition %s: via %s marks a receiver mode, but %s has no receiver", t.Name.Value, t.Callable.Value, t.Callable.Value)
-						ok = false
-						continue
-					}
-					transition.Receiver = mode
-					continue
-				}
-				index := -1
-				for i, parameter := range fn.Parameters {
-					if parameter != nil && parameter.Name != nil && parameter.Name.Value == entry.Name.Value {
-						index = i
-					}
-				}
-				if index < 0 {
-					report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s, which is not a parameter of %s", t.Name.Value, t.Callable.Value, entry.Name.Value, t.Callable.Value)
+				if fn.Receiver == nil {
+					report(CodeProtocolShape, entry.Name, "transition %s: via %s marks a receiver mode, but %s has no receiver", t.Name.Value, spelled, spelled)
 					ok = false
 					continue
 				}
-				transition.Parameters = append(transition.Parameters, typechecker.ResourceParameterDeclaration{Index: index, Mode: mode})
+				transition.Receiver = modeOf(entry.Mode)
+				continue
 			}
+			index := parameterIndex(entry.Name.Value)
+			if index < 0 {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s, which is not a parameter of %s", t.Name.Value, spelled, entry.Name.Value, spelled)
+				ok = false
+				continue
+			}
+			if entry.Contract == nil {
+				transition.Parameters = append(transition.Parameters, typechecker.ResourceParameterDeclaration{Index: index, Mode: modeOf(entry.Mode)})
+				continue
+			}
+			// A callable contract is positional over the function type of
+			// the parameter it constrains: one word per parameter of that
+			// type, `_` leaving the position unmarked.
+			functionType, isFunction := fn.Parameters[index].Type.(*ast.FunctionTypeExpression)
+			if !isFunction {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s gives %s a callable contract, but %s is not a function-typed parameter", t.Name.Value, spelled, entry.Name.Value, entry.Name.Value)
+				ok = false
+				continue
+			}
+			if len(entry.Contract.Modes) != len(functionType.Parameters) {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s: the contract on %s lists %d modes, but its function type has %d parameters (write `_` for an unmarked parameter)", t.Name.Value, spelled, entry.Name.Value, len(entry.Contract.Modes), len(functionType.Parameters))
+				ok = false
+				continue
+			}
+			contract := &typechecker.ResourceCallableContract{ReturnsFresh: entry.Contract.ReturnsFresh}
+			for position, word := range entry.Contract.Modes {
+				if word == "_" {
+					continue
+				}
+				contract.Parameters = append(contract.Parameters, typechecker.ResourceParameterDeclaration{Index: position, Mode: modeOf(word)})
+			}
+			if len(contract.Parameters) == 0 && !contract.ReturnsFresh {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s: the contract on %s marks nothing; drop it or mark a parameter or `: fresh`", t.Name.Value, spelled, entry.Name.Value)
+				ok = false
+				continue
+			}
+			transition.Parameters = append(transition.Parameters, typechecker.ResourceParameterDeclaration{Index: index, Callable: contract})
+		}
+		if t.Result != nil {
+			resultIndices := make([]int, 0, len(t.Result.Names))
+			resultOK := true
+			seenOrigin := map[string]bool{}
+			for _, name := range t.Result.Names {
+				if name.Value == "receiver" {
+					report(CodeProtocolShape, name, "transition %s: via %s: a result identity names explicit parameters; identities over the receiver are not admitted yet", t.Name.Value, spelled)
+					resultOK = false
+					continue
+				}
+				if seenOrigin[name.Value] {
+					report(CodeProtocolShape, name, "transition %s: via %s names %s twice in its result identity", t.Name.Value, spelled, name.Value)
+					resultOK = false
+					continue
+				}
+				seenOrigin[name.Value] = true
+				index := parameterIndex(name.Value)
+				if index < 0 {
+					report(CodeProtocolShape, name, "transition %s: via %s: result identity names %s, which is not a parameter of %s", t.Name.Value, spelled, name.Value, spelled)
+					resultOK = false
+					continue
+				}
+				resultIndices = append(resultIndices, index)
+			}
+			if resultOK && typestateAlias >= 0 && !(t.Result.Kind == "alias" && len(resultIndices) == 1 && resultIndices[0] == typestateAlias) {
+				report(CodeProtocolShape, t.Result.Names[0], "transition %s: via %s: a typestate transition already returns an alias of its consumed handle; the result clause must be `: alias %s` or be omitted", t.Name.Value, spelled, fn.Parameters[typestateAlias].Name.Value)
+				resultOK = false
+			}
+			if !resultOK {
+				ok = false
+			} else {
+				switch t.Result.Kind {
+				case "fresh":
+					transition.ReturnsFresh = true
+				case "alias":
+					transition.ReturnsAlias, transition.AliasesArgument = true, resultIndices[0]
+				case "borrow":
+					transition.ReturnsBorrow, transition.BorrowsArguments = true, resultIndices
+				case "borrow mut":
+					transition.ReturnsBorrow, transition.BorrowsArguments, transition.BorrowMutable = true, resultIndices, true
+				}
+			}
+		} else if t.Trusted {
+			report(CodeProtocolShape, t.Callable, "transition %s: via unsafe %s trusts a result identity, but the line declares none (`: fresh`, `: alias h`, `: borrow h`)", t.Name.Value, spelled)
+			ok = false
 		}
 		facts.Transitions = append(facts.Transitions, transition)
 	}

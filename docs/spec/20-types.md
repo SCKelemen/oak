@@ -437,12 +437,12 @@ tier 2), whose numeric core cannot move into Oak without it.
 
 #### 11.3.1 Types
 
-| Type | IEEE 754 format | Role |
+| Type | Format | Role |
 | --- | --- | --- |
 | `f32` | binary32 | arithmetic type |
 | `f64` | binary64 | arithmetic type |
 | `f16` | binary16 | **storage** type |
-| `bf16` | bfloat16 (8 exponent bits, 7 fraction bits) | **storage** type |
+| `bf16` | bfloat16 — the Brain floating-point convention (1 sign, 8 exponent, 7 fraction bits: the upper half of binary32), not an IEEE 754 interchange format; rounding and specials follow binary32 truncated to 16 bits | **storage** type |
 | `f8e4m3` | OCP FP8 E4M3 (4 exponent bits, 3 fraction bits, bias 7; no infinities, NaN is `S.1111.111`, largest finite 448) | **storage** type |
 | `f8e5m2` | OCP FP8 E5M2 (5 exponent bits, 2 fraction bits, bias 15; infinities and NaN as IEEE, largest finite 57344) | **storage** type |
 
