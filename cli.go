@@ -51,6 +51,7 @@ func init() {
 		{"repl", "start the interactive session", "oak repl", nil},
 		{"protocol", "protocol tooling", "oak protocol [args]", nil},
 		{"version", "print the oak version", "oak version", versionCommand},
+		{"completion", "print a shell completion script", "oak completion bash|zsh|fish", completionCommand},
 		{"help", "show help for a command", "oak help [command]", helpCommand},
 	}
 }
@@ -198,22 +199,36 @@ func moduleRootOf() string {
 // list the REPL's :obligations shows.
 func vetPackage(args []string) int {
 	target, profile := ".", ""
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-profile" && i+1 < len(args):
-			profile = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak vet: unknown flag %s\nusage: oak vet [-profile default|strict] [dir|file.oak]\n", args[i])
-			return 2
-		default:
-			target = args[i]
-		}
+	fs := newFlagSet("vet", "oak vet [-profile default|strict] [dir|file.oak|pattern]...")
+	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
 	}
+	targets, err := expandPackagePatterns(rest)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak vet: %v\n", err)
+		return 1
+	}
+	if len(targets) > 1 {
+		status := 0
+		for _, one := range targets {
+			if vetOne(one, profile) != 0 {
+				status = 1
+			}
+		}
+		return status
+	}
+	target = targets[0]
 	if !validProfile(profile) {
 		fmt.Fprintf(os.Stderr, "oak vet: unknown profile %q (default or strict)\n", profile)
 		return 2
 	}
+	return vetOne(target, profile)
+}
+
+// vetOne checks one package or file.
+func vetOne(target, profile string) int {
 	comp, err := compilationFor(target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak vet: %v\n", err)
@@ -261,17 +276,34 @@ func compilationFor(target string) (compiler.Compilation, error) {
 // every package the module's build reaches) with their imports.
 func listPackages(args []string) int {
 	dir, asJSON, deps := ".", false, false
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-json":
-			asJSON = true
-		case args[i] == "-deps":
-			deps = true
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak list: unknown flag %s\nusage: oak list [-json] [-deps] [dir]\n", args[i])
-			return 2
-		default:
-			dir = args[i]
+	fs := newFlagSet("list", "oak list [-json] [-deps] [dir|pattern]")
+	fs.BoolVar(&asJSON, "json", false, "one JSON object per package")
+	fs.BoolVar(&deps, "deps", false, "include every package a build reaches (dependencies, standard library)")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
+	}
+	var only map[string]bool
+	if len(rest) > 0 {
+		dir = strings.TrimSuffix(strings.TrimSuffix(rest[0], "..."), "/")
+		if dir == "" {
+			dir = "."
+		}
+		if isPattern(rest[0]) {
+			targets, err := expandPackagePatterns(rest[:1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "oak list: %v\n", err)
+				return 1
+			}
+			only = map[string]bool{}
+			for _, target := range targets {
+				if abs, err := filepath.Abs(target); err == nil {
+					only[abs] = true
+				}
+			}
+			if moduleDir := enclosingModule(mustAbs(dir)); moduleDir != "" {
+				dir = moduleDir
+			}
 		}
 	}
 	manifest, packages, err := compiler.ModulePackages(dir)
@@ -293,6 +325,11 @@ func listPackages(args []string) int {
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
+		if only != nil {
+			if abs, err := filepath.Abs(packages[path]); err != nil || !only[abs] {
+				continue
+			}
+		}
 		tree, err := compiler.New().WithPackageDir(packages[path]).Parse().Get()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "oak list: %s: %v\n", path, err)
@@ -343,7 +380,14 @@ func listPackages(args []string) int {
 // an explicit $OAKMODCACHE that is a directory is removed: the tool never
 // guesses a location to delete.
 func cleanCommand(args []string) int {
-	if len(args) != 1 || args[0] != "-modcache" {
+	modcache := false
+	fs := newFlagSet("clean", "oak clean -modcache")
+	fs.BoolVar(&modcache, "modcache", false, "empty the module cache named by $OAKMODCACHE")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
+	}
+	if !modcache || len(rest) != 0 {
 		fmt.Fprintln(os.Stderr, "usage: oak clean -modcache")
 		return 2
 	}
@@ -370,6 +414,14 @@ func cleanCommand(args []string) int {
 	}
 	fmt.Printf("removed %d entr%s from %s\n", len(entries), plural(len(entries), "y", "ies"), cache)
 	return 0
+}
+
+func mustAbs(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return dir
+	}
+	return abs
 }
 
 func plural(n int, one, many string) string {
@@ -448,17 +500,14 @@ func executableName(dir string) (string, error) {
 // $HOME/.oak/bin), named after the package (executableName).
 func installPackage(args []string) int {
 	dir, profile := ".", ""
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-profile" && i+1 < len(args):
-			profile = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak install: unknown flag %s\nusage: oak install [-profile default|strict] [dir]\n", args[i])
-			return 2
-		default:
-			dir = args[i]
-		}
+	fs := newFlagSet("install", "oak install [-profile default|strict] [dir]")
+	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
+	}
+	if len(rest) > 0 {
+		dir = rest[0]
 	}
 	if !validProfile(profile) {
 		fmt.Fprintf(os.Stderr, "oak install: unknown profile %q (default or strict)\n", profile)
