@@ -220,12 +220,15 @@ the compiler compiles, up to the extractor and the compiler being correct:
   `UInt64`, every destination of at least ten bytes, and every fuel above
   ten, `round_trip_all` closes the decided `roundTripHolds`, and
   `size_le_ten` bounds the encoding. The decided instances are kept as
-  regression. Canonicity in the strong sense is **false** for the current
-  decoder and recorded as such: `zero_padding_accepted` evaluates
-  `varint_decode #[0x80, 0x00]` to `Ok { value := 0, next := 2 }` while the
-  encoder spells `0` in one byte; the fix is in `stdlib/varint.oak` (reject
-  a final zero group after a continuation), after which the round trip gives
-  canonicity.
+  regression. Canonicity is proved as well (`canonical`): whatever
+  `varint_decode` accepts at offset zero, the encoder writes back byte for
+  byte with the same length. `decode_loop_any` runs the extracted decoder on
+  arbitrary bytes and characterizes a successful exit — the value is the
+  `groups` the consumed bytes spell, every byte but the last carries the
+  continuation bit — and `nbytes_groups` identifies the length; the decoder's
+  rejection of a zero final group after a continuation byte (`80 00` is
+  over-long, `zero_padding_rejected`), added when the first version of this
+  proof found the gap, is what makes the last group nonzero.
 - `Oak/Stdlib/SortLaws.lean`: `sort_insertion_spec` — the extracted
   insertion sort returns a permutation (`Array.Perm`) of its input that is
   sorted (`SortedPrefix`), for every array below the `u32` index range and
@@ -258,9 +261,8 @@ most; the kernel-decided facts use no axioms.
 
 - Fix the extractor's write set for spans rebound only through calls in
   loop bodies and `if` arms (oak #186), regenerate, and state the heap sort
-  and pdqsort laws (`bit_length_some` is the first lemma they need); reject
-  zero-padded encodings in `varint_decode` and derive canonicity from the
-  round trip; the universal base64 and base32 round trips and hexadecimal
+  and pdqsort laws (`bit_length_some` is the first lemma they need); the
+  universal base64 and base32 round trips and hexadecimal
   strictness (`hex_decode` accepts a string iff it is an encoding); the
   `uuid` version and variant bits against the extraction.
 - The subset: strings and the text library, methods, and recursion;
