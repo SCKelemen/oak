@@ -567,14 +567,31 @@ bit-for-bit agreement with the executor's term semantics: 181 bodies (every
 data-processing form, every condition code after `cmp`/`adds`/`subs`/`tst`,
 `ccmp`/`ccmn` chains, carry chains, multiplies, division, bit fields, bit
 manipulation, extends, wide moves, shifted and extended operands) × 60
-inputs agree. The staged plan beyond it: (1) derive the instruction table's
-operand forms, immediate encodability, flag effects, and access sizes from
-Arm's machine-readable A64 ISA XML; (2) transliterate the shared ASL
-primitives the semantics rest on (`AddWithCarry`, `ShiftReg`, `ExtendReg`,
-`ConditionHolds`, `DecodeBitMasks`) into Lean with the ASL alongside and
-prove `Oak.AssemblerSemantics` equal to them; (3) Sail-to-Lean for the
-modeled subset as the ground truth the Go transliteration is refined
-against.
+inputs agree. **Arm's ASL primitives, transliterated and proved
+(`Oak.ArmASL`).** The shared pseudocode functions the semantics rest on are
+transliterated into Lean from the Sail model of Armv8.5-A that Arm and the
+REMS group generated from Arm's own ASL (`sail-arm`, BSD-3-Clause-Clear),
+with the Sail text quoted beside each definition, and our definitions are
+proved equal to them: `AddWithCarry` — the `cmp`/`subs` form is `l - r`
+and the `adds` form `l + r` (`AddWithCarry_sub_result`/`_add_result`); its
+N, Z, and C flags are our `flagsOf`/`addFlagsOf` at every width
+(`subFlags_n/z/c`, `addFlags_n/z/c` — C is the "no borrow" reading, `r ≤
+l`), and V — Arm's `SInt` overflow against our sign-bit formula — is
+checked exhaustively by the kernel at width 5 and by the silicon
+differential at 32 and 64 bits; `ConditionHolds` on the A64 condition-code
+encodings is our `Cond.holds` for every code and every flag pattern
+(`holds_eq_ConditionHolds`); the conditional-select family is Arm's
+`integer_conditional_select` with its `else_inv`/`else_inc` switches
+(`csel_asl`, `csinc_asl`, `csinv_asl`, `csneg_asl`); `ccmp`'s flags are
+Arm's `integer_conditional_compare` (`ccmp_asl_n`); `tst`'s flags are the
+logical-result flags (`tst_asl`); `HighestSetBit`/`CountLeadingZeroBits`
+are stated with `clz_zero`, and `udiv` by zero is zero as Arm specifies.
+The chain is now: Arm's ASL ≡ `Oak.ArmASL` ≡ `Oak.AssemblerSemantics`
+(proved) ≡ the Go executor (transliteration, checked against the silicon).
+Remaining stages: (1) derive the instruction table's operand forms,
+immediate encodability, flag effects, and access sizes from Arm's
+machine-readable A64 ISA XML; (3) Sail-to-Lean for the modeled subset as
+the ground truth the Go transliteration is refined against.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
