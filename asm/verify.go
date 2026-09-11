@@ -1047,7 +1047,22 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				return "unbound register read", false
 			}
 			state.flags = &flagsFact{left: l, right: r, width: width, kind: "and"}
-		case "ubfx", "ubfiz", "sbfx", "bfi":
+		case "bfc":
+			// Clear the field: the destination with a hole.
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			lsb := instr.Operands[1].(Immediate).Value
+			fieldWidth := instr.Operands[2].(Immediate).Value
+			if lsb < 0 || fieldWidth < 1 || lsb+fieldWidth > int64(width) {
+				return "a bit field outside the register", false
+			}
+			current, ok := state.read(dest)
+			if !ok {
+				return "unbound register read", false
+			}
+			hole := constTerm(^(mask(int(fieldWidth))<<uint(lsb))&mask(width), width)
+			state.write(dest, binaryTerm("and", current, hole))
+		case "ubfx", "ubfiz", "sbfx", "sbfiz", "bfi", "bfxil":
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
 			source, ok := operandTerm(state, instr.Operands[1], width)
@@ -1070,6 +1085,11 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				up := constTerm(uint64(int64(width)-lsb-fieldWidth), width)
 				down := constTerm(uint64(int64(width)-fieldWidth), width)
 				state.write(dest, binaryTerm("sar", binaryTerm("shl", source, up), down))
+			case "sbfiz":
+				// The field to the top, then arithmetic-shift it down to lsb.
+				up := constTerm(uint64(int64(width)-fieldWidth), width)
+				down := constTerm(uint64(int64(width)-fieldWidth-lsb), width)
+				state.write(dest, binaryTerm("sar", binaryTerm("shl", source, up), down))
 			case "bfi":
 				current, ok := state.read(dest)
 				if !ok {
@@ -1078,6 +1098,15 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				placed := binaryTerm("shl", binaryTerm("and", source, fieldMask), constTerm(uint64(lsb), width))
 				hole := constTerm(^(mask(int(fieldWidth))<<uint(lsb))&mask(width), width)
 				state.write(dest, binaryTerm("or", binaryTerm("and", current, hole), placed))
+			case "bfxil":
+				// Extract the field at lsb and insert it at the bottom.
+				current, ok := state.read(dest)
+				if !ok {
+					return "unbound register read", false
+				}
+				extracted := binaryTerm("and", binaryTerm("shr", source, constTerm(uint64(lsb), width)), fieldMask)
+				hole := constTerm(^mask(int(fieldWidth))&mask(width), width)
+				state.write(dest, binaryTerm("or", binaryTerm("and", current, hole), extracted))
 			}
 		case "madd", "msub":
 			dest := instr.Operands[0].(Register)

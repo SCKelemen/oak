@@ -27,7 +27,9 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"crc32b": "crc32b w9, w0, w1", "crc32h": "crc32h w9, w0, w1", "crc32w": "crc32w w9, w0, w1", "crc32x": "crc32x w9, w0, x1", "crc32cb": "crc32cb w9, w0, w1", "crc32ch": "crc32ch w9, w0, w1", "crc32cw": "crc32cw w9, w0, w1", "crc32cx": "crc32cx w9, w0, x1",
 		"cfinv": "cmp x0, x1\n  cfinv",
 		"nop":   "nop", "wfe": "wfe", "wfi": "wfi", "sev": "sev", "sevl": "sevl", "yield": "yield", "csdb": "csdb", "esb": "esb", "hint": "hint #7", "clrex": "clrex",
-		"dmb": "dmb ish", "dsb": "dsb sy", "isb": "isb",
+		"dmb": "dmb ish", "dsb": "dsb sy", "isb": "isb", "ssbb": "ssbb", "pssbb": "pssbb",
+		"adr": "adr x9, here\nhere:", "adrp": "adrp x9, here\nhere:",
+		"bfc": "mov x9, x0\n  bfc x9, #4, #8", "bfxil": "mov x9, x0\n  bfxil x9, x1, #4, #8", "sbfiz": "sbfiz x9, x0, #4, #8", "smnegl": "smnegl x9, w0, w1", "umnegl": "umnegl x9, w0, w1",
 	}
 	// Memory through the frame and a span parameter, and the atomics.
 	frame := map[string]string{
@@ -36,10 +38,20 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"ldrsb": "str x0, [sp, #-16]!\n  ldrsb x9, [sp]\n  add sp, sp, #16", "ldrsh": "str x0, [sp, #-16]!\n  ldrsh x9, [sp]\n  add sp, sp, #16", "ldrsw": "str x0, [sp, #-16]!\n  ldrsw x9, [sp]\n  add sp, sp, #16", "ldpsw": "stp x0, x1, [sp, #-16]!\n  ldpsw x9, x10, [sp]\n  add sp, sp, #16",
 		"ldur": "str x0, [sp, #-16]!\n  ldur x9, [sp, #0]\n  add sp, sp, #16", "stur": "sub sp, sp, #16\n  stur x0, [sp, #8]\n  add sp, sp, #16", "ldurb": "str x0, [sp, #-16]!\n  ldurb w9, [sp]\n  add sp, sp, #16", "ldurh": "str x0, [sp, #-16]!\n  ldurh w9, [sp]\n  add sp, sp, #16",
 		"sturb": "sub sp, sp, #16\n  sturb w0, [sp]\n  add sp, sp, #16", "sturh": "sub sp, sp, #16\n  sturh w0, [sp]\n  add sp, sp, #16", "ldursb": "str x0, [sp, #-16]!\n  ldursb x9, [sp]\n  add sp, sp, #16", "ldursh": "str x0, [sp, #-16]!\n  ldursh x9, [sp]\n  add sp, sp, #16", "ldursw": "str x0, [sp, #-16]!\n  ldursw x9, [sp]\n  add sp, sp, #16",
-		"prfm": "sub sp, sp, #16\n  prfm pldl1keep, [sp]\n  add sp, sp, #16",
+		"prfm": "sub sp, sp, #16\n  prfm pldl1keep, [sp]\n  add sp, sp, #16", "prfum": "sub sp, sp, #16\n  prfum pldl1keep, [sp]\n  add sp, sp, #16", "rprfm": "sub sp, sp, #16\n  rprfm pldkeep, x0, [sp]\n  add sp, sp, #16",
+		"ldnp": "stp x0, x1, [sp, #-16]!\n  ldnp x9, x10, [sp]\n  add sp, sp, #16", "stnp": "sub sp, sp, #16\n  stnp x0, x1, [sp]\n  add sp, sp, #16",
+		"ldtr": "str x0, [sp, #-16]!\n  ldtr x9, [sp]\n  add sp, sp, #16", "ldtrb": "str x0, [sp, #-16]!\n  ldtrb w9, [sp]\n  add sp, sp, #16", "ldtrh": "str x0, [sp, #-16]!\n  ldtrh w9, [sp]\n  add sp, sp, #16",
+		"ldtrsb": "str x0, [sp, #-16]!\n  ldtrsb x9, [sp]\n  add sp, sp, #16", "ldtrsh": "str x0, [sp, #-16]!\n  ldtrsh x9, [sp]\n  add sp, sp, #16", "ldtrsw": "str x0, [sp, #-16]!\n  ldtrsw x9, [sp]\n  add sp, sp, #16",
+		"sttr": "sub sp, sp, #16\n  sttr x0, [sp]\n  add sp, sp, #16", "sttrb": "sub sp, sp, #16\n  sttrb w0, [sp]\n  add sp, sp, #16", "sttrh": "sub sp, sp, #16\n  sttrh w0, [sp]\n  add sp, sp, #16",
 	}
-	span := map[string]string{}
-	for _, name := range []string{"ldar", "ldxr", "ldaxr", "ldapr"} {
+	span := map[string]string{
+		"ldxp": "ldxp x9, x10, [x2]", "ldaxp": "ldaxp x9, x10, [x2]", "stxp": "stxp w9, x0, x1, [x2]", "stlxp": "stlxp w9, x0, x1, [x2]",
+		"ldraa": "ldraa x9, [x2]", "ldrab": "ldrab x9, [x2]", "stllr": "stllr x0, [x2]", "stllrb": "stllrb w0, [x2]", "stllrh": "stllrh w0, [x2]",
+	}
+	for _, order := range []string{"", "a", "l", "al"} {
+		span["casp"+order] = "casp" + order + " x0, x1, x0, x1, [x2]"
+	}
+	for _, name := range []string{"ldar", "ldxr", "ldaxr", "ldapr", "ldlar"} {
 		span[name] = name + " x9, [x2]"
 		span[name+"b"] = name + "b w9, [x2]"
 		span[name+"h"] = name + "h w9, [x2]"
@@ -51,7 +63,17 @@ func TestInstructionTableCoverage(t *testing.T) {
 		span[name+"h"] = name + "h w9, w0, [x2]"
 	}
 	for _, base := range atomicBases {
+		if base == "casp" {
+			continue
+		}
 		for _, order := range []string{"", "a", "l", "al"} {
+			if strings.HasPrefix(base, "st") {
+				// The store-only forms read one register and write none.
+				span[base+order] = base + order + " x0, [x2]"
+				span[base+order+"b"] = base + order + "b w0, [x2]"
+				span[base+order+"h"] = base + order + "h w0, [x2]"
+				continue
+			}
 			// cas reads both registers; the others read the first and write the second.
 			second := "x9"
 			if base == "cas" {
@@ -72,6 +94,26 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"fcmp": "fcmp d1, d2", "fcmpe": "fcmpe d1, #0.0", "fcsel": "fcmp d1, d2\n  fcsel d0, d1, d2, lo", "fcvt": "fcvt s0, d1",
 		"fcvtzs": "fcvtzs x9, d1", "fcvtzu": "fcvtzu w9, s3", "fcvtas": "fcvtas x9, d1", "fcvtau": "fcvtau x9, d1", "fcvtms": "fcvtms x9, d1", "fcvtmu": "fcvtmu x9, d1", "fcvtns": "fcvtns x9, d1", "fcvtnu": "fcvtnu x9, d1", "fcvtps": "fcvtps x9, d1", "fcvtpu": "fcvtpu x9, d1",
 		"scvtf": "scvtf d0, x0", "ucvtf": "ucvtf s0, w1", "fcvtn": "fcvtn v0.2s, v16.2d", "fcvtl": "fcvtl v0.2d, v5.2s",
+		"facge": "facge v0.4s, v5.4s, v6.4s", "facgt": "facgt d0, d1, d2", "fmaxnmp": "fmaxnmp v0.4s, v5.4s, v6.4s", "fminnmp": "fminnmp d0, v16.2d", "frecpe": "frecpe d0, d1", "frsqrte": "frsqrte v0.4s, v5.4s", "frecpx": "frecpx d0, d1", "frecps": "frecps d0, d1, d2", "frsqrts": "frsqrts v0.4s, v5.4s, v6.4s",
+		"fccmp": "fcmp d1, d2\n  fccmp d1, d2, #0, eq", "fccmpe": "fcmp d1, d2\n  fccmpe d1, d2, #4, ne", "fcvtxn": "fcvtxn v0.2s, v16.2d", "fcvtxn2": "mov v0.16b, v7.16b\n  fcvtxn2 v0.4s, v16.2d", "fcvtl2": "fcvtl2 v0.2d, v5.4s", "fcvtn2": "mov v0.16b, v7.16b\n  fcvtn2 v0.4s, v16.2d",
+		"bif": "mov v0.16b, v7.16b\n  bif v0.16b, v7.16b, v7.16b", "bit": "mov v0.16b, v7.16b\n  bit v0.16b, v7.16b, v7.16b", "bsl": "mov v0.16b, v7.16b\n  bsl v0.16b, v7.16b, v7.16b",
+		"shsub": "shsub v0.4s, v5.4s, v6.4s", "uhsub": "uhsub v0.4s, v5.4s, v6.4s", "srhadd": "srhadd v0.4s, v5.4s, v6.4s", "urhadd": "urhadd v0.4s, v5.4s, v6.4s", "saba": "mov v0.16b, v7.16b\n  saba v0.4s, v5.4s, v6.4s", "uaba": "mov v0.16b, v7.16b\n  uaba v0.4s, v5.4s, v6.4s",
+		"sqabs": "sqabs v0.4s, v5.4s", "sqneg": "sqneg d0, d1", "suqadd": "mov v0.16b, v7.16b\n  suqadd v0.4s, v5.4s", "usqadd": "mov v0.16b, v7.16b\n  usqadd v0.4s, v5.4s", "urecpe": "urecpe v0.4s, v5.4s", "ursqrte": "ursqrte v0.4s, v5.4s",
+		"sqdmulh": "sqdmulh v0.4s, v5.4s, v6.4s", "sqrdmulh": "sqrdmulh s0, s3, s4", "sqrdmlah": "mov v0.16b, v7.16b\n  sqrdmlah v0.4s, v5.4s, v6.4s", "sqrdmlsh": "mov v0.16b, v7.16b\n  sqrdmlsh v0.4s, v5.4s, v6.4s",
+		"sqdmlal": "mov v0.16b, v7.16b\n  sqdmlal v0.4s, v17.4h, v17.4h", "sqdmlsl": "mov v0.16b, v7.16b\n  sqdmlsl v0.4s, v17.4h, v17.4h", "sqdmull": "sqdmull v0.4s, v17.4h, v17.4h",
+		"sqdmlal2": "mov v0.16b, v7.16b\n  sqdmlal2 v0.4s, v17.8h, v17.8h", "sqdmlsl2": "mov v0.16b, v7.16b\n  sqdmlsl2 v0.4s, v17.8h, v17.8h", "sqdmull2": "sqdmull2 v0.4s, v17.8h, v17.8h",
+		"addhn": "addhn v0.4h, v5.4s, v6.4s", "raddhn": "raddhn v0.4h, v5.4s, v6.4s", "subhn": "subhn v0.4h, v5.4s, v6.4s", "rsubhn": "rsubhn v0.4h, v5.4s, v6.4s",
+		"addhn2": "mov v0.16b, v7.16b\n  addhn2 v0.8h, v5.4s, v6.4s", "raddhn2": "mov v0.16b, v7.16b\n  raddhn2 v0.8h, v5.4s, v6.4s", "subhn2": "mov v0.16b, v7.16b\n  subhn2 v0.8h, v5.4s, v6.4s", "rsubhn2": "mov v0.16b, v7.16b\n  rsubhn2 v0.8h, v5.4s, v6.4s",
+		"sabal": "mov v0.16b, v7.16b\n  sabal v0.4s, v17.4h, v17.4h", "uabal": "mov v0.16b, v7.16b\n  uabal v0.4s, v17.4h, v17.4h", "sabal2": "mov v0.16b, v7.16b\n  sabal2 v0.4s, v17.8h, v17.8h", "uabal2": "mov v0.16b, v7.16b\n  uabal2 v0.4s, v17.8h, v17.8h",
+		"sabdl": "sabdl v0.4s, v17.4h, v17.4h", "uabdl": "uabdl v0.4s, v17.4h, v17.4h", "sabdl2": "sabdl2 v0.4s, v17.8h, v17.8h", "uabdl2": "uabdl2 v0.4s, v17.8h, v17.8h",
+		"saddw2": "saddw2 v0.4s, v5.4s, v17.8h", "uaddw2": "uaddw2 v0.4s, v5.4s, v17.8h", "ssubw2": "ssubw2 v0.4s, v5.4s, v17.8h", "usubw2": "usubw2 v0.4s, v5.4s, v17.8h", "ssubl2": "ssubl2 v0.4s, v17.8h, v17.8h", "usubl2": "usubl2 v0.4s, v17.8h, v17.8h",
+		"smlal2": "mov v0.16b, v7.16b\n  smlal2 v0.4s, v17.8h, v17.8h", "umlal2": "mov v0.16b, v7.16b\n  umlal2 v0.4s, v17.8h, v17.8h", "smlsl2": "mov v0.16b, v7.16b\n  smlsl2 v0.4s, v17.8h, v17.8h", "umlsl2": "mov v0.16b, v7.16b\n  umlsl2 v0.4s, v17.8h, v17.8h",
+		"sqrshl": "sqrshl v0.4s, v5.4s, v6.4s", "uqrshl": "uqrshl d0, d1, d2", "srshr": "srshr v0.4s, v5.4s, #3", "urshr": "urshr d0, d1, #3", "srsra": "mov v0.16b, v7.16b\n  srsra v0.4s, v5.4s, #3", "ursra": "mov v0.16b, v7.16b\n  ursra v0.4s, v5.4s, #3", "sqshlu": "sqshlu v0.4s, v5.4s, #3",
+		"sshll2": "sshll2 v0.4s, v17.8h, #0", "ushll2": "ushll2 v0.4s, v17.8h, #0", "shll2": "shll2 v0.4s, v17.8h, #16",
+		"shrn2": "mov v0.16b, v7.16b\n  shrn2 v0.8h, v5.4s, #8", "rshrn2": "mov v0.16b, v7.16b\n  rshrn2 v0.8h, v5.4s, #8", "sqshrn2": "mov v0.16b, v7.16b\n  sqshrn2 v0.8h, v5.4s, #8", "uqshrn2": "mov v0.16b, v7.16b\n  uqshrn2 v0.8h, v5.4s, #8",
+		"sqrshrn2": "mov v0.16b, v7.16b\n  sqrshrn2 v0.8h, v5.4s, #8", "uqrshrn2": "mov v0.16b, v7.16b\n  uqrshrn2 v0.8h, v5.4s, #8", "sqshrun2": "mov v0.16b, v7.16b\n  sqshrun2 v0.8h, v5.4s, #8", "sqrshrun2": "mov v0.16b, v7.16b\n  sqrshrun2 v0.8h, v5.4s, #8",
+		"sqshrun": "sqshrun v0.4h, v5.4s, #8", "sqrshrun": "sqrshrun v0.4h, v5.4s, #8", "sqxtun2": "mov v0.16b, v7.16b\n  sqxtun2 v0.8h, v5.4s",
+		"ld2r": "cmp w3, #2\n  b.lo short\n  ld2r {v0.2d, v1.2d}, [x2]\n  mov x0, #0\n  ret\nshort:", "ld3r": "cmp w3, #3\n  b.lo short\n  ld3r {v0.2d, v1.2d, v2.2d}, [x2]\n  mov x0, #0\n  ret\nshort:", "ld4r": "cmp w3, #4\n  b.lo short\n  ld4r {v0.2d, v1.2d, v2.2d, v3.2d}, [x2]\n  mov x0, #0\n  ret\nshort:",
 		"mla": "mla v0.4s, v5.4s, v6.4s", "mls": "mls v0.4s, v5.4s, v6.4s", "smax": "smax v0.4s, v5.4s, v6.4s", "smin": "smin v0.4s, v5.4s, v6.4s", "umax": "umax v0.4s, v5.4s, v6.4s", "umin": "umin v0.4s, v5.4s, v6.4s",
 		"sabd": "sabd v0.4s, v5.4s, v6.4s", "uabd": "uabd v0.4s, v5.4s, v6.4s", "shadd": "shadd v0.4s, v5.4s, v6.4s", "uhadd": "uhadd v0.4s, v5.4s, v6.4s", "sqadd": "sqadd v0.4s, v5.4s, v6.4s", "uqadd": "uqadd v0.4s, v5.4s, v6.4s", "sqsub": "sqsub v0.4s, v5.4s, v6.4s", "uqsub": "uqsub v0.4s, v5.4s, v6.4s",
 		"addp": "addp v0.4s, v5.4s, v6.4s", "smaxp": "smaxp v0.4s, v5.4s, v6.4s", "sminp": "sminp v0.4s, v5.4s, v6.4s", "umaxp": "umaxp v0.4s, v5.4s, v6.4s", "uminp": "uminp v0.4s, v5.4s, v6.4s", "pmul": "pmul v0.16b, v7.16b, v7.16b",
@@ -128,7 +170,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 	}
 	control := map[string]string{
 		"b": "b done\ndone:\n  mov x0, #0", "b.": "cmp x0, x1\n  b.lo done\ndone:\n  mov x0, #0", "cbz": "cbz x0, done\ndone:\n  mov x0, #0", "cbnz": "cbnz x0, done\ndone:\n  mov x0, #0",
-		"tbz": "tbz x0, #3, done\ndone:\n  mov x0, #0", "tbnz": "tbnz x0, #3, done\ndone:\n  mov x0, #0", "bl": "bl helper", "blr": "blr x1", "br": "br x1", "ret": "ret", "eret": "eret", "brk": "brk #1",
+		"tbz": "tbz x0, #3, done\ndone:\n  mov x0, #0", "tbnz": "tbnz x0, #3, done\ndone:\n  mov x0, #0", "bl": "bl helper", "blr": "blr x1", "br": "br x1", "ret": "ret", "eret": "eret", "eretaa": "eretaa", "eretab": "eretab", "brk": "brk #1",
 	}
 	names := make([]string, 0, len(instructionTable))
 	for name := range instructionTable {
@@ -157,7 +199,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 		case frame[name] != "":
 			body = "  " + frame[name]
 		case span[name] != "":
-			body = "  cmp w3, #1\n  b.lo short\n  " + span[name] + "\n  mov x0, #0\n  ret\nshort:\n  mov x0, #0\n  ret"
+			body = "  cmp w3, #2\n  b.lo short\n  " + span[name] + "\n  mov x0, #0\n  ret\nshort:\n  mov x0, #0\n  ret"
 			epilogue = ""
 		case system[name] != "":
 			prologue = "  system\n" + prologue
@@ -171,7 +213,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 			case "ret":
 				body = "  mov x0, #0\n  ret"
 				epilogue = ""
-			case "eret":
+			case "eret", "eretaa", "eretab":
 				decl = "f: (a, b: u64, s: [*]u64) -> never"
 				prologue = "  system\n" + prologue
 				epilogue = ""

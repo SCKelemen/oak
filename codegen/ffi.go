@@ -450,3 +450,23 @@ func (cg *CodeGenerator) emitExternPrototype(fn *ast.FunctionStatement) {
 	}
 	cg.write(" );\n")
 }
+
+// emitForeignBorrow lowers an inbound buffer borrow (docs/spec/92-ffi.md
+// section 2.7): `c.borrow[T](ptr, count)` is the view struct over the
+// pointer and count, `c.borrow_mut[T](ptr, count)` the span struct. No copy,
+// no allocation; every element access through the result goes through the
+// bounds-checked helpers against the count the program supplied.
+func (cg *CodeGenerator) emitForeignBorrow(member string, element ast.Expression, call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	elementC := cg.parseTypeExpression(element)
+	if member == "borrow" {
+		structName := cg.emitViewType(elementC)
+		cg.output.WriteString(fmt.Sprintf("(%s){ (const %s *)( ", structName, elementC))
+	} else {
+		structName := cg.emitSpanType(elementC)
+		cg.output.WriteString(fmt.Sprintf("(%s){ (%s *)( ", structName, elementC))
+	}
+	cg.emitExpressionFragment(call.Arguments[0], tc)
+	cg.output.WriteString(" ), (u32)( ")
+	cg.emitExpressionFragment(call.Arguments[1], tc)
+	cg.output.WriteString(" ) }")
+}
