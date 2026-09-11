@@ -19,7 +19,7 @@ const CodeClosureCaptureStorage = "OAK-T0401"
 // environment captures.
 var closureBuiltins = map[string]bool{
 	"view": true, "span": true, "subslice": true,
-	"view_as": true, "span_as": true, "assert": true,
+	"view_as": true, "span_as": true, "assert": true, "assert_eq": true, "assert_ne": true,
 	"len": true, "get": true, "try_slice": true,
 	"is_valid_utf8": true,
 }

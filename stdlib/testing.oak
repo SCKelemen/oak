@@ -1,6 +1,7 @@
 // Test reporting is an explicit host boundary, supplied by oak test.
 // Numeric invariant IDs are chosen by the test author and must keep their meaning.
 pub testing_fail_host: (id: c.UInt32): () = c.extern("oak_test_host_fail")
+pub testing_fail_values_host: (id: c.UInt32, got: c.UInt64, want: c.UInt64, kind: c.UInt32): () = c.extern("oak_test_host_fail_values")
 pub testing_discard: (): () = c.extern("oak_test_host_discard")
 pub testing_classify_host: (id: c.UInt32): () = c.extern("oak_test_host_classify")
 pub testing_trace_host: (id: c.UInt32, a: c.UInt64, b: c.UInt64): () = c.extern("oak_test_host_trace")
@@ -43,6 +44,47 @@ pub testing_trace: (id: u32, a: u64, b: u64): () {
 
 pub test_check: (condition: Bool, id: u32): () {
   !condition ? { testing_fail(id) }
+}
+
+// A failure that names both values (docs/spec/110-testing.md, "Isolation,
+// outcomes, and reporting"): the host receives the id, the two values widened
+// to 64 bits, and a kind — bit 1 set for a "not equal" check, bit 2 for a
+// signed reading of the values, bit 4 for Bool — so the runner prints them
+// in the type's own spelling. The failure signature is still the id alone.
+pub testing_fail_values: (id: u32, got: u64, want: u64, kind: u32): () {
+  testing_fail_values_host(c.UInt32(id), c.UInt64(got), c.UInt64(want), c.UInt32(kind))
+}
+
+// test_check_eq_* / test_check_ne_*: test_check with the values reported.
+pub test_check_eq_u64: (got: u64, want: u64, id: u32): () {
+  got != want ? { testing_fail_values(id, got, want, u32(0)) }
+}
+pub test_check_ne_u64: (got: u64, want: u64, id: u32): () {
+  got == want ? { testing_fail_values(id, got, want, u32(1)) }
+}
+pub test_check_eq_u32: (got: u32, want: u32, id: u32): () {
+  got != want ? { testing_fail_values(id, u64(got), u64(want), u32(0)) }
+}
+pub test_check_ne_u32: (got: u32, want: u32, id: u32): () {
+  got == want ? { testing_fail_values(id, u64(got), u64(want), u32(1)) }
+}
+pub test_check_eq_i64: (got: i64, want: i64, id: u32): () {
+  got != want ? { testing_fail_values(id, u64_bits_i64(got), u64_bits_i64(want), u32(2)) }
+}
+pub test_check_ne_i64: (got: i64, want: i64, id: u32): () {
+  got == want ? { testing_fail_values(id, u64_bits_i64(got), u64_bits_i64(want), u32(3)) }
+}
+pub test_check_eq_i32: (got: i32, want: i32, id: u32): () {
+  got != want ? { testing_fail_values(id, u64_bits_i64(i64(got)), u64_bits_i64(i64(want)), u32(2)) }
+}
+pub test_check_ne_i32: (got: i32, want: i32, id: u32): () {
+  got == want ? { testing_fail_values(id, u64_bits_i64(i64(got)), u64_bits_i64(i64(want)), u32(3)) }
+}
+pub test_check_eq_bool: (got: Bool, want: Bool, id: u32): () {
+  got != want ? { testing_fail_values(id, got ? u64(1) | u64(0), want ? u64(1) | u64(0), u32(4)) }
+}
+pub test_check_ne_bool: (got: Bool, want: Bool, id: u32): () {
+  got == want ? { testing_fail_values(id, got ? u64(1) | u64(0), want ? u64(1) | u64(0), u32(5)) }
 }
 
 pub test_assume: (condition: Bool): () {
