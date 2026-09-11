@@ -42,6 +42,17 @@ are evaluated once, and reversed or out-of-range bounds trap.
 | `utf8_count(src)`, `utf16_count(src)`, `utf32_count(src)` | `Result[u32, TextError]`, number of scalars |
 | `utf8_decode(src, offset)` and corresponding UTF-16/32 functions | `TextScalar { value, next }`, next code-unit offset |
 | `utf8_decode_previous(src, end)` | Scalar ending exactly at `end`; `next` is its starting byte offset |
+
+`utf8_validate`, `utf8_count`, and `utf8_decode` classify a sequence through
+one 256-entry lead table (width plus the accepted range of the second byte,
+Unicode Table 3-7) and two 8-entry range tables, so over-long forms,
+surrogates, and values above U+10FFFF are rejected by the table rather than
+by arithmetic after the fact; the validator also consumes eight ASCII bytes
+per step when the next eight bytes have no high bit set. Away from the end
+of the input the loads sit under a wrap-free guard the checker turns into
+an extent fact, so they compile without bounds checks. The acceptance is
+unchanged and is checked byte for byte against Go's `unicode/utf8` in
+`compiler/e2e_stdlib_utf8_diff_test.go`.
 | `utf8_encode(dst, offset, value)` and corresponding UTF-16/32 functions | Number of code units written |
 | `utf8_to_utf16`, `utf8_to_utf32`, `utf16_to_utf8`, `utf16_to_utf32`, `utf32_to_utf8`, `utf32_to_utf16` | `(dst, src)`, complete checked conversion |
 | Each transcoder's `_size(src)` function | Required destination code units, validates without writing |
