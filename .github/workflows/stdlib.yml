@@ -44,6 +44,8 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlibUuid' -count=1
       - name: Test grapheme
         run: go test ./compiler -run 'TestE2EStdlibGrapheme' -count=1
+      - name: Test float
+        run: go test ./compiler -run 'TestE2EStdlibFloat' -count=1
       - name: Test encoding codecs
         run: go test ./compiler -run 'TestE2EStdlibEncoding' -count=1
       - name: Test time

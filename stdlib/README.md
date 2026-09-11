@@ -578,6 +578,53 @@ allocation. Errors are the closed `PathError = BadPattern |
 DestinationTooSmall` with `path_ok`, `path_written`, `path_failure`,
 `path_matched`, `path_match_failure` unwrappers, and `path_match_code` /
 `path_match_glob_code` return 0, 1 or 2 for callers that prefer a code.
+## Floating-point text
+
+`stdlib/float.oak` (`import("float")`, also in the flat prelude) converts
+f64 and f32 to and from decimal text exactly, with the algorithm Go's
+`strconv` uses on its slow path: an 800-digit decimal in caller storage,
+shifted by powers of two, so no floating-point arithmetic takes part and
+every backend agrees byte for byte with `strconv.FormatFloat` and
+`strconv.ParseFloat`.
+
+- `float_format(dst, value)` writes the shortest digit string that parses
+  back to the same f64, in Go's `'g'`/-1 spelling: the exponent form when
+  the decimal exponent is below -4 or at least 6 (`1e+06`, `100000`,
+  `1e-05`, `0.0001`), exponents with at least two digits, `NaN`, `+Inf`,
+  `-Inf`, and `-0` for the negative zero. `FLOAT_TEXT_SIZE` (32) bytes hold
+  any shortest spelling. `float_format_fixed(dst, value, digits)` is Go's
+  `'f'` with that many fraction digits and `float_format_exp` its `'e'`,
+  both rounded half to even on the exact binary value (so `2.5` with no
+  digits is `2`, `0.125` with two is `0.12`). `float_format_f32` and the
+  `_fixed_f32`/`_exp_f32` forms do the same for f32 (shortest for the f32
+  format, not the f64 one).
+- `float_parse(src)` is the f64 nearest to the exact decimal value of the
+  text, ties to even, subnormals and the range ends included. The whole view
+  must be one number: optional sign, digits with an optional fraction,
+  optional `e`/`E` exponent, or `inf`/`infinity` (optionally signed) and
+  `nan` in any case; anything else — an empty view, a lone `.`, digit
+  separators, hexadecimal floats, trailing bytes — is `InvalidSyntax`. A
+  magnitude beyond the largest finite value is `OutOfRange`
+  (`float_parse_saturating` returns the signed infinity instead); underflow
+  rounds to zero or a subnormal without error. `float_parse_f32` rounds once
+  from the decimal to f32 (never through an f64), with the same saturating
+  variant.
+- Errors are the closed `FloatError = InvalidSyntax | OutOfRange |
+  DestinationTooSmall`; every format checks the destination before its
+  first store. Unwrappers: `float_ok`/`float_written`/`float_failure` for
+  format results and `float_parse_ok`/`float_parse_value`/
+  `float_parse_failure` (plus `_f32` forms) for parse results.
+
+`compiler/e2e_stdlib_float_test.go` checks the classic hard cases (`0.1`,
+`5e-324`, the `2.2250738585072011e-308` hang value, `9007199254740993`
+rounding to even, `1e23`, the exponent-form threshold, specials, the
+subnormal boundary midpoints, thousand-digit inputs) in every form against
+Go, compiled and interpreted, and a differential test formats and parses
+thousands of random bit patterns, random decimal spellings, and exact
+midpoints between adjacent doubles, comparing every line with `strconv`.
+`examples/testing/float_test.oak` states the round trips as properties.
+Deviations from Go: digit-separating underscores and hexadecimal floats are
+rejected rather than accepted.
 
 ## Grapheme clusters
 

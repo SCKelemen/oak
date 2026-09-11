@@ -1,0 +1,762 @@
+// Decimal text for f64 and f32: the shortest digit string that round-trips
+// (`float_format`), fixed and exponent forms with a digit count
+// (`float_format_fixed`, `float_format_exp`), and correctly rounded parsing
+// (`float_parse`, `float_parse_f32`). Every conversion is exact: digits are
+// produced and consumed through an 800-digit decimal held in caller storage
+// and shifted by powers of two, the algorithm Go's strconv uses on its slow
+// path, so the output agrees byte for byte with `strconv.FormatFloat` and the
+// parsed value with `strconv.ParseFloat` (round-half-even on the exact
+// decimal value, subnormals and the range ends included). Nothing allocates
+// and no floating-point arithmetic is used to convert, so results are the
+// same on every backend.
+//
+// Formatting contract: text goes into a caller-owned span; the destination
+// is checked before the first store, so a `DestinationTooSmall` leaves it
+// unchanged. `FLOAT_TEXT_SIZE` bytes hold any shortest f64 or f32 spelling.
+// Parsing contract: the whole view must be one number (optional sign, digits
+// with an optional fraction, optional `e`/`E` exponent, or `inf`, `infinity`,
+// `is_nan` in any case with an optional sign for the infinities); anything else
+// is `InvalidSyntax`. A finite spelling whose magnitude exceeds the largest
+// finite value is `OutOfRange` (`float_parse_saturating` returns the signed
+// infinity instead); underflow rounds to zero or a subnormal without error.
+//
+// Shortest output follows Go's `'g'` with precision -1: the exponent form is
+// used when the decimal exponent is below -4 or at least 6 (`1e+06`,
+// `100000`, `1e-05`, `0.0001`), the exponent has at least two digits, and
+// the specials spell `NaN`, `+Inf`, `-Inf`; a negative zero is `-0`.
+package float
+
+pub FloatError: type = InvalidSyntax | OutOfRange | DestinationTooSmall
+
+// Enough for any shortest spelling: `-1.7976931348623157e+308` is 24 bytes.
+pub FLOAT_TEXT_SIZE: u32 = 32
+
+pub float_error_code: (reason: FloatError): u32 = reason ?
+  | .InvalidSyntax => u32(1)
+  | .OutOfRange => u32(2)
+  | .DestinationTooSmall => u32(3)
+pub float_ok: (result: Result[u32, FloatError]): Bool = result ? | .Ok(n) => true | .Err(e) => false
+pub float_written: (result: Result[u32, FloatError]): u32 = result ? | .Ok(n) => n | .Err(e) => u32(0)
+pub float_failure: (result: Result[u32, FloatError]): u32 = result ? | .Ok(n) => u32(0) | .Err(e) => float_error_code(e)
+pub float_parse_ok: (result: Result[f64, FloatError]): Bool = result ? | .Ok(v) => true | .Err(e) => false
+pub float_parse_value: (result: Result[f64, FloatError], fallback: f64): f64 = result ? | .Ok(v) => v | .Err(e) => fallback
+pub float_parse_failure: (result: Result[f64, FloatError]): u32 = result ? | .Ok(v) => u32(0) | .Err(e) => float_error_code(e)
+pub float_parse_ok_f32: (result: Result[f32, FloatError]): Bool = result ? | .Ok(v) => true | .Err(e) => false
+pub float_parse_value_f32: (result: Result[f32, FloatError], fallback: f32): f32 = result ? | .Ok(v) => v | .Err(e) => fallback
+pub float_parse_failure_f32: (result: Result[f32, FloatError]): u32 = result ? | .Ok(v) => u32(0) | .Err(e) => float_error_code(e)
+
+// ---- the decimal -----------------------------------------------------------
+//
+// A decimal is a big-endian digit array (ASCII digits, at most DEC_DIGITS of
+// them) plus a small header: meta[0] the digit count, meta[1] the decimal
+// point position biased by DP_BIAS (the value is 0.d0 d1 ... x 10^dp),
+// meta[2] the sign, meta[3] whether nonzero digits were discarded beyond the
+// array (which makes any "exactly half" rounding decision round up), and
+// meta[4] an overflow flag set by dec_float_bits.
+
+DEC_DIGITS: u32 = 800
+DP_BIAS: i32 = 65536
+MAX_SHIFT: u32 = 27
+META_SIZE: u32 = 5
+
+dec_init: (meta: [*]u32): () {
+  meta[0] = u32(0)
+  meta[1] = u32_bits_i32(DP_BIAS)
+  meta[2] = u32(0)
+  meta[3] = u32(0)
+  meta[4] = u32(0)
+}
+
+dec_dp: (meta: [*]u32): i32 = i32_bits_u32(meta[1]) - DP_BIAS
+dec_set_dp: (meta: [*]u32, dp: i32): () { meta[1] = u32_bits_i32(dp + DP_BIAS) }
+
+// dec_trim drops trailing zeros; a decimal with no digits is zero at dp 0.
+dec_trim: (digits: [*]u8, meta: [*]u32): () {
+  nd: u32 = meta[0]
+  while nd > u32(0) && digits[nd - u32(1)] == u8(48) { nd = nd - u32(1) }
+  meta[0] = nd
+  nd == u32(0) ? { dec_set_dp(meta, i32(0)) }
+}
+
+// dec_assign sets the decimal to an integer.
+dec_assign: (digits: [*]u8, meta: [*]u32, v: u64): () {
+  buf: [24]u8
+  n: u32 = u32(0)
+  value: u64 = v
+  while value > u64(0) {
+    v1: u64 = value / u64(10)
+    buf[n] = u8_trunc_u64(value - u64(10) * v1) + u8(48)
+    n = n + u32(1)
+    value = v1
+  }
+  nd: u32 = u32(0)
+  while n > u32(0) {
+    n = n - u32(1)
+    digits[nd] = buf[n]
+    nd = nd + u32(1)
+  }
+  meta[0] = nd
+  dec_set_dp(meta, i32_bits_u32(nd))
+  dec_trim(digits, meta)
+}
+
+// dec_right_shift divides by 2^k (k at most MAX_SHIFT), exactly; digits that
+// fall off the end of the array set the truncation flag.
+dec_right_shift: (digits: [*]u8, meta: [*]u32, k: u32): () {
+  nd: u32 = meta[0]
+  r: u32 = u32(0)
+  w: u32 = u32(0)
+  n: u64 = u64(0)
+  done: Bool = false
+  empty: Bool = false
+  while !done {
+    (n >> u64(k)) != u64(0) ? { done = true } |
+    r >= nd ? {
+      n == u64(0) ? { empty = true; done = true } | {
+        while (n >> u64(k)) == u64(0) {
+          n = n * u64(10)
+          r = r + u32(1)
+        }
+        done = true
+      }
+    } | {
+      n = n * u64(10) + u64(digits[r]) - u64(48)
+      r = r + u32(1)
+    }
+  }
+  empty ? { meta[0] = u32(0) } | {
+    dec_set_dp(meta, dec_dp(meta) - (i32_bits_u32(r) - i32(1)))
+    mask: u64 = (u64(1) << u64(k)) - u64(1)
+    while r < nd {
+      dig: u64 = n >> u64(k)
+      n = n & mask
+      digits[w] = u8_trunc_u64(dig) + u8(48)
+      w = w + u32(1)
+      n = n * u64(10) + u64(digits[r]) - u64(48)
+      r = r + u32(1)
+    }
+    while n > u64(0) {
+      dig2: u64 = n >> u64(k)
+      n = n & mask
+      w < DEC_DIGITS ? {
+        digits[w] = u8_trunc_u64(dig2) + u8(48)
+        w = w + u32(1)
+      } | dig2 > u64(0) ? { meta[3] = u32(1) }
+      n = n * u64(10)
+    }
+    meta[0] = w
+    dec_trim(digits, meta)
+  }
+}
+
+// dec_count_digits: the number of decimal digits of v (v > 0).
+dec_count_digits: (v: u64): u32 {
+  count: u32 = u32(0)
+  rest: u64 = v
+  while rest > u64(0) {
+    rest = rest / u64(10)
+    count = count + u32(1)
+  }
+  count
+}
+
+// dec_pow5_digits writes the decimal digits of 5^k (k at most MAX_SHIFT) into
+// cut and returns their count.
+dec_pow5_digits: (cut: [*]u8, k: u32): u32 {
+  value: u64 = u64(1)
+  i: u32 = u32(0)
+  while i < k {
+    value = value * u64(5)
+    i = i + u32(1)
+  }
+  count: u32 = dec_count_digits(value)
+  at: u32 = count
+  while at > u32(0) {
+    at = at - u32(1)
+    cut[at] = u8_trunc_u64(value % u64(10)) + u8(48)
+    value = value / u64(10)
+  }
+  count
+}
+
+// dec_prefix_less: whether the digit prefix compares less than cut[0:cutn]
+// as strings (a shorter digit string is less).
+dec_prefix_less: (digits: [*]u8, nd: u32, cut: [*]u8, cutn: u32): Bool {
+  result: Bool = false
+  decided: Bool = false
+  i: u32 = u32(0)
+  while i < cutn && !decided {
+    i >= nd ? { result = true; decided = true } |
+    digits[i] != cut[i] ? { result = digits[i] < cut[i]; decided = true } |
+    { i = i + u32(1) }
+  }
+  result
+}
+
+// dec_left_shift multiplies by 2^k (k at most MAX_SHIFT), exactly. The new
+// digit count is the digit count of 2^k, less one when the current digits
+// read as less than 5^k (the reciprocal's leading digits).
+dec_left_shift: (digits: [*]u8, meta: [*]u32, k: u32): () {
+  cut: [24]u8
+  cutn: u32 = u32(0)
+  delta: u32 = dec_count_digits(u64(1) << u64(k))
+  true ? {
+    c: [*]u8 = span(&cut)
+    cutn = dec_pow5_digits(c, k)
+    dec_prefix_less(digits, meta[0], c, cutn) ? { delta = delta - u32(1) }
+  }
+  r: u32 = meta[0]
+  w: u32 = meta[0] + delta
+  n: u64 = u64(0)
+  while r > u32(0) {
+    r = r - u32(1)
+    n = n + ((u64(digits[r]) - u64(48)) << u64(k))
+    quo: u64 = n / u64(10)
+    rem: u64 = n - u64(10) * quo
+    w = w - u32(1)
+    w < DEC_DIGITS ? { digits[w] = u8_trunc_u64(rem) + u8(48) } | rem != u64(0) ? { meta[3] = u32(1) }
+    n = quo
+  }
+  while n > u64(0) {
+    quo2: u64 = n / u64(10)
+    rem2: u64 = n - u64(10) * quo2
+    w = w - u32(1)
+    w < DEC_DIGITS ? { digits[w] = u8_trunc_u64(rem2) + u8(48) } | rem2 != u64(0) ? { meta[3] = u32(1) }
+    n = quo2
+  }
+  nd: u32 = meta[0] + delta
+  nd > DEC_DIGITS ? { nd = DEC_DIGITS }
+  meta[0] = nd
+  dec_set_dp(meta, dec_dp(meta) + i32_bits_u32(delta))
+  dec_trim(digits, meta)
+}
+
+// dec_shift multiplies by 2^k for any k, in chunks of MAX_SHIFT.
+dec_shift: (digits: [*]u8, meta: [*]u32, k: i32): () {
+  limit: i32 = i32_bits_u32(MAX_SHIFT)
+  meta[0] != u32(0) && k > i32(0) ? {
+    rest: i32 = k
+    while rest > limit {
+      dec_left_shift(digits, meta, MAX_SHIFT)
+      rest = rest - limit
+    }
+    dec_left_shift(digits, meta, u32_bits_i32(rest))
+  }
+  meta[0] != u32(0) && k < i32(0) ? {
+    rest2: i32 = i32(0) - k
+    while rest2 > limit {
+      dec_right_shift(digits, meta, MAX_SHIFT)
+      rest2 = rest2 - limit
+    }
+    dec_right_shift(digits, meta, u32_bits_i32(rest2))
+  }
+}
+
+// dec_should_round_up: whether truncating to nd digits (nd below the digit
+// count) should round the last kept digit up: round half to even, where
+// discarded nonzero digits beyond the array make a half more than a half.
+dec_should_round_up: (digits: [*]u8, meta: [*]u32, nd: u32): Bool {
+  digits[nd] == u8(53) && nd + u32(1) == meta[0] ? {
+    meta[3] != u32(0) ? { true } | { nd > u32(0) && ((u32(digits[nd - u32(1)]) - u32(48)) % u32(2)) != u32(0) }
+  } | { digits[nd] >= u8(53) }
+}
+
+dec_round_down: (digits: [*]u8, meta: [*]u32, nd: i32): () {
+  nd >= i32(0) && u32_bits_i32(nd) < meta[0] ? {
+    meta[0] = u32_bits_i32(nd)
+    dec_trim(digits, meta)
+  }
+}
+
+dec_round_up: (digits: [*]u8, meta: [*]u32, nd: i32): () {
+  nd >= i32(0) && u32_bits_i32(nd) < meta[0] ? {
+    i: u32 = u32_bits_i32(nd)
+    done: Bool = false
+    while i > u32(0) && !done {
+      i = i - u32(1)
+      digits[i] < u8(57) ? {
+        digits[i] = digits[i] + u8(1)
+        meta[0] = i + u32(1)
+        done = true
+      }
+    }
+    !done ? {
+      digits[0] = u8(49)
+      meta[0] = u32(1)
+      dec_set_dp(meta, dec_dp(meta) + i32(1))
+    }
+  }
+}
+
+dec_round: (digits: [*]u8, meta: [*]u32, nd: i32): () {
+  nd >= i32(0) && u32_bits_i32(nd) < meta[0] ? {
+    dec_should_round_up(digits, meta, u32_bits_i32(nd)) ? { dec_round_up(digits, meta, nd) } | { dec_round_down(digits, meta, nd) }
+  }
+}
+
+// dec_rounded_integer: the integer part, rounded half to even; saturates
+// when the decimal point is beyond 20 digits.
+dec_rounded_integer: (digits: [*]u8, meta: [*]u32): u64 {
+  dp: i32 = dec_dp(meta)
+  dp > i32(20) ? { u64(18446744073709551615) } | {
+    dpu: u32 = dp < i32(0) ? u32(0) | u32_bits_i32(dp)
+    n: u64 = u64(0)
+    i: u32 = u32(0)
+    while i < dpu && i < meta[0] {
+      n = n * u64(10) + u64(digits[i]) - u64(48)
+      i = i + u32(1)
+    }
+    while i < dpu {
+      n = n * u64(10)
+      i = i + u32(1)
+    }
+    dp >= i32(0) && dpu < meta[0] && dec_should_round_up(digits, meta, dpu) ? { n + u64(1) } | { n }
+  }
+}
+
+// ---- formatting --------------------------------------------------------------
+
+// float_fmt_e_size: the length of the %e rendering (prec fraction digits,
+// negative prec meaning none).
+float_fmt_e_size: (neg: Bool, nd: u32, dp: i32, prec: i32): u32 {
+  bexp: i32 = nd == u32(0) ? i32(0) | dp - i32(1)
+  mag: i32 = bexp < i32(0) ? i32(0) - bexp | bexp
+  sign: u32 = neg ? u32(1) | u32(0)
+  frac: u32 = prec > i32(0) ? u32(1) + u32_bits_i32(prec) | u32(0)
+  expw: u32 = mag < i32(100) ? u32(2) | u32(3)
+  sign + u32(1) + frac + u32(2) + expw
+}
+
+// float_fmt_e writes -d.dddde±dd; the caller has checked the size.
+float_fmt_e: (dst: [*]u8, digits: [*]u8, nd: u32, dp: i32, prec: i32, neg: Bool): u32 {
+  out: u32 = u32(0)
+  neg ? { dst[out] = u8(45); out = out + u32(1) }
+  dst[out] = nd != u32(0) ? digits[0] | u8(48)
+  out = out + u32(1)
+  prec > i32(0) ? {
+    dst[out] = u8(46)
+    out = out + u32(1)
+    p: u32 = u32_bits_i32(prec)
+    i: u32 = u32(1)
+    m: u32 = nd < p + u32(1) ? nd | p + u32(1)
+    while i < m {
+      dst[out] = digits[i]
+      out = out + u32(1)
+      i = i + u32(1)
+    }
+    while i <= p {
+      dst[out] = u8(48)
+      out = out + u32(1)
+      i = i + u32(1)
+    }
+  }
+  dst[out] = u8(101)
+  out = out + u32(1)
+  bexp: i32 = nd == u32(0) ? i32(0) | dp - i32(1)
+  bexp < i32(0) ? { dst[out] = u8(45); bexp = i32(0) - bexp } | { dst[out] = u8(43) }
+  out = out + u32(1)
+  e: u32 = u32_bits_i32(bexp)
+  e < u32(10) ? {
+    dst[out] = u8(48)
+    dst[out + u32(1)] = u8(48) + u8_trunc_u32(e)
+    out = out + u32(2)
+  } | e < u32(100) ? {
+    dst[out] = u8(48) + u8_trunc_u32(e / u32(10))
+    dst[out + u32(1)] = u8(48) + u8_trunc_u32(e % u32(10))
+    out = out + u32(2)
+  } | {
+    dst[out] = u8(48) + u8_trunc_u32(e / u32(100))
+    dst[out + u32(1)] = u8(48) + u8_trunc_u32((e / u32(10)) % u32(10))
+    dst[out + u32(2)] = u8(48) + u8_trunc_u32(e % u32(10))
+    out = out + u32(3)
+  }
+  out
+}
+
+// float_fmt_f_size: the length of the %f rendering with prec fraction digits.
+float_fmt_f_size: (neg: Bool, dp: i32, prec: u32): u32 {
+  sign: u32 = neg ? u32(1) | u32(0)
+  whole: u32 = dp > i32(0) ? u32_bits_i32(dp) | u32(1)
+  frac: u32 = prec > u32(0) ? u32(1) + prec | u32(0)
+  sign + whole + frac
+}
+
+// float_fmt_f writes -ddd.ddd; the caller has checked the size.
+float_fmt_f: (dst: [*]u8, digits: [*]u8, nd: u32, dp: i32, prec: u32, neg: Bool): u32 {
+  out: u32 = u32(0)
+  neg ? { dst[out] = u8(45); out = out + u32(1) }
+  dp > i32(0) ? {
+    dpu: u32 = u32_bits_i32(dp)
+    m: u32 = nd < dpu ? nd | dpu
+    i: u32 = u32(0)
+    while i < m {
+      dst[out] = digits[i]
+      out = out + u32(1)
+      i = i + u32(1)
+    }
+    while i < dpu {
+      dst[out] = u8(48)
+      out = out + u32(1)
+      i = i + u32(1)
+    }
+  } | {
+    dst[out] = u8(48)
+    out = out + u32(1)
+  }
+  prec > u32(0) ? {
+    dst[out] = u8(46)
+    out = out + u32(1)
+    f: u32 = u32(0)
+    while f < prec {
+      j: i32 = dp + i32_bits_u32(f)
+      ch: u8 = u8(48)
+      j >= i32(0) && u32_bits_i32(j) < nd ? { ch = digits[u32_bits_i32(j)] }
+      dst[out] = ch
+      out = out + u32(1)
+      f = f + u32(1)
+    }
+  }
+  out
+}
+
+// float_format_digits renders prepared digits in the requested form: 'e'
+// (101), 'f' (102), or 'g' (103, Go's rule for choosing between them).
+float_format_digits: (dst: [*]u8, digits: [*]u8, nd: u32, dp: i32, prec: i32, fmt: u8, shortest: Bool, neg: Bool): Result[u32, FloatError] {
+  ndi: i32 = i32_bits_u32(nd)
+  use_e: Bool = fmt == u8(101)
+  eprec: i32 = prec
+  fprec: i32 = prec
+  fmt == u8(103) ? {
+    limit: i32 = prec
+    limit > ndi && ndi >= dp ? { limit = ndi }
+    shortest ? { limit = i32(6) }
+    bexp: i32 = dp - i32(1)
+    bexp < i32(-4) || bexp >= limit ? {
+      use_e = true
+      eprec = (prec > ndi ? ndi | prec) - i32(1)
+    } | {
+      p: i32 = prec > dp ? ndi | prec
+      fprec = p - dp > i32(0) ? p - dp | i32(0)
+    }
+  }
+  fprec < i32(0) ? { fprec = i32(0) }
+  needed: u32 = use_e ? float_fmt_e_size(neg, nd, dp, eprec) | float_fmt_f_size(neg, dp, u32_bits_i32(fprec))
+  needed > len(dst) ? { .Err(.DestinationTooSmall) } |
+  use_e ? { .Ok(float_fmt_e(dst, digits, nd, dp, eprec, neg)) } |
+  { .Ok(float_fmt_f(dst, digits, nd, dp, u32_bits_i32(fprec), neg)) }
+}
+
+// float_round_shortest trims the decimal to the fewest digits that still
+// round-trip to the value mant x 2^(bexp - mantbits): it walks the digits of
+// the value against the exact midpoints to its two floating-point
+// neighbours (inclusive when the mantissa is even, because ties round to
+// even) and stops at the first digit that separates them.
+float_round_shortest: (d: [*]u8, dmeta: [*]u32, up: [*]u8, umeta: [*]u32, lo: [*]u8, lmeta: [*]u32, mant: u64, bexp: i32, mantbits: u32, bias: i32): () {
+  mant == u64(0) ? { dmeta[0] = u32(0) } | {
+    minexp: i32 = bias + i32(1)
+    mb: i32 = i32_bits_u32(mantbits)
+    dp: i32 = dec_dp(dmeta)
+    nd: i32 = i32_bits_u32(dmeta[0])
+    // Already shortest when the closest shorter number is farther away than
+    // the neighbours' midpoints: 10^(dp-nd) > 2^(bexp-mantbits).
+    already: Bool = bexp > minexp && i32(332) * (dp - nd) >= i32(100) * (bexp - mb)
+    !already ? {
+      dec_init(umeta)
+      dec_assign(up, umeta, mant * u64(2) + u64(1))
+      dec_shift(up, umeta, bexp - mb - i32(1))
+      mantlo: u64 = u64(0)
+      explo: i32 = i32(0)
+      mant > (u64(1) << u64(mantbits)) || bexp == minexp ? {
+        mantlo = mant - u64(1)
+        explo = bexp
+      } | {
+        mantlo = mant * u64(2) - u64(1)
+        explo = bexp - i32(1)
+      }
+      dec_init(lmeta)
+      dec_assign(lo, lmeta, mantlo * u64(2) + u64(1))
+      dec_shift(lo, lmeta, explo - mb - i32(1))
+      inclusive: Bool = mant % u64(2) == u64(0)
+      upperdelta: u32 = u32(0)
+      udp: i32 = dec_dp(umeta)
+      und: i32 = i32_bits_u32(umeta[0])
+      ldp: i32 = dec_dp(lmeta)
+      lnd: i32 = i32_bits_u32(lmeta[0])
+      ui: i32 = i32(0)
+      done: Bool = false
+      while !done {
+        mi: i32 = ui - udp + dp
+        mi >= nd ? { done = true } | {
+          li: i32 = ui - udp + ldp
+          l: u8 = u8(48)
+          li >= i32(0) && li < lnd ? { l = lo[u32_bits_i32(li)] }
+          m: u8 = u8(48)
+          mi >= i32(0) ? { m = d[u32_bits_i32(mi)] }
+          u: u8 = u8(48)
+          ui < und ? { u = up[u32_bits_i32(ui)] }
+          // Rounding down is safe once lower differs, or lower is inclusive
+          // and this is its last digit.
+          okdown: Bool = l != m || (inclusive && li + i32(1) == lnd)
+          prev: u32 = upperdelta
+          prev == u32(0) && m + u8(1) < u ? { upperdelta = u32(2) }
+          prev == u32(0) && m + u8(1) >= u && m != u ? { upperdelta = u32(1) }
+          prev == u32(1) && (m != u8(57) || u != u8(48)) ? { upperdelta = u32(2) }
+          // Rounding up is safe once upper differs and either upper is
+          // inclusive or the rounded value stays below it.
+          okup: Bool = upperdelta > u32(0) && (inclusive || upperdelta > u32(1) || ui + i32(1) < und)
+          okdown && okup ? { dec_round(d, dmeta, mi + i32(1)); done = true } |
+          okdown ? { dec_round_down(d, dmeta, mi + i32(1)); done = true } |
+          okup ? { dec_round_up(d, dmeta, mi + i32(1)); done = true } |
+          { ui = ui + i32(1) }
+        }
+      }
+    }
+  }
+}
+
+// float_big_ftoa converts mant x 2^(bexp - mantbits) to text: shortest when
+// prec is negative, otherwise rounded to the requested digits.
+float_big_ftoa: (dst: [*]u8, d: [*]u8, dmeta: [*]u32, up: [*]u8, umeta: [*]u32, lo: [*]u8, lmeta: [*]u32, prec: i32, fmt: u8, neg: Bool, mant: u64, bexp: i32, mantbits: u32, bias: i32): Result[u32, FloatError] {
+  dec_init(dmeta)
+  dec_assign(d, dmeta, mant)
+  dec_shift(d, dmeta, bexp - i32_bits_u32(mantbits))
+  shortest: Bool = prec < i32(0)
+  p: i32 = prec
+  shortest ? {
+    float_round_shortest(d, dmeta, up, umeta, lo, lmeta, mant, bexp, mantbits, bias)
+    nd: i32 = i32_bits_u32(dmeta[0])
+    dp: i32 = dec_dp(dmeta)
+    fmt == u8(101) ? { p = nd - i32(1) } |
+    fmt == u8(102) ? { p = nd - dp > i32(0) ? nd - dp | i32(0) } |
+    { p = nd }
+  } | {
+    fmt == u8(101) ? { dec_round(d, dmeta, p + i32(1)) } |
+    fmt == u8(102) ? { dec_round(d, dmeta, dec_dp(dmeta) + p) } |
+    {
+      p == i32(0) ? { p = i32(1) }
+      dec_round(d, dmeta, p)
+    }
+  }
+  float_format_digits(dst, d, dmeta[0], dec_dp(dmeta), p, fmt, shortest, neg)
+}
+
+// float_write_special writes NaN, +Inf, or -Inf.
+float_write_special: (dst: [*]u8, is_nan: Bool, neg: Bool): Result[u32, FloatError] {
+  needed: u32 = is_nan ? u32(3) | u32(4)
+  needed > len(dst) ? { .Err(.DestinationTooSmall) } |
+  is_nan ? {
+    dst[0] = u8(78)
+    dst[1] = u8(97)
+    dst[2] = u8(78)
+    .Ok(u32(3))
+  } | {
+    dst[0] = neg ? u8(45) | u8(43)
+    dst[1] = u8(73)
+    dst[2] = u8(110)
+    dst[3] = u8(102)
+    .Ok(u32(4))
+  }
+}
+
+// float_generic formats a value given as its bit pattern and format
+// parameters (mantissa bits, exponent bits, exponent bias).
+float_generic: (dst: [*]u8, bits: u64, mantbits: u32, expbits: u32, bias: i32, fmt: u8, prec: i32): Result[u32, FloatError] {
+  neg: Bool = (bits >> u64(mantbits + expbits)) != u64(0)
+  expmask: u32 = (u32(1) << expbits) - u32(1)
+  expfield: u32 = u32_trunc_u64(bits >> u64(mantbits)) & expmask
+  mant: u64 = bits & ((u64(1) << u64(mantbits)) - u64(1))
+  expfield == expmask ? { float_write_special(dst, mant != u64(0), neg) } | {
+    bexp: i32 = (expfield == u32(0) ? i32(1) | i32_bits_u32(expfield)) + bias
+    expfield != u32(0) ? { mant = mant | (u64(1) << u64(mantbits)) }
+    d: [800]u8
+    dmeta: [5]u32
+    up: [800]u8
+    umeta: [5]u32
+    lo: [800]u8
+    lmeta: [5]u32
+    float_big_ftoa(dst, span(&d), span(&dmeta), span(&up), span(&umeta), span(&lo), span(&lmeta), prec, fmt, neg, mant, bexp, mantbits, bias)
+  }
+}
+
+// float_format: the shortest text that parses back to the same f64, in Go's
+// `'g'`/-1 spelling.
+pub float_format: (dst: [*]u8, value: f64): Result[u32, FloatError] = float_generic(dst, u64_bits_f64(value), u32(52), u32(11), i32(-1023), u8(103), i32(-1))
+
+// float_format_fixed: `-ddd.ddd` with exactly `digits` fraction digits,
+// correctly rounded (half to even on the exact binary value).
+pub float_format_fixed: (dst: [*]u8, value: f64, digits: u32): Result[u32, FloatError] = float_generic(dst, u64_bits_f64(value), u32(52), u32(11), i32(-1023), u8(102), i32_bits_u32(digits))
+
+// float_format_exp: `-d.ddde±dd` with exactly `digits` fraction digits.
+pub float_format_exp: (dst: [*]u8, value: f64, digits: u32): Result[u32, FloatError] = float_generic(dst, u64_bits_f64(value), u32(52), u32(11), i32(-1023), u8(101), i32_bits_u32(digits))
+
+// float_format_f32: the shortest text that parses back to the same f32.
+pub float_format_f32: (dst: [*]u8, value: f32): Result[u32, FloatError] = float_generic(dst, u64(u32_bits_f32(value)), u32(23), u32(8), i32(-127), u8(103), i32(-1))
+
+pub float_format_fixed_f32: (dst: [*]u8, value: f32, digits: u32): Result[u32, FloatError] = float_generic(dst, u64(u32_bits_f32(value)), u32(23), u32(8), i32(-127), u8(102), i32_bits_u32(digits))
+
+pub float_format_exp_f32: (dst: [*]u8, value: f32, digits: u32): Result[u32, FloatError] = float_generic(dst, u64(u32_bits_f32(value)), u32(23), u32(8), i32(-127), u8(101), i32_bits_u32(digits))
+
+// ---- parsing -----------------------------------------------------------------
+
+float_lower: (unit: u8): u8 = unit >= u8(65) && unit <= u8(90) ? unit + u8(32) | unit
+
+// float_special classifies inf / infinity (optionally signed) and is_nan: 0 for
+// none, 1 for +Inf, 2 for -Inf, 3 for NaN.
+float_special: (src: []u8): u32 {
+  n: u32 = len(src)
+  i: u32 = u32(0)
+  has_sign: Bool = n > u32(0) && (src[0] == u8(43) || src[0] == u8(45))
+  neg: Bool = n > u32(0) && src[0] == u8(45)
+  has_sign ? { i = u32(1) }
+  rest: u32 = n - i
+  inf3: Bool = rest == u32(3) && float_lower(src[i]) == u8(105) && float_lower(src[i + u32(1)]) == u8(110) && float_lower(src[i + u32(2)]) == u8(102)
+  inf8: Bool = rest == u32(8) && float_lower(src[i]) == u8(105) && float_lower(src[i + u32(1)]) == u8(110) && float_lower(src[i + u32(2)]) == u8(102) && float_lower(src[i + u32(3)]) == u8(105) && float_lower(src[i + u32(4)]) == u8(110) && float_lower(src[i + u32(5)]) == u8(105) && float_lower(src[i + u32(6)]) == u8(116) && float_lower(src[i + u32(7)]) == u8(121)
+  is_nan: Bool = !has_sign && rest == u32(3) && float_lower(src[0]) == u8(110) && float_lower(src[1]) == u8(97) && float_lower(src[2]) == u8(110)
+  inf3 || inf8 ? { neg ? u32(2) | u32(1) } | is_nan ? { u32(3) } | { u32(0) }
+}
+
+// dec_set reads a decimal number (sign, digits, optional fraction, optional
+// exponent) into the decimal; false when the text is not exactly that.
+// Digits beyond the array only set the truncation flag; an exponent is
+// saturated at 10000, far outside the representable range either way.
+dec_set: (digits: [*]u8, meta: [*]u32, src: []u8): Bool {
+  n: u32 = len(src)
+  i: u32 = u32(0)
+  n > u32(0) && src[0] == u8(43) ? { i = u32(1) }
+  n > u32(0) && src[0] == u8(45) ? { i = u32(1); meta[2] = u32(1) }
+  sawdot: Bool = false
+  sawdigits: Bool = false
+  bad: Bool = false
+  nd: u32 = u32(0)
+  dp: i32 = i32(0)
+  scanning: Bool = true
+  while scanning && i < n {
+    c: u8 = src[i]
+    c == u8(46) ? {
+      sawdot ? { bad = true; scanning = false } | {
+        sawdot = true
+        dp = i32_bits_u32(nd)
+        i = i + u32(1)
+      }
+    } | c >= u8(48) && c <= u8(57) ? {
+      sawdigits = true
+      c == u8(48) && nd == u32(0) ? { dp = dp - i32(1) } |
+      nd < DEC_DIGITS ? { digits[nd] = c; nd = nd + u32(1) } |
+      c != u8(48) ? { meta[3] = u32(1) }
+      i = i + u32(1)
+    } | { scanning = false }
+  }
+  !sawdot ? { dp = i32_bits_u32(nd) }
+  !bad && sawdigits && i < n && (src[i] == u8(101) || src[i] == u8(69)) ? {
+    i = i + u32(1)
+    esign: i32 = i32(1)
+    i < n && src[i] == u8(43) ? { i = i + u32(1) }
+    i < n && src[i] == u8(45) ? { i = i + u32(1); esign = i32(-1) }
+    i >= n || src[i] < u8(48) || src[i] > u8(57) ? { bad = true } | {
+      e: i32 = i32(0)
+      while i < n && src[i] >= u8(48) && src[i] <= u8(57) {
+        e < i32(10000) ? { e = e * i32(10) + i32_bits_u32(u32(src[i]) - u32(48)) }
+        i = i + u32(1)
+      }
+      dp = dp + e * esign
+    }
+  }
+  meta[0] = nd
+  dec_set_dp(meta, dp)
+  !bad && sawdigits && i == n
+}
+
+// dec_float_bits rounds the decimal to the nearest value of the format,
+// half to even, and returns its bit pattern; meta[4] reports overflow (the
+// pattern is then the signed infinity).
+dec_float_bits: (digits: [*]u8, meta: [*]u32, mantbits: u32, expbits: u32, bias: i32): u64 {
+  powtab: [9]i32 = [9]i32{ 1, 3, 6, 9, 13, 16, 19, 23, 26 }
+  expmax: i32 = i32_bits_u32((u32(1) << expbits) - u32(1))
+  bexp: i32 = bias
+  mant: u64 = u64(0)
+  overflow: Bool = false
+  dp: i32 = dec_dp(meta)
+  meta[0] == u32(0) ? { mant = u64(0) } |
+  dp > i32(310) ? { overflow = true } |
+  dp < i32(-330) ? { mant = u64(0) } | {
+    bexp = i32(0)
+    while dec_dp(meta) > i32(0) {
+      cur: i32 = dec_dp(meta)
+      n: i32 = cur >= i32(9) ? i32(27) | powtab[u32_bits_i32(cur)]
+      dec_shift(digits, meta, i32(0) - n)
+      bexp = bexp + n
+    }
+    while dec_dp(meta) < i32(0) || (dec_dp(meta) == i32(0) && digits[0] < u8(53)) {
+      cur2: i32 = i32(0) - dec_dp(meta)
+      n2: i32 = cur2 >= i32(9) ? i32(27) | powtab[u32_bits_i32(cur2)]
+      dec_shift(digits, meta, n2)
+      bexp = bexp - n2
+    }
+    bexp = bexp - i32(1)
+    bexp < bias + i32(1) ? {
+      lift: i32 = bias + i32(1) - bexp
+      dec_shift(digits, meta, i32(0) - lift)
+      bexp = bexp + lift
+    }
+    bexp - bias >= expmax ? { overflow = true } | {
+      dec_shift(digits, meta, i32(1) + i32_bits_u32(mantbits))
+      mant = dec_rounded_integer(digits, meta)
+      mant == (u64(2) << u64(mantbits)) ? {
+        mant = mant >> u64(1)
+        bexp = bexp + i32(1)
+        bexp - bias >= expmax ? { overflow = true }
+      }
+      !overflow && (mant & (u64(1) << u64(mantbits))) == u64(0) ? { bexp = bias }
+    }
+  }
+  overflow ? {
+    mant = u64(0)
+    bexp = expmax + bias
+    meta[4] = u32(1)
+  }
+  bits: u64 = mant & ((u64(1) << u64(mantbits)) - u64(1))
+  bits = bits | (u64(u32_bits_i32(bexp - bias) & u32_bits_i32(expmax)) << u64(mantbits))
+  meta[2] != u32(0) ? { bits = bits | (u64(1) << u64(mantbits + expbits)) }
+  bits
+}
+
+// float_parse_bits parses to the bit pattern of the format; overflow is
+// OutOfRange unless saturate, in which case the signed infinity is returned.
+float_parse_bits: (src: []u8, mantbits: u32, expbits: u32, bias: i32, saturate: Bool): Result[u64, FloatError] {
+  special: u32 = float_special(src)
+  infbits: u64 = u64((u32(1) << expbits) - u32(1)) << u64(mantbits)
+  special == u32(1) ? { .Ok(infbits) } |
+  special == u32(2) ? { .Ok(infbits | (u64(1) << u64(mantbits + expbits))) } |
+  special == u32(3) ? { .Ok(infbits | (u64(1) << u64(mantbits - u32(1)))) } | {
+    digits: [800]u8
+    meta: [5]u32
+    d: [*]u8 = span(&digits)
+    m: [*]u32 = span(&meta)
+    dec_init(m)
+    dec_set(d, m, src) ? {
+      bits: u64 = dec_float_bits(d, m, mantbits, expbits, bias)
+      m[4] != u32(0) && !saturate ? { .Err(.OutOfRange) } | { .Ok(bits) }
+    } | { .Err(.InvalidSyntax) }
+  }
+}
+
+// float_parse: the f64 nearest to the decimal text, ties to even.
+pub float_parse: (src: []u8): Result[f64, FloatError] = float_parse_bits(src, u32(52), u32(11), i32(-1023), false) ?
+  | .Ok(bits) => .Ok(f64_bits_u64(bits))
+  | .Err(reason) => .Err(reason)
+
+// float_parse_saturating: as float_parse, but a magnitude beyond the largest
+// finite value is the signed infinity rather than an error.
+pub float_parse_saturating: (src: []u8): Result[f64, FloatError] = float_parse_bits(src, u32(52), u32(11), i32(-1023), true) ?
+  | .Ok(bits) => .Ok(f64_bits_u64(bits))
+  | .Err(reason) => .Err(reason)
+
+// float_parse_f32: the f32 nearest to the decimal text, rounded once from the
+// exact decimal value (never through an f64).
+pub float_parse_f32: (src: []u8): Result[f32, FloatError] = float_parse_bits(src, u32(23), u32(8), i32(-127), false) ?
+  | .Ok(bits) => .Ok(f32_bits_u32(u32_trunc_u64(bits)))
+  | .Err(reason) => .Err(reason)
+
+pub float_parse_saturating_f32: (src: []u8): Result[f32, FloatError] = float_parse_bits(src, u32(23), u32(8), i32(-127), true) ?
+  | .Ok(bits) => .Ok(f32_bits_u32(u32_trunc_u64(bits)))
+  | .Err(reason) => .Err(reason)
