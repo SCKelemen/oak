@@ -29,7 +29,7 @@ func TestLeanDiagnosticsPlacement(t *testing.T) {
 	if r, ok := ranges["a"]; !ok || r[0] != 6 || r[1] != 9 {
 		t.Fatalf("a: range %v (%v)", r, ok)
 	}
-	if r, ok := ranges["b"]; !ok || r[0] != 14 || r[1] != 17 {
+	if r, ok := ranges["b"]; !ok || r[0] != 13 || r[1] != 16 {
 		t.Fatalf("b: range %v (%v)", r, ok)
 	}
 	output := "/tmp/x.lean:16:2: error: unsolved goals\n  x : UInt32\n/tmp/x.lean:17:10: warning: something\n"
