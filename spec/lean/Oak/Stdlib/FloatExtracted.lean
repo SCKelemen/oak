@@ -115,11 +115,11 @@ def dec_trim (digits : Array UInt8) (meta_ : Array UInt32) (fuel : Nat) : Option
   let nd : UInt32 := (meta_.getD 0 (0 : UInt32))
   let nd ← dec_trim.loop1 digits nd fuel
   let meta_ := meta_.setIfInBounds 0 nd
-  let () ← (if (nd == (0 : UInt32)) then (do
+  let meta_ ← (if (nd == (0 : UInt32)) then (do
       let (r1, meta_) ← dec_set_dp meta_ (0 : Int32) fuel
-      pure ())
+      pure meta_)
     else (do
-      pure ()))
+      pure meta_))
   pure ((), digits, meta_)
 
 def dec_assign.loop1 (buf : Array UInt8) (n : UInt32) (value : UInt64) : Nat → Option (Array UInt8 × UInt32 × UInt64)
@@ -366,19 +366,21 @@ def dec_left_shift (digits : Array UInt8) (meta_ : Array UInt32) (k : UInt32) (f
   let cutn : UInt32 := (0 : UInt32)
   let r1 ← dec_count_digits ((1 : UInt64) <<< (k.toUInt64)) fuel
   let delta : UInt32 := r1
-  let (cutn, delta) ← (if true then (do
+  let (digits, cut, cutn, delta) ← (if true then (do
       let c : Array UInt8 := cut
       let (r2, c) ← dec_pow5_digits c k fuel
       let cutn := r2
+      let cut := c
       let (r3, digits, c) ← dec_prefix_less digits (meta_.getD 0 (0 : UInt32)) c cutn fuel
       let delta ← (if r3 then (do
           let delta := (delta - (1 : UInt32))
           pure delta)
         else (do
           pure delta))
-      pure (cutn, delta))
+      let cut := c
+      pure (digits, cut, cutn, delta))
     else (do
-      pure (cutn, delta)))
+      pure (digits, cut, cutn, delta)))
   let r : UInt32 := (meta_.getD 0 (0 : UInt32))
   let w : UInt32 := ((meta_.getD 0 (0 : UInt32)) + delta)
   let n : UInt64 := (0 : UInt64)
@@ -396,52 +398,52 @@ def dec_left_shift (digits : Array UInt8) (meta_ : Array UInt32) (k : UInt32) (f
   let (r6, digits, meta_) ← dec_trim digits meta_ fuel
   pure ((), digits, meta_)
 
-def dec_shift.loop1 (digits : Array UInt8) (meta_ : Array UInt32) (limit : Int32) (rest : Int32) : Nat → Option (Int32)
+def dec_shift.loop1 (digits : Array UInt8) (meta_ : Array UInt32) (limit : Int32) (rest : Int32) : Nat → Option (Array UInt8 × Array UInt32 × Int32)
   | 0 => none
   | fuel + 1 => do
     if (decide (rest > limit)) then do
       let (r1, digits, meta_) ← dec_left_shift digits meta_ MAX_SHIFT fuel
       let rest := (rest - limit)
       dec_shift.loop1 digits meta_ limit rest fuel
-    else pure rest
+    else pure (digits, meta_, rest)
 
-def dec_shift.loop2 (digits : Array UInt8) (meta_ : Array UInt32) (limit : Int32) (rest2 : Int32) : Nat → Option (Int32)
+def dec_shift.loop2 (digits : Array UInt8) (meta_ : Array UInt32) (limit : Int32) (rest2 : Int32) : Nat → Option (Array UInt8 × Array UInt32 × Int32)
   | 0 => none
   | fuel + 1 => do
     if (decide (rest2 > limit)) then do
       let (r3, digits, meta_) ← dec_right_shift digits meta_ MAX_SHIFT fuel
       let rest2 := (rest2 - limit)
       dec_shift.loop2 digits meta_ limit rest2 fuel
-    else pure rest2
+    else pure (digits, meta_, rest2)
 
 def dec_shift (digits : Array UInt8) (meta_ : Array UInt32) (k : Int32) (fuel : Nat) : Option (Unit × Array UInt8 × Array UInt32) := do
   let limit : Int32 := (MAX_SHIFT.toInt32)
-  let () ← (if (((meta_.getD 0 (0 : UInt32)) != (0 : UInt32)) && (decide (k > (0 : Int32)))) then (do
+  let (digits, meta_) ← (if (((meta_.getD 0 (0 : UInt32)) != (0 : UInt32)) && (decide (k > (0 : Int32)))) then (do
       let rest : Int32 := k
-      let rest ← dec_shift.loop1 digits meta_ limit rest fuel
+      let (digits, meta_, rest) ← dec_shift.loop1 digits meta_ limit rest fuel
       let (r2, digits, meta_) ← dec_left_shift digits meta_ (rest.toUInt32) fuel
-      pure ())
+      pure (digits, meta_))
     else (do
-      pure ()))
-  let () ← (if (((meta_.getD 0 (0 : UInt32)) != (0 : UInt32)) && (decide (k < (0 : Int32)))) then (do
+      pure (digits, meta_)))
+  let (digits, meta_) ← (if (((meta_.getD 0 (0 : UInt32)) != (0 : UInt32)) && (decide (k < (0 : Int32)))) then (do
       let rest2 : Int32 := ((0 : Int32) - k)
-      let rest2 ← dec_shift.loop2 digits meta_ limit rest2 fuel
+      let (digits, meta_, rest2) ← dec_shift.loop2 digits meta_ limit rest2 fuel
       let (r4, digits, meta_) ← dec_right_shift digits meta_ (rest2.toUInt32) fuel
-      pure ())
+      pure (digits, meta_))
     else (do
-      pure ()))
+      pure (digits, meta_)))
   pure ((), digits, meta_)
 
 def dec_should_round_up (digits : Array UInt8) (meta_ : Array UInt32) (nd : UInt32) (fuel : Nat) : Option (Bool × Array UInt8 × Array UInt32) := do
   pure ((if (((digits.getD nd.toNat (0 : UInt8)) == (53 : UInt8)) && ((nd + (1 : UInt32)) == (meta_.getD 0 (0 : UInt32)))) then (if ((meta_.getD 3 (0 : UInt32)) != (0 : UInt32)) then true else ((decide (nd > (0 : UInt32))) && (((((digits.getD (nd - (1 : UInt32)).toNat (0 : UInt8)).toUInt32) - (48 : UInt32)) % (2 : UInt32)) != (0 : UInt32)))) else (decide ((digits.getD nd.toNat (0 : UInt8)) >= (53 : UInt8)))), digits, meta_)
 
 def dec_round_down (digits : Array UInt8) (meta_ : Array UInt32) (nd : Int32) (fuel : Nat) : Option (Unit × Array UInt8 × Array UInt32) := do
-  let meta_ ← (if ((decide (nd >= (0 : Int32))) && (decide ((nd.toUInt32) < (meta_.getD 0 (0 : UInt32))))) then (do
+  let (digits, meta_) ← (if ((decide (nd >= (0 : Int32))) && (decide ((nd.toUInt32) < (meta_.getD 0 (0 : UInt32))))) then (do
       let meta_ := meta_.setIfInBounds 0 (nd.toUInt32)
       let (r1, digits, meta_) ← dec_trim digits meta_ fuel
-      pure meta_)
+      pure (digits, meta_))
     else (do
-      pure meta_))
+      pure (digits, meta_)))
   pure ((), digits, meta_)
 
 def dec_round_up.loop1 (digits : Array UInt8) (meta_ : Array UInt32) (i : UInt32) (done : Bool) : Nat → Option (Array UInt8 × Array UInt32 × UInt32 × Bool)
@@ -478,17 +480,17 @@ def dec_round_up (digits : Array UInt8) (meta_ : Array UInt32) (nd : Int32) (fue
   pure ((), digits, meta_)
 
 def dec_round (digits : Array UInt8) (meta_ : Array UInt32) (nd : Int32) (fuel : Nat) : Option (Unit × Array UInt8 × Array UInt32) := do
-  let () ← (if ((decide (nd >= (0 : Int32))) && (decide ((nd.toUInt32) < (meta_.getD 0 (0 : UInt32))))) then (do
+  let (digits, meta_) ← (if ((decide (nd >= (0 : Int32))) && (decide ((nd.toUInt32) < (meta_.getD 0 (0 : UInt32))))) then (do
       let (r1, digits, meta_) ← dec_should_round_up digits meta_ (nd.toUInt32) fuel
-      let () ← (if r1 then (do
+      let (digits, meta_) ← (if r1 then (do
           let (r2, digits, meta_) ← dec_round_up digits meta_ nd fuel
-          pure ())
+          pure (digits, meta_))
         else (do
           let (r3, digits, meta_) ← dec_round_down digits meta_ nd fuel
-          pure ()))
-      pure ())
+          pure (digits, meta_)))
+      pure (digits, meta_))
     else (do
-      pure ()))
+      pure (digits, meta_)))
   pure ((), digits, meta_)
 
 def dec_rounded_integer.loop1 (digits : Array UInt8) (meta_ : Array UInt32) (dpu : UInt32) (n : UInt64) (i : UInt32) : Nat → Option (UInt64 × UInt32)
@@ -512,9 +514,9 @@ def dec_rounded_integer.loop2 (dpu : UInt32) (n : UInt64) (i : UInt32) : Nat →
 def dec_rounded_integer (digits : Array UInt8) (meta_ : Array UInt32) (fuel : Nat) : Option (UInt64 × Array UInt8 × Array UInt32) := do
   let (r1, meta_) ← dec_dp meta_ fuel
   let dp : Int32 := r1
-  let r2 ← (
+  let (r2, digits, meta_) ← (
     if (decide (dp > (20 : Int32))) then (do
-      pure (18446744073709551615 : UInt64))
+      pure ((18446744073709551615 : UInt64), digits, meta_))
     else (do
       let dpu : UInt32 := (if (decide (dp < (0 : Int32))) then (0 : UInt32) else (dp.toUInt32))
       let n : UInt64 := (0 : UInt64)
@@ -522,7 +524,7 @@ def dec_rounded_integer (digits : Array UInt8) (meta_ : Array UInt32) (fuel : Na
       let (n, i) ← dec_rounded_integer.loop1 digits meta_ dpu n i fuel
       let (n, i) ← dec_rounded_integer.loop2 dpu n i fuel
       let (r3, digits, meta_) ← dec_should_round_up digits meta_ dpu fuel
-      pure (if (((decide (dp >= (0 : Int32))) && (decide (dpu < (meta_.getD 0 (0 : UInt32))))) && r3) then (n + (1 : UInt64)) else n)))
+      pure ((if (((decide (dp >= (0 : Int32))) && (decide (dpu < (meta_.getD 0 (0 : UInt32))))) && r3) then (n + (1 : UInt64)) else n), digits, meta_)))
   pure (r2, digits, meta_)
 
 def float_fmt_e_size (neg : Bool) (nd : UInt32) (dp : Int32) (prec : Int32) (fuel : Nat) : Option (UInt32) := do
@@ -720,28 +722,28 @@ def float_format_digits (dst : Array UInt8) (digits : Array UInt8) (nd : UInt32)
       let r3 ← float_fmt_f_size neg dp (fprec.toUInt32) fuel
       pure r3))
   let needed : UInt32 := r1
-  let r4 ← (
+  let (r4, dst, digits) ← (
     if (decide (needed > (dst.size.toUInt32))) then (do
-      pure (Result_u32_FloatError.Err FloatError.DestinationTooSmall))
+      pure ((Result_u32_FloatError.Err FloatError.DestinationTooSmall), dst, digits))
     else (do
-      let r5 ← (
+      let (r5, dst, digits) ← (
         if use_e then (do
           let (r6, dst, digits) ← float_fmt_e dst digits nd dp eprec neg fuel
-          pure (Result_u32_FloatError.Ok r6))
+          pure ((Result_u32_FloatError.Ok r6), dst, digits))
         else (do
           let (r7, dst, digits) ← float_fmt_f dst digits nd dp (fprec.toUInt32) neg fuel
-          pure (Result_u32_FloatError.Ok r7)))
-      pure r5))
+          pure ((Result_u32_FloatError.Ok r7), dst, digits)))
+      pure (r5, dst, digits)))
   pure (r4, dst, digits)
 
-def float_round_shortest.loop1 (d : Array UInt8) (dmeta : Array UInt32) (up : Array UInt8) (lo : Array UInt8) (dp : Int32) (nd : Int32) (inclusive : Bool) (upperdelta : UInt32) (udp : Int32) (und : Int32) (ldp : Int32) (lnd : Int32) (ui : Int32) (done : Bool) : Nat → Option (UInt32 × Int32 × Bool)
+def float_round_shortest.loop1 (d : Array UInt8) (dmeta : Array UInt32) (up : Array UInt8) (lo : Array UInt8) (dp : Int32) (nd : Int32) (inclusive : Bool) (upperdelta : UInt32) (udp : Int32) (und : Int32) (ldp : Int32) (lnd : Int32) (ui : Int32) (done : Bool) : Nat → Option (Array UInt8 × Array UInt32 × UInt32 × Int32 × Bool)
   | 0 => none
   | fuel + 1 => do
     if (!done) then do
       let mi : Int32 := ((ui - udp) + dp)
-      let (upperdelta, ui, done) ← (if (decide (mi >= nd)) then (do
+      let (d, dmeta, upperdelta, ui, done) ← (if (decide (mi >= nd)) then (do
           let done := true
-          pure (upperdelta, ui, done))
+          pure (d, dmeta, upperdelta, ui, done))
         else (do
           let li : Int32 := ((ui - udp) + ldp)
           let l : UInt8 := (48 : UInt8)
@@ -780,33 +782,33 @@ def float_round_shortest.loop1 (d : Array UInt8) (dmeta : Array UInt32) (up : Ar
             else (do
               pure upperdelta))
           let okup : Bool := ((decide (upperdelta > (0 : UInt32))) && ((inclusive || (decide (upperdelta > (1 : UInt32)))) || (decide ((ui + (1 : Int32)) < und))))
-          let (ui, done) ← (if (okdown && okup) then (do
+          let (d, dmeta, ui, done) ← (if (okdown && okup) then (do
               let (r10, d, dmeta) ← dec_round d dmeta (mi + (1 : Int32)) fuel
               let done := true
-              pure (ui, done))
+              pure (d, dmeta, ui, done))
             else (do
-              let (ui, done) ← (if okdown then (do
+              let (d, dmeta, ui, done) ← (if okdown then (do
                   let (r11, d, dmeta) ← dec_round_down d dmeta (mi + (1 : Int32)) fuel
                   let done := true
-                  pure (ui, done))
+                  pure (d, dmeta, ui, done))
                 else (do
-                  let (ui, done) ← (if okup then (do
+                  let (d, dmeta, ui, done) ← (if okup then (do
                       let (r12, d, dmeta) ← dec_round_up d dmeta (mi + (1 : Int32)) fuel
                       let done := true
-                      pure (ui, done))
+                      pure (d, dmeta, ui, done))
                     else (do
                       let ui := (ui + (1 : Int32))
-                      pure (ui, done)))
-                  pure (ui, done)))
-              pure (ui, done)))
-          pure (upperdelta, ui, done)))
+                      pure (d, dmeta, ui, done)))
+                  pure (d, dmeta, ui, done)))
+              pure (d, dmeta, ui, done)))
+          pure (d, dmeta, upperdelta, ui, done)))
       float_round_shortest.loop1 d dmeta up lo dp nd inclusive upperdelta udp und ldp lnd ui done fuel
-    else pure (upperdelta, ui, done)
+    else pure (d, dmeta, upperdelta, ui, done)
 
 def float_round_shortest (d : Array UInt8) (dmeta : Array UInt32) (up : Array UInt8) (umeta : Array UInt32) (lo : Array UInt8) (lmeta : Array UInt32) (mant : UInt64) (bexp : Int32) (mantbits : UInt32) (bias : Int32) (fuel : Nat) : Option (Unit × Array UInt8 × Array UInt32 × Array UInt8 × Array UInt32 × Array UInt8 × Array UInt32) := do
-  let dmeta ← (if (mant == (0 : UInt64)) then (do
+  let (d, dmeta, up, umeta, lo, lmeta) ← (if (mant == (0 : UInt64)) then (do
       let dmeta := dmeta.setIfInBounds 0 (0 : UInt32)
-      pure dmeta)
+      pure (d, dmeta, up, umeta, lo, lmeta))
     else (do
       let minexp : Int32 := (bias + (1 : Int32))
       let mb : Int32 := (mantbits.toInt32)
@@ -814,7 +816,7 @@ def float_round_shortest (d : Array UInt8) (dmeta : Array UInt32) (up : Array UI
       let dp : Int32 := r1
       let nd : Int32 := ((dmeta.getD 0 (0 : UInt32)).toInt32)
       let already : Bool := ((decide (bexp > minexp)) && (decide (((332 : Int32) * (dp - nd)) >= ((100 : Int32) * (bexp - mb)))))
-      let () ← (if (!already) then (do
+      let (d, dmeta, up, umeta, lo, lmeta) ← (if (!already) then (do
           let (r2, umeta) ← dec_init umeta fuel
           let (r3, up, umeta) ← dec_assign up umeta ((mant * (2 : UInt64)) + (1 : UInt64)) fuel
           let (r4, up, umeta) ← dec_shift up umeta ((bexp - mb) - (1 : Int32)) fuel
@@ -841,11 +843,11 @@ def float_round_shortest (d : Array UInt8) (dmeta : Array UInt32) (up : Array UI
           let lnd : Int32 := ((lmeta.getD 0 (0 : UInt32)).toInt32)
           let ui : Int32 := (0 : Int32)
           let done : Bool := false
-          let (upperdelta, ui, done) ← float_round_shortest.loop1 d dmeta up lo dp nd inclusive upperdelta udp und ldp lnd ui done fuel
-          pure ())
+          let (d, dmeta, upperdelta, ui, done) ← float_round_shortest.loop1 d dmeta up lo dp nd inclusive upperdelta udp und ldp lnd ui done fuel
+          pure (d, dmeta, up, umeta, lo, lmeta))
         else (do
-          pure ()))
-      pure dmeta))
+          pure (d, dmeta, up, umeta, lo, lmeta)))
+      pure (d, dmeta, up, umeta, lo, lmeta)))
   pure ((), d, dmeta, up, umeta, lo, lmeta)
 
 def float_big_ftoa (dst : Array UInt8) (d : Array UInt8) (dmeta : Array UInt32) (up : Array UInt8) (umeta : Array UInt32) (lo : Array UInt8) (lmeta : Array UInt32) (prec : Int32) (fmt : UInt8) (neg : Bool) (mant : UInt64) (bexp : Int32) (mantbits : UInt32) (bias : Int32) (fuel : Nat) : Option (Result_u32_FloatError × Array UInt8 × Array UInt8 × Array UInt32 × Array UInt8 × Array UInt32 × Array UInt8 × Array UInt32) := do
@@ -854,7 +856,7 @@ def float_big_ftoa (dst : Array UInt8) (d : Array UInt8) (dmeta : Array UInt32) 
   let (r3, d, dmeta) ← dec_shift d dmeta (bexp - (mantbits.toInt32)) fuel
   let shortest : Bool := (decide (prec < (0 : Int32)))
   let p : Int32 := prec
-  let p ← (if shortest then (do
+  let (d, dmeta, up, umeta, lo, lmeta, p) ← (if shortest then (do
       let (r4, d, dmeta, up, umeta, lo, lmeta) ← float_round_shortest d dmeta up umeta lo lmeta mant bexp mantbits bias fuel
       let nd : Int32 := ((dmeta.getD 0 (0 : UInt32)).toInt32)
       let (r5, dmeta) ← dec_dp dmeta fuel
@@ -870,16 +872,16 @@ def float_big_ftoa (dst : Array UInt8) (d : Array UInt8) (dmeta : Array UInt32) 
               let p := nd
               pure p))
           pure p))
-      pure p)
+      pure (d, dmeta, up, umeta, lo, lmeta, p))
     else (do
-      let p ← (if (fmt == (101 : UInt8)) then (do
+      let (d, dmeta, p) ← (if (fmt == (101 : UInt8)) then (do
           let (r6, d, dmeta) ← dec_round d dmeta (p + (1 : Int32)) fuel
-          pure p)
+          pure (d, dmeta, p))
         else (do
-          let p ← (if (fmt == (102 : UInt8)) then (do
+          let (d, dmeta, p) ← (if (fmt == (102 : UInt8)) then (do
               let (r7, dmeta) ← dec_dp dmeta fuel
               let (r8, d, dmeta) ← dec_round d dmeta (r7 + p) fuel
-              pure p)
+              pure (d, dmeta, p))
             else (do
               let p ← (if (p == (0 : Int32)) then (do
                   let p := (1 : Int32)
@@ -887,9 +889,9 @@ def float_big_ftoa (dst : Array UInt8) (d : Array UInt8) (dmeta : Array UInt32) 
                 else (do
                   pure p))
               let (r9, d, dmeta) ← dec_round d dmeta p fuel
-              pure p))
-          pure p))
-      pure p))
+              pure (d, dmeta, p)))
+          pure (d, dmeta, p)))
+      pure (d, dmeta, up, umeta, lo, lmeta, p)))
   let (r10, dmeta) ← dec_dp dmeta fuel
   let (r11, dst, d) ← float_format_digits dst d (dmeta.getD 0 (0 : UInt32)) r10 p fmt shortest neg fuel
   pure (r11, dst, d, dmeta, up, umeta, lo, lmeta)
@@ -920,10 +922,10 @@ def float_generic (dst : Array UInt8) (bits : UInt64) (mantbits : UInt32) (expbi
   let expmask : UInt32 := (((1 : UInt32) <<< expbits) - (1 : UInt32))
   let expfield : UInt32 := (((bits >>> (mantbits.toUInt64)).toUInt32) &&& expmask)
   let mant : UInt64 := (bits &&& (((1 : UInt64) <<< (mantbits.toUInt64)) - (1 : UInt64)))
-  let (r1, mant) ← (
+  let (r1, dst, mant) ← (
     if (expfield == expmask) then (do
       let (r2, dst) ← float_write_special dst (mant != (0 : UInt64)) neg fuel
-      pure (r2, mant))
+      pure (r2, dst, mant))
     else (do
       let bexp : Int32 := ((if (expfield == (0 : UInt32)) then (1 : Int32) else (expfield.toInt32)) + bias)
       let mant ← (if (expfield != (0 : UInt32)) then (do
@@ -938,7 +940,7 @@ def float_generic (dst : Array UInt8) (bits : UInt64) (mantbits : UInt32) (expbi
       let lo : Array UInt8 := Array.replicate 800 (0 : UInt8)
       let lmeta : Array UInt32 := Array.replicate 5 (0 : UInt32)
       let (r3, dst, d, dmeta, up, umeta, lo, lmeta) ← float_big_ftoa dst d dmeta up umeta lo lmeta prec fmt neg mant bexp mantbits bias fuel
-      pure (r3, mant)))
+      pure (r3, dst, mant)))
   pure (r1, dst)
 
 def float_format (dst : Array UInt8) (value : Float) (fuel : Nat) : Option (Result_u32_FloatError × Array UInt8) := do
@@ -1110,7 +1112,7 @@ def dec_set (digits : Array UInt8) (meta_ : Array UInt32) (src : Array UInt8) (f
   let (r1, meta_) ← dec_set_dp meta_ dp fuel
   pure ((((!bad) && sawdigits) && (i == n)), digits, meta_)
 
-def dec_float_bits.loop1 (digits : Array UInt8) (meta_ : Array UInt32) (powtab : Array Int32) (bexp : Int32) : Nat → Option (Int32)
+def dec_float_bits.loop1 (digits : Array UInt8) (meta_ : Array UInt32) (powtab : Array Int32) (bexp : Int32) : Nat → Option (Array UInt8 × Array UInt32 × Int32)
   | 0 => none
   | fuel + 1 => do
     let (r2, meta_) ← dec_dp meta_ fuel
@@ -1121,9 +1123,9 @@ def dec_float_bits.loop1 (digits : Array UInt8) (meta_ : Array UInt32) (powtab :
       let (r4, digits, meta_) ← dec_shift digits meta_ ((0 : Int32) - n) fuel
       let bexp := (bexp + n)
       dec_float_bits.loop1 digits meta_ powtab bexp fuel
-    else pure bexp
+    else pure (digits, meta_, bexp)
 
-def dec_float_bits.loop2 (digits : Array UInt8) (meta_ : Array UInt32) (powtab : Array Int32) (bexp : Int32) : Nat → Option (Int32)
+def dec_float_bits.loop2 (digits : Array UInt8) (meta_ : Array UInt32) (powtab : Array Int32) (bexp : Int32) : Nat → Option (Array UInt8 × Array UInt32 × Int32)
   | 0 => none
   | fuel + 1 => do
     let (r5, meta_) ← dec_dp meta_ fuel
@@ -1135,7 +1137,7 @@ def dec_float_bits.loop2 (digits : Array UInt8) (meta_ : Array UInt32) (powtab :
       let (r8, digits, meta_) ← dec_shift digits meta_ n2 fuel
       let bexp := (bexp - n2)
       dec_float_bits.loop2 digits meta_ powtab bexp fuel
-    else pure bexp
+    else pure (digits, meta_, bexp)
 
 def dec_float_bits (digits : Array UInt8) (meta_ : Array UInt32) (mantbits : UInt32) (expbits : UInt32) (bias : Int32) (fuel : Nat) : Option (UInt64 × Array UInt8 × Array UInt32) := do
   let powtab : Array Int32 := (#[(1 : Int32), (3 : Int32), (6 : Int32), (9 : Int32), (13 : Int32), (16 : Int32), (19 : Int32), (23 : Int32), (26 : Int32)] : Array Int32)
@@ -1145,32 +1147,32 @@ def dec_float_bits (digits : Array UInt8) (meta_ : Array UInt32) (mantbits : UIn
   let overflow : Bool := false
   let (r1, meta_) ← dec_dp meta_ fuel
   let dp : Int32 := r1
-  let (bexp, mant, overflow) ← (if ((meta_.getD 0 (0 : UInt32)) == (0 : UInt32)) then (do
+  let (digits, meta_, bexp, mant, overflow) ← (if ((meta_.getD 0 (0 : UInt32)) == (0 : UInt32)) then (do
       let mant := (0 : UInt64)
-      pure (bexp, mant, overflow))
+      pure (digits, meta_, bexp, mant, overflow))
     else (do
-      let (bexp, mant, overflow) ← (if (decide (dp > (310 : Int32))) then (do
+      let (digits, meta_, bexp, mant, overflow) ← (if (decide (dp > (310 : Int32))) then (do
           let overflow := true
-          pure (bexp, mant, overflow))
+          pure (digits, meta_, bexp, mant, overflow))
         else (do
-          let (bexp, mant, overflow) ← (if (decide (dp < (0 - (330 : Int32)))) then (do
+          let (digits, meta_, bexp, mant, overflow) ← (if (decide (dp < (0 - (330 : Int32)))) then (do
               let mant := (0 : UInt64)
-              pure (bexp, mant, overflow))
+              pure (digits, meta_, bexp, mant, overflow))
             else (do
               let bexp := (0 : Int32)
-              let bexp ← dec_float_bits.loop1 digits meta_ powtab bexp fuel
-              let bexp ← dec_float_bits.loop2 digits meta_ powtab bexp fuel
+              let (digits, meta_, bexp) ← dec_float_bits.loop1 digits meta_ powtab bexp fuel
+              let (digits, meta_, bexp) ← dec_float_bits.loop2 digits meta_ powtab bexp fuel
               let bexp := (bexp - (1 : Int32))
-              let bexp ← (if (decide (bexp < (bias + (1 : Int32)))) then (do
+              let (digits, meta_, bexp) ← (if (decide (bexp < (bias + (1 : Int32)))) then (do
                   let lift : Int32 := ((bias + (1 : Int32)) - bexp)
                   let (r9, digits, meta_) ← dec_shift digits meta_ ((0 : Int32) - lift) fuel
                   let bexp := (bexp + lift)
-                  pure bexp)
+                  pure (digits, meta_, bexp))
                 else (do
-                  pure bexp))
-              let (bexp, mant, overflow) ← (if (decide ((bexp - bias) >= expmax)) then (do
+                  pure (digits, meta_, bexp)))
+              let (digits, meta_, bexp, mant, overflow) ← (if (decide ((bexp - bias) >= expmax)) then (do
                   let overflow := true
-                  pure (bexp, mant, overflow))
+                  pure (digits, meta_, bexp, mant, overflow))
                 else (do
                   let (r10, digits, meta_) ← dec_shift digits meta_ ((1 : Int32) + (mantbits.toInt32)) fuel
                   let (r11, digits, meta_) ← dec_rounded_integer digits meta_ fuel
@@ -1191,10 +1193,10 @@ def dec_float_bits (digits : Array UInt8) (meta_ : Array UInt32) (mantbits : UIn
                       pure bexp)
                     else (do
                       pure bexp))
-                  pure (bexp, mant, overflow)))
-              pure (bexp, mant, overflow)))
-          pure (bexp, mant, overflow)))
-      pure (bexp, mant, overflow)))
+                  pure (digits, meta_, bexp, mant, overflow)))
+              pure (digits, meta_, bexp, mant, overflow)))
+          pure (digits, meta_, bexp, mant, overflow)))
+      pure (digits, meta_, bexp, mant, overflow)))
   let (meta_, bexp, mant) ← (if overflow then (do
       let mant := (0 : UInt64)
       let bexp := (expmax + bias)
@@ -1232,14 +1234,17 @@ def float_parse_bits (src : Array UInt8) (mantbits : UInt32) (expbits : UInt32) 
               let d : Array UInt8 := digits
               let m : Array UInt32 := meta_
               let (r5, m) ← dec_init m fuel
+              let meta_ := m
               let (r6, d, m) ← dec_set d m src fuel
-              let r7 ← (
+              let (r7, digits, meta_, d, m) ← (
                 if r6 then (do
                   let (r8, d, m) ← dec_float_bits d m mantbits expbits bias fuel
                   let bits : UInt64 := r8
-                  pure (if (((m.getD 4 (0 : UInt32)) != (0 : UInt32)) && (!saturate)) then (Result_u64_FloatError.Err FloatError.OutOfRange) else (Result_u64_FloatError.Ok bits)))
+                  let digits := d
+                  let meta_ := m
+                  pure ((if (((m.getD 4 (0 : UInt32)) != (0 : UInt32)) && (!saturate)) then (Result_u64_FloatError.Err FloatError.OutOfRange) else (Result_u64_FloatError.Ok bits)), digits, meta_, d, m))
                 else (do
-                  pure (Result_u64_FloatError.Err FloatError.InvalidSyntax)))
+                  pure ((Result_u64_FloatError.Err FloatError.InvalidSyntax), digits, meta_, d, m)))
               pure r7))
           pure r4))
       pure r3))
