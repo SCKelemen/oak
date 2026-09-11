@@ -750,7 +750,7 @@ func (c *checker) instruction(instr Instruction) bool {
 		// state, as a callee does.
 		c.clobberCallerSaved()
 		return false
-	case "wfe", "wfi", "sev", "sevl", "yield", "csdb", "esb", "hint", "clrex":
+	case "wfe", "wfi", "sev", "sevl", "yield", "csdb", "esb", "hint", "clrex", "ssbb", "pssbb":
 		return false
 	case "dc", "ic", "tlbi", "at":
 		// Maintenance operations read their address register.
@@ -783,7 +783,7 @@ func (c *checker) instruction(instr Instruction) bool {
 			c.read(instr, instr.Operands[0].(Register)) // ret xN: an explicit return address
 		}
 		return c.ret(instr)
-	case "eret":
+	case "eret", "eretaa", "eretab":
 		if !c.never && c.hasResult {
 			c.errorf(instr.Line, "eret from a function with a result: exception return never delivers %s", typeText(c.fn.Signature.ReturnType))
 		}
@@ -824,15 +824,20 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.read(instr, dest)
 	}
 	switch instr.Mnemonic {
-	case "ubfx", "ubfiz", "sbfx", "bfi":
+	case "ubfx", "ubfiz", "sbfx", "sbfiz", "bfi", "bfxil", "bfc":
 		// Bit-field immediates: a field of width >= 1 starting at lsb >= 0,
-		// inside the register.
-		lsb, width := instr.Operands[2].(Immediate).Value, instr.Operands[3].(Immediate).Value
+		// inside the register (bfc has no source operand).
+		lsbAt := 2
+		if instr.Mnemonic == "bfc" {
+			lsbAt = 1
+		}
+		lsb, width := instr.Operands[lsbAt].(Immediate).Value, instr.Operands[lsbAt+1].(Immediate).Value
 		if lsb < 0 || width < 1 || lsb+width > int64(widthOf(dest.Class)) {
 			c.errorf(instr.Line, "%s: field [%d, %d) is not inside %s", instr.Mnemonic, lsb, lsb+width, dest.Text)
 		}
-		if instr.Mnemonic == "bfi" {
-			c.read(instr, dest) // the insert keeps the destination's other bits
+		switch instr.Mnemonic {
+		case "bfi", "bfxil", "bfc":
+			c.read(instr, dest) // the insert or clear keeps the destination's other bits
 		}
 	case "movk":
 		c.read(instr, dest) // the insert keeps the other halfwords
@@ -1033,9 +1038,12 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 	}
 	isStore := isStoreMnemonic(instr.Mnemonic)
 	for _, reg := range regs {
-		if isStore {
+		if isStore || isPrefetch(instr.Mnemonic) {
 			c.read(instr, reg)
 		}
+	}
+	if isPrefetch(instr.Mnemonic) {
+		regs = nil // a hint: its registers are read, none written
 	}
 	if mem.Base.Class == ClassX {
 		if fact, isSpan := c.spans[mem.Base.Num]; isSpan {
@@ -1104,7 +1112,8 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 // register as written).
 func isStoreMnemonic(mnemonic string) bool {
 	switch mnemonic {
-	case "str", "stp", "strb", "strh", "stur", "sturb", "sturh", "stlr", "stlrb", "stlrh", "stlur", "stlurb", "stlurh":
+	case "str", "stp", "strb", "strh", "stur", "sturb", "sturh", "stlr", "stlrb", "stlrh", "stlur", "stlurb", "stlurh",
+		"stnp", "sttr", "sttrb", "sttrh", "stllr", "stllrb", "stllrh":
 		return true
 	}
 	return false
@@ -1114,7 +1123,7 @@ func isStoreMnemonic(mnemonic string) bool {
 // written, a value read, a store through the base.
 func isExclusiveStore(mnemonic string) bool {
 	switch mnemonic {
-	case "stxr", "stlxr", "stxrb", "stlxrb", "stxrh", "stlxrh":
+	case "stxr", "stlxr", "stxrb", "stlxrb", "stxrh", "stlxrh", "stxp", "stlxp":
 		return true
 	}
 	return false
@@ -1144,16 +1153,21 @@ func (c *checker) atomicAccess(instr Instruction, matched form, mem Memory, regs
 	switch {
 	case isExclusiveStore(instr.Mnemonic):
 		writes, reads = regs[:1], regs[1:]
+	case atomicBase(instr.Mnemonic) == "casp":
+		reads, writes = regs, regs[:2]
 	case atomicBase(instr.Mnemonic) == "cas":
 		reads, writes = regs, regs[:1]
+	case strings.HasPrefix(atomicBase(instr.Mnemonic), "st"):
+		reads = regs // the result is discarded
 	default:
 		reads, writes = regs[:1], regs[1:]
 	}
 	for _, reg := range reads {
 		c.read(instr, reg)
 	}
-	// The access is one element at the base (no offset form for atomics).
-	c.spanAccess(instr, matched, mem, fact, nil, true)
+	// The access is one element (or pair) at the base, sized by the value
+	// registers (no offset form for atomics).
+	c.spanAccess(instr, matched, mem, fact, reads, true)
 	for _, reg := range writes {
 		c.write(instr, reg)
 	}
