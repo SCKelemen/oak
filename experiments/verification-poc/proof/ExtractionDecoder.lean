@@ -1,4 +1,5 @@
 import OakText
+import OakTextRefinement
 import ExtractionScanner
 
 set_option autoImplicit false
@@ -190,7 +191,7 @@ def CnfRel (cnf : Array UInt8) (s : CnfExt) (pos : Nat) (c : OakText.Cnf) : Prop
   s.literals.toNat = c.pool.length ∧ s.pending.toNat = c.pending ∧
   s.first = c.first ∧ s.comment = c.comment ∧
   c.pending ≤ c.pool.length ∧ c.pool.length ≤ 4096 ∧
-  c.initial.length = c.clauses ∧ c.sizes.length = c.clauses ∧
+  c.initial.length = c.clauses ∧ c.sizes.length = c.clauses ∧ c.clauses ≤ 256 ∧
   c.expected ≤ Decimal.limit ∧
   (c.valid = true → 4 ≤ c.stage → c.expected ≤ 256) ∧
   (∀ i, i < c.pool.length → (s.pool.getD i 0).toNat = c.pool.getD i 0) ∧
@@ -211,7 +212,7 @@ theorem scan_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (po
       (state'.getD 2 0).toNat = (scan (toBytes cnf) pos).stop ∧
       (state'.getD 3 0).toNat = (scan (toBytes cnf) pos).magnitude ∧
       (state'.getD 4 0).toNat = (scan (toBytes cnf) pos).sign := by
-  obtain ⟨h5, hpos, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, hle⟩ := hrel
+  obtain ⟨h5, hpos, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, hle⟩ := hrel
   have := rup_token_scan cnf s.scan fuel hs h5 (by rw [hpos]; exact hle) hf
   rw [hpos] at this
   exact this
@@ -230,7 +231,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
   obtain ⟨kind, state', h1, hsz, hk, hnext, hstart, hstop, hmag, hsign⟩ := scan_step cnf hs s pos c fuel hrel hf
   have hrel' := hrel
   obtain ⟨h5, hpos, hpool5, hinit5, hsizes5, hv, hstage, hvars, hexp, hcl, hlit, hpend, hfirst, hcomment,
-    hpendle, hpoolle, hinitlen, hsizeslen, hexplim, hexp256, hpoolpre, hclpre, hle⟩ := hrel
+    hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, hexp256, hpoolpre, hclpre, hle⟩ := hrel
   have hrange := scan_range (toBytes cnf) pos (by rw [toBytes_length]; exact hle)
   rw [toBytes_length] at hrange
   obtain ⟨hps, hsn, hns, hstopn, hkind0⟩ := hrange
@@ -279,7 +280,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
           done := (kind == 0) }, rfl, ?_, ?_⟩
       · unfold CnfRel
         refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, hvalid', rfl, hvars, hexp, hcl, hlit, hpend,
-          rfl, rfl, hpendle, hpoolle, hinitlen, hsizeslen, hexplim, ?_, hpoolpre, hclpre, hns⟩
+          rfl, rfl, hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, ?_, hpoolpre, hclpre, hns⟩
         intro _ _
         exact hexp256 hvalid (by omega)
       · exact hk0
@@ -293,7 +294,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
           done := (kind == 0) }, rfl, ?_, ?_⟩
       · unfold CnfRel
         refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, hvalid', hstage, hvars, hexp, hcl, hlit, hpend,
-          rfl, rfl, hpendle, hpoolle, hinitlen, hsizeslen, hexplim, ?_, hpoolpre, hclpre, hns⟩
+          rfl, rfl, hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, ?_, hpoolpre, hclpre, hns⟩
         intro _ h4
         exact hexp256 hvalid h4
       · exact hk0
@@ -368,7 +369,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
           done := false }, rfl, ?_, ?_⟩
       · unfold CnfRel
         refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, hvalid.symm, hstage, hvars, hexp, hcl, hlit, hpend,
-          rfl, rfl, hpendle, hpoolle, hinitlen, hsizeslen, hexplim, hexp256, hpoolpre, hclpre, hns⟩
+          rfl, rfl, hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, hexp256, hpoolpre, hclpre, hns⟩
       · rfl
     · have hfw' : (s.first && decide (Word (toBytes cnf) t (99 : UInt8).toNat)) = false := by
         rw [hcom]; exact Bool.eq_false_iff.mpr hfw
@@ -386,7 +387,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
             done := false }, rfl, ?_, ?_⟩
         · unfold CnfRel
           refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, hvalid.symm, hstage, hvars, hexp, hcl, hlit, hpend,
-            rfl, by rw [hcomment, hcc], hpendle, hpoolle, hinitlen, hsizeslen, hexplim, hexp256, hpoolpre, hclpre, hns⟩
+            rfl, by rw [hcomment, hcc], hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, hexp256, hpoolpre, hclpre, hns⟩
         · rfl
       · have hcf : c.comment = false := Bool.eq_false_iff.mpr hcc
         have hsc : (!s.comment) = true := by rw [hcomment, hcf]; rfl
@@ -405,7 +406,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
               done := false }, rfl, ?_, ?_⟩
           · unfold CnfRel
             refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, rfl, rfl, hvars, hexp, hcl, hlit, hpend,
-              rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hexplim, ?_, hpoolpre, hclpre, hns⟩
+              rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, ?_, hpoolpre, hclpre, hns⟩
             intro _ (h : 4 ≤ 1); omega
           · rfl
         · have hb0 : (s.stage == 0) = false := by rw [hstage_eq 0 (by decide), decide_eq_false hst0]
@@ -445,7 +446,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
                 done := false }, rfl, ?_, ?_⟩
             · unfold CnfRel
               refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, rfl, rfl, hvars, hexp, hcl, hlit, hpend,
-                rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hexplim, ?_, hpoolpre, hclpre, hns⟩
+                rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, ?_, hpoolpre, hclpre, hns⟩
               intro _ (h : 4 ≤ 2); omega
             · rfl
           · have hb1 : (s.stage == 1) = false := by rw [hstage_eq 1 (by decide), decide_eq_false hst1]
@@ -484,7 +485,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
                   done := false }, rfl, ?_, ?_⟩
               · unfold CnfRel
                 refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, rfl, rfl, hmag, hexp, hcl, hlit, hpend,
-                  rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hexplim, ?_, hpoolpre, hclpre, hns⟩
+                  rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, ?_, hpoolpre, hclpre, hns⟩
                 intro _ (h : 4 ≤ 3); omega
               · rfl
             · have hb2 : (s.stage == 2) = false := by rw [hstage_eq 2 (by decide), decide_eq_false hst2]
@@ -509,7 +510,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
                     done := false }, rfl, ?_, ?_⟩
                 · unfold CnfRel
                   refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, rfl, rfl, hvars, hmag, hcl, hlit, hpend,
-                    rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hlimit, ?_, hpoolpre, hclpre, hns⟩
+                    rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hlimit, ?_, hpoolpre, hclpre, hns⟩
                   · intro hv' _
                     exact (of_decide_eq_true ((Bool.and_eq_true _ _).mp hv').2).2
                 · rfl
@@ -547,7 +548,8 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
                     · unfold CnfRel
                       refine ⟨hsz, hnext, hpool5, by rw [size_set]; exact hinit5, by rw [size_set]; exact hsizes5,
                         rfl, hstage, hvars, hexp, hclsucc, hlit, hlit, rfl, by rw [hcomment, hcf],
-                        Nat.le_refl _, hpoolle, by simp [hinitlen], by simp [hsizeslen], hexplim,
+                        Nat.le_refl _, hpoolle, by simp [hinitlen], by simp [hsizeslen],
+                        by show c.clauses + 1 ≤ 256; omega, hexplim,
                         fun _ h => hexp256 hvalid h, hpoolpre, ?_, hns⟩
                       intro i hi
                       have hi' : i < c.clauses + 1 := hi
@@ -573,7 +575,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
                         done := false }, rfl, ?_, ?_⟩
                     · unfold CnfRel
                       refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, rfl, hstage, hvars, hexp, hcl, hlit, hpend,
-                        rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hexplim, ?_, hpoolpre, hclpre, hns⟩
+                        rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, ?_, hpoolpre, hclpre, hns⟩
                       intro h; exact absurd h Bool.false_ne_true
                     · rfl
                 · have hbm : (state'.getD 3 0 == 0) = false := by rw [hmag0, decide_eq_false hm]
@@ -608,7 +610,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
                     · unfold CnfRel
                       refine ⟨hsz, hnext, by rw [size_set]; exact hpool5, hinit5, hsizes5,
                         rfl, hstage, hvars, hexp, hcl, by simp [hlitsucc], hpend, rfl, by rw [hcomment, hcf],
-                        by simp; omega, by simp; omega, hinitlen, hsizeslen, hexplim,
+                        by simp; omega, by simp; omega, hinitlen, hsizeslen, hcl256, hexplim,
                         fun _ h => hexp256 hvalid h, ?_, hclpre, hns⟩
                       intro i hi
                       have hi' : i < (c.pool ++ [OakText.encoded t.magnitude t.sign]).length := hi
@@ -631,7 +633,7 @@ theorem cnf_step (cnf : Array UInt8) (hs : cnf.size ≤ 65536) (s : CnfExt) (pos
                         done := false }, rfl, ?_, ?_⟩
                     · unfold CnfRel
                       refine ⟨hsz, hnext, hpool5, hinit5, hsizes5, rfl, hstage, hvars, hexp, hcl, hlit, hpend,
-                        rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hexplim, ?_, hpoolpre, hclpre, hns⟩
+                        rfl, by rw [hcomment, hcf], hpendle, hpoolle, hinitlen, hsizeslen, hcl256, hexplim, ?_, hpoolpre, hclpre, hns⟩
                       intro h; exact absurd h Bool.false_ne_true
                     · rfl
 
@@ -649,7 +651,7 @@ theorem cnfStep_stop (bytes : List Nat) (t : Token) (c : OakText.Cnf)
 
 theorem CnfRel.pos_le {cnf : Array UInt8} {s : CnfExt} {pos : Nat} {c : OakText.Cnf}
     (h : CnfRel cnf s pos c) : pos ≤ cnf.size := by
-  obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, hle⟩ := h
+  obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, hle⟩ := h
   exact hle
 
 theorem CnfRel.valid_eq {cnf : Array UInt8} {s : CnfExt} {pos : Nat} {c : OakText.Cnf}
@@ -816,11 +818,946 @@ theorem cnfStart_rel (cnf : Array UInt8) (valid : Bool) :
     CnfRel cnf (cnfStart valid) 0 { OakText.initialCnf with valid := valid } := by
   unfold CnfRel cnfStart OakText.initialCnf
   refine ⟨by simp, by simp, by simp, by simp, by simp, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl,
-    Nat.le_refl _, by simp, rfl, rfl, by simp [Decimal.limit], ?_, ?_, ?_, Nat.zero_le _⟩
+    Nat.le_refl _, by simp, rfl, rfl, Nat.zero_le _, by simp [Decimal.limit], ?_, ?_, ?_, Nat.zero_le _⟩
   · intro _ h; simp at h
   · intro i hi; simp at hi
   · intro i hi; simp at hi
 
 #print axioms cnf_loop
+
+/-! ## The LRAT phase -/
+
+/-- The extracted command record represents the model's. -/
+def CmdRel (e : RUPCommand) (m : Ranges.Command) : Prop :=
+  e.addition = m.addition ∧ e.id_.toNat = m.id ∧ e.start.toNat = m.start ∧ e.count.toNat = m.count ∧
+  e.refs_start.toNat = m.refsStart ∧ e.refs_count.toNat = m.refsCount
+
+/-- The extracted LRAT loop's state, bundled. -/
+structure ProofExt where
+  pool : Array UInt32
+  refs : Array UInt32
+  commands : Array RUPCommand
+  scan : Array UInt32
+  valid : Bool
+  stage : UInt32
+  variables : UInt32
+  literals : UInt32
+  first : Bool
+  comment : Bool
+  done : Bool
+  count : UInt32
+  references : UInt32
+  command : RUPCommand
+
+def ProofExt.run (proof : Array UInt8) (s : ProofExt) (fuel : Nat) :=
+  rup_text_check.loop4 proof s.pool s.refs s.commands s.scan s.valid s.stage s.variables s.literals
+    s.first s.comment s.done s.count s.references s.command fuel
+
+def ProofExt.tuple (s : ProofExt) :=
+  (s.pool, s.refs, s.commands, s.scan, s.valid, s.stage, s.literals, s.first, s.comment, s.done,
+    s.count, s.references, s.command)
+
+/-- The extracted LRAT state represents the model's `Proof` at cursor `pos`. -/
+def ProofRel (proof : Array UInt8) (s : ProofExt) (pos : Nat) (p : OakText.Proof) : Prop :=
+  s.scan.size = 5 ∧ (s.scan.getD 0 0).toNat = pos ∧
+  s.pool.size = 4096 ∧ s.refs.size = 4096 ∧ s.commands.size = 256 ∧
+  s.valid = p.valid ∧ s.stage.toNat = p.stage ∧ s.variables.toNat = p.variables ∧
+  s.literals.toNat = p.pool.length ∧ s.references.toNat = p.refs.length ∧
+  s.count.toNat = p.commands.length ∧ s.first = p.first ∧ s.comment = p.comment ∧
+  CmdRel s.command p.command ∧
+  p.pool.length ≤ 4096 ∧ p.refs.length ≤ 4096 ∧ p.commands.length ≤ 256 ∧
+  p.command.count ≤ p.pool.length ∧ p.command.refsCount ≤ p.refs.length ∧
+  (∀ i, i < p.pool.length → (s.pool.getD i 0).toNat = p.pool.getD i 0) ∧
+  (∀ i, i < p.refs.length → (s.refs.getD i 0).toNat = p.refs.getD i 0) ∧
+  (∀ i (h : i < p.commands.length), CmdRel (s.commands.getD i default) (p.commands[i]'h)) ∧
+  pos ≤ proof.size
+
+theorem ProofRel.pos_le {proof : Array UInt8} {s : ProofExt} {pos : Nat} {p : OakText.Proof}
+    (h : ProofRel proof s pos p) : pos ≤ proof.size := by
+  obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, hle⟩ := h
+  exact hle
+
+theorem ProofRel.valid_eq {proof : Array UInt8} {s : ProofExt} {pos : Nat} {p : OakText.Proof}
+    (h : ProofRel proof s pos p) : s.valid = p.valid := by
+  obtain ⟨-, -, -, -, -, hv, -⟩ := h
+  exact hv
+
+/-- Writes into the command table, read back. -/
+theorem getD_set_cmd_ne (a : Array RUPCommand) (i j : Nat) (v : RUPCommand) (hij : j ≠ i) :
+    (a.setIfInBounds i v).getD j default = a.getD j default := by
+  simp [Array.getD_eq_getD_getElem?, hij.symm]
+
+theorem getD_set_cmd_self (a : Array RUPCommand) (i : Nat) (v : RUPCommand) (hi : i < a.size) :
+    (a.setIfInBounds i v).getD i default = v := by
+  simp [Array.getD_eq_getD_getElem?, hi]
+
+theorem scan_step' (proof : Array UInt8) (hs : proof.size ≤ 65536) (s : ProofExt) (pos : Nat)
+    (p : OakText.Proof) (fuel : Nat) (hrel : ProofRel proof s pos p) (hf : proof.size < fuel) :
+    ∃ (kind : UInt32) (state' : Array UInt32), rup_token proof s.scan fuel = some (kind, state') ∧
+      state'.size = 5 ∧
+      kind.toNat = (scan (toBytes proof) pos).kind ∧
+      (state'.getD 0 0).toNat = (scan (toBytes proof) pos).next ∧
+      (state'.getD 1 0).toNat = (scan (toBytes proof) pos).start ∧
+      (state'.getD 2 0).toNat = (scan (toBytes proof) pos).stop ∧
+      (state'.getD 3 0).toNat = (scan (toBytes proof) pos).magnitude ∧
+      (state'.getD 4 0).toNat = (scan (toBytes proof) pos).sign := by
+  obtain ⟨h5, hpos, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, hle⟩ := hrel
+  have := rup_token_scan proof s.scan fuel hs h5 (by rw [hpos]; exact hle) hf
+  rw [hpos] at this
+  exact this
+
+/-- One iteration of the extracted LRAT loop is one `proofStep` of the model. -/
+theorem proof_step (proof : Array UInt8) (hs : proof.size ≤ 65536) (s : ProofExt) (pos : Nat)
+    (p : OakText.Proof) (fuel : Nat) (hrel : ProofRel proof s pos p) (hdone : s.done = false)
+    (hvalid : p.valid = true) (hf : proof.size < fuel) :
+    ∃ s' : ProofExt, s.run proof (fuel + 1) = s'.run proof fuel ∧
+      ProofRel proof s' (scan (toBytes proof) pos).next
+        (OakText.proofStep (toBytes proof) (scan (toBytes proof) pos) p).1 ∧
+      s'.done = (OakText.proofStep (toBytes proof) (scan (toBytes proof) pos) p).2 := by
+  obtain ⟨kind, state', h1, hsz, hk, hnext, hstart, hstop, hmag, hsign⟩ := scan_step' proof hs s pos p fuel hrel hf
+  obtain ⟨h5, hpos, hpool5, hrefs5, hcmds5, hv, hstage, hvars, hlit, hrefs, hcnt, hfirst, hcomment, hcmd,
+    hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hle⟩ := hrel
+  have hrange := scan_range (toBytes proof) pos (by rw [toBytes_length]; exact hle)
+  rw [toBytes_length] at hrange
+  obtain ⟨hps, hsn, hns, hstopn, hkind0⟩ := hrange
+  have hsvalid : s.valid = true := by rw [hv, hvalid]
+  unfold ProofExt.run
+  rw [rup_text_check.loop4]
+  simp only [hdone, hsvalid, Bool.not_false, Bool.true_and, ite_true, h1, bind, Option.bind]
+  generalize ht : scan (toBytes proof) pos = t at hk hnext hstart hstop hmag hsign hps hsn hns hstopn hkind0 ⊢
+  have hk2 : (kind != 2) = decide (t.kind ≠ 2) := by
+    rw [bne_ofNat32 kind 2 (by decide), hk, beq_nat_decide]
+    by_cases h : t.kind = 2 <;> simp [h]
+  have hk0 : (kind == 0) = decide (t.kind = 0) := by
+    rw [beq_ofNat32 kind 0 (by decide), hk, beq_nat_decide]
+  have hstage_eq : ∀ n : Nat, n < UInt32.size → (s.stage == (OfNat.ofNat n : UInt32)) = decide (p.stage = n) := by
+    intro n hn
+    rw [beq_ofNat32 s.stage n hn, hstage, beq_nat_decide]
+  have hsign0 : (state'.getD 4 0 != 0) = decide (t.sign ≠ 0) := bne_zero_decide _ _ hsign
+  have hsign1 : (state'.getD 4 0 == 1) = decide (t.sign = 1) := by
+    rw [beq_ofNat32 _ 1 (by decide), hsign, beq_nat_decide]
+  have hmag0 : (state'.getD 3 0 == 0) = decide (t.magnitude = 0) := by
+    rw [beq_ofNat32 _ 0 (by decide), hmag, beq_nat_decide]
+  have hlimit : t.magnitude ≤ Decimal.limit := by rw [← ht]; exact scan_magnitude_le _ _
+  have hlevars : decide (state'.getD 3 0 ≤ s.variables) = decide (t.magnitude ≤ p.variables) := by
+    rw [decide_le_toNat, hmag, hvars]
+  have hlit4096 : decide (s.literals < 4096) = decide (p.pool.length < 4096) := by
+    rw [decide_lt_toNat, hlit, toNat_ofNat32 4096 (by decide)]
+  have hrefs4096 : decide (s.references < 4096) = decide (p.refs.length < 4096) := by
+    rw [decide_lt_toNat, hrefs, toNat_ofNat32 4096 (by decide)]
+  by_cases hnot2 : t.kind ≠ 2
+  · -- A newline or the end of the text: publish a complete command.
+    have hb : (kind != 2) = true := by rw [hk2, decide_eq_true hnot2]
+    simp only [hb, ite_true]
+    have hstep : OakText.proofStep (toBytes proof) t p =
+        (if p.stage = 5 then
+          if p.commands.length < 256 then
+            ({ p with
+                valid := true
+                commands := p.commands ++ [p.command]
+                stage := 0
+                first := true
+                comment := false }, decide (t.kind = 0))
+          else ({ p with valid := false, stage := 0, first := true, comment := false }, decide (t.kind = 0))
+        else
+          ({ p with valid := decide (p.stage = 0), stage := 0, first := true, comment := false },
+            decide (t.kind = 0))) := by
+      unfold OakText.proofStep
+      rw [if_pos hnot2]
+    rw [hstep]
+    by_cases hst5 : p.stage = 5
+    · have hb5 : (s.stage == 5) = true := by rw [hstage_eq 5 (by decide), decide_eq_true hst5]
+      have hb0 : (s.stage == 0) = false := by rw [hstage_eq 0 (by decide), decide_eq_false (by omega)]
+      have hcnt256 : decide (s.count < 256) = decide (p.commands.length < 256) := by
+        rw [decide_lt_toNat, hcnt, toNat_ofNat32 256 (by decide)]
+      simp only [hb5, hb0, ite_true, if_pos hst5, Bool.false_or, Bool.true_and, hcnt256, pure]
+      by_cases hroom : p.commands.length < 256
+      · have hcntsucc : (s.count + 1).toNat = p.commands.length + 1 := by
+          rw [UInt32.toNat_add, hcnt, toNat_ofNat32 1 (by decide)]
+          exact Nat.mod_eq_of_lt (by omega)
+        simp only [decide_eq_true hroom, ite_true, if_pos hroom]
+        refine ⟨{ s with
+            commands := s.commands.setIfInBounds s.count.toNat s.command
+            scan := state'
+            valid := true
+            stage := 0
+            first := true
+            comment := false
+            done := (kind == 0)
+            count := s.count + 1 }, rfl, ?_, ?_⟩
+        · unfold ProofRel
+          refine ⟨hsz, hnext, hpool5, hrefs5, by show (s.commands.setIfInBounds _ _).size = 256; rw [Array.size_setIfInBounds]; exact hcmds5,
+            rfl, rfl, hvars, hlit, hrefs,
+            by simp [hcntsucc], rfl, rfl, hcmd, hpoolle, hrefsle, by simp; omega, hccount, hcrefs,
+            hpoolpre, hrefspre, ?_, hns⟩
+          intro i hi
+          have hi' : i < (p.commands ++ [p.command]).length := hi
+          simp only [List.length_append, List.length_singleton] at hi'
+          by_cases hil : i < p.commands.length
+          · rw [getD_set_cmd_ne _ _ _ _ (by omega), List.getElem_append_left hil]
+            exact hcmdpre i hil
+          · have hieq : i = p.commands.length := by omega
+            subst hieq
+            have hwrite : (s.commands.setIfInBounds s.count.toNat s.command).getD p.commands.length default = s.command := by
+              rw [← hcnt]
+              exact getD_set_cmd_self _ _ _ (by rw [hcmds5]; omega)
+            rw [hwrite]
+            simp only [List.getElem_append_right (Nat.le_refl _), Nat.sub_self, List.getElem_singleton]
+            exact hcmd
+        · exact hk0
+      · simp only [decide_eq_false hroom, Bool.false_eq_true, ite_false, if_neg hroom]
+        refine ⟨{ s with
+            scan := state'
+            valid := false
+            stage := 0
+            first := true
+            comment := false
+            done := (kind == 0) }, rfl, ?_, ?_⟩
+        · unfold ProofRel
+          refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, rfl, rfl, hvars, hlit, hrefs, hcnt, rfl, rfl, hcmd,
+            hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+        · exact hk0
+    · have hb5 : (s.stage == 5) = false := by rw [hstage_eq 5 (by decide), decide_eq_false hst5]
+      simp only [hb5, Bool.false_eq_true, ite_false, if_neg hst5, Bool.or_false, pure]
+      refine ⟨{ s with
+          scan := state'
+          valid := (s.stage == 0)
+          stage := 0
+          first := true
+          comment := false
+          done := (kind == 0) }, rfl, ?_, ?_⟩
+      · unfold ProofRel
+        refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, hstage_eq 0 (by decide), rfl, hvars, hlit, hrefs, hcnt, rfl, rfl, hcmd,
+          hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+      · exact hk0
+  · -- A word.
+    have hb : (kind != 2) = false := by rw [hk2, decide_eq_false hnot2]
+    simp only [hb, Bool.false_eq_true, ite_false]
+    have hw99 := rup_word_spec proof state' 99 fuel t hstart hstop ⟨by omega, by omega⟩
+    rw [hw99]
+    simp only []
+    have hcom : (s.first && decide (Word (toBytes proof) t (99 : UInt8).toNat)) =
+        (p.first && decide (Word (toBytes proof) t 99)) := by rw [hfirst]; rfl
+    have hmodel : OakText.proofStep (toBytes proof) t p =
+        (let comment := p.comment || (p.first && decide (Word (toBytes proof) t 99))
+        if comment then ({ p with first := false, comment := comment }, false)
+        else if p.stage = 0 then
+          ({ p with
+              valid := decide (t.sign ≠ 0 ∧ (t.sign = 1 ∨ t.magnitude = 0))
+              stage := 1
+              command := ⟨true, t.magnitude, p.pool.length, 0, p.refs.length, 0⟩
+              first := false
+              comment := comment }, false)
+        else if p.stage = 1 ∧ Word (toBytes proof) t 100 then
+          ({ p with
+              command := { p.command with addition := false }
+              stage := 4
+              first := false
+              comment := comment }, false)
+        else
+          let stage := if p.stage = 1 then 2 else p.stage
+          if stage = 2 then
+            if t.magnitude = 0 then
+              ({ p with valid := decide (t.sign ≠ 0), stage := 3, first := false, comment := comment }, false)
+            else if decide (t.sign ≠ 0) && decide (t.magnitude ≤ p.variables ∧ p.pool.length < 4096) then
+              ({ p with
+                  valid := true
+                  stage := stage
+                  pool := p.pool ++ [OakText.encoded t.magnitude t.sign]
+                  command := { p.command with count := p.command.count + 1 }
+                  first := false
+                  comment := comment }, false)
+            else ({ p with valid := false, stage := stage, first := false, comment := comment }, false)
+          else if t.magnitude = 0 then
+            ({ p with
+                valid := decide (t.sign ≠ 0 ∧ stage ≠ 5) && (if stage = 4 then decide (Word (toBytes proof) t 48) else true)
+                stage := 5
+                first := false
+                comment := comment }, false)
+          else if decide (t.sign ≠ 0 ∧ stage ≠ 5) && decide (t.sign = 1 ∧ p.refs.length < 4096) then
+            ({ p with
+                valid := true
+                stage := stage
+                refs := p.refs ++ [t.magnitude]
+                command := { p.command with refsCount := p.command.refsCount + 1 }
+                first := false
+                comment := comment }, false)
+          else ({ p with valid := false, stage := stage, first := false, comment := comment }, false)) := by
+      unfold OakText.proofStep
+      rw [if_neg hnot2]
+    rw [hmodel]
+    by_cases hfw : (p.first && decide (Word (toBytes proof) t 99)) = true
+    · have hfw' : (s.first && decide (Word (toBytes proof) t (99 : UInt8).toNat)) = true := by rw [hcom, hfw]
+      have hcm : (p.comment || (p.first && decide (Word (toBytes proof) t 99))) = true := by rw [hfw, Bool.or_true]
+      simp only [hfw', ite_true, hcm, Bool.not_true, Bool.false_eq_true, ite_false, pure]
+      refine ⟨{ s with
+          scan := state'
+          valid := true
+          first := false
+          comment := true
+          done := false }, rfl, ?_, ?_⟩
+      · unfold ProofRel
+        refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, hvalid.symm, hstage, hvars, hlit, hrefs, hcnt, rfl, rfl, hcmd,
+          hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+      · rfl
+    · have hfw' : (s.first && decide (Word (toBytes proof) t (99 : UInt8).toNat)) = false := by
+        rw [hcom]; exact Bool.eq_false_iff.mpr hfw
+      have hcm : (p.comment || (p.first && decide (Word (toBytes proof) t 99))) = p.comment := by
+        rw [Bool.eq_false_iff.mpr hfw, Bool.or_false]
+      simp only [hfw', Bool.false_eq_true, ite_false, hcm, pure]
+      by_cases hcc : p.comment = true
+      · have hsc : (!s.comment) = false := by rw [hcomment, hcc]; rfl
+        simp only [hcc, ite_true, hsc, Bool.false_eq_true, ite_false]
+        refine ⟨{ s with
+            scan := state'
+            valid := true
+            first := false
+            done := false }, rfl, ?_, ?_⟩
+        · unfold ProofRel
+          refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, hvalid.symm, hstage, hvars, hlit, hrefs, hcnt, rfl,
+            by rw [hcomment, hcc], hcmd, hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+        · rfl
+      · have hcf : p.comment = false := Bool.eq_false_iff.mpr hcc
+        have hsc : (!s.comment) = true := by rw [hcomment, hcf]; rfl
+        simp only [hcf, Bool.false_eq_true, ite_false, hsc, ite_true]
+        -- Stage 0: the command head.
+        by_cases hst0 : p.stage = 0
+        · have hb0 : (s.stage == 0) = true := by rw [hstage_eq 0 (by decide), decide_eq_true hst0]
+          simp only [hb0, ite_true, if_pos hst0, hsign0, hsign1, hmag0]
+          have hvalid0 : (decide (t.sign ≠ 0) && (decide (t.sign = 1) || decide (t.magnitude = 0))) =
+              decide (t.sign ≠ 0 ∧ (t.sign = 1 ∨ t.magnitude = 0)) := by
+            simp only [Bool.decide_and, Bool.decide_or]
+          rw [hvalid0]
+          refine ⟨{ s with
+              scan := state'
+              valid := decide (t.sign ≠ 0 ∧ (t.sign = 1 ∨ t.magnitude = 0))
+              stage := 1
+              first := false
+              comment := s.comment
+              done := false
+              command := {
+                addition := true
+                id_ := state'.getD 3 0
+                start := s.literals
+                count := 0
+                refs_start := s.references
+                refs_count := 0 } }, rfl, ?_, ?_⟩
+          · unfold ProofRel
+            refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, rfl, rfl, hvars, hlit, hrefs, hcnt, rfl, by rw [hcomment, hcf],
+              ⟨rfl, hmag, hlit, rfl, hrefs, rfl⟩, hpoolle, hrefsle, hcmdsle, Nat.zero_le _, Nat.zero_le _,
+              hpoolpre, hrefspre, hcmdpre, hns⟩
+          · rfl
+        · have hb0 : (s.stage == 0) = false := by rw [hstage_eq 0 (by decide), decide_eq_false hst0]
+          simp only [hb0, Bool.false_eq_true, ite_false, if_neg hst0]
+          have hw100 := rup_word_spec proof state' 100 fuel t hstart hstop ⟨by omega, by omega⟩
+          rw [hw100]
+          simp only []
+          have hdel : (s.stage == 1 && decide (Word (toBytes proof) t (100 : UInt8).toNat)) =
+              decide (p.stage = 1 ∧ Word (toBytes proof) t 100) := by
+            rw [hstage_eq 1 (by decide), Bool.decide_and]; rfl
+          rw [hdel]
+          by_cases hdw : p.stage = 1 ∧ Word (toBytes proof) t 100
+          · -- The deletion keyword.
+            simp only [decide_eq_true hdw, ite_true, if_pos hdw]
+            refine ⟨{ s with
+                scan := state'
+                valid := true
+                stage := 4
+                first := false
+                comment := s.comment
+                done := false
+                command := { s.command with addition := false } }, rfl, ?_, ?_⟩
+            · unfold ProofRel
+              refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, hvalid.symm, rfl, hvars, hlit, hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                ⟨rfl, hcmd.2.1, hcmd.2.2.1, hcmd.2.2.2.1, hcmd.2.2.2.2.1, hcmd.2.2.2.2.2⟩,
+                hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+            · rfl
+          · simp only [decide_eq_false hdw, Bool.false_eq_true, ite_false, if_neg hdw]
+            -- The stage promotion: a second word after the head is a literal.
+            by_cases hst1 : p.stage = 1
+            · have hb1 : (s.stage == 1) = true := by rw [hstage_eq 1 (by decide), decide_eq_true hst1]
+              simp only [hb1, ite_true, if_pos hst1]
+
+              -- The literal stage: a zero ends the clause, a literal joins the pool.
+              have hne5 : ((2 : UInt32) != 5) = true := by decide
+              have heq2 : ((2 : UInt32) == 2) = true := by decide
+              simp only [hne5, Bool.and_true, heq2, ite_true]
+              by_cases hm : t.magnitude = 0
+              · have hbm : (state'.getD 3 0 == 0) = true := by rw [hmag0, decide_eq_true hm]
+                simp only [hbm, ite_true, if_pos hm, hsign0]
+                refine ⟨{ s with
+                    scan := state'
+                    valid := decide (t.sign ≠ 0)
+                    stage := 3
+                    first := false
+                    comment := s.comment
+                    done := false }, rfl, ?_, ?_⟩
+                · unfold ProofRel
+                  refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, rfl, rfl, hvars, hlit, hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                    hcmd, hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+                · rfl
+              · have hbm : (state'.getD 3 0 == 0) = false := by rw [hmag0, decide_eq_false hm]
+                simp only [hbm, Bool.false_eq_true, ite_false, if_neg hm, hsign0, hlevars, hlit4096]
+                have hcondE : (decide (t.sign ≠ 0) && decide (t.magnitude ≤ p.variables) && decide (p.pool.length < 4096)) =
+                    (decide (t.sign ≠ 0) && decide (t.magnitude ≤ p.variables ∧ p.pool.length < 4096)) := by
+                  simp only [Bool.decide_and, Bool.and_assoc]
+                rw [hcondE]
+                by_cases hcond : (decide (t.sign ≠ 0) && decide (t.magnitude ≤ p.variables ∧ p.pool.length < 4096)) = true
+                · have hparts := (Bool.and_eq_true _ _).mp hcond
+                  have hroom : p.pool.length < 4096 := (of_decide_eq_true hparts.2).2
+                  obtain ⟨e, he, heval⟩ := rup_encoded_spec (state'.getD 3 0) (state'.getD 4 0) fuel
+                    (by rw [hmag]; omega) (by rw [hmag]; exact hlimit)
+                  simp only [hcond, ite_true, he]
+                  have hlitsucc : (s.literals + 1).toNat = p.pool.length + 1 := by
+                    rw [UInt32.toNat_add, hlit, toNat_ofNat32 1 (by decide)]
+                    exact Nat.mod_eq_of_lt (by omega)
+                  have hcntsucc : (s.command.count + 1).toNat = p.command.count + 1 := by
+                    rw [UInt32.toNat_add, hcmd.2.2.2.1, toNat_ofNat32 1 (by decide)]
+                    exact Nat.mod_eq_of_lt (by omega)
+                  refine ⟨{ s with
+                      pool := s.pool.setIfInBounds s.literals.toNat e
+                      scan := state'
+                      valid := true
+                      stage := (2 : UInt32)
+                      literals := s.literals + 1
+                      first := false
+                      comment := s.comment
+                      done := false
+                      command := { s.command with count := s.command.count + 1 } }, rfl, ?_, ?_⟩
+                  · unfold ProofRel
+                    refine ⟨hsz, hnext, by rw [size_set]; exact hpool5, hrefs5, hcmds5, rfl, rfl, hvars,
+                      by simp [hlitsucc], hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                      ⟨hcmd.1, hcmd.2.1, hcmd.2.2.1, hcntsucc, hcmd.2.2.2.2.1, hcmd.2.2.2.2.2⟩,
+                      by simp; omega, hrefsle, hcmdsle, by simp; omega, hcrefs, ?_, hrefspre, hcmdpre, hns⟩
+                    intro i hi
+                    have hi' : i < (p.pool ++ [OakText.encoded t.magnitude t.sign]).length := hi
+                    simp only [List.length_append, List.length_singleton] at hi'
+                    by_cases hil : i < p.pool.length
+                    · rw [getD_set_ne _ _ _ _ (by omega), list_getD_append_lt _ _ _ hil]
+                      exact hpoolpre i hil
+                    · have hieq : i = p.pool.length := by omega
+                      subst hieq
+                      rw [← hlit, getD_set_self _ _ _ (by rw [hpool5]; omega), hlit, list_getD_append_self, heval, hmag, hsign]
+                  · rfl
+                · have hcondf := Bool.eq_false_iff.mpr hcond
+                  simp only [hcondf, Bool.false_eq_true, ite_false]
+                  refine ⟨{ s with
+                      scan := state'
+                      valid := false
+                      stage := (2 : UInt32)
+                      first := false
+                      comment := s.comment
+                      done := false }, rfl, ?_, ?_⟩
+                  · unfold ProofRel
+                    refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, rfl, rfl, hvars, hlit, hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                      hcmd, hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+                  · rfl
+
+            · have hb1 : (s.stage == 1) = false := by rw [hstage_eq 1 (by decide), decide_eq_false hst1]
+              simp only [hb1, Bool.false_eq_true, ite_false, if_neg hst1]
+              by_cases hst2 : p.stage = 2
+              · have hne5' : (s.stage != 5) = true := by
+                  rw [bne_ofNat32 s.stage 5 (by decide), hstage, hst2]; rfl
+                have heq2' : (s.stage == 2) = true := by rw [hstage_eq 2 (by decide), decide_eq_true hst2]
+                have hst2e : s.stage = 2 := by
+                  apply UInt32.toNat_inj.mp; rw [hstage, hst2]; rfl
+                rw [if_pos hst2]
+
+                -- The literal stage: a zero ends the clause, a literal joins the pool.
+                have hne5 : (s.stage != 5) = true := hne5'
+                have heq2 : (s.stage == 2) = true := heq2'
+                simp only [hne5, Bool.and_true, heq2, ite_true]
+                by_cases hm : t.magnitude = 0
+                · have hbm : (state'.getD 3 0 == 0) = true := by rw [hmag0, decide_eq_true hm]
+                  simp only [hbm, ite_true, if_pos hm, hsign0]
+                  refine ⟨{ s with
+                      scan := state'
+                      valid := decide (t.sign ≠ 0)
+                      stage := 3
+                      first := false
+                      comment := s.comment
+                      done := false }, rfl, ?_, ?_⟩
+                  · unfold ProofRel
+                    refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, rfl, rfl, hvars, hlit, hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                      hcmd, hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+                  · rfl
+                · have hbm : (state'.getD 3 0 == 0) = false := by rw [hmag0, decide_eq_false hm]
+                  simp only [hbm, Bool.false_eq_true, ite_false, if_neg hm, hsign0, hlevars, hlit4096]
+                  have hcondE : (decide (t.sign ≠ 0) && decide (t.magnitude ≤ p.variables) && decide (p.pool.length < 4096)) =
+                      (decide (t.sign ≠ 0) && decide (t.magnitude ≤ p.variables ∧ p.pool.length < 4096)) := by
+                    simp only [Bool.decide_and, Bool.and_assoc]
+                  rw [hcondE]
+                  by_cases hcond : (decide (t.sign ≠ 0) && decide (t.magnitude ≤ p.variables ∧ p.pool.length < 4096)) = true
+                  · have hparts := (Bool.and_eq_true _ _).mp hcond
+                    have hroom : p.pool.length < 4096 := (of_decide_eq_true hparts.2).2
+                    obtain ⟨e, he, heval⟩ := rup_encoded_spec (state'.getD 3 0) (state'.getD 4 0) fuel
+                      (by rw [hmag]; omega) (by rw [hmag]; exact hlimit)
+                    simp only [hcond, ite_true, he]
+                    have hlitsucc : (s.literals + 1).toNat = p.pool.length + 1 := by
+                      rw [UInt32.toNat_add, hlit, toNat_ofNat32 1 (by decide)]
+                      exact Nat.mod_eq_of_lt (by omega)
+                    have hcntsucc : (s.command.count + 1).toNat = p.command.count + 1 := by
+                      rw [UInt32.toNat_add, hcmd.2.2.2.1, toNat_ofNat32 1 (by decide)]
+                      exact Nat.mod_eq_of_lt (by omega)
+                    refine ⟨{ s with
+                        pool := s.pool.setIfInBounds s.literals.toNat e
+                        scan := state'
+                        valid := true
+                        stage := s.stage
+                        literals := s.literals + 1
+                        first := false
+                        comment := s.comment
+                        done := false
+                        command := { s.command with count := s.command.count + 1 } }, rfl, ?_, ?_⟩
+                    · unfold ProofRel
+                      refine ⟨hsz, hnext, by rw [size_set]; exact hpool5, hrefs5, hcmds5, rfl, hstage, hvars,
+                        by simp [hlitsucc], hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                        ⟨hcmd.1, hcmd.2.1, hcmd.2.2.1, hcntsucc, hcmd.2.2.2.2.1, hcmd.2.2.2.2.2⟩,
+                        by simp; omega, hrefsle, hcmdsle, by simp; omega, hcrefs, ?_, hrefspre, hcmdpre, hns⟩
+                      intro i hi
+                      have hi' : i < (p.pool ++ [OakText.encoded t.magnitude t.sign]).length := hi
+                      simp only [List.length_append, List.length_singleton] at hi'
+                      by_cases hil : i < p.pool.length
+                      · rw [getD_set_ne _ _ _ _ (by omega), list_getD_append_lt _ _ _ hil]
+                        exact hpoolpre i hil
+                      · have hieq : i = p.pool.length := by omega
+                        subst hieq
+                        rw [← hlit, getD_set_self _ _ _ (by rw [hpool5]; omega), hlit, list_getD_append_self, heval, hmag, hsign]
+                    · rfl
+                  · have hcondf := Bool.eq_false_iff.mpr hcond
+                    simp only [hcondf, Bool.false_eq_true, ite_false]
+                    refine ⟨{ s with
+                        scan := state'
+                        valid := false
+                        stage := s.stage
+                        first := false
+                        comment := s.comment
+                        done := false }, rfl, ?_, ?_⟩
+                    · unfold ProofRel
+                      refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, rfl, hstage, hvars, hlit, hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                        hcmd, hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+                    · rfl
+
+              · have heq2' : (s.stage == 2) = false := by rw [hstage_eq 2 (by decide), decide_eq_false hst2]
+                have hne5s : (s.stage != 5) = decide (p.stage ≠ 5) := by
+                  rw [bne_ofNat32 s.stage 5 (by decide), hstage, beq_nat_decide, decide_not]
+                simp only [heq2', Bool.false_eq_true, ite_false, if_neg hst2, hsign0, hne5s]
+                have hvalid5 : (decide (t.sign ≠ 0) && decide (p.stage ≠ 5)) = decide (t.sign ≠ 0 ∧ p.stage ≠ 5) := by
+                  rw [Bool.decide_and]
+                rw [hvalid5]
+                by_cases hm : t.magnitude = 0
+                · have hbm : (state'.getD 3 0 == 0) = true := by rw [hmag0, decide_eq_true hm]
+                  simp only [hbm, ite_true, if_pos hm]
+                  by_cases hst4 : p.stage = 4
+                  · have hb4 : (s.stage == 4) = true := by rw [hstage_eq 4 (by decide), decide_eq_true hst4]
+                    have hw48 := rup_word_spec proof state' 48 fuel t hstart hstop ⟨by omega, by omega⟩
+                    simp only [hb4, ite_true, if_pos hst4, hw48]
+                    refine ⟨{ s with
+                        scan := state'
+                        valid := decide (t.sign ≠ 0 ∧ p.stage ≠ 5) && decide (Word (toBytes proof) t (48 : UInt8).toNat)
+                        stage := 5
+                        first := false
+                        comment := s.comment
+                        done := false }, rfl, ?_, ?_⟩
+                    · unfold ProofRel
+                      refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, rfl, rfl, hvars, hlit, hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                        hcmd, hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+                    · rfl
+                  · have hb4 : (s.stage == 4) = false := by rw [hstage_eq 4 (by decide), decide_eq_false hst4]
+                    simp only [hb4, Bool.false_eq_true, ite_false, if_neg hst4, Bool.and_true]
+                    refine ⟨{ s with
+                        scan := state'
+                        valid := decide (t.sign ≠ 0 ∧ p.stage ≠ 5)
+                        stage := 5
+                        first := false
+                        comment := s.comment
+                        done := false }, rfl, ?_, ?_⟩
+                    · unfold ProofRel
+                      refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, rfl, rfl, hvars, hlit, hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                        hcmd, hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+                    · rfl
+                · have hbm : (state'.getD 3 0 == 0) = false := by rw [hmag0, decide_eq_false hm]
+                  simp only [hbm, Bool.false_eq_true, ite_false, if_neg hm, hsign1, hrefs4096]
+                  have hcondE : (decide (t.sign ≠ 0 ∧ p.stage ≠ 5) && decide (t.sign = 1) && decide (p.refs.length < 4096)) =
+                      (decide (t.sign ≠ 0 ∧ p.stage ≠ 5) && decide (t.sign = 1 ∧ p.refs.length < 4096)) := by
+                    simp only [Bool.decide_and, Bool.and_assoc]
+                  rw [hcondE]
+                  by_cases hcond : (decide (t.sign ≠ 0 ∧ p.stage ≠ 5) && decide (t.sign = 1 ∧ p.refs.length < 4096)) = true
+                  · have hparts := (Bool.and_eq_true _ _).mp hcond
+                    have hroom : p.refs.length < 4096 := (of_decide_eq_true hparts.2).2
+                    simp only [hcond, ite_true]
+                    have hrefsucc : (s.references + 1).toNat = p.refs.length + 1 := by
+                      rw [UInt32.toNat_add, hrefs, toNat_ofNat32 1 (by decide)]
+                      exact Nat.mod_eq_of_lt (by omega)
+                    have hrcsucc : (s.command.refs_count + 1).toNat = p.command.refsCount + 1 := by
+                      rw [UInt32.toNat_add, hcmd.2.2.2.2.2, toNat_ofNat32 1 (by decide)]
+                      exact Nat.mod_eq_of_lt (by omega)
+                    refine ⟨{ s with
+                        refs := s.refs.setIfInBounds s.references.toNat (state'.getD 3 0)
+                        scan := state'
+                        valid := true
+                        first := false
+                        comment := s.comment
+                        done := false
+                        references := s.references + 1
+                        command := { s.command with refs_count := s.command.refs_count + 1 } }, rfl, ?_, ?_⟩
+                    · unfold ProofRel
+                      refine ⟨hsz, hnext, hpool5, by rw [size_set]; exact hrefs5, hcmds5, rfl, hstage, hvars, hlit,
+                        by simp [hrefsucc], hcnt, rfl, by rw [hcomment, hcf],
+                        ⟨hcmd.1, hcmd.2.1, hcmd.2.2.1, hcmd.2.2.2.1, hcmd.2.2.2.2.1, hrcsucc⟩,
+                        hpoolle, by simp; omega, hcmdsle, hccount, by simp; omega, hpoolpre, ?_, hcmdpre, hns⟩
+                      intro i hi
+                      have hi' : i < (p.refs ++ [t.magnitude]).length := hi
+                      simp only [List.length_append, List.length_singleton] at hi'
+                      by_cases hil : i < p.refs.length
+                      · rw [getD_set_ne _ _ _ _ (by omega), list_getD_append_lt _ _ _ hil]
+                        exact hrefspre i hil
+                      · have hieq : i = p.refs.length := by omega
+                        subst hieq
+                        rw [← hrefs, getD_set_self _ _ _ (by rw [hrefs5]; omega), hrefs, list_getD_append_self, hmag]
+                    · rfl
+                  · have hcondf := Bool.eq_false_iff.mpr hcond
+                    simp only [hcondf, Bool.false_eq_true, ite_false]
+                    refine ⟨{ s with
+                        scan := state'
+                        valid := false
+                        first := false
+                        comment := s.comment
+                        done := false }, rfl, ?_, ?_⟩
+                    · unfold ProofRel
+                      refine ⟨hsz, hnext, hpool5, hrefs5, hcmds5, rfl, hstage, hvars, hlit, hrefs, hcnt, rfl, by rw [hcomment, hcf],
+                        hcmd, hpoolle, hrefsle, hcmdsle, hccount, hcrefs, hpoolpre, hrefspre, hcmdpre, hns⟩
+                    · rfl
+
+/-- The model's LRAT step stops only at the end of the text. -/
+theorem proofStep_stop (bytes : List Nat) (t : Token) (p : OakText.Proof)
+    (h : (OakText.proofStep bytes t p).2 = false) : t.kind ≠ 0 := by
+  unfold OakText.proofStep at h
+  by_cases hk : t.kind ≠ 2
+  · rw [if_pos hk] at h
+    by_cases h5 : p.stage = 5
+    · rw [if_pos h5] at h
+      by_cases hroom : p.commands.length < 256
+      · rw [if_pos hroom] at h; exact of_decide_eq_false h
+      · rw [if_neg hroom] at h; exact of_decide_eq_false h
+    · rw [if_neg h5] at h; exact of_decide_eq_false h
+  · intro h0
+    exact hk (by omega)
+
+def ProofRelEnd (proof : Array UInt8) (s : ProofExt) (p : OakText.Proof) : Prop :=
+  ∃ pos, ProofRel proof s pos p
+
+/-- The extracted LRAT loop runs to the model's `proofLoop` result. -/
+theorem proof_loop (proof : Array UInt8) (hs : proof.size ≤ 65536) :
+    ∀ (m : Nat) (s : ProofExt) (pos : Nat) (p : OakText.Proof) (fuel : Nat),
+      ProofRel proof s pos p → s.done = false → proof.size - pos < m → m + proof.size < fuel →
+      ∃ (s' : ProofExt) (p' : OakText.Proof), s.run proof fuel = some s'.tuple ∧
+        OakText.proofLoop (toBytes proof) pos p m = some p' ∧ ProofRelEnd proof s' p' := by
+  intro m
+  induction m with
+  | zero => intro s pos p fuel _ _ hm; omega
+  | succ m ih =>
+    intro s pos p fuel hrel hdone hm hf
+    obtain ⟨f, rfl⟩ : ∃ f, fuel = f + 1 := ⟨fuel - 1, by omega⟩
+    have hsize_f : proof.size < f := by omega
+    by_cases hvalid : p.valid = true
+    · obtain ⟨s1, hrun, hrel1, hdone1⟩ := proof_step proof hs s pos p f hrel hdone hvalid hsize_f
+      have hmodel : OakText.proofLoop (toBytes proof) pos p (m + 1) =
+          (if (OakText.proofStep (toBytes proof) (scan (toBytes proof) pos) p).2 then
+            some (OakText.proofStep (toBytes proof) (scan (toBytes proof) pos) p).1
+          else OakText.proofLoop (toBytes proof) (scan (toBytes proof) pos).next
+            (OakText.proofStep (toBytes proof) (scan (toBytes proof) pos) p).1 m) := by
+        simp only [OakText.proofLoop, hvalid, Bool.not_true, Bool.false_eq_true, ite_false]
+      rw [hmodel, hrun]
+      by_cases hstop : (OakText.proofStep (toBytes proof) (scan (toBytes proof) pos) p).2 = true
+      · rw [if_pos hstop]
+        obtain ⟨f', rfl⟩ : ∃ f', f = f' + 1 := ⟨f - 1, by omega⟩
+        refine ⟨s1, _, ?_, rfl, ⟨_, hrel1⟩⟩
+        unfold ProofExt.run
+        rw [rup_text_check.loop4]
+        have hd : (!s1.done && s1.valid) = false := by rw [hdone1, hstop]; rfl
+        rw [if_neg (by rw [hd]; exact Bool.false_ne_true)]
+        rfl
+      · have hstop' := Bool.eq_false_iff.mpr hstop
+        rw [if_neg (by rw [hstop']; exact Bool.false_ne_true)]
+        have hkind := proofStep_stop _ _ _ hstop'
+        have hrange := scan_range (toBytes proof) pos (by rw [toBytes_length]; exact hrel.pos_le)
+        rw [toBytes_length] at hrange
+        obtain ⟨-, -, hns, -, hadv⟩ := hrange
+        have hpos := hadv hkind
+        exact ih s1 _ _ f hrel1 (by rw [hdone1, hstop']) (by omega) (by omega)
+    · have hvf : p.valid = false := Bool.eq_false_iff.mpr hvalid
+      have hsv : (!s.done && s.valid) = false := by rw [hrel.valid_eq, hvf]; simp
+      refine ⟨s, p, ?_, ?_, ⟨pos, hrel⟩⟩
+      · unfold ProofExt.run
+        rw [rup_text_check.loop4]
+        rw [if_neg (by rw [hsv]; exact Bool.false_ne_true)]
+        rfl
+      · simp only [OakText.proofLoop, hvf, Bool.not_false, ite_true]
+
+/-- The LRAT loop's starting state, as `rup_text_check` builds it from the
+DIMACS loop's result: the closing check, the scanner reset, fresh tables. -/
+def proofStart (s : CnfExt) : ProofExt :=
+  { pool := s.pool, refs := Array.replicate 4096 0, commands := Array.replicate 256 default,
+    scan := s.scan.setIfInBounds 0 0,
+    valid := (((s.valid && (s.stage == 5)) && (s.clauses == s.expected)) && (s.pending == s.literals)),
+    stage := 0, variables := s.variables, literals := s.literals, first := true, comment := false,
+    done := false, count := 0, references := 0,
+    command := { addition := true, id_ := 0, start := 0, count := 0, refs_start := 0, refs_count := 0 } }
+
+/-- The LRAT start represents the model's `proofStart` of the DIMACS result. -/
+theorem proofStart_rel (cnf proof : Array UInt8) (s : CnfExt) (pos : Nat) (c : OakText.Cnf)
+    (hrel : CnfRel cnf s pos c) : ProofRel proof (proofStart s) 0 (OakText.proofStart c) := by
+  obtain ⟨h5, hpos, hpool5, hinit5, hsizes5, hv, hstage, hvars, hexp, hcl, hlit, hpend, hfirst, hcomment,
+    hpendle, hpoolle, hinitlen, hsizeslen, -, hexplim, hexp256, hpoolpre, hclpre, hle⟩ := hrel
+  have hclosing : (((s.valid && (s.stage == 5)) && (s.clauses == s.expected)) && (s.pending == s.literals)) =
+      OakText.closingCheck c := by
+    unfold OakText.closingCheck
+    rw [hv, beq_ofNat32 s.stage 5 (by decide), hstage, beq_nat_decide, beq_toNat32 s.clauses s.expected, hcl, hexp,
+      beq_toNat32 s.pending s.literals, hpend, hlit]
+    simp only [Bool.decide_and, Bool.and_assoc]
+  unfold ProofRel proofStart OakText.proofStart
+  refine ⟨by rw [size_set]; exact h5, by rw [getD_set_self _ _ _ (by rw [h5]; decide)]; rfl,
+    hpool5, by simp, by simp, hclosing, rfl, hvars, hlit, rfl, rfl, rfl, rfl,
+    ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩, hpoolle, Nat.zero_le _, Nat.zero_le _, Nat.zero_le _, Nat.zero_le _,
+    hpoolpre, ?_, ?_, Nat.zero_le _⟩
+  · intro i hi; simp at hi
+  · intro i hi; simp at hi
+
+#print axioms proof_loop
+
+/-! ## The whole decoder -/
+
+/-- The entry guards on an invalid flag return at once, whatever the text. -/
+theorem guard1_false (cnf : Array UInt8) (b : UInt32) (fuel : Nat) :
+    rup_text_check.loop1 cnf false b (fuel + 1) = some (false, b) := by
+  rw [rup_text_check.loop1]; simp
+
+theorem guard2_false (proof : Array UInt8) (b : UInt32) (fuel : Nat) :
+    rup_text_check.loop2 proof false b (fuel + 1) = some (false, b) := by
+  rw [rup_text_check.loop2]; simp
+
+/-- Both loops return an invalid state at once. -/
+theorem cnf_run_invalid (cnf : Array UInt8) (s : CnfExt) (fuel : Nat) (h : s.valid = false) :
+    s.run cnf (fuel + 1) = some s.tuple := by
+  unfold CnfExt.run
+  rw [rup_text_check.loop3]
+  rw [if_neg (by rw [h]; simp)]
+  rfl
+
+theorem proof_run_invalid (proof : Array UInt8) (s : ProofExt) (fuel : Nat) (h : s.valid = false) :
+    s.run proof (fuel + 1) = some s.tuple := by
+  unfold ProofExt.run
+  rw [rup_text_check.loop4]
+  rw [if_neg (by rw [h]; simp)]
+  rfl
+
+/-- The model's loops return an invalid state at once as well. -/
+theorem cnfLoop_invalid (bytes : List Nat) (pos : Nat) (c : OakText.Cnf) (m : Nat) (h : c.valid = false) :
+    OakText.cnfLoop bytes pos c (m + 1) = some c := by
+  simp [OakText.cnfLoop, h]
+
+theorem proofLoop_invalid (bytes : List Nat) (pos : Nat) (p : OakText.Proof) (m : Nat) (h : p.valid = false) :
+    OakText.proofLoop bytes pos p (m + 1) = some p := by
+  simp [OakText.proofLoop, h]
+
+/-- A prefix of a bounded array, as the view the decoder hands on. -/
+theorem extract_size {α : Type} (a : Array α) (n : Nat) (hn : n ≤ a.size) : (a.extract 0 n).size = n := by
+  rw [Array.size_extract]; omega
+
+theorem extract_getD (a : Array UInt32) (n i : Nat) (hi : i < n) (hn : n ≤ a.size) :
+    (a.extract 0 n).getD i 0 = a.getD i 0 := by
+  rw [Array.getD_eq_getD_getElem?, Array.getD_eq_getD_getElem?, Array.getElem?_extract]
+  simp only [Nat.sub_zero, Nat.zero_add]
+  rw [if_pos (Nat.lt_min.mpr ⟨hi, by omega⟩)]
+
+theorem extract_getD_cmd (a : Array RUPCommand) (n i : Nat) (hi : i < n) (hn : n ≤ a.size) :
+    (a.extract 0 n).getD i default = a.getD i default := by
+  rw [Array.getD_eq_getD_getElem?, Array.getD_eq_getD_getElem?, Array.getElem?_extract]
+  simp only [Nat.sub_zero, Nat.zero_add]
+  rw [if_pos (Nat.lt_min.mpr ⟨hi, by omega⟩)]
+
+/-- `OakText.layout` over byte lists: the model's two phases and the closing
+test, as the transliteration spells them over strings. -/
+def layoutBytes (cnfBytes proofBytes : List Nat) : Option Ranges.Layout :=
+  match OakText.cnfPhase cnfBytes proofBytes with
+  | none => none
+  | some c =>
+    match OakText.proofLoop proofBytes 0 (OakText.proofStart c) (proofBytes.length + 1) with
+    | none => none
+    | some p => if p.valid then some ⟨p.variables, p.pool, c.initial, c.sizes, p.refs, p.commands⟩ else none
+
+theorem layout_eq (cnf proof : String) : OakText.layout cnf proof = layoutBytes (bytesOf cnf) (bytesOf proof) := rfl
+
+/-- The arrays the extracted decoder hands to the stream checker represent a
+model layout: the same variable count, and the same elements at every index
+of the same length. -/
+def LayoutRel (raw : Ranges.Layout) (variables : UInt32) (pool initial sizes refs : Array UInt32)
+    (commands : Array RUPCommand) : Prop :=
+  variables.toNat = raw.variables ∧
+  pool.size = raw.pool.length ∧ (∀ i, i < raw.pool.length → (pool.getD i 0).toNat = raw.pool.getD i 0) ∧
+  initial.size = raw.starts.length ∧ (∀ i, i < raw.starts.length → (initial.getD i 0).toNat = raw.starts.getD i 0) ∧
+  sizes.size = raw.sizes.length ∧ (∀ i, i < raw.sizes.length → (sizes.getD i 0).toNat = raw.sizes.getD i 0) ∧
+  refs.size = raw.refs.length ∧ (∀ i, i < raw.refs.length → (refs.getD i 0).toNat = raw.refs.getD i 0) ∧
+  commands.size = raw.commands.length ∧
+  (∀ i (h : i < raw.commands.length), CmdRel (commands.getD i default) (raw.commands[i]'h))
+
+theorem toUInt32_le_65536 (n : Nat) (hn : n < UInt32.size) :
+    decide (n.toUInt32 ≤ 65536) = decide (n ≤ 65536) := by
+  rw [decide_le_toNat]
+  show decide ((UInt32.ofNat n).toNat ≤ (65536 : UInt32).toNat) = _
+  rw [UInt32.toNat_ofNat', Nat.mod_eq_of_lt hn]
+  rfl
+
+/-- The decoder theorem: the extracted `rup_text_check` computes the model's
+layout. On every pair of texts below the `UInt32` range, with fuel above
+both texts twice over, the extraction either rejects where the model's
+`layout` is `none`, or hands the stream checker arrays that represent the
+model's `Layout`, so the acceptance of the extracted program is the
+acceptance of the extracted stream checker on the model's layout. -/
+theorem rup_text_check_spec (cnf proof : Array UInt8) (hc : cnf.size < UInt32.size)
+    (hp : proof.size < UInt32.size) (fuel : Nat) (hf : 2 * cnf.size + 2 * proof.size + 3 < fuel) :
+    ∃ (valid : Bool) (variables : UInt32) (pool initial sizes refs : Array UInt32) (commands : Array RUPCommand),
+      rup_text_check cnf proof fuel =
+        (if valid then rup_stream_check pool initial sizes refs commands variables fuel else some false) ∧
+      (valid = false → layoutBytes (toBytes cnf) (toBytes proof) = none) ∧
+      (valid = true → ∃ raw, layoutBytes (toBytes cnf) (toBytes proof) = some raw ∧
+        LayoutRel raw variables pool initial sizes refs commands) := by
+  obtain ⟨f, rfl⟩ : ∃ f, fuel = f + 1 := ⟨fuel - 1, by omega⟩
+  have hsz1 := toUInt32_le_65536 cnf.size hc
+  have hsz2 := toUInt32_le_65536 proof.size hp
+  have hlen1 : (toBytes cnf).length = cnf.size := toBytes_length cnf
+  have hlen2 : (toBytes proof).length = proof.size := toBytes_length proof
+  unfold rup_text_check
+  simp only [hsz1, hsz2]
+  by_cases hsmall : cnf.size ≤ 65536 ∧ proof.size ≤ 65536
+  · obtain ⟨hcs, hps⟩ := hsmall
+    simp only [decide_eq_true hcs, decide_eq_true hps, Bool.true_and]
+    obtain ⟨b1, hg1⟩ := guard1_spec cnf hcs (f + 1) true 0 (by simp) (by simp; omega)
+    simp only [hg1, bind, Option.bind, Bool.true_and, UInt32.toNat_zero, List.drop_zero]
+    obtain ⟨b2, hg2⟩ := guard2_spec proof hps (f + 1) ((toBytes cnf).all fun x => decide (x ≤ 127)) 0
+      (by simp) (by simp; omega)
+    simp only [hg2, UInt32.toNat_zero, List.drop_zero]
+    -- The DIMACS phase.
+    have hv : (((toBytes cnf).all fun x => decide (x ≤ 127)) && ((toBytes proof).all fun x => decide (x ≤ 127))) =
+        (OakText.guard (toBytes cnf) && OakText.guard (toBytes proof)) := by
+      unfold OakText.guard
+      rw [hlen1, hlen2, decide_eq_true hcs, decide_eq_true hps, Bool.true_and, Bool.true_and]
+    obtain ⟨s3, c3, hrun3, hmodel3, ⟨pos3, hrel3⟩⟩ := cnf_loop cnf hcs (cnf.size + 1)
+      (cnfStart (OakText.guard (toBytes cnf) && OakText.guard (toBytes proof))) 0
+      { OakText.initialCnf with valid := (OakText.guard (toBytes cnf) && OakText.guard (toBytes proof)) } (f + 1)
+      (cnfStart_rel cnf _) rfl (by omega) (by omega)
+    have hrun3' : rup_text_check.loop3 cnf (Array.replicate 4096 0) (Array.replicate 256 0) (Array.replicate 256 0)
+        ((Array.replicate 5 (0 : UInt32)).setIfInBounds 0 (0 : UInt32))
+        (OakText.guard (toBytes cnf) && OakText.guard (toBytes proof)) 0 0 0 0 0 0 true false false (f + 1) =
+        some s3.tuple := hrun3
+    rw [hv, hrun3']
+    simp only [CnfExt.tuple]
+    -- The LRAT phase.
+    obtain ⟨s4, p4, hrun4, hmodel4, ⟨pos4, hrel4⟩⟩ := proof_loop proof hps (proof.size + 1) (proofStart s3) 0
+      (OakText.proofStart c3) (f + 1) (proofStart_rel cnf proof s3 pos3 c3 hrel3) rfl (by omega) (by omega)
+    have hrun4' : rup_text_check.loop4 proof s3.pool (Array.replicate 4096 0) (Array.replicate 256 default)
+        (s3.scan.setIfInBounds 0 0)
+        (((s3.valid && (s3.stage == 5)) && (s3.clauses == s3.expected)) && (s3.pending == s3.literals))
+        0 s3.variables s3.literals true false false 0 0
+        { addition := true, id_ := 0, start := 0, count := 0, refs_start := 0, refs_count := 0 } (f + 1) =
+        some s4.tuple := hrun4
+    rw [hrun4']
+    simp only [ProofExt.tuple]
+    -- The model's layout.
+    have hphase : OakText.cnfPhase (toBytes cnf) (toBytes proof) = some c3 := by
+      unfold OakText.cnfPhase
+      rw [hlen1]
+      exact hmodel3
+    have hlayout : layoutBytes (toBytes cnf) (toBytes proof) =
+        (if p4.valid then some ⟨p4.variables, p4.pool, c3.initial, c3.sizes, p4.refs, p4.commands⟩ else none) := by
+      unfold layoutBytes
+      rw [hphase]
+      simp only [hlen2, hmodel4]
+    obtain ⟨-, -, hpool5, hinit5, hsizes5, -, -, hvars3, -, hcl3, -, -, -, -, -, -, hinitlen, hsizeslen, hcl256, -, -,
+      -, hclpre, -⟩ := hrel3
+    obtain ⟨-, -, hpool4, hrefs4, hcmds4, hv4, -, -, hlit4, hrefs4', hcnt4, -, -, -, hpoolle4, hrefsle4, hcmdsle4,
+      -, -, hpoolpre4, hrefspre4, hcmdpre4, -⟩ := hrel4
+    have hvars4 : p4.variables = (OakText.proofStart c3).variables :=
+      OakText.proofLoop_variables (toBytes proof) _ _ _ _ hmodel4
+    refine ⟨s4.valid, s3.variables, s4.pool.extract 0 s4.literals.toNat, s3.initial.extract 0 s3.clauses.toNat,
+      s3.sizes.extract 0 s3.clauses.toNat, s4.refs.extract 0 s4.references.toNat,
+      s4.commands.extract 0 s4.count.toNat, ?_, ?_, ?_⟩
+    · by_cases hval : s4.valid = true
+      · simp only [hval, ite_true]
+        cases rup_stream_check (s4.pool.extract 0 s4.literals.toNat) (s3.initial.extract 0 s3.clauses.toNat)
+          (s3.sizes.extract 0 s3.clauses.toNat) (s4.refs.extract 0 s4.references.toNat)
+          (s4.commands.extract 0 s4.count.toNat) s3.variables (f + 1) <;> rfl
+      · have hvf := Bool.eq_false_iff.mpr hval
+        simp only [hvf, Bool.false_eq_true, ite_false]
+        rfl
+    · intro hval
+      rw [hlayout, ← hv4, hval]
+      rfl
+    · intro hval
+      rw [hlayout, ← hv4, hval, if_pos rfl]
+      refine ⟨_, rfl, ?_⟩
+      unfold LayoutRel
+      refine ⟨by rw [hvars3, hvars4]; rfl,
+        by rw [extract_size _ _ (by omega), hlit4],
+        fun i hi => by
+          have hi' : i < p4.pool.length := hi
+          rw [extract_getD _ _ _ (by omega) (by omega)]; exact hpoolpre4 i hi',
+        by rw [extract_size _ _ (by omega), hcl3, hinitlen],
+        fun i hi => by
+          have hi' : i < c3.initial.length := hi
+          rw [extract_getD _ _ _ (by omega) (by omega)]; exact (hclpre i (by omega)).1,
+        by rw [extract_size _ _ (by omega), hcl3, hsizeslen],
+        fun i hi => by
+          have hi' : i < c3.sizes.length := hi
+          rw [extract_getD _ _ _ (by omega) (by omega)]; exact (hclpre i (by omega)).2,
+        by rw [extract_size _ _ (by omega), hrefs4'],
+        fun i hi => by
+          have hi' : i < p4.refs.length := hi
+          rw [extract_getD _ _ _ (by omega) (by omega)]; exact hrefspre4 i hi',
+        by rw [extract_size _ _ (by omega), hcnt4],
+        fun i hi => by
+          have hi' : i < p4.commands.length := hi
+          rw [extract_getD_cmd _ _ _ (by omega) (by omega)]; exact hcmdpre4 i hi'⟩
+  · -- A text over the size limit: rejected before anything is scanned.
+    have hguard : (decide (cnf.size ≤ 65536) && decide (proof.size ≤ 65536)) = false := by
+      rcases Decidable.not_and_iff_or_not.mp hsmall with h | h
+      · rw [decide_eq_false h]; rfl
+      · rw [decide_eq_false h]; simp
+    simp only [hguard, guard1_false, bind, Option.bind, guard2_false]
+    have hrun3 := cnf_run_invalid cnf (cnfStart false) f rfl
+    have hrun3' : rup_text_check.loop3 cnf (Array.replicate 4096 0) (Array.replicate 256 0) (Array.replicate 256 0)
+        ((Array.replicate 5 (0 : UInt32)).setIfInBounds 0 (0 : UInt32))
+        false 0 0 0 0 0 0 true false false (f + 1) = some (cnfStart false).tuple := hrun3
+    rw [hrun3']
+    simp only [CnfExt.tuple, cnfStart, Bool.false_and]
+    have hrun4 := proof_run_invalid proof (proofStart (cnfStart false)) f (by simp [proofStart, cnfStart])
+    have hrun4' : rup_text_check.loop4 proof (Array.replicate 4096 0) (Array.replicate 4096 0)
+        (Array.replicate 256 default) (((Array.replicate 5 (0 : UInt32)).setIfInBounds 0 (0 : UInt32)).setIfInBounds 0 0)
+        false 0 0 0 true false false 0 0
+        { addition := true, id_ := 0, start := 0, count := 0, refs_start := 0, refs_count := 0 } (f + 1) =
+        some (proofStart (cnfStart false)).tuple := by
+      have := hrun4
+      unfold ProofExt.run proofStart cnfStart at this
+      simp only [Bool.false_and] at this
+      exact this
+    rw [hrun4']
+    simp only [ProofExt.tuple, proofStart, cnfStart, Bool.false_and]
+    refine ⟨false, 0, Array.empty, Array.empty, Array.empty, Array.empty, Array.empty, rfl, fun _ => ?_,
+      fun h => absurd h Bool.false_ne_true⟩
+    -- The model rejects too: the guard fails, both loops return invalid states.
+    have hmg : (OakText.guard (toBytes cnf) && OakText.guard (toBytes proof)) = false := by
+      unfold OakText.guard
+      rw [hlen1, hlen2]
+      rcases Decidable.not_and_iff_or_not.mp hsmall with h | h
+      · rw [decide_eq_false h]; rfl
+      · rw [decide_eq_false h]; simp
+    unfold layoutBytes OakText.cnfPhase
+    rw [hlen1, hmg, cnfLoop_invalid _ _ _ _ rfl]
+    simp only []
+    rw [hlen2, proofLoop_invalid _ _ _ _ (by simp [OakText.proofStart, OakText.closingCheck])]
+    simp [OakText.proofStart, OakText.closingCheck]
+
+#print axioms rup_text_check_spec
 
 end OakVerification.Extraction
