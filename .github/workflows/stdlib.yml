@@ -39,7 +39,7 @@ jobs:
       - name: Test deque and ID pool
         run: go test ./compiler -run 'TestE2EStdlib(Deque|IdPool|Serenity)' -count=1
       - name: Test sort, varint, and random
-        run: go test ./compiler -run 'TestE2EStdlib(SortAndSearch|Varint|Random)|TestE2EGenericNestedTemplate' -count=1
+        run: go test ./compiler -run 'TestE2EStdlib(SortAndSearch|SortMatchesGo|Varint|Random)|TestE2EGeneric(NestedTemplate|TemplateRecordLiteral)' -count=1
       - name: Test uuid
         run: go test ./compiler -run 'TestE2EStdlibUuid' -count=1
       - name: Test encoding codecs

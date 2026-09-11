@@ -468,13 +468,26 @@ segmented/disjoint storage; these are not implemented by this addition.
 ## Sorting and searching
 
 `sort_span[T](items)` sorts a span in place through the element type's `<`
-(insertion sort up to sixteen elements, heapsort beyond; `sort_insertion` and
-`sort_heap` are also exported), `sort_is_sorted[T](view)` checks
+with a pattern-defeating quicksort (Peters 2021, the algorithm behind Go's
+`slices.Sort` and Rust's `sort_unstable`): insertion sort at twelve elements
+or fewer, median-of-three pivots and Tukey's ninther from fifty elements, a
+partition that notices already-partitioned ranges, a partial insertion sort
+that finishes nearly sorted ranges in five swaps, an equal-elements
+partition that makes many duplicates linear, pattern-breaking swaps after an
+unbalanced split, and heapsort once the depth budget (the bit length of the
+length) is spent, so the worst case is O(n log n) and sorted, reversed, and
+all-equal inputs are O(n). The recursion is an explicit 48-frame stack (the
+smaller side is sorted first, so one frame per halving is outstanding).
+`sort_span_budget[T](items, depth)` exposes the budget; `sort_insertion`
+(stable) and `sort_heap` are also exported. `sort_is_sorted[T](view)` checks
 non-decreasing order, `sort_search[T](view, key)` is a binary search returning
 `Option[u32]`, `sort_lower_bound[T](view, key)` the first index not less than
 the key (the insertion point), `sort_dedup[T](span)` compacts a sorted span
 to one element per run and returns the new length, and `sort_reverse[T]`
-reverses in place. No allocation; heapsort is not stable, insertion sort is.
+reverses in place. No allocation; `sort_span` is not stable, insertion sort
+is. On an Apple M4 Max (`benchmarks/stdlib`, 100k u32), `sort_span` runs at
+0.92× Go's `slices.Sort` on random input, 1.1× on reversed, and 1.4× on
+sorted (heapsort was 1.2×, 21×, and 22×).
 
 ## Variable-length integers
 
