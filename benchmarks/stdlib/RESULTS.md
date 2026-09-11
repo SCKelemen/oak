@@ -1,6 +1,113 @@
 # Standard library benchmark results
 
-## Baseline, 2026-09-11
+## Baseline, 2026-09-12
+
+Measured Oak revision: `03caff729fa15e92d69b9867745e8015ec89e630`, the base
+after pattern-defeating quicksort (#173), the table-driven codecs (#172), the
+table-driven CRC-32C and in-place SHA-256 with proven accesses (commit
+5def923), and the Lean extractor rounds. Same machine and toolchain as the
+first baseline (Apple M4 Max, macOS 26.3.1, Apple clang 21.0.0 `-O2`, Go
+1.27.1), scale 1.0, five samples per backend, medians; the machine was
+running other test suites, so absolute numbers are a little slower than on
+2026-09-11 and the Oak/Go ratio is the figure to read. Raw data:
+[baseline-2026-09-12-m4max.json](baseline-2026-09-12-m4max.json). The
+hashes are also measured against Rust and Go in
+[`benchmarks/kernels/`](../kernels/RESULTS.md), which owns that comparison.
+
+| Workload | Oak ns/item | Oak MB/s | Go ns/item | Go MB/s | Oak / Go time | C reference |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| encoding/base64_decode | 1.74 | 575.5 | 1.46 | 682.8 | 1.19× | — |
+| encoding/base64_encode | 1.90 | 525.8 | 1.73 | 578.3 | 1.10× | — |
+| encoding/hex_decode | 2.03 | 492.6 | 1.66 | 601.1 | 1.22× | — |
+| encoding/hex_encode | 2.49 | 401.0 | 2.69 | 371.5 | 0.93× | — |
+| encoding/percent_encode | 8.01 | 124.9 | 7.80 | 128.3 | 1.03× | — |
+| hash/crc32c | 2.08 | 480.3 | 0.10 | 9610.2 | 20.01× | — |
+| hash/sha256 | 2.68 | 373.5 | 0.37 | 2730.6 | 7.31× | — |
+| random/pcg | — | — | 3.66 | 2186.3 | — | — |
+| random/xoshiro | 0.78 | 10191.6 | 2.57 | 3113.1 | 0.31× | — |
+| sort/random | 52.12 | 76.7 | 51.35 | 77.9 | 1.02× | c_qsort 70.7 ns/item |
+| sort/reversed | 2.17 | 1843.3 | 1.84 | 2174.9 | 1.18× | c_qsort 15.1 ns/item |
+| sort/sorted | 1.89 | 2116.4 | 1.68 | 2379.2 | 1.12× | c_qsort 4.5 ns/item |
+| strings/append_u64 | 36.23 | 313.8 | 30.56 | 372.1 | 1.19× | — |
+| strings/parse_u64 | 18.36 | 619.4 | 25.85 | 439.9 | 0.71× | — |
+| strings/utf8_scan | 5.90 | 169.5 | 3.29 | 304.3 | 1.80× | — |
+| strings/utf8_validate | 3.94 | 254.0 | 2.82 | 355.2 | 1.40× | — |
+| time/format_rfc3339 | 57.23 | 524.2 | 125.85 | 238.4 | 0.45× | — |
+| time/parse_rfc3339 | 19.71 | 1521.9 | 33.56 | 893.9 | 0.59× | — |
+| uuid/v7_format | 56.38 | 638.5 | 66.01 | 545.4 | 0.85× | — |
+| varint/decode | 7.49 | 733.0 | 10.02 | 548.2 | 0.75× | c_loop 8.0 ns/item |
+| varint/encode | 13.55 | 405.3 | 12.50 | 439.4 | 1.08× | c_loop 12.0 ns/item |
+
+What moved since 2026-09-11: base64 decode 6.10× → 1.19×, base64 encode
+2.52× → 1.10×, hex decode 4.74× → 1.22× (one table lookup per symbol, one
+pass); sort on sorted and reversed input 21× → 1.1–1.2× and random 1.22× →
+1.02× (pdqsort with the heapsort fallback); CRC-32C 40.6× → 20.0× and
+SHA-256 8.9× → 7.3× (tables and in-place compression; the rest of the gap
+is Go's hardware CRC32C and SHA-2 instructions, see the kernels harness).
+Everything else is within noise of the first baseline.
+
+## Round two, 2026-09-12: UTF-8
+
+`utf8_validate`, `utf8_count`, and `utf8_decode` now classify a sequence
+through a 256-entry lead table (width plus the class of the second byte's
+accepted range, Unicode Table 3-7) and two 8-entry range tables instead of
+a chain of comparisons followed by `unicode_is_scalar` and `utf8_width`
+checks, and the validator consumes eight ASCII bytes per step when the next
+word has no high bit set. The interior loads sit under `len(src) >= 4 &&
+at < len(src) - 4` (and the eight-byte form), the wrap-free guard the
+checker turns into an extent fact, so they compile to `( src ).base[ at + k ]`
+without bounds checks; the last few bytes of an input go through a checked
+tail that pads missing bytes with zero, which no range accepts.
+Acceptance is unchanged and checked against Go's `unicode/utf8` on 1,440
+inputs (every width mix at every alignment modulo eight, each with nine
+kinds of damage) in `compiler/e2e_stdlib_utf8_diff_test.go`.
+
+| Workload | before ns/byte | after ns/byte | Go ns/byte | Oak / Go before → after |
+| --- | ---: | ---: | ---: | ---: |
+| strings/utf8_validate | 3.94 | 3.43 | 3.08 | 1.40× → 1.11× |
+| strings/utf8_scan | 5.90 | 5.39 | 3.31 | 1.80× → 1.63× |
+
+The benchmark corpus is 60% ASCII by scalar and 37% by byte, so runs of
+eight ASCII bytes are rare there (about 2% of positions); ASCII-dominant
+text gains far more from the word step. The remaining scan gap is the
+per-scalar `Result[TextScalar, TextError]` returned by value and matched by
+the caller; a consumer that only needs boundaries can call `utf8_count` or
+walk with the same tables through `grapheme_next`.
+
+`varint` was measured with one-byte fast paths for encode and decode and
+left unchanged: the gain was inside the noise (encode 1.08× → 1.14×,
+decode 0.75× → 0.79× on a loaded machine), below the bar for touching a
+loop the extraction proofs on `sam/stdlib-laws` are being written against.
+`uuid/v7_format` and `time/format_rfc3339` were not touched; their
+generated C shows no cheap win (the cost is the digit loops themselves).
+
+## Hot spots, in the order they are worth pursuing
+
+1. **CRC-32C 20× and SHA-256 7.3× slower.** The portable tables are in;
+   the remainder is Go's use of the arm64 `CRC32CX` and SHA-2 instructions.
+   The path is Oak's `asm` units (native on AArch64 hosts since the
+   assembler rounds), guarded by the same checksums the harness already
+   verifies; `benchmarks/kernels/` records the Rust comparison.
+2. **`utf8_scan` 1.63×.** A boundary-only walk (`utf8_count`) is level with
+   Go; the decode loop pays for the `Result` per scalar. A `TextScalar`
+   with a sentinel `next == offset` for failure, or a scan API that yields
+   values into a caller span in batches, would remove the tag; both are API
+   additions rather than rewrites.
+3. **`strings/append_u64` 1.08–1.19×** and **`percent_encode` 1.03×**:
+   digit-at-a-time loops with a checked store per byte; a two-digits-per-step
+   table (as Go's `strconv` uses) and a proven-extent destination window
+   would close the rest.
+
+## Next measurements
+
+The `float`, `path`, `url`, and `grapheme` packages have landed and need
+workloads (shortest formatting and correctly rounded parsing against
+`strconv`; `Clean`/`Match` against Go's `path`; parse and resolve against
+`net/url`; segmentation against `x/text`). Linux numbers from the CI
+artifact (`stdlib-benchmark-ubuntu-latest`) should be recorded here
+alongside the M4 Max once the workflow has run on `specification`.
+
+## First baseline, 2026-09-11 (kept for reference)
 
 Measured Oak revision: `a8ecd2a5ac2688da4524e53c01477c71c13254dc` (the harness
 commit itself adds no library code). Machine: Apple M4 Max, macOS 25.3.0
@@ -52,7 +159,7 @@ uuid v7. It is behind wherever the Go standard library uses a table, a
 hardware instruction, or a smarter algorithm, and wherever Oak's own code
 makes two passes or returns aggregates through `Result`.
 
-## Hot spots, in the order they are worth pursuing
+### Hot spots as seen on 2026-09-11
 
 1. **Table-driven single-pass codecs: base64 decode 6.1×, hex decode 4.7×,
    base64 encode 2.5× slower.** The generated C shows why. `base64_value`
@@ -109,7 +216,7 @@ the codecs, applies here. `percent_encode` is level with Go despite Go
 allocating its result. `varint_encode` is 1.1× behind Go and 1.15× behind
 the C loop because it computes `varint_size` before writing.
 
-## Next measurements
+### Next measurements as planned on 2026-09-11
 
 The `float`, `path`, `url`, and `grapheme` packages land after this
 baseline and get workloads then (shortest formatting and correctly rounded
