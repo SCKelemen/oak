@@ -842,6 +842,11 @@ func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (str
 	return "", true
 }
 
+// trapPath marks a path that ends in a trap (brk): it yields no result and
+// is dropped from the fork that reached it. A body that traps on every
+// path has no result to verify.
+var trapPath = &term{kind: termConst, width: 64}
+
 // isFrameMemory reports a memory instruction through sp.
 func isFrameMemory(instr Instruction) bool {
 	if len(instr.Operands) == 0 {
@@ -873,6 +878,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 				return nil, "result register never written", false
 			}
 			return result, "", true
+		case "brk":
+			// A trap: this path delivers no result. The Oak body traps on
+			// the same inputs (a failed bounds check, division by zero, an
+			// overflowing shift, a failed assert), so the path is outside
+			// the equivalence and drops from the fork it came from.
+			return trapPath, "", true
 		case "b":
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
 			if !ok {
@@ -915,6 +926,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			fallThrough, reason, ok := x.run(pc+1, state)
 			if !ok {
 				return nil, reason, false
+			}
+			switch {
+			case taken == trapPath:
+				return fallThrough, "", true
+			case fallThrough == trapPath:
+				return taken, "", true
 			}
 			return iteTerm(cond, taken, fallThrough), "", true
 		}
@@ -1935,6 +1952,9 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	asmTerm, exec, reason, ok := executeBody(fn, sig, nil)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
+	}
+	if asmTerm == trapPath {
+		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (every path traps) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 	}
 	lowering := newLowering(sig)
 	width, _, _ := contractBits(sig.ReturnType)
