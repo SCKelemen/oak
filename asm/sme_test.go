@@ -46,6 +46,8 @@ var smeSamples = []string{
 	"sdot za.s[w8, 0, vgx4], {z0.b - z3.b}, z4.b", "udot za.s[w8, 0, vgx2], {z0.b, z1.b}, {z2.b, z3.b}",
 	"ld1w {z0.s - z3.s}, pn8/z, [x0]", "ld1w {z0.s, z1.s}, pn8/z, [x0, x1, lsl #2]", "ld1w {z0.s, z1.s}, pn8/z, [x0, #2, mul vl]", "ld1w {z4.s - z7.s}, pn15/z, [x2, #-8, mul vl]",
 	"st1w {z0.s - z3.s}, pn8, [x0]", "st1d {z8.d, z9.d}, pn9, [x1, x2, lsl #3]", "ld1b {z0.b - z3.b}, pn10/z, [sp]",
+	"ld1w {z0.s, z8.s}, pn8/z, [x0]", "ld1w {z16.s, z24.s}, pn9/z, [x1, #2, mul vl]", "ld1w {z1.s, z9.s}, pn8/z, [x0]",
+	"ld1b {z0.b, z4.b, z8.b, z12.b}, pn8/z, [x0]", "st1d {z17.d, z21.d, z25.d, z29.d}, pn10, [x2, x3, lsl #3]", "st1w {z3.s, z7.s, z11.s, z15.s}, pn8, [x0]",
 	"pext p0.s, pn8[0]", "pext p3.b, pn15[3]", "luti2 z0.s, zt0, z1[0]", "luti2 z5.b, zt0, z2[3]", "luti4 z0.h, zt0, z1[1]",
 	"fadd z0.s, z1.s, z2.s", "fadd z0.s, p0/m, z0.s, z1.s", "fsub z0.d, p0/m, z0.d, z1.d", "fmul z0.s, z1.s, z2.s", "fmla z0.s, p0/m, z1.s, z2.s", "fmls z3.h, p2/m, z4.h, z5.h",
 	"fmul z0.s, z1.s, z2.s[1]", "fmul z0.d, z1.d, z2.d[1]", "fmul z0.h, z1.h, z7.h[7]", "fmla z0.s, z1.s, z2.s[3]", "fmax z0.s, p0/m, z0.s, z1.s", "fneg z0.s, p0/m, z1.s", "fabs z2.d, p1/m, z3.d",

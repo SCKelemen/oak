@@ -434,6 +434,13 @@ type BlockStatement struct {
 	BaseNode
 	Token      token.Token // { token
 	Statements []Statement
+	// DeferredFrom, when positive, is the index of the first statement the
+	// parser moved here from a `defer` (docs/spec/10-syntax.md section 4b):
+	// Statements[DeferredFrom-1] is the block's original tail and
+	// Statements[DeferredFrom:] run after it. The typechecker, which knows
+	// the tail's type, binds a valued tail to a temporary before them and
+	// resets this to zero.
+	DeferredFrom int
 }
 
 func (bs *BlockStatement) statementNode()       {}
@@ -1187,6 +1194,25 @@ func (is *IfStatement) String() string {
 // BreakStatement leaves the innermost enclosing while loop
 // (docs/spec/85-discipline.md section 3): `break` is legal only inside a
 // loop body, and a bounded loop stays bounded when a break leaves it early.
+// DeferStatement is `defer <statement>` (docs/spec/10-syntax.md section
+// 4b). It exists only between parsing a statement and finishing its
+// enclosing block: the parser reorders deferred statements to where they
+// run, so no later phase sees this node.
+type DeferStatement struct {
+	BaseNode
+	Token token.Token // 'defer' token
+	Body  Statement
+}
+
+func (ds *DeferStatement) statementNode()       {}
+func (ds *DeferStatement) TokenLiteral() string { return ds.Token.Literal }
+func (ds *DeferStatement) String() string {
+	if ds.Body == nil {
+		return "defer"
+	}
+	return "defer " + ds.Body.String()
+}
+
 type BreakStatement struct {
 	BaseNode
 	Token token.Token // 'break' token

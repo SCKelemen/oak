@@ -62,21 +62,50 @@ proofs written against them transfer.
 | `view(&TABLE)` of a top-level constant | the constant's array value (a view is the array it views); `span(&TABLE)` would mutate the global and fails closed |
 | `r.field[i] = v` | `let r := { r with field := r.field.setIfInBounds i.toNat v }` (one level of fields) |
 | `^x` | `~~~x`, the complement over the operand's width |
+| `subslice(v, start, n)` | `v.extract start.toNat (start.toNat + n.toNat)` — the window as the array it views (section 3 on the clamp) |
+| `f32`, `f64` | `Float32`, `Float` — the host's binary32 and binary64 (section 3) |
+| `1.5`, `0x1p-126` (a float literal) | `Float.ofBits (0x3FF8000000000000 : UInt64)`: the checker's own rounding of the text to its width (`typechecker.FloatLiteralValue`, correct from the exact value), spelled by bit pattern so Lean parses no decimal |
+| `a + b`, `a * b`, `a / b`, `-x`, `a < b`, `a == b` on floats | the same operators on `Float`/`Float32`: one IEEE rounding each, `-x` the sign flip (`0 - x` would lose the sign of zero), comparisons and equality as IEEE (`NaN == NaN` is false) |
+| `f64(x: f32)` | `x.toFloat`, exact |
+| `f32_round_f64`, `fN_round_iM` | `x.toFloat32`, `x.toFloat`/`x.toFloat32` from the integer |
+| `f64_bits_u64`, `u64_bits_f64`, `f32_bits_u32`, `u32_bits_f32` | `Float.ofBits`, `x.toBits`, and the `Float32` pair |
+| `uM_saturating_fN`, `iM_saturating_fN`; `uM_trunc_fN`, `iM_trunc_fN` | `x.toUIntM`/`x.toIntM`: toward zero, clamped to the range, NaN to zero — the `saturating` row exactly; `trunc` traps out of range where this saturates (section 3) |
+| `sqrt`, `abs`, `floor`, `ceil`, `round`, `is_nan`, `is_finite`, `is_infinite` | `Float.sqrt`, `.abs`, `.floor`, `.ceil`, `.round` (ties away from zero, as section 11.3.5), `.isNaN`, `.isFinite`, `.isInf`, and the `Float32` forms |
 
 Functions are emitted callee-first. Every function takes `fuel : Nat` and
 threads it to every loop and call; the corpus harness supplies a fuel above
 any loop's iteration count, so `none` is a disagreement, never a pass.
 
-## 3. Three modeling choices, stated
+## 3. The modeling choices, stated
 
-Oak traps on an out-of-range read or write, on division by zero, and on a
-shift whose count reaches the operand width (`10-syntax.md` section 3b). The
-extraction reads the element type's zero, drops the write, divides to zero,
-and shifts by Lean's masked count. This is sound for the direction the experiment proves — an Oak run
+Oak traps on an out-of-range read or write, on division by zero, on a
+shift whose count reaches the operand width (`10-syntax.md` section 3b), and
+on a `subslice` window that leaves its array. The extraction reads the
+element type's zero, drops the write, divides to zero, shifts by Lean's
+masked count, and clamps the window (`Array.extract` stops at the array's
+end); a `trunc` conversion from a float that would trap out of range
+saturates instead. This is sound for the direction the experiment proves — an Oak run
 that produced a verdict took no trapping path, and on such runs the model
 computes the same values — and it is what the hand-written models already
 assume. A model of trapping as `none` would make every expression monadic;
 the choice here keeps expressions pure and the proofs tractable.
+
+**Floats are the host's.** `f32` and `f64` extract to Lean's `Float32` and
+`Float`, whose operations are the compiled runtime's binary32 and binary64
+IEEE operations — one rounding to nearest even per operation, no
+contraction (each operation is its own call), subnormals kept — which is
+what `20-types.md` section 11.3.3 fixes for Oak. Literals cross by bit
+pattern, so Lean's decimal parser (which is not correctly rounded) never
+takes part. What this does not give: `Float` is opaque to the kernel, so
+`decide` cannot evaluate an extracted float program and the theorems about
+float code stay against `Oak.Floats`, the abstract discipline model; the
+extraction is the executable model an implementation is compared with, the
+way the differential float witness compares the compiled C and the
+interpreter. Intrinsics Lean has no exact counterpart for — `fma`,
+`copysign`, `trunc`, `round_even`, `min`/`max` (2019 `minimum`/`maximum`),
+`min_num`/`max_num`, `is_normal`, `total_order` — the `checked` rows into
+integers, and the storage formats `f16`/`bf16`/`f8` fail closed rather than
+approximate.
 
 ## 4. The subset, and what fails closed
 
@@ -88,13 +117,17 @@ statements bound through do-blocks; calls to extracted functions (the
 checker's specializations of generic templates included), `len`, `view`,
 `span`, the widening constructors, the `trunc`/`bits`/`saturating`/`checked`
 integer conversion rows, the bitwise operators and the complement,
-`assert`; field assignment and element assignment into a record's array
-field, one level deep; array literals; top-level constants, including
-constant tables read through `view`. The extraction closes over the roots'
+`assert`, `subslice`; `f32` and `f64` with their literals, arithmetic,
+comparisons, negation, the `round`/`bits`/`saturating`/`trunc` rows between
+them and the integers, and the intrinsics of the table above; field
+assignment and element assignment into a record's array field, one level
+deep; array literals; top-level constants, including constant tables read
+through `view`. The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
 functions it reaches. Everything else — strings, generic templates
-themselves, recursion, methods, extern functions, closures, `subslice`,
-the floating-point rows, floats, SIMD, FFI, assignment to a global — is an
+themselves, recursion, methods, extern functions, closures, the storage
+float formats and the intrinsics named in section 3, `fma`, the `checked`
+float rows, SIMD, FFI, assignment to a global — is an
 error naming the construct. Nothing is approximated.
 
 ## 5. Where it runs
@@ -108,7 +141,8 @@ the replayed real certificate (729 cases at the time of writing). The opt-in
 verification workflow and the certificate gate build and run it.
 
 **The standard library.** `compiler/lean_stdlib_extract_test.go` extracts
-whole packages — `varint`, `encoding`, `random`, `uuid`, and `sort`
+whole packages — `varint`, `encoding`, `hash`, `random`, `uuid`, `float`
+(the decimal text package, integer code over `f64` bit patterns), and `sort`
 at `u32` — into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
 failing on drift the same way. A package's program is the core prelude
 plus the flattened texts of its dependencies and itself (`stdlib.Flatten`);
@@ -116,7 +150,12 @@ the roots are the package's declarations plus a driver that instantiates
 its generic templates (`sort_u32_span: (items: [*]u32): () {
 sort_span[u32](items) }`), and `Compilation.EmitLeanRoots` closes over
 their callees. The modules are imported from `spec/lean/Oak.lean`, so the
-Lean job builds them. Generated modules raise `maxRecDepth` and `maxHeartbeats`: an
+Lean job builds them. `FloatKernelsExtracted.lean` is the same test's
+extraction of a program rather than a package: the ml shape of roadmap
+item E4 — `dot_f32`, `sum_f32`, `sum_f64` in their stated left-to-right
+order, `axpy_f32` into a span with its two roundings, `max_abs_f32`,
+`widen_mean`, `quantize_u8`, `bits_roundtrip` — so a change to how floats
+extract shows up as drift in a file a reader can compare with the source. Generated modules raise `maxRecDepth` and `maxHeartbeats`: an
 unrolled compression function (SHA-256's sixty-four rounds) is one
 definition with hundreds of binds, beyond the budgets sized for
 hand-written code.
@@ -224,8 +263,9 @@ most; the kernel-decided facts use no axioms.
   round trip; the universal base64 and base32 round trips and hexadecimal
   strictness (`hex_decode` accepts a string iff it is an encoding); the
   `uuid` version and variant bits against the extraction.
-- The subset: `subslice`, strings and the text library, methods, and
-  recursion; instantiations whose arguments are arrays or views.
+- The subset: strings and the text library, methods, and recursion;
+  instantiations whose arguments are arrays or views; the `checked` float
+  rows and `fma` once Lean carries them exactly.
 The stream checker (`rup_stream_check` and the `rup_check` kernel under
 it, seven and six loops, against `CertifiedStream.check`), which closes
 the transfer of `check_refines` to the extraction; the string-level
@@ -234,4 +274,6 @@ the verification programs need next (matches over records, the `checked`
 rows), each added with its own fail-closed test. Integer-constant matches and the integer
 conversion rows were added for the ml subset (op dispatch on constants,
 `u64` index arithmetic narrowed to `u32`); the `checked` rows landed with
-the standard-library round; every floating-point row still fails closed.
+the standard-library round; `f32`/`f64` landed with the float round
+(section 3), the storage formats and the inexact intrinsics still fail
+closed.

@@ -48,7 +48,12 @@ test of what stays checked) and rewriting the standard library's hashes to
 sit under them, so every block and table access is proven and emitted
 unchecked. That is the intended relationship between the proofs and the
 performance: a check is removed only when the checker can show it never
-fails, and the removal is where the speed comes from.
+fails, and the removal is where the speed comes from. A second run the
+same day, after the facts learned to name record field paths
+(`tail.block[tail.filled]` under `tail.filled < 64`), has CRC-32C at
+2,009,800 against Rust's 2,022,842 and SHA-256 at 2,563,400 against
+2,636,150; the hash package's remaining checked accesses fell from eight
+to four, all four under a record invariant the extent facts cannot state.
 
 ## Typed JSON decoding against simdjson
 

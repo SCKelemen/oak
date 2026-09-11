@@ -26,13 +26,81 @@ var leanStdlibPackages = []struct {
 	namespace string
 	deps      []string
 	driver    string
+	// source, when set, is the program itself (over the core prelude and
+	// deps) instead of a library package: a committed extraction of a
+	// program shape rather than of a package.
+	source string
 }{
 	{name: "varint", file: "VarintExtracted.lean", namespace: "Oak.Stdlib.Varint"},
 	{name: "encoding", file: "EncodingExtracted.lean", namespace: "Oak.Stdlib.Encoding"},
+	{name: "hash", file: "HashExtracted.lean", namespace: "Oak.Stdlib.Hash"},
 	{name: "random", file: "RandomExtracted.lean", namespace: "Oak.Stdlib.Random", driver: `
 drive_shuffle_u32: (state: [*]Xoshiro, items: [*]u32): () { random_shuffle[u32](state, items) }
 `},
 	{name: "uuid", file: "UuidExtracted.lean", namespace: "Oak.Stdlib.Uuid", deps: []string{"random", "encoding"}},
+	{name: "float", file: "FloatExtracted.lean", namespace: "Oak.Stdlib.Float"},
+	// The ml shape (docs/notes/ml-feedback-2026-09.md, roadmap E4): fixed
+	// reductions over f32 and f64 in the stated sequential order, an axpy
+	// into a span, and the f32/f64 rows of 20-types.md section 11.3.4.
+	{name: "floatkernels", file: "FloatKernelsExtracted.lean", namespace: "Oak.Stdlib.FloatKernels", source: `
+// dot_f32 combines products left to right (docs/spec/20-types.md section 11.3.3).
+pub dot_f32: (a: []f32, b: []f32): f32 {
+  acc: f32 = 0.0
+  i: u32 = 0
+  while i < len(a) && i < len(b) {
+    acc = acc + a[i] * b[i]
+    i = i + u32(1)
+  }
+  acc
+}
+pub sum_f32: (xs: []f32): f32 {
+  acc: f32 = 0.0
+  i: u32 = 0
+  while i < len(xs) {
+    acc = acc + xs[i]
+    i = i + u32(1)
+  }
+  acc
+}
+pub sum_f64: (xs: []f64): f64 {
+  acc: f64 = 0.0
+  i: u32 = 0
+  while i < len(xs) {
+    acc = acc + xs[i]
+    i = i + u32(1)
+  }
+  acc
+}
+// axpy writes y[i] = a * x[i] + y[i] with two roundings, never contracted.
+pub axpy_f32: (a: f32, x: []f32, y: [*]f32): () {
+  i: u32 = 0
+  while i < len(x) && i < len(y) {
+    y[i] = a * x[i] + y[i]
+    i = i + u32(1)
+  }
+}
+pub max_abs_f32: (xs: []f32): f32 {
+  best: f32 = 0.0
+  i: u32 = 0
+  while i < len(xs) {
+    m: f32 = abs(xs[i])
+    m > best ? { best = m }
+    i = i + u32(1)
+  }
+  best
+}
+pub widen_mean: (xs: []f32): f64 {
+  total: f64 = 0.0
+  i: u32 = 0
+  while i < len(xs) {
+    total = total + f64(xs[i])
+    i = i + u32(1)
+  }
+  len(xs) == u32(0) ? 0.0 | total / f64_round_u32(len(xs))
+}
+pub quantize_u8: (x: f32, scale: f32): u8 = u8_saturating_f32(round(x / scale))
+pub bits_roundtrip: (x: f64): Bool = f64_bits_u64(u64_bits_f64(x)) == x || is_nan(x)
+`},
 	{name: "sort", file: "SortU32Extracted.lean", namespace: "Oak.Stdlib.SortU32", driver: `
 sort_u32_is_sorted: (items: []u32): Bool = sort_is_sorted[u32](items)
 sort_u32_insertion: (items: [*]u32): () { sort_insertion[u32](items) }
@@ -46,7 +114,7 @@ sort_u32_reverse: (items: [*]u32): () { sort_reverse[u32](items) }
 }
 
 // leanStdlibProgram assembles a package's extraction program and its roots.
-func leanStdlibProgram(t *testing.T, name string, deps []string, driver string) (string, []string) {
+func leanStdlibProgram(t *testing.T, name string, deps []string, driver, source_ string) (string, []string) {
 	t.Helper()
 	var source strings.Builder
 	source.WriteString(stdlib.Prelude)
@@ -59,11 +127,14 @@ func leanStdlibProgram(t *testing.T, name string, deps []string, driver string) 
 		source.WriteString(stdlib.Flatten(text))
 		source.WriteString("\n")
 	}
-	text, ok := stdlib.Packages[name]
-	if !ok {
-		t.Fatalf("no standard library package %q", name)
+	packageText := source_
+	if packageText == "" {
+		text, ok := stdlib.Packages[name]
+		if !ok {
+			t.Fatalf("no standard library package %q", name)
+		}
+		packageText = stdlib.Flatten(text)
 	}
-	packageText := stdlib.Flatten(text)
 	source.WriteString(packageText)
 	source.WriteString("\n")
 	source.WriteString(driver)
@@ -105,7 +176,7 @@ func topLevelNames(t *testing.T, text string) []string {
 func TestLeanStdlibExtract(t *testing.T) {
 	for _, pkg := range leanStdlibPackages {
 		t.Run(pkg.name, func(t *testing.T) {
-			source, roots := leanStdlibProgram(t, pkg.name, pkg.deps, pkg.driver)
+			source, roots := leanStdlibProgram(t, pkg.name, pkg.deps, pkg.driver, pkg.source)
 			extracted, err := New().WithSource("stdlib_"+pkg.name+".oak", source).EmitLeanRoots(pkg.namespace, roots).Get()
 			if err != nil {
 				t.Fatalf("extraction failed: %v", err)

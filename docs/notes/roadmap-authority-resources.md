@@ -206,7 +206,9 @@ generated C makes cleanup auditable.
 on (`OAK-B0120`), closers discharge their own parameters, and no double
 cleanup or moved-field cleanup can occur because consumption forbids later
 use. Three of four "done when" cases are tested; auditable cleanup in
-generated C, and what dropping does (destructors, `defer`), remain open.
+generated C, and what dropping does (destructors), remain open. **`defer`
+(same day):** `10-syntax.md` §4b, block-scoped and static, the idiomatic
+way to discharge an obligation on every exit including `break`.
 
 ## 7. Scoped callbacks and shortened borrows
 

@@ -17,6 +17,11 @@ type Parser struct {
 	source       token.Source
 	currentToken token.Token
 	peekToken    token.Token
+	// blockDepth counts open statement blocks, so `defer` can be rejected
+	// outside one; deferCounter names the temporaries that hold a block's
+	// value while its deferred statements run.
+	blockDepth   int
+	deferCounter int
 
 	diagnostics *diagnostic.DiagnosticCollector
 
@@ -195,6 +200,7 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 	defer p.operatorPipe()()
 	blocc := &ast.BlockStatement{Token: p.currentToken}
 	blocc.Statements = []ast.Statement{}
+	p.blockDepth++
 	p.nextToken()
 	for !p.currentTokenIs(token.RBRACE) && !p.currentTokenIs(token.EOF) {
 		stmt := p.parseStatement()
@@ -203,7 +209,8 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 		}
 		p.nextToken()
 	}
-
+	p.blockDepth--
+	p.desugarDefers(blocc)
 	return blocc
 }
 
@@ -261,6 +268,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return nil
 	case token.BREAK:
 		return &ast.BreakStatement{Token: p.currentToken}
+	case token.DEFER:
+		return p.parseDeferStatement()
 	case token.UNSAFE:
 		if stmt := p.parseUnsafeBlock(); stmt != nil {
 			return stmt

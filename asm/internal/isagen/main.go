@@ -136,6 +136,7 @@ type operand struct {
 	Special  string     // bitmask, wide, fp8, movi, index, shift-immh, fbits
 	Count    int        // zlist: registers in the list; slice: consecutive slices named (offs1:offs2)
 	Qual     string     // preg/pnreg: the fixed /M or /Z qualifier
+	Const    string     // strided list head: the constant bits between T and Zt
 }
 
 type formDef struct {
@@ -184,6 +185,7 @@ var (
 	sliceRe     = regexp.MustCompile(`^(<ZA[a-z]*\d?>|ZA\d*)(<HV>)?(?:\.(<T>|[BHSDQ]))?\[(<W[a-z]+>), (<offs\d?>|<imm>)(?::(<offs\d>))?(?:, (VGx[24]))?\]$`)
 	zRangeRe    = regexp.MustCompile(`^(<Z[a-z]+\d?>(?:\.(?:<T[b]?>|[BHSDQ]))?)-(<Z[a-z]+(\d)>(?:\.(?:<T[b]?>|[BHSDQ]))?)$`)
 	pSliceRe    = regexp.MustCompile(`^<P[a-z]+\d?>\.<T>\[`)
+	stridedRe   = regexp.MustCompile(`encoded as "(\w+):'([01]+)':(\w+)"`)
 	fpRegRe     = regexp.MustCompile(`^<([BHSDQ])(d|n|m|a|t|s|t1|t2)>$|^([BHSDQ])<[dnmats]>$`)
 	vRegRe      = regexp.MustCompile(`^<V[ab]?><(dn|[dnmats])>$`)
 	vecArrRe    = regexp.MustCompile(`^<V([a-z0-9+]*)>\.(<T[ab]?>|<Ts>|\d+[BHSD]|[BHSD]|2D|1Q)$`)
@@ -1353,7 +1355,11 @@ func list(enc, tok string, explanations []explanation) (operand, string) {
 				return op, "multi-vector list shape: " + inner
 			}
 		}
-		return operand{Sym: tok, Kind: "zlist", Count: len(parts), Sub: []operand{first}}, ""
+		list := operand{Sym: tok, Kind: "zlist", Count: len(parts), Sub: []operand{first}}
+		if first.Special == "strided" {
+			list.Special = "strided"
+		}
+		return list, ""
 	}
 	for _, p := range parts {
 		sub, why := classify(enc, strings.TrimSpace(p), explanations)
@@ -1519,6 +1525,15 @@ func scalable(enc, tok string, explanations []explanation) (op operand, why stri
 		}
 		op.Fields = fieldsOf(b)
 		text := introText(b)
+		if m := stridedRe.FindStringSubmatch(text); m != nil {
+			// `encoded as "T:'0':Zt"`: the head of a strided multi-vector
+			// list — T, then constant bits, then Zt make the register number.
+			op.Fields = []string{m[1], m[3]}
+			op.Special = "strided"
+			op.Const = m[2]
+			op.Scale = 1
+			return ""
+		}
 		if strings.Contains(text, "'") && !strings.Contains(text, "encoded in") {
 			return "register with a constructed encoding: " + sym
 		}
@@ -1794,6 +1809,9 @@ func renderOperand(b *strings.Builder, op operand) {
 	}
 	if op.Qual != "" {
 		fmt.Fprintf(b, ", Qual: %q", op.Qual)
+	}
+	if op.Const != "" {
+		fmt.Fprintf(b, ", Const: %q", op.Const)
 	}
 	if len(op.Table) > 0 {
 		b.WriteString(", Table: []isaTableRow{")
