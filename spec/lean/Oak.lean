@@ -87,6 +87,7 @@ import Oak.Stdlib.SortLaws
 import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.Base64Laws
 import Oak.Stdlib.RandomLaws
+import Oak.Stdlib.UuidLaws
 import Oak.Typestate
 import Oak.IoPort
 import Oak.ProtocolQuorum
