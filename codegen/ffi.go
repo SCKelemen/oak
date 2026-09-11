@@ -64,6 +64,49 @@ func boundarySpanArgument(arg ast.Expression) (operand ast.Expression, ok bool) 
 	return call.Arguments[0], true
 }
 
+// cStringArgument recognizes `c.cstr(v)` in the argument list of an extern
+// call (docs/spec/92-ffi.md section 2.5.3) and returns the operand: a named
+// []u8 view or a string literal, as the typechecker confirmed.
+func cStringArgument(arg ast.Expression) (operand ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, false
+	}
+	library, member, isLibrary := libraryCallTarget(call.Function)
+	if !isLibrary || library != "c" || member != "cstr" {
+		return nil, false
+	}
+	return call.Arguments[0], true
+}
+
+// emitCStringArgument lowers `c.cstr(v)` at its extern call site (docs/spec/
+// 92-ffi.md section 2.5.3): a literal operand is the interned literal (the
+// typechecker required its trailing NUL); a named view goes through
+// oak_cstr_u8, which checks the trailing NUL at the call and traps naming
+// the source position otherwise. No copy.
+func (cg *CodeGenerator) emitCStringArgument(operand ast.Expression, arg ast.Expression, tc *typechecker.TypeChecker) {
+	if literal, isLiteral := operand.(*ast.StringLiteral); isLiteral {
+		idx, exists := cg.stringLiteralMap[literal.Value]
+		if !exists {
+			idx = len(cg.stringLiterals)
+			cg.stringLiterals = append(cg.stringLiterals, literal.Value)
+			cg.stringLiteralMap[literal.Value] = idx
+		}
+		cg.output.WriteString(fmt.Sprintf("((const char *)str_lit_%d)", idx))
+		return
+	}
+	cg.emitViewType("u8")
+	line := 0
+	file := cg.sourceFile
+	if call, isCall := arg.(*ast.InvocationExpression); isCall {
+		file = cg.tokenSourceFile(call.Token)
+		line = call.Token.Line
+	}
+	cg.output.WriteString("oak_cstr_u8( ")
+	cg.emitExpressionFragment(operand, tc)
+	cg.output.WriteString(fmt.Sprintf(", %q, %d )", file, line))
+}
+
 // emitLibraryCall lowers a compiler-known library call. The typechecker owns
 // the arm64 signature catalog, so codegen queries arity rather than maintaining
 // a second table. This supports both ordinary one-operand intrinsics and
@@ -83,7 +126,7 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 			cg.output.WriteString(" ).base)")
 			return true
 		}
-		if member == "extern" || member == "span_of" || member == "span_mut_of" || len(call.Arguments) != 1 {
+		if member == "extern" || member == "span_of" || member == "span_mut_of" || member == "cstr" || len(call.Arguments) != 1 {
 			// Boundary spans are expanded at their extern call site
 			// (emitExpressionFragment); anywhere else they are not
 			// expressions and the typechecker has already rejected them.
@@ -465,6 +508,18 @@ func (cg *CodeGenerator) emitExternPrototype(fn *ast.FunctionStatement) {
 // no allocation; every element access through the result goes through the
 // bounds-checked helpers against the count the program supplied.
 func (cg *CodeGenerator) emitForeignBorrow(member string, element ast.Expression, call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	if member == "borrow_string" {
+		// c.borrow_string(p) (section 2.7.1): the u8 view over the bytes
+		// before the terminator, whose offset oak_cstr_len reads at
+		// runtime (a NULL pointer is the empty view).
+		structName := cg.emitViewType("u8")
+		cg.output.WriteString(fmt.Sprintf("(%s){ (const u8 *)( ", structName))
+		cg.emitExpressionFragment(call.Arguments[0], tc)
+		cg.output.WriteString(" ), oak_cstr_len( ")
+		cg.emitExpressionFragment(call.Arguments[0], tc)
+		cg.output.WriteString(" ) }")
+		return
+	}
 	elementC := cg.parseTypeExpression(element)
 	if member == "borrow" {
 		structName := cg.emitViewType(elementC)

@@ -219,9 +219,48 @@ emits the literal with a trailing NUL, so `c.String("kernel_main")` is
 well-formed by construction. A non-literal `string` is rejected
 (`OAK-F0106`): Oak strings are not NUL-terminated and carry a length, so a
 runtime `string` would need a copy the language does not perform silently
-(`00-constitution.md`, no hidden work). Programs that build text at runtime
-for C terminate it themselves and pass `c.span_of` over the bytes, or call a
-C function that takes a pointer and a length.
+(`00-constitution.md`, no hidden work).
+
+Text built at runtime reaches C through **`c.cstr(v)`**, a third argument
+form in the shape of §2.5.1 (ml roadmap D1). Its operand is a named
+read-only view `v: []u8` **whose last byte is NUL** — the program
+terminated it — or a string literal that ends in `\0`. It stands for one
+`c.String` parameter of the extern binding and yields the view's base
+pointer for the duration of that call:
+
+```oak
+c_strlen: (s: c.String): c.UInt64 = c.extern("strlen")
+getenv: (name: c.String): c.Ptr = c.extern("getenv")
+
+length_of: (buffer: [8]u8): u64 {
+  // buffer's last written byte is 0
+  text: []u8 = view(&buffer)
+  u64(c_strlen(c.cstr(text)))
+}
+home: (): c.Ptr = getenv(c.cstr("HOME\0"))
+```
+
+The rules are those of a boundary span, plus the terminator:
+
+- the parameter at the argument's position must be `c.String`
+  (`OAK-F0110` otherwise), and the operand a named `[]u8` view or a
+  string literal (`OAK-F0110`);
+- a literal operand must end in NUL, checked at compile time
+  (`OAK-F0110`; `c.String("...")` terminates a literal itself and is the
+  usual spelling for one);
+- a view operand's terminator is checked **at the call**: the backend
+  passes the pointer through a helper that traps, naming the Oak source
+  position like a failed assertion, when `len(v) == 0` or
+  `v[len(v) - 1] != 0`, so C never receives an unterminated buffer as a
+  string. No copy is made;
+- for the borrow checker the call is a read use of the view's owner for
+  the call's extent, exactly as `c.span_of` (§2.5.2); the pointer cannot
+  escape because `c.cstr` is not an expression (`OAK-F0103` anywhere but
+  an extern parameter position), and the interpreter rejects it with the
+  extern-call diagnostic (§4).
+
+C sees `len(v) - 1` characters; the length Oak knows is not passed, which
+is the point of the form — the terminator is the contract.
 
 #### 2.5.4 Lowering
 
@@ -247,6 +286,7 @@ addresses exactly the layout it expects). Semantic records without the
 | `OAK-F0104` | element type of a boundary span is not representable across the C ABI |
 | `OAK-F0105` | `c.span_of`/`c.span_mut_of` argument does not line up with a `c.Ptr, c.Size` parameter pair |
 | `OAK-F0106` | `c.String` constructed from a non-literal string |
+| `OAK-F0110` | `c.cstr` argument does not stand for a `c.String` parameter, its operand is not a named `[]u8` view or a string literal, or a literal operand is not NUL-terminated |
 
 The test runner's native adapter rules (`110-testing.md`) continue to exclude
 pointer interfaces from the adapters themselves; a test may nonetheless call
@@ -335,6 +375,7 @@ inside an `unsafe` block:
 | --- | --- | --- | --- |
 | `c.borrow[T](p, n)` | `p: c.Ptr`, `n: u32` | `[]T` | Oak may read `n` elements |
 | `c.borrow_mut[T](p, n)` | `p: c.Ptr`, `n: u32` | `[*]T` | Oak may read and write `n` elements |
+| `c.borrow_string(p)` | `p: c.Ptr` to a NUL-terminated C string | `[]u8` | Oak may read the bytes before the terminator |
 
 `T` is a boundary element type exactly as in §2.5.1 — a fixed-width
 integer, a floating-point or storage format, `Bool`, a boundary tagged
@@ -361,6 +402,36 @@ readback_sum: (id: u32): f32 {
     }
   }
   total
+}
+```
+
+**Inbound C strings** (ml roadmap D2). `c.borrow_string(p)` is the
+`c.borrow` of a string whose length C did not tell us: the view covers the
+bytes before the first NUL, **excluding the terminator**, and its length is
+that offset, read at runtime by scanning for the terminator (the `strlen`
+contract, implemented without libc so freestanding builds stay free of
+it). A NULL pointer yields the empty view — the total behaviour, chosen over
+a trap because the common producers (`getenv`, optional fields) spell
+"absent" as NULL, and an empty view is exactly what a program reading such
+a string can do nothing wrong with; a program that must distinguish absent
+from empty checks the pointer on the C side. A string longer than `u32`
+holds traps. Everything else is `c.borrow[u8]`: placement (`OAK-F0107`),
+scope, the recorded assumption (`OAK-B0110`, worded for the terminator: the
+pointer addresses a NUL-terminated string that stays valid and unwritten
+for the block's extent), lowering to the view struct over the pointer and
+the scanned length, and the interpreter's rejection.
+
+```oak
+getenv: (name: c.String): c.Ptr = c.extern("getenv")
+
+data_dir_length: (): u32 {
+  p: c.Ptr = getenv(c.String("ML_DATA_DIR"))
+  n: u32 = 0
+  unsafe {
+    dir: []u8 = c.borrow_string(p)   // empty when the variable is unset
+    n = len(dir)
+  }
+  n
 }
 ```
 
@@ -433,7 +504,7 @@ typestate that lets a device own the memory for a while
 | Code | Meaning |
 | --- | --- |
 | `OAK-F0104` | element type of an inbound buffer is not representable across the C ABI |
-| `OAK-F0107` | `c.borrow`/`c.borrow_mut` outside an `unsafe` block, or not the initializer of a named binding |
+| `OAK-F0107` | `c.borrow`/`c.borrow_mut`/`c.borrow_string` outside an `unsafe` block, or not the initializer of a named binding |
 | `OAK-B0110` | (warning) the foreign buffer contract assumed for a binding |
 
 ### 2.8 Owned foreign buffers: `Buffer[T]`

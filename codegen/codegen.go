@@ -2466,7 +2466,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		// An inbound buffer borrow (docs/spec/92-ffi.md section 2.7) is
 		// spelled as an index over a library member, so it comes before the
 		// generic index-call paths.
-		if member, element, isForeign := typechecker.ForeignBorrowCall(e); isForeign && len(e.Arguments) == 2 {
+		if member, element, isForeign := typechecker.ForeignBorrowCall(e); isForeign && (len(e.Arguments) == 2 || (member == "borrow_string" && len(e.Arguments) == 1)) {
 			cg.emitForeignBorrow(member, element, e, tc)
 			return
 		}
@@ -2623,6 +2623,8 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.output.WriteString(" ).base, (size_t)( ")
 				cg.emitExpressionFragment(operand, tc)
 				cg.output.WriteString(" ).len")
+			} else if operand, isCString := cStringArgument(arg); isCString {
+				cg.emitCStringArgument(operand, arg, tc)
 			} else {
 				cg.emitExpressionFragment(arg, tc)
 			}
@@ -2997,6 +2999,26 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
 	cg.write("  return v.base[i];\n")
 	cg.write("}\n\n")
+
+	if elementType == "u8" {
+		// c.cstr(v) (docs/spec/92-ffi.md section 2.5.3): the view's base
+		// pointer is a C string only when its last byte is NUL; the check
+		// runs at the foreign call and names the Oak source position before
+		// trapping, as an assertion does.
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <stdio.h>\n")
+		cg.write(fmt.Sprintf("static inline const char *oak_cstr_u8(%s v, const char *file, u32 line) {\n", viewTypeName))
+		cg.write("  if (v.len == 0u || v.base[v.len - 1u] != 0u) {\n")
+		cg.write("    fprintf(stderr, \"oak: c.cstr view is not NUL-terminated at %s:%u\\n\", file, (unsigned)line);\n")
+		cg.write("    __builtin_trap();\n  }\n  return (const char *)v.base;\n}\n#else\n")
+		cg.write(fmt.Sprintf("static inline const char *oak_cstr_u8(%s v, const char *file, u32 line) {\n", viewTypeName))
+		cg.write("  (void)file; (void)line;\n  if (v.len == 0u || v.base[v.len - 1u] != 0u) { __builtin_trap(); }\n  return (const char *)v.base;\n}\n#endif\n\n")
+		// c.borrow_string(p) (section 2.7.1): the terminator's offset,
+		// counted without libc so freestanding builds stay free of it; a
+		// NULL pointer is the empty string, and a length past u32 traps.
+		cg.write("static inline u32 oak_cstr_len(const void *p) {\n")
+		cg.write("  const unsigned char *s = (const unsigned char *)p;\n  u64 n = 0;\n  if (s == 0) { return 0u; }\n")
+		cg.write("  while (s[n] != 0u) { n++; if (n > 0xFFFFFFFFull) { __builtin_trap(); } }\n  return (u32)n;\n}\n\n")
+	}
 
 	// subslice(v, start, n): the derived view is exactly n elements starting
 	// at start, admitted only when start + n <= len (no overflow: both
