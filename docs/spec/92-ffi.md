@@ -401,7 +401,11 @@ element type is one both sides agree on, and the assumption is recorded.
   other admitted unsafe assumption, so an audit of a program's assumptions
   lists its foreign borrows. `Oak.Unsafe` (Lean) carries the contract as
   the second entry of the assumption vocabulary and proves it discharges
-  only its own obligation.
+  only its own obligation. A strict module that accepts the contract says
+  so once in its manifest, `admit OAK-B0110` (`85-discipline.md` section
+  7); the warning is then recorded and listed but no longer rejects that
+  module's packages. Without the admission the strict profile's
+  zero-warning rule rejects every borrow (ml finding F22).
 - **Exclusivity.** Two `c.borrow_mut` bindings in one block over the same
   memory are the program's contract violation (item 3), not something Oak
   can see: distinct foreign owners are distinct to the checker. Two views
