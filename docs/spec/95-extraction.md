@@ -191,6 +191,11 @@ hand-written code.
 
 ## 6. Theorems about the extraction
 
+The standard library's per-package status — which packages extract, which
+laws are proved universally, which are decided, what the faithfulness
+harness covers, and the benchmark ratios — is kept as one table in
+`stdlib/VERIFICATION.md`; this section holds the theorems themselves.
+
 `proof/ExtractionScanner.lean` proves the scanner gate: `rup_token_scan`
 states that on any text of at most 65536 bytes, from any cursor inside it,
 with fuel above the text length, the extracted `rup_token` returns exactly
