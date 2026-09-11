@@ -1,0 +1,146 @@
+import(std)
+import(testing)
+
+// Round trips through the strings package's byte-order and Latin-1 codecs
+// and its signed/radix numbers (stdlib/STRINGS.md). The tape chooses the
+// bytes and numbers; every encode must decode to what went in.
+
+// Latin-1 bytes -> UTF-8 -> Latin-1 is the identity on any bytes (7000);
+// the UTF-8 is valid (7001) and as long as _size said (7002).
+PropertyLatin1RoundTrip: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  source: [16]u8
+  utf: [32]u8
+  back: [16]u8
+  count: u32 = test_range(choices, data, u32(0), u32(16))
+  i: u32 = u32(0)
+  while i < count {
+    source[i] = test_byte(choices, data)
+    i = i + u32(1)
+  }
+  whole: []u8 = view(&source)
+  src: []u8 = whole[u32(0):count]
+  needed: u32 = text_result_value(latin1_to_utf8_size(src))
+  written: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&utf)
+    written = text_result_value(latin1_to_utf8(dst, src))
+  }
+  test_check(written == needed, u32(7002))
+  encoded_whole: []u8 = view(&utf)
+  encoded: []u8 = encoded_whole[u32(0):written]
+  test_check(utf8_validate(encoded), u32(7001))
+  returned: u32 = u32(0)
+  true ? {
+    bdst: [*]u8 = span(&back)
+    returned = text_result_value(utf8_to_latin1(bdst, encoded))
+  }
+  test_check(returned == count, u32(7000))
+  j: u32 = u32(0)
+  while j < count {
+    test_check(back[j] == source[j], u32(7000))
+    j = j + u32(1)
+  }
+  count == u32(0) ? { testing_classify(u32(150)) }
+  written > count ? { testing_classify(u32(151)) }
+}
+
+// Scalars -> UTF-8 -> UTF-16 bytes (tape-chosen byte order) -> UTF-8 is the
+// identity (7010); the byte length matches _size (7011); flipping the byte
+// order of the decode fails or differs (7012).
+PropertyUtf16BytesRoundTrip: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  utf: [32]u8
+  units: [64]u8
+  back: [32]u8
+  count: u32 = test_range(choices, data, u32(0), u32(6))
+  length: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&utf)
+    i: u32 = u32(0)
+    while i < count {
+      raw: u32 = test_range(choices, data, u32(1), u32(1114111))
+      value: u32 = unicode_is_scalar(raw) ? raw | u32(65)
+      length = length + text_result_value(utf8_encode(dst, length, value))
+      i = i + u32(1)
+    }
+  }
+  whole: []u8 = view(&utf)
+  src: []u8 = whole[u32(0):length]
+  big: Bool = test_bool(choices, data)
+  needed: u32 = text_result_value(utf8_to_utf16_bytes_size(src))
+  written: u32 = u32(0)
+  true ? {
+    udst: [*]u8 = span(&units)
+    written = text_result_value(utf8_to_utf16_bytes(udst, src, big))
+  }
+  test_check(written == needed, u32(7011))
+  units_whole: []u8 = view(&units)
+  encoded: []u8 = units_whole[u32(0):written]
+  returned: u32 = u32(0)
+  true ? {
+    bdst: [*]u8 = span(&back)
+    returned = text_result_value(utf16_bytes_to_utf8(bdst, encoded, big))
+  }
+  true ? {
+    back_whole: []u8 = view(&back)
+    test_check(returned == length && text_equal(back_whole[u32(0):returned], src), u32(7010))
+  }
+  flipped: Result[u32, TextError] = utf16_bytes_to_utf8_size(encoded, !big)
+  text_result_ok(flipped) && length > u32(0) ? {
+    other_store: [32]u8
+    other: u32 = u32(0)
+    true ? {
+      odst: [*]u8 = span(&other_store)
+      other = text_result_value(utf16_bytes_to_utf8(odst, encoded, !big))
+    }
+    other_whole: []u8 = view(&other_store)
+    test_check(other != length || !text_equal(other_whole[u32(0):other], src), u32(7012))
+    testing_classify(u32(152))
+  }
+  big ? { testing_classify(u32(153)) }
+  written > length ? { testing_classify(u32(154)) }
+}
+
+// Format then parse is the identity for signed decimals (7020) and for
+// unsigned values in a tape-chosen radix and letter case (7021).
+PropertyNumberRoundTrip: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  buffer: [80]u8
+  high: u64 = u64(test_u32(choices, data))
+  low: u64 = u64(test_u32(choices, data))
+  bits: u64 = (high << u64(32)) | low
+  signed: i64 = i64_bits_u64(bits)
+  n: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&buffer)
+    b: TextBuilder = append_i64(text_builder(), dst, signed)
+    n = text_result_value(finish_text(b))
+  }
+  true ? {
+    whole: []u8 = view(&buffer)
+    text: []u8 = whole[u32(0):n]
+    parsed: Result[i64, TextParseError] = text_parse_i64(text, u32(10))
+    value: i64 = parsed ? | .Ok(v) => v | .Err(e) => i64(0) - i64(1)
+    test_check(value == signed, u32(7020))
+  }
+  signed < i64(0) ? { testing_classify(u32(155)) }
+  radix: u32 = test_range(choices, data, u32(2), u32(36))
+  upper: Bool = test_bool(choices, data)
+  m: u32 = u32(0)
+  true ? {
+    rdst: [*]u8 = span(&buffer)
+    rb: TextBuilder = append_u64_radix(text_builder(), rdst, bits, radix, upper)
+    m = text_result_value(finish_text(rb))
+  }
+  radix_whole: []u8 = view(&buffer)
+  radix_text: []u8 = radix_whole[u32(0):m]
+  back: Result[u64, TextParseError] = text_parse_u64(radix_text, radix)
+  unsigned: u64 = back ? | .Ok(v) => v | .Err(e) => u64(0)
+  test_check(unsigned == bits, u32(7021))
+  radix == u32(16) ? { testing_classify(u32(156)) }
+  radix == u32(2) ? { testing_classify(u32(157)) }
+}
