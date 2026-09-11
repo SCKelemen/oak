@@ -21,7 +21,7 @@ func (cg *CodeGenerator) emitBorrowedSlice(call *ast.InvocationExpression, tc *t
 		return false
 	}
 	ctype := fmt.Sprintf("oak_%s_%s", kind, info.element)
-	name := fmt.Sprintf("oak_%s_slice_%s", kind, info.element)
+	name := fmt.Sprintf("oak_%s_slice_%s", kind, elementIdent(info.element))
 	cg.sliceHelpers[name] = fmt.Sprintf(`static inline %s %s(%s value, u64 low, u64 high) {
   if (low > high || high > (u64)value.len) { __builtin_trap(); }
   %s result = { low == 0 ? value.base : value.base + low, (u32)(high - low) };
@@ -52,7 +52,7 @@ func (cg *CodeGenerator) emitOwnedArraySlice(call *ast.InvocationExpression, inf
 	// The view typedef must already be placed (a slice flows into a []T
 	// position, which the type pre-pass emitted); a body is no place for a
 	// typedef, so an unplaced view type fails closed.
-	viewType := fmt.Sprintf("oak_view_%s", info.element)
+	viewType := fmt.Sprintf("oak_view_%s", elementIdent(info.element))
 	if !cg.types[viewType] {
 		cg.output.WriteString("OAK_UNSUPPORTED_SLICE_VIEW_TYPE")
 		return true

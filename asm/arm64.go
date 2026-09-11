@@ -80,7 +80,7 @@ func regForms3() []form {
 
 var instructionTable = map[string]instructionSpec{
 	"mov":   {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}, {opX, opSP}, {opSP, opX}}, sysregOperand: -1},
-	"add":   {forms: append(regForms3(), form{opSP, opSP, opImm}), sysregOperand: -1},
+	"add":   {forms: append(regForms3(), form{opSP, opSP, opImm}, form{opX, opSP, opImm}), sysregOperand: -1},
 	"sub":   {forms: append(regForms3(), form{opSP, opSP, opImm}), sysregOperand: -1},
 	"adds":  {forms: regForms3(), setsFlags: true, sysregOperand: -1},
 	"subs":  {forms: regForms3(), setsFlags: true, sysregOperand: -1},

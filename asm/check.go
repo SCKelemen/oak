@@ -69,14 +69,20 @@ func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool,
 }
 
 // guardState is the guard knowledge at a program point: per span base
-// register the proven minimum length, per index register its bound.
+// register the proven minimum length, per index register its bound, per
+// register the frame address it holds.
 type guardState struct {
-	mins map[int]int64
-	idx  map[int]idxFact
+	mins  map[int]int64
+	idx   map[int]idxFact
+	frame map[int]int64
+}
+
+func newGuardState() *guardState {
+	return &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}, frame: map[int]int64{}}
 }
 
 func (c *checker) guardSnapshot() *guardState {
-	gs := &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}}
+	gs := newGuardState()
 	for base, fact := range c.spans {
 		if fact.hasMin {
 			gs.mins[base] = fact.minLen
@@ -84,6 +90,9 @@ func (c *checker) guardSnapshot() *guardState {
 	}
 	for reg, fact := range c.idxFacts {
 		gs.idx[reg] = fact
+	}
+	for reg, addr := range c.frameAddrs {
+		gs.frame[reg] = addr
 	}
 	return gs
 }
@@ -100,12 +109,17 @@ func (c *checker) applyGuards(gs *guardState) {
 	for reg, fact := range gs.idx {
 		c.idxFacts[reg] = fact
 	}
+	c.frameAddrs = map[int]int64{}
+	for reg, addr := range gs.frame {
+		c.frameAddrs[reg] = addr
+	}
 	c.pendingCmp = cmpFact{}
 }
 
 // meetGuards is the intersection of two states: a length bound holds after
 // a merge only at the smaller of the two proven minimums
-// (Oak.Assembler.meet_sound), an index fact only when both sides agree.
+// (Oak.Assembler.meet_sound), an index fact or a frame address only when
+// both sides agree.
 func meetGuards(a, b *guardState) *guardState {
 	if a == nil {
 		return b
@@ -113,7 +127,12 @@ func meetGuards(a, b *guardState) *guardState {
 	if b == nil {
 		return a
 	}
-	out := &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}}
+	out := newGuardState()
+	for reg, addrA := range a.frame {
+		if addrB, ok := b.frame[reg]; ok && addrA == addrB {
+			out.frame[reg] = addrA
+		}
+	}
 	for base, minA := range a.mins {
 		if minB, ok := b.mins[base]; ok {
 			out.mins[base] = min(minA, minB)
@@ -141,8 +160,13 @@ func guardStatesEqual(a, b map[string]*guardState) bool {
 	}
 	for name, ga := range a {
 		gb, ok := b[name]
-		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) {
+		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) || len(ga.frame) != len(gb.frame) {
 			return false
+		}
+		for reg, addr := range ga.frame {
+			if gb.frame[reg] != addr {
+				return false
+			}
 		}
 		for base, m := range ga.mins {
 			if gb.mins[base] != m {
@@ -191,6 +215,12 @@ type checker struct {
 	// below (`cmp wI, wL` / `cmp wI, #K` then `b.hs <exit>`); they die with
 	// any write to the index or bound register, any label, and any call.
 	idxFacts map[int]idxFact
+	// frameAddrs: register -> the frame address it holds, relative to the
+	// entry sp (`add xN, sp, #imm`): the base of an owned array in the
+	// frame. Memory through it is checked against the declared frame like
+	// `[sp, #imm]`; the fact dies with a write to the register, a label, or
+	// a call.
+	frameAddrs map[int]int64
 	// The label fixpoint: assumed guard states entering each label (nil on
 	// the first, optimistic pass), the meet of the states arriving there
 	// during this pass, and the conservative fallback that forgets all.
@@ -517,6 +547,7 @@ func (c *checker) walk() {
 	c.written = map[int]bool{}
 	c.writtenV = map[int]bool{}
 	c.writtenP = map[int]bool{}
+	c.frameAddrs = map[int]int64{}
 	c.labelDisp = map[string]int64{}
 	c.pendingDisp = map[string]int64{}
 	c.labels = map[string]bool{}
@@ -638,6 +669,7 @@ func (c *checker) forgetGuards() {
 	}
 	c.pendingCmp = cmpFact{}
 	c.idxFacts = map[int]idxFact{}
+	c.frameAddrs = map[int]int64{}
 }
 
 // instruction checks one instruction and reports whether it ends control.
@@ -948,6 +980,16 @@ func (c *checker) instruction(instr Instruction) bool {
 		return false
 	}
 	c.write(instr, dest)
+	if instr.Mnemonic == "add" && len(regs) == 2 && regs[1].Class == ClassSP && dest.Class == ClassX {
+		// `add xN, sp, #imm`: xN holds a frame address (an owned array's base).
+		if imm, isImm := instr.Operands[2].(Immediate); isImm {
+			if !c.dispKnown {
+				c.errorf(instr.Line, "add %s, sp: the sp displacement is unknown here", dest.Text)
+			} else {
+				c.frameAddrs[dest.Num] = -c.disp + imm.Value
+			}
+		}
+	}
 	if spec.setsFlags {
 		c.flagsValid = true
 	}
@@ -1106,6 +1148,7 @@ func (c *checker) write(instr Instruction, reg Register) {
 			delete(c.idxFacts, index)
 		}
 	}
+	delete(c.frameAddrs, reg.Num)
 }
 
 func (c *checker) moveSP(instr Instruction, delta int64) {
@@ -1145,6 +1188,10 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 	if mem.Base.Class == ClassX {
 		if fact, isSpan := c.spans[mem.Base.Num]; isSpan {
 			c.spanAccess(instr, matched, mem, fact, regs, isStore)
+			return
+		}
+		if addr, isFrame := c.frameAddrs[mem.Base.Num]; isFrame {
+			c.frameArrayAccess(instr, matched, mem, addr, regs, isStore)
 			return
 		}
 	}
@@ -1215,6 +1262,54 @@ func (c *checker) calleeSavedState(reg Register) *savedState {
 		return c.calleeSavedV[reg.Num]
 	}
 	return nil
+}
+
+// frameArrayAccess admits memory through a register holding a frame address
+// (`add xN, sp, #imm`): `[xN, #off]` must lie inside the declared frame, and
+// `[xN, wI, uxtw #s]` needs a dominating constant index guard (`cmp wI, #K`
+// then `b.hs <exit>`) with the K whole elements inside the frame — the
+// owned array in the frame, bounds-checked like an Oak index.
+func (c *checker) frameArrayAccess(instr Instruction, matched form, mem Memory, base int64, regs []Register, isStore bool) {
+	if mem.Mode != MemOffset {
+		c.errorf(instr.Line, "%s: a frame address is never moved; pre/post-index addressing is refused on %s", instr.Mnemonic, mem.Base.Text)
+		return
+	}
+	size := accessBytes(instr.Mnemonic, matched[0])
+	if len(regs) > 0 && regs[0].Class == ClassV {
+		size = memorySizeReg(instr.Mnemonic, regs[0])
+	}
+	inFrame := func(lo, hi int64) bool { return lo >= -c.fn.Frame && hi <= 0 }
+	if mem.Index == nil {
+		if !inFrame(base+mem.Offset, base+mem.Offset+size) {
+			c.errorf(instr.Line, "%s touches [%d, %d) relative to entry sp through %s, outside the declared %d-byte frame", instr.Mnemonic, base+mem.Offset, base+mem.Offset+size, mem.Base.Text, c.fn.Frame)
+			return
+		}
+	} else {
+		index := *mem.Index
+		c.read(instr, index)
+		if index.Class != ClassW || mem.Extend != "" && mem.Extend != "uxtw" {
+			c.errorf(instr.Line, "%s: a frame array is indexed by a 32-bit element index, `[base, wI, uxtw #s]`; %s is not one", instr.Mnemonic, index.Text)
+			return
+		}
+		if int64(1)<<uint(mem.Shift) != size {
+			c.errorf(instr.Line, "%s: indexed access must move by whole elements: a %d-byte access needs `uxtw #%d`", instr.Mnemonic, size, log2(size))
+			return
+		}
+		bound, guarded := c.idxFacts[index.Num]
+		if !guarded || bound.boundReg >= 0 {
+			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the frame array's index", instr.Mnemonic, index.Text, index.Text)
+			return
+		}
+		if !inFrame(base, base+bound.bound*size) {
+			c.errorf(instr.Line, "%s: the guard admits %d elements of %d bytes at %d relative to entry sp, past the declared %d-byte frame", instr.Mnemonic, bound.bound, size, base, c.fn.Frame)
+			return
+		}
+	}
+	if !isStore {
+		for _, reg := range regs {
+			c.write(instr, reg)
+		}
+	}
 }
 
 // systemRegister checks a named system register against Arm's SysReg
@@ -1324,7 +1419,10 @@ func (c *checker) clobberCallerSaved() {
 	for num := 0; num <= 7; num++ {
 		delete(c.writtenV, num)
 	}
-	c.written[0] = true // the call's result
+	// The call's result: x0 for an integer, v0 for a floating-point one (the
+	// checker does not see the callee's signature; either is readable).
+	c.written[0] = true
+	c.writtenV[0] = true
 	c.flagsValid = false
 	c.forgetGuards()
 }
@@ -1503,7 +1601,10 @@ func (c *checker) call(instr Instruction) {
 	for num := 0; num <= 7; num++ {
 		delete(c.writtenV, num)
 	}
-	c.written[0] = true // the call's result
+	// The call's result: x0 for an integer, v0 for a floating-point one (the
+	// checker does not see the callee's signature; either is readable).
+	c.written[0] = true
+	c.writtenV[0] = true
 	c.flagsValid = false
 	c.forgetGuards()
 }

@@ -92,3 +92,4 @@ import Oak.Typestate
 import Oak.IoPort
 import Oak.ProtocolQuorum
 import Oak.TimeInterval
+import Oak.ProtocolConformance

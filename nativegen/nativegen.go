@@ -91,6 +91,35 @@ func spanOf(expr ast.Expression) (span, bool) {
 	return span{elem: elem, writable: marker.Value == "*"}, true
 }
 
+// arrayLocal is an owned array `buf: [N]T` living in the frame: N*sizeof(T)
+// bytes at a fixed slot offset. Its elements are reached through a frame
+// address (`add xB, sp, #off`) under a constant index guard (`cmp wI, #N;
+// b.hs trap`) — the checker admits exactly that shape (asm/check.go,
+// frameArrayAccess) — and `view(&buf)` / `span(&buf)` hand a callee the
+// {address, N} pair.
+type arrayLocal struct {
+	offset int64 // slot offset (slotMem-relative), 8-byte aligned
+	elem   scalar
+	length int64
+}
+
+// arrayOf reads an owned array type [N]T of scalar elements.
+func arrayOf(expr ast.Expression) (elem scalar, length int64, ok bool) {
+	index, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return scalar{}, 0, false
+	}
+	n, isLit := index.Index.(*ast.IntegerLiteral)
+	if !isLit || n.Value <= 0 {
+		return scalar{}, 0, false
+	}
+	elem, ok = scalarOf(index.Left)
+	if !ok || elem.isBool {
+		return scalar{}, 0, false
+	}
+	return elem, n.Value, true
+}
+
 // Unsupported reports why a function is left to the C backend.
 type Unsupported struct{ Reason string }
 
@@ -107,11 +136,12 @@ type generator struct {
 	functions map[string]*ast.FunctionStatement
 	result    *scalar
 
-	items []asm.Item
-	slots map[string]int64  // variable → frame offset (relative to the frame base after the prologue)
-	types map[string]scalar // variable → type
-	spans map[string]span   // span and view parameters, register-resident
-	head  string            // the loop header a tail self-call jumps to
+	items  []asm.Item
+	slots  map[string]int64       // variable → frame offset (relative to the frame base after the prologue)
+	types  map[string]scalar      // variable → type
+	spans  map[string]span        // span and view parameters, register-resident
+	arrays map[string]*arrayLocal // owned array locals, in the frame
+	head   string                 // the loop header a tail self-call jumps to
 	// Variables live in the callee-saved registers x19–x28 in declaration
 	// order (saved in the prologue, restored before ret), and in frame
 	// slots once those run out; regs maps a variable to its register.
@@ -144,7 +174,8 @@ type generator struct {
 type slotBinding struct {
 	offset int64
 	typ    scalar
-	reg    int // callee-saved register, or -1 for a slot
+	reg    int         // callee-saved register, or -1 for a slot
+	arr    *arrayLocal // an owned array local (offset/typ/reg unused)
 }
 
 const scratchLow, scratchHigh = 9, 15
@@ -164,7 +195,7 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}
 	if hasVariables(fn) {
 		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
 	}
@@ -510,13 +541,112 @@ func (g *generator) popScope() {
 		delete(g.slots, name)
 		delete(g.types, name)
 		delete(g.regs, name)
+		delete(g.arrays, name)
 		// A shadowed outer binding comes back into view.
 		for i := len(g.scopes) - 1; i >= 0; i-- {
 			if b, ok := g.scopes[i][name]; ok {
-				g.slots[name], g.types[name], g.regs[name] = b.offset, b.typ, b.reg
+				if b.arr != nil {
+					g.arrays[name] = b.arr
+				} else {
+					g.slots[name], g.types[name], g.regs[name] = b.offset, b.typ, b.reg
+				}
 				break
 			}
 		}
+	}
+}
+
+// declareArray gives an owned array local its frame storage: whole 8-byte
+// slots, so every element access stays aligned and spills never overlap.
+func (g *generator) declareArray(name string, elem scalar, length int64) *arrayLocal {
+	bytes := length * int64(elem.bits/8)
+	arr := &arrayLocal{offset: 8 * g.nslots, elem: elem, length: length}
+	g.nslots += (bytes + 7) / 8
+	delete(g.slots, name)
+	delete(g.types, name)
+	delete(g.regs, name)
+	g.arrays[name] = arr
+	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, arr: arr}
+	return arr
+}
+
+// lowerArrayDeclaration lowers `buf: [N]T` (zero-filled, as the C backend
+// leaves no storage uninitialized) or `buf: [N]T = [e0, …]` (each element
+// stored at its slot).
+func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scalar, length int64) error {
+	if elem.isFloat {
+		g.usedFloat = true
+	}
+	if s.Value == nil {
+		arr := g.declareArray(s.Name.Value, elem, length)
+		zero, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return err
+		}
+		g.emit("mov", xr(zero), imm(0))
+		bytes := length * int64(elem.bits/8)
+		words := (bytes + 7) / 8
+		for w := int64(0); w < words; w += 2 {
+			if w+1 < words {
+				g.emit("stp", xr(zero), xr(zero), g.slotMem(arr.offset+8*w))
+			} else {
+				g.emit("str", xr(zero), g.slotMem(arr.offset+8*w))
+			}
+		}
+		g.release(zero)
+		return nil
+	}
+	literal, isLiteral := s.Value.(*ast.ArrayLiteral)
+	if !isLiteral {
+		return unsupported("an array local initialized from %s", s.Value.String())
+	}
+	if int64(len(literal.Elements)) != length {
+		return unsupported("an array literal of %d elements for [%d]%s", len(literal.Elements), length, elem.name)
+	}
+	// The elements evaluate before the name is bound (an initializer never
+	// sees the array it fills).
+	var values []int
+	for _, element := range literal.Elements {
+		r, err := g.expr(element, &elem)
+		if err != nil {
+			return err
+		}
+		values = append(values, r)
+	}
+	arr := g.declareArray(s.Name.Value, elem, length)
+	for i, r := range values {
+		g.emit(storeOf(elem), reg(r, elem), g.slotMem(arr.offset+int64(i)*int64(elem.bits/8)))
+		g.release(r)
+	}
+	return nil
+}
+
+// storeOf is the whole-element store of a type.
+func storeOf(s scalar) string {
+	switch {
+	case s.isFloat || s.bits >= 32:
+		return "str"
+	case s.bits == 16:
+		return "strh"
+	default:
+		return "strb"
+	}
+}
+
+// loadOf is the whole-element load of a type, zero- or sign-extending as the
+// element type reads in C.
+func loadOf(s scalar) string {
+	switch {
+	case s.isFloat || s.bits >= 32:
+		return "ldr"
+	case s.bits == 16 && s.signed:
+		return "ldrsh"
+	case s.bits == 16:
+		return "ldrh"
+	case s.signed:
+		return "ldrsb"
+	default:
+		return "ldrb"
 	}
 }
 
@@ -541,7 +671,7 @@ func (g *generator) declare(name string, s scalar) int64 {
 		g.nslots++
 	}
 	g.slots[name], g.types[name], g.regs[name] = offset, s, r
-	g.scopes[len(g.scopes)-1][name] = slotBinding{offset, s, r}
+	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: offset, typ: s, reg: r}
 	return offset
 }
 
@@ -613,6 +743,9 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 		if e.Dot {
 			return scalar{}, unsupported("a field access")
 		}
+		if arr := g.arrayOperand(e.Left); arr != nil {
+			return arr.elem, nil
+		}
 		sp, err := g.spanOperand(e.Left)
 		if err != nil {
 			return scalar{}, err
@@ -624,6 +757,9 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 			return scalar{}, unsupported("a call through a value")
 		}
 		if ident.Value == "len" && len(e.Arguments) == 1 {
+			if g.arrayOperand(e.Arguments[0]) != nil {
+				return scalars["u32"], nil
+			}
 			if _, err := g.spanOperand(e.Arguments[0]); err != nil {
 				return scalar{}, err
 			}
@@ -761,6 +897,12 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 		g.line = statementLine(stmt)
 		switch s := stmt.(type) {
 		case *ast.VariableDeclaration:
+			if elem, length, isArray := arrayOf(s.Type); isArray {
+				if err := g.lowerArrayDeclaration(s, elem, length); err != nil {
+					return err
+				}
+				continue
+			}
 			if s.Value == nil {
 				return unsupported("a local without an initializer")
 			}
@@ -1114,11 +1256,15 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 	case *ast.InvocationExpression:
 		ident := e.Function.(*ast.Identifier)
 		if ident.Value == "len" && len(e.Arguments) == 1 {
-			sp, err := g.spanOperand(e.Arguments[0])
+			r, err := g.alloc(scalars["u32"])
 			if err != nil {
 				return 0, err
 			}
-			r, err := g.alloc(scalars["u32"])
+			if arr := g.arrayOperand(e.Arguments[0]); arr != nil {
+				g.constant(r, uint64(arr.length), scalars["u32"])
+				return r, nil
+			}
+			sp, err := g.spanOperand(e.Arguments[0])
 			if err != nil {
 				return 0, err
 			}
@@ -1767,14 +1913,6 @@ func (g *generator) call(e *ast.InvocationExpression) (int, error) {
 	if len(e.Arguments) != len(callee.Parameters) || len(e.Arguments) > 8 {
 		return 0, unsupported("a call to %s with %d arguments", ident.Value, len(e.Arguments))
 	}
-	var argTypes []scalar
-	for _, p := range callee.Parameters {
-		s, ok := scalarOf(p.Type)
-		if !ok || p.Variadic {
-			return 0, unsupported("a call to %s (parameter %s: %s)", ident.Value, p.Name.Value, p.Type.String())
-		}
-		argTypes = append(argTypes, s)
-	}
 	var resultType *scalar
 	if callee.ReturnType != nil && callee.ReturnType.String() != "()" {
 		s, ok := scalarOf(callee.ReturnType)
@@ -1784,25 +1922,63 @@ func (g *generator) call(e *ast.InvocationExpression) (int, error) {
 		resultType = &s
 	}
 	// Arguments evaluate into scratch registers first (an argument may
-	// itself call), then move to the argument registers.
-	var args []int
+	// itself call), then move to the argument registers: a scalar one, a
+	// span or view (`view(&buf)` / `span(&buf)` over an owned array local)
+	// its {frame address, u32 length} pair.
+	type argument struct {
+		regs  []int
+		types []scalar
+	}
+	var args []argument
 	for i, arg := range e.Arguments {
-		r, err := g.expr(arg, &argTypes[i])
+		p := callee.Parameters[i]
+		if p.Variadic {
+			return 0, unsupported("a call to %s (parameter %s is variadic)", ident.Value, p.Name.Value)
+		}
+		if s, ok := scalarOf(p.Type); ok {
+			r, err := g.expr(arg, &s)
+			if err != nil {
+				return 0, err
+			}
+			args = append(args, argument{[]int{r}, []scalar{s}})
+			continue
+		}
+		target, isSpan := spanOf(p.Type)
+		if !isSpan {
+			return 0, unsupported("a call to %s (parameter %s: %s)", ident.Value, p.Name.Value, p.Type.String())
+		}
+		arr, err := g.arrayArgument(arg, target)
+		if err != nil {
+			return 0, unsupported("a call to %s: %v", ident.Value, err)
+		}
+		base, err := g.alloc(scalars["u64"])
 		if err != nil {
 			return 0, err
 		}
-		args = append(args, r)
+		length, err := g.alloc(scalars["u32"])
+		if err != nil {
+			return 0, err
+		}
+		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
+		g.constant(length, uint64(arr.length), scalars["u32"])
+		args = append(args, argument{[]int{base, length}, []scalar{scalars["u64"], scalars["u32"]}})
 	}
 	general, vector := 0, 0
-	for i, r := range args {
-		if argTypes[i].isFloat {
-			g.emit("fmov", reg(vecBase+vector, argTypes[i]), reg(r, argTypes[i]))
-			vector++
-		} else {
-			g.emit("mov", reg(general, argTypes[i]), reg(r, argTypes[i]))
-			general++
+	for _, arg := range args {
+		for j, r := range arg.regs {
+			typ := arg.types[j]
+			if typ.isFloat {
+				g.emit("fmov", reg(vecBase+vector, typ), reg(r, typ))
+				vector++
+			} else {
+				g.emit("mov", reg(general, typ), reg(r, typ))
+				general++
+			}
+			g.release(r)
 		}
-		g.release(r)
+	}
+	if general > 8 || vector > 8 {
+		return 0, unsupported("a call to %s: the arguments exhaust the argument registers", ident.Value)
 	}
 	// Spill the live scratch registers: the callee owns x9–x15 and v16–v23.
 	var spilled []int
@@ -1831,6 +2007,35 @@ func (g *generator) call(e *ast.InvocationExpression) (int, error) {
 		g.emit("mov", reg(out, *resultType), reg(0, *resultType))
 	}
 	return out, nil
+}
+
+// arrayArgument reads a span or view argument: `span(&buf)` for a [*]T
+// parameter, `view(&buf)` for a []T one, over an owned array local of the
+// parameter's element type.
+func (g *generator) arrayArgument(arg ast.Expression, target span) (*arrayLocal, error) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, unsupported("a span argument that is not view(&buf) or span(&buf)")
+	}
+	ident, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent || (ident.Value != "view" && ident.Value != "span") {
+		return nil, unsupported("a span argument that is not view(&buf) or span(&buf)")
+	}
+	if target.writable && ident.Value != "span" {
+		return nil, unsupported("a view where a span is expected")
+	}
+	borrow, isBorrow := call.Arguments[0].(*ast.PrefixExpression)
+	if !isBorrow || borrow.Operator != "&" {
+		return nil, unsupported("%s of %s (only &buf over an owned array local)", ident.Value, call.Arguments[0].String())
+	}
+	arr := g.arrayOperand(borrow.Right)
+	if arr == nil {
+		return nil, unsupported("%s of %s (only an owned array local)", ident.Value, borrow.Right.String())
+	}
+	if arr.elem != target.elem {
+		return nil, unsupported("%s over [%d]%s where %s elements are expected", ident.Value, arr.length, arr.elem.name, target.elem.name)
+	}
+	return arr, nil
 }
 
 // spillReg is the whole-register view a scratch register spills as.
@@ -1884,7 +2089,7 @@ func mentionsCall(body ast.Node) bool {
 	walk(body, func(n ast.Node) {
 		if call, ok := n.(*ast.InvocationExpression); ok {
 			if ident, ok := call.Function.(*ast.Identifier); ok {
-				if isConversion(ident.Value) || ident.Value == "assert" || ident.Value == "len" || typechecker.FloatIntrinsicName(ident.Value) {
+				if isConversion(ident.Value) || ident.Value == "assert" || ident.Value == "len" || ident.Value == "view" || ident.Value == "span" || typechecker.FloatIntrinsicName(ident.Value) {
 					return
 				}
 			}
@@ -1941,6 +2146,10 @@ func walk(n ast.Node, visit func(ast.Node)) {
 		walk(e.Right, visit)
 	case *ast.InvocationExpression:
 		for _, a := range e.Arguments {
+			walk(a, visit)
+		}
+	case *ast.ArrayLiteral:
+		for _, a := range e.Elements {
 			walk(a, visit)
 		}
 	case *ast.MatchExpression:
@@ -2016,9 +2225,78 @@ func log2Bytes(bytes int) int {
 	return n
 }
 
+// arrayOperand names an owned array local, or nil.
+func (g *generator) arrayOperand(expr ast.Expression) *arrayLocal {
+	ident, isIdent := expr.(*ast.Identifier)
+	if !isIdent {
+		return nil
+	}
+	return g.arrays[ident.Value]
+}
+
+// arrayAddress lowers `buf[i]` to a memory operand: a literal index inside
+// the array addresses its slot directly through sp; any other index goes
+// through the frame address of the array under the constant guard
+// `cmp wI, #N; b.hs trap` — the checker's frame-array idiom. The returned
+// registers are released by the caller (the index may be spent as the
+// load's destination, so it is returned separately).
+func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address asm.Memory, indexReg, baseReg int, err error) {
+	size := int64(arr.elem.bits / 8)
+	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
+		return g.slotMem(arr.offset + k*size), -1, -1, nil
+	}
+	idxType, err := g.typeOf(index, nil)
+	if err != nil {
+		return asm.Memory{}, 0, 0, err
+	}
+	if idxType.wide() || idxType.signed || idxType.isBool || idxType.isFloat {
+		return asm.Memory{}, 0, 0, unsupported("an element index of type %s (the array idiom walks by a u32 index)", idxType.name)
+	}
+	r, err := g.expr(index, &idxType)
+	if err != nil {
+		return asm.Memory{}, 0, 0, err
+	}
+	base, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return asm.Memory{}, 0, 0, err
+	}
+	g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
+	g.usedTrap = true
+	g.emit("cmp", wr(r), imm(arr.length))
+	g.branch("hs", g.trap)
+	idx := wr(r)
+	return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, r, base, nil
+}
+
+// arrayElement lowers a load from an owned array local.
+func (g *generator) arrayElement(arr *arrayLocal, index ast.Expression) (int, error) {
+	address, idx, base, err := g.arrayAddress(arr, index)
+	if err != nil {
+		return 0, err
+	}
+	out := idx
+	if idx < 0 || arr.elem.isFloat {
+		out, err = g.alloc(arr.elem)
+		if err != nil {
+			return 0, err
+		}
+	}
+	g.emit(loadOf(arr.elem), reg(out, arr.elem), address)
+	if base >= 0 {
+		g.release(base)
+	}
+	if idx >= 0 && out != idx {
+		g.release(idx)
+	}
+	return out, nil
+}
+
 // element lowers `v[i]`: a guarded, whole-element load through the bound
 // base, zero- or sign-extending as the element type reads in C.
 func (g *generator) element(e *ast.IndexExpression) (int, error) {
+	if arr := g.arrayOperand(e.Left); arr != nil {
+		return g.arrayElement(arr, e.Index)
+	}
 	sp, err := g.spanOperand(e.Left)
 	if err != nil {
 		return 0, err
@@ -2060,6 +2338,23 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	if s.Target.Dot {
 		return unsupported("a field store")
+	}
+	if arr := g.arrayOperand(s.Target.Left); arr != nil {
+		value, err := g.expr(s.Value, &arr.elem)
+		if err != nil {
+			return err
+		}
+		address, idx, base, err := g.arrayAddress(arr, s.Target.Index)
+		if err != nil {
+			return err
+		}
+		g.emit(storeOf(arr.elem), reg(value, arr.elem), address)
+		for _, r := range []int{value, idx, base} {
+			if r >= 0 {
+				g.release(r)
+			}
+		}
+		return nil
 	}
 	sp, err := g.spanOperand(s.Target.Left)
 	if err != nil {

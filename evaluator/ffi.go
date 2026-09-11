@@ -32,6 +32,10 @@ func evalLibraryCall(library, member string, args []ast.Expression, env *object.
 			return newError("c.%s requires the native backend; the interpreter cannot call foreign code", member)
 		case "cstr":
 			return newError("c.cstr requires the native backend; the interpreter cannot call foreign code")
+		case "argv_of", "out":
+			return newError("c.%s requires the native backend; the interpreter cannot call foreign code", member)
+		case "null":
+			return newError("c.null requires the native backend; the interpreter has no foreign pointers")
 		case "disown", "borrow_string":
 			return newError("c.%s requires the native backend; the interpreter has no foreign memory", member)
 		}
