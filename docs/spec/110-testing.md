@@ -419,9 +419,31 @@ damages it one time in four so a parser meets the near-valid inputs.
 one through a carrier scalar (the example's `Advance: u16` is whole
 milliseconds).
 
+## Native code in tests
+
+A module's tests link the native inputs its manifest declares
+(`83-modules.md` section 4.6): `oak test` compiles the test binary with the
+`link` objects and `framework` names of the module and of every dependency
+the package reaches, in the same link order and through the same argument
+vector `oak build` uses, so a package whose production code binds externs
+against `runtime/libmlrt.a` tests against that archive with ordinary `Test`,
+`Property`, and `Table` targets. The objects' bytes join the build
+fingerprint, so a replay records which archive the failure was found
+against and refuses a different one. Nothing else changes: the Oak program
+passes every gate, and the native code is trusted as the module's own source
+is, with no determinism claim — a test that depends on native state has to
+reset it, or route it through the choice tape, itself.
+
 ## Trusted native adapters
 
-`-adapter manifest.json` links a prebuilt native adapter. The version-1 manifest
+`-adapter manifest.json` links a prebuilt native adapter. Where a manifest
+`link` line is the module's own statement that an archive belongs to its
+build, an adapter manifest is a **separate, pinned assertion of trust** for
+`Sim` targets: digests, scalar bindings, and a determinism contract, supplied
+per invocation. The two compose — the runner links the module's inputs and
+then the adapter's pinned objects — and an adapter whose objects a module
+also lists under `link` needs no change; the adapter manifest keeps carrying
+the bindings and the identity the replay fingerprint records. The version-1 manifest
 requires a name, `deterministic: true`, exact Oak binding names/C symbols, scalar
 ABI signatures, and 1..32 `.a`/`.o` objects with SHA-256 digests. Parameters and
 results are fixed-width signed/unsigned `c.Int8` through `c.UInt64`; `()` is also

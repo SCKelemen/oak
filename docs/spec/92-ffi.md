@@ -90,6 +90,11 @@ putchar: (ch: c.Int): c.Int = c.extern("putchar")
 abort: (): () = c.extern("abort")
 ```
 
+A symbol the C library does not provide comes from a native input the
+module's manifest names — `link runtime/libmlrt.a`, `framework Metal`
+(`83-modules.md` section 4.6) — which every `oak build`, `oak run`, and
+`oak test` of the module passes to the C compiler.
+
 Rules (diagnostics `OAK-F01xx`):
 
 - **F0101** — every parameter type and any non-unit return type of an extern
