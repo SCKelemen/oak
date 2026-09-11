@@ -649,6 +649,13 @@ func (c *checker) instruction(instr Instruction) bool {
 		}
 		switch instr.Mnemonic {
 		case "movz", "movk", "movn":
+			if imm.Shift%16 != 0 || imm.Shift > 48 || imm.MSL {
+				c.errorf(instr.Line, "%s: the immediate shift must be lsl #0, #16, #32, or #48", instr.Mnemonic)
+			}
+		case "add", "adds", "sub", "subs", "cmp", "cmn":
+			if imm.Shift != 12 || imm.MSL {
+				c.errorf(instr.Line, "%s: an immediate is shifted by lsl #12 or not at all", instr.Mnemonic)
+			}
 		default:
 			if !vectorDest {
 				c.errorf(instr.Line, "%s takes no shifted immediate", instr.Mnemonic)
@@ -1285,6 +1292,10 @@ func (c *checker) spanAccess(instr Instruction, matched form, mem Memory, fact *
 func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFact, size int64, regs []Register, isStore bool) {
 	index := *mem.Index
 	c.read(instr, index)
+	if index.Class != ClassW || mem.Extend != "" && mem.Extend != "uxtw" {
+		c.errorf(instr.Line, "%s: a span is walked by a 32-bit element index, `[base, wI, uxtw #s]`; %s is not one", instr.Mnemonic, index.Text)
+		return
+	}
 	if size != fact.elem || int64(1)<<uint(mem.Shift) != size {
 		c.errorf(instr.Line, "%s: indexed access must move by whole elements: a %d-byte access over %d-byte elements needs `uxtw #%d` and a matching register width", instr.Mnemonic, size, fact.elem, log2(fact.elem))
 		return
