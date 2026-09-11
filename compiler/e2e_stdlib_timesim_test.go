@@ -1,9 +1,10 @@
 package compiler
 
 import (
-	"os"
-	"path/filepath"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TimeSource (stdlib/time.oak, "Time sources"): a fixed source never moves
@@ -95,17 +96,14 @@ main: (): i32 {
 	}
 }
 
-// The native realization (stdlib/timenative.oak) linked against the
-// reference host shim: the wall clock is after 2020 and before 2100, the
-// monotonic clock starts at zero and never decreases across refreshes.
+// The native realization (stdlib/timenative.oak) in pure Oak — the clock
+// ids as target constants, clock_gettime as an extern, the timespec through
+// c.out, nothing linked but the C library: the wall clock is after 2020 and
+// before 2100 and within a minute of Go's own reading, the monotonic clock
+// starts at zero and never decreases across refreshes.
 func TestE2EStdlibTimeNative(t *testing.T) {
-	shim, err := filepath.Abs(filepath.Join("..", "stdlib", "native", "oak_time_host.c"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(shim); err != nil {
-		t.Fatal(err)
-	}
+	skipWithoutPosixSpawn(t)
+	nowNanos := time.Now().UnixNano()
 	src := `package main
 import(std)
 import("time")
@@ -117,6 +115,7 @@ main: (): i32 {
   timenative.timenative_source(source)
   first: time.Instant = time.time_now(source)
   assert(first.nanos > i64(1577836800000000000) && first.nanos < i64(4102444800000000000))
+  assert(first.nanos > i64(WALL_LOW) && first.nanos < i64(WALL_HIGH))
   assert(time.time_monotonic(source).nanos == i64(0))
   i: u32 = u32(0)
   last: i64 = i64(0)
@@ -134,11 +133,16 @@ main: (): i32 {
   42
 }
 `
+	// Within a minute of Go's wall clock, either way.
+	src = strings.NewReplacer(
+		"WALL_LOW", fmt.Sprintf("%d", nowNanos-60*time.Second.Nanoseconds()),
+		"WALL_HIGH", fmt.Sprintf("%d", nowNanos+60*time.Second.Nanoseconds()),
+	).Replace(src)
 	root := writeModule(t, map[string]string{
 		"oak.mod":  "module example.com/timenative_check\noak 0.1.0\n",
 		"main.oak": src,
 	})
-	_, code, abnormal := buildAndRunFrom(t, "timenative", New().WithPackageDir(root), shim)
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
 	if abnormal || code != 42 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
