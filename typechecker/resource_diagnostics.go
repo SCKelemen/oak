@@ -4,6 +4,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/modules"
 )
 
 const CodeResourceCallAliasConflict = "OAK-B0112"
@@ -29,6 +30,9 @@ func (tc *TypeChecker) addResourceDiagnostic(node ast.Node, title string) *diagn
 }
 
 func (tc *TypeChecker) addResourceDiagnosticWithCode(node ast.Node, code, title string) *diagnostic.Diagnostic {
+	// Imported callables carry internal names; readers see the qualified
+	// spelling (docs/spec/83-modules.md section 7).
+	title = modules.DemangleText(title)
 	var d *diagnostic.Diagnostic
 	if node != nil {
 		d = diagnostic.NewDiagnosticFromNodeWithCode(node, "borrow", code, title)

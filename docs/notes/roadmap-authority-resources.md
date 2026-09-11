@@ -85,8 +85,12 @@ specializations retain template modes at call sites and in specialized
 bodies (`50-borrowing.md` §9). **Second increment (same day):** receiver
 authority as its own slot — receiver modes participate in exclusivity and
 consumption without shifting explicit indices, govern method bodies, and
-round-trip through SemIR. Still open: contracts on function types
-(borrowed-function requirements), imports and sealing.
+round-trip through SemIR. **Source spelling and imports (2026-09-12):**
+`via f(consumed h, borrowed mut receiver)` declares modes in source
+(`112-protocols.md` §5) and, because protocols elaborate with internal
+names, imports and sealing cannot erase them (acceptance case 4). Still
+open: contracts on function types (borrowed-function requirements) and a
+source spelling for callable contracts and fresh returns.
 
 ## 3. Resource provenance through bindings, projections, control flow
 

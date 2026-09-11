@@ -476,8 +476,14 @@ receiver cannot be consumed or retained inside the method). In SemIR the
 receiver mode is the `resource.borrow`/`borrow-mut`/`consume` effect with
 the parameter `receiver`. A receiver mode is valid only on a method whose
 receiver type is a resource type. Contracts on function *types* (so that a
-borrowed-function requirement can reject a consuming implementation) and
-imported or sealed signatures are the remaining boundaries of milestone 2.
+borrowed-function requirement can reject a consuming implementation) are
+the remaining boundary of milestone 2.
+
+Imports and sealing cannot erase modes: a protocol declared in one package
+(`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the
+program's internal names, so the same contract governs every importer's
+calls — qualified, open, selective, or through a sealed signature — and the
+diagnostics name the qualified spelling.
 
 The callable-boundary audit and proposed result provenance/lifetime relationships
 are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).

@@ -2589,6 +2589,38 @@ func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.Pro
 					return nil
 				}
 				transition.Callable = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+				// `via f(consumed h, borrowed other, borrowed mut receiver)`
+				// names the callable's resource parameter modes
+				// (docs/spec/112-protocols.md section 5).
+				if p.peekTokenIs(token.LPAREN) {
+					p.nextToken() // (
+					for !p.peekTokenIs(token.RPAREN) {
+						if !p.expectPeek(token.IDENT) {
+							return nil
+						}
+						mode := &ast.ProtocolParameterMode{Token: p.currentToken, Mode: p.currentToken.Literal}
+						switch mode.Mode {
+						case "borrowed":
+							if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "mut" {
+								p.nextToken()
+								mode.Mode = "borrowed mut"
+							}
+						case "consumed":
+						default:
+							p.addErrorAtCurrentToken(fmt.Sprintf("via: expected a parameter mode (borrowed, borrowed mut, consumed), got %s", mode.Mode))
+							return nil
+						}
+						if !p.expectPeek(token.IDENT) {
+							return nil
+						}
+						mode.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+						transition.Modes = append(transition.Modes, mode)
+						if p.peekTokenIs(token.COMMA) {
+							p.nextToken()
+						}
+					}
+					p.nextToken() // )
+				}
 			}
 			decl.Transitions = append(decl.Transitions, transition)
 			p.nextToken()

@@ -146,8 +146,32 @@ that performs it. With at least one `resource T`, the declaration projects a
 resource protocol fact (typechecker/resource_resolution.go): the protocol's
 states, initial state, and one transition per `via` line, checked against the
 typed program by the existing resource resolution. Lines without `via` stay
-executable-only. Parameter modes are not declared in source yet and stay
-unspecified; declaring them is part of §7.
+executable-only.
+
+The callable may carry its **resource parameter modes** in parentheses:
+
+```oak
+Lifecycle: protocol = {
+  resource Handle
+  initial Open
+  look: Open -> Open via inspect(borrowed h)
+  shut: Open -> Closed via close(consumed h)
+  join: Open -> Open via merge(borrowed mut receiver, borrowed other)
+}
+```
+
+Each entry is a mode — `borrowed`, `borrowed mut`, or `consumed` — followed
+by the name of one of the callable's parameters, or `receiver` for a
+method's receiver slot (`50-borrowing.md` §9). Names resolve against the
+callable's declaration: an unknown parameter, a name marked twice, or
+`receiver` on a function without one is `OAK-P0xxx`-class protocol shape
+error (`CodeProtocolShape`). A marked parameter must have a resource type,
+which resource resolution checks. Because protocol declarations are
+elaborated with the program's internal names, a protocol declared in one
+package binds the same contract in every importer — through a qualified
+call, an open or selective import, or a sealed signature — so imports and
+sealing cannot erase modes. Callable contracts on function-typed
+parameters (`50-borrowing.md` §9) have no source spelling yet.
 
 ## 6. What is not derived
 
@@ -161,7 +185,7 @@ not generate Lean definitions, state diagrams, or debugger decoding
 
 ## 7. Direction
 
-- Parameter modes on `via` lines (`borrowed`, `borrowed mut`, `consumed`) and
-  typestate-indexed handle types.
+- Typestate-indexed handle types; a source spelling for callable contracts
+  on function-typed parameters and for fresh-return facts.
 - Conformance checking of a hand-written TLA+ module against the projected
   machine, for modules that predate the declaration.
