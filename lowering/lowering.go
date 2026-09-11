@@ -174,6 +174,9 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			AsmBacked:  fn.AsmBacked,
 			Exported:   fn.Exported,
 			Opaque:     fn.Opaque,
+			// The C ABI symbol of an explicit export travels with the
+			// definition to the backend (docs/spec/92-ffi.md section 2.9).
+			ExportSymbol: fn.ExportSymbol,
 		}
 	}
 	return fn

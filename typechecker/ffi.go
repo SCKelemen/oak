@@ -7,8 +7,10 @@ package typechecker
 import (
 	"fmt"
 	"regexp"
+	"sort"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/modules"
 )
 
 // Diagnostic codes of the FFI family (docs/spec/92-ffi.md section 2.3).
@@ -38,6 +40,16 @@ const (
 	// unsafe block or anywhere but the initializer of a named binding
 	// (docs/spec/92-ffi.md section 2.7).
 	CodeForeignBorrowPlacement = "OAK-F0107"
+	// CodeExportSymbolConflict rejects two C ABI exports that would share
+	// one symbol, an explicit `export("...")` colliding with another export
+	// or with a root package pub function's implicit `oak_<name>`
+	// (docs/spec/92-ffi.md section 2.9).
+	CodeExportSymbolConflict = "OAK-F0108"
+	// CodeExportInvalid rejects an `export("...")` whose symbol is not a C
+	// identifier or whose function has no single C ABI shape: a generic
+	// template, a method, an extern binding, or a non-pub function
+	// (docs/spec/92-ffi.md section 2.9).
+	CodeExportInvalid = "OAK-F0109"
 )
 
 // CType is a member of the `c` interface library (docs/spec/92-ffi.md
@@ -895,4 +907,110 @@ func (tc *TypeChecker) checkForeignDisown(expr *ast.InvocationExpression) Type {
 		return nil
 	}
 	return &CType{Name: "Ptr"}
+}
+
+// exportOwner names the package a flattened top-level function belongs to
+// for diagnostics: the module path the elaborator mangled into its internal
+// name, or "the root package".
+func exportOwner(fn *ast.FunctionStatement) string {
+	if path, _, ok := modules.Demangle(fn.Name.Value); ok {
+		return fmt.Sprintf("package %q", path)
+	}
+	return "the root package"
+}
+
+// implicitExportSymbol is the C symbol the backend gives a root package pub
+// function without an explicit marker (codegen cFunctionName for a root
+// program): every such function is exported as `oak_<name>`.
+func implicitExportSymbol(fn *ast.FunctionStatement) string {
+	return "oak_" + fn.Name.Value
+}
+
+// checkExportSymbols validates the program's C ABI exports
+// (docs/spec/92-ffi.md section 2.9): every `export("symbol")` marker names
+// a C identifier, marks a pub, non-generic, non-method, non-extern function,
+// and no two exports of the program — explicit markers from any package and
+// the root package's implicit `oak_<name>` exports — share a symbol. The
+// check runs over the elaborated program, so dependency functions carry
+// their mangled internal names and the marker is the only way they reach
+// the header.
+func (tc *TypeChecker) checkExportSymbols(program *ast.Program) {
+	type owner struct {
+		fn     *ast.FunctionStatement
+		symbol string
+	}
+	// A declaration is identified by where it is written, not by the name
+	// the elaborator gave it: the same source function is checked once in
+	// the flattened program under its internal name and may be checked
+	// again on its own, and neither pass may report it against itself.
+	declaration := func(fn *ast.FunctionStatement) string {
+		tok := fn.Name.Token
+		return fmt.Sprintf("%s|%d|%d|%d", tok.SemanticContext, tok.Line, tok.Column, tok.ByteStart)
+	}
+	claimed := map[string]owner{}
+	var explicit []*ast.FunctionStatement
+	visited := map[*ast.FunctionStatement]bool{}
+	for _, stmt := range program.Statements {
+		fn, ok := stmt.(*ast.FunctionStatement)
+		if !ok || fn.Name == nil || visited[fn] {
+			continue
+		}
+		visited[fn] = true
+		if fn.ExportSymbol != "" {
+			explicit = append(explicit, fn)
+			continue
+		}
+		// Root package pub functions are implicit exports; dependency pub
+		// functions (mangled names) are not part of the C surface.
+		if fn.Exported && fn.Receiver == nil && fn.ExternSymbol == "" && len(fn.TypeParams) == 0 {
+			if _, _, mangled := modules.Demangle(fn.Name.Value); !mangled {
+				claimed[implicitExportSymbol(fn)] = owner{fn: fn, symbol: implicitExportSymbol(fn)}
+			}
+		}
+	}
+	// Deterministic order: by symbol, then by internal name.
+	sort.SliceStable(explicit, func(i, j int) bool {
+		if explicit[i].ExportSymbol != explicit[j].ExportSymbol {
+			return explicit[i].ExportSymbol < explicit[j].ExportSymbol
+		}
+		return explicit[i].Name.Value < explicit[j].Name.Value
+	})
+	for _, fn := range explicit {
+		symbol := fn.ExportSymbol
+		switch {
+		case !ValidCSymbol(symbol):
+			d := tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export symbol %q is not a C identifier", symbol))
+			d.AddHelp("a C identifier starts with a letter or underscore and continues with letters, digits, and underscores")
+			continue
+		case !fn.Exported:
+			d := tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export(%q) marks %s, which is not pub", symbol, fn.Name.Value))
+			d.AddHelp("only a pub function has a C ABI surface; write `export(\"...\") pub name: ...`")
+			continue
+		case fn.Receiver != nil:
+			tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export(%q) marks a method; only free functions have a C ABI shape", symbol))
+			continue
+		case fn.ExternSymbol != "":
+			tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export(%q) marks an extern binding; the foreign symbol %q is already the C name", symbol, fn.ExternSymbol))
+			continue
+		case len(fn.TypeParams) != 0:
+			tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export(%q) marks a generic template; export a concrete instantiation through a wrapper instead", symbol))
+			continue
+		}
+		if prior, taken := claimed[symbol]; taken && declaration(prior.fn) != declaration(fn) {
+			d := tc.addTypeDiagnostic(fn.Name, CodeExportSymbolConflict,
+				fmt.Sprintf("export symbol %q is already used by %s in %s", symbol, prior.fn.Name.Value, exportOwner(prior.fn)))
+			if prior.fn.ExportSymbol == "" {
+				d.AddHelp(fmt.Sprintf("the root package's pub function %s is exported implicitly as %q; pick another symbol or rename the root function", prior.fn.Name.Value, symbol))
+			} else {
+				d.AddHelp(fmt.Sprintf("this export is in %s; C symbols are program-unique", exportOwner(fn)))
+			}
+			continue
+		}
+		claimed[symbol] = owner{fn: fn, symbol: symbol}
+	}
 }

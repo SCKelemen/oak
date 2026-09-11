@@ -2,9 +2,11 @@ package codegen
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -37,27 +39,39 @@ func (cg *CodeGenerator) GenerateHeader(program *ast.Program, tc *typechecker.Ty
 	cg.emitTypesInDependencyOrder(program, tc)
 	cg.preEmitContainerTypes(program)
 
+	// The root package's pub functions are exported implicitly under
+	// `oak_<name>`, in declaration order. A dependency's pub functions carry
+	// the elaborator's internal names and are not part of the C surface;
+	// they reach the header only through an explicit `export("symbol")`
+	// marker (docs/spec/92-ffi.md section 2.9), listed after the implicit
+	// exports sorted by symbol, each with its package in a comment.
 	cg.write("/* exported functions */\n")
+	var explicit []*ast.FunctionStatement
 	for _, stmt := range program.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil || !fn.Exported || fn.Receiver != nil || fn.ExternSymbol != "" || len(fn.TypeParams) != 0 {
 			continue
 		}
-		cg.write(fmt.Sprintf("%s %s( ", cg.parseTypeExpression(fn.ReturnType), cg.cFunctionName(fn.Name.Value)))
-		if len(fn.Parameters) == 0 {
-			cg.write("void")
+		if fn.ExportSymbol != "" {
+			explicit = append(explicit, fn)
+			continue
 		}
-		for i, param := range fn.Parameters {
-			if param.Variadic {
-				cg.write(fmt.Sprintf("%s %s", cg.emitViewType(cg.parseTypeExpression(param.Type)), cIdent(param.Name.Value)))
-			} else {
-				cg.write(cg.cParameter(param.Type, param.Name.Value))
-			}
-			if i < len(fn.Parameters)-1 {
-				cg.write(", ")
-			}
+		if _, _, mangled := modules.Demangle(fn.Name.Value); mangled {
+			continue
 		}
-		cg.write(" );\n")
+		cg.write(fmt.Sprintf("%s %s( %s );\n", cg.parseTypeExpression(fn.ReturnType), cg.cFunctionName(fn.Name.Value), cg.cParameterList(fn)))
+	}
+	sort.SliceStable(explicit, func(i, j int) bool { return explicit[i].ExportSymbol < explicit[j].ExportSymbol })
+	if len(explicit) > 0 {
+		cg.write("/* explicit C ABI exports (export(\"symbol\") markers) */\n")
+	}
+	for _, fn := range explicit {
+		path, name, mangled := modules.Demangle(fn.Name.Value)
+		if !mangled {
+			path, name = "the root package", fn.Name.Value
+		}
+		cg.write(fmt.Sprintf("/* %s: %s */\n", path, name))
+		cg.write(fmt.Sprintf("%s %s( %s );\n", cg.parseTypeExpression(fn.ReturnType), fn.ExportSymbol, cg.cParameterList(fn)))
 	}
 	cg.write(fmt.Sprintf("\n#endif /* %s */\n", guard))
 	output := cg.output.String()

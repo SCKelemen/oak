@@ -364,7 +364,10 @@ abs: (v: i32): i32 = v < 0 ? 0 - v | v        // private helper
 ```
 
 `pub` is accepted in `package main` (it affects only the API snapshot, section
-10). Encapsulation is decided at elaboration: `Oak.Modules.Visibility.lookup_never_private`
+10). `pub` alone never gives a dependency's function a C ABI name; a
+`export("symbol")` marker on a `pub` function of any package does
+(`92-ffi.md` §2.9), and the root package's `pub` functions are exported to C
+implicitly as `oak_<name>`. Encapsulation is decided at elaboration: `Oak.Modules.Visibility.lookup_never_private`
 proves a qualified reference never resolves to a private declaration, and
 `lookup_exported_resolves` that every exported one is reachable.
 

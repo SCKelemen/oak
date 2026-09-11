@@ -1073,6 +1073,12 @@ type FunctionStatement struct {
 	// function for a left operand of its first parameter's type
 	// (docs/spec/10-syntax.md section 14); empty for ordinary functions.
 	Operator string
+	// ExportSymbol is the C symbol an `export("symbol")` marker gives this
+	// function at the C ABI boundary (docs/spec/92-ffi.md section 2.9): a
+	// pub function of any package becomes callable from C under that
+	// program-unique name. Empty for functions without the marker; the root
+	// package's pub functions are exported implicitly as `oak_<name>`.
+	ExportSymbol string
 	// Effect clauses (docs/spec/60-effects-allocation.md section 2):
 	// `effects { Memory.Allocate, ... }` declares the effects this function
 	// itself performs (EffectsDeclared distinguishes an empty clause, an
