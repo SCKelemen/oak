@@ -106,7 +106,9 @@ func TestSelfHostedTextProfile(t *testing.T) {
   {"max-commands",cnf,proof+strings.Repeat("3 d 0\n",255),true},
   {"max-literal-pool","p cnf 1 2\n"+strings.Repeat("1 ",4095)+"0 -1 0",proof,true},
  }
- runOakTextCases(t,cases);t.Logf("Oak ASCII profile: %d boundary cases passed",len(cases))
+ runOakTextCases(t,cases)
+ if path:=os.Getenv("OAK_SELF_HOSTED_TEXT_PROFILE_OUT");path!="" {data,err:=json.MarshalIndent(cases,"","  ");if err!=nil {t.Fatal(err)};if err:=os.WriteFile(path,append(data,'\n'),0644);err!=nil {t.Fatal(err)}}
+ t.Logf("Oak ASCII profile: %d boundary cases passed",len(cases))
 }
 func TestSelfHostedTextCertificate(t *testing.T) {
  cnfPath,proofPath:=os.Getenv("OAK_SELF_HOSTED_TEXT_CNF"),os.Getenv("OAK_SELF_HOSTED_TEXT_PROOF")

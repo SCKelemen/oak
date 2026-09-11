@@ -1,5 +1,68 @@
 # JSON decoder optimization measurements
 
+## Third optimization pass: M1 proximity target
+
+Measured candidate: `c5debc11f324838c286c96c0c237f48c16824f3d`.
+Baseline: `661e614e8da9ab49e46d23a11f788492fb256766` (includes the second pass below).
+[Workflow, raw samples and native code](https://github.com/SCKelemen/oak/actions/runs/34290861422).
+Machine-readable data: [word-optimization-2026-09-08.json](word-optimization-2026-09-08.json).
+
+| Runner | Oak baseline ns/document | Oak candidate ns/document | Raw speedup | simdjson ns/document | Oak / simdjson time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Apple M1 (Virtual) | 207.37 | 119.91 | 1.73× | 105.87 | 1.133× |
+| AMD EPYC 7763 64-Core Processor | 195.15 | 178.67 | 1.09× | 127.58 | 1.400× |
+
+The M1 ratio of median times is 13.3% above simdjson, within the requested
+10–20% range for this workload and run. Nine samples each process 1,024,000
+documents/backend. The schema, corpus, validation policy, checksum, simdjson
+revision and release flags are unchanged. Corpus/parser setup stays outside
+timing; complete validated typed materialization stays inside timing.
+
+This is not a guarantee that every sample or JSON workload falls within 20%.
+The M1 paired sample ratios are 1.265, 1.129, 1.665, 1.121, 1.138, 1.409, 1.172, 0.935, 1.033.
+Their range is 0.935–1.665×. The simdjson median control changed by
+1.34%; affinity, CPU frequency and virtualization remain uncontrolled.
+The Linux result is 40.0% above simdjson and does not meet the M1 target.
+Do not use cross-run CPU-model changes as evidence of a code speedup.
+
+Earlier candidates are retained rather than selecting only the best run:
+
+| Candidate / workflow | M1 time ratio | Notes |
+| --- | ---: | --- |
+| [5305f740](https://github.com/SCKelemen/oak/actions/runs/34289575827) | 1.482× | Separate key fallback; word key expressions; whitespace loop |
+| [00e36f7f](https://github.com/SCKelemen/oak/actions/runs/34289690619) | 1.327× | Eight-digit arithmetic |
+| [60a24e75](https://github.com/SCKelemen/oak/actions/runs/34289844608) | 1.379× | Direct Boolean reader; test fixture needed borrow-scope repair |
+| [3372d108](https://github.com/SCKelemen/oak/actions/runs/34290092315) | 1.252× | Compiler coalesces complete byte packs |
+| [8fd893af](https://github.com/SCKelemen/oak/actions/runs/34290240398) | 1.139× | Overflow-safe helper guard and packed-load regressions |
+| [022ab3c1](https://github.com/SCKelemen/oak/actions/runs/34290499350) | 1.184× | Successful-parse UTF-8 validity; mutation fixture needed a name fix |
+| [d2050140](https://github.com/SCKelemen/oak/actions/runs/34290654967) | 1.212× | Corrected mutation fixture, paired-ratio reporting |
+| Final candidate above | 1.133× | Packed Boolean spellings; one array lookahead; nine samples |
+
+Changes apply to ordinary derived decoders and general byte-pack expressions.
+The scanner batches eight validated digits using word arithmetic; codegen
+coalesces complete 4/8-byte packs into one checked portable helper. ARM64
+assembly confirms a single 64-bit load for an eight-byte batch. Keeping key
+fallback storage separate reduced the inspected record reader frame from
+304 to 208 bytes. Boolean matching and array lookahead avoid unnecessary work.
+No boxing or heap allocation was introduced; allocation counts remain
+uninstrumented.
+
+Successful parsing of the supported typed grammar establishes UTF-8 validity:
+ASCII values/delimiters and validated key spellings cover every consumed byte.
+Failures still run whole-input validation to preserve InvalidEncoding
+precedence. Unicode/escape matching and public Result APIs remain unchanged.
+See the [codec specification](../../docs/spec/71-codecs.md) for the argument
+and the constraints on extending this optimization to future field types.
+
+Both native sanitizer and release preflights passed. The focused JSON suites,
+byte-pack alignment/trap checks, byte-lane differential checks, encoding
+mutation tests, borrow-boundary checks and golden corpus passed. The final
+full compiler/standard-library race suite was still pending/running when this
+report was prepared; no final full-suite pass is claimed.
+
+Dedicated M-series hardware, additional schemas, long strings, floats, larger
+arrays and streaming-sized working sets remain necessary for broader claims.
+
 ## Second optimization pass
 
 Measured candidate: `8e5951dab25bd75c21f0b4be7fe3fc59313314ec`.

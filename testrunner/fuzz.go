@@ -49,10 +49,10 @@ void oak_test_host_command(uint32_t kind, uint32_t target, uint32_t value) { (vo
 	fmt.Fprintf(&out, `int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
  if (size > %d) return 0;
  if (setjmp(oak_fuzz_discard)) return 0;
- oak_%s((oak_view_u8){data, (u32)size});
+ %s((oak_view_u8){data, (u32)size});
  return 0;
 }
-`, maxBytes, test.Name)
+`, maxBytes, pkg.symbol(test.Name))
 	return out.String(), nil
 }
 

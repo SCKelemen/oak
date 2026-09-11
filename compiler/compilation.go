@@ -9,6 +9,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/borrowchecker"
 	"github.com/SCKelemen/oak/codegen"
+	"github.com/SCKelemen/oak/codegen/lean"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/layout"
@@ -44,6 +45,11 @@ type Options struct {
 	// AsmUnits are the `.oakasm` translation units providing bodies for
 	// definition-less declarations (docs/spec/94-assembler.md).
 	AsmUnits []SourceText
+	// LineDirectives makes the C backend emit #line directives so C
+	// diagnostics and debuggers attribute generated code to Oak source
+	// (docs/spec/90-backend.md section 10). Off by default: the generated C
+	// then stands on its own lines for backend inspection.
+	LineDirectives bool
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -61,6 +67,21 @@ type Compilation struct {
 	packageDir   string
 	includeTests bool
 	moduleCache  string
+	sessionFiles map[string]string
+	// replaces overlays `replace` directives on the root manifest in memory
+	// (oak mod try, docs/spec/82-package-semver.md section 8).
+	replaces map[string]string
+	// diagnosticSink observes every diagnostic a stage gate sees, rejecting
+	// or not — how a driver surfaces informational findings such as the
+	// assembler's verification verdicts (docs/spec/94-assembler.md §8).
+	diagnosticSink func(*diagnostic.Diagnostic)
+}
+
+// WithDiagnosticSink returns a compilation that reports every diagnostic
+// (including informational ones that never reject) to sink.
+func (comp Compilation) WithDiagnosticSink(sink func(*diagnostic.Diagnostic)) Compilation {
+	comp.diagnosticSink = sink
+	return comp
 }
 
 // SyntaxTree is a parsed Oak source file.
@@ -71,6 +92,9 @@ type SyntaxTree struct {
 	// Modules carries the elaborator's facts for a package build; nil for a
 	// single-source compilation.
 	Modules *ModuleInfo
+	// Prelude records which standard library prelude was spliced: "full"
+	// (import(std)), "core" (library packages imported), or "".
+	Prelude string
 }
 
 // SemanticModel owns type information for a syntax tree.
@@ -82,6 +106,10 @@ type SemanticModel struct {
 	// never from compiler-generated declarations.
 	PublicRoot  *ast.Program
 	TypeChecker *typechecker.TypeChecker
+	// Diagnostics are every diagnostic the phases recorded, warnings
+	// included, whether or not the profile rejected them: the recorded
+	// assumptions and undischarged checks a proof-aware tool can surface.
+	Diagnostics []*diagnostic.Diagnostic
 	// AsmFunctions are the checked asm-unit functions the backend emits as
 	// top-level assembly blocks.
 	AsmFunctions []*asm.Function
@@ -118,6 +146,13 @@ func (comp Compilation) WithSource(path, text string) Compilation {
 // declarations with identical signatures.
 func (comp Compilation) WithAsmUnit(path, text string) Compilation {
 	comp.options.AsmUnits = append(append([]SourceText(nil), comp.options.AsmUnits...), SourceText{Path: path, Text: text})
+	return comp
+}
+
+// WithLineDirectives returns a compilation whose generated C carries #line
+// directives mapping functions and statements to their Oak source lines.
+func (comp Compilation) WithLineDirectives() Compilation {
+	comp.options.LineDirectives = true
 	return comp
 }
 
@@ -223,6 +258,28 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := loadStandardLibrary(tree); err != nil {
 			return nil, err
 		}
+		// Protocol declarations (compiler/protocols.go) project into the
+		// types and functions the rest of the pipeline sees, and into the
+		// resource facts checked after typing.
+		protocolFacts, err := lowerProtocols(tree)
+		if err != nil {
+			return nil, err
+		}
+		if len(protocolFacts) != 0 {
+			resourceProtocols = append(cloneResourceProtocolDeclarations(resourceProtocols), protocolFacts...)
+		}
+		// Type-qualified variant construction (compiler/variants.go) and
+		// derived declarations (compiler/derive.go) are resolved once the
+		// whole program, imports included, is in one tree.
+		if err := lowerDerived(tree, comp); err != nil {
+			return nil, err
+		}
+		if err := lowerLibrarySugar(tree); err != nil {
+			return nil, err
+		}
+		if err := lowerQualifiedVariants(tree.Root); err != nil {
+			return nil, err
+		}
 		if comp.simulation {
 			if err := checkSimulation(tree.Root, comp.simulationBindings); err != nil {
 				return nil, err
@@ -232,28 +289,42 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// assembler's seam checker before type checking sees the program
 		// (docs/spec/94-assembler.md).
 		asmFunctions, asmDiagnostics := comp.stitchAsmUnits(tree.Root)
-		if err := comp.gate("asm", asmDiagnostics); err != nil {
+		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		if tree.Modules != nil {
 			tc.SetModuleContext(tree.Modules.OpaqueTypes, tree.Modules.Packages)
+			tc.SetPackageExports(tree.Modules.Exports)
+			tc.SetSealedOpaque(tree.Modules.SealedOpaque)
+			tc.SetAbstractTypes(tree.Modules.Abstract)
 		}
+		// The spliced bootstrap library is stamped `std` (compiler/stdlib.go)
+		// and is a package of its own for scoping purposes.
+		tc.AddPackagePaths("std")
 		tc.CheckProgram(tree.Root)
 		if tree.Modules != nil {
 			// Sealed-import member types (docs/spec/83-modules.md section 6.3).
 			tc.CheckSignatureObligations(tree.Modules.Obligations)
+			tc.CheckParameterObligations(tree.Modules.Parameters)
 		}
-		if err := comp.gate("typecheck", tc.Diagnostics()); err != nil {
+		if err := comp.gate("typecheck", tc.Diagnostics(), tree.Modules); err != nil {
 			return nil, err
 		}
+		// Operator definitions (docs/spec/10-syntax.md section 14): every
+		// infix expression the checker resolved through a binding becomes
+		// the plain call it denotes, so the borrow checker, discipline,
+		// lowering, codegen, and the interpreter never see an operator.
+		rewriteOperatorCalls(tree.Root, tc)
 
 		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions}
+		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)
 
 		bc := borrowchecker.New()
 		bc.CheckProgram(tree.Root, tc.Env())
-		if err := comp.gate("borrowcheck", bc.Diagnostics()); err != nil {
+		model.Diagnostics = append(model.Diagnostics, bc.Diagnostics()...)
+		if err := comp.gate("borrowcheck", bc.Diagnostics(), tree.Modules); err != nil {
 			return nil, err
 		}
 
@@ -263,7 +334,20 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			}
 		}
 
-		if err := comp.gate("discipline", discipline.AnalyzeProgram(tree.Root).Diagnostics()); err != nil {
+		disciplineDiagnostics := discipline.AnalyzeProgram(tree.Root).Diagnostics()
+		model.Diagnostics = append(model.Diagnostics, disciplineDiagnostics...)
+		if err := comp.gate("discipline", disciplineDiagnostics, tree.Modules); err != nil {
+			return nil, err
+		}
+		// Effect clauses (compiler/effects.go): forbids is checked over the
+		// specialized call graph, so every callee here is concrete.
+		steady := map[string]string{}
+		if tree.Modules != nil {
+			steady = applySteadyEntries(tree.Root, tree.Modules.Steady)
+		}
+		effectDiagnostics := analyzeEffects(tree.Root, steady)
+		model.Diagnostics = append(model.Diagnostics, effectDiagnostics...)
+		if err := comp.gate("effects", effectDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
 
@@ -271,21 +355,70 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 	})
 }
 
-// gate rejects on error diagnostics, and on warnings too in the strict
-// profile (zero-warning rule).
-func (comp Compilation) gate(phase string, diagnostics []*diagnostic.Diagnostic) error {
-	rejecting := diagnosticErrors(diagnostics)
-	if comp.options.Profile == "strict" {
+// gate rejects on error diagnostics, and on warnings too where the strict
+// profile applies (zero-warning rule). Profiles are per module
+// (docs/spec/85-discipline.md section 1): a warning rejects when the
+// effective profile of the package owning its primary cause is strict.
+func (comp Compilation) gate(phase string, diagnostics []*diagnostic.Diagnostic, info *ModuleInfo) error {
+	if comp.diagnosticSink != nil {
 		for _, d := range diagnostics {
-			if d.Severity == diagnostic.SeverityWarning {
-				rejecting = append(rejecting, d)
+			if d != nil {
+				comp.diagnosticSink(d)
 			}
+		}
+	}
+	rejecting := diagnosticErrors(diagnostics)
+	for _, d := range diagnostics {
+		if d.Severity == diagnostic.SeverityWarning && comp.profileFor(d.Package, info) == "strict" {
+			rejecting = append(rejecting, d)
 		}
 	}
 	if len(rejecting) != 0 {
 		return &DiagnosticError{Phase: phase, Diagnostics: rejecting}
 	}
 	return nil
+}
+
+// profileFor resolves the discipline profile a package is judged under.
+//
+//   - Root-module packages, the root of a single-source build, and any
+//     diagnostic whose package is unknown take the root profile: the
+//     command-line/Options profile when given, else the root manifest's
+//     declaration, else "default". Unknown is treated as root deliberately —
+//     monomorphized clones of generic functions carry their instantiation
+//     name rather than a package — so a strict root never loses a warning to
+//     a missing stamp.
+//   - Packages of a dependency module take that module's declared profile,
+//     "default" when it declares none.
+//   - The spliced bootstrap library (`std`, `testing-host`) and standard
+//     library packages, which have no manifest, are judged under "default".
+func (comp Compilation) profileFor(pkg string, info *ModuleInfo) string {
+	rootProfile := comp.options.Profile
+	if rootProfile == "" && info != nil {
+		rootProfile = info.ModuleProfiles[info.RootModule]
+	}
+	if rootProfile == "" {
+		rootProfile = "default"
+	}
+	switch pkg {
+	case "":
+		return rootProfile
+	case "std", "testing-host":
+		return "default"
+	}
+	if info == nil || pkg == info.RootPackage {
+		return rootProfile
+	}
+	if info.StandardLibrary[pkg] {
+		return "default" // no module, no manifest
+	}
+	if module, owned := info.ModuleOf[pkg]; owned && module != info.RootModule {
+		if declared := info.ModuleProfiles[module]; declared != "" {
+			return declared
+		}
+		return "default"
+	}
+	return rootProfile
 }
 
 // SemanticModel is the Roslyn-style spelling for Check.
@@ -314,8 +447,53 @@ func (comp Compilation) EmitC() Stage[string] {
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
+		generator.SetLineDirectives(comp.options.LineDirectives)
+		if lowered.Model.Tree.Modules != nil {
+			generator.SetAbstractAliases(lowered.Model.Tree.Modules.Abstract)
+		}
 		generator.SetSourceText(lowered.Model.Tree.Source.Text)
 		return generator.Generate(lowered.Root, lowered.Model.TypeChecker)
+	})
+}
+
+// EmitHeader emits the C header of the program's exported surface: the
+// generated C's typedefs, every declared type with its layout assertions,
+// and a prototype per `pub` function (docs/spec/92-ffi.md section 2.6).
+func (comp Compilation) EmitHeader() Stage[string] {
+	return comp.Lower().Then(func(lowered *LoweredProgram) (string, error) {
+		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
+		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
+		if lowered.Model.Tree.Modules != nil {
+			generator.SetAbstractAliases(lowered.Model.Tree.Modules.Abstract)
+		}
+		return generator.GenerateHeader(lowered.Root, lowered.Model.TypeChecker)
+	})
+}
+
+// EmitLean extracts the program's own declarations (never the spliced
+// standard library) into Lean 4 definitions under the given namespace
+// (docs/spec/95-extraction.md, codegen/lean). The extraction reads the
+// type-checked tree before lowering, so it sees the program as written.
+func (comp Compilation) EmitLean(namespace string) Stage[string] {
+	return comp.Check().Then(func(model *SemanticModel) (string, error) {
+		names := map[string]bool{}
+		if model.PublicRoot != nil {
+			for _, stmt := range model.PublicRoot.Statements {
+				switch s := stmt.(type) {
+				case *ast.FunctionStatement:
+					if s.Name != nil {
+						names[s.Name.Value] = true
+					}
+				case *ast.ADTType:
+					if s.Name != nil {
+						names[s.Name.Value] = true
+					}
+				}
+			}
+		} else {
+			names = nil
+		}
+		return lean.Emit(model.Tree.Root, model.TypeChecker, namespace, names)
 	})
 }
 

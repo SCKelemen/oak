@@ -93,6 +93,28 @@ unsafe member, and include all successors; an empty initial set is rejected.
 Trace evidence must begin initially, follow legal transitions
 or stutter, and end unsafe.
 
+Every accepted `verify` result is a **verdict** (`evidence.go`, roadmap step
+4's evidence contract): `claim` is the property about identified Oak
+declarations — the state record and the initial, step, and invariant
+predicates by name and source position (roadmap step 3's first increment:
+the claim names the Oak source it is about, bound by source hash and
+semantic digest, not only an exported formula),
+`established` the fact this checker verified about the evidence, `assumptions`
+what the verdict trusts rather than checks, `trust_path` the components the
+result passed through in order, `unsupported` what the checker refuses, and
+`details` the evidence-specific numbers. The three kinds — closed set, trace,
+LRAT — fix these fields; nothing in a verdict is inferred from the evidence
+itself. The LRAT verdict's trust path names the corpus gates behind
+`internal/lrat` (agreement with compiled Oak and the Lean file model on every
+case, the model's `check_sound`, and the Oak decoder's `check_refines`), and
+its assumptions state that the CNF translation is compared, not proved.
+
+The integration suite's backend rows carry the same contract: each passed row
+states what the tool established, what the row trusts (Z3 and TLC answers are
+tool claims, the projections are compared, not proved), and the path the
+result took; the CaDiCaL row attaches the LRAT verdict itself, the one row whose
+refutations are independently checked.
+
 `oak-evidence-3` binds source bytes, project settings, the checked frontend
 model, and a Go-adapter semantics version. Earlier certificate identities are
 rejected. The migration tests explicitly rebind old fixture identities only
@@ -114,7 +136,7 @@ Install the versions in `tools.lock.json`, put Lean, Z3, CaDiCaL, and Java on
 `PATH`, and supply the exact SHA-256-pinned TLC jar. No tools are auto-installed.
 
 ```sh
-./build/oak-verify suite --tla-jar /absolute/path/to/tla2tools.jar --out build/integration
+./build/oak-verify suite --tla-jar "$PWD/tools/tla2tools.jar" --out build/integration
 ```
 
 The suite covers seven safe/broken enum, byte, and publication models. It checks tool versions,
@@ -243,3 +265,22 @@ It is compared with Go and Lean on 425 complete streams. The
 [bounded ASCII decoder](proof/SelfHostedText.md) now parses DIMACS/LRAT bytes in
 Oak and feeds that checker. Its text decisions are compared with Go and Lean;
 the solver gate also replays a real CaDiCaL certificate through compiled Oak.
+
+Roadmap step 2: [`proof/OakText.lean`](proof/OakText.md) transliterates the Oak
+decoder structure for structure over the proved scanner, `OakTextCompare`
+requires it, the proved file model, and compiled Oak to agree on every corpus
+case, and `proof/OakTextRefinement.lean` proves `check_refines` (every
+acceptance by the transliteration is an acceptance by the file model) and
+`check_refutes` (the model's soundness transferred to the Oak decoder).
+Roadmap step 3: [`proof/OakTextExtracted.lean`](../../docs/spec/95-extraction.md)
+is not written by hand — the compiler extracts it from the same three Oak
+sources (`codegen/lean`, `TestLeanExtractionMatchesCommitted` regenerates it
+and fails on drift), and `OakTextCompare` requires the extraction, the
+transliteration, the file model, and compiled Oak to agree on every corpus
+case. The assumption between compiled Oak and the model is now the
+correctness of the compiler and a small translator rather than a reading of
+two sources. `proof/ExtractionScanner.lean` proves the first gate outright:
+`rup_token_scan` shows the extracted scanner returns the proved scanner's
+token on every bounded input, so the scanner comparison is regression, not
+evidence. The decoder phases and the stream checker are next, after which
+`check_refines` transfers to the extraction directly.

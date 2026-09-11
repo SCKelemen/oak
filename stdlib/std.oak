@@ -1,28 +1,28 @@
 // Bootstrap standard library. Every allocation is supplied by the caller.
-Option[T]: type = Some: T | None
-Result[T, E]: type = Ok: T | Err: E
-Overflow: type = | Overflow
+pub Option[T]: type = Some: T | None
+pub Result[T, E]: type = Ok: T | Err: E
+pub Overflow: type = | Overflow
 
-option_or[T]: (item: Option[T], fallback: T): T = item ?
+pub option_or[T]: (item: Option[T], fallback: T): T = item ?
   | .Some(value) => value
   | .None => fallback
 
 // Capacity is the supplied storage length. This cursor owns no elements.
 // A cursor is paired with the same storage for its entire active lifetime.
-RingCursor: type = struct {
+pub RingCursor: type = struct {
   head: u32
   count: u32
 }
-RingPush: type = Inserted | Full
+pub RingPush: type = Inserted | Full
 
-ring_check: (cursor: [*]RingCursor, capacity: u32): () {
+pub ring_check: (cursor: [*]RingCursor, capacity: u32): () {
   assert(len(cursor) == u32(1))
   assert(capacity > u32(0))
   assert(cursor[0].head < capacity)
   assert(cursor[0].count <= capacity)
 }
 
-ring_push[T]: (cursor: [*]RingCursor, storage: [*]T, item: T): RingPush {
+pub ring_push[T]: (cursor: [*]RingCursor, storage: [*]T, item: T): RingPush {
   capacity: u32 = len(storage)
   ring_check(cursor, capacity)
   cursor[0].count == capacity ? {
@@ -37,7 +37,7 @@ ring_push[T]: (cursor: [*]RingCursor, storage: [*]T, item: T): RingPush {
   }
 }
 
-ring_pop[T]: (cursor: [*]RingCursor, storage: [*]T): Option[T] {
+pub ring_pop[T]: (cursor: [*]RingCursor, storage: [*]T): Option[T] {
   capacity: u32 = len(storage)
   ring_check(cursor, capacity)
   cursor[0].count == u32(0) ? {
@@ -52,8 +52,8 @@ ring_pop[T]: (cursor: [*]RingCursor, storage: [*]T): Option[T] {
 
 // Consumes no authority and performs no allocation. Destination exhaustion is
 // checked before writing; success copies the entire source.
-CopyError: type = | DestinationTooSmall
-bytes_copy_into: (dst: [*]u8, src: []u8): Result[u32, CopyError] {
+pub CopyError: type = | DestinationTooSmall
+pub bytes_copy_into: (dst: [*]u8, src: []u8): Result[u32, CopyError] {
   n: u32 = len(src)
   len(dst) < n ? {
     .Err(.DestinationTooSmall)
@@ -67,7 +67,7 @@ bytes_copy_into: (dst: [*]u8, src: []u8): Result[u32, CopyError] {
   }
 }
 
-bytes_equal: (left: []u8, right: []u8): Bool {
+pub bytes_equal: (left: []u8, right: []u8): Bool {
   n: u32 = len(left)
   n == len(right) ? {
     same: Bool = true
@@ -82,7 +82,7 @@ bytes_equal: (left: []u8, right: []u8): Bool {
   }
 }
 
-bytes_find: (src: []u8, needle: u8): Option[u32] {
+pub bytes_find: (src: []u8, needle: u8): Option[u32] {
   n: u32 = len(src)
   index: u32 = n
   i: u32 = 0
@@ -95,14 +95,14 @@ bytes_find: (src: []u8, needle: u8): Option[u32] {
 
 // Byte-oriented bitsets: bit zero is the least significant bit of byte zero.
 // Logical capacity is independent of spare backing bytes and tail bits.
-BitSetError: type = StorageTooSmall | BitOutOfRange
+pub BitSetError: type = StorageTooSmall | BitOutOfRange
 
-bitset_storage_bytes: (bits: u32): u32 {
+pub bitset_storage_bytes: (bits: u32): u32 {
   whole: u32 = bits / u32(8)
   bits % u32(8) == u32(0) ? whole | whole + u32(1)
 }
 
-bitset_contains: (storage: []u8, bits: u32, index: u32): Result[Bool, BitSetError] {
+pub bitset_contains: (storage: []u8, bits: u32, index: u32): Result[Bool, BitSetError] {
   len(storage) < bitset_storage_bytes(bits) ? {
     .Err(.StorageTooSmall)
   } | {
@@ -116,7 +116,7 @@ bitset_contains: (storage: []u8, bits: u32, index: u32): Result[Bool, BitSetErro
 }
 
 // Returns the previous bit. Errors leave every backing byte unchanged.
-bitset_set: (storage: [*]u8, bits: u32, index: u32, value: Bool): Result[Bool, BitSetError] {
+pub bitset_set: (storage: [*]u8, bits: u32, index: u32, value: Bool): Result[Bool, BitSetError] {
   len(storage) < bitset_storage_bytes(bits) ? {
     .Err(.StorageTooSmall)
   } | {
@@ -137,7 +137,7 @@ bitset_set: (storage: [*]u8, bits: u32, index: u32, value: Bool): Result[Bool, B
 }
 
 // Counts only logical bits; ignores unused tail bits and spare backing bytes.
-bitset_count: (storage: []u8, bits: u32): Result[u32, BitSetError] {
+pub bitset_count: (storage: []u8, bits: u32): Result[u32, BitSetError] {
   len(storage) < bitset_storage_bytes(bits) ? {
     .Err(.StorageTooSmall)
   } | {
@@ -154,12 +154,12 @@ bitset_count: (storage: []u8, bits: u32): Result[u32, BitSetError] {
 }
 
 // Bounds are checked by subtraction before any indexing or mutation.
-EndianError: type = | BufferTooSmall
-bytes_range_fits: (length: u32, offset: u32, width: u32): Bool {
+pub EndianError: type = | BufferTooSmall
+pub bytes_range_fits: (length: u32, offset: u32, width: u32): Bool {
   offset > length ? false | width <= length - offset
 }
 
-bytes_read_u16_le: (src: []u8, offset: u32): Result[u16, EndianError] {
+pub bytes_read_u16_le: (src: []u8, offset: u32): Result[u16, EndianError] {
   bytes_range_fits(len(src), offset, u32(2)) ? {
     value: u16 = 0
     value = (value | (u16(src[offset + u32(0)]) << u16(0)))
@@ -170,7 +170,7 @@ bytes_read_u16_le: (src: []u8, offset: u32): Result[u16, EndianError] {
   }
 }
 
-bytes_write_u16_le: (dst: [*]u8, offset: u32, value: u16): Result[u32, EndianError] {
+pub bytes_write_u16_le: (dst: [*]u8, offset: u32, value: u16): Result[u32, EndianError] {
   bytes_range_fits(len(dst), offset, u32(2)) ? {
     dst[offset + u32(0)] = u8_trunc_u16(value >> u16(0))
     dst[offset + u32(1)] = u8_trunc_u16(value >> u16(8))
@@ -180,7 +180,7 @@ bytes_write_u16_le: (dst: [*]u8, offset: u32, value: u16): Result[u32, EndianErr
   }
 }
 
-bytes_read_u16_be: (src: []u8, offset: u32): Result[u16, EndianError] {
+pub bytes_read_u16_be: (src: []u8, offset: u32): Result[u16, EndianError] {
   bytes_range_fits(len(src), offset, u32(2)) ? {
     value: u16 = 0
     value = (value | (u16(src[offset + u32(0)]) << u16(8)))
@@ -191,7 +191,7 @@ bytes_read_u16_be: (src: []u8, offset: u32): Result[u16, EndianError] {
   }
 }
 
-bytes_write_u16_be: (dst: [*]u8, offset: u32, value: u16): Result[u32, EndianError] {
+pub bytes_write_u16_be: (dst: [*]u8, offset: u32, value: u16): Result[u32, EndianError] {
   bytes_range_fits(len(dst), offset, u32(2)) ? {
     dst[offset + u32(0)] = u8_trunc_u16(value >> u16(8))
     dst[offset + u32(1)] = u8_trunc_u16(value >> u16(0))
@@ -201,7 +201,7 @@ bytes_write_u16_be: (dst: [*]u8, offset: u32, value: u16): Result[u32, EndianErr
   }
 }
 
-bytes_read_u32_le: (src: []u8, offset: u32): Result[u32, EndianError] {
+pub bytes_read_u32_le: (src: []u8, offset: u32): Result[u32, EndianError] {
   bytes_range_fits(len(src), offset, u32(4)) ? {
     value: u32 = 0
     value = (value | (u32(src[offset + u32(0)]) << u32(0)))
@@ -214,7 +214,7 @@ bytes_read_u32_le: (src: []u8, offset: u32): Result[u32, EndianError] {
   }
 }
 
-bytes_write_u32_le: (dst: [*]u8, offset: u32, value: u32): Result[u32, EndianError] {
+pub bytes_write_u32_le: (dst: [*]u8, offset: u32, value: u32): Result[u32, EndianError] {
   bytes_range_fits(len(dst), offset, u32(4)) ? {
     dst[offset + u32(0)] = u8_trunc_u32(value >> u32(0))
     dst[offset + u32(1)] = u8_trunc_u32(value >> u32(8))
@@ -226,7 +226,7 @@ bytes_write_u32_le: (dst: [*]u8, offset: u32, value: u32): Result[u32, EndianErr
   }
 }
 
-bytes_read_u32_be: (src: []u8, offset: u32): Result[u32, EndianError] {
+pub bytes_read_u32_be: (src: []u8, offset: u32): Result[u32, EndianError] {
   bytes_range_fits(len(src), offset, u32(4)) ? {
     value: u32 = 0
     value = (value | (u32(src[offset + u32(0)]) << u32(24)))
@@ -239,7 +239,7 @@ bytes_read_u32_be: (src: []u8, offset: u32): Result[u32, EndianError] {
   }
 }
 
-bytes_write_u32_be: (dst: [*]u8, offset: u32, value: u32): Result[u32, EndianError] {
+pub bytes_write_u32_be: (dst: [*]u8, offset: u32, value: u32): Result[u32, EndianError] {
   bytes_range_fits(len(dst), offset, u32(4)) ? {
     dst[offset + u32(0)] = u8_trunc_u32(value >> u32(24))
     dst[offset + u32(1)] = u8_trunc_u32(value >> u32(16))
@@ -251,7 +251,7 @@ bytes_write_u32_be: (dst: [*]u8, offset: u32, value: u32): Result[u32, EndianErr
   }
 }
 
-bytes_read_u64_le: (src: []u8, offset: u32): Result[u64, EndianError] {
+pub bytes_read_u64_le: (src: []u8, offset: u32): Result[u64, EndianError] {
   bytes_range_fits(len(src), offset, u32(8)) ? {
     value: u64 = 0
     value = (value | (u64(src[offset + u32(0)]) << u64(0)))
@@ -268,7 +268,7 @@ bytes_read_u64_le: (src: []u8, offset: u32): Result[u64, EndianError] {
   }
 }
 
-bytes_write_u64_le: (dst: [*]u8, offset: u32, value: u64): Result[u32, EndianError] {
+pub bytes_write_u64_le: (dst: [*]u8, offset: u32, value: u64): Result[u32, EndianError] {
   bytes_range_fits(len(dst), offset, u32(8)) ? {
     dst[offset + u32(0)] = u8_trunc_u64(value >> u64(0))
     dst[offset + u32(1)] = u8_trunc_u64(value >> u64(8))
@@ -284,7 +284,7 @@ bytes_write_u64_le: (dst: [*]u8, offset: u32, value: u64): Result[u32, EndianErr
   }
 }
 
-bytes_read_u64_be: (src: []u8, offset: u32): Result[u64, EndianError] {
+pub bytes_read_u64_be: (src: []u8, offset: u32): Result[u64, EndianError] {
   bytes_range_fits(len(src), offset, u32(8)) ? {
     value: u64 = 0
     value = (value | (u64(src[offset + u32(0)]) << u64(56)))
@@ -301,7 +301,7 @@ bytes_read_u64_be: (src: []u8, offset: u32): Result[u64, EndianError] {
   }
 }
 
-bytes_write_u64_be: (dst: [*]u8, offset: u32, value: u64): Result[u32, EndianError] {
+pub bytes_write_u64_be: (dst: [*]u8, offset: u32, value: u64): Result[u32, EndianError] {
   bytes_range_fits(len(dst), offset, u32(8)) ? {
     dst[offset + u32(0)] = u8_trunc_u64(value >> u64(56))
     dst[offset + u32(1)] = u8_trunc_u64(value >> u64(48))
@@ -318,8 +318,8 @@ bytes_write_u64_be: (dst: [*]u8, offset: u32, value: u64): Result[u32, EndianErr
 }
 
 // Bounded byte operations. Range errors never partially mutate storage.
-ByteRangeError: type = | OutOfBounds
-bytes_fill: (dst: [*]u8, value: u8): () {
+pub ByteRangeError: type = | OutOfBounds
+pub bytes_fill: (dst: [*]u8, value: u8): () {
   i: u32 = 0
   while i < len(dst) {
     dst[i] = value
@@ -327,7 +327,7 @@ bytes_fill: (dst: [*]u8, value: u8): () {
   }
 }
 
-bytes_copy_at: (dst: [*]u8, offset: u32, src: []u8): Result[u32, ByteRangeError] {
+pub bytes_copy_at: (dst: [*]u8, offset: u32, src: []u8): Result[u32, ByteRangeError] {
   n: u32 = len(src)
   bytes_range_fits(len(dst), offset, n) ? {
     i: u32 = 0
@@ -340,7 +340,7 @@ bytes_copy_at: (dst: [*]u8, offset: u32, src: []u8): Result[u32, ByteRangeError]
 }
 
 // A single exclusive span permits overlapping source and destination ranges.
-bytes_move_within: (storage: [*]u8, dst: u32, src: u32, count: u32): Result[u32, ByteRangeError] {
+pub bytes_move_within: (storage: [*]u8, dst: u32, src: u32, count: u32): Result[u32, ByteRangeError] {
   valid: Bool = bytes_range_fits(len(storage), dst, count) && bytes_range_fits(len(storage), src, count)
   valid ? {
     dst > src ? {
@@ -361,7 +361,7 @@ bytes_move_within: (storage: [*]u8, dst: u32, src: u32, count: u32): Result[u32,
 }
 
 // Unsigned-byte lexicographic order, with a shorter equal prefix first.
-bytes_compare: (left: []u8, right: []u8): i32 {
+pub bytes_compare: (left: []u8, right: []u8): i32 {
   limit: u32 = len(left) < len(right) ? len(left) | len(right)
   order: i32 = 0
   i: u32 = 0
@@ -378,30 +378,30 @@ bytes_compare: (left: []u8, right: []u8): i32 {
 }
 
 // Live bytes occupy [start, end). Keep cursor and storage paired.
-ByteBufferCursor: type = struct {
+pub ByteBufferCursor: type = struct {
   start: u32
   end: u32
 }
-BufferError: type = Full | InsufficientData
+pub BufferError: type = Full | InsufficientData
 
-buffer_check: (cursor: [*]ByteBufferCursor, capacity: u32): () {
+pub buffer_check: (cursor: [*]ByteBufferCursor, capacity: u32): () {
   assert(len(cursor) == u32(1))
   assert(cursor[0].start <= cursor[0].end)
   assert(cursor[0].end <= capacity)
 }
 
-buffer_len: (cursor: [*]ByteBufferCursor, capacity: u32): u32 {
+pub buffer_len: (cursor: [*]ByteBufferCursor, capacity: u32): u32 {
   buffer_check(cursor, capacity)
   cursor[0].end - cursor[0].start
 }
 
-buffer_tail_space: (cursor: [*]ByteBufferCursor, capacity: u32): u32 {
+pub buffer_tail_space: (cursor: [*]ByteBufferCursor, capacity: u32): u32 {
   buffer_check(cursor, capacity)
   capacity - cursor[0].end
 }
 
 // Append requires contiguous tail space. Reclaim consumed space with compact.
-buffer_append: (cursor: [*]ByteBufferCursor, storage: [*]u8, src: []u8): Result[u32, BufferError] {
+pub buffer_append: (cursor: [*]ByteBufferCursor, storage: [*]u8, src: []u8): Result[u32, BufferError] {
   buffer_check(cursor, len(storage))
   n: u32 = len(src)
   n <= len(storage) - cursor[0].end ? {
@@ -416,7 +416,7 @@ buffer_append: (cursor: [*]ByteBufferCursor, storage: [*]u8, src: []u8): Result[
 }
 
 // Exact read into a separate destination. Does not consume buffered bytes.
-buffer_peek_into: (cursor: [*]ByteBufferCursor, storage: []u8, dst: [*]u8): Result[u32, BufferError] {
+pub buffer_peek_into: (cursor: [*]ByteBufferCursor, storage: []u8, dst: [*]u8): Result[u32, BufferError] {
   buffer_check(cursor, len(storage))
   n: u32 = len(dst)
   n <= cursor[0].end - cursor[0].start ? {
@@ -430,7 +430,7 @@ buffer_peek_into: (cursor: [*]ByteBufferCursor, storage: []u8, dst: [*]u8): Resu
 }
 
 // Consuming the last byte resets both offsets, making the whole capacity free.
-buffer_consume: (cursor: [*]ByteBufferCursor, capacity: u32, count: u32): Result[u32, BufferError] {
+pub buffer_consume: (cursor: [*]ByteBufferCursor, capacity: u32, count: u32): Result[u32, BufferError] {
   buffer_check(cursor, capacity)
   count <= cursor[0].end - cursor[0].start ? {
     cursor[0].start = cursor[0].start + count
@@ -442,7 +442,7 @@ buffer_consume: (cursor: [*]ByteBufferCursor, capacity: u32, count: u32): Result
   } | { .Err(.InsufficientData) }
 }
 
-buffer_read_into: (cursor: [*]ByteBufferCursor, storage: []u8, dst: [*]u8): Result[u32, BufferError] {
+pub buffer_read_into: (cursor: [*]ByteBufferCursor, storage: []u8, dst: [*]u8): Result[u32, BufferError] {
   copied: Result[u32, BufferError] = buffer_peek_into(cursor, storage, dst)
   copied ?
     | .Ok(count) => buffer_consume(cursor, len(storage), count)
@@ -450,7 +450,7 @@ buffer_read_into: (cursor: [*]ByteBufferCursor, storage: []u8, dst: [*]u8): Resu
 }
 
 // O(live length), forward copy is safe because the destination precedes source.
-buffer_compact: (cursor: [*]ByteBufferCursor, storage: [*]u8): u32 {
+pub buffer_compact: (cursor: [*]ByteBufferCursor, storage: [*]u8): u32 {
   buffer_check(cursor, len(storage))
   n: u32 = cursor[0].end - cursor[0].start
   cursor[0].start > u32(0) ? {
@@ -466,7 +466,7 @@ buffer_compact: (cursor: [*]ByteBufferCursor, storage: [*]u8): u32 {
 }
 
 // Logical reset only: this does not erase bytes or revoke external authority.
-buffer_reset: (cursor: [*]ByteBufferCursor): () {
+pub buffer_reset: (cursor: [*]ByteBufferCursor): () {
   assert(len(cursor) == u32(1))
   cursor[0].start = u32(0)
   cursor[0].end = u32(0)
@@ -474,17 +474,17 @@ buffer_reset: (cursor: [*]ByteBufferCursor): () {
 
 // Small value-state builder. Storage is passed explicitly on every operation.
 // A failed append is sticky; the successful prefix stays available on finish.
-ByteBuilder: type = struct {
+pub ByteBuilder: type = struct {
   length: u32
   failed: Bool
 }
 
-byte_builder: (): ByteBuilder {
+pub byte_builder: (): ByteBuilder {
   initial: ByteBuilder = ByteBuilder { length: u32(0), failed: false }
   initial
 }
 
-append_bytes: (builder: ByteBuilder, storage: [*]u8, src: []u8): ByteBuilder {
+pub append_bytes: (builder: ByteBuilder, storage: [*]u8, src: []u8): ByteBuilder {
   next: ByteBuilder = builder
   builder.failed ? { next } | {
     assert(builder.length <= len(storage))
@@ -501,7 +501,7 @@ append_bytes: (builder: ByteBuilder, storage: [*]u8, src: []u8): ByteBuilder {
   }
 }
 
-append_byte: (builder: ByteBuilder, storage: [*]u8, value: u8): ByteBuilder {
+pub append_byte: (builder: ByteBuilder, storage: [*]u8, value: u8): ByteBuilder {
   next: ByteBuilder = builder
   builder.failed ? { next } | {
     assert(builder.length <= len(storage))
@@ -513,20 +513,20 @@ append_byte: (builder: ByteBuilder, storage: [*]u8, value: u8): ByteBuilder {
   }
 }
 
-finish_bytes: (builder: ByteBuilder): Result[u32, BufferError] {
+pub finish_bytes: (builder: ByteBuilder): Result[u32, BufferError] {
   builder.failed ? { .Err(.Full) } | { .Ok(builder.length) }
 }
 
 
-CollectionError: type = Full | Empty | OutOfBounds | AlreadyLinked | NotMember
-ArrayListCursor: type = struct { length: u32 }
+pub CollectionError: type = Full | Empty | OutOfBounds | AlreadyLinked | NotMember
+pub ArrayListCursor: type = struct { length: u32 }
 
-array_list_check: (cursor: [*]ArrayListCursor, capacity: u32): () {
+pub array_list_check: (cursor: [*]ArrayListCursor, capacity: u32): () {
   assert(len(cursor) == u32(1))
   assert(cursor[0].length <= capacity)
 }
 
-array_list_push[T]: (cursor: [*]ArrayListCursor, storage: [*]T, value: T): Result[u32, CollectionError] {
+pub array_list_push[T]: (cursor: [*]ArrayListCursor, storage: [*]T, value: T): Result[u32, CollectionError] {
   array_list_check(cursor, len(storage))
   index: u32 = cursor[0].length
   index == len(storage) ? { .Err(.Full) } | {
@@ -536,12 +536,12 @@ array_list_push[T]: (cursor: [*]ArrayListCursor, storage: [*]T, value: T): Resul
   }
 }
 
-array_list_get[T]: (cursor: [*]ArrayListCursor, storage: []T, index: u32): Result[T, CollectionError] {
+pub array_list_get[T]: (cursor: [*]ArrayListCursor, storage: []T, index: u32): Result[T, CollectionError] {
   array_list_check(cursor, len(storage))
   index >= cursor[0].length ? { .Err(.OutOfBounds) } | { .Ok(storage[index]) }
 }
 
-array_list_set[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32, value: T): Result[T, CollectionError] {
+pub array_list_set[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32, value: T): Result[T, CollectionError] {
   array_list_check(cursor, len(storage))
   index >= cursor[0].length ? { .Err(.OutOfBounds) } | {
     previous: T = storage[index]
@@ -550,7 +550,7 @@ array_list_set[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32, value
   }
 }
 
-array_list_pop[T]: (cursor: [*]ArrayListCursor, storage: [*]T): Result[T, CollectionError] {
+pub array_list_pop[T]: (cursor: [*]ArrayListCursor, storage: [*]T): Result[T, CollectionError] {
   array_list_check(cursor, len(storage))
   cursor[0].length == u32(0) ? { .Err(.Empty) } | {
     cursor[0].length = cursor[0].length - u32(1)
@@ -558,7 +558,7 @@ array_list_pop[T]: (cursor: [*]ArrayListCursor, storage: [*]T): Result[T, Collec
   }
 }
 
-array_list_insert[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32, value: T): Result[u32, CollectionError] {
+pub array_list_insert[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32, value: T): Result[u32, CollectionError] {
   array_list_check(cursor, len(storage))
   index > cursor[0].length ? { .Err(.OutOfBounds) } | {
     cursor[0].length == len(storage) ? { .Err(.Full) } | {
@@ -574,7 +574,7 @@ array_list_insert[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32, va
   }
 }
 
-array_list_remove[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32): Result[T, CollectionError] {
+pub array_list_remove[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32): Result[T, CollectionError] {
   array_list_check(cursor, len(storage))
   index >= cursor[0].length ? { .Err(.OutOfBounds) } | {
     value: T = storage[index]
@@ -589,7 +589,7 @@ array_list_remove[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32): R
   }
 }
 
-array_list_swap_remove[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32): Result[T, CollectionError] {
+pub array_list_swap_remove[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u32): Result[T, CollectionError] {
   array_list_check(cursor, len(storage))
   index >= cursor[0].length ? { .Err(.OutOfBounds) } | {
     value: T = storage[index]
@@ -600,25 +600,25 @@ array_list_swap_remove[T]: (cursor: [*]ArrayListCursor, storage: [*]T, index: u3
   }
 }
 
-array_list_clear: (cursor: [*]ArrayListCursor, capacity: u32): () {
+pub array_list_clear: (cursor: [*]ArrayListCursor, capacity: u32): () {
   array_list_check(cursor, capacity)
   cursor[0].length = u32(0)
 }
 
 // Intrusive links encode pool index + 1; zero is detached/end-of-list.
 // A nonzero list ID must be unique among live cursors sharing a hook pool.
-SListHook: type = struct { next: u32, owner: u32 }
-DListHook: type = struct { next: u32, prev: u32, owner: u32 }
-IntrusiveCursor: type = struct { head: u32, tail: u32, count: u32, id: u32 }
+pub SListHook: type = struct { next: u32, owner: u32 }
+pub DListHook: type = struct { next: u32, prev: u32, owner: u32 }
+pub IntrusiveCursor: type = struct { head: u32, tail: u32, count: u32, id: u32 }
 
-intrusive_init: (cursor: [*]IntrusiveCursor, id: u32): () {
+pub intrusive_init: (cursor: [*]IntrusiveCursor, id: u32): () {
   assert(len(cursor) == u32(1))
   assert(id != u32(0))
   assert(cursor[0].count == u32(0) && cursor[0].head == u32(0) && cursor[0].tail == u32(0))
   cursor[0].id = id
 }
 
-intrusive_check: (cursor: [*]IntrusiveCursor, capacity: u32): () {
+pub intrusive_check: (cursor: [*]IntrusiveCursor, capacity: u32): () {
   assert(len(cursor) == u32(1))
   assert(cursor[0].id != u32(0))
   assert(cursor[0].count <= capacity)
@@ -632,7 +632,7 @@ intrusive_check: (cursor: [*]IntrusiveCursor, capacity: u32): () {
 }
 
 // T supplies an embedded slist: SListHook field.
-slist_check[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
+pub slist_check[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
   intrusive_check(cursor, len(nodes))
   cursor[0].count > u32(0) ? {
     assert(nodes[cursor[0].head - u32(1)].slist.owner == cursor[0].id)
@@ -641,7 +641,7 @@ slist_check[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
   }
 }
 
-slist_push_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+pub slist_push_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
   slist_check(cursor, nodes)
   index >= len(nodes) ? { .Err(.OutOfBounds) } | {
     nodes[index].slist.owner != u32(0) ? { .Err(.AlreadyLinked) } | {
@@ -658,7 +658,7 @@ slist_push_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Resu
   }
 }
 
-slist_push_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+pub slist_push_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
   slist_check(cursor, nodes)
   index >= len(nodes) ? { .Err(.OutOfBounds) } | {
     nodes[index].slist.owner != u32(0) ? { .Err(.AlreadyLinked) } | {
@@ -676,7 +676,7 @@ slist_push_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Resul
   }
 }
 
-slist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+pub slist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
   slist_check(cursor, nodes)
   index >= len(nodes) ? { .Err(.OutOfBounds) } | {
     nodes[index].slist.owner != cursor[0].id ? { .Err(.NotMember) } | {
@@ -710,7 +710,7 @@ slist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u
   }
 }
 
-slist_pop_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
+pub slist_pop_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
   slist_check(cursor, nodes)
   cursor[0].count == u32(0) ? { .Err(.Empty) } | {
     slist_remove(cursor, nodes, cursor[0].head - u32(1))
@@ -718,7 +718,7 @@ slist_pop_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, Colle
 }
 
 // Full bounded walk for diagnostics; ordinary operations check local links.
-slist_validate[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
+pub slist_validate[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
   slist_check(cursor, nodes)
   current: u32 = cursor[0].head
   previous: u32 = 0
@@ -734,7 +734,7 @@ slist_validate[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
 }
 
 // T supplies an embedded dlist: DListHook field.
-dlist_check[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
+pub dlist_check[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
   intrusive_check(cursor, len(nodes))
   cursor[0].count > u32(0) ? {
     assert(nodes[cursor[0].head - u32(1)].dlist.owner == cursor[0].id)
@@ -744,7 +744,7 @@ dlist_check[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
   }
 }
 
-dlist_push_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+pub dlist_push_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
   dlist_check(cursor, nodes)
   index >= len(nodes) ? { .Err(.OutOfBounds) } | {
     nodes[index].dlist.owner != u32(0) ? { .Err(.AlreadyLinked) } | {
@@ -762,7 +762,7 @@ dlist_push_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Resu
   }
 }
 
-dlist_push_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+pub dlist_push_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
   dlist_check(cursor, nodes)
   index >= len(nodes) ? { .Err(.OutOfBounds) } | {
     nodes[index].dlist.owner != u32(0) ? { .Err(.AlreadyLinked) } | {
@@ -782,7 +782,7 @@ dlist_push_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Resul
   }
 }
 
-dlist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+pub dlist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
   dlist_check(cursor, nodes)
   index >= len(nodes) ? { .Err(.OutOfBounds) } | {
     nodes[index].dlist.owner != cursor[0].id ? { .Err(.NotMember) } | {
@@ -813,14 +813,14 @@ dlist_remove[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u
   }
 }
 
-dlist_pop_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
+pub dlist_pop_front[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
   dlist_check(cursor, nodes)
   cursor[0].count == u32(0) ? { .Err(.Empty) } | {
     dlist_remove(cursor, nodes, cursor[0].head - u32(1))
   }
 }
 
-dlist_pop_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
+pub dlist_pop_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
   dlist_check(cursor, nodes)
   cursor[0].count == u32(0) ? { .Err(.Empty) } | {
     dlist_remove(cursor, nodes, cursor[0].tail - u32(1))
@@ -828,7 +828,7 @@ dlist_pop_back[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, Collec
 }
 
 // Full bounded walk for diagnostics; ordinary operations check local links.
-dlist_validate[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
+pub dlist_validate[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
   dlist_check(cursor, nodes)
   current: u32 = cursor[0].head
   previous: u32 = 0
@@ -845,14 +845,14 @@ dlist_validate[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): () {
 }
 
 // FIFO queue facade shares the singly linked hook and cursor contract.
-intrusive_queue_push[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
+pub intrusive_queue_push[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, CollectionError] {
   slist_push_back(cursor, nodes, index)
 }
-intrusive_queue_pop[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
+pub intrusive_queue_pop[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): Result[u32, CollectionError] {
   slist_pop_front(cursor, nodes)
 }
 
-slist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
+pub slist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
   slist_validate(cursor, nodes)
   count: u32 = cursor[0].count
   current: u32 = cursor[0].head
@@ -868,7 +868,7 @@ slist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
   count
 }
 
-dlist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
+pub dlist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
   dlist_validate(cursor, nodes)
   count: u32 = cursor[0].count
   current: u32 = cursor[0].head
@@ -888,9 +888,9 @@ dlist_clear[T]: (cursor: [*]IntrusiveCursor, nodes: [*]T): u32 {
 
 // Cross-list operations require distinct IDs and the same node pool/hook family.
 // Expected errors leave both cursors and every node unchanged.
-ListTransferError: type = SameList | OutOfBounds | NotMember
+pub ListTransferError: type = SameList | OutOfBounds | NotMember
 
-slist_transfer_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
+pub slist_transfer_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
   slist_check(dst, nodes)
   slist_check(src, nodes)
   dst[0].id == src[0].id ? { .Err(.SameList) } | {
@@ -910,7 +910,7 @@ slist_transfer_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, node
 }
 
 // Preserve source order. Retagging membership is O(source count), not O(1).
-slist_splice_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+pub slist_splice_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
   slist_check(dst, nodes)
   slist_check(src, nodes)
   dst[0].id == src[0].id ? { .Err(.SameList) } | {
@@ -942,7 +942,7 @@ slist_splice_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes:
   }
 }
 
-slist_transfer_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
+pub slist_transfer_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
   slist_check(dst, nodes)
   slist_check(src, nodes)
   dst[0].id == src[0].id ? { .Err(.SameList) } | {
@@ -962,7 +962,7 @@ slist_transfer_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes
 }
 
 // Preserve source order. Retagging membership is O(source count), not O(1).
-slist_splice_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+pub slist_splice_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
   slist_check(dst, nodes)
   slist_check(src, nodes)
   dst[0].id == src[0].id ? { .Err(.SameList) } | {
@@ -994,7 +994,7 @@ slist_splice_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: 
   }
 }
 
-dlist_transfer_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
+pub dlist_transfer_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
   dlist_check(dst, nodes)
   dlist_check(src, nodes)
   dst[0].id == src[0].id ? { .Err(.SameList) } | {
@@ -1014,7 +1014,7 @@ dlist_transfer_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, node
 }
 
 // Preserve source order. Retagging membership is O(source count), not O(1).
-dlist_splice_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+pub dlist_splice_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
   dlist_check(dst, nodes)
   dlist_check(src, nodes)
   dst[0].id == src[0].id ? { .Err(.SameList) } | {
@@ -1047,7 +1047,7 @@ dlist_splice_front[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes:
   }
 }
 
-dlist_transfer_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
+pub dlist_transfer_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T, index: u32): Result[u32, ListTransferError] {
   dlist_check(dst, nodes)
   dlist_check(src, nodes)
   dst[0].id == src[0].id ? { .Err(.SameList) } | {
@@ -1067,7 +1067,7 @@ dlist_transfer_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes
 }
 
 // Preserve source order. Retagging membership is O(source count), not O(1).
-dlist_splice_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+pub dlist_splice_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
   dlist_check(dst, nodes)
   dlist_check(src, nodes)
   dst[0].id == src[0].id ? { .Err(.SameList) } | {
@@ -1101,21 +1101,21 @@ dlist_splice_back[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: 
 }
 
 // FIFO batch transfer appends the source queue in order and empties it.
-intrusive_queue_append[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
+pub intrusive_queue_append[T]: (dst: [*]IntrusiveCursor, src: [*]IntrusiveCursor, nodes: [*]T): Result[u32, ListTransferError] {
   slist_splice_back(dst, src, nodes)
 }
 
 // Bounded min-priority heap. T is a copyable record with priority: u64.
-MinHeapCursor: type = struct { length: u32 }
+pub MinHeapCursor: type = struct { length: u32 }
 
-min_heap_check: (cursor: [*]MinHeapCursor, capacity: u32): () {
+pub min_heap_check: (cursor: [*]MinHeapCursor, capacity: u32): () {
   assert(len(cursor) == u32(1))
   assert(cursor[0].length <= capacity)
 }
 
-min_heap_key[T]: (entry: T): u64 = entry.priority
+pub min_heap_key[T]: (entry: T): u64 = entry.priority
 
-min_heap_sift_up[T]: (storage: [*]T, start: u32): () {
+pub min_heap_sift_up[T]: (storage: [*]T, start: u32): () {
   assert(start < len(storage))
   index: u32 = start
   moving: Bool = true
@@ -1130,7 +1130,7 @@ min_heap_sift_up[T]: (storage: [*]T, start: u32): () {
   }
 }
 
-min_heap_sift_down[T]: (storage: [*]T, start: u32, count: u32): () {
+pub min_heap_sift_down[T]: (storage: [*]T, start: u32, count: u32): () {
   assert(count <= len(storage) && start < count)
   index: u32 = start
   moving: Bool = true
@@ -1151,7 +1151,7 @@ min_heap_sift_down[T]: (storage: [*]T, start: u32, count: u32): () {
 }
 
 // Success returns the new length, not an unstable heap-array position.
-min_heap_push[T]: (cursor: [*]MinHeapCursor, storage: [*]T, entry: T): Result[u32, CollectionError] {
+pub min_heap_push[T]: (cursor: [*]MinHeapCursor, storage: [*]T, entry: T): Result[u32, CollectionError] {
   min_heap_check(cursor, len(storage))
   cursor[0].length == len(storage) ? { .Err(.Full) } | {
     index: u32 = cursor[0].length
@@ -1162,12 +1162,12 @@ min_heap_push[T]: (cursor: [*]MinHeapCursor, storage: [*]T, entry: T): Result[u3
   }
 }
 
-min_heap_peek[T]: (cursor: [*]MinHeapCursor, storage: []T): Result[T, CollectionError] {
+pub min_heap_peek[T]: (cursor: [*]MinHeapCursor, storage: []T): Result[T, CollectionError] {
   min_heap_check(cursor, len(storage))
   cursor[0].length == u32(0) ? { .Err(.Empty) } | { .Ok(storage[0]) }
 }
 
-min_heap_pop[T]: (cursor: [*]MinHeapCursor, storage: [*]T): Result[T, CollectionError] {
+pub min_heap_pop[T]: (cursor: [*]MinHeapCursor, storage: [*]T): Result[T, CollectionError] {
   min_heap_check(cursor, len(storage))
   cursor[0].length == u32(0) ? { .Err(.Empty) } | {
     result: T = storage[0]
@@ -1182,7 +1182,7 @@ min_heap_pop[T]: (cursor: [*]MinHeapCursor, storage: [*]T): Result[T, Collection
 }
 
 // Replaces the minimum and returns the old entry; Empty does not insert.
-min_heap_replace_top[T]: (cursor: [*]MinHeapCursor, storage: [*]T, entry: T): Result[T, CollectionError] {
+pub min_heap_replace_top[T]: (cursor: [*]MinHeapCursor, storage: [*]T, entry: T): Result[T, CollectionError] {
   min_heap_check(cursor, len(storage))
   cursor[0].length == u32(0) ? { .Err(.Empty) } | {
     result: T = storage[0]
@@ -1193,7 +1193,7 @@ min_heap_replace_top[T]: (cursor: [*]MinHeapCursor, storage: [*]T, entry: T): Re
 }
 
 // Heapify an initialized prefix. Count may be zero; errors write nothing.
-min_heap_build[T]: (cursor: [*]MinHeapCursor, storage: [*]T, count: u32): Result[u32, CollectionError] {
+pub min_heap_build[T]: (cursor: [*]MinHeapCursor, storage: [*]T, count: u32): Result[u32, CollectionError] {
   min_heap_check(cursor, len(storage))
   count > len(storage) ? { .Err(.OutOfBounds) } | {
     remaining: u32 = count / u32(2)
@@ -1206,12 +1206,12 @@ min_heap_build[T]: (cursor: [*]MinHeapCursor, storage: [*]T, count: u32): Result
   }
 }
 
-min_heap_clear: (cursor: [*]MinHeapCursor, capacity: u32): () {
+pub min_heap_clear: (cursor: [*]MinHeapCursor, capacity: u32): () {
   min_heap_check(cursor, capacity)
   cursor[0].length = u32(0)
 }
 
-min_heap_validate[T]: (cursor: [*]MinHeapCursor, storage: []T): () {
+pub min_heap_validate[T]: (cursor: [*]MinHeapCursor, storage: []T): () {
   min_heap_check(cursor, len(storage))
   index: u32 = 1
   while index < cursor[0].length {
@@ -1223,9 +1223,9 @@ min_heap_validate[T]: (cursor: [*]MinHeapCursor, storage: []T): () {
 
 
 // Bounded double-ended queue. The cursor and initialized storage stay paired.
-DequeCursor: type = struct { head: u32, count: u32 }
+pub DequeCursor: type = struct { head: u32, count: u32 }
 
-deque_check: (cursor: [*]DequeCursor, capacity: u32): () {
+pub deque_check: (cursor: [*]DequeCursor, capacity: u32): () {
   assert(len(cursor) == u32(1))
   assert(cursor[0].count <= capacity)
   capacity == u32(0) ? { assert(cursor[0].head == u32(0)) } | {
@@ -1234,13 +1234,13 @@ deque_check: (cursor: [*]DequeCursor, capacity: u32): () {
 }
 
 // offset < capacity; subtraction avoids overflow of head + offset.
-deque_offset: (head: u32, capacity: u32, offset: u32): u32 {
+pub deque_offset: (head: u32, capacity: u32, offset: u32): u32 {
   assert(head < capacity && offset < capacity)
   remaining: u32 = capacity - head
   offset < remaining ? head + offset | offset - remaining
 }
 
-deque_push_back[T]: (cursor: [*]DequeCursor, storage: [*]T, value: T): Result[u32, CollectionError] {
+pub deque_push_back[T]: (cursor: [*]DequeCursor, storage: [*]T, value: T): Result[u32, CollectionError] {
   capacity: u32 = len(storage)
   deque_check(cursor, capacity)
   cursor[0].count == capacity ? { .Err(.Full) } | {
@@ -1251,7 +1251,7 @@ deque_push_back[T]: (cursor: [*]DequeCursor, storage: [*]T, value: T): Result[u3
   }
 }
 
-deque_push_front[T]: (cursor: [*]DequeCursor, storage: [*]T, value: T): Result[u32, CollectionError] {
+pub deque_push_front[T]: (cursor: [*]DequeCursor, storage: [*]T, value: T): Result[u32, CollectionError] {
   capacity: u32 = len(storage)
   deque_check(cursor, capacity)
   cursor[0].count == capacity ? { .Err(.Full) } | {
@@ -1263,7 +1263,7 @@ deque_push_front[T]: (cursor: [*]DequeCursor, storage: [*]T, value: T): Result[u
   }
 }
 
-deque_pop_front[T]: (cursor: [*]DequeCursor, storage: [*]T): Result[T, CollectionError] {
+pub deque_pop_front[T]: (cursor: [*]DequeCursor, storage: [*]T): Result[T, CollectionError] {
   capacity: u32 = len(storage)
   deque_check(cursor, capacity)
   cursor[0].count == u32(0) ? { .Err(.Empty) } | {
@@ -1274,7 +1274,7 @@ deque_pop_front[T]: (cursor: [*]DequeCursor, storage: [*]T): Result[T, Collectio
   }
 }
 
-deque_pop_back[T]: (cursor: [*]DequeCursor, storage: [*]T): Result[T, CollectionError] {
+pub deque_pop_back[T]: (cursor: [*]DequeCursor, storage: [*]T): Result[T, CollectionError] {
   capacity: u32 = len(storage)
   deque_check(cursor, capacity)
   cursor[0].count == u32(0) ? { .Err(.Empty) } | {
@@ -1285,14 +1285,14 @@ deque_pop_back[T]: (cursor: [*]DequeCursor, storage: [*]T): Result[T, Collection
   }
 }
 
-deque_get[T]: (cursor: [*]DequeCursor, storage: []T, index: u32): Result[T, CollectionError] {
+pub deque_get[T]: (cursor: [*]DequeCursor, storage: []T, index: u32): Result[T, CollectionError] {
   deque_check(cursor, len(storage))
   index >= cursor[0].count ? { .Err(.OutOfBounds) } | {
     .Ok(storage[deque_offset(cursor[0].head, len(storage), index)])
   }
 }
 
-deque_set[T]: (cursor: [*]DequeCursor, storage: [*]T, index: u32, value: T): Result[T, CollectionError] {
+pub deque_set[T]: (cursor: [*]DequeCursor, storage: [*]T, index: u32, value: T): Result[T, CollectionError] {
   deque_check(cursor, len(storage))
   index >= cursor[0].count ? { .Err(.OutOfBounds) } | {
     slot: u32 = deque_offset(cursor[0].head, len(storage), index)
@@ -1302,19 +1302,19 @@ deque_set[T]: (cursor: [*]DequeCursor, storage: [*]T, index: u32, value: T): Res
   }
 }
 
-deque_front[T]: (cursor: [*]DequeCursor, storage: []T): Result[T, CollectionError] {
+pub deque_front[T]: (cursor: [*]DequeCursor, storage: []T): Result[T, CollectionError] {
   deque_check(cursor, len(storage))
   cursor[0].count == u32(0) ? { .Err(.Empty) } | { .Ok(storage[cursor[0].head]) }
 }
 
-deque_back[T]: (cursor: [*]DequeCursor, storage: []T): Result[T, CollectionError] {
+pub deque_back[T]: (cursor: [*]DequeCursor, storage: []T): Result[T, CollectionError] {
   deque_check(cursor, len(storage))
   cursor[0].count == u32(0) ? { .Err(.Empty) } | {
     .Ok(storage[deque_offset(cursor[0].head, len(storage), cursor[0].count - u32(1))])
   }
 }
 
-deque_clear: (cursor: [*]DequeCursor, capacity: u32): () {
+pub deque_clear: (cursor: [*]DequeCursor, capacity: u32): () {
   deque_check(cursor, capacity)
   cursor[0].head = u32(0)
   cursor[0].count = u32(0)
@@ -1322,9 +1322,9 @@ deque_clear: (cursor: [*]DequeCursor, capacity: u32): () {
 
 // Dense reusable IDs in [0, limit). One occupied bit per ID, no hidden state.
 // Initialize with zeroed storage or id_pool_clear before first use.
-IdPoolError: type = StorageTooSmall | Full | OutOfBounds | AlreadyAllocated | NotAllocated
+pub IdPoolError: type = StorageTooSmall | Full | OutOfBounds | AlreadyAllocated | NotAllocated
 
-id_pool_contains: (storage: []u8, limit: u32, id: u32): Result[Bool, IdPoolError] {
+pub id_pool_contains: (storage: []u8, limit: u32, id: u32): Result[Bool, IdPoolError] {
   len(storage) < bitset_storage_bytes(limit) ? { .Err(.StorageTooSmall) } | {
     id >= limit ? { .Err(.OutOfBounds) } | {
       mask: u8 = u8(1) << u8_trunc_u32(id % u32(8))
@@ -1333,7 +1333,7 @@ id_pool_contains: (storage: []u8, limit: u32, id: u32): Result[Bool, IdPoolError
   }
 }
 
-id_pool_reserve: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError] {
+pub id_pool_reserve: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError] {
   len(storage) < bitset_storage_bytes(limit) ? { .Err(.StorageTooSmall) } | {
     id >= limit ? { .Err(.OutOfBounds) } | {
       index: u32 = id / u32(8)
@@ -1347,7 +1347,7 @@ id_pool_reserve: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError]
   }
 }
 
-id_pool_release: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError] {
+pub id_pool_release: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError] {
   len(storage) < bitset_storage_bytes(limit) ? { .Err(.StorageTooSmall) } | {
     id >= limit ? { .Err(.OutOfBounds) } | {
       index: u32 = id / u32(8)
@@ -1362,7 +1362,7 @@ id_pool_release: (storage: [*]u8, limit: u32, id: u32): Result[u32, IdPoolError]
 }
 
 // Lowest free ID; full bytes are skipped. Full pools remain unchanged.
-id_pool_allocate: (storage: [*]u8, limit: u32): Result[u32, IdPoolError] {
+pub id_pool_allocate: (storage: [*]u8, limit: u32): Result[u32, IdPoolError] {
   needed: u32 = bitset_storage_bytes(limit)
   len(storage) < needed ? { .Err(.StorageTooSmall) } | {
     byte_index: u32 = 0
@@ -1384,7 +1384,7 @@ id_pool_allocate: (storage: [*]u8, limit: u32): Result[u32, IdPoolError] {
 }
 
 // Clear logical bits only; preserve unused tail bits and spare backing bytes.
-id_pool_clear: (storage: [*]u8, limit: u32): Result[u32, IdPoolError] {
+pub id_pool_clear: (storage: [*]u8, limit: u32): Result[u32, IdPoolError] {
   len(storage) < bitset_storage_bytes(limit) ? { .Err(.StorageTooSmall) } | {
     whole: u32 = limit / u32(8)
     i: u32 = 0

@@ -71,6 +71,10 @@ main: (): i32 {
 // parenthesized (a | b) is bitwise or. Outside arms, bare | is bitwise or.
 func TestE2EBitwiseOrArmRule(t *testing.T) {
 	code, abnormal := buildAndRun(t, "armrule", `
+Pair: type = { x: u32 }
+
+or_of: (a: u32, b: u32): u32 = a | b
+
 main: (): i32 {
   a: u32 = 0x28
   b: u32 = 0x2
@@ -78,6 +82,24 @@ main: (): i32 {
   bare: u32 = a | b
   assert(picked == 0x2A)
   assert(bare == 0x2A)
+  // Every bracketed construct restores the operator inside an arm: call
+  // arguments, index brackets, array and record literals, and brace
+  // blocks nested in a bare arm (the mx package's rounding tripped on the
+  // last two).
+  called: u32 = a > b ? or_of(a | b, u32(0)) | a
+  assert(called == 0x2A)
+  table: [4]u32 = [4]u32{ 1, 2, 3, 4 }
+  indexed: u32 = a > b ? table[(a | b) & 3] | a
+  assert(indexed == 3)
+  literal: [2]u32 = a > b ? [2]u32{ a | b, a } | [2]u32{ a, a }
+  assert(literal[0] == 0x2A)
+  wrapped: Pair = a > b ? Pair { x: a | b } | Pair { x: a }
+  assert(wrapped.x == 0x2A)
+  blocked: u32 = a < b ? a | {
+    inner: u32 = a | b
+    inner
+  }
+  assert(blocked == 0x2A)
   42
 }
 `)

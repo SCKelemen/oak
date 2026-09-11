@@ -1,12 +1,17 @@
 package compiler
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// runDeadline bounds the execution of a compiled test program.
+const runDeadline = 60 * time.Second
 
 // End-to-end execution: the full real pipeline — Oak source through
 // Compilation.EmitC, compiled and linked by the system C compiler, executed
@@ -48,17 +53,24 @@ func buildAndRunFrom(t *testing.T, name string, comp Compilation, ccFlags ...str
 	if err := os.WriteFile(cPath, []byte(output), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	args := append([]string{"-std=c99", "-O1"}, ccFlags...)
-	args = append(args, "-o", binPath, cPath)
+	args := append([]string{"-std=c99", "-O1", "-ffp-contract=off"}, ccFlags...)
+	args = append(args, "-o", binPath, cPath, "-lm")
 	compile := exec.Command(cc, args...)
 	if combined, err := compile.CombinedOutput(); err != nil {
 		t.Fatalf("cc failed: %v\n%s\n--- generated C ---\n%s", err, combined, output)
 	}
 
-	run := exec.Command(binPath)
+	// A program that does not finish within the deadline is a hang, reported
+	// as such rather than stalling the whole package's test binary.
+	ctx, cancel := context.WithTimeout(context.Background(), runDeadline)
+	defer cancel()
+	run := exec.CommandContext(ctx, binPath)
 	var captured strings.Builder
 	run.Stdout = &captured
 	err = run.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("compiled program %s did not finish within %s (killed)", name, runDeadline)
+	}
 	if err == nil {
 		return captured.String(), 0, false
 	}

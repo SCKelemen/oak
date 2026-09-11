@@ -102,6 +102,10 @@ type ExpressionStatement struct {
 	BaseNode
 	Token      token.Token // the first token of the expression
 	Expression Expression
+	// Discard marks the explicit discard form `_ = expr`
+	// (docs/spec/85-discipline.md section 6): the expression is evaluated
+	// for its effects and its non-unit result is deliberately dropped.
+	Discard bool
 }
 
 func (es *ExpressionStatement) statementNode()       {}
@@ -117,7 +121,14 @@ type IntegerLiteral struct {
 	BaseNode
 	Token token.Token
 	Value int64
+	// Wide marks a literal above the signed 64-bit range (2^63 .. 2^64-1):
+	// Value then holds the unsigned magnitude's two's-complement bit
+	// pattern, and only u64/uint/uptr contexts admit the literal.
+	Wide bool
 }
+
+// Magnitude returns the literal's unsigned value (the full u64 range).
+func (lit *IntegerLiteral) Magnitude() uint64 { return uint64(lit.Value) }
 
 func (lit *IntegerLiteral) expressionNode()      {}
 func (lit *IntegerLiteral) TokenLiteral() string { return lit.Token.Literal }
@@ -139,6 +150,10 @@ type RecordField struct {
 	Token token.Token
 	Name  string
 	Value Expression
+	// Manifest is the shared definition of a signature type member
+	// (`Key: type = u64`, docs/spec/83-modules.md section 6.3); nil for an
+	// abstract member or an ordinary field.
+	Manifest Expression
 	// Align is the field's declared alignment (head(align: 64): Atomic[u32]),
 	// 0 for natural. A representation detail, never shape identity
 	// (docs/spec/40-records.md §6a).
@@ -556,6 +571,11 @@ type VariableDeclaration struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// Section is the declared linker section of a static
+	// (ring: [8]u64 (section: "shared")); empty for the default
+	// (docs/spec/65-machine-memory.md). Fixed addresses stay with the
+	// linker script; only the section is language surface.
+	Section string
 }
 
 func (vd *VariableDeclaration) statementNode()       {}
@@ -881,17 +901,47 @@ func (v *ADTVariant) String() string {
 	return out.String()
 }
 
-// Package declaration
+// Package declaration. TypeParams make the package generic
+// (`package ring[T, N: u32]`, docs/spec/83-modules.md section 6.7); each
+// import instantiates it with arguments.
 type PackageStatement struct {
 	BaseNode
-	Token token.Token // 'package' token
-	Name  *Identifier
+	Token      token.Token // 'package' token
+	Name       *Identifier
+	TypeParams []*TypeParameter
 }
 
 func (ps *PackageStatement) statementNode()       {}
 func (ps *PackageStatement) TokenLiteral() string { return ps.Token.Literal }
 func (ps *PackageStatement) String() string {
 	return "package " + ps.Name.String()
+}
+
+// ModuleDeclaration is a nested module (docs/spec/83-modules.md section
+// 3.5): `module name { declarations }` inside a package file declares the
+// package `<enclosing path>/name` with its own `pub` boundary. The loader
+// extracts the body into that package and binds `name` in the enclosing
+// package as an implicit import.
+type ModuleDeclaration struct {
+	BaseNode
+	Token token.Token // the contextual 'module' identifier
+	Name  *Identifier
+	Body  *BlockStatement
+}
+
+func (md *ModuleDeclaration) statementNode()       {}
+func (md *ModuleDeclaration) TokenLiteral() string { return md.Token.Literal }
+func (md *ModuleDeclaration) String() string {
+	var out bytes.Buffer
+	out.WriteString("module ")
+	if md.Name != nil {
+		out.WriteString(md.Name.String())
+	}
+	out.WriteString(" ")
+	if md.Body != nil {
+		out.WriteString(md.Body.String())
+	}
+	return out.String()
 }
 
 // ImportStatement is a package import (docs/spec/83-modules.md section 3).
@@ -910,12 +960,26 @@ type ImportStatement struct {
 	// Signature is the sealing type of `alias: Sig = import(path)`; nil
 	// for an unsealed import.
 	Signature Expression
+	// Arguments instantiate a generic package: import("...")[u8, 8].
+	Arguments []Expression
+	// Names are the unqualified bindings of a selective import
+	// `{ f, g } := import(path)`; Alias is nil for those.
+	Names []*Identifier
+	// Open marks `open import(path)`: every exported member of the package
+	// is bound unqualified (docs/spec/83-modules.md section 3.2).
+	Open bool
+	// Implicit marks an import the loader synthesized for a nested module
+	// (section 3.5); it is never reported unused.
+	Implicit bool
 }
 
 func (is *ImportStatement) statementNode()       {}
 func (is *ImportStatement) TokenLiteral() string { return is.Token.Literal }
 func (is *ImportStatement) String() string {
 	var out bytes.Buffer
+	if is.Open {
+		out.WriteString("open ")
+	}
 	if is.Alias != nil {
 		out.WriteString(is.Alias.String())
 		if is.Signature != nil {
@@ -939,8 +1003,9 @@ func (is *ImportStatement) String() string {
 // folds it into an ImportStatement; anywhere else the loader rejects it.
 type ImportExpression struct {
 	BaseNode
-	Token token.Token // 'import' token
-	Path  *Identifier
+	Token     token.Token // 'import' token
+	Path      *Identifier
+	Arguments []Expression
 }
 
 func (ie *ImportExpression) expressionNode()      {}
@@ -997,7 +1062,31 @@ type FunctionStatement struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// Operator is the symbol an `operator(SYM)` marker binds to this
+	// function for a left operand of its first parameter's type
+	// (docs/spec/10-syntax.md section 14); empty for ordinary functions.
+	Operator string
+	// Effect clauses (docs/spec/60-effects-allocation.md section 2):
+	// `effects { Memory.Allocate, ... }` declares the effects this function
+	// itself performs (EffectsDeclared distinguishes an empty clause, an
+	// assertion of purity for an extern, from no clause); `forbids { ... }`
+	// rejects the program when any of these effects is reachable from the
+	// function through the call graph.
+	Effects         []*EffectName
+	EffectsDeclared bool
+	Forbids         []*EffectName
 }
+
+// EffectName is one `Namespace.Name` in an effect clause.
+type EffectName struct {
+	BaseNode
+	Token     token.Token
+	Namespace string
+	Name      string
+}
+
+func (e *EffectName) TokenLiteral() string { return e.Token.Literal }
+func (e *EffectName) String() string       { return e.Namespace + "." + e.Name }
 
 func (fs *FunctionStatement) statementNode()       {}
 func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
@@ -1022,6 +1111,22 @@ func (fs *FunctionStatement) String() string {
 	if fs.ReturnType != nil {
 		out.WriteString(" -> ")
 		out.WriteString(fs.ReturnType.String())
+	}
+	writeEffects := func(keyword string, names []*EffectName) {
+		out.WriteString(" " + keyword + " {")
+		for i, e := range names {
+			if i > 0 {
+				out.WriteString(",")
+			}
+			out.WriteString(" " + e.String())
+		}
+		out.WriteString(" }")
+	}
+	if fs.EffectsDeclared {
+		writeEffects("effects", fs.Effects)
+	}
+	if len(fs.Forbids) > 0 {
+		writeEffects("forbids", fs.Forbids)
 	}
 	out.WriteRune(' ')
 	out.WriteString(fs.Body.String())
@@ -1078,6 +1183,18 @@ func (is *IfStatement) String() string {
 	}
 	return out.String()
 }
+
+// BreakStatement leaves the innermost enclosing while loop
+// (docs/spec/85-discipline.md section 3): `break` is legal only inside a
+// loop body, and a bounded loop stays bounded when a break leaves it early.
+type BreakStatement struct {
+	BaseNode
+	Token token.Token // 'break' token
+}
+
+func (bs *BreakStatement) statementNode()       {}
+func (bs *BreakStatement) TokenLiteral() string { return bs.Token.Literal }
+func (bs *BreakStatement) String() string       { return "break" }
 
 type WhileStatement struct {
 	BaseNode
@@ -1149,4 +1266,97 @@ func (rc *REPLCommand) String() string {
 		return "<nil REPLCommand>"
 	}
 	return ":" + rc.Name
+}
+
+// FloatLiteral is a floating-point literal (docs/spec/20-types.md section
+// 11.3.2): `1.5`, `2.0e-5`, `1e3`. Text keeps the source spelling so the
+// typechecker can round it correctly to the width its context requires
+// (f32 or f64) from the exact decimal value, never through an intermediate
+// width; Value is the f64 reading for phases that only need a number.
+type FloatLiteral struct {
+	BaseNode
+	Token token.Token
+	Text  string
+	Value float64
+}
+
+func (fl *FloatLiteral) expressionNode()      {}
+func (fl *FloatLiteral) TokenLiteral() string { return fl.Token.Literal }
+func (fl *FloatLiteral) String() string       { return fl.Text }
+
+// ProtocolDeclaration is `Name: protocol = { ... }` (docs/spec/112-protocols.md):
+// a finite control-state machine declared once and projected into the
+// state and step types, the legality and transition functions, the
+// model-checker module, and (through `via`) the resource protocol facts.
+// `protocol` is contextual, like `tag`: only IDENT ':' protocol '=' '{'
+// reads as a declaration.
+type ProtocolDeclaration struct {
+	BaseNode
+	Token       token.Token // the protocol name token
+	EndToken    token.Token // closing brace
+	Name        *Identifier
+	Resources   []*Identifier  // `resource T`: nominal types governed by the protocol
+	Initial     *Identifier    // `initial S`
+	Data        *RecordLiteral // `data { field: T, ... }`: the machine's data record, or nil
+	Init        *RecordLiteral // `init { field: value, ... }`: the initial data, required with Data
+	Transitions []*ProtocolTransition
+	Exported    bool
+}
+
+// ProtocolTransition is one
+// `name(param: T)?: From -> To (when guard)? (then { effects })? (via callable)?` line.
+type ProtocolTransition struct {
+	Token    token.Token
+	Name     *Identifier
+	Param    *FunctionParameter // optional payload: one fixed-width scalar or Bool
+	From     *Identifier
+	To       *Identifier
+	Guard    Expression      // optional `when` expression over data.field and the payload
+	Effects  *BlockStatement // optional `then { ... }` statements over data.field and the payload
+	Callable *Identifier     // optional `via f`: the function that performs it
+}
+
+func (pd *ProtocolDeclaration) statementNode()       {}
+func (pd *ProtocolDeclaration) TokenLiteral() string { return pd.Token.Literal }
+func (pd *ProtocolDeclaration) String() string {
+	var out bytes.Buffer
+	out.WriteString(pd.Name.String())
+	out.WriteString(": protocol = {")
+	for _, r := range pd.Resources {
+		out.WriteString(" resource ")
+		out.WriteString(r.String())
+	}
+	if pd.Initial != nil {
+		out.WriteString(" initial ")
+		out.WriteString(pd.Initial.String())
+	}
+	for _, t := range pd.Transitions {
+		out.WriteString(" ")
+		out.WriteString(t.Name.String())
+		if t.Param != nil {
+			out.WriteString("(")
+			out.WriteString(t.Param.Name.String())
+			out.WriteString(": ")
+			out.WriteString(t.Param.Type.String())
+			out.WriteString(")")
+		}
+		out.WriteString(": ")
+		out.WriteString(t.From.String())
+		out.WriteString(" -> ")
+		out.WriteString(t.To.String())
+		if t.Guard != nil {
+			out.WriteString(" when ")
+			out.WriteString(t.Guard.String())
+		}
+		if t.Effects != nil {
+			out.WriteString(" then ")
+			out.WriteString(t.Effects.String())
+		}
+		if t.Callable != nil {
+			out.WriteString(" via ")
+			out.WriteString(t.Callable.String())
+		}
+	}
+	out.WriteString(" }")
+	return out.String()
 }

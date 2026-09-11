@@ -60,7 +60,7 @@ func (comp Compilation) checkResourceProtocols(
 	// Ordinary type checking has already populated the environment. Run only
 	// resource flow here so diagnostics are not duplicated by CheckProgram.
 	model.TypeChecker.CheckResourceFlow(model.Tree.Root, resourceModel)
-	if err := comp.gate("resource", model.TypeChecker.Diagnostics()); err != nil {
+	if err := comp.gate("resource", model.TypeChecker.Diagnostics(), model.Tree.Modules); err != nil {
 		return typechecker.ResolvedResourceProgram{}, semir.Module{}, err
 	}
 
@@ -128,6 +128,17 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 				default:
 					return semir.Module{}, fmt.Errorf("resource callable %q has unresolved parameter mode %d", resourceTransition.Callable, parameter.Mode)
 				}
+			}
+			switch resourceTransition.Receiver {
+			case typechecker.ResourceParameterUnspecified:
+			case typechecker.ResourceParameterBorrowed:
+				transition.Effects = append(transition.Effects, semir.ResourceBorrowReceiver())
+			case typechecker.ResourceParameterBorrowedMut:
+				transition.Effects = append(transition.Effects, semir.ResourceBorrowMutReceiver())
+			case typechecker.ResourceParameterConsumed:
+				transition.Effects = append(transition.Effects, semir.ResourceConsumeReceiver())
+			default:
+				return semir.Module{}, fmt.Errorf("resource callable %q has unresolved receiver mode %d", resourceTransition.Callable, resourceTransition.Receiver)
 			}
 			if resourceTransition.ReturnsFresh {
 				transition.Effects = append(transition.Effects, semir.ResourceReturnFresh())

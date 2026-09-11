@@ -247,3 +247,20 @@ from the byte-reading segment state to the packer's published ranges.
 See [Command assembly from published ranges](CommandAssembly.md) for the proved
 assembly of addition IDs, deletion stamps, and command metadata from published
 clause and hint ranges, and its composition with the certified stream checker.
+
+See [The complete certificate-file state machine](CertificateFile.md) for the
+executable whole-file model that composes scanning, segment publication,
+command assembly, and the certified stream, with its acceptance theorem.
+
+See [The Oak decoder, transliterated](OakText.md) for roadmap step 2:
+`OakText.lean` restates `rup_text_check` structure for structure over the
+proved scanner, `OakTextCompare.lean` requires the transliteration, the file
+model, and compiled Oak to agree on every corpus case, and
+`OakTextRefinement.lean` proves `check_refines` — every acceptance by the
+transliteration is an acceptance by the file model — and `check_refutes`,
+the model's soundness transferred to the Oak decoder. `OakTextExtracted.lean`
+(roadmap step 3, `docs/spec/95-extraction.md`) is the compiler's own
+extraction of the same Oak sources, generated and drift-checked, and
+`OakTextCompare.lean` requires it to agree with the other three on every
+case; the remaining assumption is the translator's correctness, and the
+theorem relating the extraction to the transliteration is next.

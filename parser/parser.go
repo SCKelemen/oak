@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -47,6 +48,7 @@ func New(source token.Source) *Parser {
 	p.prefixParseFns = make(map[token.TokenKind]prefixParseFn)
 	p.registerPrefix(token.IDENT, p.parseIdentifier)
 	p.registerPrefix(token.INT, p.parseIntegerLiteral)
+	p.registerPrefix(token.FLOAT, p.parseFloatLiteral)
 	p.registerPrefix(token.STRING, p.parseStringLiteral)
 	p.registerPrefix(token.BANG, p.parsePrefixExpression)
 	p.registerPrefix(token.NEG, p.parsePrefixExpression)
@@ -146,12 +148,7 @@ func (p *Parser) nextToken() {
 	// Skip ILLEGAL tokens and report errors
 	// Note: zero-initialized tokens have TokenKind == 0 (ILLEGAL), but Line == 0 indicates uninitialized
 	for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
-		// Use the literal from the token (e.g., "unterminated block comment")
-		errorMsg := p.currentToken.Literal
-		if errorMsg == "" {
-			errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.currentToken.Line, p.currentToken.Column)
-		}
-		p.addErrorAtToken(&p.currentToken, errorMsg)
+		p.addErrorAtToken(&p.currentToken, illegalTokenMessage(p.currentToken))
 		// Skip the illegal token and continue
 		p.currentToken = p.peekToken
 		p.peekToken = p.source.NextToken()
@@ -165,11 +162,7 @@ func (p *Parser) nextToken() {
 
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.currentToken.TokenKind == token.ILLEGAL && p.currentToken.Line > 0 {
-			errorMsg := p.currentToken.Literal
-			if errorMsg == "" {
-				errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.currentToken.Line, p.currentToken.Column)
-			}
-			p.addErrorAtToken(&p.currentToken, errorMsg)
+			p.addErrorAtToken(&p.currentToken, illegalTokenMessage(p.currentToken))
 			p.currentToken = p.peekToken
 			p.peekToken = p.source.NextToken()
 		}
@@ -178,11 +171,7 @@ func (p *Parser) nextToken() {
 	// Skip ILLEGAL tokens in peekToken
 	// Note: zero-initialized tokens have TokenKind == 0 (ILLEGAL), but Line == 0 indicates uninitialized
 	for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
-		errorMsg := p.peekToken.Literal
-		if errorMsg == "" {
-			errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.peekToken.Line, p.peekToken.Column)
-		}
-		p.addErrorAtToken(&p.peekToken, errorMsg)
+		p.addErrorAtToken(&p.peekToken, illegalTokenMessage(p.peekToken))
 		// Skip the illegal token
 		p.peekToken = p.source.NextToken()
 	}
@@ -194,17 +183,16 @@ func (p *Parser) nextToken() {
 
 		// Skip any ILLEGAL tokens that appear after trivia/comments
 		for p.peekToken.TokenKind == token.ILLEGAL && p.peekToken.Line > 0 {
-			errorMsg := p.peekToken.Literal
-			if errorMsg == "" {
-				errorMsg = fmt.Sprintf("illegal token at line %d, column %d", p.peekToken.Line, p.peekToken.Column)
-			}
-			p.addErrorAtToken(&p.peekToken, errorMsg)
+			p.addErrorAtToken(&p.peekToken, illegalTokenMessage(p.peekToken))
 			p.peekToken = p.source.NextToken()
 		}
 	}
 }
 
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
+	// A brace block restores '|' as bitwise or, wherever it sits inside a
+	// ?-match arm (docs/spec/10-syntax.md section 3b).
+	defer p.operatorPipe()()
 	blocc := &ast.BlockStatement{Token: p.currentToken}
 	blocc.Statements = []ast.Statement{}
 	p.nextToken()
@@ -271,6 +259,8 @@ func (p *Parser) parseStatement() ast.Statement {
 			return stmt
 		}
 		return nil
+	case token.BREAK:
+		return &ast.BreakStatement{Token: p.currentToken}
 	case token.UNSAFE:
 		if stmt := p.parseUnsafeBlock(); stmt != nil {
 			return stmt
@@ -281,7 +271,31 @@ func (p *Parser) parseStatement() ast.Statement {
 			return stmt
 		}
 		return nil
+	case token.LBRACE:
+		if p.selectiveImportAhead() {
+			if stmt := p.parseSelectiveImport(); stmt != nil {
+				return stmt
+			}
+			return nil
+		}
+		return p.parseExpressionStatementOrIndexAssignment()
 	case token.IDENT:
+		// `open import(path)` binds every exported member unqualified
+		// (docs/spec/83-modules.md section 3.2); `open` is contextual.
+		if p.currentToken.Literal == "open" && p.peekTokenIs(token.IMPORT) {
+			return p.parseOpenImport()
+		}
+		// `operator(SYM) name: (a: T, b: U): R = ...` binds SYM for a left
+		// operand of type T (docs/spec/10-syntax.md section 14); `operator`
+		// is contextual, so `operator := 1` stays an ordinary binding.
+		if p.currentToken.Literal == "operator" && p.peekTokenIs(token.LPAREN) {
+			return p.parseOperatorDeclaration()
+		}
+		// `module name { ... }` declares a nested module (section 3.5);
+		// `module` is contextual, so `module := 1` stays an ordinary binding.
+		if p.currentToken.Literal == "module" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.LBRACE {
+			return p.parseModuleDeclaration()
+		}
 		// Variable declarations and assignments:
 		// - x := expr -> declaration with type inference (short declaration)
 		// - x: T = expr -> declaration with type annotation
@@ -373,6 +387,9 @@ func (p *Parser) parseStatement() ast.Statement {
 			// Without the trailing ':', IDENT "[" starts an index or slice
 			// expression statement (e.g. buf[0:8]) and falls through below.
 			return p.parseIdentLedStatement()
+		} else if p.peekTokenIs(token.ASSIGN) && p.currentToken.Literal == "_" {
+			// Explicit discard: _ = expr (docs/spec/85-discipline.md §6)
+			return p.parseDiscardStatement()
 		} else if p.peekTokenIs(token.ASSIGN) {
 			// Assignment: x = expr (must refer to existing variable)
 			return p.parseAssignmentStatement()
@@ -389,24 +406,30 @@ func (p *Parser) parseStatement() ast.Statement {
 		}
 		fallthrough
 	default:
-		stmt := p.parseExpressionStatement()
-		if stmt == nil {
+		return p.parseExpressionStatementOrIndexAssignment()
+	}
+}
+
+// parseExpressionStatementOrIndexAssignment is the statement fallback: an
+// expression statement, or an index/field assignment when '=' follows.
+func (p *Parser) parseExpressionStatementOrIndexAssignment() ast.Statement {
+	stmt := p.parseExpressionStatement()
+	if stmt == nil {
+		return nil
+	}
+	// Index assignment: s[i] = value (docs/spec/50-borrowing.md: spans
+	// and owners are writable; views are read-only).
+	if target, ok := stmt.Expression.(*ast.IndexExpression); ok && p.peekTokenIs(token.ASSIGN) {
+		p.nextToken() // move to '='
+		assignToken := p.currentToken
+		p.nextToken() // move to the value
+		value := p.parseExpression(LOWEST)
+		if value == nil {
 			return nil
 		}
-		// Index assignment: s[i] = value (docs/spec/50-borrowing.md: spans
-		// and owners are writable; views are read-only).
-		if target, ok := stmt.Expression.(*ast.IndexExpression); ok && p.peekTokenIs(token.ASSIGN) {
-			p.nextToken() // move to '='
-			assignToken := p.currentToken
-			p.nextToken() // move to the value
-			value := p.parseExpression(LOWEST)
-			if value == nil {
-				return nil
-			}
-			return &ast.IndexAssignmentStatement{Token: assignToken, Target: target, Value: value}
-		}
-		return stmt
+		return &ast.IndexAssignmentStatement{Token: assignToken, Target: target, Value: value}
 	}
+	return stmt
 }
 
 func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
@@ -618,18 +641,51 @@ func (p *Parser) parseVariantExpression() ast.Expression {
 	return expr
 }
 
+// parseFloatLiteral parses a FLOAT token (docs/spec/20-types.md section
+// 11.3.2). The text is kept for width-correct rounding in the typechecker;
+// a literal that does not even fit f64 is rejected here.
+func (p *Parser) parseFloatLiteral() ast.Expression {
+	lit := &ast.FloatLiteral{Token: p.currentToken, Text: p.currentToken.Literal}
+	value, err := strconv.ParseFloat(lit.Text, 64)
+	if err != nil {
+		if numErr, ok := err.(*strconv.NumError); ok && numErr.Err == strconv.ErrRange && !math.IsInf(value, 0) {
+			// Underflow to zero or a subnormal is the IEEE result, not an error.
+			lit.Value = value
+			return lit
+		}
+		p.addErrorAtCurrentToken(fmt.Sprintf("floating-point literal out of range: %q", lit.Text))
+		return nil
+	}
+	lit.Value = value
+	return lit
+}
+
+// illegalTokenMessage explains an illegal token; the scanner's own message
+// (e.g. "unterminated block comment") wins, known foreign spellings get a
+// hint, and anything else names its position.
+func illegalTokenMessage(tok token.Token) string {
+	switch tok.Literal {
+	case "":
+		return fmt.Sprintf("illegal token at line %d, column %d", tok.Line, tok.Column)
+	case "~":
+		return "unexpected ~: bitwise complement is the prefix operator ^ in Oak (Go style), e.g. x & ^mask"
+	}
+	return tok.Literal
+}
+
 func (p *Parser) parseIntegerLiteral() ast.Expression {
 	lit := &ast.IntegerLiteral{Token: p.currentToken}
 
 	// Check if this is a radix literal (e.g., "16r1000", "2r1010")
 	literal := p.currentToken.Literal
 	if strings.ContainsAny(literal, "rR") {
-		value, err := p.parseRadixLiteral(literal)
+		value, wide, err := p.parseRadixLiteral(literal)
 		if err != nil {
 			p.addErrorAtCurrentToken(fmt.Sprintf("invalid radix literal %q: %v", literal, err))
 			return nil
 		}
 		lit.Value = value
+		lit.Wide = wide
 		return lit
 	}
 
@@ -638,6 +694,13 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 		var msg string
 		numErr, ok := err.(*strconv.NumError)
 		if ok && numErr.Err == strconv.ErrRange {
+			// Above the signed range: the full u64 range is still a literal
+			// (docs/spec/20-types.md), carried as its bit pattern.
+			if wide, wideErr := strconv.ParseUint(literal, 10, 64); wideErr == nil {
+				lit.Value = int64(wide)
+				lit.Wide = true
+				return lit
+			}
 			msg = fmt.Sprintf("integer literal out of range: %q", literal)
 		} else {
 			msg = fmt.Sprintf("could not parse %q as integer", literal)
@@ -652,7 +715,7 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 
 // parseRadixLiteral parses a radix literal like "16r1000" or "2r1010"
 // Returns the integer value and nil error if successful, or 0 and error if not a radix literal or invalid
-func (p *Parser) parseRadixLiteral(literal string) (int64, error) {
+func (p *Parser) parseRadixLiteral(literal string) (int64, bool, error) {
 	// Find the 'r' or 'R' separator
 	rIndex := -1
 	for i, ch := range literal {
@@ -662,42 +725,46 @@ func (p *Parser) parseRadixLiteral(literal string) (int64, error) {
 		}
 	}
 	if rIndex == -1 {
-		return 0, fmt.Errorf("not a radix literal")
+		return 0, false, fmt.Errorf("not a radix literal")
 	}
 
 	// Parse the radix (base)
 	radixStr := util.NormalizeDigits(literal[:rIndex])
 	radix, err := strconv.Atoi(radixStr)
 	if err != nil {
-		return 0, fmt.Errorf("invalid radix: %s", radixStr)
+		return 0, false, fmt.Errorf("invalid radix: %s", radixStr)
 	}
 	if radix < 2 || radix > 16 {
-		return 0, fmt.Errorf("radix must be between 2 and 16, got %d", radix)
+		return 0, false, fmt.Errorf("radix must be between 2 and 16, got %d", radix)
 	}
 
 	// Parse the digits after 'r' (skip the 'r' itself)
 	digitsStr := util.NormalizeDigits(literal[rIndex+1:])
 	if digitsStr == "" {
-		return 0, fmt.Errorf("missing digits after radix separator")
+		return 0, false, fmt.Errorf("missing digits after radix separator")
 	}
 	if err := validateDigitSeparators(digitsStr); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	digitsStrClean := strings.ReplaceAll(digitsStr, "_", "")
 	if digitsStrClean == "" {
-		return 0, fmt.Errorf("missing digits after radix separator")
+		return 0, false, fmt.Errorf("missing digits after radix separator")
 	}
 
-	// Convert from the given radix to int64
+	// Convert from the given radix: the full u64 range is admitted, values
+	// above the signed range travel as their bit pattern with Wide set.
 	value, err := strconv.ParseInt(digitsStrClean, radix, 64)
 	if err != nil {
 		if numErr, ok := err.(*strconv.NumError); ok && numErr.Err == strconv.ErrRange {
-			return 0, fmt.Errorf("integer literal out of range for radix %d", radix)
+			if wide, wideErr := strconv.ParseUint(digitsStrClean, radix, 64); wideErr == nil {
+				return int64(wide), true, nil
+			}
+			return 0, false, fmt.Errorf("integer literal out of range for radix %d", radix)
 		}
-		return 0, fmt.Errorf("invalid digits for radix %d: %s", radix, digitsStrClean)
+		return 0, false, fmt.Errorf("invalid digits for radix %d: %s", radix, digitsStrClean)
 	}
 
-	return value, nil
+	return value, false, nil
 }
 
 func validateDigitSeparators(digits string) error {
@@ -757,6 +824,7 @@ func (p *Parser) parseFunctionArgs() []*ast.Identifier {
 }
 func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expression {
 	exp := &ast.InvocationExpression{Token: p.currentToken, Function: function}
+	defer p.operatorPipe()()
 	// Inside parentheses a '{' can only be a composite literal, even when
 	// the call sits in a statement header (Go's rule).
 	wasDisabled := p.braceLiteralDisabled
@@ -799,7 +867,8 @@ func (p *Parser) parseFieldAccess(left ast.Expression) ast.Expression {
 // This is a unified Pratt hook for '[' that pattern-matches on ':' to choose index vs slice
 func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression {
 	tok := p.currentToken // '['
-	p.nextToken()         // move to first token after '['
+	defer p.operatorPipe()()
+	p.nextToken() // move to first token after '['
 
 	// Case 1: a[:...] or a[:]
 	if p.currentTokenIs(token.COLON) {
@@ -902,6 +971,45 @@ func (p *Parser) parseBoolean() ast.Expression {
 	return &ast.Boolean{Token: p.currentToken, Value: p.currentTokenIs(token.TRUE)}
 }
 
+// functionTypeAhead reports whether the parenthesized group at currentToken
+// is followed by `->`, i.e. spells a function type `(T1, T2) -> R`.
+func (p *Parser) functionTypeAhead() bool {
+	cursor, ok := p.source.(*token.Cursor)
+	if !ok {
+		return false
+	}
+	depth := 1
+	next := func(i int) token.Token {
+		if i == 0 {
+			return p.peekToken
+		}
+		return cursor.Peek(i - 1)
+	}
+	const lookaheadLimit = 4096
+	for i := 0; i < lookaheadLimit; i++ {
+		tok := next(i)
+		switch tok.TokenKind {
+		case token.LPAREN:
+			depth++
+		case token.RPAREN:
+			depth--
+			if depth == 0 {
+				for rest := i + 1; rest < i+16; rest++ {
+					after := next(rest)
+					if after.TokenKind == token.TRIVIA || after.TokenKind == token.COMMENT {
+						continue
+					}
+					return after.TokenKind == token.ARROW
+				}
+				return false
+			}
+		case token.EOF:
+			return false
+		}
+	}
+	return false
+}
+
 // qualifiedTypeReceiver reports whether leftExp is `pkg.Type` immediately
 // followed (same line) by `{`: a package-qualified typed record literal
 // (docs/spec/83-modules.md section 3.4). The same-line rule keeps a field
@@ -932,7 +1040,7 @@ func (p *Parser) foldImportBinding(stmt ast.Statement) ast.Statement {
 		p.addErrorAtToken(&decl.Token, "an import binding cannot be pub")
 		return stmt
 	}
-	return &ast.ImportStatement{BaseNode: decl.BaseNode, Token: imp.Token, Path: imp.Path, Alias: decl.Name, Signature: decl.Type}
+	return &ast.ImportStatement{BaseNode: decl.BaseNode, Token: imp.Token, Path: imp.Path, Alias: decl.Name, Signature: decl.Type, Arguments: imp.Arguments}
 }
 
 func (p *Parser) ParseProgram() *ast.Program {
@@ -1132,12 +1240,20 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	return exp
 }
 
-func (p *Parser) parseExpressionGroup() ast.Expression {
-	// Skip opening paren - currentToken is LPAREN, advance to expression.
-	// Parens re-enable '|' as bitwise or inside ?-match arm bodies.
+// operatorPipe re-enables '|' as bitwise or for the extent of a bracketed
+// construct inside a ?-match arm body: parentheses, call arguments, index
+// brackets, and array and record literals all close before the arm can
+// (docs/spec/10-syntax.md section 3b). The returned function restores the
+// arm depth; callers defer it.
+func (p *Parser) operatorPipe() func() {
 	saved := p.armDepth
 	p.armDepth = 0
-	defer func() { p.armDepth = saved }()
+	return func() { p.armDepth = saved }
+}
+
+func (p *Parser) parseExpressionGroup() ast.Expression {
+	// Skip opening paren - currentToken is LPAREN, advance to expression.
+	defer p.operatorPipe()()
 	p.nextToken()
 	exp := p.parseExpression(LOWEST)
 	// After parseExpression, currentToken is the last token of the expression
@@ -1183,6 +1299,13 @@ func (p *Parser) peekPrecedence() Precedence {
 	if p.armDepth > 0 && p.peekToken.TokenKind == token.PIPE {
 		return LOWEST
 	}
+	// A call or an index never continues across a line break: a line that
+	// starts with '(' or '[' begins a new statement (F18). Go's rule, without
+	// the semicolon insertion.
+	if (p.peekToken.TokenKind == token.LPAREN || p.peekToken.TokenKind == token.LBRACK) &&
+		p.peekToken.Line > p.currentToken.Line && p.currentToken.Line > 0 {
+		return LOWEST
+	}
 	if p, ok := precedences[p.peekToken.TokenKind]; ok {
 		return p
 	}
@@ -1206,26 +1329,34 @@ func (p *Parser) parsePackageStatement() *ast.PackageStatement {
 	}
 
 	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	// A generic package declares its parameters after the name
+	// (docs/spec/83-modules.md section 6.7).
+	if p.peekTokenIs(token.LBRACK) {
+		stmt.TypeParams = p.parseTypeParameters()
+		if stmt.TypeParams == nil {
+			return nil
+		}
+	}
 	return stmt
 }
 
 // Import statement (docs/spec/83-modules.md section 3): import(path).
 func (p *Parser) parseImportStatement() *ast.ImportStatement {
 	stmt := &ast.ImportStatement{Token: p.currentToken}
-	path := p.parseImportPath()
-	if path == nil {
+	path, arguments, ok := p.parseImportPath()
+	if !ok {
 		return nil
 	}
-	stmt.Path = path
+	stmt.Path, stmt.Arguments = path, arguments
 	return stmt
 }
 
 // parseImportPath parses `( path )` after `import`. The path is a string
 // literal; a bare identifier is sugar for a single-segment path
 // (`import(std)`).
-func (p *Parser) parseImportPath() *ast.Identifier {
+func (p *Parser) parseImportPath() (*ast.Identifier, []ast.Expression, bool) {
 	if !p.expectPeek(token.LPAREN) {
-		return nil
+		return nil, nil, false
 	}
 	p.nextToken()
 	var path *ast.Identifier
@@ -1234,12 +1365,148 @@ func (p *Parser) parseImportPath() *ast.Identifier {
 		path = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 	default:
 		p.addErrorAtCurrentToken(fmt.Sprintf("import path must be a string literal or identifier, got %s", p.currentToken.TokenKind))
-		return nil
+		return nil, nil, false
 	}
 	if !p.expectPeek(token.RPAREN) {
+		return nil, nil, false
+	}
+	// Generic package instantiation: import("...")[u8, 8].
+	var arguments []ast.Expression
+	if p.peekTokenIs(token.LBRACK) {
+		p.nextToken()
+		args, ok := p.parseDelimited[ast.Expression](
+			token.LBRACK, token.RBRACK, token.COMMA, false,
+			func() (ast.Expression, bool) {
+				if p.currentTokenIs(token.INT) {
+					return p.parseIntegerLiteral(), true
+				}
+				arg := p.parseTypeExpression()
+				return arg, arg != nil
+			},
+		)
+		if !ok {
+			return nil, nil, false
+		}
+		arguments = args
+	}
+	return path, arguments, true
+}
+
+// selectiveImportAhead reports whether currentToken `{` opens
+// `{ name, name } := import(...)` (docs/spec/83-modules.md section 3.2).
+func (p *Parser) selectiveImportAhead() bool {
+	cursor, ok := p.source.(*token.Cursor)
+	if !ok {
+		return false
+	}
+	next := func(i int) token.Token {
+		if i == 0 {
+			return p.peekToken
+		}
+		return cursor.Peek(i - 1)
+	}
+	i := 0
+	expectIdent := true
+	for ; i < 256; i++ {
+		tok := next(i)
+		if tok.TokenKind == token.TRIVIA || tok.TokenKind == token.COMMENT {
+			continue
+		}
+		if expectIdent {
+			if tok.TokenKind != token.IDENT {
+				return false
+			}
+			expectIdent = false
+			continue
+		}
+		switch tok.TokenKind {
+		case token.COMMA:
+			expectIdent = true
+		case token.RBRACE:
+			// `:=` then `import`, skipping trivia.
+			seen := 0
+			for j := i + 1; j < i+64; j++ {
+				after := next(j)
+				if after.TokenKind == token.TRIVIA || after.TokenKind == token.COMMENT {
+					continue
+				}
+				if seen == 0 {
+					if after.TokenKind != token.COLON_ASSIGN {
+						return false
+					}
+					seen++
+					continue
+				}
+				return after.TokenKind == token.IMPORT
+			}
+			return false
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// parseSelectiveImport parses `{ f, g } := import(path)`.
+func (p *Parser) parseSelectiveImport() ast.Statement {
+	var names []*ast.Identifier
+	for {
+		if !p.expectPeek(token.IDENT) {
+			return nil
+		}
+		names = append(names, &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal})
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	if !p.expectPeek(token.RBRACE) || !p.expectPeek(token.COLON_ASSIGN) || !p.expectPeek(token.IMPORT) {
 		return nil
 	}
-	return path
+	stmt := &ast.ImportStatement{Token: p.currentToken, Names: names}
+	path, arguments, ok := p.parseImportPath()
+	if !ok {
+		return nil
+	}
+	stmt.Path, stmt.Arguments = path, arguments
+	return stmt
+}
+
+// parseModuleDeclaration parses `module name { declarations }`.
+func (p *Parser) parseModuleDeclaration() ast.Statement {
+	stmt := &ast.ModuleDeclaration{Token: p.currentToken}
+	if !p.expectPeek(token.IDENT) {
+		return nil
+	}
+	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+	if !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+	stmt.Body = p.parseBlockStatement()
+	if stmt.Body == nil {
+		return nil
+	}
+	// The block is a package body: `x := import(...)` and `x: Sig = import(...)`
+	// are import statements there, as at the top of a file.
+	for i, inner := range stmt.Body.Statements {
+		stmt.Body.Statements[i] = p.foldImportBinding(inner)
+	}
+	return stmt
+}
+
+// parseOpenImport parses `open import(path)`.
+func (p *Parser) parseOpenImport() ast.Statement {
+	if !p.expectPeek(token.IMPORT) {
+		return nil
+	}
+	stmt := &ast.ImportStatement{Token: p.currentToken, Open: true}
+	path, arguments, ok := p.parseImportPath()
+	if !ok {
+		return nil
+	}
+	stmt.Path, stmt.Arguments = path, arguments
+	return stmt
 }
 
 // parseImportExpression parses `import(path)` in expression position. Only a
@@ -1247,11 +1514,11 @@ func (p *Parser) parseImportPath() *ast.Identifier {
 // ImportStatement); the loader rejects any other placement.
 func (p *Parser) parseImportExpression() ast.Expression {
 	expr := &ast.ImportExpression{Token: p.currentToken}
-	path := p.parseImportPath()
-	if path == nil {
+	path, arguments, ok := p.parseImportPath()
+	if !ok {
 		return nil
 	}
-	expr.Path = path
+	expr.Path, expr.Arguments = path, arguments
 	return expr
 }
 
@@ -1266,6 +1533,46 @@ func (p *Parser) parseTypeKindExpression() ast.Expression {
 // parsePubDeclaration parses `pub decl` and `pub(opaque) decl`
 // (docs/spec/83-modules.md section 6). pub applies to package-level
 // declarations only; pub(opaque) applies to type declarations only.
+// operatorSymbols are the symbols an operator declaration may bind
+// (docs/spec/10-syntax.md section 14): arithmetic and comparison. Bool and
+// bitwise operators keep their fixed meaning and are not bindable.
+var operatorSymbols = map[token.TokenKind]string{
+	token.SUM: "+", token.NEG: "-", token.MUL: "*", token.QUO: "/", token.REM: "%",
+	token.EQL: "==", token.NEQL: "!=", token.LCHEV: "<", token.LEQ: "<=", token.RCHEV: ">", token.GEQ: ">=",
+}
+
+// parseOperatorDeclaration parses `operator(SYM)` followed by a function
+// declaration and records the bound symbol on it.
+func (p *Parser) parseOperatorDeclaration() ast.Statement {
+	marker := p.currentToken
+	p.nextToken() // (
+	p.nextToken() // the symbol
+	symbol, bindable := operatorSymbols[p.currentToken.TokenKind]
+	if !bindable {
+		p.addErrorAtCurrentToken(fmt.Sprintf("operator(%s): only + - * / %% == != < <= > >= can be bound (docs/spec/10-syntax.md section 14)", p.currentToken.Literal))
+		return nil
+	}
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+	if p.peekTokenIs(token.EOF) {
+		p.addErrorAtToken(&marker, "operator(%s) must be followed by a function declaration")
+		return nil
+	}
+	p.nextToken()
+	stmt := p.parseStatement()
+	if stmt == nil {
+		return nil
+	}
+	fn, isFunction := stmt.(*ast.FunctionStatement)
+	if !isFunction {
+		p.addErrorAtToken(&marker, "operator("+symbol+") must be followed by a function declaration")
+		return nil
+	}
+	fn.Operator = symbol
+	return fn
+}
+
 func (p *Parser) parsePubDeclaration() ast.Statement {
 	pubToken := p.currentToken
 	opaque := false
@@ -1305,8 +1612,10 @@ func (p *Parser) parsePubDeclaration() ast.Statement {
 		decl.Exported, decl.Opaque = true, opaque
 	case *ast.TagDeclaration:
 		decl.Exported, decl.Opaque = true, opaque
+	case *ast.ProtocolDeclaration:
+		decl.Exported = true
 	default:
-		p.addErrorAtToken(&pubToken, "pub applies only to package-level declarations (functions, values, types, interfaces, tag schemas)")
+		p.addErrorAtToken(&pubToken, "pub applies only to package-level declarations (functions, values, types, interfaces, tag schemas, protocols)")
 		return nil
 	}
 	if opaque && !isType {
@@ -1924,11 +2233,23 @@ func (p *Parser) parseRecordType() ast.Expression {
 		if fieldType == nil {
 			return nil
 		}
+		// A shared type member of a signature: `Key: type = u64`
+		// (docs/spec/83-modules.md section 6.3).
+		var manifest ast.Expression
+		if kind, isKind := fieldType.(*ast.Identifier); isKind && kind.Value == "type" && p.peekTokenIs(token.ASSIGN) {
+			p.nextToken() // to '='
+			p.nextToken() // to the shared type
+			manifest = p.parseTypeExpression()
+			if manifest == nil {
+				return nil
+			}
+		}
 		for _, fieldToken := range fieldTokens {
 			if !record.AddField(fieldToken, fieldToken.Literal, fieldType) {
 				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate record field %q", fieldToken.Literal))
 				return nil
 			}
+			record.FieldOrder[len(record.FieldOrder)-1].Manifest = manifest
 			// The declared alignment and tags ride on the ordered entry
 			// AddField just appended; AddField's proven construction
 			// contract (Oak.SemanticRecord) covers name/value, not
@@ -2059,11 +2380,21 @@ func (p *Parser) parseFieldSpec() (uint32, []ast.FieldTag, bool) {
 			p.nextToken()
 		default:
 			namespace := p.currentToken
-			if seen[namespace.Literal] {
-				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate tag namespace %q in field spec", namespace.Literal))
+			name := namespace.Literal
+			// A tag schema of an imported package: alias.schema
+			// (docs/spec/83-modules.md section 6.8).
+			if p.peekTokenIs(token.DOT) {
+				p.nextToken()
+				if !p.expectPeek(token.IDENT) {
+					return 0, nil, false
+				}
+				name = name + "." + p.currentToken.Literal
+			}
+			if seen[name] {
+				p.addErrorAtCurrentToken(fmt.Sprintf("duplicate tag namespace %q in field spec", name))
 				return 0, nil, false
 			}
-			seen[namespace.Literal] = true
+			seen[name] = true
 			if !p.expectPeek(token.COLON) {
 				return 0, nil, false
 			}
@@ -2072,7 +2403,7 @@ func (p *Parser) parseFieldSpec() (uint32, []ast.FieldTag, bool) {
 			if value == nil {
 				return 0, nil, false
 			}
-			tags = append(tags, ast.FieldTag{Token: namespace, Name: namespace.Literal, Value: value})
+			tags = append(tags, ast.FieldTag{Token: namespace, Name: name, Value: value})
 			p.nextToken() // past the value's last token
 		}
 		if p.currentTokenIs(token.COMMA) {
@@ -2115,6 +2446,154 @@ func (p *Parser) parseTagDeclarationFromName(name *ast.Identifier) *ast.TagDecla
 	}
 	decl.Schema = recordLit
 	decl.EndToken = recordLit.EndToken
+	return decl
+}
+
+// parseProtocolDeclarationFromName parses the body of `Name: protocol = {
+// ... }`: `resource T`, `initial S`, and transition lines
+// `name(param: T)?: From -> To (via callable)?`, separated by newlines or
+// commas. The cursor is on `protocol`. Structure only: states are the
+// names the transitions and `initial` mention, and the compiler checks
+// that the initial state exists and that names are unique.
+func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.ProtocolDeclaration {
+	decl := &ast.ProtocolDeclaration{Token: name.Token, Name: name}
+	p.nextToken() // consume `protocol`; currentToken is '='
+	if !p.currentTokenIs(token.ASSIGN) {
+		p.peekError(token.ASSIGN)
+		return nil
+	}
+	p.nextToken() // to '{'
+	if !p.currentTokenIs(token.LBRACE) {
+		p.peekError(token.LBRACE)
+		return nil
+	}
+	p.nextToken() // first entry, or '}'
+	for {
+		for p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.SEMI) {
+			p.nextToken()
+		}
+		if p.currentTokenIs(token.RBRACE) {
+			decl.EndToken = p.currentToken
+			break
+		}
+		if p.currentTokenIs(token.EOF) {
+			p.addErrorAtCurrentToken("protocol declaration is missing its closing brace")
+			return nil
+		}
+		if !p.currentTokenIs(token.IDENT) {
+			p.addErrorAtCurrentToken("protocol entries are `resource T`, `initial S`, or `name: From -> To`")
+			return nil
+		}
+		switch p.currentToken.Literal {
+		case "data", "init":
+			keyword := p.currentToken.Literal
+			if !p.expectPeek(token.LBRACE) {
+				return nil
+			}
+			if keyword == "data" {
+				if decl.Data != nil {
+					p.addErrorAtCurrentToken("protocol declares its data record once")
+					return nil
+				}
+				shape := p.parseRecordType()
+				record, ok := shape.(*ast.RecordLiteral)
+				if !ok || record == nil {
+					return nil
+				}
+				decl.Data = record
+			} else {
+				if decl.Init != nil {
+					p.addErrorAtCurrentToken("protocol declares its initial data once")
+					return nil
+				}
+				values := p.parseRecordLiteral()
+				record, ok := values.(*ast.RecordLiteral)
+				if !ok || record == nil {
+					return nil
+				}
+				decl.Init = record
+			}
+			p.nextToken()
+		case "resource", "initial":
+			keyword := p.currentToken.Literal
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			ident := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if keyword == "resource" {
+				decl.Resources = append(decl.Resources, ident)
+			} else {
+				if decl.Initial != nil {
+					p.addErrorAtCurrentToken("protocol declares its initial state once")
+					return nil
+				}
+				decl.Initial = ident
+			}
+			p.nextToken()
+		default:
+			transition := &ast.ProtocolTransition{Token: p.currentToken, Name: &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}}
+			if p.peekTokenIs(token.LPAREN) {
+				p.nextToken() // (
+				if !p.expectPeek(token.IDENT) {
+					return nil
+				}
+				param := &ast.FunctionParameter{Token: p.currentToken, Name: &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}}
+				if !p.expectPeek(token.COLON) {
+					return nil
+				}
+				p.nextToken()
+				param.Type = p.parseTypeExpression()
+				if param.Type == nil {
+					return nil
+				}
+				if !p.expectPeek(token.RPAREN) {
+					return nil
+				}
+				transition.Param = param
+			}
+			if !p.expectPeek(token.COLON) {
+				return nil
+			}
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			transition.From = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if !p.expectPeek(token.ARROW) {
+				return nil
+			}
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			transition.To = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "when" {
+				p.nextToken() // when
+				p.nextToken() // first token of the guard
+				transition.Guard = p.parseExpression(LOWEST)
+				if transition.Guard == nil {
+					return nil
+				}
+			}
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "then" {
+				p.nextToken() // then
+				if !p.expectPeek(token.LBRACE) {
+					return nil
+				}
+				transition.Effects = p.parseBlockStatement()
+				if transition.Effects == nil {
+					return nil
+				}
+			}
+			if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "via" {
+				p.nextToken() // via
+				if !p.expectPeek(token.IDENT) {
+					return nil
+				}
+				transition.Callable = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			}
+			decl.Transitions = append(decl.Transitions, transition)
+			p.nextToken()
+		}
+	}
 	return decl
 }
 
@@ -2224,6 +2703,16 @@ func (p *Parser) parseStructLiteral() ast.Expression {
 	return record
 }
 
+// peekTokenIsArithmetic reports whether the next token is an arithmetic
+// operator, the start of a const-arithmetic array length.
+func (p *Parser) peekTokenIsArithmetic() bool {
+	switch p.peekToken.TokenKind {
+	case token.SUM, token.NEG, token.MUL, token.QUO, token.REM:
+		return true
+	}
+	return false
+}
+
 // Parse array type: [Type] or [N]Type
 func (p *Parser) parseArrayType() ast.Expression {
 	// Skip opening bracket (currentToken is [)
@@ -2252,6 +2741,27 @@ func (p *Parser) parseArrayType() ast.Expression {
 			Token: p.currentToken,
 			Left:  elementType,
 			Index: &ast.Identifier{Token: p.currentToken, Value: "*"},
+		}
+	}
+
+	// Arithmetic length: [M*K]T or [N+1]T over const parameters, folded to
+	// a literal at instantiation (docs/spec/20-types.md section 11.0). Type
+	// position has no literal ambiguity, so the length is an ordinary
+	// expression up to the closing bracket.
+	if (p.currentTokenIs(token.IDENT) || p.currentTokenIs(token.INT)) && p.peekTokenIsArithmetic() {
+		length := p.parseExpression(LOWEST)
+		if length == nil || !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		p.nextToken() // move to the element type
+		elementType := p.parseTypeExpression()
+		if elementType == nil {
+			return nil
+		}
+		return &ast.IndexExpression{
+			Token: p.currentToken,
+			Left:  elementType,
+			Index: length,
 		}
 	}
 
@@ -2365,6 +2875,7 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 		Token:  p.currentToken,
 		Fields: make(map[string]ast.Expression),
 	}
+	defer p.operatorPipe()()
 
 	// Skip opening brace (currentToken is {)
 	p.nextToken()
@@ -2414,7 +2925,15 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 
 		// Parse field value
 		p.nextToken() // Advance past colon to the value
-		fieldValue := p.parseExpression(LOWEST)
+		var fieldValue ast.Expression
+		if p.currentTokenIs(token.LPAREN) && p.functionTypeAhead() {
+			// A function-typed member of a signature shape declared as
+			// `Name: type = { hash: (Key) -> u64 }` (docs/spec/83-modules.md
+			// section 6.3): the group is a type, not a value.
+			fieldValue = p.parseTypeExpression()
+		} else {
+			fieldValue = p.parseExpression(LOWEST)
+		}
 		if fieldValue == nil {
 			return nil
 		}
@@ -2476,6 +2995,25 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 		p.nextToken() // element type
 		elementType := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 		return p.parseTypedArrayLiteralWithToken(open, nil, elementType)
+	}
+
+	// Typed nested array literal: [N][M]Type{ ... } — the element type is
+	// itself an array type, parsed by the type grammar.
+	if p.lookaheadSignificant(1).TokenKind == token.INT &&
+		p.lookaheadSignificant(2).TokenKind == token.RBRACK &&
+		p.lookaheadSignificant(3).TokenKind == token.LBRACK {
+		p.nextToken() // N
+		size, isInt := p.parseIntegerLiteral().(*ast.IntegerLiteral)
+		if !isInt {
+			return nil
+		}
+		p.nextToken() // ]
+		p.nextToken() // [ opening the element type
+		elementType := p.parseArrayType()
+		if elementType == nil {
+			return nil
+		}
+		return p.parseTypedArrayLiteralWithToken(open, size, elementType)
 	}
 
 	// Typed fixed array literal: [N]Type{ ... }.
@@ -2563,6 +3101,7 @@ func (p *Parser) parseTypedArrayLiteral(size *ast.IntegerLiteral, elementType as
 
 // parseTypedArrayLiteralWithToken is the internal implementation that takes the bracket token
 func (p *Parser) parseTypedArrayLiteralWithToken(bracketToken token.Token, size *ast.IntegerLiteral, elementType ast.Expression) ast.Expression {
+	defer p.operatorPipe()()
 	var index ast.Expression
 	if size == nil {
 		index = &ast.Identifier{Token: bracketToken, Value: ""}
@@ -2857,17 +3396,20 @@ func (p *Parser) parseREPLCommand() *ast.REPLCommand {
 	commandName := p.currentToken.Literal
 	// Validate command name
 	validCommands := map[string]bool{
-		"exit":    true,
-		"quit":    true,
-		"help":    true,
-		"clear":   true,
-		"reset":   true,
-		"typeof":  true,
-		"ptrsize": true,
-		"intsize": true,
+		"exit":        true,
+		"quit":        true,
+		"help":        true,
+		"clear":       true,
+		"reset":       true,
+		"typeof":      true,
+		"ptrsize":     true,
+		"obligations": true,
+		"strict":      true,
+		"lean":        true,
+		"intsize":     true,
 	}
 	if !validCommands[commandName] {
-		p.addErrorAtCurrentToken(fmt.Sprintf("unknown REPL command: %s (valid: exit, quit, help, clear, reset, typeof, ptrsize, intsize)", commandName))
+		p.addErrorAtCurrentToken(fmt.Sprintf("unknown REPL command: %s (valid: exit, quit, help, clear, reset, typeof, ptrsize, intsize, obligations, strict, lean)", commandName))
 		return nil
 	}
 
@@ -3068,6 +3610,14 @@ func (p *Parser) parseConditionSugarArms(match *ast.MatchExpression) ast.Express
 		p.nextToken() // consume '|'
 		falseBody = p.parseConditionBranch()
 		if falseBody == nil {
+			return nil
+		}
+		// A Bool conditional has two arms. A third bare '|' after them is
+		// the classic misreading of a bitwise or inside an arm (F16): it
+		// used to parse as an or over the whole conditional. Refuse it and
+		// say what to write instead.
+		if _, block := falseBody.(*ast.BlockExpression); !block && p.peekTokenIs(token.PIPE) {
+			p.addErrorAtPeekToken("a `?` conditional has two arms and this `|` would start a third: inside a bare arm `|` is the arm separator, so write a bitwise or as `(a | b)` or brace the arm `{ a | b }`")
 			return nil
 		}
 	} else {
@@ -3576,6 +4126,48 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		}
 	}
 
+	// Effect clauses (docs/spec/60-effects-allocation.md section 2), in
+	// either order, each at most once: effects { A.B, ... } forbids { ... }.
+	// `effects` and `forbids` are contextual: only this position reads them.
+	for p.peekTokenIs(token.IDENT) && (p.peekToken.Literal == "effects" || p.peekToken.Literal == "forbids") {
+		p.nextToken()
+		keyword := p.currentToken.Literal
+		if (keyword == "effects" && stmt.EffectsDeclared) || (keyword == "forbids" && stmt.Forbids != nil) {
+			p.addErrorAtCurrentToken(fmt.Sprintf("a function declares one %s clause", keyword))
+			return nil
+		}
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+		names := []*ast.EffectName{}
+		for !p.peekTokenIs(token.RBRACE) {
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			effect := &ast.EffectName{Token: p.currentToken, Namespace: p.currentToken.Literal}
+			if !p.expectPeek(token.DOT) {
+				return nil
+			}
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			effect.Name = p.currentToken.Literal
+			names = append(names, effect)
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+			} else if !p.peekTokenIs(token.RBRACE) {
+				p.peekError(token.RBRACE)
+				return nil
+			}
+		}
+		p.nextToken() // '}'
+		if keyword == "effects" {
+			stmt.Effects, stmt.EffectsDeclared = names, true
+		} else {
+			stmt.Forbids = names
+		}
+	}
+
 	// Body: '= expr', '= { block }', or a brace block.
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken()
@@ -3678,6 +4270,14 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 	// shape IDENT ':' tag '=' '{' reads as a declaration.
 	if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "tag" && p.peekTokenIs(token.ASSIGN) {
 		return p.parseTagDeclarationFromName(name)
+	}
+	// Protocol declaration: Name: protocol = { ... } (docs/spec/112-protocols.md).
+	// `protocol` is contextual too.
+	if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "protocol" && p.peekTokenIs(token.ASSIGN) {
+		if decl := p.parseProtocolDeclarationFromName(name); decl != nil {
+			return decl
+		}
+		return nil
 	}
 
 	if p.currentTokenIs(token.TYPE) {
@@ -3871,6 +4471,22 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 	return adt
 }
 
+// validSectionName admits ELF (.shared) and Mach-O (__DATA,__shared)
+// section spellings and nothing that could escape a C string literal.
+func validSectionName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == ',', r == '$':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // parseVarDeclFromNameAndTypeStart parses a variable declaration starting from the type.
 // Assumes currentToken is the first token of the type expression (after ':').
 func (p *Parser) parseVarDeclFromNameAndTypeStart(name *ast.Identifier) *ast.VariableDeclaration {
@@ -3887,6 +4503,28 @@ func (p *Parser) parseVarDeclFromNameAndTypeStart(name *ast.Identifier) *ast.Var
 	stmt.Type = p.parseTypeExpression()
 	if stmt.Type == nil {
 		return nil
+	}
+
+	// Optional placement clause: name: Type (section: "shared"). The
+	// section name is validated here so nothing but a plain section
+	// spelling can reach generated C.
+	if p.peekTokenIs(token.LPAREN) {
+		p.nextToken() // to (
+		if !p.expectPeek(token.IDENT) || p.currentToken.Literal != "section" {
+			p.addErrorAtCurrentToken("placement clause takes the form (section: \"name\")")
+			return nil
+		}
+		if !p.expectPeek(token.COLON) || !p.expectPeek(token.STRING) {
+			return nil
+		}
+		if !validSectionName(p.currentToken.Literal) {
+			p.addErrorAtCurrentToken(fmt.Sprintf("section name %q must match [A-Za-z0-9_.,$]+", p.currentToken.Literal))
+			return nil
+		}
+		stmt.Section = p.currentToken.Literal
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
 	}
 
 	// Check for optional assignment
@@ -3932,6 +4570,23 @@ func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 		p.nextToken()
 	}
 
+	return stmt
+}
+
+// parseDiscardStatement parses the explicit discard form `_ = expr`
+// (docs/spec/85-discipline.md section 6). It is an expression statement
+// marked Discard: the value is evaluated and its result deliberately
+// dropped; `_` binds nothing and is never a variable.
+func (p *Parser) parseDiscardStatement() *ast.ExpressionStatement {
+	stmt := &ast.ExpressionStatement{Token: p.currentToken, Discard: true}
+	if !p.expectPeek(token.ASSIGN) {
+		return nil
+	}
+	p.nextToken() // consume =, now at the first token of the value
+	stmt.Expression = p.parseExpression(LOWEST)
+	if p.peekTokenIs(token.SEMI) {
+		p.nextToken()
+	}
 	return stmt
 }
 

@@ -44,9 +44,10 @@ func (cg *CodeGenerator) emitGlobals(program *ast.Program, tc *typechecker.TypeC
 }
 
 func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
-	name := decl.Name.Value
+	name := cIdent(decl.Name.Value)
 
-	// Declarator: owned arrays put the length after the name.
+	// Declarator. Owned arrays are wrapper-struct values (codegen/arrays.go),
+	// so they take the ordinary type-then-name form.
 	declarator := ""
 	if decl.Type != nil {
 		if fn, isFunction := decl.Type.(*ast.FunctionTypeExpression); isFunction {
@@ -57,9 +58,6 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 			// arrays — the template's arity disambiguates (codegen/mono.go).
 			if mangled, isGeneric := cg.genericAnnotationName(indexExpr); isGeneric {
 				declarator = fmt.Sprintf("static %s %s", cg.cTypeName(mangled), name)
-			} else if length, isFixed := indexExpr.Index.(*ast.IntegerLiteral); isFixed {
-				element := cg.parseTypeExpression(indexExpr.Left)
-				declarator = fmt.Sprintf("static %s %s[ %d ]", element, name, length.Value)
 			}
 		}
 		if declarator == "" {
@@ -71,9 +69,17 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 		return
 	}
 
+	// Declared placement (docs/spec/65-machine-memory.md): the linker
+	// section; the parser admitted only a plain section spelling.
+	if decl.Section != "" {
+		declarator = fmt.Sprintf("__attribute__((section(\"%s\"))) %s", decl.Section, declarator)
+	}
+
 	if decl.Value == nil {
 		// Zero initialization: explicit for aggregates, zero for scalars.
-		if _, isIndex := decl.Type.(*ast.IndexExpression); isIndex {
+		if info := cg.classifyContainer(decl.Type); info.kind == containerOwnedArray {
+			cg.write(declarator + zeroArrayInitializer(info.length) + ";\n")
+		} else if _, isIndex := decl.Type.(*ast.IndexExpression); isIndex {
 			cg.write(declarator + " = {0};\n")
 		} else if cg.isAggregateType(decl.Type) {
 			cg.write(declarator + " = {0};\n")
@@ -127,21 +133,23 @@ func (cg *CodeGenerator) emitFileScopeInitializer(expr ast.Expression, tc *typec
 			if i > 0 {
 				cg.output.WriteString(", ")
 			}
-			cg.output.WriteString(fmt.Sprintf(".%s = ", field.Name))
+			cg.output.WriteString(fmt.Sprintf(".%s = ", cIdent(field.Name)))
 			cg.emitFileScopeInitializer(field.Value, tc)
 		}
 		cg.output.WriteString(" }")
 	case *ast.ArrayLiteral:
-		cg.output.WriteString("{ ")
+		// The wrapper struct, then its array member (codegen/arrays.go).
+		cg.output.WriteString("{ { ")
 		for i, element := range e.Elements {
 			if i > 0 {
 				cg.output.WriteString(", ")
 			}
 			cg.emitFileScopeInitializer(element, tc)
 		}
-		cg.output.WriteString(" }")
+		cg.output.WriteString(" } }")
 	default:
-		// Scalar constant expressions share the ordinary fragment emitter.
-		cg.emitExpressionFragment(expr, tc)
+		// Scalar constant expressions share the ordinary fragment emitter,
+		// in constant context so arithmetic stays a C constant expression.
+		cg.emitConstantExpression(expr, tc)
 	}
 }

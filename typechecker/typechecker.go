@@ -7,6 +7,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/token"
 )
@@ -495,8 +496,22 @@ func (t *FunctionType) Equals(other Type) bool {
 type TypeChecker struct {
 	// Module-system facts (typechecker/modules.go): opaque types by internal
 	// name and the loaded package paths.
-	opaqueTypes             map[string]string
+	opaqueTypes map[string]string
+	// typeOwners maps each declared type to its declaring package, like
+	// globalOwners for functions and values.
+	typeOwners map[string]string
+	// operatorBindings maps "TypeName SYM" to the function an operator
+	// declaration bound (docs/spec/10-syntax.md section 14), and
+	// operatorCalls records, position-keyed by the operator token, the
+	// callee of every infix expression that resolved through a binding.
+	operatorBindings map[string]string
+	operatorCalls    map[string]string
+	// packageExports is every loaded package's member table, for uniform
+	// call syntax (docs/spec/10-syntax.md section 13).
+	packageExports          map[string]modules.Exports
 	packagePaths            map[string]bool
+	sealedOpaque            map[string]map[string]bool
+	abstractTypes           map[string]string
 	adtPayloadTypes         map[string]map[string]Type
 	monomorphicTransactions [][]Substitution
 	diagnostics             *diagnostic.DiagnosticCollector
@@ -510,7 +525,10 @@ type TypeChecker struct {
 	// Monomorphization records (typechecker/mono.go): the concrete
 	// generic-ADT instantiations the program uses and the instantiation
 	// each variant expression / match scrutinee was checked against.
-	adtInstantiations  map[string]Instantiation
+	adtInstantiations map[string]Instantiation
+	// loopDepth counts the while bodies enclosing the statement being
+	// checked; a function body starts a fresh count.
+	loopDepth          int
 	variantResolutions map[string]string
 	matchResolutions   map[string]string
 	// recordTemplates holds generic record declarations (Ring[T, N: u32]);
@@ -520,14 +538,40 @@ type TypeChecker struct {
 	// tagSchemas holds declared tag schemas (json: tag = { name: string }) —
 	// the closed namespace field tags check against (typechecker/tags.go).
 	tagSchemas map[string]*RecordType
+	// boolFacts remembers, per Bool binding, the extent facts of the
+	// condition assigned to it (typechecker/extents.go).
+	boolFacts map[string][]extentFact
+	// arithmeticTypes records the fixed-width result type of each arithmetic
+	// expression (position-keyed), so the backend emits the total helper.
+	arithmeticTypes map[string]string
+	// predeclaredGlobals names package-level bindings registered before any
+	// body is checked, so functions may mention globals declared later in
+	// the file; the defining declaration consumes its entry.
+	predeclaredGlobals map[string]bool
 	// shiftWidths records the operand width of each shift expression
 	// (position-keyed), consumed by the backend's checked-shift emission.
 	shiftWidths map[string]int
 	// Generic function templates and their monomorphized instantiations
 	// (typechecker/genericfn.go).
-	globalEnv                  *TypeEnvironment
-	functionTemplates          map[string]*ast.FunctionStatement
-	functionInstantiations     map[string]*ast.FunctionStatement
+	globalEnv *TypeEnvironment
+	// globalOwners maps each package-level declaration to the package that
+	// declares it ("" for the root), so the no-shadowing rule is checked
+	// against the declaring package's scope (docs/spec/83-modules.md section 7).
+	globalOwners map[string]string
+	// externFunctions names the extern bindings (docs/spec/92-ffi.md section 2.3),
+	// whose calls may carry boundary spans (section 2.5).
+	externFunctions        map[string]bool
+	layoutQueries          map[string]LayoutQuery
+	checkingSpecialization bool
+	extentFacts            []extentFact
+	provenIndices          map[string]bool
+	asmBackedFunctions     map[string]bool
+	functionTemplates      map[string]*ast.FunctionStatement
+	functionInstantiations map[string]*ast.FunctionStatement
+	// instantiationTemplates maps each specialization's mangled name back
+	// to its template, so resource contracts declared for a template apply
+	// to every specialization (docs/spec/50-borrowing.md section 9).
+	instantiationTemplates     map[string]string
 	functionInstantiationOrder []string
 	// rowFunctionTemplates marks source functions whose extensible-record
 	// parameters are representation-polymorphic. They share the ordinary
@@ -703,14 +747,45 @@ func (tc *TypeChecker) addError(node ast.Node, format string, args ...interface{
 // CheckProgram type checks a program
 func typeParamsConstrained(params []*ast.TypeParameter) bool {
 	for _, param := range params {
-		if param != nil && param.Constraint != nil {
+		if param != nil && param.Constraint != nil && !isConstParameter(param) {
 			return true
 		}
 	}
 	return false
 }
 
+// constParameterKinds are the integer kinds a const parameter may declare
+// (docs/spec/20-types.md section 11.0): `N: u32` is a value parameter, not
+// an interface constraint.
+var constParameterKinds = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true,
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"int": true, "uint": true, "ptr": true, "uptr": true, "byte": true, "rune": true,
+}
+
+// isConstParameter reports whether a type parameter declares an integer
+// kind and so ranges over integer constants.
+func isConstParameter(param *ast.TypeParameter) bool {
+	if param == nil || param.Constraint == nil {
+		return false
+	}
+	kind, isIdent := param.Constraint.(*ast.Identifier)
+	return isIdent && constParameterKinds[kind.Value]
+}
+
+// constParameterKind returns the declared integer kind of a const parameter.
+func constParameterKind(param *ast.TypeParameter) string {
+	if kind, isIdent := param.Constraint.(*ast.Identifier); isIdent {
+		return kind.Value
+	}
+	return ""
+}
+
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
+	// Region parameters are erased first (typechecker/regions.go): every
+	// later phase sees View[T, R] as []T and a region-only type parameter as
+	// absent; the borrow checker reads the recorded structure.
+	tc.eraseRegions(program)
 	// Resolve declared types before caching function signatures. Otherwise a
 	// span of a named record can retain an unresolved type variable.
 	for _, stmt := range program.Statements {
@@ -719,9 +794,13 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.checkStatement(stmt)
 		}
 	}
+	// Fresh abstract types of sealed imports take their identity from the
+	// declarations just resolved (typechecker/modules.go).
+	tc.registerAbstractTypes()
 	// The global scope is the closure of top-level declarations; template
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
+	tc.recordGlobalOwners(program)
 	// Pre-declare top-level non-generic function signatures so functions can
 	// reference one another regardless of declaration order (mutual
 	// recursion included); each signature is finalized when its declaration
@@ -729,6 +808,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok {
 			tc.predeclareFunctionSignature(fn)
+			if fn.Operator != "" && fn.Name != nil {
+				tc.registerOperator(fn)
+			}
 			if len(fn.TypeParams) > 0 && fn.Receiver == nil && !typeParamsConstrained(fn.TypeParams) {
 				if tc.functionTemplates == nil {
 					tc.functionTemplates = make(map[string]*ast.FunctionStatement)
@@ -738,6 +820,22 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 	}
 	tc.resolvePredeclaredFunctionBarriers(program)
+	// Package scope is order-independent for annotated globals: register
+	// their declared types now so a body checked earlier may name them.
+	tc.predeclaredGlobals = make(map[string]bool)
+	for _, stmt := range program.Statements {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Type == nil {
+			continue
+		}
+		if _, exists := tc.env.Get(decl.Name.Value); exists {
+			continue // the full check reports the duplicate
+		}
+		if varType := tc.parseTypeExpression(decl.Type); varType != nil {
+			tc.env.SetType(decl.Name.Value, varType)
+			tc.predeclaredGlobals[decl.Name.Value] = true
+		}
+	}
 	for _, stmt := range program.Statements {
 		switch stmt.(type) {
 		case *ast.ADTType, *ast.TagDeclaration:
@@ -771,6 +869,168 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 		program.Statements = kept
 	}
+}
+
+// recordGlobalOwners notes, for every package-level function and binding,
+// the package that declares it (docs/spec/83-modules.md section 7: the root
+// package is spelled "").
+func (tc *TypeChecker) recordGlobalOwners(program *ast.Program) {
+	tc.globalOwners = make(map[string]string)
+	for _, stmt := range program.Statements {
+		switch s := stmt.(type) {
+		case *ast.FunctionStatement:
+			if s.Name != nil {
+				tc.globalOwners[s.Name.Value] = tc.packageOf(s.Name.Token)
+			}
+		case *ast.VariableDeclaration:
+			if s.Name != nil {
+				tc.globalOwners[s.Name.Value] = tc.packageOf(s.Name.Token)
+			}
+		case *ast.ADTType:
+			if s.Name != nil {
+				if tc.typeOwners == nil {
+					tc.typeOwners = make(map[string]string)
+				}
+				tc.typeOwners[s.Name.Value] = tc.packageOf(s.Name.Token)
+			}
+		}
+	}
+}
+
+// registerOperator validates an `operator(SYM)` declaration and records
+// its binding (docs/spec/10-syntax.md section 14): two parameters, no
+// receiver or type parameters, a first parameter of a declared record or
+// ADT type declared in this function's own package, one binding per type
+// and symbol, and a Bool result for the comparison symbols.
+func (tc *TypeChecker) registerOperator(fn *ast.FunctionStatement) {
+	if fn.Receiver != nil || len(fn.TypeParams) > 0 || len(fn.Parameters) != 2 || fn.Parameters[1].Variadic {
+		tc.addError(fn.Name, "operator(%s) %s must be a non-generic function of exactly two parameters", fn.Operator, fn.Name.Value)
+		return
+	}
+	leftType := tc.parseTypeExpression(fn.Parameters[0].Type)
+	typeName := ""
+	switch t := leftType.(type) {
+	case *RecordType:
+		typeName = t.Name
+	case *ADTType:
+		typeName = t.Name
+	}
+	if typeName == "" {
+		tc.addError(fn.Parameters[0].Type, "operator(%s) %s: the first parameter must be a declared record or ADT type, got %s; primitives, strings, arrays, and views keep their built-in operators", fn.Operator, fn.Name.Value, leftType)
+		return
+	}
+	if owner, declared := tc.typeOwners[typeName]; declared && owner != tc.packageOf(fn.Name.Token) {
+		tc.addError(fn.Name, "operator(%s) %s must be declared in the package that declares %s (docs/spec/83-modules.md section 6.5)", fn.Operator, fn.Name.Value, typeName)
+		return
+	}
+	switch fn.Operator {
+	case "==", "!=", "<", "<=", ">", ">=":
+		if fn.ReturnType == nil {
+			tc.addError(fn.Name, "operator(%s) %s must return Bool", fn.Operator, fn.Name.Value)
+			return
+		}
+		if ret := tc.parseTypeExpression(fn.ReturnType); ret == nil || !ret.Equals(&BoolType{}) {
+			tc.addError(fn.ReturnType, "operator(%s) %s must return Bool, got %s", fn.Operator, fn.Name.Value, ret)
+			return
+		}
+	}
+	if tc.operatorBindings == nil {
+		tc.operatorBindings = make(map[string]string)
+	}
+	key := typeName + " " + fn.Operator
+	if prior, bound := tc.operatorBindings[key]; bound {
+		tc.addError(fn.Name, "operator(%s) is already bound for %s by %s; one binding per type and symbol", fn.Operator, typeName, prior)
+		return
+	}
+	tc.operatorBindings[key] = fn.Name.Value
+}
+
+// operatorBinding reports the function bound to SYM for a left operand of
+// the given type, if any.
+func (tc *TypeChecker) operatorBinding(leftType Type, symbol string) (string, bool) {
+	typeName := ""
+	switch t := leftType.(type) {
+	case *RecordType:
+		typeName = t.Name
+	case *ADTType:
+		typeName = t.Name
+	}
+	if typeName == "" {
+		return "", false
+	}
+	callee, bound := tc.operatorBindings[typeName+" "+symbol]
+	return callee, bound
+}
+
+// OperatorCallee reports the function an infix expression at tok resolved
+// to through an operator binding; the compiler's elaboration rewrites such
+// expressions into plain calls before any later phase runs.
+func (tc *TypeChecker) OperatorCallee(tok token.Token) (string, bool) {
+	callee, ok := tc.operatorCalls[positionKey(tok)]
+	return callee, ok
+}
+
+// checkOperatorCall checks `left SYM right` as the call callee(left, right)
+// and records it for rewriting.
+func (tc *TypeChecker) checkOperatorCall(expr *ast.InfixExpression, callee string, leftType Type) Type {
+	scheme, declared := tc.env.Get(callee)
+	if !declared {
+		return nil
+	}
+	fnType, isFunction := Instantiate(scheme, NewUnifier()).(*FunctionType)
+	if !isFunction || len(fnType.Parameters) != 2 {
+		tc.addError(expr, "operator %s: %s is not a two-parameter function", expr.Operator, callee)
+		return nil
+	}
+	if !tc.isAssignable(leftType, fnType.Parameters[0]) {
+		tc.addError(expr.Left, "operator %s (%s): left operand %s does not match %s", expr.Operator, callee, leftType, fnType.Parameters[0])
+		return nil
+	}
+	rightType := tc.checkExpression(expr.Right, fnType.Parameters[1])
+	if rightType == nil {
+		return nil
+	}
+	if !tc.isAssignable(rightType, fnType.Parameters[1]) {
+		tc.addError(expr.Right, "operator %s (%s): right operand %s does not match %s", expr.Operator, callee, rightType, fnType.Parameters[1])
+		return nil
+	}
+	if tc.operatorCalls == nil {
+		tc.operatorCalls = make(map[string]string)
+	}
+	tc.operatorCalls[positionKey(expr.Token)] = callee
+	return fnType.ReturnType
+}
+
+// shadowsVisibleBinding reports whether declaring name at tok would shadow
+// a binding that is in scope at that declaration.
+//
+// The elaborated program is one flat tree (docs/spec/83-modules.md section
+// 7): imported packages' declarations carry their mangled internal names,
+// which no user identifier can spell, but the root package keeps its source
+// names. Without this rule a root `pub rank` would make `rank: u32 = ...`
+// illegal in every other package, the prelude included, so a package's
+// legal local names would depend on which package happens to be the build
+// root (ml finding F5). A package-level declaration of a *different*
+// package is therefore not in scope for a local declaration in a non-root
+// package. Root-package code keeps the whole rule: everything visible to
+// the root is unqualified there, prelude exports included.
+func (tc *TypeChecker) shadowsVisibleBinding(name string, tok token.Token) bool {
+	if _, exists := tc.env.Get(name); !exists {
+		return false
+	}
+	owner, isGlobal := tc.globalOwners[name]
+	if !isGlobal || tc.globalEnv == nil {
+		return true
+	}
+	// Only the package-level binding may be out of scope: a local of the
+	// same name in an enclosing block still shadows.
+	for env := tc.env; env != nil && env != tc.globalEnv; env = env.outer {
+		if _, local := env.store[name]; local {
+			return true
+		}
+	}
+	declaring := tc.packageOf(tok)
+	return declaring == "" || declaring == owner
 }
 
 // predeclareFunctionSignature registers a function's declared type before any
@@ -807,7 +1067,7 @@ func (tc *TypeChecker) predeclareFunctionSignature(fn *ast.FunctionStatement) {
 			return // full check reports the malformed declaration
 		}
 		typeVars = append(typeVars, parameter.Name.Value)
-		if parameter.Constraint != nil {
+		if parameter.Constraint != nil && !isConstParameter(parameter) {
 			interfaces := tc.extractInterfacesFromConstraint(parameter.Constraint)
 			if len(interfaces) > 0 {
 				constraints = append(constraints, Constraint{
@@ -951,7 +1211,7 @@ func (tc *TypeChecker) predeclaredMethodBarrierScheme(fn *ast.FunctionStatement)
 			return nil
 		}
 		typeVars = append(typeVars, parameter.Name.Value)
-		if parameter.Constraint != nil {
+		if parameter.Constraint != nil && !isConstParameter(parameter) {
 			interfaces := tc.extractInterfacesFromConstraint(parameter.Constraint)
 			if len(interfaces) > 0 {
 				constraints = append(constraints, Constraint{
@@ -1048,8 +1308,22 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		if ContainsAtomicStorage(resultType) {
 			tc.addError(s.Expression, "Atomic[T] is storage identity, not a value; use an atomic_load_* operation")
 		}
+		if s.Discard {
+			// `_ = expr` exists to drop a result on purpose
+			// (docs/spec/85-discipline.md section 6); discarding unit
+			// says nothing and is rejected so the form stays meaningful.
+			if _, isUnit := resultType.(*UnitType); isUnit {
+				tc.addError(s.Expression, "discard of a unit value: `_ = expr` drops a non-unit result; write the expression alone")
+			}
+		}
 	case *ast.WhileStatement:
 		tc.checkWhileStatement(s)
+	case *ast.BreakStatement:
+		// A break leaves the innermost while (docs/spec/85-discipline.md
+		// section 3); outside a loop body there is nothing to leave.
+		if tc.loopDepth == 0 {
+			tc.addError(s, "break outside a while loop")
+		}
 	case *ast.IfStatement:
 		tc.checkIfStatement(s)
 	case *ast.UnsafeBlock:
@@ -1089,19 +1363,37 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
-		// Integer literals: use context-based inference if expected type is provided
+		// Integer literals take the expected integer type from their context:
+		// declarations, assignments, arguments, returns, indices, and the peer
+		// operand of an arithmetic, comparison, or bitwise operator. A literal
+		// that does not fit that type is an error rather than a silent
+		// fallback to int, so `at + 1` has exactly the range and overflow
+		// rules of `at + u32(1)`.
 		if expected != nil {
 			if primType, ok := expected.(*PrimitiveType); ok {
-				// Check if literal fits in the expected primitive type
-				if tc.literalFitsInType(e.Value, primType.Name) {
+				if IsFloatName(primType.Name) {
+					// An integer literal is not a float (docs/spec/20-types.md
+					// section 11.3.2): the program spells `1.0`.
+					tc.addError(e, "integer literal %d in floating-point context %s; spell it %d.0", e.Value, primType.Name, e.Value)
 					return primType
 				}
-				// Literal doesn't fit - fall through to default inference
+				if tc.literalFits(e, primType.Name) {
+					return primType
+				}
+				if tc.isNumericType(primType) {
+					tc.addError(e, "literal %s does not fit in type %s", e.Token.Literal, primType.Name)
+					return primType
+				}
+				// Non-integer primitive context: fall through to default inference
 			}
 		}
 		// No context: default to int (signed native word integer)
 		// This matches the platform-dependent default integer type
 		return &PrimitiveType{Name: "int"}
+	case *ast.FloatLiteral:
+		// Floating-point literals take the float type of their context and
+		// are f64 without one (docs/spec/20-types.md section 11.3.2).
+		return tc.checkFloatLiteral(e, expected)
 	case *ast.StringLiteral:
 		return &StringType{}
 	case *ast.Boolean:
@@ -1109,7 +1401,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.Identifier:
 		return tc.checkIdentifier(e)
 	case *ast.PrefixExpression:
-		return tc.checkPrefixExpression(e)
+		return tc.checkPrefixExpression(e, expected)
 	case *ast.InfixExpression:
 		return tc.checkInfixExpression(e, expected)
 	case *ast.FunctionLiteral:
@@ -1200,8 +1492,32 @@ func (tc *TypeChecker) checkIdentifier(ident *ast.Identifier) Type {
 	return tc.applyPendingMonomorphic(Instantiate(scheme, unifier))
 }
 
-func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
-	rightType := tc.checkExpression(expr.Right)
+func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression, expectedType ...Type) Type {
+	var expected Type
+	if len(expectedType) > 0 {
+		expected = expectedType[0]
+	}
+	// A negated literal is one constant: range-check the negated value against
+	// the expected integer type so `x: i8 = -128` types as i8 and `at + -1`
+	// with at: u32 is rejected as a literal that does not fit.
+	if expr.Operator == "-" {
+		if lit, isLiteral := expr.Right.(*ast.IntegerLiteral); isLiteral {
+			if prim, ok := expected.(*PrimitiveType); ok && tc.isNumericType(prim) {
+				if !lit.Wide && tc.literalFitsInType(-lit.Value, prim.Name) {
+					return prim
+				}
+				tc.addError(expr, "literal -%s does not fit in type %s", lit.Token.Literal, prim.Name)
+				return prim
+			}
+		}
+	}
+	var operandExpected Type
+	if prim, ok := expected.(*PrimitiveType); ok && (tc.isNumericType(prim) || IsFloatName(prim.Name)) {
+		// Negation keeps a signed type and complement keeps an unsigned type, so
+		// the operand shares the expected type in both well-typed cases.
+		operandExpected = prim
+	}
+	rightType := tc.checkExpression(expr.Right, operandExpected)
 	if rightType == nil {
 		return nil
 	}
@@ -1225,18 +1541,20 @@ func (tc *TypeChecker) checkPrefixExpression(expr *ast.PrefixExpression) Type {
 		tc.addError(expr, "operator ^ (complement) requires an unsigned fixed-width operand, got %s", rightType)
 		return nil
 	case "-":
-		// Negation: promote unsigned to signed, or keep signed
-		if prim, ok := rightType.(*PrimitiveType); ok {
-			if prim.Name[0] == 'i' { // signed integer
-				return rightType
-			} else if prim.Name[0] == 'u' {
-				// Unsigned: promote to corresponding signed type
-				// u8 -> i8, u16 -> i16, u32 -> i32, u64 -> i64
-				signedName := "i" + prim.Name[1:]
-				return &PrimitiveType{Name: signedName}
-			}
+		// Negation is total in the operand's own width: two's-complement
+		// negation mod 2^N for signed and unsigned alike (docs/spec/20-types.md
+		// section 11.1). No implicit move between signednesses: `-x` with
+		// x: u32 is a u32, and `i32_bits_u32(x)` is the explicit route.
+		if prim, ok := rightType.(*PrimitiveType); ok && tc.isNumericType(prim) {
+			return tc.recordNegation(expr, prim)
 		}
-		tc.addError(expr, "operator - requires integer type, got %s", rightType)
+		if prim, ok := rightType.(*PrimitiveType); ok && IsFloatName(prim.Name) {
+			// Negation flips the sign bit, including of NaN and zero
+			// (docs/spec/20-types.md section 11.3.5); the backend's plain
+			// unary minus is exactly that.
+			return prim
+		}
+		tc.addError(expr, "operator - requires a numeric type, got %s", rightType)
 		return nil
 	default:
 		tc.addError(expr, "unknown prefix operator: %s", expr.Operator)
@@ -1250,31 +1568,51 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		expected = expectedType[0]
 	}
 
-	// Bitwise operands infer through the operator: the outer expected type
-	// flows into the left operand, and the left operand's type types the
-	// right (so hcr & 0x19 and v << 3 need no literal annotations).
+	// Operands infer through the operator. For arithmetic and bitwise
+	// operators the outer expected type flows into both operands, and for
+	// every numeric operator the typed operand types a literal-only peer, in
+	// either order: `at + 1`, `2 * at`, `1 < at`, `at * 2 + 1`, and
+	// `hcr & 0x19` need no literal annotations and keep the precise type.
 	bitwise := expr.Operator == "&" || expr.Operator == "|" || expr.Operator == "^" ||
 		expr.Operator == "<<" || expr.Operator == ">>"
-	var leftType Type
-	if bitwise && expected != nil && tc.isNumericType(expected) {
-		leftType = tc.checkExpression(expr.Left, expected)
-	} else {
-		leftType = tc.checkExpression(expr.Left)
+	arithmetic := expr.Operator == "+" || expr.Operator == "-" || expr.Operator == "*" ||
+		expr.Operator == "/" || expr.Operator == "%"
+	var operandExpected Type
+	if (arithmetic || bitwise) && expected != nil && (tc.isNumericType(expected) || tc.isFloatType(expected)) {
+		operandExpected = expected
 	}
-	// For right side, if expected type is numeric and we're doing arithmetic,
-	// use it for context-based inference of literals
-	var rightExpected Type
-	if expected != nil {
-		if prim, ok := expected.(*PrimitiveType); ok {
-			if tc.isNumericType(prim) {
-				rightExpected = expected
+	peerContext := func(typ Type) Type {
+		if typ != nil && (tc.isNumericType(typ) || tc.isFloatType(typ)) {
+			return typ
+		}
+		return operandExpected
+	}
+	var leftType, rightType Type
+	if IsLiteralOnlyExpression(expr.Left) && !IsLiteralOnlyExpression(expr.Right) {
+		rightType = tc.checkExpression(expr.Right, operandExpected)
+		leftType = tc.checkExpression(expr.Left, peerContext(rightType))
+	} else {
+		leftType = tc.checkExpression(expr.Left, operandExpected)
+		// A declared type with an operator binding for this symbol makes the
+		// expression the bound call (docs/spec/10-syntax.md section 14): the
+		// right operand is checked against the callee's second parameter.
+		if leftType != nil {
+			if callee, bound := tc.operatorBinding(leftType, expr.Operator); bound {
+				return tc.checkOperatorCall(expr, callee, leftType)
 			}
 		}
+		// The right operand of && runs only when the left held, so it sees
+		// the facts the left establishes (typechecker/extents.go); no
+		// expression can reassign a local in between.
+		var guard int
+		if expr.Operator == "&&" {
+			guard = tc.enterFactScope(expr.Left)
+		}
+		rightType = tc.checkExpression(expr.Right, peerContext(leftType))
+		if expr.Operator == "&&" {
+			tc.popExtentFacts(guard)
+		}
 	}
-	if bitwise && leftType != nil && tc.isNumericType(leftType) {
-		rightExpected = leftType
-	}
-	rightType := tc.checkExpression(expr.Right, rightExpected)
 	if leftType == nil || rightType == nil {
 		return nil
 	}
@@ -1289,20 +1627,38 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		if leftType.Equals(&StringType{}) && rightType.Equals(&StringType{}) {
 			return &StringType{}
 		}
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
+			return tc.checkFloatArithmetic(expr, leftType, rightType)
+		}
 		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
-			return tc.promoteNumericTypes(leftType, rightType)
+			return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 		}
 		tc.addError(expr, "operator + requires numeric types or strings, got %s and %s", leftType, rightType)
 		return nil
 	case "-", "*", "/", "%":
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
+			return tc.checkFloatArithmetic(expr, leftType, rightType)
+		}
 		// Arithmetic operators require numeric types
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
-		return tc.promoteNumericTypes(leftType, rightType)
+		return tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType))
 	case "==", "!=":
-		// Equality operators work on compatible types
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
+			return tc.checkFloatComparison(expr, leftType, rightType)
+		}
+		// Equality on machine integers follows the arithmetic rule: one
+		// signedness, widths promote; otherwise operands must be compatible.
+		if tc.isNumericType(leftType) && tc.isNumericType(rightType) {
+			// Recorded so the interpreter compares in the operands' width
+			// and signedness, as the compiled comparison does.
+			if tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType)) == nil {
+				return nil
+			}
+			return &BoolType{}
+		}
 		if !tc.areCompatibleTypes(leftType, rightType) {
 			tc.addError(expr, "operator %s requires compatible types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
@@ -1342,12 +1698,25 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 				}
 			}
 			tc.recordShiftWidth(expr, width)
+			// A shift's result wraps to the operand width like any other
+			// fixed-width operation: recorded so the interpreter's width
+			// oracle covers it (the backend reads ShiftWidth for its
+			// checked helper; found by the generated-program differential
+			// witness: `u8(100) << u8(2)` is 144, not 400).
+			tc.recordArithmetic(expr, leftType)
 		}
 		return leftType
 	case "<", ">", "<=", ">=":
-		// Comparison operators require numeric types
+		if tc.isFloatLike(leftType) || tc.isFloatLike(rightType) {
+			return tc.checkFloatComparison(expr, leftType, rightType)
+		}
+		// Ordering compares machine integers of one signedness; widths
+		// promote as in arithmetic, mixed signedness is rejected.
 		if !tc.isNumericType(leftType) || !tc.isNumericType(rightType) {
 			tc.addError(expr, "operator %s requires numeric types, got %s and %s", expr.Operator, leftType, rightType)
+			return nil
+		}
+		if tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType)) == nil {
 			return nil
 		}
 		return &BoolType{}
@@ -1364,10 +1733,28 @@ func (tc *TypeChecker) isNumericType(typ Type) bool {
 	return false
 }
 
+// IsLiteralOnlyExpression reports whether an expression is built only from
+// integer literals, unary signs, arithmetic, and bitwise operators, so its
+// type comes entirely from context rather than from any typed operand.
+func IsLiteralOnlyExpression(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.IntegerLiteral, *ast.FloatLiteral:
+		return true
+	case *ast.PrefixExpression:
+		return (e.Operator == "-" || e.Operator == "+") && IsLiteralOnlyExpression(e.Right)
+	case *ast.InfixExpression:
+		switch e.Operator {
+		case "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>":
+			return IsLiteralOnlyExpression(e.Left) && IsLiteralOnlyExpression(e.Right)
+		}
+	}
+	return false
+}
+
 // promoteNumericTypes returns the wider of two numeric types
 // Implements widening conversions: u8 -> u16 -> u32 -> u64, i8 -> i16 -> i32 -> i64
 // No implicit conversion between signed and unsigned
-func (tc *TypeChecker) promoteNumericTypes(left, right Type) Type {
+func (tc *TypeChecker) promoteNumericTypes(node ast.Node, left, right Type) Type {
 	leftPrim, leftOk := left.(*PrimitiveType)
 	rightPrim, rightOk := right.(*PrimitiveType)
 
@@ -1386,8 +1773,7 @@ func (tc *TypeChecker) promoteNumericTypes(left, right Type) Type {
 
 	// No implicit conversion between signed and unsigned
 	if leftIsSigned != rightIsSigned {
-		// Note: This function doesn't have access to the expression, so we pass nil
-		tc.addError(nil, "cannot mix signed and unsigned types: %s and %s", left, right)
+		tc.addError(node, "cannot mix signed and unsigned types: %s and %s", left, right)
 		return left
 	}
 
@@ -1425,8 +1811,11 @@ func (tc *TypeChecker) areCompatibleTypes(left, right Type) bool {
 		return true
 	}
 
-	// Numeric types can be compared (with coercion)
+	// Numeric types can be compared (with coercion); floats only with floats
 	if tc.isNumericType(left) && tc.isNumericType(right) {
+		return true
+	}
+	if tc.isFloatType(left) && tc.isFloatType(right) {
 		return true
 	}
 
@@ -1555,7 +1944,10 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	tc.env = funcEnv
 
 	// Type check function body (BlockStatement - check last expression)
+	savedLoopDepth := tc.loopDepth
+	tc.loopDepth = 0
 	returnType := tc.checkBlockExpression(fn.Body)
+	tc.loopDepth = savedLoopDepth
 	if returnType == nil {
 		returnType = &UnitType{}
 	}
@@ -1582,11 +1974,20 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if atomicType, recognized := tc.checkAtomicInvocation(ident.Value, expr); recognized {
 			return atomicType
 		}
+		if coerced, recognized := tc.checkAbstractCoercion(ident.Value, expr); recognized {
+			return coerced
+		}
 	}
 	// Compiler-known library calls: c conversions, misplaced c.extern, and
 	// arm64 instruction functions (docs/spec/92-ffi.md).
 	if libraryType, isLibrary := tc.checkLibraryInvocation(expr); isLibrary {
 		return libraryType
+	}
+
+	// Layout introspection, static_assert, address_of
+	// (typechecker/layout_builtins.go).
+	if layoutType, isLayout := tc.resolveLayoutBuiltin(expr); isLayout {
+		return layoutType
 	}
 
 	// Generic function calls monomorphize here: the call site is rewritten
@@ -1597,12 +1998,23 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 
 	// Check if this is a primitive type constructor: u32(x), u64(y), etc.
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
-		if constructorType := tc.checkPrimitiveConstructor(ident.Value, expr.Arguments); constructorType != nil {
+		if constructorType := tc.checkPrimitiveConstructor(ident.Value, expr.Arguments, expr); constructorType != nil {
 			return constructorType
 		}
 		// Check if this is a narrowing function: u8_trunc_u32(x), u8_checked_u32(x), etc.
 		if narrowingType := tc.checkNarrowingFunction(ident.Value, expr.Arguments); narrowingType != nil {
 			return narrowingType
+		}
+		// Checked and saturating arithmetic: u32_checked_add(a, b),
+		// i64_saturating_mul(a, b) (docs/spec/20-types.md section 11.1a).
+		if arithmeticType := tc.checkArithmeticFunction(ident.Value, expr.Arguments, expr); arithmeticType != nil {
+			return arithmeticType
+		}
+		// Floating-point intrinsics (docs/spec/20-types.md section 11.3.5):
+		// fma, sqrt, min, max, is_nan, ... unless a program binding shadows
+		// the name.
+		if floatType := tc.checkFloatIntrinsic(ident.Value, expr); floatType != nil {
+			return floatType
 		}
 		// Check if this is a Castable constructor: string(x), byte(x), etc.
 		if castableType := tc.checkCastableConstructor(ident.Value, expr.Arguments); castableType != nil {
@@ -1677,10 +2089,13 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		}
 	}
 
-	// Check if this is a method call: recv.method(args)
+	// recv.member(args): a method call or uniform call syntax
+	// (docs/spec/10-syntax.md section 13).
 	if indexExpr, ok := expr.Function.(*ast.IndexExpression); ok {
 		if methodName, ok := indexExpr.Index.(*ast.Identifier); ok {
-			// This is a method call
+			if indexExpr.Dot {
+				return tc.checkDotCall(expr, indexExpr, methodName)
+			}
 			return tc.checkMethodCall(indexExpr.Left, methodName.Value, expr.Arguments)
 		}
 	}
@@ -1709,6 +2124,40 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return nil
 	}
 
+	// Boundary spans (docs/spec/92-ffi.md section 2.5): in a call to an
+	// extern binding, c.span_of(v) / c.span_mut_of(s) stands for two
+	// consecutive parameters (c.Ptr, c.Size). paramPos maps each argument to
+	// the parameter position it starts at; effectiveArgs counts positions.
+	isExtern := false
+	if funcIdent, ok := expr.Function.(*ast.Identifier); ok {
+		isExtern = tc.externFunctions[funcIdent.Value]
+	}
+	paramPos := make([]int, len(expr.Arguments))
+	effectiveArgs := 0
+	spansValid := true
+	for i, arg := range expr.Arguments {
+		paramPos[i] = effectiveArgs
+		if member, operand, isSpan := tc.BoundarySpanArgument(arg); isSpan {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					fmt.Sprintf("c.%s is only an argument to an extern binding", member))
+				d.AddNote("a boundary span yields a c.Ptr, c.Size pair for the duration of one foreign call; Oak functions take the view or span itself (docs/spec/92-ffi.md section 2.5.2)")
+				return nil
+			}
+			// The pair rule is checked before the arity, so a misplaced span
+			// is reported as such rather than as a count mismatch.
+			if !tc.checkBoundarySpan(arg, member, operand, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs += 2
+			continue
+		}
+		effectiveArgs++
+	}
+	if !spansValid {
+		return nil
+	}
+
 	// Check argument count. A variadic function requires at least its fixed
 	// arity; every trailing argument checks against the element type.
 	fixedParams := len(fnType.Parameters)
@@ -1722,8 +2171,8 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			tc.addError(expr, "function expects at least %d arguments, got %d", fixedParams, len(expr.Arguments))
 			return nil
 		}
-	} else if len(expr.Arguments) != len(fnType.Parameters) {
-		tc.addError(expr, "function expects %d arguments, got %d", len(fnType.Parameters), len(expr.Arguments))
+	} else if effectiveArgs != len(fnType.Parameters) {
+		tc.addError(expr, "function expects %d arguments, got %d", len(fnType.Parameters), effectiveArgs)
 		return nil
 	}
 
@@ -1736,14 +2185,20 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	validCall := len(tc.Errors()) == beforeCall
 	beforeArguments := len(tc.Errors())
 	for i, arg := range expr.Arguments {
+		if _, _, isSpan := tc.BoundarySpanArgument(arg); isSpan {
+			// Validated in the pre-pass above; it stands for the pair.
+			argTypes[i] = &CType{Name: "Ptr"}
+			continue
+		}
+		pos := paramPos[i]
 		var parameterType Type
-		if fnType.Variadic && i >= fixedParams {
+		if fnType.Variadic && pos >= fixedParams {
 			if variadicElement == nil {
 				continue
 			}
 			parameterType = variadicElement
 		} else {
-			parameterType = fnType.Parameters[i]
+			parameterType = fnType.Parameters[pos]
 		}
 		expectedType := bindings.Apply(parameterType)
 		argType := tc.checkExpression(arg, expectedType)
@@ -1778,6 +2233,16 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		tc.checkFunctionConstraintBindings(funcScheme, bindings, expr)
 		if len(tc.Errors()) != before {
 			validCall = false
+		}
+	}
+
+	// A satisfied call to a constrained generic specializes it for emission
+	// and is rewritten to the instantiation (typechecker/genericfn.go).
+	if validCall && funcScheme != nil && len(funcScheme.Constraints) > 0 {
+		if funcIdent, ok := expr.Function.(*ast.Identifier); ok {
+			if template, isTemplate := tc.functionTemplates[funcIdent.Value]; isTemplate {
+				tc.specializeConstrainedCall(expr, template, funcScheme, bindings)
+			}
 		}
 	}
 
@@ -1848,14 +2313,16 @@ func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expressi
 
 // checkPrimitiveConstructor checks if an invocation is a primitive type constructor
 // (e.g., u32(x), u64(y)) and returns the target type if valid
-func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Expression) Type {
+func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Expression, call *ast.InvocationExpression) Type {
 	// Check if it's a primitive type name (including aliases and platform types)
 	primitiveTypes := map[string]bool{
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
-		"byte": true, // alias of u8
-		"rune": true, // alias of u32 (docs/spec/70-strings.md section 9)
+		"byte": true,              // alias of u8
+		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
+		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
+		"f16": true, "bf16": true, "f8e4m3": true, "f8e5m2": true, // storage formats: rejected with the spelling to use
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -1871,11 +2338,15 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		return nil
 	}
 
+	if IsFloatName(typeName) || IsStorageFloatName(typeName) {
+		return tc.checkFloatConstructor(typeName, args[0], call)
+	}
+
 	// Check if argument is an integer literal (untyped)
 	if intLit, ok := args[0].(*ast.IntegerLiteral); ok {
 		// Check if literal fits in target type
-		if !tc.literalFitsInType(intLit.Value, typeName) {
-			tc.addError(intLit, "literal %d does not fit in type %s", intLit.Value, typeName)
+		if !tc.literalFits(intLit, typeName) {
+			tc.addError(intLit, "literal %s does not fit in type %s", intLit.Token.Literal, typeName)
 			return nil
 		}
 		// Literal fits - return target type
@@ -1920,12 +2391,28 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 
 	// Check if widening is valid (same signedness, source is narrower or equal)
 	if !tc.isValidWidening(argPrim.Name, normalizedTarget) {
-		tc.addError(args[0], "cannot widen %s to %s (must be same signedness and source must be narrower or equal)", argPrim.Name, typeName)
+		tc.addError(args[0], "cannot widen %s to %s (must be same signedness and source must be narrower or equal); narrowing is explicit: %s_trunc_%s(x) wraps, %s_saturating_%s(x) clamps, %s_checked_%s(x) returns Result, and %s_bits_%s(x) reinterprets same-width bits",
+			argPrim.Name, typeName, typeName, argPrim.Name, typeName, argPrim.Name, typeName, argPrim.Name, typeName, argPrim.Name)
 		return nil
 	}
 
 	// Return the target type (preserve alias name if used)
 	return &PrimitiveType{Name: typeName}
+}
+
+// literalFits checks whether an integer literal node fits the given primitive
+// type; a wide literal (above 2^63 - 1) fits only the 64-bit unsigned types.
+func (tc *TypeChecker) literalFits(lit *ast.IntegerLiteral, typeName string) bool {
+	if lit.Wide {
+		switch typeName {
+		case "u64":
+			return true
+		case "uint", "uptr":
+			return tc.intSize == 64
+		}
+		return false
+	}
+	return tc.literalFitsInType(lit.Value, typeName)
 }
 
 // literalFitsInType checks if an integer literal value fits in the given primitive type
@@ -2081,18 +2568,22 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 	}
-	if !primitiveTypes[targetType] || !primitiveTypes[sourceType] {
+	targetFloat := IsFloatName(targetType) || IsStorageFloatName(targetType)
+	sourceFloat := IsFloatName(sourceType) || IsStorageFloatName(sourceType)
+	if (!primitiveTypes[targetType] && !targetFloat) || (!primitiveTypes[sourceType] && !sourceFloat) {
 		return nil
 	}
 
 	// Validate operation. `bits` is the same-width cross-sign
 	// reinterpretation (two's complement bit pattern, total): the explicit
 	// path between u32 and i32 that widening/narrowing deliberately lack.
+	// `round` belongs to the floating-point rows (section 11.3.4).
 	validOperations := map[string]bool{
 		"trunc":      true,
 		"checked":    true,
 		"saturating": true,
 		"bits":       true,
+		"round":      true,
 	}
 	if !validOperations[operation] {
 		return nil
@@ -2105,6 +2596,14 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 			node = args[0]
 		}
 		tc.addError(node, "narrowing function %s expects 1 argument, got %d", funcName, len(args))
+		return nil
+	}
+
+	if targetFloat || sourceFloat {
+		return tc.checkFloatConversion(funcName, targetType, operation, sourceType, args[0])
+	}
+	if operation == "round" {
+		tc.addError(args[0], "%s: round converts to a floating-point type; integers narrow with trunc, saturating, or checked", funcName)
 		return nil
 	}
 
@@ -2325,6 +2824,71 @@ func (tc *TypeChecker) isValidNarrowing(sourceType, targetType string) bool {
 }
 
 // checkMethodCall type checks a method call: recv.method(args)
+// checkDotCall resolves recv.name(args) (docs/spec/10-syntax.md section
+// 13). A method declared for an ADT receiver wins. Otherwise the form is
+// uniform call syntax: name must be a function visible at the call site or
+// an exported function of the package that declares the receiver's type,
+// and the call is rewritten in place into name(recv, args...), an ordinary
+// invocation for every later phase. Fields are never callable this way,
+// and nothing is dispatched at run time: the callee is fixed here.
+func (tc *TypeChecker) checkDotCall(expr *ast.InvocationExpression, access *ast.IndexExpression, member *ast.Identifier) Type {
+	recvType := tc.checkExpression(access.Left)
+	if recvType == nil {
+		return nil
+	}
+	if adt, isADT := recvType.(*ADTType); isADT {
+		if _, declared := tc.env.Get(fmt.Sprintf("%s::%s", adt.Name, member.Value)); declared {
+			return tc.checkMethodCall(access.Left, member.Value, expr.Arguments)
+		}
+	}
+	if record, isRecord := recvType.(*RecordType); isRecord {
+		if _, isField := record.Fields[member.Value]; isField {
+			tc.addError(member, "%s is a field of %s, not a function: uniform call syntax never reads a field (docs/spec/10-syntax.md section 13); bind the field and call the value", member.Value, record.DisplayName())
+			return nil
+		}
+	}
+	callee, found := tc.uniformCallee(recvType, member.Value)
+	if !found {
+		tc.addError(member, "no method or function %s for %s: uniform call syntax needs a function %s visible here or exported by the package declaring %s (docs/spec/10-syntax.md section 13)", member.Value, recvType, member.Value, recvType)
+		return nil
+	}
+	expr.Function = &ast.Identifier{Token: member.Token, Value: callee}
+	expr.Arguments = append([]ast.Expression{access.Left}, expr.Arguments...)
+	return tc.checkInvocationExpression(expr)
+}
+
+// uniformCallee names the function recv.name(...) calls: name itself when
+// a binding of that name is visible at the call site (the receiver's own
+// package, selective and open imports, the prelude), else the exported
+// function name of the package that declares the receiver's named type,
+// under its internal name. Unexported functions of other packages are not
+// reachable: the same `pub` boundary as a qualified call.
+func (tc *TypeChecker) uniformCallee(recvType Type, name string) (string, bool) {
+	if _, visible := tc.env.Get(name); visible {
+		return name, true
+	}
+	typeName := ""
+	switch t := recvType.(type) {
+	case *RecordType:
+		typeName = t.Name
+	case *ADTType:
+		typeName = t.Name
+	}
+	path, _, mangled := modules.Demangle(typeName)
+	if !mangled {
+		return "", false
+	}
+	member, declared := tc.packageExports[path][name]
+	if !declared || !member.Exported || member.Kind != modules.KindValue {
+		return "", false
+	}
+	internal := modules.Mangle(path, name)
+	if _, present := tc.env.Get(internal); !present {
+		return "", false
+	}
+	return internal, true
+}
+
 func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName string, args []ast.Expression) Type {
 	// Check receiver type
 	recvType := tc.checkExpression(recvExpr)
@@ -2386,6 +2950,9 @@ func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentSt
 	seqType := tc.checkExpression(stmt.Target.Left)
 	if seqType == nil {
 		return
+	}
+	if arr, isArray := seqType.(*ArrayType); isArray && !stmt.Target.Dot {
+		tc.recordIndexProof(stmt.Target, arr)
 	}
 	// Record field assignment: p.x = value (docs/spec/40-records.md).
 	if stmt.Target.Dot {
@@ -2462,6 +3029,8 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 	// Redundant or refinement-impossible arms are semantically never and
 	// must not widen the result type or create cascaded body errors.
 	armTypes := []Type{}
+	armsBefore := tc.deadSnapshot()
+	armsAfter := armsBefore
 	for armIndex, arm := range expr.Arms {
 		// Create a new scoped environment for this match arm to support type narrowing
 		armEnv := NewEnclosedTypeEnvironment(tc.env)
@@ -2496,11 +3065,17 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		// Type check arm body expression with narrowed type context,
 		// inferring literals against the expected result type.
 		var armType Type
+		// Arms are alternatives: each starts from the facts live before the
+		// match, and the union of their kills applies afterwards.
+		tc.restoreDead(armsBefore)
+		armMark := tc.enterArmFacts(expr, arm)
 		if expected != nil {
 			armType = tc.checkExpression(arm.Body, expected)
 		} else {
 			armType = tc.checkExpression(arm.Body)
 		}
+		tc.popExtentFacts(armMark)
+		armsAfter = unionDead(armsAfter, tc.deadSnapshot())
 		if armType == nil {
 			// Unreachable or error - use never type
 			armType = &NeverType{}
@@ -2512,6 +3087,7 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 	}
 
 	// Compute join of all arm types (lattice-based)
+	tc.restoreDead(armsAfter)
 	returnType := Join(armTypes...)
 
 	// Strict mode: if join is any and we didn't explicitly request any, it's an error
@@ -2549,7 +3125,7 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 		// like expression literals infer from their expected type.
 		if intLit, ok := p.Value.(*ast.IntegerLiteral); ok {
 			if prim, ok := expectedType.(*PrimitiveType); ok {
-				if tc.literalFitsInType(intLit.Value, prim.Name) {
+				if tc.literalFits(intLit, prim.Name) {
 					return expectedType
 				}
 				tc.addError(p.Value, "pattern literal %d does not fit in scrutinee type %s", intLit.Value, expectedType)
@@ -2751,6 +3327,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 			primitiveTypes := map[string]bool{
 				"i8": true, "i16": true, "i32": true, "i64": true,
 				"u8": true, "u16": true, "u32": true, "u64": true,
+				"f32": true, "f64": true, "f16": true, "bf16": true, "f8e4m3": true, "f8e5m2": true,
 				"string": true, "Bool": true, "byte": true, "()": true,
 			}
 			if primitiveTypes[ident.Value] {
@@ -2858,6 +3435,9 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 	if leftType == nil {
 		return nil
 	}
+	if arr, isArray := leftType.(*ArrayType); isArray && !expr.Dot {
+		tc.recordIndexProof(expr, arr)
+	}
 
 	// A constrained type variable exposes only fields guaranteed by its semantic
 	// record-shape requirements, never fields that happen to exist on one caller.
@@ -2893,7 +3473,7 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 
 	// Handle array indexing: array[index]
 	if arrayType, ok := leftType.(*ArrayType); ok {
-		indexType := tc.checkExpression(expr.Index)
+		indexType := tc.checkExpression(expr.Index, &PrimitiveType{Name: "u32"})
 		if indexType == nil {
 			return nil
 		}
@@ -2919,7 +3499,7 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 
 	// Check low and high bounds if provided
 	if expr.Low != nil {
-		lowType := tc.checkExpression(expr.Low)
+		lowType := tc.checkExpression(expr.Low, &PrimitiveType{Name: "u32"})
 		if lowType == nil {
 			return nil
 		}
@@ -2930,7 +3510,7 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 	}
 
 	if expr.High != nil {
-		highType := tc.checkExpression(expr.High)
+		highType := tc.checkExpression(expr.High, &PrimitiveType{Name: "u32"})
 		if highType == nil {
 			return nil
 		}
@@ -2996,9 +3576,12 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		// Defense in depth against parser error-recovery artifacts.
 		return
 	}
-	// Check if variable already exists
-	_, exists := tc.env.Get(stmt.Name.Value)
-	if exists {
+	// The defining declaration of a predeclared global is not a redeclaration.
+	if tc.env == tc.globalEnv && tc.predeclaredGlobals[stmt.Name.Value] {
+		delete(tc.predeclaredGlobals, stmt.Name.Value)
+	} else if tc.shadowsVisibleBinding(stmt.Name.Value, stmt.Name.Token) {
+		// Check if variable already exists in the declaring package's scope
+		// (docs/spec/83-modules.md section 7; shadowsVisibleBinding).
 		// Variable already exists - redefinition is not allowed
 		// Use assignment statement (x = value) instead of variable declaration (x: type = value)
 		if stmt.Type != nil {
@@ -3230,6 +3813,11 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		tc.addError(stmt, "function %s needs a definition ('= expression', a brace block) or an asm unit providing its body", stmt.Name.Value)
 		return
 	}
+	if stmt.AsmBacked {
+		// An Oak fallback body beside an asm unit: the signature must still
+		// be an asm-boundary signature; the body is checked as usual below.
+		tc.checkAsmBoundary(stmt)
+	}
 
 	// An UNCONSTRAINED generic function declaration is a template:
 	// registered, never checked generically — each instantiation is
@@ -3242,6 +3830,14 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		tc.registerFunctionTemplate(stmt)
 		return
 	}
+	// A CONSTRAINED generic function keeps the contract path below — its
+	// body is checked once against the constraint (a field outside the
+	// contract is a declaration-time error) and every call checks its
+	// argument (OAK-T0104) — and is additionally a template: each satisfied
+	// call specializes it for emission (typechecker/genericfn.go).
+	if len(stmt.TypeParams) > 0 && stmt.Receiver == nil {
+		tc.registerFunctionTemplate(stmt)
+	}
 
 	// Extract type parameters and constraints
 	typeVars := []string{}
@@ -3253,7 +3849,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 			// Extract constraint if present
 			// Constraints can be single interfaces or intersections (A & B & C)
-			if tp.Constraint != nil {
+			if tp.Constraint != nil && !isConstParameter(tp) {
 				interfaces := tc.extractInterfacesFromConstraint(tp.Constraint)
 				if len(interfaces) > 0 {
 					constraints = append(constraints, Constraint{
@@ -3277,7 +3873,7 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	// If this is a method, add receiver to the environment
 	if stmt.Receiver != nil {
 		// Check for shadowing: receiver name must not conflict with outer scope
-		if _, exists := tc.env.Get(stmt.Receiver.Name.Value); exists {
+		if tc.shadowsVisibleBinding(stmt.Receiver.Name.Value, stmt.Receiver.Name.Token) {
 			tc.addError(stmt.Receiver.Name, "receiver '%s' already declared in outer scope; Oak does not allow shadowing", stmt.Receiver.Name.Value)
 			return
 		}
@@ -3293,8 +3889,11 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	paramTypes := []Type{}
 	paramNames := make(map[string]bool)
 	for _, param := range stmt.Parameters {
-		// Check for shadowing: parameter name must not conflict with outer scope or other parameters
-		if _, exists := tc.env.Get(param.Name.Value); exists {
+		// Check for shadowing: parameter name must not conflict with outer scope or other parameters.
+		// A specialization re-checks a template body that already passed
+		// this rule in its own declaration scope; globals declared between
+		// the template and the instantiating call are not shadowing.
+		if !tc.checkingSpecialization && tc.shadowsVisibleBinding(param.Name.Value, param.Name.Token) {
 			tc.addError(param.Name, "parameter '%s' already declared in outer scope; Oak does not allow shadowing", param.Name.Value)
 			return
 		}
@@ -3347,7 +3946,10 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 	// Type check function body, inferring literals against the declared
 	// return type.
+	savedLoopDepth := tc.loopDepth
+	tc.loopDepth = 0
 	bodyType := tc.checkExpression(stmt.Body, returnType)
+	tc.loopDepth = savedLoopDepth
 	if bodyType == nil {
 		bodyType = &UnitType{}
 	}
@@ -3692,8 +4294,16 @@ func (tc *TypeChecker) checkIfStatement(stmt *ast.IfStatement) {
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError(stmt.Condition, "if condition must be Bool, got %s", conditionType)
 	}
+	// Each branch starts from the same fact state; kills in one branch do
+	// not reach the other, and their union applies after the statement.
+	before := tc.deadSnapshot()
+	after := before
 	if stmt.Consequence != nil {
+		mark := tc.enterFactScope(stmt.Condition)
 		tc.checkBlockStatement(stmt.Consequence)
+		tc.popExtentFacts(mark)
+		after = unionDead(after, tc.deadSnapshot())
+		tc.restoreDead(before)
 	}
 	switch alternative := stmt.Alternative.(type) {
 	case nil:
@@ -3704,6 +4314,7 @@ func (tc *TypeChecker) checkIfStatement(stmt *ast.IfStatement) {
 	default:
 		tc.addError(stmt, "if statement: invalid else branch %T", stmt.Alternative)
 	}
+	tc.restoreDead(unionDead(after, tc.deadSnapshot()))
 }
 
 func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
@@ -3713,19 +4324,66 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 		tc.finishMonomorphicTransaction(len(tc.Errors()) == before)
 	}()
 
+	// The condition's facts are derived with the bindings as they are on
+	// entry; a loop that assigns a binding anywhere then invalidates the
+	// enclosing facts about it before the condition runs, because an
+	// earlier statement of the body executes again after the assignment
+	// (typechecker/extents.go).
+	conditionFacts := tc.loopConditionFacts(stmt)
+	tc.killFactsAssignedBy(stmt)
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError(stmt.Condition, "while condition must be bool, got %s", conditionType)
 	}
 
-	// Type check body
+	// The loop condition dominates the body on every iteration: `i < len(v)`
+	// bounds v[i] until the body assigns i (typechecker/extents.go).
+	mark := tc.pushExtentFacts(conditionFacts)
+	// The body is its own scope: a name declared inside the loop is not
+	// visible after it, so a later block may declare the same name.
+	outerEnv := tc.env
+	tc.env = NewEnclosedTypeEnvironment(outerEnv)
+	tc.loopDepth++
 	tc.checkBlockStatement(stmt.Body)
+	tc.loopDepth--
+	tc.env = outerEnv
+	tc.popExtentFacts(mark)
 }
 
 func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
-	// Type check all statements in the block
-	for _, stmt := range block.Statements {
+	// Type check all statements in the block. A view/span declaration with
+	// literal bounds establishes its extent for the rest of the block
+	// (typechecker/extents.go); the facts pop with the block.
+	mark := len(tc.extentFacts)
+	defer tc.popExtentFacts(mark)
+	for i, stmt := range block.Statements {
 		tc.checkStatement(stmt)
+		tc.killFactsAfterStatement(stmt)
+		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {
+			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
+		}
+	}
+}
+
+// killFactsAfterStatement invalidates the facts an assignment statement
+// breaks, once its right-hand side (which still saw them) is checked.
+// Loops kill on entry (checkWhileStatement) and branches kill inside their
+// own blocks, so only direct assignments are handled here.
+func (tc *TypeChecker) killFactsAfterStatement(stmt ast.Statement) {
+	switch s := stmt.(type) {
+	case *ast.AssignmentStatement:
+		remembered := tc.factsFromCondition(s.Value) // the right-hand side saw the old binding
+		tc.killFactsAssignedBy(stmt)
+		tc.rememberBoolFacts(s.Name, remembered)
+	case *ast.VariableDeclaration:
+		var remembered []extentFact
+		if s.Value != nil {
+			remembered = tc.factsFromCondition(s.Value)
+		}
+		tc.killFactsAssignedBy(stmt)
+		tc.rememberBoolFacts(s.Name, remembered)
+	case *ast.IndexAssignmentStatement:
+		tc.killFactsAssignedBy(stmt)
 	}
 }
 
@@ -3740,14 +4398,24 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 		return &UnitType{}
 	}
 
-	// Type check all statements except the last
+	// Type check all statements except the last. Declarations with literal
+	// extents establish facts for the rest of the block, tail included
+	// (typechecker/extents.go); the facts pop with the block.
+	mark := len(tc.extentFacts)
+	defer tc.popExtentFacts(mark)
 	for i := 0; i < len(block.Statements)-1; i++ {
 		tc.checkStatement(block.Statements[i])
+		tc.killFactsAfterStatement(block.Statements[i])
+		if decl, isDecl := block.Statements[i].(*ast.VariableDeclaration); isDecl {
+			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
+		}
 	}
 
-	// The last statement should be an expression statement
+	// The last statement should be an expression statement. A trailing
+	// discard (`_ = expr`, docs/spec/85-discipline.md section 6) is a
+	// statement, never the block's value: the block is unit.
 	lastStmt := block.Statements[len(block.Statements)-1]
-	if exprStmt, ok := lastStmt.(*ast.ExpressionStatement); ok {
+	if exprStmt, ok := lastStmt.(*ast.ExpressionStatement); ok && !exprStmt.Discard {
 		if expected != nil {
 			return tc.checkExpression(exprStmt.Expression, expected)
 		}
@@ -3756,6 +4424,7 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 
 	// If the last statement is not an expression, return unit
 	tc.checkStatement(lastStmt)
+	tc.killFactsAfterStatement(lastStmt)
 	return &UnitType{}
 }
 
@@ -3763,6 +4432,41 @@ func (tc *TypeChecker) checkUnsafeBlock(stmt *ast.UnsafeBlock) {
 	// Type check body (same as regular block)
 	// Unsafe blocks don't change type checking rules, they just bypass borrow checking
 	tc.checkBlockStatement(stmt.Body)
+}
+
+// typeExpressionFor renders a checked type back into the type-annotation
+// syntax the backend reads: primitive and declared names as identifiers,
+// arrays as [N]T, views as []T, spans as [*]T. Types with no annotation
+// spelling (anonymous records, functions, generics) yield nil, and the
+// caller leaves the literal untyped.
+func typeExpressionFor(t Type, tok token.Token) ast.Expression {
+	switch t := t.(type) {
+	case *PrimitiveType:
+		return &ast.Identifier{Token: tok, Value: t.Name}
+	case *BoolType:
+		return &ast.Identifier{Token: tok, Value: "Bool"}
+	case *RecordType:
+		if t.Name == "" {
+			return nil
+		}
+		return &ast.Identifier{Token: tok, Value: t.Name}
+	case *ADTType:
+		return &ast.Identifier{Token: tok, Value: t.Name}
+	case *ArrayType:
+		element := typeExpressionFor(t.ElementType, tok)
+		if element == nil {
+			return nil
+		}
+		switch {
+		case t.IsSlice:
+			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: ""}}
+		case t.IsSpan:
+			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: "*"}}
+		default:
+			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.IntegerLiteral{Token: tok, Value: t.Length}}
+		}
+	}
+	return nil
 }
 
 func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ...Type) Type {
@@ -3813,7 +4517,11 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 
 	// An untyped literal inherits an expected array/view shape. This gives
 	// every element the declared context (notably sized integer literals) and
-	// preserves owned-array length instead of degrading [N]T to []T.
+	// preserves owned-array length instead of degrading [N]T to []T. The
+	// resolved shape is stamped onto the literal as its type annotation, so
+	// the backend emits a compound literal usable in any expression position
+	// (argument, return, field) exactly as if the author had written
+	// [N]T{ ... } or []T{ ... } (docs/spec/10-syntax.md section 2c).
 	if expectedArray, ok := expected.(*ArrayType); ok {
 		if !expectedArray.IsSlice && !expectedArray.IsSpan &&
 			int64(len(expr.Elements)) != expectedArray.Length {
@@ -3824,6 +4532,15 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 			elemType := tc.checkExpression(elem, expectedArray.ElementType)
 			if elemType != nil && !tc.isAssignable(elemType, expectedArray.ElementType) {
 				tc.addError(elem, "array element %d: expected type %s, got %s", i, expectedArray.ElementType, elemType)
+			}
+		}
+		if expr.Type == nil {
+			if shape := typeExpressionFor(expectedArray, expr.Token); shape != nil {
+				if expectedArray.IsSlice || expectedArray.IsSpan {
+					expr.Type = shape
+				} else {
+					expr.Type = &ast.IndexExpression{Token: expr.Token, Left: typeExpressionFor(expectedArray.ElementType, expr.Token), Index: &ast.IntegerLiteral{Token: expr.Token, Value: int64(len(expr.Elements))}}
+				}
 			}
 		}
 		return expectedArray
@@ -3877,7 +4594,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 		if !elemType.Equals(commonType) {
 			// Try to find a common type (promotion)
 			if tc.isNumericType(elemType) && tc.isNumericType(commonType) {
-				commonType = tc.promoteNumericTypes(commonType, elemType)
+				commonType = tc.promoteNumericTypes(expr.Elements[i], commonType, elemType)
 				if commonType == nil {
 					if i+1 < len(expr.Elements) {
 						tc.addError(expr.Elements[i+1], "array element %d: incompatible types %s and %s", i+1, firstType, elemType)
@@ -4022,7 +4739,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types
@@ -4197,7 +4914,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types

@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
  switch (strtol(argv[1], NULL, 10)) {
 `, cfg.MaxBytes, cfg.MaxBytes, cfg.MaxBytes)
 	for i, test := range pkg.Registry {
-		fmt.Fprintf(&source, "case %d: oak_test_generating = %d; oak_%s(", i, map[bool]int{true: 1, false: 0}[test.Kind == "generator"], test.Name)
+		fmt.Fprintf(&source, "case %d: oak_test_generating = %d; %s(", i, map[bool]int{true: 1, false: 0}[test.Kind == "generator"], pkg.symbol(test.Name))
 		if test.Kind != "unit" {
 			source.WriteString("(oak_view_u8){data, (u32)size}")
 		}
@@ -106,11 +106,13 @@ int main(int argc, char **argv) {
 	if err != nil {
 		return nil, err
 	}
-	flags := []string{"-std=c11", "-O1", "-g"}
+	// -ffp-contract=off keeps floating-point semantics exactly as written
+	// (docs/spec/90-backend.md section 7a).
+	flags := []string{"-std=c11", "-O1", "-g", "-ffp-contract=off"}
 	if cfg.Sanitize {
 		flags = append(flags, "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer")
 	}
-	args := append(append([]string{}, flags...), "-o", filepath.Join(dir, "test"), cpath)
+	args := append(append([]string{}, flags...), "-o", filepath.Join(dir, "test"), cpath, "-lm")
 	adapterIdentity := ""
 	if adapter != nil {
 		adapterIdentity = adapter.identity
@@ -189,8 +191,16 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 		result.signature = "harness:input-too-large"
 		return result
 	}
-	reportPath := filepath.Join(p.dir, "report")
-	_ = os.Remove(reportPath)
+	// One report file per execution: workers run cases concurrently.
+	reportFile, err := os.CreateTemp(p.dir, "report-*")
+	if err != nil {
+		result.signature = "harness:report-file"
+		result.output = err.Error()
+		return result
+	}
+	reportPath := reportFile.Name()
+	_ = reportFile.Close()
+	defer os.Remove(reportPath)
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, p.bin, strconv.Itoa(index), reportPath)
@@ -199,7 +209,7 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 	cmd.Stdout, cmd.Stderr = &output, &output
 	// Bound pipe draining too: a descendant must not keep the runner waiting.
 	cmd.WaitDelay = 100 * time.Millisecond
-	err := cmd.Run()
+	err = cmd.Run()
 	result.output = output.text()
 	timedOut := ctx.Err() != nil
 	// Read the flushed prefix even when a watchdog killed the process. A

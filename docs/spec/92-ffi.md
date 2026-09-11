@@ -73,7 +73,10 @@ back: i32 = i32(n)
 ```
 
 The fixed-width rows are total bijections in both directions;
-`Oak.CInterop` (Lean) proves the mapping is injective and round-trips.
+`Oak.CInterop` (Lean) proves the mapping is injective and round-trips. The
+`f32`/`f64` rows are implemented as bit-preserving casts between the same
+IEEE formats (`20-types.md` §11.3.4); `f16`/`bf16` have no `c` counterpart
+and cross as `u16` bit patterns.
 `c.Size(x: u32)` is injective but its inverse is a checked narrowing, which is
 not provided in v1 — keep lengths in `u32` on the Oak side.
 
@@ -90,7 +93,12 @@ abort: (): () = c.extern("abort")
 Rules (diagnostics `OAK-F01xx`):
 
 - **F0101** — every parameter type and any non-unit return type of an extern
-  binding must be a `c.*` type. Oak types never cross the boundary raw.
+  binding must be a `c.*` type, **or a declared `struct` (or boundary tagged
+  union, §2.6) whose fields are boundary types (§2.5.1), passed by value**.
+  Oak scalars never cross the boundary raw; a struct crosses with the layout
+  the backend asserts at C compile time, in both directions — `div` from
+  libc returning its `div_t` by value, or a Metal launch descriptor handed
+  to a runtime shim, both without a pointer.
 - **F0102** — the symbol must be a single string literal that is a valid C
   identifier (`[A-Za-z_][A-Za-z0-9_]*`). This is load-bearing for the C
   backend: the symbol is emitted into generated source, and the identifier
@@ -118,6 +126,193 @@ v1 code generation assumes an ILP32 or LP64 C target: `int` is exactly 32
 bits, `size_t` is at least 32 bits. Targets outside this model (16-bit `int`)
 are not supported by the v1 `c.Int`/`c.Size` conversion rows; the fixed-width
 rows are unconditional.
+
+### 2.5 Spans at the boundary
+
+**Status: implemented and tested** for fixed-width integer and `Bool`
+elements (`STATUS.md`; the implemented subset is stated in §2.5.4).
+Motivated by the ml project's pilot, where every byte of kernel source left
+the process through one `putchar` call because no buffer could cross the
+boundary (`docs/notes/ml-feedback-2026-09.md`, tier 3).
+
+§2.1 makes `c.Ptr` and `c.String` opaque and constructor-less, which is the
+right rule for pointers that come *from* C. It leaves no way to hand C a
+buffer that Oak owns. This section adds exactly that, in the only shape the
+borrow checker can vouch for: **a borrowed view or span becomes a pointer
+and a length for the duration of one extern call, and for nothing else.**
+
+#### 2.5.1 Argument forms
+
+Two compiler-known functions exist only in argument position of a call to an
+extern binding:
+
+| Form | Oak operand | Yields (two consecutive parameters) | Access |
+| --- | --- | --- | --- |
+| `c.span_of(v)` | `v: []T` | `c.Ptr, c.Size` | C may read `len(v)` elements |
+| `c.span_mut_of(s)` | `s: [*]T` | `c.Ptr, c.Size` | C may read and write `len(s)` elements |
+
+`T` must be a fixed-width integer, a floating-point type (`20-types.md`
+§11.3; the `f16`/`bf16` storage formats cross as their `uint16_t`
+carriers and `f8e4m3`/`f8e5m2` as `uint8_t`), `Bool`, a boundary tagged union (§2.6), or a `struct` whose
+layout is proven (`40-records.md`) and whose fields are recursively of
+these types — the types with one meaning on both sides of the boundary. Views of records without a selected
+representation, of ADTs, of views, or of anything carrying a borrow are
+rejected (`OAK-F0104`).
+
+The extern binding's signature declares the pair explicitly, so the trust
+boundary (§2.3) stays honest about what C receives:
+
+```oak
+write: (fd: c.Int, data: c.Ptr, count: c.Size): c.Long = c.extern("write")
+fread: (into: c.Ptr, size: c.Size, count: c.Size, stream: c.Ptr): c.Size = c.extern("fread")
+
+emit: (fd: i32, bytes: []u8): i64 {
+  i64(write(c.Int(fd), c.span_of(bytes)))
+}
+
+fill: (buffer: [*]u8, stream: c.Ptr): u32 {
+  n: c.Size = fread(c.span_mut_of(buffer), c.Size(u32(1)), stream)
+  ...
+}
+```
+
+`c.span_of(bytes)` occupies **two** parameter positions — `data` and
+`count` — and the checker matches them as a unit: the parameter at the
+span's position must be `c.Ptr` and the next must be `c.Size`
+(`OAK-F0105` otherwise). The length passed is the element count, not the
+byte count; `T`'s size is known to both sides.
+
+#### 2.5.2 Borrowing rule
+
+For the borrow checker (`50-borrowing.md`), an extern call whose arguments
+include `c.span_of(v)` is a **read use** of `v` and one including
+`c.span_mut_of(s)` is a **write use** of `s`, for the extent of the call
+expression: exactly the rule an ordinary Oak call taking `[]T` or `[*]T`
+already gets. Consequently:
+
+- a `span_mut_of` argument excludes every other borrow of the same owner in
+  the same call (`OAK-B0104`, the existing exclusivity rule), so C never
+  receives two writable aliases of one buffer, and never a writable alias
+  together with a readable one;
+- the pointer **cannot escape**: `c.span_of` is not an expression, has no
+  type, and cannot be bound, stored, returned, or passed anywhere but an
+  extern parameter position (`OAK-F0103` extended). The foreign function
+  may, of course, retain the pointer — that is a foreign-contract violation
+  under the trust rule of §2.3, exactly like a wrong prototype, and the
+  binding's author asserts it does not happen;
+- the owner outlives the call trivially, because the call is inside the
+  region that proves the owner alive.
+
+Nothing changes in the reverse direction: a `c.Ptr` returned by C is still
+opaque. Oak never dereferences a foreign pointer. A program that wants C to
+fill Oak memory passes Oak memory with `span_mut_of`; a program that wants
+to keep a C-allocated buffer keeps the handle and asks C to operate on it.
+The stronger design — a `Buffer[CpuOwned] -> Buffer[DeviceOwned]` typestate
+that lets a foreign runtime *own* Oak storage for a while
+(`50-borrowing.md` §11) — is the later increment, and this section is the
+shape it will generalize.
+
+#### 2.5.3 `c.String` from Oak text
+
+A `c.String` may be constructed from a `string` **literal**: the backend
+emits the literal with a trailing NUL, so `c.String("kernel_main")` is
+well-formed by construction. A non-literal `string` is rejected
+(`OAK-F0106`): Oak strings are not NUL-terminated and carry a length, so a
+runtime `string` would need a copy the language does not perform silently
+(`00-constitution.md`, no hidden work). Programs that build text at runtime
+for C terminate it themselves and pass `c.span_of` over the bytes, or call a
+C function that takes a pointer and a length.
+
+#### 2.5.4 Lowering
+
+`c.span_of(v)` lowers to the two C arguments `(void *)v.base, (size_t)v.len`
+and `c.span_mut_of(s)` to `(void *)s.base, (size_t)s.len` — the base pointer
+and element count of the view/span struct the backend already uses. No copy,
+no allocation, no thunk. The interpreter cannot call externs (§4) and rejects
+these forms with the same diagnostic it gives an extern call.
+
+**Implemented.** Every element type of §2.5.1 is admitted: fixed-width
+integers, `f32`/`f64` and the `f16`/`bf16`/`f8e4m3`/`f8e5m2` storage
+formats, `Bool`, tagged
+unions whose payloads are boundary types (§2.6), and declared `struct`
+types whose fields are recursively boundary types (the backend emits these
+with C compile-time size and offset assertions, so the pointer C receives
+addresses exactly the layout it expects). Semantic records without the
+`struct` keyword, strings, views, and spans are rejected (`OAK-F0104`).
+
+#### 2.5.5 Diagnostics
+
+| Code | Meaning |
+| --- | --- |
+| `OAK-F0104` | element type of a boundary span is not representable across the C ABI |
+| `OAK-F0105` | `c.span_of`/`c.span_mut_of` argument does not line up with a `c.Ptr, c.Size` parameter pair |
+| `OAK-F0106` | `c.String` constructed from a non-literal string |
+
+The test runner's native adapter rules (`110-testing.md`) continue to exclude
+pointer interfaces from the adapters themselves; a test may nonetheless call
+an extern with a boundary span, since the span never outlives the call.
+
+### 2.6 Tagged unions at the boundary
+
+**Status: implemented and tested.** Motivated by the hypervisor ports, whose
+effect-returning modules (`ipc`, `virtio_mmio`) flattened a union with data
+into a status code plus out-parameter globals because the union had no shape
+C could be told about.
+
+A declared tagged union (`30-adts-patterns.md`) has exactly one C
+representation, and the backend asserts it at C compile time:
+
+```c
+typedef struct oak_Effect {
+  u32 tag;                       /* the variant's declaration index */
+  union { u32 Send; u8 Yield; } payload;
+} oak_Effect;
+typedef char oak_union_layout_Effect[ (sizeof(oak_Effect) == 8u && _Alignof(oak_Effect) == 4u
+  && offsetof(oak_Effect, tag) == 0u && offsetof(oak_Effect, payload) == 4u) ? 1 : -1 ];
+```
+
+- The **tag** is a fixed-width `u32` holding the variant's declaration index
+  (`None | Send: u32 | Yield: u8` numbers them 0, 1, 2). A C `enum` is still
+  emitted to name the values, but the member is not of enum type: an enum's
+  width is implementation-defined, and the tag's is not.
+- The **payload** is a C union of the payloads, named by variant, at the
+  first offset aligned for its strictest member. A union without payloads is
+  the tag alone.
+- The **layout** is `semir.TaggedUnionLayout`: the union is the largest
+  payload rounded up to the strictest alignment, and tag plus union are
+  placed by the natural record layout (`40-records.md` §6, the Lean-refined
+  algorithm). The typedef assertion makes cc ratify the numbers, exactly as
+  for records. A union with a payload the layout model cannot place (a
+  `string`, a view, a record without a proven layout) is emitted without an
+  assertion: it is fine inside Oak and has no proven shape at the boundary.
+
+What the proven shape buys:
+
+- **Exported functions.** A `pub` function returning or taking a tagged union
+  is C-callable as is. `oak build -header out.h` (`Compilation.EmitHeader()`)
+  emits the C header of the exported surface: the generated C's typedefs,
+  every declared type in dependency order with its layout assertions —
+  records, tagged unions, array wrappers, views and spans — emitted by the
+  same emitters as the C file so the two cannot disagree, and one prototype
+  per `pub` function (private functions, helpers, globals, and bodies are not
+  part of the surface). A consumer includes the header and links the
+  generated C, reading `e.tag` (the enum constants `oak_Effect_tag_Send`
+  name the values) and `e.payload.Send`. A hand-written mirror struct with
+  the same member types remains ABI-identical on the recorded targets.
+- **Layout builtins.** `size_of[Effect]()`, `align_of[Effect]()`, and
+  `offset_of[Effect](tag)` / `offset_of[Effect](payload)` are admitted
+  (`40-records.md` §6b) so a C mirror can be pinned with `static_assert`.
+- **Records.** A record field of tagged-union type is placeable once the
+  union's layout is proven, and the union is emitted ahead of the record
+  (`codegen/mono.go`); this is the same mechanism nullable fields
+  (`Option[T]`) already used, generalized to every declared union.
+- **Boundary spans.** `c.span_of` / `c.span_mut_of` admit views and spans of
+  tagged unions whose payloads are fixed-width integers, `Bool`, or such
+  unions (§2.5.1); other payloads are rejected with `OAK-F0104`.
+
+Generic unions cross only as concrete instantiations named by a declared
+alias or field; a template has no representation. The interpreter has no
+struct layout and treats the builtins as compiled-backend facts (§6b).
 
 ## 3. The abstract assembly interface
 

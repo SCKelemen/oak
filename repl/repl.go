@@ -10,11 +10,10 @@ import (
 	"golang.org/x/term"
 
 	"github.com/SCKelemen/oak/ast"
-	"github.com/SCKelemen/oak/evaluator"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
-	"github.com/SCKelemen/oak/typechecker"
 )
 
 const PROMPT = "🌳> "
@@ -268,8 +267,11 @@ func removeLineContinuation(line string) string {
 
 func Start(in io.Reader, out io.Writer) {
 	history := NewHistory()
-	env := object.NewEnvironment()
-	typeChecker := typechecker.New(env)
+	moduleDir, err := os.Getwd()
+	if err != nil {
+		moduleDir = "."
+	}
+	session := NewSession(moduleDir)
 
 	// Try to get file descriptors for terminal control
 	var inFile *os.File
@@ -355,6 +357,14 @@ func Start(in io.Reader, out io.Writer) {
 
 			// Try parsing to see if input is complete
 			currentInput := fullInput.String()
+			// REPL directives are complete once their parentheses balance;
+			// their arguments are handled textually (see :typeof below).
+			if strings.HasPrefix(strings.TrimSpace(currentInput), ":") {
+				if strings.Count(currentInput, "(") <= strings.Count(currentInput, ")") {
+					break
+				}
+				continue
+			}
 			lxr := scanner.New(currentInput)
 			p := parser.New(lxr)
 			_ = p.ParseProgram()
@@ -376,6 +386,60 @@ func Start(in io.Reader, out io.Writer) {
 
 		input := fullInput.String()
 		if strings.TrimSpace(input) == "" {
+			continue
+		}
+
+		// :typeof takes an arbitrary expression; resolve it against the
+		// session textually before the directive parser sees it.
+		if trimmed := strings.TrimSpace(input); strings.HasPrefix(trimmed, ":typeof(") && strings.HasSuffix(trimmed, ")") {
+			text := strings.TrimSuffix(strings.TrimPrefix(trimmed, ":typeof("), ")")
+			exprType, err := session.TypeOf(text)
+			switch {
+			case err != nil:
+				fmt.Fprintf(out, "Type errors:\n  %s\n", strings.ReplaceAll(err.Error(), "\n", "\n  "))
+			case exprType != nil:
+				fmt.Fprintf(out, "%s\n", modules.DemangleText(exprType.String()))
+			default:
+				fmt.Fprintf(out, "unknown type\n")
+			}
+			history.Reset()
+			continue
+		}
+
+		// :lean <file.lean> writes the session's obligations as Lean theorem
+		// statements over the models in spec/lean (Oak.Loops, Oak.Discipline,
+		// Oak.Regions) for the programmer to prove there; `-` prints them.
+		if target, isLean := strings.CutPrefix(strings.TrimSpace(input), ":lean "); isLean && strings.TrimSpace(target) != "" {
+			target = strings.TrimSpace(target)
+			text, err := session.LeanObligations()
+			if err != nil {
+				fmt.Fprintf(out, "%s\n", strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "\n\t"))
+				continue
+			}
+			// :lean check [file] elaborates the statements with the
+			// repository's Lean toolchain and reports each theorem's verdict.
+			if file, isCheck := strings.CutPrefix(target, "check"); isCheck && (file == "" || strings.HasPrefix(file, " ")) {
+				file = strings.TrimSpace(file)
+				if file == "" {
+					file = "oak_session_obligations.lean"
+				}
+				report, err := session.LeanCheck(text, file)
+				if err != nil {
+					fmt.Fprintf(out, "%v\n", err)
+					continue
+				}
+				fmt.Fprint(out, report.String())
+				continue
+			}
+			if target == "-" {
+				fmt.Fprint(out, text)
+				continue
+			}
+			if err := os.WriteFile(target, []byte(text), 0o644); err != nil {
+				fmt.Fprintf(out, "%v\n", err)
+				continue
+			}
+			fmt.Fprintf(out, "wrote %s; import it from spec/lean and `lake build` to check the statements, replace each sorry to discharge\n", target)
 			continue
 		}
 
@@ -407,6 +471,16 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "  :ptrsize()       - Print current ptr/uptr size\n")
 					fmt.Fprintf(out, "  :intsize(size)   - Set size of int/uint (32 or 64)\n")
 					fmt.Fprintf(out, "  :intsize()       - Print current int/uint size\n")
+					fmt.Fprintf(out, "  :obligations     - List the recorded assumptions the checker could not discharge\n")
+					fmt.Fprintf(out, "  :strict          - Toggle the strict profile (assumptions reject)\n")
+					fmt.Fprintf(out, "  :lean            - Name the Lean law governing each recorded assumption\n")
+					fmt.Fprintf(out, "  :lean <file>     - Write the recorded assumptions as Lean theorem statements (- for stdout)\n")
+					fmt.Fprintf(out, "  :lean check [f]  - Write the statements and elaborate them with lake; report each theorem's verdict\n")
+					fmt.Fprintf(out, "\n")
+					fmt.Fprintf(out, "Inputs are checked by the full compiler pipeline. Imports resolve through\n")
+					fmt.Fprintf(out, "the module (oak.mod) enclosing the working directory: import(\"...\"), pub,\n")
+					fmt.Fprintf(out, "sealed imports and derive work as in a build. Submit imports and\n")
+					fmt.Fprintf(out, "declarations as separate inputs; an expression may follow declarations.\n")
 					fmt.Fprintf(out, "\n")
 					fmt.Fprintf(out, "Multiline input: End a line with \\ to continue on the next line\n")
 					fmt.Fprintf(out, "  Example: Color: type = \\\n")
@@ -415,9 +489,51 @@ func Start(in io.Reader, out io.Writer) {
 				case "clear":
 					fmt.Fprintf(out, "\033[2J\033[H")
 					continue
+				case "obligations":
+					open, err := session.Obligations()
+					if err != nil {
+						fmt.Fprintf(out, "%s\n", strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "\n\t"))
+						continue
+					}
+					if len(open) == 0 {
+						fmt.Fprintf(out, "no recorded assumptions: every check in the session is discharged statically or trapped at runtime\n")
+						continue
+					}
+					for _, d := range open {
+						fmt.Fprintf(out, "%s\n", modules.DemangleText(d.PlainText()))
+					}
+					fmt.Fprintf(out, "%d recorded assumption(s); :strict rejects them, Lean (spec/lean) is where they are proved\n", len(open))
+					continue
+				case "lean":
+					open, err := session.Obligations()
+					if err != nil {
+						fmt.Fprintf(out, "%s\n", strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "\n\t"))
+						continue
+					}
+					if len(open) == 0 {
+						fmt.Fprintf(out, "nothing to prove: no recorded assumptions in the session\n")
+						continue
+					}
+					for _, d := range open {
+						law, known := LawFor(d.Code)
+						if !known {
+							fmt.Fprintf(out, "%s: no formal model governs this code yet (docs/spec/STATUS.md)\n", d.Code)
+							continue
+						}
+						fmt.Fprintf(out, "%s at %s:%d\n  law: %s — %s\n  discharge: %s\n", d.Code, d.File, d.Range.Start.Line+1, law.Module, law.Statement, law.Discharge)
+					}
+					fmt.Fprintf(out, "laws are proved in spec/lean; the compiler records these assumptions, it does not prove them; :lean <file.lean> states them\n")
+					continue
+				case "strict":
+					session.Strict = !session.Strict
+					if session.Strict {
+						fmt.Fprintf(out, "strict profile on: recorded assumptions reject\n")
+					} else {
+						fmt.Fprintf(out, "strict profile off\n")
+					}
+					continue
 				case "reset":
-					env = object.NewEnvironment()
-					typeChecker = typechecker.New(env)
+					session.Reset()
 					fmt.Fprintf(out, "Environment reset.\n")
 					continue
 				case "typeof":
@@ -425,33 +541,26 @@ func Start(in io.Reader, out io.Writer) {
 						fmt.Fprintf(out, "Usage: :typeof(expression)\n")
 						continue
 					}
-					expr := replCmd.Args[0]
-					typeChecker.ClearErrors()
-					var exprType typechecker.Type
-					exprType = typeChecker.ParseTypeExpression(expr)
-					if exprType == nil {
-						typeChecker.ClearErrors()
-						exprType = typeChecker.CheckExpression(expr)
-					}
-					if len(typeChecker.Errors()) > 0 {
-						fmt.Fprintf(out, "Type errors:\n")
-						for _, err := range typeChecker.Errors() {
-							fmt.Fprintf(out, "  %s\n", err)
-						}
+					text := strings.TrimSpace(input)
+					text = strings.TrimPrefix(text, ":typeof(")
+					text = strings.TrimSuffix(text, ")")
+					exprType, err := session.TypeOf(text)
+					if err != nil {
+						fmt.Fprintf(out, "Type errors:\n  %s\n", strings.ReplaceAll(err.Error(), "\n", "\n  "))
 					} else if exprType != nil {
-						fmt.Fprintf(out, "%s\n", exprType.String())
+						fmt.Fprintf(out, "%s\n", modules.DemangleText(exprType.String()))
 					} else {
 						fmt.Fprintf(out, "unknown type\n")
 					}
 					continue
 				case "ptrsize":
 					if len(replCmd.Args) == 0 {
-						fmt.Fprintf(out, "ptr/uptr size: %d bits\n", typeChecker.GetPtrSize())
+						fmt.Fprintf(out, "ptr/uptr size: %d bits\n", session.PtrSize)
 					} else if len(replCmd.Args) == 1 {
 						if intLit, ok := replCmd.Args[0].(*ast.IntegerLiteral); ok {
 							size := int(intLit.Value)
 							if size == 32 || size == 64 {
-								typeChecker.SetPtrSize(size)
+								session.PtrSize = size
 								fmt.Fprintf(out, "ptr/uptr size set to %d bits\n", size)
 							} else {
 								fmt.Fprintf(out, "Error: ptrsize must be 32 or 64, got %d\n", size)
@@ -465,12 +574,12 @@ func Start(in io.Reader, out io.Writer) {
 					continue
 				case "intsize":
 					if len(replCmd.Args) == 0 {
-						fmt.Fprintf(out, "int/uint size: %d bits\n", typeChecker.GetIntSize())
+						fmt.Fprintf(out, "int/uint size: %d bits\n", session.IntSize)
 					} else if len(replCmd.Args) == 1 {
 						if intLit, ok := replCmd.Args[0].(*ast.IntegerLiteral); ok {
 							size := int(intLit.Value)
 							if size == 32 || size == 64 {
-								typeChecker.SetIntSize(size)
+								session.IntSize = size
 								fmt.Fprintf(out, "int/uint size set to %d bits\n", size)
 							} else {
 								fmt.Fprintf(out, "Error: intsize must be 32 or 64, got %d\n", size)
@@ -486,24 +595,19 @@ func Start(in io.Reader, out io.Writer) {
 			}
 		}
 
-		typeChecker.ClearErrors()
-		typeChecker.CheckProgram(program)
-		if len(typeChecker.Errors()) != 0 {
-			for _, msg := range typeChecker.Errors() {
-				io.WriteString(out, "\t[type error] "+msg+"\n")
-			}
+		// Every input goes through the compiler pipeline (module loader,
+		// type/borrow/discipline gates) and expressions are evaluated over
+		// the elaborated program (repl/session.go).
+		outcome, err := session.Submit(input)
+		if err != nil {
+			io.WriteString(out, strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "\n\t")+"\n")
 			continue
 		}
-
-		val := evaluator.Eval(program, env)
-		if val != nil {
-			if val.Type() == object.ERROR_OBJ {
-				io.WriteString(out, val.Inspect())
-				io.WriteString(out, "\n")
-			} else if val.Type() != object.NULL_OBJ {
-				io.WriteString(out, val.Inspect())
-				io.WriteString(out, "\n")
-			}
+		if outcome.Value != nil && outcome.Value.Type() != object.NULL_OBJ {
+			io.WriteString(out, outcome.Value.Inspect())
+			io.WriteString(out, "\n")
+		} else if outcome.Committed && outcome.Type != nil {
+			fmt.Fprintf(out, ": %s\n", modules.DemangleText(outcome.Type.String()))
 		}
 		// When there's no output, readLineWithHistory already printed \n
 		// The next call to readLineWithHistory will print the prompt on a fresh line

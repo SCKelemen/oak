@@ -92,11 +92,62 @@ Verification is the SIMD/intrinsics precedent (`93-simd.md`): golden and
 differential tests over the emitted C, asserting the absence of wrapper
 calls and the presence of the direct form.
 
+### 4a. One bounds check per record, one validation per string
+
+Two costs handwritten code does not pay, and derived code did: a derived
+record writer preflighted the whole value once and then every field writer
+measured and checked capacity again, at every nesting level; and a string
+was validated as UTF-8 in one pass and scanned for escapes in another. Both
+are removed the way a scheduler removes redundant work — by making the
+boundary explicit — and both keep the pre-fusion form as the oracle.
+
+- **Checked entry, unchecked interior.** For each type the derivation
+  emits `__oak_json_write_unchecked_T(value, dst, offset): u32`, which
+  writes a value the caller has measured into storage the caller has
+  checked and returns the count, and `__oak_json_write_T`, the entry
+  callers reach by name: measure once, `bytes_range_fits` once, then the
+  unchecked writer. Field writes inside a record's unchecked body call the
+  fields' unchecked writers; the primitives have the same pair
+  (`json_u64_write_at`, `json_i64_write_at`, `json_bool_write_at`,
+  `json_string_write_at` under `json_*_encode_at`). Every store the
+  unchecked form makes is still a bounds-checked Oak store, so a caller that
+  broke the contract traps rather than writes out of range; the contract
+  that failure leaves the output unchanged holds because the checked entry
+  never calls the writer unless the whole value fits. The generated C is the
+  witness: the unchecked body of a record contains no capacity check, no
+  size call, and no assertion, and the checked entry contains exactly one of
+  each (`compiler/e2e_codec_fusion_test.go`).
+- **Fused validation lane.** `json_string_scan` is the escape scan with one
+  more accumulator: the same sixteen-byte loads that classify escape bytes
+  OR the high bits, and the scalar tail does the same, so the run comes
+  back with an ASCII verdict. `json_string_encode_size` runs the full UTF-8
+  validator only when some run or escape byte was not ASCII. Every ASCII
+  byte is a valid scalar, so the verdict is exact; the encoding error keeps
+  its precedence over the size error because the decision is taken before
+  any result is returned. `json_string_encode_size_reference` is the
+  unfused form, and a differential test requires the two to agree on ASCII,
+  escapes, long runs, valid multibyte, and invalid UTF-8 at every position
+  class, compiled and interpreted.
+
+Not taken from the scheduler: tile choice as semantics (byte codecs are
+exact, so a block size carries no meaning), predicated zero-fill tails (no
+semantic zero, no overread — section 11), and fusing the size pass into the
+write pass (a single speculative pass would need rollback and break the
+unchanged-on-failure contract; the two passes stay, and the redundancy
+between them is what 4a removes). The remaining candidate is a
+classification pass over the field list so a statically sized record skips
+the size pass entirely (`docs/notes/codec-fusion-lessons-2026-09.md`).
+
 ## 5. Derivation from typed tags
 
 `encode[T, F]` and `decode[T, F]` for a declared record are **derived**:
 generated Oak code, checkable like any other, read from the record's
-declared fields and typed tags (`40-records.md` §12):
+declared fields and typed tags (`40-records.md` §12). The generation is a
+structured compiler transformation: the derivation builds typed syntax
+(`compiler/synth.go`, the same nodes the parser produces) with a fresh
+resolution context per generated function and a distinct position per node,
+so no Oak source text is templated and reparsed, and every generated shape
+is a node the checker, lowering, backend, and interpreter already know:
 
 ```oak
 json: tag = { name: string, omit: Bool }
@@ -171,10 +222,12 @@ establish memory safety (ownership does that) or hardware privilege
    `F: Format` statically, and constrained templates must specialize the
    way unconstrained ones now do.
 2. **Tag-driven derivation** as generated Oak code (§5).
-3. **Borrowed decoded views**: relaxing `OAK-B0109` so a decoded view can
-   be returned tied to its input region — the sound headroom `Oak.Escape`
-   already proves. Until then, v1 decode copies into caller storage, which
-   is honest and allocation-free.
+3. **Borrowed decoded views** — **implemented** (§13a): a record with
+   `View[u8, R]` fields decodes as views of its input, tied to the input's
+   region by `50-borrowing.md` §8c (region-indexed returns, ADT payloads
+   included). Scalar and fixed-array fields still decode into the returned
+   value; a string field the program wants copied and unescaped stays a
+   caller-storage `json_string_decode` on the returned view.
 4. Then the first codec: JSON over declared records, verified zero-cost
    per §4.
 
@@ -316,7 +369,43 @@ The two spellings lower to identical C. Decoding returns a concrete value inside
 `Result`; no boxed value, generic document tree, token array, or allocator
 is required. For this fixed-size subset the destination is the returned
 value, so there is no separate output-storage argument. Input is borrowed
-read-only; no reference to its bytes escapes in the result.
+read-only; no reference to its bytes escapes in the result unless the
+record declares a view field (§13a), in which case the result borrows the
+input for as long as it lives and the borrow checker says so.
+
+### 13a. Borrowed decoded views
+
+```oak
+Frame[R]: type = struct { kind: u32, payload: View[u8, R] }
+r: Result[Frame, JsonDecodeError] = decode[Frame, Json](input)
+r ? | .Ok(f) => json_string_decode(dst, f.payload) | .Err(e) => ...
+```
+
+A record may declare a region parameter and use it in `View[u8, R]` fields
+(`50-borrowing.md` §8c). Such a field decodes as **the JSON string token
+itself, quotes included**: the bytes between the surrounding quotes in the
+input, escape sequences untouched, validated by the tokenizer as a
+well-formed string. Nothing is copied. Unescaping is the caller's, on
+demand, with `json_string_decode(dst, f.payload)` into storage the caller
+sizes — or never, when the bytes are only compared or forwarded. A
+non-string value in that position is `TypeMismatch`.
+
+The derived reader and decoder carry the region: `__oak_json_decode_Frame`
+takes `View[u8, R]` and returns `Result[Frame[R], JsonDecodeError]`, so at
+the call the bound `Result` is a reborrow of the input's owner and the
+`.Ok(f)` binding in a match reborrows it for the arm; writing the input
+while either lives is `OAK-B0103`. Because the viewed bytes are handed back
+without decoding, a borrowed record's decoder validates the whole input as
+UTF-8 on success as well as on failure, so a successful decode still
+establishes the input's encoding. Views are the sound zero-copy form for
+the frame scan a storage engine wants to hand back; the reader assembles
+the record once, at the end, from the fields it collected, so no zero
+record holding views ever exists.
+
+Limits: one region per record; a borrowed record is not encodable by
+derivation (`encode` reports why — the view is a token, not a value to
+re-escape); nested borrowed records are not derived; the fixed-array and
+nullable forms of a view field are not derived.
 
 Supported targets are fixed-width integers, Bool, and closed concrete
 records recursively containing those types, including fixed-size array fields
@@ -342,7 +431,7 @@ before conversion; no number passes through floating point.
 
 `JsonDecodeError` distinguishes `InvalidEncoding`, `InvalidSyntax`,
 `TypeMismatch`, `NumericOverflow`, `MissingField`, `DuplicateField`, and
-`UnknownField`, plus `LengthMismatch` for fixed arrays. UTF-8 validation runs first. Subsequent errors are fail-fast:
+`UnknownField`, plus `LengthMismatch` for fixed arrays. InvalidEncoding takes precedence over all other errors. Other errors are fail-fast:
 unknown/duplicate fields can be reported before their values are parsed.
 Errors do not contain a partly constructed output record. The decoder does
 not mutate caller storage. Returning `Result[T, JsonDecodeError]` still uses
@@ -443,10 +532,11 @@ Both API levels should share scanning/conversion kernels; high-level
 convenience must not force scalar processing or hidden allocations.
 
 Matching simdjson on Apple M-series is a target, not a measured result.
-Current key scanning uses bounded SIMD runs, but numeric conversion and
-schema dispatch are scalar, field lookup is linear, and root UTF-8
-validation performs a separate pass. Removing abstraction overhead alone
-does not close those algorithmic gaps. Investigate fused structural/UTF-8
+Key scanning uses bounded SIMD runs; integer conversion uses scalar and
+word-parallel operations, and field lookup remains linear. Successful typed
+parsing establishes UTF-8 validity; failure paths retain a full validation
+pass to preserve error precedence. Removing abstraction overhead alone
+does not establish parity across JSON workloads. Investigate fused structural/UTF-8
 scanning, faster checked numeric conversion, schema-specialized field
 matching, and reusable bounded work buffers based on profiles. Any padded
 input fast path requires an explicit verified readable-capacity contract;
@@ -487,7 +577,7 @@ Punctuation has a small token wrapper; other tokens retain the full parser.
 ASCII keys avoid per-scalar Unicode decoding, while escapes and non-ASCII
 keys retain the existing semantic comparison.
 
-Root UTF-8 validation has a bounded 16-byte SIMD ASCII fast path. An entirely
+The standalone UTF-8 validator has a bounded 16-byte SIMD ASCII fast path. An entirely
 ASCII input is valid UTF-8; any high bit delegates to the original complete
 validator. Incomplete tails use scalar reads. This does not fuse UTF-8 with
 JSON syntax checking, relax JSON control-character rules, or assume readable
@@ -507,7 +597,7 @@ with the candidate on the same Linux and ARM64 macOS runner, using five
 samples of 1,024,000 documents per backend. Paired reports check compatible
 metadata and report simdjson timing drift as a noise indicator. Raw samples
 remain in workflow artifacts. See [recorded measurements](../../benchmarks/json/RESULTS.md).
-Field dispatch remains linear, numeric accumulation remains scalar, and
+Field dispatch remains linear, numeric accumulation now includes word-parallel batches, and
 aggregate copy elimination is not guaranteed. These results support specific
 improvements on this schema, not universal parser or language superiority.
 
@@ -525,7 +615,8 @@ Empty-object and post-comma array lookahead inspect only the relevant closing
 byte after whitespace. Colons and separators use direct bounded checks where
 every other token must produce InvalidSyntax. Positions requiring distinctions
 between malformed syntax and a valid value of the wrong type retain token
-classification. Root UTF-8 validation remains a separate complete pass.
+classification. Successful typed decoding establishes UTF-8 validity as described
+below; failures retain a complete validation pass.
 
 The implementation-only JsonIntegerScan contains magnitude:u64, next:u32, and
 status:u32. Status 0/1 denotes positive/negative success; larger values encode
@@ -541,3 +632,51 @@ The native benchmark can retain generated C and assembly with --inspect.
 Sanitizer coverage includes every truncated prefix of a representative record,
 escaped key aliases and duplicates, malformed separators, and numeric error
 precedence. Updated measurements and their scope are in the benchmark results.
+
+## 19. Word-parallel scanning and successful-parse validation
+
+Record fallback key matching lives in a separate derived helper, keeping its
+fixed key storage out of the common reader's live state. Plain literal keys
+and Boolean spellings use bounded little-endian word comparisons plus scalar
+tails. Array lookahead classifies an initial closing bracket as LengthMismatch
+and a closing bracket after a comma as InvalidSyntax, without a second scan.
+Whitespace scanning tests the byte in the loop condition.
+
+The integer scanner processes eight ASCII decimal digits at a time when eight
+bytes remain within the first-19-digit bound. A word mask validates every byte
+before combining adjacent digits into pairs, four-digit groups, and an
+eight-digit number. The aggregate update is magnitude * 100000000 + group.
+At most 19 accumulated digits fit u64, so this update cannot overflow. The
+existing cutoff handles subsequent digits, and the original slow reader
+preserves leading-zero, suffix, type, and overflow error precedence. This is
+word-parallel arithmetic (SWAR), not eight heap values or a padded overread.
+
+The C backend recognizes complete 4/8-byte little-endian packs written as
+ORs of unsigned widened bytes shifted by 0, 8, ... bits. Recognition requires
+the same u8 view identifier, the same side-effect-free offset identifier,
+consecutive offset additions, and the matching unsigned result width. It
+emits a helper with one overflow-safe range check and ordinary unsigned byte
+loads from a common pointer. C optimization can combine those into one word
+load; unaligned access, strict aliasing and byte order remain portable. Other
+expressions retain their existing lowering. Out-of-range access still traps.
+This compiler optimization applies to ordinary Oak expressions, not JSON names.
+
+For the current derivation subset (integers, Bool, records, fixed arrays and
+required nullable fields), a successful complete parse establishes valid UTF-8:
+all value tokens, delimiters and whitespace are ASCII; direct key matches are
+ASCII; other successful key matches validate UTF-8 or JSON Unicode escapes.
+Nested readers satisfy the same property, and the root consumes the full
+input. The success path therefore needs no additional UTF-8 pass. On any
+failure, including trailing content, the root validates the entire input
+before returning the error, preserving InvalidEncoding precedence even for
+invalid bytes beyond the first syntax error. Extending the derivation subset
+requires preserving this property or reinstating an explicit validity check.
+The public standalone token and offset readers do not gain a whole-document
+validity guarantee.
+
+Sanitizer regressions sweep every byte value through digit lanes and through
+every position of a representative record, check unaligned 32/64-bit loads
+against a scalar oracle, and verify traps at short and extreme offsets.
+Escaped-key, nullable, numeric-boundary and truncation tests remain in place.
+These are executable checks and an algorithmic argument, not a machine-checked
+proof of the complete compiler transformation or parser.

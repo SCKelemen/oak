@@ -41,6 +41,7 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 			BaseNode:   s.BaseNode,
 			Token:      s.Token,
 			Expression: lowerExpression(s.Expression, tc),
+			Discard:    s.Discard,
 		}
 	case *ast.FunctionStatement:
 		return lowerFunctionStatement(s, tc)
@@ -131,6 +132,7 @@ func lowerVariableDeclaration(vd *ast.VariableDeclaration, tc *typechecker.TypeC
 			Name:     vd.Name,
 			Type:     vd.Type,
 			Value:    lowerExpression(vd.Value, tc),
+			Section:  vd.Section,
 		}
 	}
 	return vd
@@ -169,6 +171,9 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			Parameters: fn.Parameters,
 			ReturnType: fn.ReturnType,
 			Body:       loweredBody,
+			AsmBacked:  fn.AsmBacked,
+			Exported:   fn.Exported,
+			Opaque:     fn.Opaque,
 		}
 	}
 	return fn
@@ -261,6 +266,7 @@ func lowerFunctionBodyBlock(body *ast.BlockExpression, tc *typechecker.TypeCheck
 			BaseNode:   exprStmt.BaseNode,
 			Token:      exprStmt.Token,
 			Expression: lowerExpression(exprStmt.Expression, tc),
+			Discard:    exprStmt.Discard,
 		})
 	} else {
 		lowered = append(lowered, lowerStatement(last, tc))
@@ -315,7 +321,7 @@ func hoistBoolMatchValue(stmt ast.Statement, tc *typechecker.TypeChecker) ([]ast
 		name = s.Name
 		match = candidate
 		lead = &ast.VariableDeclaration{
-			BaseNode: s.BaseNode, Token: s.Token, Name: s.Name, Type: s.Type,
+			BaseNode: s.BaseNode, Token: s.Token, Name: s.Name, Type: s.Type, Section: s.Section,
 		}
 	case *ast.AssignmentStatement:
 		candidate, isMatch := s.Value.(*ast.MatchExpression)

@@ -52,6 +52,81 @@ x: T
 
 is not part of the safe core until definite-initialization semantics are specified and mechanically checked. Prefer initialization at declaration or an explicit `Option[T]`/state ADT.
 
+## 2a. String literals
+
+A string literal is delimited by double quotes and holds UTF-8 text
+(`70-strings.md`). The scanner decodes the following escape sequences, once,
+so every later phase — the evaluator, `text_literal`, the C backend's own
+re-escaping — sees the bytes the program means:
+
+| Escape | Byte |
+| --- | --- |
+| `\n` `\t` `\r` | line feed, horizontal tab, carriage return |
+| `\0` | NUL |
+| `\\` `\"` | backslash, double quote |
+| `\xHH` | one byte, exactly two hexadecimal digits |
+
+Any other character after a backslash is an invalid escape and the literal
+is a parse error; there is no silent fallback. `\xHH` may produce a byte
+that is not valid UTF-8 on its own; the literal as a whole must still be
+valid UTF-8 where a `string` is required, and a `[]u8` context accepts any
+bytes. There is no raw-string form in v1: a literal that must contain a
+backslash spells it `\\`.
+
+Motivation recorded in `docs/notes/ml-feedback-2026-09.md` (finding F1): a
+code emitter cannot write a newline into its output without it.
+
+## 2b. Discard statements
+
+`_ = expr` evaluates `expr` and drops its non-unit result on purpose
+(`85-discipline.md` §6). `_` is not a variable and binds nothing;
+`_: T = expr` and `_ := expr` are not declarations and are rejected as
+they are today. The form is a statement, never an expression.
+
+## 2c. List literals take their shape from context
+
+A bare list literal `[e1, e2, ...]` has no type of its own. It takes the
+array or view shape its context expects — a declaration's type, a
+parameter's type at a call, a function's return type, a record field's
+type, or the element type of an enclosing literal — and its elements are
+checked against that shape's element type, so `[1, 2, 3]` is a `[3]u32`
+where a `[3]u32` is expected, a `[]u32` view where a view is expected, and
+`[[1, 2], [3, 4]]` fills a `[2][2]u32`. The literal is then exactly the
+typed form `[N]T{ ... }` or `[]T{ ... }` the author could have written, in
+every position those are legal:
+
+```oak
+sum3: (xs: [3]u32): u32 = xs[0] + xs[1] + xs[2]
+dims: (shape: []u32): u32 = len(shape)
+
+xs: [3]u32 = [1, 2, 3]
+total: u32 = sum3([4, 5, 6])          // an owned [3]u32 argument
+rank: u32 = dims([28, 28])            // a view over two u32
+corners: (): [2]Point = [Point { x: 0.0, y: 0.0 }, Point { x: 1.0, y: 2.0 }]
+```
+
+Rules:
+
+- An owned-array context `[N]T` requires exactly `N` elements; a different
+  count is an error naming both counts. A view context `[]T` (or a span
+  `[*]T`) takes the literal's own length.
+- Every element is checked with the context's element type as its expected
+  type, so integer literals take that width and a float literal in an
+  integer context is an error, as anywhere else.
+- A literal with no array or view context (`xs = [1, 2]` with `xs`
+  undeclared, a literal passed where a scalar is expected) is rejected; the
+  compiler does not guess a shape.
+- A literal in a view or span context denotes call-local storage: the C
+  backend lowers it to a view over a C99 array compound literal, whose
+  lifetime is the enclosing block (`90-backend.md` §10), long enough for
+  the call or initializer it appears in and no longer. Such a view cannot be
+  returned or stored beyond that block — the borrow rules of
+  `50-borrowing.md` apply to it as to any view of a local.
+
+The variadic form of §3 is the other spelling of the same thing:
+`dims(28, 28)` and `dims([28, 28])` reach a `dims: (shape: ...u32)` or
+`dims: (shape: []u32)` callee as the same two-element view.
+
 ## 3. Functions
 
 A function is an ordinary declaration: a name bound to a function interface
@@ -245,9 +320,16 @@ Rules:
   check away under optimization).
 - **The arm rule.** Inside a bare-expression `?`-match arm body, `|` is
   the arm separator; parenthesize to use bitwise or there
-  (`cond ? (a | b) | c` — first arm `(a | b)`, second arm `c`). Brace
-  blocks and parentheses restore `|` as an operator; everywhere else,
-  bare `|` is bitwise or.
+  (`cond ? (a | b) | c` — first arm `(a | b)`, second arm `c`). Every
+  bracketed construct restores `|` as an operator for its extent —
+  parentheses, call arguments, index brackets, array and record
+  literals, and brace blocks, however deeply the arm nests them
+  (`cond ? f(a | b) | c` calls `f` with `a | b`; a block arm's
+  statements read `|` as the operator); everywhere else, bare `|` is
+  bitwise or. A Bool conditional has two arms, so a third
+  bare `|` after them is a **parse error** that names the fix
+  (`cond ? a | b | c` used to parse as `(cond ? a | b) | c`, an or over
+  the whole conditional — the F16 misreading; it no longer parses).
 
 ## 4. Blocks and layout
 
@@ -277,6 +359,16 @@ Point { x: 1, y: 2 }
 ```
 
 Layout indentation never changes a record literal into a statement block or vice versa.
+
+### 4a. Line breaks end calls and indexes
+
+A call or an index never continues across a line break: a line that begins
+with `(` or `[` begins a new statement (F18). `f(x)` followed by a line
+`(a + b) == c ? ...` is two statements, not `f(x)(a + b)`. Inside
+parentheses and brackets nothing changes (they are continuation contexts),
+and an operator at the end of a line still continues the expression. This
+is Go's rule without the semicolon insertion; `;` remains available to put
+two statements on one line.
 
 ## 5. Separators
 
@@ -448,3 +540,105 @@ Oak admits the left-associative pipeline operator `|>`. `value |> f` is equivale
 A leading-dot lowercase identifier is a structurally polymorphic field accessor: `.name(record)` is equivalent to `record.name`, and `record |> .name` selects `record.name`. Leading-dot uppercase identifiers remain inferred ADT constructors (`.Ok`, `.Some(value)`). The accessor requires exactly one argument and works for every record or struct whose type guarantees that field; it captures no environment and causes no record boxing.
 
 An accessor is also a first-class function when a concrete unary function type supplies its layout: `getter: (Person) -> string = .name` and `map(.name, people)` specialize `.name` to the selected struct at that use site. Generic-call inference first learns the record type from the other arguments, then learns the accessor result from that record's field. A bare inferred binding such as `getter := .name` is rejected because it supplies no concrete layout. Native lowering uses a typed static field-projection function and an ordinary function pointer; it introduces no closure environment, dispatch table, allocation, or boxing.
+
+## 13. Uniform call syntax
+
+`recv.f(args)` is a call of `f` with `recv` as its first argument whenever
+`recv` is a value (not a package alias) and its type has no method or field
+named `f`. It is syntax, not dispatch: the callee is fixed at compile time,
+named by `f`, and the form lowers to the plain call `f(recv, args...)` in
+every backend and in the interpreter — no vtable, no thunk, no allocation.
+
+```oak
+Vec: type = struct { x: f32, y: f32 }
+scale: (v: Vec, k: f32): Vec = Vec { x: v.x * k, y: v.y * k }
+norm1: (v: Vec): f32 = v.x + v.y
+
+n: f32 = v.scale(2.0).norm1()      // norm1(scale(v, 2.0))
+h: u32 = view(&xs).first()         // first[u32](view(&xs)): generics infer as usual
+```
+
+Resolution of `recv.f(args)`, in order:
+
+1. If `recv` is an ADT and a method `fn (r: T) f` is declared, the call is
+   that method (`83-modules.md` §6.5).
+2. If `recv`'s type has a field `f`, the form is an error: fields are read,
+   never called through this syntax, so `p.callback(1)` cannot silently
+   change meaning when a function named `callback` appears.
+3. Otherwise `f` is a function visible at the call site — the enclosing
+   package's own, a selective or open import, the prelude — or, when
+   `recv`'s type is declared by an imported package, an **exported**
+   function `f` of that package, as if written `alias.f(recv, args)`.
+   Unexported functions of other packages are not reachable: the `pub`
+   boundary is the same as for a qualified call.
+4. Nothing found is an error naming `f` and the receiver's type.
+
+The rewritten call is then checked exactly as `f(recv, args...)`: arity,
+argument types, generic inference, borrow and effect rules, and the
+discipline profile all apply to the plain call, and their diagnostics name
+it. Chaining is left-associative because `.` binds tightest (§1):
+`x.matmul(w).relu()` is `relu(matmul(x, w))`.
+
+The receiver is the **first** argument. The pipeline operator of §12 puts
+its value **last** (`v |> f(a)` is `f(a, v)`); both conventions are stated
+so that `x.f(a)` and `x |> f(a)` are never confused — the former matches
+method calls, the latter a data-last pipeline.
+## 14. Operator definitions
+
+An `operator(SYM)` marker before a function declaration binds the symbol
+`SYM` for a left operand of the function's first parameter type:
+
+```oak
+Vec: type = struct { x: f32, y: f32 }
+operator(+) add: (a: Vec, b: Vec): Vec = Vec { x: a.x + b.x, y: a.y + b.y }
+operator(*) scale: (v: Vec, k: f32): Vec = Vec { x: v.x * k, y: v.y * k }
+operator(==) same: (a: Vec, b: Vec): Bool = a.x == b.x && a.y == b.y
+
+c: Vec = a + b * 2.0          // add(a, scale(b, 2.0))
+```
+
+The function keeps its name: it is called, exported, and found by that
+name, and `a + b` is exactly `add(a, b)` — a statically bound call with
+the same arity, argument, borrow, effect, and discipline checking as the
+spelled-out call, whose diagnostics name `add`. Nothing is dispatched and
+nothing is hidden: every `+` on a `Vec` names one function a reader can
+find in the package that declares `Vec` (`00-constitution.md`, no hidden
+work).
+
+Rules:
+
+- **Symbols.** `+ - * / % == != < <= > >=` may be bound. `&& || ! & | ^ <<
+  >>` keep their fixed Bool and bitwise meaning (§3b) and are not
+  bindable; there are no unary bindings, no new symbols, no user-defined
+  precedence, and no compound assignment. A bound symbol keeps its grammar
+  precedence, so `a + b * 2.0` groups as it always did.
+- **Left operand type.** The first parameter must be a declared record or
+  ADT type. Primitives, strings, arrays, views, and spans keep their
+  built-in operators and cannot be rebound. The second parameter may be
+  any type: `Vec * f32` is `scale`.
+- **Home package.** The declaration must live in the package that declares
+  the left operand's type (`83-modules.md` §6.5, the same rule as for
+  methods): a call's meaning never depends on which unrelated package is
+  compiled. A binding on an imported type is an error.
+- **One binding per type and symbol.** A second `operator(+)` for the same
+  left type is an error naming the first.
+- **Comparisons return Bool.** `== != < <= > >=` bindings must have a
+  `Bool` result. Nothing requires them to be consistent with one another;
+  `derive.equal` (`40-records.md`) remains the structural equality.
+- **Resolution.** In `a SYM b`, if the checked type of `a` is a declared
+  type with a binding for `SYM`, the expression is the bound call: `b` is
+  checked with the second parameter's type as its expected type (so a
+  literal takes it), and the result is the function's return type. A
+  declared type without a binding for `SYM` keeps today's error. Operands
+  evaluate left to right, as call arguments do.
+- **Generics.** v1 bindings are monomorphic: the left operand type is a
+  concrete declared type, not a generic instance or type parameter.
+
+Lowering: the checker records the callee of each bound infix expression,
+and an elaboration pass after type checking rewrites it into the ordinary
+invocation, so the borrow checker, discipline, lowering, both backends,
+and the interpreter never see an operator (`compiler/operators.go`). The
+declared operator properties of `docs/notes/ml-feedback-2026-09.md` item
+7.3 (`associative`, `commutative`, `neutral`) are a later refinement over
+these bindings and are not part of this section.
+

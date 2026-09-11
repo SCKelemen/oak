@@ -45,7 +45,7 @@ func TestCompareClassifiesPublicChanges(t *testing.T) {
 func TestEnforceRequiresExactAutomaticBump(t *testing.T) {
 	old := snap("1.2.3", map[string]Export{"read": {Kind: "function", Type: "fn()->u8"}})
 	added := snap("1.3.0", map[string]Export{
-		"read": old.Exports["read"],
+		"read":  old.Exports["read"],
 		"write": {Kind: "function", Type: "fn(u8)->()"},
 	})
 	if _, err := Enforce(old, added); err != nil {

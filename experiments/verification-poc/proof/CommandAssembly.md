@@ -47,20 +47,38 @@ theorems.
 
 ## Validation
 
-Local runs on the tested commit: 18 theorem and definition reports passed with
-warnings treated as errors, without proof holes or project-specific axioms.
-Dependencies are limited to standard `propext`, `Quot.sound`, and
-`Classical.choice`. The assembly adapter, Go oracle, and compiled Oak agreed
-on all 95 cases: 45 decoded layouts and 50 rejected inputs. The corpus covers
-signed, zero, leading-zero, whitespace-adjacent, boundary, overflowing, and
-non-numeric identifier spellings for both additions and deletions, repeated and
-descending IDs, deletion offsets after additions, malformed segments after a
-valid identifier, and the 256-command boundary. The existing 72-case buffer
-corpus still agreed through both earlier adapters after the observer refactor.
+[The soundness job passed](https://github.com/SCKelemen/oak/actions/runs/34289063128/job/102271267459)
+on commit `ae5043e2b10d64d00aeed16259c5fef032b45e5ae`. All 18 theorem and
+definition reports passed with warnings treated as errors, without proof holes
+or project-specific axioms. Dependencies are limited to standard `propext`,
+`Quot.sound`, and `Classical.choice`.
 
-CI results are recorded in `../validation-command-assembly.json` once the
-opt-in workflow has run on the pushed commit.
+The assembly adapter, Go oracle, and compiled Oak agreed on all 95 cases:
+45 decoded layouts and 50 rejected inputs. Native assembly comparison took
+4.17 seconds without the race detector. The corpus covers signed, zero,
+leading-zero, whitespace-adjacent, boundary, overflowing, and non-numeric
+identifier spellings for both additions and deletions, repeated and descending
+IDs, deletion offsets after additions, malformed segments after a valid
+identifier, and the 256-command boundary. The existing 72-case buffer corpus
+still agreed through both earlier adapters after the observer refactor.
+Existing proved packing comparisons passed 425 cases, and certified streams
+passed 887 layouts (308 accepted, 579 rejected).
 
-Next: model line splitting and the `d` marker in the byte adapter, then
-connect the DIMACS header and clause-count checks so the whole file state
-machine is covered.
+[The solver job passed](https://github.com/SCKelemen/oak/actions/runs/34289063128/job/102271267739).
+The assembly corpus also passed with the race detector in 6.73 seconds.
+Existing real-certificate replay accepted nine bounded certificates and
+rejected 18 corruptions, with two certificates explicitly outside the bounded
+profile. All 11 source certificates and 22 corruptions passed the earlier Lean
+text gate. Boolean proof/model checks and the full external solver suite
+passed. These certificate gates retain the previously proved packing/text
+entry path; they do not yet use a complete file parser assembled from
+publication states.
+
+Repository CI, standard-library race tests, Oak testing tools, formal
+verification, and golden files all passed on the tested commit.
+`../validation-command-assembly.json` records the exact scope and job links.
+
+The subsequent [certificate-file milestone](CertificateFile.md) models line
+splitting, the `d` marker, the DIMACS header, and clause counts as one
+executable file state machine and composes it with the certified stream.
+Universal Oak refinement remains open.

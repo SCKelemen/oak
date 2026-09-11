@@ -30,6 +30,8 @@ v1 defines the 128-bit unsigned integer vectors:
 | `simd.U16x8` | 8 | `u16` |
 | `simd.U32x4` | 4 | `u32` |
 | `simd.U64x2` | 2 | `u64` |
+| `simd.F32x4` | 4 | `f32` |
+| `simd.F64x2` | 2 | `f64` |
 
 A vector is an ordinary 16-byte **value**: copyable, stack-resident, no
 borrow interaction, no implicit conversion between vector types or to
@@ -37,15 +39,14 @@ scalars. Lane order is index order; lane `0` is the first element loaded
 from memory (memory order matches view element order, independent of host
 endianness at the semantic level).
 
-The 128-bit size is a semantic representation contract for these types, **not
-a claim about the target's physical vector-register width**. A backend may
-use one hardware vector register, part of a wider register, multiple narrower
-operations, or scalar code, provided the exact fixed-lane semantics are
-preserved.
-
-Signed, float, and wider vectors are reserved for later revisions; the
-naming (`I32x4`, `F32x4`, 256-bit `U8x32`) is fixed now so programs and
-backends do not fork conventions.
+Signed and wider vectors are reserved for later revisions; the naming
+(`I32x4`, 256-bit `U8x32`) is fixed now so programs and backends do not fork
+conventions. The floating-point vectors `F32x4` and `F64x2` are specified
+with the floating-point types themselves (`20-types.md` §11.3.7) and
+implemented: lane-wise `add sub mul div fma min max sqrt neg abs` under the
+fixed IEEE semantics of §11.3.3, lane `extract` and `insert`, and a
+horizontal `reduce_add` whose pairwise-tree grouping is its semantics
+(§1.2a below).
 
 ### 1.2 Operations
 
@@ -74,6 +75,33 @@ is responsible for unaligned-safe lowering.
 `simd.any_u8x16(simd.eq_u8x16(chunk, simd.splat_u8x16(needle)))` is the
 canonical byte-search kernel, and its law — the reduction is true exactly
 when some lane matches — is proven in `Oak.Simd`.
+
+### 1.2a Floating-point vectors
+
+For `E` in `F32x4`, `F64x2` with lane type `fN` (suffix `f32x4`, `f64x2`),
+every lane obeys the scalar rules of `20-types.md` §11.3.3 and §11.3.5:
+
+| Function | Type | Semantics |
+| --- | --- | --- |
+| `simd.splat_E` / `simd.load_E` / `simd.store_E` | as for the integer vectors | loads and stores **trap** out of range |
+| `simd.add_E` / `sub_E` / `mul_E` / `div_E` | `(E, E) -> E` | lane-wise, one rounding each, never contracted |
+| `simd.fma_E` | `(E, E, E) -> E` | lane-wise `a * b + c` in one rounding |
+| `simd.min_E` / `simd.max_E` | `(E, E) -> E` | IEEE 754-2019 `minimum`/`maximum`: a NaN operand yields NaN, `-0.0` orders below `+0.0` |
+| `simd.sqrt_E` / `neg_E` / `abs_E` | `(E) -> E` | lane-wise; `neg` and `abs` are sign-bit operations |
+| `simd.extract_E` | `(E, u32) -> fN` | the lane; **traps** when the index is not below the lane count |
+| `simd.insert_E` | `(E, u32, fN) -> E` | the vector with one lane replaced; same trap |
+| `simd.reduce_add_E` | `(E) -> fN` | `(l0 + l1) + (l2 + l3)` for four lanes, `l0 + l1` for two: the grouping is the semantics (`55-parallelism.md` §4) |
+
+There is no `eq`, `any`, or `all` over float vectors in v1: lane comparison
+yields a mask over an integer vector, and that operation is reserved with the
+comparison masks of a later revision. The lowering uses the NEON
+instructions where the target has them (`vminq`/`vmaxq` already have the
+2019 semantics, `vfmaq` is one rounding) and the float preamble's helpers in
+the portable lane loop; `reduce_add` is emitted as the explicit pairwise
+expression in both, so the grouping is identical on every target. The
+interpreter holds lanes as IEEE bit patterns and matches bit for bit
+(`compiler/e2e_float_simd_test.go`, compiled with and without
+`OAK_PORTABLE_INTRINSICS`).
 
 ### 1.3 Formal model
 

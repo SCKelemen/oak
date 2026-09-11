@@ -11,6 +11,7 @@ package typechecker
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -87,15 +88,71 @@ func SubstituteTypeAST(expr ast.Expression, bindings map[string]ast.Expression) 
 		return out, true
 	case *ast.IntegerLiteral:
 		return t, true
+	case *ast.InfixExpression:
+		// Const arithmetic in a length position ([M*K]T, [N+1]T): once both
+		// operands are literals the length folds to one, so an instantiation
+		// never carries a symbolic extent (docs/spec/20-types.md section
+		// 11.0). A fold that is not a valid length fails closed.
+		left, okLeft := SubstituteTypeAST(t.Left, bindings)
+		right, okRight := SubstituteTypeAST(t.Right, bindings)
+		if !okLeft || !okRight {
+			return nil, false
+		}
+		leftLit, leftIsLit := left.(*ast.IntegerLiteral)
+		rightLit, rightIsLit := right.(*ast.IntegerLiteral)
+		if leftIsLit && rightIsLit {
+			value, ok := foldConstLength(t.Operator, leftLit.Value, rightLit.Value)
+			if !ok {
+				return nil, false
+			}
+			return &ast.IntegerLiteral{Token: token.Token{TokenKind: token.INT, Literal: strconv.FormatInt(value, 10), Line: t.Token.Line, Column: t.Token.Column}, Value: value}, true
+		}
+		return &ast.InfixExpression{Token: t.Token, Left: left, Operator: t.Operator, Right: right}, true
 	}
 	return nil, false
+}
+
+// foldConstLength evaluates one arithmetic step of a const length. The
+// result must be a representable non-negative length: division by zero,
+// a negative result, and overflow past the u32 range all fail.
+func foldConstLength(operator string, left, right int64) (int64, bool) {
+	const maxLength = int64(^uint32(0))
+	var value int64
+	switch operator {
+	case "+":
+		value = left + right
+	case "-":
+		value = left - right
+	case "*":
+		if left != 0 && right != 0 && (left > maxLength/right || right > maxLength/left) {
+			return 0, false
+		}
+		value = left * right
+	case "/":
+		if right == 0 {
+			return 0, false
+		}
+		value = left / right
+	case "%":
+		if right == 0 {
+			return 0, false
+		}
+		value = left % right
+	default:
+		return 0, false
+	}
+	if value < 0 || value > maxLength {
+		return 0, false
+	}
+	return value, true
 }
 
 // ArgumentSpelling renders a concrete type argument back to type-expression
 // syntax, for substitution into templates.
 func ArgumentSpelling(arg Type) (ast.Expression, bool) {
 	if constInt, isConst := arg.(*ConstIntType); isConst {
-		return &ast.IntegerLiteral{Value: constInt.Value}, true
+		digits := strconv.FormatInt(constInt.Value, 10)
+		return &ast.IntegerLiteral{Token: token.Token{TokenKind: token.INT, Literal: digits}, Value: constInt.Value}, true
 	}
 	atom, ok := typeAtom(arg)
 	if !ok {
@@ -200,6 +257,74 @@ func (tc *TypeChecker) ShiftWidth(tok token.Token) (int, bool) {
 	return width, ok
 }
 
+// FixedWidthName resolves an integer type name to its fixed-width spelling:
+// aliases and the platform-sized int/uint/ptr/uptr map onto u8..i64, and any
+// other name yields "" (not a machine integer the backend can wrap).
+func (tc *TypeChecker) FixedWidthName(name string) string {
+	switch name {
+	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
+		return name
+	case "byte":
+		return "u8"
+	case "rune":
+		return "u32"
+	case "int":
+		return fmt.Sprintf("i%d", tc.intSize)
+	case "uint":
+		return fmt.Sprintf("u%d", tc.intSize)
+	case "ptr":
+		return fmt.Sprintf("i%d", tc.ptrSize)
+	case "uptr":
+		return fmt.Sprintf("u%d", tc.ptrSize)
+	}
+	return ""
+}
+
+// recordArithmetic notes the fixed-width result type of one arithmetic
+// expression, so the backend emits the total (two's-complement, never-UB)
+// helper for that width instead of C's promoted operator. It returns the
+// result type unchanged for the caller.
+func (tc *TypeChecker) recordArithmetic(expr *ast.InfixExpression, result Type) Type {
+	prim, ok := result.(*PrimitiveType)
+	if !ok {
+		return result
+	}
+	name := tc.FixedWidthName(prim.Name)
+	if name == "" && IsFloatName(prim.Name) {
+		// Floats are recorded too — not for a wrapping helper (the backend
+		// keeps the plain C operator, docs/spec/20-types.md section 11.3.8)
+		// but so untyped locals and the interpreter know the width.
+		name = prim.Name
+	}
+	if name == "" {
+		return result
+	}
+	if tc.arithmeticTypes == nil {
+		tc.arithmeticTypes = make(map[string]string)
+	}
+	tc.arithmeticTypes[positionKey(expr.Token)] = name
+	return result
+}
+
+// recordNegation notes the fixed-width type of one unary minus, so the
+// backend emits the total negation helper for that width.
+func (tc *TypeChecker) recordNegation(expr *ast.PrefixExpression, prim *PrimitiveType) Type {
+	if name := tc.FixedWidthName(prim.Name); name != "" {
+		if tc.arithmeticTypes == nil {
+			tc.arithmeticTypes = make(map[string]string)
+		}
+		tc.arithmeticTypes[positionKey(expr.Token)] = name
+	}
+	return prim
+}
+
+// ArithmeticType reports the recorded fixed-width result type of an
+// arithmetic expression.
+func (tc *TypeChecker) ArithmeticType(tok token.Token) (string, bool) {
+	name, ok := tc.arithmeticTypes[positionKey(tok)]
+	return name, ok
+}
+
 // recordMatchResolution notes which instantiation a match scrutinee has.
 func (tc *TypeChecker) recordMatchResolution(match *ast.MatchExpression, name string, args []Type) {
 	if match == nil {
@@ -260,15 +385,25 @@ func (tc *TypeChecker) resolveRecordTemplateApplication(expr ast.Expression) (Ty
 		return nil, false
 	}
 	args := make([]Type, 0, len(argExprs))
+	open := false
 	for _, argExpr := range argExprs {
 		arg := tc.parseTypeExpression(argExpr)
 		if arg == nil {
 			return nil, true
 		}
+		if _, isVar := arg.(*TypeVar); isVar {
+			open = true
+		}
 		args = append(args, arg)
 	}
 	if instantiated := tc.instantiateRecordTemplate(template, args); instantiated != nil {
 		return instantiated, true
+	}
+	if open {
+		// An application over a generic function's own parameters
+		// (Ring[T, N] in a template signature) instantiates per call, once
+		// the arguments are known; nothing to report here.
+		return nil, true
 	}
 	tc.addError(expr, "cannot instantiate %s with these arguments", name)
 	return nil, true

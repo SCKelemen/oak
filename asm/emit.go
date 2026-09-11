@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -21,7 +22,7 @@ const CPrelude = `/* asm units (docs/spec/94-assembler.md): top-level assembly b
 func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "/* asm unit: %s */\n", fn.Name)
-	b.WriteString("#if defined(__aarch64__)\n")
+	b.WriteString("#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)\n")
 	b.WriteString("__asm__(\n")
 	b.WriteString("  \"  .text\\n\"\n")
 	align := fn.Align
@@ -60,6 +61,12 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 		first = false
 	}
 	b.WriteString(");\n")
+	if fn.Fallback {
+		// The Oak body is emitted by the ordinary function emitter under the
+		// complementary condition.
+		b.WriteString("#endif\n\n")
+		return b.String()
+	}
 	b.WriteString("#else\n")
 	fmt.Fprintf(&b, "#error \"asm unit %s requires an AArch64 target (no Oak fallback body declared)\"\n", fn.Name)
 	b.WriteString("#endif\n\n")
@@ -86,8 +93,32 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 	case Register:
 		return o.Text
 	case Immediate:
+		if o.Shift != 0 {
+			return fmt.Sprintf("#%d, lsl #%d", o.Value, o.Shift)
+		}
 		return fmt.Sprintf("#%d", o.Value)
+	case Shifted, Extended:
+		text, _ := renderModified(o)
+		return text
+	case RegisterList:
+		names := make([]string, len(o.Regs))
+		for i, reg := range o.Regs {
+			names[i] = reg.Text
+		}
+		return "{" + strings.Join(names, ", ") + "}"
+	case FloatImmediate:
+		text := strconv.FormatFloat(o.Value, 'f', -1, 64)
+		if !strings.ContainsAny(text, ".eE") {
+			text += ".0"
+		}
+		return "#" + text
 	case Memory:
+		if o.Index != nil {
+			if o.Shift == 0 {
+				return fmt.Sprintf("[%s, %s, uxtw]", o.Base.Text, o.Index.Text)
+			}
+			return fmt.Sprintf("[%s, %s, uxtw #%d]", o.Base.Text, o.Index.Text, o.Shift)
+		}
 		switch o.Mode {
 		case MemPreIndex:
 			return fmt.Sprintf("[%s, #%d]!", o.Base.Text, o.Offset)
@@ -113,6 +144,8 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 		return o.Name
 	case Option:
 		return o.Name
+	case Condition:
+		return o.Code
 	}
 	return "?"
 }

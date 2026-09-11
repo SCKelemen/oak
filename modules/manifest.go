@@ -14,10 +14,17 @@ const ManifestFile = "oak.mod"
 // MaxManifestSize bounds a manifest read before parsing.
 const MaxManifestSize = 1 << 20
 
-// Requirement is one `require` line: a module path at a minimum version.
+// Requirement is one `require` line: a module path at a minimum version,
+// optionally pinned to an archive location and content digest
+// (`require example.com/dep 1.2.0 https://... sha256:<hex>`, section 4.4).
 type Requirement struct {
 	Path    string
 	Version packageapi.Version
+	// Location is the HTTPS archive URL, empty when the module comes from a
+	// replace directive or a pre-populated cache.
+	Location string
+	// Digest is the pinned `sha256:<hex>` of the archive.
+	Digest string
 }
 
 // Manifest is a parsed oak.mod.
@@ -27,12 +34,34 @@ type Manifest struct {
 	Path string
 	// Oak is the declared language version (informational in v1).
 	Oak string
+	// Version is the module's own SemVer version (`version 1.2.0`), the
+	// candidate `oak mod bump` checks against the previous API snapshot.
+	Version string
 	// Requires lists dependency modules in source order.
 	Requires []Requirement
 	// Replaces maps a required module path to a local directory (relative
 	// to the manifest's directory unless absolute).
 	Replaces map[string]string
+	// Profile is the discipline profile the module's packages are judged
+	// under (docs/spec/85-discipline.md section 1): "default", "strict", or
+	// "" when the manifest does not say.
+	Profile string
+	// Steady lists the steady-state entry points (`steady <package> <fn>`,
+	// docs/spec/85-discipline.md section 4): functions after which the
+	// program may not allocate. The compiler checks each as if it declared
+	// `forbids { Memory.Allocate }`.
+	Steady []SteadyEntry
 }
+
+// SteadyEntry names one steady-state entry point: a function of a package of
+// this module.
+type SteadyEntry struct {
+	Path string
+	Name string
+}
+
+// Profiles are the discipline profiles a manifest may declare.
+var Profiles = map[string]bool{"default": true, "strict": true}
 
 // ParseManifest parses oak.mod text. The grammar is line-oriented:
 //
@@ -40,6 +69,8 @@ type Manifest struct {
 //	oak <version>
 //	require <path> <version>
 //	replace <path> => <directory>
+//	profile <default|strict>
+//	steady <package-path> <function>
 //	// comment
 //
 // Unknown directives, malformed lines, duplicate `module`/`oak`/`replace`
@@ -52,10 +83,7 @@ func ParseManifest(text string) (Manifest, error) {
 	manifest := Manifest{Replaces: map[string]string{}}
 	seenRequire := map[string]bool{}
 	for number, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSpace(raw)
-		if index := strings.Index(line, "//"); index >= 0 {
-			line = strings.TrimSpace(line[:index])
-		}
+		line := strings.TrimSpace(stripComment(raw))
 		if line == "" {
 			continue
 		}
@@ -87,9 +115,20 @@ func ParseManifest(text string) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("oak.mod:%d: %v", lineNumber, err)
 			}
 			manifest.Oak = fields[1]
+		case "version":
+			if len(fields) != 2 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: version directive takes exactly one version", lineNumber)
+			}
+			if manifest.Version != "" {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate version directive", lineNumber)
+			}
+			if _, err := packageapi.ParseVersion(fields[1]); err != nil {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: %v", lineNumber, err)
+			}
+			manifest.Version = fields[1]
 		case "require":
-			if len(fields) != 3 {
-				return Manifest{}, fmt.Errorf("oak.mod:%d: require directive takes a path and a version", lineNumber)
+			if len(fields) != 3 && len(fields) != 5 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: require directive takes a path and a version, optionally followed by an archive URL and sha256:<hex> digest", lineNumber)
 			}
 			if err := ValidateImportPath(fields[1]); err != nil {
 				return Manifest{}, fmt.Errorf("oak.mod:%d: %v", lineNumber, err)
@@ -105,7 +144,17 @@ func ParseManifest(text string) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate require of %q", lineNumber, fields[1])
 			}
 			seenRequire[fields[1]] = true
-			manifest.Requires = append(manifest.Requires, Requirement{Path: fields[1], Version: version})
+			requirement := Requirement{Path: fields[1], Version: version}
+			if len(fields) == 5 {
+				if err := ValidateLocation(fields[3]); err != nil {
+					return Manifest{}, fmt.Errorf("oak.mod:%d: %v", lineNumber, err)
+				}
+				if _, err := ParseDigest(fields[4]); err != nil {
+					return Manifest{}, fmt.Errorf("oak.mod:%d: %v", lineNumber, err)
+				}
+				requirement.Location, requirement.Digest = fields[3], fields[4]
+			}
+			manifest.Requires = append(manifest.Requires, requirement)
 		case "replace":
 			if len(fields) != 4 || fields[2] != "=>" {
 				return Manifest{}, fmt.Errorf("oak.mod:%d: replace directive has the form `replace <path> => <directory>`", lineNumber)
@@ -117,6 +166,36 @@ func ParseManifest(text string) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate replace of %q", lineNumber, fields[1])
 			}
 			manifest.Replaces[fields[1]] = fields[3]
+		case "profile":
+			if len(fields) != 2 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: profile directive takes exactly one name (default or strict)", lineNumber)
+			}
+			if manifest.Profile != "" {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate profile directive", lineNumber)
+			}
+			if !Profiles[fields[1]] {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)", lineNumber, fields[1])
+			}
+			manifest.Profile = fields[1]
+		case "steady":
+			if len(fields) != 3 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: steady directive has the form `steady <package-path> <function>`", lineNumber)
+			}
+			if err := ValidateImportPath(fields[1]); err != nil {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: %v", lineNumber, err)
+			}
+			if IsStandardLibraryPath(fields[1]) {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: steady entry names standard library path %q; entry points are this module's functions", lineNumber, fields[1])
+			}
+			if !validIdentifier(fields[2]) {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: steady entry %q is not a function name", lineNumber, fields[2])
+			}
+			for _, prior := range manifest.Steady {
+				if prior.Path == fields[1] && prior.Name == fields[2] {
+					return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate steady entry %s %s", lineNumber, fields[1], fields[2])
+				}
+			}
+			manifest.Steady = append(manifest.Steady, SteadyEntry{Path: fields[1], Name: fields[2]})
 		default:
 			return Manifest{}, fmt.Errorf("oak.mod:%d: unknown directive %q", lineNumber, fields[0])
 		}
@@ -130,4 +209,31 @@ func ParseManifest(text string) (Manifest, error) {
 		}
 	}
 	return manifest, nil
+}
+
+// stripComment removes a `//` comment that starts the line or follows
+// whitespace; `//` inside a token (an https:// location) is kept.
+func stripComment(line string) string {
+	for index := 0; index+1 < len(line); index++ {
+		if line[index] == '/' && line[index+1] == '/' && (index == 0 || line[index-1] == ' ' || line[index-1] == '\t') {
+			return line[:index]
+		}
+	}
+	return line
+}
+
+// validIdentifier accepts an Oak identifier: a letter or underscore followed
+// by letters, digits, or underscores.
+func validIdentifier(text string) bool {
+	if text == "" {
+		return false
+	}
+	for i, r := range text {
+		alpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
+		digit := r >= '0' && r <= '9'
+		if !alpha && !(digit && i > 0) {
+			return false
+		}
+	}
+	return true
 }

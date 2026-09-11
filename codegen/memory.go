@@ -48,7 +48,6 @@ func atomicTypeCarrier(expr ast.Expression) (string, bool) {
 	return carrier.Value, true
 }
 
-
 // atomicPathShape mirrors the checker's atomicCellPath: identifier-rooted
 // access paths only. Lowered element accesses arrive as core_index calls,
 // which emitLvaluePath re-emits as checked lvalue accesses.
@@ -219,7 +218,7 @@ func (cg *CodeGenerator) emitAtomicGlobals(program *ast.Program) {
 			cg.write("OAK_ATOMIC_INITIALIZER_MUST_BE_ZERO_INIT;\n")
 			continue
 		}
-		cg.write(fmt.Sprintf("static %s %s = 0;\n", cType, decl.Name.Value))
+		cg.write(fmt.Sprintf("static %s %s = 0;\n", cType, cIdent(decl.Name.Value)))
 	}
 	if emitted {
 		cg.write("\n")

@@ -161,15 +161,22 @@ func pureBorrowBuiltin(name string) bool {
 	parts := strings.Split(name, "_")
 	if len(parts) == 3 && scalarIntegerName(parts[0]) && scalarIntegerName(parts[2]) {
 		switch parts[1] {
-		case "trunc", "checked", "saturating", "bits":
+		case "trunc", "checked", "saturating", "bits", "round":
 			return true
 		}
+	}
+	// Floating-point intrinsics are pure (docs/spec/20-types.md section
+	// 11.3.5); a program function of the same name has its own entry in
+	// globalWrites and is consulted first.
+	if typechecker.FloatIntrinsicName(name) {
+		return true
 	}
 	switch name {
 	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
 		"int", "uint", "uptr", "iptr", "f32", "f64", "byte", "rune",
 		"len", "assert", "is_valid_utf8", "str_from_utf8", "str_bytes",
-		"view", "span", "subslice", "view_as", "span_as":
+		"view", "span", "subslice", "view_as", "span_as",
+		"address_of", "size_of", "align_of", "offset_of", "static_assert":
 		return true
 	}
 	return false
@@ -177,7 +184,7 @@ func pureBorrowBuiltin(name string) bool {
 
 func scalarIntegerName(name string) bool {
 	switch name {
-	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
+	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64":
 		return true
 	}
 	return false

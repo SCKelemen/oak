@@ -24,10 +24,44 @@ type Test struct {
 }
 
 type Package struct {
-	Dir      string
-	Source   string
+	Dir string
+	// Name is the package clause of a module package (docs/spec/83-modules.md);
+	// empty for a bootstrap package assembled by concatenation.
+	Name   string
+	Module bool
+	Source string
+	// Profile is the discipline profile the test build is judged under
+	// ("" or "default", or "strict"; docs/spec/85-discipline.md section 1).
+	Profile  string
 	Tests    []Test
 	Registry []Test
+	// Schema decodes semantic trace events for people and tools; nil when the
+	// directory has no oak-trace.json.
+	Schema *TraceSchema
+}
+
+// symbol is the C name the generated translation unit gives a top-level
+// function of the root package: root declarations keep their source names
+// whatever the package clause says (docs/spec/83-modules.md section 7,
+// compiler/modules.go merge); only imported packages are renamed.
+func (p Package) symbol(name string) string {
+	return "oak_" + name
+}
+
+// packageClause returns the package name declared by the first statement of
+// an Oak source file, or "" when the file has no package clause.
+func packageClause(source string) string {
+	for _, line := range strings.Split(source, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if name, ok := strings.CutPrefix(trimmed, "package "); ok {
+			return strings.TrimSpace(name)
+		}
+		return ""
+	}
+	return ""
 }
 
 var cIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
@@ -95,8 +129,15 @@ func Discover(paths []string) ([]Package, error) {
 		}
 		var pkg Package
 		pkg.Dir = dir
+		schema, err := loadTraceSchema(dir)
+		if err != nil {
+			return nil, err
+		}
+		pkg.Schema = schema
 		generators := map[string]*ast.FunctionStatement{}
 		var src strings.Builder
+		clauses := 0
+		files := 0
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".oak") || strings.HasPrefix(entry.Name(), ".") {
 				continue
@@ -105,6 +146,16 @@ func Discover(paths []string) ([]Package, error) {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return nil, err
+			}
+			// A directory whose files open with package clauses is a module
+			// package: the compiler's loader assembles it, not concatenation.
+			files++
+			if name := packageClause(string(data)); name != "" {
+				if clauses != 0 && name != pkg.Name {
+					return nil, fmt.Errorf("%s: package clause %q disagrees with %q", path, name, pkg.Name)
+				}
+				pkg.Name, pkg.Module = name, true
+				clauses++
 			}
 			// Newlines prevent final comments/layout blocks from eating the next file.
 			fmt.Fprintf(&src, "\n// oak test source: %s\n%s\n", entry.Name(), data)
@@ -135,6 +186,9 @@ func Discover(paths []string) ([]Package, error) {
 				}
 				pkg.Tests = append(pkg.Tests, Test{Name: fn.Name.Value, File: entry.Name(), Line: fn.Token.Line, Kind: kind})
 			}
+		}
+		if clauses != 0 && clauses != files {
+			return nil, fmt.Errorf("%s: every file of a module package must begin with the same package clause", dir)
 		}
 		pkg.Source = src.String()
 		sort.Slice(pkg.Tests, func(i, j int) bool { return pkg.Tests[i].Name < pkg.Tests[j].Name })
@@ -173,7 +227,7 @@ func Discover(paths []string) ([]Package, error) {
 }
 
 func testKind(name string) string {
-	for _, p := range []struct{ prefix, kind string }{{"Property", "property"}, {"Fuzz", "fuzz"}, {"Sim", "simulation"}, {"Test", "unit"}} {
+	for _, p := range []struct{ prefix, kind string }{{"Property", "property"}, {"Fuzz", "fuzz"}, {"Sim", "simulation"}, {"Table", "table"}, {"Test", "unit"}} {
 		if strings.HasPrefix(name, p.prefix) && len(name) > len(p.prefix) {
 			next := name[len(p.prefix)]
 			if next == '_' || next >= 'A' && next <= 'Z' {

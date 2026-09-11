@@ -46,6 +46,16 @@ Module diagnostics arrive as a `*DiagnosticError` with phase `"modules"` and
 codes `OAK-M01xx`; `SyntaxTree.Modules` carries the elaborator's facts
 (public surface, opaque types, sealed-import obligations, compile order).
 
+An in-memory root package (the REPL's session, `repl/session.go`) compiles
+through the same loader without touching disk:
+
+```go
+c := compiler.New().WithSessionSources(workingDir, map[string]string{
+    "repl.oak": source, // imports resolve through the module enclosing workingDir
+})
+model, err := c.SemanticModel().Get()
+```
+
 The command-line compiler now uses this API rather than manually constructing scanner, parser, type checker, lowering, and code-generation phases.
 
 ## Generic stages

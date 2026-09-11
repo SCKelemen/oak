@@ -465,12 +465,49 @@ record-valued deque with an ID pool. Both structures operate without allocation.
 Further AK-inspired work includes hash tables/maps, intrusive ordered trees, and
 segmented/disjoint storage; these are not implemented by this addition.
 
+## Sorting and searching
+
+`sort_span[T](items)` sorts a span in place through the element type's `<`
+(insertion sort up to sixteen elements, heapsort beyond; `sort_insertion` and
+`sort_heap` are also exported), `sort_is_sorted[T](view)` checks
+non-decreasing order, `sort_search[T](view, key)` is a binary search returning
+`Option[u32]`, `sort_lower_bound[T](view, key)` the first index not less than
+the key (the insertion point), `sort_dedup[T](span)` compacts a sorted span
+to one element per run and returns the new length, and `sort_reverse[T]`
+reverses in place. No allocation; heapsort is not stable, insertion sort is.
+
+## Variable-length integers
+
+`varint_encode(dst, offset, value)` writes unsigned LEB128 (one to ten bytes,
+`varint_size(value)`), `varint_decode(src, offset)` reads it back as a
+`VarintValue { value, next }` and rejects truncated and over-long forms so
+every value has one canonical encoding; `zigzag_encode`/`zigzag_decode` map
+signed to unsigned so small magnitudes stay short, and
+`varint_encode_signed`/`varint_decode_signed` compose the two. Errors are the
+closed `VarintError`; a failed write leaves the destination unchanged.
+`varint_ok`/`varint_value` and `varint_signed_ok`/`varint_signed_value` unwrap
+decode results (zero on error) and `varint_written` unwraps an encode result,
+for callers that have already checked the input.
+
+## Deterministic random numbers
+
+`random_seed(seed)` derives a xoshiro256** state (`Xoshiro`) through
+SplitMix64; `random_next(state)` yields 64 bits, `random_below(state, bound)`
+a uniform value below the bound by rejection (no modulo bias),
+`random_range(state, low, high)` an inclusive range, `random_bool`,
+`random_fill(state, dst)` random bytes, and `random_shuffle[T](state, span)` a
+Fisher-Yates permutation. Bit-exact across the interpreter and every backend;
+not a cryptographic source. Tests draw from the choice tape instead
+(`import(testing)`).
+
 ## Strings and Unicode text
 
 The [strings API](STRINGS.md) is executable through `import(std)`: strict
 UTF-8/16/32 codecs, ASCII validation, Unicode 17 full casing and case folding,
 searching, trimming, split/fields iteration, range-based joining, replacement,
-repetition, unsigned parsing, and a bounded fluent text builder. All outputs use
+repetition, byte order marks, UTF-16 as bytes in either byte order, Latin-1,
+signed and radix number parsing and formatting, and a bounded fluent text
+builder. All outputs use
 caller-provided storage. `text_literal("hello")` supplies readable static UTF-8
 byte views through ordinary borrowing. The placeholder string examples have been
 replaced with compiled programs; see `examples/stdlib_strings.oak`.
@@ -526,3 +563,151 @@ protocols remain separate work; importing this module does not implement them.
 See [Oak collection ports](COLLECTION_PORTS.md) for Bloom/counting Bloom filters,
 u64-key hash maps and sets, bitset algebra, validated flags, and the remaining OS
 library parity work.
+
+## `math`: transcendental functions (`import("math")`)
+
+`stdlib/math.oak` implements `exp`, `exp2`, `expm1`, `log`, `log2`, `log1p`,
+`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`,
+`tanh`, `asinh`, `acosh`, `atanh`, and `pow` over `f64`, plus `exp_f32` …
+`pow_f32` over `f32`, entirely in Oak (docs/spec/20-types.md section
+11.3.6). The algorithms are fdlibm's (as carried by musl), with the
+Cody-Waite split constants spelled as hexadecimal literals generated from
+the fdlibm bit patterns; the trigonometric functions reduce huge arguments
+(at or beyond 2^20 pi/2) by a Payne-Hanek multiplication against the
+relevant limbs of 2/pi in exact integer arithmetic. Because every primitive
+they use is correctly rounded, the interpreter and every backend compute
+identical bits — the bit-exact transcendental implementation a reproducible
+training run needs.
+
+Contract: error within 1 ulp of the correctly rounded result for
+`exp exp2 expm1 log log2 log1p sin cos tan asin acos atan pow`, within 2 ulp
+for `atan2 tanh sinh cosh asinh acosh atanh` (compositions of the 1-ulp
+functions); the `_f32` forms compute at `f64` and round once. `pow` and
+`atan2` follow IEEE 754-2019 / C99 Annex F for their special values, and
+`pow` is exact for representable integer powers. `compiler/e2e_math_test.go`
+is the fourth witness: an arbitrary-precision reference over special
+points, interval boundaries, random arguments, the nearest doubles to
+multiples of pi/2, and the Annex F cases, failing on any case beyond the
+bound and on any difference between compiled and interpreted results.
+
+## `hash`: SHA-256, BLAKE3, and CRC-32C (`import("hash")`)
+
+`stdlib/hash.oak` implements SHA-256 (FIPS 180-4), BLAKE3 (hash mode,
+32-byte output), and CRC-32C (the
+Castagnoli polynomial `0x82F63B78`, reflected, all-ones initial value,
+final complement — RFC 3720 appendix B.4) in Oak over the total fixed-width
+arithmetic, so the interpreter and every backend compute the same bits and
+`oak test` can check a frame's checksum or a hash chain without a foreign
+implementation. Everything lives in caller-owned or bounded local storage:
+no allocation, every store bounds-checked.
+
+SHA-256 is incremental: `sha256_init(): Sha256State`, `sha256_update(state,
+view): Sha256State` over any number of pieces, `sha256_final(state, out:
+[*]u8): Bool` writes the 32-byte big-endian digest and is false when `out`
+is shorter; `sha256(view, out)` is the one-shot form. CRC-32C is a running
+value: `crc32c(view): u32`, and `crc32c_update(crc, view)` continues a
+finished checksum across pieces, so `crc32c_update(crc32c(a), b)` is the
+checksum of `a ++ b`. BLAKE3 has the same incremental shape —
+`blake3_init`, `blake3_update`, `blake3_final(state, out)` — and a one-shot
+`blake3(view, out)`; the state carries the open chunk and the chaining-value
+stack (room for the 54 levels a 64-bit length can need), and the tree is the
+specification's: 1024-byte chunks, parents merged by the chunk counter's
+trailing zeros, the last parent taking the root flag. All three are
+bit-serial or byte-serial today; word-at-a-time and table paths are measured
+changes for later.
+
+`compiler/e2e_hash_test.go` checks the FIPS known-answer vectors, the
+RFC 3720 CRC-32C check value (`0xE3069283` for `"123456789"`), and random
+inputs at every length class around the 64-byte block and 56-byte padding
+boundary against Go's `crypto/sha256` and `hash/crc32`, compiled and
+interpreted, one-shot and split across an update boundary. BLAKE3 is checked
+against a compact reference written from the specification in the test,
+itself anchored to the official vectors for the empty and one-byte inputs,
+at every tree shape that matters: partial and full blocks, one chunk, the
+first parent, an odd chunk count, a full power-of-two tree, and larger
+random inputs.
+
+For the big-endian frame header, the core prelude already has
+`bytes_read_u16_be/u32_be/u64_be(view, offset): Result[T, EndianError]` and
+`bytes_write_*_be(span, offset, value)`, alongside the little-endian forms.
+
+## `mx`: MXFP4 blocks (`import("mx")`)
+
+`stdlib/mx.oak` implements the OCP Microscaling (MX) MXFP4 block format
+in Oak (`docs/spec/20-types.md` §11.3.1a): thirty-two E2M1 elements — sign,
+two exponent bits, one fraction bit, the eight magnitudes 0, 0.5, 1, 1.5,
+2, 3, 4, 6 — packed two to a byte under one E8M0 scale (an unsigned
+exponent with bias 127; `0xFF` is NaN). `Fp4Block` is a proven 17-byte
+`struct { scale: u8, packed: [16]u8 }`; element `i` sits in `packed[i / 2]`,
+even indices in the low nibble.
+
+- `fp4_round_f32(x)` rounds to the nearest E2M1 code, ties to even;
+  magnitudes past 6 clamp to 6 (the format has no infinity), NaN is zero,
+  infinities clamp with their sign.
+- `fp4_widen(code)` and `e8m0_widen(code)` are exact.
+- `fp4_scale_of(values)` is the OCP MX v1.0 §6.3 block scale: the largest
+  power of two at or below the largest magnitude, divided by 4, clamped to
+  the E8M0 range; an all-zero block scales by 1.
+- `fp4_quantize(values: [32]f32)` divides by the scale (an exact power of
+  two) and rounds each element; `fp4_get(block, i)` and
+  `fp4_dequantize(block)` multiply back, exact except where the product
+  leaves the `f32` range.
+
+Everything is `f32` and `u32` bit work, so the interpreter and the backends
+agree bit for bit. `compiler/e2e_mx_test.go` checks every element code,
+every rounding tie, the scale range, the layout, and a 64-block
+pseudo-random sweep against a Go rendering of the same arithmetic,
+compiled and interpreted. Block arithmetic is deliberately absent: a
+kernel widens to `f32` and computes there.
+
+## `encoding`: hex, base64, base32, percent (`import("encoding")`)
+
+`stdlib/encoding.oak` implements the binary-to-text codecs a wire protocol
+or a storage format reaches for — hexadecimal, base64 and base32 in the
+RFC 4648 alphabets, and RFC 3986 percent-encoding — in Oak over borrowed
+bytes, on the `strings` contract: input as a view `[]u8`, output into a
+caller-owned span `[*]u8`, every function returning
+`Result[u32, EncodingError]` with the count written, and every `_size`
+function validating the input without writing. Nothing allocates; a
+destination that is too short is reported before the first store, so a
+failed call leaves the destination unchanged. The package is also part of
+the flat `import(std)` prelude.
+
+- `EncodingError: type = InvalidCharacter | InvalidLength | InvalidPadding
+  | NonCanonical | DestinationTooSmall | SizeOverflow`, with
+  `encoding_error_code` (1 to 6) and the `Result` helpers `encoding_ok`,
+  `encoding_value` (0 on error) and `encoding_failure` (the code, 0 on
+  success).
+- Hex: `hex_encode(dst, src, upper)`, `hex_decode(dst, src)` (either case
+  accepted), `hex_encoded_size(len)`, `hex_decoded_size(src)`; an odd
+  length is `InvalidLength`, a non-digit `InvalidCharacter`. `hex_digit`
+  and `hex_value` are the per-symbol tables.
+- Base64 (RFC 4648 §4 and §5): `base64_encode(dst, src, url, pad)` selects
+  the standard (`+/`) or URL-safe (`-_`) alphabet and optional `=`
+  padding; `base64_decode(dst, src, url)` is strict — one alphabet, padding
+  either complete or absent, a length of 1 mod 4 is `InvalidLength`,
+  misplaced or excess `=` is `InvalidPadding`, and nonzero trailing bits in
+  the final symbol are `NonCanonical`. `base64_encoded_size(len, pad)` and
+  `base64_decoded_size(src, url)`.
+- Base32 (RFC 4648 §6 and §7) with the same shape: `base32_encode(dst, src,
+  hex, pad)`, `base32_decode(dst, src, hex)` (lowercase accepted),
+  `base32_encoded_size(len, pad)`, `base32_decoded_size(src, hex)`; `hex`
+  selects the base32hex alphabet.
+- Percent (RFC 3986): `percent_encode(dst, src, keep)` leaves the
+  unreserved set (`ALPHA DIGIT - . _ ~`) and every byte in `keep` as is and
+  escapes the rest as uppercase `%XX`; `percent_decode(dst, src,
+  plus_as_space)` accepts either hex case and decodes `+` as a space only
+  when asked, and a `%` not followed by two hex digits is
+  `InvalidCharacter`. `percent_encoded_size(src, keep)` and
+  `percent_decoded_size(src, plus_as_space)`.
+
+Sizes are `u32`; an input whose encoding would not fit is `SizeOverflow`
+rather than a wrapped count. `compiler/e2e_stdlib_encoding_test.go` checks
+the RFC 4648 §10 test vectors for base64, base32 and base32hex, padded and
+unpadded, the URL alphabet against the standard one, hex in both cases, the
+percent cases including a kept set and `+`, every rejection class with the
+destination shown unchanged, and the qualified `import("encoding")` form.
+`examples/testing/encoding_test.oak` is the round-trip property over
+tape-generated bytes for every codec and alphabet. Line wrapping, the
+`base64` MIME dialect, and the non-strict "ignore whitespace" decoders are
+deliberately absent.

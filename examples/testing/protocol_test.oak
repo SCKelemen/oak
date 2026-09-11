@@ -1,0 +1,87 @@
+import(std)
+import(testing)
+
+// A protocol declaration (docs/spec/112-protocols.md) is one fact projected
+// into the state and step types, the initial/legal/next functions, and the
+// TLA+ module `oak protocol -tla IrqLine` renders. Here the step type also
+// derives typed commands, so a generated history is a sequence of protocol
+// steps and the model under test is the transition table itself.
+IrqLine: protocol = {
+  initial Idle
+  inject: Idle -> Pending
+  acknowledge: Pending -> Active
+  eoi: Active -> Idle
+  program(compare: u16): Idle -> Idle
+  program(compare: u16): Pending -> Pending
+}
+
+irq_line_step_generate: (choices: [*]TestChoices, data: []u8): IrqLineStep = derive.test_generate
+irq_line_step_encode: (v: IrqLineStep): TestCommand = derive.test_encode
+irq_line_step_decode: (command: TestCommand): Option[IrqLineStep] = derive.test_decode
+
+// The transition table, written a second time by hand as the oracle:
+// state index 0 Idle, 1 Pending, 2 Active; step kinds in declaration order.
+irq_line_oracle_next: (state: u32, kind: u32): u32 {
+  result: u32 = u32(3)
+  kind == u32(0) && state == u32(0) ? { result = u32(1) }
+  kind == u32(1) && state == u32(1) ? { result = u32(2) }
+  kind == u32(2) && state == u32(2) ? { result = u32(0) }
+  kind == u32(3) && state <= u32(1) ? { result = state }
+  result
+}
+
+irq_line_state_index: (s: IrqLineState): u32 = s ? | .Idle => u32(0) | .Pending => u32(1) | .Active => u32(2)
+
+TestIrqLineProtocolTable: (): () {
+  s: IrqLineState = irq_line_initial()
+  test_check(irq_line_state_index(s) == u32(0), u32(6000))
+  test_check(irq_line_legal(s, .Inject) && !irq_line_legal(s, .Acknowledge) && !irq_line_legal(s, .Eoi), u32(6001))
+  test_check(irq_line_legal(s, .Program(u16(9))), u32(6002))
+  s = irq_line_next(s, .Inject)
+  test_check(irq_line_state_index(s) == u32(1) && irq_line_legal(s, .Program(u16(1))) && !irq_line_legal(s, .Inject), u32(6003))
+  s = irq_line_next(s, .Acknowledge)
+  test_check(irq_line_state_index(s) == u32(2) && !irq_line_legal(s, .Program(u16(1))), u32(6004))
+  s = irq_line_next(s, .Eoi)
+  test_check(irq_line_state_index(s) == u32(0), u32(6005))
+}
+
+// Generated step histories: only legal steps are emitted, and the projected
+// functions agree with the hand-written table at every step.
+GeneratePropertyIrqLineProtocol: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  s: IrqLineState = irq_line_initial()
+  limit: u32 = testing_command_limit()
+  limit > u32(32) ? { limit = u32(32) }
+  count: u32 = test_range(choices, data, u32(0), limit)
+  i: u32 = u32(0)
+  while i < count {
+    step: IrqLineStep = irq_line_step_generate(choices, data)
+    irq_line_legal(s, step) ? {
+      testing_command(irq_line_step_encode(step))
+      s = irq_line_next(s, step)
+    }
+    i = i + u32(1)
+  }
+}
+
+PropertyIrqLineProtocol: (data: []u8): () {
+  count: u32 = test_command_count(data)
+  s: IrqLineState = irq_line_initial()
+  i: u32 = u32(0)
+  while i < count {
+    raw: TestCommand = test_command_at(data, i)
+    decoded: Option[IrqLineStep] = irq_line_step_decode(raw)
+    step: IrqLineStep = decoded ? | .Some(v) => v | .None => .Inject
+    ok: Bool = decoded ? | .Some(v) => true | .None => false
+    test_assume(ok)
+    before: u32 = irq_line_state_index(s)
+    expected: u32 = irq_line_oracle_next(before, raw.kind)
+    test_check(irq_line_legal(s, step) == (expected != u32(3)), u32(6010))
+    test_assume(expected != u32(3))
+    s = irq_line_next(s, step)
+    test_check(irq_line_state_index(s) == expected, u32(6011))
+    testing_classify(u32(70) + raw.kind)
+    i = i + u32(1)
+  }
+}

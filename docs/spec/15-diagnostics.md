@@ -221,6 +221,9 @@ The first stable borrow-conflict family is:
 | `OAK-B0110` | unsafe code assumes mutable-region disjointness that safe analysis could not prove |
 | `OAK-B0111` | a resource or alias is used after its authority was consumed |
 | `OAK-B0112` | a resource call requires exclusive authority but two mode-marked arguments alias the same resource |
+| `OAK-B0114` | a callee forwards one of its own mode-marked resource parameters beyond its entry authority (borrowed to borrowed-mut or consumed, borrowed-mut to consumed), or retains a borrowed one by returning it or storing it in a record or array |
+| `OAK-B0115` | a resource is passed through a callable whose resource contract is unknown (a function-typed parameter, a closure, or a reassigned function value) |
+| `OAK-B0113` | a region-indexed signature is invalid (its return region names no parameter or two, or a view from a span region), its body returns a borrow outside the region, or a call's region argument is not a traceable borrow |
 
 For `OAK-B0106`, known regions use half-open interval semantics. The diagnostic
 should show the requested region and one earliest causal conflicting span. If a
@@ -234,13 +237,26 @@ the diagnostic must include the shortest useful programmer-visible alias or
 provenance chain connecting it to the consumed authority. It should not dump an
 internal alias-set identifier.
 
-For `OAK-B0112`, the primary label is the argument whose semantic parameter mode
-requires exclusive authority. The conflicting argument is a secondary label.
+For `OAK-B0112`, the primary label is the argument (or the receiver, labeled
+"receiver") whose semantic parameter mode requires exclusive authority. The conflicting argument is a secondary label.
 When the two arguments use different names, include the shortest useful alias or
 provenance chain showing why they identify one resource authority class. A call
 rejected for this conflict has not occurred semantically, so the diagnostic must
 not trigger a derivative use-after-consume error merely because one of its
 parameters was marked consuming.
+
+For `OAK-B0114`, the primary label is the argument forwarded beyond its entry
+authority (or the returned or stored identifier, for retention), the parameter
+declaration is a secondary label, and an alias chain
+is included when the argument is not the parameter's own name. The rejected
+call has not occurred semantically: it consumes nothing and must not cascade
+into `OAK-B0111`.
+
+For `OAK-B0115`, the primary label is the resource argument; the note names the
+callable and says why its contract is unknown. The call is not analyzed
+further, so it neither consumes nor borrows.
+
+For `OAK-B0113` (`50-borrowing.md` section 8c), the primary label is the returned expression in the callee, or the region argument at the caller. A note names what the returned view borrows instead (a local owner, another parameter, a temporary) or why the source cannot be traced, and the help names the parameter the signature commits to.
 
 When several active borrows or aliases could explain the same conflict, the
 compiler should choose causal context deterministically, preferring the earliest

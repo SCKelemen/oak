@@ -8,6 +8,7 @@ import (
 	"unicode"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/packageapi"
 	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
@@ -24,12 +25,30 @@ func (comp Compilation) APISnapshot(version string) Stage[packageapi.Snapshot] {
 		if _, err := packageapi.ParseVersion(version); err != nil {
 			return packageapi.Snapshot{}, err
 		}
+		if model.Tree != nil && model.Tree.Modules != nil && len(model.Tree.Modules.NestedModules) != 0 {
+			// Fail closed: a nested module's pub surface is part of the
+			// module's API but is not yet projected as its own snapshot, so
+			// an API claim over this package would be incomplete
+			// (docs/spec/82-package-semver.md section 6).
+			return packageapi.Snapshot{}, fmt.Errorf("package %s declares nested modules (%s); API snapshots do not yet cover nested modules — move them to directories to publish", comp.options.PackageName, strings.Join(model.Tree.Modules.NestedModules, ", "))
+		}
 		return buildAPISnapshot(comp.options.PackageName, version, model, comp.options)
 	})
 }
 
 func buildAPISnapshot(packageName, version string, model *SemanticModel, options Options) (packageapi.Snapshot, error) {
-	layouts, err := resolvePublicStructLayouts(model.PublicRoot, options)
+	identity := func(text string) string { return text }
+	return snapshotDeclarations(packageName, version, model.PublicRoot, model.TypeChecker, options, identity)
+}
+
+// snapshotDeclarations projects the public declarations of one program as a
+// package snapshot. The program is either a root package's source surface
+// (names as written) or a nested module's elaborated declarations (internal
+// names, docs/spec/83-modules.md section 3.5); spell renders every emitted
+// name and type text in the package's own spelling, so both routes yield the
+// snapshot a directory package would.
+func snapshotDeclarations(packageName, version string, program *ast.Program, checker *typechecker.TypeChecker, options Options, spell func(string) string) (packageapi.Snapshot, error) {
+	layouts, err := resolvePublicStructLayouts(program, options)
 	if err != nil {
 		return packageapi.Snapshot{}, fmt.Errorf("public ABI projection failed: %w", err)
 	}
@@ -39,7 +58,7 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 		Version: version,
 		Exports: make(map[string]packageapi.Export),
 	}
-	for _, statement := range model.PublicRoot.Statements {
+	for _, statement := range program.Statements {
 		var name, kind, typeIdentity string
 		var concreteStruct bool
 		switch declaration := statement.(type) {
@@ -48,7 +67,14 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 				continue
 			}
 			name = declaration.Name.Value
-			kind, typeIdentity, concreteStruct, err = canonicalADTDeclaration(declaration, model.TypeChecker)
+			if declaration.Opaque {
+				// pub(opaque) exports the name only: neither the definition
+				// nor the layout is public API, so changing them is a patch
+				// (docs/spec/83-modules.md section 6.2).
+				kind, typeIdentity, concreteStruct = "opaque type", "opaque", false
+				break
+			}
+			kind, typeIdentity, concreteStruct, err = canonicalADTDeclaration(declaration, checker)
 		case *ast.InterfaceType:
 			if declaration.Name == nil || !declaration.Exported {
 				continue
@@ -67,7 +93,7 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 				abi = canonicalRecordABI(layout.representation, layout.spec)
 			} else {
 				var ok bool
-				abi, ok, err = canonicalGenericStructABI(name, model.PublicRoot)
+				abi, ok, err = canonicalGenericStructABI(name, program)
 				if err != nil {
 					return packageapi.Snapshot{}, err
 				}
@@ -76,14 +102,14 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 				}
 			}
 		}
-		snapshot.Exports[name] = packageapi.Export{
+		snapshot.Exports[spell(name)] = packageapi.Export{
 			Kind: kind,
-			Type: typeIdentity,
-			ABI:  abi,
+			Type: spell(typeIdentity),
+			ABI:  spell(abi),
 		}
 	}
 
-	for _, statement := range model.PublicRoot.Statements {
+	for _, statement := range program.Statements {
 		var name, kind string
 		switch declaration := statement.(type) {
 		case *ast.FunctionStatement:
@@ -100,7 +126,7 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 				if err != nil {
 					return packageapi.Snapshot{}, fmt.Errorf("public method %q: %w", name, err)
 				}
-				snapshot.Exports[name] = packageapi.Export{Kind: kind, Type: typeIdentity}
+				snapshot.Exports[spell(name)] = packageapi.Export{Kind: kind, Type: spell(typeIdentity)}
 				continue
 			}
 			name, kind = declaration.Name.Value, "function"
@@ -112,19 +138,19 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 		default:
 			continue
 		}
-		scheme, ok := model.TypeChecker.Env().Get(name)
+		scheme, ok := checker.Env().Get(name)
 		if function, isFunction := statement.(*ast.FunctionStatement); isFunction && (!ok || scheme == nil || scheme.Type == nil) {
 			typeIdentity, err := canonicalFunctionDeclaration(function)
 			if err != nil {
 				return packageapi.Snapshot{}, fmt.Errorf("public function %q: %w", name, err)
 			}
-			snapshot.Exports[name] = packageapi.Export{Kind: kind, Type: typeIdentity}
+			snapshot.Exports[spell(name)] = packageapi.Export{Kind: kind, Type: spell(typeIdentity)}
 			continue
 		}
 		if !ok || scheme == nil || scheme.Type == nil {
 			return packageapi.Snapshot{}, fmt.Errorf("public %s %q has no checked type", kind, name)
 		}
-		snapshot.Exports[name] = packageapi.Export{Kind: kind, Type: canonicalScheme(scheme)}
+		snapshot.Exports[spell(name)] = packageapi.Export{Kind: kind, Type: spell(canonicalScheme(scheme))}
 	}
 	return snapshot, nil
 }
@@ -467,6 +493,13 @@ func canonicalCheckedType(typ typechecker.Type) string {
 		}
 		return application + "::" + value.VariantName
 	case *typechecker.RecordType:
+		// A declared record or struct is part of the API by name; its shape
+		// is the named export's own definition (and for pub(opaque) types, no
+		// part of the API at all). Spelling it structurally here would leak
+		// opaque representations through every signature mentioning them.
+		if value.Name != "" {
+			return modules.DemangleText(value.Name)
+		}
 		names := make([]string, 0, len(value.Fields))
 		for name := range value.Fields {
 			names = append(names, name)

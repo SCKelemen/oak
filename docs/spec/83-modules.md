@@ -1,9 +1,10 @@
 # Modules and Packages
 
-Status: normative; implemented for user packages (`compiler/modules.go`,
+Status: normative; implemented (`compiler/modules.go`, `compiler/derive.go`,
 `modules/`), Lean model and proofs in `spec/lean/Oak/Modules.lean`. The
 bootstrap standard library keeps its prelude-style `import(std)` /
-`import(testing)` splice (section 9) until it is re-cut into packages.
+`import(testing)` splice and is importable as qualified views (section 9)
+until it is re-cut into packages.
 
 Oak takes the **unit structure of Go** — a package is a directory, a module is
 a versioned tree of packages with one manifest, imports are explicit and
@@ -30,11 +31,14 @@ module is the unit of versioning; neither adds runtime work.**
   (`{ Key: type, hash: (Key) -> u64 }`). One construct — the record shape of
   `40-records.md` — serves as the module interface (one fact, many
   projections).
-- **No functors, no `open`, no nested modules in v1.** Parameterized
-  abstraction is expressed with Oak's monomorphized generics and constraints;
-  package-level type parameters (generic packages) are a recorded direction
-  (section 11). Unqualified import of another package's names is not
-  provided: readers always see where a name comes from.
+- **Functors are generic packages, monomorphized at import.**
+  `package pair[T, N: u32]` is instantiated by `import("...")[u8, 3]`; each
+  argument list is a distinct concrete package (section 6.7). There is no
+  runtime module object.
+- **Names come from somewhere visible.** Members are qualified
+  (`alias.member`) or imported by name (`{ f, g } := import(...)`); there is
+  `open import(...)` is available but a name it binds may never be bound by
+  anything else, so what an identifier means never depends on precedence.
 - **Whole-program, one translation unit.** The compiler resolves every package
   of the build into one flat program before type checking. Encapsulation is a
   static rule enforced by the elaborator, not a link-time property; the C
@@ -59,7 +63,10 @@ package geometry
 
 Rules (diagnostic `OAK-M0103`):
 
-- every file of the directory carries the same package name;
+- every file of the directory carries the same package name; a file of the
+  **root** package (the directory being built) may omit the clause and is then
+  `package main` — the single-file rule — while files of imported packages
+  must declare it;
 - the name is a lowercase ASCII identifier without `__`;
 - an importable package is named after the last segment of its import path
   (`example.com/hello/geometry` is `package geometry`) — there is no Go-style
@@ -82,7 +89,7 @@ with a letter or digit; `.` and `..` are not segments; no segment contains
 `__`; the whole path is at most 256 bytes (`OAK-M0101`).
 
 A path whose first segment contains no dot names a **standard library**
-package (`std`, `testing`, and future `strings`, `encoding/utf8`). A path whose
+package (`std`, `testing`, `strings`, `json`, `unicode`, ...; section 9). A path whose
 first segment contains a dot (`example.com/hello`) belongs to a module (section
 4). The grammar is what makes the directory mapping containment-safe: a valid
 path can only name a directory below a module root, never `..` out of it.
@@ -100,6 +107,25 @@ import(std)                                     // bootstrap, unqualified (secti
 - The **binding form** `name := import(path)` chooses the alias.
 - The **sealed form** `name: Sig = import(path)` chooses the alias and seals
   the import to the signature `Sig` (section 6.3).
+- The **selective form** `{ f, g } := import(path)` binds the named exported
+  members unqualified; each name is resolved by the visibility rule of
+  section 6 and follows the alias rules (no collision with declarations or
+  other imports, unused names are errors). A selective import cannot be
+  sealed.
+- The **open form** `open import(path)` binds **every** exported member of
+  the package unqualified, exactly as a selective import naming them all
+  would. The names are those the package exports when it is loaded, so the
+  set can grow with the dependency; to keep that growth from silently
+  changing meaning, a name an open binds may not also be bound by a
+  package-level declaration, an import alias, a selective import, or another
+  open (`OAK-M0115`, checked at the importer, never resolved by precedence).
+  An open cannot be bound, sealed, or repeated for one package; an open none
+  of whose names is used is an unused import. `Oak.Modules.OpenImports`
+  states the rule: an open is rejected exactly when an export is already
+  bound (`openBind_none_iff`), an accepted open binds exactly the exports
+  and none was bound before (`openBind_some`), and adding exports can only
+  turn acceptance into rejection, never change a binding
+  (`openBind_none_mono`).
 - A bare identifier path (`import(std)`) is sugar for a single-segment path.
 
 `import(...)` is legal only as a top-level import statement or as the entire
@@ -128,15 +154,61 @@ type position. All of the following resolve through one rule (section 6):
 
 ```oak
 geo.make(1, 2)                  // exported function
+limit: u32 = geo.MAX_POINTS     // exported constant, read as a value
 p: geo.Point = geo.origin()     // exported type
 r: ring.Ring[u8, 8]             // exported generic type with arguments
 geo.Point { x: 1, y: 2 }        // typed record literal (transparent types only)
 s: geo.Shape = .Line(3)         // variant construction with expected type
 ```
 
-`alias.Type.Variant(payload)` in call position is not yet lowered (a recorded
-gap shared with unqualified `Type.Variant(payload)`); bare `.Variant` with an
-expected type is the working spelling.
+`alias.Type.Variant(payload)` and `alias.Type.Variant` construct variants of
+an imported ADT exactly like the unqualified `Type.Variant(payload)` form:
+after elaboration a pass rewrites both into variant expressions
+(`compiler/variants.go`), so the checker, lowering, and backend see one
+construction form.
+
+### 3.5 Nested modules
+
+A file may declare a package inside itself:
+
+```oak
+package geometry
+
+module units {
+  pub scale: (v: i32): i32 = v * 2
+}
+
+pub(opaque) Point: type = struct { x: i32, y: i32 }
+pub doubled: (p: Point): i32 = units.scale(p.x + p.y)
+```
+
+`module name { declarations }` declares the package `<enclosing path>/name`
+— here `example.com/hello/geometry/units` — with the block's statements as
+its single file. A nested module is a package in every respect: it has its
+own `pub` boundary (the enclosing package sees only its exported members,
+and `pub(opaque)` hides definitions from it as from anyone), its own
+internal names, and an ordinary place in the import graph. The enclosing
+package binds `name` as if it had written `name := import("<path>/name")`
+(the binding is never reported unused), and any other package imports the
+module by its path. The block may itself import packages and declare
+modules; importing the enclosing package from inside is a cycle
+(`OAK-M0104`). The name follows the package-name grammar and may not be
+reserved; declaring one name twice in a package, or alongside a
+subdirectory of the same name, is rejected (`OAK-M0116`). `module` is a
+contextual word: outside this form it is an ordinary identifier. A nested
+module belongs to its parent's module and so inherits its discipline
+profile and version: under longest-prefix module resolution the nested path
+resolves as the parent's unless a module's path is exactly the nested path,
+the directory conflict `OAK-M0116` rejects
+(`Oak.Modules.NestedPaths.moduleOf_nested`).
+
+Nested modules are for a package that wants an internal abstraction
+boundary without a directory; the directory rule of section 2 is unchanged.
+A module snapshot (`82-package-semver.md` section 6) covers nested modules
+as packages under their own paths, spelled exactly as a directory package
+would spell itself, so publishing and the exact-bump rule see them; a
+single-package snapshot (`oak mod api -package`) of a package that declares
+nested modules still refuses rather than emit an incomplete claim.
 
 ## 4. Modules
 
@@ -163,6 +235,16 @@ replace example.com/dep => ../dep
 - `replace <path> => <dir>` — provide a required module from a local
   directory, relative to the manifest's directory unless absolute. Only the
   root module's replace directives apply.
+- `profile <default|strict>` — at most once; the discipline profile every
+  package of this module is judged under (`85-discipline.md` section 1). A
+  module that declares none is judged under `default`. The command-line
+  `-profile` flag overrides the declaration for the root module only.
+- `steady <package-path> <function>` — a steady-state entry point
+  (`85-discipline.md` section 4): a function of a package of this module
+  after which the program may not allocate. The compiler checks it as if it
+  declared `forbids { Memory.Allocate }`. Only the root module's `steady`
+  lines apply; the package must belong to this module and the function must
+  exist, or the manifest fails (`OAK-M0112`). Repeatable; duplicates fail.
 
 Unknown directives, duplicates, malformed lines, replaces without a matching
 require, and manifests over 1 MiB fail closed (`OAK-M0112`).
@@ -189,10 +271,56 @@ root manifest's `replace` directive, else in the module cache directory
 other source exists in v1; fetching into the cache is external tooling
 (`OAK-M0112` when absent).
 
+### 4.4 Fetching pinned dependencies
+
+A `require` line may pin the archive that provides the module:
+
+```text
+require example.com/dep 1.2.0 https://example.com/dep-1.2.0.tar.gz sha256:<64 hex digits>
+```
+
+`oak mod download [dir]` populates the module cache from such lines. The
+compiler never fetches. The tool downloads over HTTPS only (redirects may not
+leave HTTPS; locations carry no credentials), bounds the archive at 256 MiB,
+computes the SHA-256 of the whole archive and compares it with the pinned
+digest **before** extracting anything, extracts the gzip-compressed tar into
+a staging directory admitting only regular files and directories (no
+symlinks, hard links, or devices; no absolute or `..` paths; at most 100 000
+members and 1 GiB decompressed), verifies that the extracted `oak.mod`
+declares the required module path, checks an archive-carried `api.json`
+against the API the extracted source actually exposes at the required
+version (`82-package-semver.md` section 7), and only then renames the staging
+directory into `<cache>/<path>@v<version>`. A single top-level wrapper
+directory carrying the manifest is stripped. `oak mod pack` produces such an
+archive from a module directory, with `api.json` inside and the matching
+`require` line printed (`82-package-semver.md` section 7). Identity is the module path, the
+URL is a location hint, the digest is the trust anchor: the manifests alone
+reproduce a build, as with Zig's pinned dependencies, without Go's proxy
+protocol or version-control execution.
+
 An import path is mapped to a directory by the longest module path that is a
 segment-wise prefix of it. The resulting directory must exist, contain at least
 one `.oak` file, and lie within the module root after symlink resolution;
 otherwise the import is unresolvable (`OAK-M0102`).
+
+### 4.5 Tidying the manifest
+
+`oak mod tidy [-w] [dir]` reconciles the `require` directives with what the
+module's packages import. The check is syntactic — every `.oak` file of every
+package, test files included, is parsed and its import statements collected
+(nested module bodies too), never built — so it works on a module that does
+not yet compile. An import outside the module and the standard library is
+attributed to the `require` whose module path is its longest prefix; a
+`require` no import is attributed to is **unused**; an import no `require`
+covers is **missing** when the module cache (`$OAKMODCACHE`, section 4.3)
+holds a module whose path is its prefix — the highest cached version is
+proposed — and **uncovered** otherwise, since the providing module cannot be
+inferred offline and the compiler never asks a registry. With `-w` the
+manifest is rewritten: unused `require` lines are dropped and missing
+modules are appended as `require path version`; every other line —
+comments, `replace`, `profile`, `steady`, ordering — is kept verbatim, the
+result must parse, and the file is replaced through a temporary file in the
+same directory. Uncovered imports are reported for the author.
 
 ## 5. Compile order and cycles
 
@@ -241,7 +369,8 @@ pub make: (x: i32, y: i32): Point = Point { x: x, y: y }   // the only construct
 ```
 
 An opaque type's representation is not public ABI: changing it is a patch
-change (`82-package-semver.md` section 2, last row). `pub(opaque)` applies to
+change (`82-package-semver.md` section 2), and signatures mentioning the type
+spell it by name, so the representation never leaks into the snapshot. `pub(opaque)` applies to
 type declarations only; on a value or function it is a parse error.
 
 ### 6.3 Signatures and sealing
@@ -261,17 +390,44 @@ signature does three things:
    program). No widening, no narrowing — the explicit-contract rule of
    `25-type-inference.md` section 4.
 
+Because a sealed client depends on exactly its signature, whether a new
+version of the dependency still satisfies it is decidable from the
+dependency's API snapshot alone: `oak mod compat dep-api.json` checks every
+sealed import of a module against a snapshot, and `oak mod upgrade` picks the
+highest of several candidate snapshots that does (`82-package-semver.md`
+section 8). The loader records each sealed import's members and canonical types for
+this purpose (`ModuleInfo.Sealed`).
+
 ```oak
 h: { Key: type, key: (u64) -> Key, hash: (Key) -> u64 } = import("example.com/hello/fnv")
 k: h.Key = h.key(2)
 ```
 
 Sealing never widens: whatever resolves through a sealed import resolves to
-the same declaration through the unsealed import (`lookup_sealed_narrows`). In
-v1 a type member is satisfied by any exported type and is transparent unless
-the package declared it `pub(opaque)`; generating a fresh abstract type per
-sealed binding (ML's opaque ascription) is a recorded direction (section 11).
-Signature types are monomorphic in v1.
+the same declaration through the unsealed import (`lookup_sealed_narrows`).
+
+A signature may be written inline, declared in the importing package
+(`Hasher: type = { Key: type, hash: (Key) -> u64 }`), or exported by another
+package and named as `alias.Hasher`. Signature shapes are compile-time
+interfaces: they are never emitted as runtime records.
+
+**Abstract type members are fresh types.** A `Name: type` member is ML's
+opaque ascription: each sealed binding gets a *fresh nominal type*
+`h.Name`, distinct from the package's own type and from every other sealed
+binding's (`h.Key` and `g.Key` of two seals of one package do not unify).
+Values acquire and shed the fresh type only at the sealed boundary: the
+elaborator rewrites `h.f(args)` so that arguments in abstract positions of
+`f`'s signature are unwrapped and an abstract result is wrapped by
+compiler-only coercions (`__abstract_<fresh>`, `__concrete_<fresh>`) that the
+checker admits exactly between the fresh type and its underlying type
+(`OAK-M0113` otherwise) and the backend emits as identities over a typedef
+alias. Function-valued members with abstract types must be called directly.
+Inside the importer the fresh type is opaque (`OAK-M0110`): its definition is
+unreachable. Only declared records and ADTs can be sealed abstract.
+
+**Sharing.** `Name: type = T` shares a type member: it stays transparent and
+the package's type must be exactly `T` (`OAK-M0113`) — the `with type`
+constraint. Signature types are monomorphic in v1.
 
 ### 6.4 What privacy means
 
@@ -280,6 +436,114 @@ translation unit, so a private function is present in the emitted C; it is
 unreachable from Oak source outside its package because the elaborator refuses
 to resolve it, and unspellable because its internal name is reserved (section
 7). Privacy is encapsulation for correctness and evolution, not secrecy.
+
+### 6.5 Methods stay with their type
+
+A method (`fn (r: T) m()`) may be declared only in the package that declares
+its receiver type (`OAK-M0114`). Uniform call syntax (`10-syntax.md` §13)
+gives every exported function of that package the same call shape —
+`p.shift(1)` for `geo.shift(p, 1)` when `p: geo.Point` — without declaring a
+method: the receiver type's package is the only other package searched, so
+a call's meaning never depends on which unrelated package is compiled. Oak's interfaces are implicit, so there are
+no instances to collide, but two packages attaching same-named methods to one
+imported type would make method lookup depend on which package is compiled —
+Go's rule, adopted for the same reason. Operator definitions
+(`10-syntax.md` §14) follow it too: an `operator(+)` binding for a type
+lives in the type's package and travels with the type to every importer.
+
+### 6.6 Derived declarations
+
+A declaration-form function whose definition is `derive.<kind>` receives a
+compiler-synthesized body computed from its parameter type's declaration, the
+pattern of `c.extern("symbol")` (a typed interface whose body the compiler
+supplies):
+
+```oak
+Point: type = struct { x: i32, y: i32 }
+point_eq: (a: Point, b: Point): Bool = derive.equal
+point_hash: (v: Point): u64 = derive.hash
+```
+
+- `derive.equal` requires `(a: T, b: T): Bool` and compares field by field
+  (records) or variant by variant with payloads (ADTs).
+- `derive.hash` requires `(v: T): u64` and mixes fields, or the variant index
+  and payload, with shift-xor steps that never overflow-trap.
+- `derive.compare` requires `(a: T, b: T): Ordering` with
+  `Ordering: type = Less | Equal | Greater` in scope, and orders records
+  lexicographically by field and ADTs by variant index then payload.
+- `derive.format` requires `(v: T, dst: [*]u8): Result[u32, TextError]`
+  (the strings library's `TextError`) and renders `Point { x: -3, y: 42 }`
+  or `Line(3)` into the caller's span through the library's text builder —
+  bounds-checked writes, no allocation, decimal integers, `true`/`false`.
+- `derive.test_generate`, `derive.test_encode`, and `derive.test_decode`
+  derive a test-command sum type's tape generator, `TestCommand` packing, and
+  range-checked decoder (`110-testing.md`, "Typed commands"); the type is the
+  return type, the parameter, or `Option`'s argument respectively, and they
+  require `import(testing)` (and `import(std)` for `Option`).
+- Members may be fixed-width integers, `Bool`, declared records or ADTs, and
+  concrete instantiations of generic ones (`Pair[u8]`, `Wrap[u16]`),
+  recursively; helpers are generated once per type or instantiation, the
+  instantiation's shape obtained through the same substitution authority the
+  type checker uses (`typechecker.SubstituteTypeAST`). Anything else is
+  rejected (`OAK-M0203`); a generic template itself is not derivable over,
+  only its instantiations.
+- Derivation is admitted only in the package declaring the type
+  (`OAK-M0204`): it reads the definition, so `pub(opaque)` types derive their
+  operations at home and export them as ordinary `pub` functions.
+- Unknown kinds (`OAK-M0201`) and mismatched signatures (`OAK-M0202`) are
+  rejected. `derive` is a reserved qualifier, never an import alias.
+
+The body is built as typed Oak syntax from the declaration's field order and
+variant list — one fact, one generator — the same nodes the parser produces
+(`compiler/synth.go`), and checked by every gate like handwritten code; no
+source text is templated and reparsed. Each generated helper carries the
+owning type's package in its resolution context, so the opaque-projection
+rule sees it as the type's own package, and a distinct position per node, so
+position-keyed records never alias. This is the same mechanism as tag-driven
+codec derivation (`71-codecs.md`), generalized: Haskell's `deriving` and
+Rust's `#[derive]` without a new syntax axis. Generated helper names carry
+the reserved `__`, so they cannot collide with user identifiers.
+### 6.7 Generic packages
+
+A package may declare parameters after its name and is then a template that
+every import instantiates:
+
+```oak
+package pair[T, N: u32]
+
+pub Pair: type = struct { first: T, second: T }
+pub capacity: (): u32 = N
+```
+
+```oak
+bytes := import("example.com/hello/pair")[u8, 3]
+words := import("example.com/hello/pair")[u32, 10]
+```
+
+Each distinct argument list is a distinct package (identity
+`path@atom,atom`, section 7): its declarations are substituted copies, its
+imports resolve normally, and its exports are looked up like any other
+package's. Arguments are primitive types, integer constants, the importer's
+own declared types, or imported types, resolved as the importer would resolve
+them (`OAK-M0302` otherwise); the import must supply exactly the declared
+arity, a non-generic package takes none, and a generic package cannot be the
+root of a build (`OAK-M0301`). A declared parameter contract
+(`package pair[T: Keyed]`, naming a record shape or interface of the package)
+is checked **at the import site**: the argument must satisfy it
+(`OAK-M0303`), the same predicate generic functions use, before the instance
+body is checked as concrete code.
+This is Oak's functor: monomorphized at import, with the package as the unit
+of parameterization and no runtime object.
+
+
+### 6.8 Tag schemas are package members
+
+A tag schema (`json: tag = { name: string }`, `40-records.md` §12) is an
+ordinary package-level declaration: private unless `pub`, renamed to its
+internal name like any other, and named from another package as
+`alias.schema` in a field's tag list (`x(wire.json: "px"): u32`). Two
+packages may each declare a `json` schema without colliding. Codec
+derivation recognizes the json schema under any package's spelling.
 
 ## 7. Elaboration and naming
 
@@ -309,17 +573,42 @@ internal names back to `path.name`.
 never spell — or capture — an internal name. This is the capture-freedom
 argument for the whole-program elaboration.
 
-Two kinds of declarations are looked up by label rather than by name and are
-therefore not renamed: **methods** (`fn (r: T) m()` is selected through the
-receiver type, which is renamed) and **tag schemas** (field tags name their
-schema as a string; tag namespaces are consequently program-wide, a recorded
-limitation). Renaming is consistent across a package — binders and uses alike
-— so shadowing inside function bodies is preserved.
+**Scope is per package.** The flattened program is an implementation device,
+not a scoping rule. The names legal inside a package — its locals,
+parameters, and receivers — are determined by that package's own
+declarations and its imports, never by which package happens to be the build
+root. Concretely, the no-shadowing rule (`20-types.md`, "Oak does not allow
+shadowing") is checked against the **declaring package's** scope: a local in
+package `view` may be named `rank` even though the root package exports
+`rank`, and a local inside the standard prelude may be named `maximum` even
+though the program that imports the prelude declares `maximum`. The root
+package keeps the whole rule, because everything visible to the root — its
+own declarations and the prelude's unqualified exports — is unqualified
+there. Imported packages' renamed declarations can never collide with a
+local (no user identifier contains `__`), so the rule bites only in the two
+directions just named. This is law 6 of section 12. The spliced bootstrap
+library is its own package for this purpose (identity `std`), and the
+tokens of every package are stamped with their package, so the checker
+reads the declaring package of any binding from the binding itself.
 
-Every token of an imported package is stamped with the package path in its
+**Methods** are looked up by label through their receiver type and are not
+renamed themselves (the receiver type is). Everything else a package declares
+— functions, values, types, interfaces, tag schemas — is renamed; field tag
+namespaces are strings on record fields and are rewritten through the same
+lookup. Renaming is consistent across a package — binders and uses alike — so
+shadowing inside function bodies is preserved.
+
+Every token of every package is stamped with `package#file` in its
 `SemanticContext`, keeping position-keyed resolution records distinct across
-packages (the mechanism the stdlib and generic instantiation already use) and
-telling the type checker which package a projection comes from.
+packages (the mechanism the stdlib and generic instantiation already use),
+telling the type checker which package a projection comes from, and letting
+every diagnostic name the file and position of its primary cause.
+
+A generic package instance has identity `path@atom,atom` (arguments resolved
+to primitive names, constants, or internal type names). Import paths contain
+no `@` and atoms no `,`, so the identity decodes uniquely and mangles
+injectively like any package path. A sealed binding's fresh abstract type
+`h.Key` has internal name `mangle(importer@h, Key)`.
 
 ## 8. Diagnostics
 
@@ -340,6 +629,14 @@ Family `M` (`15-diagnostics.md`). Structural tests assert each code.
 | `OAK-M0111` | `import(...)` in an illegal position; imports after declarations; bootstrap import bound or sealed |
 | `OAK-M0112` | manifest error: malformed `oak.mod`, dependency module not locatable, module path disagreement |
 | `OAK-M0113` | sealed import: member type differs from the signature |
+| `OAK-M0114` | method declared outside the package of its receiver type |
+| `OAK-M0201` | `derive.<kind>`: unknown kind |
+| `OAK-M0202` | derived declaration: signature does not match the kind |
+| `OAK-M0203` | derivation over an unsupported type or member |
+| `OAK-M0204` | derivation outside the type's declaring package |
+| `OAK-M0301` | generic package arity: arguments missing, unexpected, or wrong in number; generic package as build root |
+| `OAK-M0302` | generic package argument not resolvable to a type or constant |
+| `OAK-M0303` | generic package argument does not satisfy the parameter's declared contract |
 
 Module diagnostics carry the file path in their title; multi-file source
 mapping of every downstream diagnostic remains the recorded debt of
@@ -354,23 +651,129 @@ They cannot be bound or sealed (`OAK-M0111`). Their names are not `pub` and
 are not renamed; a user declaration colliding with a bootstrap export is
 rejected as before.
 
-Re-cutting the standard library into importable packages (`strings`,
-`encoding/utf8`, ...) under the rules of this chapter — with `pub` exports and
-qualified access — is the recorded migration; `docs/notes/standard-library-design.md`
-section 4 sketches the module graph. Until then a non-bootstrap standard
-library path is unresolvable (`OAK-M0102`).
+**Standard library packages.** The library files are real packages:
+`strings`, `unicode`, `json`, `filters`, `hash_table`, `bitset_algebra`,
+`causal_frontier`, `math`, `hash`, and `mx` each carry a package clause, import the
+library packages they use (`strings` imports `unicode`, `json` imports
+`strings`, `hash_table` imports `filters`), qualify their cross-references,
+and mark their exports `pub`. `math` (`20-types.md` §11.3.6), `hash`
+(`stdlib/README.md`: SHA-256, CRC-32C), and `mx` (`20-types.md` §11.3.1a:
+MXFP4 blocks) are packages only: their names
+(`exp`, `log`, `sha256`, …) are too common to enter every program
+unqualified, so they are never part of the flat prelude below. `import("json")` loads json, strings, unicode, and the **core prelude**
+(`std.oak`: Option, Result, Overflow, byte and ring helpers), which every
+library package builds on unqualified — and nothing else. The legacy flat
+prelude of `import(std)` is *derived* from the same sources at build time:
+clauses and imports dropped, cross-references de-qualified, concatenated in
+dependency order. One source, two spellings; the flat one cannot drift from
+the packages. A program may use both: the core types are shared, so a value
+from `strings.utf8_decode` and one from the flat `utf8_decode` have the same
+`Result` type.
+
+**Library sugar on package spellings.** Derived JSON codecs
+(`encode[T, Json]`, `from[T](v).to[Json](dst)`), typed text literals
+(`text_literal("...")`), fluent builder calls (`b.append_text(dst, s)`), and
+derived formatting generate calls to library functions by their flat names.
+The sugar runs after module elaboration and derivation and resolves those
+names to the imported packages' internal names; a name belonging to a
+library package the program did not import fails closed with a diagnostic
+naming the import to add (`encode` needs `import("json")`, text needs
+`import("strings")`). The flat prelude keeps the flat names.
 
 ## 10. Interaction with other chapters
 
 - **API snapshots (`82-package-semver.md`).** The public API of a package is
   exactly its `pub` declarations; `Compilation.APISnapshot` projects only
-  those. `pub(opaque)` types contribute their semantic identity but no ABI.
-  `oak-api` accepts a package directory as well as a single file.
-- **Testing (`110-testing.md`).** `oak test` still concatenates the files of
-  one directory into a bootstrap package; routing the runner through the
-  package loader so test packages can import other packages is a recorded next
-  step. Trust-by-import for the testing reporter is unaffected: the reporter
+  those. `pub(opaque)` types contribute their name but no definition or ABI,
+  and named types are spelled by name inside every signature.
+  `oak mod api -package P` snapshots one package from a directory or a
+  single file. Versions
+  attach to modules: `oak.mod` may declare `version`, `oak mod api` snapshots
+  every package of the module, `oak mod diff`/`oak mod bump` classify the
+  change and enforce the exact bump, `oak mod download` refuses an archive
+  whose carried `api.json` its source does not honor, and `oak mod compat`
+  decides from a dependency snapshot alone whether the module's sealed
+  imports still hold, `oak mod upgrade` picks the highest compatible
+  candidate, and `oak mod try` decides unsealed imports by building against
+  a local candidate through an in-memory `replace`. `oak mod pack` closes
+  the producer side. `Oak.Modules.Semver` proves the classification and
+  exact-bump laws.
+- **Testing (`110-testing.md`).** `oak test` compiles each test directory
+  through the package loader with `*_test.oak` files included, so test
+  packages import other packages of their module and diagnostics name real
+  files. `oak run [dir]` builds a package, compiles the C with the system
+  compiler into a temporary directory, runs it, and propagates its exit
+  status — a development convenience over trusted local source.
+  Trust-by-import for the testing reporter is unaffected: the reporter
   declarations still enter only through `import(testing)`.
+- **REPL.** A REPL session is an in-memory root package compiled through the
+  loader (`Compilation.WithSessionSources`): imports resolve through the
+  module enclosing the working directory, every input passes the type,
+  borrow, and discipline gates, and expressions are evaluated by the
+  tree-walking evaluator over the elaborated program. `pub`, sealed imports,
+  fresh abstract types, generic packages, and derived declarations behave as
+  in a build; the only session-specific rule is that an import may be
+  submitted before it is used. `:obligations` lists the recorded assumptions
+  the pipeline left standing for the session program — unsafe admissions,
+  unbounded loops, unlowered tail cycles, runtime-initialized globals — the
+  exact inputs a proof step would take; `:strict` judges declarations under
+  the strict profile, where those assumptions reject; `:lean` names, for each
+  listed assumption, the Lean module and law that govern it and what
+  discharges it (`OAK-D0103` → `Oak.BoundedLoop`, `OAK-B0110` → `Oak.Unsafe`,
+  ...). `:lean <file.lean>` goes one step further and **states** every
+  listed assumption as a Lean theorem over the formal models, so the REPL is
+  the front end of a proof exchange with Lean:
+  - an unbounded loop (`OAK-D0103`) is translated into `Oak.Loops` — the
+    guard, each assigned variable's representation (`u8..i64`, `Bool`), the
+    body as one simultaneous assignment plus an ordered list of array
+    writes, obtained by symbolically executing the sequential Oak body — and
+    the theorem is its termination from every state
+    (`Oak.Loops.Terminates`), discharged by a ranking function through
+    `Oak.Loops.ranking_terminates`. The fragment is integer and Boolean
+    locals, arithmetic (wrapped at every operation, as Oak's total
+    fixed-width arithmetic is), comparison, connectives, `?` conditionals,
+    assignments, loop-local declarations (substituted where read, never part
+    of the state), array reads and writes (the state carries a memory; a
+    read sees the iteration's earlier writes; each write stores the
+    pre-iteration index and value in program order), explicit narrowing
+    (`u8_trunc_u32`, `_bits_`), records (flattened: a record-typed local or
+    parameter is one variable per scalar leaf `p.v`, `q.p.k`, an array of
+    records one memory per leaf `cs.v`, and record literals, whole-record
+    copies, field stores, and record arguments expand per leaf; the Lean
+    semantics sees only scalars), sum types (flattened the same way: a
+    `tag` leaf in declaration order plus each constructor's payload leaves
+    under its name; a constructor sets the tag and its payload and zeroes
+    the unobservable rest; a match is the nested conditional on the tag
+    with the last arm as the checker-guaranteed default, and a payload
+    binding is a local over the payload leaves), and calls: an
+    expression-bodied,
+    non-recursive, non-generic callee whose body is in the fragment is
+    inlined, and any other callee is an uninterpreted function of the
+    statement (`Oak.Loops.Funs`, the parameter `F` the programmer constrains
+    with hypotheses). A loop outside the fragment (a nested loop, a
+    record-valued call, an unknown representation) is reported as
+    untranslatable, never approximated;
+  - a tail-only cycle (`OAK-D0102`) is stated over `Oak.Discipline.Ranked`
+    with the cycle's call edges, and emitted **proved** by the compiler's own
+    constant rank certificate;
+  - an admitted writable-disjointness assumption (`OAK-B0110`) is stated
+    over `Oak.Regions.Disjoint`; when both regions were known the statement
+    is decided, so an assumption that is in fact false (`span(&buf)` twice)
+    is emitted as its refutation, and symbolic regions become variables.
+  `spec/lean/Oak/SessionObligations.lean` is the emitted file for the
+  example session of `repl/lean_test.go` (regenerated by the test, checked by
+  the Lean CI job), and `Oak/SessionObligationsProved.lean` discharges its
+  closed loop statements by ranking functions — the programmer's half of
+  the exchange. `:lean check [file]` closes the loop inside the session:
+  the REPL writes the statements and runs the repository's Lean toolchain
+  on them (`lake env lean --json`, from the `spec/lean` directory found
+  above the working directory or named by `$OAK_LEAN_DIR`, with a fixed
+  argument list and no shell), then reports each theorem as **proved**,
+  **sorry** (the programmer's part is still open), or **error** (the
+  statement is false or ill-formed, with Lean's message). Without `lake` on
+  the path the command says how to check by hand. The REPL still proves
+  nothing: it records assumptions, states them exactly, and Lean checks the
+  statements and the proofs.
 - **FFI/SIMD (`92-ffi.md`, `93-simd.md`).** `c`, `arm64`, and `simd` remain
   compiler-known libraries, not packages; an import alias may not reuse their
   names.
@@ -379,24 +782,20 @@ library path is unresolvable (`OAK-M0102`).
 
 ## 11. Direction (not part of v1)
 
-- **Generic packages / functors**: `package ring[T, N: u32]` instantiated at
-  import; today parameterized code is written with generic declarations inside
-  ordinary packages.
-- **Opaque ascription**: a sealed import's `Name: type` member becoming a
-  fresh abstract type per binding, and `with type` sharing constraints.
-- **Named signatures**: `Hasher: type = { ... }` declarations reusable across
-  sealed imports (blocked on function types in record-literal expressions).
-- **Selective and unqualified imports**, **nested modules**.
-- **Package-qualified variant construction in call position**
-  (`geo.Shape.Line(3)`), shared with the unqualified gap.
-- **Codegen type inference for `x := call()` returning a record**: annotate
-  the binding today; a pre-existing backend limitation the module tests expose.
-- **Standard library packages** (section 9), **`oak test` through the loader**
-  (section 10), **source-mapped multi-file diagnostics**, **network fetch and
-  a lock file** (the manifests alone already make selection reproducible),
-  **evaluator support** (the interpreter still ignores imports).
+- **A lock file** (the manifests alone already make selection
+  reproducible).
+- **A full Oak semantics in Lean.** `:lean <file>` states obligations over
+  the loop fragment of `Oak.Loops`, the call graph of `Oak.Discipline`, and
+  the regions of `Oak.Regions`; loops that call functions, index arrays, or
+  declare locals need the larger semantics before they can be stated.
 
 ## 12. Required laws
+
+- An open import is rejected exactly when one of its exports is already
+  bound; an accepted open binds exactly the exports, none previously bound;
+  adding exports never changes a binding (`Oak.Modules.OpenImports`).
+- A nested module resolves to its parent's module unless a module path
+  equals the nested path (`Oak.Modules.NestedPaths.moduleOf_nested`).
 
 - `escape` is injective and never yields adjacent underscores; `mangle`
   decodes to exactly its package path and declaration name; every internal
@@ -410,10 +809,23 @@ library path is unresolvable (`OAK-M0102`).
 - Opaque projection is admitted exactly inside the declaring package.
 - Version selection satisfies every requirement, is the least such version,
   and is one of the requirements.
+- The set of legal local names in a package is a function of that package's
+  declarations and imports alone; in particular it does not change when a
+  different package becomes the build root (section 7, "Scope is per
+  package"). Checked by executable tests (`compiler/e2e_ml_feedback_test.go`),
+  not yet modeled in Lean.
 
-These laws are mechanically checked in Lean (`spec/lean/Oak/Modules.lean`).
-The Go procedures (`modules/`) are maintained as line-for-line transliterations
-of the Lean definitions and tested against the same laws, including a
-randomized injectivity witness; an explicit refinement theorem relating the Go
-representation to the model is pending, so the STATUS matrix records M and P
-but not R.
+These laws are mechanically checked in Lean (`spec/lean/Oak/Modules.lean`),
+except the scoping law, whose formal model is a recorded gap.
+`spec/lean/Oak/ModulesRefinement.lean` states the correspondence in
+refinement form: `lookup` resolves exactly the abstractly reachable members
+(`lookup_iff_reachable`), a complete Kahn run is a valid compile order and a
+stuck set is a cycle witness (`order_complete_refines`,
+`order_stuck_refines`), decoding is a left inverse of mangling and user
+identifiers are never internal names (`naming_refines`,
+`user_identifier_not_internal`), and `select` yields exactly the abstract
+minimal version (`select_iff_minimal`). The Go procedures (`modules/`) are
+maintained as line-for-line transliterations of the Lean definitions and
+tested against the same laws, including a randomized injectivity witness.
+**R is scoped to these pure decision procedures**, not to the loader's
+filesystem traversal, syntax rewriting, or diagnostics.

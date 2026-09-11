@@ -3,6 +3,7 @@ package object
 import (
 	"bytes"
 	"fmt"
+	"github.com/SCKelemen/oak/token"
 	"strconv"
 
 	"github.com/SCKelemen/oak/ast"
@@ -99,6 +100,14 @@ func (rv *ReturnValue) Type() ObjectType { return RETURN_VALUE_OBJ }
 func (rv *ReturnValue) Inspect() string  { return rv.Value.Inspect() }
 func (rv *ReturnValue) Kind() ObjectKind { return RETURN_VALUE }
 
+// BreakSignal is the control-flow value a `break` statement evaluates to:
+// blocks return it upward until the enclosing while consumes it.
+type BreakSignal struct{}
+
+func (b *BreakSignal) Type() ObjectType { return BREAK_OBJ }
+func (b *BreakSignal) Inspect() string  { return "break" }
+func (b *BreakSignal) Kind() ObjectKind { return BREAK }
+
 type Error struct {
 	Message string
 }
@@ -136,6 +145,28 @@ func (r *Record) Inspect() string {
 // Array: [elem1, elem2, ...]
 type Array struct {
 	Elements []Object
+}
+
+// View is a borrowed window over an Array's storage (docs/spec/50-borrowing.md):
+// Start and Len select the elements, Writable distinguishes a span ([*]T)
+// from a read-only view ([]T). Element access goes through the array, so
+// writes through a span are visible to the owner — the interpreter's
+// counterpart of the backend's {base, len} pair.
+type View struct {
+	Array    *Array
+	Start    int
+	Len      int
+	Writable bool
+}
+
+func (v *View) Type() ObjectType { return VIEW_OBJ }
+func (v *View) Kind() ObjectKind { return ARRAY }
+func (v *View) Inspect() string {
+	kind := "view"
+	if v.Writable {
+		kind = "span"
+	}
+	return kind + "[" + strconv.Itoa(v.Start) + ":" + strconv.Itoa(v.Start+v.Len) + "]"
 }
 
 func (a *Array) Type() ObjectType { return ARRAY_OBJ }
@@ -198,8 +229,13 @@ type Environment struct {
 	// recordDecls retains record type declarations' field structure
 	// (name/order/type expressions) for zero-value construction of
 	// storage-identity records in the interpreter.
-	recordDecls map[string]*ast.RecordLiteral
-	outer       *Environment
+	recordDecls     map[string]*ast.RecordLiteral
+	recordTemplates map[string]recordTemplate
+	outer           *Environment
+	// arithmeticWidths, when set, reports the checker's recorded fixed-width
+	// result type of an arithmetic or negation token, so the interpreter
+	// wraps exactly as compiled code does. Inherited through enclosures.
+	arithmeticWidths func(token.Token) (string, bool)
 }
 
 func NewEnvironment() *Environment {
@@ -213,6 +249,9 @@ func NewEnvironment() *Environment {
 func NewEnclosedEnvironment(outer *Environment) *Environment {
 	env := NewEnvironment()
 	env.outer = outer
+	if outer != nil {
+		env.arithmeticWidths = outer.arithmeticWidths
+	}
 	// Copy ADT types from outer environment
 	if outer != nil {
 		for name, adtType := range outer.GetAllADTTypes() {
@@ -233,6 +272,47 @@ func (e *Environment) Get(name string) (Object, bool) {
 func (e *Environment) Set(name string, val Object) Object {
 	e.store[name] = val
 	return val
+}
+
+// Assign updates an existing binding in the scope that declares it, so an
+// assignment inside a nested block (a match arm, a loop body) reaches the
+// outer variable instead of shadowing it. Reports false when no scope
+// holds the name.
+func (e *Environment) Assign(name string, val Object) bool {
+	for scope := e; scope != nil; scope = scope.outer {
+		if _, ok := scope.store[name]; ok {
+			scope.store[name] = val
+			return true
+		}
+	}
+	return false
+}
+
+// SetRecordTemplate retains a generic record declaration (Idx[P]) with its
+// type-parameter names, for zero-value construction of instantiations.
+func (e *Environment) SetRecordTemplate(name string, params []string, decl *ast.RecordLiteral) {
+	if e.recordTemplates == nil {
+		e.recordTemplates = make(map[string]recordTemplate)
+	}
+	e.recordTemplates[name] = recordTemplate{params: params, decl: decl}
+}
+
+// GetRecordTemplate returns a generic record declaration and its
+// type-parameter names.
+func (e *Environment) GetRecordTemplate(name string) ([]string, *ast.RecordLiteral, bool) {
+	template, ok := e.recordTemplates[name]
+	if !ok && e.outer != nil {
+		return e.outer.GetRecordTemplate(name)
+	}
+	if !ok {
+		return nil, nil, false
+	}
+	return template.params, template.decl, true
+}
+
+type recordTemplate struct {
+	params []string
+	decl   *ast.RecordLiteral
 }
 
 func (e *Environment) GetADTType(name string) (*ADTType, bool) {
@@ -283,15 +363,18 @@ type ObjectType string
 
 const (
 	INTEGER_OBJ      = "INTEGER"
+	FLOAT_OBJ        = "FLOAT"
 	BOOLEAN_OBJ      = "BOOLEAN"
 	STRING_OBJ       = "STRING"
 	NULL_OBJ         = "NULL"
 	RETURN_VALUE_OBJ = "RETURN_VALUE"
+	BREAK_OBJ        = "BREAK"
 	ERROR_OBJ        = "ERROR"
 	FUNCTION_OBJ     = "FUNCTION"
 	ADT_OBJ          = "ADT"
 	RECORD_OBJ       = "RECORD"
 	ARRAY_OBJ        = "ARRAY"
+	VIEW_OBJ         = "VIEW"
 	VECTOR_OBJ       = "VECTOR"
 )
 
@@ -306,9 +389,11 @@ const (
 	VARIANT
 	ERROR
 	RETURN_VALUE
+	BREAK
 	RECORD
 	ARRAY
 	VECTOR
+	FLOAT
 )
 
 var types = [...]string{
@@ -325,6 +410,7 @@ var types = [...]string{
 	RECORD:       "RECORD",
 	ARRAY:        "ARRAY",
 	VECTOR:       "VECTOR",
+	FLOAT:        "FLOAT",
 }
 
 func (kind ObjectKind) String() string {
@@ -336,4 +422,45 @@ func (kind ObjectKind) String() string {
 		s = "object(" + strconv.Itoa(int(kind)) + ")"
 	}
 	return s
+}
+
+// SetArithmeticWidths installs the checker's width oracle (typically
+// TypeChecker.ArithmeticType) so evaluation wraps fixed-width arithmetic
+// like the compiled backend. Without one the interpreter computes on
+// untyped 64-bit integers.
+func (e *Environment) SetArithmeticWidths(oracle func(token.Token) (string, bool)) {
+	e.arithmeticWidths = oracle
+}
+
+// ArithmeticWidth reports the recorded fixed-width type of a token, if an
+// oracle is installed in this environment or an enclosing one.
+func (e *Environment) ArithmeticWidth(tok token.Token) (string, bool) {
+	for env := e; env != nil; env = env.outer {
+		if env.arithmeticWidths != nil {
+			return env.arithmeticWidths(tok)
+		}
+	}
+	return "", false
+}
+
+// Float is a floating-point value of one width (docs/spec/20-types.md
+// section 11.3): Bits is 32 or 64, and Value holds the exactly representable
+// number of that width (an f32 value is stored widened, which is exact).
+type Float struct {
+	Value float64
+	Bits  int
+	// Format names a storage kind ("f16" or "bf16" when Bits is 16, "f8e4m3"
+	// or "f8e5m2" when Bits is 8); Value then holds the exactly representable
+	// widened number.
+	Format string
+}
+
+func (f *Float) Kind() ObjectKind { return FLOAT }
+func (f *Float) Type() ObjectType { return FLOAT_OBJ }
+func (f *Float) Inspect() string {
+	bits := f.Bits
+	if bits != 32 {
+		bits = 64
+	}
+	return strconv.FormatFloat(f.Value, 'g', -1, bits)
 }

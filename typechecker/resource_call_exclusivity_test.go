@@ -233,7 +233,6 @@ f: (left: Handle, right: Handle): u32 {
 	}
 }
 
-
 func TestResourceCallConsumedModeInvalidatesAliases(t *testing.T) {
 	input := `
 Handle: type = struct { id: u32 }
@@ -372,7 +371,7 @@ func TestResourceModelConflictingModesFailClosed(t *testing.T) {
 	// Populate the map directly to exercise the checking entry-point boundary.
 	model.Operations["close"] = ResourceOperation{
 		Parameters: []ResourceParameterDeclaration{{Index: 0, Mode: ResourceParameterBorrowed}},
-		Consumes: []int{0},
+		Consumes:   []int{0},
 	}
 	tc := setupTypeChecker(input)
 	tc.CheckProgramWithResources(parseProgram(input), model)

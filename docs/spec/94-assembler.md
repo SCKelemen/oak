@@ -200,9 +200,408 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   under `frame 160`, a flags/label loop, and a 2 KiB-aligned sixteen-entry
   `eret` vector table (assembled, its extents checked statically).
 
-Pending, in the order the pilot needs them: memory through typed pointer
-parameters (`[x0, #off]` where `x0` is bound to a span); callee-saved
-clobbers with save/restore obligations; the operand-stack shorthand
-(`push left / push right / add`); an Oak fallback body for non-AArch64
-targets; taking an asm function's address for `VBAR_EL2`; the semantic
+- **Units beside the sources.** A package build (`oak build`, `oak run`,
+  `Compilation.WithPackageDir`) picks up every `*.oakasm` in the root
+  package's directory; each unit function pairs with the package's
+  definition-less declaration of the same name, or with a defined function
+  as its fallback body. Verification verdicts (§8) are informational
+  diagnostics the CLI prints as `asm: …` lines; a mismatch is an error.
+  `examples/asm` is the reference: four kernels, all proven, run both ways.
+- **Typed pointer memory.** A span (`[*]T`) or view (`[]T`) parameter of
+  fixed-width elements crosses as its `{base, u32 len}` pair and binds
+  both registers explicitly — `bind x0, w1 = frame` (the base pointer,
+  then the 32-bit length; the upper half of `x1` is padding the contract
+  never defines, so only `w1` is ever consulted). Memory through the base
+  (`ldr x9, [x0, #8]`) is admitted only under a **dominating bounds
+  guard**: `cmp w1, #N` immediately followed by `b.lo <fail>` proves
+  `len >= N` on the fall-through path, and the checker then proves each
+  access `[off, off+size)` lies within `N * elem` bytes
+  (`Oak.Assembler.span_access`). Guards die at calls and on any write to
+  the base or length register, and at a label they survive only when every
+  predecessor carries them (below); a span base is never moved
+  (no pre/post-index); stores through a view are refused; a comparison
+  of `x1` is not a guard. **Walking a span by index** uses the scaled
+  register-offset form `ldr w11, [x0, w9, uxtw #2]` — element `w9`, the
+  shift the element size's log2 and the register the element's width —
+  admitted only under a **dominating index guard**: `cmp w9, w1` then
+  `b.hs <exit>` proves `w9 < len` on the fall-through path (or `cmp w9,
+  #K` then `b.hs` with `len >= K` already established), so the access lies
+  inside the span (`Oak.Assembler.index_access`). Index facts die like
+  length guards: at calls, and on any write to the index or the register
+  it was compared against. **At a label a fact survives exactly when every
+  predecessor carries it** — fall-through and every branch targeting the
+  label, forward or backward — computed as a fixpoint over checker passes
+  (assume everything, record the meet of what arrives, repeat until
+  stable; proven minimum lengths meet at the smaller value,
+  `Oak.Assembler.meet_sound`). So the loop idiom is one length guard
+  before the loop, then guard the index, load, advance, branch back: the
+  outer `len >= N` holds at the header because both the fall-through and
+  the back edge carry it, and a back edge that wrote the length register
+  drops it. This is the bounds-check doctrine made explicit
+  in assembly: the runtime check is written by the author, its dominance
+  is verified by the checker, and the offsets under it are proven.
+- **Callee-saved obligations.** `x19`–`x30` carry the caller's values on
+  entry (readable without a write), may be written only after being
+  **saved** into the declared frame (a `str`/`stp` from the still-untouched
+  register records its absolute slot), and every `ret` requires each
+  written callee-saved register **restored** from that same slot (`ldr`/
+  `ldp`, matched by absolute address relative to entry sp, not by textual
+  offset) with no write after the restore. `bl` in a returning function
+  requires the link register saved first (`stp x29, x30, [sp, #-16]!`) —
+  the call clobbers it, so the same restore obligation covers it before
+  `ret`; never-returning functions keep the clobber-only rule.
+- **Oak fallback bodies.** A declaration may carry both an Oak body and an
+  asm unit of identical signature: the asm block emits under
+  `__aarch64__` (and not `OAK_PORTABLE_INTRINSICS`), the compiled Oak body
+  under the complementary condition, so programs with asm units build on
+  non-AArch64 hosts and the Oak body is the portable semantics the asm
+  must agree with — the differential-witness convention of `93-simd.md`
+  extended to hand-written assembly. Without a fallback, a non-AArch64
+  target still fails closed with `#error`.
+- **`address_of(f)`** yields the `u64` code address of an asm-backed
+  function and nothing else — the `VBAR_EL2` install path
+  (`arm64.write_vbar_el2(address_of(vectors))`). Ordinary Oak functions
+  have no exposed address.
+
+- **The operand-stack shorthand** (§2) is implemented as desugaring
+  (`asm/stack.go`): `push <param>` writes the parameter's contract binding
+  for the author, `push #imm` pushes an immediate, an operand-less
+  data-processing mnemonic (`add sub and orr eor lsl lsr`) pops two values
+  and pushes its result in a compiler-chosen scratch register (`x9`–`x15`,
+  declared as clobbers for the author), and the single value left at the
+  end moves into the result register before `ret`. The desugared body is
+  then checked exactly like a handwritten one. Refused: underflow, a
+  leftover value, mixing explicit operands or explicit `bind` lines into a
+  shorthand body, vector parameters. Executed: the spec's own
+  `add_asm` example and a chained `push a / push #2 / add / push #3 / lsl`.
+
+Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.
+
+## 8. Semantic verification of asm bodies (six increments implemented)
+
+**Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
+with both an asm unit and an Oak fallback body, the asm gate runs the
+verifier and labels its verdict — **proven** when both sides normalize to
+the same linear form modulo the result width (sums of parameters and
+constants; `lsl` by a constant as multiplication; the `wN` write/read masks
+are transparent modulo 32), **mismatch** when any witness input disagrees
+(a hard error naming the input and both values — a wrong body never
+compiles), **proven at the bit level** when, beyond the linear form, both sides
+bit-blast (`asm/blast.go`, a small ROBDD with interleaved variable order)
+to the same canonical decision diagram for every result bit — the complete
+decision for the term language (`and`/`orr`/`eor`, shifts by constants and
+by registers as a mux barrel, `add`/`sub` as a ripple-carry chain), with a
+differing bit reported as a **mismatch** carrying a concrete counterexample
+(`Oak.AssemblerSemantics.eq_of_bits` is the justification; the ripple-carry
+chain is now **Lean-refined**: `rippleCarry`/`rippleSum` are the blaster's
+recurrences verbatim, `rippleCarry_eq_carry` identifies the chain's carry
+with `BitVec.carry`, `rippleSum_eq_add` gives bit i of `a + b`, and
+`rippleSum_eq_sub` gives bit i of `a - b` through the complement chain with
+carry-in 1), **witness-checked** only when the bit-level decision exceeds
+its node budget (evidence, labeled so), and **trusted** when the body or the
+Oak expression is outside the executable subset (labels, calls, memory,
+system instructions, non-constant shift counts on the Oak side — Oak traps
+where the machine wraps the count).
+
+**Conditional bodies (second increment).** `csel` and `cset` join the
+instruction table (`csel wD, wN, wM, cond` / `cset wD, cond`; a condition
+code is an operand; both consume flags under the same dominance rule as
+`b.cond`). The executor tracks the flags as *the operands that produced
+them*: `cmp l, r` and `subs` leave NZCV as the flags of `l - r` at the
+operands' width; `adds` leaves flags no comparison describes (a select
+after it is trusted, never falsely proven). A select lowers to `cond ? a :
+b` over a comparison term; on the Oak side a two-armed Bool conditional
+`x < y ? a | b` whose scrutinee compares parameters lowers to the same
+shape, with the condition code chosen from the operator *and the parameter
+type's signedness* (`<` on `u32` is `lo`, on `i32` it is `lt`). Deciding
+the comparison is the flag computation itself: the blaster runs the
+complement chain, takes C as its carry-out, Z from the difference, N its
+sign, V the subtraction's signed overflow, and applies ARM's condition table
+(`asm/blast.go`'s `condition`); the witness evaluator computes the
+comparison directly. `Oak.AssemblerSemantics` ties the two readings:
+`flagsOf`, `Cond.holds`, and `condHolds` are the table; `c_eq_carry` proves
+C is the chain's carry-out; `eq_holds_iff`, `hs_holds_iff`, `lo_holds_iff`,
+`hi_holds_iff` prove the unsigned codes are the comparisons Oak lowers to;
+the four signed codes are checked exhaustively at width 4 against
+`BitVec.slt`; `csel_lo_max` is the unsigned maximum on the semantics. `mi`,
+`pl`, `vs`, `vc` (single-flag reads) and conditions composed with `&&`/`||`
+remain outside the subset (trusted). Executed: `max32` via `cmp`/`csel lo`
+proven and run both ways; `csel hi` for `a < b` refuted at the gate with a
+concrete counterexample; `lo` for a signed comparison refuted at
+`a = -1, b = 0`.
+
+**Acyclic branches (third increment).** The executor unfolds a body into
+its paths: `b.cond L` forks the symbolic state — the taken path continues
+at `L` under the branch's condition (read off the flags exactly as `csel`
+does), the fall-through under its negation — and the two results meet as a
+select (`Oak.AssemblerSemantics.branch_as_select`; `branch_map` is the law
+that lets paths rejoin at a shared tail through an unconditional `b`).
+Every branch target must lie ahead of the branch: a backward target is a
+loop, outside the subset, and the body is trusted, as is a body exceeding
+the path budget. On the Oak side, nested conditionals lower to nested
+selects, comparisons joined by `&&`/`||` lower to the strict and/or of their
+0/1 terms (over pure comparisons of parameters, short-circuiting is
+unobservable), Bool literals are `1`/`0`, and a Bool-typed body is its C
+representation — so a range test `lo <= v && v < hi` is the specification
+of a two-branch chain. The signed condition codes are now theorems at the
+contract widths: `lt_holds_eq_slt_w32`/`_w64` (and `ge`/`gt`/`le`) prove
+the N ≠ V reading against `BitVec.slt` for every 32- and 64-bit operand pair
+by `bv_decide` (a SAT certificate the kernel checks). Executed: a clamp
+with two branches and three paths proven and run both ways; `b.hs` for a
+`<` branch refuted; an inclusive bound for an exclusive one refuted; a loop
+trusted. **Register-offset span addressing** (`[x0, w9, uxtw #2]`, §7)
+reaches the verifier as an element load whose index is the index register's
+term: along an unrolled counted loop that term is a constant, so the load
+is `v[k]` exactly as a constant offset would be; a data-dependent index
+names no single element and is trusted. Executed: a four-element sum loop
+walking a view by index proven against its Oak `while` (and against the
+flat `v[0] + … + v[3]`), run both ways; three iterations refuted with
+`v[3]` named; the data-dependent `while i < len(v)` walk checked but
+trusted.
+
+**Span memory (fourth increment).** A span or view parameter enters the
+executor as its `{base, len}` pair: the base register holds an opaque
+address term (no Oak spelling — a result depending on it can never match),
+the length register the 32-bit parameter `len(v)`. A load `ldr rD, [xB,
+#off]` whose base term is a span base reads the element parameter `v[k]`
+with `k = off / elem`, admitted only when the offset is a whole element and
+the register width is the element width; the seam checker has already
+placed the load under a dominating `cmp wL, #N; b.lo` guard, so the
+verifier asks only *which* element is read (`Oak.AssemblerSemantics.Span`,
+`loadElem_at`, `guarded_index_in_bounds`). The Oak side lowers `len(v)` and
+constant-index `v[k]` to the same parameters, with the element type's width
+and signedness (`[]i32` elements compare signed). Stores through a span,
+frame memory, moving bases, and loads whose width differs from the element
+(`ldr w` over `[]u8`) stay outside the subset (trusted). Executed: a
+guarded `pair_sum` over `[]u32` proven and run both ways; reading element 0
+twice refuted with the elements named in the counterexample; a guard
+constant of 3 for Oak's 2 refuted at `len(v) = 2`; a 64-bit first-or-default
+and a signed head max proven.
+
+**Counted loops (fifth increment).** The term constructors fold constants,
+so a comparison of a counter that is a constant on every iteration decides
+itself. The asm executor follows a backward branch whose condition folds
+(and an unconditional `b`) instead of refusing it, bounded by a global
+instruction-step budget; a backward branch whose condition is not constant
+is a loop with a data-dependent trip count — trusted (so is an unconditional
+`b` closing a loop in which the path forked on the inputs: the exit is the
+fork). A counted loop whose body forks on the inputs still unrolls — its
+closing branch is decided on every path — into up to 2^K paths, bounded by
+the path budget (beyond it, trusted). On the Oak side the fallback
+body may now be a statement block: typed locals with initializers,
+assignments (at the local's declared width), and `while` loops whose
+condition folds to a constant before every iteration (unrolled under a
+budget; a data-dependent condition is trusted), ending in the result
+expression. `Oak.AssemblerSemantics.counted_loop_unrolls` is the law: a
+counter from 0 to N under fuel N + 1 runs exactly N times, so the loop is
+the N-fold iterate of its body — the term both sides compute. Executed:
+`3*a` by a three-iteration accumulate proven (linear form); four iterations
+refuted; an eight-step popcount of the low byte proven at the bit level
+against its Oak `while`, and run both ways; seven steps refuted with a
+concrete input; data-dependent trip counts on either side trusted; a
+three-iteration loop that branches on the input inside proven against its
+conditional accumulate (eight paths) and refuted against the unconditional
+one; nine such iterations exceed the path budget and are trusted. **Data-dependent loops (sixth increment).** A loop whose trip count depends
+on the inputs is summarized rather than unrolled: on meeting a `while`
+whose condition does not fold (Oak) or a recognized loop — header label,
+`cmp` + `b.cond` exit, straight-line body, unconditional back edge — whose
+exit does not fold (asm), the executor records a **loop event**: the
+loop-carried variables' values at the header, fresh symbols standing for
+them on an arbitrary iteration, the continue condition over those symbols,
+and their values after one iteration; it then continues past the loop on
+the fresh symbols (the exit sees the header values of the exiting
+iteration; asm scratch registers are unbound after the loop). Element reads
+at a symbolic index become **select** terms — evaluated through a fixed
+element-content function, and bit-blasted as uninterpreted values shared by
+selects with identical index bits (sound for equality: equal under
+independent element values means equal under every memory). Verification
+then has two layers. **Witnesses**: both sides are re-executed on small
+concrete inputs, under which the loops become counted and unroll; a
+disagreement is a mismatch with a concrete input (a stride-2 walk, summing
+indices instead of elements, returning the counter — all refuted). **The
+coupling proof** (`Oak.AssemblerSemantics.whileFuel_coupled`): each Oak
+loop variable is paired with a register of the same width whose header
+value is bit-level equal — a small search, since two zeroed counters start
+alike — and the pairing is accepted when the continue conditions are
+proven equal and one iteration provably preserves every pair; the results
+after the loops are then compared as usual over the fresh symbols. The sum
+over a view of any length, and an n-fold 64-bit accumulate, are **proven**;
+the commuted body is the same loop; a count-down asm loop against a
+count-up Oak loop cannot be coupled and is **witness-checked** (evidence,
+never a false mismatch); a loop on one side only is trusted. Executed:
+`sum` over views of length 5, 2, and 0, both ways. **Forks inside the
+body**: a recognized loop body may branch forward within itself; one
+iteration is then executed along every path (a body-path budget bounds
+them) and the paths merge register by register into selects on their path
+conditions at the back edge. On the Oak side a statement-level conditional
+`c ? { x = e } | { }` runs each arm on a snapshot of the locals and merges
+the locals either arm assigns as selects — so the branchy asm, the
+`cset`-based asm, the value-position Oak spelling, and the statement-level
+Oak spelling of "count the elements above a threshold" are all one loop,
+and a running maximum by conditional move is proven; the wrong branch sense
+is refuted on a concrete input. **Affine couplings with invariants**: a
+pairing may relate a register to an Oak variable by `r = x + b` or
+`r = b - x` with `b` read off the header values and required to be
+loop-invariant (equality is `b = 0`); the Oak symbols are substituted by
+the inverse expressions. The Oak guard weakened to its closure (`i < n`
+gives `i ≤ n`) is a candidate invariant — admitted when it holds at the
+header and one iteration preserves it under the guard — and every check
+(condition agreement, body preservation, and the exit comparison under the
+negated guard) is a bit-level implication from the invariant, so R in
+`whileFuel_coupled` is the affine relations conjoined with the invariant.
+The exit comparison in loop mode never reports a symbolic disagreement as a
+mismatch (the state may be unreachable); only the concrete layer refutes.
+A count-down asm loop (`w1 = n - i`, under `i ≤ n`) and an inclusive
+1-based counter (`w9 = i + 1`) are now proven against the count-up Oak
+loop. **Nested loops**: the events form a tree in creation order with
+parent links on both sides — an inner loop met while executing the outer
+body is summarized in place, with fresh symbols namespaced per event
+(`loop2.j`), and the body continues at its exit; the asm shape admits
+recognized inner loops inside a body, and Oak loop bodies admit local
+declarations (a body-local counter is the body's own, not an outer
+loop-carried variable). The coupling pairs every event's variables in one
+search (an inner header mentions the outer symbols, so candidates are read
+under the substitution so far) and checks each event under its premise:
+its invariant and guard, its ancestors' invariants and guards, and its
+children's exit premises — an outer body's successors mention the inner
+loops' exit symbols. The nested `n × m` counter and row sums over a view
+are proven; an inner stride of two is refuted on a concrete input; loops
+that nest differently on the two sides are trusted. **Flags from additions
+and compare-and-branch.** `adds` leaves NZCV as the flags of `left + right`
+(`Oak.AssemblerSemantics.addFlagsOf`; `add_carry_iff`: the carry is the
+unsigned overflow, `a + b < a`), so the idiomatic saturating add
+`adds; csel cs` is proven against `a + b < a ? max | a + b`; every code is
+read through one NZCV table for both flag kinds, which brings `mi`/`pl`/
+`vs`/`vc` into the verified subset (`mi` after `cmp` is the difference's
+sign bit, `vs` after `adds` the signed overflow). `cbz`/`cbnz` and
+`tbz`/`tbnz` join the instruction table as conditional branches without
+flags (the checker reads the register and bounds the bit index); the
+executor, the loop-body executor, and loop recognition treat them like
+`b.cond`, so a count-down loop exiting through `cbz` is proven by the
+affine coupling and a `tbz` bit test verifies. Byte-offset pointer walks
+(`[xB, xO]`) remain deliberately outside the subset: the scaled-index form
+is the idiom and costs nothing on AArch64, and a byte offset would need
+value tracking the seam checker fails closed on. **Instruction breadth.**
+`ldrb`/`ldrh`/`strb`/`strh` access one- and two-byte elements (the span
+element size must match; the indexed form takes `uxtw #0`/`uxtw #1` and
+bytes emit as `[x0, w9, uxtw]`), and a narrower load zero-extends the
+element into its `w` register — so packet-buffer kernels over `[]u8` verify
+(a byte checksum by coupling, a big-endian 16-bit field). `mul` is a term
+operation (a constant factor keeps the linear form: `a * 10` is proven
+linearly; two symbolic operands blast as a shift-and-add product within the
+budget or stay evidence), `neg` and `mvn` are subtraction from zero and
+exclusive-or with all ones, `asr` is the arithmetic shift, and `tst` sets
+the flags of the AND (a third flags kind; C and V clear), so `tst; cset ne`
+is a bit test. Note Oak's shift and bitwise operators take unsigned
+operands only (`20-types.md`: bitwise on signed values is refused), so
+`asr` never implements an Oak body; should a signed shift ever be spelled,
+the verifier refutes the arithmetic reading at a negative input rather than
+assuming it. **Frame memory.** The executor carries sp's displacement
+(exactly the checker's number, through `sub`/`add sp` and pre/post-index)
+and a map from entry-relative slot addresses to the stored terms
+(`Oak.AssemblerSemantics.storeSlot`, `loadSlot_storeSlot`): `str`/`stp`
+record, `ldr`/`ldp` read back a slot stored with the same width, and a load
+of a slot never stored on the path, a width mismatch, or a narrow reload is
+outside the subset (trusted — never a fresh value that could match by
+accident). Callee-saved registers read before any write are the caller's
+opaque values, so a save/use/restore body round-trips them and is proven;
+spills and reloads are proven; reloading the wrong slot is refuted. Frame
+memory inside a loop body stays outside the subset. **Bit fields,
+conditional compare, conditional increment/negate, multiply-add.**
+`ubfx`/`ubfiz`/`sbfx`/`bfi` (the checker bounds the field inside the
+register) lower to shift/mask/or terms — `ubfx` is the extractor spelled
+directly, `bfi` keeps the destination's other bits, `sbfx` shifts the field
+to the top and arithmetic-shifts it down. `ccmp` reads and sets flags: the
+new flags are the comparison's when the prior condition holds and the
+immediate NZCV otherwise (`Oak.AssemblerSemantics.ccmpFlags`), so the
+range-check chain `cmp v, lo; ccmp v, hi, #2, hs; cset lo` is proven
+against `lo <= v && v < hi` and the wrong immediate (`#0`, which leaves
+`lo` true on the failing path) is refuted. `cinc`/`cneg` are selects
+(`cinc_eq_csel`), `madd`/`msub` multiply-add terms (a constant factor stays
+linear). The Oak side gained the prefix `^` (bitwise not).
+
+**General-purpose ISA coverage.** The table now spans the A64
+general-purpose instruction set; `asm/isa_test.go` is the coverage
+witness (every mnemonic parses, matches a form, passes the checker, and
+renders). Operands: shifted registers (`x2, lsl #3`, also `lsr`/`asr`/`ror`)
+on the arithmetic and logical group, extended registers (`w2, uxtw #2`,
+`sxtw`) on `add`/`sub`/`cmp`/`cmn`, and shifted immediates (`#imm, lsl #16`)
+on the wide moves. By group, with the verifier's status:
+
+| Group | Instructions | Verifier |
+| --- | --- | --- |
+| arithmetic, carry | `add sub adds subs adc sbc adcs sbcs neg negs ngc ngcs cmp cmn madd msub mneg` | modeled (`adcs`/`sbcs` flags unknown) |
+| logical | `and ands orr eor bic bics orn eon tst mvn` | modeled |
+| shifts, rotates, fields | `lsl lsr asr ror extr ubfx ubfiz sbfx bfi` | modeled |
+| bit manipulation, extends | `rev rev16 rev32 rbit clz cls sxtb sxth sxtw uxtb uxth` | modeled (`clz` as a priority encoder) |
+| wide moves | `movz movn movk` | modeled |
+| conditional | `csel cset csetm csinc csinv csneg cinc cinv cneg ccmp ccmn` | modeled |
+| multiply, divide | `mul smull umull smaddl umaddl smsubl umsubl smulh umulh udiv sdiv` | modeled; two symbolic operands, high products, and division exceed the bit-level budget (evidence); Oak's `/` and `%` trap and stay unlowered |
+| memory | `ldr str ldp stp ldrb ldrh strb strh ldrsb ldrsh ldrsw ldpsw ldur stur ldurb ldurh sturb sturh ldursb ldursh ldursw prfm` | loads through spans and the frame modeled (sign-extending loads sign-extend the element); `prfm` checked only |
+| ordered, exclusive, atomic | `ldar ldxr ldaxr ldapr stlr stxr stlxr` (+`b`/`h`), the LSE set `ldadd ldclr ldeor ldset ldsmax ldsmin ldumax ldumin swp cas` × {`-`,`a`,`l`,`al`} × {`-`,`b`,`h`}, `clrex` | checked: a guarded writable span, one element, roles per operation (`stxr` writes its status register, `cas` reads both); trusted by the verifier |
+| branches | `b b.cond cbz cbnz tbz tbnz bl blr br ret ret-xN` | `br`/`blr` checked as an indirect transfer/call; trusted |
+| hints, traps, exceptions | `nop wfe wfi sev sevl yield csdb esb hint brk svc hvc smc` | hints have no value semantics; `brk` ends control; `svc`/`hvc`/`smc` need `system` and clobber the caller-saved state; trusted |
+| system, barriers, maintenance | `mrs msr eret dmb dsb isb dc ic tlbi at` | checked under `system`; trusted |
+| CRC, flags | `crc32{b,h,w,x} crc32c{b,h,w,x} cfinv` | checked; trusted |
+| scalar floating point | `fmov fadd fsub fmul fdiv fnmul fmax fmin fmaxnm fminnm fneg fabs fsqrt frint{a,i,m,n,p,x,z} fmadd fmsub fnmadd fnmsub fcmp fcmpe fcsel fcvt fcvt{z,a,m,n,p}{s,u} scvtf ucvtf` on the `h`/`s`/`d` views; `f32`/`f64` parameters bind to `s`/`d` registers, results return in `v0` | checked (forms, view widths, `fcmp` flags feed `b.cond`/`csel`/`fcsel`); trusted |
+| NEON integer | arithmetic, logical, saturating and halving forms, pairwise, compares (register and against zero), min/max and reductions (`addv smaxv … uaddlv`), shifts and shift-inserts, widening and narrowing (`ushll xtn sqxtn uaddl umull uaddw …` and their `2` halves), `dup ins umov smov mov ext tbl tbx zip uzp trn rev16/32/64 cnt movi mvni` | checked: arranged operands agree unless the instruction widens, narrows, or reduces; lanes bounded at parse | trusted |
+| NEON float | `fadd fsub fmul fdiv fmla fmls fmulx fabd fmax fmin faddp fmaxp fminp fneg fabs fsqrt frint* fcmeq fcmgt fcmge fcmlt fcmle fcvtn fcvtl` and the vector conversions | checked | trusted |
+| vector memory | `ldr str ldp stp ldur stur` of `h`/`s`/`d`/`q`; `ld1 st1 ld2 st2 ld3 st3 ld4 st4 ld1r` with register lists | checked: sizes from the register view (a `q` load moves 16 bytes; `ld2 {v0.2d, v1.2d}` 32), through guarded spans or the frame | trusted (the verifier never keys vector state with the general registers) |
+
+| Apple M-series extensions (ARMv8.4–8.6, arm64e) | pointer authentication (`pac*`/`aut*` register, zero-modifier, and `sp`/`lr` forms, `xpac*`, `pacga`, `retaa`/`retab`, `braa`/`brab`/`blraa`/`blrab` and z forms), `bti`, `sb`, `dgh`, `wfet`/`wfit`, FlagM/FlagM2 (`setf8 setf16 rmif axflag xaflag`), RCpc2 (`ldapur*`/`stlur*`), FP16 scalar arithmetic on the `h` view, DotProd (`sdot udot`), I8MM (`smmla ummla usmmla usdot sudot`), BF16 (`bfdot bfmmla bfmlalb bfmlalt bfcvt bfcvtn bfcvtn2`), FHM (`fmlal fmlsl` and `2` forms), FCMA (`fcadd fcmla`, rotations validated), JSCVT (`fjcvtzs`), FRINTTS (`frint32z/x frint64z/x`), crypto (`aes* sha1* sha256* sha512* eor3 rax1 xar bcax pmull pmull2` with the `1q` arrangement), scalar NEON integer forms on `b`/`h`/`s`/`d` | checked (`paciasp`-style link-register signing is transparent to the callee-saved discipline; authenticated returns and indirect transfers follow the `ret`/`br`/`blr` rules); trusted |
+
+The bitvector verifier does not model floating-point or vector values: any
+body touching a vector register is trusted per §5 and says so. What the
+table does not cover, by design: SVE and SME (absent from M-series), and the
+system-register namespace beyond `mrs`/`msr` (any register name is
+accepted under `system`).
+
+§5 named the roadmap: shrink the trust in an asm unit from "the author's
+algorithm" to "a stated postcondition". With Oak fallback bodies landed
+(§7), the design has a natural anchor — **the Oak body is the
+specification** — and three layers:
+
+1. **Differential witness (landed).** A function with both an asm unit
+   and an Oak fallback executes both realizations under the test harness
+   (`-DOAK_PORTABLE_INTRINSICS` selects the fallback), the SIMD convention
+   of `93-simd.md`. This is evidence, not proof: it covers the inputs the
+   tests reach.
+
+2. **Instruction semantics (next).** Each data-processing entry of the
+   instruction table (`mov add sub adds subs and orr eor lsl lsr`, later
+   `cmp` and the conditional branches) carries a semantic definition as a
+   function on machine state — general registers as `w`/`x` bitvectors with
+   the `wN`/`xN` aliasing law of `Oak.Assembler`, the flags as the ARM
+   `NZCV` computation — written once in Lean (`Oak.Assembler.Semantics`,
+   compatible with `Oak.Intrinsics`/`Oak.Simd` so `arm64.*` instruction
+   functions and asm table entries cite the same semantics) and
+   transliterated into a Go symbolic executor.
+
+3. **Postcondition discharge.** For a body the executor can unfold
+   (straight-line, conditional selects, forward branches, span loads,
+   counted loops, and coupled data-dependent loops all landed), the symbolic executor produces
+   the result register's value as a bitvector term over the bound
+   parameters. The Oak fallback body, when it is a pure expression over the
+   same parameters (the `add_asm: ... = left + right` shape), lowers to a
+   bitvector term too. The obligation is term equality, decided by
+   normalization over the total fixed-width semantics of `20-types.md`
+   §11.1 (wrapping arithmetic), with bounded exhaustive evaluation at
+   8-bit width as the executable cross-check of the normalizer itself.
+   Bodies the executor cannot reduce (memory, calls, system registers,
+   loops) keep §5's trust boundary and say so in diagnostics — the same
+   fail-closed shape as every other checker here.
+
+What this buys: the pilot's hot leaf functions (bitfield extraction,
+counter reads wrapped in arithmetic, saturating adds) become *proven equal*
+to their Oak specification, not tested equal; register-allocation-critical
+inner loops remain trusted until the acyclic extension lands. What it does
+not claim: liveness, timing, or anything about the frame beyond the §7
+seam checks, which remain the frame's only guarantee.
+
+Dependencies: the semantics table is independent work; the normalizer can
+reuse the total-arithmetic helpers' definitions; the executor needs the
+checker's binding and clobber facts, already computed. Acceptance: the
+spec's `add_asm` and a shift/mask extractor verify; a deliberately wrong
+body (`sub` for `add`) is rejected with the differing term printed; a body
+with memory or a call reports "not verified: trusted per §5".

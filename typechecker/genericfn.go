@@ -16,6 +16,7 @@ package typechecker
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -106,7 +107,7 @@ func (tc *TypeChecker) resolveGenericInvocation(expr *ast.InvocationExpression) 
 			return nil, false
 		}
 		template, isTemplate := tc.functionTemplates[name]
-		if !isTemplate {
+		if !isTemplate || typeParamsConstrained(template.TypeParams) {
 			return nil, false
 		}
 		if len(argExprs) != len(template.TypeParams) {
@@ -122,6 +123,9 @@ func (tc *TypeChecker) resolveGenericInvocation(expr *ast.InvocationExpression) 
 			}
 			args = append(args, argType)
 		}
+		if !tc.checkConstArguments(expr, template, args) {
+			return nil, true
+		}
 		return tc.invokeInstantiated(expr, template, args), true
 	}
 
@@ -130,7 +134,7 @@ func (tc *TypeChecker) resolveGenericInvocation(expr *ast.InvocationExpression) 
 		return nil, false
 	}
 	template, isTemplate := tc.functionTemplates[ident.Value]
-	if !isTemplate {
+	if !isTemplate || typeParamsConstrained(template.TypeParams) {
 		return nil, false
 	}
 
@@ -177,6 +181,9 @@ func (tc *TypeChecker) resolveGenericInvocation(expr *ast.InvocationExpression) 
 			return nil, true
 		}
 		args = append(args, bound)
+	}
+	if !tc.checkConstArguments(expr, template, args) {
+		return nil, true
 	}
 	return tc.invokeInstantiated(expr, template, args), true
 }
@@ -238,10 +245,58 @@ func (tc *TypeChecker) bindTypeParams(paramType ast.Expression, argType Type, pa
 		bindings[t.Value] = argType
 		return true
 	case *ast.IndexExpression:
-		// [N]T / []T / generic applications: descend into the element
-		// against the argument's element type when the shapes align.
+		bind := func(name string, typ Type) bool {
+			if existing, bound := bindings[name]; bound {
+				if !existing.Equals(typ) {
+					tc.addError(at, "argument %d: type parameter %s bound to both %s and %s", argPosition, name, existing, typ)
+					return false
+				}
+				return true
+			}
+			bindings[name] = typ
+			return true
+		}
+		// [N]T / []T: descend into the element against the argument's
+		// element type; an owned array's static length binds a const
+		// parameter in the length position.
 		if arr, isArr := argType.(*ArrayType); isArr {
+			if idx, isIdent := t.Index.(*ast.Identifier); isIdent && paramSet[idx.Value] &&
+				arr.Length >= 0 && !arr.IsSlice && !arr.IsSpan {
+				if !bind(idx.Value, &ConstIntType{Value: arr.Length}) {
+					return false
+				}
+			}
+			// An arithmetic length ([M*K]T) binds nothing: its parameters
+			// come from a plain position or an explicit argument, and the
+			// folded length is checked against the argument afterwards.
 			return tc.bindTypeParams(t.Left, arr.ElementType, paramSet, bindings, at, argPosition)
+		}
+		// Ring[T, N] against a record instantiation Ring_u8_8: recover the
+		// arguments positionally from the recorded instantiation.
+		if rec, isRec := argType.(*RecordType); isRec {
+			name, argExprs, ok := lenientFlattenApplication(t)
+			inst, known := tc.adtInstantiations[rec.Name]
+			if !ok || !known || inst.ADT != name || len(inst.Args) != len(argExprs) {
+				return true
+			}
+			for i, argExpr := range argExprs {
+				ident, isIdent := argExpr.(*ast.Identifier)
+				if !isIdent || !paramSet[ident.Value] {
+					continue
+				}
+				var argument Type
+				if value, err := strconv.ParseInt(inst.Args[i], 10, 64); err == nil {
+					argument = &ConstIntType{Value: value}
+				} else {
+					argument = tc.parseTypeExpression(&ast.Identifier{Value: inst.Args[i]})
+				}
+				if argument == nil {
+					continue
+				}
+				if !bind(ident.Value, argument) {
+					return false
+				}
+			}
 		}
 		return true
 	case *ast.FunctionTypeExpression:
@@ -259,6 +314,35 @@ func (tc *TypeChecker) bindTypeParams(paramType ast.Expression, argType Type, pa
 	return true
 }
 
+// checkConstArguments validates type arguments against the template's
+// parameter kinds: a const parameter takes an integer constant within its
+// declared kind, a type parameter takes a type.
+func (tc *TypeChecker) checkConstArguments(expr *ast.InvocationExpression, template *ast.FunctionStatement, args []Type) bool {
+	if len(args) != len(template.TypeParams) {
+		return true // arity is reported by the caller
+	}
+	for i, param := range template.TypeParams {
+		constant, isConst := args[i].(*ConstIntType)
+		if isConstParameter(param) {
+			kind := constParameterKind(param)
+			if !isConst {
+				tc.addError(expr, "%s: const parameter %s takes an integer constant of kind %s, got type %s", template.Name.Value, param.Name.Value, kind, args[i])
+				return false
+			}
+			if !tc.literalFitsInType(constant.Value, kind) {
+				tc.addError(expr, "%s: literal %d does not fit in type %s (const parameter %s)", template.Name.Value, constant.Value, kind, param.Name.Value)
+				return false
+			}
+			continue
+		}
+		if isConst {
+			tc.addError(expr, "%s: type parameter %s takes a type, got constant %d", template.Name.Value, param.Name.Value, constant.Value)
+			return false
+		}
+	}
+	return true
+}
+
 // invokeInstantiated monomorphizes the template for the given arguments,
 // rewrites the call site to the mangled name, and returns the call's type.
 func (tc *TypeChecker) invokeInstantiated(expr *ast.InvocationExpression, template *ast.FunctionStatement, args []Type) Type {
@@ -267,6 +351,11 @@ func (tc *TypeChecker) invokeInstantiated(expr *ast.InvocationExpression, templa
 	if scheme, found := tc.env.Get(template.Name.Value); found && scheme.Monomorphic != nil {
 		bindings := make(Substitution)
 		for i, parameter := range template.TypeParams {
+			// A const parameter is an integer, not an authority-bearing type:
+			// instantiating at 3 and at 4 in one scope is ordinary reuse.
+			if isConstParameter(parameter) {
+				continue
+			}
 			for _, variable := range typeVarsIn(scheme.Type) {
 				if variable.Name != parameter.Name.Value {
 					continue
@@ -346,7 +435,12 @@ func (tc *TypeChecker) instantiateFunctionTemplate(template *ast.FunctionStateme
 		tc.functionInstantiations = make(map[string]*ast.FunctionStatement)
 	}
 	tc.functionInstantiations[mangled] = specialized
+	if tc.instantiationTemplates == nil {
+		tc.instantiationTemplates = make(map[string]string)
+	}
+	tc.instantiationTemplates[mangled] = template.Name.Value
 	tc.functionInstantiationOrder = append(tc.functionInstantiationOrder, mangled)
+	tc.copyRegionSignature(template.Name.Value, mangled)
 
 	// The specialized declaration is an ordinary function checked in the
 	// GLOBAL scope (templates are top-level; a caller's locals must not
@@ -356,8 +450,11 @@ func (tc *TypeChecker) instantiateFunctionTemplate(template *ast.FunctionStateme
 	if tc.globalEnv != nil {
 		tc.env = tc.globalEnv
 	}
+	wasSpecializing := tc.checkingSpecialization
+	tc.checkingSpecialization = true
 	tc.predeclareFunctionSignature(specialized)
 	tc.checkFunctionStatement(specialized)
+	tc.checkingSpecialization = wasSpecializing
 	tc.env = callerEnv
 	return mangled, true
 }
@@ -430,7 +527,7 @@ func substituteStmt(stmt ast.Statement, bindings map[string]ast.Expression) (ast
 		if !ok {
 			return nil, false
 		}
-		return &ast.VariableDeclaration{Token: s.Token, Name: s.Name, Type: declType, Value: value}, true
+		return &ast.VariableDeclaration{Token: s.Token, Name: s.Name, Type: declType, Value: value, Section: s.Section}, true
 	case *ast.AssignmentStatement:
 		value, ok := substituteExpr(s.Value, bindings)
 		if !ok {
@@ -618,4 +715,30 @@ func substituteExpr(expr ast.Expression, bindings map[string]ast.Expression) (as
 		return &ast.SliceExpression{Token: e.Token, Seq: seq, Low: low, High: high}, true
 	}
 	return nil, false
+}
+
+// specializeConstrainedCall monomorphizes a constrained generic function
+// after the ordinary contract path has inferred the bindings and
+// discharged every constraint: the concrete types are read from the same
+// substitution the diagnostics used, so a call that satisfies its contract
+// is exactly a call that specializes.
+func (tc *TypeChecker) specializeConstrainedCall(expr *ast.InvocationExpression, template *ast.FunctionStatement, scheme *TypeScheme, bindings Substitution) {
+	args := make([]Type, 0, len(template.TypeParams))
+	for _, tp := range template.TypeParams {
+		concrete, ok := bindings.LookupName(tp.Name.Value)
+		if scheme.Monomorphic != nil {
+			concrete, ok = tc.monomorphicConstraintBinding(scheme, bindings, tp.Name.Value)
+		}
+		if !ok || concrete == nil || len(typeVarsIn(concrete)) != 0 {
+			tc.addError(expr, "cannot determine a concrete type for %s of %s to specialize this call; instantiate with a concrete argument", tp.Name.Value, template.Name.Value)
+			return
+		}
+		args = append(args, concrete)
+	}
+	mangled, ok := tc.instantiateFunctionTemplate(template, args)
+	if !ok {
+		tc.addError(expr, "cannot instantiate %s: type arguments must be mangleable concrete types", template.Name.Value)
+		return
+	}
+	expr.Function = &ast.Identifier{Token: template.Name.Token, Value: mangled}
 }

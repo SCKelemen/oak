@@ -172,7 +172,10 @@ code-unit views and uses fallible validation/transcoding plus caller-owned outpu
 spans. UTF-8 read helpers validate and trap on invalid bytes; their fallible input
 boundary counterparts report `TextError`. `text_literal` constructs static UTF-8
 byte storage through ordinary borrowing. It is not a runtime `[]u8 -> Str[Utf8]`
-cast and does not expose a representation-preserving validity bypass.
+cast and does not expose a representation-preserving validity bypass. It
+performs no escape processing of its own: the scanner has already decoded the
+literal's escape sequences (`10-syntax.md` §2a), so `text_literal("a\n")` is
+two bytes, and the same holds for every string literal in every position.
 
 Unicode default full case conversion/folding is pinned to Unicode 17.0.0. Byte
 search results, scalar search results and grapheme counts remain explicitly
@@ -180,6 +183,15 @@ distinct. Scalar-boundary slicing returns ranges whose actual views are created
 by the caller. No normalization, collation, grapheme segmentation, locale tailoring
 or hidden allocator is implied. General encoding-polymorphic `Str[E]` and writer
 interfaces above remain target interfaces.
+
+Binary-to-text codecs — hexadecimal, RFC 4648 base64 and base32, RFC 3986
+percent-encoding — live in the `encoding` package (`stdlib/encoding.oak`,
+`import("encoding")`, also in the flat prelude) on the same contract: borrowed
+byte views in, caller-owned spans out, `Result[u32, EncodingError]` with the
+count written, `_size` functions that validate without writing, and strict
+decoders that reject unknown symbols, wrong lengths, misplaced padding and
+non-canonical trailing bits. They operate on bytes, not on `Str[E]`; text
+validity of the decoded bytes is the caller's separate step.
 
 ## 13. Scoped runtime UTF-8 views
 

@@ -2,6 +2,8 @@ package evaluator
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/token"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
@@ -26,10 +28,22 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalProgram(node, env)
 
 	case *ast.ExpressionStatement:
+		if node.Discard {
+			// `_ = expr` evaluates for its effects and yields nothing
+			// (docs/spec/85-discipline.md section 6); errors still surface.
+			result := Eval(node.Expression, env)
+			if isError(result) {
+				return result
+			}
+			return NULL
+		}
 		return Eval(node.Expression, env)
 
 	case *ast.IntegerLiteral:
 		return &object.Integer{Value: node.Value}
+
+	case *ast.FloatLiteral:
+		return evalFloatLiteral(node, env)
 
 	case *ast.StringLiteral:
 		return &object.String{Value: node.Value}
@@ -57,7 +71,7 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if isError(right) {
 			return right
 		}
-		return evalPrefixExpression(node.Operator, right)
+		return wrapToWidth(evalPrefixExpression(node.Operator, right), node.Token, env)
 
 	case *ast.InfixExpression:
 		left := Eval(node.Left, env)
@@ -91,10 +105,16 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		if isError(right) {
 			return right
 		}
-		return evalInfixExpression(node.Operator, left, right)
+		if unsigned := evalUnsignedInfix(node.Operator, left, right, node.Token, env); unsigned != nil {
+			return unsigned
+		}
+		return wrapToWidth(evalInfixExpression(node.Operator, left, right), node.Token, env)
 
 	case *ast.IndexAssignmentStatement:
 		return evalIndexAssignmentStatement(node, env)
+
+	case *ast.SliceExpression:
+		return evalSliceExpression(node, env)
 
 	case *ast.BlockStatement:
 		return evalBlockStatement(node, env)
@@ -123,6 +143,17 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 			if result, recognized := evalAtomicInvocation(ident.Value, node.Arguments, env); recognized {
 				return result
 			}
+			// Borrow construction and derivation (docs/spec/50-borrowing.md):
+			// view(&owner), span(&owner), subslice(v, start, n).
+			if result, recognized := evalBorrowInvocation(ident.Value, node.Arguments, env); recognized {
+				return result
+			}
+			// Sealed-boundary coercions (docs/spec/83-modules.md section
+			// 6.3) are identities on values; the type checker has already
+			// enforced them.
+			if len(node.Arguments) == 1 && (strings.HasPrefix(ident.Value, "__abstract_") || strings.HasPrefix(ident.Value, "__concrete_")) {
+				return Eval(node.Arguments[0], env)
+			}
 		}
 		// Check if this is a primitive type constructor: u32(x), u64(y), etc.
 		if ident, ok := node.Function.(*ast.Identifier); ok {
@@ -132,6 +163,16 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 			// Explicit integer conversions: {target}_{op}_{source}
 			// (docs/spec/20-types.md), total two's-complement semantics.
 			if result, isConversion := evalConversionCall(ident.Value, node.Arguments, env); isConversion {
+				return result
+			}
+			// Checked and saturating arithmetic (docs/spec/20-types.md
+			// section 11.1a).
+			if result, isArithmetic := evalArithmeticCall(ident.Value, node.Arguments, env); isArithmetic {
+				return result
+			}
+			// Floating-point intrinsics (docs/spec/20-types.md section
+			// 11.3.5), unless a program binding shadows the name.
+			if result, isIntrinsic := evalFloatIntrinsic(ident.Value, node, env); isIntrinsic {
 				return result
 			}
 		}
@@ -200,6 +241,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.WhileStatement:
 		return evalWhileStatement(node, env)
 
+	case *ast.BreakStatement:
+		return &object.BreakSignal{}
+
 	case *ast.IfStatement:
 		return evalIfStatement(node, env)
 
@@ -248,7 +292,7 @@ func evalBlockStatement(block *ast.BlockStatement, env *object.Environment) obje
 
 		if result != nil {
 			rt := result.Type()
-			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
+			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ || rt == object.BREAK_OBJ {
 				return result
 			}
 		}
@@ -301,6 +345,24 @@ func evalIdentifier(node *ast.Identifier, env *object.Environment) object.Object
 // Built-in functions
 func getBuiltin(name string) (*object.Builtin, bool) {
 	builtins := map[string]object.BuiltinFunction{
+		// Layout introspection and code addresses exist only in the
+		// compiled backend, where the C compiler is the authority; the
+		// interpreter has no struct layout or code symbols to report.
+		"size_of": func(args ...object.Object) object.Object {
+			return newError("size_of is compile-time layout introspection; unavailable in the interpreter")
+		},
+		"align_of": func(args ...object.Object) object.Object {
+			return newError("align_of is compile-time layout introspection; unavailable in the interpreter")
+		},
+		"offset_of": func(args ...object.Object) object.Object {
+			return newError("offset_of is compile-time layout introspection; unavailable in the interpreter")
+		},
+		"address_of": func(args ...object.Object) object.Object {
+			return newError("address_of names a compiled code symbol; unavailable in the interpreter")
+		},
+		"static_assert": func(args ...object.Object) object.Object {
+			return NULL
+		},
 		"assert": func(args ...object.Object) object.Object {
 			// docs/spec/85-discipline.md section 5: assertions are always
 			// checked, in every mode.
@@ -322,17 +384,13 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			if len(args) != 1 {
 				return newError("is_valid_utf8 expects exactly one []u8 argument, got %d", len(args))
 			}
-			arr, ok := args[0].(*object.Array)
+			w, ok := elementWindow(args[0])
 			if !ok {
 				return newError("is_valid_utf8 requires a []u8 view, got %s", args[0].Type())
 			}
-			bytes := make([]byte, 0, len(arr.Elements))
-			for _, element := range arr.Elements {
-				integer, ok := element.(*object.Integer)
-				if !ok || integer.Value < 0 || integer.Value > 255 {
-					return newError("is_valid_utf8 requires byte elements")
-				}
-				bytes = append(bytes, byte(integer.Value))
+			bytes, isBytes := w.bytes()
+			if !isBytes {
+				return newError("is_valid_utf8 requires byte elements")
 			}
 			_, valid := source.ValidateUTF8(string(bytes))
 			return nativeBoolToBooleanObject(valid)
@@ -344,6 +402,8 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			switch arg := args[0].(type) {
 			case *object.Array:
 				return &object.Integer{Value: int64(len(arg.Elements))}
+			case *object.View:
+				return &object.Integer{Value: int64(arg.Len)}
 			case *object.String:
 				return &object.Integer{Value: int64(len(arg.Value))}
 			default:
@@ -354,7 +414,7 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			if len(args) != 2 {
 				return newError("wrong number of arguments. got=%d, want=2", len(args))
 			}
-			arr, ok := args[0].(*object.Array)
+			w, ok := elementWindow(args[0])
 			if !ok {
 				return newError("first argument to `get` must be array, got %s", args[0].Type())
 			}
@@ -362,12 +422,12 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			if !ok {
 				return newError("second argument to `get` must be integer, got %s", args[1].Type())
 			}
-			if idx.Value < 0 || int64(len(arr.Elements)) <= idx.Value {
+			if idx.Value < 0 || int64(w.length) <= idx.Value {
 				// Return None
 				return makeOptionNone()
 			}
 			// Return Some(value)
-			return makeOptionSome(arr.Elements[idx.Value])
+			return makeOptionSome(w.get(int(idx.Value)))
 		},
 		"try_slice": func(args ...object.Object) object.Object {
 			if len(args) != 3 {
@@ -412,8 +472,9 @@ func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *objec
 		"u8": true, "u16": true, "u32": true, "u64": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
-		"byte": true, // alias of u8
-		"rune": true, // alias of u32 (docs/spec/70-strings.md section 9)
+		"byte": true,              // alias of u8
+		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
+		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -428,6 +489,9 @@ func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *objec
 	arg := Eval(args[0], env)
 	if isError(arg) {
 		return arg
+	}
+	if typechecker.IsFloatName(typeName) {
+		return evalFloatConstructor(typeName, arg)
 	}
 
 	// Get the integer value
@@ -475,7 +539,96 @@ func evalBangOperatorExpression(right object.Object) object.Object {
 	}
 }
 
+// evalUnsignedInfix evaluates division, modulo, and ordering in the
+// unsigned width the checker recorded for the operator, so u64 values above
+// 2^63 divide and compare as the compiled code does; it returns nil when the
+// operator or the recorded width does not call for it.
+func evalUnsignedInfix(operator string, left, right object.Object, tok token.Token, env *object.Environment) object.Object {
+	switch operator {
+	case "/", "%", "<", ">", "<=", ">=":
+	default:
+		return nil
+	}
+	width, known := env.ArithmeticWidth(tok)
+	if !known || len(width) == 0 || width[0] != 'u' {
+		return nil
+	}
+	l, lok := left.(*object.Integer)
+	r, rok := right.(*object.Integer)
+	if !lok || !rok {
+		return nil
+	}
+	bits, ok := primitiveWidthBits(width)
+	if !ok {
+		return nil
+	}
+	a, b := uint64(l.Value)&widthMask(bits), uint64(r.Value)&widthMask(bits)
+	switch operator {
+	case "/":
+		if b == 0 {
+			return newError("division by zero")
+		}
+		return &object.Integer{Value: int64(a / b)}
+	case "%":
+		if b == 0 {
+			return newError("modulo by zero")
+		}
+		return &object.Integer{Value: int64(a % b)}
+	case "<":
+		return nativeBoolToBooleanObject(a < b)
+	case ">":
+		return nativeBoolToBooleanObject(a > b)
+	case "<=":
+		return nativeBoolToBooleanObject(a <= b)
+	default:
+		return nativeBoolToBooleanObject(a >= b)
+	}
+}
+
+// wrapToWidth folds an integer result into the fixed width the checker
+// recorded for this operator token (docs/spec/20-types.md section 11.1):
+// unsigned by masking, signed by masking and sign extension. Without a
+// record, or without an oracle, the value stays as computed.
+func wrapToWidth(result object.Object, tok token.Token, env *object.Environment) object.Object {
+	integer, isInt := result.(*object.Integer)
+	if !isInt {
+		return result
+	}
+	width, known := env.ArithmeticWidth(tok)
+	if !known || len(width) < 2 {
+		return result
+	}
+	bits, ok := primitiveWidthBits(width)
+	if !ok {
+		return result
+	}
+	pattern := uint64(integer.Value) & widthMask(bits)
+	if width[0] == 'i' {
+		return &object.Integer{Value: signExtend(pattern, bits)}
+	}
+	return &object.Integer{Value: int64(pattern)}
+}
+
+func primitiveWidthBits(width string) (uint, bool) {
+	switch width {
+	case "u8", "i8":
+		return 8, true
+	case "u16", "i16":
+		return 16, true
+	case "u32", "i32":
+		return 32, true
+	case "u64", "i64":
+		return 64, true
+	}
+	return 0, false
+}
+
 func evalMinusPrefixOperatorExpression(right object.Object) object.Object {
+	if f, isFloat := right.(*object.Float); isFloat {
+		// Sign-bit flip, including of NaN and zero (docs/spec/20-types.md
+		// section 11.3.5).
+		return &object.Float{Value: -f.Value, Bits: f.Bits}
+	}
 	if right.Type() != object.INTEGER_OBJ {
 		return newError("unknown operator: -%s", right.Type())
 	}
@@ -488,6 +641,10 @@ func evalInfixExpression(operator string, left, right object.Object) object.Obje
 	switch {
 	case left.Type() == object.INTEGER_OBJ && right.Type() == object.INTEGER_OBJ:
 		return evalIntegerInfixExpression(operator, left, right)
+	case left.Type() == object.FLOAT_OBJ && right.Type() == object.FLOAT_OBJ:
+		// Before the identity fallbacks below: float equality is IEEE
+		// (NaN != NaN, +0.0 == -0.0), never object identity.
+		return evalFloatInfixExpression(operator, left.(*object.Float), right.(*object.Float))
 	case left.Type() == object.STRING_OBJ && right.Type() == object.STRING_OBJ:
 		return evalStringInfixExpression(operator, left, right)
 	case operator == "==":
@@ -634,6 +791,16 @@ func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Enviro
 	if fn.Variadic && len(fn.Parameters) > 0 {
 		fixed := len(fn.Parameters) - 1
 		for paramIdx := 0; paramIdx < fixed && paramIdx < len(args); paramIdx++ {
+			// Owned arrays are values: a parameter receives its own copy, as
+			// compiled code copies in (views and spans stay borrowed windows).
+			if owned, isArray := args[paramIdx].(*object.Array); isArray {
+				env.Set(fn.Parameters[paramIdx].Value, &object.Array{Elements: append([]object.Object(nil), owned.Elements...)})
+				continue
+			}
+			if owned, isArray := args[paramIdx].(*object.Array); isArray {
+				env.Set(fn.Parameters[paramIdx].Value, &object.Array{Elements: append([]object.Object(nil), owned.Elements...)})
+				continue
+			}
 			env.Set(fn.Parameters[paramIdx].Value, args[paramIdx])
 		}
 		// Bundle the trailing arguments (possibly none) for the last name.
@@ -644,7 +811,7 @@ func extendFunctionEnv(fn *object.Function, args []object.Object) *object.Enviro
 
 	for paramIdx, param := range fn.Parameters {
 		if paramIdx < len(args) {
-			env.Set(param.Value, args[paramIdx])
+			env.Set(param.Value, copyValue(args[paramIdx])) // aggregates pass by value
 		}
 	}
 
@@ -791,8 +958,19 @@ func evalADTType(adt *ast.ADTType, env *object.Environment) object.Object {
 				// Just store a marker that this is a record type
 				variantDef.Literal = &object.Record{Fields: make(map[string]object.Object)}
 				// Retain the field structure for zero-value construction of
-				// storage-identity records (evaluator/memory.go).
+				// storage-identity records (evaluator/memory.go); generic
+				// records keep their parameter names for instantiation
+				// (evaluator/zero.go).
 				env.SetRecordDecl(adt.Name.Value, recordLit)
+				if len(adt.TypeParams) > 0 {
+					params := make([]string, 0, len(adt.TypeParams))
+					for _, param := range adt.TypeParams {
+						if param != nil && param.Name != nil {
+							params = append(params, param.Name.Value)
+						}
+					}
+					env.SetRecordTemplate(adt.Name.Value, params, recordLit)
+				}
 			} else {
 				// Regular literal (for ADT variants with literal tags)
 				variantDef.Literal = Eval(variant.Literal, env)
@@ -917,6 +1095,11 @@ func evalWhileStatement(ws *ast.WhileStatement, env *object.Environment) object.
 		if result != nil && result.Type() == object.RETURN_VALUE_OBJ {
 			return result
 		}
+		if result != nil && result.Type() == object.BREAK_OBJ {
+			// The break is consumed here: the loop ends, and it is not
+			// reported to the enclosing block.
+			return NULL
+		}
 	}
 
 	return result
@@ -947,6 +1130,12 @@ func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environmen
 			env.Set(vd.Name.Value, zero)
 			return zero
 		}
+		// Value-less typed declarations are zero-initialized storage, as in
+		// the backend (evaluator/zero.go).
+		if zero, known := zeroValue(vd.Type, env); known {
+			env.Set(vd.Name.Value, zero)
+			return zero
+		}
 	}
 	// Check if variable already exists - if so, treat as assignment
 	if _, exists := env.Get(vd.Name.Value); exists && vd.Type == nil {
@@ -969,6 +1158,7 @@ func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environmen
 		if isError(val) {
 			return val
 		}
+		val = copyValue(val) // records and owned arrays are values
 		env.Set(vd.Name.Value, val)
 		return val
 	} else {
@@ -995,7 +1185,13 @@ func evalAssignmentStatement(as *ast.AssignmentStatement, env *object.Environmen
 		return val
 	}
 
-	env.Set(as.Name.Value, val)
+	// Update the declaring scope: an assignment inside a match arm or loop
+	// body must reach the outer variable, never shadow it. Records and
+	// owned arrays are values: assignment copies (views alias by design).
+	val = copyValue(val)
+	if !env.Assign(as.Name.Value, val) {
+		env.Set(as.Name.Value, val)
+	}
 	return val
 }
 
@@ -1030,6 +1226,7 @@ func evalVariantExpression(ve *ast.VariantExpression, env *object.Environment) o
 		if isError(payload) {
 			return payload
 		}
+		payload = copyValue(payload) // an aggregate payload is a value
 	}
 
 	// Create ADT value
@@ -1098,7 +1295,9 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 		if isError(fieldValue) {
 			return fieldValue
 		}
-		fields[fieldName] = fieldValue
+		// Records and owned arrays are values: the field holds its own
+		// copy, as the backend's struct member does.
+		fields[fieldName] = copyValue(fieldValue)
 	}
 
 	return &object.Record{Fields: fields}
@@ -1112,6 +1311,24 @@ func evalIndexAssignmentStatement(stmt *ast.IndexAssignmentStatement, env *objec
 	if isError(seq) {
 		return seq
 	}
+	// Record field store: p.x = v, pool[i].next.raw = v. The receiver
+	// evaluates to the stored record itself (records live in their owner's
+	// storage), so the field update is visible through the owner.
+	if fieldName, isField := stmt.Target.Index.(*ast.Identifier); isField && (stmt.Target.Dot || isRecordObject(seq)) {
+		record, isRecord := seq.(*object.Record)
+		if !isRecord {
+			return newError("field store into %s", seq.Type())
+		}
+		if _, exists := record.Fields[fieldName.Value]; !exists {
+			return newError("field '%s' not found in record", fieldName.Value)
+		}
+		value := Eval(stmt.Value, env)
+		if isError(value) {
+			return value
+		}
+		record.Fields[fieldName.Value] = copyValue(value)
+		return NULL
+	}
 	index := Eval(stmt.Target.Index, env)
 	if isError(index) {
 		return index
@@ -1120,13 +1337,23 @@ func evalIndexAssignmentStatement(stmt *ast.IndexAssignmentStatement, env *objec
 	if isError(value) {
 		return value
 	}
-	array, ok := seq.(*object.Array)
-	if !ok {
-		return newError("cannot index-assign into %s", seq.Type())
-	}
 	idx, ok := index.(*object.Integer)
 	if !ok {
 		return newError("index must be an integer, got %s", index.Type())
+	}
+	if view, isView := seq.(*object.View); isView {
+		if !view.Writable {
+			return newError("cannot store through a read-only view")
+		}
+		if idx.Value < 0 || idx.Value >= int64(view.Len) {
+			return newError("span index out of bounds: %d (length: %d)", idx.Value, view.Len)
+		}
+		view.Array.Elements[view.Start+int(idx.Value)] = value
+		return NULL
+	}
+	array, ok := seq.(*object.Array)
+	if !ok {
+		return newError("cannot index-assign into %s", seq.Type())
 	}
 	if idx.Value < 0 || idx.Value >= int64(len(array.Elements)) {
 		return newError("array index out of bounds: %d (length: %d)", idx.Value, len(array.Elements))
@@ -1163,12 +1390,16 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 
 	// Check if this is record field access (index is identifier) or array indexing
 	if fieldName, ok := ie.Index.(*ast.Identifier); ok {
-		// Special case: raw() method on ADT values
+		// Special case: raw() method on ADT values. A record may declare a
+		// field of its own named raw (Idx[P]: type = struct { raw: u32 }),
+		// which is plain field access.
 		if fieldName.Value == "raw" {
 			if adtValue, ok := left.(*object.ADTValue); ok {
 				return evalRawAccessor(adtValue, env)
 			}
-			return newError("raw() only works on ADT values, got %s", left.Type())
+			if _, isRecord := left.(*object.Record); !isRecord {
+				return newError("raw() only works on ADT values, got %s", left.Type())
+			}
 		}
 
 		// Record field access: record.field
@@ -1184,7 +1415,13 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 			return evalFieldLifting(adtValue, fieldName.Value, env)
 		}
 
-		return newError("field access not supported for type %s", left.Type())
+		// An identifier index into an array or view is a variable index
+		// (v[i]), not a field: fall through to element indexing.
+		_, isArray := left.(*object.Array)
+		_, isView := left.(*object.View)
+		if !isArray && !isView {
+			return newError("field access not supported for type %s", left.Type())
+		}
 	}
 
 	// Array indexing: array[index]
@@ -1209,6 +1446,17 @@ func evalIndexExpression(ie *ast.IndexExpression, env *object.Environment) objec
 		return array.Elements[idx]
 	}
 
+	if view, ok := left.(*object.View); ok {
+		idx, isInt := indexObj.(*object.Integer)
+		if !isInt {
+			return newError("view index must be integer, got %s", indexObj.Type())
+		}
+		if idx.Value < 0 || idx.Value >= int64(view.Len) {
+			return newError("view index out of bounds: %d (length: %d)", idx.Value, view.Len)
+		}
+		return view.Array.Elements[view.Start+int(idx.Value)]
+	}
+
 	return newError("index operator not supported for type %s", left.Type())
 }
 
@@ -1221,7 +1469,7 @@ func evalArrayLiteral(al *ast.ArrayLiteral, env *object.Environment) object.Obje
 		if isError(elem) {
 			return elem
 		}
-		elements = append(elements, elem)
+		elements = append(elements, copyValue(elem)) // nested aggregates are values
 	}
 
 	return &object.Array{Elements: elements}

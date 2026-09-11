@@ -30,15 +30,132 @@ import (
 //   - the result register written before every `ret`; no `ret` from a
 //     `never` function; no fall-through past the end.
 func Check(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
-	c := &checker{fn: fn, symbols: symbols}
+	// Guard facts across labels are a dataflow fixpoint: each pass assumes
+	// a guard state at every label, records the meet of the states that
+	// actually arrive there (by fall-through and by every branch, forward
+	// or backward), and the passes repeat until the assumptions are exactly
+	// the arrivals. The first pass assumes everything (top); facts only
+	// shrink, so the iteration terminates. Only the stable pass reports.
+	var labelIn map[string]*guardState
+	for pass := 0; pass < maxGuardPasses; pass++ {
+		c := runPass(fn, decl, symbols, labelIn, false)
+		if len(c.errors) != 0 && c.labelArrive == nil {
+			return c.errors // signature errors: nothing to iterate
+		}
+		if labelIn != nil && guardStatesEqual(labelIn, c.labelArrive) {
+			return c.errors
+		}
+		labelIn = c.labelArrive
+	}
+	// Past the cap: the conservative pass forgets every guard at every
+	// label (a sound assumption, the pre-fixpoint behavior).
+	return runPass(fn, decl, symbols, nil, true).errors
+}
+
+// maxGuardPasses caps the fixpoint iteration.
+const maxGuardPasses = 16
+
+func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, forgetAtLabels bool) *checker {
+	c := &checker{fn: fn, symbols: symbols, labelIn: labelIn, forgetAtLabels: forgetAtLabels}
 	c.checkSignature(decl)
 	if len(c.errors) != 0 {
-		return c.errors
+		return c
 	}
+	c.labelArrive = map[string]*guardState{}
 	c.bindContract()
 	c.declareClobbers()
 	c.walk()
-	return c.errors
+	return c
+}
+
+// guardState is the guard knowledge at a program point: per span base
+// register the proven minimum length, per index register its bound.
+type guardState struct {
+	mins map[int]int64
+	idx  map[int]idxFact
+}
+
+func (c *checker) guardSnapshot() *guardState {
+	gs := &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}}
+	for base, fact := range c.spans {
+		if fact.hasMin {
+			gs.mins[base] = fact.minLen
+		}
+	}
+	for reg, fact := range c.idxFacts {
+		gs.idx[reg] = fact
+	}
+	return gs
+}
+
+// applyGuards installs a label's guard state: exactly the facts it holds,
+// on the spans that still exist.
+func (c *checker) applyGuards(gs *guardState) {
+	for base, fact := range c.spans {
+		minLen, has := gs.mins[base]
+		fact.hasMin = has
+		fact.minLen = minLen
+	}
+	c.idxFacts = map[int]idxFact{}
+	for reg, fact := range gs.idx {
+		c.idxFacts[reg] = fact
+	}
+	c.pendingCmp = cmpFact{}
+}
+
+// meetGuards is the intersection of two states: a length bound holds after
+// a merge only at the smaller of the two proven minimums
+// (Oak.Assembler.meet_sound), an index fact only when both sides agree.
+func meetGuards(a, b *guardState) *guardState {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}}
+	for base, minA := range a.mins {
+		if minB, ok := b.mins[base]; ok {
+			out.mins[base] = min(minA, minB)
+		}
+	}
+	for reg, factA := range a.idx {
+		if factB, ok := b.idx[reg]; ok && factA == factB {
+			out.idx[reg] = factA
+		}
+	}
+	return out
+}
+
+// arrive records a state reaching a label.
+func (c *checker) arrive(label string) {
+	if c.labelArrive == nil {
+		return
+	}
+	c.labelArrive[label] = meetGuards(c.labelArrive[label], c.guardSnapshot())
+}
+
+func guardStatesEqual(a, b map[string]*guardState) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, ga := range a {
+		gb, ok := b[name]
+		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) {
+			return false
+		}
+		for base, m := range ga.mins {
+			if gb.mins[base] != m {
+				return false
+			}
+		}
+		for reg, f := range ga.idx {
+			if gb.idx[reg] != f {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type checker struct {
@@ -49,6 +166,7 @@ type checker struct {
 	// contract
 	paramClass    map[string]RegClass // parameter -> width class
 	paramRegister map[string]int      // parameter -> contract register number
+	paramView     map[string]string   // parameter -> "s"/"d" for f32/f64, "" otherwise
 	resultClass   RegClass
 	hasResult     bool
 	never         bool
@@ -57,6 +175,26 @@ type checker struct {
 	bound     map[int]bool // register numbers bound to parameters
 	clobbered map[int]bool // declared clobbers (general file)
 	clobberV  map[int]bool // declared vector clobbers
+	// spans: base register number -> the span it points at (typed pointer
+	// parameters); guard facts live here and die with any write to the
+	// base or length register, any label, and any call.
+	spans      map[int]*spanFact
+	spanParams map[string]spanParam
+	pendingCmp cmpFact
+	// idxFacts: index register -> the bound a dominating guard proved it
+	// below (`cmp wI, wL` / `cmp wI, #K` then `b.hs <exit>`); they die with
+	// any write to the index or bound register, any label, and any call.
+	idxFacts map[int]idxFact
+	// The label fixpoint: assumed guard states entering each label (nil on
+	// the first, optimistic pass), the meet of the states arriving there
+	// during this pass, and the conservative fallback that forgets all.
+	labelIn        map[string]*guardState
+	labelArrive    map[string]*guardState
+	forgetAtLabels bool
+	// calleeSaved tracks x19–x30: the caller's state, readable on entry,
+	// writable only after being saved to the frame, and restored from the
+	// same absolute slot before every ret (docs/spec/94-assembler.md §7).
+	calleeSaved map[int]*savedState
 
 	// state
 	written      map[int]bool
@@ -71,6 +209,83 @@ type checker struct {
 	alignBytes   int64 // current align region stride, 0 when none
 	regionInstrs int64 // instructions since the region's align directive
 	alignLine    int
+}
+
+// savedState is one callee-saved register's obligation: saved at an
+// absolute frame address (relative to entry sp), written since, restored
+// since the last write.
+type savedState struct {
+	saved    bool
+	slot     int64
+	written  bool
+	restored bool
+}
+
+func calleeSavedRegister(num int) bool { return num >= 19 && num <= 30 }
+
+// spanParam is a span/view parameter's contract: two consecutive general
+// registers (base pointer, then the 32-bit length in the low half of the
+// next register — its upper half is padding and is never consulted).
+type spanParam struct {
+	baseReg  int
+	lenReg   int
+	elem     int64
+	writable bool
+}
+
+// spanFact is the live knowledge about a bound span base register. hasMin
+// holds after a dominating guard `cmp wL, #N` + `b.lo <fail>`: on the
+// fall-through path len >= N, so offsets below N*elem are in bounds.
+type spanFact struct {
+	lenReg   int
+	elem     int64
+	writable bool
+	hasMin   bool
+	minLen   int64
+}
+
+// cmpFact remembers a 32-bit `cmp wA, #N` or `cmp wA, wB` for exactly the
+// next instruction, which must be the guarding branch: `b.lo` after
+// comparing a span length with N proves len >= N; `b.hs` after comparing
+// an index with N or with a length register proves index < N / index < len.
+type cmpFact struct {
+	valid    bool
+	left     int   // the compared register
+	rightReg int   // the register compared against, or -1 for an immediate
+	imm      int64 // the immediate compared against
+}
+
+// idxFact: the register is below an immediate bound (boundReg == -1) or
+// below the value of another register (a span length register).
+type idxFact struct {
+	boundReg int
+	bound    int64
+}
+
+// spanShape recognizes span ([*]T) and view ([]T) parameter types of
+// fixed-width elements, returning the element size and writability.
+func spanShape(expr ast.Expression) (elem int64, writable bool, ok bool) {
+	indexExpr, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || indexExpr.Dot {
+		return 0, false, false
+	}
+	marker, isMarker := indexExpr.Index.(*ast.Identifier)
+	if !isMarker || (marker.Value != "*" && marker.Value != "") {
+		return 0, false, false
+	}
+	switch typeText(indexExpr.Left) {
+	case "u8", "i8", "byte":
+		elem = 1
+	case "u16", "i16":
+		elem = 2
+	case "u32", "i32", "rune":
+		elem = 4
+	case "u64", "i64":
+		elem = 8
+	default:
+		return 0, false, false
+	}
+	return elem, marker.Value == "*", true
 }
 
 func (c *checker) errorf(line int, format string, args ...interface{}) {
@@ -117,6 +332,8 @@ func contractClass(expr ast.Expression) (RegClass, bool) {
 		return ClassW, true
 	case "u64", "i64":
 		return ClassX, true
+	case "f32", "f64":
+		return ClassV, true // AAPCS64: floating-point values travel in v0–v7 (s/d views)
 	}
 	if strings.HasPrefix(typeText(expr), "simd.") {
 		return ClassV, true
@@ -124,20 +341,48 @@ func contractClass(expr ast.Expression) (RegClass, bool) {
 	return 0, false
 }
 
+// floatView is the scalar view a floating-point parameter or result binds
+// as: "s" for f32, "d" for f64, "" for a simd vector.
+func floatView(expr ast.Expression) string {
+	switch typeText(expr) {
+	case "f32":
+		return "s"
+	case "f64":
+		return "d"
+	}
+	return ""
+}
+
 // bindContract assigns AAPCS64 contract registers (x0..x7 / v0..v7) and
 // verifies every parameter is bound explicitly at its class.
 func (c *checker) bindContract() {
 	c.paramClass = map[string]RegClass{}
 	c.paramRegister = map[string]int{}
+	c.paramView = map[string]string{}
 	c.bound = map[int]bool{}
+	c.spans = map[int]*spanFact{}
+	c.idxFacts = map[int]idxFact{}
+	c.spanParams = map[string]spanParam{}
 	nextGeneral, nextVector := 0, 0
 	for _, param := range c.fn.Signature.Parameters {
+		if elem, writable, isSpan := spanShape(param.Type); isSpan {
+			if nextGeneral > 6 {
+				c.errorf(c.fn.Line, "span parameter %s needs two registers; the integer register contract is exhausted", param.Name.Value)
+				continue
+			}
+			c.paramClass[param.Name.Value] = ClassX
+			c.paramRegister[param.Name.Value] = nextGeneral
+			c.spanParams[param.Name.Value] = spanParam{baseReg: nextGeneral, lenReg: nextGeneral + 1, elem: elem, writable: writable}
+			nextGeneral += 2
+			continue
+		}
 		class, ok := contractClass(param.Type)
 		if !ok {
 			c.errorf(c.fn.Line, "parameter %s: type %s cannot cross the asm boundary in v1 (fixed-width integers, Bool, simd vectors)", param.Name.Value, typeText(param.Type))
 			continue
 		}
 		c.paramClass[param.Name.Value] = class
+		c.paramView[param.Name.Value] = floatView(param.Type)
 		if class == ClassV {
 			if nextVector > 7 {
 				c.errorf(c.fn.Line, "more than eight vector parameters exceed the register contract")
@@ -183,6 +428,29 @@ func (c *checker) bindContract() {
 		}
 		seen[binding.Param] = true
 		want := c.paramRegister[binding.Param]
+		if span, isSpan := c.spanParams[binding.Param]; isSpan {
+			if binding.Length == nil {
+				c.errorf(binding.Line, "bind: span parameter %s binds a pair: bind x%d, w%d = %s (base pointer, 32-bit length)", binding.Param, span.baseReg, span.lenReg, binding.Param)
+				continue
+			}
+			if binding.Register.Class != ClassX || binding.Register.Num != span.baseReg ||
+				binding.Length.Class != ClassW || binding.Length.Num != span.lenReg {
+				c.errorf(binding.Line, "bind: span parameter %s arrives as x%d (base), w%d (length; the upper half of x%d is padding), not %s, %s", binding.Param, span.baseReg, span.lenReg, span.lenReg, binding.Register.Text, binding.Length.Text)
+				continue
+			}
+			c.bound[span.baseReg] = true
+			c.bound[span.lenReg] = true
+			c.spans[span.baseReg] = &spanFact{lenReg: span.lenReg, elem: span.elem, writable: span.writable}
+			continue
+		}
+		if binding.Length != nil {
+			c.errorf(binding.Line, "bind: parameter %s is a scalar and binds one register", binding.Param)
+			continue
+		}
+		if view := c.paramView[binding.Param]; view != "" && binding.Register.Vec != view {
+			c.errorf(binding.Line, "bind: floating-point parameter %s arrives in %s%d, not %s", binding.Param, view, want, binding.Register.Text)
+			continue
+		}
 		if binding.Register.Class != class || binding.Register.Num != want {
 			c.errorf(binding.Line, "bind: parameter %s arrives in %s%d (%s), not %s", binding.Param, classPrefix(class), want, class, binding.Register.Text)
 			continue
@@ -220,10 +488,6 @@ func (c *checker) declareClobbers() {
 				c.errorf(c.fn.Line, "clobber: the zero register cannot be clobbered")
 				continue
 			}
-			if reg.Num >= 19 && reg.Num <= 29 {
-				c.errorf(c.fn.Line, "clobber: x%d is callee-saved; v1 has no save/restore obligation tracking — use x9–x17", reg.Num)
-				continue
-			}
 			c.clobbered[reg.Num] = true
 		}
 	}
@@ -238,6 +502,10 @@ func (c *checker) walk() {
 	c.pendingDisp = map[string]int64{}
 	c.labels = map[string]bool{}
 	c.dispKnown = true
+	c.calleeSaved = map[int]*savedState{}
+	for num := 19; num <= 30; num++ {
+		c.calleeSaved[num] = &savedState{}
+	}
 
 	// Labels are known up front so forward branches resolve.
 	for _, item := range c.fn.Items {
@@ -304,6 +572,9 @@ func (c *checker) closeRegion(line int) {
 func (c *checker) enterLabel(label Label) {
 	// A label merges control: its sp displacement must agree with every
 	// branch that targets it, and flags are conservatively unknown.
+	if !c.unreachable {
+		c.arrive(label.Name) // the fall-through predecessor
+	}
 	if expected, pending := c.pendingDisp[label.Name]; pending {
 		if c.dispKnown && !c.unreachable && expected != c.disp {
 			c.errorf(label.Line, "label %s reached with sp displacement %d by fall-through and %d by branch", label.Name, c.disp, expected)
@@ -318,10 +589,39 @@ func (c *checker) enterLabel(label Label) {
 	c.labelDisp[label.Name] = c.disp
 	c.flagsValid = false
 	c.unreachable = false
+	// Guard facts at the label: the fixpoint's assumption for it — the meet
+	// of every predecessor's facts — or, on the first pass (no assumption
+	// yet) the optimistic carry-over, or under the conservative fallback
+	// nothing at all.
+	switch {
+	case c.forgetAtLabels:
+		c.forgetGuards()
+	case c.labelIn == nil:
+		c.pendingCmp = cmpFact{}
+	default:
+		if assumed, known := c.labelIn[label.Name]; known {
+			c.applyGuards(assumed)
+		} else {
+			c.forgetGuards() // no predecessor reached it: unreachable label
+		}
+	}
+}
+
+// forgetGuards drops every span length guard: control merged (label) or
+// left the function (call), so no fall-through fact survives.
+func (c *checker) forgetGuards() {
+	for _, fact := range c.spans {
+		fact.hasMin = false
+	}
+	c.pendingCmp = cmpFact{}
+	c.idxFacts = map[int]idxFact{}
 }
 
 // instruction checks one instruction and reports whether it ends control.
 func (c *checker) instruction(instr Instruction) bool {
+	// A length comparison guards exactly the next instruction.
+	guard := c.pendingCmp
+	c.pendingCmp = cmpFact{}
 	spec := instructionTable[instr.Mnemonic]
 	matched, ok := matchForm(spec, instr.Operands)
 	if !ok {
@@ -330,6 +630,24 @@ func (c *checker) instruction(instr Instruction) bool {
 	}
 	if spec.system && !c.fn.System {
 		c.errorf(instr.Line, "%s requires the unit's `system` capability", instr.Mnemonic)
+	}
+	for _, operand := range instr.Operands {
+		switch operand.(type) {
+		case Shifted, Extended:
+			if !modifierAllowed(instr.Mnemonic, operand) {
+				c.errorf(instr.Line, "%s takes no shifted or extended register operand", instr.Mnemonic)
+			}
+		}
+	}
+	if finding := vectorDiscipline(instr); finding != "" {
+		c.errorf(instr.Line, "%s: %s", instr.Mnemonic, finding)
+	}
+	if imm, isImm := lastImmediate(instr.Operands); isImm && imm.Shift != 0 {
+		switch instr.Mnemonic {
+		case "movz", "movk", "movn":
+		default:
+			c.errorf(instr.Line, "%s takes no shifted immediate", instr.Mnemonic)
+		}
 	}
 
 	switch instr.Mnemonic {
@@ -340,11 +658,130 @@ func (c *checker) instruction(instr Instruction) bool {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
 		}
 		c.branch(instr, false)
+		// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
+		// len >= N for every span whose length register is wL.
+		if guard.valid && guard.rightReg < 0 && (instr.Cond == "lo" || instr.Cond == "cc") {
+			for _, fact := range c.spans {
+				if fact.lenReg == guard.left {
+					fact.hasMin = true
+					fact.minLen = guard.imm
+				}
+			}
+		}
+		// `cmp wI, wL` / `cmp wI, #K` then `b.hs exit`: the fall-through
+		// path knows wI < len / wI < K — the index guard of a loop walking
+		// a span (Oak.Assembler.index_access).
+		if guard.valid && (instr.Cond == "hs" || instr.Cond == "cs") {
+			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+		}
+		return false
+	case "retaa", "retab":
+		return c.ret(instr) // an authenticated return
+	case "braa", "brab", "braaz", "brabz":
+		for _, reg := range registerOperands(instr.Operands) {
+			c.read(instr, reg)
+		}
+		if c.disp != 0 {
+			c.errorf(instr.Line, "%s with sp displacement %d: the frame must be fully released", instr.Mnemonic, c.disp)
+		}
+		c.unreachable = true
+		return true
+	case "blraa", "blrab", "blraaz", "blrabz":
+		for _, reg := range registerOperands(instr.Operands) {
+			c.read(instr, reg)
+		}
+		c.indirectCall(instr)
+		return false
+	case "bti", "sb", "dgh":
+		return false
+	case "wfet", "wfit":
+		c.read(instr, instr.Operands[0].(Register))
+		return false
+	case "setf8", "setf16":
+		c.read(instr, instr.Operands[0].(Register))
+		c.flagsValid = true
+		return false
+	case "rmif":
+		if !c.flagsValid {
+			c.errorf(instr.Line, "rmif rotates flags no dominating instruction produced")
+		}
+		c.read(instr, instr.Operands[0].(Register))
+		if shift := instr.Operands[1].(Immediate).Value; shift < 0 || shift > 63 {
+			c.errorf(instr.Line, "rmif: shift %d is not below 64", shift)
+		}
+		if mask := instr.Operands[2].(Immediate).Value; mask < 0 || mask > 15 {
+			c.errorf(instr.Line, "rmif: mask %d is not a 4-bit flag pattern", mask)
+		}
+		c.flagsValid = true
+		return false
+	case "axflag", "xaflag":
+		if !c.flagsValid {
+			c.errorf(instr.Line, "%s converts flags no dominating instruction produced", instr.Mnemonic)
+		}
+		return false
+	case "fcadd", "fcmla":
+		if rotation := instr.Operands[len(instr.Operands)-1].(Immediate).Value; rotation%90 != 0 || rotation < 0 || rotation > 270 || (instr.Mnemonic == "fcadd" && rotation != 90 && rotation != 270) {
+			c.errorf(instr.Line, "%s: rotation #%d is not one of the encodable rotations", instr.Mnemonic, rotation)
+		}
+	case "br":
+		// An indirect terminal transfer: the frame is released and the
+		// callee-saved obligations met, as for ret; the target is unknown.
+		c.read(instr, instr.Operands[0].(Register))
+		if c.disp != 0 {
+			c.errorf(instr.Line, "br with sp displacement %d: the frame must be fully released", c.disp)
+		}
+		for num := 19; num <= 30; num++ {
+			if state := c.calleeSaved[num]; state.written && !state.restored {
+				c.errorf(instr.Line, "br without restoring callee-saved x%d", num)
+			}
+		}
+		c.unreachable = true
+		return true
+	case "blr":
+		c.read(instr, instr.Operands[0].(Register))
+		c.indirectCall(instr)
+		return false
+	case "brk":
+		// A trap: control never continues.
+		c.unreachable = true
+		return true
+	case "svc", "hvc", "smc":
+		// An exception to a higher level: the handler owns the caller-saved
+		// state, as a callee does.
+		c.clobberCallerSaved()
+		return false
+	case "wfe", "wfi", "sev", "sevl", "yield", "csdb", "esb", "hint", "clrex":
+		return false
+	case "dc", "ic", "tlbi", "at":
+		// Maintenance operations read their address register.
+		if reg, isReg := lastRegister(instr.Operands); isReg {
+			c.read(instr, reg)
+		}
+		return false
+	case "cfinv":
+		if !c.flagsValid {
+			c.errorf(instr.Line, "cfinv inverts flags no dominating instruction produced")
+		}
+		return false
+	case "cbz", "cbnz", "tbz", "tbnz":
+		// Compare-and-branch: reads its register, needs no flags; a bit
+		// test names a bit inside the register.
+		reg := instr.Operands[0].(Register)
+		c.read(instr, reg)
+		if imm, isBitTest := instr.Operands[1].(Immediate); isBitTest {
+			if imm.Value < 0 || imm.Value >= int64(widthOf(reg.Class)) {
+				c.errorf(instr.Line, "%s: bit %d is outside %s", instr.Mnemonic, imm.Value, reg.Text)
+			}
+		}
+		c.branch(instr, false)
 		return false
 	case "bl":
 		c.call(instr)
 		return false
 	case "ret":
+		if len(instr.Operands) == 1 {
+			c.read(instr, instr.Operands[0].(Register)) // ret xN: an explicit return address
+		}
 		return c.ret(instr)
 	case "eret":
 		if !c.never && c.hasResult {
@@ -366,6 +803,10 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.memoryAccess(instr, matched)
 		return false
 	}
+	// csel/cset consume flags under the same dominance rule as b.cond.
+	if spec.readsFlags && !c.flagsValid {
+		c.errorf(instr.Line, "%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Mnemonic)
+	}
 
 	// Data processing: reads then write; sp arithmetic moves the frame.
 	regs := registerOperands(instr.Operands)
@@ -376,9 +817,54 @@ func (c *checker) instruction(instr Instruction) bool {
 	for _, source := range regs[1:] {
 		c.read(instr, source)
 	}
-	if instr.Mnemonic == "cmp" {
-		c.read(instr, dest) // cmp's first operand is a source
+	if pacTransparent(instr.Mnemonic) {
+		return false // signing the link register is not a tracked write
+	}
+	if pacInPlace(instr.Mnemonic) {
+		c.read(instr, dest)
+	}
+	switch instr.Mnemonic {
+	case "ubfx", "ubfiz", "sbfx", "bfi":
+		// Bit-field immediates: a field of width >= 1 starting at lsb >= 0,
+		// inside the register.
+		lsb, width := instr.Operands[2].(Immediate).Value, instr.Operands[3].(Immediate).Value
+		if lsb < 0 || width < 1 || lsb+width > int64(widthOf(dest.Class)) {
+			c.errorf(instr.Line, "%s: field [%d, %d) is not inside %s", instr.Mnemonic, lsb, lsb+width, dest.Text)
+		}
+		if instr.Mnemonic == "bfi" {
+			c.read(instr, dest) // the insert keeps the destination's other bits
+		}
+	case "movk":
+		c.read(instr, dest) // the insert keeps the other halfwords
+	case "extr":
+		if lsb := instr.Operands[3].(Immediate).Value; lsb < 0 || lsb >= int64(widthOf(dest.Class)) {
+			c.errorf(instr.Line, "extr: lsb %d is not below the width of %s", lsb, dest.Text)
+		}
+	case "ccmp", "ccmn":
+		// A conditional compare reads its first operand and an nzcv immediate.
+		if nzcv := instr.Operands[2].(Immediate).Value; nzcv < 0 || nzcv > 15 {
+			c.errorf(instr.Line, "ccmp: nzcv immediate %d is not a 4-bit flag pattern", nzcv)
+		}
+		c.read(instr, dest)
 		c.flagsValid = true
+		return false
+	}
+	if instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || instr.Mnemonic == "cmn" {
+		c.read(instr, dest) // cmp/cmn/tst: the first operand is a source
+		c.flagsValid = true
+		// Only 32-bit comparisons guard: a span length lives in the low half
+		// of its register (the upper half is padding the contract never
+		// defines), and an index is a 32-bit element count.
+		if instr.Mnemonic == "cmp" && dest.Class == ClassW {
+			switch right := instr.Operands[1].(type) {
+			case Immediate:
+				c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: -1, imm: right.Value}
+			case Register:
+				if right.Class == ClassW && !right.ZeroRegister() {
+					c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: right.Num}
+				}
+			}
+		}
 		return false
 	}
 	if dest.Class == ClassSP {
@@ -404,11 +890,24 @@ func (c *checker) instruction(instr Instruction) bool {
 func registerOperands(operands []Operand) []Register {
 	var regs []Register
 	for _, operand := range operands {
-		if reg, ok := operand.(Register); ok {
+		if list, isList := operand.(RegisterList); isList {
+			regs = append(regs, list.Regs...)
+			continue
+		}
+		if reg, ok := operandRegister(operand); ok {
 			regs = append(regs, reg)
 		}
 	}
 	return regs
+}
+
+func lastImmediate(operands []Operand) (Immediate, bool) {
+	for _, operand := range operands {
+		if imm, ok := operand.(Immediate); ok {
+			return imm, true
+		}
+	}
+	return Immediate{}, false
 }
 
 func describeOperands(operands []Operand) string {
@@ -440,8 +939,8 @@ func (c *checker) read(instr Instruction, reg Register) {
 		}
 		return
 	}
-	if reg.ZeroRegister() {
-		return
+	if reg.ZeroRegister() || calleeSavedRegister(reg.Num) {
+		return // callee-saved registers carry the caller's values on entry
 	}
 	if !c.bound[reg.Num] && !c.written[reg.Num] {
 		c.errorf(instr.Line, "read of %s before any write or binding (uninitialized register)", reg.Text)
@@ -481,7 +980,30 @@ func (c *checker) write(instr Instruction, reg Register) {
 		c.errorf(instr.Line, "write to undeclared register %s: bind it, or declare it with `clobber %s`", reg.Text, reg.Text)
 		return
 	}
+	if state, isSaved := c.calleeSaved[reg.Num]; isSaved {
+		if !state.saved {
+			c.errorf(instr.Line, "write to callee-saved %s before saving it to the frame (str/stp it into the declared frame first)", reg.Text)
+			return
+		}
+		state.written = true
+		state.restored = false
+	}
 	c.written[reg.Num] = true
+	// Moving a span base forgets the span; touching a length register
+	// forgets its guard; touching an index or its bound forgets the
+	// index fact.
+	delete(c.spans, reg.Num)
+	for _, fact := range c.spans {
+		if fact.lenReg == reg.Num {
+			fact.hasMin = false
+		}
+	}
+	delete(c.idxFacts, reg.Num)
+	for index, fact := range c.idxFacts {
+		if fact.boundReg == reg.Num {
+			delete(c.idxFacts, index)
+		}
+	}
 }
 
 func (c *checker) moveSP(instr Instruction, delta int64) {
@@ -505,14 +1027,28 @@ func (c *checker) moveSP(instr Instruction, delta int64) {
 func (c *checker) memoryAccess(instr Instruction, matched form) {
 	mem, _ := instr.Operands[len(instr.Operands)-1].(Memory)
 	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
-	isStore := instr.Mnemonic == "str" || instr.Mnemonic == "stp"
+	if isAtomic(instr.Mnemonic) || isExclusiveStore(instr.Mnemonic) {
+		c.atomicAccess(instr, matched, mem, regs)
+		return
+	}
+	isStore := isStoreMnemonic(instr.Mnemonic)
 	for _, reg := range regs {
 		if isStore {
 			c.read(instr, reg)
 		}
 	}
+	if mem.Base.Class == ClassX {
+		if fact, isSpan := c.spans[mem.Base.Num]; isSpan {
+			c.spanAccess(instr, matched, mem, fact, regs, isStore)
+			return
+		}
+	}
 	if mem.Base.Class != ClassSP {
-		c.errorf(instr.Line, "memory operands go through the declared sp frame in v1; base %s is not sp (typed pointer parameters pending)", mem.Base.Text)
+		c.errorf(instr.Line, "memory operands go through the declared sp frame or a bound span base; %s is neither", mem.Base.Text)
+		return
+	}
+	if mem.Index != nil {
+		c.errorf(instr.Line, "%s: register-offset addressing walks a span, not the frame", instr.Mnemonic)
 		return
 	}
 	if c.fn.Frame == 0 {
@@ -520,21 +1056,237 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 		return
 	}
 	size := accessBytes(instr.Mnemonic, matched[0])
+	if len(regs) > 0 && regs[0].Class == ClassV {
+		size = memorySizeReg(instr.Mnemonic, regs[0])
+		if isStructureAccess(instr.Mnemonic) {
+			size *= int64(len(regs))
+		}
+	}
+	var slotBase int64
 	switch mem.Mode {
 	case MemPreIndex:
 		c.moveSP(instr, -mem.Offset)
 		c.checkAccess(instr, 0, size)
+		slotBase = -c.disp
 	case MemPostIndex:
 		c.checkAccess(instr, 0, size)
+		slotBase = -c.disp
 		c.moveSP(instr, -mem.Offset)
 	default:
 		c.checkAccess(instr, mem.Offset, size)
+		slotBase = -c.disp + mem.Offset
+	}
+	if len(regs) == 0 {
+		return // prfm: a bounds-checked hint with no register
+	}
+	width := size / int64(len(regs))
+	if isStore {
+		// Saving a still-untouched callee-saved register records its slot.
+		for i, reg := range regs {
+			if state, isSaved := c.calleeSaved[reg.Num]; isSaved && !state.written && !state.saved && reg.Class == ClassX {
+				state.saved = true
+				state.slot = slotBase + int64(i)*width
+			}
+		}
+		return
+	}
+	for i, reg := range regs {
+		c.write(instr, reg)
+		// Loading a callee-saved register back from its own slot restores it.
+		if state, isSaved := c.calleeSaved[reg.Num]; isSaved && state.saved && reg.Class == ClassX && state.slot == slotBase+int64(i)*width {
+			state.restored = true
+		}
+	}
+}
+
+// isStoreMnemonic: the instructions whose register operands are sources
+// written to memory (a view refuses them; the executor never treats their
+// register as written).
+func isStoreMnemonic(mnemonic string) bool {
+	switch mnemonic {
+	case "str", "stp", "strb", "strh", "stur", "sturb", "sturh", "stlr", "stlrb", "stlrh", "stlur", "stlurb", "stlurh":
+		return true
+	}
+	return false
+}
+
+// isExclusiveStore: stxr/stlxr and their b/h forms — a status register
+// written, a value read, a store through the base.
+func isExclusiveStore(mnemonic string) bool {
+	switch mnemonic {
+	case "stxr", "stlxr", "stxrb", "stlxrb", "stxrh", "stlxrh":
+		return true
+	}
+	return false
+}
+
+// atomicAccess checks an exclusive store or an LSE atomic through a span:
+// the base must be a guarded, writable span (every atomic may store), the
+// access one element; the roles of the register operands depend on the
+// operation — stxr writes its status register and reads the value, cas
+// reads both and writes the compare register, the others read the source
+// and write the destination.
+func (c *checker) atomicAccess(instr Instruction, matched form, mem Memory, regs []Register) {
+	if mem.Base.Class != ClassX {
+		c.errorf(instr.Line, "%s: atomics address a span base, not the frame", instr.Mnemonic)
+		return
+	}
+	fact, isSpan := c.spans[mem.Base.Num]
+	if !isSpan {
+		c.errorf(instr.Line, "%s through %s, which is not a bound span base", instr.Mnemonic, mem.Base.Text)
+		return
+	}
+	if !fact.writable {
+		c.errorf(instr.Line, "%s through %s: the parameter is a read-only view ([]T); atomics need a span ([*]T)", instr.Mnemonic, mem.Base.Text)
+		return
+	}
+	var reads, writes []Register
+	switch {
+	case isExclusiveStore(instr.Mnemonic):
+		writes, reads = regs[:1], regs[1:]
+	case atomicBase(instr.Mnemonic) == "cas":
+		reads, writes = regs, regs[:1]
+	default:
+		reads, writes = regs[:1], regs[1:]
+	}
+	for _, reg := range reads {
+		c.read(instr, reg)
+	}
+	// The access is one element at the base (no offset form for atomics).
+	c.spanAccess(instr, matched, mem, fact, nil, true)
+	for _, reg := range writes {
+		c.write(instr, reg)
+	}
+}
+
+func lastRegister(operands []Operand) (Register, bool) {
+	for i := len(operands) - 1; i >= 0; i-- {
+		if reg, ok := operands[i].(Register); ok {
+			return reg, true
+		}
+	}
+	return Register{}, false
+}
+
+// clobberCallerSaved: after a call or an exception, x0–x17, v0–v7, and the
+// flags belong to the callee.
+func (c *checker) clobberCallerSaved() {
+	for num := 0; num <= 17; num++ {
+		if !c.bound[num] || num == 0 {
+			delete(c.written, num)
+		}
+	}
+	for num := 0; num <= 7; num++ {
+		delete(c.writtenV, num)
+	}
+	c.written[0] = true // the call's result
+	c.flagsValid = false
+	c.forgetGuards()
+}
+
+// indirectCall is `blr xN`: a call to an unknown Oak-visible target.
+func (c *checker) indirectCall(instr Instruction) {
+	if !c.clobbered[30] {
+		c.errorf(instr.Line, "blr writes the link register: declare `clobber x30`")
+	}
+	if lr := c.calleeSaved[30]; lr != nil {
+		if !c.never && !lr.saved {
+			c.errorf(instr.Line, "blr in a returning function before saving the link register")
+		}
+		lr.written = true
+		lr.restored = false
+	}
+	c.clobberCallerSaved()
+}
+
+// spanAccess admits [base, #off] on a bound span only under a dominating
+// length guard: with len >= N established, the access [off, off+size) must
+// lie inside the N*elem bytes the guard proves (Oak.Assembler.span_access).
+func (c *checker) spanAccess(instr Instruction, matched form, mem Memory, fact *spanFact, regs []Register, isStore bool) {
+	if mem.Mode != MemOffset {
+		c.errorf(instr.Line, "%s: a span base is never moved; pre/post-index addressing is refused on %s", instr.Mnemonic, mem.Base.Text)
+		return
+	}
+	if isStore && !fact.writable {
+		c.errorf(instr.Line, "%s through %s: the parameter is a read-only view ([]T); stores need a span ([*]T)", instr.Mnemonic, mem.Base.Text)
+		return
+	}
+	size := accessBytes(instr.Mnemonic, matched[0])
+	if len(regs) > 0 {
+		size = memorySizeReg(instr.Mnemonic, regs[0])
+		if isStructureAccess(instr.Mnemonic) {
+			size *= int64(len(regs))
+		}
+	}
+	if mem.Index != nil {
+		c.indexedSpanAccess(instr, mem, fact, size, regs, isStore)
+		return
+	}
+	if mem.Offset < 0 {
+		c.errorf(instr.Line, "%s: negative offset %d reaches before the span", instr.Mnemonic, mem.Offset)
+		return
+	}
+	if !fact.hasMin {
+		c.errorf(instr.Line, "%s through %s without a dominating bounds guard: `cmp w%d, #N` then `b.lo <fail>` proves len >= N for the fall-through path", instr.Mnemonic, mem.Base.Text, fact.lenReg)
+		return
+	}
+	if mem.Offset+size > fact.elem*fact.minLen {
+		c.errorf(instr.Line, "%s touches span bytes [%d, %d) but the guard proves only %d elements (%d bytes)", instr.Mnemonic, mem.Offset, mem.Offset+size, fact.minLen, fact.elem*fact.minLen)
+		return
+	}
+	if mem.Offset%size != 0 && size <= 8 {
+		c.errorf(instr.Line, "%s: offset %d is not aligned to the %d-byte access", instr.Mnemonic, mem.Offset, size)
 	}
 	if !isStore {
 		for _, reg := range regs {
 			c.write(instr, reg)
 		}
 	}
+}
+
+// indexedSpanAccess admits [base, wI, uxtw #s] on a bound span: the access
+// is one whole element (1<<s == size == elem) at element index wI, and a
+// dominating guard proved wI below the span's length — directly (`cmp wI,
+// wL; b.hs`) or through a constant the length guard covers (`cmp wI, #K;
+// b.hs` with len >= K established). Then (wI+1)*elem <= elem*len
+// (Oak.Assembler.index_access).
+func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFact, size int64, regs []Register, isStore bool) {
+	index := *mem.Index
+	c.read(instr, index)
+	if size != fact.elem || int64(1)<<uint(mem.Shift) != size {
+		c.errorf(instr.Line, "%s: indexed access must move by whole elements: a %d-byte access over %d-byte elements needs `uxtw #%d` and a matching register width", instr.Mnemonic, size, fact.elem, log2(fact.elem))
+		return
+	}
+	bound, guarded := c.idxFacts[index.Num]
+	switch {
+	case !guarded:
+		c.errorf(instr.Line, "%s indexed by %s without a dominating index guard: `cmp %s, w%d` then `b.hs <exit>` proves the index below the span's length for the fall-through path", instr.Mnemonic, index.Text, index.Text, fact.lenReg)
+		return
+	case bound.boundReg == fact.lenReg:
+		// index < len: in bounds.
+	case bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen:
+		// index < K <= len.
+	case bound.boundReg < 0:
+		c.errorf(instr.Line, "%s: the guard proves %s < %d but the span's proven minimum length is %d", instr.Mnemonic, index.Text, bound.bound, fact.minLen)
+		return
+	default:
+		c.errorf(instr.Line, "%s: %s is guarded against w%d, which is not this span's length register (w%d)", instr.Mnemonic, index.Text, bound.boundReg, fact.lenReg)
+		return
+	}
+	if !isStore {
+		for _, reg := range regs {
+			c.write(instr, reg)
+		}
+	}
+}
+
+func log2(n int64) int {
+	shift := 0
+	for n > 1 {
+		n >>= 1
+		shift++
+	}
+	return shift
 }
 
 func (c *checker) checkAccess(instr Instruction, offset, size int64) {
@@ -548,8 +1300,9 @@ func (c *checker) checkAccess(instr Instruction, offset, size int64) {
 }
 
 func (c *checker) branch(instr Instruction, unconditional bool) bool {
-	target := instr.Operands[0].(Symbol).Name
+	target := instr.Operands[len(instr.Operands)-1].(Symbol).Name // b/b.cond: the only operand; cbz/tbz: the last
 	if c.labels[target] {
+		c.arrive(target) // the branch-taken predecessor, with the facts held here
 		if recorded, seen := c.labelDisp[target]; seen {
 			if recorded != c.disp {
 				c.errorf(instr.Line, "branch to %s with sp displacement %d, label recorded %d", target, c.disp, recorded)
@@ -580,7 +1333,14 @@ func (c *checker) call(instr Instruction) {
 		c.errorf(instr.Line, "bl target %s is not an Oak-visible function", target)
 	}
 	if !c.clobbered[30] {
-		c.errorf(instr.Line, "bl writes the link register: declare `clobber x30` (and save it in the frame if this function returns)")
+		c.errorf(instr.Line, "bl writes the link register: declare `clobber x30`")
+	}
+	if lr := c.calleeSaved[30]; lr != nil {
+		if !c.never && !lr.saved {
+			c.errorf(instr.Line, "bl in a returning function before saving the link register: stp x29, x30 (or str x30) into the frame first")
+		}
+		lr.written = true
+		lr.restored = false
 	}
 	// The callee owns x0–x17, v0–v7, and the flags under AAPCS64.
 	for num := 0; num <= 17; num++ {
@@ -593,6 +1353,7 @@ func (c *checker) call(instr Instruction) {
 	}
 	c.written[0] = true // the call's result
 	c.flagsValid = false
+	c.forgetGuards()
 }
 
 func (c *checker) ret(instr Instruction) bool {
@@ -601,6 +1362,11 @@ func (c *checker) ret(instr Instruction) bool {
 	}
 	if c.disp != 0 {
 		c.errorf(instr.Line, "ret with sp displacement %d: the frame must be fully released", c.disp)
+	}
+	for num := 19; num <= 30; num++ {
+		if state := c.calleeSaved[num]; state.written && !state.restored {
+			c.errorf(instr.Line, "ret without restoring callee-saved x%d from its frame slot (ldr/ldp it from the slot it was saved to)", num)
+		}
 	}
 	if c.hasResult {
 		if c.resultClass == ClassV {

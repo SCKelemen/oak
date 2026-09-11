@@ -56,9 +56,14 @@ test "$count" -gt 0
 test "$count" -eq "$expected"
 # Replay every real certificate that fits the fixed Oak profile. Exclusions are
 # retained explicitly; malformed text and in-profile disagreement fail the gate.
-for module in BoundedDecimal ScannerState PackedBuffers RangeBridge LiveTable PropagationState ClauseClassifier PropagationChain CertifiedStream InitialDecoder ProofPacking PackedText; do
+for module in BoundedDecimal ScannerState PackedBuffers RangeBridge LiveTable PropagationState ClauseClassifier PropagationChain CertifiedStream InitialDecoder ProofPacking SegmentPublication CommandAssembly CertificateFile OakText OakTextExtracted ExtractionScanner OakTextRefinement PackedText; do
   lean -DwarningAsError=true -o "$attempt/$module.olean" "proof/$module.lean" 2>&1 | tee "$attempt/$module.log"
 done
+# The proved file model must also accept the replayed Oak text certificate.
+lean -DwarningAsError=true --run proof/CertificateFileCompare.lean "$attempt/oak-text-certificate.json" | tee "$attempt/oak-text-certificate-file-model.log"
+# So must the transliteration of the Oak decoder (roadmap step 2) and the
+# compiler's extraction of the same source (roadmap step 3).
+lean -DwarningAsError=true --run proof/OakTextCompare.lean "$attempt/oak-text-certificate.json" | tee "$attempt/oak-text-certificate-transliteration.log"
 jq '[.models[].cadical.logs[] | select(.exit_code == 20 and .command[0] == "cadical") | {cnf:.command[-2],proof:.command[-1]}]' \
   "$report" > "$attempt/certified-manifest.json"
 lean -DwarningAsError=true --run proof/CertificateReplay.lean "$attempt/certified-manifest.json" \

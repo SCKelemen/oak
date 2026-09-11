@@ -15,6 +15,13 @@ typedef int64_t i64;
 typedef u8  byte;
 typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
 
+typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
+typedef double f64; /* IEEE 754 binary64 */
+typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */
+typedef uint16_t bf16; /* bfloat16 storage */
+typedef uint8_t f8e4m3; /* OCP FP8 E4M3 storage: no infinities, NaN is S.1111.111 */
+typedef uint8_t f8e5m2; /* OCP FP8 E5M2 storage: IEEE-like */
+
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */
     u32 len;   /* number of bytes */
@@ -32,11 +39,22 @@ typedef enum oak_Comparison {
 } Comparison;
 
 /* assert: always compiled in (docs/spec/85-discipline.md section 5) */
-static inline void oak_assert(Bool cond) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  if (!cond) {
+    fprintf(stderr, "oak: assertion failed at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+}
+#else
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  (void)file; (void)line;
   if (!cond) {
     __builtin_trap();
   }
 }
+#endif
 
 typedef struct oak_view_u8 {
     const u8* base;
@@ -46,6 +64,11 @@ typedef struct oak_view_u8 {
 static inline u8 oak_view_index_u8(oak_view_u8 v, u64 i) {
   if (i >= (u64)v.len) { __builtin_trap(); }
   return v.base[i];
+}
+
+static inline oak_view_u8 oak_view_subslice_u8(oak_view_u8 v, u64 start, u64 n) {
+  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }
+  return (oak_view_u8){ v.base + start, (u32)n };
 }
 
 /* core_slice: view construction as a brace initializer (declaration
@@ -64,6 +87,28 @@ static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap();
   static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \
   static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }
 OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)
+
+/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md
+   section 7): results wrap mod 2^N, computed in unsigned space so no C
+   promotion overflows; signed results come back through a union pun (defined
+   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */
+#define OAK_ARITH_U(T) \
+  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \
+  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \
+  static inline T oak_neg_##T(T a) { return (T)(0u - (u64)a); } \
+  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \
+  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \
+  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }
+#define OAK_ARITH_I(T, U, MIN) \
+  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \
+  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \
+  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \
+  static inline T oak_neg_##T(T a) { return oak_pun_##T((U)(0u - (u64)(U)a)); } \
+  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \
+  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \
+  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }
+OAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)
+OAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)
 #define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
@@ -131,6 +176,8 @@ typedef struct oak_u8x16 { u8 lanes[16]; } u8x16;
 typedef struct oak_u16x8 { u16 lanes[8]; } u16x8;
 typedef struct oak_u32x4 { u32 lanes[4]; } u32x4;
 typedef struct oak_u64x2 { u64 lanes[2]; } u64x2;
+typedef struct oak_f32x4 { f32 lanes[4]; } f32x4;
+typedef struct oak_f64x2 { f64 lanes[2]; } f64x2;
 
 static inline Bool oak_simd_any_u8x16( u8x16 v ) {
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
@@ -190,6 +237,11 @@ static inline void oak_span_store_u8(oak_span_u8 v, u64 i, u8 value) {
   v.base[i] = value;
 }
 
+static inline oak_span_u8 oak_span_subslice_u8(oak_span_u8 v, u64 start, u64 n) {
+  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }
+  return (oak_span_u8){ v.base + start, (u32)n };
+}
+
 static inline void oak_simd_store_u8x16( oak_span_u8 s, u32 off, u8x16 val ) {
   if ((u64)off + 16u > (u64)s.len) { __builtin_trap(); }
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
@@ -209,8 +261,13 @@ static inline u32 oak_arm64_uaddlv_u8x16( u8x16 x ) {
 #endif
 }
 
-/* forward declarations */
-Bool oak_contains16( oak_view_u8 v, u8 needle );
+typedef struct oak_arr_u8_16 { u8 v[ 16 ]; } oak_arr_u8_16;
+
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+OAK_INLINE Bool oak_contains16( oak_view_u8 v, u8 needle );
 i32 oak_main( void );
 
 // @source: unknown.oak:1:0-5:0
@@ -218,7 +275,7 @@ i32 oak_main( void );
 // @kind: function
 // @identifier: contains16
 // @signature: fn contains16(v: /* type */, needle: u8) -> Bool
-Bool oak_contains16( oak_view_u8 v, u8 needle ) {
+OAK_INLINE Bool oak_contains16( oak_view_u8 v, u8 needle ) {
     u8x16 chunk   = oak_simd_load_u8x16( v, ((u32)( 0 )) )  ;
     u8x16 hits   = oak_simd_eq_u8x16( chunk, oak_simd_splat_u8x16( needle ) )  ;
     return oak_simd_any_u8x16( hits )  ;
@@ -230,10 +287,10 @@ Bool oak_contains16( oak_view_u8 v, u8 needle ) {
 // @identifier: main
 // @signature: fn main() -> i32
 i32 oak_main(  ) {
-    u8 out[16] = {0};
-    oak_span_u8 s   = (oak_span_u8){ out, 16 }  ;
+    oak_arr_u8_16 out = {0};
+    oak_span_u8 s   = (oak_span_u8){ out.v, 16 }  ;
 oak_simd_store_u8x16( s, ((u32)( 0 )), oak_simd_splat_u8x16( ((u8)( 66 )) ) )  ;
-oak_assert( ( oak_arm64_uaddlv_u8x16( oak_simd_splat_u8x16( ((u8)( 1 )) ) ) == ((u32)( 16 )) ) )  ;
+oak_assert( ( oak_arm64_uaddlv_u8x16( oak_simd_splat_u8x16( ((u8)( 1 )) ) ) == ((u32)( 16 )) ), "unknown.oak", 12 )  ;
     return ((i32)( oak_span_index_u8( s, (u64)( 0 ) ) ))  ;
 }
 

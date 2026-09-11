@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"fmt"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -215,18 +216,27 @@ oak 0.1.0
 require example.com/dep 1.2.0
 require example.com/other 0.3.1 // trailing comment
 replace example.com/dep => ../dep
+profile strict
+steady example.com/hello serve
+steady example.com/hello/net poll
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Path != "example.com/hello" || manifest.Oak != "0.1.0" {
+	if manifest.Path != "example.com/hello" || manifest.Oak != "0.1.0" || manifest.Profile != "strict" {
 		t.Fatalf("manifest = %+v", manifest)
+	}
+	if plain, err := ParseManifest("module example.com/x\n"); err != nil || plain.Profile != "" {
+		t.Fatalf("manifest without profile = %+v, %v", plain, err)
 	}
 	if len(manifest.Requires) != 2 || manifest.Requires[0].Path != "example.com/dep" || manifest.Requires[0].Version != (packageapi.Version{Major: 1, Minor: 2}) {
 		t.Fatalf("requires = %+v", manifest.Requires)
 	}
 	if manifest.Replaces["example.com/dep"] != "../dep" {
 		t.Fatalf("replaces = %v", manifest.Replaces)
+	}
+	if len(manifest.Steady) != 2 || manifest.Steady[0] != (SteadyEntry{Path: "example.com/hello", Name: "serve"}) || manifest.Steady[1].Name != "poll" {
+		t.Fatalf("steady = %+v", manifest.Steady)
 	}
 	bad := map[string]string{
 		"missing module":     "oak 0.1.0\n",
@@ -238,6 +248,13 @@ replace example.com/dep => ../dep
 		"replace unrequired": "module example.com/x\nreplace example.com/y => ../y\n",
 		"replace shape":      "module example.com/x\nrequire example.com/y 1.0.0\nreplace example.com/y ../y\n",
 		"require stdlib":     "module example.com/x\nrequire strings 1.0.0\n",
+		"unknown profile":    "module example.com/x\nprofile lenient\n",
+		"profile arity":      "module example.com/x\nprofile\n",
+		"duplicate profile":  "module example.com/x\nprofile strict\nprofile default\n",
+		"steady arity":       "module example.com/x\nsteady example.com/x\n",
+		"steady bad path":    "module example.com/x\nsteady strings serve\n",
+		"steady bad name":    "module example.com/x\nsteady example.com/x 9serve\n",
+		"duplicate steady":   "module example.com/x\nsteady example.com/x serve\nsteady example.com/x serve\n",
 	}
 	for name, text := range bad {
 		if _, err := ParseManifest(text); err == nil {
@@ -251,8 +268,8 @@ replace example.com/dep => ../dep
 func TestSelectIsMaximumOfRequirements(t *testing.T) {
 	v := func(a, b, c int) packageapi.Version { return packageapi.Version{Major: a, Minor: b, Patch: c} }
 	selected := Select([]Requirement{
-		{"example.com/a", v(1, 2, 0)}, {"example.com/b", v(0, 1, 0)},
-		{"example.com/a", v(1, 10, 0)}, {"example.com/a", v(1, 9, 9)},
+		{Path: "example.com/a", Version: v(1, 2, 0)}, {Path: "example.com/b", Version: v(0, 1, 0)},
+		{Path: "example.com/a", Version: v(1, 10, 0)}, {Path: "example.com/a", Version: v(1, 9, 9)},
 	})
 	if selected["example.com/a"] != v(1, 10, 0) || selected["example.com/b"] != v(0, 1, 0) {
 		t.Fatalf("selected = %v", selected)
@@ -301,5 +318,52 @@ func TestLookupVisibilityAndSealing(t *testing.T) {
 	}
 	if !ProjectionAllowed("p", "p", true) || ProjectionAllowed("p", "q", true) || !ProjectionAllowed("p", "q", false) {
 		t.Fatal("ProjectionAllowed broken")
+	}
+}
+
+// OpenBind against Oak.Modules.OpenImports: rejected iff an export is
+// bound (openBind_none_iff); accepted binds exactly the exports, none bound
+// before (openBind_some); growth is monotone toward rejection
+// (openBind_none_mono).
+func TestOpenBindLaws(t *testing.T) {
+	rng := rand.New(rand.NewSource(23))
+	for round := 0; round < 500; round++ {
+		bound := map[string]bool{}
+		for i := 0; i < rng.Intn(6); i++ {
+			bound[fmt.Sprintf("n%d", rng.Intn(8))] = true
+		}
+		var exports []string
+		for i := 0; i < rng.Intn(6); i++ {
+			exports = append(exports, fmt.Sprintf("n%d", rng.Intn(8)))
+		}
+		isBound := func(name string) bool { return bound[name] }
+		names, collisions := OpenBind(isBound, exports)
+		anyBound := false
+		for _, name := range exports {
+			if bound[name] {
+				anyBound = true
+			}
+		}
+		if (len(collisions) != 0) != anyBound {
+			t.Fatalf("rejected=%v but bound export present=%v (%v %v)", len(collisions) != 0, anyBound, exports, bound)
+		}
+		if len(collisions) == 0 {
+			if len(names) != len(exports) {
+				t.Fatalf("accepted open must bind exactly the exports: %v vs %v", names, exports)
+			}
+			for i, name := range names {
+				if name != exports[i] || bound[name] {
+					t.Fatalf("accepted open bound %q, which was already bound or out of order", name)
+				}
+			}
+		} else {
+			if names != nil {
+				t.Fatal("a rejected open must bind nothing")
+			}
+			_, more := OpenBind(isBound, append(exports, "extra"))
+			if len(more) == 0 {
+				t.Fatal("adding exports must not turn a rejection into an acceptance")
+			}
+		}
 	}
 }

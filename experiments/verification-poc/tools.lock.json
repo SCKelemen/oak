@@ -21,12 +21,13 @@
   },
   "tlc": {
     "version": "1.8.0",
-    "source": "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar",
-    "sha256": "4c7bb1f6b050d56c197ee9ddd6e57fe521eae175f5043c9fb98b169f7b2d5407",
-    "note": "Mutable upstream prerelease. Explicitly refreshed from GitHub's published asset digest on 2026-09-08; checksum verification remains mandatory.",
-    "asset_id": 551007111,
-    "asset_updated_at": "2026-09-08T17:57:45Z",
-    "source_commit": "b123b22654942bd7f8b1bcadcc47da4ee2cf4c0e",
-    "digest_source": "https://api.github.com/repos/tlaplus/tlaplus/releases/assets/551007111"
+    "source": "tools/tla2tools.jar",
+    "sha256": "1a2d48d60fe1417e0d50f045da927221d83eb7be935fbd36eee11ac80f053621",
+    "note": "Vendored on 2026-09-09: upstream publishes v1.8.0 only as a mutable prerelease asset rebuilt on each commit (three rebuilds that day). The vendored jar is the build below, verified against GitHub's published asset digest and recomputed from a fresh download; the installer copies it and checksum verification remains mandatory.",
+    "upstream_source": "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar",
+    "upstream_asset_id": 553004562,
+    "upstream_asset_updated_at": "2026-09-09T15:10:02Z",
+    "upstream_digest_source": "https://api.github.com/repos/tlaplus/tlaplus/releases/assets/553004562",
+    "source_commit": "b123b22654942bd7f8b1bcadcc47da4ee2cf4c0e"
   }
 }

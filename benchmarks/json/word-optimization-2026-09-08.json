@@ -1,0 +1,56 @@
+{
+  "workflow": "https://github.com/SCKelemen/oak/actions/runs/34290861422",
+  "release_samples": 9,
+  "results": [
+    {
+      "baseline_ns_per_document": 207.3706875,
+      "baseline_sha": "661e614e8da9ab49e46d23a11f788492fb256766",
+      "candidate_ns_per_document": 119.9075107421875,
+      "candidate_sha": "c5debc11f324838c286c96c0c237f48c16824f3d",
+      "cpu": "Apple M1 (Virtual)",
+      "limitation": "One hosted runner, one schema, resident corpus. No affinity/frequency control; no statistical or universal parity claim.",
+      "machine": "arm64",
+      "oak_over_simdjson_time": 1.1325824316233053,
+      "oak_speedup": 1.729422003813144,
+      "simdjson_ns_per_document": 105.870890625,
+      "simdjson_time_drift": 1.0133939942577657
+    },
+    {
+      "machine": "x86_64",
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "baseline_sha": "661e614e8da9ab49e46d23a11f788492fb256766",
+      "candidate_sha": "c5debc11f324838c286c96c0c237f48c16824f3d",
+      "baseline_ns_per_document": 195.1518662109375,
+      "candidate_ns_per_document": 178.6703955078125,
+      "oak_speedup": 1.0922451123269852,
+      "simdjson_ns_per_document": 127.5778818359375,
+      "oak_over_simdjson_time": 1.4004809684611232,
+      "simdjson_time_drift": 1.0217708066415667,
+      "limitation": "One hosted runner, one schema, resident corpus. No affinity/frequency control; no statistical or universal parity claim."
+    }
+  ],
+  "paired_release_time_ratios": {
+    "arm64": [
+      1.2653270120165607,
+      1.1288490860830591,
+      1.6650558336695591,
+      1.1206114921520713,
+      1.1378397917228704,
+      1.4085372424338845,
+      1.1717830738311132,
+      0.9349580612497109,
+      1.032670128550714
+    ],
+    "x86_64": [
+      1.3433808338057918,
+      1.3570918694277254,
+      1.4061386979409534,
+      1.3999855526362723,
+      1.3993311309879612,
+      1.3978896413404864,
+      1.4055561774168184,
+      1.407770100280064,
+      1.4046731689026524
+    ]
+  }
+}

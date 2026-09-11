@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/SCKelemen/oak/asm"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -16,10 +17,18 @@ import (
 
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
+	// constantContext is set while emitting C integer constant expressions
+	// (file-scope initializers, static_assert), where arithmetic must stay
+	// a plain operator rather than a helper call.
+	constantContext bool
+	// inlineHelpers names the functions emitted as forced-inline helpers
+	// (OAK_INLINE): private, leaf, loop-free, and short.
+	inlineHelpers    map[string]bool
 	asmFunctions     []*asm.Function
 	packageName      string
 	sourceFile       string // Source file path for source location comments
 	sourceText       string // Full source text for UTF-8 to UTF-16 conversion
+	abstractAliases  map[string]string
 	sourceIndex      *lsp.PositionIndex
 	output           strings.Builder
 	indentLevel      int
@@ -59,6 +68,14 @@ type CodeGenerator struct {
 	// bounds-checked form. Unknown containers fail closed.
 	localTypes   map[string]localContainer
 	sliceHelpers map[string]string
+	// lineDirectives enables #line directives before every function and
+	// statement (docs/spec/90-backend.md section 10), so C diagnostics and
+	// debuggers attribute generated code to the Oak source line.
+	lineDirectives bool
+	// emittingBodies is set once function definitions begin: a type that
+	// first appears there cannot receive a file-scope typedef any more
+	// (codegen/arrays.go fails closed instead).
+	emittingBodies bool
 }
 
 // localContainer classifies a local binding for element-access lowering.
@@ -67,6 +84,10 @@ type localContainer struct {
 	length  int64  // ownedArray only
 	element string // C element type for ownedArray/view/span
 	adtName string // declared ADT name for containerADT
+	// elementType is the element's type expression for ownedArray, view,
+	// and span, so an element that is itself a container (a row of a
+	// [N][M]T grid) classifies through the same path.
+	elementType ast.Expression
 }
 
 type containerKind int
@@ -193,11 +214,16 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// Conversion helpers come after ADT emission: checked narrowing returns
 	// a monomorphized Result (docs/spec/20-types.md §11.1).
 	cg.emitConversionHelpers(program)
+	cg.emitArithmeticHelpers(program)
 
 	// Forward declarations: C requires declaration before use, and Oak
 	// functions are order-independent.
 	sliceHelperOffset := cg.output.Len()
+	// Every type a body can name has a typedef by now; a wrapper typedef
+	// requested past this point would land inside a function.
+	cg.emittingBodies = true
 	cg.emitFunctionPrototypes(program)
+	cg.emitStaticAsserts(program, tc)
 	cg.emitAsmUnits()
 
 	// Emit function definitions
@@ -416,6 +442,25 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("/* Generated C code from Oak */\n")
 	cg.write("#include <stdint.h>\n")
 	cg.write("#include <stddef.h>\n")
+	// <math.h> and the float helpers only when the program uses floating
+	// point, so every other program stays freestanding.
+	usesFloats := programUsesFloats(program)
+	if usesFloats {
+		cg.write("#include <math.h>\n")
+		cg.write("#include <float.h>\n")
+		// Every operation rounds to its own type: no excess intermediate
+		// precision (docs/spec/20-types.md section 11.3.3). A target that
+		// evaluates in wider registers (x87) fails the build instead of
+		// silently changing results.
+		cg.write("#if FLT_EVAL_METHOD != 0\n#error \"Oak floating point requires FLT_EVAL_METHOD == 0: every operation rounds to its own type\"\n#endif\n")
+		// Floating-point semantics are part of Oak's semantics, not of the
+		// C compiler's optimization level: no contraction of a * b + c into
+		// an fma, ever (docs/spec/20-types.md section 11.3.3, 90-backend.md
+		// 7a). Clang honors the standard pragma; gcc does not implement it
+		// (and warns under -Wunknown-pragmas), but never contracts in strict
+		// ISO mode, and the drivers pass -ffp-contract=off besides.
+		cg.write("#if defined(__clang__)\n#pragma STDC FP_CONTRACT OFF\n#endif\n")
+	}
 	cg.write("\n")
 
 	// Emit primitive type aliases
@@ -437,6 +482,16 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("typedef u8  byte;\n")
 	cg.write("typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */\n")
 	cg.write("\n")
+	cg.write("typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */\n")
+	cg.write("typedef double f64; /* IEEE 754 binary64 */\n")
+	cg.write("typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */\n")
+	cg.write("typedef uint16_t bf16; /* bfloat16 storage */\n")
+	cg.write("typedef uint8_t f8e4m3; /* OCP FP8 E4M3 storage: no infinities, NaN is S.1111.111 */\n")
+	cg.write("typedef uint8_t f8e5m2; /* OCP FP8 E5M2 storage: IEEE-like */\n")
+	cg.write("\n")
+	if usesFloats {
+		cg.writeRaw(floatPreamble)
+	}
 	// Emit string type definition
 	cg.write("typedef struct oak_string {\n")
 	cg.indentLevel++
@@ -547,6 +602,15 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 
 	cg.types[cName] = true
 
+	// Payload types resolve before the enum opens, so a payload that is an
+	// owned array places its wrapper typedef at file scope
+	// (codegen/arrays.go) rather than inside the union.
+	for _, variant := range adt.Variants {
+		if variant.Payload != nil {
+			cg.parsePayloadType(variant.Payload)
+		}
+	}
+
 	// Emit tag enum (with proper C style spacing)
 	tagEnumName := fmt.Sprintf("%s_tag", cName)
 	cg.write(fmt.Sprintf("typedef enum %s {\n", tagEnumName))
@@ -575,10 +639,13 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 		}
 	}
 
-	// Emit struct
+	// Emit struct. The tag is a fixed-width u32 holding the variant's
+	// declaration index (the enum above names the values), so the union
+	// has one shape on both sides of the C boundary (docs/spec/92-ffi.md
+	// section 2.6); a C enum's width is implementation-defined.
 	cg.write(fmt.Sprintf("typedef struct %s {\n", cName))
 	cg.indentLevel++
-	cg.write(fmt.Sprintf("  %s tag;\n", tagEnumName))
+	cg.write("  u32 tag;\n")
 
 	if hasPayload {
 		cg.write("  union {\n")
@@ -597,6 +664,7 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 	cg.indentLevel--
 	cg.write(fmt.Sprintf("} %s;\n", cName))
 	cg.write("\n")
+	cg.emitUnionLayout(typeName, cName, adt)
 
 	// Emit constructors
 	for _, variant := range adt.Variants {
@@ -646,8 +714,14 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	// emitted with the prototypes (docs/spec/92-ffi.md section 2.3).
 	// Asm-backed declarations have their body emitted as an assembly
 	// block beside the prototypes (docs/spec/94-assembler.md).
-	if fn.ExternSymbol != "" || fn.AsmBacked || fn.Body == nil {
+	if fn.ExternSymbol != "" || fn.Body == nil {
 		return
+	}
+	if fn.AsmBacked {
+		// The Oak fallback body realizes the signature where the asm unit
+		// does not apply (non-AArch64, or the portable lowering).
+		cg.write("#if !defined(__aarch64__) || defined(OAK_PORTABLE_INTRINSICS)\n")
+		defer cg.write("#endif\n")
 	}
 
 	funcName := fn.Name.Value
@@ -698,7 +772,8 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	}
 
 	// Emit function signature (C style: space inside parentheses)
-	cg.write(fmt.Sprintf("%s %s( ", returnType, cFuncName))
+	cg.emitLineDirective(fn.Token)
+	cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(funcName), returnType, cFuncName))
 
 	// If method, add receiver as first parameter
 	if fn.Receiver != nil {
@@ -710,13 +785,15 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		}
 	}
 
-	// Emit parameters
+	// Emit parameters. An owned-array parameter is a wrapper-struct value
+	// (codegen/arrays.go): C's by-value passing is the copy the language
+	// specifies, so a store in the callee never reaches the caller.
 	for i, param := range fn.Parameters {
 		if param.Variadic {
 			// The body sees a read-only view of the caller-owned argument
 			// array (docs/spec/10-syntax.md, variadic parameters).
 			viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
-			cg.write(fmt.Sprintf("%s %s", viewType, param.Name.Value))
+			cg.write(fmt.Sprintf("%s %s", viewType, cIdent(param.Name.Value)))
 		} else {
 			cg.write(cg.cParameter(param.Type, param.Name.Value))
 		}
@@ -853,7 +930,7 @@ func (cg *CodeGenerator) emitMatchReturn(match *ast.MatchExpression, tc *typeche
 						restorePayload = cg.bindMatchContainer(binding.Name.Value, variant.Payload)
 					}
 				}
-				cg.write(fmt.Sprintf("    %s %s = ", payloadType, binding.Name.Value))
+				cg.write(fmt.Sprintf("    %s %s = ", payloadType, cIdent(binding.Name.Value)))
 				cg.emitExpressionFragment(match.Scrutinee, tc)
 				cg.output.WriteString(fmt.Sprintf(".payload.%s;\n", variantName))
 			}
@@ -927,9 +1004,11 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 	if _, isIdent := match.Scrutinee.(*ast.Identifier); !isIdent {
 		if mangled, resolved := tc.MatchResolution(match); resolved {
 			if _, known := cg.adtTypes[mangled]; known {
-				tmp := fmt.Sprintf("oak_scrutinee_%d", cg.scrutineeCounter)
+				tmp := fmt.Sprintf("oak__scrutinee_%d", cg.scrutineeCounter)
 				cg.scrutineeCounter++
-				cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), tmp))
+				// The temporary is used through the identifier path, so its
+				// declaration must carry the same C spelling.
+				cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), cIdent(tmp)))
 				cg.emitExpressionFragment(match.Scrutinee, tc)
 				cg.output.WriteString(";\n")
 				if cg.localTypes == nil {
@@ -992,7 +1071,7 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 						restorePayload = cg.bindMatchContainer(binding.Name.Value, variant.Payload)
 					}
 				}
-				cg.write(fmt.Sprintf("    %s %s = ", payloadType, binding.Name.Value))
+				cg.write(fmt.Sprintf("    %s %s = ", payloadType, cIdent(binding.Name.Value)))
 				cg.emitExpressionFragment(match.Scrutinee, tc)
 				cg.output.WriteString(fmt.Sprintf(".payload.%s;\n", variantName))
 			}
@@ -1014,6 +1093,14 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 			cg.write("  }\n")
 		}
 		return
+	}
+	// Every arm was guarded and none was a fallback. Exhaustiveness is
+	// checked upstream, so the trailing branch is unreachable; emitting it
+	// makes the C data flow total (a binding assigned in every arm is
+	// assigned on every path the C compiler can see, so -Wall stays clean)
+	// and turns the impossible fallthrough into a fail-stop, never UB.
+	if guarded {
+		cg.write("  else { __builtin_trap(); /* unreachable: exhaustive match */ }\n")
 	}
 }
 
@@ -1038,62 +1125,39 @@ func (cg *CodeGenerator) bindMatchContainer(name string, typ ast.Expression) fun
 // for every container type expression in the program, so later per-function
 // emission never writes a typedef mid-function.
 func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
-	emit := func(typeExpr ast.Expression) {
-		info := cg.classifyContainer(typeExpr)
-		switch info.kind {
-		case containerView:
-			cg.emitViewType(info.element)
-		case containerSpan:
-			cg.emitSpanType(info.element)
-		}
-	}
-	var walkStmt func(stmt ast.Statement)
-	walkStmt = func(stmt ast.Statement) {
-		switch s := stmt.(type) {
-		case *ast.VariableDeclaration:
-			if s.Type != nil {
-				emit(s.Type)
+	var emit func(typeExpr ast.Expression)
+	emit = func(typeExpr ast.Expression) {
+		switch t := typeExpr.(type) {
+		case *ast.FunctionTypeExpression:
+			for _, parameter := range t.Parameters {
+				emit(parameter)
 			}
-		case *ast.FunctionStatement:
-			for _, param := range s.Parameters {
-				if param.Variadic {
-					cg.emitViewType(cg.parseTypeExpression(param.Type))
-				} else if param.Type != nil {
-					emit(param.Type)
-				}
-			}
-			if block, ok := s.Body.(*ast.BlockExpression); ok && block.Block != nil {
-				for _, inner := range block.Block.Statements {
-					walkStmt(inner)
-				}
-			}
-		case *ast.WhileStatement:
-			if s.Body != nil {
-				for _, inner := range s.Body.Statements {
-					walkStmt(inner)
-				}
-			}
-		case *ast.IfStatement:
-			if s.Consequence != nil {
-				walkStmt(s.Consequence)
-			}
-			if s.Alternative != nil {
-				walkStmt(s.Alternative)
-			}
-		case *ast.BlockStatement:
-			for _, inner := range s.Statements {
-				walkStmt(inner)
-			}
-		case *ast.UnsafeBlock:
-			if s.Body != nil {
-				for _, inner := range s.Body.Statements {
-					walkStmt(inner)
-				}
+			emit(t.Return)
+		case *ast.IndexExpression:
+			info := cg.classifyContainer(t)
+			switch info.kind {
+			case containerView:
+				cg.emitViewType(info.element)
+			case containerSpan:
+				cg.emitSpanType(info.element)
+			case containerOwnedArray:
+				// Resolving the spelling places the wrapper typedef (and
+				// the typedefs of nested element arrays) at file scope.
+				cg.parseTypeExpression(t)
 			}
 		}
 	}
+	walkTypePositions(program, emit)
 	for _, stmt := range program.Statements {
-		walkStmt(stmt)
+		fn, isFunction := stmt.(*ast.FunctionStatement)
+		if !isFunction {
+			continue
+		}
+		for _, param := range fn.Parameters {
+			if param.Variadic {
+				cg.emitViewType(cg.parseTypeExpression(param.Type))
+			}
+		}
 	}
 }
 
@@ -1117,16 +1181,17 @@ func (cg *CodeGenerator) classifyContainer(typeExpr ast.Expression) localContain
 		switch index := t.Index.(type) {
 		case *ast.IntegerLiteral:
 			return localContainer{
-				kind:    containerOwnedArray,
-				length:  index.Value,
-				element: cg.parseTypeExpression(t.Left),
+				kind:        containerOwnedArray,
+				length:      index.Value,
+				element:     cg.parseTypeExpression(t.Left),
+				elementType: t.Left,
 			}
 		case *ast.Identifier:
 			if index.Value == "" {
-				return localContainer{kind: containerView, element: cg.parseTypeExpression(t.Left)}
+				return localContainer{kind: containerView, element: cg.parseTypeExpression(t.Left), elementType: t.Left}
 			}
 			if index.Value == "*" {
-				return localContainer{kind: containerSpan, element: cg.parseTypeExpression(t.Left)}
+				return localContainer{kind: containerSpan, element: cg.parseTypeExpression(t.Left), elementType: t.Left}
 			}
 		}
 	}
@@ -1215,10 +1280,27 @@ func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 		if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "core_index" && len(call.Arguments) == 2 {
 			return cg.localContainerOf(&ast.IndexExpression{Left: call.Arguments[0], Index: call.Arguments[1]})
 		}
+		// A call to a program function classifies by its declared return
+		// type: a region-indexed function returning a view
+		// (docs/spec/50-borrowing.md section 8c) is indexed like the view.
+		if id, ok := call.Function.(*ast.Identifier); ok && cg.programFunctions != nil {
+			if fn, declared := cg.programFunctions[id.Value]; declared && fn.ReturnType != nil {
+				if info := cg.classifyContainer(fn.ReturnType); info.kind != containerUnknown {
+					return info
+				}
+			}
+		}
 	}
 	if index, ok := expr.(*ast.IndexExpression); ok && !index.Dot {
 		base := cg.localContainerOf(index.Left)
 		if base.kind == containerOwnedArray || base.kind == containerView || base.kind == containerSpan {
+			// An element that is itself a container (a row of a [N][M]T
+			// grid, a view of arrays) classifies by its declared type.
+			if base.elementType != nil {
+				if element := cg.classifyContainer(base.elementType); element.kind != containerUnknown {
+					return element
+				}
+			}
 			name := strings.TrimPrefix(base.element, "oak_")
 			if _, exists := cg.adtTypes[name]; exists {
 				return localContainer{kind: containerADT, adtName: name}
@@ -1262,6 +1344,9 @@ var primitiveCasts = map[string]string{
 	"u8": "u8", "u16": "u16", "u32": "u32", "u64": "u64",
 	"i8": "i8", "i16": "i16", "i32": "i32", "i64": "i64",
 	"byte": "u8", "rune": "u32",
+	// f64(x: f32) is the one implicit floating-point move, an exact
+	// widening; f32(literal) types the literal (docs/spec/20-types.md 11.3.4).
+	"f32": "f32", "f64": "f64",
 }
 
 // emitCoreIndex lowers core_index(seq, i) to the bounds-checked access for
@@ -1271,6 +1356,25 @@ var primitiveCasts = map[string]string{
 func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
 	seq, index := call.Arguments[0], call.Arguments[1]
 	info := cg.localContainerOf(seq)
+	// A proven access (typechecker/extents.go) needs no runtime check: the
+	// fact that bounds it dominates this position.
+	if tc.IndexProven(call.Token) {
+		switch info.kind {
+		case containerView, containerSpan:
+			cg.output.WriteString("( ")
+			cg.emitExpressionFragment(seq, tc)
+			cg.output.WriteString(" ).base[ ")
+			cg.emitExpressionFragment(index, tc)
+			cg.output.WriteString(" ]")
+			return
+		case containerOwnedArray:
+			cg.emitExpressionFragment(seq, tc)
+			cg.output.WriteString(".v[ ")
+			cg.emitExpressionFragment(index, tc)
+			cg.output.WriteString(" ]")
+			return
+		}
+	}
 	switch info.kind {
 	case containerView:
 		cg.output.WriteString(fmt.Sprintf("oak_view_index_%s( ", info.element))
@@ -1287,7 +1391,7 @@ func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typec
 	case containerOwnedArray:
 		cg.output.WriteString("oak_index( ")
 		cg.emitExpressionFragment(seq, tc)
-		cg.output.WriteString(fmt.Sprintf(", %d, (u64)( ", info.length))
+		cg.output.WriteString(fmt.Sprintf(".v, %d, (u64)( ", info.length))
 		cg.emitExpressionFragment(index, tc)
 		cg.output.WriteString(" ) )")
 	default:
@@ -1317,7 +1421,7 @@ func (cg *CodeGenerator) emitBorrowConstruction(kind string, call *ast.Invocatio
 	}
 	cg.output.WriteString(fmt.Sprintf("(%s){ ", structName))
 	cg.emitExpressionFragment(prefix.Right, tc)
-	cg.output.WriteString(fmt.Sprintf(", %d }", info.length))
+	cg.output.WriteString(fmt.Sprintf(".v, %d }", info.length))
 }
 
 // emitLen lowers len(x): static length for owned arrays, the len field for
@@ -1348,6 +1452,92 @@ func programReturnsNever(program *ast.Program) bool {
 	return false
 }
 
+// emitLayoutBuiltin emits size_of/align_of/offset_of over the real emitted
+// type, address_of as the code symbol's address, and static_assert as a
+// compile-time check (a negative array size in a sizeof type is a C
+// constraint violation, so a false condition fails the build). Reports
+// whether the invocation was one of these.
+func (cg *CodeGenerator) emitLayoutBuiltin(ident *ast.Identifier, e *ast.InvocationExpression, tc *typechecker.TypeChecker) bool {
+	switch ident.Value {
+	case "address_of":
+		if len(e.Arguments) != 1 {
+			return false
+		}
+		target, ok := e.Arguments[0].(*ast.Identifier)
+		if !ok {
+			return false
+		}
+		cg.output.WriteString(fmt.Sprintf("((u64)(uintptr_t)&%s)", cg.cFunctionName(target.Value)))
+		return true
+	case "static_assert":
+		if len(e.Arguments) != 1 {
+			return false
+		}
+		cg.output.WriteString("((void)sizeof(char[ (")
+		cg.emitConstantExpression(e.Arguments[0], tc)
+		cg.output.WriteString(") ? 1 : -1 ]))")
+		return true
+	case "size_of", "align_of", "offset_of":
+		query, ok := tc.LayoutQueryAt(ident.Token)
+		if !ok {
+			cg.output.WriteString("OAK_UNRESOLVED_LAYOUT_QUERY")
+			return true
+		}
+		typeName := query.TypeName
+		if query.Record {
+			typeName = cg.cTypeName(query.TypeName)
+		}
+		switch query.Kind {
+		case "size_of":
+			cg.output.WriteString(fmt.Sprintf("((u32)sizeof(%s))", typeName))
+		case "align_of":
+			cg.output.WriteString(fmt.Sprintf("((u32)_Alignof(%s))", typeName))
+		case "offset_of":
+			cg.output.WriteString(fmt.Sprintf("((u32)offsetof(%s, %s))", typeName, cIdent(query.Field)))
+		}
+		return true
+	}
+	return false
+}
+
+// emitConstantExpression emits an expression that C must accept as an
+// integer constant expression: arithmetic stays a plain operator there.
+func (cg *CodeGenerator) emitConstantExpression(expr ast.Expression, tc *typechecker.TypeChecker) {
+	previous := cg.constantContext
+	cg.constantContext = true
+	cg.emitExpressionFragment(expr, tc)
+	cg.constantContext = previous
+}
+
+// emitStaticAsserts emits top-level static_assert statements as typedef
+// assertions once every type and global they may mention exists.
+func (cg *CodeGenerator) emitStaticAsserts(program *ast.Program, tc *typechecker.TypeChecker) {
+	count := 0
+	for _, stmt := range program.Statements {
+		exprStmt, ok := stmt.(*ast.ExpressionStatement)
+		if !ok {
+			continue
+		}
+		call, ok := exprStmt.Expression.(*ast.InvocationExpression)
+		if !ok || len(call.Arguments) != 1 {
+			continue
+		}
+		if ident, isIdent := call.Function.(*ast.Identifier); !isIdent || ident.Value != "static_assert" {
+			continue
+		}
+		if count == 0 {
+			cg.write("/* static_assert: the C compiler ratifies each layout claim */\n")
+		}
+		cg.write(fmt.Sprintf("typedef char oak_static_assert_%d[ (", count))
+		cg.emitConstantExpression(call.Arguments[0], tc)
+		cg.write(") ? 1 : -1 ];\n")
+		count++
+	}
+	if count > 0 {
+		cg.write("\n")
+	}
+}
+
 // SetAsmFunctions supplies the checked asm-unit functions to emit.
 func (cg *CodeGenerator) SetAsmFunctions(functions []*asm.Function) {
 	cg.asmFunctions = functions
@@ -1368,7 +1558,53 @@ func (cg *CodeGenerator) emitAsmUnits() {
 
 // emitFunctionPrototypes forward-declares every top-level function so calls
 // are order-independent in the emitted C.
+// inlineHelperLines bounds the source span of a forced-inline helper.
+const inlineHelperLines = 12
+
+// computeInlineHelpers decides which functions are emitted as forced-inline
+// helpers (docs/spec/90-backend.md section 9): private (not pub), named,
+// non-generic, non-method, with an Oak body, calling no user function,
+// containing no loop, and at most inlineHelperLines long. Exported and
+// extern/asm-backed functions keep external linkage.
+func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
+	cg.inlineHelpers = make(map[string]bool)
+	functions := make(map[string]*ast.FunctionStatement)
+	for _, stmt := range program.Statements {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil {
+			functions[fn.Name.Value] = fn
+		}
+	}
+	for name, fn := range functions {
+		if fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked || fn.Body == nil ||
+			fn.Exported || len(fn.TypeParams) > 0 || name == "main" {
+			continue
+		}
+		if fn.EndToken.Line <= 0 || fn.EndToken.Line-fn.Token.Line > inlineHelperLines {
+			continue
+		}
+		if _, isMember := cg.trampolineMember[name]; isMember {
+			continue
+		}
+		if discipline.InlineHelperShape(fn, functions) {
+			cg.inlineHelpers[name] = true
+		}
+	}
+}
+
+// linkage returns the storage-class prefix for a function's prototype and
+// definition. Forced-inline helpers are C99 `extern inline` with the
+// always-inline attribute: every call inlines at every optimization level
+// and the external definition is still emitted, so the symbol stays
+// available to linkers and to assembly inspection.
+func (cg *CodeGenerator) linkage(name string) string {
+	if cg.inlineHelpers[name] {
+		return "OAK_INLINE "
+	}
+	return ""
+}
+
 func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
+	cg.computeInlineHelpers(program)
 	emitted := false
 	for _, stmt := range program.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
@@ -1376,7 +1612,8 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			continue
 		}
 		if !emitted {
-			cg.write("/* forward declarations */\n")
+			cg.write("/* forward declarations; OAK_INLINE marks private leaf helpers the C\n   compiler must inline at every optimization level (the external\n   definition is still emitted: C99 extern inline) */\n")
+			cg.write("#define OAK_INLINE extern inline __attribute__((always_inline))\n")
 			emitted = true
 		}
 		// An extern binding declares the foreign symbol it asserts
@@ -1386,14 +1623,14 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			continue
 		}
 		returnType := cg.parseTypeExpression(fn.ReturnType)
-		cg.write(fmt.Sprintf("%s %s( ", returnType, cg.cFunctionName(fn.Name.Value)))
+		cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(fn.Name.Value), returnType, cg.cFunctionName(fn.Name.Value)))
 		if len(fn.Parameters) == 0 {
 			cg.write("void")
 		}
 		for i, param := range fn.Parameters {
 			if param.Variadic {
 				viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
-				cg.write(fmt.Sprintf("%s %s", viewType, param.Name.Value))
+				cg.write(fmt.Sprintf("%s %s", viewType, cIdent(param.Name.Value)))
 			} else {
 				cg.write(cg.cParameter(param.Type, param.Name.Value))
 			}
@@ -1464,16 +1701,31 @@ func (cg *CodeGenerator) emitVariadicCall(fn *ast.FunctionStatement, call *ast.I
 // decay to pointers; the explicit-cost copy semantics of 50-borrowing
 // section 8 for owned aggregates is tracked as backend debt.
 func (cg *CodeGenerator) cParameter(typeExpr ast.Expression, name string) string {
+	name = cIdent(name)
 	if fn, ok := typeExpr.(*ast.FunctionTypeExpression); ok {
 		return cg.cFunctionPointer(fn, name)
 	}
-	if indexExpr, ok := typeExpr.(*ast.IndexExpression); ok {
-		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
-			element := cg.parseTypeExpression(indexExpr.Left)
-			return fmt.Sprintf("%s %s[%d]", element, name, intLit.Value)
-		}
-	}
+	// An owned array is a wrapper-struct value (codegen/arrays.go): the
+	// parameter is the callee's own copy, mutable like any local.
 	return fmt.Sprintf("%s %s", cg.parseTypeExpression(typeExpr), name)
+}
+
+// ownedArrayParameter recognizes a fixed-length owned array type [N]T.
+func ownedArrayParameter(typeExpr ast.Expression, cg *CodeGenerator) (element string, length int64, ok bool) {
+	indexExpr, isIndex := typeExpr.(*ast.IndexExpression)
+	if !isIndex {
+		return "", 0, false
+	}
+	// A generic application (Ring[u8, 8]) is a record, not an array whose
+	// element type happens to be indexed.
+	if _, isGeneric := cg.genericAnnotationName(typeExpr); isGeneric {
+		return "", 0, false
+	}
+	intLit, isLit := indexExpr.Index.(*ast.IntegerLiteral)
+	if !isLit {
+		return "", 0, false
+	}
+	return cg.parseTypeExpression(indexExpr.Left), intLit.Value, true
 }
 
 // cFunctionPointer renders a named C declarator for an Oak function type.
@@ -1542,7 +1794,7 @@ var runtimeBuiltins = map[string]string{
 // can wrap them; the helper reads only v.len bytes and fails closed.
 func (cg *CodeGenerator) emitUtf8Helper() {
 	viewType := cg.emitViewType("u8")
-	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n\n/* checked shifts: a count reaching the operand width traps, never UB\n   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */\n#define OAK_SHIFT_HELPERS(T, W) \\\n  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \\\n  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }\nOAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n\n/* checked shifts: a count reaching the operand width traps, never UB\n   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */\n#define OAK_SHIFT_HELPERS(T, W) \\\n  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \\\n  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }\nOAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)\n\n/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md\n   section 7): results wrap mod 2^N, computed in unsigned space so no C\n   promotion overflows; signed results come back through a union pun (defined\n   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */\n#define OAK_ARITH_U(T) \\\n  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \\\n  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \\\n  static inline T oak_neg_##T(T a) { return (T)(0u - (u64)a); } \\\n  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }\n#define OAK_ARITH_I(T, U, MIN) \\\n  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \\\n  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \\\n  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \\\n  static inline T oak_neg_##T(T a) { return oak_pun_##T((U)(0u - (u64)(U)a)); } \\\n  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }\nOAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)\nOAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
 	cg.write(fmt.Sprintf("static Bool oak_is_valid_utf8(%s v) {\n", viewType))
 	cg.write("  u64 i = 0;\n")
 	cg.write("  u64 n = (u64)v.len;\n")
@@ -1602,11 +1854,26 @@ func (cg *CodeGenerator) emitUtf8Helper() {
 // (docs/spec/85-discipline.md section 5).
 func (cg *CodeGenerator) emitAssertHelper() {
 	cg.write("/* assert: always compiled in (docs/spec/85-discipline.md section 5) */\n")
-	cg.write("static inline void oak_assert(Bool cond) {\n")
+	// A failed assertion names its Oak source position before trapping
+	// (docs/spec/85-discipline.md section 5). Hosted builds print it to
+	// stderr; freestanding builds (-ffreestanding, or -DOAK_FREESTANDING)
+	// keep the bare trap and no libc dependency.
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("#include <stdio.h>\n")
+	cg.write("static inline void oak_assert(Bool cond, const char *file, u32 line) {\n")
+	cg.write("  if (!cond) {\n")
+	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u\\n\", file, (unsigned)line);\n")
+	cg.write("    __builtin_trap();\n")
+	cg.write("  }\n")
+	cg.write("}\n")
+	cg.write("#else\n")
+	cg.write("static inline void oak_assert(Bool cond, const char *file, u32 line) {\n")
+	cg.write("  (void)file; (void)line;\n")
 	cg.write("  if (!cond) {\n")
 	cg.write("    __builtin_trap();\n")
 	cg.write("  }\n")
-	cg.write("}\n\n")
+	cg.write("}\n")
+	cg.write("#endif\n\n")
 }
 
 // emitTrampolineGroup merges one mutual-tail cycle into a state-machine
@@ -1671,7 +1938,7 @@ func (cg *CodeGenerator) emitTrampolineGroup(members []string, tc *typechecker.T
 		cg.write(" ) {\n")
 		cg.write(fmt.Sprintf("  return %s( %s_%s", engine, engine, member))
 		for _, param := range fn.Parameters {
-			cg.write(", " + param.Name.Value)
+			cg.write(", " + cIdent(param.Name.Value))
 		}
 		cg.write(" );\n")
 		cg.write("}\n\n")
@@ -1697,7 +1964,7 @@ func (cg *CodeGenerator) emitTailGroupContinue(call *ast.InvocationExpression, s
 		if i >= len(call.Arguments) {
 			break
 		}
-		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", param.Name.Value, i))
+		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", cIdent(param.Name.Value), i))
 	}
 	cg.write(fmt.Sprintf("    __oak_state = %s;\n", stateTag))
 	cg.write("    continue;\n")
@@ -1723,7 +1990,7 @@ func (cg *CodeGenerator) emitTailLoopContinue(call *ast.InvocationExpression, tc
 		if i >= len(call.Arguments) {
 			break
 		}
-		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", param.Name.Value, i))
+		cg.write(fmt.Sprintf("    %s = __oak_tail_%d;\n", cIdent(param.Name.Value), i))
 	}
 	cg.write("    continue;\n")
 	cg.write("  }\n")
@@ -1792,9 +2059,9 @@ func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.Typ
 		if _, isIdent := match.Scrutinee.(*ast.Identifier); !isIdent {
 			if mangled, resolved := tc.MatchResolution(match); resolved {
 				if _, known := cg.adtTypes[mangled]; known {
-					tmp := fmt.Sprintf("oak_scrutinee_%d", cg.scrutineeCounter)
+					tmp := fmt.Sprintf("oak__scrutinee_%d", cg.scrutineeCounter)
 					cg.scrutineeCounter++
-					cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), tmp))
+					cg.write(fmt.Sprintf("  %s %s = ", cg.cTypeName(mangled), cIdent(tmp)))
 					cg.emitExpressionFragment(match.Scrutinee, tc)
 					cg.output.WriteString(";\n")
 					if cg.localTypes == nil {
@@ -1828,8 +2095,16 @@ func (cg *CodeGenerator) emitStatementExpression(expr ast.Expression, tc *typech
 	cg.write(";\n")
 }
 
+// arithmeticHelpers names the prelude helper family for each total operator.
+var arithmeticHelpers = map[string]string{
+	"+": "oak_add", "-": "oak_sub", "*": "oak_mul", "/": "oak_div", "%": "oak_rem",
+}
+
 // emitInfixExpression emits C code for an infix expression (as fragment)
 func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *typechecker.TypeChecker) {
+	if cg.emitBytePack(expr, tc) {
+		return
+	}
 	// Shifts route through the checked helpers (oak_shl_u32 and friends):
 	// the operand width was recorded by the checker; without a record the
 	// emission fails closed rather than guessing a width.
@@ -1850,6 +2125,23 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 		cg.output.WriteString(" )")
 		return
 	}
+	// Fixed-width arithmetic routes through the total helpers (oak_add_u8
+	// and friends): the checker recorded the result width. Constant contexts
+	// and literal-only operands keep the plain operator so C integer constant
+	// expressions stay constant; an unrecorded expression also stays plain.
+	if helper, isArithmetic := arithmeticHelpers[expr.Operator]; isArithmetic && !cg.constantContext &&
+		!(typechecker.IsLiteralOnlyExpression(expr.Left) && typechecker.IsLiteralOnlyExpression(expr.Right)) {
+		// Floats keep the plain C operator: their rounding is fixed by the
+		// FP_CONTRACT pragma and the absence of fast-math, not by a helper.
+		if width, known := tc.ArithmeticType(expr.Token); known && !typechecker.IsFloatName(width) {
+			cg.output.WriteString(fmt.Sprintf("%s_%s( ", helper, width))
+			cg.emitExpressionFragment(expr.Left, tc)
+			cg.output.WriteString(", ")
+			cg.emitExpressionFragment(expr.Right, tc)
+			cg.output.WriteString(" )")
+			return
+		}
+	}
 	// C style: space around operators, parentheses for grouping
 	cg.output.WriteString("( ")
 	cg.emitExpressionFragment(expr.Left, tc)
@@ -1862,7 +2154,13 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typechecker.TypeChecker) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
-		cg.output.WriteString(fmt.Sprintf("%d", e.Value))
+		if e.Wide {
+			cg.output.WriteString(fmt.Sprintf("%dULL", e.Magnitude()))
+		} else {
+			cg.output.WriteString(fmt.Sprintf("%d", e.Value))
+		}
+	case *ast.FloatLiteral:
+		cg.emitFloatLiteral(e, tc)
 	case *ast.StringLiteral:
 		// Emit string literal as a string struct
 		idx, exists := cg.stringLiteralMap[e.Value]
@@ -1881,11 +2179,22 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString("oak_Bool_False")
 		}
 	case *ast.Identifier:
-		cg.output.WriteString(e.Value)
+		cg.output.WriteString(cIdent(e.Value))
 	case *ast.InfixExpression:
 		cg.emitInfixExpression(e, tc)
 	case *ast.PrefixExpression:
 		operator := e.Operator
+		// Unary minus on a machine integer is total in its width: route
+		// through oak_neg_<type> (the checker recorded the width) except in
+		// constant contexts and on literal-only operands.
+		if operator == "-" && !cg.constantContext && !typechecker.IsLiteralOnlyExpression(e.Right) {
+			if width, known := tc.ArithmeticType(e.Token); known {
+				cg.output.WriteString(fmt.Sprintf("oak_neg_%s( ", width))
+				cg.emitExpressionFragment(e.Right, tc)
+				cg.output.WriteString(" )")
+				return
+			}
+		}
 		// Oak's unary ^ (bitwise complement, Go-style) is C's ~; C's
 		// unary ^ does not exist.
 		if operator == "^" {
@@ -1901,7 +2210,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		if e.Dot {
 			cg.emitExpressionFragment(e.Left, tc)
 			if ident, ok := e.Index.(*ast.Identifier); ok {
-				cg.output.WriteString(fmt.Sprintf(".%s", ident.Value))
+				cg.output.WriteString(fmt.Sprintf(".%s", cIdent(ident.Value)))
 			} else {
 				cg.output.WriteString(".OAK_UNSUPPORTED_FIELD")
 			}
@@ -1912,7 +2221,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			info := cg.localContainerOf(e.Left)
 			if info.kind == containerOwnedArray {
 				cg.emitExpressionFragment(e.Left, tc)
-				cg.output.WriteString("[ oak_lv_idx( (u64)( ")
+				cg.output.WriteString(".v[ oak_lv_idx( (u64)( ")
 				cg.emitExpressionFragment(e.Index, tc)
 				cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
 			} else {
@@ -1972,6 +2281,14 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(")")
 		}
 	case *ast.InvocationExpression:
+		// Sealed-boundary coercions are identities: the fresh abstract type is
+		// a typedef alias of its underlying type (docs/spec/83-modules.md
+		// section 6.3).
+		if callee, ok := e.Function.(*ast.Identifier); ok && len(e.Arguments) == 1 &&
+			(strings.HasPrefix(callee.Value, "__abstract_") || strings.HasPrefix(callee.Value, "__concrete_")) {
+			cg.emitExpressionFragment(e.Arguments[0], tc)
+			return
+		}
 		if accessor, ok := e.Function.(*ast.FieldAccessorExpression); ok && len(e.Arguments) == 1 {
 			cg.output.WriteString("( ")
 			cg.emitExpressionFragment(e.Arguments[0], tc)
@@ -1993,6 +2310,16 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		// Explicit integer conversions ({target}_{op}_{source}) lower to
 		// their total two's-complement helpers.
 		if cg.emitConversionCall(e, tc) {
+			return
+		}
+		// Checked and saturating arithmetic (docs/spec/20-types.md
+		// section 11.1a) lower to their overflow-detecting helpers.
+		if cg.emitArithmeticCall(e, tc) {
+			return
+		}
+		// Floating-point intrinsics lower to their correctly rounded C99
+		// realizations (docs/spec/20-types.md section 11.3.8).
+		if cg.emitFloatIntrinsicCall(e, tc) {
 			return
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
@@ -2020,10 +2347,46 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.emitBorrowConstruction(ident.Value, e, tc)
 				return
 			}
+			if ident.Value == "subslice" && len(e.Arguments) == 3 {
+				// subslice(v, start, n) derives a view/span of the same kind
+				// (docs/spec/50-borrowing.md); the helper traps past the end.
+				info := cg.localContainerOf(e.Arguments[0])
+				helper := ""
+				switch info.kind {
+				case containerView:
+					helper = fmt.Sprintf("oak_view_subslice_%s", info.element)
+				case containerSpan:
+					helper = fmt.Sprintf("oak_span_subslice_%s", info.element)
+				}
+				if helper == "" {
+					cg.output.WriteString("OAK_UNSUPPORTED_SUBSLICE_SOURCE")
+					return
+				}
+				cg.output.WriteString(helper + "( ")
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(", (u64)( ")
+				cg.emitExpressionFragment(e.Arguments[1], tc)
+				cg.output.WriteString(" ), (u64)( ")
+				cg.emitExpressionFragment(e.Arguments[2], tc)
+				cg.output.WriteString(" ) )")
+				return
+			}
 			if target, isCast := primitiveCasts[ident.Value]; isCast && len(e.Arguments) == 1 {
+				// f32(x) over a storage format is an exact widening through
+				// its helper, never a C cast of the uint16_t carrier
+				// (docs/spec/20-types.md section 11.3.1).
+				if source, recorded := tc.ArithmeticType(e.Token); recorded && strings.HasPrefix(source, "widen_") {
+					cg.output.WriteString(fmt.Sprintf("oak_%s( ", source))
+					cg.emitExpressionFragment(e.Arguments[0], tc)
+					cg.output.WriteString(" )")
+					return
+				}
 				cg.output.WriteString(fmt.Sprintf("((%s)( ", target))
 				cg.emitExpressionFragment(e.Arguments[0], tc)
 				cg.output.WriteString(" ))")
+				return
+			}
+			if cg.emitLayoutBuiltin(ident, e, tc) {
 				return
 			}
 		}
@@ -2047,10 +2410,25 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		}
 		cg.output.WriteString("( ")
 		for i, arg := range e.Arguments {
-			cg.emitExpressionFragment(arg, tc)
+			if operand, isSpan := boundarySpanArgument(arg); isSpan {
+				// A boundary span lowers to the pointer and the element
+				// count of the view or span, for this call only
+				// (docs/spec/92-ffi.md section 2.5.4). No copy, no thunk.
+				cg.output.WriteString("(void *)( ")
+				cg.emitExpressionFragment(operand, tc)
+				cg.output.WriteString(" ).base, (size_t)( ")
+				cg.emitExpressionFragment(operand, tc)
+				cg.output.WriteString(" ).len")
+			} else {
+				cg.emitExpressionFragment(arg, tc)
+			}
 			if i < len(e.Arguments)-1 {
 				cg.output.WriteString(", ")
 			}
+		}
+		// assert carries its source position so a trap can be attributed.
+		if ident, ok := e.Function.(*ast.Identifier); ok && ident.Value == "assert" && len(e.Arguments) == 1 {
+			cg.output.WriteString(fmt.Sprintf(", %q, %d", cg.sourceFile, ident.Token.Line))
 		}
 		cg.output.WriteString(" )")
 	case *ast.BlockExpression:
@@ -2154,7 +2532,7 @@ func (cg *CodeGenerator) emitADTMatch(expr *ast.MatchExpression, tc *typechecker
 			if variantPattern.Payload != nil {
 				// Check if payload is a binding pattern
 				if bindingPattern, ok := variantPattern.Payload.(*ast.BindingPattern); ok {
-					payloadName := bindingPattern.Name.Value
+					payloadName := cIdent(bindingPattern.Name.Value)
 					// Try to determine payload type from ADT definition
 					payloadType := cg.inferPayloadType(adtDef, variantName, tc)
 					cg.write(fmt.Sprintf("      %s %s = scrutinee.payload.%s;\n", payloadType, payloadName, variantName))
@@ -2285,7 +2663,7 @@ func (cg *CodeGenerator) cFunctionName(oakName string) string {
 func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	if ident, ok := expr.(*ast.Identifier); ok {
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return ident.Value
 		case "string":
 			return "string"
@@ -2333,9 +2711,10 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 		}
 		// Check if this is an array type annotation
 		if intLit, ok := indexExpr.Index.(*ast.IntegerLiteral); ok {
-			// Fixed-size array: [N]T
+			// Fixed-size array: [N]T is a wrapper-struct value
+			// (codegen/arrays.go), never a raw C array.
 			elementType := cg.parseTypeExpression(indexExpr.Left)
-			return fmt.Sprintf("%s[ %d ]", elementType, intLit.Value)
+			return cg.arrayTypeName(elementType, intLit.Value)
 		} else if marker, ok := indexExpr.Index.(*ast.Identifier); ok {
 			// The parser represents []T as IndexExpression{Left: T, Index: ""}
 			// and [*]T as IndexExpression{Left: T, Index: "*"}.
@@ -2386,6 +2765,14 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 	cg.write("  return v.base[i];\n")
 	cg.write("}\n\n")
 
+	// subslice(v, start, n): the derived view is exactly n elements starting
+	// at start, admitted only when start + n <= len (no overflow: both
+	// comparisons stay within u64 without adding).
+	cg.write(fmt.Sprintf("static inline %s oak_view_subslice_%s(%s v, u64 start, u64 n) {\n", viewTypeName, elementType, viewTypeName))
+	cg.write("  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }\n")
+	cg.write(fmt.Sprintf("  return (%s){ v.base + start, (u32)n };\n", viewTypeName))
+	cg.write("}\n\n")
+
 	return viewTypeName
 }
 
@@ -2419,6 +2806,11 @@ func (cg *CodeGenerator) emitSpanType(elementType string) string {
 	cg.write(fmt.Sprintf("static inline void oak_span_store_%s(%s v, u64 i, %s value) {\n", elementType, spanTypeName, elementType))
 	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
 	cg.write("  v.base[i] = value;\n")
+	cg.write("}\n\n")
+
+	cg.write(fmt.Sprintf("static inline %s oak_span_subslice_%s(%s v, u64 start, u64 n) {\n", spanTypeName, elementType, spanTypeName))
+	cg.write("  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }\n")
+	cg.write(fmt.Sprintf("  return (%s){ v.base + start, (u32)n };\n", spanTypeName))
 	cg.write("}\n\n")
 
 	return spanTypeName
@@ -2506,6 +2898,45 @@ func (cg *CodeGenerator) emitSourceLocationComment(metadata SourceMetadata) {
 	if metadata.Signature != "" {
 		cg.write("// @signature: " + metadata.Signature + "\n")
 	}
+}
+
+// SetLineDirectives enables or disables #line directives in the output.
+func (cg *CodeGenerator) SetLineDirectives(enabled bool) {
+	cg.lineDirectives = enabled
+}
+
+// emitLineDirective writes `#line N "file"` for a token of the compiled
+// source, when directives are enabled. Spliced standard-library syntax
+// (SemanticContext "std") is not from that file and is left unattributed;
+// a specialization's tokens are the template's and map to it.
+func (cg *CodeGenerator) emitLineDirective(tok token.Token) {
+	if !cg.lineDirectives || tok.Line <= 0 || tok.SemanticContext == "std" {
+		return
+	}
+	cg.output.WriteString(fmt.Sprintf("#line %d %s\n", tok.Line, strconv.Quote(cg.sourceFile)))
+}
+
+// statementToken is the token that opens a statement, for source mapping.
+func statementToken(stmt ast.Statement) token.Token {
+	switch s := stmt.(type) {
+	case *ast.VariableDeclaration:
+		return s.Token
+	case *ast.AssignmentStatement:
+		return s.Token
+	case *ast.IndexAssignmentStatement:
+		return s.Token
+	case *ast.ExpressionStatement:
+		return s.Token
+	case *ast.WhileStatement:
+		return s.Token
+	case *ast.IfStatement:
+		return s.Token
+	case *ast.BlockStatement:
+		return s.Token
+	case *ast.UnsafeBlock:
+		return s.Token
+	}
+	return token.Token{}
 }
 
 // getSourceLocation extracts source location from a token
@@ -2596,14 +3027,20 @@ func (cg *CodeGenerator) emitBlockExpression(block *ast.BlockStatement, tc *type
 
 // emitStatement emits a statement
 func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeChecker, isLastInFunction bool) {
+	cg.emitLineDirective(statementToken(stmt))
 	switch s := stmt.(type) {
 	case *ast.VariableDeclaration:
 		cg.emitVariableDeclaration(s, tc)
 	case *ast.AssignmentStatement:
 		cg.emitAssignmentStatement(s, tc)
+	case *ast.BreakStatement:
+		// Statement-position conditionals lower to if/else and loops to
+		// while, so C's break leaves exactly the Oak loop.
+		cg.write("  break;\n")
 	case *ast.ExpressionStatement:
-		if isLastInFunction {
-			// Last statement in function - emit as return
+		if isLastInFunction && !s.Discard {
+			// Last statement in function - emit as return. A trailing
+			// discard (`_ = expr`) is a statement, never the result.
 			cg.emitExpression(s.Expression, tc)
 		} else if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
 			// Statement-position match with side-effecting arms
@@ -2636,12 +3073,12 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 func (cg *CodeGenerator) emitLvaluePath(expr ast.Expression, tc *typechecker.TypeChecker) {
 	switch e := expr.(type) {
 	case *ast.Identifier:
-		cg.output.WriteString(e.Value)
+		cg.output.WriteString(cIdent(e.Value))
 	case *ast.IndexExpression:
 		if e.Dot {
 			cg.emitLvaluePath(e.Left, tc)
 			if ident, ok := e.Index.(*ast.Identifier); ok {
-				cg.output.WriteString(fmt.Sprintf(".%s", ident.Value))
+				cg.output.WriteString(fmt.Sprintf(".%s", cIdent(ident.Value)))
 			} else {
 				cg.output.WriteString(".OAK_UNSUPPORTED_FIELD")
 			}
@@ -2651,7 +3088,7 @@ func (cg *CodeGenerator) emitLvaluePath(expr ast.Expression, tc *typechecker.Typ
 		switch info.kind {
 		case containerOwnedArray:
 			cg.emitLvaluePath(e.Left, tc)
-			cg.output.WriteString("[ oak_lv_idx( (u64)( ")
+			cg.output.WriteString(".v[ oak_lv_idx( (u64)( ")
 			cg.emitExpressionFragment(e.Index, tc)
 			cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
 		case containerSpan:
@@ -2688,7 +3125,7 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 		cg.write("  ")
 		cg.emitLvaluePath(stmt.Target.Left, tc)
 		if fieldIdent, isIdent := stmt.Target.Index.(*ast.Identifier); isIdent {
-			cg.output.WriteString(fmt.Sprintf(".%s = ", fieldIdent.Value))
+			cg.output.WriteString(fmt.Sprintf(".%s = ", cIdent(fieldIdent.Value)))
 		} else {
 			cg.output.WriteString(".OAK_UNSUPPORTED_FIELD = ")
 		}
@@ -2698,6 +3135,24 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 	}
 
 	info := cg.localContainerOf(stmt.Target.Left)
+	if tc.IndexProven(stmt.Target.Token) && (info.kind == containerSpan || info.kind == containerOwnedArray) {
+		// Proven store (typechecker/extents.go): direct element assignment.
+		cg.write("  ")
+		if info.kind == containerSpan {
+			cg.output.WriteString("( ")
+			cg.emitExpressionFragment(stmt.Target.Left, tc)
+			cg.output.WriteString(" ).base")
+		} else {
+			cg.emitLvaluePath(stmt.Target.Left, tc)
+			cg.output.WriteString(".v")
+		}
+		cg.output.WriteString("[ ")
+		cg.emitExpressionFragment(stmt.Target.Index, tc)
+		cg.output.WriteString(" ] = ")
+		cg.emitExpressionFragment(stmt.Value, tc)
+		cg.output.WriteString(";\n")
+		return
+	}
 	switch info.kind {
 	case containerSpan:
 		cg.write(fmt.Sprintf("  oak_span_store_%s( ", info.element))
@@ -2709,8 +3164,11 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 		cg.output.WriteString(" );\n")
 	case containerOwnedArray:
 		cg.write("  oak_store( ")
-		cg.emitExpressionFragment(stmt.Target.Left, tc)
-		cg.output.WriteString(fmt.Sprintf(", %d, (u64)( ", info.length))
+		// Preserve the owning storage through nested record/span paths.
+		// Rvalue indexing returns a record copy, so projecting its array
+		// here would silently store into a temporary.
+		cg.emitLvaluePath(stmt.Target.Left, tc)
+		cg.output.WriteString(fmt.Sprintf(".v, %d, (u64)( ", info.length))
 		cg.emitExpressionFragment(stmt.Target.Index, tc)
 		cg.output.WriteString(" ), ")
 		cg.emitExpressionFragment(stmt.Value, tc)
@@ -2736,13 +3194,13 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 				cg.write("  OAK_ATOMIC_INITIALIZER_MUST_BE_ZERO_INIT;\n")
 				return
 			}
-			cg.write(fmt.Sprintf("  %s %s = 0;\n", cType, varName))
+			cg.write(fmt.Sprintf("  %s %s = 0;\n", cType, cIdent(varName)))
 			return
 		}
 	}
 
 	if fn, ok := stmt.Type.(*ast.FunctionTypeExpression); ok {
-		cg.write("  " + cg.cFunctionPointer(fn, varName))
+		cg.write("  " + cg.cFunctionPointer(fn, cIdent(varName)))
 		if stmt.Value != nil {
 			cg.write(" = ")
 			cg.emitExpressionFragment(stmt.Value, tc)
@@ -2751,14 +3209,20 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 		return
 	}
 
-	// Owned arrays use C declarator syntax; value-less arrays are
-	// zero-filled (definite-initialization semantics pending — the backend
-	// never leaves storage uninitialized).
+	// Owned arrays are wrapper-struct values (codegen/arrays.go); value-less
+	// arrays are zero-filled (definite-initialization semantics pending —
+	// the backend never leaves storage uninitialized). A literal initializer
+	// is a brace initializer; any other initializer is a struct copy.
 	if stmt.Type != nil {
 		if info := cg.classifyContainer(stmt.Type); info.kind == containerOwnedArray {
-			cg.write(fmt.Sprintf("  %s %s[%d]", info.element, varName, info.length))
+			cg.write(fmt.Sprintf("  %s %s", cg.parseTypeExpression(stmt.Type), cIdent(varName)))
 			if stmt.Value == nil {
-				cg.output.WriteString(" = {0}")
+				// A zero-length array has no element to zero: its wrapper
+				// takes the empty initializer ({0} names an element).
+				cg.output.WriteString(zeroArrayInitializer(info.length))
+			} else if literal, isLiteral := stmt.Value.(*ast.ArrayLiteral); isLiteral {
+				cg.output.WriteString(" = ")
+				cg.emitArrayInitializer(literal, tc)
 			} else {
 				cg.output.WriteString(" = ")
 				cg.emitExpressionFragment(stmt.Value, tc)
@@ -2772,14 +3236,22 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 	var varType string
 	if stmt.Type != nil {
 		varType = cg.parseTypeExpression(stmt.Type)
+	} else if inferred, ok := cg.inferLocalType(stmt.Value); ok {
+		varType = inferred
+	} else if floatType, ok := cg.inferFloatLocalType(stmt.Value, tc); ok {
+		// The checker recorded a float width for the initializer
+		// (docs/spec/20-types.md section 11.3.2: no context means f64).
+		varType = floatType
 	} else {
-		// Type inference - try to infer from value
-		// For now, default to i32
+		// Untyped scalar initializers default to i32 (integer literals and
+		// arithmetic); everything the checker knows more about is handled
+		// by inferLocalType, which fails closed to this default only for
+		// shapes it does not recognize.
 		varType = "i32"
 	}
 
 	// C style: type name;
-	cg.write(fmt.Sprintf("  %s %s", varType, varName))
+	cg.write(fmt.Sprintf("  %s %s", varType, cIdent(varName)))
 
 	if stmt.Value != nil {
 		cg.write(" = ")
@@ -2843,16 +3315,48 @@ func (cg *CodeGenerator) emitIfStatement(stmt *ast.IfStatement, tc *typechecker.
 
 // emitArrayLiteral emits an array literal
 func (cg *CodeGenerator) emitArrayLiteral(expr *ast.ArrayLiteral, tc *typechecker.TypeChecker) {
-	// For now, emit as array initializer
-	// In full implementation, we'd need to determine the element type and size
-	cg.output.WriteString("{ ")
+	// A typed literal is a C99 compound literal of the wrapper struct, so it
+	// is a value in any expression position (argument, return, assignment,
+	// record field); an untyped literal is a bare initializer.
+	if expr.Type != nil {
+		if _, _, isArray := ownedArrayParameter(expr.Type, cg); isArray {
+			cg.output.WriteString(fmt.Sprintf("(%s)", cg.parseTypeExpression(expr.Type)))
+		} else if info := cg.classifyContainer(expr.Type); info.kind == containerView || info.kind == containerSpan {
+			// A view or span literal ([]T{ ... }, or a bare literal in a
+			// []T context): a view over a C99 array compound literal, whose
+			// automatic storage lives to the end of the enclosing block —
+			// long enough for the call or initializer it appears in
+			// (docs/spec/10-syntax.md section 2c).
+			viewType := fmt.Sprintf("oak_view_%s", info.element)
+			if info.kind == containerSpan {
+				viewType = fmt.Sprintf("oak_span_%s", info.element)
+			}
+			cg.output.WriteString(fmt.Sprintf("(%s){ (%s[]){ ", viewType, info.element))
+			for i, elem := range expr.Elements {
+				if i > 0 {
+					cg.output.WriteString(", ")
+				}
+				cg.emitExpressionFragment(elem, tc)
+			}
+			cg.output.WriteString(fmt.Sprintf(" }, %d }", len(expr.Elements)))
+			return
+		}
+	}
+	cg.emitArrayInitializer(expr, tc)
+}
+
+// emitArrayInitializer emits the brace initializer of an owned array: the
+// outer braces initialize the wrapper struct, the inner ones its array
+// member (explicit, so no brace-elision warning is ever emitted).
+func (cg *CodeGenerator) emitArrayInitializer(expr *ast.ArrayLiteral, tc *typechecker.TypeChecker) {
+	cg.output.WriteString("{ { ")
 	for i, elem := range expr.Elements {
 		if i > 0 {
 			cg.output.WriteString(", ")
 		}
 		cg.emitExpressionFragment(elem, tc)
 	}
-	cg.output.WriteString(" }")
+	cg.output.WriteString(" } }")
 }
 
 // emitRecordLiteral emits a record literal
@@ -2870,7 +3374,7 @@ func (cg *CodeGenerator) emitRecordLiteral(expr *ast.RecordLiteral, tc *typechec
 		if !first {
 			cg.output.WriteString(", ")
 		}
-		cg.output.WriteString(fmt.Sprintf(".%s = ", field.Name))
+		cg.output.WriteString(fmt.Sprintf(".%s = ", cIdent(field.Name)))
 		cg.emitExpressionFragment(field.Value, tc)
 		first = false
 	}
@@ -3003,5 +3507,64 @@ func (cg *CodeGenerator) emitRecordType(typeName string, recordLit *ast.RecordLi
 
 	cg.indentLevel--
 	cg.write(fmt.Sprintf("} %s;\n", cName))
+	cg.write("\n")
+}
+
+// inferLocalType determines the C type of an untyped local from its
+// initializer where the declaration surface makes it unambiguous: a call to
+// a program function takes the callee's declared return type, a typed record
+// literal its type, and a type-qualified variant its ADT. Other shapes report
+// false and keep the scalar default.
+func (cg *CodeGenerator) inferLocalType(value ast.Expression) (string, bool) {
+	switch v := value.(type) {
+	case *ast.InvocationExpression:
+		callee, ok := v.Function.(*ast.Identifier)
+		if !ok {
+			return "", false
+		}
+		fn := cg.programFunctions[callee.Value]
+		if fn == nil || fn.ReturnType == nil || fn.ExternSymbol != "" {
+			return "", false
+		}
+		if _, isFnType := fn.ReturnType.(*ast.FunctionTypeExpression); isFnType {
+			return "", false
+		}
+		cType := cg.parseTypeExpression(fn.ReturnType)
+		if cType == "" || cType == "void" {
+			return "", false
+		}
+		return cType, true
+	case *ast.RecordLiteral:
+		if v.TypeName != nil {
+			return cg.cTypeName(v.TypeName.Value), true
+		}
+	case *ast.VariantExpression:
+		if v.TypeName != nil {
+			return cg.cTypeName(v.TypeName.Value), true
+		}
+	}
+	return "", false
+}
+
+// SetAbstractAliases records the fresh abstract types of sealed imports
+// (fresh internal name -> underlying internal name); each is emitted as a
+// typedef alias of its underlying C type after the types.
+func (cg *CodeGenerator) SetAbstractAliases(aliases map[string]string) {
+	cg.abstractAliases = aliases
+}
+
+func (cg *CodeGenerator) emitAbstractAliases() {
+	if len(cg.abstractAliases) == 0 {
+		return
+	}
+	names := make([]string, 0, len(cg.abstractAliases))
+	for fresh := range cg.abstractAliases {
+		names = append(names, fresh)
+	}
+	sort.Strings(names)
+	cg.write("/* sealed abstract types: aliases of their underlying representation */\n")
+	for _, fresh := range names {
+		cg.write(fmt.Sprintf("typedef %s %s;\n", cg.cTypeName(cg.abstractAliases[fresh]), cg.cTypeName(fresh)))
+	}
 	cg.write("\n")
 }

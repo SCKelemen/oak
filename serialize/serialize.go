@@ -183,6 +183,11 @@ func serializeNode(node ast.Node) (ASTNodeJSON, error) {
 			nodeJSON.Data["value"] = n.Value
 		}
 
+	case *ast.FloatLiteral:
+		if n != nil {
+			nodeJSON.Data["text"] = n.Text
+		}
+
 	case *ast.StringLiteral:
 		if n != nil {
 			nodeJSON.Data["value"] = n.Value
@@ -516,6 +521,8 @@ func getNodeType(node ast.Node) string {
 		return "Identifier"
 	case *ast.IntegerLiteral:
 		return "IntegerLiteral"
+	case *ast.FloatLiteral:
+		return "FloatLiteral"
 	case *ast.StringLiteral:
 		return "StringLiteral"
 	case *ast.Boolean:
@@ -550,6 +557,8 @@ func getNodeType(node ast.Node) string {
 		return "InvocationExpression"
 	case *ast.WhileStatement:
 		return "WhileStatement"
+	case *ast.BreakStatement:
+		return "BreakStatement"
 	case *ast.AssignmentStatement:
 		return "AssignmentStatement"
 	default:
@@ -570,6 +579,10 @@ func getNodePosition(node ast.Node) *PositionJSON {
 			tok = n.Token
 		}
 	case *ast.IntegerLiteral:
+		if n != nil {
+			tok = n.Token
+		}
+	case *ast.FloatLiteral:
 		if n != nil {
 			tok = n.Token
 		}
@@ -638,6 +651,10 @@ func getNodePosition(node ast.Node) *PositionJSON {
 			tok = n.Token
 		}
 	case *ast.WhileStatement:
+		if n != nil {
+			tok = n.Token
+		}
+	case *ast.BreakStatement:
 		if n != nil {
 			tok = n.Token
 		}

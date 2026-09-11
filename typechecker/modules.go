@@ -10,6 +10,7 @@ package typechecker
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -25,6 +26,9 @@ const (
 	// CodeSignatureType rejects a sealed import whose member has a type
 	// other than the one the signature promises.
 	CodeSignatureType = "OAK-M0113"
+	// CodeParameterConstraint rejects a generic package instantiation whose
+	// argument does not satisfy the parameter's declared constraint.
+	CodeParameterConstraint = "OAK-M0303"
 )
 
 // SignatureObligation asks the checker to verify that the declaration
@@ -34,6 +38,9 @@ type SignatureObligation struct {
 	Member   string
 	Type     ast.Expression
 	Node     ast.Node
+	// TypeMember marks a shared type member (`Key: type = T`): the
+	// declaration Internal must be the type T, not have it.
+	TypeMember bool
 }
 
 // SetModuleContext hands the checker the elaborator's facts: the opaque
@@ -48,6 +55,130 @@ func (tc *TypeChecker) SetModuleContext(opaque map[string]string, packages []str
 	}
 }
 
+// SetPackageExports hands the checker every loaded package's member table
+// (path -> exports). Uniform call syntax consults it: recv.f(args) on a
+// receiver whose type an imported package declares may name that package's
+// exported function f (docs/spec/10-syntax.md section 13).
+func (tc *TypeChecker) SetPackageExports(exports map[string]modules.Exports) {
+	tc.packageExports = exports
+}
+
+// AddPackagePaths registers further package identities that tokens may be
+// stamped with — the spliced bootstrap prelude (`std`) in particular, which
+// is not a loaded package but is not the root package either
+// (docs/spec/83-modules.md section 7).
+func (tc *TypeChecker) AddPackagePaths(packages ...string) {
+	if tc.packagePaths == nil {
+		tc.packagePaths = map[string]bool{}
+	}
+	for _, path := range packages {
+		tc.packagePaths[path] = true
+	}
+}
+
+// SetSealedOpaque records, per importing package (the root spelled ""),
+// the types that a sealed import's `Name: type` member made abstract for
+// that package: projections are rejected there even though the declaring
+// package exported the type transparently (docs/spec/83-modules.md
+// section 6.3).
+func (tc *TypeChecker) SetSealedOpaque(sealed map[string]map[string]bool) {
+	tc.sealedOpaque = sealed
+}
+
+// SetAbstractTypes registers the fresh abstract types of sealed imports:
+// each fresh internal name is a nominal type distinct from every other type,
+// whose values are introduced and eliminated only by the compiler-only
+// coercions `__abstract_<fresh>` and `__concrete_<fresh>` at the sealed
+// boundary (docs/spec/83-modules.md section 6.3).
+func (tc *TypeChecker) SetAbstractTypes(abstract map[string]string) {
+	tc.abstractTypes = abstract
+}
+
+// registerAbstractTypes gives each fresh abstract type a nominal identity
+// derived from its underlying declaration: records become a same-shaped
+// record under the fresh name (nominal identity is by name), ADTs a fresh
+// ADT name sharing the definition. Anything else cannot be made abstract.
+func (tc *TypeChecker) registerAbstractTypes() {
+	names := make([]string, 0, len(tc.abstractTypes))
+	for fresh := range tc.abstractTypes {
+		names = append(names, fresh)
+	}
+	sort.Strings(names)
+	for _, fresh := range names {
+		underlying := tc.abstractTypes[fresh]
+		if def, isADT := tc.adtTypes[underlying]; isADT {
+			tc.adtTypes[fresh] = def
+			continue
+		}
+		if named, ok := tc.env.GetType(underlying); ok {
+			if record, isRecord := named.(*RecordType); isRecord {
+				copy := *record
+				copy.Name = fresh
+				tc.env.SetType(fresh, &copy)
+				continue
+			}
+		}
+		tc.addTypeDiagnostic(nil, CodeSignatureType,
+			fmt.Sprintf("abstract type member %s: %s must be a declared record or ADT to be sealed abstract", modules.DemangleText(fresh), modules.DemangleText(underlying)))
+	}
+}
+
+// abstractType returns the fresh type's representation.
+func (tc *TypeChecker) abstractType(fresh string) Type {
+	if _, isADT := tc.adtTypes[fresh]; isADT {
+		return &ADTType{Name: fresh}
+	}
+	if named, ok := tc.env.GetType(fresh); ok {
+		return named
+	}
+	return nil
+}
+
+// checkAbstractCoercion types the boundary builtins. Reports whether callee
+// was one.
+func (tc *TypeChecker) checkAbstractCoercion(callee string, expr *ast.InvocationExpression) (Type, bool) {
+	var fresh string
+	toAbstract := false
+	switch {
+	case strings.HasPrefix(callee, "__abstract_"):
+		fresh, toAbstract = strings.TrimPrefix(callee, "__abstract_"), true
+	case strings.HasPrefix(callee, "__concrete_"):
+		fresh = strings.TrimPrefix(callee, "__concrete_")
+	default:
+		return nil, false
+	}
+	underlying, known := tc.abstractTypes[fresh]
+	if !known || len(expr.Arguments) != 1 {
+		tc.addError(expr, "%s is not a sealed boundary of this program", callee)
+		return nil, true
+	}
+	freshType := tc.abstractType(fresh)
+	var underlyingType Type
+	if _, isADT := tc.adtTypes[underlying]; isADT {
+		underlyingType = &ADTType{Name: underlying}
+	} else if named, ok := tc.env.GetType(underlying); ok {
+		underlyingType = named
+	}
+	if freshType == nil || underlyingType == nil {
+		return nil, true
+	}
+	want, result := underlyingType, freshType
+	if !toAbstract {
+		want, result = freshType, underlyingType
+	}
+	got := tc.checkExpression(expr.Arguments[0], want)
+	if got == nil {
+		return nil, true
+	}
+	if !got.Equals(want) {
+		d := tc.addTypeDiagnostic(expr, CodeSignatureType,
+			fmt.Sprintf("sealed boundary expects %s, got %s", modules.DemangleText(fmt.Sprint(want)), modules.DemangleText(fmt.Sprint(got))))
+		d.AddNote("values cross a sealed import only through its signature's declared types")
+		return nil, true
+	}
+	return result, true
+}
+
 // packageOf reads the package that owns a token. Tokens of imported
 // packages are stamped with their package path (optionally followed by
 // `|<instantiation>` for monomorphized clones); everything else belongs to
@@ -55,6 +186,9 @@ func (tc *TypeChecker) SetModuleContext(opaque map[string]string, packages []str
 func (tc *TypeChecker) packageOf(tok token.Token) string {
 	context := tok.SemanticContext
 	if index := strings.IndexByte(context, '|'); index >= 0 {
+		context = context[:index]
+	}
+	if index := strings.IndexByte(context, '#'); index >= 0 {
 		context = context[:index]
 	}
 	if tc.packagePaths[context] {
@@ -81,19 +215,21 @@ func (tc *TypeChecker) opaqueOwner(typeName string) (string, bool) {
 // variant naming, matching) of typeName from the code that owns tok exactly
 // when modules.ProjectionAllowed does. It returns false after reporting.
 func (tc *TypeChecker) checkOpaqueProjection(tok token.Token, typeName string, node ast.Node, action string) bool {
-	if len(tc.opaqueTypes) == 0 {
+	if len(tc.opaqueTypes) == 0 && len(tc.sealedOpaque) == 0 {
 		return true
+	}
+	if users, sealed := tc.sealedOpaque[typeName]; sealed && users[tc.packageOf(tok)] {
+		d := tc.addTypeDiagnostic(node, CodeOpaqueProjection,
+			fmt.Sprintf("cannot %s type %s: this package sealed it as an abstract type member", action, modules.DemangleText(typeName)))
+		d.AddNote("a sealed import's `Name: type` member hides the definition from the importing package")
+		return false
 	}
 	owner, opaque := tc.opaqueOwner(typeName)
 	if !opaque {
 		return true
 	}
-	// The root package is spelled "" by packageOf but by its own path in
-	// the opaque table only when it is not the root; the elaborator records
-	// root-owned opaque types under the root's path, which packageOf never
-	// returns, so compare through the packages set.
 	using := tc.packageOf(tok)
-	if modules.ProjectionAllowed(owner, using, true) || (using == "" && !tc.packagePaths[owner]) {
+	if modules.ProjectionAllowed(owner, using, true) {
 		return true
 	}
 	d := tc.addTypeDiagnostic(node, CodeOpaqueProjection,
@@ -109,6 +245,10 @@ func (tc *TypeChecker) checkOpaqueProjection(tok token.Token, typeName string, n
 // docs/spec/25-type-inference.md section 4).
 func (tc *TypeChecker) CheckSignatureObligations(obligations []SignatureObligation) {
 	for _, obligation := range obligations {
+		if obligation.TypeMember {
+			tc.checkSharedTypeMember(obligation)
+			continue
+		}
 		scheme, bound := tc.env.Get(obligation.Internal)
 		if !bound || scheme == nil {
 			tc.addTypeDiagnostic(obligation.Node, CodeSignatureType,
@@ -124,6 +264,63 @@ func (tc *TypeChecker) CheckSignatureObligations(obligations []SignatureObligati
 			d := tc.addTypeDiagnostic(obligation.Node, CodeSignatureType,
 				fmt.Sprintf("signature member %s has type %s, but the signature requires %s", obligation.Member, modules.DemangleText(fmt.Sprint(got)), modules.DemangleText(fmt.Sprint(want))))
 			d.AddNote("a sealed import checks the package against the signature exactly; the declaration must have the promised type")
+		}
+	}
+}
+
+// checkSharedTypeMember verifies `Key: type = T`: the package's type is T.
+func (tc *TypeChecker) checkSharedTypeMember(obligation SignatureObligation) {
+	want := tc.parseTypeExpression(obligation.Type)
+	if want == nil {
+		return
+	}
+	var got Type
+	if _, isADT := tc.adtTypes[obligation.Internal]; isADT {
+		got = &ADTType{Name: obligation.Internal}
+	} else if named, ok := tc.env.GetType(obligation.Internal); ok {
+		got = named
+	} else {
+		got = &ADTType{Name: obligation.Internal}
+	}
+	if !got.Equals(want) {
+		d := tc.addTypeDiagnostic(obligation.Node, CodeSignatureType,
+			fmt.Sprintf("signature type member %s is %s, but the signature shares it as %s", obligation.Member, modules.DemangleText(fmt.Sprint(got)), modules.DemangleText(fmt.Sprint(want))))
+		d.AddNote("`Name: type = T` requires the package's type to be exactly T")
+	}
+}
+
+// ParameterObligation asks the checker to verify that a generic package
+// instantiation argument satisfies the declared parameter constraint
+// (docs/spec/83-modules.md section 6.7).
+type ParameterObligation struct {
+	Package    string
+	Param      string
+	Constraint ast.Expression
+	Argument   ast.Expression
+	Node       ast.Node
+}
+
+// CheckParameterObligations discharges instantiation constraints with the
+// same predicate generic functions use (SatisfiesConstraint): the argument
+// must satisfy every requirement the parameter names.
+func (tc *TypeChecker) CheckParameterObligations(obligations []ParameterObligation) {
+	for _, obligation := range obligations {
+		interfaces := tc.extractInterfacesFromConstraint(obligation.Constraint)
+		constraint := Constraint{Var: obligation.Param, Interfaces: interfaces}
+		if !tc.validateGenericConstraints([]Constraint{constraint}, tc.env, obligation.Node) {
+			continue
+		}
+		argument := tc.parseTypeExpression(obligation.Argument)
+		if argument == nil {
+			continue
+		}
+		if !tc.SatisfiesConstraint(argument, constraint) {
+			d := tc.addTypeDiagnostic(obligation.Node, CodeParameterConstraint,
+				fmt.Sprintf("instantiation of %s: argument %s for parameter %s does not satisfy %s", obligation.Package, modules.DemangleText(fmt.Sprint(argument)), obligation.Param, strings.Join(interfaces, " & ")))
+			if detail := tc.constraintMismatchDetail(argument, constraint); detail != "" {
+				d.AddNote(detail)
+			}
+			d.AddHelp("instantiate the package with a type that satisfies its declared parameter contract")
 		}
 	}
 }

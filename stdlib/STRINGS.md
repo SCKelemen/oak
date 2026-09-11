@@ -94,6 +94,21 @@ helpers such as `text_find_from`, `text_is_boundary`, `text_decoded` and
 `text_fold_next` require their caller to establish the relevant validity/state
 preconditions; use the public operations above at input boundaries.
 
+## Byte order, UTF-16 as bytes, Latin-1, and numbers
+
+| API | Contract |
+| --- | --- |
+| `text_bom(src)` | Leading mark: 0 none, 1 UTF-8, 2 UTF-16 LE, 3 UTF-16 BE, 4 UTF-32 LE, 5 UTF-32 BE (UTF-32 LE is checked before UTF-16 LE, whose mark it extends) |
+| `text_bom_width(kind)`, `text_strip_bom(src)` | The mark's byte length; the `TextRange` after any mark |
+| `utf16_bytes_decode(src, offset, big_endian)` | One scalar from UTF-16 stored as bytes; `next` is a byte offset; odd tails and lone surrogates reject |
+| `utf16_bytes_to_utf8(dst, src, big_endian)`, `_size(src, big_endian)` | UTF-16 bytes in either byte order to UTF-8 |
+| `utf8_to_utf16_bytes(dst, src, big_endian)`, `_size(src)` | UTF-8 to UTF-16 bytes in the requested byte order; no mark is written |
+| `latin1_to_utf8(dst, src)`, `_size(src)` | ISO-8859-1 bytes to UTF-8 (every byte is the scalar of its value) |
+| `utf8_to_latin1(dst, src)`, `_size(src)` | UTF-8 to ISO-8859-1; a scalar above U+00FF is `InvalidScalar` |
+| `text_parse_i64(src, radix)` | Optional leading `-` or `+`, then `text_parse_u64`'s digits; the magnitude must fit the sign |
+| `append_i64(builder, dst, value)` | Decimal with a leading `-` when negative |
+| `append_u64_radix(builder, dst, value, radix, upper)` | Radix 2..36, letters for digits above 9 in the requested case; an invalid radix records `InvalidScalar` |
+
 ## Splitting and construction
 
 | API | Contract |

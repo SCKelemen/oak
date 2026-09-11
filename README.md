@@ -60,10 +60,20 @@ import("example.com/hello/geometry")
 // Import under an explicit alias
 geo := import("example.com/hello/geometry")
 
-// Import sealed to a signature: only Key, key and hash are visible
+// Import sealed to a signature: only Key, key and hash are visible, and
+// h.Key is a fresh abstract type (share it with `Key: type = fnv.Key`)
 h: { Key: type, key: (u64) -> Key, hash: (Key) -> u64 } = import("example.com/hello/fnv")
 
-// Bootstrap standard library (unqualified prelude, see the spec)
+// Import named members unqualified
+{ twice, Box } := import("example.com/hello/util")
+
+// Instantiate a generic package (`package pair[T, N: u32]`)
+bytes := import("example.com/hello/pair")[u8, 3]
+
+// Standard library packages (json loads strings, unicode and the core prelude)
+import("json")
+
+// Legacy flat prelude: every library name unqualified
 import(std)
 ```
 
@@ -75,7 +85,38 @@ pub make: (x: i32, y: i32): Point = Point { x: x, y: y }
 abs: (v: i32): i32 = v < 0 ? 0 - v | v                // private to the package
 ```
 
-Build a package with `oak build [dir]`; see `examples/modules`.
+`open import("...")` binds every exported member unqualified (collisions are
+errors, never precedence), and `module name { ... }` declares a nested package
+inside a file with its own `pub` boundary. Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
+pinned dependencies with `oak mod download`; see `examples/modules`. Versions
+are enforced Elm-style at module granularity: `oak mod api` snapshots a
+module's public API, `oak mod bump previous.json` requires the `version` in
+`oak.mod` to be the exact bump the API diff implies, `oak mod compat
+dep-api.json` checks a module's sealed imports against a dependency snapshot,
+`oak mod download` refuses an archive whose carried `api.json` its source
+does not honor, `oak mod pack` builds that archive and prints its `require`
+line, `oak mod upgrade` picks the highest candidate snapshot a module's sealed
+imports accept, and `oak mod try` builds against a local candidate to decide
+the unsealed ones, and `oak mod tidy -w` reconciles `require` lines with what
+the packages import (`docs/spec/82-package-semver.md`). Derived operations are ordinary
+declarations whose body the compiler synthesizes from the type:
+
+```oak
+point_eq: (a: Point, b: Point): Bool = derive.equal
+point_hash: (v: Point): u64 = derive.hash
+point_cmp: (a: Point, b: Point): Ordering = derive.compare
+point_format: (v: Point, dst: [*]u8): Result[u32, TextError] = derive.format
+```
+
+The REPL is module-aware: it compiles every input through the same pipeline,
+resolves imports through the working directory's `oak.mod`, and `:obligations`
+lists the recorded assumptions the checker could not discharge. `:lean
+obligations.lean` states those assumptions as Lean theorems over the models in
+`spec/lean` (loop termination over `Oak.Loops`, tail cycles over
+`Oak.Discipline`, region disjointness over `Oak.Regions`) for you to prove
+there, and `:lean check` runs the repository's Lean toolchain on them from
+inside the session; see `spec/lean/Oak/SessionObligationsProved.lean` for the
+discharged example.
 
 ### Comments
 
@@ -157,14 +198,23 @@ Oak has four platform-dependent sized types that adapt to the target architectur
 
 **Literal inference:**
 
-Untyped integer literals default to `int`:
+Integer literals take their type from context: a declared or assigned type, a
+parameter or return type, an array index, or the typed operand next to them in
+an arithmetic, comparison, or bitwise expression. Only a literal with no
+context defaults to `int`:
 
 ```oak
-a := 5        // a: int (i32 on 32-bit, i64 on 64-bit)
-b: uint = 6   // b: uint (u32 on 32-bit, u64 on 64-bit)
-c: i32 = 5    // c: i32 (explicit fixed-width)
-d: u32 = 6    // d: u32 (explicit fixed-width)
+a := 5          // a: int (i32 on 32-bit, i64 on 64-bit)
+b: uint = 6     // b: uint (u32 on 32-bit, u64 on 64-bit)
+d: u32 = 6      // d: u32 (explicit fixed-width)
+e: u32 = d + 1  // 1 is u32: same type and wrap rule as d + u32(1)
+f: Bool = 2 * d < 4096
+n: u8 = d8 + 300  // error: literal 300 does not fit in type u8
 ```
+
+A literal that does not fit the type its context requires is an error at the
+literal; it never silently widens to `int`. Literals span the full `u64`
+range: `0xFFFFFFFFFFFFFFFF` and `14695981039346656037` are `u64` constants.
 
 ### Pointers
 
@@ -914,7 +964,7 @@ typedef enum oak_Option_i32_tag {
 } oak_Option_i32_tag;
 
 typedef struct oak_Option_i32 {
-  oak_Option_i32_tag tag;
+  u32 tag;
   union {
     i32 Some;
   } data;

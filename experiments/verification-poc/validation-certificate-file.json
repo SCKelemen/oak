@@ -1,0 +1,157 @@
+{
+  "artifacts": {
+    "retention_days": 30,
+    "solvers": "Existing real-certificate layouts, source hashes, replay logs, the Oak text certificate file-model log and backend provenance",
+    "soundness": "CertificateFile.lean, certificate-file-proof.log, certificate-file-agreement.log and the text and profile corpora"
+  },
+  "commit": "17b2ffcc57a9b375ab95da278d22dfe2e258b8aa",
+  "comparison": {
+    "accepted": 123,
+    "compared": [
+      "Compiled Oak decoder acceptance on the text corpus and boundary profile",
+      "Go oracle acceptance (lrat.Check for the corpus, labelled profile cases)",
+      "New Lean certificate-file model"
+    ],
+    "file_cases": 743,
+    "profile_cases": 14,
+    "rejected": 620,
+    "text_corpus_cases": 729,
+    "existing_assembly_cases": 95,
+    "existing_buffer_cases": 72,
+    "existing_packing_cases": 425,
+    "existing_stream_layouts": 887,
+    "lean_comparison_seconds": "under 3 by soundness log timestamps",
+    "stream_native_seconds_with_race": 94.0,
+    "assembly_native_seconds_with_race": 7.19,
+    "text_native_seconds_with_race": 13.62,
+    "profile_native_seconds_with_race": 20.96
+  },
+  "date": "2026-09-09",
+  "existing_gates": {
+    "boolean_bridge": {
+      "accepted": 6,
+      "rejected_corruptions": 12,
+      "rejected_satisfiable": 3
+    },
+    "boolean_model": {
+      "corruptions_rejected": 2,
+      "malformed_rejected": 3,
+      "safe_accepted": 1,
+      "unsafe_rejected": 1,
+      "wrong_model_rejected": 1
+    },
+    "bounded_certificate_replay": {
+      "accepted": 9,
+      "outside_profile": 2,
+      "rejected_corruptions": 18
+    },
+    "external_solver_suite": "success",
+    "lean_text_certificates": {
+      "accepted": 11,
+      "rejected_corruptions": 22
+    },
+    "native_race_suite": "success",
+    "oak_text_certificate_file_model": {
+      "accepted": 1,
+      "rejected_corruptions": 2
+    },
+    "tlc_checksum": "OK for refreshed asset 551753628"
+  },
+  "format": "oak-certificate-file-validation-1",
+  "implementation": {
+    "decoder_reused": "Scanner.scan, Packed.tokenStep, SegmentPublication invariants and CommandAssembly.Represents",
+    "host_harness": "Go; TestSelfHostedTextProfile now exports its boundary cases, corpora unchanged",
+    "native_Oak_changed": false,
+    "new_formal_module": "CertificateFile.lean",
+    "production_language_changed": false,
+    "python_introduced": false,
+    "tlc_pin": "Refreshed to GitHub's published digest for the rebuilt v1.8.0 asset 551753628 after the pinned asset 551007111 was removed upstream; digest recomputed from a fresh download"
+  },
+  "next_step": "Relate the compiled Oak decoder's states to the file model for every input, starting with a precise semantics for the Oak fragment it uses.",
+  "passed": true,
+  "proof": {
+    "axiom_reports": [
+      "'OakVerification.CertificateFile.segmentAt_completes' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.segmentAt_preserves' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.tokenStep_domain' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.segmentAt_domain' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.publishAt_layout' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.publishAt_valid' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.identifier_word' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.identifier_token' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.addition_step' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.deletion_step' depends on axioms: [propext]",
+      "'OakVerification.CertificateFile.readCommand_represents' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.proofLines_represents' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.header_bounds' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.close_partial' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CertificateFile.push_partial' depends on axioms: [propext, Quot.sound]",
+      "'OakVerification.CertificateFile.clauses_valid' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CertificateFile.formula_valid' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CertificateFile.check' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CertificateFile.check_sound' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CommandAssembly.represented_origin' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CommandAssembly.represented_sound' depends on axioms: [propext, Classical.choice, Quot.sound]",
+      "'OakVerification.CommandAssembly.assemble_certified_sound' depends on axioms: [propext, Classical.choice, Quot.sound]"
+    ],
+    "custom_axioms": false,
+    "guarantees": [
+      "Position-based segment reads complete exactly one published segment, preserve well-formedness, and keep literal pools inside the declared variable domain",
+      "Every proof line preserves the command-assembly invariant and appends one instruction; blank and comment lines leave it unchanged",
+      "The DIMACS phase yields a valid publication state whose clause count equals the declared count, with header domains 1..64 variables and at most 256 clauses",
+      "The certified stream's live table starts from exactly the published clauses of any represented assembly",
+      "Acceptance of the whole-file check implies unsatisfiability of the initial clauses returned by the executable DIMACS phase"
+    ],
+    "reported_theorems": 22,
+    "sorry": false
+  },
+  "proof_boundary": {
+    "not_yet_proved": [
+      "Universal refinement of the concrete Oak text decoder against this model",
+      "External DIMACS/LRAT grammar conformance beyond the executable model's profile",
+      "Fuel adequacy of the executable model",
+      "Compiler and C runtime correctness"
+    ],
+    "proved": [
+      "Complete file state machine from bytes to certified stream acceptance",
+      "Line splitting, deletion marker, identifier and stamp acceptance",
+      "DIMACS header, variable domain and exact clause count",
+      "Composition with the command-assembly invariant and certified stream soundness"
+    ],
+    "rejected_states": "No state is returned on failure; exact partial native mutations are outside these theorems",
+    "tested": [
+      "Compiled Oak and Go agreement with the Lean file model on the 729-case text corpus and the 14-case boundary profile",
+      "File-model acceptance of the replayed Oak text certificate in the solver gate"
+    ]
+  },
+  "run": "https://github.com/SCKelemen/oak/actions/runs/34327988773",
+  "solvers_job": 102389628032,
+  "soundness_job": 102389628358,
+  "repository_ci": {
+    "Formal Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34327988522"
+    },
+    "Golden File Verification": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34327988631"
+    },
+    "Oak testing tools": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34327988809"
+    },
+    "Verification experiment (opt-in)": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34327988773"
+    },
+    "CI": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34327988288"
+    },
+    "Standard library": {
+      "status": "success",
+      "run": "https://github.com/SCKelemen/oak/actions/runs/34327988698"
+    }
+  },
+  "previous_attempt": "https://github.com/SCKelemen/oak/actions/runs/34327084791 on commit 429e8199b11ff899a5a81231f13200ae79eaad77: soundness passed with identical results; the solver job stopped at backend installation because upstream removed the pinned TLC asset"
+}

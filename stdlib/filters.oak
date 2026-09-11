@@ -1,9 +1,12 @@
 // Allocator-free filters over caller-supplied 64-bit key hashes.
 // Hash collisions contribute to false positives. This mixer is not cryptographic.
-FilterError: type = InvalidConfig | StorageTooSmall | CounterOverflow | NotPresent | Incompatible
-BloomConfig: type = struct { cells: u32, probes: u32, seed: u64, blocked: Bool }
+package filters
 
-filter_mix: (input: u64): u64 {
+
+pub FilterError: type = InvalidConfig | StorageTooSmall | CounterOverflow | NotPresent | Incompatible
+pub BloomConfig: type = struct { cells: u32, probes: u32, seed: u64, blocked: Bool }
+
+pub filter_mix: (input: u64): u64 {
   x: u64 = input
   multiplier1: u64 = (u64(3210233709) << u64(32)) | u64(484763065)
   multiplier2: u64 = (u64(2496678331) << u64(32)) | u64(321982955)
@@ -12,13 +15,13 @@ filter_mix: (input: u64): u64 {
   x ^ (x >> u64(31))
 }
 
-filter_config_valid: (config: BloomConfig): Bool {
+pub filter_config_valid: (config: BloomConfig): Bool {
   config.cells > u32(0) && config.probes > u32(0) && config.probes <= u32(64) &&
     (!config.blocked || config.cells % u32(512) == u32(0))
 }
 
 // u64 arithmetic wraps modulo 2^64; the C backend uses uint64_t.
-filter_index: (config: BloomConfig, hash: u64, probe: u32): u32 {
+pub filter_index: (config: BloomConfig, hash: u64, probe: u32): u32 {
   a: u64 = filter_mix(hash ^ config.seed)
   increment: u64 = (u64(2654435769) << u64(32)) | u64(2135587861)
   b: u64 = filter_mix(a + increment) | u64(1)
@@ -31,7 +34,7 @@ filter_index: (config: BloomConfig, hash: u64, probe: u32): u32 {
   }
 }
 
-bloom_insert: (storage: [*]u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
+pub bloom_insert: (storage: [*]u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
   !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
     len(storage) < bitset_storage_bytes(config.cells) ? { .Err(.StorageTooSmall) } | {
       changed: Bool = false
@@ -49,7 +52,7 @@ bloom_insert: (storage: [*]u8, config: BloomConfig, hash: u64): Result[Bool, Fil
   }
 }
 
-bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
+pub bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
   !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
     len(storage) < bitset_storage_bytes(config.cells) ? { .Err(.StorageTooSmall) } | {
       present: Bool = true
@@ -65,7 +68,7 @@ bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bool, Filte
   }
 }
 
-bloom_clear: (storage: [*]u8, config: BloomConfig): Result[Bool, FilterError] {
+pub bloom_clear: (storage: [*]u8, config: BloomConfig): Result[Bool, FilterError] {
   !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
     n: u32 = bitset_storage_bytes(config.cells)
     len(storage) < n ? { .Err(.StorageTooSmall) } | {
@@ -85,7 +88,7 @@ bloom_clear: (storage: [*]u8, config: BloomConfig): Result[Bool, FilterError] {
 }
 
 // Deduplicate probes: small filters may map several probes to the same cell.
-filter_first_probe: (config: BloomConfig, hash: u64, probe: u32, index: u32): Bool {
+pub filter_first_probe: (config: BloomConfig, hash: u64, probe: u32, index: u32): Bool {
   first: Bool = true
   previous: u32 = 0
   while previous < probe && first {
@@ -95,7 +98,7 @@ filter_first_probe: (config: BloomConfig, hash: u64, probe: u32, index: u32): Bo
   first
 }
 
-counting_bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
+pub counting_bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
   !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
     len(storage) < config.cells ? { .Err(.StorageTooSmall) } | {
       present: Bool = true
@@ -111,7 +114,7 @@ counting_bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bo
 
 // Removal requires caller proof of a successful, unmatched insertion.
 // A positive query alone is not proof: false positives are possible.
-counting_bloom_update: (storage: [*]u8, config: BloomConfig, hash: u64, insert: Bool): Result[Bool, FilterError] {
+pub counting_bloom_update: (storage: [*]u8, config: BloomConfig, hash: u64, insert: Bool): Result[Bool, FilterError] {
   !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
     len(storage) < config.cells ? { .Err(.StorageTooSmall) } | {
       allowed: Bool = true

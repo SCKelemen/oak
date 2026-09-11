@@ -36,6 +36,7 @@ var builtinCallees = map[string]bool{
 	"view": true, "span": true, "subslice": true,
 	"view_as": true, "span_as": true, "assert": true,
 	"is_valid_utf8": true,
+	"address_of":    true, "size_of": true, "align_of": true, "offset_of": true, "static_assert": true,
 }
 
 type callEdge struct {
@@ -57,7 +58,27 @@ type Result struct {
 	// the C backend merges each group into one state-machine loop, so the
 	// whole cycle runs in a single frame. Members are sorted.
 	TrampolineGroups [][]string
-	diagnostics      []*diagnostic.Diagnostic
+	// TailCycles are the all-tail call cycles recorded as OAK-D0102
+	// obligations, in analysis order; the REPL states them in Lean's terms
+	// (Oak.Discipline.Ranked over the cycle's edges).
+	TailCycles  []TailCycle
+	diagnostics []*diagnostic.Diagnostic
+}
+
+// TailCycle is one recorded tail-only cycle: its members (sorted) and the
+// internal call edges, all of them tail calls.
+type TailCycle struct {
+	Members []string
+	Edges   []CallEdge
+	Site    ast.Node
+}
+
+// CallEdge is one call in a cycle: Caller invokes Callee; Tail reports tail
+// position.
+type CallEdge struct {
+	Caller string
+	Callee string
+	Tail   bool
 }
 
 // Diagnostics returns the discipline findings, errors first.
@@ -177,12 +198,34 @@ func (r *Result) classifyComponent(component []string, functions map[string]*ast
 	}
 
 	first := internalTail[0]
+	cycle := TailCycle{Members: sorted, Site: first.edge.site}
+	for _, call := range internalTail {
+		cycle.Edges = append(cycle.Edges, CallEdge{Caller: call.caller, Callee: call.edge.callee, Tail: true})
+	}
+	r.TailCycles = append(r.TailCycles, cycle)
 	d := diagnostic.NewDiagnosticFromNodeWithCode(first.edge.site, "discipline", string(CodeTailRecursionObligation),
 		fmt.Sprintf("tail recursion through %v relies on tail-call elimination the backend does not guarantee yet", sorted))
 	d.Severity = diagnostic.SeverityWarning
 	d.AddNote("every call in this cycle is a tail call, so the cycle is eliminable; direct self tail recursion in result position already compiles to a loop")
 	d.AddHelp("restructure into direct self tail recursion or an explicit loop until mutual tail-call lowering lands")
 	r.diagnostics = append(r.diagnostics, d)
+}
+
+// InlineHelperShape reports whether fn is a leaf without loops: it calls no
+// user-defined function (so it sits in no call cycle) and contains no while
+// statement. Together with a size bound this is the shape the backend emits
+// as a forced-inline helper, so composing small named operations costs
+// nothing at any optimization level.
+func InlineHelperShape(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement) bool {
+	if fn == nil || fn.Body == nil {
+		return false
+	}
+	if len(collectCallEdges(fn, functions)) > 0 {
+		return false
+	}
+	loops := 0
+	forEachWhile(&ast.Program{Statements: []ast.Statement{fn}}, func(*ast.WhileStatement) { loops++ })
+	return loops == 0
 }
 
 // SelfTailLoop reports whether fn recurses exactly through self tail calls in

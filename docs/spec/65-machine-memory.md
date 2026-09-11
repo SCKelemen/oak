@@ -299,3 +299,20 @@ semantics. It is to **refine and test the projection**: generated C, emitted
 AArch64 instructions, weak-memory litmus outcomes, and target lock-free
 admission. Higher-level SPSC/MPSC proofs should consume that demonstrated
 compiler-to-machine contract rather than re-specifying atomics locally.
+
+## Placement of statics
+
+A static may declare its linker section with a placement clause after its
+type — the clause form of `40-records.md` §6a, on a declaration:
+
+```oak
+ring: [8]u64 (section: ".shared")           // ELF
+grant: [4096]u8 (section: "__DATA,grant")   // Mach-O: segment,section
+```
+
+The section name admits only `[A-Za-z0-9_.,$]`, so nothing but a plain
+section spelling reaches generated C (`__attribute__((section(...)))`).
+Fixed addresses are the linker script's job; only the section is language
+surface. Together with `struct(align: N)`/`packed`, per-field `align`, and
+`static_assert` over `size_of`/`offset_of`, this is the surface a ring or
+grant window needs to live exactly where a stage-2 mapping expects it.

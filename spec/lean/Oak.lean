@@ -48,6 +48,8 @@ import Oak.RecordLayoutRefinement
 import Oak.LayoutSpec
 import Oak.FieldTags
 import Oak.Assembler
+import Oak.AssemblerSemantics
+import Oak.Extents
 import Oak.RecordShape
 import Oak.RecordShapeRefinement
 import Oak.GenericConstraintRefinement
@@ -59,3 +61,10 @@ import Oak.HypervisorPOC
 import Oak.CausalFrontier
 import Oak.CausalFrontierRefinement
 import Oak.Modules
+import Oak.ModulesRefinement
+import Oak.Semver
+import Oak.Loops
+import Oak.Regions
+import Oak.SessionObligations
+import Oak.SessionObligationsProved
+import Oak.Floats

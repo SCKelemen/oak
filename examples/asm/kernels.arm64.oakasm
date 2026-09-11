@@ -1,0 +1,47 @@
+// AArch64 bodies for examples/asm/main.oak (docs/spec/94-assembler.md §7).
+// Each pairs with the Oak declaration of the same name; the Oak body is
+// the specification the verifier proves these equal to, and the portable
+// fallback under -DOAK_PORTABLE_INTRINSICS or off AArch64.
+
+field: (hcr: u64) -> u64 = {
+  bind x0 = hcr
+  clobber x9
+  lsr x9, x0, #3
+  and x0, x9, #3
+  ret
+}
+
+sat_add: (a, b: u32) -> u32 = {
+  bind w0 = a
+  bind w1 = b
+  clobber w9, w10
+  adds w9, w0, w1
+  mov w10, #-1
+  csel w0, w10, w9, cs
+  ret
+}
+
+max32: (a, b: u32) -> u32 = {
+  bind w0 = a
+  bind w1 = b
+  cmp w0, w1
+  csel w0, w1, w0, lo
+  ret
+}
+
+checksum: (v: []u32) -> u32 = {
+  bind x0, w1 = v
+  clobber w9, w10, w11
+  mov w9, #0
+  mov w10, #0
+loop:
+  cmp w9, w1
+  b.hs done
+  ldr w11, [x0, w9, uxtw #2]
+  add w10, w10, w11
+  add w9, w9, #1
+  b loop
+done:
+  mov w0, w10
+  ret
+}

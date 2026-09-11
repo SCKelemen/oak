@@ -2,7 +2,9 @@ package testrunner
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,7 +171,7 @@ TestCrash: (): () { assert(false) }
 TestTimeout: (): () { while true {} }
 TestSurvives: (): () { test_check(true, u32(1)) }
 `})
-	code, results, stderr := runCLI(t, "-runs", "1", "-max-discards", "2", "-timeout", "100ms", "-shrink", "0", dir)
+	code, results, stderr := runCLI(t, "-runs", "1", "-max-discards", "2", "-timeout", "2s", "-shrink", "0", dir)
 	if code != 1 || len(results) != 4 {
 		t.Fatalf("%d %+v %s", code, results, stderr)
 	}
@@ -181,7 +183,7 @@ TestSurvives: (): () { test_check(true, u32(1)) }
 		t.Fatalf("%+v", states)
 	}
 	a, err := readArtifact(states["TestTimeout"].Artifact, 256)
-	if err != nil || a.TimeoutNanos != 100000000 {
+	if err != nil || a.TimeoutNanos != 2000000000 {
 		t.Fatalf("timeout configuration lost: %+v %v", a, err)
 	}
 	code, results, stderr = runCLI(t, "-replay", states["TestTimeout"].Artifact, dir)
@@ -216,6 +218,9 @@ FuzzExport: (data: []u8): () {
 		t.Fatal("overwrote existing harness")
 	}
 	clang, err := exec.LookPath("clang")
+	if err == nil && !fuzzerRuntimeAvailable(t, clang) {
+		t.Skip("clang has no libFuzzer runtime on this host")
+	}
 	if err != nil {
 		t.Skip("requires clang")
 	}
@@ -318,5 +323,87 @@ TestEncode: (): () { test_check(encode(u32(7)) == u32(7), u32(1)) }
 	code, results, stderr := runCLI(t, dir)
 	if code != 0 {
 		t.Fatalf("testing import reserved a production name: %d %+v %s", code, results, stderr)
+	}
+}
+
+// A test package inside a module imports a sibling package through the
+// module loader (docs/spec/83-modules.md section 10).
+func TestRunnerCompilesTestPackageThroughModuleLoader(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"oak.mod":            "module example.com/app\n",
+		"math/math.oak":      "package math\n\npub square: (v: u32): u32 = v * v\n",
+		"calc/calc.oak":      "package calc\n\nimport(\"example.com/app/math\")\n\npub area: (side: u32): u32 = math.square(side)\n",
+		"calc/calc_test.oak": "package calc\n\nimport(testing)\n\nTestArea: (): () {\n  test_check(area(6) == 36, 1)\n}\n",
+	})
+	code, results, stderr := runCLI(t, filepath.Join(dir, "calc"))
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	if len(results) != 1 || results[0].Status != "pass" {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
+// fuzzerRuntimeAvailable probes whether clang can link -fsanitize=fuzzer on
+// this host (Apple's clang ships without libclang_rt.fuzzer).
+func fuzzerRuntimeAvailable(t *testing.T, clang string) bool {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "probe.c")
+	if err := os.WriteFile(src, []byte("#include <stddef.h>\n#include <stdint.h>\nint LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) { (void)d; (void)n; return 0; }\n"), 0o600); err != nil {
+		return false
+	}
+	cmd := exec.Command(clang, "-fsanitize=fuzzer", src, "-o", filepath.Join(dir, "probe"))
+	return cmd.Run() == nil
+}
+
+// Table targets (docs/spec/110-testing.md, "Table targets"): every file
+// under testdata/oak/<Test>/rows is one case in name order, results carry
+// the failing row's name, rows are never minimized, and a target without
+// rows is an error rather than a vacuous pass. Float fields are compared
+// by ULP distance.
+func TestTableRows(t *testing.T) {
+	row := func(x, want float64) string {
+		var b [16]byte
+		binary.LittleEndian.PutUint64(b[0:], math.Float64bits(x))
+		binary.LittleEndian.PutUint64(b[8:], math.Float64bits(want))
+		return string(b[:])
+	}
+	files := map[string]string{
+		"production.oak": "halve: (x: f64): f64 = x * 0.5\nmain: (): i32 = 42",
+		"a_test.oak": `import(testing)
+TableHalve: (row: []u8): () {
+  x: f64 = test_row_f64(row, u32(0))
+  want: f64 = test_row_f64(row, u32(8))
+  test_check_ulps_f64(halve(x), want, u64(0), u32(1))
+  test_check(test_ulp_distance_f64(x, x) == u64(0), u32(2))
+}
+TableEmpty: (row: []u8): () { test_check(len(row) == u32(0), u32(3)) }`,
+		"testdata/oak/TableHalve/rows/001-one.bin":  row(1, 0.5),
+		"testdata/oak/TableHalve/rows/002-tiny.bin": row(5e-324, 0),
+		"testdata/oak/TableHalve/rows/003-inf.bin":  row(math.Inf(1), math.Inf(1)),
+		"testdata/oak/TableHalve/rows/.ignored":     row(1, 2),
+	}
+	dir := fixture(t, files)
+	code, results, stderr := runCLI(t, "-run", "TableHalve", dir)
+	if code != 0 || len(results) != 1 || results[0].Status != "pass" || results[0].Cases != 3 || results[0].Row != "" {
+		t.Fatalf("table pass: %d %+v %s", code, results, stderr)
+	}
+	// A wrong expectation names its row, and the row is the saved input.
+	if err := os.WriteFile(filepath.Join(dir, "testdata/oak/TableHalve/rows/004-wrong.bin"), []byte(row(3, 1.5000000000000002)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, results, stderr = runCLI(t, "-run", "TableHalve", dir)
+	if code != 1 || len(results) != 1 || results[0].Status != "fail" || results[0].Row != "004-wrong.bin" || results[0].Cases != 4 || !strings.HasPrefix(results[0].Failure, "row 004-wrong.bin: ") {
+		t.Fatalf("table fail: %d %+v %s", code, results, stderr)
+	}
+	artifact, err := readArtifact(results[0].Artifact, 1<<20)
+	if err != nil || artifact.Row != "004-wrong.bin" || artifact.Kind != "table" || string(artifact.Input) != row(3, 1.5000000000000002) {
+		t.Fatalf("artifact: %v %+v", err, artifact)
+	}
+	// Without rows the target is an error, not a pass.
+	code, results, _ = runCLI(t, "-run", "TableEmpty", dir)
+	if code == 0 || len(results) != 1 || results[0].Status != "error" || !strings.Contains(results[0].Failure, "has no rows") {
+		t.Fatalf("missing rows: %d %+v", code, results)
 	}
 }

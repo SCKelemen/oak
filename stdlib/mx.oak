@@ -1,0 +1,135 @@
+package mx
+
+// OCP Microscaling (MX) block formats in Oak (docs/spec/20-types.md
+// section 11.3.1a). MXFP4 is the one the tensor emitters spelled by hand:
+// thirty-two E2M1 elements (sign, two exponent bits, one fraction bit; the
+// eight magnitudes 0, 0.5, 1, 1.5, 2, 3, 4, 6; no infinity or NaN) packed
+// two to a pair and sharing one E8M0 scale (an unsigned exponent with bias
+// 127, 2^-127 through 2^127; 0xFF is NaN, there is no zero).
+//
+// Everything here is bit work over f32 and u32: the same source runs
+// compiled and interpreted and must agree with the Go reference in
+// compiler/e2e_mx_test.go on every element code, every scale code, and a
+// sweep of blocks.
+
+pub MX_BLOCK: u32 = u32(32)
+
+// A block: the scale first, then the packed elements — element i lives in
+// packed[i / 2], even indices in the low nibble, odd in the high. A proven
+// layout of 17 bytes so a buffer of blocks crosses the boundary as is.
+pub Fp4Block: type = struct {
+  scale: u8
+  packed: [16]u8
+}
+
+// The E2M1 magnitude of a 4-bit code (the sign bit is bit 3).
+pub fp4_widen: (code: u8): f32 {
+  magnitude: f32 = fp4_magnitude(u32(code) & u32(7))
+  (u32(code) & u32(8)) != u32(0) ? -magnitude | magnitude
+}
+
+fp4_magnitude: (bits: u32): f32 {
+  bits == u32(0) ? 0.0 |
+  bits == u32(1) ? 0.5 |
+  bits == u32(2) ? 1.0 |
+  bits == u32(3) ? 1.5 |
+  bits == u32(4) ? 2.0 |
+  bits == u32(5) ? 3.0 |
+  bits == u32(6) ? 4.0 |
+  6.0
+}
+
+// Round an f32 to the nearest E2M1 code, ties to even, magnitudes past 6
+// clamped to 6 (the format has no infinity). NaN becomes zero, which keeps
+// a block's bytes total over every input; the caller that wants NaN to
+// poison a block checks before quantizing.
+pub fp4_round_f32: (x: f32): u8 {
+  bits: u32 = u32_bits_f32(x)
+  sign: u32 = (bits >> u32(28)) & u32(8)
+  exponent: u32 = (bits >> u32(23)) & u32(255)
+  mant: u32 = bits & u32(8388607)
+  exponent == u32(255) ? {
+    mant != u32(0) ? u8(0) | u8_trunc_u32(sign | u32(7))
+  } | exponent >= u32(130) ? {
+    // 8 and above: clamp to 6.
+    u8_trunc_u32(sign | u32(7))
+  } | exponent <= u32(126) ? {
+    // Below 1: the subnormal 0.5 (code 1) or zero; 0.25 is the tie to zero.
+    exponent < u32(125) ? u8_trunc_u32(sign) | {
+      shift: u32 = u32(149) - exponent
+      full: u32 = mant | u32(8388608)
+      code: u32 = full >> shift
+      rem: u32 = full & ((u32(1) << shift) - u32(1))
+      midpoint: u32 = u32(1) << (shift - u32(1))
+      rounded: u32 = rem > midpoint || (rem == midpoint && (code & u32(1)) == u32(1)) ? code + u32(1) | code
+      u8_trunc_u32(sign | rounded)
+    }
+  } | {
+    // Normal: exponent field 127..129 is E2M1 exponent 1..3.
+    code: u32 = ((exponent - u32(126)) << u32(1)) | (mant >> u32(22))
+    rem: u32 = mant & u32(4194303)
+    rounded: u32 = rem > u32(2097152) || (rem == u32(2097152) && (code & u32(1)) == u32(1)) ? code + u32(1) | code
+    u8_trunc_u32(sign | (rounded > u32(7) ? u32(7) | rounded))
+  }
+}
+
+// The value of an E8M0 scale code: 2^(code - 127); 0xFF is NaN.
+pub e8m0_widen: (code: u8): f32 {
+  code == u8(255) ? f32_bits_u32(u32(2143289344)) |
+  code == u8(0) ? f32_bits_u32(u32(4194304)) |
+  f32_bits_u32(u32(code) << u32(23))
+}
+
+// The scale a block of values takes (OCP MX v1.0 section 6.3): the largest
+// power of two at or below the largest magnitude, divided by the largest
+// E2M1 power of two (4), clamped to the E8M0 range. An all-zero block, and
+// a block whose largest magnitude is NaN or infinite, scales by 1.
+pub fp4_scale_of: (values: [32]f32): u8 {
+  largest: f32 = 0.0
+  i: u32 = 0
+  while i < MX_BLOCK {
+    magnitude: f32 = abs(values[i])
+    largest = magnitude > largest ? magnitude | largest
+    i = i + u32(1)
+  }
+  exponent: u32 = (u32_bits_f32(largest) >> u32(23)) & u32(255)
+  largest == 0.0 || exponent == u32(255) ? u8(127) |
+  exponent <= u32(2) ? u8(0) |
+  u8_trunc_u32(exponent - u32(2))
+}
+
+// Quantize thirty-two values into a block: every element is the value
+// divided by the block's scale (an exact power of two, so the division
+// rounds nothing), rounded to E2M1 by fp4_round_f32.
+pub fp4_quantize: (values: [32]f32): Fp4Block {
+  block: Fp4Block
+  block.scale = fp4_scale_of(values)
+  inverse: f32 = e8m0_widen(u8_trunc_u32(u32(254) - u32(block.scale)))
+  i: u32 = 0
+  while i < u32(16) {
+    low: u32 = u32(fp4_round_f32(values[i * u32(2)] * inverse))
+    high: u32 = u32(fp4_round_f32(values[i * u32(2) + u32(1)] * inverse))
+    block.packed[i] = u8_trunc_u32(low | (high << u32(4)))
+    i = i + u32(1)
+  }
+  block
+}
+
+// One element of a block, dequantized: the scale times the element, exact
+// except where the product leaves the f32 range.
+pub fp4_get: (block: Fp4Block, i: u32): f32 {
+  pair: u32 = u32(block.packed[i >> u32(1)])
+  code: u32 = (i & u32(1)) == u32(0) ? pair & u32(15) | pair >> u32(4)
+  e8m0_widen(block.scale) * fp4_widen(u8_trunc_u32(code))
+}
+
+// Every element of a block, dequantized.
+pub fp4_dequantize: (block: Fp4Block): [32]f32 {
+  out: [32]f32
+  i: u32 = 0
+  while i < MX_BLOCK {
+    out[i] = fp4_get(block, i)
+    i = i + u32(1)
+  }
+  out
+}
