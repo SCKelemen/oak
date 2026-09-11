@@ -37,8 +37,9 @@ type Decision struct {
 // DecideTheorem decides a theorem declaration: every parameter a
 // fixed-width scalar or Bool, the body in the verifier's subset (wrapping
 // arithmetic, bitwise operators, comparisons, conditionals, typed locals,
-// counted loops; no calls, views, or data-dependent loops).
-func DecideTheorem(sig *ast.FunctionStatement) Decision {
+// counted loops, calls to program functions in the same subset — given in
+// functions — inlined; no views or data-dependent loops).
+func DecideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement) Decision {
 	if sig == nil || sig.Name == nil || sig.Body == nil {
 		return Decision{Kind: DecisionUndecided, Message: "no body"}
 	}
@@ -49,6 +50,8 @@ func DecideTheorem(sig *ast.FunctionStatement) Decision {
 		}
 	}
 	lowering := newLowering(sig)
+	lowering.functions = functions
+	lowering.trapsTracked = true
 	body := sig.Body
 	if loop, isTail := tailRecursionAsLoop(sig, body); isTail {
 		body = loop
@@ -61,9 +64,16 @@ func DecideTheorem(sig *ast.FunctionStatement) Decision {
 		return Decision{Kind: DecisionUndecided, Message: "the body has a data-dependent loop"}
 	}
 	t = truncate(t, 1)
+	traps := make([]*term, 0, len(lowering.traps))
+	for _, trap := range lowering.traps {
+		traps = append(traps, truncate(trap, 1))
+	}
 
 	mentioned := map[string]bool{}
 	collectParams(t, mentioned)
+	for _, trap := range traps {
+		collectParams(trap, mentioned)
+	}
 	names := make([]string, 0, len(mentioned))
 	widths := map[string]int{}
 	for name := range mentioned {
@@ -72,14 +82,30 @@ func DecideTheorem(sig *ast.FunctionStatement) Decision {
 	}
 	sort.Strings(names)
 
-	// Witnesses first: a false case is a counterexample regardless of what
-	// the canonical form would say.
+	// Witnesses first: a trapping or false case is a counterexample
+	// regardless of what the canonical form would say.
 	for _, env := range witnessInputs(names, widths) {
+		for _, trap := range traps {
+			if trap.eval(env) != 0 {
+				return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count reaches the width) at " + describeEnv(names, env)}
+			}
+		}
 		if t.eval(env) != 1 {
 			return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}
 		}
 	}
 	bl := newBlaster(names, widths)
+	// Every recorded trap condition must be impossible.
+	for _, trap := range traps {
+		bits := bl.blast(trap)
+		if bits == nil || bl.bdd.exceeded {
+			return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}
+		}
+		if bits[0] != bddFalse {
+			env := bl.counterexample(bits[0], bddFalse)
+			return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count reaches the width) at " + describeEnv(names, env)}
+		}
+	}
 	bits := bl.blast(t)
 	if bits == nil || bl.bdd.exceeded {
 		return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}

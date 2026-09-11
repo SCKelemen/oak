@@ -64,7 +64,7 @@ Every theorem is placed on one rung, from the strongest evidence down:
 
 | Status | Meaning |
 | --- | --- |
-| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops — no calls, views, or data-dependent loops) and bit-blasted, and its bit is the constant true; the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
+| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
 | `refuted` | One of the deciders found a counterexample. The theorem is false; the assignment is reported. |
 | `proved` | Lean checked the theorem's statement over the extraction of the program (§5); the projection carries the automatic proof, or a hand-written one in a module of its own. This rung is reached by running Lean on the projection; the compiler records that it was stated, not that it was proved. |
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
@@ -77,8 +77,7 @@ and a theorem is not one — though a theorem may be called from one.
 The order is exhaustive first when the domain fits (a concrete count is
 the plainest evidence), then the bit-level decider, then Lean. Direction
 (§6): the extent facts (`50-borrowing.md`) decide a linear fragment inside
-the checker and are the next `decided` rung; calls in a theorem body are
-inlined by the bit-level decider once the callee is in its subset.
+the checker and are the next `decided` rung.
 
 ## 4. `oak prove`
 
@@ -161,10 +160,10 @@ In order of payoff, each reusing a surface that exists:
 - **Contracts.** Leading `assert`s of a body are its preconditions; a
   caller discharges them statically or keeps the check. No `requires`
   keyword.
-- **Larger decided domains.** Calls inlined into the bit-level decider,
-  views and spans as the assembler verifier already models them, and the
-  extent facts for linear bounds, inside the compiler, each with its Lean
-  law.
+- **Larger decided domains.** Views and spans as the assembler verifier
+  already models them, division with its zero-divisor obligation like the
+  shift's, and the extent facts for linear bounds, inside the compiler,
+  each with its Lean law.
 - **Temporal properties.** Safety first, through the invariants above;
   liveness with declared fairness, projected to the TLA+ module the
   protocol command already renders.
