@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SCKelemen/oak/buildcache"
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/modules"
@@ -46,7 +47,7 @@ func init() {
 		{"doc", "print the public declarations of a module or package", "oak doc [-package P] [dir] [name]", docCommand},
 		{"fmt", "canonicalize whitespace in Oak source (meaning-preserving)", "oak fmt [-l] [-w] [file.oak|dir]...", fmtCommand},
 		{"mod", "module maintenance: init, download, tidy, edit, graph, why, vendor, verify, api, diff, bump, compat, pack, upgrade, try", "oak mod <subcommand> [args]", modCommand},
-		{"clean", "remove the module cache", "oak clean -modcache", cleanCommand},
+		{"clean", "remove the build cache or the module cache", "oak clean [-cache] [-modcache]", cleanCommand},
 		{"env", "print oak environment information", "oak env [NAME...]", envCommand},
 		{"repl", "start the interactive session", "oak repl", nil},
 		{"protocol", "protocol tooling", "oak protocol [args]", nil},
@@ -141,6 +142,13 @@ var envVariables = []struct {
 }{
 	{"OAKMODCACHE", "module cache; unset means dependencies resolve only through replace directives", func() string { return os.Getenv("OAKMODCACHE") }},
 	{"OAKBIN", "where oak install puts executables (default $HOME/.oak/bin)", defaultBinDir},
+	{"OAKCACHE", "build cache of compiled executables (default: the user cache directory, oak/; off disables)", func() string {
+		dir, err := buildcache.Dir()
+		if err != nil {
+			return "off"
+		}
+		return dir
+	}},
 	{"OAK_LEAN_DIR", "spec/lean directory for :lean check (default: found above the working directory)", func() string { return os.Getenv("OAK_LEAN_DIR") }},
 	{"OAKROOT", "the module root of the working directory (derived)", moduleRootOf},
 }
@@ -380,16 +388,28 @@ func listPackages(args []string) int {
 // an explicit $OAKMODCACHE that is a directory is removed: the tool never
 // guesses a location to delete.
 func cleanCommand(args []string) int {
-	modcache := false
-	fs := newFlagSet("clean", "oak clean -modcache")
+	modcache, buildCache := false, false
+	fs := newFlagSet("clean", "oak clean [-cache] [-modcache]")
 	fs.BoolVar(&modcache, "modcache", false, "empty the module cache named by $OAKMODCACHE")
+	fs.BoolVar(&buildCache, "cache", false, "remove the build cache ($OAKCACHE)")
 	rest, code, stop := parseFlags(fs, args)
 	if stop {
 		return code
 	}
-	if !modcache || len(rest) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: oak clean -modcache")
+	if (!modcache && !buildCache) || len(rest) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: oak clean [-cache] [-modcache]")
 		return 2
+	}
+	if buildCache {
+		dir, err := buildcache.Clean()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak clean: %v\n", err)
+			return 1
+		}
+		fmt.Printf("removed build cache %s\n", dir)
+	}
+	if !modcache {
+		return 0
 	}
 	cache := os.Getenv("OAKMODCACHE")
 	if cache == "" {
@@ -439,36 +459,60 @@ func compileBinary(comp compiler.Compilation, binary, asmMode string) error {
 	if err != nil {
 		return err
 	}
+	_, err = compileC(code, object, binary)
+	return err
+}
+
+// ccFlags are the fixed C compiler flags for executables: -ffp-contract=off
+// keeps floating-point semantics exactly as written (docs/spec/90-backend.md
+// section 7a); -lm links the C99 math library the float intrinsics lower to.
+var ccFlags = []string{"-std=c99", "-O1", "-ffp-contract=off"}
+
+// compileC turns emitted C (and an optional asm companion object) into the
+// executable at binary, through the build cache: a hit copies the cached
+// binary, a miss compiles with a fixed argument list and stores the result.
+// It reports whether the binary came from the cache.
+func compileC(code string, object []byte, binary string) (bool, error) {
 	cc, err := exec.LookPath("cc")
 	if err != nil {
-		return errors.New("no C compiler (cc) on PATH; use -emit-c to write C instead")
+		return false, errors.New("no C compiler (cc) on PATH; use -emit-c to write C instead")
+	}
+	key := ""
+	if identity, err := buildcache.CompilerIdentity(cc); err == nil {
+		key = buildcache.Key("oak-exe-v1", code, string(object), identity, strings.Join(ccFlags, " "))
+		if cached, ok := buildcache.Lookup(key); ok {
+			if err := buildcache.Copy(cached, binary); err == nil {
+				return true, nil
+			}
+		}
 	}
 	work, err := os.MkdirTemp("", "oak-build-")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer os.RemoveAll(work)
 	cPath := filepath.Join(work, "program.c")
 	if err := os.WriteFile(cPath, []byte(code), 0o600); err != nil {
-		return err
+		return false, err
 	}
-	// -ffp-contract=off keeps floating-point semantics exactly as written
-	// (docs/spec/90-backend.md section 7a); -lm links the C99 math library
-	// the float intrinsics lower to.
-	ccArgs := []string{"-std=c99", "-O1", "-ffp-contract=off", "-o", binary, cPath}
+	ccArgs := append(append([]string{}, ccFlags...), "-o", binary, cPath)
 	if object != nil {
 		objPath := filepath.Join(work, "asm.o")
 		if err := os.WriteFile(objPath, object, 0o600); err != nil {
-			return err
+			return false, err
 		}
 		ccArgs = append(ccArgs, objPath)
 	}
 	build := exec.Command(cc, append(ccArgs, "-lm")...)
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
-		return fmt.Errorf("C compilation failed: %v", err)
+		return false, fmt.Errorf("C compilation failed: %v", err)
 	}
-	return nil
+	if key != "" {
+		// A failed store is a miss next time, never a failed build.
+		_ = buildcache.Store(key, binary)
+	}
+	return false, nil
 }
 
 // executableName names a package's executable: the last segment of the root

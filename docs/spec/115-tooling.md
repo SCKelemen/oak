@@ -40,7 +40,7 @@ names or the module cache.
 | `oak fmt [-l] [-w] [file\|dir]...` | `gofmt` | Canonicalize whitespace: CRLF to LF, trailing whitespace removed, blank-line runs collapsed, one final newline. A file is rewritten only when the result parses to the same syntax tree, so formatting cannot change meaning; a file that does not parse is reported and left alone. `-l` lists, `-w` writes, neither prints. Layout-sensitive indentation is never touched. |
 | `oak list [-json] [-deps] [dir]` | `go list` | The packages of the module with their imports; `-deps` includes every package a build reaches (dependencies and standard library), `-json` emits one object per package with `path`, `dir`, `module`, `imports`. |
 | `oak mod ...` | `go mod` | Module maintenance, section 2. |
-| `oak clean -modcache` | `go clean -modcache` | Empty the module cache. Only an explicit `$OAKMODCACHE` that is a directory is touched; the tool never guesses a location to delete. |
+| `oak clean [-cache] [-modcache]` | `go clean -cache/-modcache` | `-cache` removes the build cache (section 3); `-modcache` empties the module cache. Only an explicit `$OAKMODCACHE` that is a directory is touched; the tool never guesses a location to delete. |
 | `oak env [NAME...]` | `go env` | Print the environment oak reads: `OAKMODCACHE`, `OAKBIN`, `OAK_LEAN_DIR`, and the derived `OAKROOT` (the module root of the working directory). |
 | `oak repl` | — | The interactive session (`83-modules.md` section 10). |
 | `oak version` | `go version` | The module version and VCS revision the Go toolchain recorded in the binary. |
@@ -68,6 +68,21 @@ names or the module cache.
 | `OAKMODCACHE` | The module cache, `<cache>/<path>@v<version>`. Unset means dependencies resolve only through `replace` directives; `oak mod download` and `oak clean -modcache` require it. |
 | `OAKBIN` | Where `oak install` puts executables. Default `$HOME/.oak/bin`, created on demand. |
 | `OAK_LEAN_DIR` | The `spec/lean` directory for the REPL's `:lean check`; default: found above the working directory. |
+| `OAKCACHE` | The build cache of compiled executables. Default: the user cache directory, `oak/`; `off` disables it. |
+
+### 3.1 The build cache
+
+`oak build`, `oak run`, `oak install`, and `oak test` keep the executables
+they compile under `$OAKCACHE/build/`, keyed by a SHA-256 over everything
+that determines the binary: the emitted C (which already captures the Oak
+compiler's lowering), the asm companion object, the C compiler's identity
+(resolved path, size, modification time), the exact flag list, and the host
+OS and architecture; the test runner additionally keys on its engine version
+and adapter identity. A hit copies the cached binary to the requested
+output (`oak build` reports `(cached)`), a miss compiles and stores. Entries
+are written through a temporary file and rename; any cache failure is a
+miss, never a failed build. `oak clean -cache` removes the entries;
+`OAKCACHE=off` bypasses the cache entirely.
 
 ## 4. Not provided, and why
 
