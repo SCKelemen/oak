@@ -2,6 +2,9 @@
 // Link this file into a program that imports timenative, or provide the two
 // symbols yourself: a hypervisor reads its counter, a test harness returns
 // whatever its scenario dictates. POSIX.1-2001 clock_gettime; macOS 10.12+.
+// The feature-test macro exposes clock_gettime and the CLOCK_* identifiers
+// under a strict -std=c99 compile on glibc, where <time.h> otherwise hides them.
+#define _POSIX_C_SOURCE 200112L
 #include <stdint.h>
 #include <time.h>
 

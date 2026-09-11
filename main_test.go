@@ -238,6 +238,17 @@ func TestCLIParityCommands(t *testing.T) {
 	if code, out := runCLI(t, vetPackage, []string{filepath.Join(lib, "geometry")}); code != 0 || !strings.Contains(out, "no recorded assumptions") {
 		t.Fatalf("vet clean: %d\n%s", code, out)
 	}
+	// An admitted assumption (85-discipline.md section 7) stays in the vet
+	// listing, marked as admitted, and no longer fails the strict profile.
+	admitted := writeTree(t, map[string]string{
+		"oak.mod":       "module example.com/admitted\nprofile strict\nadmit OAK-D0103\n",
+		"main.oak":      "package main\n\nu := import(\"example.com/admitted/util\")\n\nmain: (): i32 = u.zero()\n",
+		"util/util.oak": "package util\n\npub zero: (): i32 = { i: u32 = 0\n  running: Bool = true\n  while running { i = i + 1\n    running = i < 3 }\n  0 }\n",
+	})
+	code, out = runCLI(t, vetPackage, []string{admitted})
+	if code != 0 || !strings.Contains(out, "OAK-D0103") || !strings.Contains(out, "admitted by oak.mod (`admit OAK-D0103`)") || !strings.Contains(out, "1 recorded assumption") {
+		t.Fatalf("vet admitted: %d\n%s", code, out)
+	}
 	code, out = run(t, "why", "example.com/lib/geometry", app)
 	if code != 0 || !strings.Contains(out, "# example.com/app\nexample.com/app\nexample.com/lib/geometry") {
 		t.Fatalf("why: %d\n%s", code, out)
@@ -530,5 +541,48 @@ func TestCLIParityRoundC(t *testing.T) {
 	}
 	if code, _ := runCLI(t, completionCommand, []string{"tcsh"}); code != 2 {
 		t.Fatal("completion must reject an unknown shell")
+	}
+}
+
+// Round D: the build cache.
+func TestBuildCache(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("no C compiler")
+	}
+	t.Setenv("OAKCACHE", t.TempDir())
+	app := writeTree(t, map[string]string{"oak.mod": "module example.com/app\n", "main.oak": "package main\n\nmain: (): i32 = 42\n"})
+	bin := filepath.Join(t.TempDir(), "app")
+	code, out := runCLI(t, buildPackage, []string{"-o", bin, app})
+	if code != 0 || strings.Contains(out, "(cached)") {
+		t.Fatalf("first build: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, buildPackage, []string{"-o", bin + "2", app}); code != 0 || !strings.Contains(out, "(cached)") {
+		t.Fatalf("second build must hit the cache: %d\n%s", code, out)
+	}
+	if info, err := os.Stat(bin + "2"); err != nil || info.Mode()&0o111 == 0 {
+		t.Fatalf("cached copy must be executable: %v", err)
+	}
+	if code, _ := runCLI(t, runPackage, []string{app}); code != 42 {
+		t.Fatalf("run from cache exit = %d", code)
+	}
+	// A source change is a miss.
+	if err := os.WriteFile(filepath.Join(app, "main.oak"), []byte("package main\n\nmain: (): i32 = 41\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCLI(t, buildPackage, []string{"-o", bin + "3", app}); code != 0 || strings.Contains(out, "(cached)") {
+		t.Fatalf("changed source must miss: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, cleanCommand, []string{"-cache"}); code != 0 || !strings.Contains(out, "removed build cache") {
+		t.Fatalf("clean -cache: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, buildPackage, []string{"-o", bin + "4", app}); code != 0 || strings.Contains(out, "(cached)") {
+		t.Fatalf("after clean the build must miss: %d\n%s", code, out)
+	}
+	t.Setenv("OAKCACHE", "off")
+	if code, out := runCLI(t, buildPackage, []string{"-o", bin + "5", app}); code != 0 || strings.Contains(out, "(cached)") {
+		t.Fatalf("disabled cache must miss: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, envCommand, []string{"OAKCACHE"}); code != 0 || strings.TrimSpace(out) != "off" {
+		t.Fatalf("env OAKCACHE: %d\n%s", code, out)
 	}
 }

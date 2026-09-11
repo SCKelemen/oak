@@ -69,13 +69,25 @@ int main(int argc, char **argv) {
       } else if (!strcmp(kernel, "search")) {
         oak_view_u64 k = { words, size }, p = { probes, probe_count };
         uint32_t h = oak_bench_search(k, p); memcpy(out, &h, 4); sink += h;
+      } else if (!strcmp(kernel, "page_probe")) {
+        oak_view_u64 k = { words, size }, p = { probes, probe_count };
+        uint32_t h = oak_bench_page_probe(k, p); memcpy(out, &h, 4); sink += h;
+      } else if (!strcmp(kernel, "bitmap")) {
+        oak_view_u64 v = { words, size };
+        uint64_t t = oak_bench_bitmap(v); memcpy(out, &t, 8); sink += out[0];
+      } else if (!strcmp(kernel, "dispatch")) {
+        oak_view_u8 v = { bytes, size };
+        uint64_t t = oak_bench_dispatch(v); memcpy(out, &t, 8); sink += out[0];
+      } else if (!strcmp(kernel, "tiled")) {
+        oak_view_f32 a = { fa, size };
+        float d = oak_bench_tiled(a); memcpy(out, &d, 4); sink += out[0];
       } else { fprintf(stderr, "unknown kernel %s\n", kernel); return 2; }
     }
     double end = now_ns();
     ns[s] = (end - start) / rounds;
     if (sink == 0xFFFFFFFFFFFFFFFFull) fprintf(stderr, "sink\n");
   }
-  size_t width = !strcmp(kernel, "sha256") || !strcmp(kernel, "blake3") ? 32 : (!strcmp(kernel, "sum") ? 8 : 4);
+  size_t width = !strcmp(kernel, "sha256") || !strcmp(kernel, "blake3") ? 32 : (!strcmp(kernel, "sum") || !strcmp(kernel, "bitmap") || !strcmp(kernel, "dispatch") ? 8 : 4);
   for (size_t i = 0; i < width; ++i) sprintf(checksum + 2 * i, "%02x", out[i]);
   qsort(ns, samples, sizeof(double), cmp_double);
   printf("{\"impl\":\"oak\",\"kernel\":\"%s\",\"size\":%u,\"checksum\":\"%s\",\"ns_per_op_median\":%.1f,\"samples\":[", kernel, size, checksum, ns[samples / 2]);

@@ -899,6 +899,13 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
 - **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
   when the length is known to be at least `M + 1`
   (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`.
+- **Field paths**: a container or an index in any of the above may be a
+  record field path rooted at a local binding — `t.block[t.filled]` under
+  `while t.filled < u32(64)`, `t.h[j]` under `j < 8`, the trailing
+  increment `t.filled = t.filled + 1` — with the same laws. A fact about a
+  path dies when the path itself or any prefix of it (the record) is
+  assigned; an element write into a field never changes an owned array's
+  length and kills nothing (`kill_is_conservative` applied per path).
 - Conjunctions (`&&`) contribute every fact of both sides.
 
 Facts are refused, not weakened, whenever soundness would need dataflow

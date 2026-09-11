@@ -55,3 +55,25 @@ blurred invariant.
   detection obligations, not only durability.
 - An IO surface design exists: the same recovery rule runs against a real
   file, and the simulation and the file agree on the conformance vectors.
+
+## Third round (2026-09-12) — gates for the engine-language decision
+
+Standing constraints, stated by the owner for everything below: every
+landed feature carries a formal model (a Lean module or refinement under
+`spec/lean/Oak/`) or a stated reason it cannot, and runtime paths are
+measured — zero-cost erasure where the feature is static, no allocation,
+benchmarks under `benchmarks/` where code runs.
+
+| # | Ask | Disposition |
+| --- | --- | --- |
+| 1 | Typestate-indexed handles: a handle type carrying its custody state, so `evict` on an `Offloaded` handle is a compile error, not a trap in `custody_next` | **Next.** The other half of terminal-state obligations and `via` modes. Design: a resource type with one phantom parameter is state-indexed (`Segment[S]`); the protocol projects one marker type per state, `via` callables must take `Resource[From]` and return `Resource[To]`, and constructing a state other than the initial one is admitted only inside the transition into it. Erased at run time (`Oak.PhantomRepresentation`); soundness model `Oak.Typestate`: the static index always equals the machine state, so the legality trap is unreachable in a well-typed program. |
+| 2 | `io/sim` and `io/native` per `120-io.md`, with directory sync, agreeing on the dbs conformance rows | **Planned after 1.** Completion rings over `SimDisk`/`SimSched`/`SimProcess`, then `pread`/`pwrite`/`fsync`/`fsyncdir`; the two realizations differ only in the fault model. Rings are caller-owned storage (no allocation); the contract of §3 is the Lean target. |
+| 3 | Quorum predicates in protocol guards: counting or quantification over an array field, multi-field payloads, array-of-records data | **Planned after 1.** Guard forms `count(data.acked) >= N`, `all(data.acked)`, `any(...)` with a bounded fold in Oak and `Cardinality`/`\A`/`\E` in the TLA+ export; payload records; `[N]Record` data. Extends `112-protocols.md` §1 and §4 together so the two gates keep agreeing. |
+| 4 | Interval time source: earliest/latest with an attested bound, layered over timesim's faults | **Planned.** `110-testing.md` "Simulated time" gains an interval clock and a bound-attestation fault; the clock-ordered class refuses on an unattestable bound. |
+| 5 | Conformance of a hand-written TLA+ module (`Custody.tla`) against a projection | **Planned.** Design chosen: compare in the projection's normal form — one action per step, one disjunct per line — after parsing the hand-written module's actions; a checker verdict, not a reviewer's. TLC refinement stays the fallback for modules that use forms the normal form lacks. |
+| 6 | rv64 as a first-class target (AArch64 and RISC-V are dbs's only targets) | **Planned; largest item.** Backend, ABI, memory model (`MemoryOrder.lean` has the RVWMO shape to instantiate), assembler unit. Sequenced after 2 and 3 so the sim/native IO agreement exists to test it against. |
+| 7 | Vector dispatch across AArch64 feature levels and RVV behind one deterministic interface | Wanted. Follows 6; the scalable-vector design in `93-simd.md` is the shape. |
+| 8 | SPSC and MPSC rings as memory-model consumers | Wanted. Follows the C and ISA refinement `MemoryOrder.lean` lists as next; rings then reuse the `io` ring shape. |
+| 9 | Derived binary codec for fixed-layout records with per-field endianness | Wanted. A non-JSON derive in `71-codecs.md`; the header stops being hand-written over `bytes_read_*_be`. |
+| 10 | Document `-max-bytes` in the Table section | **Done** (this round): `110-testing.md` "Table targets" names the flag, the default, and the per-row refusal. |
+

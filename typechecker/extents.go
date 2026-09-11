@@ -30,6 +30,7 @@ package typechecker
 import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/token"
+	"strings"
 )
 
 type extentFactKind int
@@ -82,14 +83,69 @@ func (tc *TypeChecker) popExtentFacts(mark int) {
 	tc.extentFacts = tc.extentFacts[:mark]
 }
 
-// localBinding reports whether name is a binding no callee can reassign:
-// not a global (Oak forbids shadowing, so a global name is the global).
+// localBinding reports whether name (a binding or a field path) is rooted
+// at a binding no callee can reassign: one the current scope resolves and
+// that is not a global (Oak forbids shadowing, so a global name is the
+// global). A package qualifier (`hash.TABLE`) is not a binding at all and
+// is refused.
 func (tc *TypeChecker) localBinding(name string) bool {
 	if tc.globalEnv == nil || tc.env == tc.globalEnv {
 		return false
 	}
-	_, isGlobal := tc.globalEnv.Get(name)
-	return !isGlobal
+	root := pathRoot(name)
+	if _, isGlobal := tc.globalEnv.Get(root); isGlobal {
+		return false
+	}
+	_, bound := tc.env.Get(root)
+	return bound
+}
+
+// pathOf renders a binding or a record field path rooted at a binding
+// (`t`, `t.block`, `t.state.filled`) as the dotted name the facts use.
+func pathOf(expr ast.Expression) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return e.Value, true
+	case *ast.IndexExpression:
+		if !e.Dot {
+			return "", false
+		}
+		base, ok := pathOf(e.Left)
+		if !ok {
+			return "", false
+		}
+		field, isIdent := e.Index.(*ast.Identifier)
+		if !isIdent {
+			return "", false
+		}
+		return base + "." + field.Value, true
+	}
+	return "", false
+}
+
+// pathRoot is the binding a path is rooted at.
+func pathRoot(path string) string {
+	if dot := strings.IndexByte(path, '.'); dot >= 0 {
+		return path[:dot]
+	}
+	return path
+}
+
+// pathTouches reports whether assigning `assigned` can change the value
+// named by `watched`: the same path, a prefix of it (the record holding
+// the field), or a field under it (part of the record's value).
+func pathTouches(assigned, watched string) bool {
+	return assigned == watched || strings.HasPrefix(watched, assigned+".") || strings.HasPrefix(assigned, watched+".")
+}
+
+// touchedBy reports whether any assigned name can change the path.
+func touchedBy(assigned map[string]bool, path string) bool {
+	for name := range assigned {
+		if pathTouches(name, path) {
+			return true
+		}
+	}
+	return false
 }
 
 // constantIndex recognizes a literal or a primitive constructor over one:
@@ -121,11 +177,7 @@ func lenOf(expr ast.Expression) (string, bool) {
 	if !isIdent || fn.Value != "len" {
 		return "", false
 	}
-	arg, isIdent := call.Arguments[0].(*ast.Identifier)
-	if !isIdent {
-		return "", false
-	}
-	return arg.Value, true
+	return pathOf(call.Arguments[0])
 }
 
 // lenMinus recognizes `len(name) - K` with K a literal.
@@ -147,21 +199,21 @@ func lenMinus(expr ast.Expression) (name string, k int64, ok bool) {
 
 // offsetIndex recognizes `i` or `i + K` (either order) with K a literal.
 func offsetIndex(expr ast.Expression) (name string, offset int64, ok bool) {
-	if ident, isIdent := expr.(*ast.Identifier); isIdent {
-		return ident.Value, 0, true
+	if path, isPath := pathOf(expr); isPath {
+		return path, 0, true
 	}
 	infix, isInfix := expr.(*ast.InfixExpression)
 	if !isInfix || infix.Operator != "+" {
 		return "", 0, false
 	}
-	if ident, isIdent := infix.Left.(*ast.Identifier); isIdent {
+	if path, isPath := pathOf(infix.Left); isPath {
 		if k, isConst := constantIndex(infix.Right); isConst && k >= 0 {
-			return ident.Value, k, true
+			return path, k, true
 		}
 	}
-	if ident, isIdent := infix.Right.(*ast.Identifier); isIdent {
+	if path, isPath := pathOf(infix.Right); isPath {
 		if k, isConst := constantIndex(infix.Left); isConst && k >= 0 {
-			return ident.Value, k, true
+			return path, k, true
 		}
 	}
 	return "", 0, false
@@ -173,15 +225,15 @@ func minusIndex(expr ast.Expression) (name string, k int64, ok bool) {
 	if !isInfix || infix.Operator != "-" {
 		return "", 0, false
 	}
-	ident, isIdent := infix.Left.(*ast.Identifier)
-	if !isIdent {
+	name, isPath := pathOf(infix.Left)
+	if !isPath {
 		return "", 0, false
 	}
 	k, isConst := constantIndex(infix.Right)
 	if !isConst || k < 0 {
 		return "", 0, false
 	}
-	return ident.Value, k, true
+	return name, k, true
 }
 
 // scaledIndex recognizes `i * K`, `K * i`, and either plus a literal `j`
@@ -192,14 +244,14 @@ func scaledIndex(expr ast.Expression) (name string, scale int64, offset int64, o
 		if !isInfix || infix.Operator != "*" {
 			return "", 0, false
 		}
-		if ident, isIdent := infix.Left.(*ast.Identifier); isIdent {
+		if name, isPath := pathOf(infix.Left); isPath {
 			if k, isConst := constantIndex(infix.Right); isConst && k >= 0 {
-				return ident.Value, k, true
+				return name, k, true
 			}
 		}
-		if ident, isIdent := infix.Right.(*ast.Identifier); isIdent {
+		if name, isPath := pathOf(infix.Right); isPath {
 			if k, isConst := constantIndex(infix.Left); isConst && k >= 0 {
-				return ident.Value, k, true
+				return name, k, true
 			}
 		}
 		return "", 0, false
@@ -440,7 +492,9 @@ func factNames(facts []extentFact) map[string]bool {
 
 // dependsOn reports whether a fact mentions any of the names.
 func (fact extentFact) dependsOn(names map[string]bool) bool {
-	return names[fact.container] || (fact.other != "" && names[fact.other]) || (fact.via != "" && names[fact.via])
+	return (fact.container != "" && touchedBy(names, fact.container)) ||
+		(fact.other != "" && touchedBy(names, fact.other)) ||
+		(fact.via != "" && touchedBy(names, fact.via))
 }
 
 // rememberBoolFacts records the facts a Bool binding's new value carries
@@ -469,13 +523,13 @@ func (tc *TypeChecker) loopConditionFacts(loop *ast.WhileStatement) []extentFact
 	assignedNames(loop, assigned)
 	kept := make([]extentFact, 0)
 	for _, fact := range tc.factsFromCondition(loop.Condition) {
-		if fact.via != "" && assigned[fact.via] {
+		if fact.via != "" && touchedBy(assigned, fact.via) {
 			continue
 		}
 		if fact.viaBinding {
 			// The container and the composed-through binding came from the
 			// remembered condition; a directly compared index is re-checked.
-			if assigned[fact.container] || (!fact.indexDirect && fact.other != "" && assigned[fact.other]) {
+			if touchedBy(assigned, fact.container) || (!fact.indexDirect && fact.other != "" && touchedBy(assigned, fact.other)) {
 				continue
 			}
 		}
@@ -497,6 +551,9 @@ func assignsAny(node ast.Node, names map[string]bool, exceptLast bool) bool {
 				if _, isAssign := stmt.(*ast.AssignmentStatement); isAssign {
 					continue
 				}
+				if field, isField := stmt.(*ast.IndexAssignmentStatement); isField && field.Target != nil && field.Target.Dot {
+					continue
+				}
 			}
 			if assignsAny(stmt, names, false) {
 				return true
@@ -506,14 +563,21 @@ func assignsAny(node ast.Node, names map[string]bool, exceptLast bool) bool {
 	case *ast.BlockExpression:
 		return assignsAny(n.Block, names, exceptLast)
 	case *ast.AssignmentStatement:
-		return n.Name != nil && names[n.Name.Value]
+		return n.Name != nil && touchedBy(names, n.Name.Value)
 	case *ast.VariableDeclaration:
-		return n.Name != nil && names[n.Name.Value]
+		return n.Name != nil && touchedBy(names, n.Name.Value)
 	case *ast.WhileStatement:
 		return assignsAny(n.Condition, names, false) || assignsAny(n.Body, names, false)
 	case *ast.ExpressionStatement:
 		return assignsAny(n.Expression, names, false)
 	case *ast.IndexAssignmentStatement:
+		// A field assignment writes the path; an element write leaves the
+		// container's length alone.
+		if n.Target != nil && n.Target.Dot {
+			if path, isPath := pathOf(n.Target); isPath && touchedBy(names, path) {
+				return true
+			}
+		}
 		return assignsAny(n.Value, names, false)
 	case *ast.MatchExpression:
 		for _, arm := range n.Arms {
@@ -581,6 +645,11 @@ func assignedNames(node ast.Node, into map[string]bool) {
 	case *ast.ExpressionStatement:
 		assignedNames(n.Expression, into)
 	case *ast.IndexAssignmentStatement:
+		if n.Target != nil && n.Target.Dot {
+			if path, isPath := pathOf(n.Target); isPath {
+				into[path] = true
+			}
+		}
 		assignedNames(n.Value, into)
 	case *ast.MatchExpression:
 		assignedNames(n.Scrutinee, into)
@@ -664,11 +733,10 @@ func unionDead(a, b []bool) []bool {
 // recordIndexProof marks v[index] proven when a fact or a static extent
 // bounds it; the backend then elides the check.
 func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayType) {
-	container, isIdent := expr.Left.(*ast.Identifier)
-	if !isIdent || arr == nil {
+	name, isPath := pathOf(expr.Left)
+	if !isPath || arr == nil {
 		return
 	}
-	name := container.Value
 	proven := false
 	// lengthAtLeast: the container is known to hold at least n elements —
 	// its declared static extent, or a live min-length fact.
@@ -860,18 +928,33 @@ func (tc *TypeChecker) lowerBoundsSurviving(loop *ast.WhileStatement, conditionF
 	if loop == nil || loop.Body == nil || len(loop.Body.Statements) == 0 {
 		return keep
 	}
-	last, isAssign := loop.Body.Statements[len(loop.Body.Statements)-1].(*ast.AssignmentStatement)
-	if !isAssign || last.Name == nil {
+	var name string
+	var value ast.Expression
+	switch last := loop.Body.Statements[len(loop.Body.Statements)-1].(type) {
+	case *ast.AssignmentStatement:
+		if last.Name == nil {
+			return keep
+		}
+		name, value = last.Name.Value, last.Value
+	case *ast.IndexAssignmentStatement:
+		if last.Target == nil || !last.Target.Dot {
+			return keep
+		}
+		path, isPath := pathOf(last.Target)
+		if !isPath {
+			return keep
+		}
+		name, value = path, last.Value
+	default:
 		return keep
 	}
-	name := last.Name.Value
-	increment, isIncrement := last.Value.(*ast.InfixExpression)
+	increment, isIncrement := value.(*ast.InfixExpression)
 	if !isIncrement || increment.Operator != "+" {
 		return keep
 	}
 	incrementOf := func(a, b ast.Expression) bool {
-		ident, isIdent := a.(*ast.Identifier)
-		if !isIdent || ident.Value != name {
+		path, isPath := pathOf(a)
+		if !isPath || path != name {
 			return false
 		}
 		c, isConst := constantIndex(b)
