@@ -1295,6 +1295,22 @@ func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 				return localContainer{kind: containerView, element: "u8"}
 			}
 		}
+		// An inline borrow construction (`view(&x)`, `span(&x)`) classifies as
+		// the view or span of x's element type, so slicing or measuring it in
+		// expression position lowers through the same checked helpers a named
+		// view uses (F20: the `core_slice` macro cannot take a compound literal).
+		if id, ok := call.Function.(*ast.Identifier); ok && (id.Value == "view" || id.Value == "span") && len(call.Arguments) == 1 {
+			if prefix, ok := call.Arguments[0].(*ast.PrefixExpression); ok && prefix.Operator == "&" {
+				inner := cg.localContainerOf(prefix.Right)
+				if inner.kind == containerOwnedArray || inner.kind == containerBuffer {
+					kind := containerView
+					if id.Value == "span" {
+						kind = containerSpan
+					}
+					return localContainer{kind: kind, element: inner.element, elementType: inner.elementType}
+				}
+			}
+		}
 		if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "core_slice" && len(call.Arguments) == 3 {
 			info := cg.localContainerOf(call.Arguments[0])
 			if info.kind == containerView || info.kind == containerSpan {
