@@ -103,52 +103,20 @@ func reportAsmVerdict(d *diagnostic.Diagnostic) {
 // unit, which the system C compiler turns into an executable named after the
 // package (or `-o out`); `-emit-c`, or an `-o` ending in .c, writes the C.
 func buildPackage(args []string) int {
-	dir := "."
-	output := ""
-	header := ""
-	leanOut := ""
-	profile := ""
-	lines := false
-	emitC := false
+	output, header, leanOut, profile := "", "", "", ""
+	lines, emitC := false, false
 	asmMode := defaultAsmMode()
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-o" && i+1 < len(args):
-			output = args[i+1]
-			i++
-		case args[i] == "-asm" && i+1 < len(args):
-			// native: the Oak assembler encodes asm units into a companion
-			// object linked with the executable; c: inline __asm__ text
-			// (docs/spec/94-assembler.md §9). C output (-emit-c) always
-			// carries the units inline, since it stands alone.
-			asmMode = args[i+1]
-			i++
-		case args[i] == "-emit-c":
-			// Write C instead of an executable (also implied by -o x.c).
-			emitC = true
-		case args[i] == "-header" && i+1 < len(args):
-			// The C header of the package's exported surface
-			// (docs/spec/92-ffi.md section 2.6).
-			header = args[i+1]
-			i++
-		case args[i] == "-lean" && i+1 < len(args):
-			// The Lean 4 extraction of the package's own declarations
-			// (docs/spec/95-extraction.md).
-			leanOut = args[i+1]
-			i++
-		case args[i] == "-profile" && i+1 < len(args):
-			profile = args[i+1]
-			i++
-		case args[i] == "-lines":
-			// #line directives: C diagnostics and debuggers point at Oak
-			// source (docs/spec/90-backend.md section 10).
-			lines = true
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-profile default|strict] [-asm native|c] [-lines] [dir|file.oak]\n", args[i])
-			return 2
-		default:
-			dir = args[i]
-		}
+	fs := newFlagSet("build", "oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-profile default|strict] [-asm native|c] [-lines] [dir|file.oak|pattern]...")
+	fs.StringVar(&output, "o", "", "output file: an executable, or C when it ends in .c")
+	fs.BoolVar(&emitC, "emit-c", false, "write C instead of an executable")
+	fs.StringVar(&header, "header", "", "write the C header of the exported surface (docs/spec/92-ffi.md section 2.6)")
+	fs.StringVar(&leanOut, "lean", "", "write the Lean 4 extraction of the package (docs/spec/95-extraction.md)")
+	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict (docs/spec/85-discipline.md)")
+	fs.StringVar(&asmMode, "asm", asmMode, "asm units: native (Oak assembler companion object) or c (inline __asm__; docs/spec/94-assembler.md section 9)")
+	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
 	}
 	if !validProfile(profile) {
 		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
@@ -158,6 +126,25 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: -asm takes native or c, got %q\n", asmMode)
 		return 2
 	}
+	targets, err := expandPackagePatterns(rest)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+		return 1
+	}
+	if len(targets) > 1 && (output != "" || header != "" || leanOut != "") {
+		fmt.Fprintln(os.Stderr, "oak build: -o, -header, and -lean apply to a single package")
+		return 2
+	}
+	for _, dir := range targets {
+		if code := buildOne(dir, output, header, leanOut, profile, asmMode, lines, emitC); code != 0 {
+			return code
+		}
+	}
+	return 0
+}
+
+// buildOne builds a single package or file.
+func buildOne(dir, output, header, leanOut, profile, asmMode string, lines, emitC bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -356,20 +343,15 @@ func modDownload(args []string) int {
 
 func modAPI(args []string) int {
 	dir, packageName, packageVersion := ".", "", ""
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-package" && i+1 < len(args):
-			packageName = args[i+1]
-			i++
-		case args[i] == "-version" && i+1 < len(args):
-			packageVersion = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak mod api: unknown flag %s\nusage: oak mod api [dir] | oak mod api -package P [-version V] <dir|file.oak>\n", args[i])
-			return 2
-		default:
-			dir = args[i]
-		}
+	fs := newFlagSet("mod api", "oak mod api [dir] | oak mod api -package P [-version V] <dir|file.oak>")
+	fs.StringVar(&packageName, "package", "", "snapshot one package under this import path")
+	fs.StringVar(&packageVersion, "version", "", "version to record in a single-package snapshot (default 0.0.0)")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
+	}
+	if len(rest) > 0 {
+		dir = rest[0]
 	}
 	if packageName != "" {
 		return modAPIPackage(packageName, packageVersion, dir)
@@ -539,23 +521,16 @@ func modCompat(args []string) int {
 // archive whose version lies about its API change is never produced.
 func modPack(args []string) int {
 	dir, output, previousPath, location := ".", "", "", "<url>"
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-o" && i+1 < len(args):
-			output = args[i+1]
-			i++
-		case args[i] == "-previous" && i+1 < len(args):
-			previousPath = args[i+1]
-			i++
-		case args[i] == "-url" && i+1 < len(args):
-			location = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak mod pack: unknown flag %s\nusage: oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]\n", args[i])
-			return 2
-		default:
-			dir = args[i]
-		}
+	fs := newFlagSet("mod pack", "oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]")
+	fs.StringVar(&output, "o", "", "archive to write (default <name>-<version>.tar.gz)")
+	fs.StringVar(&previousPath, "previous", "", "previous snapshot; the exact bump is enforced before packing")
+	fs.StringVar(&location, "url", "<url>", "HTTPS location to print in the require line")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
+	}
+	if len(rest) > 0 {
+		dir = rest[0]
 	}
 	manifest, err := readManifest(dir)
 	if err != nil {
@@ -617,18 +592,13 @@ func modPack(args []string) int {
 func modUpgrade(args []string) int {
 	dir := "."
 	var files []string
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-dir" && i+1 < len(args):
-			dir = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak mod upgrade: unknown flag %s\nusage: oak mod upgrade [-dir dir] dep-api.json...\n", args[i])
-			return 2
-		default:
-			files = append(files, args[i])
-		}
+	fs := newFlagSet("mod upgrade", "oak mod upgrade [-dir dir] dep-api.json...")
+	fs.StringVar(&dir, "dir", ".", "module directory")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
 	}
+	files = rest
 	if len(files) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: oak mod upgrade [-dir dir] dep-api.json...")
 		return 2
@@ -670,18 +640,13 @@ func modUpgrade(args []string) int {
 func modTry(args []string) int {
 	dir := "."
 	var positional []string
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-dir" && i+1 < len(args):
-			dir = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak mod try: unknown flag %s\nusage: oak mod try path candidate-dir [-dir dir]\n", args[i])
-			return 2
-		default:
-			positional = append(positional, args[i])
-		}
+	fs := newFlagSet("mod try", "oak mod try path candidate-dir [-dir dir]")
+	fs.StringVar(&dir, "dir", ".", "module directory")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
 	}
+	positional = rest
 	if len(positional) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: oak mod try path candidate-dir [-dir dir]")
 		return 2
@@ -714,16 +679,14 @@ func modTry(args []string) int {
 // the module cache ($OAKMODCACHE) can provide.
 func modTidy(args []string) int {
 	dir, write := ".", false
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-w":
-			write = true
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak mod tidy: unknown flag %s\nusage: oak mod tidy [-w] [dir]\n", args[i])
-			return 2
-		default:
-			dir = args[i]
-		}
+	fs := newFlagSet("mod tidy", "oak mod tidy [-w] [dir]")
+	fs.BoolVar(&write, "w", false, "rewrite oak.mod")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
+	}
+	if len(rest) > 0 {
+		dir = rest[0]
 	}
 	report, err := compiler.Tidy(dir, os.Getenv("OAKMODCACHE"))
 	if err != nil {
@@ -792,23 +755,20 @@ func runPackage(args []string) int {
 	dir := "."
 	profile := ""
 	asmMode := defaultAsmMode()
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-profile" && i+1 < len(args):
-			profile = args[i+1]
-			i++
-		case args[i] == "-asm" && i+1 < len(args):
-			// native: the Oak assembler encodes asm units into a companion
-			// object; c: they are emitted as __asm__ text the C toolchain
-			// assembles (docs/spec/94-assembler.md §9).
-			asmMode = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak run: unknown flag %s\nusage: oak run [-profile default|strict] [-asm native|c] [dir]\n", args[i])
-			return 2
-		default:
-			dir = args[i]
-		}
+	own, programArgs := splitProgramArgs(args)
+	fs := newFlagSet("run", "oak run [-profile default|strict] [-asm native|c] [dir] [-- program arguments]")
+	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
+	fs.StringVar(&asmMode, "asm", asmMode, "asm units: native or c (docs/spec/94-assembler.md section 9)")
+	rest, exit, stop := parseFlags(fs, own)
+	if stop {
+		return exit
+	}
+	if len(rest) > 1 {
+		fmt.Fprintln(os.Stderr, "oak run: one package directory; pass program arguments after --")
+		return 2
+	}
+	if len(rest) == 1 {
+		dir = rest[0]
 	}
 	if !validProfile(profile) {
 		fmt.Fprintf(os.Stderr, "oak run: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
@@ -860,7 +820,7 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak run: C compilation failed: %v\n", err)
 		return 1
 	}
-	program := exec.Command(binary)
+	program := exec.Command(binary, programArgs...)
 	program.Stdin, program.Stdout, program.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := program.Run(); err != nil {
 		var exitErr *exec.ExitError
