@@ -223,6 +223,48 @@ extend it for liveness and environment assumptions in a module of their own,
 so regenerating never overwrites hand-written properties. The generated
 header names the source it came from.
 
+## 4a. Conformance of a hand-written module
+
+```text
+oak protocol -conform Name -against Custody.tla [-json] file.oak
+```
+
+A module written before the declaration, or kept beside it for the
+properties it states, must agree with the projection — and the checker,
+not a reviewer, says whether it does. Both texts are read into the
+projection's **normal form**: constants, variables, `States`, `Init` as a
+set of conjuncts, one action per step with one disjunct per line — each a
+conjunction of `state = "From"`, guard terms, `state' = "To"`, primed
+assignments (`EXCEPT` forms included) and `UNCHANGED` — `Next` as a set of
+disjuncts, and `TypeOK`. Spellings that differ only in whitespace,
+redundant parentheses, conjunct or disjunct order, or comments are the
+same line; a guard compares by its canonical text, so `who < 2` and
+`(who) < 2` agree and `who < 3` does not. The report names every
+difference with its kind, action and disjunct: a missing or extra action,
+a missing or extra line (with the closest line on the other side, so a
+changed guard, target or effect shows what it was changed from), and
+`Init`, `TypeOK`, `Next`, constants, variables or states that differ.
+Exit 0 means agreement; 1 a difference or an unsupported form; `-json`
+prints the report as data.
+
+What the reader does not understand it reports as **unsupported** by line
+— a disjunct without the state conjuncts, a quantifier outside a guard, a
+definition it cannot place — and never judges: for such modules TLC
+refinement against the projection remains the check. Helper operators
+inlined in the hand-written module compare as their expanded guard text
+only when the projection spells the same text; a module that names a
+quorum predicate of its own is therefore reported as a guard difference,
+which is honest (the checker compares what the two texts say), and the
+quantifier forms of §1 exist so that the projection can say it too.
+
+`Oak.ProtocolConformance` (`spec/lean/Oak/ProtocolConformance.lean`)
+states what the verdict means: two machines with the same line sets have
+the same step relation under every interpretation of guards and effects
+(`steps_of_lines`), and with the same initial states reach the same states
+(`conform_reachable_equal`); the report is complete — a line on one side
+only is a reported line, and an empty report means the line sets agree
+(`report_complete`, `empty_report_agrees`).
+
 ## 5. Resource protocols (`via`)
 
 A transition line ending in `via f` binds the transition to the function `f`
@@ -414,5 +456,7 @@ not generate Lean definitions, state diagrams, or debugger decoding
 
 - Typestate-indexed handle types; a source spelling for callable contracts
   on function-typed parameters and for fresh-return facts.
-- Conformance checking of a hand-written TLA+ module against the projected
-  machine, for modules that predate the declaration.
+- Conformance of modules outside the normal form (helper operators,
+  quantifiers outside guards): a semantic comparison through TLC
+  refinement driven by the checker, rather than the textual normal form of
+  §4a.
