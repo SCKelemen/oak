@@ -463,10 +463,21 @@ rather than treated as harmless. A value initialized from a function with
 no contract keeps the ordinary (unmarked) meaning. A contract declared for
 a generic template holds for every specialization: the specialized call
 sites and the specialized bodies are checked under the template's modes,
-so monomorphization cannot lose a mode. Contracts on function *types*
-(so that a borrowed-function requirement can reject a consuming
-implementation), receiver modes, and imported or sealed signatures are the
-remaining boundaries of milestone 2.
+so monomorphization cannot lose a mode. **Receiver authority is its own slot.** A method's receiver carries a mode
+of its own — `borrowed`, `borrowed-mut`, or `consumed` — declared beside
+the explicit parameter modes and never shifting their indices: argument 0
+of `fn (h: Handle) merge(other: Handle)` is `other` whether or not the
+receiver is marked. At a call `h.merge(g)` the receiver participates in
+call-local exclusivity like any argument (a mutable receiver and a borrowed
+argument naming one resource is `OAK-B0112`, labeled "receiver"), a
+consuming receiver invalidates the caller's handle after the call, and the
+method body is checked under the receiver's entry authority (a borrowed
+receiver cannot be consumed or retained inside the method). In SemIR the
+receiver mode is the `resource.borrow`/`borrow-mut`/`consume` effect with
+the parameter `receiver`. A receiver mode is valid only on a method whose
+receiver type is a resource type. Contracts on function *types* (so that a
+borrowed-function requirement can reject a consuming implementation) and
+imported or sealed signatures are the remaining boundaries of milestone 2.
 
 The callable-boundary audit and proposed result provenance/lifetime relationships
 are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).

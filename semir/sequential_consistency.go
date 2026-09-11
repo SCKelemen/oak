@@ -133,14 +133,14 @@ func (s SequentialConsistencyWitness) initialWriteSkipped(
 // scans over Events/Order; the success path performs no hidden allocation.
 //
 // Constraints:
-//   1. every and only seq-cst event appears exactly once in S;
-//   2. S is consistent with happens-before among seq-cst events;
-//   3. S is consistent with per-location modification order among seq-cst
-//      writes/RMWs;
-//   4. an SC read/RMW may not skip a later modification that is already visible
-//      before it through HB or the SC order;
-//   5. an SC read of the implicit initial value may not have any visible write
-//      before it.
+//  1. every and only seq-cst event appears exactly once in S;
+//  2. S is consistent with happens-before among seq-cst events;
+//  3. S is consistent with per-location modification order among seq-cst
+//     writes/RMWs;
+//  4. an SC read/RMW may not skip a later modification that is already visible
+//     before it through HB or the SC order;
+//  5. an SC read of the implicit initial value may not have any visible write
+//     before it.
 func (x MemoryExecution) ValidateSequentialConsistency(
 	s SequentialConsistencyWitness,
 	workspace MemoryWorkspace,

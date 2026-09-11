@@ -142,3 +142,53 @@ func TestModCommandsEndToEnd(t *testing.T) {
 		t.Fatalf("tidy -w must restore the manifest exactly:\n%s", after)
 	}
 }
+
+// The former oak-api and oak-semver tools: single-package snapshots and
+// diffs between two snapshot files.
+func TestModAPIPackageAndSnapshotFileDiff(t *testing.T) {
+	lib := writeTree(t, map[string]string{"oak.mod": "module example.com/lib\nversion 1.0.0\n", "geometry/point.oak": libV1})
+	work := t.TempDir()
+	code, out := run(t, "api", "-package", "example.com/lib/geometry", "-version", "1.0.0", filepath.Join(lib, "geometry"))
+	if code != 0 || !strings.Contains(out, `"package": "example.com/lib/geometry"`) || strings.Contains(out, `"packages"`) {
+		t.Fatalf("api -package: %d\n%s", code, out)
+	}
+	prev := filepath.Join(work, "prev.json")
+	if err := os.WriteFile(prev, []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A single source file, no module at all.
+	single := filepath.Join(work, "net.oak")
+	if err := os.WriteFile(single, []byte("pub twice: (v: i32): i32 = v * 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := run(t, "api", "-package", "example/net", "-version", "0.1.0", single); code != 0 || !strings.Contains(out, `"twice"`) {
+		t.Fatalf("api -package on a file: %d\n%s", code, out)
+	}
+	// Add an export, snapshot at 1.1.0, and enforce between the two files.
+	if err := os.WriteFile(filepath.Join(lib, "geometry", "point.oak"), []byte(libV1+"pub zero: (): Point = make(0, 0)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = run(t, "api", "-package", "example.com/lib/geometry", "-version", "1.1.0", filepath.Join(lib, "geometry"))
+	if code != 0 {
+		t.Fatal(out)
+	}
+	current := filepath.Join(work, "current.json")
+	if err := os.WriteFile(current, []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := run(t, "diff", prev, current); code != 0 || !strings.Contains(out, "zero: public export added (minor)") {
+		t.Fatalf("diff files: %d\n%s", code, out)
+	}
+	if code, out := run(t, "bump", prev, current); code != 0 || !strings.Contains(out, "version 1.1.0 is the exact required bump") {
+		t.Fatalf("bump files: %d\n%s", code, out)
+	}
+	wrong := strings.Replace(out, "", "", 1)
+	_ = wrong
+	text, _ := os.ReadFile(current)
+	if err := os.WriteFile(current, []byte(strings.ReplaceAll(string(text), `"1.1.0"`, `"2.0.0"`)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := run(t, "bump", prev, current); code != 1 || !strings.Contains(out, "requires version 1.1.0; declared 2.0.0") {
+		t.Fatalf("bump over-versioned: %d\n%s", code, out)
+	}
+}

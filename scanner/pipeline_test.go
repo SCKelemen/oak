@@ -1,8 +1,8 @@
 package scanner
 
 import (
-	"testing"
 	"github.com/SCKelemen/oak/token"
+	"testing"
 )
 
 func TestPipelineToken(t *testing.T) {

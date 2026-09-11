@@ -81,9 +81,9 @@ func TestRecordShapeSatisfactionIgnoresRepresentation(t *testing.T) {
 		t.Fatalf("shape check failed: %v", err)
 	}
 	candidate.Representation = Representation{
-		Kind:      RepresentationRecord,
-		Policy:    RepresentationPolicyNaturalOrdered,
-		Resolved:  false,
+		Kind:     RepresentationRecord,
+		Policy:   RepresentationPolicyNaturalOrdered,
+		Resolved: false,
 	}
 	after, err := DefinitionSatisfiesRecordShape(candidate, shape)
 	if err != nil {

@@ -8,8 +8,8 @@ import (
 
 // BorrowStateJSON represents borrow state information
 type BorrowStateJSON struct {
-	Owner       string   `json:"owner"`
-	State       string   `json:"state"` // "Free", "SharedRead", "UniqueWrite"
+	Owner         string           `json:"owner"`
+	State         string           `json:"state"` // "Free", "SharedRead", "UniqueWrite"
 	ActiveBorrows []BorrowInfoJSON `json:"active_borrows,omitempty"`
 }
 

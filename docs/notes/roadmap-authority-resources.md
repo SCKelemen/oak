@@ -82,9 +82,11 @@ global functions carry their contracts (indirect consumption invalidates
 caller aliases); function values of unknown provenance have unknown
 contracts and resources passed through them fail closed (`OAK-B0115`);
 specializations retain template modes at call sites and in specialized
-bodies (`50-borrowing.md` §9). Still open: contracts on function types
-(borrowed-function requirements), receiver modes as their own slot,
-imports and sealing.
+bodies (`50-borrowing.md` §9). **Second increment (same day):** receiver
+authority as its own slot — receiver modes participate in exclusivity and
+consumption without shifting explicit indices, govern method bodies, and
+round-trip through SemIR. Still open: contracts on function types
+(borrowed-function requirements), imports and sealing.
 
 ## 3. Resource provenance through bindings, projections, control flow
 

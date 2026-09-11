@@ -190,9 +190,16 @@ func buildPackage(args []string) int {
 //	oak mod download [dir]            fetch pinned requirements into $OAKMODCACHE,
 //	                                  verifying digests and carried api.json
 //	oak mod api [dir]                 print the module's API snapshot (JSON)
-//	oak mod diff previous.json [dir]  classify the API change since previous.json
-//	oak mod bump previous.json [dir]  print the required version; with a
-//	                                  `version` directive, enforce it
+//	oak mod api -package P [-version V] <dir|file.oak>
+//	                                  snapshot one package (a directory or a
+//	                                  single source file)
+//	oak mod diff previous.json [dir|current.json]
+//	                                  classify the API change since previous.json
+//	                                  (module or package snapshots)
+//	oak mod bump previous.json [dir|current.json]
+//	                                  print the required version; with a
+//	                                  `version` directive (or a current
+//	                                  snapshot), enforce it
 //	oak mod compat dep-api.json [dir] check sealed imports against a
 //	                                  dependency's snapshot
 //	oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]
@@ -260,9 +267,24 @@ func modDownload(args []string) int {
 }
 
 func modAPI(args []string) int {
-	dir := "."
-	if len(args) > 0 {
-		dir = args[0]
+	dir, packageName, packageVersion := ".", "", ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-package" && i+1 < len(args):
+			packageName = args[i+1]
+			i++
+		case args[i] == "-version" && i+1 < len(args):
+			packageVersion = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-"):
+			fmt.Fprintf(os.Stderr, "oak mod api: unknown flag %s\nusage: oak mod api [dir] | oak mod api -package P [-version V] <dir|file.oak>\n", args[i])
+			return 2
+		default:
+			dir = args[i]
+		}
+	}
+	if packageName != "" {
+		return modAPIPackage(packageName, packageVersion, dir)
 	}
 	manifest, err := readManifest(dir)
 	if err != nil {
@@ -288,6 +310,38 @@ func modAPI(args []string) int {
 	return 0
 }
 
+// modAPIPackage snapshots a single package — a directory built through the
+// module loader or one source file — the former `oak-api` tool.
+func modAPIPackage(name, version, target string) int {
+	if version == "" {
+		version = "0.0.0"
+	}
+	comp := compiler.New().WithPackageName(name)
+	if info, err := os.Stat(target); err == nil && info.IsDir() {
+		comp = comp.WithPackageDir(target)
+	} else {
+		source, err := os.ReadFile(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod api: %v\n", err)
+			return 1
+		}
+		comp = comp.WithSource(target, string(source))
+	}
+	snapshot, err := comp.APISnapshot(version).Get()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod api: %v\n", err)
+		return 1
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(snapshot); err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod api: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
 func modDiff(args []string, enforce bool) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: oak mod diff|bump previous.json [dir]")
@@ -302,19 +356,34 @@ func modDiff(args []string, enforce bool) int {
 		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
 		return 1
 	}
-	manifest, err := readManifest(dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
-		return 1
-	}
-	candidate := manifest.Version
-	if candidate == "" {
-		candidate = previous.Version
-	}
-	current, err := compiler.ModuleAPISnapshot(dir, candidate)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
-		return 1
+	// The current API is the module at dir, or a second snapshot file (the
+	// former `oak-semver` form); with a file, its version is the declared
+	// candidate.
+	var current packageapi.ModuleSnapshot
+	declared := ""
+	if info, statErr := os.Stat(dir); statErr == nil && !info.IsDir() {
+		current, err = compiler.ReadModuleSnapshot(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+			return 1
+		}
+		declared = current.Version
+	} else {
+		manifest, err := readManifest(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+			return 1
+		}
+		declared = manifest.Version
+		candidate := declared
+		if candidate == "" {
+			candidate = previous.Version
+		}
+		current, err = compiler.ModuleAPISnapshot(dir, candidate)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+			return 1
+		}
 	}
 	required, report, err := packageapi.RequiredVersion(previous, current)
 	if err != nil {
@@ -333,7 +402,7 @@ func modDiff(args []string, enforce bool) int {
 	if !enforce {
 		return 0
 	}
-	if manifest.Version == "" {
+	if declared == "" {
 		fmt.Fprintf(os.Stderr, "oak mod bump: add `version %s` to %s\n", required, modules.ManifestFile)
 		return 1
 	}
@@ -341,7 +410,7 @@ func modDiff(args []string, enforce bool) int {
 		fmt.Fprintf(os.Stderr, "oak mod bump: %v\n", err)
 		return 1
 	}
-	fmt.Printf("version %s is the exact required bump\n", manifest.Version)
+	fmt.Printf("version %s is the exact required bump\n", declared)
 	return 0
 }
 

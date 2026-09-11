@@ -505,7 +505,9 @@ not a cryptographic source. Tests draw from the choice tape instead
 The [strings API](STRINGS.md) is executable through `import(std)`: strict
 UTF-8/16/32 codecs, ASCII validation, Unicode 17 full casing and case folding,
 searching, trimming, split/fields iteration, range-based joining, replacement,
-repetition, unsigned parsing, and a bounded fluent text builder. All outputs use
+repetition, byte order marks, UTF-16 as bytes in either byte order, Latin-1,
+signed and radix number parsing and formatting, and a bounded fluent text
+builder. All outputs use
 caller-provided storage. `text_literal("hello")` supplies readable static UTF-8
 byte views through ordinary borrowing. The placeholder string examples have been
 replaced with compiled programs; see `examples/stdlib_strings.oak`.
