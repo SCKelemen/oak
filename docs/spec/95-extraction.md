@@ -288,8 +288,24 @@ the compiler compiles, up to the extractor and the compiler being correct:
   sorted (`SortedPrefix`), for every array below the `u32` index range and
   every fuel above twice its length, by induction over the two loops with
   `SortedExcept` (sorted but for one gap) as the inner invariant and the two
-  stores shown to be `Array.swap`. Heap sort and `sort_span` are not yet
-  stated as laws; their extractions are faithful since the write-set fix (oak #186): `heap_sorts_example`, `span_sorts_example`, and `span_sorts_reversed` are kernel evaluations of the fixed extraction on the inputs the earlier gap witnesses used, and the universal heap and pdqsort laws are the next theorems (`bit_length_some` is their first lemma).
+  stores shown to be `Array.swap`. `sort_heap_spec` — the extracted heap sort
+  returns a sorted permutation for every array below `2^31` elements and
+  every fuel above `3 n + 3`: `sift_loop_spec` keeps the heap edges above a
+  floor except at the hole (`SiftInv`, with the hole's parent bounding its
+  children once it has moved) and only permutes positions below `end`,
+  `heap_build_spec` lowers the floor to zero, `heap_extract_spec` keeps a heap
+  below a sorted tail that dominates it (`heap_root_max` moves the maximum
+  out). For `sort_span`: `writeback_perm` — writing a permutation of the
+  window `items[lo:hi]` back over it is a permutation of `items` for every
+  `lo` and `hi`; `sort_span_small` — below thirteen elements the result is a
+  sorted permutation (it is insertion sort); `sort_span_budget_zero` — with
+  the depth budget spent the whole span is heap sorted, so the fallback path
+  is a sorted permutation for every array below `2^31`. The pattern-defeating
+  path beyond the threshold is decided on twenty-four-element sorted,
+  reversed, all-equal, organ-pipe, few-distinct and sawtooth inputs and a
+  budget of one on the reversed sixteen; its universal laws need the
+  range-stack invariant and the in-bounds proof of every swap (the extraction
+  drops an out-of-range store, so permutation itself depends on them).
 - `Oak/Stdlib/EncodingLaws.lean`: `hex_round_trip` — for every source below
   `2^31 - 2` bytes, either symbol case, a destination that holds exactly the
   encoding, and a decode destination that holds the source, `hex_encode`
@@ -309,8 +325,10 @@ most; the kernel-decided facts use no axioms.
 
 ## 7. Next
 
-- State the heap sort and pdqsort laws on the now-faithful extraction
-  (`bit_length_some` is the first lemma they need); the universal base64 and base32 round trips and hexadecimal
+- State the pdqsort laws beyond the insertion threshold and the exhausted
+  budget: the range-stack invariant (ranges disjoint, everything between them
+  in final position, every swap in bounds) over `sort_span_budget.loop1`,
+  with `writeback_perm` and the heap and insertion laws as the leaves; the universal base64 and base32 round trips and hexadecimal
   strictness (`hex_decode` accepts a string iff it is an encoding); the
   `uuid` version and variant bits against the extraction.
 - The subset: strings and the text library, methods, and recursion;
