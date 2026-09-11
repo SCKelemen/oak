@@ -207,37 +207,67 @@ check, and the one gap between the extraction's acceptance and
 `rup_stream_check` against `CertifiedStream.check` on a represented
 layout.
 
-`spec/lean/Oak/Stdlib/VarintLaws.lean` states the first law about a
-library extraction: `roundTripHolds v` encodes `v` into a fresh ten-byte
-buffer with the extracted `varint_encode` and decodes it with the extracted
-`varint_decode`, and holds when the decoded value is `v` and the decoder's
-`next` is the encoder's count. It is decided in the kernel for every
-one-byte value (`round_trip_one_byte`, all 128), for the first value of
-every encoding length from two to ten bytes, for the RFC example (`300` is
-`AC 02`, `encode_300`), and for the largest `UInt64`; `overlong_tenth_byte_rejected`,
-`truncated_rejected`, and `decode_stops_at_terminator` decide the canonical-form
-rejections. These are kernel evaluations of the extracted program, not
-corpus agreement, and they hold with no axioms. The universal statement
-(every `UInt64`) needs an induction over the two loops and is stated as
-remaining work in section 7.
+The standard-library laws live next to the extractions, one file per
+package, and are theorems about the extracted programs — so about the Oak
+the compiler compiles, up to the extractor and the compiler being correct:
+
+- `Oak/Stdlib/VarintLaws.lean`: the universal LEB128 round trip. `nbytes`
+  and `byteOf` state the encoding in `Nat`; `size_loop`, `encode_loop`, and
+  `decode_loop` relate the extracted loops to them by induction on the fuel,
+  with every `UInt64`/`UInt32` wrap discharged by a bound the guards
+  establish (`Nat.two_pow_add_eq_or_of_lt` turns the decoder's `|||` into
+  the addition the invariant needs); `round_trip` assembles them for every
+  `UInt64`, every destination of at least ten bytes, and every fuel above
+  ten, `round_trip_all` closes the decided `roundTripHolds`, and
+  `size_le_ten` bounds the encoding. The decided instances are kept as
+  regression. Canonicity is proved as well (`canonical`): whatever
+  `varint_decode` accepts at offset zero, the encoder writes back byte for
+  byte with the same length. `decode_loop_any` runs the extracted decoder on
+  arbitrary bytes and characterizes a successful exit — the value is the
+  `groups` the consumed bytes spell, every byte but the last carries the
+  continuation bit — and `nbytes_groups` identifies the length; the decoder's
+  rejection of a zero final group after a continuation byte (`80 00` is
+  over-long, `zero_padding_rejected`), added when the first version of this
+  proof found the gap, is what makes the last group nonzero.
+- `Oak/Stdlib/SortLaws.lean`: `sort_insertion_spec` — the extracted
+  insertion sort returns a permutation (`Array.Perm`) of its input that is
+  sorted (`SortedPrefix`), for every array below the `u32` index range and
+  every fuel above twice its length, by induction over the two loops with
+  `SortedExcept` (sorted but for one gap) as the inner invariant and the two
+  stores shown to be `Array.swap`. Heap sort and `sort_span` are **not**
+  covered: their extractions are unfaithful today — a loop body or `if` arm
+  that changes the array only through a call does not return it, so the
+  mutation is dropped (oak #186); `heap_extraction_gap` and
+  `span_extraction_gap` are decided witnesses meant to stop compiling when
+  the extractor is fixed and the file regenerated.
+- `Oak/Stdlib/EncodingLaws.lean`: `hex_round_trip` — for every source below
+  `2^31 - 2` bytes, either symbol case, a destination that holds exactly the
+  encoding, and a decode destination that holds the source, `hex_encode`
+  reports the encoded length and writes the symbols and `hex_decode` of them
+  reports the source length and writes the source back; proved through the
+  encoder's loop, both validation loops of `hex_scan`, and the decoder's
+  loop, with the symbol and value tables read in the kernel
+  (`decide +kernel`). Base64 and base32 have the RFC 4648 §10 vectors
+  decided; their universal round trips and hexadecimal strictness remain.
+- `Oak/Stdlib/RandomLaws.lean`: `random_next_spec` — the extracted step is
+  the xoshiro256** reference `refNext` on the one-cell state; `random_below_lt`
+  — a successful draw is below a non-zero bound; `random_range_mem` — a
+  successful draw lies in `[low, high]`, including the full-range case.
+
+All of these hold with `propext`, `Classical.choice`, and `Quot.sound` at
+most; the kernel-decided facts use no axioms.
 
 ## 7. Next
 
-- The universal varint law: `∀ v, roundTripHolds v = true` by induction
-  over `varint_encode.loop1` and `varint_decode.loop1` (the decided range
-  covers every one-byte value and one value per longer length), then
-  canonicity — a decoded value re-encodes to the same bytes — the same way;
-  laws for `encoding` (each codec's round trip and strictness), `sort` (a
-  sorted permutation), `random` (the reference xoshiro256** sequence), and
-  `uuid` (the version and variant bits) against their extractions.
+- Fix the extractor's write set for spans rebound only through calls in
+  loop bodies and `if` arms (oak #186), regenerate, and state the heap sort
+  and pdqsort laws (`bit_length_some` is the first lemma they need); the
+  universal base64 and base32 round trips and hexadecimal
+  strictness (`hex_decode` accepts a string iff it is an encoding); the
+  `uuid` version and variant bits against the extraction.
 - The subset: strings and the text library, methods, and recursion;
   instantiations whose arguments are arrays or views; the `checked` float
   rows and `fma` once Lean carries them exactly.
-- Float laws: relate the extracted kernels to `Oak.Floats` — state
-  `dot_f32` as the `eval` of its parse tree so the reproducibility theorem
-  (`conforming_agree`) covers the extracted order, and decide the
-  bit-pattern rows (`bits_roundtrip`) over sampled inputs at the runtime
-  level since the kernel cannot reduce `Float`.
 The stream checker (`rup_stream_check` and the `rup_check` kernel under
 it, seven and six loops, against `CertifiedStream.check`), which closes
 the transfer of `check_refines` to the extraction; the string-level

@@ -121,6 +121,75 @@ fn search(keys: &[u64], probes: &[u64]) -> u32 {
     hits
 }
 
+fn page_probe(keys: &[u64], probes: &[u64]) -> u32 {
+    let mut hits = 0u32;
+    let pages = keys.len() / 512;
+    if pages == 0 { return 0; }
+    for &target in probes {
+        let (mut lo, mut hi) = (0usize, pages);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if keys[mid * 512] <= target { lo = mid + 1; } else { hi = mid; }
+        }
+        if lo > 0 {
+            let page = &keys[(lo - 1) * 512..lo * 512];
+            let (mut a, mut b) = (0usize, 512usize);
+            while a < b {
+                let m = a + (b - a) / 2;
+                if page[m] == target { hits += 1; break; } else if page[m] < target { a = m + 1; } else { b = m; }
+            }
+        }
+    }
+    hits
+}
+
+fn bitmap(words: &[u64]) -> u64 {
+    let mut free = 0u64;
+    for &w in words {
+        free = free.wrapping_add((!w).count_ones() as u64);
+    }
+    free
+}
+
+fn dispatch(code: &[u8]) -> u64 {
+    let (mut acc, mut x) = (0u64, 0u64);
+    for &b in code {
+        let arg = (b >> 3) as u64;
+        match b & 7 {
+            0 => acc = acc.wrapping_add(arg),
+            1 => acc ^= arg << 7,
+            2 => acc = acc.wrapping_mul(31).wrapping_add(arg),
+            3 => x = acc,
+            4 => acc = acc.wrapping_add(x),
+            5 => acc &= !(arg << 3),
+            6 => x = x.wrapping_add(arg),
+            _ => acc = acc.wrapping_sub(x),
+        }
+    }
+    acc
+}
+
+fn tiled(a: &[f32]) -> f32 {
+    let mut acc = [0f32; 8];
+    let mut i = 0usize;
+    while i + 8 <= a.len() {
+        acc[0] += a[i] * a[i];
+        acc[1] += a[i + 1] * a[i + 1];
+        acc[2] += a[i + 2] * a[i + 2];
+        acc[3] += a[i + 3] * a[i + 3];
+        acc[4] += a[i + 4] * a[i + 4];
+        acc[5] += a[i + 5] * a[i + 5];
+        acc[6] += a[i + 6] * a[i + 6];
+        acc[7] += a[i + 7] * a[i + 7];
+        i += 8;
+    }
+    while i < a.len() {
+        acc[0] += a[i] * a[i];
+        i += 1;
+    }
+    ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 5 { eprintln!("usage: kernels KERNEL SIZE ROUNDS SAMPLES"); std::process::exit(2); }
@@ -157,6 +226,10 @@ fn main() {
                 "dot" => { let d = dot(&fa, &fb); out[..4].copy_from_slice(&d.to_bits().to_le_bytes()); sink = sink.wrapping_add(out[0] as u64); }
                 "sum" => { width = 8; let t = sum(&words); out[..8].copy_from_slice(&t.to_le_bytes()); sink = sink.wrapping_add(t); }
                 "search" => { let h = search(&words, &probes); out[..4].copy_from_slice(&h.to_le_bytes()); sink = sink.wrapping_add(h as u64); }
+                "page_probe" => { let h = page_probe(&words, &probes); out[..4].copy_from_slice(&h.to_le_bytes()); sink = sink.wrapping_add(h as u64); }
+                "bitmap" => { width = 8; let t = bitmap(&words); out[..8].copy_from_slice(&t.to_le_bytes()); sink = sink.wrapping_add(t); }
+                "dispatch" => { width = 8; let t = dispatch(&bytes); out[..8].copy_from_slice(&t.to_le_bytes()); sink = sink.wrapping_add(t); }
+                "tiled" => { let d = tiled(&fa); out[..4].copy_from_slice(&d.to_bits().to_le_bytes()); sink = sink.wrapping_add(out[0] as u64); }
                 _ => { eprintln!("unknown kernel {}", kernel); std::process::exit(2); }
             }
         }

@@ -493,8 +493,11 @@ sorted (heapsort was 1.2×, 21×, and 22×).
 
 `varint_encode(dst, offset, value)` writes unsigned LEB128 (one to ten bytes,
 `varint_size(value)`), `varint_decode(src, offset)` reads it back as a
-`VarintValue { value, next }` and rejects truncated and over-long forms so
-every value has one canonical encoding; `zigzag_encode`/`zigzag_decode` map
+`VarintValue { value, next }` and rejects truncated forms, over-long forms,
+and zero-padded spellings (`80 00` is not `0`), so every value has exactly
+one accepted encoding, the one `varint_encode` writes — proved on the Lean
+extraction (`Oak/Stdlib/VarintLaws.lean`, `round_trip` and `canonical`);
+`zigzag_encode`/`zigzag_decode` map
 signed to unsigned so small magnitudes stay short, and
 `varint_encode_signed`/`varint_decode_signed` compose the two. Errors are the
 closed `VarintError`; a failed write leaves the destination unchanged.
@@ -735,7 +738,7 @@ byte-boundary limits. They verify deterministic reuse, reservation, double relea
 short storage, maximum u32 bounds, preserved tail/spare bits and the runnable
 record-valued example. Emitted example C is checked for allocator calls.
 
-The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs, with one exception growing: `oak build -lean` extracts whole packages into Lean (`docs/spec/95-extraction.md` section 5) — `varint`, `encoding`, `hash`, `random`, `uuid`, and `sort` at `u32` today, committed under `spec/lean/Oak/Stdlib/` with a drift test — and `Oak/Stdlib/VarintLaws.lean` decides the first law about an extraction in the kernel: encoding then decoding is the identity for every one-byte value, for one value of every encoding length up to ten, for the RFC example, and for the `u64` maximum, and the over-long and truncated forms are rejected. Those are statements about the extracted program, not corpus agreement. Native
+The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs, with one exception growing: `oak build -lean` extracts whole packages into Lean (`docs/spec/95-extraction.md` section 5) — `varint`, `encoding`, `hash`, `random`, `uuid`, and `sort` at `u32` today, committed under `spec/lean/Oak/Stdlib/` with a drift test — and `Oak/Stdlib/VarintLaws.lean` decides the first law about an extraction in the kernel: encoding then decoding is the identity for every one-byte value, for one value of every encoding length up to ten, for the RFC example, and for the `u64` maximum, and the over-long and truncated forms are rejected. Those are statements about the extracted program, not corpus agreement. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and canonicity (`canonical`: whatever the decoder accepts, the encoder writes back byte for byte); `SortLaws.lean` proves the extracted insertion sort returns a sorted permutation, and records that heap sort and `sort_span` extract unfaithfully until oak #186 is fixed; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
 allocator-backed pools, intrusive trees/hash tables, concurrent rings, broader collections and persistence
 protocols remain separate work; importing this module does not implement them.

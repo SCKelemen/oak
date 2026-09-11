@@ -24,22 +24,100 @@ pub utf8_width: (value: u32): u32 = value < u32(128) ? u32(1) | value < u32(2048
 pub utf16_width: (value: u32): u32 = value < u32(65536) ? u32(1) | u32(2)
 pub utf32_width: (value: u32): u32 = u32(1)
 
+// Well-formed UTF-8 (Unicode 17, Table 3-7) as tables. UTF8_LEAD maps a
+// lead byte to its sequence width in the low bits and, in the high bits, the
+// class of the range the second byte must fall in (UTF8_SECOND_LO/HI): 1
+// for ASCII, 0 for a byte that cannot start a sequence (a continuation byte,
+// the over-long leads C0/C1, or F5..FF). The ranges exclude over-long forms,
+// surrogates, and values above U+10FFFF, so a sequence the tables accept is
+// exactly a well-formed encoding of a Unicode scalar value.
+UTF8_LEAD: [256]u8 = [256]u8{
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+  19, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 35, 3, 3, 52, 4, 4, 4, 68, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+UTF8_SECOND_LO: [8]u8 = [8]u8{ 128, 160, 128, 144, 128, 128, 128, 128 }
+UTF8_SECOND_HI: [8]u8 = [8]u8{ 191, 191, 159, 191, 143, 191, 191, 191 }
+
+// utf8_sequence_width: the width of the well-formed sequence that starts
+// with these bytes (bytes past the sequence are ignored), or 0 when there is
+// none. A one-byte sequence is ASCII.
+utf8_sequence_width: (first: u32, second: u32, third: u32, fourth: u32): u32 {
+  info: u32 = u32(UTF8_LEAD[first & u32(255)])
+  width: u32 = info & u32(7)
+  kind: u32 = (info >> u32(4)) & u32(7)
+  info == u32(0) ? u32(0) |
+  info == u32(1) ? u32(1) |
+  second < u32(UTF8_SECOND_LO[kind]) || second > u32(UTF8_SECOND_HI[kind]) ? u32(0) |
+  width == u32(2) ? u32(2) |
+  (third & u32(192)) != u32(128) ? u32(0) |
+  width == u32(3) ? u32(3) |
+  (fourth & u32(192)) != u32(128) ? u32(0) | u32(4)
+}
+
+// utf8_step_tail: the step for a position fewer than five bytes from the
+// end, where the loads stay checked and missing bytes read as zero (which
+// no table range accepts).
+utf8_step_tail: (src: []u8, at: u32): u32 {
+  remaining: u32 = len(src) - at
+  second: u32 = remaining > u32(1) ? u32(src[at + u32(1)]) | u32(0)
+  third: u32 = remaining > u32(2) ? u32(src[at + u32(2)]) | u32(0)
+  fourth: u32 = remaining > u32(3) ? u32(src[at + u32(3)]) | u32(0)
+  width: u32 = utf8_sequence_width(u32(src[at]), second, third, fourth)
+  width > remaining ? at | at + width
+}
+
+// utf8_step: the offset just past the well-formed scalar at `at`, or `at`
+// itself when the bytes there are not well-formed (a scalar always advances,
+// so equality is the failure signal). `at` must be below len(src). Away
+// from the end the four loads are proven in bounds by the guard.
+utf8_step: (src: []u8, at: u32): u32 {
+  len(src) >= u32(4) ? {
+    at < len(src) - u32(4) ? {
+      at + utf8_sequence_width(u32(src[at]), u32(src[at + u32(1)]), u32(src[at + u32(2)]), u32(src[at + u32(3)]))
+    } | { utf8_step_tail(src, at) }
+  } | { utf8_step_tail(src, at) }
+}
+
+// utf8_ascii_word: the eight bytes at `at` are all ASCII; false when fewer
+// than nine bytes remain, so the loads are proven in bounds by the guard.
+utf8_ascii_word: (src: []u8, at: u32): Bool {
+  len(src) >= u32(8) ? {
+    at < len(src) - u32(8) ? {
+      word: u64 = u64(src[at]) | (u64(src[at + u32(1)]) << u64(8)) | (u64(src[at + u32(2)]) << u64(16)) | (u64(src[at + u32(3)]) << u64(24)) | (u64(src[at + u32(4)]) << u64(32)) | (u64(src[at + u32(5)]) << u64(40)) | (u64(src[at + u32(6)]) << u64(48)) | (u64(src[at + u32(7)]) << u64(56))
+      (word & u64(9259542123273814144)) == u64(0)
+    } | { false }
+  } | { false }
+}
+
+// utf8_decode_bytes: the scalar encoded by the sequence starting with these
+// bytes when it is well-formed and fits in `remaining` bytes.
+utf8_decode_bytes: (first: u32, second: u32, third: u32, fourth: u32, remaining: u32, offset: u32): Result[TextScalar, TextError] {
+  width: u32 = utf8_sequence_width(first, second, third, fourth)
+  width == u32(0) || width > remaining ? { .Err(.InvalidEncoding) } |
+  width == u32(1) ? { .Ok(TextScalar { value: first, next: offset + u32(1) }) } |
+  width == u32(2) ? { .Ok(TextScalar { value: ((first & u32(31)) << u32(6)) | (second & u32(63)), next: offset + u32(2) }) } |
+  width == u32(3) ? { .Ok(TextScalar { value: ((first & u32(15)) << u32(12)) | ((second & u32(63)) << u32(6)) | (third & u32(63)), next: offset + u32(3) }) } | {
+    .Ok(TextScalar { value: ((first & u32(7)) << u32(18)) | ((second & u32(63)) << u32(12)) | ((third & u32(63)) << u32(6)) | (fourth & u32(63)), next: offset + u32(4) })
+  }
+}
+
 pub utf8_decode: (src: []u8, offset: u32): Result[TextScalar, TextError] {
   offset > len(src) ? { .Err(.OutOfBounds) } | offset == len(src) ? { .Err(.Empty) } | {
     first: u32 = u32(src[offset])
-    width: u32 = first < u32(128) ? u32(1) | first >= u32(194) && first <= u32(223) ? u32(2) | first >= u32(224) && first <= u32(239) ? u32(3) | first >= u32(240) && first <= u32(244) ? u32(4) | u32(0)
-    width == u32(0) || width > len(src) - offset ? { .Err(.InvalidEncoding) } | {
-      value: u32 = width == u32(1) ? first | width == u32(2) ? first & u32(31) | width == u32(3) ? first & u32(15) | first & u32(7)
-      valid: Bool = true
-      i: u32 = 1
-      while i < width {
-        unit: u32 = u32(src[offset + i])
-        unit < u32(128) || unit > u32(191) ? { valid = false }
-        value = ((value << u32(6)) | (unit & u32(63)))
-        i = i + u32(1)
-      }
-      valid = valid && unicode_is_scalar(value) && utf8_width(value) == width
-      valid ? { .Ok(TextScalar { value: value, next: offset + width }) } | { .Err(.InvalidEncoding) }
+    first < u32(128) ? { .Ok(TextScalar { value: first, next: offset + u32(1) }) } |
+    len(src) >= u32(4) && offset < len(src) - u32(4) ? {
+      utf8_decode_bytes(first, u32(src[offset + u32(1)]), u32(src[offset + u32(2)]), u32(src[offset + u32(3)]), u32(4), offset)
+    } | {
+      remaining: u32 = len(src) - offset
+      second: u32 = remaining > u32(1) ? u32(src[offset + u32(1)]) | u32(0)
+      third: u32 = remaining > u32(2) ? u32(src[offset + u32(2)]) | u32(0)
+      fourth: u32 = remaining > u32(3) ? u32(src[offset + u32(3)]) | u32(0)
+      utf8_decode_bytes(first, second, third, fourth, remaining, offset)
     }
   }
 }
@@ -119,11 +197,15 @@ pub utf8_count: (src: []u8): Result[u32, TextError] {
   count: u32 = 0
   valid: Bool = true
   while at < len(src) && valid {
-    decoded: Result[TextScalar, TextError] = utf8_decode(src, at)
-    valid = text_decode_ok(decoded)
-    valid ? { item: TextScalar = text_decoded(decoded)
-      at = item.next
-      count = count + u32(1)
+    utf8_ascii_word(src, at) ? {
+      at = at + u32(8)
+      count = count + u32(8)
+    } | {
+      next: u32 = utf8_step(src, at)
+      next == at ? { valid = false } | {
+        at = next
+        count = count + u32(1)
+      }
     }
   }
   valid ? { .Ok(count) } | { .Err(.InvalidEncoding) }

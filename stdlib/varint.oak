@@ -59,6 +59,9 @@ pub varint_decode: (src: []u8, offset: u32): Result[VarintValue, VarintError] {
       }
     }
   }
+  // A zero final group after a continuation byte (`80 00`) spells a value the
+  // encoder writes shorter; reject it so every value has one encoding.
+  !failed && at > offset + u32(1) && (u32(src[at - u32(1)]) & u32(127)) == u32(0) ? { failed = true; overlong = true }
   failed ? { overlong ? .Err(.Overlong) | .Err(.Truncated) } | { .Ok(VarintValue { value: value, next: at }) }
 }
 

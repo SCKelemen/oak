@@ -73,3 +73,44 @@ columns are re-measured here rather than copied from the table above:
 | crc32c | 2,009,800 | 2,022,842 | 2,164,733 | 103,042 (hardware) | 0.99× |
 | sha256 | 2,563,400 | 2,636,150 | 3,197,708 | 357,192 (hardware) | 0.97× |
 | blake3 | 1,874,200 | — | — | — | — |
+
+## Workload shapes from dbs, os, and ml (`m-series-2026-09-11-shapes.json`)
+
+Four kernels shaped like the hot loops of the sibling projects, each with
+a Go and a Rust twin of identical arithmetic (the driver still refuses a
+timing until all agree): a B-tree leaf probe (`page_probe`: fence-key
+search over 2^11 pages of 512 keys, then a binary search inside the page
+through a fixed-length `subslice` view), an allocator bitmap scan
+(`bitmap`: free-bit count over 2^20 words), bytecode dispatch
+(`dispatch`: 2^20 opcodes through an integer `match` over two wrapping
+u64 registers), and a tiled f32 reduction (`tiled`: sum of squares with
+eight accumulators, eight elements per step, a scalar tail).
+
+| Kernel | Oak | Rust | Go | Go generic | Oak / Rust |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| page_probe | 6,764,400 | 7,410,333 | 11,069,600 | | 0.91× |
+| bitmap | 137,400 | 134,458 (hardware) | 342,358 (hardware) | 636,733 | 1.02× |
+| dispatch | 6,911,200 | 9,570,758 | 7,465,467 | | 0.72× |
+| tiled | 159,200 | 175,750 | 390,567 | | 0.91× |
+
+What the checker proved: every access in `tiled` (`a[i + 7]` under
+`i <= len(a) - 8` by `subtraction_under_length`, the eight constant
+accumulator indices), `bitmap`, and `dispatch` is unchecked; the constant
+shift counts fold their checks away. `page_probe` keeps two checked view
+reads, the same shape `search` keeps: `keys[mid * 512]` with `mid` below
+a bound derived by division, and `page[m]` where `m < b` and `b` only
+ever decreases from 512 — a monotone upper bound the facts do not yet
+track. Neither costs measurably; a binary search is latency-bound on the
+comparison chain.
+
+What the numbers say: `bitmap` is Oak's SWAR popcount against the
+hardware instruction in Rust and Go, and it ties Rust because clang
+vectorizes the SWAR loop over NEON; the Go standard-library row is the
+scalar instruction per word, and the plain Go loop is what Oak would have
+been without the vectorizer. Oak has no popcount intrinsic yet, so an os
+bitmap written in Oak today gets this form. `dispatch` favors Oak's
+integer `match`, emitted as a chain of equality tests that clang lowers
+as it would a `switch`, over rustc's lowering of the same match. `page_probe` and `tiled`
+are the same generated C shape as `search` and `dot`, ahead of both twins
+by the same margin.
+
