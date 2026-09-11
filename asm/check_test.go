@@ -150,6 +150,57 @@ func TestCheckerFrameArrays(t *testing.T) {
 	}
 }
 
+// Records at the boundary (AAPCS64 composites): up to 16 bytes as x-register
+// chunks, larger by reference to the caller's read-only copy, a large result
+// through the writable area in x8.
+func TestCheckerComposites(t *testing.T) {
+	composites := map[string]Composite{"Pair": {Size: 16}, "Wide": {Size: 24}, "Small": {Size: 8}, "Hfa": {Size: 16, HFA: true}}
+	check := func(t *testing.T, decl, body string) string {
+		unit, errs := ParseUnit("records.oakasm", decl+" = {\n"+body+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatalf("parse errors: %v", errs)
+		}
+		sig, err := parseSignature(decl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit.Functions[0].Composites = composites
+		return strings.Join(Check(unit.Functions[0], sig, map[string]bool{"helper": true}), "\n")
+	}
+	accepts := []struct{ name, decl, body string }{
+		{"two chunks in, two chunks out", "swap: (p: Pair) -> Pair", "  bind x0, x1 = p\n  clobber x9\n  mov x9, x0\n  mov x0, x1\n  mov x1, x9\n  ret"},
+		{"one chunk", "first: (s: Small) -> u64", "  bind x0 = s\n  ret"},
+		{"by reference, read inside the extent", "sum3: (w: Wide) -> u64", "  bind x0 = w\n  clobber x9, x10\n  ldr x9, [x0]\n  ldr x10, [x0, #16]\n  add x0, x9, x10\n  ret"},
+		{"indirect result written through x8", "make: (a: u64) -> Wide", "  bind x0 = a\n  str x0, [x8]\n  str x0, [x8, #8]\n  str x0, [x8, #16]\n  ret"},
+		{"reference alias survives a call", "sum_after: (w: Wide) -> u64", "  bind x0 = w\n  clobber x9, x19, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  str x19, [sp, #16]\n  mov x19, x0\n  bl helper\n  ldr x0, [x19, #16]\n  ldr x19, [sp, #16]\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret"},
+	}
+	for _, tc := range accepts {
+		t.Run(tc.name, func(t *testing.T) {
+			if findings := check(t, tc.decl, tc.body); findings != "" {
+				t.Fatalf("expected no findings, got:\n%s", findings)
+			}
+		})
+	}
+	rejects := []struct{ name, decl, body, want string }{
+		{"two-chunk record bound as one", "swap: (p: Pair) -> Pair", "  bind x0 = p\n  ret", "arrives as two chunks"},
+		{"wrong second chunk", "swap: (p: Pair) -> Pair", "  bind x0, x2 = p\n  ret", "arrives as two chunks"},
+		{"second result chunk missing", "make: (a: u64) -> Pair", "  bind x0 = a\n  ret", "second chunk in x1"},
+		{"read past the extent", "sum3: (w: Wide) -> u64", "  bind x0 = w\n  ldr x0, [x0, #24]\n  ret", "outside its 24 bytes"},
+		{"store into the caller's copy", "poke: (w: Wide) -> u64", "  bind x0 = w\n  clobber x9\n  mov x9, #1\n  str x9, [x0]\n  mov x0, x9\n  ret", "read-only copy"},
+		{"indexed record memory", "idx: (w: Wide, i: u32) -> u64", "  bind x0 = w\n  bind w1 = i\n  ldr x0, [x0, w1, uxtw #3]\n  ret", "addressed as [x0, #off] only"},
+		{"reference dead after a call", "sum_after: (w: Wide) -> u64", "  bind x0 = w\n  clobber x29, x30\n  frame 16\n  sub sp, sp, #16\n  stp x29, x30, [sp]\n  bl helper\n  ldr x0, [x0, #16]\n  ldp x29, x30, [sp]\n  add sp, sp, #16\n  ret", "memory operands go through the declared sp frame or a bound span base"},
+		{"result area written past its size", "make: (a: u64) -> Wide", "  bind x0 = a\n  str x0, [x8, #24]\n  ret", "outside its 24 bytes"},
+		{"HFA refused", "scale: (h: Hfa) -> u64", "  bind x0, x1 = h\n  mov x0, #0\n  ret", "homogeneous floating-point aggregate"},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			if findings := check(t, tc.decl, tc.body); !strings.Contains(findings, tc.want) {
+				t.Fatalf("expected a finding mentioning %q, got:\n%s", tc.want, findings)
+			}
+		})
+	}
+}
+
 // A span parked in callee-saved registers: `mov x19, x0; mov w20, w1` copy
 // the span's base and length facts, so the pair survives a call (the
 // callee preserves x19–x28) and is walked from there; the original pair in
