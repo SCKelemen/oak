@@ -178,7 +178,6 @@ func resourceParameterModeAccess(mode ResourceParameterMode) string {
 	}
 }
 
-
 func (a *typedResourceAnalysis) reportUntrackedResourcePair(expr *ast.InvocationExpression, exclusive, unknown resourceCallArgument) {
 	callable, _ := a.callableIdentity(expr)
 	d := a.tc.addResourceDiagnosticWithCode(exclusive.node, CodeResourceCallAliasConflict,

@@ -101,10 +101,12 @@ func clauseImplies(left, right latticeClause) bool {
 // IsSubtype checks whether t1 <= t2 in Oak's semantic type lattice.
 //
 // Converting both sides to DNF makes all join/meet laws explicit:
-//   A <= A | B
-//   B <= A | B
-//   A & B <= A
-//   A & B <= B
+//
+//	A <= A | B
+//	B <= A | B
+//	A & B <= A
+//	A & B <= B
+//
 // and the corresponding least-upper-bound / greatest-lower-bound rules.
 func IsSubtype(t1, t2 Type) bool {
 	left := latticeDNFOf(t1)

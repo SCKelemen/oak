@@ -79,7 +79,6 @@ func TestGADTConstructorRejectsWrongExpectedIndex(t *testing.T) {
 	t.Fatalf("expected %s, got %#v", CodeGADTResultMismatch, tc.Diagnostics())
 }
 
-
 func TestGADTVariableScrutineeRefinesFixedConstructors(t *testing.T) {
 	tc := New(object.NewEnvironment())
 	tc.checkADTType(indexedExprDecl())
@@ -149,7 +148,6 @@ func TestGADTMismatchDiagnosticNamesDeclaredAndExpectedResults(t *testing.T) {
 	}
 	t.Fatalf("expected %s, got %#v", CodeGADTResultMismatch, tc.Diagnostics())
 }
-
 
 func TestGADTConstructorRefinesVariableExpectedIndex(t *testing.T) {
 	tc := New(object.NewEnvironment())
