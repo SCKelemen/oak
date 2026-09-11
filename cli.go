@@ -53,7 +53,7 @@ func init() {
 		{"repl", "start the interactive session", "oak repl", nil},
 		{"lsp", "run the language server over stdio (editors start this)", "oak lsp", lspCommand},
 		{"protocol", "protocol tooling", "oak protocol [args]", nil},
-		{"prove", "discharge the package's theorems: decided, or open for Lean", "oak prove [-lean out.lean] [-cases N] [dir|file.oak]", nil},
+		{"prove", "discharge the package's theorems: decided, proved by Lean, refuted, or open", "oak prove [-lean out.lean [-check]] [-cases N] [dir|file.oak]", nil},
 		{"version", "print the oak version", "oak version", versionCommand},
 		{"completion", "print a shell completion script", "oak completion bash|zsh|fish", completionCommand},
 		{"help", "show help for a command", "oak help [command]", helpCommand},

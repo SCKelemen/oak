@@ -599,6 +599,8 @@ func TestProveCommand(t *testing.T) {
 		"wide: theorem (x: u32) { x + u32(1) - u32(1) == x }\n" +
 		"twice: (x: u32): u32 = x + x\n" +
 		"via_call: theorem (x: u32) { twice(x) == x * u32(2) }\n" +
+		"down: (x: u32): u32 = x == u32(0) ? u32(0) | down(x - u32(1))\n" +
+		"recursive: theorem (x: u32) { down(x) == u32(0) }\n" +
 		"main: (): i32 = 0\n"
 	path := filepath.Join(dir, "thm.oak")
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
@@ -615,8 +617,9 @@ func TestProveCommand(t *testing.T) {
 		"decided   cycle: all 3 cases",
 		"refuted   wrong: counterexample x = 255",
 		"decided   wide: at the bit level",
-		"open      via_call:",
-		"oak prove: 3 decided, 1 open, 1 refuted",
+		"decided   via_call: at the bit level",
+		"open      recursive:",
+		"oak prove: 4 decided, 1 open, 1 refuted",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
