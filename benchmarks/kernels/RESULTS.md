@@ -50,11 +50,26 @@ constant index. No algorithmic trick beyond that; no intrinsics.
 | search | 8,396,000 | 7,478,000 | 7,499,675 | 11,266,700 | | 1.00× |
 
 Reading: every kernel is now within ten percent of the hand-written Rust,
-three are ahead, and all are well ahead of Go. The generated C for the
-hash package carries eight checked accesses in total, all on arrays held
-in record fields (`state.block[filled]`), which the checker does not yet
-reason about; the next increment of the facts is field-path containers.
-The hardware rows remain the ceiling for a portable-C backend: reaching
+three are ahead, and all are well ahead of Go. The hardware rows remain the ceiling for a portable-C backend: reaching
 them is an intrinsics decision (`92-ffi.md` §3 has the AArch64 catalog
 shape), not a checker one. Numbers drift by a few percent between runs on
 this uncontrolled machine; the JSON keeps every sample.
+
+### Field-path facts (`m-series-2026-09-11-field-paths.json`)
+
+The next increment let a container or an index be a record field path
+(`tail.block[tail.filled]` under `while tail.filled < u32(64)`, `tail.h[j]`
+under `j < 8`, the trailing increment `t.filled = t.filled + 1`), with a
+fact dying when the path or any prefix of it is assigned. The hash
+package's checked accesses went from eight to four; the four that remain
+(`next.block[next.filled]` in the byte-at-a-time absorb loops, the stack
+write in BLAKE3) sit under a record invariant, `filled < 64`, that no
+local fact states, so they are the typestate's job, not the extent
+facts'. Same machine, same flags, a separate run, so the Rust and Go
+columns are re-measured here rather than copied from the table above:
+
+| Kernel | Oak | Rust | Go generic | Go stdlib | Oak / Rust |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| crc32c | 2,009,800 | 2,022,842 | 2,164,733 | 103,042 (hardware) | 0.99× |
+| sha256 | 2,563,400 | 2,636,150 | 3,197,708 | 357,192 (hardware) | 0.97× |
+| blake3 | 1,874,200 | — | — | — | — |
