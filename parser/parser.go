@@ -4510,6 +4510,37 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		}
 	}
 
+	// Operator laws (docs/spec/10-syntax.md section 14a): `laws { associative,
+	// commutative }`, contextual like the effect clauses, at most once.
+	if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "laws" {
+		p.nextToken()
+		if stmt.Laws != nil {
+			p.addErrorAtCurrentToken("a function declares one laws clause")
+			return nil
+		}
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+		stmt.Laws = []string{}
+		for !p.peekTokenIs(token.RBRACE) {
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			stmt.Laws = append(stmt.Laws, p.currentToken.Literal)
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+			} else if !p.peekTokenIs(token.RBRACE) {
+				p.peekError(token.RBRACE)
+				return nil
+			}
+		}
+		p.nextToken() // '}'
+		if len(stmt.Laws) == 0 {
+			p.addErrorAtCurrentToken("a laws clause names at least one law (associative, commutative)")
+			return nil
+		}
+	}
+
 	// Body: '= expr', '= { block }', or a brace block.
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken()

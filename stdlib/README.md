@@ -68,6 +68,19 @@ A future owning `Ring[T,N]` wrapper can bind storage and cursor once borrowing o
 aggregate storage is fully supported. The current API exposes both borrows rather
 than accidentally passing a whole fixed-size ring by value.
 
+## Reductions (`import("reduce")`)
+
+Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
+§4; `Oak.Reduce` in Lean).
+
+| Function | Semantics |
+| --- | --- |
+| `tree[T](xs: []T, zero: T, f: (T, T) -> T)` | The balanced binary-counter tree: four elements give `f(f(x0, x1), f(x2, x3))`, the `simd.reduce_add` grouping; an empty view yields `zero`, which takes no other part. Identical on every backend, no associativity assumed. O(n) work, one 64-entry stack. |
+| `left[T](xs: []T, zero: T, f: (T, T) -> T)` | The sequential left fold `f(f(zero, x0), x1) ...`. |
+
+When `f` is an operator declaring `laws { associative }` the two agree on
+non-empty input (`Oak.Reduce.tree_assoc`).
+
 ## Bytes
 
 | Function | Result and work |

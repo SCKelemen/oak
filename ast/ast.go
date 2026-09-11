@@ -1139,6 +1139,12 @@ type FunctionStatement struct {
 	Effects         []*EffectName
 	EffectsDeclared bool
 	Forbids         []*EffectName
+	// Laws are the algebraic properties an operator definition declares on
+	// the author's authority (`laws { associative, commutative }`,
+	// docs/spec/10-syntax.md section 14a): the permission a backend has to
+	// regroup or reorder applications of the operator, and a statement the
+	// REPL's :lean can put to Lean. Empty for ordinary functions.
+	Laws []string
 	// Lowering, when set, is the compiler-known lowering of a projected
 	// protocol step function (docs/spec/112-protocols.md section 2a,
 	// 90-backend.md section 14): the C backend emits a transition table
@@ -1224,6 +1230,11 @@ func (fs *FunctionStatement) String() string {
 	}
 	if len(fs.Forbids) > 0 {
 		writeEffects("forbids", fs.Forbids)
+	}
+	if len(fs.Laws) > 0 {
+		out.WriteString(" laws { ")
+		out.WriteString(strings.Join(fs.Laws, ", "))
+		out.WriteString(" }")
 	}
 	out.WriteRune(' ')
 	out.WriteString(fs.Body.String())

@@ -72,6 +72,7 @@ import Oak.Loops
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved
+import Oak.Reduce
 import Oak.Floats
 import Oak.GraphemeBreak
 import Oak.Normalization
