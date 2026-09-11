@@ -88,7 +88,11 @@ consumption without shifting explicit indices, govern method bodies, and
 round-trip through SemIR. **Third increment (2026-09-12):** contracts on
 function types — a function-typed parameter requires a callable contract,
 satisfied only by exact agreement (`OAK-B0116`), and calls through the
-parameter use it (acceptance case 2). Still open: imports and sealing.
+parameter use it (acceptance case 2). **Fourth increment (2026-09-12):**
+`via f(consumed h, borrowed mut receiver)` declares modes in source
+(`112-protocols.md` §5) and, because protocols elaborate with internal
+names, imports and sealing cannot erase them (acceptance case 4). The milestone's acceptance list is covered; still open: a source
+spelling for callable contracts and fresh returns.
 
 ## 3. Resource provenance through bindings, projections, control flow
 
