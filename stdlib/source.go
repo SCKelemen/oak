@@ -35,6 +35,12 @@ var hashTableSource string
 //go:embed bitset_algebra.oak
 var bitsetAlgebraSource string
 
+// url is spliced into the flat prelude like the collections: RFC 3986
+// reference parsing and resolution over caller storage (stdlib/README.md).
+//
+//go:embed url.oak
+var urlSource string
+
 // math is a library package only (import("math")), never spliced into the
 // flat prelude: its names (exp, log, ...) are too common to land
 // unqualified in every program (docs/spec/20-types.md section 11.3.6).
@@ -67,12 +73,12 @@ var Prelude = baseSource
 // flat spelling is derived here so the two views cannot drift.
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
-	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource)
+	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(urlSource)
 
 var (
 	clauseLine    = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
 	importLine    = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
-	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier)\.`)
+	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|url)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -116,6 +122,7 @@ var Packages = map[string]string{
 	"hash_table":      hashTableSource,
 	"bitset_algebra":  bitsetAlgebraSource,
 	"causal_frontier": causalFrontierSource,
+	"url":             urlSource,
 	"math":            mathSource,
 	"hash":            hashSource,
 	"mx":              mxSource,

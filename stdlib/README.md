@@ -465,6 +465,33 @@ record-valued deque with an ID pool. Both structures operate without allocation.
 Further AK-inspired work includes hash tables/maps, intrusive ordered trees, and
 segmented/disjoint storage; these are not implemented by this addition.
 
+## URI references
+
+`url_parse(src)` splits a URI or relative reference (RFC 3986 §3, Appendix B)
+into a `Url` of byte ranges — scheme, userinfo, host, port, path, query,
+fragment, each a `UrlRange { start, end, present }` into the source — and
+validates every component against its grammar: scheme characters (§3.1),
+userinfo, reg-name or bracketed IP-literal host, digits-only port (§3.2),
+path, query and fragment character classes with `%XX` escapes needing two hex
+digits (§3.3–§3.5), and no `:` in a relative reference's first segment
+(§4.2). Errors are the closed `UrlError` (`InvalidScheme`, `InvalidHost`,
+`InvalidPort`, `InvalidCharacter`, `InvalidPercentEncoding`,
+`DestinationTooSmall`). Nothing is allocated or copied: callers slice the
+source themselves (`src[range.start:range.end]`), since a function may not
+return a view (OAK-B0109), as in the strings package. `url_port_number` reads
+the port as `Option[u32]` (None above 65535), `url_is_absolute` (§4.3) and
+`url_is_relative` classify. `url_remove_dot_segments(dst, path)` applies
+§5.2.4 into caller storage (the output never exceeds the input, so `dst` must
+hold `len(path)` bytes, checked before the first store), and
+`url_resolve(dst, base, reference)` writes the target of a reference against
+an absolute base (§5.2.2 strict, §5.2.3 merge, §5.3 recomposition; `dst` must
+hold `len(base) + len(reference) + 1` bytes). `url_query_next(query, begin)`
+iterates `&`-separated `key=value` pairs as ranges; keys and values stay
+percent-encoded — decode them with the `encoding` package's
+`percent_decode`. Properties in `examples/testing/url_test.oak`: a generated
+reference parses back to the ranges it was built from, and dot-segment
+removal is idempotent and leaves no `.` or `..` segment.
+
 ## Strings and Unicode text
 
 The [strings API](STRINGS.md) is executable through `import(std)`: strict

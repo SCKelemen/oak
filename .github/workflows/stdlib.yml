@@ -38,6 +38,8 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlibText' -count=1
       - name: Test deque and ID pool
         run: go test ./compiler -run 'TestE2EStdlib(Deque|IdPool|Serenity)' -count=1
+      - name: Test url
+        run: go test ./compiler -run 'TestE2EStdlibUrl' -count=1
       - name: Test standard library and compiler
         run: go test -race -timeout 40m ./...
       - name: Check formatting
