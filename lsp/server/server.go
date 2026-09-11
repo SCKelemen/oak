@@ -905,6 +905,12 @@ func (s *Server) semanticTokens(path string) []uint32 {
 			switch {
 			case name == "open" || name == "module" || name == "derive":
 				kind = tokKeyword
+			case (name == "effects" || name == "forbids" || name == "laws") && i+1 < len(tokens) && tokens[i+1].TokenKind == token.LBRACE,
+				name == "operator" && nextParen:
+				// Contextual clause keywords (docs/spec/60-effects-allocation.md
+				// section 2, 10-syntax.md section 14): keywords only in front of
+				// their brace or parenthesis, identifiers elsewhere.
+				kind = tokKeyword
 			case previousDot:
 				kind = tokProperty
 				if nextParen {

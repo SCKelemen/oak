@@ -65,6 +65,57 @@ a hot path prove, transitively, that it reaches none of them. Effect
 inference for undeclared Oak functions is exactly this closure; a function
 need not declare what its callees declare.
 
+### 2a. Effect rows on function types
+
+A function type may carry an effect row:
+
+```oak
+launch: (step: ([]u8) -> () effects { }, buf: []u8): () forbids { Host.Read } = step(buf)
+```
+
+`(T) -> R effects { A.B, ... }` is a type; a value of that type performs at
+most the effects in the row. The row is written after the return type,
+binds to the innermost function type, and appears at most once; a function
+statement that returns a function type and declares its own clause
+parenthesizes the return type. Rows do not take part in type identity —
+`(u32) -> u32` and `(u32) -> u32 effects { }` are the same type to the
+checker — and have no runtime representation; they are facts for the effect
+analysis:
+
+- **A call through a rowed value is known.** It contributes exactly the
+  row's effects to the caller's closure, so a `forbids` that reaches it
+  passes when the row excludes the effect and is rejected with the value's
+  name when the row carries it (`OAK-E0101`: "which it may perform through
+  the function value step"). A call through a value without a row stays
+  unknown (`OAK-E0103`) as before.
+- **A value entering a rowed type is checked against the row**
+  (`OAK-E0105`), at the two positions where a value enters: an argument for
+  a parameter of the type, and the initializer of a declaration with the
+  type. The value's reachable effects — declared clauses, rows of the values
+  it calls, transitively through its callees after specialization — must
+  all lie in the row, and must be known: a value that reaches an undeclared
+  extern, a call through an unrowed value, or an expression the analysis
+  cannot follow is rejected. A function named in the program, a rowed
+  parameter or local (its row must be inside the target row — a narrower row
+  fits a wider one), and a function literal (analyzed like a body) are the
+  admitted forms. Other flows — assignment after declaration, record fields,
+  return values — are not checked and so a rowed value obtained through
+  them is trusted only where its declaration was checked.
+- Rows are checked whenever the program contains one, with or without a
+  `forbids`; the diagnostic names the function, the slot, the row, the
+  offending effect, and the call path that reaches it.
+
+This is the pilot's "effect-typed step": a step declared as `([]u8) -> ()
+effects { }` may be launched from a function that forbids host reads, and a
+step body that reads the host — by calling `Host.Read`-declared externs —
+is a compile error at the launch, naming the reader. `Oak.EffectRows`
+(`spec/lean/Oak/EffectRows.lean`) models the check: `bound` is the compiler's
+static closure over own effects, slot rows, and callees; `perform` is what a
+run with concrete functions installed in the slots may do;
+`perform_subset_bound` proves that under the row check every performed
+effect is in the bound, and `forbids_sound` that a `forbids` on a function
+whose bound excludes the effect holds for every admitted run.
+
 ## 3. No hidden allocation
 
 Ordinary language constructs do not allocate unless their semantics explicitly carry an allocation effect.
