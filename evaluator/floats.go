@@ -100,17 +100,23 @@ func evalFloatConstructor(typeName string, arg object.Object) object.Object {
 // evalFloatConversion evaluates the float rows of {target}_{op}_{source}.
 func evalFloatConversion(name, target, op, source string, operand object.Object, env *object.Environment) object.Object {
 	switch op {
-	case "round":
+	case "round", "saturating":
 		if typechecker.IsStorageFloatName(target) {
-			// f16_round_f32 / bf16_round_f32: nearest even into the storage
-			// format, kept as its exact widened value.
+			// f16_round_f32 / bf16_round_f32 / f8e4m3_round_f32 /
+			// f8e5m2_round_f32: nearest even into the storage format, kept
+			// as its exact widened value; the 8-bit saturating forms clamp
+			// finite overflow instead.
 			if v, isFloat := operand.(*object.Float); isFloat {
-				if target == "f16" {
-					return storageFloat("f16", float32ToHalf(float32(v.Value)))
-				}
-				return storageFloat("bf16", float32ToBfloat16(float32(v.Value)))
+				return storageFloat(target, storageRound(target, float32(v.Value), op == "saturating"))
 			}
 			break
+		}
+		if op == "saturating" {
+			v, isFloat := operand.(*object.Float)
+			if !isFloat {
+				break
+			}
+			return &object.Integer{Value: saturateFloatToInteger(v.Value, target)}
 		}
 		bits := typechecker.FloatBits(target)
 		switch v := operand.(type) {
@@ -128,20 +134,20 @@ func evalFloatConversion(name, target, op, source string, operand object.Object,
 			switch target {
 			case "f32":
 				return &object.Float{Value: float64(math.Float32frombits(uint32(v.Value))), Bits: 32}
-			case "f16", "bf16":
+			case "f16", "bf16", "f8e4m3", "f8e5m2":
 				return storageFloat(target, uint16(v.Value))
 			}
 			return &object.Float{Value: math.Float64frombits(uint64(v.Value)), Bits: 64}
 		case *object.Float:
 			switch v.Bits {
-			case 16:
+			case 8, 16:
 				return &object.Integer{Value: int64(storageBits(v))}
 			case 32:
 				return &object.Integer{Value: int64(math.Float32bits(float32(v.Value)))}
 			}
 			return &object.Integer{Value: int64(math.Float64bits(v.Value))}
 		}
-	case "trunc", "saturating", "checked":
+	case "trunc", "checked":
 		v, isFloat := operand.(*object.Float)
 		if !isFloat {
 			break
@@ -153,8 +159,6 @@ func evalFloatConversion(name, target, op, source string, operand object.Object,
 				return newError("%s: %v is outside the range of %s (the compiled program traps)", name, v.Value, target)
 			}
 			return &object.Integer{Value: value}
-		case "saturating":
-			return &object.Integer{Value: saturateFloatToInteger(v.Value, target)}
 		case "checked":
 			return checkedResult(name, target, value, inRange, env)
 		}
@@ -511,18 +515,201 @@ func float32ToBfloat16(x float32) uint16 {
 // storageFloat builds the storage-format object for a bit pattern.
 func storageFloat(format string, bits uint16) *object.Float {
 	var value float32
-	if format == "f16" {
+	width := 16
+	switch format {
+	case "f16":
 		value = halfToFloat32(bits)
-	} else {
+	case "bf16":
 		value = bfloat16ToFloat32(bits)
+	case "f8e4m3":
+		value, width = F8E4M3ToFloat32(uint8(bits)), 8
+	case "f8e5m2":
+		value, width = F8E5M2ToFloat32(uint8(bits)), 8
 	}
-	return &object.Float{Value: float64(value), Bits: 16, Format: format}
+	return &object.Float{Value: float64(value), Bits: width, Format: format}
 }
 
-// storageBits recovers the bit pattern of a storage-format value.
+// storageBits recovers the bit pattern of a storage-format value. A stored
+// value is exactly representable in its format, so rounding it again is
+// the identity; a NaN reproduces the format's quiet NaN.
 func storageBits(f *object.Float) uint16 {
-	if f.Format == "f16" {
+	switch f.Format {
+	case "f16":
 		return float32ToHalf(float32(f.Value))
+	case "f8e4m3":
+		return uint16(Float32ToF8E4M3(float32(f.Value)))
+	case "f8e5m2":
+		return uint16(Float32ToF8E5M2(float32(f.Value)))
 	}
 	return float32ToBfloat16(float32(f.Value))
+}
+
+// storageRound rounds an f32 into a storage format's bit pattern (nearest
+// even; the format's own overflow rule), or clamps when saturating.
+func storageRound(format string, x float32, saturating bool) uint16 {
+	switch format {
+	case "f16":
+		return float32ToHalf(x)
+	case "bf16":
+		return float32ToBfloat16(x)
+	case "f8e4m3":
+		if saturating {
+			return uint16(Float32ToF8E4M3Saturating(x))
+		}
+		return uint16(Float32ToF8E4M3(x))
+	case "f8e5m2":
+		if saturating {
+			return uint16(Float32ToF8E5M2Saturating(x))
+		}
+		return uint16(Float32ToF8E5M2(x))
+	}
+	return 0
+}
+
+// OCP FP8 E4M3 (docs/spec/20-types.md section 11.3.1): bias 7, three
+// fraction bits, no infinities, NaN is exponent and fraction all ones,
+// largest finite 448. The interpreter and the C preamble are the same bit
+// work, so they agree on every input.
+func F8E4M3ToFloat32(h uint8) float32 {
+	sign := uint32(h&0x80) << 24
+	exp := uint32(h>>3) & 0xF
+	mant := uint32(h & 0x7)
+	if exp == 0xF && mant == 0x7 {
+		return math.Float32frombits(sign | 0x7FC00000)
+	}
+	if exp == 0 {
+		if mant == 0 {
+			return math.Float32frombits(sign)
+		}
+		exp = 1
+		for mant&0x8 == 0 {
+			mant <<= 1
+			exp--
+		}
+		mant &= 0x7
+	}
+	return math.Float32frombits(sign | (exp+120)<<23 | mant<<20)
+}
+
+func Float32ToF8E4M3(x float32) uint8 {
+	u := math.Float32bits(x)
+	sign := uint32(u>>24) & 0x80
+	exp := (u >> 23) & 0xFF
+	mant := u & 0x7FFFFF
+	if exp == 0xFF {
+		return uint8(sign | 0x7F)
+	}
+	e := int32(exp) - 127 + 7
+	if e >= 16 {
+		return uint8(sign | 0x7F)
+	}
+	var enc uint32
+	if e <= 0 {
+		if e < -3 {
+			return uint8(sign)
+		}
+		mant |= 0x800000
+		shift := uint32(21 - e)
+		rem := mant & (1<<shift - 1)
+		midpoint := uint32(1) << (shift - 1)
+		enc = mant >> shift
+		if rem > midpoint || (rem == midpoint && enc&1 == 1) {
+			enc++
+		}
+	} else {
+		rem := mant & 0xFFFFF
+		enc = uint32(e)<<3 | mant>>20
+		if rem > 0x80000 || (rem == 0x80000 && enc&1 == 1) {
+			enc++
+		}
+	}
+	if enc >= 0x7F {
+		return uint8(sign | 0x7F)
+	}
+	return uint8(sign | enc)
+}
+
+func Float32ToF8E4M3Saturating(x float32) uint8 {
+	r := Float32ToF8E4M3(x)
+	if r&0x7F == 0x7F && x == x {
+		return r&0x80 | 0x7E
+	}
+	return r
+}
+
+// OCP FP8 E5M2: bias 15, two fraction bits, infinities and NaN as IEEE,
+// largest finite 57344; overflow is infinity.
+func F8E5M2ToFloat32(h uint8) float32 {
+	sign := uint32(h&0x80) << 24
+	exp := uint32(h>>2) & 0x1F
+	mant := uint32(h & 0x3)
+	if exp == 0x1F {
+		// NaN payloads widen quiet: a signaling f32 NaN would not survive
+		// the interpreter's float64 value, and nothing reads the payload.
+		quiet := uint32(0)
+		if mant != 0 {
+			quiet = 0x400000
+		}
+		return math.Float32frombits(sign | 0x7F800000 | quiet | mant<<21)
+	}
+	if exp == 0 {
+		if mant == 0 {
+			return math.Float32frombits(sign)
+		}
+		exp = 1
+		for mant&0x4 == 0 {
+			mant <<= 1
+			exp--
+		}
+		mant &= 0x3
+	}
+	return math.Float32frombits(sign | (exp+112)<<23 | mant<<21)
+}
+
+func Float32ToF8E5M2(x float32) uint8 {
+	u := math.Float32bits(x)
+	sign := uint32(u>>24) & 0x80
+	exp := (u >> 23) & 0xFF
+	mant := u & 0x7FFFFF
+	if exp == 0xFF {
+		// Every NaN narrows to the quiet NaN without payload; infinity keeps
+		// its sign.
+		if mant != 0 {
+			return uint8(sign | 0x7E)
+		}
+		return uint8(sign | 0x7C)
+	}
+	e := int32(exp) - 127 + 15
+	if e >= 31 {
+		return uint8(sign | 0x7C)
+	}
+	var enc uint32
+	if e <= 0 {
+		if e < -2 {
+			return uint8(sign)
+		}
+		mant |= 0x800000
+		shift := uint32(22 - e)
+		rem := mant & (1<<shift - 1)
+		midpoint := uint32(1) << (shift - 1)
+		enc = mant >> shift
+		if rem > midpoint || (rem == midpoint && enc&1 == 1) {
+			enc++
+		}
+	} else {
+		rem := mant & 0x1FFFFF
+		enc = uint32(e)<<2 | mant>>21
+		if rem > 0x100000 || (rem == 0x100000 && enc&1 == 1) {
+			enc++
+		}
+	}
+	return uint8(sign | enc)
+}
+
+func Float32ToF8E5M2Saturating(x float32) uint8 {
+	r := Float32ToF8E5M2(x)
+	if r&0x7F == 0x7C && x == x && !math.IsInf(float64(x), 0) {
+		return r&0x80 | 0x7B
+	}
+	return r
 }

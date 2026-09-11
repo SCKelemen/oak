@@ -14,7 +14,9 @@ main: (p: Person): string = name(p)
 `
 	tc := setupTypeChecker(input)
 	tc.CheckProgram(parseProgram(input))
-	if errs := tc.Errors(); len(errs) != 0 { t.Fatalf("unexpected errors: %v", errs) }
+	if errs := tc.Errors(); len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
 }
 
 func TestExtensibleRecordRejectsMissingField(t *testing.T) {
@@ -35,7 +37,9 @@ main: (p: Person): string = .name(p)
 `
 	tc := setupTypeChecker(input)
 	tc.CheckProgram(parseProgram(input))
-	if errs := tc.Errors(); len(errs) != 0 { t.Fatalf("unexpected errors: %v", errs) }
+	if errs := tc.Errors(); len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
 }
 
 func TestFieldAccessorSpecializesAsFirstClassFunction(t *testing.T) {

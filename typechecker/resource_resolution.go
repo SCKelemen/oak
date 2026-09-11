@@ -3,6 +3,9 @@ package typechecker
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/SCKelemen/oak/ast"
 )
 
 // ResourceProtocolDeclaration is syntax-independent resource protocol input to
@@ -60,6 +63,11 @@ type ResourceTransitionDeclaration struct {
 	// parameter modes. Resolution normalizes it to ResourceParameterConsumed.
 	Consumes     []int
 	ReturnsFresh bool
+	// Receiver is the authority mode of a method's receiver
+	// (docs/spec/50-borrowing.md section 9): its own slot, so the explicit
+	// parameter indices above never shift. Unspecified for plain functions
+	// and for methods whose receiver carries no contract.
+	Receiver ResourceParameterMode
 }
 
 // ResolvedResourceProgram contains only resource facts that have been checked
@@ -95,11 +103,13 @@ type ResolvedResourceTransition struct {
 	// Consumes is retained as the executable permanent-authority projection.
 	Consumes     []int
 	ReturnsFresh bool
+	Receiver     ResourceParameterMode
 }
 
 type resolvedCallableResourceSemantics struct {
 	Parameters   []ResolvedResourceParameter
 	ReturnsFresh bool
+	Receiver     ResourceParameterMode
 }
 
 // ResolveResourceDeclarations resolves internal protocol facts against the
@@ -140,6 +150,14 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 			localTypes[name] = true
 
 			typ, exists := tc.env.GetType(name)
+			if (!exists || typ == nil) && tc.adtTypes != nil {
+				// Tagged unions are registered in the checker's ADT table
+				// rather than the value environment; they are nominal
+				// resource types like structs (methods require them today).
+				if _, isADT := tc.adtTypes[name]; isADT {
+					typ, exists = &ADTType{Name: name}, true
+				}
+			}
 			if !exists || typ == nil {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q references unknown type %q", declaration.Name, name)
 			}
@@ -205,6 +223,15 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 
 			callableType, exists := tc.env.GetType(transition.Callable)
 			if !exists || callableType == nil {
+				// A generic template has no environment type; its signature
+				// is read from the declaration, with type parameters as
+				// variables. The contract then holds for every specialization
+				// (docs/spec/50-borrowing.md section 9).
+				if templateType, isTemplate := tc.templateSignature(transition.Callable); isTemplate {
+					callableType, exists = templateType, true
+				}
+			}
+			if !exists || callableType == nil {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q transition %q references unknown callable %q", declaration.Name, transition.Name, transition.Callable)
 			}
 			function, ok := callableType.(*FunctionType)
@@ -223,7 +250,19 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				}
 			}
 
-			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh}
+			if transition.Receiver != ResourceParameterUnspecified {
+				if transition.Receiver > ResourceParameterConsumed {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q has invalid receiver mode %d", transition.Callable, transition.Receiver)
+				}
+				receiverType, _, isMethod := strings.Cut(transition.Callable, "::")
+				if !isMethod {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a receiver mode but is not a method (Type::name)", transition.Callable)
+				}
+				if !resourceTypes[receiverType] {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a receiver mode but its receiver type %s is not a resource type", transition.Callable, receiverType)
+				}
+			}
+			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh, Receiver: transition.Receiver}
 			if previous, exists := callableSemantics[transition.Callable]; exists && !sameResolvedCallableResourceSemantics(previous, semantics) {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q has conflicting semantics across protocols", transition.Callable)
 			}
@@ -236,12 +275,51 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				Parameters:   parameters,
 				Consumes:     consumes,
 				ReturnsFresh: transition.ReturnsFresh,
+				Receiver:     transition.Receiver,
 			})
 		}
 		resolved.Protocols = append(resolved.Protocols, protocol)
 	}
 
 	return resolved, nil
+}
+
+// templateSignature builds the signature of a generic function template
+// for contract resolution: concrete parameter and return types are parsed,
+// type parameters become variables (never resource types, so a contract
+// cannot mark a parameter whose type is the template's own parameter).
+func (tc *TypeChecker) templateSignature(name string) (*FunctionType, bool) {
+	template, isTemplate := tc.functionTemplates[name]
+	if !isTemplate || template == nil {
+		return nil, false
+	}
+	typeParams := make(map[string]bool, len(template.TypeParams))
+	for _, tp := range template.TypeParams {
+		if tp != nil && tp.Name != nil {
+			typeParams[tp.Name.Value] = true
+		}
+	}
+	resolve := func(expr ast.Expression) Type {
+		if ident, isIdent := expr.(*ast.Identifier); isIdent && typeParams[ident.Value] {
+			return &TypeVar{Name: ident.Value}
+		}
+		if expr == nil {
+			return &UnitType{}
+		}
+		if typ := tc.parseTypeExpression(expr); typ != nil {
+			return typ
+		}
+		return &TypeVar{Name: expr.String()}
+	}
+	function := &FunctionType{}
+	for _, parameter := range template.Parameters {
+		if parameter == nil {
+			continue
+		}
+		function.Parameters = append(function.Parameters, resolve(parameter.Type))
+	}
+	function.ReturnType = resolve(template.ReturnType)
+	return function, true
 }
 
 func resolveResourceParameters(
@@ -302,7 +380,7 @@ func resolveResourceParameters(
 }
 
 func sameResolvedCallableResourceSemantics(left, right resolvedCallableResourceSemantics) bool {
-	if left.ReturnsFresh != right.ReturnsFresh || len(left.Parameters) != len(right.Parameters) {
+	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver || len(left.Parameters) != len(right.Parameters) {
 		return false
 	}
 	for i := range left.Parameters {

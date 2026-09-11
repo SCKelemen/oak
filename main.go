@@ -190,14 +190,26 @@ func buildPackage(args []string) int {
 //	oak mod download [dir]            fetch pinned requirements into $OAKMODCACHE,
 //	                                  verifying digests and carried api.json
 //	oak mod api [dir]                 print the module's API snapshot (JSON)
-//	oak mod diff previous.json [dir]  classify the API change since previous.json
-//	oak mod bump previous.json [dir]  print the required version; with a
-//	                                  `version` directive, enforce it
+//	oak mod api -package P [-version V] <dir|file.oak>
+//	                                  snapshot one package (a directory or a
+//	                                  single source file)
+//	oak mod diff previous.json [dir|current.json]
+//	                                  classify the API change since previous.json
+//	                                  (module or package snapshots)
+//	oak mod bump previous.json [dir|current.json]
+//	                                  print the required version; with a
+//	                                  `version` directive (or a current
+//	                                  snapshot), enforce it
 //	oak mod compat dep-api.json [dir] check sealed imports against a
 //	                                  dependency's snapshot
 //	oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]
 //	                                  build the module archive carrying api.json
 //	                                  and print its `require` line
+//	oak mod tidy [-w] [dir]          reconcile require directives with imports;
+//	                                  -w rewrites oak.mod
+//	oak mod try path candidate-dir [-dir dir]
+//	                                  build every package with `path` replaced
+//	                                  by a local candidate: decides unsealed imports
 //	oak mod upgrade [-dir dir] dep-api.json...
 //	                                  pick the highest candidate version whose
 //	                                  snapshot satisfies the module's sealed imports
@@ -205,7 +217,7 @@ func buildPackage(args []string) int {
 // The compiler itself never fetches; every input here is a local file.
 func modCommand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat|pack|upgrade ...")
+		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat|pack|upgrade|try|tidy ...")
 		return 2
 	}
 	switch args[0] {
@@ -223,6 +235,10 @@ func modCommand(args []string) int {
 		return modPack(args[1:])
 	case "upgrade":
 		return modUpgrade(args[1:])
+	case "try":
+		return modTry(args[1:])
+	case "tidy":
+		return modTidy(args[1:])
 	}
 	fmt.Fprintf(os.Stderr, "oak mod: unknown subcommand %q\n", args[0])
 	return 2
@@ -251,9 +267,24 @@ func modDownload(args []string) int {
 }
 
 func modAPI(args []string) int {
-	dir := "."
-	if len(args) > 0 {
-		dir = args[0]
+	dir, packageName, packageVersion := ".", "", ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-package" && i+1 < len(args):
+			packageName = args[i+1]
+			i++
+		case args[i] == "-version" && i+1 < len(args):
+			packageVersion = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-"):
+			fmt.Fprintf(os.Stderr, "oak mod api: unknown flag %s\nusage: oak mod api [dir] | oak mod api -package P [-version V] <dir|file.oak>\n", args[i])
+			return 2
+		default:
+			dir = args[i]
+		}
+	}
+	if packageName != "" {
+		return modAPIPackage(packageName, packageVersion, dir)
 	}
 	manifest, err := readManifest(dir)
 	if err != nil {
@@ -279,6 +310,38 @@ func modAPI(args []string) int {
 	return 0
 }
 
+// modAPIPackage snapshots a single package — a directory built through the
+// module loader or one source file — the former `oak-api` tool.
+func modAPIPackage(name, version, target string) int {
+	if version == "" {
+		version = "0.0.0"
+	}
+	comp := compiler.New().WithPackageName(name)
+	if info, err := os.Stat(target); err == nil && info.IsDir() {
+		comp = comp.WithPackageDir(target)
+	} else {
+		source, err := os.ReadFile(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod api: %v\n", err)
+			return 1
+		}
+		comp = comp.WithSource(target, string(source))
+	}
+	snapshot, err := comp.APISnapshot(version).Get()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod api: %v\n", err)
+		return 1
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(snapshot); err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod api: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
 func modDiff(args []string, enforce bool) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: oak mod diff|bump previous.json [dir]")
@@ -293,19 +356,34 @@ func modDiff(args []string, enforce bool) int {
 		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
 		return 1
 	}
-	manifest, err := readManifest(dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
-		return 1
-	}
-	candidate := manifest.Version
-	if candidate == "" {
-		candidate = previous.Version
-	}
-	current, err := compiler.ModuleAPISnapshot(dir, candidate)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
-		return 1
+	// The current API is the module at dir, or a second snapshot file (the
+	// former `oak-semver` form); with a file, its version is the declared
+	// candidate.
+	var current packageapi.ModuleSnapshot
+	declared := ""
+	if info, statErr := os.Stat(dir); statErr == nil && !info.IsDir() {
+		current, err = compiler.ReadModuleSnapshot(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+			return 1
+		}
+		declared = current.Version
+	} else {
+		manifest, err := readManifest(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+			return 1
+		}
+		declared = manifest.Version
+		candidate := declared
+		if candidate == "" {
+			candidate = previous.Version
+		}
+		current, err = compiler.ModuleAPISnapshot(dir, candidate)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak mod: %v\n", err)
+			return 1
+		}
 	}
 	required, report, err := packageapi.RequiredVersion(previous, current)
 	if err != nil {
@@ -324,7 +402,7 @@ func modDiff(args []string, enforce bool) int {
 	if !enforce {
 		return 0
 	}
-	if manifest.Version == "" {
+	if declared == "" {
 		fmt.Fprintf(os.Stderr, "oak mod bump: add `version %s` to %s\n", required, modules.ManifestFile)
 		return 1
 	}
@@ -332,7 +410,7 @@ func modDiff(args []string, enforce bool) int {
 		fmt.Fprintf(os.Stderr, "oak mod bump: %v\n", err)
 		return 1
 	}
-	fmt.Printf("version %s is the exact required bump\n", manifest.Version)
+	fmt.Printf("version %s is the exact required bump\n", declared)
 	return 0
 }
 
@@ -496,6 +574,110 @@ func modUpgrade(args []string) int {
 		return 1
 	}
 	fmt.Printf("require %s %s\n", best.Module, best.Version)
+	return 0
+}
+
+// modTry decides the unsealed imports of a module against a local candidate
+// of a dependency by building (docs/spec/82-package-semver.md section 8).
+func modTry(args []string) int {
+	dir := "."
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-dir" && i+1 < len(args):
+			dir = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-"):
+			fmt.Fprintf(os.Stderr, "oak mod try: unknown flag %s\nusage: oak mod try path candidate-dir [-dir dir]\n", args[i])
+			return 2
+		default:
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: oak mod try path candidate-dir [-dir dir]")
+		return 2
+	}
+	results, err := compiler.TryReplacement(dir, positional[0], positional[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod try: %v\n", err)
+		return 1
+	}
+	failed := 0
+	for _, result := range results {
+		if result.Err == nil {
+			fmt.Printf("%s: compatible\n", result.Package)
+			continue
+		}
+		failed++
+		fmt.Printf("%s: incompatible\n  %s\n", result.Package, strings.ReplaceAll(strings.TrimSpace(result.Err.Error()), "\n", "\n  "))
+	}
+	if failed != 0 {
+		fmt.Printf("%d of %d package(s) do not build against %s\n", failed, len(results), positional[1])
+		return 1
+	}
+	fmt.Printf("every package builds against %s\n", positional[1])
+	return 0
+}
+
+// modTidy reconciles require directives with the module's imports
+// (docs/spec/83-modules.md section 4.5). Without -w it reports; with -w it
+// rewrites oak.mod, dropping unused requires and adding the missing ones
+// the module cache ($OAKMODCACHE) can provide.
+func modTidy(args []string) int {
+	dir, write := ".", false
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-w":
+			write = true
+		case strings.HasPrefix(args[i], "-"):
+			fmt.Fprintf(os.Stderr, "oak mod tidy: unknown flag %s\nusage: oak mod tidy [-w] [dir]\n", args[i])
+			return 2
+		default:
+			dir = args[i]
+		}
+	}
+	report, err := compiler.Tidy(dir, os.Getenv("OAKMODCACHE"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod tidy: %v\n", err)
+		return 1
+	}
+	for _, path := range report.Unused {
+		fmt.Printf("unused: require %s (no package imports from it)\n", path)
+	}
+	for _, missing := range report.Missing {
+		version := missing.Version
+		if version == "" {
+			version = "<version unknown>"
+		}
+		fmt.Printf("missing: require %s %s (imported: %s)\n", missing.Path, version, strings.Join(missing.Imports, ", "))
+	}
+	for _, path := range report.Uncovered {
+		fmt.Printf("uncovered: import %q matches no require or replace; add the module that provides it\n", path)
+	}
+	if report.Clean() {
+		fmt.Println("oak.mod is tidy")
+		return 0
+	}
+	if !write {
+		fmt.Println("run `oak mod tidy -w` to rewrite oak.mod")
+		return 1
+	}
+	if err := compiler.TidyWrite(dir, report); err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod tidy: %v\n", err)
+		return 1
+	}
+	fmt.Printf("rewrote %s\n", filepath.Join(dir, modules.ManifestFile))
+	unresolved := len(report.Uncovered)
+	for _, missing := range report.Missing {
+		if missing.Version == "" {
+			unresolved++
+		}
+	}
+	if unresolved != 0 {
+		fmt.Printf("%d requirement(s) still need a version or module path by hand\n", unresolved)
+		return 1
+	}
 	return 0
 }
 

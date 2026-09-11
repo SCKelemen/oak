@@ -198,9 +198,9 @@ func TestSelfCallInBindingArmIsNotLowered(t *testing.T) {
 // canonical counter shape is recognized; everything else records OAK-D0103.
 func TestBoundedLoopShapes(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		wantD0103  int
+		name      string
+		input     string
+		wantD0103 int
 	}{
 		{"canonical literal bound", "i: i32 = 0\nwhile i < 10 {\ni = i + 1\n}", 0},
 		{"canonical identifier bound", "n: i32 = 8\ni: i32 = 0\nwhile i < n {\ni = i + 2\n}", 0},

@@ -111,6 +111,13 @@ func analyzeProtocol(decl *ast.ProtocolDeclaration, report func(code string, nod
 		fields := map[string]bool{}
 		for _, f := range decl.Data.FieldOrder {
 			fields[f.Name] = true
+			// The control state is the module's `state` variable and the
+			// projection's `state` parameter; a field of that name would
+			// shadow both.
+			if f.Name == "state" || f.Name == "step" || f.Name == "data" {
+				report(CodeProtocolShape, decl.Data, "protocol %s: data field %s is reserved by the projection (the control state, the step, the record)", decl.Name.Value, f.Name)
+				ok = false
+			}
 		}
 		for _, f := range decl.Init.FieldOrder {
 			if !fields[f.Name] {

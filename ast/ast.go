@@ -1062,6 +1062,10 @@ type FunctionStatement struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// Operator is the symbol an `operator(SYM)` marker binds to this
+	// function for a left operand of its first parameter's type
+	// (docs/spec/10-syntax.md section 14); empty for ordinary functions.
+	Operator string
 	// Effect clauses (docs/spec/60-effects-allocation.md section 2):
 	// `effects { Memory.Allocate, ... }` declares the effects this function
 	// itself performs (EffectsDeclared distinguishes an empty clause, an
@@ -1179,6 +1183,18 @@ func (is *IfStatement) String() string {
 	}
 	return out.String()
 }
+
+// BreakStatement leaves the innermost enclosing while loop
+// (docs/spec/85-discipline.md section 3): `break` is legal only inside a
+// loop body, and a bounded loop stays bounded when a break leaves it early.
+type BreakStatement struct {
+	BaseNode
+	Token token.Token // 'break' token
+}
+
+func (bs *BreakStatement) statementNode()       {}
+func (bs *BreakStatement) TokenLiteral() string { return bs.Token.Literal }
+func (bs *BreakStatement) String() string       { return "break" }
 
 type WhileStatement struct {
 	BaseNode

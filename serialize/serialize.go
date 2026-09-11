@@ -557,6 +557,8 @@ func getNodeType(node ast.Node) string {
 		return "InvocationExpression"
 	case *ast.WhileStatement:
 		return "WhileStatement"
+	case *ast.BreakStatement:
+		return "BreakStatement"
 	case *ast.AssignmentStatement:
 		return "AssignmentStatement"
 	default:
@@ -649,6 +651,10 @@ func getNodePosition(node ast.Node) *PositionJSON {
 			tok = n.Token
 		}
 	case *ast.WhileStatement:
+		if n != nil {
+			tok = n.Token
+		}
+	case *ast.BreakStatement:
 		if n != nil {
 			tok = n.Token
 		}

@@ -21,6 +21,9 @@ type ResourceOperation struct {
 	Parameters   []ResourceParameterDeclaration
 	Consumes     []int
 	ReturnsFresh bool
+	// Receiver is the authority mode of a method's receiver, its own slot
+	// beside the explicit parameters (docs/spec/50-borrowing.md section 9).
+	Receiver ResourceParameterMode
 }
 
 // ResourceModel is the syntax-independent bridge from resolved types/callables
@@ -100,30 +103,163 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			continue
 		}
 		analysis := &typedResourceAnalysis{
-			tc:               tc,
-			model:            model,
-			flow:             resourceflow.New(),
-			reported:         make(map[string]bool),
-			unknownResources: make(map[string]bool),
+			tc:                tc,
+			model:             model,
+			flow:              resourceflow.New(),
+			reported:          make(map[string]bool),
+			unknownResources:  make(map[string]bool),
+			entryModes:        make(map[string]entryAuthority),
+			callableContracts: make(map[string]string),
+			unknownCallables:  make(map[string]bool),
 		}
 		analysis.pushScope()
+		// The function's own contract fixes what its body may do with each
+		// resource parameter (callee-entry authority, docs/spec/50-borrowing.md
+		// section 9): a borrowed parameter enters with shared authority, a
+		// borrowed-mut one with mutable authority, a consumed one with full
+		// authority. Unmarked parameters keep their ordinary meaning. A
+		// method's receiver is governed by the contract's receiver slot.
+		own, hasContract := analysis.contractOperation(functionIdentity(fn))
 		if fn.Receiver != nil && fn.Receiver.Name != nil {
 			analysis.bind(fn.Receiver.Name.Value)
 			if model.isResourceType(fn.Receiver.Type) {
 				analysis.flow.Register(fn.Receiver.Name.Value, fn.Receiver.Name)
+				if hasContract && own.Receiver != ResourceParameterUnspecified {
+					analysis.entryModes[fn.Receiver.Name.Value] = entryAuthority{mode: own.Receiver, declaration: fn.Receiver.Name}
+				}
 			}
 		}
-		for _, parameter := range fn.Parameters {
+		for index, parameter := range fn.Parameters {
 			if parameter == nil || parameter.Name == nil {
 				continue
 			}
 			analysis.bind(parameter.Name.Value)
+			if _, isCallable := parameter.Type.(*ast.FunctionTypeExpression); isCallable {
+				// A function-typed parameter arrives without a contract.
+				analysis.unknownCallables[parameter.Name.Value] = true
+			}
 			if model.isResourceType(parameter.Type) {
 				analysis.flow.Register(parameter.Name.Value, parameter.Name)
+				if hasContract {
+					if mode := own.parameterMode(index); mode != ResourceParameterUnspecified {
+						analysis.entryModes[parameter.Name.Value] = entryAuthority{mode: mode, declaration: parameter.Name}
+					}
+				}
 			}
 		}
 		analysis.expression(fn.Body)
+		analysis.checkRetainedReturn(fn)
 	}
+}
+
+// bindCallable records what a function-valued binding may be called as: a
+// global function's identity when initialized from that function (its
+// contract travels with the value), unknown when the initializer is a
+// closure, a parameter, another unknown callable, or a call result.
+func (a *typedResourceAnalysis) bindCallable(stmt *ast.VariableDeclaration) {
+	_, declaredCallable := stmt.Type.(*ast.FunctionTypeExpression)
+	if source, ok := stmt.Value.(*ast.Identifier); ok && source != nil {
+		if a.isLocalBinding(source.Value) {
+			if global, carried := a.callableContracts[source.Value]; carried {
+				a.callableContracts[stmt.Name.Value] = global
+				return
+			}
+			if a.unknownCallables[source.Value] {
+				a.unknownCallables[stmt.Name.Value] = true
+			}
+			return
+		}
+		if a.tc != nil && a.tc.globalEnv != nil {
+			if typ, exists := a.tc.globalEnv.GetType(source.Value); exists {
+				if _, isFunction := typ.(*FunctionType); isFunction {
+					a.callableContracts[stmt.Name.Value] = source.Value
+					return
+				}
+			}
+		}
+	}
+	if _, isClosure := stmt.Value.(*ast.FunctionLiteral); isClosure || declaredCallable {
+		a.unknownCallables[stmt.Name.Value] = true
+	}
+}
+
+// methodReceiver is the receiver expression of a method call
+// (recv.method(args)), or nil for a plain call.
+func methodReceiver(expr *ast.InvocationExpression) ast.Expression {
+	if access, isAccess := expr.Function.(*ast.IndexExpression); isAccess && access.Dot {
+		return access.Left
+	}
+	return nil
+}
+
+// tailIdentifiers collects the identifiers an expression may evaluate to
+// as a function's result: the expression itself, the last statement of a
+// block, and every arm of a match. Calls and literals contribute nothing
+// (their results are checked where they are built).
+func tailIdentifiers(expr ast.Expression) []*ast.Identifier {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return []*ast.Identifier{e}
+	case *ast.BlockExpression:
+		if e.Block == nil || len(e.Block.Statements) == 0 {
+			return nil
+		}
+		if last, ok := e.Block.Statements[len(e.Block.Statements)-1].(*ast.ExpressionStatement); ok {
+			return tailIdentifiers(last.Expression)
+		}
+	case *ast.MatchExpression:
+		var out []*ast.Identifier
+		for _, arm := range e.Arms {
+			if arm != nil {
+				out = append(out, tailIdentifiers(arm.Body)...)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// checkRetainedReturn rejects a body that returns a borrowed or
+// borrowed-mut parameter (or an alias of one) as its result: the caller
+// keeps custody of a borrowed resource, so handing it back would mint a
+// second authority over the same resource (OAK-B0114, retention).
+func (a *typedResourceAnalysis) checkRetainedReturn(fn *ast.FunctionStatement) {
+	if len(a.entryModes) == 0 || fn == nil || fn.Body == nil {
+		return
+	}
+	for _, ident := range tailIdentifiers(fn.Body) {
+		a.checkRetention(ident, "returned as this function's result")
+	}
+}
+
+// checkRetention reports a borrowed or borrowed-mut parameter (or alias)
+// being retained — returned, or stored in an aggregate — beyond the call
+// that lent it.
+func (a *typedResourceAnalysis) checkRetention(ident *ast.Identifier, how string) {
+	if ident == nil || !a.flow.Registered(ident.Value) {
+		return
+	}
+	parameter, entry, governed := a.entryAuthorityOf(ident.Value)
+	if !governed || entry.mode == ResourceParameterConsumed {
+		return
+	}
+	title := fmt.Sprintf("parameter %q enters with %s authority and cannot be %s: a borrowed resource stays in the caller's custody", parameter, entry.mode, how)
+	d := a.tc.addResourceDiagnosticWithCode(ident, CodeResourceParameterForwarded, title)
+	if entry.declaration != nil {
+		d.AddSecondary(diagnostic.NodeToRange(entry.declaration), fmt.Sprintf("%q is declared %s by this function's resource contract", parameter, entry.mode))
+	}
+	if parameter != ident.Value {
+		for _, edge := range a.flow.AliasPath(parameter, ident.Value) {
+			message := fmt.Sprintf("resource alias %q derives authority from %q", edge.Child, edge.Parent)
+			if edge.Origin != nil {
+				d.AddSecondary(diagnostic.NodeToRange(edge.Origin), message)
+			} else {
+				d.AddNote(message)
+			}
+		}
+	}
+	d.AddNote("only a consumed parameter may be returned or stored: consumption transfers custody, borrowing never does (docs/spec/50-borrowing.md section 9)")
+	d.AddHelp("declare the parameter consumed in this function's contract, or return a fresh resource from a consuming operation")
 }
 
 type typedResourceAnalysis struct {
@@ -134,6 +270,150 @@ type typedResourceAnalysis struct {
 	unknownResources map[string]bool
 	scopes           []map[string]struct{}
 	freshCalls       map[*ast.InvocationExpression]bool
+	// entryModes records, per resource parameter of the function under
+	// analysis, the authority its own contract grants on entry.
+	entryModes map[string]entryAuthority
+	// callableContracts maps a local function-value binding to the global
+	// function it was initialized from, whose contract calls through the
+	// binding carry; unknownCallables marks function-typed bindings whose
+	// contract cannot be known (parameters, closures, reassigned values).
+	callableContracts map[string]string
+	unknownCallables  map[string]bool
+}
+
+// entryAuthority is a resource parameter's contract mode together with the
+// declaration that diagnostics point back to.
+type entryAuthority struct {
+	mode        ResourceParameterMode
+	declaration ast.Node
+}
+
+// functionIdentity names a function the way callableIdentity names its
+// calls: the bare name for a top-level function, Receiver::name for a
+// method.
+func functionIdentity(fn *ast.FunctionStatement) string {
+	if fn == nil || fn.Name == nil {
+		return ""
+	}
+	if fn.Receiver != nil {
+		if receiver, ok := fn.Receiver.Type.(*ast.Identifier); ok && receiver != nil {
+			return receiver.Value + "::" + fn.Name.Value
+		}
+	}
+	return fn.Name.Value
+}
+
+// parameterMode is the normalized mode of one parameter of an operation:
+// the declared mode, or consumed for an index listed in Consumes.
+func (op ResourceOperation) parameterMode(index int) ResourceParameterMode {
+	for _, declaration := range op.Parameters {
+		if declaration.Index == index && declaration.Mode != ResourceParameterUnspecified {
+			return declaration.Mode
+		}
+	}
+	for _, consumed := range op.Consumes {
+		if consumed == index {
+			return ResourceParameterConsumed
+		}
+	}
+	return ResourceParameterUnspecified
+}
+
+// authorityRank orders the modes by what they permit: shared < mutable <
+// full. Forwarding is legal only when the callee asks for no more than the
+// caller-side parameter entered with.
+func authorityRank(mode ResourceParameterMode) int {
+	switch mode {
+	case ResourceParameterBorrowed:
+		return 1
+	case ResourceParameterBorrowedMut:
+		return 2
+	case ResourceParameterConsumed:
+		return 3
+	}
+	return 0
+}
+
+// entryAuthorityOf finds the contract mode governing an argument: the
+// argument's own parameter, or the mode-marked parameter it aliases.
+func (a *typedResourceAnalysis) entryAuthorityOf(name string) (string, entryAuthority, bool) {
+	if authority, direct := a.entryModes[name]; direct {
+		return name, authority, true
+	}
+	names := make([]string, 0, len(a.entryModes))
+	for parameter := range a.entryModes {
+		names = append(names, parameter)
+	}
+	sort.Strings(names)
+	for _, parameter := range names {
+		if a.flow.Aliases(name, parameter) {
+			return parameter, a.entryModes[parameter], true
+		}
+	}
+	return "", entryAuthority{}, false
+}
+
+// checkParameterForwarding rejects a call that forwards one of the
+// function's own resource parameters beyond its entry authority
+// (OAK-B0114): a borrowed parameter to a borrowed-mut or consuming
+// position, a borrowed-mut parameter to a consuming position. It reports
+// every offending argument and returns false when any was found, so the
+// call neither consumes nor establishes fresh authority.
+func (a *typedResourceAnalysis) checkParameterForwarding(expr *ast.InvocationExpression, op ResourceOperation) bool {
+	if len(a.entryModes) == 0 {
+		return true
+	}
+	ok := true
+	type governed struct {
+		argument ast.Expression
+		required ResourceParameterMode
+	}
+	positions := make([]governed, 0, len(expr.Arguments)+1)
+	if receiver := methodReceiver(expr); receiver != nil && op.Receiver != ResourceParameterUnspecified {
+		positions = append(positions, governed{argument: receiver, required: op.Receiver})
+	}
+	for index, argument := range expr.Arguments {
+		positions = append(positions, governed{argument: argument, required: op.parameterMode(index)})
+	}
+	for _, position := range positions {
+		argument, required := position.argument, position.required
+		ident, isIdent := argument.(*ast.Identifier)
+		if !isIdent || ident == nil || !a.flow.Registered(ident.Value) {
+			continue
+		}
+		if required == ResourceParameterUnspecified {
+			continue
+		}
+		parameter, entry, governed := a.entryAuthorityOf(ident.Value)
+		if !governed || authorityRank(required) <= authorityRank(entry.mode) {
+			continue
+		}
+		ok = false
+		callee, _ := a.callableIdentity(expr)
+		title := fmt.Sprintf("parameter %q enters with %s authority and cannot be passed to the %s parameter of %s", parameter, entry.mode, required, callee)
+		d := a.tc.addResourceDiagnosticWithCode(argument, CodeResourceParameterForwarded, title)
+		if entry.declaration != nil {
+			d.AddSecondary(diagnostic.NodeToRange(entry.declaration), fmt.Sprintf("%q is declared %s by this function's resource contract", parameter, entry.mode))
+		}
+		if parameter != ident.Value {
+			for _, edge := range a.flow.AliasPath(parameter, ident.Value) {
+				message := fmt.Sprintf("resource alias %q derives authority from %q", edge.Child, edge.Parent)
+				if edge.Origin != nil {
+					d.AddSecondary(diagnostic.NodeToRange(edge.Origin), message)
+				} else {
+					d.AddNote(message)
+				}
+			}
+		}
+		switch entry.mode {
+		case ResourceParameterBorrowed:
+			d.AddNote("a borrowed parameter permits shared use only: it can neither be mutated through a borrowed-mut contract nor consumed (docs/spec/50-borrowing.md section 9)")
+		case ResourceParameterBorrowedMut:
+			d.AddNote("a borrowed-mut parameter permits mutation for the duration of the call but never permanent custody: it cannot be consumed (docs/spec/50-borrowing.md section 9)")
+		}
+		d.AddHelp("declare the parameter with the stronger mode in this function's contract, or have the caller perform the operation")
+	}
+	return ok
 }
 
 func (m ResourceModel) isResourceType(expr ast.Expression) bool {
@@ -158,6 +438,22 @@ func (m ResourceModel) operationByName(name string) (ResourceOperation, bool) {
 	}
 	op, exists := m.Operations[name]
 	return op, exists
+}
+
+// contractOperation resolves a callable identity to its contract, falling
+// back from a specialization's mangled name to the template it was
+// instantiated from: a contract declared for a generic function holds for
+// every specialization (docs/spec/50-borrowing.md section 9).
+func (a *typedResourceAnalysis) contractOperation(identity string) (ResourceOperation, bool) {
+	if op, exists := a.model.operationByName(identity); exists {
+		return op, true
+	}
+	if a.tc != nil {
+		if template, specialized := a.tc.instantiationTemplates[identity]; specialized {
+			return a.model.operationByName(template)
+		}
+	}
+	return ResourceOperation{}, false
 }
 
 func (a *typedResourceAnalysis) pushScope() {
@@ -217,7 +513,15 @@ func (a *typedResourceAnalysis) callableIdentity(expr *ast.InvocationExpression)
 	}
 	switch function := expr.Function.(type) {
 	case *ast.Identifier:
-		if function == nil || function.Value == "" || a.isLocalBinding(function.Value) {
+		if function == nil || function.Value == "" {
+			return "", false
+		}
+		if a.isLocalBinding(function.Value) {
+			// A local function value carries the contract of the global it
+			// was initialized from, and nothing else.
+			if global, carried := a.callableContracts[function.Value]; carried {
+				return global, true
+			}
 			return "", false
 		}
 		typ, exists := a.tc.globalEnv.GetType(function.Value)
@@ -260,7 +564,29 @@ func (a *typedResourceAnalysis) operation(expr *ast.InvocationExpression) (Resou
 	if !ok {
 		return ResourceOperation{}, false
 	}
-	return a.model.operationByName(identity)
+	return a.contractOperation(identity)
+}
+
+// checkUnknownCallable fails closed when a resource is passed through a
+// callable whose contract is unknown (OAK-B0115): a function-typed
+// parameter, a closure, or a reassigned function value. An unknown
+// contract is not an empty effect set.
+func (a *typedResourceAnalysis) checkUnknownCallable(expr *ast.InvocationExpression) bool {
+	callee, isIdent := expr.Function.(*ast.Identifier)
+	if !isIdent || callee == nil || !a.unknownCallables[callee.Value] {
+		return true
+	}
+	for _, argument := range expr.Arguments {
+		if !a.isResourceValue(argument) {
+			continue
+		}
+		d := a.tc.addResourceDiagnosticWithCode(argument, CodeResourceUnknownCallable,
+			fmt.Sprintf("resource passed through %q, a callable whose resource contract is unknown", callee.Value))
+		d.AddNote("a function-typed parameter, a closure, or a reassigned function value has no checked contract; an unknown contract is not an empty one (docs/spec/50-borrowing.md section 9)")
+		d.AddHelp("call the operation by its global name, or bind the function value directly from the global function so its contract is carried")
+		return false
+	}
+	return true
 }
 
 func (a *typedResourceAnalysis) statement(stmt ast.Statement) {
@@ -272,6 +598,13 @@ func (a *typedResourceAnalysis) statement(stmt ast.Statement) {
 		a.variable(s)
 	case *ast.AssignmentStatement:
 		a.expression(s.Value)
+		if s.Name != nil {
+			if _, carried := a.callableContracts[s.Name.Value]; carried || a.unknownCallables[s.Name.Value] {
+				// A reassigned function value has no single contract.
+				delete(a.callableContracts, s.Name.Value)
+				a.unknownCallables[s.Name.Value] = true
+			}
+		}
 		if a.isResourceValue(s.Value) || (s.Name != nil && (a.flow.Registered(s.Name.Value) || a.unknownResources[s.Name.Value])) {
 			a.tc.addResourceDiagnosticWithCode(s, CodeResourceCallAliasConflict,
 				"resource reassignment requires tracked destination provenance")
@@ -321,6 +654,7 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 	if stmt.Value != nil {
 		a.expression(stmt.Value)
 	}
+	a.bindCallable(stmt)
 
 	fresh := false
 	if call, ok := stmt.Value.(*ast.InvocationExpression); ok {
@@ -451,6 +785,9 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 		if len(e.FieldOrder) > 0 {
 			for _, field := range e.FieldOrder {
 				a.expression(field.Value)
+				if ident, isIdent := field.Value.(*ast.Identifier); isIdent {
+					a.checkRetention(ident, "stored in a record")
+				}
 			}
 		} else {
 			names := make([]string, 0, len(e.Fields))
@@ -465,6 +802,9 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 	case *ast.ArrayLiteral:
 		for _, element := range e.Elements {
 			a.expression(element)
+			if ident, isIdent := element.(*ast.Identifier); isIdent {
+				a.checkRetention(ident, "stored in an array")
+			}
 		}
 	case *ast.MatchExpression:
 		a.match(e)
@@ -510,6 +850,9 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 	for _, argument := range expr.Arguments {
 		a.expression(argument)
 	}
+	if !a.checkUnknownCallable(expr) {
+		return
+	}
 
 	op, present := a.operation(expr)
 	if !present {
@@ -520,6 +863,14 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 	// authority state and cannot create cascading use-after-consume errors.
 	if len(a.tc.Diagnostics()) != diagnosticsBefore || !a.checkCallResourceExclusivity(expr, op) {
 		return
+	}
+	if !a.checkParameterForwarding(expr, op) {
+		return
+	}
+	if receiver := methodReceiver(expr); receiver != nil && op.Receiver == ResourceParameterConsumed {
+		if ident, ok := receiver.(*ast.Identifier); ok && ident != nil && a.flow.Registered(ident.Value) && a.flow.CanUse(ident.Value) {
+			a.flow.Consume(ident.Value, expr)
+		}
 	}
 	for _, index := range op.Consumes {
 		if index < 0 || index >= len(expr.Arguments) {
@@ -597,4 +948,3 @@ func (a *typedResourceAnalysis) use(name string, node ast.Node) {
 	}
 	d.AddHelp("use the fresh resource value returned by the consuming operation, if the protocol returns one")
 }
-

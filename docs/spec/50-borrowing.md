@@ -347,6 +347,24 @@ they landed and the shape each admits.
    region-declared parameter; a record parameter without a region keeps
    `OAK-B0109`. Executed: a cursor opened, advanced through nested calls,
    and read, with the owner write while it lives rejected.
+4. ADT payloads and match bindings. A region may be carried by an ADT
+   whose payloads hold borrows — `Result[Frame[R], E]`,
+   `Option[View[u8, R]]` — in parameters and returns alike. Borrowed
+   storage is named by **path**: record fields by name, a variant's payload
+   as `$Variant` (`r.$Ok.payload`), so the bound result of a call reborrows
+   the region argument once per path, and a match arm's payload binding
+   (`r ? | .Ok(f) => ...`) reborrows the scrutinee's paths under that
+   variant for the arm only — `f.payload` is a borrow inside the arm, and
+   the owner is writable again after the match (the `Result` binding
+   itself stays lexical). A returned variant traces its payload; a bare
+   variant carries nothing. Provenance is traced statically when the
+   lexical borrows have already dropped: a value assembled inside nested
+   conditionals is followed through the locals' declarations, record
+   literals, and payload bindings back to the region's owners, always as
+   a superset of what the value can hold, so the trace can only reject
+   more. Strings and unions of borrows are outside the path form and fail
+   closed. This is what a derived decoder needs to hand back views
+   (`71-codecs.md` §13a); executed there in both realizations.
 
 What stays rejected: borrows in globals and statics, borrows in records
 without a region crossing a call, a returned borrow whose provenance the
@@ -408,6 +426,58 @@ provenance is tracked; it must not retain a stale independent alias class. Unkno
 provenance and known consumed authority are distinct diagnostic causes. A conflict
 involving an unknown argument must identify that argument, including when it is a
 shared participant paired with a tracked exclusive participant.
+
+**Callee-entry authority.** A function's own resource contract also governs
+its body. Each mode-marked resource parameter enters with exactly the
+authority its mode grants: a `borrowed` parameter enters with shared
+authority and may be read and forwarded to shared-borrowed positions, but
+may neither be passed to a mutable-borrowed position nor consumed; a
+`borrowed-mut` parameter may be forwarded to shared and mutable positions but
+never consumed; a `consumed` parameter enters with full authority, usable
+until its own consumption. An alias of a parameter carries the parameter's
+entry authority, so renaming does not launder it. A call that forwards a
+parameter beyond its entry authority is rejected with `OAK-B0114`, has not
+occurred semantically (it consumes nothing and establishes no fresh
+result), and the diagnostic names the parameter declaration and the
+offending argument. A borrowed or borrowed-mut parameter is also never
+**retained**: returning it (or an alias of it) as the function's result,
+directly or through a block or match arm, or storing it in a record or
+array literal, is rejected with the same code — the caller keeps custody
+of a lent resource, and only consumption transfers it, so a consumed
+parameter may be returned. Unmarked parameters keep their ordinary meaning
+until a migration rule is chosen. These are the forwarding and retention
+increments of the authority roadmap's milestone 1
+(`docs/notes/roadmap-authority-resources.md`); escape of storage borrows
+(views and spans) remains `OAK-B0109`.
+
+**Contracts across callable boundaries.** A contract belongs to a function's
+semantic identity, not to the spelling of a call. A function value
+initialized from a global function (`shutdown: (Handle) -> () = close`)
+carries that function's contract: calling through the value consumes or
+borrows exactly as the direct call would, and invalidates the caller's
+aliases the same way. A function value of unknown provenance — a
+function-typed parameter, a closure literal, a value that was reassigned —
+has an **unknown** contract, and an unknown contract is not an empty one:
+passing a resource through such a value is rejected with `OAK-B0115`
+rather than treated as harmless. A value initialized from a function with
+no contract keeps the ordinary (unmarked) meaning. A contract declared for
+a generic template holds for every specialization: the specialized call
+sites and the specialized bodies are checked under the template's modes,
+so monomorphization cannot lose a mode. **Receiver authority is its own slot.** A method's receiver carries a mode
+of its own — `borrowed`, `borrowed-mut`, or `consumed` — declared beside
+the explicit parameter modes and never shifting their indices: argument 0
+of `fn (h: Handle) merge(other: Handle)` is `other` whether or not the
+receiver is marked. At a call `h.merge(g)` the receiver participates in
+call-local exclusivity like any argument (a mutable receiver and a borrowed
+argument naming one resource is `OAK-B0112`, labeled "receiver"), a
+consuming receiver invalidates the caller's handle after the call, and the
+method body is checked under the receiver's entry authority (a borrowed
+receiver cannot be consumed or retained inside the method). In SemIR the
+receiver mode is the `resource.borrow`/`borrow-mut`/`consume` effect with
+the parameter `receiver`. A receiver mode is valid only on a method whose
+receiver type is a resource type. Contracts on function *types* (so that a
+borrowed-function requirement can reject a consuming implementation) and
+imported or sealed signatures are the remaining boundaries of milestone 2.
 
 The callable-boundary audit and proposed result provenance/lifetime relationships
 are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).

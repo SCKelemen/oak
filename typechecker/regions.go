@@ -232,10 +232,17 @@ func eraseRegionType(expr ast.Expression, regions map[string]bool, records map[s
 		}
 		rec, isRegionRecord := records[head]
 		if !isRegionRecord {
+			// An ordinary application (Result[Frame[R], E], Option[View[u8, R]])
+			// carries the region its arguments carry.
+			carried := ""
 			for i := range args {
-				args[i], _ = eraseRegionType(args[i], regions, records)
+				var region string
+				args[i], region = eraseRegionType(args[i], regions, records)
+				if carried == "" {
+					carried = region
+				}
 			}
-			return rebuildApplication(e, head, args), ""
+			return rebuildApplication(e, head, args), carried
 		}
 		region := ""
 		kept := make([]ast.Expression, 0, len(args))

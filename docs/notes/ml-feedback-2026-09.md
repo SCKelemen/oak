@@ -57,7 +57,9 @@ ml's `exp2f` finding is that the library is the one implementation — with
 documented bounds (1 ulp; 2 for `tanh`, `atan2`, and the hyperbolics)
 checked by an arbitrary-precision fourth witness
 (`compiler/e2e_math_test.go`), and placed float fields in records with
-`size_of` over float types. Not yet: the Lean model. The design:
+`size_of` over float types; `Oak.Floats` models the evaluation discipline in
+Lean and proves the reproducibility theorem, exact widening, commutativity,
+and the reassociation and contraction counterexamples. The design:
 
 - `f32`/`f64` arithmetic; `f16`/`bf16` storage-only with exactly four
   operations; contextual literals with `f64` as the no-context default;
@@ -129,14 +131,19 @@ endorses:
    **already implemented** on this branch: `p |> .x |> double |> add(u32(1))`
    compiles under the strict profile and runs. The survey's "not
    implemented" was stale; ml can use them now.
-2. Uniform call syntax `x.matmul(w).relu()` as sugar for `relu(matmul(x, w))`
-   when the receiver's package exports the function; no dispatch, no
-   vtables. Needs a normative section before implementation.
-3. Operator definitions bound only to functions marked `operator` in the
-   receiver's package. The constitution's "no hidden work" rule is the bar
-   the proposal must clear; an explicit marker that makes every `+` on a
-   tensor name one findable function is the defensible middle, and the
-   decision is open.
+2. **Done.** Uniform call syntax (`10-syntax.md` §13): `x.matmul(w).relu()`
+   is `relu(matmul(x, w))` when the receiver has no method or field of that
+   name — a function visible at the call site or an exported function of
+   the package declaring the receiver's type. The checker rewrites the call
+   in place; nothing is dispatched. Closes revisit criterion O6.
+3. **Done.** Operator definitions (`10-syntax.md` §14): `operator(+) add:
+   (a: Vec, b: Vec): Vec` binds `+` for a left operand of `Vec`, declared
+   only in `Vec`'s package, one binding per type and symbol; `a + b` is
+   exactly `add(a, b)`, rewritten into the plain call after type checking so
+   nothing is dispatched or hidden. The constitution's bar is met by the
+   marker and the home-package rule: every `+` on a tensor names one
+   function a reader can find. Declared operator properties (7.3) remain
+   the follow-on.
 4. **Done.** Array literals take their shape from context (`10-syntax.md`
    §2c): `[3]u32 = [1, 2, 3]`, `sum3([4, 5, 6])`, and `dims([28, 28])`
    where `dims` takes a `[]u32` (the literal form of the variadic view;
@@ -173,4 +180,26 @@ disposition, in the order to work them:
 | O3 | Any runtime-sized allocation surface | direction |
 | O4 | Views or spans in records or as return values | roadmap |
 | O5 | `F32x4` with `mul` and `fma` | **implemented** (`93-simd.md` §1.2a; NEON and portable lowerings agree with the interpreter) |
-| O6 | A frontend surface for `x.matmul(w).relu()` | pipeline operator and field accessors implemented (`x \|> matmul(w) \|> relu`); uniform call syntax and operator definitions remain direction |
+| O6 | A frontend surface for `x.matmul(w).relu()` | **implemented**: uniform call syntax (`10-syntax.md` §13), operator definitions (§14), and the pipeline operator (`x \|> matmul(w) \|> relu`) |
+
+## Tier 8 — the second numeric-runtime list (2026-09-11)
+
+The list arrived as six items; most were already on the branch. Their state
+against the current tree, with what changed today:
+
+| # | Ask | Disposition |
+| --- | --- | --- |
+| 1 | Floats (tier 2) | **Already done**: `f32`/`f64` with fixed IEEE semantics, `FP_CONTRACT OFF` and `-ffp-contract=off`, `f16`/`bf16` storage, the `bits` and `round` rows, correctly rounded intrinsics, the `math` package under a fourth witness (`20-types.md` §11.3, STATUS row). Not yet: the Lean lattice model. |
+| 2 | Spans across the FFI (tier 3) | **Already done** for integers, floats, storage formats, tagged unions, and proven-layout structs (`92-ffi.md` §2.5). **New today**: structs by value in extern signatures (§2.3) — Metal's struct-by-value calls and libc's `div_t` return without a pointer. |
+| 3 | F13 declarations before use | **Already done**: annotated top-level bindings are predeclared (STATUS "Order-independent package scope"). |
+| 3 | F14 assertions without locations | **Already done**: `assert` traps name file and line in hosted builds (STATUS "Located assertion traps"). |
+| 3 | F16 `\|` inside a `?` arm | **Fixed today** (`10-syntax.md` §3b): a third bare `\|` after a Bool conditional's two arms is a parse error naming the fix; it used to parse as a bitwise or over the whole conditional. Inside a bare arm `\|` stays the separator; `(a \| b)` or a braced arm spells the operator. |
+| 3 | F18 a line starting with `(` continues the expression | **Fixed today** (`10-syntax.md` §4a): a call or index never continues across a line break; a line beginning with `(` or `[` begins a new statement. |
+| 4 | Pipeline operator, shape literals, `pub` constants, size-indexed parameters | **Already done** (tier 5 items 1 and 4, tier 7.1). |
+| 4 | Match on integer constants | **Already done**: `x ? \| 1 => a \| 2 => b \| _ => c` typechecks and runs; the nine-deep `?` chain can be one match today. |
+| 4 | `break` in bounded loops | **Done today** (`85-discipline.md` §3a): `break` leaves the innermost `while`; a certified bounded loop stays certified; executed both ways. |
+| 5 | `f8` and packed 4-bit with block scales as storage types | **Done today** (`20-types.md` §11.3.1, §11.3.1a; STATUS rows). `f8e4m3` and `f8e5m2` are storage types on the `f16`/`bf16` pattern: exact widening, `round` with each format's own overflow rule (E4M3 to NaN, E5M2 to infinity), a `saturating` narrowing that clamps to the largest finite value, `bits` with `u8`, one-byte layout, `uint8_t` at the boundary; C helpers and interpreter swept against a Go reference over every pattern. Packed 4-bit is a library package, not a type: `import("mx")` gives the OCP MXFP4 block (32 E2M1 elements, one E8M0 scale, 17 proven bytes) with quantize, dequantize, and element access, written in Oak. |
+| 6 | `#line` directives | **Already done** (`oak build -lines`). |
+| 6 | Per-package discipline profiles | **Already done**: `profile <default\|strict>` in `oak.mod`, judged per module (`85-discipline.md` §1). |
+| 6 | A trace schema so `oak test -sim` can replay a launch sequence | **Dropped, by decision.** A launch-sequence replay would need every FFI call and its arguments recorded as a trace event, and recording at the boundary adds latency to the path the project tunes for throughput; the project values that performance over the replay. `testing_trace` stays as it is (semantic events only, `110-testing.md`), and a replay design would have to find its events somewhere other than the boundary. |
+

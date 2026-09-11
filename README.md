@@ -95,8 +95,10 @@ module's public API, `oak mod bump previous.json` requires the `version` in
 dep-api.json` checks a module's sealed imports against a dependency snapshot,
 `oak mod download` refuses an archive whose carried `api.json` its source
 does not honor, `oak mod pack` builds that archive and prints its `require`
-line, and `oak mod upgrade` picks the highest candidate snapshot a module's
-sealed imports accept (`docs/spec/82-package-semver.md`). Derived operations are ordinary
+line, `oak mod upgrade` picks the highest candidate snapshot a module's sealed
+imports accept, and `oak mod try` builds against a local candidate to decide
+the unsealed ones, and `oak mod tidy -w` reconciles `require` lines with what
+the packages import (`docs/spec/82-package-semver.md`). Derived operations are ordinary
 declarations whose body the compiler synthesizes from the type:
 
 ```oak
@@ -112,8 +114,9 @@ lists the recorded assumptions the checker could not discharge. `:lean
 obligations.lean` states those assumptions as Lean theorems over the models in
 `spec/lean` (loop termination over `Oak.Loops`, tail cycles over
 `Oak.Discipline`, region disjointness over `Oak.Regions`) for you to prove
-there; see `spec/lean/Oak/SessionObligationsProved.lean` for the discharged
-example.
+there, and `:lean check` runs the repository's Lean toolchain on them from
+inside the session; see `spec/lean/Oak/SessionObligationsProved.lean` for the
+discharged example.
 
 ### Comments
 

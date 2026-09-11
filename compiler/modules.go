@@ -119,6 +119,11 @@ type ModuleInfo struct {
 	// OpaqueTypes maps an internal type name to its declaring package path
 	// for every pub(opaque) declaration.
 	OpaqueTypes map[string]string
+	// Exports maps every loaded package path to its member table, so the
+	// type checker can resolve uniform call syntax against the exported
+	// functions of a receiver type's declaring package
+	// (docs/spec/10-syntax.md section 13).
+	Exports map[string]modules.Exports
 	// Obligations are the sealed-import member types the type checker must
 	// verify after checking the program.
 	Obligations []typechecker.SignatureObligation
@@ -321,6 +326,20 @@ func (comp Compilation) WithModuleCache(dir string) Compilation {
 	return comp
 }
 
+// WithReplace lays a `replace path => dir` directive over the root module's
+// manifest for this build only; the manifest on disk is never rewritten.
+// `oak mod try` uses it to build against a local candidate of a dependency
+// (docs/spec/82-package-semver.md section 8).
+func (comp Compilation) WithReplace(path, dir string) Compilation {
+	replaces := map[string]string{}
+	for k, v := range comp.replaces {
+		replaces[k] = v
+	}
+	replaces[path] = dir
+	comp.replaces = replaces
+	return comp
+}
+
 // WithSessionSources configures an in-memory root package (the REPL's
 // session): files are named sources, and imports resolve through the module
 // enclosing moduleDir (the working directory, typically) as if the package
@@ -519,6 +538,16 @@ func (l *moduleLoader) findModuleRoot(dir string) (*moduleRoot, bool) {
 			manifest, ok := l.readManifest(candidate)
 			if !ok {
 				return nil, false
+			}
+			if len(l.comp.replaces) != 0 {
+				overlaid := map[string]string{}
+				for k, v := range manifest.Replaces {
+					overlaid[k] = v
+				}
+				for k, v := range l.comp.replaces {
+					overlaid[k] = v
+				}
+				manifest.Replaces = overlaid
 			}
 			l.root = &moduleRoot{Dir: current, Manifest: manifest}
 			l.located[manifest.Path] = l.root
@@ -1341,32 +1370,34 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 		if target == nil {
 			continue
 		}
-		names := make([]string, 0, len(target.Exports))
+		exports := make([]string, 0, len(target.Exports))
 		for name, member := range target.Exports {
 			if member.Exported {
-				names = append(names, name)
+				exports = append(exports, name)
 			}
 		}
-		sort.Strings(names)
-		for _, name := range names {
-			collision := ""
+		sort.Strings(exports)
+		// What the name would collide with, or "" when it is free.
+		boundBy := func(name string) string {
 			switch {
 			case pkg.Exports[name].Name != "":
-				collision = "a package-level declaration"
+				return "a package-level declaration"
 			case pkg.Imports[name] != nil:
-				collision = "an import alias"
+				return "an import alias"
 			case pkg.Selective[name] != nil && pkg.Selective[name] != binding:
 				if other := pkg.Selective[name]; other.Open {
-					collision = fmt.Sprintf("the open import of %q", other.Template)
-				} else {
-					collision = fmt.Sprintf("the selective import from %q", other.Template)
+					return fmt.Sprintf("the open import of %q", other.Template)
 				}
+				return fmt.Sprintf("the selective import from %q", pkg.Selective[name].Template)
 			}
-			if collision != "" {
-				d := l.reportAt(CodeOpenCollision, binding.File, binding.Statement, "open import of %q binds %q, which collides with %s", binding.Template, name, collision)
-				d.AddHelp("import the package under an alias, or select the members you need: { f, g } := import(...)")
-				continue
-			}
+			return ""
+		}
+		names, collisions := modules.OpenBind(func(name string) bool { return boundBy(name) != "" }, exports)
+		for _, name := range collisions {
+			d := l.reportAt(CodeOpenCollision, binding.File, binding.Statement, "open import of %q binds %q, which collides with %s", binding.Template, name, boundBy(name))
+			d.AddHelp("import the package under an alias, or select the members you need: { f, g } := import(...)")
+		}
+		for _, name := range names {
 			pkg.Selective[name] = binding
 		}
 	}
@@ -1942,7 +1973,11 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 			steady[internal] = entry.Path + " " + entry.Name
 		}
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady}
+	exports := map[string]modules.Exports{}
+	for path, pkg := range l.packages {
+		exports[path] = pkg.Exports
+	}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,
@@ -2122,7 +2157,7 @@ var primitiveTypeNames = map[string]bool{
 	"u8": true, "u16": true, "u32": true, "u64": true,
 	"int": true, "uint": true, "ptr": true, "uptr": true,
 	"byte": true, "rune": true, "Bool": true, "string": true,
-	"f32": true, "f64": true, "f16": true, "bf16": true,
+	"f32": true, "f64": true, "f16": true, "bf16": true, "f8e4m3": true, "f8e5m2": true,
 }
 
 // instantiate substitutes a generic package's parameters with the import's

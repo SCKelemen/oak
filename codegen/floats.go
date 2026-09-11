@@ -75,6 +75,87 @@ static inline bf16 oak_bf16_round_f32(f32 x) {
   if (rem > 0x8000u || (rem == 0x8000u && (upper & 1u))) { upper++; }
   return (bf16)upper;
 }
+/* OCP FP8 storage formats (docs/spec/20-types.md section 11.3.1). E4M3: bias 7,
+   three fraction bits, no infinities, NaN is exponent and fraction all ones
+   (0x7F), largest finite 448 (0x7E); rounding is nearest even on the format's
+   grid, a result that would exceed 448 is NaN. E5M2: bias 15, two fraction
+   bits, infinities and NaN as IEEE, largest finite 57344 (0x7B); overflow is
+   infinity. NaN narrows to the format's quiet NaN without payload and widens
+   quiet. The saturating forms clamp finite overflow to the largest finite
+   value instead (NaN stays NaN; an E5M2 infinity stays infinite). */
+static inline f32 oak_widen_f8e4m3(f8e4m3 h) {
+  uint32_t sign = ((uint32_t)h & 0x80u) << 24, exp = ((uint32_t)h >> 3) & 0xFu, mant = (uint32_t)h & 0x7u;
+  union { uint32_t u; f32 f; } pun;
+  if (exp == 0xFu && mant == 0x7u) { pun.u = sign | 0x7FC00000u; return pun.f; }
+  if (exp == 0u) {
+    if (mant == 0u) { pun.u = sign; return pun.f; }
+    exp = 1u; while ((mant & 0x8u) == 0u) { mant <<= 1; exp--; } mant &= 0x7u;
+    pun.u = sign | ((exp + 120u) << 23) | (mant << 20); return pun.f;
+  }
+  pun.u = sign | ((exp + 120u) << 23) | (mant << 20); return pun.f;
+}
+static inline f8e4m3 oak_f8e4m3_round_f32(f32 x) {
+  union { f32 f; uint32_t u; } pun; pun.f = x;
+  uint32_t u = pun.u, sign = (u >> 24) & 0x80u, exp = (u >> 23) & 0xFFu, mant = u & 0x7FFFFFu;
+  if (exp == 0xFFu) { return (f8e4m3)(sign | 0x7Fu); }
+  int32_t e = (int32_t)exp - 127 + 7;
+  if (e >= 16) { return (f8e4m3)(sign | 0x7Fu); }
+  uint32_t enc;
+  if (e <= 0) {
+    if (e < -3) { return (f8e4m3)sign; }
+    mant |= 0x800000u;
+    uint32_t shift = (uint32_t)(21 - e), rem = mant & ((1u << shift) - 1u), midpoint = 1u << (shift - 1u);
+    enc = mant >> shift;
+    if (rem > midpoint || (rem == midpoint && (enc & 1u))) { enc++; }
+  } else {
+    uint32_t rem = mant & 0xFFFFFu;
+    enc = ((uint32_t)e << 3) | (mant >> 20);
+    if (rem > 0x80000u || (rem == 0x80000u && (enc & 1u))) { enc++; }
+  }
+  if (enc >= 0x7Fu) { return (f8e4m3)(sign | 0x7Fu); }
+  return (f8e4m3)(sign | enc);
+}
+static inline f8e4m3 oak_f8e4m3_saturating_f32(f32 x) {
+  f8e4m3 r = oak_f8e4m3_round_f32(x);
+  if ((r & 0x7Fu) == 0x7Fu && x == x) { return (f8e4m3)((r & 0x80u) | 0x7Eu); }
+  return r;
+}
+static inline f32 oak_widen_f8e5m2(f8e5m2 h) {
+  uint32_t sign = ((uint32_t)h & 0x80u) << 24, exp = ((uint32_t)h >> 2) & 0x1Fu, mant = (uint32_t)h & 0x3u;
+  union { uint32_t u; f32 f; } pun;
+  if (exp == 0x1Fu) { pun.u = sign | 0x7F800000u | (mant != 0u ? 0x400000u : 0u) | (mant << 21); return pun.f; }
+  if (exp == 0u) {
+    if (mant == 0u) { pun.u = sign; return pun.f; }
+    exp = 1u; while ((mant & 0x4u) == 0u) { mant <<= 1; exp--; } mant &= 0x3u;
+    pun.u = sign | ((exp + 112u) << 23) | (mant << 21); return pun.f;
+  }
+  pun.u = sign | ((exp + 112u) << 23) | (mant << 21); return pun.f;
+}
+static inline f8e5m2 oak_f8e5m2_round_f32(f32 x) {
+  union { f32 f; uint32_t u; } pun; pun.f = x;
+  uint32_t u = pun.u, sign = (u >> 24) & 0x80u, exp = (u >> 23) & 0xFFu, mant = u & 0x7FFFFFu;
+  if (exp == 0xFFu) { return (f8e5m2)(sign | (mant != 0u ? 0x7Eu : 0x7Cu)); }
+  int32_t e = (int32_t)exp - 127 + 15;
+  if (e >= 31) { return (f8e5m2)(sign | 0x7Cu); }
+  uint32_t enc;
+  if (e <= 0) {
+    if (e < -2) { return (f8e5m2)sign; }
+    mant |= 0x800000u;
+    uint32_t shift = (uint32_t)(22 - e), rem = mant & ((1u << shift) - 1u), midpoint = 1u << (shift - 1u);
+    enc = mant >> shift;
+    if (rem > midpoint || (rem == midpoint && (enc & 1u))) { enc++; }
+  } else {
+    uint32_t rem = mant & 0x1FFFFFu;
+    enc = ((uint32_t)e << 2) | (mant >> 21);
+    if (rem > 0x100000u || (rem == 0x100000u && (enc & 1u))) { enc++; }
+  }
+  return (f8e5m2)(sign | enc);
+}
+static inline f8e5m2 oak_f8e5m2_saturating_f32(f32 x) {
+  f8e5m2 r = oak_f8e5m2_round_f32(x);
+  if ((r & 0x7Fu) == 0x7Cu && x == x && (x < 0 ? -x : x) <= 0x1.fffffep+127f) { return (f8e5m2)((r & 0x80u) | 0x7Bu); }
+  return r;
+}
 
 `
 
@@ -242,6 +323,11 @@ func floatConversionHelperSource(oakName, target, op, source string) string {
 		return fmt.Sprintf("static inline %s %s( %s x ) {\n  if (!(x %s && x %s)) { __builtin_trap(); }\n  return (%s)x;\n}\n",
 			target, helper, source, low, high, target)
 	case "saturating":
+		if typechecker.IsStorageFloatName(target) {
+			// f8e4m3_saturating_f32 / f8e5m2_saturating_f32: the
+			// preamble's clamping helpers.
+			return fmt.Sprintf("static inline %s %s( %s x ) { return oak_%s_saturating_f32(x); }\n", target, helper, source, target)
+		}
 		low, high := floatIntegerBounds(target)
 		minC, maxC := integerExtremes(target)
 		return fmt.Sprintf("static inline %s %s( %s x ) {\n  if (x != x) { return 0; }\n  if (!(x %s)) { return %s; }\n  if (!(x %s)) { return %s; }\n  return (%s)x;\n}\n",

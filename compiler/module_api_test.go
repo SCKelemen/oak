@@ -339,3 +339,89 @@ pub wrap: (v: i32): inner.Box = inner.box(v)
 		t.Fatal("a single-package snapshot of a package with nested modules must still fail closed")
 	}
 }
+
+// Unsealed imports are decided by building against a candidate through an
+// in-memory replace; the manifest on disk is untouched.
+func TestTryReplacementDecidesUnsealedImports(t *testing.T) {
+	dep := writeModule(t, map[string]string{
+		"oak.mod":       "module example.com/dep\nversion 1.0.0\n",
+		"math/math.oak": "package math\n\npub square: (v: i32): i32 = v * v\n",
+	})
+	compatible := writeModule(t, map[string]string{
+		"oak.mod":       "module example.com/dep\nversion 1.1.0\n",
+		"math/math.oak": "package math\n\npub square: (v: i32): i32 = v * v\npub cube: (v: i32): i32 = v * v * v\n",
+	})
+	breaking := writeModule(t, map[string]string{
+		"oak.mod":       "module example.com/dep\nversion 2.0.0\n",
+		"math/math.oak": "package math\n\npub square: (v: i64): i64 = v * v\n",
+	})
+	app := writeModule(t, map[string]string{
+		"oak.mod":  "module example.com/app\nrequire example.com/dep 1.0.0\nreplace example.com/dep => " + dep + "\n",
+		"main.oak": "package main\n\nm := import(\"example.com/dep/math\")\n\nmain: (): i32 = m.square(6) + 6\n",
+	})
+	manifestBefore, _ := os.ReadFile(filepath.Join(app, "oak.mod"))
+	results, err := TryReplacement(app, "example.com/dep", compatible)
+	if err != nil || len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("compatible candidate: %v %+v", err, results)
+	}
+	results, err = TryReplacement(app, "example.com/dep", breaking)
+	if err != nil || len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("breaking candidate must fail the build: %v %+v", err, results)
+	}
+	if _, err := TryReplacement(app, "example.com/other", breaking); err == nil {
+		t.Fatal("a candidate declaring another module must be rejected")
+	}
+	manifestAfter, _ := os.ReadFile(filepath.Join(app, "oak.mod"))
+	if string(manifestBefore) != string(manifestAfter) {
+		t.Fatal("oak mod try must never rewrite the manifest")
+	}
+}
+
+// Tidy reconciles require directives with imports syntactically, proposes
+// cached modules for uncovered imports, and rewrites oak.mod preserving
+// every other line.
+func TestTidyReconcilesRequires(t *testing.T) {
+	cache := t.TempDir()
+	for _, version := range []string{"1.2.0", "1.4.0"} {
+		dir := filepath.Join(cache, "example.com", "dep@v"+version)
+		if err := os.MkdirAll(filepath.Join(dir, "math"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "oak.mod"), []byte("module example.com/dep\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := writeModule(t, map[string]string{
+		"oak.mod":            "module example.com/app\noak 0.1.0\n// pinned for reproducibility\nrequire example.com/stale 3.0.0\nprofile strict\n",
+		"main.oak":           "package main\n\nimport(\"strings\")\nm := import(\"example.com/dep/math\")\nx := import(\"example.com/mystery/pkg\")\n\nmain: (): i32 = m.square(6) + x.y()\n",
+		"util/util_test.oak": "package util\n\nm := import(\"example.com/dep/math\")\n",
+		"util/util.oak":      "package util\n\npub one: (): i32 = 1\n",
+	})
+	report, err := Tidy(root, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Unused) != 1 || report.Unused[0] != "example.com/stale" {
+		t.Fatalf("unused = %v", report.Unused)
+	}
+	if len(report.Missing) != 1 || report.Missing[0].Path != "example.com/dep" || report.Missing[0].Version != "1.4.0" || len(report.Missing[0].Imports) != 1 {
+		t.Fatalf("missing = %+v", report.Missing)
+	}
+	if len(report.Uncovered) != 1 || report.Uncovered[0] != "example.com/mystery/pkg" {
+		t.Fatalf("uncovered = %v", report.Uncovered)
+	}
+	if err := TidyWrite(root, report); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := os.ReadFile(filepath.Join(root, "oak.mod"))
+	want := "module example.com/app\noak 0.1.0\n// pinned for reproducibility\nprofile strict\nrequire example.com/dep 1.4.0\n"
+	if string(text) != want {
+		t.Fatalf("rewritten manifest:\n%s\nwant:\n%s", text, want)
+	}
+	// Without a cache the same import is merely uncovered; a second pass
+	// reports only what needs a hand.
+	report, err = Tidy(root, "")
+	if err != nil || len(report.Unused) != 0 || len(report.Missing) != 0 || len(report.Uncovered) != 1 {
+		t.Fatalf("second pass = %+v %v", report, err)
+	}
+}

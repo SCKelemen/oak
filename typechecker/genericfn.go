@@ -435,6 +435,10 @@ func (tc *TypeChecker) instantiateFunctionTemplate(template *ast.FunctionStateme
 		tc.functionInstantiations = make(map[string]*ast.FunctionStatement)
 	}
 	tc.functionInstantiations[mangled] = specialized
+	if tc.instantiationTemplates == nil {
+		tc.instantiationTemplates = make(map[string]string)
+	}
+	tc.instantiationTemplates[mangled] = template.Name.Value
 	tc.functionInstantiationOrder = append(tc.functionInstantiationOrder, mangled)
 	tc.copyRegionSignature(template.Name.Value, mangled)
 

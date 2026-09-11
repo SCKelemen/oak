@@ -7,6 +7,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/token"
 )
@@ -495,7 +496,19 @@ func (t *FunctionType) Equals(other Type) bool {
 type TypeChecker struct {
 	// Module-system facts (typechecker/modules.go): opaque types by internal
 	// name and the loaded package paths.
-	opaqueTypes             map[string]string
+	opaqueTypes map[string]string
+	// typeOwners maps each declared type to its declaring package, like
+	// globalOwners for functions and values.
+	typeOwners map[string]string
+	// operatorBindings maps "TypeName SYM" to the function an operator
+	// declaration bound (docs/spec/10-syntax.md section 14), and
+	// operatorCalls records, position-keyed by the operator token, the
+	// callee of every infix expression that resolved through a binding.
+	operatorBindings map[string]string
+	operatorCalls    map[string]string
+	// packageExports is every loaded package's member table, for uniform
+	// call syntax (docs/spec/10-syntax.md section 13).
+	packageExports          map[string]modules.Exports
 	packagePaths            map[string]bool
 	sealedOpaque            map[string]map[string]bool
 	abstractTypes           map[string]string
@@ -512,7 +525,10 @@ type TypeChecker struct {
 	// Monomorphization records (typechecker/mono.go): the concrete
 	// generic-ADT instantiations the program uses and the instantiation
 	// each variant expression / match scrutinee was checked against.
-	adtInstantiations  map[string]Instantiation
+	adtInstantiations map[string]Instantiation
+	// loopDepth counts the while bodies enclosing the statement being
+	// checked; a function body starts a fresh count.
+	loopDepth          int
 	variantResolutions map[string]string
 	matchResolutions   map[string]string
 	// recordTemplates holds generic record declarations (Ring[T, N: u32]);
@@ -544,14 +560,18 @@ type TypeChecker struct {
 	globalOwners map[string]string
 	// externFunctions names the extern bindings (docs/spec/92-ffi.md section 2.3),
 	// whose calls may carry boundary spans (section 2.5).
-	externFunctions            map[string]bool
-	layoutQueries              map[string]LayoutQuery
-	checkingSpecialization     bool
-	extentFacts                []extentFact
-	provenIndices              map[string]bool
-	asmBackedFunctions         map[string]bool
-	functionTemplates          map[string]*ast.FunctionStatement
-	functionInstantiations     map[string]*ast.FunctionStatement
+	externFunctions        map[string]bool
+	layoutQueries          map[string]LayoutQuery
+	checkingSpecialization bool
+	extentFacts            []extentFact
+	provenIndices          map[string]bool
+	asmBackedFunctions     map[string]bool
+	functionTemplates      map[string]*ast.FunctionStatement
+	functionInstantiations map[string]*ast.FunctionStatement
+	// instantiationTemplates maps each specialization's mangled name back
+	// to its template, so resource contracts declared for a template apply
+	// to every specialization (docs/spec/50-borrowing.md section 9).
+	instantiationTemplates     map[string]string
 	functionInstantiationOrder []string
 	// rowFunctionTemplates marks source functions whose extensible-record
 	// parameters are representation-polymorphic. They share the ordinary
@@ -788,6 +808,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok {
 			tc.predeclareFunctionSignature(fn)
+			if fn.Operator != "" && fn.Name != nil {
+				tc.registerOperator(fn)
+			}
 			if len(fn.TypeParams) > 0 && fn.Receiver == nil && !typeParamsConstrained(fn.TypeParams) {
 				if tc.functionTemplates == nil {
 					tc.functionTemplates = make(map[string]*ast.FunctionStatement)
@@ -863,8 +886,119 @@ func (tc *TypeChecker) recordGlobalOwners(program *ast.Program) {
 			if s.Name != nil {
 				tc.globalOwners[s.Name.Value] = tc.packageOf(s.Name.Token)
 			}
+		case *ast.ADTType:
+			if s.Name != nil {
+				if tc.typeOwners == nil {
+					tc.typeOwners = make(map[string]string)
+				}
+				tc.typeOwners[s.Name.Value] = tc.packageOf(s.Name.Token)
+			}
 		}
 	}
+}
+
+// registerOperator validates an `operator(SYM)` declaration and records
+// its binding (docs/spec/10-syntax.md section 14): two parameters, no
+// receiver or type parameters, a first parameter of a declared record or
+// ADT type declared in this function's own package, one binding per type
+// and symbol, and a Bool result for the comparison symbols.
+func (tc *TypeChecker) registerOperator(fn *ast.FunctionStatement) {
+	if fn.Receiver != nil || len(fn.TypeParams) > 0 || len(fn.Parameters) != 2 || fn.Parameters[1].Variadic {
+		tc.addError(fn.Name, "operator(%s) %s must be a non-generic function of exactly two parameters", fn.Operator, fn.Name.Value)
+		return
+	}
+	leftType := tc.parseTypeExpression(fn.Parameters[0].Type)
+	typeName := ""
+	switch t := leftType.(type) {
+	case *RecordType:
+		typeName = t.Name
+	case *ADTType:
+		typeName = t.Name
+	}
+	if typeName == "" {
+		tc.addError(fn.Parameters[0].Type, "operator(%s) %s: the first parameter must be a declared record or ADT type, got %s; primitives, strings, arrays, and views keep their built-in operators", fn.Operator, fn.Name.Value, leftType)
+		return
+	}
+	if owner, declared := tc.typeOwners[typeName]; declared && owner != tc.packageOf(fn.Name.Token) {
+		tc.addError(fn.Name, "operator(%s) %s must be declared in the package that declares %s (docs/spec/83-modules.md section 6.5)", fn.Operator, fn.Name.Value, typeName)
+		return
+	}
+	switch fn.Operator {
+	case "==", "!=", "<", "<=", ">", ">=":
+		if fn.ReturnType == nil {
+			tc.addError(fn.Name, "operator(%s) %s must return Bool", fn.Operator, fn.Name.Value)
+			return
+		}
+		if ret := tc.parseTypeExpression(fn.ReturnType); ret == nil || !ret.Equals(&BoolType{}) {
+			tc.addError(fn.ReturnType, "operator(%s) %s must return Bool, got %s", fn.Operator, fn.Name.Value, ret)
+			return
+		}
+	}
+	if tc.operatorBindings == nil {
+		tc.operatorBindings = make(map[string]string)
+	}
+	key := typeName + " " + fn.Operator
+	if prior, bound := tc.operatorBindings[key]; bound {
+		tc.addError(fn.Name, "operator(%s) is already bound for %s by %s; one binding per type and symbol", fn.Operator, typeName, prior)
+		return
+	}
+	tc.operatorBindings[key] = fn.Name.Value
+}
+
+// operatorBinding reports the function bound to SYM for a left operand of
+// the given type, if any.
+func (tc *TypeChecker) operatorBinding(leftType Type, symbol string) (string, bool) {
+	typeName := ""
+	switch t := leftType.(type) {
+	case *RecordType:
+		typeName = t.Name
+	case *ADTType:
+		typeName = t.Name
+	}
+	if typeName == "" {
+		return "", false
+	}
+	callee, bound := tc.operatorBindings[typeName+" "+symbol]
+	return callee, bound
+}
+
+// OperatorCallee reports the function an infix expression at tok resolved
+// to through an operator binding; the compiler's elaboration rewrites such
+// expressions into plain calls before any later phase runs.
+func (tc *TypeChecker) OperatorCallee(tok token.Token) (string, bool) {
+	callee, ok := tc.operatorCalls[positionKey(tok)]
+	return callee, ok
+}
+
+// checkOperatorCall checks `left SYM right` as the call callee(left, right)
+// and records it for rewriting.
+func (tc *TypeChecker) checkOperatorCall(expr *ast.InfixExpression, callee string, leftType Type) Type {
+	scheme, declared := tc.env.Get(callee)
+	if !declared {
+		return nil
+	}
+	fnType, isFunction := Instantiate(scheme, NewUnifier()).(*FunctionType)
+	if !isFunction || len(fnType.Parameters) != 2 {
+		tc.addError(expr, "operator %s: %s is not a two-parameter function", expr.Operator, callee)
+		return nil
+	}
+	if !tc.isAssignable(leftType, fnType.Parameters[0]) {
+		tc.addError(expr.Left, "operator %s (%s): left operand %s does not match %s", expr.Operator, callee, leftType, fnType.Parameters[0])
+		return nil
+	}
+	rightType := tc.checkExpression(expr.Right, fnType.Parameters[1])
+	if rightType == nil {
+		return nil
+	}
+	if !tc.isAssignable(rightType, fnType.Parameters[1]) {
+		tc.addError(expr.Right, "operator %s (%s): right operand %s does not match %s", expr.Operator, callee, rightType, fnType.Parameters[1])
+		return nil
+	}
+	if tc.operatorCalls == nil {
+		tc.operatorCalls = make(map[string]string)
+	}
+	tc.operatorCalls[positionKey(expr.Token)] = callee
+	return fnType.ReturnType
 }
 
 // shadowsVisibleBinding reports whether declaring name at tok would shadow
@@ -1184,6 +1318,12 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		}
 	case *ast.WhileStatement:
 		tc.checkWhileStatement(s)
+	case *ast.BreakStatement:
+		// A break leaves the innermost while (docs/spec/85-discipline.md
+		// section 3); outside a loop body there is nothing to leave.
+		if tc.loopDepth == 0 {
+			tc.addError(s, "break outside a while loop")
+		}
 	case *ast.IfStatement:
 		tc.checkIfStatement(s)
 	case *ast.UnsafeBlock:
@@ -1453,6 +1593,14 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		leftType = tc.checkExpression(expr.Left, peerContext(rightType))
 	} else {
 		leftType = tc.checkExpression(expr.Left, operandExpected)
+		// A declared type with an operator binding for this symbol makes the
+		// expression the bound call (docs/spec/10-syntax.md section 14): the
+		// right operand is checked against the callee's second parameter.
+		if leftType != nil {
+			if callee, bound := tc.operatorBinding(leftType, expr.Operator); bound {
+				return tc.checkOperatorCall(expr, callee, leftType)
+			}
+		}
 		// The right operand of && runs only when the left held, so it sees
 		// the facts the left establishes (typechecker/extents.go); no
 		// expression can reassign a local in between.
@@ -1796,7 +1944,10 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	tc.env = funcEnv
 
 	// Type check function body (BlockStatement - check last expression)
+	savedLoopDepth := tc.loopDepth
+	tc.loopDepth = 0
 	returnType := tc.checkBlockExpression(fn.Body)
+	tc.loopDepth = savedLoopDepth
 	if returnType == nil {
 		returnType = &UnitType{}
 	}
@@ -1938,10 +2089,13 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		}
 	}
 
-	// Check if this is a method call: recv.method(args)
+	// recv.member(args): a method call or uniform call syntax
+	// (docs/spec/10-syntax.md section 13).
 	if indexExpr, ok := expr.Function.(*ast.IndexExpression); ok {
 		if methodName, ok := indexExpr.Index.(*ast.Identifier); ok {
-			// This is a method call
+			if indexExpr.Dot {
+				return tc.checkDotCall(expr, indexExpr, methodName)
+			}
 			return tc.checkMethodCall(indexExpr.Left, methodName.Value, expr.Arguments)
 		}
 	}
@@ -2168,7 +2322,7 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 		"byte": true,              // alias of u8
 		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
 		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
-		"f16": true, "bf16": true, // storage formats: rejected with the spelling to use
+		"f16": true, "bf16": true, "f8e4m3": true, "f8e5m2": true, // storage formats: rejected with the spelling to use
 	}
 	if !primitiveTypes[typeName] {
 		return nil // Not a primitive constructor
@@ -2670,6 +2824,71 @@ func (tc *TypeChecker) isValidNarrowing(sourceType, targetType string) bool {
 }
 
 // checkMethodCall type checks a method call: recv.method(args)
+// checkDotCall resolves recv.name(args) (docs/spec/10-syntax.md section
+// 13). A method declared for an ADT receiver wins. Otherwise the form is
+// uniform call syntax: name must be a function visible at the call site or
+// an exported function of the package that declares the receiver's type,
+// and the call is rewritten in place into name(recv, args...), an ordinary
+// invocation for every later phase. Fields are never callable this way,
+// and nothing is dispatched at run time: the callee is fixed here.
+func (tc *TypeChecker) checkDotCall(expr *ast.InvocationExpression, access *ast.IndexExpression, member *ast.Identifier) Type {
+	recvType := tc.checkExpression(access.Left)
+	if recvType == nil {
+		return nil
+	}
+	if adt, isADT := recvType.(*ADTType); isADT {
+		if _, declared := tc.env.Get(fmt.Sprintf("%s::%s", adt.Name, member.Value)); declared {
+			return tc.checkMethodCall(access.Left, member.Value, expr.Arguments)
+		}
+	}
+	if record, isRecord := recvType.(*RecordType); isRecord {
+		if _, isField := record.Fields[member.Value]; isField {
+			tc.addError(member, "%s is a field of %s, not a function: uniform call syntax never reads a field (docs/spec/10-syntax.md section 13); bind the field and call the value", member.Value, record.DisplayName())
+			return nil
+		}
+	}
+	callee, found := tc.uniformCallee(recvType, member.Value)
+	if !found {
+		tc.addError(member, "no method or function %s for %s: uniform call syntax needs a function %s visible here or exported by the package declaring %s (docs/spec/10-syntax.md section 13)", member.Value, recvType, member.Value, recvType)
+		return nil
+	}
+	expr.Function = &ast.Identifier{Token: member.Token, Value: callee}
+	expr.Arguments = append([]ast.Expression{access.Left}, expr.Arguments...)
+	return tc.checkInvocationExpression(expr)
+}
+
+// uniformCallee names the function recv.name(...) calls: name itself when
+// a binding of that name is visible at the call site (the receiver's own
+// package, selective and open imports, the prelude), else the exported
+// function name of the package that declares the receiver's named type,
+// under its internal name. Unexported functions of other packages are not
+// reachable: the same `pub` boundary as a qualified call.
+func (tc *TypeChecker) uniformCallee(recvType Type, name string) (string, bool) {
+	if _, visible := tc.env.Get(name); visible {
+		return name, true
+	}
+	typeName := ""
+	switch t := recvType.(type) {
+	case *RecordType:
+		typeName = t.Name
+	case *ADTType:
+		typeName = t.Name
+	}
+	path, _, mangled := modules.Demangle(typeName)
+	if !mangled {
+		return "", false
+	}
+	member, declared := tc.packageExports[path][name]
+	if !declared || !member.Exported || member.Kind != modules.KindValue {
+		return "", false
+	}
+	internal := modules.Mangle(path, name)
+	if _, present := tc.env.Get(internal); !present {
+		return "", false
+	}
+	return internal, true
+}
+
 func (tc *TypeChecker) checkMethodCall(recvExpr ast.Expression, methodName string, args []ast.Expression) Type {
 	// Check receiver type
 	recvType := tc.checkExpression(recvExpr)
@@ -3108,7 +3327,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 			primitiveTypes := map[string]bool{
 				"i8": true, "i16": true, "i32": true, "i64": true,
 				"u8": true, "u16": true, "u32": true, "u64": true,
-				"f32": true, "f64": true, "f16": true, "bf16": true,
+				"f32": true, "f64": true, "f16": true, "bf16": true, "f8e4m3": true, "f8e5m2": true,
 				"string": true, "Bool": true, "byte": true, "()": true,
 			}
 			if primitiveTypes[ident.Value] {
@@ -3727,7 +3946,10 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 	// Type check function body, inferring literals against the declared
 	// return type.
+	savedLoopDepth := tc.loopDepth
+	tc.loopDepth = 0
 	bodyType := tc.checkExpression(stmt.Body, returnType)
+	tc.loopDepth = savedLoopDepth
 	if bodyType == nil {
 		bodyType = &UnitType{}
 	}
@@ -4121,7 +4343,9 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	// visible after it, so a later block may declare the same name.
 	outerEnv := tc.env
 	tc.env = NewEnclosedTypeEnvironment(outerEnv)
+	tc.loopDepth++
 	tc.checkBlockStatement(stmt.Body)
+	tc.loopDepth--
 	tc.env = outerEnv
 	tc.popExtentFacts(mark)
 }
@@ -4515,7 +4739,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types
@@ -4690,7 +4914,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types

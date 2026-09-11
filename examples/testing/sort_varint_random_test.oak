@@ -1,0 +1,145 @@
+import(std)
+import(testing)
+
+// Properties for the sort, varint and random packages: sorting is a
+// permutation that ends sorted, LEB128 and ZigZag round-trip and are
+// canonical, and a shuffle is a permutation.
+
+// 7100 sorted, 7101 the multiset is preserved (counts per value), 7102 binary
+// search finds every present element and lower_bound is its first index,
+// 7103 dedup leaves a strictly increasing prefix of the distinct count.
+PropertySortPermutes: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  values: [24]u32
+  before: [8]u32
+  after: [8]u32
+  count: u32 = test_range(choices, data, u32(0), u32(24))
+  distinct: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < count {
+    v: u32 = test_range(choices, data, u32(0), u32(7))
+    values[i] = v
+    before[v] == u32(0) ? { distinct = distinct + u32(1) }
+    before[v] = before[v] + u32(1)
+    i = i + u32(1)
+  }
+  true ? {
+    whole: [*]u32 = span(&values)
+    items: [*]u32 = whole[u32(0):count]
+    count > u32(16) ? { sort_heap[u32](items) } | { sort_insertion[u32](items) }
+  }
+  true ? {
+    sorted_whole: []u32 = view(&values)
+    sorted: []u32 = sorted_whole[u32(0):count]
+    test_check(sort_is_sorted[u32](sorted), u32(7100))
+    j: u32 = u32(0)
+    while j < count {
+      after[sorted[j]] = after[sorted[j]] + u32(1)
+      j = j + u32(1)
+    }
+    k: u32 = u32(0)
+    while k < u32(8) {
+      test_check(before[k] == after[k], u32(7101))
+      before[k] > u32(0) ? {
+        found: Option[u32] = sort_search[u32](sorted, k)
+        at: u32 = option_or[u32](found, u32(99))
+        test_check(at < count && sorted[at] == k, u32(7102))
+        first: u32 = sort_lower_bound[u32](sorted, k)
+        test_check(sorted[first] == k && (first == u32(0) || sorted[first - u32(1)] < k), u32(7102))
+      } | {
+        test_check(option_or[u32](sort_search[u32](sorted, k), u32(99)) == u32(99), u32(7102))
+      }
+      k = k + u32(1)
+    }
+  }
+  kept: u32 = u32(0)
+  true ? {
+    whole2: [*]u32 = span(&values)
+    items2: [*]u32 = whole2[u32(0):count]
+    kept = sort_dedup[u32](items2)
+  }
+  test_check(kept == distinct, u32(7103))
+  m: u32 = u32(1)
+  while m < kept {
+    test_check(values[m - u32(1)] < values[m], u32(7103))
+    m = m + u32(1)
+  }
+  count > u32(16) ? { testing_classify(u32(160)) } | { testing_classify(u32(161)) }
+  count == u32(0) ? { testing_classify(u32(162)) }
+}
+
+// 7110 encode then decode is the identity and consumes exactly the bytes
+// written, 7111 the size matches, 7112 signed values round-trip through
+// ZigZag, 7113 flipping the last byte's continuation bit is rejected.
+PropertyVarintRoundTrip: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  buffer: [10]u8
+  high: u64 = u64(test_u32(choices, data))
+  low: u64 = u64(test_u32(choices, data))
+  shift: u64 = u64(test_range(choices, data, u32(0), u32(63)))
+  value: u64 = ((high << u64(32)) | low) >> shift
+  n: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&buffer)
+    n = varint_written(varint_encode(dst, u32(0), value))
+  }
+  test_check(n == varint_size(value) && n >= u32(1) && n <= u32(10), u32(7111))
+  true ? {
+    whole: []u8 = view(&buffer)
+    encoded: []u8 = whole[u32(0):n]
+    back: VarintValue = varint_value(varint_decode(encoded, u32(0)))
+    test_check(back.value == value && back.next == n, u32(7110))
+  }
+  buffer[n - u32(1)] = buffer[n - u32(1)] | u8(128)
+  true ? {
+    flipped: []u8 = view(&buffer)
+    test_check(!varint_ok(varint_decode(flipped[u32(0):n], u32(0))), u32(7113))
+  }
+  signed: i64 = i64_bits_u64((high << u64(32)) | low)
+  sbuf: [10]u8
+  sn: u32 = u32(0)
+  true ? {
+    sdst: [*]u8 = span(&sbuf)
+    sn = varint_written(varint_encode_signed(sdst, u32(0), signed))
+  }
+  swhole: []u8 = view(&sbuf)
+  decoded: VarintSigned = varint_signed_value(varint_decode_signed(swhole[u32(0):sn], u32(0)))
+  test_check(decoded.value == signed && decoded.next == sn, u32(7112))
+  testing_classify(u32(170) + n)
+}
+
+// 7120 a shuffle is a permutation (sorted, it is the identity), 7121
+// bounded draws stay in range.
+PropertyShuffleIsPermutation: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  states: [1]Xoshiro
+  state: [*]Xoshiro = span(&states)
+  seed: u64 = (u64(test_u32(choices, data)) << u64(32)) | u64(test_u32(choices, data))
+  state[0] = random_seed(seed)
+  count: u32 = test_range(choices, data, u32(0), u32(20))
+  deck: [20]u32
+  true ? {
+    whole: [*]u32 = span(&deck)
+    items: [*]u32 = whole[u32(0):count]
+    i: u32 = u32(0)
+    while i < count { items[i] = i
+      i = i + u32(1)
+    }
+    random_shuffle[u32](state, items)
+    sort_span[u32](items)
+  }
+  j: u32 = u32(0)
+  while j < count {
+    test_check(deck[j] == j, u32(7120))
+    j = j + u32(1)
+  }
+  bound: u64 = u64(test_range(choices, data, u32(1), u32(1000)))
+  k: u32 = u32(0)
+  while k < u32(16) {
+    test_check(random_below(state, bound) < bound, u32(7121))
+    k = k + u32(1)
+  }
+}

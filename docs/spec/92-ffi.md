@@ -93,7 +93,12 @@ abort: (): () = c.extern("abort")
 Rules (diagnostics `OAK-F01xx`):
 
 - **F0101** — every parameter type and any non-unit return type of an extern
-  binding must be a `c.*` type. Oak types never cross the boundary raw.
+  binding must be a `c.*` type, **or a declared `struct` (or boundary tagged
+  union, §2.6) whose fields are boundary types (§2.5.1), passed by value**.
+  Oak scalars never cross the boundary raw; a struct crosses with the layout
+  the backend asserts at C compile time, in both directions — `div` from
+  libc returning its `div_t` by value, or a Metal launch descriptor handed
+  to a runtime shim, both without a pointer.
 - **F0102** — the symbol must be a single string literal that is a valid C
   identifier (`[A-Za-z_][A-Za-z0-9_]*`). This is load-bearing for the C
   backend: the symbol is emitted into generated source, and the identifier
@@ -148,7 +153,7 @@ extern binding:
 
 `T` must be a fixed-width integer, a floating-point type (`20-types.md`
 §11.3; the `f16`/`bf16` storage formats cross as their `uint16_t`
-carriers), `Bool`, a boundary tagged union (§2.6), or a `struct` whose
+carriers and `f8e4m3`/`f8e5m2` as `uint8_t`), `Bool`, a boundary tagged union (§2.6), or a `struct` whose
 layout is proven (`40-records.md`) and whose fields are recursively of
 these types — the types with one meaning on both sides of the boundary. Views of records without a selected
 representation, of ADTs, of views, or of anything carrying a borrow are
@@ -227,7 +232,8 @@ no allocation, no thunk. The interpreter cannot call externs (§4) and rejects
 these forms with the same diagnostic it gives an extern call.
 
 **Implemented.** Every element type of §2.5.1 is admitted: fixed-width
-integers, `f32`/`f64` and the `f16`/`bf16` storage formats, `Bool`, tagged
+integers, `f32`/`f64` and the `f16`/`bf16`/`f8e4m3`/`f8e5m2` storage
+formats, `Bool`, tagged
 unions whose payloads are boundary types (§2.6), and declared `struct`
 types whose fields are recursively boundary types (the backend emits these
 with C compile-time size and offset assertions, so the pointer C receives

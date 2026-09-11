@@ -24,6 +24,10 @@ type blaster struct {
 	// an index whose bits are the same canonical nodes as an earlier one
 	// (over the same span) is the same value and shares its variables.
 	selects []selectAbstraction
+	// memo shares the blasting of shared subterms: the terms are DAGs (a
+	// loop-carried value or a local appears in every place it is read),
+	// and re-blasting each reference is exponential in the nesting depth.
+	memo map[*term][]int
 }
 
 type selectAbstraction struct {
@@ -110,6 +114,20 @@ func (bl *blaster) blast(t *term) []int {
 	if bl.bdd.exceeded {
 		return nil
 	}
+	if bl.memo == nil {
+		bl.memo = map[*term][]int{}
+	}
+	if cached, seen := bl.memo[t]; seen {
+		return cached
+	}
+	out := bl.blastUncached(t)
+	if out != nil {
+		bl.memo[t] = out
+	}
+	return out
+}
+
+func (bl *blaster) blastUncached(t *term) []int {
 	out := make([]int, t.width)
 	switch t.kind {
 	case termConst:
@@ -199,7 +217,31 @@ func (bl *blaster) blast(t *term) []int {
 		}
 	case "mul":
 		out = bl.multiply(left, right)
+	case "ror":
+		if t.right.kind == termConst {
+			out = rotateRight(left, int(t.right.value%uint64(t.width)))
+		} else {
+			out = bl.rotateBarrel(left, right)
+		}
+	case "rev", "rev16", "rev32", "rbit":
+		out = permuteBits(t.op, left)
+	case "clz":
+		out = bl.countLeadingZeros(left)
+	case "cls":
+		// CLZ(x ^ (x >>s 1)) - 1
+		shifted := shiftRightArith(left, 1)
+		xor := make([]int, len(left))
+		for i := range left {
+			xor[i] = bl.bdd.apply(opXor, left[i], shifted[i])
+		}
+		ones := make([]int, len(left))
+		for i := range ones {
+			ones[i] = bddTrue
+		}
+		out = bl.add(bl.countLeadingZeros(xor), ones, bddFalse) // minus one
 	default:
+		// udiv, sdiv, umulh, smulh: beyond the bit-level decision (an
+		// evidence verdict when reached).
 		return nil
 	}
 	if bl.bdd.exceeded {
@@ -389,6 +431,90 @@ func (bl *blaster) multiply(a, b []int) []int {
 		}
 	}
 	return out
+}
+
+// rotateRight rotates by a constant.
+func rotateRight(a []int, k int) []int {
+	n := len(a)
+	out := make([]int, n)
+	for i := range a {
+		out[i] = a[(i+k)%n]
+	}
+	return out
+}
+
+// rotateBarrel rotates by a term count reduced modulo the width.
+func (bl *blaster) rotateBarrel(a, count []int) []int {
+	stages := bits.Len(uint(len(a) - 1))
+	current := a
+	for s := 0; s < stages; s++ {
+		rotated := rotateRight(current, 1<<uint(s))
+		next := make([]int, len(a))
+		for i := range a {
+			next[i] = bl.bdd.ite(count[s], rotated[i], current[i])
+		}
+		current = next
+	}
+	return current
+}
+
+// permuteBits realizes the byte and bit reversals as bit permutations.
+func permuteBits(op string, a []int) []int {
+	n := len(a)
+	out := make([]int, n)
+	for i := range a {
+		var src int
+		switch op {
+		case "rbit":
+			src = n - 1 - i
+		case "rev":
+			byteIndex, bit := i/8, i%8
+			src = (n/8-1-byteIndex)*8 + bit
+		case "rev16":
+			half, within := i/16, i%16
+			byteIndex, bit := within/8, within%8
+			src = half*16 + (1-byteIndex)*8 + bit
+		case "rev32":
+			word, within := i/32, i%32
+			byteIndex, bit := within/8, within%8
+			src = word*32 + (3-byteIndex)*8 + bit
+		}
+		out[i] = a[src]
+	}
+	return out
+}
+
+// countLeadingZeros is a priority encoder: the count is the number of
+// leading bits before the highest set bit, width when none is set.
+func (bl *blaster) countLeadingZeros(a []int) []int {
+	n := len(a)
+	b := bl.bdd
+	// prefixZero[i]: bits above and including position i are all zero.
+	result := make([]int, n)
+	for i := range result {
+		result[i] = bddFalse
+	}
+	setConst := func(value int) []int {
+		bits := make([]int, n)
+		for i := range bits {
+			bits[i] = bddFalse
+			if (value>>uint(i))&1 == 1 {
+				bits[i] = bddTrue
+			}
+		}
+		return bits
+	}
+	// Scan from the top: result = ite(a[top] , 0, ite(a[top-1], 1, ...)).
+	acc := setConst(n) // all zero
+	for pos := 0; pos < n; pos++ {
+		candidate := setConst(n - 1 - pos)
+		next := make([]int, n)
+		for i := range next {
+			next[i] = b.ite(a[pos], candidate[i], acc[i])
+		}
+		acc = next
+	}
+	return acc
 }
 
 // shiftBarrel shifts by a term count reduced modulo the width: one mux

@@ -11,7 +11,7 @@ const (
 	SysRegReadWrite
 )
 
-func (a SysRegAccess) CanRead() bool { return a == SysRegReadOnly || a == SysRegReadWrite }
+func (a SysRegAccess) CanRead() bool  { return a == SysRegReadOnly || a == SysRegReadWrite }
 func (a SysRegAccess) CanWrite() bool { return a == SysRegReadWrite }
 
 // SysRegSpec is one AArch64 system-register contract. v1 deliberately admits

@@ -19,6 +19,8 @@ typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
 typedef double f64; /* IEEE 754 binary64 */
 typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */
 typedef uint16_t bf16; /* bfloat16 storage */
+typedef uint8_t f8e4m3; /* OCP FP8 E4M3 storage: no infinities, NaN is S.1111.111 */
+typedef uint8_t f8e5m2; /* OCP FP8 E5M2 storage: IEEE-like */
 
 typedef struct oak_string {
     u8* data;  /* UTF-8 bytes, not necessarily null-terminated */

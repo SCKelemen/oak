@@ -27,10 +27,23 @@ jobs:
     - name: Verify dependencies
       run: go mod verify
 
+    # The protocol tests model-check their generated TLA+ modules when a TLC
+    # jar is present (compiler/e2e_protocol_array_test.go); give them one.
+    - name: Set up Java for TLC
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    - name: Install TLC
+      run: curl -fsSL -o /tmp/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
+
     - name: Check nested array store regression
       run: go test -v ./compiler -run '^TestE2ENestedArrayFieldStores$' -count=1
 
     - name: Run tests
+      env:
+        OAK_TLA2TOOLS_JAR: /tmp/tla2tools.jar
       run: go test -v -race -timeout 40m ./...
 
   aarch64-memory-refinement:

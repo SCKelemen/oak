@@ -35,12 +35,44 @@ var hashTableSource string
 //go:embed bitset_algebra.oak
 var bitsetAlgebraSource string
 
+// sort, varint and random are spliced into the flat prelude like the
+// collections: sorting and searching over spans, LEB128/ZigZag integers,
+// and a deterministic xoshiro256** stream.
+//
+//go:embed sort.oak
+var sortSource string
+
+//go:embed varint.oak
+var varintSource string
+
+//go:embed random.oak
+var randomSource string
+
+// encoding: hex, base64, base32 and percent codecs over borrowed bytes
+// (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed encoding.oak
+var encodingSource string
+
 // math is a library package only (import("math")), never spliced into the
 // flat prelude: its names (exp, log, ...) are too common to land
 // unqualified in every program (docs/spec/20-types.md section 11.3.6).
 //
 //go:embed math.oak
 var mathSource string
+
+// hash is a library package only (import("hash")): SHA-256 and CRC-32C in
+// Oak (stdlib/README.md), bit-identical across the interpreter and backends.
+//
+//go:embed hash.oak
+var hashSource string
+
+// mx is a library package only (import("mx")): the OCP Microscaling MXFP4
+// block format — E2M1 elements under an E8M0 block scale — in Oak
+// (docs/spec/20-types.md section 11.3.1a).
+//
+//go:embed mx.oak
+var mxSource string
 
 // Prelude is the core library (std.oak): Option, Result, Overflow, byte and
 // ring helpers. Every standard library package builds on it unqualified, and
@@ -54,12 +86,13 @@ var Prelude = baseSource
 // flat spelling is derived here so the two views cannot drift.
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
-	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource)
+	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource)
 
 var (
 	clauseLine    = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
 	importLine    = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
-	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier)\.`)
+	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -102,6 +135,12 @@ var Packages = map[string]string{
 	"filters":         filtersSource,
 	"hash_table":      hashTableSource,
 	"bitset_algebra":  bitsetAlgebraSource,
+	"sort":            sortSource,
+	"varint":          varintSource,
+	"random":          randomSource,
 	"causal_frontier": causalFrontierSource,
+	"encoding":        encodingSource,
 	"math":            mathSource,
+	"hash":            hashSource,
+	"mx":              mxSource,
 }

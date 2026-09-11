@@ -51,6 +51,18 @@ rejected; shared-to-mutable forwarding is rejected; permitted reads and
 mutable operations pass; consumed parameters stay usable until their next
 valid transfer; violations name the declaration and the offending use.
 
+**Landed (first increment, 2026-09-11):** callee-entry authority for
+forwarding (`50-borrowing.md` §9, `OAK-B0114`): each mode-marked resource
+parameter enters with its contract's authority, aliases carry it, and
+forwarding beyond it to a resource operation is rejected without
+consuming; consumed parameters keep full authority; unmarked parameters are
+unchanged. **Second increment (same day):** retention — returning a
+borrowed or borrowed-mut parameter or its alias (directly, through a block,
+or through a match arm) or storing it in a record or array literal is
+rejected; a consumed parameter may be returned. Still open in this
+milestone: imported/external contracts' trust boundary and the migration
+rule for unmarked parameters.
+
 ## 2. Preserve contracts across every callable boundary
 
 Stable semantic identities for resolved contracts, carried through function
@@ -64,6 +76,17 @@ Receiver authority is its own slot.
 function cannot satisfy a borrowed-function requirement; specializations
 retain template modes; imports and sealing cannot erase modes; receivers
 do not shift parameter numbering.
+
+**Landed (first increment, 2026-09-11):** function values initialized from
+global functions carry their contracts (indirect consumption invalidates
+caller aliases); function values of unknown provenance have unknown
+contracts and resources passed through them fail closed (`OAK-B0115`);
+specializations retain template modes at call sites and in specialized
+bodies (`50-borrowing.md` §9). **Second increment (same day):** receiver
+authority as its own slot — receiver modes participate in exclusivity and
+consumption without shifting explicit indices, govern method bodies, and
+round-trip through SemIR. Still open: contracts on function types
+(borrowed-function requirements), imports and sealing.
 
 ## 3. Resource provenance through bindings, projections, control flow
 

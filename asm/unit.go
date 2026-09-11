@@ -90,12 +90,66 @@ type Operand interface{ operandKind() string }
 
 // Register is a parsed register operand.
 type Register struct {
-	Text  string // as written: "x0", "w5", "sp", "lr", "v3"
+	Text  string // as written: "x0", "w5", "sp", "lr", "v3", "d1", "v0.4s", "v2.s[1]"
 	Class RegClass
 	Num   int // physical register number for X/W (0..30), V (0..31); -1 for SP; 31 for zero registers
+	// Vec is the vector register's view: a scalar width letter ("b", "h",
+	// "s", "d", "q"), an arrangement ("8b", "16b", "4h", "8h", "2s", "4s",
+	// "1d", "2d"), or "" for the whole register named as vN. Lane is the
+	// element index of a lane reference (v0.s[1]), -1 when none.
+	Vec  string
+	Lane int
 }
 
-type Immediate struct{ Value int64 }
+// RegisterList is the `{v0.4s, v1.4s}` operand of the structure loads.
+type RegisterList struct{ Regs []Register }
+
+// FloatImmediate is `#0.0` and friends (fcmp, fmov).
+type FloatImmediate struct{ Value float64 }
+
+func (RegisterList) operandKind() string   { return "register list" }
+func (FloatImmediate) operandKind() string { return "float immediate" }
+
+var vectorArrangements = map[string]int{"8b": 8, "16b": 16, "4h": 4, "8h": 8, "2s": 2, "4s": 4, "1d": 1, "2d": 2, "1q": 1}
+var scalarVectorWidths = map[byte]int{'b': 1, 'h': 2, 's': 4, 'd': 8, 'q': 16}
+
+// VecBytes is the byte width of a vector-class register view.
+func (r Register) VecBytes() int64 {
+	if r.Class != ClassV {
+		return 0
+	}
+	if r.Vec == "" {
+		return 16
+	}
+	if lanes, isArrangement := vectorArrangements[r.Vec]; isArrangement {
+		return int64(lanes * laneBytes(r.Vec))
+	}
+	return int64(scalarVectorWidths[r.Vec[0]])
+}
+
+// laneBytes is the element width of an arrangement or lane letter.
+func laneBytes(arrangement string) int {
+	switch arrangement[len(arrangement)-1] {
+	case 'b':
+		return 1
+	case 'h':
+		return 2
+	case 's':
+		return 4
+	case 'd':
+		return 8
+	case 'q':
+		return 16
+	}
+	return 0
+}
+
+// Immediate is a constant operand; Shift is the `lsl #16`-style shift of a
+// movz/movk/movn immediate (0 when absent).
+type Immediate struct {
+	Value int64
+	Shift int64
+}
 
 // Memory is an sp-relative or register-relative access: [base, #off],
 // [base, #off]! (pre-index), [base], #off (post-index).
@@ -373,6 +427,12 @@ func splitFields(line string) []string {
 	}
 	for _, r := range line {
 		switch {
+		case r == '{':
+			depth++
+			current.WriteRune(r)
+		case r == '}':
+			depth--
+			current.WriteRune(r)
 		case r == '[':
 			depth++
 			current.WriteRune(r)
@@ -421,6 +481,19 @@ func parseInstruction(fields []string, line int) (Instruction, error) {
 		return instr, fmt.Errorf("unknown instruction %q (not in the v1 AArch64 table)", mnemonic)
 	}
 	for i := 1; i < len(fields); i++ {
+		// A trailing `lsl #3` / `uxtw` field modifies the operand before it;
+		// splitFields separates the kind from its amount, so rejoin them.
+		modifier := fields[i]
+		if lower := strings.ToLower(modifier); (shiftKinds[lower] || extendKinds[lower]) && i+1 < len(fields) && strings.HasPrefix(fields[i+1], "#") {
+			modifier = fields[i] + " " + fields[i+1]
+			i++
+		}
+		if folded, consumed, err := foldModifier(modifier, instr.Operands); err != nil {
+			return instr, err
+		} else if consumed {
+			instr.Operands = folded
+			continue
+		}
 		operand, err := parseOperand(fields[i], i-1, spec)
 		if err != nil {
 			return instr, err
@@ -441,11 +514,37 @@ func parseInstruction(fields []string, line int) (Instruction, error) {
 
 func parseOperand(text string, position int, spec instructionSpec) (Operand, error) {
 	if strings.HasPrefix(text, "#") {
+		if strings.ContainsAny(text[1:], ".eE") && !strings.HasPrefix(strings.ToLower(text[1:]), "0x") {
+			value, err := strconv.ParseFloat(text[1:], 64)
+			if err != nil {
+				return nil, fmt.Errorf("bad float immediate %q", text)
+			}
+			return FloatImmediate{Value: value}, nil
+		}
 		value, err := parseImmediate(text[1:])
 		if err != nil {
 			return nil, err
 		}
 		return Immediate{Value: value}, nil
+	}
+	if strings.HasPrefix(text, "{") && strings.HasSuffix(text, "}") {
+		var list RegisterList
+		for _, part := range strings.Split(text[1:len(text)-1], ",") {
+			reg, ok := parseRegister(strings.TrimSpace(part))
+			if !ok || reg.Class != ClassV || reg.Vec == "" || reg.Lane >= 0 {
+				return nil, fmt.Errorf("register list %q must hold arranged vector registers", text)
+			}
+			list.Regs = append(list.Regs, reg)
+		}
+		if len(list.Regs) < 1 || len(list.Regs) > 4 {
+			return nil, fmt.Errorf("register list %q must hold one to four registers", text)
+		}
+		for _, reg := range list.Regs[1:] {
+			if reg.Vec != list.Regs[0].Vec {
+				return nil, fmt.Errorf("register list %q mixes arrangements", text)
+			}
+		}
+		return list, nil
 	}
 	if strings.HasPrefix(text, "[") {
 		return parseMemory(text)
@@ -460,13 +559,24 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 	if spec.branch != branchNone {
 		return Symbol{Name: text}, nil
 	}
-	if spec.barrier {
+	if spec.barrier || formsTakeOption(spec, position) {
 		return Option{Name: lower}, nil
 	}
 	if spec.readsFlags && conditionCodes[lower] {
 		return Condition{Code: lower}, nil
 	}
 	return nil, fmt.Errorf("unrecognized operand %q", text)
+}
+
+// formsTakeOption reports whether some legal form of the instruction has an
+// option word at the position (prefetch operations, maintenance targets).
+func formsTakeOption(spec instructionSpec, position int) bool {
+	for _, candidate := range spec.forms {
+		if position < len(candidate) && candidate[position] == opOption {
+			return true
+		}
+	}
+	return false
 }
 
 func parseImmediate(text string) (int64, error) {
@@ -565,6 +675,31 @@ func parseRegister(text string) (Register, bool) {
 	if len(lower) < 2 {
 		return Register{}, false
 	}
+	// Vector views: v0.4s (arrangement), v0.s[1] (lane).
+	if lower[0] == 'v' {
+		if dot := strings.IndexByte(lower, '.'); dot > 0 {
+			num, err := strconv.Atoi(lower[1:dot])
+			if err != nil || num < 0 || num > 31 {
+				return Register{}, false
+			}
+			view := lower[dot+1:]
+			if open := strings.IndexByte(view, '['); open > 0 && strings.HasSuffix(view, "]") {
+				letter := view[:open]
+				lane, err := strconv.Atoi(view[open+1 : len(view)-1])
+				if err != nil || lane < 0 || len(letter) != 1 || strings.IndexByte("bhsd", letter[0]) < 0 {
+					return Register{}, false
+				}
+				if lane >= 16/laneBytes(letter) {
+					return Register{}, false // a lane past the register
+				}
+				return Register{Text: lower, Class: ClassV, Num: num, Vec: letter, Lane: lane}, true
+			}
+			if _, ok := vectorArrangements[view]; !ok {
+				return Register{}, false
+			}
+			return Register{Text: lower, Class: ClassV, Num: num, Vec: view, Lane: -1}, true
+		}
+	}
 	num, err := strconv.Atoi(lower[1:])
 	if err != nil || num < 0 {
 		return Register{}, false
@@ -572,15 +707,20 @@ func parseRegister(text string) (Register, bool) {
 	switch lower[0] {
 	case 'x':
 		if num <= 30 {
-			return Register{Text: lower, Class: ClassX, Num: num}, true
+			return Register{Text: lower, Class: ClassX, Num: num, Lane: -1}, true
 		}
 	case 'w':
 		if num <= 30 {
-			return Register{Text: lower, Class: ClassW, Num: num}, true
+			return Register{Text: lower, Class: ClassW, Num: num, Lane: -1}, true
 		}
 	case 'v':
 		if num <= 31 {
-			return Register{Text: lower, Class: ClassV, Num: num}, true
+			return Register{Text: lower, Class: ClassV, Num: num, Lane: -1}, true
+		}
+	case 'b', 'h', 's', 'd', 'q':
+		// Scalar views of the vector registers (FP values live here).
+		if num <= 31 {
+			return Register{Text: lower, Class: ClassV, Num: num, Vec: lower[:1], Lane: -1}, true
 		}
 	}
 	return Register{}, false

@@ -222,12 +222,12 @@ establish memory safety (ownership does that) or hardware privilege
    `F: Format` statically, and constrained templates must specialize the
    way unconstrained ones now do.
 2. **Tag-driven derivation** as generated Oak code (§5).
-3. **Borrowed decoded views**: relaxing `OAK-B0109` so a decoded view can
-   be returned tied to its input region — the sound headroom `Oak.Escape`
-   already proves. The design is `50-borrowing.md` §8c (region-indexed
-   borrowed returns); its first increment is what decode needs. Until
-   then, v1 decode copies into caller storage, which is honest and
-   allocation-free.
+3. **Borrowed decoded views** — **implemented** (§13a): a record with
+   `View[u8, R]` fields decodes as views of its input, tied to the input's
+   region by `50-borrowing.md` §8c (region-indexed returns, ADT payloads
+   included). Scalar and fixed-array fields still decode into the returned
+   value; a string field the program wants copied and unescaped stays a
+   caller-storage `json_string_decode` on the returned view.
 4. Then the first codec: JSON over declared records, verified zero-cost
    per §4.
 
@@ -369,7 +369,43 @@ The two spellings lower to identical C. Decoding returns a concrete value inside
 `Result`; no boxed value, generic document tree, token array, or allocator
 is required. For this fixed-size subset the destination is the returned
 value, so there is no separate output-storage argument. Input is borrowed
-read-only; no reference to its bytes escapes in the result.
+read-only; no reference to its bytes escapes in the result unless the
+record declares a view field (§13a), in which case the result borrows the
+input for as long as it lives and the borrow checker says so.
+
+### 13a. Borrowed decoded views
+
+```oak
+Frame[R]: type = struct { kind: u32, payload: View[u8, R] }
+r: Result[Frame, JsonDecodeError] = decode[Frame, Json](input)
+r ? | .Ok(f) => json_string_decode(dst, f.payload) | .Err(e) => ...
+```
+
+A record may declare a region parameter and use it in `View[u8, R]` fields
+(`50-borrowing.md` §8c). Such a field decodes as **the JSON string token
+itself, quotes included**: the bytes between the surrounding quotes in the
+input, escape sequences untouched, validated by the tokenizer as a
+well-formed string. Nothing is copied. Unescaping is the caller's, on
+demand, with `json_string_decode(dst, f.payload)` into storage the caller
+sizes — or never, when the bytes are only compared or forwarded. A
+non-string value in that position is `TypeMismatch`.
+
+The derived reader and decoder carry the region: `__oak_json_decode_Frame`
+takes `View[u8, R]` and returns `Result[Frame[R], JsonDecodeError]`, so at
+the call the bound `Result` is a reborrow of the input's owner and the
+`.Ok(f)` binding in a match reborrows it for the arm; writing the input
+while either lives is `OAK-B0103`. Because the viewed bytes are handed back
+without decoding, a borrowed record's decoder validates the whole input as
+UTF-8 on success as well as on failure, so a successful decode still
+establishes the input's encoding. Views are the sound zero-copy form for
+the frame scan a storage engine wants to hand back; the reader assembles
+the record once, at the end, from the fields it collected, so no zero
+record holding views ever exists.
+
+Limits: one region per record; a borrowed record is not encodable by
+derivation (`encode` reports why — the view is a token, not a value to
+re-escape); nested borrowed records are not derived; the fixed-array and
+nullable forms of a view field are not derived.
 
 Supported targets are fixed-width integers, Bool, and closed concrete
 records recursively containing those types, including fixed-size array fields

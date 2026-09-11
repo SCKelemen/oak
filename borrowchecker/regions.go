@@ -87,37 +87,39 @@ func regionSignatureFor(name string, env *typechecker.TypeEnvironment) (*typeche
 	return fn, sig, true
 }
 
-// borrowField is one borrow-carrying field of a record type, flattened to
-// a dotted path.
+// borrowField is one piece of borrowed storage inside a value: its dotted
+// path (record fields by name, a variant's payload as `$Variant`) and kind.
 type borrowField struct {
 	path string
 	kind borrowKind
 }
 
-// recordBorrowFields lists a record type's view and span fields in
-// declaration order, nested records flattened.
-func recordBorrowFields(rt *typechecker.RecordType, prefix string) []borrowField {
-	var fields []borrowField
-	names := rt.Order
-	if len(names) == 0 {
-		for name := range rt.Fields {
-			names = append(names, name)
-		}
-		sort.Strings(names)
+// borrowFieldsOf lists the views and spans a value of the type carries, by
+// path (typechecker.TypeEnvironment.BorrowPaths). Reports false when the
+// type carries borrowed storage the path form does not cover, so callers
+// fail closed.
+func borrowFieldsOf(typ typechecker.Type, env *typechecker.TypeEnvironment) ([]borrowField, bool) {
+	paths, complete := env.BorrowPaths(typ)
+	if !complete {
+		return nil, false
 	}
-	for _, name := range names {
-		switch ft := rt.Fields[name].(type) {
-		case *typechecker.ArrayType:
-			if ft.IsSpan {
-				fields = append(fields, borrowField{path: prefix + name, kind: BorrowSpan})
-			} else if ft.IsSlice {
-				fields = append(fields, borrowField{path: prefix + name, kind: BorrowView})
-			}
-		case *typechecker.RecordType:
-			fields = append(fields, recordBorrowFields(ft, prefix+name+".")...)
+	fields := make([]borrowField, 0, len(paths))
+	for _, p := range paths {
+		kind := BorrowView
+		if p.Span {
+			kind = BorrowSpan
 		}
+		fields = append(fields, borrowField{path: p.Path, kind: kind})
 	}
-	return fields
+	return fields, true
+}
+
+// withPrefix names a borrow field under a binding.
+func withPrefix(binding, path string) string {
+	if path == "" {
+		return binding
+	}
+	return binding + "." + path
 }
 
 // returnKind classifies a region-indexed return type.
@@ -126,7 +128,7 @@ type returnKind int
 const (
 	returnsView returnKind = iota
 	returnsSpan
-	returnsRecord
+	returnsAggregate // a record, or an ADT whose payloads carry borrows
 )
 
 // regionContract is what a function's body owes its signature: the owners
@@ -176,7 +178,6 @@ func (bc *BorrowChecker) returnContractFor(stmt *ast.FunctionStatement, env *typ
 		contract.checked = true
 		return contract
 	}
-	var recordFields []borrowField
 	switch ret := fn.ReturnType.(type) {
 	case *typechecker.ArrayType:
 		switch {
@@ -196,10 +197,22 @@ func (bc *BorrowChecker) returnContractFor(stmt *ast.FunctionStatement, env *typ
 			return invalid(fmt.Sprintf("function %q returns record %q with borrows but no single declared region", stmt.Name.Value, ret.Name),
 				"a record that crosses a call carries its borrows in exactly one region parameter (Cursor[R]: type = struct { data: View[u8, R], ... })")
 		}
-		contract.kind = returnsRecord
-		recordFields = recordBorrowFields(ret, "")
+		if _, complete := borrowFieldsOf(ret, env); !complete {
+			return invalid(fmt.Sprintf("function %q returns record %q with borrowed storage outside the view/span field form", stmt.Name.Value, ret.Name),
+				"only view and span fields (and records of them) cross a call in a region; strings and unions of borrows do not")
+		}
+		contract.kind = returnsAggregate
 	default:
-		return nil
+		// An ADT carrying borrows in its payloads (Result[Cursor[R], E],
+		// Option[View[u8, R]]): the signature's return region names them.
+		if !env.ContainsBorrowStorage(fn.ReturnType) {
+			return nil
+		}
+		if _, complete := borrowFieldsOf(fn.ReturnType, env); !complete {
+			return invalid(fmt.Sprintf("function %q returns a value with borrowed storage outside the view/span form", stmt.Name.Value),
+				"only views, spans, records of them, and ADT payloads of them cross a call in a region; strings and unions of borrows do not")
+		}
+		contract.kind = returnsAggregate
 	}
 	labeled := 0
 	for i, region := range sig.Params {
@@ -219,9 +232,14 @@ func (bc *BorrowChecker) returnContractFor(stmt *ast.FunctionStatement, env *typ
 					"writable access cannot be derived from a read-only view")
 			}
 			contract.owners[parameterOwnerPrefix+name] = true
-		case *typechecker.RecordType:
-			for _, field := range recordBorrowFields(pt, "") {
-				contract.owners[parameterOwnerPrefix+name+"."+field.path] = true
+		default:
+			fields, complete := borrowFieldsOf(fn.Parameters[i], env)
+			if !complete {
+				return invalid(fmt.Sprintf("function %q: region parameter %q carries borrowed storage outside the view/span form", stmt.Name.Value, name),
+					"only views, spans, records of them, and ADT payloads of them can be a region's source")
+			}
+			for _, field := range fields {
+				contract.owners[withPrefix(parameterOwnerPrefix+name, field.path)] = true
 			}
 		}
 	}
@@ -237,7 +255,6 @@ func (bc *BorrowChecker) returnContractFor(stmt *ast.FunctionStatement, env *typ
 		return invalid(fmt.Sprintf("function %q: region %s labels a parameter that carries no borrow", stmt.Name.Value, displayRegion(sig.Return)),
 			"only view, span, and region-carrying record parameters can be a region's source")
 	}
-	_ = recordFields
 	return contract
 }
 
@@ -248,17 +265,22 @@ func displayRegion(region string) string {
 	return region
 }
 
-// registerRegionRecordParameter registers a record parameter's borrow
-// fields as borrows of synthetic owners, one per field path.
-func (bc *BorrowChecker) registerRegionRecordParameter(name string, rt *typechecker.RecordType, origin ast.Node) {
-	for _, field := range recordBorrowFields(rt, "") {
-		owner := parameterOwnerPrefix + name + "." + field.path
+// registerRegionAggregateParameter registers an aggregate parameter's borrow
+// fields as borrows of synthetic owners, one per path.
+func (bc *BorrowChecker) registerRegionAggregateParameter(name string, typ typechecker.Type, origin ast.Node, env *typechecker.TypeEnvironment) bool {
+	fields, complete := borrowFieldsOf(typ, env)
+	if !complete {
+		return false
+	}
+	for _, field := range fields {
+		owner := withPrefix(parameterOwnerPrefix+name, field.path)
 		if field.kind == BorrowSpan {
-			bc.createSpanBorrowWithRegion(owner, name+"."+field.path, nil, origin)
+			bc.createSpanBorrowWithRegion(owner, withPrefix(name, field.path), nil, origin)
 		} else {
-			bc.createViewBorrowWithRegion(owner, name+"."+field.path, nil, origin)
+			bc.createViewBorrowWithRegion(owner, withPrefix(name, field.path), nil, origin)
 		}
 	}
+	return true
 }
 
 // checkReturnedProvenance is the callee's obligation: every borrow the
@@ -273,7 +295,7 @@ func (bc *BorrowChecker) checkReturnedProvenance(result ast.Expression, contract
 		return
 	}
 	owners, ok := bc.provenanceOwners(result, env)
-	if ok && len(owners) > 0 {
+	if ok {
 		outside := []string{}
 		for owner := range owners {
 			if !contract.owners[owner] {
@@ -349,6 +371,155 @@ func (bc *BorrowChecker) aggregateBorrowNames(binding string) []string {
 	return names
 }
 
+// payloadBinding records a match arm's payload binding and the scrutinee
+// it projects, so a value built inside an arm can be traced after the arm's
+// borrows have been dropped.
+type payloadBinding struct {
+	scrutinee ast.Expression
+	variant   string
+}
+
+// collectStatics maps every local declared in a body to its initializer
+// (nil when a name is declared twice, so it is not traced) and every match
+// payload binding to its scrutinee. Provenance is a static property of the
+// source; the borrows themselves are lexical and drop with their blocks, so
+// a result assembled inside nested conditionals is traced through these
+// maps once the blocks have closed.
+func collectStatics(body ast.Expression) (map[string]ast.Expression, map[string]payloadBinding) {
+	inits := map[string]ast.Expression{}
+	payloads := map[string]payloadBinding{}
+	var stmts func(list []ast.Statement)
+	var exprs func(e ast.Expression)
+	stmts = func(list []ast.Statement) {
+		for _, stmt := range list {
+			switch st := stmt.(type) {
+			case *ast.VariableDeclaration:
+				if st.Name != nil {
+					if _, dup := inits[st.Name.Value]; dup {
+						inits[st.Name.Value] = nil
+					} else {
+						inits[st.Name.Value] = st.Value
+					}
+				}
+				exprs(st.Value)
+			case *ast.AssignmentStatement:
+				// A reassigned local is no longer statically one value.
+				if st.Name != nil {
+					inits[st.Name.Value] = nil
+				}
+				exprs(st.Value)
+			case *ast.IndexAssignmentStatement:
+				exprs(st.Value)
+			case *ast.WhileStatement:
+				exprs(st.Condition)
+				if st.Body != nil {
+					stmts(st.Body.Statements)
+				}
+			case *ast.IfStatement:
+				// Alternative is a nested IfStatement or a BlockStatement;
+				// both are statements this walk already handles.
+				exprs(st.Condition)
+				if st.Consequence != nil {
+					stmts(st.Consequence.Statements)
+				}
+				if st.Alternative != nil {
+					stmts([]ast.Statement{st.Alternative})
+				}
+			case *ast.ExpressionStatement:
+				exprs(st.Expression)
+			case *ast.BlockStatement:
+				stmts(st.Statements)
+			}
+		}
+	}
+	exprs = func(e ast.Expression) {
+		switch x := e.(type) {
+		case nil:
+		case *ast.BlockExpression:
+			if x.Block != nil {
+				stmts(x.Block.Statements)
+			}
+		case *ast.MatchExpression:
+			exprs(x.Scrutinee)
+			for _, arm := range x.Arms {
+				if variant, ok := arm.Pattern.(*ast.VariantPattern); ok && variant.Variant != nil {
+					if binding, isBinding := variant.Payload.(*ast.BindingPattern); isBinding && binding.Name != nil {
+						payloads[binding.Name.Value] = payloadBinding{scrutinee: x.Scrutinee, variant: variant.Variant.Value}
+					}
+				}
+				exprs(arm.Body)
+			}
+		case *ast.InfixExpression:
+			exprs(x.Left)
+			exprs(x.Right)
+		case *ast.PrefixExpression:
+			exprs(x.Right)
+		case *ast.InvocationExpression:
+			for _, arg := range x.Arguments {
+				exprs(arg)
+			}
+		case *ast.RecordLiteral:
+			for _, field := range x.FieldOrder {
+				exprs(field.Value)
+			}
+		case *ast.VariantExpression:
+			exprs(x.Payload)
+		case *ast.IndexExpression:
+			exprs(x.Left)
+			if !x.Dot {
+				exprs(x.Index)
+			}
+		case *ast.SliceExpression:
+			exprs(x.Seq)
+			exprs(x.Low)
+			exprs(x.High)
+		}
+	}
+	exprs(body)
+	return inits, payloads
+}
+
+// staticValue resolves an identifier or field path to the expression that
+// produced it, through declarations and record literals, when the borrows
+// themselves are no longer live.
+func (bc *BorrowChecker) staticValue(expr ast.Expression, depth int) (ast.Expression, bool) {
+	if depth > 32 {
+		return nil, false
+	}
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if binding, ok := bc.payloadBindings[e.Value]; ok {
+			return binding.scrutinee, true
+		}
+		if init, ok := bc.initializers[e.Value]; ok && init != nil {
+			return init, true
+		}
+		return nil, false
+	case *ast.IndexExpression:
+		if !e.Dot {
+			return nil, false
+		}
+		field, isIdent := e.Index.(*ast.Identifier)
+		if !isIdent {
+			return nil, false
+		}
+		base, ok := bc.staticValue(e.Left, depth+1)
+		if !ok {
+			return nil, false
+		}
+		if literal, isLiteral := base.(*ast.RecordLiteral); isLiteral {
+			if value, declared := literal.Fields[field.Value]; declared {
+				return value, true
+			}
+			return nil, false
+		}
+		// A projection of a value produced whole (a call, a scrutinee):
+		// its borrows are among the whole value's.
+		return base, true
+	}
+	return nil, false
+}
+
 // provenanceOwners traces a borrow-valued expression to the set of owners
 // it borrows: a tracked binding or field, a record binding's fields,
 // `view(&owner)`/`span(&owner)`, a subslice or reinterpretation of a traced
@@ -376,6 +547,9 @@ func (bc *BorrowChecker) provenanceOwners(expr ast.Expression, env *typechecker.
 		if _, isOwner := bc.ownerStates[e.Value]; isOwner {
 			return map[string]bool{e.Value: true}, true
 		}
+		if value, ok := bc.staticValue(e, 0); ok {
+			return bc.provenanceOwners(value, env)
+		}
 		return nil, false
 	case *ast.IndexExpression:
 		if !e.Dot {
@@ -393,6 +567,9 @@ func (bc *BorrowChecker) provenanceOwners(expr ast.Expression, env *typechecker.
 				owners[bc.activeBorrows[name].owner] = true
 			}
 			return owners, true
+		}
+		if value, ok := bc.staticValue(e, 0); ok {
+			return bc.provenanceOwners(value, env)
 		}
 		return nil, false
 	case *ast.SliceExpression:
@@ -429,6 +606,17 @@ func (bc *BorrowChecker) provenanceOwners(expr ast.Expression, env *typechecker.
 			merge(sub)
 		}
 		return owners, true
+	case *ast.VariantExpression:
+		// A variant carries whatever its payload borrows; a bare variant
+		// carries nothing.
+		if e.Payload == nil {
+			return owners, true
+		}
+		payloadType := env.CheckedExpressionType(e.Payload)
+		if payloadType != nil && !env.ContainsBorrowStorage(payloadType) {
+			return owners, true
+		}
+		return bc.provenanceOwners(e.Payload, env)
 	case *ast.InvocationExpression:
 		callee, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent {
@@ -625,14 +813,32 @@ func (bc *BorrowChecker) bindRegionCall(call *ast.InvocationExpression, targetVa
 		if !derive(targetVar, kind) {
 			return fail(fmt.Sprintf("cannot bind %q: the region argument of %q carries no %s", targetVar, callee, kindName(kind)))
 		}
-	case *typechecker.RecordType:
-		for _, field := range recordBorrowFields(ret, "") {
-			if !derive(targetVar+"."+field.path, field.kind) {
-				return fail(fmt.Sprintf("cannot bind %q: field %q needs a %s and the region argument of %q carries none", targetVar, field.path, kindName(field.kind), callee))
+	default:
+		fields, complete := borrowFieldsOf(ret, env)
+		if !complete {
+			return fail(fmt.Sprintf("cannot bind %q: the result of %q carries borrowed storage outside the view/span form", targetVar, callee))
+		}
+		for _, field := range fields {
+			if !derive(withPrefix(targetVar, field.path), field.kind) {
+				return fail(fmt.Sprintf("cannot bind %q: %q needs a %s and the region argument of %q carries none", targetVar, withPrefix(targetVar, field.path), kindName(field.kind), callee))
 			}
 		}
 	}
 	return true
+}
+
+// bindPayload gives a match arm's payload binding the borrows the scrutinee
+// carries under that variant (`r.$Ok.value.data` becomes `item.value.data`),
+// as reborrows at the current block depth.
+func (bc *BorrowChecker) bindPayload(scrutinee string, variant string, binding string, origin ast.Node) {
+	prefix := scrutinee + ".$" + variant
+	for _, name := range bc.aggregateBorrowNames(scrutinee) {
+		if name != prefix && !strings.HasPrefix(name, prefix+".") {
+			continue
+		}
+		rest := strings.TrimPrefix(strings.TrimPrefix(name, prefix), ".")
+		bc.createSubsliceWithRegion(name, withPrefix(binding, rest), nil, origin)
+	}
 }
 
 func kindName(kind borrowKind) string {

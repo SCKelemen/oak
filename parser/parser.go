@@ -190,6 +190,9 @@ func (p *Parser) nextToken() {
 }
 
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
+	// A brace block restores '|' as bitwise or, wherever it sits inside a
+	// ?-match arm (docs/spec/10-syntax.md section 3b).
+	defer p.operatorPipe()()
 	blocc := &ast.BlockStatement{Token: p.currentToken}
 	blocc.Statements = []ast.Statement{}
 	p.nextToken()
@@ -256,6 +259,8 @@ func (p *Parser) parseStatement() ast.Statement {
 			return stmt
 		}
 		return nil
+	case token.BREAK:
+		return &ast.BreakStatement{Token: p.currentToken}
 	case token.UNSAFE:
 		if stmt := p.parseUnsafeBlock(); stmt != nil {
 			return stmt
@@ -279,6 +284,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		// (docs/spec/83-modules.md section 3.2); `open` is contextual.
 		if p.currentToken.Literal == "open" && p.peekTokenIs(token.IMPORT) {
 			return p.parseOpenImport()
+		}
+		// `operator(SYM) name: (a: T, b: U): R = ...` binds SYM for a left
+		// operand of type T (docs/spec/10-syntax.md section 14); `operator`
+		// is contextual, so `operator := 1` stays an ordinary binding.
+		if p.currentToken.Literal == "operator" && p.peekTokenIs(token.LPAREN) {
+			return p.parseOperatorDeclaration()
 		}
 		// `module name { ... }` declares a nested module (section 3.5);
 		// `module` is contextual, so `module := 1` stays an ordinary binding.
@@ -813,6 +824,7 @@ func (p *Parser) parseFunctionArgs() []*ast.Identifier {
 }
 func (p *Parser) parseInvocationExpression(function ast.Expression) ast.Expression {
 	exp := &ast.InvocationExpression{Token: p.currentToken, Function: function}
+	defer p.operatorPipe()()
 	// Inside parentheses a '{' can only be a composite literal, even when
 	// the call sits in a statement header (Go's rule).
 	wasDisabled := p.braceLiteralDisabled
@@ -855,7 +867,8 @@ func (p *Parser) parseFieldAccess(left ast.Expression) ast.Expression {
 // This is a unified Pratt hook for '[' that pattern-matches on ':' to choose index vs slice
 func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression {
 	tok := p.currentToken // '['
-	p.nextToken()         // move to first token after '['
+	defer p.operatorPipe()()
+	p.nextToken() // move to first token after '['
 
 	// Case 1: a[:...] or a[:]
 	if p.currentTokenIs(token.COLON) {
@@ -1227,12 +1240,20 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	return exp
 }
 
-func (p *Parser) parseExpressionGroup() ast.Expression {
-	// Skip opening paren - currentToken is LPAREN, advance to expression.
-	// Parens re-enable '|' as bitwise or inside ?-match arm bodies.
+// operatorPipe re-enables '|' as bitwise or for the extent of a bracketed
+// construct inside a ?-match arm body: parentheses, call arguments, index
+// brackets, and array and record literals all close before the arm can
+// (docs/spec/10-syntax.md section 3b). The returned function restores the
+// arm depth; callers defer it.
+func (p *Parser) operatorPipe() func() {
 	saved := p.armDepth
 	p.armDepth = 0
-	defer func() { p.armDepth = saved }()
+	return func() { p.armDepth = saved }
+}
+
+func (p *Parser) parseExpressionGroup() ast.Expression {
+	// Skip opening paren - currentToken is LPAREN, advance to expression.
+	defer p.operatorPipe()()
 	p.nextToken()
 	exp := p.parseExpression(LOWEST)
 	// After parseExpression, currentToken is the last token of the expression
@@ -1276,6 +1297,13 @@ func (p *Parser) peekPrecedence() Precedence {
 	// never bitwise or — parenthesize (a | b) to use the operator there.
 	// Parens and brace blocks reset the suppression.
 	if p.armDepth > 0 && p.peekToken.TokenKind == token.PIPE {
+		return LOWEST
+	}
+	// A call or an index never continues across a line break: a line that
+	// starts with '(' or '[' begins a new statement (F18). Go's rule, without
+	// the semicolon insertion.
+	if (p.peekToken.TokenKind == token.LPAREN || p.peekToken.TokenKind == token.LBRACK) &&
+		p.peekToken.Line > p.currentToken.Line && p.currentToken.Line > 0 {
 		return LOWEST
 	}
 	if p, ok := precedences[p.peekToken.TokenKind]; ok {
@@ -1505,6 +1533,46 @@ func (p *Parser) parseTypeKindExpression() ast.Expression {
 // parsePubDeclaration parses `pub decl` and `pub(opaque) decl`
 // (docs/spec/83-modules.md section 6). pub applies to package-level
 // declarations only; pub(opaque) applies to type declarations only.
+// operatorSymbols are the symbols an operator declaration may bind
+// (docs/spec/10-syntax.md section 14): arithmetic and comparison. Bool and
+// bitwise operators keep their fixed meaning and are not bindable.
+var operatorSymbols = map[token.TokenKind]string{
+	token.SUM: "+", token.NEG: "-", token.MUL: "*", token.QUO: "/", token.REM: "%",
+	token.EQL: "==", token.NEQL: "!=", token.LCHEV: "<", token.LEQ: "<=", token.RCHEV: ">", token.GEQ: ">=",
+}
+
+// parseOperatorDeclaration parses `operator(SYM)` followed by a function
+// declaration and records the bound symbol on it.
+func (p *Parser) parseOperatorDeclaration() ast.Statement {
+	marker := p.currentToken
+	p.nextToken() // (
+	p.nextToken() // the symbol
+	symbol, bindable := operatorSymbols[p.currentToken.TokenKind]
+	if !bindable {
+		p.addErrorAtCurrentToken(fmt.Sprintf("operator(%s): only + - * / %% == != < <= > >= can be bound (docs/spec/10-syntax.md section 14)", p.currentToken.Literal))
+		return nil
+	}
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+	if p.peekTokenIs(token.EOF) {
+		p.addErrorAtToken(&marker, "operator(%s) must be followed by a function declaration")
+		return nil
+	}
+	p.nextToken()
+	stmt := p.parseStatement()
+	if stmt == nil {
+		return nil
+	}
+	fn, isFunction := stmt.(*ast.FunctionStatement)
+	if !isFunction {
+		p.addErrorAtToken(&marker, "operator("+symbol+") must be followed by a function declaration")
+		return nil
+	}
+	fn.Operator = symbol
+	return fn
+}
+
 func (p *Parser) parsePubDeclaration() ast.Statement {
 	pubToken := p.currentToken
 	opaque := false
@@ -2807,6 +2875,7 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 		Token:  p.currentToken,
 		Fields: make(map[string]ast.Expression),
 	}
+	defer p.operatorPipe()()
 
 	// Skip opening brace (currentToken is {)
 	p.nextToken()
@@ -3032,6 +3101,7 @@ func (p *Parser) parseTypedArrayLiteral(size *ast.IntegerLiteral, elementType as
 
 // parseTypedArrayLiteralWithToken is the internal implementation that takes the bracket token
 func (p *Parser) parseTypedArrayLiteralWithToken(bracketToken token.Token, size *ast.IntegerLiteral, elementType ast.Expression) ast.Expression {
+	defer p.operatorPipe()()
 	var index ast.Expression
 	if size == nil {
 		index = &ast.Identifier{Token: bracketToken, Value: ""}
@@ -3540,6 +3610,14 @@ func (p *Parser) parseConditionSugarArms(match *ast.MatchExpression) ast.Express
 		p.nextToken() // consume '|'
 		falseBody = p.parseConditionBranch()
 		if falseBody == nil {
+			return nil
+		}
+		// A Bool conditional has two arms. A third bare '|' after them is
+		// the classic misreading of a bitwise or inside an arm (F16): it
+		// used to parse as an or over the whole conditional. Refuse it and
+		// say what to write instead.
+		if _, block := falseBody.(*ast.BlockExpression); !block && p.peekTokenIs(token.PIPE) {
+			p.addErrorAtPeekToken("a `?` conditional has two arms and this `|` would start a third: inside a bare arm `|` is the arm separator, so write a bitwise or as `(a | b)` or brace the arm `{ a | b }`")
 			return nil
 		}
 	} else {

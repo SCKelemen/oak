@@ -69,16 +69,18 @@ recoverable to its level at or after 1.0.0 (`next_injective_level`,
 (`next_pre1_major_eq_minor`). `packageapi/semver_laws_test.go` checks the Go
 procedures against the same laws over randomized snapshots.
 
-The reference checker is:
+The reference checker is `oak mod bump`:
 
 ```sh
-go run ./cmd/oak-semver previous-api.json current-api.json
+oak mod bump previous-api.json current-api.json
 ```
 
-It exits nonzero for an invalid version and lists the public changes that caused
-the classification. Repositories can run this command in their publication CI
-using the last release snapshot and the compiler-produced candidate snapshot.
-At module granularity the same rule is `oak mod bump` (section 6).
+It accepts module snapshots and single-package snapshots alike (a package
+snapshot is read as a module of one package), exits nonzero for an invalid
+version, and lists the public changes that caused the classification.
+Repositories can run this command in their publication CI using the last
+release snapshot and the compiler-produced candidate snapshot. `oak mod diff`
+reports the classification without enforcing it (section 6).
 
 ## 4. Records and representation
 
@@ -145,6 +147,8 @@ and `oak mod` never contacts a registry:
 | `oak mod compat dep-api.json [dir]` | Check this module's sealed imports against a dependency's snapshot (section 8). |
 | `oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]` | Build the archive `oak mod download` consumes, carrying `api.json`; with `-previous`, enforce the exact bump first (section 7). |
 | `oak mod upgrade [-dir dir] dep-api.json...` | Among candidate snapshots of one dependency, pick the highest version that satisfies the module's sealed imports (section 8). |
+| `oak mod try path candidate-dir [-dir dir]` | Build every package of the module with `path` replaced by the local candidate, deciding unsealed imports (section 8). |
+| `oak mod tidy [-w] [dir]` | Reconcile `require` directives with the packages' imports; `-w` rewrites `oak.mod` (`83-modules.md` section 4.5). |
 
 Both `diff` and `bump` snapshot the module through the ordinary package build,
 so a module that does not type check has no API and is rejected before any
@@ -152,8 +156,8 @@ comparison. Nested modules (`83-modules.md` section 3.5) are packages
 of the module: each is snapshotted under its own path from its elaborated
 declarations, with every name spelled as a directory package would spell it
 (its own types bare, other packages' types by path), so a nested module's
-API changes classify exactly like a directory's. Only `oak-api`, the
-single-package tool, refuses a package that declares nested modules. The compiler snapshot boundary is `compiler.ModuleAPISnapshot`.
+API changes classify exactly like a directory's. Only the single-package
+form `oak mod api -package` refuses a package that declares nested modules. The compiler snapshot boundary is `compiler.ModuleAPISnapshot`.
 
 ## 7. Archive-carried snapshots
 
@@ -216,6 +220,16 @@ are not covered; they depend on whatever they reference, and only a build
 against the new version decides them. The compiler entry point is
 `compiler.CheckSealedCompatibility`.
 
+Unsealed imports (`geo := import(...)`) depend on whatever they reference,
+so no snapshot decides them; a build does. `oak mod try path candidate-dir
+[-dir module]` builds every package of the module with the dependency `path`
+replaced by the local `candidate-dir` — an in-memory `replace` laid over the
+manifest, which is never rewritten — and reports each package as compatible
+or not with the first diagnostics. The candidate must be a module whose
+`oak.mod` declares `path`; nothing is fetched. Together with `oak mod
+upgrade` this covers both halves: sealed imports are decided from the
+published snapshot, unsealed ones from a local build of the candidate.
+
 Elm's package manager derives the required bump from the API diff and refuses
 to publish otherwise; Oak does the same at module granularity (`oak mod
 bump`), and additionally lets the *client* decide upgrades from the same
@@ -225,8 +239,8 @@ its source does not honor (section 7).
 Publication CI can produce the candidate snapshot directly from Oak source:
 
 ```sh
-go run ./cmd/oak-api example/net 1.3.0 src/net.oak > current-api.json
-go run ./cmd/oak-semver previous-api.json current-api.json
+oak mod api -package example/net -version 1.3.0 src/net.oak > current-api.json
+oak mod bump previous-api.json current-api.json
 ```
 
 Record fields are sorted only in canonical semantic identity, because record

@@ -270,6 +270,9 @@ var conversionPrimitives = map[string]int{
 	"f32": 32, "f64": 64,
 	// Storage formats (section 11.3.1): round from f32, bits with u16.
 	"f16": 16, "bf16": 16,
+	// The 8-bit storage formats (section 11.3.1): round and saturate from
+	// f32, bits with u8.
+	"f8e4m3": 8, "f8e5m2": 8,
 }
 
 var conversionOperations = map[string]bool{
@@ -580,10 +583,10 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 			continue
 		}
 		paramType := tc.parseTypeExpression(param.Type)
-		if _, isC := paramType.(*CType); !isC {
+		if !tc.boundaryValue(paramType) {
 			d := tc.addTypeDiagnostic(param.Name, CodeExternSignatureNotC,
-				fmt.Sprintf("extern binding %s: parameter %s must have a c.* type", stmt.Name.Value, param.Name.Value))
-			d.AddNote("Oak types never cross the foreign boundary raw; convert explicitly at the call site (docs/spec/92-ffi.md section 2.3)")
+				fmt.Sprintf("extern binding %s: parameter %s must have a c.* type or a proven-layout struct", stmt.Name.Value, param.Name.Value))
+			d.AddNote("Oak scalars never cross the foreign boundary raw; convert explicitly at the call site. A declared struct whose fields are boundary types passes by value with its layout asserted (docs/spec/92-ffi.md section 2.3)")
 			valid = false
 			continue
 		}
@@ -592,12 +595,11 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 	var returnType Type = &UnitType{}
 	if stmt.ReturnType != nil {
 		returnType = tc.parseTypeExpression(stmt.ReturnType)
-		_, isC := returnType.(*CType)
 		_, isUnit := returnType.(*UnitType)
-		if !isC && !isUnit {
+		if !isUnit && !tc.boundaryValue(returnType) {
 			d := tc.addTypeDiagnostic(stmt.ReturnType, CodeExternSignatureNotC,
-				fmt.Sprintf("extern binding %s: return type must be a c.* type or ()", stmt.Name.Value))
-			d.AddNote("Oak types never cross the foreign boundary raw; convert explicitly at the call site (docs/spec/92-ffi.md section 2.3)")
+				fmt.Sprintf("extern binding %s: return type must be a c.* type, a proven-layout struct, or ()", stmt.Name.Value))
+			d.AddNote("Oak scalars never cross the foreign boundary raw; convert explicitly at the call site. A declared struct whose fields are boundary types returns by value with its layout asserted (docs/spec/92-ffi.md section 2.3)")
 			valid = false
 		}
 	}
@@ -612,6 +614,22 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 		Parameters: paramTypes,
 		ReturnType: returnType,
 	}, tc.env))
+}
+
+// boundaryValue reports whether a type may be an extern binding's parameter
+// or return type: a c.* type, or a declared struct (or boundary tagged
+// union) whose layout the backend asserts, passed by value
+// (docs/spec/92-ffi.md section 2.3).
+func (tc *TypeChecker) boundaryValue(typ Type) bool {
+	switch t := typ.(type) {
+	case *CType:
+		return true
+	case *RecordType:
+		return tc.boundaryStruct(t, map[string]bool{})
+	case *ADTType:
+		return tc.boundaryTaggedUnion(t.Name, map[string]bool{})
+	}
+	return false
 }
 
 // BoundarySpanArgument recognizes `c.span_of(v)` / `c.span_mut_of(s)` in
@@ -647,6 +665,7 @@ var boundarySpanElementTypes = map[string]bool{
 	"i8": true, "i16": true, "i32": true, "i64": true,
 	"byte": true,
 	"f32":  true, "f64": true, "f16": true, "bf16": true,
+	"f8e4m3": true, "f8e5m2": true,
 }
 
 // boundarySpanElement reports whether an element type has one meaning on

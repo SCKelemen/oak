@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -92,7 +93,25 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 	case Register:
 		return o.Text
 	case Immediate:
+		if o.Shift != 0 {
+			return fmt.Sprintf("#%d, lsl #%d", o.Value, o.Shift)
+		}
 		return fmt.Sprintf("#%d", o.Value)
+	case Shifted, Extended:
+		text, _ := renderModified(o)
+		return text
+	case RegisterList:
+		names := make([]string, len(o.Regs))
+		for i, reg := range o.Regs {
+			names[i] = reg.Text
+		}
+		return "{" + strings.Join(names, ", ") + "}"
+	case FloatImmediate:
+		text := strconv.FormatFloat(o.Value, 'f', -1, 64)
+		if !strings.ContainsAny(text, ".eE") {
+			text += ".0"
+		}
+		return "#" + text
 	case Memory:
 		if o.Index != nil {
 			if o.Shift == 0 {

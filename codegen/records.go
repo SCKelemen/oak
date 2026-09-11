@@ -45,6 +45,7 @@ var fixedFieldRepresentations = map[string]semir.RecordFieldRepresentation{
 	// f16/bf16 storage formats in their uint16_t carriers (section 11.3.8).
 	"f32": {Size: 4, Alignment: 4}, "f64": {Size: 8, Alignment: 8},
 	"f16": {Size: 2, Alignment: 2}, "bf16": {Size: 2, Alignment: 2},
+	"f8e4m3": {Size: 1, Alignment: 1}, "f8e5m2": {Size: 1, Alignment: 1},
 }
 
 // fieldRepresentation resolves one field's size and alignment, reporting
