@@ -240,8 +240,8 @@ func ParseManifest(text string) (Manifest, error) {
 	if manifest.Path == "" {
 		return Manifest{}, fmt.Errorf("oak.mod: missing module directive")
 	}
-	for path := range manifest.Replaces {
-		if !seenRequire[path] {
+	for path, target := range manifest.Replaces {
+		if !seenRequire[path] && !StandardLibraryRealization(target) {
 			return Manifest{}, fmt.Errorf("oak.mod: replace of %q without a matching require", path)
 		}
 	}
@@ -284,4 +284,15 @@ func validIdentifier(text string) bool {
 		}
 	}
 	return true
+}
+
+// StandardLibraryRealization reports whether a replace target names a
+// standard library realization of a port rather than a directory
+// (docs/spec/120-io.md section 1): a bare lowercase identifier with no
+// path separator. The loader checks that the package exists.
+func StandardLibraryRealization(target string) bool {
+	if target == "" || strings.ContainsAny(target, "/\\.") {
+		return false
+	}
+	return ValidPackageName(target)
 }
