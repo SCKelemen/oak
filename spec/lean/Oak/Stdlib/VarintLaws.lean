@@ -490,8 +490,41 @@ theorem decode_spec (v : UInt64) (src : Array UInt8) (hsz : nbytes v.toNat ≤ s
     varint_decode src 0 fuel = some (.Ok { value := v, next := (nbytes v.toNat).toUInt32 }) := by
   have hten := nbytes_le_ten v.toNat (UInt64.toNat_lt v)
   obtain ⟨shift', h⟩ := decode_loop v src hsz hsmall hb fuel 0 0 0 0 (nbytes_pos _) (by simp [Nat.mod_one]) (by simp) (by simp) (by omega)
+  have hn : (nbytes v.toNat).toUInt32.toNat = nbytes v.toNat := by
+    show (UInt32.ofNat _).toNat = _
+    rw [UInt32.toNat_ofNat']; exact Nat.mod_eq_of_lt (by omega)
   unfold varint_decode
-  simp [h]
+  simp only [h]
+  by_cases h1 : nbytes v.toNat = 1
+  · have hgt : ¬ ((1 : UInt32) < UInt32.ofNat (nbytes v.toNat)) := by
+      intro hlt
+      have := UInt32.lt_iff_toNat_lt.mp hlt
+      rw [UInt32.toNat_ofNat', h1, show (1 : UInt32).toNat = 1 by decide] at this
+      omega
+    simp [hgt]
+  · -- the final group of a multi-byte encoding is not zero
+    have hpos : 1 ≤ nbytes v.toNat - 1 := by have := nbytes_pos v.toNat; omega
+    have hdiv : v.toNat / 128 ^ (nbytes v.toNat - 1) ≠ 0 :=
+      (div_pow_ne_zero_iff _ _ hpos).mpr (by omega)
+    have hlt128 : v.toNat / 128 ^ (nbytes v.toNat - 1) < 128 := by
+      have := lt_pow_nbytes v.toNat
+      rw [Nat.div_lt_iff_lt_mul (Nat.pow_pos (by decide))]
+      have hpow : 128 ^ (nbytes v.toNat - 1) * 128 = 128 ^ nbytes v.toNat := by
+        rw [← Nat.pow_succ]; congr 1; all_goals omega
+      rw [Nat.mul_comm, hpow]; exact this
+    have hidx : (UInt32.ofNat (nbytes v.toNat) - 1).toNat = nbytes v.toNat - 1 := by
+      have hn' : (UInt32.ofNat (nbytes v.toNat)).toNat = nbytes v.toNat := hn
+      rw [UInt32.toNat_sub_of_le _ _ (by rw [UInt32.le_iff_toNat_le, hn']; show 1 ≤ _; omega), hn']
+      rfl
+    have hne : ¬ (((src[(UInt32.ofNat (nbytes v.toNat) - 1).toNat]?.getD 0).toUInt32 &&& 127) = 0) := by
+      rw [← Array.getD_eq_getD_getElem?]
+      intro hz
+      have := congrArg UInt32.toNat hz
+      rw [UInt32.toNat_and, hidx, hb _ (by omega), byte_toUInt8_toUInt32_toNat,
+        show (127 : UInt32).toNat = 127 by decide, byteOf_and127, show (0 : UInt32).toNat = 0 by decide] at this
+      rw [Nat.mod_eq_of_lt hlt128] at this
+      exact hdiv this
+    simp [hne]
 
 /-- The round trip at offset zero for every `UInt64`, every destination of at
 least ten bytes, and every fuel above ten: the encoder reports the LEB128
@@ -525,24 +558,351 @@ theorem size_le_ten (v : UInt64) (fuel : Nat) (hf : 10 < fuel) :
 
 
 /-!
-## What the decoder accepts beyond the encoder's output
+## Canonicity
 
-The strong form of canonicity — every accepted byte string is the encoder's
-output for the value it decodes to — does **not** hold for the current
-`varint_decode`: the over-long checks reject an eleventh byte and a tenth
-byte above one, but a zero group after a continuation bit is accepted, so
-`80 00` decodes to `0` and `next = 2` while the encoder spells `0` as one
-byte. The two kernel evaluations below record the gap; closing it is a
-change to `stdlib/varint.oak` (reject a final zero group after at least one
-byte), after which the round trip theorem gives canonicity for free.
+Every accepted byte string is the encoder's output for the value it decodes
+to. The decoder rejects an eleventh byte, a tenth byte above one, and — since
+the fix the first version of this file asked for — a zero final group after
+a continuation byte, so `80 00` is over-long rather than a second spelling of
+`0`. The decided instances below record the boundary; `canonical` is the
+universal statement.
 -/
 
-/-- The zero-padded spelling `80 00` is accepted. -/
-theorem zero_padding_accepted :
-    varint_decode #[0x80, 0x00] 0 16 = some (.Ok { value := 0, next := 2 }) := by decide
+/-- The zero-padded spelling `80 00` is rejected as over-long... -/
+theorem zero_padding_rejected :
+    varint_decode #[0x80, 0x00] 0 16 = some (.Err .Overlong) := by decide
+
+/-- ...as is `81 80 00`, a padded spelling of `1`. -/
+theorem padded_one_rejected :
+    varint_decode #[0x81, 0x80, 0x00] 0 16 = some (.Err .Overlong) := by decide
+
+/-- ...while `00` stays the encoding of zero... -/
+theorem plain_zero_accepted :
+    varint_decode #[0x00] 0 16 = some (.Ok { value := 0, next := 1 }) := by decide
 
 /-- ...while the encoder spells `0` in one byte. -/
 theorem encode_zero_one_byte :
     (varint_encode (Array.replicate 10 0) 0 0 16).map (·.1) = some (.Ok 1) := by decide
+
+/-! ## Canonicity, universally
+
+`groups src k` is the value the first `k` seven-bit groups of `src` spell.
+The general loop lemma `decode_loop_any` runs the extracted decoder on an
+arbitrary byte string: a successful exit at `n` bytes means the value is
+`groups src n`, every byte before the last carries the continuation bit, and
+the last does not. With the padding check that is exactly the shape the
+encoder writes, so `canonical` follows from `encode_spec`.
+-/
+
+/-- The value spelled by the first `k` groups of `src`. -/
+def groups (src : Array UInt8) : Nat → Nat
+  | 0 => 0
+  | k + 1 => groups src k + 128 ^ k * ((src.getD k 0).toNat % 128)
+
+theorem groups_succ (src : Array UInt8) (k : Nat) :
+    groups src (k + 1) = groups src k + 128 ^ k * ((src.getD k 0).toNat % 128) := rfl
+
+theorem groups_lt (src : Array UInt8) (k : Nat) : groups src k < 128 ^ k := by
+  induction k with
+  | zero => simp [groups]
+  | succ k ih =>
+    unfold groups
+    have := Nat.mod_lt (src.getD k 0).toNat (by decide : 0 < 128)
+    rw [Nat.pow_succ]
+    have h1 : 128 ^ k * ((src.getD k 0).toNat % 128) ≤ 128 ^ k * 127 := Nat.mul_le_mul_left _ (by omega)
+    omega
+
+theorem groups_div_mod (src : Array UInt8) (k : Nat) : ∀ j, j < k →
+    groups src k / 128 ^ j % 128 = (src.getD j 0).toNat % 128 := by
+  induction k with
+  | zero => intro j hj; omega
+  | succ k ih =>
+    intro j hj
+    unfold groups
+    by_cases hjk : j = k
+    · subst hjk
+      have hlt := groups_lt src j
+      rw [Nat.add_mul_div_left _ _ (Nat.pow_pos (by decide)), Nat.div_eq_of_lt hlt, Nat.zero_add]
+      exact Nat.mod_eq_of_lt (Nat.mod_lt _ (by decide))
+    · have hjk' : j < k := by omega
+      obtain ⟨m, hm⟩ : ∃ m, k = j + 1 + m := ⟨k - j - 1, by omega⟩
+      have hsplit : 128 ^ k * ((src.getD k 0).toNat % 128)
+          = 128 ^ j * (((src.getD k 0).toNat % 128) * 128 ^ m * 128) := by
+        rw [hm, Nat.pow_add, Nat.pow_succ]
+        ac_rfl
+      rw [hsplit, Nat.add_mul_div_left _ _ (Nat.pow_pos (by decide)), Nat.add_mul_mod_self_right]
+      exact ih j hjk'
+
+theorem decode_loop_failed (src : Array UInt8) (value : UInt64) (shift at_ : UInt32)
+    (done overlong : Bool) (fuel : Nat) :
+    varint_decode.loop1 src value shift at_ done true overlong (fuel + 1)
+      = some (value, shift, at_, done, true, overlong) := by
+  unfold varint_decode.loop1
+  simp
+
+/-- The decoder on arbitrary bytes: from group `k`, a successful exit
+reports `groups src n` at `n` bytes with the continuation bits exactly on
+the first `n - 1`. -/
+theorem decode_loop_any (src : Array UInt8) (hsmall : src.size < 2 ^ 32) (fuel : Nat) :
+    ∀ (k : Nat) (value : UInt64) (shift at_ : UInt32),
+      k ≤ 10 → value.toNat = groups src k → shift.toNat = 7 * k → at_.toNat = k →
+      (∀ j, j < k → 128 ≤ (src.getD j 0).toNat) → 11 - k < fuel →
+      ∀ value' shift' at' done' failed' overlong',
+        varint_decode.loop1 src value shift at_ false false false fuel
+          = some (value', shift', at', done', failed', overlong') →
+        failed' = false →
+        ∃ n, k < n ∧ n ≤ 10 ∧ n ≤ src.size ∧ at'.toNat = n ∧ value'.toNat = groups src n ∧
+          (∀ j, j < n - 1 → 128 ≤ (src.getD j 0).toNat) ∧ (src.getD (n - 1) 0).toNat < 128 := by
+  induction fuel with
+  | zero => intro k value shift at_ _ _ _ _ _ hf; omega
+  | succ fuel ih =>
+    intro k value shift at_ hk hval hshift hat hcont hf value' shift' at' done' failed' overlong' hrun hfail
+    obtain ⟨fuel', rfl⟩ : ∃ fuel', fuel = fuel' + 1 := ⟨fuel - 1, by omega⟩
+    unfold varint_decode.loop1 at hrun
+    simp only [Bool.not_false, Bool.and_self, ↓reduceIte] at hrun
+    have hsz : (src.size.toUInt32).toNat = src.size := by
+      show (UInt32.ofNat _).toNat = _
+      rw [UInt32.toNat_ofNat']; exact Nat.mod_eq_of_lt hsmall
+    -- out of input
+    by_cases hge : k ≥ src.size
+    · have hc : decide (at_ ≥ src.size.toUInt32) = true := by
+        apply decide_eq_true; show src.size.toUInt32 ≤ at_
+        rw [UInt32.le_iff_toNat_le, hsz, hat]; exact hge
+      simp only [hc, ↓reduceIte, Option.pure_def] at hrun
+      have hrun' : varint_decode.loop1 src value shift at_ false true false (fuel' + 1)
+          = some (value', shift', at', done', failed', overlong') := hrun
+      rw [decode_loop_failed] at hrun'
+      simp only [Option.some.injEq, Prod.mk.injEq] at hrun'
+      obtain ⟨_, _, _, _, hf', _⟩ := hrun'
+      rw [← hf'] at hfail; exact absurd hfail (by decide)
+    · have hc : decide (at_ ≥ src.size.toUInt32) = false := by
+        apply decide_eq_false; show ¬ (src.size.toUInt32 ≤ at_)
+        rw [UInt32.le_iff_toNat_le, hsz, hat]; exact hge
+      simp only [hc, Bool.false_eq_true, ↓reduceIte] at hrun
+      -- an eleventh byte
+      by_cases hk10 : k = 10
+      · have hc2 : decide (shift ≥ (70 : UInt32)) = true := by
+          apply decide_eq_true; show (70 : UInt32) ≤ shift
+          rw [UInt32.le_iff_toNat_le, hshift, hk10]; decide
+        simp only [hc2, ↓reduceIte, Option.pure_def] at hrun
+        have hrun' : varint_decode.loop1 src value shift at_ false true true (fuel' + 1)
+            = some (value', shift', at', done', failed', overlong') := hrun
+        rw [decode_loop_failed] at hrun'
+        simp only [Option.some.injEq, Prod.mk.injEq] at hrun'
+        obtain ⟨_, _, _, _, hf', _⟩ := hrun'
+        rw [← hf'] at hfail; exact absurd hfail (by decide)
+      · have hc2 : decide (shift ≥ (70 : UInt32)) = false := by
+          apply decide_eq_false; intro h
+          have := UInt32.le_iff_toNat_le.mp (show (70 : UInt32) ≤ shift from h)
+          rw [hshift, show (70 : UInt32).toNat = 70 by decide] at this; omega
+        simp only [hc2, Bool.false_eq_true, ↓reduceIte] at hrun
+        have hlead : ((src.getD at_.toNat 0).toUInt32).toNat = (src.getD k 0).toNat := by
+          rw [hat, UInt8.toNat_toUInt32]
+        have hlt256 := UInt8.toNat_lt (src.getD k 0)
+        have hgroup : (((src.getD at_.toNat 0).toUInt32) &&& 127).toNat = (src.getD k 0).toNat % 128 := by
+          rw [UInt32.toNat_and, hlead, show (127 : UInt32).toNat = 2 ^ 7 - 1 by decide,
+            Nat.and_two_pow_sub_one_eq_mod]
+        -- a tenth byte above one
+        by_cases hbig : k = 9 ∧ 1 < (src.getD k 0).toNat % 128
+        · have hc3 : ((shift == (63 : UInt32)) && decide ((((src.getD at_.toNat 0).toUInt32) &&& 127) > 1)) = true := by
+            rw [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq]
+            refine ⟨?_, ?_⟩
+            · apply UInt32.toNat.inj; rw [hshift, hbig.1]; decide
+            · show (1 : UInt32) < _
+              rw [UInt32.lt_iff_toNat_lt, hgroup, show (1 : UInt32).toNat = 1 by decide]; exact hbig.2
+          simp only [hc3, ↓reduceIte, Option.pure_def] at hrun
+          have hrun' : varint_decode.loop1 src value shift at_ false true true (fuel' + 1)
+              = some (value', shift', at', done', failed', overlong') := hrun
+          rw [decode_loop_failed] at hrun'
+          simp only [Option.some.injEq, Prod.mk.injEq] at hrun'
+          obtain ⟨_, _, _, _, hf', _⟩ := hrun'
+          rw [← hf'] at hfail; exact absurd hfail (by decide)
+        · have hc3 : ((shift == (63 : UInt32)) && decide ((((src.getD at_.toNat 0).toUInt32) &&& 127) > 1)) = false := by
+            cases h63 : (shift == (63 : UInt32)) with
+            | false => rfl
+            | true =>
+              rw [Bool.true_and]
+              apply decide_eq_false
+              intro h
+              have hk9' : k = 9 := by
+                have := beq_iff_eq.mp h63
+                rw [this, show (63 : UInt32).toNat = 63 by decide] at hshift; omega
+              have := UInt32.lt_iff_toNat_lt.mp (show (1 : UInt32) < _ from h)
+              rw [hgroup, show (1 : UInt32).toNat = 1 by decide] at this
+              exact hbig ⟨hk9', this⟩
+          simp only [hc3, Bool.false_eq_true, ↓reduceIte] at hrun
+          -- the new state
+          have hsmallgroup : 128 ^ k * ((src.getD k 0).toNat % 128) < 2 ^ 64 := by
+            have hm := Nat.mod_lt (src.getD k 0).toNat (by decide : 0 < 128)
+            by_cases h9 : k = 9
+            · subst h9
+              have hle1 : (src.getD 9 0).toNat % 128 ≤ 1 := by
+                have := Nat.lt_or_ge ((src.getD 9 0).toNat % 128) 2
+                rcases this with hlt | hge2
+                · omega
+                · exact absurd ⟨rfl, by omega⟩ hbig
+              rw [pow128_9, two_pow_64]; omega
+            · have hpow : 128 ^ k ≤ 128 ^ 8 := Nat.pow_le_pow_right (by decide) (by omega)
+              have h8 : (128 : Nat) ^ 8 = 72057594037927936 := by decide
+              rw [h8] at hpow
+              have hmul : 128 ^ k * ((src.getD k 0).toNat % 128) ≤ 72057594037927936 * 127 :=
+                Nat.mul_le_mul hpow (by omega)
+              rw [two_pow_64]; omega
+          have hshl : ((((src.getD at_.toNat 0).toUInt32) &&& 127).toUInt64 <<< shift.toUInt64).toNat
+              = 128 ^ k * ((src.getD k 0).toNat % 128) := by
+            rw [UInt64.toNat_shiftLeft, UInt32.toNat_toUInt64, UInt32.toNat_toUInt64, hgroup, hshift,
+              Nat.shiftLeft_eq, Nat.mod_eq_of_lt (by omega : 7 * k < 64), ← pow128_eq, Nat.mul_comm]
+            exact Nat.mod_eq_of_lt hsmallgroup
+          have hval' : (value ||| ((((src.getD at_.toNat 0).toUInt32) &&& 127).toUInt64 <<< shift.toUInt64)).toNat
+              = groups src (k + 1) := by
+            rw [UInt64.toNat_or, hshl, hval, Nat.or_comm, groups_succ, Nat.add_comm, pow128_eq k]
+            exact (Nat.two_pow_add_eq_or_of_lt (by rw [← pow128_eq]; exact groups_lt src k) _).symm
+          have hat' : (at_ + 1).toNat = k + 1 := by
+            rw [UInt32.toNat_add, hat, show (1 : UInt32).toNat = 1 by decide]; exact Nat.mod_eq_of_lt (by omega)
+          have hshift' : (shift + 7).toNat = 7 * (k + 1) := by
+            rw [UInt32.toNat_add, hshift, show (7 : UInt32).toNat = 7 by decide, Nat.mod_eq_of_lt (by omega)]; omega
+          have hand128 : (((src.getD at_.toNat 0).toUInt32) &&& 128).toNat = (src.getD k 0).toNat &&& 128 := by
+            rw [UInt32.toNat_and, hlead, show (128 : UInt32).toNat = 128 by decide]
+          by_cases hstop : (src.getD k 0).toNat < 128
+          · -- the last byte
+            have hdone : ((((src.getD at_.toNat 0).toUInt32) &&& 128) == (0 : UInt32)) = true := by
+              apply beq_iff_eq.mpr; apply UInt32.toNat.inj
+              rw [hand128, show (0 : UInt32).toNat = 0 by decide]
+              exact (and128_byte ⟨_, hlt256⟩).mpr hstop
+            simp only [hdone, ↓reduceIte, Option.pure_def] at hrun
+            have hrun' : varint_decode.loop1 src
+                (value ||| ((((src.getD at_.toNat 0).toUInt32) &&& 127).toUInt64 <<< shift.toUInt64))
+                (shift + 7) (at_ + 1) true false false (fuel' + 1)
+                = some (value', shift', at', done', failed', overlong') := hrun
+            rw [decode_loop_done] at hrun'
+            simp only [Option.some.injEq, Prod.mk.injEq] at hrun'
+            obtain ⟨hv', _, ha', _, _, _⟩ := hrun'
+            refine ⟨k + 1, by omega, by omega, by omega, by rw [← ha', hat'], by rw [← hv', hval'], ?_, ?_⟩
+            · intro j hj; exact hcont j (by omega)
+            · simpa using hstop
+          · have hdone : ((((src.getD at_.toNat 0).toUInt32) &&& 128) == (0 : UInt32)) = false := by
+              apply beq_eq_false_iff_ne.mpr
+              intro hz
+              have := congrArg UInt32.toNat hz
+              rw [hand128, show (0 : UInt32).toNat = 0 by decide] at this
+              exact hstop ((and128_byte ⟨_, hlt256⟩).mp this)
+            simp only [hdone, Bool.false_eq_true, ↓reduceIte, Option.pure_def] at hrun
+            have hcont' : ∀ j, j < k + 1 → 128 ≤ (src.getD j 0).toNat := by
+              intro j hj
+              by_cases hjk : j = k
+              · subst hjk; omega
+              · exact hcont j (by omega)
+            have hrun' : varint_decode.loop1 src
+                (value ||| ((((src.getD at_.toNat 0).toUInt32) &&& 127).toUInt64 <<< shift.toUInt64))
+                (shift + 7) (at_ + 1) false false false (fuel' + 1)
+                = some (value', shift', at', done', failed', overlong') := hrun
+            obtain ⟨n, hn1, hn2, hn3, hn4, hn5, hn6, hn7⟩ :=
+              ih (k + 1) _ _ _ (by omega) hval' hshift' hat' hcont' (by omega) value' shift' at' done' failed' overlong' hrun' hfail
+            exact ⟨n, by omega, hn2, hn3, hn4, hn5, hn6, hn7⟩
+
+/-- `nbytes` of a value spelled by `n` groups whose last group is nonzero
+(or `n = 1`) is `n`. -/
+theorem nbytes_groups (src : Array UInt8) (n : Nat) (hn : 1 ≤ n)
+    (hlast : n = 1 ∨ (src.getD (n - 1) 0).toNat % 128 ≠ 0) : nbytes (groups src n) = n := by
+  have hupper : nbytes (groups src n) ≤ n := by
+    unfold nbytes
+    have h : groups src n / 128 / 128 ^ (n - 1) = 0 := by
+      have hpow : 128 * 128 ^ (n - 1) = 128 ^ n := by
+        rw [← Nat.pow_succ']; congr 1; omega
+      rw [Nat.div_div_eq_div_mul, hpow]
+      exact Nat.div_eq_of_lt (groups_lt src n)
+    have := (cntN_le_iff (n - 1) (groups src n / 128)).mp h
+    omega
+  by_cases h1 : n = 1
+  · subst h1; exact Nat.le_antisymm hupper (nbytes_pos _)
+  · have hne : (src.getD (n - 1) 0).toNat % 128 ≠ 0 := by
+      rcases hlast with h1' | hne
+      · exact absurd h1' h1
+      · exact hne
+    have hn2 : 2 ≤ n := by omega
+    have hge : 128 ^ (n - 1) ≤ groups src n := by
+      obtain ⟨m, rfl⟩ : ∃ m, n = m + 1 := ⟨n - 1, by omega⟩
+      unfold groups
+      simp only [Nat.add_sub_cancel] at hne ⊢
+      have h1 : 1 ≤ (src.getD m 0).toNat % 128 := Nat.pos_of_ne_zero hne
+      have := Nat.mul_le_mul_left (128 ^ m) h1
+      omega
+    have hdiv : groups src n / 128 ^ (n - 1) ≠ 0 := by
+      intro hz
+      have := (Nat.div_eq_zero_iff_lt (Nat.pow_pos (by decide))).mp hz
+      omega
+    have := (div_pow_ne_zero_iff _ _ (by omega)).mp hdiv
+    omega
+
+/-- Canonicity: whatever `varint_decode` accepts at offset zero, the encoder
+writes back byte for byte, with the same length. -/
+theorem canonical (src dst : Array UInt8) (hsmall : src.size < 2 ^ 32) (h10 : 10 ≤ dst.size)
+    (hdsmall : dst.size < 2 ^ 32) (fuel : Nat) (hf : 11 < fuel) (value : UInt64) (next : UInt32)
+    (h : varint_decode src 0 fuel = some (.Ok { value := value, next := next })) :
+    ∃ dst', varint_encode dst 0 value fuel = some (.Ok next, dst') ∧
+      ∀ j, j < next.toNat → dst'.getD j 0 = src.getD j 0 := by
+  unfold varint_decode at h
+  cases hr : varint_decode.loop1 src 0 0 0 false false false fuel with
+  | none => simp only [hr] at h; simp at h
+  | some r =>
+    obtain ⟨v', s', a', d', f', o'⟩ := r
+    simp only [hr] at h
+    simp at h
+    split at h
+    · simp at h
+    · rename_i hpad
+      by_cases hf' : f' = true
+      · cases o' <;> simp [hf'] at h
+      · have hf'' : f' = false := by cases f' <;> simp_all
+        simp [hf''] at h
+        obtain ⟨rfl, rfl⟩ := h
+        obtain ⟨n, hn1, hn2, hn3, hn4, hn5, hn6, hn7⟩ :=
+          decode_loop_any src hsmall fuel 0 0 0 0 (by omega) (by simp [groups]) (by simp) (by simp)
+            (by intro j hj; omega) (by omega) v' s' a' d' f' o' hr hf''
+        -- the padding check passed
+        have hlast : n = 1 ∨ (src.getD (n - 1) 0).toNat % 128 ≠ 0 := by
+          by_cases hn1' : n = 1
+          · exact Or.inl hn1'
+          · right
+            intro hz
+            apply hpad
+            refine ⟨⟨hf'', ?_⟩, ?_⟩
+            · rw [UInt32.lt_iff_toNat_lt, hn4, show (1 : UInt32).toNat = 1 by decide]; omega
+            · have hidx : (a' - 1).toNat = n - 1 := by
+                rw [UInt32.toNat_sub_of_le _ _ (by rw [UInt32.le_iff_toNat_le, hn4]; show 1 ≤ n; omega), hn4]; rfl
+              rw [← Array.getD_eq_getD_getElem?, hidx]
+              apply UInt32.toNat.inj
+              rw [UInt32.toNat_and, UInt8.toNat_toUInt32, show (127 : UInt32).toNat = 2 ^ 7 - 1 by decide,
+                Nat.and_two_pow_sub_one_eq_mod, show (0 : UInt32).toNat = 0 by decide]
+              exact hz
+        have hnb : nbytes v'.toNat = n := by rw [hn5]; exact nbytes_groups src n (by omega) hlast
+        have hbyte : ∀ j, j < n → (byteOf v'.toNat j).toUInt8 = src.getD j 0 := by
+          intro j hj
+          apply UInt8.toNat.inj
+          have hlt := byteOf_lt v'.toNat j
+          show (UInt8.ofNat _).toNat = _
+          rw [UInt8.toNat_ofNat', Nat.mod_eq_of_lt hlt]
+          unfold byteOf
+          rw [hnb, hn5, groups_div_mod src n j hj]
+          have hb256 := UInt8.toNat_lt (src.getD j 0)
+          by_cases hj1 : j + 1 < n
+          · rw [if_pos hj1]
+            have := hn6 j (by omega)
+            omega
+          · rw [if_neg hj1]
+            have hjn : j = n - 1 := by omega
+            rw [hjn]
+            have := hn7
+            omega
+        obtain ⟨dst', henc, _, hget⟩ := encode_spec v' dst h10 hdsmall fuel (by omega)
+        have hnext : (nbytes v'.toNat).toUInt32 = a' := by
+          apply UInt32.toNat.inj
+          rw [hn4, hnb]
+          show (UInt32.ofNat _).toNat = _
+          rw [UInt32.toNat_ofNat']; exact Nat.mod_eq_of_lt (by omega)
+        refine ⟨dst', by rw [← hnext]; exact henc, ?_⟩
+        intro j hj
+        rw [hn4] at hj
+        rw [hget j, if_pos (by rw [hnb]; exact hj), hbyte j hj]
 
 end Oak.Stdlib.Varint

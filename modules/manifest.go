@@ -2,6 +2,7 @@ package modules
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/packageapi"
@@ -58,6 +59,21 @@ type Manifest struct {
 	// program may not allocate. The compiler checks each as if it declared
 	// `forbids { Memory.Allocate }`.
 	Steady []SteadyEntry
+	// Admits lists the recorded-assumption codes this module accepts under
+	// the strict profile (`admit <code>`, docs/spec/85-discipline.md section
+	// 7): the assumption stays recorded and audited, but does not reject the
+	// module's packages. Only AdmissibleAssumptions may be named.
+	Admits []string
+}
+
+// AdmissibleAssumptions are the diagnostic codes an `admit` directive may
+// name: the recorded assumptions the checker leaves standing as warnings and
+// the REPL's :obligations lists (docs/spec/85-discipline.md section 7). An
+// error is never admissible; neither is a warning that is not an assumption.
+var AdmissibleAssumptions = map[string]string{
+	"OAK-B0110": "an unsafe block's writable-disjointness or foreign-buffer assumption",
+	"OAK-D0102": "a tail-recursion obligation",
+	"OAK-D0103": "a loop without a static iteration bound",
 }
 
 // SteadyEntry names one steady-state entry point: a function of a package of
@@ -78,6 +94,7 @@ var Profiles = map[string]bool{"default": true, "strict": true}
 //	replace <path> => <directory>
 //	profile <default|strict>
 //	steady <package-path> <function>
+//	admit <diagnostic-code>
 //	// comment
 //
 // Unknown directives, malformed lines, duplicate `module`/`oak`/`replace`
@@ -203,6 +220,19 @@ func ParseManifest(text string) (Manifest, error) {
 				}
 			}
 			manifest.Steady = append(manifest.Steady, SteadyEntry{Path: fields[1], Name: fields[2]})
+		case "admit":
+			if len(fields) != 2 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: admit directive has the form `admit <diagnostic-code>`", lineNumber)
+			}
+			if _, admissible := AdmissibleAssumptions[fields[1]]; !admissible {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: %q is not an admissible recorded assumption (%s; docs/spec/85-discipline.md section 7)", lineNumber, fields[1], admissibleList())
+			}
+			for _, prior := range manifest.Admits {
+				if prior == fields[1] {
+					return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate admit of %s", lineNumber, fields[1])
+				}
+			}
+			manifest.Admits = append(manifest.Admits, fields[1])
 		default:
 			return Manifest{}, fmt.Errorf("oak.mod:%d: unknown directive %q", lineNumber, fields[0])
 		}
@@ -216,6 +246,17 @@ func ParseManifest(text string) (Manifest, error) {
 		}
 	}
 	return manifest, nil
+}
+
+// admissibleList spells the admissible codes in a stable order for
+// diagnostics.
+func admissibleList() string {
+	codes := make([]string, 0, len(AdmissibleAssumptions))
+	for code := range AdmissibleAssumptions {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	return strings.Join(codes, ", ")
 }
 
 // stripComment removes a `//` comment that starts the line or follows

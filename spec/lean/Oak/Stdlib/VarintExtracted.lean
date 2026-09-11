@@ -125,6 +125,12 @@ def varint_decode (src : Array UInt8) (offset : UInt32) (fuel : Nat) : Option (R
   let failed : Bool := false
   let overlong : Bool := false
   let (value, shift, at_, done, failed, overlong) ← varint_decode.loop1 src value shift at_ done failed overlong fuel
+  let (failed, overlong) ← (if (((!failed) && (decide (at_ > (offset + (1 : UInt32))))) && ((((src.getD (at_ - (1 : UInt32)).toNat (0 : UInt8)).toUInt32) &&& (127 : UInt32)) == (0 : UInt32))) then (do
+      let failed := true
+      let overlong := true
+      pure (failed, overlong))
+    else (do
+      pure (failed, overlong)))
   pure (if failed then (if overlong then (Result_VarintValue_VarintError.Err VarintError.Overlong) else (Result_VarintValue_VarintError.Err VarintError.Truncated)) else (Result_VarintValue_VarintError.Ok ({ value := value, next := at_ } : VarintValue)))
 
 def zigzag_encode (value : Int64) (fuel : Nat) : Option (UInt64) := do

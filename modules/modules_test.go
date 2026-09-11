@@ -255,6 +255,11 @@ steady example.com/hello/net poll
 		"steady bad path":    "module example.com/x\nsteady strings serve\n",
 		"steady bad name":    "module example.com/x\nsteady example.com/x 9serve\n",
 		"duplicate steady":   "module example.com/x\nsteady example.com/x serve\nsteady example.com/x serve\n",
+		"admit arity":        "module example.com/x\nadmit\n",
+		"admit unknown code": "module example.com/x\nadmit OAK-Z9999\n",
+		"admit an error":     "module example.com/x\nadmit OAK-B0101\n",
+		"admit a warning that is not an assumption": "module example.com/x\nadmit OAK-T0202\n",
+		"duplicate admit": "module example.com/x\nadmit OAK-B0110\nadmit OAK-B0110\n",
 	}
 	for name, text := range bad {
 		if _, err := ParseManifest(text); err == nil {
@@ -365,5 +370,27 @@ func TestOpenBindLaws(t *testing.T) {
 				t.Fatal("adding exports must not turn a rejection into an acceptance")
 			}
 		}
+	}
+}
+
+// admit names recorded-assumption codes the strict profile accepts for this
+// module (docs/spec/85-discipline.md section 7); the admissible set is
+// exactly the assumptions the checker leaves standing as warnings.
+func TestManifestAdmit(t *testing.T) {
+	manifest, err := ParseManifest("module example.com/x\nprofile strict\nadmit OAK-B0110\nadmit OAK-D0103 // bounded elsewhere\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Admits) != 2 || manifest.Admits[0] != "OAK-B0110" || manifest.Admits[1] != "OAK-D0103" {
+		t.Fatalf("admits = %v", manifest.Admits)
+	}
+	for code := range AdmissibleAssumptions {
+		if _, err := ParseManifest("module example.com/x\nadmit " + code + "\n"); err != nil {
+			t.Fatalf("%s must be admissible: %v", code, err)
+		}
+	}
+	_, err = ParseManifest("module example.com/x\nadmit OAK-B0109\n")
+	if err == nil || !strings.Contains(err.Error(), "not an admissible recorded assumption") || !strings.Contains(err.Error(), "OAK-B0110") {
+		t.Fatalf("an error code is never admissible, and the message names the admissible set: %v", err)
 	}
 }
