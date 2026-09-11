@@ -58,6 +58,10 @@ proofs written against them transfer.
 | `u8_checked_u32(x)` | `if x > 255 then Result_u8_Overflow.Err Overflow.Overflow else Result_u8_Overflow.Ok x.toUInt8` — the range test per signedness pair, then the wrapping conversion |
 | `f[T]: (items: [*]T): ()` called as `f[u32](s)` | the checker's specialization `f_u32` (typechecker/genericfn.go), extracted like any function; the template itself is never emitted |
 | `NAME: u32 = 16` at top level | `def NAME : UInt32 := (16 : UInt32)`, emitted when a function reads it; an initializer that calls a function fails closed |
+| `TABLE: [256]u8 = [256]u8{ ... }` at top level, `[16]u32{ m[2], ... }` anywhere | `def TABLE : Array UInt8 := (#[...] : Array UInt8)`; an array literal is the Lean array literal, split into `++`-joined chunks of 128 beyond that length so a 2048-entry table elaborates |
+| `view(&TABLE)` of a top-level constant | the constant's array value (a view is the array it views); `span(&TABLE)` would mutate the global and fails closed |
+| `r.field[i] = v` | `let r := { r with field := r.field.setIfInBounds i.toNat v }` (one level of fields) |
+| `^x` | `~~~x`, the complement over the operand's width |
 
 Functions are emitted callee-first. Every function takes `fuel : Nat` and
 threads it to every loop and call; the corpus harness supplies a fuel above
@@ -83,8 +87,10 @@ and matches over variants in statement and value position, arms with
 statements bound through do-blocks; calls to extracted functions (the
 checker's specializations of generic templates included), `len`, `view`,
 `span`, the widening constructors, the `trunc`/`bits`/`saturating`/`checked`
-integer conversion rows, the bitwise operators, `assert`; field assignment
-one level deep; top-level constants. The extraction closes over the roots'
+integer conversion rows, the bitwise operators and the complement,
+`assert`; field assignment and element assignment into a record's array
+field, one level deep; array literals; top-level constants, including
+constant tables read through `view`. The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
 functions it reaches. Everything else — strings, generic templates
 themselves, recursion, methods, extern functions, closures, `subslice`,
@@ -102,15 +108,18 @@ the replayed real certificate (729 cases at the time of writing). The opt-in
 verification workflow and the certificate gate build and run it.
 
 **The standard library.** `compiler/lean_stdlib_extract_test.go` extracts
-whole packages — `varint`, `encoding`, `random`, `uuid`, and `sort` at
-`u32` — into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
+whole packages — `varint`, `encoding`, `random`, `uuid`, and `sort`
+at `u32` — into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
 failing on drift the same way. A package's program is the core prelude
 plus the flattened texts of its dependencies and itself (`stdlib.Flatten`);
 the roots are the package's declarations plus a driver that instantiates
 its generic templates (`sort_u32_span: (items: [*]u32): () {
 sort_span[u32](items) }`), and `Compilation.EmitLeanRoots` closes over
 their callees. The modules are imported from `spec/lean/Oak.lean`, so the
-Lean job builds them.
+Lean job builds them. Generated modules raise `maxRecDepth` and `maxHeartbeats`: an
+unrolled compression function (SHA-256's sixty-four rounds) is one
+definition with hundreds of binds, beyond the budgets sized for
+hand-written code.
 
 ## 6. Theorems about the extraction
 

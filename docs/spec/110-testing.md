@@ -360,6 +360,60 @@ event-driven log scenario (`examples/testing`) schedules two writers through
 the adapter and crashes through the process helper, keeping the storage
 invariants above plus fairness.
 
+## Simulated time
+
+Code that reads time reads it through a `time.TimeSource`
+(`stdlib/time.oak`, "Time sources"), a record the consumer owns and passes
+by span. Who advances it is the environment's decision: a unit test freezes
+it (`time_source_fixed`), a simulation drives it (`time_source_sim`, moved
+by `time_source_advance` or by the `timesim` package), and the platform
+layer refreshes a native one from the operating system (`timenative`, the
+only package that admits to a real clock). A source carries the classic
+pair: `time_now` is the wall clock and may jump; `time_monotonic` never
+decreases, and deadlines are taken against it (`time_deadline`,
+`time_expired`). Consumers written this way — timeouts, leases, rate
+limiters, retries — are simulation-testable and fuzzable without a test
+seam of their own.
+
+`timesim` is the environment side. `timesim_sync(sim, source, clock,
+choices, data)` advances the source to the `SimClock` reading (ticks since
+the last sync times `tick_nanos`), so the event timeline of the section
+above and the consumer's clock agree; `timesim_advance` moves it by a
+duration directly; `timesim_ticks` converts a duration back to ticks for
+`sim_schedule`. Every advance injects at most one fault drawn from the tape,
+one roll in eight among the kinds the mask enables, so a shrunk tape is a
+run with fewer faults and strict replay reproduces them:
+
+| bit | fault | effect |
+| --- | --- | --- |
+| 1 | jump back | the wall clock steps backward, up to a day |
+| 2 | jump forward | the wall clock steps forward, up to a day |
+| 4 | stall | neither clock advances this step |
+| 8 | coarse | the wall clock is quantized to `coarse_nanos` (10 ms by default) |
+| 16 | drift | the wall clock runs up to two percent fast or slow against the monotonic one |
+
+The ledger (`jumps_back`, `jumps_forward`, `stalls`, `coarsened`,
+`drifted`, and `skew`, the wall clock's total departure from the monotonic
+timeline) is there for `testing_classify`. The law every fault respects is
+asserted inside `timesim_advance`: **the monotonic clock never decreases**.
+A consumer whose deadlines are monotonic is therefore unaffected by every
+fault but the stall, and the stall only delays — which is exactly the claim
+its properties should state (a timer never fires early and fires once due;
+a lease is never held by two parties; a wall step moves no deadline), as
+`examples/timesim` does under every mask, through the event simulator with
+crashing clients, and as typed command histories.
+
+The generators bias toward the values that break time code:
+`timesim_instant` (the epoch, the range ends, second and day boundaries plus
+or minus a nanosecond), `timesim_duration`, `timesim_step`,
+`timesim_offset_minutes`, `timesim_civil` (always valid: years 0 and
+negative, the century rules, the instant range ends, month ends, February
+29) and `timesim_rfc3339`, which writes text for a generated instant and
+damages it one time in four so a parser meets the near-valid inputs.
+`Instant` and `Duration` are records of one `i64`; a typed command carries
+one through a carrier scalar (the example's `Advance: u16` is whole
+milliseconds).
+
 ## Trusted native adapters
 
 `-adapter manifest.json` links a prebuilt native adapter. The version-1 manifest

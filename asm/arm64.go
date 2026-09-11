@@ -28,6 +28,11 @@ type instructionSpec struct {
 	// clobbersCallerSaved marks bl: x0–x17 and the flags are unknown after
 	// the call (the callee owns them under AAPCS64).
 	clobbersCallerSaved bool
+	// tableForms marks the SVE/SME mnemonics (asm/isa_sme.go): their legal
+	// operand forms are exactly the readings of Arm's templates in the
+	// generated encoding table, matched by the encoder, not a hand-written
+	// form list.
+	tableForms bool
 }
 
 // form is one legal operand shape; each entry is an operand class.
@@ -62,6 +67,11 @@ var conditionCodes = map[string]bool{
 	"eq": true, "ne": true, "cs": true, "hs": true, "cc": true, "lo": true,
 	"mi": true, "pl": true, "vs": true, "vc": true, "hi": true, "ls": true,
 	"ge": true, "lt": true, "gt": true, "le": true, "al": true,
+	// The SVE spellings of the flags a predicate-generating instruction
+	// sets (whilelt, the compares): none/any (Z), first/nfrst (N),
+	// pmore/plast (C and Z), tcont/tstop (N and V), nlast/last (C).
+	"none": true, "any": true, "first": true, "nfrst": true, "pmore": true, "plast": true,
+	"tcont": true, "tstop": true, "nlast": true, "last": true,
 }
 
 func regForms3() []form {

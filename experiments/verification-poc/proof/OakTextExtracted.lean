@@ -4,6 +4,8 @@
 
 set_option autoImplicit false
 set_option linter.unusedVariables false
+set_option maxRecDepth 65536
+set_option maxHeartbeats 4000000
 namespace OakVerification.Extracted
 
 structure RUPCommand where

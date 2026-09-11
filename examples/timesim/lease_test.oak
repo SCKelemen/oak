@@ -1,0 +1,349 @@
+// Tests for the lease and timer in lease.oak, run with `oak test
+// examples/timesim`. They are the point of the example: the consumer code
+// never sees a real clock, so a frozen source pins a unit test, a
+// simulated source with tape-drawn clock faults fuzzes it, the scheduler's
+// SimClock drives it through crashes, and typed commands replay it — all
+// deterministic, all shrinkable.
+package main
+
+import(std)
+import("time")
+import("timesim")
+import(testing)
+
+TTL_NANOS: i64 = 5000000000
+
+holder_of: (h: Option[u32]): u32 = h ? | .Some(v) => v | .None => u32(4294967295)
+
+// 7400 a wall step neither expires nor extends a lease; 7401 a timer never
+// fires early; 7402 it fires at the deadline; 7403 exactly once.
+TestLeaseFixedClock: (): () {
+  store: [1]time.TimeSource
+  source: [*]time.TimeSource = span(&store)
+  source[0] = time.time_source_fixed(time.instant_nanos(i64(1000000000000)))
+  l: [1]Lease
+  lease: [*]Lease = span(&l)
+  lease[0] = lease_new()
+  test_check(lease_acquire(lease, source, u32(1), time.duration_nanos(TTL_NANOS)), u32(7400))
+  test_check(!lease_acquire(lease, source, u32(2), time.duration_nanos(TTL_NANOS)), u32(7400))
+  moved: Bool = time.time_source_set(source, time.instant_nanos(i64(1000000000000) + i64(86400000000000)))
+  test_check(moved && holder_of(lease_holder(lease, source)) == u32(1), u32(7400))
+  test_check(!lease_release(lease, source, u32(2)) && lease_release(lease, source, u32(1)), u32(7400))
+  test_check(lease_acquire(lease, source, u32(2), time.duration_nanos(TTL_NANOS)), u32(7400))
+  // The timer needs a clock that moves: a simulated source.
+  sim_store: [1]time.TimeSource
+  clock: [*]time.TimeSource = span(&sim_store)
+  clock[0] = time.time_source_sim(time.instant_nanos(i64(0)))
+  t: [1]Timer
+  timer: [*]Timer = span(&t)
+  timer[0] = timer_new()
+  test_check(timer_arm(timer, clock, time.duration_nanos(TTL_NANOS)), u32(7401))
+  test_check(!timer_poll(timer, clock), u32(7401))
+  advanced: Bool = time.time_source_advance(clock, time.duration_nanos(TTL_NANOS - i64(1)))
+  test_check(advanced && !timer_poll(timer, clock), u32(7401))
+  advanced = time.time_source_advance(clock, time.duration_nanos(i64(1)))
+  test_check(advanced && timer_poll(timer, clock), u32(7402))
+  test_check(!timer_poll(timer, clock) && timer[0].fired == u32(1), u32(7403))
+}
+
+// Every fault mask, random operations. Laws: 7410 the monotonic clock never
+// decreases; 7411 a client whose own deadline has not passed can always
+// renew; 7412 the timer never fires before its deadline; 7413 clock faults
+// and wall steps never move a monotonic deadline; 7414 the timer fires
+// exactly once, once its deadline has passed; 7415 at most one client
+// believes it holds the lease; 7416 the server agrees with that client.
+PropertyLeaseUnderClockFaults: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  store: [1]time.TimeSource
+  source: [*]time.TimeSource = span(&store)
+  source[0] = time.time_source_sim(timesim.timesim_instant(choices, data))
+  s: [1]timesim.TimeSim
+  sim: [*]timesim.TimeSim = span(&s)
+  mask: u32 = u32(test_byte(choices, data)) & timesim.TIME_FAULT_ALL
+  timesim.timesim_init(sim, mask, i64(1000000))
+  l: [1]Lease
+  lease: [*]Lease = span(&l)
+  lease[0] = lease_new()
+  t: [1]Timer
+  timer: [*]Timer = span(&t)
+  timer[0] = timer_new()
+  timer_span: time.Duration = timesim.timesim_step(choices, data, u32(3000))
+  test_check(timer_arm(timer, source, timer_span), u32(7412))
+  armed_deadline: i64 = timer[0].deadline
+  believes: [2]Bool
+  believed: [2]i64
+  fired_total: u32 = u32(0)
+  step: u32 = u32(0)
+  while step < u32(60) {
+    before: i64 = source[0].mono
+    op: u32 = test_range(choices, data, u32(0), u32(5))
+    h: u32 = test_range(choices, data, u32(0), u32(1))
+    ttl: time.Duration = time.duration_nanos(timesim.timesim_step(choices, data, u32(2000)).nanos + i64(1))
+    op == u32(0) ? {
+      lease_acquire(lease, source, h, ttl) ? {
+        believes[h] = true
+        believed[h] = lease[0].deadline
+      }
+    }
+    op == u32(1) ? {
+      renewed: Bool = lease_renew(lease, source, h, ttl)
+      renewed ? { believed[h] = lease[0].deadline }
+      believes[h] && source[0].mono < believed[h] ? { test_check(renewed, u32(7411)) }
+    }
+    op == u32(2) ? {
+      released: Bool = lease_release(lease, source, h)
+      released ? { believes[h] = false }
+    }
+    op == u32(3) ? {
+      moved: Bool = timesim.timesim_advance(sim, source, timesim.timesim_step(choices, data, u32(1500)), choices, data)
+      test_check(source[0].mono >= before, u32(7410))
+    }
+    op == u32(4) ? {
+      timer_poll(timer, source) ? {
+        fired_total = fired_total + u32(1)
+        test_check(source[0].mono >= armed_deadline, u32(7412))
+      }
+    }
+    op == u32(5) ? {
+      jumped: Bool = time.time_source_set(source, timesim.timesim_instant(choices, data))
+    }
+    test_check(timer[0].deadline == armed_deadline, u32(7413))
+    // Beliefs lapse with the monotonic clock, exactly as the server's view does.
+    believes[0] = believes[0] && source[0].mono < believed[0]
+    believes[1] = believes[1] && source[0].mono < believed[1]
+    test_check(!(believes[0] && believes[1]), u32(7415))
+    believes[0] ? { test_check(holder_of(lease_holder(lease, source)) == u32(0), u32(7416)) }
+    believes[1] ? { test_check(holder_of(lease_holder(lease, source)) == u32(1), u32(7416)) }
+    step = step + u32(1)
+  }
+  source[0].mono >= armed_deadline ? {
+    polled: Bool = timer_poll(timer, source)
+    polled ? { fired_total = fired_total + u32(1) }
+    test_check(fired_total == u32(1), u32(7414))
+  } | { test_check(fired_total == u32(0), u32(7414)) }
+  testing_classify(u32(180) + mask)
+  timesim.timesim_fault_count(sim) > u32(0) ? { testing_classify(u32(220)) }
+  sim[0].jumps_back > u32(0) ? { testing_classify(u32(221)) }
+  sim[0].stalls > u32(0) ? { testing_classify(u32(222)) }
+  sim[0].skew != i64(0) ? { testing_classify(u32(223)) }
+}
+
+// Two clients through the discrete-event simulator: attempts to acquire,
+// renew and release arrive as scheduled events; client 0 may crash and
+// restart (losing its belief that it holds the lease, while the server
+// still counts it until expiry) and the SimClock drives the time source,
+// faults included. 7420 at most one client believes it holds; 7421 the
+// server's holder is that client; 7422 a restarted client cannot reacquire
+// while its old lease is unexpired unless it is still the holder; 7423 the
+// monotonic clock never decreases across events, even when a sync is refused
+// because the wall clock would leave its range.
+SimLeaseTwoClients: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  q: [1]SimQueue
+  e: [40]SimEvent
+  k: [1]SimClock
+  p: [1]SimProcess
+  queue: [*]SimQueue = span(&q)
+  events: [*]SimEvent = span(&e)
+  clock: [*]SimClock = span(&k)
+  process: [*]SimProcess = span(&p)
+  process[0] = sim_process_new()
+  store: [1]time.TimeSource
+  source: [*]time.TimeSource = span(&store)
+  source[0] = time.time_source_sim(timesim.timesim_instant(choices, data))
+  s: [1]timesim.TimeSim
+  sim: [*]timesim.TimeSim = span(&s)
+  mask: u32 = u32(test_byte(choices, data)) & timesim.TIME_FAULT_ALL
+  timesim.timesim_init(sim, mask, i64(1000000))
+  l: [1]Lease
+  lease: [*]Lease = span(&l)
+  lease[0] = lease_new()
+  ttl: time.Duration = time.duration_nanos(i64(30000000))
+  believes: [2]Bool
+  believed: [2]i64
+  i: u32 = u32(0)
+  while i < u32(24) {
+    kind: u32 = test_range(choices, data, u32(0), u32(2))
+    who: u32 = test_range(choices, data, u32(0), u32(1))
+    at: u64 = u64(test_range(choices, data, u32(0), u32(50)))
+    ignored: Bool = sim_schedule_delayed(queue, events, clock, choices, data, SimEvent { at: at, kind: kind, value: who }, u32(5))
+    i = i + u32(1)
+  }
+  crashes: u32 = test_range(choices, data, u32(0), u32(2))
+  i = u32(0)
+  while i < crashes {
+    scheduled: Bool = sim_process_schedule_crash(queue, events, clock, choices, data, u32(3), u32(4), u32(40), u32(20))
+    scheduled ? { testing_classify(u32(230)) }
+    i = i + u32(1)
+  }
+  while queue[0].count > u32(0) {
+    event: SimEvent = sim_next(queue, events, clock, choices, data)
+    before: i64 = source[0].mono
+    // A sync is refused only when the wall clock would leave the instant
+    // range (a source started at the range end); the monotonic law holds
+    // regardless.
+    synced: Bool = timesim.timesim_sync(sim, source, clock, choices, data)
+    !synced ? { testing_classify(u32(233)) }
+    test_check(source[0].mono >= before, u32(7423))
+    testing_trace(u32(540), (u64(event.kind) << u64(32)) | u64(event.value), clock[0].now)
+    up: Bool = process[0].up
+    who: u32 = event.value
+    active: Bool = who == u32(1) || up
+    event.kind == u32(0) && active ? {
+      old_holder: u32 = holder_of(lease_holder(lease, source))
+      granted: Bool = lease_acquire(lease, source, who, ttl)
+      granted ? {
+        believes[who] = true
+        believed[who] = lease[0].deadline
+      } | { old_holder != who && old_holder != u32(4294967295) ? { testing_classify(u32(231)) } }
+      !granted && who == u32(0) && process[0].restarts > u32(0) ? { test_check(old_holder != u32(4294967295), u32(7422)) }
+    }
+    event.kind == u32(1) && active ? {
+      renewed: Bool = lease_renew(lease, source, who, ttl)
+      renewed ? { believed[who] = lease[0].deadline }
+    }
+    event.kind == u32(2) && active ? {
+      released: Bool = lease_release(lease, source, who)
+      released ? { believes[who] = false }
+    }
+    event.kind == u32(3) && up ? {
+      sim_process_crash(process, clock)
+      believes[0] = false
+      testing_classify(u32(232))
+    }
+    event.kind == u32(4) && !up ? { sim_process_restart(process) }
+    believes[0] = believes[0] && source[0].mono < believed[0]
+    believes[1] = believes[1] && source[0].mono < believed[1]
+    test_check(!(believes[0] && believes[1]), u32(7420))
+    believes[0] ? { test_check(holder_of(lease_holder(lease, source)) == u32(0), u32(7421)) }
+    believes[1] ? { test_check(holder_of(lease_holder(lease, source)) == u32(1), u32(7421)) }
+  }
+  testing_classify(u32(180) + mask)
+}
+
+// Typed commands (docs/spec/110-testing.md, "Typed commands"): the history
+// is concrete, so shrinking deletes whole operations and shrinks holders,
+// ttls and advances; Advance carries a Duration as whole milliseconds, the
+// carrier scalar a derived command may hold.
+LeaseArg: type = struct { holder: u8, ttl_ms: u8 }
+LeaseCmd: type = Acquire: LeaseArg | Renew: LeaseArg | Release: u8 | Advance: u16 | Poll
+lease_cmd_generate: (choices: [*]TestChoices, data: []u8): LeaseCmd = derive.test_generate
+lease_cmd_encode: (v: LeaseCmd): TestCommand = derive.test_encode
+lease_cmd_decode: (command: TestCommand): Option[LeaseCmd] = derive.test_decode
+
+// Legal: holders are 0 or 1 and a ttl is positive.
+lease_cmd_legal: (cmd: LeaseCmd): Bool = cmd ?
+  | .Acquire(a) => a.holder < u8(2) && a.ttl_ms > u8(0)
+  | .Renew(a) => a.holder < u8(2) && a.ttl_ms > u8(0)
+  | .Release(h) => h < u8(2)
+  | .Advance(ms) => true
+  | .Poll => true
+
+GeneratePropertyLeaseCommands: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  limit: u32 = testing_command_limit()
+  limit > u32(48) ? { limit = u32(48) }
+  count: u32 = test_range(choices, data, u32(0), limit)
+  i: u32 = u32(0)
+  while i < count {
+    cmd: LeaseCmd = lease_cmd_generate(choices, data)
+    lease_cmd_legal(cmd) ? { testing_command(lease_cmd_encode(cmd)) }
+    i = i + u32(1)
+  }
+}
+
+// 7430 every replayed command is legal; 7431 at most one believer; 7432
+// the server agrees; 7433 the timer fires exactly once, never early; 7434
+// the monotonic clock only grows.
+PropertyLeaseCommands: (data: []u8): () {
+  count: u32 = test_command_count(data)
+  store: [1]time.TimeSource
+  source: [*]time.TimeSource = span(&store)
+  source[0] = time.time_source_sim(time.instant_nanos(i64(1700000000000000000)))
+  l: [1]Lease
+  lease: [*]Lease = span(&l)
+  lease[0] = lease_new()
+  t: [1]Timer
+  timer: [*]Timer = span(&t)
+  timer[0] = timer_new()
+  armed: Bool = timer_arm(timer, source, time.duration_nanos(i64(2500000000)))
+  test_check(armed, u32(7433))
+  believes: [2]Bool
+  believed: [2]i64
+  fired_total: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < count {
+    raw: TestCommand = test_command_at(data, i)
+    decoded: Option[LeaseCmd] = lease_cmd_decode(raw)
+    ok: Bool = decoded ? | .Some(v) => true | .None => false
+    test_assume(ok)
+    cmd: LeaseCmd = decoded ? | .Some(v) => v | .None => .Poll
+    test_check(lease_cmd_legal(cmd), u32(7430))
+    before: i64 = source[0].mono
+    cmd ?
+      | .Acquire(a) => {
+        lease_acquire(lease, source, u32(a.holder), time.duration_nanos(i64(a.ttl_ms) * i64(1000000))) ? {
+          believes[u32(a.holder)] = true
+          believed[u32(a.holder)] = lease[0].deadline
+        }
+      }
+      | .Renew(a) => {
+        lease_renew(lease, source, u32(a.holder), time.duration_nanos(i64(a.ttl_ms) * i64(1000000))) ? {
+          believed[u32(a.holder)] = lease[0].deadline
+        }
+      }
+      | .Release(h) => {
+        lease_release(lease, source, u32(h)) ? { believes[u32(h)] = false }
+      }
+      | .Advance(ms) => {
+        moved: Bool = time.time_source_advance(source, time.duration_nanos(i64(ms) * i64(1000000)))
+        test_check(moved && source[0].mono >= before, u32(7434))
+      }
+      | .Poll => {
+        timer_poll(timer, source) ? {
+          fired_total = fired_total + u32(1)
+          test_check(source[0].mono >= timer[0].deadline, u32(7433))
+        }
+      }
+    believes[0] = believes[0] && source[0].mono < believed[0]
+    believes[1] = believes[1] && source[0].mono < believed[1]
+    test_check(!(believes[0] && believes[1]), u32(7431))
+    believes[0] ? { test_check(holder_of(lease_holder(lease, source)) == u32(0), u32(7432)) }
+    believes[1] ? { test_check(holder_of(lease_holder(lease, source)) == u32(1), u32(7432)) }
+    testing_classify(u32(240) + raw.kind)
+    i = i + u32(1)
+  }
+  test_check(fired_total <= u32(1), u32(7433))
+}
+
+// The generators produce what they promise: 7440 civil dates are valid and
+// convert both ways; 7441 instants stay in range and format; 7442 RFC 3339
+// text either parses to the instant it was made from or is rejected,
+// never trapping; 7443 offsets are within a day.
+PropertyGenerators: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  c: time.Civil = timesim.timesim_civil(choices, data)
+  test_check(time.civil_valid(c), u32(7440))
+  back: time.Civil = time.civil_from_days(time.days_from_civil(c.year, c.month, c.day))
+  test_check(back.year == c.year && back.month == c.month && back.day == c.day, u32(7440))
+  offset: i32 = timesim.timesim_offset_minutes(choices, data)
+  test_check(offset > i32(0) - i32(1440) && offset < i32(1440), u32(7443))
+  buf: [48]u8
+  n: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&buf)
+    n = timesim.timesim_rfc3339(dst, choices, data)
+  }
+  test_check(n <= u32(35), u32(7441))
+  n > u32(0) ? {
+    text: []u8 = view(&buf)
+    parsed: Result[time.Zoned, time.TimeError] = time.parse_rfc3339(text[u32(0):n])
+    parsed ? | .Ok(z) => { testing_classify(u32(250)) } | .Err(e) => { testing_classify(u32(251)) }
+  }
+  d: time.Duration = timesim.timesim_duration(choices, data)
+  d.nanos == i64(0) ? { testing_classify(u32(252)) }
+}

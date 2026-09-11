@@ -5,6 +5,9 @@
 > specification lives in [`docs/spec/`](docs/spec/). Examples below may
 > describe design direction ahead of the implemented subset; when this
 > document and `docs/spec/` disagree, `docs/spec/` wins.
+>
+> Measured performance against Go, Rust, and simdjson, with the raw
+> samples and the caveats, is in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 Oak is a systems programming language designed for embedded systems, firmware, and low-level programming. It combines strong type safety, memory safety through borrow checking, and expressive type system features while compiling to simple, readable C code.
 

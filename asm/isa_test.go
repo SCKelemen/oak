@@ -181,6 +181,9 @@ func TestInstructionTableCoverage(t *testing.T) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		if spec := instructionTable[name]; spec.tableForms && len(spec.forms) == 0 {
+			continue // SVE/SME: covered by the generated table's differential (sme_test.go)
+		}
 		body, decl := "", "f: (a, b: u64, s: [*]u64) -> u64"
 		prologue, epilogue := "  bind x0 = a\n  bind x1 = b\n  bind x2, w3 = s\n  clobber x9, x10, x30\n  frame 16\n", "\n  mov x0, #0\n  ret"
 		switch {

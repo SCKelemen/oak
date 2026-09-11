@@ -76,6 +76,7 @@ func cloneResourceProtocolDeclarations(declarations []typechecker.ResourceProtoc
 		cloned[i] = declaration
 		cloned[i].ResourceTypes = append([]string(nil), declaration.ResourceTypes...)
 		cloned[i].States = append([]string(nil), declaration.States...)
+		cloned[i].Terminal = append([]string(nil), declaration.Terminal...)
 		cloned[i].Transitions = make([]typechecker.ResourceTransitionDeclaration, len(declaration.Transitions))
 		for j, transition := range declaration.Transitions {
 			cloned[i].Transitions[j] = transition
@@ -109,6 +110,14 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 		}
 		for _, state := range resourceProtocol.States {
 			protocol.States = append(protocol.States, semir.State{Name: state})
+		}
+		if len(resourceProtocol.Terminal) > 0 {
+			// The obligation is a temporal guarantee of the protocol: every
+			// run eventually reaches one of the terminal states.
+			protocol.Guarantees = append(protocol.Guarantees, semir.TemporalProperty{
+				Name:    semir.ResourceTerminalGuarantee,
+				Formula: semir.EventuallyStates(resourceProtocol.Terminal),
+			})
 		}
 		for _, resourceTransition := range resourceProtocol.Transitions {
 			transition := semir.Transition{

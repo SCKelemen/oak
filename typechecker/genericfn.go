@@ -713,6 +713,35 @@ func substituteExpr(expr ast.Expression, bindings map[string]ast.Expression) (as
 			return nil, false
 		}
 		return &ast.SliceExpression{Token: e.Token, Seq: seq, Low: low, High: high}, true
+	// A record literal in a template body (`Pair { index: a, hint: b }`)
+	// substitutes each field value; the type name is a declared record,
+	// never a type parameter, so it is shared as is.
+	case *ast.RecordLiteral:
+		clone := *e
+		clone.Fields = make(map[string]ast.Expression, len(e.Fields))
+		clone.FieldOrder = make([]ast.RecordField, 0, len(e.FieldOrder))
+		for _, field := range e.OrderedFields() {
+			value, ok := substituteExpr(field.Value, bindings)
+			if !ok {
+				return nil, false
+			}
+			copied := field
+			copied.Value = value
+			clone.FieldOrder = append(clone.FieldOrder, copied)
+			clone.Fields[field.Name] = value
+		}
+		return &clone, true
+	case *ast.ArrayLiteral:
+		clone := *e
+		clone.Elements = make([]ast.Expression, 0, len(e.Elements))
+		for _, element := range e.Elements {
+			value, ok := substituteExpr(element, bindings)
+			if !ok {
+				return nil, false
+			}
+			clone.Elements = append(clone.Elements, value)
+		}
+		return &clone, true
 	}
 	return nil, false
 }

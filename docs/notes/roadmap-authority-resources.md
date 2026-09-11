@@ -178,6 +178,17 @@ the one match form; whole-value moves before partial-field states.
 reject reuse of the old location; return through `Result` without
 duplication; generic helpers specialize without erasing authority.
 
+**Landed (first increment, 2026-09-12):** resource paths through record
+fields and ADT payloads (`50-borrowing.md` §9 "Resources through
+aggregates"), construction and match extraction (inspect keeps the source,
+extract consumes the location, re-matching is `OAK-B0111`), return through
+`Result` as an alias of a consumed parameter (no duplication), contracts on
+aggregate parameters path by path with sibling paths failing closed, and a
+template's contract governing its specializations' payloads. All four
+"done when" cases are tested. Open: borrowing or aliasing an aggregate
+argument as a whole, partial-field states after a move, array elements,
+and copyability as a declared capability.
+
 ## 6. Cleanup and terminal-state obligations
 
 Separate: may an unused value be dropped; does dropping clean up; must a
@@ -188,6 +199,14 @@ before choosing `defer`/destructor syntax.
 **Done when:** no double cleanup after transfer; no cleanup of moved
 fields; required `close`/`abort` transitions checked on every exit;
 generated C makes cleanup auditable.
+
+**Landed (first increment, 2026-09-12):** terminal-state obligations
+(`50-borrowing.md` §9): protocols declare terminal states (SemIR guarantee
+`terminal`), owned resources must reach one on every exit or pass custody
+on (`OAK-B0120`), closers discharge their own parameters, and no double
+cleanup or moved-field cleanup can occur because consumption forbids later
+use. Three of four "done when" cases are tested; auditable cleanup in
+generated C, and what dropping does (destructors, `defer`), remain open.
 
 ## 7. Scoped callbacks and shortened borrows
 

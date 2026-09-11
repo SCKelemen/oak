@@ -1,0 +1,62 @@
+package main
+
+import("hash")
+
+// The kernels the harness times, as the entry points the C runner calls
+// (benchmarks/kernels/README.md). Each is the plain Oak a program would
+// write: bounds checks stay wherever the checker cannot prove them.
+
+pub bench_sha256: (src: []u8, out: [*]u8): Bool = hash.sha256(src, out)
+
+pub bench_blake3: (src: []u8, out: [*]u8): Bool = hash.blake3(src, out)
+
+pub bench_crc32c: (src: []u8): u32 = hash.crc32c(src)
+
+// Dot product over f32: the ml reduction shape.
+pub bench_dot: (a: []f32, b: []f32): f32 {
+  total: f32 = 0.0
+  len(a) == len(b) ? {
+    i: u32 = 0
+    while i < len(a) {
+      total = total + a[i] * b[i]
+      i = i + u32(1)
+    }
+  }
+  total
+}
+
+// Sum over u64: the simplest reduction, every access proven.
+pub bench_sum: (v: []u64): u64 {
+  total: u64 = 0
+  i: u32 = 0
+  while i < len(v) {
+    total = total + v[i]
+    i = i + u32(1)
+  }
+  total
+}
+
+// Binary search of every probe in a sorted key array: the index lookup shape
+// of a database page. Returns the number of hits.
+pub bench_search: (keys: []u64, probes: []u64): u32 {
+  hits: u32 = 0
+  p: u32 = 0
+  while p < len(probes) {
+    target: u64 = probes[p]
+    lo: u32 = 0
+    hi: u32 = len(keys)
+    found: Bool = false
+    while lo < hi && !found {
+      mid: u32 = lo + (hi - lo) / u32(2)
+      k: u64 = keys[mid]
+      k == target ? { found = true }
+      | k < target ? { lo = mid + u32(1) }
+      | { hi = mid }
+    }
+    found ? { hits = hits + u32(1) }
+    p = p + u32(1)
+  }
+  hits
+}
+
+main: (): i32 = 0

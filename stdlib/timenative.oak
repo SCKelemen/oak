@@ -1,0 +1,51 @@
+// The native realization of a time source (docs/spec/110-testing.md,
+// "Simulated time"; stdlib/README.md). Importing this package is the one
+// place a program admits it reads the operating system's clocks, and it is
+// the platform layer that imports it: the code that owns timeouts and
+// leases takes a `[*]time.TimeSource` and never sees this package.
+//
+// Library Oak cannot call clock_gettime itself today: the FFI passes owned
+// storage to C only as a (pointer, length) pair that must line up with a
+// `c.Ptr, c.Size` parameter pair (92-ffi.md section 2.5), and clock_gettime
+// takes a bare out-pointer. Until the boundary grows an out-parameter form,
+// the two readings cross as plain integers through host symbols the
+// platform provides (the same shape as the test runner's oak_test_host_*):
+//
+//   int64_t  oak_time_host_wall_nanos(void);        // CLOCK_REALTIME
+//   uint64_t oak_time_host_monotonic_nanos(void);   // CLOCK_MONOTONIC
+//
+// stdlib/native/oak_time_host.c is the reference implementation for POSIX
+// hosts; link it (or your own) into any program that imports this package.
+// A program that imports timenative without providing the symbols fails to
+// link, which is the intended failure: the dependency on a real clock is
+// visible at build time, never at run time.
+package timenative
+
+import("time")
+
+timenative_wall_host: (): c.Int64 = c.extern("oak_time_host_wall_nanos")
+timenative_monotonic_host: (): c.UInt64 = c.extern("oak_time_host_monotonic_nanos")
+
+// The host's monotonic reading as i64 nanoseconds; the top bit is never set
+// by a sane host, and a value beyond i64 is clamped rather than reinterpreted.
+timenative_monotonic_nanos: (): i64 {
+  raw: u64 = u64(timenative_monotonic_host())
+  raw > u64(9223372036854775807) ? { i64(9223372036854775807) } | { i64_bits_u64(raw) }
+}
+
+// timenative_refresh reads both host clocks into a native source. False,
+// and no change, for a fixed or simulated source (the platform layer handed
+// a test source to production code; that is a bug to surface, not to hide).
+pub timenative_refresh: (source: [*]time.TimeSource): Bool {
+  assert(len(source) == u32(1))
+  time.time_source_refresh(source, i64(timenative_wall_host()), timenative_monotonic_nanos())
+}
+
+// timenative_source is a native source already refreshed once, so the first
+// read after it does not trap.
+pub timenative_source: (out: [*]time.TimeSource): () {
+  assert(len(out) == u32(1))
+  out[0] = time.time_source_native()
+  refreshed: Bool = timenative_refresh(out)
+  assert(refreshed)
+}

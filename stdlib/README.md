@@ -468,13 +468,26 @@ segmented/disjoint storage; these are not implemented by this addition.
 ## Sorting and searching
 
 `sort_span[T](items)` sorts a span in place through the element type's `<`
-(insertion sort up to sixteen elements, heapsort beyond; `sort_insertion` and
-`sort_heap` are also exported), `sort_is_sorted[T](view)` checks
+with a pattern-defeating quicksort (Peters 2021, the algorithm behind Go's
+`slices.Sort` and Rust's `sort_unstable`): insertion sort at twelve elements
+or fewer, median-of-three pivots and Tukey's ninther from fifty elements, a
+partition that notices already-partitioned ranges, a partial insertion sort
+that finishes nearly sorted ranges in five swaps, an equal-elements
+partition that makes many duplicates linear, pattern-breaking swaps after an
+unbalanced split, and heapsort once the depth budget (the bit length of the
+length) is spent, so the worst case is O(n log n) and sorted, reversed, and
+all-equal inputs are O(n). The recursion is an explicit 48-frame stack (the
+smaller side is sorted first, so one frame per halving is outstanding).
+`sort_span_budget[T](items, depth)` exposes the budget; `sort_insertion`
+(stable) and `sort_heap` are also exported. `sort_is_sorted[T](view)` checks
 non-decreasing order, `sort_search[T](view, key)` is a binary search returning
 `Option[u32]`, `sort_lower_bound[T](view, key)` the first index not less than
 the key (the insertion point), `sort_dedup[T](span)` compacts a sorted span
 to one element per run and returns the new length, and `sort_reverse[T]`
-reverses in place. No allocation; heapsort is not stable, insertion sort is.
+reverses in place. No allocation; `sort_span` is not stable, insertion sort
+is. On an Apple M4 Max (`benchmarks/stdlib`, 100k u32), `sort_span` runs at
+0.92× Go's `slices.Sort` on random input, 1.1× on reversed, and 1.4× on
+sorted (heapsort was 1.2×, 21×, and 22×).
 
 ## Variable-length integers
 
@@ -764,17 +777,14 @@ bound and on any difference between compiled and interpreted results.
 32-byte output), and CRC-32C (the
 Castagnoli polynomial `0x82F63B78`, reflected, all-ones initial value,
 final complement — RFC 3720 appendix B.4) in Oak over the total fixed-width
-arithmetic, so the interpreter and every backend compute the same bits and
+arithmetic — CRC-32C table-driven, SHA-256 compressing whole blocks in
+place from the input, BLAKE3's quarter round by value, every block and
+table access proven by the extent facts (`benchmarks/kernels/RESULTS.md`
+measures them against Rust and Go) — so the interpreter and every backend
+compute the same bits and
 `oak test` can check a frame's checksum or a hash chain without a foreign
 implementation. Everything lives in caller-owned or bounded local storage:
-no allocation, every store bounds-checked. The SHA-256 rounds are fully
-unrolled (every schedule and constant index is a literal the C compiler
-checks at compile time; whole blocks compress straight from the input view
-without a copy) and CRC-32C is slicing-by-8 over an 8 KiB constant table,
-both emitted into `hash.oak` by `stdlib/generate_codec_tables.py`, which
-CI re-runs and diffs. On an M4 Max the compiled C runs SHA-256 at about
-480 MB/s and CRC-32C at about 2.4 GB/s; Go's hardware SHA-2 and CRC32C
-instructions remain 6× and 4× ahead, and closing that needs `asm`.
+no allocation, every store bounds-checked.
 
 SHA-256 is incremental: `sha256_init(): Sha256State`, `sha256_update(state,
 view): Sha256State` over any number of pieces, `sha256_final(state, out:
@@ -961,6 +971,99 @@ at seven offsets and 1000 random durations in Oak, compares each line with
 Go, parses it back, and parses 400 random duration spellings to Go's value.
 `examples/time/time_test.oak` (`oak test examples/time`) states the round
 trips as properties over the full i64 range.
+
+- **Time sources** (the one sanctioned way to read time): a `TimeSource` is
+  a record the consumer owns and passes by span, so who advances it is the
+  environment's decision. `time_source_fixed(start)` never moves unless
+  `time_source_set` steps the wall clock; `time_source_sim(start)` advances
+  only through `time_source_advance(source, d)` (both clocks together, false
+  and unchanged on a negative duration or an overflow), `time_source_set`
+  and `time_source_shift_wall` (wall only); `time_source_native()` is
+  unreadable until `time_source_refresh(source, wall_nanos, mono_nanos)` has
+  run — reading it earlier traps, because a forgotten platform refresh is a
+  bug the simulation cannot see. Every source carries the classic pair:
+  `time_now(source)` is the wall clock (an `Instant`, free to jump) and
+  `time_monotonic(source)` a `Duration` since creation that never decreases
+  (a native host whose monotonic reading regresses is clamped). Deadlines
+  are monotonic: `time_deadline(source, d)`, `time_expired(source,
+  deadline)`, `time_remaining`, `time_elapsed`. Code written against a
+  source — timeouts, leases, rate limiters, retries — is simulation-testable
+  and fuzzable as it stands; `examples/timesim` is the worked consumer and
+  `timesim` below drives it.
+
+## `timesim`: simulated time with clock faults (`import("timesim")`)
+
+`stdlib/timesim.oak` (a library package over `time` and `import(testing)`,
+docs/spec/110-testing.md "Simulated time") is the environment side of a
+`TimeSource` under deterministic simulation. `timesim_init(sim, faults,
+tick_nanos)` makes a `TimeSim`; `timesim_advance(sim, source, d, choices,
+data)` moves a simulated source by `d` and injects at most one fault drawn
+from the choice tape (one roll in eight, uniformly among the enabled kinds;
+a shrunk or exhausted tape injects nothing, so a shorter tape is a run with
+fewer faults and strict replay reproduces them); `timesim_sync(sim, source,
+clock, choices, data)` advances the source to the scheduler's `SimClock`
+reading (ticks since the last sync times `tick_nanos`) so the event
+timeline and the consumer's clock agree, faults included, and
+`timesim_ticks(sim, d)` converts a duration back to ticks for scheduling.
+
+The fault mask: `TIME_FAULT_JUMP_BACK` (1, the wall clock steps back up to a
+day), `TIME_FAULT_JUMP_FORWARD` (2), `TIME_FAULT_STALL` (4, neither clock
+advances this step), `TIME_FAULT_COARSE` (8, the wall clock is quantized to
+`coarse_nanos`, 10 ms unless `timesim_set_coarse` says otherwise),
+`TIME_FAULT_DRIFT` (16, the wall clock runs up to two percent fast or slow
+against the monotonic one), `TIME_FAULT_ALL`. The ledger (`jumps_back`,
+`jumps_forward`, `stalls`, `coarsened`, `drifted`, `skew` — how far the wall
+clock has departed from the monotonic timeline) is there to classify on.
+The law every fault respects, asserted inside `timesim_advance`: **the
+monotonic clock never decreases**; a consumer whose deadlines are monotonic
+is unaffected by every fault but the stall, and the stall only delays.
+
+Generators, each drawing a class first so the reducer moves toward the
+simplest value: `timesim_instant` (near the epoch, at the range ends, on a
+second or day boundary plus or minus a nanosecond, anywhere),
+`timesim_duration` (zero, a nanosecond, up to a minute, up to a year, the
+range ends, anywhere), `timesim_step(choices, data, max_millis)` (a
+non-negative step), `timesim_offset_minutes` (zero, whole hours, the
+extremes, anywhere in -1439..1439), `timesim_civil` (always valid; years 0,
+-400, -1, the century rules, 1970, the instant range ends; days 1, the
+month's last, February 28/29), and `timesim_rfc3339(dst, choices, data)`
+(text for a generated instant, offset and fraction width, damaged one time
+in four by a replaced byte or a truncation, for parser fuzzing). `Instant`
+and `Duration` are records of one `i64`, so a typed command
+(`derive.test_generate`) carries them through a carrier scalar — the
+example's `Advance: u16` is whole milliseconds.
+
+`examples/timesim` is the consumer that proves the point: a lease and a
+one-shot timer written against `[*]time.TimeSource`, tested under a frozen
+source (a wall step neither expires nor extends a lease), under every fault
+mask (the monotonic clock never decreases; a client whose own deadline has
+not passed can always renew; the timer never fires early, never twice, and
+fires once its deadline has passed; clock faults and wall steps never move a
+monotonic deadline; at most one client believes it holds the lease and the
+server agrees with it), through the discrete-event simulator with client
+crashes and restarts driving the source from `SimClock`, and as typed
+command histories. `testrunner/timesim_example_test.go` runs it under the
+Go suite; `.github/workflows/testing.yml` runs it with `oak test`.
+
+## `timenative`: the operating system's clocks (`import("timenative")`)
+
+`stdlib/timenative.oak` is the native realization of a `TimeSource`, and the
+platform layer is the only code that imports it. `timenative_source(out)`
+fills a refreshed native source; `timenative_refresh(source)` reads both
+host clocks into it (false, unchanged, for a fixed or simulated source
+handed to production code by mistake). The readings cross the boundary as
+plain integers through two symbols the platform provides —
+`int64_t oak_time_host_wall_nanos(void)` (CLOCK_REALTIME) and `uint64_t
+oak_time_host_monotonic_nanos(void)` (CLOCK_MONOTONIC) — because library
+Oak cannot call `clock_gettime` itself yet: the FFI passes owned storage to
+C only as a `c.Ptr, c.Size` pair and `clock_gettime` takes a bare
+out-pointer. `stdlib/native/oak_time_host.c` is the reference shim for
+POSIX hosts; a program that imports `timenative` without providing the
+symbols fails to link, which is the intended failure: the dependency on a
+real clock is visible at build time, never at run time.
+`compiler/e2e_stdlib_timesim_test.go` links the shim and checks the wall
+clock is plausible, the monotonic clock starts at zero and never decreases
+over a thousand refreshes, and a fixed source is refused.
 
 ## `arena`: reservations over an owner (`import("arena")`)
 

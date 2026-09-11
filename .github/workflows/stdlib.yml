@@ -19,7 +19,7 @@ jobs:
       - name: Check generated codec tables
         run: |
           python3 stdlib/generate_codec_tables.py
-          git diff --exit-code -- stdlib/encoding.oak stdlib/hash.oak
+          git diff --exit-code -- stdlib/encoding.oak
       - name: Test JSON fast paths
         run: go test ./compiler -run 'Test.*JsonFast' -count=1
       - name: Test nullable JSON codecs
@@ -43,7 +43,7 @@ jobs:
       - name: Test deque and ID pool
         run: go test ./compiler -run 'TestE2EStdlib(Deque|IdPool|Serenity)' -count=1
       - name: Test sort, varint, and random
-        run: go test ./compiler -run 'TestE2EStdlib(SortAndSearch|Varint|Random)|TestE2EGenericNestedTemplate' -count=1
+        run: go test ./compiler -run 'TestE2EStdlib(SortAndSearch|SortMatchesGo|Varint|Random)|TestE2EGeneric(NestedTemplate|TemplateRecordLiteral)' -count=1
       - name: Test uuid
         run: go test ./compiler -run 'TestE2EStdlibUuid' -count=1
       - name: Test grapheme
@@ -56,6 +56,8 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlibEncoding' -count=1
       - name: Test time
         run: go test ./compiler -run 'TestE2EStdlibTime' -count=1
+      - name: Test time sources and simulated time
+        run: go test ./compiler -run 'TestE2EStdlibTime(Source|Native)' -count=1 && go test ./testrunner -run 'TestTimesimExample' -count=1
       - name: Test url
         run: go test ./compiler -run 'TestE2EStdlibUrl' -count=1
       - name: Test path

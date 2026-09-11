@@ -1,0 +1,313 @@
+{
+  "schema": "oak-kernels-benchmark-v1",
+  "machine": "arm64",
+  "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Max",
+  "oak": "517f1b1f56848677a3fc9c3f9faaf7fad587fd84",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "go": "go version go1.27.1 darwin/arm64",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19) (Homebrew)",
+  "c_flags": [
+    "-O3",
+    "-DNDEBUG"
+  ],
+  "rust_flags": [
+    "-O"
+  ],
+  "go_flags": [],
+  "size": 1048576,
+  "rounds": 5,
+  "samples": 7,
+  "core_affinity": "not controlled",
+  "cache_flush": false,
+  "results": [
+    {
+      "impl": "oak",
+      "kernel": "crc32c",
+      "size": 1048576,
+      "checksum": "9a26588f",
+      "ns_per_op_median": 2386600.0,
+      "samples": [
+        2381800.0,
+        2384000.0,
+        2386000.0,
+        2386600.0,
+        2395600.0,
+        2412400.0,
+        2429800.0
+      ]
+    },
+    {
+      "impl": "go-stdlib",
+      "kernel": "crc32c",
+      "size": 1048576,
+      "checksum": "9a26588f",
+      "ns_per_op_median": 119850.0,
+      "samples": [
+        119758.4,
+        119775.0,
+        119850.0,
+        119850.0,
+        120000.0,
+        120300.0,
+        122500.0
+      ]
+    },
+    {
+      "impl": "go-generic",
+      "kernel": "crc32c",
+      "size": 1048576,
+      "checksum": "9a26588f",
+      "ns_per_op_median": 2554883.2,
+      "samples": [
+        2428716.6,
+        2443433.4,
+        2552266.6,
+        2554883.2,
+        2556191.6,
+        2563150.0,
+        2563558.4
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "crc32c",
+      "size": 1048576,
+      "checksum": "9a26588f",
+      "ns_per_op_median": 2170400.0,
+      "samples": [
+        2100491.6,
+        2163200.0,
+        2169991.6,
+        2170400.0,
+        2173466.6,
+        2178133.4,
+        2179783.2
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "sha256",
+      "size": 1048576,
+      "checksum": "c7f83242f7967cc3ff4cacc879c31c6fde4596b95b1820a9c061e83df73d0d6f",
+      "ns_per_op_median": 2632400.0,
+      "samples": [
+        2626200.0,
+        2628000.0,
+        2632200.0,
+        2632400.0,
+        2634000.0,
+        2634800.0,
+        2640800.0
+      ]
+    },
+    {
+      "impl": "go-stdlib",
+      "kernel": "sha256",
+      "size": 1048576,
+      "checksum": "c7f83242f7967cc3ff4cacc879c31c6fde4596b95b1820a9c061e83df73d0d6f",
+      "ns_per_op_median": 371183.4,
+      "samples": [
+        370158.2,
+        370600.0,
+        370833.4,
+        371183.4,
+        371775.0,
+        374316.6,
+        382566.8
+      ]
+    },
+    {
+      "impl": "go-generic",
+      "kernel": "sha256",
+      "size": 1048576,
+      "checksum": "c7f83242f7967cc3ff4cacc879c31c6fde4596b95b1820a9c061e83df73d0d6f",
+      "ns_per_op_median": 3383175.0,
+      "samples": [
+        3320241.8,
+        3346458.4,
+        3352141.6,
+        3383175.0,
+        3410116.6,
+        3453166.6,
+        3460083.2
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "sha256",
+      "size": 1048576,
+      "checksum": "c7f83242f7967cc3ff4cacc879c31c6fde4596b95b1820a9c061e83df73d0d6f",
+      "ns_per_op_median": 2732350.0,
+      "samples": [
+        2700250.0,
+        2708075.0,
+        2730766.6,
+        2732350.0,
+        2734008.4,
+        2735725.0,
+        2746600.0
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 1911200.0,
+      "samples": [
+        1812800.0,
+        1827400.0,
+        1861400.0,
+        1911200.0,
+        1913400.0,
+        1949600.0,
+        1974400.0
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "dot",
+      "size": 1048576,
+      "checksum": "032c8048",
+      "ns_per_op_median": 604600.0,
+      "samples": [
+        587400.0,
+        587800.0,
+        592200.0,
+        604600.0,
+        604800.0,
+        608400.0,
+        614600.0
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "dot",
+      "size": 1048576,
+      "checksum": "032c8048",
+      "ns_per_op_median": 961716.6,
+      "samples": [
+        935100.0,
+        937100.0,
+        949008.2,
+        961716.6,
+        962266.6,
+        962650.0,
+        969441.6
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "dot",
+      "size": 1048576,
+      "checksum": "032c8048",
+      "ns_per_op_median": 631450.0,
+      "samples": [
+        630808.4,
+        631008.2,
+        631075.0,
+        631450.0,
+        631750.0,
+        632275.0,
+        632375.0
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "sum",
+      "size": 1048576,
+      "checksum": "0000e8ff7f010000",
+      "ns_per_op_median": 89600.0,
+      "samples": [
+        88400.0,
+        88600.0,
+        89400.0,
+        89600.0,
+        89600.0,
+        89800.0,
+        90400.0
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "sum",
+      "size": 1048576,
+      "checksum": "0000e8ff7f010000",
+      "ns_per_op_median": 310608.2,
+      "samples": [
+        308383.2,
+        308641.6,
+        309558.4,
+        310608.2,
+        310691.8,
+        310908.4,
+        312341.8
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "sum",
+      "size": 1048576,
+      "checksum": "0000e8ff7f010000",
+      "ns_per_op_median": 88058.2,
+      "samples": [
+        87091.8,
+        87316.8,
+        87450.0,
+        88058.2,
+        88066.6,
+        90200.0,
+        96350.0
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "search",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 7478000.0,
+      "samples": [
+        7277800.0,
+        7361600.0,
+        7374800.0,
+        7478000.0,
+        7603200.0,
+        7676600.0,
+        7995400.0
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "search",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 11266700.0,
+      "samples": [
+        11112900.0,
+        11113275.0,
+        11262808.4,
+        11266700.0,
+        11423133.4,
+        11869308.4,
+        11901858.2
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "search",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 7499675.0,
+      "samples": [
+        7094316.6,
+        7105766.8,
+        7213591.6,
+        7499675.0,
+        7626800.0,
+        7765583.4,
+        7766341.6
+      ]
+    }
+  ]
+}

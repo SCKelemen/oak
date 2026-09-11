@@ -92,4 +92,52 @@ theorem subslice_extent (start n len c : Nat) (hfits : start + n ≤ len)
 theorem subslice_check_iff (start n len : Nat) :
     (start ≤ len ∧ n ≤ len - start) ↔ start + n ≤ len := by omega
 
+
+/-- A literal upper bound composes with a known length: from `i < K` and
+    `K ≤ len`, `i < len`; with an offset, from `i < K` and `K + j ≤ len`,
+    `i + j < len` (`recordIndexProof`, factIndexLit). -/
+theorem literal_bound_under_length (i K j len : Nat) (hi : i < K) (hlen : K + j ≤ len) :
+    i + j < len := by omega
+
+/-- Subtracting a literal under a lower and an upper bound: from `L ≤ i`,
+    `K ≤ L`, `i < U`, and `U - K ≤ len`, `i - K < len`, and the subtraction
+    does not wrap because `K ≤ i` (`recordIndexProof`, `minusIndex` with
+    factLowerLit and factIndexLit). -/
+theorem subtraction_under_bounds (i K L U len : Nat) (hL : L ≤ i) (hK : K ≤ L) (hU : i < U)
+    (hlen : U - K ≤ len) : i - K < len := by omega
+
+/-- The same with the upper bound a length: from `K ≤ i` and `i < len`,
+    `i - K < len`. -/
+theorem subtraction_under_length (i K len : Nat) (hK : K ≤ i) (hi : i < len) : i - K < len := by
+  omega
+
+/-- A scaled index under a literal bound: from `i < U` (so `1 ≤ U`) and
+    `(U - 1) * K + j < len`, `i * K + j < len` (`recordIndexProof`,
+    `scaledIndex`). The product cannot wrap when the length fits the machine
+    word, because it is bounded by the length. -/
+theorem scaled_under_bound (i K j U len : Nat) (hi : i < U) (hlen : (U - 1) * K + j < len) :
+    i * K + j < len := by
+  have hle : i ≤ U - 1 := by omega
+  have := Nat.mul_le_mul_right K hle
+  omega
+
+/-- A masked index is below every length above the mask: from `M < len`,
+    `x &&& M < len`, for any `x` (`recordIndexProof`, `maskedIndex`). -/
+theorem masked_under_length (x M len : Nat) (hM : M < len) : x &&& M < len :=
+  Nat.lt_of_le_of_lt (Nat.and_le_right) hM
+
+/-- Leaving a loop `while i < K` normally means `K ≤ i`
+    (`checkWhileStatement`, the exit fact; a body with `break` gets none). -/
+theorem loop_exit_lower_bound (i K : Nat) (h : ¬ i < K) : K ≤ i := Nat.le_of_not_lt h
+
+/-- A lower bound survives the canonical increment when an upper bound
+    keeps the sum below the word: from `K0 ≤ i`, `K0 ≤ i + c`; and with
+    `i < U` and `U + c ≤ 2^w` the fixed-width sum is the natural one
+    (`checkWhileStatement`, the exception that keeps factLowerLit alive
+    through a loop whose only write to `i` is the trailing increment). -/
+theorem increment_keeps_lower_bound (i c K0 : Nat) (h : K0 ≤ i) : K0 ≤ i + c := by omega
+
+theorem increment_without_wrap (i c U w : Nat) (hi : i < U) (hU : U + c ≤ 2 ^ w) :
+    i + c < 2 ^ w := by omega
+
 end Oak.Extents
