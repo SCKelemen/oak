@@ -103,6 +103,15 @@ resources; rebinding cannot manufacture freshness; freshness has a scope.
 fresh assignment does not revive old aliases; shadowing leaves outer
 bindings alone; branches and loops cannot manufacture disjointness.
 
+**Landed (first increment, 2026-09-12):** reassignment of resource bindings
+is tracked (`50-borrowing.md` §9): rebinding to a live name joins its
+class, rebinding to a fresh result starts a new class, other right-hand
+sides give unknown provenance, rebound parameters release entry authority,
+and joins drop names whose provenance differs. All four "done when" cases
+are tested. Still open: projections and aggregate writes (distinct fields
+are not automatically distinct resources) and loop-specific fixed points
+beyond the existing two-iteration probe.
+
 ## 4. Checked result provenance, then borrowed returns
 
 Independent result facts — identity (fresh / input alias / unknown),

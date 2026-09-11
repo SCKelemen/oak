@@ -199,6 +199,44 @@ func methodReceiver(expr *ast.InvocationExpression) ast.Expression {
 	return nil
 }
 
+// reassign gives a resource binding a new provenance (docs/spec/
+// 50-borrowing.md section 9): from a live registered name it becomes that
+// name's alias, so later exclusive use of the two conflicts; from a
+// fresh-return call it becomes a new authority, reviving nothing; from any
+// other resource-valued expression its provenance becomes unknown and later
+// exclusive or consuming use fails closed. The binding's entry authority, if
+// it was a parameter, no longer applies to the new value. A binding that
+// was never a tracked resource is untouched.
+func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
+	if s == nil || s.Name == nil {
+		return
+	}
+	name := s.Name.Value
+	tracked := a.flow.Registered(name) || a.unknownResources[name]
+	if !tracked && !a.isResourceValue(s.Value) {
+		return
+	}
+	delete(a.entryModes, name)
+	delete(a.unknownResources, name)
+	if source, ok := s.Value.(*ast.Identifier); ok && source != nil && a.flow.Registered(source.Value) {
+		if a.flow.CanUse(source.Value) {
+			a.flow.Rebind(name, source.Value, s.Name)
+		} else {
+			// Ordinary evaluation reported the use-after-consume; the
+			// destination now has no usable provenance.
+			a.flow.Forget(name)
+			a.unknownResources[name] = true
+		}
+		return
+	}
+	if call, ok := s.Value.(*ast.InvocationExpression); ok && a.freshCalls[call] {
+		a.flow.RebindFresh(name, s.Name)
+		return
+	}
+	a.flow.Forget(name)
+	a.unknownResources[name] = true
+}
+
 // tailIdentifiers collects the identifiers an expression may evaluate to
 // as a function's result: the expression itself, the last statement of a
 // block, and every arm of a match. Calls and literals contribute nothing
@@ -736,10 +774,7 @@ func (a *typedResourceAnalysis) statement(stmt ast.Statement) {
 				a.unknownCallables[s.Name.Value] = true
 			}
 		}
-		if a.isResourceValue(s.Value) || (s.Name != nil && (a.flow.Registered(s.Name.Value) || a.unknownResources[s.Name.Value])) {
-			a.tc.addResourceDiagnosticWithCode(s, CodeResourceCallAliasConflict,
-				"resource reassignment requires tracked destination provenance")
-		}
+		a.reassign(s)
 	case *ast.IndexAssignmentStatement:
 		if s.Target != nil {
 			a.expression(s.Target.Left)
