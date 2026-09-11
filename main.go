@@ -221,7 +221,12 @@ func buildOne(dir, output, header, leanOut, profile, asmMode string, lines, emit
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	cached, err := compileC(code, object, output)
+	inputs, err := comp.LinkInputs()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	cached, err := compileC(code, object, inputs, output)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
@@ -812,7 +817,12 @@ func runPackage(args []string) int {
 	}
 	defer os.RemoveAll(work)
 	binary := filepath.Join(work, "program")
-	if _, err := compileC(code, object, binary); err != nil {
+	inputs, err := comp.LinkInputs()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	if _, err := compileC(code, object, inputs, binary); err != nil {
 		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
 		return 1
 	}

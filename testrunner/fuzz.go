@@ -24,6 +24,11 @@ func emitFuzzHarness(pkg Package, test Test, maxBytes int, adapter *nativeAdapte
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "#define OAK_COMMAND_LIMIT %d\n", min(commandLimit, maxBytes/commandWidth))
+	if inputs, err := packageCompilation(pkg, adapter).LinkInputs(); err == nil {
+		for _, input := range inputs {
+			fmt.Fprintf(&out, "/* oak.mod %s: %s %s; link it explicitly when compiling this export. */\n", input.Module, input.Kind, input.Path)
+		}
+	}
 	if adapter != nil {
 		fmt.Fprintf(&out, "/* Trusted adapter manifest identity SHA-256: %x; link its pinned objects explicitly. */\n", sha256.Sum256([]byte(adapter.identity)))
 	}

@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/SCKelemen/oak/buildcache"
+	"github.com/SCKelemen/oak/compiler"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -95,7 +97,18 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 	if err != nil {
 		return nil, err
 	}
-	generated, err := packageCompilation(pkg, adapter).EmitC().Get()
+	compilation := packageCompilation(pkg, adapter)
+	generated, err := compilation.EmitC().Get()
+	if err != nil {
+		return nil, err
+	}
+	// The manifests' native inputs (`link`, `framework`; docs/spec/83-modules.md
+	// section 4.6) link into the test binary exactly as into `oak build`'s.
+	inputs, err := compilation.LinkInputs()
+	if err != nil {
+		return nil, err
+	}
+	linkArgs, linkIdentity, err := linkArguments(inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +151,9 @@ int main(int argc, char **argv) {
 	if cfg.Sanitize {
 		flags = append(flags, "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer")
 	}
-	args := append(append([]string{}, flags...), "-o", filepath.Join(dir, "test"), cpath, "-lm")
+	args := append(append([]string{}, flags...), "-o", filepath.Join(dir, "test"), cpath)
+	args = append(args, linkArgs...)
+	args = append(args, "-lm")
 	adapterIdentity := ""
 	if adapter != nil {
 		adapterIdentity = adapter.identity
@@ -160,7 +175,7 @@ int main(int argc, char **argv) {
 	}
 	// Generated C captures compiler/lowering changes; flags and compiler identity
 	// prevent replay under a silently different native build.
-	hash := sha256.Sum256([]byte(engineVersion + "\n" + source.String() + "\n" + strings.Join(flags, " ") + "\n" + versionOutput.String() + "\nadapter-v1:" + adapterIdentity))
+	hash := sha256.Sum256([]byte(engineVersion + "\n" + source.String() + "\n" + strings.Join(flags, " ") + "\n" + versionOutput.String() + "\nadapter-v1:" + adapterIdentity + "\nlink-v1:" + linkIdentity))
 	// The same identity keys the build cache (docs/spec/115-tooling.md
 	// section 3): an unchanged test binary is copied, not recompiled.
 	binary := filepath.Join(dir, "test")
@@ -187,6 +202,33 @@ int main(int argc, char **argv) {
 	}
 	keep = true
 	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: cfg.MaxBytes, timeout: cfg.Timeout}, nil
+}
+
+// linkArguments spells the manifests' native inputs as C compiler arguments
+// and returns an identity covering each object's bytes and each framework's
+// name for the build fingerprint (docs/spec/83-modules.md section 4.6). A
+// `framework` line links only on macOS and is skipped elsewhere.
+func linkArguments(inputs []compiler.LinkInput) ([]string, string, error) {
+	var args []string
+	var identity strings.Builder
+	for _, input := range inputs {
+		switch input.Kind {
+		case "object":
+			data, err := os.ReadFile(input.Path)
+			if err != nil {
+				return nil, "", fmt.Errorf("link %s: %w", input.Path, err)
+			}
+			sum := sha256.Sum256(data)
+			fmt.Fprintf(&identity, "object %s %x\n", input.Path, sum)
+			args = append(args, input.Path)
+		case "framework":
+			fmt.Fprintf(&identity, "framework %s\n", input.Path)
+			if runtime.GOOS == "darwin" {
+				args = append(args, "-framework", input.Path)
+			}
+		}
+	}
+	return args, identity.String(), nil
 }
 
 const nativePreamble = `
