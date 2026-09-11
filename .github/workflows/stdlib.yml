@@ -46,6 +46,8 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlibEncoding' -count=1
       - name: Test time
         run: go test ./compiler -run 'TestE2EStdlibTime' -count=1
+      - name: Test time sources and simulated time
+        run: go test ./compiler -run 'TestE2EStdlibTime(Source|Native)' -count=1 && go test ./testrunner -run 'TestTimesimExample' -count=1
       - name: Test url
         run: go test ./compiler -run 'TestE2EStdlibUrl' -count=1
       - name: Test standard library and compiler

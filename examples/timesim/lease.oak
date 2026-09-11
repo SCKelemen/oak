@@ -1,0 +1,94 @@
+// A lease and a one-shot timer written against a TimeSource (stdlib/time.oak,
+// "Time sources"). This is the consumer side of the contract: the code holds
+// a `[*]time.TimeSource` it was handed and reads only through it, so the same
+// code runs under a frozen clock, a deterministic simulation with injected
+// clock faults, and the operating system's clocks — the tests in
+// lease_test.oak exercise the first two, and nothing here would change for
+// the third.
+//
+// Every deadline is monotonic (time_deadline / time_expired). A wall-clock
+// step, forward or back, must not extend, shorten, or fire anything; the
+// property tests state that as a law and the simulation injects the steps.
+package main
+
+import(std)
+import("time")
+
+pub Lease: type = struct { held: Bool, holder: u32, deadline: i64 }
+
+pub lease_new: (): Lease = Lease { held: false, holder: u32(0), deadline: i64(0) }
+
+deadline_ok: (r: Result[time.Duration, time.TimeError]): Bool = r ? | .Ok(d) => true | .Err(e) => false
+deadline_nanos: (r: Result[time.Duration, time.TimeError]): i64 = r ? | .Ok(d) => d.nanos | .Err(e) => i64(0)
+holder_is: (h: Option[u32], holder: u32): Bool = h ? | .Some(v) => v == holder | .None => false
+holder_none: (h: Option[u32]): Bool = h ? | .Some(v) => false | .None => true
+
+// The current holder, None when the lease is free or has expired on the
+// monotonic clock. Expiry is a reading, not an event: nothing has to run
+// for a lease to lapse.
+pub lease_holder: (lease: [*]Lease, source: [*]time.TimeSource): Option[u32] {
+  assert(len(lease) == u32(1))
+  deadline: i64 = lease[0].deadline
+  !lease[0].held || time.time_expired(source, time.Duration { nanos: deadline }) ? { .None } | { .Some(lease[0].holder) }
+}
+
+// lease_acquire grants a free (or lapsed) lease to `holder` for `ttl`
+// (positive). False when someone else holds it, or ttl is not positive or
+// overflows the monotonic range.
+pub lease_acquire: (lease: [*]Lease, source: [*]time.TimeSource, holder: u32, ttl: time.Duration): Bool {
+  assert(len(lease) == u32(1))
+  !holder_none(lease_holder(lease, source)) || ttl.nanos <= i64(0) ? { false } | {
+    deadline: Result[time.Duration, time.TimeError] = time.time_deadline(source, ttl)
+    deadline_ok(deadline) ? {
+      lease[0] = Lease { held: true, holder: holder, deadline: deadline_nanos(deadline) }
+      true
+    } | { false }
+  }
+}
+
+// lease_renew extends a lease its current, unexpired holder still owns.
+pub lease_renew: (lease: [*]Lease, source: [*]time.TimeSource, holder: u32, ttl: time.Duration): Bool {
+  assert(len(lease) == u32(1))
+  !holder_is(lease_holder(lease, source), holder) || ttl.nanos <= i64(0) ? { false } | {
+    deadline: Result[time.Duration, time.TimeError] = time.time_deadline(source, ttl)
+    deadline_ok(deadline) ? {
+      lease[0].deadline = deadline_nanos(deadline)
+      true
+    } | { false }
+  }
+}
+
+// lease_release frees a lease its current, unexpired holder owns.
+pub lease_release: (lease: [*]Lease, source: [*]time.TimeSource, holder: u32): Bool {
+  assert(len(lease) == u32(1))
+  holder_is(lease_holder(lease, source), holder) ? {
+    lease[0].held = false
+    true
+  } | { false }
+}
+
+// A one-shot timer: armed for a duration, it fires exactly once, at the
+// first poll at or after its monotonic deadline.
+pub Timer: type = struct { armed: Bool, deadline: i64, fired: u32 }
+
+pub timer_new: (): Timer = Timer { armed: false, deadline: i64(0), fired: u32(0) }
+
+pub timer_arm: (timer: [*]Timer, source: [*]time.TimeSource, d: time.Duration): Bool {
+  assert(len(timer) == u32(1))
+  deadline: Result[time.Duration, time.TimeError] = time.time_deadline(source, d)
+  fired: u32 = timer[0].fired
+  deadline_ok(deadline) && d.nanos >= i64(0) ? {
+    timer[0] = Timer { armed: true, deadline: deadline_nanos(deadline), fired: fired }
+    true
+  } | { false }
+}
+
+pub timer_poll: (timer: [*]Timer, source: [*]time.TimeSource): Bool {
+  assert(len(timer) == u32(1))
+  deadline: i64 = timer[0].deadline
+  timer[0].armed && time.time_expired(source, time.Duration { nanos: deadline }) ? {
+    timer[0].armed = false
+    timer[0].fired = timer[0].fired + u32(1)
+    true
+  } | { false }
+}

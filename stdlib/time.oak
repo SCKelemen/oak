@@ -574,3 +574,158 @@ pub parse_duration: (src: []u8): Result[Duration, TimeError] {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Time sources
+//
+// A TimeSource is the one sanctioned way for a consumer to read time. It is a
+// record the consumer owns and passes by span, so who advances it is the
+// environment's decision, not the consumer's: a test freezes it
+// (TIME_SOURCE_FIXED), a deterministic simulation drives it from the event
+// queue (TIME_SOURCE_SIM, through the timesim package or directly with
+// time_source_advance), and a platform layer refreshes it from the operating
+// system (TIME_SOURCE_NATIVE, see timenative). Code written against a source
+// — timeouts, leases, rate limiters, retries — never touches a real clock and
+// so is simulation-testable and fuzzable as it stands.
+//
+// Every source carries two clocks, the classic distinction:
+//   time_now        the wall clock, an Instant; it may jump in either
+//                   direction (NTP steps, a simulated fault, an operator).
+//   time_monotonic  a Duration since the source was created (or first
+//                   refreshed); it never decreases. Under simulation it may
+//                   stall; it never reverses. Deadlines and timeouts must be
+//                   taken against this clock (time_deadline, time_expired).
+//
+// A native source that has never been refreshed traps on the first read:
+// forgetting the platform refresh is a bug the simulation cannot see, so it
+// fails closed rather than reporting the epoch.
+
+pub TIME_SOURCE_FIXED: u32 = 0
+pub TIME_SOURCE_SIM: u32 = 1
+pub TIME_SOURCE_NATIVE: u32 = 2
+
+// wall and mono are nanoseconds; origin is the host's monotonic reading at
+// the first refresh of a native source, so mono starts at zero everywhere.
+pub TimeSource: type = struct { kind: u32, wall: i64, mono: i64, origin: i64, refreshed: Bool }
+
+// A frozen clock: both readings stay put unless time_source_set moves the wall.
+pub time_source_fixed: (start: Instant): TimeSource =
+  TimeSource { kind: TIME_SOURCE_FIXED, wall: start.nanos, mono: i64(0), origin: i64(0), refreshed: true }
+
+// A simulated clock: advances only through time_source_advance / time_source_set.
+pub time_source_sim: (start: Instant): TimeSource =
+  TimeSource { kind: TIME_SOURCE_SIM, wall: start.nanos, mono: i64(0), origin: i64(0), refreshed: true }
+
+// A native clock shell: unreadable until time_source_refresh has run once.
+pub time_source_native: (): TimeSource =
+  TimeSource { kind: TIME_SOURCE_NATIVE, wall: i64(0), mono: i64(0), origin: i64(0), refreshed: false }
+
+pub time_now: (source: [*]TimeSource): Instant {
+  assert(len(source) == u32(1))
+  assert(source[0].refreshed)
+  wall: i64 = source[0].wall
+  Instant { nanos: wall }
+}
+
+pub time_monotonic: (source: [*]TimeSource): Duration {
+  assert(len(source) == u32(1))
+  assert(source[0].refreshed)
+  mono: i64 = source[0].mono
+  Duration { nanos: mono }
+}
+
+overflow_ok: (r: Result[i64, Overflow]): Bool = r ? | .Ok(v) => true | .Err(e) => false
+overflow_value: (r: Result[i64, Overflow], fallback: i64): i64 = r ? | .Ok(v) => v | .Err(e) => fallback
+
+// time_source_advance moves a simulated source forward by d on both clocks.
+// It reports false, changing nothing, for a fixed or native source, a
+// negative duration, or an overflow of either reading.
+pub time_source_advance: (source: [*]TimeSource, d: Duration): Bool {
+  assert(len(source) == u32(1))
+  source[0].kind != TIME_SOURCE_SIM || d.nanos < i64(0) ? { false } | {
+    next_wall: Result[i64, Overflow] = i64_checked_add(source[0].wall, d.nanos)
+    next_mono: Result[i64, Overflow] = i64_checked_add(source[0].mono, d.nanos)
+    ok: Bool = overflow_ok(next_wall) && overflow_ok(next_mono)
+    ok ? {
+      source[0].wall = overflow_value(next_wall, i64(0))
+      source[0].mono = overflow_value(next_mono, i64(0))
+    }
+    ok
+  }
+}
+
+// time_source_set moves the wall clock of a fixed or simulated source to
+// `at`; the monotonic clock is untouched, exactly as a wall step behaves.
+pub time_source_set: (source: [*]TimeSource, at: Instant): Bool {
+  assert(len(source) == u32(1))
+  source[0].kind == TIME_SOURCE_NATIVE ? { false } | {
+    source[0].wall = at.nanos
+    true
+  }
+}
+
+// time_source_shift_wall steps the wall clock by delta (either sign) without
+// touching the monotonic clock: how the simulation injects a clock jump.
+// False, and no change, on a native source or an overflow.
+pub time_source_shift_wall: (source: [*]TimeSource, delta: i64): Bool {
+  assert(len(source) == u32(1))
+  next_wall: Result[i64, Overflow] = i64_checked_add(source[0].wall, delta)
+  ok: Bool = source[0].kind != TIME_SOURCE_NATIVE && overflow_ok(next_wall)
+  ok ? { source[0].wall = overflow_value(next_wall, i64(0)) }
+  ok
+}
+
+// time_source_refresh is the platform layer's entry for a native source:
+// the host's wall reading (nanoseconds since the Unix epoch) and monotonic
+// reading (nanoseconds from any fixed origin). The first refresh fixes the
+// origin so mono starts at zero; later refreshes never move mono backwards
+// (a host whose monotonic reading regressed is clamped, so the consumer's
+// deadlines stay honest). False, and no change, for a non-native source.
+pub time_source_refresh: (source: [*]TimeSource, wall_nanos: i64, mono_nanos: i64): Bool {
+  assert(len(source) == u32(1))
+  source[0].kind != TIME_SOURCE_NATIVE ? { false } | {
+    !source[0].refreshed ? {
+      source[0].origin = mono_nanos
+      source[0].mono = i64(0)
+      source[0].refreshed = true
+    } | {
+      elapsed: Result[i64, Overflow] = i64_checked_sub(mono_nanos, source[0].origin)
+      candidate: i64 = overflow_value(elapsed, source[0].mono)
+      candidate > source[0].mono ? { source[0].mono = candidate }
+    }
+    source[0].wall = wall_nanos
+    true
+  }
+}
+
+// Deadlines are monotonic readings: time_deadline(source, d) is "d from now"
+// on the monotonic clock (Err(Overflowed) beyond the range), time_expired
+// says whether that point has been reached, and time_remaining is what is
+// left of it, zero once expired.
+pub time_deadline: (source: [*]TimeSource, d: Duration): Result[Duration, TimeError] {
+  assert(len(source) == u32(1))
+  assert(source[0].refreshed)
+  checked_i64(i64_checked_add(source[0].mono, d.nanos)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub time_expired: (source: [*]TimeSource, deadline: Duration): Bool {
+  assert(len(source) == u32(1))
+  assert(source[0].refreshed)
+  source[0].mono >= deadline.nanos
+}
+
+pub time_remaining: (source: [*]TimeSource, deadline: Duration): Duration {
+  assert(len(source) == u32(1))
+  assert(source[0].refreshed)
+  mono: i64 = source[0].mono
+  mono >= deadline.nanos ? { Duration { nanos: i64(0) } } | { Duration { nanos: deadline.nanos - mono } }
+}
+
+// time_elapsed is the monotonic time since an earlier monotonic reading.
+pub time_elapsed: (source: [*]TimeSource, since: Duration): Duration {
+  assert(len(source) == u32(1))
+  assert(source[0].refreshed)
+  mono: i64 = source[0].mono
+  assert(since.nanos <= mono)
+  Duration { nanos: mono - since.nanos }
+}

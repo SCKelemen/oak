@@ -1,0 +1,345 @@
+// Simulated time for deterministic simulation and fuzzing
+// (docs/spec/110-testing.md, "Simulated time"; stdlib/README.md). A library
+// package (import("timesim")) over the time package's TimeSource and the
+// testing module's choice tape and SimClock: it drives a simulated source
+// from the event queue, injects clock faults drawn from the tape so a
+// shrunk tape is a run with fewer faults and strict replay reproduces them,
+// and generates instants, durations, offsets, civil dates and RFC 3339 text
+// biased to the values that break time code.
+//
+// Fault kinds (the `faults` mask enables them; the ledger counts them):
+//    1 jump back      the wall clock steps backward (an NTP step, an operator)
+//    2 jump forward   the wall clock steps forward
+//    4 stall          neither clock advances for this step
+//    8 coarse         the wall clock is quantized to a coarse granularity
+//   16 drift          the wall clock runs fast or slow against the monotonic one
+//
+// The law every fault respects: the monotonic clock never decreases. It may
+// stall (4) and it may fall behind or run ahead of the wall clock (1, 2, 8,
+// 16); a consumer whose deadlines are monotonic is therefore unaffected by
+// every fault but the stall, and the stall only delays. `skew` records how
+// far the wall clock has departed from the monotonic timeline so a scenario
+// can classify runs by it.
+package timesim
+
+import("time")
+import(testing)
+
+pub TIME_FAULT_JUMP_BACK: u32 = 1
+pub TIME_FAULT_JUMP_FORWARD: u32 = 2
+pub TIME_FAULT_STALL: u32 = 4
+pub TIME_FAULT_COARSE: u32 = 8
+pub TIME_FAULT_DRIFT: u32 = 16
+pub TIME_FAULT_ALL: u32 = 31
+
+NANOS_PER_MILLI: i64 = 1000000
+NANOS_PER_SECOND: i64 = 1000000000
+NANOS_PER_DAY: i64 = 86400000000000
+MAX_NANOS: i64 = 9223372036854775807
+MIN_NANOS: i64 = -9223372036854775807 - 1
+
+// tick_nanos maps SimClock ticks to nanoseconds; last_tick is the SimClock
+// reading the source was last synced to; coarse_nanos is the granularity of
+// a coarse read (10 ms unless timesim_set_coarse says otherwise).
+pub TimeSim: type = struct {
+  faults: u32
+  tick_nanos: i64
+  last_tick: u64
+  coarse_nanos: i64
+  jumps_back: u32
+  jumps_forward: u32
+  stalls: u32
+  coarsened: u32
+  drifted: u32
+  skew: i64
+}
+
+pub timesim_init: (sim: [*]TimeSim, faults: u32, tick_nanos: i64): () {
+  assert(len(sim) == u32(1))
+  assert(tick_nanos > i64(0))
+  sim[0] = TimeSim { faults: faults, tick_nanos: tick_nanos, last_tick: u64(0), coarse_nanos: i64(10000000), jumps_back: u32(0), jumps_forward: u32(0), stalls: u32(0), coarsened: u32(0), drifted: u32(0), skew: i64(0) }
+}
+
+pub timesim_set_coarse: (sim: [*]TimeSim, coarse_nanos: i64): () {
+  assert(len(sim) == u32(1))
+  assert(coarse_nanos > i64(0))
+  sim[0].coarse_nanos = coarse_nanos
+}
+
+// The number of faults injected so far, for classification.
+pub timesim_fault_count: (sim: [*]TimeSim): u32 {
+  assert(len(sim) == u32(1))
+  sim[0].jumps_back + sim[0].jumps_forward + sim[0].stalls + sim[0].coarsened + sim[0].drifted
+}
+
+floor_mod: (a: i64, b: i64): i64 {
+  r: i64 = a % b
+  r < i64(0) ? { r + b } | { r }
+}
+
+overflow_ok: (r: Result[i64, Overflow]): Bool = r ? | .Ok(v) => true | .Err(e) => false
+overflow_value: (r: Result[i64, Overflow], fallback: i64): i64 = r ? | .Ok(v) => v | .Err(e) => fallback
+
+// pick_i64 draws a full-range i64 from two u32 choices.
+pick_i64: (choices: [*]TestChoices, data: []u8): i64 {
+  hi: u32 = test_u32(choices, data)
+  lo: u32 = test_u32(choices, data)
+  i64_bits_u64((u64(hi) << u64(32)) | u64(lo))
+}
+
+// One roll in eight injects a fault, chosen uniformly among the enabled
+// kinds. Zero (tape exhausted, or a shrunk tape) never injects: a shorter
+// tape is a run with fewer faults.
+timesim_pick_fault: (choices: [*]TestChoices, data: []u8, faults: u32): u32 {
+  enabled: u32 = faults & TIME_FAULT_ALL
+  roll: u32 = test_range(choices, data, u32(0), u32(7))
+  count: u32 = u32(0)
+  bit: u32 = u32(1)
+  while bit <= u32(16) {
+    (enabled & bit) != u32(0) ? { count = count + u32(1) }
+    bit = bit << u32(1)
+  }
+  chosen: u32 = u32(0)
+  roll == u32(7) && count > u32(0) ? {
+    pick: u32 = test_range(choices, data, u32(0), count - u32(1))
+    seen: u32 = u32(0)
+    bit = u32(1)
+    while bit <= u32(16) {
+      (enabled & bit) != u32(0) ? {
+        seen == pick ? { chosen = bit }
+        seen = seen + u32(1)
+      }
+      bit = bit << u32(1)
+    }
+  }
+  chosen
+}
+
+// A jump magnitude: up to a day, in whole milliseconds, so the reducer
+// shrinks a jump toward zero.
+timesim_jump_nanos: (choices: [*]TestChoices, data: []u8): i64 {
+  millis: u32 = test_range(choices, data, u32(0), u32(86400000))
+  i64_bits_u64(u64(millis) * u64(1000000))
+}
+
+// Record how far the wall clock departed from the monotonic timeline.
+timesim_note_skew: (sim: [*]TimeSim, delta: i64): () {
+  next: Result[i64, Overflow] = i64_checked_add(sim[0].skew, delta)
+  sim[0].skew = overflow_value(next, sim[0].skew)
+}
+
+// timesim_advance moves a simulated source forward by d, injecting at most
+// one tape-chosen fault. It returns false, and changes nothing, for a
+// negative duration or a monotonic overflow; a fault that cannot apply
+// (a wall overflow) is skipped, not counted. The monotonic clock never
+// decreases across the call — asserted here, so a violated law is a trap.
+pub timesim_advance: (sim: [*]TimeSim, source: [*]time.TimeSource, d: time.Duration, choices: [*]TestChoices, data: []u8): Bool {
+  assert(len(sim) == u32(1))
+  assert(len(source) == u32(1))
+  assert(source[0].kind == time.TIME_SOURCE_SIM)
+  before: i64 = source[0].mono
+  applied: Bool = false
+  d.nanos < i64(0) ? { applied = false } | {
+    fault: u32 = timesim_pick_fault(choices, data, sim[0].faults)
+    fault == TIME_FAULT_STALL ? {
+      sim[0].stalls = sim[0].stalls + u32(1)
+      applied = true
+    } | {
+      applied = time.time_source_advance(source, d)
+      applied && fault == TIME_FAULT_JUMP_BACK ? {
+        back: i64 = timesim_jump_nanos(choices, data)
+        time.time_source_shift_wall(source, i64(0) - back) ? {
+          sim[0].jumps_back = sim[0].jumps_back + u32(1)
+          timesim_note_skew(sim, i64(0) - back)
+        }
+      }
+      applied && fault == TIME_FAULT_JUMP_FORWARD ? {
+        forward: i64 = timesim_jump_nanos(choices, data)
+        time.time_source_shift_wall(source, forward) ? {
+          sim[0].jumps_forward = sim[0].jumps_forward + u32(1)
+          timesim_note_skew(sim, forward)
+        }
+      }
+      applied && fault == TIME_FAULT_DRIFT ? {
+        // The wall clock ran up to two percent fast or slow over this step.
+        permille: i64 = i64(test_range(choices, data, u32(0), u32(40))) - i64(20)
+        scaled: Result[i64, Overflow] = i64_checked_mul(d.nanos, permille)
+        overflow_ok(scaled) ? {
+          extra: i64 = overflow_value(scaled, i64(0)) / i64(1000)
+          time.time_source_shift_wall(source, extra) ? {
+            sim[0].drifted = sim[0].drifted + u32(1)
+            timesim_note_skew(sim, extra)
+          }
+        }
+      }
+      applied && fault == TIME_FAULT_COARSE ? {
+        down: i64 = floor_mod(source[0].wall, sim[0].coarse_nanos)
+        time.time_source_shift_wall(source, i64(0) - down) ? {
+          sim[0].coarsened = sim[0].coarsened + u32(1)
+          timesim_note_skew(sim, i64(0) - down)
+        }
+      }
+    }
+  }
+  assert(source[0].mono >= before)
+  applied
+}
+
+// timesim_sync advances the source to the SimClock's reading: the ticks
+// since the last sync, times tick_nanos, through timesim_advance (so the
+// scheduler's timeline and the consumer's clock agree, faults included).
+// False when the tick span does not fit a duration.
+pub timesim_sync: (sim: [*]TimeSim, source: [*]time.TimeSource, clock: [*]SimClock, choices: [*]TestChoices, data: []u8): Bool {
+  assert(len(sim) == u32(1))
+  assert(len(clock) == u32(1))
+  now: u64 = clock[0].now
+  assert(now >= sim[0].last_tick)
+  ticks: u64 = now - sim[0].last_tick
+  limit: u64 = u64(9223372036854775807) / u64_bits_i64(sim[0].tick_nanos)
+  ticks > limit ? { false } | {
+    sim[0].last_tick = now
+    nanos: i64 = i64_bits_u64(ticks * u64_bits_i64(sim[0].tick_nanos))
+    timesim_advance(sim, source, time.Duration { nanos: nanos }, choices, data)
+  }
+}
+
+// timesim_ticks converts a duration to whole SimClock ticks, rounding up,
+// saturating at the u32 maximum; a non-positive duration is zero ticks. Use
+// it to schedule a SimEvent `at: clock[0].now + timesim_ticks(sim, d)`.
+pub timesim_ticks: (sim: [*]TimeSim, d: time.Duration): u32 {
+  assert(len(sim) == u32(1))
+  d.nanos <= i64(0) ? { u32(0) } | {
+    tick: i64 = sim[0].tick_nanos
+    whole: i64 = d.nanos / tick
+    rounded: i64 = d.nanos % tick != i64(0) ? { whole + i64(1) } | { whole }
+    rounded > i64(4294967295) ? { u32(4294967295) } | { u32_trunc_u64(u64_bits_i64(rounded)) }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Generators. Each draws a class first so the reducer moves toward the
+// simplest value (class zero), then the value within the class.
+
+// timesim_instant: near the epoch, at the range ends, on a second or day
+// boundary (plus or minus a nanosecond), or anywhere.
+pub timesim_instant: (choices: [*]TestChoices, data: []u8): time.Instant {
+  class: u32 = test_range(choices, data, u32(0), u32(5))
+  class == u32(0) ? {
+    seconds: i64 = i64(test_range(choices, data, u32(0), u32(86400)))
+    frac: i64 = i64(test_range(choices, data, u32(0), u32(999999999)))
+    magnitude: i64 = seconds * NANOS_PER_SECOND + frac
+    time.Instant { nanos: test_bool(choices, data) ? { i64(0) - magnitude } | { magnitude } }
+  } | class == u32(1) ? {
+    k: i64 = i64(test_range(choices, data, u32(0), u32(1000)))
+    time.Instant { nanos: test_bool(choices, data) ? { MIN_NANOS + k } | { MAX_NANOS - k } }
+  } | class == u32(2) ? {
+    seconds: i64 = pick_i64(choices, data) / NANOS_PER_SECOND
+    adjust: i64 = i64(test_range(choices, data, u32(0), u32(2))) - i64(1)
+    time.Instant { nanos: seconds * NANOS_PER_SECOND + adjust }
+  } | class == u32(3) ? {
+    days: i64 = pick_i64(choices, data) / NANOS_PER_DAY
+    adjust: i64 = i64(test_range(choices, data, u32(0), u32(2))) - i64(1)
+    time.Instant { nanos: days * NANOS_PER_DAY + adjust }
+  } | {
+    time.Instant { nanos: pick_i64(choices, data) }
+  }
+}
+
+// timesim_duration: zero, a nanosecond either way, up to a minute, up to a
+// year, the range ends, or anywhere.
+pub timesim_duration: (choices: [*]TestChoices, data: []u8): time.Duration {
+  class: u32 = test_range(choices, data, u32(0), u32(5))
+  class == u32(0) ? { time.Duration { nanos: i64(0) } } |
+  class == u32(1) ? { time.Duration { nanos: test_bool(choices, data) ? { i64(0) - i64(1) } | { i64(1) } } } |
+  class == u32(2) ? {
+    magnitude: i64 = i64(test_range(choices, data, u32(0), u32(60000))) * NANOS_PER_MILLI
+    time.Duration { nanos: test_bool(choices, data) ? { i64(0) - magnitude } | { magnitude } }
+  } | class == u32(3) ? {
+    magnitude: i64 = i64(test_range(choices, data, u32(0), u32(31536000))) * NANOS_PER_SECOND
+    time.Duration { nanos: test_bool(choices, data) ? { i64(0) - magnitude } | { magnitude } }
+  } | class == u32(4) ? {
+    k: i64 = i64(test_range(choices, data, u32(0), u32(1000)))
+    time.Duration { nanos: test_bool(choices, data) ? { MIN_NANOS + k } | { MAX_NANOS - k } }
+  } | {
+    time.Duration { nanos: pick_i64(choices, data) }
+  }
+}
+
+// timesim_step: a non-negative duration up to `max_millis`, for advancing a
+// simulated source one step at a time.
+pub timesim_step: (choices: [*]TestChoices, data: []u8, max_millis: u32): time.Duration {
+  time.Duration { nanos: i64(test_range(choices, data, u32(0), max_millis)) * NANOS_PER_MILLI }
+}
+
+// timesim_offset_minutes: zero, a whole hour either way, the extremes and
+// their neighbors, or anywhere in -1439..1439.
+pub timesim_offset_minutes: (choices: [*]TestChoices, data: []u8): i32 {
+  class: u32 = test_range(choices, data, u32(0), u32(3))
+  class == u32(0) ? { i32(0) } |
+  class == u32(1) ? {
+    hours: i32 = i32_bits_u32(test_range(choices, data, u32(0), u32(23)))
+    test_bool(choices, data) ? { i32(0) - hours * i32(60) } | { hours * i32(60) }
+  } | class == u32(2) ? {
+    edge: i32 = i32(1439) - i32_bits_u32(test_range(choices, data, u32(0), u32(1)))
+    test_bool(choices, data) ? { i32(0) - edge } | { edge }
+  } | {
+    i32_bits_u32(test_range(choices, data, u32(0), u32(2878))) - i32(1439)
+  }
+}
+
+// timesim_civil: always valid. Years favor the ones calendars get wrong
+// (0, negative, the century rules, the epoch, the instant range ends), days
+// favor the first and last of the month and February 29.
+pub timesim_civil: (choices: [*]TestChoices, data: []u8): time.Civil {
+  year_class: u32 = test_range(choices, data, u32(0), u32(11))
+  year: i32 = year_class == u32(0) ? { i32(1970) } |
+    year_class == u32(1) ? { i32(0) } |
+    year_class == u32(2) ? { i32(0) - i32(400) } |
+    year_class == u32(3) ? { i32(0) - i32(1) } |
+    year_class == u32(4) ? { i32(1600) } |
+    year_class == u32(5) ? { i32(1900) } |
+    year_class == u32(6) ? { i32(2000) } |
+    year_class == u32(7) ? { i32(2100) } |
+    year_class == u32(8) ? { i32(1677) } |
+    year_class == u32(9) ? { i32(2262) } |
+    year_class == u32(10) ? { i32_bits_u32(test_range(choices, data, u32(1900), u32(2100))) } |
+    { i32_bits_u32(test_range(choices, data, u32(0), u32(65535))) - i32(32768) }
+  month: u8 = u8_trunc_u32(test_range(choices, data, u32(1), u32(12)))
+  last: u8 = time.days_in_month(year, month)
+  day_class: u32 = test_range(choices, data, u32(0), u32(3))
+  day: u8 = day_class == u32(0) ? { u8(1) } |
+    day_class == u32(1) ? { last } |
+    day_class == u32(2) ? { month == u8(2) ? { last } | { u8(28) } } |
+    { u8_trunc_u32(test_range(choices, data, u32(1), u32(last))) }
+  edge: Bool = test_bool(choices, data)
+  hour: u8 = edge ? { u8(23) } | { u8_trunc_u32(test_range(choices, data, u32(0), u32(23))) }
+  minute: u8 = edge ? { u8(59) } | { u8_trunc_u32(test_range(choices, data, u32(0), u32(59))) }
+  second: u8 = edge ? { u8(59) } | { u8_trunc_u32(test_range(choices, data, u32(0), u32(59))) }
+  nanos: u32 = edge ? { u32(999999999) } | { test_range(choices, data, u32(0), u32(999999999)) }
+  c: time.Civil = time.Civil { year: year, month: month, day: day, hour: hour, minute: minute, second: second, nanos: nanos }
+  assert(time.civil_valid(c))
+  c
+}
+
+// timesim_rfc3339 writes RFC 3339 text for a generated instant, offset and
+// fraction width into dst, and one time in four damages it — one byte
+// replaced, or the text truncated — so a parser sees the near-valid inputs
+// that matter. Returns the length written, zero when dst is too short
+// (35 bytes always suffice). The caller learns whether the text was left
+// intact by parsing it: `damaged` is reported through the second word.
+pub timesim_rfc3339: (dst: [*]u8, choices: [*]TestChoices, data: []u8): u32 {
+  at: time.Instant = timesim_instant(choices, data)
+  offset: i32 = timesim_offset_minutes(choices, data)
+  digits: u32 = test_range(choices, data, u32(0), u32(9))
+  written: Result[u32, time.TimeError] = time.format_rfc3339(dst, at, offset, digits)
+  n: u32 = written ? | .Ok(v) => v | .Err(e) => u32(0)
+  n > u32(0) && test_range(choices, data, u32(0), u32(3)) == u32(0) ? {
+    test_bool(choices, data) ? {
+      at_byte: u32 = test_range(choices, data, u32(0), n - u32(1))
+      dst[at_byte] = test_byte(choices, data)
+    } | {
+      n = n - u32(1)
+    }
+  }
+  n
+}

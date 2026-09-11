@@ -93,6 +93,21 @@ var mxSource string
 //go:embed time.oak
 var timeSource string
 
+// timesim is a library package only (import("timesim")): drives a simulated
+// TimeSource from the event queue, injects tape-drawn clock faults, and
+// generates the instants, durations and text that break time code
+// (110-testing.md, "Simulated time").
+//
+//go:embed timesim.oak
+var timesimSource string
+
+// timenative is a library package only (import("timenative")): the native
+// TimeSource realization through two host clock symbols the platform layer
+// provides (stdlib/native/oak_time_host.c is the reference).
+//
+//go:embed timenative.oak
+var timenativeSource string
+
 // arena is a library package only (import("arena")): bump reservations of
 // element ranges over an owner such as a Buffer[T]
 // (docs/spec/60-effects-allocation.md section 6).
@@ -172,5 +187,7 @@ var Packages = map[string]string{
 	"hash":            hashSource,
 	"mx":              mxSource,
 	"time":            timeSource,
+	"timesim":         timesimSource,
+	"timenative":      timenativeSource,
 	"arena":           arenaSource,
 }
