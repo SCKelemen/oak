@@ -39,7 +39,7 @@ func protocolCommand(args []string, stdout, stderr io.Writer) int {
 		if decl.Name.Value != *tla {
 			continue
 		}
-		module, err := compiler.ProtocolTLA(decl, path)
+		module, err := compiler.ProtocolTLAWithRecords(decl, path, compiler.RecordDeclarations(tree.Root))
 		if err != nil {
 			fmt.Fprintf(stderr, "oak protocol: %v\n", err)
 			return 1

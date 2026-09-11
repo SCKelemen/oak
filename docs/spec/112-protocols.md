@@ -48,10 +48,32 @@ sequence of entries separated by newlines or commas:
   every field; arrays as typed array literals).
 - `resource T` — zero or more nominal types the protocol governs (§5).
 - `name(param: T)?: From -> To (when guard)? (then { effects })? (via callable)?`
-  — one transition line. The guard is a Bool expression over `data.field`
-  and `data.field[i]` reads and the payload; the effects are statements over
-  `data.field = e` and `data.field[i] = e` and the payload. Both use ordinary
-  Oak and are checked by every gate once projected. An index is checked at
+  — one transition line. The guard is a Bool expression over `data.field`,
+  `data.field[i]` and `data.field[i].sub` reads (an array of records: the
+  element type is a declared record), the payload, and the **quantifier
+  forms** below; the effects are statements over `data.field = e`,
+  `data.field[i] = e` and `data.field[i].sub = e` and the payload. Both use
+  ordinary Oak and are checked by every gate once projected.
+- Quantifier forms over a fixed array field: `count(data.f)` (`u32`, the
+  number of true slots of an `[N]Bool` field), `all(data.f)`,
+  `any(data.f)`, `none(data.f)`, and over an array of records
+  `count(data.peers, acked)`, `all(data.peers, acked)`,
+  `any(data.peers, acked)`, `none(data.peers, acked)`, where the second
+  argument names a `Bool` field of the element record. Each distinct use
+  projects one bounded helper (`name_count_acks: (data: NameData): u32`,
+  a `while` over the array) that the guard calls, so the Oak gate sees a
+  plain fold; the model-checker module writes `Cardinality({k \in 0..N-1 :
+  f[k]})` (adding `FiniteSets`) and the bounded `\A`/`\E`. A quorum guard
+  is therefore declared once — `commit: Normal -> Normal when
+  count(data.acks) >= u32(2)` — and both gates read it. `Oak.ProtocolQuorum`
+  fixes the shared meaning over a Bool vector: `count ≤ N`; `all`, `any`,
+  `none` are exactly `count = N`, `count > 0`, `count = 0`; acknowledging
+  a slot never lowers the count (`quorum_stable`). Shape errors
+  (`OAK-M0301`): a form over a field `data` does not declare, over a
+  non-array field, a one-argument form over non-`Bool` elements, a
+  two-argument form whose element is not a declared record or whose named
+  field is not `Bool`. Multi-field payloads per step remain one scalar
+  (the typed-command derive admits one); a record payload is a follow-up. An index is checked at
   run time like any Oak index, so a guard that indexes by the payload
   bounds it first (`u32(who) < u32(2) && data.parked[u32(who)]`); the
   model-checker module gets the same conjunct and a payload domain that
@@ -127,13 +149,19 @@ one action per step name — the disjunction of its lines, each
 <<rest>>`, with a parameter for the payload — `Next` as the disjunction of
 the actions with payloads quantified over a declared `CONSTANT` per payload
 name (`on` -> `On`), `TypeOK` (`Nat`, `Int`, `BOOLEAN` by field type), and
-`Spec`. Guards and effects translate from the subset a line may use: field
-and element reads, the payload, literals, width conversions, `+ - * / %`,
-comparisons, `&& || !`, `data.field = expr`, and `data.field[i] = expr`
-(element stores on one array fold into one `[field EXCEPT ![i] = v, ...]`);
-an `[N]T` field is a function `[0..N-1 -> T]`, initialized as one arrow
-when every element agrees and as a `CASE` otherwise; anything else stops the
-export naming the line. The module is complete for what the declaration says and
+`Spec`. Guards and effects translate from the subset a line may use: field,
+element and element-field reads (`peers[i].acked`), the payload, literals,
+width conversions, `+ - * / %`, comparisons, `&& || !`, the quantifier
+forms (`Cardinality({k \in 0..N-1 : f[k]})` with `EXTENDS FiniteSets`,
+`\A k \in 0..N-1 : f[k]`, `\E`, and `~f[k]` under `\A` for `none`),
+`data.field = expr`, `data.field[i] = expr` and `data.field[i].sub = expr`
+(element and element-field stores on one array fold into one
+`[field EXCEPT ![i] = v, ![j].sub = w, ...]`); an `[N]T` field is a
+function `[0..N-1 -> T]`, initialized as one arrow when every element
+agrees and as a `CASE` otherwise, and an element record `R` is the record
+set `[f1: D1, f2: D2]` from the program's declaration (`oak protocol -tla`
+reads it from the same file; `ProtocolTLAWithRecords` takes it);
+anything else stops the export naming the line. The module is complete for what the declaration says and
 checkable as is (TLC checks the modules of both examples above); scenarios
 extend it for liveness and environment assumptions in a module of their own,
 so regenerating never overwrites hand-written properties. The generated
