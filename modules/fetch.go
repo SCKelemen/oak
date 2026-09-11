@@ -212,6 +212,11 @@ func (f *Fetcher) fetchOne(ctx context.Context, requirement Requirement, target 
 			return fmt.Errorf("archive verification failed: %w", err)
 		}
 	}
+	// The download record lets `oak mod verify` detect later edits to the
+	// cache entry.
+	if err := WriteRecord(staging, "sha256:"+digest); err != nil {
+		return err
+	}
 	if err := os.Rename(staging, target); err != nil {
 		return err
 	}

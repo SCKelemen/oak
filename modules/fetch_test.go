@@ -229,3 +229,37 @@ func TestManifestPinnedRequire(t *testing.T) {
 		}
 	}
 }
+
+// Downloads leave a record the cache can be verified against.
+func TestFetchWritesDownloadRecord(t *testing.T) {
+	archive := buildTarGz(t, []archiveEntry{
+		{name: "oak.mod", body: "module example.com/dep\n"},
+		{name: "math/", typeflag: tar.TypeDir},
+		{name: "math/math.oak", body: "package math\n\npub square: (v: i32): i32 = v * v\n"},
+	})
+	server := serve(t, archive)
+	cache := t.TempDir()
+	fetcher := &Fetcher{Client: server.Client(), Cache: cache}
+	manifest := Manifest{Path: "example.com/app", Requires: []Requirement{{
+		Path: "example.com/dep", Version: packageapi.Version{Major: 1},
+		Location: server.URL + "/dep.tar.gz", Digest: digestOf(archive),
+	}}, Replaces: map[string]string{}}
+	if err := fetcher.Download(context.Background(), manifest); err != nil {
+		t.Fatal(err)
+	}
+	entry := CacheDir(cache, "example.com/dep", packageapi.Version{Major: 1})
+	record, err := ReadRecord(entry)
+	if err != nil || record.Archive != digestOf(archive) {
+		t.Fatalf("record = %+v %v", record, err)
+	}
+	results := VerifyCache(cache, manifest)
+	if len(results) != 1 || results[0].State != "ok" {
+		t.Fatalf("verify = %+v", results)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "math", "math.oak"), []byte("package math\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if results := VerifyCache(cache, manifest); results[0].State != "modified" {
+		t.Fatalf("edited entry must be modified: %+v", results)
+	}
+}
