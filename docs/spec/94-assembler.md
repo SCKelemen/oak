@@ -955,10 +955,30 @@ trapping in both realizations — the program's `main` is now itself lowered
 natively. Bodies with owned arrays are trusted by the verifier (§5): it
 models frame memory only through `sp`, not through a frame address in a
 register.
+**Fifth increment — spans in functions that call.** A span or view
+parameter arrives in its argument pair, which a `bl` clobbers; the
+lowering of a function that calls now parks each pair in two callee-saved
+registers in the prologue (`mov x19, x0; mov w20, w1`, from the pool the
+variables use, saved and restored with them) and walks the span from
+there, and a span parameter passed on to a callee moves its parked pair
+into consecutive argument registers. The checker follows the copies: `mov
+xD, xB` over a span base makes `xD` a base of the same span, `mov wD, wL`
+over a length register adds `wD` to that span's length registers (one set
+shared by a base and its copies), guards accept any register in the set,
+a write drops the register from it, and a call forgets every fact on
+`x0`–`x17` (a span parked there does not survive the callee — which also
+closes the latitude that had let a bound argument base be dereferenced
+after a `bl`). `TestCheckerSpanAliases`: walking the parked pair after a
+call is accepted; the original base after the call, an overwritten length
+copy, and a guard against an unrelated register are refused; a length
+guard through the copy holds. Executed (`TestE2ENativeSpanCalls`): a view
+forwarded twice with `len` read after the calls, a store loop calling a
+helper for every element, and two parked views with a leaf called before
+and inside the loop — natively against the C backend and the portable
+realization. Bodies that call remain trusted by the verifier (§5).
 Next increments: the verifier's frame-address memory (so array bodies are
 proven, not trusted), `break` as a second loop exit in the recognizer,
-records, and spans with calls (spilling the pair under a re-derivable
-fact).
+records, and `subslice`/local span variables.
 
 
 

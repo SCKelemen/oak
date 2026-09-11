@@ -72,6 +72,11 @@ type span struct {
 	writable bool
 	baseReg  int // x register holding the base
 	lenReg   int // w register holding the length
+	// argBase/argLen: the argument registers the pair arrived in. In a
+	// function that calls, the pair is parked in callee-saved registers
+	// (baseReg/lenReg) by the prologue — the checker follows the copies —
+	// so the callee's clobber of x0–x17 never touches it.
+	argBase, argLen int
 }
 
 // spanOf reads a span or view type of the subset.
@@ -196,7 +201,8 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 		return nil, unsupported("more than eight parameters")
 	}
 	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}
-	if hasVariables(fn) {
+	parkSpans := mentionsCall(fn.Body)
+	if hasVariables(fn) || parkSpans {
 		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
 	}
 	for r := scratchHigh; r >= scratchLow; r-- {
@@ -220,8 +226,17 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 			continue
 		}
 		if sp, ok := spanOf(p.Type); ok {
-			sp.baseReg, sp.lenReg = nextReg, nextReg+1
+			sp.argBase, sp.argLen = nextReg, nextReg+1
+			sp.baseReg, sp.lenReg = sp.argBase, sp.argLen
 			nextReg += 2
+			if parkSpans {
+				// Two callee-saved registers, from the pool variables use.
+				if g.usedCallee+2 > calleeHigh-calleeLow+1 {
+					return nil, unsupported("the span parameters and locals exhaust the callee-saved registers")
+				}
+				sp.baseReg, sp.lenReg = calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
+				g.usedCallee += 2
+			}
 			g.spans[p.Name.Value] = sp
 			continue
 		}
@@ -229,11 +244,6 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	}
 	if nextReg > 8 {
 		return nil, unsupported("the parameters exhaust the eight argument registers")
-	}
-	if len(g.spans) > 0 && mentionsCall(fn.Body) {
-		// A call would clobber the span's registers, and reloading the base
-		// would drop the checker's span fact: span kernels are leaves.
-		return nil, unsupported("a span parameter in a function that calls")
 	}
 	if fn.ReturnType != nil {
 		if fn.ReturnType.String() != "()" {
@@ -296,8 +306,12 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	regIndex, vecIndex := 0, 0
 	for _, p := range fn.Parameters {
 		if sp, isSpan := g.spans[p.Name.Value]; isSpan {
-			length := wr(sp.lenReg)
-			out.Bindings = append(out.Bindings, asm.Binding{Register: xr(sp.baseReg), Length: &length, Param: p.Name.Value, Line: fn.Token.Line})
+			length := wr(sp.argLen)
+			out.Bindings = append(out.Bindings, asm.Binding{Register: xr(sp.argBase), Length: &length, Param: p.Name.Value, Line: fn.Token.Line})
+			if sp.baseReg != sp.argBase {
+				// Park the pair in its callee-saved registers (saved above).
+				prologue = append(prologue, g.ins("mov", xr(sp.baseReg), xr(sp.argBase)), g.ins("mov", wr(sp.lenReg), wr(sp.argLen)))
+			}
 			regIndex += 2
 			continue
 		}
@@ -1928,6 +1942,7 @@ func (g *generator) call(e *ast.InvocationExpression) (int, error) {
 	type argument struct {
 		regs  []int
 		types []scalar
+		fixed bool // the registers are a parked span's, not scratch: never released
 	}
 	var args []argument
 	for i, arg := range e.Arguments {
@@ -1940,12 +1955,24 @@ func (g *generator) call(e *ast.InvocationExpression) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			args = append(args, argument{[]int{r}, []scalar{s}})
+			args = append(args, argument{regs: []int{r}, types: []scalar{s}})
 			continue
 		}
 		target, isSpan := spanOf(p.Type)
 		if !isSpan {
 			return 0, unsupported("a call to %s (parameter %s: %s)", ident.Value, p.Name.Value, p.Type.String())
+		}
+		if forwarded, isIdent := arg.(*ast.Identifier); isIdent {
+			// A span parameter passed on: its parked pair.
+			sp, isParam := g.spans[forwarded.Value]
+			if !isParam {
+				return 0, unsupported("a call to %s: %s is not a span parameter", ident.Value, forwarded.Value)
+			}
+			if sp.elem != target.elem || (target.writable && !sp.writable) {
+				return 0, unsupported("a call to %s: %s does not fit parameter %s", ident.Value, forwarded.Value, p.Name.Value)
+			}
+			args = append(args, argument{regs: []int{sp.baseReg, sp.lenReg}, types: []scalar{scalars["u64"], scalars["u32"]}, fixed: true})
+			continue
 		}
 		arr, err := g.arrayArgument(arg, target)
 		if err != nil {
@@ -1961,7 +1988,7 @@ func (g *generator) call(e *ast.InvocationExpression) (int, error) {
 		}
 		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
 		g.constant(length, uint64(arr.length), scalars["u32"])
-		args = append(args, argument{[]int{base, length}, []scalar{scalars["u64"], scalars["u32"]}})
+		args = append(args, argument{regs: []int{base, length}, types: []scalar{scalars["u64"], scalars["u32"]}})
 	}
 	general, vector := 0, 0
 	for _, arg := range args {
@@ -1974,7 +2001,9 @@ func (g *generator) call(e *ast.InvocationExpression) (int, error) {
 				g.emit("mov", reg(general, typ), reg(r, typ))
 				general++
 			}
-			g.release(r)
+			if !arg.fixed {
+				g.release(r)
+			}
 		}
 	}
 	if general > 8 || vector > 8 {
