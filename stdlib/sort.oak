@@ -1,0 +1,133 @@
+// Sorting and searching over caller-owned spans, generic in the element type
+// through `<` (fixed-width integers, and any type the checker orders). No
+// allocation: heapsort works in place, binary search reads a view. Every
+// function is total and every index is bounds-checked; the ordering used is
+// the element type's `<`, so equal elements are interchangeable (heapsort is
+// not stable — `sort_insertion` is, and is the right choice below a few
+// dozen elements).
+package sort
+
+// sort_is_sorted: non-decreasing order.
+pub sort_is_sorted[T]: (items: []T): Bool {
+  ok: Bool = true
+  i: u32 = u32(1)
+  while ok && i < len(items) {
+    ok = !(items[i] < items[i - u32(1)])
+    i = i + u32(1)
+  }
+  ok
+}
+
+// sort_insertion: stable, O(n^2), the fast path for short spans.
+pub sort_insertion[T]: (items: [*]T): () {
+  i: u32 = u32(1)
+  while i < len(items) {
+    j: u32 = i
+    while j > u32(0) && items[j] < items[j - u32(1)] {
+      held: T = items[j]
+      items[j] = items[j - u32(1)]
+      items[j - u32(1)] = held
+      j = j - u32(1)
+    }
+    i = i + u32(1)
+  }
+}
+
+sort_sift_down[T]: (items: [*]T, start: u32, end: u32): () {
+  root: u32 = start
+  more: Bool = true
+  while more {
+    child: u32 = root * u32(2) + u32(1)
+    child >= end ? { more = false } | {
+      right: u32 = child + u32(1)
+      largest: u32 = right < end && items[child] < items[right] ? right | child
+      items[root] < items[largest] ? {
+        held: T = items[root]
+        items[root] = items[largest]
+        items[largest] = held
+        root = largest
+      } | { more = false }
+    }
+  }
+}
+
+// sort_heap: in-place heapsort, O(n log n) worst case, no extra storage.
+pub sort_heap[T]: (items: [*]T): () {
+  n: u32 = len(items)
+  n > u32(1) ? {
+    start: u32 = n / u32(2)
+    while start > u32(0) {
+      start = start - u32(1)
+      sort_sift_down[T](items, start, n)
+    }
+    end: u32 = n
+    while end > u32(1) {
+      end = end - u32(1)
+      held: T = items[0]
+      items[0] = items[end]
+      items[end] = held
+      sort_sift_down[T](items, u32(0), end)
+    }
+  }
+}
+
+// sort_span: insertion sort for short spans, heapsort otherwise.
+pub sort_span[T]: (items: [*]T): () {
+  len(items) <= u32(16) ? { sort_insertion[T](items) } | { sort_heap[T](items) }
+}
+
+// sort_search: the index of `key` in a sorted view, or None. Equal elements:
+// any one of them.
+pub sort_search[T]: (items: []T, key: T): Option[u32] {
+  low: u32 = u32(0)
+  high: u32 = len(items)
+  found: Option[u32] = .None
+  searching: Bool = true
+  while searching && low < high {
+    mid: u32 = low + (high - low) / u32(2)
+    items[mid] < key ? { low = mid + u32(1) } |
+    key < items[mid] ? { high = mid } |
+    { found = .Some(mid); searching = false }
+  }
+  found
+}
+
+// sort_lower_bound: the first index whose element is not less than `key`
+// (len(items) when every element is); the insertion point that keeps order.
+pub sort_lower_bound[T]: (items: []T, key: T): u32 {
+  low: u32 = u32(0)
+  high: u32 = len(items)
+  while low < high {
+    mid: u32 = low + (high - low) / u32(2)
+    items[mid] < key ? { low = mid + u32(1) } | { high = mid }
+  }
+  low
+}
+
+// sort_dedup: compact a sorted span so each run of equal elements keeps one;
+// returns the new length. Elements past it are unspecified.
+pub sort_dedup[T]: (items: [*]T): u32 {
+  n: u32 = len(items)
+  n == u32(0) ? { u32(0) } | {
+    kept: u32 = u32(1)
+    i: u32 = u32(1)
+    while i < n {
+      equal: Bool = !(items[kept - u32(1)] < items[i]) && !(items[i] < items[kept - u32(1)])
+      !equal ? { items[kept] = items[i]; kept = kept + u32(1) }
+      i = i + u32(1)
+    }
+    kept
+  }
+}
+
+// sort_reverse: reverse a span in place.
+pub sort_reverse[T]: (items: [*]T): () {
+  n: u32 = len(items)
+  i: u32 = u32(0)
+  while n > u32(1) && i < n / u32(2) {
+    held: T = items[i]
+    items[i] = items[n - u32(1) - i]
+    items[n - u32(1) - i] = held
+    i = i + u32(1)
+  }
+}

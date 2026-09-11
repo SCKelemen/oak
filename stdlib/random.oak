@@ -1,0 +1,93 @@
+// Deterministic pseudo-random numbers for programs (tests draw from the
+// choice tape instead): SplitMix64 for seeding and xoshiro256** for the
+// stream, both bit-exact across the interpreter and every backend because
+// they are written over total fixed-width arithmetic. Not a cryptographic
+// source. State is a caller-owned record; every function is total.
+package random
+
+pub Xoshiro: type = struct { s0: u64, s1: u64, s2: u64, s3: u64 }
+
+// splitmix64 advances a 64-bit state and returns the next output.
+pub splitmix64_next: (state: u64): u64 {
+  z: u64 = state + u64(11400714819323198485)
+  z = (z ^ (z >> u64(30))) * u64(13787848793156543929)
+  z = (z ^ (z >> u64(27))) * u64(10723151780598845931)
+  z ^ (z >> u64(31))
+}
+
+// random_seed derives a full xoshiro256** state from one seed through
+// SplitMix64, as the reference implementation recommends; a zero seed is
+// fine (the derived state is never all zero).
+pub random_seed: (seed: u64): Xoshiro {
+  a: u64 = seed + u64(11400714819323198485)
+  s0: u64 = splitmix64_next(seed)
+  s1: u64 = splitmix64_next(a)
+  s2: u64 = splitmix64_next(a + u64(11400714819323198485))
+  s3: u64 = splitmix64_next(a + u64(11400714819323198485) * u64(2))
+  Xoshiro { s0: s0, s1: s1, s2: s2, s3: s3 }
+}
+
+rotl64: (x: u64, k: u32): u64 = (x << u64(k)) | (x >> u64(u32(64) - k))
+
+// random_next advances the state in place and returns 64 random bits
+// (xoshiro256**: output = rotl(s1 * 5, 7) * 9).
+pub random_next: (state: [*]Xoshiro): u64 {
+  assert(len(state) == u32(1))
+  result: u64 = rotl64(state[0].s1 * u64(5), u32(7)) * u64(9)
+  t: u64 = state[0].s1 << u64(17)
+  s2: u64 = state[0].s2 ^ state[0].s0
+  s3: u64 = state[0].s3 ^ state[0].s1
+  s1: u64 = state[0].s1 ^ s2
+  s0: u64 = state[0].s0 ^ s3
+  s2 = s2 ^ t
+  s3 = rotl64(s3, u32(45))
+  state[0] = Xoshiro { s0: s0, s1: s1, s2: s2, s3: s3 }
+  result
+}
+
+// random_below returns a uniform value in 0..bound-1 (bound > 0) by
+// rejection on the top bits, so no modulo bias; a zero bound returns 0.
+pub random_below: (state: [*]Xoshiro, bound: u64): u64 {
+  bound <= u64(1) ? { u64(0) } | {
+    // Largest multiple of bound that fits: reject draws at or above it.
+    limit: u64 = u64(0) - (u64(0) - bound) % bound
+    draw: u64 = random_next(state)
+    while draw >= limit && limit != u64(0) {
+      draw = random_next(state)
+    }
+    draw % bound
+  }
+}
+
+// random_range returns a uniform value in low..high inclusive (low <= high).
+pub random_range: (state: [*]Xoshiro, low: u64, high: u64): u64 {
+  assert(low <= high)
+  high - low == u64(18446744073709551615) ? { random_next(state) } | { low + random_below(state, high - low + u64(1)) }
+}
+
+// random_bool: one fair bit.
+pub random_bool: (state: [*]Xoshiro): Bool = (random_next(state) >> u64(63)) == u64(1)
+
+// random_fill writes random bytes over a span.
+pub random_fill: (state: [*]Xoshiro, dst: [*]u8): () {
+  i: u32 = u32(0)
+  word: u64 = u64(0)
+  while i < len(dst) {
+    i % u32(8) == u32(0) ? { word = random_next(state) }
+    dst[i] = u8_trunc_u64(word & u64(255))
+    word = word >> u64(8)
+    i = i + u32(1)
+  }
+}
+
+// random_shuffle: Fisher-Yates over a span, uniform over permutations.
+pub random_shuffle[T]: (state: [*]Xoshiro, items: [*]T): () {
+  i: u32 = len(items)
+  while i > u32(1) {
+    j: u32 = u32_trunc_u64(random_below(state, u64(i)))
+    i = i - u32(1)
+    held: T = items[i]
+    items[i] = items[j]
+    items[j] = held
+  }
+}
