@@ -288,3 +288,19 @@ Fixture and ergonomics friction:
 9. `20-types.md` §11.3.8 should cite bf16 as the bfloat16 convention
    (Google Brain, vendor ISA documents) rather than IEEE 754, which does
    not define it.
+
+## Roadmap disposition (2026-09-11, night)
+
+ml's `docs/notes/oak-roadmap.md` (stages A–E) against the Oak tree, after the
+Stage B branch `sam/roadmap-stage-b`:
+
+| Item | Ask | Disposition |
+| --- | --- | --- |
+| A1 (F22) | a strict module may borrow runtime memory (`OAK-B0110` as an assumption severity or an `oak.mod` admission) | **Open**; untouched by the Stage B branch. |
+| B1 (F21) | assertion traps name the file, not the root directory | **Fixed** (`fix(codegen): attribute assertion traps to the token's source file`): `oak_assert` and `#line` take the file from the token's `package#file` stamp, relative to the package directory (`fuzz/fuzz.oak:4`). |
+| B2 (F20, oak #149) | a slice of an inline view compiles | **Fixed** (`fix(codegen): slice inline views and spans through the checked helpers`): `view(&x)[lo:hi]` and `span(&x)[lo:hi]` classify as the view/span of `x` and lower through `oak_view_slice_T`/`oak_span_slice_T`, bounds-checked; `len(view(&x))` folds the same way. |
+| B3 (F9, F10) | string literals usable directly as arguments | **Fixed** (`fix(borrow): string view conversions as call-argument temporaries`): `f(str_bytes("x"))` and `f(str_bytes(name))` borrow for the call's extent and are dropped after it (`50-borrowing.md` §12); a `string` parameter takes any tracked string (`count(who)` with `who: string = "oak"`), and the `path` package is callable with spelled text (`path_clean(dst, str_bytes("a/./b"))`). |
+| B4 (F15) | shape arity | As the roadmap says: eased by list literals in argument position; closable with a note once const generics cover the `[]u32` shape parameter. |
+| D6 | a clock | **Hooked**, not realized in Oak: PR #178 adds `TimeSource` (fixed, simulated, native) to `time`, `timesim` fault injection from the choice tape, and `timenative` host symbols with a POSIX shim; the FFI gap (library externs bind every importer; no out-pointer form for `clock_gettime`) is oak #179. |
+| D7 | float formatting for text output | **Landed** as the `float` package (#161): shortest and correctly rounded `f64`/`f32` text, Go's `strconv` slow path in Oak, differential-tested against `strconv`; integer text via `append_u64`/`append_i64`/`text_parse_i64` (#151). |
+| E4 | Lean extraction of float code | **Open**: after #170 the extractor covers sum types, generic specializations, constant tables and views of globals (five stdlib packages extract, the first varint laws are kernel-decided); `f32`/`f64` arithmetic and the float conversion rows still fail closed. |
