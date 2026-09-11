@@ -715,7 +715,13 @@ naming the import to add (`encode` needs `import("json")`, text needs
     parameter is one variable per scalar leaf `p.v`, `q.p.k`, an array of
     records one memory per leaf `cs.v`, and record literals, whole-record
     copies, field stores, and record arguments expand per leaf; the Lean
-    semantics sees only scalars), and calls: an expression-bodied,
+    semantics sees only scalars), sum types (flattened the same way: a
+    `tag` leaf in declaration order plus each constructor's payload leaves
+    under its name; a constructor sets the tag and its payload and zeroes
+    the unobservable rest; a match is the nested conditional on the tag
+    with the last arm as the checker-guaranteed default, and a payload
+    binding is a local over the payload leaves), and calls: an
+    expression-bodied,
     non-recursive, non-generic callee whose body is in the fragment is
     inlined, and any other callee is an uninterpreted function of the
     statement (`Oak.Loops.Funs`, the parameter `F` the programmer constrains

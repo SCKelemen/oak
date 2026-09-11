@@ -12,8 +12,10 @@ writes, records, and calls (inlined when the callee is an expression-bodied
 function of the fragment, otherwise uninterpreted). Records never reach this
 semantics: the translator flattens a record into one variable per scalar
 leaf (`p.v`) and an array of records into one memory per leaf (`cs.v`), so a
-field store is a variable assignment and a field read a variable. Anything
-outside the fragment is reported as untranslatable rather than approximated.
+field store is a variable assignment and a field read a variable. Sum types
+flatten to a `tag` leaf plus payload leaves, and a match is a nested
+conditional on the tag. Anything outside the fragment is reported as
+untranslatable rather than approximated.
 
 A `State` is the variables (index ↦ unbounded integer) and the memory
 (array ↦ index ↦ value). Oak's fixed-width arithmetic is total and wraps at
