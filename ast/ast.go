@@ -492,6 +492,13 @@ type FunctionTypeExpression struct {
 	Token      token.Token // ( token
 	Parameters []Expression
 	Return     Expression
+	// Effects is the effect row of the type (`(T) -> R effects { A.B }`,
+	// docs/spec/60-effects-allocation.md section 2a): a value of the type
+	// performs at most these effects, so a call through it is known to the
+	// effect analysis. EffectsDeclared distinguishes `effects { }` (none)
+	// from no row (unknown, as before).
+	Effects         []*EffectName
+	EffectsDeclared bool
 }
 
 func (ft *FunctionTypeExpression) expressionNode()      {}
@@ -510,6 +517,16 @@ func (ft *FunctionTypeExpression) String() string {
 		out.WriteString(ft.Return.String())
 	} else {
 		out.WriteString("()")
+	}
+	if ft.EffectsDeclared {
+		out.WriteString(" effects {")
+		for i, e := range ft.Effects {
+			if i > 0 {
+				out.WriteString(",")
+			}
+			out.WriteString(" " + e.String())
+		}
+		out.WriteString(" }")
 	}
 	return out.String()
 }

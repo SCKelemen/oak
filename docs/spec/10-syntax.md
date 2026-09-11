@@ -174,6 +174,11 @@ a type does — a variable of function type holds a function value:
 handler: (i32, i32) -> i32 = addi32
 ```
 
+A function type may carry an effect row, `(i32) -> i32 effects { }`
+(`60-effects-allocation.md` §2a): a value of the type performs at most the
+listed effects, which the effect analysis checks where a value enters the
+type and relies on where a call goes through it.
+
 ### Variadic trailing parameters
 
 The last parameter may be variadic, Go-style:
