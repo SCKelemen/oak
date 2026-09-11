@@ -141,8 +141,15 @@ alias of one argument (`resource.return-alias arg:N` in SemIR), bodies are
 validated against the claim (`OAK-B0117`), a declared alias return of a
 borrowed parameter is exempt from the retention rule, and callers carry
 the aliased argument's provenance into bindings, rebinding, projections,
-and nested arguments. Permission and lifetime facts, and stages (b)–(e),
-remain open; view results stay `OAK-B0109`.
+and nested arguments. **Stage (b) (same day):** borrowed resource results
+(`50-borrowing.md` §9 "Borrowed results", `resource.return-borrow arg:N`,
+`OAK-B0118`): a shared borrow of one borrowed argument is its own
+authority dependent on the argument's owners for its scope; owner
+mutation, consumption, and rebinding, dependent mutation, consumption,
+storage, and uncontracted return, and rebinding across scopes are
+rejected; contracted wrappers preserve the dependency; joins union
+dependencies. Storage views keep their own rule (§8c). Open: stages
+(c)–(e) and a source spelling for all three result identities.
 
 ## 5. Resources through generics and pattern matching
 
