@@ -52,8 +52,13 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlibUrl' -count=1
       - name: Test path
         run: go test ./compiler -run 'TestE2EStdlibPath' -count=1
-      - name: Test standard library and compiler
-        run: go test -race -timeout 40m ./...
+      # The whole compiler package runs under the race detector in ci.yml,
+      # sharded; here the race run covers every other package plus the
+      # compiler's standard-library and extraction tests.
+      - name: Test standard library packages under the race detector
+        run: |
+          go test -race -timeout 45m $(go list ./... | grep -v '/compiler$')
+          go test -race -timeout 45m ./compiler -run 'Stdlib|Lean|Hash|Text'
       - name: Check formatting
         if: always()
         run: |
