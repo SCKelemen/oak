@@ -110,3 +110,6 @@ The first refinement targets should be small and foundational: the type lattice,
 
 - [Native testing and simulation](110-testing.md): `oak test`, generated inputs,
   shrinking, corpus/replay, libFuzzer export, and bounded virtual-time events.
+- [The oak command](115-tooling.md): one binary with the shape of the Go tool —
+  `build`, `run`, `install`, `vet`, `test`, `list`, `env`, `version`, `clean`, and
+  `oak mod init|download|tidy|edit|graph|why` plus the semver commands.

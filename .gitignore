@@ -1,4 +1,5 @@
 /oak
+/oak_test
 *.test
 verify_golden
 spec/lean/.lake/

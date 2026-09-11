@@ -523,6 +523,106 @@ In SemIR the requirement is the `resource.callable-borrow`,
 (functions of functions) and ownership variance are not admitted until
 their substitutability laws are specified.
 
+**Result identity.** A resource-returning operation's contract also states
+what its result *is*: **fresh** authority (a class no caller name shares,
+the existing fact), an **alias** of exactly one argument (the same
+authority class, no wider permission), or unstated (unknown, which fails
+closed as today). The two facts are exclusive; an alias declaration names a
+resource-typed parameter of a resource-returning callable, and anything
+else is a declaration error. Both sides are held to the claim. The
+callee's body is validated against its own result contract: a fresh-return
+body may not return a parameter or an alias of one on any path, and an
+alias-return body must return the declared parameter's authority on every
+path, directly or through a local alias or a nested alias-returning call;
+a violation is `OAK-B0117`, which names the function, the declared
+identity, and the offending returned name. Because an alias result hands
+the caller a second name for an authority it already holds, returning the
+aliased parameter is not retention even when it is borrowed, so
+`peek: (borrowed h) -> alias of h` is accepted where the same body without
+the declaration is `OAK-B0114`. At the call site an alias result carries
+the argument's provenance: binding it, rebinding a name to it, storing it
+in a record field, or passing it directly as a nested argument gives that
+position the argument's class, so an exclusive pairing of the result with
+its source is `OAK-B0112` and consuming either consumes both. When the
+operation also consumes the aliased argument, every prior name of the
+class is dead and the result is its only surviving name; the caller tracks
+it as a new class, which is indistinguishable from fresh authority. An
+alias of an argument without tracked provenance has unknown provenance.
+In SemIR the fact is the `resource.return-alias` (`arg:N`) effect beside
+`return-fresh`. Freshness and aliasing say nothing about the lifetime of
+backing storage: a borrowed *view* result is governed by section 8c.
+
+**Borrowed results.** The third result identity is a **shared borrow of
+one or more arguments**: the result is its own authority (distinct from
+the arguments for exclusivity, so all may be read side by side) that
+*depends* on those arguments' owners for as long as the binding that
+holds it is in scope. The declaration names a non-empty set of arguments
+without repetition, each of which must be `borrowed` or `borrowed-mut` —
+a borrow of consumed or unmarked input is not admitted — and is exclusive
+with fresh and alias; in SemIR it is one `resource.return-borrow`
+(`arg:N`) effect per argument. A borrow is the most conservative claim a
+result can make, so the callee's body may return any declared parameter,
+an alias or dependent of them, or a value with no provenance from any
+other tracked resource (a fresh result, an independent local, a record
+literal that mentions no other resource); it may not return authority
+derived from an undeclared parameter, a borrowed result whose owners the
+declaration does not cover, or a value of unknown provenance
+(`OAK-B0117`). Declaring more origins than the body needs is admitted
+(the caller is merely more restricted); declaring fewer is the lie the
+rule exists to catch. At the call site the result depends on the union of
+the declared arguments' root owners — a borrow of a borrowed result
+depends on that result's owners, and a borrow of a record projection
+depends on the field path, so writing the field or the whole record while
+the dependent lives is rebinding an owner — and one declared argument
+without tracked provenance leaves the whole result unknown, which fails
+closed: a dependency cannot be partially proven. A temporary borrowed
+result passed directly as an argument takes part in the call's
+exclusivity check with its owner set: it is distinct from every other
+argument except its owners and their aliases. While a dependent lives,
+all of the following are rejected
+with `OAK-B0118`, and the rejected call or statement has not occurred:
+passing the owner, or an alias of it, to a borrowed-mut or consuming
+position; rebinding the owner; passing the dependent, an alias of it, or a
+temporary borrowed result to a borrowed-mut or consuming position;
+storing a dependent or temporary borrowed result in a record or array
+literal (borrowed values in aggregates await stage (e)); returning a
+dependent or temporary borrowed result from a function whose own
+contract does not declare its result a borrow of the parameter the value
+depends on (a contracted wrapper preserves the dependency, and returning
+the declared parameter itself is not retention); and rebinding a binding
+to a borrowed result whose owner, or whose own binding, lives in an inner
+scope, which would let the result outlive what it depends on. Rebinding a
+dependent releases its old dependency. Control-flow joins keep every
+dependency established on any path — a conservative set, never fresh
+authority — and the two-iteration loop probe applies. Freshness never
+proves backing-storage lifetime, and a borrowed result says nothing about
+storage either: it is an authority dependency between opaque resources.
+**Mutable reborrows.** A borrowed result whose every origin is
+`borrowed-mut` may be declared a **mutable reborrow** (SemIR
+`resource.return-borrow-mut` per origin; mixing shared and mutable origins
+on one result is an error, and a mutable reborrow can never be minted
+from a shared borrow — a shared dependent or temporary passed to the
+borrowed-mut origin is `OAK-B0118`). The result carries mutable
+authority: it may be passed to borrowed and borrowed-mut positions and
+reborrowed again, shared or mutable, with the same owners. Everything else
+a shared borrowed result may not do, a mutable one may not do either. The
+difference is on the owner's side: while a mutable reborrow lives — the
+lexical scope of its binding, or the call for a temporary passed directly
+as an argument — its owners and their aliases are **suspended entirely**:
+any use (a read, a projection, an argument in any position, rebinding,
+return) is `OAK-B0119`, and they are usable again when the scope ends.
+Aliases and rebinding carry the permission with the dependency. Body
+checks admit narrowing and reject widening: a shared-borrow contract may
+return a mutable reborrow, but a mutable-reborrow contract returning a
+shared dependent or temporary of the declared origins is `OAK-B0117`.
+Suspension is lexical, not use-based: the owner is not freed by the
+reborrow's last use, only by its scope's end, so a body that needs the
+owner back finishes with the reborrow in an inner scope.
+
+These are stages (b), (c), and (d) of the authority roadmap's milestone
+4; stage (e) (borrowed values in aggregates with destination lifetime
+checks) remains open.
+
 Imports and sealing cannot erase modes: a protocol declared in one package
 (`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the
 program's internal names, so the same contract governs every importer's

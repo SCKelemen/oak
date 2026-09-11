@@ -55,7 +55,7 @@ func TestCheckConfiguredFreshReturnCarriesNewAuthority(t *testing.T) {
 	const source = `
 Handle: type = struct { id: u32 }
 close: (h: Handle): () = {}
-renew: (h: Handle): Handle = h
+renew: (h: Handle): Handle = Handle { id: h.id }
 f: (h: Handle): u32 {
   next: Handle = renew(h)
   next.id

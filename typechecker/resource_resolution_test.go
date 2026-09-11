@@ -46,7 +46,7 @@ func TestResolveResourceDeclarationsBindsCheckedTypesAndCallables(t *testing.T) 
 	const input = `
 Handle: type = struct { id: u32 }
 close: (h: Handle): () = {}
-renew: (h: Handle): Handle = h
+renew: (h: Handle): Handle = Handle { id: h.id }
 `
 	tc := checkedResourceProgram(t, input)
 	resolved, err := tc.ResolveResourceDeclarations(handleResourceDeclarations())

@@ -1,0 +1,467 @@
+// Slash-separated paths and glob patterns over caller-owned bytes, with the
+// semantics of Go's `path` package: `path_clean` (the four rules), `path_join`,
+// `path_base`, `path_dir`, `path_ext`, `path_is_abs`, `path_split`, a
+// component iterator, and `path_match` (Go's `path.Match`: `*`, `?`, `[..]`
+// classes with ranges and `^` negation, `\` escapes, `*` and `?` never cross
+// a slash, a malformed pattern is `BadPattern` even after the name has already
+// failed to match). `path_match_glob` adds `**` as a whole component that
+// matches zero or more components. Only `/` separates; there is no OS-specific
+// behavior. Functions that produce a path write into a caller-owned span and
+// return `Result[u32, PathError]` with the count written, checking the
+// destination before the first store; functions that select part of a path
+// return byte ranges into the source (a function may not return a view,
+// OAK-B0109), which callers slice as `src[range.start:range.end]`.
+//
+// Cleaning works in place: Go's algorithm never writes past its read
+// position, so `path_clean` copies the source into the destination and
+// cleans there, and `path_join` joins into the destination and cleans there.
+// A destination as long as the input therefore always fits (one byte for the
+// empty path, which cleans to `.`).
+package path
+
+import("strings")
+
+pub PathError: type = BadPattern | DestinationTooSmall
+
+// PathRange: [start, end) into the source view; empty when start == end.
+pub PathRange: type = struct { start: u32, end: u32 }
+
+// PathSplit: the result of `path_split`, Go's `Split`: `dir` is everything
+// through the final slash, `file` the rest.
+pub PathSplit: type = struct { dir: PathRange, file: PathRange }
+
+pub path_range: (start: u32, end: u32): PathRange = PathRange { start: start, end: end }
+pub path_range_len: (range: PathRange): u32 = range.end - range.start
+
+pub path_error_code: (reason: PathError): u32 = reason ?
+  | .BadPattern => u32(1)
+  | .DestinationTooSmall => u32(2)
+
+pub path_ok: (result: Result[u32, PathError]): Bool = result ? | .Ok(count) => true | .Err(reason) => false
+pub path_written: (result: Result[u32, PathError]): u32 = result ? | .Ok(count) => count | .Err(reason) => u32(0)
+pub path_failure: (result: Result[u32, PathError]): u32 = result ? | .Ok(count) => u32(0) | .Err(reason) => path_error_code(reason)
+pub path_matched: (result: Result[Bool, PathError]): Bool = result ? | .Ok(matched) => matched | .Err(reason) => false
+pub path_match_failure: (result: Result[Bool, PathError]): u32 = result ? | .Ok(matched) => u32(0) | .Err(reason) => path_error_code(reason)
+
+// ---- cleaning -------------------------------------------------------------
+
+// path_clean_in_place: Go's Clean over the first `n` bytes of `dst`, which
+// already hold the path; returns the cleaned length. The read index never
+// falls behind the write index, so reading and writing the same span is
+// sound. Empty input becomes ".".
+path_clean_in_place: (dst: [*]u8, n: u32): u32 {
+  n == u32(0) ? { dst[0] = u8(46); u32(1) } | {
+    rooted: Bool = dst[0] == u8(47)
+    r: u32 = u32(0)
+    w: u32 = u32(0)
+    dotdot: u32 = u32(0)
+    rooted ? { w = u32(1); r = u32(1); dotdot = u32(1) }
+    while r < n {
+      unit: u8 = dst[r]
+      dot_then_end: Bool = unit == u8(46) && (r + u32(1) == n || dst[r + u32(1)] == u8(47))
+      dotdot_then_end: Bool = unit == u8(46) && r + u32(1) < n && dst[r + u32(1)] == u8(46) && (r + u32(2) == n || dst[r + u32(2)] == u8(47))
+      unit == u8(47) ? { r = r + u32(1) } |
+      dot_then_end ? { r = r + u32(1) } |
+      dotdot_then_end ? {
+        r = r + u32(2)
+        w > dotdot ? {
+          w = w - u32(1)
+          while w > dotdot && dst[w] != u8(47) { w = w - u32(1) }
+        } | !rooted ? {
+          w > u32(0) ? { dst[w] = u8(47); w = w + u32(1) }
+          dst[w] = u8(46)
+          dst[w + u32(1)] = u8(46)
+          w = w + u32(2)
+          dotdot = w
+        }
+      } | {
+        (rooted && w != u32(1)) || (!rooted && w != u32(0)) ? { dst[w] = u8(47); w = w + u32(1) }
+        while r < n && dst[r] != u8(47) {
+          dst[w] = dst[r]
+          w = w + u32(1)
+          r = r + u32(1)
+        }
+      }
+    }
+    w == u32(0) ? { dst[0] = u8(46); u32(1) } | { w }
+  }
+}
+
+path_copy: (dst: [*]u8, at: u32, src: []u8, start: u32, end: u32): () {
+  i: u32 = start
+  while i < end {
+    dst[at + i - start] = src[i]
+    i = i + u32(1)
+  }
+}
+
+// path_clean: Go's Clean into `dst`. Rules: replace multiple slashes with
+// one; eliminate each `.`; eliminate each inner `..` with the non-`..`
+// element before it; eliminate `..` that begin a rooted path; the result
+// ends in a slash only if it is the root; the empty result is `.`. The
+// destination must hold the source (or one byte for the empty source).
+pub path_clean: (dst: [*]u8, src: []u8): Result[u32, PathError] {
+  n: u32 = len(src)
+  needed: u32 = n == u32(0) ? u32(1) | n
+  len(dst) < needed ? { .Err(.DestinationTooSmall) } | {
+    path_copy(dst, u32(0), src, u32(0), n)
+    .Ok(path_clean_in_place(dst, n))
+  }
+}
+
+// path_join: Go's Join of two elements: empty elements are ignored, the rest
+// joined with a slash, and the result cleaned; both empty gives the empty
+// path. The destination must hold `len(a) + 1 + len(b)`.
+pub path_join: (dst: [*]u8, a: []u8, b: []u8): Result[u32, PathError] {
+  len(a) == u32(0) && len(b) == u32(0) ? { .Ok(u32(0)) } |
+  len(dst) < len(a) + u32(1) + len(b) ? { .Err(.DestinationTooSmall) } | {
+    path_copy(dst, u32(0), a, u32(0), len(a))
+    n: u32 = len(a)
+    len(a) > u32(0) && len(b) > u32(0) ? { dst[n] = u8(47); n = n + u32(1) }
+    path_copy(dst, n, b, u32(0), len(b))
+    .Ok(path_clean_in_place(dst, n + len(b)))
+  }
+}
+
+// ---- selecting parts ------------------------------------------------------
+
+// path_last_slash: the index of the last slash before `end`, or 4294967295
+// when there is none.
+path_last_slash: (src: []u8, end: u32): u32 {
+  i: u32 = end
+  found: u32 = u32(4294967295)
+  while i > u32(0) && found == u32(4294967295) {
+    i = i - u32(1)
+    src[i] == u8(47) ? { found = i }
+  }
+  found
+}
+
+// path_is_abs: the path begins with a slash.
+pub path_is_abs: (src: []u8): Bool = len(src) > u32(0) && src[0] == u8(47)
+
+// path_split: Go's Split: everything through the final slash, and the rest.
+pub path_split: (src: []u8): PathSplit {
+  last: u32 = path_last_slash(src, len(src))
+  cut: u32 = last == u32(4294967295) ? u32(0) | last + u32(1)
+  PathSplit { dir: path_range(u32(0), cut), file: path_range(cut, len(src)) }
+}
+
+// path_base: Go's Base: the last element after trailing slashes are removed;
+// a path of only slashes yields one slash. Go spells the base of the empty
+// path `.`; that byte is not in the source, so here the range is empty and a
+// caller wanting Go's spelling cleans the empty path instead.
+pub path_base: (src: []u8): PathRange {
+  end: u32 = len(src)
+  while end > u32(0) && src[end - u32(1)] == u8(47) { end = end - u32(1) }
+  end == u32(0) ? { len(src) > u32(0) ? path_range(u32(0), u32(1)) | path_range(u32(0), u32(0)) } | {
+    last: u32 = path_last_slash(src, end)
+    last == u32(4294967295) ? { path_range(u32(0), end) } | { path_range(last + u32(1), end) }
+  }
+}
+
+// path_dir: Go's Dir: everything but the last element, cleaned, so `.` for a
+// path with no slash and `/` for the root. It writes into `dst` because
+// cleaning can shorten or synthesize bytes that the source does not contain;
+// the destination must hold the source (or one byte).
+pub path_dir: (dst: [*]u8, src: []u8): Result[u32, PathError] {
+  parts: PathSplit = path_split(src)
+  needed: u32 = parts.dir.end == u32(0) ? u32(1) | parts.dir.end
+  len(dst) < needed ? { .Err(.DestinationTooSmall) } | {
+    path_copy(dst, u32(0), src, u32(0), parts.dir.end)
+    .Ok(path_clean_in_place(dst, parts.dir.end))
+  }
+}
+
+// path_ext: Go's Ext: the suffix beginning at the final dot in the final
+// element, or the empty range at the end when there is none.
+pub path_ext: (src: []u8): PathRange {
+  n: u32 = len(src)
+  i: u32 = n
+  found: u32 = n
+  while i > u32(0) && found == n && src[i - u32(1)] != u8(47) {
+    i = i - u32(1)
+    src[i] == u8(46) ? { found = i }
+  }
+  path_range(found, n)
+}
+
+// path_next_component: the next non-empty slash-separated component at or
+// after `begin`, None when only slashes remain. Iterate with `range.end`.
+pub path_next_component: (src: []u8, begin: u32): Option[PathRange] {
+  n: u32 = len(src)
+  start: u32 = begin
+  while start < n && src[start] == u8(47) { start = start + u32(1) }
+  start >= n ? { .None } | {
+    end: u32 = start
+    while end < n && src[end] != u8(47) { end = end + u32(1) }
+    .Some(path_range(start, end))
+  }
+}
+
+// ---- matching (Go's path.Match) -------------------------------------------
+
+// Internal codes: a chunk match returns the index in the name after the
+// match, or one of these.
+MATCH_FAIL: u32 = 4294967295
+MATCH_BAD: u32 = 4294967294
+
+// PathScalar: one decoded scalar of a view, as Go's DecodeRuneInString: an
+// invalid sequence is U+FFFD of width one with `valid` false.
+PathScalar: type = struct { value: u32, next: u32, valid: Bool }
+
+path_scalar_of: (decoded: Result[strings.TextScalar, strings.TextError], at: u32): PathScalar = decoded ?
+  | .Ok(scalar) => PathScalar { value: scalar.value, next: scalar.next, valid: true }
+  | .Err(reason) => PathScalar { value: u32(65533), next: at + u32(1), valid: false }
+
+path_scalar_at: (src: []u8, at: u32): PathScalar = path_scalar_of(strings.utf8_decode(src, at), at)
+
+// path_scan_chunk: from `at`, skip stars and return the following star-free
+// chunk as start (high 32 bits) and end (low 32 bits); `[` .. `]` protects a
+// star inside a class, and `\` skips the next byte (Go's scanChunk). A star
+// was seen when start > at.
+path_scan_chunk: (pattern: []u8, at: u32): u64 {
+  n: u32 = len(pattern)
+  start: u32 = at
+  while start < n && pattern[start] == u8(42) { start = start + u32(1) }
+  i: u32 = start
+  inrange: Bool = false
+  stop: Bool = false
+  while i < n && !stop {
+    unit: u8 = pattern[i]
+    unit == u8(92) ? { i = i + u32(1) < n ? i + u32(2) | i + u32(1) } |
+    unit == u8(91) ? { inrange = true; i = i + u32(1) } |
+    unit == u8(93) ? { inrange = false; i = i + u32(1) } |
+    unit == u8(42) && !inrange ? { stop = true } |
+    { i = i + u32(1) }
+  }
+  (u64(start) << u64(32)) | u64(i)
+}
+
+// path_get_esc: one possibly escaped class endpoint at `at` (Go's getEsc):
+// the scalar and the index after it; `next` is MATCH_BAD when the chunk
+// ends, the endpoint is `-` or `]`, a `\` dangles, the UTF-8 is invalid, or
+// nothing follows the endpoint before `end`.
+path_get_esc: (pattern: []u8, at: u32, end: u32): PathScalar {
+  at >= end || pattern[at] == u8(45) || pattern[at] == u8(93) ? { PathScalar { value: u32(0), next: MATCH_BAD, valid: false } } | {
+    origin: u32 = pattern[at] == u8(92) ? at + u32(1) | at
+    origin >= end ? { PathScalar { value: u32(0), next: MATCH_BAD, valid: false } } | {
+      scalar: PathScalar = path_scalar_at(pattern, origin)
+      !scalar.valid || scalar.next >= end ? { PathScalar { value: scalar.value, next: MATCH_BAD, valid: false } } | { scalar }
+    }
+  }
+}
+
+// path_match_chunk: Go's matchChunk. The chunk pattern[start:end] is matched
+// against name[at:]; after the first failure the chunk is still walked so a
+// malformed pattern is reported as MATCH_BAD rather than MATCH_FAIL; on
+// success the index in the name after the match.
+path_match_chunk: (pattern: []u8, start: u32, end: u32, name: []u8, at: u32): u32 {
+  n: u32 = len(name)
+  p: u32 = start
+  s: u32 = at
+  failed: Bool = false
+  bad: Bool = false
+  while p < end && !bad {
+    !failed && s >= n ? { failed = true }
+    unit: u8 = pattern[p]
+    unit == u8(91) ? {
+      r: u32 = u32(0)
+      !failed ? {
+        scalar: PathScalar = path_scalar_at(name, s)
+        r = scalar.value
+        s = scalar.next
+      }
+      p = p + u32(1)
+      negated: Bool = false
+      p < end && pattern[p] == u8(94) ? { negated = true; p = p + u32(1) }
+      matched: Bool = false
+      nrange: u32 = u32(0)
+      closed: Bool = false
+      while !closed && !bad {
+        p < end && pattern[p] == u8(93) && nrange > u32(0) ? { p = p + u32(1); closed = true } | {
+          lo: PathScalar = path_get_esc(pattern, p, end)
+          lo.next == MATCH_BAD ? { bad = true } | {
+            p = lo.next
+            hi: u32 = lo.value
+            pattern[p] == u8(45) ? {
+              upper: PathScalar = path_get_esc(pattern, p + u32(1), end)
+              upper.next == MATCH_BAD ? { bad = true } | { p = upper.next; hi = upper.value }
+            }
+            !bad && lo.value <= r && r <= hi ? { matched = true }
+            nrange = nrange + u32(1)
+          }
+        }
+      }
+      !bad && matched == negated ? { failed = true }
+    } |
+    unit == u8(63) ? {
+      !failed ? {
+        name[s] == u8(47) ? { failed = true }
+        skipped: PathScalar = path_scalar_at(name, s)
+        s = skipped.next
+      }
+      p = p + u32(1)
+    } | {
+      literal: u32 = unit == u8(92) ? p + u32(1) | p
+      literal >= end ? { bad = true } | {
+        !failed ? {
+          pattern[literal] != name[s] ? { failed = true }
+          s = s + u32(1)
+        }
+        p = literal + u32(1)
+      }
+    }
+  }
+  bad ? MATCH_BAD | failed ? MATCH_FAIL | s
+}
+
+// path_has_slash: whether name[at:] contains a slash.
+path_has_slash: (name: []u8, at: u32): Bool {
+  i: u32 = at
+  found: Bool = false
+  while i < len(name) && !found {
+    name[i] == u8(47) ? { found = true }
+    i = i + u32(1)
+  }
+  found
+}
+
+// path_validate_rest: walk the remaining chunks of a pattern that has already
+// failed to match, so a malformed tail is still reported (Go 1.16+).
+path_validate_rest: (pattern: []u8, at: u32, name: []u8): Bool {
+  p: u32 = at
+  bad: Bool = false
+  while p < len(pattern) && !bad {
+    packed: u64 = path_scan_chunk(pattern, p)
+    start: u32 = u32_trunc_u64(packed >> u64(32))
+    end: u32 = u32_trunc_u64(packed & u64(4294967295))
+    path_match_chunk(pattern, start, end, name, len(name)) == MATCH_BAD ? { bad = true }
+    p = end
+  }
+  bad
+}
+
+// path_match_code: 1 when the pattern matches the whole name, 0 when it does
+// not, 2 when the pattern is malformed (Go's ErrBadPattern).
+pub path_match_code: (pattern: []u8, name: []u8): u32 {
+  pn: u32 = len(pattern)
+  nn: u32 = len(name)
+  p: u32 = u32(0)
+  s: u32 = u32(0)
+  result: u32 = u32(3)
+  while result == u32(3) {
+    p >= pn ? { result = s == nn ? u32(1) | u32(0) } | {
+      packed: u64 = path_scan_chunk(pattern, p)
+      start: u32 = u32_trunc_u64(packed >> u64(32))
+      end: u32 = u32_trunc_u64(packed & u64(4294967295))
+      star: Bool = start > p
+      star && start == end ? {
+        // A trailing star matches the rest of the name unless it has a slash.
+        result = path_has_slash(name, s) ? u32(0) | u32(1)
+      } | {
+        t: u32 = path_match_chunk(pattern, start, end, name, s)
+        t != MATCH_FAIL && t != MATCH_BAD && (t == nn || end < pn) ? { s = t; p = end } |
+        t == MATCH_BAD ? { result = u32(2) } | {
+          advanced: Bool = false
+          star ? {
+            // Retry the chunk after skipping one more byte of the name; a
+            // star never crosses a slash.
+            i: u32 = s
+            while i < nn && name[i] != u8(47) && !advanced && result == u32(3) {
+              again: u32 = path_match_chunk(pattern, start, end, name, i + u32(1))
+              again == MATCH_BAD ? { result = u32(2) } |
+              again != MATCH_FAIL && (end < pn || again == nn) ? { s = again; p = end; advanced = true }
+              i = i + u32(1)
+            }
+          }
+          !advanced && result == u32(3) ? {
+            result = path_validate_rest(pattern, end, name) ? u32(2) | u32(0)
+          }
+        }
+      }
+    }
+  }
+  result
+}
+
+// path_match: Go's path.Match. `*` matches any sequence of non-slash
+// characters, `?` one non-slash character, `[class]` one character from the
+// class (`[^class]` outside it; ranges `lo-hi`; `\` escapes inside), and `\c`
+// matches `c`. The whole name must match. A malformed pattern (an unclosed
+// or empty class, a range without an end, a trailing `\`) is `BadPattern`,
+// reported even when the name has already failed to match.
+pub path_match: (pattern: []u8, name: []u8): Result[Bool, PathError] {
+  code: u32 = path_match_code(pattern, name)
+  code == u32(2) ? { .Err(.BadPattern) } | { .Ok(code == u32(1)) }
+}
+
+// ---- matching with ** -----------------------------------------------------
+
+// Component positions: a component starts at `at` and ends at the next slash
+// or the length; the position after the last component is len + 1, so a
+// position is exhausted when it exceeds the length. Empty components count
+// (`a//b` has three, and an absolute path has an empty first one), so both
+// sides must agree on the slash structure, exactly as `path_match` does.
+
+path_component_end: (src: []u8, at: u32): u32 {
+  i: u32 = at
+  while i < len(src) && src[i] != u8(47) { i = i + u32(1) }
+  i
+}
+
+path_component_next: (src: []u8, at: u32): u32 = path_component_end(src, at) + u32(1)
+
+path_is_double_star: (pattern: []u8, at: u32): Bool = path_component_end(pattern, at) == at + u32(2) && pattern[at] == u8(42) && pattern[at + u32(1)] == u8(42)
+
+// path_match_glob_code: 1 match, 0 mismatch, 2 malformed, as path_match_code.
+// Components are compared pairwise with path_match; a component that is
+// exactly `**` matches zero or more name components (the most recent `**`
+// absorbs one more component on a later mismatch), so `a/**/b` matches
+// `a/b`, `a/x/b` and `a/x/y/b`, `**/b` matches `b` and `x/y/b`, and `a/**`
+// matches `a` and everything below it. `**` mixed with other text (`a**`)
+// is two ordinary stars within one component.
+pub path_match_glob_code: (pattern: []u8, name: []u8): u32 {
+  pn: u32 = len(pattern)
+  nn: u32 = len(name)
+  p: u32 = u32(0)
+  s: u32 = u32(0)
+  star_p: u32 = u32(0)
+  star_s: u32 = u32(0)
+  has_star: Bool = false
+  result: u32 = u32(3)
+  while result == u32(3) {
+    stepped: Bool = false
+    p <= pn ? {
+      path_is_double_star(pattern, p) ? {
+        star_p = path_component_next(pattern, p)
+        star_s = s
+        has_star = true
+        p = star_p
+        stepped = true
+      } | s <= nn ? {
+        part: u32 = path_match_code(pattern[p:path_component_end(pattern, p)], name[s:path_component_end(name, s)])
+        part == u32(2) ? { result = u32(2); stepped = true } |
+        part == u32(1) ? {
+          p = path_component_next(pattern, p)
+          s = path_component_next(name, s)
+          stepped = true
+        }
+      }
+    } | s > nn ? { result = u32(1); stepped = true }
+    !stepped && result == u32(3) ? {
+      // Mismatch: let the most recent ** absorb one more name component.
+      has_star && star_s <= nn ? {
+        star_s = path_component_next(name, star_s)
+        s = star_s
+        p = star_p
+      } | { result = u32(0) }
+    }
+  }
+  result
+}
+
+pub path_match_glob: (pattern: []u8, name: []u8): Result[Bool, PathError] {
+  code: u32 = path_match_glob_code(pattern, name)
+  code == u32(2) ? { .Err(.BadPattern) } | { .Ok(code == u32(1)) }
+}

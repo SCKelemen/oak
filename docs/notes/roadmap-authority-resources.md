@@ -135,6 +135,32 @@ of local storage stays rejected; owner mutation is rejected while a
 dependent view lives; wrappers preserve every dependency. Retain
 `OAK-B0109` for every unsupported case.
 
+**Landed (stage (a), 2026-09-12):** checked result contracts
+(`50-borrowing.md` §9 "Result identity"): a result is declared fresh or an
+alias of one argument (`resource.return-alias arg:N` in SemIR), bodies are
+validated against the claim (`OAK-B0117`), a declared alias return of a
+borrowed parameter is exempt from the retention rule, and callers carry
+the aliased argument's provenance into bindings, rebinding, projections,
+and nested arguments. **Stage (b) (same day):** borrowed resource results
+(`50-borrowing.md` §9 "Borrowed results", `resource.return-borrow arg:N`,
+`OAK-B0118`): a shared borrow of one borrowed argument is its own
+authority dependent on the argument's owners for its scope; owner
+mutation, consumption, and rebinding, dependent mutation, consumption,
+storage, and uncontracted return, and rebinding across scopes are
+rejected; contracted wrappers preserve the dependency; joins union
+dependencies. Storage views keep their own rule (§8c). **Stage (c) (same
+day):** multiple-origin results (`BorrowsArguments`, one `return-borrow`
+per origin), root-owner union with fail-closed unknown origins, projection
+owners protected against field and whole-record writes, wrapper contracts
+that must cover every origin, and temporary borrowed results participating
+in exclusivity by owner set. **Stage (d) (same day):** mutable reborrows
+(`BorrowMutable`, `return-borrow-mut`, `OAK-B0119`): origins must all be
+borrowed-mut, the result may be passed to borrowed-mut positions and
+reborrowed, its owners are suspended entirely for its lexical scope (a
+temporary suspends for the call), widening is rejected and narrowing
+admitted. Open: stage (e) and a source spelling for all three result
+identities.
+
 ## 5. Resources through generics and pattern matching
 
 Copyability as a capability, propagated through fields, payloads, generic

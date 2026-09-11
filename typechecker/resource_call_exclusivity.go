@@ -14,6 +14,10 @@ type resourceCallArgument struct {
 	node    ast.Node
 	tracked bool
 	fresh   bool
+	// owners is the dependency set of a temporary borrowed result passed
+	// directly as an argument: it aliases nothing itself, but conflicts
+	// with an exclusive use of any owner it depends on.
+	owners map[string]bool
 }
 
 func resourceParameterModesCompatible(left, right ResourceParameterMode) bool {
@@ -62,7 +66,7 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 			mode:  parameter.mode,
 			node:  argument,
 		}
-		if name, ok := resourceName(argument); ok && a.flow.Registered(name) {
+		if name, ok := a.trackedName(argument); ok {
 			if !a.flow.CanUse(name) {
 				// Ordinary argument evaluation owns the use-after-consume diagnostic.
 				a.use(name, argument)
@@ -76,6 +80,14 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 			// It needs no source binding and cannot revive an input authority class.
 			participant.tracked = true
 			participant.fresh = true
+		}
+		if call, ok := argument.(*ast.InvocationExpression); ok {
+			if owners, borrowed := a.borrowCalls[call]; borrowed && len(owners) > 0 {
+				// A temporary borrowed result with known owners is distinct
+				// from every other argument except those owners.
+				participant.tracked = true
+				participant.owners = owners
+			}
 		}
 		participants = append(participants, participant)
 
@@ -102,6 +114,13 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 				continue
 			}
 			if left.tracked && right.tracked {
+				if left.owners != nil || right.owners != nil {
+					if !a.participantsOverlap(left, right) {
+						continue
+					}
+					a.reportCallAliasConflict(expr, left, right)
+					return false
+				}
 				if !a.flow.Aliases(left.name, right.name) {
 					continue
 				}
@@ -213,4 +232,39 @@ func positionLabel(index int) string {
 		return "receiver"
 	}
 	return fmt.Sprintf("argument %d", index+1)
+}
+
+// participantsOverlap decides whether two tracked participants, at least
+// one a temporary borrowed result, can denote or depend on one authority:
+// a temporary overlaps a named argument that is (or aliases) one of its
+// owners, and two temporaries overlap when they share an owner. Two
+// temporaries of one owner are both shared borrows, so the caller has
+// already skipped compatible mode pairs before asking.
+func (a *typedResourceAnalysis) participantsOverlap(left, right resourceCallArgument) bool {
+	sameOwner := func(owner, name string) bool {
+		return owner == name || (a.flow.Registered(owner) && a.flow.Registered(name) && a.flow.Aliases(owner, name))
+	}
+	switch {
+	case left.owners != nil && right.owners != nil:
+		for owner := range left.owners {
+			for other := range right.owners {
+				if sameOwner(owner, other) {
+					return true
+				}
+			}
+		}
+		return false
+	case left.owners != nil:
+		if right.name == "" {
+			return true
+		}
+		for owner := range left.owners {
+			if sameOwner(owner, right.name) {
+				return true
+			}
+		}
+		return false
+	default:
+		return a.participantsOverlap(right, left)
+	}
 }

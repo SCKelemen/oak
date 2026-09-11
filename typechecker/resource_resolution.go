@@ -77,6 +77,26 @@ type ResourceTransitionDeclaration struct {
 	// parameter modes. Resolution normalizes it to ResourceParameterConsumed.
 	Consumes     []int
 	ReturnsFresh bool
+	// ReturnsAlias marks a result that is an alias of the argument at
+	// AliasesArgument: the same authority class, no wider permission
+	// (docs/spec/50-borrowing.md section 9, result identity). Exclusive
+	// with ReturnsFresh.
+	ReturnsAlias    bool
+	AliasesArgument int
+	// ReturnsBorrow marks a result that is a shared borrow dependent on
+	// the arguments at BorrowsArguments: its own authority, read permission
+	// only, alive no longer than its scope, and while it lives none of those
+	// arguments may be mutated, consumed, or rebound
+	// (docs/spec/50-borrowing.md section 9, borrowed results). Exclusive
+	// with ReturnsFresh and ReturnsAlias; every listed argument must be
+	// borrowed or borrowed-mut, and the list is non-empty without duplicates.
+	ReturnsBorrow    bool
+	BorrowsArguments []int
+	// BorrowMutable makes the borrowed result a mutable reborrow: it may be
+	// passed to borrowed-mut positions, and while it lives its owners are
+	// suspended entirely (docs/spec/50-borrowing.md section 9, borrowed
+	// results). Requires ReturnsBorrow; every origin must be borrowed-mut.
+	BorrowMutable bool
 	// Receiver is the authority mode of a method's receiver
 	// (docs/spec/50-borrowing.md section 9): its own slot, so the explicit
 	// parameter indices above never shift. Unspecified for plain functions
@@ -116,15 +136,25 @@ type ResolvedResourceTransition struct {
 	To         string
 	Parameters []ResolvedResourceParameter
 	// Consumes is retained as the executable permanent-authority projection.
-	Consumes     []int
-	ReturnsFresh bool
-	Receiver     ResourceParameterMode
+	Consumes         []int
+	ReturnsFresh     bool
+	ReturnsAlias     bool
+	AliasesArgument  int
+	ReturnsBorrow    bool
+	BorrowsArguments []int
+	BorrowMutable    bool
+	Receiver         ResourceParameterMode
 }
 
 type resolvedCallableResourceSemantics struct {
-	Parameters   []ResolvedResourceParameter
-	ReturnsFresh bool
-	Receiver     ResourceParameterMode
+	Parameters       []ResolvedResourceParameter
+	ReturnsFresh     bool
+	ReturnsAlias     bool
+	AliasesArgument  int
+	ReturnsBorrow    bool
+	BorrowsArguments []int
+	BorrowMutable    bool
+	Receiver         ResourceParameterMode
 }
 
 // ResolveResourceDeclarations resolves internal protocol facts against the
@@ -277,20 +307,78 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a receiver mode but its receiver type %s is not a resource type", transition.Callable, receiverType)
 				}
 			}
-			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh, Receiver: transition.Receiver}
+			if transition.ReturnsAlias {
+				if transition.ReturnsFresh {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q cannot both return fresh authority and alias an argument", transition.Callable)
+				}
+				if transition.AliasesArgument < 0 || transition.AliasesArgument >= len(function.Parameters) {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q aliases argument %d outside its %d parameters", transition.Callable, transition.AliasesArgument, len(function.Parameters))
+				}
+				if !resourceTypes[nominalTypeName(function.Parameters[transition.AliasesArgument])] {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q aliases argument %d, which has non-resource type %s", transition.Callable, transition.AliasesArgument, function.Parameters[transition.AliasesArgument])
+				}
+				if !resourceTypes[nominalTypeName(function.ReturnType)] {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks an alias return but returns non-resource type %s", transition.Callable, function.ReturnType)
+				}
+			}
+			borrows := normalizeIndexSet(transition.BorrowsArguments)
+			if transition.ReturnsBorrow {
+				if transition.ReturnsFresh || transition.ReturnsAlias {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q cannot return a borrowed result and also fresh or aliased authority", transition.Callable)
+				}
+				if len(borrows) == 0 {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a borrowed result but names no borrowed argument", transition.Callable)
+				}
+				if len(borrows) != len(transition.BorrowsArguments) {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q lists a borrowed argument twice", transition.Callable)
+				}
+				if !resourceTypes[nominalTypeName(function.ReturnType)] {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a borrowed result but returns non-resource type %s", transition.Callable, function.ReturnType)
+				}
+				for _, index := range borrows {
+					if index < 0 || index >= len(function.Parameters) {
+						return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q borrows argument %d outside its %d parameters", transition.Callable, index, len(function.Parameters))
+					}
+					if !resourceTypes[nominalTypeName(function.Parameters[index])] {
+						return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q borrows argument %d, which has non-resource type %s", transition.Callable, index, function.Parameters[index])
+					}
+					sourceMode := ResourceParameterUnspecified
+					for _, parameter := range parameters {
+						if parameter.Index == index {
+							sourceMode = parameter.Mode
+						}
+					}
+					if sourceMode != ResourceParameterBorrowed && sourceMode != ResourceParameterBorrowedMut {
+						return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q borrows argument %d, which must be declared borrowed or borrowed-mut (a borrow of consumed or unmarked input is not admitted)", transition.Callable, index)
+					}
+					if transition.BorrowMutable && sourceMode != ResourceParameterBorrowedMut {
+						return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q returns a mutable reborrow of argument %d, which must be declared borrowed-mut (mutable authority cannot be minted from a shared borrow)", transition.Callable, index)
+					}
+				}
+			} else if transition.BorrowMutable {
+				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a mutable reborrow without a borrowed result", transition.Callable)
+			} else if len(borrows) != 0 {
+				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q names borrowed arguments without marking a borrowed result", transition.Callable)
+			}
+			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh, ReturnsAlias: transition.ReturnsAlias, AliasesArgument: transition.AliasesArgument, ReturnsBorrow: transition.ReturnsBorrow, BorrowsArguments: borrows, BorrowMutable: transition.BorrowMutable, Receiver: transition.Receiver}
 			if previous, exists := callableSemantics[transition.Callable]; exists && !sameResolvedCallableResourceSemantics(previous, semantics) {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q has conflicting semantics across protocols", transition.Callable)
 			}
 			callableSemantics[transition.Callable] = semantics
 			protocol.Transitions = append(protocol.Transitions, ResolvedResourceTransition{
-				Name:         transition.Name,
-				Callable:     transition.Callable,
-				From:         transition.From,
-				To:           transition.To,
-				Parameters:   parameters,
-				Consumes:     consumes,
-				ReturnsFresh: transition.ReturnsFresh,
-				Receiver:     transition.Receiver,
+				Name:             transition.Name,
+				Callable:         transition.Callable,
+				From:             transition.From,
+				To:               transition.To,
+				Parameters:       parameters,
+				Consumes:         consumes,
+				ReturnsFresh:     transition.ReturnsFresh,
+				ReturnsAlias:     transition.ReturnsAlias,
+				AliasesArgument:  transition.AliasesArgument,
+				ReturnsBorrow:    transition.ReturnsBorrow,
+				BorrowsArguments: borrows,
+				BorrowMutable:    transition.BorrowMutable,
+				Receiver:         transition.Receiver,
 			})
 		}
 		resolved.Protocols = append(resolved.Protocols, protocol)
@@ -470,7 +558,9 @@ func resolveResourceParameters(
 }
 
 func sameResolvedCallableResourceSemantics(left, right resolvedCallableResourceSemantics) bool {
-	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver || len(left.Parameters) != len(right.Parameters) {
+	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver || len(left.Parameters) != len(right.Parameters) ||
+		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) ||
+		left.ReturnsBorrow != right.ReturnsBorrow || (left.ReturnsBorrow && (!sameIndexSet(left.BorrowsArguments, right.BorrowsArguments) || left.BorrowMutable != right.BorrowMutable)) {
 		return false
 	}
 	for i := range left.Parameters {
@@ -502,4 +592,33 @@ func nominalTypeName(typ Type) string {
 	default:
 		return ""
 	}
+}
+
+// normalizeIndexSet sorts indices and drops duplicates; the caller compares
+// lengths to detect a repeated index.
+func normalizeIndexSet(indices []int) []int {
+	seen := make(map[int]bool, len(indices))
+	out := make([]int, 0, len(indices))
+	for _, index := range indices {
+		if seen[index] {
+			continue
+		}
+		seen[index] = true
+		out = append(out, index)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func sameIndexSet(left, right []int) bool {
+	left, right = normalizeIndexSet(left), normalizeIndexSet(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
