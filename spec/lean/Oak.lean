@@ -16,6 +16,7 @@ import Oak.ResourceCall
 import Oak.ResourceResult
 import Oak.MethodMangling
 import Oak.StatementBoundary
+import Oak.Protocol
 import Oak.BorrowRegions
 import Oak.Reborrow
 import Oak.ReborrowRefinement
@@ -73,6 +74,7 @@ import Oak.SessionObligations
 import Oak.SessionObligationsProved
 import Oak.Floats
 import Oak.GraphemeBreak
+import Oak.Normalization
 import Oak.Stdlib.VarintExtracted
 import Oak.Stdlib.EncodingExtracted
 import Oak.Stdlib.HashExtracted
@@ -87,3 +89,4 @@ import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.RandomLaws
 import Oak.Typestate
 import Oak.IoPort
+import Oak.ProtocolQuorum

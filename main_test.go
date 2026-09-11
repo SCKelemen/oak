@@ -586,3 +586,55 @@ func TestBuildCache(t *testing.T) {
 		t.Fatalf("env OAKCACHE: %d\n%s", code, out)
 	}
 }
+
+// oak prove: the ladder's three outcomes on one file, and the Lean
+// projection on request (docs/spec/125-verification.md section 4).
+func TestProveCommand(t *testing.T) {
+	dir := t.TempDir()
+	src := "Color: type = Red | Green | Blue\n" +
+		"next: (c: Color): Color = c ? | .Red => .Green | .Green => .Blue | .Blue => .Red\n" +
+		"add_commutes: theorem (x: u8, y: u8) { x + y == y + x }\n" +
+		"cycle: theorem (c: Color) { next(next(next(c))) == c }\n" +
+		"wrong: theorem (x: u8) { x + u8(1) > x }\n" +
+		"wide: theorem (x: u32) { x + u32(1) - u32(1) == x }\n" +
+		"twice: (x: u32): u32 = x + x\n" +
+		"via_call: theorem (x: u32) { twice(x) == x * u32(2) }\n" +
+		"main: (): i32 = 0\n"
+	path := filepath.Join(dir, "thm.oak")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	leanOut := filepath.Join(dir, "thm.lean")
+	code, out := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) },
+		[]string{"-lean", leanOut, path})
+	if code != 1 {
+		t.Fatalf("exit %d, want 1 (a refuted and an open theorem):\n%s", code, out)
+	}
+	for _, want := range []string{
+		"decided   add_commutes: all 65536 cases",
+		"decided   cycle: all 3 cases",
+		"refuted   wrong: counterexample x = 255",
+		"decided   wide: at the bit level",
+		"open      via_call:",
+		"oak prove: 3 decided, 1 open, 1 refuted",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	lean, err := os.ReadFile(leanOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"import Std.Tactic.BVDecide", "theorem wide_holds (x : UInt32) (fuel : Nat) : wide x fuel = some true",
+		"theorem cycle_holds (c : Color) (fuel : Nat)", "theorem via_call_holds (x : UInt32) (fuel : Nat)"} {
+		if !strings.Contains(string(lean), want) {
+			t.Errorf("projection lacks %q:\n%s", want, lean)
+		}
+	}
+	code, out = runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) },
+		[]string{filepath.Join(dir, "missing.oak")})
+	if code != 2 {
+		t.Fatalf("missing file: exit %d, want 2:\n%s", code, out)
+	}
+}

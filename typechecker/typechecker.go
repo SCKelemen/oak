@@ -550,6 +550,10 @@ type TypeChecker struct {
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[string]string
+	// equalityTypes records, per `==`/`!=` operator position, the named
+	// sum type or record the operands have, so the backend emits that
+	// type's equality function (typechecker/equality.go).
+	equalityTypes map[string]string
 	// unsafeDepth counts the enclosing unsafe blocks; initializerUnderCheck
 	// is the initializer expression of the declaration being checked. Both
 	// gate the inbound buffer borrows of docs/spec/92-ffi.md section 2.7.
@@ -1680,6 +1684,9 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			tc.addError(expr, "operator %s requires compatible types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
+		if !tc.checkAggregateEquality(expr, leftType) {
+			return nil
+		}
 		return &BoolType{}
 	case "&&", "||":
 		// Short-circuit Boolean connectives (docs/spec/10-syntax.md): both
@@ -2249,6 +2256,21 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			effectiveArgs += 2
 			continue
 		}
+		// A C string from Oak bytes (docs/spec/92-ffi.md section 2.5.3)
+		// stands for one c.String parameter of an extern binding.
+		if operand, isCString := tc.CStringArgument(arg); isCString {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					"c.cstr is only an argument to an extern binding")
+				d.AddNote("c.cstr(v) hands C the base pointer of a NUL-terminated view for the duration of one foreign call; Oak functions take the view itself (docs/spec/92-ffi.md section 2.5.3)")
+				return nil
+			}
+			if !tc.checkCStringArgument(arg, operand, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs++
+			continue
+		}
 		effectiveArgs++
 	}
 	if !spansValid {
@@ -2285,6 +2307,11 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if _, _, isSpan := tc.BoundarySpanArgument(arg); isSpan {
 			// Validated in the pre-pass above; it stands for the pair.
 			argTypes[i] = &CType{Name: "Ptr"}
+			continue
+		}
+		if _, isCString := tc.CStringArgument(arg); isCString {
+			// Validated in the pre-pass above; it stands for a c.String.
+			argTypes[i] = &CType{Name: "String"}
 			continue
 		}
 		pos := paramPos[i]
@@ -3923,6 +3950,9 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 	// Check for nil function statement
 	if stmt == nil {
+		return
+	}
+	if stmt.Theorem && !tc.checkTheoremShape(stmt) {
 		return
 	}
 

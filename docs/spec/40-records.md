@@ -478,3 +478,13 @@ An extensible record type writes a row variable before `|`: `{ r | name: string,
 An extensible record is a structural constraint, never a concrete storage layout. A concrete value still has a record or struct type. Every function with an extensible-record parameter is a representation template: calls are monomorphized for the concrete argument struct, the call is rewritten to that specialization, and only closed-layout functions reach borrowing, discipline analysis, lowering, and code generation. Two structs with the same required fields but different order therefore produce distinct native specializations without copying, boxing, or runtime field-offset dispatch.
 
 Closed record types continue to use exact shape matching where exact identity is requested. Extensible syntax in value position is ill-formed; it is not record-update syntax.
+
+## 16. Equality
+
+`==` and `!=` on values of a declared record type compare field by field
+in declaration order, each field by its type's own equality
+(`30-adts-patterns.md` §14 lists the admitted types). An anonymous record
+shape has no equality: declare the shape as a struct to compare it. The
+comparison is refused (`OAK-T0601`) when any field's type has none, rather
+than compared by identity or by bytes; padding never takes part.
+

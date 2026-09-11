@@ -897,6 +897,12 @@ type ADTType struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// TagValues, when set, fixes each variant's tag value in the C
+	// representation (one per variant, in order) instead of the
+	// declaration index — a representation choice the protocol projection
+	// makes for shift-DFA state types (tags are the offsets 6*i). Matching
+	// compares tags by name, so nothing else observes the values.
+	TagValues []int `json:",omitempty"`
 }
 
 func (adt *ADTType) statementNode()       {}
@@ -1089,6 +1095,11 @@ type FunctionStatement struct {
 	Parameters []*FunctionParameter
 	ReturnType Expression // type expression
 	Body       Expression
+	// Theorem marks `name: theorem (params) { Bool }`
+	// (docs/spec/125-verification.md): a Bool-valued function whose
+	// parameters are universally quantified. It is checked and compiled as
+	// an ordinary function; `oak prove` discharges it.
+	Theorem bool
 	// ExternSymbol, when non-empty, marks an extern C binding
 	// (docs/spec/92-ffi.md section 2.3): the definition was
 	// `c.extern("symbol")`, the function has no Oak body, and calls
@@ -1128,6 +1139,35 @@ type FunctionStatement struct {
 	Effects         []*EffectName
 	EffectsDeclared bool
 	Forbids         []*EffectName
+	// Lowering, when set, is the compiler-known lowering of a projected
+	// protocol step function (docs/spec/112-protocols.md section 2a,
+	// 90-backend.md section 14): the C backend emits a transition table
+	// or shift-DFA body in place of the Oak body, which remains the
+	// function's meaning for the interpreter and the Lean extraction.
+	// Set by the protocol projection only; never by the parser.
+	Lowering *ProtocolLowering `json:",omitempty"`
+}
+
+// ProtocolLowering is the resolved transition table of a protocol without
+// a data record, attached to its projected `legal`, `next`, and `run`
+// functions. Symbols are the step tags, or the 256 values of the single
+// step's u8 payload when ByteSymbol is set (guards over the payload are
+// evaluated at compile time for every value). Table holds (States+1) rows
+// of Symbols entries: the next state's index, or States (the sink, also
+// the illegal sentinel); the sink row maps every symbol to the sink. Shift
+// selects the shift-DFA form, admitted when States+1 <= 10, under which the
+// state ADT's tags are the offsets 6*i (ADTType.TagValues) and a step is
+// (rows[symbol] >> state) & 63. Oak.Protocol proves both forms compute the
+// declaration's first-match semantics.
+type ProtocolLowering struct {
+	Protocol   string
+	Kind       string // "legal", "next", or "run"
+	States     int
+	Symbols    int
+	ByteSymbol bool
+	StepName   string // the variant carrying the byte payload, ByteSymbol only
+	Table      []int
+	Shift      bool
 }
 
 // EffectName is one `Namespace.Name` in an effect clause.
@@ -1145,7 +1185,11 @@ func (fs *FunctionStatement) statementNode()       {}
 func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
 func (fs *FunctionStatement) String() string {
 	var out bytes.Buffer
-	out.WriteString("fn ")
+	if fs.Theorem {
+		out.WriteString("theorem ")
+	} else {
+		out.WriteString("fn ")
+	}
 	if fs.Receiver != nil {
 		out.WriteRune('(')
 		out.WriteString(fs.Receiver.String())
