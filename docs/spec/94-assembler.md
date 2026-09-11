@@ -533,29 +533,115 @@ on the wide moves. By group, with the verifier's status:
 | --- | --- | --- |
 | arithmetic, carry | `add sub adds subs adc sbc adcs sbcs neg negs ngc ngcs cmp cmn madd msub mneg` | modeled (`adcs`/`sbcs` flags unknown) |
 | logical | `and ands orr eor bic bics orn eon tst mvn` | modeled |
-| shifts, rotates, fields | `lsl lsr asr ror extr ubfx ubfiz sbfx bfi` | modeled |
+| shifts, rotates, fields | `lsl lsr asr ror extr ubfx ubfiz sbfx sbfiz bfi bfxil bfc` | modeled |
 | bit manipulation, extends | `rev rev16 rev32 rbit clz cls sxtb sxth sxtw uxtb uxth` | modeled (`clz` as a priority encoder) |
 | wide moves | `movz movn movk` | modeled |
 | conditional | `csel cset csetm csinc csinv csneg cinc cinv cneg ccmp ccmn` | modeled |
-| multiply, divide | `mul smull umull smaddl umaddl smsubl umsubl smulh umulh udiv sdiv` | modeled; two symbolic operands, high products, and division exceed the bit-level budget (evidence); Oak's `/` and `%` trap and stay unlowered |
-| memory | `ldr str ldp stp ldrb ldrh strb strh ldrsb ldrsh ldrsw ldpsw ldur stur ldurb ldurh sturb sturh ldursb ldursh ldursw prfm` | loads through spans and the frame modeled (sign-extending loads sign-extend the element); `prfm` checked only |
-| ordered, exclusive, atomic | `ldar ldxr ldaxr ldapr stlr stxr stlxr` (+`b`/`h`), the LSE set `ldadd ldclr ldeor ldset ldsmax ldsmin ldumax ldumin swp cas` × {`-`,`a`,`l`,`al`} × {`-`,`b`,`h`}, `clrex` | checked: a guarded writable span, one element, roles per operation (`stxr` writes its status register, `cas` reads both); trusted by the verifier |
+| multiply, divide | `mul smull umull smaddl umaddl smsubl umsubl smnegl umnegl smulh umulh udiv sdiv` | modeled; two symbolic operands, high products, and division exceed the bit-level budget (evidence); Oak's `/` and `%` trap and stay unlowered |
+| memory | `ldr str ldp stp ldnp stnp ldrb ldrh strb strh ldrsb ldrsh ldrsw ldpsw ldur stur ldurb ldurh sturb sturh ldursb ldursh ldursw`, the unprivileged `ldtr sttr ldtrb ldtrh sttrb sttrh ldtrsb ldtrsh ldtrsw`, `adr adrp`, `prfm prfum rprfm` | loads through spans and the frame modeled (sign-extending loads sign-extend the element); the unprivileged forms, `adr`/`adrp`, and the prefetches checked only |
+| ordered, exclusive, atomic | `ldar ldxr ldaxr ldapr stlr stxr stlxr ldlar stllr` (+`b`/`h`), the pairs `ldxp ldaxp stxp stlxp`, the LSE set `ldadd ldclr ldeor ldset ldsmax ldsmin ldumax ldumin swp cas` × {`-`,`a`,`l`,`al`} × {`-`,`b`,`h`}, `casp` × {`-`,`a`,`l`,`al`}, the store-only `stadd stclr steor stset stsmax stsmin stumax stumin` × {`-`,`l`} × {`-`,`b`,`h`}, `clrex` | checked: a guarded writable span, one element or pair sized by the value registers, roles per operation (`stxr`/`stxp` write their status register, `cas`/`casp` read every register, the store-only forms write none); trusted by the verifier |
 | branches | `b b.cond cbz cbnz tbz tbnz bl blr br ret ret-xN` | `br`/`blr` checked as an indirect transfer/call; trusted |
-| hints, traps, exceptions | `nop wfe wfi sev sevl yield csdb esb hint brk svc hvc smc` | hints have no value semantics; `brk` ends control; `svc`/`hvc`/`smc` need `system` and clobber the caller-saved state; trusted |
+| hints, traps, exceptions | `nop wfe wfi sev sevl yield csdb esb ssbb pssbb hint brk svc hvc smc` | hints have no value semantics; `brk` ends control; `svc`/`hvc`/`smc` need `system` and clobber the caller-saved state; trusted |
 | system, barriers, maintenance | `mrs msr eret dmb dsb isb dc ic tlbi at` | checked under `system`; trusted |
 | CRC, flags | `crc32{b,h,w,x} crc32c{b,h,w,x} cfinv` | checked; trusted |
-| scalar floating point | `fmov fadd fsub fmul fdiv fnmul fmax fmin fmaxnm fminnm fneg fabs fsqrt frint{a,i,m,n,p,x,z} fmadd fmsub fnmadd fnmsub fcmp fcmpe fcsel fcvt fcvt{z,a,m,n,p}{s,u} scvtf ucvtf` on the `h`/`s`/`d` views; `f32`/`f64` parameters bind to `s`/`d` registers, results return in `v0` | checked (forms, view widths, `fcmp` flags feed `b.cond`/`csel`/`fcsel`); trusted |
-| NEON integer | arithmetic, logical, saturating and halving forms, pairwise, compares (register and against zero), min/max and reductions (`addv smaxv … uaddlv`), shifts and shift-inserts, widening and narrowing (`ushll xtn sqxtn uaddl umull uaddw …` and their `2` halves), `dup ins umov smov mov ext tbl tbx zip uzp trn rev16/32/64 cnt movi mvni` | checked: arranged operands agree unless the instruction widens, narrows, or reduces; lanes bounded at parse | trusted |
-| NEON float | `fadd fsub fmul fdiv fmla fmls fmulx fabd fmax fmin faddp fmaxp fminp fneg fabs fsqrt frint* fcmeq fcmgt fcmge fcmlt fcmle fcvtn fcvtl` and the vector conversions | checked | trusted |
-| vector memory | `ldr str ldp stp ldur stur` of `h`/`s`/`d`/`q`; `ld1 st1 ld2 st2 ld3 st3 ld4 st4 ld1r` with register lists | checked: sizes from the register view (a `q` load moves 16 bytes; `ld2 {v0.2d, v1.2d}` 32), through guarded spans or the frame | trusted (the verifier never keys vector state with the general registers) |
+| scalar floating point | `fmov fadd fsub fmul fdiv fnmul fmax fmin fmaxnm fminnm fneg fabs fsqrt frint{a,i,m,n,p,x,z} fmadd fmsub fnmadd fnmsub fcmp fcmpe fccmp fccmpe fcsel fcvt fcvt{z,a,m,n,p}{s,u} scvtf ucvtf frecpe frecps frecpx frsqrte frsqrts facge facgt fcvtxn` on the `h`/`s`/`d` views; `f32`/`f64` parameters bind to `s`/`d` registers, results return in `v0` | checked (forms, view widths, `fcmp` flags feed `b.cond`/`csel`/`fcsel`); trusted |
+| NEON integer | arithmetic, logical, bitwise selects (`bsl bit bif`), saturating, halving and rounding-halving forms (`shsub uhsub srhadd urhadd sqabs sqneg suqadd usqadd`), absolute differences with accumulate (`saba uaba sabal uabal sabdl uabdl`), pairwise, compares (register and against zero), min/max and reductions (`addv smaxv … uaddlv`), shifts, rounding shifts, and shift-inserts (`srshr urshr srsra ursra sqshlu sqrshl uqrshl`), saturating doubling multiplies (`sqdmulh sqrdmulh sqrdmlah sqrdmlsh sqdmull sqdmlal sqdmlsl`), widening and narrowing (`ushll xtn sqxtn sqxtun uaddl umull uaddw addhn raddhn subhn rsubhn shrn sqshrun sqrshrun …` and their `2` halves), integer reciprocal estimates (`urecpe ursqrte`), `dup ins umov smov mov ext tbl tbx zip uzp trn rev16/32/64 cnt movi mvni` | checked: arranged operands agree unless the instruction widens, narrows, or reduces; lanes bounded at parse | trusted |
+| NEON float | `fadd fsub fmul fdiv fmla fmls fmulx fabd fmax fmin faddp fmaxp fminp fmaxnmp fminnmp` (and their scalar pairwise forms) `fneg fabs fsqrt frint* fcmeq fcmgt fcmge fcmlt fcmle facge facgt frecpe frecps frsqrte frsqrts fcvtn fcvtl fcvtn2 fcvtl2 fcvtxn fcvtxn2` and the vector conversions | checked | trusted |
+| vector memory | `ldr str ldp stp ldur stur` of `h`/`s`/`d`/`q`; `ld1 st1 ld2 st2 ld3 st3 ld4 st4 ld1r ld2r ld3r ld4r` with register lists | checked: sizes from the register view (a `q` load moves 16 bytes; `ld2 {v0.2d, v1.2d}` 32), through guarded spans or the frame | trusted (the verifier never keys vector state with the general registers) |
 
-| Apple M-series extensions (ARMv8.4–8.6, arm64e) | pointer authentication (`pac*`/`aut*` register, zero-modifier, and `sp`/`lr` forms, `xpac*`, `pacga`, `retaa`/`retab`, `braa`/`brab`/`blraa`/`blrab` and z forms), `bti`, `sb`, `dgh`, `wfet`/`wfit`, FlagM/FlagM2 (`setf8 setf16 rmif axflag xaflag`), RCpc2 (`ldapur*`/`stlur*`), FP16 scalar arithmetic on the `h` view, DotProd (`sdot udot`), I8MM (`smmla ummla usmmla usdot sudot`), BF16 (`bfdot bfmmla bfmlalb bfmlalt bfcvt bfcvtn bfcvtn2`), FHM (`fmlal fmlsl` and `2` forms), FCMA (`fcadd fcmla`, rotations validated), JSCVT (`fjcvtzs`), FRINTTS (`frint32z/x frint64z/x`), crypto (`aes* sha1* sha256* sha512* eor3 rax1 xar bcax pmull pmull2` with the `1q` arrangement), scalar NEON integer forms on `b`/`h`/`s`/`d` | checked (`paciasp`-style link-register signing is transparent to the callee-saved discipline; authenticated returns and indirect transfers follow the `ret`/`br`/`blr` rules); trusted |
+| Apple M-series extensions (ARMv8.4–8.6, arm64e) | pointer authentication (`pac*`/`aut*` register, zero-modifier, and `sp`/`lr` forms, `xpac*`, `pacga`, `retaa`/`retab`, `eretaa`/`eretab`, `braa`/`brab`/`blraa`/`blrab` and z forms, `ldraa`/`ldrab`), `bti`, `sb`, `dgh`, `wfet`/`wfit`, FlagM/FlagM2 (`setf8 setf16 rmif axflag xaflag`), RCpc2 (`ldapur*`/`stlur*`), FP16 scalar arithmetic on the `h` view, DotProd (`sdot udot`), I8MM (`smmla ummla usmmla usdot sudot`), BF16 (`bfdot bfmmla bfmlalb bfmlalt bfcvt bfcvtn bfcvtn2`), FHM (`fmlal fmlsl` and `2` forms), FCMA (`fcadd fcmla`, rotations validated), JSCVT (`fjcvtzs`), FRINTTS (`frint32z/x frint64z/x`), crypto (`aes* sha1* sha256* sha512* eor3 rax1 xar bcax pmull pmull2` with the `1q` arrangement), scalar NEON integer forms on `b`/`h`/`s`/`d` | checked (`paciasp`-style link-register signing is transparent to the callee-saved discipline; authenticated returns and indirect transfers follow the `ret`/`br`/`blr` rules); trusted |
 
 The bitvector verifier does not model floating-point or vector values: any
 body touching a vector register is trusted per §5 and says so. What the
 table does not cover, by design: SVE and SME (absent from M-series), and the
 system-register namespace beyond `mrs`/`msr` (any register name is
 accepted under `system`).
+
+**Grounding the model in the hardware and in Arm's specification.** The
+verifier's semantics are a reading of the Arm manual, transliterated into
+Lean (`Oak.AssemblerSemantics`) and Go. The **silicon differential**
+(`asm/silicon_test.go`) executes every modeled register-level instruction
+body natively on the host's AArch64 core — pinned-register inline asm over a
+deterministic operand set of boundary values and a generator — and requires
+bit-for-bit agreement with the executor's term semantics: 181 bodies (every
+data-processing form, every condition code after `cmp`/`adds`/`subs`/`tst`,
+`ccmp`/`ccmn` chains, carry chains, multiplies, division, bit fields, bit
+manipulation, extends, wide moves, shifted and extended operands) × 60
+inputs agree. **Arm's ASL primitives, transliterated and proved
+(`Oak.ArmASL`).** The shared pseudocode functions the semantics rest on are
+transliterated into Lean from the Sail model of Armv8.5-A that Arm and the
+REMS group generated from Arm's own ASL (`sail-arm`, BSD-3-Clause-Clear),
+with the Sail text quoted beside each definition, and our definitions are
+proved equal to them: `AddWithCarry` — the `cmp`/`subs` form is `l - r`
+and the `adds` form `l + r` (`AddWithCarry_sub_result`/`_add_result`); its
+N, Z, and C flags are our `flagsOf`/`addFlagsOf` at every width
+(`subFlags_n/z/c`, `addFlags_n/z/c` — C is the "no borrow" reading, `r ≤
+l`), and V — Arm's `SInt` overflow against our sign-bit formula — is
+checked exhaustively by the kernel at width 5 and by the silicon
+differential at 32 and 64 bits; `ConditionHolds` on the A64 condition-code
+encodings is our `Cond.holds` for every code and every flag pattern
+(`holds_eq_ConditionHolds`); the conditional-select family is Arm's
+`integer_conditional_select` with its `else_inv`/`else_inc` switches
+(`csel_asl`, `csinc_asl`, `csinv_asl`, `csneg_asl`); `ccmp`'s flags are
+Arm's `integer_conditional_compare` (`ccmp_asl_n`); `tst`'s flags are the
+logical-result flags (`tst_asl`); `HighestSetBit`/`CountLeadingZeroBits`
+are stated with `clz_zero`, and `udiv` by zero is zero as Arm specifies.
+The chain is now: Arm's ASL ≡ `Oak.ArmASL` ≡ `Oak.AssemblerSemantics`
+(proved) ≡ the Go executor (transliteration, checked against the silicon).
+**The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
+The same Sail model carries Arm's A64 decode tree as one clause per
+encoding class — a 32-bit pattern of fixed bits and fields, and the decode
+function it dispatches to. The audit walks every clause, draws encodings
+from its pattern (the free bits clear, set, and pseudo-randomly filled from
+a fixed seed), and asks the host LLVM disassembler, configured for the
+Apple M4, which mnemonic each defined encoding spells; the disassembler is
+the encoding-to-text oracle only, the classes come from Arm's tree. Every
+mnemonic Arm's decoder reaches must be in the table or on the audit's
+exclusion list, each entry with its reason — so an instruction class the
+table silently lacks fails the test by name. On landing the audit reached
+720 mnemonics from 917 classes and found 185 missing; all but seven are now
+in the table (non-temporal and exclusive pairs, pair compare-and-swap, the
+store-only atomics, unprivileged and limited-ordering accesses,
+authenticated loads and exception returns, `adr`/`adrp`, the bit-field
+aliases `bfc`/`bfxil`/`sbfiz` — modeled by the verifier and checked on
+the silicon — the negated widening multiplies, the speculation barriers,
+the prefetch forms, and the NEON/FP families the first pass left out:
+bitwise selects, narrowing high halves, second-half widening forms,
+saturating doubling multiplies, rounding shifts, absolute compares,
+reciprocal estimates and steps, FP conditional compares, the inexact
+narrowing conversion, replicating structure loads). Excluded by design:
+the debug-state instructions (`dcps1–3`, `drps`, `hlt`) and the raw `sys`/
+`sysl`, whose aliases (`dc`, `ic`, `tlbi`, `at`) are the table's spelling.
+The audit skips when the model or the disassembler is absent. It audits
+mnemonic coverage, not operand-form completeness: the encodability of each
+operand form is still our reading, checked by the coverage test's samples
+and the executed programs; when Arm's A64 ISA XML is at hand, the
+operand-form derivation follows.
+
+**Sail-to-Lean: the hand transliteration proved against mechanically
+generated Lean (`spec/sail/`).** `spec/sail/arm_primitives.sail` carries
+Arm's Sail text for the primitives the semantics rest on — `AddWithCarry`,
+`ConditionHolds`, `integer_conditional_select`,
+`integer_conditional_compare_register`, `HighestSetBit`,
+`CountLeadingZeroBits`, with `IsZero`/`UInt`/`SInt` from Arm's prelude —
+copied from the Armv8.5-A model with the adaptations listed in the file's
+header (register reads and writes become parameters and results; Arm's
+prelude names are restated over the Sail standard library; none changes a
+computed value). Sail's Lean backend (Sail 0.20.2, `regen.sh`) generates
+`spec/sail/lean/Out.lean` from it, against the Sail Lean support library
+(rems-project/lean-sail, `setup.sh`); the generated files are committed and
+`asm/sail_lean_test.go` requires them to equal a fresh generation. Then
+`spec/sail/lean/Bridge.lean` proves `Oak.ArmASL` equal to the generated
+code: `AddWithCarry_bridge` (result and all four flags, every width ≥ 1),
+`ConditionHolds_bridge` (every code and flag pattern), `conditionalSelect_bridge`,
+`conditionalCompare_bridge`, and `HighestSetBit_bridge`/
+`CountLeadingZeroBits_bridge` (the generated early-return `foreach` loop,
+through the support library's integer-range loop, is our list search at
+every width). With the theorems of `Oak.ArmASL`, the chain is closed
+mechanically: Arm's ASL → Sail (Arm's tooling) → Lean (Sail's backend) ≡
+`Oak.ArmASL` ≡ `Oak.AssemblerSemantics` (proved) ≡ the Go executor
+(checked on the silicon). The bridge is a separate Lake package so the
+main specification builds without the Sail toolchain.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

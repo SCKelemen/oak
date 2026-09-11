@@ -421,8 +421,21 @@ argument; naming that result first does not change its exclusivity semantics.
 Rejected calls do not establish fresh results. Valid nested-call effects are not
 rolled back when a surrounding call is rejected.
 
-Resource reassignment is currently rejected with `OAK-B0112` until destination
-provenance is tracked; it must not retain a stale independent alias class. Unknown
+**Reassignment** of a resource binding is tracked by provenance rather than
+rejected: `alias = h` makes `alias` denote `h`'s authority from that point,
+so a later exclusive pairing of the two names is an alias conflict and
+consuming through either consumes both; `h = open(..)` from an operation
+that returns fresh authority gives `h` a new live class and revives no old
+alias of the class it left; any other resource-valued right-hand side gives
+the name unknown provenance, and later exclusive or consuming use of it
+fails closed. The class a name leaves keeps its state and its other
+aliases. A rebound parameter's entry authority governed its old value, not
+the new one. Shadowing an outer resource binding in an inner block is rejected
+by the no-shadowing rule (`83-modules.md` §7), so an inner binding can never
+touch an outer authority. Across a control-flow join, a name whose
+provenance differs between paths is unknown afterwards, so branches cannot
+manufacture disjointness. (Authority roadmap milestone 3, first increment;
+projections and aggregate writes remain conservative.) Unknown
 provenance and known consumed authority are distinct diagnostic causes. A conflict
 involving an unknown argument must identify that argument, including when it is a
 shared participant paired with a tracked exclusive participant.
@@ -475,9 +488,30 @@ method body is checked under the receiver's entry authority (a borrowed
 receiver cannot be consumed or retained inside the method). In SemIR the
 receiver mode is the `resource.borrow`/`borrow-mut`/`consume` effect with
 the parameter `receiver`. A receiver mode is valid only on a method whose
-receiver type is a resource type. Contracts on function *types* (so that a
-borrowed-function requirement can reject a consuming implementation) and
-imported or sealed signatures are the remaining boundaries of milestone 2.
+receiver type is a resource type.
+
+**Contracts on function types.** A function-typed parameter may carry a
+**callable contract**: the resource modes (and fresh-return fact) required
+of any function value passed for it, declared beside the parameter modes of
+the enclosing callable. At a call, the function value passed must carry
+that contract by **exact normalized agreement** — a consuming function does
+not satisfy a borrowed requirement, a function with no contract does not
+satisfy a requirement with any mode, and a value of unknown provenance
+satisfies none; mismatches are `OAK-B0116`, and the rejected call has not
+occurred. Inside the callee, a call through the contracted parameter uses
+the declared contract: `op(h)` borrows or consumes exactly as declared, and
+forwarding `op` to another contracted position compares the two contracts.
+In SemIR the requirement is the `resource.callable-borrow`,
+`callable-borrow-mut`, `callable-consume` (`arg:N`, `param:M`) and
+`callable-return-fresh` (`arg:N`) effects. Nested callable contracts
+(functions of functions) and ownership variance are not admitted until
+their substitutability laws are specified.
+
+Imports and sealing cannot erase modes: a protocol declared in one package
+(`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the
+program's internal names, so the same contract governs every importer's
+calls — qualified, open, selective, or through a sealed signature — and the
+diagnostics name the qualified spelling.
 
 The callable-boundary audit and proposed result provenance/lifetime relationships
 are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).
@@ -508,6 +542,12 @@ Buffer[CpuOwned]
 ```
 
 CPU code cannot safely access a device-owned buffer because it lacks the corresponding authority/state, not because the pointer has disappeared.
+
+The first step toward this is implemented: an inbound buffer borrow
+(`92-ffi.md` §2.7) lets an `unsafe` block view or write runtime-owned memory
+for the block's extent under a stated contract. The owning `Buffer` record
+that carries a foreign allocation across calls remains the increment after
+runtime-sized arenas.
 
 These transitions combine protocol/typestate refinement with consumption: the previous state value is invalid after transfer, while the returned value carries the new custody state.
 

@@ -34,6 +34,12 @@ func init() {
 		add(name, instructionSpec{forms: []form{{opNone}}})
 	}
 	add("pacga", instructionSpec{forms: []form{{opX, opX, opX}}})
+	for _, name := range []string{"ldraa", "ldrab"} {
+		add(name, instructionSpec{forms: []form{{opX, opMem}}, memory: true})
+	}
+	for _, name := range []string{"eretaa", "eretab"} {
+		add(name, instructionSpec{forms: []form{{opNone}}, branch: branchReturn, system: true})
+	}
 	for _, name := range []string{"retaa", "retab"} {
 		add(name, instructionSpec{forms: []form{{opNone}}, branch: branchReturn})
 	}

@@ -103,6 +103,19 @@ func resourceParametersFromSemIR(semantics semir.ResourceTransitionSemantics) []
 	for _, index := range semantics.Consumes {
 		parameters = append(parameters, ResourceParameterDeclaration{Index: index, Mode: ResourceParameterConsumed})
 	}
+	for _, callable := range semantics.Callables {
+		contract := &ResourceCallableContract{ReturnsFresh: callable.ReturnsFresh}
+		for _, index := range callable.Borrowed {
+			contract.Parameters = append(contract.Parameters, ResourceParameterDeclaration{Index: index, Mode: ResourceParameterBorrowed})
+		}
+		for _, index := range callable.BorrowedMut {
+			contract.Parameters = append(contract.Parameters, ResourceParameterDeclaration{Index: index, Mode: ResourceParameterBorrowedMut})
+		}
+		for _, index := range callable.Consumes {
+			contract.Parameters = append(contract.Parameters, ResourceParameterDeclaration{Index: index, Mode: ResourceParameterConsumed})
+		}
+		parameters = append(parameters, ResourceParameterDeclaration{Index: callable.Argument, Callable: normalizeCallableContract(contract)})
+	}
 	sort.Slice(parameters, func(i, j int) bool { return parameters[i].Index < parameters[j].Index })
 	return parameters
 }
@@ -141,6 +154,16 @@ func sameResourceOperation(left, right ResourceOperation) bool {
 func sameResourceTransitionSemantics(left, right semir.ResourceTransitionSemantics) bool {
 	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver {
 		return false
+	}
+	if len(left.Callables) != len(right.Callables) {
+		return false
+	}
+	for i := range left.Callables {
+		l, r := left.Callables[i], right.Callables[i]
+		if l.Argument != r.Argument || l.ReturnsFresh != r.ReturnsFresh ||
+			!sameIntSlice(l.Borrowed, r.Borrowed) || !sameIntSlice(l.BorrowedMut, r.BorrowedMut) || !sameIntSlice(l.Consumes, r.Consumes) {
+			return false
+		}
 	}
 	return sameIntSlice(left.Borrowed, right.Borrowed) &&
 		sameIntSlice(left.BorrowedMut, right.BorrowedMut) &&

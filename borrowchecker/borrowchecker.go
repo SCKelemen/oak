@@ -964,6 +964,24 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 		bc.checkExpression(arg, env)
 	}
 
+	// An inbound buffer borrow (docs/spec/92-ffi.md section 2.7): the
+	// binding borrows a foreign owner that lives exactly as long as the
+	// enclosing block, so the view or span is dropped at the block's end
+	// and cannot escape it, and the assumption the program makes about the
+	// runtime's memory is recorded where every other unsafe assumption is.
+	if member, _, isForeign := typechecker.ForeignBorrowCall(call); isForeign && targetVar != "" {
+		owner := "$foreign:" + targetVar
+		if member == "borrow" {
+			bc.createViewBorrowWithRegion(owner, targetVar, nil, call)
+		} else {
+			bc.createSpanBorrowWithRegion(owner, targetVar, nil, call)
+		}
+		d := bc.reportUnsafeAssumption(call,
+			fmt.Sprintf("foreign buffer contract assumed for %q: the pointer addresses the given count of elements, valid and unaliased for writes until the block ends", targetVar),
+			targetVar, nil, "", nil)
+		d.AddNote("the assumption is the binding author's, as for an extern prototype (docs/spec/92-ffi.md section 2.7); indexing stays bounds-checked against the count")
+		return
+	}
 	// 2. Then apply borrow-sensitive builtins
 	// Arguments are already validated, so we can safely create borrows
 	if ident, ok := call.Function.(*ast.Identifier); ok {

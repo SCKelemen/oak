@@ -49,6 +49,7 @@ import Oak.LayoutSpec
 import Oak.FieldTags
 import Oak.Assembler
 import Oak.AssemblerSemantics
+import Oak.ArmASL
 import Oak.Extents
 import Oak.RecordShape
 import Oak.RecordShapeRefinement

@@ -45,10 +45,24 @@ func (mode ResourceParameterMode) String() string {
 }
 
 // ResourceParameterDeclaration assigns one resource-authority mode to a
-// zero-based callable parameter.
+// zero-based callable parameter, or — for a function-typed parameter — the
+// callable contract any function value passed for it must carry
+// (docs/spec/50-borrowing.md section 9, contracts on function types).
+// Exactly one of Mode and Callable is set.
 type ResourceParameterDeclaration struct {
-	Index int
-	Mode  ResourceParameterMode
+	Index    int
+	Mode     ResourceParameterMode
+	Callable *ResourceCallableContract
+}
+
+// ResourceCallableContract is the contract a function-typed parameter
+// requires of the function values passed for it: the modes of the
+// callable's own resource parameters and whether it returns fresh
+// authority. Agreement is exact after normalization; an uncontracted or
+// unknown function value does not satisfy a contract with any mode.
+type ResourceCallableContract struct {
+	Parameters   []ResourceParameterDeclaration
+	ReturnsFresh bool
 }
 
 // ResourceTransitionDeclaration binds one protocol-local transition label to
@@ -90,8 +104,9 @@ type ResolvedResourceProtocol struct {
 }
 
 type ResolvedResourceParameter struct {
-	Index int
-	Mode  ResourceParameterMode
+	Index    int
+	Mode     ResourceParameterMode
+	Callable *ResourceCallableContract
 }
 
 type ResolvedResourceTransition struct {
@@ -322,6 +337,60 @@ func (tc *TypeChecker) templateSignature(name string) (*FunctionType, bool) {
 	return function, true
 }
 
+// validateCallableContract checks a function-typed parameter's required
+// contract against that function type: every marked index is a parameter
+// of resource type, and a fresh return names a resource result.
+func validateCallableContract(callable string, index int, contract *ResourceCallableContract, function *FunctionType, resourceTypes map[string]bool) error {
+	seen := make(map[int]bool)
+	for _, inner := range contract.Parameters {
+		if inner.Callable != nil {
+			return fmt.Errorf("resource callable %q argument %d: nested callable contracts are not supported", callable, index)
+		}
+		if inner.Mode == ResourceParameterUnspecified || inner.Mode > ResourceParameterConsumed {
+			return fmt.Errorf("resource callable %q argument %d: callable contract parameter %d has invalid mode %d", callable, index, inner.Index, inner.Mode)
+		}
+		if inner.Index < 0 || inner.Index >= len(function.Parameters) {
+			return fmt.Errorf("resource callable %q argument %d: callable contract marks parameter %d outside the function type's %d parameters", callable, index, inner.Index, len(function.Parameters))
+		}
+		if seen[inner.Index] {
+			return fmt.Errorf("resource callable %q argument %d: callable contract marks parameter %d twice", callable, index, inner.Index)
+		}
+		seen[inner.Index] = true
+		if !resourceTypes[nominalTypeName(function.Parameters[inner.Index])] {
+			return fmt.Errorf("resource callable %q argument %d: callable contract parameter %d has non-resource type %s", callable, index, inner.Index, function.Parameters[inner.Index])
+		}
+	}
+	if contract.ReturnsFresh && !resourceTypes[nominalTypeName(function.ReturnType)] {
+		return fmt.Errorf("resource callable %q argument %d: callable contract marks a fresh return but the function type returns %s", callable, index, function.ReturnType)
+	}
+	return nil
+}
+
+// normalizeCallableContract sorts a callable contract's parameters by index.
+func normalizeCallableContract(contract *ResourceCallableContract) *ResourceCallableContract {
+	out := &ResourceCallableContract{ReturnsFresh: contract.ReturnsFresh}
+	out.Parameters = append(out.Parameters, contract.Parameters...)
+	sort.Slice(out.Parameters, func(i, j int) bool { return out.Parameters[i].Index < out.Parameters[j].Index })
+	return out
+}
+
+// sameCallableContract is exact normalized agreement of two callable
+// contracts; nil equals nil only.
+func sameCallableContract(left, right *ResourceCallableContract) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	if left.ReturnsFresh != right.ReturnsFresh || len(left.Parameters) != len(right.Parameters) {
+		return false
+	}
+	for i := range left.Parameters {
+		if left.Parameters[i].Index != right.Parameters[i].Index || left.Parameters[i].Mode != right.Parameters[i].Mode {
+			return false
+		}
+	}
+	return true
+}
+
 func resolveResourceParameters(
 	transition ResourceTransitionDeclaration,
 	function *FunctionType,
@@ -350,6 +419,27 @@ func resolveResourceParameters(
 	}
 
 	for _, parameter := range transition.Parameters {
+		if parameter.Callable != nil {
+			if parameter.Mode != ResourceParameterUnspecified {
+				return nil, nil, fmt.Errorf("resource callable %q argument %d has both a resource mode and a callable contract", transition.Callable, parameter.Index)
+			}
+			if parameter.Index < 0 || parameter.Index >= len(function.Parameters) {
+				return nil, nil, fmt.Errorf("resource callable %q marks argument %d outside its %d parameters", transition.Callable, parameter.Index, len(function.Parameters))
+			}
+			callableType, isFunction := function.Parameters[parameter.Index].(*FunctionType)
+			if !isFunction {
+				return nil, nil, fmt.Errorf("resource callable %q argument %d carries a callable contract but has non-function type %s", transition.Callable, parameter.Index, function.Parameters[parameter.Index])
+			}
+			if err := validateCallableContract(transition.Callable, parameter.Index, parameter.Callable, callableType, resourceTypes); err != nil {
+				return nil, nil, err
+			}
+			if _, exists := seen[parameter.Index]; exists {
+				return nil, nil, fmt.Errorf("resource callable %q argument %d is declared twice", transition.Callable, parameter.Index)
+			}
+			seen[parameter.Index] = ResourceParameterUnspecified
+			parameters = append(parameters, ResolvedResourceParameter{Index: parameter.Index, Callable: normalizeCallableContract(parameter.Callable)})
+			continue
+		}
 		if err := validate(parameter.Index, parameter.Mode); err != nil {
 			return nil, nil, err
 		}
@@ -384,7 +474,8 @@ func sameResolvedCallableResourceSemantics(left, right resolvedCallableResourceS
 		return false
 	}
 	for i := range left.Parameters {
-		if left.Parameters[i] != right.Parameters[i] {
+		if left.Parameters[i].Index != right.Parameters[i].Index || left.Parameters[i].Mode != right.Parameters[i].Mode ||
+			!sameCallableContract(left.Parameters[i].Callable, right.Parameters[i].Callable) {
 			return false
 		}
 	}
