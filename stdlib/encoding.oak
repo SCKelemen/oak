@@ -1,0 +1,394 @@
+// Binary-to-text codecs over explicitly borrowed bytes: hex, base64 (RFC 4648
+// §4/§5), base32 (RFC 4648 §6/§7), and percent-encoding (RFC 3986 §2.1). No
+// allocation. Every transform validates its input and the destination
+// capacity before writing, so a failure leaves the destination unchanged;
+// every `_size` function performs the same validation without writing.
+// Decoders are strict: a character outside the alphabet, a length no encoder
+// produces, misplaced or miscounted padding, and non-zero unused trailing
+// bits are all rejected, so exactly one encoding decodes to each input.
+package encoding
+
+pub EncodingError: type = InvalidCharacter | InvalidLength | InvalidPadding | NonCanonical | DestinationTooSmall | SizeOverflow
+
+pub encoding_error_code: (reason: EncodingError): u32 = reason ?
+ | .InvalidCharacter => u32(1)
+ | .InvalidLength => u32(2)
+ | .InvalidPadding => u32(3)
+ | .NonCanonical => u32(4)
+ | .DestinationTooSmall => u32(5)
+ | .SizeOverflow => u32(6)
+
+pub encoding_ok: (result: Result[u32, EncodingError]): Bool = result ? | .Ok(value) => true | .Err(reason) => false
+pub encoding_value: (result: Result[u32, EncodingError]): u32 = result ? | .Ok(value) => value | .Err(reason) => u32(0)
+pub encoding_failure: (result: Result[u32, EncodingError]): u32 = result ? | .Ok(value) => u32(0) | .Err(reason) => encoding_error_code(reason)
+
+// ---- hex ------------------------------------------------------------------
+
+pub hex_digit: (value: u8, upper: Bool): u8 = value < u8(10) ? value + u8(48) | (upper ? value - u8(10) + u8(65) | value - u8(10) + u8(97))
+
+// 16 for a byte that is not a hex digit.
+pub hex_value: (unit: u8): u32 = unit >= u8(48) && unit <= u8(57) ? u32(unit - u8(48)) | (unit >= u8(65) && unit <= u8(70) ? u32(unit - u8(65)) + u32(10) | (unit >= u8(97) && unit <= u8(102) ? u32(unit - u8(97)) + u32(10) | u32(16)))
+
+pub hex_encoded_size: (length: u32): Result[u32, EncodingError] = length > u32(2147483647) ? .Err(.SizeOverflow) | .Ok(length * u32(2))
+
+pub hex_encode: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, EncodingError] {
+  size: Result[u32, EncodingError] = hex_encoded_size(len(src))
+  size ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    i: u32 = u32(0)
+    while i < len(src) {
+      dst[i * u32(2)] = hex_digit(src[i] >> u8(4), upper)
+      dst[i * u32(2) + u32(1)] = hex_digit(src[i] & u8(15), upper)
+      i = i + u32(1)
+    }
+    .Ok(needed)
+  }
+}
+
+pub hex_decoded_size: (src: []u8): Result[u32, EncodingError] {
+  len(src) % u32(2) != u32(0) ? .Err(.InvalidLength) | {
+    valid: Bool = true
+    i: u32 = u32(0)
+    while i < len(src) && valid {
+      valid = hex_value(src[i]) < u32(16)
+      i = i + u32(1)
+    }
+    valid ? .Ok(len(src) / u32(2)) | .Err(.InvalidCharacter)
+  }
+}
+
+pub hex_decode: (dst: [*]u8, src: []u8): Result[u32, EncodingError] {
+  size: Result[u32, EncodingError] = hex_decoded_size(src)
+  size ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    i: u32 = u32(0)
+    while i < needed {
+      dst[i] = u8_trunc_u32((hex_value(src[i * u32(2)]) << u32(4)) | hex_value(src[i * u32(2) + u32(1)]))
+      i = i + u32(1)
+    }
+    .Ok(needed)
+  }
+}
+
+// ---- base64 ---------------------------------------------------------------
+
+// The symbol for a 6-bit value in the standard (§4) or URL-safe (§5) alphabet.
+pub base64_symbol: (value: u32, url: Bool): u8 = value < u32(26) ? u8(65) + u8_trunc_u32(value) | (value < u32(52) ? u8(97) + u8_trunc_u32(value - u32(26)) | (value < u32(62) ? u8(48) + u8_trunc_u32(value - u32(52)) | (value == u32(62) ? (url ? u8(45) | u8(43)) | (url ? u8(95) | u8(47)))))
+
+// 64 for a byte outside the chosen alphabet.
+pub base64_value: (unit: u8, url: Bool): u32 = unit >= u8(65) && unit <= u8(90) ? u32(unit - u8(65)) | (unit >= u8(97) && unit <= u8(122) ? u32(unit - u8(97)) + u32(26) | (unit >= u8(48) && unit <= u8(57) ? u32(unit - u8(48)) + u32(52) | (unit == (url ? u8(45) | u8(43)) ? u32(62) | (unit == (url ? u8(95) | u8(47)) ? u32(63) | u32(64)))))
+
+pub base64_encoded_size: (length: u32, pad: Bool): Result[u32, EncodingError] {
+  length > u32(3221225469) ? .Err(.SizeOverflow) | {
+    groups: u32 = length / u32(3)
+    rest: u32 = length % u32(3)
+    tail: u32 = rest == u32(0) ? u32(0) | (pad ? u32(4) | rest + u32(1))
+    .Ok(groups * u32(4) + tail)
+  }
+}
+
+pub base64_encode: (dst: [*]u8, src: []u8, url: Bool, pad: Bool): Result[u32, EncodingError] {
+  size: Result[u32, EncodingError] = base64_encoded_size(len(src), pad)
+  size ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    i: u32 = u32(0)
+    out: u32 = u32(0)
+    while i + u32(3) <= len(src) {
+      word: u32 = (u32(src[i]) << u32(16)) | (u32(src[i + u32(1)]) << u32(8)) | u32(src[i + u32(2)])
+      dst[out] = base64_symbol(word >> u32(18), url)
+      dst[out + u32(1)] = base64_symbol((word >> u32(12)) & u32(63), url)
+      dst[out + u32(2)] = base64_symbol((word >> u32(6)) & u32(63), url)
+      dst[out + u32(3)] = base64_symbol(word & u32(63), url)
+      i = i + u32(3)
+      out = out + u32(4)
+    }
+    rest: u32 = len(src) - i
+    rest == u32(1) ? {
+      word1: u32 = u32(src[i]) << u32(16)
+      dst[out] = base64_symbol(word1 >> u32(18), url)
+      dst[out + u32(1)] = base64_symbol((word1 >> u32(12)) & u32(63), url)
+      pad ? { dst[out + u32(2)] = u8(61); dst[out + u32(3)] = u8(61) }
+    }
+    rest == u32(2) ? {
+      word2: u32 = (u32(src[i]) << u32(16)) | (u32(src[i + u32(1)]) << u32(8))
+      dst[out] = base64_symbol(word2 >> u32(18), url)
+      dst[out + u32(1)] = base64_symbol((word2 >> u32(12)) & u32(63), url)
+      dst[out + u32(2)] = base64_symbol((word2 >> u32(6)) & u32(63), url)
+      pad ? { dst[out + u32(3)] = u8(61) }
+    }
+    .Ok(needed)
+  }
+}
+
+// Symbols before any padding: trailing '=' is counted, '=' anywhere else and
+// a padding count no encoder produces are rejected.
+base64_unpadded_length: (src: []u8): Result[u32, EncodingError] {
+  pads: u32 = u32(0)
+  while pads < len(src) && pads < u32(2) && src[len(src) - u32(1) - pads] == u8(61) { pads = pads + u32(1) }
+  body: u32 = len(src) - pads
+  misplaced: Bool = false
+  i: u32 = u32(0)
+  while i < body && !misplaced {
+    misplaced = src[i] == u8(61)
+    i = i + u32(1)
+  }
+  rest: u32 = body % u32(4)
+  bad_pads: Bool = pads > u32(0) && (len(src) % u32(4) != u32(0) || rest == u32(0) || rest == u32(1))
+  misplaced || bad_pads ? .Err(.InvalidPadding) | .Ok(body)
+}
+
+pub base64_decoded_size: (src: []u8, url: Bool): Result[u32, EncodingError] {
+  stripped: Result[u32, EncodingError] = base64_unpadded_length(src)
+  stripped ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(body) => body % u32(4) == u32(1) ? .Err(.InvalidLength) | {
+    valid: Bool = true
+    i: u32 = u32(0)
+    while i < body && valid {
+      valid = base64_value(src[i], url) < u32(64)
+      i = i + u32(1)
+    }
+    rest: u32 = body % u32(4)
+    last: u32 = body == u32(0) ? u32(0) | base64_value(src[body - u32(1)], url)
+    canonical: Bool = rest == u32(0) || (rest == u32(2) && (last & u32(15)) == u32(0)) || (rest == u32(3) && (last & u32(3)) == u32(0))
+    !valid ? .Err(.InvalidCharacter) | (!canonical ? .Err(.NonCanonical) | .Ok((body / u32(4)) * u32(3) + (rest == u32(0) ? u32(0) | rest - u32(1))))
+  }
+}
+
+pub base64_decode: (dst: [*]u8, src: []u8, url: Bool): Result[u32, EncodingError] {
+  size: Result[u32, EncodingError] = base64_decoded_size(src, url)
+  size ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    body: u32 = (needed / u32(3)) * u32(4) + (needed % u32(3) == u32(0) ? u32(0) | needed % u32(3) + u32(1))
+    i: u32 = u32(0)
+    out: u32 = u32(0)
+    while i + u32(4) <= body {
+      word: u32 = (base64_value(src[i], url) << u32(18)) | (base64_value(src[i + u32(1)], url) << u32(12)) | (base64_value(src[i + u32(2)], url) << u32(6)) | base64_value(src[i + u32(3)], url)
+      dst[out] = u8_trunc_u32(word >> u32(16))
+      dst[out + u32(1)] = u8_trunc_u32((word >> u32(8)) & u32(255))
+      dst[out + u32(2)] = u8_trunc_u32(word & u32(255))
+      i = i + u32(4)
+      out = out + u32(3)
+    }
+    rest: u32 = body - i
+    rest == u32(2) ? {
+      word2: u32 = (base64_value(src[i], url) << u32(18)) | (base64_value(src[i + u32(1)], url) << u32(12))
+      dst[out] = u8_trunc_u32(word2 >> u32(16))
+    }
+    rest == u32(3) ? {
+      word3: u32 = (base64_value(src[i], url) << u32(18)) | (base64_value(src[i + u32(1)], url) << u32(12)) | (base64_value(src[i + u32(2)], url) << u32(6))
+      dst[out] = u8_trunc_u32(word3 >> u32(16))
+      dst[out + u32(1)] = u8_trunc_u32((word3 >> u32(8)) & u32(255))
+    }
+    .Ok(needed)
+  }
+}
+
+// ---- base32 ---------------------------------------------------------------
+
+// The symbol for a 5-bit value in the standard (§6) or base32hex (§7) alphabet.
+pub base32_symbol: (value: u32, hex: Bool): u8 = hex ? (value < u32(10) ? u8(48) + u8_trunc_u32(value) | u8(65) + u8_trunc_u32(value - u32(10))) | (value < u32(26) ? u8(65) + u8_trunc_u32(value) | u8(50) + u8_trunc_u32(value - u32(26)))
+
+// 32 for a byte outside the chosen alphabet; lowercase letters are accepted.
+pub base32_value: (unit: u8, hex: Bool): u32 {
+  upper: u8 = unit >= u8(97) && unit <= u8(122) ? unit - u8(32) | unit
+  hex ? (upper >= u8(48) && upper <= u8(57) ? u32(upper - u8(48)) | (upper >= u8(65) && upper <= u8(86) ? u32(upper - u8(65)) + u32(10) | u32(32))) |
+  (upper >= u8(65) && upper <= u8(90) ? u32(upper - u8(65)) | (upper >= u8(50) && upper <= u8(55) ? u32(upper - u8(50)) + u32(26) | u32(32)))
+}
+
+// Symbols a partial final group of `rest` bytes (1..4) occupies.
+base32_partial: (rest: u32): u32 = rest == u32(1) ? u32(2) | (rest == u32(2) ? u32(4) | (rest == u32(3) ? u32(5) | u32(7)))
+
+// Bytes a partial final group of `symbols` symbols (2, 4, 5, 7) carries.
+base32_partial_bytes: (symbols: u32): u32 = symbols == u32(2) ? u32(1) | (symbols == u32(4) ? u32(2) | (symbols == u32(5) ? u32(3) | (symbols == u32(7) ? u32(4) | u32(0))))
+
+pub base32_encoded_size: (length: u32, pad: Bool): Result[u32, EncodingError] {
+  length > u32(2684354555) ? .Err(.SizeOverflow) | {
+    groups: u32 = length / u32(5)
+    rest: u32 = length % u32(5)
+    tail: u32 = rest == u32(0) ? u32(0) | (pad ? u32(8) | base32_partial(rest))
+    .Ok(groups * u32(8) + tail)
+  }
+}
+
+pub base32_encode: (dst: [*]u8, src: []u8, hex: Bool, pad: Bool): Result[u32, EncodingError] {
+  size: Result[u32, EncodingError] = base32_encoded_size(len(src), pad)
+  size ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    i: u32 = u32(0)
+    out: u32 = u32(0)
+    while i < len(src) {
+      take: u32 = len(src) - i < u32(5) ? len(src) - i | u32(5)
+      word: u64 = u64(0)
+      k: u32 = u32(0)
+      while k < u32(5) {
+        word = (word << u64(8)) | (k < take ? u64(src[i + k]) | u64(0))
+        k = k + u32(1)
+      }
+      symbols: u32 = take == u32(5) ? u32(8) | base32_partial(take)
+      s: u32 = u32(0)
+      while s < u32(8) {
+        s < symbols ? { dst[out + s] = base32_symbol(u32_trunc_u64((word >> u64(u32(35) - s * u32(5))) & u64(31)), hex) } |
+        pad ? { dst[out + s] = u8(61) }
+        s = s + u32(1)
+      }
+      i = i + take
+      out = out + (take == u32(5) || pad ? u32(8) | symbols)
+    }
+    .Ok(needed)
+  }
+}
+
+base32_unpadded_length: (src: []u8): Result[u32, EncodingError] {
+  pads: u32 = u32(0)
+  while pads < len(src) && pads < u32(6) && src[len(src) - u32(1) - pads] == u8(61) { pads = pads + u32(1) }
+  body: u32 = len(src) - pads
+  misplaced: Bool = false
+  i: u32 = u32(0)
+  while i < body && !misplaced {
+    misplaced = src[i] == u8(61)
+    i = i + u32(1)
+  }
+  rest: u32 = body % u32(8)
+  expected: u32 = rest == u32(0) ? u32(0) | u32(8) - rest
+  bad_pads: Bool = pads > u32(0) && (len(src) % u32(8) != u32(0) || pads != expected)
+  misplaced || bad_pads ? .Err(.InvalidPadding) | .Ok(body)
+}
+
+pub base32_decoded_size: (src: []u8, hex: Bool): Result[u32, EncodingError] {
+  stripped: Result[u32, EncodingError] = base32_unpadded_length(src)
+  stripped ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(body) => {
+    rest: u32 = body % u32(8)
+    rest == u32(1) || rest == u32(3) || rest == u32(6) ? .Err(.InvalidLength) | {
+      valid: Bool = true
+      i: u32 = u32(0)
+      while i < body && valid {
+        valid = base32_value(src[i], hex) < u32(32)
+        i = i + u32(1)
+      }
+      last: u32 = body == u32(0) ? u32(0) | base32_value(src[body - u32(1)], hex)
+      unused: u32 = rest == u32(2) ? u32(3) | (rest == u32(4) ? u32(15) | (rest == u32(5) ? u32(1) | (rest == u32(7) ? u32(7) | u32(0))))
+      !valid ? .Err(.InvalidCharacter) | ((last & unused) != u32(0) ? .Err(.NonCanonical) | .Ok((body / u32(8)) * u32(5) + base32_partial_bytes(rest)))
+    }
+  }
+}
+
+pub base32_decode: (dst: [*]u8, src: []u8, hex: Bool): Result[u32, EncodingError] {
+  size: Result[u32, EncodingError] = base32_decoded_size(src, hex)
+  size ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    tail: u32 = needed % u32(5)
+    body: u32 = (needed / u32(5)) * u32(8) + (tail == u32(0) ? u32(0) | base32_partial(tail))
+    i: u32 = u32(0)
+    out: u32 = u32(0)
+    while i < body {
+      take: u32 = body - i < u32(8) ? body - i | u32(8)
+      word: u64 = u64(0)
+      s: u32 = u32(0)
+      while s < u32(8) {
+        word = (word << u64(5)) | (s < take ? u64(base32_value(src[i + s], hex)) | u64(0))
+        s = s + u32(1)
+      }
+      produced: u32 = take == u32(8) ? u32(5) | base32_partial_bytes(take)
+      k: u32 = u32(0)
+      while k < produced {
+        dst[out + k] = u8_trunc_u32(u32_trunc_u64((word >> u64(u32(32) - k * u32(8))) & u64(255)))
+        k = k + u32(1)
+      }
+      i = i + take
+      out = out + produced
+    }
+    .Ok(needed)
+  }
+}
+
+// ---- percent-encoding -----------------------------------------------------
+
+// RFC 3986 §2.3 unreserved: ALPHA / DIGIT / "-" / "." / "_" / "~".
+pub percent_unreserved: (unit: u8): Bool = (unit >= u8(65) && unit <= u8(90)) || (unit >= u8(97) && unit <= u8(122)) || (unit >= u8(48) && unit <= u8(57)) || unit == u8(45) || unit == u8(46) || unit == u8(95) || unit == u8(126)
+
+percent_kept: (unit: u8, keep: []u8): Bool {
+  found: Bool = percent_unreserved(unit)
+  i: u32 = u32(0)
+  while i < len(keep) && !found {
+    found = keep[i] == unit
+    i = i + u32(1)
+  }
+  found
+}
+
+pub percent_encoded_size: (src: []u8, keep: []u8): Result[u32, EncodingError] {
+  len(src) > u32(1431655765) ? .Err(.SizeOverflow) | {
+    total: u32 = u32(0)
+    i: u32 = u32(0)
+    while i < len(src) {
+      total = total + (percent_kept(src[i], keep) ? u32(1) | u32(3))
+      i = i + u32(1)
+    }
+    .Ok(total)
+  }
+}
+
+pub percent_encode: (dst: [*]u8, src: []u8, keep: []u8): Result[u32, EncodingError] {
+  size: Result[u32, EncodingError] = percent_encoded_size(src, keep)
+  size ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    i: u32 = u32(0)
+    out: u32 = u32(0)
+    while i < len(src) {
+      percent_kept(src[i], keep) ? { dst[out] = src[i]; out = out + u32(1) } | {
+        dst[out] = u8(37)
+        dst[out + u32(1)] = hex_digit(src[i] >> u8(4), true)
+        dst[out + u32(2)] = hex_digit(src[i] & u8(15), true)
+        out = out + u32(3)
+      }
+      i = i + u32(1)
+    }
+    .Ok(needed)
+  }
+}
+
+// A '%' must be followed by two hex digits; anything else is InvalidCharacter.
+pub percent_decoded_size: (src: []u8, plus_as_space: Bool): Result[u32, EncodingError] {
+  total: u32 = u32(0)
+  i: u32 = u32(0)
+  valid: Bool = true
+  while i < len(src) && valid {
+    src[i] == u8(37) ? {
+      valid = len(src) - i >= u32(3) && hex_value(src[i + u32(1)]) < u32(16) && hex_value(src[i + u32(2)]) < u32(16)
+      i = i + u32(3)
+    } | { i = i + u32(1) }
+    total = total + u32(1)
+  }
+  valid ? .Ok(total) | .Err(.InvalidCharacter)
+}
+
+pub percent_decode: (dst: [*]u8, src: []u8, plus_as_space: Bool): Result[u32, EncodingError] {
+  size: Result[u32, EncodingError] = percent_decoded_size(src, plus_as_space)
+  size ?
+   | .Err(reason) => .Err(reason)
+   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    i: u32 = u32(0)
+    out: u32 = u32(0)
+    while i < len(src) {
+      src[i] == u8(37) ? {
+        dst[out] = u8_trunc_u32((hex_value(src[i + u32(1)]) << u32(4)) | hex_value(src[i + u32(2)]))
+        i = i + u32(3)
+      } | {
+        dst[out] = plus_as_space && src[i] == u8(43) ? u8(32) | src[i]
+        i = i + u32(1)
+      }
+      out = out + u32(1)
+    }
+    .Ok(needed)
+  }
+}
