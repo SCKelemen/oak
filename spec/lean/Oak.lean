@@ -88,3 +88,4 @@ import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.RandomLaws
 import Oak.Typestate
 import Oak.IoPort
+import Oak.ProtocolQuorum
