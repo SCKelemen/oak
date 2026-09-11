@@ -633,10 +633,11 @@ func lowerInvocationExpression(expr *ast.InvocationExpression, tc *typechecker.T
 		loweredArgs = append(loweredArgs, lowerExpression(arg, tc))
 	}
 	return &ast.InvocationExpression{
-		BaseNode:  expr.BaseNode,
-		Token:     expr.Token,
-		Function:  lowerExpression(expr.Function, tc),
-		Arguments: loweredArgs,
+		BaseNode:       expr.BaseNode,
+		Token:          expr.Token,
+		Function:       lowerExpression(expr.Function, tc),
+		Arguments:      loweredArgs,
+		ResolvedMethod: expr.ResolvedMethod, // the checker's Type::method resolution rides along
 	}
 }
 

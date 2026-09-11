@@ -1953,17 +1953,38 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Create new environment for function parameters
 	funcEnv := NewEnclosedTypeEnvironment(tc.env)
 
-	// Type check parameters (for anonymous functions, infer from usage)
-	// For now, assume they're all i32 if we can't infer
-	// Note: Type inference for anonymous function parameters is limited
-	// Parameters default to i32 if types cannot be inferred from context
+	// Typed shape (docs/spec/10-syntax.md section 3c): each parameter has
+	// its declared type and the body is checked against the declared
+	// return type, exactly as a function declaration is. Untyped names
+	// keep the historical default of i32; annotate to get anything else.
 	paramTypes := []Type{}
-	for _, param := range fn.Arguments {
-		// Default to i32 for now (type inference would be better)
-		paramType := &PrimitiveType{Name: "i32"}
-		paramTypes = append(paramTypes, paramType)
-		// Store as a monomorphic scheme
-		funcEnv.SetType(param.Value, paramType)
+	typed := len(fn.Parameters) > 0 || fn.ReturnType != nil
+	if typed {
+		for _, param := range fn.Parameters {
+			if param == nil || param.Name == nil || param.Type == nil {
+				tc.addError(fn, "function literal: every typed parameter needs a name and a type")
+				return nil
+			}
+			paramType := tc.parseTypeExpressionInEnv(param.Type, funcEnv)
+			if paramType == nil {
+				return nil
+			}
+			paramTypes = append(paramTypes, paramType)
+			funcEnv.SetType(param.Name.Value, paramType)
+		}
+	} else {
+		for _, param := range fn.Arguments {
+			paramType := &PrimitiveType{Name: "i32"}
+			paramTypes = append(paramTypes, paramType)
+			funcEnv.SetType(param.Value, paramType)
+		}
+	}
+	var declaredReturn Type = &UnitType{}
+	if fn.ReturnType != nil {
+		declaredReturn = tc.parseTypeExpressionInEnv(fn.ReturnType, funcEnv)
+		if declaredReturn == nil {
+			return nil
+		}
 	}
 
 	// Save current environment and switch to function environment
@@ -1973,7 +1994,12 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Type check function body (BlockStatement - check last expression)
 	savedLoopDepth := tc.loopDepth
 	tc.loopDepth = 0
-	returnType := tc.checkBlockExpression(fn.Body)
+	var returnType Type
+	if typed {
+		returnType = tc.checkBlockExpression(fn.Body, declaredReturn)
+	} else {
+		returnType = tc.checkBlockExpression(fn.Body)
+	}
 	tc.loopDepth = savedLoopDepth
 	if returnType == nil {
 		returnType = &UnitType{}
@@ -1981,6 +2007,16 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 
 	// Restore environment
 	tc.env = oldEnv
+
+	if typed && !returnType.Equals(declaredReturn) {
+		if _, unitBody := returnType.(*UnitType); !(unitBody && fn.ReturnType == nil) {
+			tc.addError(fn, "function literal: expected return type %s, got %s", declaredReturn, returnType)
+			return nil
+		}
+	}
+	if typed {
+		returnType = declaredReturn
+	}
 
 	return &FunctionType{
 		Parameters: paramTypes,
@@ -2873,7 +2909,11 @@ func (tc *TypeChecker) checkDotCall(expr *ast.InvocationExpression, access *ast.
 		return nil
 	}
 	if adt, isADT := recvType.(*ADTType); isADT {
-		if _, declared := tc.env.Get(fmt.Sprintf("%s::%s", adt.Name, member.Value)); declared {
+		if key := fmt.Sprintf("%s::%s", adt.Name, member.Value); func() bool { _, declared := tc.env.Get(key); return declared }() {
+			// Record the resolution for the backend: the call stays in its
+			// dotted shape (the receiver is not an argument), and codegen
+			// lowers it to the method's C function.
+			expr.ResolvedMethod = key
 			return tc.checkMethodCall(access.Left, member.Value, expr.Arguments)
 		}
 	}
@@ -4445,6 +4485,12 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 }
 
 func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
+	// A brace block is a scope (docs/spec/10-syntax.md section 4c): names
+	// declared inside it end with it, and sibling blocks may reuse a name.
+	// Assignments still reach the declaring scope through the chain.
+	outerEnv := tc.env
+	tc.env = NewEnclosedTypeEnvironment(outerEnv)
+	defer func() { tc.env = outerEnv }()
 	// Type check all statements in the block. A view/span declaration with
 	// literal bounds establishes its extent for the rest of the block
 	// (typechecker/extents.go); the facts pop with the block.

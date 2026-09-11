@@ -184,6 +184,9 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 					}
 				}
 			}
+			if resourceTransition.Trusted {
+				transition.Effects = append(transition.Effects, semir.ResourceReturnTrusted())
+			}
 			protocol.Transitions = append(protocol.Transitions, transition)
 		}
 		module.Protocols = append(module.Protocols, protocol)

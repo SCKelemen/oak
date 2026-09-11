@@ -107,6 +107,11 @@ type ResourceTransitionDeclaration struct {
 	// parameter indices above never shift. Unspecified for plain functions
 	// and for methods whose receiver carries no contract.
 	Receiver ResourceParameterMode
+	// Trusted marks the result identity (fresh, alias, borrow, or mutable
+	// reborrow) as an assumption the compiler records rather than a claim
+	// it validates against the callable's body — the `via unsafe` boundary
+	// of docs/spec/112-protocols.md section 5. Requires a result identity.
+	Trusted bool
 }
 
 // ResolvedResourceProgram contains only resource facts that have been checked
@@ -150,6 +155,7 @@ type ResolvedResourceTransition struct {
 	BorrowsArguments []int
 	BorrowMutable    bool
 	Receiver         ResourceParameterMode
+	Trusted          bool
 }
 
 type resolvedCallableResourceSemantics struct {
@@ -161,6 +167,7 @@ type resolvedCallableResourceSemantics struct {
 	BorrowsArguments []int
 	BorrowMutable    bool
 	Receiver         ResourceParameterMode
+	Trusted          bool
 }
 
 // ResolveResourceDeclarations resolves internal protocol facts against the
@@ -388,7 +395,10 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 			} else if len(borrows) != 0 {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q names borrowed arguments without marking a borrowed result", transition.Callable)
 			}
-			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh, ReturnsAlias: transition.ReturnsAlias, AliasesArgument: transition.AliasesArgument, ReturnsBorrow: transition.ReturnsBorrow, BorrowsArguments: borrows, BorrowMutable: transition.BorrowMutable, Receiver: transition.Receiver}
+			if transition.Trusted && !transition.ReturnsFresh && !transition.ReturnsAlias && !transition.ReturnsBorrow {
+				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q is marked unsafe (trusted) but declares no result identity to trust", transition.Callable)
+			}
+			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh, ReturnsAlias: transition.ReturnsAlias, AliasesArgument: transition.AliasesArgument, ReturnsBorrow: transition.ReturnsBorrow, BorrowsArguments: borrows, BorrowMutable: transition.BorrowMutable, Receiver: transition.Receiver, Trusted: transition.Trusted}
 			if previous, exists := callableSemantics[transition.Callable]; exists && !sameResolvedCallableResourceSemantics(previous, semantics) {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q has conflicting semantics across protocols", transition.Callable)
 			}
@@ -407,6 +417,7 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				BorrowsArguments: borrows,
 				BorrowMutable:    transition.BorrowMutable,
 				Receiver:         transition.Receiver,
+				Trusted:          transition.Trusted,
 			})
 		}
 		resolved.Protocols = append(resolved.Protocols, protocol)
@@ -586,7 +597,7 @@ func resolveResourceParameters(
 }
 
 func sameResolvedCallableResourceSemantics(left, right resolvedCallableResourceSemantics) bool {
-	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver || len(left.Parameters) != len(right.Parameters) ||
+	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver || len(left.Parameters) != len(right.Parameters) || left.Trusted != right.Trusted ||
 		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) ||
 		left.ReturnsBorrow != right.ReturnsBorrow || (left.ReturnsBorrow && (!sameIndexSet(left.BorrowsArguments, right.BorrowsArguments) || left.BorrowMutable != right.BorrowMutable)) {
 		return false

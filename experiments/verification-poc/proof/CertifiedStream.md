@@ -31,8 +31,13 @@ both agree with the Go oracle and compiled Oak.
 ## Boundary
 
 Whole-stream soundness of this new Lean model is proved. Universal equivalence
-with the concrete Oak executor or the original Lean checker is not proved; that
-correspondence is tested on the corpus. The original `decoded_sound` theorem retains a representation premise;
+with the original Lean checker is not proved; that correspondence is tested on
+the corpus. Equivalence with the compiler's extraction of the Oak stream
+checker is proved later in the series: `ExtractionStream.lean`'s
+`rup_stream_check_spec` (the extracted `rup_stream_check` returns exactly
+`check` on every layout the decoder hands over) and `rup_text_check_sound`
+(the extracted text checker accepts only refutations), documented in
+`docs/spec/95-extraction.md` §6. The original `decoded_sound` theorem retains a representation premise;
 [`InitialDecoder.lean`](InitialDecoder.md) now derives it from successful
 executable range decoding. A failed
 deletion returns no certified state; the exact partial mutation on rejected inputs

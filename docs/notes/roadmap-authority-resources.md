@@ -91,8 +91,10 @@ satisfied only by exact agreement (`OAK-B0116`), and calls through the
 parameter use it (acceptance case 2). **Fourth increment (2026-09-12):**
 `via f(consumed h, borrowed mut receiver)` declares modes in source
 (`112-protocols.md` §5) and, because protocols elaborate with internal
-names, imports and sealing cannot erase them (acceptance case 4). The milestone's acceptance list is covered; still open: a source
-spelling for callable contracts and fresh returns.
+names, imports and sealing cannot erase them (acceptance case 4). The milestone's acceptance list is covered. **Fifth increment
+(2026-09-11):** callable contracts, fresh returns, and methods
+(`via Handle.close(consumed receiver)`) have their source spelling on
+the via line (`112-protocols.md` §5.1).
 
 ## 3. Resource provenance through bindings, projections, control flow
 
@@ -162,8 +164,14 @@ admitted. **Stage (e) (same day):** borrowed values in aggregates: record
 fields hold borrowed results under a destination lifetime check, paths
 carry dependency and permission, copies carry them, records holding
 borrowed fields cannot be passed or returned, arrays stay rejected.
-**Milestone 4 is implemented for opaque resources.** Open: a source
-spelling for all three result identities; contracts for record-typed
+**Milestone 4 is implemented for opaque resources.** **Source spelling
+(2026-09-11):** all three result identities are written on the via line
+(`: alias h`, `: borrow a, b`, `: borrow mut a`; `112-protocols.md` §5.1),
+and `via unsafe` marks a claim trusted — the explicit boundary for
+primitives whose bodies carry no provenance (`50-borrowing.md` §9 "Trusted
+result claims"). `Oak.ResourceResult` models admission, monotonicity,
+narrowing/widening, the caller's classification, callable-contract
+agreement, and the trust boundary. Open: contracts for record-typed
 parameters and results that carry borrowed fields (today they fail
 closed); array element provenance.
 
@@ -285,3 +293,30 @@ user-visible lifetimes; per-resource dropping and cleanup policy;
 partial-move rules; first borrowed aggregate shapes; the extent theory and
 runtime-proof admission surface; parallel numeric reproducibility;
 target-specific device-transfer obligations.
+
+## Asks recorded from the resource work (2026-09-11)
+
+The ml pilot's asks document (`docs/notes/oak-asks.md` in that project)
+and its pitfalls list live outside this repository; the entries below are
+the gaps this workstream kept running into, recorded here so the
+specification branch carries them, and marked as they land.
+
+**Tier 1 — blocking for the resource work to be usable from Oak source**
+
+| Ask | Status |
+| --- | --- |
+| Source spelling for result identities (fresh, alias, borrow, mutable reborrow) and callable contracts on function-typed parameters; methods on via lines | **Landed 2026-09-11** (`112-protocols.md` §5.1) |
+| A trusted boundary for resource primitives: a definition-less declaration needs an asm unit and an extern needs C types, so a cursor over an arena had no honest way to claim a borrow beyond the provenance-free-body rule | **Landed 2026-09-11** as `via unsafe` (trusted result identity, `50-borrowing.md` §9); the provenance-free-body rule stays, and is now proved sound (`fresh_tracked_body_is_borrow_body`) |
+| Method calls on ADT receivers lower to C, so receiver contracts execute compiled | **Landed 2026-09-11** (`90-backend.md` §13; `Oak.MethodMangling`) |
+
+**Tier 2 — ergonomic, hit repeatedly while writing fixtures**
+
+| Ask | Status |
+| --- | --- |
+| A bare block statement `{ ... }` for scoping, now that suspension and dependencies are lexical | **Landed 2026-09-11** (`10-syntax.md` §4c) |
+| Statement lines may begin with `(`, `-`, or `!` | **Landed 2026-09-11**: `(` and `!` already did; `-` joins the F18 rule (`10-syntax.md` §4a; `Oak.StatementBoundary`) |
+| Closure literals take typed parameters and a return annotation | **Landed 2026-09-11** (`10-syntax.md` §3c; lifted to C, `90-backend.md` §9) |
+| One protocol per resource type | Open (`ResolveResourceDeclarations` binds a type to one protocol; several protocols over one type need a conflict rule) |
+| Array elements tracked by provenance | Open (milestone 3; indices are not static) |
+| The `bf16` note cites the bfloat16 convention rather than IEEE | **Fixed 2026-09-11** (`20-types.md` §11.3.1) |
+

@@ -1622,7 +1622,8 @@ theorem rup_text_check_spec (cnf proof : Array UInt8) (hc : cnf.size < UInt32.si
         (if valid then rup_stream_check pool initial sizes refs commands variables fuel else some false) ∧
       (valid = false → layoutBytes (toBytes cnf) (toBytes proof) = none) ∧
       (valid = true → ∃ raw, layoutBytes (toBytes cnf) (toBytes proof) = some raw ∧
-        LayoutRel raw variables pool initial sizes refs commands) := by
+        LayoutRel raw variables pool initial sizes refs commands) ∧
+      pool.size ≤ 4096 ∧ initial.size ≤ 256 ∧ sizes.size ≤ 256 ∧ refs.size ≤ 4096 ∧ commands.size ≤ 256 := by
   obtain ⟨f, rfl⟩ : ∃ f, fuel = f + 1 := ⟨fuel - 1, by omega⟩
   have hsz1 := toUInt32_le_65536 cnf.size hc
   have hsz2 := toUInt32_le_65536 proof.size hp
@@ -1682,7 +1683,7 @@ theorem rup_text_check_spec (cnf proof : Array UInt8) (hc : cnf.size < UInt32.si
       OakText.proofLoop_variables (toBytes proof) _ _ _ _ hmodel4
     refine ⟨s4.valid, s3.variables, s4.pool.extract 0 s4.literals.toNat, s3.initial.extract 0 s3.clauses.toNat,
       s3.sizes.extract 0 s3.clauses.toNat, s4.refs.extract 0 s4.references.toNat,
-      s4.commands.extract 0 s4.count.toNat, ?_, ?_, ?_⟩
+      s4.commands.extract 0 s4.count.toNat, ?_, ?_, ?_, ?_⟩
     · by_cases hval : s4.valid = true
       · simp only [hval, ite_true]
         cases rup_stream_check (s4.pool.extract 0 s4.literals.toNat) (s3.initial.extract 0 s3.clauses.toNat)
@@ -1719,6 +1720,8 @@ theorem rup_text_check_spec (cnf proof : Array UInt8) (hc : cnf.size < UInt32.si
         fun i hi => by
           have hi' : i < p4.commands.length := hi
           rw [extract_getD_cmd _ _ _ (by omega) (by omega)]; exact hcmdpre4 i hi'⟩
+    · -- The arrays stay inside the fixed capacities.
+      refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> rw [extract_size _ _ (by omega)] <;> omega
   · -- A text over the size limit: rejected before anything is scanned.
     have hguard : (decide (cnf.size ≤ 65536) && decide (proof.size ≤ 65536)) = false := by
       rcases Decidable.not_and_iff_or_not.mp hsmall with h | h
@@ -1744,7 +1747,7 @@ theorem rup_text_check_spec (cnf proof : Array UInt8) (hc : cnf.size < UInt32.si
     rw [hrun4']
     simp only [ProofExt.tuple, proofStart, cnfStart, Bool.false_and]
     refine ⟨false, 0, Array.empty, Array.empty, Array.empty, Array.empty, Array.empty, rfl, fun _ => ?_,
-      fun h => absurd h Bool.false_ne_true⟩
+      fun h => absurd h Bool.false_ne_true, Nat.zero_le _, Nat.zero_le _, Nat.zero_le _, Nat.zero_le _, Nat.zero_le _⟩
     -- The model rejects too: the guard fails, both loops return invalid states.
     have hmg : (OakText.guard (toBytes cnf) && OakText.guard (toBytes proof)) = false := by
       unfold OakText.guard
