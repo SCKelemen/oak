@@ -238,6 +238,17 @@ func TestCLIParityCommands(t *testing.T) {
 	if code, out := runCLI(t, vetPackage, []string{filepath.Join(lib, "geometry")}); code != 0 || !strings.Contains(out, "no recorded assumptions") {
 		t.Fatalf("vet clean: %d\n%s", code, out)
 	}
+	// An admitted assumption (85-discipline.md section 7) stays in the vet
+	// listing, marked as admitted, and no longer fails the strict profile.
+	admitted := writeTree(t, map[string]string{
+		"oak.mod":       "module example.com/admitted\nprofile strict\nadmit OAK-D0103\n",
+		"main.oak":      "package main\n\nu := import(\"example.com/admitted/util\")\n\nmain: (): i32 = u.zero()\n",
+		"util/util.oak": "package util\n\npub zero: (): i32 = { i: u32 = 0\n  running: Bool = true\n  while running { i = i + 1\n    running = i < 3 }\n  0 }\n",
+	})
+	code, out = runCLI(t, vetPackage, []string{admitted})
+	if code != 0 || !strings.Contains(out, "OAK-D0103") || !strings.Contains(out, "admitted by oak.mod (`admit OAK-D0103`)") || !strings.Contains(out, "1 recorded assumption") {
+		t.Fatalf("vet admitted: %d\n%s", code, out)
+	}
 	code, out = run(t, "why", "example.com/lib/geometry", app)
 	if code != 0 || !strings.Contains(out, "# example.com/app\nexample.com/app\nexample.com/lib/geometry") {
 		t.Fatalf("why: %d\n%s", code, out)

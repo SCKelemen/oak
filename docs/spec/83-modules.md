@@ -245,6 +245,14 @@ replace example.com/dep => ../dep
   declared `forbids { Memory.Allocate }`. Only the root module's `steady`
   lines apply; the package must belong to this module and the function must
   exist, or the manifest fails (`OAK-M0112`). Repeatable; duplicates fail.
+- `admit <diagnostic-code>` — a recorded assumption this module accepts
+  under the strict profile (`85-discipline.md` section 7): the assumption
+  stays recorded and audited but does not reject this module's packages.
+  Only recorded-assumption codes are admissible (`OAK-B0110`, `OAK-D0102`,
+  `OAK-D0103`); an error code or any other warning fails the manifest
+  (`OAK-M0112`). Admissions apply to the packages of the module whose
+  manifest declares them, never to a dependency's or the root's. Repeatable;
+  duplicates fail.
 
 Unknown directives, duplicates, malformed lines, replaces without a matching
 require, and manifests over 1 MiB fail closed (`OAK-M0112`).

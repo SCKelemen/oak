@@ -382,14 +382,42 @@ func (comp Compilation) gate(phase string, diagnostics []*diagnostic.Diagnostic,
 	}
 	rejecting := diagnosticErrors(diagnostics)
 	for _, d := range diagnostics {
-		if d.Severity == diagnostic.SeverityWarning && comp.profileFor(d.Package, info) == "strict" {
-			rejecting = append(rejecting, d)
+		if d.Severity != diagnostic.SeverityWarning || comp.profileFor(d.Package, info) != "strict" {
+			continue
 		}
+		if comp.admitted(d, info) {
+			// The manifest accepted this assumption: it stays recorded (oak
+			// vet, :obligations, :lean all still see it) and says so.
+			d.Advice = append(d.Advice, diagnostic.Advice{Kind: diagnostic.AdviceNote, Message: fmt.Sprintf("admitted by oak.mod (`admit %s`); the strict profile accepts it as a stated assumption", d.Code)})
+			continue
+		}
+		rejecting = append(rejecting, d)
 	}
 	if len(rejecting) != 0 {
 		return &DiagnosticError{Phase: phase, Diagnostics: rejecting}
 	}
 	return nil
+}
+
+// admitted reports whether the module owning the diagnostic's package admits
+// its code (`admit <code>` in that module's oak.mod, 85-discipline.md section
+// 7). Admissions are per module, like profiles: a dependency's manifest
+// speaks for its own packages, the root's for the root's. Single-source
+// builds and the standard library have no manifest and admit nothing.
+func (comp Compilation) admitted(d *diagnostic.Diagnostic, info *ModuleInfo) bool {
+	if info == nil || d == nil {
+		return false
+	}
+	module := info.RootModule
+	if d.Package != "" && d.Package != info.RootPackage {
+		if info.StandardLibrary[d.Package] {
+			return false
+		}
+		if owner, owned := info.ModuleOf[d.Package]; owned {
+			module = owner
+		}
+	}
+	return info.ModuleAdmits[module][d.Code]
 }
 
 // profileFor resolves the discipline profile a package is judged under.

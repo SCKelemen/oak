@@ -156,6 +156,11 @@ type ModuleInfo struct {
 	// ModuleProfiles maps a module path to the discipline profile its
 	// manifest declares ("" when it declares none).
 	ModuleProfiles map[string]string
+	// ModuleAdmits maps a module path to the recorded-assumption codes its
+	// manifest admits (`admit <code>`, 85-discipline.md section 7): under
+	// the strict profile these stay recorded but do not reject the module's
+	// own packages.
+	ModuleAdmits map[string]map[string]bool
 	// RootModule is the module path of the build root ("" outside a module).
 	RootModule string
 	// Steady maps the internal name of each steady-state entry point the
@@ -1938,6 +1943,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	// resolveImportDir applies when locating the directory.
 	moduleOf := map[string]string{}
 	moduleProfiles := map[string]string{}
+	moduleAdmits := map[string]map[string]bool{}
 	standardLibrary := map[string]bool{}
 	for _, path := range order {
 		pkg := l.packages[path]
@@ -1952,6 +1958,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 		if module, ok := l.moduleOfPath(importPath); ok {
 			moduleOf[path] = module.Manifest.Path
 			moduleProfiles[module.Manifest.Path] = module.Manifest.Profile
+			moduleAdmits[module.Manifest.Path] = admittedCodes(module.Manifest)
 		}
 	}
 	imports := map[string][]string{}
@@ -1969,6 +1976,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	if l.root != nil {
 		rootModule = l.root.Manifest.Path
 		moduleProfiles[rootModule] = l.root.Manifest.Profile
+		moduleAdmits[rootModule] = admittedCodes(l.root.Manifest)
 		// Steady-state entry points must be functions of packages this
 		// module contains; the check happens here, where every package and
 		// its exports are known, so an entry that names nothing fails the
@@ -1995,7 +2003,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	for path, pkg := range l.packages {
 		exports[path] = pkg.Exports
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady, Imports: imports}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, ModuleAdmits: moduleAdmits, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady, Imports: imports}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,
@@ -2314,4 +2322,16 @@ func (l *moduleLoader) packageOfBinding(binding *importBinding) *loadedPackage {
 func dependencySpelling(canonical, path string) string {
 	text := modules.DemangleText(canonical)
 	return strings.ReplaceAll(text, path+".", "")
+}
+
+// admittedCodes is the set of recorded-assumption codes a manifest admits.
+func admittedCodes(manifest modules.Manifest) map[string]bool {
+	if len(manifest.Admits) == 0 {
+		return nil
+	}
+	codes := make(map[string]bool, len(manifest.Admits))
+	for _, code := range manifest.Admits {
+		codes[code] = true
+	}
+	return codes
 }

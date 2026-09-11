@@ -225,6 +225,26 @@ assumptions (`OAK-B0110`) and tail-recursion obligations (`OAK-D0102`) — to
 a rejection. Auditable assumptions remain expressible; silently accumulated
 ones do not.
 
+**Admitted assumptions.** A module may state, once and in the open, which
+recorded assumptions it accepts: `admit <code>` in its `oak.mod`
+(`83-modules.md` section 4.1). Under the strict profile an admitted
+assumption is not promoted to a rejection; everything else about it is
+unchanged — it is still recorded, `oak vet` and the REPL's `:obligations`
+still list it (marked "admitted by oak.mod"), and `:lean` still states it,
+so the audit trail is exactly as long as before and the acceptance is a
+reviewable line in the manifest rather than a weaker profile. Only the
+recorded assumptions are admissible — `OAK-B0110` (an unsafe block's
+writable-disjointness or foreign-buffer contract, `92-ffi.md` section 2.7),
+`OAK-D0102` (a tail-recursion obligation), `OAK-D0103` (a loop without a
+static bound); an error code, or a warning that is not an assumption, fails
+the manifest (`OAK-M0112`). Admissions are per module, like profiles: a
+dependency's manifest speaks for its own packages and the root's for the
+root's; the command-line `-profile` flag grants none, and a single-source
+build has no manifest and admits nothing. The motivating case (ml finding
+F22): a strict module that borrows runtime memory through `c.borrow` records
+the foreign-buffer contract as `OAK-B0110` on every borrow, so without an
+admission no strict module could use tier 4 of the FFI at all.
+
 ## 8. Formal verification targets
 
 - rank certificate bounds stack depth (`Oak.Discipline.stack_depth_bounded`) — proved;
