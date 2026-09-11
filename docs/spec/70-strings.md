@@ -184,6 +184,15 @@ by the caller. No normalization, collation, grapheme segmentation, locale tailor
 or hidden allocator is implied. General encoding-polymorphic `Str[E]` and writer
 interfaces above remain target interfaces.
 
+Binary-to-text codecs — hexadecimal, RFC 4648 base64 and base32, RFC 3986
+percent-encoding — live in the `encoding` package (`stdlib/encoding.oak`,
+`import("encoding")`, also in the flat prelude) on the same contract: borrowed
+byte views in, caller-owned spans out, `Result[u32, EncodingError]` with the
+count written, `_size` functions that validate without writing, and strict
+decoders that reject unknown symbols, wrong lengths, misplaced padding and
+non-canonical trailing bits. They operate on bytes, not on `Str[E]`; text
+validity of the decoded bytes is the caller's separate step.
+
 ## 13. Scoped runtime UTF-8 views
 
 `str_from_utf8(named_view)` validates a read-only `[]u8` and returns a borrowed
