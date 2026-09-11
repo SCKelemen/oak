@@ -201,11 +201,37 @@ the model's `Layout` element for element (`LayoutRel`). Texts over the
 65536-byte limit are covered too: both reject before scanning. Same
 axioms as the scanner: `propext`, `Classical.choice`, `Quot.sound`.
 
-What this buys: the decoder's corpus comparison is now a regression
-check, and the one gap between the extraction's acceptance and
-`OakTextRefinement.check_refines` is the stream checker — the extracted
-`rup_stream_check` against `CertifiedStream.check` on a represented
-layout.
+`proof/ExtractionRUP.lean` proves the RUP kernel under the stream checker.
+`ScratchRel` states how the kernel's assignment bytes represent a model
+`Scratch` on the declared variables (0, 1, 2 for unassigned, false, true;
+unassigned above the count), `TableRel` how the 256-slot start, length,
+and liveness arrays represent a `LiveTable.Table`. Each of the extracted
+loops is proved against a function on lists — `rup_loop1_spec` zeroes the
+scratch, `rup_loop2_spec` decides `slotOK` over the hints (`slotOK_db`
+shows that is the model's `(db id).isSome` on a live slot),
+`rup_loop6_spec` is membership in the clause's prefix, `rup_loop5_spec` is
+`scan`, the clause walk with the kernel's stop-at-satisfied and
+skip-duplicates behavior, `rup_loop3_spec` is `assume`, the negated-target
+walk, and `rup_loop4_spec` is `walk`, the chain — and each list function is
+proved to be the model's: `classify_of_scan` (the walk's outcome is
+`ClauseClassifier.classify`, through a permutation of the unique
+survivors), `prepare_spec` (`assume` clashes exactly when
+`PropagationChain.prepare` does and otherwise yields its scratch), and
+`chain_walk` (`walk` is `chain`'s `isSome`). `rup_check_spec` assembles
+them: on the inputs the stream checker hands the kernel — a pool of at
+most 4096 literals all below the variable count, the 256-slot tables, a
+target and hints drawn from it, hints that are live slots, a 64-byte
+scratch, fuel above 8800 — the extracted `rup_check` returns exactly
+`(PropagationChain.check variables db target refs).isSome` for the live
+table's database, the decoded target, and the one-based hint ids. Same
+axioms again.
+
+What this buys: the decoder's and the kernel's corpus comparisons are now
+regression checks, and the one gap between the extraction's acceptance
+and `OakTextRefinement.check_refines` is the stream loop itself — the
+extracted `rup_stream_check`'s seven loops against `CertifiedStream.run`
+on a represented layout, with `rup_check_spec` discharging every
+publication.
 
 The standard-library laws live next to the extractions, one file per
 package, and are theorems about the extracted programs — so about the Oak
@@ -268,9 +294,9 @@ most; the kernel-decided facts use no axioms.
 - The subset: strings and the text library, methods, and recursion;
   instantiations whose arguments are arrays or views; the `checked` float
   rows and `fma` once Lean carries them exactly.
-The stream checker (`rup_stream_check` and the `rup_check` kernel under
-it, seven and six loops, against `CertifiedStream.check`), which closes
-the transfer of `check_refines` to the extraction; the string-level
+The stream checker (`rup_stream_check`, seven loops, against
+`CertifiedStream.check`, with `rup_check_spec` already covering the kernel
+it calls), which closes the transfer of `check_refines` to the extraction; the string-level
 corollary once `ByteArray.toList` has its data lemma; then the constructs
 the verification programs need next (matches over records, the `checked`
 rows), each added with its own fail-closed test. Integer-constant matches and the integer
