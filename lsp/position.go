@@ -96,7 +96,7 @@ func ConvertUTF8RangeToUTF16(text string, startByte, endByte, startLine, endLine
 	// Use the simpler position conversion for start and end
 	startPos := ConvertUTF8PositionToUTF16(text, startByte, startLine)
 	endPos := ConvertUTF8PositionToUTF16(text, endByte, endLine)
-	
+
 	return Range{
 		Start: startPos,
 		End:   endPos,
@@ -107,7 +107,7 @@ func ConvertUTF8RangeToUTF16(text string, startByte, endByte, startLine, endLine
 func splitLines(text string) []string {
 	var lines []string
 	var current strings.Builder
-	
+
 	for i, r := range text {
 		if r == '\n' {
 			lines = append(lines, current.String())
@@ -125,12 +125,12 @@ func splitLines(text string) []string {
 			current.WriteRune(r)
 		}
 	}
-	
+
 	// Add last line if any
 	if current.Len() > 0 {
 		lines = append(lines, current.String())
 	}
-	
+
 	return lines
 }
 
@@ -145,10 +145,10 @@ func ConvertUTF8PositionToUTF16(text string, byteOffset, line int) Position {
 	if byteOffset > len(text) {
 		byteOffset = len(text)
 	}
-	
+
 	// Split text into lines
 	lines := splitLines(text)
-	
+
 	// Convert to zero-based line number
 	lineZero := line - 1
 	if lineZero < 0 {
@@ -157,7 +157,7 @@ func ConvertUTF8PositionToUTF16(text string, byteOffset, line int) Position {
 	if lineZero >= len(lines) {
 		lineZero = len(lines) - 1
 	}
-	
+
 	// Calculate byte offset to start of line
 	lineStartBytes := 0
 	for i := 0; i < lineZero && i < len(lines); i++ {
@@ -173,13 +173,13 @@ func ConvertUTF8PositionToUTF16(text string, byteOffset, line int) Position {
 			}
 		}
 	}
-	
+
 	// Get the line text
 	lineText := ""
 	if lineZero < len(lines) {
 		lineText = lines[lineZero]
 	}
-	
+
 	// Calculate character offset within the line (UTF-8 byte offset from start of line)
 	charBytes := byteOffset - lineStartBytes
 	if charBytes < 0 {
@@ -188,13 +188,12 @@ func ConvertUTF8PositionToUTF16(text string, byteOffset, line int) Position {
 	if charBytes > len(lineText) {
 		charBytes = len(lineText)
 	}
-	
+
 	// Convert to UTF-16 offset
 	charUTF16 := UTF8ToUTF16Offset(lineText, charBytes)
-	
+
 	return Position{
 		Line:      lineZero,
 		Character: charUTF16,
 	}
 }
-

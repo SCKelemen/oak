@@ -69,16 +69,18 @@ recoverable to its level at or after 1.0.0 (`next_injective_level`,
 (`next_pre1_major_eq_minor`). `packageapi/semver_laws_test.go` checks the Go
 procedures against the same laws over randomized snapshots.
 
-The reference checker is:
+The reference checker is `oak mod bump`:
 
 ```sh
-go run ./cmd/oak-semver previous-api.json current-api.json
+oak mod bump previous-api.json current-api.json
 ```
 
-It exits nonzero for an invalid version and lists the public changes that caused
-the classification. Repositories can run this command in their publication CI
-using the last release snapshot and the compiler-produced candidate snapshot.
-At module granularity the same rule is `oak mod bump` (section 6).
+It accepts module snapshots and single-package snapshots alike (a package
+snapshot is read as a module of one package), exits nonzero for an invalid
+version, and lists the public changes that caused the classification.
+Repositories can run this command in their publication CI using the last
+release snapshot and the compiler-produced candidate snapshot. `oak mod diff`
+reports the classification without enforcing it (section 6).
 
 ## 4. Records and representation
 
@@ -154,8 +156,8 @@ comparison. Nested modules (`83-modules.md` section 3.5) are packages
 of the module: each is snapshotted under its own path from its elaborated
 declarations, with every name spelled as a directory package would spell it
 (its own types bare, other packages' types by path), so a nested module's
-API changes classify exactly like a directory's. Only `oak-api`, the
-single-package tool, refuses a package that declares nested modules. The compiler snapshot boundary is `compiler.ModuleAPISnapshot`.
+API changes classify exactly like a directory's. Only the single-package
+form `oak mod api -package` refuses a package that declares nested modules. The compiler snapshot boundary is `compiler.ModuleAPISnapshot`.
 
 ## 7. Archive-carried snapshots
 
@@ -237,8 +239,8 @@ its source does not honor (section 7).
 Publication CI can produce the candidate snapshot directly from Oak source:
 
 ```sh
-go run ./cmd/oak-api example/net 1.3.0 src/net.oak > current-api.json
-go run ./cmd/oak-semver previous-api.json current-api.json
+oak mod api -package example/net -version 1.3.0 src/net.oak > current-api.json
+oak mod bump previous-api.json current-api.json
 ```
 
 Record fields are sorted only in canonical semantic identity, because record

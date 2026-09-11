@@ -129,6 +129,17 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 					return semir.Module{}, fmt.Errorf("resource callable %q has unresolved parameter mode %d", resourceTransition.Callable, parameter.Mode)
 				}
 			}
+			switch resourceTransition.Receiver {
+			case typechecker.ResourceParameterUnspecified:
+			case typechecker.ResourceParameterBorrowed:
+				transition.Effects = append(transition.Effects, semir.ResourceBorrowReceiver())
+			case typechecker.ResourceParameterBorrowedMut:
+				transition.Effects = append(transition.Effects, semir.ResourceBorrowMutReceiver())
+			case typechecker.ResourceParameterConsumed:
+				transition.Effects = append(transition.Effects, semir.ResourceConsumeReceiver())
+			default:
+				return semir.Module{}, fmt.Errorf("resource callable %q has unresolved receiver mode %d", resourceTransition.Callable, resourceTransition.Receiver)
+			}
 			if resourceTransition.ReturnsFresh {
 				transition.Effects = append(transition.Effects, semir.ResourceReturnFresh())
 			}

@@ -21,6 +21,9 @@ type ResourceOperation struct {
 	Parameters   []ResourceParameterDeclaration
 	Consumes     []int
 	ReturnsFresh bool
+	// Receiver is the authority mode of a method's receiver, its own slot
+	// beside the explicit parameters (docs/spec/50-borrowing.md section 9).
+	Receiver ResourceParameterMode
 }
 
 // ResourceModel is the syntax-independent bridge from resolved types/callables
@@ -110,18 +113,22 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			unknownCallables:  make(map[string]bool),
 		}
 		analysis.pushScope()
-		if fn.Receiver != nil && fn.Receiver.Name != nil {
-			analysis.bind(fn.Receiver.Name.Value)
-			if model.isResourceType(fn.Receiver.Type) {
-				analysis.flow.Register(fn.Receiver.Name.Value, fn.Receiver.Name)
-			}
-		}
 		// The function's own contract fixes what its body may do with each
 		// resource parameter (callee-entry authority, docs/spec/50-borrowing.md
 		// section 9): a borrowed parameter enters with shared authority, a
 		// borrowed-mut one with mutable authority, a consumed one with full
-		// authority. Unmarked parameters keep their ordinary meaning.
+		// authority. Unmarked parameters keep their ordinary meaning. A
+		// method's receiver is governed by the contract's receiver slot.
 		own, hasContract := analysis.contractOperation(functionIdentity(fn))
+		if fn.Receiver != nil && fn.Receiver.Name != nil {
+			analysis.bind(fn.Receiver.Name.Value)
+			if model.isResourceType(fn.Receiver.Type) {
+				analysis.flow.Register(fn.Receiver.Name.Value, fn.Receiver.Name)
+				if hasContract && own.Receiver != ResourceParameterUnspecified {
+					analysis.entryModes[fn.Receiver.Name.Value] = entryAuthority{mode: own.Receiver, declaration: fn.Receiver.Name}
+				}
+			}
+		}
 		for index, parameter := range fn.Parameters {
 			if parameter == nil || parameter.Name == nil {
 				continue
@@ -174,6 +181,15 @@ func (a *typedResourceAnalysis) bindCallable(stmt *ast.VariableDeclaration) {
 	if _, isClosure := stmt.Value.(*ast.FunctionLiteral); isClosure || declaredCallable {
 		a.unknownCallables[stmt.Name.Value] = true
 	}
+}
+
+// methodReceiver is the receiver expression of a method call
+// (recv.method(args)), or nil for a plain call.
+func methodReceiver(expr *ast.InvocationExpression) ast.Expression {
+	if access, isAccess := expr.Function.(*ast.IndexExpression); isAccess && access.Dot {
+		return access.Left
+	}
+	return nil
 }
 
 // tailIdentifiers collects the identifiers an expression may evaluate to
@@ -348,12 +364,23 @@ func (a *typedResourceAnalysis) checkParameterForwarding(expr *ast.InvocationExp
 		return true
 	}
 	ok := true
+	type governed struct {
+		argument ast.Expression
+		required ResourceParameterMode
+	}
+	positions := make([]governed, 0, len(expr.Arguments)+1)
+	if receiver := methodReceiver(expr); receiver != nil && op.Receiver != ResourceParameterUnspecified {
+		positions = append(positions, governed{argument: receiver, required: op.Receiver})
+	}
 	for index, argument := range expr.Arguments {
+		positions = append(positions, governed{argument: argument, required: op.parameterMode(index)})
+	}
+	for _, position := range positions {
+		argument, required := position.argument, position.required
 		ident, isIdent := argument.(*ast.Identifier)
 		if !isIdent || ident == nil || !a.flow.Registered(ident.Value) {
 			continue
 		}
-		required := op.parameterMode(index)
 		if required == ResourceParameterUnspecified {
 			continue
 		}
@@ -839,6 +866,11 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 	}
 	if !a.checkParameterForwarding(expr, op) {
 		return
+	}
+	if receiver := methodReceiver(expr); receiver != nil && op.Receiver == ResourceParameterConsumed {
+		if ident, ok := receiver.(*ast.Identifier); ok && ident != nil && a.flow.Registered(ident.Value) && a.flow.CanUse(ident.Value) {
+			a.flow.Consume(ident.Value, expr)
+		}
 	}
 	for _, index := range op.Consumes {
 		if index < 0 || index >= len(expr.Arguments) {

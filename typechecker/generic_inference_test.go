@@ -63,11 +63,11 @@ func TestUnifyRecordAccumulatesRepeatedBindings(t *testing.T) {
 	u := NewUnifier()
 	repeated := u.FreshTypeVar("T")
 	expected := &RecordType{Fields: map[string]Type{
-		"left": repeated,
+		"left":  repeated,
 		"right": repeated,
 	}}
 	actual := &RecordType{Fields: map[string]Type{
-		"left": &PrimitiveType{Name: "i32"},
+		"left":  &PrimitiveType{Name: "i32"},
 		"right": &StringType{},
 	}}
 

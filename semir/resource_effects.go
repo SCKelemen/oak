@@ -30,6 +30,26 @@ type ResourceTransitionSemantics struct {
 	BorrowedMut  []int
 	Consumes     []int
 	ReturnsFresh bool
+	// Receiver is the authority mode of a method's receiver — one of the
+	// resource effect names borrow, borrow-mut, or consume — or empty when
+	// the receiver carries no resource contract. It is its own slot: it
+	// never shifts the explicit argument indices above.
+	Receiver string
+}
+
+// ResourceReceiverParameter is the effect parameter spelling that marks a
+// method's receiver rather than an explicit argument.
+const ResourceReceiverParameter = "receiver"
+
+// ResourceBorrowReceiver, ResourceBorrowMutReceiver, and
+// ResourceConsumeReceiver construct the canonical effects for a method's
+// receiver authority.
+func ResourceBorrowReceiver() Effect    { return resourceReceiverEffect(ResourceEffectBorrow) }
+func ResourceBorrowMutReceiver() Effect { return resourceReceiverEffect(ResourceEffectBorrowMut) }
+func ResourceConsumeReceiver() Effect   { return resourceReceiverEffect(ResourceEffectConsume) }
+
+func resourceReceiverEffect(name string) Effect {
+	return Effect{Namespace: ResourceEffectNamespace, Name: name, Parameters: []string{ResourceReceiverParameter}}
 }
 
 // ResourceBorrowArgument constructs the canonical semantic effect for a shared
@@ -81,6 +101,14 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 		present = true
 		switch effect.Name {
 		case ResourceEffectBorrow, ResourceEffectBorrowMut, ResourceEffectConsume:
+			if len(effect.Parameters) == 1 && effect.Parameters[0] == ResourceReceiverParameter {
+				if result.Receiver != "" {
+					return ResourceTransitionSemantics{}, true,
+						fmt.Errorf("resource receiver has both %s and %s modes", result.Receiver, effect.Name)
+				}
+				result.Receiver = effect.Name
+				continue
+			}
 			index, err := decodeResourceArgument(effect)
 			if err != nil {
 				return ResourceTransitionSemantics{}, true, err

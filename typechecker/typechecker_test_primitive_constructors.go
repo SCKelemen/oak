@@ -255,7 +255,3 @@ func TestTypeChecker_LiteralRangeChecking(t *testing.T) {
 		})
 	}
 }
-
-
-
-

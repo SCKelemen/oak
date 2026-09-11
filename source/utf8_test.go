@@ -69,13 +69,13 @@ func TestValidateUTF8KnownVectors(t *testing.T) {
 	valid := []string{
 		"",
 		"hello",
-		"héllo",              // 2-byte
-		"€",             // euro, 3-byte
-		"世界",       // CJK
-		"\U0001F600",         // emoji, 4-byte
-		"�",             // replacement char itself is valid
-		"\U0010FFFF",         // maximum scalar
-		"퟿",       // brackets around the surrogate gap
+		"héllo",      // 2-byte
+		"€",          // euro, 3-byte
+		"世界",         // CJK
+		"\U0001F600", // emoji, 4-byte
+		"�",          // replacement char itself is valid
+		"\U0010FFFF", // maximum scalar
+		"퟿",         // brackets around the surrogate gap
 	}
 	for _, input := range valid {
 		if offset, ok := ValidateUTF8(input); !ok {

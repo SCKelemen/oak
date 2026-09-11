@@ -83,7 +83,7 @@ func elementWindow(obj object.Object) (window, bool) {
 	return window{}, false
 }
 
-func (w window) get(i int) object.Object       { return w.array.Elements[w.start+i] }
+func (w window) get(i int) object.Object        { return w.array.Elements[w.start+i] }
 func (w window) set(i int, value object.Object) { w.array.Elements[w.start+i] = value }
 
 // bytes reads the window as byte values; false when an element is not a byte.
