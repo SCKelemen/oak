@@ -1,0 +1,32 @@
+// Benchmark entry point for the uuid package: `count` version 7 values at
+// consecutive milliseconds, each formatted as 36 lowercase characters into
+// `dst` back to back. Returns the bytes written, 0 on failure.
+package main
+
+import("random")
+import("uuid")
+
+pub bench_uuid_v7_format: (seed: u64, start_millis: u64, count: u32, dst: [*]u8): u32 {
+  states: [1]random.Xoshiro
+  states[0] = random.random_seed(seed)
+  state: [*]random.Xoshiro = span(&states)
+  scratch: [16]u8
+  at: u32 = u32(0)
+  i: u32 = u32(0)
+  failed: Bool = false
+  while i < count && !failed {
+    true ? {
+      raw: [*]u8 = span(&scratch)
+      uuid.uuid_written(uuid.uuid_v7(start_millis + u64(i), state, raw)) != u32(16) ? { failed = true }
+    }
+    !failed ? {
+      piece: [*]u8 = dst[at:at + u32(36)]
+      uuid.uuid_written(uuid.uuid_format(piece, view(&scratch), false)) != u32(36) ? { failed = true }
+    }
+    at = at + u32(36)
+    i = i + u32(1)
+  }
+  failed ? u32(0) | at
+}
+
+main: (): i32 = 0

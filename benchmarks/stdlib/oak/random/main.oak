@@ -1,0 +1,21 @@
+// Benchmark entry point for the random package: `count` xoshiro256** draws
+// from a SplitMix64-seeded state, folded with xor so nothing is optimized
+// away.
+package main
+
+import("random")
+
+pub bench_random: (seed: u64, count: u64): u64 {
+  states: [1]random.Xoshiro
+  states[0] = random.random_seed(seed)
+  state: [*]random.Xoshiro = span(&states)
+  acc: u64 = u64(0)
+  i: u64 = u64(0)
+  while i < count {
+    acc = acc ^ random.random_next(state)
+    i = i + u64(1)
+  }
+  acc
+}
+
+main: (): i32 = 0
