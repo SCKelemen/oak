@@ -2228,6 +2228,21 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			effectiveArgs += 2
 			continue
 		}
+		// A C string from Oak bytes (docs/spec/92-ffi.md section 2.5.3)
+		// stands for one c.String parameter of an extern binding.
+		if operand, isCString := tc.CStringArgument(arg); isCString {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					"c.cstr is only an argument to an extern binding")
+				d.AddNote("c.cstr(v) hands C the base pointer of a NUL-terminated view for the duration of one foreign call; Oak functions take the view itself (docs/spec/92-ffi.md section 2.5.3)")
+				return nil
+			}
+			if !tc.checkCStringArgument(arg, operand, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs++
+			continue
+		}
 		effectiveArgs++
 	}
 	if !spansValid {
@@ -2264,6 +2279,11 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if _, _, isSpan := tc.BoundarySpanArgument(arg); isSpan {
 			// Validated in the pre-pass above; it stands for the pair.
 			argTypes[i] = &CType{Name: "Ptr"}
+			continue
+		}
+		if _, isCString := tc.CStringArgument(arg); isCString {
+			// Validated in the pre-pass above; it stands for a c.String.
+			argTypes[i] = &CType{Name: "String"}
 			continue
 		}
 		pos := paramPos[i]
