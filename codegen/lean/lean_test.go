@@ -281,3 +281,29 @@ pair: (a: u32): [2]u32 = [2]u32{ a, a + u32(1) }
 		t.Fatalf("span of a global must fail closed, got %v", err)
 	}
 }
+
+// subslice(v, start, n) is the window of n elements from start as
+// Array.extract; Oak traps past the end, the extraction clamps
+// (docs/spec/95-extraction.md section 3).
+func TestExtractionSubslice(t *testing.T) {
+	src := `
+window_sum: (src: []u8, at: u32): u32 {
+  win: []u8 = subslice(src, at, u32(4))
+  total: u32 = 0
+  i: u32 = 0
+  while i < len(win) {
+    total = total + u32(win[i])
+    i = i + u32(1)
+  }
+  total
+}
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "let win : Array UInt8 := (src.extract at_.toNat (at_.toNat + (4 : UInt32).toNat))"
+	if !strings.Contains(out, want) {
+		t.Fatalf("extraction lacks %q:\n%s", want, out)
+	}
+}

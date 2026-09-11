@@ -1481,6 +1481,27 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 			return "", err
 		}
 		return "(" + base + ".size.toUInt32)", nil
+	case "subslice":
+		// subslice(v, start, n) is the window of n elements from start
+		// (docs/spec/50-borrowing.md); Oak traps past the end, the extraction
+		// clamps the window to the array (docs/spec/95-extraction.md section
+		// 3), which agrees on every run that produced a result.
+		if len(call.Arguments) != 3 {
+			return "", fmt.Errorf("subslice takes three arguments")
+		}
+		base, err := em.expr(call.Arguments[0], "")
+		if err != nil {
+			return "", err
+		}
+		start, err := em.indexTerm(call.Arguments[1])
+		if err != nil {
+			return "", err
+		}
+		count, err := em.indexTerm(call.Arguments[2])
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(%s.extract %s (%s + %s))", base, start, start, count), nil
 	case "view", "span":
 		if len(call.Arguments) != 1 {
 			return "", fmt.Errorf("%s takes one argument", callee.Value)

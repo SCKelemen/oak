@@ -62,6 +62,7 @@ proofs written against them transfer.
 | `view(&TABLE)` of a top-level constant | the constant's array value (a view is the array it views); `span(&TABLE)` would mutate the global and fails closed |
 | `r.field[i] = v` | `let r := { r with field := r.field.setIfInBounds i.toNat v }` (one level of fields) |
 | `^x` | `~~~x`, the complement over the operand's width |
+| `subslice(v, start, n)` | `v.extract start.toNat (start.toNat + n.toNat)` — the window as the array it views (section 3 on the clamp) |
 
 Functions are emitted callee-first. Every function takes `fuel : Nat` and
 threads it to every loop and call; the corpus harness supplies a fuel above
@@ -69,10 +70,12 @@ any loop's iteration count, so `none` is a disagreement, never a pass.
 
 ## 3. Three modeling choices, stated
 
-Oak traps on an out-of-range read or write, on division by zero, and on a
-shift whose count reaches the operand width (`10-syntax.md` section 3b). The
-extraction reads the element type's zero, drops the write, divides to zero,
-and shifts by Lean's masked count. This is sound for the direction the experiment proves — an Oak run
+Oak traps on an out-of-range read or write, on division by zero, on a
+shift whose count reaches the operand width (`10-syntax.md` section 3b), and
+on a `subslice` window that leaves its array. The extraction reads the
+element type's zero, drops the write, divides to zero, shifts by Lean's
+masked count, and clamps the window (`Array.extract` stops at the array's
+end). This is sound for the direction the experiment proves — an Oak run
 that produced a verdict took no trapping path, and on such runs the model
 computes the same values — and it is what the hand-written models already
 assume. A model of trapping as `none` would make every expression monadic;
@@ -88,12 +91,12 @@ statements bound through do-blocks; calls to extracted functions (the
 checker's specializations of generic templates included), `len`, `view`,
 `span`, the widening constructors, the `trunc`/`bits`/`saturating`/`checked`
 integer conversion rows, the bitwise operators and the complement,
-`assert`; field assignment and element assignment into a record's array
-field, one level deep; array literals; top-level constants, including
-constant tables read through `view`. The extraction closes over the roots'
+`assert`, `subslice`; field assignment and element assignment into a
+record's array field, one level deep; array literals; top-level constants,
+including constant tables read through `view`. The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
 functions it reaches. Everything else — strings, generic templates
-themselves, recursion, methods, extern functions, closures, `subslice`,
+themselves, recursion, methods, extern functions, closures,
 the floating-point rows, floats, SIMD, FFI, assignment to a global — is an
 error naming the construct. Nothing is approximated.
 
@@ -108,7 +111,7 @@ the replayed real certificate (729 cases at the time of writing). The opt-in
 verification workflow and the certificate gate build and run it.
 
 **The standard library.** `compiler/lean_stdlib_extract_test.go` extracts
-whole packages — `varint`, `encoding`, `random`, `uuid`, and `sort`
+whole packages — `varint`, `encoding`, `hash`, `random`, `uuid`, and `sort`
 at `u32` — into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
 failing on drift the same way. A package's program is the core prelude
 plus the flattened texts of its dependencies and itself (`stdlib.Flatten`);
@@ -191,8 +194,8 @@ remaining work in section 7.
   laws for `encoding` (each codec's round trip and strictness), `sort` (a
   sorted permutation), `random` (the reference xoshiro256** sequence), and
   `uuid` (the version and variant bits) against their extractions.
-- The subset: `subslice`, strings and the text library, methods, and
-  recursion; instantiations whose arguments are arrays or views.
+- The subset: strings and the text library, methods, and recursion;
+  instantiations whose arguments are arrays or views.
 The stream checker (`rup_stream_check` and the `rup_check` kernel under
 it, seven and six loops, against `CertifiedStream.check`), which closes
 the transfer of `check_refines` to the extraction; the string-level

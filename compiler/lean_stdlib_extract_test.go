@@ -29,6 +29,7 @@ var leanStdlibPackages = []struct {
 }{
 	{name: "varint", file: "VarintExtracted.lean", namespace: "Oak.Stdlib.Varint"},
 	{name: "encoding", file: "EncodingExtracted.lean", namespace: "Oak.Stdlib.Encoding"},
+	{name: "hash", file: "HashExtracted.lean", namespace: "Oak.Stdlib.Hash"},
 	{name: "random", file: "RandomExtracted.lean", namespace: "Oak.Stdlib.Random", driver: `
 drive_shuffle_u32: (state: [*]Xoshiro, items: [*]u32): () { random_shuffle[u32](state, items) }
 `},
