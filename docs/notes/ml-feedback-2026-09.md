@@ -134,11 +134,14 @@ endorses:
    name — a function visible at the call site or an exported function of
    the package declaring the receiver's type. The checker rewrites the call
    in place; nothing is dispatched. Closes revisit criterion O6.
-3. Operator definitions bound only to functions marked `operator` in the
-   receiver's package. The constitution's "no hidden work" rule is the bar
-   the proposal must clear; an explicit marker that makes every `+` on a
-   tensor name one findable function is the defensible middle, and the
-   decision is open.
+3. **Done.** Operator definitions (`10-syntax.md` §14): `operator(+) add:
+   (a: Vec, b: Vec): Vec` binds `+` for a left operand of `Vec`, declared
+   only in `Vec`'s package, one binding per type and symbol; `a + b` is
+   exactly `add(a, b)`, rewritten into the plain call after type checking so
+   nothing is dispatched or hidden. The constitution's bar is met by the
+   marker and the home-package rule: every `+` on a tensor names one
+   function a reader can find. Declared operator properties (7.3) remain
+   the follow-on.
 4. **Done.** Array literals take their shape from context (`10-syntax.md`
    §2c): `[3]u32 = [1, 2, 3]`, `sum3([4, 5, 6])`, and `dims([28, 28])`
    where `dims` takes a `[]u32` (the literal form of the variadic view;
@@ -175,4 +178,4 @@ disposition, in the order to work them:
 | O3 | Any runtime-sized allocation surface | direction |
 | O4 | Views or spans in records or as return values | roadmap |
 | O5 | `F32x4` with `mul` and `fma` | **implemented** (`93-simd.md` §1.2a; NEON and portable lowerings agree with the interpreter) |
-| O6 | A frontend surface for `x.matmul(w).relu()` | **implemented**: uniform call syntax (`10-syntax.md` §13) and the pipeline operator (`x \|> matmul(w) \|> relu`); operator definitions remain direction |
+| O6 | A frontend surface for `x.matmul(w).relu()` | **implemented**: uniform call syntax (`10-syntax.md` §13), operator definitions (§14), and the pipeline operator (`x \|> matmul(w) \|> relu`) |

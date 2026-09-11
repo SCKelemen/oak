@@ -1062,6 +1062,10 @@ type FunctionStatement struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// Operator is the symbol an `operator(SYM)` marker binds to this
+	// function for a left operand of its first parameter's type
+	// (docs/spec/10-syntax.md section 14); empty for ordinary functions.
+	Operator string
 	// Effect clauses (docs/spec/60-effects-allocation.md section 2):
 	// `effects { Memory.Allocate, ... }` declares the effects this function
 	// itself performs (EffectsDeclared distinguishes an empty clause, an

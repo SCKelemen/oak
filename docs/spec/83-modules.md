@@ -428,7 +428,9 @@ method: the receiver type's package is the only other package searched, so
 a call's meaning never depends on which unrelated package is compiled. Oak's interfaces are implicit, so there are
 no instances to collide, but two packages attaching same-named methods to one
 imported type would make method lookup depend on which package is compiled —
-Go's rule, adopted for the same reason.
+Go's rule, adopted for the same reason. Operator definitions
+(`10-syntax.md` §14) follow it too: an `operator(+)` binding for a type
+lives in the type's package and travels with the type to every importer.
 
 ### 6.6 Derived declarations
 
