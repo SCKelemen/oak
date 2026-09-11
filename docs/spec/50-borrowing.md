@@ -750,7 +750,11 @@ environment.
 
 Scoped UTF-8 construction is available through `str_from_utf8`, with `str_bytes`
 providing the inverse read-only view. Both propagate the source owner/region into
-an explicit new binding. Direct borrowed parameters receive caller-owned origins;
+an explicit new binding. `str_bytes` may also stand directly in a call's argument
+position (`text_parse_u64(str_bytes("42"), 10)`, `count(str_bytes(name))`): the
+view is a temporary borrowing its literal or tracked string source for the
+call's extent, dropped when the call returns, and it cannot outlive the callee
+because no callee returns a view (`OAK-B0109`). Direct borrowed parameters receive caller-owned origins;
 view/string aliases retain shared reads and span aliases suspend their parent.
 Borrowed bindings cannot be reassigned, and string declarations require a tracked
 initializer. Direct literal-string returns are allowed; borrowed returns and

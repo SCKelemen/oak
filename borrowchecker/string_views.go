@@ -49,6 +49,14 @@ func (bc *BorrowChecker) registerBorrowParameter(name string, typ typechecker.Ty
 	}
 }
 
+// isStringViewConversion recognizes `str_bytes(x)`: the bridge whose result
+// may stand directly as a call argument (F9). `str_from_utf8` yields a
+// string, which is bound like any other value.
+func isStringViewConversion(call *ast.InvocationExpression) bool {
+	name, ok := call.Function.(*ast.Identifier)
+	return ok && name.Value == "str_bytes" && len(call.Arguments) == 1
+}
+
 // Both bridges derive an immutable borrow from the same backing owner. Binding
 // the source and result explicitly keeps the lexical lifetime visible; temporary
 // and block-result conversions are rejected until expression regions exist.
