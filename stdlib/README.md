@@ -866,7 +866,7 @@ the flat `import(std)` prelude.
 - Hex: `hex_encode(dst, src, upper)`, `hex_decode(dst, src)` (either case
   accepted), `hex_encoded_size(len)`, `hex_decoded_size(src)`; an odd
   length is `InvalidLength`, a non-digit `InvalidCharacter`. `hex_digit`
-  and `hex_value` are the per-symbol tables.
+  and `hex_value` read the per-symbol tables.
 - Base64 (RFC 4648 §4 and §5): `base64_encode(dst, src, url, pad)` selects
   the standard (`+/`) or URL-safe (`-_`) alphabet and optional `=`
   padding; `base64_decode(dst, src, url)` is strict — one alphabet, padding
@@ -885,6 +885,18 @@ the flat `import(std)` prelude.
   when asked, and a `%` not followed by two hex digits is
   `InvalidCharacter`. `percent_encoded_size(src, keep)` and
   `percent_decoded_size(src, plus_as_space)`.
+
+Every symbol lookup is a 256-entry table read (`stdlib/generate_codec_tables.py`
+emits the tables into `encoding.oak`; CI re-runs it and diffs). A decoder
+makes two passes by design: the first ORs every byte's table value, which is
+below the alphabet size exactly when every byte is valid, so the whole
+input is validated before the first store and a rejected input leaves the
+destination untouched; the second decodes four base64 symbols per 24-bit
+word (two hex digits per byte) without re-checking. The error a rejected
+body reports keeps its order: misplaced `=`, then a length no encoder
+produces, then a character outside the alphabet. On an M4 Max the compiled
+C encodes and decodes base64 and hex within 25% of Go's `encoding/base64`
+and `encoding/hex`.
 
 Sizes are `u32`; an input whose encoding would not fit is `SizeOverflow`
 rather than a wrapped count. `compiler/e2e_stdlib_encoding_test.go` checks

@@ -37,6 +37,12 @@ inductive Result_u32_UuidError where
   | Err (payload : UuidError)
   deriving Repr, Inhabited, BEq, DecidableEq
 
+def HEX_LOWER_SYMBOLS : Array UInt8 := (#[(48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8), (56 : UInt8), (57 : UInt8), (97 : UInt8), (98 : UInt8), (99 : UInt8), (100 : UInt8), (101 : UInt8), (102 : UInt8)] : Array UInt8)
+
+def HEX_UPPER_SYMBOLS : Array UInt8 := (#[(48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8), (56 : UInt8), (57 : UInt8), (65 : UInt8), (66 : UInt8), (67 : UInt8), (68 : UInt8), (69 : UInt8), (70 : UInt8)] : Array UInt8)
+
+def HEX_VALUES : Array UInt8 := ((#[(16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (0 : UInt8), (1 : UInt8), (2 : UInt8), (3 : UInt8), (4 : UInt8), (5 : UInt8), (6 : UInt8), (7 : UInt8), (8 : UInt8), (9 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8)] ++ #[(16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8)]) : Array UInt8)
+
 def UUID_SIZE : UInt32 := (16 : UInt32)
 
 def UUID_TEXT_SIZE : UInt32 := (36 : UInt32)
@@ -200,7 +206,7 @@ def uuid_v7_millis (src : Array UInt8) (fuel : Nat) : Option (Option_u64) := do
   pure r1
 
 def hex_digit (value : UInt8) (upper : Bool) (fuel : Nat) : Option (UInt8) := do
-  pure (if (decide (value < (10 : UInt8))) then (value + (48 : UInt8)) else (if upper then ((value - (10 : UInt8)) + (65 : UInt8)) else ((value - (10 : UInt8)) + (97 : UInt8))))
+  pure (if upper then (HEX_UPPER_SYMBOLS.getD ((value &&& (15 : UInt8)).toUInt32).toNat (0 : UInt8)) else (HEX_LOWER_SYMBOLS.getD ((value &&& (15 : UInt8)).toUInt32).toNat (0 : UInt8)))
 
 def uuid_format.loop1 (dst : Array UInt8) (src : Array UInt8) (upper : Bool) (out : UInt32) (i : UInt32) : Nat → Option (Array UInt8 × UInt32 × UInt32)
   | 0 => none
@@ -239,7 +245,7 @@ def uuid_format (dst : Array UInt8) (src : Array UInt8) (upper : Bool) (fuel : N
   pure (r1, dst)
 
 def hex_value (unit : UInt8) (fuel : Nat) : Option (UInt32) := do
-  pure (if ((decide (unit >= (48 : UInt8))) && (decide (unit <= (57 : UInt8)))) then ((unit - (48 : UInt8)).toUInt32) else (if ((decide (unit >= (65 : UInt8))) && (decide (unit <= (70 : UInt8)))) then (((unit - (65 : UInt8)).toUInt32) + (10 : UInt32)) else (if ((decide (unit >= (97 : UInt8))) && (decide (unit <= (102 : UInt8)))) then (((unit - (97 : UInt8)).toUInt32) + (10 : UInt32)) else (16 : UInt32))))
+  pure ((HEX_VALUES.getD (unit.toUInt32).toNat (0 : UInt8)).toUInt32)
 
 def uuid_parse.loop1 (src : Array UInt8) (valid : Bool) (i : UInt32) : Nat → Option (Bool × UInt32)
   | 0 => none
