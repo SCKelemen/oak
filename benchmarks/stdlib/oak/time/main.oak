@@ -1,0 +1,43 @@
+// Benchmark entry points for the time package: RFC 3339 with nine fraction
+// digits at offset zero (30 bytes per instant), formatted back to back and
+// parsed back in sequence.
+package main
+
+import("time")
+
+written_or_zero: (result: Result[u32, time.TimeError]): u32 = result ? | .Ok(n) => n | .Err(e) => u32(0)
+zoned_or_zero: (result: Result[time.Zoned, time.TimeError]): time.Zoned =
+  result ? | .Ok(z) => z | .Err(e) => time.Zoned { instant: time.Instant { nanos: i64(0) }, offset_minutes: i32(0) }
+
+pub bench_format_rfc3339: (nanos: []i64, dst: [*]u8): u32 {
+  at: u32 = u32(0)
+  i: u32 = u32(0)
+  failed: Bool = false
+  while i < len(nanos) && !failed {
+    piece: [*]u8 = dst[at:at + u32(30)]
+    n: u32 = written_or_zero(time.format_rfc3339(piece, time.instant_nanos(nanos[i]), i32(0), u32(9)))
+    n != u32(30) ? { failed = true }
+    at = at + u32(30)
+    i = i + u32(1)
+  }
+  failed ? u32(0) | at
+}
+
+// FNV-1a over the parsed nanosecond values, 0 on failure.
+pub bench_parse_rfc3339: (src: []u8, count: u32): u64 {
+  acc: u64 = u64(14695981039346656037)
+  at: u32 = u32(0)
+  i: u32 = u32(0)
+  failed: Bool = false
+  while i < count && !failed {
+    z: time.Zoned = zoned_or_zero(time.parse_rfc3339(src[at:at + u32(30)]))
+    z.instant.nanos == i64(0) ? { failed = true } | {
+      acc = (acc ^ u64_bits_i64(z.instant.nanos)) * u64(1099511628211)
+    }
+    at = at + u32(30)
+    i = i + u32(1)
+  }
+  failed ? u64(0) | acc
+}
+
+main: (): i32 = 0

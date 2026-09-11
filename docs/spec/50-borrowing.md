@@ -637,8 +637,44 @@ literal mentioning a dependent, to any call — contracted or not — is
 dependency carried by a field. Array elements are never tracked, so a
 borrowed result in an array literal stays rejected.
 
-With this, milestone 4 of the authority roadmap (stages (a)–(e)) is
-implemented for opaque resources. Open follow-ups: a source spelling for
+**Resources through aggregates.** A resource held inside an aggregate is
+a **path**: a record field is `root.field`, an ADT payload is
+`root.$Variant`, and paths compose through nested records and ADTs,
+including generic instantiations such as `Option[Handle]` and
+`Result[Handle, E]`. Paths are tracked like named resources. Construction
+binds them: a variant expression gives the chosen variant's payload path
+its payload's provenance (alias, fresh, borrow, dependent) and leaves the
+other variants' paths absent, a record literal binds field by field, and a
+contracted call's result fact applies to every path of an aggregate result
+(fresh registers each as a new class, alias makes each an alias of the
+argument, borrow makes each a dependent). **Matching** extracts without
+copying: a variant pattern descends into `$Variant`, and a binding pattern
+aliases its name to the path it stands for, so **inspection** (borrowed
+use of the binding) leaves the source usable while **extraction**
+(consuming the binding) consumes the location — matching the same value
+again then reads a consumed location (`OAK-B0111`), which is the
+whole-value move discipline: partial-field states are not modeled, and a
+payload of unknown provenance cannot be consumed (fail closed). A
+scrutinee that is a contracted call binds by its result fact; wildcards and
+literals bind nothing; a payload binding lives for its arm. A resource
+returned inside a variant (`.Ok(h)`) is returned, so retention and result
+contracts see it. **Aggregate parameters** are governed by their
+contracted mode path by path: every resource path below a `borrowed`,
+`borrowed-mut`, or `consumed` aggregate parameter enters with that
+authority as a tracked class, and two paths of one such parameter are
+never assumed distinct — pairing them exclusively fails closed
+(`OAK-B0112`) because field names alone prove nothing about the resources
+they hold. An unmarked aggregate parameter keeps unknown paths. At call
+sites an aggregate argument takes part once per path, consuming it moves
+every path, and forwarding is checked per path. Contracts may therefore
+name parameters and results whose types contain resource paths, not only
+nominal resource types, and a contract declared on a generic template
+governs every specialization's payloads. Not yet admitted: borrowing from
+or aliasing an aggregate argument as a whole (the result is unknown, fail
+closed), array element provenance, and partial-field states after a move.
+
+With this, milestone 4 of the authority roadmap (stages (a)–(e)) and the
+first increment of milestone 5 are implemented for opaque resources. Open follow-ups: a source spelling for
 result identities, contracts on record-typed parameters and results that
 carry borrowed fields, and array element provenance.
 
@@ -801,6 +837,32 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   and otherwise returns `{base + start, n}` — zero copies, one check.
 - **Static extent**: a constant index below an owned array's declared
   length needs no fact (`static_extent`).
+- **Literal bound**: `i < K`, `i <= K`, `K > i`, `K >= i` with `K` a
+  literal bounds `i` by a number rather than a length, and proves `v[i]`
+  and `v[i + j]` against any container whose length is known to be at
+  least `K + j` — an owned array's declared length or a min-length fact
+  (`literal_bound_under_length`). This is the loop over a fixed table:
+  `while i < u32(64) { ... SHA256_K[i] ... w[i] ... }`.
+- **Scaled index**: under `i < U`, `v[i * K + j]` and `v[i * K]` (with
+  `K` and `j` literals, either operand order) are proven when the length
+  is known to be at least `(U - 1) * K + j + 1` (`scaled_under_bound`) —
+  the word loads of a block, `block[i * 4 + 3]` under `i < 16`.
+- **Lower bound and subtraction**: a literal initializer `i: u32 = K`
+  establishes `K <= i`; leaving `while i < K` (a bare comparison, no
+  `break` in the body) establishes `K <= i` for the rest of the block
+  (`loop_exit_lower_bound`); so does the guard `i >= K` for its true arm. Under `L <= i` with `K <= L` and an upper bound `i < U`,
+  `v[i - K]` is proven when the length is at least `U - K`
+  (`subtraction_under_bounds`; against `i < len(v)`,
+  `subtraction_under_length`), and the subtraction cannot wrap. A lower
+  bound survives a following loop whose only write to `i` is the trailing
+  `i = i + c` (`c` a literal) under an upper bound on `i` from the loop's
+  own condition, because the increment cannot wrap and only raises `i`
+  (`increment_keeps_lower_bound`, `increment_without_wrap`); any other
+  write to `i` kills it before the body — the SHA-256 schedule,
+  `w[i - 16]` for `16 <= i < 64`.
+- **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
+  when the length is known to be at least `M + 1`
+  (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`.
 - Conjunctions (`&&`) contribute every fact of both sides.
 
 Facts are refused, not weakened, whenever soundness would need dataflow

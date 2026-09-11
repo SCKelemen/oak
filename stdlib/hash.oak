@@ -30,16 +30,13 @@ SHA256_K: [64]u32 = [64]u32{
 // Rotate right by 1..31 bits; both shifts stay below the width, so neither traps.
 rotr32: (x: u32, n: u32): u32 = (x >> n) | (x << (u32(32) - n))
 
-// One compression of a 64-byte block into the eight working words
-// (FIPS 180-4 section 6.2.2). The block and the state pass by value.
-sha256_compress: (h: [8]u32, block: [64]u8): [8]u32 {
-  w: [64]u32
-  i: u32 = 0
-  while i < u32(16) {
-    at: u32 = i * u32(4)
-    w[i] = (u32(block[at]) << u32(24)) | (u32(block[at + u32(1)]) << u32(16)) | (u32(block[at + u32(2)]) << u32(8)) | u32(block[at + u32(3)])
-    i = i + u32(1)
-  }
+// The 64 rounds over a loaded message schedule (FIPS 180-4 section
+// 6.2.2). Every index below is proven by the loop bounds — `i < 16`,
+// `i < 64`, and `16 <= i` after the first loop — so the emitted C reads the
+// arrays directly (docs/spec/50-borrowing.md, extent facts).
+sha256_rounds: (h: [8]u32, w_in: [64]u32): [8]u32 {
+  w: [64]u32 = w_in
+  i: u32 = 16
   while i < u32(64) {
     w15: u32 = w[i - u32(15)]
     w2: u32 = w[i - u32(2)]
@@ -77,6 +74,34 @@ sha256_compress: (h: [8]u32, block: [64]u8): [8]u32 {
   [8]u32{ h[0] + a, h[1] + b, h[2] + c, h[3] + d, h[4] + e, h[5] + f, h[6] + g, h[7] + hh }
 }
 
+// One compression of a 64-byte block held by value: the partial block of
+// the incremental state. The scaled index `i * 4 + k` under `i < 16` is
+// proven against the 64-byte block.
+sha256_compress: (h: [8]u32, block: [64]u8): [8]u32 {
+  w: [64]u32
+  i: u32 = 0
+  while i < u32(16) {
+    w[i] = (u32(block[i * u32(4)]) << u32(24)) | (u32(block[i * u32(4) + u32(1)]) << u32(16)) | (u32(block[i * u32(4) + u32(2)]) << u32(8)) | u32(block[i * u32(4) + u32(3)])
+    i = i + u32(1)
+  }
+  sha256_rounds(h, w)
+}
+
+// One compression of a 64-byte block read in place from the input: the
+// bulk path of `sha256_update`, which never copies a full block. The one
+// check is `len(block) >= 64`, and every load under it is proven.
+sha256_compress_view: (h: [8]u32, block: []u8): [8]u32 {
+  len(block) >= u32(64) ? {
+    w: [64]u32
+    i: u32 = 0
+    while i < u32(16) {
+      w[i] = (u32(block[i * u32(4)]) << u32(24)) | (u32(block[i * u32(4) + u32(1)]) << u32(16)) | (u32(block[i * u32(4) + u32(2)]) << u32(8)) | u32(block[i * u32(4) + u32(3)])
+      i = i + u32(1)
+    }
+    sha256_rounds(h, w)
+  } | { h }
+}
+
 // The incremental state: the chaining value, the partial block, how much of
 // it is filled, and the total byte count for the length padding.
 pub Sha256State: type = struct {
@@ -98,6 +123,12 @@ pub sha256_init: (): Sha256State {
 pub sha256_update: (state: Sha256State, src: []u8): Sha256State {
   next: Sha256State = state
   i: u32 = 0
+  // Whole blocks compress in place while the partial block is empty; the
+  // guard is the wrap-free spelling of `i + 64 <= len(src)`.
+  while next.filled == u32(0) && len(src) >= u32(64) && i <= len(src) - u32(64) {
+    next.h = sha256_compress_view(next.h, subslice(src, i, u32(64)))
+    i = i + u32(64)
+  }
   while i < len(src) {
     next.block[next.filled] = src[i]
     next.filled = next.filled + u32(1)
@@ -155,21 +186,53 @@ pub sha256_final: (state: Sha256State, out: [*]u8): Bool {
 // One-shot digest of a view into 32 bytes of caller storage.
 pub sha256: (src: []u8, out: [*]u8): Bool = sha256_final(sha256_update(sha256_init(), src), out)
 
+// The byte table of the reflected CRC-32C polynomial 0x82F63B78: entry n
+// is the CRC of the single byte n, the eight bit-serial steps folded once.
+CRC32C_TABLE: [256]u32 = [256]u32{
+  0x00000000, 0xf26b8303, 0xe13b70f7, 0x1350f3f4, 0xc79a971f, 0x35f1141c, 0x26a1e7e8, 0xd4ca64eb,
+  0x8ad958cf, 0x78b2dbcc, 0x6be22838, 0x9989ab3b, 0x4d43cfd0, 0xbf284cd3, 0xac78bf27, 0x5e133c24,
+  0x105ec76f, 0xe235446c, 0xf165b798, 0x030e349b, 0xd7c45070, 0x25afd373, 0x36ff2087, 0xc494a384,
+  0x9a879fa0, 0x68ec1ca3, 0x7bbcef57, 0x89d76c54, 0x5d1d08bf, 0xaf768bbc, 0xbc267848, 0x4e4dfb4b,
+  0x20bd8ede, 0xd2d60ddd, 0xc186fe29, 0x33ed7d2a, 0xe72719c1, 0x154c9ac2, 0x061c6936, 0xf477ea35,
+  0xaa64d611, 0x580f5512, 0x4b5fa6e6, 0xb93425e5, 0x6dfe410e, 0x9f95c20d, 0x8cc531f9, 0x7eaeb2fa,
+  0x30e349b1, 0xc288cab2, 0xd1d83946, 0x23b3ba45, 0xf779deae, 0x05125dad, 0x1642ae59, 0xe4292d5a,
+  0xba3a117e, 0x4851927d, 0x5b016189, 0xa96ae28a, 0x7da08661, 0x8fcb0562, 0x9c9bf696, 0x6ef07595,
+  0x417b1dbc, 0xb3109ebf, 0xa0406d4b, 0x522bee48, 0x86e18aa3, 0x748a09a0, 0x67dafa54, 0x95b17957,
+  0xcba24573, 0x39c9c670, 0x2a993584, 0xd8f2b687, 0x0c38d26c, 0xfe53516f, 0xed03a29b, 0x1f682198,
+  0x5125dad3, 0xa34e59d0, 0xb01eaa24, 0x42752927, 0x96bf4dcc, 0x64d4cecf, 0x77843d3b, 0x85efbe38,
+  0xdbfc821c, 0x2997011f, 0x3ac7f2eb, 0xc8ac71e8, 0x1c661503, 0xee0d9600, 0xfd5d65f4, 0x0f36e6f7,
+  0x61c69362, 0x93ad1061, 0x80fde395, 0x72966096, 0xa65c047d, 0x5437877e, 0x4767748a, 0xb50cf789,
+  0xeb1fcbad, 0x197448ae, 0x0a24bb5a, 0xf84f3859, 0x2c855cb2, 0xdeeedfb1, 0xcdbe2c45, 0x3fd5af46,
+  0x7198540d, 0x83f3d70e, 0x90a324fa, 0x62c8a7f9, 0xb602c312, 0x44694011, 0x5739b3e5, 0xa55230e6,
+  0xfb410cc2, 0x092a8fc1, 0x1a7a7c35, 0xe811ff36, 0x3cdb9bdd, 0xceb018de, 0xdde0eb2a, 0x2f8b6829,
+  0x82f63b78, 0x709db87b, 0x63cd4b8f, 0x91a6c88c, 0x456cac67, 0xb7072f64, 0xa457dc90, 0x563c5f93,
+  0x082f63b7, 0xfa44e0b4, 0xe9141340, 0x1b7f9043, 0xcfb5f4a8, 0x3dde77ab, 0x2e8e845f, 0xdce5075c,
+  0x92a8fc17, 0x60c37f14, 0x73938ce0, 0x81f80fe3, 0x55326b08, 0xa759e80b, 0xb4091bff, 0x466298fc,
+  0x1871a4d8, 0xea1a27db, 0xf94ad42f, 0x0b21572c, 0xdfeb33c7, 0x2d80b0c4, 0x3ed04330, 0xccbbc033,
+  0xa24bb5a6, 0x502036a5, 0x4370c551, 0xb11b4652, 0x65d122b9, 0x97baa1ba, 0x84ea524e, 0x7681d14d,
+  0x2892ed69, 0xdaf96e6a, 0xc9a99d9e, 0x3bc21e9d, 0xef087a76, 0x1d63f975, 0x0e330a81, 0xfc588982,
+  0xb21572c9, 0x407ef1ca, 0x532e023e, 0xa145813d, 0x758fe5d6, 0x87e466d5, 0x94b49521, 0x66df1622,
+  0x38cc2a06, 0xcaa7a905, 0xd9f75af1, 0x2b9cd9f2, 0xff56bd19, 0x0d3d3e1a, 0x1e6dcdee, 0xec064eed,
+  0xc38d26c4, 0x31e6a5c7, 0x22b65633, 0xd0ddd530, 0x0417b1db, 0xf67c32d8, 0xe52cc12c, 0x1747422f,
+  0x49547e0b, 0xbb3ffd08, 0xa86f0efc, 0x5a048dff, 0x8ecee914, 0x7ca56a17, 0x6ff599e3, 0x9d9e1ae0,
+  0xd3d3e1ab, 0x21b862a8, 0x32e8915c, 0xc083125f, 0x144976b4, 0xe622f5b7, 0xf5720643, 0x07198540,
+  0x590ab964, 0xab613a67, 0xb831c993, 0x4a5a4a90, 0x9e902e7b, 0x6cfbad78, 0x7fab5e8c, 0x8dc0dd8f,
+  0xe330a81a, 0x115b2b19, 0x020bd8ed, 0xf0605bee, 0x24aa3f05, 0xd6c1bc06, 0xc5914ff2, 0x37faccf1,
+  0x69e9f0d5, 0x9b8273d6, 0x88d28022, 0x7ab90321, 0xae7367ca, 0x5c18e4c9, 0x4f48173d, 0xbd23943e,
+  0xf36e6f75, 0x0105ec76, 0x12551f82, 0xe03e9c81, 0x34f4f86a, 0xc69f7b69, 0xd5cf889d, 0x27a40b9e,
+  0x79b737ba, 0x8bdcb4b9, 0x988c474d, 0x6ae7c44e, 0xbe2da0a5, 0x4c4623a6, 0x5f16d052, 0xad7d5351
+}
+
 // CRC-32C: reflected polynomial 0x82F63B78, initial value all ones, final
-// complement (RFC 3720 appendix B.4, RFC 3385). Bit-serial: eight steps per
-// byte, no table, no allocation. `crc` is a finished checksum to continue
-// from; pass 0 to start.
+// complement (RFC 3720 appendix B.4, RFC 3385). One table lookup per byte;
+// the index is masked to the table's 256 entries, which proves the access
+// (docs/spec/50-borrowing.md, masked index). `crc` is a finished checksum
+// to continue from; pass 0 to start.
 pub crc32c_update: (crc: u32, src: []u8): u32 {
   state: u32 = crc ^ u32(4294967295)
   i: u32 = 0
   while i < len(src) {
-    state = state ^ u32(src[i])
-    bit: u32 = 0
-    while bit < u32(8) {
-      mask: u32 = u32(0) - (state & u32(1))
-      state = (state >> u32(1)) ^ (u32(0x82f63b78) & mask)
-      bit = bit + u32(1)
-    }
+    state = CRC32C_TABLE[(state ^ u32(src[i])) & u32(255)] ^ (state >> u32(8))
     i = i + u32(1)
   }
   state ^ u32(4294967295)
@@ -190,17 +253,19 @@ BLAKE3_CHUNK_END: u32 = 2
 BLAKE3_PARENT: u32 = 4
 BLAKE3_ROOT: u32 = 8
 
-blake3_g: (v: [16]u32, a: u32, b: u32, c: u32, d: u32, mx: u32, my: u32): [16]u32 {
-  state: [16]u32 = v
-  state[a] = state[a] + state[b] + mx
-  state[d] = rotr32(state[d] ^ state[a], u32(16))
-  state[c] = state[c] + state[d]
-  state[b] = rotr32(state[b] ^ state[c], u32(12))
-  state[a] = state[a] + state[b] + my
-  state[d] = rotr32(state[d] ^ state[a], u32(8))
-  state[c] = state[c] + state[d]
-  state[b] = rotr32(state[b] ^ state[c], u32(7))
-  state
+// The quarter round over four words by value; the callers name the state
+// words with constant indices, so every access is proven by the static
+// extent and the emitted C touches the words directly.
+blake3_g: (a: u32, b: u32, c: u32, d: u32, mx: u32, my: u32): [4]u32 {
+  a1: u32 = a + b + mx
+  d1: u32 = rotr32(d ^ a1, u32(16))
+  c1: u32 = c + d1
+  b1: u32 = rotr32(b ^ c1, u32(12))
+  a2: u32 = a1 + b1 + my
+  d2: u32 = rotr32(d1 ^ a2, u32(8))
+  c2: u32 = c1 + d2
+  b2: u32 = rotr32(b1 ^ c2, u32(7))
+  [4]u32{ a2, b2, c2, d2 }
 }
 
 // The message permutation applied between rounds (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8).
@@ -219,14 +284,46 @@ blake3_compress: (cv: [8]u32, block: [16]u32, counter: u64, block_len: u32, flag
   m: [16]u32 = block
   round: u32 = 0
   while round < u32(7) {
-    v = blake3_g(v, u32(0), u32(4), u32(8), u32(12), m[0], m[1])
-    v = blake3_g(v, u32(1), u32(5), u32(9), u32(13), m[2], m[3])
-    v = blake3_g(v, u32(2), u32(6), u32(10), u32(14), m[4], m[5])
-    v = blake3_g(v, u32(3), u32(7), u32(11), u32(15), m[6], m[7])
-    v = blake3_g(v, u32(0), u32(5), u32(10), u32(15), m[8], m[9])
-    v = blake3_g(v, u32(1), u32(6), u32(11), u32(12), m[10], m[11])
-    v = blake3_g(v, u32(2), u32(7), u32(8), u32(13), m[12], m[13])
-    v = blake3_g(v, u32(3), u32(4), u32(9), u32(14), m[14], m[15])
+    g0: [4]u32 = blake3_g(v[0], v[4], v[8], v[12], m[0], m[1])
+    v[0] = g0[0]
+    v[4] = g0[1]
+    v[8] = g0[2]
+    v[12] = g0[3]
+    g1: [4]u32 = blake3_g(v[1], v[5], v[9], v[13], m[2], m[3])
+    v[1] = g1[0]
+    v[5] = g1[1]
+    v[9] = g1[2]
+    v[13] = g1[3]
+    g2: [4]u32 = blake3_g(v[2], v[6], v[10], v[14], m[4], m[5])
+    v[2] = g2[0]
+    v[6] = g2[1]
+    v[10] = g2[2]
+    v[14] = g2[3]
+    g3: [4]u32 = blake3_g(v[3], v[7], v[11], v[15], m[6], m[7])
+    v[3] = g3[0]
+    v[7] = g3[1]
+    v[11] = g3[2]
+    v[15] = g3[3]
+    g4: [4]u32 = blake3_g(v[0], v[5], v[10], v[15], m[8], m[9])
+    v[0] = g4[0]
+    v[5] = g4[1]
+    v[10] = g4[2]
+    v[15] = g4[3]
+    g5: [4]u32 = blake3_g(v[1], v[6], v[11], v[12], m[10], m[11])
+    v[1] = g5[0]
+    v[6] = g5[1]
+    v[11] = g5[2]
+    v[12] = g5[3]
+    g6: [4]u32 = blake3_g(v[2], v[7], v[8], v[13], m[12], m[13])
+    v[2] = g6[0]
+    v[7] = g6[1]
+    v[8] = g6[2]
+    v[13] = g6[3]
+    g7: [4]u32 = blake3_g(v[3], v[4], v[9], v[14], m[14], m[15])
+    v[3] = g7[0]
+    v[4] = g7[1]
+    v[9] = g7[2]
+    v[14] = g7[3]
     round < u32(6) ? { m = blake3_permute(m) }
     round = round + u32(1)
   }
@@ -244,8 +341,7 @@ blake3_words: (block: [64]u8): [16]u32 {
   m: [16]u32
   i: u32 = 0
   while i < u32(16) {
-    at: u32 = i * u32(4)
-    m[i] = u32(block[at]) | (u32(block[at + u32(1)]) << u32(8)) | (u32(block[at + u32(2)]) << u32(16)) | (u32(block[at + u32(3)]) << u32(24))
+    m[i] = u32(block[i * u32(4)]) | (u32(block[i * u32(4) + u32(1)]) << u32(8)) | (u32(block[i * u32(4) + u32(2)]) << u32(16)) | (u32(block[i * u32(4) + u32(3)]) << u32(24))
     i = i + u32(1)
   }
   m

@@ -136,6 +136,7 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			expiredDecl:        make(map[string]ast.Node),
 			mutableDependents:  make(map[string]bool),
 			mutableCalls:       make(map[*ast.InvocationExpression]bool),
+			unprovenRoots:      make(map[string]bool),
 		}
 		analysis.pushScope()
 		// The function's own contract fixes what its body may do with each
@@ -175,6 +176,28 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 					if mode := own.parameterMode(index); mode != ResourceParameterUnspecified {
 						analysis.entryModes[parameter.Name.Value] = entryAuthority{mode: mode, declaration: parameter.Name}
 					}
+				}
+			} else if len(fn.TypeParams) == 0 {
+				// An aggregate parameter (a record or ADT holding resources)
+				// enters with its resource paths: under a contracted mode each
+				// path carries the parameter's entry authority as a tracked
+				// class, with sibling paths never assumed distinct; without a
+				// mode the paths have unknown provenance and fail closed.
+				// Generic templates are analyzed through their specializations.
+				paramType := tc.parseTypeExpression(parameter.Type)
+				mode := ResourceParameterUnspecified
+				if hasContract {
+					mode = own.parameterMode(index)
+				}
+				for _, path := range analysis.resourcePaths(parameter.Name.Value, paramType) {
+					if mode == ResourceParameterUnspecified {
+						analysis.unknownResources[path] = true
+						continue
+					}
+					analysis.flow.Register(path, parameter.Name)
+					analysis.parameters[path] = true
+					analysis.entryModes[path] = entryAuthority{mode: mode, declaration: parameter.Name}
+					analysis.unprovenRoots[parameter.Name.Value] = true
 				}
 			}
 		}
@@ -247,14 +270,25 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 		// A whole-record reassignment b = c rebinds every tracked field
 		// path of b to c's corresponding path.
 		recordType := a.tc.env.CheckedExpressionType(s.Value)
-		if _, isRecord := recordType.(*RecordType); isRecord {
-			source, isIdent := s.Value.(*ast.Identifier)
+		if len(a.resourcePaths(name, recordType)) > 0 {
 			for _, path := range a.dependentPathsUnder(name) {
 				// Rebinding the record releases what its fields depended on;
 				// bindPath below decides what they depend on now.
 				if len(a.ownerDependents(path)) == 0 {
 					a.clearDependent(path)
 				}
+			}
+			source, isIdent := s.Value.(*ast.Identifier)
+			switch s.Value.(type) {
+			case *ast.RecordLiteral, *ast.VariantExpression, *ast.InvocationExpression:
+				for _, path := range a.resourcePaths(name, recordType) {
+					if owners := a.ownerDependents(path); len(owners) > 0 {
+						a.reportDependent(s.Name, fmt.Sprintf("%q cannot be rebound while %q borrows from it", path, owners[0]), owners[0], a.dependents[owners[0]])
+						return
+					}
+				}
+				a.bindRecordValue(name, recordType, s.Value, s.Name)
+				return
 			}
 			for _, path := range a.resourcePaths(name, recordType) {
 				if !a.flow.Registered(path) && !a.unknownResources[path] {
@@ -369,21 +403,29 @@ func resourceName(expr ast.Expression) (string, bool) {
 // Box { inner: Handle, pair: Pair { left: Handle } } and root "b",
 // b.inner and b.pair.left.
 func (a *typedResourceAnalysis) resourcePaths(root string, typ Type) []string {
-	record, isRecord := typ.(*RecordType)
-	if !isRecord || record == nil {
+	return a.tc.resourcePathsOf(root, typ, a.model.ResourceTypes)
+}
+
+// aggregatePaths lists the resource paths below a named aggregate-valued
+// expression (an identifier or a record projection), or nothing for
+// anything else.
+func (a *typedResourceAnalysis) aggregatePaths(expr ast.Expression) []string {
+	name, ok := resourceName(expr)
+	if !ok || a.tc == nil || a.tc.env == nil {
 		return nil
 	}
-	var paths []string
-	for _, name := range record.orderedFieldNames() {
-		fieldType := record.Fields[name]
-		path := root + "." + name
-		if a.model.ResourceTypes[nominalTypeName(fieldType)] {
-			paths = append(paths, path)
-			continue
-		}
-		paths = append(paths, a.resourcePaths(path, fieldType)...)
+	return a.resourcePaths(name, a.tc.env.CheckedExpressionType(expr))
+}
+
+// sameUnprovenRoot reports whether two distinct paths lie under one
+// aggregate parameter whose paths were never proven distinct.
+func (a *typedResourceAnalysis) sameUnprovenRoot(left, right string) bool {
+	if left == right {
+		return false
 	}
-	return paths
+	leftRoot, _, leftIsPath := strings.Cut(left, ".")
+	rightRoot, _, rightIsPath := strings.Cut(right, ".")
+	return leftIsPath && rightIsPath && leftRoot == rightRoot && a.unprovenRoots[leftRoot]
 }
 
 // bindRecordFields gives a freshly declared record binding's resource
@@ -396,14 +438,19 @@ func (a *typedResourceAnalysis) resourcePaths(root string, typ Type) []string {
 // consuming use of them fails closed: distinct fields are never assumed
 // distinct resources without provenance saying so.
 func (a *typedResourceAnalysis) bindRecordFields(stmt *ast.VariableDeclaration) {
-	if stmt == nil || stmt.Name == nil || stmt.Type == nil {
+	if stmt == nil || stmt.Name == nil {
 		return
 	}
-	recordType := a.tc.parseTypeExpression(stmt.Type)
-	if _, isRecord := recordType.(*RecordType); !isRecord {
+	var aggregateType Type
+	if stmt.Type != nil {
+		aggregateType = a.tc.parseTypeExpression(stmt.Type)
+	} else if a.tc.env != nil {
+		aggregateType = a.tc.env.CheckedDeclarationType(stmt)
+	}
+	if len(a.resourcePaths(stmt.Name.Value, aggregateType)) == 0 {
 		return
 	}
-	a.bindRecordValue(stmt.Name.Value, recordType, stmt.Value, stmt.Name)
+	a.bindRecordValue(stmt.Name.Value, aggregateType, stmt.Value, stmt.Name)
 }
 
 // bindRecordValue gives the resource paths below root, a record of the
@@ -411,13 +458,30 @@ func (a *typedResourceAnalysis) bindRecordFields(stmt *ast.VariableDeclaration) 
 // (recursing into record-typed fields), a named record aliases every path
 // to the source's corresponding path, and anything else leaves every path
 // with unknown provenance.
-func (a *typedResourceAnalysis) bindRecordValue(root string, recordType Type, value ast.Expression, origin ast.Node) {
-	record, isRecord := recordType.(*RecordType)
-	if !isRecord || record == nil {
+func (a *typedResourceAnalysis) bindRecordValue(root string, aggregateType Type, value ast.Expression, origin ast.Node) {
+	paths := a.resourcePaths(root, aggregateType)
+	if len(paths) == 0 {
 		return
+	}
+	clear := func() {
+		for _, path := range paths {
+			a.flow.Forget(path)
+			delete(a.unknownResources, path)
+		}
+	}
+	unknownAll := func() {
+		clear()
+		for _, path := range paths {
+			a.unknownResources[path] = true
+		}
 	}
 	switch v := value.(type) {
 	case *ast.RecordLiteral:
+		record, isRecord := aggregateType.(*RecordType)
+		if !isRecord || record == nil {
+			unknownAll()
+			return
+		}
 		for _, field := range v.FieldOrder {
 			fieldType, declared := record.Fields[field.Name]
 			if !declared {
@@ -428,13 +492,62 @@ func (a *typedResourceAnalysis) bindRecordValue(root string, recordType Type, va
 				a.bindPath(path, field.Value, origin)
 				continue
 			}
-			if _, nested := fieldType.(*RecordType); nested {
-				a.bindRecordValue(path, fieldType, field.Value, origin)
+			a.bindRecordValue(path, fieldType, field.Value, origin)
+		}
+	case *ast.VariantExpression:
+		// Construction: the chosen variant's payload path takes the
+		// payload's provenance; the other variants' paths are absent.
+		clear()
+		if v.Variant == nil || v.Payload == nil {
+			return
+		}
+		payloadType := a.tc.payloadTypeOfVariant(aggregateType, v.Variant.Value)
+		path := root + ".$" + v.Variant.Value
+		if payloadType == nil {
+			return
+		}
+		if a.model.ResourceTypes[nominalTypeName(payloadType)] {
+			a.bindPath(path, v.Payload, origin)
+			return
+		}
+		a.bindRecordValue(path, payloadType, v.Payload, origin)
+	case *ast.InvocationExpression:
+		// A contracted call's result fact applies to every resource path of
+		// an aggregate result: fresh registers each as a new class, alias
+		// makes each an alias of the argument, borrow makes each a dependent.
+		clear()
+		if a.freshCalls[v] {
+			for _, path := range paths {
+				a.flow.Register(path, origin)
 			}
+			return
+		}
+		if source, aliased := a.aliasCalls[v]; aliased {
+			for _, path := range paths {
+				if source != "" && a.flow.CanUse(source) {
+					a.flow.Alias(path, source, origin)
+				} else {
+					a.unknownResources[path] = true
+				}
+			}
+			return
+		}
+		if owners, borrowed := a.borrowCalls[v]; borrowed {
+			for _, path := range paths {
+				if len(owners) > 0 && a.adoptDependency(path, owners, a.mutableCalls[v], origin, value) {
+					a.flow.Register(path, origin)
+				} else {
+					a.unknownResources[path] = true
+				}
+			}
+			return
+		}
+		for _, path := range paths {
+			a.unknownResources[path] = true
 		}
 	default:
 		if source, ok := resourceName(value); ok {
-			for _, path := range a.resourcePaths(root, recordType) {
+			for _, path := range paths {
 				sourcePath := source + path[len(root):]
 				a.flow.Forget(path)
 				delete(a.unknownResources, path)
@@ -454,11 +567,33 @@ func (a *typedResourceAnalysis) bindRecordValue(root string, recordType Type, va
 			}
 			return
 		}
-		for _, path := range a.resourcePaths(root, recordType) {
-			a.flow.Forget(path)
-			a.unknownResources[path] = true
-		}
+		unknownAll()
 	}
+}
+
+// bindPathFrom gives a destination name or path the provenance of a
+// tracked source path (a match binding taking a payload, a copied
+// aggregate): an alias when the source is live, a use error when it was
+// consumed, unknown provenance otherwise.
+func (a *typedResourceAnalysis) bindPathFrom(destination, sourcePath string, origin ast.Node) {
+	a.flow.Forget(destination)
+	delete(a.unknownResources, destination)
+	if a.flow.Registered(sourcePath) {
+		if !a.flow.CanUse(sourcePath) {
+			a.use(sourcePath, origin)
+			a.unknownResources[destination] = true
+			return
+		}
+		if dependent, owners, isDependent := a.dependentOf(sourcePath); isDependent {
+			if !a.adoptDependency(destination, owners, a.mutableDependents[dependent], origin, origin) {
+				a.unknownResources[destination] = true
+				return
+			}
+		}
+		a.flow.Alias(destination, sourcePath, origin)
+		return
+	}
+	a.unknownResources[destination] = true
 }
 
 // bindPath gives a resource path (or name) the provenance of a value: an
@@ -533,6 +668,9 @@ func tailIdentifiers(expr ast.Expression) []*ast.Identifier {
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		return []*ast.Identifier{e}
+	case *ast.VariantExpression:
+		// A resource returned inside a variant (.Ok(h)) is returned.
+		return tailIdentifiers(e.Payload)
 	case *ast.BlockExpression:
 		if e.Block == nil || len(e.Block.Statements) == 0 {
 			return nil
@@ -568,7 +706,7 @@ func (a *typedResourceAnalysis) destinationScope(path string) int {
 // permission, provided the record binding that holds path does not outlive
 // any owner (an owner bound in an inner scope would be gone first). It
 // reports OAK-B0118 and returns false otherwise.
-func (a *typedResourceAnalysis) adoptDependency(path string, owners map[string]bool, mutable bool, origin ast.Node, value ast.Expression) bool {
+func (a *typedResourceAnalysis) adoptDependency(path string, owners map[string]bool, mutable bool, origin ast.Node, value ast.Node) bool {
 	destination := a.destinationScope(path)
 	for _, owner := range sortedOwners(owners) {
 		if a.scopeOf(owner) > destination {
@@ -633,6 +771,8 @@ func tailCalls(expr ast.Expression) []*ast.InvocationExpression {
 	switch e := expr.(type) {
 	case *ast.InvocationExpression:
 		return []*ast.InvocationExpression{e}
+	case *ast.VariantExpression:
+		return tailCalls(e.Payload)
 	case *ast.BlockExpression:
 		if e.Block == nil || len(e.Block.Statements) == 0 {
 			return nil
@@ -658,6 +798,8 @@ func tailLiterals(expr ast.Expression) []*ast.RecordLiteral {
 	switch e := expr.(type) {
 	case *ast.RecordLiteral:
 		return []*ast.RecordLiteral{e}
+	case *ast.VariantExpression:
+		return tailLiterals(e.Payload)
 	case *ast.BlockExpression:
 		if e.Block == nil || len(e.Block.Statements) == 0 {
 			return nil
@@ -1048,6 +1190,11 @@ type typedResourceAnalysis struct {
 	// mutableCalls marks borrow-returning calls whose result is one.
 	mutableDependents map[string]bool
 	mutableCalls      map[*ast.InvocationExpression]bool
+	// unprovenRoots marks aggregate parameters whose resource paths were
+	// registered under a contract: the caller transferred or lent the whole
+	// value, but nothing proves two of its paths denote distinct resources,
+	// so an exclusive pairing of sibling paths fails closed.
+	unprovenRoots map[string]bool
 	// entryModes records, per resource parameter of the function under
 	// analysis, the authority its own contract grants on entry.
 	entryModes map[string]entryAuthority
@@ -1261,26 +1408,43 @@ func (a *typedResourceAnalysis) checkParameterForwarding(expr *ast.InvocationExp
 	}
 	for _, position := range positions {
 		argument, required := position.argument, position.required
-		ident, isIdent := argument.(*ast.Identifier)
-		if !isIdent || ident == nil || !a.flow.Registered(ident.Value) {
-			continue
-		}
 		if required == ResourceParameterUnspecified {
 			continue
 		}
-		parameter, entry, governed := a.entryAuthorityOf(ident.Value)
-		if !governed || authorityRank(required) <= authorityRank(entry.mode) {
-			continue
+		var names []string
+		if ident, isIdent := argument.(*ast.Identifier); isIdent && ident != nil {
+			if a.flow.Registered(ident.Value) {
+				names = []string{ident.Value}
+			} else {
+				// An aggregate argument forwards every tracked path below it.
+				names = a.aggregatePaths(argument)
+			}
 		}
-		ok = false
+		for _, name := range names {
+			if !a.flow.Registered(name) {
+				continue
+			}
+			parameter, entry, governed := a.entryAuthorityOf(name)
+			if !governed || authorityRank(required) <= authorityRank(entry.mode) {
+				continue
+			}
+			ok = false
+			a.reportForwarding(expr, argument, name, parameter, entry, required)
+		}
+	}
+	return ok
+}
+
+func (a *typedResourceAnalysis) reportForwarding(expr *ast.InvocationExpression, argument ast.Expression, name, parameter string, entry entryAuthority, required ResourceParameterMode) {
+	{
 		callee, _ := a.callableIdentity(expr)
 		title := fmt.Sprintf("parameter %q enters with %s authority and cannot be passed to the %s parameter of %s", parameter, entry.mode, required, callee)
 		d := a.tc.addResourceDiagnosticWithCode(argument, CodeResourceParameterForwarded, title)
 		if entry.declaration != nil {
 			d.AddSecondary(diagnostic.NodeToRange(entry.declaration), fmt.Sprintf("%q is declared %s by this function's resource contract", parameter, entry.mode))
 		}
-		if parameter != ident.Value {
-			for _, edge := range a.flow.AliasPath(parameter, ident.Value) {
+		if parameter != name {
+			for _, edge := range a.flow.AliasPath(parameter, name) {
 				message := fmt.Sprintf("resource alias %q derives authority from %q", edge.Child, edge.Parent)
 				if edge.Origin != nil {
 					d.AddSecondary(diagnostic.NodeToRange(edge.Origin), message)
@@ -1297,7 +1461,6 @@ func (a *typedResourceAnalysis) checkParameterForwarding(expr *ast.InvocationExp
 		}
 		d.AddHelp("declare the parameter with the stronger mode in this function's contract, or have the caller perform the operation")
 	}
-	return ok
 }
 
 func (m ResourceModel) isResourceType(expr ast.Expression) bool {
@@ -1873,6 +2036,20 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 	}
 	a.bindCallable(stmt)
 
+	// An aggregate binding (a record or ADT holding resources) is bound
+	// path by path, whatever its initializer's result fact.
+	if stmt.Type != nil {
+		if len(a.resourcePaths(stmt.Name.Value, a.tc.parseTypeExpression(stmt.Type))) > 0 {
+			a.bindRecordFields(stmt)
+			return
+		}
+	} else if a.tc.env != nil {
+		if len(a.resourcePaths(stmt.Name.Value, a.tc.env.CheckedDeclarationType(stmt))) > 0 {
+			a.bindRecordFields(stmt)
+			return
+		}
+	}
+
 	fresh := false
 	borrowed := false
 	if call, ok := stmt.Value.(*ast.InvocationExpression); ok {
@@ -2160,6 +2337,13 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 		}
 		name, ok := a.trackedName(expr.Arguments[index])
 		if !ok {
+			// Consuming an aggregate moves the whole value: every tracked
+			// resource path below it is consumed (partial states come later).
+			for _, path := range a.aggregatePaths(expr.Arguments[index]) {
+				if a.flow.Registered(path) && a.flow.CanUse(path) {
+					a.flow.Consume(path, expr)
+				}
+			}
 			continue
 		}
 		// Argument evaluation already performed the ordinary Use check. If it
@@ -2222,6 +2406,7 @@ func (a *typedResourceAnalysis) match(expr *ast.MatchExpression) {
 		return
 	}
 	a.expression(expr.Scrutinee)
+	scrutineeType := a.tc.env.CheckedExpressionType(expr.Scrutinee)
 	incoming := a.flow.Clone()
 	incomingDeps, incomingScopes, incomingDecls := a.cloneDependents()
 	branches := make([]*resourceflow.Flow, 0, len(expr.Arms))
@@ -2233,7 +2418,11 @@ func (a *typedResourceAnalysis) match(expr *ast.MatchExpression) {
 		a.flow = incoming.Clone()
 		a.dependents, a.dependentScope, a.dependentDecl = incomingDeps, incomingScopes, incomingDecls
 		incomingDeps, incomingScopes, incomingDecls = a.cloneDependents()
+		// A payload binding lives for its arm only.
+		a.pushScope()
+		a.bindPattern(arm.Pattern, expr.Scrutinee, "", scrutineeType)
 		a.expression(arm.Body)
+		a.popScope()
 		branches = append(branches, a.flow.Clone())
 		armDeps, armScopes, armDecls := a.cloneDependents()
 		a.dependents, a.dependentScope, a.dependentDecl = mergedDeps, mergedScopes, mergedDecls
@@ -2246,6 +2435,64 @@ func (a *typedResourceAnalysis) match(expr *ast.MatchExpression) {
 		return
 	}
 	a.flow = resourceflow.Join(branches...)
+}
+
+// bindPattern gives the names a pattern binds the provenance of the
+// scrutinee's corresponding paths (docs/spec/50-borrowing.md section 9,
+// "Resources through aggregates"): a variant pattern descends into
+// $Variant, a binding pattern aliases its name to the path it stands for
+// — so inspecting the binding is a use of the payload's authority and
+// consuming it consumes the payload's location — and a scrutinee that is a
+// contracted call binds by the call's result fact. Wildcards and literals
+// bind nothing.
+func (a *typedResourceAnalysis) bindPattern(pattern ast.Pattern, scrutinee ast.Expression, relative string, typ Type) {
+	switch p := pattern.(type) {
+	case *ast.VariantPattern:
+		if p == nil || p.Variant == nil || p.Payload == nil {
+			return
+		}
+		a.bindPattern(p.Payload, scrutinee, relative+".$"+p.Variant.Value, a.tc.payloadTypeOfVariant(typ, p.Variant.Value))
+	case *ast.BindingPattern:
+		if p == nil || p.Name == nil {
+			return
+		}
+		name := p.Name.Value
+		a.bind(name)
+		isResource := typ != nil && a.model.ResourceTypes[nominalTypeName(typ)]
+		destinations := []string{name}
+		if !isResource {
+			destinations = a.resourcePaths(name, typ)
+		}
+		if len(destinations) == 0 {
+			return
+		}
+		if source, ok := resourceName(scrutinee); ok {
+			for _, destination := range destinations {
+				a.bindPathFrom(destination, source+relative+destination[len(name):], p.Name)
+			}
+			return
+		}
+		if call, isCall := scrutinee.(*ast.InvocationExpression); isCall {
+			for _, destination := range destinations {
+				a.flow.Forget(destination)
+				delete(a.unknownResources, destination)
+				switch {
+				case a.freshCalls[call]:
+					a.flow.Register(destination, p.Name)
+				case a.aliasCalls[call] != "" && a.flow.CanUse(a.aliasCalls[call]):
+					a.flow.Alias(destination, a.aliasCalls[call], p.Name)
+				case len(a.borrowCalls[call]) > 0 && a.adoptDependency(destination, a.borrowCalls[call], a.mutableCalls[call], p.Name, scrutinee):
+					a.flow.Register(destination, p.Name)
+				default:
+					a.unknownResources[destination] = true
+				}
+			}
+			return
+		}
+		for _, destination := range destinations {
+			a.unknownResources[destination] = true
+		}
+	}
 }
 
 func (a *typedResourceAnalysis) use(name string, node ast.Node) {

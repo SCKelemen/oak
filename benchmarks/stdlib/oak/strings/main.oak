@@ -1,0 +1,61 @@
+// Benchmark entry points for the strings package: UTF-8 validation, a
+// decode scan, decimal parsing of newline-separated numbers, and decimal
+// formatting through the text builder.
+package main
+
+import("strings")
+
+pub bench_utf8_validate: (src: []u8): Bool = strings.utf8_validate(src)
+
+scalar_or_stop: (result: Result[strings.TextScalar, strings.TextError]): strings.TextScalar =
+  result ? | .Ok(s) => s | .Err(e) => strings.TextScalar { value: u32(0), next: u32(0) }
+
+// Sum of every scalar value (wrapping), 0 if a decode fails.
+pub bench_utf8_scan: (src: []u8): u64 {
+  acc: u64 = u64(0)
+  at: u32 = u32(0)
+  failed: Bool = false
+  while at < len(src) && !failed {
+    s: strings.TextScalar = scalar_or_stop(strings.utf8_decode(src, at))
+    s.next == at ? { failed = true } | {
+      acc = acc + u64(s.value)
+      at = s.next
+    }
+  }
+  failed ? u64(0) | acc
+}
+
+parsed_or_zero: (result: Result[u64, strings.TextParseError]): u64 = result ? | .Ok(v) => v | .Err(e) => u64(0)
+
+// FNV-1a over the numbers in `src`, one decimal per line.
+pub bench_parse_u64: (src: []u8): u64 {
+  acc: u64 = u64(14695981039346656037)
+  start: u32 = u32(0)
+  at: u32 = u32(0)
+  while at < len(src) {
+    src[at] == u8(10) ? {
+      value: u64 = parsed_or_zero(strings.text_parse_u64(src[start:at], u32(10)))
+      acc = (acc ^ value) * u64(1099511628211)
+      start = at + u32(1)
+    }
+    at = at + u32(1)
+  }
+  acc
+}
+
+// Formats every value in decimal followed by a newline; returns bytes written,
+// 0 on failure.
+pub bench_append_u64: (values: []u64, dst: [*]u8): u32 {
+  builder: strings.TextBuilder = strings.text_builder()
+  newline: [1]u8 = [1]u8{ 10 }
+  separator: []u8 = view(&newline)
+  i: u32 = u32(0)
+  while i < len(values) {
+    builder = strings.append_u64(builder, dst, values[i])
+    builder = strings.append_text(builder, dst, separator)
+    i = i + u32(1)
+  }
+  builder.status == u32(0) ? builder.length | u32(0)
+}
+
+main: (): i32 = 0

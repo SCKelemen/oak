@@ -178,6 +178,17 @@ the one match form; whole-value moves before partial-field states.
 reject reuse of the old location; return through `Result` without
 duplication; generic helpers specialize without erasing authority.
 
+**Landed (first increment, 2026-09-12):** resource paths through record
+fields and ADT payloads (`50-borrowing.md` §9 "Resources through
+aggregates"), construction and match extraction (inspect keeps the source,
+extract consumes the location, re-matching is `OAK-B0111`), return through
+`Result` as an alias of a consumed parameter (no duplication), contracts on
+aggregate parameters path by path with sibling paths failing closed, and a
+template's contract governing its specializations' payloads. All four
+"done when" cases are tested. Open: borrowing or aliasing an aggregate
+argument as a whole, partial-field states after a move, array elements,
+and copyability as a declared capability.
+
 ## 6. Cleanup and terminal-state obligations
 
 Separate: may an unused value be dropped; does dropping clean up; must a
