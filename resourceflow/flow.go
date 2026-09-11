@@ -291,6 +291,26 @@ func (f *Flow) Aliases(left, right string) bool {
 	return lok && rok && li.class == ri.class
 }
 
+// ClassMates lists, sorted, the other names that share name's authority
+// class: the names through which the same resource is still reachable.
+func (f *Flow) ClassMates(name string) []string {
+	if f == nil {
+		return nil
+	}
+	info, ok := f.aliases[name]
+	if !ok {
+		return nil
+	}
+	var mates []string
+	for other, otherInfo := range f.aliases {
+		if other != name && otherInfo.class == info.class {
+			mates = append(mates, other)
+		}
+	}
+	sort.Strings(mates)
+	return mates
+}
+
 // AliasPath returns the deterministic shortest programmer-visible provenance
 // path between two aliases in one authority class.
 func (f *Flow) AliasPath(from, to string) []AliasEdge {

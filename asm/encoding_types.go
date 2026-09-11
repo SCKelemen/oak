@@ -16,6 +16,12 @@ type isaEncoding struct {
 	Forms     []isaForm  // the template readings (optional groups present or absent)
 	Alias     string     // for an alias: the template of the instruction it stands for
 	AliasCond string     // and the condition under which the alias is preferred
+	// Mode is the PSTATE the instruction needs (from Arm's Check* call):
+	// "" anywhere, sm (streaming SVE mode), za (the ZA array enabled), smza
+	// (both), nosm (Advanced SIMD illegal in streaming mode).
+	Mode string
+	// Flags marks an Execute that writes NZCV (whilelt, the SVE compares).
+	Flags bool
 }
 
 // isaField is a named bit field: bits [Hi-Width+1, Hi].
@@ -49,6 +55,16 @@ type isaDefault struct {
 // (PC-relative, Scale), table (a spelled word encoded by a value table),
 // cond, sysreg, mem (Sub: base, then offset or index/extend/amount; Mode
 // off/pre/post), list (Sub: the registers), text (a fixed word).
+//
+// Scalable kinds (SVE/SME): zreg (a z register; Text the fixed element
+// letter or Sub[0] the size table; Scale/Offset the "times N"/"plus N" of
+// a list head), zlane (a z element: Sub the size table and the idx
+// immediate), preg (a predicate; Qual the fixed /M or /Z, or a <ZM> table
+// in Sub), pnreg (a predicate-as-counter, Offset 8, optional idx), tile (a
+// ZA tile: Fields, or Special fixed with the number in Offset), slice (a
+// ZA slice or vector: Sub tile, hv, elem, idx, offs, group; Count the
+// consecutive slices named), zlist (Count consecutive z registers from
+// Sub[0], or one slice), tilemask (zero's list of tiles in Fields).
 type isaOperand struct {
 	Sym      string
 	Kind     string
@@ -62,6 +78,8 @@ type isaOperand struct {
 	Mode     string
 	Text     string
 	Special  string
+	Count    int
+	Qual     string
 	Table    []isaTableRow
 	Sizes    []isaTableRow
 	Sub      []isaOperand

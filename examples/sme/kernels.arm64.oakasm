@@ -1,0 +1,47 @@
+// The SME body of examples/sme/main.oak (docs/spec/94-assembler.md §9).
+//
+// Streaming mode is entered with smstart (which zeroes z0-z31 and p0-p15,
+// so the parameters live in general registers), the column predicate marks
+// the n live lanes of a vector, and each step of k loads column kk of A
+// (a row of at) and row kk of B and accumulates their outer product into
+// tile za0.s. The tile's rows are then stored under the same predicate,
+// one horizontal slice per row of C, and smstop returns to the caller's
+// mode before ret. The checker holds every instruction to Arm's template,
+// to the mode it needs, and to the zeroing smstart/smstop perform; the
+// predicated loads and stores are trusted (§5).
+
+fmopa_f32: (at: []f32, b: []f32, c: [*]f32, n: u32) -> () = {
+  bind x0, w1 = at
+  bind x2, w3 = b
+  bind x4, w5 = c
+  bind w6 = n
+  clobber w9, w11, w12
+  clobber z0, z1, p0
+  udiv w9, w1, w6          // k = len(at) / n
+  mov w11, w6
+  lsl x11, x11, #2         // row stride in bytes
+  smstart
+  whilelt p0.s, wzr, w6    // lanes below n
+  zero {za0.s}
+loop:
+  cbz w9, store
+  ld1w {z0.s}, p0/z, [x0]  // column kk of A
+  ld1w {z1.s}, p0/z, [x2]  // row kk of B
+  fmopa za0.s, p0/m, p0/m, z0.s, z1.s
+  add x0, x0, x11
+  add x2, x2, x11
+  sub w9, w9, #1
+  b loop
+store:
+  mov w12, #0
+rows:
+  cmp w12, w6
+  b.hs done
+  st1w {za0h.s[w12, 0]}, p0, [x4]
+  add x4, x4, x11
+  add w12, w12, #1
+  b rows
+done:
+  smstop
+  ret
+}

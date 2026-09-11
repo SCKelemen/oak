@@ -18,6 +18,11 @@ type ResourceProtocolDeclaration struct {
 	States        []string
 	Initial       string
 	Transitions   []ResourceTransitionDeclaration
+	// Terminal lists the states a resource of this protocol must reach
+	// before its last name leaves scope (docs/spec/50-borrowing.md section
+	// 9, terminal-state obligations). Empty means the value may be dropped
+	// in any state, today's meaning.
+	Terminal []string
 }
 
 // ResourceParameterMode describes how one callable parameter participates in
@@ -120,6 +125,7 @@ type ResolvedResourceProtocol struct {
 	Name        string
 	States      []string
 	Initial     string
+	Terminal    []string
 	Transitions []ResolvedResourceTransition
 }
 
@@ -246,7 +252,19 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 			return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q initial state %q does not exist", declaration.Name, declaration.Initial)
 		}
 
-		protocol := ResolvedResourceProtocol{Name: declaration.Name, States: states, Initial: declaration.Initial}
+		seenTerminal := make(map[string]bool, len(declaration.Terminal))
+		terminal := make([]string, 0, len(declaration.Terminal))
+		for _, state := range declaration.Terminal {
+			if !stateNames[state] {
+				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q terminal state %q does not exist", declaration.Name, state)
+			}
+			if seenTerminal[state] {
+				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q lists terminal state %q twice", declaration.Name, state)
+			}
+			seenTerminal[state] = true
+			terminal = append(terminal, state)
+		}
+		protocol := ResolvedResourceProtocol{Name: declaration.Name, States: states, Initial: declaration.Initial, Terminal: terminal}
 		transitionNames := make(map[string]bool, len(declaration.Transitions))
 		for _, transition := range declaration.Transitions {
 			if transition.Name == "" {

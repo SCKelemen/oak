@@ -46,6 +46,13 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 		align = 4
 	}
 	fmt.Fprintf(&b, "  \"  .balign %d\\n\"\n", align)
+	if usesScalableFile(fn) {
+		// The host assembler must accept SVE/SME spellings (the Oak
+		// assembler needs no such directive on the native path).
+		for _, ext := range []string{"sme", "sme2", "sme-f64f64", "sme-i16i64"} {
+			fmt.Fprintf(&b, "  \"  .arch_extension %s\\n\"\n", ext)
+		}
+	}
 	fmt.Fprintf(&b, "  \"  .globl \" OAK_ASM_SYMBOL(%s) \"\\n\"\n", cSymbol)
 	fmt.Fprintf(&b, "  OAK_ASM_SYMBOL(%s) \":\\n\"\n", cSymbol)
 	// Labels render as GNU numeric local labels (1:, branches 1b/1f), which
@@ -89,6 +96,19 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 	return b.String()
 }
 
+// usesScalableFile reports a function with SVE/SME instructions.
+func usesScalableFile(fn *Function) bool {
+	for _, item := range fn.Items {
+		if instr, ok := item.(Instruction); ok {
+			spec := instructionTable[instr.Mnemonic]
+			if spec.tableForms && (len(spec.forms) == 0 || usesScalable(instr.Operands)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func renderInstruction(fn *Function, instr Instruction, symbolFor func(string) string, numbers map[string]int, defined map[string]bool) string {
 	mnemonic := instr.Mnemonic
 	if mnemonic == "b." {
@@ -122,6 +142,11 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 			names[i] = reg.Text
 		}
 		return "{" + strings.Join(names, ", ") + "}"
+	case TileSlice:
+		if o.Listed {
+			return "{" + o.Text + "}"
+		}
+		return o.Text
 	case FloatImmediate:
 		text := strconv.FormatFloat(o.Value, 'f', -1, 64)
 		if !strings.ContainsAny(text, ".eE") {
@@ -148,6 +173,9 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 		case MemPostIndex:
 			return fmt.Sprintf("[%s], #%d", o.Base.Text, o.Offset)
 		}
+		if o.MulVL {
+			return fmt.Sprintf("[%s, #%d, mul vl]", o.Base.Text, o.Offset)
+		}
 		if o.Offset == 0 {
 			return fmt.Sprintf("[%s]", o.Base.Text)
 		}
@@ -166,6 +194,9 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 	case SysReg:
 		return o.Name
 	case Option:
+		if o.Mul != 0 {
+			return fmt.Sprintf("%s, mul #%d", o.Name, o.Mul)
+		}
 		return o.Name
 	case Condition:
 		return o.Code

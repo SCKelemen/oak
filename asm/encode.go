@@ -80,6 +80,15 @@ func alignUp(n, to int64) int64 {
 // function. labels resolve local symbols; any other symbol yields a
 // relocation and a zero displacement.
 func EncodeInstruction(instr Instruction, pc int64, labels map[string]int64) (uint32, *Relocation, error) {
+	word, reloc, _, err := encodeInstruction(instr, pc, labels)
+	return word, reloc, err
+}
+
+// encodeInstruction also returns the encoder of the reading that matched
+// (nil for the assembler-chosen `mov` immediates), which names the
+// encoding and binds each operand to its template symbol — the checker's
+// view of an SVE/SME instruction's form (asm/isa_sme.go).
+func encodeInstruction(instr Instruction, pc int64, labels map[string]int64) (uint32, *Relocation, *encoder, error) {
 	operands := instr.Operands
 	if instr.Mnemonic == "b." {
 		operands = append([]Operand{Condition{Code: instr.Cond}}, operands...)
@@ -88,8 +97,9 @@ func EncodeInstruction(instr Instruction, pc int64, labels map[string]int64) (ui
 	// orr with a bitmask; Arm's aliases each cover one case.
 	if instr.Mnemonic == "mov" && len(operands) == 2 {
 		if imm, isImm := operands[1].(Immediate); isImm {
-			if reg, isReg := operands[0].(Register); isReg && reg.Class != ClassSP {
-				return encodeMovImmediate(reg, imm.Value)
+			if reg, isReg := operands[0].(Register); isReg && (reg.Class == ClassX || reg.Class == ClassW) {
+				word, reloc, err := encodeMovImmediate(reg, imm.Value)
+				return word, reloc, nil, err
 			}
 		}
 	}
@@ -101,9 +111,9 @@ func EncodeInstruction(instr Instruction, pc int64, labels map[string]int64) (ui
 			continue
 		}
 		for f := range enc.Forms {
-			word, reloc, err := encodeWith(enc, &enc.Forms[f], operands, pc, labels)
+			word, reloc, e, err := encodeWith(enc, &enc.Forms[f], operands, pc, labels)
 			if err == nil {
-				return word, reloc, nil
+				return word, reloc, e, nil
 			}
 			if _, shape := err.(shapeMismatch); !shape {
 				lastErr = err
@@ -118,15 +128,15 @@ func EncodeInstruction(instr Instruction, pc int64, labels map[string]int64) (ui
 		if mem, isMem := lastOperand(operands).(Memory); isMem && mem.Mode == MemOffset && mem.Index == nil {
 			retry := instr
 			retry.Mnemonic = unscaled
-			if word, reloc, err := EncodeInstruction(retry, pc, labels); err == nil {
-				return word, reloc, nil
+			if word, reloc, e, err := encodeInstruction(retry, pc, labels); err == nil {
+				return word, reloc, e, nil
 			}
 		}
 	}
 	if lastErr != nil {
-		return 0, nil, lastErr
+		return 0, nil, nil, lastErr
 	}
-	return 0, nil, fmt.Errorf("%s: no encoding admits operands %s (%s)", instr.Mnemonic, describeOperands(instr.Operands), strings.Join(reasons, "; "))
+	return 0, nil, nil, fmt.Errorf("%s: no encoding admits operands %s (%s)", instr.Mnemonic, describeOperands(instr.Operands), strings.Join(reasons, "; "))
 }
 
 var unscaledSpelling = map[string]string{"ldr": "ldur", "str": "stur", "ldrb": "ldurb", "strb": "sturb", "ldrh": "ldurh", "strh": "sturh", "ldrsb": "ldursb", "ldrsh": "ldursh", "ldrsw": "ldursw", "prfm": "prfum"}
@@ -151,23 +161,32 @@ func mismatch(format string, args ...interface{}) error {
 // encoder holds one attempt: the word under construction, the fields
 // written so far, and the operand values bound by symbol (for aliases).
 type encoder struct {
-	enc      *isaEncoding
-	word     uint32
-	written  map[string]uint32
-	bindings map[string]Operand
-	values   map[string]int64
-	esizes   []int64 // element widths the operands implied, in order
+	enc       *isaEncoding
+	word      uint32
+	written   map[string]uint32
+	patterned map[string]bool // fields a wildcard table row wrote bits of
+	bindings  map[string]Operand
+	values    map[string]int64
+	esizes    []int64 // element widths the operands implied, in order
 	// Modifiers the reading consumed: shifted/extended registers, and a
 	// shifted immediate (`#imm, lsl #12`).
 	consumed                 []Register
 	consumedShiftedImmediate bool
 	consumedExtend           bool
+	consumedMul              bool // `mul #n` after a pattern word
 	sawSP                    bool
 	writeImmh                bool // arrangement tables over immh write it (no shift immediate follows)
+	form                     *isaForm
 }
 
-func encodeWith(enc *isaEncoding, form *isaForm, operands []Operand, pc int64, labels map[string]int64) (uint32, *Relocation, error) {
-	e := &encoder{enc: enc, word: enc.Value, written: map[string]uint32{}, bindings: map[string]Operand{}, values: map[string]int64{}, writeImmh: true}
+func encodeWith(enc *isaEncoding, form *isaForm, operands []Operand, pc int64, labels map[string]int64) (uint32, *Relocation, *encoder, error) {
+	e := &encoder{enc: enc, form: form, word: enc.Value, written: map[string]uint32{}, patterned: map[string]bool{}, bindings: map[string]Operand{}, values: map[string]int64{}, writeImmh: true}
+	word, reloc, err := e.run(form, operands, pc, labels)
+	return word, reloc, e, err
+}
+
+func (e *encoder) run(form *isaForm, operands []Operand, pc int64, labels map[string]int64) (uint32, *Relocation, error) {
+	enc := e.enc
 	for _, fop := range form.Operands {
 		if fop.Special == "shift-immh" || fop.Special == "fbits" {
 			e.writeImmh = false // the shift immediate carries the element size
@@ -184,7 +203,7 @@ func encodeWith(enc *isaEncoding, form *isaForm, operands []Operand, pc int64, l
 	for fi := 0; fi < len(form.Operands); fi++ {
 		fop := &form.Operands[fi]
 		// Modifiers attach to the previous instruction operand.
-		if fop.Kind == "table" && (fop.Sym == "<shift>" || fop.Sym == "<extend>") || fop.Kind == "text" && (fop.Text == "LSL" || fop.Text == "MSL") {
+		if fop.Kind == "table" && (fop.Sym == "<shift>" || fop.Sym == "<extend>") || fop.Kind == "text" && (fop.Text == "LSL" || fop.Text == "MSL" || fop.Text == "MUL") {
 			if err := e.modifier(form.Operands, &fi, prev); err != nil {
 				return 0, nil, err
 			}
@@ -222,6 +241,10 @@ func encodeWith(enc *isaEncoding, form *isaForm, operands []Operand, pc int64, l
 		case Immediate:
 			if m.Shift != 0 && !e.consumedShiftedImmediate {
 				return 0, nil, mismatch("shifted immediate not admitted here")
+			}
+		case Option:
+			if m.Mul != 0 && !e.consumedMul {
+				return 0, nil, mismatch("mul #n not admitted here")
 			}
 		}
 	}
@@ -400,6 +423,16 @@ func (e *encoder) operand(fop *isaOperand, op Operand, pc int64, labels map[stri
 			text = strings.ToUpper(v.Name)
 		case Register:
 			text = strings.ToUpper(v.Text)
+		case FloatImmediate:
+			// A table of floating-point constants (`#0.5`, `#1.0`): match by value.
+			for _, row := range fop.Table {
+				if f, err := strconv.ParseFloat(strings.TrimPrefix(row.Text, "#"), 64); err == nil && f == v.Value {
+					text = row.Text
+				}
+			}
+			if text == "" {
+				return nil, mismatch("%s: %v is not one of its constants", fop.Sym, v.Value)
+			}
 		default:
 			return nil, mismatch("%s wants a spelled word", fop.Sym)
 		}
@@ -432,8 +465,377 @@ func (e *encoder) operand(fop *isaOperand, op Operand, pc int64, labels map[stri
 		return e.operand(&fop.Sub[0], list.Regs[0], pc, labels)
 	case "text":
 		return nil, e.fixedText(fop, op)
+	case "zreg":
+		reg, ok := op.(Register)
+		if !ok || reg.Class != ClassZ || reg.Lane >= 0 {
+			return nil, mismatch("%s wants a z register", fop.Sym)
+		}
+		if err := e.elementSize(fop, reg.Vec); err != nil {
+			return nil, err
+		}
+		return nil, e.scalableNumber(fop, reg)
+	case "zlane":
+		reg, ok := op.(Register)
+		if !ok || reg.Class != ClassZ || reg.Lane < 0 {
+			return nil, mismatch("%s wants an indexed z register", fop.Sym)
+		}
+		if err := e.elementSize(fop, reg.Vec); err != nil {
+			return nil, err
+		}
+		if err := e.scalableNumber(fop, reg); err != nil {
+			return nil, err
+		}
+		return nil, e.scalableIndex(fop, reg.Lane)
+	case "preg":
+		reg, ok := op.(Register)
+		if !ok || reg.Class != ClassP || reg.Lane >= 0 {
+			return nil, mismatch("%s wants a predicate register", fop.Sym)
+		}
+		if err := e.predicateQualifier(fop, reg.Qual); err != nil {
+			return nil, err
+		}
+		if err := e.elementSize(fop, reg.Vec); err != nil {
+			return nil, err
+		}
+		return nil, e.scalableNumber(fop, reg)
+	case "pnreg":
+		reg, ok := op.(Register)
+		if !ok || reg.Class != ClassPN {
+			return nil, mismatch("%s wants a predicate-as-counter register", fop.Sym)
+		}
+		if err := e.predicateQualifier(fop, reg.Qual); err != nil {
+			return nil, err
+		}
+		if err := e.elementSize(fop, reg.Vec); err != nil {
+			return nil, err
+		}
+		if err := e.scalableNumber(fop, reg); err != nil {
+			return nil, err
+		}
+		hasIndex := false
+		for _, sub := range fop.Sub {
+			if sub.Sym == "idx" {
+				hasIndex = true
+			}
+		}
+		if hasIndex != (reg.Lane >= 0) {
+			return nil, mismatch("%s: portion index", fop.Sym)
+		}
+		if hasIndex {
+			return nil, e.scalableIndex(fop, reg.Lane)
+		}
+		return nil, nil
+	case "tile":
+		reg, ok := op.(Register)
+		if !ok || reg.Class != ClassZA || reg.Num < 0 {
+			return nil, mismatch("%s wants a ZA tile", fop.Sym)
+		}
+		if err := e.elementSize(fop, reg.Vec); err != nil {
+			return nil, err
+		}
+		return nil, e.tileNumber(fop, reg.Num)
+	case "slice":
+		s, ok := op.(TileSlice)
+		if !ok || s.Listed {
+			return nil, mismatch("%s wants a ZA slice", fop.Sym)
+		}
+		return nil, e.slice(fop, s)
+	case "zlist":
+		if len(fop.Sub) == 1 && fop.Sub[0].Kind == "slice" {
+			s, ok := op.(TileSlice)
+			if !ok || !s.Listed {
+				return nil, mismatch("%s wants a braced ZA slice", fop.Sym)
+			}
+			return nil, e.slice(&fop.Sub[0], s)
+		}
+		list, ok := op.(RegisterList)
+		if !ok || len(list.Regs) == 0 || list.Regs[0].Class != ClassZ {
+			return nil, mismatch("%s wants a list of z registers", fop.Sym)
+		}
+		if len(list.Regs) != fop.Count {
+			return nil, mismatch("%s wants %d registers", fop.Sym, fop.Count)
+		}
+		for i, reg := range list.Regs {
+			if reg.Num != (list.Regs[0].Num+i)%32 {
+				return nil, fmt.Errorf("%s: the registers of a multi-vector group are consecutive", fop.Sym)
+			}
+		}
+		return e.operand(&fop.Sub[0], list.Regs[0], pc, labels)
+	case "tilemask":
+		list, ok := op.(RegisterList)
+		if !ok {
+			return nil, mismatch("%s wants a list of ZA tiles", fop.Sym)
+		}
+		mask, err := tileMask(list)
+		if err != nil {
+			return nil, err
+		}
+		return nil, e.writeFields(fop.Fields, uint64(mask))
 	}
 	return nil, fmt.Errorf("%s: operand kind %q is not encodable", fop.Sym, fop.Kind)
+}
+
+// elementSize checks a scalable operand's element size letter against the
+// reading: a fixed letter (`<Zn>.S`), a size table (`<Zd>.<T>`), or none
+// (`<Zd>` of movprfx, `<Pg>` of the stores).
+func (e *encoder) elementSize(fop *isaOperand, vec string) error {
+	letter := strings.ToUpper(vec)
+	if fop.Text != "" {
+		if letter != fop.Text {
+			return mismatch("%s wants element size %s", fop.Sym, strings.ToLower(fop.Text))
+		}
+		return nil
+	}
+	for i := range fop.Sub {
+		sub := &fop.Sub[i]
+		if sub.Kind == "table" && sub.Sym != "<ZM>" && sub.Sym != "hv" {
+			if vec == "" {
+				return mismatch("%s names an element size", fop.Sym)
+			}
+			return e.tableFill(sub.Fields, sub.Table, letter, fop.Sym)
+		}
+	}
+	if vec != "" {
+		return mismatch("%s takes no element size", fop.Sym)
+	}
+	return nil
+}
+
+// tableFill is table for an element-size row whose wildcard bits are free
+// (`1x` for D): they are set, the canonical spelling assemblers choose.
+// Rows whose wildcards another operand fills (dup's index above the size
+// marker, the SVE shift's tsize) are overwritten whole by that operand.
+func (e *encoder) tableFill(fields []string, rows []isaTableRow, text, sym string) error {
+	row, ok := tableRow(rows, text)
+	if !ok {
+		return mismatch("%s: %s is not one of its spellings", sym, text)
+	}
+	// Wildcards above the marker bit (`xxx10` of dup's tsz) are an index
+	// that defaults to 0; wildcards below a leading fixed bit (`1x` for D)
+	// are free, and the canonical choice sets them.
+	filled := isaTableRow{Text: row.Text}
+	for _, bits := range row.Bits {
+		first := strings.IndexAny(bits, "01")
+		var b strings.Builder
+		for i, ch := range bits {
+			switch {
+			case ch != 'x':
+				b.WriteRune(ch)
+			case first < 0 || i < first:
+				b.WriteByte('0')
+			default:
+				b.WriteByte('1')
+			}
+		}
+		filled.Bits = append(filled.Bits, b.String())
+	}
+	return e.table(fields, []isaTableRow{filled}, text, sym)
+}
+
+// scalableNumber writes a z, p, pn, or slice-index register number as the
+// explanation encodes it: `"Zn" times 2` (the head of a pair), `"PNg" plus
+// 8`, `"Rs" plus 12`.
+func (e *encoder) scalableNumber(fop *isaOperand, reg Register) error {
+	scale := fop.Scale
+	if scale <= 0 {
+		scale = 1
+	}
+	n := int64(reg.Num) - fop.Offset
+	if n < 0 {
+		return fmt.Errorf("%s: %s is below the registers this operand admits", fop.Sym, reg.Text)
+	}
+	if n%scale != 0 {
+		return fmt.Errorf("%s: %s must be a multiple of %d", fop.Sym, reg.Text, scale)
+	}
+	if len(fop.Fields) == 0 {
+		return fmt.Errorf("%s: register without a field", fop.Sym)
+	}
+	if err := e.writeFields(fop.Fields, uint64(n/scale)); err != nil {
+		return fmt.Errorf("%s: %s is not among the registers this operand admits (%v)", fop.Sym, reg.Text, err)
+	}
+	return nil
+}
+
+// scalableIndex writes the element or portion index of `z2.s[1]`, `z1[0]`,
+// `pn8[0]` through the idx immediate of the reading.
+func (e *encoder) scalableIndex(fop *isaOperand, lane int) error {
+	for i := range fop.Sub {
+		sub := &fop.Sub[i]
+		if sub.Sym != "idx" {
+			continue
+		}
+		if sub.Text != "" {
+			// A literal index of the template: the lane must be it, and it is
+			// still written through the index fields when the encoding has them.
+			want, _ := strconv.Atoi(sub.Text)
+			if lane != want {
+				return mismatch("%s wants index %d", fop.Sym, want)
+			}
+			if sub.Kind == "text" {
+				return nil
+			}
+		}
+		return e.immediate(sub, Immediate{Value: int64(lane)})
+	}
+	return fmt.Errorf("%s: index without a field", fop.Sym)
+}
+
+// predicateQualifier checks `/m`, `/z`, or none against the reading: a
+// fixed qualifier, a `/<ZM>` table, or no qualifier.
+func (e *encoder) predicateQualifier(fop *isaOperand, qual string) error {
+	upper := strings.ToUpper(qual)
+	if fop.Qual != "" {
+		if upper != fop.Qual {
+			return mismatch("%s wants /%s", fop.Sym, strings.ToLower(fop.Qual))
+		}
+		return nil
+	}
+	for i := range fop.Sub {
+		sub := &fop.Sub[i]
+		if sub.Sym == "<ZM>" {
+			if qual == "" {
+				return mismatch("%s wants /m or /z", fop.Sym)
+			}
+			return e.table(sub.Fields, sub.Table, upper, fop.Sym)
+		}
+	}
+	if qual != "" {
+		return mismatch("%s takes no qualifier", fop.Sym)
+	}
+	return nil
+}
+
+// tileNumber writes a ZA tile number, or checks a fixed one (ZA0).
+func (e *encoder) tileNumber(fop *isaOperand, tile int) error {
+	if fop.Special == "fixed" {
+		if int64(tile) != fop.Offset {
+			return mismatch("%s wants tile za%d", fop.Sym, fop.Offset)
+		}
+		return nil
+	}
+	if len(fop.Fields) == 0 {
+		return fmt.Errorf("%s: tile without a field", fop.Sym)
+	}
+	if err := e.writeFields(fop.Fields, uint64(tile)); err != nil {
+		return fmt.Errorf("%s: za%d is not a tile of this element size", fop.Sym, tile)
+	}
+	return nil
+}
+
+// slice writes a ZA slice or array-vector operand: the tile (or the whole
+// array), the direction, the element size, the slice-index register, the
+// offset (with the count of consecutive slices), and the vector group.
+func (e *encoder) slice(fop *isaOperand, s TileSlice) error {
+	if s.Count != fop.Count {
+		return mismatch("%s names %d consecutive slices", fop.Sym, fop.Count)
+	}
+	if fop.Text != "" {
+		if strings.ToUpper(s.Elem) != fop.Text {
+			return mismatch("%s wants element size %s", fop.Sym, strings.ToLower(fop.Text))
+		}
+	}
+	sawElem, sawDir, sawGroup := fop.Text != "", false, false
+	for i := range fop.Sub {
+		sub := &fop.Sub[i]
+		switch sub.Sym {
+		case "tile":
+			switch sub.Special {
+			case "array":
+				if s.Tile >= 0 || s.Dir != "" {
+					return mismatch("%s addresses the whole array", fop.Sym)
+				}
+			case "fixed":
+				if int64(s.Tile) != sub.Offset {
+					return mismatch("%s wants tile za%d", fop.Sym, sub.Offset)
+				}
+			default:
+				if s.Tile < 0 {
+					return mismatch("%s wants a tile", fop.Sym)
+				}
+				if err := e.tileNumber(sub, s.Tile); err != nil {
+					return err
+				}
+			}
+		case "hv":
+			if s.Dir == "" {
+				return mismatch("%s wants a slice direction (h or v)", fop.Sym)
+			}
+			sawDir = true
+			if err := e.table(sub.Fields, sub.Table, strings.ToUpper(s.Dir), fop.Sym); err != nil {
+				return err
+			}
+		case "elem":
+			if s.Elem == "" {
+				return mismatch("%s names an element size", fop.Sym)
+			}
+			sawElem = true
+			if err := e.tableFill(sub.Fields, sub.Table, strings.ToUpper(s.Elem), fop.Sym); err != nil {
+				return err
+			}
+		case "idx":
+			if err := e.scalableNumber(sub, s.Index); err != nil {
+				return err
+			}
+		case "offs":
+			if err := e.immediate(sub, Immediate{Value: s.Offset}); err != nil {
+				return err
+			}
+		case "group":
+			if !strings.EqualFold(s.Group, sub.Text) {
+				return mismatch("%s wants %s", fop.Sym, strings.ToLower(sub.Text))
+			}
+			sawGroup = true
+		}
+	}
+	if s.Dir != "" && !sawDir {
+		return mismatch("%s addresses vectors, not tile slices", fop.Sym)
+	}
+	if s.Elem != "" && !sawElem {
+		return mismatch("%s takes no element size", fop.Sym)
+	}
+	if s.Group != "" && !sawGroup {
+		return mismatch("%s takes no vector group", fop.Sym)
+	}
+	return nil
+}
+
+// tileMask is zero's imm8: one bit per 64-bit tile, a wider tile covering
+// the 64-bit tiles it aliases (za0.s = za0.d and za4.d), `za` all eight.
+func tileMask(list RegisterList) (uint32, error) {
+	var mask uint32
+	for _, reg := range list.Regs {
+		if reg.Class != ClassZA {
+			return 0, mismatch("zero takes ZA tiles")
+		}
+		if reg.Num < 0 {
+			mask = 0xff
+			continue
+		}
+		switch reg.Vec {
+		case "b":
+			mask = 0xff
+		case "h":
+			if reg.Num > 1 {
+				return 0, fmt.Errorf("%s is not a tile of halfwords", reg.Text)
+			}
+			for k := 0; k < 4; k++ {
+				mask |= 1 << uint(reg.Num+2*k)
+			}
+		case "s":
+			if reg.Num > 3 {
+				return 0, fmt.Errorf("%s is not a tile of words", reg.Text)
+			}
+			mask |= 1<<uint(reg.Num) | 1<<uint(reg.Num+4)
+		case "d":
+			if reg.Num > 7 {
+				return 0, fmt.Errorf("%s is not a tile of doublewords", reg.Text)
+			}
+			mask |= 1 << uint(reg.Num)
+		default:
+			return 0, fmt.Errorf("zero takes tiles of b, h, s, or d elements, not %s", reg.Text)
+		}
+	}
+	return mask, nil
 }
 
 func tableHas(rows []isaTableRow, text string) bool {
@@ -701,9 +1103,26 @@ func (e *encoder) immediate(fop *isaOperand, imm Immediate) error {
 			return fmt.Errorf("%s: %d is outside 1..64", fop.Sym, imm.Value)
 		}
 		return e.writeFields(fop.Fields, uint64(64-imm.Value))
+	case "sve-shift-left", "sve-shift-right":
+		return e.sveShift(fop, imm.Value)
+	case "sve-index":
+		return e.sveIndex(fop, imm.Value)
+	case "sub":
+		// `encoded as N minus "imm4"`: values 1..N.
+		if imm.Value < 1 || imm.Value > fop.Offset {
+			return fmt.Errorf("%s: %d is outside 1..%d", fop.Sym, imm.Value, fop.Offset)
+		}
+		return e.writeFields(fop.Fields, uint64(fop.Offset-imm.Value))
 	}
 	if len(fop.Table) > 0 {
 		return e.table(fop.Fields, fop.Table, "#"+strconv.FormatInt(imm.Value, 10), fop.Sym)
+	}
+	if len(fop.Fields) == 0 {
+		// An operand with an implicit value (the .q tile slices' offset 0).
+		if imm.Value != 0 {
+			return fmt.Errorf("%s: only 0 is encodable here", fop.Sym)
+		}
+		return nil
 	}
 	v := imm.Value
 	if fop.HasRange && (v < fop.Min || v > fop.Max) {
@@ -728,6 +1147,77 @@ func (e *encoder) immediate(fop *isaOperand, imm Immediate) error {
 		return fmt.Errorf("%s: %d does not fit %d bits", fop.Sym, v, width)
 	}
 	return e.writeFields(fop.Fields, uint64(encoded))
+}
+
+// lastElementSize is the element size in bits the operands so far implied.
+func (e *encoder) lastElementSize(sym string) (int64, error) {
+	if len(e.esizes) == 0 {
+		return 0, fmt.Errorf("%s: no element size known", sym)
+	}
+	return e.esizes[len(e.esizes)-1], nil
+}
+
+// sveShift writes the SVE shift-by-immediate: tszh:tszl:imm3 holds
+// esize + shift for a left shift and 2*esize - shift for a right shift,
+// so the element size lands in the top bits the size table also names.
+func (e *encoder) sveShift(fop *isaOperand, shift int64) error {
+	// The element size is the one the size table wrote into tszh:tszl
+	// (esize = 8 << HighestSetBit(tszh:tszl)); for the narrowing shifts that
+	// is the destination's, not the last operand's.
+	var esize int64
+	if len(fop.Fields) == 3 {
+		var tsz uint32
+		for _, f := range fop.Fields[:2] {
+			low, width, ok := e.fieldBits(f)
+			if !ok {
+				return fmt.Errorf("%s: no field %s", fop.Sym, f)
+			}
+			tsz = tsz<<uint(width) | (e.word>>uint(low))&(1<<uint(width)-1)
+		}
+		if tsz != 0 {
+			esize = 8 << uint(bits.Len32(tsz)-1)
+		}
+	}
+	if esize == 0 {
+		var err error
+		if esize, err = e.lastElementSize(fop.Sym); err != nil {
+			return err
+		}
+	}
+	var tsize int64
+	if fop.Special == "sve-shift-left" {
+		if shift < 0 || shift >= esize {
+			return fmt.Errorf("%s: shift %d is outside 0..%d", fop.Sym, shift, esize-1)
+		}
+		tsize = esize + shift
+	} else {
+		if shift < 1 || shift > esize {
+			return fmt.Errorf("%s: shift %d is outside 1..%d", fop.Sym, shift, esize)
+		}
+		tsize = 2*esize - shift
+	}
+	for _, f := range fop.Fields {
+		delete(e.written, f) // the size table wrote the top bits; tsize restates them
+	}
+	return e.writeFields(fop.Fields, uint64(tsize))
+}
+
+// sveIndex writes dup's element index above the element-size marker bit
+// of imm2:tsz (B: xxxx1, H: xxx10, S: xx100, D: x1000, Q: 10000).
+func (e *encoder) sveIndex(fop *isaOperand, index int64) error {
+	esize, err := e.lastElementSize(fop.Sym)
+	if err != nil {
+		return err
+	}
+	bytesOf := esize / 8
+	shift := uint(bits.TrailingZeros64(uint64(bytesOf))) + 1
+	if index < 0 || index >= 512/esize {
+		return fmt.Errorf("%s: index %d is outside a 512-bit vector of %d-bit elements", fop.Sym, index, esize)
+	}
+	for _, f := range fop.Fields {
+		delete(e.written, f)
+	}
+	return e.writeFields(fop.Fields, uint64(index)<<shift|uint64(bytesOf))
 }
 
 // wide: a 16-bit immediate (movz/movn/movk); the shift is a modifier.
@@ -976,7 +1466,9 @@ func (e *encoder) label(fop *isaOperand, sym Symbol, pc int64, labels map[string
 	return nil, e.writeFields(fop.Fields, uint64(encoded))
 }
 
-var conditionCodesByName = map[string]uint32{"eq": 0, "ne": 1, "cs": 2, "hs": 2, "cc": 3, "lo": 3, "mi": 4, "pl": 5, "vs": 6, "vc": 7, "hi": 8, "ls": 9, "ge": 10, "lt": 11, "gt": 12, "le": 13, "al": 14, "nv": 15}
+var conditionCodesByName = map[string]uint32{"eq": 0, "ne": 1, "cs": 2, "hs": 2, "cc": 3, "lo": 3, "mi": 4, "pl": 5, "vs": 6, "vc": 7, "hi": 8, "ls": 9, "ge": 10, "lt": 11, "gt": 12, "le": 13, "al": 14, "nv": 15,
+	// SVE condition aliases (Arm's C4.1 table of condition-code synonyms).
+	"none": 0, "any": 1, "nlast": 2, "last": 3, "first": 4, "nfrst": 5, "pmore": 8, "plast": 9, "tcont": 10, "tstop": 11}
 
 func (e *encoder) condition(fop *isaOperand, code string) error {
 	v, ok := conditionCodesByName[strings.ToLower(code)]
@@ -1049,7 +1541,7 @@ func (e *encoder) memory(fop *isaOperand, mem Memory) error {
 	if err := e.gpRegister(&fop.Sub[0], mem.Base); err != nil {
 		return err
 	}
-	hasOffset, hasIndex, hasAmount := false, false, false
+	hasOffset, hasIndex, hasAmount, hasMulVL := false, false, false, false
 	extend := strings.ToUpper(mem.Extend)
 	if extend == "" && mem.Index != nil {
 		extend = "UXTW"
@@ -1060,6 +1552,11 @@ func (e *encoder) memory(fop *isaOperand, mem Memory) error {
 	for i := 1; i < len(fop.Sub); i++ {
 		sub := &fop.Sub[i]
 		switch sub.Sym {
+		case "MUL VL":
+			hasMulVL = true
+			if !mem.MulVL {
+				return mismatch("%s: offset in vector lengths", fop.Sym)
+			}
 		case "off":
 			hasOffset = true
 			if mem.Index != nil {
@@ -1096,7 +1593,13 @@ func (e *encoder) memory(fop *isaOperand, mem Memory) error {
 			}
 		case "<amount>":
 			hasAmount = true
-			if len(sub.Table) > 0 {
+			if sub.Kind == "text" {
+				// A fixed amount (`LSL #2` of the SVE word accesses).
+				want, _ := strconv.Atoi(strings.TrimPrefix(sub.Text, "#"))
+				if mem.Shift != want {
+					return mismatch("%s: this reading shifts the index by %d", fop.Sym, want)
+				}
+			} else if len(sub.Table) > 0 {
 				if err := e.table(sub.Fields, sub.Table, "#"+strconv.Itoa(mem.Shift), fop.Sym); err != nil {
 					return err
 				}
@@ -1110,6 +1613,9 @@ func (e *encoder) memory(fop *isaOperand, mem Memory) error {
 	}
 	if hasIndex && !hasAmount && mem.Shift != 0 {
 		return mismatch("%s: shift not admitted", fop.Sym)
+	}
+	if mem.MulVL && !hasMulVL {
+		return mismatch("%s: offset in bytes", fop.Sym)
 	}
 	return nil
 }
@@ -1164,6 +1670,18 @@ func (e *encoder) modifier(ops []isaOperand, fi *int, prev Operand) error {
 			return mismatch("extend amount not admitted here")
 		}
 		return nil
+	}
+	// `MUL #<imm>` after a predicate pattern (cntw x0, all, mul #4).
+	if fop.Text == "MUL" {
+		opt, ok := prev.(Option)
+		if !ok || opt.Mul == 0 {
+			return mismatch("mul wants a pattern with a multiplier")
+		}
+		e.consumedMul = true
+		if next, ok := nextImm(); ok {
+			return e.immediate(next, Immediate{Value: opt.Mul})
+		}
+		return fmt.Errorf("MUL without its immediate")
 	}
 	// `LSL #<n>` / `MSL #<n>` after an immediate (movz/movk/movn, the
 	// vector immediates), or `LSL #<amount>` on a register spelled so.
@@ -1275,6 +1793,7 @@ func (e *encoder) writePattern(field, pattern string) error {
 	if !ok {
 		return fmt.Errorf("encoding %s has no field %q", e.enc.Name, field)
 	}
+	e.patterned[field] = true
 	for b := 0; b < len(pattern) && b < width; b++ {
 		ch := pattern[b]
 		if ch == 'x' {
@@ -1293,7 +1812,16 @@ func (e *encoder) writePattern(field, pattern string) error {
 // the vector shift and fixed-point immediates that follow.
 func (e *encoder) rememberElementSize(text string) {
 	if _, isArr := vectorArrangements[strings.ToLower(text)]; !isArr {
-		return
+		switch text {
+		case "B", "H", "S", "D":
+			// A scalable element size letter (z0.s): the SVE shift and
+			// index immediates need it.
+		case "Q":
+			e.esizes = append(e.esizes, 128)
+			return
+		default:
+			return
+		}
 	}
 	switch text[len(text)-1] {
 	case 'B':
@@ -1323,6 +1851,17 @@ func (e *encoder) checkTables() error {
 				letter := "X"
 				if width == 32 {
 					letter = "W"
+				}
+				written := false
+				for _, f := range fop.Fields[1:] {
+					if _, ok := e.written[f]; ok || e.patterned[f] {
+						written = true
+					}
+				}
+				if !written {
+					// Nothing else chose the width (whilelt's <R><n>, <R><m>):
+					// the register's own width writes the table.
+					return e.table(fop.Fields[1:], fop.Table, letter, sym)
 				}
 				for _, row := range fop.Table {
 					if e.rowMatches(fop.Fields[1:], row.Bits) {
@@ -1763,6 +2302,43 @@ func (e *encoder) aliasOperand(tok string) (Operand, error) {
 	if op, ok := e.bindings[tok]; ok {
 		return op, nil
 	}
+	// A scalable register the target spells with another qualifier or
+	// element size than the alias bound it with (`<Pv>/M` of mov and `<Pv>`
+	// of sel; `<Pg>/Z` of not and `<Pg>.B` of eor).
+	if base := scalableBase(tok); base != "" {
+		for sym, op := range e.bindings {
+			if scalableBase(sym) != base {
+				continue
+			}
+			reg, isReg := op.(Register)
+			if !isReg || !reg.Class.Scalable() {
+				continue
+			}
+			reg.Qual = ""
+			if i := strings.Index(tok, "/"); i >= 0 {
+				reg.Qual = strings.ToLower(tok[i+1:])
+			}
+			if i := strings.Index(tok, "."); i >= 0 {
+				size := tok[i+1:]
+				if j := strings.IndexAny(size, "/["); j >= 0 {
+					size = size[:j]
+				}
+				if len(size) == 1 {
+					reg.Vec = strings.ToLower(size)
+				}
+			} else {
+				reg.Vec = ""
+			}
+			reg.Text = reg.Class.spell(reg.Num)
+			if reg.Vec != "" {
+				reg.Text += "." + reg.Vec
+			}
+			if reg.Qual != "" {
+				reg.Text += "/" + reg.Qual
+			}
+			return reg, nil
+		}
+	}
 	switch tok {
 	case "<invcond>", "<cond>":
 		other := "<cond>"
@@ -1810,6 +2386,39 @@ func (e *encoder) aliasOperand(tok string) (Operand, error) {
 }
 
 var aliasRegRe = regexp.MustCompile(`^<([WX])([a-z]+\d?)(\|W?SP)?>$`)
+
+// scalableBase is the bare symbol of a scalable register token: `<Pg>` for
+// `<Pg>/Z` and `<Pg>.B`, `<Zd>` for `<Zd>.<T>`; "" for other tokens.
+func scalableBase(tok string) string {
+	if !strings.HasPrefix(tok, "<Z") && !strings.HasPrefix(tok, "<P") {
+		return ""
+	}
+	end := strings.IndexByte(tok, '>')
+	if end < 0 {
+		return ""
+	}
+	return tok[:end+1]
+}
+
+// spell is the bare register name of a scalable class.
+func (c RegClass) spell(num int) string {
+	switch c {
+	case ClassZ:
+		return "z" + strconv.Itoa(num)
+	case ClassP:
+		return "p" + strconv.Itoa(num)
+	case ClassPN:
+		return "pn" + strconv.Itoa(num)
+	case ClassZA:
+		if num < 0 {
+			return "za"
+		}
+		return "za" + strconv.Itoa(num)
+	case ClassZT:
+		return "zt0"
+	}
+	return "?"
+}
 
 func invertCondition(code string) string {
 	v := conditionCodesByName[strings.ToLower(code)] ^ 1

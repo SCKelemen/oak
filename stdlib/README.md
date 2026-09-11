@@ -960,6 +960,99 @@ Go, parses it back, and parses 400 random duration spellings to Go's value.
 `examples/time/time_test.oak` (`oak test examples/time`) states the round
 trips as properties over the full i64 range.
 
+- **Time sources** (the one sanctioned way to read time): a `TimeSource` is
+  a record the consumer owns and passes by span, so who advances it is the
+  environment's decision. `time_source_fixed(start)` never moves unless
+  `time_source_set` steps the wall clock; `time_source_sim(start)` advances
+  only through `time_source_advance(source, d)` (both clocks together, false
+  and unchanged on a negative duration or an overflow), `time_source_set`
+  and `time_source_shift_wall` (wall only); `time_source_native()` is
+  unreadable until `time_source_refresh(source, wall_nanos, mono_nanos)` has
+  run — reading it earlier traps, because a forgotten platform refresh is a
+  bug the simulation cannot see. Every source carries the classic pair:
+  `time_now(source)` is the wall clock (an `Instant`, free to jump) and
+  `time_monotonic(source)` a `Duration` since creation that never decreases
+  (a native host whose monotonic reading regresses is clamped). Deadlines
+  are monotonic: `time_deadline(source, d)`, `time_expired(source,
+  deadline)`, `time_remaining`, `time_elapsed`. Code written against a
+  source — timeouts, leases, rate limiters, retries — is simulation-testable
+  and fuzzable as it stands; `examples/timesim` is the worked consumer and
+  `timesim` below drives it.
+
+## `timesim`: simulated time with clock faults (`import("timesim")`)
+
+`stdlib/timesim.oak` (a library package over `time` and `import(testing)`,
+docs/spec/110-testing.md "Simulated time") is the environment side of a
+`TimeSource` under deterministic simulation. `timesim_init(sim, faults,
+tick_nanos)` makes a `TimeSim`; `timesim_advance(sim, source, d, choices,
+data)` moves a simulated source by `d` and injects at most one fault drawn
+from the choice tape (one roll in eight, uniformly among the enabled kinds;
+a shrunk or exhausted tape injects nothing, so a shorter tape is a run with
+fewer faults and strict replay reproduces them); `timesim_sync(sim, source,
+clock, choices, data)` advances the source to the scheduler's `SimClock`
+reading (ticks since the last sync times `tick_nanos`) so the event
+timeline and the consumer's clock agree, faults included, and
+`timesim_ticks(sim, d)` converts a duration back to ticks for scheduling.
+
+The fault mask: `TIME_FAULT_JUMP_BACK` (1, the wall clock steps back up to a
+day), `TIME_FAULT_JUMP_FORWARD` (2), `TIME_FAULT_STALL` (4, neither clock
+advances this step), `TIME_FAULT_COARSE` (8, the wall clock is quantized to
+`coarse_nanos`, 10 ms unless `timesim_set_coarse` says otherwise),
+`TIME_FAULT_DRIFT` (16, the wall clock runs up to two percent fast or slow
+against the monotonic one), `TIME_FAULT_ALL`. The ledger (`jumps_back`,
+`jumps_forward`, `stalls`, `coarsened`, `drifted`, `skew` — how far the wall
+clock has departed from the monotonic timeline) is there to classify on.
+The law every fault respects, asserted inside `timesim_advance`: **the
+monotonic clock never decreases**; a consumer whose deadlines are monotonic
+is unaffected by every fault but the stall, and the stall only delays.
+
+Generators, each drawing a class first so the reducer moves toward the
+simplest value: `timesim_instant` (near the epoch, at the range ends, on a
+second or day boundary plus or minus a nanosecond, anywhere),
+`timesim_duration` (zero, a nanosecond, up to a minute, up to a year, the
+range ends, anywhere), `timesim_step(choices, data, max_millis)` (a
+non-negative step), `timesim_offset_minutes` (zero, whole hours, the
+extremes, anywhere in -1439..1439), `timesim_civil` (always valid; years 0,
+-400, -1, the century rules, 1970, the instant range ends; days 1, the
+month's last, February 28/29), and `timesim_rfc3339(dst, choices, data)`
+(text for a generated instant, offset and fraction width, damaged one time
+in four by a replaced byte or a truncation, for parser fuzzing). `Instant`
+and `Duration` are records of one `i64`, so a typed command
+(`derive.test_generate`) carries them through a carrier scalar — the
+example's `Advance: u16` is whole milliseconds.
+
+`examples/timesim` is the consumer that proves the point: a lease and a
+one-shot timer written against `[*]time.TimeSource`, tested under a frozen
+source (a wall step neither expires nor extends a lease), under every fault
+mask (the monotonic clock never decreases; a client whose own deadline has
+not passed can always renew; the timer never fires early, never twice, and
+fires once its deadline has passed; clock faults and wall steps never move a
+monotonic deadline; at most one client believes it holds the lease and the
+server agrees with it), through the discrete-event simulator with client
+crashes and restarts driving the source from `SimClock`, and as typed
+command histories. `testrunner/timesim_example_test.go` runs it under the
+Go suite; `.github/workflows/testing.yml` runs it with `oak test`.
+
+## `timenative`: the operating system's clocks (`import("timenative")`)
+
+`stdlib/timenative.oak` is the native realization of a `TimeSource`, and the
+platform layer is the only code that imports it. `timenative_source(out)`
+fills a refreshed native source; `timenative_refresh(source)` reads both
+host clocks into it (false, unchanged, for a fixed or simulated source
+handed to production code by mistake). The readings cross the boundary as
+plain integers through two symbols the platform provides —
+`int64_t oak_time_host_wall_nanos(void)` (CLOCK_REALTIME) and `uint64_t
+oak_time_host_monotonic_nanos(void)` (CLOCK_MONOTONIC) — because library
+Oak cannot call `clock_gettime` itself yet: the FFI passes owned storage to
+C only as a `c.Ptr, c.Size` pair and `clock_gettime` takes a bare
+out-pointer. `stdlib/native/oak_time_host.c` is the reference shim for
+POSIX hosts; a program that imports `timenative` without providing the
+symbols fails to link, which is the intended failure: the dependency on a
+real clock is visible at build time, never at run time.
+`compiler/e2e_stdlib_timesim_test.go` links the shim and checks the wall
+clock is plausible, the monotonic clock starts at zero and never decreases
+over a thousand refreshes, and a fixed source is refused.
+
 ## `arena`: reservations over an owner (`import("arena")`)
 
 `stdlib/arena.oak` is bump allocation over an owner's element index space
