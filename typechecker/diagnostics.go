@@ -18,6 +18,11 @@ const (
 
 	CodeGADTResultInvalid  = "OAK-T0301"
 	CodeGADTResultMismatch = "OAK-T0302"
+
+	// CodeAssertOperands rejects assert_eq/assert_ne operands that are not
+	// two values of one fixed-width integer, float, or Bool type
+	// (docs/spec/85-discipline.md section 5).
+	CodeAssertOperands = "OAK-T0601"
 )
 
 func (tc *TypeChecker) addTypeDiagnostic(node ast.Node, code, title string) *diagnostic.Diagnostic {

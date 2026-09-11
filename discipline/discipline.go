@@ -34,7 +34,7 @@ const (
 // builtin call targets that never form call-graph edges.
 var builtinCallees = map[string]bool{
 	"view": true, "span": true, "subslice": true,
-	"view_as": true, "span_as": true, "assert": true,
+	"view_as": true, "span_as": true, "assert": true, "assert_eq": true, "assert_ne": true,
 	"is_valid_utf8": true,
 	"address_of":    true, "size_of": true, "align_of": true, "offset_of": true, "static_assert": true,
 }

@@ -16,6 +16,7 @@ import Oak.ResourceCall
 import Oak.ResourceResult
 import Oak.MethodMangling
 import Oak.StatementBoundary
+import Oak.Protocol
 import Oak.BorrowRegions
 import Oak.Reborrow
 import Oak.ReborrowRefinement
@@ -89,3 +90,4 @@ import Oak.Stdlib.RandomLaws
 import Oak.Typestate
 import Oak.IoPort
 import Oak.ProtocolQuorum
+import Oak.TimeInterval

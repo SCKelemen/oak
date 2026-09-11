@@ -4621,6 +4621,35 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 		}
 		return nil
 	}
+	// Theorem declaration: name: theorem (params) { Bool }
+	// (docs/spec/125-verification.md). `theorem` is contextual: only the
+	// shape IDENT ':' theorem '(' reads as one. The parameters are the
+	// function grammar's; the result type is Bool and is never written.
+	if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "theorem" && p.peekTokenIs(token.LPAREN) {
+		kind := p.currentToken
+		p.nextToken()
+		fn := p.parseFunctionDefinitionFromName(name)
+		if fn == nil {
+			return nil
+		}
+		if fn.ReturnType != nil {
+			p.addErrorAtToken(&kind, "a theorem's result is Bool; it declares no return type")
+			return nil
+		}
+		if fn.Body == nil {
+			p.addErrorAtToken(&kind, "a theorem states a Bool expression; it has no definition-less form")
+			return nil
+		}
+		boolToken := kind
+		boolToken.TokenKind = token.IDENT
+		boolToken.Literal = "Bool"
+		fn.ReturnType = &ast.Identifier{Token: boolToken, Value: "Bool"}
+		fn.Theorem = true
+		if len(typeParams) > 0 {
+			fn.TypeParams = typeParams
+		}
+		return fn
+	}
 
 	if p.currentTokenIs(token.TYPE) {
 		// We're in `Name: type = ...` or `Name[E, Unit]: type = ...` - ADT type definition

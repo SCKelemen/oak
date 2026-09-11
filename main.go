@@ -36,6 +36,8 @@ func main() {
 		return
 	case "protocol":
 		os.Exit(protocolCommand(args, os.Stdout, os.Stderr))
+	case "prove":
+		os.Exit(proveCommand(args, os.Stdout, os.Stderr))
 	case "-h", "-help", "--help":
 		printUsage(os.Stdout)
 		return

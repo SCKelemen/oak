@@ -157,6 +157,13 @@ func TestSMEChecker(t *testing.T) {
   bind w6 = n
   clobber w9, w11, w12
   clobber z0, z1, p0
+  clobber v8, v9, v10, v11, v12, v13, v14, v15
+  frame 64
+  sub sp, sp, #64
+  stp d8, d9, [sp]           // smstart and smstop zero d8-d15, the caller's
+  stp d10, d11, [sp, #16]
+  stp d12, d13, [sp, #32]
+  stp d14, d15, [sp, #48]
   udiv w9, w1, w6
   mov w11, w6
   lsl x11, x11, #2
@@ -183,6 +190,11 @@ rows:
   b rows
 done:
   smstop
+  ldp d8, d9, [sp]
+  ldp d10, d11, [sp, #16]
+  ldp d12, d13, [sp, #32]
+  ldp d14, d15, [sp, #48]
+  add sp, sp, #64
   ret
 }
 `

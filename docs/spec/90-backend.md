@@ -271,3 +271,42 @@ length rendering; decimal is one. Motivation recorded in
 `docs/notes/roadmap-authority-resources.md` (asks, tier 1): receiver
 contracts type-checked but could not execute compiled.
 
+## 14. Protocol machines: tables and shift DFAs
+
+The projected `name_legal`, `name_next`, and `name_run` of a protocol
+without a data record carry a compiler-known lowering
+(`FunctionStatement.Lowering`, set by the projection, never the parser;
+`112-protocols.md` §2a). The backend emits the ordinary signature and, in
+place of the Oak body, the table form:
+
+```c
+static const u64 oak_utf8_transitions[256] = { ... };   /* shift rows, one per byte */
+oak_Utf8State oak_utf8_next( oak_Utf8State state, oak_Utf8Step step ) {
+  u32 next = (u32)( ( oak_utf8_transitions[ step.payload.Byte ] >> state.tag ) & 63u );
+  oak_assert( next != 48u ? oak_Bool_True : oak_Bool_False, "Utf8", 0 );   /* 48 = 6 * sink */
+  oak_Utf8State result; result.tag = next; return result;
+}
+```
+
+The table is emitted once at file scope, after the prototypes, and shared
+by the three functions. The dense form is `static const u8 T[states+1][symbols]`
+with the sink row mapping every symbol to the sink, so `run` needs no
+check inside its loop. Nothing is allocated, nothing is dispatched
+indirectly, and the trap sits exactly where the branch tree's assertion
+sat.
+
+This is the first instance of the roadmap's milestone 9, "proven facts
+into predictable performance": the declaration is the simplest thing the
+user can write, the compiler chooses the implementation the hardware
+prefers for input-driven steps, and `Oak.Protocol` (`spec/lean/Oak/Protocol.lean`)
+proves the table entry is the declared first-match target
+(`table_target`), the sentinel is exactly illegality (`table_sentinel`),
+the deferred batch check reports exactly the declared result
+(`runSink_correct`), and the shift rows decode what they store
+(`unpack_pack`, bit-blasted). The compile-time guard evaluator is checked
+against the interpreter by differential tests over every state and symbol
+(`compiler/e2e_protocol_lowering_test.go`). Measured: the emitted UTF-8
+validator runs at 0.5 ns per byte, the hand-written shift DFA's speed, six
+times the branch tree the same declaration produced before
+(`benchmarks/state-machines/README.md`).
+

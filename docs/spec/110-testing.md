@@ -62,6 +62,17 @@ Tests may use the host permissions available to them. Sanitizers are opt-in via
 
 - `test_check(condition, id)`: fail with an author-assigned stable `u32` invariant
   ID. The explicit C reporting boundary is supplied by the host harness.
+- `test_check_eq_u32/u64/i32/i64/bool(got, want, id)` and the `test_check_ne_*`
+  forms: `test_check` with both values reported. The failure signature is
+  still `invariant:<id>` (what shrinking, replay, and campaigns compare); the
+  values travel through the host boundary (`oak_test_host_fail_values`, the
+  operands widened to 64 bits plus a kind byte naming the signedness, `Bool`,
+  and the not-equal form) and the runner spells them in the operand's type:
+  the terminal line reads `invariant:7002 (got 1, want 0)`, and the JSON
+  result gains `got`, `want`, and `want_not`. After minimization the values
+  are those of the minimized input. Floats keep `test_check_ulps_*` and
+  `test_check_bits_*`; the language's `assert_eq`/`assert_ne`
+  (`85-discipline.md` §5) trap with the same message outside the runner.
 - `test_assume(condition)`: reject an input. Rejections do not count as passing
   cases; exceeding `-max-discards` fails. A unit test cannot discard.
 - `testing_classify(id)`: mark a class reached in this execution. Each accepted
@@ -396,10 +407,23 @@ run with fewer faults and strict replay reproduces them:
 | 4 | stall | neither clock advances this step |
 | 8 | coarse | the wall clock is quantized to `coarse_nanos` (10 ms by default) |
 | 16 | drift | the wall clock runs up to two percent fast or slow against the monotonic one |
+| 32 | bound break | the wall clock is stepped beyond the attested error bound while the attestation stands, so the interval reading no longer contains the true time |
+| 64 | unattest | the attestation is withdrawn for the step, so `time_interval` refuses |
 
 The ledger (`jumps_back`, `jumps_forward`, `stalls`, `coarsened`,
-`drifted`, and `skew`, the wall clock's total departure from the monotonic
-timeline) is there for `testing_classify`. The law every fault respects is
+`drifted`, `bound_breaks`, `unattested`, and `skew`, the wall clock's
+total departure from the monotonic timeline) is there for
+`testing_classify`. A source may carry an **attested error bound**
+(`time_source_attest`); `time_interval` is then the clock-ordered reading
+`[wall - bound, wall + bound]`, `time_interval_before` the
+definitely-before comparison, and an unattested source makes the reading
+refuse (`Err(Unattested)`) so a clock-ordered class never guesses. The
+environment alone knows the true time (`timesim_true_now`, the skew-free
+wall), and `timesim_interval_honest` says whether a reading contained it:
+false exactly after a bound break, which is the fault a clock-ordered
+scenario needs to exist. `Oak.TimeInterval` proves the reading honest iff
+the departure is within the bound, that definitely-ordered honest
+intervals order their true times, and that refusal claims nothing. The law every fault respects is
 asserted inside `timesim_advance`: **the monotonic clock never decreases**.
 A consumer whose deadlines are monotonic is therefore unaffected by every
 fault but the stall, and the stall only delays — which is exactly the claim

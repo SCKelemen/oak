@@ -6,7 +6,10 @@
 // (a row of at) and row kk of B and accumulates their outer product into
 // tile za0.s. The tile's rows are then stored under the same predicate,
 // one horizontal slice per row of C, and smstop returns to the caller's
-// mode before ret. The checker holds every instruction to Arm's template,
+// mode before ret. Entering and leaving streaming mode zeroes z0-z31, and
+// with them d8-d15 — the caller's under AAPCS64 — so the kernel saves them
+// to its frame first and restores them after smstop; the checker refuses
+// the kernel without that. It holds every instruction to Arm's template,
 // to the mode it needs, and to the zeroing smstart/smstop perform; the
 // predicated loads and stores are trusted (§5).
 
@@ -17,6 +20,13 @@ fmopa_f32: (at: []f32, b: []f32, c: [*]f32, n: u32) -> () = {
   bind w6 = n
   clobber w9, w11, w12
   clobber z0, z1, p0
+  clobber v8, v9, v10, v11, v12, v13, v14, v15
+  frame 64
+  sub sp, sp, #64
+  stp d8, d9, [sp]           // smstart and smstop zero d8-d15, the caller's
+  stp d10, d11, [sp, #16]
+  stp d12, d13, [sp, #32]
+  stp d14, d15, [sp, #48]
   udiv w9, w1, w6          // k = len(at) / n
   mov w11, w6
   lsl x11, x11, #2         // row stride in bytes
@@ -43,5 +53,10 @@ rows:
   b rows
 done:
   smstop
+  ldp d8, d9, [sp]
+  ldp d10, d11, [sp, #16]
+  ldp d12, d13, [sp, #32]
+  ldp d14, d15, [sp, #48]
+  add sp, sp, #64
   ret
 }

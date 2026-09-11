@@ -49,6 +49,7 @@ err_code: (e: time.TimeError): u32 {
     | .InvalidOffset => u32(4)
     | .InvalidDuration => u32(5)
     | .DestinationTooSmall => u32(6)
+    | .Unattested => u32(7)
 }
 
 civil: (y: i32, mo: u8, d: u8, h: u8, mi: u8, s: u8, ns: u32): time.Civil {
