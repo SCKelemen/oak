@@ -166,6 +166,7 @@ type checker struct {
 	// contract
 	paramClass    map[string]RegClass // parameter -> width class
 	paramRegister map[string]int      // parameter -> contract register number
+	paramView     map[string]string   // parameter -> "s"/"d" for f32/f64, "" otherwise
 	resultClass   RegClass
 	hasResult     bool
 	never         bool
@@ -331,6 +332,8 @@ func contractClass(expr ast.Expression) (RegClass, bool) {
 		return ClassW, true
 	case "u64", "i64":
 		return ClassX, true
+	case "f32", "f64":
+		return ClassV, true // AAPCS64: floating-point values travel in v0–v7 (s/d views)
 	}
 	if strings.HasPrefix(typeText(expr), "simd.") {
 		return ClassV, true
@@ -338,11 +341,24 @@ func contractClass(expr ast.Expression) (RegClass, bool) {
 	return 0, false
 }
 
+// floatView is the scalar view a floating-point parameter or result binds
+// as: "s" for f32, "d" for f64, "" for a simd vector.
+func floatView(expr ast.Expression) string {
+	switch typeText(expr) {
+	case "f32":
+		return "s"
+	case "f64":
+		return "d"
+	}
+	return ""
+}
+
 // bindContract assigns AAPCS64 contract registers (x0..x7 / v0..v7) and
 // verifies every parameter is bound explicitly at its class.
 func (c *checker) bindContract() {
 	c.paramClass = map[string]RegClass{}
 	c.paramRegister = map[string]int{}
+	c.paramView = map[string]string{}
 	c.bound = map[int]bool{}
 	c.spans = map[int]*spanFact{}
 	c.idxFacts = map[int]idxFact{}
@@ -366,6 +382,7 @@ func (c *checker) bindContract() {
 			continue
 		}
 		c.paramClass[param.Name.Value] = class
+		c.paramView[param.Name.Value] = floatView(param.Type)
 		if class == ClassV {
 			if nextVector > 7 {
 				c.errorf(c.fn.Line, "more than eight vector parameters exceed the register contract")
@@ -428,6 +445,10 @@ func (c *checker) bindContract() {
 		}
 		if binding.Length != nil {
 			c.errorf(binding.Line, "bind: parameter %s is a scalar and binds one register", binding.Param)
+			continue
+		}
+		if view := c.paramView[binding.Param]; view != "" && binding.Register.Vec != view {
+			c.errorf(binding.Line, "bind: floating-point parameter %s arrives in %s%d, not %s", binding.Param, view, want, binding.Register.Text)
 			continue
 		}
 		if binding.Register.Class != class || binding.Register.Num != want {
@@ -617,6 +638,9 @@ func (c *checker) instruction(instr Instruction) bool {
 				c.errorf(instr.Line, "%s takes no shifted or extended register operand", instr.Mnemonic)
 			}
 		}
+	}
+	if finding := vectorDiscipline(instr); finding != "" {
+		c.errorf(instr.Line, "%s: %s", instr.Mnemonic, finding)
 	}
 	if imm, isImm := lastImmediate(instr.Operands); isImm && imm.Shift != 0 {
 		switch instr.Mnemonic {
@@ -812,6 +836,10 @@ func (c *checker) instruction(instr Instruction) bool {
 func registerOperands(operands []Operand) []Register {
 	var regs []Register
 	for _, operand := range operands {
+		if list, isList := operand.(RegisterList); isList {
+			regs = append(regs, list.Regs...)
+			continue
+		}
 		if reg, ok := operandRegister(operand); ok {
 			regs = append(regs, reg)
 		}
@@ -974,6 +1002,12 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 		return
 	}
 	size := accessBytes(instr.Mnemonic, matched[0])
+	if len(regs) > 0 && regs[0].Class == ClassV {
+		size = memorySizeReg(instr.Mnemonic, regs[0])
+		if isStructureAccess(instr.Mnemonic) {
+			size *= int64(len(regs))
+		}
+	}
 	var slotBase int64
 	switch mem.Mode {
 	case MemPreIndex:
@@ -1125,7 +1159,10 @@ func (c *checker) spanAccess(instr Instruction, matched form, mem Memory, fact *
 	}
 	size := accessBytes(instr.Mnemonic, matched[0])
 	if len(regs) > 0 {
-		size = memorySize(instr.Mnemonic, regs[0].Class)
+		size = memorySizeReg(instr.Mnemonic, regs[0])
+		if isStructureAccess(instr.Mnemonic) {
+			size *= int64(len(regs))
+		}
 	}
 	if mem.Index != nil {
 		c.indexedSpanAccess(instr, mem, fact, size, regs, isStore)

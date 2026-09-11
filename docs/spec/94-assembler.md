@@ -544,9 +544,13 @@ on the wide moves. By group, with the verifier's status:
 | hints, traps, exceptions | `nop wfe wfi sev sevl yield csdb esb hint brk svc hvc smc` | hints have no value semantics; `brk` ends control; `svc`/`hvc`/`smc` need `system` and clobber the caller-saved state; trusted |
 | system, barriers, maintenance | `mrs msr eret dmb dsb isb dc ic tlbi at` | checked under `system`; trusted |
 | CRC, flags | `crc32{b,h,w,x} crc32c{b,h,w,x} cfinv` | checked; trusted |
+| scalar floating point | `fmov fadd fsub fmul fdiv fnmul fmax fmin fmaxnm fminnm fneg fabs fsqrt frint{a,i,m,n,p,x,z} fmadd fmsub fnmadd fnmsub fcmp fcmpe fcsel fcvt fcvt{z,a,m,n,p}{s,u} scvtf ucvtf` on the `h`/`s`/`d` views; `f32`/`f64` parameters bind to `s`/`d` registers, results return in `v0` | checked (forms, view widths, `fcmp` flags feed `b.cond`/`csel`/`fcsel`); trusted |
+| NEON integer | arithmetic, logical, saturating and halving forms, pairwise, compares (register and against zero), min/max and reductions (`addv smaxv … uaddlv`), shifts and shift-inserts, widening and narrowing (`ushll xtn sqxtn uaddl umull uaddw …` and their `2` halves), `dup ins umov smov mov ext tbl tbx zip uzp trn rev16/32/64 cnt movi mvni` | checked: arranged operands agree unless the instruction widens, narrows, or reduces; lanes bounded at parse | trusted |
+| NEON float | `fadd fsub fmul fdiv fmla fmls fmulx fabd fmax fmin faddp fmaxp fminp fneg fabs fsqrt frint* fcmeq fcmgt fcmge fcmlt fcmle fcvtn fcvtl` and the vector conversions | checked | trusted |
+| vector memory | `ldr str ldp stp ldur stur` of `h`/`s`/`d`/`q`; `ld1 st1 ld2 st2 ld3 st3 ld4 st4 ld1r` with register lists | checked: sizes from the register view (a `q` load moves 16 bytes; `ld2 {v0.2d, v1.2d}` 32), through guarded spans or the frame | trusted (the verifier never keys vector state with the general registers) |
 
-Floating-point and NEON are the next increment: the checker admits vector
-registers already, and the bitvector verifier does not model them.
+The bitvector verifier does not model floating-point or vector values: any
+body touching a vector register is trusted per §5 and says so.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

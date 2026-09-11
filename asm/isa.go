@@ -146,6 +146,9 @@ func init() {
 // (sub-word accesses, sign-extending loads, unscaled forms, atomics with a
 // b/h suffix) or the register width.
 func memorySize(mnemonic string, class RegClass) int64 {
+	if class == ClassV {
+		return 16 // refined per register view by memorySizeReg
+	}
 	switch mnemonic {
 	case "ldrb", "strb", "ldrsb", "ldurb", "sturb", "ldursb", "ldarb", "ldxrb", "ldaxrb", "ldaprb", "stlrb", "stxrb", "stlxrb":
 		return 1
@@ -174,6 +177,31 @@ func memorySize(mnemonic string, class RegClass) int64 {
 		return 2 * width
 	}
 	return width
+}
+
+// memorySizeReg is memorySize with the register's vector view taken into
+// account: ldr d0 moves 8 bytes, ldr q0 16, ldp s0, s1 8.
+func memorySizeReg(mnemonic string, reg Register) int64 {
+	if reg.Class == ClassV {
+		if mnemonic == "ld1r" {
+			return int64(laneBytes(reg.Vec)) // one element, replicated
+		}
+		size := reg.VecBytes()
+		if mnemonic == "ldp" || mnemonic == "stp" {
+			return 2 * size
+		}
+		return size
+	}
+	return memorySize(mnemonic, reg.Class)
+}
+
+// isStructureAccess: ld1–ld4/st1–st4 move every register of their list.
+func isStructureAccess(mnemonic string) bool {
+	switch mnemonic {
+	case "ld1", "st1", "ld2", "st2", "ld3", "st3", "ld4", "st4":
+		return true
+	}
+	return false
 }
 
 var atomicBases = []string{"ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax", "ldumin", "swp", "cas"}

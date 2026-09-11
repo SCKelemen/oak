@@ -46,6 +46,14 @@ const (
 	opSysReg                     // system register name
 	opOption                     // barrier option
 	opCond                       // condition code operand of csel/cset
+	opFH                         // h scalar (16-bit float view)
+	opFS                         // s scalar (32-bit float view)
+	opFD                         // d scalar (64-bit float view)
+	opFQ                         // q scalar (128-bit view)
+	opVA                         // arranged vector (v0.4s)
+	opVL                         // vector lane (v0.s[1])
+	opList                       // register list {v0.4s}
+	opFImm                       // float immediate
 	opNone                       // no operands
 )
 
@@ -177,6 +185,26 @@ func operandMatches(class operandClass, operand Operand) bool {
 		return ok
 	case opCond:
 		_, ok := operand.(Condition)
+		return ok
+	case opFH, opFS, opFD, opFQ:
+		reg, ok := operand.(Register)
+		letter := map[operandClass]string{opFH: "h", opFS: "s", opFD: "d", opFQ: "q"}[class]
+		return ok && reg.Class == ClassV && reg.Vec == letter && reg.Lane < 0
+	case opVA:
+		reg, ok := operand.(Register)
+		if !ok || reg.Class != ClassV || reg.Lane >= 0 {
+			return false
+		}
+		_, arranged := vectorArrangements[reg.Vec]
+		return arranged
+	case opVL:
+		reg, ok := operand.(Register)
+		return ok && reg.Class == ClassV && reg.Lane >= 0
+	case opList:
+		_, ok := operand.(RegisterList)
+		return ok
+	case opFImm:
+		_, ok := operand.(FloatImmediate)
 		return ok
 	}
 	return false

@@ -778,6 +778,11 @@ func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (str
 	if len(regs) == 0 || isAtomic(instr.Mnemonic) || isExclusiveStore(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic) || instr.Mnemonic == "ldpsw" {
 		return "a frame access outside the modeled subset (" + instr.Mnemonic + ")", false
 	}
+	for _, reg := range regs {
+		if reg.Class == ClassV {
+			return "a vector-register frame access", false
+		}
+	}
 	size := memorySize(instr.Mnemonic, regs[0].Class)
 	if len(regs) == 2 {
 		size /= 2 // ldp/stp: one slot per register
@@ -923,7 +928,10 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 // whole element and the register width the element's width; loads from the
 // frame, stores, and moving bases are outside the subset.
 func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bool) {
-	dest := instr.Operands[0].(Register)
+	dest, isReg := instr.Operands[0].(Register)
+	if !isReg || dest.Class == ClassV {
+		return "a vector-register load", false
+	}
 	mem := instr.Operands[1].(Memory)
 	if mem.Base.Class == ClassSP {
 		return "frame memory", false
@@ -985,6 +993,11 @@ func (x *pathExecutor) element(span string, index *term, width int) *term {
 
 // step executes one data-processing instruction on the state.
 func step(instr Instruction, state *symbolicState) (string, bool) {
+	for _, reg := range registerOperands(instr.Operands) {
+		if reg.Class == ClassV {
+			return "a floating-point or vector instruction (" + instr.Mnemonic + ")", false
+		}
+	}
 	{
 		switch instr.Mnemonic {
 		case "mov":
