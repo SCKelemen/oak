@@ -475,9 +475,24 @@ method body is checked under the receiver's entry authority (a borrowed
 receiver cannot be consumed or retained inside the method). In SemIR the
 receiver mode is the `resource.borrow`/`borrow-mut`/`consume` effect with
 the parameter `receiver`. A receiver mode is valid only on a method whose
-receiver type is a resource type. Contracts on function *types* (so that a
-borrowed-function requirement can reject a consuming implementation) and
-imported or sealed signatures are the remaining boundaries of milestone 2.
+receiver type is a resource type. Imported or sealed signatures are the remaining boundary of milestone 2.
+
+**Contracts on function types.** A function-typed parameter may carry a
+**callable contract**: the resource modes (and fresh-return fact) required
+of any function value passed for it, declared beside the parameter modes of
+the enclosing callable. At a call, the function value passed must carry
+that contract by **exact normalized agreement** — a consuming function does
+not satisfy a borrowed requirement, a function with no contract does not
+satisfy a requirement with any mode, and a value of unknown provenance
+satisfies none; mismatches are `OAK-B0116`, and the rejected call has not
+occurred. Inside the callee, a call through the contracted parameter uses
+the declared contract: `op(h)` borrows or consumes exactly as declared, and
+forwarding `op` to another contracted position compares the two contracts.
+In SemIR the requirement is the `resource.callable-borrow`,
+`callable-borrow-mut`, `callable-consume` (`arg:N`, `param:M`) and
+`callable-return-fresh` (`arg:N`) effects. Nested callable contracts
+(functions of functions) and ownership variance are not admitted until
+their substitutability laws are specified.
 
 The callable-boundary audit and proposed result provenance/lifetime relationships
 are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).
