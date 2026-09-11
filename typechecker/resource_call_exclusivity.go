@@ -58,6 +58,23 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 	for _, parameter := range slots {
 		argument := parameter.argument
 		if !a.isResourceValue(argument) {
+			// An aggregate argument takes part once per resource path below
+			// it; a path without provenance is an untracked participant.
+			for _, path := range a.aggregatePaths(argument) {
+				participant := resourceCallArgument{index: parameter.index, mode: parameter.mode, node: argument, name: path}
+				if a.flow.Registered(path) {
+					if !a.flow.CanUse(path) {
+						a.use(path, argument)
+						return false
+					}
+					participant.tracked = !a.unknownResources[path]
+				}
+				participants = append(participants, participant)
+				if parameter.mode == ResourceParameterConsumed && !participant.tracked {
+					a.reportUntrackedResourceArgument(expr, participant, "consuming")
+					return false
+				}
+			}
 			continue
 		}
 
@@ -114,6 +131,12 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 				continue
 			}
 			if left.tracked && right.tracked {
+				if a.sameUnprovenRoot(left.name, right.name) {
+					// Two paths of one contracted aggregate parameter may hold
+					// the same resource; nothing proves them distinct.
+					a.reportCallAliasConflict(expr, left, right)
+					return false
+				}
 				if left.owners != nil || right.owners != nil {
 					if !a.participantsOverlap(left, right) {
 						continue
