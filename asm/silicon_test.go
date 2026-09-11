@@ -48,6 +48,7 @@ func siliconCases() []siliconCase {
 		x("smull", "smull x0, w0, w1"), x("umull", "umull x0, w0, w1"), x("smaddl", "smaddl x0, w0, w1, x1"), x("umaddl", "umaddl x0, w0, w1, x1"), x("smsubl", "smsubl x0, w0, w1, x1"), x("umsubl", "umsubl x0, w0, w1, x1"),
 		x("smulh", "smulh x0, x0, x1"), x("umulh", "umulh x0, x0, x1"), x("udiv", "udiv x0, x0, x1"), x("sdiv", "sdiv x0, x0, x1"), w("udiv w", "udiv w0, w0, w1"), w("sdiv w", "sdiv w0, w0, w1"),
 		x("ubfx", "ubfx x0, x0, #7, #20"), x("ubfiz", "ubfiz x0, x0, #7, #20"), x("sbfx", "sbfx x0, x0, #7, #20"), x("bfi", "bfi x0, x1, #7, #20"), w("sbfx w", "sbfx w0, w0, #3, #9"), w("bfi w", "bfi w0, w1, #3, #9"),
+		x("sbfiz", "sbfiz x0, x0, #7, #20"), w("sbfiz w", "sbfiz w0, w1, #3, #9"), x("bfxil", "bfxil x0, x1, #7, #20"), w("bfxil w", "bfxil w0, w1, #3, #9"), x("bfc", "bfc x0, #7, #20"), w("bfc w", "bfc w0, #3, #9"),
 		x("shifted lsl", "add x0, x0, x1, lsl #3"), x("shifted lsr", "sub x0, x0, x1, lsr #7"), x("shifted asr", "and x0, x0, x1, asr #7"), x("shifted ror", "eor x0, x0, x1, ror #9"),
 		x("extended uxtw", "add x0, x0, w1, uxtw #2"), x("extended sxtw", "add x0, x0, w1, sxtw"), x("extended uxtb", "sub x0, x0, w1, uxtb"), x("extended sxth", "cmp x0, w1, sxth\n  cset x0, lo"),
 		x("cmn", "cmn x0, x1\n  cset x0, eq"), x("tst", "tst x0, x1\n  cset x0, ne"), x("ands", "ands x0, x0, x1\n  cset x0, mi"), x("bics", "bics x9, x0, x1\n  cset x0, eq"),

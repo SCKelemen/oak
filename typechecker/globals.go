@@ -21,7 +21,15 @@ func (tc *TypeChecker) checkGlobalInitializer(decl *ast.VariableDeclaration) {
 	if decl == nil || decl.Value == nil {
 		return // zero initialization is always constant
 	}
-	if isConstantExpression(decl.Value) {
+	if tc.IsConstantInitializer(decl.Value) {
+		// A constant global may be read by the constant initializers that
+		// follow it (a derived constant such as TOTAL = ROWS * COLS).
+		if decl.Name != nil {
+			if tc.constantGlobals == nil {
+				tc.constantGlobals = map[string]bool{}
+			}
+			tc.constantGlobals[decl.Name.Value] = true
+		}
 		return
 	}
 	// A warning: script-style programs may still interpret top-level
@@ -35,18 +43,35 @@ func (tc *TypeChecker) checkGlobalInitializer(decl *ast.VariableDeclaration) {
 
 // IsConstantInitializer is the shared constant-initializer judgment —
 // exactly the forms the backend emits as C constant expressions at file
-// scope; the backend consults the same function it warns with (one
-// authority).
+// scope or folds; the backend consults the same function it warns with (one
+// authority). A read of an earlier constant global is constant too, and is
+// folded with it.
+func (tc *TypeChecker) IsConstantInitializer(expr ast.Expression) bool {
+	return IsConstantInitializerIn(expr, tc.constantGlobals)
+}
+
+// IsConstantInitializer without a checker admits the literal forms only.
 func IsConstantInitializer(expr ast.Expression) bool {
-	return isConstantExpression(expr)
+	return IsConstantInitializerIn(expr, nil)
+}
+
+// IsConstantInitializerIn is the judgment relative to the set of constant
+// globals declared earlier: the backend, which emits globals in declaration
+// order, passes the set it has emitted so far.
+func IsConstantInitializerIn(expr ast.Expression, constants map[string]bool) bool {
+	return isConstantExpression(expr, constants)
 }
 
 // isConstantExpression is the shared constant-initializer judgment: exactly
-// the forms the backend emits as C constant expressions at file scope.
-func isConstantExpression(expr ast.Expression) bool {
+// the forms the backend emits as C constant expressions at file scope or
+// folds.
+func isConstantExpression(expr ast.Expression, constants map[string]bool) bool {
+	isConstantExpression := func(e ast.Expression) bool { return isConstantExpression(e, constants) }
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral, *ast.FloatLiteral, *ast.StringLiteral, *ast.Boolean, *ast.FieldAccessorExpression:
 		return true
+	case *ast.Identifier:
+		return constants[e.Value]
 	case *ast.PrefixExpression:
 		return isConstantExpression(e.Right)
 	case *ast.InfixExpression:
@@ -108,6 +133,16 @@ func IsFoldedConversion(call *ast.InvocationExpression) bool {
 // the checker recorded for an operator over folded operands.
 func (tc *TypeChecker) FoldedConstantType(expr ast.Expression) (string, bool) {
 	switch e := expr.(type) {
+	case *ast.Identifier:
+		// A read of an earlier constant global has that global's type.
+		if tc.globalEnv != nil {
+			if scheme, ok := tc.globalEnv.Get(e.Value); ok && scheme != nil {
+				if prim, isPrim := scheme.Type.(*PrimitiveType); isPrim {
+					return prim.Name, true
+				}
+			}
+		}
+		return "", false
 	case *ast.InvocationExpression:
 		ident, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent {
@@ -139,9 +174,12 @@ func (tc *TypeChecker) FoldedConstantType(expr ast.Expression) (string, bool) {
 }
 
 // ContainsFoldedConversion reports whether a constant initializer needs the
-// backend's fold: some conversion or float constructor sits inside it.
+// backend's fold: some conversion, float constructor, or read of an earlier
+// constant global sits inside it.
 func ContainsFoldedConversion(expr ast.Expression) bool {
 	switch e := expr.(type) {
+	case *ast.Identifier:
+		return true
 	case *ast.PrefixExpression:
 		return ContainsFoldedConversion(e.Right)
 	case *ast.InfixExpression:
@@ -157,4 +195,12 @@ func ContainsFoldedConversion(expr ast.Expression) bool {
 		}
 	}
 	return false
+}
+
+// ForeignBorrowCallee reports whether an expression is the callee of an
+// inbound buffer borrow, `c.borrow[T]` or `c.borrow_mut[T]`, so the
+// lowering keeps its shape instead of treating the index as element access.
+func ForeignBorrowCallee(fn ast.Expression) bool {
+	_, _, ok := foreignBorrowAccess(fn)
+	return ok
 }

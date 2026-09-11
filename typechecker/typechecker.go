@@ -544,6 +544,15 @@ type TypeChecker struct {
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[string]string
+	// unsafeDepth counts the enclosing unsafe blocks; initializerUnderCheck
+	// is the initializer expression of the declaration being checked. Both
+	// gate the inbound buffer borrows of docs/spec/92-ffi.md section 2.7.
+	unsafeDepth           int
+	initializerUnderCheck ast.Expression
+	// constantGlobals names the top-level bindings whose initializers are
+	// compile-time constants, in declaration order, so later constant
+	// initializers may read them (typechecker/globals.go).
+	constantGlobals map[string]bool
 	// predeclaredGlobals names package-level bindings registered before any
 	// body is checked, so functions may mention globals declared later in
 	// the file; the defining declaration consumes its entry.
@@ -1980,6 +1989,11 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	}
 	// Compiler-known library calls: c conversions, misplaced c.extern, and
 	// arm64 instruction functions (docs/spec/92-ffi.md).
+	if member, element, isBorrow := foreignBorrowAccess(expr.Function); isBorrow {
+		if _, bound := tc.env.Get("c"); !bound {
+			return tc.checkForeignBorrow(expr, member, element)
+		}
+	}
 	if libraryType, isLibrary := tc.checkLibraryInvocation(expr); isLibrary {
 		return libraryType
 	}
@@ -3557,6 +3571,11 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 }
 
 func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
+	// The initializer under check, so forms admitted only in binding
+	// position (inbound buffer borrows) can recognize it.
+	savedInitializer := tc.initializerUnderCheck
+	tc.initializerUnderCheck = stmt.Value
+	defer func() { tc.initializerUnderCheck = savedInitializer }()
 	defer func() {
 		if stmt != nil && stmt.Name != nil {
 			if info := tc.env.borrowMetadata(); info != nil {
@@ -4429,9 +4448,12 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 }
 
 func (tc *TypeChecker) checkUnsafeBlock(stmt *ast.UnsafeBlock) {
-	// Type check body (same as regular block)
-	// Unsafe blocks don't change type checking rules, they just bypass borrow checking
+	// Type check body (same as regular block). Unsafe blocks do not change
+	// the typing rules; they admit the forms that state an assumption, such
+	// as inbound buffer borrows (docs/spec/92-ffi.md section 2.7).
+	tc.unsafeDepth++
 	tc.checkBlockStatement(stmt.Body)
+	tc.unsafeDepth--
 }
 
 // typeExpressionFor renders a checked type back into the type-annotation
