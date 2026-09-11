@@ -496,6 +496,15 @@ func functionStatementCaptureFactsWithBound(fn *ast.FunctionStatement, env *Type
 			arguments = append(arguments, parameter.Name)
 		}
 	}
+	// A type parameter named in an explicit instantiation (`inner[T](..)`)
+	// is a type, not a captured value; treating it as an unknown free
+	// variable would block generalization of every template that calls
+	// another template.
+	for _, parameter := range fn.TypeParams {
+		if parameter != nil && parameter.Name != nil {
+			arguments = append(arguments, parameter.Name)
+		}
+	}
 	var body *ast.BlockStatement
 	if block, ok := fn.Body.(*ast.BlockExpression); ok {
 		body = block.Block
