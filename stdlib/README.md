@@ -774,3 +774,18 @@ at seven offsets and 1000 random durations in Oak, compares each line with
 Go, parses it back, and parses 400 random duration spellings to Go's value.
 `examples/time/time_test.oak` (`oak test examples/time`) states the round
 trips as properties over the full i64 range.
+
+## `arena`: reservations over an owner (`import("arena")`)
+
+`stdlib/arena.oak` is bump allocation over an owner's element index space
+(`docs/spec/92-ffi.md` §2.8.4): an `Arena { used, capacity }` hands out
+offsets, never memory. `arena_reserve(a, count, align)` returns a
+`Reservation { ok, offset, arena }`, the aligned start of a range that fits
+after every earlier reservation and the arena after it, or `ok = false`
+with the arena unchanged. `arena_align_up` rounds up without wrapping (an
+offset that cannot be rounded becomes the largest `u32`, which no capacity
+admits), and `arena_reset`/`arena_remaining` complete the surface. The
+program carves the ranges with `subslice` over `view(&b)` or `span(&b)` of
+a `Buffer[T]` or a fixed array, so the borrow checker decides what may be
+live at once. Executed over a libc allocation in
+`compiler/e2e_buffers_test.go`.

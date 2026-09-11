@@ -417,15 +417,12 @@ representation every view and span already has, so every existing helper
 allocation. The interpreter has no foreign memory and rejects the forms
 with the diagnostic it gives an extern call (§4).
 
-#### 2.7.5 What this is not yet
+#### 2.7.5 Beyond one block
 
-A borrow ends with its block. A `Buffer[CpuOwned]` record that *owns* a
-foreign allocation across calls, hands it to a device (`Buffer[DeviceOwned]`)
-and gets it back, is the typestate of `50-borrowing.md` §11: it needs the
-record to carry the region (`50-borrowing.md` §8c, more than one region per
-record) and an explicit close. This section is the shape that record's
-methods will use internally; the tier-9 note records it as the next
-increment after runtime-sized arenas.
+A borrow ends with its block. An owner that holds a foreign allocation
+until the program hands it back is `Buffer[T]`, §2.8. The custody
+typestate that lets a device own the memory for a while
+(`Buffer[DeviceOwned]`, `50-borrowing.md` §11) is the increment after it.
 
 #### 2.7.6 Diagnostics
 
@@ -434,6 +431,119 @@ increment after runtime-sized arenas.
 | `OAK-F0104` | element type of an inbound buffer is not representable across the C ABI |
 | `OAK-F0107` | `c.borrow`/`c.borrow_mut` outside an `unsafe` block, or not the initializer of a named binding |
 | `OAK-B0110` | (warning) the foreign buffer contract assumed for a binding |
+
+### 2.8 Owned foreign buffers: `Buffer[T]`
+
+**Status: implemented and tested** (`compiler/e2e_buffers_test.go`).
+Motivated by the ml project's third list, item 2: weight arenas are
+hundreds of megabytes, not a static array, and a `Tensor` record holding a
+view over them is the frontend shape every user expects.
+
+A borrow of §2.7 ends with its block. `Buffer[T]` is an **owner** of
+runtime length: memory a runtime allocated, held by an Oak binding until
+the program hands it back, and borrowed in between exactly like an owned
+fixed array. It is the runtime-sized owner the arena story of
+`60-effects-allocation.md` §6 needs, and the `arena` package (§2.8.4) is
+the allocator over it.
+
+#### 2.8.1 Forms
+
+| Form | Operands | Meaning |
+| --- | --- | --- |
+| `b: Buffer[T] = c.own[T](p, n)` | `p: c.Ptr`, `n: u32`, inside `unsafe` | `b` owns `n` elements of `T` at `p` |
+| `view(&b)`, `span(&b)` | | a read-only view / writable span of all `n` elements, tracked as borrows of `b` |
+| `len(b)` | | `n` |
+| `c.disown(b)` | | the `c.Ptr` back, for the runtime to free or reuse; `b` is consumed |
+
+`T` is a boundary element type (§2.5.1), checked when the type is spelled.
+`Buffer[T]` is the type of a local binding initialized by `c.own` and of
+nothing else: it cannot be copied into another binding, assigned, passed as
+an argument (a generic parameter included), returned, placed in a record or
+array, or indexed directly. Every one of those is an error naming the
+alternative, so a buffer has exactly one name and the borrow checker's
+owner story holds for it: views and spans of `b` follow the rules of
+`50-borrowing.md` (one writable span at a time, no writes while a view
+lives, block-scoped), region-indexed functions and region records accept
+`view(&b)` and `span(&b)` as they accept any owner's borrows, and nothing
+derived from `b` outlives `b`'s block.
+
+```oak
+malloc: (n: c.Size): c.Ptr = c.extern("malloc")
+free: (p: c.Ptr): () = c.extern("free")
+
+Tensor[R]: type = struct { data: View[f32, R], rows: u32, cols: u32 }
+tensor_of[R]: (data: View[f32, R], rows: u32, cols: u32): Tensor[R] = Tensor { data: data, rows: rows, cols: cols }
+
+load: (count: u32): f32 {
+  p: c.Ptr = malloc(c.Size(count * u32(4)))
+  total: f32 = 0.0
+  unsafe {
+    weights: Buffer[f32] = c.own[f32](p, count)
+    fill(span(&weights))
+    t: Tensor = tensor_of(view(&weights), count / u32(64), u32(64))
+    total = sum(t)
+    free(c.disown(weights))
+  }
+  total
+}
+```
+
+#### 2.8.2 The contract and the consumption
+
+`c.own` admits the foreign buffer contract of §2.7.2 with a longer extent:
+the memory at `p` holds `n` elements of `T` with Oak's layout, stays
+mapped, and is not written by anything else, from `c.own` until
+`c.disown`. It is recorded as an `OAK-B0110` assumption naming the owner.
+`c.disown(b)` is rejected while any view or span of `b` is live
+(`OAK-B0000`, "cannot be handed back while borrow is live"), and after it
+every use of `b` — a borrow, `len`, a second `disown` — is
+`OAK-B0111`, use after consumption. Freeing is the runtime's: the program
+passes the returned pointer to whatever allocated it. A buffer that is
+never disowned is a leak, not unsoundness; the discipline profiles may
+later require the pair.
+
+#### 2.8.3 Lowering and interpretation
+
+`Buffer[T]` lowers to the span struct `{ T *base; u32 len }`; `c.own` fills
+it, `view(&b)`/`span(&b)` copy the pair into the view or span struct,
+`len(b)` reads `len`, and `c.disown(b)` reads `base`. No copy of the
+memory, no allocation, no destructor. Every element access goes through
+the bounds-checked view and span helpers against `n`. The interpreter has
+no foreign memory and rejects `c.own` and `c.disown`.
+
+#### 2.8.4 Arenas over a buffer (`import("arena")`)
+
+`stdlib/arena.oak` is bump allocation over an owner's element index space:
+an `Arena { used, capacity }` hands out **offsets**, never memory.
+`arena_reserve(a, count, align)` returns a `Reservation { ok, offset,
+arena }` — the aligned start of a range that fits after every earlier
+reservation, and the arena after it, or `ok = false` with the arena
+unchanged; `arena_align_up` rounds without wrapping (an offset that cannot
+be rounded becomes the largest `u32`, which no capacity admits);
+`arena_reset` and `arena_remaining` complete the surface. The program
+carves the ranges it reserved with `subslice` over `view(&b)` or
+`span(&b)`, so the borrow checker's rules decide what may be live at once:
+any number of views, or one span and its reborrows. Everything is `u32`
+arithmetic that the interpreter and the backends compute identically.
+
+#### 2.8.5 What stays outside
+
+A `Buffer[T]` in a record or a global (a `Weights` record owning its
+arena, a package-level buffer loaded once) needs the record to carry
+custody, which is the `Buffer[CpuOwned]` typestate of `50-borrowing.md`
+§11 and the resource-consumption machinery of §9 applied to a field. The
+element-space arena admits one span at a time; carving several writable
+ranges from one buffer at once is the disjoint-region proof of
+`50-borrowing.md` §6, or an `unsafe` disjointness assumption.
+
+#### 2.8.6 Diagnostics
+
+| Code | Meaning |
+| --- | --- |
+| `OAK-F0107` | `c.own` outside an `unsafe` block, or not the initializer of a named binding |
+| `OAK-B0110` | (warning) the foreign buffer contract assumed for an owner |
+| `OAK-B0111` | a buffer used after `c.disown` |
+| `OAK-B0000` | `c.disown` while a view or span of the buffer is live |
 
 ## 3. The abstract assembly interface
 

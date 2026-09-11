@@ -543,11 +543,13 @@ Buffer[CpuOwned]
 
 CPU code cannot safely access a device-owned buffer because it lacks the corresponding authority/state, not because the pointer has disappeared.
 
-The first step toward this is implemented: an inbound buffer borrow
+Two steps toward this are implemented: an inbound buffer borrow
 (`92-ffi.md` §2.7) lets an `unsafe` block view or write runtime-owned memory
-for the block's extent under a stated contract. The owning `Buffer` record
-that carries a foreign allocation across calls remains the increment after
-runtime-sized arenas.
+for the block's extent, and `Buffer[T]` (`92-ffi.md` §2.8) is an owner of
+runtime length that holds a foreign allocation from `c.own` until
+`c.disown` consumes it, borrowed like an owned array in between. The
+custody typestate — a buffer inside a record, handed to a device and back
+— is the increment after them.
 
 These transitions combine protocol/typestate refinement with consumption: the previous state value is invalid after transfer, while the returned value carries the new custody state.
 

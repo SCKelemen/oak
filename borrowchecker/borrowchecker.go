@@ -102,6 +102,9 @@ type BorrowChecker struct {
 	// writable-disjointness assumption, recording it as an auditable
 	// warning; every other invariant remains checked.
 	unsafeDepth int
+	// consumedOwners names the Buffer bindings c.disown has handed back
+	// (docs/spec/92-ffi.md section 2.8); any later use is rejected.
+	consumedOwners map[string]bool
 }
 
 // New creates a new borrow checker
@@ -138,6 +141,7 @@ func (bc *BorrowChecker) CheckProgram(program *ast.Program, env *typechecker.Typ
 	bc.activeBorrows = make(map[string]borrowInfo)
 	bc.currentBlockDepth = 0
 	bc.unsafeDepth = 0
+	bc.consumedOwners = make(map[string]bool)
 	bc.staticStringFunctions = make(map[string]bool)
 	bc.collectGlobalWrites(program, env)
 	for _, statement := range program.Statements {
@@ -615,6 +619,11 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 			}
 			// Views ([]T) and spans ([*]T) are tracked as borrows, not owners
 		}
+		if _, isBuffer := typ.(*typechecker.BufferType); isBuffer {
+			// An owned foreign buffer is an owner of runtime length
+			// (docs/spec/92-ffi.md section 2.8).
+			bc.ownerStates[varName] = Free
+		}
 	} else if vd.Type != nil {
 		// Function-local declarations are not in the surviving global
 		// environment; classify owners from the checker's recorded
@@ -623,6 +632,9 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 		declared := env.CheckedDeclarationType(vd)
 		if declared == nil {
 			declared = bc.parseTypeFromAST(vd.Type, env)
+		}
+		if _, isBuffer := declared.(*typechecker.BufferType); isBuffer {
+			bc.ownerStates[varName] = Free
 		}
 		if arrType, ok := declared.(*typechecker.ArrayType); ok {
 			if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
@@ -970,6 +982,16 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 	// and cannot escape it, and the assumption the program makes about the
 	// runtime's memory is recorded where every other unsafe assumption is.
 	if member, _, isForeign := typechecker.ForeignBorrowCall(call); isForeign && targetVar != "" {
+		if member == "own" {
+			// An owned foreign buffer (docs/spec/92-ffi.md section 2.8):
+			// the binding is an owner, registered by its declaration; the
+			// contract lasts until c.disown hands the memory back.
+			d := bc.reportUnsafeAssumption(call,
+				fmt.Sprintf("foreign buffer contract assumed for owner %q: the pointer addresses the given count of elements, valid and unaliased until c.disown(%s)", targetVar, targetVar),
+				targetVar, nil, "", nil)
+			d.AddNote("the assumption is the binding author's, as for an extern prototype (docs/spec/92-ffi.md section 2.8); indexing through its views and spans stays bounds-checked against the count")
+			return
+		}
 		owner := "$foreign:" + targetVar
 		if member == "borrow" {
 			bc.createViewBorrowWithRegion(owner, targetVar, nil, call)
@@ -980,6 +1002,27 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			fmt.Sprintf("foreign buffer contract assumed for %q: the pointer addresses the given count of elements, valid and unaliased for writes until the block ends", targetVar),
 			targetVar, nil, "", nil)
 		d.AddNote("the assumption is the binding author's, as for an extern prototype (docs/spec/92-ffi.md section 2.7); indexing stays bounds-checked against the count")
+		return
+	}
+	// c.disown(b) hands a buffer's memory back (docs/spec/92-ffi.md section
+	// 2.8): rejected while any view or span of it is live, and the binding
+	// is consumed afterward.
+	if owner, isDisown := foreignDisownOperand(call); isDisown {
+		if bc.consumedOwners[owner] {
+			bc.reportBorrow(call, CodeResourceUsedAfterConsume,
+				fmt.Sprintf("buffer %q was already handed back by c.disown", owner))
+			return
+		}
+		for _, kind := range []borrowKind{BorrowSpan, BorrowView} {
+			if borrowName, info, live := bc.firstActiveBorrow(owner, kind); live {
+				d := bc.reportBorrow(call, CodeBorrowGeneric,
+					fmt.Sprintf("buffer %q cannot be handed back while borrow %q is live", owner, borrowName))
+				bc.addBorrowContext(d, borrowName, info, fmt.Sprintf("borrow %q still reads the buffer's memory", borrowName))
+				d.AddHelp("let the view or span leave scope before c.disown")
+				return
+			}
+		}
+		bc.consumedOwners[owner] = true
 		return
 	}
 	// 2. Then apply borrow-sensitive builtins
@@ -1223,6 +1266,12 @@ func (bc *BorrowChecker) checkSpanAsCall(call *ast.InvocationExpression, env *ty
 // This enforces that owners cannot be used directly while they have active borrows
 // isWrite indicates if this is a write operation (assignment target)
 func (bc *BorrowChecker) checkIdentifierUse(node ast.Node, name string, env *typechecker.TypeEnvironment, isWrite bool) {
+	if bc.consumedOwners[name] {
+		d := bc.reportBorrow(node, CodeResourceUsedAfterConsume,
+			fmt.Sprintf("buffer %q cannot be used after c.disown handed its memory back", name))
+		d.AddHelp("create a new buffer with c.own, or move the use before c.disown")
+		return
+	}
 	if info, isBorrow := bc.activeBorrows[name]; isBorrow && len(info.reborrows) > 0 {
 		title := fmt.Sprintf("writable span %q is suspended by reborrow %q", name, info.reborrows[0])
 		if len(info.reborrows) > 1 {
@@ -1315,6 +1364,11 @@ func (bc *BorrowChecker) createViewBorrow(ownerName, borrowName string) {
 
 // createViewBorrowWithRegion creates a read-only borrow (view) from an owner with region information.
 func (bc *BorrowChecker) createViewBorrowWithRegion(ownerName, borrowName string, region *Region, origin ast.Node) {
+	if bc.consumedOwners[ownerName] {
+		bc.reportBorrow(origin, CodeResourceUsedAfterConsume,
+			fmt.Sprintf("buffer %q cannot be borrowed after c.disown handed its memory back", ownerName))
+		return
+	}
 	state := bc.ownerStates[ownerName]
 	if !admitViewBorrow(state) {
 		d := bc.reportBorrow(origin, CodeViewConflictsWithSpan,
@@ -1349,6 +1403,11 @@ func (bc *BorrowChecker) createSpanBorrow(ownerName, borrowName string) {
 // createSpanBorrowWithRegion creates a unique writable borrow (span) from an owner with region information.
 // Multiple spans are allowed only when every active writable region is provably disjoint.
 func (bc *BorrowChecker) createSpanBorrowWithRegion(ownerName, borrowName string, region *Region, origin ast.Node) {
+	if bc.consumedOwners[ownerName] {
+		bc.reportBorrow(origin, CodeResourceUsedAfterConsume,
+			fmt.Sprintf("buffer %q cannot be borrowed after c.disown handed its memory back", ownerName))
+		return
+	}
 	state := bc.ownerStates[ownerName]
 	spanNames := bc.activeBorrowNames(ownerName, BorrowSpan)
 
@@ -1506,4 +1565,24 @@ func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName
 		origin:     origin,
 		parent:     sourceBorrowName,
 	}
+}
+
+// foreignDisownOperand recognizes `c.disown(b)` and names the buffer
+// binding (docs/spec/92-ffi.md section 2.8). A local named `c` would have
+// made this an ordinary call, which the typechecker never accepts here.
+func foreignDisownOperand(call *ast.InvocationExpression) (string, bool) {
+	access, isAccess := call.Function.(*ast.IndexExpression)
+	if !isAccess || len(call.Arguments) != 1 {
+		return "", false
+	}
+	base, isIdent := access.Left.(*ast.Identifier)
+	member, memberIsIdent := access.Index.(*ast.Identifier)
+	if !isIdent || !memberIsIdent || base.Value != "c" || member.Value != "disown" {
+		return "", false
+	}
+	owner, isOwner := call.Arguments[0].(*ast.Identifier)
+	if !isOwner {
+		return "", false
+	}
+	return owner.Value, true
 }

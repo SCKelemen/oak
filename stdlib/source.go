@@ -80,6 +80,12 @@ var mxSource string
 //
 //go:embed time.oak
 var timeSource string
+// arena is a library package only (import("arena")): bump reservations of
+// element ranges over an owner such as a Buffer[T]
+// (docs/spec/60-effects-allocation.md section 6).
+//
+//go:embed arena.oak
+var arenaSource string
 
 // Prelude is the core library (std.oak): Option, Result, Overflow, byte and
 // ring helpers. Every standard library package builds on it unqualified, and
@@ -151,4 +157,5 @@ var Packages = map[string]string{
 	"hash":            hashSource,
 	"mx":              mxSource,
 	"time":            timeSource,
+	"arena":           arenaSource,
 }

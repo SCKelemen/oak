@@ -75,6 +75,14 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 	}
 	switch library {
 	case "c":
+		if member == "disown" && len(call.Arguments) == 1 {
+			// c.disown(b): the buffer's pointer, for the runtime to free
+			// (docs/spec/92-ffi.md section 2.8).
+			cg.output.WriteString("((void *)( ")
+			cg.emitExpressionFragment(call.Arguments[0], tc)
+			cg.output.WriteString(" ).base)")
+			return true
+		}
 		if member == "extern" || member == "span_of" || member == "span_mut_of" || len(call.Arguments) != 1 {
 			// Boundary spans are expanded at their extern call site
 			// (emitExpressionFragment); anywhere else they are not
@@ -462,6 +470,8 @@ func (cg *CodeGenerator) emitForeignBorrow(member string, element ast.Expression
 		structName := cg.emitViewType(elementC)
 		cg.output.WriteString(fmt.Sprintf("(%s){ (const %s *)( ", structName, elementC))
 	} else {
+		// borrow_mut, and own: an owned buffer is the span struct too
+		// (section 2.8), so its views and spans are one copy away.
 		structName := cg.emitSpanType(elementC)
 		cg.output.WriteString(fmt.Sprintf("(%s){ (%s *)( ", structName, elementC))
 	}

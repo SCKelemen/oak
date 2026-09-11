@@ -251,7 +251,8 @@ func KnownLibraryMember(library, member string) bool {
 	switch library {
 	case "c":
 		_, isType := cTypeSpellings[member]
-		return isType || member == "extern" || member == "span_of" || member == "span_mut_of"
+		return isType || member == "extern" || member == "span_of" || member == "span_mut_of" ||
+			member == "borrow" || member == "borrow_mut" || member == "own" || member == "disown"
 	case "arm64":
 		_, isIntrinsic := arm64Intrinsics[member]
 		return isIntrinsic
@@ -426,6 +427,8 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 		return nil
 	}
 	switch member {
+	case "disown":
+		return tc.checkForeignDisown(expr)
 	case "span_of", "span_mut_of":
 		// Boundary spans are not expressions: they exist only as arguments
 		// of a call to an extern binding, where checkInvocationExpression
@@ -797,7 +800,7 @@ func foreignBorrowAccess(fn ast.Expression) (member string, element ast.Expressi
 		return "", nil, false
 	}
 	library, member, isLibrary := libraryAccess(index.Left)
-	if !isLibrary || library != "c" || (member != "borrow" && member != "borrow_mut") {
+	if !isLibrary || library != "c" || (member != "borrow" && member != "borrow_mut" && member != "own") {
 		return "", nil, false
 	}
 	return member, index.Index, true
@@ -823,7 +826,7 @@ func ForeignBorrowCall(call *ast.InvocationExpression) (member string, element a
 func (tc *TypeChecker) checkForeignBorrow(expr *ast.InvocationExpression, member string, elementExpr ast.Expression) Type {
 	if tc.unsafeDepth == 0 {
 		d := tc.addTypeDiagnostic(expr, CodeForeignBorrowPlacement,
-			fmt.Sprintf("c.%s borrows runtime-owned memory and is admitted only inside an unsafe block", member))
+			fmt.Sprintf("c.%s takes runtime-owned memory and is admitted only inside an unsafe block", member))
 		d.AddNote("the program asserts that the pointer addresses count elements of the element type, valid and unaliased for writes for the block's extent (docs/spec/92-ffi.md section 2.7)")
 		d.AddHelp("wrap the binding and its uses in unsafe { ... }")
 	} else if tc.initializerUnderCheck != expr {
@@ -855,8 +858,37 @@ func (tc *TypeChecker) checkForeignBorrow(expr *ast.InvocationExpression, member
 	if prim, isPrim := countType.(*PrimitiveType); countType != nil && (!isPrim || prim.Name != "u32") {
 		tc.addError(expr.Arguments[1], "c.%s takes a u32 element count second, got %s (lengths stay in u32 on the Oak side, docs/spec/92-ffi.md section 2.2)", member, countType)
 	}
-	if member == "borrow" {
+	switch member {
+	case "borrow":
 		return &ArrayType{Length: -1, IsSlice: true, ElementType: element}
+	case "own":
+		// An owner of runtime length (section 2.8): the binding borrows
+		// it like an owned array until c.disown hands the memory back.
+		return &BufferType{Element: element}
 	}
 	return &ArrayType{Length: -1, IsSpan: true, ElementType: element}
+}
+
+// checkForeignDisown types c.disown(b): the buffer's pointer, for the
+// runtime to free or reuse; the borrow checker consumes the binding.
+func (tc *TypeChecker) checkForeignDisown(expr *ast.InvocationExpression) Type {
+	if len(expr.Arguments) != 1 {
+		tc.addError(expr, "c.disown takes exactly one Buffer[T] binding")
+		return nil
+	}
+	ident, isIdent := expr.Arguments[0].(*ast.Identifier)
+	if !isIdent {
+		tc.addError(expr.Arguments[0], "c.disown takes the Buffer[T] binding itself, not an expression")
+		return nil
+	}
+	scheme, bound := tc.env.Get(ident.Value)
+	if !bound || scheme == nil {
+		tc.addError(ident, "undefined variable: %s", ident.Value)
+		return nil
+	}
+	if _, isBuffer := scheme.Type.(*BufferType); !isBuffer {
+		tc.addError(ident, "c.disown takes a Buffer[T] binding, got %s", scheme.Type)
+		return nil
+	}
+	return &CType{Name: "Ptr"}
 }
