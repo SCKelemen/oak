@@ -1,0 +1,473 @@
+{
+  "metadata": {
+    "schema": "oak-stdlib-benchmark-v1",
+    "mode": "resident corpus, steady state",
+    "scale": 1.0,
+    "samples": 5,
+    "only": "normalize",
+    "machine": "arm64",
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "cpu": "Apple M4 Max",
+    "logical_cpu_count": 16,
+    "oak": {
+      "sha": "f98b572889ecd6c95447d4f694937e536b764e7d",
+      "tracked_changes": true
+    },
+    "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+    "go": "go version go1.27.1 darwin/arm64",
+    "flags": [
+      "-O2"
+    ],
+    "allocation_counts": null,
+    "core_affinity": "not controlled",
+    "cache_flush": false,
+    "generated_c_sha256": {
+      "normalize": "c5188854bd08c3d7969ae86f236246a4b5ec948dd0acd7ac2d0aa3840792bd60"
+    },
+    "commands": [
+      [
+        "go",
+        "run",
+        ".",
+        "build",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-j5f2n309/oak_normalize.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-a281793ae06d92a9a/benchmarks/stdlib/oak/normalize"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O2",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-j5f2n309",
+        "-I/Users/sam/dst/oak/.claude/worktrees/agent-a281793ae06d92a9a/benchmarks/stdlib",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-a281793ae06d92a9a/benchmarks/stdlib/runner.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-a281793ae06d92a9a/benchmarks/stdlib/bridge_normalize.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-j5f2n309/bench_normalize"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-j5f2n309/bench_normalize",
+        "1.0",
+        "5",
+        "normalize"
+      ],
+      [
+        "go",
+        "run",
+        "./benchmarks/stdlib/goref",
+        "1.0",
+        "5",
+        "normalize"
+      ]
+    ]
+  },
+  "summary": {
+    "normalize/is_nfc_ascii": {
+      "oak": {
+        "median_ns": 3889000,
+        "median_ns_per_item": 0.3420198519262472,
+        "median_mb_per_second": 2923.806891231679,
+        "items": 11370685,
+        "bytes": 11370685,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 4278541,
+        "median_ns_per_item": 0.376278210151807,
+        "median_mb_per_second": 2657.60804909898,
+        "items": 11370685,
+        "bytes": 11370685,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.9089547114308358
+    },
+    "normalize/nfc": {
+      "oak": {
+        "median_ns": 248506000,
+        "median_ns_per_item": 29.624223709106445,
+        "median_mb_per_second": 33.75615880501879,
+        "items": 8388608,
+        "bytes": 8388608,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 624174791,
+        "median_ns_per_item": 74.40743339061737,
+        "median_mb_per_second": 13.439517457218166,
+        "items": 8388608,
+        "bytes": 8388608,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.39813527169507235
+    },
+    "normalize/nfd": {
+      "oak": {
+        "median_ns": 178866000,
+        "median_ns_per_item": 21.32248878479004,
+        "median_mb_per_second": 46.89884047275615,
+        "items": 8388608,
+        "bytes": 8388608,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 312014416,
+        "median_ns_per_item": 37.195016860961914,
+        "median_mb_per_second": 26.885321862820597,
+        "items": 8388608,
+        "bytes": 8388608,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.5732619738954626
+    }
+  },
+  "preflight": {
+    "oak": {
+      "normalize/nfc": {
+        "event": "preflight",
+        "workload": "normalize/nfc",
+        "items": 8388608,
+        "bytes": 8388608,
+        "checksum": 756273756710711553,
+        "side": "oak"
+      },
+      "normalize/nfd": {
+        "event": "preflight",
+        "workload": "normalize/nfd",
+        "items": 8388608,
+        "bytes": 8388608,
+        "checksum": 8155105488899120031,
+        "side": "oak"
+      },
+      "normalize/is_nfc_ascii": {
+        "event": "preflight",
+        "workload": "normalize/is_nfc_ascii",
+        "items": 11370685,
+        "bytes": 11370685,
+        "checksum": 1,
+        "side": "oak"
+      }
+    },
+    "go": {
+      "normalize/nfc": {
+        "event": "preflight",
+        "workload": "normalize/nfc",
+        "items": 8388608,
+        "bytes": 8388608,
+        "checksum": 756273756710711553
+      },
+      "normalize/nfd": {
+        "event": "preflight",
+        "workload": "normalize/nfd",
+        "items": 8388608,
+        "bytes": 8388608,
+        "checksum": 8155105488899120031
+      },
+      "normalize/is_nfc_ascii": {
+        "event": "preflight",
+        "workload": "normalize/is_nfc_ascii",
+        "items": 11370685,
+        "bytes": 11370685,
+        "checksum": 1
+      }
+    }
+  },
+  "samples": [
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 248716000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 249919000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 248506000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 246986000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 248363000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 178866000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 178672000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 178063000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 183785000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 251977000,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 4648000,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 3682000,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 3680000,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 3889000,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 3973000,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "go",
+      "ns": 565246083,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "go",
+      "sample": 1,
+      "ns": 889706500,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "go",
+      "sample": 2,
+      "ns": 562850167,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "go",
+      "sample": 3,
+      "ns": 630038458,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfc",
+      "backend": "go",
+      "sample": 4,
+      "ns": 624174791,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 756273756710711553
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "go",
+      "ns": 312014416,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "go",
+      "sample": 1,
+      "ns": 275213125,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "go",
+      "sample": 2,
+      "ns": 454628333,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "go",
+      "sample": 3,
+      "ns": 386119250,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/nfd",
+      "backend": "go",
+      "sample": 4,
+      "ns": 213649875,
+      "items": 8388608,
+      "bytes": 8388608,
+      "checksum": 8155105488899120031
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "go",
+      "ns": 3997208,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "go",
+      "sample": 1,
+      "ns": 4278541,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "go",
+      "sample": 2,
+      "ns": 4381625,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "go",
+      "sample": 3,
+      "ns": 4382167,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "normalize/is_nfc_ascii",
+      "backend": "go",
+      "sample": 4,
+      "ns": 4017792,
+      "items": 11370685,
+      "bytes": 11370685,
+      "checksum": 1
+    }
+  ]
+}
