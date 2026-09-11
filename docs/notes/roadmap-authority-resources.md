@@ -56,9 +56,12 @@ forwarding (`50-borrowing.md` §9, `OAK-B0114`): each mode-marked resource
 parameter enters with its contract's authority, aliases carry it, and
 forwarding beyond it to a resource operation is rejected without
 consuming; consumed parameters keep full authority; unmarked parameters are
-unchanged. Still open in this milestone: retention (storing a borrowed
-parameter in a record or returning it), imported/external contracts' trust
-boundary, and the migration rule for unmarked parameters.
+unchanged. **Second increment (same day):** retention — returning a
+borrowed or borrowed-mut parameter or its alias (directly, through a block,
+or through a match arm) or storing it in a record or array literal is
+rejected; a consumed parameter may be returned. Still open in this
+milestone: imported/external contracts' trust boundary and the migration
+rule for unmarked parameters.
 
 ## 2. Preserve contracts across every callable boundary
 
