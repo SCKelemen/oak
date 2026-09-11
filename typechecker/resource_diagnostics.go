@@ -50,6 +50,12 @@ const CodeResourceDependentResult = "OAK-B0118"
 // ends, so even shared reads and projections are rejected.
 const CodeResourceSuspendedOwner = "OAK-B0119"
 
+// CodeResourceUnclosed reports an owned resource whose protocol declares
+// terminal states leaving scope (or being rebound) without having reached
+// one on every path and without being transferred out
+// (docs/spec/50-borrowing.md section 9, terminal-state obligations).
+const CodeResourceUnclosed = "OAK-B0120"
+
 // addResourceDiagnostic keeps resource authority failures in the borrow/resource
 // diagnostic category even though typed resource analysis is hosted by typechecker.
 func (tc *TypeChecker) addResourceDiagnostic(node ast.Node, title string) *diagnostic.Diagnostic {
