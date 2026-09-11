@@ -682,6 +682,139 @@ mechanically: Arm's ASL → Sail (Arm's tooling) → Lean (Sail's backend) ≡
 (checked on the silicon). The bridge is a separate Lake package so the
 main specification builds without the Sail toolchain.
 
+## 9. Native encoding, and the architectures to come
+
+**The encoder (`asm/encode.go`, table `asm/encodings_gen.go`).** Oak emits
+C and lets the system toolchain assemble the `__asm__` text — that remains
+the default path. Alongside it the assembler now encodes its own machine
+words, so that a unit's bytes depend on nothing outside this repository and
+Arm's specification. The encoding table is *generated* from Arm's A64 ISA
+XML by `asm/internal/isagen` (run against the release under `external/`;
+only the derived facts are written, never Arm's prose): for every encoding
+on features the M-series has — 1657 of them — the fixed bits (from the
+encoding diagram, the per-encoding bit settings, and the decode-time
+`if size != '10' then UNDEFINED` constraints), the named bit fields, and
+every assembler template reading with its operands mapped to the fields
+Arm's operand explanations state: register operands to their register
+field (with `sp` and the zero register admitted where the template spells
+them), immediates with the range, scale ("a multiple of 8", "encoded as
+<pimm>/8"), offset ("encoded as imm6 plus 1"), and special forms (bitmask
+immediates, wide moves, the vector shift and fixed-point immediates whose
+`immh:immb` carry the element size, the byte-mask and modified immediates,
+the 8-bit floating-point constants), spelled words with their value tables
+(shifts, extends, conditions, barrier and prefetch options, arrangements,
+element sizes — including the correlated `<V>`/`<Va>`/`<Vb>` sizes and the
+per-size element-index formulas), labels with their scale and range, field
+slices (`op2[2:1]`), the defaults of omitted optional operands (`ret` →
+Rn = 30, `clrex` → CRm = 15, `isb` → SY), and for every alias the
+equivalence template Arm gives (`BFI … ≡ BFM <Wd>, <Wn>, #(-<lsb> MOD 32),
+#(<width>-1)`) with its preference condition (`Rd == '11111' || Rn ==
+'11111'`).
+
+The encoder matches a checked instruction against the readings of its
+mnemonic and writes the fields. Aliases encode directly when their own
+fields determine the word and the preference condition holds; when an
+operand is computed (`bfi`'s lsb and width) or the condition names a field
+the alias's operands did not write (`cinc`'s `Rn == Rm`), the equivalence
+template is evaluated — its expressions (`MOD`, `+`, `-`, register
+re-spellings such as `<Xn>` for a bound `<Wn>`, `WZR`/`XZR` literals,
+inverted conditions) — and the instruction it stands for is encoded
+instead. `mov #imm` chooses among `movz`, `movn`, and a bitmask `orr` as
+the three aliases prescribe; scaled loads fall back to their unscaled
+spelling when the offset is not a multiple of the access size; the
+extended-register forms are taken without an extend only when `sp` makes
+them unambiguous, as Arm's text states. Labels within a function resolve
+to PC-relative displacements (range- and alignment-checked); a symbol
+outside it yields a relocation record (branch26, condbr19, tbz14, adr21,
+adrp21) with a zero displacement. `EncodeFunction` produces the bytes of a
+checked function with its relocations; nothing links or writes object
+files yet.
+
+**Trust.** The encoder is checked against the host LLVM assembler three
+ways (`asm/encode_test.go`, skipped without `llvm-mc`): 672 hand-written
+instructions across the general-purpose, system, FP, and NEON surface
+agree word for word; a seeded fuzz instantiates every template reading of
+the generated table with random operands and requires agreement wherever
+both assemblers accept the text (on landing 5307 instantiations from 1319
+encodings, 4219 agreeing, the rest rejected by LLVM as architecturally
+invalid random operands, none we encode differently); and whole functions
+of `examples/asm` encoded with labels resolved equal LLVM's object code.
+The specification side is Arm's: the table is Arm's XML, so a disagreement
+with LLVM is a bug in one of the two readings of the same document, and the
+tests found several on the way (the wide-move and byte-mask immediates,
+the element-index field orders, the omitted-operand defaults). Not yet
+encoded: post-index by register, structure lane lists, `wsp`, literal
+loads.
+
+**System registers (`asm/sysregs_gen.go`, from Arm's SysReg XML by
+`asm/internal/sysreggen`).** Every AArch64 register MRS or MSR can name —
+1232 of them, register arrays expanded (`dbgbvr0_el1` … `dbgbvr15_el1`,
+`icc_ap0r1_el1`, `pmevcntr30_el0`) from the index expressions of their
+encodings — with its op0:op1:CRn:CRm:op2 and its access directions. The
+checker holds `mrs`/`msr` to that table: an unknown name is an error
+(implementation-defined registers keep the `S<op0>_<op1>_<Cn>_<Cm>_<op2>`
+spelling), reading a write-only register or writing a read-only one is an
+error. Checked against the host assembler on every access it knows: 1772
+agree, none differ; the 417 it does not know are newer than the host
+LLVM. `TestGeneratedTablesCurrent` regenerates both tables from the
+releases under `external/` and requires the committed files to match.
+
+**Object emission (`asm/object.go`).** The encoded functions of a
+compilation's asm units are written as a relocatable object — Mach-O
+(`MH_OBJECT`, `CPU_TYPE_ARM64`, one `__TEXT,__text` section,
+`LC_SYMTAB`, `LC_BUILD_VERSION`, `MH_SUBSECTIONS_VIA_SYMBOLS`) or ELF64
+(`ET_REL`, `EM_AARCH64`, `.text`/`.rela.text`/`.symtab`/`.strtab`) — under
+the C symbols the emitted C declares, functions laid out at their entry
+alignment, calls to other Oak functions as relocations
+(`ARM64_RELOC_BRANCH26`; `R_AARCH64_CALL26`/`JUMP26`/`CONDBR19`/`TSTBR14`/
+`ADR_PREL_LO21`/`ADR_PREL_PG_HI21`). Every offset and count is computed
+from the encoded bytes and checked against the field that carries it; a
+layout the format cannot express (a conditional branch to an external
+symbol on Mach-O, an odd alignment) is an error, never a truncated file.
+The compilation's `EmitNative` emits, in one pass, the C with asm units
+as prototypes (`EmitCExtern`: no `__asm__` text; without an Oak fallback
+body the C fails closed off AArch64) and the companion object; `oak run`
+and `oak build` link the object beside the C. **On AArch64 hosts this is
+the default (`-asm native`)**: the C toolchain compiles the C and links,
+and never sees the assembly. `-asm c` keeps the inline `__asm__` path (the
+portable lowering under `-DOAK_PORTABLE_INTRINSICS` still uses it, since
+the C then defines the functions itself). Checked: `llvm-objdump`
+disassembles our Mach-O and ELF objects to exactly the encoder's words
+with the recorded relocations, `llvm-nm` lists the symbols, and
+`examples/asm` builds, links, and runs to its expected exit through the
+native path (`TestE2EExampleAsmPackageNative`).
+
+**What self-hosting still needs.** (1) A native backend for Oak bodies —
+a real compiler back end from the checked tree to machine code through
+this encoder and object writer, with the C backend kept as the portable
+realization and the differential oracle. (2) The proof and solver stack
+in Oak itself, the long arc (`95-extraction.md` is its current foothold).
+
+**SME/SME2 (planned lane).** The Apple M4 implements the Scalable Matrix
+Extension; the XML's `mortlachindex.xml` lists 353 instruction files. The
+generator and the operand-form audit make the table mechanical, but the
+checker needs new operand kinds and disciplines: `z` registers with
+element sizes, predicate registers (`p0.b`, `p0/m`, `p0/z`), the `za`
+tile views (`za0h.s[w12, 0]`), the streaming-mode and ZA-state capabilities
+(`smstart`/`smstop` as a unit directive, the streaming vector length as an
+unknown), and its own load/store family. The bitvector verifier will trust
+all of it, as it trusts NEON. This is the lane for Oak kernels on the
+matrix unit (github.com/SCKelemen/ml).
+
+**RISC-V and RVV (planned lane).** The second architecture, RV64GC first
+(user-level integer and FP — the profile a hypervisor or firmware needs),
+then the V extension. The plan mirrors this chapter with a better
+specification situation: the instruction list comes from riscv-opcodes
+(redistributable, so the table is generated and committed, not only
+audited); the semantics come from riscv/sail-riscv, the ratified golden
+model, which already targets Lean — the bridge of §8 applies to the whole
+model rather than to a transliterated fragment; the differential oracle is
+the Sail C emulator (no RISC-V silicon on the host). What is new: no flags
+(the checker's dataflow rule becomes a comparison-branch rule), the RISC-V
+calling convention as a second binding profile, compressed encodings, and
+for RVV the vector-length and type registers (`vsetvli`) as checker state.
+The term language and the BDD blaster carry over unchanged.
+
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
 (§7), the design has a natural anchor — **the Oak body is the

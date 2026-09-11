@@ -31,3 +31,15 @@ func TestE2EExampleAsmPackage(t *testing.T) {
 		}
 	}
 }
+
+// The same package with the asm units encoded by the Oak assembler into a
+// companion object (docs/spec/94-assembler.md §9): the C toolchain compiles
+// the C and links; it never sees the assembly.
+func TestE2EExampleAsmPackageNative(t *testing.T) {
+	requireArm64Host(t)
+	comp := New().WithPackageDir("../examples/asm").WithNativeAsm()
+	_, code, abnormal := buildAndRunFrom(t, "example_asm_native", comp)
+	if abnormal || code != 42 {
+		t.Fatalf("native asm: exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}

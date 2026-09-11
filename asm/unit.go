@@ -110,7 +110,7 @@ type FloatImmediate struct{ Value float64 }
 func (RegisterList) operandKind() string   { return "register list" }
 func (FloatImmediate) operandKind() string { return "float immediate" }
 
-var vectorArrangements = map[string]int{"8b": 8, "16b": 16, "4h": 4, "8h": 8, "2s": 2, "4s": 4, "1d": 1, "2d": 2, "1q": 1}
+var vectorArrangements = map[string]int{"8b": 8, "16b": 16, "2h": 2, "4h": 4, "8h": 8, "2s": 2, "4s": 4, "1d": 1, "2d": 2, "1q": 1}
 var scalarVectorWidths = map[byte]int{'b': 1, 'h': 2, 's': 4, 'd': 8, 'q': 16}
 
 // VecBytes is the byte width of a vector-class register view.
@@ -149,6 +149,7 @@ func laneBytes(arrangement string) int {
 type Immediate struct {
 	Value int64
 	Shift int64
+	MSL   bool // `msl #n`: the shifting-ones form of the vector immediates
 }
 
 // Memory is an sp-relative or register-relative access: [base, #off],
@@ -162,6 +163,9 @@ type Memory struct {
 	// size's log2) — how a loop walks a span by element index.
 	Index *Register
 	Shift int
+	// Extend spells how the index is read: uxtw (the checker's idiom, a
+	// 32-bit element index), sxtw, lsl (a 64-bit index), or sxtx.
+	Extend string
 }
 
 type MemMode int
@@ -596,9 +600,13 @@ func parseImmediate(text string) (int64, error) {
 	var value int64
 	var err error
 	if strings.HasPrefix(strings.ToLower(text), "0x") {
-		value, err = strconv.ParseInt(text[2:], 16, 64)
+		var u uint64
+		u, err = strconv.ParseUint(text[2:], 16, 64) // full 64-bit patterns (0xffff0000ffff0000)
+		value = int64(u)
 	} else {
-		value, err = strconv.ParseInt(text, 10, 64)
+		var u uint64
+		u, err = strconv.ParseUint(text, 10, 64) // up to 2^63 in magnitude
+		value = int64(u)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("bad immediate %q", text)
@@ -627,26 +635,44 @@ func parseMemory(text string) (Operand, error) {
 		return nil, fmt.Errorf("bad memory base %q", parts[0])
 	}
 	mem := Memory{Base: base}
+	if len(parts) == 2 && !strings.HasPrefix(strings.TrimSpace(parts[1]), "#") {
+		// [base, xI]: a 64-bit register offset (LSL #0).
+		index, ok := parseRegister(strings.TrimSpace(parts[1]))
+		if !ok || index.Class != ClassX {
+			return nil, fmt.Errorf("memory offset must be an immediate or an x register, got %q", strings.TrimSpace(parts[1]))
+		}
+		if pre {
+			return nil, fmt.Errorf("register-offset addressing has no pre-index form")
+		}
+		mem.Index = &index
+		mem.Extend = "lsl"
+		return mem, nil
+	}
 	if len(parts) == 2 {
 		offsetText := strings.TrimSpace(parts[1])
-		if !strings.HasPrefix(offsetText, "#") {
-			return nil, fmt.Errorf("memory offset must be an immediate, got %q", offsetText)
-		}
 		offset, err := parseImmediate(offsetText[1:])
 		if err != nil {
 			return nil, err
 		}
 		mem.Offset = offset
 	} else if len(parts) == 3 {
-		// [base, wI, uxtw #s]: a scaled 32-bit index.
+		// [base, wI, uxtw #s] (the checker's idiom), [base, wI, sxtw #s],
+		// [base, xI, lsl #s], [base, xI, sxtx #s].
 		index, ok := parseRegister(strings.TrimSpace(parts[1]))
-		if !ok || index.Class != ClassW {
-			return nil, fmt.Errorf("memory index must be a w register, got %q", strings.TrimSpace(parts[1]))
+		if !ok || index.Class != ClassW && index.Class != ClassX {
+			return nil, fmt.Errorf("memory index must be a general register, got %q", strings.TrimSpace(parts[1]))
 		}
 		extend := strings.Fields(strings.ToLower(strings.TrimSpace(parts[2])))
-		if len(extend) == 0 || extend[0] != "uxtw" || len(extend) > 2 {
+		if len(extend) == 0 || len(extend) > 2 {
 			return nil, fmt.Errorf("memory index extension must be `uxtw #s`, got %q", strings.TrimSpace(parts[2]))
 		}
+		switch {
+		case index.Class == ClassW && (extend[0] == "uxtw" || extend[0] == "sxtw"):
+		case index.Class == ClassX && (extend[0] == "lsl" || extend[0] == "sxtx"):
+		default:
+			return nil, fmt.Errorf("memory index %s takes uxtw/sxtw (w) or lsl/sxtx (x), got %q", index.Text, extend[0])
+		}
+		mem.Extend = extend[0]
 		if len(extend) == 2 {
 			if !strings.HasPrefix(extend[1], "#") {
 				return nil, fmt.Errorf("index shift must be an immediate, got %q", extend[1])

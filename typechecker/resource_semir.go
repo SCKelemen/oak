@@ -67,12 +67,15 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 			fullSemantics[callable] = semantics
 
 			model.MarkOperation(callable, ResourceOperation{
-				Parameters:      resourceParametersFromSemIR(semantics),
-				Consumes:        append([]int(nil), semantics.Consumes...),
-				ReturnsFresh:    semantics.ReturnsFresh,
-				ReturnsAlias:    semantics.ReturnsAlias,
-				AliasesArgument: semantics.AliasesArgument,
-				Receiver:        receiverModeFromSemIR(semantics.Receiver),
+				Parameters:       resourceParametersFromSemIR(semantics),
+				Consumes:         append([]int(nil), semantics.Consumes...),
+				ReturnsFresh:     semantics.ReturnsFresh,
+				ReturnsAlias:     semantics.ReturnsAlias,
+				AliasesArgument:  semantics.AliasesArgument,
+				ReturnsBorrow:    semantics.ReturnsBorrow,
+				BorrowsArguments: append([]int(nil), semantics.BorrowsArguments...),
+				BorrowMutable:    semantics.BorrowMutable,
+				Receiver:         receiverModeFromSemIR(semantics.Receiver),
 			})
 		}
 	}
@@ -155,7 +158,8 @@ func sameResourceOperation(left, right ResourceOperation) bool {
 
 func sameResourceTransitionSemantics(left, right semir.ResourceTransitionSemantics) bool {
 	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver ||
-		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) {
+		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) ||
+		left.ReturnsBorrow != right.ReturnsBorrow || (left.ReturnsBorrow && (!sameIndexSet(left.BorrowsArguments, right.BorrowsArguments) || left.BorrowMutable != right.BorrowMutable)) {
 		return false
 	}
 	if len(left.Callables) != len(right.Callables) {
