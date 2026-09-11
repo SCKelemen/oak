@@ -155,12 +155,12 @@ narrow: (x: u64, y: i32): u32 {
 
 func TestExtractionFailsClosed(t *testing.T) {
 	cases := map[string]struct{ src, want string }{
-		"recursion": {"f: (n: u32): u32 = n == u32(0) ? u32(0) | f(n - u32(1))", "recursive"},
-		"checked":   {"Overflow: type = | Overflow\nResult[T, E]: type = Ok: T | Err: E\nf: (n: u32): Result[u8, Overflow] = u8_checked_u32(n)", "only record types are extracted"},
-		"float row": {"f: (x: u32): u32 = u32_trunc_f32(f32_round_u32(x))", "integer conversions only"},
+		"recursion":      {"f: (n: u32): u32 = n == u32(0) ? u32(0) | f(n - u32(1))", "recursive"},
+		"checked":        {"Overflow: type = | Overflow\nResult[T, E]: type = Ok: T | Err: E\nf: (n: u32): Result[u8, Overflow] = u8_checked_u32(n)", "only record types are extracted"},
+		"float row":      {"f: (x: u32): u32 = u32_trunc_f32(f32_round_u32(x))", "integer conversions only"},
 		"mixed patterns": {"f: (n: u32): u32 = n ? | 0 => u32(1) | k => k", "outside the extracted subset"},
-		"adt match": {"Kind: type = Word | Line\nclassify: (k: Kind): u32 = k ? | .Word => u32(2) | .Line => u32(1)", "only record types are extracted"},
-		"string":    {"s: (): string = \"x\"", "outside the extracted subset"},
+		"adt match":      {"Kind: type = Word | Line\nclassify: (k: Kind): u32 = k ? | .Word => u32(2) | .Line => u32(1)", "only record types are extracted"},
+		"string":         {"s: (): string = \"x\"", "outside the extracted subset"},
 	}
 	for name, c := range cases {
 		_, err := extract(t, c.src)
