@@ -463,6 +463,10 @@ func (tc *TypeChecker) instantiateRecordTemplate(template *ast.ADTType, args []T
 		tc.recordInstantiationCache = make(map[string]*RecordType)
 	}
 	tc.recordInstantiationCache[mangled] = instantiated
+	if tc.recordInstantiationArgs == nil {
+		tc.recordInstantiationArgs = make(map[string]RecordInstantiation)
+	}
+	tc.recordInstantiationArgs[mangled] = RecordInstantiation{Template: template.Name.Value, Args: append([]Type(nil), args...)}
 	return instantiated
 }
 

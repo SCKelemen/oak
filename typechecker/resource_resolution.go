@@ -209,6 +209,14 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 					typ, exists = &ADTType{Name: name}, true
 				}
 			}
+			if (!exists || typ == nil) && tc.recordTemplates != nil {
+				// A record template with one type parameter is a
+				// typestate-indexed resource: every instantiation shares
+				// the nominal name (docs/spec/112-protocols.md section 5a).
+				if template, isTemplate := tc.recordTemplates[name]; isTemplate && template != nil {
+					typ, exists = &RecordType{Name: name, Struct: true}, true
+				}
+			}
 			if !exists || typ == nil {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q references unknown type %q", declaration.Name, name)
 			}
@@ -302,7 +310,9 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q transition %q binds %q, which is not a function", declaration.Name, transition.Name, transition.Callable)
 			}
 
-			resourceLike := func(t Type) bool { return tc.resourceLike(t, resourceTypes) }
+			// A typestate-indexed resource is a resource in every state.
+			expanded := tc.expandResourceTemplates(resourceTypes)
+			resourceLike := func(t Type) bool { return tc.resourceLike(t, expanded) }
 			parameters, consumes, err := resolveResourceParameters(transition, function, resourceTypes, resourceLike)
 			if err != nil {
 				return ResolvedResourceProgram{}, err
