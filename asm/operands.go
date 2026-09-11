@@ -30,7 +30,7 @@ type Extended struct {
 func (Shifted) operandKind() string  { return "shifted register" }
 func (Extended) operandKind() string { return "extended register" }
 
-var shiftKinds = map[string]bool{"lsl": true, "lsr": true, "asr": true, "ror": true}
+var shiftKinds = map[string]bool{"lsl": true, "lsr": true, "asr": true, "ror": true, "msl": true}
 var extendKinds = map[string]bool{"uxtb": true, "uxth": true, "uxtw": true, "uxtx": true, "sxtb": true, "sxth": true, "sxtw": true, "sxtx": true}
 
 // foldModifier folds a trailing `lsl #n` / `uxtw #n` field into the operand
@@ -63,6 +63,9 @@ func foldModifier(text string, operands []Operand) ([]Operand, bool, error) {
 		if previous.Class != ClassX && previous.Class != ClassW {
 			return operands, false, fmt.Errorf("only general registers take a shift or extend, got %s", previous.Text)
 		}
+		if kind == "msl" {
+			return operands, false, fmt.Errorf("msl shifts an immediate, not a register")
+		}
 		if amount < 0 || amount >= int64(widthOf(previous.Class)) {
 			return operands, false, fmt.Errorf("shift amount %d is not below the width of %s", amount, previous.Text)
 		}
@@ -76,10 +79,14 @@ func foldModifier(text string, operands []Operand) ([]Operand, bool, error) {
 		}
 		return operands, true, nil
 	case Immediate:
-		if kind != "lsl" || amount%16 != 0 || amount > 48 {
-			return operands, false, fmt.Errorf("an immediate shift must be lsl #0, #16, #32, or #48")
+		// `lsl #n` (wide moves by 16, add/sub by 12, vector immediates by
+		// 8) or `msl #n` (vector shifting ones); the checker and the encoder
+		// hold each instruction to its own amounts.
+		if kind != "lsl" && kind != "msl" || amount < 0 || amount > 63 {
+			return operands, false, fmt.Errorf("an immediate takes lsl #n or msl #n, got %s #%d", kind, amount)
 		}
 		previous.Shift = amount
+		previous.MSL = kind == "msl"
 		operands[last] = previous
 		return operands, true, nil
 	}

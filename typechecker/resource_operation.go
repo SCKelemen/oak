@@ -55,7 +55,28 @@ func normalizeResourceOperation(op ResourceOperation) (ResourceOperation, error)
 	if op.ReturnsAlias && op.AliasesArgument < 0 {
 		return ResourceOperation{}, fmt.Errorf("invalid aliased argument %d", op.AliasesArgument)
 	}
-	out := ResourceOperation{ReturnsFresh: op.ReturnsFresh, ReturnsAlias: op.ReturnsAlias, AliasesArgument: op.AliasesArgument, Receiver: op.Receiver}
+	if op.ReturnsBorrow && (op.ReturnsFresh || op.ReturnsAlias) {
+		return ResourceOperation{}, fmt.Errorf("a borrowed result cannot also be fresh or an alias of an argument")
+	}
+	borrows := normalizeIndexSet(op.BorrowsArguments)
+	if op.ReturnsBorrow && len(borrows) == 0 {
+		return ResourceOperation{}, fmt.Errorf("a borrowed result must name at least one borrowed argument")
+	}
+	if len(borrows) != len(op.BorrowsArguments) {
+		return ResourceOperation{}, fmt.Errorf("a borrowed argument is listed twice")
+	}
+	for _, index := range borrows {
+		if index < 0 {
+			return ResourceOperation{}, fmt.Errorf("invalid borrowed argument %d", index)
+		}
+	}
+	if !op.ReturnsBorrow {
+		borrows = nil
+	}
+	if op.BorrowMutable && !op.ReturnsBorrow {
+		return ResourceOperation{}, fmt.Errorf("a mutable reborrow requires a borrowed result")
+	}
+	out := ResourceOperation{ReturnsFresh: op.ReturnsFresh, ReturnsAlias: op.ReturnsAlias, AliasesArgument: op.AliasesArgument, ReturnsBorrow: op.ReturnsBorrow, BorrowsArguments: borrows, BorrowMutable: op.BorrowMutable, Receiver: op.Receiver}
 	for _, index := range indices {
 		if _, callable := callables[index]; callable {
 			return ResourceOperation{}, fmt.Errorf("parameter %d has both a resource mode and a callable contract", index)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -21,62 +22,63 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "test" {
-		os.Exit(testrunner.Main(os.Args[2:], os.Stdout, os.Stderr))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "build" {
-		os.Exit(buildPackage(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "mod" {
-		os.Exit(modCommand(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "run" {
-		os.Exit(runPackage(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "protocol" {
-		os.Exit(protocolCommand(os.Args[2:], os.Stdout, os.Stderr))
-	}
-
-	if len(os.Args) > 1 {
-		// Compile mode: oak file.oak
-		filename := os.Args[1]
-		if !strings.HasSuffix(filename, ".oak") {
-			fmt.Printf("Error: expected .oak file, got %s\n", filename)
-			os.Exit(1)
-		}
-
-		source, err := os.ReadFile(filename)
-		if err != nil {
-			fmt.Printf("Error reading file: %v\n", err)
-			os.Exit(1)
-		}
-
-		output, err := compiler.New().
-			WithSource(filename, string(source)).
-			EmitC().
-			Get()
-		if err != nil {
-			fmt.Printf("Compilation error: %v\n", err)
-			os.Exit(1)
-		}
-
-		baseName := strings.TrimSuffix(filename, ".oak")
-		outputFile := baseName + ".c"
-		if err := os.WriteFile(outputFile, []byte(output), 0644); err != nil {
-			fmt.Printf("Error writing output file: %v\n", err)
-			os.Exit(1)
-		}
-
-		fmt.Printf("Compiled %s -> %s\n", filename, outputFile)
+	if len(os.Args) < 2 {
+		startREPL()
 		return
 	}
+	name, args := os.Args[1], os.Args[2:]
+	switch name {
+	case "test":
+		os.Exit(testrunner.Main(args, os.Stdout, os.Stderr))
+	case "repl":
+		startREPL()
+		return
+	case "protocol":
+		os.Exit(protocolCommand(args, os.Stdout, os.Stderr))
+	case "-h", "-help", "--help":
+		printUsage(os.Stdout)
+		return
+	}
+	if c := findCommand(name); c != nil && c.run != nil {
+		os.Exit(c.run(args))
+	}
+	if strings.HasSuffix(name, ".oak") {
+		// Compile mode: oak file.oak writes file.c beside the source.
+		os.Exit(compileFile(name))
+	}
+	fmt.Fprintf(os.Stderr, "oak %s: unknown command\n", name)
+	fmt.Fprintln(os.Stderr, "Run 'oak help' for usage.")
+	os.Exit(2)
+}
 
-	// REPL mode
+// compileFile is the original single-file mode: `oak file.oak` emits C beside
+// the source.
+func compileFile(filename string) int {
+	source, err := os.ReadFile(filename)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak: %v\n", err)
+		return 1
+	}
+	output, err := compiler.New().WithSource(filename, string(source)).EmitC().Get()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	outputFile := strings.TrimSuffix(filename, ".oak") + ".c"
+	if err := os.WriteFile(outputFile, []byte(output), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "oak: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Compiled %s -> %s\n", filename, outputFile)
+	return 0
+}
+
+// startREPL runs the interactive session.
+func startREPL() {
 	usr, err := user.Current()
 	if err != nil {
 		panic(err)
 	}
-
 	fmt.Printf("Hello %s, welcome to Oak 🌳\n", usr.Username)
 	fmt.Printf("Type Oak code or 'exit' to quit\n")
 	repl.Start(os.Stdin, os.Stdout)
@@ -93,10 +95,12 @@ func reportAsmVerdict(d *diagnostic.Diagnostic) {
 	}
 }
 
-// buildPackage implements `oak build [-o out.c] [dir]`: the package at dir
+// buildPackage implements `oak build [-o out] [-emit-c] [dir|file.oak]`
+// (docs/spec/115-tooling.md): the package at dir
 // (default ".") and everything it imports, resolved through the enclosing
 // module's oak.mod (docs/spec/83-modules.md), compile to one C translation
-// unit written to out.c (default <dir-name>.c in the current directory).
+// unit, which the system C compiler turns into an executable named after the
+// package (or `-o out`); `-emit-c`, or an `-o` ending in .c, writes the C.
 func buildPackage(args []string) int {
 	dir := "."
 	output := ""
@@ -104,11 +108,15 @@ func buildPackage(args []string) int {
 	leanOut := ""
 	profile := ""
 	lines := false
+	emitC := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "-o" && i+1 < len(args):
 			output = args[i+1]
 			i++
+		case args[i] == "-emit-c":
+			// Write C instead of an executable (also implied by -o x.c).
+			emitC = true
 		case args[i] == "-header" && i+1 < len(args):
 			// The C header of the package's exported surface
 			// (docs/spec/92-ffi.md section 2.6).
@@ -127,7 +135,7 @@ func buildPackage(args []string) int {
 			// source (docs/spec/90-backend.md section 10).
 			lines = true
 		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out.c] [-header out.h] [-lean out.lean] [-profile default|strict] [-lines] [dir]\n", args[i])
+			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-profile default|strict] [-lines] [dir|file.oak]\n", args[i])
 			return 2
 		default:
 			dir = args[i]
@@ -137,9 +145,17 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
 		return 2
 	}
-	comp := compiler.New().WithPackageDir(dir).WithProfile(profile).WithDiagnosticSink(reportAsmVerdict)
+	comp, err := compilationFor(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+		return 1
+	}
+	comp = comp.WithProfile(profile).WithDiagnosticSink(reportAsmVerdict)
 	if lines {
 		comp = comp.WithLineDirectives()
+	}
+	if strings.HasSuffix(output, ".c") {
+		emitC = true
 	}
 	code, err := comp.EmitC().Get()
 	if err != nil {
@@ -174,9 +190,27 @@ func buildPackage(args []string) int {
 			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 			return 1
 		}
-		output = filepath.Base(abs) + ".c"
+		output = strings.TrimSuffix(filepath.Base(abs), ".oak")
+		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
+			if name, nameErr := executableName(dir); nameErr == nil {
+				output = name
+			}
+		}
+		if emitC {
+			output += ".c"
+		}
 	}
-	if err := os.WriteFile(output, []byte(code), 0o644); err != nil {
+	if emitC {
+		if err := os.WriteFile(output, []byte(code), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Built %s -> %s\n", dir, output)
+		return 0
+	}
+	// An executable, like `go build`: the emitted C compiled by the system
+	// C compiler into the named output.
+	if err := compileBinary(comp, output); err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
 	}
@@ -216,11 +250,19 @@ func buildPackage(args []string) int {
 //
 // The compiler itself never fetches; every input here is a local file.
 func modCommand(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat|pack|upgrade|try|tidy ...")
+	if len(args) == 0 || args[0] == "help" {
+		printModUsage(os.Stderr)
 		return 2
 	}
 	switch args[0] {
+	case "init":
+		return modInit(args[1:])
+	case "graph":
+		return modGraph(args[1:])
+	case "why":
+		return modWhy(args[1:])
+	case "edit":
+		return modEdit(args[1:])
 	case "download":
 		return modDownload(args[1:])
 	case "api":
@@ -241,7 +283,34 @@ func modCommand(args []string) int {
 		return modTidy(args[1:])
 	}
 	fmt.Fprintf(os.Stderr, "oak mod: unknown subcommand %q\n", args[0])
+	printModUsage(os.Stderr)
 	return 2
+}
+
+// printModUsage lists the module subcommands.
+func printModUsage(out io.Writer) {
+	fmt.Fprintln(out, "usage: oak mod <subcommand> [args]")
+	fmt.Fprintln(out)
+	for _, line := range []string{
+		"init <module-path> [dir]         create oak.mod",
+		"download [dir]                   fetch pinned requirements into $OAKMODCACHE",
+		"tidy [-w] [dir]                  reconcile require directives with imports",
+		"edit [-require p@v] [-droprequire p] [-replace p=>dir] [-dropreplace p] [-version v] [-profile p] [dir]",
+		"                                 rewrite oak.mod directives",
+		"graph [dir]                      print the module requirement graph",
+		"why <import-path> [dir]          show which packages import a path",
+		"api [dir] | api -package P [-version V] <dir|file>",
+		"                                 print an API snapshot (JSON)",
+		"diff previous.json [dir|cur.json] classify the API change",
+		"bump previous.json [dir|cur.json] enforce the exact required version",
+		"compat dep-api.json [dir]        check sealed imports against a snapshot",
+		"pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]",
+		"                                 build the module archive",
+		"upgrade [-dir dir] dep-api.json... pick the highest compatible candidate",
+		"try path candidate-dir [-dir dir] build against a local candidate",
+	} {
+		fmt.Fprintf(out, "\t%s\n", line)
+	}
 }
 
 func modDownload(args []string) int {

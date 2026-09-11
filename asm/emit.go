@@ -114,10 +114,17 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 		return "#" + text
 	case Memory:
 		if o.Index != nil {
-			if o.Shift == 0 {
-				return fmt.Sprintf("[%s, %s, uxtw]", o.Base.Text, o.Index.Text)
+			extend := o.Extend
+			if extend == "" {
+				extend = "uxtw"
 			}
-			return fmt.Sprintf("[%s, %s, uxtw #%d]", o.Base.Text, o.Index.Text, o.Shift)
+			if o.Shift == 0 {
+				if extend == "lsl" {
+					return fmt.Sprintf("[%s, %s]", o.Base.Text, o.Index.Text)
+				}
+				return fmt.Sprintf("[%s, %s, %s]", o.Base.Text, o.Index.Text, extend)
+			}
+			return fmt.Sprintf("[%s, %s, %s #%d]", o.Base.Text, o.Index.Text, extend, o.Shift)
 		}
 		switch o.Mode {
 		case MemPreIndex:

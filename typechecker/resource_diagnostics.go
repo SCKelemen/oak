@@ -37,6 +37,19 @@ const CodeResourceCallableContractMismatch = "OAK-B0116"
 // authority.
 const CodeResourceResultContract = "OAK-B0117"
 
+// CodeResourceDependentResult reports a violation of a borrowed result's
+// dependency (docs/spec/50-borrowing.md section 9, borrowed results): its
+// owner mutated, consumed, or rebound while it lives; the result itself
+// mutated, consumed, stored in an aggregate, or returned without a
+// matching contract; or a rebinding that would let it outlive its owner.
+const CodeResourceDependentResult = "OAK-B0118"
+
+// CodeResourceSuspendedOwner reports a use of a resource while a live
+// mutable reborrow of it exists (docs/spec/50-borrowing.md section 9,
+// borrowed results): the parent is suspended until the reborrow's scope
+// ends, so even shared reads and projections are rejected.
+const CodeResourceSuspendedOwner = "OAK-B0119"
+
 // addResourceDiagnostic keeps resource authority failures in the borrow/resource
 // diagnostic category even though typed resource analysis is hosted by typechecker.
 func (tc *TypeChecker) addResourceDiagnostic(node ast.Node, title string) *diagnostic.Diagnostic {
