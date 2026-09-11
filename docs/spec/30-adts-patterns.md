@@ -253,3 +253,18 @@ Formal obligations include:
 - erased proof/index information does not alter runtime constructor semantics.
 
 `Oak.Exhaustiveness` formalizes the initial finite-constructor laws. `Oak.PatternAnalysis` formalizes reachable-case coverage, redundancy/usefulness, counterexamples, constructor refinement, and refinement-excluded arms independently of parser syntax. Implementation refinement remains a separate obligation.
+
+## 14. Equality
+
+`==` and `!=` on values of a concrete sum type compare structurally: the
+variant tags first, then, when they agree, the payloads by the payload
+type's own equality. The comparison is admitted when every payload has an
+equality — machine integers, `Bool`, `f32`/`f64` (IEEE: NaN differs from
+itself), nested named sum types and records (`40-records.md` §16), fixed
+arrays of integers or `Bool` — and refused otherwise (`OAK-T0601`): a view
+or span payload, a storage float (`f16`, `bf16`, `f8e4m3`, `f8e5m2`), an
+anonymous record shape, or a generic instantiation. The backend emits one
+equality function per compared type (`oak_eq_T`), and the interpreter
+compares the same way, so the two realizations agree by construction and
+the differential sweep holds them to it.
+

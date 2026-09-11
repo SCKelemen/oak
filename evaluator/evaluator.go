@@ -659,9 +659,9 @@ func evalInfixExpression(operator string, left, right object.Object) object.Obje
 	case left.Type() == object.STRING_OBJ && right.Type() == object.STRING_OBJ:
 		return evalStringInfixExpression(operator, left, right)
 	case operator == "==":
-		return nativeBoolToBooleanObject(left == right)
+		return nativeBoolToBooleanObject(valuesEqual(left, right))
 	case operator == "!=":
-		return nativeBoolToBooleanObject(left != right)
+		return nativeBoolToBooleanObject(!valuesEqual(left, right))
 	case left.Type() != right.Type():
 		return newError("type mismatch: %s %s %s", left.Type(), operator, right.Type())
 	default:
@@ -736,6 +736,65 @@ func evalStringInfixExpression(operator string, left, right object.Object) objec
 	return &object.String{Value: leftVal + rightVal}
 }
 
+// Bool is the interpreter's Boolean for a Go bool: the shared TRUE and
+// FALSE values that `!`, conditionals, and matches recognize. The prover
+// builds its Bool domains from it (docs/spec/125-verification.md).
+func Bool(input bool) object.Object {
+	return nativeBoolToBooleanObject(input)
+}
+
+// valuesEqual is `==` on values the integer, float, and string cases do not
+// cover: Booleans by value, sum-type values by type, variant, and payload,
+// records field by field, owned arrays element by element — the equality
+// the compiled program computes (docs/spec/30-adts-patterns.md). Anything
+// else compares by identity, as functions and cells do.
+func valuesEqual(left, right object.Object) bool {
+	switch l := left.(type) {
+	case *object.Boolean:
+		r, ok := right.(*object.Boolean)
+		return ok && l.Value == r.Value
+	case *object.Integer:
+		r, ok := right.(*object.Integer)
+		return ok && l.Value == r.Value
+	case *object.String:
+		r, ok := right.(*object.String)
+		return ok && l.Value == r.Value
+	case *object.ADTValue:
+		r, ok := right.(*object.ADTValue)
+		if !ok || l.TypeName != r.TypeName || l.Variant != r.Variant {
+			return false
+		}
+		if l.Value == nil || r.Value == nil {
+			return l.Value == nil && r.Value == nil
+		}
+		return valuesEqual(l.Value, r.Value)
+	case *object.Record:
+		r, ok := right.(*object.Record)
+		if !ok || len(l.Fields) != len(r.Fields) {
+			return false
+		}
+		for name, value := range l.Fields {
+			other, found := r.Fields[name]
+			if !found || !valuesEqual(value, other) {
+				return false
+			}
+		}
+		return true
+	case *object.Array:
+		r, ok := right.(*object.Array)
+		if !ok || len(l.Elements) != len(r.Elements) {
+			return false
+		}
+		for i := range l.Elements {
+			if !valuesEqual(l.Elements[i], r.Elements[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	return left == right
+}
+
 func nativeBoolToBooleanObject(input bool) *object.Boolean {
 	if input {
 		return TRUE
@@ -768,6 +827,13 @@ func evalExpressions(exps []ast.Expression, env *object.Environment) []object.Ob
 	}
 
 	return result
+}
+
+// Apply calls a function value with evaluated arguments: the entry point
+// the prover uses to run a theorem over concrete inputs
+// (docs/spec/125-verification.md). Aggregates pass by value as in a call.
+func Apply(fn object.Object, args []object.Object) object.Object {
+	return applyFunction(fn, args)
 }
 
 func applyFunction(fn object.Object, args []object.Object) object.Object {

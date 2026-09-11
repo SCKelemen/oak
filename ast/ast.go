@@ -1095,6 +1095,11 @@ type FunctionStatement struct {
 	Parameters []*FunctionParameter
 	ReturnType Expression // type expression
 	Body       Expression
+	// Theorem marks `name: theorem (params) { Bool }`
+	// (docs/spec/125-verification.md): a Bool-valued function whose
+	// parameters are universally quantified. It is checked and compiled as
+	// an ordinary function; `oak prove` discharges it.
+	Theorem bool
 	// ExternSymbol, when non-empty, marks an extern C binding
 	// (docs/spec/92-ffi.md section 2.3): the definition was
 	// `c.extern("symbol")`, the function has no Oak body, and calls
@@ -1180,7 +1185,11 @@ func (fs *FunctionStatement) statementNode()       {}
 func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
 func (fs *FunctionStatement) String() string {
 	var out bytes.Buffer
-	out.WriteString("fn ")
+	if fs.Theorem {
+		out.WriteString("theorem ")
+	} else {
+		out.WriteString("fn ")
+	}
 	if fs.Receiver != nil {
 		out.WriteRune('(')
 		out.WriteString(fs.Receiver.String())

@@ -19,6 +19,9 @@ import (
 
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
+	// equalityTypes caches the aggregates whose equality functions the
+	// program needs (typechecker.EqualityTypes); nil until first asked.
+	equalityTypes map[string]bool
 	// constantContext is set while emitting C integer constant expressions
 	// (file-scope initializers, static_assert), where arithmetic must stay
 	// a plain operator rather than a helper call.
@@ -588,6 +591,7 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 	if recordLit, isRecord := recordDefinitionShape(adt); isRecord {
 		cg.types[cName] = true
 		cg.emitRecordTypeDef(typeName, recordLit)
+		cg.emitRecordEquality(typeName, cName, tc)
 		return
 	}
 
@@ -718,6 +722,94 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 	for _, variant := range adt.Variants {
 		cg.emitADTConstructor(cName, variant)
 	}
+	cg.emitADTEquality(typeName, cName, tc)
+}
+
+// equalityTerm is the C expression comparing two values of typ held in l
+// and r: the operator for scalars, the generated function for aggregates
+// (typechecker/equality.go states which types have one).
+func (cg *CodeGenerator) equalityTerm(typ typechecker.Type, l, r string) string {
+	switch t := typ.(type) {
+	case *typechecker.UnitType:
+		return "oak_Bool_True"
+	case *typechecker.ADTType:
+		return fmt.Sprintf("oak_eq_%s( %s, %s )", cg.cTypeName(t.Name), l, r)
+	case *typechecker.NarrowedADTVariantType:
+		return fmt.Sprintf("oak_eq_%s( %s, %s )", cg.cTypeName(t.ADTName), l, r)
+	case *typechecker.RecordType:
+		if t.Name != "" {
+			return fmt.Sprintf("oak_eq_%s( %s, %s )", cg.cTypeName(t.Name), l, r)
+		}
+	case *typechecker.ArrayType:
+		if !t.IsSlice && !t.IsSpan {
+			element := cg.parseTypeExpression(typeExpressionOf(t.ElementType))
+			return fmt.Sprintf("%s( %s, %s )", cg.arrayEqualityName(element, t.Length), l, r)
+		}
+	}
+	return fmt.Sprintf("( %s == %s )", l, r)
+}
+
+// typeExpressionOf spells a checked scalar type as the AST the C type
+// mapping reads; the equality functions need it for array elements only.
+func typeExpressionOf(typ typechecker.Type) ast.Expression {
+	return &ast.Identifier{Value: typ.String()}
+}
+
+// equalityNeeded is the set of aggregates the program compares, closed
+// under nesting; only those get an equality function, so a type the
+// checker refused to compare never references a helper that does not
+// exist.
+func (cg *CodeGenerator) equalityNeeded(tc *typechecker.TypeChecker) map[string]bool {
+	if cg.equalityTypes == nil {
+		cg.equalityTypes = tc.EqualityTypes()
+	}
+	return cg.equalityTypes
+}
+
+// emitADTEquality emits the equality function of a concrete sum type:
+// tags first, then the payload of the shared variant.
+func (cg *CodeGenerator) emitADTEquality(typeName, cName string, tc *typechecker.TypeChecker) {
+	if tc == nil || !cg.equalityNeeded(tc)[typeName] {
+		return
+	}
+	variants, ok := tc.ADTVariants(typeName)
+	if !ok {
+		return
+	}
+	cg.write(fmt.Sprintf("static inline Bool oak_eq_%s( %s a, %s b ) {\n", cName, cName, cName))
+	cg.write("  if ( a.tag != b.tag ) { return oak_Bool_False; }\n")
+	cg.write("  switch ( a.tag ) {\n")
+	for _, variant := range variants {
+		if variant.Payload == nil {
+			continue
+		}
+		if _, isUnit := variant.Payload.(*typechecker.UnitType); isUnit {
+			continue
+		}
+		cg.write(fmt.Sprintf("    case %s_tag_%s: return %s;\n", cName, variant.Name,
+			cg.equalityTerm(variant.Payload, "a.payload."+variant.Name, "b.payload."+variant.Name)))
+	}
+	cg.write("    default: return oak_Bool_True;\n")
+	cg.write("  }\n")
+	cg.write("}\n\n")
+}
+
+// emitRecordEquality emits the equality function of a declared record:
+// every field in declaration order.
+func (cg *CodeGenerator) emitRecordEquality(typeName, cName string, tc *typechecker.TypeChecker) {
+	if tc == nil || !cg.equalityNeeded(tc)[typeName] {
+		return
+	}
+	order, fields, ok := tc.RecordFields(typeName)
+	if !ok {
+		return
+	}
+	cg.write(fmt.Sprintf("static inline Bool oak_eq_%s( %s a, %s b ) {\n", cName, cName, cName))
+	for _, field := range order {
+		cg.write(fmt.Sprintf("  if ( !%s ) { return oak_Bool_False; }\n", cg.equalityTerm(fields[field], "a."+field, "b."+field)))
+	}
+	cg.write("  return oak_Bool_True;\n")
+	cg.write("}\n\n")
 }
 
 // emitADTConstructor emits a constructor function for an ADT variant
@@ -2306,6 +2398,21 @@ var arithmeticHelpers = map[string]string{
 func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *typechecker.TypeChecker) {
 	if cg.emitBytePack(expr, tc) {
 		return
+	}
+	// Equality on sum types and records calls the type's generated
+	// equality function (typechecker/equality.go records the type).
+	if expr.Operator == "==" || expr.Operator == "!=" {
+		if name, isAggregate := tc.EqualityType(expr.Token); isAggregate {
+			if expr.Operator == "!=" {
+				cg.output.WriteString("!")
+			}
+			cg.output.WriteString(fmt.Sprintf("oak_eq_%s( ", cg.cTypeName(name)))
+			cg.emitExpressionFragment(expr.Left, tc)
+			cg.output.WriteString(", ")
+			cg.emitExpressionFragment(expr.Right, tc)
+			cg.output.WriteString(" )")
+			return
+		}
 	}
 	// Shifts route through the checked helpers (oak_shl_u32 and friends):
 	// the operand width was recorded by the checker; without a record the
