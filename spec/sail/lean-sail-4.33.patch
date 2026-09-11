@@ -1,0 +1,26 @@
+diff --git a/Sail/Sail.lean b/Sail/Sail.lean
+index 24720fa..c155de2 100644
+--- a/Sail/Sail.lean
++++ b/Sail/Sail.lean
+@@ -536,14 +536,17 @@ def readReg (r : Register) : PreSailM RegisterType c ue (RegisterType r) := do
+     | throw .Unreachable
+   pure s
+ 
++-- Patched for Lean 4.33 (Oak's checkout, see spec/sail/lean-sail-4.33.patch):
++-- the dependent match on `RegisterRef` no longer infers the family's
++-- parameter; eliminate with an explicit motive instead.
+ @[simp_sail]
+-def readRegRef (reg_ref : @RegisterRef Register RegisterType α) : PreSailM RegisterType c ue α := do
+-  match reg_ref with | .Reg r => readReg r
++def readRegRef (reg_ref : @RegisterRef Register RegisterType α) : PreSailM RegisterType c ue α :=
++  reg_ref.casesOn (motive := fun β _ => PreSailM RegisterType c ue β) (fun r => readReg r)
+ 
+ @[simp_sail]
+ def writeRegRef (reg_ref : @RegisterRef Register RegisterType α) (a : α) :
+-  PreSailM RegisterType c ue Unit := do
+-  match reg_ref with | .Reg r => writeReg r a
++  PreSailM RegisterType c ue Unit :=
++  reg_ref.casesOn (motive := fun β _ => β → PreSailM RegisterType c ue Unit) (fun r v => writeReg r v) a
+ 
+ @[simp_sail]
+ def reg_deref (reg_ref : @RegisterRef Register RegisterType α) : PreSailM RegisterType c ue α :=

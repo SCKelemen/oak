@@ -1314,6 +1314,18 @@ type ProtocolTransition struct {
 	Guard    Expression      // optional `when` expression over data.field and the payload
 	Effects  *BlockStatement // optional `then { ... }` statements over data.field and the payload
 	Callable *Identifier     // optional `via f`: the function that performs it
+	// Modes are the resource parameter modes written after the callable,
+	// `via f(consumed h, borrowed other, borrowed mut receiver)`
+	// (docs/spec/112-protocols.md section 5): each names one of f's
+	// parameters, or `receiver`, with its authority mode.
+	Modes []*ProtocolParameterMode
+}
+
+// ProtocolParameterMode is one `mode name` entry of a `via` clause.
+type ProtocolParameterMode struct {
+	Token token.Token // the mode keyword
+	Mode  string      // "borrowed", "borrowed mut", or "consumed"
+	Name  *Identifier // a parameter name of the callable, or `receiver`
 }
 
 func (pd *ProtocolDeclaration) statementNode()       {}
@@ -1355,6 +1367,16 @@ func (pd *ProtocolDeclaration) String() string {
 		if t.Callable != nil {
 			out.WriteString(" via ")
 			out.WriteString(t.Callable.String())
+			if len(t.Modes) > 0 {
+				out.WriteString("(")
+				for i, mode := range t.Modes {
+					if i > 0 {
+						out.WriteString(", ")
+					}
+					out.WriteString(mode.Mode + " " + mode.Name.String())
+				}
+				out.WriteString(")")
+			}
 		}
 	}
 	out.WriteString(" }")
