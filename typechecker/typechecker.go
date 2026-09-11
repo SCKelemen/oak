@@ -557,14 +557,18 @@ type TypeChecker struct {
 	globalOwners map[string]string
 	// externFunctions names the extern bindings (docs/spec/92-ffi.md section 2.3),
 	// whose calls may carry boundary spans (section 2.5).
-	externFunctions            map[string]bool
-	layoutQueries              map[string]LayoutQuery
-	checkingSpecialization     bool
-	extentFacts                []extentFact
-	provenIndices              map[string]bool
-	asmBackedFunctions         map[string]bool
-	functionTemplates          map[string]*ast.FunctionStatement
-	functionInstantiations     map[string]*ast.FunctionStatement
+	externFunctions        map[string]bool
+	layoutQueries          map[string]LayoutQuery
+	checkingSpecialization bool
+	extentFacts            []extentFact
+	provenIndices          map[string]bool
+	asmBackedFunctions     map[string]bool
+	functionTemplates      map[string]*ast.FunctionStatement
+	functionInstantiations map[string]*ast.FunctionStatement
+	// instantiationTemplates maps each specialization's mangled name back
+	// to its template, so resource contracts declared for a template apply
+	// to every specialization (docs/spec/50-borrowing.md section 9).
+	instantiationTemplates     map[string]string
 	functionInstantiationOrder []string
 	// rowFunctionTemplates marks source functions whose extensible-record
 	// parameters are representation-polymorphic. They share the ordinary

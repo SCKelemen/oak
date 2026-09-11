@@ -450,6 +450,24 @@ increments of the authority roadmap's milestone 1
 (`docs/notes/roadmap-authority-resources.md`); escape of storage borrows
 (views and spans) remains `OAK-B0109`.
 
+**Contracts across callable boundaries.** A contract belongs to a function's
+semantic identity, not to the spelling of a call. A function value
+initialized from a global function (`shutdown: (Handle) -> () = close`)
+carries that function's contract: calling through the value consumes or
+borrows exactly as the direct call would, and invalidates the caller's
+aliases the same way. A function value of unknown provenance — a
+function-typed parameter, a closure literal, a value that was reassigned —
+has an **unknown** contract, and an unknown contract is not an empty one:
+passing a resource through such a value is rejected with `OAK-B0115`
+rather than treated as harmless. A value initialized from a function with
+no contract keeps the ordinary (unmarked) meaning. A contract declared for
+a generic template holds for every specialization: the specialized call
+sites and the specialized bodies are checked under the template's modes,
+so monomorphization cannot lose a mode. Contracts on function *types*
+(so that a borrowed-function requirement can reject a consuming
+implementation), receiver modes, and imported or sealed signatures are the
+remaining boundaries of milestone 2.
+
 The callable-boundary audit and proposed result provenance/lifetime relationships
 are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).
 These proposals do not relax the current borrowed-return restriction.

@@ -3,6 +3,8 @@ package typechecker
 import (
 	"fmt"
 	"sort"
+
+	"github.com/SCKelemen/oak/ast"
 )
 
 // ResourceProtocolDeclaration is syntax-independent resource protocol input to
@@ -205,6 +207,15 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 
 			callableType, exists := tc.env.GetType(transition.Callable)
 			if !exists || callableType == nil {
+				// A generic template has no environment type; its signature
+				// is read from the declaration, with type parameters as
+				// variables. The contract then holds for every specialization
+				// (docs/spec/50-borrowing.md section 9).
+				if templateType, isTemplate := tc.templateSignature(transition.Callable); isTemplate {
+					callableType, exists = templateType, true
+				}
+			}
+			if !exists || callableType == nil {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q transition %q references unknown callable %q", declaration.Name, transition.Name, transition.Callable)
 			}
 			function, ok := callableType.(*FunctionType)
@@ -242,6 +253,44 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 	}
 
 	return resolved, nil
+}
+
+// templateSignature builds the signature of a generic function template
+// for contract resolution: concrete parameter and return types are parsed,
+// type parameters become variables (never resource types, so a contract
+// cannot mark a parameter whose type is the template's own parameter).
+func (tc *TypeChecker) templateSignature(name string) (*FunctionType, bool) {
+	template, isTemplate := tc.functionTemplates[name]
+	if !isTemplate || template == nil {
+		return nil, false
+	}
+	typeParams := make(map[string]bool, len(template.TypeParams))
+	for _, tp := range template.TypeParams {
+		if tp != nil && tp.Name != nil {
+			typeParams[tp.Name.Value] = true
+		}
+	}
+	resolve := func(expr ast.Expression) Type {
+		if ident, isIdent := expr.(*ast.Identifier); isIdent && typeParams[ident.Value] {
+			return &TypeVar{Name: ident.Value}
+		}
+		if expr == nil {
+			return &UnitType{}
+		}
+		if typ := tc.parseTypeExpression(expr); typ != nil {
+			return typ
+		}
+		return &TypeVar{Name: expr.String()}
+	}
+	function := &FunctionType{}
+	for _, parameter := range template.Parameters {
+		if parameter == nil {
+			continue
+		}
+		function.Parameters = append(function.Parameters, resolve(parameter.Type))
+	}
+	function.ReturnType = resolve(template.ReturnType)
+	return function, true
 }
 
 func resolveResourceParameters(

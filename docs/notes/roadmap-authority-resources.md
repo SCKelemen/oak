@@ -77,6 +77,15 @@ function cannot satisfy a borrowed-function requirement; specializations
 retain template modes; imports and sealing cannot erase modes; receivers
 do not shift parameter numbering.
 
+**Landed (first increment, 2026-09-11):** function values initialized from
+global functions carry their contracts (indirect consumption invalidates
+caller aliases); function values of unknown provenance have unknown
+contracts and resources passed through them fail closed (`OAK-B0115`);
+specializations retain template modes at call sites and in specialized
+bodies (`50-borrowing.md` §9). Still open: contracts on function types
+(borrowed-function requirements), receiver modes as their own slot,
+imports and sealing.
+
 ## 3. Resource provenance through bindings, projections, control flow
 
 Bindings by semantic identity with current authority origins; a location
