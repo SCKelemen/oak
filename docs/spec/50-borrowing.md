@@ -434,9 +434,25 @@ the new one. Shadowing an outer resource binding in an inner block is rejected
 by the no-shadowing rule (`83-modules.md` §7), so an inner binding can never
 touch an outer authority. Across a control-flow join, a name whose
 provenance differs between paths is unknown afterwards, so branches cannot
-manufacture disjointness. (Authority roadmap milestone 3, first increment;
-projections and aggregate writes remain conservative.) Unknown
-provenance and known consumed authority are distinct diagnostic causes. A conflict
+manufacture disjointness.
+
+**Projections and aggregate writes.** A record built from a literal gives
+each resource-typed field the provenance of its initializer: `b: Box = Box
+{ inner: h }` makes the path `b.inner` an alias of `h`, so consuming
+through either consumes both and pairing them exclusively conflicts; a field
+initialized from a fresh-return call is its own authority; any other
+initializer leaves the field with unknown provenance. Paths extend through
+nested records (`p.left.inner`) and through a record copied from a named
+record. A projection in use, argument, or consuming position is a use of
+that field's authority, not of the whole record. An aggregate write
+`b.inner = g` rebinds the path exactly as a binding is rebound, and a
+whole-record reassignment `b = c` rebinds every path to `c`'s. The fields
+of a record without provenance — a parameter, a call result — stay
+untracked: exclusive or consuming use of them fails closed, because
+distinct fields are never assumed to be distinct resources without
+provenance saying so. Array elements are never tracked (indices are not
+static). Unknown provenance and known consumed authority are distinct
+diagnostic causes. A conflict
 involving an unknown argument must identify that argument, including when it is a
 shared participant paired with a tracked exclusive participant.
 
@@ -543,11 +559,13 @@ Buffer[CpuOwned]
 
 CPU code cannot safely access a device-owned buffer because it lacks the corresponding authority/state, not because the pointer has disappeared.
 
-The first step toward this is implemented: an inbound buffer borrow
+Two steps toward this are implemented: an inbound buffer borrow
 (`92-ffi.md` §2.7) lets an `unsafe` block view or write runtime-owned memory
-for the block's extent under a stated contract. The owning `Buffer` record
-that carries a foreign allocation across calls remains the increment after
-runtime-sized arenas.
+for the block's extent, and `Buffer[T]` (`92-ffi.md` §2.8) is an owner of
+runtime length that holds a foreign allocation from `c.own` until
+`c.disown` consumes it, borrowed like an owned array in between. The
+custody typestate — a buffer inside a record, handed to a device and back
+— is the increment after them.
 
 These transitions combine protocol/typestate refinement with consumption: the previous state value is invalid after transfer, while the returned value carries the new custody state.
 

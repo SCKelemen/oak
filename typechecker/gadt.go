@@ -36,6 +36,23 @@ func (tc *TypeChecker) parseGenericTypeApplication(expr ast.Expression) (Type, b
 	if !ok || len(argExprs) == 0 {
 		return nil, false
 	}
+	if name == "Buffer" {
+		// Owned foreign buffers (docs/spec/92-ffi.md section 2.8): the
+		// element type must have one meaning on both sides of the boundary.
+		if len(argExprs) != 1 {
+			tc.addError(expr, "Buffer[...] expects exactly one element type")
+			return nil, true
+		}
+		element := tc.parseTypeExpression(argExprs[0])
+		if element == nil {
+			return nil, true
+		}
+		if !tc.boundarySpanElement(element, map[string]bool{}) {
+			tc.addError(argExprs[0], "Buffer[%s]: the element type must be a boundary type — a fixed-width integer, a floating-point or storage format, Bool, a proven-layout struct of those, or a boundary tagged union (docs/spec/92-ffi.md section 2.5.1)", element)
+			return nil, true
+		}
+		return &BufferType{Element: element}, true
+	}
 	if name == "Atomic" {
 		if len(argExprs) != 1 {
 			tc.addError(expr, "Atomic[...] expects exactly one fixed-width integer carrier")

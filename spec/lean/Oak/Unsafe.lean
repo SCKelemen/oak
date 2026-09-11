@@ -9,10 +9,11 @@ unrelated invariant remains checked. The assumption vocabulary contains
 exactly two entries: the writable-disjointness assumption of `50-borrowing`
 section 6 — writable regions whose disjointness cannot be proven are rejected
 in safe code and admissible only inside an unsafe boundary — and the foreign
-buffer contract of `92-ffi` section 2.7 — an inbound buffer borrow asserts
-that a runtime pointer addresses the stated count of elements, valid and
-unaliased for writes for the block's extent. In both cases the compiler
-records the assumption instead of silently dropping the obligation. -/
+buffer contract of `92-ffi` sections 2.7 and 2.8 — an inbound buffer borrow
+or an owned buffer asserts that a runtime pointer addresses the stated count
+of elements, valid and unaliased for writes, for the block's extent or until
+the buffer is handed back. In both cases the compiler records the
+assumption instead of silently dropping the obligation. -/
 
 /-- The obligations the compiler discharges for safe code. -/
 inductive Obligation where

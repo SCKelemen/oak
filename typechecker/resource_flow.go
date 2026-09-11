@@ -214,6 +214,23 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 	name := s.Name.Value
 	tracked := a.flow.Registered(name) || a.unknownResources[name]
 	if !tracked && !a.isResourceValue(s.Value) {
+		// A whole-record reassignment b = c rebinds every tracked field
+		// path of b to c's corresponding path.
+		recordType := a.tc.env.CheckedExpressionType(s.Value)
+		if _, isRecord := recordType.(*RecordType); isRecord {
+			source, isIdent := s.Value.(*ast.Identifier)
+			for _, path := range a.resourcePaths(name, recordType) {
+				if !a.flow.Registered(path) && !a.unknownResources[path] {
+					continue
+				}
+				if isIdent && source != nil {
+					a.bindPath(path, &ast.IndexExpression{Token: s.Name.Token, Left: source, Index: &ast.Identifier{Token: s.Name.Token, Value: path[len(name)+1:]}, Dot: true}, s.Name)
+				} else {
+					a.flow.Forget(path)
+					a.unknownResources[path] = true
+				}
+			}
+		}
 		return
 	}
 	delete(a.entryModes, name)
@@ -235,6 +252,145 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 	}
 	a.flow.Forget(name)
 	a.unknownResources[name] = true
+}
+
+// resourceName is the flow name of a resource-valued expression: an
+// identifier's own name, or the dotted path of a record projection
+// (b.inner, b.pair.left) whose root is an identifier
+// (docs/spec/50-borrowing.md section 9, projections). Anything else has no
+// name and therefore no tracked provenance.
+func resourceName(expr ast.Expression) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if e == nil || e.Value == "" {
+			return "", false
+		}
+		return e.Value, true
+	case *ast.IndexExpression:
+		if e == nil || !e.Dot {
+			return "", false
+		}
+		field, isField := e.Index.(*ast.Identifier)
+		if !isField || field == nil {
+			return "", false
+		}
+		base, ok := resourceName(e.Left)
+		if !ok {
+			return "", false
+		}
+		return base + "." + field.Value, true
+	}
+	return "", false
+}
+
+// resourcePaths lists the resource-typed field paths below a record value
+// of the given type, recursing into nested named records: for
+// Box { inner: Handle, pair: Pair { left: Handle } } and root "b",
+// b.inner and b.pair.left.
+func (a *typedResourceAnalysis) resourcePaths(root string, typ Type) []string {
+	record, isRecord := typ.(*RecordType)
+	if !isRecord || record == nil {
+		return nil
+	}
+	var paths []string
+	for _, name := range record.orderedFieldNames() {
+		fieldType := record.Fields[name]
+		path := root + "." + name
+		if a.model.ResourceTypes[nominalTypeName(fieldType)] {
+			paths = append(paths, path)
+			continue
+		}
+		paths = append(paths, a.resourcePaths(path, fieldType)...)
+	}
+	return paths
+}
+
+// bindRecordFields gives a freshly declared record binding's resource
+// fields their provenance from the record literal that built it: a field
+// initialized from a live named resource aliases it (consuming through
+// b.inner consumes h), a field initialized from a fresh-return call is a new
+// authority, and any other resource-valued initializer leaves the field
+// with unknown provenance. Records not built from a literal here — a
+// parameter, a call result — keep untracked fields, so exclusive or
+// consuming use of them fails closed: distinct fields are never assumed
+// distinct resources without provenance saying so.
+func (a *typedResourceAnalysis) bindRecordFields(stmt *ast.VariableDeclaration) {
+	if stmt == nil || stmt.Name == nil || stmt.Type == nil {
+		return
+	}
+	recordType := a.tc.parseTypeExpression(stmt.Type)
+	if _, isRecord := recordType.(*RecordType); !isRecord {
+		return
+	}
+	a.bindRecordValue(stmt.Name.Value, recordType, stmt.Value, stmt.Name)
+}
+
+// bindRecordValue gives the resource paths below root, a record of the
+// given type, the provenance of value: a literal binds field by field
+// (recursing into record-typed fields), a named record aliases every path
+// to the source's corresponding path, and anything else leaves every path
+// with unknown provenance.
+func (a *typedResourceAnalysis) bindRecordValue(root string, recordType Type, value ast.Expression, origin ast.Node) {
+	record, isRecord := recordType.(*RecordType)
+	if !isRecord || record == nil {
+		return
+	}
+	switch v := value.(type) {
+	case *ast.RecordLiteral:
+		for _, field := range v.FieldOrder {
+			fieldType, declared := record.Fields[field.Name]
+			if !declared {
+				continue
+			}
+			path := root + "." + field.Name
+			if a.model.ResourceTypes[nominalTypeName(fieldType)] {
+				a.bindPath(path, field.Value, origin)
+				continue
+			}
+			if _, nested := fieldType.(*RecordType); nested {
+				a.bindRecordValue(path, fieldType, field.Value, origin)
+			}
+		}
+	default:
+		if source, ok := resourceName(value); ok {
+			for _, path := range a.resourcePaths(root, recordType) {
+				sourcePath := source + path[len(root):]
+				a.flow.Forget(path)
+				delete(a.unknownResources, path)
+				if a.flow.Registered(sourcePath) && a.flow.CanUse(sourcePath) {
+					a.flow.Alias(path, sourcePath, origin)
+				} else if a.flow.Registered(sourcePath) || a.unknownResources[sourcePath] {
+					a.unknownResources[path] = true
+				}
+			}
+			return
+		}
+		for _, path := range a.resourcePaths(root, recordType) {
+			a.flow.Forget(path)
+			a.unknownResources[path] = true
+		}
+	}
+}
+
+// bindPath gives a resource path (or name) the provenance of a value: an
+// alias of a live named resource, a fresh authority from a fresh-return
+// call, else unknown provenance.
+func (a *typedResourceAnalysis) bindPath(path string, value ast.Expression, origin ast.Node) {
+	a.flow.Forget(path)
+	delete(a.unknownResources, path)
+	if source, ok := resourceName(value); ok && a.flow.Registered(source) {
+		if a.flow.CanUse(source) {
+			a.flow.Alias(path, source, origin)
+			return
+		}
+		a.unknownResources[path] = true
+		return
+	}
+	if call, ok := value.(*ast.InvocationExpression); ok && a.freshCalls[call] {
+		a.flow.Register(path, origin)
+		return
+	}
+	a.unknownResources[path] = true
 }
 
 // tailIdentifiers collects the identifiers an expression may evaluate to
@@ -777,12 +933,22 @@ func (a *typedResourceAnalysis) statement(stmt ast.Statement) {
 		a.reassign(s)
 	case *ast.IndexAssignmentStatement:
 		if s.Target != nil {
-			a.expression(s.Target.Left)
 			if !s.Target.Dot {
+				a.expression(s.Target.Left)
 				a.expression(s.Target.Index)
+			} else if _, isPath := resourceName(s.Target); !isPath {
+				a.expression(s.Target.Left)
 			}
 		}
 		a.expression(s.Value)
+		// An aggregate write b.inner = v gives the field path v's
+		// provenance (docs/spec/50-borrowing.md section 9); writes through
+		// indices or to untracked records leave nothing tracked.
+		if s.Target != nil && s.Target.Dot {
+			if path, isPath := resourceName(s.Target); isPath && (a.flow.Registered(path) || a.unknownResources[path] || a.isResourceValue(s.Value)) {
+				a.bindPath(path, s.Value, s.Target)
+			}
+		}
 	case *ast.ExpressionStatement:
 		a.expression(s.Expression)
 	case *ast.BlockStatement:
@@ -830,6 +996,7 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 	}
 	isResource := a.model.isResourceType(stmt.Type) || fresh
 	if !isResource {
+		a.bindRecordFields(stmt)
 		return
 	}
 
@@ -937,6 +1104,12 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 	case *ast.InvocationExpression:
 		a.invocation(e)
 	case *ast.IndexExpression:
+		if path, isPath := resourceName(e); isPath && e.Dot && a.flow.Registered(path) {
+			// A projection of a tracked record field is a use of that
+			// field's authority, not of the whole record.
+			a.use(path, e)
+			return
+		}
 		a.expression(e.Left)
 		if !e.Dot {
 			a.expression(e.Index)
@@ -1045,14 +1218,14 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 		if index < 0 || index >= len(expr.Arguments) {
 			continue
 		}
-		ident, ok := expr.Arguments[index].(*ast.Identifier)
-		if !ok || ident == nil || !a.flow.Registered(ident.Value) {
+		name, ok := resourceName(expr.Arguments[index])
+		if !ok || !a.flow.Registered(name) {
 			continue
 		}
 		// Argument evaluation already performed the ordinary Use check. If it
 		// failed, do not emit a second diagnostic for the consuming action.
-		if a.flow.CanUse(ident.Value) {
-			a.flow.Consume(ident.Value, expr)
+		if a.flow.CanUse(name) {
+			a.flow.Consume(name, expr)
 		}
 	}
 	a.freshCalls[expr] = op.ReturnsFresh

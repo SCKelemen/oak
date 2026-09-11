@@ -139,6 +139,14 @@ An arena operation has an allocation effect scoped to that arena identity.
 
 The type/proof system should be able to express that `T[R]` cannot safely escape `R`.
 
+Implemented subset: `Buffer[T]` (`92-ffi.md` §2.8) is the runtime-sized
+owner — memory a runtime allocated, held by one binding from `c.own` to
+`c.disown` — and the `arena` package reserves aligned element ranges over
+it, handing out offsets the program carves with `subslice` over the
+buffer's views and spans. The region identity `R` is the buffer's owner
+identity in the borrow checker: nothing derived from the buffer outlives
+its block, and the buffer cannot be borrowed after `c.disown`.
+
 ## 7. Slabs / pools
 
 A bounded typed slab:

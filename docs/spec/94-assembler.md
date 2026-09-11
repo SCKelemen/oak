@@ -533,7 +533,7 @@ on the wide moves. By group, with the verifier's status:
 | --- | --- | --- |
 | arithmetic, carry | `add sub adds subs adc sbc adcs sbcs neg negs ngc ngcs cmp cmn madd msub mneg` | modeled (`adcs`/`sbcs` flags unknown) |
 | logical | `and ands orr eor bic bics orn eon tst mvn` | modeled |
-| shifts, rotates, fields | `lsl lsr asr ror extr ubfx ubfiz sbfx sbfiz bfi bfxil bfc` | modeled |
+| shifts, rotates, fields | `lsl lsr asr ror extr ubfx ubfiz sbfx sbfiz bfi bfxil bfc`, and `lslv lsrv asrv rorv bfm sbfm ubfm` under their own names | modeled (the raw names checked only) |
 | bit manipulation, extends | `rev rev16 rev32 rbit clz cls sxtb sxth sxtw uxtb uxth` | modeled (`clz` as a priority encoder) |
 | wide moves | `movz movn movk` | modeled |
 | conditional | `csel cset csetm csinc csinv csneg cinc cinv cneg ccmp ccmn` | modeled |
@@ -542,7 +542,7 @@ on the wide moves. By group, with the verifier's status:
 | ordered, exclusive, atomic | `ldar ldxr ldaxr ldapr stlr stxr stlxr ldlar stllr` (+`b`/`h`), the pairs `ldxp ldaxp stxp stlxp`, the LSE set `ldadd ldclr ldeor ldset ldsmax ldsmin ldumax ldumin swp cas` × {`-`,`a`,`l`,`al`} × {`-`,`b`,`h`}, `casp` × {`-`,`a`,`l`,`al`}, the store-only `stadd stclr steor stset stsmax stsmin stumax stumin` × {`-`,`l`} × {`-`,`b`,`h`}, `clrex` | checked: a guarded writable span, one element or pair sized by the value registers, roles per operation (`stxr`/`stxp` write their status register, `cas`/`casp` read every register, the store-only forms write none); trusted by the verifier |
 | branches | `b b.cond cbz cbnz tbz tbnz bl blr br ret ret-xN` | `br`/`blr` checked as an indirect transfer/call; trusted |
 | hints, traps, exceptions | `nop wfe wfi sev sevl yield csdb esb ssbb pssbb hint brk svc hvc smc` | hints have no value semantics; `brk` ends control; `svc`/`hvc`/`smc` need `system` and clobber the caller-saved state; trusted |
-| system, barriers, maintenance | `mrs msr eret dmb dsb isb dc ic tlbi at` | checked under `system`; trusted |
+| system, barriers, maintenance | `mrs msr eret eretaa eretab dmb dsb isb dc ic tlbi at cfp cpp dvp` | checked under `system`; trusted |
 | CRC, flags | `crc32{b,h,w,x} crc32c{b,h,w,x} cfinv` | checked; trusted |
 | scalar floating point | `fmov fadd fsub fmul fdiv fnmul fmax fmin fmaxnm fminnm fneg fabs fsqrt frint{a,i,m,n,p,x,z} fmadd fmsub fnmadd fnmsub fcmp fcmpe fccmp fccmpe fcsel fcvt fcvt{z,a,m,n,p}{s,u} scvtf ucvtf frecpe frecps frecpx frsqrte frsqrts facge facgt fcvtxn` on the `h`/`s`/`d` views; `f32`/`f64` parameters bind to `s`/`d` registers, results return in `v0` | checked (forms, view widths, `fcmp` flags feed `b.cond`/`csel`/`fcsel`); trusted |
 | NEON integer | arithmetic, logical, bitwise selects (`bsl bit bif`), saturating, halving and rounding-halving forms (`shsub uhsub srhadd urhadd sqabs sqneg suqadd usqadd`), absolute differences with accumulate (`saba uaba sabal uabal sabdl uabdl`), pairwise, compares (register and against zero), min/max and reductions (`addv smaxv … uaddlv`), shifts, rounding shifts, and shift-inserts (`srshr urshr srsra ursra sqshlu sqrshl uqrshl`), saturating doubling multiplies (`sqdmulh sqrdmulh sqrdmlah sqrdmlsh sqdmull sqdmlal sqdmlsl`), widening and narrowing (`ushll xtn sqxtn sqxtun uaddl umull uaddw addhn raddhn subhn rsubhn shrn sqshrun sqrshrun …` and their `2` halves), integer reciprocal estimates (`urecpe ursqrte`), `dup ins umov smov mov ext tbl tbx zip uzp trn rev16/32/64 cnt movi mvni` | checked: arranged operands agree unless the instruction widens, narrows, or reduces; lanes bounded at parse | trusted |
@@ -612,11 +612,50 @@ reciprocal estimates and steps, FP conditional compares, the inexact
 narrowing conversion, replicating structure loads). Excluded by design:
 the debug-state instructions (`dcps1–3`, `drps`, `hlt`) and the raw `sys`/
 `sysl`, whose aliases (`dc`, `ic`, `tlbi`, `at`) are the table's spelling.
-The audit skips when the model or the disassembler is absent. It audits
-mnemonic coverage, not operand-form completeness: the encodability of each
-operand form is still our reading, checked by the coverage test's samples
-and the executed programs; when Arm's A64 ISA XML is at hand, the
-operand-form derivation follows.
+The audit skips when the model or the disassembler is absent.
+
+**Operand forms audited against Arm's A64 ISA XML
+(`asm/isa_xml_test.go`).** Arm's machine-readable release (one XML file per
+instruction: encodings, assembler templates such as `ADD <Wd>, <Wn>,
+<Wm>{, <shift> #<amount>}`, feature requirements, and the operand
+explanations with the size tables behind `<V>`) is read from
+`external/isa-a64` beside the checkout — Arm's notice forbids
+redistribution, so nothing from it is committed and the test skips without
+it. Every template of a mnemonic the table carries, on features the
+M-series has (Armv8.7-A plus the extensions LLVM enables for apple-m4; the
+optional features it lacks are listed with reasons), is expanded — optional
+groups present and absent, alternatives, the correlated scalar sizes
+`<V>`/`<Va>`/`<Vb>` taken from the encoding's own tables so `<Va><d>,
+<Vb><n>` yields exactly the pairings the encoding expresses — and
+translated to our operand-form vocabulary; the table must admit every
+derived form, and every table form must be spelled by some template. On
+landing the audit found 214 forms Arm spells that the table refused and
+94 table forms no template spells. The refusals are closed: the
+extended-register `add x, x, w` family, scalar and by-element FP/NEON forms
+(compares against `#0.0`, fixed-point conversions with a fraction-bit count,
+`fmla`/`fmul`/`fmulx` and the long multiplies by element, saturating scalar
+shifts and narrowing shifts, `sqshl`/`uqshl` register forms), byte-view
+loads and stores, vector pairs for `ldnp`/`stnp`, `mov` of a scalar from an
+element, `msr` of a PSTATE field from an immediate, prefetch operations by
+number, `rev64`, `sxtb`/`sxth` widening into an X register, `sxtl`/`uxtl`,
+`bfm`/`sbfm`/`ubfm` and `lslv`/`lsrv`/`asrv`/`rorv` under their own names,
+`dmb`/`dsb`/`isb` by number, `bic`/`orr` vector immediates, `dup` and the
+integer reductions into `b`, PAC with an `sp` modifier, `fmov` between `h`
+and `x`. The suspect table forms were real errors, now removed: integer
+compares against a float immediate and float compares against an integer
+one, zero-compare forms for `cmhi`/`cmhs`/`cmtst` that Arm does not define,
+a vector `fnmul`, a scalar `mvni`, 64-bit `uxtb`/`uxth`, `sxtb x, x`, scalar
+`sshl`/`ushl`/`srshl`/`urshl` beyond `d`, reductions into `q`. The audit
+also exposed an initialization-order bug: the M-series file's FP16
+extensions ran before the FP file replaced those entries, so every `h`
+form it added was silently lost — the table files are now ordered
+(`isa.go`, `isa_fp.go`, `isa_m_series.go`) and the audit guards it. Left
+out by design and reported, not required: literal loads (`ldr x0, label` —
+an asm unit has no data section), forms through `sp` beyond `add/sub sp,
+sp, #imm` (the frame discipline), post-index by register, and structure
+lane lists (`ld1 { v0.b }[3]`). The same release also audits mnemonic
+coverage, feature-gated for the M-series, on top of the Sail-decoder audit
+above (the XML is Armv9.7 current where the Sail model stops at v8.5).
 
 **Sail-to-Lean: the hand transliteration proved against mechanically
 generated Lean (`spec/sail/`).** `spec/sail/arm_primitives.sail` carries

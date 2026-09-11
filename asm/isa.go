@@ -50,8 +50,13 @@ func init() {
 		add(name, instructionSpec{forms: rr(2)})
 	}
 	add("rev32", instructionSpec{forms: []form{{opX, opX}}})
-	for _, name := range []string{"sxtb", "sxth", "uxtb", "uxth"} {
-		add(name, instructionSpec{forms: rr(2)})
+	// Byte/halfword extends: the signed ones also widen into an X register;
+	// the unsigned ones are 32-bit only (Arm's UXTB/UXTH aliases).
+	for _, name := range []string{"sxtb", "sxth"} {
+		add(name, instructionSpec{forms: []form{{opW, opW}, {opX, opW}}})
+	}
+	for _, name := range []string{"uxtb", "uxth"} {
+		add(name, instructionSpec{forms: []form{{opW, opW}}})
 	}
 	add("sxtw", instructionSpec{forms: []form{{opX, opW}}})
 	// Wide moves.
@@ -127,7 +132,11 @@ func init() {
 	for _, name := range []string{"svc", "hvc", "smc"} {
 		add(name, instructionSpec{forms: []form{{opImm}}, system: true, clobbersCallerSaved: true})
 	}
-	// Cache, TLB, and address-translation maintenance.
+	// Cache, TLB, and address-translation maintenance; speculation
+	// restriction by context (FEAT_SPECRES: `cfp rctx, xt`).
+	for _, name := range []string{"cfp", "cpp", "dvp"} {
+		add(name, instructionSpec{forms: []form{{opOption, opX}}, system: true, barrier: true})
+	}
 	add("dc", instructionSpec{forms: []form{{opOption, opX}}, system: true, barrier: true})
 	add("ic", instructionSpec{forms: []form{{opOption}, {opOption, opX}}, system: true, barrier: true})
 	add("tlbi", instructionSpec{forms: []form{{opOption}, {opOption, opX}}, system: true, barrier: true})
@@ -187,6 +196,34 @@ func init() {
 	// Prefetch hints: the unscaled and range forms.
 	add("prfum", instructionSpec{forms: []form{{opOption, opMem}}, memory: true})
 	add("rprfm", instructionSpec{forms: []form{{opOption, opX, opMem}}, memory: true})
+	// Extended-register arithmetic takes a 32-bit second source into a
+	// 64-bit result (`add x0, x1, w2, uxtw`).
+	for _, name := range []string{"add", "adds", "sub", "subs"} {
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opX, opX, opW})
+		instructionTable[name] = spec
+	}
+	for _, name := range []string{"cmp", "cmn"} {
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opX, opW})
+		instructionTable[name] = spec
+	}
+	add("rev64", instructionSpec{forms: []form{{opX, opX}}}) // alias of rev on 64 bits (the vector form joins later)
+	// Prefetch operations may be spelled by number; MSR may write a PSTATE
+	// field from an immediate.
+	for _, name := range []string{"prfm", "prfum"} {
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opImm, opMem})
+		instructionTable[name] = spec
+	}
+	// The bit-field and variable-shift instructions under their own names
+	// (the aliases above are the idiomatic spellings).
+	for _, name := range []string{"bfm", "sbfm", "ubfm"} {
+		add(name, instructionSpec{forms: []form{{opX, opX, opImm, opImm}, {opW, opW, opImm, opImm}}})
+	}
+	for _, name := range []string{"lslv", "lsrv", "asrv", "rorv"} {
+		add(name, instructionSpec{forms: rr(3)})
+	}
 	// Speculative store bypass barriers.
 	for _, name := range []string{"ssbb", "pssbb"} {
 		add(name, instructionSpec{forms: []form{{opNone}}, barrier: true})

@@ -25,7 +25,7 @@ func init() {
 	// the first operand with the modifier in the second; the z forms use a
 	// zero modifier; the sp/lr forms are transparent to the discipline.
 	for _, name := range []string{"pacia", "pacib", "pacda", "pacdb", "autia", "autib", "autda", "autdb"} {
-		add(name, instructionSpec{forms: []form{{opX, opX}}})
+		add(name, instructionSpec{forms: []form{{opX, opX}, {opX, opSP}}}) // the modifier may be sp
 	}
 	for _, name := range []string{"paciza", "pacizb", "pacdza", "pacdzb", "autiza", "autizb", "autdza", "autdzb", "xpaci", "xpacd"} {
 		add(name, instructionSpec{forms: []form{{opX}}})
@@ -97,7 +97,7 @@ func init() {
 		extend(name, form{opFH, opFH}, form{opFH, opFImm})
 	}
 	extend("fcsel", form{opFH, opFH, opFH, opCond})
-	extend("fmov", form{opFH, opFH}, form{opFH, opW}, form{opW, opFH}, form{opFH, opFImm})
+	extend("fmov", form{opFH, opFH}, form{opFH, opW}, form{opW, opFH}, form{opFH, opX}, form{opX, opFH}, form{opFH, opFImm})
 	for _, name := range []string{"fcvtzs", "fcvtzu", "fcvtas", "fcvtau", "fcvtms", "fcvtmu", "fcvtns", "fcvtnu", "fcvtps", "fcvtpu"} {
 		extend(name, form{opW, opFH}, form{opX, opFH})
 	}
@@ -106,9 +106,10 @@ func init() {
 	}
 	// Dot products, int8 matrix multiply, BF16, FHM, complex, JavaScript,
 	// frint32/64.
-	for _, name := range []string{"sdot", "udot", "usdot", "sudot", "bfdot"} {
+	for _, name := range []string{"sdot", "udot", "usdot", "bfdot"} {
 		add(name, instructionSpec{forms: []form{{opVA, opVA, opVA}, {opVA, opVA, opVL}}})
 	}
+	add("sudot", instructionSpec{forms: []form{{opVA, opVA, opVL}}}) // by element only
 	for _, name := range []string{"smmla", "ummla", "usmmla", "bfmmla"} {
 		add(name, instructionSpec{forms: []form{{opVA, opVA, opVA}}})
 	}
@@ -165,7 +166,7 @@ func init() {
 	for _, name := range []string{"shl", "sshr", "ushr", "sli", "sri", "ssra", "usra"} {
 		extend(name, form{opFD, opFD, opImm})
 	}
-	for _, name := range []string{"sqadd", "uqadd", "sqsub", "uqsub", "ushl", "sshl", "urshl", "srshl", "sqshl", "uqshl"} {
+	for _, name := range []string{"sqadd", "uqadd", "sqsub", "uqsub", "sqshl", "uqshl"} {
 		extend(name, form{opFB, opFB, opFB}, form{opFH, opFH, opFH}, form{opFS, opFS, opFS}, form{opFD, opFD, opFD})
 	}
 	for _, name := range []string{"abs", "neg"} {

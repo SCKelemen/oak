@@ -499,6 +499,32 @@ a uniform value below the bound by rejection (no modulo bias),
 Fisher-Yates permutation. Bit-exact across the interpreter and every backend;
 not a cryptographic source. Tests draw from the choice tape instead
 (`import(testing)`).
+## URI references
+
+`url_parse(src)` splits a URI or relative reference (RFC 3986 §3, Appendix B)
+into a `Url` of byte ranges — scheme, userinfo, host, port, path, query,
+fragment, each a `UrlRange { start, end, present }` into the source — and
+validates every component against its grammar: scheme characters (§3.1),
+userinfo, reg-name or bracketed IP-literal host, digits-only port (§3.2),
+path, query and fragment character classes with `%XX` escapes needing two hex
+digits (§3.3–§3.5), and no `:` in a relative reference's first segment
+(§4.2). Errors are the closed `UrlError` (`InvalidScheme`, `InvalidHost`,
+`InvalidPort`, `InvalidCharacter`, `InvalidPercentEncoding`,
+`DestinationTooSmall`). Nothing is allocated or copied: callers slice the
+source themselves (`src[range.start:range.end]`), since a function may not
+return a view (OAK-B0109), as in the strings package. `url_port_number` reads
+the port as `Option[u32]` (None above 65535), `url_is_absolute` (§4.3) and
+`url_is_relative` classify. `url_remove_dot_segments(dst, path)` applies
+§5.2.4 into caller storage (the output never exceeds the input, so `dst` must
+hold `len(path)` bytes, checked before the first store), and
+`url_resolve(dst, base, reference)` writes the target of a reference against
+an absolute base (§5.2.2 strict, §5.2.3 merge, §5.3 recomposition; `dst` must
+hold `len(base) + len(reference) + 1` bytes). `url_query_next(query, begin)`
+iterates `&`-separated `key=value` pairs as ranges; keys and values stay
+percent-encoded — decode them with the `encoding` package's
+`percent_decode`. Properties in `examples/testing/url_test.oak`: a generated
+reference parses back to the ranges it was built from, and dot-segment
+removal is idempotent and leaves no `.` or `..` segment.
 
 ## UUIDs
 
@@ -796,3 +822,18 @@ at seven offsets and 1000 random durations in Oak, compares each line with
 Go, parses it back, and parses 400 random duration spellings to Go's value.
 `examples/time/time_test.oak` (`oak test examples/time`) states the round
 trips as properties over the full i64 range.
+
+## `arena`: reservations over an owner (`import("arena")`)
+
+`stdlib/arena.oak` is bump allocation over an owner's element index space
+(`docs/spec/92-ffi.md` §2.8.4): an `Arena { used, capacity }` hands out
+offsets, never memory. `arena_reserve(a, count, align)` returns a
+`Reservation { ok, offset, arena }`, the aligned start of a range that fits
+after every earlier reservation and the arena after it, or `ok = false`
+with the arena unchanged. `arena_align_up` rounds up without wrapping (an
+offset that cannot be rounded becomes the largest `u32`, which no capacity
+admits), and `arena_reset`/`arena_remaining` complete the surface. The
+program carves the ranges with `subslice` over `view(&b)` or `span(&b)` of
+a `Buffer[T]` or a fixed array, so the borrow checker decides what may be
+live at once. Executed over a libc allocation in
+`compiler/e2e_buffers_test.go`.

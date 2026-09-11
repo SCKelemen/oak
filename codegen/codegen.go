@@ -107,6 +107,9 @@ type containerKind int
 
 const (
 	containerUnknown containerKind = iota
+	// containerBuffer is an owned foreign buffer Buffer[T]
+	// (docs/spec/92-ffi.md section 2.8): the span struct {base, len}.
+	containerBuffer
 	containerOwnedArray
 	containerView
 	containerSpan
@@ -1192,6 +1195,9 @@ func (cg *CodeGenerator) classifyContainer(typeExpr ast.Expression) localContain
 		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Str" {
 			return localContainer{kind: containerString}
 		}
+		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
+			return localContainer{kind: containerBuffer, element: cg.parseTypeExpression(t.Index), elementType: t.Index}
+		}
 		if mangled, isGeneric := cg.genericAnnotationName(t); isGeneric {
 			return localContainer{kind: containerADT, adtName: mangled}
 		}
@@ -1426,7 +1432,7 @@ func (cg *CodeGenerator) emitBorrowConstruction(kind string, call *ast.Invocatio
 		return
 	}
 	info := cg.localContainerOf(prefix.Right)
-	if info.kind != containerOwnedArray {
+	if info.kind != containerOwnedArray && info.kind != containerBuffer {
 		cg.output.WriteString("OAK_UNSUPPORTED_BORROW_SOURCE")
 		return
 	}
@@ -1435,6 +1441,16 @@ func (cg *CodeGenerator) emitBorrowConstruction(kind string, call *ast.Invocatio
 		structName = cg.emitViewType(info.element)
 	} else {
 		structName = cg.emitSpanType(info.element)
+	}
+	if info.kind == containerBuffer {
+		// A buffer is already a {base, len} pair (docs/spec/92-ffi.md
+		// section 2.8): the borrow copies the pointer and the count.
+		cg.output.WriteString(fmt.Sprintf("(%s){ ( ", structName))
+		cg.emitExpressionFragment(prefix.Right, tc)
+		cg.output.WriteString(" ).base, ( ")
+		cg.emitExpressionFragment(prefix.Right, tc)
+		cg.output.WriteString(" ).len }")
+		return
 	}
 	cg.output.WriteString(fmt.Sprintf("(%s){ ", structName))
 	cg.emitExpressionFragment(prefix.Right, tc)
@@ -1449,7 +1465,7 @@ func (cg *CodeGenerator) emitLen(call *ast.InvocationExpression, tc *typechecker
 	switch info.kind {
 	case containerOwnedArray:
 		cg.output.WriteString(fmt.Sprintf("%d", info.length))
-	case containerView, containerSpan, containerString:
+	case containerView, containerSpan, containerString, containerBuffer:
 		cg.output.WriteString("((u32)( ")
 		cg.emitExpressionFragment(seq, tc)
 		cg.output.WriteString(" ).len)")
@@ -2723,6 +2739,11 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 		// lowers to the same C string struct (docs/spec/70-strings.md).
 		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Str" {
 			return "string"
+		}
+		// An owned foreign buffer is the span struct over its element type
+		// (docs/spec/92-ffi.md section 2.8).
+		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
+			return cg.emitSpanType(cg.parseTypeExpression(indexExpr.Index))
 		}
 		// Atomic cells embed as C11 _Atomic members (docs/spec/65).
 		if atomicC, isAtomic := atomicTypeC(indexExpr); isAtomic {

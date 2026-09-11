@@ -62,14 +62,14 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 			mode:  parameter.mode,
 			node:  argument,
 		}
-		if ident, ok := argument.(*ast.Identifier); ok && ident != nil && a.flow.Registered(ident.Value) {
-			if !a.flow.CanUse(ident.Value) {
+		if name, ok := resourceName(argument); ok && a.flow.Registered(name) {
+			if !a.flow.CanUse(name) {
 				// Ordinary argument evaluation owns the use-after-consume diagnostic.
-				a.use(ident.Value, ident)
+				a.use(name, argument)
 				return false
 			}
-			participant.name = ident.Value
-			participant.tracked = !a.unknownResources[ident.Value]
+			participant.name = name
+			participant.tracked = !a.unknownResources[name]
 		}
 		if call, ok := argument.(*ast.InvocationExpression); ok && a.freshCalls[call] {
 			// Each successfully evaluated fresh result has independent authority.

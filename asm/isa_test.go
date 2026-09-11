@@ -19,7 +19,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"adc": "cmp x0, x1\n  adc x9, x0, x1", "adcs": "cmp x0, x1\n  adcs x9, x0, x1", "sbc": "cmp x0, x1\n  sbc x9, x0, x1", "sbcs": "cmp x0, x1\n  sbcs x9, x0, x1", "ngc": "cmp x0, x1\n  ngc x9, x0", "ngcs": "cmp x0, x1\n  ngcs x9, x0",
 		"neg": "neg x9, x0", "negs": "negs x9, x0", "mvn": "mvn x9, x0", "ands": "ands x9, x0, x1", "bic": "bic x9, x0, x1", "bics": "bics x9, x0, x1", "orn": "orn x9, x0, x1", "eon": "eon x9, x0, x1",
 		"ror": "ror x9, x0, #5", "extr": "extr x9, x0, x1, #8", "rev": "rev x9, x0", "rev16": "rev16 x9, x0", "rev32": "rev32 x9, x0", "rbit": "rbit x9, x0", "clz": "clz x9, x0", "cls": "cls x9, x0",
-		"sxtb": "sxtb x9, x0", "sxth": "sxth x9, x0", "sxtw": "sxtw x9, w0", "uxtb": "uxtb w9, w0", "uxth": "uxth w9, w0",
+		"sxtb": "sxtb x9, w0", "sxth": "sxth x9, w0", "sxtw": "sxtw x9, w0", "uxtb": "uxtb w9, w0", "uxth": "uxth w9, w0",
 		"movz": "movz x9, #1, lsl #16", "movn": "movn x9, #1", "movk": "movz x9, #1\n  movk x9, #2, lsl #32",
 		"mul": "mul x9, x0, x1", "madd": "madd x9, x0, x1, x0", "msub": "msub x9, x0, x1, x0", "mneg": "mneg x9, x0, x1", "smull": "smull x9, w0, w1", "umull": "umull x9, w0, w1",
 		"smaddl": "smaddl x9, w0, w1, x0", "umaddl": "umaddl x9, w0, w1, x0", "smsubl": "smsubl x9, w0, w1, x0", "umsubl": "umsubl x9, w0, w1, x0", "smulh": "smulh x9, x0, x1", "umulh": "umulh x9, x0, x1",
@@ -29,7 +29,8 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"nop":   "nop", "wfe": "wfe", "wfi": "wfi", "sev": "sev", "sevl": "sevl", "yield": "yield", "csdb": "csdb", "esb": "esb", "hint": "hint #7", "clrex": "clrex",
 		"dmb": "dmb ish", "dsb": "dsb sy", "isb": "isb", "ssbb": "ssbb", "pssbb": "pssbb",
 		"adr": "adr x9, here\nhere:", "adrp": "adrp x9, here\nhere:",
-		"bfc": "mov x9, x0\n  bfc x9, #4, #8", "bfxil": "mov x9, x0\n  bfxil x9, x1, #4, #8", "sbfiz": "sbfiz x9, x0, #4, #8", "smnegl": "smnegl x9, w0, w1", "umnegl": "umnegl x9, w0, w1",
+		"bfc": "mov x9, x0\n  bfc x9, #4, #8", "bfm": "mov x9, x0\n  bfm x9, x1, #4, #8", "sbfm": "sbfm x9, x0, #4, #8", "ubfm": "ubfm x9, x0, #4, #8",
+		"lslv": "lslv x9, x0, x1", "lsrv": "lsrv x9, x0, x1", "asrv": "asrv x9, x0, x1", "rorv": "rorv x9, x0, x1", "bfxil": "mov x9, x0\n  bfxil x9, x1, #4, #8", "sbfiz": "sbfiz x9, x0, #4, #8", "smnegl": "smnegl x9, w0, w1", "umnegl": "umnegl x9, w0, w1",
 	}
 	// Memory through the frame and a span parameter, and the atomics.
 	frame := map[string]string{
@@ -124,6 +125,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"addv": "addv s0, v5.4s", "smaxv": "smaxv s0, v5.4s", "sminv": "sminv s0, v5.4s", "umaxv": "umaxv s0, v5.4s", "uminv": "uminv s0, v5.4s", "fmaxv": "fmaxv s0, v5.4s", "fminv": "fminv s0, v5.4s", "fmaxnmv": "fmaxnmv s0, v5.4s", "fminnmv": "fminnmv s0, v5.4s", "saddlv": "saddlv d0, v5.4s", "uaddlv": "uaddlv d0, v5.4s",
 		"shl": "shl v0.4s, v5.4s, #3", "ushr": "ushr v0.4s, v5.4s, #3", "sshr": "sshr v0.4s, v5.4s, #3", "sli": "sli v0.4s, v5.4s, #3", "sri": "sri v0.4s, v5.4s, #3", "ssra": "ssra v0.4s, v5.4s, #3", "usra": "usra v0.4s, v5.4s, #3",
 		"shrn": "shrn v0.4h, v5.4s, #8", "rshrn": "rshrn v0.4h, v5.4s, #8", "sqshrn": "sqshrn v0.4h, v5.4s, #8", "uqshrn": "uqshrn v0.4h, v5.4s, #8", "sqrshrn": "sqrshrn v0.4h, v5.4s, #8", "uqrshrn": "uqrshrn v0.4h, v5.4s, #8",
+		"sxtl": "sxtl v0.4s, v17.4h", "uxtl": "uxtl v0.4s, v17.4h", "sxtl2": "sxtl2 v0.4s, v17.8h", "uxtl2": "uxtl2 v0.4s, v17.8h",
 		"ushll": "ushll v0.4s, v17.4h, #0", "sshll": "sshll v0.4s, v17.4h, #0", "shll": "shll v0.4s, v17.4h, #16", "uqshl": "uqshl v0.4s, v5.4s, #3", "sqshl": "sqshl v0.4s, v5.4s, #3",
 		"ushl": "ushl v0.4s, v5.4s, v6.4s", "sshl": "sshl v0.4s, v5.4s, v6.4s", "urshl": "urshl v0.4s, v5.4s, v6.4s", "srshl": "srshl v0.4s, v5.4s, v6.4s",
 		"xtn": "xtn v0.4h, v5.4s", "sqxtn": "sqxtn v0.4h, v5.4s", "uqxtn": "uqxtn v0.4h, v5.4s", "sqxtun": "sqxtun v0.4h, v5.4s", "xtn2": "mov v0.16b, v7.16b\n  xtn2 v0.8h, v5.4s", "sqxtn2": "mov v0.16b, v7.16b\n  sqxtn2 v0.8h, v5.4s", "uqxtn2": "mov v0.16b, v7.16b\n  uqxtn2 v0.8h, v5.4s",
@@ -147,7 +149,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"bti":   "bti c", "sb": "sb", "dgh": "dgh", "wfet": "wfet x0", "wfit": "wfit x0",
 		"setf8": "setf8 w0", "setf16": "setf16 w0", "rmif": "cmp x0, x1\n  rmif x0, #3, #15", "axflag": "cmp x0, x1\n  axflag", "xaflag": "cmp x0, x1\n  xaflag",
 		"fjcvtzs": "fjcvtzs w9, d1",
-		"sdot":    "sdot v0.4s, v7.16b, v7.16b", "udot": "udot v0.4s, v7.16b, v7.16b", "usdot": "usdot v0.4s, v7.16b, v7.16b", "sudot": "sudot v0.4s, v7.16b, v7.16b", "bfdot": "bfdot v0.4s, v17.8h, v17.8h",
+		"sdot":    "sdot v0.4s, v7.16b, v7.16b", "udot": "udot v0.4s, v7.16b, v7.16b", "usdot": "usdot v0.4s, v7.16b, v7.16b", "sudot": "sudot v0.4s, v7.16b, v7.4b[1]", "bfdot": "bfdot v0.4s, v17.8h, v17.8h",
 		"smmla": "smmla v0.4s, v7.16b, v7.16b", "ummla": "ummla v0.4s, v7.16b, v7.16b", "usmmla": "usmmla v0.4s, v7.16b, v7.16b", "bfmmla": "bfmmla v0.4s, v17.8h, v17.8h",
 		"bfmlalb": "bfmlalb v0.4s, v17.8h, v17.8h", "bfmlalt": "bfmlalt v0.4s, v17.8h, v17.8h", "bfcvt": "bfcvt h0, s3", "bfcvtn": "bfcvtn v0.4h, v5.4s", "bfcvtn2": "mov v0.16b, v7.16b\n  bfcvtn2 v0.8h, v5.4s",
 		"fmlal": "fmlal v0.4s, v17.4h, v17.4h", "fmlsl": "fmlsl v0.4s, v17.4h, v17.4h", "fmlal2": "fmlal2 v0.4s, v17.4h, v17.4h", "fmlsl2": "fmlsl2 v0.4s, v17.4h, v17.4h",
@@ -166,6 +168,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 	}
 	system := map[string]string{
 		"mrs": "mrs x9, cntvct_el0", "msr": "msr cntvoff_el2, x0", "dc": "dc civac, x0", "ic": "ic iallu", "tlbi": "tlbi vmalle1is", "at": "at s1e1r, x0",
+		"cfp": "cfp rctx, x0", "cpp": "cpp rctx, x0", "dvp": "dvp rctx, x0",
 		"svc": "svc #0", "hvc": "hvc #0", "smc": "smc #0",
 	}
 	control := map[string]string{

@@ -643,10 +643,16 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.errorf(instr.Line, "%s: %s", instr.Mnemonic, finding)
 	}
 	if imm, isImm := lastImmediate(instr.Operands); isImm && imm.Shift != 0 {
+		vectorDest := false
+		if reg, isReg := instr.Operands[0].(Register); isReg && reg.Class == ClassV {
+			vectorDest = true // movi/mvni/orr/bic vector immediates take `lsl #n`
+		}
 		switch instr.Mnemonic {
 		case "movz", "movk", "movn":
 		default:
-			c.errorf(instr.Line, "%s takes no shifted immediate", instr.Mnemonic)
+			if !vectorDest {
+				c.errorf(instr.Line, "%s takes no shifted immediate", instr.Mnemonic)
+			}
 		}
 	}
 
@@ -752,7 +758,7 @@ func (c *checker) instruction(instr Instruction) bool {
 		return false
 	case "wfe", "wfi", "sev", "sevl", "yield", "csdb", "esb", "hint", "clrex", "ssbb", "pssbb":
 		return false
-	case "dc", "ic", "tlbi", "at":
+	case "dc", "ic", "tlbi", "at", "cfp", "cpp", "dvp":
 		// Maintenance operations read their address register.
 		if reg, isReg := lastRegister(instr.Operands); isReg {
 			c.read(instr, reg)
@@ -793,7 +799,9 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.write(instr, instr.Operands[0].(Register))
 		return false
 	case "msr":
-		c.read(instr, instr.Operands[1].(Register))
+		if reg, isReg := instr.Operands[1].(Register); isReg {
+			c.read(instr, reg) // `msr field, #imm` writes a PSTATE field from a constant
+		}
 		return false
 	case "dmb", "dsb", "isb", "nop":
 		return false
@@ -824,6 +832,16 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.read(instr, dest)
 	}
 	switch instr.Mnemonic {
+	case "bfm", "sbfm", "ubfm":
+		// Raw bit-field moves: rotation and field end both below the width.
+		for _, i := range []int{2, 3} {
+			if v := instr.Operands[i].(Immediate).Value; v < 0 || v >= int64(widthOf(dest.Class)) {
+				c.errorf(instr.Line, "%s: immediate %d is not below the width of %s", instr.Mnemonic, v, dest.Text)
+			}
+		}
+		if instr.Mnemonic == "bfm" {
+			c.read(instr, dest)
+		}
 	case "ubfx", "ubfiz", "sbfx", "sbfiz", "bfi", "bfxil", "bfc":
 		// Bit-field immediates: a field of width >= 1 starting at lsb >= 0,
 		// inside the register (bfc has no source operand).
