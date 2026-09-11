@@ -40,6 +40,33 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 		}
 	}
 
+	// Every state a callable's transitions enter, across protocols.
+	targets := make(map[string]map[string]bool)
+	for _, protocol := range module.Protocols {
+		for _, transition := range protocol.Transitions {
+			if transition.Callable == "" || transition.To == "" {
+				continue
+			}
+			if targets[transition.Callable] == nil {
+				targets[transition.Callable] = make(map[string]bool)
+			}
+			targets[transition.Callable][transition.To] = true
+		}
+		for typeName, protocolName := range protocolOf {
+			if protocolName == protocol.Name && protocol.Initial != "" {
+				model.MarkInitial(typeName, protocol.Initial)
+			}
+		}
+	}
+	sortedTargets := func(callable string) []string {
+		out := make([]string, 0, len(targets[callable]))
+		for state := range targets[callable] {
+			out = append(out, state)
+		}
+		sort.Strings(out)
+		return out
+	}
+
 	fullSemantics := make(map[string]semir.ResourceTransitionSemantics)
 	for _, protocol := range module.Protocols {
 		terminalStates := make(map[string]bool)
@@ -82,6 +109,7 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 				BorrowsArguments: append([]int(nil), semantics.BorrowsArguments...),
 				BorrowMutable:    semantics.BorrowMutable,
 				Terminal:         terminalStates[transition.To],
+				Targets:          sortedTargets(callable),
 				Receiver:         receiverModeFromSemIR(semantics.Receiver),
 			})
 		}

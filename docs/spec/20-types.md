@@ -223,6 +223,11 @@ can make `Id[User]` distinct from `Id[Order]` while both lower to the same machi
 
 Phantom identity belongs to the type axis. It must not silently add runtime fields.
 
+A record template's literal takes its type arguments from the expected
+type (`Segment { ... }` against `Segment[Fresh]`), or is an error asking for
+an annotation; typestate-indexed resource handles (`112-protocols.md` §5a)
+are the first use, with the protocol's states as phantom markers.
+
 ## 10. Refinements and GADT direction
 
 Refinements add propositions to a base type:

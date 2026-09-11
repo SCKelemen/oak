@@ -38,6 +38,10 @@ type ResourceOperation struct {
 	// of its protocol: it is a closer, so its own consumed parameters owe no
 	// further terminal state inside its body.
 	Terminal bool
+	// Targets are the states the operation's transitions enter, sorted:
+	// the states a typestate-indexed handle may be constructed in inside
+	// its body (docs/spec/112-protocols.md section 5a).
+	Targets []string
 	// Receiver is the authority mode of a method's receiver, its own slot
 	// beside the explicit parameters (docs/spec/50-borrowing.md section 9).
 	Receiver ResourceParameterMode
@@ -52,6 +56,9 @@ type ResourceModel struct {
 	// Obligations maps a resource type to its terminal-state obligation,
 	// when its protocol declares one (docs/spec/50-borrowing.md section 9).
 	Obligations map[string]ResourceObligation
+	// Initials maps a resource type to its protocol's initial state, the one
+	// state a typestate-indexed handle may be constructed in anywhere.
+	Initials map[string]string
 }
 
 // ResourceObligation is a protocol's terminal-state obligation: an owned
@@ -67,7 +74,16 @@ func NewResourceModel() ResourceModel {
 		ResourceTypes: make(map[string]bool),
 		Operations:    make(map[string]ResourceOperation),
 		Obligations:   make(map[string]ResourceObligation),
+		Initials:      make(map[string]string),
 	}
+}
+
+// MarkInitial records a resource type's initial protocol state.
+func (m *ResourceModel) MarkInitial(typeName, state string) {
+	if m.Initials == nil {
+		m.Initials = make(map[string]string)
+	}
+	m.Initials[typeName] = state
 }
 
 // MarkObligation records a terminal-state obligation for a resource type.
@@ -118,8 +134,22 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 	}
 	// Normalize here too: callers can populate Operations without MarkOperation.
 	normalized := NewResourceModel()
-	normalized.ResourceTypes = model.ResourceTypes
-	normalized.Obligations = model.Obligations
+	normalized.ResourceTypes = tc.expandResourceTemplates(model.ResourceTypes)
+	normalized.Obligations = make(map[string]ResourceObligation, len(model.Obligations))
+	normalized.Initials = make(map[string]string, len(model.Initials))
+	for name := range normalized.ResourceTypes {
+		// Instantiations inherit their template's obligation and initial state.
+		base := name
+		if inst, isInstance := tc.recordInstantiationArgs[name]; isInstance && model.ResourceTypes[inst.Template] {
+			base = inst.Template
+		}
+		if obligation, has := model.Obligations[base]; has {
+			normalized.Obligations[name] = obligation
+		}
+		if initial, has := model.Initials[base]; has {
+			normalized.Initials[name] = initial
+		}
+	}
 	names := make([]string, 0, len(model.Operations))
 	for name := range model.Operations {
 		names = append(names, name)
@@ -178,6 +208,7 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 		// authority. Unmarked parameters keep their ordinary meaning. A
 		// method's receiver is governed by the contract's receiver slot.
 		own, hasContract := analysis.contractOperation(functionIdentity(fn))
+		analysis.own, analysis.hasOwn = own, hasContract
 		if fn.Receiver != nil && fn.Receiver.Name != nil {
 			analysis.bind(fn.Receiver.Name.Value)
 			if model.isResourceType(fn.Receiver.Type) {
@@ -400,6 +431,11 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 		if typ, known := a.tc.env.GetType(name); known {
 			a.markOwned(name, nominalTypeName(typ), s.Name)
 		}
+		return
+	}
+	if typeName, constructed := a.isTypestateConstruction(s.Value); constructed {
+		a.flow.RebindFresh(name, s.Name)
+		a.markOwned(name, typeName, s.Name)
 		return
 	}
 	if call, ok := s.Value.(*ast.InvocationExpression); ok {
@@ -718,6 +754,11 @@ func (a *typedResourceAnalysis) bindPath(path string, value ast.Expression, orig
 		a.markOwned(path, a.pathTypeName(path), origin)
 		return
 	}
+	if typeName, constructed := a.isTypestateConstruction(value); constructed {
+		a.flow.Register(path, origin)
+		a.markOwned(path, typeName, origin)
+		return
+	}
 	if call, ok := value.(*ast.InvocationExpression); ok {
 		if source, aliased := a.aliasCalls[call]; aliased && source != "" && a.flow.CanUse(source) {
 			a.flow.Alias(path, source, origin)
@@ -845,6 +886,75 @@ func (a *typedResourceAnalysis) checkAggregateEscape(expr *ast.InvocationExpress
 		}
 	}
 	return ok
+}
+
+// typestateOf reports whether a checked type is an instantiation of a
+// typestate-indexed resource (a record template with one type parameter
+// governed by a protocol): the template and the state its index names.
+func (a *typedResourceAnalysis) typestateOf(typ Type) (template, state string, ok bool) {
+	record, isRecord := typ.(*RecordType)
+	if !isRecord || record == nil || a.tc == nil {
+		return "", "", false
+	}
+	inst, known := a.tc.RecordInstantiationOf(record.Name)
+	if !known || len(inst.Args) != 1 || !a.model.ResourceTypes[inst.Template] {
+		return "", "", false
+	}
+	tmpl := a.tc.recordTemplates[inst.Template]
+	if tmpl == nil || len(tmpl.TypeParams) != 1 {
+		return "", "", false
+	}
+	atom, isAtom := typeAtom(inst.Args[0])
+	if !isAtom {
+		return "", "", false
+	}
+	return inst.Template, atom, true
+}
+
+// isTypestateConstruction reports whether an expression is a literal of a
+// typestate-indexed resource: construction, which is fresh authority where
+// the construction rule admits it (checkTypestateConstruction reports the
+// rest), and the type name of the resource.
+func (a *typedResourceAnalysis) isTypestateConstruction(expr ast.Expression) (string, bool) {
+	literal, isLiteral := expr.(*ast.RecordLiteral)
+	if !isLiteral || literal == nil || a.tc == nil || a.tc.env == nil {
+		return "", false
+	}
+	typ := a.tc.env.CheckedExpressionType(literal)
+	if _, _, isTypestate := a.typestateOf(typ); !isTypestate {
+		return "", false
+	}
+	return nominalTypeName(typ), true
+}
+
+// checkTypestateConstruction admits a literal of a typestate-indexed
+// resource only in its protocol's initial state or, inside a transition,
+// in a state that transition enters (OAK-B0121): a handle's state is a
+// claim about the resource, and only the transition into a state may make
+// it (docs/spec/112-protocols.md section 5a).
+func (a *typedResourceAnalysis) checkTypestateConstruction(literal *ast.RecordLiteral) {
+	if literal == nil || a.tc == nil || a.tc.env == nil {
+		return
+	}
+	template, state, isTypestate := a.typestateOf(a.tc.env.CheckedExpressionType(literal))
+	if !isTypestate {
+		return
+	}
+	if initial, known := a.model.Initials[template]; known && initial == state {
+		return
+	}
+	if a.hasOwn {
+		for _, target := range a.own.Targets {
+			if target == state {
+				return
+			}
+		}
+	}
+	d := a.tc.addResourceDiagnosticWithCode(literal, CodeResourceTypestateConstruction, fmt.Sprintf("a %s[%s] cannot be constructed here: only the transition into %s may put a handle in that state", template, state, state))
+	if initial, known := a.model.Initials[template]; known {
+		d.AddNote(fmt.Sprintf("a %s may be constructed anywhere in its initial state %s; every other state is reached through the protocol's via callables (docs/spec/112-protocols.md section 5a)", template, initial))
+	}
+	d.AddHelp("construct the handle in its initial state and move it with the protocol's transitions, or make this function the via callable of a transition into " + state)
 }
 
 // tailCalls collects the invocation expressions an expression may evaluate
@@ -1175,9 +1285,21 @@ func (a *typedResourceAnalysis) checkResultContract(fn *ast.FunctionStatement, o
 		return
 	}
 	declared := fn.Parameters[own.AliasesArgument].Name.Value
-	if len(tails) == 0 && len(calls) == 0 {
+	literals := tailLiterals(fn.Body)
+	if len(tails) == 0 && len(calls) == 0 && len(literals) == 0 {
 		report(fn.Name, fmt.Sprintf("%s is declared to return an alias of %q but its result is not a named resource", fn.Name.Value, declared))
 		return
+	}
+	// A typestate transition rebuilds the handle in its new state: a record
+	// literal that mentions no resource other than the aliased parameter is
+	// that parameter's authority under its next state.
+	for _, literal := range literals {
+		for _, name := range mentionedNames(literal) {
+			if a.flow.Registered(name) && name != declared && !a.flow.Aliases(name, declared) {
+				report(literal, fmt.Sprintf("%s is declared to return an alias of %q but its result literal mentions resource %q", fn.Name.Value, declared, name))
+				break
+			}
+		}
 	}
 	for _, call := range calls {
 		if source, isAlias := a.aliasCalls[call]; isAlias && source != "" && (source == declared || a.flow.Aliases(source, declared)) {
@@ -1288,6 +1410,9 @@ type typedResourceAnalysis struct {
 	transferred map[string]bool
 	// pathTypes caches the resource type each known aggregate path holds.
 	pathTypes map[string]string
+	// own is the contract of the function under analysis, when it has one.
+	own    ResourceOperation
+	hasOwn bool
 	// diverged is set by a `break`: the state after it does not fall
 	// through to the join of its branch but to the enclosing loop's exit,
 	// collected in loopExits (one slice per open loop).
@@ -2349,6 +2474,14 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 		}
 	}
 
+	if typeName, constructed := a.isTypestateConstruction(stmt.Value); constructed {
+		// Constructing a typestate-indexed handle is fresh authority
+		// (docs/spec/112-protocols.md section 5a, rule 4).
+		a.flow.Register(stmt.Name.Value, stmt.Name)
+		a.markOwned(stmt.Name.Value, typeName, stmt.Name)
+		return
+	}
+
 	if stmt.Value != nil && a.isResourceValue(stmt.Value) {
 		// A projection or other resource-valued expression without a tracked
 		// authority source is not fresh merely because it receives a new name.
@@ -2518,6 +2651,7 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 	case *ast.BlockExpression:
 		a.block(e.Block)
 	case *ast.RecordLiteral:
+		a.checkTypestateConstruction(e)
 		if len(e.FieldOrder) > 0 {
 			for _, field := range e.FieldOrder {
 				a.expression(field.Value)

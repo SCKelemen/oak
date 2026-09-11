@@ -98,6 +98,11 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 			participant.tracked = true
 			participant.fresh = true
 		}
+		if _, constructed := a.isTypestateConstruction(argument); constructed {
+			// Constructing a typestate-indexed handle is fresh authority.
+			participant.tracked = true
+			participant.fresh = true
+		}
 		if call, ok := argument.(*ast.InvocationExpression); ok {
 			if owners, borrowed := a.borrowCalls[call]; borrowed && len(owners) > 0 {
 				// A temporary borrowed result with known owners is distinct

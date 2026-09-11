@@ -534,7 +534,12 @@ type TypeChecker struct {
 	matchResolutions   map[string]string
 	// recordTemplates holds generic record declarations (Ring[T, N: u32]);
 	// instantiations are cached by mangled name.
-	recordTemplates          map[string]*ast.ADTType
+	recordTemplates map[string]*ast.ADTType
+	// recordInstantiationArgs maps an instantiated record's mangled name to
+	// its template and argument types, so a literal checked against an
+	// instantiation, and the resource analyses, can recover the arguments
+	// (typestate-indexed handles, docs/spec/112-protocols.md section 5a).
+	recordInstantiationArgs  map[string]RecordInstantiation
 	recordInstantiationCache map[string]*RecordType
 	// tagSchemas holds declared tag schemas (json: tag = { name: string }) —
 	// the closed namespace field tags check against (typechecker/tags.go).
@@ -3324,8 +3329,27 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 		typeName := expr.TypeName.Value
 		namedType, ok := tc.env.GetType(typeName)
 		if !ok {
-			tc.addError(expr.TypeName, "type %s not found", typeName)
-			return nil
+			// A literal of a record template takes its type arguments from
+			// context (docs/spec/10-syntax.md section 2c applied to records):
+			// the expected type must be an instantiation of the same
+			// template, and the literal is retyped to that instantiation so
+			// every later phase sees a concrete record.
+			if _, isTemplate := tc.recordTemplates[typeName]; isTemplate {
+				var expected Type
+				if len(expectedType) > 0 {
+					expected = expectedType[0]
+				}
+				instance := tc.templateLiteralInstance(typeName, expected)
+				if instance == nil {
+					tc.addError(expr.TypeName, "record literal %s needs its type arguments from context: annotate the binding, parameter, or return type with %s[...]", typeName, typeName)
+					return nil
+				}
+				expr.TypeName = &ast.Identifier{Token: expr.TypeName.Token, Value: instance.Name}
+				namedType, ok = instance, true
+			} else {
+				tc.addError(expr.TypeName, "type %s not found", typeName)
+				return nil
+			}
 		}
 		if !tc.checkOpaqueProjection(expr.Token, typeName, expr.TypeName, "construct") {
 			return nil
@@ -4586,6 +4610,34 @@ func (tc *TypeChecker) checkDeferredBlock(block *ast.BlockStatement, expected Ty
 		return tc.checkExpression(yield.Expression, expected)
 	}
 	return tc.checkExpression(yield.Expression)
+}
+
+// RecordInstantiation records how an instantiated record was built.
+type RecordInstantiation struct {
+	Template string
+	Args     []Type
+}
+
+// RecordInstantiationOf returns the template and arguments of an
+// instantiated record type by its mangled name.
+func (tc *TypeChecker) RecordInstantiationOf(mangled string) (RecordInstantiation, bool) {
+	inst, ok := tc.recordInstantiationArgs[mangled]
+	return inst, ok
+}
+
+// templateLiteralInstance resolves the instantiation a template literal
+// denotes from its expected type: an instantiated record of the same
+// template, or nil.
+func (tc *TypeChecker) templateLiteralInstance(template string, expected Type) *RecordType {
+	record, isRecord := expected.(*RecordType)
+	if !isRecord || record == nil || record.Name == "" {
+		return nil
+	}
+	inst, known := tc.recordInstantiationArgs[record.Name]
+	if !known || inst.Template != template {
+		return nil
+	}
+	return record
 }
 
 func (tc *TypeChecker) checkUnsafeBlock(stmt *ast.UnsafeBlock) {

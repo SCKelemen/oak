@@ -72,6 +72,22 @@ func (tc *TypeChecker) resourcePathsAndTypes(root string, typ Type, resourceType
 	return paths, types
 }
 
+// expandResourceTemplates adds, for every resource type that is a record
+// template, the names of its instantiations: a typestate-indexed handle
+// is a resource in every state (docs/spec/112-protocols.md section 5a).
+func (tc *TypeChecker) expandResourceTemplates(types map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(types))
+	for name := range types {
+		out[name] = true
+	}
+	for mangled, inst := range tc.recordInstantiationArgs {
+		if types[inst.Template] {
+			out[mangled] = true
+		}
+	}
+	return out
+}
+
 // resourceLike reports whether a type is a resource or an aggregate with
 // resource paths below it: the types a resource contract may govern.
 func (tc *TypeChecker) resourceLike(typ Type, resourceTypes map[string]bool) bool {

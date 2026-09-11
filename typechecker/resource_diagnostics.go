@@ -56,6 +56,13 @@ const CodeResourceSuspendedOwner = "OAK-B0119"
 // (docs/spec/50-borrowing.md section 9, terminal-state obligations).
 const CodeResourceUnclosed = "OAK-B0120"
 
+// CodeResourceTypestateConstruction reports a literal of a typestate-indexed
+// resource built in a state that is neither the protocol's initial state
+// nor a state the enclosing transition enters
+// (docs/spec/112-protocols.md section 5a): only a transition may put a
+// handle into its target state.
+const CodeResourceTypestateConstruction = "OAK-B0121"
+
 // addResourceDiagnostic keeps resource authority failures in the borrow/resource
 // diagnostic category even though typed resource analysis is hosted by typechecker.
 func (tc *TypeChecker) addResourceDiagnostic(node ast.Node, title string) *diagnostic.Diagnostic {
