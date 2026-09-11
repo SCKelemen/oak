@@ -421,8 +421,21 @@ argument; naming that result first does not change its exclusivity semantics.
 Rejected calls do not establish fresh results. Valid nested-call effects are not
 rolled back when a surrounding call is rejected.
 
-Resource reassignment is currently rejected with `OAK-B0112` until destination
-provenance is tracked; it must not retain a stale independent alias class. Unknown
+**Reassignment** of a resource binding is tracked by provenance rather than
+rejected: `alias = h` makes `alias` denote `h`'s authority from that point,
+so a later exclusive pairing of the two names is an alias conflict and
+consuming through either consumes both; `h = open(..)` from an operation
+that returns fresh authority gives `h` a new live class and revives no old
+alias of the class it left; any other resource-valued right-hand side gives
+the name unknown provenance, and later exclusive or consuming use of it
+fails closed. The class a name leaves keeps its state and its other
+aliases. A rebound parameter's entry authority governed its old value, not
+the new one. Shadowing an outer resource binding in an inner block is rejected
+by the no-shadowing rule (`83-modules.md` §7), so an inner binding can never
+touch an outer authority. Across a control-flow join, a name whose
+provenance differs between paths is unknown afterwards, so branches cannot
+manufacture disjointness. (Authority roadmap milestone 3, first increment;
+projections and aggregate writes remain conservative.) Unknown
 provenance and known consumed authority are distinct diagnostic causes. A conflict
 involving an unknown argument must identify that argument, including when it is a
 shared participant paired with a tracked exclusive participant.

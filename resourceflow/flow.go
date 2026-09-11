@@ -146,6 +146,66 @@ func (f *Flow) Alias(alias, source string, origin ast.Node) bool {
 	return true
 }
 
+// Rebind makes name denote the source's authority from this point on
+// (docs/spec/50-borrowing.md section 9, reassignment): the name leaves its
+// current alias class — that class and its other aliases keep their state,
+// so an old alias is never revived and never invalidated by the rebinding —
+// and joins the source's class, so a later exclusive use of the two names
+// conflicts. The source must be definitely live. A name may be rebound to
+// itself only as a no-op.
+func (f *Flow) Rebind(name, source string, origin ast.Node) bool {
+	if f == nil || name == "" || source == "" {
+		return false
+	}
+	if name == source {
+		return f.CanUse(name)
+	}
+	sourceInfo, exists := f.aliases[source]
+	if !exists || !f.CanUse(source) {
+		return false
+	}
+	f.forget(name)
+	f.aliases[name] = aliasInfo{class: sourceInfo.class, parent: source, origin: origin}
+	return true
+}
+
+// RebindFresh makes name denote a new, independent live authority — the
+// result of an operation declared to return fresh authority. The old class
+// the name denoted is untouched: fresh assignment revives nothing.
+func (f *Flow) RebindFresh(name string, origin ast.Node) bool {
+	if f == nil || name == "" {
+		return false
+	}
+	f.forget(name)
+	return f.Register(name, origin)
+}
+
+// Forget drops a name from the flow without touching the class it denoted;
+// the class and its other aliases keep their state. Used when a binding's
+// new value has no traceable provenance.
+func (f *Flow) Forget(name string) {
+	if f != nil {
+		f.forget(name)
+	}
+}
+
+func (f *Flow) forget(name string) {
+	info, exists := f.aliases[name]
+	if !exists {
+		return
+	}
+	delete(f.aliases, name)
+	// Children that derived authority through this name keep their class
+	// but lose the edge, so provenance chains stay acyclic and truthful.
+	for child, childInfo := range f.aliases {
+		if childInfo.parent == name {
+			childInfo.parent = ""
+			f.aliases[child] = childInfo
+		}
+	}
+	_ = info
+}
+
 // AuthorityOf reports the current path summary for a registered resource name.
 func (f *Flow) AuthorityOf(name string) (Authority, bool) {
 	if f == nil {

@@ -314,7 +314,10 @@ f: (h: Handle): u32 {
 	}
 }
 
-func TestResourceReassignmentFailsClosed(t *testing.T) {
+// Reassignment is tracked (docs/spec/50-borrowing.md section 9): after
+// `alias = h` the two names identify one authority, so the exclusive call
+// reports the precise alias conflict rather than a blanket rejection.
+func TestResourceReassignmentTracksProvenance(t *testing.T) {
 	input := `
 Handle: type = struct { id: u32 }
 update_pair: (left: Handle, right: Handle): () = {}
@@ -330,8 +333,8 @@ f: (h: Handle, other: Handle): u32 {
 	tc := setupTypeChecker(input)
 	tc.CheckProgramWithResources(parseProgram(input), model)
 	got := resourceCallDiagnostics(tc, CodeResourceCallAliasConflict)
-	if len(got) == 0 || !strings.Contains(got[0], "resource reassignment") {
-		t.Fatalf("unsupported reassignment must not retain trusted distinctness: %v (all: %v)", got, tc.Errors())
+	if len(got) != 1 || !strings.Contains(got[0], "aliases the same resource") {
+		t.Fatalf("reassignment must make the exclusive use conflict: %v (all: %v)", got, tc.Errors())
 	}
 }
 

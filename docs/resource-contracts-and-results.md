@@ -41,10 +41,11 @@ Unknown projections remain unknown after naming them. Already-consumed arguments
 retain their causal use-after-consume diagnostic, rather than acquiring a second
 unknown-provenance diagnosis.
 
-Resource reassignment is conservatively rejected pending destination provenance
-tracking. This is an acceptance restriction, not a complete reassignment model.
-Future support must handle shadowing, reassignment through blocks, control-flow
-joins, loop fixed points, and old aliases without reviving consumed authority.
+Resource reassignment is now tracked by provenance (`50-borrowing.md` §9):
+rebinding to a live name joins its class, rebinding to a fresh result starts a
+new class without reviving the old one, other right-hand sides leave the name
+with unknown provenance, and control-flow joins drop names whose provenance
+differs across paths. Projections and aggregate writes remain conservative.
 
 ## Callable contract preservation
 
