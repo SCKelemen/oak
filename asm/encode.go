@@ -1007,11 +1007,17 @@ func (e *encoder) sysreg(fop *isaOperand, name string) error {
 		}
 		op0, op1, crn, crm, op2 = vals[0], vals[1], vals[2], vals[3], vals[4]
 	} else {
-		enc, ok := systemRegisters[name]
+		enc, ok := systemRegisterEncodings[name]
 		if !ok {
-			return fmt.Errorf("system register %q is not in the encoder's table (spell it S<op0>_<op1>_<Cn>_<Cm>_<op2>)", name)
+			return fmt.Errorf("system register %q is not one Arm's SysReg release names (spell it S<op0>_<op1>_<Cn>_<Cm>_<op2>)", name)
 		}
-		op0, op1, crn, crm, op2 = enc[0], enc[1], enc[2], enc[3], enc[4]
+		if e.enc.Mnemonic == "mrs" && !enc.Read {
+			return fmt.Errorf("system register %s is not readable", name)
+		}
+		if e.enc.Mnemonic == "msr" && !enc.Write {
+			return fmt.Errorf("system register %s is not writable", name)
+		}
+		op0, op1, crn, crm, op2 = enc.Op0, enc.Op1, enc.CRn, enc.CRm, enc.Op2
 	}
 	if op0 < 2 || op0 > 3 {
 		return fmt.Errorf("system register %q: op0 must be 2 or 3", name)
@@ -1978,35 +1984,6 @@ func encodeMovImmediate(reg Register, value int64) (uint32, *Relocation, error) 
 		zr = Register{Text: "wzr", Class: ClassW, Num: 31}
 	}
 	return EncodeInstruction(Instruction{Mnemonic: "orr", Operands: []Operand{reg, zr, Immediate{Value: value}}}, 0, nil)
-}
-
-// systemRegisters: op0, op1, CRn, CRm, op2 of the named system registers
-// the units use. Any register may be spelled S<op0>_<op1>_<Cn>_<Cm>_<op2>;
-// the full name table awaits Arm's SysReg XML release.
-var systemRegisters = map[string][5]uint32{
-	"nzcv": {3, 3, 4, 2, 0}, "daif": {3, 3, 4, 2, 1}, "currentel": {3, 0, 4, 2, 2}, "spsel": {3, 0, 4, 2, 0},
-	"tpidr_el0": {3, 3, 13, 0, 2}, "tpidrro_el0": {3, 3, 13, 0, 3}, "tpidr_el1": {3, 0, 13, 0, 4}, "tpidr_el2": {3, 4, 13, 0, 2},
-	"cntfrq_el0": {3, 3, 14, 0, 0}, "cntpct_el0": {3, 3, 14, 0, 1}, "cntvct_el0": {3, 3, 14, 0, 2}, "cntvoff_el2": {3, 4, 14, 0, 3},
-	"cntv_ctl_el0": {3, 3, 14, 3, 1}, "cntv_cval_el0": {3, 3, 14, 3, 2}, "cntv_tval_el0": {3, 3, 14, 3, 0},
-	"cntp_ctl_el0": {3, 3, 14, 2, 1}, "cntp_cval_el0": {3, 3, 14, 2, 2}, "cntp_tval_el0": {3, 3, 14, 2, 0},
-	"cnthctl_el2": {3, 4, 14, 1, 0}, "cnthp_ctl_el2": {3, 4, 14, 2, 1}, "cnthp_cval_el2": {3, 4, 14, 2, 2}, "cnthp_tval_el2": {3, 4, 14, 2, 0},
-	"midr_el1": {3, 0, 0, 0, 0}, "mpidr_el1": {3, 0, 0, 0, 5}, "revidr_el1": {3, 0, 0, 0, 6},
-	"id_aa64pfr0_el1": {3, 0, 0, 4, 0}, "id_aa64pfr1_el1": {3, 0, 0, 4, 1}, "id_aa64isar0_el1": {3, 0, 0, 6, 0}, "id_aa64isar1_el1": {3, 0, 0, 6, 1},
-	"id_aa64mmfr0_el1": {3, 0, 0, 7, 0}, "id_aa64mmfr1_el1": {3, 0, 0, 7, 1}, "id_aa64mmfr2_el1": {3, 0, 0, 7, 2},
-	"sctlr_el1": {3, 0, 1, 0, 0}, "sctlr_el2": {3, 4, 1, 0, 0}, "actlr_el1": {3, 0, 1, 0, 1}, "cpacr_el1": {3, 0, 1, 0, 2}, "cptr_el2": {3, 4, 1, 1, 2},
-	"hcr_el2": {3, 4, 1, 1, 0}, "mdcr_el2": {3, 4, 1, 1, 1}, "hstr_el2": {3, 4, 1, 1, 3}, "hacr_el2": {3, 4, 1, 1, 7},
-	"ttbr0_el1": {3, 0, 2, 0, 0}, "ttbr1_el1": {3, 0, 2, 0, 1}, "tcr_el1": {3, 0, 2, 0, 2}, "ttbr0_el2": {3, 4, 2, 0, 0}, "tcr_el2": {3, 4, 2, 0, 2},
-	"vttbr_el2": {3, 4, 2, 1, 0}, "vtcr_el2": {3, 4, 2, 1, 2},
-	"spsr_el1": {3, 0, 4, 0, 0}, "elr_el1": {3, 0, 4, 0, 1}, "sp_el0": {3, 0, 4, 1, 0}, "sp_el1": {3, 4, 4, 1, 0},
-	"spsr_el2": {3, 4, 4, 0, 0}, "elr_el2": {3, 4, 4, 0, 1},
-	"afsr0_el1": {3, 0, 5, 1, 0}, "afsr1_el1": {3, 0, 5, 1, 1}, "esr_el1": {3, 0, 5, 2, 0}, "esr_el2": {3, 4, 5, 2, 0},
-	"far_el1": {3, 0, 6, 0, 0}, "far_el2": {3, 4, 6, 0, 0}, "hpfar_el2": {3, 4, 6, 0, 4},
-	"par_el1": {3, 0, 7, 4, 0}, "mair_el1": {3, 0, 10, 2, 0}, "amair_el1": {3, 0, 10, 3, 0}, "mair_el2": {3, 4, 10, 2, 0},
-	"vbar_el1": {3, 0, 12, 0, 0}, "vbar_el2": {3, 4, 12, 0, 0}, "isr_el1": {3, 0, 12, 1, 0}, "rvbar_el1": {3, 0, 12, 0, 1},
-	"contextidr_el1": {3, 0, 13, 0, 1}, "vpidr_el2": {3, 4, 0, 0, 0}, "vmpidr_el2": {3, 4, 0, 0, 5},
-	"fpcr": {3, 3, 4, 4, 0}, "fpsr": {3, 3, 4, 4, 1}, "dczid_el0": {3, 3, 0, 0, 7}, "ctr_el0": {3, 3, 0, 0, 1},
-	"pmccntr_el0": {3, 3, 9, 13, 0}, "pmcr_el0": {3, 3, 9, 12, 0},
-	"osdlr_el1": {2, 0, 1, 3, 4}, "mdscr_el1": {2, 0, 0, 2, 2},
 }
 
 // ---- fields --------------------------------------------------------------------

@@ -744,9 +744,20 @@ with LLVM is a bug in one of the two readings of the same document, and the
 tests found several on the way (the wide-move and byte-mask immediates,
 the element-index field orders, the omitted-operand defaults). Not yet
 encoded: post-index by register, structure lane lists, `wsp`, literal
-loads, named system registers beyond the encoder's own table (the
-`S<op0>_<op1>_<Cn>_<Cm>_<op2>` spelling always works; Arm's SysReg XML
-release would complete the names).
+loads.
+
+**System registers (`asm/sysregs_gen.go`, from Arm's SysReg XML by
+`asm/internal/sysreggen`).** Every AArch64 register MRS or MSR can name —
+1232 of them, register arrays expanded (`dbgbvr0_el1` … `dbgbvr15_el1`,
+`icc_ap0r1_el1`, `pmevcntr30_el0`) from the index expressions of their
+encodings — with its op0:op1:CRn:CRm:op2 and its access directions. The
+checker holds `mrs`/`msr` to that table: an unknown name is an error
+(implementation-defined registers keep the `S<op0>_<op1>_<Cn>_<Cm>_<op2>`
+spelling), reading a write-only register or writing a read-only one is an
+error. Checked against the host assembler on every access it knows: 1772
+agree, none differ; the 417 it does not know are newer than the host
+LLVM. `TestGeneratedTablesCurrent` regenerates both tables from the
+releases under `external/` and requires the committed files to match.
 
 **What self-hosting still needs.** (1) Object emission: Mach-O and ELF
 relocatable objects carrying the encoded bytes, symbols, and the
