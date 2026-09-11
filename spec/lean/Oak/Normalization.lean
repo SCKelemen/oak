@@ -266,7 +266,7 @@ theorem nfd_idem (hc : UCD.Closed u) (l : List Nat) : nfd u (nfd u l) = nfd u l 
     decomposeAll_none u hc l x ((order_perm u _).mem_iff.mp hx)
   rw [decomposeAll_id_of_none u _ hnone, order_idem]
 
-/-! ## Canonical composition (defined, not yet proved about) -/
+/-! ## Canonical composition (the definition; its laws follow below) -/
 
 /-- One step of D117 over an ordered, decomposed text. The accumulator is the
     output so far, the index of the last starter kept in it (when there is

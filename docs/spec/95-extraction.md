@@ -341,8 +341,46 @@ the compiler compiles, up to the extractor and the compiler being correct:
   reports the source length and writes the source back; proved through the
   encoder's loop, both validation loops of `hex_scan`, and the decoder's
   loop, with the symbol and value tables read in the kernel
-  (`decide +kernel`). Base64 and base32 have the RFC 4648 §10 vectors
-  decided; their universal round trips and hexadecimal strictness remain.
+  (`decide +kernel`). Hexadecimal strictness is proved as well:
+  `hex_decode_ok_iff` — for every source below `2^32 - 4` bytes and a
+  destination that holds half of it, `hex_decode` succeeds exactly when the
+  source has even length and every byte is a hexadecimal digit (`AllDigits`),
+  otherwise reporting `InvalidLength` or `InvalidCharacter`; the proof tracks
+  bit four of the validation scan's accumulated `|||` (`Bit4`), which the
+  value table sets on every non-digit and only there. `hex_decode_encode` —
+  whatever the decoder accepts, re-encoding the decoded bytes in lower case
+  writes the source back with its letters lowered (`lowerHex`), so the
+  decoder accepts exactly the encodings, up to case. Base32 has the RFC 4648
+  §10 vectors decided; its universal round trip remains.
+- `Oak/Stdlib/Base64Laws.lean`: `base64_round_trip` — for every source below
+  `2^31 - 8` bytes, either alphabet (standard or URL), padded or not, a
+  destination that holds exactly the encoding (`encSize`), and a decode
+  destination that holds the source, `base64_encode` reports the encoded
+  length and `base64_decode` of its output reports the source length and
+  writes the source back. `b64_encode_spec` characterizes the encoder's
+  output position by position (symbols below `symCount`, pads after, the
+  rest untouched) through the three-to-four group loop and its one- and
+  two-byte tails; `unpadded_length_spec` shows the decoder's padding strip
+  counts exactly the pads written; `b64_scan_spec` shows the validation
+  scan's accumulated `|||` stays below 64 on symbols; `decoded_size_spec`
+  and the group loop with its tails close the decode. The 24-bit word
+  identities are bit-vector facts (`bv_decide`); the symbol tables are read
+  in the kernel.
+- `Oak/Stdlib/UuidLaws.lean`: for every one-cell generator state and every
+  sixteen-byte destination, `uuid_v4_spec` — `uuid_v4` succeeds and the
+  value reports version 4 (`uuid_version`) and the RFC variant
+  (`uuid_variant`); `uuid_v7_spec` — for every timestamp below `2^48`,
+  `uuid_v7` succeeds, reports version 7 and the RFC variant, and
+  `uuid_v7_millis` recovers the timestamp; `uuid_format_parse` — for every
+  sixteen-byte value, `uuid_format` writes exactly `textOf upper x` (two
+  digits per byte in the requested case, hyphens at 8, 13, 18, 23) and
+  `uuid_parse` reads it back to the value, in either case. Every loop in the
+  package runs a fixed number of times, so the proofs unroll the extracted
+  loops by simplification; the byte identities are `bv_decide` facts, the
+  two table facts (a symbol decodes to its nibble, a symbol is never a
+  hyphen) are read in the kernel over `Fin 256`, and writing every slot of a
+  fixed-size destination in order is shown to yield a literal array
+  (`overwrite36`, `overwrite16`) that the parser reads at literal positions.
 - `Oak/Stdlib/RandomLaws.lean`: `random_next_spec` — the extracted step is
   the xoshiro256** reference `refNext` on the one-cell state; `random_below_lt`
   — a successful draw is below a non-zero bound; `random_range_mem` — a
@@ -356,9 +394,12 @@ most; the kernel-decided facts use no axioms.
 - State the pdqsort laws beyond the insertion threshold and the exhausted
   budget: the range-stack invariant (ranges disjoint, everything between them
   in final position, every swap in bounds) over `sort_span_budget.loop1`,
-  with `writeback_perm` and the heap and insertion laws as the leaves; the universal base64 and base32 round trips and hexadecimal
-  strictness (`hex_decode` accepts a string iff it is an encoding); the
-  `uuid` version and variant bits against the extraction.
+  with `writeback_perm` and the heap and insertion laws as the leaves; the
+  universal base32 round trip (the base64 proof's shape, with five-to-eight
+  groups and four tail lengths); strictness for base64 (`base64_decode`
+  accepts a string iff it is a canonical encoding) as `hex_decode_ok_iff`
+  does for hexadecimal; the SHA-256 and CRC-32C extractions against
+  reference definitions.
 - The subset: strings and the text library, methods, and recursion;
   instantiations whose arguments are arrays or views; the `checked` float
   rows and `fma` once Lean carries them exactly.
