@@ -97,7 +97,8 @@ dep-api.json` checks a module's sealed imports against a dependency snapshot,
 does not honor, `oak mod pack` builds that archive and prints its `require`
 line, `oak mod upgrade` picks the highest candidate snapshot a module's sealed
 imports accept, and `oak mod try` builds against a local candidate to decide
-the unsealed ones (`docs/spec/82-package-semver.md`). Derived operations are ordinary
+the unsealed ones, and `oak mod tidy -w` reconciles `require` lines with what
+the packages import (`docs/spec/82-package-semver.md`). Derived operations are ordinary
 declarations whose body the compiler synthesizes from the type:
 
 ```oak

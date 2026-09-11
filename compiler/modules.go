@@ -1370,32 +1370,34 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 		if target == nil {
 			continue
 		}
-		names := make([]string, 0, len(target.Exports))
+		exports := make([]string, 0, len(target.Exports))
 		for name, member := range target.Exports {
 			if member.Exported {
-				names = append(names, name)
+				exports = append(exports, name)
 			}
 		}
-		sort.Strings(names)
-		for _, name := range names {
-			collision := ""
+		sort.Strings(exports)
+		// What the name would collide with, or "" when it is free.
+		boundBy := func(name string) string {
 			switch {
 			case pkg.Exports[name].Name != "":
-				collision = "a package-level declaration"
+				return "a package-level declaration"
 			case pkg.Imports[name] != nil:
-				collision = "an import alias"
+				return "an import alias"
 			case pkg.Selective[name] != nil && pkg.Selective[name] != binding:
 				if other := pkg.Selective[name]; other.Open {
-					collision = fmt.Sprintf("the open import of %q", other.Template)
-				} else {
-					collision = fmt.Sprintf("the selective import from %q", other.Template)
+					return fmt.Sprintf("the open import of %q", other.Template)
 				}
+				return fmt.Sprintf("the selective import from %q", pkg.Selective[name].Template)
 			}
-			if collision != "" {
-				d := l.reportAt(CodeOpenCollision, binding.File, binding.Statement, "open import of %q binds %q, which collides with %s", binding.Template, name, collision)
-				d.AddHelp("import the package under an alias, or select the members you need: { f, g } := import(...)")
-				continue
-			}
+			return ""
+		}
+		names, collisions := modules.OpenBind(func(name string) bool { return boundBy(name) != "" }, exports)
+		for _, name := range collisions {
+			d := l.reportAt(CodeOpenCollision, binding.File, binding.Statement, "open import of %q binds %q, which collides with %s", binding.Template, name, boundBy(name))
+			d.AddHelp("import the package under an alias, or select the members you need: { f, g } := import(...)")
+		}
+		for _, name := range names {
 			pkg.Selective[name] = binding
 		}
 	}
