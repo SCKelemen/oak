@@ -241,6 +241,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 	case *ast.WhileStatement:
 		return evalWhileStatement(node, env)
 
+	case *ast.BreakStatement:
+		return &object.BreakSignal{}
+
 	case *ast.IfStatement:
 		return evalIfStatement(node, env)
 
@@ -289,7 +292,7 @@ func evalBlockStatement(block *ast.BlockStatement, env *object.Environment) obje
 
 		if result != nil {
 			rt := result.Type()
-			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
+			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ || rt == object.BREAK_OBJ {
 				return result
 			}
 		}
@@ -1091,6 +1094,11 @@ func evalWhileStatement(ws *ast.WhileStatement, env *object.Environment) object.
 
 		if result != nil && result.Type() == object.RETURN_VALUE_OBJ {
 			return result
+		}
+		if result != nil && result.Type() == object.BREAK_OBJ {
+			// The break is consumed here: the loop ends, and it is not
+			// reported to the enclosing block.
+			return NULL
 		}
 	}
 

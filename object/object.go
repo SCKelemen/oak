@@ -100,6 +100,14 @@ func (rv *ReturnValue) Type() ObjectType { return RETURN_VALUE_OBJ }
 func (rv *ReturnValue) Inspect() string  { return rv.Value.Inspect() }
 func (rv *ReturnValue) Kind() ObjectKind { return RETURN_VALUE }
 
+// BreakSignal is the control-flow value a `break` statement evaluates to:
+// blocks return it upward until the enclosing while consumes it.
+type BreakSignal struct{}
+
+func (b *BreakSignal) Type() ObjectType { return BREAK_OBJ }
+func (b *BreakSignal) Inspect() string  { return "break" }
+func (b *BreakSignal) Kind() ObjectKind { return BREAK }
+
 type Error struct {
 	Message string
 }
@@ -360,6 +368,7 @@ const (
 	STRING_OBJ       = "STRING"
 	NULL_OBJ         = "NULL"
 	RETURN_VALUE_OBJ = "RETURN_VALUE"
+	BREAK_OBJ        = "BREAK"
 	ERROR_OBJ        = "ERROR"
 	FUNCTION_OBJ     = "FUNCTION"
 	ADT_OBJ          = "ADT"
@@ -380,6 +389,7 @@ const (
 	VARIANT
 	ERROR
 	RETURN_VALUE
+	BREAK
 	RECORD
 	ARRAY
 	VECTOR

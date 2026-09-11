@@ -1184,6 +1184,18 @@ func (is *IfStatement) String() string {
 	return out.String()
 }
 
+// BreakStatement leaves the innermost enclosing while loop
+// (docs/spec/85-discipline.md section 3): `break` is legal only inside a
+// loop body, and a bounded loop stays bounded when a break leaves it early.
+type BreakStatement struct {
+	BaseNode
+	Token token.Token // 'break' token
+}
+
+func (bs *BreakStatement) statementNode()       {}
+func (bs *BreakStatement) TokenLiteral() string { return bs.Token.Literal }
+func (bs *BreakStatement) String() string       { return "break" }
+
 type WhileStatement struct {
 	BaseNode
 	Token     token.Token // 'while' token

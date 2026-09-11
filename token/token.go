@@ -83,6 +83,7 @@ const (
 	PACKAGE
 	IMPORT
 	WHILE
+	BREAK
 	UNSAFE
 	FN
 	PUB
@@ -151,6 +152,7 @@ var tokens = [...]string{
 	PACKAGE:   "package",
 	IMPORT:    "import",
 	WHILE:     "while",
+	BREAK:     "break",
 	UNSAFE:    "unsafe",
 	FN:        "fn",
 	PUB:       "pub",

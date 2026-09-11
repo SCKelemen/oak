@@ -256,6 +256,8 @@ func (p *Parser) parseStatement() ast.Statement {
 			return stmt
 		}
 		return nil
+	case token.BREAK:
+		return &ast.BreakStatement{Token: p.currentToken}
 	case token.UNSAFE:
 		if stmt := p.parseUnsafeBlock(); stmt != nil {
 			return stmt
@@ -1282,6 +1284,13 @@ func (p *Parser) peekPrecedence() Precedence {
 	// never bitwise or — parenthesize (a | b) to use the operator there.
 	// Parens and brace blocks reset the suppression.
 	if p.armDepth > 0 && p.peekToken.TokenKind == token.PIPE {
+		return LOWEST
+	}
+	// A call or an index never continues across a line break: a line that
+	// starts with '(' or '[' begins a new statement (F18). Go's rule, without
+	// the semicolon insertion.
+	if (p.peekToken.TokenKind == token.LPAREN || p.peekToken.TokenKind == token.LBRACK) &&
+		p.peekToken.Line > p.currentToken.Line && p.currentToken.Line > 0 {
 		return LOWEST
 	}
 	if p, ok := precedences[p.peekToken.TokenKind]; ok {
@@ -3586,6 +3595,14 @@ func (p *Parser) parseConditionSugarArms(match *ast.MatchExpression) ast.Express
 		p.nextToken() // consume '|'
 		falseBody = p.parseConditionBranch()
 		if falseBody == nil {
+			return nil
+		}
+		// A Bool conditional has two arms. A third bare '|' after them is
+		// the classic misreading of a bitwise or inside an arm (F16): it
+		// used to parse as an or over the whole conditional. Refuse it and
+		// say what to write instead.
+		if _, block := falseBody.(*ast.BlockExpression); !block && p.peekTokenIs(token.PIPE) {
+			p.addErrorAtPeekToken("a `?` conditional has two arms and this `|` would start a third: inside a bare arm `|` is the arm separator, so write a bitwise or as `(a | b)` or brace the arm `{ a | b }`")
 			return nil
 		}
 	} else {

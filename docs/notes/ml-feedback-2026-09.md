@@ -181,3 +181,25 @@ disposition, in the order to work them:
 | O4 | Views or spans in records or as return values | roadmap |
 | O5 | `F32x4` with `mul` and `fma` | **implemented** (`93-simd.md` §1.2a; NEON and portable lowerings agree with the interpreter) |
 | O6 | A frontend surface for `x.matmul(w).relu()` | **implemented**: uniform call syntax (`10-syntax.md` §13), operator definitions (§14), and the pipeline operator (`x \|> matmul(w) \|> relu`) |
+
+## Tier 8 — the second numeric-runtime list (2026-09-11)
+
+The list arrived as six items; most were already on the branch. Their state
+against the current tree, with what changed today:
+
+| # | Ask | Disposition |
+| --- | --- | --- |
+| 1 | Floats (tier 2) | **Already done**: `f32`/`f64` with fixed IEEE semantics, `FP_CONTRACT OFF` and `-ffp-contract=off`, `f16`/`bf16` storage, the `bits` and `round` rows, correctly rounded intrinsics, the `math` package under a fourth witness (`20-types.md` §11.3, STATUS row). Not yet: the Lean lattice model. |
+| 2 | Spans across the FFI (tier 3) | **Already done** for integers, floats, storage formats, tagged unions, and proven-layout structs (`92-ffi.md` §2.5). **New today**: structs by value in extern signatures (§2.3) — Metal's struct-by-value calls and libc's `div_t` return without a pointer. |
+| 3 | F13 declarations before use | **Already done**: annotated top-level bindings are predeclared (STATUS "Order-independent package scope"). |
+| 3 | F14 assertions without locations | **Already done**: `assert` traps name file and line in hosted builds (STATUS "Located assertion traps"). |
+| 3 | F16 `\|` inside a `?` arm | **Fixed today** (`10-syntax.md` §3b): a third bare `\|` after a Bool conditional's two arms is a parse error naming the fix; it used to parse as a bitwise or over the whole conditional. Inside a bare arm `\|` stays the separator; `(a \| b)` or a braced arm spells the operator. |
+| 3 | F18 a line starting with `(` continues the expression | **Fixed today** (`10-syntax.md` §4a): a call or index never continues across a line break; a line beginning with `(` or `[` begins a new statement. |
+| 4 | Pipeline operator, shape literals, `pub` constants, size-indexed parameters | **Already done** (tier 5 items 1 and 4, tier 7.1). |
+| 4 | Match on integer constants | **Already done**: `x ? \| 1 => a \| 2 => b \| _ => c` typechecks and runs; the nine-deep `?` chain can be one match today. |
+| 4 | `break` in bounded loops | **Done today** (`85-discipline.md` §3a): `break` leaves the innermost `while`; a certified bounded loop stays certified; executed both ways. |
+| 5 | `f8` and packed 4-bit with block scales as storage types | **Not started; design needed.** `f8` (E4M3, E5M2) fits the `f16`/`bf16` storage-type pattern exactly — four operations, bit-exact rounding, a `u8` carrier at the boundary — and is a bounded increment once the E4M3 overflow rule (saturate or NaN) is chosen. Packed 4-bit with block scales is a block format, not a scalar: `[N]f4` with an `e8m0` scale per 32 values is a layout the emitters express by hand today, and a first-class form wants the same design conversation as the tensor storage types. |
+| 6 | `#line` directives | **Already done** (`oak build -lines`). |
+| 6 | Per-package discipline profiles | **Already done**: `profile <default\|strict>` in `oak.mod`, judged per module (`85-discipline.md` §1). |
+| 6 | A trace schema so `oak test -sim` can replay a launch sequence | **Not started; design needed.** `110-testing.md` records semantic events (`testing_trace`) with a schema version in the corpus; a launch-sequence replay needs the FFI-call events and their arguments as a recorded kind, then a replay mode that feeds them back through the boundary. |
+

@@ -525,7 +525,10 @@ type TypeChecker struct {
 	// Monomorphization records (typechecker/mono.go): the concrete
 	// generic-ADT instantiations the program uses and the instantiation
 	// each variant expression / match scrutinee was checked against.
-	adtInstantiations  map[string]Instantiation
+	adtInstantiations map[string]Instantiation
+	// loopDepth counts the while bodies enclosing the statement being
+	// checked; a function body starts a fresh count.
+	loopDepth          int
 	variantResolutions map[string]string
 	matchResolutions   map[string]string
 	// recordTemplates holds generic record declarations (Ring[T, N: u32]);
@@ -1311,6 +1314,12 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		}
 	case *ast.WhileStatement:
 		tc.checkWhileStatement(s)
+	case *ast.BreakStatement:
+		// A break leaves the innermost while (docs/spec/85-discipline.md
+		// section 3); outside a loop body there is nothing to leave.
+		if tc.loopDepth == 0 {
+			tc.addError(s, "break outside a while loop")
+		}
 	case *ast.IfStatement:
 		tc.checkIfStatement(s)
 	case *ast.UnsafeBlock:
@@ -1931,7 +1940,10 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	tc.env = funcEnv
 
 	// Type check function body (BlockStatement - check last expression)
+	savedLoopDepth := tc.loopDepth
+	tc.loopDepth = 0
 	returnType := tc.checkBlockExpression(fn.Body)
+	tc.loopDepth = savedLoopDepth
 	if returnType == nil {
 		returnType = &UnitType{}
 	}
@@ -3930,7 +3942,10 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 	// Type check function body, inferring literals against the declared
 	// return type.
+	savedLoopDepth := tc.loopDepth
+	tc.loopDepth = 0
 	bodyType := tc.checkExpression(stmt.Body, returnType)
+	tc.loopDepth = savedLoopDepth
 	if bodyType == nil {
 		bodyType = &UnitType{}
 	}
@@ -4324,7 +4339,9 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	// visible after it, so a later block may declare the same name.
 	outerEnv := tc.env
 	tc.env = NewEnclosedTypeEnvironment(outerEnv)
+	tc.loopDepth++
 	tc.checkBlockStatement(stmt.Body)
+	tc.loopDepth--
 	tc.env = outerEnv
 	tc.popExtentFacts(mark)
 }

@@ -142,6 +142,18 @@ warning[OAK-D0103]: stdlib.oak:348:7: loop in bytes_move_within has no staticall
 Planned extensions: declared bounds with checked runtime guards, and
 structural iteration over finite sequences.
 
+### 3a. `break`
+
+`break` leaves the innermost enclosing `while`; it is legal only inside a
+loop body (a function literal starts a fresh scope, so a break inside one
+cannot leave a loop outside it — `break outside a while loop` otherwise).
+A bounded loop that breaks early is still bounded: the canonical shape
+certifies an upper bound on iterations, and leaving sooner cannot exceed
+it, so the strict profile accepts a break in a certified loop unchanged.
+The backends agree by construction — statement-position conditionals lower
+to `if`/`else` and loops to `while`, so C's `break` leaves exactly the Oak
+loop, and the interpreter consumes the break at the loop it belongs to.
+
 ## 4. Allocation phase
 
 No dynamic allocation after initialization (Power of Ten rule 3,

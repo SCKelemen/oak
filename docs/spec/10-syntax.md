@@ -322,7 +322,10 @@ Rules:
   the arm separator; parenthesize to use bitwise or there
   (`cond ? (a | b) | c` — first arm `(a | b)`, second arm `c`). Brace
   blocks and parentheses restore `|` as an operator; everywhere else,
-  bare `|` is bitwise or.
+  bare `|` is bitwise or. A Bool conditional has two arms, so a third
+  bare `|` after them is a **parse error** that names the fix
+  (`cond ? a | b | c` used to parse as `(cond ? a | b) | c`, an or over
+  the whole conditional — the F16 misreading; it no longer parses).
 
 ## 4. Blocks and layout
 
@@ -352,6 +355,16 @@ Point { x: 1, y: 2 }
 ```
 
 Layout indentation never changes a record literal into a statement block or vice versa.
+
+### 4a. Line breaks end calls and indexes
+
+A call or an index never continues across a line break: a line that begins
+with `(` or `[` begins a new statement (F18). `f(x)` followed by a line
+`(a + b) == c ? ...` is two statements, not `f(x)(a + b)`. Inside
+parentheses and brackets nothing changes (they are continuation contexts),
+and an operator at the end of a line still continues the expression. This
+is Go's rule without the semicolon insertion; `;` remains available to put
+two statements on one line.
 
 ## 5. Separators
 

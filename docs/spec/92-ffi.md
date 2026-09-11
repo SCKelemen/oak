@@ -93,7 +93,12 @@ abort: (): () = c.extern("abort")
 Rules (diagnostics `OAK-F01xx`):
 
 - **F0101** — every parameter type and any non-unit return type of an extern
-  binding must be a `c.*` type. Oak types never cross the boundary raw.
+  binding must be a `c.*` type, **or a declared `struct` (or boundary tagged
+  union, §2.6) whose fields are boundary types (§2.5.1), passed by value**.
+  Oak scalars never cross the boundary raw; a struct crosses with the layout
+  the backend asserts at C compile time, in both directions — `div` from
+  libc returning its `div_t` by value, or a Metal launch descriptor handed
+  to a runtime shim, both without a pointer.
 - **F0102** — the symbol must be a single string literal that is a valid C
   identifier (`[A-Za-z_][A-Za-z0-9_]*`). This is load-bearing for the C
   backend: the symbol is emitted into generated source, and the identifier

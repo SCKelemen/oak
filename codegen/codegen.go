@@ -3031,6 +3031,10 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 		cg.emitVariableDeclaration(s, tc)
 	case *ast.AssignmentStatement:
 		cg.emitAssignmentStatement(s, tc)
+	case *ast.BreakStatement:
+		// Statement-position conditionals lower to if/else and loops to
+		// while, so C's break leaves exactly the Oak loop.
+		cg.write("  break;\n")
 	case *ast.ExpressionStatement:
 		if isLastInFunction && !s.Discard {
 			// Last statement in function - emit as return. A trailing
