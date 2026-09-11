@@ -249,6 +249,13 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 		recordType := a.tc.env.CheckedExpressionType(s.Value)
 		if _, isRecord := recordType.(*RecordType); isRecord {
 			source, isIdent := s.Value.(*ast.Identifier)
+			for _, path := range a.dependentPathsUnder(name) {
+				// Rebinding the record releases what its fields depended on;
+				// bindPath below decides what they depend on now.
+				if len(a.ownerDependents(path)) == 0 {
+					a.clearDependent(path)
+				}
+			}
 			for _, path := range a.resourcePaths(name, recordType) {
 				if !a.flow.Registered(path) && !a.unknownResources[path] {
 					continue
@@ -432,6 +439,14 @@ func (a *typedResourceAnalysis) bindRecordValue(root string, recordType Type, va
 				a.flow.Forget(path)
 				delete(a.unknownResources, path)
 				if a.flow.Registered(sourcePath) && a.flow.CanUse(sourcePath) {
+					if dependent, owners, isDependent := a.dependentOf(sourcePath); isDependent {
+						// A copied record carries each borrowed field's
+						// dependency, under the copy's own lifetime.
+						if !a.adoptDependency(path, owners, a.mutableDependents[dependent], origin, value) {
+							a.unknownResources[path] = true
+							continue
+						}
+					}
 					a.flow.Alias(path, sourcePath, origin)
 				} else if a.flow.Registered(sourcePath) || a.unknownResources[sourcePath] {
 					a.unknownResources[path] = true
@@ -460,20 +475,32 @@ func (a *typedResourceAnalysis) bindPath(path string, value ast.Expression, orig
 	}
 	a.flow.Forget(path)
 	delete(a.unknownResources, path)
-	// Borrowed results in aggregates await destination lifetime checks
-	// (authority roadmap milestone 4 stage (e)); until then storing one in
-	// a record field is rejected rather than losing the dependency.
+	// A borrowed result may live in a record field when the record's
+	// binding does not outlive the owners the value depends on
+	// (docs/spec/50-borrowing.md section 9, borrowed values in aggregates):
+	// the field path becomes a dependent with the same owners and
+	// permission. A destination that would outlive an owner is rejected.
 	if source, ok := resourceName(value); ok {
 		if dependent, owners, isDependent := a.dependentOf(source); isDependent {
-			a.reportDependent(value, fmt.Sprintf("%q is a borrowed result of %s and cannot be stored in a record field", source, describeOwners(owners)), dependent, owners)
-			a.unknownResources[path] = true
+			if a.adoptDependency(path, owners, a.mutableDependents[dependent], origin, value) {
+				a.flow.Alias(path, source, origin)
+			} else {
+				a.unknownResources[path] = true
+			}
 			return
 		}
 	}
 	if call, ok := value.(*ast.InvocationExpression); ok {
 		if owners, isBorrow := a.borrowCalls[call]; isBorrow {
-			a.reportDependent(value, fmt.Sprintf("a borrowed result of %s cannot be stored in a record field", describeOwners(owners)), "", owners)
-			a.unknownResources[path] = true
+			if len(owners) == 0 {
+				a.unknownResources[path] = true
+				return
+			}
+			if a.adoptDependency(path, owners, a.mutableCalls[call], origin, value) {
+				a.flow.Register(path, origin)
+			} else {
+				a.unknownResources[path] = true
+			}
 			return
 		}
 	}
@@ -523,6 +550,79 @@ func tailIdentifiers(expr ast.Expression) []*ast.Identifier {
 		return out
 	}
 	return nil
+}
+
+// destinationScope is the lexical scope of the binding a path is stored
+// under: the root name's scope, or the current scope while that root's
+// declaration is still in progress (its binding is deferred until the
+// initializer has been evaluated).
+func (a *typedResourceAnalysis) destinationScope(path string) int {
+	root, _, _ := strings.Cut(path, ".")
+	if scope := a.scopeOf(root); scope >= 0 {
+		return scope
+	}
+	return len(a.scopes) - 1
+}
+
+// adoptDependency makes path a dependent of owners with the given
+// permission, provided the record binding that holds path does not outlive
+// any owner (an owner bound in an inner scope would be gone first). It
+// reports OAK-B0118 and returns false otherwise.
+func (a *typedResourceAnalysis) adoptDependency(path string, owners map[string]bool, mutable bool, origin ast.Node, value ast.Expression) bool {
+	destination := a.destinationScope(path)
+	for _, owner := range sortedOwners(owners) {
+		if a.scopeOf(owner) > destination {
+			a.reportDependent(value, fmt.Sprintf("a borrowed result of %q cannot be stored in %q, which outlives its owner", owner, path), "", owners).
+				AddHelp("store the borrowed result in a record bound no longer than its owner, or copy the value out")
+			return false
+		}
+	}
+	a.setDependent(path, owners, destination, origin, mutable)
+	return true
+}
+
+// dependentPathsUnder lists the dependent field paths below a record name.
+func (a *typedResourceAnalysis) dependentPathsUnder(name string) []string {
+	var out []string
+	for path := range a.dependents {
+		if strings.HasPrefix(path, name+".") {
+			out = append(out, path)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// checkAggregateEscape rejects passing a record that holds a borrowed
+// result to any call (docs/spec/50-borrowing.md section 9): the callee's
+// contract cannot yet describe a dependency carried by a field, so the
+// record could outlive or release what the field depends on. Both a named
+// record and a record literal mentioning a dependent are rejected. It
+// returns false when the call has not occurred.
+func (a *typedResourceAnalysis) checkAggregateEscape(expr *ast.InvocationExpression) bool {
+	ok := true
+	for _, argument := range expr.Arguments {
+		switch arg := argument.(type) {
+		case *ast.Identifier:
+			if arg == nil || a.isResourceValue(arg) {
+				continue
+			}
+			if paths := a.dependentPathsUnder(arg.Value); len(paths) > 0 {
+				ok = false
+				a.reportDependent(arg, fmt.Sprintf("%q holds the borrowed result %q and cannot be passed to a call", arg.Value, paths[0]), paths[0], a.dependents[paths[0]]).
+					AddHelp("pass the borrowed field itself under a contract, or the record without it")
+			}
+		case *ast.RecordLiteral:
+			for _, name := range mentionedNames(arg) {
+				if dependent, owners, isDependent := a.dependentOf(name); isDependent {
+					ok = false
+					a.reportDependent(arg, fmt.Sprintf("a record literal holding the borrowed result %q cannot be passed to a call", name), dependent, owners)
+					break
+				}
+			}
+		}
+	}
+	return ok
 }
 
 // tailCalls collects the invocation expressions an expression may evaluate
@@ -664,6 +764,20 @@ func (a *typedResourceAnalysis) checkRetainedReturn(fn *ast.FunctionStatement, o
 			continue
 		}
 		a.checkRetention(ident, "returned as this function's result")
+	}
+	for _, ident := range tailIdentifiers(fn.Body) {
+		if paths := a.dependentPathsUnder(ident.Value); len(paths) > 0 {
+			a.reportDependent(ident, fmt.Sprintf("%q holds the borrowed result %q and cannot be returned as this function's result", ident.Value, paths[0]), paths[0], a.dependents[paths[0]]).
+				AddHelp("return the borrowed field itself under a contract, or the record without it")
+		}
+	}
+	for _, literal := range tailLiterals(fn.Body) {
+		for _, name := range mentionedNames(literal) {
+			if dependent, owners, isDependent := a.dependentOf(name); isDependent {
+				a.reportDependent(literal, fmt.Sprintf("a record literal holding the borrowed result %q cannot be returned as this function's result", name), dependent, owners)
+				break
+			}
+		}
 	}
 	for _, call := range tailCalls(fn.Body) {
 		owners, isBorrow := a.borrowCalls[call]
@@ -1941,7 +2055,11 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 			for _, field := range e.FieldOrder {
 				a.expression(field.Value)
 				if ident, isIdent := field.Value.(*ast.Identifier); isIdent {
-					a.checkRetention(ident, "stored in a record")
+					// A borrowed result in a record field is judged by its
+					// destination (bindPath); parameters keep the retention rule.
+					if _, _, isDependent := a.dependentOf(ident.Value); !isDependent {
+						a.checkRetention(ident, "stored in a record")
+					}
 				}
 			}
 		} else {
@@ -2007,6 +2125,9 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 	}
 	for _, argument := range expr.Arguments {
 		a.expression(argument)
+	}
+	if !a.checkAggregateEscape(expr) {
+		return
 	}
 	if !a.checkUnknownCallable(expr) {
 		return

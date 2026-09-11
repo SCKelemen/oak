@@ -158,8 +158,14 @@ in exclusivity by owner set. **Stage (d) (same day):** mutable reborrows
 borrowed-mut, the result may be passed to borrowed-mut positions and
 reborrowed, its owners are suspended entirely for its lexical scope (a
 temporary suspends for the call), widening is rejected and narrowing
-admitted. Open: stage (e) and a source spelling for all three result
-identities.
+admitted. **Stage (e) (same day):** borrowed values in aggregates: record
+fields hold borrowed results under a destination lifetime check, paths
+carry dependency and permission, copies carry them, records holding
+borrowed fields cannot be passed or returned, arrays stay rejected.
+**Milestone 4 is implemented for opaque resources.** Open: a source
+spelling for all three result identities; contracts for record-typed
+parameters and results that carry borrowed fields (today they fail
+closed); array element provenance.
 
 ## 5. Resources through generics and pattern matching
 

@@ -156,28 +156,17 @@ f: (a: Arena): u32 {
 	}
 }
 
-func TestBorrowedResultCannotBeStored(t *testing.T) {
-	for name, body := range map[string]string{
-		"record field from dependent": `
-Holder: type = struct { c: Cursor }
+// Array elements are never tracked, so a borrowed result cannot be stored
+// in an array literal; record fields are governed by the destination
+// lifetime rule of stage (e) (resource_borrowed_aggregates_test.go).
+func TestBorrowedResultCannotBeStoredInArray(t *testing.T) {
+	expectCode(t, "array", checkBorrowedResults(t, "array", `
 f: (a: Arena): u32 {
   c: Cursor = cursor_of(a)
-  h: Holder = Holder { c: c }
-  h.c.pos
+  cs: [1]Cursor = [c]
+  cs[0].pos
 }
-`,
-		"record field from temporary": `
-Holder: type = struct { c: Cursor }
-f: (a: Arena): u32 {
-  h: Holder = Holder { c: cursor_of(a) }
-  h.c.pos
-}
-`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			expectCode(t, name, checkBorrowedResults(t, "store", body), typechecker.CodeResourceDependentResult)
-		})
-	}
+`), typechecker.CodeResourceDependentResult)
 }
 
 func TestBorrowedResultCannotEscapeWithoutContract(t *testing.T) {
