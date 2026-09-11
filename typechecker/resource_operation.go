@@ -35,7 +35,10 @@ func normalizeResourceOperation(op ResourceOperation) (ResourceOperation, error)
 		indices = append(indices, index)
 	}
 	sort.Ints(indices)
-	out := ResourceOperation{ReturnsFresh: op.ReturnsFresh}
+	if op.Receiver > ResourceParameterConsumed {
+		return ResourceOperation{}, fmt.Errorf("invalid resource receiver mode %d", op.Receiver)
+	}
+	out := ResourceOperation{ReturnsFresh: op.ReturnsFresh, Receiver: op.Receiver}
 	for _, index := range indices {
 		mode := modes[index]
 		out.Parameters = append(out.Parameters, ResourceParameterDeclaration{Index: index, Mode: mode})

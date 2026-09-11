@@ -24,25 +24,42 @@ func resourceParameterModesCompatible(left, right ResourceParameterMode) bool {
 }
 
 func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.InvocationExpression, op ResourceOperation) bool {
-	if a == nil || a.flow == nil || expr == nil || len(op.Parameters) == 0 {
+	if a == nil || a.flow == nil || expr == nil || (len(op.Parameters) == 0 && op.Receiver == ResourceParameterUnspecified) {
 		return true
 	}
 
-	participants := make([]resourceCallArgument, 0, len(op.Parameters))
+	// The receiver of a method call participates under the contract's
+	// receiver slot (index -1), alongside the explicit arguments, so a
+	// consuming receiver and a borrowed argument naming one resource
+	// conflict exactly as two arguments would.
+	type slot struct {
+		index    int
+		mode     ResourceParameterMode
+		argument ast.Expression
+	}
+	slots := make([]slot, 0, len(op.Parameters)+1)
+	if receiver := methodReceiver(expr); receiver != nil && op.Receiver != ResourceParameterUnspecified {
+		slots = append(slots, slot{index: -1, mode: op.Receiver, argument: receiver})
+	}
 	for _, parameter := range op.Parameters {
 		if parameter.Index < 0 || parameter.Index >= len(expr.Arguments) {
 			a.tc.addResourceDiagnosticWithCode(expr, CodeResourceCallAliasConflict,
 				"resource contract refers to an argument outside this call")
 			return false
 		}
-		argument := expr.Arguments[parameter.Index]
+		slots = append(slots, slot{index: parameter.Index, mode: parameter.Mode, argument: expr.Arguments[parameter.Index]})
+	}
+
+	participants := make([]resourceCallArgument, 0, len(slots))
+	for _, parameter := range slots {
+		argument := parameter.argument
 		if !a.isResourceValue(argument) {
 			continue
 		}
 
 		participant := resourceCallArgument{
-			index: parameter.Index,
-			mode:  parameter.Mode,
+			index: parameter.index,
+			mode:  parameter.mode,
 			node:  argument,
 		}
 		if ident, ok := argument.(*ast.Identifier); ok && ident != nil && a.flow.Registered(ident.Value) {
@@ -66,7 +83,7 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 		// unavailable after the call. Until aggregate/field resource provenance
 		// is modeled, consuming an untracked resource expression would silently
 		// fail to invalidate anything, so reject it rather than weaken authority.
-		if parameter.Mode == ResourceParameterConsumed && !participant.tracked {
+		if parameter.mode == ResourceParameterConsumed && !participant.tracked {
 			a.reportUntrackedResourceArgument(expr, participant, "consuming")
 			return false
 		}
@@ -128,16 +145,16 @@ func (a *typedResourceAnalysis) reportCallAliasConflict(expr *ast.InvocationExpr
 
 	callable, _ := a.callableIdentity(expr)
 	title := fmt.Sprintf(
-		"resource argument %d to %q requires %s authority, but argument %d aliases the same resource",
-		primary.index+1,
+		"resource %s to %q requires %s authority, but %s aliases the same resource",
+		positionLabel(primary.index),
 		callable,
 		resourceParameterModeAccess(primary.mode),
-		other.index+1,
+		positionLabel(other.index),
 	)
 	d := a.tc.addResourceDiagnosticWithCode(primary.node, CodeResourceCallAliasConflict, title)
 	d.AddSecondary(diagnostic.NodeToRange(other.node), fmt.Sprintf(
-		"argument %d uses the same authority through %q",
-		other.index+1,
+		"%s uses the same authority through %q",
+		positionLabel(other.index),
 		other.name,
 	))
 	for _, edge := range a.flow.AliasPath(primary.name, other.name) {
@@ -155,8 +172,8 @@ func (a *typedResourceAnalysis) reportCallAliasConflict(expr *ast.InvocationExpr
 func (a *typedResourceAnalysis) reportUntrackedResourceArgument(expr *ast.InvocationExpression, argument resourceCallArgument, access string) {
 	callable, _ := a.callableIdentity(expr)
 	title := fmt.Sprintf(
-		"resource argument %d to %q requires %s authority, but its resource provenance is not traceable",
-		argument.index+1,
+		"resource %s to %q requires %s authority, but its resource provenance is not traceable",
+		positionLabel(argument.index),
 		callable,
 		access,
 	)
@@ -178,14 +195,22 @@ func resourceParameterModeAccess(mode ResourceParameterMode) string {
 	}
 }
 
-
 func (a *typedResourceAnalysis) reportUntrackedResourcePair(expr *ast.InvocationExpression, exclusive, unknown resourceCallArgument) {
 	callable, _ := a.callableIdentity(expr)
 	d := a.tc.addResourceDiagnosticWithCode(exclusive.node, CodeResourceCallAliasConflict,
-		fmt.Sprintf("resource argument %d to %q requires %s authority, but argument %d resource provenance is not traceable",
-			exclusive.index+1, callable, resourceParameterModeAccess(exclusive.mode), unknown.index+1))
+		fmt.Sprintf("resource %s to %q requires %s authority, but %s resource provenance is not traceable",
+			positionLabel(exclusive.index), callable, resourceParameterModeAccess(exclusive.mode), positionLabel(unknown.index)))
 	d.AddSecondary(diagnostic.NodeToRange(unknown.node),
-		fmt.Sprintf("argument %d has unknown resource provenance", unknown.index+1))
+		fmt.Sprintf("%s has unknown resource provenance", positionLabel(unknown.index)))
 	d.AddNote("unknown provenance cannot establish distinct resource authority classes")
 	d.AddHelp("provide traceable resource provenance; introducing a local name alone does not establish independence")
+}
+
+// positionLabel names a call position in diagnostics: the receiver slot
+// (index -1) or a one-based explicit argument.
+func positionLabel(index int) string {
+	if index < 0 {
+		return "receiver"
+	}
+	return fmt.Sprintf("argument %d", index+1)
 }
