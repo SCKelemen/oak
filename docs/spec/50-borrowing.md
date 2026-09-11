@@ -553,23 +553,33 @@ In SemIR the fact is the `resource.return-alias` (`arg:N`) effect beside
 backing storage: a borrowed *view* result is governed by section 8c.
 
 **Borrowed results.** The third result identity is a **shared borrow of
-one argument**: the result is its own authority (distinct from the
-argument for exclusivity, so both may be read side by side) that
-*depends* on the argument's owner for as long as the binding that holds
-it is in scope. The declaration names one argument, which must be
-`borrowed` or `borrowed-mut` — a borrow of consumed or unmarked input is
-not admitted — and is exclusive with fresh and alias; in SemIR it is the
-`resource.return-borrow` (`arg:N`) effect. A borrow is the most
-conservative claim a result can make, so the callee's body may return the
-declared parameter, an alias or dependent of it, or a value with no
-provenance from any other tracked resource (a fresh result, an
-independent local, a record literal that mentions no other resource); it
-may not return authority derived from another parameter, a borrowed
-result of a different owner, or a value of unknown provenance
-(`OAK-B0117`). At the call site the result depends on the argument's root
-owners — a borrow of a borrowed result depends on the same owners — and
-an argument without tracked provenance leaves the result unknown, which
-fails closed. While a dependent lives, all of the following are rejected
+one or more arguments**: the result is its own authority (distinct from
+the arguments for exclusivity, so all may be read side by side) that
+*depends* on those arguments' owners for as long as the binding that
+holds it is in scope. The declaration names a non-empty set of arguments
+without repetition, each of which must be `borrowed` or `borrowed-mut` —
+a borrow of consumed or unmarked input is not admitted — and is exclusive
+with fresh and alias; in SemIR it is one `resource.return-borrow`
+(`arg:N`) effect per argument. A borrow is the most conservative claim a
+result can make, so the callee's body may return any declared parameter,
+an alias or dependent of them, or a value with no provenance from any
+other tracked resource (a fresh result, an independent local, a record
+literal that mentions no other resource); it may not return authority
+derived from an undeclared parameter, a borrowed result whose owners the
+declaration does not cover, or a value of unknown provenance
+(`OAK-B0117`). Declaring more origins than the body needs is admitted
+(the caller is merely more restricted); declaring fewer is the lie the
+rule exists to catch. At the call site the result depends on the union of
+the declared arguments' root owners — a borrow of a borrowed result
+depends on that result's owners, and a borrow of a record projection
+depends on the field path, so writing the field or the whole record while
+the dependent lives is rebinding an owner — and one declared argument
+without tracked provenance leaves the whole result unknown, which fails
+closed: a dependency cannot be partially proven. A temporary borrowed
+result passed directly as an argument takes part in the call's
+exclusivity check with its owner set: it is distinct from every other
+argument except its owners and their aliases. While a dependent lives,
+all of the following are rejected
 with `OAK-B0118`, and the rejected call or statement has not occurred:
 passing the owner, or an alias of it, to a borrowed-mut or consuming
 position; rebinding the owner; passing the dependent, an alias of it, or a
@@ -587,9 +597,9 @@ dependency established on any path — a conservative set, never fresh
 authority — and the two-iteration loop probe applies. Freshness never
 proves backing-storage lifetime, and a borrowed result says nothing about
 storage either: it is an authority dependency between opaque resources.
-This is stage (b) of the authority roadmap's milestone 4; stages (c)–(e)
-(nested and multiple-origin results, mutable reborrows suspending the
-parent, borrowed values in aggregates) remain open.
+These are stages (b) and (c) of the authority roadmap's milestone 4;
+stages (d) and (e) (mutable reborrows suspending the parent, borrowed
+values in aggregates) remain open.
 
 Imports and sealing cannot erase modes: a protocol declared in one package
 (`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the

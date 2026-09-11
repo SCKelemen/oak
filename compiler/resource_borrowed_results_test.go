@@ -30,9 +30,9 @@ func borrowedResultDeclarations() []typechecker.ResourceProtocolDeclaration {
 	dropCursor := transition("drop_cursor", mode(0, consumed))
 	dropCursor.To = "Closed"
 	cursorOf := transition("cursor_of", mode(0, borrowed))
-	cursorOf.ReturnsBorrow, cursorOf.BorrowsArgument = true, 0
+	cursorOf.ReturnsBorrow, cursorOf.BorrowsArguments = true, []int{0}
 	advance := transition("advance", mode(0, borrowed))
-	advance.ReturnsBorrow, advance.BorrowsArgument = true, 0
+	advance.ReturnsBorrow, advance.BorrowsArguments = true, []int{0}
 	return []typechecker.ResourceProtocolDeclaration{{
 		Name:          "ArenaLifecycle",
 		ResourceTypes: []string{"Arena", "Cursor"},
@@ -197,7 +197,7 @@ func TestBorrowedResultCannotEscapeWithoutContract(t *testing.T) {
 func TestBorrowedResultWrapperPreservesDependency(t *testing.T) {
 	wrapper := typechecker.ResourceTransitionDeclaration{Name: "first", Callable: "first", From: "Open", To: "Open",
 		Parameters:    []typechecker.ResourceParameterDeclaration{{Index: 0, Mode: typechecker.ResourceParameterBorrowed}},
-		ReturnsBorrow: true, BorrowsArgument: 0}
+		ReturnsBorrow: true, BorrowsArguments: []int{0}}
 	if err := checkBorrowedResults(t, "wrapper", `
 first: (a: Arena): Cursor {
   c: Cursor = cursor_of(a)
@@ -230,7 +230,7 @@ func TestBorrowedResultWrapperContractMismatch(t *testing.T) {
 		return typechecker.ResourceTransitionDeclaration{Name: "pick", Callable: "pick", From: "Open", To: "Open",
 			Parameters: []typechecker.ResourceParameterDeclaration{
 				{Index: 0, Mode: typechecker.ResourceParameterBorrowed}, {Index: 1, Mode: typechecker.ResourceParameterBorrowed}},
-			ReturnsBorrow: true, BorrowsArgument: index}
+			ReturnsBorrow: true, BorrowsArguments: []int{index}}
 	}
 	// Declared a borrow of b, returns a borrow of a.
 	expectCode(t, "wrong-owner", checkBorrowedResults(t, "wrong-owner", `
@@ -304,7 +304,9 @@ func TestBorrowedResultDeclarationValidation(t *testing.T) {
 		},
 		"borrow and fresh": func(d *typechecker.ResourceTransitionDeclaration) { d.ReturnsFresh = true },
 		"borrow and alias": func(d *typechecker.ResourceTransitionDeclaration) { d.ReturnsAlias = true },
-		"out of range":     func(d *typechecker.ResourceTransitionDeclaration) { d.BorrowsArgument = 4 },
+		"out of range":     func(d *typechecker.ResourceTransitionDeclaration) { d.BorrowsArguments = []int{4} },
+		"duplicate":        func(d *typechecker.ResourceTransitionDeclaration) { d.BorrowsArguments = []int{0, 0} },
+		"empty":            func(d *typechecker.ResourceTransitionDeclaration) { d.BorrowsArguments = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			declarations := borrowedResultDeclarations()
@@ -336,7 +338,7 @@ func TestBorrowedResultSemIRRoundTrip(t *testing.T) {
 			if err != nil || !present {
 				t.Fatalf("advance semantics: present=%v err=%v", present, err)
 			}
-			if !semantics.ReturnsBorrow || semantics.BorrowsArgument != 0 || semantics.ReturnsFresh || semantics.ReturnsAlias {
+			if !semantics.ReturnsBorrow || len(semantics.BorrowsArguments) != 1 || semantics.BorrowsArguments[0] != 0 || semantics.ReturnsFresh || semantics.ReturnsAlias {
 				t.Fatalf("advance should borrow argument 0, got %#v", semantics)
 			}
 			for _, effect := range transition.Effects {

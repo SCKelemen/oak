@@ -85,10 +85,10 @@ type ResourceTransitionSemantics struct {
 	// one argument.
 	ReturnsAlias    bool
 	AliasesArgument int
-	// ReturnsBorrow and BorrowsArgument record a result declared to be a
-	// shared borrow of one argument.
-	ReturnsBorrow   bool
-	BorrowsArgument int
+	// ReturnsBorrow and BorrowsArguments record a result declared to be a
+	// shared borrow of the listed arguments (sorted, no duplicates).
+	ReturnsBorrow    bool
+	BorrowsArguments []int
 	// Callables are the contracts required of function-typed parameters,
 	// sorted by argument index.
 	Callables []ResourceCallableSemantics
@@ -209,10 +209,13 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 			if err != nil {
 				return ResourceTransitionSemantics{}, true, err
 			}
-			if result.ReturnsBorrow {
-				return ResourceTransitionSemantics{}, true, fmt.Errorf("resource.return-borrow is duplicated")
+			for _, existing := range result.BorrowsArguments {
+				if existing == index {
+					return ResourceTransitionSemantics{}, true, fmt.Errorf("resource.return-borrow arg:%d is duplicated", index)
+				}
 			}
-			result.ReturnsBorrow, result.BorrowsArgument = true, index
+			result.ReturnsBorrow = true
+			result.BorrowsArguments = append(result.BorrowsArguments, index)
 
 		case ResourceEffectReturnFresh:
 			if len(effect.Parameters) != 0 {
@@ -241,6 +244,7 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 	sort.Ints(result.Borrowed)
 	sort.Ints(result.BorrowedMut)
 	sort.Ints(result.Consumes)
+	sort.Ints(result.BorrowsArguments)
 	for i := range result.Callables {
 		sort.Ints(result.Callables[i].Borrowed)
 		sort.Ints(result.Callables[i].BorrowedMut)

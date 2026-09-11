@@ -167,7 +167,9 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 				transition.Effects = append(transition.Effects, semir.ResourceReturnAlias(resourceTransition.AliasesArgument))
 			}
 			if resourceTransition.ReturnsBorrow {
-				transition.Effects = append(transition.Effects, semir.ResourceReturnBorrow(resourceTransition.BorrowsArgument))
+				for _, index := range resourceTransition.BorrowsArguments {
+					transition.Effects = append(transition.Effects, semir.ResourceReturnBorrow(index))
+				}
 			}
 			protocol.Transitions = append(protocol.Transitions, transition)
 		}
