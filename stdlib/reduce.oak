@@ -1,0 +1,72 @@
+package reduce
+
+// Reductions whose grouping is a language fact (docs/spec/55-parallelism.md
+// section 4, the fourth option). `tree` combines a view with a binary
+// operation in the **balanced binary-counter tree**: elements enter a stack
+// of partial results at level 0, and whenever the two topmost partials have
+// the same level they combine (earlier operand on the left) into one partial
+// a level higher; what remains on the stack at the end combines right to
+// left. Four elements give `f(f(x0, x1), f(x2, x3))` — exactly
+// `simd.reduce_add` — eight give a perfect tree, and any count gives one
+// fixed tree that every backend implements identically (C, the interpreter,
+// and `Oak.Reduce` in Lean). No associativity is assumed: a floating-point
+// `+` reduced by `tree` yields the same bits everywhere.
+//
+// `left` is the sequential left fold `f(f(f(zero, x0), x1), x2) ...`, the
+// other grouping a program may name. When the operation declares
+// `laws { associative }` (docs/spec/10-syntax.md section 14a) the two agree
+// on every non-empty input up to the identity, and a backend may then pick
+// any grouping it likes; without the law, the grouping named is the
+// grouping computed.
+
+// tree reduces xs by f in the balanced binary-counter tree; an empty view
+// yields zero, and zero takes no other part in the result.
+pub tree[T]: (xs: []T, zero: T, f: (T, T) -> T): T = {
+  stack: [64]T = [zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero]
+  levels: [64]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  count: u32 = 0
+  n: u32 = len(xs)
+  i: u32 = 0
+  while i < n {
+    stack[count] = xs[i]
+    levels[count] = 0
+    count = count + 1
+    // Combine equal-level neighbours: at most one per level, so the walk is
+    // bounded by the stack depth (64 levels cover every u32 count).
+    k: u32 = 0
+    while k < 64 {
+      count >= 2 && levels[count - 1] == levels[count - 2] ? {
+        stack[count - 2] = f(stack[count - 2], stack[count - 1])
+        levels[count - 2] = levels[count - 2] + 1
+        count = count - 1
+      } | { break }
+      k = k + 1
+    }
+    i = i + 1
+  }
+  count == 0 ? zero | {
+    // The leftover partials combine right to left: the rightmost (lowest
+    // level, latest elements) first, so earlier elements stay on the left.
+    acc: T = stack[count - 1]
+    rest: u32 = count - 1
+    m: u32 = 0
+    while m < rest {
+      acc = f(stack[count - 2 - m], acc)
+      m = m + 1
+    }
+    acc
+  }
+}
+
+// left is the sequential left fold: f applied to the running value and each
+// element in order, starting from zero.
+pub left[T]: (xs: []T, zero: T, f: (T, T) -> T): T = {
+  acc: T = zero
+  n: u32 = len(xs)
+  i: u32 = 0
+  while i < n {
+    acc = f(acc, xs[i])
+    i = i + 1
+  }
+  acc
+}

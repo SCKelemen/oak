@@ -27,6 +27,7 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/borrowchecker"
+	leancg "github.com/SCKelemen/oak/codegen/lean"
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/modules"
@@ -125,11 +126,58 @@ func (s *Session) LeanObligations() (string, error) {
 		}
 	}
 
+	count += writeOperatorLaws(&out, model)
+
 	if count == 0 {
 		out.WriteString("-- No recorded assumptions: every check in the session is discharged statically or trapped at runtime.\n\n")
 	}
 	out.WriteString("end Oak.Session\n")
 	return out.String(), nil
+}
+
+// writeOperatorLaws states each declared operator law (docs/spec/10-syntax.md
+// section 14a) as a theorem over the extracted definition of the operator's
+// function (docs/spec/95-extraction.md), so the author's claim can be proved
+// rather than repeated. The functions the laws name are extracted once into
+// the nested namespace `Defs`; a function outside the extracted subset gets
+// its statement in a comment instead. Returns the number of laws stated.
+func writeOperatorLaws(out *strings.Builder, model *compiler.SemanticModel) int {
+	if model == nil || model.TypeChecker == nil {
+		return 0
+	}
+	laws := model.TypeChecker.OperatorLaws()
+	if len(laws) == 0 {
+		return 0
+	}
+	roots := map[string]bool{}
+	for _, law := range laws {
+		roots[law.Function] = true
+	}
+	extracted, err := leancg.Emit(model.Tree.Root, model.TypeChecker, "Defs", roots)
+	out.WriteString("/-! Declared operator laws: each is the author's claim, stated here over the\nextracted definition so it can be proved. A regrouping backend relies on the\nlaw; a `sorry` left standing means the program's grouping is being trusted. -/\n\n")
+	if err != nil {
+		fmt.Fprintf(out, "-- The operator functions are outside the extracted subset (%s); the laws are\n-- stated informally.\n\n", err)
+	} else {
+		out.WriteString(extracted)
+		out.WriteString("\n")
+	}
+	for _, law := range laws {
+		fn := identifierPart(modules.DemangleText(law.Function))
+		typ := identifierPart(modules.DemangleText(law.Type))
+		name := fmt.Sprintf("law_%s_%s", fn, law.Law)
+		fmt.Fprintf(out, "/-- `operator(%s) %s` on `%s` declares `%s`. -/\n", law.Symbol, fn, typ, law.Law)
+		switch {
+		case err != nil && law.Law == "associative":
+			fmt.Fprintf(out, "-- theorem %s : ∀ a b c, (a %s b) %s c = a %s (b %s c)\n\n", name, law.Symbol, law.Symbol, law.Symbol, law.Symbol)
+		case err != nil:
+			fmt.Fprintf(out, "-- theorem %s : ∀ a b, a %s b = b %s a\n\n", name, law.Symbol, law.Symbol)
+		case law.Law == "associative":
+			fmt.Fprintf(out, "theorem %s (a b c : Defs.%s) (fuel : Nat) :\n    (Defs.%s a b fuel >>= fun ab => Defs.%s ab c fuel) = (Defs.%s b c fuel >>= fun bc => Defs.%s a bc fuel) := by\n  sorry\n\n", name, typ, fn, fn, fn, fn)
+		default:
+			fmt.Fprintf(out, "theorem %s (a b : Defs.%s) (fuel : Nat) :\n    Defs.%s a b fuel = Defs.%s b a fuel := by\n  sorry\n\n", name, typ, fn, fn)
+		}
+	}
+	return len(laws)
 }
 
 func regionsDisjoint(a, b borrowchecker.RegionFact) bool {

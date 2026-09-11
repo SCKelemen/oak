@@ -257,6 +257,14 @@ func vetOne(target, profile string) int {
 		recorded++
 		fmt.Println(modules.DemangleText(d.PlainText()))
 	}
+	// Declared operator laws are the author's claims, not the checker's
+	// findings (docs/spec/10-syntax.md section 14a): list them beside the
+	// assumptions so nothing that licenses a regrouping goes unseen.
+	if model.TypeChecker != nil {
+		for _, law := range model.TypeChecker.OperatorLaws() {
+			fmt.Printf("law: operator(%s) %s on %s declares %s — declared, not checked; the REPL's :lean states it\n", law.Symbol, modules.DemangleText(law.Function), modules.DemangleText(law.Type), law.Law)
+		}
+	}
 	if recorded == 0 {
 		fmt.Printf("%s: no recorded assumptions\n", target)
 		return 0

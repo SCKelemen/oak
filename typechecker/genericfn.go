@@ -574,6 +574,16 @@ func substituteStmt(stmt ast.Statement, bindings map[string]ast.Expression) (ast
 		return &clone, true
 	case *ast.BlockStatement:
 		return substituteBlockAsStmt(s, bindings)
+	case *ast.BreakStatement:
+		// Nothing to substitute; a break inside a generic body is ordinary.
+		clone := *s
+		return &clone, true
+	case *ast.DeferStatement:
+		body, ok := substituteStmt(s.Body, bindings)
+		if !ok {
+			return nil, false
+		}
+		return &ast.DeferStatement{Token: s.Token, Body: body}, true
 	}
 	return nil, false
 }

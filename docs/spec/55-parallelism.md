@@ -79,6 +79,21 @@ A `par.reduce`-like operation therefore requires a contract that makes regroupin
 
 In particular, ordinary IEEE floating-point addition must not be silently treated as mathematically associative under default strict machine semantics. `20-types.md` §11.3 fixes those semantics (no reassociation, no contraction, in any backend) and takes the fourth option for the one reduction it defines: `simd.reduce_add` over a float vector is a specified pairwise tree.
 
+The standard library's `reduce` package (`import("reduce")`) is the fourth
+option for views of any element type: `reduce.tree(xs, zero, f)` combines a
+view in the **balanced binary-counter tree** — a stack of partial results
+with levels; each element enters at level 0 and combines with its neighbour
+whenever the two newest partials share a level, earlier operand on the left;
+the leftovers combine right to left — so four elements give
+`f(f(x0, x1), f(x2, x3))`, exactly `simd.reduce_add`, and any count gives one
+fixed tree that C, the interpreter, and `Oak.Reduce` (Lean) compute
+identically (`tree_four`, `tree_eight`). `reduce.left(xs, zero, f)` is the
+sequential left fold. The first option is `laws { associative }` on an
+operator definition (`10-syntax.md` §14a): `Oak.Reduce.tree_assoc` proves
+that under associativity the tree equals the left fold from the first
+element, which is what licenses a backend to choose any grouping for such
+an operation; without the law it computes the tree named.
+
 The identity element, if required by the operation, is likewise a semantic law and not merely an optimization hint.
 
 ## 5. Work and span

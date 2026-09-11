@@ -2250,6 +2250,19 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString("oak_Bool_False")
 		}
 	case *ast.Identifier:
+		// A program function named as a value (passed to a higher-order
+		// function, stored in a function-typed binding) is its C symbol. A
+		// local of the same name — scope is per package, so an imported
+		// package's local may share a root function's name — stays a local.
+		_, isLocal := cg.localTypes[e.Value]
+		if target := cg.programFunctions[e.Value]; target != nil && target.Receiver == nil && !isLocal {
+			if target.ExternSymbol != "" && typechecker.ValidCSymbol(target.ExternSymbol) {
+				cg.output.WriteString(target.ExternSymbol)
+			} else {
+				cg.output.WriteString(cg.cFunctionName(e.Value))
+			}
+			return
+		}
 		cg.output.WriteString(cIdent(e.Value))
 	case *ast.InfixExpression:
 		cg.emitInfixExpression(e, tc)
