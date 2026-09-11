@@ -22,6 +22,7 @@ import (
 	"github.com/SCKelemen/oak/buildcache"
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/lsp/server"
 	"github.com/SCKelemen/oak/modules"
 )
 
@@ -50,6 +51,7 @@ func init() {
 		{"clean", "remove the build cache or the module cache", "oak clean [-cache] [-modcache]", cleanCommand},
 		{"env", "print oak environment information", "oak env [NAME...]", envCommand},
 		{"repl", "start the interactive session", "oak repl", nil},
+		{"lsp", "run the language server over stdio (editors start this)", "oak lsp", lspCommand},
 		{"protocol", "protocol tooling", "oak protocol [args]", nil},
 		{"version", "print the oak version", "oak version", versionCommand},
 		{"completion", "print a shell completion script", "oak completion bash|zsh|fish", completionCommand},
@@ -513,6 +515,20 @@ func compileC(code string, object []byte, binary string) (bool, error) {
 		_ = buildcache.Store(key, binary)
 	}
 	return false, nil
+}
+
+// lspCommand runs the language server on stdin/stdout
+// (docs/spec/115-tooling.md section 4).
+func lspCommand(args []string) int {
+	fs := newFlagSet("lsp", "oak lsp")
+	if _, code, stop := parseFlags(fs, args); stop {
+		return code
+	}
+	if err := server.ServeStdio(); err != nil {
+		fmt.Fprintf(os.Stderr, "oak lsp: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // executableName names a package's executable: the last segment of the root

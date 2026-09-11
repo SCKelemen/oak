@@ -1,0 +1,72 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Oak",
+  "scopeName": "source.oak",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#declarations" },
+    { "include": "#types" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.oak", "match": "//.*$" }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.oak",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "name": "constant.character.escape.oak", "match": "\\\\." }]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.oak", "match": "\\b0x[0-9a-fA-F_]+\\b" },
+        { "name": "constant.numeric.binary.oak", "match": "\\b0b[01_]+\\b" },
+        { "name": "constant.numeric.float.oak", "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9]+)?\\b" },
+        { "name": "constant.numeric.integer.oak", "match": "\\b[0-9][0-9_]*\\b" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.oak", "match": "\\b(while|break|defer)\\b" },
+        { "name": "keyword.other.oak", "match": "\\b(package|import|open|module|pub|unsafe|fn|type|interface|struct|derive)\\b" },
+        { "name": "constant.language.boolean.oak", "match": "\\b(true|false)\\b" }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "comment": "name: (params): Ret = ...  and  name(params): Ret = ...",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=(:\\s*)?\\()",
+          "captures": { "1": { "name": "entity.name.function.oak" } }
+        },
+        {
+          "comment": "Name: type = ...",
+          "match": "\\b([A-Z][A-Za-z0-9_]*)\\s*(\\[[^\\]]*\\])?\\s*:\\s*(?=type\\b)",
+          "captures": { "1": { "name": "entity.name.type.oak" } }
+        },
+        {
+          "comment": "alias := import(\"path\")",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=:=\\s*import\\b)",
+          "captures": { "1": { "name": "entity.name.namespace.oak" } }
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "storage.type.primitive.oak", "match": "\\b(u8|u16|u32|u64|i8|i16|i32|i64|int|uint|uptr|byte|rune|f16|bf16|f32|f64|Bool|String)\\b" },
+        { "name": "entity.name.type.oak", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.oak", "match": "(->|=>|:=|\\|>|==|!=|<=|>=|&&|\\|\\||<<|>>|[-+*/%<>=!?|&^])" }
+      ]
+    }
+  }
+}

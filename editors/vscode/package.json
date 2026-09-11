@@ -1,0 +1,61 @@
+{
+  "name": "oak-language",
+  "displayName": "Oak",
+  "description": "Oak language support: syntax highlighting and the oak language server (diagnostics, hover, go to definition, symbols, semantic tokens).",
+  "version": "0.1.0",
+  "publisher": "oak-lang",
+  "license": "MIT",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:oak"],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "oak",
+        "aliases": ["Oak", "oak"],
+        "extensions": [".oak"],
+        "filenames": ["oak.mod"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "oak",
+        "scopeName": "source.oak",
+        "path": "./syntaxes/oak.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Oak",
+      "properties": {
+        "oak.serverPath": {
+          "type": "string",
+          "default": "oak",
+          "description": "Path to the oak executable; the extension runs `oak lsp`."
+        },
+        "oak.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace the communication with the language server."
+        }
+      }
+    },
+    "semanticTokenScopes": [
+      {
+        "language": "oak",
+        "scopes": {
+          "namespace": ["entity.name.namespace.oak"],
+          "property": ["variable.other.property.oak"]
+        }
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "scripts": {
+    "package": "vsce package"
+  }
+}
