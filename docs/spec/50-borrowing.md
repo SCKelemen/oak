@@ -619,9 +619,28 @@ Suspension is lexical, not use-based: the owner is not freed by the
 reborrow's last use, only by its scope's end, so a body that needs the
 owner back finishes with the reborrow in an inner scope.
 
-These are stages (b), (c), and (d) of the authority roadmap's milestone
-4; stage (e) (borrowed values in aggregates with destination lifetime
-checks) remains open.
+**Borrowed values in aggregates.** A borrowed result — a dependent
+binding, a dependent field path, or a temporary borrow-returning call —
+may be stored in a record field when the record's binding does not
+outlive any owner the value depends on: an owner bound in an inner scope
+would be gone first, so that destination is `OAK-B0118`. The field path
+then becomes a dependent with the same owners and permission (a mutable
+reborrow in a field suspends its owners through the path), so projections
+of the field are uses of the borrowed authority and the owner stays
+protected while the record's scope lasts. Whole-record copies and writes
+(`k = h`, `Outer { h: h }`, `k.h = h`) carry each borrowed field's
+dependency to the new paths under the copy's own lifetime, and rebinding
+a record or writing a field releases what it held. A record holding a
+borrowed result cannot **escape** the function: passing it, or a record
+literal mentioning a dependent, to any call — contracted or not — is
+`OAK-B0118`, and so is returning it, because no contract yet describes a
+dependency carried by a field. Array elements are never tracked, so a
+borrowed result in an array literal stays rejected.
+
+With this, milestone 4 of the authority roadmap (stages (a)–(e)) is
+implemented for opaque resources. Open follow-ups: a source spelling for
+result identities, contracts on record-typed parameters and results that
+carry borrowed fields, and array element provenance.
 
 Imports and sealing cannot erase modes: a protocol declared in one package
 (`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the

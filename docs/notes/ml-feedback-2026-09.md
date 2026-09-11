@@ -217,3 +217,48 @@ answered against the tree today:
 | 4 | `pub` constants, match on integer constants, the pipeline operator | **Already done**, verified today: `pub MX_BLOCK: u32 = u32(32)` is exported and read as `mx.MX_BLOCK` (`83-modules.md` §5 example `geo.MAX_POINTS`); `op ? \| 0 => a \| 1 => b \| _ => c` typechecks, runs, and now extracts to Lean; the pipeline operator is `10-syntax.md` §12. If the packages still export `op_add(): u32` functions, that is a port left over from before exported constants landed. |
 | 5 | Lean extraction reaching the ml subset | **Extended today** (`95-extraction.md` §2): integer-constant matches (the scheduler's op dispatch) extract as if-chains in value and statement position; the integer conversion rows extract (`trunc`/`bits` as Lean's wrapping conversions, `saturating` as a clamp); Oak's implicit same-signedness widening is made explicit. An ml-shaped sample — a `Shape` record of `u64`s, view algebra over a `[16]u64`, a lane reduction with a `while` loop and `%`, a window `subslice`, an op dispatch on constants — extracts, compiles under Lean 4.33.1, and `main` evaluates to the compiled program's exit code. Still outside: floats, records with more than one level of field assignment, `checked` conversions, matches over records. |
 | 6 | A strict-clean prelude, or `json` under strict | **Verified clean today**: a strict-profile module importing `json`, `strings`, `hash`, or `mx`, and a strict-profile program using the derived JSON encoder, all compile without a strict diagnostic (probed against `WithProfile("strict")` and `profile strict` in `oak.mod`). If a root module still has to default, the trigger is in the module's own code; send the diagnostic and it gets a row here. |
+
+## Follow-up asks from the authority work (2026-09-11)
+
+Gaps the authority roadmap (milestones 1–4, `roadmap-authority-resources.md`)
+ran into while landing callee-entry authority, callable boundaries,
+provenance, and result contracts. The first group blocks using the features
+from Oak source; the second is fixture friction that keeps recurring.
+
+Prerequisites for adopting the authority features:
+
+1. **Source spelling for result identities and callable contracts.** Fresh,
+   alias-of-argument, borrow-of-arguments, and mutable reborrow exist only
+   as protocol declarations and SemIR effects (`return-fresh`,
+   `return-alias`, `return-borrow`, `return-borrow-mut`); contracts on
+   function-typed parameters (`callable-*`) likewise. `via f(consumed h)`
+   covers parameter modes only. Proposal: extend the `via` line with a
+   result clause, e.g. `via cursor_of(borrowed a) -> borrow a`,
+   `-> borrow-mut a`, `-> alias h`, `-> fresh`, and a callable clause
+   `via apply(consumed h, f: (consumed Handle))`.
+2. **A trusted boundary for resource primitives.** Definition-less
+   declarations require an asm unit and `c.extern` requires C types, so a
+   primitive such as a cursor over an arena cannot state a borrow honestly;
+   today a provenance-free body is accepted for a borrow claim because a
+   borrow is the most conservative claim. An explicit `trusted` (or
+   `unsafe`) marker on a resource-typed declaration would make the boundary
+   visible and let fresh/alias claims be trusted there too.
+3. **Method calls on ADT receivers do not lower to C.** Receiver contracts
+   typecheck and round-trip through SemIR but cannot be executed compiled.
+4. **Record-typed parameters and results carrying resource fields are not
+   governed at calls.** A record with resource fields passed by value to an
+   unmarked function is not checked; records holding borrowed fields
+   therefore fail closed (cannot be passed or returned). Contracts need a
+   path form (`via take(borrowed h.c)`) or a record-level mode.
+
+Fixture and ergonomics friction:
+
+5. No bare block statement: scoping requires `flag ? { } | { }`, which
+   matters more now that dependencies and suspension are lexical.
+6. Statement lines cannot start with `(`, `-`, or `!`.
+7. Closure literals cannot take typed parameters.
+8. One protocol per resource type; array elements never carry provenance.
+9. `20-types.md` §11.3.8 should cite bf16 as the bfloat16 convention
+   (Google Brain, vendor ISA documents) rather than IEEE 754, which does
+   not define it.
+

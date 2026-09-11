@@ -120,7 +120,7 @@ f: (a: Arena, x: Arena): u32 {
 func TestMutableReborrowKeepsDependentRules(t *testing.T) {
 	for name, use := range map[string]string{
 		"consume": "drop_cursor(c)",
-		"store":   "h: Holder = Holder { c: c }",
+		"array":   "cs: [1]Cursor = [c]",
 	} {
 		t.Run(name, func(t *testing.T) {
 			expectCode(t, name, checkMutableReborrows(t, "rules", `
