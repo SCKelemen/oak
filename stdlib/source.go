@@ -54,6 +54,12 @@ var randomSource string
 //go:embed encoding.oak
 var encodingSource string
 
+// url is spliced into the flat prelude like the collections: RFC 3986
+// reference parsing and resolution over caller storage (stdlib/README.md).
+//
+//go:embed url.oak
+var urlSource string
+
 // math is a library package only (import("math")), never spliced into the
 // flat prelude: its names (exp, log, ...) are too common to land
 // unqualified in every program (docs/spec/20-types.md section 11.3.6).
@@ -101,12 +107,12 @@ var Prelude = baseSource
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
 	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource)
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource)
 
 var (
 	clauseLine    = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
 	importLine    = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
-	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random)\.`)
+	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -154,6 +160,7 @@ var Packages = map[string]string{
 	"random":          randomSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,
+	"url":             urlSource,
 	"math":            mathSource,
 	"hash":            hashSource,
 	"mx":              mxSource,

@@ -1,0 +1,198 @@
+import(std)
+import(testing)
+
+// Properties for the url package: parsing a generated well-formed reference
+// recovers exactly the ranges it was assembled from (the components
+// partition the input in order), and dot-segment removal is idempotent and
+// leaves no "." or ".." segment.
+
+url_put_letters: (dst: [*]u8, at: u32, count: u32, choices: [*]TestChoices, data: []u8): u32 {
+  i: u32 = u32(0)
+  while i < count {
+    dst[at + i] = u8(97) + u8_trunc_u32(test_range(choices, data, u32(0), u32(25)))
+    i = i + u32(1)
+  }
+  at + count
+}
+
+url_put_digits: (dst: [*]u8, at: u32, count: u32, choices: [*]TestChoices, data: []u8): u32 {
+  i: u32 = u32(0)
+  while i < count {
+    dst[at + i] = u8(48) + u8_trunc_u32(test_range(choices, data, u32(0), u32(9)))
+    i = i + u32(1)
+  }
+  at + count
+}
+
+// 7200 parses, 7201 scheme, 7202 authority and host, 7203 port, 7204 path,
+// 7205 query, 7206 fragment, 7207 no userinfo was generated so none is seen.
+PropertyUrlRangesPartition: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  buffer: [96]u8
+  has_scheme: Bool = test_bool(choices, data)
+  has_authority: Bool = test_bool(choices, data)
+  has_port: Bool = has_authority && test_bool(choices, data)
+  has_query: Bool = test_bool(choices, data)
+  has_fragment: Bool = test_bool(choices, data)
+  scheme_len: u32 = test_range(choices, data, u32(1), u32(5))
+  host_len: u32 = test_range(choices, data, u32(1), u32(8))
+  port_len: u32 = test_range(choices, data, u32(0), u32(4))
+  segments: u32 = test_range(choices, data, u32(0), u32(3))
+  rooted: Bool = has_authority || test_bool(choices, data)
+  query_len: u32 = test_range(choices, data, u32(0), u32(6))
+  fragment_len: u32 = test_range(choices, data, u32(0), u32(6))
+  n: u32 = u32(0)
+  scheme_end: u32 = u32(0)
+  host_start: u32 = u32(0)
+  host_end: u32 = u32(0)
+  port_start: u32 = u32(0)
+  port_end: u32 = u32(0)
+  path_start: u32 = u32(0)
+  path_end: u32 = u32(0)
+  query_start: u32 = u32(0)
+  query_end: u32 = u32(0)
+  fragment_start: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&buffer)
+    has_scheme ? {
+      n = url_put_letters(dst, n, scheme_len, choices, data)
+      scheme_end = n
+      dst[n] = u8(58)
+      n = n + u32(1)
+    }
+    has_authority ? {
+      dst[n] = u8(47)
+      dst[n + u32(1)] = u8(47)
+      n = n + u32(2)
+      host_start = n
+      n = url_put_letters(dst, n, host_len, choices, data)
+      host_end = n
+      has_port ? {
+        dst[n] = u8(58)
+        n = n + u32(1)
+        port_start = n
+        n = url_put_digits(dst, n, port_len, choices, data)
+        port_end = n
+      }
+    }
+    path_start = n
+    s: u32 = u32(0)
+    while s < segments {
+      rooted || s > u32(0) ? {
+        dst[n] = u8(47)
+        n = n + u32(1)
+      }
+      n = url_put_letters(dst, n, test_range(choices, data, u32(1), u32(4)), choices, data)
+      s = s + u32(1)
+    }
+    path_end = n
+    has_query ? {
+      dst[n] = u8(63)
+      n = n + u32(1)
+      query_start = n
+      n = url_put_letters(dst, n, query_len, choices, data)
+      query_end = n
+    }
+    has_fragment ? {
+      dst[n] = u8(35)
+      n = n + u32(1)
+      fragment_start = n
+      n = url_put_letters(dst, n, fragment_len, choices, data)
+    }
+  }
+  src: []u8 = view(&buffer)
+  text: []u8 = src[u32(0):n]
+  result: Result[Url, UrlError] = url_parse(text)
+  test_check(url_ok(result), u32(7200))
+  parsed: Url = url_value(result)
+  test_check(parsed.scheme.present == has_scheme && (!has_scheme || (parsed.scheme.start == u32(0) && parsed.scheme.end == scheme_end)), u32(7201))
+  test_check(parsed.has_authority == has_authority && parsed.host.present == has_authority && (!has_authority || (parsed.host.start == host_start && parsed.host.end == host_end)), u32(7202))
+  test_check(parsed.port.present == has_port && (!has_port || (parsed.port.start == port_start && parsed.port.end == port_end)), u32(7203))
+  test_check(parsed.path.present && parsed.path.start == path_start && parsed.path.end == path_end, u32(7204))
+  test_check(parsed.query.present == has_query && (!has_query || (parsed.query.start == query_start && parsed.query.end == query_end)), u32(7205))
+  test_check(parsed.fragment.present == has_fragment && (!has_fragment || (parsed.fragment.start == fragment_start && parsed.fragment.end == n)), u32(7206))
+  test_check(!parsed.userinfo.present, u32(7207))
+  has_scheme && has_authority ? { testing_classify(u32(180)) }
+  !has_scheme && !has_authority ? { testing_classify(u32(181)) }
+  segments == u32(0) ? { testing_classify(u32(182)) }
+}
+
+// url_no_dot_segments: no segment of the path is "." or "..".
+url_no_dot_segments: (path: []u8): Bool {
+  clean: Bool = true
+  i: u32 = u32(0)
+  while i <= len(path) && clean {
+    end: u32 = i
+    while end < len(path) && path[end] != u8(47) { end = end + u32(1) }
+    width: u32 = end - i
+    width == u32(1) && path[i] == u8(46) ? { clean = false }
+    width == u32(2) && path[i] == u8(46) && path[i + u32(1)] == u8(46) ? { clean = false }
+    i = end + u32(1)
+  }
+  clean
+}
+
+// 7210 the output is no longer than the input, 7211 removing dot segments
+// again changes nothing, 7212 the output has no dot segments.
+PropertyDotSegmentsIdempotent: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  buffer: [64]u8
+  once: [64]u8
+  twice: [64]u8
+  rooted: Bool = test_bool(choices, data)
+  segments: u32 = test_range(choices, data, u32(0), u32(6))
+  n: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&buffer)
+    s: u32 = u32(0)
+    while s < segments {
+      rooted || s > u32(0) ? {
+        dst[n] = u8(47)
+        n = n + u32(1)
+      }
+      kind: u32 = test_range(choices, data, u32(0), u32(4))
+      kind == u32(0) ? {
+        dst[n] = u8(97)
+        n = n + u32(1)
+      }
+      kind == u32(1) ? {
+        dst[n] = u8(98)
+        dst[n + u32(1)] = u8(99)
+        n = n + u32(2)
+      }
+      kind == u32(2) ? {
+        dst[n] = u8(46)
+        n = n + u32(1)
+      }
+      kind == u32(3) ? {
+        dst[n] = u8(46)
+        dst[n + u32(1)] = u8(46)
+        n = n + u32(2)
+      }
+      s = s + u32(1)
+    }
+  }
+  src: []u8 = view(&buffer)
+  path: []u8 = src[u32(0):n]
+  n1: u32 = u32(0)
+  true ? {
+    first_dst: [*]u8 = span(&once)
+    n1 = url_written(url_remove_dot_segments(first_dst, path))
+  }
+  test_check(n1 <= n, u32(7210))
+  first_view: []u8 = view(&once)
+  first: []u8 = first_view[u32(0):n1]
+  n2: u32 = u32(0)
+  true ? {
+    second_dst: [*]u8 = span(&twice)
+    n2 = url_written(url_remove_dot_segments(second_dst, first))
+  }
+  second_view: []u8 = view(&twice)
+  second: []u8 = second_view[u32(0):n2]
+  test_check(n2 == n1 && bytes_equal(first, second), u32(7211))
+  test_check(url_no_dot_segments(first), u32(7212))
+  n1 == u32(0) ? { testing_classify(u32(190)) }
+  n1 < n ? { testing_classify(u32(191)) }
+}
