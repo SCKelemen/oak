@@ -165,9 +165,10 @@ func (n libraryNames) apply(program *ast.Program) error {
 			rootDeclared[name] = true
 		}
 	}
+	bound := boundNames(program)
 	var failure error
 	(&syntaxVisitor{ident: func(id *ast.Identifier, label bool) {
-		if label || rootDeclared[id.Value] || failure != nil {
+		if label || rootDeclared[id.Value] || bound[id.Value] || failure != nil {
 			return
 		}
 		if internal, loaded := n.internal[id.Value]; loaded {
@@ -179,6 +180,58 @@ func (n libraryNames) apply(program *ast.Program) error {
 		}
 	}}).walk(reflect.ValueOf(program), false)
 	return failure
+}
+
+var (
+	variableDeclType   = reflect.TypeOf(ast.VariableDeclaration{})
+	functionParamType  = reflect.TypeOf(ast.FunctionParameter{})
+	bindingPatternType = reflect.TypeOf(ast.BindingPattern{})
+	stdlibLocalBinders = []reflect.Type{variableDeclType, functionParamType, bindingPatternType}
+)
+
+// boundNames collects every name a program binds locally — variable
+// declarations, parameters, and pattern bindings, in any package spliced
+// into the program. A flat library name that is also a local binder somewhere
+// is left alone: a local `left` in a sort routine is not `reduce.left`, and
+// generated sugar never spells a library name that doubles as a local.
+func boundNames(program *ast.Program) map[string]bool {
+	names := map[string]bool{}
+	var walk func(v reflect.Value)
+	walk = func(v reflect.Value) {
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if !v.IsNil() {
+				walk(v.Elem())
+			}
+		case reflect.Struct:
+			t := v.Type()
+			if t == tokenType {
+				return
+			}
+			for _, binder := range stdlibLocalBinders {
+				if t == binder {
+					if name, ok := v.FieldByName("Name").Interface().(*ast.Identifier); ok && name != nil {
+						names[name.Value] = true
+					}
+				}
+			}
+			for i := 0; i < v.NumField(); i++ {
+				if t.Field(i).IsExported() {
+					walk(v.Field(i))
+				}
+			}
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i))
+			}
+		case reflect.Map:
+			for _, key := range v.MapKeys() {
+				walk(v.MapIndex(key))
+			}
+		}
+	}
+	walk(reflect.ValueOf(program))
+	return names
 }
 
 var (

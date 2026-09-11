@@ -59,7 +59,7 @@ PropertySortPermutes: (data: []u8): () {
     items2: [*]u32 = whole2[u32(0):count]
     kept = sort_dedup[u32](items2)
   }
-  test_check(kept == distinct, u32(7103))
+  test_check_eq_u32(kept, distinct, u32(7103))
   m: u32 = u32(1)
   while m < kept {
     test_check(values[m - u32(1)] < values[m], u32(7103))

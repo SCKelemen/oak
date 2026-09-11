@@ -25,6 +25,16 @@ import (
 // the mangling maps * to ptr and every other non-identifier character to an
 // underscore, collapsing and trimming runs.
 func arrayWrapperName(element string, length int64) string {
+	return fmt.Sprintf("oak_arr_%s_%d", elementIdent(element), length)
+}
+
+// elementIdent mangles an element's C spelling into an identifier fragment
+// for the container typedefs and helpers derived from it (oak_view_*,
+// oak_span_*, oak_arr_*): * becomes ptr and every other non-identifier
+// character an underscore, with runs collapsed and trimmed, so `void *`
+// (a span of c.Ptr slots) names oak_span_void_ptr rather than an invalid
+// identifier.
+func elementIdent(element string) string {
 	var mangled strings.Builder
 	pendingUnderscore := false
 	for _, r := range element {
@@ -46,7 +56,7 @@ func arrayWrapperName(element string, length int64) string {
 			pendingUnderscore = true
 		}
 	}
-	return fmt.Sprintf("oak_arr_%s_%d", mangled.String(), length)
+	return mangled.String()
 }
 
 // arrayTypeName returns the wrapper typedef name for [length]element,
@@ -67,6 +77,20 @@ func (cg *CodeGenerator) arrayTypeName(element string, length int64) string {
 	cg.types[name] = true
 	cg.write(fmt.Sprintf("typedef struct %s { %s v[ %d ]; } %s;\n\n", name, element, length, name))
 	return name
+}
+
+// arrayEqualityName emits, once, the element-wise equality of an owned
+// array of scalars held in a sum type or record the program compares
+// (typechecker/equality.go admits integer and Bool elements only, so `!=`
+// is exact), and returns its name.
+func (cg *CodeGenerator) arrayEqualityName(element string, length int64) string {
+	name := arrayWrapperName(element, length)
+	key := "eq:" + name
+	if !cg.types[key] {
+		cg.types[key] = true
+		cg.write(fmt.Sprintf("static inline Bool oak_eq_%s( %s a, %s b ) { for ( size_t i = 0; i < %d; ++i ) { if ( a.v[ i ] != b.v[ i ] ) { return oak_Bool_False; } } return oak_Bool_True; }\n\n", name, name, name, length))
+	}
+	return "oak_eq_" + name
 }
 
 // walkTypePositions visits every type expression written in the program

@@ -978,6 +978,27 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			bc.checkIdentifierUse(operand, operand.Value, env, mutable)
 			continue
 		}
+		// A C string from Oak bytes (docs/spec/92-ffi.md section 2.5.3) is a
+		// read use of the view's owner for the extent of the foreign call;
+		// a literal operand borrows nothing.
+		if operand, isLiteral, isCString := cStringOperand(arg, env); isCString {
+			if !isLiteral {
+				bc.checkIdentifierUse(operand, operand.Value, env, false)
+			}
+			continue
+		}
+		// An argument vector (docs/spec/92-ffi.md section 2.5.6) reads the
+		// strings' owner and writes the slots' owner for the extent of the
+		// foreign call; an out-parameter (section 2.5.7) writes its local.
+		if bytes, slots, isArgv := argvOperands(arg, env); isArgv {
+			bc.checkIdentifierUse(bytes, bytes.Value, env, false)
+			bc.checkIdentifierUse(slots, slots.Value, env, true)
+			continue
+		}
+		if operand, isOut := outOperand(arg, env); isOut {
+			bc.checkIdentifierUse(operand, operand.Value, env, true)
+			continue
+		}
 		// A borrow-carrying record may be passed to a parameter that
 		// declares its region (docs/spec/50-borrowing.md section 8c) when
 		// the argument's borrows are tracked; otherwise aggregates fail
@@ -1014,14 +1035,18 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			return
 		}
 		owner := "$foreign:" + targetVar
-		if member == "borrow" {
+		if member == "borrow" || member == "borrow_string" {
 			bc.createViewBorrowWithRegion(owner, targetVar, nil, call)
 		} else {
 			bc.createSpanBorrowWithRegion(owner, targetVar, nil, call)
 		}
-		d := bc.reportUnsafeAssumption(call,
-			fmt.Sprintf("foreign buffer contract assumed for %q: the pointer addresses the given count of elements, valid and unaliased for writes until the block ends", targetVar),
-			targetVar, nil, "", nil)
+		contract := fmt.Sprintf("foreign buffer contract assumed for %q: the pointer addresses the given count of elements, valid and unaliased for writes until the block ends", targetVar)
+		if member == "borrow_string" {
+			// An inbound C string (docs/spec/92-ffi.md section 2.7.1): the
+			// count is the terminator's offset, read at runtime.
+			contract = fmt.Sprintf("foreign buffer contract assumed for %q: the pointer addresses a NUL-terminated string that stays valid and unwritten until the block ends", targetVar)
+		}
+		d := bc.reportUnsafeAssumption(call, contract, targetVar, nil, "", nil)
 		d.AddNote("the assumption is the binding author's, as for an extern prototype (docs/spec/92-ffi.md section 2.7); indexing stays bounds-checked against the count")
 		return
 	}
@@ -1107,6 +1132,88 @@ func boundarySpanOperand(arg ast.Expression, env *typechecker.TypeEnvironment) (
 		return nil, false, false
 	}
 	return operand, member.Value == "span_mut_of", true
+}
+
+// cStringOperand recognizes `c.cstr(v)` in argument position
+// (docs/spec/92-ffi.md section 2.5.3): the named view operand, or a literal
+// (isLiteral) that borrows nothing. A local binding named `c` shadows the
+// library, as for every other library call.
+func cStringOperand(arg ast.Expression, env *typechecker.TypeEnvironment) (operand *ast.Identifier, isLiteral, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, false, false
+	}
+	access, isAccess := call.Function.(*ast.IndexExpression)
+	if !isAccess {
+		return nil, false, false
+	}
+	library, isIdent := access.Left.(*ast.Identifier)
+	member, memberIsIdent := access.Index.(*ast.Identifier)
+	if !isIdent || !memberIsIdent || library.Value != "c" || member.Value != "cstr" {
+		return nil, false, false
+	}
+	if _, bound := env.Get("c"); bound {
+		return nil, false, false
+	}
+	if _, literal := call.Arguments[0].(*ast.StringLiteral); literal {
+		return nil, true, true
+	}
+	operand, isIdent = call.Arguments[0].(*ast.Identifier)
+	if !isIdent {
+		return nil, false, false
+	}
+	return operand, false, true
+}
+
+// cLibraryMemberCall recognizes `c.<member>(...)` in argument position when
+// no local binding named `c` shadows the library, returning the call.
+func cLibraryMemberCall(arg ast.Expression, member string, arity int, env *typechecker.TypeEnvironment) (*ast.InvocationExpression, bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != arity {
+		return nil, false
+	}
+	access, isAccess := call.Function.(*ast.IndexExpression)
+	if !isAccess {
+		return nil, false
+	}
+	library, isIdent := access.Left.(*ast.Identifier)
+	name, nameIsIdent := access.Index.(*ast.Identifier)
+	if !isIdent || !nameIsIdent || library.Value != "c" || name.Value != member {
+		return nil, false
+	}
+	if _, bound := env.Get("c"); bound {
+		return nil, false
+	}
+	return call, true
+}
+
+// argvOperands recognizes `c.argv_of(bytes, slots)` in argument position
+// (docs/spec/92-ffi.md section 2.5.6): the named view and span operands.
+func argvOperands(arg ast.Expression, env *typechecker.TypeEnvironment) (bytes, slots *ast.Identifier, ok bool) {
+	call, isArgv := cLibraryMemberCall(arg, "argv_of", 2, env)
+	if !isArgv {
+		return nil, nil, false
+	}
+	bytes, bytesIsIdent := call.Arguments[0].(*ast.Identifier)
+	slots, slotsIsIdent := call.Arguments[1].(*ast.Identifier)
+	if !bytesIsIdent || !slotsIsIdent {
+		return nil, nil, false
+	}
+	return bytes, slots, true
+}
+
+// outOperand recognizes `c.out(x)` in argument position (docs/spec/92-ffi.md
+// section 2.5.7): the named local the foreign callee writes.
+func outOperand(arg ast.Expression, env *typechecker.TypeEnvironment) (operand *ast.Identifier, ok bool) {
+	call, isOut := cLibraryMemberCall(arg, "out", 1, env)
+	if !isOut {
+		return nil, false
+	}
+	operand, isIdent := call.Arguments[0].(*ast.Identifier)
+	if !isIdent {
+		return nil, false
+	}
+	return operand, true
 }
 
 // checkViewCall handles view() calls: creates a read-only borrow

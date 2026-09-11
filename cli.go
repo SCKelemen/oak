@@ -19,11 +19,13 @@ import (
 	"sort"
 	"strings"
 
+	"crypto/sha256"
 	"github.com/SCKelemen/oak/buildcache"
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp/server"
 	"github.com/SCKelemen/oak/modules"
+	"runtime"
 )
 
 // command is one top-level oak command.
@@ -53,6 +55,7 @@ func init() {
 		{"repl", "start the interactive session", "oak repl", nil},
 		{"lsp", "run the language server over stdio (editors start this)", "oak lsp", lspCommand},
 		{"protocol", "protocol tooling", "oak protocol [args]", nil},
+		{"prove", "discharge the package's theorems: decided, proved by Lean, refuted, or open", "oak prove [-lean out.lean [-check]] [-cases N] [dir|file.oak]", nil},
 		{"version", "print the oak version", "oak version", versionCommand},
 		{"completion", "print a shell completion script", "oak completion bash|zsh|fish", completionCommand},
 		{"help", "show help for a command", "oak help [command]", helpCommand},
@@ -256,6 +259,14 @@ func vetOne(target, profile string) int {
 		}
 		recorded++
 		fmt.Println(modules.DemangleText(d.PlainText()))
+	}
+	// Declared operator laws are the author's claims, not the checker's
+	// findings (docs/spec/10-syntax.md section 14a): list them beside the
+	// assumptions so nothing that licenses a regrouping goes unseen.
+	if model.TypeChecker != nil {
+		for _, law := range model.TypeChecker.OperatorLaws() {
+			fmt.Printf("law: operator(%s) %s on %s declares %s — declared, not checked; the REPL's :lean states it\n", law.Symbol, modules.DemangleText(law.Function), modules.DemangleText(law.Type), law.Law)
+		}
 	}
 	if recorded == 0 {
 		fmt.Printf("%s: no recorded assumptions\n", target)
@@ -461,7 +472,11 @@ func compileBinary(comp compiler.Compilation, binary, asmMode string) error {
 	if err != nil {
 		return err
 	}
-	_, err = compileC(code, object, binary)
+	inputs, err := comp.LinkInputs()
+	if err != nil {
+		return err
+	}
+	_, err = compileC(code, object, inputs, binary)
 	return err
 }
 
@@ -473,15 +488,23 @@ var ccFlags = []string{"-std=c99", "-O1", "-ffp-contract=off"}
 // compileC turns emitted C (and an optional asm companion object) into the
 // executable at binary, through the build cache: a hit copies the cached
 // binary, a miss compiles with a fixed argument list and stores the result.
+// The manifests' native inputs (`link`, `framework`; docs/spec/83-modules.md
+// section 4.6) follow the program on the command line, objects by path and
+// frameworks as `-framework Name` on macOS; their contents are part of the
+// cache identity, so a rebuilt library invalidates the cached executable.
 // It reports whether the binary came from the cache.
-func compileC(code string, object []byte, binary string) (bool, error) {
+func compileC(code string, object []byte, inputs []compiler.LinkInput, binary string) (bool, error) {
 	cc, err := exec.LookPath("cc")
 	if err != nil {
 		return false, errors.New("no C compiler (cc) on PATH; use -emit-c to write C instead")
 	}
+	linkArgs, linkIdentity, err := linkArguments(inputs, os.Stderr)
+	if err != nil {
+		return false, err
+	}
 	key := ""
 	if identity, err := buildcache.CompilerIdentity(cc); err == nil {
-		key = buildcache.Key("oak-exe-v1", code, string(object), identity, strings.Join(ccFlags, " "))
+		key = buildcache.Key("oak-exe-v1", code, string(object), identity, strings.Join(ccFlags, " "), linkIdentity)
 		if cached, ok := buildcache.Lookup(key); ok {
 			if err := buildcache.Copy(cached, binary); err == nil {
 				return true, nil
@@ -505,6 +528,7 @@ func compileC(code string, object []byte, binary string) (bool, error) {
 		}
 		ccArgs = append(ccArgs, objPath)
 	}
+	ccArgs = append(ccArgs, linkArgs...)
 	build := exec.Command(cc, append(ccArgs, "-lm")...)
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
@@ -515,6 +539,37 @@ func compileC(code string, object []byte, binary string) (bool, error) {
 		_ = buildcache.Store(key, binary)
 	}
 	return false, nil
+}
+
+// linkArguments spells the manifests' native inputs as C compiler arguments
+// (argv, never a shell) and returns an identity string covering each
+// object's bytes and each framework's name, for build-cache keys. On hosts
+// without frameworks a `framework` line is skipped with one note on notes.
+func linkArguments(inputs []compiler.LinkInput, notes io.Writer) ([]string, string, error) {
+	var args []string
+	var identity strings.Builder
+	noted := false
+	for _, input := range inputs {
+		switch input.Kind {
+		case "object":
+			data, err := os.ReadFile(input.Path)
+			if err != nil {
+				return nil, "", fmt.Errorf("link %s: %v", input.Path, err)
+			}
+			sum := sha256.Sum256(data)
+			fmt.Fprintf(&identity, "object %s %x\n", input.Path, sum)
+			args = append(args, input.Path)
+		case "framework":
+			fmt.Fprintf(&identity, "framework %s\n", input.Path)
+			if runtime.GOOS == "darwin" {
+				args = append(args, "-framework", input.Path)
+			} else if !noted && notes != nil {
+				fmt.Fprintf(notes, "note: framework directives apply on macOS only; %s not linked on %s\n", input.Path, runtime.GOOS)
+				noted = true
+			}
+		}
+	}
+	return args, identity.String(), nil
 }
 
 // lspCommand runs the language server on stdin/stdout

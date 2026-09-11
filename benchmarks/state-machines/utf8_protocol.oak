@@ -1,0 +1,21 @@
+
+Utf8: protocol = {
+  initial Accept
+  byte(b: u8): Accept -> Accept when b < u8(128)
+  byte(b: u8): Accept -> Two when b >= u8(194) && b <= u8(223)
+  byte(b: u8): Accept -> ThreeE0 when b == u8(224)
+  byte(b: u8): Accept -> Three when (b >= u8(225) && b <= u8(236)) || b == u8(238) || b == u8(239)
+  byte(b: u8): Accept -> ThreeED when b == u8(237)
+  byte(b: u8): Accept -> FourF0 when b == u8(240)
+  byte(b: u8): Accept -> Four when b >= u8(241) && b <= u8(243)
+  byte(b: u8): Accept -> FourF4 when b == u8(244)
+  byte(b: u8): Two -> Accept when b >= u8(128) && b <= u8(191)
+  byte(b: u8): ThreeE0 -> Two when b >= u8(160) && b <= u8(191)
+  byte(b: u8): Three -> Two when b >= u8(128) && b <= u8(191)
+  byte(b: u8): ThreeED -> Two when b >= u8(128) && b <= u8(159)
+  byte(b: u8): FourF0 -> Three when b >= u8(144) && b <= u8(191)
+  byte(b: u8): Four -> Three when b >= u8(128) && b <= u8(191)
+  byte(b: u8): FourF4 -> Three when b >= u8(128) && b <= u8(143)
+}
+
+main: (): u32 = u32(0)

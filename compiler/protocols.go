@@ -806,8 +806,41 @@ func (m *protocolMachine) project() []ast.Statement {
 
 	if !withData {
 		covers := func(step *protocolStep) bool { return len(step.from) == len(m.states) }
+		guarded := func(step *protocolStep) bool {
+			for _, line := range step.lines {
+				if line.Guard != nil {
+					return true
+				}
+			}
+			return false
+		}
 		var legalArms, nextArms []*ast.MatchArm
-		for _, step := range m.steps {
+		for si, step := range m.steps {
+			if guarded(step) {
+				// Lines with payload guards: the first line whose source
+				// state and guard hold, in declaration order — the same
+				// sequential shape the data-carrying projection uses.
+				var legalBody, nextBody []ast.Statement
+				var terms []ast.Expression
+				for k, line := range step.lines {
+					fromName := fmt.Sprintf("from_%d_%d", si, k)
+					legalBody = append(legalBody, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
+					nextBody = append(nextBody, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
+					var term ast.Expression = s.id(fromName)
+					condition := s.and(s.not(s.id("done")), s.id(fromName))
+					if line.Guard != nil {
+						term = s.and(term, cloneExpression(line.Guard))
+						condition = s.and(condition, cloneExpression(line.Guard))
+					}
+					terms = append(terms, term)
+					nextBody = append(nextBody, s.expr(s.cond(condition, s.block(s.assign("result", s.variant(line.To.Value, nil)), s.assign("done", s.boolean(true))), nil)))
+				}
+				legalBody = append(legalBody, s.expr(s.or(terms...)))
+				legalArms = append(legalArms, s.arm(variantName(step.name), binding(step), s.block(legalBody...)))
+				nextBody = append(nextBody, s.expr(s.id("result")))
+				nextArms = append(nextArms, s.arm(variantName(step.name), binding(step), s.block(nextBody...)))
+				continue
+			}
 			var legalInner, nextInner []*ast.MatchArm
 			for i, from := range step.from {
 				legalInner = append(legalInner, s.arm(from, "", s.boolean(true)))
@@ -821,11 +854,52 @@ func (m *protocolMachine) project() []ast.Statement {
 			nextArms = append(nextArms, s.arm(variantName(step.name), binding(step), s.match(s.id("state"), nextInner...)))
 		}
 		legal := s.fnExpr(prefix+"_legal", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id("Bool"), s.match(s.id("step"), legalArms...))
-		next := s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
-			s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.id("step")))),
-			s.expr(s.match(s.id("step"), nextArms...)))
+		anyGuarded := false
+		for _, step := range m.steps {
+			anyGuarded = anyGuarded || guarded(step)
+		}
+		var next *ast.FunctionStatement
+		if anyGuarded {
+			next = s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
+				s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.id("step")))),
+				s.decl("result", s.id(stateType), s.id("state")),
+				s.decl("done", s.id("Bool"), s.boolean(false)),
+				s.expr(s.match(s.id("step"), nextArms...)))
+		} else {
+			next = s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
+				s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.id("step")))),
+				s.expr(s.match(s.id("step"), nextArms...)))
+		}
 		legal.Exported, next.Exported = exported, exported
-		return append(out, legal, next)
+		out = append(out, legal, next)
+		// The compiler-known lowering (docs/spec/112-protocols.md section
+		// 2a): a transition table, or a shift DFA when the machine is small
+		// enough, computed here from the declaration; the Oak bodies above
+		// stay the meaning. A byte-driven machine also gets `name_run`.
+		if lowering := m.lowering(); lowering != nil {
+			legal.Lowering = loweringKind(lowering, "legal")
+			next.Lowering = loweringKind(lowering, "next")
+			if lowering.Shift {
+				stateADT := out[0].(*ast.ADTType)
+				for i := range m.states {
+					stateADT.TagValues = append(stateADT.TagValues, 6*i)
+				}
+			}
+			if lowering.ByteSymbol {
+				step := m.steps[0]
+				run := s.fn(prefix+"_run", []*ast.FunctionParameter{stateParam(), s.param("bytes", s.view(s.id("u8")))}, s.id(stateType),
+					s.decl("current", s.id(stateType), s.id("state")),
+					s.decl("i", s.id("u32"), s.u32(0)),
+					s.loop(s.lt(s.id("i"), s.call("len", s.id("bytes"))),
+						s.assign("current", s.call(prefix+"_next", s.id("current"), s.variant(variantName(step.name), s.index(s.id("bytes"), s.id("i"))))),
+						s.assign("i", s.add(s.id("i"), s.u32(1)))),
+					s.expr(s.id("current")))
+				run.Exported = exported
+				run.Lowering = loweringKind(lowering, "run")
+				out = append(out, run)
+			}
+		}
+		return out
 	}
 
 	// NameData and its initial value.
@@ -1128,4 +1202,228 @@ func (m *protocolMachine) typestateAliasIndex(t *ast.ProtocolTransition, fn *ast
 		}
 	}
 	return index
+}
+
+// lowering computes the transition table of a machine without a data
+// record (docs/spec/112-protocols.md section 2a). Symbols are the step tags
+// when no step carries a payload, or the 256 values of the single step's
+// u8 payload, with every guard evaluated for every value. It returns nil —
+// the branch-tree projection stands — when the machine has another shape,
+// when a guard is outside the evaluator's vocabulary, or when the table
+// would not fit a u8 (more than 254 states or 64 KiB of entries).
+func (m *protocolMachine) lowering() *ast.ProtocolLowering {
+	if m.decl.Data != nil || len(m.states) == 0 || len(m.states) > 254 {
+		return nil
+	}
+	stateIndex := map[string]int{}
+	for i, st := range m.states {
+		stateIndex[st] = i
+	}
+	sink := len(m.states)
+	// A payload that no guard reads does not affect transitions: the step
+	// is one symbol. Only a payload some guard mentions makes the payload
+	// values the symbols.
+	payloads := 0
+	for _, step := range m.steps {
+		if step.payload == nil {
+			continue
+		}
+		for _, line := range step.lines {
+			if mentionsIdentifier(line.Guard, step.payload.Name.Value) {
+				payloads++
+				break
+			}
+		}
+	}
+	lowering := &ast.ProtocolLowering{Protocol: m.name, States: len(m.states)}
+	// firstLine resolves (state, step, payload value) to the target of the
+	// first line whose source and guard hold; ok is false when a guard is
+	// outside the compile-time vocabulary.
+	firstLine := func(state string, step *protocolStep, payload uint64) (target int, legal bool, ok bool) {
+		for _, line := range step.lines {
+			if line.From.Value != state {
+				continue
+			}
+			if line.Guard != nil {
+				holds, evaluable := evalPayloadGuard(line.Guard, step.payload.Name.Value, payload)
+				if !evaluable {
+					return 0, false, false
+				}
+				if !holds {
+					continue
+				}
+			}
+			return stateIndex[line.To.Value], true, true
+		}
+		return sink, false, true
+	}
+	switch {
+	case payloads == 0:
+		lowering.Symbols = len(m.steps)
+		if len(m.states)*len(m.steps) > 65536 {
+			return nil
+		}
+		for _, state := range m.states {
+			for _, step := range m.steps {
+				target, _, ok := firstLine(state, step, 0)
+				if !ok {
+					return nil
+				}
+				lowering.Table = append(lowering.Table, target)
+			}
+		}
+	case payloads == 1 && len(m.steps) == 1:
+		step := m.steps[0]
+		payloadType, isIdent := step.payload.Type.(*ast.Identifier)
+		if !isIdent || payloadType.Value != "u8" {
+			return nil
+		}
+		lowering.Symbols, lowering.ByteSymbol, lowering.StepName = 256, true, variantName(step.name)
+		if len(m.states)*256 > 65536 {
+			return nil
+		}
+		for _, state := range m.states {
+			for value := 0; value < 256; value++ {
+				target, _, ok := firstLine(state, step, uint64(value))
+				if !ok {
+					return nil
+				}
+				lowering.Table = append(lowering.Table, target)
+			}
+		}
+	default:
+		return nil
+	}
+	// The sink row: every symbol keeps the sink (Oak.Protocol.runSink_sink).
+	for t := 0; t < lowering.Symbols; t++ {
+		lowering.Table = append(lowering.Table, sink)
+	}
+	lowering.Shift = len(m.states)+1 <= 10
+	return lowering
+}
+
+// kind copies the lowering for one projected function.
+func loweringKind(l *ast.ProtocolLowering, kind string) *ast.ProtocolLowering {
+	copied := *l
+	copied.Kind = kind
+	return &copied
+}
+
+// evalPayloadGuard evaluates a guard over a scalar payload at compile time:
+// the payload name, integer and Boolean literals, width conversions
+// (`u8(128)`), `+ - * / %`, comparisons, and `&& || !` — the guard
+// vocabulary of docs/spec/112-protocols.md section 1 without data fields.
+// Arithmetic is unsigned modulo 2^64 with the result masked to the payload
+// width, matching the total machine arithmetic of 20-types.md; division by
+// zero is not evaluable (it would trap at run time). Anything else is
+// reported not evaluable and the lowering falls back to the branch tree.
+func evalPayloadGuard(guard ast.Expression, payload string, value uint64) (bool, bool) {
+	const width = uint64(0xFF)
+	var num func(e ast.Expression) (uint64, bool)
+	var boolean func(e ast.Expression) (bool, bool)
+	num = func(e ast.Expression) (uint64, bool) {
+		switch x := e.(type) {
+		case *ast.Identifier:
+			if x.Value == payload {
+				return value & width, true
+			}
+			return 0, false
+		case *ast.IntegerLiteral:
+			return uint64(x.Value), true
+		case *ast.InvocationExpression:
+			name, isIdent := x.Function.(*ast.Identifier)
+			if !isIdent || len(x.Arguments) != 1 {
+				return 0, false
+			}
+			switch name.Value {
+			case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
+				v, ok := num(x.Arguments[0])
+				if !ok {
+					return 0, false
+				}
+				switch name.Value {
+				case "u8", "i8":
+					return v & 0xFF, true
+				case "u16", "i16":
+					return v & 0xFFFF, true
+				case "u32", "i32":
+					return v & 0xFFFFFFFF, true
+				}
+				return v, true
+			}
+			return 0, false
+		case *ast.InfixExpression:
+			l, okL := num(x.Left)
+			r, okR := num(x.Right)
+			if !okL || !okR {
+				return 0, false
+			}
+			switch x.Operator {
+			case "+":
+				return (l + r) & width, true
+			case "-":
+				return (l - r) & width, true
+			case "*":
+				return (l * r) & width, true
+			case "/":
+				if r == 0 {
+					return 0, false
+				}
+				return l / r, true
+			case "%":
+				if r == 0 {
+					return 0, false
+				}
+				return l % r, true
+			}
+			return 0, false
+		}
+		return 0, false
+	}
+	boolean = func(e ast.Expression) (bool, bool) {
+		switch x := e.(type) {
+		case *ast.Boolean:
+			return x.Value, true
+		case *ast.PrefixExpression:
+			if x.Operator != "!" {
+				return false, false
+			}
+			v, ok := boolean(x.Right)
+			return !v, ok
+		case *ast.InfixExpression:
+			switch x.Operator {
+			case "&&", "||":
+				l, okL := boolean(x.Left)
+				r, okR := boolean(x.Right)
+				if !okL || !okR {
+					return false, false
+				}
+				if x.Operator == "&&" {
+					return l && r, true
+				}
+				return l || r, true
+			case "==", "!=", "<", "<=", ">", ">=":
+				l, okL := num(x.Left)
+				r, okR := num(x.Right)
+				if !okL || !okR {
+					return false, false
+				}
+				switch x.Operator {
+				case "==":
+					return l == r, true
+				case "!=":
+					return l != r, true
+				case "<":
+					return l < r, true
+				case "<=":
+					return l <= r, true
+				case ">":
+					return l > r, true
+				}
+				return l >= r, true
+			}
+		}
+		return false, false
+	}
+	return boolean(guard)
 }

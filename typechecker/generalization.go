@@ -447,7 +447,7 @@ func isNonCapturingBuiltin(name string) bool {
 		"i8", "i16", "i32", "i64",
 		"int", "uint", "ptr", "uptr", "byte", "rune", "string", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2",
 		"view_as", "span_as", "view", "span", "subslice",
-		"len", "is_valid_utf8", "assert":
+		"len", "is_valid_utf8", "assert", "assert_eq", "assert_ne":
 		return true
 	}
 	if FloatIntrinsicName(name) {

@@ -3,6 +3,7 @@ package typechecker
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
@@ -505,6 +506,7 @@ type TypeChecker struct {
 	// operatorCalls records, position-keyed by the operator token, the
 	// callee of every infix expression that resolved through a binding.
 	operatorBindings map[string]string
+	operatorLaws     []OperatorLaw
 	operatorCalls    map[string]string
 	// packageExports is every loaded package's member table, for uniform
 	// call syntax (docs/spec/10-syntax.md section 13).
@@ -550,6 +552,10 @@ type TypeChecker struct {
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[string]string
+	// equalityTypes records, per `==`/`!=` operator position, the named
+	// sum type or record the operands have, so the backend emits that
+	// type's equality function (typechecker/equality.go).
+	equalityTypes map[string]string
 	// unsafeDepth counts the enclosing unsafe blocks; initializerUnderCheck
 	// is the initializer expression of the declaration being checked. Both
 	// gate the inbound buffer borrows of docs/spec/92-ffi.md section 2.7.
@@ -826,6 +832,8 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.predeclareFunctionSignature(fn)
 			if fn.Operator != "" && fn.Name != nil {
 				tc.registerOperator(fn)
+			} else if len(fn.Laws) > 0 {
+				tc.addError(fn, "laws { %s }: only an operator definition declares laws (docs/spec/10-syntax.md section 14a)", strings.Join(fn.Laws, ", "))
 			}
 			if len(fn.TypeParams) > 0 && fn.Receiver == nil && !typeParamsConstrained(fn.TypeParams) {
 				if tc.functionTemplates == nil {
@@ -959,6 +967,71 @@ func (tc *TypeChecker) registerOperator(fn *ast.FunctionStatement) {
 		return
 	}
 	tc.operatorBindings[key] = fn.Name.Value
+	tc.recordOperatorLaws(fn, typeName)
+}
+
+// OperatorLaw is one algebraic property an operator definition declares
+// (docs/spec/10-syntax.md section 14a): the permission a backend has to
+// regroup (associative) or reorder (commutative) applications of the
+// operator, on the author's authority.
+type OperatorLaw struct {
+	Type     string
+	Symbol   string
+	Function string
+	Law      string
+}
+
+// operatorLawNames are the laws a definition may declare.
+var operatorLawNames = map[string]bool{"associative": true, "commutative": true}
+
+// recordOperatorLaws validates a `laws { ... }` clause against the
+// operator's signature — both laws need two parameters of one type, and
+// associativity needs the result to be that type too — and records it.
+func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName string) {
+	if len(fn.Laws) == 0 {
+		return
+	}
+	sameParams := len(fn.Parameters) == 2 && fn.Parameters[0] != nil && fn.Parameters[1] != nil &&
+		fn.Parameters[0].Type != nil && fn.Parameters[1].Type != nil &&
+		fn.Parameters[0].Type.String() == fn.Parameters[1].Type.String()
+	returnsOperand := sameParams && fn.ReturnType != nil && fn.ReturnType.String() == fn.Parameters[0].Type.String()
+	seen := map[string]bool{}
+	for _, law := range fn.Laws {
+		if !operatorLawNames[law] {
+			tc.addError(fn, "operator(%s) %s: unknown law %q (associative, commutative)", fn.Operator, fn.Name.Value, law)
+			continue
+		}
+		if seen[law] {
+			tc.addError(fn, "operator(%s) %s: law %s declared twice", fn.Operator, fn.Name.Value, law)
+			continue
+		}
+		seen[law] = true
+		if !sameParams {
+			tc.addError(fn, "operator(%s) %s: %s needs two parameters of one type", fn.Operator, fn.Name.Value, law)
+			continue
+		}
+		if law == "associative" && !returnsOperand {
+			tc.addError(fn, "operator(%s) %s: associative needs the result type to be the operand type", fn.Operator, fn.Name.Value)
+			continue
+		}
+		tc.operatorLaws = append(tc.operatorLaws, OperatorLaw{Type: typeName, Symbol: fn.Operator, Function: fn.Name.Value, Law: law})
+	}
+}
+
+// OperatorLaws lists the declared operator laws in declaration order.
+func (tc *TypeChecker) OperatorLaws() []OperatorLaw {
+	return append([]OperatorLaw(nil), tc.operatorLaws...)
+}
+
+// HasOperatorLaw reports whether the function bound as an operator declares
+// the law — the fact a backend consults before regrouping.
+func (tc *TypeChecker) HasOperatorLaw(function, law string) bool {
+	for _, l := range tc.operatorLaws {
+		if l.Function == function && l.Law == law {
+			return true
+		}
+	}
+	return false
 }
 
 // operatorBinding reports the function bound to SYM for a left operand of
@@ -1680,6 +1753,9 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			tc.addError(expr, "operator %s requires compatible types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
+		if !tc.checkAggregateEquality(expr, leftType) {
+			return nil
+		}
 		return &BoolType{}
 	case "&&", "||":
 		// Short-circuit Boolean connectives (docs/spec/10-syntax.md): both
@@ -2156,6 +2232,34 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			}
 			return &UnitType{}
 		}
+		// assert_eq / assert_ne (docs/spec/85-discipline.md section 5): two
+		// values of one fixed-width integer, float, or Bool type; a failure
+		// names both values. The operand type is recorded by position so the
+		// backend picks the printing helper without re-deriving it.
+		if ident.Value == "assert_eq" || ident.Value == "assert_ne" {
+			if len(expr.Arguments) != 2 {
+				tc.addTypeDiagnostic(expr, CodeAssertOperands, ident.Value+" expects exactly two arguments: got and want")
+				return &UnitType{}
+			}
+			gotType := tc.checkExpression(expr.Arguments[0])
+			wantType := tc.checkExpression(expr.Arguments[1])
+			if gotType == nil || wantType == nil {
+				return &UnitType{}
+			}
+			name, comparable := tc.assertOperandName(gotType)
+			if !comparable {
+				d := tc.addTypeDiagnostic(expr.Arguments[0], CodeAssertOperands, fmt.Sprintf("%s compares fixed-width integers, f32/f64, or Bool, got %s", ident.Value, gotType))
+				d.AddHelp("compare a scalar the failure message can print; for records and views assert on a field or an element, or use assert with a Bool")
+				return &UnitType{}
+			}
+			if !gotType.Equals(wantType) {
+				d := tc.addTypeDiagnostic(expr, CodeAssertOperands, fmt.Sprintf("%s operands must have one type, got %s and %s", ident.Value, gotType, wantType))
+				d.AddHelp("convert one operand explicitly; there is no implicit promotion between widths or between integers and floats")
+				return &UnitType{}
+			}
+			tc.recordFloatWidth(ident.Token, name)
+			return &UnitType{}
+		}
 	}
 
 	// recv.member(args): a method call or uniform call syntax
@@ -2221,6 +2325,50 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			effectiveArgs += 2
 			continue
 		}
+		// A C string from Oak bytes (docs/spec/92-ffi.md section 2.5.3)
+		// stands for one c.String parameter of an extern binding.
+		if operand, isCString := tc.CStringArgument(arg); isCString {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					"c.cstr is only an argument to an extern binding")
+				d.AddNote("c.cstr(v) hands C the base pointer of a NUL-terminated view for the duration of one foreign call; Oak functions take the view itself (docs/spec/92-ffi.md section 2.5.3)")
+				return nil
+			}
+			if !tc.checkCStringArgument(arg, operand, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs++
+			continue
+		}
+		// An argument vector (docs/spec/92-ffi.md section 2.5.6) and an
+		// out-parameter (section 2.5.7) each stand for one c.Ptr parameter
+		// of an extern binding.
+		if bytes, slots, isArgv := tc.ArgvArgument(arg); isArgv {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					"c.argv_of is only an argument to an extern binding")
+				d.AddNote("c.argv_of(bytes, slots) forms a NUL-terminated pointer vector for the duration of one foreign call; Oak functions take the view and span themselves (docs/spec/92-ffi.md section 2.5.6)")
+				return nil
+			}
+			if !tc.checkArgvArgument(arg, bytes, slots, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs++
+			continue
+		}
+		if operand, isOut := tc.OutArgument(arg); isOut {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					"c.out is only an argument to an extern binding")
+				d.AddNote("c.out(x) hands C the address of a local for the duration of one foreign call; Oak functions take a span or return a value (docs/spec/92-ffi.md section 2.5.7)")
+				return nil
+			}
+			if !tc.checkOutArgument(arg, operand, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs++
+			continue
+		}
 		effectiveArgs++
 	}
 	if !spansValid {
@@ -2256,6 +2404,21 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	for i, arg := range expr.Arguments {
 		if _, _, isSpan := tc.BoundarySpanArgument(arg); isSpan {
 			// Validated in the pre-pass above; it stands for the pair.
+			argTypes[i] = &CType{Name: "Ptr"}
+			continue
+		}
+		if _, isCString := tc.CStringArgument(arg); isCString {
+			// Validated in the pre-pass above; it stands for a c.String.
+			argTypes[i] = &CType{Name: "String"}
+			continue
+		}
+		if _, _, isArgv := tc.ArgvArgument(arg); isArgv {
+			// Validated in the pre-pass above; it stands for a c.Ptr.
+			argTypes[i] = &CType{Name: "Ptr"}
+			continue
+		}
+		if _, isOut := tc.OutArgument(arg); isOut {
+			// Validated in the pre-pass above; it stands for a c.Ptr.
 			argTypes[i] = &CType{Name: "Ptr"}
 			continue
 		}
@@ -3895,6 +4058,9 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 
 	// Check for nil function statement
 	if stmt == nil {
+		return
+	}
+	if stmt.Theorem && !tc.checkTheoremShape(stmt) {
 		return
 	}
 

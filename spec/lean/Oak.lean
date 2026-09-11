@@ -16,6 +16,7 @@ import Oak.ResourceCall
 import Oak.ResourceResult
 import Oak.MethodMangling
 import Oak.StatementBoundary
+import Oak.Protocol
 import Oak.BorrowRegions
 import Oak.Reborrow
 import Oak.ReborrowRefinement
@@ -71,6 +72,7 @@ import Oak.Loops
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved
+import Oak.Reduce
 import Oak.Floats
 import Oak.GraphemeBreak
 import Oak.Normalization
@@ -91,3 +93,5 @@ import Oak.Stdlib.UuidLaws
 import Oak.Typestate
 import Oak.IoPort
 import Oak.ProtocolQuorum
+import Oak.TimeInterval
+import Oak.ProtocolConformance

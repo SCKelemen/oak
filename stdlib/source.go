@@ -60,6 +60,13 @@ var uuidSource string
 //go:embed path.oak
 var pathSource string
 
+// reduce: reductions whose grouping is a language fact — the balanced
+// binary-counter tree and the sequential left fold (docs/spec/55-parallelism.md
+// section 4); a library package and part of the flat prelude.
+//
+//go:embed reduce.oak
+var reduceSource string
+
 // grapheme: UAX #29 extended grapheme cluster segmentation over UTF-8 views
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -222,6 +229,7 @@ var Packages = map[string]string{
 	"random":          randomSource,
 	"uuid":            uuidSource,
 	"path":            pathSource,
+	"reduce":          reduceSource,
 	"grapheme":        graphemeSource,
 	"normalize":       normalizeSource,
 	"float":           floatSource,

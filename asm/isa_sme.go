@@ -168,6 +168,18 @@ func (c *checker) streamingSwitch(instr Instruction) {
 	}
 	if mode == "both" || mode == "sm" {
 		if c.sm != on {
+			// Zeroing v8–v15 writes the caller's callee-saved d8–d15: they
+			// must have been saved to the frame first, and restored before ret.
+			for num := 8; num <= 15; num++ {
+				if state := c.calleeSavedV[num]; state != nil {
+					if !state.saved {
+						c.errorf(instr.Line, "%s zeroes callee-saved d%d (the caller's under AAPCS64): save d8–d15 to the frame first and restore them before ret", instr.Mnemonic, num)
+					} else {
+						state.written = true
+						state.restored = false
+					}
+				}
+			}
 			c.writtenV = map[int]bool{}
 			c.writtenP = map[int]bool{}
 			c.vZeroed = true

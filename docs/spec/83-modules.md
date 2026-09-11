@@ -257,6 +257,11 @@ replace example.com/dep => ../dep
   (`OAK-M0112`). Admissions apply to the packages of the module whose
   manifest declares them, never to a dependency's or the root's. Repeatable;
   duplicates fail.
+- `link <path>` — a native input this module links (section 4.6): a static
+  archive (`.a`) or relocatable object (`.o`) named by a slash-separated path
+  relative to the module root. Repeatable; duplicates fail.
+- `framework <Name>` — a macOS framework this module links (section 4.6).
+  Repeatable; duplicates fail.
 
 Unknown directives, duplicates, malformed lines, replaces without a matching
 require, and manifests over 1 MiB fail closed (`OAK-M0112`).
@@ -340,6 +345,54 @@ modules are appended as `require path version`; every other line —
 comments, `replace`, `profile`, `steady`, ordering — is kept verbatim, the
 result must parse, and the file is replaced through a temporary file in the
 same directory. Uncovered imports are reported for the author.
+
+### 4.6 Native inputs
+
+A module whose packages bind extern functions (`92-ffi.md` section 2.3)
+against code the C library does not provide names that code in its
+manifest, and every build of the module links it:
+
+```text
+module example.com/ml
+link runtime/libmlrt.a
+link runtime/kernels.o
+framework Metal
+```
+
+- `link <path>` names a static archive (`.a`) or a relocatable object (`.o`).
+  The path is slash-separated and relative to the declaring module's root;
+  it may not be absolute and may not contain an empty, `.`, or `..` segment
+  (`OAK-M0112` at the manifest). The loader resolves it against the module
+  root, requires a regular file, and requires the resolved file to lie inside
+  the root through symlinks — the containment rule import paths obey
+  (section 4.3) — or the build fails with `OAK-M0112` naming the directive
+  and operand. Shared libraries, linker scripts, and bare flags are not
+  accepted: a `link` operand is a file, never an option.
+- `framework <Name>` names a macOS framework (`Metal`, `Foundation`); the
+  name is an identifier. On macOS it becomes `-framework Name`; on every
+  other host it is skipped and the build notes the skip once. It is not an
+  error to declare a framework on a host without them, so one manifest
+  serves both.
+
+`oak build`, `oak run`, `oak install`, and `oak test` pass the inputs to the
+C compiler after the emitted C (and the asm companion object), as argument
+vector entries — never through a shell — in **link order**: the root module's
+lines in declaration order, objects before frameworks, then each dependency
+module that contributes a loaded package, by module path. A module links
+what its own manifest declares; a dependency's `link` and `framework` lines
+take effect when the root reaches one of its packages, the way its `admit`
+lines scope to its own packages. The bytes of every linked object and the
+name of every framework are part of the executable's build-cache identity and
+of `oak test`'s replay fingerprint, so a rebuilt archive is never served from
+the cache and a replay against a different archive is refused.
+
+Link inputs are trusted exactly as the module's own source is: the compiler
+checks the Oak program, not the archive. Code in a linked object runs with
+the program's authority, and nothing in the manifest asserts anything about
+it — the trusted-adapter manifest of `oak test` (`110-testing.md`, "Trusted
+native adapters") is the place for pinned digests and a determinism
+contract; `link` is the general mechanism a module uses to carry its
+runtime.
 
 ## 5. Compile order and cycles
 
