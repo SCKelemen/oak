@@ -213,7 +213,7 @@ f: (holder: Holder): u32 {
 func TestResourceCallFreshReturnRemainsTrackedForExclusiveAccess(t *testing.T) {
 	input := `
 Handle: type = struct { id: u32 }
-renew: (h: Handle): Handle = h
+renew: (h: Handle): Handle = Handle { id: h.id }
 update_pair: (left: Handle, right: Handle): () = {}
 f: (left: Handle, right: Handle): u32 {
   next: Handle = renew(left)
@@ -255,7 +255,7 @@ func TestResourceCallDirectFreshResultMatchesBinding(t *testing.T) {
 		t.Run(invocation, func(t *testing.T) {
 			input := `
 Handle: type = struct { id: u32 }
-renew: (h: Handle): Handle = h
+renew: (h: Handle): Handle = Handle { id: h.id }
 update_pair: (left: Handle, right: Handle): () = {}
 f: (left: Handle, right: Handle): u32 {
   ` + invocation + `
@@ -341,7 +341,7 @@ f: (h: Handle, other: Handle): u32 {
 func TestRejectedFreshCallDoesNotConsumeOuterArgument(t *testing.T) {
 	input := `
 Handle: type = struct { id: u32 }
-renew: (left: Handle, right: Handle): Handle = left
+renew: (left: Handle, right: Handle): Handle = Handle { id: left.id }
 close_pair: (left: Handle, right: Handle): () = {}
 f: (h: Handle, other: Handle): u32 {
   close_pair(renew(h, h), other)
@@ -389,7 +389,7 @@ func TestResourceCallFreshResultIsDistinctFromUnknownBorrow(t *testing.T) {
 			input := `
 Handle: type = struct { id: u32 }
 Holder: type = struct { handle: Handle }
-renew: (h: Handle): Handle = h
+renew: (h: Handle): Handle = Handle { id: h.id }
 update_pair: (left: Handle, right: Handle): () = {}
 f: (h: Handle, holder: Holder): u32 {
   update_pair(` + arguments + `)
@@ -412,7 +412,7 @@ func TestResourceCallFreshResultDoesNotAuthorizeUnknownConsumption(t *testing.T)
 	input := `
 Handle: type = struct { id: u32 }
 Holder: type = struct { handle: Handle }
-renew: (h: Handle): Handle = h
+renew: (h: Handle): Handle = Handle { id: h.id }
 close_pair: (left: Handle, right: Handle): () = {}
 f: (h: Handle, holder: Holder): u32 {
   close_pair(renew(h), holder.handle)

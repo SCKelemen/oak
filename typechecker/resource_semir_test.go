@@ -120,7 +120,7 @@ f: (h: Handle): u32 {
 func TestCheckProgramWithSemIRDerivesFreshReturnAuthority(t *testing.T) {
 	input := `
 Handle: type = struct { id: u32 }
-renew: (h: Handle): Handle = h
+renew: (h: Handle): Handle = Handle { id: h.id }
 f: (h: Handle): u32 {
   next: Handle = renew(h)
   next.id

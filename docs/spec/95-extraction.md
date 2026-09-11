@@ -101,15 +101,31 @@ the paths the theorem covers; the axioms are `propext`, `Classical.choice`,
 `Quot.sound` only. The scanner gate's corpus comparison remains as a
 regression check, no longer as the evidence.
 
+`proof/ExtractionDecoder.lean` starts the decoder itself, the DIMACS
+phase. `CnfRel` states how the extracted loop's state — six `UInt32`
+counters, three bounded arrays, the five-word scanner state, and the flags
+— represents the model's `Cnf` record at a cursor: every scalar through
+`toNat`, every array on the prefix its counter names, with the bounds the
+writes rely on (a pending clause start below the pool length, the clause
+count below the declared count, which the stage machine has checked
+against 256 by the time it can write). `cnf_step` proves one iteration of
+the extracted loop is one `cnfStep` of the model, on top of
+`rup_token_scan` for the token, `rup_word_spec` for the `c`/`p`/`cnf`
+tests, and `rup_encoded_spec` for the packed literal; `cnf_loop` runs it
+to `cnfLoop` with both fuels above the remaining text; `guard1_spec` and
+`guard2_spec` are the entry guards against the model's `all`, and
+`cnfStart_rel` the initial state. Same axioms as the scanner.
+
 ## 7. Next
 
-The theorem that the extraction equals the hand-written transliteration on
-the decoder (`OakText.check`), so `check_refines` transfers to the extracted
-model without a second corpus hop — the DIMACS and LRAT phases against
-`cnfLoop` and `proofLoop` on top of `rup_token_scan`, and the stream checker
-against `CertifiedStream.check`; then the constructs the verification
-programs need next (matches over records, the `checked` rows), each added
-with its own fail-closed test. Integer-constant matches and the integer
+The LRAT phase (`rup_text_check.loop4` against `proofLoop`, a record
+`command` and an array of them instead of the clause tables), then the
+assembly of `rup_text_check` — the phases, the closing check, the layout
+handed to the stream checker — against `OakText.layout`, at which point
+`check_refines` reaches the extraction for every text; then the stream
+checker against `CertifiedStream.check`; then the constructs the
+verification programs need next (matches over records, the `checked`
+rows), each added with its own fail-closed test. Integer-constant matches and the integer
 conversion rows were added for the ml subset (op dispatch on constants,
 `u64` index arithmetic narrowed to `u32`); `checked` conversions and every
 floating-point row still fail closed.
