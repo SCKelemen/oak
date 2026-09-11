@@ -80,6 +80,7 @@ var mxSource string
 //
 //go:embed time.oak
 var timeSource string
+
 // arena is a library package only (import("arena")): bump reservations of
 // element ranges over an owner such as a Buffer[T]
 // (docs/spec/60-effects-allocation.md section 6).
