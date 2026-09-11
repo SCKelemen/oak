@@ -34,9 +34,10 @@ func init() {
 	}
 	// Scalar floating point.
 	add("fmov", instructionSpec{forms: append(scalar(2), form{opFS, opW}, form{opFD, opX}, form{opW, opFS}, form{opX, opFD}, form{opFS, opFImm}, form{opFD, opFImm}, form{opVA, opFImm}, form{opX, opVL}, form{opVL, opX})})
-	for _, name := range []string{"fadd", "fsub", "fmul", "fdiv", "fnmul", "fmax", "fmin", "fmaxnm", "fminnm"} {
+	for _, name := range []string{"fadd", "fsub", "fmul", "fdiv", "fmax", "fmin", "fmaxnm", "fminnm"} {
 		add(name, instructionSpec{forms: append(scalar(3), vector(3)...)})
 	}
+	add("fnmul", instructionSpec{forms: scalar(3)}) // no vector form
 	for _, name := range []string{"fneg", "fabs", "fsqrt", "frinta", "frinti", "frintm", "frintn", "frintp", "frintx", "frintz"} {
 		add(name, instructionSpec{forms: append(scalar(2), vector(2)...)})
 	}
@@ -49,16 +50,44 @@ func init() {
 	add("fcsel", instructionSpec{forms: []form{{opFS, opFS, opFS, opCond}, {opFD, opFD, opFD, opCond}}, readsFlags: true})
 	add("fcvt", instructionSpec{forms: []form{{opFS, opFD}, {opFD, opFS}, {opFH, opFS}, {opFS, opFH}, {opFH, opFD}, {opFD, opFH}}})
 	for _, name := range []string{"fcvtzs", "fcvtzu", "fcvtas", "fcvtau", "fcvtms", "fcvtmu", "fcvtns", "fcvtnu", "fcvtps", "fcvtpu"} {
-		add(name, instructionSpec{forms: append([]form{{opW, opFS}, {opX, opFS}, {opW, opFD}, {opX, opFD}}, vector(2)...)})
+		add(name, instructionSpec{forms: append([]form{{opW, opFS}, {opX, opFS}, {opW, opFD}, {opX, opFD}, {opFS, opFS}, {opFD, opFD}, {opFH, opFH}}, vector(2)...)})
+	}
+	// Fixed-point conversions carry the fraction-bit count.
+	for _, name := range []string{"fcvtzs", "fcvtzu"} {
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opW, opFS, opImm}, form{opX, opFS, opImm}, form{opW, opFD, opImm}, form{opX, opFD, opImm}, form{opW, opFH, opImm}, form{opX, opFH, opImm},
+			form{opVA, opVA, opImm}, form{opFS, opFS, opImm}, form{opFD, opFD, opImm}, form{opFH, opFH, opImm})
+		instructionTable[name] = spec
 	}
 	for _, name := range []string{"scvtf", "ucvtf"} {
-		add(name, instructionSpec{forms: append([]form{{opFS, opW}, {opFS, opX}, {opFD, opW}, {opFD, opX}}, vector(2)...)})
+		add(name, instructionSpec{forms: append([]form{{opFS, opW}, {opFS, opX}, {opFD, opW}, {opFD, opX}, {opFS, opFS}, {opFD, opFD}, {opFH, opFH},
+			{opFS, opW, opImm}, {opFS, opX, opImm}, {opFD, opW, opImm}, {opFD, opX, opImm}, {opFH, opW, opImm}, {opFH, opX, opImm},
+			{opVA, opVA, opImm}, {opFS, opFS, opImm}, {opFD, opFD, opImm}, {opFH, opFH, opImm}}, vector(2)...)})
 	}
 	add("fcvtn", instructionSpec{forms: vector(2)})
 	add("fcvtl", instructionSpec{forms: vector(2)})
 	// Vector integer arithmetic and logic.
 	for _, name := range []string{"mla", "mls", "smax", "smin", "umax", "umin", "sabd", "uabd", "shadd", "uhadd", "sqadd", "uqadd", "sqsub", "uqsub", "addp", "smaxp", "sminp", "umaxp", "uminp", "pmul", "fmla", "fmls", "fmulx", "fabd", "fmaxp", "fminp", "faddp"} {
 		add(name, instructionSpec{forms: vector(3)})
+	}
+	for _, name := range []string{"mla", "mls", "mul"} { // by element
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opVA, opVA, opVL})
+		instructionTable[name] = spec
+	}
+	for _, name := range []string{"fmulx", "fabd"} { // scalar
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opFS, opFS, opFS}, form{opFD, opFD, opFD}, form{opFH, opFH, opFH})
+		instructionTable[name] = spec
+	}
+	// By-element multiplies: vector and scalar destinations.
+	for _, name := range []string{"fmul", "fmla", "fmls", "fmulx"} {
+		spec, known := instructionTable[name]
+		if !known {
+			spec = instructionSpec{sysregOperand: -1}
+		}
+		spec.forms = append(spec.forms, form{opVA, opVA, opVL}, form{opFS, opFS, opVL}, form{opFD, opFD, opVL}, form{opFH, opFH, opVL})
+		instructionTable[name] = spec
 	}
 	for _, name := range []string{"add", "sub", "mul", "and", "orr", "eor", "bic", "orn"} {
 		spec := instructionTable[name]
@@ -74,26 +103,58 @@ func init() {
 		spec.sysregOperand = -1
 		instructionTable[name] = spec
 	}
-	// Vector compares (register and against zero).
-	for _, name := range []string{"cmeq", "cmgt", "cmge", "cmhi", "cmhs", "cmtst", "fcmeq", "fcmgt", "fcmge"} {
-		add(name, instructionSpec{forms: append(vector(3), form{opVA, opVA, opImm}, form{opVA, opVA, opFImm})})
+	// Vector compares: register forms for all; integer compares against
+	// `#0` for eq/gt/ge/lt/le only; float compares against `#0.0` (Arm's
+	// templates — cmhi/cmhs/cmtst have no zero form, the float ones take no
+	// integer immediate). Scalar forms on d (and s/h for the float ones).
+	for _, name := range []string{"cmeq", "cmgt", "cmge"} {
+		add(name, instructionSpec{forms: append(vector(3), form{opVA, opVA, opImm}, form{opFD, opFD, opFD}, form{opFD, opFD, opImm})})
 	}
-	for _, name := range []string{"cmlt", "cmle", "fcmlt", "fcmle"} {
-		add(name, instructionSpec{forms: []form{{opVA, opVA, opImm}, {opVA, opVA, opFImm}}})
+	for _, name := range []string{"cmhi", "cmhs", "cmtst"} {
+		add(name, instructionSpec{forms: append(vector(3), form{opFD, opFD, opFD})})
+	}
+	for _, name := range []string{"cmlt", "cmle"} {
+		add(name, instructionSpec{forms: []form{{opVA, opVA, opImm}, {opFD, opFD, opImm}}})
+	}
+	for _, name := range []string{"fcmeq", "fcmgt", "fcmge"} {
+		add(name, instructionSpec{forms: append(vector(3), form{opVA, opVA, opFImm}, form{opFS, opFS, opFS}, form{opFD, opFD, opFD}, form{opFH, opFH, opFH}, form{opFS, opFS, opFImm}, form{opFD, opFD, opFImm}, form{opFH, opFH, opFImm})})
+	}
+	for _, name := range []string{"facge", "facgt"} { // absolute compares: registers only
+		add(name, instructionSpec{forms: append(vector(3), form{opFS, opFS, opFS}, form{opFD, opFD, opFD}, form{opFH, opFH, opFH})})
+	}
+	for _, name := range []string{"fcmlt", "fcmle"} {
+		add(name, instructionSpec{forms: []form{{opVA, opVA, opFImm}, {opFS, opFS, opFImm}, {opFD, opFD, opFImm}, {opFH, opFH, opFImm}}})
 	}
 	// Reductions to a scalar.
-	for _, name := range []string{"addv", "smaxv", "sminv", "umaxv", "uminv", "fmaxv", "fminv", "fmaxnmv", "fminnmv"} {
-		add(name, instructionSpec{forms: []form{{opFS, opVA}, {opFH, opVA}, {opFD, opVA}, {opFQ, opVA}}})
+	// Integer reductions land in b/h/s (the element size), the long ones
+	// in h/s/d, the float ones in h/s (Arm's <V> tables).
+	for _, name := range []string{"addv", "smaxv", "sminv", "umaxv", "uminv"} {
+		add(name, instructionSpec{forms: []form{{opFB, opVA}, {opFH, opVA}, {opFS, opVA}}})
+	}
+	for _, name := range []string{"fmaxv", "fminv", "fmaxnmv", "fminnmv"} {
+		add(name, instructionSpec{forms: []form{{opFH, opVA}, {opFS, opVA}}})
 	}
 	for _, name := range []string{"saddlv", "uaddlv"} {
 		add(name, instructionSpec{forms: []form{{opFH, opVA}, {opFS, opVA}, {opFD, opVA}}})
 	}
 	// Vector shifts, widening and narrowing.
-	for _, name := range []string{"shl", "ushr", "sshr", "sli", "sri", "ssra", "usra", "shrn", "rshrn", "sqshrn", "uqshrn", "sqrshrn", "uqrshrn", "ushll", "sshll", "shll", "uqshl", "sqshl"} {
+	for _, name := range []string{"shl", "ushr", "sshr", "sli", "sri", "ssra", "usra", "shrn", "rshrn", "sqshrn", "uqshrn", "sqrshrn", "uqrshrn", "ushll", "sshll", "shll"} {
 		add(name, instructionSpec{forms: []form{{opVA, opVA, opImm}}})
 	}
+	for _, name := range []string{"sqshrn", "uqshrn", "sqrshrn", "uqrshrn"} { // scalar narrowing
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opFB, opFH, opImm}, form{opFH, opFS, opImm}, form{opFS, opFD, opImm})
+		instructionTable[name] = spec
+	}
+	for _, name := range []string{"uqshl", "sqshl"} { // register and immediate, vector and scalar
+		add(name, instructionSpec{forms: []form{{opVA, opVA, opImm}, {opVA, opVA, opVA}, {opFB, opFB, opImm}, {opFH, opFH, opImm}, {opFS, opFS, opImm}, {opFD, opFD, opImm}}})
+	}
 	for _, name := range []string{"ushl", "sshl", "urshl", "srshl"} {
-		add(name, instructionSpec{forms: vector(3)})
+		add(name, instructionSpec{forms: append(vector(3), form{opFD, opFD, opFD})})
+	}
+	// Sign/zero-extend long: aliases of sshll/ushll by #0.
+	for _, name := range []string{"sxtl", "sxtl2", "uxtl", "uxtl2"} {
+		add(name, instructionSpec{forms: vector(2)})
 	}
 	for _, name := range []string{"xtn", "sqxtn", "uqxtn", "sqxtun", "xtn2", "sqxtn2", "uqxtn2", "uaddlp", "saddlp", "uadalp", "sadalp"} {
 		add(name, instructionSpec{forms: vector(2)})
@@ -108,12 +169,12 @@ func init() {
 		instructionTable[name] = spec
 	}
 	// Moves, inserts, extracts, permutes.
-	add("dup", instructionSpec{forms: []form{{opVA, opW}, {opVA, opX}, {opVA, opVL}, {opFS, opVL}, {opFD, opVL}, {opFH, opVL}}})
+	add("dup", instructionSpec{forms: []form{{opVA, opW}, {opVA, opX}, {opVA, opVL}, {opFB, opVL}, {opFH, opVL}, {opFS, opVL}, {opFD, opVL}}})
 	add("ins", instructionSpec{forms: []form{{opVL, opW}, {opVL, opX}, {opVL, opVL}}})
 	add("umov", instructionSpec{forms: []form{{opW, opVL}, {opX, opVL}}})
 	add("smov", instructionSpec{forms: []form{{opW, opVL}, {opX, opVL}}})
 	mov := instructionTable["mov"]
-	mov.forms = append(mov.forms, form{opVA, opVA}, form{opW, opVL}, form{opX, opVL}, form{opVL, opW}, form{opVL, opX}, form{opVL, opVL})
+	mov.forms = append(mov.forms, form{opVA, opVA}, form{opW, opVL}, form{opX, opVL}, form{opVL, opW}, form{opVL, opX}, form{opVL, opVL}, form{opFB, opVL}, form{opFH, opVL}, form{opFS, opVL}, form{opFD, opVL})
 	instructionTable["mov"] = mov
 	add("ext", instructionSpec{forms: []form{{opVA, opVA, opVA, opImm}}})
 	for _, name := range []string{"tbl", "tbx"} {
@@ -122,29 +183,35 @@ func init() {
 	for _, name := range []string{"zip1", "zip2", "uzp1", "uzp2", "trn1", "trn2"} {
 		add(name, instructionSpec{forms: vector(3)})
 	}
-	for _, name := range []string{"movi", "mvni"} {
-		add(name, instructionSpec{forms: []form{{opVA, opImm}, {opFD, opImm}}})
+	add("movi", instructionSpec{forms: []form{{opVA, opImm}, {opFD, opImm}}})
+	add("mvni", instructionSpec{forms: []form{{opVA, opImm}}}) // no scalar form
+	// Vector bitwise immediates (`orr v0.4s, #imm{, lsl #n}`).
+	for _, name := range []string{"bic", "orr"} {
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opVA, opImm})
+		instructionTable[name] = spec
 	}
 	// Absolute compares, pairwise scalar reductions, reciprocal estimates
 	// and steps, conditional compares, the inexact narrowing conversion,
 	// and the second-half conversions.
-	for _, name := range []string{"facge", "facgt"} {
-		add(name, instructionSpec{forms: append(scalar(3), vector(3)...)})
-	}
 	for _, name := range []string{"fmaxnmp", "fminnmp"} {
-		add(name, instructionSpec{forms: append(vector(3), form{opFS, opVA}, form{opFD, opVA})})
+		add(name, instructionSpec{forms: append(vector(3), form{opFH, opVA}, form{opFS, opVA}, form{opFD, opVA})})
 	}
 	for _, name := range []string{"faddp", "fmaxp", "fminp"} {
 		spec := instructionTable[name]
-		spec.forms = append(spec.forms, form{opFS, opVA}, form{opFD, opVA})
+		spec.forms = append(spec.forms, form{opFH, opVA}, form{opFS, opVA}, form{opFD, opVA})
 		instructionTable[name] = spec
 	}
-	for _, name := range []string{"frecpe", "frsqrte"} {
-		add(name, instructionSpec{forms: append(scalar(2), vector(2)...)})
+	for _, name := range []string{"frecpe", "frsqrte", "frecpx"} {
+		add(name, instructionSpec{forms: append(scalar(2), form{opFH, opFH})})
 	}
-	add("frecpx", instructionSpec{forms: scalar(2)})
+	for _, name := range []string{"frecpe", "frsqrte"} {
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, vector(2)...)
+		instructionTable[name] = spec
+	}
 	for _, name := range []string{"frecps", "frsqrts"} {
-		add(name, instructionSpec{forms: append(scalar(3), vector(3)...)})
+		add(name, instructionSpec{forms: append(scalar(3), append(vector(3), form{opFH, opFH, opFH})...)})
 	}
 	for _, name := range []string{"fccmp", "fccmpe"} {
 		add(name, instructionSpec{forms: []form{{opFS, opFS, opImm, opCond}, {opFD, opFD, opImm, opCond}, {opFH, opFH, opImm, opCond}}, readsFlags: true, setsFlags: true})
@@ -197,14 +264,25 @@ func init() {
 	for _, name := range []string{"ld1", "st1", "ld2", "st2", "ld3", "st3", "ld4", "st4", "ld1r", "ld2r", "ld3r", "ld4r"} {
 		add(name, instructionSpec{forms: []form{{opList, opMem}}, memory: true})
 	}
+	// Long multiplies by element (vector, and scalar for the saturating ones).
+	for _, name := range []string{"smlal", "smlsl", "smull", "umlal", "umlsl", "umull", "smlal2", "smlsl2", "smull2", "umlal2", "umlsl2", "umull2", "sqdmlal", "sqdmlsl", "sqdmull", "sqdmlal2", "sqdmlsl2", "sqdmull2"} {
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opVA, opVA, opVL})
+		instructionTable[name] = spec
+	}
+	for _, name := range []string{"sqdmlal", "sqdmlsl", "sqdmull"} {
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opFS, opFH, opVL}, form{opFD, opFS, opVL})
+		instructionTable[name] = spec
+	}
 	// Scalar and vector loads/stores through the general table: ldr/str/
 	// ldp/stp/ldur/stur accept the scalar views and q registers.
 	for _, name := range []string{"ldr", "str", "ldur", "stur"} {
 		spec := instructionTable[name]
-		spec.forms = append(spec.forms, form{opFS, opMem}, form{opFD, opMem}, form{opFQ, opMem}, form{opFH, opMem})
+		spec.forms = append(spec.forms, form{opFB, opMem}, form{opFH, opMem}, form{opFS, opMem}, form{opFD, opMem}, form{opFQ, opMem})
 		instructionTable[name] = spec
 	}
-	for _, name := range []string{"ldp", "stp"} {
+	for _, name := range []string{"ldp", "stp", "ldnp", "stnp"} {
 		spec := instructionTable[name]
 		spec.forms = append(spec.forms, form{opFS, opFS, opMem}, form{opFD, opFD, opMem}, form{opFQ, opFQ, opMem})
 		instructionTable[name] = spec
@@ -249,7 +327,7 @@ func mixedArrangementAllowed(mnemonic string) bool {
 		"uaddlp", "saddlp", "uadalp", "sadalp", "uaddl", "saddl", "usubl", "ssubl", "umull", "smull", "umlal", "smlal", "umlsl", "smlsl", "uaddw", "saddw", "usubw", "ssubw",
 		"uaddl2", "saddl2", "umull2", "smull2", "fcvtn", "fcvtl", "fcvtzs", "fcvtzu", "scvtf", "ucvtf", "tbl", "tbx", "ext",
 		"sdot", "udot", "usdot", "sudot", "bfdot", "smmla", "ummla", "usmmla", "bfmmla", "bfmlalb", "bfmlalt", "bfcvtn", "bfcvtn2",
-		"fmlal", "fmlsl", "fmlal2", "fmlsl2", "pmull", "pmull2", "sha1c", "sha1p", "sha1m", "sha256h", "sha256h2", "sha512h", "sha512h2", "addp",
+		"fmlal", "fmlsl", "fmlal2", "fmlsl2", "pmull", "pmull2", "sha1c", "sha1p", "sha1m", "sha256h", "sha256h2", "sha512h", "sha512h2", "addp", "sxtl", "sxtl2", "uxtl", "uxtl2",
 		"fcvtxn", "fcvtxn2", "fcvtl2", "fcvtn2", "addhn", "addhn2", "raddhn", "raddhn2", "subhn", "subhn2", "rsubhn", "rsubhn2",
 		"sabal", "uabal", "sabal2", "uabal2", "sabdl", "uabdl", "sabdl2", "uabdl2", "saddw2", "uaddw2", "ssubl2", "usubl2", "ssubw2", "usubw2",
 		"smlal2", "umlal2", "smlsl2", "umlsl2", "sqdmlal", "sqdmlsl", "sqdmull", "sqdmlal2", "sqdmlsl2", "sqdmull2",

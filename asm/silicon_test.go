@@ -42,7 +42,7 @@ func siliconCases() []siliconCase {
 		x("extr", "extr x0, x0, x1, #17"), w("extr w", "extr w0, w0, w1, #5"),
 		x("rev", "rev x0, x0"), w("rev w", "rev w0, w0"), x("rev16", "rev16 x0, x0"), w("rev16 w", "rev16 w0, w0"), x("rev32", "rev32 x0, x0"), x("rbit", "rbit x0, x0"), w("rbit w", "rbit w0, w0"),
 		x("clz", "clz x0, x0"), w("clz w", "clz w0, w0"), x("cls", "cls x0, x0"), w("cls w", "cls w0, w0"),
-		x("sxtb", "sxtb x0, x0"), x("sxth", "sxth x0, x0"), x("sxtw", "sxtw x0, w0"), w("uxtb", "uxtb w0, w0"), w("uxth", "uxth w0, w0"), w("sxtb w", "sxtb w0, w0"), w("sxth w", "sxth w0, w0"),
+		x("sxtb", "sxtb x0, w0"), x("sxth", "sxth x0, w0"), x("sxtw", "sxtw x0, w0"), w("uxtb", "uxtb w0, w0"), w("uxth", "uxth w0, w0"), w("sxtb w", "sxtb w0, w0"), w("sxth w", "sxth w0, w0"),
 		x("movz/movk", "movz x0, #0x1234, lsl #16\n  movk x0, #0x5678, lsl #48\n  movk x0, #0x9abc"), x("movn", "movn x0, #0x10, lsl #32"),
 		x("mul", "mul x0, x0, x1"), w("mul w", "mul w0, w0, w1"), x("madd", "madd x0, x0, x1, x1"), x("msub", "msub x0, x0, x1, x1"), x("mneg", "mneg x0, x0, x1"),
 		x("smull", "smull x0, w0, w1"), x("umull", "umull x0, w0, w1"), x("smaddl", "smaddl x0, w0, w1, x1"), x("umaddl", "umaddl x0, w0, w1, x1"), x("smsubl", "smsubl x0, w0, w1, x1"), x("umsubl", "umsubl x0, w0, w1, x1"),
