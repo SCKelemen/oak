@@ -488,7 +488,7 @@ method body is checked under the receiver's entry authority (a borrowed
 receiver cannot be consumed or retained inside the method). In SemIR the
 receiver mode is the `resource.borrow`/`borrow-mut`/`consume` effect with
 the parameter `receiver`. A receiver mode is valid only on a method whose
-receiver type is a resource type. Imported or sealed signatures are the remaining boundary of milestone 2.
+receiver type is a resource type.
 
 **Contracts on function types.** A function-typed parameter may carry a
 **callable contract**: the resource modes (and fresh-return fact) required
@@ -506,6 +506,12 @@ In SemIR the requirement is the `resource.callable-borrow`,
 `callable-return-fresh` (`arg:N`) effects. Nested callable contracts
 (functions of functions) and ownership variance are not admitted until
 their substitutability laws are specified.
+
+Imports and sealing cannot erase modes: a protocol declared in one package
+(`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the
+program's internal names, so the same contract governs every importer's
+calls — qualified, open, selective, or through a sealed signature — and the
+diagnostics name the qualified spelling.
 
 The callable-boundary audit and proposed result provenance/lifetime relationships
 are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).

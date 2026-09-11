@@ -216,9 +216,13 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 	var out []ast.Statement
 	found := false
 	declared := map[string]bool{}
+	functions := map[string]*ast.FunctionStatement{}
 	for _, stmt := range program.Statements {
 		if name := declarationName(stmt); name != "" {
 			declared[name] = true
+		}
+		if fn, isFunction := stmt.(*ast.FunctionStatement); isFunction && fn.Name != nil && fn.Receiver == nil {
+			functions[fn.Name.Value] = fn
 		}
 	}
 	for _, stmt := range program.Statements {
@@ -243,7 +247,7 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 			continue
 		}
 		out = append(out, projected...)
-		if facts, has := machine.resourceFacts(); has {
+		if facts, has := machine.resourceFacts(functions, report); has {
 			resources = append(resources, facts)
 		}
 	}
@@ -257,8 +261,13 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 }
 
 // resourceFacts projects `via`-bound transitions into the typestate facts
-// the resource checker enforces (typechecker/resource_resolution.go).
-func (m *protocolMachine) resourceFacts() (typechecker.ResourceProtocolDeclaration, bool) {
+// the resource checker enforces (typechecker/resource_resolution.go). The
+// parameter modes written on the via clause resolve against the callable's
+// declaration in the elaborated program — parameter names to zero-based
+// indices, `receiver` to the receiver slot — so the same declaration reads
+// identically whether the callable lives in this package or an imported
+// one (internal names are already substituted by the module loader).
+func (m *protocolMachine) resourceFacts(functions map[string]*ast.FunctionStatement, report func(code string, node ast.Node, format string, args ...interface{})) (typechecker.ResourceProtocolDeclaration, bool) {
 	if len(m.decl.Resources) == 0 {
 		return typechecker.ResourceProtocolDeclaration{}, false
 	}
@@ -266,15 +275,62 @@ func (m *protocolMachine) resourceFacts() (typechecker.ResourceProtocolDeclarati
 	for _, r := range m.decl.Resources {
 		facts.ResourceTypes = append(facts.ResourceTypes, r.Value)
 	}
+	ok := true
 	for _, t := range m.decl.Transitions {
 		if t.Callable == nil {
 			continue
 		}
-		facts.Transitions = append(facts.Transitions, typechecker.ResourceTransitionDeclaration{
+		transition := typechecker.ResourceTransitionDeclaration{
 			Name: t.Name.Value + "@" + t.From.Value, Callable: t.Callable.Value, From: t.From.Value, To: t.To.Value,
-		})
+		}
+		if len(t.Modes) > 0 {
+			fn := functions[t.Callable.Value]
+			if fn == nil {
+				report(CodeProtocolShape, t.Callable, "transition %s: via %s names parameter modes, but %s is not a function declared in this program", t.Name.Value, t.Callable.Value, t.Callable.Value)
+				ok = false
+				continue
+			}
+			seen := map[string]bool{}
+			for _, entry := range t.Modes {
+				mode := typechecker.ResourceParameterBorrowed
+				switch entry.Mode {
+				case "borrowed mut":
+					mode = typechecker.ResourceParameterBorrowedMut
+				case "consumed":
+					mode = typechecker.ResourceParameterConsumed
+				}
+				if seen[entry.Name.Value] {
+					report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s twice", t.Name.Value, t.Callable.Value, entry.Name.Value)
+					ok = false
+					continue
+				}
+				seen[entry.Name.Value] = true
+				if entry.Name.Value == "receiver" {
+					if fn.Receiver == nil {
+						report(CodeProtocolShape, entry.Name, "transition %s: via %s marks a receiver mode, but %s has no receiver", t.Name.Value, t.Callable.Value, t.Callable.Value)
+						ok = false
+						continue
+					}
+					transition.Receiver = mode
+					continue
+				}
+				index := -1
+				for i, parameter := range fn.Parameters {
+					if parameter != nil && parameter.Name != nil && parameter.Name.Value == entry.Name.Value {
+						index = i
+					}
+				}
+				if index < 0 {
+					report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s, which is not a parameter of %s", t.Name.Value, t.Callable.Value, entry.Name.Value, t.Callable.Value)
+					ok = false
+					continue
+				}
+				transition.Parameters = append(transition.Parameters, typechecker.ResourceParameterDeclaration{Index: index, Mode: mode})
+			}
+		}
+		facts.Transitions = append(facts.Transitions, transition)
 	}
-	return facts, len(facts.Transitions) > 0
+	return facts, ok && len(facts.Transitions) > 0
 }
 
 // project builds the Oak declarations: NameState, NameStep, name_initial,

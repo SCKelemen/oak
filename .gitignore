@@ -3,3 +3,7 @@
 verify_golden
 spec/lean/.lake/
 spec/lean/lake-manifest.json
+
+# Sail writes an SMT query cache beside its working directory
+sail_smt_cache/
+spec/sail/lean/.lake/
