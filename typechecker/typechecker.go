@@ -2243,6 +2243,35 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			effectiveArgs++
 			continue
 		}
+		// An argument vector (docs/spec/92-ffi.md section 2.5.6) and an
+		// out-parameter (section 2.5.7) each stand for one c.Ptr parameter
+		// of an extern binding.
+		if bytes, slots, isArgv := tc.ArgvArgument(arg); isArgv {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					"c.argv_of is only an argument to an extern binding")
+				d.AddNote("c.argv_of(bytes, slots) forms a NUL-terminated pointer vector for the duration of one foreign call; Oak functions take the view and span themselves (docs/spec/92-ffi.md section 2.5.6)")
+				return nil
+			}
+			if !tc.checkArgvArgument(arg, bytes, slots, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs++
+			continue
+		}
+		if operand, isOut := tc.OutArgument(arg); isOut {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					"c.out is only an argument to an extern binding")
+				d.AddNote("c.out(x) hands C the address of a local for the duration of one foreign call; Oak functions take a span or return a value (docs/spec/92-ffi.md section 2.5.7)")
+				return nil
+			}
+			if !tc.checkOutArgument(arg, operand, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs++
+			continue
+		}
 		effectiveArgs++
 	}
 	if !spansValid {
@@ -2284,6 +2313,16 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if _, isCString := tc.CStringArgument(arg); isCString {
 			// Validated in the pre-pass above; it stands for a c.String.
 			argTypes[i] = &CType{Name: "String"}
+			continue
+		}
+		if _, _, isArgv := tc.ArgvArgument(arg); isArgv {
+			// Validated in the pre-pass above; it stands for a c.Ptr.
+			argTypes[i] = &CType{Name: "Ptr"}
+			continue
+		}
+		if _, isOut := tc.OutArgument(arg); isOut {
+			// Validated in the pre-pass above; it stands for a c.Ptr.
+			argTypes[i] = &CType{Name: "Ptr"}
 			continue
 		}
 		pos := paramPos[i]
