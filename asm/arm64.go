@@ -46,6 +46,7 @@ const (
 	opSysReg                     // system register name
 	opOption                     // barrier option
 	opCond                       // condition code operand of csel/cset
+	opFB                         // b scalar (8-bit view)
 	opFH                         // h scalar (16-bit float view)
 	opFS                         // s scalar (32-bit float view)
 	opFD                         // d scalar (64-bit float view)
@@ -186,9 +187,9 @@ func operandMatches(class operandClass, operand Operand) bool {
 	case opCond:
 		_, ok := operand.(Condition)
 		return ok
-	case opFH, opFS, opFD, opFQ:
+	case opFB, opFH, opFS, opFD, opFQ:
 		reg, ok := operand.(Register)
-		letter := map[operandClass]string{opFH: "h", opFS: "s", opFD: "d", opFQ: "q"}[class]
+		letter := map[operandClass]string{opFB: "b", opFH: "h", opFS: "s", opFD: "d", opFQ: "q"}[class]
 		return ok && reg.Class == ClassV && reg.Vec == letter && reg.Lane < 0
 	case opVA:
 		reg, ok := operand.(Register)

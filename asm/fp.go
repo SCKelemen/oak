@@ -179,7 +179,9 @@ func mixedArrangementAllowed(mnemonic string) bool {
 	switch mnemonic {
 	case "ushll", "sshll", "shll", "xtn", "xtn2", "sqxtn", "sqxtn2", "uqxtn", "uqxtn2", "sqxtun", "shrn", "rshrn", "sqshrn", "uqshrn", "sqrshrn", "uqrshrn",
 		"uaddlp", "saddlp", "uadalp", "sadalp", "uaddl", "saddl", "usubl", "ssubl", "umull", "smull", "umlal", "smlal", "umlsl", "smlsl", "uaddw", "saddw", "usubw", "ssubw",
-		"uaddl2", "saddl2", "umull2", "smull2", "fcvtn", "fcvtl", "fcvtzs", "fcvtzu", "scvtf", "ucvtf", "tbl", "tbx", "ext":
+		"uaddl2", "saddl2", "umull2", "smull2", "fcvtn", "fcvtl", "fcvtzs", "fcvtzu", "scvtf", "ucvtf", "tbl", "tbx", "ext",
+		"sdot", "udot", "usdot", "sudot", "bfdot", "smmla", "ummla", "usmmla", "bfmmla", "bfmlalb", "bfmlalt", "bfcvtn", "bfcvtn2",
+		"fmlal", "fmlsl", "fmlal2", "fmlsl2", "pmull", "pmull2", "sha1c", "sha1p", "sha1m", "sha256h", "sha256h2", "sha512h", "sha512h2", "addp":
 		return true
 	}
 	return false

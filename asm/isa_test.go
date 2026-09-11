@@ -97,6 +97,31 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"ld3": "cmp w3, #6\n  b.lo short\n  ld3 {v0.2d, v1.2d, v2.2d}, [x2]\n  mov x0, #0\n  ret\nshort:", "st3": "cmp w3, #6\n  b.lo short\n  st3 {v16.2d, v17.2d, v18.2d}, [x2]\n  mov x0, #0\n  ret\nshort:",
 		"ld4": "cmp w3, #8\n  b.lo short\n  ld4 {v0.2d, v1.2d, v2.2d, v3.2d}, [x2]\n  mov x0, #0\n  ret\nshort:", "st4": "cmp w3, #8\n  b.lo short\n  st4 {v16.2d, v17.2d, v18.2d, v19.2d}, [x2]\n  mov x0, #0\n  ret\nshort:",
 	}
+	apple := map[string]string{
+		"pacia": "pacia x9, x0", "pacib": "pacib x9, x0", "pacda": "pacda x9, x0", "pacdb": "pacdb x9, x0", "autia": "autia x9, x0", "autib": "autib x9, x0", "autda": "autda x9, x0", "autdb": "autdb x9, x0",
+		"paciza": "mov x9, x0\n  paciza x9", "pacizb": "mov x9, x0\n  pacizb x9", "pacdza": "mov x9, x0\n  pacdza x9", "pacdzb": "mov x9, x0\n  pacdzb x9", "autiza": "mov x9, x0\n  autiza x9", "autizb": "mov x9, x0\n  autizb x9", "autdza": "mov x9, x0\n  autdza x9", "autdzb": "mov x9, x0\n  autdzb x9", "xpaci": "mov x9, x0\n  xpaci x9", "xpacd": "mov x9, x0\n  xpacd x9",
+		"paciasp": "paciasp", "pacibsp": "pacibsp", "autiasp": "autiasp", "autibsp": "autibsp", "paciaz": "paciaz", "pacibz": "pacibz", "autiaz": "autiaz", "autibz": "autibz", "pacia1716": "pacia1716", "pacib1716": "pacib1716", "autia1716": "autia1716", "autib1716": "autib1716", "xpaclri": "xpaclri",
+		"pacga": "pacga x9, x0, x1",
+		"bti":   "bti c", "sb": "sb", "dgh": "dgh", "wfet": "wfet x0", "wfit": "wfit x0",
+		"setf8": "setf8 w0", "setf16": "setf16 w0", "rmif": "cmp x0, x1\n  rmif x0, #3, #15", "axflag": "cmp x0, x1\n  axflag", "xaflag": "cmp x0, x1\n  xaflag",
+		"fjcvtzs": "fjcvtzs w9, d1",
+		"sdot":    "sdot v0.4s, v7.16b, v7.16b", "udot": "udot v0.4s, v7.16b, v7.16b", "usdot": "usdot v0.4s, v7.16b, v7.16b", "sudot": "sudot v0.4s, v7.16b, v7.16b", "bfdot": "bfdot v0.4s, v17.8h, v17.8h",
+		"smmla": "smmla v0.4s, v7.16b, v7.16b", "ummla": "ummla v0.4s, v7.16b, v7.16b", "usmmla": "usmmla v0.4s, v7.16b, v7.16b", "bfmmla": "bfmmla v0.4s, v17.8h, v17.8h",
+		"bfmlalb": "bfmlalb v0.4s, v17.8h, v17.8h", "bfmlalt": "bfmlalt v0.4s, v17.8h, v17.8h", "bfcvt": "bfcvt h0, s3", "bfcvtn": "bfcvtn v0.4h, v5.4s", "bfcvtn2": "mov v0.16b, v7.16b\n  bfcvtn2 v0.8h, v5.4s",
+		"fmlal": "fmlal v0.4s, v17.4h, v17.4h", "fmlsl": "fmlsl v0.4s, v17.4h, v17.4h", "fmlal2": "fmlal2 v0.4s, v17.4h, v17.4h", "fmlsl2": "fmlsl2 v0.4s, v17.4h, v17.4h",
+		"fcadd": "fcadd v0.4s, v5.4s, v6.4s, #90", "fcmla": "fcmla v0.4s, v5.4s, v6.4s, #180",
+		"frint32z": "frint32z d0, d1", "frint32x": "frint32x v0.4s, v5.4s", "frint64z": "frint64z s0, s3", "frint64x": "frint64x d0, d1",
+		"aese": "aese v0.16b, v7.16b", "aesd": "aesd v0.16b, v7.16b", "aesmc": "aesmc v0.16b, v7.16b", "aesimc": "aesimc v0.16b, v7.16b",
+		"sha1c": "sha1c q0, s3, v5.4s", "sha1p": "sha1p q0, s3, v5.4s", "sha1m": "sha1m q0, s3, v5.4s", "sha1h": "sha1h s0, s3", "sha1su0": "sha1su0 v0.4s, v5.4s, v6.4s", "sha1su1": "sha1su1 v0.4s, v5.4s",
+		"sha256h": "fmov d0, x0\n  sha256h q0, q0, v5.4s", "sha256h2": "fmov d0, x0\n  sha256h2 q0, q0, v5.4s", "sha256su0": "sha256su0 v0.4s, v5.4s", "sha256su1": "sha256su1 v0.4s, v5.4s, v6.4s",
+		"sha512h": "fmov d0, x0\n  sha512h q0, q0, v16.2d", "sha512h2": "fmov d0, x0\n  sha512h2 q0, q0, v16.2d", "sha512su0": "sha512su0 v0.2d, v16.2d", "sha512su1": "sha512su1 v0.2d, v16.2d, v16.2d",
+		"eor3": "eor3 v0.16b, v7.16b, v7.16b, v7.16b", "bcax": "bcax v0.16b, v7.16b, v7.16b, v7.16b", "rax1": "rax1 v0.2d, v16.2d, v16.2d", "xar": "xar v0.2d, v16.2d, v16.2d, #7", "pmull": "pmull v0.1q, v16.1d, v16.1d", "pmull2": "pmull2 v0.1q, v16.2d, v16.2d",
+		"ldapur": "cmp w3, #1\n  b.lo short\n  ldapur x9, [x2]\n  mov x0, #0\n  ret\nshort:", "ldapurb": "cmp w3, #1\n  b.lo short\n  ldapurb w9, [x2]\n  mov x0, #0\n  ret\nshort:", "ldapurh": "cmp w3, #1\n  b.lo short\n  ldapurh w9, [x2]\n  mov x0, #0\n  ret\nshort:",
+		"ldapursb": "cmp w3, #1\n  b.lo short\n  ldapursb x9, [x2]\n  mov x0, #0\n  ret\nshort:", "ldapursh": "cmp w3, #1\n  b.lo short\n  ldapursh x9, [x2]\n  mov x0, #0\n  ret\nshort:", "ldapursw": "cmp w3, #1\n  b.lo short\n  ldapursw x9, [x2]\n  mov x0, #0\n  ret\nshort:",
+		"stlur": "cmp w3, #1\n  b.lo short\n  stlur x0, [x2]\n  mov x0, #0\n  ret\nshort:", "stlurb": "cmp w3, #1\n  b.lo short\n  stlurb w0, [x2]\n  mov x0, #0\n  ret\nshort:", "stlurh": "cmp w3, #1\n  b.lo short\n  stlurh w0, [x2]\n  mov x0, #0\n  ret\nshort:",
+		"retaa": "mov x0, #0\n  retaa", "retab": "mov x0, #0\n  retab", "braa": "braa x1, x0", "brab": "brab x1, x0", "braaz": "braaz x1", "brabz": "brabz x1",
+		"blraa": "str x30, [sp, #-16]!\n  blraa x1, x0\n  ldr x30, [sp], #16", "blrab": "str x30, [sp, #-16]!\n  blrab x1, x0\n  ldr x30, [sp], #16", "blraaz": "str x30, [sp, #-16]!\n  blraaz x1\n  ldr x30, [sp], #16", "blrabz": "str x30, [sp, #-16]!\n  blrabz x1\n  ldr x30, [sp], #16",
+	}
 	system := map[string]string{
 		"mrs": "mrs x9, cntvct_el0", "msr": "msr cntvoff_el2, x0", "dc": "dc civac, x0", "ic": "ic iallu", "tlbi": "tlbi vmalle1is", "at": "at s1e1r, x0",
 		"svc": "svc #0", "hvc": "hvc #0", "smc": "smc #0",
@@ -114,6 +139,16 @@ func TestInstructionTableCoverage(t *testing.T) {
 		body, decl := "", "f: (a, b: u64, s: [*]u64) -> u64"
 		prologue, epilogue := "  bind x0 = a\n  bind x1 = b\n  bind x2, w3 = s\n  clobber x9, x10, x30\n  frame 16\n", "\n  mov x0, #0\n  ret"
 		switch {
+		case apple[name] != "":
+			prologue += "  clobber v0, v1, v2, v3, v4, v5, v6, v7, v16, v17, v18, v19\n"
+			body = fpPrologue + apple[name]
+			switch name {
+			case "retaa", "retab", "braa", "brab", "braaz", "brabz", "ldapur", "ldapurb", "ldapurh", "ldapursb", "ldapursh", "ldapursw", "stlur", "stlurb", "stlurh":
+				epilogue = "\n  mov x0, #0\n  ret"
+				if strings.HasPrefix(name, "ret") || strings.HasPrefix(name, "bra") || strings.HasPrefix(name, "brb") {
+					epilogue = ""
+				}
+			}
 		case fp[name] != "":
 			prologue += "  clobber v0, v1, v2, v3, v4, v5, v6, v7, v16, v17, v18, v19\n"
 			body = fpPrologue + fp[name]

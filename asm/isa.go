@@ -150,11 +150,11 @@ func memorySize(mnemonic string, class RegClass) int64 {
 		return 16 // refined per register view by memorySizeReg
 	}
 	switch mnemonic {
-	case "ldrb", "strb", "ldrsb", "ldurb", "sturb", "ldursb", "ldarb", "ldxrb", "ldaxrb", "ldaprb", "stlrb", "stxrb", "stlxrb":
+	case "ldrb", "strb", "ldrsb", "ldurb", "sturb", "ldursb", "ldarb", "ldxrb", "ldaxrb", "ldaprb", "stlrb", "stxrb", "stlxrb", "ldapurb", "ldapursb", "stlurb":
 		return 1
-	case "ldrh", "strh", "ldrsh", "ldurh", "sturh", "ldursh", "ldarh", "ldxrh", "ldaxrh", "ldaprh", "stlrh", "stxrh", "stlxrh":
+	case "ldrh", "strh", "ldrsh", "ldurh", "sturh", "ldursh", "ldarh", "ldxrh", "ldaxrh", "ldaprh", "stlrh", "stxrh", "stlxrh", "ldapurh", "ldapursh", "stlurh":
 		return 2
-	case "ldrsw", "ldursw":
+	case "ldrsw", "ldursw", "ldapursw":
 		return 4
 	case "ldpsw":
 		return 8

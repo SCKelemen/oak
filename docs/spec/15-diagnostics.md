@@ -237,8 +237,8 @@ the diagnostic must include the shortest useful programmer-visible alias or
 provenance chain connecting it to the consumed authority. It should not dump an
 internal alias-set identifier.
 
-For `OAK-B0112`, the primary label is the argument whose semantic parameter mode
-requires exclusive authority. The conflicting argument is a secondary label.
+For `OAK-B0112`, the primary label is the argument (or the receiver, labeled
+"receiver") whose semantic parameter mode requires exclusive authority. The conflicting argument is a secondary label.
 When the two arguments use different names, include the shortest useful alias or
 provenance chain showing why they identify one resource authority class. A call
 rejected for this conflict has not occurred semantically, so the diagnostic must

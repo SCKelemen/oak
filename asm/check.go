@@ -675,6 +675,54 @@ func (c *checker) instruction(instr Instruction) bool {
 			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
 		}
 		return false
+	case "retaa", "retab":
+		return c.ret(instr) // an authenticated return
+	case "braa", "brab", "braaz", "brabz":
+		for _, reg := range registerOperands(instr.Operands) {
+			c.read(instr, reg)
+		}
+		if c.disp != 0 {
+			c.errorf(instr.Line, "%s with sp displacement %d: the frame must be fully released", instr.Mnemonic, c.disp)
+		}
+		c.unreachable = true
+		return true
+	case "blraa", "blrab", "blraaz", "blrabz":
+		for _, reg := range registerOperands(instr.Operands) {
+			c.read(instr, reg)
+		}
+		c.indirectCall(instr)
+		return false
+	case "bti", "sb", "dgh":
+		return false
+	case "wfet", "wfit":
+		c.read(instr, instr.Operands[0].(Register))
+		return false
+	case "setf8", "setf16":
+		c.read(instr, instr.Operands[0].(Register))
+		c.flagsValid = true
+		return false
+	case "rmif":
+		if !c.flagsValid {
+			c.errorf(instr.Line, "rmif rotates flags no dominating instruction produced")
+		}
+		c.read(instr, instr.Operands[0].(Register))
+		if shift := instr.Operands[1].(Immediate).Value; shift < 0 || shift > 63 {
+			c.errorf(instr.Line, "rmif: shift %d is not below 64", shift)
+		}
+		if mask := instr.Operands[2].(Immediate).Value; mask < 0 || mask > 15 {
+			c.errorf(instr.Line, "rmif: mask %d is not a 4-bit flag pattern", mask)
+		}
+		c.flagsValid = true
+		return false
+	case "axflag", "xaflag":
+		if !c.flagsValid {
+			c.errorf(instr.Line, "%s converts flags no dominating instruction produced", instr.Mnemonic)
+		}
+		return false
+	case "fcadd", "fcmla":
+		if rotation := instr.Operands[len(instr.Operands)-1].(Immediate).Value; rotation%90 != 0 || rotation < 0 || rotation > 270 || (instr.Mnemonic == "fcadd" && rotation != 90 && rotation != 270) {
+			c.errorf(instr.Line, "%s: rotation #%d is not one of the encodable rotations", instr.Mnemonic, rotation)
+		}
 	case "br":
 		// An indirect terminal transfer: the frame is released and the
 		// callee-saved obligations met, as for ret; the target is unknown.
@@ -768,6 +816,12 @@ func (c *checker) instruction(instr Instruction) bool {
 	dest := regs[0]
 	for _, source := range regs[1:] {
 		c.read(instr, source)
+	}
+	if pacTransparent(instr.Mnemonic) {
+		return false // signing the link register is not a tracked write
+	}
+	if pacInPlace(instr.Mnemonic) {
+		c.read(instr, dest)
 	}
 	switch instr.Mnemonic {
 	case "ubfx", "ubfiz", "sbfx", "bfi":
@@ -1050,7 +1104,7 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 // register as written).
 func isStoreMnemonic(mnemonic string) bool {
 	switch mnemonic {
-	case "str", "stp", "strb", "strh", "stur", "sturb", "sturh", "stlr", "stlrb", "stlrh":
+	case "str", "stp", "strb", "strh", "stur", "sturb", "sturh", "stlr", "stlrb", "stlrh", "stlur", "stlurb", "stlurh":
 		return true
 	}
 	return false

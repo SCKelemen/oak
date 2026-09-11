@@ -110,7 +110,7 @@ type FloatImmediate struct{ Value float64 }
 func (RegisterList) operandKind() string   { return "register list" }
 func (FloatImmediate) operandKind() string { return "float immediate" }
 
-var vectorArrangements = map[string]int{"8b": 8, "16b": 16, "4h": 4, "8h": 8, "2s": 2, "4s": 4, "1d": 1, "2d": 2}
+var vectorArrangements = map[string]int{"8b": 8, "16b": 16, "4h": 4, "8h": 8, "2s": 2, "4s": 4, "1d": 1, "2d": 2, "1q": 1}
 var scalarVectorWidths = map[byte]int{'b': 1, 'h': 2, 's': 4, 'd': 8, 'q': 16}
 
 // VecBytes is the byte width of a vector-class register view.
@@ -138,6 +138,8 @@ func laneBytes(arrangement string) int {
 		return 4
 	case 'd':
 		return 8
+	case 'q':
+		return 16
 	}
 	return 0
 }
