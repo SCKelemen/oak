@@ -168,6 +168,7 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			TypeParams:   fn.TypeParams,
 			Name:         fn.Name,
 			Receiver:     fn.Receiver,
+			Lowering:     fn.Lowering, // the protocol projection's compiler-known lowering rides along
 			Parameters:   fn.Parameters,
 			ReturnType:   fn.ReturnType,
 			Body:         loweredBody,

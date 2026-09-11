@@ -66,6 +66,12 @@ var pathSource string
 //go:embed grapheme.oak
 var graphemeSource string
 
+// normalize: UAX #15 normalization forms over UTF-8 views
+// (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed normalize.oak
+var normalizeSource string
+
 // float: shortest and correctly rounded decimal text for f64 and f32
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -158,7 +164,7 @@ var Prelude = baseSource
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
 	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource) + "\n" + flatten(pathSource) + "\n" + flatten(graphemeSource) + "\n" + flatten(floatSource)
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource) + "\n" + flatten(pathSource) + "\n" + flatten(graphemeSource) + "\n" + flatten(floatSource) + "\n" + flatten(normalizeSource)
 
 var (
 	clauseLine = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
@@ -166,7 +172,7 @@ var (
 	// A package qualifier is only a qualifier when nothing precedes it: after
 	// a `.` it is a field named like a package (the `Url` record's `path`), so
 	// the leading context is kept and only the qualifier is dropped.
-	qualification = regexp.MustCompile(`(^|[^.\w])(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid|path|grapheme|float)\.`)
+	qualification = regexp.MustCompile(`(^|[^.\w])(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid|path|grapheme|float|normalize)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -217,6 +223,7 @@ var Packages = map[string]string{
 	"uuid":            uuidSource,
 	"path":            pathSource,
 	"grapheme":        graphemeSource,
+	"normalize":       normalizeSource,
 	"float":           floatSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,

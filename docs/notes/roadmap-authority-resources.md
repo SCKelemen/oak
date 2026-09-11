@@ -250,6 +250,17 @@ explicit contracts. Parallel reduction needs algebraic laws and a
 reproducibility policy — floating-point addition is not associative.
 Report improvements only when measured.
 
+**Landed (first increment, 2026-09-12):** protocol machines without a
+data record lower to compile-time transition tables — shift DFAs up to
+ten states, dense `u8` tables otherwise — with `name_run` over a byte view
+(`112-protocols.md` §2a, `90-backend.md` §14, `Oak.Protocol`). Measured
+against the branch tree the same declarations produced before: 3x to 15x
+on input-driven steps, and the emitted UTF-8 validator at the hand-written
+shift DFA's 0.5 ns per byte (`benchmarks/state-machines/`). The method —
+find the fastest structure for a golden use case, prove it computes the
+declaration, make the declaration the only thing the user writes — is the
+one this milestone continues with.
+
 ## 10. Device custody and concurrency
 
 Transferable custody vs concurrent sharing. Pilot one real CPU → device →

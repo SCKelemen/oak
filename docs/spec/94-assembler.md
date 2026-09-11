@@ -897,9 +897,35 @@ args }`, then `v` — with fresh temporaries so the arguments read the old
 parameters, as the compiler's own layout does), so the compiled
 `count_down` is proven by coupling and the 64-bit `fact` agrees on every
 witness (its product's continue-condition proof exceeds the budget).
+**Third increment — floating point.** `f32`/`f64` parameters, locals,
+results, and span elements: arguments and results in `s0`–`s7`/`d0`–`d7`
+by their own AAPCS64 count, expression temporaries in `v16`–`v23`,
+variables in the callee-saved `v8`–`v15` with their `d` views saved in
+pairs and restored before `ret`; literals as their IEEE bit pattern through
+an integer register and `fmov`; `+ - * /` and unary minus as
+`fadd`/`fsub`/`fmul`/`fdiv`/`fneg` (nothing is contracted, as the C
+backend's `FP_CONTRACT OFF` states); comparisons as `fcmp` with the codes
+that read the flags as C does (`mi`, `ls`, `gt`, `ge`, `eq`, `ne`, so an
+unordered pair is unequal and neither below nor above); widening `f64(x)`
+and `f32_round_f64` through `fcvt`; `fN_round_iM` through `scvtf`/`ucvtf`;
+`bits` through `fmov`; `iN_saturating_fM` through `fcvtzs`/`fcvtzu` (which
+saturate at the register and send NaN to 0, the helper's semantics) with a
+`cmp`/`csel` clamp to a narrower target's range; `iN_trunc_fM` with the C
+backend's range check first (NaN or a value outside the target's open
+interval traps) and the correctly rounded intrinsics that are one
+instruction each (`sqrt abs floor ceil trunc round round_even min max
+min_num max_num`, `fma` as `fmadd`). The checker now holds `d8`–`d15` to
+the callee-saved obligation it held `x19`–`x30` to — readable on entry,
+written only after a save, restored before every `ret`, with
+`smstart`/`smstop` (which zero them) counting as writes — which found that
+the shipped SME kernel had been clobbering the caller's `d8`–`d15`; it
+saves them now. Executed (`TestE2ENativeFloats`): thirteen float
+functions natively against the C backend and the portable realization,
+including a float span reduction and a store loop, and an out-of-range
+`trunc` trapping in both. Float bodies are trusted by the verifier (§5).
 Next increments: `break` as a second loop exit in the recognizer,
-records, floating point through the `s`/`d` views, and spans with calls
-(spilling the pair under a re-derivable fact).
+records, and spans with calls (spilling the pair under a re-derivable
+fact).
 
 
 

@@ -48,10 +48,32 @@ sequence of entries separated by newlines or commas:
   every field; arrays as typed array literals).
 - `resource T` — zero or more nominal types the protocol governs (§5).
 - `name(param: T)?: From -> To (when guard)? (then { effects })? (via callable)?`
-  — one transition line. The guard is a Bool expression over `data.field`
-  and `data.field[i]` reads and the payload; the effects are statements over
-  `data.field = e` and `data.field[i] = e` and the payload. Both use ordinary
-  Oak and are checked by every gate once projected. An index is checked at
+  — one transition line. The guard is a Bool expression over `data.field`,
+  `data.field[i]` and `data.field[i].sub` reads (an array of records: the
+  element type is a declared record), the payload, and the **quantifier
+  forms** below; the effects are statements over `data.field = e`,
+  `data.field[i] = e` and `data.field[i].sub = e` and the payload. Both use
+  ordinary Oak and are checked by every gate once projected.
+- Quantifier forms over a fixed array field: `count(data.f)` (`u32`, the
+  number of true slots of an `[N]Bool` field), `all(data.f)`,
+  `any(data.f)`, `none(data.f)`, and over an array of records
+  `count(data.peers, acked)`, `all(data.peers, acked)`,
+  `any(data.peers, acked)`, `none(data.peers, acked)`, where the second
+  argument names a `Bool` field of the element record. Each distinct use
+  projects one bounded helper (`name_count_acks: (data: NameData): u32`,
+  a `while` over the array) that the guard calls, so the Oak gate sees a
+  plain fold; the model-checker module writes `Cardinality({k \in 0..N-1 :
+  f[k]})` (adding `FiniteSets`) and the bounded `\A`/`\E`. A quorum guard
+  is therefore declared once — `commit: Normal -> Normal when
+  count(data.acks) >= u32(2)` — and both gates read it. `Oak.ProtocolQuorum`
+  fixes the shared meaning over a Bool vector: `count ≤ N`; `all`, `any`,
+  `none` are exactly `count = N`, `count > 0`, `count = 0`; acknowledging
+  a slot never lowers the count (`quorum_stable`). Shape errors
+  (`OAK-M0301`): a form over a field `data` does not declare, over a
+  non-array field, a one-argument form over non-`Bool` elements, a
+  two-argument form whose element is not a declared record or whose named
+  field is not `Bool`. Multi-field payloads per step remain one scalar
+  (the typed-command derive admits one); a record payload is a follow-up. An index is checked at
   run time like any Oak index, so a guard that indexes by the payload
   bounds it first (`u32(who) < u32(2) && data.parked[u32(who)]`); the
   model-checker module gets the same conjunct and a payload domain that
@@ -105,6 +127,62 @@ one-element `NameData` array it spans), asks `name_legal` before acting, and
 moves with `name_next`; an illegal step is a bug in the caller and traps like
 any failed assertion.
 
+### 2a. Lowering: the declaration dictates the code
+
+A machine without a `data` record is lowered by the C backend from a
+**transition table the compiler computes from the declaration**
+(`90-backend.md` §14); the Oak projections above remain its meaning for
+the interpreter and the Lean extraction, and the backend's code is proved
+to compute the same function (`Oak.Protocol`). The symbols of the table
+are the step tags — a payload no guard reads leaves its step one symbol —
+or, for a machine with exactly one step whose `u8` payload guards read, the
+256 payload values: every guard is evaluated at compile time for every
+value, so a byte-driven machine (a UTF-8 validator, a tokenizer) becomes a
+table indexed by the input byte. A guard outside the evaluator's vocabulary
+(the payload, literals, width conversions, `+ - * / %`, comparisons,
+`&& || !`) leaves the branch-tree projection in place.
+
+Two forms, chosen by the machine's size and never by the program's use:
+
+| Form | When | `next` | `legal` |
+| --- | --- | --- | --- |
+| shift DFA | states plus the sink at most ten | `(rows[symbol] >> state) & 63`: one load, one shift, one mask | the same, compared with the sink |
+| dense table | otherwise, up to 254 states and 64 KiB | `table[state][symbol]`: one load | one load, one compare |
+
+Under the shift form the state type's tags are the field offsets `6 * i`
+(`ADTType.TagValues`), a representation choice matching compares by name
+and nothing else observes. The sentinel is the sink, one past the last
+state; `next` traps on it exactly where the branch tree asserted.
+
+A byte-driven machine also projects **`name_run`**:
+
+```oak
+utf8_run: (state: Utf8State, bytes: []u8): Utf8State
+```
+
+which steps the whole view with the sink absorbing and checks once at the
+end: it ends in the declared final state when every step was legal and
+traps when any was not — `Oak.Protocol.runSink_correct` — so the loop body
+carries no branch. Measured on the UTF-8 validator below, the emitted code
+runs at the speed of the hand-written shift DFA it is modeled on
+(`benchmarks/state-machines/`).
+
+Payload guards without a data record are honored: `legal` is the
+disjunction of the step's lines whose source state and guard hold, and
+`next` takes the first such line, in declaration order — the same
+first-match rule as the data-carrying projection. (Until 2026-09-12 the
+projection dropped these guards; the byte-driven shape below did not work.)
+
+```oak
+Utf8: protocol = {
+  initial Accept
+  byte(b: u8): Accept -> Accept when b < u8(128)
+  byte(b: u8): Accept -> Two when b >= u8(194) && b <= u8(223)
+  byte(b: u8): Two -> Accept when b >= u8(128) && b <= u8(191)
+  ...
+}
+```
+
 ## 3. Deterministic-simulation actions
 
 `NameStep` satisfies the typed-command shape of `110-testing.md`, so
@@ -127,13 +205,19 @@ one action per step name — the disjunction of its lines, each
 <<rest>>`, with a parameter for the payload — `Next` as the disjunction of
 the actions with payloads quantified over a declared `CONSTANT` per payload
 name (`on` -> `On`), `TypeOK` (`Nat`, `Int`, `BOOLEAN` by field type), and
-`Spec`. Guards and effects translate from the subset a line may use: field
-and element reads, the payload, literals, width conversions, `+ - * / %`,
-comparisons, `&& || !`, `data.field = expr`, and `data.field[i] = expr`
-(element stores on one array fold into one `[field EXCEPT ![i] = v, ...]`);
-an `[N]T` field is a function `[0..N-1 -> T]`, initialized as one arrow
-when every element agrees and as a `CASE` otherwise; anything else stops the
-export naming the line. The module is complete for what the declaration says and
+`Spec`. Guards and effects translate from the subset a line may use: field,
+element and element-field reads (`peers[i].acked`), the payload, literals,
+width conversions, `+ - * / %`, comparisons, `&& || !`, the quantifier
+forms (`Cardinality({k \in 0..N-1 : f[k]})` with `EXTENDS FiniteSets`,
+`\A k \in 0..N-1 : f[k]`, `\E`, and `~f[k]` under `\A` for `none`),
+`data.field = expr`, `data.field[i] = expr` and `data.field[i].sub = expr`
+(element and element-field stores on one array fold into one
+`[field EXCEPT ![i] = v, ![j].sub = w, ...]`); an `[N]T` field is a
+function `[0..N-1 -> T]`, initialized as one arrow when every element
+agrees and as a `CASE` otherwise, and an element record `R` is the record
+set `[f1: D1, f2: D2]` from the program's declaration (`oak protocol -tla`
+reads it from the same file; `ProtocolTLAWithRecords` takes it);
+anything else stops the export naming the line. The module is complete for what the declaration says and
 checkable as is (TLC checks the modules of both examples above); scenarios
 extend it for liveness and environment assumptions in a module of their own,
 so regenerating never overwrites hand-written properties. The generated

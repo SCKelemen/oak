@@ -1,0 +1,187 @@
+import(std)
+import(testing)
+
+// Normalization properties over tape-generated text: every form is
+// idempotent, NFC and NFD agree through each other, the output is
+// well-formed UTF-8 the quick check accepts, and ASCII is a fixed point.
+
+// normalize_pick: a scalar from the classes normalization can tell apart —
+// ASCII, Latin letters with precomposed forms, combining marks of several
+// classes, Hangul jamo and syllables, singletons and excluded composites,
+// and compatibility characters.
+normalize_pick: (choices: [*]TestChoices, data: []u8): u32 {
+  kind: u32 = test_range(choices, data, u32(0), u32(11))
+  kind == u32(0) ? { test_range(choices, data, u32(32), u32(126)) } |
+  kind == u32(1) ? { test_range(choices, data, u32(192), u32(255)) } |
+  kind == u32(2) ? { test_range(choices, data, u32(768), u32(788)) } |
+  kind == u32(3) ? { test_range(choices, data, u32(789), u32(846)) } |
+  kind == u32(4) ? { test_range(choices, data, u32(4352), u32(4370)) } |
+  kind == u32(5) ? { test_range(choices, data, u32(4449), u32(4469)) } |
+  kind == u32(6) ? { test_range(choices, data, u32(4520), u32(4546)) } |
+  kind == u32(7) ? { test_range(choices, data, u32(44032), u32(44100)) } |
+  kind == u32(8) ? { test_range(choices, data, u32(7680), u32(7935)) } |
+  kind == u32(9) ? { test_range(choices, data, u32(8490), u32(8491)) } |
+  kind == u32(10) ? { test_range(choices, data, u32(64256), u32(64262)) } |
+  { test_range(choices, data, u32(2325), u32(2361)) }
+}
+
+// normalize_generate: up to eight scalars encoded as UTF-8 into `dst`;
+// returns the byte count.
+normalize_generate: (dst: [*]u8, choices: [*]TestChoices, data: []u8): u32 {
+  count: u32 = test_range(choices, data, u32(0), u32(8))
+  at: u32 = 0
+  i: u32 = 0
+  while i < count {
+    value: u32 = normalize_pick(choices, data)
+    at = at + text_result_value(utf8_encode(dst, at, value))
+    i = i + u32(1)
+  }
+  at
+}
+
+// normalize_apply: `form` of `src` into `dst`, the count written (0 when the
+// form fails, which the properties then report).
+normalize_apply: (dst: [*]u8, src: []u8, form: u32): u32 = normalize_written(normalize_form(dst, src, form))
+
+// 7300 every form succeeds on well-formed input, 7301 NFD and NFKD are
+// idempotent, 7302 NFC and NFKC are idempotent, 7303 NFD(NFC(x)) = NFD(x)
+// and NFKD(NFKC(x)) = NFKD(x), 7304 NFC(NFD(x)) = NFC(x), 7305 the outputs
+// are valid UTF-8 and their own quick check accepts them, 7306 the size
+// functions predict the counts.
+PropertyNormalizeLaws: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  input: [64]u8
+  n: u32 = 0
+  true ? {
+    dst: [*]u8 = span(&input)
+    n = normalize_generate(dst, choices, data)
+  }
+  src_whole: []u8 = view(&input)
+  src: []u8 = src_whole[u32(0):n]
+  nfd: [512]u8
+  nfc: [512]u8
+  nfkd: [512]u8
+  nfkc: [512]u8
+  nd: u32 = 0
+  nc: u32 = 0
+  nkd: u32 = 0
+  nkc: u32 = 0
+  true ? {
+    d: [*]u8 = span(&nfd)
+    c: [*]u8 = span(&nfc)
+    kd: [*]u8 = span(&nfkd)
+    kc: [*]u8 = span(&nfkc)
+    test_check(normalize_ok(normalize_nfd(d, src)) && normalize_ok(normalize_nfc(c, src)) && normalize_ok(normalize_nfkd(kd, src)) && normalize_ok(normalize_nfkc(kc, src)), u32(7300))
+    nd = normalize_apply(d, src, NORMALIZE_NFD)
+    nc = normalize_apply(c, src, NORMALIZE_NFC)
+    nkd = normalize_apply(kd, src, NORMALIZE_NFKD)
+    nkc = normalize_apply(kc, src, NORMALIZE_NFKC)
+  }
+  test_check(normalize_written(normalize_nfd_size(src)) == nd && normalize_written(normalize_nfc_size(src)) == nc && normalize_written(normalize_nfkd_size(src)) == nkd && normalize_written(normalize_nfkc_size(src)) == nkc, u32(7306))
+  nfd_whole: []u8 = view(&nfd)
+  nfc_whole: []u8 = view(&nfc)
+  nfkd_whole: []u8 = view(&nfkd)
+  nfkc_whole: []u8 = view(&nfkc)
+  nfd_view: []u8 = nfd_whole[u32(0):nd]
+  nfc_view: []u8 = nfc_whole[u32(0):nc]
+  nfkd_view: []u8 = nfkd_whole[u32(0):nkd]
+  nfkc_view: []u8 = nfkc_whole[u32(0):nkc]
+  test_check(utf8_validate(nfd_view) && utf8_validate(nfc_view) && utf8_validate(nfkd_view) && utf8_validate(nfkc_view), u32(7305))
+  test_check(normalize_is_nfd(nfd_view) && normalize_is_nfc(nfc_view) && normalize_is_nfkd(nfkd_view) && normalize_is_nfkc(nfkc_view), u32(7305))
+  again: [512]u8
+  m_7301_normalize_nfd: u32 = 0
+  true ? {
+    a: [*]u8 = span(&again)
+    m_7301_normalize_nfd = normalize_apply(a, nfd_view, NORMALIZE_NFD)
+  }
+  true ? {
+    again_whole: []u8 = view(&again)
+    test_check(m_7301_normalize_nfd == nd && bytes_equal(again_whole[u32(0):m_7301_normalize_nfd], nfd_view), u32(7301))
+  }
+  m_7301_normalize_nfkd: u32 = 0
+  true ? {
+    a: [*]u8 = span(&again)
+    m_7301_normalize_nfkd = normalize_apply(a, nfkd_view, NORMALIZE_NFKD)
+  }
+  true ? {
+    again_whole: []u8 = view(&again)
+    test_check(m_7301_normalize_nfkd == nkd && bytes_equal(again_whole[u32(0):m_7301_normalize_nfkd], nfkd_view), u32(7301))
+  }
+  m_7302_normalize_nfc: u32 = 0
+  true ? {
+    a: [*]u8 = span(&again)
+    m_7302_normalize_nfc = normalize_apply(a, nfc_view, NORMALIZE_NFC)
+  }
+  true ? {
+    again_whole: []u8 = view(&again)
+    test_check(m_7302_normalize_nfc == nc && bytes_equal(again_whole[u32(0):m_7302_normalize_nfc], nfc_view), u32(7302))
+  }
+  m_7302_normalize_nfkc: u32 = 0
+  true ? {
+    a: [*]u8 = span(&again)
+    m_7302_normalize_nfkc = normalize_apply(a, nfkc_view, NORMALIZE_NFKC)
+  }
+  true ? {
+    again_whole: []u8 = view(&again)
+    test_check(m_7302_normalize_nfkc == nkc && bytes_equal(again_whole[u32(0):m_7302_normalize_nfkc], nfkc_view), u32(7302))
+  }
+  m_7303_normalize_nfd: u32 = 0
+  true ? {
+    a: [*]u8 = span(&again)
+    m_7303_normalize_nfd = normalize_apply(a, nfc_view, NORMALIZE_NFD)
+  }
+  true ? {
+    again_whole: []u8 = view(&again)
+    test_check(m_7303_normalize_nfd == nd && bytes_equal(again_whole[u32(0):m_7303_normalize_nfd], nfd_view), u32(7303))
+  }
+  m_7303_normalize_nfkd: u32 = 0
+  true ? {
+    a: [*]u8 = span(&again)
+    m_7303_normalize_nfkd = normalize_apply(a, nfkc_view, NORMALIZE_NFKD)
+  }
+  true ? {
+    again_whole: []u8 = view(&again)
+    test_check(m_7303_normalize_nfkd == nkd && bytes_equal(again_whole[u32(0):m_7303_normalize_nfkd], nfkd_view), u32(7303))
+  }
+  m_7304_normalize_nfc: u32 = 0
+  true ? {
+    a: [*]u8 = span(&again)
+    m_7304_normalize_nfc = normalize_apply(a, nfd_view, NORMALIZE_NFC)
+  }
+  true ? {
+    again_whole: []u8 = view(&again)
+    test_check(m_7304_normalize_nfc == nc && bytes_equal(again_whole[u32(0):m_7304_normalize_nfc], nfc_view), u32(7304))
+  }
+  n == u32(0) ? { testing_classify(u32(190)) } | nc < n ? { testing_classify(u32(191)) } | nd > n ? { testing_classify(u32(192)) } | { testing_classify(u32(193)) }
+}
+
+// 7310 ASCII text is a fixed point of every form and passes every quick check.
+PropertyNormalizeAsciiFixedPoint: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  text: [32]u8
+  n: u32 = test_range(choices, data, u32(0), u32(32))
+  i: u32 = 0
+  while i < n {
+    text[i] = u8_trunc_u32(test_range(choices, data, u32(0), u32(127)))
+    i = i + u32(1)
+  }
+  whole: []u8 = view(&text)
+  src: []u8 = whole[u32(0):n]
+  out: [32]u8
+  form: u32 = 0
+  while form < u32(4) {
+    m: u32 = 0
+    true ? {
+      dst: [*]u8 = span(&out)
+      m = normalize_apply(dst, src, form)
+    }
+    true ? {
+      out_whole: []u8 = view(&out)
+      test_check(m == n && bytes_equal(out_whole[u32(0):m], src), u32(7310))
+    }
+    form = form + u32(1)
+  }
+  test_check(normalize_is_nfc(src) && normalize_is_nfd(src) && normalize_is_nfkc(src) && normalize_is_nfkd(src), u32(7310))
+}

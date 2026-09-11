@@ -45,6 +45,22 @@ func interpretChecked(t *testing.T, src string) int64 {
 // realization.
 func TestDifferentialSweep(t *testing.T) {
 	programs := map[string]string{
+		"sum-type equality": `
+Color: type = Red | Green | Blue
+Shape: type = Dot | Box: u8
+
+next: (c: Color): Color = c ? | .Red => .Green | .Green => .Blue | .Blue => .Red
+
+main: (): i32 {
+  c: Color = .Red
+  same: Bool = next(next(next(c))) == c
+  other: Bool = next(c) != c
+  boxed: Bool = Shape.Box(u8(3)) == Shape.Box(u8(3))
+  unboxed: Bool = Shape.Box(u8(3)) != Shape.Box(u8(4))
+  flag: Bool = (u8(1) < u8(2)) == true
+  (same && other && boxed && unboxed && flag) ? 42 | 1
+}
+`,
 		"bitfields": `
 main: (): i32 {
   hcr: u64 = 0x1 | 0x8 | (u64(1) << 27)

@@ -96,6 +96,7 @@ The `oak` command has the shape of the Go tool (`docs/spec/115-tooling.md`):
 `oak build` produces an executable (`-emit-c` for C), `oak run`, `oak install`
 into `$OAKBIN`, `oak vet` reports what the checker recorded without generating
 code, `oak list [-json] [-deps]` lists packages and imports, `oak test`, `oak
+prove` discharges the package's theorems, `oak
 env`, `oak version`, `oak clean -modcache`, `oak doc`, `oak fmt`, `oak completion`,
 package patterns (`oak build ./...`), `oak run dir -- args`, a build cache that
 makes repeated builds and test runs skip the C compiler, `oak lsp` (a language
@@ -1151,3 +1152,12 @@ fn schedule[T: IntrusiveListNode[T, ReadyQueue]](
 deterministic event simulations. See [the runner guide](testrunner/README.md)
 and [the testing contract](docs/spec/110-testing.md) for examples, shrinking,
 corpus replay, and Clang/libFuzzer harness export.
+
+## Theorems
+
+`name: theorem (params) { Bool }` states that a `Bool` expression holds for
+every value of its parameters, in the language's own type system and with one
+new word. `oak prove` places each theorem on a ladder — `decided` by
+exhaustive evaluation over finite domains, `refuted` with a counterexample, or
+`open` with a Lean projection (`-lean out.lean`) whose automatic proof Lean
+checks. See [the verification spec](docs/spec/125-verification.md).
