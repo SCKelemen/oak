@@ -16,6 +16,22 @@ const CPrelude = `/* asm units (docs/spec/94-assembler.md): top-level assembly b
 #define OAK_ASM_SYMBOL(name) OAK_ASM_STR(__USER_LABEL_PREFIX__) #name
 `
 
+// EmitCExtern is EmitC's counterpart when the unit is encoded by the Oak
+// assembler into a companion object (docs/spec/94-assembler.md §9): the C
+// keeps only the prototype the declaration emitted and, without an Oak
+// fallback body, fails closed off AArch64.
+func EmitCExtern(fn *Function, cSymbol string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "/* asm unit: %s — encoded by the Oak assembler into the companion object as %s */\n", fn.Name, cSymbol)
+	if !fn.Fallback {
+		b.WriteString("#if !defined(__aarch64__) || defined(OAK_PORTABLE_INTRINSICS)\n")
+		fmt.Fprintf(&b, "#error \"asm unit %s requires an AArch64 target (no Oak fallback body declared)\"\n", fn.Name)
+		b.WriteString("#endif\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 // EmitC renders one checked asm function as a top-level GNU assembly block
 // under the C symbol the Oak declaration's prototype uses. Non-AArch64
 // targets fail closed with #error: an asm unit is never silently stubbed.
@@ -114,10 +130,17 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 		return "#" + text
 	case Memory:
 		if o.Index != nil {
-			if o.Shift == 0 {
-				return fmt.Sprintf("[%s, %s, uxtw]", o.Base.Text, o.Index.Text)
+			extend := o.Extend
+			if extend == "" {
+				extend = "uxtw"
 			}
-			return fmt.Sprintf("[%s, %s, uxtw #%d]", o.Base.Text, o.Index.Text, o.Shift)
+			if o.Shift == 0 {
+				if extend == "lsl" {
+					return fmt.Sprintf("[%s, %s]", o.Base.Text, o.Index.Text)
+				}
+				return fmt.Sprintf("[%s, %s, %s]", o.Base.Text, o.Index.Text, extend)
+			}
+			return fmt.Sprintf("[%s, %s, %s #%d]", o.Base.Text, o.Index.Text, extend, o.Shift)
 		}
 		switch o.Mode {
 		case MemPreIndex:

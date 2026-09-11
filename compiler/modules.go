@@ -164,6 +164,9 @@ type ModuleInfo struct {
 	Steady map[string]string
 	// RootPackage is the import path of the build root package.
 	RootPackage string
+	// Imports maps every loaded package to the packages it imports (sorted),
+	// the edges of the import graph, for `oak list` and `oak mod why`.
+	Imports map[string][]string
 	// StandardLibrary marks the loaded standard library packages, which have
 	// no module and are judged under the default profile.
 	StandardLibrary map[string]bool
@@ -616,7 +619,12 @@ func (l *moduleLoader) locateDependencies() bool {
 
 func (l *moduleLoader) locateModule(path string, version packageapi.Version) (*moduleRoot, bool) {
 	var dir string
-	if replacement, replaced := l.root.Manifest.Replaces[path]; replaced {
+	if vendored := filepath.Join(l.root.Dir, modules.VendorDir, filepath.FromSlash(path)); directoryHasManifest(vendored) {
+		// A vendored copy (oak mod vendor) takes precedence over replace
+		// directives and the cache, so a build from a vendored tree needs
+		// neither (docs/spec/83-modules.md section 4.3).
+		dir = vendored
+	} else if replacement, replaced := l.root.Manifest.Replaces[path]; replaced {
 		dir = replacement
 		if !filepath.IsAbs(dir) {
 			dir = filepath.Join(l.root.Dir, filepath.FromSlash(dir))
@@ -1012,6 +1020,12 @@ func (l *moduleLoader) extractNestedModules(pkg *loadedPackage) bool {
 		file.Root.Statements = append(rebuilt, kept...)
 	}
 	return ok
+}
+
+// directoryHasManifest reports whether dir holds an oak.mod.
+func directoryHasManifest(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, modules.ManifestFile))
+	return err == nil && !info.IsDir()
 }
 
 // directoryHasSources reports whether dir holds any .oak file.
@@ -1940,6 +1954,10 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 			moduleProfiles[module.Manifest.Path] = module.Manifest.Profile
 		}
 	}
+	imports := map[string][]string{}
+	for _, path := range order {
+		imports[path] = append([]string(nil), l.packages[path].Edges...)
+	}
 	nestedDeclarations := map[string][]ast.Statement{}
 	for _, path := range l.nested {
 		if pkg := l.packages[path]; pkg != nil {
@@ -1977,7 +1995,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	for path, pkg := range l.packages {
 		exports[path] = pkg.Exports
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady}
+	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady, Imports: imports}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,

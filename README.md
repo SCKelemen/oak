@@ -87,7 +87,15 @@ abs: (v: i32): i32 = v < 0 ? 0 - v | v                // private to the package
 
 `open import("...")` binds every exported member unqualified (collisions are
 errors, never precedence), and `module name { ... }` declares a nested package
-inside a file with its own `pub` boundary. Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
+inside a file with its own `pub` boundary.
+
+The `oak` command has the shape of the Go tool (`docs/spec/115-tooling.md`):
+`oak build` produces an executable (`-emit-c` for C), `oak run`, `oak install`
+into `$OAKBIN`, `oak vet` reports what the checker recorded without generating
+code, `oak list [-json] [-deps]` lists packages and imports, `oak test`, `oak
+env`, `oak version`, `oak clean -modcache`, `oak doc`, `oak fmt`, and `oak mod
+init|download|tidy|edit|graph|why|vendor|verify` alongside the semver commands
+below. Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
 pinned dependencies with `oak mod download`; see `examples/modules`. Versions
 are enforced Elm-style at module granularity: `oak mod api` snapshots a
 module's public API, `oak mod bump previous.json` requires the `version` in

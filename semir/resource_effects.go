@@ -22,6 +22,14 @@ const (
 	// ResourceEffectReturnAlias marks a result that aliases the argument
 	// arg:N: same authority class, no wider permission.
 	ResourceEffectReturnAlias = "return-alias"
+	// ResourceEffectReturnBorrow marks a result that is a shared borrow
+	// dependent on the argument arg:N: while it lives the argument may not
+	// be mutated, consumed, or rebound.
+	ResourceEffectReturnBorrow = "return-borrow"
+	// ResourceEffectReturnBorrowMut marks a result that is a mutable
+	// reborrow of the argument arg:N: it may be mutated through
+	// borrowed-mut contracts, and while it lives the argument is suspended.
+	ResourceEffectReturnBorrowMut = "return-borrow-mut"
 	// Callable-contract effects describe what a function-typed parameter
 	// (arg:N) requires of the function values passed for it: the mode of
 	// the callable's own parameter param:M, or a fresh result.
@@ -45,6 +53,18 @@ type ResourceCallableSemantics struct {
 // argument at index.
 func ResourceReturnAlias(index int) Effect {
 	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnAlias, Parameters: []string{"arg:" + strconv.Itoa(index)}}
+}
+
+// ResourceReturnBorrow constructs the effect for a result that is a shared
+// borrow of the argument at index.
+func ResourceReturnBorrow(index int) Effect {
+	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnBorrow, Parameters: []string{"arg:" + strconv.Itoa(index)}}
+}
+
+// ResourceReturnBorrowMut constructs the effect for a result that is a
+// mutable reborrow of the argument at index.
+func ResourceReturnBorrowMut(index int) Effect {
+	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnBorrowMut, Parameters: []string{"arg:" + strconv.Itoa(index)}}
 }
 
 // ResourceCallableEffect constructs the effect requiring mode name (one of
@@ -75,6 +95,13 @@ type ResourceTransitionSemantics struct {
 	// one argument.
 	ReturnsAlias    bool
 	AliasesArgument int
+	// ReturnsBorrow and BorrowsArguments record a result declared to be a
+	// shared borrow of the listed arguments (sorted, no duplicates).
+	ReturnsBorrow    bool
+	BorrowsArguments []int
+	// BorrowMutable records that the borrowed result is a mutable reborrow
+	// (every origin carried return-borrow-mut rather than return-borrow).
+	BorrowMutable bool
 	// Callables are the contracts required of function-typed parameters,
 	// sorted by argument index.
 	Callables []ResourceCallableSemantics
@@ -190,6 +217,24 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 			}
 			result.ReturnsAlias, result.AliasesArgument = true, index
 
+		case ResourceEffectReturnBorrow, ResourceEffectReturnBorrowMut:
+			index, err := decodeResourceArgument(effect)
+			if err != nil {
+				return ResourceTransitionSemantics{}, true, err
+			}
+			for _, existing := range result.BorrowsArguments {
+				if existing == index {
+					return ResourceTransitionSemantics{}, true, fmt.Errorf("resource.%s arg:%d is duplicated", effect.Name, index)
+				}
+			}
+			mutable := effect.Name == ResourceEffectReturnBorrowMut
+			if result.ReturnsBorrow && result.BorrowMutable != mutable {
+				return ResourceTransitionSemantics{}, true, fmt.Errorf("a result cannot mix return-borrow and return-borrow-mut origins")
+			}
+			result.ReturnsBorrow = true
+			result.BorrowMutable = mutable
+			result.BorrowsArguments = append(result.BorrowsArguments, index)
+
 		case ResourceEffectReturnFresh:
 			if len(effect.Parameters) != 0 {
 				return ResourceTransitionSemantics{}, true,
@@ -211,9 +256,13 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 	if result.ReturnsAlias && result.ReturnsFresh {
 		return ResourceTransitionSemantics{}, true, fmt.Errorf("a result cannot be both return-fresh and return-alias")
 	}
+	if result.ReturnsBorrow && (result.ReturnsFresh || result.ReturnsAlias) {
+		return ResourceTransitionSemantics{}, true, fmt.Errorf("a result cannot be return-borrow and also return-fresh or return-alias")
+	}
 	sort.Ints(result.Borrowed)
 	sort.Ints(result.BorrowedMut)
 	sort.Ints(result.Consumes)
+	sort.Ints(result.BorrowsArguments)
 	for i := range result.Callables {
 		sort.Ints(result.Callables[i].Borrowed)
 		sort.Ints(result.Callables[i].BorrowedMut)

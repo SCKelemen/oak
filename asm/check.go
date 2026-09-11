@@ -649,6 +649,13 @@ func (c *checker) instruction(instr Instruction) bool {
 		}
 		switch instr.Mnemonic {
 		case "movz", "movk", "movn":
+			if imm.Shift%16 != 0 || imm.Shift > 48 || imm.MSL {
+				c.errorf(instr.Line, "%s: the immediate shift must be lsl #0, #16, #32, or #48", instr.Mnemonic)
+			}
+		case "add", "adds", "sub", "subs", "cmp", "cmn":
+			if imm.Shift != 12 || imm.MSL {
+				c.errorf(instr.Line, "%s: an immediate is shifted by lsl #12 or not at all", instr.Mnemonic)
+			}
 		default:
 			if !vectorDest {
 				c.errorf(instr.Line, "%s takes no shifted immediate", instr.Mnemonic)
@@ -796,12 +803,16 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.unreachable = true
 		return true
 	case "mrs":
+		c.systemRegister(instr, instr.Operands[1].(SysReg).Name, true)
 		c.write(instr, instr.Operands[0].(Register))
 		return false
 	case "msr":
 		if reg, isReg := instr.Operands[1].(Register); isReg {
-			c.read(instr, reg) // `msr field, #imm` writes a PSTATE field from a constant
+			c.systemRegister(instr, instr.Operands[0].(SysReg).Name, false)
+			c.read(instr, reg)
 		}
+		// `msr field, #imm` writes a PSTATE field from a constant; the
+		// field names are the encoder's table.
 		return false
 	case "dmb", "dsb", "isb", "nop":
 		return false
@@ -1125,6 +1136,27 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 	}
 }
 
+// systemRegister checks a named system register against Arm's SysReg
+// release: it must exist and admit the access direction. The
+// `S<op0>_<op1>_<Cn>_<Cm>_<op2>` spelling names any encoding.
+func (c *checker) systemRegister(instr Instruction, name string, read bool) {
+	lower := strings.ToLower(name)
+	if strings.HasPrefix(lower, "s") && strings.Count(lower, "_") == 4 {
+		return
+	}
+	enc, known := systemRegisterEncodings[lower]
+	if !known {
+		c.errorf(instr.Line, "%s: %s is not a system register Arm's SysReg release names (spell an implementation-defined one S<op0>_<op1>_<Cn>_<Cm>_<op2>)", instr.Mnemonic, name)
+		return
+	}
+	if read && !enc.Read {
+		c.errorf(instr.Line, "mrs: %s is not readable", name)
+	}
+	if !read && !enc.Write {
+		c.errorf(instr.Line, "msr: %s is not writable", name)
+	}
+}
+
 // isStoreMnemonic: the instructions whose register operands are sources
 // written to memory (a view refuses them; the executor never treats their
 // register as written).
@@ -1285,6 +1317,10 @@ func (c *checker) spanAccess(instr Instruction, matched form, mem Memory, fact *
 func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFact, size int64, regs []Register, isStore bool) {
 	index := *mem.Index
 	c.read(instr, index)
+	if index.Class != ClassW || mem.Extend != "" && mem.Extend != "uxtw" {
+		c.errorf(instr.Line, "%s: a span is walked by a 32-bit element index, `[base, wI, uxtw #s]`; %s is not one", instr.Mnemonic, index.Text)
+		return
+	}
 	if size != fact.elem || int64(1)<<uint(mem.Shift) != size {
 		c.errorf(instr.Line, "%s: indexed access must move by whole elements: a %d-byte access over %d-byte elements needs `uxtw #%d` and a matching register width", instr.Mnemonic, size, fact.elem, log2(fact.elem))
 		return
