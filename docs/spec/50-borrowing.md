@@ -597,9 +597,31 @@ dependency established on any path — a conservative set, never fresh
 authority — and the two-iteration loop probe applies. Freshness never
 proves backing-storage lifetime, and a borrowed result says nothing about
 storage either: it is an authority dependency between opaque resources.
-These are stages (b) and (c) of the authority roadmap's milestone 4;
-stages (d) and (e) (mutable reborrows suspending the parent, borrowed
-values in aggregates) remain open.
+**Mutable reborrows.** A borrowed result whose every origin is
+`borrowed-mut` may be declared a **mutable reborrow** (SemIR
+`resource.return-borrow-mut` per origin; mixing shared and mutable origins
+on one result is an error, and a mutable reborrow can never be minted
+from a shared borrow — a shared dependent or temporary passed to the
+borrowed-mut origin is `OAK-B0118`). The result carries mutable
+authority: it may be passed to borrowed and borrowed-mut positions and
+reborrowed again, shared or mutable, with the same owners. Everything else
+a shared borrowed result may not do, a mutable one may not do either. The
+difference is on the owner's side: while a mutable reborrow lives — the
+lexical scope of its binding, or the call for a temporary passed directly
+as an argument — its owners and their aliases are **suspended entirely**:
+any use (a read, a projection, an argument in any position, rebinding,
+return) is `OAK-B0119`, and they are usable again when the scope ends.
+Aliases and rebinding carry the permission with the dependency. Body
+checks admit narrowing and reject widening: a shared-borrow contract may
+return a mutable reborrow, but a mutable-reborrow contract returning a
+shared dependent or temporary of the declared origins is `OAK-B0117`.
+Suspension is lexical, not use-based: the owner is not freed by the
+reborrow's last use, only by its scope's end, so a body that needs the
+owner back finishes with the reborrow in an inner scope.
+
+These are stages (b), (c), and (d) of the authority roadmap's milestone
+4; stage (e) (borrowed values in aggregates with destination lifetime
+checks) remains open.
 
 Imports and sealing cannot erase modes: a protocol declared in one package
 (`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the

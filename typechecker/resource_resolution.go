@@ -92,6 +92,11 @@ type ResourceTransitionDeclaration struct {
 	// borrowed or borrowed-mut, and the list is non-empty without duplicates.
 	ReturnsBorrow    bool
 	BorrowsArguments []int
+	// BorrowMutable makes the borrowed result a mutable reborrow: it may be
+	// passed to borrowed-mut positions, and while it lives its owners are
+	// suspended entirely (docs/spec/50-borrowing.md section 9, borrowed
+	// results). Requires ReturnsBorrow; every origin must be borrowed-mut.
+	BorrowMutable bool
 	// Receiver is the authority mode of a method's receiver
 	// (docs/spec/50-borrowing.md section 9): its own slot, so the explicit
 	// parameter indices above never shift. Unspecified for plain functions
@@ -137,6 +142,7 @@ type ResolvedResourceTransition struct {
 	AliasesArgument  int
 	ReturnsBorrow    bool
 	BorrowsArguments []int
+	BorrowMutable    bool
 	Receiver         ResourceParameterMode
 }
 
@@ -147,6 +153,7 @@ type resolvedCallableResourceSemantics struct {
 	AliasesArgument  int
 	ReturnsBorrow    bool
 	BorrowsArguments []int
+	BorrowMutable    bool
 	Receiver         ResourceParameterMode
 }
 
@@ -344,11 +351,16 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 					if sourceMode != ResourceParameterBorrowed && sourceMode != ResourceParameterBorrowedMut {
 						return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q borrows argument %d, which must be declared borrowed or borrowed-mut (a borrow of consumed or unmarked input is not admitted)", transition.Callable, index)
 					}
+					if transition.BorrowMutable && sourceMode != ResourceParameterBorrowedMut {
+						return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q returns a mutable reborrow of argument %d, which must be declared borrowed-mut (mutable authority cannot be minted from a shared borrow)", transition.Callable, index)
+					}
 				}
+			} else if transition.BorrowMutable {
+				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a mutable reborrow without a borrowed result", transition.Callable)
 			} else if len(borrows) != 0 {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q names borrowed arguments without marking a borrowed result", transition.Callable)
 			}
-			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh, ReturnsAlias: transition.ReturnsAlias, AliasesArgument: transition.AliasesArgument, ReturnsBorrow: transition.ReturnsBorrow, BorrowsArguments: borrows, Receiver: transition.Receiver}
+			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh, ReturnsAlias: transition.ReturnsAlias, AliasesArgument: transition.AliasesArgument, ReturnsBorrow: transition.ReturnsBorrow, BorrowsArguments: borrows, BorrowMutable: transition.BorrowMutable, Receiver: transition.Receiver}
 			if previous, exists := callableSemantics[transition.Callable]; exists && !sameResolvedCallableResourceSemantics(previous, semantics) {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q has conflicting semantics across protocols", transition.Callable)
 			}
@@ -365,6 +377,7 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				AliasesArgument:  transition.AliasesArgument,
 				ReturnsBorrow:    transition.ReturnsBorrow,
 				BorrowsArguments: borrows,
+				BorrowMutable:    transition.BorrowMutable,
 				Receiver:         transition.Receiver,
 			})
 		}
@@ -547,7 +560,7 @@ func resolveResourceParameters(
 func sameResolvedCallableResourceSemantics(left, right resolvedCallableResourceSemantics) bool {
 	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver || len(left.Parameters) != len(right.Parameters) ||
 		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) ||
-		left.ReturnsBorrow != right.ReturnsBorrow || (left.ReturnsBorrow && !sameIndexSet(left.BorrowsArguments, right.BorrowsArguments)) {
+		left.ReturnsBorrow != right.ReturnsBorrow || (left.ReturnsBorrow && (!sameIndexSet(left.BorrowsArguments, right.BorrowsArguments) || left.BorrowMutable != right.BorrowMutable)) {
 		return false
 	}
 	for i := range left.Parameters {
