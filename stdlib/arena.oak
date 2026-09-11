@@ -1,0 +1,55 @@
+package arena
+
+// Bump allocation over an owner's element index space (docs/spec/60-effects-
+// allocation.md section 6, 92-ffi.md section 2.8). An arena hands out
+// offsets, never memory: the program owns a Buffer[T] (or a fixed array),
+// reserves ranges here, and carves views and spans with subslice at the
+// offsets it gets back. Reservations are monotonic until a reset; a
+// reservation that does not fit fails explicitly and leaves the arena as it
+// was. Everything is u32 arithmetic with the overflow cases decided, so the
+// interpreter and every backend agree.
+
+pub Arena: type = struct {
+  used: u32
+  capacity: u32
+}
+
+// The outcome of a reservation: the offset of the range and the arena
+// after it, or ok = false with the arena unchanged.
+pub Reservation: type = struct {
+  ok: Bool
+  offset: u32
+  arena: Arena
+}
+
+pub arena_new: (capacity: u32): Arena = Arena { used: u32(0), capacity: capacity }
+
+pub arena_remaining: (a: Arena): u32 = a.capacity - a.used
+
+pub arena_reset: (a: Arena): Arena = Arena { used: u32(0), capacity: a.capacity }
+
+// The smallest multiple of align at or above offset, for align a power of
+// two (align 0 and 1 leave the offset alone). An offset that cannot be
+// rounded up without wrapping becomes the largest u32, which no capacity
+// admits, so the caller's reservation fails instead of aliasing.
+pub arena_align_up: (offset: u32, align: u32): u32 {
+  align <= u32(1) ? offset | {
+    rem: u32 = offset % align
+    rem == u32(0) ? offset | {
+      pad: u32 = align - rem
+      pad <= u32(4294967295) - offset ? offset + pad | u32(4294967295)
+    }
+  }
+}
+
+// Reserve count elements aligned to align: the range [offset, offset +
+// count) lies within the capacity and after every earlier reservation.
+pub arena_reserve: (a: Arena, count: u32, align: u32): Reservation {
+  start: u32 = arena_align_up(a.used, align)
+  fits: Bool = start >= a.used && start <= a.capacity && count <= a.capacity - start
+  fits ? {
+    Reservation { ok: true, offset: start, arena: Arena { used: start + count, capacity: a.capacity } }
+  } | {
+    Reservation { ok: false, offset: u32(0), arena: a }
+  }
+}

@@ -1,0 +1,466 @@
+// URI references (RFC 3986) over caller-owned bytes: a reference is split
+// into scheme, authority (userinfo, host, port), path, query and fragment as
+// byte ranges into the source view, each component checked against its
+// character class; dot segments are removed and references resolved against
+// a base into caller storage; query pairs are iterated as ranges. Nothing is
+// allocated or copied while parsing: a `Url` holds ranges, and callers slice
+// the source themselves (`src[range.start:range.end]`), because a function
+// may not return a view (OAK-B0109), as in the strings package. Percent
+// decoding of a component is the encoding package's job (`percent_decode`).
+// https://datatracker.ietf.org/doc/html/rfc3986
+package url
+
+pub UrlError: type = InvalidScheme | InvalidHost | InvalidPort | InvalidCharacter | InvalidPercentEncoding | DestinationTooSmall
+
+// UrlRange: a component as [start, end) into the source; `present` is false
+// for a component the reference does not have (an absent query differs from
+// an empty one, RFC 3986 §3.4).
+pub UrlRange: type = struct { start: u32, end: u32, present: Bool }
+
+// Url: the five components of RFC 3986 §3 with the authority split into its
+// subcomponents (§3.2). `has_authority` is true when the reference has "//",
+// even when the host is empty (`file:///x`). The path is always present,
+// possibly empty.
+pub Url: type = struct { scheme: UrlRange, userinfo: UrlRange, host: UrlRange, port: UrlRange, path: UrlRange, query: UrlRange, fragment: UrlRange, has_authority: Bool }
+
+// UrlPair: one key/value pair of a query; `value.present` is false when the
+// pair has no "="; `next` is where the following pair starts.
+pub UrlPair: type = struct { key: UrlRange, value: UrlRange, next: u32 }
+
+pub url_range: (start: u32, end: u32): UrlRange = UrlRange { start: start, end: end, present: true }
+pub url_absent: (): UrlRange = UrlRange { start: u32(0), end: u32(0), present: false }
+pub url_range_len: (range: UrlRange): u32 = range.end - range.start
+
+pub url_error_code: (reason: UrlError): u32 = reason ?
+  | .InvalidScheme => u32(1)
+  | .InvalidHost => u32(2)
+  | .InvalidPort => u32(3)
+  | .InvalidCharacter => u32(4)
+  | .InvalidPercentEncoding => u32(5)
+  | .DestinationTooSmall => u32(6)
+
+pub url_ok: (result: Result[Url, UrlError]): Bool = result ? | .Ok(parsed) => true | .Err(reason) => false
+pub url_value: (result: Result[Url, UrlError]): Url = result ? | .Ok(parsed) => parsed | .Err(reason) => url_empty()
+pub url_failure: (result: Result[Url, UrlError]): u32 = result ? | .Ok(parsed) => u32(0) | .Err(reason) => url_error_code(reason)
+pub url_written: (result: Result[u32, UrlError]): u32 = result ? | .Ok(count) => count | .Err(reason) => u32(0)
+pub url_write_failure: (result: Result[u32, UrlError]): u32 = result ? | .Ok(count) => u32(0) | .Err(reason) => url_error_code(reason)
+
+pub url_empty: (): Url = Url { scheme: url_absent(), userinfo: url_absent(), host: url_absent(), port: url_absent(), path: url_range(u32(0), u32(0)), query: url_absent(), fragment: url_absent(), has_authority: false }
+
+// ---- character classes (RFC 3986 §2) --------------------------------------
+
+url_is_alpha: (unit: u8): Bool = (unit >= u8(65) && unit <= u8(90)) || (unit >= u8(97) && unit <= u8(122))
+url_is_digit: (unit: u8): Bool = unit >= u8(48) && unit <= u8(57)
+url_is_hex: (unit: u8): Bool = url_is_digit(unit) || (unit >= u8(65) && unit <= u8(70)) || (unit >= u8(97) && unit <= u8(102))
+
+// url_is_unreserved: ALPHA / DIGIT / "-" / "." / "_" / "~".
+// RFC 3986 §2.3 https://datatracker.ietf.org/doc/html/rfc3986#section-2.3
+pub url_is_unreserved: (unit: u8): Bool = url_is_alpha(unit) || url_is_digit(unit) || unit == u8(45) || unit == u8(46) || unit == u8(95) || unit == u8(126)
+
+// url_is_sub_delim: "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "=".
+// RFC 3986 §2.2 https://datatracker.ietf.org/doc/html/rfc3986#section-2.2
+pub url_is_sub_delim: (unit: u8): Bool = unit == u8(33) || unit == u8(36) || unit == u8(38) || unit == u8(39) || unit == u8(40) || unit == u8(41) || unit == u8(42) || unit == u8(43) || unit == u8(44) || unit == u8(59) || unit == u8(61)
+
+// url_scan_class: 0 when every byte of [start, end) belongs to the class and
+// every "%" is followed by two hex digits (§2.1); 1 on a foreign byte, 2 on
+// a bad escape. Classes: 1 path (pchar / "/"), 2 query and fragment (pchar /
+// "/" / "?"), 3 userinfo (unreserved / pct-encoded / sub-delims / ":"),
+// 4 reg-name (unreserved / pct-encoded / sub-delims).
+// RFC 3986 §3.3 https://datatracker.ietf.org/doc/html/rfc3986#section-3.3
+url_scan_class: (src: []u8, start: u32, end: u32, class: u32): u32 {
+  i: u32 = start
+  code: u32 = u32(0)
+  while i < end && code == u32(0) {
+    unit: u8 = src[i]
+    unit == u8(37) ? {
+      i + u32(2) < end && url_is_hex(src[i + u32(1)]) && url_is_hex(src[i + u32(2)]) ? { i = i + u32(3) } | { code = u32(2) }
+    } | {
+      allowed: Bool = url_is_unreserved(unit) || url_is_sub_delim(unit) || (unit == u8(58) && class != u32(4)) || (unit == u8(64) && class <= u32(2)) || (unit == u8(47) && class <= u32(2)) || (unit == u8(63) && class == u32(2))
+      allowed ? { i = i + u32(1) } | { code = u32(1) }
+    }
+  }
+  code
+}
+
+// url_find_delim: the first index in [begin, len) holding one of three
+// delimiter bytes, or len.
+url_find_delim: (src: []u8, begin: u32, a: u8, b: u8, c: u8): u32 {
+  i: u32 = begin
+  while i < len(src) && src[i] != a && src[i] != b && src[i] != c { i = i + u32(1) }
+  i
+}
+
+// ---- parsing (RFC 3986 §3, Appendix B) -------------------------------------
+
+// url_scheme_end: the index of the ":" that ends the scheme, or 0 when the
+// reference has none. A scheme is ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+// running from the first byte to the first ":"; anything else before the
+// first "/", "?" or "#" means a relative reference.
+// RFC 3986 §3.1 https://datatracker.ietf.org/doc/html/rfc3986#section-3.1
+url_scheme_end: (src: []u8): u32 {
+  i: u32 = u32(0)
+  while i < len(src) && (url_is_alpha(src[i]) || url_is_digit(src[i]) || src[i] == u8(43) || src[i] == u8(45) || src[i] == u8(46)) { i = i + u32(1) }
+  i > u32(0) && i < len(src) && src[i] == u8(58) && url_is_alpha(src[0]) ? { i } | { u32(0) }
+}
+
+// url_first_segment_has_colon: a relative reference's first path segment
+// may not contain ":" (it would read as a scheme): path-noscheme, §4.2.
+// RFC 3986 §4.2 https://datatracker.ietf.org/doc/html/rfc3986#section-4.2
+url_first_segment_has_colon: (src: []u8, start: u32, end: u32): Bool {
+  i: u32 = start
+  found: Bool = false
+  while i < end && src[i] != u8(47) {
+    src[i] == u8(58) ? { found = true }
+    i = i + u32(1)
+  }
+  found
+}
+
+// url_ip_literal_ok: the bytes between "[" and "]" are an IPv6address,
+// checked by character class (HEXDIG, ":" and "." with at least two ":"),
+// or an IPvFuture ("v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )).
+// RFC 3986 §3.2.2 https://datatracker.ietf.org/doc/html/rfc3986#section-3.2.2
+url_ip_literal_ok: (src: []u8, start: u32, end: u32): Bool {
+  start >= end ? { false } |
+  src[start] == u8(118) || src[start] == u8(86) ? {
+    i: u32 = start + u32(1)
+    while i < end && url_is_hex(src[i]) { i = i + u32(1) }
+    i > start + u32(1) && i + u32(1) < end && src[i] == u8(46) ? {
+      j: u32 = i + u32(1)
+      while j < end && (url_is_unreserved(src[j]) || url_is_sub_delim(src[j]) || src[j] == u8(58)) { j = j + u32(1) }
+      j == end
+    } | { false }
+  } | {
+    k: u32 = start
+    colons: u32 = u32(0)
+    while k < end && (url_is_hex(src[k]) || src[k] == u8(58) || src[k] == u8(46)) {
+      src[k] == u8(58) ? { colons = colons + u32(1) }
+      k = k + u32(1)
+    }
+    k == end && colons >= u32(2)
+  }
+}
+
+// url_with_authority: a Url carrying only the authority subcomponents, the
+// port being the digits after `colon` when colon < end (an empty port is
+// legal: `http://a:/`).
+// RFC 3986 §3.2.3 https://datatracker.ietf.org/doc/html/rfc3986#section-3.2.3
+url_with_authority: (src: []u8, userinfo: UrlRange, host: UrlRange, colon: u32, end: u32): Result[Url, UrlError] {
+  has_port: Bool = colon < end
+  digits: Bool = true
+  i: u32 = colon + u32(1)
+  while i < end && digits {
+    digits = url_is_digit(src[i])
+    i = i + u32(1)
+  }
+  port: UrlRange = has_port ? url_range(colon + u32(1), end) | url_absent()
+  !digits ? { .Err(.InvalidPort) } | {
+    .Ok(Url { scheme: url_absent(), userinfo: userinfo, host: host, port: port, path: url_range(u32(0), u32(0)), query: url_absent(), fragment: url_absent(), has_authority: true })
+  }
+}
+
+// url_parse_authority: userinfo, host and port of the authority [start, end):
+// userinfo ends at the first "@"; a host that starts with "[" is an IP
+// literal that must close and be followed by ":" or the end; otherwise the
+// host is a reg-name (IPv4 addresses are reg-names by character class) up
+// to the first ":", which starts the port.
+// RFC 3986 §3.2 https://datatracker.ietf.org/doc/html/rfc3986#section-3.2
+url_parse_authority: (src: []u8, start: u32, end: u32): Result[Url, UrlError] {
+  at: u32 = start
+  while at < end && src[at] != u8(64) { at = at + u32(1) }
+  has_user: Bool = at < end
+  userinfo: UrlRange = has_user ? url_range(start, at) | url_absent()
+  host_start: u32 = has_user ? at + u32(1) | start
+  user_code: u32 = has_user ? url_scan_class(src, start, at, u32(3)) | u32(0)
+  user_code == u32(2) ? { .Err(.InvalidPercentEncoding) } |
+  user_code != u32(0) ? { .Err(.InvalidCharacter) } |
+  host_start < end && src[host_start] == u8(91) ? {
+    close: u32 = host_start
+    while close < end && src[close] != u8(93) { close = close + u32(1) }
+    close >= end ? { .Err(.InvalidHost) } | {
+      after: u32 = close + u32(1)
+      after < end && src[after] != u8(58) ? { .Err(.InvalidHost) } |
+      !url_ip_literal_ok(src, host_start + u32(1), close) ? { .Err(.InvalidHost) } | {
+        url_with_authority(src, userinfo, url_range(host_start, after), after, end)
+      }
+    }
+  } | {
+    colon: u32 = host_start
+    while colon < end && src[colon] != u8(58) { colon = colon + u32(1) }
+    url_scan_class(src, host_start, colon, u32(4)) != u32(0) ? { .Err(.InvalidHost) } | {
+      url_with_authority(src, userinfo, url_range(host_start, colon), colon, end)
+    }
+  }
+}
+
+// url_parse: split a URI reference into its components (the regular
+// expression of Appendix B, then each component validated against its
+// grammar). Accepts URIs and relative references (§4.1); the path is always
+// present, possibly empty; a query or fragment is present when its "?" or
+// "#" is, even if empty.
+// RFC 3986 §3 https://datatracker.ietf.org/doc/html/rfc3986#section-3
+// RFC 3986 Appendix B https://datatracker.ietf.org/doc/html/rfc3986#appendix-B
+pub url_parse: (src: []u8): Result[Url, UrlError] {
+  scheme_end: u32 = url_scheme_end(src)
+  has_scheme: Bool = scheme_end > u32(0)
+  scheme: UrlRange = has_scheme ? url_range(u32(0), scheme_end) | url_absent()
+  rest: u32 = has_scheme ? scheme_end + u32(1) | u32(0)
+  has_authority: Bool = rest + u32(1) < len(src) && src[rest] == u8(47) && src[rest + u32(1)] == u8(47)
+  authority_start: u32 = has_authority ? rest + u32(2) | rest
+  authority_end: u32 = has_authority ? url_find_delim(src, authority_start, u8(47), u8(63), u8(35)) | rest
+  path_end: u32 = url_find_delim(src, authority_end, u8(63), u8(35), u8(35))
+  has_query: Bool = path_end < len(src) && src[path_end] == u8(63)
+  query_start: u32 = has_query ? path_end + u32(1) | path_end
+  query_end: u32 = has_query ? url_find_delim(src, query_start, u8(35), u8(35), u8(35)) | path_end
+  has_fragment: Bool = query_end < len(src) && src[query_end] == u8(35)
+  path: UrlRange = url_range(authority_end, path_end)
+  query: UrlRange = has_query ? url_range(query_start, query_end) | url_absent()
+  fragment: UrlRange = has_fragment ? url_range(query_end + u32(1), len(src)) | url_absent()
+  path_code: u32 = url_scan_class(src, authority_end, path_end, u32(1))
+  query_code: u32 = has_query ? url_scan_class(src, query_start, query_end, u32(2)) | u32(0)
+  fragment_code: u32 = has_fragment ? url_scan_class(src, query_end + u32(1), len(src), u32(2)) | u32(0)
+  worst: u32 = path_code > query_code ? path_code | query_code
+  code: u32 = fragment_code > worst ? fragment_code | worst
+  noscheme_colon: Bool = !has_scheme && !has_authority && url_first_segment_has_colon(src, authority_end, path_end)
+  authority: Result[Url, UrlError] = has_authority ? url_parse_authority(src, authority_start, authority_end) | .Ok(url_empty())
+  authority ?
+    | .Err(reason) => .Err(reason)
+    | .Ok(parts) => code == u32(2) ? { .Err(.InvalidPercentEncoding) } |
+      code != u32(0) || noscheme_colon ? { .Err(.InvalidCharacter) } | {
+        .Ok(Url { scheme: scheme, userinfo: parts.userinfo, host: parts.host, port: parts.port, path: path, query: query, fragment: fragment, has_authority: has_authority })
+      }
+}
+
+// url_port_number: the port as a number, None when absent, empty, or above
+// 65535 (the grammar allows any digit string; the transport does not).
+// RFC 3986 §3.2.3 https://datatracker.ietf.org/doc/html/rfc3986#section-3.2.3
+pub url_port_number: (src: []u8, parsed: Url): Option[u32] {
+  !parsed.port.present || parsed.port.end == parsed.port.start ? { .None } | {
+    value: u32 = u32(0)
+    i: u32 = parsed.port.start
+    while i < parsed.port.end && value <= u32(65535) {
+      value = value * u32(10) + u32(src[i] - u8(48))
+      i = i + u32(1)
+    }
+    value <= u32(65535) ? { .Some(value) } | { .None }
+  }
+}
+
+// url_is_absolute: an absolute-URI has a scheme and no fragment.
+// RFC 3986 §4.3 https://datatracker.ietf.org/doc/html/rfc3986#section-4.3
+pub url_is_absolute: (parsed: Url): Bool = parsed.scheme.present && !parsed.fragment.present
+
+// url_is_relative: a relative reference has no scheme.
+// RFC 3986 §4.2 https://datatracker.ietf.org/doc/html/rfc3986#section-4.2
+pub url_is_relative: (parsed: Url): Bool = !parsed.scheme.present
+
+// ---- dot segments and resolution (RFC 3986 §5) -----------------------------
+
+// The removal algorithm reads its input as the concatenation of two views so
+// a merged path (base prefix + reference path, §5.2.3) needs no scratch
+// buffer.
+url_in: (first: []u8, second: []u8, i: u32): u8 = i < len(first) ? { first[i] } | { second[i - len(first)] }
+url_in_is: (first: []u8, second: []u8, i: u32, n: u32, unit: u8): Bool = i < n && url_in(first, second, i) == unit
+
+// url_drop_segment: remove the output's last segment and its preceding "/".
+url_drop_segment: (dst: [*]u8, out_start: u32, out: u32): u32 {
+  cut: u32 = out
+  while cut > out_start && dst[cut - u32(1)] != u8(47) { cut = cut - u32(1) }
+  cut > out_start ? { cut - u32(1) } | { cut }
+}
+
+// url_remove_dots_into: the remove_dot_segments algorithm, writing at
+// dst[out_start..] and returning the bytes written. The output never exceeds
+// the input, so a destination holding len(first) + len(second) bytes past
+// out_start suffices; callers check that before calling.
+// RFC 3986 §5.2.4 https://datatracker.ietf.org/doc/html/rfc3986#section-5.2.4
+url_remove_dots_into: (dst: [*]u8, out_start: u32, first: []u8, second: []u8): u32 {
+  n: u32 = len(first) + len(second)
+  at: u32 = u32(0)
+  out: u32 = out_start
+  while at < n {
+    rest: u32 = n - at
+    dot0: Bool = url_in_is(first, second, at, n, u8(46))
+    slash0: Bool = url_in_is(first, second, at, n, u8(47))
+    dot1: Bool = url_in_is(first, second, at + u32(1), n, u8(46))
+    slash1: Bool = url_in_is(first, second, at + u32(1), n, u8(47))
+    dot2: Bool = url_in_is(first, second, at + u32(2), n, u8(46))
+    slash2: Bool = url_in_is(first, second, at + u32(2), n, u8(47))
+    slash3: Bool = url_in_is(first, second, at + u32(3), n, u8(47))
+    // A: "../" or "./"
+    dot0 && dot1 && slash2 ? { at = at + u32(3) } |
+    dot0 && slash1 ? { at = at + u32(2) } |
+    // B: "/./" or "/." becomes "/"
+    slash0 && dot1 && slash2 ? { at = at + u32(2) } |
+    slash0 && dot1 && rest == u32(2) ? {
+      dst[out] = u8(47)
+      out = out + u32(1)
+      at = n
+    } |
+    // C: "/../" or "/.." becomes "/" and drops the last output segment
+    slash0 && dot1 && dot2 && slash3 ? {
+      at = at + u32(3)
+      out = url_drop_segment(dst, out_start, out)
+    } |
+    slash0 && dot1 && dot2 && rest == u32(3) ? {
+      out = url_drop_segment(dst, out_start, out)
+      dst[out] = u8(47)
+      out = out + u32(1)
+      at = n
+    } |
+    // D: a lone "." or ".."
+    dot0 && (rest == u32(1) || (dot1 && rest == u32(2))) ? { at = n } | {
+      // E: move the first segment (its leading "/" included) to the output
+      dst[out] = url_in(first, second, at)
+      out = out + u32(1)
+      at = at + u32(1)
+      while at < n && !url_in_is(first, second, at, n, u8(47)) {
+        dst[out] = url_in(first, second, at)
+        out = out + u32(1)
+        at = at + u32(1)
+      }
+    }
+  }
+  out - out_start
+}
+
+// url_remove_dot_segments: write `path` with its "." and ".." segments
+// interpreted into dst; returns the bytes written. The output is never
+// longer than the input, so dst must hold len(path) bytes (checked before
+// the first store).
+// RFC 3986 §5.2.4 https://datatracker.ietf.org/doc/html/rfc3986#section-5.2.4
+pub url_remove_dot_segments: (dst: [*]u8, path: []u8): Result[u32, UrlError] {
+  len(dst) < len(path) ? { .Err(.DestinationTooSmall) } | {
+    empty: []u8 = path[u32(0):u32(0)]
+    .Ok(url_remove_dots_into(dst, u32(0), path, empty))
+  }
+}
+
+// url_copy: append src[range] to dst at out; returns the new out.
+url_copy: (dst: [*]u8, out: u32, src: []u8, range: UrlRange): u32 {
+  i: u32 = range.start
+  at: u32 = out
+  while i < range.end {
+    dst[at] = src[i]
+    at = at + u32(1)
+    i = i + u32(1)
+  }
+  at
+}
+
+// url_copy_authority: "//" then the authority as it appears in the source,
+// which is contiguous from the userinfo (or host) to the port (or host).
+// RFC 3986 §5.3 https://datatracker.ietf.org/doc/html/rfc3986#section-5.3
+url_copy_authority: (dst: [*]u8, out: u32, src: []u8, parsed: Url): u32 {
+  start: u32 = parsed.userinfo.present ? parsed.userinfo.start | parsed.host.start
+  end: u32 = parsed.port.present ? parsed.port.end | parsed.host.end
+  dst[out] = u8(47)
+  dst[out + u32(1)] = u8(47)
+  url_copy(dst, out + u32(2), src, url_range(start, end))
+}
+
+// url_resolve_parsed: the transformation of §5.2.2 (strict: a reference
+// with a scheme is never treated as relative) followed by the recomposition
+// of §5.3. Both inputs are already parsed and the destination already
+// checked.
+// RFC 3986 §5.2.2 https://datatracker.ietf.org/doc/html/rfc3986#section-5.2.2
+// RFC 3986 §5.2.3 https://datatracker.ietf.org/doc/html/rfc3986#section-5.2.3
+url_resolve_parsed: (dst: [*]u8, base: []u8, b: Url, reference: []u8, r: Url): u32 {
+  out: u32 = u32(0)
+  empty: []u8 = reference[u32(0):u32(0)]
+  ref_path: []u8 = reference[r.path.start:r.path.end]
+  own: Bool = r.scheme.present || r.has_authority
+  ref_path_empty: Bool = r.path.end == r.path.start
+  ref_path_rooted: Bool = !ref_path_empty && reference[r.path.start] == u8(47)
+  // scheme
+  r.scheme.present ? { out = url_copy(dst, out, reference, r.scheme) } | { out = url_copy(dst, out, base, b.scheme) }
+  dst[out] = u8(58)
+  out = out + u32(1)
+  // authority
+  own && r.has_authority ? { out = url_copy_authority(dst, out, reference, r) }
+  !own && b.has_authority ? { out = url_copy_authority(dst, out, base, b) }
+  // path
+  own || ref_path_rooted ? { out = out + url_remove_dots_into(dst, out, ref_path, empty) } |
+  ref_path_empty ? { out = url_copy(dst, out, base, b.path) } |
+  b.has_authority && b.path.end == b.path.start ? {
+    // merge onto an empty path of an authority-bearing base: "/" + path,
+    // the "/" borrowed from the base's own "//" (base[scheme.end + 1])
+    slash: []u8 = base[b.scheme.end + u32(1):b.scheme.end + u32(2)]
+    out = out + url_remove_dots_into(dst, out, slash, ref_path)
+  } | {
+    // merge: the base path up to and including its last "/"
+    cut: u32 = b.path.end
+    while cut > b.path.start && base[cut - u32(1)] != u8(47) { cut = cut - u32(1) }
+    prefix: []u8 = base[b.path.start:cut]
+    out = out + url_remove_dots_into(dst, out, prefix, ref_path)
+  }
+  // query: the reference's unless it is empty in every part but the fragment
+  use_base_query: Bool = !own && ref_path_empty && !r.query.present
+  use_base_query && b.query.present ? {
+    dst[out] = u8(63)
+    out = url_copy(dst, out + u32(1), base, b.query)
+  }
+  !use_base_query && r.query.present ? {
+    dst[out] = u8(63)
+    out = url_copy(dst, out + u32(1), reference, r.query)
+  }
+  // fragment: always the reference's
+  r.fragment.present ? {
+    dst[out] = u8(35)
+    out = url_copy(dst, out + u32(1), reference, r.fragment)
+  }
+  out
+}
+
+url_resolve_with_base: (dst: [*]u8, base: []u8, b: Url, reference: []u8): Result[u32, UrlError] {
+  url_parse(reference) ?
+    | .Err(reason) => .Err(reason)
+    | .Ok(r) => .Ok(url_resolve_parsed(dst, base, b, reference, r))
+}
+
+url_resolve_checked: (dst: [*]u8, base: []u8, reference: []u8): Result[u32, UrlError] {
+  url_parse(base) ?
+    | .Err(reason) => .Err(reason)
+    | .Ok(b) => !b.scheme.present ? { .Err(.InvalidScheme) } | { url_resolve_with_base(dst, base, b, reference) }
+}
+
+// url_resolve: write the target URI of `reference` against `base` into dst
+// and return its length. The base must be an absolute URI (§5.1; a base
+// without a scheme is InvalidScheme). The target is never longer than
+// len(base) + len(reference) + 1, and dst must hold that many bytes, checked
+// before the first store; a parse error in either input leaves dst unchanged.
+// RFC 3986 §5.2 https://datatracker.ietf.org/doc/html/rfc3986#section-5.2
+pub url_resolve: (dst: [*]u8, base: []u8, reference: []u8): Result[u32, UrlError] {
+  len(dst) < len(base) + len(reference) + u32(1) ? { .Err(.DestinationTooSmall) } | { url_resolve_checked(dst, base, reference) }
+}
+
+// ---- queries ---------------------------------------------------------------
+
+// url_query_next: the next key/value pair of a query at or after `begin`,
+// pairs separated by "&" and split at their first "=" (no "=": the value is
+// absent); empty pairs ("a=1&&b") are skipped; None at the end. Iterate with
+// `begin = pair.next`. Keys and values are still percent-encoded and may use
+// "+" for space: decode them with the encoding package's `percent_decode`.
+// The "&"/"=" convention is the HTML form one, not part of RFC 3986 §3.4.
+pub url_query_next: (query: []u8, begin: u32): Option[UrlPair] {
+  start: u32 = begin
+  while start < len(query) && query[start] == u8(38) { start = start + u32(1) }
+  start >= len(query) ? { .None } | {
+    end: u32 = start
+    eq: u32 = start
+    found: Bool = false
+    while end < len(query) && query[end] != u8(38) {
+      !found && query[end] == u8(61) ? {
+        eq = end
+        found = true
+      }
+      end = end + u32(1)
+    }
+    key: UrlRange = found ? url_range(start, eq) | url_range(start, end)
+    value: UrlRange = found ? url_range(eq + u32(1), end) | url_absent()
+    .Some(UrlPair { key: key, value: value, next: end })
+  }
+}
+
+pub url_pair_or: (item: Option[UrlPair], fallback: UrlPair): UrlPair = item ? | .Some(pair) => pair | .None => fallback
+pub url_pair_present: (item: Option[UrlPair]): Bool = item ? | .Some(pair) => true | .None => false

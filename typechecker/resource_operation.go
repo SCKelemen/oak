@@ -10,7 +10,18 @@ import (
 // SemIR projection supplies both representations; conflicting entries fail closed.
 func normalizeResourceOperation(op ResourceOperation) (ResourceOperation, error) {
 	modes := make(map[int]ResourceParameterMode)
+	callables := make(map[int]*ResourceCallableContract)
 	for _, parameter := range op.Parameters {
+		if parameter.Callable != nil {
+			if parameter.Index < 0 || parameter.Mode != ResourceParameterUnspecified {
+				return ResourceOperation{}, fmt.Errorf("invalid callable contract on resource parameter %d", parameter.Index)
+			}
+			if _, exists := callables[parameter.Index]; exists {
+				return ResourceOperation{}, fmt.Errorf("duplicate callable contract on parameter %d", parameter.Index)
+			}
+			callables[parameter.Index] = normalizeCallableContract(parameter.Callable)
+			continue
+		}
 		if parameter.Index < 0 || parameter.Mode < ResourceParameterBorrowed || parameter.Mode > ResourceParameterConsumed {
 			return ResourceOperation{}, fmt.Errorf("invalid resource parameter %d mode %d", parameter.Index, parameter.Mode)
 		}
@@ -40,11 +51,23 @@ func normalizeResourceOperation(op ResourceOperation) (ResourceOperation, error)
 	}
 	out := ResourceOperation{ReturnsFresh: op.ReturnsFresh, Receiver: op.Receiver}
 	for _, index := range indices {
+		if _, callable := callables[index]; callable {
+			return ResourceOperation{}, fmt.Errorf("parameter %d has both a resource mode and a callable contract", index)
+		}
 		mode := modes[index]
 		out.Parameters = append(out.Parameters, ResourceParameterDeclaration{Index: index, Mode: mode})
 		if mode == ResourceParameterConsumed {
 			out.Consumes = append(out.Consumes, index)
 		}
 	}
+	callableIndices := make([]int, 0, len(callables))
+	for index := range callables {
+		callableIndices = append(callableIndices, index)
+	}
+	sort.Ints(callableIndices)
+	for _, index := range callableIndices {
+		out.Parameters = append(out.Parameters, ResourceParameterDeclaration{Index: index, Callable: callables[index]})
+	}
+	sort.Slice(out.Parameters, func(i, j int) bool { return out.Parameters[i].Index < out.Parameters[j].Index })
 	return out, nil
 }

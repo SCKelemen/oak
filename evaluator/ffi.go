@@ -30,6 +30,8 @@ func evalLibraryCall(library, member string, args []ast.Expression, env *object.
 			// (docs/spec/92-ffi.md section 2.5.4), which the interpreter
 			// cannot make.
 			return newError("c.%s requires the native backend; the interpreter cannot call foreign code", member)
+		case "disown":
+			return newError("c.disown requires the native backend; the interpreter has no foreign memory")
 		}
 		if len(args) != 1 {
 			return newError("c.%s takes exactly one argument", member)

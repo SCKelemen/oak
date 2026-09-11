@@ -60,6 +60,12 @@ var floatSource string
 //go:embed encoding.oak
 var encodingSource string
 
+// url is spliced into the flat prelude like the collections: RFC 3986
+// reference parsing and resolution over caller storage (stdlib/README.md).
+//
+//go:embed url.oak
+var urlSource string
+
 // math is a library package only (import("math")), never spliced into the
 // flat prelude: its names (exp, log, ...) are too common to land
 // unqualified in every program (docs/spec/20-types.md section 11.3.6).
@@ -80,6 +86,20 @@ var hashSource string
 //go:embed mx.oak
 var mxSource string
 
+// time is a library package only (import("time")): instants, durations,
+// the proleptic Gregorian calendar and RFC 3339 text in Oak, with no clock
+// (stdlib/README.md); its names (instant_add, weekday, ...) stay qualified.
+//
+//go:embed time.oak
+var timeSource string
+
+// arena is a library package only (import("arena")): bump reservations of
+// element ranges over an owner such as a Buffer[T]
+// (docs/spec/60-effects-allocation.md section 6).
+//
+//go:embed arena.oak
+var arenaSource string
+
 // Prelude is the core library (std.oak): Option, Result, Overflow, byte and
 // ring helpers. Every standard library package builds on it unqualified, and
 // the loader splices it into any program that imports a library package.
@@ -93,12 +113,12 @@ var Prelude = baseSource
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
 	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(floatSource)
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(floatSource)
 
 var (
 	clauseLine    = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
 	importLine    = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
-	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|float)\.`)
+	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|float)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -147,7 +167,10 @@ var Packages = map[string]string{
 	"float":           floatSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,
+	"url":             urlSource,
 	"math":            mathSource,
 	"hash":            hashSource,
 	"mx":              mxSource,
+	"time":            timeSource,
+	"arena":           arenaSource,
 }

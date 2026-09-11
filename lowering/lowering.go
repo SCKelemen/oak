@@ -552,6 +552,11 @@ func lowerIndexExpression(expr *ast.IndexExpression, tc *typechecker.TypeChecker
 			return expr
 		}
 	}
+	// The callee of an inbound buffer borrow, c.borrow[T] (docs/spec/92-ffi.md
+	// section 2.7), names an element type, not an element.
+	if typechecker.ForeignBorrowCallee(expr) {
+		return expr
+	}
 	// Create a call to core_index intrinsic
 	coreIndex := &ast.Identifier{
 		Token: expr.Token,

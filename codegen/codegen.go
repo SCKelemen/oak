@@ -10,6 +10,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
@@ -46,6 +47,18 @@ type CodeGenerator struct {
 	// globalTypes classifies top-level bindings (static globals) the same
 	// way localTypes classifies function locals.
 	globalTypes map[string]localContainer
+	// globalErrors collects top-level initializers the backend could not
+	// place in static storage; Generate reports the first (OAK-T0501 as an
+	// error at emission, ml finding F19).
+	globalErrors []error
+	// foldEnv holds the values of the constant globals emitted so far, so a
+	// later constant initializer may read them (codegen/globals.go).
+	foldEnv *object.Environment
+	// constantGlobals names the globals emitted so far with constant
+	// initializers; foldTypeHint is the annotated type of the global whose
+	// initializer is being emitted.
+	constantGlobals map[string]bool
+	foldTypeHint    string
 	// recordLayouts holds the resolved natural layout of each emitted
 	// record type (semir.NaturalRecordLayout, the Oak.RecordLayoutRefinement
 	// transliteration), for nested-record placement and layout assertions.
@@ -94,6 +107,9 @@ type containerKind int
 
 const (
 	containerUnknown containerKind = iota
+	// containerBuffer is an owned foreign buffer Buffer[T]
+	// (docs/spec/92-ffi.md section 2.8): the span struct {base, len}.
+	containerBuffer
 	containerOwnedArray
 	containerView
 	containerSpan
@@ -136,6 +152,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.stringLiteralMap = make(map[string]int)
 	cg.recordLayouts = make(map[string]semir.Representation)
 	cg.fieldAccessors = make(map[string]*ast.FieldAccessorExpression)
+	cg.globalErrors = nil
 
 	// Extract package name from program
 	for _, stmt := range program.Statements {
@@ -248,6 +265,9 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 			helpers.WriteString(cg.sliceHelpers[name])
 		}
 		output = output[:sliceHelperOffset] + helpers.String() + output[sliceHelperOffset:]
+	}
+	if len(cg.globalErrors) > 0 {
+		return "", cg.globalErrors[0]
 	}
 	return output, nil
 }
@@ -1175,6 +1195,9 @@ func (cg *CodeGenerator) classifyContainer(typeExpr ast.Expression) localContain
 		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Str" {
 			return localContainer{kind: containerString}
 		}
+		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
+			return localContainer{kind: containerBuffer, element: cg.parseTypeExpression(t.Index), elementType: t.Index}
+		}
 		if mangled, isGeneric := cg.genericAnnotationName(t); isGeneric {
 			return localContainer{kind: containerADT, adtName: mangled}
 		}
@@ -1409,7 +1432,7 @@ func (cg *CodeGenerator) emitBorrowConstruction(kind string, call *ast.Invocatio
 		return
 	}
 	info := cg.localContainerOf(prefix.Right)
-	if info.kind != containerOwnedArray {
+	if info.kind != containerOwnedArray && info.kind != containerBuffer {
 		cg.output.WriteString("OAK_UNSUPPORTED_BORROW_SOURCE")
 		return
 	}
@@ -1418,6 +1441,16 @@ func (cg *CodeGenerator) emitBorrowConstruction(kind string, call *ast.Invocatio
 		structName = cg.emitViewType(info.element)
 	} else {
 		structName = cg.emitSpanType(info.element)
+	}
+	if info.kind == containerBuffer {
+		// A buffer is already a {base, len} pair (docs/spec/92-ffi.md
+		// section 2.8): the borrow copies the pointer and the count.
+		cg.output.WriteString(fmt.Sprintf("(%s){ ( ", structName))
+		cg.emitExpressionFragment(prefix.Right, tc)
+		cg.output.WriteString(" ).base, ( ")
+		cg.emitExpressionFragment(prefix.Right, tc)
+		cg.output.WriteString(" ).len }")
+		return
 	}
 	cg.output.WriteString(fmt.Sprintf("(%s){ ", structName))
 	cg.emitExpressionFragment(prefix.Right, tc)
@@ -1432,7 +1465,7 @@ func (cg *CodeGenerator) emitLen(call *ast.InvocationExpression, tc *typechecker
 	switch info.kind {
 	case containerOwnedArray:
 		cg.output.WriteString(fmt.Sprintf("%d", info.length))
-	case containerView, containerSpan, containerString:
+	case containerView, containerSpan, containerString, containerBuffer:
 		cg.output.WriteString("((u32)( ")
 		cg.emitExpressionFragment(seq, tc)
 		cg.output.WriteString(" ).len)")
@@ -2281,6 +2314,13 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(")")
 		}
 	case *ast.InvocationExpression:
+		// An inbound buffer borrow (docs/spec/92-ffi.md section 2.7) is
+		// spelled as an index over a library member, so it comes before the
+		// generic index-call paths.
+		if member, element, isForeign := typechecker.ForeignBorrowCall(e); isForeign && len(e.Arguments) == 2 {
+			cg.emitForeignBorrow(member, element, e, tc)
+			return
+		}
 		// Sealed-boundary coercions are identities: the fresh abstract type is
 		// a typedef alias of its underlying type (docs/spec/83-modules.md
 		// section 6.3).
@@ -2700,6 +2740,11 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Str" {
 			return "string"
 		}
+		// An owned foreign buffer is the span struct over its element type
+		// (docs/spec/92-ffi.md section 2.8).
+		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
+			return cg.emitSpanType(cg.parseTypeExpression(indexExpr.Index))
+		}
 		// Atomic cells embed as C11 _Atomic members (docs/spec/65).
 		if atomicC, isAtomic := atomicTypeC(indexExpr); isAtomic {
 			return atomicC
@@ -3062,6 +3107,19 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 		cg.emitBlockStatement(s, tc, false)
 		cg.indentLevel--
 		cg.write("  }\n")
+	case *ast.UnsafeBlock:
+		// An unsafe block is a scope like any other in C; what it admits is
+		// decided by the checkers (Oak.Unsafe), and the comment keeps the
+		// boundary visible in the emitted text. Before this case existed
+		// the body was dropped with a TODO comment, a silent miscompile the
+		// inbound-buffer tests exposed (docs/spec/92-ffi.md section 2.7).
+		if s.Body != nil {
+			cg.write("  { /* unsafe */\n")
+			cg.indentLevel++
+			cg.emitBlockStatement(s.Body, tc, false)
+			cg.indentLevel--
+			cg.write("  }\n")
+		}
 	default:
 		cg.write(fmt.Sprintf("  /* TODO: emit statement type %T */\n", s))
 	}
