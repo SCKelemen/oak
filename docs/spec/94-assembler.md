@@ -976,9 +976,36 @@ forwarded twice with `len` read after the calls, a store loop calling a
 helper for every element, and two parked views with a leaf called before
 and inside the loop — natively against the C backend and the portable
 realization. Bodies that call remain trusted by the verifier (§5).
-Next increments: the verifier's frame-address memory (so array bodies are
-proven, not trusted), `break` as a second loop exit in the recognizer,
-records, and `subslice`/local span variables.
+**Sixth increment — record locals.** A declared record type of scalar
+fields (`Point: type = struct { x: i32, y: i32 }`) is placed by
+`semir.RecordLayoutWithSpec` over the C backend's field representations
+(`u8`…`u64`, `i8`…`i64`, `f32`, `f64`; `Bool` the 4-byte C enum; a declared
+per-field alignment raising the natural one; packed layouts and non-scalar
+fields left to the C backend) — the same numbers `codegen/records.go`
+asserts against the C compiler, so a natively compiled body and a
+C-compiled one agree on every offset. A local `p: Point = Point { x: e, y:
+e }` occupies the layout's size in whole 8-byte frame slots with every
+field value evaluated before the name is bound; `p: Point = q` and `p = q`
+copy the record slot-wise (padding travels, as C's struct assignment copies
+it); `p.f` loads the field at its own width and offset with the field
+type's extension (`ldrb`/`ldrh`/`ldrsb`/`ldrsh`/`ldr`, a Bool field's
+32-bit `ldr`), `p.f = e` stores it likewise — through `[sp, #imm]`, which
+the checker bounds to the declared frame and requires naturally aligned. A
+record local without an initializer is left to the C backend (which leaves
+it uninitialized; no semantics are invented natively), and records as
+parameters, results, or call arguments are not yet lowered (AAPCS64
+composite passing is a later increment). Executed (`TestE2ENativeRecords`):
+absolute-value updates through a `Point`, a five-field record of mixed
+widths updated in a loop with a Bool field written from a comparison and
+read as a condition, a copy diverging from its source, whole-record
+assignment, and a float field — natively against the C backend and the
+portable realization. Record bodies are trusted by the verifier (§5): its
+Oak side has no record locals.
+Next increments: record parameters and results (AAPCS64 composites: up to
+16 bytes in `x` registers, larger by reference), the verifier's frame
+addresses and record locals (so array and record bodies are proven, not
+trusted), `break` as a second loop exit in the recognizer, and
+`subslice`/local span variables.
 
 
 

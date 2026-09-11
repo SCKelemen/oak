@@ -33,6 +33,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -125,6 +126,100 @@ func arrayOf(expr ast.Expression) (elem scalar, length int64, ok bool) {
 	return elem, n.Value, true
 }
 
+// recordLayout is a declared record type's placement — the natural ordered
+// layout `semir.RecordLayoutWithSpec` computes, the same numbers the C
+// backend asserts against the C compiler (codegen/records.go) — restricted
+// to scalar fields. A record local occupies size bytes of the frame; a field
+// is read and written at its own width at offset.
+type recordLayout struct {
+	name   string
+	size   int64
+	fields map[string]recordField
+	order  []string
+}
+
+type recordField struct {
+	typ    scalar
+	offset int64
+	size   int64 // the C field's size: a Bool field is the 4-byte enum
+}
+
+// recordLocal is an owned record in the frame.
+type recordLocal struct {
+	offset int64 // slot offset (slotMem-relative), 8-byte aligned
+	layout *recordLayout
+}
+
+// fieldRepresentations: the C backend's sizes and alignments of the scalar
+// field types (codegen/records.go fixedFieldRepresentations).
+var fieldRepresentations = map[string]semir.RecordFieldRepresentation{
+	"u8": {Size: 1, Alignment: 1}, "i8": {Size: 1, Alignment: 1}, "byte": {Size: 1, Alignment: 1},
+	"u16": {Size: 2, Alignment: 2}, "i16": {Size: 2, Alignment: 2},
+	"u32": {Size: 4, Alignment: 4}, "i32": {Size: 4, Alignment: 4}, "f32": {Size: 4, Alignment: 4},
+	"u64": {Size: 8, Alignment: 8}, "i64": {Size: 8, Alignment: 8}, "f64": {Size: 8, Alignment: 8},
+	"Bool": {Size: 4, Alignment: 4},
+}
+
+// layoutOf places a declared record type, or reports why it is outside the
+// subset (a non-scalar field, a packed layout, an under-aligned field).
+func (g *generator) layoutOf(name string) (*recordLayout, error) {
+	if layout, done := g.layouts[name]; done {
+		return layout, nil
+	}
+	decl, isRecord := g.recordDecls[name]
+	if !isRecord {
+		return nil, unsupported("the type %s is not a declared record", name)
+	}
+	if decl.Layout != nil && decl.Layout.Packed {
+		return nil, unsupported("the packed record %s", name)
+	}
+	var reps []semir.RecordFieldRepresentation
+	layout := &recordLayout{name: name, fields: map[string]recordField{}}
+	for _, field := range decl.FieldOrder {
+		typ, isScalar := scalarOf(field.Value)
+		rep, placeable := fieldRepresentations[field.Value.String()]
+		if !isScalar || !placeable {
+			return nil, unsupported("the record %s (field %s: %s)", name, field.Name, field.Value.String())
+		}
+		if field.Align != 0 {
+			if field.Align < rep.Alignment {
+				return nil, unsupported("the record %s (field %s under-aligned)", name, field.Name)
+			}
+			rep.Alignment = field.Align
+		}
+		rep.Name = field.Name
+		reps = append(reps, rep)
+		layout.fields[field.Name] = recordField{typ: typ, size: int64(rep.Size)}
+		layout.order = append(layout.order, field.Name)
+	}
+	spec := semir.RecordLayoutSpec{}
+	if decl.Layout != nil {
+		spec.Align = decl.Layout.Align
+	}
+	placed, err := semir.RecordLayoutWithSpec(reps, spec)
+	if err != nil || len(reps) == 0 {
+		return nil, unsupported("the record %s has no placeable layout", name)
+	}
+	for _, placedField := range placed.Fields {
+		field := layout.fields[placedField.Name]
+		field.offset = int64(placedField.Offset)
+		layout.fields[placedField.Name] = field
+	}
+	layout.size = int64(placed.Size)
+	g.layouts[name] = layout
+	return layout, nil
+}
+
+// recordTypeName reads a type expression naming a declared record.
+func (g *generator) recordTypeName(expr ast.Expression) (string, bool) {
+	ident, isIdent := expr.(*ast.Identifier)
+	if !isIdent {
+		return "", false
+	}
+	_, isRecord := g.recordDecls[ident.Value]
+	return ident.Value, isRecord
+}
+
 // Unsupported reports why a function is left to the C backend.
 type Unsupported struct{ Reason string }
 
@@ -146,7 +241,12 @@ type generator struct {
 	types  map[string]scalar      // variable → type
 	spans  map[string]span        // span and view parameters, register-resident
 	arrays map[string]*arrayLocal // owned array locals, in the frame
-	head   string                 // the loop header a tail self-call jumps to
+	// Declared record types of the program, their placements, and the
+	// record locals in the frame.
+	recordDecls map[string]*ast.RecordLiteral
+	layouts     map[string]*recordLayout
+	records     map[string]*recordLocal
+	head        string // the loop header a tail self-call jumps to
 	// Variables live in the callee-saved registers x19–x28 in declaration
 	// order (saved in the prologue, restored before ret), and in frame
 	// slots once those run out; regs maps a variable to its register.
@@ -179,8 +279,9 @@ type generator struct {
 type slotBinding struct {
 	offset int64
 	typ    scalar
-	reg    int         // callee-saved register, or -1 for a slot
-	arr    *arrayLocal // an owned array local (offset/typ/reg unused)
+	reg    int          // callee-saved register, or -1 for a slot
+	arr    *arrayLocal  // an owned array local (offset/typ/reg unused)
+	rec    *recordLocal // an owned record local (offset/typ/reg unused)
 }
 
 const scratchLow, scratchHigh = 9, 15
@@ -192,15 +293,16 @@ const vecScratchLow, vecScratchHigh = 16, 23
 const vecCalleeLow, vecCalleeHigh = 8, 15
 
 // Compile lowers one Oak function. functions maps every program function by
-// name (callees' signatures); tc is the checker that typed the program.
-func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, tc *typechecker.TypeChecker) (*asm.Function, error) {
+// name (callees' signatures), records every declared record type by name
+// (their field lists); tc is the checker that typed the program.
+func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}
 	parkSpans := mentionsCall(fn.Body)
 	if hasVariables(fn) || parkSpans {
 		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
@@ -211,7 +313,7 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	for r := vecScratchHigh; r >= vecScratchLow; r-- {
 		g.freeF = append(g.freeF, vecBase+r)
 	}
-	if mentionsFloat(fn) {
+	if mentionsFloat(fn) || g.recordsMentionFloat(fn) {
 		g.saveAreaV = 8 * (vecCalleeHigh - vecCalleeLow + 1)
 	}
 	// Parameters take AAPCS64's integer registers in order: a scalar one, a
@@ -556,11 +658,14 @@ func (g *generator) popScope() {
 		delete(g.types, name)
 		delete(g.regs, name)
 		delete(g.arrays, name)
+		delete(g.records, name)
 		// A shadowed outer binding comes back into view.
 		for i := len(g.scopes) - 1; i >= 0; i-- {
 			if b, ok := g.scopes[i][name]; ok {
 				if b.arr != nil {
 					g.arrays[name] = b.arr
+				} else if b.rec != nil {
+					g.records[name] = b.rec
 				} else {
 					g.slots[name], g.types[name], g.regs[name] = b.offset, b.typ, b.reg
 				}
@@ -633,6 +738,159 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		g.release(r)
 	}
 	return nil
+}
+
+// declareRecord gives an owned record local its frame storage in whole
+// 8-byte slots.
+func (g *generator) declareRecord(name string, layout *recordLayout) *recordLocal {
+	rec := &recordLocal{offset: 8 * g.nslots, layout: layout}
+	g.nslots += (layout.size + 7) / 8
+	delete(g.slots, name)
+	delete(g.types, name)
+	delete(g.regs, name)
+	g.records[name] = rec
+	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
+	return rec
+}
+
+// lowerRecordDeclaration lowers `p: Point = Point { x: e, … }` (every field
+// stored at its offset) or `p: Point = q` (a slot-wise copy). A record
+// without an initializer is left to the C backend, which leaves it
+// uninitialized — no semantics are invented here.
+func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName string) error {
+	layout, err := g.layoutOf(typeName)
+	if err != nil {
+		return err
+	}
+	if s.Value == nil {
+		return unsupported("the record local %s without an initializer", s.Name.Value)
+	}
+	switch value := s.Value.(type) {
+	case *ast.RecordLiteral:
+		if value.TypeName != nil && value.TypeName.Value != typeName {
+			return unsupported("a %s literal for the %s local %s", value.TypeName.Value, typeName, s.Name.Value)
+		}
+		if len(value.Fields) != len(layout.order) {
+			return unsupported("a partial literal for the record local %s", s.Name.Value)
+		}
+		// The field values evaluate before the name is bound, in the
+		// layout's order (each is a pure expression or a call).
+		var values []int
+		for _, name := range layout.order {
+			expr, given := value.Fields[name]
+			if !given {
+				return unsupported("the literal for %s lacks the field %s", s.Name.Value, name)
+			}
+			field := layout.fields[name]
+			r, err := g.expr(expr, &field.typ)
+			if err != nil {
+				return err
+			}
+			values = append(values, r)
+		}
+		rec := g.declareRecord(s.Name.Value, layout)
+		for i, name := range layout.order {
+			g.fieldStore(rec, layout.fields[name], values[i])
+			g.release(values[i])
+		}
+		return nil
+	case *ast.Identifier:
+		src, isRecord := g.records[value.Value]
+		if !isRecord || src.layout != layout {
+			return unsupported("the record local %s initialized from %s", s.Name.Value, value.Value)
+		}
+		rec := g.declareRecord(s.Name.Value, layout)
+		return g.copyRecord(rec, src)
+	}
+	return unsupported("the record local %s initialized from %s", s.Name.Value, s.Value.String())
+}
+
+// copyRecord copies a record slot-wise (the padding travels too, as the C
+// struct assignment copies it).
+func (g *generator) copyRecord(dst, src *recordLocal) error {
+	tmp, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return err
+	}
+	words := (dst.layout.size + 7) / 8
+	for w := int64(0); w < words; w++ {
+		g.emit("ldr", xr(tmp), g.slotMem(src.offset+8*w))
+		g.emit("str", xr(tmp), g.slotMem(dst.offset+8*w))
+	}
+	g.release(tmp)
+	return nil
+}
+
+// fieldMem is a field's frame address.
+func (g *generator) fieldMem(rec *recordLocal, field recordField) asm.Memory {
+	return g.slotMem(rec.offset + field.offset)
+}
+
+// fieldLoad reads a field into a fresh register at its type: a Bool field
+// is the 4-byte C enum holding 0 or 1, so its load is a 32-bit `ldr`.
+func (g *generator) fieldLoad(rec *recordLocal, field recordField) (int, error) {
+	r, err := g.alloc(field.typ)
+	if err != nil {
+		return 0, err
+	}
+	load := loadOf(field.typ)
+	if field.typ.isBool {
+		load = "ldr"
+	}
+	g.emit(load, reg(r, field.typ), g.fieldMem(rec, field))
+	return r, nil
+}
+
+// fieldStore writes a normalized value of the field's type.
+func (g *generator) fieldStore(rec *recordLocal, field recordField, r int) {
+	store := storeOf(field.typ)
+	if field.typ.isBool {
+		store = "str"
+	}
+	g.emit(store, reg(r, field.typ), g.fieldMem(rec, field))
+}
+
+// fieldOperand reads `p.f` over a record local.
+func (g *generator) fieldOperand(e *ast.IndexExpression) (*recordLocal, recordField, error) {
+	ident, isIdent := e.Left.(*ast.Identifier)
+	if !isIdent {
+		return nil, recordField{}, unsupported("a field access on %s", e.Left.String())
+	}
+	rec, isRecord := g.records[ident.Value]
+	if !isRecord {
+		return nil, recordField{}, unsupported("a field access on %s (not a record local)", ident.Value)
+	}
+	name, isName := e.Index.(*ast.Identifier)
+	if !isName {
+		return nil, recordField{}, unsupported("a field access %s", e.String())
+	}
+	field, has := rec.layout.fields[name.Value]
+	if !has {
+		return nil, recordField{}, unsupported("the field %s of %s", name.Value, rec.layout.name)
+	}
+	return rec, field, nil
+}
+
+// recordsMentionFloat reports a record local whose type has a float field:
+// the vector file's save area is then reserved up front like any float use.
+func (g *generator) recordsMentionFloat(fn *ast.FunctionStatement) bool {
+	found := false
+	walk(fn.Body, func(n ast.Node) {
+		decl, isDecl := n.(*ast.VariableDeclaration)
+		if !isDecl || decl.Type == nil {
+			return
+		}
+		name, isRecord := g.recordTypeName(decl.Type)
+		if !isRecord {
+			return
+		}
+		for _, field := range g.recordDecls[name].FieldOrder {
+			if s, ok := scalarOf(field.Value); ok && s.isFloat {
+				found = true
+			}
+		}
+	})
+	return found
 }
 
 // storeOf is the whole-element store of a type.
@@ -755,7 +1013,11 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 		return g.typeOf(e.Right, hint)
 	case *ast.IndexExpression:
 		if e.Dot {
-			return scalar{}, unsupported("a field access")
+			_, field, err := g.fieldOperand(e)
+			if err != nil {
+				return scalar{}, err
+			}
+			return field.typ, nil
 		}
 		if arr := g.arrayOperand(e.Left); arr != nil {
 			return arr.elem, nil
@@ -917,6 +1179,12 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 				}
 				continue
 			}
+			if typeName, isRecord := g.recordTypeName(s.Type); isRecord {
+				if err := g.lowerRecordDeclaration(s, typeName); err != nil {
+					return err
+				}
+				continue
+			}
 			if s.Value == nil {
 				return unsupported("a local without an initializer")
 			}
@@ -942,6 +1210,21 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			g.items = append(g.items, g.storeVar(s.Name.Value, r))
 			g.release(r)
 		case *ast.AssignmentStatement:
+			if dst, isRecord := g.records[s.Name.Value]; isRecord {
+				// `q = p`: a whole-record copy.
+				src, isIdent := s.Value.(*ast.Identifier)
+				if !isIdent {
+					return unsupported("an assignment of %s to the record %s", s.Value.String(), s.Name.Value)
+				}
+				from, fromRecord := g.records[src.Value]
+				if !fromRecord || from.layout != dst.layout {
+					return unsupported("an assignment of %s to the record %s", src.Value, s.Name.Value)
+				}
+				if err := g.copyRecord(dst, from); err != nil {
+					return err
+				}
+				continue
+			}
 			typ, ok := g.types[s.Name.Value]
 			if !ok {
 				return unsupported("an assignment to %s", s.Name.Value)
@@ -2181,6 +2464,12 @@ func walk(n ast.Node, visit func(ast.Node)) {
 		for _, a := range e.Elements {
 			walk(a, visit)
 		}
+	case *ast.RecordLiteral:
+		for _, field := range e.FieldOrder {
+			if value, given := e.Fields[field.Name]; given {
+				walk(value, visit)
+			}
+		}
 	case *ast.MatchExpression:
 		walk(e.Scrutinee, visit)
 		for _, arm := range e.Arms {
@@ -2323,6 +2612,13 @@ func (g *generator) arrayElement(arr *arrayLocal, index ast.Expression) (int, er
 // element lowers `v[i]`: a guarded, whole-element load through the bound
 // base, zero- or sign-extending as the element type reads in C.
 func (g *generator) element(e *ast.IndexExpression) (int, error) {
+	if e.Dot {
+		rec, field, err := g.fieldOperand(e)
+		if err != nil {
+			return 0, err
+		}
+		return g.fieldLoad(rec, field)
+	}
 	if arr := g.arrayOperand(e.Left); arr != nil {
 		return g.arrayElement(arr, e.Index)
 	}
@@ -2366,7 +2662,17 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 // elementStore lowers `v[i] = e` through a writable span.
 func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	if s.Target.Dot {
-		return unsupported("a field store")
+		rec, field, err := g.fieldOperand(s.Target)
+		if err != nil {
+			return err
+		}
+		value, err := g.expr(s.Value, &field.typ)
+		if err != nil {
+			return err
+		}
+		g.fieldStore(rec, field, value)
+		g.release(value)
+		return nil
 	}
 	if arr := g.arrayOperand(s.Target.Left); arr != nil {
 		value, err := g.expr(s.Value, &arr.elem)
