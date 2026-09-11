@@ -556,7 +556,7 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 	if spec.sysregOperand == position {
 		return SysReg{Name: lower}, nil
 	}
-	if spec.branch != branchNone {
+	if spec.branch != branchNone || formsTakeSymbol(spec, position) {
 		return Symbol{Name: text}, nil
 	}
 	if spec.barrier || formsTakeOption(spec, position) {
@@ -573,6 +573,17 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 func formsTakeOption(spec instructionSpec, position int) bool {
 	for _, candidate := range spec.forms {
 		if position < len(candidate) && candidate[position] == opOption {
+			return true
+		}
+	}
+	return false
+}
+
+// formsTakeSymbol reports whether some legal form of a non-branch
+// instruction names a label at the position (adr/adrp).
+func formsTakeSymbol(spec instructionSpec, position int) bool {
+	for _, candidate := range spec.forms {
+		if position < len(candidate) && candidate[position] == opSym {
 			return true
 		}
 	}

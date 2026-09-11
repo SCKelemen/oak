@@ -22,6 +22,9 @@ import (
 // Atomic cells are emitted by emitAtomicGlobals and skipped here.
 func (cg *CodeGenerator) emitGlobals(program *ast.Program, tc *typechecker.TypeChecker) {
 	cg.globalTypes = make(map[string]localContainer)
+	cg.foldEnv = object.NewEnvironment()
+	cg.foldEnv.SetArithmeticWidths(tc.ArithmeticType)
+	cg.constantGlobals = make(map[string]bool)
 	emitted := false
 	for _, stmt := range program.Statements {
 		decl, isDecl := stmt.(*ast.VariableDeclaration)
@@ -94,7 +97,7 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 		return
 	}
 
-	if !typechecker.IsConstantInitializer(decl.Value) {
+	if !typechecker.IsConstantInitializerIn(decl.Value, cg.constantGlobals) {
 		// Fail closed, as an Oak error rather than a C one (ml finding F19):
 		// never a hidden global constructor. OAK-T0501 warned at check time;
 		// emission is where the C backend's rule becomes binding.
@@ -104,8 +107,20 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 	}
 
 	cg.write(declarator + " = ")
+	if typeName, isIdent := decl.Type.(*ast.Identifier); isIdent {
+		cg.foldTypeHint = typeName.Value
+	}
 	cg.emitFileScopeInitializer(decl.Value, tc)
+	cg.foldTypeHint = ""
 	cg.output.WriteString(";\n")
+	// A constant global is readable by the constant initializers after it:
+	// bind its value in the fold environment.
+	cg.constantGlobals[decl.Name.Value] = true
+	if result := evaluator.Eval(decl, cg.foldEnv); result != nil {
+		if e, isErr := result.(*object.Error); isErr {
+			cg.globalError(decl, "global %s does not fold for later initializers: %s", decl.Name.Value, e.Message)
+		}
+	}
 }
 
 // isAggregateType reports whether the annotation names a struct-like type
@@ -187,8 +202,16 @@ func (cg *CodeGenerator) globalError(decl *ast.VariableDeclaration, format strin
 // folded constant is the value the program would compute at run time.
 func (cg *CodeGenerator) emitFoldedConstant(expr ast.Expression, tc *typechecker.TypeChecker) {
 	typeName, typed := tc.FoldedConstantType(expr)
-	env := object.NewEnvironment()
-	env.SetArithmeticWidths(tc.ArithmeticType)
+	if !typed && cg.foldTypeHint != "" {
+		// The declaration's own annotation, when the whole initializer is
+		// the folded expression.
+		typeName, typed = cg.foldTypeHint, true
+	}
+	env := cg.foldEnv
+	if env == nil {
+		env = object.NewEnvironment()
+		env.SetArithmeticWidths(tc.ArithmeticType)
+	}
 	value := evaluator.Eval(expr, env)
 	fail := func(format string, args ...any) {
 		cg.output.WriteString("OAK_GLOBAL_INITIALIZER_NOT_FOLDED")

@@ -140,6 +140,57 @@ func init() {
 		add(name, instructionSpec{forms: []form{{opW, opW, opX}}})
 	}
 	add("cfinv", instructionSpec{forms: []form{{opNone}}, readsFlags: true, setsFlags: true})
+	// PC-relative addresses (adr within ±1 MiB; adrp to the 4 KiB page).
+	add("adr", instructionSpec{forms: []form{{opX, opSym}}})
+	add("adrp", instructionSpec{forms: []form{{opX, opSym}}})
+	// Bit-field aliases: clear, extract-and-insert-low, signed insert-zero.
+	add("bfc", instructionSpec{forms: []form{{opX, opImm, opImm}, {opW, opImm, opImm}}})
+	add("bfxil", instructionSpec{forms: []form{{opX, opX, opImm, opImm}, {opW, opW, opImm, opImm}}})
+	add("sbfiz", instructionSpec{forms: []form{{opX, opX, opImm, opImm}, {opW, opW, opImm, opImm}}})
+	// Negated widening multiplies.
+	for _, name := range []string{"smnegl", "umnegl"} {
+		add(name, instructionSpec{forms: []form{{opX, opW, opW}}})
+	}
+	// Non-temporal pairs, exclusive pairs, pair compare-and-swap.
+	for _, name := range []string{"ldnp", "stnp", "ldxp", "ldaxp"} {
+		add(name, instructionSpec{forms: []form{{opX, opX, opMem}, {opW, opW, opMem}}, memory: true})
+	}
+	for _, name := range []string{"stxp", "stlxp"} {
+		add(name, instructionSpec{forms: []form{{opW, opX, opX, opMem}, {opW, opW, opW, opMem}}, memory: true})
+	}
+	for _, order := range []string{"", "a", "l", "al"} {
+		add("casp"+order, instructionSpec{forms: []form{{opX, opX, opX, opX, opMem}, {opW, opW, opW, opW, opMem}}, memory: true})
+	}
+	// Store-only LSE atomics: the ld* forms with the result discarded.
+	for _, base := range []string{"stadd", "stclr", "steor", "stset", "stsmax", "stsmin", "stumax", "stumin"} {
+		for _, order := range []string{"", "l"} {
+			add(base+order, instructionSpec{forms: []form{{opX, opMem}, {opW, opMem}}, memory: true})
+			add(base+order+"b", instructionSpec{forms: []form{{opW, opMem}}, memory: true})
+			add(base+order+"h", instructionSpec{forms: []form{{opW, opMem}}, memory: true})
+		}
+	}
+	// Limited-ordering-region accesses.
+	add("ldlar", instructionSpec{forms: []form{{opX, opMem}, {opW, opMem}}, memory: true})
+	add("stllr", instructionSpec{forms: []form{{opX, opMem}, {opW, opMem}}, memory: true})
+	for _, name := range []string{"ldlarb", "ldlarh", "stllrb", "stllrh"} {
+		add(name, instructionSpec{forms: []form{{opW, opMem}}, memory: true})
+	}
+	// Unprivileged accesses: EL1 acting as EL0; ordinary accesses at EL0.
+	add("ldtr", instructionSpec{forms: []form{{opX, opMem}, {opW, opMem}}, memory: true})
+	add("sttr", instructionSpec{forms: []form{{opX, opMem}, {opW, opMem}}, memory: true})
+	for _, name := range []string{"ldtrb", "ldtrh", "sttrb", "sttrh"} {
+		add(name, instructionSpec{forms: []form{{opW, opMem}}, memory: true})
+	}
+	add("ldtrsb", instructionSpec{forms: []form{{opW, opMem}, {opX, opMem}}, memory: true})
+	add("ldtrsh", instructionSpec{forms: []form{{opW, opMem}, {opX, opMem}}, memory: true})
+	add("ldtrsw", instructionSpec{forms: []form{{opX, opMem}}, memory: true})
+	// Prefetch hints: the unscaled and range forms.
+	add("prfum", instructionSpec{forms: []form{{opOption, opMem}}, memory: true})
+	add("rprfm", instructionSpec{forms: []form{{opOption, opX, opMem}}, memory: true})
+	// Speculative store bypass barriers.
+	for _, name := range []string{"ssbb", "pssbb"} {
+		add(name, instructionSpec{forms: []form{{opNone}}, barrier: true})
+	}
 }
 
 // memorySize is the byte footprint of one load/store, from the mnemonic
@@ -150,15 +201,17 @@ func memorySize(mnemonic string, class RegClass) int64 {
 		return 16 // refined per register view by memorySizeReg
 	}
 	switch mnemonic {
-	case "ldrb", "strb", "ldrsb", "ldurb", "sturb", "ldursb", "ldarb", "ldxrb", "ldaxrb", "ldaprb", "stlrb", "stxrb", "stlxrb", "ldapurb", "ldapursb", "stlurb":
+	case "ldrb", "strb", "ldrsb", "ldurb", "sturb", "ldursb", "ldarb", "ldxrb", "ldaxrb", "ldaprb", "stlrb", "stxrb", "stlxrb", "ldapurb", "ldapursb", "stlurb",
+		"ldtrb", "sttrb", "ldtrsb", "ldlarb", "stllrb":
 		return 1
-	case "ldrh", "strh", "ldrsh", "ldurh", "sturh", "ldursh", "ldarh", "ldxrh", "ldaxrh", "ldaprh", "stlrh", "stxrh", "stlxrh", "ldapurh", "ldapursh", "stlurh":
+	case "ldrh", "strh", "ldrsh", "ldurh", "sturh", "ldursh", "ldarh", "ldxrh", "ldaxrh", "ldaprh", "stlrh", "stxrh", "stlxrh", "ldapurh", "ldapursh", "stlurh",
+		"ldtrh", "sttrh", "ldtrsh", "ldlarh", "stllrh":
 		return 2
-	case "ldrsw", "ldursw", "ldapursw":
+	case "ldrsw", "ldursw", "ldapursw", "ldtrsw":
 		return 4
 	case "ldpsw":
 		return 8
-	case "prfm":
+	case "prfm", "prfum", "rprfm":
 		return 8
 	}
 	if isAtomic(mnemonic) {
@@ -173,21 +226,41 @@ func memorySize(mnemonic string, class RegClass) int64 {
 	if class == ClassW {
 		width = 4
 	}
-	if mnemonic == "ldp" || mnemonic == "stp" {
+	if isPairAccess(mnemonic) {
 		return 2 * width
 	}
 	return width
+}
+
+// isPairAccess: the loads and stores that move two registers (the atomic
+// pair forms included), so the footprint is twice the register width.
+func isPairAccess(mnemonic string) bool {
+	switch mnemonic {
+	case "ldp", "stp", "ldnp", "stnp", "ldxp", "ldaxp", "stxp", "stlxp":
+		return true
+	}
+	return atomicBase(mnemonic) == "casp"
+}
+
+// isPrefetch: hints with a memory operand and no register written.
+func isPrefetch(mnemonic string) bool {
+	switch mnemonic {
+	case "prfm", "prfum", "rprfm":
+		return true
+	}
+	return false
 }
 
 // memorySizeReg is memorySize with the register's vector view taken into
 // account: ldr d0 moves 8 bytes, ldr q0 16, ldp s0, s1 8.
 func memorySizeReg(mnemonic string, reg Register) int64 {
 	if reg.Class == ClassV {
-		if mnemonic == "ld1r" {
-			return int64(laneBytes(reg.Vec)) // one element, replicated
+		switch mnemonic {
+		case "ld1r", "ld2r", "ld3r", "ld4r":
+			return int64(laneBytes(reg.Vec)) // one element per register, replicated
 		}
 		size := reg.VecBytes()
-		if mnemonic == "ldp" || mnemonic == "stp" {
+		if isPairAccess(mnemonic) {
 			return 2 * size
 		}
 		return size
@@ -195,16 +268,19 @@ func memorySizeReg(mnemonic string, reg Register) int64 {
 	return memorySize(mnemonic, reg.Class)
 }
 
-// isStructureAccess: ld1–ld4/st1–st4 move every register of their list.
+// isStructureAccess: ld1–ld4/st1–st4 and the replicating ld2r–ld4r move
+// one element (or one structure) per register of their list.
 func isStructureAccess(mnemonic string) bool {
 	switch mnemonic {
-	case "ld1", "st1", "ld2", "st2", "ld3", "st3", "ld4", "st4":
+	case "ld1", "st1", "ld2", "st2", "ld3", "st3", "ld4", "st4", "ld2r", "ld3r", "ld4r":
 		return true
 	}
 	return false
 }
 
-var atomicBases = []string{"ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax", "ldumin", "swp", "cas"}
+// atomicBases: the LSE operations, longest prefix first where one is a
+// prefix of another (casp before cas); the st* forms discard their result.
+var atomicBases = []string{"ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax", "ldumin", "swp", "casp", "cas", "stadd", "stclr", "steor", "stset", "stsmax", "stsmin", "stumax", "stumin"}
 
 // isAtomic reports an LSE atomic mnemonic.
 func isAtomic(mnemonic string) bool {
@@ -250,7 +326,7 @@ func atomicBase(mnemonic string) string {
 // register.
 func isSignExtendingLoad(mnemonic string) bool {
 	switch mnemonic {
-	case "ldrsb", "ldrsh", "ldrsw", "ldursb", "ldursh", "ldursw":
+	case "ldrsb", "ldrsh", "ldrsw", "ldursb", "ldursh", "ldursw", "ldtrsb", "ldtrsh", "ldtrsw":
 		return true
 	}
 	return false

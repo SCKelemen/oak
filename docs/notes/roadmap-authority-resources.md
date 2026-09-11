@@ -85,8 +85,10 @@ specializations retain template modes at call sites and in specialized
 bodies (`50-borrowing.md` §9). **Second increment (same day):** receiver
 authority as its own slot — receiver modes participate in exclusivity and
 consumption without shifting explicit indices, govern method bodies, and
-round-trip through SemIR. Still open: contracts on function types
-(borrowed-function requirements), imports and sealing.
+round-trip through SemIR. **Third increment (2026-09-12):** contracts on
+function types — a function-typed parameter requires a callable contract,
+satisfied only by exact agreement (`OAK-B0116`), and calls through the
+parameter use it (acceptance case 2). Still open: imports and sealing.
 
 ## 3. Resource provenance through bindings, projections, control flow
 

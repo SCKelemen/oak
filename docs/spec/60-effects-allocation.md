@@ -213,10 +213,12 @@ Its initializer is a compile-time constant or absent (zero initialization):
   float, storage bits, or integer). The differential tests hold the
   interpreter to the C helpers, so the folded constant is the value the
   program would compute at run time;
+- a read of a constant global declared **earlier** in the file, folded
+  with it (`CELLS: u32 = ROWS * COLS`);
 - record and array literals of the above.
 
-Anything else — a call to an ordinary function, a read of another global,
-an intrinsic — is not constant. `OAK-T0501` warns at check time (script
+Anything else — a call to an ordinary function, a read of a later or
+non-constant global, an intrinsic — is not constant. `OAK-T0501` warns at check time (script
 programs may still interpret such a binding, initializing it at load), the
 strict profile rejects it, and **C emission fails with `OAK-T0501` as an
 error** naming the global and its position. The generated C never runs a
