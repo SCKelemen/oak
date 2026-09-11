@@ -60,6 +60,12 @@ var uuidSource string
 //go:embed path.oak
 var pathSource string
 
+// grapheme: UAX #29 extended grapheme cluster segmentation over UTF-8 views
+// (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed grapheme.oak
+var graphemeSource string
+
 // encoding: hex, base64, base32 and percent codecs over borrowed bytes
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -119,7 +125,7 @@ var Prelude = baseSource
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
 	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource) + "\n" + flatten(pathSource)
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource) + "\n" + flatten(pathSource) + "\n" + flatten(graphemeSource)
 
 var (
 	clauseLine = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
@@ -127,7 +133,7 @@ var (
 	// A package qualifier is only a qualifier when nothing precedes it: after
 	// a `.` it is a field named like a package (the `Url` record's `path`), so
 	// the leading context is kept and only the qualifier is dropped.
-	qualification = regexp.MustCompile(`(^|[^.\w])(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid|path)\.`)
+	qualification = regexp.MustCompile(`(^|[^.\w])(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid|path|grapheme)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -175,6 +181,7 @@ var Packages = map[string]string{
 	"random":          randomSource,
 	"uuid":            uuidSource,
 	"path":            pathSource,
+	"grapheme":        graphemeSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,
 	"url":             urlSource,
