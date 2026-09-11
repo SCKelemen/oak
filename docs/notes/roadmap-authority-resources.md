@@ -88,7 +88,11 @@ consumption without shifting explicit indices, govern method bodies, and
 round-trip through SemIR. **Third increment (2026-09-12):** contracts on
 function types — a function-typed parameter requires a callable contract,
 satisfied only by exact agreement (`OAK-B0116`), and calls through the
-parameter use it (acceptance case 2). Still open: imports and sealing.
+parameter use it (acceptance case 2). **Fourth increment (2026-09-12):**
+`via f(consumed h, borrowed mut receiver)` declares modes in source
+(`112-protocols.md` §5) and, because protocols elaborate with internal
+names, imports and sealing cannot erase them (acceptance case 4). The milestone's acceptance list is covered; still open: a source
+spelling for callable contracts and fresh returns.
 
 ## 3. Resource provenance through bindings, projections, control flow
 
@@ -102,6 +106,15 @@ resources; rebinding cannot manufacture freshness; freshness has a scope.
 **Done when:** alias reassignment makes later exclusive use conflict;
 fresh assignment does not revive old aliases; shadowing leaves outer
 bindings alone; branches and loops cannot manufacture disjointness.
+
+**Landed (first increment, 2026-09-12):** reassignment of resource bindings
+is tracked (`50-borrowing.md` §9): rebinding to a live name joins its
+class, rebinding to a fresh result starts a new class, other right-hand
+sides give unknown provenance, rebound parameters release entry authority,
+and joins drop names whose provenance differs. All four "done when" cases
+are tested. Still open: projections and aggregate writes (distinct fields
+are not automatically distinct resources) and loop-specific fixed points
+beyond the existing two-iteration probe.
 
 ## 4. Checked result provenance, then borrowed returns
 
