@@ -188,6 +188,25 @@ file and line, and a hosted build prints `oak: assertion failed at file:line`
 to stderr before the trap. Freestanding builds (`-ffreestanding`, or
 `-DOAK_FREESTANDING`) keep the bare trap and take no libc dependency.
 
+**Assertions that name both values.** `assert_eq(got, want)` and
+`assert_ne(got, want)` take two values of one type — a fixed-width integer
+(aliases and the platform-sized names resolve to their width), `f32`, `f64`,
+or `Bool` — and trap exactly when the comparison fails. A hosted build prints
+`oak: assertion failed at file:line: got 5, want 4` (or `want anything but 7`
+for `assert_ne`) before the trap; integers print in decimal in their own
+signedness, `Bool` as `true`/`false`, floats with enough digits to round-trip
+(`%.9g` for `f32`, `%.17g` for `f64`) so the message identifies the exact
+value rather than a rounded reading of it. Freestanding builds keep the bare
+trap. The operands must share one of those types: `OAK-T0601` rejects a
+width or integer/float mismatch (there is no implicit promotion) and any
+operand the message could not print (records, views, strings — assert on a
+field or element, or use `assert` with a `Bool`). The interpreter evaluates
+both forms with the same message; the Lean extraction models them as the
+trap alone (`none` when the comparison fails), not the printed values. The
+`testing` prelude's `test_check_eq_*`/`test_check_ne_*` are the counterpart
+for property tests (`110-testing.md`): the failure keeps its invariant id as
+the signature and carries the values to the runner.
+
 TigerStyle assertion density: functions assert their arguments, results, and
 invariants; assertions are compiled in, not compiled out. The `assert`
 builtin exists: it takes one `Bool`, returns unit, evaluates in the

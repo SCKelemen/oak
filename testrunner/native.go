@@ -53,6 +53,31 @@ type outcome struct {
 	trace                     []TraceEvent
 	traceTruncated            bool
 	commands                  []Command
+	// got and want are the values a test_check_eq_*/test_check_ne_* failure
+	// reported, spelled in the operand type; wantNot marks the "not equal"
+	// form. Empty for every other outcome.
+	got, want string
+	wantNot   bool
+}
+
+// failureValues spells the two 64-bit values a fail-values report carries in
+// the operand's own type: kind bit 2 reads them as signed, bit 4 as Bool,
+// otherwise unsigned; bit 1 marks a "not equal" check.
+func failureValues(got, want uint64, kind uint64) (gotText, wantText string, wantNot bool) {
+	spell := func(v uint64) string {
+		switch {
+		case kind&4 != 0:
+			if v != 0 {
+				return "true"
+			}
+			return "false"
+		case kind&2 != 0:
+			return strconv.FormatInt(int64(v), 10)
+		default:
+			return strconv.FormatUint(v, 10)
+		}
+	}
+	return spell(got), spell(want), kind&1 != 0
 }
 
 func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
@@ -195,6 +220,13 @@ void oak_test_host_fail(uint32_t id) {
  if (oak_test_report) { fprintf(oak_test_report, "fail %u\n", (unsigned)id); fflush(oak_test_report); }
  exit(101);
 }
+void oak_test_host_fail_values(uint32_t id, uint64_t got, uint64_t want, uint32_t kind) {
+ if (oak_test_report) {
+  fprintf(oak_test_report, "fail-values %u %llu %llu %u\n", (unsigned)id, (unsigned long long)got, (unsigned long long)want, (unsigned)kind);
+  fflush(oak_test_report);
+ }
+ exit(101);
+}
 void oak_test_host_discard(void) {
  if (oak_test_report) { fputs("discard\n", oak_test_report); fflush(oak_test_report); }
  exit(102);
@@ -280,6 +312,18 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 				return result
 			}
 			result.traceTruncated = true
+		} else if len(fields) == 5 && fields[0] == "fail-values" {
+			_, e1 := strconv.ParseUint(fields[1], 10, 32)
+			got, e2 := strconv.ParseUint(fields[2], 10, 64)
+			want, e3 := strconv.ParseUint(fields[3], 10, 64)
+			kind, e4 := strconv.ParseUint(fields[4], 10, 32)
+			if e1 != nil || e2 != nil || e3 != nil || e4 != nil || kind > 7 {
+				result.signature = "harness:bad-report"
+				return result
+			}
+			terminal = "fail"
+			result.signature = "invariant:" + fields[1]
+			result.got, result.want, result.wantNot = failureValues(got, want, kind)
 		} else if len(fields) == 2 && (fields[0] == "class" || fields[0] == "fail") {
 			id, e := strconv.ParseUint(fields[1], 10, 32)
 			if e != nil {

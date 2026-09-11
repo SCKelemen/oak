@@ -2156,6 +2156,34 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			}
 			return &UnitType{}
 		}
+		// assert_eq / assert_ne (docs/spec/85-discipline.md section 5): two
+		// values of one fixed-width integer, float, or Bool type; a failure
+		// names both values. The operand type is recorded by position so the
+		// backend picks the printing helper without re-deriving it.
+		if ident.Value == "assert_eq" || ident.Value == "assert_ne" {
+			if len(expr.Arguments) != 2 {
+				tc.addTypeDiagnostic(expr, CodeAssertOperands, ident.Value+" expects exactly two arguments: got and want")
+				return &UnitType{}
+			}
+			gotType := tc.checkExpression(expr.Arguments[0])
+			wantType := tc.checkExpression(expr.Arguments[1])
+			if gotType == nil || wantType == nil {
+				return &UnitType{}
+			}
+			name, comparable := tc.assertOperandName(gotType)
+			if !comparable {
+				d := tc.addTypeDiagnostic(expr.Arguments[0], CodeAssertOperands, fmt.Sprintf("%s compares fixed-width integers, f32/f64, or Bool, got %s", ident.Value, gotType))
+				d.AddHelp("compare a scalar the failure message can print; for records and views assert on a field or an element, or use assert with a Bool")
+				return &UnitType{}
+			}
+			if !gotType.Equals(wantType) {
+				d := tc.addTypeDiagnostic(expr, CodeAssertOperands, fmt.Sprintf("%s operands must have one type, got %s and %s", ident.Value, gotType, wantType))
+				d.AddHelp("convert one operand explicitly; there is no implicit promotion between widths or between integers and floats")
+				return &UnitType{}
+			}
+			tc.recordFloatWidth(ident.Token, name)
+			return &UnitType{}
+		}
 	}
 
 	// recv.member(args): a method call or uniform call syntax

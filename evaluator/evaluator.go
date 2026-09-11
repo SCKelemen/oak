@@ -389,6 +389,14 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			}
 			return NULL
 		},
+		// assert_eq / assert_ne (docs/spec/85-discipline.md section 5): a
+		// failure names both values, exactly as the compiled helper does.
+		"assert_eq": func(args ...object.Object) object.Object {
+			return evalAssertValues("assert_eq", true, args)
+		},
+		"assert_ne": func(args ...object.Object) object.Object {
+			return evalAssertValues("assert_ne", false, args)
+		},
 		"is_valid_utf8": func(args ...object.Object) object.Object {
 			// docs/spec/70-strings.md: validate bytes against the well-formed
 			// UTF-8 sequences (Oak.Utf8Validity) before trusting them as text.

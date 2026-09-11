@@ -2056,6 +2056,58 @@ func (cg *CodeGenerator) emitAssertHelper() {
 	cg.write("  }\n")
 	cg.write("}\n")
 	cg.write("#endif\n\n")
+	cg.emitAssertValueHelpers()
+}
+
+// assertValueFormats spells each comparable operand type for the failure
+// message of assert_eq/assert_ne: the C type, the printf conversion, and the
+// cast that makes the conversion exact. Floats print with enough digits to
+// round-trip (nine for binary32, seventeen for binary64), so the message
+// identifies the exact value rather than a rounded reading of it.
+var assertValueFormats = []struct{ name, ctype, format, cast string }{
+	{"u8", "u8", "%llu", "(unsigned long long)"},
+	{"u16", "u16", "%llu", "(unsigned long long)"},
+	{"u32", "u32", "%llu", "(unsigned long long)"},
+	{"u64", "u64", "%llu", "(unsigned long long)"},
+	{"i8", "i8", "%lld", "(long long)"},
+	{"i16", "i16", "%lld", "(long long)"},
+	{"i32", "i32", "%lld", "(long long)"},
+	{"i64", "i64", "%lld", "(long long)"},
+	{"f32", "f32", "%.9g", "(double)"},
+	{"f64", "f64", "%.17g", "(double)"},
+}
+
+// emitAssertValueHelpers emits oak_assert_eq_T / oak_assert_ne_T for every
+// comparable type: the same always-on trap as oak_assert, whose hosted
+// message names both values (docs/spec/85-discipline.md section 5).
+func (cg *CodeGenerator) emitAssertValueHelpers() {
+	cg.write("/* assert_eq / assert_ne: the failure names both values (85-discipline section 5) */\n")
+	for _, f := range assertValueFormats {
+		cg.write(fmt.Sprintf("static inline void oak_assert_eq_%s(%s got, %s want, const char *file, u32 line) {\n", f.name, f.ctype, f.ctype))
+		cg.write("  if (!(got == want)) {\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+		cg.write(fmt.Sprintf("    fprintf(stderr, \"oak: assertion failed at %%s:%%u: got %s, want %s\\n\", file, (unsigned)line, %sgot, %swant);\n", f.format, f.format, f.cast, f.cast))
+		cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+		cg.write("    __builtin_trap();\n  }\n}\n")
+		cg.write(fmt.Sprintf("static inline void oak_assert_ne_%s(%s got, %s want, const char *file, u32 line) {\n", f.name, f.ctype, f.ctype))
+		cg.write("  if (got == want) {\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+		cg.write(fmt.Sprintf("    fprintf(stderr, \"oak: assertion failed at %%s:%%u: got %s, want anything but %s\\n\", file, (unsigned)line, %sgot, %swant);\n", f.format, f.format, f.cast, f.cast))
+		cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+		cg.write("    __builtin_trap();\n  }\n}\n")
+	}
+	cg.write("static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32 line) {\n")
+	cg.write("  if (!(got == want)) {\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got %s, want %s\\n\", file, (unsigned)line, got ? \"true\" : \"false\", want ? \"true\" : \"false\");\n")
+	cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+	cg.write("    __builtin_trap();\n  }\n}\n")
+	cg.write("static inline void oak_assert_ne_Bool(Bool got, Bool want, const char *file, u32 line) {\n")
+	cg.write("  if (got == want) {\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got %s, want anything but %s\\n\", file, (unsigned)line, got ? \"true\" : \"false\", want ? \"true\" : \"false\");\n")
+	cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+	cg.write("    __builtin_trap();\n  }\n}\n\n")
 }
 
 // emitTrampolineGroup merges one mutual-tail cycle into a state-machine
@@ -2518,6 +2570,21 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			}
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
+			// assert_eq / assert_ne name both values on failure; the checker
+			// recorded the operand type by position, which selects the
+			// printing helper (docs/spec/85-discipline.md section 5).
+			if (ident.Value == "assert_eq" || ident.Value == "assert_ne") && len(e.Arguments) == 2 {
+				name, known := tc.ArithmeticType(ident.Token)
+				if !known {
+					name = "u64"
+				}
+				cg.output.WriteString(fmt.Sprintf("oak_%s_%s( ", ident.Value, name))
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(", ")
+				cg.emitExpressionFragment(e.Arguments[1], tc)
+				cg.output.WriteString(fmt.Sprintf(", %q, %d )", cg.tokenSourceFile(ident.Token), ident.Token.Line))
+				return
+			}
 			if cg.emitStringViewCall(e, tc) {
 				return
 			}

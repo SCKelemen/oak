@@ -174,7 +174,7 @@ func pureBorrowBuiltin(name string) bool {
 	switch name {
 	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
 		"int", "uint", "uptr", "iptr", "f32", "f64", "byte", "rune",
-		"len", "assert", "is_valid_utf8", "str_from_utf8", "str_bytes",
+		"len", "assert", "assert_eq", "assert_ne", "is_valid_utf8", "str_from_utf8", "str_bytes",
 		"view", "span", "subslice", "view_as", "span_as",
 		"address_of", "size_of", "align_of", "offset_of", "static_assert":
 		return true

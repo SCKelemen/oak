@@ -795,6 +795,24 @@ func (em *emitter) statementInner(stmt ast.Statement, lines *[]string) error {
 				emit("let () ← (if %s then pure () else none)", cond)
 				return nil
 			}
+			// assert_eq / assert_ne trap exactly when the comparison fails; the
+			// values they would print are not part of the model.
+			if callee, isIdent := call.Function.(*ast.Identifier); isIdent && (callee.Value == "assert_eq" || callee.Value == "assert_ne") && len(call.Arguments) == 2 {
+				got, err := em.expr(call.Arguments[0], "")
+				if err != nil {
+					return err
+				}
+				want, err := em.expr(call.Arguments[1], "")
+				if err != nil {
+					return err
+				}
+				if callee.Value == "assert_eq" {
+					emit("let () ← (if %s == %s then pure () else none)", got, want)
+				} else {
+					emit("let () ← (if %s == %s then none else pure ())", got, want)
+				}
+				return nil
+			}
 			// A call in statement position is evaluated for its span effects.
 			if _, err := em.expr(call, ""); err != nil {
 				return err
