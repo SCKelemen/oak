@@ -1,0 +1,15 @@
+// Benchmark entry points for the normalize package: NFC and NFD of a random
+// UTF-8 corpus into caller storage, the exact output sizes for the harness's
+// allocation, and the NFC quick check over ASCII text.
+package main
+
+import("normalize")
+
+pub bench_nfc_size: (src: []u8): u32 = normalize.normalize_written(normalize.normalize_nfc_size(src))
+pub bench_nfd_size: (src: []u8): u32 = normalize.normalize_written(normalize.normalize_nfd_size(src))
+
+// The bytes written, 0 when the form fails.
+pub bench_nfc: (dst: [*]u8, src: []u8): u32 = normalize.normalize_written(normalize.normalize_nfc(dst, src))
+pub bench_nfd: (dst: [*]u8, src: []u8): u32 = normalize.normalize_written(normalize.normalize_nfd(dst, src))
+
+pub bench_is_nfc: (src: []u8): Bool = normalize.normalize_is_nfc(src)

@@ -642,6 +642,47 @@ midpoints between adjacent doubles, comparing every line with `strconv`.
 Deviations from Go: digit-separating underscores and hexadecimal floats are
 rejected rather than accepted.
 
+## Unicode normalization
+
+`stdlib/normalize.oak` (`import("normalize")`, also in the flat prelude)
+implements the four normalization forms of UAX #15 at Unicode 17.0.0 over
+UTF-8 views into caller-owned spans: `normalize_nfd` and `normalize_nfkd`
+decompose (canonical, or canonical plus compatibility, always the full
+recursive decomposition, Hangul syllables algorithmically) and put combining
+marks in canonical order; `normalize_nfc` and `normalize_nfkc` then recompose
+primary composites under the blocking rule of D117, composition exclusions
+and Hangul included. `normalize_form(dst, src, form)` selects a form by the
+`NORMALIZE_NFD .. NORMALIZE_NFKC` constants. Every function returns
+`Result[u32, NormalizeError]` with the count written; the closed error type is
+`InvalidEncoding | DestinationTooSmall | RunTooLong`. Nothing allocates and
+every store follows its length check, but the pass streams: when the
+destination is too small the bytes written before the failure stay, so
+callers size the destination with the exact `normalize_nfd_size` /
+`normalize_nfc_size` / `normalize_nfkd_size` / `normalize_nfkc_size` (a
+counting pass over the same algorithm) or allow 18 × 4 bytes per input scalar,
+the longest decomposition at the widest encoding. The algorithm holds one run
+— a starter and the marks after it — in a `NORMALIZE_RUN_LIMIT` (256) scalar
+buffer; text with more consecutive non-starters than that (UAX #15's
+stream-safe format caps them at 30) is refused as `RunTooLong` rather than
+normalized wrongly. `normalize_is_nfd`/`normalize_is_nfkd` are the quick check
+of §9 (decisive for the decomposed forms); `normalize_is_nfc`/
+`normalize_is_nfkc` run the quick check and, only when a MAYBE scalar leaves
+it undecided, the full pass compared byte for byte against the input. A block
+table marks the 150 of 4352 blocks that hold any property, decomposition, or
+Hangul syllable, so scalars elsewhere skip every lookup, and a run of ASCII
+copies straight through. `normalize_ccc`, `normalize_flags`,
+`normalize_compose_pair`, and `normalize_is_plain` expose the tables. The
+tables come from `extract_normalize.py` (UnicodeData.txt,
+DerivedNormalizationProps.txt) through `unicode17_normalize.json` and
+`generate_normalize.py`; `testdata/NormalizationTest-17.0.0.txt` is checked in
+and every one of its 20,034 lines passes all five-column invariants in
+`compiler/e2e_stdlib_normalize_test.go`, `e2e_stdlib_normalize_laws_test.go`
+compares the compiled code with an independent Go transliteration on random
+sequences, and `spec/lean/Oak/Normalization.lean` proves canonical ordering
+is a stable sorted permutation and NFD idempotent (composition is defined
+there, its laws are remaining work). Invalid UTF-8 is `InvalidEncoding`, never
+normalized.
+
 ## Grapheme clusters
 
 `stdlib/grapheme.oak` (`import("grapheme")`, also in the flat prelude)

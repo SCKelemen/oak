@@ -73,6 +73,7 @@ import Oak.SessionObligations
 import Oak.SessionObligationsProved
 import Oak.Floats
 import Oak.GraphemeBreak
+import Oak.Normalization
 import Oak.Stdlib.VarintExtracted
 import Oak.Stdlib.EncodingExtracted
 import Oak.Stdlib.HashExtracted

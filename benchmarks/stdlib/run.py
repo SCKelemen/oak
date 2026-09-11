@@ -15,7 +15,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-PACKAGES = ("sort", "varint", "encoding", "hash", "random", "uuid", "strings", "time")
+PACKAGES = ("sort", "varint", "encoding", "hash", "random", "uuid", "strings", "time", "normalize")
 
 
 def capture(args, cwd=None):

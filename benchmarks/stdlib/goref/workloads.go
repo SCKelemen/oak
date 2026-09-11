@@ -420,4 +420,7 @@ func init() {
 	register("strings/append_u64", "go", stringsSetup, appendU64)
 	register("time/format_rfc3339", "go", timeSetup, formatRFC3339)
 	register("time/parse_rfc3339", "go", timeSetup, parseRFC3339)
+	register("normalize/nfc", "go", normalizeSetup, normalizeNFC)
+	register("normalize/nfd", "go", normalizeSetup, normalizeNFD)
+	register("normalize/is_nfc_ascii", "go", normalizeSetup, normalizeIsNFCASCII)
 }

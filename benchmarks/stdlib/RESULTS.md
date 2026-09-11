@@ -81,6 +81,32 @@ loop the extraction proofs on `sam/stdlib-laws` are being written against.
 `uuid/v7_format` and `time/format_rfc3339` were not touched; their
 generated C shows no cheap win (the cost is the digit loops themselves).
 
+## Normalization, 2026-09-12
+
+The `normalize` package (`import("normalize")`) adds three workloads. Go's
+standard library has no normalizer and the module takes no dependency, so
+the Go column is a plain allocating transliteration of the UAX #15
+definitions over the same Unicode 17.0.0 extract
+(`goref/normalize.go`), not a tuned library: read the ratio as "against a
+naive reference", not against `x/text`. The corpus is the harness's random
+UTF-8 text (60 % ASCII, then two-, three-, and four-byte scalars, most of
+them plain); the ASCII quick-check corpus is the decimal text. Output
+buffers are sized by the package's own `_size` functions before timing.
+M4 Max, clang 21 `-O2`, scale 1, five samples.
+
+| Workload | Oak ns/byte | Oak MB/s | Go ns/byte | Go MB/s | Oak / Go time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| normalize/nfc | 29.62 | 33.8 | 74.41 | 13.4 | 0.40× |
+| normalize/nfd | 21.32 | 46.9 | 37.20 | 26.9 | 0.57× |
+| normalize/is_nfc_ascii | 0.34 | 2923.8 | 0.38 | 2657.6 | 0.91× |
+
+Before the block table that lets a scalar in one of the 4202 property-free
+blocks skip every lookup, NFC ran at 36.9 ns/byte and NFD at 24.6 (against
+the same reference at scale 0.25). The remaining cost is the per-scalar
+decode, the two binary searches for scalars in marked blocks, the run
+buffer round trip, and the re-encode; a direct-indexed first-level table for
+the Latin and combining-mark blocks would remove most of the searches.
+
 ## Hot spots, in the order they are worth pursuing
 
 1. **CRC-32C 20× and SHA-256 7.3× slower.** The portable tables are in;
