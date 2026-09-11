@@ -30,7 +30,12 @@ pub TIME_FAULT_JUMP_FORWARD: u32 = 2
 pub TIME_FAULT_STALL: u32 = 4
 pub TIME_FAULT_COARSE: u32 = 8
 pub TIME_FAULT_DRIFT: u32 = 16
-pub TIME_FAULT_ALL: u32 = 31
+// The wall clock is shifted beyond the attested bound while the attestation
+// stands: the interval reading no longer contains the true time.
+pub TIME_FAULT_BOUND_BREAK: u32 = 32
+// The attestation is withdrawn for this step: interval readings refuse.
+pub TIME_FAULT_UNATTEST: u32 = 64
+pub TIME_FAULT_ALL: u32 = 127
 
 NANOS_PER_MILLI: i64 = 1000000
 NANOS_PER_SECOND: i64 = 1000000000
@@ -52,12 +57,14 @@ pub TimeSim: type = struct {
   coarsened: u32
   drifted: u32
   skew: i64
+  bound_breaks: u32
+  unattested: u32
 }
 
 pub timesim_init: (sim: [*]TimeSim, faults: u32, tick_nanos: i64): () {
   assert(len(sim) == u32(1))
   assert(tick_nanos > i64(0))
-  sim[0] = TimeSim { faults: faults, tick_nanos: tick_nanos, last_tick: u64(0), coarse_nanos: i64(10000000), jumps_back: u32(0), jumps_forward: u32(0), stalls: u32(0), coarsened: u32(0), drifted: u32(0), skew: i64(0) }
+  sim[0] = TimeSim { faults: faults, tick_nanos: tick_nanos, last_tick: u64(0), coarse_nanos: i64(10000000), jumps_back: u32(0), jumps_forward: u32(0), stalls: u32(0), coarsened: u32(0), drifted: u32(0), skew: i64(0), bound_breaks: u32(0), unattested: u32(0) }
 }
 
 pub timesim_set_coarse: (sim: [*]TimeSim, coarse_nanos: i64): () {
@@ -95,7 +102,7 @@ timesim_pick_fault: (choices: [*]TestChoices, data: []u8, faults: u32): u32 {
   roll: u32 = test_range(choices, data, u32(0), u32(7))
   count: u32 = u32(0)
   bit: u32 = u32(1)
-  while bit <= u32(16) {
+  while bit <= u32(64) {
     (enabled & bit) != u32(0) ? { count = count + u32(1) }
     bit = bit << u32(1)
   }
@@ -104,7 +111,7 @@ timesim_pick_fault: (choices: [*]TestChoices, data: []u8, faults: u32): u32 {
     pick: u32 = test_range(choices, data, u32(0), count - u32(1))
     seen: u32 = u32(0)
     bit = u32(1)
-    while bit <= u32(16) {
+    while bit <= u32(64) {
       (enabled & bit) != u32(0) ? {
         seen == pick ? { chosen = bit }
         seen = seen + u32(1)
@@ -172,6 +179,24 @@ pub timesim_advance: (sim: [*]TimeSim, source: [*]time.TimeSource, d: time.Durat
           }
         }
       }
+      applied && fault == TIME_FAULT_BOUND_BREAK && source[0].attested ? {
+        // Step the wall past the attested bound, either way, with the
+        // attestation left standing: the interval lies.
+        extra: i64 = timesim_jump_nanos(choices, data) % i64(1000000)
+        beyond: Result[i64, Overflow] = i64_checked_add(source[0].bound, i64(1) + extra)
+        overflow_ok(beyond) ? {
+          delta: i64 = overflow_value(beyond, i64(0))
+          test_bool(choices, data) ? { delta = i64(0) - delta }
+          time.time_source_shift_wall(source, delta) ? {
+            sim[0].bound_breaks = sim[0].bound_breaks + u32(1)
+            timesim_note_skew(sim, delta)
+          }
+        }
+      }
+      applied && fault == TIME_FAULT_UNATTEST && source[0].attested ? {
+        time.time_source_unattest(source)
+        sim[0].unattested = sim[0].unattested + u32(1)
+      }
       applied && fault == TIME_FAULT_COARSE ? {
         down: i64 = floor_mod(source[0].wall, sim[0].coarse_nanos)
         time.time_source_shift_wall(source, i64(0) - down) ? {
@@ -184,6 +209,22 @@ pub timesim_advance: (sim: [*]TimeSim, source: [*]time.TimeSource, d: time.Durat
   assert(source[0].mono >= before)
   applied
 }
+
+// The simulation's true time is the skew-free wall clock: the wall reading
+// less the departure the ledger recorded. Only the environment knows it;
+// a consumer sees the interval and must not be told.
+pub timesim_true_now: (sim: [*]TimeSim, source: [*]time.TimeSource): time.Instant {
+  assert(len(sim) == u32(1) && len(source) == u32(1))
+  wall: i64 = source[0].wall
+  truth: Result[i64, Overflow] = i64_checked_sub(wall, sim[0].skew)
+  time.Instant { nanos: overflow_value(truth, wall) }
+}
+
+// timesim_interval_honest says whether an interval reading contains the
+// true time: false exactly when a bound break has pushed the wall clock
+// further than the attested bound.
+pub timesim_interval_honest: (sim: [*]TimeSim, source: [*]time.TimeSource, interval: time.TimeInterval): Bool =
+  time.time_interval_contains(interval, timesim_true_now(sim, source))
 
 // timesim_sync advances the source to the SimClock's reading: the ticks
 // since the last sync, times tick_nanos, through timesim_advance (so the

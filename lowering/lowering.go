@@ -168,6 +168,7 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			TypeParams:   fn.TypeParams,
 			Name:         fn.Name,
 			Receiver:     fn.Receiver,
+			Lowering:     fn.Lowering, // the protocol projection's compiler-known lowering rides along
 			Parameters:   fn.Parameters,
 			ReturnType:   fn.ReturnType,
 			Body:         loweredBody,
@@ -175,6 +176,9 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			NativeBacked: fn.NativeBacked,
 			Exported:     fn.Exported,
 			Opaque:       fn.Opaque,
+			// The C ABI symbol of an explicit export travels with the
+			// definition to the backend (docs/spec/92-ffi.md section 2.9).
+			ExportSymbol: fn.ExportSymbol,
 		}
 	}
 	return fn
@@ -633,10 +637,11 @@ func lowerInvocationExpression(expr *ast.InvocationExpression, tc *typechecker.T
 		loweredArgs = append(loweredArgs, lowerExpression(arg, tc))
 	}
 	return &ast.InvocationExpression{
-		BaseNode:  expr.BaseNode,
-		Token:     expr.Token,
-		Function:  lowerExpression(expr.Function, tc),
-		Arguments: loweredArgs,
+		BaseNode:       expr.BaseNode,
+		Token:          expr.Token,
+		Function:       lowerExpression(expr.Function, tc),
+		Arguments:      loweredArgs,
+		ResolvedMethod: expr.ResolvedMethod, // the checker's Type::method resolution rides along
 	}
 }
 

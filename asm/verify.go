@@ -842,6 +842,11 @@ func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (str
 	return "", true
 }
 
+// trapPath marks a path that ends in a trap (brk): it yields no result and
+// is dropped from the fork that reached it. A body that traps on every
+// path has no result to verify.
+var trapPath = &term{kind: termConst, width: 64}
+
 // isFrameMemory reports a memory instruction through sp.
 func isFrameMemory(instr Instruction) bool {
 	if len(instr.Operands) == 0 {
@@ -873,6 +878,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 				return nil, "result register never written", false
 			}
 			return result, "", true
+		case "brk":
+			// A trap: this path delivers no result. The Oak body traps on
+			// the same inputs (a failed bounds check, division by zero, an
+			// overflowing shift, a failed assert), so the path is outside
+			// the equivalence and drops from the fork it came from.
+			return trapPath, "", true
 		case "b":
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
 			if !ok {
@@ -915,6 +926,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			fallThrough, reason, ok := x.run(pc+1, state)
 			if !ok {
 				return nil, reason, false
+			}
+			switch {
+			case taken == trapPath:
+				return fallThrough, "", true
+			case fallThrough == trapPath:
+				return taken, "", true
 			}
 			return iteTerm(cond, taken, fallThrough), "", true
 		}
@@ -1322,6 +1339,17 @@ type oakLowering struct {
 	loops     []*loopEvent         // data-dependent loops met, in creation order
 	loopStack []int                // indices of the loops whose bodies are being lowered
 	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// functions are the program's functions a body may call; a call to one
+	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
+	functions map[string]*ast.FunctionStatement
+	inlining  map[string]bool // callees on the inlining stack, against recursion
+	// trapsTracked lets a body contain a construct that traps on some
+	// inputs — a variable shift count reaching the width — by recording
+	// the trap condition in traps instead of refusing the body; the
+	// theorem decider proves every recorded condition impossible. The asm
+	// verifier leaves it off: there the machine wraps where Oak traps.
+	trapsTracked bool
+	traps        []*term
 }
 
 // oakLocal is a typed local of a statement body: its current symbolic
@@ -1609,6 +1637,60 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 	return 0, false
 }
 
+// inlineCall lowers a call to a program function: the arguments at the
+// callee's parameter widths in the caller's scope, then the callee's body
+// at its return width with its parameters bound as locals, the result
+// adapted to the context by the callee's signedness. Methods, generics,
+// foreign and definition-less functions, non-scalar parameters or results,
+// and recursion fail closed.
+func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.InvocationExpression, width int) (*term, string, bool) {
+	name := callee.Name.Value
+	if callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.Body == nil || callee.ExternSymbol != "" {
+		return nil, fmt.Sprintf("a call to %s (a method, generic, foreign, or definition-less function)", name), false
+	}
+	if len(call.Arguments) != len(callee.Parameters) {
+		return nil, fmt.Sprintf("a call to %s with %d arguments", name, len(call.Arguments)), false
+	}
+	if lo.inlining[name] {
+		return nil, fmt.Sprintf("a recursive call to %s", name), false
+	}
+	if callee.ReturnType == nil {
+		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
+	}
+	resultWidth, resultSigned, ok := contractBits(callee.ReturnType)
+	if !ok {
+		return nil, fmt.Sprintf("a call to %s returning %s", name, typeText(callee.ReturnType)), false
+	}
+	bound := map[string]*oakLocal{}
+	for i, param := range callee.Parameters {
+		w, signed, ok := contractBits(param.Type)
+		if !ok || param.Variadic {
+			return nil, fmt.Sprintf("a call to %s: parameter %s is not a fixed-width scalar", name, param.Name.Value), false
+		}
+		value, reason, ok := lo.lower(call.Arguments[i], w)
+		if !ok {
+			return nil, reason, false
+		}
+		bound[param.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
+	}
+	saved := lo.locals
+	lo.locals = bound
+	if lo.inlining == nil {
+		lo.inlining = map[string]bool{}
+	}
+	lo.inlining[name] = true
+	result, reason, ok := lo.lower(callee.Body, resultWidth)
+	delete(lo.inlining, name)
+	lo.locals = saved
+	if !ok {
+		return nil, fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+	}
+	if resultWidth < width {
+		return extendTerm(result, resultWidth, width, resultSigned), "", true
+	}
+	return truncate(result, width), "", true
+}
+
 // spanLength recognizes len(v) over a span parameter.
 func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
@@ -1670,6 +1752,13 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 				return constTerm(value, width), "", true
 			}
 			return zeroExtend(truncate(paramTerm(name, 32), width), width), "", true
+		}
+		// A call to a program function in the subset is inlined
+		// (docs/spec/125-verification.md §3).
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
+			if callee, known := lo.functions[ident.Value]; known {
+				return lo.inlineCall(callee, e, width)
+			}
 		}
 		// Primitive constructors (u32(x), widening) and the explicit
 		// conversions {target}_trunc_{source} / {target}_bits_{source}.
@@ -1738,8 +1827,13 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			return nil, reason, false
 		}
 		if (op == "shl" || op == "shr") && right.kind != termConst {
-			// Oak traps at the width; the machine wraps the count.
-			return nil, "a non-constant shift count", false
+			// Oak traps at the width; the machine wraps the count. Under
+			// the theorem decider the trap is a recorded obligation and
+			// the shift below the width is the machine's.
+			if !lo.trapsTracked {
+				return nil, "a non-constant shift count", false
+			}
+			lo.traps = append(lo.traps, cmpTerm("hs", right, constTerm(uint64(width), width)))
 		}
 		return binaryTerm(op, left, right), "", true
 	case *ast.BlockExpression:
@@ -1936,8 +2030,15 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
+	if asmTerm == trapPath {
+		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (every path traps) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+	}
 	lowering := newLowering(sig)
 	width, _, _ := contractBits(sig.ReturnType)
+	// A tail-recursive body is the loop it compiles to (docs/spec/85-discipline.md).
+	if loop, isTail := tailRecursionAsLoop(sig, oakBody); isTail {
+		oakBody = loop
+	}
 	oakTerm, reason, ok := lowering.lower(oakBody, width)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
@@ -1946,6 +2047,104 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 	}
 	return decideEqual(fn, lowering, asmTerm, oakTerm, width, "")
+}
+
+// tailRecursionAsLoop rewrites a tail-recursive body `c ? v | f(args)` (or
+// `c ? f(args) | v`) into the loop it denotes — the parameters as locals,
+// `while <continue> { fresh temporaries for the arguments; parameters =
+// temporaries }`, then the value arm — so the verifier's loop machinery
+// couples it with the backend's loop. Only scalar parameters qualify.
+func tailRecursionAsLoop(sig *ast.FunctionStatement, body ast.Expression) (ast.Expression, bool) {
+	if block, isBlock := body.(*ast.BlockExpression); isBlock {
+		if block.Block == nil || len(block.Block.Statements) != 1 {
+			return nil, false
+		}
+		es, isExpr := block.Block.Statements[0].(*ast.ExpressionStatement)
+		if !isExpr {
+			return nil, false
+		}
+		body = es.Expression
+	}
+	match, isMatch := body.(*ast.MatchExpression)
+	if !isMatch {
+		return nil, false
+	}
+	whenTrue, whenFalse, isBool := boolConditional(match)
+	if !isBool {
+		return nil, false
+	}
+	isSelf := func(expr ast.Expression) (*ast.InvocationExpression, bool) {
+		call, isCall := expr.(*ast.InvocationExpression)
+		if !isCall {
+			return nil, false
+		}
+		ident, isIdent := call.Function.(*ast.Identifier)
+		return call, isIdent && sig.Name != nil && ident.Value == sig.Name.Value && len(call.Arguments) == len(sig.Parameters)
+	}
+	tail, tailIsTrue := isSelf(whenTrue)
+	if _, falseIsSelf := isSelf(whenFalse); falseIsSelf == tailIsTrue {
+		return nil, false // both arms or neither
+	}
+	value := whenFalse
+	if !tailIsTrue {
+		tail, _ = isSelf(whenFalse)
+		value = whenTrue
+	}
+	continueWhile := match.Scrutinee
+	if !tailIsTrue {
+		negated, ok := negateCondition(match.Scrutinee)
+		if !ok {
+			return nil, false
+		}
+		continueWhile = negated
+	}
+	var statements []ast.Statement
+	var updates []ast.Statement
+	for i, param := range sig.Parameters {
+		if _, _, ok := contractBits(param.Type); !ok {
+			return nil, false
+		}
+		name := param.Name
+		// The parameter becomes a local of its own type, initialized from itself.
+		statements = append(statements, &ast.VariableDeclaration{Token: name.Token, Name: name, Type: param.Type, Value: &ast.Identifier{Token: name.Token, Value: name.Value}})
+		temp := &ast.Identifier{Token: name.Token, Value: name.Value + "#next"}
+		updates = append(updates, &ast.VariableDeclaration{Token: name.Token, Name: temp, Type: param.Type, Value: tail.Arguments[i]})
+	}
+	for _, param := range sig.Parameters {
+		name := param.Name
+		updates = append(updates, &ast.AssignmentStatement{Token: name.Token, Name: name, Value: &ast.Identifier{Token: name.Token, Value: name.Value + "#next"}})
+	}
+	statements = append(statements, &ast.WhileStatement{Token: match.Token, Condition: continueWhile, Body: &ast.BlockStatement{Token: match.Token, Statements: updates}})
+	statements = append(statements, &ast.ExpressionStatement{Token: match.Token, Expression: value})
+	return &ast.BlockExpression{Token: match.Token, Block: &ast.BlockStatement{Token: match.Token, Statements: statements}}, true
+}
+
+var negatedComparison = map[string]string{"==": "!=", "!=": "==", "<": ">=", ">=": "<", "<=": ">", ">": "<="}
+
+// negateCondition negates a condition built from comparisons with `&&`
+// and `||` (De Morgan), the shapes lowerCondition reads.
+func negateCondition(expr ast.Expression) (ast.Expression, bool) {
+	infix, isInfix := expr.(*ast.InfixExpression)
+	if !isInfix {
+		return nil, false
+	}
+	switch infix.Operator {
+	case "&&", "||":
+		left, okL := negateCondition(infix.Left)
+		right, okR := negateCondition(infix.Right)
+		if !okL || !okR {
+			return nil, false
+		}
+		op := "||"
+		if infix.Operator == "||" {
+			op = "&&"
+		}
+		return &ast.InfixExpression{Token: infix.Token, Left: left, Operator: op, Right: right}, true
+	}
+	if negated, ok := negatedComparison[infix.Operator]; ok {
+		return &ast.InfixExpression{Token: infix.Token, Left: infix.Left, Operator: negated, Right: infix.Right}, true
+	}
+	return nil, false
 }
 
 // newLowering builds the Oak-side contract from the signature.

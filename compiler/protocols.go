@@ -55,6 +55,256 @@ type protocolMachine struct {
 	// templates with one type parameter: their handles carry the protocol
 	// state in the type (docs/spec/112-protocols.md section 5a).
 	typestate map[string]bool
+	// quantifiers are the count/all/any/none forms the guards and effects
+	// use over array data fields (docs/spec/112-protocols.md section 1),
+	// each projected as one bounded helper function.
+	quantifiers []quantifierUse
+	// records are the program's plain record declarations, for the element
+	// type of an array-of-records data field.
+	records map[string]*ast.RecordLiteral
+}
+
+// quantifierUse is one count/all/any/none form over a data field: the
+// field, its length, and for an array of records the Bool field read.
+type quantifierUse struct {
+	form   string
+	field  string
+	sub    string
+	length int64
+}
+
+func (q quantifierUse) helperName(prefix string) string {
+	name := prefix + "_" + q.form + "_" + q.field
+	if q.sub != "" {
+		name += "_" + q.sub
+	}
+	return name
+}
+
+var quantifierForms = map[string]bool{"count": true, "all": true, "any": true, "none": true}
+
+// RecordDeclarations collects a program's plain (non-generic) record
+// declarations by name: the element types array-of-records protocol data
+// may use.
+func RecordDeclarations(program *ast.Program) map[string]*ast.RecordLiteral {
+	records := map[string]*ast.RecordLiteral{}
+	if program == nil {
+		return records
+	}
+	for _, stmt := range program.Statements {
+		adt, isADT := stmt.(*ast.ADTType)
+		if !isADT || adt.Name == nil || len(adt.TypeParams) != 0 || len(adt.Variants) != 1 {
+			continue
+		}
+		if literal, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
+			records[adt.Name.Value] = literal
+		}
+	}
+	return records
+}
+
+// rewriteExpressions replaces every expression below node (and node's own
+// expression fields) with f's result, descending into the replacement.
+func rewriteExpressions(node ast.Node, f func(ast.Expression) ast.Expression) {
+	if node == nil {
+		return
+	}
+	rewriteValue(reflect.ValueOf(node), f)
+}
+
+var expressionType = reflect.TypeOf((*ast.Expression)(nil)).Elem()
+
+func rewriteValue(v reflect.Value, f func(ast.Expression) ast.Expression) {
+	switch v.Kind() {
+	case reflect.Ptr:
+		if !v.IsNil() {
+			rewriteValue(v.Elem(), f)
+		}
+	case reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		if v.Type() == expressionType && v.CanSet() {
+			replaced := f(v.Interface().(ast.Expression))
+			if replaced != nil {
+				v.Set(reflect.ValueOf(replaced))
+			}
+		}
+		rewriteValue(v.Elem(), f)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Field(i).CanSet() {
+				rewriteValue(v.Field(i), f)
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			rewriteValue(v.Index(i), f)
+		}
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			value := iter.Value()
+			if value.Kind() == reflect.Interface && value.Type() == expressionType && !value.IsNil() {
+				replaced := f(value.Interface().(ast.Expression))
+				if replaced != nil {
+					v.SetMapIndex(iter.Key(), reflect.ValueOf(replaced))
+					rewriteValue(reflect.ValueOf(replaced), f)
+					continue
+				}
+			}
+			rewriteValue(value, f)
+		}
+	}
+}
+
+// quantifierCall recognizes count/all/any/none over `data.field` or
+// `data.field, sub`; the shape is validated by analyzeProtocol.
+func quantifierCall(e ast.Expression) (form, field, sub string, ok bool) {
+	call, isCall := e.(*ast.InvocationExpression)
+	if !isCall || call == nil {
+		return "", "", "", false
+	}
+	fn, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent || fn == nil || !quantifierForms[fn.Value] || len(call.Arguments) == 0 || len(call.Arguments) > 2 {
+		return "", "", "", false
+	}
+	target, isIndex := call.Arguments[0].(*ast.IndexExpression)
+	if !isIndex {
+		return fn.Value, "", "", true
+	}
+	name, isField := dataField(target)
+	if !isField {
+		return fn.Value, "", "", true
+	}
+	if len(call.Arguments) == 2 {
+		subIdent, isSub := call.Arguments[1].(*ast.Identifier)
+		if !isSub || subIdent == nil {
+			return fn.Value, name, "", true
+		}
+		return fn.Value, name, subIdent.Value, true
+	}
+	return fn.Value, name, "", true
+}
+
+// checkQuantifiers validates the quantifier forms in a guard or effect
+// block and records each distinct use. A one-argument form needs an
+// [N]Bool field; a two-argument form needs an [N]R field with R a declared
+// record whose named field is Bool.
+func (m *protocolMachine) checkQuantifiers(node ast.Node, where string, report func(code string, node ast.Node, format string, args ...interface{})) bool {
+	ok := true
+	fieldTypes := map[string]ast.Expression{}
+	if m.decl.Data != nil {
+		for _, f := range m.decl.Data.FieldOrder {
+			fieldTypes[f.Name] = f.Value
+		}
+	}
+	seen := map[string]bool{}
+	for _, q := range m.quantifiers {
+		seen[q.helperName("")] = true
+	}
+	rewriteExpressions(node, func(e ast.Expression) ast.Expression {
+		call, isCall := e.(*ast.InvocationExpression)
+		if !isCall {
+			return nil
+		}
+		fn, isIdent := call.Function.(*ast.Identifier)
+		if !isIdent || fn == nil || !quantifierForms[fn.Value] {
+			return nil
+		}
+		form, field, sub, _ := quantifierCall(e)
+		if field == "" {
+			report(CodeProtocolShape, e, "%s: %s takes data.field (an [N]Bool field) or data.field, sub (an [N]R field and a Bool field of R)", where, form)
+			ok = false
+			return nil
+		}
+		typ, declared := fieldTypes[field]
+		if !declared {
+			report(CodeProtocolShape, e, "%s: %s over data.%s, which data does not declare", where, form, field)
+			ok = false
+			return nil
+		}
+		length, element, isArray := arrayShape(typ)
+		if !isArray {
+			report(CodeProtocolShape, e, "%s: %s over data.%s, which is not a fixed array", where, form, field)
+			ok = false
+			return nil
+		}
+		if sub == "" {
+			if element != "Bool" {
+				report(CodeProtocolShape, e, "%s: %s over data.%s needs an [N]Bool field; name the Bool field of its %s elements as a second argument", where, form, field, element)
+				ok = false
+				return nil
+			}
+		} else {
+			record, isRecord := m.records[element]
+			if !isRecord {
+				report(CodeProtocolShape, e, "%s: %s over data.%s, %s: %s is not a declared record", where, form, field, sub, element)
+				ok = false
+				return nil
+			}
+			subType, hasSub := record.Fields[sub]
+			subIdent, isIdent := subType.(*ast.Identifier)
+			if !hasSub || !isIdent || subIdent.Value != "Bool" {
+				report(CodeProtocolShape, e, "%s: %s over data.%s, %s: %s has no Bool field %s", where, form, field, sub, element, sub)
+				ok = false
+				return nil
+			}
+		}
+		use := quantifierUse{form: form, field: field, sub: sub, length: length}
+		if !seen[use.helperName("")] {
+			seen[use.helperName("")] = true
+			m.quantifiers = append(m.quantifiers, use)
+		}
+		return nil
+	})
+	return ok
+}
+
+// rewriteQuantifiers replaces quantifier forms in a cloned guard or effect
+// block with calls to the projected helpers, which take the data record.
+func (m *protocolMachine) rewriteQuantifiers(node ast.Node, prefix string, s *synth) {
+	rewriteExpressions(node, func(e ast.Expression) ast.Expression {
+		form, field, sub, isQuantifier := quantifierCall(e)
+		if !isQuantifier || field == "" {
+			return nil
+		}
+		use := quantifierUse{form: form, field: field, sub: sub}
+		return s.call(use.helperName(prefix), s.id("data"))
+	})
+}
+
+// quantifierHelpers projects one bounded helper per quantifier use, as
+// parsed Oak: `name_count_acks: (data: NameData): u32` folds the array.
+func (m *protocolMachine) quantifierHelpers(prefix, dataType string) []ast.Statement {
+	var out []ast.Statement
+	for _, q := range m.quantifiers {
+		element := fmt.Sprintf("data.%s[i]", q.field)
+		if q.sub != "" {
+			element += "." + q.sub
+		}
+		var src string
+		switch q.form {
+		case "count":
+			src = fmt.Sprintf("%s: (data: %s): u32 {\n  n: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    %s ? { n = n + u32(1) } | { }\n    i = i + u32(1)\n  }\n  n\n}\n", q.helperName(prefix), dataType, q.length, element)
+		case "all":
+			src = fmt.Sprintf("%s: (data: %s): Bool {\n  ok: Bool = true\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    ok = ok && %s\n    i = i + u32(1)\n  }\n  ok\n}\n", q.helperName(prefix), dataType, q.length, element)
+		case "any":
+			src = fmt.Sprintf("%s: (data: %s): Bool {\n  found: Bool = false\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    found = found || %s\n    i = i + u32(1)\n  }\n  found\n}\n", q.helperName(prefix), dataType, q.length, element)
+		case "none":
+			src = fmt.Sprintf("%s: (data: %s): Bool {\n  ok: Bool = true\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    ok = ok && !%s\n    i = i + u32(1)\n  }\n  ok\n}\n", q.helperName(prefix), dataType, q.length, element)
+		}
+		if m.decl.Exported {
+			src = "pub " + src
+		}
+		p := parser.New(layout.New(scanner.New(src)))
+		program := p.ParseProgram()
+		if len(p.Errors()) != 0 || program == nil || len(program.Statements) != 1 {
+			continue
+		}
+		out = append(out, program.Statements[0])
+	}
+	return out
 }
 
 // variantName spells a transition name as its step variant: inject -> Inject.
@@ -86,8 +336,18 @@ func snakeCase(name string) string {
 
 // analyzeProtocol checks one declaration and returns its machine.
 func analyzeProtocol(decl *ast.ProtocolDeclaration, report func(code string, node ast.Node, format string, args ...interface{})) (*protocolMachine, bool) {
+	return analyzeProtocolWith(decl, nil, report)
+}
+
+// analyzeProtocolWith is analyzeProtocol with the program's record
+// declarations, which array-of-records data and two-argument quantifier
+// forms need.
+func analyzeProtocolWith(decl *ast.ProtocolDeclaration, records map[string]*ast.RecordLiteral, report func(code string, node ast.Node, format string, args ...interface{})) (*protocolMachine, bool) {
 	ok := true
-	m := &protocolMachine{decl: decl, name: decl.Name.Value}
+	m := &protocolMachine{decl: decl, name: decl.Name.Value, records: records}
+	if m.records == nil {
+		m.records = map[string]*ast.RecordLiteral{}
+	}
 	seen := map[string]bool{}
 	addState := func(id *ast.Identifier) {
 		if !seen[id.Value] {
@@ -163,6 +423,12 @@ func analyzeProtocol(decl *ast.ProtocolDeclaration, report func(code string, nod
 			report(CodeProtocolShape, t.Name, "transition %s refers to data, but protocol %s declares none", t.Name.Value, decl.Name.Value)
 			ok = false
 		}
+		if t.Guard != nil && !m.checkQuantifiers(&ast.ExpressionStatement{Expression: t.Guard}, fmt.Sprintf("transition %s: guard", t.Name.Value), report) {
+			ok = false
+		}
+		if t.Effects != nil && !m.checkQuantifiers(t.Effects, fmt.Sprintf("transition %s: effects", t.Name.Value), report) {
+			ok = false
+		}
 		key := t.Name.Value + "\x00" + t.From.Value
 		if pairs[key] && (!guarded[key] || t.Guard == nil) {
 			report(CodeProtocolShape, t.Name, "transition %s from %s is declared twice; several lines from one state must each carry a `when` guard", t.Name.Value, t.From.Value)
@@ -229,8 +495,14 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 		if name := declarationName(stmt); name != "" {
 			declared[name] = true
 		}
-		if fn, isFunction := stmt.(*ast.FunctionStatement); isFunction && fn.Name != nil && fn.Receiver == nil {
-			functions[fn.Name.Value] = fn
+		if fn, isFunction := stmt.(*ast.FunctionStatement); isFunction && fn.Name != nil {
+			if fn.Receiver == nil {
+				functions[fn.Name.Value] = fn
+			} else if receiver, isIdent := fn.Receiver.Type.(*ast.Identifier); isIdent {
+				// Methods are known to the checker as Type::method; a via
+				// clause spells them Type.method.
+				functions[receiver.Value+"::"+fn.Name.Value] = fn
+			}
 		}
 		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil && len(adt.TypeParams) > 0 && len(adt.Variants) == 1 {
 			if _, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
@@ -245,7 +517,7 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 			continue
 		}
 		found = true
-		machine, ok := analyzeProtocol(decl, report)
+		machine, ok := analyzeProtocolWith(decl, RecordDeclarations(program), report)
 		if !ok {
 			continue
 		}
@@ -258,6 +530,9 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 		projected := machine.project()
 		if len(machine.typestate) > 0 {
 			projected = append(projected, machine.stateMarkers()...)
+		}
+		if decl.Data != nil {
+			projected = append(projected, machine.quantifierHelpers(snakeCase(machine.name), machine.name+"Data")...)
 		}
 		for _, generated := range projected {
 			if name := declarationName(generated); declared[name] {
@@ -284,11 +559,14 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 
 // resourceFacts projects `via`-bound transitions into the typestate facts
 // the resource checker enforces (typechecker/resource_resolution.go). The
-// parameter modes written on the via clause resolve against the callable's
-// declaration in the elaborated program — parameter names to zero-based
-// indices, `receiver` to the receiver slot — so the same declaration reads
-// identically whether the callable lives in this package or an imported
-// one (internal names are already substituted by the module loader).
+// parameter modes, callable contracts, and result identity written on the
+// via clause resolve against the callable's declaration in the elaborated
+// program — parameter names to zero-based indices, `receiver` to the
+// receiver slot, `Type.method` to the checker's `Type::method` identity —
+// so the same declaration reads identically whether the callable lives in
+// this package or an imported one (internal names are already substituted
+// by the module loader). Every name is resolved here and every failure is
+// a protocol shape error: nothing reaches the checker half-resolved.
 func (m *protocolMachine) resourceFacts(functions map[string]*ast.FunctionStatement, report func(code string, node ast.Node, format string, args ...interface{})) (typechecker.ResourceProtocolDeclaration, bool) {
 	if len(m.decl.Resources) == 0 {
 		return typechecker.ResourceProtocolDeclaration{}, false
@@ -302,67 +580,170 @@ func (m *protocolMachine) resourceFacts(functions map[string]*ast.FunctionStatem
 		if t.Callable == nil {
 			continue
 		}
-		transition := typechecker.ResourceTransitionDeclaration{
-			Name: t.Name.Value + "@" + t.From.Value, Callable: t.Callable.Value, From: t.From.Value, To: t.To.Value,
+		callable := t.Callable.Value
+		if t.CallableType != nil {
+			callable = t.CallableType.Value + "::" + t.Callable.Value
 		}
+		spelled := strings.ReplaceAll(callable, "::", ".")
+		transition := typechecker.ResourceTransitionDeclaration{
+			Name: t.Name.Value + "@" + t.From.Value, Callable: callable, From: t.From.Value, To: t.To.Value, Trusted: t.Trusted,
+		}
+		// Typestate-indexed resources (112-protocols.md section 5a): a
+		// transition that consumes a Handle[From] and returns a Handle[To]
+		// hands back the same resource in its next state — an alias of the
+		// consumed argument by construction. A result clause written on the
+		// same line must agree with that.
+		typestateAlias := -1
 		if len(m.typestate) > 0 {
-			if fn := functions[t.Callable.Value]; fn != nil {
+			if fn := functions[callable]; fn != nil {
 				if !m.checkTypestateSignature(t, fn, report) {
 					ok = false
 					continue
 				}
-				// A transition that consumes a Segment[From] and returns a
-				// Segment[To] hands back the same resource in its next state:
-				// an alias of the consumed argument, by construction.
 				if index := m.typestateAliasIndex(t, fn); index >= 0 {
 					transition.ReturnsAlias, transition.AliasesArgument = true, index
+					typestateAlias = index
 				}
 			}
 		}
-		if len(t.Modes) > 0 {
-			fn := functions[t.Callable.Value]
-			if fn == nil {
-				report(CodeProtocolShape, t.Callable, "transition %s: via %s names parameter modes, but %s is not a function declared in this program", t.Name.Value, t.Callable.Value, t.Callable.Value)
+		if len(t.Modes) == 0 && t.Result == nil && !t.Trusted {
+			facts.Transitions = append(facts.Transitions, transition)
+			continue
+		}
+		fn := functions[callable]
+		if fn == nil {
+			if t.CallableType != nil {
+				report(CodeProtocolShape, t.Callable, "transition %s: via %s names a method, but %s declares no method %s in this program", t.Name.Value, spelled, t.CallableType.Value, t.Callable.Value)
+			} else {
+				report(CodeProtocolShape, t.Callable, "transition %s: via %s names parameter modes or a result identity, but %s is not a function declared in this program", t.Name.Value, spelled, spelled)
+			}
+			ok = false
+			continue
+		}
+		// parameterIndex resolves a parameter name of the callable; -1 when
+		// the name is not one of its parameters.
+		parameterIndex := func(name string) int {
+			for i, parameter := range fn.Parameters {
+				if parameter != nil && parameter.Name != nil && parameter.Name.Value == name {
+					return i
+				}
+			}
+			return -1
+		}
+		modeOf := func(word string) typechecker.ResourceParameterMode {
+			switch word {
+			case "borrowed mut":
+				return typechecker.ResourceParameterBorrowedMut
+			case "consumed":
+				return typechecker.ResourceParameterConsumed
+			}
+			return typechecker.ResourceParameterBorrowed
+		}
+		seen := map[string]bool{}
+		for _, entry := range t.Modes {
+			if seen[entry.Name.Value] {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s twice", t.Name.Value, spelled, entry.Name.Value)
 				ok = false
 				continue
 			}
-			seen := map[string]bool{}
-			for _, entry := range t.Modes {
-				mode := typechecker.ResourceParameterBorrowed
-				switch entry.Mode {
-				case "borrowed mut":
-					mode = typechecker.ResourceParameterBorrowedMut
-				case "consumed":
-					mode = typechecker.ResourceParameterConsumed
-				}
-				if seen[entry.Name.Value] {
-					report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s twice", t.Name.Value, t.Callable.Value, entry.Name.Value)
+			seen[entry.Name.Value] = true
+			if entry.Name.Value == "receiver" {
+				if entry.Contract != nil {
+					report(CodeProtocolShape, entry.Name, "transition %s: via %s gives the receiver a callable contract; a receiver carries a mode", t.Name.Value, spelled)
 					ok = false
 					continue
 				}
-				seen[entry.Name.Value] = true
-				if entry.Name.Value == "receiver" {
-					if fn.Receiver == nil {
-						report(CodeProtocolShape, entry.Name, "transition %s: via %s marks a receiver mode, but %s has no receiver", t.Name.Value, t.Callable.Value, t.Callable.Value)
-						ok = false
-						continue
-					}
-					transition.Receiver = mode
-					continue
-				}
-				index := -1
-				for i, parameter := range fn.Parameters {
-					if parameter != nil && parameter.Name != nil && parameter.Name.Value == entry.Name.Value {
-						index = i
-					}
-				}
-				if index < 0 {
-					report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s, which is not a parameter of %s", t.Name.Value, t.Callable.Value, entry.Name.Value, t.Callable.Value)
+				if fn.Receiver == nil {
+					report(CodeProtocolShape, entry.Name, "transition %s: via %s marks a receiver mode, but %s has no receiver", t.Name.Value, spelled, spelled)
 					ok = false
 					continue
 				}
-				transition.Parameters = append(transition.Parameters, typechecker.ResourceParameterDeclaration{Index: index, Mode: mode})
+				transition.Receiver = modeOf(entry.Mode)
+				continue
 			}
+			index := parameterIndex(entry.Name.Value)
+			if index < 0 {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s marks %s, which is not a parameter of %s", t.Name.Value, spelled, entry.Name.Value, spelled)
+				ok = false
+				continue
+			}
+			if entry.Contract == nil {
+				transition.Parameters = append(transition.Parameters, typechecker.ResourceParameterDeclaration{Index: index, Mode: modeOf(entry.Mode)})
+				continue
+			}
+			// A callable contract is positional over the function type of
+			// the parameter it constrains: one word per parameter of that
+			// type, `_` leaving the position unmarked.
+			functionType, isFunction := fn.Parameters[index].Type.(*ast.FunctionTypeExpression)
+			if !isFunction {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s gives %s a callable contract, but %s is not a function-typed parameter", t.Name.Value, spelled, entry.Name.Value, entry.Name.Value)
+				ok = false
+				continue
+			}
+			if len(entry.Contract.Modes) != len(functionType.Parameters) {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s: the contract on %s lists %d modes, but its function type has %d parameters (write `_` for an unmarked parameter)", t.Name.Value, spelled, entry.Name.Value, len(entry.Contract.Modes), len(functionType.Parameters))
+				ok = false
+				continue
+			}
+			contract := &typechecker.ResourceCallableContract{ReturnsFresh: entry.Contract.ReturnsFresh}
+			for position, word := range entry.Contract.Modes {
+				if word == "_" {
+					continue
+				}
+				contract.Parameters = append(contract.Parameters, typechecker.ResourceParameterDeclaration{Index: position, Mode: modeOf(word)})
+			}
+			if len(contract.Parameters) == 0 && !contract.ReturnsFresh {
+				report(CodeProtocolShape, entry.Name, "transition %s: via %s: the contract on %s marks nothing; drop it or mark a parameter or `: fresh`", t.Name.Value, spelled, entry.Name.Value)
+				ok = false
+				continue
+			}
+			transition.Parameters = append(transition.Parameters, typechecker.ResourceParameterDeclaration{Index: index, Callable: contract})
+		}
+		if t.Result != nil {
+			resultIndices := make([]int, 0, len(t.Result.Names))
+			resultOK := true
+			seenOrigin := map[string]bool{}
+			for _, name := range t.Result.Names {
+				if name.Value == "receiver" {
+					report(CodeProtocolShape, name, "transition %s: via %s: a result identity names explicit parameters; identities over the receiver are not admitted yet", t.Name.Value, spelled)
+					resultOK = false
+					continue
+				}
+				if seenOrigin[name.Value] {
+					report(CodeProtocolShape, name, "transition %s: via %s names %s twice in its result identity", t.Name.Value, spelled, name.Value)
+					resultOK = false
+					continue
+				}
+				seenOrigin[name.Value] = true
+				index := parameterIndex(name.Value)
+				if index < 0 {
+					report(CodeProtocolShape, name, "transition %s: via %s: result identity names %s, which is not a parameter of %s", t.Name.Value, spelled, name.Value, spelled)
+					resultOK = false
+					continue
+				}
+				resultIndices = append(resultIndices, index)
+			}
+			if resultOK && typestateAlias >= 0 && !(t.Result.Kind == "alias" && len(resultIndices) == 1 && resultIndices[0] == typestateAlias) {
+				report(CodeProtocolShape, t.Result.Names[0], "transition %s: via %s: a typestate transition already returns an alias of its consumed handle; the result clause must be `: alias %s` or be omitted", t.Name.Value, spelled, fn.Parameters[typestateAlias].Name.Value)
+				resultOK = false
+			}
+			if !resultOK {
+				ok = false
+			} else {
+				switch t.Result.Kind {
+				case "fresh":
+					transition.ReturnsFresh = true
+				case "alias":
+					transition.ReturnsAlias, transition.AliasesArgument = true, resultIndices[0]
+				case "borrow":
+					transition.ReturnsBorrow, transition.BorrowsArguments = true, resultIndices
+				case "borrow mut":
+					transition.ReturnsBorrow, transition.BorrowsArguments, transition.BorrowMutable = true, resultIndices, true
+				}
+			}
+		} else if t.Trusted {
+			report(CodeProtocolShape, t.Callable, "transition %s: via unsafe %s trusts a result identity, but the line declares none (`: fresh`, `: alias h`, `: borrow h`)", t.Name.Value, spelled)
+			ok = false
 		}
 		facts.Transitions = append(facts.Transitions, transition)
 	}
@@ -425,8 +806,41 @@ func (m *protocolMachine) project() []ast.Statement {
 
 	if !withData {
 		covers := func(step *protocolStep) bool { return len(step.from) == len(m.states) }
+		guarded := func(step *protocolStep) bool {
+			for _, line := range step.lines {
+				if line.Guard != nil {
+					return true
+				}
+			}
+			return false
+		}
 		var legalArms, nextArms []*ast.MatchArm
-		for _, step := range m.steps {
+		for si, step := range m.steps {
+			if guarded(step) {
+				// Lines with payload guards: the first line whose source
+				// state and guard hold, in declaration order — the same
+				// sequential shape the data-carrying projection uses.
+				var legalBody, nextBody []ast.Statement
+				var terms []ast.Expression
+				for k, line := range step.lines {
+					fromName := fmt.Sprintf("from_%d_%d", si, k)
+					legalBody = append(legalBody, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
+					nextBody = append(nextBody, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
+					var term ast.Expression = s.id(fromName)
+					condition := s.and(s.not(s.id("done")), s.id(fromName))
+					if line.Guard != nil {
+						term = s.and(term, cloneExpression(line.Guard))
+						condition = s.and(condition, cloneExpression(line.Guard))
+					}
+					terms = append(terms, term)
+					nextBody = append(nextBody, s.expr(s.cond(condition, s.block(s.assign("result", s.variant(line.To.Value, nil)), s.assign("done", s.boolean(true))), nil)))
+				}
+				legalBody = append(legalBody, s.expr(s.or(terms...)))
+				legalArms = append(legalArms, s.arm(variantName(step.name), binding(step), s.block(legalBody...)))
+				nextBody = append(nextBody, s.expr(s.id("result")))
+				nextArms = append(nextArms, s.arm(variantName(step.name), binding(step), s.block(nextBody...)))
+				continue
+			}
 			var legalInner, nextInner []*ast.MatchArm
 			for i, from := range step.from {
 				legalInner = append(legalInner, s.arm(from, "", s.boolean(true)))
@@ -440,11 +854,52 @@ func (m *protocolMachine) project() []ast.Statement {
 			nextArms = append(nextArms, s.arm(variantName(step.name), binding(step), s.match(s.id("state"), nextInner...)))
 		}
 		legal := s.fnExpr(prefix+"_legal", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id("Bool"), s.match(s.id("step"), legalArms...))
-		next := s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
-			s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.id("step")))),
-			s.expr(s.match(s.id("step"), nextArms...)))
+		anyGuarded := false
+		for _, step := range m.steps {
+			anyGuarded = anyGuarded || guarded(step)
+		}
+		var next *ast.FunctionStatement
+		if anyGuarded {
+			next = s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
+				s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.id("step")))),
+				s.decl("result", s.id(stateType), s.id("state")),
+				s.decl("done", s.id("Bool"), s.boolean(false)),
+				s.expr(s.match(s.id("step"), nextArms...)))
+		} else {
+			next = s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
+				s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.id("step")))),
+				s.expr(s.match(s.id("step"), nextArms...)))
+		}
 		legal.Exported, next.Exported = exported, exported
-		return append(out, legal, next)
+		out = append(out, legal, next)
+		// The compiler-known lowering (docs/spec/112-protocols.md section
+		// 2a): a transition table, or a shift DFA when the machine is small
+		// enough, computed here from the declaration; the Oak bodies above
+		// stay the meaning. A byte-driven machine also gets `name_run`.
+		if lowering := m.lowering(); lowering != nil {
+			legal.Lowering = loweringKind(lowering, "legal")
+			next.Lowering = loweringKind(lowering, "next")
+			if lowering.Shift {
+				stateADT := out[0].(*ast.ADTType)
+				for i := range m.states {
+					stateADT.TagValues = append(stateADT.TagValues, 6*i)
+				}
+			}
+			if lowering.ByteSymbol {
+				step := m.steps[0]
+				run := s.fn(prefix+"_run", []*ast.FunctionParameter{stateParam(), s.param("bytes", s.view(s.id("u8")))}, s.id(stateType),
+					s.decl("current", s.id(stateType), s.id("state")),
+					s.decl("i", s.id("u32"), s.u32(0)),
+					s.loop(s.lt(s.id("i"), s.call("len", s.id("bytes"))),
+						s.assign("current", s.call(prefix+"_next", s.id("current"), s.variant(variantName(step.name), s.index(s.id("bytes"), s.id("i"))))),
+						s.assign("i", s.add(s.id("i"), s.u32(1)))),
+					s.expr(s.id("current")))
+				run.Exported = exported
+				run.Lowering = loweringKind(lowering, "run")
+				out = append(out, run)
+			}
+		}
+		return out
 	}
 
 	// NameData and its initial value.
@@ -471,7 +926,10 @@ func (m *protocolMachine) project() []ast.Statement {
 			body = append(body, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
 			var term ast.Expression = s.id(fromName)
 			if line.Guard != nil {
-				term = s.and(term, cloneExpression(line.Guard))
+				guard := cloneExpression(line.Guard)
+				holder := &ast.ExpressionStatement{Expression: guard}
+				m.rewriteQuantifiers(holder, prefix, s)
+				term = s.and(term, holder.Expression)
 			}
 			terms = append(terms, term)
 		}
@@ -497,11 +955,15 @@ func (m *protocolMachine) project() []ast.Statement {
 			body = append(body, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
 			condition := s.and(s.not(s.id("done")), s.id(fromName))
 			if line.Guard != nil {
-				condition = s.and(condition, renameIdentifier(cloneExpression(line.Guard), "data", local).(ast.Expression))
+				guard := &ast.ExpressionStatement{Expression: cloneExpression(line.Guard)}
+				m.rewriteQuantifiers(guard, prefix, s)
+				condition = s.and(condition, renameIdentifier(guard.Expression, "data", local).(ast.Expression))
 			}
 			var effects []ast.Statement
 			if line.Effects != nil {
-				rewritten := renameIdentifier(cloneSyntax(reflect.ValueOf(line.Effects)).Interface().(*ast.BlockStatement), "data", local).(*ast.BlockStatement)
+				cloned := cloneSyntax(reflect.ValueOf(line.Effects)).Interface().(*ast.BlockStatement)
+				m.rewriteQuantifiers(cloned, prefix, s)
+				rewritten := renameIdentifier(cloned, "data", local).(*ast.BlockStatement)
 				effects = append(effects, rewritten.Statements...)
 			}
 			effects = append(effects, s.assign("result", s.variant(line.To.Value, nil)), s.assign("done", s.boolean(true)))
@@ -740,4 +1202,228 @@ func (m *protocolMachine) typestateAliasIndex(t *ast.ProtocolTransition, fn *ast
 		}
 	}
 	return index
+}
+
+// lowering computes the transition table of a machine without a data
+// record (docs/spec/112-protocols.md section 2a). Symbols are the step tags
+// when no step carries a payload, or the 256 values of the single step's
+// u8 payload, with every guard evaluated for every value. It returns nil —
+// the branch-tree projection stands — when the machine has another shape,
+// when a guard is outside the evaluator's vocabulary, or when the table
+// would not fit a u8 (more than 254 states or 64 KiB of entries).
+func (m *protocolMachine) lowering() *ast.ProtocolLowering {
+	if m.decl.Data != nil || len(m.states) == 0 || len(m.states) > 254 {
+		return nil
+	}
+	stateIndex := map[string]int{}
+	for i, st := range m.states {
+		stateIndex[st] = i
+	}
+	sink := len(m.states)
+	// A payload that no guard reads does not affect transitions: the step
+	// is one symbol. Only a payload some guard mentions makes the payload
+	// values the symbols.
+	payloads := 0
+	for _, step := range m.steps {
+		if step.payload == nil {
+			continue
+		}
+		for _, line := range step.lines {
+			if mentionsIdentifier(line.Guard, step.payload.Name.Value) {
+				payloads++
+				break
+			}
+		}
+	}
+	lowering := &ast.ProtocolLowering{Protocol: m.name, States: len(m.states)}
+	// firstLine resolves (state, step, payload value) to the target of the
+	// first line whose source and guard hold; ok is false when a guard is
+	// outside the compile-time vocabulary.
+	firstLine := func(state string, step *protocolStep, payload uint64) (target int, legal bool, ok bool) {
+		for _, line := range step.lines {
+			if line.From.Value != state {
+				continue
+			}
+			if line.Guard != nil {
+				holds, evaluable := evalPayloadGuard(line.Guard, step.payload.Name.Value, payload)
+				if !evaluable {
+					return 0, false, false
+				}
+				if !holds {
+					continue
+				}
+			}
+			return stateIndex[line.To.Value], true, true
+		}
+		return sink, false, true
+	}
+	switch {
+	case payloads == 0:
+		lowering.Symbols = len(m.steps)
+		if len(m.states)*len(m.steps) > 65536 {
+			return nil
+		}
+		for _, state := range m.states {
+			for _, step := range m.steps {
+				target, _, ok := firstLine(state, step, 0)
+				if !ok {
+					return nil
+				}
+				lowering.Table = append(lowering.Table, target)
+			}
+		}
+	case payloads == 1 && len(m.steps) == 1:
+		step := m.steps[0]
+		payloadType, isIdent := step.payload.Type.(*ast.Identifier)
+		if !isIdent || payloadType.Value != "u8" {
+			return nil
+		}
+		lowering.Symbols, lowering.ByteSymbol, lowering.StepName = 256, true, variantName(step.name)
+		if len(m.states)*256 > 65536 {
+			return nil
+		}
+		for _, state := range m.states {
+			for value := 0; value < 256; value++ {
+				target, _, ok := firstLine(state, step, uint64(value))
+				if !ok {
+					return nil
+				}
+				lowering.Table = append(lowering.Table, target)
+			}
+		}
+	default:
+		return nil
+	}
+	// The sink row: every symbol keeps the sink (Oak.Protocol.runSink_sink).
+	for t := 0; t < lowering.Symbols; t++ {
+		lowering.Table = append(lowering.Table, sink)
+	}
+	lowering.Shift = len(m.states)+1 <= 10
+	return lowering
+}
+
+// kind copies the lowering for one projected function.
+func loweringKind(l *ast.ProtocolLowering, kind string) *ast.ProtocolLowering {
+	copied := *l
+	copied.Kind = kind
+	return &copied
+}
+
+// evalPayloadGuard evaluates a guard over a scalar payload at compile time:
+// the payload name, integer and Boolean literals, width conversions
+// (`u8(128)`), `+ - * / %`, comparisons, and `&& || !` — the guard
+// vocabulary of docs/spec/112-protocols.md section 1 without data fields.
+// Arithmetic is unsigned modulo 2^64 with the result masked to the payload
+// width, matching the total machine arithmetic of 20-types.md; division by
+// zero is not evaluable (it would trap at run time). Anything else is
+// reported not evaluable and the lowering falls back to the branch tree.
+func evalPayloadGuard(guard ast.Expression, payload string, value uint64) (bool, bool) {
+	const width = uint64(0xFF)
+	var num func(e ast.Expression) (uint64, bool)
+	var boolean func(e ast.Expression) (bool, bool)
+	num = func(e ast.Expression) (uint64, bool) {
+		switch x := e.(type) {
+		case *ast.Identifier:
+			if x.Value == payload {
+				return value & width, true
+			}
+			return 0, false
+		case *ast.IntegerLiteral:
+			return uint64(x.Value), true
+		case *ast.InvocationExpression:
+			name, isIdent := x.Function.(*ast.Identifier)
+			if !isIdent || len(x.Arguments) != 1 {
+				return 0, false
+			}
+			switch name.Value {
+			case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
+				v, ok := num(x.Arguments[0])
+				if !ok {
+					return 0, false
+				}
+				switch name.Value {
+				case "u8", "i8":
+					return v & 0xFF, true
+				case "u16", "i16":
+					return v & 0xFFFF, true
+				case "u32", "i32":
+					return v & 0xFFFFFFFF, true
+				}
+				return v, true
+			}
+			return 0, false
+		case *ast.InfixExpression:
+			l, okL := num(x.Left)
+			r, okR := num(x.Right)
+			if !okL || !okR {
+				return 0, false
+			}
+			switch x.Operator {
+			case "+":
+				return (l + r) & width, true
+			case "-":
+				return (l - r) & width, true
+			case "*":
+				return (l * r) & width, true
+			case "/":
+				if r == 0 {
+					return 0, false
+				}
+				return l / r, true
+			case "%":
+				if r == 0 {
+					return 0, false
+				}
+				return l % r, true
+			}
+			return 0, false
+		}
+		return 0, false
+	}
+	boolean = func(e ast.Expression) (bool, bool) {
+		switch x := e.(type) {
+		case *ast.Boolean:
+			return x.Value, true
+		case *ast.PrefixExpression:
+			if x.Operator != "!" {
+				return false, false
+			}
+			v, ok := boolean(x.Right)
+			return !v, ok
+		case *ast.InfixExpression:
+			switch x.Operator {
+			case "&&", "||":
+				l, okL := boolean(x.Left)
+				r, okR := boolean(x.Right)
+				if !okL || !okR {
+					return false, false
+				}
+				if x.Operator == "&&" {
+					return l && r, true
+				}
+				return l || r, true
+			case "==", "!=", "<", "<=", ">", ">=":
+				l, okL := num(x.Left)
+				r, okR := num(x.Right)
+				if !okL || !okR {
+					return false, false
+				}
+				switch x.Operator {
+				case "==":
+					return l == r, true
+				case "!=":
+					return l != r, true
+				case "<":
+					return l < r, true
+				case "<=":
+					return l <= r, true
+				case ">":
+					return l > r, true
+				}
+				return l >= r, true
+			}
+		}
+		return false, false
+	}
+	return boolean(guard)
 }

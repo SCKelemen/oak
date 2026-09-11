@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/SCKelemen/oak/buildcache"
+	"github.com/SCKelemen/oak/compiler"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +55,31 @@ type outcome struct {
 	trace                     []TraceEvent
 	traceTruncated            bool
 	commands                  []Command
+	// got and want are the values a test_check_eq_*/test_check_ne_* failure
+	// reported, spelled in the operand type; wantNot marks the "not equal"
+	// form. Empty for every other outcome.
+	got, want string
+	wantNot   bool
+}
+
+// failureValues spells the two 64-bit values a fail-values report carries in
+// the operand's own type: kind bit 2 reads them as signed, bit 4 as Bool,
+// otherwise unsigned; bit 1 marks a "not equal" check.
+func failureValues(got, want uint64, kind uint64) (gotText, wantText string, wantNot bool) {
+	spell := func(v uint64) string {
+		switch {
+		case kind&4 != 0:
+			if v != 0 {
+				return "true"
+			}
+			return "false"
+		case kind&2 != 0:
+			return strconv.FormatInt(int64(v), 10)
+		default:
+			return strconv.FormatUint(v, 10)
+		}
+	}
+	return spell(got), spell(want), kind&1 != 0
 }
 
 func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
@@ -70,7 +97,18 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 	if err != nil {
 		return nil, err
 	}
-	generated, err := packageCompilation(pkg, adapter).EmitC().Get()
+	compilation := packageCompilation(pkg, adapter)
+	generated, err := compilation.EmitC().Get()
+	if err != nil {
+		return nil, err
+	}
+	// The manifests' native inputs (`link`, `framework`; docs/spec/83-modules.md
+	// section 4.6) link into the test binary exactly as into `oak build`'s.
+	inputs, err := compilation.LinkInputs()
+	if err != nil {
+		return nil, err
+	}
+	linkArgs, linkIdentity, err := linkArguments(inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +151,9 @@ int main(int argc, char **argv) {
 	if cfg.Sanitize {
 		flags = append(flags, "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer")
 	}
-	args := append(append([]string{}, flags...), "-o", filepath.Join(dir, "test"), cpath, "-lm")
+	args := append(append([]string{}, flags...), "-o", filepath.Join(dir, "test"), cpath)
+	args = append(args, linkArgs...)
+	args = append(args, "-lm")
 	adapterIdentity := ""
 	if adapter != nil {
 		adapterIdentity = adapter.identity
@@ -135,7 +175,7 @@ int main(int argc, char **argv) {
 	}
 	// Generated C captures compiler/lowering changes; flags and compiler identity
 	// prevent replay under a silently different native build.
-	hash := sha256.Sum256([]byte(engineVersion + "\n" + source.String() + "\n" + strings.Join(flags, " ") + "\n" + versionOutput.String() + "\nadapter-v1:" + adapterIdentity))
+	hash := sha256.Sum256([]byte(engineVersion + "\n" + source.String() + "\n" + strings.Join(flags, " ") + "\n" + versionOutput.String() + "\nadapter-v1:" + adapterIdentity + "\nlink-v1:" + linkIdentity))
 	// The same identity keys the build cache (docs/spec/115-tooling.md
 	// section 3): an unchanged test binary is copied, not recompiled.
 	binary := filepath.Join(dir, "test")
@@ -162,6 +202,33 @@ int main(int argc, char **argv) {
 	}
 	keep = true
 	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: cfg.MaxBytes, timeout: cfg.Timeout}, nil
+}
+
+// linkArguments spells the manifests' native inputs as C compiler arguments
+// and returns an identity covering each object's bytes and each framework's
+// name for the build fingerprint (docs/spec/83-modules.md section 4.6). A
+// `framework` line links only on macOS and is skipped elsewhere.
+func linkArguments(inputs []compiler.LinkInput) ([]string, string, error) {
+	var args []string
+	var identity strings.Builder
+	for _, input := range inputs {
+		switch input.Kind {
+		case "object":
+			data, err := os.ReadFile(input.Path)
+			if err != nil {
+				return nil, "", fmt.Errorf("link %s: %w", input.Path, err)
+			}
+			sum := sha256.Sum256(data)
+			fmt.Fprintf(&identity, "object %s %x\n", input.Path, sum)
+			args = append(args, input.Path)
+		case "framework":
+			fmt.Fprintf(&identity, "framework %s\n", input.Path)
+			if runtime.GOOS == "darwin" {
+				args = append(args, "-framework", input.Path)
+			}
+		}
+	}
+	return args, identity.String(), nil
 }
 
 const nativePreamble = `
@@ -193,6 +260,13 @@ void oak_test_host_trace(uint32_t id, uint64_t a, uint64_t b) {
 }
 void oak_test_host_fail(uint32_t id) {
  if (oak_test_report) { fprintf(oak_test_report, "fail %u\n", (unsigned)id); fflush(oak_test_report); }
+ exit(101);
+}
+void oak_test_host_fail_values(uint32_t id, uint64_t got, uint64_t want, uint32_t kind) {
+ if (oak_test_report) {
+  fprintf(oak_test_report, "fail-values %u %llu %llu %u\n", (unsigned)id, (unsigned long long)got, (unsigned long long)want, (unsigned)kind);
+  fflush(oak_test_report);
+ }
  exit(101);
 }
 void oak_test_host_discard(void) {
@@ -280,6 +354,18 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 				return result
 			}
 			result.traceTruncated = true
+		} else if len(fields) == 5 && fields[0] == "fail-values" {
+			_, e1 := strconv.ParseUint(fields[1], 10, 32)
+			got, e2 := strconv.ParseUint(fields[2], 10, 64)
+			want, e3 := strconv.ParseUint(fields[3], 10, 64)
+			kind, e4 := strconv.ParseUint(fields[4], 10, 32)
+			if e1 != nil || e2 != nil || e3 != nil || e4 != nil || kind > 7 {
+				result.signature = "harness:bad-report"
+				return result
+			}
+			terminal = "fail"
+			result.signature = "invariant:" + fields[1]
+			result.got, result.want, result.wantNot = failureValues(got, want, kind)
 		} else if len(fields) == 2 && (fields[0] == "class" || fields[0] == "fail") {
 			id, e := strconv.ParseUint(fields[1], 10, 32)
 			if e != nil {

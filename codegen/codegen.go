@@ -19,6 +19,9 @@ import (
 
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
+	// equalityTypes caches the aggregates whose equality functions the
+	// program needs (typechecker.EqualityTypes); nil until first asked.
+	equalityTypes map[string]bool
 	// constantContext is set while emitting C integer constant expressions
 	// (file-scope initializers, static_assert), where arithmetic must stay
 	// a plain operator rather than a helper call.
@@ -83,6 +86,16 @@ type CodeGenerator struct {
 	// bounds-checked form. Unknown containers fail closed.
 	localTypes   map[string]localContainer
 	sliceHelpers map[string]string
+	// liftedLiterals is the C text of every typed function literal lifted
+	// to a top-level function (emitFunctionLiteral); liftedCount names them
+	// in emission order; liftedOffset is where the text is spliced — after
+	// the prototypes, before the first definition that refers to one.
+	liftedLiterals strings.Builder
+	liftedCount    int
+	liftedOffset   int
+	// protocolTables records which protocols' transition tables (or
+	// shift rows) have been emitted, so the three step functions share one.
+	protocolTables map[string]bool
 	// lineDirectives enables #line directives before every function and
 	// statement (docs/spec/90-backend.md section 10), so C diagnostics and
 	// debuggers attribute generated code to the Oak source line.
@@ -172,7 +185,13 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.programFunctions = make(map[string]*ast.FunctionStatement)
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil {
-			cg.programFunctions[fn.Name.Value] = fn
+			if fn.Receiver == nil {
+				cg.programFunctions[fn.Name.Value] = fn
+			} else if identity, isMethod := methodIdentity(fn); isMethod {
+				// Methods are known by the checker's Type::method identity
+				// so they never shadow a function of the same bare name.
+				cg.programFunctions[identity] = fn
+			}
 		}
 	}
 	cg.trampolineMember = make(map[string]string)
@@ -244,6 +263,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitFunctionPrototypes(program)
 	cg.emitStaticAsserts(program, tc)
 	cg.emitAsmUnits()
+	cg.liftedOffset = cg.output.Len()
 
 	// Emit function definitions
 	for _, stmt := range program.Statements {
@@ -252,10 +272,14 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 			cg.emitFunction(s, tc)
 		}
 	}
+	cg.emitExportWrappers(program)
 
 	cg.emitEntryPoint()
 
 	output := cg.output.String()
+	if cg.liftedLiterals.Len() != 0 {
+		output = output[:cg.liftedOffset] + "/* function literals lifted to plain functions: a literal is a code\n   pointer, never an environment (docs/spec/10-syntax.md section 3c) */\n" + cg.liftedLiterals.String() + output[cg.liftedOffset:]
+	}
 	if len(cg.sliceHelpers) != 0 {
 		names := make([]string, 0, len(cg.sliceHelpers))
 		for name := range cg.sliceHelpers {
@@ -567,6 +591,7 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 	if recordLit, isRecord := recordDefinitionShape(adt); isRecord {
 		cg.types[cName] = true
 		cg.emitRecordTypeDef(typeName, recordLit)
+		cg.emitRecordEquality(typeName, cName, tc)
 		return
 	}
 
@@ -642,6 +667,11 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 		variantName := variant.Name.Value
 		tagName := fmt.Sprintf("%s_tag_%s", cName, variantName)
 		cg.write(fmt.Sprintf("  %s", tagName))
+		if i < len(adt.TagValues) {
+			// A representation choice recorded on the declaration (a
+			// shift-DFA state type: tags are field offsets 6*i).
+			cg.write(fmt.Sprintf(" = %d", adt.TagValues[i]))
+		}
 		if i < len(adt.Variants)-1 {
 			cg.write(",")
 		}
@@ -692,6 +722,94 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 	for _, variant := range adt.Variants {
 		cg.emitADTConstructor(cName, variant)
 	}
+	cg.emitADTEquality(typeName, cName, tc)
+}
+
+// equalityTerm is the C expression comparing two values of typ held in l
+// and r: the operator for scalars, the generated function for aggregates
+// (typechecker/equality.go states which types have one).
+func (cg *CodeGenerator) equalityTerm(typ typechecker.Type, l, r string) string {
+	switch t := typ.(type) {
+	case *typechecker.UnitType:
+		return "oak_Bool_True"
+	case *typechecker.ADTType:
+		return fmt.Sprintf("oak_eq_%s( %s, %s )", cg.cTypeName(t.Name), l, r)
+	case *typechecker.NarrowedADTVariantType:
+		return fmt.Sprintf("oak_eq_%s( %s, %s )", cg.cTypeName(t.ADTName), l, r)
+	case *typechecker.RecordType:
+		if t.Name != "" {
+			return fmt.Sprintf("oak_eq_%s( %s, %s )", cg.cTypeName(t.Name), l, r)
+		}
+	case *typechecker.ArrayType:
+		if !t.IsSlice && !t.IsSpan {
+			element := cg.parseTypeExpression(typeExpressionOf(t.ElementType))
+			return fmt.Sprintf("%s( %s, %s )", cg.arrayEqualityName(element, t.Length), l, r)
+		}
+	}
+	return fmt.Sprintf("( %s == %s )", l, r)
+}
+
+// typeExpressionOf spells a checked scalar type as the AST the C type
+// mapping reads; the equality functions need it for array elements only.
+func typeExpressionOf(typ typechecker.Type) ast.Expression {
+	return &ast.Identifier{Value: typ.String()}
+}
+
+// equalityNeeded is the set of aggregates the program compares, closed
+// under nesting; only those get an equality function, so a type the
+// checker refused to compare never references a helper that does not
+// exist.
+func (cg *CodeGenerator) equalityNeeded(tc *typechecker.TypeChecker) map[string]bool {
+	if cg.equalityTypes == nil {
+		cg.equalityTypes = tc.EqualityTypes()
+	}
+	return cg.equalityTypes
+}
+
+// emitADTEquality emits the equality function of a concrete sum type:
+// tags first, then the payload of the shared variant.
+func (cg *CodeGenerator) emitADTEquality(typeName, cName string, tc *typechecker.TypeChecker) {
+	if tc == nil || !cg.equalityNeeded(tc)[typeName] {
+		return
+	}
+	variants, ok := tc.ADTVariants(typeName)
+	if !ok {
+		return
+	}
+	cg.write(fmt.Sprintf("static inline Bool oak_eq_%s( %s a, %s b ) {\n", cName, cName, cName))
+	cg.write("  if ( a.tag != b.tag ) { return oak_Bool_False; }\n")
+	cg.write("  switch ( a.tag ) {\n")
+	for _, variant := range variants {
+		if variant.Payload == nil {
+			continue
+		}
+		if _, isUnit := variant.Payload.(*typechecker.UnitType); isUnit {
+			continue
+		}
+		cg.write(fmt.Sprintf("    case %s_tag_%s: return %s;\n", cName, variant.Name,
+			cg.equalityTerm(variant.Payload, "a.payload."+variant.Name, "b.payload."+variant.Name)))
+	}
+	cg.write("    default: return oak_Bool_True;\n")
+	cg.write("  }\n")
+	cg.write("}\n\n")
+}
+
+// emitRecordEquality emits the equality function of a declared record:
+// every field in declaration order.
+func (cg *CodeGenerator) emitRecordEquality(typeName, cName string, tc *typechecker.TypeChecker) {
+	if tc == nil || !cg.equalityNeeded(tc)[typeName] {
+		return
+	}
+	order, fields, ok := tc.RecordFields(typeName)
+	if !ok {
+		return
+	}
+	cg.write(fmt.Sprintf("static inline Bool oak_eq_%s( %s a, %s b ) {\n", cName, cName, cName))
+	for _, field := range order {
+		cg.write(fmt.Sprintf("  if ( !%s ) { return oak_Bool_False; }\n", cg.equalityTerm(fields[field], "a."+field, "b."+field)))
+	}
+	cg.write("  return oak_Bool_True;\n")
+	cg.write("}\n\n")
 }
 
 // emitADTConstructor emits a constructor function for an ADT variant
@@ -748,6 +866,21 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	}
 
 	funcName := fn.Name.Value
+	cFuncName := cg.cFunctionName(funcName)
+	if fn.Receiver != nil {
+		// A method is emitted under its Type::method identity with the
+		// receiver as its first C parameter; the name is mangled
+		// injectively so two types' methods, or a method and a function
+		// of a similar spelling, never share a C symbol.
+		identity, isMethod := methodIdentity(fn)
+		if !isMethod {
+			cg.write("OAK_UNSUPPORTED_RECEIVER_TYPE;\n")
+			return
+		}
+		funcName = identity
+		typeName, method, _ := strings.Cut(identity, "::")
+		cFuncName = cg.cMethodName(typeName, method)
+	}
 
 	// Trampoline-group members are emitted once, together, as one engine
 	// plus per-member wrappers.
@@ -758,8 +891,6 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		}
 		return
 	}
-
-	cFuncName := cg.cFunctionName(funcName)
 
 	// Build Oak function signature
 	signature := cg.buildFunctionSignature(fn)
@@ -830,6 +961,18 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	cg.localTypes = cg.buildLocalTypes(fn)
 	defer func() { cg.localTypes = nil }()
+
+	// A projected protocol step function has a compiler-known lowering
+	// (docs/spec/90-backend.md section 14): the table or shift-DFA body
+	// replaces the Oak body, which remains the meaning for the interpreter
+	// and the Lean extraction.
+	if fn.Lowering != nil {
+		cg.emitProtocolLoweringBody(fn)
+		cg.indentLevel--
+		cg.write("}\n")
+		cg.write("\n")
+		return
+	}
 
 	// Self tail recursion compiles to a loop (docs/spec/85-discipline.md):
 	// the tail self-call becomes parameter rebinding plus continue, so the
@@ -1641,7 +1784,7 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 	cg.inlineHelpers = make(map[string]bool)
 	functions := make(map[string]*ast.FunctionStatement)
 	for _, stmt := range program.Statements {
-		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil && fn.Receiver == nil {
 			functions[fn.Name.Value] = fn
 		}
 	}
@@ -1679,8 +1822,17 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 	emitted := false
 	for _, stmt := range program.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
-		if !ok || fn.Name == nil || fn.Receiver != nil {
+		if !ok || fn.Name == nil {
 			continue
+		}
+		cName := cg.cFunctionName(fn.Name.Value)
+		if fn.Receiver != nil {
+			identity, isMethod := methodIdentity(fn)
+			if !isMethod {
+				continue
+			}
+			typeName, method, _ := strings.Cut(identity, "::")
+			cName = cg.cMethodName(typeName, method)
 		}
 		if !emitted {
 			cg.write("/* forward declarations; OAK_INLINE marks private leaf helpers the C\n   compiler must inline at every optimization level (the external\n   definition is still emitted: C99 extern inline) */\n")
@@ -1694,8 +1846,13 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			continue
 		}
 		returnType := cg.parseTypeExpression(fn.ReturnType)
-		cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(fn.Name.Value), returnType, cg.cFunctionName(fn.Name.Value)))
-		if len(fn.Parameters) == 0 {
+		cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(fn.Name.Value), returnType, cName))
+		if fn.Receiver != nil {
+			cg.write(cg.cParameter(fn.Receiver.Type, fn.Receiver.Name.Value))
+			if len(fn.Parameters) > 0 {
+				cg.write(", ")
+			}
+		} else if len(fn.Parameters) == 0 {
 			cg.write("void")
 		}
 		for i, param := range fn.Parameters {
@@ -1710,6 +1867,72 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			}
 		}
 		cg.write(" );\n")
+		// An explicit C ABI export is a second entry point with the
+		// declared symbol (docs/spec/92-ffi.md section 2.9).
+		if fn.ExportSymbol != "" {
+			cg.write(fmt.Sprintf("%s %s( %s );\n", returnType, fn.ExportSymbol, cg.cParameterList(fn)))
+		}
+	}
+	if emitted {
+		cg.write("\n")
+	}
+}
+
+// cParameterList spells a free function's parameters as a C parameter list
+// (`void` when there are none), the way the prototype and definition do:
+// owned arrays as wrapper structs, a variadic tail as a read-only view.
+func (cg *CodeGenerator) cParameterList(fn *ast.FunctionStatement) string {
+	if len(fn.Parameters) == 0 {
+		return "void"
+	}
+	parts := make([]string, 0, len(fn.Parameters))
+	for _, param := range fn.Parameters {
+		if param.Variadic {
+			viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
+			parts = append(parts, fmt.Sprintf("%s %s", viewType, cIdent(param.Name.Value)))
+		} else {
+			parts = append(parts, cg.cParameter(param.Type, param.Name.Value))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// emitExportWrappers defines every explicit C ABI export
+// (docs/spec/92-ffi.md section 2.9) as a forwarding function under its
+// declared symbol: the Oak-internal definition keeps the elaborator's name
+// for Oak callers, and the wrapper, one call the C compiler inlines, is the
+// stable symbol a C consumer links. The type checker has already rejected
+// symbols that are not C identifiers or that collide (OAK-F0108/F0109); the
+// backend re-checks the grammar before emitting.
+func (cg *CodeGenerator) emitExportWrappers(program *ast.Program) {
+	emitted := false
+	for _, stmt := range program.Statements {
+		fn, ok := stmt.(*ast.FunctionStatement)
+		if !ok || fn.Name == nil || fn.ExportSymbol == "" || fn.Receiver != nil || fn.ExternSymbol != "" || len(fn.TypeParams) != 0 {
+			continue
+		}
+		if !typechecker.ValidCSymbol(fn.ExportSymbol) {
+			cg.write(fmt.Sprintf("OAK_UNSUPPORTED_EXPORT_SYMBOL /* %q */\n", fn.ExportSymbol))
+			continue
+		}
+		if !emitted {
+			cg.write("/* C ABI exports (docs/spec/92-ffi.md section 2.9): stable symbols forwarding to the Oak definitions */\n")
+			emitted = true
+		}
+		returnType := "void"
+		if fn.ReturnType != nil {
+			returnType = cg.parseTypeExpression(fn.ReturnType)
+		}
+		args := make([]string, 0, len(fn.Parameters))
+		for _, param := range fn.Parameters {
+			args = append(args, cIdent(param.Name.Value))
+		}
+		cg.write(fmt.Sprintf("%s %s( %s ) {\n", returnType, fn.ExportSymbol, cg.cParameterList(fn)))
+		if returnType == "void" {
+			cg.write(fmt.Sprintf("  %s( %s );\n}\n", cg.cFunctionName(fn.Name.Value), strings.Join(args, ", ")))
+		} else {
+			cg.write(fmt.Sprintf("  return %s( %s );\n}\n", cg.cFunctionName(fn.Name.Value), strings.Join(args, ", ")))
+		}
 	}
 	if emitted {
 		cg.write("\n")
@@ -1945,6 +2168,58 @@ func (cg *CodeGenerator) emitAssertHelper() {
 	cg.write("  }\n")
 	cg.write("}\n")
 	cg.write("#endif\n\n")
+	cg.emitAssertValueHelpers()
+}
+
+// assertValueFormats spells each comparable operand type for the failure
+// message of assert_eq/assert_ne: the C type, the printf conversion, and the
+// cast that makes the conversion exact. Floats print with enough digits to
+// round-trip (nine for binary32, seventeen for binary64), so the message
+// identifies the exact value rather than a rounded reading of it.
+var assertValueFormats = []struct{ name, ctype, format, cast string }{
+	{"u8", "u8", "%llu", "(unsigned long long)"},
+	{"u16", "u16", "%llu", "(unsigned long long)"},
+	{"u32", "u32", "%llu", "(unsigned long long)"},
+	{"u64", "u64", "%llu", "(unsigned long long)"},
+	{"i8", "i8", "%lld", "(long long)"},
+	{"i16", "i16", "%lld", "(long long)"},
+	{"i32", "i32", "%lld", "(long long)"},
+	{"i64", "i64", "%lld", "(long long)"},
+	{"f32", "f32", "%.9g", "(double)"},
+	{"f64", "f64", "%.17g", "(double)"},
+}
+
+// emitAssertValueHelpers emits oak_assert_eq_T / oak_assert_ne_T for every
+// comparable type: the same always-on trap as oak_assert, whose hosted
+// message names both values (docs/spec/85-discipline.md section 5).
+func (cg *CodeGenerator) emitAssertValueHelpers() {
+	cg.write("/* assert_eq / assert_ne: the failure names both values (85-discipline section 5) */\n")
+	for _, f := range assertValueFormats {
+		cg.write(fmt.Sprintf("static inline void oak_assert_eq_%s(%s got, %s want, const char *file, u32 line) {\n", f.name, f.ctype, f.ctype))
+		cg.write("  if (!(got == want)) {\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+		cg.write(fmt.Sprintf("    fprintf(stderr, \"oak: assertion failed at %%s:%%u: got %s, want %s\\n\", file, (unsigned)line, %sgot, %swant);\n", f.format, f.format, f.cast, f.cast))
+		cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+		cg.write("    __builtin_trap();\n  }\n}\n")
+		cg.write(fmt.Sprintf("static inline void oak_assert_ne_%s(%s got, %s want, const char *file, u32 line) {\n", f.name, f.ctype, f.ctype))
+		cg.write("  if (got == want) {\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+		cg.write(fmt.Sprintf("    fprintf(stderr, \"oak: assertion failed at %%s:%%u: got %s, want anything but %s\\n\", file, (unsigned)line, %sgot, %swant);\n", f.format, f.format, f.cast, f.cast))
+		cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+		cg.write("    __builtin_trap();\n  }\n}\n")
+	}
+	cg.write("static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32 line) {\n")
+	cg.write("  if (!(got == want)) {\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got %s, want %s\\n\", file, (unsigned)line, got ? \"true\" : \"false\", want ? \"true\" : \"false\");\n")
+	cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+	cg.write("    __builtin_trap();\n  }\n}\n")
+	cg.write("static inline void oak_assert_ne_Bool(Bool got, Bool want, const char *file, u32 line) {\n")
+	cg.write("  if (got == want) {\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got %s, want anything but %s\\n\", file, (unsigned)line, got ? \"true\" : \"false\", want ? \"true\" : \"false\");\n")
+	cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+	cg.write("    __builtin_trap();\n  }\n}\n\n")
 }
 
 // emitTrampolineGroup merges one mutual-tail cycle into a state-machine
@@ -2176,6 +2451,21 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 	if cg.emitBytePack(expr, tc) {
 		return
 	}
+	// Equality on sum types and records calls the type's generated
+	// equality function (typechecker/equality.go records the type).
+	if expr.Operator == "==" || expr.Operator == "!=" {
+		if name, isAggregate := tc.EqualityType(expr.Token); isAggregate {
+			if expr.Operator == "!=" {
+				cg.output.WriteString("!")
+			}
+			cg.output.WriteString(fmt.Sprintf("oak_eq_%s( ", cg.cTypeName(name)))
+			cg.emitExpressionFragment(expr.Left, tc)
+			cg.output.WriteString(", ")
+			cg.emitExpressionFragment(expr.Right, tc)
+			cg.output.WriteString(" )")
+			return
+		}
+	}
 	// Shifts route through the checked helpers (oak_shl_u32 and friends):
 	// the operand width was recorded by the checker; without a record the
 	// emission fails closed rather than guessing a width.
@@ -2368,7 +2658,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		// An inbound buffer borrow (docs/spec/92-ffi.md section 2.7) is
 		// spelled as an index over a library member, so it comes before the
 		// generic index-call paths.
-		if member, element, isForeign := typechecker.ForeignBorrowCall(e); isForeign && len(e.Arguments) == 2 {
+		if member, element, isForeign := typechecker.ForeignBorrowCall(e); isForeign && (len(e.Arguments) == 2 || (member == "borrow_string" && len(e.Arguments) == 1)) {
 			cg.emitForeignBorrow(member, element, e, tc)
 			return
 		}
@@ -2420,6 +2710,21 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			}
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
+			// assert_eq / assert_ne name both values on failure; the checker
+			// recorded the operand type by position, which selects the
+			// printing helper (docs/spec/85-discipline.md section 5).
+			if (ident.Value == "assert_eq" || ident.Value == "assert_ne") && len(e.Arguments) == 2 {
+				name, known := tc.ArithmeticType(ident.Token)
+				if !known {
+					name = "u64"
+				}
+				cg.output.WriteString(fmt.Sprintf("oak_%s_%s( ", ident.Value, name))
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(", ")
+				cg.emitExpressionFragment(e.Arguments[1], tc)
+				cg.output.WriteString(fmt.Sprintf(", %q, %d )", cg.tokenSourceFile(ident.Token), ident.Token.Line))
+				return
+			}
 			if cg.emitStringViewCall(e, tc) {
 				return
 			}
@@ -2481,6 +2786,21 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				return
 			}
 		}
+		if access, isDot := e.Function.(*ast.IndexExpression); isDot && access.Dot && e.ResolvedMethod != "" {
+			// An ADT method call (docs/spec/90-backend.md): a direct call to
+			// the method's C function with the receiver as the first
+			// argument. No dispatch, no thunk, no allocation.
+			typeName, method, _ := strings.Cut(e.ResolvedMethod, "::")
+			cg.output.WriteString(cg.cMethodName(typeName, method))
+			cg.output.WriteString("( ")
+			cg.emitExpressionFragment(access.Left, tc)
+			for _, arg := range e.Arguments {
+				cg.output.WriteString(", ")
+				cg.emitExpressionFragment(arg, tc)
+			}
+			cg.output.WriteString(" )")
+			return
+		}
 		if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
 		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil {
@@ -2510,6 +2830,8 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.output.WriteString(" ).base, (size_t)( ")
 				cg.emitExpressionFragment(operand, tc)
 				cg.output.WriteString(" ).len")
+			} else if operand, isCString := cStringArgument(arg); isCString {
+				cg.emitCStringArgument(operand, arg, tc)
 			} else {
 				cg.emitExpressionFragment(arg, tc)
 			}
@@ -2751,6 +3073,30 @@ func (cg *CodeGenerator) cFunctionName(oakName string) string {
 	return fmt.Sprintf("oak_%s", oakName)
 }
 
+// cMethodName mangles a method Type::method into a C symbol that no
+// function's mangled name and no other method's can equal: the receiver
+// type's length in decimal, the type, an underscore, the method
+// (docs/spec/90-backend.md). The length prefix begins with a digit, which
+// no Oak identifier can, so it cannot be a function's name; and it fixes
+// where the type ends, so `A_b::c` and `A::b_c` differ. Oak.MethodMangling
+// (spec/lean/Oak/MethodMangling.lean) proves the injectivity.
+func (cg *CodeGenerator) cMethodName(typeName, method string) string {
+	return cg.cFunctionName(fmt.Sprintf("%d%s_%s", len(typeName), typeName, method))
+}
+
+// methodIdentity is the checker's Type::method identity of a method whose
+// receiver type is a plain nominal type.
+func methodIdentity(fn *ast.FunctionStatement) (string, bool) {
+	if fn == nil || fn.Receiver == nil || fn.Name == nil {
+		return "", false
+	}
+	receiver, isIdent := fn.Receiver.Type.(*ast.Identifier)
+	if !isIdent {
+		return "", false
+	}
+	return receiver.Value + "::" + fn.Name.Value, true
+}
+
 func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	if ident, ok := expr.(*ast.Identifier); ok {
 		switch ident.Value {
@@ -2860,6 +3206,26 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
 	cg.write("  return v.base[i];\n")
 	cg.write("}\n\n")
+
+	if elementType == "u8" {
+		// c.cstr(v) (docs/spec/92-ffi.md section 2.5.3): the view's base
+		// pointer is a C string only when its last byte is NUL; the check
+		// runs at the foreign call and names the Oak source position before
+		// trapping, as an assertion does.
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <stdio.h>\n")
+		cg.write(fmt.Sprintf("static inline const char *oak_cstr_u8(%s v, const char *file, u32 line) {\n", viewTypeName))
+		cg.write("  if (v.len == 0u || v.base[v.len - 1u] != 0u) {\n")
+		cg.write("    fprintf(stderr, \"oak: c.cstr view is not NUL-terminated at %s:%u\\n\", file, (unsigned)line);\n")
+		cg.write("    __builtin_trap();\n  }\n  return (const char *)v.base;\n}\n#else\n")
+		cg.write(fmt.Sprintf("static inline const char *oak_cstr_u8(%s v, const char *file, u32 line) {\n", viewTypeName))
+		cg.write("  (void)file; (void)line;\n  if (v.len == 0u || v.base[v.len - 1u] != 0u) { __builtin_trap(); }\n  return (const char *)v.base;\n}\n#endif\n\n")
+		// c.borrow_string(p) (section 2.7.1): the terminator's offset,
+		// counted without libc so freestanding builds stay free of it; a
+		// NULL pointer is the empty string, and a length past u32 traps.
+		cg.write("static inline u32 oak_cstr_len(const void *p) {\n")
+		cg.write("  const unsigned char *s = (const unsigned char *)p;\n  u64 n = 0;\n  if (s == 0) { return 0u; }\n")
+		cg.write("  while (s[n] != 0u) { n++; if (n > 0xFFFFFFFFull) { __builtin_trap(); } }\n  return (u32)n;\n}\n\n")
+	}
 
 	// subslice(v, start, n): the derived view is exactly n elements starting
 	// at start, admitted only when start + n <= len (no overflow: both
@@ -3363,6 +3729,22 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 		}
 	}
 
+	// A binding inferred from a typed function literal is a function
+	// pointer of the literal's own signature.
+	if literal, isLiteral := stmt.Value.(*ast.FunctionLiteral); isLiteral && stmt.Type == nil && (len(literal.Parameters) > 0 || literal.ReturnType != nil) {
+		signature := &ast.FunctionTypeExpression{Token: literal.Token, Return: literal.ReturnType}
+		for _, param := range literal.Parameters {
+			signature.Parameters = append(signature.Parameters, param.Type)
+		}
+		if signature.Return == nil {
+			signature.Return = &ast.Identifier{Token: literal.Token, Value: "()"}
+		}
+		cg.write("  " + cg.cFunctionPointer(signature, cIdent(varName)) + " = ")
+		cg.emitExpressionFragment(stmt.Value, tc)
+		cg.write(";\n")
+		return
+	}
+
 	// Determine type
 	var varType string
 	if stmt.Type != nil {
@@ -3515,11 +3897,45 @@ func (cg *CodeGenerator) emitRecordLiteral(expr *ast.RecordLiteral, tc *typechec
 	}
 }
 
-// emitFunctionLiteral emits a function literal (closure)
+// emitFunctionLiteral emits a function literal. A typed literal
+// (docs/spec/10-syntax.md section 3c) is lifted to a top-level C function
+// and the expression is that function's name — a plain code pointer, which
+// is all a captureless literal is (capturing literals are rejected by the
+// checker, OAK-T0401). The lifted definition is spliced after the
+// prototypes, so any function may refer to it. An untyped literal has no
+// declared parameter types to lower and is left unsupported.
 func (cg *CodeGenerator) emitFunctionLiteral(expr *ast.FunctionLiteral, tc *typechecker.TypeChecker) {
-	// For now, function literals are not fully supported in C
-	// In full implementation, we'd need to emit a function pointer or struct
-	cg.output.WriteString("/* function literal */")
+	if len(expr.Parameters) == 0 && expr.ReturnType == nil {
+		cg.output.WriteString("OAK_UNSUPPORTED_UNTYPED_FUNCTION_LITERAL")
+		return
+	}
+	cg.output.WriteString(cg.cFunctionName(cg.liftFunctionLiteral(expr, tc)))
+}
+
+// liftFunctionLiteral emits a typed function literal as a top-level
+// function into the lifted-literal buffer and returns its Oak-side name.
+// The name begins with a digit, which no Oak identifier can, so it never
+// collides with a program function's mangled name. Nested literals are
+// lifted while the outer body is emitted, so their definitions precede it.
+func (cg *CodeGenerator) liftFunctionLiteral(expr *ast.FunctionLiteral, tc *typechecker.TypeChecker) string {
+	name := fmt.Sprintf("0lit_%d", cg.liftedCount)
+	cg.liftedCount++
+	fn := &ast.FunctionStatement{
+		Token:      expr.Token,
+		Name:       &ast.Identifier{Token: expr.Token, Value: name},
+		Parameters: expr.Parameters,
+		ReturnType: expr.ReturnType,
+		Body:       &ast.BlockExpression{Token: expr.Token, Block: expr.Body},
+	}
+	saved, savedIndent, savedLocals := cg.output, cg.indentLevel, cg.localTypes
+	cg.output = strings.Builder{}
+	cg.indentLevel = 0
+	cg.localTypes = nil
+	cg.emitFunction(fn, tc)
+	lifted := cg.output.String()
+	cg.output, cg.indentLevel, cg.localTypes = saved, savedIndent, savedLocals
+	cg.liftedLiterals.WriteString(lifted)
+	return name
 }
 
 func (cg *CodeGenerator) parsePayloadType(expr ast.Expression) string {
@@ -3698,4 +4114,122 @@ func (cg *CodeGenerator) emitAbstractAliases() {
 		cg.write(fmt.Sprintf("typedef %s %s;\n", cg.cTypeName(cg.abstractAliases[fresh]), cg.cTypeName(fresh)))
 	}
 	cg.write("\n")
+}
+
+// emitProtocolLoweringBody emits the body of a projected protocol step
+// function from its compile-time transition table
+// (docs/spec/112-protocols.md section 2a, 90-backend.md section 14). The
+// signature, metadata, and closing brace are the ordinary function's; this
+// writes only the statements between them.
+//
+// Dense form: `static const u8 T[States+1][Symbols]`, sentinel States;
+// legal is one load and compare, next is one load, a compare on the
+// sentinel that traps, and the tag. Shift form (States+1 <= 10): one u64
+// row per symbol holding the next offset in the 6-bit field at the current
+// state's offset, so a step is `(rows[sym] >> tag) & 63`; the state type's
+// tags are the offsets (ADTType.TagValues). `run` steps a whole byte view
+// with the sink absorbing, and checks once at the end
+// (Oak.Protocol.runSink_correct).
+func (cg *CodeGenerator) emitProtocolLoweringBody(fn *ast.FunctionStatement) {
+	l := fn.Lowering
+	tableName := cg.cFunctionName(snakeIdent(l.Protocol) + "_transitions")
+	sink := l.States
+	sinkValue := sink
+	if l.Shift {
+		sinkValue = 6 * sink
+	}
+	if cg.protocolTables == nil {
+		cg.protocolTables = map[string]bool{}
+	}
+	if !cg.protocolTables[tableName] {
+		cg.protocolTables[tableName] = true
+		var table strings.Builder
+		if l.Shift {
+			// rows[symbol]: field s holds 6 * next(s, symbol); field sink holds 6 * sink.
+			table.WriteString(fmt.Sprintf("  /* shift-DFA rows of protocol %s: field 6*s of rows[symbol] is 6*next(s, symbol) */\n", l.Protocol))
+			table.WriteString(fmt.Sprintf("  static const u64 %s[%d] = {", tableName, l.Symbols))
+			for t := 0; t < l.Symbols; t++ {
+				var row uint64
+				for s := 0; s <= sink; s++ {
+					row |= uint64(6*l.Table[s*l.Symbols+t]) << (6 * uint(s))
+				}
+				if t > 0 {
+					table.WriteString(",")
+				}
+				if t%4 == 0 {
+					table.WriteString("\n    ")
+				} else {
+					table.WriteString(" ")
+				}
+				table.WriteString(fmt.Sprintf("0x%016xULL", row))
+			}
+			table.WriteString("\n  };\n")
+		} else {
+			table.WriteString(fmt.Sprintf("  /* transition table of protocol %s: T[state][symbol] is the next state, %d the sink */\n", l.Protocol, sink))
+			table.WriteString(fmt.Sprintf("  static const u8 %s[%d][%d] = {\n", tableName, sink+1, l.Symbols))
+			for s := 0; s <= sink; s++ {
+				table.WriteString("    {")
+				for t := 0; t < l.Symbols; t++ {
+					if t > 0 {
+						table.WriteString(",")
+					}
+					table.WriteString(fmt.Sprintf(" %d", l.Table[s*l.Symbols+t]))
+				}
+				table.WriteString(" },\n")
+			}
+			table.WriteString("  };\n")
+		}
+		// File scope, spliced after the prototypes with the lifted literals:
+		// the three step functions and any caller share one table.
+		cg.liftedLiterals.WriteString(table.String())
+	}
+	symbol := "step.tag"
+	if l.ByteSymbol {
+		symbol = fmt.Sprintf("step.payload.%s", l.StepName)
+	}
+	lookup := func(state, sym string) string {
+		if l.Shift {
+			return fmt.Sprintf("(u32)( ( %s[ %s ] >> %s ) & 63u )", tableName, sym, state)
+		}
+		return fmt.Sprintf("(u32)%s[ %s ][ %s ]", tableName, state, sym)
+	}
+	stateType := cg.cTypeName(l.Protocol + "State")
+	switch l.Kind {
+	case "legal":
+		cg.write(fmt.Sprintf("  return %s != %du ? oak_Bool_True : oak_Bool_False;\n", lookup("state.tag", symbol), sinkValue))
+	case "next":
+		cg.write(fmt.Sprintf("  u32 next = %s;\n", lookup("state.tag", symbol)))
+		cg.write(fmt.Sprintf("  oak_assert( next != %du ? oak_Bool_True : oak_Bool_False, \"%s\", 0 );\n", sinkValue, l.Protocol))
+		cg.write(fmt.Sprintf("  %s result;\n  result.tag = next;\n  return result;\n", stateType))
+	case "run":
+		// The sink absorbs, so the loop carries no check; the trap fires
+		// once at the end exactly when some step was illegal.
+		cg.write("  u32 current = state.tag;\n")
+		cg.write("  const u8 *symbols = bytes.base;\n")
+		cg.write("  u64 count = (u64)bytes.len;\n")
+		cg.write("  for (u64 i = 0; i < count; i++) {\n")
+		cg.write(fmt.Sprintf("    current = %s;\n", lookup("current", "symbols[ i ]")))
+		cg.write("  }\n")
+		cg.write(fmt.Sprintf("  oak_assert( current != %du ? oak_Bool_True : oak_Bool_False, \"%s\", 0 );\n", sinkValue, l.Protocol))
+		cg.write(fmt.Sprintf("  %s result;\n  result.tag = current;\n  return result;\n", stateType))
+	default:
+		cg.write("  OAK_UNSUPPORTED_PROTOCOL_LOWERING;\n")
+	}
+}
+
+// snakeIdent spells a protocol name the way its projected functions are
+// prefixed (compiler/protocols.go snakeCase), for the shared table's name.
+func snakeIdent(name string) string {
+	var out strings.Builder
+	for i, r := range name {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				out.WriteByte('_')
+			}
+			out.WriteRune(r + ('a' - 'A'))
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }

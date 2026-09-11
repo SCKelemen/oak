@@ -55,7 +55,7 @@ classify: (v: []u8, at: u32): Pair {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"structure Pair where\n  lo : UInt32\n  hi : UInt32\n  deriving Repr, Inhabited, BEq",
+		"structure Pair where\n  lo : UInt32\n  hi : UInt32\n  deriving Repr, BEq, DecidableEq\ninstance : Inhabited Pair := ⟨{ lo := (0 : UInt32), hi := (0 : UInt32) }⟩",
 		"def fill.loop1 (dst : Array UInt8) (n : UInt32) (i : UInt32) : Nat → Option (Array UInt8 × UInt32)",
 		"  | 0 => none",
 		"if ((decide (i < n)) && (decide (i < (dst.size.toUInt32)))) then do",
@@ -225,7 +225,7 @@ narrow: (n: u32): Result[u8, Overflow] = u8_checked_u32(n)
 		"inductive Fault where\n  | Short\n  | Bad (payload : UInt32)\n  deriving Repr, Inhabited, BEq, DecidableEq",
 		"inductive Result_u32_Fault where\n  | Ok (payload : UInt32)\n  | Err (payload : Fault)",
 		"inductive Option_Item where\n  | Some (payload : Item)\n  | None",
-		"structure Item where\n  value : UInt64\n  next : UInt32\n  deriving Repr, Inhabited, BEq, DecidableEq",
+		"structure Item where\n  value : UInt64\n  next : UInt32\n  deriving Repr, BEq, DecidableEq\ninstance : Inhabited Item := ⟨{ value := (0 : UInt64), next := (0 : UInt32) }⟩",
 		"def encode (dst : Array UInt8) (value : UInt64) (fuel : Nat) : Option (Result_u32_Fault × Array UInt8) := do",
 		"let (r2, dst) ← (\n    if (decide (n > (dst.size.toUInt32))) then (do",
 		"pure ((Result_u32_Fault.Err (Fault.Bad n)), dst))",

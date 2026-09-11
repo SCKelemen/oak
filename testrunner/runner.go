@@ -46,11 +46,18 @@ type Result struct {
 	Status     string           `json:"status"`
 	// Row names the failing row of a table target (docs/spec/110-testing.md,
 	// "Table targets"): the file under testdata/oak/<Test>/rows.
-	Row      string         `json:"row,omitempty"`
-	Cases    int            `json:"cases"`
-	Discards int            `json:"discards"`
-	Seed     uint64         `json:"seed"`
-	Failure  string         `json:"failure,omitempty"`
+	Row      string `json:"row,omitempty"`
+	Cases    int    `json:"cases"`
+	Discards int    `json:"discards"`
+	Seed     uint64 `json:"seed"`
+	Failure  string `json:"failure,omitempty"`
+	// Got and Want are the two values a test_check_eq_*/test_check_ne_*
+	// failure reported, spelled in the operand's type (110-testing.md,
+	// "Isolation, outcomes, and reporting"); WantNot marks the "not equal"
+	// form. Absent for every other failure.
+	Got      string         `json:"got,omitempty"`
+	Want     string         `json:"want,omitempty"`
+	WantNot  bool           `json:"want_not,omitempty"`
 	Artifact string         `json:"artifact,omitempty"`
 	Output   string         `json:"output,omitempty"`
 	Classes  map[uint32]int `json:"classes,omitempty"`
@@ -64,6 +71,24 @@ type Result struct {
 func (r *Result) setTrace(trace []TraceEvent, truncated bool) {
 	r.Trace, r.TraceTruncated = trace, truncated
 	r.TraceText = r.schema.describeAll(trace)
+}
+
+// setValues carries a value-reporting failure's two operands into the result
+// and spells them after the signature in the failure text, so the terminal
+// line reads `invariant:7 (got 5, want 4)` while the signature the shrinker
+// and replay compare stays the id alone.
+func (r *Result) setValues(out outcome) {
+	if out.got == "" && out.want == "" {
+		return
+	}
+	r.Got, r.Want, r.WantNot = out.got, out.want, out.wantNot
+	if r.Failure == out.signature {
+		if out.wantNot {
+			r.Failure = fmt.Sprintf("%s (got %s, want anything but %s)", out.signature, out.got, out.want)
+		} else {
+			r.Failure = fmt.Sprintf("%s (got %s, want %s)", out.signature, out.got, out.want)
+		}
+	}
 }
 
 // Main is usable without os.Exit, including by CLI integration tests.
@@ -347,6 +372,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		result.Cases = 1
 		result.Output = out.output
 		result.setTrace(out.trace, out.traceTruncated)
+		result.setValues(out)
 		if format != "" {
 			result.Commands = decodeCommands(replay.Input)
 		}
@@ -451,6 +477,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		}
 		result.setTrace(out.trace, out.traceTruncated)
 		result.Output = out.output
+		result.setValues(out)
 		if format != "" {
 			result.Commands = decodeCommands(best)
 		}

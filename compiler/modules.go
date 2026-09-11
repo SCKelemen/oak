@@ -163,6 +163,13 @@ type ModuleInfo struct {
 	ModuleAdmits map[string]map[string]bool
 	// RootModule is the module path of the build root ("" outside a module).
 	RootModule string
+	// Links lists the native inputs the build links, in link order
+	// (docs/spec/83-modules.md section 4.6): the root module's `link` and
+	// `framework` lines in declaration order, then every dependency module
+	// that contributes a loaded package, by module path. Object paths are
+	// absolute, resolved against the declaring module's root and
+	// containment-checked; a framework carries its name.
+	Links []LinkInput
 	// Steady maps the internal name of each steady-state entry point the
 	// root manifest names (`steady <package> <fn>`, 85-discipline.md section
 	// 4) to its source spelling, for the implicit forbids { Memory.Allocate }.
@@ -246,6 +253,18 @@ type loadedPackage struct {
 	Bootstrap     map[string]*ast.ImportStatement
 	// statements after elaboration, in source order across files
 	Statements []ast.Statement
+}
+
+// LinkInput is one native input a manifest declares for the C compiler
+// (docs/spec/83-modules.md section 4.6).
+type LinkInput struct {
+	// Module is the path of the module whose manifest declares the input.
+	Module string
+	// Kind is "object" for a `link` line (Path is the absolute path of the
+	// archive or object) or "framework" for a `framework` line (Path is the
+	// framework name).
+	Kind string
+	Path string
 }
 
 // SealedImport is one sealed import's contract: the dependency package and
@@ -838,6 +857,30 @@ func (l *moduleLoader) loadPackageInstance(dir, path, template string, arguments
 // package (docs/spec/83-modules.md section 9): its declarations are renamed
 // like any dependency, its own library imports resolve recursively, and the
 // core prelude is spliced into the program for the names it uses unqualified.
+// stdlibReplacement resolves a replace directive whose target names a
+// standard library package (`replace io => iosim`), from the compilation's
+// overlay first and the root manifest second.
+func (l *moduleLoader) stdlibReplacement(path string) (string, bool) {
+	target, found := l.comp.replaces[path]
+	if !found && l.root != nil {
+		target, found = l.root.Manifest.Replaces[path]
+	}
+	if !found {
+		return "", false
+	}
+	if _, isLibrary := stdlib.Packages[target]; !isLibrary {
+		return "", false
+	}
+	return target, true
+}
+
+// aliasStdlibSource rewrites a library file's package clause from its own
+// name to the path it is loaded under, so the clause check passes and the
+// importer's qualified names read as the port's.
+func aliasStdlibSource(text, from, to string) string {
+	return strings.Replace(text, "package "+from, "package "+to, 1)
+}
+
 func (l *moduleLoader) loadStdlibPackage(path, text string) *loadedPackage {
 	if existing, loaded := l.packages[path]; loaded {
 		return existing
@@ -908,6 +951,13 @@ func (l *moduleLoader) finishPackage(pkg *loadedPackage, arguments []ast.Express
 				continue
 			}
 			l.loadPackageInstance(depDir, binding.Path, binding.Template, binding.Arguments, binding, false)
+			continue
+		}
+		if target, aliased := l.stdlibReplacement(binding.Path); aliased {
+			// `replace io => iosim`: a standard library realization stands
+			// in for the port path (docs/spec/120-io.md section 1), loaded
+			// under the requested path so its names qualify as `io.`.
+			l.loadStdlibPackage(binding.Path, aliasStdlibSource(stdlib.Packages[target], target, binding.Path))
 			continue
 		}
 		if librarySource, isLibrary := stdlib.Packages[binding.Path]; isLibrary {
@@ -2037,7 +2087,8 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	for path, pkg := range l.packages {
 		exports[path] = pkg.Exports
 	}
-	info := &ModuleInfo{Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, ModuleAdmits: moduleAdmits, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady, Imports: imports}
+	links := l.collectLinks(moduleOf)
+	info := &ModuleInfo{Links: links, Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, ModuleAdmits: moduleAdmits, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady, Imports: imports}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,
@@ -2356,6 +2407,86 @@ func (l *moduleLoader) packageOfBinding(binding *importBinding) *loadedPackage {
 func dependencySpelling(canonical, path string) string {
 	text := modules.DemangleText(canonical)
 	return strings.ReplaceAll(text, path+".", "")
+}
+
+// collectLinks resolves every located module's `link` and `framework`
+// lines into link order (docs/spec/83-modules.md section 4.6): the root
+// module first, in declaration order, then each dependency module that
+// contributes a loaded package, by module path. A `link` path is resolved
+// against the declaring module's root, must exist as a regular file, and
+// must stay inside that root through symlinks; anything else is a manifest
+// error (OAK-M0112) naming the directive.
+func (l *moduleLoader) collectLinks(moduleOf map[string]string) []LinkInput {
+	var roots []*moduleRoot
+	if l.root != nil {
+		roots = append(roots, l.root)
+	}
+	var dependencyPaths []string
+	seen := map[string]bool{}
+	for _, module := range moduleOf {
+		if (l.root != nil && module == l.root.Manifest.Path) || seen[module] {
+			continue
+		}
+		seen[module] = true
+		dependencyPaths = append(dependencyPaths, module)
+	}
+	sort.Strings(dependencyPaths)
+	for _, module := range dependencyPaths {
+		if root, ok := l.located[module]; ok {
+			roots = append(roots, root)
+		}
+	}
+	var links []LinkInput
+	for _, root := range roots {
+		for _, rel := range root.Manifest.Links {
+			resolved, ok := l.resolveLinkInput(root, rel)
+			if !ok {
+				continue
+			}
+			links = append(links, LinkInput{Module: root.Manifest.Path, Kind: "object", Path: resolved})
+		}
+		for _, name := range root.Manifest.Frameworks {
+			links = append(links, LinkInput{Module: root.Manifest.Path, Kind: "framework", Path: name})
+		}
+	}
+	return links
+}
+
+// resolveLinkInput maps a manifest's `link` path to the absolute file it
+// names, failing closed when the file is missing, is not a regular file, or
+// resolves (through symlinks) outside the module root.
+func (l *moduleLoader) resolveLinkInput(root *moduleRoot, rel string) (string, bool) {
+	path := filepath.Join(root.Dir, filepath.FromSlash(rel))
+	info, err := os.Stat(path)
+	if err != nil {
+		l.report(CodeManifest, nil, "%s: oak.mod: link %s: %v", root.Manifest.Path, rel, err)
+		return "", false
+	}
+	if !info.Mode().IsRegular() {
+		l.report(CodeManifest, nil, "%s: oak.mod: link %s is not a regular file", root.Manifest.Path, rel)
+		return "", false
+	}
+	rootReal, err := filepath.EvalSymlinks(root.Dir)
+	if err != nil {
+		l.report(CodeManifest, nil, "%s: oak.mod: link %s: %v", root.Manifest.Path, rel, err)
+		return "", false
+	}
+	pathReal, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		l.report(CodeManifest, nil, "%s: oak.mod: link %s: %v", root.Manifest.Path, rel, err)
+		return "", false
+	}
+	relCheck, err := filepath.Rel(rootReal, pathReal)
+	if err != nil || relCheck == ".." || strings.HasPrefix(relCheck, ".."+string(filepath.Separator)) {
+		l.report(CodeManifest, nil, "%s: oak.mod: link %s resolves outside the module root", root.Manifest.Path, rel)
+		return "", false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		l.report(CodeManifest, nil, "%s: oak.mod: link %s: %v", root.Manifest.Path, rel, err)
+		return "", false
+	}
+	return abs, true
 }
 
 // admittedCodes is the set of recorded-assumption codes a manifest admits.

@@ -199,6 +199,228 @@ static inline void oak_assert(Bool cond, const char *file, u32 line) {
 }
 #endif
 
+/* assert_eq / assert_ne: the failure names both values (85-discipline section 5) */
+static inline void oak_assert_eq_u8(u8 got, u8 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_u8(u8 got, u8 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_u16(u16 got, u16 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_u16(u16 got, u16 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_u32(u32 got, u32 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_u32(u32 got, u32 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_u64(u64 got, u64 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_u64(u64 got, u64 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_i8(i8 got, i8 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_i8(i8 got, i8 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_i16(i16 got, i16 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_i16(i16 got, i16 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_i32(i32 got, i32 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_i32(i32 got, i32 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_i64(i64 got, i64 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_i64(i64 got, i64 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_f32(f32 got, f32 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %.9g, want %.9g\n", file, (unsigned)line, (double)got, (double)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_f32(f32 got, f32 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %.9g, want anything but %.9g\n", file, (unsigned)line, (double)got, (double)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_f64(f64 got, f64 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %.17g, want %.17g\n", file, (unsigned)line, (double)got, (double)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_f64(f64 got, f64 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %.17g, want anything but %.17g\n", file, (unsigned)line, (double)got, (double)want);
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %s, want %s\n", file, (unsigned)line, got ? "true" : "false", want ? "true" : "false");
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_Bool(Bool got, Bool want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got %s, want anything but %s\n", file, (unsigned)line, got ? "true" : "false", want ? "true" : "false");
+#else
+    (void)file; (void)line;
+#endif
+    __builtin_trap();
+  }
+}
+
 typedef struct oak_view_u8 {
     const u8* base;
     u32       len;
@@ -207,6 +429,31 @@ typedef struct oak_view_u8 {
 static inline u8 oak_view_index_u8(oak_view_u8 v, u64 i) {
   if (i >= (u64)v.len) { __builtin_trap(); }
   return v.base[i];
+}
+
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline const char *oak_cstr_u8(oak_view_u8 v, const char *file, u32 line) {
+  if (v.len == 0u || v.base[v.len - 1u] != 0u) {
+    fprintf(stderr, "oak: c.cstr view is not NUL-terminated at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+  return (const char *)v.base;
+}
+#else
+static inline const char *oak_cstr_u8(oak_view_u8 v, const char *file, u32 line) {
+  (void)file; (void)line;
+  if (v.len == 0u || v.base[v.len - 1u] != 0u) { __builtin_trap(); }
+  return (const char *)v.base;
+}
+#endif
+
+static inline u32 oak_cstr_len(const void *p) {
+  const unsigned char *s = (const unsigned char *)p;
+  u64 n = 0;
+  if (s == 0) { return 0u; }
+  while (s[n] != 0u) { n++; if (n > 0xFFFFFFFFull) { __builtin_trap(); } }
+  return (u32)n;
 }
 
 static inline oak_view_u8 oak_view_subslice_u8(oak_view_u8 v, u64 start, u64 n) {

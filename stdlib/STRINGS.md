@@ -272,3 +272,9 @@ builtins; their checked code-unit codecs remain available.
 See [runtime_utf8.oak](../examples/strings/runtime_utf8.oak) for caller-owned
 runtime input, string views, and a fluent text builder used together.
 
+## Normalization
+
+Normalization forms live in the `normalize` package (`stdlib/normalize.oak`,
+`import("normalize")`): NFD, NFKD, NFC, NFKC over UTF-8 views into caller
+spans, the quick checks, and the combining-class and composition tables.
+See the "Unicode normalization" section of README.md.

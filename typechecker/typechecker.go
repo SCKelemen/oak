@@ -552,6 +552,10 @@ type TypeChecker struct {
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[string]string
+	// equalityTypes records, per `==`/`!=` operator position, the named
+	// sum type or record the operands have, so the backend emits that
+	// type's equality function (typechecker/equality.go).
+	equalityTypes map[string]string
 	// unsafeDepth counts the enclosing unsafe blocks; initializerUnderCheck
 	// is the initializer expression of the declaration being checked. Both
 	// gate the inbound buffer borrows of docs/spec/92-ffi.md section 2.7.
@@ -818,6 +822,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
 	tc.recordGlobalOwners(program)
+	tc.checkExportSymbols(program)
 	// Pre-declare top-level non-generic function signatures so functions can
 	// reference one another regardless of declaration order (mutual
 	// recursion included); each signature is finalized when its declaration
@@ -1748,6 +1753,9 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 			tc.addError(expr, "operator %s requires compatible types, got %s and %s", expr.Operator, leftType, rightType)
 			return nil
 		}
+		if !tc.checkAggregateEquality(expr, leftType) {
+			return nil
+		}
 		return &BoolType{}
 	case "&&", "||":
 		// Short-circuit Boolean connectives (docs/spec/10-syntax.md): both
@@ -2022,17 +2030,38 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Create new environment for function parameters
 	funcEnv := NewEnclosedTypeEnvironment(tc.env)
 
-	// Type check parameters (for anonymous functions, infer from usage)
-	// For now, assume they're all i32 if we can't infer
-	// Note: Type inference for anonymous function parameters is limited
-	// Parameters default to i32 if types cannot be inferred from context
+	// Typed shape (docs/spec/10-syntax.md section 3c): each parameter has
+	// its declared type and the body is checked against the declared
+	// return type, exactly as a function declaration is. Untyped names
+	// keep the historical default of i32; annotate to get anything else.
 	paramTypes := []Type{}
-	for _, param := range fn.Arguments {
-		// Default to i32 for now (type inference would be better)
-		paramType := &PrimitiveType{Name: "i32"}
-		paramTypes = append(paramTypes, paramType)
-		// Store as a monomorphic scheme
-		funcEnv.SetType(param.Value, paramType)
+	typed := len(fn.Parameters) > 0 || fn.ReturnType != nil
+	if typed {
+		for _, param := range fn.Parameters {
+			if param == nil || param.Name == nil || param.Type == nil {
+				tc.addError(fn, "function literal: every typed parameter needs a name and a type")
+				return nil
+			}
+			paramType := tc.parseTypeExpressionInEnv(param.Type, funcEnv)
+			if paramType == nil {
+				return nil
+			}
+			paramTypes = append(paramTypes, paramType)
+			funcEnv.SetType(param.Name.Value, paramType)
+		}
+	} else {
+		for _, param := range fn.Arguments {
+			paramType := &PrimitiveType{Name: "i32"}
+			paramTypes = append(paramTypes, paramType)
+			funcEnv.SetType(param.Value, paramType)
+		}
+	}
+	var declaredReturn Type = &UnitType{}
+	if fn.ReturnType != nil {
+		declaredReturn = tc.parseTypeExpressionInEnv(fn.ReturnType, funcEnv)
+		if declaredReturn == nil {
+			return nil
+		}
 	}
 
 	// Save current environment and switch to function environment
@@ -2042,7 +2071,12 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Type check function body (BlockStatement - check last expression)
 	savedLoopDepth := tc.loopDepth
 	tc.loopDepth = 0
-	returnType := tc.checkBlockExpression(fn.Body)
+	var returnType Type
+	if typed {
+		returnType = tc.checkBlockExpression(fn.Body, declaredReturn)
+	} else {
+		returnType = tc.checkBlockExpression(fn.Body)
+	}
 	tc.loopDepth = savedLoopDepth
 	if returnType == nil {
 		returnType = &UnitType{}
@@ -2050,6 +2084,16 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 
 	// Restore environment
 	tc.env = oldEnv
+
+	if typed && !returnType.Equals(declaredReturn) {
+		if _, unitBody := returnType.(*UnitType); !(unitBody && fn.ReturnType == nil) {
+			tc.addError(fn, "function literal: expected return type %s, got %s", declaredReturn, returnType)
+			return nil
+		}
+	}
+	if typed {
+		returnType = declaredReturn
+	}
 
 	return &FunctionType{
 		Parameters: paramTypes,
@@ -2188,6 +2232,34 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			}
 			return &UnitType{}
 		}
+		// assert_eq / assert_ne (docs/spec/85-discipline.md section 5): two
+		// values of one fixed-width integer, float, or Bool type; a failure
+		// names both values. The operand type is recorded by position so the
+		// backend picks the printing helper without re-deriving it.
+		if ident.Value == "assert_eq" || ident.Value == "assert_ne" {
+			if len(expr.Arguments) != 2 {
+				tc.addTypeDiagnostic(expr, CodeAssertOperands, ident.Value+" expects exactly two arguments: got and want")
+				return &UnitType{}
+			}
+			gotType := tc.checkExpression(expr.Arguments[0])
+			wantType := tc.checkExpression(expr.Arguments[1])
+			if gotType == nil || wantType == nil {
+				return &UnitType{}
+			}
+			name, comparable := tc.assertOperandName(gotType)
+			if !comparable {
+				d := tc.addTypeDiagnostic(expr.Arguments[0], CodeAssertOperands, fmt.Sprintf("%s compares fixed-width integers, f32/f64, or Bool, got %s", ident.Value, gotType))
+				d.AddHelp("compare a scalar the failure message can print; for records and views assert on a field or an element, or use assert with a Bool")
+				return &UnitType{}
+			}
+			if !gotType.Equals(wantType) {
+				d := tc.addTypeDiagnostic(expr, CodeAssertOperands, fmt.Sprintf("%s operands must have one type, got %s and %s", ident.Value, gotType, wantType))
+				d.AddHelp("convert one operand explicitly; there is no implicit promotion between widths or between integers and floats")
+				return &UnitType{}
+			}
+			tc.recordFloatWidth(ident.Token, name)
+			return &UnitType{}
+		}
 	}
 
 	// recv.member(args): a method call or uniform call syntax
@@ -2253,6 +2325,21 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			effectiveArgs += 2
 			continue
 		}
+		// A C string from Oak bytes (docs/spec/92-ffi.md section 2.5.3)
+		// stands for one c.String parameter of an extern binding.
+		if operand, isCString := tc.CStringArgument(arg); isCString {
+			if !isExtern {
+				d := tc.addTypeDiagnostic(arg, CodeExternOutsideDefinition,
+					"c.cstr is only an argument to an extern binding")
+				d.AddNote("c.cstr(v) hands C the base pointer of a NUL-terminated view for the duration of one foreign call; Oak functions take the view itself (docs/spec/92-ffi.md section 2.5.3)")
+				return nil
+			}
+			if !tc.checkCStringArgument(arg, operand, fnType.Parameters, effectiveArgs) {
+				spansValid = false
+			}
+			effectiveArgs++
+			continue
+		}
 		effectiveArgs++
 	}
 	if !spansValid {
@@ -2289,6 +2376,11 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if _, _, isSpan := tc.BoundarySpanArgument(arg); isSpan {
 			// Validated in the pre-pass above; it stands for the pair.
 			argTypes[i] = &CType{Name: "Ptr"}
+			continue
+		}
+		if _, isCString := tc.CStringArgument(arg); isCString {
+			// Validated in the pre-pass above; it stands for a c.String.
+			argTypes[i] = &CType{Name: "String"}
 			continue
 		}
 		pos := paramPos[i]
@@ -2942,7 +3034,11 @@ func (tc *TypeChecker) checkDotCall(expr *ast.InvocationExpression, access *ast.
 		return nil
 	}
 	if adt, isADT := recvType.(*ADTType); isADT {
-		if _, declared := tc.env.Get(fmt.Sprintf("%s::%s", adt.Name, member.Value)); declared {
+		if key := fmt.Sprintf("%s::%s", adt.Name, member.Value); func() bool { _, declared := tc.env.Get(key); return declared }() {
+			// Record the resolution for the backend: the call stays in its
+			// dotted shape (the receiver is not an argument), and codegen
+			// lowers it to the method's C function.
+			expr.ResolvedMethod = key
 			return tc.checkMethodCall(access.Left, member.Value, expr.Arguments)
 		}
 	}
@@ -3925,6 +4021,9 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	if stmt == nil {
 		return
 	}
+	if stmt.Theorem && !tc.checkTheoremShape(stmt) {
+		return
+	}
 
 	// Check for nil function name
 	if stmt.Name == nil {
@@ -4514,6 +4613,12 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 }
 
 func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
+	// A brace block is a scope (docs/spec/10-syntax.md section 4c): names
+	// declared inside it end with it, and sibling blocks may reuse a name.
+	// Assignments still reach the declaring scope through the chain.
+	outerEnv := tc.env
+	tc.env = NewEnclosedTypeEnvironment(outerEnv)
+	defer func() { tc.env = outerEnv }()
 	// Type check all statements in the block. A view/span declaration with
 	// literal bounds establishes its extent for the rest of the block
 	// (typechecker/extents.go); the facts pop with the block.

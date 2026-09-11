@@ -37,6 +37,8 @@ func TestCheckerRejections(t *testing.T) {
 		{"restore from wrong slot", "f: (x: u64) -> u64", "  bind x0 = x\n  clobber x19, x20\n  frame 32\n  stp x19, x20, [sp, #-32]!\n  mov x19, #1\n  ldr x19, [sp, #8]\n  add sp, sp, #32\n  ret", "without restoring callee-saved x19"},
 		{"write after restore", "f: (x: u64) -> u64", "  bind x0 = x\n  clobber x19\n  frame 16\n  str x19, [sp, #-16]!\n  mov x19, #1\n  ldr x19, [sp], #16\n  mov x19, #2\n  ret", "without restoring callee-saved x19"},
 		{"bl without lr saved", "f: (x: u32) -> u32", "  bind w0 = x\n  clobber x30\n  frame 16\n  sub sp, sp, #16\n  bl helper\n  add sp, sp, #16\n  ret", "before saving the link register"},
+		{"callee-saved d8 write without save", "f: (x: f32) -> f32", "  bind s0 = x\n  clobber v8\n  fmov s8, s0\n  fmov s0, s8\n  ret", "write to callee-saved s8 before saving it"},
+		{"callee-saved d8 not restored", "f: (x: f32) -> f32", "  bind s0 = x\n  clobber v8\n  frame 16\n  str d8, [sp, #-16]!\n  fmov s8, s0\n  fmov s0, s8\n  add sp, sp, #16\n  ret", "without restoring callee-saved d8"},
 		{"align extent overflow", "f: () -> never", "  system\n  align 8\n  eret\n  nop\n  nop\n  eret", "exceeding its 8-byte stride"},
 		{"branch outside", "f: (x: u32) -> u32", "  bind w0 = x\n  b elsewhere", "neither a label"},
 		{"bl without lr clobber", "f: (x: u32) -> u32", "  bind w0 = x\n  bl helper\n  ret", "clobber x30"},

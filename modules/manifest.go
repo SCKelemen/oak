@@ -64,6 +64,14 @@ type Manifest struct {
 	// 7): the assumption stays recorded and audited, but does not reject the
 	// module's packages. Only AdmissibleAssumptions may be named.
 	Admits []string
+	// Links lists the native inputs this module links (`link <path>`,
+	// docs/spec/83-modules.md section 4.6): static archives or relocatable
+	// objects, as slash-separated paths relative to the module root, in
+	// declaration order. The loader resolves and containment-checks them.
+	Links []string
+	// Frameworks lists the macOS frameworks this module links (`framework
+	// <Name>`), in declaration order; other hosts ignore them with a note.
+	Frameworks []string
 }
 
 // AdmissibleAssumptions are the diagnostic codes an `admit` directive may
@@ -95,6 +103,8 @@ var Profiles = map[string]bool{"default": true, "strict": true}
 //	profile <default|strict>
 //	steady <package-path> <function>
 //	admit <diagnostic-code>
+//	link <path>
+//	framework <Name>
 //	// comment
 //
 // Unknown directives, malformed lines, duplicate `module`/`oak`/`replace`
@@ -233,6 +243,32 @@ func ParseManifest(text string) (Manifest, error) {
 				}
 			}
 			manifest.Admits = append(manifest.Admits, fields[1])
+		case "link":
+			if len(fields) != 2 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: link directive has the form `link <path>` (an archive or object inside the module)", lineNumber)
+			}
+			if err := ValidateLinkPath(fields[1]); err != nil {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: link %s: %v", lineNumber, fields[1], err)
+			}
+			for _, prior := range manifest.Links {
+				if prior == fields[1] {
+					return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate link of %s", lineNumber, fields[1])
+				}
+			}
+			manifest.Links = append(manifest.Links, fields[1])
+		case "framework":
+			if len(fields) != 2 {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: framework directive has the form `framework <Name>`", lineNumber)
+			}
+			if !validIdentifier(fields[1]) {
+				return Manifest{}, fmt.Errorf("oak.mod:%d: framework %q is not a framework name (letters, digits, underscores)", lineNumber, fields[1])
+			}
+			for _, prior := range manifest.Frameworks {
+				if prior == fields[1] {
+					return Manifest{}, fmt.Errorf("oak.mod:%d: duplicate framework %s", lineNumber, fields[1])
+				}
+			}
+			manifest.Frameworks = append(manifest.Frameworks, fields[1])
 		default:
 			return Manifest{}, fmt.Errorf("oak.mod:%d: unknown directive %q", lineNumber, fields[0])
 		}
@@ -240,12 +276,36 @@ func ParseManifest(text string) (Manifest, error) {
 	if manifest.Path == "" {
 		return Manifest{}, fmt.Errorf("oak.mod: missing module directive")
 	}
-	for path := range manifest.Replaces {
-		if !seenRequire[path] {
+	for path, target := range manifest.Replaces {
+		if !seenRequire[path] && !StandardLibraryRealization(target) {
 			return Manifest{}, fmt.Errorf("oak.mod: replace of %q without a matching require", path)
 		}
 	}
 	return manifest, nil
+}
+
+// ValidateLinkPath accepts a `link` operand: a slash-separated relative path
+// inside the module (no absolute path, no empty, `.` or `..` segment, no
+// backslash) naming a static archive (`.a`) or a relocatable object (`.o`).
+// Shared libraries, linker scripts, and bare flags are rejected here; the
+// loader checks that the resolved file exists and stays inside the module
+// root through symlinks (docs/spec/83-modules.md section 4.6).
+func ValidateLinkPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
+	if strings.HasPrefix(path, "/") || strings.Contains(path, "\\") || strings.Contains(path, ":") {
+		return fmt.Errorf("must be a slash-separated path relative to the module root")
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("must not contain empty, `.` or `..` segments")
+		}
+	}
+	if !strings.HasSuffix(path, ".a") && !strings.HasSuffix(path, ".o") {
+		return fmt.Errorf("must name a static archive (.a) or a relocatable object (.o)")
+	}
+	return nil
 }
 
 // admissibleList spells the admissible codes in a stable order for
@@ -284,4 +344,15 @@ func validIdentifier(text string) bool {
 		}
 	}
 	return true
+}
+
+// StandardLibraryRealization reports whether a replace target names a
+// standard library realization of a port rather than a directory
+// (docs/spec/120-io.md section 1): a bare lowercase identifier with no
+// path separator. The loader checks that the package exists.
+func StandardLibraryRealization(target string) bool {
+	if target == "" || strings.ContainsAny(target, "/\\.") {
+		return false
+	}
+	return ValidPackageName(target)
 }

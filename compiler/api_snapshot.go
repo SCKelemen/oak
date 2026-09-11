@@ -138,19 +138,26 @@ func snapshotDeclarations(packageName, version string, program *ast.Program, che
 		default:
 			continue
 		}
+		// An explicit C ABI export is part of the public surface: its symbol
+		// is the function's ABI identity, so renaming or removing it is a
+		// major change (docs/spec/92-ffi.md section 2.9).
+		abi := ""
+		if function, isFunction := statement.(*ast.FunctionStatement); isFunction && function.ExportSymbol != "" {
+			abi = "c-export " + function.ExportSymbol
+		}
 		scheme, ok := checker.Env().Get(name)
 		if function, isFunction := statement.(*ast.FunctionStatement); isFunction && (!ok || scheme == nil || scheme.Type == nil) {
 			typeIdentity, err := canonicalFunctionDeclaration(function)
 			if err != nil {
 				return packageapi.Snapshot{}, fmt.Errorf("public function %q: %w", name, err)
 			}
-			snapshot.Exports[spell(name)] = packageapi.Export{Kind: kind, Type: spell(typeIdentity)}
+			snapshot.Exports[spell(name)] = packageapi.Export{Kind: kind, Type: spell(typeIdentity), ABI: abi}
 			continue
 		}
 		if !ok || scheme == nil || scheme.Type == nil {
 			return packageapi.Snapshot{}, fmt.Errorf("public %s %q has no checked type", kind, name)
 		}
-		snapshot.Exports[spell(name)] = packageapi.Export{Kind: kind, Type: spell(canonicalScheme(scheme))}
+		snapshot.Exports[spell(name)] = packageapi.Export{Kind: kind, Type: spell(canonicalScheme(scheme)), ABI: abi}
 	}
 	return snapshot, nil
 }

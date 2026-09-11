@@ -331,6 +331,39 @@ Rules:
   (`cond ? a | b | c` used to parse as `(cond ? a | b) | c`, an or over
   the whole conditional — the F16 misreading; it no longer parses).
 
+## 3c. Function literals
+
+A function literal is a function value written in expression position. Its
+typed shape carries the same annotations a declaration does, and it is
+checked exactly like one: each parameter has its declared type and the body
+must produce the declared result.
+
+```oak
+inc := fn(x: u32): u32 = x + 1
+add: (u32, u32) -> u32 = fn(a: u32, b: u32): u32 { a + b }
+total := apply(fn(x: u32): u32 = x * 2, total)
+say := fn(): () = {}
+```
+
+Rules:
+
+- The typed shape is recognized by `name :` right after the opening
+  parenthesis, or by `()` followed by a return annotation. The return
+  annotation uses `:` or `->`, the body is `{ block }` or `= expression`
+  (`= {` opens a block, as for declarations). A literal takes no variadic
+  parameter.
+- The untyped shape `fn(a, b) { ... }` remains for the REPL and legacy
+  tests; its parameters default to `i32`. Annotate to get anything else.
+- A literal is a code pointer, never an environment: capturing an enclosing
+  local is rejected (`OAK-T0401`, `60-effects-allocation.md` §10) until
+  environment storage has a justification surface. A typed literal lowers
+  to a plain top-level C function (`90-backend.md` §9); the expression is
+  that function's address — no closure object, no allocation, no indirect
+  dispatch beyond the pointer the program itself asked for.
+
+Motivation recorded in `docs/notes/roadmap-authority-resources.md` (asks,
+tier 2): resource fixtures needed literals whose parameters are handles.
+
 ## 4. Blocks and layout
 
 Statement/expression blocks may be delimited by indentation or explicit braces. Both normalize to the same structural token stream and AST.
@@ -360,15 +393,23 @@ Point { x: 1, y: 2 }
 
 Layout indentation never changes a record literal into a statement block or vice versa.
 
-### 4a. Line breaks end calls and indexes
+### 4a. Line breaks end calls, indexes, and subtractions
 
 A call or an index never continues across a line break: a line that begins
 with `(` or `[` begins a new statement (F18). `f(x)` followed by a line
-`(a + b) == c ? ...` is two statements, not `f(x)(a + b)`. Inside
-parentheses and brackets nothing changes (they are continuation contexts),
-and an operator at the end of a line still continues the expression. This
-is Go's rule without the semicolon insertion; `;` remains available to put
-two statements on one line.
+`(a + b) == c ? ...` is two statements, not `f(x)(a + b)`. The same holds
+for `-`: a line that begins with a minus negates what follows, it does not
+subtract from the line above — `x := 1` followed by a line `-x == 0 - 3 ? ...`
+is a negation, not `1 - x`. (`!` has no infix reading and always starts a
+statement.) Inside parentheses and brackets nothing changes (they are
+continuation contexts), and an operator at the end of a line still
+continues the expression: `50 -` followed by a line `8` is one subtraction.
+This is Go's rule without the semicolon insertion; `;` remains available to
+put two statements on one line. `Oak.StatementBoundary`
+(`spec/lean/Oak/StatementBoundary.lean`) models the rule — the decision reads
+only the next token's kind and the two lines; a token on the same line never
+begins a statement; a boundary kind on a later line always does; other kinds
+never do — and checks the three examples above by evaluation.
 
 ## 4b. Deferred statements
 
@@ -408,6 +449,34 @@ sees the deferred call where it runs, which is why `defer close(h)`
 discharges a terminal-state obligation (`50-borrowing.md` §9) and a use of
 `h` after the block is a use after consumption. The canonical formatter
 keeps `defer` where the programmer wrote it.
+
+## 4c. Bare block statements
+
+A `{ ... }` on its own in statement position is a **block statement**: a
+scope of its own, whose bindings end with it, so sibling blocks may reuse a
+name and a resource borrowed inside is released at the closing brace
+(`50-borrowing.md` §9: suspension and dependency are lexical). Assignments
+inside reach the declaring scope.
+
+```oak
+x: u32 = 1
+{
+  y: u32 = 41
+  x = x + y
+}
+{
+  y: u32 = 100
+  _ = y
+}
+```
+
+Every brace block is a scope in the same way: function bodies, `while`
+bodies, the arms of a `?`, and a `defer` (§4b) runs at the end of the block
+that holds it, so a bare block bounds deferred cleanup too. In statement position the brace is a block unless
+it reads as record syntax — `{ x: 1, y: 2 }` (a field list reaching `,` or
+`}` before any `=`), or `{ r | ... }` (an extensible record type) — which
+the REPL evaluates as an expression. The C backend emits the block as a C
+compound statement, so the scopes agree.
 
 ## 5. Separators
 

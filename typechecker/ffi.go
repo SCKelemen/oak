@@ -7,8 +7,10 @@ package typechecker
 import (
 	"fmt"
 	"regexp"
+	"sort"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/modules"
 )
 
 // Diagnostic codes of the FFI family (docs/spec/92-ffi.md section 2.3).
@@ -38,6 +40,21 @@ const (
 	// unsafe block or anywhere but the initializer of a named binding
 	// (docs/spec/92-ffi.md section 2.7).
 	CodeForeignBorrowPlacement = "OAK-F0107"
+	// CodeExportSymbolConflict rejects two C ABI exports that would share
+	// one symbol, an explicit `export("...")` colliding with another export
+	// or with a root package pub function's implicit `oak_<name>`
+	// (docs/spec/92-ffi.md section 2.9).
+	CodeExportSymbolConflict = "OAK-F0108"
+	// CodeExportInvalid rejects an `export("...")` whose symbol is not a C
+	// identifier or whose function has no single C ABI shape: a generic
+	// template, a method, an extern binding, or a non-pub function
+	// (docs/spec/92-ffi.md section 2.9).
+	CodeExportInvalid = "OAK-F0109"
+	// CodeCStringArgument rejects a `c.cstr(v)` argument that does not stand
+	// for a `c.String` parameter, whose operand is not a named `[]u8` view
+	// or a string literal, or whose literal operand is not NUL-terminated
+	// (docs/spec/92-ffi.md section 2.5.3).
+	CodeCStringArgument = "OAK-F0110"
 )
 
 // CType is a member of the `c` interface library (docs/spec/92-ffi.md
@@ -252,7 +269,8 @@ func KnownLibraryMember(library, member string) bool {
 	case "c":
 		_, isType := cTypeSpellings[member]
 		return isType || member == "extern" || member == "span_of" || member == "span_mut_of" ||
-			member == "borrow" || member == "borrow_mut" || member == "own" || member == "disown"
+			member == "borrow" || member == "borrow_mut" || member == "own" || member == "disown" ||
+			member == "cstr" || member == "borrow_string"
 	case "arm64":
 		_, isIntrinsic := arm64Intrinsics[member]
 		return isIntrinsic
@@ -429,6 +447,16 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 	switch member {
 	case "disown":
 		return tc.checkForeignDisown(expr)
+	case "borrow_string":
+		return tc.checkForeignStringBorrow(expr)
+	case "cstr":
+		// A C string from Oak bytes is not an expression either: it exists
+		// only as the argument standing for a c.String parameter of an
+		// extern binding (docs/spec/92-ffi.md section 2.5.3).
+		d := tc.addTypeDiagnostic(expr, CodeExternOutsideDefinition,
+			"c.cstr is only an argument to an extern binding, not an expression")
+		d.AddNote("c.cstr(v) hands C the base pointer of a NUL-terminated []u8 view for the duration of one foreign call and cannot be bound, stored, returned, or passed to Oak code")
+		return nil
 	case "span_of", "span_mut_of":
 		// Boundary spans are not expressions: they exist only as arguments
 		// of a call to an extern binding, where checkInvocationExpression
@@ -665,6 +693,81 @@ func (tc *TypeChecker) BoundarySpanArgument(arg ast.Expression) (member string, 
 	return member, call.Arguments[0], true
 }
 
+// CStringArgument recognizes `c.cstr(v)` in argument position
+// (docs/spec/92-ffi.md section 2.5.3), returning the operand. A local
+// binding named `c` shadows the library, exactly as for every other library
+// call.
+func (tc *TypeChecker) CStringArgument(arg ast.Expression) (operand ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall {
+		return nil, false
+	}
+	library, member, isLibrary := libraryAccess(call.Function)
+	if !isLibrary || library != "c" || member != "cstr" {
+		return nil, false
+	}
+	if _, bound := tc.env.Get("c"); bound {
+		return nil, false
+	}
+	if len(call.Arguments) != 1 {
+		return nil, true
+	}
+	return call.Arguments[0], true
+}
+
+// checkCStringArgument validates one `c.cstr(v)` argument of an extern call
+// (docs/spec/92-ffi.md section 2.5.3): the parameter at pos is `c.String`,
+// and the operand is either a named read-only `[]u8` view — whose trailing
+// NUL the backend checks at the call — or a string literal that ends in a
+// NUL, checked here.
+func (tc *TypeChecker) checkCStringArgument(arg ast.Expression, operand ast.Expression, parameters []Type, pos int) bool {
+	if operand == nil {
+		tc.addError(arg, "c.cstr takes exactly one []u8 view or string literal argument")
+		return false
+	}
+	if pos >= len(parameters) {
+		d := tc.addTypeDiagnostic(arg, CodeCStringArgument, "c.cstr must stand for a `c.String` parameter of the extern binding")
+		d.AddNote("the extern's prototype declares the pointer C receives as c.String (docs/spec/92-ffi.md section 2.5.3)")
+		return false
+	}
+	if str, isC := parameters[pos].(*CType); !isC || str.Name != "String" {
+		d := tc.addTypeDiagnostic(arg, CodeCStringArgument,
+			fmt.Sprintf("c.cstr must stand for a `c.String` parameter of the extern binding, got %s", parameters[pos]))
+		d.AddNote("the extern's prototype declares the pointer C receives as c.String (docs/spec/92-ffi.md section 2.5.3)")
+		return false
+	}
+	switch v := operand.(type) {
+	case *ast.StringLiteral:
+		if len(v.Value) == 0 || v.Value[len(v.Value)-1] != 0 {
+			d := tc.addTypeDiagnostic(operand, CodeCStringArgument, "c.cstr literal is not NUL-terminated")
+			d.AddHelp("end the literal with \\0, or construct it with c.String(\"...\"), which terminates the literal itself")
+			return false
+		}
+		return true
+	case *ast.Identifier:
+		operandType := tc.checkExpression(v)
+		if operandType == nil {
+			return false
+		}
+		array, isArray := operandType.(*ArrayType)
+		var element *PrimitiveType
+		isPrim := false
+		if isArray {
+			element, isPrim = array.ElementType.(*PrimitiveType)
+		}
+		if !isArray || !array.IsSlice || !isPrim || (element.Name != "u8" && element.Name != "byte") {
+			d := tc.addTypeDiagnostic(operand, CodeCStringArgument,
+				fmt.Sprintf("c.cstr takes a read-only view []u8, got %s", operandType))
+			d.AddNote("the view's last byte must be NUL; the backend checks it at the call and traps otherwise (docs/spec/92-ffi.md section 2.5.3)")
+			return false
+		}
+		return true
+	}
+	d := tc.addTypeDiagnostic(operand, CodeCStringArgument, "c.cstr takes a named []u8 view binding or a string literal")
+	d.AddHelp("bind the bytes first: text: []u8 = view(&buffer)")
+	return false
+}
+
 // boundarySpanElementTypes are the primitive element types with one meaning
 // on both sides of the C boundary (docs/spec/92-ffi.md section 2.5.1):
 // fixed-width integers, the IEEE binary32/binary64 types, and the f16/bf16
@@ -816,7 +919,41 @@ func ForeignBorrowCall(call *ast.InvocationExpression) (member string, element a
 	if call == nil {
 		return "", nil, false
 	}
+	// `c.borrow_string(p)` (docs/spec/92-ffi.md section 2.7.1) names no
+	// element type: the elements are the bytes of a NUL-terminated C
+	// string, and the count comes from the terminator at runtime.
+	if library, member, isLibrary := libraryAccess(call.Function); isLibrary && library == "c" && member == "borrow_string" {
+		return member, nil, true
+	}
 	return foreignBorrowAccess(call.Function)
+}
+
+// checkForeignStringBorrow types `c.borrow_string(p)` (docs/spec/92-ffi.md
+// section 2.7): inside an unsafe block, as the initializer of a named
+// binding, a read-only `[]u8` view over the bytes of the NUL-terminated C
+// string at `p`, excluding the terminator; the length is the terminator's
+// offset, read at runtime. The trust contract is c.borrow's: the program
+// asserts the string is terminated and stays valid for the block's extent.
+func (tc *TypeChecker) checkForeignStringBorrow(expr *ast.InvocationExpression) Type {
+	if tc.unsafeDepth == 0 {
+		d := tc.addTypeDiagnostic(expr, CodeForeignBorrowPlacement,
+			"c.borrow_string takes runtime-owned memory and is admitted only inside an unsafe block")
+		d.AddNote("the program asserts that the pointer addresses a NUL-terminated string that stays valid for the block's extent (docs/spec/92-ffi.md section 2.7)")
+		d.AddHelp("wrap the binding and its uses in unsafe { ... }")
+	} else if tc.initializerUnderCheck != expr {
+		d := tc.addTypeDiagnostic(expr, CodeForeignBorrowPlacement,
+			"c.borrow_string must initialize a named binding, so the borrow it creates has a scope")
+		d.AddHelp("bind it first: text: []u8 = c.borrow_string(ptr)")
+	}
+	if len(expr.Arguments) != 1 {
+		tc.addError(expr, "c.borrow_string takes exactly one c.Ptr")
+		return nil
+	}
+	ptrType := tc.checkExpression(expr.Arguments[0], &CType{Name: "Ptr"})
+	if ptr, isC := ptrType.(*CType); ptrType != nil && (!isC || ptr.Name != "Ptr") {
+		tc.addError(expr.Arguments[0], "c.borrow_string takes a c.Ptr, got %s", ptrType)
+	}
+	return &ArrayType{Length: -1, IsSlice: true, ElementType: &PrimitiveType{Name: "u8"}}
 }
 
 // checkForeignBorrow types an inbound buffer borrow (docs/spec/92-ffi.md
@@ -895,4 +1032,110 @@ func (tc *TypeChecker) checkForeignDisown(expr *ast.InvocationExpression) Type {
 		return nil
 	}
 	return &CType{Name: "Ptr"}
+}
+
+// exportOwner names the package a flattened top-level function belongs to
+// for diagnostics: the module path the elaborator mangled into its internal
+// name, or "the root package".
+func exportOwner(fn *ast.FunctionStatement) string {
+	if path, _, ok := modules.Demangle(fn.Name.Value); ok {
+		return fmt.Sprintf("package %q", path)
+	}
+	return "the root package"
+}
+
+// implicitExportSymbol is the C symbol the backend gives a root package pub
+// function without an explicit marker (codegen cFunctionName for a root
+// program): every such function is exported as `oak_<name>`.
+func implicitExportSymbol(fn *ast.FunctionStatement) string {
+	return "oak_" + fn.Name.Value
+}
+
+// checkExportSymbols validates the program's C ABI exports
+// (docs/spec/92-ffi.md section 2.9): every `export("symbol")` marker names
+// a C identifier, marks a pub, non-generic, non-method, non-extern function,
+// and no two exports of the program — explicit markers from any package and
+// the root package's implicit `oak_<name>` exports — share a symbol. The
+// check runs over the elaborated program, so dependency functions carry
+// their mangled internal names and the marker is the only way they reach
+// the header.
+func (tc *TypeChecker) checkExportSymbols(program *ast.Program) {
+	type owner struct {
+		fn     *ast.FunctionStatement
+		symbol string
+	}
+	// A declaration is identified by where it is written, not by the name
+	// the elaborator gave it: the same source function is checked once in
+	// the flattened program under its internal name and may be checked
+	// again on its own, and neither pass may report it against itself.
+	declaration := func(fn *ast.FunctionStatement) string {
+		tok := fn.Name.Token
+		return fmt.Sprintf("%s|%d|%d|%d", tok.SemanticContext, tok.Line, tok.Column, tok.ByteStart)
+	}
+	claimed := map[string]owner{}
+	var explicit []*ast.FunctionStatement
+	visited := map[*ast.FunctionStatement]bool{}
+	for _, stmt := range program.Statements {
+		fn, ok := stmt.(*ast.FunctionStatement)
+		if !ok || fn.Name == nil || visited[fn] {
+			continue
+		}
+		visited[fn] = true
+		if fn.ExportSymbol != "" {
+			explicit = append(explicit, fn)
+			continue
+		}
+		// Root package pub functions are implicit exports; dependency pub
+		// functions (mangled names) are not part of the C surface.
+		if fn.Exported && fn.Receiver == nil && fn.ExternSymbol == "" && len(fn.TypeParams) == 0 {
+			if _, _, mangled := modules.Demangle(fn.Name.Value); !mangled {
+				claimed[implicitExportSymbol(fn)] = owner{fn: fn, symbol: implicitExportSymbol(fn)}
+			}
+		}
+	}
+	// Deterministic order: by symbol, then by internal name.
+	sort.SliceStable(explicit, func(i, j int) bool {
+		if explicit[i].ExportSymbol != explicit[j].ExportSymbol {
+			return explicit[i].ExportSymbol < explicit[j].ExportSymbol
+		}
+		return explicit[i].Name.Value < explicit[j].Name.Value
+	})
+	for _, fn := range explicit {
+		symbol := fn.ExportSymbol
+		switch {
+		case !ValidCSymbol(symbol):
+			d := tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export symbol %q is not a C identifier", symbol))
+			d.AddHelp("a C identifier starts with a letter or underscore and continues with letters, digits, and underscores")
+			continue
+		case !fn.Exported:
+			d := tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export(%q) marks %s, which is not pub", symbol, fn.Name.Value))
+			d.AddHelp("only a pub function has a C ABI surface; write `export(\"...\") pub name: ...`")
+			continue
+		case fn.Receiver != nil:
+			tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export(%q) marks a method; only free functions have a C ABI shape", symbol))
+			continue
+		case fn.ExternSymbol != "":
+			tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export(%q) marks an extern binding; the foreign symbol %q is already the C name", symbol, fn.ExternSymbol))
+			continue
+		case len(fn.TypeParams) != 0:
+			tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
+				fmt.Sprintf("export(%q) marks a generic template; export a concrete instantiation through a wrapper instead", symbol))
+			continue
+		}
+		if prior, taken := claimed[symbol]; taken && declaration(prior.fn) != declaration(fn) {
+			d := tc.addTypeDiagnostic(fn.Name, CodeExportSymbolConflict,
+				fmt.Sprintf("export symbol %q is already used by %s in %s", symbol, prior.fn.Name.Value, exportOwner(prior.fn)))
+			if prior.fn.ExportSymbol == "" {
+				d.AddHelp(fmt.Sprintf("the root package's pub function %s is exported implicitly as %q; pick another symbol or rename the root function", prior.fn.Name.Value, symbol))
+			} else {
+				d.AddHelp(fmt.Sprintf("this export is in %s; C symbols are program-unique", exportOwner(fn)))
+			}
+			continue
+		}
+		claimed[symbol] = owner{fn: fn, symbol: symbol}
+	}
 }

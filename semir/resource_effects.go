@@ -30,6 +30,13 @@ const (
 	// reborrow of the argument arg:N: it may be mutated through
 	// borrowed-mut contracts, and while it lives the argument is suspended.
 	ResourceEffectReturnBorrowMut = "return-borrow-mut"
+	// ResourceEffectReturnTrusted marks a result identity (fresh, alias,
+	// borrow, or mutable reborrow) that the compiler recorded as an
+	// assumption from a `via unsafe` line instead of validating against
+	// the callable's body. Callers reason from the declared identity
+	// exactly as for a validated one; the effect exists so tooling and
+	// proofs can see where the trust boundary lies.
+	ResourceEffectReturnTrusted = "return-trusted"
 	// Callable-contract effects describe what a function-typed parameter
 	// (arg:N) requires of the function values passed for it: the mode of
 	// the callable's own parameter param:M, or a fresh result.
@@ -108,6 +115,12 @@ func ResourceReturnBorrowMut(index int) Effect {
 	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnBorrowMut, Parameters: []string{"arg:" + strconv.Itoa(index)}}
 }
 
+// ResourceReturnTrusted constructs the effect recording that the result
+// identity of this transition is an assumption, not a validated claim.
+func ResourceReturnTrusted() Effect {
+	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnTrusted}
+}
+
 // ResourceCallableEffect constructs the effect requiring mode name (one of
 // borrow, borrow-mut, consume) of parameter param of the function value
 // passed as argument arg.
@@ -151,6 +164,10 @@ type ResourceTransitionSemantics struct {
 	// the receiver carries no resource contract. It is its own slot: it
 	// never shifts the explicit argument indices above.
 	Receiver string
+	// ReturnTrusted records that the result identity above is an
+	// assumption from a `via unsafe` line (return-trusted), not a claim the
+	// compiler validated against the body.
+	ReturnTrusted bool
 }
 
 // ResourceReceiverParameter is the effect parameter spelling that marks a
@@ -288,6 +305,17 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 			seenFresh = true
 			result.ReturnsFresh = true
 
+		case ResourceEffectReturnTrusted:
+			if len(effect.Parameters) != 0 {
+				return ResourceTransitionSemantics{}, true,
+					fmt.Errorf("resource.return-trusted does not accept parameters")
+			}
+			if result.ReturnTrusted {
+				return ResourceTransitionSemantics{}, true,
+					fmt.Errorf("resource.return-trusted is duplicated")
+			}
+			result.ReturnTrusted = true
+
 		default:
 			return ResourceTransitionSemantics{}, true,
 				fmt.Errorf("unknown resource effect %q", effect.Name)
@@ -299,6 +327,9 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 	}
 	if result.ReturnsBorrow && (result.ReturnsFresh || result.ReturnsAlias) {
 		return ResourceTransitionSemantics{}, true, fmt.Errorf("a result cannot be return-borrow and also return-fresh or return-alias")
+	}
+	if result.ReturnTrusted && !result.ReturnsFresh && !result.ReturnsAlias && !result.ReturnsBorrow {
+		return ResourceTransitionSemantics{}, true, fmt.Errorf("resource.return-trusted requires a result identity to trust")
 	}
 	sort.Ints(result.Borrowed)
 	sort.Ints(result.BorrowedMut)

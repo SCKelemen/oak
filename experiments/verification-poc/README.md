@@ -287,5 +287,12 @@ evidence. `proof/ExtractionDecoder.lean` proves the decoder phases
 `none`, else hands the stream checker arrays that represent it), and
 `proof/ExtractionRUP.lean` proves the RUP kernel (`rup_check_spec`: the
 extracted `rup_check` accepts exactly when `PropagationChain.check`
-certifies the decoded target under the live table). The stream loop is
-next, after which `check_refines` transfers to the extraction directly.
+certifies the decoded target under the live table), and
+`proof/ExtractionStream.lean` proves the stream checker
+(`rup_stream_check_spec`: on every layout the decoder hands over, the
+extraction returns exactly `CertifiedStream.check`) and composes them:
+`rup_text_check_sound` — whenever the extracted `rup_text_check` accepts
+a pair of texts, the model's layout of those texts is unsatisfiable. The
+chain from the extracted program to `check_sound` is closed; what remains
+is the extractor's and the compiler's fidelity to the binary, covered by
+the extraction lane's tests and the differential witnesses.

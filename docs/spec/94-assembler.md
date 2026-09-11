@@ -858,10 +858,74 @@ itself — lowered entirely by the backend, six functions proven at the bit
 level and the rest trusted with the reason (`bl`, no integer result, the
 conversion the verifier had not modeled before this increment), exit 42
 natively, through the C backend alone, and as the portable realization.
-Next increments: spans and views (the guarded `[base, wI, uxtw #s]`
-idiom), records, the tail-self-call loop, floating point through the
-`s`/`d` views, and a register allocator once the slot discipline is the
-bottleneck.
+**Second increment — spans, views, and the tail loop.** Span (`[*]T`) and
+view (`[]T`) parameters of fixed-width elements bind as their `{base, u32
+len}` pair and stay in those registers (the checker keys a span's facts on
+its bound base, so a span kernel is a leaf: a call would clobber the pair
+and a reload would drop the fact — such functions stay with the C
+backend). `len(v)` reads the length register; `v[i]` and `v[i] = e` go
+through the checker's own idiom — the index in a 32-bit scratch register,
+`cmp wI, wL` then `b.hs <trap>` immediately before the access, then
+`ldr`/`ldrb`/`ldrsh`/`str`/… `[xBase, wI, uxtw #log2(elem)]` — so every
+element access is bounds-checked (out of range traps, as the C backend's
+`oak_index` does), stores need a writable span, and the checker's
+index-fact rule admits the access rather than trusting it. A self-call in
+result position lowers to a loop: the arguments into the parameter slots,
+then a jump to the header after the prologue — constant stack depth, as
+the discipline requires. The verifier now drops a path that ends in `brk`
+from the fork that reached it (the Oak body traps on the same inputs:
+a failed bounds check, division by zero, an overflowing shift), so the
+guarded element load `at: (v: []u32, i: u32) -> u32 = v[i]` is proven and
+`byte_sum`/`clamp8` are proven at their 8-bit contracts. Variables now live in the callee-saved registers x19–x28 in declaration
+order (saved in pairs in the prologue, restored before `ret` — the
+checker's callee-saved discipline applies to the compiler's code), with
+frame slots only past ten variables; a comparison of simple operands emits
+directly as `cmp` then `b.cond`; and a result conditional with one
+tail-call arm is laid out with the tail arm falling through to the back
+edge. That is the loop shape the verifier recognizes, and its loop
+recognizer now admits a guard's branch to the trap block inside a body —
+so the compiled `sum` and `byte_total` loops are **proven** equal to their
+Oak `while` bodies by inductive coupling (`acc↔x19, i↔x20` under the
+invariant `i ≤ len(v)`), exactly as the hand-written checksum was.
+Executed (`TestE2ENativeSpans`): a view sum, a byte total with
+zero-extending loads, a fill through a span with halfword stores, an
+element read, and a tail-recursive count as a loop — exit 42 natively and
+through the C backend, and an index at the length traps in both
+realizations. The verifier also reads a tail-recursive Oak body `c ? v | f(args)`
+as the loop it denotes (the parameters as locals, `while !c { params =
+args }`, then `v` — with fresh temporaries so the arguments read the old
+parameters, as the compiler's own layout does), so the compiled
+`count_down` is proven by coupling and the 64-bit `fact` agrees on every
+witness (its product's continue-condition proof exceeds the budget).
+**Third increment — floating point.** `f32`/`f64` parameters, locals,
+results, and span elements: arguments and results in `s0`–`s7`/`d0`–`d7`
+by their own AAPCS64 count, expression temporaries in `v16`–`v23`,
+variables in the callee-saved `v8`–`v15` with their `d` views saved in
+pairs and restored before `ret`; literals as their IEEE bit pattern through
+an integer register and `fmov`; `+ - * /` and unary minus as
+`fadd`/`fsub`/`fmul`/`fdiv`/`fneg` (nothing is contracted, as the C
+backend's `FP_CONTRACT OFF` states); comparisons as `fcmp` with the codes
+that read the flags as C does (`mi`, `ls`, `gt`, `ge`, `eq`, `ne`, so an
+unordered pair is unequal and neither below nor above); widening `f64(x)`
+and `f32_round_f64` through `fcvt`; `fN_round_iM` through `scvtf`/`ucvtf`;
+`bits` through `fmov`; `iN_saturating_fM` through `fcvtzs`/`fcvtzu` (which
+saturate at the register and send NaN to 0, the helper's semantics) with a
+`cmp`/`csel` clamp to a narrower target's range; `iN_trunc_fM` with the C
+backend's range check first (NaN or a value outside the target's open
+interval traps) and the correctly rounded intrinsics that are one
+instruction each (`sqrt abs floor ceil trunc round round_even min max
+min_num max_num`, `fma` as `fmadd`). The checker now holds `d8`–`d15` to
+the callee-saved obligation it held `x19`–`x30` to — readable on entry,
+written only after a save, restored before every `ret`, with
+`smstart`/`smstop` (which zero them) counting as writes — which found that
+the shipped SME kernel had been clobbering the caller's `d8`–`d15`; it
+saves them now. Executed (`TestE2ENativeFloats`): thirteen float
+functions natively against the C backend and the portable realization,
+including a float span reduction and a store loop, and an out-of-range
+`trunc` trapping in both. Float bodies are trusted by the verifier (§5).
+Next increments: `break` as a second loop exit in the recognizer,
+records, and spans with calls (spilling the pair under a re-derivable
+fact).
 
 
 

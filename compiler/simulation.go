@@ -58,6 +58,7 @@ func matchesSimulationBinding(fn *ast.FunctionStatement, b SimulationBinding) bo
 func checkSimulation(root *ast.Program, bindings []SimulationBinding) error {
 	reporters := []SimulationBinding{
 		{Name: "testing_fail_host", Symbol: "oak_test_host_fail", Parameters: []string{"c.UInt32"}, Return: "()"},
+		{Name: "testing_fail_values_host", Symbol: "oak_test_host_fail_values", Parameters: []string{"c.UInt32", "c.UInt64", "c.UInt64", "c.UInt32"}, Return: "()"},
 		{Name: "testing_discard", Symbol: "oak_test_host_discard", Return: "()"},
 		{Name: "testing_classify_host", Symbol: "oak_test_host_classify", Parameters: []string{"c.UInt32"}, Return: "()"},
 		{Name: "testing_trace_host", Symbol: "oak_test_host_trace", Parameters: []string{"c.UInt32", "c.UInt64", "c.UInt64"}, Return: "()"},

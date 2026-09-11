@@ -90,6 +90,11 @@ putchar: (ch: c.Int): c.Int = c.extern("putchar")
 abort: (): () = c.extern("abort")
 ```
 
+A symbol the C library does not provide comes from a native input the
+module's manifest names — `link runtime/libmlrt.a`, `framework Metal`
+(`83-modules.md` section 4.6) — which every `oak build`, `oak run`, and
+`oak test` of the module passes to the C compiler.
+
 Rules (diagnostics `OAK-F01xx`):
 
 - **F0101** — every parameter type and any non-unit return type of an extern
@@ -219,9 +224,48 @@ emits the literal with a trailing NUL, so `c.String("kernel_main")` is
 well-formed by construction. A non-literal `string` is rejected
 (`OAK-F0106`): Oak strings are not NUL-terminated and carry a length, so a
 runtime `string` would need a copy the language does not perform silently
-(`00-constitution.md`, no hidden work). Programs that build text at runtime
-for C terminate it themselves and pass `c.span_of` over the bytes, or call a
-C function that takes a pointer and a length.
+(`00-constitution.md`, no hidden work).
+
+Text built at runtime reaches C through **`c.cstr(v)`**, a third argument
+form in the shape of §2.5.1 (ml roadmap D1). Its operand is a named
+read-only view `v: []u8` **whose last byte is NUL** — the program
+terminated it — or a string literal that ends in `\0`. It stands for one
+`c.String` parameter of the extern binding and yields the view's base
+pointer for the duration of that call:
+
+```oak
+c_strlen: (s: c.String): c.UInt64 = c.extern("strlen")
+getenv: (name: c.String): c.Ptr = c.extern("getenv")
+
+length_of: (buffer: [8]u8): u64 {
+  // buffer's last written byte is 0
+  text: []u8 = view(&buffer)
+  u64(c_strlen(c.cstr(text)))
+}
+home: (): c.Ptr = getenv(c.cstr("HOME\0"))
+```
+
+The rules are those of a boundary span, plus the terminator:
+
+- the parameter at the argument's position must be `c.String`
+  (`OAK-F0110` otherwise), and the operand a named `[]u8` view or a
+  string literal (`OAK-F0110`);
+- a literal operand must end in NUL, checked at compile time
+  (`OAK-F0110`; `c.String("...")` terminates a literal itself and is the
+  usual spelling for one);
+- a view operand's terminator is checked **at the call**: the backend
+  passes the pointer through a helper that traps, naming the Oak source
+  position like a failed assertion, when `len(v) == 0` or
+  `v[len(v) - 1] != 0`, so C never receives an unterminated buffer as a
+  string. No copy is made;
+- for the borrow checker the call is a read use of the view's owner for
+  the call's extent, exactly as `c.span_of` (§2.5.2); the pointer cannot
+  escape because `c.cstr` is not an expression (`OAK-F0103` anywhere but
+  an extern parameter position), and the interpreter rejects it with the
+  extern-call diagnostic (§4).
+
+C sees `len(v) - 1` characters; the length Oak knows is not passed, which
+is the point of the form — the terminator is the contract.
 
 #### 2.5.4 Lowering
 
@@ -247,6 +291,7 @@ addresses exactly the layout it expects). Semantic records without the
 | `OAK-F0104` | element type of a boundary span is not representable across the C ABI |
 | `OAK-F0105` | `c.span_of`/`c.span_mut_of` argument does not line up with a `c.Ptr, c.Size` parameter pair |
 | `OAK-F0106` | `c.String` constructed from a non-literal string |
+| `OAK-F0110` | `c.cstr` argument does not stand for a `c.String` parameter, its operand is not a named `[]u8` view or a string literal, or a literal operand is not NUL-terminated |
 
 The test runner's native adapter rules (`110-testing.md`) continue to exclude
 pointer interfaces from the adapters themselves; a test may nonetheless call
@@ -335,6 +380,7 @@ inside an `unsafe` block:
 | --- | --- | --- | --- |
 | `c.borrow[T](p, n)` | `p: c.Ptr`, `n: u32` | `[]T` | Oak may read `n` elements |
 | `c.borrow_mut[T](p, n)` | `p: c.Ptr`, `n: u32` | `[*]T` | Oak may read and write `n` elements |
+| `c.borrow_string(p)` | `p: c.Ptr` to a NUL-terminated C string | `[]u8` | Oak may read the bytes before the terminator |
 
 `T` is a boundary element type exactly as in §2.5.1 — a fixed-width
 integer, a floating-point or storage format, `Bool`, a boundary tagged
@@ -361,6 +407,36 @@ readback_sum: (id: u32): f32 {
     }
   }
   total
+}
+```
+
+**Inbound C strings** (ml roadmap D2). `c.borrow_string(p)` is the
+`c.borrow` of a string whose length C did not tell us: the view covers the
+bytes before the first NUL, **excluding the terminator**, and its length is
+that offset, read at runtime by scanning for the terminator (the `strlen`
+contract, implemented without libc so freestanding builds stay free of
+it). A NULL pointer yields the empty view — the total behaviour, chosen over
+a trap because the common producers (`getenv`, optional fields) spell
+"absent" as NULL, and an empty view is exactly what a program reading such
+a string can do nothing wrong with; a program that must distinguish absent
+from empty checks the pointer on the C side. A string longer than `u32`
+holds traps. Everything else is `c.borrow[u8]`: placement (`OAK-F0107`),
+scope, the recorded assumption (`OAK-B0110`, worded for the terminator: the
+pointer addresses a NUL-terminated string that stays valid and unwritten
+for the block's extent), lowering to the view struct over the pointer and
+the scanned length, and the interpreter's rejection.
+
+```oak
+getenv: (name: c.String): c.Ptr = c.extern("getenv")
+
+data_dir_length: (): u32 {
+  p: c.Ptr = getenv(c.String("ML_DATA_DIR"))
+  n: u32 = 0
+  unsafe {
+    dir: []u8 = c.borrow_string(p)   // empty when the variable is unset
+    n = len(dir)
+  }
+  n
 }
 ```
 
@@ -433,7 +509,7 @@ typestate that lets a device own the memory for a while
 | Code | Meaning |
 | --- | --- |
 | `OAK-F0104` | element type of an inbound buffer is not representable across the C ABI |
-| `OAK-F0107` | `c.borrow`/`c.borrow_mut` outside an `unsafe` block, or not the initializer of a named binding |
+| `OAK-F0107` | `c.borrow`/`c.borrow_mut`/`c.borrow_string` outside an `unsafe` block, or not the initializer of a named binding |
 | `OAK-B0110` | (warning) the foreign buffer contract assumed for a binding |
 
 ### 2.8 Owned foreign buffers: `Buffer[T]`
@@ -548,6 +624,87 @@ ranges from one buffer at once is the disjoint-region proof of
 | `OAK-B0110` | (warning) the foreign buffer contract assumed for an owner |
 | `OAK-B0111` | a buffer used after `c.disown` |
 | `OAK-B0000` | `c.disown` while a view or span of the buffer is live |
+
+### 2.9 C ABI exports from any package
+
+Status: implemented (`export("symbol")`, `OAK-F0108`, `OAK-F0109`).
+
+The C header of a build (`oak build -header out.h`, §2.6) lists the root
+package's `pub` functions under `oak_<name>`. That rule alone puts every C
+ABI entry point of a program into the root package: a numeric runtime whose
+kernels, checks, and benchmarks are all C-callable grows a root file of
+thousands of lines. An **export marker** lets a `pub` function of *any*
+package name its own C symbol:
+
+```oak
+package ops
+
+export("oak_ml_add") pub add: (a: i32, b: i32): i32 = a + b
+```
+
+#### 2.9.1 Grammar and meaning
+
+`export("symbol")` precedes a `pub` function declaration; `export` is a
+contextual identifier, so `export := 1` stays an ordinary binding. The symbol
+is a string literal that must satisfy the C identifier grammar of §2.3
+(`OAK-F0102`'s pattern). The marked function is defined in the generated C
+under the elaborator's internal name for every Oak caller, and additionally
+under `symbol` as a forwarding function the C compiler inlines; both the
+prototype and the header carry `symbol` with the function's parameter and
+result types spelled exactly as §2.6 spells them for the root's exports
+(records as their typedefs, owned arrays as wrapper structs, views and spans
+as the view and span structs, a variadic tail as a view). The forwarding
+wrapper is the only C-visible name the marker adds; nothing about the Oak
+name, visibility, or calling convention of the function changes.
+
+#### 2.9.2 What the header lists
+
+The header has two parts, each deterministic:
+
+1. the root package's `pub` functions under `oak_<name>`, in declaration
+   order, as before — a root `pub` function **with** a marker appears under
+   its symbol only (the marker replaces the implicit name in the header; the
+   generated C still defines `oak_<name>` for the root's own callers);
+2. every explicit export of the program, from any package, sorted by symbol,
+   each preceded by a comment naming its package and Oak name.
+
+A dependency's `pub` functions without a marker are **not** part of the C
+surface. Before this section they leaked into the header under the
+elaborator's internal names (`oak_example_dcom_sml_sops__add`), which embed
+the module path and are stable for nobody; the marker is now the only way a
+non-root function reaches the header. Exports of a dependency *module*
+appear when the root module imports the package (transitively), because the
+build compiles exactly the packages it reaches; a package that is not
+reached contributes no code and no exports.
+
+Types named by an exported signature are emitted the way the C file emits
+them: a root type as `oak_Name`, a dependency type under its internal name.
+Exporting a type under a chosen C name is a separate request (a
+`export("...")` marker on a type declaration) and is not provided here.
+
+#### 2.9.3 Rules and diagnostics
+
+| Code | Meaning |
+| --- | --- |
+| `OAK-F0108` | two exports would share one C symbol: two markers, or a marker and a root `pub` function's implicit `oak_<name>`; the diagnostic names both functions and their packages |
+| `OAK-F0109` | the marker's symbol is not a C identifier, or the function has no single C ABI shape: not `pub`, a method, an extern binding (its foreign symbol is already its C name), or a generic template (export a concrete wrapper instead) |
+
+The parser rejects a marker that is not followed by a `pub` function
+declaration (a value, a type, a private function). Symbols are program-unique
+because the C linker has one namespace: the check runs over the elaborated
+program, so exports of every reached package are compared together with the
+root's implicit exports. A signature the header cannot represent (a string,
+a closure) is rejected when the header is emitted, as for root exports
+(§2.6).
+
+#### 2.9.4 API snapshots
+
+An explicit export is part of a package's public surface: the snapshot
+(`82-package-semver.md`) records the symbol as the function's ABI identity
+(`c-export <symbol>`), so renaming or removing an export is a major change
+and adding a marker to a published function is classified as an ABI change
+too — conservative, since a consumer linking the old symbol set is unaffected
+by an addition, but the snapshot laws classify any ABI difference as major.
 
 ## 3. The abstract assembly interface
 

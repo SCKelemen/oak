@@ -67,14 +67,15 @@ theorem random_below_lt (state : Array Xoshiro) (bound : UInt64) (fuel : Nat) (r
     rw [← h.1]; decide
   · simp [hle] at h
     rw [Option.bind_eq_some_iff] at h
-    obtain ⟨r1, h1, h2⟩ := h
+    obtain ⟨⟨r1, st1⟩, h1, h2⟩ := h
     simp only [Option.some.injEq, Prod.mk.injEq] at h2
     obtain ⟨rfl, _⟩ := h2
     rw [Option.bind_eq_some_iff] at h1
-    obtain ⟨x, _, h1⟩ := h1
+    obtain ⟨⟨x, stx⟩, _, h1⟩ := h1
     rw [Option.bind_eq_some_iff] at h1
-    obtain ⟨draw, _, h1⟩ := h1
-    simp only [Option.some.injEq] at h1
+    obtain ⟨⟨sty, draw⟩, _, h1⟩ := h1
+    simp only [Option.some.injEq, Prod.mk.injEq] at h1
+    obtain ⟨h1, _⟩ := h1
     subst h1
     rw [UInt64.lt_iff_toNat_lt, UInt64.toNat_mod]
     exact Nat.mod_lt _ hbpos
@@ -89,7 +90,7 @@ theorem random_range_mem (state : Array Xoshiro) (low high : UInt64) (fuel : Nat
   by_cases hlh : low ≤ high
   · simp [hlh] at h
     rw [Option.bind_eq_some_iff] at h
-    obtain ⟨r1, h1, h2⟩ := h
+    obtain ⟨⟨r1, st1⟩, h1, h2⟩ := h
     simp only [Option.some.injEq, Prod.mk.injEq] at h2
     obtain ⟨rfl, _⟩ := h2
     have hlow64 := UInt64.toNat_lt low
@@ -111,7 +112,8 @@ theorem random_range_mem (state : Array Xoshiro) (low high : UInt64) (fuel : Nat
     · rename_i hfull
       rw [Option.bind_eq_some_iff] at h1
       obtain ⟨⟨r3, st3⟩, hb, h1⟩ := h1
-      simp only [Option.some.injEq] at h1
+      simp only [Option.some.injEq, Prod.mk.injEq] at h1
+      obtain ⟨h1, _⟩ := h1
       subst h1
       have hsucc : ((high - low) + 1).toNat = high.toNat - low.toNat + 1 := by
         rw [UInt64.toNat_add, hsub, show (1 : UInt64).toNat = 1 by decide]

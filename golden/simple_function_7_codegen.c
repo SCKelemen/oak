@@ -1,3 +1,1 @@
-// Codegen skipped due to errors
-// Typechecker errors: 3
-// Borrow checker errors: 0
+// Codegen error: error[OAK-T0501]: 14:1: global sum has an initializer that is not a compile-time constant; static storage is initialized before any code runs (literals, arithmetic over literals, conversions of constants, record/array literals of constants); initialize runtime values at the top of main

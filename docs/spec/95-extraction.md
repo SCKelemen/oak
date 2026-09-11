@@ -46,9 +46,12 @@ proofs written against them transfer.
 | `c ? a \| b` (value) | `if c then a else b` |
 | `op ? \| 0 => a \| 1 => b \| _ => c` (integer constants) | `if op == 0 then a else if op == 1 then b else c`, in value and statement position; the last arm is the else |
 | `while c { body }` | `def f.loopN (reads...) : Nat → Option (writes...)` with `0 => none`, recursing on the fuel |
-| `g(args)` | `let (r, spans...) ← g args fuel`, hoisted before the statement; the span owners are rebound |
+| `g(args)` | `let (r, spans...) ← g args fuel`, hoisted before the statement; the span owners are rebound — and such a rebinding inside a loop body or a conditional arm is a write of that loop or arm, so the owner is in the tuple the helper returns (oak #186) |
+| `s: [*]T = items[a:b]`, `s: [*]T = span(&buf)` (a writable window) | `let s := items.extract a b` plus `let s_lo : Nat := a`; after every statement that rebinds `s` (a store, a call), the window is written back — `let items := (items.extract 0 s_lo) ++ s ++ (items.extract (s_lo + s.size) items.size)`, or `let buf := s` for a whole span — transitively through nested windows, and the owner joins the enclosing write sets, because in Oak the window aliases the owner's storage |
 | `assert(c)` | `let () ← if c then pure () else none` |
-| `E: type = A \| B: T` | `inductive E where \| A \| B (payload : T)` deriving `Repr, Inhabited, BEq, DecidableEq` (records derive the same four) |
+| `name: theorem (params) { e }` | the `def` of the function it is, then `theorem name_holds (params) (fuel : Nat) : name params fuel = some true` with the automatic script of `125-verification.md` §5; the module imports `Std.Tactic.BVDecide` when it states one |
+| `E: type = A \| B: T` | `inductive E where \| A \| B (payload : T)` deriving `Repr, Inhabited, BEq, DecidableEq` |
+| `R: type = struct { h: [8]u32, n: u32 }` | `structure R where ...` deriving `Repr, BEq, DecidableEq` with an explicit `instance : Inhabited R := ⟨{ h := Array.replicate 8 0, n := 0 }⟩`: the zero record an uninitialized `r: R` denotes, a fixed array field being its N zeroes rather than the empty array `deriving Inhabited` would choose (section 3) |
 | `Result[u32, E]`, `Option[Item]` | one inductive per instantiation the checker recorded, under its mangled name: `Result_u32_E`, `Option_Item` — the concrete tagged union the C backend emits (codegen/mono.go); templates are never emitted |
 | `.B(x)`, `.Err(.Overlong)` | `(E.B x)`, `(Result_u32_E.Err E.Overlong)` — the type from the checked expression type, else the recorded variant resolution |
 | `x ? \| .Ok(v) => a \| .Err(e) => b` (value) | `(match x with \| (.Ok v) => a \| (.Err e) => b)`; nested patterns, wildcards, and a whole-value binding as in the source |
@@ -89,6 +92,19 @@ that produced a verdict took no trapping path, and on such runs the model
 computes the same values — and it is what the hand-written models already
 assume. A model of trapping as `none` would make every expression monadic;
 the choice here keeps expressions pure and the proofs tractable.
+
+**Windows and records are values, made to agree.** A writable span is
+an `Array` value, so a window of an owner (`items[a:b]`, `span(&buf)`)
+would be a copy where Oak has an alias; the extraction restores the
+agreement by writing every rebound window back into its owner after the
+statement that rebound it (section 2), which is exactly the owner's state
+the compiled program has, because the borrow checker forbids touching the
+owner while the window is live. A record's default is its zero record with
+every fixed array field at its declared length; with Lean's derived
+`Inhabited` the fields would be empty arrays and every element store into
+an uninitialized record would be dropped as out of range — SHA-256 hashed
+an empty block until this was made explicit. Both were found by the
+faithfulness check of section 5, not by the drift test.
 
 **Floats are the host's.** `f32` and `f64` extract to Lean's `Float32` and
 `Float`, whose operations are the compiled runtime's binary32 and binary64
@@ -139,6 +155,19 @@ requires the extraction, the hand-written transliteration, the proved file
 model, and compiled Oak to return one verdict on every corpus case and on
 the replayed real certificate (729 cases at the time of writing). The opt-in
 verification workflow and the certificate gate build and run it.
+
+**Faithfulness, executed.** `compiler/lean_stdlib_faithful_test.go`
+builds one Oak module and one Lean driver over the committed extractions
+from a fixed-seed corpus — the heap, pdq and insertion sorts, LEB128
+encode and decode, hex and base64 round trips, xoshiro256** draws,
+CRC-32C and SHA-256 — runs the compiled program and `lake env lean --run`,
+and compares the two outputs byte for byte (336 lines). The drift test
+says the committed text is current; this says the text means what the
+compiled code does. It skips without a Lean toolchain and runs in the
+Formal Verification workflow after the Lean build. It is what oak #186
+needed: three faithfulness gaps (spans rebound through calls, windows never
+written back, zero records with empty array fields) each passed the drift
+test and each fails this one.
 
 **The standard library.** `compiler/lean_stdlib_extract_test.go` extracts
 whole packages — `varint`, `encoding`, `hash`, `random`, `uuid`, `float`
@@ -226,12 +255,40 @@ scratch, fuel above 8800 — the extracted `rup_check` returns exactly
 table's database, the decoded target, and the one-based hint ids. Same
 axioms again.
 
-What this buys: the decoder's and the kernel's corpus comparisons are now
-regression checks, and the one gap between the extraction's acceptance
-and `OakTextRefinement.check_refines` is the stream loop itself — the
-extracted `rup_stream_check`'s seven loops against `CertifiedStream.run`
-on a represented layout, with `rup_check_spec` discharging every
-publication.
+`proof/ExtractionStream.lean` proves the stream checker and closes the
+chain. `StreamRel` states how the loop's state — the 256-slot tables, the
+last addition id, the refutation flag — represents a `CertifiedStream.State`;
+the seven loops are proved against list functions as before (the table
+zeroing, the literal check against the model's pool guard, the initial
+clauses against `LiveTable.initialTable` and the model's empty-clause scan,
+the hint mapping as `refOK` over the reference slice, the clause copy as
+`targetList` = `clauseAt`, the deletions as `clearAll`, which
+`deleteIDs_clearAll` identifies with the model's sequential `deleteIDs`),
+and the command loop is proved against `CertifiedStream.commands` one
+command at a time through the model's own case split (`command_add_check`
+and its siblings), with `rup_check_spec` discharging the kernel call: the
+copied clause is the pool's clause, the mapped hints read back are the
+reference slice, and the kernel's answer is `PropagationChain.check`'s.
+`rup_stream_check_spec` states the result: on every layout the decoder can
+hand over (`LayoutRel`, arrays inside the fixed capacities), with fuel
+above 9100, the extracted `rup_stream_check` returns exactly
+`CertifiedStream.check raw`.
+
+`rup_text_check_sound` is the composition and the end of the chain: for
+any pair of texts below the `UInt32` range, with fuel above twice both
+lengths plus 9101, if the extracted `rup_text_check` returns `true` then
+the model's layout of those texts exists and its initial database is
+unsatisfiable — `CertifiedStream.check_sound` transported to the
+compiler's extraction of the whole Oak program. Same axioms:
+`propext`, `Classical.choice`, `Quot.sound`.
+
+What this buys: the scanner, decoder, kernel, and stream corpus
+comparisons are all regression checks now. What remains between the
+compiled binary and the theorem is the extractor's fidelity to the
+compiled program and the compiler itself, which the extraction lane's
+own tests and the differential witnesses cover, and the string-level
+corollary (the theorem is over byte arrays; `ByteArray.toList` lacks its
+data lemma).
 
 The standard-library laws live next to the extractions, one file per
 package, and are theorems about the extracted programs — so about the Oak
@@ -260,12 +317,24 @@ the compiler compiles, up to the extractor and the compiler being correct:
   sorted (`SortedPrefix`), for every array below the `u32` index range and
   every fuel above twice its length, by induction over the two loops with
   `SortedExcept` (sorted but for one gap) as the inner invariant and the two
-  stores shown to be `Array.swap`. Heap sort and `sort_span` are **not**
-  covered: their extractions are unfaithful today — a loop body or `if` arm
-  that changes the array only through a call does not return it, so the
-  mutation is dropped (oak #186); `heap_extraction_gap` and
-  `span_extraction_gap` are decided witnesses meant to stop compiling when
-  the extractor is fixed and the file regenerated.
+  stores shown to be `Array.swap`. `sort_heap_spec` — the extracted heap sort
+  returns a sorted permutation for every array below `2^31` elements and
+  every fuel above `3 n + 3`: `sift_loop_spec` keeps the heap edges above a
+  floor except at the hole (`SiftInv`, with the hole's parent bounding its
+  children once it has moved) and only permutes positions below `end`,
+  `heap_build_spec` lowers the floor to zero, `heap_extract_spec` keeps a heap
+  below a sorted tail that dominates it (`heap_root_max` moves the maximum
+  out). For `sort_span`: `writeback_perm` — writing a permutation of the
+  window `items[lo:hi]` back over it is a permutation of `items` for every
+  `lo` and `hi`; `sort_span_small` — below thirteen elements the result is a
+  sorted permutation (it is insertion sort); `sort_span_budget_zero` — with
+  the depth budget spent the whole span is heap sorted, so the fallback path
+  is a sorted permutation for every array below `2^31`. The pattern-defeating
+  path beyond the threshold is decided on twenty-four-element sorted,
+  reversed, all-equal, organ-pipe, few-distinct and sawtooth inputs and a
+  budget of one on the reversed sixteen; its universal laws need the
+  range-stack invariant and the in-bounds proof of every swap (the extraction
+  drops an out-of-range store, so permutation itself depends on them).
 - `Oak/Stdlib/EncodingLaws.lean`: `hex_round_trip` — for every source below
   `2^31 - 2` bytes, either symbol case, a destination that holds exactly the
   encoding, and a decode destination that holds the source, `hex_encode`
@@ -285,19 +354,17 @@ most; the kernel-decided facts use no axioms.
 
 ## 7. Next
 
-- Fix the extractor's write set for spans rebound only through calls in
-  loop bodies and `if` arms (oak #186), regenerate, and state the heap sort
-  and pdqsort laws (`bit_length_some` is the first lemma they need); the
-  universal base64 and base32 round trips and hexadecimal
+- State the pdqsort laws beyond the insertion threshold and the exhausted
+  budget: the range-stack invariant (ranges disjoint, everything between them
+  in final position, every swap in bounds) over `sort_span_budget.loop1`,
+  with `writeback_perm` and the heap and insertion laws as the leaves; the universal base64 and base32 round trips and hexadecimal
   strictness (`hex_decode` accepts a string iff it is an encoding); the
   `uuid` version and variant bits against the extraction.
 - The subset: strings and the text library, methods, and recursion;
   instantiations whose arguments are arrays or views; the `checked` float
   rows and `fma` once Lean carries them exactly.
-The stream checker (`rup_stream_check`, seven loops, against
-`CertifiedStream.check`, with `rup_check_spec` already covering the kernel
-it calls), which closes the transfer of `check_refines` to the extraction; the string-level
-corollary once `ByteArray.toList` has its data lemma; then the constructs
+The string-level corollary of `rup_text_check_sound` once
+`ByteArray.toList` has its data lemma; then the constructs
 the verification programs need next (matches over records, the `checked`
 rows), each added with its own fail-closed test. Integer-constant matches and the integer
 conversion rows were added for the ml subset (op dispatch on constants,

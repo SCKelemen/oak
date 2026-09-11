@@ -655,6 +655,47 @@ midpoints between adjacent doubles, comparing every line with `strconv`.
 Deviations from Go: digit-separating underscores and hexadecimal floats are
 rejected rather than accepted.
 
+## Unicode normalization
+
+`stdlib/normalize.oak` (`import("normalize")`, also in the flat prelude)
+implements the four normalization forms of UAX #15 at Unicode 17.0.0 over
+UTF-8 views into caller-owned spans: `normalize_nfd` and `normalize_nfkd`
+decompose (canonical, or canonical plus compatibility, always the full
+recursive decomposition, Hangul syllables algorithmically) and put combining
+marks in canonical order; `normalize_nfc` and `normalize_nfkc` then recompose
+primary composites under the blocking rule of D117, composition exclusions
+and Hangul included. `normalize_form(dst, src, form)` selects a form by the
+`NORMALIZE_NFD .. NORMALIZE_NFKC` constants. Every function returns
+`Result[u32, NormalizeError]` with the count written; the closed error type is
+`InvalidEncoding | DestinationTooSmall | RunTooLong`. Nothing allocates and
+every store follows its length check, but the pass streams: when the
+destination is too small the bytes written before the failure stay, so
+callers size the destination with the exact `normalize_nfd_size` /
+`normalize_nfc_size` / `normalize_nfkd_size` / `normalize_nfkc_size` (a
+counting pass over the same algorithm) or allow 18 × 4 bytes per input scalar,
+the longest decomposition at the widest encoding. The algorithm holds one run
+— a starter and the marks after it — in a `NORMALIZE_RUN_LIMIT` (256) scalar
+buffer; text with more consecutive non-starters than that (UAX #15's
+stream-safe format caps them at 30) is refused as `RunTooLong` rather than
+normalized wrongly. `normalize_is_nfd`/`normalize_is_nfkd` are the quick check
+of §9 (decisive for the decomposed forms); `normalize_is_nfc`/
+`normalize_is_nfkc` run the quick check and, only when a MAYBE scalar leaves
+it undecided, the full pass compared byte for byte against the input. A block
+table marks the 150 of 4352 blocks that hold any property, decomposition, or
+Hangul syllable, so scalars elsewhere skip every lookup, and a run of ASCII
+copies straight through. `normalize_ccc`, `normalize_flags`,
+`normalize_compose_pair`, and `normalize_is_plain` expose the tables. The
+tables come from `extract_normalize.py` (UnicodeData.txt,
+DerivedNormalizationProps.txt) through `unicode17_normalize.json` and
+`generate_normalize.py`; `testdata/NormalizationTest-17.0.0.txt` is checked in
+and every one of its 20,034 lines passes all five-column invariants in
+`compiler/e2e_stdlib_normalize_test.go`, `e2e_stdlib_normalize_laws_test.go`
+compares the compiled code with an independent Go transliteration on random
+sequences, and `spec/lean/Oak/Normalization.lean` proves canonical ordering
+is a stable sorted permutation and NFD idempotent (composition is defined
+there, its laws are remaining work). Invalid UTF-8 is `InvalidEncoding`, never
+normalized.
+
 ## Grapheme clusters
 
 `stdlib/grapheme.oak` (`import("grapheme")`, also in the flat prelude)
@@ -751,7 +792,7 @@ byte-boundary limits. They verify deterministic reuse, reservation, double relea
 short storage, maximum u32 bounds, preserved tail/spare bits and the runnable
 record-valued example. Emitted example C is checked for allocator calls.
 
-The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs, with one exception growing: `oak build -lean` extracts whole packages into Lean (`docs/spec/95-extraction.md` section 5) — `varint`, `encoding`, `hash`, `random`, `uuid`, and `sort` at `u32` today, committed under `spec/lean/Oak/Stdlib/` with a drift test — and `Oak/Stdlib/VarintLaws.lean` decides the first law about an extraction in the kernel: encoding then decoding is the identity for every one-byte value, for one value of every encoding length up to ten, for the RFC example, and for the `u64` maximum, and the over-long and truncated forms are rejected. Those are statements about the extracted program, not corpus agreement. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and canonicity (`canonical`: whatever the decoder accepts, the encoder writes back byte for byte); `SortLaws.lean` proves the extracted insertion sort returns a sorted permutation, and records that heap sort and `sort_span` extract unfaithfully until oak #186 is fixed; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native
+The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs, with one exception growing: `oak build -lean` extracts whole packages into Lean (`docs/spec/95-extraction.md` section 5) — `varint`, `encoding`, `hash`, `random`, `uuid`, and `sort` at `u32` today, committed under `spec/lean/Oak/Stdlib/` with a drift test — and `Oak/Stdlib/VarintLaws.lean` decides the first law about an extraction in the kernel: encoding then decoding is the identity for every one-byte value, for one value of every encoding length up to ten, for the RFC example, and for the `u64` maximum, and the over-long and truncated forms are rejected. Those are statements about the extracted program, not corpus agreement. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and canonicity (`canonical`: whatever the decoder accepts, the encoder writes back byte for byte); `SortLaws.lean` proves the extracted insertion sort and heap sort return sorted permutations for every input, the window write-back a permutation, and `sort_span` a sorted permutation below the insertion threshold and once the depth budget is spent, the pattern-defeating path in between decided on adversarial inputs; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native ; that the extracted program is the compiled one is checked by `TestLeanStdlibFaithful`, which runs both on a fixed corpus (sorts, varint, hex and base64, xoshiro, CRC-32C, SHA-256) and compares byte for byte. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and records that the decoder still accepts the zero-padded spelling `80 00`; `SortLaws.lean` proves the extracted insertion sort returns a sorted permutation, and records that heap sort and `sort_span` extract unfaithfully until oak #186 is fixed; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
 allocator-backed pools, intrusive trees/hash tables, concurrent rings, broader collections and persistence
 protocols remain separate work; importing this module does not implement them.
@@ -1007,6 +1048,22 @@ trips as properties over the full i64 range.
   and fuzzable as it stands; `examples/timesim` is the worked consumer and
   `timesim` below drives it.
 
+### Interval readings and attestation
+
+A `TimeSource` may carry an attested error bound: `time_source_attest(source,
+bound)` (a non-negative `Duration`, refused otherwise) is the platform
+layer's statement of its synchronization error, or a scenario's decree;
+`time_source_unattest` withdraws it. `time_interval(source)` is the
+clock-ordered reading `Result[TimeInterval, TimeError]`: `[wall - bound,
+wall + bound]` while attested, `Err(.Unattested)` otherwise, so a consumer
+that orders events by time refuses rather than guesses.
+`time_interval_before(a, b)` is definitely-before (`a.latest < b.earliest`;
+overlapping intervals are unordered) and `time_interval_contains(i, at)`
+membership. `Oak.TimeInterval` (`spec/lean/Oak/TimeInterval.lean`) proves
+the reading contains the true time exactly when the clock's departure is
+within the bound, that definitely-ordered honest intervals order their true
+times the same way, and that an unattested source yields no ordering.
+
 ## `timesim`: simulated time with clock faults (`import("timesim")`)
 
 `stdlib/timesim.oak` (a library package over `time` and `import(testing)`,
@@ -1027,7 +1084,11 @@ day), `TIME_FAULT_JUMP_FORWARD` (2), `TIME_FAULT_STALL` (4, neither clock
 advances this step), `TIME_FAULT_COARSE` (8, the wall clock is quantized to
 `coarse_nanos`, 10 ms unless `timesim_set_coarse` says otherwise),
 `TIME_FAULT_DRIFT` (16, the wall clock runs up to two percent fast or slow
-against the monotonic one), `TIME_FAULT_ALL`. The ledger (`jumps_back`,
+against the monotonic one), `TIME_FAULT_BOUND_BREAK` (32, the wall clock is
+stepped past the attested bound with the attestation left standing — the
+interval reading lies, and `timesim_interval_honest(sim, source, interval)`
+says so against `timesim_true_now`), `TIME_FAULT_UNATTEST` (64, the
+attestation is withdrawn, so `time_interval` refuses), `TIME_FAULT_ALL`. The ledger (`jumps_back`,
 `jumps_forward`, `stalls`, `coarsened`, `drifted`, `skew` — how far the wall
 clock has departed from the monotonic timeline) is there to classify on.
 The law every fault respects, asserted inside `timesim_advance`: **the
@@ -1095,3 +1156,48 @@ program carves the ranges with `subslice` over `view(&b)` or `span(&b)` of
 a `Buffer[T]` or a fixed array, so the borrow checker decides what may be
 live at once. Executed over a libc allocation in
 `compiler/e2e_buffers_test.go`.
+
+## `iosim` and `ionative`: the IO port (`import("io")`)
+
+`docs/spec/120-io.md` fixes one completion-ring port two packages realize
+with an identical exported surface. A program imports the port as `io`
+and its manifest selects the realization — `replace io => iosim` for a
+simulation build, `replace io => ionative` for the operating system — so
+nothing in the program text changes (`compiler/e2e_io_port_test.go` is
+one consumer under both).
+
+- Storage is caller-owned and bounded: `IoRing`, `[N]IoRequest`,
+  `[N]IoCompletion`, and one byte region every buffer is a `(base, len)`
+  window into. `io_submit` returns false when the submission storage is
+  full; `io_wait`/`io_poll` complete into the completion storage from
+  index 0 and return the count (the storage must hold every pending
+  request). Ops: `io_op_open`, `close`, `pread`, `pwrite`, `fsync`,
+  `fdatasync`, `fsyncdir` (the directory's path bytes in the window);
+  errors are the closed set `io_err_*` in `IoCompletion.error`, 0 for
+  success. A request with `link` set must complete before the next one
+  starts, and its failure cancels the rest of the chain (`io_err_canceled`).
+- `iosim` is pure Oak over `SimDisk` (this module): a 64-block, 64-byte
+  device holding up to 8 files of 512 bytes; bytes are packed into words,
+  writes tear at block boundaries exactly as the device's mask allows,
+  `io_wait` completes chains in a tape-chosen order, `io_poll` completes a
+  tape-chosen subset. `io_attach(data, faults)` binds the run's tape and
+  fault mask; `iosim_crash`/`iosim_restart` are the scenario's crash
+  events (files close, unsynced bytes vanish, sizes revert);
+  `iosim_trusted(slot)` says whether the durability contract applies to a
+  file; `iosim_fault_count(kind)` reads the device's ledger; the
+  submit/complete ledger (`iosim_ledger_*`) is the scenario's to forward to
+  `testing_trace`. `testrunner/io_sim_test.go` runs a linked-fsync log
+  through torn, dropped and lost-fsync faults and a crash.
+- `ionative` is the portable backend of §5: bindings to
+  `stdlib/native/oak_io_host.c` (`openat`, `close`, `pread`, `pwrite`,
+  `fsync`, `fdatasync`, directory `fsync`), each declaring
+  `effects { Os.Syscall }`; errno is mapped onto the port's errors in the
+  shim and the raw code is readable through `ionative_last_errno`. Link
+  the shim into any program that imports it. A `Sim` test package rejects
+  it (undeclared externs), so the operating system cannot enter a
+  simulation by mistake.
+- `Oak.IoPort` (`spec/lean/Oak/IoPort.lean`) proves the contract's shape:
+  a failed linked request cancels exactly the rest of its chain, a
+  completed fsync covers every write completed before its submission and
+  claims nothing else, and a read of a written range sees the write.
+
