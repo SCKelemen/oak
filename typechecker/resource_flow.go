@@ -1288,6 +1288,11 @@ type typedResourceAnalysis struct {
 	transferred map[string]bool
 	// pathTypes caches the resource type each known aggregate path holds.
 	pathTypes map[string]string
+	// diverged is set by a `break`: the state after it does not fall
+	// through to the join of its branch but to the enclosing loop's exit,
+	// collected in loopExits (one slice per open loop).
+	diverged  bool
+	loopExits [][]*resourceflow.Flow
 	// entryModes records, per resource parameter of the function under
 	// analysis, the authority its own contract grants on entry.
 	entryModes map[string]entryAuthority
@@ -2213,6 +2218,13 @@ func (a *typedResourceAnalysis) statement(stmt ast.Statement) {
 		}
 	case *ast.ExpressionStatement:
 		a.expression(s.Expression)
+	case *ast.BreakStatement:
+		// Control leaves the loop here: this path's state joins the loop's
+		// exit, not the fall-through of the enclosing branch.
+		if n := len(a.loopExits); n > 0 {
+			a.loopExits[n-1] = append(a.loopExits[n-1], a.flow.Clone())
+		}
+		a.diverged = true
 	case *ast.BlockStatement:
 		a.block(s)
 	case *ast.IfStatement:
@@ -2374,11 +2386,15 @@ func (a *typedResourceAnalysis) ifStatement(stmt *ast.IfStatement) {
 	incoming := a.flow.Clone()
 	incomingDeps, incomingScopes, incomingDecls := a.cloneDependents()
 
+	outerDiverged := a.diverged
+	a.diverged = false
 	a.flow = incoming.Clone()
 	a.block(stmt.Consequence)
 	consequence := a.flow.Clone()
+	consequenceDiverged := a.diverged
 	consequenceDeps, consequenceScopes, consequenceDecls := a.cloneDependents()
 
+	a.diverged = false
 	a.flow = incoming.Clone()
 	a.dependents, a.dependentScope, a.dependentDecl = incomingDeps, incomingScopes, incomingDecls
 	switch alternative := stmt.Alternative.(type) {
@@ -2389,9 +2405,27 @@ func (a *typedResourceAnalysis) ifStatement(stmt *ast.IfStatement) {
 		a.block(alternative)
 	}
 	alternative := a.flow.Clone()
-	a.flow = resourceflow.Join(consequence, alternative)
+	alternativeDiverged := a.diverged
+	a.flow = joinReachable([]*resourceflow.Flow{consequence, alternative}, []bool{consequenceDiverged, alternativeDiverged}, incoming)
+	a.diverged = outerDiverged || (consequenceDiverged && alternativeDiverged)
 	// Every dependency established on either path survives the join.
 	a.mergeDependents(consequenceDeps, consequenceScopes, consequenceDecls)
+}
+
+// joinReachable joins the branch states that fall through; a branch that
+// left by `break` contributes to its loop's exit instead. When no branch
+// falls through the result is the (unreachable) incoming state.
+func joinReachable(branches []*resourceflow.Flow, diverged []bool, incoming *resourceflow.Flow) *resourceflow.Flow {
+	reachable := make([]*resourceflow.Flow, 0, len(branches))
+	for i, branch := range branches {
+		if !diverged[i] {
+			reachable = append(reachable, branch)
+		}
+	}
+	if len(reachable) == 0 {
+		return incoming.Clone()
+	}
+	return resourceflow.Join(reachable...)
 }
 
 func (a *typedResourceAnalysis) whileStatement(stmt *ast.WhileStatement) {
@@ -2404,19 +2438,42 @@ func (a *typedResourceAnalysis) whileStatement(stmt *ast.WhileStatement) {
 	// first-iteration consumption and reaches the conservative fixed point.
 	incoming := a.flow.Clone()
 	incomingDeps, incomingScopes, incomingDecls := a.cloneDependents()
+	outerDiverged := a.diverged
+	a.loopExits = append(a.loopExits, nil)
 
+	a.diverged = false
 	a.flow = incoming.Clone()
 	a.expression(stmt.Condition)
 	a.block(stmt.Body)
 	oneIteration := a.flow.Clone()
+	oneDiverged := a.diverged
 
-	invariant := resourceflow.Join(incoming, oneIteration)
+	invariant := oneIteration
+	if !oneDiverged {
+		invariant = resourceflow.Join(incoming, oneIteration)
+	} else {
+		invariant = incoming
+	}
+	a.diverged = false
 	a.flow = invariant.Clone()
 	a.expression(stmt.Condition)
 	a.block(stmt.Body)
 	twoIterations := a.flow.Clone()
+	twoDiverged := a.diverged
 
-	a.flow = resourceflow.Join(incoming, oneIteration, twoIterations)
+	// The loop exits when its condition fails (after zero, one, or two
+	// probed iterations that fell through) or through any break.
+	exits := []*resourceflow.Flow{incoming}
+	if !oneDiverged {
+		exits = append(exits, oneIteration)
+	}
+	if !twoDiverged {
+		exits = append(exits, twoIterations)
+	}
+	exits = append(exits, a.loopExits[len(a.loopExits)-1]...)
+	a.loopExits = a.loopExits[:len(a.loopExits)-1]
+	a.flow = resourceflow.Join(exits...)
+	a.diverged = outerDiverged
 	// Dependencies established by any iteration, or by none, all survive.
 	a.mergeDependents(incomingDeps, incomingScopes, incomingDecls)
 }
@@ -2643,11 +2700,14 @@ func (a *typedResourceAnalysis) match(expr *ast.MatchExpression) {
 	incoming := a.flow.Clone()
 	incomingDeps, incomingScopes, incomingDecls := a.cloneDependents()
 	branches := make([]*resourceflow.Flow, 0, len(expr.Arms))
+	divergences := make([]bool, 0, len(expr.Arms))
+	outerDiverged := a.diverged
 	mergedDeps, mergedScopes, mergedDecls := a.cloneDependents()
 	for _, arm := range expr.Arms {
 		if arm == nil {
 			continue
 		}
+		a.diverged = false
 		a.flow = incoming.Clone()
 		a.dependents, a.dependentScope, a.dependentDecl = incomingDeps, incomingScopes, incomingDecls
 		incomingDeps, incomingScopes, incomingDecls = a.cloneDependents()
@@ -2657,6 +2717,7 @@ func (a *typedResourceAnalysis) match(expr *ast.MatchExpression) {
 		a.expression(arm.Body)
 		a.popScope()
 		branches = append(branches, a.flow.Clone())
+		divergences = append(divergences, a.diverged)
 		armDeps, armScopes, armDecls := a.cloneDependents()
 		a.dependents, a.dependentScope, a.dependentDecl = mergedDeps, mergedScopes, mergedDecls
 		a.mergeDependents(armDeps, armScopes, armDecls)
@@ -2665,9 +2726,15 @@ func (a *typedResourceAnalysis) match(expr *ast.MatchExpression) {
 	a.dependents, a.dependentScope, a.dependentDecl = mergedDeps, mergedScopes, mergedDecls
 	if len(branches) == 0 {
 		a.flow = incoming
+		a.diverged = outerDiverged
 		return
 	}
-	a.flow = resourceflow.Join(branches...)
+	a.flow = joinReachable(branches, divergences, incoming)
+	allDiverged := true
+	for _, d := range divergences {
+		allDiverged = allDiverged && d
+	}
+	a.diverged = outerDiverged || allDiverged
 }
 
 // bindPattern gives the names a pattern binds the provenance of the

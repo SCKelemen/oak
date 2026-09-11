@@ -280,7 +280,9 @@ Fixture and ergonomics friction:
 
 5. No bare block statement: scoping requires `flag ? { } | { }`, which
    matters more now that dependencies and suspension are lexical. A bare
-   `{ ... }` statement is the lightest fix and allocates nothing.
+   `{ ... }` statement is the lightest fix and allocates nothing. (`defer`
+   landed 2026-09-12, `10-syntax.md` §4b, so the most common reason to
+   want an inner scope — closing at a known point — no longer needs one.)
 6. Statement lines cannot start with `(`, `-`, or `!`.
 7. Closure literals cannot take typed parameters.
 8. One protocol per resource type; array elements never carry provenance,
