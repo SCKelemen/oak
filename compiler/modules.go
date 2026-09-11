@@ -804,6 +804,30 @@ func (l *moduleLoader) loadPackageInstance(dir, path, template string, arguments
 // package (docs/spec/83-modules.md section 9): its declarations are renamed
 // like any dependency, its own library imports resolve recursively, and the
 // core prelude is spliced into the program for the names it uses unqualified.
+// stdlibReplacement resolves a replace directive whose target names a
+// standard library package (`replace io => iosim`), from the compilation's
+// overlay first and the root manifest second.
+func (l *moduleLoader) stdlibReplacement(path string) (string, bool) {
+	target, found := l.comp.replaces[path]
+	if !found && l.root != nil {
+		target, found = l.root.Manifest.Replaces[path]
+	}
+	if !found {
+		return "", false
+	}
+	if _, isLibrary := stdlib.Packages[target]; !isLibrary {
+		return "", false
+	}
+	return target, true
+}
+
+// aliasStdlibSource rewrites a library file's package clause from its own
+// name to the path it is loaded under, so the clause check passes and the
+// importer's qualified names read as the port's.
+func aliasStdlibSource(text, from, to string) string {
+	return strings.Replace(text, "package "+from, "package "+to, 1)
+}
+
 func (l *moduleLoader) loadStdlibPackage(path, text string) *loadedPackage {
 	if existing, loaded := l.packages[path]; loaded {
 		return existing
@@ -874,6 +898,13 @@ func (l *moduleLoader) finishPackage(pkg *loadedPackage, arguments []ast.Express
 				continue
 			}
 			l.loadPackageInstance(depDir, binding.Path, binding.Template, binding.Arguments, binding, false)
+			continue
+		}
+		if target, aliased := l.stdlibReplacement(binding.Path); aliased {
+			// `replace io => iosim`: a standard library realization stands
+			// in for the port path (docs/spec/120-io.md section 1), loaded
+			// under the requested path so its names qualify as `io.`.
+			l.loadStdlibPackage(binding.Path, aliasStdlibSource(stdlib.Packages[target], target, binding.Path))
 			continue
 		}
 		if librarySource, isLibrary := stdlib.Packages[binding.Path]; isLibrary {
