@@ -22,6 +22,28 @@ inductive Result_u32_EncodingError where
   | Err (payload : EncodingError)
   deriving Repr, Inhabited, BEq, DecidableEq
 
+def HEX_LOWER_SYMBOLS : Array UInt8 := (#[(48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8), (56 : UInt8), (57 : UInt8), (97 : UInt8), (98 : UInt8), (99 : UInt8), (100 : UInt8), (101 : UInt8), (102 : UInt8)] : Array UInt8)
+
+def HEX_UPPER_SYMBOLS : Array UInt8 := (#[(48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8), (56 : UInt8), (57 : UInt8), (65 : UInt8), (66 : UInt8), (67 : UInt8), (68 : UInt8), (69 : UInt8), (70 : UInt8)] : Array UInt8)
+
+def HEX_VALUES : Array UInt8 := ((#[(16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (0 : UInt8), (1 : UInt8), (2 : UInt8), (3 : UInt8), (4 : UInt8), (5 : UInt8), (6 : UInt8), (7 : UInt8), (8 : UInt8), (9 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8)] ++ #[(16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8), (16 : UInt8)]) : Array UInt8)
+
+def BASE64_STD_SYMBOLS : Array UInt8 := (#[(65 : UInt8), (66 : UInt8), (67 : UInt8), (68 : UInt8), (69 : UInt8), (70 : UInt8), (71 : UInt8), (72 : UInt8), (73 : UInt8), (74 : UInt8), (75 : UInt8), (76 : UInt8), (77 : UInt8), (78 : UInt8), (79 : UInt8), (80 : UInt8), (81 : UInt8), (82 : UInt8), (83 : UInt8), (84 : UInt8), (85 : UInt8), (86 : UInt8), (87 : UInt8), (88 : UInt8), (89 : UInt8), (90 : UInt8), (97 : UInt8), (98 : UInt8), (99 : UInt8), (100 : UInt8), (101 : UInt8), (102 : UInt8), (103 : UInt8), (104 : UInt8), (105 : UInt8), (106 : UInt8), (107 : UInt8), (108 : UInt8), (109 : UInt8), (110 : UInt8), (111 : UInt8), (112 : UInt8), (113 : UInt8), (114 : UInt8), (115 : UInt8), (116 : UInt8), (117 : UInt8), (118 : UInt8), (119 : UInt8), (120 : UInt8), (121 : UInt8), (122 : UInt8), (48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8), (56 : UInt8), (57 : UInt8), (43 : UInt8), (47 : UInt8)] : Array UInt8)
+
+def BASE64_URL_SYMBOLS : Array UInt8 := (#[(65 : UInt8), (66 : UInt8), (67 : UInt8), (68 : UInt8), (69 : UInt8), (70 : UInt8), (71 : UInt8), (72 : UInt8), (73 : UInt8), (74 : UInt8), (75 : UInt8), (76 : UInt8), (77 : UInt8), (78 : UInt8), (79 : UInt8), (80 : UInt8), (81 : UInt8), (82 : UInt8), (83 : UInt8), (84 : UInt8), (85 : UInt8), (86 : UInt8), (87 : UInt8), (88 : UInt8), (89 : UInt8), (90 : UInt8), (97 : UInt8), (98 : UInt8), (99 : UInt8), (100 : UInt8), (101 : UInt8), (102 : UInt8), (103 : UInt8), (104 : UInt8), (105 : UInt8), (106 : UInt8), (107 : UInt8), (108 : UInt8), (109 : UInt8), (110 : UInt8), (111 : UInt8), (112 : UInt8), (113 : UInt8), (114 : UInt8), (115 : UInt8), (116 : UInt8), (117 : UInt8), (118 : UInt8), (119 : UInt8), (120 : UInt8), (121 : UInt8), (122 : UInt8), (48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8), (56 : UInt8), (57 : UInt8), (45 : UInt8), (95 : UInt8)] : Array UInt8)
+
+def BASE64_STD_VALUES : Array UInt8 := ((#[(64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (62 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (63 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8), (56 : UInt8), (57 : UInt8), (58 : UInt8), (59 : UInt8), (60 : UInt8), (61 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (0 : UInt8), (1 : UInt8), (2 : UInt8), (3 : UInt8), (4 : UInt8), (5 : UInt8), (6 : UInt8), (7 : UInt8), (8 : UInt8), (9 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (17 : UInt8), (18 : UInt8), (19 : UInt8), (20 : UInt8), (21 : UInt8), (22 : UInt8), (23 : UInt8), (24 : UInt8), (25 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (26 : UInt8), (27 : UInt8), (28 : UInt8), (29 : UInt8), (30 : UInt8), (31 : UInt8), (32 : UInt8), (33 : UInt8), (34 : UInt8), (35 : UInt8), (36 : UInt8), (37 : UInt8), (38 : UInt8), (39 : UInt8), (40 : UInt8), (41 : UInt8), (42 : UInt8), (43 : UInt8), (44 : UInt8), (45 : UInt8), (46 : UInt8), (47 : UInt8), (48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8)] ++ #[(64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8)]) : Array UInt8)
+
+def BASE64_URL_VALUES : Array UInt8 := ((#[(64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (62 : UInt8), (64 : UInt8), (64 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8), (56 : UInt8), (57 : UInt8), (58 : UInt8), (59 : UInt8), (60 : UInt8), (61 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (0 : UInt8), (1 : UInt8), (2 : UInt8), (3 : UInt8), (4 : UInt8), (5 : UInt8), (6 : UInt8), (7 : UInt8), (8 : UInt8), (9 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (17 : UInt8), (18 : UInt8), (19 : UInt8), (20 : UInt8), (21 : UInt8), (22 : UInt8), (23 : UInt8), (24 : UInt8), (25 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (63 : UInt8), (64 : UInt8), (26 : UInt8), (27 : UInt8), (28 : UInt8), (29 : UInt8), (30 : UInt8), (31 : UInt8), (32 : UInt8), (33 : UInt8), (34 : UInt8), (35 : UInt8), (36 : UInt8), (37 : UInt8), (38 : UInt8), (39 : UInt8), (40 : UInt8), (41 : UInt8), (42 : UInt8), (43 : UInt8), (44 : UInt8), (45 : UInt8), (46 : UInt8), (47 : UInt8), (48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8)] ++ #[(64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8), (64 : UInt8)]) : Array UInt8)
+
+def BASE32_STD_SYMBOLS : Array UInt8 := (#[(65 : UInt8), (66 : UInt8), (67 : UInt8), (68 : UInt8), (69 : UInt8), (70 : UInt8), (71 : UInt8), (72 : UInt8), (73 : UInt8), (74 : UInt8), (75 : UInt8), (76 : UInt8), (77 : UInt8), (78 : UInt8), (79 : UInt8), (80 : UInt8), (81 : UInt8), (82 : UInt8), (83 : UInt8), (84 : UInt8), (85 : UInt8), (86 : UInt8), (87 : UInt8), (88 : UInt8), (89 : UInt8), (90 : UInt8), (50 : UInt8), (51 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8)] : Array UInt8)
+
+def BASE32_HEX_SYMBOLS : Array UInt8 := (#[(48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8), (52 : UInt8), (53 : UInt8), (54 : UInt8), (55 : UInt8), (56 : UInt8), (57 : UInt8), (65 : UInt8), (66 : UInt8), (67 : UInt8), (68 : UInt8), (69 : UInt8), (70 : UInt8), (71 : UInt8), (72 : UInt8), (73 : UInt8), (74 : UInt8), (75 : UInt8), (76 : UInt8), (77 : UInt8), (78 : UInt8), (79 : UInt8), (80 : UInt8), (81 : UInt8), (82 : UInt8), (83 : UInt8), (84 : UInt8), (85 : UInt8), (86 : UInt8)] : Array UInt8)
+
+def BASE32_STD_VALUES : Array UInt8 := ((#[(32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (26 : UInt8), (27 : UInt8), (28 : UInt8), (29 : UInt8), (30 : UInt8), (31 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (0 : UInt8), (1 : UInt8), (2 : UInt8), (3 : UInt8), (4 : UInt8), (5 : UInt8), (6 : UInt8), (7 : UInt8), (8 : UInt8), (9 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (17 : UInt8), (18 : UInt8), (19 : UInt8), (20 : UInt8), (21 : UInt8), (22 : UInt8), (23 : UInt8), (24 : UInt8), (25 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (0 : UInt8), (1 : UInt8), (2 : UInt8), (3 : UInt8), (4 : UInt8), (5 : UInt8), (6 : UInt8), (7 : UInt8), (8 : UInt8), (9 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (17 : UInt8), (18 : UInt8), (19 : UInt8), (20 : UInt8), (21 : UInt8), (22 : UInt8), (23 : UInt8), (24 : UInt8), (25 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8)] ++ #[(32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8)]) : Array UInt8)
+
+def BASE32_HEX_VALUES : Array UInt8 := ((#[(32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (0 : UInt8), (1 : UInt8), (2 : UInt8), (3 : UInt8), (4 : UInt8), (5 : UInt8), (6 : UInt8), (7 : UInt8), (8 : UInt8), (9 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (17 : UInt8), (18 : UInt8), (19 : UInt8), (20 : UInt8), (21 : UInt8), (22 : UInt8), (23 : UInt8), (24 : UInt8), (25 : UInt8), (26 : UInt8), (27 : UInt8), (28 : UInt8), (29 : UInt8), (30 : UInt8), (31 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (10 : UInt8), (11 : UInt8), (12 : UInt8), (13 : UInt8), (14 : UInt8), (15 : UInt8), (16 : UInt8), (17 : UInt8), (18 : UInt8), (19 : UInt8), (20 : UInt8), (21 : UInt8), (22 : UInt8), (23 : UInt8), (24 : UInt8), (25 : UInt8), (26 : UInt8), (27 : UInt8), (28 : UInt8), (29 : UInt8), (30 : UInt8), (31 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8)] ++ #[(32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8), (32 : UInt8)]) : Array UInt8)
+
 def encoding_error_code (reason : EncodingError) (fuel : Nat) : Option (UInt32) := do
   pure (match reason with | .InvalidCharacter => (1 : UInt32) | .InvalidLength => (2 : UInt32) | .InvalidPadding => (3 : UInt32) | .NonCanonical => (4 : UInt32) | .DestinationTooSmall => (5 : UInt32) | .SizeOverflow => (6 : UInt32))
 
@@ -41,25 +63,25 @@ def encoding_failure (result : Result_u32_EncodingError) (fuel : Nat) : Option (
   pure r1
 
 def hex_digit (value : UInt8) (upper : Bool) (fuel : Nat) : Option (UInt8) := do
-  pure (if (decide (value < (10 : UInt8))) then (value + (48 : UInt8)) else (if upper then ((value - (10 : UInt8)) + (65 : UInt8)) else ((value - (10 : UInt8)) + (97 : UInt8))))
+  pure (if upper then (HEX_UPPER_SYMBOLS.getD ((value &&& (15 : UInt8)).toUInt32).toNat (0 : UInt8)) else (HEX_LOWER_SYMBOLS.getD ((value &&& (15 : UInt8)).toUInt32).toNat (0 : UInt8)))
 
 def hex_value (unit : UInt8) (fuel : Nat) : Option (UInt32) := do
-  pure (if ((decide (unit >= (48 : UInt8))) && (decide (unit <= (57 : UInt8)))) then ((unit - (48 : UInt8)).toUInt32) else (if ((decide (unit >= (65 : UInt8))) && (decide (unit <= (70 : UInt8)))) then (((unit - (65 : UInt8)).toUInt32) + (10 : UInt32)) else (if ((decide (unit >= (97 : UInt8))) && (decide (unit <= (102 : UInt8)))) then (((unit - (97 : UInt8)).toUInt32) + (10 : UInt32)) else (16 : UInt32))))
+  pure ((HEX_VALUES.getD (unit.toUInt32).toNat (0 : UInt8)).toUInt32)
 
 def hex_encoded_size (length : UInt32) (fuel : Nat) : Option (Result_u32_EncodingError) := do
   pure (if (decide (length > (2147483647 : UInt32))) then (Result_u32_EncodingError.Err EncodingError.SizeOverflow) else (Result_u32_EncodingError.Ok (length * (2 : UInt32))))
 
-def hex_encode.loop1 (dst : Array UInt8) (src : Array UInt8) (upper : Bool) (i : UInt32) : Nat → Option (Array UInt8 × UInt32)
+def hex_encode.loop1 (dst : Array UInt8) (src : Array UInt8) (symbols : Array UInt8) (i : UInt32) (out : UInt32) : Nat → Option (Array UInt8 × UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < (src.size.toUInt32))) then do
-      let r4 ← hex_digit ((src.getD i.toNat (0 : UInt8)) >>> (4 : UInt8)) upper fuel
-      let dst := dst.setIfInBounds (i * (2 : UInt32)).toNat r4
-      let r5 ← hex_digit ((src.getD i.toNat (0 : UInt8)) &&& (15 : UInt8)) upper fuel
-      let dst := dst.setIfInBounds ((i * (2 : UInt32)) + (1 : UInt32)).toNat r5
+      let unit : UInt8 := (src.getD i.toNat (0 : UInt8))
+      let dst := dst.setIfInBounds out.toNat (symbols.getD ((unit >>> (4 : UInt8)).toUInt32).toNat (0 : UInt8))
+      let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat (symbols.getD ((unit &&& (15 : UInt8)).toUInt32).toNat (0 : UInt8))
       let i := (i + (1 : UInt32))
-      hex_encode.loop1 dst src upper i fuel
-    else pure (dst, i)
+      let out := (out + (2 : UInt32))
+      hex_encode.loop1 dst src symbols i out fuel
+    else pure (dst, i, out)
 
 def hex_encode (dst : Array UInt8) (src : Array UInt8) (upper : Bool) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
   let r1 ← hex_encoded_size (src.size.toUInt32) fuel
@@ -72,43 +94,58 @@ def hex_encode (dst : Array UInt8) (src : Array UInt8) (upper : Bool) (fuel : Na
         if (decide (needed > (dst.size.toUInt32))) then (do
           pure ((Result_u32_EncodingError.Err EncodingError.DestinationTooSmall), dst))
         else (do
+          let symbols : Array UInt8 := (if upper then HEX_UPPER_SYMBOLS else HEX_LOWER_SYMBOLS)
           let i : UInt32 := (0 : UInt32)
-          let (dst, i) ← hex_encode.loop1 dst src upper i fuel
+          let out : UInt32 := (0 : UInt32)
+          let (dst, i, out) ← hex_encode.loop1 dst src symbols i out fuel
           pure ((Result_u32_EncodingError.Ok needed), dst)))
       pure (r3, dst)))
   pure (r2, dst)
 
-def hex_decoded_size.loop1 (src : Array UInt8) (valid : Bool) (i : UInt32) : Nat → Option (Bool × UInt32)
+def hex_scan.loop1 (src : Array UInt8) (values : Array UInt8) (acc : UInt32) (i : UInt32) : Nat → Option (UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
-    if ((decide (i < (src.size.toUInt32))) && valid) then do
-      let r2 ← hex_value (src.getD i.toNat (0 : UInt8)) fuel
-      let valid := (decide (r2 < (16 : UInt32)))
+    if (decide ((i + (4 : UInt32)) <= (src.size.toUInt32))) then do
+      let acc := ((((acc ||| ((values.getD ((src.getD i.toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32)) ||| ((values.getD ((src.getD (i + (1 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32)) ||| ((values.getD ((src.getD (i + (2 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32)) ||| ((values.getD ((src.getD (i + (3 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32))
+      let i := (i + (4 : UInt32))
+      hex_scan.loop1 src values acc i fuel
+    else pure (acc, i)
+
+def hex_scan.loop2 (src : Array UInt8) (values : Array UInt8) (acc : UInt32) (i : UInt32) : Nat → Option (UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (i < (src.size.toUInt32))) then do
+      let acc := (acc ||| ((values.getD ((src.getD i.toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32))
       let i := (i + (1 : UInt32))
-      hex_decoded_size.loop1 src valid i fuel
-    else pure (valid, i)
+      hex_scan.loop2 src values acc i fuel
+    else pure (acc, i)
+
+def hex_scan (src : Array UInt8) (fuel : Nat) : Option (UInt32) := do
+  let values : Array UInt8 := HEX_VALUES
+  let acc : UInt32 := (0 : UInt32)
+  let i : UInt32 := (0 : UInt32)
+  let (acc, i) ← hex_scan.loop1 src values acc i fuel
+  let (acc, i) ← hex_scan.loop2 src values acc i fuel
+  pure acc
 
 def hex_decoded_size (src : Array UInt8) (fuel : Nat) : Option (Result_u32_EncodingError) := do
   let r1 ← (
     if (((src.size.toUInt32) % (2 : UInt32)) != (0 : UInt32)) then (do
       pure (Result_u32_EncodingError.Err EncodingError.InvalidLength))
     else (do
-      let valid : Bool := true
-      let i : UInt32 := (0 : UInt32)
-      let (valid, i) ← hex_decoded_size.loop1 src valid i fuel
-      pure (if valid then (Result_u32_EncodingError.Ok ((src.size.toUInt32) / (2 : UInt32))) else (Result_u32_EncodingError.Err EncodingError.InvalidCharacter))))
+      let r2 ← hex_scan src fuel
+      pure (if (decide (r2 < (16 : UInt32))) then (Result_u32_EncodingError.Ok ((src.size.toUInt32) / (2 : UInt32))) else (Result_u32_EncodingError.Err EncodingError.InvalidCharacter))))
   pure r1
 
-def hex_decode.loop1 (dst : Array UInt8) (src : Array UInt8) (needed : UInt32) (i : UInt32) : Nat → Option (Array UInt8 × UInt32)
+def hex_decode.loop1 (dst : Array UInt8) (src : Array UInt8) (needed : UInt32) (values : Array UInt8) (i : UInt32) (at_ : UInt32) : Nat → Option (Array UInt8 × UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < needed)) then do
-      let r4 ← hex_value (src.getD (i * (2 : UInt32)).toNat (0 : UInt8)) fuel
-      let r5 ← hex_value (src.getD ((i * (2 : UInt32)) + (1 : UInt32)).toNat (0 : UInt8)) fuel
-      let dst := dst.setIfInBounds i.toNat (((r4 <<< (4 : UInt32)) ||| r5).toUInt8)
+      let dst := dst.setIfInBounds i.toNat (((values.getD ((src.getD at_.toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)) <<< (4 : UInt8)) ||| (values.getD ((src.getD (at_ + (1 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)))
       let i := (i + (1 : UInt32))
-      hex_decode.loop1 dst src needed i fuel
-    else pure (dst, i)
+      let at_ := (at_ + (2 : UInt32))
+      hex_decode.loop1 dst src needed values i at_ fuel
+    else pure (dst, i, at_)
 
 def hex_decode (dst : Array UInt8) (src : Array UInt8) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
   let r1 ← hex_decoded_size src fuel
@@ -121,17 +158,19 @@ def hex_decode (dst : Array UInt8) (src : Array UInt8) (fuel : Nat) : Option (Re
         if (decide (needed > (dst.size.toUInt32))) then (do
           pure ((Result_u32_EncodingError.Err EncodingError.DestinationTooSmall), dst))
         else (do
+          let values : Array UInt8 := HEX_VALUES
           let i : UInt32 := (0 : UInt32)
-          let (dst, i) ← hex_decode.loop1 dst src needed i fuel
+          let at_ : UInt32 := (0 : UInt32)
+          let (dst, i, at_) ← hex_decode.loop1 dst src needed values i at_ fuel
           pure ((Result_u32_EncodingError.Ok needed), dst)))
       pure (r3, dst)))
   pure (r2, dst)
 
 def base64_symbol (value : UInt32) (url : Bool) (fuel : Nat) : Option (UInt8) := do
-  pure (if (decide (value < (26 : UInt32))) then ((65 : UInt8) + (value.toUInt8)) else (if (decide (value < (52 : UInt32))) then ((97 : UInt8) + ((value - (26 : UInt32)).toUInt8)) else (if (decide (value < (62 : UInt32))) then ((48 : UInt8) + ((value - (52 : UInt32)).toUInt8)) else (if (value == (62 : UInt32)) then (if url then (45 : UInt8) else (43 : UInt8)) else (if url then (95 : UInt8) else (47 : UInt8))))))
+  pure (if url then (BASE64_URL_SYMBOLS.getD (value &&& (63 : UInt32)).toNat (0 : UInt8)) else (BASE64_STD_SYMBOLS.getD (value &&& (63 : UInt32)).toNat (0 : UInt8)))
 
 def base64_value (unit : UInt8) (url : Bool) (fuel : Nat) : Option (UInt32) := do
-  pure (if ((decide (unit >= (65 : UInt8))) && (decide (unit <= (90 : UInt8)))) then ((unit - (65 : UInt8)).toUInt32) else (if ((decide (unit >= (97 : UInt8))) && (decide (unit <= (122 : UInt8)))) then (((unit - (97 : UInt8)).toUInt32) + (26 : UInt32)) else (if ((decide (unit >= (48 : UInt8))) && (decide (unit <= (57 : UInt8)))) then (((unit - (48 : UInt8)).toUInt32) + (52 : UInt32)) else (if (unit == (if url then (45 : UInt8) else (43 : UInt8))) then (62 : UInt32) else (if (unit == (if url then (95 : UInt8) else (47 : UInt8))) then (63 : UInt32) else (64 : UInt32))))))
+  pure (if url then ((BASE64_URL_VALUES.getD (unit.toUInt32).toNat (0 : UInt8)).toUInt32) else ((BASE64_STD_VALUES.getD (unit.toUInt32).toNat (0 : UInt8)).toUInt32))
 
 def base64_encoded_size (length : UInt32) (pad : Bool) (fuel : Nat) : Option (Result_u32_EncodingError) := do
   let r1 ← (
@@ -144,22 +183,18 @@ def base64_encoded_size (length : UInt32) (pad : Bool) (fuel : Nat) : Option (Re
       pure (Result_u32_EncodingError.Ok ((groups * (4 : UInt32)) + tail))))
   pure r1
 
-def base64_encode.loop1 (dst : Array UInt8) (src : Array UInt8) (url : Bool) (i : UInt32) (out : UInt32) : Nat → Option (Array UInt8 × UInt32 × UInt32)
+def base64_encode.loop1 (dst : Array UInt8) (src : Array UInt8) (symbols : Array UInt8) (i : UInt32) (out : UInt32) : Nat → Option (Array UInt8 × UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide ((i + (3 : UInt32)) <= (src.size.toUInt32))) then do
       let word : UInt32 := (((((src.getD i.toNat (0 : UInt8)).toUInt32) <<< (16 : UInt32)) ||| (((src.getD (i + (1 : UInt32)).toNat (0 : UInt8)).toUInt32) <<< (8 : UInt32))) ||| ((src.getD (i + (2 : UInt32)).toNat (0 : UInt8)).toUInt32))
-      let r4 ← base64_symbol (word >>> (18 : UInt32)) url fuel
-      let dst := dst.setIfInBounds out.toNat r4
-      let r5 ← base64_symbol ((word >>> (12 : UInt32)) &&& (63 : UInt32)) url fuel
-      let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat r5
-      let r6 ← base64_symbol ((word >>> (6 : UInt32)) &&& (63 : UInt32)) url fuel
-      let dst := dst.setIfInBounds (out + (2 : UInt32)).toNat r6
-      let r7 ← base64_symbol (word &&& (63 : UInt32)) url fuel
-      let dst := dst.setIfInBounds (out + (3 : UInt32)).toNat r7
+      let dst := dst.setIfInBounds out.toNat (symbols.getD (word >>> (18 : UInt32)).toNat (0 : UInt8))
+      let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat (symbols.getD ((word >>> (12 : UInt32)) &&& (63 : UInt32)).toNat (0 : UInt8))
+      let dst := dst.setIfInBounds (out + (2 : UInt32)).toNat (symbols.getD ((word >>> (6 : UInt32)) &&& (63 : UInt32)).toNat (0 : UInt8))
+      let dst := dst.setIfInBounds (out + (3 : UInt32)).toNat (symbols.getD (word &&& (63 : UInt32)).toNat (0 : UInt8))
       let i := (i + (3 : UInt32))
       let out := (out + (4 : UInt32))
-      base64_encode.loop1 dst src url i out fuel
+      base64_encode.loop1 dst src symbols i out fuel
     else pure (dst, i, out)
 
 def base64_encode (dst : Array UInt8) (src : Array UInt8) (url : Bool) (pad : Bool) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
@@ -173,16 +208,15 @@ def base64_encode (dst : Array UInt8) (src : Array UInt8) (url : Bool) (pad : Bo
         if (decide (needed > (dst.size.toUInt32))) then (do
           pure ((Result_u32_EncodingError.Err EncodingError.DestinationTooSmall), dst))
         else (do
+          let symbols : Array UInt8 := (if url then BASE64_URL_SYMBOLS else BASE64_STD_SYMBOLS)
           let i : UInt32 := (0 : UInt32)
           let out : UInt32 := (0 : UInt32)
-          let (dst, i, out) ← base64_encode.loop1 dst src url i out fuel
+          let (dst, i, out) ← base64_encode.loop1 dst src symbols i out fuel
           let rest : UInt32 := ((src.size.toUInt32) - i)
           let dst ← (if (rest == (1 : UInt32)) then (do
               let word1 : UInt32 := (((src.getD i.toNat (0 : UInt8)).toUInt32) <<< (16 : UInt32))
-              let r8 ← base64_symbol (word1 >>> (18 : UInt32)) url fuel
-              let dst := dst.setIfInBounds out.toNat r8
-              let r9 ← base64_symbol ((word1 >>> (12 : UInt32)) &&& (63 : UInt32)) url fuel
-              let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat r9
+              let dst := dst.setIfInBounds out.toNat (symbols.getD (word1 >>> (18 : UInt32)).toNat (0 : UInt8))
+              let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat (symbols.getD ((word1 >>> (12 : UInt32)) &&& (63 : UInt32)).toNat (0 : UInt8))
               let dst ← (if pad then (do
                   let dst := dst.setIfInBounds (out + (2 : UInt32)).toNat (61 : UInt8)
                   let dst := dst.setIfInBounds (out + (3 : UInt32)).toNat (61 : UInt8)
@@ -194,12 +228,9 @@ def base64_encode (dst : Array UInt8) (src : Array UInt8) (url : Bool) (pad : Bo
               pure dst))
           let dst ← (if (rest == (2 : UInt32)) then (do
               let word2 : UInt32 := ((((src.getD i.toNat (0 : UInt8)).toUInt32) <<< (16 : UInt32)) ||| (((src.getD (i + (1 : UInt32)).toNat (0 : UInt8)).toUInt32) <<< (8 : UInt32)))
-              let r10 ← base64_symbol (word2 >>> (18 : UInt32)) url fuel
-              let dst := dst.setIfInBounds out.toNat r10
-              let r11 ← base64_symbol ((word2 >>> (12 : UInt32)) &&& (63 : UInt32)) url fuel
-              let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat r11
-              let r12 ← base64_symbol ((word2 >>> (6 : UInt32)) &&& (63 : UInt32)) url fuel
-              let dst := dst.setIfInBounds (out + (2 : UInt32)).toNat r12
+              let dst := dst.setIfInBounds out.toNat (symbols.getD (word2 >>> (18 : UInt32)).toNat (0 : UInt8))
+              let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat (symbols.getD ((word2 >>> (12 : UInt32)) &&& (63 : UInt32)).toNat (0 : UInt8))
+              let dst := dst.setIfInBounds (out + (2 : UInt32)).toNat (symbols.getD ((word2 >>> (6 : UInt32)) &&& (63 : UInt32)).toNat (0 : UInt8))
               let dst ← (if pad then (do
                   let dst := dst.setIfInBounds (out + (3 : UInt32)).toNat (61 : UInt8)
                   pure dst)
@@ -220,35 +251,54 @@ def base64_unpadded_length.loop1 (src : Array UInt8) (pads : UInt32) : Nat → O
       base64_unpadded_length.loop1 src pads fuel
     else pure pads
 
-def base64_unpadded_length.loop2 (src : Array UInt8) (body : UInt32) (misplaced : Bool) (i : UInt32) : Nat → Option (Bool × UInt32)
+def base64_unpadded_length (src : Array UInt8) (fuel : Nat) : Option (Result_u32_EncodingError) := do
+  let pads : UInt32 := (0 : UInt32)
+  let pads ← base64_unpadded_length.loop1 src pads fuel
+  let body : UInt32 := ((src.size.toUInt32) - pads)
+  let rest : UInt32 := (body % (4 : UInt32))
+  let bad_pads : Bool := ((decide (pads > (0 : UInt32))) && (((((src.size.toUInt32) % (4 : UInt32)) != (0 : UInt32)) || (rest == (0 : UInt32))) || (rest == (1 : UInt32))))
+  pure (if bad_pads then (Result_u32_EncodingError.Err EncodingError.InvalidPadding) else (Result_u32_EncodingError.Ok body))
+
+def base64_scan.loop1 (src : Array UInt8) (body : UInt32) (values : Array UInt8) (acc : UInt32) (i : UInt32) : Nat → Option (UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide ((i + (4 : UInt32)) <= body)) then do
+      let acc := ((((acc ||| ((values.getD ((src.getD i.toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32)) ||| ((values.getD ((src.getD (i + (1 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32)) ||| ((values.getD ((src.getD (i + (2 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32)) ||| ((values.getD ((src.getD (i + (3 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32))
+      let i := (i + (4 : UInt32))
+      base64_scan.loop1 src body values acc i fuel
+    else pure (acc, i)
+
+def base64_scan.loop2 (src : Array UInt8) (body : UInt32) (values : Array UInt8) (acc : UInt32) (i : UInt32) : Nat → Option (UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (i < body)) then do
+      let acc := (acc ||| ((values.getD ((src.getD i.toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32))
+      let i := (i + (1 : UInt32))
+      base64_scan.loop2 src body values acc i fuel
+    else pure (acc, i)
+
+def base64_scan (src : Array UInt8) (body : UInt32) (url : Bool) (fuel : Nat) : Option (UInt32) := do
+  let values : Array UInt8 := (if url then BASE64_URL_VALUES else BASE64_STD_VALUES)
+  let acc : UInt32 := (0 : UInt32)
+  let i : UInt32 := (0 : UInt32)
+  let (acc, i) ← base64_scan.loop1 src body values acc i fuel
+  let (acc, i) ← base64_scan.loop2 src body values acc i fuel
+  pure acc
+
+def base64_classify.loop1 (src : Array UInt8) (body : UInt32) (misplaced : Bool) (i : UInt32) : Nat → Option (Bool × UInt32)
   | 0 => none
   | fuel + 1 => do
     if ((decide (i < body)) && (!misplaced)) then do
       let misplaced := ((src.getD i.toNat (0 : UInt8)) == (61 : UInt8))
       let i := (i + (1 : UInt32))
-      base64_unpadded_length.loop2 src body misplaced i fuel
+      base64_classify.loop1 src body misplaced i fuel
     else pure (misplaced, i)
 
-def base64_unpadded_length (src : Array UInt8) (fuel : Nat) : Option (Result_u32_EncodingError) := do
-  let pads : UInt32 := (0 : UInt32)
-  let pads ← base64_unpadded_length.loop1 src pads fuel
-  let body : UInt32 := ((src.size.toUInt32) - pads)
+def base64_classify (src : Array UInt8) (body : UInt32) (fuel : Nat) : Option (EncodingError) := do
   let misplaced : Bool := false
   let i : UInt32 := (0 : UInt32)
-  let (misplaced, i) ← base64_unpadded_length.loop2 src body misplaced i fuel
-  let rest : UInt32 := (body % (4 : UInt32))
-  let bad_pads : Bool := ((decide (pads > (0 : UInt32))) && (((((src.size.toUInt32) % (4 : UInt32)) != (0 : UInt32)) || (rest == (0 : UInt32))) || (rest == (1 : UInt32))))
-  pure (if (misplaced || bad_pads) then (Result_u32_EncodingError.Err EncodingError.InvalidPadding) else (Result_u32_EncodingError.Ok body))
-
-def base64_decoded_size.loop1 (src : Array UInt8) (url : Bool) (body : UInt32) (valid : Bool) (i : UInt32) : Nat → Option (Bool × UInt32)
-  | 0 => none
-  | fuel + 1 => do
-    if ((decide (i < body)) && valid) then do
-      let r4 ← base64_value (src.getD i.toNat (0 : UInt8)) url fuel
-      let valid := (decide (r4 < (64 : UInt32)))
-      let i := (i + (1 : UInt32))
-      base64_decoded_size.loop1 src url body valid i fuel
-    else pure (valid, i)
+  let (misplaced, i) ← base64_classify.loop1 src body misplaced i fuel
+  pure (if misplaced then EncodingError.InvalidPadding else (if ((body % (4 : UInt32)) == (1 : UInt32)) then EncodingError.InvalidLength else EncodingError.InvalidCharacter))
 
 def base64_decoded_size (src : Array UInt8) (url : Bool) (fuel : Nat) : Option (Result_u32_EncodingError) := do
   let r1 ← base64_unpadded_length src fuel
@@ -257,41 +307,41 @@ def base64_decoded_size (src : Array UInt8) (url : Bool) (fuel : Nat) : Option (
     | (.Err reason) => (do
       pure (Result_u32_EncodingError.Err reason))
     | (.Ok body) => (do
-      let r3 ← (
-        if ((body % (4 : UInt32)) == (1 : UInt32)) then (do
-          pure (Result_u32_EncodingError.Err EncodingError.InvalidLength))
+      let r3 ← base64_scan src body url fuel
+      let r4 ← (
+        if (decide (r3 >= (64 : UInt32))) then (do
+          let r5 ← base64_classify src body fuel
+          pure (Result_u32_EncodingError.Err r5))
         else (do
-          let valid : Bool := true
-          let i : UInt32 := (0 : UInt32)
-          let (valid, i) ← base64_decoded_size.loop1 src url body valid i fuel
           let rest : UInt32 := (body % (4 : UInt32))
-          let r5 ← (
-            if (body == (0 : UInt32)) then (do
-              pure (0 : UInt32))
+          let r6 ← (
+            if (rest == (1 : UInt32)) then (do
+              pure (Result_u32_EncodingError.Err EncodingError.InvalidLength))
             else (do
-              let r6 ← base64_value (src.getD (body - (1 : UInt32)).toNat (0 : UInt8)) url fuel
-              pure r6))
-          let last : UInt32 := r5
-          let canonical : Bool := (((rest == (0 : UInt32)) || ((rest == (2 : UInt32)) && ((last &&& (15 : UInt32)) == (0 : UInt32)))) || ((rest == (3 : UInt32)) && ((last &&& (3 : UInt32)) == (0 : UInt32))))
-          pure (if (!valid) then (Result_u32_EncodingError.Err EncodingError.InvalidCharacter) else (if (!canonical) then (Result_u32_EncodingError.Err EncodingError.NonCanonical) else (Result_u32_EncodingError.Ok (((body / (4 : UInt32)) * (3 : UInt32)) + (if (rest == (0 : UInt32)) then (0 : UInt32) else (rest - (1 : UInt32)))))))))
-      pure r3))
+              let r7 ← (
+                if (body == (0 : UInt32)) then (do
+                  pure (0 : UInt32))
+                else (do
+                  let r8 ← base64_value (src.getD (body - (1 : UInt32)).toNat (0 : UInt8)) url fuel
+                  pure r8))
+              let last : UInt32 := r7
+              let canonical : Bool := (((rest == (0 : UInt32)) || ((rest == (2 : UInt32)) && ((last &&& (15 : UInt32)) == (0 : UInt32)))) || ((rest == (3 : UInt32)) && ((last &&& (3 : UInt32)) == (0 : UInt32))))
+              pure (if canonical then (Result_u32_EncodingError.Ok (((body / (4 : UInt32)) * (3 : UInt32)) + (if (rest == (0 : UInt32)) then (0 : UInt32) else (rest - (1 : UInt32))))) else (Result_u32_EncodingError.Err EncodingError.NonCanonical))))
+          pure r6))
+      pure r4))
   pure r2
 
-def base64_decode.loop1 (dst : Array UInt8) (src : Array UInt8) (url : Bool) (body : UInt32) (i : UInt32) (out : UInt32) : Nat → Option (Array UInt8 × UInt32 × UInt32)
+def base64_decode.loop1 (dst : Array UInt8) (src : Array UInt8) (values : Array UInt8) (body : UInt32) (i : UInt32) (out : UInt32) : Nat → Option (Array UInt8 × UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide ((i + (4 : UInt32)) <= body)) then do
-      let r4 ← base64_value (src.getD i.toNat (0 : UInt8)) url fuel
-      let r5 ← base64_value (src.getD (i + (1 : UInt32)).toNat (0 : UInt8)) url fuel
-      let r6 ← base64_value (src.getD (i + (2 : UInt32)).toNat (0 : UInt8)) url fuel
-      let r7 ← base64_value (src.getD (i + (3 : UInt32)).toNat (0 : UInt8)) url fuel
-      let word : UInt32 := ((((r4 <<< (18 : UInt32)) ||| (r5 <<< (12 : UInt32))) ||| (r6 <<< (6 : UInt32))) ||| r7)
+      let word : UInt32 := ((((((values.getD ((src.getD i.toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32) <<< (18 : UInt32)) ||| (((values.getD ((src.getD (i + (1 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32) <<< (12 : UInt32))) ||| (((values.getD ((src.getD (i + (2 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32) <<< (6 : UInt32))) ||| ((values.getD ((src.getD (i + (3 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32))
       let dst := dst.setIfInBounds out.toNat ((word >>> (16 : UInt32)).toUInt8)
-      let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat (((word >>> (8 : UInt32)) &&& (255 : UInt32)).toUInt8)
-      let dst := dst.setIfInBounds (out + (2 : UInt32)).toNat ((word &&& (255 : UInt32)).toUInt8)
+      let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat ((word >>> (8 : UInt32)).toUInt8)
+      let dst := dst.setIfInBounds (out + (2 : UInt32)).toNat (word.toUInt8)
       let i := (i + (4 : UInt32))
       let out := (out + (3 : UInt32))
-      base64_decode.loop1 dst src url body i out fuel
+      base64_decode.loop1 dst src values body i out fuel
     else pure (dst, i, out)
 
 def base64_decode (dst : Array UInt8) (src : Array UInt8) (url : Bool) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
@@ -305,26 +355,22 @@ def base64_decode (dst : Array UInt8) (src : Array UInt8) (url : Bool) (fuel : N
         if (decide (needed > (dst.size.toUInt32))) then (do
           pure ((Result_u32_EncodingError.Err EncodingError.DestinationTooSmall), dst))
         else (do
+          let values : Array UInt8 := (if url then BASE64_URL_VALUES else BASE64_STD_VALUES)
           let body : UInt32 := (((needed / (3 : UInt32)) * (4 : UInt32)) + (if ((needed % (3 : UInt32)) == (0 : UInt32)) then (0 : UInt32) else ((needed % (3 : UInt32)) + (1 : UInt32))))
           let i : UInt32 := (0 : UInt32)
           let out : UInt32 := (0 : UInt32)
-          let (dst, i, out) ← base64_decode.loop1 dst src url body i out fuel
+          let (dst, i, out) ← base64_decode.loop1 dst src values body i out fuel
           let rest : UInt32 := (body - i)
           let dst ← (if (rest == (2 : UInt32)) then (do
-              let r8 ← base64_value (src.getD i.toNat (0 : UInt8)) url fuel
-              let r9 ← base64_value (src.getD (i + (1 : UInt32)).toNat (0 : UInt8)) url fuel
-              let word2 : UInt32 := ((r8 <<< (18 : UInt32)) ||| (r9 <<< (12 : UInt32)))
+              let word2 : UInt32 := ((((values.getD ((src.getD i.toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32) <<< (18 : UInt32)) ||| (((values.getD ((src.getD (i + (1 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32) <<< (12 : UInt32)))
               let dst := dst.setIfInBounds out.toNat ((word2 >>> (16 : UInt32)).toUInt8)
               pure dst)
             else (do
               pure dst))
           let dst ← (if (rest == (3 : UInt32)) then (do
-              let r10 ← base64_value (src.getD i.toNat (0 : UInt8)) url fuel
-              let r11 ← base64_value (src.getD (i + (1 : UInt32)).toNat (0 : UInt8)) url fuel
-              let r12 ← base64_value (src.getD (i + (2 : UInt32)).toNat (0 : UInt8)) url fuel
-              let word3 : UInt32 := (((r10 <<< (18 : UInt32)) ||| (r11 <<< (12 : UInt32))) ||| (r12 <<< (6 : UInt32)))
+              let word3 : UInt32 := (((((values.getD ((src.getD i.toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32) <<< (18 : UInt32)) ||| (((values.getD ((src.getD (i + (1 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32) <<< (12 : UInt32))) ||| (((values.getD ((src.getD (i + (2 : UInt32)).toNat (0 : UInt8)).toUInt32).toNat (0 : UInt8)).toUInt32) <<< (6 : UInt32)))
               let dst := dst.setIfInBounds out.toNat ((word3 >>> (16 : UInt32)).toUInt8)
-              let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat (((word3 >>> (8 : UInt32)) &&& (255 : UInt32)).toUInt8)
+              let dst := dst.setIfInBounds (out + (1 : UInt32)).toNat ((word3 >>> (8 : UInt32)).toUInt8)
               pure dst)
             else (do
               pure dst))
@@ -333,11 +379,10 @@ def base64_decode (dst : Array UInt8) (src : Array UInt8) (url : Bool) (fuel : N
   pure (r2, dst)
 
 def base32_symbol (value : UInt32) (hex : Bool) (fuel : Nat) : Option (UInt8) := do
-  pure (if hex then (if (decide (value < (10 : UInt32))) then ((48 : UInt8) + (value.toUInt8)) else ((65 : UInt8) + ((value - (10 : UInt32)).toUInt8))) else (if (decide (value < (26 : UInt32))) then ((65 : UInt8) + (value.toUInt8)) else ((50 : UInt8) + ((value - (26 : UInt32)).toUInt8))))
+  pure (if hex then (BASE32_HEX_SYMBOLS.getD (value &&& (31 : UInt32)).toNat (0 : UInt8)) else (BASE32_STD_SYMBOLS.getD (value &&& (31 : UInt32)).toNat (0 : UInt8)))
 
 def base32_value (unit : UInt8) (hex : Bool) (fuel : Nat) : Option (UInt32) := do
-  let upper : UInt8 := (if ((decide (unit >= (97 : UInt8))) && (decide (unit <= (122 : UInt8)))) then (unit - (32 : UInt8)) else unit)
-  pure (if hex then (if ((decide (upper >= (48 : UInt8))) && (decide (upper <= (57 : UInt8)))) then ((upper - (48 : UInt8)).toUInt32) else (if ((decide (upper >= (65 : UInt8))) && (decide (upper <= (86 : UInt8)))) then (((upper - (65 : UInt8)).toUInt32) + (10 : UInt32)) else (32 : UInt32))) else (if ((decide (upper >= (65 : UInt8))) && (decide (upper <= (90 : UInt8)))) then ((upper - (65 : UInt8)).toUInt32) else (if ((decide (upper >= (50 : UInt8))) && (decide (upper <= (55 : UInt8)))) then (((upper - (50 : UInt8)).toUInt32) + (26 : UInt32)) else (32 : UInt32))))
+  pure (if hex then ((BASE32_HEX_VALUES.getD (unit.toUInt32).toNat (0 : UInt8)).toUInt32) else ((BASE32_STD_VALUES.getD (unit.toUInt32).toNat (0 : UInt8)).toUInt32))
 
 def base32_partial (rest : UInt32) (fuel : Nat) : Option (UInt32) := do
   pure (if (rest == (1 : UInt32)) then (2 : UInt32) else (if (rest == (2 : UInt32)) then (4 : UInt32) else (if (rest == (3 : UInt32)) then (5 : UInt32) else (7 : UInt32))))
