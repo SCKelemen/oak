@@ -42,6 +42,8 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlib(SortAndSearch|Varint|Random)|TestE2EGenericNestedTemplate' -count=1
       - name: Test encoding codecs
         run: go test ./compiler -run 'TestE2EStdlibEncoding' -count=1
+      - name: Test path
+        run: go test ./compiler -run 'TestE2EStdlibPath' -count=1
       - name: Test standard library and compiler
         run: go test -race -timeout 40m ./...
       - name: Check formatting

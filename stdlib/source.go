@@ -48,6 +48,12 @@ var varintSource string
 //go:embed random.oak
 var randomSource string
 
+// path: slash-separated paths and glob patterns with Go's path semantics
+// (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed path.oak
+var pathSource string
+
 // encoding: hex, base64, base32 and percent codecs over borrowed bytes
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -87,12 +93,12 @@ var Prelude = baseSource
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
 	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource)
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(pathSource)
 
 var (
 	clauseLine    = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
 	importLine    = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
-	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random)\.`)
+	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|path)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -138,6 +144,7 @@ var Packages = map[string]string{
 	"sort":            sortSource,
 	"varint":          varintSource,
 	"random":          randomSource,
+	"path":            pathSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,
 	"math":            mathSource,
