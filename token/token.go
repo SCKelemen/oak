@@ -84,6 +84,7 @@ const (
 	IMPORT
 	WHILE
 	BREAK
+	DEFER
 	UNSAFE
 	FN
 	PUB
@@ -153,6 +154,7 @@ var tokens = [...]string{
 	IMPORT:    "import",
 	WHILE:     "while",
 	BREAK:     "break",
+	DEFER:     "defer",
 	UNSAFE:    "unsafe",
 	FN:        "fn",
 	PUB:       "pub",

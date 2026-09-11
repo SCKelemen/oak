@@ -517,6 +517,7 @@ type TypeChecker struct {
 	diagnostics             *diagnostic.DiagnosticCollector
 	env                     *TypeEnvironment
 	adtTypes                map[string]*object.ADTType // ADT type definitions
+	deferResults            int                        // temporaries binding deferred blocks' values (10-syntax section 4b)
 	intSize                 int                        // Platform size for int/uint (default: 64)
 	ptrSize                 int                        // Platform size for ptr/uptr (default: 64)
 	// checkedExterns marks extern bindings already validated, so the
@@ -4466,6 +4467,9 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 	if len(block.Statements) == 0 {
 		return &UnitType{}
 	}
+	if block.DeferredFrom > 0 && block.DeferredFrom <= len(block.Statements) {
+		return tc.checkDeferredBlock(block, expected)
+	}
 
 	// Type check all statements except the last. Declarations with literal
 	// extents establish facts for the rest of the block, tail included
@@ -4495,6 +4499,93 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 	tc.checkStatement(lastStmt)
 	tc.killFactsAfterStatement(lastStmt)
 	return &UnitType{}
+}
+
+// checkDeferredBlock checks a block whose parser-moved deferred statements
+// start at DeferredFrom (docs/spec/10-syntax.md section 4b). A tail that
+// is a value is bound to a temporary of its checked type before the
+// deferred statements run and yielded after them, so every later phase
+// sees the value computed first; a unit tail simply precedes them.
+func (tc *TypeChecker) checkDeferredBlock(block *ast.BlockStatement, expected Type) Type {
+	from := block.DeferredFrom
+	block.DeferredFrom = 0
+	mark := len(tc.extentFacts)
+	defer tc.popExtentFacts(mark)
+	checkAsStatement := func(i int) {
+		tc.checkStatement(block.Statements[i])
+		tc.killFactsAfterStatement(block.Statements[i])
+		if decl, isDecl := block.Statements[i].(*ast.VariableDeclaration); isDecl {
+			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
+		}
+	}
+	tailIndex := from - 1
+	for i := 0; i < tailIndex; i++ {
+		checkAsStatement(i)
+	}
+	tail, isValue := block.Statements[tailIndex].(*ast.ExpressionStatement)
+	if !isValue || tail.Expression == nil || tail.Discard {
+		for i := tailIndex; i < len(block.Statements); i++ {
+			checkAsStatement(i)
+		}
+		return &UnitType{}
+	}
+	errorsBefore := len(tc.Errors())
+	var tailType Type
+	if expected != nil {
+		tailType = tc.checkExpression(tail.Expression, expected)
+	} else {
+		tailType = tc.checkExpression(tail.Expression)
+	}
+	unitLike := tailType == nil
+	switch tailType.(type) {
+	case *UnitType, *NeverType:
+		unitLike = true
+	}
+	if unitLike || len(tc.Errors()) != errorsBefore {
+		for i := tailIndex + 1; i < len(block.Statements); i++ {
+			checkAsStatement(i)
+		}
+		if tailType == nil {
+			return &UnitType{}
+		}
+		return tailType
+	}
+	annotation := typeExpressionFor(tailType, tail.Token)
+	if annotation == nil {
+		tc.addError(tail.Expression, "defer in a block whose value has type %s is not supported yet; bind the value to a named variable before the deferred statements run", tailType)
+		return tailType
+	}
+	name := fmt.Sprintf("defer_result_%d__", tc.deferResults)
+	tc.deferResults++
+	nameToken := tail.Token
+	nameToken.TokenKind = token.IDENT
+	nameToken.Literal = name
+	decl := &ast.VariableDeclaration{
+		Token: tail.Token,
+		Name:  &ast.Identifier{Token: nameToken, Value: name},
+		Type:  annotation,
+		Value: tail.Expression,
+	}
+	yield := &ast.ExpressionStatement{Token: tail.Token, Expression: &ast.Identifier{Token: nameToken, Value: name}}
+	rewritten := make([]ast.Statement, 0, len(block.Statements)+1)
+	rewritten = append(rewritten, block.Statements[:tailIndex]...)
+	rewritten = append(rewritten, decl)
+	rewritten = append(rewritten, block.Statements[from:]...)
+	rewritten = append(rewritten, yield)
+	block.Statements = rewritten
+	// The tail was checked once above; bind its type without checking the
+	// initializer again, then check the deferred statements and the yield.
+	tc.env.SetType(name, tailType)
+	if info := tc.env.borrowMetadata(); info != nil {
+		info.declarations[decl] = tailType
+	}
+	for i := tailIndex + 1; i < len(block.Statements)-1; i++ {
+		checkAsStatement(i)
+	}
+	if expected != nil {
+		return tc.checkExpression(yield.Expression, expected)
+	}
+	return tc.checkExpression(yield.Expression)
 }
 
 func (tc *TypeChecker) checkUnsafeBlock(stmt *ast.UnsafeBlock) {

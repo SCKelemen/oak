@@ -594,7 +594,10 @@ to a borrowed result whose owner, or whose own binding, lives in an inner
 scope, which would let the result outlive what it depends on. Rebinding a
 dependent releases its old dependency. Control-flow joins keep every
 dependency established on any path — a conservative set, never fresh
-authority — and the two-iteration loop probe applies. Freshness never
+authority — and the two-iteration loop probe applies. A path that leaves a
+loop through `break` does not fall through to its branch's join; its
+authority state joins the loop's exit, so a close placed before the break
+(as `defer` places it) is seen on exactly the paths it runs on. Freshness never
 proves backing-storage lifetime, and a borrowed result says nothing about
 storage either: it is an authority dependency between opaque resources.
 **Mutable reborrows.** A borrowed result whose every origin is
@@ -695,9 +698,11 @@ holds custody). Because consumption already forbids later use, there is
 no double cleanup after a transfer and no cleanup of a moved field. In
 SemIR the obligation is the protocol guarantee named `terminal`,
 `eventually(S1 or S2 ...)`. A protocol without terminal states keeps
-today's meaning: its values may be dropped in any state. Not yet
-specified: what dropping does (destructors, `defer`), and cleanup made
-auditable in generated C.
+today's meaning: its values may be dropped in any state. `defer close(h)`
+(`10-syntax.md` §4b) is the idiomatic way to discharge an obligation: the
+close runs at the block's end on every exit, including `break`, and the
+analysis sees it there. Not yet specified: what dropping does
+(destructors), and cleanup made auditable in generated C.
 
 With this, milestone 4 of the authority roadmap (stages (a)–(e)), the
 first increment of milestone 5, and the first increment of milestone 6

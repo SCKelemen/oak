@@ -370,6 +370,45 @@ and an operator at the end of a line still continues the expression. This
 is Go's rule without the semicolon insertion; `;` remains available to put
 two statements on one line.
 
+## 4b. Deferred statements
+
+`defer` schedules a statement to run when the enclosing block ends:
+
+```oak
+process: (path: string): u32 {
+  h: Handle = open(path)
+  defer close(h)
+  read(h)
+  count(h)
+}
+```
+
+The rules, all static:
+
+1. `defer` is a keyword and takes one statement — a call, an assignment,
+   or a discard (`defer _ = f()`; the discard rule of `85-discipline.md`
+   §6 applies to a deferred call as anywhere).
+2. The deferred statement runs when the **enclosing block** ends — a brace
+   or layout block, a `?` arm, a `while` body, the function body — after
+   the block's value has been computed and before the block yields it. In
+   a loop body it runs at the end of every iteration. Several `defer`s in
+   one block run in reverse order of appearance.
+3. `break` runs the pending deferred statements of every block it leaves,
+   innermost first, before leaving.
+4. The deferred statement is **evaluated when it runs**, not when it is
+   written: `defer close(h)` closes whatever `h` names at the block's end.
+   Nothing is captured and nothing is allocated.
+5. `defer` outside a block is an error.
+
+`defer` is a reordering the compiler performs on the syntax tree before
+any analysis: the block above is checked, borrow-checked, executed, and
+lowered exactly as if it were written with `close(h)` after the tail
+expression has been bound to a temporary. Every later phase therefore
+sees the deferred call where it runs, which is why `defer close(h)`
+discharges a terminal-state obligation (`50-borrowing.md` §9) and a use of
+`h` after the block is a use after consumption. The canonical formatter
+keeps `defer` where the programmer wrote it.
+
 ## 5. Separators
 
 Commas delimit elements inside data/parameter/type argument lists:

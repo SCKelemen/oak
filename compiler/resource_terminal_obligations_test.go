@@ -318,3 +318,52 @@ func TestObligationSemIRRoundTrip(t *testing.T) {
 		t.Fatalf("Handle should owe Closed/Aborted via abort and close, got %#v (present=%v)", obligation, ok)
 	}
 }
+
+// defer (docs/spec/10-syntax.md section 4b) is the idiomatic discharge: the
+// close runs at the block's end on every exit, and the analysis sees it
+// there, so a use after the block is a use after consumption.
+func TestObligationDischargedByDefer(t *testing.T) {
+	if err := checkObligations(t, "defer-ok", `
+f: (flag: Bool): u32 {
+  h: Handle = open(u32(1))
+  defer close(h)
+  inspect(h)
+  flag ? {
+    g: Handle = open(u32(2))
+    defer close(g)
+    inspect(g)
+  } | { }
+  h.id
+}
+`); err != nil {
+		t.Fatalf("defer close must discharge the obligation: %v", err)
+	}
+	expectCode(t, "defer-use-after", checkObligations(t, "defer-use-after", `
+f: (flag: Bool): u32 {
+  h: Handle = open(u32(1))
+  flag ? {
+    defer close(h)
+    inspect(h)
+  } | { close(h) }
+  inspect(h)
+  0
+}
+`), typechecker.CodeResourceUsedAfterConsume)
+	// A deferred close inside a loop body closes the handle opened in that
+	// iteration, and a break still runs it.
+	if err := checkObligations(t, "defer-loop", `
+f: (): u32 {
+  n: u32 = u32(0)
+  while n < u32(3) {
+    h: Handle = open(n)
+    defer close(h)
+    n = n + u32(1)
+    n > u32(1) ? { break } | { }
+    inspect(h)
+  }
+  n
+}
+`); err != nil {
+		t.Fatalf("defer in a loop body must close on every iteration and on break: %v", err)
+	}
+}
