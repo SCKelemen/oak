@@ -91,8 +91,8 @@ func startREPL() {
 // unit matches its Oak fallback body. Mismatches are errors and arrive
 // through the compilation's error instead.
 func reportAsmVerdict(d *diagnostic.Diagnostic) {
-	if d.Source == "asm" && d.Severity == diagnostic.SeverityInformation {
-		fmt.Fprintf(os.Stderr, "asm: %s\n", d.Message)
+	if (d.Source == "asm" || d.Source == "native") && d.Severity == diagnostic.SeverityInformation {
+		fmt.Fprintf(os.Stderr, "%s: %s\n", d.Source, d.Message)
 	}
 }
 
@@ -104,9 +104,9 @@ func reportAsmVerdict(d *diagnostic.Diagnostic) {
 // package (or `-o out`); `-emit-c`, or an `-o` ending in .c, writes the C.
 func buildPackage(args []string) int {
 	output, header, leanOut, profile := "", "", "", ""
-	lines, emitC := false, false
+	lines, emitC, nativeBodies := false, false, false
 	asmMode := defaultAsmMode()
-	fs := newFlagSet("build", "oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-profile default|strict] [-asm native|c] [-lines] [dir|file.oak|pattern]...")
+	fs := newFlagSet("build", "oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-profile default|strict] [-asm native|c] [-native] [-lines] [dir|file.oak|pattern]...")
 	fs.StringVar(&output, "o", "", "output file: an executable, or C when it ends in .c")
 	fs.BoolVar(&emitC, "emit-c", false, "write C instead of an executable")
 	fs.StringVar(&header, "header", "", "write the C header of the exported surface (docs/spec/92-ffi.md section 2.6)")
@@ -114,6 +114,7 @@ func buildPackage(args []string) int {
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict (docs/spec/85-discipline.md)")
 	fs.StringVar(&asmMode, "asm", asmMode, "asm units: native (Oak assembler companion object) or c (inline __asm__; docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
+	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
 	rest, code, stop := parseFlags(fs, args)
 	if stop {
 		return code
@@ -136,7 +137,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, profile, asmMode, lines, emitC); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, profile, asmMode, lines, emitC, nativeBodies); code != 0 {
 			return code
 		}
 	}
@@ -144,7 +145,7 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
-func buildOne(dir, output, header, leanOut, profile, asmMode string, lines, emitC bool) int {
+func buildOne(dir, output, header, leanOut, profile, asmMode string, lines, emitC, nativeBodies bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -153,6 +154,9 @@ func buildOne(dir, output, header, leanOut, profile, asmMode string, lines, emit
 	comp = comp.WithProfile(profile).WithDiagnosticSink(reportAsmVerdict)
 	if lines {
 		comp = comp.WithLineDirectives()
+	}
+	if nativeBodies {
+		comp = comp.WithNativeBodies()
 	}
 	if strings.HasSuffix(output, ".c") {
 		emitC = true
@@ -766,9 +770,11 @@ func runPackage(args []string) int {
 	profile := ""
 	asmMode := defaultAsmMode()
 	own, programArgs := splitProgramArgs(args)
-	fs := newFlagSet("run", "oak run [-profile default|strict] [-asm native|c] [dir] [-- program arguments]")
+	nativeBodies := false
+	fs := newFlagSet("run", "oak run [-profile default|strict] [-asm native|c] [-native] [dir] [-- program arguments]")
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
 	fs.StringVar(&asmMode, "asm", asmMode, "asm units: native or c (docs/spec/94-assembler.md section 9)")
+	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
 	rest, exit, stop := parseFlags(fs, own)
 	if stop {
 		return exit
@@ -789,6 +795,9 @@ func runPackage(args []string) int {
 		return 2
 	}
 	comp := compiler.New().WithPackageDir(dir).WithProfile(profile).WithDiagnosticSink(reportAsmVerdict)
+	if nativeBodies {
+		comp = comp.WithNativeBodies()
+	}
 	code, object, err := emitForHost(comp, asmMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)

@@ -808,8 +808,62 @@ native path (`TestE2EExampleAsmPackageNative`).
 **What self-hosting still needs.** (1) A native backend for Oak bodies —
 a real compiler back end from the checked tree to machine code through
 this encoder and object writer, with the C backend kept as the portable
-realization and the differential oracle. (2) The proof and solver stack
-in Oak itself, the long arc (`95-extraction.md` is its current foothold).
+realization and the differential oracle: its first increment has landed
+(below). (2) The proof and solver stack in Oak itself, the long arc
+(`95-extraction.md` is its current foothold).
+
+**Native backend for Oak bodies (first increment landed; `nativegen`).**
+The backend lowers a type-checked Oak function to an `asm.Function` — the
+same object an `.oakasm` unit yields — so everything this chapter built
+applies to the compiler's own output: the seam checker holds the generated
+code to its bindings, clobbers, frame, flags, and callee-saved disciplines
+(a finding is a backend bug and rejects the compilation), the §8 verifier
+proves it equal to the Oak body where its subset reaches (a mismatch
+rejects), the encoder and object writer realize it, and the Oak body stays
+as the portable realization under `OAK_PORTABLE_INTRINSICS` — the
+differential oracle. `Compilation.WithNativeBodies()` (CLI `-native`)
+switches it on; a function outside the subset is left to the C backend
+with the reason reported.
+
+The subset: parameters, locals, and results of the fixed-width integers
+and `Bool` (or a unit result); literals; wrapping `+ - * & | ^`; `/` and
+`%` with the C helpers' edge cases (zero traps through `brk #1`; `MIN /
+-1` and `MIN % -1` wrap as `sdiv`/`msub` give); shifts (a count at or
+beyond the width traps; constant counts fold the check away);
+comparisons as `cmp`/`cset` at the operands' signedness; short-circuit
+`&&`/`||`; `!`, `-`, `^`; the widening constructors and the
+`trunc`/`bits` conversions; the Bool conditional in value and statement
+position; typed locals and assignment; `while`/`break`; `assert` (a
+trap); and calls to program functions with scalar signatures, including
+tail self-calls (as calls — the loop lowering is a follow-up). Values
+live in 8-byte frame slots, one per parameter and local, stored and
+loaded at their type's width; expressions evaluate into x9–x15 as a
+small operand stack, spilled to their own slots around calls — the checker
+would refuse a caller-saved register read after `bl`, so the discipline is
+enforced, not assumed. A narrow value stays normalized in its register
+(zero- or sign-extended), which is also how a narrow parameter enters:
+AAPCS64 leaves the register bits above it unspecified.
+
+That contract is now what the verifier models: a parameter of type `u8`
+is an 8-bit unknown with a fresh unknown above it in the register
+(`a#hi`), a `Bool` a 1-bit one, results compare at their type's width,
+locals carry their declared width, and the `trunc`/`bits` conversions
+lower — so `byte_sum: (a, b: u8) -> u8 = a + b` is proven for the
+normalizing code and would be refuted for code that added the raw
+registers, the ABI bug the old 32-bit model could not see. Executed
+(`TestE2ENativeBodies`): a twelve-function program — wrapping and narrow
+arithmetic, signed division, conditionals, a loop with `break`, calls with
+live temporaries across them, tail recursion, conversions, and `main`
+itself — lowered entirely by the backend, six functions proven at the bit
+level and the rest trusted with the reason (`bl`, no integer result, the
+conversion the verifier had not modeled before this increment), exit 42
+natively, through the C backend alone, and as the portable realization.
+Next increments: spans and views (the guarded `[base, wI, uxtw #s]`
+idiom), records, the tail-self-call loop, floating point through the
+`s`/`d` views, and a register allocator once the slot discipline is the
+bottleneck.
+
+
 
 **SME/SME2 (landed).** The Apple M4 implements the Scalable Matrix
 Extension (SME, SME2, SME_F64F64, SME_I16I64 — the features LLVM enables

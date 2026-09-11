@@ -162,18 +162,19 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			loweredBody = lowerExpression(fn.Body, tc)
 		}
 		return &ast.FunctionStatement{
-			BaseNode:   fn.BaseNode,
-			Token:      fn.Token,
-			EndToken:   fn.EndToken,
-			TypeParams: fn.TypeParams,
-			Name:       fn.Name,
-			Receiver:   fn.Receiver,
-			Parameters: fn.Parameters,
-			ReturnType: fn.ReturnType,
-			Body:       loweredBody,
-			AsmBacked:  fn.AsmBacked,
-			Exported:   fn.Exported,
-			Opaque:     fn.Opaque,
+			BaseNode:     fn.BaseNode,
+			Token:        fn.Token,
+			EndToken:     fn.EndToken,
+			TypeParams:   fn.TypeParams,
+			Name:         fn.Name,
+			Receiver:     fn.Receiver,
+			Parameters:   fn.Parameters,
+			ReturnType:   fn.ReturnType,
+			Body:         loweredBody,
+			AsmBacked:    fn.AsmBacked,
+			NativeBacked: fn.NativeBacked,
+			Exported:     fn.Exported,
+			Opaque:       fn.Opaque,
 		}
 	}
 	return fn

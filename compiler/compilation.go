@@ -55,6 +55,11 @@ type Options struct {
 	// into a companion object (EmitAsmObject) instead of inline __asm__
 	// text the C toolchain assembles (docs/spec/94-assembler.md §9).
 	NativeAsm bool
+	// NativeBodies runs the native backend over ordinary Oak functions
+	// (nativegen): every function in its subset is lowered to a checked,
+	// verified asm function and realized like an asm unit; the rest keep
+	// the C backend (docs/spec/94-assembler.md §9).
+	NativeBodies bool
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -166,6 +171,13 @@ func (comp Compilation) WithLineDirectives() Compilation {
 // prototypes. Link the object of EmitAsmObject with the compiled C.
 func (comp Compilation) WithNativeAsm() Compilation {
 	comp.options.NativeAsm = true
+	return comp
+}
+
+// WithNativeBodies lowers ordinary Oak functions through the native backend
+// (nativegen) where its subset reaches, realizing them like asm units.
+func (comp Compilation) WithNativeBodies() Compilation {
+	comp.options.NativeBodies = true
 	return comp
 }
 
@@ -330,6 +342,17 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// the plain call it denotes, so the borrow checker, discipline,
 		// lowering, codegen, and the interpreter never see an operator.
 		rewriteOperatorCalls(tree.Root, tc)
+
+		// The native backend lowers the ordinary functions it reaches into
+		// checked, verified asm functions beside the units
+		// (docs/spec/94-assembler.md §9).
+		if comp.options.NativeBodies {
+			nativeFunctions, nativeDiagnostics := comp.lowerNativeBodies(tree.Root, tc)
+			if err := comp.gate("native", nativeDiagnostics, tree.Modules); err != nil {
+				return nil, err
+			}
+			asmFunctions = append(asmFunctions, nativeFunctions...)
+		}
 
 		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions}
 		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)

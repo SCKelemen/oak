@@ -739,9 +739,10 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	if fn.ExternSymbol != "" || fn.Body == nil {
 		return
 	}
-	if fn.AsmBacked {
+	if fn.AsmBacked || fn.NativeBacked {
 		// The Oak fallback body realizes the signature where the asm unit
-		// does not apply (non-AArch64, or the portable lowering).
+		// (or the natively lowered body) does not apply: non-AArch64, or
+		// the portable lowering.
 		cg.write("#if !defined(__aarch64__) || defined(OAK_PORTABLE_INTRINSICS)\n")
 		defer cg.write("#endif\n")
 	}
@@ -1645,7 +1646,7 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 		}
 	}
 	for name, fn := range functions {
-		if fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked || fn.Body == nil ||
+		if fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked || fn.NativeBacked || fn.Body == nil ||
 			fn.Exported || len(fn.TypeParams) > 0 || name == "main" {
 			continue
 		}

@@ -1064,6 +1064,10 @@ type FunctionStatement struct {
 	// compilation when a unit's matching signature is found; a body-less
 	// declaration with no unit is a compile error.
 	AsmBacked bool
+	// NativeBacked marks a body the native backend lowered (nativegen,
+	// docs/spec/94-assembler.md §9): the C backend emits the Oak body only
+	// for the portable realization, as for an asm unit with a fallback.
+	NativeBacked bool
 	// Exported marks a `pub` declaration (docs/spec/83-modules.md section
 	// 6); visibility is never inferred from spelling. Opaque marks
 	// `pub(opaque)`: the name is exported, the definition is not.

@@ -22,6 +22,7 @@ package asm
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/typechecker"
 	"math/bits"
 	"sort"
 	"strconv"
@@ -667,7 +668,13 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 			return nil, nil, "vector or non-integer parameters", false
 		}
 		params[param.Name.Value] = class
-		declared[param.Name.Value] = widthOf(class)
+		bits, _, _ := contractBits(param.Type)
+		declared[param.Name.Value] = bits
+		if bits < 32 {
+			// AAPCS64 leaves the register bits above a narrow argument
+			// unspecified: they are a fresh unknown the body must not depend on.
+			declared[upperBitsName(param.Name.Value)] = 32 - bits
+		}
 	}
 	// input is a parameter's entry term: symbolic, or the witness value in
 	// a concrete run (which is what lets a data-dependent loop unroll).
@@ -690,9 +697,17 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 			continue
 		}
 		class := params[binding.Param]
-		state.regs[binding.Register.Num] = zeroExtend(input(binding.Param, widthOf(class)), 64)
-		if class == ClassX {
+		bits := declared[binding.Param]
+		switch {
+		case class == ClassX:
 			state.regs[binding.Register.Num] = input(binding.Param, 64)
+		case bits < 32:
+			// The narrow value in the low bits, unspecified bits above it.
+			low := zeroExtend(input(binding.Param, bits), 32)
+			high := binaryTerm("shl", zeroExtend(input(upperBitsName(binding.Param), 32-bits), 32), constTerm(uint64(bits), 32))
+			state.regs[binding.Register.Num] = zeroExtend(binaryTerm("or", high, low), 64)
+		default:
+			state.regs[binding.Register.Num] = zeroExtend(input(binding.Param, 32), 64)
 		}
 	}
 	resultClass, hasResult := contractClass(sig.ReturnType)
@@ -1513,17 +1528,7 @@ func (lo *oakLowering) restoreLocals(values map[string]*term) {
 
 // scalarType reads a local's declared fixed-width integer type.
 func scalarType(expr ast.Expression) (width int, signed bool, ok bool) {
-	switch typeText(expr) {
-	case "u8", "u16", "u32", "Bool", "byte", "rune":
-		return 32, false, true
-	case "i8", "i16", "i32":
-		return 32, true, true
-	case "u64":
-		return 64, false, true
-	case "i64":
-		return 64, true, true
-	}
-	return 0, false, false
+	return contractBits(expr)
 }
 
 type spanContract struct {
@@ -1666,23 +1671,48 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return zeroExtend(truncate(paramTerm(name, 32), width), width), "", true
 		}
-		// Primitive constructors over constants: u32(15).
+		// Primitive constructors (u32(x), widening) and the explicit
+		// conversions {target}_trunc_{source} / {target}_bits_{source}.
 		ident, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent || len(e.Arguments) != 1 {
 			return nil, "a call", false
 		}
+		target := ""
 		switch ident.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
-			// A widening of a signed operand sign-extends (i64(x) with x: i32);
-			// every other conversion is the operand's bits at the new width.
-			if srcWidth, signed, known := lo.operandContract(e.Arguments[0]); known && signed && ident.Value[0] == 'i' && srcWidth < width {
+			target = ident.Value
+		default:
+			if t, op, _, isConv := typechecker.ConversionParts(ident.Value); isConv && (op == "trunc" || op == "bits") {
+				target = t
+			}
+		}
+		if target != "" {
+			targetBits, targetSigned, _ := contractBits(&ast.Identifier{Value: target})
+			// The operand at its own width; widening extends by the
+			// operand's signedness, narrowing keeps the low bits; then the
+			// converted value sits in the context at the target's signedness.
+			var converted *term
+			if srcWidth, srcSigned, known := lo.operandContract(e.Arguments[0]); known {
 				operand, reason, ok := lo.lower(e.Arguments[0], srcWidth)
 				if !ok {
 					return nil, reason, false
 				}
-				return extendTerm(operand, srcWidth, width, true), "", true
+				if srcWidth < targetBits {
+					converted = extendTerm(operand, srcWidth, targetBits, srcSigned)
+				} else {
+					converted = truncate(operand, targetBits)
+				}
+			} else {
+				operand, reason, ok := lo.lower(e.Arguments[0], targetBits)
+				if !ok {
+					return nil, reason, false
+				}
+				converted = operand
 			}
-			return lo.lower(e.Arguments[0], width)
+			if targetBits < width {
+				return extendTerm(converted, targetBits, width, targetSigned), "", true
+			}
+			return truncate(converted, width), "", true
 		}
 		return nil, fmt.Sprintf("call to %s", ident.Value), false
 	case *ast.InfixExpression:
@@ -1863,7 +1893,11 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 	var inputs []map[string]uint64
 	boundary := func(w int) []uint64 {
 		m := mask(w)
-		return []uint64{0, 1, 2, 3, 7, 8, 15, 16, 31, 32, 127, 128, 255, 256, m - 1, m, m >> 1, (m >> 1) + 1}
+		values := []uint64{0, 1, 2, 3, 7, 8, 15, 16, 31, 32, 127, 128, 255, 256, m - 1, m, m >> 1, (m >> 1) + 1}
+		for i := range values {
+			values[i] &= m // a witness is a value of the parameter's width
+		}
+		return values
 	}
 	if len(params) == 0 {
 		return []map[string]uint64{{}}
@@ -1877,7 +1911,7 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 		for _, b := range boundary(widths[params[1]]) {
 			env := map[string]uint64{params[0]: a, params[1]: b}
 			for _, extra := range params[2:] {
-				env[extra] = a ^ b
+				env[extra] = (a ^ b) & mask(widths[extra])
 			}
 			inputs = append(inputs, env)
 		}
@@ -1903,8 +1937,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
 	lowering := newLowering(sig)
-	resultClass, _ := contractClass(sig.ReturnType)
-	width := widthOf(resultClass)
+	width, _, _ := contractBits(sig.ReturnType)
 	oakTerm, reason, ok := lowering.lower(oakBody, width)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
@@ -1924,12 +1957,46 @@ func newLowering(sig *ast.FunctionStatement) *oakLowering {
 			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i")}
 			continue
 		}
-		class, _ := contractClass(param.Type)
-		lowering.params[param.Name.Value] = widthOf(class)
-		lowering.signed[param.Name.Value] = strings.HasPrefix(typeText(param.Type), "i")
+		bits, signed, _ := contractBits(param.Type)
+		lowering.params[param.Name.Value] = bits
+		lowering.signed[param.Name.Value] = signed
+		if bits < 32 {
+			lowering.fresh[upperBitsName(param.Name.Value)] = 32 - bits
+		}
 	}
 	return lowering
 }
+
+// contractBits is the width in bits of a scalar contract type (u8 → 8,
+// Bool → 1, u32 → 32, ...) and its signedness. The verifier models a
+// value at exactly its type's width; the register carrying it is wider.
+func contractBits(expr ast.Expression) (bits int, signed bool, ok bool) {
+	switch typeText(expr) {
+	case "u8", "byte":
+		return 8, false, true
+	case "i8":
+		return 8, true, true
+	case "u16":
+		return 16, false, true
+	case "i16":
+		return 16, true, true
+	case "u32", "rune":
+		return 32, false, true
+	case "i32":
+		return 32, true, true
+	case "u64":
+		return 64, false, true
+	case "i64":
+		return 64, true, true
+	case "Bool":
+		return 1, false, true
+	}
+	return 0, false, false
+}
+
+// upperBitsName names the unspecified register bits above a narrow
+// parameter (`a#hi`): a parameter of the verification like any other.
+func upperBitsName(param string) string { return param + "#hi" }
 
 // decideEqual is the equality decision for two lowered terms: witnesses,
 // the linear normal form, then the bit level. note is appended to a proof.
