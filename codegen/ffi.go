@@ -79,6 +79,66 @@ func cStringArgument(arg ast.Expression) (operand ast.Expression, ok bool) {
 	return call.Arguments[0], true
 }
 
+// argvArgument recognizes `c.argv_of(bytes, slots)` in the argument list of
+// an extern call (docs/spec/92-ffi.md section 2.5.6) and returns both
+// operands, as the typechecker confirmed them: a named []u8 view and a
+// named [*]c.Ptr span.
+func argvArgument(arg ast.Expression) (bytes, slots ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 2 {
+		return nil, nil, false
+	}
+	library, member, isLibrary := libraryCallTarget(call.Function)
+	if !isLibrary || library != "c" || member != "argv_of" {
+		return nil, nil, false
+	}
+	return call.Arguments[0], call.Arguments[1], true
+}
+
+// outArgument recognizes `c.out(x)` in the argument list of an extern call
+// (docs/spec/92-ffi.md section 2.5.7) and returns the local binding.
+func outArgument(arg ast.Expression) (operand ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, false
+	}
+	library, member, isLibrary := libraryCallTarget(call.Function)
+	if !isLibrary || library != "c" || member != "out" {
+		return nil, false
+	}
+	return call.Arguments[0], true
+}
+
+// emitArgvArgument lowers `c.argv_of(bytes, slots)` at its extern call site
+// (docs/spec/92-ffi.md section 2.5.6): oak_argv_u8 walks the view, records
+// each string's start in the slots, appends the trailing NULL, and returns
+// the slots' base; it traps naming the source position when the view is not
+// NUL-terminated or the slots are too few. No copy of the strings.
+func (cg *CodeGenerator) emitArgvArgument(bytes, slots ast.Expression, arg ast.Expression, tc *typechecker.TypeChecker) {
+	cg.emitViewType("u8")
+	line := 0
+	file := cg.sourceFile
+	if call, isCall := arg.(*ast.InvocationExpression); isCall {
+		file = cg.tokenSourceFile(call.Token)
+		line = call.Token.Line
+	}
+	cg.output.WriteString("oak_argv_u8( ")
+	cg.emitExpressionFragment(bytes, tc)
+	cg.output.WriteString(", (void **)( ")
+	cg.emitExpressionFragment(slots, tc)
+	cg.output.WriteString(" ).base, (u64)( ")
+	cg.emitExpressionFragment(slots, tc)
+	cg.output.WriteString(fmt.Sprintf(" ).len, %q, %d )", file, line))
+}
+
+// emitOutArgument lowers `c.out(x)` at its extern call site (docs/spec/
+// 92-ffi.md section 2.5.7): the address of the local, valid for the call.
+func (cg *CodeGenerator) emitOutArgument(operand ast.Expression, tc *typechecker.TypeChecker) {
+	cg.output.WriteString("(void *)&( ")
+	cg.emitExpressionFragment(operand, tc)
+	cg.output.WriteString(" )")
+}
+
 // emitCStringArgument lowers `c.cstr(v)` at its extern call site (docs/spec/
 // 92-ffi.md section 2.5.3): a literal operand is the interned literal (the
 // typechecker required its trailing NUL); a named view goes through
@@ -118,6 +178,11 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 	}
 	switch library {
 	case "c":
+		if member == "null" && len(call.Arguments) == 0 {
+			// c.null(): the null pointer (docs/spec/92-ffi.md section 2.1).
+			cg.output.WriteString("((void *)0)")
+			return true
+		}
 		if member == "disown" && len(call.Arguments) == 1 {
 			// c.disown(b): the buffer's pointer, for the runtime to free
 			// (docs/spec/92-ffi.md section 2.8).
@@ -126,7 +191,7 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 			cg.output.WriteString(" ).base)")
 			return true
 		}
-		if member == "extern" || member == "span_of" || member == "span_mut_of" || member == "cstr" || len(call.Arguments) != 1 {
+		if member == "extern" || member == "span_of" || member == "span_mut_of" || member == "cstr" || member == "argv_of" || member == "out" || len(call.Arguments) != 1 {
 			// Boundary spans are expanded at their extern call site
 			// (emitExpressionFragment); anywhere else they are not
 			// expressions and the typechecker has already rejected them.
@@ -332,6 +397,38 @@ func scanCalls(program *ast.Program, visit func(library, member string)) {
 	for _, stmt := range program.Statements {
 		scanStmt(stmt)
 	}
+}
+
+// emitArgvHelper emits oak_argv_u8 when the program uses c.argv_of
+// (docs/spec/92-ffi.md section 2.5.6), so programs without an argument
+// vector keep their C output unchanged. The view holds the strings back to
+// back, each NUL-terminated; every string's start goes into a slot and a
+// NULL closes the vector. The view must end in NUL and the slots must
+// number at least strings + 1; both are checked at the foreign call, naming
+// the Oak source position before trapping, as an assertion does.
+func (cg *CodeGenerator) emitArgvHelper(program *ast.Program) {
+	used := false
+	scanCalls(program, func(library, member string) {
+		if library == "c" && member == "argv_of" {
+			used = true
+		}
+	})
+	if !used {
+		return
+	}
+	viewTypeName := cg.emitViewType("u8")
+	cg.write("/* c.argv_of: a NUL-terminated pointer vector over Oak strings, for one call */\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <stdio.h>\n")
+	cg.write("#define OAK_ARGV_FAIL(msg) do { fprintf(stderr, \"oak: c.argv_of %s at %s:%u\\n\", msg, file, (unsigned)line); __builtin_trap(); } while (0)\n")
+	cg.write("#else\n#define OAK_ARGV_FAIL(msg) do { (void)file; (void)line; __builtin_trap(); } while (0)\n#endif\n")
+	cg.write(fmt.Sprintf("static inline void *oak_argv_u8(%s v, void **slots, u64 nslots, const char *file, u32 line) {\n", viewTypeName))
+	cg.write("  u64 count = 0;\n  u64 i;\n")
+	cg.write("  if (v.len != 0u && v.base[v.len - 1u] != 0u) { OAK_ARGV_FAIL(\"strings are not NUL-terminated\"); }\n")
+	cg.write("  for (i = 0; i < (u64)v.len; i++) { if (v.base[i] == 0u) { count++; } }\n")
+	cg.write("  if (nslots < count + 1u) { OAK_ARGV_FAIL(\"has too few pointer slots\"); }\n")
+	cg.write("  count = 0;\n  for (i = 0; i < (u64)v.len; i++) {\n")
+	cg.write("    if (i == 0u || v.base[i - 1u] == 0u) { slots[count++] = (void *)(v.base + i); }\n  }\n")
+	cg.write("  slots[count] = 0;\n  return (void *)slots;\n}\n#undef OAK_ARGV_FAIL\n\n")
 }
 
 // emitIntrinsicHelpers emits only helpers referenced by the program. Scalar
