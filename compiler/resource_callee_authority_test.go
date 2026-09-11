@@ -174,3 +174,58 @@ free: (h: Handle): () {
 		t.Fatalf("unmarked parameter lost its authority: %v", err)
 	}
 }
+
+// Retention: a borrowed or borrowed-mut parameter stays in the caller's
+// custody, so a body may neither return it (directly, through a block, or
+// through a match arm, nor an alias of it) nor store it in a record or
+// array literal; a consumed parameter may be returned, since consumption
+// transfers custody.
+func TestCalleeAuthorityRejectsReturningBorrowedParameter(t *testing.T) {
+	expectForwardingRejection(t, "return-borrowed", `
+pass_through: (h: Handle): Handle = h
+`, `cannot be returned as this function's result`,
+		map[string]typechecker.ResourceParameterMode{"pass_through": typechecker.ResourceParameterBorrowed})
+	expectForwardingRejection(t, "return-borrowed-block", `
+pass_block: (h: Handle): Handle {
+  inspect(h)
+  h
+}
+`, `cannot be returned as this function's result`,
+		map[string]typechecker.ResourceParameterMode{"pass_block": typechecker.ResourceParameterBorrowedMut})
+	expectForwardingRejection(t, "return-alias", `
+pass_alias: (h: Handle): Handle {
+  same: Handle = h
+  same
+}
+`, `parameter "h" enters with borrowed authority and cannot be returned`,
+		map[string]typechecker.ResourceParameterMode{"pass_alias": typechecker.ResourceParameterBorrowed})
+}
+
+func TestCalleeAuthorityRejectsStoringBorrowedParameter(t *testing.T) {
+	expectForwardingRejection(t, "store-record", `
+Box: type = struct { inner: Handle }
+box_it: (h: Handle): u32 {
+  b: Box = Box { inner: h }
+  b.inner.id
+}
+`, `cannot be stored in a record`,
+		map[string]typechecker.ResourceParameterMode{"box_it": typechecker.ResourceParameterBorrowed})
+	expectForwardingRejection(t, "store-array", `
+shelve: (h: Handle): u32 {
+  shelf: [1]Handle = [h]
+  shelf[0].id
+}
+`, `cannot be stored in an array`,
+		map[string]typechecker.ResourceParameterMode{"shelve": typechecker.ResourceParameterBorrowedMut})
+}
+
+func TestCalleeAuthorityConsumedParameterMayBeReturned(t *testing.T) {
+	if err := checkWithCalleeAuthority(t, "return-consumed", `
+hand_over: (h: Handle): Handle {
+  inspect(h)
+  h
+}
+`, map[string]typechecker.ResourceParameterMode{"hand_over": typechecker.ResourceParameterConsumed}); err != nil {
+		t.Fatalf("a consumed parameter may be returned: %v", err)
+	}
+}

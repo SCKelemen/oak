@@ -439,10 +439,16 @@ entry authority, so renaming does not launder it. A call that forwards a
 parameter beyond its entry authority is rejected with `OAK-B0114`, has not
 occurred semantically (it consumes nothing and establishes no fresh
 result), and the diagnostic names the parameter declaration and the
-offending argument. Unmarked parameters keep their ordinary meaning until a
-migration rule is chosen. This is the first increment of the authority
-roadmap's milestone 1 (`docs/notes/roadmap-authority-resources.md`);
-retention and escape of borrowed parameters remain with `OAK-B0109`.
+offending argument. A borrowed or borrowed-mut parameter is also never
+**retained**: returning it (or an alias of it) as the function's result,
+directly or through a block or match arm, or storing it in a record or
+array literal, is rejected with the same code — the caller keeps custody
+of a lent resource, and only consumption transfers it, so a consumed
+parameter may be returned. Unmarked parameters keep their ordinary meaning
+until a migration rule is chosen. These are the forwarding and retention
+increments of the authority roadmap's milestone 1
+(`docs/notes/roadmap-authority-resources.md`); escape of storage borrows
+(views and spans) remains `OAK-B0109`.
 
 The callable-boundary audit and proposed result provenance/lifetime relationships
 are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).

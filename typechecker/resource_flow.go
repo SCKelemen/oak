@@ -135,7 +135,78 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			}
 		}
 		analysis.expression(fn.Body)
+		analysis.checkRetainedReturn(fn)
 	}
+}
+
+// tailIdentifiers collects the identifiers an expression may evaluate to
+// as a function's result: the expression itself, the last statement of a
+// block, and every arm of a match. Calls and literals contribute nothing
+// (their results are checked where they are built).
+func tailIdentifiers(expr ast.Expression) []*ast.Identifier {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return []*ast.Identifier{e}
+	case *ast.BlockExpression:
+		if e.Block == nil || len(e.Block.Statements) == 0 {
+			return nil
+		}
+		if last, ok := e.Block.Statements[len(e.Block.Statements)-1].(*ast.ExpressionStatement); ok {
+			return tailIdentifiers(last.Expression)
+		}
+	case *ast.MatchExpression:
+		var out []*ast.Identifier
+		for _, arm := range e.Arms {
+			if arm != nil {
+				out = append(out, tailIdentifiers(arm.Body)...)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// checkRetainedReturn rejects a body that returns a borrowed or
+// borrowed-mut parameter (or an alias of one) as its result: the caller
+// keeps custody of a borrowed resource, so handing it back would mint a
+// second authority over the same resource (OAK-B0114, retention).
+func (a *typedResourceAnalysis) checkRetainedReturn(fn *ast.FunctionStatement) {
+	if len(a.entryModes) == 0 || fn == nil || fn.Body == nil {
+		return
+	}
+	for _, ident := range tailIdentifiers(fn.Body) {
+		a.checkRetention(ident, "returned as this function's result")
+	}
+}
+
+// checkRetention reports a borrowed or borrowed-mut parameter (or alias)
+// being retained — returned, or stored in an aggregate — beyond the call
+// that lent it.
+func (a *typedResourceAnalysis) checkRetention(ident *ast.Identifier, how string) {
+	if ident == nil || !a.flow.Registered(ident.Value) {
+		return
+	}
+	parameter, entry, governed := a.entryAuthorityOf(ident.Value)
+	if !governed || entry.mode == ResourceParameterConsumed {
+		return
+	}
+	title := fmt.Sprintf("parameter %q enters with %s authority and cannot be %s: a borrowed resource stays in the caller's custody", parameter, entry.mode, how)
+	d := a.tc.addResourceDiagnosticWithCode(ident, CodeResourceParameterForwarded, title)
+	if entry.declaration != nil {
+		d.AddSecondary(diagnostic.NodeToRange(entry.declaration), fmt.Sprintf("%q is declared %s by this function's resource contract", parameter, entry.mode))
+	}
+	if parameter != ident.Value {
+		for _, edge := range a.flow.AliasPath(parameter, ident.Value) {
+			message := fmt.Sprintf("resource alias %q derives authority from %q", edge.Child, edge.Parent)
+			if edge.Origin != nil {
+				d.AddSecondary(diagnostic.NodeToRange(edge.Origin), message)
+			} else {
+				d.AddNote(message)
+			}
+		}
+	}
+	d.AddNote("only a consumed parameter may be returned or stored: consumption transfers custody, borrowing never does (docs/spec/50-borrowing.md section 9)")
+	d.AddHelp("declare the parameter consumed in this function's contract, or return a fresh resource from a consuming operation")
 }
 
 type typedResourceAnalysis struct {
@@ -590,6 +661,9 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 		if len(e.FieldOrder) > 0 {
 			for _, field := range e.FieldOrder {
 				a.expression(field.Value)
+				if ident, isIdent := field.Value.(*ast.Identifier); isIdent {
+					a.checkRetention(ident, "stored in a record")
+				}
 			}
 		} else {
 			names := make([]string, 0, len(e.Fields))
@@ -604,6 +678,9 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 	case *ast.ArrayLiteral:
 		for _, element := range e.Elements {
 			a.expression(element)
+			if ident, isIdent := element.(*ast.Identifier); isIdent {
+				a.checkRetention(ident, "stored in an array")
+			}
 		}
 	case *ast.MatchExpression:
 		a.match(e)
