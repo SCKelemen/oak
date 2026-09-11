@@ -57,7 +57,9 @@ ml's `exp2f` finding is that the library is the one implementation — with
 documented bounds (1 ulp; 2 for `tanh`, `atan2`, and the hyperbolics)
 checked by an arbitrary-precision fourth witness
 (`compiler/e2e_math_test.go`), and placed float fields in records with
-`size_of` over float types. Not yet: the Lean model. The design:
+`size_of` over float types; `Oak.Floats` models the evaluation discipline in
+Lean and proves the reproducibility theorem, exact widening, commutativity,
+and the reassociation and contraction counterexamples. The design:
 
 - `f32`/`f64` arithmetic; `f16`/`bf16` storage-only with exactly four
   operations; contextual literals with `f64` as the no-context default;

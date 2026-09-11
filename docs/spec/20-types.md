@@ -417,8 +417,15 @@ unconstrained templates are one mechanism with one emission path.
 storage formats, hexadecimal literals, the float vectors, float fields in
 records with `size_of`/`align_of`/`offset_of` over float types, and the
 complete v1 `math` package (`exp exp2 expm1 log log2 log1p sin cos tan asin
-acos atan atan2 sinh cosh tanh asinh acosh atanh pow`); the Lean model is
-the recorded gap** (`STATUS.md` lists the implemented subset precisely). This section is
+acos atan atan2 sinh cosh tanh asinh acosh atanh pow`). `Oak.Floats`
+(`spec/lean/Oak/Floats.lean`) models the evaluation discipline of §11.3.3
+— one rounding per operation over an idealised binary format, grouping as
+the parse tree, `fma` as a single rounding — and proves that any two
+conforming implementations agree on every expression, that rounding is the
+identity on representable values (widening is exact), that addition and
+multiplication commute, and, by decided witnesses, that reassociation and
+contraction change results. Special values, overflow, and subnormals are
+outside the model and are executed by the witness tests** (`STATUS.md` lists the implemented subset precisely). This section is
 normative for the whole floating-point design. It was motivated by the ml
 project's tensor-compiler pilot (`docs/notes/ml-feedback-2026-09.md`,
 tier 2), whose numeric core cannot move into Oak without it.
