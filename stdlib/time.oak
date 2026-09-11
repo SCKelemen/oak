@@ -24,7 +24,7 @@ EPOCH_TO_ERA_DAYS: i64 = 719468
 DAYS_PER_ERA: i64 = 146097
 BAD_DIGITS: u32 = 4294967295
 
-pub TimeError: type = Overflowed | InvalidCivil | InvalidFormat | InvalidOffset | InvalidDuration | DestinationTooSmall
+pub TimeError: type = Overflowed | InvalidCivil | InvalidFormat | InvalidOffset | InvalidDuration | DestinationTooSmall | Unattested
 
 pub Instant: type = struct { nanos: i64 }
 pub Duration: type = struct { nanos: i64 }
@@ -606,19 +606,26 @@ pub TIME_SOURCE_NATIVE: u32 = 2
 
 // wall and mono are nanoseconds; origin is the host's monotonic reading at
 // the first refresh of a native source, so mono starts at zero everywhere.
-pub TimeSource: type = struct { kind: u32, wall: i64, mono: i64, origin: i64, refreshed: Bool }
+// bound is the attested error of the wall clock (nanoseconds, either side)
+// and attested says whether anyone vouched for it: an interval reading
+// (time_interval) exists only while it stands.
+pub TimeSource: type = struct { kind: u32, wall: i64, mono: i64, origin: i64, refreshed: Bool, bound: i64, attested: Bool }
+
+// An interval reading: the true time lies in [earliest, latest] as long as
+// the attested bound holds (docs/spec/110-testing.md, "Simulated time").
+pub TimeInterval: type = struct { earliest: Instant, latest: Instant }
 
 // A frozen clock: both readings stay put unless time_source_set moves the wall.
 pub time_source_fixed: (start: Instant): TimeSource =
-  TimeSource { kind: TIME_SOURCE_FIXED, wall: start.nanos, mono: i64(0), origin: i64(0), refreshed: true }
+  TimeSource { kind: TIME_SOURCE_FIXED, wall: start.nanos, mono: i64(0), origin: i64(0), refreshed: true, bound: i64(0), attested: false }
 
 // A simulated clock: advances only through time_source_advance / time_source_set.
 pub time_source_sim: (start: Instant): TimeSource =
-  TimeSource { kind: TIME_SOURCE_SIM, wall: start.nanos, mono: i64(0), origin: i64(0), refreshed: true }
+  TimeSource { kind: TIME_SOURCE_SIM, wall: start.nanos, mono: i64(0), origin: i64(0), refreshed: true, bound: i64(0), attested: false }
 
 // A native clock shell: unreadable until time_source_refresh has run once.
 pub time_source_native: (): TimeSource =
-  TimeSource { kind: TIME_SOURCE_NATIVE, wall: i64(0), mono: i64(0), origin: i64(0), refreshed: false }
+  TimeSource { kind: TIME_SOURCE_NATIVE, wall: i64(0), mono: i64(0), origin: i64(0), refreshed: false, bound: i64(0), attested: false }
 
 pub time_now: (source: [*]TimeSource): Instant {
   assert(len(source) == u32(1))
@@ -697,6 +704,51 @@ pub time_source_refresh: (source: [*]TimeSource, wall_nanos: i64, mono_nanos: i6
     true
   }
 }
+
+// Attestation: whoever knows the wall clock's error — the platform layer
+// from its synchronization estimate, a scenario by decree — attests a
+// non-negative bound; withdrawing it makes interval readings refuse. A
+// negative bound is refused and changes nothing.
+pub time_source_attest: (source: [*]TimeSource, bound: Duration): Bool {
+  assert(len(source) == u32(1))
+  bound.nanos < i64(0) ? { false } | {
+    source[0].bound = bound.nanos
+    source[0].attested = true
+    true
+  }
+}
+
+pub time_source_unattest: (source: [*]TimeSource): () {
+  assert(len(source) == u32(1))
+  source[0].attested = false
+}
+
+pub time_source_attested: (source: [*]TimeSource): Bool {
+  assert(len(source) == u32(1))
+  source[0].attested
+}
+
+// time_interval is the clock-ordered reading: [wall - bound, wall + bound]
+// while the bound is attested, Err(Unattested) otherwise — a consumer that
+// orders events by time refuses rather than guesses. Err(Overflowed) when
+// an end leaves the range.
+pub time_interval: (source: [*]TimeSource): Result[TimeInterval, TimeError] {
+  assert(len(source) == u32(1))
+  assert(source[0].refreshed)
+  !source[0].attested ? { .Err(.Unattested) } | {
+    lo: Result[i64, Overflow] = i64_checked_sub(source[0].wall, source[0].bound)
+    hi: Result[i64, Overflow] = i64_checked_add(source[0].wall, source[0].bound)
+    overflow_ok(lo) && overflow_ok(hi) ? {
+      .Ok(TimeInterval { earliest: Instant { nanos: overflow_value(lo, i64(0)) }, latest: Instant { nanos: overflow_value(hi, i64(0)) } })
+    } | { .Err(.Overflowed) }
+  }
+}
+
+// Definitely-before: every instant of a precedes every instant of b. Two
+// overlapping intervals are unordered, and a consumer says so.
+pub time_interval_before: (a: TimeInterval, b: TimeInterval): Bool = a.latest.nanos < b.earliest.nanos
+
+pub time_interval_contains: (i: TimeInterval, at: Instant): Bool = i.earliest.nanos <= at.nanos && at.nanos <= i.latest.nanos
 
 // Deadlines are monotonic readings: time_deadline(source, d) is "d from now"
 // on the monotonic clock (Err(Overflowed) beyond the range), time_expired

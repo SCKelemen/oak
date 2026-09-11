@@ -1339,6 +1339,17 @@ type oakLowering struct {
 	loops     []*loopEvent         // data-dependent loops met, in creation order
 	loopStack []int                // indices of the loops whose bodies are being lowered
 	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// functions are the program's functions a body may call; a call to one
+	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
+	functions map[string]*ast.FunctionStatement
+	inlining  map[string]bool // callees on the inlining stack, against recursion
+	// trapsTracked lets a body contain a construct that traps on some
+	// inputs — a variable shift count reaching the width — by recording
+	// the trap condition in traps instead of refusing the body; the
+	// theorem decider proves every recorded condition impossible. The asm
+	// verifier leaves it off: there the machine wraps where Oak traps.
+	trapsTracked bool
+	traps        []*term
 }
 
 // oakLocal is a typed local of a statement body: its current symbolic
@@ -1626,6 +1637,60 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 	return 0, false
 }
 
+// inlineCall lowers a call to a program function: the arguments at the
+// callee's parameter widths in the caller's scope, then the callee's body
+// at its return width with its parameters bound as locals, the result
+// adapted to the context by the callee's signedness. Methods, generics,
+// foreign and definition-less functions, non-scalar parameters or results,
+// and recursion fail closed.
+func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.InvocationExpression, width int) (*term, string, bool) {
+	name := callee.Name.Value
+	if callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.Body == nil || callee.ExternSymbol != "" {
+		return nil, fmt.Sprintf("a call to %s (a method, generic, foreign, or definition-less function)", name), false
+	}
+	if len(call.Arguments) != len(callee.Parameters) {
+		return nil, fmt.Sprintf("a call to %s with %d arguments", name, len(call.Arguments)), false
+	}
+	if lo.inlining[name] {
+		return nil, fmt.Sprintf("a recursive call to %s", name), false
+	}
+	if callee.ReturnType == nil {
+		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
+	}
+	resultWidth, resultSigned, ok := contractBits(callee.ReturnType)
+	if !ok {
+		return nil, fmt.Sprintf("a call to %s returning %s", name, typeText(callee.ReturnType)), false
+	}
+	bound := map[string]*oakLocal{}
+	for i, param := range callee.Parameters {
+		w, signed, ok := contractBits(param.Type)
+		if !ok || param.Variadic {
+			return nil, fmt.Sprintf("a call to %s: parameter %s is not a fixed-width scalar", name, param.Name.Value), false
+		}
+		value, reason, ok := lo.lower(call.Arguments[i], w)
+		if !ok {
+			return nil, reason, false
+		}
+		bound[param.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
+	}
+	saved := lo.locals
+	lo.locals = bound
+	if lo.inlining == nil {
+		lo.inlining = map[string]bool{}
+	}
+	lo.inlining[name] = true
+	result, reason, ok := lo.lower(callee.Body, resultWidth)
+	delete(lo.inlining, name)
+	lo.locals = saved
+	if !ok {
+		return nil, fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+	}
+	if resultWidth < width {
+		return extendTerm(result, resultWidth, width, resultSigned), "", true
+	}
+	return truncate(result, width), "", true
+}
+
 // spanLength recognizes len(v) over a span parameter.
 func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
@@ -1687,6 +1752,13 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 				return constTerm(value, width), "", true
 			}
 			return zeroExtend(truncate(paramTerm(name, 32), width), width), "", true
+		}
+		// A call to a program function in the subset is inlined
+		// (docs/spec/125-verification.md §3).
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
+			if callee, known := lo.functions[ident.Value]; known {
+				return lo.inlineCall(callee, e, width)
+			}
 		}
 		// Primitive constructors (u32(x), widening) and the explicit
 		// conversions {target}_trunc_{source} / {target}_bits_{source}.
@@ -1755,8 +1827,13 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			return nil, reason, false
 		}
 		if (op == "shl" || op == "shr") && right.kind != termConst {
-			// Oak traps at the width; the machine wraps the count.
-			return nil, "a non-constant shift count", false
+			// Oak traps at the width; the machine wraps the count. Under
+			// the theorem decider the trap is a recorded obligation and
+			// the shift below the width is the machine's.
+			if !lo.trapsTracked {
+				return nil, "a non-constant shift count", false
+			}
+			lo.traps = append(lo.traps, cmpTerm("hs", right, constTerm(uint64(width), width)))
 		}
 		return binaryTerm(op, left, right), "", true
 	case *ast.BlockExpression:

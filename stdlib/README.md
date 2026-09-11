@@ -739,51 +739,40 @@ replaced with compiled programs; see `examples/stdlib_strings.oak`.
 
 ## Verification and remaining work
 
-`compiler/e2e_stdlib_test.go` compiles real imported Oak through the compiler and
-system C compiler and executes the result. It covers typed outcomes, independent
-ring instances, wraparound, capacity one, full/empty behavior, byte-copy failure,
-explicit specialization and negative compilation cases. Seeded traces compare
-128 operations at capacities 1, 3 and 8 against a plain sequence model; invalid
-cursor fields must trap. Endian tests compare all six width/order pairs against
-Go byte-encoding fixtures, including high-bit and maximum values at unaligned
-offsets. Bitset traces check each backing byte against a reference model across
-zero, partial-byte and byte-boundary capacities; bounds tests cover unchanged
-failed writes and maximum u32 arguments.
+The per-package status — Go end-to-end tests, Oak property and simulation
+tests, the oracle each package is compared against, whether its Lean
+extraction is committed, which laws are proved universally, which are only
+decided on inputs, what the faithfulness harness covers, and the latest
+benchmark ratio — is one table in [VERIFICATION.md](VERIFICATION.md). That
+file is derived from the tree and names the theorem and test functions, so
+it is the place to look before believing a sentence in this README.
 
-Buffer tests run deterministic mixed-operation traces against a byte-array model,
-checking cursor offsets and every backing byte after each operation. Byte moves
-are checked against Go copy for both overlap directions and empty ranges. Builder
-tests cover fluent chains, exact capacity, sticky failure, and type rejection.
+Three kinds of evidence back the packages, and they are not interchangeable.
+For `sort`, `varint`, `random`, and the hexadecimal codec the laws are
+theorems about the Lean image `oak build -lean` produces from the same
+source the C backend compiles (`docs/spec/95-extraction.md`): a drift test
+keeps the committed image current and `TestLeanStdlibFaithful` runs the image
+and the compiled program on one corpus and compares them byte for byte, so
+the remaining assumptions are the extractor's stated modeling choices and the
+compiler. For `grapheme`, `normalize`, `causal_frontier`, the interval time
+readings, and the IO port the theorems are about a hand-written model of the
+published rules, and a Go law test or a transliteration relates the Oak code
+to that model on enumerated or random inputs. Everything else — the prelude
+collections, `strings`, `json`, `hash`, `math`, `mx`, `url`, `uuid`, `path`,
+`float`, `time`'s calendar, the simulation packages — is checked by
+implementation tests against sequence models, Go's standard library,
+conformance files, or reference implementations; those are not refinement
+proofs.
 
-Collection tests compare array-list operations against an array/length model and
-intrusive operations against two sequence models sharing one pool. They verify
-every link, owner, cursor and payload after each step, independent hooks, clearing,
-record-valued elements, missing-hook rejection, and bounded corruption traps.
-
-Transfer tests compare 120 mixed operations per hook family against three
-sequence models sharing a pool. They check every cursor, owner, link and payload,
-including an independent live membership through the other hook family. Additional
-tests cover FIFO batch order, old-owner rejection, detach/reuse and corrupt chains.
-
-Heap tests compare mixed push/pop/replace/clear operations with sorted sequences
-at capacities 1, 4 and 9. They check every expected live entry, minimum, ordering
-invariant and failed-operation snapshot. Additional cases exercise prefix heapify,
-zero count, even/odd sizes, invalid counts, equal/high unsigned priorities,
-independent heaps, missing/wrong priority fields and corruption traps.
-
-Deque tests compare mixed operations with a sequence model at capacities 0, 1, 3
-and 8, including both endpoints, indexed replacement, wraparound, full/empty
-errors and unchanged failed writes. ID-pool tests compare every logical bit and
-backing byte with an independent occupancy model across zero, partial-byte and
-byte-boundary limits. They verify deterministic reuse, reservation, double release,
-short storage, maximum u32 bounds, preserved tail/spare bits and the runnable
-record-valued example. Emitted example C is checked for allocator calls.
-
-The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs, with one exception growing: `oak build -lean` extracts whole packages into Lean (`docs/spec/95-extraction.md` section 5) — `varint`, `encoding`, `hash`, `random`, `uuid`, and `sort` at `u32` today, committed under `spec/lean/Oak/Stdlib/` with a drift test — and `Oak/Stdlib/VarintLaws.lean` decides the first law about an extraction in the kernel: encoding then decoding is the identity for every one-byte value, for one value of every encoding length up to ten, for the RFC example, and for the `u64` maximum, and the over-long and truncated forms are rejected. Those are statements about the extracted program, not corpus agreement. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and canonicity (`canonical`: whatever the decoder accepts, the encoder writes back byte for byte); `SortLaws.lean` proves the extracted insertion sort and heap sort return sorted permutations for every input, the window write-back a permutation, and `sort_span` a sorted permutation below the insertion threshold and once the depth budget is spent, the pattern-defeating path in between decided on adversarial inputs; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native ; that the extracted program is the compiled one is checked by `TestLeanStdlibFaithful`, which runs both on a fixed corpus (sorts, varint, hex and base64, xoshiro, CRC-32C, SHA-256) and compares byte for byte. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and records that the decoder still accepts the zero-padded spelling `80 00`; `SortLaws.lean` proves the extracted insertion sort returns a sorted permutation, and records that heap sort and `sort_span` extract unfaithfully until oak #186 is fixed; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native
-Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
-allocator-backed pools, intrusive trees/hash tables, concurrent rings, broader collections and persistence
-protocols remain separate work; importing this module does not implement them.
-
+The standard-library workflow (`.github/workflows/stdlib.yml`) runs the
+package tests, the generated-table checks, the extraction drift test, and
+every non-compiler package under the race detector; the compiler package's
+race run is sharded in `ci.yml`; the Formal Verification workflow builds
+`spec/lean` and runs the faithfulness harness. Native Apple Silicon
+execution, PAC/tag representations, capability transfer/revocation,
+allocator-backed pools, intrusive trees/hash tables, concurrent rings,
+broader collections, and persistence protocols remain separate work;
+importing this module does not implement them.
 
 See [Oak collection ports](COLLECTION_PORTS.md) for Bloom/counting Bloom filters,
 u64-key hash maps and sets, bitset algebra, validated flags, and the remaining OS
@@ -859,6 +848,11 @@ random inputs.
 For the big-endian frame header, the core prelude already has
 `bytes_read_u16_be/u32_be/u64_be(view, offset): Result[T, EndianError]` and
 `bytes_write_*_be(span, offset, value)`, alongside the little-endian forms.
+
+The package extracts whole to Lean (`spec/lean/Oak/Stdlib/HashExtracted.lean`,
+regenerated by the drift test) and `TestLeanStdlibFaithful` compares the
+extracted CRC-32C and SHA-256 with the compiled program on a corpus; no laws
+about the digests are proved yet (`VERIFICATION.md`).
 
 ## `mx`: MXFP4 blocks (`import("mx")`)
 
@@ -1035,6 +1029,22 @@ trips as properties over the full i64 range.
   and fuzzable as it stands; `examples/timesim` is the worked consumer and
   `timesim` below drives it.
 
+### Interval readings and attestation
+
+A `TimeSource` may carry an attested error bound: `time_source_attest(source,
+bound)` (a non-negative `Duration`, refused otherwise) is the platform
+layer's statement of its synchronization error, or a scenario's decree;
+`time_source_unattest` withdraws it. `time_interval(source)` is the
+clock-ordered reading `Result[TimeInterval, TimeError]`: `[wall - bound,
+wall + bound]` while attested, `Err(.Unattested)` otherwise, so a consumer
+that orders events by time refuses rather than guesses.
+`time_interval_before(a, b)` is definitely-before (`a.latest < b.earliest`;
+overlapping intervals are unordered) and `time_interval_contains(i, at)`
+membership. `Oak.TimeInterval` (`spec/lean/Oak/TimeInterval.lean`) proves
+the reading contains the true time exactly when the clock's departure is
+within the bound, that definitely-ordered honest intervals order their true
+times the same way, and that an unattested source yields no ordering.
+
 ## `timesim`: simulated time with clock faults (`import("timesim")`)
 
 `stdlib/timesim.oak` (a library package over `time` and `import(testing)`,
@@ -1055,7 +1065,11 @@ day), `TIME_FAULT_JUMP_FORWARD` (2), `TIME_FAULT_STALL` (4, neither clock
 advances this step), `TIME_FAULT_COARSE` (8, the wall clock is quantized to
 `coarse_nanos`, 10 ms unless `timesim_set_coarse` says otherwise),
 `TIME_FAULT_DRIFT` (16, the wall clock runs up to two percent fast or slow
-against the monotonic one), `TIME_FAULT_ALL`. The ledger (`jumps_back`,
+against the monotonic one), `TIME_FAULT_BOUND_BREAK` (32, the wall clock is
+stepped past the attested bound with the attestation left standing — the
+interval reading lies, and `timesim_interval_honest(sim, source, interval)`
+says so against `timesim_true_now`), `TIME_FAULT_UNATTEST` (64, the
+attestation is withdrawn, so `time_interval` refuses), `TIME_FAULT_ALL`. The ledger (`jumps_back`,
 `jumps_forward`, `stalls`, `coarsened`, `drifted`, `skew` — how far the wall
 clock has departed from the monotonic timeline) is there to classify on.
 The law every fault respects, asserted inside `timesim_advance`: **the

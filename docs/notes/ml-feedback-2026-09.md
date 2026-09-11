@@ -309,9 +309,23 @@ Stage B branch `sam/roadmap-stage-b`:
 | D6 | a clock | **Hooked**, not realized in Oak: PR #178 adds `TimeSource` (fixed, simulated, native) to `time`, `timesim` fault injection from the choice tape, and `timenative` host symbols with a POSIX shim; the FFI gap (library externs bind every importer; no out-pointer form for `clock_gettime`) is oak #179. The out-pointer half is closed by `c.out` (D4 row): a boundary-struct `timespec` can be filled in place, `gettimeofday(c.out(tv), c.null())` is executed; what remains is `CLOCK_MONOTONIC`'s host-dependent value (1 on Linux, 6 on Darwin), which needs a target-constant facility or the IO port before `time_source_native()` can leave the shim. |
 | D7 | float formatting for text output | **Landed** as the `float` package (#161): shortest and correctly rounded `f64`/`f32` text, Go's `strconv` slow path in Oak, differential-tested against `strconv`; integer text via `append_u64`/`append_i64`/`text_parse_i64` (#151). |
 | E1 | C ABI exports from any package | **Fixed** (`feat(ffi): C ABI exports from any package (E1)`): `export("symbol") pub name: (...)` in any package defines the function under that C symbol and lists it in the header with its package (`92-ffi.md` §2.9); symbols are C identifiers, program-unique against every other export and the root's implicit `oak_<name>` (`OAK-F0108`), and only pub non-generic free functions qualify (`OAK-F0109`). The root's implicit exports are unchanged; a dependency's plain `pub` functions no longer leak into the header under internal names. ml can split `tensor/tensor.oak` into `ops/`, `gpt2/`, `mnist/`, `checks/`, `bench/` packages that keep their own exports. |
+| E2 | `oak test` linking a native runtime | **Fixed** (`feat(modules): link native libraries and frameworks from oak.mod (E2)`): `link runtime/libmlrt.a` and `framework Metal` in `oak.mod` (`83-modules.md` §4.6) name the module's native inputs; `oak build`, `oak run`, `oak install`, and `oak test` pass them to the C compiler as argv entries in link order (root first, then dependencies by module path), with the objects' bytes in the build-cache identity and the test replay fingerprint. ml's tests can be Oak tests with `Table` targets against `libmlrt.a`, and the Metal tests link on a machine with Metal (`framework Metal` is skipped with a note elsewhere). The `-adapter` manifest stays the pinned determinism assertion for `Sim` targets and composes with `link`. |
+| E3 | assertions with values (`expect_eq(got, want)` naming both values) | **Fixed** (`feat(testing): assertions that name both values (E3)`): `assert_eq`/`assert_ne` builtins for fixed-width integers, `f32`/`f64`, and `Bool` print `got <a>, want <b>` at `file:line` before the trap (`85-discipline.md` §5, `OAK-T0601` on mismatched operands); `test_check_eq_*`/`test_check_ne_*` in the testing prelude carry both values into `oak test` output and JSON (`110-testing.md`). Floats print with round-trip precision; the `float` package (D7) remains the shortest-form spelling for text output. |
 | E4 | Lean extraction of float code | **First increment (2026-09-11, night)**: `f32`/`f64` extract to Lean's `Float32`/`Float` — literals by bit pattern, `+ - * /`, negation, comparisons, the `round`/`bits`/`saturating`/`trunc` rows, `sqrt`/`abs`/`floor`/`ceil`/`round`/`is_nan`/`is_finite`/`is_infinite` — and `spec/lean/Oak/Stdlib/FloatKernelsExtracted.lean` commits the ml shape (`dot_f32`, `sum_f32`/`sum_f64`, `axpy_f32`, `max_abs_f32`, `widen_mean`, `quantize_u8`) with a drift test (`95-extraction.md` §2–§5). Lean's `Float` is opaque to the kernel, so theorems about extracted float code are stated against `Oak.Floats`; `fma`, `copysign`, `min`/`max`, `round_even`, `total_order`, the `checked` float rows, and `f16`/`bf16`/`f8` fail closed. |
 10. Codegen: a span index inside a ternary that is a record literal's field
     value (`error: slot >= ring[0].files ? { a } | { b }`) emits raw
     `ring[0]` in C instead of the span accessor; binding the value to a
-    local first avoids it (met in `stdlib/ionative.oak`, 2026-09-12).
+    local first avoids it (met in `stdlib/ionative.oak`, 2026-09-12, and
+    again as a span read inside a call argument in a record literal field,
+    `Instant { nanos: f(x, source[0].wall) }`, in `stdlib/timesim.oak`).
+    The interpreter is unaffected; only the runner's and the e2e tests'
+    C builds catch it, which argues for a codegen test that emits every
+    stdlib package once.
+11. Codegen: a `?` match with a block arm that itself contains a match
+    (`r ? | .Ok(i) => false | .Err(e) => { e ? | .Overflowed => true | _ =>
+    false }`) emits an empty `/* match expression */` placeholder in C when
+    it is a binding's initializer; the same match as a function's tail
+    lowers fine, so a small helper function avoids it (met in
+    `compiler/e2e_time_interval_test.go`, 2026-09-12). The interpreter
+    handles both positions.
 

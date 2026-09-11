@@ -82,3 +82,5 @@ formatting and correctly rounded parsing against `strconv`), `path`
 `net/url`), `grapheme` (segmentation against `x/text`).
 
 See [RESULTS.md](RESULTS.md) for the recorded baselines.
+The per-package status table `stdlib/VERIFICATION.md` carries the latest
+Oak / Go ratio next to each package's tests and proofs.

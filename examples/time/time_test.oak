@@ -52,7 +52,7 @@ TestLeapSecondRejected: (): () {
   r ? | .Ok(z) => { test_check(false, u32(6)) } | .Err(e) => {
     e ? | .InvalidCivil => { test_check(true, u32(7)) } | .Overflowed => { test_check(false, u32(8)) }
       | .InvalidFormat => { test_check(false, u32(8)) } | .InvalidOffset => { test_check(false, u32(8)) }
-      | .InvalidDuration => { test_check(false, u32(8)) } | .DestinationTooSmall => { test_check(false, u32(8)) }
+      | .InvalidDuration => { test_check(false, u32(8)) } | .DestinationTooSmall => { test_check(false, u32(8)) } | .Unattested => { test_check(false, u32(8)) }
   }
 }
 

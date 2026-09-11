@@ -923,7 +923,40 @@ saves them now. Executed (`TestE2ENativeFloats`): thirteen float
 functions natively against the C backend and the portable realization,
 including a float span reduction and a store loop, and an out-of-range
 `trunc` trapping in both. Float bodies are trusted by the verifier (§5).
-Next increments: `break` as a second loop exit in the recognizer,
+**Fourth increment — owned arrays in the frame.** A local `buf: [N]T`
+occupies `N·sizeof(T)` bytes of the frame (whole 8-byte slots), zero-filled
+by `stp`/`str` of a zero register as the C backend leaves no storage
+uninitialized, or stored element by element from a literal `[e0, …]`.
+`buf[i]` with a literal index inside the array addresses its slot through
+`sp` directly; any other index goes through the array's frame address —
+`add xB, sp, #off`, the constant guard `cmp wI, #N; b.hs trap`, then
+`ldr/str … [xB, wI, uxtw #s]` — so an index at or past `N` traps exactly as
+the C backend's guard does. `view(&buf)` and `span(&buf)` are admitted as
+call arguments (the callee receives the `{frame address, N}` pair in two
+consecutive argument registers; a `[]T` parameter takes either, a `[*]T`
+one only `span`), and `len(buf)` is the constant `N`. The checker gained the
+matching fact: `add xN, sp, #imm` (a new form of `add`) records that `xN`
+holds an entry-relative frame address; memory through it is checked
+against the declared frame like `[sp, #imm]` — a plain offset must lie
+inside the frame, an indexed access needs a dominating constant index guard
+(`cmp wI, #K` then `b.hs <exit>`) with all `K` elements inside the frame,
+scaled by whole elements, and pre/post-indexing is refused. The fact dies
+with a write to the register or a call, flows through the label fixpoint
+with the span and index guards (the meet keeps it only where every
+predecessor agrees on the address), and is exercised by
+`TestCheckerFrameArrays` (an accepted body and eight refusals). A call's
+result is now readable in `v0` as well as `x0` (the checker sees no callee
+signature; the same latitude it always gave `x0`). Executed
+(`TestE2ENativeArrays`): a byte histogram bucketed into four owned counters
+by a computed index, a literal-initialized array passed to a leaf through
+`view`, zero-filled storage filled through `span` and read back, signed
+bytes with sign extension, float elements, and an index at the length
+trapping in both realizations — the program's `main` is now itself lowered
+natively. Bodies with owned arrays are trusted by the verifier (§5): it
+models frame memory only through `sp`, not through a frame address in a
+register.
+Next increments: the verifier's frame-address memory (so array bodies are
+proven, not trusted), `break` as a second loop exit in the recognizer,
 records, and spans with calls (spilling the pair under a re-derivable
 fact).
 

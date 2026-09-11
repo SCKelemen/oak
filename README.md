@@ -1158,6 +1158,6 @@ corpus replay, and Clang/libFuzzer harness export.
 `name: theorem (params) { Bool }` states that a `Bool` expression holds for
 every value of its parameters, in the language's own type system and with one
 new word. `oak prove` places each theorem on a ladder — `decided` by
-exhaustive evaluation over finite domains, `refuted` with a counterexample, or
-`open` with a Lean projection (`-lean out.lean`) whose automatic proof Lean
-checks. See [the verification spec](docs/spec/125-verification.md).
+exhaustive evaluation over finite domains or at the bit level through the
+assembler verifier's blaster, `refuted` with a counterexample, or `open` with a
+Lean projection (`-lean out.lean`) whose automatic proof Lean checks. See [the verification spec](docs/spec/125-verification.md).

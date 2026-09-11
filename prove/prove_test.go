@@ -45,7 +45,7 @@ main: (): i32 = 0
 	}
 	want := map[string]Status{
 		"add_commutes": Decided, "wraps": Decided, "not_monotone": Refuted, "cycle": Decided,
-		"implies_true": Decided, "wide": Open,
+		"implies_true": Decided, "wide": Decided,
 	}
 	if len(results) != len(want) {
 		t.Fatalf("got %d results, want %d: %+v", len(results), len(want), results)
@@ -66,7 +66,7 @@ main: (): i32 = 0
 				t.Errorf("add_commutes: detail %q", r.Detail)
 			}
 		case "wide":
-			if !strings.Contains(r.Detail, "stated for Lean") {
+			if !strings.Contains(r.Detail, "bit level") {
 				t.Errorf("wide: detail %q", r.Detail)
 			}
 		}
@@ -142,5 +142,56 @@ main: (): i32 = 0
 	}
 	if results[1].Status != Refuted || !strings.Contains(results[1].Detail, "coins: 255") {
 		t.Errorf("paid_preserved: %+v (the 8-bit counter wraps at 255)", results[1])
+	}
+}
+
+// The bit-level decider covers the 32- and 64-bit statements the exhaustive
+// decider cannot reach, refutes with a counterexample, and leaves calls and
+// data-dependent loops to Lean (docs/spec/125-verification.md §3).
+func TestBitLevelDecider(t *testing.T) {
+	src := `
+double: (x: u32): u32 = x + x
+rotl: (x: u32, n: u32): u32 = (x << (n & u32(31))) | (x >> ((u32(32) - n) & u32(31)))
+rotr: (x: u32, n: u32): u32 = (x >> (n & u32(31))) | (x << ((u32(32) - n) & u32(31)))
+loops_forever: (x: u32): u32 = x == u32(0) ? u32(0) | loops_forever(x - u32(1))
+
+shift_is_double: theorem (x: u32) { x << u32(1) == x + x }
+mask_bound: theorem (x: u64, m: u64) { (x & m) <= m }
+xor_cancel: theorem (a: u32, b: u32) { (a ^ b) ^ b == a }
+overflow: theorem (x: u32) { x + u32(1) > x }
+signed_wrap: theorem (x: i32) { x - x == i32(0) }
+calls: theorem (x: u32) { double(x) == x * u32(2) }
+rotations: theorem (x: u32, n: u32) { rotr(rotl(x, n), n) == x }
+unmasked: theorem (x: u32, n: u32) { (x << n) >> n <= x }
+recursion: theorem (x: u32) { loops_forever(x) == u32(0) }
+counted: theorem (x: u32) {
+  acc: u32 = 0
+  i: u32 = 0
+  while i < u32(4) {
+    acc = acc + x
+    i = i + u32(1)
+  }
+  acc == x * u32(4)
+}
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]Status{
+		"shift_is_double": Decided, "mask_bound": Decided, "xor_cancel": Decided, "overflow": Refuted,
+		"signed_wrap": Decided, "calls": Decided, "counted": Decided, "rotations": Decided, "recursion": Open, "unmasked": Refuted,
+	}
+	for _, r := range results {
+		if r.Status != want[r.Name] {
+			t.Errorf("%s: status %s (%s), want %s", r.Name, r.Status, r.Detail, want[r.Name])
+		}
+		if r.Name == "overflow" && !strings.Contains(r.Detail, "x=4294967295") {
+			t.Errorf("overflow: detail %q", r.Detail)
+		}
+		if r.Name == "unmasked" && !strings.Contains(r.Detail, "traps") {
+			t.Errorf("unmasked: detail %q", r.Detail)
+		}
 	}
 }

@@ -64,9 +64,9 @@ Every theorem is placed on one rung, from the strongest evidence down:
 
 | Status | Meaning |
 | --- | --- |
-| `decided` | The compiler evaluated the statement on every element of its finite parameter domain and every case held. Domains: `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains); the product of the parameter domains is bounded (`-cases`, 65536 by default). The evaluator is the interpreter the differential witnesses hold to the compiled program. |
-| `refuted` | The same decider found a counterexample. The theorem is false; the assignment is reported. |
-| `proved` | Lean checked the theorem's statement over the extraction of the program (§5); the projection carries the automatic proof, or a hand-written one in a module of its own. This rung is reached by running Lean on the projection; the compiler records that it was stated, not that it was proved. |
+| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
+| `refuted` | One of the deciders found a counterexample. The theorem is false; the assignment is reported. |
+| `proved` | Lean checked the theorem's statement over the extraction of the program (§5): `oak prove -lean out.lean -check` ran Lean on the projection and its statement drew no error. The compiler never awards this rung on its own; it reads Lean's diagnostics. A hand-written proof lives in a module of its own that imports the projection. |
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
 
 Statuses never mix: a theorem is not "verified"; it is `decided` by the
@@ -74,25 +74,32 @@ exhaustive decider, or `proved` by Lean, or `open`. Properties run by
 `oak test` (`110-testing.md`) remain `tested`, a fifth and weaker status,
 and a theorem is not one — though a theorem may be called from one.
 
-Direction for the rungs between `decided` and `proved` (§6): the extent
-facts (`50-borrowing.md`) already decide a linear fragment inside the
-checker, and the assembler's bit-blaster (`94-assembler.md` §8) decides
-fixed-width bit-vector identities with a Lean-proved decision procedure;
-both are candidates for a `decided` rung over larger domains.
+The order is exhaustive first when the domain fits (a concrete count is
+the plainest evidence), then the bit-level decider, then Lean. Direction
+(§6): the extent facts (`50-borrowing.md`) decide a linear fragment inside
+the checker and are the next `decided` rung.
 
 ## 4. `oak prove`
 
 ```text
-oak prove [-lean out.lean] [-cases N] [dir|file.oak]
+oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [dir|file.oak]
 ```
 
 type-checks the package (a directory through the module loader, or one
 source file), runs the ladder over its theorems in source order, and
 prints one line per theorem — status, name, detail — and a summary. The
-exit status is 0 when every theorem is `decided`, 1 when any is `refuted`
-or `open`, 2 on usage or compilation errors. With `-lean`, the Lean
-projection of the theorems and of every function they call is written to
-the named file (§5). `-cases` bounds the exhaustive decider.
+exit status is 0 when every theorem is `decided` or `proved`, 1 when any
+is `refuted` or `open`, 2 on usage or compilation errors. With `-lean`,
+the Lean projection of the theorems and of every function they call is
+written to the named file (§5); a theorem the extractor cannot state (a
+recursive callee, a construct outside its subset) stays open with the
+extractor's reason and the projection carries the rest. With `-check`,
+Lean is run on the projection — the named executable, `lean` by default,
+invoked directly with the file as its one argument — and its diagnostics
+are read back by line: an open theorem whose statement drew no error is
+`proved`; one whose statement drew an error stays open with Lean's first
+message; an error outside every statement leaves them all open with it.
+`-cases` bounds the exhaustive decider.
 
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.
@@ -161,8 +168,9 @@ In order of payoff, each reusing a surface that exists:
 - **Contracts.** Leading `assert`s of a body are its preconditions; a
   caller discharges them statically or keeps the check. No `requires`
   keyword.
-- **Larger decided domains.** The bit-blaster for `u32`/`u64` bit-vector
-  statements and the extent facts for linear bounds, inside the compiler,
+- **Larger decided domains.** Views and spans as the assembler verifier
+  already models them, division with its zero-divisor obligation like the
+  shift's, and the extent facts for linear bounds, inside the compiler,
   each with its Lean law.
 - **Temporal properties.** Safety first, through the invariants above;
   liveness with declared fairness, projected to the TLA+ module the

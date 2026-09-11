@@ -21,12 +21,14 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("oak prove", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	leanOut := flags.String("lean", "", "write the Lean projection of the theorems here")
+	check := flags.Bool("check", false, "run Lean on the projection (-lean) and report the statements it proves")
+	leanBinary := flags.String("lean-binary", "lean", "the Lean executable -check runs")
 	cases := flags.Int("cases", prove.DefaultCases, "largest parameter domain the exhaustive decider enumerates")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if flags.NArg() > 1 {
-		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean] [-cases N] [dir|file.oak]")
+	if flags.NArg() > 1 || (*check && *leanOut == "") {
+		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [dir|file.oak]")
 		return 2
 	}
 	target := "."
@@ -59,16 +61,21 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "oak prove: no theorems")
 		return 0
 	}
-	exit := 0
-	for _, r := range results {
-		fmt.Fprintf(stdout, "%-9s %s: %s\n", r.Status, r.Name, r.Detail)
-		if r.Status != prove.Decided {
-			exit = 1
-		}
-	}
-	fmt.Fprintf(stdout, "oak prove: %s\n", prove.Summary(results))
 	if *leanOut != "" {
-		text, err := comp.EmitLeanRoots("Oak.Theorems", prove.Names(model)).Get()
+		// A theorem the extractor cannot state (a recursive callee, a
+		// construct outside the subset) stays open with the extractor's
+		// reason; the projection carries the rest.
+		var roots []string
+		for i, r := range results {
+			if _, err := comp.EmitLeanRoots("Oak.Theorems", []string{r.Name}).Get(); err != nil {
+				if r.Status == prove.Open {
+					results[i].Detail += " (not projected: " + err.Error() + ")"
+				}
+				continue
+			}
+			roots = append(roots, r.Name)
+		}
+		text, err := comp.EmitLeanRoots("Oak.Theorems", roots).Get()
 		if err != nil {
 			fmt.Fprintf(stderr, "oak prove: lean: %v\n", err)
 			return 2
@@ -77,6 +84,24 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "oak prove: %v\n", err)
 			return 2
 		}
+		if *check {
+			checked, err := prove.CheckWithLean(*leanBinary, *leanOut, text, results)
+			if err != nil {
+				fmt.Fprintf(stderr, "oak prove: %v\n", err)
+				return 2
+			}
+			results = checked
+		}
+	}
+	exit := 0
+	for _, r := range results {
+		fmt.Fprintf(stdout, "%-9s %s: %s\n", r.Status, r.Name, r.Detail)
+		if r.Status != prove.Decided && r.Status != prove.Proved {
+			exit = 1
+		}
+	}
+	fmt.Fprintf(stdout, "oak prove: %s\n", prove.Summary(results))
+	if *leanOut != "" {
 		fmt.Fprintf(stdout, "oak prove: wrote %s\n", *leanOut)
 	}
 	return exit

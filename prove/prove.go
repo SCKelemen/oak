@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/evaluator"
@@ -67,9 +68,15 @@ func Theorems(model *compiler.SemanticModel, cases int) ([]Result, error) {
 			return nil, fmt.Errorf("prove: loading the program in the interpreter: %s", e.Message)
 		}
 	}
+	functions := map[string]*ast.FunctionStatement{}
+	for _, stmt := range model.Tree.Root.Statements {
+		if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil {
+			functions[fn.Name.Value] = fn
+		}
+	}
 	var results []Result
 	for _, theorem := range theorems {
-		results = append(results, decide(env, model.TypeChecker, theorem, cases))
+		results = append(results, decide(env, model.TypeChecker, functions, theorem, cases))
 	}
 	return results, nil
 }
@@ -168,7 +175,7 @@ func integers(low, high int64) []object.Object {
 }
 
 // decide runs the exhaustive decider on one theorem.
-func decide(env *object.Environment, tc *typechecker.TypeChecker, theorem *ast.FunctionStatement, cases int) Result {
+func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[string]*ast.FunctionStatement, theorem *ast.FunctionStatement, cases int) Result {
 	name := theorem.Name.Value
 	fn, found := env.Get(name)
 	if !found {
@@ -179,12 +186,13 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, theorem *ast.F
 	for _, param := range theorem.Parameters {
 		d, reason := domainOf(tc, param)
 		if reason != "" {
-			return Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"}
+			return blastOr(theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})
 		}
 		domains = append(domains, d)
 		total *= len(d.values)
 		if total > cases {
-			return Result{Name: name, Status: Open, Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)}
+			return blastOr(theorem, functions, Result{Name: name, Status: Open,
+				Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)})
 		}
 	}
 	args := make([]object.Object, len(domains))
@@ -218,6 +226,20 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, theorem *ast.F
 		}
 	}
 	return Result{Name: name, Status: Decided, Detail: fmt.Sprintf("all %d cases", total)}
+}
+
+// blastOr runs the bit-level decider (asm.DecideTheorem) on a theorem the
+// exhaustive decider does not reach, and keeps the given open result when
+// the decider does not apply either.
+func blastOr(theorem *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, open Result) Result {
+	decision := asm.DecideTheorem(theorem, functions)
+	switch decision.Kind {
+	case asm.DecisionProven:
+		return Result{Name: open.Name, Status: Decided, Detail: decision.Message}
+	case asm.DecisionRefuted:
+		return Result{Name: open.Name, Status: Refuted, Detail: decision.Message}
+	}
+	return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + decision.Message + ")"}
 }
 
 // assignment renders one argument tuple as `x = 3, y = Red`.

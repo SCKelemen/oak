@@ -28,7 +28,7 @@ main: (): i32 {
     kept = sort_dedup[u32](s2)
     sort_reverse[u32](s2)
   }
-  assert(kept == u32(6))
+  assert_eq(kept, u32(6))
   assert(data[0] == u32(9) && data[6] == u32(1))
   // Heapsort on a longer span, and signed elements.
   big: [40]i32

@@ -98,6 +98,22 @@ func (comp Compilation) WithDiagnosticSink(sink func(*diagnostic.Diagnostic)) Co
 	return comp
 }
 
+// LinkInputs resolves the native inputs the build's manifests declare
+// (`link`, `framework`; docs/spec/83-modules.md section 4.6) by running the
+// module loader. A single-source compilation has none. Callers that compile
+// the emitted C pass every object and framework to the C compiler and fold
+// the objects' contents into their build identity.
+func (comp Compilation) LinkInputs() ([]LinkInput, error) {
+	tree, err := comp.Parse().Get()
+	if err != nil {
+		return nil, err
+	}
+	if tree.Modules == nil {
+		return nil, nil
+	}
+	return tree.Modules.Links, nil
+}
+
 // SyntaxTree is a parsed Oak source file.
 type SyntaxTree struct {
 	Source SourceText
