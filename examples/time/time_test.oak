@@ -1,0 +1,163 @@
+// Property tests for the standard library's time package (stdlib/time.oak),
+// run with `oak test examples/time`. Library packages resolve through the
+// module loader, so this directory is a module root (oak.mod); the tests
+// draw instants over the whole i64 range and check the round trips the
+// package promises: civil <-> days, instant <-> civil, RFC 3339 format <->
+// parse, and duration text.
+package main
+
+import("time")
+import(testing)
+
+MAX_NANOS: i64 = 9223372036854775807
+MIN_NANOS: i64 = -9223372036854775807 - 1
+NANOS_PER_DAY: i64 = 86400000000000
+
+// floor_mod for the truncation a formatted fraction performs.
+floor_mod: (a: i64, b: i64): i64 {
+  r: i64 = a % b
+  r < i64(0) ? { r + b } | { r }
+}
+
+// pick_i64 draws a full-range i64 from two u32 choices.
+pick_i64: (choices: [*]TestChoices, data: []u8): i64 {
+  hi: u32 = test_u32(choices, data)
+  lo: u32 = test_u32(choices, data)
+  i64_bits_u64(u64(hi) * u64(4294967296) + u64(lo))
+}
+
+// pick_offset draws an offset in -1439..1439 minutes.
+pick_offset: (choices: [*]TestChoices, data: []u8): i32 {
+  i32_bits_u32(test_range(choices, data, u32(0), u32(2879))) - i32(1439)
+}
+
+// near_edge: an instant within a day of the range ends, where an offset
+// shift may overflow.
+near_edge: (nanos: i64): Bool = nanos > MAX_NANOS - NANOS_PER_DAY || nanos < MIN_NANOS + NANOS_PER_DAY
+
+TestEpoch: (): () {
+  buf: [48]u8
+  r: Result[u32, time.TimeError] = time.format_rfc3339(span(&buf), time.instant_nanos(i64(0)), i32(0), u32(0))
+  r ? | .Ok(n) => {
+    test_check(n == u32(20), u32(1))
+    test_check(buf[0] == u8(49) && buf[10] == u8(84) && buf[19] == u8(90), u32(2))
+  } | .Err(e) => { test_check(false, u32(3)) }
+  test_check(time.days_from_civil(i32(1970), u8(1), u8(1)) == i64(0), u32(4))
+  test_check(time.weekday(i64(0)) == u8(4), u32(5))
+}
+
+TestLeapSecondRejected: (): () {
+  text: [20]u8 = [20]u8{50,48,49,54,45,49,50,45,51,49,84,50,51,58,53,57,58,54,48,90}
+  r: Result[time.Zoned, time.TimeError] = time.parse_rfc3339(view(&text))
+  r ? | .Ok(z) => { test_check(false, u32(6)) } | .Err(e) => {
+    e ? | .InvalidCivil => { test_check(true, u32(7)) } | .Overflowed => { test_check(false, u32(8)) }
+      | .InvalidFormat => { test_check(false, u32(8)) } | .InvalidOffset => { test_check(false, u32(8)) }
+      | .InvalidDuration => { test_check(false, u32(8)) } | .DestinationTooSmall => { test_check(false, u32(8)) }
+  }
+}
+
+TestLowercaseAccepted: (): () {
+  text: [20]u8 = [20]u8{49,57,55,48,45,48,49,45,48,49,116,48,48,58,48,48,58,48,48,122}
+  r: Result[time.Zoned, time.TimeError] = time.parse_rfc3339(view(&text))
+  r ? | .Ok(z) => { test_check(z.instant.nanos == i64(0) && z.offset_minutes == i32(0), u32(9)) } | .Err(e) => { test_check(false, u32(10)) }
+}
+
+// Every day count in a wide range converts to a valid date and back, and
+// consecutive days advance the weekday by one.
+PropertyCivilDaysRoundTrip: (data: []u8): () {
+  state: [1]TestChoices
+  choices: [*]TestChoices = span(&state)
+  raw: u32 = test_u32(choices, data)
+  days: i64 = i64(raw % u32(200000000)) - i64(100000000)
+  c: time.Civil = time.civil_from_days(days)
+  test_check(time.civil_valid(c), u32(11))
+  test_check(time.days_from_civil(c.year, c.month, c.day) == days, u32(12))
+  test_check(time.weekday(days + i64(1)) == (time.weekday(days) + u8(1)) % u8(7), u32(13))
+  test_check(time.day_of_year(c) >= u32(1) && time.day_of_year(c) <= u32(366), u32(14))
+  test_check(c.day <= time.days_in_month(c.year, c.month), u32(15))
+}
+
+// Any instant at any offset converts to civil time and back exactly, or
+// reports Overflowed only within a day of the range ends.
+PropertyInstantCivilRoundTrip: (data: []u8): () {
+  state: [1]TestChoices
+  choices: [*]TestChoices = span(&state)
+  nanos: i64 = pick_i64(choices, data)
+  offset: i32 = pick_offset(choices, data)
+  r: Result[time.Civil, time.TimeError] = time.instant_to_civil(time.instant_nanos(nanos), offset)
+  r ?
+    | .Err(e) => { test_check(near_edge(nanos), u32(16)) }
+    | .Ok(c) => {
+      test_check(time.civil_valid(c), u32(17))
+      back: Result[time.Instant, time.TimeError] = time.civil_to_instant(c, offset)
+      back ? | .Ok(i) => { test_check(i.nanos == nanos, u32(18)) } | .Err(e2) => { test_check(false, u32(19)) }
+    }
+}
+
+// What format_rfc3339 writes, parse_rfc3339 reads back: the same offset,
+// the instant truncated to the fraction digits written, and exactly
+// rfc3339_size bytes.
+PropertyFormatParseRoundTrip: (data: []u8): () {
+  state: [1]TestChoices
+  choices: [*]TestChoices = span(&state)
+  nanos: i64 = pick_i64(choices, data)
+  offset: i32 = pick_offset(choices, data)
+  fraction: u32 = test_range(choices, data, u32(0), u32(9))
+  unit: i64 = 1
+  k: u32 = fraction
+  while k < u32(9) {
+    unit = unit * i64(10)
+    k = k + u32(1)
+  }
+  buf: [48]u8
+  r: Result[u32, time.TimeError] = time.format_rfc3339(span(&buf), time.instant_nanos(nanos), offset, fraction)
+  r ?
+    | .Err(e) => { test_check(near_edge(nanos), u32(20)) }
+    | .Ok(n) => {
+      test_check(n == time.rfc3339_size(offset, fraction), u32(21))
+      v: []u8 = view(&buf)
+      parsed: Result[time.Zoned, time.TimeError] = time.parse_rfc3339(v[0:n])
+      parsed ?
+        | .Err(e2) => { test_check(false, u32(22)) }
+        | .Ok(z) => {
+          test_check(z.offset_minutes == offset, u32(23))
+          test_check(z.instant.nanos == nanos - floor_mod(nanos, unit), u32(24))
+        }
+    }
+}
+
+// Every duration prints in Go's spelling and parses back to itself.
+PropertyDurationTextRoundTrip: (data: []u8): () {
+  state: [1]TestChoices
+  choices: [*]TestChoices = span(&state)
+  nanos: i64 = pick_i64(choices, data)
+  buf: [48]u8
+  r: Result[u32, time.TimeError] = time.format_duration(span(&buf), time.duration_nanos(nanos))
+  r ?
+    | .Err(e) => { test_check(false, u32(25)) }
+    | .Ok(n) => {
+      test_check(n <= time.DURATION_TEXT_SIZE, u32(26))
+      v: []u8 = view(&buf)
+      parsed: Result[time.Duration, time.TimeError] = time.parse_duration(v[0:n])
+      parsed ? | .Err(e2) => { test_check(false, u32(27)) } | .Ok(d) => { test_check(d.nanos == nanos, u32(28)) }
+    }
+}
+
+// Checked addition either inverts exactly or fails precisely when the
+// mathematical sum leaves i64.
+PropertyCheckedAdd: (data: []u8): () {
+  state: [1]TestChoices
+  choices: [*]TestChoices = span(&state)
+  a: i64 = pick_i64(choices, data)
+  b: i64 = pick_i64(choices, data)
+  sum: Result[time.Duration, time.TimeError] = time.duration_add(time.duration_nanos(a), time.duration_nanos(b))
+  sum ?
+    | .Ok(s) => {
+      back: Result[time.Duration, time.TimeError] = time.duration_sub(s, time.duration_nanos(b))
+      back ? | .Ok(d) => { test_check(d.nanos == a, u32(29)) } | .Err(e) => { test_check(false, u32(30)) }
+    }
+    | .Err(e) => {
+      overflows: Bool = (b > i64(0) && a > MAX_NANOS - b) || (b < i64(0) && a < MIN_NANOS - b)
+      test_check(overflows, u32(31))
+    }
+}

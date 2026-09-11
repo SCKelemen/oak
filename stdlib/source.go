@@ -74,6 +74,13 @@ var hashSource string
 //go:embed mx.oak
 var mxSource string
 
+// time is a library package only (import("time")): instants, durations,
+// the proleptic Gregorian calendar and RFC 3339 text in Oak, with no clock
+// (stdlib/README.md); its names (instant_add, weekday, ...) stay qualified.
+//
+//go:embed time.oak
+var timeSource string
+
 // Prelude is the core library (std.oak): Option, Result, Overflow, byte and
 // ring helpers. Every standard library package builds on it unqualified, and
 // the loader splices it into any program that imports a library package.
@@ -143,4 +150,5 @@ var Packages = map[string]string{
 	"math":            mathSource,
 	"hash":            hashSource,
 	"mx":              mxSource,
+	"time":            timeSource,
 }
