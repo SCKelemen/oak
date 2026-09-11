@@ -247,3 +247,57 @@ func TryReplacement(moduleDir, path, candidateDir string) ([]TryResult, error) {
 	}
 	return results, nil
 }
+
+// RequirementGraph returns, for the module at moduleDir and every module
+// its manifests reach, the require directives of each — the edges of the
+// module graph `oak mod graph` prints. Modules are located as a build
+// locates them (replace directives, then the module cache); a module that
+// cannot be located contributes no edges.
+func RequirementGraph(moduleDir string) (map[string][]modules.Requirement, error) {
+	root, err := filepath.Abs(moduleDir)
+	if err != nil {
+		return nil, err
+	}
+	text, err := os.ReadFile(filepath.Join(root, modules.ManifestFile))
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := modules.ParseManifest(string(text))
+	if err != nil {
+		return nil, err
+	}
+	cache := os.Getenv("OAKMODCACHE")
+	graph := map[string][]modules.Requirement{manifest.Path: manifest.Requires}
+	queue := append([]modules.Requirement(nil), manifest.Requires...)
+	for len(queue) != 0 {
+		requirement := queue[0]
+		queue = queue[1:]
+		if _, seen := graph[requirement.Path]; seen {
+			continue
+		}
+		dir := ""
+		if replacement, replaced := manifest.Replaces[requirement.Path]; replaced {
+			dir = replacement
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(root, filepath.FromSlash(dir))
+			}
+		} else if cache != "" {
+			dir = modules.CacheDir(cache, requirement.Path, requirement.Version)
+		}
+		graph[requirement.Path] = nil
+		if dir == "" {
+			continue
+		}
+		depText, err := os.ReadFile(filepath.Join(dir, modules.ManifestFile))
+		if err != nil {
+			continue
+		}
+		dep, err := modules.ParseManifest(string(depText))
+		if err != nil {
+			continue
+		}
+		graph[requirement.Path] = dep.Requires
+		queue = append(queue, dep.Requires...)
+	}
+	return graph, nil
+}

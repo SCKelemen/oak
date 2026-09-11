@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,4 +192,166 @@ func TestModAPIPackageAndSnapshotFileDiff(t *testing.T) {
 	if code, out := run(t, "bump", prev, current); code != 1 || !strings.Contains(out, "requires version 1.1.0; declared 2.0.0") {
 		t.Fatalf("bump over-versioned: %d\n%s", code, out)
 	}
+}
+
+// Round A of go-tool parity: dispatcher-level commands.
+func TestCLIParityCommands(t *testing.T) {
+	// help / version / env
+	if code, out := runCLI(t, helpCommand, nil); code != 0 || !strings.Contains(out, "oak <command> [arguments]") || !strings.Contains(out, "install") {
+		t.Fatalf("help: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, helpCommand, []string{"mod"}); code != 0 || !strings.Contains(out, "graph [dir]") {
+		t.Fatalf("help mod: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, versionCommand, nil); code != 0 || !strings.HasPrefix(out, "oak version ") {
+		t.Fatalf("version: %d\n%s", code, out)
+	}
+	t.Setenv("OAKMODCACHE", "/tmp/oak-cache-test")
+	if code, out := runCLI(t, envCommand, []string{"OAKMODCACHE"}); code != 0 || strings.TrimSpace(out) != "/tmp/oak-cache-test" {
+		t.Fatalf("env NAME: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, envCommand, nil); code != 0 || !strings.Contains(out, `OAKMODCACHE="/tmp/oak-cache-test"`) || !strings.Contains(out, "OAKBIN=") {
+		t.Fatalf("env: %d\n%s", code, out)
+	}
+
+	// A module with a dependency, for list, vet, why, graph, edit, init.
+	lib := writeTree(t, map[string]string{"oak.mod": "module example.com/lib\nversion 1.0.0\n", "geometry/point.oak": libV1})
+	app := writeTree(t, map[string]string{
+		"oak.mod":       "module example.com/app\nrequire example.com/lib 1.0.0\nreplace example.com/lib => " + lib + "\n",
+		"main.oak":      "package main\n\ngeo := import(\"example.com/lib/geometry\")\nu := import(\"example.com/app/util\")\n\nmain: (): i32 = geo.sum(geo.make(20, 22)) + u.zero()\n",
+		"util/util.oak": "package util\n\npub zero: (): i32 = { i: u32 = 0\n  running: Bool = true\n  while running { i = i + 1\n    running = i < 3 }\n  0 }\n",
+	})
+	code, out := runCLI(t, listPackages, []string{app})
+	if code != 0 || !strings.Contains(out, "example.com/app\n\texample.com/app/util\n\texample.com/lib/geometry") || strings.Contains(out, "example.com/lib/geometry\n") && strings.HasPrefix(out, "example.com/lib") {
+		t.Fatalf("list: %d\n%s", code, out)
+	}
+	code, out = runCLI(t, listPackages, []string{"-json", "-deps", app})
+	if code != 0 || !strings.Contains(out, `"path": "example.com/lib/geometry"`) || !strings.Contains(out, `"module": "example.com/lib"`) {
+		t.Fatalf("list -json -deps: %d\n%s", code, out)
+	}
+	code, out = runCLI(t, vetPackage, []string{filepath.Join(app, "util")})
+	if code != 0 || !strings.Contains(out, "OAK-D0103") || !strings.Contains(out, "1 recorded assumption") {
+		t.Fatalf("vet: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, vetPackage, []string{filepath.Join(lib, "geometry")}); code != 0 || !strings.Contains(out, "no recorded assumptions") {
+		t.Fatalf("vet clean: %d\n%s", code, out)
+	}
+	code, out = run(t, "why", "example.com/lib/geometry", app)
+	if code != 0 || !strings.Contains(out, "# example.com/app\nexample.com/app\nexample.com/lib/geometry") {
+		t.Fatalf("why: %d\n%s", code, out)
+	}
+	if code, out := run(t, "why", "example.com/absent", app); code != 1 || !strings.Contains(out, "no package of example.com/app imports") {
+		t.Fatalf("why absent: %d\n%s", code, out)
+	}
+	if code, out := run(t, "graph", app); code != 0 || strings.TrimSpace(out) != "example.com/app example.com/lib@1.0.0" {
+		t.Fatalf("graph: %d\n%s", code, out)
+	}
+	// edit: require, replace, version, profile; then drops.
+	if code, out := run(t, "edit", "-require", "example.com/extra@2.1.0", "-version", "0.3.0", "-profile", "strict", app); code != 0 || !strings.Contains(out, "rewrote") {
+		t.Fatalf("edit: %d\n%s", code, out)
+	}
+	text, _ := os.ReadFile(filepath.Join(app, "oak.mod"))
+	for _, want := range []string{"require example.com/extra 2.1.0", "version 0.3.0", "profile strict", "require example.com/lib 1.0.0"} {
+		if !strings.Contains(string(text), want) {
+			t.Fatalf("edit missing %q:\n%s", want, text)
+		}
+	}
+	if code, out := run(t, "edit", "-require", "example.com/lib@1.2.0", "-droprequire", "example.com/extra", "-version", "0.4.0", app); code != 0 {
+		t.Fatalf("edit 2: %d\n%s", code, out)
+	}
+	text, _ = os.ReadFile(filepath.Join(app, "oak.mod"))
+	if strings.Contains(string(text), "extra") || !strings.Contains(string(text), "require example.com/lib 1.2.0") || strings.Count(string(text), "version ") != 1 || !strings.Contains(string(text), "version 0.4.0") {
+		t.Fatalf("edit 2 result:\n%s", text)
+	}
+	if code, _ := run(t, "edit", "-require", "example.com/lib@nonsense", app); code != 1 {
+		t.Fatalf("edit must reject a bad version: %d", code)
+	}
+	if code, _ := run(t, "edit", "-replace", "example.com/nowhere=>../x", app); code != 1 {
+		t.Fatal("edit must refuse a manifest that does not parse (replace without require)")
+	}
+	// init: creates once, refuses twice, rejects library paths.
+	fresh := t.TempDir()
+	if code, out := run(t, "init", "example.com/new", fresh); code != 0 || !strings.Contains(out, "created") {
+		t.Fatalf("init: %d\n%s", code, out)
+	}
+	if code, _ := run(t, "init", "example.com/new", fresh); code != 1 {
+		t.Fatal("init must not overwrite")
+	}
+	if code, _ := run(t, "init", "strings", t.TempDir()); code != 1 {
+		t.Fatal("init must reject a standard-library path")
+	}
+	// clean: refuses an unset cache, removes an explicit one.
+	t.Setenv("OAKMODCACHE", "")
+	if code, _ := runCLI(t, cleanCommand, []string{"-modcache"}); code != 1 {
+		t.Fatal("clean must refuse without OAKMODCACHE")
+	}
+	cache := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cache, "example.com", "dep@v1.0.0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OAKMODCACHE", cache)
+	if code, out := runCLI(t, cleanCommand, []string{"-modcache"}); code != 0 || !strings.Contains(out, "removed 1 entry") {
+		t.Fatalf("clean: %d\n%s", code, out)
+	}
+	if entries, _ := os.ReadDir(cache); len(entries) != 0 {
+		t.Fatal("clean must empty the cache directory")
+	}
+	// build: executable by default, C with -o x.c, from a single file too.
+	// (The edit above made the module strict, which rejects util's loop;
+	// go back to the default profile first.)
+	if code, _ := run(t, "edit", "-profile", "default", app); code != 0 {
+		t.Fatal("edit -profile default")
+	}
+	if _, err := exec.LookPath("cc"); err == nil {
+		bin := filepath.Join(t.TempDir(), "app")
+		if code, out := runCLI(t, buildPackage, []string{"-o", bin, app}); code != 0 || !strings.Contains(out, "Built") {
+			t.Fatalf("build binary: %d\n%s", code, out)
+		}
+		if info, err := os.Stat(bin); err != nil || info.Mode()&0o111 == 0 {
+			t.Fatalf("build must produce an executable: %v", err)
+		}
+		t.Setenv("OAKBIN", filepath.Join(t.TempDir(), "bin"))
+		if code, out := runCLI(t, installPackage, []string{app}); code != 0 || !strings.Contains(out, "installed") {
+			t.Fatalf("install: %d\n%s", code, out)
+		}
+		// Named after the module (the root package is the clause-less main).
+		if _, err := os.Stat(filepath.Join(os.Getenv("OAKBIN"), "app")); err != nil {
+			t.Fatalf("install target missing: %v", err)
+		}
+	}
+	cfile := filepath.Join(t.TempDir(), "app.c")
+	if code, out := runCLI(t, buildPackage, []string{"-o", cfile, app}); code != 0 || !strings.Contains(out, "Built") {
+		t.Fatalf("build -o x.c: %d\n%s", code, out)
+	}
+	if text, err := os.ReadFile(cfile); err != nil || !strings.Contains(string(text), "int main") {
+		t.Fatalf("build -o x.c must write C: %v", err)
+	}
+	single := filepath.Join(t.TempDir(), "one.oak")
+	if err := os.WriteFile(single, []byte("main: (): i32 = 42\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCLI(t, buildPackage, []string{"-emit-c", "-o", filepath.Join(filepath.Dir(single), "one.c"), single}); code != 0 {
+		t.Fatalf("build file: %d\n%s", code, out)
+	}
+}
+
+// runCLI invokes a top-level command function capturing its output.
+func runCLI(t *testing.T, fn func([]string) int, args []string) (int, string) {
+	t.Helper()
+	savedOut, savedErr := os.Stdout, os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout, os.Stderr = writer, writer
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, reader)
+		done <- buf.String()
+	}()
+	code := fn(args)
+	writer.Close()
+	os.Stdout, os.Stderr = savedOut, savedErr
+	return code, <-done
 }
