@@ -626,6 +626,48 @@ midpoints between adjacent doubles, comparing every line with `strconv`.
 Deviations from Go: digit-separating underscores and hexadecimal floats are
 rejected rather than accepted.
 
+## Grapheme clusters
+
+`stdlib/grapheme.oak` (`import("grapheme")`, also in the flat prelude)
+segments UTF-8 text into extended grapheme clusters, the user-perceived
+characters of UAX #29 section 3.1.1 at Unicode 17.0.0: a base with its
+combining marks, a Hangul syllable spelled as jamo, an emoji ZWJ sequence, a
+flag pair, an Indic conjunct. `grapheme_next(src, at)` returns the byte
+offset where the cluster starting at `at` ends (`len(src)` at the end), so
+walking from 0 partitions the text; `grapheme_count(src)` is the length of
+that walk and `grapheme_is_boundary(src, at)` whether the walk lands on
+`at`. `at` must be a boundary reached from 0, because GB9c, GB11 and the
+Regional_Indicator parity of GB12/GB13 count from the start of the scan.
+An undecodable byte is its own cluster, so segmentation is total over any
+byte view. `grapheme_class(scalar)` is the combined property word `gcb |
+incb << 8 | pictographic << 10` read by `grapheme_gcb`, `grapheme_incb` and
+`grapheme_is_pictographic`, with the `GB_*` and `INCB_*` constants naming the
+values; the table (`grapheme_table`, 1631 ranges) is generated from the
+checked-in extract `unicode17_grapheme.json` by `generate_grapheme.py`, and
+the extract from the UCD files by `extract_grapheme.py`.
+
+The rules run as a state machine — `GraphemeState { prev, ri_run, pict,
+conjunct }` with `grapheme_initial`, `grapheme_breaks(state, props)` and
+`grapheme_advance(state, props)` exported — so each decision is one table
+lookup and a bounded state, no allocation, no recursion, no lookback.
+`spec/lean/Oak/GraphemeBreak.lean` states the rules GB3 to GB13 and GB999
+as scans over the preceding text (`ruleBreak`, the annex's wording) and the
+machine as `breaks`/`advance` folded over the text (`machineBreak`), and
+proves `machine_agrees`: for every history of well-formed symbols (an
+Extended_Pictographic or InCB=Consonant scalar has class Other, a Linker has
+class Extend, InCB=Extend has class Extend or ZWJ — the shape the UCD
+guarantees and the Go law test checks against the table) the two decide
+every position identically. `compiler/e2e_stdlib_grapheme_test.go` runs the
+hand-picked cases, the qualified import, and every line of the official
+`GraphemeBreakTest-17.0.0.txt` (`stdlib/testdata`); the law test
+`compiler/e2e_stdlib_grapheme_laws_test.go` enumerates every sequence of
+five symbol shapes (18^5) through the compiled machine and compares each
+boundary decision with an independent Go transliteration of `ruleBreak`.
+`examples/testing/grapheme_test.oak` states the partition, count and ASCII
+properties over tape-generated text. Reverse iteration (`grapheme_prev`) is
+absent: the parity and conjunct rules need unbounded lookback from the
+right, so callers walk forward from 0.
+
 ## Strings and Unicode text
 
 The [strings API](STRINGS.md) is executable through `import(std)`: strict
