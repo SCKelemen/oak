@@ -48,16 +48,27 @@ proofs written against them transfer.
 | `while c { body }` | `def f.loopN (reads...) : Nat → Option (writes...)` with `0 => none`, recursing on the fuel |
 | `g(args)` | `let (r, spans...) ← g args fuel`, hoisted before the statement; the span owners are rebound |
 | `assert(c)` | `let () ← if c then pure () else none` |
+| `E: type = A \| B: T` | `inductive E where \| A \| B (payload : T)` deriving `Repr, Inhabited, BEq, DecidableEq` (records derive the same four) |
+| `Result[u32, E]`, `Option[Item]` | one inductive per instantiation the checker recorded, under its mangled name: `Result_u32_E`, `Option_Item` — the concrete tagged union the C backend emits (codegen/mono.go); templates are never emitted |
+| `.B(x)`, `.Err(.Overlong)` | `(E.B x)`, `(Result_u32_E.Err E.Overlong)` — the type from the checked expression type, else the recorded variant resolution |
+| `x ? \| .Ok(v) => a \| .Err(e) => b` (value) | `(match x with \| (.Ok v) => a \| (.Err e) => b)`; nested patterns, wildcards, and a whole-value binding as in the source |
+| the same in statement position | `let (vars) ← (match x with \| (.Ok v) => (do ...; pure (vars)) \| ...)` over the variables the arms assign |
+| a value-position arm with statements or calls | `let (r, vars) ← (if c then (do ...; pure (v, vars)) else (do ...))`, so nothing in an untaken arm is evaluated; arms that are plain terms stay a pure `if`/`match` |
+| `a & b`, `a \| b`, `a ^ b`, `a << n`, `a >> n` | `a &&& b`, `a \|\|\| b`, `a ^^^ b`, `a <<< n`, `a >>> n` (see section 3 for the count) |
+| `u8_checked_u32(x)` | `if x > 255 then Result_u8_Overflow.Err Overflow.Overflow else Result_u8_Overflow.Ok x.toUInt8` — the range test per signedness pair, then the wrapping conversion |
+| `f[T]: (items: [*]T): ()` called as `f[u32](s)` | the checker's specialization `f_u32` (typechecker/genericfn.go), extracted like any function; the template itself is never emitted |
+| `NAME: u32 = 16` at top level | `def NAME : UInt32 := (16 : UInt32)`, emitted when a function reads it; an initializer that calls a function fails closed |
 
 Functions are emitted callee-first. Every function takes `fuel : Nat` and
 threads it to every loop and call; the corpus harness supplies a fuel above
 any loop's iteration count, so `none` is a disagreement, never a pass.
 
-## 3. Two modeling choices, stated
+## 3. Three modeling choices, stated
 
-Oak traps on an out-of-range read or write and on division by zero. The
-extraction reads the element type's zero, drops the write, and divides to
-zero. This is sound for the direction the experiment proves — an Oak run
+Oak traps on an out-of-range read or write, on division by zero, and on a
+shift whose count reaches the operand width (`10-syntax.md` section 3b). The
+extraction reads the element type's zero, drops the write, divides to zero,
+and shifts by Lean's masked count. This is sound for the direction the experiment proves — an Oak run
 that produced a verdict took no trapping path, and on such runs the model
 computes the same values — and it is what the hand-written models already
 assume. A model of trapping as `none` would make every expression monadic;
@@ -65,14 +76,20 @@ the choice here keeps expressions pure and the proofs tractable.
 
 ## 4. The subset, and what fails closed
 
-Records of extractable fields; the fixed-width integers and Bool; arrays,
-views, and spans of those; `while`; Bool conditionals in statement and value
-position; calls to extracted functions, `len`, `view`, `span`, the widening
-constructors, and `assert`; field assignment one level deep. Everything
-else — strings, ADTs other than records, matches over variants, generics
-that survive checking, recursion, methods, extern functions, closures,
-`subslice`, the explicit conversions, floats, SIMD, FFI — is an error
-naming the construct. Nothing is approximated.
+Records and sum types of extractable fields and payloads, generic ADTs per
+recorded instantiation; the fixed-width integers and Bool; arrays, views,
+and spans of those; `while`; Bool conditionals, integer-constant matches,
+and matches over variants in statement and value position, arms with
+statements bound through do-blocks; calls to extracted functions (the
+checker's specializations of generic templates included), `len`, `view`,
+`span`, the widening constructors, the `trunc`/`bits`/`saturating`/`checked`
+integer conversion rows, the bitwise operators, `assert`; field assignment
+one level deep; top-level constants. The extraction closes over the roots'
+callees, so a program that calls the standard library extracts the library
+functions it reaches. Everything else — strings, generic templates
+themselves, recursion, methods, extern functions, closures, `subslice`,
+the floating-point rows, floats, SIMD, FFI, assignment to a global — is an
+error naming the construct. Nothing is approximated.
 
 ## 5. Where it runs
 
@@ -83,6 +100,17 @@ requires the extraction, the hand-written transliteration, the proved file
 model, and compiled Oak to return one verdict on every corpus case and on
 the replayed real certificate (729 cases at the time of writing). The opt-in
 verification workflow and the certificate gate build and run it.
+
+**The standard library.** `compiler/lean_stdlib_extract_test.go` extracts
+whole packages — `varint`, `encoding`, `random`, `uuid`, and `sort` at
+`u32` — into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
+failing on drift the same way. A package's program is the core prelude
+plus the flattened texts of its dependencies and itself (`stdlib.Flatten`);
+the roots are the package's declarations plus a driver that instantiates
+its generic templates (`sort_u32_span: (items: [*]u32): () {
+sort_span[u32](items) }`), and `Compilation.EmitLeanRoots` closes over
+their callees. The modules are imported from `spec/lean/Oak.lean`, so the
+Lean job builds them.
 
 ## 6. Theorems about the extraction
 
@@ -131,8 +159,31 @@ check, and the one gap between the extraction's acceptance and
 `rup_stream_check` against `CertifiedStream.check` on a represented
 layout.
 
+`spec/lean/Oak/Stdlib/VarintLaws.lean` states the first law about a
+library extraction: `roundTripHolds v` encodes `v` into a fresh ten-byte
+buffer with the extracted `varint_encode` and decodes it with the extracted
+`varint_decode`, and holds when the decoded value is `v` and the decoder's
+`next` is the encoder's count. It is decided in the kernel for every
+one-byte value (`round_trip_one_byte`, all 128), for the first value of
+every encoding length from two to ten bytes, for the RFC example (`300` is
+`AC 02`, `encode_300`), and for the largest `UInt64`; `overlong_tenth_byte_rejected`,
+`truncated_rejected`, and `decode_stops_at_terminator` decide the canonical-form
+rejections. These are kernel evaluations of the extracted program, not
+corpus agreement, and they hold with no axioms. The universal statement
+(every `UInt64`) needs an induction over the two loops and is stated as
+remaining work in section 7.
+
 ## 7. Next
 
+- The universal varint law: `∀ v, roundTripHolds v = true` by induction
+  over `varint_encode.loop1` and `varint_decode.loop1` (the decided range
+  covers every one-byte value and one value per longer length), then
+  canonicity — a decoded value re-encodes to the same bytes — the same way;
+  laws for `encoding` (each codec's round trip and strictness), `sort` (a
+  sorted permutation), `random` (the reference xoshiro256** sequence), and
+  `uuid` (the version and variant bits) against their extractions.
+- The subset: `subslice`, strings and the text library, methods, and
+  recursion; instantiations whose arguments are arrays or views.
 The stream checker (`rup_stream_check` and the `rup_check` kernel under
 it, seven and six loops, against `CertifiedStream.check`), which closes
 the transfer of `check_refines` to the extraction; the string-level
@@ -140,5 +191,5 @@ corollary once `ByteArray.toList` has its data lemma; then the constructs
 the verification programs need next (matches over records, the `checked`
 rows), each added with its own fail-closed test. Integer-constant matches and the integer
 conversion rows were added for the ml subset (op dispatch on constants,
-`u64` index arithmetic narrowed to `u32`); `checked` conversions and every
-floating-point row still fail closed.
+`u64` index arithmetic narrowed to `u32`); the `checked` rows landed with
+the standard-library round; every floating-point row still fails closed.

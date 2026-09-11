@@ -174,3 +174,10 @@ var Packages = map[string]string{
 	"time":            timeSource,
 	"arena":           arenaSource,
 }
+
+// Flatten derives the prelude spelling of one library package's text: no
+// package clause, no imports, qualified cross-references de-qualified. The
+// Lean extraction of the standard library builds a package's program from
+// the core prelude plus the flattened texts of the package and its
+// dependencies (compiler/lean_stdlib_extract_test.go).
+func Flatten(text string) string { return flatten(text) }

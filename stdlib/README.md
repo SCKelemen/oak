@@ -615,7 +615,7 @@ byte-boundary limits. They verify deterministic reuse, reservation, double relea
 short storage, maximum u32 bounds, preserved tail/spare bits and the runnable
 record-valued example. Emitted example C is checked for allocator calls.
 
-The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs. Native
+The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs, with one exception growing: `oak build -lean` extracts whole packages into Lean (`docs/spec/95-extraction.md` section 5) — `varint`, `encoding`, `random`, `uuid`, and `sort` at `u32` today, committed under `spec/lean/Oak/Stdlib/` with a drift test — and `Oak/Stdlib/VarintLaws.lean` decides the first law about an extraction in the kernel: encoding then decoding is the identity for every one-byte value, for one value of every encoding length up to ten, for the RFC example, and for the `u64` maximum, and the over-long and truncated forms are rejected. Those are statements about the extracted program, not corpus agreement. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
 allocator-backed pools, intrusive trees/hash tables, concurrent rings, broader collections and persistence
 protocols remain separate work; importing this module does not implement them.

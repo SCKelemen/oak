@@ -42,6 +42,8 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlib(SortAndSearch|SortMatchesGo|Varint|Random)|TestE2EGeneric(NestedTemplate|TemplateRecordLiteral)' -count=1
       - name: Test uuid
         run: go test ./compiler -run 'TestE2EStdlibUuid' -count=1
+      - name: Check Lean extraction of the standard library
+        run: go test ./codegen/lean ./compiler -run 'TestExtraction|TestLeanStdlibExtract' -count=1
       - name: Test encoding codecs
         run: go test ./compiler -run 'TestE2EStdlibEncoding' -count=1
       - name: Test time
