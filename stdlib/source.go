@@ -54,6 +54,24 @@ var randomSource string
 //go:embed uuid.oak
 var uuidSource string
 
+// path: slash-separated paths and glob patterns with Go's path semantics
+// (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed path.oak
+var pathSource string
+
+// grapheme: UAX #29 extended grapheme cluster segmentation over UTF-8 views
+// (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed grapheme.oak
+var graphemeSource string
+
+// float: shortest and correctly rounded decimal text for f64 and f32
+// (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed float.oak
+var floatSource string
+
 // encoding: hex, base64, base32 and percent codecs over borrowed bytes
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -113,12 +131,15 @@ var Prelude = baseSource
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
 	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource)
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource) + "\n" + flatten(pathSource) + "\n" + flatten(graphemeSource) + "\n" + flatten(floatSource)
 
 var (
-	clauseLine    = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
-	importLine    = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
-	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid)\.`)
+	clauseLine = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
+	importLine = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
+	// A package qualifier is only a qualifier when nothing precedes it: after
+	// a `.` it is a field named like a package (the `Url` record's `path`), so
+	// the leading context is kept and only the qualifier is dropped.
+	qualification = regexp.MustCompile(`(^|[^.\w])(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid|path|grapheme|float)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -127,7 +148,7 @@ var (
 func flatten(text string) string {
 	text = clauseLine.ReplaceAllString(text, "")
 	text = importLine.ReplaceAllString(text, "")
-	return qualification.ReplaceAllString(text, "")
+	return qualification.ReplaceAllString(text, "$1")
 }
 
 //go:embed testing.oak
@@ -165,6 +186,9 @@ var Packages = map[string]string{
 	"varint":          varintSource,
 	"random":          randomSource,
 	"uuid":            uuidSource,
+	"path":            pathSource,
+	"grapheme":        graphemeSource,
+	"float":           floatSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,
 	"url":             urlSource,

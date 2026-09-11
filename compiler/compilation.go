@@ -3,6 +3,7 @@ package compiler
 import (
 	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 
 	"github.com/SCKelemen/oak/asm"
@@ -50,6 +51,10 @@ type Options struct {
 	// (docs/spec/90-backend.md section 10). Off by default: the generated C
 	// then stands on its own lines for backend inspection.
 	LineDirectives bool
+	// NativeAsm realizes asm units through the Oak assembler's own encoder
+	// into a companion object (EmitAsmObject) instead of inline __asm__
+	// text the C toolchain assembles (docs/spec/94-assembler.md §9).
+	NativeAsm bool
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -153,6 +158,14 @@ func (comp Compilation) WithAsmUnit(path, text string) Compilation {
 // directives mapping functions and statements to their Oak source lines.
 func (comp Compilation) WithLineDirectives() Compilation {
 	comp.options.LineDirectives = true
+	return comp
+}
+
+// WithNativeAsm encodes asm units with the Oak assembler into a companion
+// object (docs/spec/94-assembler.md §9); the emitted C keeps only their
+// prototypes. Link the object of EmitAsmObject with the compiled C.
+func (comp Compilation) WithNativeAsm() Compilation {
+	comp.options.NativeAsm = true
 	return comp
 }
 
@@ -446,6 +459,7 @@ func (comp Compilation) EmitC() Stage[string] {
 		}
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
+		generator.SetNativeAsm(comp.options.NativeAsm)
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
 		generator.SetLineDirectives(comp.options.LineDirectives)
 		if lowered.Model.Tree.Modules != nil {
@@ -453,6 +467,72 @@ func (comp Compilation) EmitC() Stage[string] {
 		}
 		generator.SetSourceText(lowered.Model.Tree.Source.Text)
 		return generator.Generate(lowered.Root, lowered.Model.TypeChecker)
+	})
+}
+
+// HostObjectFormat is the relocatable object format of the host platform:
+// Mach-O on macOS, ELF elsewhere.
+func HostObjectFormat() asm.ObjectFormat {
+	if runtime.GOOS == "darwin" {
+		return asm.MachO
+	}
+	return asm.ELF
+}
+
+// NativeOutput is the emitted C beside the companion object that realizes
+// its asm units (docs/spec/94-assembler.md §9).
+type NativeOutput struct {
+	C      string
+	Object []byte
+}
+
+// EmitNative emits the C with asm units as prototypes and the companion
+// object holding their machine code, in one pass over the program.
+func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] {
+	comp.options.NativeAsm = true
+	return comp.Lower().Then(func(lowered *LoweredProgram) (NativeOutput, error) {
+		for _, stmt := range lowered.Root.Statements {
+			if fn, ok := stmt.(*ast.FunctionStatement); ok && len(fn.TypeParams) != 0 {
+				return NativeOutput{}, fmt.Errorf("codegen: generic function %s requires supported explicit specialization", fn.Name.Value)
+			}
+		}
+		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
+		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
+		generator.SetNativeAsm(true)
+		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
+		generator.SetLineDirectives(comp.options.LineDirectives)
+		if lowered.Model.Tree.Modules != nil {
+			generator.SetAbstractAliases(lowered.Model.Tree.Modules.Abstract)
+		}
+		generator.SetSourceText(lowered.Model.Tree.Source.Text)
+		code, err := generator.Generate(lowered.Root, lowered.Model.TypeChecker)
+		if err != nil {
+			return NativeOutput{}, err
+		}
+		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
+		if err != nil {
+			return NativeOutput{}, fmt.Errorf("asm: %w", err)
+		}
+		object, err := asm.WriteObject(format, encoded)
+		if err != nil {
+			return NativeOutput{}, err
+		}
+		return NativeOutput{C: code, Object: object}, nil
+	})
+}
+
+// EmitAsmObject encodes the compilation's checked asm units with the Oak
+// assembler and writes them as a relocatable object in the given format
+// (docs/spec/94-assembler.md §9), under the C symbols the emitted C
+// declares. A compilation without asm units yields an empty object.
+func (comp Compilation) EmitAsmObject(format asm.ObjectFormat) Stage[[]byte] {
+	return comp.Lower().Then(func(lowered *LoweredProgram) ([]byte, error) {
+		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
+		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
+		if err != nil {
+			return nil, fmt.Errorf("asm: %w", err)
+		}
+		return asm.WriteObject(format, encoded)
 	})
 }
 

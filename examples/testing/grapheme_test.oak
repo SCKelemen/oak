@@ -1,0 +1,120 @@
+import(std)
+import(testing)
+
+// Grapheme cluster properties over tape-generated text: the boundary chain
+// partitions the text, agrees with grapheme_is_boundary and grapheme_count,
+// and ASCII text has one cluster per byte except CR LF.
+
+// grapheme_pick: a scalar from a small alphabet that exercises every rule
+// family (letters, marks, ZWJ, regional indicators, Hangul jamo, emoji,
+// Devanagari consonant and virama, controls, CR, LF).
+grapheme_pick: (choices: [*]TestChoices, data: []u8): u32 {
+  kind: u32 = test_range(choices, data, u32(0), u32(17))
+  kind == u32(0) ? { u32(97) } |
+  kind == u32(1) ? { u32(13) } |
+  kind == u32(2) ? { u32(10) } |
+  kind == u32(3) ? { u32(1) } |
+  kind == u32(4) ? { u32(8204) } |
+  kind == u32(5) ? { u32(768) } |
+  kind == u32(6) ? { u32(2381) } |
+  kind == u32(7) ? { u32(8205) } |
+  kind == u32(8) ? { u32(127462) } |
+  kind == u32(9) ? { u32(1536) } |
+  kind == u32(10) ? { u32(2307) } |
+  kind == u32(11) ? { u32(4352) } |
+  kind == u32(12) ? { u32(4448) } |
+  kind == u32(13) ? { u32(4520) } |
+  kind == u32(14) ? { u32(44032) } |
+  kind == u32(15) ? { u32(44033) } |
+  kind == u32(16) ? { u32(128512) } |
+  { u32(2325) }
+}
+
+// 7300 every step of the chain advances and lands on a scalar boundary,
+// 7301 the chain ends exactly at the end of the text, 7302 grapheme_count is
+// the chain length, 7303 grapheme_is_boundary holds at every chain point and
+// fails at every scalar boundary the chain skipped, 7304 a cluster never
+// spans a CR/LF/control except the CR LF pair.
+PropertyGraphemeChainPartitions: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  buffer: [64]u8
+  starts: [17]u32
+  count: u32 = test_range(choices, data, u32(0), u32(16))
+  total: u32 = 0
+  i: u32 = 0
+  true ? {
+    dst: [*]u8 = span(&buffer)
+    while i < count {
+      starts[i] = total
+      total = total + text_result_value(utf8_encode(dst, total, grapheme_pick(choices, data)))
+      i = i + u32(1)
+    }
+  }
+  starts[count] = total
+  whole: []u8 = view(&buffer)
+  text: []u8 = whole[u32(0):total]
+  marks: [65]u8
+  marks[0] = u8(1)
+  clusters: u32 = 0
+  pos: u32 = 0
+  while pos < total {
+    next: u32 = grapheme_next(text, pos)
+    test_check(next > pos && next <= total, u32(7300))
+    on_scalar: Bool = false
+    j: u32 = 0
+    while j <= count {
+      starts[j] == next ? { on_scalar = true }
+      j = j + u32(1)
+    }
+    test_check(on_scalar, u32(7300))
+    marks[next] = u8(1)
+    clusters = clusters + u32(1)
+    pos = next
+  }
+  test_check(pos == total, u32(7301))
+  test_check(grapheme_count(text) == clusters, u32(7302))
+  k: u32 = 0
+  while k <= count {
+    at: u32 = starts[k]
+    expected: Bool = marks[at] == u8(1)
+    test_check(grapheme_is_boundary(text, at) == expected, u32(7303))
+    k = k + u32(1)
+  }
+  m: u32 = 1
+  while m < count {
+    lead: u32 = u32(text[starts[m - u32(1)]])
+    unit: u32 = u32(text[starts[m]])
+    control_edge: Bool = lead == u32(13) || lead == u32(10) || lead == u32(1) || unit == u32(13) || unit == u32(10) || unit == u32(1)
+    crlf: Bool = lead == u32(13) && unit == u32(10)
+    control_edge && !crlf ? { test_check(marks[starts[m]] == u8(1), u32(7304)) }
+    m = m + u32(1)
+  }
+  count == u32(0) ? { testing_classify(u32(190)) } | clusters == count ? { testing_classify(u32(191)) } | { testing_classify(u32(192)) }
+}
+
+// 7310 ASCII text without CR LF pairs has one cluster per byte, 7311 a CR
+// LF pair is one cluster.
+PropertyGraphemeAscii: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  buffer: [32]u8
+  count: u32 = test_range(choices, data, u32(0), u32(32))
+  pairs: u32 = 0
+  i: u32 = 0
+  while i < count {
+    buffer[i] = u8_trunc_u32(test_range(choices, data, u32(0), u32(127)))
+    i > u32(0) && buffer[i - u32(1)] == u8(13) && buffer[i] == u8(10) ? { pairs = pairs + u32(1) }
+    i = i + u32(1)
+  }
+  whole: []u8 = view(&buffer)
+  text: []u8 = whole[u32(0):count]
+  test_check(grapheme_count(text) == count - pairs, u32(7310))
+  pos: u32 = 0
+  while pos < count {
+    next: u32 = grapheme_next(text, pos)
+    width: u32 = next - pos
+    width == u32(2) ? { test_check(text[pos] == u8(13) && text[pos + u32(1)] == u8(10), u32(7311)) } | { test_check(width == u32(1), u32(7310)) }
+    pos = next
+  }
+}

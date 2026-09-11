@@ -26,6 +26,7 @@ type CodeGenerator struct {
 	// (OAK_INLINE): private, leaf, loop-free, and short.
 	inlineHelpers    map[string]bool
 	asmFunctions     []*asm.Function
+	nativeAsm        bool // asm units go to a companion object, not inline __asm__
 	packageName      string
 	sourceFile       string // Source file path for source location comments
 	sourceText       string // Full source text for UTF-8 to UTF-16 conversion
@@ -1576,10 +1577,29 @@ func (cg *CodeGenerator) SetAsmFunctions(functions []*asm.Function) {
 	cg.asmFunctions = functions
 }
 
+// SetNativeAsm selects the native realization of asm units: the Oak
+// assembler encodes them into a companion object and the C keeps only
+// their prototypes (docs/spec/94-assembler.md §9).
+func (cg *CodeGenerator) SetNativeAsm(native bool) {
+	cg.nativeAsm = native
+}
+
+// CFunctionName is the C symbol of an Oak function in this package — the
+// name the companion object defines and its relocations reference.
+func (cg *CodeGenerator) CFunctionName(oakName string) string {
+	return cg.cFunctionName(oakName)
+}
+
 // emitAsmUnits emits every asm-unit function as a top-level assembly block
 // under the C symbol its Oak prototype declared (docs/spec/94-assembler.md).
 func (cg *CodeGenerator) emitAsmUnits() {
 	if len(cg.asmFunctions) == 0 {
+		return
+	}
+	if cg.nativeAsm {
+		for _, fn := range cg.asmFunctions {
+			cg.write(asm.EmitCExtern(fn, cg.cFunctionName(fn.Name)))
+		}
 		return
 	}
 	cg.write(asm.CPrelude)

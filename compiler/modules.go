@@ -619,7 +619,12 @@ func (l *moduleLoader) locateDependencies() bool {
 
 func (l *moduleLoader) locateModule(path string, version packageapi.Version) (*moduleRoot, bool) {
 	var dir string
-	if replacement, replaced := l.root.Manifest.Replaces[path]; replaced {
+	if vendored := filepath.Join(l.root.Dir, modules.VendorDir, filepath.FromSlash(path)); directoryHasManifest(vendored) {
+		// A vendored copy (oak mod vendor) takes precedence over replace
+		// directives and the cache, so a build from a vendored tree needs
+		// neither (docs/spec/83-modules.md section 4.3).
+		dir = vendored
+	} else if replacement, replaced := l.root.Manifest.Replaces[path]; replaced {
 		dir = replacement
 		if !filepath.IsAbs(dir) {
 			dir = filepath.Join(l.root.Dir, filepath.FromSlash(dir))
@@ -1015,6 +1020,12 @@ func (l *moduleLoader) extractNestedModules(pkg *loadedPackage) bool {
 		file.Root.Statements = append(rebuilt, kept...)
 	}
 	return ok
+}
+
+// directoryHasManifest reports whether dir holds an oak.mod.
+func directoryHasManifest(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, modules.ManifestFile))
+	return err == nil && !info.IsDir()
 }
 
 // directoryHasSources reports whether dir holds any .oak file.

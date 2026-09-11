@@ -553,23 +553,33 @@ In SemIR the fact is the `resource.return-alias` (`arg:N`) effect beside
 backing storage: a borrowed *view* result is governed by section 8c.
 
 **Borrowed results.** The third result identity is a **shared borrow of
-one argument**: the result is its own authority (distinct from the
-argument for exclusivity, so both may be read side by side) that
-*depends* on the argument's owner for as long as the binding that holds
-it is in scope. The declaration names one argument, which must be
-`borrowed` or `borrowed-mut` — a borrow of consumed or unmarked input is
-not admitted — and is exclusive with fresh and alias; in SemIR it is the
-`resource.return-borrow` (`arg:N`) effect. A borrow is the most
-conservative claim a result can make, so the callee's body may return the
-declared parameter, an alias or dependent of it, or a value with no
-provenance from any other tracked resource (a fresh result, an
-independent local, a record literal that mentions no other resource); it
-may not return authority derived from another parameter, a borrowed
-result of a different owner, or a value of unknown provenance
-(`OAK-B0117`). At the call site the result depends on the argument's root
-owners — a borrow of a borrowed result depends on the same owners — and
-an argument without tracked provenance leaves the result unknown, which
-fails closed. While a dependent lives, all of the following are rejected
+one or more arguments**: the result is its own authority (distinct from
+the arguments for exclusivity, so all may be read side by side) that
+*depends* on those arguments' owners for as long as the binding that
+holds it is in scope. The declaration names a non-empty set of arguments
+without repetition, each of which must be `borrowed` or `borrowed-mut` —
+a borrow of consumed or unmarked input is not admitted — and is exclusive
+with fresh and alias; in SemIR it is one `resource.return-borrow`
+(`arg:N`) effect per argument. A borrow is the most conservative claim a
+result can make, so the callee's body may return any declared parameter,
+an alias or dependent of them, or a value with no provenance from any
+other tracked resource (a fresh result, an independent local, a record
+literal that mentions no other resource); it may not return authority
+derived from an undeclared parameter, a borrowed result whose owners the
+declaration does not cover, or a value of unknown provenance
+(`OAK-B0117`). Declaring more origins than the body needs is admitted
+(the caller is merely more restricted); declaring fewer is the lie the
+rule exists to catch. At the call site the result depends on the union of
+the declared arguments' root owners — a borrow of a borrowed result
+depends on that result's owners, and a borrow of a record projection
+depends on the field path, so writing the field or the whole record while
+the dependent lives is rebinding an owner — and one declared argument
+without tracked provenance leaves the whole result unknown, which fails
+closed: a dependency cannot be partially proven. A temporary borrowed
+result passed directly as an argument takes part in the call's
+exclusivity check with its owner set: it is distinct from every other
+argument except its owners and their aliases. While a dependent lives,
+all of the following are rejected
 with `OAK-B0118`, and the rejected call or statement has not occurred:
 passing the owner, or an alias of it, to a borrowed-mut or consuming
 position; rebinding the owner; passing the dependent, an alias of it, or a
@@ -587,9 +597,50 @@ dependency established on any path — a conservative set, never fresh
 authority — and the two-iteration loop probe applies. Freshness never
 proves backing-storage lifetime, and a borrowed result says nothing about
 storage either: it is an authority dependency between opaque resources.
-This is stage (b) of the authority roadmap's milestone 4; stages (c)–(e)
-(nested and multiple-origin results, mutable reborrows suspending the
-parent, borrowed values in aggregates) remain open.
+**Mutable reborrows.** A borrowed result whose every origin is
+`borrowed-mut` may be declared a **mutable reborrow** (SemIR
+`resource.return-borrow-mut` per origin; mixing shared and mutable origins
+on one result is an error, and a mutable reborrow can never be minted
+from a shared borrow — a shared dependent or temporary passed to the
+borrowed-mut origin is `OAK-B0118`). The result carries mutable
+authority: it may be passed to borrowed and borrowed-mut positions and
+reborrowed again, shared or mutable, with the same owners. Everything else
+a shared borrowed result may not do, a mutable one may not do either. The
+difference is on the owner's side: while a mutable reborrow lives — the
+lexical scope of its binding, or the call for a temporary passed directly
+as an argument — its owners and their aliases are **suspended entirely**:
+any use (a read, a projection, an argument in any position, rebinding,
+return) is `OAK-B0119`, and they are usable again when the scope ends.
+Aliases and rebinding carry the permission with the dependency. Body
+checks admit narrowing and reject widening: a shared-borrow contract may
+return a mutable reborrow, but a mutable-reborrow contract returning a
+shared dependent or temporary of the declared origins is `OAK-B0117`.
+Suspension is lexical, not use-based: the owner is not freed by the
+reborrow's last use, only by its scope's end, so a body that needs the
+owner back finishes with the reborrow in an inner scope.
+
+**Borrowed values in aggregates.** A borrowed result — a dependent
+binding, a dependent field path, or a temporary borrow-returning call —
+may be stored in a record field when the record's binding does not
+outlive any owner the value depends on: an owner bound in an inner scope
+would be gone first, so that destination is `OAK-B0118`. The field path
+then becomes a dependent with the same owners and permission (a mutable
+reborrow in a field suspends its owners through the path), so projections
+of the field are uses of the borrowed authority and the owner stays
+protected while the record's scope lasts. Whole-record copies and writes
+(`k = h`, `Outer { h: h }`, `k.h = h`) carry each borrowed field's
+dependency to the new paths under the copy's own lifetime, and rebinding
+a record or writing a field releases what it held. A record holding a
+borrowed result cannot **escape** the function: passing it, or a record
+literal mentioning a dependent, to any call — contracted or not — is
+`OAK-B0118`, and so is returning it, because no contract yet describes a
+dependency carried by a field. Array elements are never tracked, so a
+borrowed result in an array literal stays rejected.
+
+With this, milestone 4 of the authority roadmap (stages (a)–(e)) is
+implemented for opaque resources. Open follow-ups: a source spelling for
+result identities, contracts on record-typed parameters and results that
+carry borrowed fields, and array element provenance.
 
 Imports and sealing cannot erase modes: a protocol declared in one package
 (`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the

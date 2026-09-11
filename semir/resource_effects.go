@@ -26,6 +26,10 @@ const (
 	// dependent on the argument arg:N: while it lives the argument may not
 	// be mutated, consumed, or rebound.
 	ResourceEffectReturnBorrow = "return-borrow"
+	// ResourceEffectReturnBorrowMut marks a result that is a mutable
+	// reborrow of the argument arg:N: it may be mutated through
+	// borrowed-mut contracts, and while it lives the argument is suspended.
+	ResourceEffectReturnBorrowMut = "return-borrow-mut"
 	// Callable-contract effects describe what a function-typed parameter
 	// (arg:N) requires of the function values passed for it: the mode of
 	// the callable's own parameter param:M, or a fresh result.
@@ -57,6 +61,12 @@ func ResourceReturnBorrow(index int) Effect {
 	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnBorrow, Parameters: []string{"arg:" + strconv.Itoa(index)}}
 }
 
+// ResourceReturnBorrowMut constructs the effect for a result that is a
+// mutable reborrow of the argument at index.
+func ResourceReturnBorrowMut(index int) Effect {
+	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnBorrowMut, Parameters: []string{"arg:" + strconv.Itoa(index)}}
+}
+
 // ResourceCallableEffect constructs the effect requiring mode name (one of
 // borrow, borrow-mut, consume) of parameter param of the function value
 // passed as argument arg.
@@ -85,10 +95,13 @@ type ResourceTransitionSemantics struct {
 	// one argument.
 	ReturnsAlias    bool
 	AliasesArgument int
-	// ReturnsBorrow and BorrowsArgument record a result declared to be a
-	// shared borrow of one argument.
-	ReturnsBorrow   bool
-	BorrowsArgument int
+	// ReturnsBorrow and BorrowsArguments record a result declared to be a
+	// shared borrow of the listed arguments (sorted, no duplicates).
+	ReturnsBorrow    bool
+	BorrowsArguments []int
+	// BorrowMutable records that the borrowed result is a mutable reborrow
+	// (every origin carried return-borrow-mut rather than return-borrow).
+	BorrowMutable bool
 	// Callables are the contracts required of function-typed parameters,
 	// sorted by argument index.
 	Callables []ResourceCallableSemantics
@@ -204,15 +217,23 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 			}
 			result.ReturnsAlias, result.AliasesArgument = true, index
 
-		case ResourceEffectReturnBorrow:
+		case ResourceEffectReturnBorrow, ResourceEffectReturnBorrowMut:
 			index, err := decodeResourceArgument(effect)
 			if err != nil {
 				return ResourceTransitionSemantics{}, true, err
 			}
-			if result.ReturnsBorrow {
-				return ResourceTransitionSemantics{}, true, fmt.Errorf("resource.return-borrow is duplicated")
+			for _, existing := range result.BorrowsArguments {
+				if existing == index {
+					return ResourceTransitionSemantics{}, true, fmt.Errorf("resource.%s arg:%d is duplicated", effect.Name, index)
+				}
 			}
-			result.ReturnsBorrow, result.BorrowsArgument = true, index
+			mutable := effect.Name == ResourceEffectReturnBorrowMut
+			if result.ReturnsBorrow && result.BorrowMutable != mutable {
+				return ResourceTransitionSemantics{}, true, fmt.Errorf("a result cannot mix return-borrow and return-borrow-mut origins")
+			}
+			result.ReturnsBorrow = true
+			result.BorrowMutable = mutable
+			result.BorrowsArguments = append(result.BorrowsArguments, index)
 
 		case ResourceEffectReturnFresh:
 			if len(effect.Parameters) != 0 {
@@ -241,6 +262,7 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 	sort.Ints(result.Borrowed)
 	sort.Ints(result.BorrowedMut)
 	sort.Ints(result.Consumes)
+	sort.Ints(result.BorrowsArguments)
 	for i := range result.Callables {
 		sort.Ints(result.Callables[i].Borrowed)
 		sort.Ints(result.Callables[i].BorrowedMut)

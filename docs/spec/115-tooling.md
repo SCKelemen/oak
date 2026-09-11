@@ -28,6 +28,8 @@ names or the module cache.
 | `oak install [-profile p] [dir]` | `go install` | Build the executable into `$OAKBIN` (default `$HOME/.oak/bin`), named after the package directory. |
 | `oak vet [-profile p] [dir\|file.oak]` | `go vet` | Run every semantic gate without generating code and print what the checker recorded: errors, and the assumptions it could not discharge (the same list as the REPL's `:obligations`). |
 | `oak test [flags] [dir]` | `go test` | Run the package's tests (`110-testing.md`). |
+| `oak doc [-package P] [dir] [name]` | `go doc` | The public declarations of the module's packages (or one package) with their canonical types, from the API snapshot; a name filters. |
+| `oak fmt [-l] [-w] [file\|dir]...` | `gofmt` | Canonicalize whitespace: CRLF to LF, trailing whitespace removed, blank-line runs collapsed, one final newline. A file is rewritten only when the result parses to the same syntax tree, so formatting cannot change meaning; a file that does not parse is reported and left alone. `-l` lists, `-w` writes, neither prints. Layout-sensitive indentation is never touched. |
 | `oak list [-json] [-deps] [dir]` | `go list` | The packages of the module with their imports; `-deps` includes every package a build reaches (dependencies and standard library), `-json` emits one object per package with `path`, `dir`, `module`, `imports`. |
 | `oak mod ...` | `go mod` | Module maintenance, section 2. |
 | `oak clean -modcache` | `go clean -modcache` | Empty the module cache. Only an explicit `$OAKMODCACHE` that is a directory is touched; the tool never guesses a location to delete. |
@@ -44,6 +46,8 @@ names or the module cache.
 | `oak mod download [dir]` | `go mod download` | Fetch pinned requirements into the cache, verifying digests and carried `api.json` (`83-modules.md` 4.4). **Network.** |
 | `oak mod tidy [-w] [dir]` | `go mod tidy` | Reconcile `require` directives with imports (`83-modules.md` 4.5). |
 | `oak mod edit [-require p@v] [-droprequire p] [-replace p=>dir] [-dropreplace p] [-version v] [-profile p] [dir]` | `go mod edit` | Rewrite directives line by line; the result must parse (a `replace` without its `require` is rejected, as always); `-droprequire` also drops the module's `replace`. |
+| `oak mod vendor [dir]` | `go mod vendor` | Copy the dependency modules a build would locate (replace directives, then the cache, at the versions minimal version selection picks) into `vendor/<module path>/` — regular `.oak` files, `oak.mod`, `api.json` only, every destination checked to lie under `vendor/` — and write `vendor/modules.txt`. A vendored module takes precedence over replace directives and the cache when the loader locates it (`83-modules.md` 4.3), so the tree builds with neither. |
+| `oak mod verify [dir]` | `go mod verify` | Every download writes a record beside the cached module (`.oakdigest`: the verified archive digest and a hash over the extracted files). `verify` recomputes the tree hash of each cached requirement and reports `modified`, `missing`, or `unrecorded` entries. |
 | `oak mod graph [dir]` | `go mod graph` | The requirement graph reachable from the module, one `module requirement@version` line per edge, root first, following `replace` directives and the cache. |
 | `oak mod why <import-path> [dir]` | `go mod why` | For each package of the module that reaches the path, a shortest import chain. |
 | `oak mod api`, `diff`, `bump`, `compat`, `pack`, `upgrade`, `try` | — | API snapshots and semver (`82-package-semver.md` sections 6–8). |
@@ -61,6 +65,7 @@ names or the module cache.
 - `oak get` — Oak has no registry and the compiler never fetches. Adding a
   dependency is `oak mod edit -require path@version` (or a pinned `require`
   line with a location and digest) followed by `oak mod download`.
-- `oak fmt` — a formatter needs a comment-preserving printer for the layout
-  and explicit-brace surfaces; recorded as direction.
+- A pretty-printing `oak fmt` — the whitespace canonicalizer above is what a
+  layout-sensitive syntax admits safely; reflowing tokens needs a
+  comment-preserving printer for both surfaces, recorded as direction.
 - `oak generate`, `oak work`, `oak fix` — no counterpart yet.

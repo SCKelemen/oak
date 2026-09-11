@@ -1,0 +1,162 @@
+import(std)
+import(testing)
+
+// Path properties: cleaning is idempotent, Join(Dir, Base) cleans to Clean,
+// a name matches itself once its metacharacters are escaped, and `**`
+// matches everything `*` does.
+
+// path_random: a path of up to `limit` bytes over `a`, `b`, `/`, `.`.
+path_random: (choices: [*]TestChoices, data: []u8, dst: [*]u8, limit: u32): u32 {
+  count: u32 = test_range(choices, data, u32(0), limit)
+  i: u32 = u32(0)
+  while i < count {
+    pick: u32 = test_range(choices, data, u32(0), u32(5))
+    dst[i] = pick == u32(0) ? u8(97) | pick == u32(1) ? u8(98) | pick == u32(2) ? u8(46) | u8(47)
+    i = i + u32(1)
+  }
+  count
+}
+
+// 7300 clean(clean(p)) == clean(p), 7301 the result is never empty and never
+// ends in a slash unless it is `/`, 7302 Join(Dir(p), Base(p)) == Clean(p)
+// for paths that do not end in a slash (Go's own identity).
+PropertyPathCleanIdempotent: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  source: [16]u8
+  count: u32 = u32(0)
+  true ? {
+    fill: [*]u8 = span(&source)
+    count = path_random(choices, data, fill, u32(12))
+  }
+  once: [16]u8
+  twice: [16]u8
+  n1: u32 = u32(0)
+  n2: u32 = u32(0)
+  true ? {
+    src: []u8 = view(&source)
+    d1: [*]u8 = span(&once)
+    n1 = path_written(path_clean(d1, src[u32(0):count]))
+  }
+  true ? {
+    c1: []u8 = view(&once)
+    d2: [*]u8 = span(&twice)
+    n2 = path_written(path_clean(d2, c1[u32(0):n1]))
+  }
+  true ? {
+    c1b: []u8 = view(&once)
+    c2: []u8 = view(&twice)
+    test_check(n1 == n2 && bytes_equal(c1b[u32(0):n1], c2[u32(0):n2]), u32(7300))
+    test_check(n1 >= u32(1) && (n1 == u32(1) || c1b[n1 - u32(1)] != u32(47)), u32(7301))
+  }
+  test_assume(count == u32(0) || source[count - u32(1)] != u8(47) || count == u32(1))
+  dir: [16]u8
+  joined: [40]u8
+  nd: u32 = u32(0)
+  nj: u32 = u32(0)
+  true ? {
+    src2: []u8 = view(&source)
+    whole: []u8 = src2[u32(0):count]
+    dd: [*]u8 = span(&dir)
+    nd = path_written(path_dir(dd, whole))
+  }
+  true ? {
+    src3: []u8 = view(&source)
+    whole3: []u8 = src3[u32(0):count]
+    base: PathRange = path_base(whole3)
+    dview: []u8 = view(&dir)
+    jd: [*]u8 = span(&joined)
+    nj = path_written(path_join(jd, dview[u32(0):nd], whole3[base.start:base.end]))
+  }
+  true ? {
+    c1c: []u8 = view(&once)
+    j: []u8 = view(&joined)
+    test_check(nj == n1 && bytes_equal(j[u32(0):nj], c1c[u32(0):n1]), u32(7302))
+  }
+  count == u32(0) ? { testing_classify(u32(190)) } | { testing_classify(u32(191)) }
+}
+
+// 7310 a name matches the pattern made by escaping its metacharacters, 7311
+// the escaped pattern is never malformed.
+PropertyPathEscapedSelfMatch: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  name: [12]u8
+  pattern: [24]u8
+  count: u32 = test_range(choices, data, u32(0), u32(12))
+  out: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < count {
+    pick: u32 = test_range(choices, data, u32(0), u32(8))
+    unit: u8 = pick == u32(0) ? u8(97) | pick == u32(1) ? u8(42) | pick == u32(2) ? u8(63) | pick == u32(3) ? u8(91) | pick == u32(4) ? u8(93) | pick == u32(5) ? u8(92) | pick == u32(6) ? u8(47) | pick == u32(7) ? u8(45) | u8(94)
+    name[i] = unit
+    unit == u8(42) || unit == u8(63) || unit == u8(91) || unit == u8(93) || unit == u8(92) ? {
+      pattern[out] = u8(92)
+      out = out + u32(1)
+    }
+    pattern[out] = unit
+    out = out + u32(1)
+    i = i + u32(1)
+  }
+  n: []u8 = view(&name)
+  p: []u8 = view(&pattern)
+  code: u32 = path_match_code(p[u32(0):out], n[u32(0):count])
+  test_check(code == u32(1), u32(7310))
+  test_check(code != u32(2), u32(7311))
+  gcode: u32 = path_match_glob_code(p[u32(0):out], n[u32(0):count])
+  test_check(gcode == u32(1), u32(7310))
+}
+
+// 7320 a pattern of `*` components matches the name it was cut from, 7321
+// replacing those components with `**` still matches, 7322 `**` alone
+// matches every name.
+PropertyPathDoubleStarSubsumesStar: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  name: [16]u8
+  count: u32 = u32(0)
+  true ? {
+    fill: [*]u8 = span(&name)
+    count = path_random(choices, data, fill, u32(14))
+  }
+  star: [16]u8
+  double: [32]u8
+  ns: u32 = u32(0)
+  nd: u32 = u32(0)
+  i: u32 = u32(0)
+  at_start: Bool = true
+  while i < count {
+    unit: u8 = name[i]
+    unit == u8(47) ? {
+      star[ns] = unit
+      ns = ns + u32(1)
+      double[nd] = unit
+      nd = nd + u32(1)
+      at_start = true
+    } | {
+      wild: Bool = test_range(choices, data, u32(0), u32(1)) == u32(1)
+      wild && at_start ? {
+        // Replace the whole component with a star (and `**` in the glob).
+        star[ns] = u8(42)
+        ns = ns + u32(1)
+        double[nd] = u8(42)
+        double[nd + u32(1)] = u8(42)
+        nd = nd + u32(2)
+        while i + u32(1) < count && name[i + u32(1)] != u8(47) { i = i + u32(1) }
+      } | {
+        star[ns] = unit
+        ns = ns + u32(1)
+        double[nd] = unit
+        nd = nd + u32(1)
+      }
+      at_start = false
+    }
+    i = i + u32(1)
+  }
+  n: []u8 = view(&name)
+  s: []u8 = view(&star)
+  d: []u8 = view(&double)
+  test_check(path_match_code(s[u32(0):ns], n[u32(0):count]) == u32(1), u32(7320))
+  test_check(path_match_glob_code(d[u32(0):nd], n[u32(0):count]) == u32(1), u32(7321))
+  test_check(path_match_glob_code(text_literal("**"), n[u32(0):count]) == u32(1), u32(7322))
+}
