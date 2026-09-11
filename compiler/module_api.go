@@ -153,6 +153,23 @@ func ReadModuleSnapshot(path string) (packageapi.ModuleSnapshot, error) {
 	if err != nil {
 		return packageapi.ModuleSnapshot{}, err
 	}
+	// A module snapshot carries "packages"; a single-package snapshot
+	// (`oak mod api -package`) carries "exports" and is read as a module of
+	// one package, so the same diff and bump rules apply to both shapes.
+	var shape struct {
+		Packages json.RawMessage `json:"packages"`
+		Exports  json.RawMessage `json:"exports"`
+	}
+	if err := json.Unmarshal(data, &shape); err != nil {
+		return packageapi.ModuleSnapshot{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if len(shape.Packages) == 0 && len(shape.Exports) != 0 {
+		var one packageapi.Snapshot
+		if err := json.Unmarshal(data, &one); err != nil {
+			return packageapi.ModuleSnapshot{}, fmt.Errorf("%s: %w", path, err)
+		}
+		return packageapi.ModuleSnapshot{Module: one.Package, Version: one.Version, Packages: map[string]packageapi.Snapshot{one.Package: one}}, nil
+	}
 	var snapshot packageapi.ModuleSnapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return packageapi.ModuleSnapshot{}, fmt.Errorf("%s: %w", path, err)

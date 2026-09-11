@@ -178,7 +178,6 @@ func TestSemanticTypeNameFlattensGenericArguments(t *testing.T) {
 	}
 }
 
-
 func TestCompilationTypeModelPreservesIndexedConstructorResults(t *testing.T) {
 	const source = `Expr[T]: type =
   | Int: i64 => Expr[i64]

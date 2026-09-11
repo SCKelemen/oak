@@ -88,10 +88,10 @@ func TestLitmusIRIWSeqCstSplitObservationForbidden(t *testing.T) {
 		Events: []MemoryEvent{
 			{Thread: 0, Sequence: 0, Location: 1, Access: MemoryAccessWrite, Atomic: true, Order: MemoryOrderSeqCst, HasModification: true, Modification: 0}, // Wx
 			{Thread: 1, Sequence: 0, Location: 2, Access: MemoryAccessWrite, Atomic: true, Order: MemoryOrderSeqCst, HasModification: true, Modification: 0}, // Wy
-			{Thread: 2, Sequence: 0, Location: 1, Access: MemoryAccessRead, Atomic: true, Order: MemoryOrderSeqCst, HasReadsFrom: true, ReadsFrom: 0},          // Rx=1
-			{Thread: 2, Sequence: 1, Location: 2, Access: MemoryAccessRead, Atomic: true, Order: MemoryOrderSeqCst},                                     // Ry=0
-			{Thread: 3, Sequence: 0, Location: 2, Access: MemoryAccessRead, Atomic: true, Order: MemoryOrderSeqCst, HasReadsFrom: true, ReadsFrom: 1},          // Ry=1
-			{Thread: 3, Sequence: 1, Location: 1, Access: MemoryAccessRead, Atomic: true, Order: MemoryOrderSeqCst},                                     // Rx=0
+			{Thread: 2, Sequence: 0, Location: 1, Access: MemoryAccessRead, Atomic: true, Order: MemoryOrderSeqCst, HasReadsFrom: true, ReadsFrom: 0},        // Rx=1
+			{Thread: 2, Sequence: 1, Location: 2, Access: MemoryAccessRead, Atomic: true, Order: MemoryOrderSeqCst},                                          // Ry=0
+			{Thread: 3, Sequence: 0, Location: 2, Access: MemoryAccessRead, Atomic: true, Order: MemoryOrderSeqCst, HasReadsFrom: true, ReadsFrom: 1},        // Ry=1
+			{Thread: 3, Sequence: 1, Location: 1, Access: MemoryAccessRead, Atomic: true, Order: MemoryOrderSeqCst},                                          // Rx=0
 		},
 		Synchronizes: []MemorySyncEdge{
 			{From: 0, To: 2, Kind: MemorySyncReleaseAcquire},

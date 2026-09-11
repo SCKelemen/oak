@@ -83,7 +83,7 @@ func TestResourceCallableIdentityUsesCheckedReceiverType(t *testing.T) {
 	argument := &ast.Identifier{Value: "other"}
 	method := &ast.Identifier{Value: "transfer"}
 	call := &ast.InvocationExpression{
-		Function: &ast.IndexExpression{Dot: true, Left: receiver, Index: method},
+		Function:  &ast.IndexExpression{Dot: true, Left: receiver, Index: method},
 		Arguments: []ast.Expression{argument},
 	}
 	tc.env.borrowMetadata().expressions[receiver] = &ADTType{Name: "Handle"}

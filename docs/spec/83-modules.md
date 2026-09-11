@@ -207,8 +207,8 @@ boundary without a directory; the directory rule of section 2 is unchanged.
 A module snapshot (`82-package-semver.md` section 6) covers nested modules
 as packages under their own paths, spelled exactly as a directory package
 would spell itself, so publishing and the exact-bump rule see them; a
-single-package snapshot (`oak-api`) of a package that declares nested
-modules still refuses rather than emit an incomplete claim.
+single-package snapshot (`oak mod api -package`) of a package that declares
+nested modules still refuses rather than emit an incomplete claim.
 
 ## 4. Modules
 
@@ -686,7 +686,8 @@ naming the import to add (`encode` needs `import("json")`, text needs
   exactly its `pub` declarations; `Compilation.APISnapshot` projects only
   those. `pub(opaque)` types contribute their name but no definition or ABI,
   and named types are spelled by name inside every signature.
-  `oak-api` accepts a package directory as well as a single file. Versions
+  `oak mod api -package P` snapshots one package from a directory or a
+  single file. Versions
   attach to modules: `oak.mod` may declare `version`, `oak mod api` snapshots
   every package of the module, `oak mod diff`/`oak mod bump` classify the
   change and enforce the exact bump, `oak mod download` refuses an archive

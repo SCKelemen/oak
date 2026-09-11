@@ -49,10 +49,10 @@ func TestUTF8ToUTF16Offset(t *testing.T) {
 
 func TestConvertUTF8PositionToUTF16(t *testing.T) {
 	text := "hello\nworld\ntest"
-	
+
 	// Position at 'w' in "world" (line 2, column 0 in 1-based)
 	pos := ConvertUTF8PositionToUTF16(text, 6, 2)
-	
+
 	if pos.Line != 1 { // Zero-based, so line 2 is index 1
 		t.Errorf("Expected line 1 (zero-based), got %d", pos.Line)
 	}
@@ -60,4 +60,3 @@ func TestConvertUTF8PositionToUTF16(t *testing.T) {
 		t.Errorf("Expected character 0, got %d", pos.Character)
 	}
 }
-
