@@ -803,12 +803,16 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.unreachable = true
 		return true
 	case "mrs":
+		c.systemRegister(instr, instr.Operands[1].(SysReg).Name, true)
 		c.write(instr, instr.Operands[0].(Register))
 		return false
 	case "msr":
 		if reg, isReg := instr.Operands[1].(Register); isReg {
-			c.read(instr, reg) // `msr field, #imm` writes a PSTATE field from a constant
+			c.systemRegister(instr, instr.Operands[0].(SysReg).Name, false)
+			c.read(instr, reg)
 		}
+		// `msr field, #imm` writes a PSTATE field from a constant; the
+		// field names are the encoder's table.
 		return false
 	case "dmb", "dsb", "isb", "nop":
 		return false
@@ -1129,6 +1133,27 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 		if state, isSaved := c.calleeSaved[reg.Num]; isSaved && state.saved && reg.Class == ClassX && state.slot == slotBase+int64(i)*width {
 			state.restored = true
 		}
+	}
+}
+
+// systemRegister checks a named system register against Arm's SysReg
+// release: it must exist and admit the access direction. The
+// `S<op0>_<op1>_<Cn>_<Cm>_<op2>` spelling names any encoding.
+func (c *checker) systemRegister(instr Instruction, name string, read bool) {
+	lower := strings.ToLower(name)
+	if strings.HasPrefix(lower, "s") && strings.Count(lower, "_") == 4 {
+		return
+	}
+	enc, known := systemRegisterEncodings[lower]
+	if !known {
+		c.errorf(instr.Line, "%s: %s is not a system register Arm's SysReg release names (spell an implementation-defined one S<op0>_<op1>_<Cn>_<Cm>_<op2>)", instr.Mnemonic, name)
+		return
+	}
+	if read && !enc.Read {
+		c.errorf(instr.Line, "mrs: %s is not readable", name)
+	}
+	if !read && !enc.Write {
+		c.errorf(instr.Line, "msr: %s is not writable", name)
 	}
 }
 

@@ -271,6 +271,11 @@ root manifest's `replace` directive, else in the module cache directory
 other source exists in v1; fetching into the cache is external tooling
 (`OAK-M0112` when absent).
 
+A **vendored** copy takes precedence over both: when `<root>/vendor/<module
+path>/oak.mod` exists (written by `oak mod vendor`, `115-tooling.md`), the
+loader locates the module there and consults neither `replace` nor the
+cache, so a vendored tree builds with no cache at all.
+
 ### 4.4 Fetching pinned dependencies
 
 A `require` line may pin the archive that provides the module:
@@ -290,8 +295,10 @@ members and 1 GiB decompressed), verifies that the extracted `oak.mod`
 declares the required module path, checks an archive-carried `api.json`
 against the API the extracted source actually exposes at the required
 version (`82-package-semver.md` section 7), and only then renames the staging
-directory into `<cache>/<path>@v<version>`. A single top-level wrapper
-directory carrying the manifest is stripped. `oak mod pack` produces such an
+directory into `<cache>/<path>@v<version>`, beside a download record
+(`.oakdigest`: the verified archive digest and a hash over the extracted
+files) that `oak mod verify` later checks the entry against. A single
+top-level wrapper directory carrying the manifest is stripped. `oak mod pack` produces such an
 archive from a module directory, with `api.json` inside and the matching
 `require` line printed (`82-package-semver.md` section 7). Identity is the module path, the
 URL is a location hint, the digest is the trust anchor: the manifests alone

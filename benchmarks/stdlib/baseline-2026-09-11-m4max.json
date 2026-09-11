@@ -1,0 +1,3270 @@
+{
+  "metadata": {
+    "schema": "oak-stdlib-benchmark-v1",
+    "mode": "resident corpus, steady state",
+    "scale": 1.0,
+    "samples": 5,
+    "only": "",
+    "machine": "arm64",
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "cpu": "Apple M4 Max",
+    "logical_cpu_count": 16,
+    "oak": {
+      "sha": "a8ecd2a5ac2688da4524e53c01477c71c13254dc",
+      "tracked_changes": false
+    },
+    "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+    "go": "go version go1.27.1 darwin/arm64",
+    "flags": [
+      "-O2"
+    ],
+    "allocation_counts": null,
+    "core_affinity": "not controlled",
+    "cache_flush": false,
+    "generated_c_sha256": {
+      "sort": "cbf4ef2d30bc5fb7abaf3deeea9f12626dff6f1e56c01059b167a728b6681640",
+      "varint": "343d63ba1400650f131217634c99e6a3efcfc66716de67d75da09c4ea4a1538d",
+      "encoding": "8dfa52a2758bcf48c89e36bd6645a2825ae34d39b5aa053425c72de19e6f934c",
+      "hash": "8bcacd2eac0d7fd75c03cc9dbf32e616316c34ac9ae3177ab78de12b134a4f22",
+      "random": "3a6075087dd9329f6f8084df5d89cce77a7945ae53c696c0d98dee877f2d9145",
+      "uuid": "8a29cadfd3e2fb03267c536aade974ee33dc47fabdcfc112a6d978d162acdca4",
+      "strings": "843fdee6b6698e13ce3e741c8b470dcf570ace9e6278054d4b6b1682d11d0dba",
+      "time": "b64a9da3aa87d4c0b7a2a660e59bd87885d21a7904ef5df4ac2a46c991c92303"
+    },
+    "commands": [
+      [
+        "go",
+        "run",
+        ".",
+        "build",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/sort.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/oak/sort"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O2",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g",
+        "-I/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/runner.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/bridge_sort.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_sort"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_sort",
+        "1.0",
+        "5"
+      ],
+      [
+        "go",
+        "run",
+        ".",
+        "build",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/varint.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/oak/varint"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O2",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g",
+        "-I/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/runner.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/bridge_varint.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_varint"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_varint",
+        "1.0",
+        "5"
+      ],
+      [
+        "go",
+        "run",
+        ".",
+        "build",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/encoding.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/oak/encoding"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O2",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g",
+        "-I/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/runner.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/bridge_encoding.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_encoding"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_encoding",
+        "1.0",
+        "5"
+      ],
+      [
+        "go",
+        "run",
+        ".",
+        "build",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/hash.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/oak/hash"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O2",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g",
+        "-I/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/runner.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/bridge_hash.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_hash"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_hash",
+        "1.0",
+        "5"
+      ],
+      [
+        "go",
+        "run",
+        ".",
+        "build",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/random.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/oak/random"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O2",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g",
+        "-I/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/runner.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/bridge_random.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_random"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_random",
+        "1.0",
+        "5"
+      ],
+      [
+        "go",
+        "run",
+        ".",
+        "build",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/uuid.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/oak/uuid"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O2",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g",
+        "-I/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/runner.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/bridge_uuid.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_uuid"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_uuid",
+        "1.0",
+        "5"
+      ],
+      [
+        "go",
+        "run",
+        ".",
+        "build",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/strings.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/oak/strings"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O2",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g",
+        "-I/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/runner.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/bridge_strings.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_strings"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_strings",
+        "1.0",
+        "5"
+      ],
+      [
+        "go",
+        "run",
+        ".",
+        "build",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/time.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/oak/time"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O2",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g",
+        "-I/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/runner.c",
+        "/Users/sam/dst/oak/.claude/worktrees/agent-ab9d8ca018d7c3b8f/benchmarks/stdlib/bridge_time.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_time"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-stdlib-bench-_8_pfe_g/bench_time",
+        "1.0",
+        "5"
+      ],
+      [
+        "go",
+        "run",
+        "./benchmarks/stdlib/goref",
+        "1.0",
+        "5"
+      ]
+    ]
+  },
+  "summary": {
+    "encoding/base64_decode": {
+      "oak": {
+        "median_ns": 139102000,
+        "median_ns_per_item": 8.291125297546387,
+        "median_mb_per_second": 120.61088985061322,
+        "items": 16777216,
+        "bytes": 16777216,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 22799041,
+        "median_ns_per_item": 1.3589287400245667,
+        "median_mb_per_second": 735.8737589006486,
+        "items": 16777216,
+        "bytes": 16777216,
+        "runs": 5
+      },
+      "oak_over_go_time": 6.101221538221718
+    },
+    "encoding/base64_encode": {
+      "oak": {
+        "median_ns": 71061000,
+        "median_ns_per_item": 4.235565662384033,
+        "median_mb_per_second": 236.0959738815947,
+        "items": 16777216,
+        "bytes": 16777216,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 28209708,
+        "median_ns_per_item": 1.6814296245574951,
+        "median_mb_per_second": 594.7319979348953,
+        "items": 16777216,
+        "bytes": 16777216,
+        "runs": 5
+      },
+      "oak_over_go_time": 2.519026428774094
+    },
+    "encoding/hex_decode": {
+      "oak": {
+        "median_ns": 122973000,
+        "median_ns_per_item": 7.329761981964111,
+        "median_mb_per_second": 136.43007814723558,
+        "items": 16777216,
+        "bytes": 16777216,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 25942792,
+        "median_ns_per_item": 1.5463109016418457,
+        "median_mb_per_second": 646.7004784989989,
+        "items": 16777216,
+        "bytes": 16777216,
+        "runs": 5
+      },
+      "oak_over_go_time": 4.740160581019961
+    },
+    "encoding/hex_encode": {
+      "oak": {
+        "median_ns": 35312000,
+        "median_ns_per_item": 2.1047592163085938,
+        "median_mb_per_second": 475.113729043951,
+        "items": 16777216,
+        "bytes": 16777216,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 43502667,
+        "median_ns_per_item": 2.592961013317108,
+        "median_mb_per_second": 385.6594815209835,
+        "items": 16777216,
+        "bytes": 16777216,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.8117203480880839
+    },
+    "encoding/percent_encode": {
+      "oak": {
+        "median_ns": 32283000,
+        "median_ns_per_item": 7.696866989135742,
+        "median_mb_per_second": 129.92299352600438,
+        "items": 4194304,
+        "bytes": 4194304,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 29803333,
+        "median_ns_per_item": 7.105668306350708,
+        "median_mb_per_second": 140.732716035485,
+        "items": 4194304,
+        "bytes": 4194304,
+        "runs": 5
+      },
+      "oak_over_go_time": 1.083200996344939
+    },
+    "hash/crc32c": {
+      "oak": {
+        "median_ns": 129840000,
+        "median_ns_per_item": 3.8695335388183594,
+        "median_mb_per_second": 258.4290819470117,
+        "items": 33554432,
+        "bytes": 33554432,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 3199208,
+        "median_ns_per_item": 0.09534382820129395,
+        "median_mb_per_second": 10488.35586807735,
+        "items": 33554432,
+        "bytes": 33554432,
+        "runs": 5
+      },
+      "oak_over_go_time": 40.58504479858765
+    },
+    "hash/sha256": {
+      "oak": {
+        "median_ns": 100713000,
+        "median_ns_per_item": 3.001481294631958,
+        "median_mb_per_second": 333.1688262687041,
+        "items": 33554432,
+        "bytes": 33554432,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 11331625,
+        "median_ns_per_item": 0.3377087414264679,
+        "median_mb_per_second": 2961.131523501704,
+        "items": 33554432,
+        "bytes": 33554432,
+        "runs": 5
+      },
+      "oak_over_go_time": 8.887780878735398
+    },
+    "random/pcg": {
+      "go": {
+        "median_ns": 355107875,
+        "median_ns_per_item": 3.55107875,
+        "median_mb_per_second": 2252.8365500201876,
+        "items": 100000000,
+        "bytes": 800000000,
+        "runs": 5
+      }
+    },
+    "random/xoshiro": {
+      "oak": {
+        "median_ns": 77536000,
+        "median_ns_per_item": 0.77536,
+        "median_mb_per_second": 10317.78786628147,
+        "items": 100000000,
+        "bytes": 800000000,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 251129083,
+        "median_ns_per_item": 2.51129083,
+        "median_mb_per_second": 3185.6127153540397,
+        "items": 100000000,
+        "bytes": 800000000,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.30874958437211353
+    },
+    "sort/random": {
+      "oak": {
+        "median_ns": 6088000,
+        "median_ns_per_item": 60.88,
+        "median_mb_per_second": 65.7030223390276,
+        "items": 100000,
+        "bytes": 400000,
+        "runs": 5
+      },
+      "c_qsort": {
+        "median_ns": 6474000,
+        "median_ns_per_item": 64.74,
+        "median_mb_per_second": 61.78560395427865,
+        "items": 100000,
+        "bytes": 400000,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 5007291,
+        "median_ns_per_item": 50.07291,
+        "median_mb_per_second": 79.88351386008921,
+        "items": 100000,
+        "bytes": 400000,
+        "runs": 5
+      },
+      "oak_over_go_time": 1.2158270809505578
+    },
+    "sort/reversed": {
+      "oak": {
+        "median_ns": 3651000,
+        "median_ns_per_item": 36.51,
+        "median_mb_per_second": 109.55902492467817,
+        "items": 100000,
+        "bytes": 400000,
+        "runs": 5
+      },
+      "c_qsort": {
+        "median_ns": 1378000,
+        "median_ns_per_item": 13.78,
+        "median_mb_per_second": 290.27576197387515,
+        "items": 100000,
+        "bytes": 400000,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 175000,
+        "median_ns_per_item": 1.75,
+        "median_mb_per_second": 2285.7142857142853,
+        "items": 100000,
+        "bytes": 400000,
+        "runs": 5
+      },
+      "oak_over_go_time": 20.86285714285714
+    },
+    "sort/sorted": {
+      "oak": {
+        "median_ns": 3356000,
+        "median_ns_per_item": 33.56,
+        "median_mb_per_second": 119.18951132300357,
+        "items": 100000,
+        "bytes": 400000,
+        "runs": 5
+      },
+      "c_qsort": {
+        "median_ns": 416000,
+        "median_ns_per_item": 4.16,
+        "median_mb_per_second": 961.5384615384615,
+        "items": 100000,
+        "bytes": 400000,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 155459,
+        "median_ns_per_item": 1.55459,
+        "median_mb_per_second": 2573.0256852289026,
+        "items": 100000,
+        "bytes": 400000,
+        "runs": 5
+      },
+      "oak_over_go_time": 21.587685499070496
+    },
+    "strings/append_u64": {
+      "oak": {
+        "median_ns": 30384000,
+        "median_ns_per_item": 30.384,
+        "median_mb_per_second": 374.2326553449184,
+        "items": 1000000,
+        "bytes": 11370685,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 28398167,
+        "median_ns_per_item": 28.398167,
+        "median_mb_per_second": 400.40207524661713,
+        "items": 1000000,
+        "bytes": 11370685,
+        "runs": 5
+      },
+      "oak_over_go_time": 1.0699282105073895
+    },
+    "strings/parse_u64": {
+      "oak": {
+        "median_ns": 16456000,
+        "median_ns_per_item": 16.456,
+        "median_mb_per_second": 690.9750243072435,
+        "items": 1000000,
+        "bytes": 11370685,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 23128208,
+        "median_ns_per_item": 23.128208,
+        "median_mb_per_second": 491.63709527344275,
+        "items": 1000000,
+        "bytes": 11370685,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.7115121067745499
+    },
+    "strings/utf8_scan": {
+      "oak": {
+        "median_ns": 175667000,
+        "median_ns_per_item": 5.2352845668792725,
+        "median_mb_per_second": 191.0115844182459,
+        "items": 33554432,
+        "bytes": 33554432,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 98231334,
+        "median_ns_per_item": 2.9275218844413757,
+        "median_mb_per_second": 341.5858324798888,
+        "items": 33554432,
+        "bytes": 33554432,
+        "runs": 5
+      },
+      "oak_over_go_time": 1.7882990370465701
+    },
+    "strings/utf8_validate": {
+      "oak": {
+        "median_ns": 117337000,
+        "median_ns_per_item": 3.496915102005005,
+        "median_mb_per_second": 285.966336279264,
+        "items": 33554432,
+        "bytes": 33554432,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 88279041,
+        "median_ns_per_item": 2.6309204399585724,
+        "median_mb_per_second": 380.09511227019334,
+        "items": 33554432,
+        "bytes": 33554432,
+        "runs": 5
+      },
+      "oak_over_go_time": 1.329160338295927
+    },
+    "time/format_rfc3339": {
+      "oak": {
+        "median_ns": 53094000,
+        "median_ns_per_item": 53.094,
+        "median_mb_per_second": 565.0355972426263,
+        "items": 1000000,
+        "bytes": 30000000,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 116498250,
+        "median_ns_per_item": 116.49825,
+        "median_mb_per_second": 257.51459785876614,
+        "items": 1000000,
+        "bytes": 30000000,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.45574933529044426
+    },
+    "time/parse_rfc3339": {
+      "oak": {
+        "median_ns": 19232000,
+        "median_ns_per_item": 19.232,
+        "median_mb_per_second": 1559.9001663893512,
+        "items": 1000000,
+        "bytes": 30000000,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 31217459,
+        "median_ns_per_item": 31.217459,
+        "median_mb_per_second": 961.0007015625454,
+        "items": 1000000,
+        "bytes": 30000000,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.6160655164150292
+    },
+    "uuid/v7_format": {
+      "oak": {
+        "median_ns": 55823000,
+        "median_ns_per_item": 55.823,
+        "median_mb_per_second": 644.8954731920535,
+        "items": 1000000,
+        "bytes": 36000000,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 57668083,
+        "median_ns_per_item": 57.668083,
+        "median_mb_per_second": 624.262124336611,
+        "items": 1000000,
+        "bytes": 36000000,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.9680051268567398
+    },
+    "varint/decode": {
+      "oak": {
+        "median_ns": 7195000,
+        "median_ns_per_item": 7.195,
+        "median_mb_per_second": 763.2350243224461,
+        "items": 1000000,
+        "bytes": 5491476,
+        "runs": 5
+      },
+      "c_loop": {
+        "median_ns": 7877000,
+        "median_ns_per_item": 7.877,
+        "median_mb_per_second": 697.1532309254792,
+        "items": 1000000,
+        "bytes": 5491476,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 9620375,
+        "median_ns_per_item": 9.620375,
+        "median_mb_per_second": 570.8172498473292,
+        "items": 1000000,
+        "bytes": 5491476,
+        "runs": 5
+      },
+      "oak_over_go_time": 0.747891844132895
+    },
+    "varint/encode": {
+      "oak": {
+        "median_ns": 13534000,
+        "median_ns_per_item": 13.534,
+        "median_mb_per_second": 405.75410078321266,
+        "items": 1000000,
+        "bytes": 5491476,
+        "runs": 5
+      },
+      "c_loop": {
+        "median_ns": 11833000,
+        "median_ns_per_item": 11.833,
+        "median_mb_per_second": 464.08146708357987,
+        "items": 1000000,
+        "bytes": 5491476,
+        "runs": 5
+      },
+      "go": {
+        "median_ns": 11983625,
+        "median_ns_per_item": 11.983625,
+        "median_mb_per_second": 458.2483180172944,
+        "items": 1000000,
+        "bytes": 5491476,
+        "runs": 5
+      },
+      "oak_over_go_time": 1.1293744588970365
+    }
+  },
+  "preflight": {
+    "oak": {
+      "sort/random": {
+        "event": "preflight",
+        "workload": "sort/random",
+        "items": 100000,
+        "bytes": 400000,
+        "checksum": 3972778610534833294,
+        "side": "oak"
+      },
+      "sort/sorted": {
+        "event": "preflight",
+        "workload": "sort/sorted",
+        "items": 100000,
+        "bytes": 400000,
+        "checksum": 3972778610534833294,
+        "side": "oak"
+      },
+      "sort/reversed": {
+        "event": "preflight",
+        "workload": "sort/reversed",
+        "items": 100000,
+        "bytes": 400000,
+        "checksum": 3972778610534833294,
+        "side": "oak"
+      },
+      "varint/encode": {
+        "event": "preflight",
+        "workload": "varint/encode",
+        "items": 1000000,
+        "bytes": 5491476,
+        "checksum": 13942474835582198745,
+        "side": "oak"
+      },
+      "varint/decode": {
+        "event": "preflight",
+        "workload": "varint/decode",
+        "items": 1000000,
+        "bytes": 5491476,
+        "checksum": 6359538571314388742,
+        "side": "oak"
+      },
+      "encoding/base64_encode": {
+        "event": "preflight",
+        "workload": "encoding/base64_encode",
+        "items": 16777216,
+        "bytes": 16777216,
+        "checksum": 678230274837248152,
+        "side": "oak"
+      },
+      "encoding/base64_decode": {
+        "event": "preflight",
+        "workload": "encoding/base64_decode",
+        "items": 16777216,
+        "bytes": 16777216,
+        "checksum": 5892724346137606130,
+        "side": "oak"
+      },
+      "encoding/hex_encode": {
+        "event": "preflight",
+        "workload": "encoding/hex_encode",
+        "items": 16777216,
+        "bytes": 16777216,
+        "checksum": 14232794422108238278,
+        "side": "oak"
+      },
+      "encoding/hex_decode": {
+        "event": "preflight",
+        "workload": "encoding/hex_decode",
+        "items": 16777216,
+        "bytes": 16777216,
+        "checksum": 5892724346137606130,
+        "side": "oak"
+      },
+      "encoding/percent_encode": {
+        "event": "preflight",
+        "workload": "encoding/percent_encode",
+        "items": 4194304,
+        "bytes": 4194304,
+        "checksum": 7664896481861014596,
+        "side": "oak"
+      },
+      "hash/sha256": {
+        "event": "preflight",
+        "workload": "hash/sha256",
+        "items": 33554432,
+        "bytes": 33554432,
+        "checksum": 1990495277505503982,
+        "side": "oak"
+      },
+      "hash/crc32c": {
+        "event": "preflight",
+        "workload": "hash/crc32c",
+        "items": 33554432,
+        "bytes": 33554432,
+        "checksum": 2417145749,
+        "side": "oak"
+      },
+      "random/xoshiro": {
+        "event": "preflight",
+        "workload": "random/xoshiro",
+        "items": 100000000,
+        "bytes": 800000000,
+        "checksum": 2847977569296611295,
+        "side": "oak"
+      },
+      "uuid/v7_format": {
+        "event": "preflight",
+        "workload": "uuid/v7_format",
+        "items": 1000000,
+        "bytes": 36000000,
+        "checksum": 14120454721255994050,
+        "side": "oak"
+      },
+      "strings/utf8_validate": {
+        "event": "preflight",
+        "workload": "strings/utf8_validate",
+        "items": 33554432,
+        "bytes": 33554432,
+        "checksum": 1,
+        "side": "oak"
+      },
+      "strings/utf8_scan": {
+        "event": "preflight",
+        "workload": "strings/utf8_scan",
+        "items": 33554432,
+        "bytes": 33554432,
+        "checksum": 695598734894,
+        "side": "oak"
+      },
+      "strings/parse_u64": {
+        "event": "preflight",
+        "workload": "strings/parse_u64",
+        "items": 1000000,
+        "bytes": 11370685,
+        "checksum": 14513971918476864440,
+        "side": "oak"
+      },
+      "strings/append_u64": {
+        "event": "preflight",
+        "workload": "strings/append_u64",
+        "items": 1000000,
+        "bytes": 11370685,
+        "checksum": 1322850159758127498,
+        "side": "oak"
+      },
+      "time/format_rfc3339": {
+        "event": "preflight",
+        "workload": "time/format_rfc3339",
+        "items": 1000000,
+        "bytes": 30000000,
+        "checksum": 18195373796614737082,
+        "side": "oak"
+      },
+      "time/parse_rfc3339": {
+        "event": "preflight",
+        "workload": "time/parse_rfc3339",
+        "items": 1000000,
+        "bytes": 30000000,
+        "checksum": 8876784794003257570,
+        "side": "oak"
+      }
+    },
+    "go": {
+      "sort/random": {
+        "event": "preflight",
+        "workload": "sort/random",
+        "items": 100000,
+        "bytes": 400000,
+        "checksum": 3972778610534833294
+      },
+      "sort/sorted": {
+        "event": "preflight",
+        "workload": "sort/sorted",
+        "items": 100000,
+        "bytes": 400000,
+        "checksum": 3972778610534833294
+      },
+      "sort/reversed": {
+        "event": "preflight",
+        "workload": "sort/reversed",
+        "items": 100000,
+        "bytes": 400000,
+        "checksum": 3972778610534833294
+      },
+      "varint/encode": {
+        "event": "preflight",
+        "workload": "varint/encode",
+        "items": 1000000,
+        "bytes": 5491476,
+        "checksum": 13942474835582198745
+      },
+      "varint/decode": {
+        "event": "preflight",
+        "workload": "varint/decode",
+        "items": 1000000,
+        "bytes": 5491476,
+        "checksum": 6359538571314388742
+      },
+      "encoding/base64_encode": {
+        "event": "preflight",
+        "workload": "encoding/base64_encode",
+        "items": 16777216,
+        "bytes": 16777216,
+        "checksum": 678230274837248152
+      },
+      "encoding/base64_decode": {
+        "event": "preflight",
+        "workload": "encoding/base64_decode",
+        "items": 16777216,
+        "bytes": 16777216,
+        "checksum": 5892724346137606130
+      },
+      "encoding/hex_encode": {
+        "event": "preflight",
+        "workload": "encoding/hex_encode",
+        "items": 16777216,
+        "bytes": 16777216,
+        "checksum": 14232794422108238278
+      },
+      "encoding/hex_decode": {
+        "event": "preflight",
+        "workload": "encoding/hex_decode",
+        "items": 16777216,
+        "bytes": 16777216,
+        "checksum": 5892724346137606130
+      },
+      "encoding/percent_encode": {
+        "event": "preflight",
+        "workload": "encoding/percent_encode",
+        "items": 4194304,
+        "bytes": 4194304,
+        "checksum": 7664896481861014596
+      },
+      "hash/sha256": {
+        "event": "preflight",
+        "workload": "hash/sha256",
+        "items": 33554432,
+        "bytes": 33554432,
+        "checksum": 1990495277505503982
+      },
+      "hash/crc32c": {
+        "event": "preflight",
+        "workload": "hash/crc32c",
+        "items": 33554432,
+        "bytes": 33554432,
+        "checksum": 2417145749
+      },
+      "random/xoshiro": {
+        "event": "preflight",
+        "workload": "random/xoshiro",
+        "items": 100000000,
+        "bytes": 800000000,
+        "checksum": 2847977569296611295
+      },
+      "random/pcg": {
+        "event": "preflight",
+        "workload": "random/pcg",
+        "items": 100000000,
+        "bytes": 800000000,
+        "checksum": 9886564897740231731
+      },
+      "uuid/v7_format": {
+        "event": "preflight",
+        "workload": "uuid/v7_format",
+        "items": 1000000,
+        "bytes": 36000000,
+        "checksum": 14120454721255994050
+      },
+      "strings/utf8_validate": {
+        "event": "preflight",
+        "workload": "strings/utf8_validate",
+        "items": 33554432,
+        "bytes": 33554432,
+        "checksum": 1
+      },
+      "strings/utf8_scan": {
+        "event": "preflight",
+        "workload": "strings/utf8_scan",
+        "items": 33554432,
+        "bytes": 33554432,
+        "checksum": 695598734894
+      },
+      "strings/parse_u64": {
+        "event": "preflight",
+        "workload": "strings/parse_u64",
+        "items": 1000000,
+        "bytes": 11370685,
+        "checksum": 14513971918476864440
+      },
+      "strings/append_u64": {
+        "event": "preflight",
+        "workload": "strings/append_u64",
+        "items": 1000000,
+        "bytes": 11370685,
+        "checksum": 1322850159758127498
+      },
+      "time/format_rfc3339": {
+        "event": "preflight",
+        "workload": "time/format_rfc3339",
+        "items": 1000000,
+        "bytes": 30000000,
+        "checksum": 18195373796614737082
+      },
+      "time/parse_rfc3339": {
+        "event": "preflight",
+        "workload": "time/parse_rfc3339",
+        "items": 1000000,
+        "bytes": 30000000,
+        "checksum": 8876784794003257570
+      }
+    }
+  },
+  "samples": [
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 6098000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "c_qsort",
+      "sample": 0,
+      "ns": 6436000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "c_qsort",
+      "sample": 1,
+      "ns": 6474000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 6005000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 6068000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "c_qsort",
+      "sample": 2,
+      "ns": 6509000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "c_qsort",
+      "sample": 3,
+      "ns": 6393000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 6133000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 6088000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "c_qsort",
+      "sample": 4,
+      "ns": 6501000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 3385000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "c_qsort",
+      "sample": 0,
+      "ns": 412000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "c_qsort",
+      "sample": 1,
+      "ns": 416000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 3349000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 3386000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "c_qsort",
+      "sample": 2,
+      "ns": 420000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "c_qsort",
+      "sample": 3,
+      "ns": 375000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 3221000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 3356000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "c_qsort",
+      "sample": 4,
+      "ns": 416000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 3656000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "c_qsort",
+      "sample": 0,
+      "ns": 1363000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "c_qsort",
+      "sample": 1,
+      "ns": 1357000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 3653000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 3597000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "c_qsort",
+      "sample": 2,
+      "ns": 1378000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "c_qsort",
+      "sample": 3,
+      "ns": 1379000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 3607000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 3651000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "c_qsort",
+      "sample": 4,
+      "ns": 1380000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 13534000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "c_loop",
+      "sample": 0,
+      "ns": 12028000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "c_loop",
+      "sample": 1,
+      "ns": 11753000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 13496000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 13531000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "c_loop",
+      "sample": 2,
+      "ns": 11833000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "c_loop",
+      "sample": 3,
+      "ns": 11850000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 13821000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 13570000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "c_loop",
+      "sample": 4,
+      "ns": 11773000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 7195000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "c_loop",
+      "sample": 0,
+      "ns": 7880000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "c_loop",
+      "sample": 1,
+      "ns": 7877000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 7474000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 6942000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "c_loop",
+      "sample": 2,
+      "ns": 7901000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "c_loop",
+      "sample": 3,
+      "ns": 7824000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 7490000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 7098000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "c_loop",
+      "sample": 4,
+      "ns": 7765000,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 70420000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 71407000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 71288000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 70681000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 71061000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 139902000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 138325000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 139986000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 139102000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 138153000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 35385000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 35109000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 35055000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 35312000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 37606000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 123496000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 122760000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 122287000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 122973000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 123108000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 32379000,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 32087000,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 32048000,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 32283000,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 32401000,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 100854000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 100713000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 104844000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 100223000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 100595000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 128641000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 128375000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 130678000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 130236000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 129840000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 77163000,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 77536000,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 77477000,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 77768000,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 77972000,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 56297000,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 55825000,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 55288000,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 55363000,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 55823000,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 117337000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 119326000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 121232000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 115518000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 115497000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 173940000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 174964000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 175667000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 177523000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 178285000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 16704000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 16456000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 16380000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 16487000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 15928000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 30384000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 30235000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 30086000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 30688000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 30489000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 53584000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 53035000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 52769000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 53094000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 53584000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "oak",
+      "sample": 0,
+      "ns": 19347000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "oak",
+      "sample": 1,
+      "ns": 19056000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "oak",
+      "sample": 2,
+      "ns": 19109000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "oak",
+      "sample": 3,
+      "ns": 19479000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "oak",
+      "sample": 4,
+      "ns": 19232000,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "go",
+      "ns": 5102583,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "go",
+      "sample": 1,
+      "ns": 5077459,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "go",
+      "sample": 2,
+      "ns": 4983083,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "go",
+      "sample": 3,
+      "ns": 4839416,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/random",
+      "backend": "go",
+      "sample": 4,
+      "ns": 5007291,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "go",
+      "ns": 155917,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "go",
+      "sample": 1,
+      "ns": 155167,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "go",
+      "sample": 2,
+      "ns": 159792,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "go",
+      "sample": 3,
+      "ns": 154792,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/sorted",
+      "backend": "go",
+      "sample": 4,
+      "ns": 155459,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "go",
+      "ns": 179541,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "go",
+      "sample": 1,
+      "ns": 174667,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "go",
+      "sample": 2,
+      "ns": 179541,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "go",
+      "sample": 3,
+      "ns": 174625,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "sort/reversed",
+      "backend": "go",
+      "sample": 4,
+      "ns": 175000,
+      "items": 100000,
+      "bytes": 400000,
+      "checksum": 3972778610534833294
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "go",
+      "ns": 12061916,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "go",
+      "sample": 1,
+      "ns": 12150125,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "go",
+      "sample": 2,
+      "ns": 11983625,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "go",
+      "sample": 3,
+      "ns": 11836708,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/encode",
+      "backend": "go",
+      "sample": 4,
+      "ns": 11893208,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 13942474835582198745
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "go",
+      "ns": 9461208,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "go",
+      "sample": 1,
+      "ns": 9784917,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "go",
+      "sample": 2,
+      "ns": 9620375,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "go",
+      "sample": 3,
+      "ns": 9624750,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "varint/decode",
+      "backend": "go",
+      "sample": 4,
+      "ns": 9539750,
+      "items": 1000000,
+      "bytes": 5491476,
+      "checksum": 6359538571314388742
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "go",
+      "ns": 28209708,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "go",
+      "sample": 1,
+      "ns": 27884334,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "go",
+      "sample": 2,
+      "ns": 27871875,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "go",
+      "sample": 3,
+      "ns": 28450958,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_encode",
+      "backend": "go",
+      "sample": 4,
+      "ns": 28442000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 678230274837248152
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "go",
+      "ns": 22617916,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "go",
+      "sample": 1,
+      "ns": 22806833,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "go",
+      "sample": 2,
+      "ns": 22345125,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "go",
+      "sample": 3,
+      "ns": 22811750,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/base64_decode",
+      "backend": "go",
+      "sample": 4,
+      "ns": 22799041,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "go",
+      "ns": 43174083,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "go",
+      "sample": 1,
+      "ns": 43362000,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "go",
+      "sample": 2,
+      "ns": 43621084,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "go",
+      "sample": 3,
+      "ns": 43902666,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_encode",
+      "backend": "go",
+      "sample": 4,
+      "ns": 43502667,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 14232794422108238278
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "go",
+      "ns": 26326500,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "go",
+      "sample": 1,
+      "ns": 25942792,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "go",
+      "sample": 2,
+      "ns": 26125584,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "go",
+      "sample": 3,
+      "ns": 25845375,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/hex_decode",
+      "backend": "go",
+      "sample": 4,
+      "ns": 25851666,
+      "items": 16777216,
+      "bytes": 16777216,
+      "checksum": 5892724346137606130
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "go",
+      "ns": 30093458,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "go",
+      "sample": 1,
+      "ns": 30080375,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "go",
+      "sample": 2,
+      "ns": 29657542,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "go",
+      "sample": 3,
+      "ns": 29803333,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "encoding/percent_encode",
+      "backend": "go",
+      "sample": 4,
+      "ns": 29177250,
+      "items": 4194304,
+      "bytes": 4194304,
+      "checksum": 7664896481861014596
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "go",
+      "ns": 11264250,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "go",
+      "sample": 1,
+      "ns": 11380083,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "go",
+      "sample": 2,
+      "ns": 11343583,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "go",
+      "sample": 3,
+      "ns": 11121958,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/sha256",
+      "backend": "go",
+      "sample": 4,
+      "ns": 11331625,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1990495277505503982
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "go",
+      "ns": 3199208,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "go",
+      "sample": 1,
+      "ns": 3187875,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "go",
+      "sample": 2,
+      "ns": 3202250,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "go",
+      "sample": 3,
+      "ns": 3308541,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "hash/crc32c",
+      "backend": "go",
+      "sample": 4,
+      "ns": 3188292,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 2417145749
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "go",
+      "ns": 247914083,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "go",
+      "sample": 1,
+      "ns": 249278667,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "go",
+      "sample": 2,
+      "ns": 251129083,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "go",
+      "sample": 3,
+      "ns": 251688625,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "random/xoshiro",
+      "backend": "go",
+      "sample": 4,
+      "ns": 252022250,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 2847977569296611295
+    },
+    {
+      "event": "sample",
+      "workload": "random/pcg",
+      "backend": "go",
+      "ns": 348848625,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 9886564897740231731
+    },
+    {
+      "event": "sample",
+      "workload": "random/pcg",
+      "backend": "go",
+      "sample": 1,
+      "ns": 355941167,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 9886564897740231731
+    },
+    {
+      "event": "sample",
+      "workload": "random/pcg",
+      "backend": "go",
+      "sample": 2,
+      "ns": 355107875,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 9886564897740231731
+    },
+    {
+      "event": "sample",
+      "workload": "random/pcg",
+      "backend": "go",
+      "sample": 3,
+      "ns": 355768125,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 9886564897740231731
+    },
+    {
+      "event": "sample",
+      "workload": "random/pcg",
+      "backend": "go",
+      "sample": 4,
+      "ns": 355097166,
+      "items": 100000000,
+      "bytes": 800000000,
+      "checksum": 9886564897740231731
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "go",
+      "ns": 59028834,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "go",
+      "sample": 1,
+      "ns": 57668083,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "go",
+      "sample": 2,
+      "ns": 58216000,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "go",
+      "sample": 3,
+      "ns": 57571708,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "uuid/v7_format",
+      "backend": "go",
+      "sample": 4,
+      "ns": 57525667,
+      "items": 1000000,
+      "bytes": 36000000,
+      "checksum": 14120454721255994050
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "go",
+      "ns": 88279041,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "go",
+      "sample": 1,
+      "ns": 88267042,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "go",
+      "sample": 2,
+      "ns": 88673584,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "go",
+      "sample": 3,
+      "ns": 88519000,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_validate",
+      "backend": "go",
+      "sample": 4,
+      "ns": 88198917,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 1
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "go",
+      "ns": 99561584,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "go",
+      "sample": 1,
+      "ns": 98231334,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "go",
+      "sample": 2,
+      "ns": 101478167,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "go",
+      "sample": 3,
+      "ns": 98068291,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/utf8_scan",
+      "backend": "go",
+      "sample": 4,
+      "ns": 98228875,
+      "items": 33554432,
+      "bytes": 33554432,
+      "checksum": 695598734894
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "go",
+      "ns": 22804125,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "go",
+      "sample": 1,
+      "ns": 24046625,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "go",
+      "sample": 2,
+      "ns": 23732375,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "go",
+      "sample": 3,
+      "ns": 22814667,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/parse_u64",
+      "backend": "go",
+      "sample": 4,
+      "ns": 23128208,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 14513971918476864440
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "go",
+      "ns": 28666333,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "go",
+      "sample": 1,
+      "ns": 28142250,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "go",
+      "sample": 2,
+      "ns": 28398167,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "go",
+      "sample": 3,
+      "ns": 29016417,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "strings/append_u64",
+      "backend": "go",
+      "sample": 4,
+      "ns": 28209000,
+      "items": 1000000,
+      "bytes": 11370685,
+      "checksum": 1322850159758127498
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "go",
+      "ns": 116274792,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "go",
+      "sample": 1,
+      "ns": 116498250,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "go",
+      "sample": 2,
+      "ns": 118098542,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "go",
+      "sample": 3,
+      "ns": 117418250,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/format_rfc3339",
+      "backend": "go",
+      "sample": 4,
+      "ns": 116091292,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 18195373796614737082
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "go",
+      "ns": 32209709,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "go",
+      "sample": 1,
+      "ns": 31217459,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "go",
+      "sample": 2,
+      "ns": 31390458,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "go",
+      "sample": 3,
+      "ns": 29204917,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    },
+    {
+      "event": "sample",
+      "workload": "time/parse_rfc3339",
+      "backend": "go",
+      "sample": 4,
+      "ns": 30416500,
+      "items": 1000000,
+      "bytes": 30000000,
+      "checksum": 8876784794003257570
+    }
+  ]
+}

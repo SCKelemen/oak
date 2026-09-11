@@ -73,3 +73,12 @@ type isaTableRow struct {
 	Bits []string
 	Text string
 }
+
+// sysRegEncoding is a system register's op0:op1:CRn:CRm:op2 and whether MRS
+// (Read) and MSR (Write) may name it. The table, `systemRegisterEncodings`
+// in sysregs_gen.go, is generated from Arm's SysReg XML by
+// asm/internal/sysreggen.
+type sysRegEncoding struct {
+	Op0, Op1, CRn, CRm, Op2 uint32
+	Read, Write             bool
+}

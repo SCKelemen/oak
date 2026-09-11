@@ -1,0 +1,38 @@
+// Benchmark entry points for the varint package: encode a corpus of u64
+// values back to back, then decode them in sequence.
+package main
+
+import("varint")
+
+// Encodes every value; returns the total bytes written, 0 on any failure.
+pub bench_varint_encode: (values: []u64, dst: [*]u8): u32 {
+  at: u32 = u32(0)
+  i: u32 = u32(0)
+  failed: Bool = false
+  while i < len(values) && !failed {
+    n: u32 = varint.varint_written(varint.varint_encode(dst, at, values[i]))
+    n == u32(0) ? { failed = true } | { at = at + n }
+    i = i + u32(1)
+  }
+  failed ? u32(0) | at
+}
+
+// Decodes `count` values from `src`; returns FNV-1a over the values, 0 on
+// any failure or if the bytes are not consumed exactly.
+pub bench_varint_decode: (src: []u8, count: u32): u64 {
+  acc: u64 = u64(14695981039346656037)
+  at: u32 = u32(0)
+  i: u32 = u32(0)
+  failed: Bool = false
+  while i < count && !failed {
+    decoded: varint.VarintValue = varint.varint_value(varint.varint_decode(src, at))
+    decoded.next == at ? { failed = true } | {
+      acc = (acc ^ decoded.value) * u64(1099511628211)
+      at = decoded.next
+    }
+    i = i + u32(1)
+  }
+  failed || at != len(src) ? u64(0) | acc
+}
+
+main: (): i32 = 0
