@@ -65,6 +65,12 @@ const (
 	// `c.*` scalar type or of a declared struct with boundary fields
 	// (docs/spec/92-ffi.md section 2.5.7).
 	CodeOutArgument = "OAK-F0112"
+	// CodeForeignFunctionType rejects a `c.Fn[...]` type anywhere but as
+	// the annotation of a local binding that `c.fn_at(p)` initializes inside
+	// an unsafe block, a `c.fn_at` without that annotation, and a `c.Fn`
+	// signature whose parameter or return types are not boundary types
+	// (docs/spec/92-ffi.md section 2.10).
+	CodeForeignFunctionType = "OAK-F0113"
 )
 
 // CType is a member of the `c` interface library (docs/spec/92-ffi.md
@@ -459,6 +465,8 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 		return tc.checkForeignDisown(expr)
 	case "borrow_string":
 		return tc.checkForeignStringBorrow(expr)
+	case "fn_at":
+		return tc.checkForeignFunctionAt(expr)
 	case "cstr":
 		// A C string from Oak bytes is not an expression either: it exists
 		// only as the argument standing for a c.String parameter of an

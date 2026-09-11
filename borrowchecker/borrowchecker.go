@@ -1023,6 +1023,17 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 	// enclosing block, so the view or span is dropped at the block's end
 	// and cannot escape it, and the assumption the program makes about the
 	// runtime's memory is recorded where every other unsafe assumption is.
+	// A foreign function pointer (docs/spec/92-ffi.md section 2.10): the
+	// binding names a function at an address the program vouches for;
+	// the contract is recorded like the foreign-buffer one, under its own
+	// code, so a module accepts it explicitly (`admit OAK-B0122`).
+	if typechecker.ForeignFunctionAtCall(call) && targetVar != "" {
+		d := bc.reportForeignFunctionAssumption(call,
+			fmt.Sprintf("foreign function contract assumed for %q: the pointer is a function of the annotated signature, callable until the block ends", targetVar),
+			targetVar)
+		d.AddNote("the assumption is the binding author's, as for an extern prototype (docs/spec/92-ffi.md section 2.10); a NULL pointer traps at c.fn_at, and every call passes exactly the annotated argument types")
+		return
+	}
 	if member, _, isForeign := typechecker.ForeignBorrowCall(call); isForeign && targetVar != "" {
 		if member == "own" {
 			// An owned foreign buffer (docs/spec/92-ffi.md section 2.8):
