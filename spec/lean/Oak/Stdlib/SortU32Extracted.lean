@@ -8,10 +8,40 @@ set_option maxRecDepth 65536
 set_option maxHeartbeats 4000000
 namespace Oak.Stdlib.SortU32
 
+structure SortPivot where
+  index : UInt32
+  hint : UInt32
+  deriving Repr, Inhabited, BEq, DecidableEq
+
+structure SortSplit where
+  mid : UInt32
+  already : Bool
+  deriving Repr, Inhabited, BEq, DecidableEq
+
+structure SortMedian where
+  index : UInt32
+  swaps : UInt32
+  deriving Repr, Inhabited, BEq, DecidableEq
+
 inductive Option_u32 where
   | Some (payload : UInt32)
   | None
   deriving Repr, Inhabited, BEq, DecidableEq
+
+def sort_bit_length.loop1 (bits : UInt32) (rest : UInt32) : Nat → Option (UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (rest > (0 : UInt32))) then do
+      let rest := (rest >>> (1 : UInt32))
+      let bits := (bits + (1 : UInt32))
+      sort_bit_length.loop1 bits rest fuel
+    else pure (bits, rest)
+
+def sort_bit_length (n : UInt32) (fuel : Nat) : Option (UInt32) := do
+  let bits : UInt32 := (0 : UInt32)
+  let rest : UInt32 := n
+  let (bits, rest) ← sort_bit_length.loop1 bits rest fuel
+  pure bits
 
 def sort_is_sorted_u32.loop1 (items : Array UInt32) (ok : Bool) (i : UInt32) : Nat → Option (Bool × UInt32)
   | 0 => none
@@ -129,13 +159,453 @@ def sort_u32_heap (items : Array UInt32) (fuel : Nat) : Option (Unit × Array UI
   let (r1, items) ← sort_heap_u32 items fuel
   pure ((), items)
 
-def sort_span_u32 (items : Array UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
-  let () ← (if (decide ((items.size.toUInt32) <= (16 : UInt32))) then (do
+def sort_swap_u32 (items : Array UInt32) (i : UInt32) (j : UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
+  let held : UInt32 := (items.getD i.toNat (0 : UInt32))
+  let items := items.setIfInBounds i.toNat (items.getD j.toNat (0 : UInt32))
+  let items := items.setIfInBounds j.toNat held
+  pure ((), items)
+
+def sort_break_patterns_u32.loop1 (items : Array UInt32) (a : UInt32) (length : UInt32) (mask : UInt32) (random : UInt64) (middle : UInt32) (step : UInt32) : Nat → Option (UInt64 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (step < (3 : UInt32))) then do
+      let random := (random ^^^ (random <<< (13 : UInt64)))
+      let random := (random ^^^ (random >>> (7 : UInt64)))
+      let random := (random ^^^ (random <<< (17 : UInt64)))
+      let other : UInt32 := ((random.toUInt32) &&& mask)
+      let other ← (if (decide (other >= length)) then (do
+          let other := (other - length)
+          pure other)
+        else (do
+          pure other))
+      let (r2, items) ← sort_swap_u32 items ((middle - (1 : UInt32)) + step) (a + other) fuel
+      let step := (step + (1 : UInt32))
+      sort_break_patterns_u32.loop1 items a length mask random middle step fuel
+    else pure (random, step)
+
+def sort_break_patterns_u32 (items : Array UInt32) (a : UInt32) (b : UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
+  let length : UInt32 := (b - a)
+  let () ← (if (decide (length >= (8 : UInt32))) then (do
+      let r1 ← sort_bit_length length fuel
+      let bits : UInt32 := r1
+      let mask : UInt32 := (if (decide (bits >= (32 : UInt32))) then (4294967295 : UInt32) else (((1 : UInt32) <<< bits) - (1 : UInt32)))
+      let random : UInt64 := (length.toUInt64)
+      let middle : UInt32 := ((a + ((length / (4 : UInt32)) * (2 : UInt32))) - (1 : UInt32))
+      let step : UInt32 := (0 : UInt32)
+      let (random, step) ← sort_break_patterns_u32.loop1 items a length mask random middle step fuel
+      pure ())
+    else (do
+      pure ()))
+  pure ((), items)
+
+def sort_median3_u32 (items : Array UInt32) (a : UInt32) (b : UInt32) (c : UInt32) (swaps : UInt32) (fuel : Nat) : Option (SortMedian × Array UInt32) := do
+  let x : UInt32 := a
+  let y : UInt32 := b
+  let z : UInt32 := c
+  let count : UInt32 := swaps
+  let (x, y, count) ← (if (decide ((items.getD y.toNat (0 : UInt32)) < (items.getD x.toNat (0 : UInt32)))) then (do
+      let first : UInt32 := x
+      let x := y
+      let y := first
+      let count := (count + (1 : UInt32))
+      pure (x, y, count))
+    else (do
+      pure (x, y, count)))
+  let (y, z, count) ← (if (decide ((items.getD z.toNat (0 : UInt32)) < (items.getD y.toNat (0 : UInt32)))) then (do
+      let second : UInt32 := y
+      let y := z
+      let z := second
+      let count := (count + (1 : UInt32))
+      pure (y, z, count))
+    else (do
+      pure (y, z, count)))
+  let (x, y, count) ← (if (decide ((items.getD y.toNat (0 : UInt32)) < (items.getD x.toNat (0 : UInt32)))) then (do
+      let third : UInt32 := x
+      let x := y
+      let y := third
+      let count := (count + (1 : UInt32))
+      pure (x, y, count))
+    else (do
+      pure (x, y, count)))
+  pure (({ index := y, swaps := count } : SortMedian), items)
+
+def sort_choose_pivot_u32 (items : Array UInt32) (a : UInt32) (b : UInt32) (fuel : Nat) : Option (SortPivot × Array UInt32) := do
+  let length : UInt32 := (b - a)
+  let quarter : UInt32 := (length / (4 : UInt32))
+  let i : UInt32 := (a + quarter)
+  let j : UInt32 := (a + (quarter * (2 : UInt32)))
+  let k : UInt32 := (a + (quarter * (3 : UInt32)))
+  let swaps : UInt32 := (0 : UInt32)
+  let (i, j, k, swaps) ← (if (decide (length >= (8 : UInt32))) then (do
+      let (i, j, k, swaps) ← (if (decide (length >= (50 : UInt32))) then (do
+          let (r1, items) ← sort_median3_u32 items (i - (1 : UInt32)) i (i + (1 : UInt32)) swaps fuel
+          let mi : SortMedian := r1
+          let i := mi.index
+          let (r2, items) ← sort_median3_u32 items (j - (1 : UInt32)) j (j + (1 : UInt32)) mi.swaps fuel
+          let mj : SortMedian := r2
+          let j := mj.index
+          let (r3, items) ← sort_median3_u32 items (k - (1 : UInt32)) k (k + (1 : UInt32)) mj.swaps fuel
+          let mk : SortMedian := r3
+          let k := mk.index
+          let swaps := mk.swaps
+          pure (i, j, k, swaps))
+        else (do
+          pure (i, j, k, swaps)))
+      let (r4, items) ← sort_median3_u32 items i j k swaps fuel
+      let m : SortMedian := r4
+      let j := m.index
+      let swaps := m.swaps
+      pure (i, j, k, swaps))
+    else (do
+      pure (i, j, k, swaps)))
+  let hint : UInt32 := (if (swaps == (0 : UInt32)) then (1 : UInt32) else (if (swaps == (12 : UInt32)) then (2 : UInt32) else (0 : UInt32)))
+  pure (({ index := j, hint := hint } : SortPivot), items)
+
+def sort_partial_insertion_u32.loop2 (items : Array UInt32) (b : UInt32) (i : UInt32) : Nat → Option (UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (i < b)) && (!(decide ((items.getD i.toNat (0 : UInt32)) < (items.getD (i - (1 : UInt32)).toNat (0 : UInt32)))))) then do
+      let i := (i + (1 : UInt32))
+      sort_partial_insertion_u32.loop2 items b i fuel
+    else pure i
+
+def sort_partial_insertion_u32.loop3 (items : Array UInt32) (a : UInt32) (left : UInt32) (shifting : Bool) : Nat → Option (UInt32 × Bool)
+  | 0 => none
+  | fuel + 1 => do
+    if (shifting && (decide (left > a))) then do
+      let (left, shifting) ← (if (decide ((items.getD left.toNat (0 : UInt32)) < (items.getD (left - (1 : UInt32)).toNat (0 : UInt32)))) then (do
+          let (r2, items) ← sort_swap_u32 items left (left - (1 : UInt32)) fuel
+          let left := (left - (1 : UInt32))
+          pure (left, shifting))
+        else (do
+          let shifting := false
+          pure (left, shifting)))
+      sort_partial_insertion_u32.loop3 items a left shifting fuel
+    else pure (left, shifting)
+
+def sort_partial_insertion_u32.loop4 (items : Array UInt32) (b : UInt32) (right : UInt32) (moving : Bool) : Nat → Option (UInt32 × Bool)
+  | 0 => none
+  | fuel + 1 => do
+    if (moving && (decide (right < b))) then do
+      let (right, moving) ← (if (decide ((items.getD right.toNat (0 : UInt32)) < (items.getD (right - (1 : UInt32)).toNat (0 : UInt32)))) then (do
+          let (r3, items) ← sort_swap_u32 items right (right - (1 : UInt32)) fuel
+          let right := (right + (1 : UInt32))
+          pure (right, moving))
+        else (do
+          let moving := false
+          pure (right, moving)))
+      sort_partial_insertion_u32.loop4 items b right moving fuel
+    else pure (right, moving)
+
+def sort_partial_insertion_u32.loop1 (items : Array UInt32) (a : UInt32) (b : UInt32) (i : UInt32) (steps : UInt32) (sorted : Bool) (trying : Bool) : Nat → Option (UInt32 × UInt32 × Bool × Bool)
+  | 0 => none
+  | fuel + 1 => do
+    if (trying && (decide (steps < (5 : UInt32)))) then do
+      let i ← sort_partial_insertion_u32.loop2 items b i fuel
+      let (steps, sorted, trying) ← (if (i == b) then (do
+          let sorted := true
+          let trying := false
+          pure (steps, sorted, trying))
+        else (do
+          let (steps, trying) ← (if (decide ((b - a) < (50 : UInt32))) then (do
+              let trying := false
+              pure (steps, trying))
+            else (do
+              let (r1, items) ← sort_swap_u32 items i (i - (1 : UInt32)) fuel
+              let () ← (if (decide ((i - a) >= (2 : UInt32))) then (do
+                  let left : UInt32 := (i - (1 : UInt32))
+                  let shifting : Bool := true
+                  let (left, shifting) ← sort_partial_insertion_u32.loop3 items a left shifting fuel
+                  pure ())
+                else (do
+                  pure ()))
+              let () ← (if (decide ((b - i) >= (2 : UInt32))) then (do
+                  let right : UInt32 := (i + (1 : UInt32))
+                  let moving : Bool := true
+                  let (right, moving) ← sort_partial_insertion_u32.loop4 items b right moving fuel
+                  pure ())
+                else (do
+                  pure ()))
+              let steps := (steps + (1 : UInt32))
+              pure (steps, trying)))
+          pure (steps, sorted, trying)))
+      sort_partial_insertion_u32.loop1 items a b i steps sorted trying fuel
+    else pure (i, steps, sorted, trying)
+
+def sort_partial_insertion_u32 (items : Array UInt32) (a : UInt32) (b : UInt32) (fuel : Nat) : Option (Bool × Array UInt32) := do
+  let i : UInt32 := (a + (1 : UInt32))
+  let steps : UInt32 := (0 : UInt32)
+  let sorted : Bool := false
+  let trying : Bool := true
+  let (i, steps, sorted, trying) ← sort_partial_insertion_u32.loop1 items a b i steps sorted trying fuel
+  pure (sorted, items)
+
+def sort_partition_equal_u32.loop2 (items : Array UInt32) (a : UInt32) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (i <= j)) && (!(decide ((items.getD a.toNat (0 : UInt32)) < (items.getD i.toNat (0 : UInt32)))))) then do
+      let i := (i + (1 : UInt32))
+      sort_partition_equal_u32.loop2 items a i j fuel
+    else pure i
+
+def sort_partition_equal_u32.loop3 (items : Array UInt32) (a : UInt32) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (i <= j)) && (decide ((items.getD a.toNat (0 : UInt32)) < (items.getD j.toNat (0 : UInt32))))) then do
+      let j := (j - (1 : UInt32))
+      sort_partition_equal_u32.loop3 items a i j fuel
+    else pure j
+
+def sort_partition_equal_u32.loop1 (items : Array UInt32) (a : UInt32) (i : UInt32) (j : UInt32) (scanning : Bool) : Nat → Option (UInt32 × UInt32 × Bool)
+  | 0 => none
+  | fuel + 1 => do
+    if scanning then do
+      let i ← sort_partition_equal_u32.loop2 items a i j fuel
+      let j ← sort_partition_equal_u32.loop3 items a i j fuel
+      let (i, j, scanning) ← (if (decide (i > j)) then (do
+          let scanning := false
+          pure (i, j, scanning))
+        else (do
+          let (r2, items) ← sort_swap_u32 items i j fuel
+          let i := (i + (1 : UInt32))
+          let j := (j - (1 : UInt32))
+          pure (i, j, scanning)))
+      sort_partition_equal_u32.loop1 items a i j scanning fuel
+    else pure (i, j, scanning)
+
+def sort_partition_equal_u32 (items : Array UInt32) (a : UInt32) (b : UInt32) (pivot : UInt32) (fuel : Nat) : Option (UInt32 × Array UInt32) := do
+  let (r1, items) ← sort_swap_u32 items a pivot fuel
+  let i : UInt32 := (a + (1 : UInt32))
+  let j : UInt32 := (b - (1 : UInt32))
+  let scanning : Bool := true
+  let (i, j, scanning) ← sort_partition_equal_u32.loop1 items a i j scanning fuel
+  pure (i, items)
+
+def sort_partition_u32.loop1 (items : Array UInt32) (a : UInt32) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (i <= j)) && (decide ((items.getD i.toNat (0 : UInt32)) < (items.getD a.toNat (0 : UInt32))))) then do
+      let i := (i + (1 : UInt32))
+      sort_partition_u32.loop1 items a i j fuel
+    else pure i
+
+def sort_partition_u32.loop2 (items : Array UInt32) (a : UInt32) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (i <= j)) && (!(decide ((items.getD j.toNat (0 : UInt32)) < (items.getD a.toNat (0 : UInt32)))))) then do
+      let j := (j - (1 : UInt32))
+      sort_partition_u32.loop2 items a i j fuel
+    else pure j
+
+def sort_partition_u32.loop4 (items : Array UInt32) (a : UInt32) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (i <= j)) && (decide ((items.getD i.toNat (0 : UInt32)) < (items.getD a.toNat (0 : UInt32))))) then do
+      let i := (i + (1 : UInt32))
+      sort_partition_u32.loop4 items a i j fuel
+    else pure i
+
+def sort_partition_u32.loop5 (items : Array UInt32) (a : UInt32) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (i <= j)) && (!(decide ((items.getD j.toNat (0 : UInt32)) < (items.getD a.toNat (0 : UInt32)))))) then do
+      let j := (j - (1 : UInt32))
+      sort_partition_u32.loop5 items a i j fuel
+    else pure j
+
+def sort_partition_u32.loop3 (items : Array UInt32) (a : UInt32) (i : UInt32) (j : UInt32) (scanning : Bool) : Nat → Option (UInt32 × UInt32 × Bool)
+  | 0 => none
+  | fuel + 1 => do
+    if scanning then do
+      let i ← sort_partition_u32.loop4 items a i j fuel
+      let j ← sort_partition_u32.loop5 items a i j fuel
+      let (i, j, scanning) ← (if (decide (i > j)) then (do
+          let scanning := false
+          pure (i, j, scanning))
+        else (do
+          let (r5, items) ← sort_swap_u32 items i j fuel
+          let i := (i + (1 : UInt32))
+          let j := (j - (1 : UInt32))
+          pure (i, j, scanning)))
+      sort_partition_u32.loop3 items a i j scanning fuel
+    else pure (i, j, scanning)
+
+def sort_partition_u32 (items : Array UInt32) (a : UInt32) (b : UInt32) (pivot : UInt32) (fuel : Nat) : Option (SortSplit × Array UInt32) := do
+  let (r1, items) ← sort_swap_u32 items a pivot fuel
+  let i : UInt32 := (a + (1 : UInt32))
+  let j : UInt32 := (b - (1 : UInt32))
+  let i ← sort_partition_u32.loop1 items a i j fuel
+  let j ← sort_partition_u32.loop2 items a i j fuel
+  let (r2, i, j) ← (
+    if (decide (i > j)) then (do
+      let (r3, items) ← sort_swap_u32 items j a fuel
+      pure (({ mid := j, already := true } : SortSplit), i, j))
+    else (do
+      let (r4, items) ← sort_swap_u32 items i j fuel
+      let i := (i + (1 : UInt32))
+      let j := (j - (1 : UInt32))
+      let scanning : Bool := true
+      let (i, j, scanning) ← sort_partition_u32.loop3 items a i j scanning fuel
+      let (r6, items) ← sort_swap_u32 items j a fuel
+      pure (({ mid := j, already := false } : SortSplit), i, j)))
+  pure (r2, items)
+
+def sort_reverse_u32.loop1 (items : Array UInt32) (n : UInt32) (i : UInt32) : Nat → Option (Array UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (n > (1 : UInt32))) && (decide (i < (n / (2 : UInt32))))) then do
+      let held : UInt32 := (items.getD i.toNat (0 : UInt32))
+      let items := items.setIfInBounds i.toNat (items.getD ((n - (1 : UInt32)) - i).toNat (0 : UInt32))
+      let items := items.setIfInBounds ((n - (1 : UInt32)) - i).toNat held
+      let i := (i + (1 : UInt32))
+      sort_reverse_u32.loop1 items n i fuel
+    else pure (items, i)
+
+def sort_reverse_u32 (items : Array UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
+  let n : UInt32 := (items.size.toUInt32)
+  let i : UInt32 := (0 : UInt32)
+  let (items, i) ← sort_reverse_u32.loop1 items n i fuel
+  pure ((), items)
+
+def sort_span_budget_u32.loop1 (items : Array UInt32) (stack : Array UInt32) (depth : UInt32) (a : UInt32) (b : UInt32) (limit : UInt32) (balanced : Bool) (partitioned : Bool) (working : Bool) : Nat → Option (Array UInt32 × UInt32 × UInt32 × UInt32 × UInt32 × Bool × Bool × Bool)
+  | 0 => none
+  | fuel + 1 => do
+    if working then do
+      let length : UInt32 := (b - a)
+      let done : Bool := false
+      let (stack, depth, a, b, limit, balanced, partitioned, done) ← (if (decide (length <= (12 : UInt32))) then (do
+          let () ← (if true then (do
+              let short : Array UInt32 := (items.extract a.toNat b.toNat)
+              let (r2, short) ← sort_insertion_u32 short fuel
+              pure ())
+            else (do
+              pure ()))
+          let done := true
+          pure (stack, depth, a, b, limit, balanced, partitioned, done))
+        else (do
+          let (stack, depth, a, b, limit, balanced, partitioned, done) ← (if (limit == (0 : UInt32)) then (do
+              let () ← (if true then (do
+                  let fallback : Array UInt32 := (items.extract a.toNat b.toNat)
+                  let (r3, fallback) ← sort_heap_u32 fallback fuel
+                  pure ())
+                else (do
+                  pure ()))
+              let done := true
+              pure (stack, depth, a, b, limit, balanced, partitioned, done))
+            else (do
+              let limit ← (if (!balanced) then (do
+                  let (r4, items) ← sort_break_patterns_u32 items a b fuel
+                  let limit := (limit - (1 : UInt32))
+                  pure limit)
+                else (do
+                  pure limit))
+              let (r5, items) ← sort_choose_pivot_u32 items a b fuel
+              let chosen : SortPivot := r5
+              let pivot : UInt32 := chosen.index
+              let hint : UInt32 := chosen.hint
+              let (pivot, hint) ← (if (hint == (2 : UInt32)) then (do
+                  let () ← (if true then (do
+                      let backwards : Array UInt32 := (items.extract a.toNat b.toNat)
+                      let (r6, backwards) ← sort_reverse_u32 backwards fuel
+                      pure ())
+                    else (do
+                      pure ()))
+                  let pivot := ((b - (1 : UInt32)) - (pivot - a))
+                  let hint := (1 : UInt32)
+                  pure (pivot, hint))
+                else (do
+                  pure (pivot, hint)))
+              let handled : Bool := false
+              let (done, handled) ← (if ((balanced && partitioned) && (hint == (1 : UInt32))) then (do
+                  let (r7, items) ← sort_partial_insertion_u32 items a b fuel
+                  let (done, handled) ← (if r7 then (do
+                      let done := true
+                      let handled := true
+                      pure (done, handled))
+                    else (do
+                      pure (done, handled)))
+                  pure (done, handled))
+                else (do
+                  pure (done, handled)))
+              let (a, handled) ← (if (((!handled) && (decide (a > (0 : UInt32)))) && (!(decide ((items.getD (a - (1 : UInt32)).toNat (0 : UInt32)) < (items.getD pivot.toNat (0 : UInt32)))))) then (do
+                  let (r8, items) ← sort_partition_equal_u32 items a b pivot fuel
+                  let a := r8
+                  let handled := true
+                  pure (a, handled))
+                else (do
+                  pure (a, handled)))
+              let (stack, depth, a, b, balanced, partitioned) ← (if (!handled) then (do
+                  let (r9, items) ← sort_partition_u32 items a b pivot fuel
+                  let split : SortSplit := r9
+                  let partitioned := split.already
+                  let mid : UInt32 := split.mid
+                  let left_len : UInt32 := (mid - a)
+                  let right_len : UInt32 := (b - mid)
+                  let threshold : UInt32 := (length / (8 : UInt32))
+                  let push_a : UInt32 := a
+                  let push_b : UInt32 := b
+                  let (a, b, balanced, push_a, push_b) ← (if (decide (left_len < right_len)) then (do
+                      let balanced := (decide (left_len >= threshold))
+                      let push_a := (mid + (1 : UInt32))
+                      let b := mid
+                      pure (a, b, balanced, push_a, push_b))
+                    else (do
+                      let balanced := (decide (right_len >= threshold))
+                      let push_b := mid
+                      let a := (mid + (1 : UInt32))
+                      pure (a, b, balanced, push_a, push_b)))
+                  let flags : UInt32 := ((if balanced then (256 : UInt32) else (0 : UInt32)) + (if partitioned then (512 : UInt32) else (0 : UInt32)))
+                  let stack := stack.setIfInBounds (depth * (3 : UInt32)).toNat push_a
+                  let stack := stack.setIfInBounds ((depth * (3 : UInt32)) + (1 : UInt32)).toNat push_b
+                  let stack := stack.setIfInBounds ((depth * (3 : UInt32)) + (2 : UInt32)).toNat (limit + flags)
+                  let depth := (depth + (1 : UInt32))
+                  let balanced := true
+                  let partitioned := true
+                  pure (stack, depth, a, b, balanced, partitioned))
+                else (do
+                  pure (stack, depth, a, b, balanced, partitioned)))
+              pure (stack, depth, a, b, limit, balanced, partitioned, done)))
+          pure (stack, depth, a, b, limit, balanced, partitioned, done)))
+      let (depth, a, b, limit, balanced, partitioned, working) ← (if done then (do
+          let (depth, a, b, limit, balanced, partitioned, working) ← (if (depth == (0 : UInt32)) then (do
+              let working := false
+              pure (depth, a, b, limit, balanced, partitioned, working))
+            else (do
+              let depth := (depth - (1 : UInt32))
+              let a := (stack.getD (depth * (3 : UInt32)).toNat (0 : UInt32))
+              let b := (stack.getD ((depth * (3 : UInt32)) + (1 : UInt32)).toNat (0 : UInt32))
+              let packed : UInt32 := (stack.getD ((depth * (3 : UInt32)) + (2 : UInt32)).toNat (0 : UInt32))
+              let limit := (packed &&& (255 : UInt32))
+              let balanced := ((packed &&& (256 : UInt32)) != (0 : UInt32))
+              let partitioned := ((packed &&& (512 : UInt32)) != (0 : UInt32))
+              pure (depth, a, b, limit, balanced, partitioned, working)))
+          pure (depth, a, b, limit, balanced, partitioned, working))
+        else (do
+          pure (depth, a, b, limit, balanced, partitioned, working)))
+      sort_span_budget_u32.loop1 items stack depth a b limit balanced partitioned working fuel
+    else pure (stack, depth, a, b, limit, balanced, partitioned, working)
+
+def sort_span_budget_u32 (items : Array UInt32) (depth_limit : UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
+  let n : UInt32 := (items.size.toUInt32)
+  let () ← (if (decide (n <= (12 : UInt32))) then (do
       let (r1, items) ← sort_insertion_u32 items fuel
       pure ())
     else (do
-      let (r2, items) ← sort_heap_u32 items fuel
+      let stack : Array UInt32 := Array.replicate 144 (0 : UInt32)
+      let depth : UInt32 := (0 : UInt32)
+      let a : UInt32 := (0 : UInt32)
+      let b : UInt32 := n
+      let limit : UInt32 := depth_limit
+      let balanced : Bool := true
+      let partitioned : Bool := true
+      let working : Bool := true
+      let (stack, depth, a, b, limit, balanced, partitioned, working) ← sort_span_budget_u32.loop1 items stack depth a b limit balanced partitioned working fuel
       pure ()))
+  pure ((), items)
+
+def sort_span_u32 (items : Array UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
+  let r1 ← sort_bit_length (items.size.toUInt32) fuel
+  let (r2, items) ← sort_span_budget_u32 items r1 fuel
   pure ((), items)
 
 def sort_u32_span (items : Array UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
@@ -228,23 +698,6 @@ def sort_dedup_u32 (items : Array UInt32) (fuel : Nat) : Option (UInt32 × Array
 def sort_u32_dedup (items : Array UInt32) (fuel : Nat) : Option (UInt32 × Array UInt32) := do
   let (r1, items) ← sort_dedup_u32 items fuel
   pure (r1, items)
-
-def sort_reverse_u32.loop1 (items : Array UInt32) (n : UInt32) (i : UInt32) : Nat → Option (Array UInt32 × UInt32)
-  | 0 => none
-  | fuel + 1 => do
-    if ((decide (n > (1 : UInt32))) && (decide (i < (n / (2 : UInt32))))) then do
-      let held : UInt32 := (items.getD i.toNat (0 : UInt32))
-      let items := items.setIfInBounds i.toNat (items.getD ((n - (1 : UInt32)) - i).toNat (0 : UInt32))
-      let items := items.setIfInBounds ((n - (1 : UInt32)) - i).toNat held
-      let i := (i + (1 : UInt32))
-      sort_reverse_u32.loop1 items n i fuel
-    else pure (items, i)
-
-def sort_reverse_u32 (items : Array UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
-  let n : UInt32 := (items.size.toUInt32)
-  let i : UInt32 := (0 : UInt32)
-  let (items, i) ← sort_reverse_u32.loop1 items n i fuel
-  pure ((), items)
 
 def sort_u32_reverse (items : Array UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
   let (r1, items) ← sort_reverse_u32 items fuel

@@ -108,7 +108,7 @@ the replayed real certificate (729 cases at the time of writing). The opt-in
 verification workflow and the certificate gate build and run it.
 
 **The standard library.** `compiler/lean_stdlib_extract_test.go` extracts
-whole packages — `varint`, `encoding`, `hash`, `random`, `uuid`, and `sort`
+whole packages — `varint`, `encoding`, `random`, `uuid`, and `sort`
 at `u32` — into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
 failing on drift the same way. A package's program is the core prelude
 plus the flattened texts of its dependencies and itself (`stdlib.Flatten`);
