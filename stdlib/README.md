@@ -578,6 +578,95 @@ allocation. Errors are the closed `PathError = BadPattern |
 DestinationTooSmall` with `path_ok`, `path_written`, `path_failure`,
 `path_matched`, `path_match_failure` unwrappers, and `path_match_code` /
 `path_match_glob_code` return 0, 1 or 2 for callers that prefer a code.
+## Floating-point text
+
+`stdlib/float.oak` (`import("float")`, also in the flat prelude) converts
+f64 and f32 to and from decimal text exactly, with the algorithm Go's
+`strconv` uses on its slow path: an 800-digit decimal in caller storage,
+shifted by powers of two, so no floating-point arithmetic takes part and
+every backend agrees byte for byte with `strconv.FormatFloat` and
+`strconv.ParseFloat`.
+
+- `float_format(dst, value)` writes the shortest digit string that parses
+  back to the same f64, in Go's `'g'`/-1 spelling: the exponent form when
+  the decimal exponent is below -4 or at least 6 (`1e+06`, `100000`,
+  `1e-05`, `0.0001`), exponents with at least two digits, `NaN`, `+Inf`,
+  `-Inf`, and `-0` for the negative zero. `FLOAT_TEXT_SIZE` (32) bytes hold
+  any shortest spelling. `float_format_fixed(dst, value, digits)` is Go's
+  `'f'` with that many fraction digits and `float_format_exp` its `'e'`,
+  both rounded half to even on the exact binary value (so `2.5` with no
+  digits is `2`, `0.125` with two is `0.12`). `float_format_f32` and the
+  `_fixed_f32`/`_exp_f32` forms do the same for f32 (shortest for the f32
+  format, not the f64 one).
+- `float_parse(src)` is the f64 nearest to the exact decimal value of the
+  text, ties to even, subnormals and the range ends included. The whole view
+  must be one number: optional sign, digits with an optional fraction,
+  optional `e`/`E` exponent, or `inf`/`infinity` (optionally signed) and
+  `nan` in any case; anything else — an empty view, a lone `.`, digit
+  separators, hexadecimal floats, trailing bytes — is `InvalidSyntax`. A
+  magnitude beyond the largest finite value is `OutOfRange`
+  (`float_parse_saturating` returns the signed infinity instead); underflow
+  rounds to zero or a subnormal without error. `float_parse_f32` rounds once
+  from the decimal to f32 (never through an f64), with the same saturating
+  variant.
+- Errors are the closed `FloatError = InvalidSyntax | OutOfRange |
+  DestinationTooSmall`; every format checks the destination before its
+  first store. Unwrappers: `float_ok`/`float_written`/`float_failure` for
+  format results and `float_parse_ok`/`float_parse_value`/
+  `float_parse_failure` (plus `_f32` forms) for parse results.
+
+`compiler/e2e_stdlib_float_test.go` checks the classic hard cases (`0.1`,
+`5e-324`, the `2.2250738585072011e-308` hang value, `9007199254740993`
+rounding to even, `1e23`, the exponent-form threshold, specials, the
+subnormal boundary midpoints, thousand-digit inputs) in every form against
+Go, compiled and interpreted, and a differential test formats and parses
+thousands of random bit patterns, random decimal spellings, and exact
+midpoints between adjacent doubles, comparing every line with `strconv`.
+`examples/testing/float_test.oak` states the round trips as properties.
+Deviations from Go: digit-separating underscores and hexadecimal floats are
+rejected rather than accepted.
+
+## Grapheme clusters
+
+`stdlib/grapheme.oak` (`import("grapheme")`, also in the flat prelude)
+segments UTF-8 text into extended grapheme clusters, the user-perceived
+characters of UAX #29 section 3.1.1 at Unicode 17.0.0: a base with its
+combining marks, a Hangul syllable spelled as jamo, an emoji ZWJ sequence, a
+flag pair, an Indic conjunct. `grapheme_next(src, at)` returns the byte
+offset where the cluster starting at `at` ends (`len(src)` at the end), so
+walking from 0 partitions the text; `grapheme_count(src)` is the length of
+that walk and `grapheme_is_boundary(src, at)` whether the walk lands on
+`at`. `at` must be a boundary reached from 0, because GB9c, GB11 and the
+Regional_Indicator parity of GB12/GB13 count from the start of the scan.
+An undecodable byte is its own cluster, so segmentation is total over any
+byte view. `grapheme_class(scalar)` is the combined property word `gcb |
+incb << 8 | pictographic << 10` read by `grapheme_gcb`, `grapheme_incb` and
+`grapheme_is_pictographic`, with the `GB_*` and `INCB_*` constants naming the
+values; the table (`grapheme_table`, 1631 ranges) is generated from the
+checked-in extract `unicode17_grapheme.json` by `generate_grapheme.py`, and
+the extract from the UCD files by `extract_grapheme.py`.
+
+The rules run as a state machine — `GraphemeState { prev, ri_run, pict,
+conjunct }` with `grapheme_initial`, `grapheme_breaks(state, props)` and
+`grapheme_advance(state, props)` exported — so each decision is one table
+lookup and a bounded state, no allocation, no recursion, no lookback.
+`spec/lean/Oak/GraphemeBreak.lean` states the rules GB3 to GB13 and GB999
+as scans over the preceding text (`ruleBreak`, the annex's wording) and the
+machine as `breaks`/`advance` folded over the text (`machineBreak`), and
+proves `machine_agrees`: for every history of well-formed symbols (an
+Extended_Pictographic or InCB=Consonant scalar has class Other, a Linker has
+class Extend, InCB=Extend has class Extend or ZWJ — the shape the UCD
+guarantees and the Go law test checks against the table) the two decide
+every position identically. `compiler/e2e_stdlib_grapheme_test.go` runs the
+hand-picked cases, the qualified import, and every line of the official
+`GraphemeBreakTest-17.0.0.txt` (`stdlib/testdata`); the law test
+`compiler/e2e_stdlib_grapheme_laws_test.go` enumerates every sequence of
+five symbol shapes (18^5) through the compiled machine and compares each
+boundary decision with an independent Go transliteration of `ruleBreak`.
+`examples/testing/grapheme_test.oak` states the partition, count and ASCII
+properties over tape-generated text. Reverse iteration (`grapheme_prev`) is
+absent: the parity and conjunct rules need unbounded lookback from the
+right, so callers walk forward from 0.
 
 ## Strings and Unicode text
 

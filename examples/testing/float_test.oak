@@ -1,0 +1,118 @@
+import(std)
+import(testing)
+
+// Properties of the float package: shortest text round-trips bit for bit,
+// fixed text is within half a unit of the requested digit, and f32 text
+// round-trips through the f32 parser.
+
+// f64 bit patterns from the tape: exponent class chosen first so subnormals
+// and the range ends appear often; NaN is discarded.
+tape_f64_bits: (choices: [*]TestChoices, data: []u8): u64 {
+  high: u64 = u64(test_u32(choices, data))
+  low: u64 = u64(test_u32(choices, data))
+  bits: u64 = (high << u64(32)) | low
+  class: u32 = test_range(choices, data, u32(0), u32(3))
+  class == u32(1) ? { bits = bits & u64(4503599627370495) } | class == u32(2) ? {
+    exp: u64 = u64(test_range(choices, data, u32(963), u32(1083)))
+    bits = (exp << u64(52)) | (bits & u64(4503599627370495)) | (bits & u64(9223372036854775808))
+  } | class == u32(3) ? { bits = u64(test_range(choices, data, u32(0), u32(100000))) << u64(32) }
+  bits
+}
+
+// 7300 shortest text is at most FLOAT_TEXT_SIZE bytes and never fails,
+// 7301 parsing it gives the same bit pattern (negative zero included),
+// 7302 the text has no leading zero digit before another digit and no
+// trailing zero in a fraction, 7303 the exponent form is used exactly when
+// the decimal exponent is below -4 or at least 6.
+PropertyFloatShortestRoundTrip: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  bits: u64 = tape_f64_bits(choices, data)
+  test_assume((bits & u64(9218868437227405312)) != u64(9218868437227405312))
+  value: f64 = f64_bits_u64(bits)
+  out: [32]u8
+  n: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&out)
+    n = float_written(float_format(dst, value))
+  }
+  test_check(n > u32(0) && n <= FLOAT_TEXT_SIZE, u32(7300))
+  whole: []u8 = view(&out)
+  text: []u8 = whole[u32(0):n]
+  back: Result[f64, FloatError] = float_parse(text)
+  test_check(float_parse_ok(back) && u64_bits_f64(float_parse_value(back, 0.0)) == bits, u32(7301))
+  start: u32 = text[0] == u8(45) ? u32(1) | u32(0)
+  has_e: Bool = false
+  has_dot: Bool = false
+  i: u32 = start
+  while i < n {
+    text[i] == u8(101) ? { has_e = true }
+    text[i] == u8(46) ? { has_dot = true }
+    i = i + u32(1)
+  }
+  test_check(!(text[start] == u8(48) && n > start + u32(1) && text[start + u32(1)] >= u8(48) && text[start + u32(1)] <= u8(57)), u32(7302))
+  has_dot && !has_e ? { test_check(text[n - u32(1)] != u8(48), u32(7302)) }
+  has_e ? { testing_classify(u32(190)) } | { testing_classify(u32(191)) }
+  (bits & u64(9218868437227405312)) == u64(0) ? { testing_classify(u32(192)) }
+}
+
+// 7310 fixed text with d digits parses to within half a unit in the last
+// place of the value, 7311 it has exactly d fraction digits.
+PropertyFloatFixedNearby: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  bits: u64 = tape_f64_bits(choices, data)
+  exp: u64 = (bits >> u64(52)) & u64(2047)
+  test_assume(exp != u64(2047) && exp > u64(900) && exp < u64(1100))
+  value: f64 = f64_bits_u64(bits)
+  digits: u32 = test_range(choices, data, u32(0), u32(6))
+  out: [400]u8
+  n: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&out)
+    n = float_written(float_format_fixed(dst, value, digits))
+  }
+  whole: []u8 = view(&out)
+  text: []u8 = whole[u32(0):n]
+  dot: u32 = n
+  i: u32 = u32(0)
+  while i < n {
+    text[i] == u8(46) ? { dot = i }
+    i = i + u32(1)
+  }
+  frac: u32 = dot == n ? u32(0) | n - dot - u32(1)
+  test_check(frac == digits, u32(7311))
+  back: f64 = float_parse_value(float_parse(text), 0.0)
+  // half a unit of the last digit: 0.5 x 10^-digits
+  unit: f64 = 1.0
+  k: u32 = u32(0)
+  while k < digits {
+    unit = unit / 10.0
+    k = k + u32(1)
+  }
+  diff: f64 = back > value ? back - value | value - back
+  test_check(diff <= unit * 0.5 + unit * 0.0000000001, u32(7310))
+}
+
+// 7320 f32 shortest text parses back to the same f32 bits through the f32
+// parser, 7321 and to a value that rounds to the same f32 through the f64
+// parser.
+PropertyFloat32RoundTrip: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  bits: u32 = test_u32(choices, data)
+  test_assume((bits & u32(2139095040)) != u32(2139095040))
+  value: f32 = f32_bits_u32(bits)
+  out: [32]u8
+  n: u32 = u32(0)
+  true ? {
+    dst: [*]u8 = span(&out)
+    n = float_written(float_format_f32(dst, value))
+  }
+  whole: []u8 = view(&out)
+  text: []u8 = whole[u32(0):n]
+  back: Result[f32, FloatError] = float_parse_f32(text)
+  test_check(n > u32(0) && float_parse_ok_f32(back) && u32_bits_f32(float_parse_value_f32(back, 0.0)) == bits, u32(7320))
+  wide: f64 = float_parse_value(float_parse(text), 0.0)
+  test_check(u32_bits_f32(f32_round_f64(wide)) == bits, u32(7321))
+}

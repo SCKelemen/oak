@@ -27,6 +27,13 @@ type Requirement struct {
 	Digest string
 }
 
+// VendorDir is the directory under a module root that holds vendored
+// copies of its dependencies (`oak mod vendor`), each under its module path.
+const VendorDir = "vendor"
+
+// VendorListFile records what was vendored.
+const VendorListFile = "modules.txt"
+
 // Manifest is a parsed oak.mod.
 type Manifest struct {
 	// Path is the module path: the import-path prefix of every package in
