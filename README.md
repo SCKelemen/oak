@@ -93,8 +93,9 @@ The `oak` command has the shape of the Go tool (`docs/spec/115-tooling.md`):
 `oak build` produces an executable (`-emit-c` for C), `oak run`, `oak install`
 into `$OAKBIN`, `oak vet` reports what the checker recorded without generating
 code, `oak list [-json] [-deps]` lists packages and imports, `oak test`, `oak
-env`, `oak version`, `oak clean -modcache`, and `oak mod init|download|tidy|edit|graph|why`
-alongside the semver commands below. Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
+env`, `oak version`, `oak clean -modcache`, `oak doc`, `oak fmt`, and `oak mod
+init|download|tidy|edit|graph|why|vendor|verify` alongside the semver commands
+below. Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
 pinned dependencies with `oak mod download`; see `examples/modules`. Versions
 are enforced Elm-style at module granularity: `oak mod api` snapshots a
 module's public API, `oak mod bump previous.json` requires the `version` in
