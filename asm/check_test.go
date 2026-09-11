@@ -99,6 +99,57 @@ func TestCheckerAccepts(t *testing.T) {
 	}
 }
 
+// Owned arrays in the frame: `add xN, sp, #imm` records a frame address,
+// and memory through it is checked against the declared frame — a plain
+// offset must lie inside it, an indexed access needs a dominating constant
+// index guard whose bound keeps every element inside it (the native
+// backend's lowering of `buf[i]`).
+func TestCheckerFrameArrays(t *testing.T) {
+	decl := "pick: (i: u32) -> u32"
+	accept := "  bind w0 = i\n  clobber x9, x10\n  frame 16\n  sub sp, sp, #16\n  mov x9, #0\n  stp x9, x9, [sp]\n  add x9, sp, #0\n  cmp w0, #4\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1"
+	unit, errs := ParseUnit("frame_array.oakasm", decl+" = {\n"+accept+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	sig, _ := parseSignature(decl)
+	if findings := Check(unit.Functions[0], sig, nil); len(findings) != 0 {
+		t.Fatalf("a guarded frame-array access must pass: %v", findings)
+	}
+	prologue := "  bind w0 = i\n  clobber x9, x10\n  frame 16\n  sub sp, sp, #16\n  mov x9, #0\n  stp x9, x9, [sp]\n"
+	cases := []struct{ name, body, want string }{
+		{"unguarded index", prologue + "  add x9, sp, #0\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret", "without a dominating constant index guard"},
+		{"guard admits too many", prologue + "  add x9, sp, #0\n  cmp w0, #5\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", "past the declared 16-byte frame"},
+		{"base past the frame", prologue + "  add x9, sp, #8\n  cmp w0, #4\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", "past the declared 16-byte frame"},
+		{"offset outside the frame", prologue + "  add x9, sp, #8\n  ldr w0, [x9, #12]\n  add sp, sp, #16\n  ret", "outside the declared 16-byte frame"},
+		{"scale not the element", prologue + "  add x9, sp, #0\n  cmp w0, #4\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #1]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", "whole elements"},
+		{"guard against a register is no constant", prologue + "  add x9, sp, #0\n  mov w10, #4\n  cmp w0, w10\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", "without a dominating constant index guard"},
+		// Two predecessors with different frame addresses in x9: the merge
+		// holds neither.
+		{"address lost at a merge", prologue + "  cbz w0, other\n  add x9, sp, #0\n  b join\nother:\n  add x9, sp, #8\njoin:\n  ldr w0, [x9, #4]\n  add sp, sp, #16\n  ret", "memory operands go through the declared sp frame or a bound span base"},
+		// One predecessor: the address and the index guard flow through the label.
+		{"facts flow through a single-predecessor label", prologue + "  add x9, sp, #0\n  cmp w0, #4\n  b.hs trap\nagain:\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", ""},
+		{"fact lost at a call", "  bind w0 = i\n  clobber x9, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  add x9, sp, #16\n  bl helper\n  ldr w0, [x9, #0]\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret", "memory operands go through the declared sp frame or a bound span base"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit(tc.name+".oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			joined := strings.Join(Check(unit.Functions[0], sig, map[string]bool{"helper": true}), "\n")
+			if tc.want == "" {
+				if joined != "" {
+					t.Fatalf("expected no findings, got:\n%s", joined)
+				}
+				return
+			}
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("expected a finding mentioning %q, got:\n%s", tc.want, joined)
+			}
+		})
+	}
+}
+
 // Typed pointer memory: span/view parameters bind a register pair and are
 // addressable only under a dominating length guard.
 func TestCheckerSpanAccess(t *testing.T) {
