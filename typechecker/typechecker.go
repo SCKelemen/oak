@@ -816,6 +816,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
 	tc.recordGlobalOwners(program)
+	tc.checkExportSymbols(program)
 	// Pre-declare top-level non-generic function signatures so functions can
 	// reference one another regardless of declaration order (mutual
 	// recursion included); each signature is finalized when its declaration

@@ -549,6 +549,87 @@ ranges from one buffer at once is the disjoint-region proof of
 | `OAK-B0111` | a buffer used after `c.disown` |
 | `OAK-B0000` | `c.disown` while a view or span of the buffer is live |
 
+### 2.9 C ABI exports from any package
+
+Status: implemented (`export("symbol")`, `OAK-F0108`, `OAK-F0109`).
+
+The C header of a build (`oak build -header out.h`, §2.6) lists the root
+package's `pub` functions under `oak_<name>`. That rule alone puts every C
+ABI entry point of a program into the root package: a numeric runtime whose
+kernels, checks, and benchmarks are all C-callable grows a root file of
+thousands of lines. An **export marker** lets a `pub` function of *any*
+package name its own C symbol:
+
+```oak
+package ops
+
+export("oak_ml_add") pub add: (a: i32, b: i32): i32 = a + b
+```
+
+#### 2.9.1 Grammar and meaning
+
+`export("symbol")` precedes a `pub` function declaration; `export` is a
+contextual identifier, so `export := 1` stays an ordinary binding. The symbol
+is a string literal that must satisfy the C identifier grammar of §2.3
+(`OAK-F0102`'s pattern). The marked function is defined in the generated C
+under the elaborator's internal name for every Oak caller, and additionally
+under `symbol` as a forwarding function the C compiler inlines; both the
+prototype and the header carry `symbol` with the function's parameter and
+result types spelled exactly as §2.6 spells them for the root's exports
+(records as their typedefs, owned arrays as wrapper structs, views and spans
+as the view and span structs, a variadic tail as a view). The forwarding
+wrapper is the only C-visible name the marker adds; nothing about the Oak
+name, visibility, or calling convention of the function changes.
+
+#### 2.9.2 What the header lists
+
+The header has two parts, each deterministic:
+
+1. the root package's `pub` functions under `oak_<name>`, in declaration
+   order, as before — a root `pub` function **with** a marker appears under
+   its symbol only (the marker replaces the implicit name in the header; the
+   generated C still defines `oak_<name>` for the root's own callers);
+2. every explicit export of the program, from any package, sorted by symbol,
+   each preceded by a comment naming its package and Oak name.
+
+A dependency's `pub` functions without a marker are **not** part of the C
+surface. Before this section they leaked into the header under the
+elaborator's internal names (`oak_example_dcom_sml_sops__add`), which embed
+the module path and are stable for nobody; the marker is now the only way a
+non-root function reaches the header. Exports of a dependency *module*
+appear when the root module imports the package (transitively), because the
+build compiles exactly the packages it reaches; a package that is not
+reached contributes no code and no exports.
+
+Types named by an exported signature are emitted the way the C file emits
+them: a root type as `oak_Name`, a dependency type under its internal name.
+Exporting a type under a chosen C name is a separate request (a
+`export("...")` marker on a type declaration) and is not provided here.
+
+#### 2.9.3 Rules and diagnostics
+
+| Code | Meaning |
+| --- | --- |
+| `OAK-F0108` | two exports would share one C symbol: two markers, or a marker and a root `pub` function's implicit `oak_<name>`; the diagnostic names both functions and their packages |
+| `OAK-F0109` | the marker's symbol is not a C identifier, or the function has no single C ABI shape: not `pub`, a method, an extern binding (its foreign symbol is already its C name), or a generic template (export a concrete wrapper instead) |
+
+The parser rejects a marker that is not followed by a `pub` function
+declaration (a value, a type, a private function). Symbols are program-unique
+because the C linker has one namespace: the check runs over the elaborated
+program, so exports of every reached package are compared together with the
+root's implicit exports. A signature the header cannot represent (a string,
+a closure) is rejected when the header is emitted, as for root exports
+(§2.6).
+
+#### 2.9.4 API snapshots
+
+An explicit export is part of a package's public surface: the snapshot
+(`82-package-semver.md`) records the symbol as the function's ABI identity
+(`c-export <symbol>`), so renaming or removing an export is a major change
+and adding a marker to a published function is classified as an ABI change
+too — conservative, since a consumer linking the old symbol set is unaffected
+by an addition, but the snapshot laws classify any ABI difference as major.
+
 ## 3. The abstract assembly interface
 
 ### 3.1 Shape
