@@ -209,10 +209,20 @@ func buildOne(dir, output, header, leanOut, profile, asmMode string, lines, emit
 		return 0
 	}
 	// An executable, like `go build`: the emitted C compiled by the system
-	// C compiler into the named output.
-	if err := compileBinary(comp, output, asmMode); err != nil {
+	// C compiler into the named output, through the build cache.
+	_, object, err := emitForHost(comp, asmMode)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	cached, err := compileC(code, object, output)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
+	}
+	if cached {
+		fmt.Printf("Built %s -> %s (cached)\n", dir, output)
+		return 0
 	}
 	fmt.Printf("Built %s -> %s\n", dir, output)
 	return 0
@@ -784,40 +794,15 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	cc, err := exec.LookPath("cc")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "oak run: no C compiler (cc) on PATH")
-		return 1
-	}
 	work, err := os.MkdirTemp("", "oak-run-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
 		return 1
 	}
 	defer os.RemoveAll(work)
-	cPath := filepath.Join(work, "program.c")
 	binary := filepath.Join(work, "program")
-	if err := os.WriteFile(cPath, []byte(code), 0o600); err != nil {
+	if _, err := compileC(code, object, binary); err != nil {
 		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
-		return 1
-	}
-	// -ffp-contract=off keeps floating-point semantics exactly as written
-	// (docs/spec/90-backend.md section 7a); -lm links the C99 math library
-	// the float intrinsics lower to. The asm units' companion object, when
-	// the Oak assembler encoded them, links beside the C.
-	ccArgs := []string{"-std=c99", "-O1", "-ffp-contract=off", "-o", binary, cPath}
-	if object != nil {
-		objPath := filepath.Join(work, "asm.o")
-		if err := os.WriteFile(objPath, object, 0o600); err != nil {
-			fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
-			return 1
-		}
-		ccArgs = append(ccArgs, objPath)
-	}
-	build := exec.Command(cc, append(ccArgs, "-lm")...)
-	build.Stdout, build.Stderr = os.Stdout, os.Stderr
-	if err := build.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "oak run: C compilation failed: %v\n", err)
 		return 1
 	}
 	program := exec.Command(binary, programArgs...)

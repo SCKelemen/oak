@@ -19,10 +19,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-KERNELS = ["crc32c", "sha256", "blake3", "dot", "sum", "search"]
+KERNELS = ["crc32c", "sha256", "blake3", "dot", "sum", "search", "page_probe", "bitmap", "dispatch", "tiled"]
 GO_IMPLS = {"crc32c": ["go-stdlib", "go-generic"], "sha256": ["go-stdlib", "go-generic"],
-            "dot": ["go"], "sum": ["go"], "search": ["go"]}
-RUST_KERNELS = ["crc32c", "sha256", "dot", "sum", "search"]
+            "dot": ["go"], "sum": ["go"], "search": ["go"],
+            "page_probe": ["go"], "bitmap": ["go-stdlib", "go-generic"], "dispatch": ["go"], "tiled": ["go"]}
+RUST_KERNELS = ["crc32c", "sha256", "dot", "sum", "search", "page_probe", "bitmap", "dispatch", "tiled"]
 
 
 def capture(args, cwd=None):

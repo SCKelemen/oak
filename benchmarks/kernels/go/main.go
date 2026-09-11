@@ -153,6 +153,110 @@ func search(keys, probes []uint64) uint32 {
 	return hits
 }
 
+// pageProbe is the B-tree leaf probe: fence-key search over pages of 512
+// keys, then a binary search inside the page.
+func pageProbe(keys, probes []uint64) uint32 {
+	var hits uint32
+	pages := len(keys) / 512
+	if pages == 0 {
+		return 0
+	}
+	for _, target := range probes {
+		lo, hi := 0, pages
+		for lo < hi {
+			mid := lo + (hi-lo)/2
+			if keys[mid*512] <= target {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		if lo > 0 {
+			page := keys[(lo-1)*512 : lo*512]
+			a, b := 0, 512
+			for a < b {
+				m := a + (b-a)/2
+				if page[m] == target {
+					hits++
+					break
+				} else if page[m] < target {
+					a = m + 1
+				} else {
+					b = m
+				}
+			}
+		}
+	}
+	return hits
+}
+
+// popcount64 is the SWAR form, the same arithmetic as Oak's.
+func popcount64(x uint64) uint64 {
+	a := x - ((x >> 1) & 0x5555555555555555)
+	b := (a & 0x3333333333333333) + ((a >> 2) & 0x3333333333333333)
+	c := (b + (b >> 4)) & 0x0f0f0f0f0f0f0f0f
+	return (c * 0x0101010101010101) >> 56
+}
+
+func bitmapFree(words []uint64, hardware bool) uint64 {
+	var free uint64
+	if hardware {
+		for _, w := range words {
+			free += uint64(bits.OnesCount64(^w))
+		}
+		return free
+	}
+	for _, w := range words {
+		free += popcount64(^w)
+	}
+	return free
+}
+
+func dispatch(code []byte) uint64 {
+	var acc, x uint64
+	for _, b := range code {
+		arg := uint64(b >> 3)
+		switch b & 7 {
+		case 0:
+			acc += arg
+		case 1:
+			acc ^= arg << 7
+		case 2:
+			acc = acc*31 + arg
+		case 3:
+			x = acc
+		case 4:
+			acc += x
+		case 5:
+			acc &= ^(arg << 3)
+		case 6:
+			x += arg
+		default:
+			acc -= x
+		}
+	}
+	return acc
+}
+
+func tiled(a []float32) float32 {
+	var acc [8]float32
+	i := 0
+	for ; i+8 <= len(a); i += 8 {
+		acc[0] += a[i] * a[i]
+		acc[1] += a[i+1] * a[i+1]
+		acc[2] += a[i+2] * a[i+2]
+		acc[3] += a[i+3] * a[i+3]
+		acc[4] += a[i+4] * a[i+4]
+		acc[5] += a[i+5] * a[i+5]
+		acc[6] += a[i+6] * a[i+6]
+		acc[7] += a[i+7] * a[i+7]
+	}
+	for ; i < len(a); i++ {
+		acc[0] += a[i] * a[i]
+	}
+	return ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]))
+}
+
 func main() {
 	if len(os.Args) != 6 {
 		fmt.Fprintln(os.Stderr, "usage: kernels IMPL KERNEL SIZE ROUNDS SAMPLES")
@@ -220,6 +324,24 @@ func main() {
 				h := search(words, probes)
 				binary.LittleEndian.PutUint32(out[:], h)
 				sink += uint64(h)
+			case "page_probe":
+				h := pageProbe(words, probes)
+				binary.LittleEndian.PutUint32(out[:], h)
+				sink += uint64(h)
+			case "bitmap":
+				width = 8
+				t := bitmapFree(words, impl == "go-stdlib")
+				binary.LittleEndian.PutUint64(out[:], t)
+				sink += t
+			case "dispatch":
+				width = 8
+				t := dispatch(bytesBuf)
+				binary.LittleEndian.PutUint64(out[:], t)
+				sink += t
+			case "tiled":
+				d := tiled(fa)
+				binary.LittleEndian.PutUint32(out[:], math.Float32bits(d))
+				sink += uint64(out[0])
 			default:
 				fmt.Fprintln(os.Stderr, "unknown kernel", kernel)
 				os.Exit(2)
