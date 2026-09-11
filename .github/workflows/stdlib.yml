@@ -16,6 +16,10 @@ jobs:
         run: |
           python3 stdlib/generate_unicode.py
           git diff --exit-code -- stdlib/unicode.oak
+      - name: Check generated codec tables
+        run: |
+          python3 stdlib/generate_codec_tables.py
+          git diff --exit-code -- stdlib/encoding.oak stdlib/hash.oak
       - name: Test JSON fast paths
         run: go test ./compiler -run 'Test.*JsonFast' -count=1
       - name: Test nullable JSON codecs

@@ -22,12 +22,137 @@ pub encoding_ok: (result: Result[u32, EncodingError]): Bool = result ? | .Ok(val
 pub encoding_value: (result: Result[u32, EncodingError]): u32 = result ? | .Ok(value) => value | .Err(reason) => u32(0)
 pub encoding_failure: (result: Result[u32, EncodingError]): u32 = result ? | .Ok(value) => u32(0) | .Err(reason) => encoding_error_code(reason)
 
+// BEGIN GENERATED (stdlib/generate_codec_tables.py)
+// Per-symbol tables. A `_SYMBOLS` table maps a value to its character; a
+// `_VALUES` table maps every byte to its value or to the sentinel one past
+// the alphabet (16, 64, 32), which sets a bit no valid value has, so the OR
+// of a run of table values is below the sentinel exactly when every byte
+// was in the alphabet. Base32 accepts lowercase letters.
+HEX_LOWER_SYMBOLS: [16]u8 = [16]u8{
+  48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102
+}
+HEX_UPPER_SYMBOLS: [16]u8 = [16]u8{
+  48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 65, 66, 67, 68, 69, 70
+}
+HEX_VALUES: [256]u8 = [256]u8{
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 16, 16, 16, 16, 16,
+  16, 10, 11, 12, 13, 14, 15, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 10, 11, 12, 13, 14, 15, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+  16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16
+}
+BASE64_STD_SYMBOLS: [64]u8 = [64]u8{
+  65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+  81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 97, 98, 99, 100, 101, 102,
+  103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
+  119, 120, 121, 122, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 43, 47
+}
+BASE64_URL_SYMBOLS: [64]u8 = [64]u8{
+  65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+  81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 97, 98, 99, 100, 101, 102,
+  103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
+  119, 120, 121, 122, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 45, 95
+}
+BASE64_STD_VALUES: [256]u8 = [256]u8{
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
+  52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
+  64, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64,
+  64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+  41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64
+}
+BASE64_URL_VALUES: [256]u8 = [256]u8{
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64,
+  52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
+  64, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 63,
+  64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+  41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+  64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64
+}
+BASE32_STD_SYMBOLS: [32]u8 = [32]u8{
+  65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+  81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 50, 51, 52, 53, 54, 55
+}
+BASE32_HEX_SYMBOLS: [32]u8 = [32]u8{
+  48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 65, 66, 67, 68, 69, 70,
+  71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86
+}
+BASE32_STD_VALUES: [256]u8 = [256]u8{
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 26, 27, 28, 29, 30, 31, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 32, 32, 32, 32, 32,
+  32, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32
+}
+BASE32_HEX_VALUES: [256]u8 = [256]u8{
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 32, 32, 32, 32, 32,
+  32, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+  25, 26, 27, 28, 29, 30, 31, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+  25, 26, 27, 28, 29, 30, 31, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+  32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32
+}
+// END GENERATED
+
 // ---- hex ------------------------------------------------------------------
 
-pub hex_digit: (value: u8, upper: Bool): u8 = value < u8(10) ? value + u8(48) | (upper ? value - u8(10) + u8(65) | value - u8(10) + u8(97))
+// The symbol for a nibble; only the low four bits of `value` are read.
+pub hex_digit: (value: u8, upper: Bool): u8 = upper ? HEX_UPPER_SYMBOLS[u32(value & u8(15))] | HEX_LOWER_SYMBOLS[u32(value & u8(15))]
 
 // 16 for a byte that is not a hex digit.
-pub hex_value: (unit: u8): u32 = unit >= u8(48) && unit <= u8(57) ? u32(unit - u8(48)) | (unit >= u8(65) && unit <= u8(70) ? u32(unit - u8(65)) + u32(10) | (unit >= u8(97) && unit <= u8(102) ? u32(unit - u8(97)) + u32(10) | u32(16)))
+pub hex_value: (unit: u8): u32 = u32(HEX_VALUES[u32(unit)])
 
 pub hex_encoded_size: (length: u32): Result[u32, EncodingError] = length > u32(2147483647) ? .Err(.SizeOverflow) | .Ok(length * u32(2))
 
@@ -36,37 +161,59 @@ pub hex_encode: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, EncodingError]
   size ?
    | .Err(reason) => .Err(reason)
    | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    symbols: []u8 = upper ? view(&HEX_UPPER_SYMBOLS) | view(&HEX_LOWER_SYMBOLS)
     i: u32 = u32(0)
+    out: u32 = u32(0)
     while i < len(src) {
-      dst[i * u32(2)] = hex_digit(src[i] >> u8(4), upper)
-      dst[i * u32(2) + u32(1)] = hex_digit(src[i] & u8(15), upper)
+      unit: u8 = src[i]
+      dst[out] = symbols[u32(unit >> u8(4))]
+      dst[out + u32(1)] = symbols[u32(unit & u8(15))]
       i = i + u32(1)
+      out = out + u32(2)
     }
     .Ok(needed)
   }
 }
 
+// The OR of every byte's table value: below 16 exactly when every byte is a
+// hex digit, because the sentinel sets a bit no digit has. One table read
+// per byte, no branch.
+hex_scan: (src: []u8): u32 {
+  values: []u8 = view(&HEX_VALUES)
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i + u32(4) <= len(src) {
+    acc = acc | u32(values[u32(src[i])]) | u32(values[u32(src[i + u32(1)])]) | u32(values[u32(src[i + u32(2)])]) | u32(values[u32(src[i + u32(3)])])
+    i = i + u32(4)
+  }
+  while i < len(src) {
+    acc = acc | u32(values[u32(src[i])])
+    i = i + u32(1)
+  }
+  acc
+}
+
 pub hex_decoded_size: (src: []u8): Result[u32, EncodingError] {
   len(src) % u32(2) != u32(0) ? .Err(.InvalidLength) | {
-    valid: Bool = true
-    i: u32 = u32(0)
-    while i < len(src) && valid {
-      valid = hex_value(src[i]) < u32(16)
-      i = i + u32(1)
-    }
-    valid ? .Ok(len(src) / u32(2)) | .Err(.InvalidCharacter)
+    hex_scan(src) < u32(16) ? .Ok(len(src) / u32(2)) | .Err(.InvalidCharacter)
   }
 }
 
+// Two passes by design: the scan validates the whole input before the first
+// store, so a rejected input leaves `dst` unchanged; the second pass then
+// decodes without re-checking symbols.
 pub hex_decode: (dst: [*]u8, src: []u8): Result[u32, EncodingError] {
   size: Result[u32, EncodingError] = hex_decoded_size(src)
   size ?
    | .Err(reason) => .Err(reason)
    | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    values: []u8 = view(&HEX_VALUES)
     i: u32 = u32(0)
+    at: u32 = u32(0)
     while i < needed {
-      dst[i] = u8_trunc_u32((hex_value(src[i * u32(2)]) << u32(4)) | hex_value(src[i * u32(2) + u32(1)]))
+      dst[i] = (values[u32(src[at])] << u8(4)) | values[u32(src[at + u32(1)])]
       i = i + u32(1)
+      at = at + u32(2)
     }
     .Ok(needed)
   }
@@ -74,11 +221,12 @@ pub hex_decode: (dst: [*]u8, src: []u8): Result[u32, EncodingError] {
 
 // ---- base64 ---------------------------------------------------------------
 
-// The symbol for a 6-bit value in the standard (§4) or URL-safe (§5) alphabet.
-pub base64_symbol: (value: u32, url: Bool): u8 = value < u32(26) ? u8(65) + u8_trunc_u32(value) | (value < u32(52) ? u8(97) + u8_trunc_u32(value - u32(26)) | (value < u32(62) ? u8(48) + u8_trunc_u32(value - u32(52)) | (value == u32(62) ? (url ? u8(45) | u8(43)) | (url ? u8(95) | u8(47)))))
+// The symbol for a 6-bit value in the standard (§4) or URL-safe (§5)
+// alphabet; only the low six bits of `value` are read.
+pub base64_symbol: (value: u32, url: Bool): u8 = url ? BASE64_URL_SYMBOLS[value & u32(63)] | BASE64_STD_SYMBOLS[value & u32(63)]
 
 // 64 for a byte outside the chosen alphabet.
-pub base64_value: (unit: u8, url: Bool): u32 = unit >= u8(65) && unit <= u8(90) ? u32(unit - u8(65)) | (unit >= u8(97) && unit <= u8(122) ? u32(unit - u8(97)) + u32(26) | (unit >= u8(48) && unit <= u8(57) ? u32(unit - u8(48)) + u32(52) | (unit == (url ? u8(45) | u8(43)) ? u32(62) | (unit == (url ? u8(95) | u8(47)) ? u32(63) | u32(64)))))
+pub base64_value: (unit: u8, url: Bool): u32 = url ? u32(BASE64_URL_VALUES[u32(unit)]) | u32(BASE64_STD_VALUES[u32(unit)])
 
 pub base64_encoded_size: (length: u32, pad: Bool): Result[u32, EncodingError] {
   length > u32(3221225469) ? .Err(.SizeOverflow) | {
@@ -94,95 +242,122 @@ pub base64_encode: (dst: [*]u8, src: []u8, url: Bool, pad: Bool): Result[u32, En
   size ?
    | .Err(reason) => .Err(reason)
    | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    symbols: []u8 = url ? view(&BASE64_URL_SYMBOLS) | view(&BASE64_STD_SYMBOLS)
     i: u32 = u32(0)
     out: u32 = u32(0)
     while i + u32(3) <= len(src) {
       word: u32 = (u32(src[i]) << u32(16)) | (u32(src[i + u32(1)]) << u32(8)) | u32(src[i + u32(2)])
-      dst[out] = base64_symbol(word >> u32(18), url)
-      dst[out + u32(1)] = base64_symbol((word >> u32(12)) & u32(63), url)
-      dst[out + u32(2)] = base64_symbol((word >> u32(6)) & u32(63), url)
-      dst[out + u32(3)] = base64_symbol(word & u32(63), url)
+      dst[out] = symbols[word >> u32(18)]
+      dst[out + u32(1)] = symbols[(word >> u32(12)) & u32(63)]
+      dst[out + u32(2)] = symbols[(word >> u32(6)) & u32(63)]
+      dst[out + u32(3)] = symbols[word & u32(63)]
       i = i + u32(3)
       out = out + u32(4)
     }
     rest: u32 = len(src) - i
     rest == u32(1) ? {
       word1: u32 = u32(src[i]) << u32(16)
-      dst[out] = base64_symbol(word1 >> u32(18), url)
-      dst[out + u32(1)] = base64_symbol((word1 >> u32(12)) & u32(63), url)
+      dst[out] = symbols[word1 >> u32(18)]
+      dst[out + u32(1)] = symbols[(word1 >> u32(12)) & u32(63)]
       pad ? { dst[out + u32(2)] = u8(61); dst[out + u32(3)] = u8(61) }
     }
     rest == u32(2) ? {
       word2: u32 = (u32(src[i]) << u32(16)) | (u32(src[i + u32(1)]) << u32(8))
-      dst[out] = base64_symbol(word2 >> u32(18), url)
-      dst[out + u32(1)] = base64_symbol((word2 >> u32(12)) & u32(63), url)
-      dst[out + u32(2)] = base64_symbol((word2 >> u32(6)) & u32(63), url)
+      dst[out] = symbols[word2 >> u32(18)]
+      dst[out + u32(1)] = symbols[(word2 >> u32(12)) & u32(63)]
+      dst[out + u32(2)] = symbols[(word2 >> u32(6)) & u32(63)]
       pad ? { dst[out + u32(3)] = u8(61) }
     }
     .Ok(needed)
   }
 }
 
-// Symbols before any padding: trailing '=' is counted, '=' anywhere else and
-// a padding count no encoder produces are rejected.
+// Symbols before any padding. Trailing '=' (at most two) is counted, and a
+// padding shape no encoder produces is rejected here; '=' inside the body
+// is caught by the scan and classified afterwards.
 base64_unpadded_length: (src: []u8): Result[u32, EncodingError] {
   pads: u32 = u32(0)
   while pads < len(src) && pads < u32(2) && src[len(src) - u32(1) - pads] == u8(61) { pads = pads + u32(1) }
   body: u32 = len(src) - pads
+  rest: u32 = body % u32(4)
+  bad_pads: Bool = pads > u32(0) && (len(src) % u32(4) != u32(0) || rest == u32(0) || rest == u32(1))
+  bad_pads ? .Err(.InvalidPadding) | .Ok(body)
+}
+
+// The OR of every body symbol's table value: below 64 exactly when every
+// byte is in the alphabet. One table read per byte, no branch.
+base64_scan: (src: []u8, body: u32, url: Bool): u32 {
+  values: []u8 = url ? view(&BASE64_URL_VALUES) | view(&BASE64_STD_VALUES)
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i + u32(4) <= body {
+    acc = acc | u32(values[u32(src[i])]) | u32(values[u32(src[i + u32(1)])]) | u32(values[u32(src[i + u32(2)])]) | u32(values[u32(src[i + u32(3)])])
+    i = i + u32(4)
+  }
+  while i < body {
+    acc = acc | u32(values[u32(src[i])])
+    i = i + u32(1)
+  }
+  acc
+}
+
+// Which error a body that failed the scan deserves, in the order the
+// checks have always been reported: '=' inside the body is misplaced
+// padding, then a body length no encoder produces, then a character outside
+// the alphabet. Cold path.
+base64_classify: (src: []u8, body: u32): EncodingError {
   misplaced: Bool = false
   i: u32 = u32(0)
   while i < body && !misplaced {
     misplaced = src[i] == u8(61)
     i = i + u32(1)
   }
-  rest: u32 = body % u32(4)
-  bad_pads: Bool = pads > u32(0) && (len(src) % u32(4) != u32(0) || rest == u32(0) || rest == u32(1))
-  misplaced || bad_pads ? .Err(.InvalidPadding) | .Ok(body)
+  misplaced ? .InvalidPadding | (body % u32(4) == u32(1) ? .InvalidLength | .InvalidCharacter)
 }
 
 pub base64_decoded_size: (src: []u8, url: Bool): Result[u32, EncodingError] {
   stripped: Result[u32, EncodingError] = base64_unpadded_length(src)
   stripped ?
    | .Err(reason) => .Err(reason)
-   | .Ok(body) => body % u32(4) == u32(1) ? .Err(.InvalidLength) | {
-    valid: Bool = true
-    i: u32 = u32(0)
-    while i < body && valid {
-      valid = base64_value(src[i], url) < u32(64)
-      i = i + u32(1)
-    }
+   | .Ok(body) => base64_scan(src, body, url) >= u32(64) ? .Err(base64_classify(src, body)) | {
     rest: u32 = body % u32(4)
-    last: u32 = body == u32(0) ? u32(0) | base64_value(src[body - u32(1)], url)
-    canonical: Bool = rest == u32(0) || (rest == u32(2) && (last & u32(15)) == u32(0)) || (rest == u32(3) && (last & u32(3)) == u32(0))
-    !valid ? .Err(.InvalidCharacter) | (!canonical ? .Err(.NonCanonical) | .Ok((body / u32(4)) * u32(3) + (rest == u32(0) ? u32(0) | rest - u32(1))))
+    rest == u32(1) ? .Err(.InvalidLength) | {
+      last: u32 = body == u32(0) ? u32(0) | base64_value(src[body - u32(1)], url)
+      canonical: Bool = rest == u32(0) || (rest == u32(2) && (last & u32(15)) == u32(0)) || (rest == u32(3) && (last & u32(3)) == u32(0))
+      canonical ? .Ok((body / u32(4)) * u32(3) + (rest == u32(0) ? u32(0) | rest - u32(1))) | .Err(.NonCanonical)
+    }
   }
 }
 
+// Two passes by design: `base64_decoded_size` validates the whole input
+// before the first store, so a rejected input leaves `dst` unchanged; this
+// pass then decodes four symbols per 24-bit word without re-checking them.
 pub base64_decode: (dst: [*]u8, src: []u8, url: Bool): Result[u32, EncodingError] {
   size: Result[u32, EncodingError] = base64_decoded_size(src, url)
   size ?
    | .Err(reason) => .Err(reason)
    | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+    values: []u8 = url ? view(&BASE64_URL_VALUES) | view(&BASE64_STD_VALUES)
     body: u32 = (needed / u32(3)) * u32(4) + (needed % u32(3) == u32(0) ? u32(0) | needed % u32(3) + u32(1))
     i: u32 = u32(0)
     out: u32 = u32(0)
     while i + u32(4) <= body {
-      word: u32 = (base64_value(src[i], url) << u32(18)) | (base64_value(src[i + u32(1)], url) << u32(12)) | (base64_value(src[i + u32(2)], url) << u32(6)) | base64_value(src[i + u32(3)], url)
+      word: u32 = (u32(values[u32(src[i])]) << u32(18)) | (u32(values[u32(src[i + u32(1)])]) << u32(12)) | (u32(values[u32(src[i + u32(2)])]) << u32(6)) | u32(values[u32(src[i + u32(3)])])
       dst[out] = u8_trunc_u32(word >> u32(16))
-      dst[out + u32(1)] = u8_trunc_u32((word >> u32(8)) & u32(255))
-      dst[out + u32(2)] = u8_trunc_u32(word & u32(255))
+      dst[out + u32(1)] = u8_trunc_u32(word >> u32(8))
+      dst[out + u32(2)] = u8_trunc_u32(word)
       i = i + u32(4)
       out = out + u32(3)
     }
     rest: u32 = body - i
     rest == u32(2) ? {
-      word2: u32 = (base64_value(src[i], url) << u32(18)) | (base64_value(src[i + u32(1)], url) << u32(12))
+      word2: u32 = (u32(values[u32(src[i])]) << u32(18)) | (u32(values[u32(src[i + u32(1)])]) << u32(12))
       dst[out] = u8_trunc_u32(word2 >> u32(16))
     }
     rest == u32(3) ? {
-      word3: u32 = (base64_value(src[i], url) << u32(18)) | (base64_value(src[i + u32(1)], url) << u32(12)) | (base64_value(src[i + u32(2)], url) << u32(6))
+      word3: u32 = (u32(values[u32(src[i])]) << u32(18)) | (u32(values[u32(src[i + u32(1)])]) << u32(12)) | (u32(values[u32(src[i + u32(2)])]) << u32(6))
       dst[out] = u8_trunc_u32(word3 >> u32(16))
-      dst[out + u32(1)] = u8_trunc_u32((word3 >> u32(8)) & u32(255))
+      dst[out + u32(1)] = u8_trunc_u32(word3 >> u32(8))
     }
     .Ok(needed)
   }
@@ -190,15 +365,12 @@ pub base64_decode: (dst: [*]u8, src: []u8, url: Bool): Result[u32, EncodingError
 
 // ---- base32 ---------------------------------------------------------------
 
-// The symbol for a 5-bit value in the standard (§6) or base32hex (§7) alphabet.
-pub base32_symbol: (value: u32, hex: Bool): u8 = hex ? (value < u32(10) ? u8(48) + u8_trunc_u32(value) | u8(65) + u8_trunc_u32(value - u32(10))) | (value < u32(26) ? u8(65) + u8_trunc_u32(value) | u8(50) + u8_trunc_u32(value - u32(26)))
+// The symbol for a 5-bit value in the standard (§6) or base32hex (§7)
+// alphabet; only the low five bits of `value` are read.
+pub base32_symbol: (value: u32, hex: Bool): u8 = hex ? BASE32_HEX_SYMBOLS[value & u32(31)] | BASE32_STD_SYMBOLS[value & u32(31)]
 
 // 32 for a byte outside the chosen alphabet; lowercase letters are accepted.
-pub base32_value: (unit: u8, hex: Bool): u32 {
-  upper: u8 = unit >= u8(97) && unit <= u8(122) ? unit - u8(32) | unit
-  hex ? (upper >= u8(48) && upper <= u8(57) ? u32(upper - u8(48)) | (upper >= u8(65) && upper <= u8(86) ? u32(upper - u8(65)) + u32(10) | u32(32))) |
-  (upper >= u8(65) && upper <= u8(90) ? u32(upper - u8(65)) | (upper >= u8(50) && upper <= u8(55) ? u32(upper - u8(50)) + u32(26) | u32(32)))
-}
+pub base32_value: (unit: u8, hex: Bool): u32 = hex ? u32(BASE32_HEX_VALUES[u32(unit)]) | u32(BASE32_STD_VALUES[u32(unit)])
 
 // Symbols a partial final group of `rest` bytes (1..4) occupies.
 base32_partial: (rest: u32): u32 = rest == u32(1) ? u32(2) | (rest == u32(2) ? u32(4) | (rest == u32(3) ? u32(5) | u32(7)))

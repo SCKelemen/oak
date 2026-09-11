@@ -647,7 +647,14 @@ final complement — RFC 3720 appendix B.4) in Oak over the total fixed-width
 arithmetic, so the interpreter and every backend compute the same bits and
 `oak test` can check a frame's checksum or a hash chain without a foreign
 implementation. Everything lives in caller-owned or bounded local storage:
-no allocation, every store bounds-checked.
+no allocation, every store bounds-checked. The SHA-256 rounds are fully
+unrolled (every schedule and constant index is a literal the C compiler
+checks at compile time; whole blocks compress straight from the input view
+without a copy) and CRC-32C is slicing-by-8 over an 8 KiB constant table,
+both emitted into `hash.oak` by `stdlib/generate_codec_tables.py`, which
+CI re-runs and diffs. On an M4 Max the compiled C runs SHA-256 at about
+480 MB/s and CRC-32C at about 2.4 GB/s; Go's hardware SHA-2 and CRC32C
+instructions remain 6× and 4× ahead, and closing that needs `asm`.
 
 SHA-256 is incremental: `sha256_init(): Sha256State`, `sha256_update(state,
 view): Sha256State` over any number of pieces, `sha256_final(state, out:
@@ -729,7 +736,7 @@ the flat `import(std)` prelude.
 - Hex: `hex_encode(dst, src, upper)`, `hex_decode(dst, src)` (either case
   accepted), `hex_encoded_size(len)`, `hex_decoded_size(src)`; an odd
   length is `InvalidLength`, a non-digit `InvalidCharacter`. `hex_digit`
-  and `hex_value` are the per-symbol tables.
+  and `hex_value` read the per-symbol tables.
 - Base64 (RFC 4648 §4 and §5): `base64_encode(dst, src, url, pad)` selects
   the standard (`+/`) or URL-safe (`-_`) alphabet and optional `=`
   padding; `base64_decode(dst, src, url)` is strict — one alphabet, padding
@@ -748,6 +755,18 @@ the flat `import(std)` prelude.
   when asked, and a `%` not followed by two hex digits is
   `InvalidCharacter`. `percent_encoded_size(src, keep)` and
   `percent_decoded_size(src, plus_as_space)`.
+
+Every symbol lookup is a 256-entry table read (`stdlib/generate_codec_tables.py`
+emits the tables into `encoding.oak`; CI re-runs it and diffs). A decoder
+makes two passes by design: the first ORs every byte's table value, which is
+below the alphabet size exactly when every byte is valid, so the whole
+input is validated before the first store and a rejected input leaves the
+destination untouched; the second decodes four base64 symbols per 24-bit
+word (two hex digits per byte) without re-checking. The error a rejected
+body reports keeps its order: misplaced `=`, then a length no encoder
+produces, then a character outside the alphabet. On an M4 Max the compiled
+C encodes and decodes base64 and hex within 25% of Go's `encoding/base64`
+and `encoding/hex`.
 
 Sizes are `u32`; an input whose encoding would not fit is `SizeOverflow`
 rather than a wrapped count. `compiler/e2e_stdlib_encoding_test.go` checks
