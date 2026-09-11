@@ -1,0 +1,69 @@
+import(std)
+import(testing)
+
+// UUID properties: text round-trips, version 7 values carry their timestamp
+// and sort by it, and the version and variant bits survive generation.
+
+// 7200 format then parse is the identity, 7201 the text has hyphens exactly
+// at 8, 13, 18 and 23, 7202 both cases parse to the same bytes.
+PropertyUuidTextRoundTrip: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  value: [16]u8
+  i: u32 = u32(0)
+  while i < u32(16) {
+    value[i] = u8_trunc_u32(test_range(choices, data, u32(0), u32(255)))
+    i = i + u32(1)
+  }
+  lower: [36]u8
+  upper: [36]u8
+  true ? {
+    l: [*]u8 = span(&lower)
+    u: [*]u8 = span(&upper)
+    test_check(uuid_written(uuid_format(l, view(&value), false)) == u32(36), u32(7200))
+    test_check(uuid_written(uuid_format(u, view(&value), true)) == u32(36), u32(7200))
+  }
+  test_check(lower[8] == u8(45) && lower[13] == u8(45) && lower[18] == u8(45) && lower[23] == u8(45), u32(7201))
+  back: [16]u8
+  again: [16]u8
+  true ? {
+    b: [*]u8 = span(&back)
+    a: [*]u8 = span(&again)
+    test_check(uuid_written(uuid_parse(b, view(&lower))) == u32(16), u32(7200))
+    test_check(uuid_written(uuid_parse(a, view(&upper))) == u32(16), u32(7202))
+  }
+  test_check(uuid_equal(view(&back), view(&value)), u32(7200))
+  test_check(uuid_equal(view(&again), view(&value)), u32(7202))
+}
+
+// 7210 a version 7 value reports its timestamp, 7211 version and variant
+// bits are set, 7212 a later millisecond compares greater, 7213 version 4
+// values carry their bits and are distinct from the version 7 value.
+PropertyUuidV7Order: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  states: [1]Xoshiro
+  seed: u64 = (u64(test_u32(choices, data)) << u64(32)) | u64(test_u32(choices, data))
+  states[0] = random_seed(seed)
+  state: [*]Xoshiro = span(&states)
+  millis: u64 = (u64(test_range(choices, data, u32(0), u32(65535))) << u64(32)) | u64(test_u32(choices, data))
+  later: u64 = millis + u64(test_range(choices, data, u32(1), u32(1000000)))
+  test_assume(later < u64(281474976710656))
+  first: [16]u8
+  second: [16]u8
+  fourth: [16]u8
+  true ? {
+    f: [*]u8 = span(&first)
+    s: [*]u8 = span(&second)
+    v: [*]u8 = span(&fourth)
+    test_check(uuid_written(uuid_v7(millis, state, f)) == u32(16), u32(7210))
+    test_check(uuid_written(uuid_v7(later, state, s)) == u32(16), u32(7210))
+    test_check(uuid_written(uuid_v4(state, v)) == u32(16), u32(7213))
+  }
+  test_check(option_or[u64](uuid_v7_millis(view(&first)), u64(0)) == millis, u32(7210))
+  test_check(option_or[u32](uuid_version(view(&first)), u32(99)) == u32(7) && option_or[u32](uuid_variant(view(&first)), u32(99)) == u32(1), u32(7211))
+  test_check(uuid_compare(view(&first), view(&second)) == i32(0) - i32(1), u32(7212))
+  test_check(option_or[u32](uuid_version(view(&fourth)), u32(99)) == u32(4) && option_or[u32](uuid_variant(view(&fourth)), u32(99)) == u32(1), u32(7213))
+  test_check(!uuid_equal(view(&fourth), view(&first)), u32(7213))
+  millis < u64(4294967296) ? { testing_classify(u32(180)) } | { testing_classify(u32(181)) }
+}
