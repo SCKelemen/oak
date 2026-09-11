@@ -1,0 +1,68 @@
+// A kernel on the Scalable Matrix Extension (docs/spec/94-assembler.md §9).
+//
+// The Oak body below is the specification and the portable fallback;
+// kernels.arm64.oakasm computes the same product on the M4's matrix unit
+// through the Oak assembler: streaming mode, a predicate for the row
+// length, the ZA tile accumulating one outer product per step of k, and
+// the tile stored row by row. The build pairs the two by name and the seam
+// checker admits the asm (bindings, clobbers, the streaming and ZA modes);
+// `oak run examples/sme` executes it.
+
+// C = A × B for n×n matrices with n at most the streaming vector length in
+// words: A arrives transposed (at is k×n, row kk holding column kk of A),
+// B is k×n, C is n×n, all row-major.
+fmopa_f32: (at: []f32, b: []f32, c: [*]f32, n: u32) -> () {
+  k: u32 = len(at) / n
+  i: u32 = u32(0)
+  while i < n {
+    j: u32 = u32(0)
+    while j < n {
+      acc: f32 = 0.0
+      kk: u32 = u32(0)
+      while kk < k {
+        acc = acc + at[kk * n + i] * b[kk * n + j]
+        kk = kk + u32(1)
+      }
+      c[i * n + j] = acc
+      j = j + u32(1)
+    }
+    i = i + u32(1)
+  }
+}
+
+main: (): i32 {
+  // A = [[1 2 3] [4 5 6] [7 8 9]] stored transposed; B = [[1 0 2] [0 1 0] [3 0 1]].
+  at: [9]f32
+  at[0] = 1.0
+  at[1] = 4.0
+  at[2] = 7.0
+  at[3] = 2.0
+  at[4] = 5.0
+  at[5] = 8.0
+  at[6] = 3.0
+  at[7] = 6.0
+  at[8] = 9.0
+  b: [9]f32
+  b[0] = 1.0
+  b[1] = 0.0
+  b[2] = 2.0
+  b[3] = 0.0
+  b[4] = 1.0
+  b[5] = 0.0
+  b[6] = 3.0
+  b[7] = 0.0
+  b[8] = 1.0
+  c: [9]f32
+  fmopa_f32(view(&at), view(&b), span(&c), u32(3))
+  // A × B = [[10 2 5] [22 5 14] [34 8 23]].
+  assert(c[0] == 10.0)
+  assert(c[1] == 2.0)
+  assert(c[2] == 5.0)
+  assert(c[3] == 22.0)
+  assert(c[4] == 5.0)
+  assert(c[5] == 14.0)
+  assert(c[6] == 34.0)
+  assert(c[7] == 8.0)
+  assert(c[8] == 23.0)
+  42
+}

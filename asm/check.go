@@ -174,7 +174,13 @@ type checker struct {
 	// authority
 	bound     map[int]bool // register numbers bound to parameters
 	clobbered map[int]bool // declared clobbers (general file)
-	clobberV  map[int]bool // declared vector clobbers
+	clobberV  map[int]bool // declared vector clobbers (v and z)
+	clobberP  map[int]bool // declared predicate clobbers (p and pn)
+	// The streaming-mode and ZA state (asm/isa_sme.go): tracked along the
+	// block from smstart/smstop; vZeroed marks that a mode switch zeroed
+	// the vector registers since entry, so a bound vector is gone.
+	sm, za  bool
+	vZeroed bool
 	// spans: base register number -> the span it points at (typed pointer
 	// parameters); guard facts live here and die with any write to the
 	// base or length register, any label, and any call.
@@ -199,6 +205,7 @@ type checker struct {
 	// state
 	written      map[int]bool
 	writtenV     map[int]bool
+	writtenP     map[int]bool
 	flagsValid   bool
 	disp         int64 // bytes the sp has moved below entry
 	dispKnown    bool
@@ -278,9 +285,9 @@ func spanShape(expr ast.Expression) (elem int64, writable bool, ok bool) {
 		elem = 1
 	case "u16", "i16":
 		elem = 2
-	case "u32", "i32", "rune":
+	case "u32", "i32", "rune", "f32":
 		elem = 4
-	case "u64", "i64":
+	case "u64", "i64", "f64":
 		elem = 8
 	default:
 		return 0, false, false
@@ -477,12 +484,17 @@ func classPrefix(class RegClass) string {
 func (c *checker) declareClobbers() {
 	c.clobbered = map[int]bool{}
 	c.clobberV = map[int]bool{}
+	c.clobberP = map[int]bool{}
 	for _, reg := range c.fn.Clobbers {
 		switch reg.Class {
 		case ClassSP:
 			c.errorf(c.fn.Line, "clobber: sp is never a clobber; declare a frame")
-		case ClassV:
-			c.clobberV[reg.Num] = true
+		case ClassV, ClassZ:
+			c.clobberV[reg.Num] = true // zN is vN with its scalable upper part
+		case ClassP, ClassPN:
+			c.clobberP[reg.Num] = true
+		case ClassZA, ClassZT:
+			c.errorf(c.fn.Line, "clobber: the ZA array is enabled by smstart, not clobbered")
 		default:
 			if reg.ZeroRegister() {
 				c.errorf(c.fn.Line, "clobber: the zero register cannot be clobbered")
@@ -498,6 +510,7 @@ func (c *checker) declareClobbers() {
 func (c *checker) walk() {
 	c.written = map[int]bool{}
 	c.writtenV = map[int]bool{}
+	c.writtenP = map[int]bool{}
 	c.labelDisp = map[string]int64{}
 	c.pendingDisp = map[string]int64{}
 	c.labels = map[string]bool{}
@@ -623,6 +636,9 @@ func (c *checker) instruction(instr Instruction) bool {
 	guard := c.pendingCmp
 	c.pendingCmp = cmpFact{}
 	spec := instructionTable[instr.Mnemonic]
+	if spec.tableForms && (len(spec.forms) == 0 || usesScalable(instr.Operands)) {
+		return c.scalable(instr) // SVE/SME: Arm's templates are the forms (asm/isa_sme.go)
+	}
 	matched, ok := matchForm(spec, instr.Operands)
 	if !ok {
 		c.errorf(instr.Line, "%s: operands %s do not match any legal form (width discipline: X with X, W with W)", instr.Mnemonic, describeOperands(instr.Operands))
@@ -630,6 +646,13 @@ func (c *checker) instruction(instr Instruction) bool {
 	}
 	if spec.system && !c.fn.System {
 		c.errorf(instr.Line, "%s requires the unit's `system` capability", instr.Mnemonic)
+	}
+	if c.sm {
+		// Most Advanced SIMD is illegal in streaming mode; the encoding
+		// table carries Arm's per-encoding rule.
+		if _, _, e, err := encodeInstruction(instr, 0, map[string]int64{}); err == nil && e != nil {
+			c.requireMode(instr, e.enc.Mode)
+		}
 	}
 	for _, operand := range instr.Operands {
 		switch operand.(type) {
@@ -965,11 +988,24 @@ func describeOperands(operands []Operand) string {
 // sp, or a zero register.
 func (c *checker) read(instr Instruction, reg Register) {
 	switch reg.Class {
-	case ClassSP:
+	case ClassSP, ClassZA, ClassZT:
 		return
-	case ClassV:
-		if !c.writtenV[reg.Num] && !c.boundVector(reg.Num) {
-			c.errorf(instr.Line, "read of v%d before any write or binding", reg.Num)
+	case ClassV, ClassZ:
+		if c.writtenV[reg.Num] {
+			return
+		}
+		if c.boundVector(reg.Num) && !c.vZeroed {
+			return
+		}
+		if c.boundVector(reg.Num) {
+			c.errorf(instr.Line, "read of %s after smstart/smstop zeroed the vector registers (the bound value is gone)", reg.Text)
+			return
+		}
+		c.errorf(instr.Line, "read of %s before any write or binding", reg.Text)
+		return
+	case ClassP, ClassPN:
+		if !c.writtenP[reg.Num] {
+			c.errorf(instr.Line, "read of %s before any write (predicates hold no value on entry, and smstart zeroes them)", reg.Text)
 		}
 		return
 	}
@@ -998,12 +1034,23 @@ func (c *checker) write(instr Instruction, reg Register) {
 		c.errorf(instr.Line, "sp may only move by add/sub sp, sp, #imm or pre/post-index addressing")
 		return
 	}
-	if reg.Class == ClassV {
+	if reg.Class == ClassV || reg.Class == ClassZ {
 		if !c.clobberV[reg.Num] && !c.boundVector(reg.Num) && !(c.hasResult && c.resultClass == ClassV && reg.Num == 0) {
-			c.errorf(instr.Line, "write to undeclared register v%d: declare it with `clobber v%d`", reg.Num, reg.Num)
+			c.errorf(instr.Line, "write to undeclared register %s: declare it with `clobber v%d`", reg.Text, reg.Num)
 			return
 		}
 		c.writtenV[reg.Num] = true
+		return
+	}
+	if reg.Class == ClassP || reg.Class == ClassPN {
+		if !c.clobberP[reg.Num] {
+			c.errorf(instr.Line, "write to undeclared predicate %s: declare it with `clobber p%d`", reg.Text, reg.Num)
+			return
+		}
+		c.writtenP[reg.Num] = true
+		return
+	}
+	if reg.Class == ClassZA || reg.Class == ClassZT {
 		return
 	}
 	if reg.ZeroRegister() {
@@ -1403,6 +1450,9 @@ func (c *checker) call(instr Instruction) {
 	if !c.clobbered[30] {
 		c.errorf(instr.Line, "bl writes the link register: declare `clobber x30`")
 	}
+	if c.sm || c.za {
+		c.errorf(instr.Line, "bl in streaming mode or with the ZA array enabled: Oak functions have no streaming interface — smstop first")
+	}
 	if lr := c.calleeSaved[30]; lr != nil {
 		if !c.never && !lr.saved {
 			c.errorf(instr.Line, "bl in a returning function before saving the link register: stp x29, x30 (or str x30) into the frame first")
@@ -1438,12 +1488,15 @@ func (c *checker) ret(instr Instruction) bool {
 	}
 	if c.hasResult {
 		if c.resultClass == ClassV {
-			if !c.writtenV[0] && !c.boundVector(0) {
+			if !c.writtenV[0] && (!c.boundVector(0) || c.vZeroed) {
 				c.errorf(instr.Line, "ret without producing the result in v0")
 			}
 		} else if !c.written[0] && !c.bound[0] {
 			c.errorf(instr.Line, "ret without producing the result in %s0", classPrefix(c.resultClass))
 		}
+	}
+	if c.sm || c.za {
+		c.errorf(instr.Line, "ret with streaming mode or the ZA array still enabled: the caller is not streaming — smstop first")
 	}
 	c.unreachable = true
 	return true

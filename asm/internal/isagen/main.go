@@ -25,6 +25,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/SCKelemen/oak/asm/internal/armfeat"
 )
 
 // ---- XML shapes -----------------------------------------------------------
@@ -35,6 +37,13 @@ type instructionFile struct {
 		IClass []iclass `xml:"iclass"`
 	} `xml:"classes"`
 	Explanations []explanation `xml:"explanations>explanation"`
+	// The shared Execute pseudocode of the file: its Check* call states the
+	// PSTATE.SM/ZA mode the instruction needs, and its NZCV writes whether
+	// it sets the flags.
+	Operation []struct {
+		Section string `xml:"section,attr"`
+		Inner   string `xml:",innerxml"`
+	} `xml:"ps_section>ps>pstext"`
 }
 
 type iclass struct {
@@ -111,7 +120,7 @@ type tableRow struct {
 
 type operand struct {
 	Sym      string
-	Kind     string // gp, fp, vecarr, veclane, imm, fimm, label, table, sysreg, cond, mem, list, text
+	Kind     string // gp, fp, vecarr, veclane, imm, fimm, label, table, sysreg, cond, mem, list, text, zreg, zlane, preg, pnreg, tile, slice, zlist, tilemask
 	Fields   []string
 	Width    int
 	SP, ZR   bool
@@ -121,10 +130,12 @@ type operand struct {
 	Offset   int64
 	Table    []tableRow
 	Sizes    []tableRow // vecarr/veclane: arrangement table; fp: <V> size table
-	Sub      []operand  // memory: base, offset, index, extend, amount
+	Sub      []operand  // memory: base, offset, index, extend, amount; slice: tile, hv, elem, idx, offs, group
 	Mode     string     // memory: off, pre, post
-	Text     string     // fixed token
+	Text     string     // fixed token; zreg/preg/tile/slice: the fixed element size letter
 	Special  string     // bitmask, wide, fp8, movi, index, shift-immh, fbits
+	Count    int        // zlist: registers in the list; slice: consecutive slices named (offs1:offs2)
+	Qual     string     // preg/pnreg: the fixed /M or /Z qualifier
 }
 
 type formDef struct {
@@ -144,6 +155,8 @@ type encodingDef struct {
 	Forms                 []formDef
 	Alias                 string
 	AliasCond             string
+	Mode                  string // "", sm, za, smza, nosm (docs/spec/94-assembler.md §9)
+	Flags                 bool   // the Execute pseudocode writes NZCV
 }
 
 // isAlias is set while the encoding under construction is an alias (its
@@ -151,19 +164,28 @@ type encodingDef struct {
 var isAlias bool
 
 var (
-	tags        = regexp.MustCompile(`<[^>]*>`)
-	versionRe   = regexp.MustCompile(`^v(\d+)Ap(\d+)$`)
-	rangeRe     = regexp.MustCompile(`in the range (-?\d+) to (-?\d+)`)
-	pmRangeRe   = regexp.MustCompile(`in the range \+/-(\d+)([KMG]B)`)
-	multipleRe  = regexp.MustCompile(`a multiple of (\d+)`)
-	divRe       = regexp.MustCompile(`as <[^>]+>/(\d+)`)
-	timesRe     = regexp.MustCompile(`times (\d+)`)
-	plusRe      = regexp.MustCompile(`encoded as "[^"]+" plus (\d+)`)
-	minusRe     = regexp.MustCompile(`encoded as "[^"]+" minus (\d+)`)
-	gpRegRe     = regexp.MustCompile(`^<([WX])(d|n|m|t|s|a|t1|t2|\(s\+1\)|\(t\+1\)|t\+1)(\|(W?SP))?>$`)
-	rRegRe      = regexp.MustCompile(`^<R><[a-z]>$`)
+	tags           = regexp.MustCompile(`<[^>]*>`)
+	rangeRe        = regexp.MustCompile(`in the range (-?\d+) to (-?\d+)`)
+	pmRangeRe      = regexp.MustCompile(`in the range \+/-(\d+)([KMG]B)`)
+	multipleRe     = regexp.MustCompile(`a multiple of (\d+)`)
+	divRe          = regexp.MustCompile(`as <[^>]+>/(\d+)`)
+	timesRe        = regexp.MustCompile(`times (\d+)`)
+	plusRe         = regexp.MustCompile(`encoded as "[^"]+"(?: field)?(?: times \d+)? plus (\d+)`)
+	encodedTimesRe = regexp.MustCompile(`encoded as "[^"]+"(?: field)? times (\d+)`)
+	minusRe        = regexp.MustCompile(`encoded as "[^"]+" minus (\d+)`)
+	gpRegRe        = regexp.MustCompile(`^<([WX])(d|n|m|t|s|a|dn|t1|t2|\(s\+1\)|\(t\+1\)|t\+1)(\|(W?SP))?>$`)
+	rRegRe         = regexp.MustCompile(`^<R><[a-z]+(\|SP)?>$`)
+	// Scalable registers and the ZA array (SVE/SME templates).
+	zRegRe      = regexp.MustCompile(`^<Z([a-z]+\d?)>(?:\.(<T[b]?>|[BHSDQ]))?$`)
+	zLaneRe     = regexp.MustCompile(`^<Z([a-z]+\d?)>(?:\.(<T[b]?>|[BHSDQ]))?\[(<index\d?>|<imm\d?>|\d+)\]$`)
+	pRegRe      = regexp.MustCompile(`^<P([a-z]+\d?)>(?:\.(<T>|[BHSDQ]))?(?:/(M|Z|<ZM>))?$`)
+	pnRegRe     = regexp.MustCompile(`^<PN([a-z]+\d?)>(?:\.(<T>|[BHSDQ]))?(/Z)?(?:\[(<imm\d?>)\])?$`)
+	tileRe      = regexp.MustCompile(`^(<ZA[a-z]*\d?>|ZA\d+)\.(<T>|[BHSDQ])$`)
+	sliceRe     = regexp.MustCompile(`^(<ZA[a-z]*\d?>|ZA\d*)(<HV>)?(?:\.(<T>|[BHSDQ]))?\[(<W[a-z]+>), (<offs\d?>|<imm>)(?::(<offs\d>))?(?:, (VGx[24]))?\]$`)
+	zRangeRe    = regexp.MustCompile(`^(<Z[a-z]+\d?>(?:\.(?:<T[b]?>|[BHSDQ]))?)-(<Z[a-z]+(\d)>(?:\.(?:<T[b]?>|[BHSDQ]))?)$`)
+	pSliceRe    = regexp.MustCompile(`^<P[a-z]+\d?>\.<T>\[`)
 	fpRegRe     = regexp.MustCompile(`^<([BHSDQ])(d|n|m|a|t|s|t1|t2)>$|^([BHSDQ])<[dnmats]>$`)
-	vRegRe      = regexp.MustCompile(`^<V[ab]?><[dnmats]>$`)
+	vRegRe      = regexp.MustCompile(`^<V[ab]?><(dn|[dnmats])>$`)
 	vecArrRe    = regexp.MustCompile(`^<V([a-z0-9+]*)>\.(<T[ab]?>|<Ts>|\d+[BHSD]|[BHSD]|2D|1Q)$`)
 	vecLaneRe   = regexp.MustCompile(`^(<V[a-z0-9+]*>|V<[a-z]>)\.(<Ts>|<T>|[BHSD]|\d*[BHSD])\[(<index\d?>|\d+)\]$`)
 	sysRegRe    = regexp.MustCompile(`^S<op0>_<op1>_<Cn>_<Cm>_<op2>$`)
@@ -176,44 +198,112 @@ var (
 	optionSYRe  = regexp.MustCompile(`SY [^.]*encoded as CRm = 0b([01]+)`)
 )
 
-// Optional features of Armv8.x the M-series does not implement (kept in
-// step with asm/isa_xml_test.go).
-var absentFeatures = map[string]bool{
-	"FEAT_MTE": true, "FEAT_MTE2": true, "FEAT_MTE4": true, "FEAT_MTE_TAGGED_FAR": true, "FEAT_MTETC": true,
-	"FEAT_SVE": true, "FEAT_SVE2": true, "FEAT_SME": true,
-	"FEAT_LS64": true, "FEAT_LS64_V": true, "FEAT_LS64_ACCDATA": true,
-	"FEAT_TME": true, "FEAT_RNG": true, "FEAT_SM3": true, "FEAT_SM4": true,
-	"FEAT_SPE": true, "FEAT_TRBE": true, "FEAT_BRBE": true, "FEAT_TRF": true,
-	"FEAT_RME": true, "FEAT_XS": true, "FEAT_LRCPC3": true,
-	"FEAT_HBC": true, "FEAT_MOPS": true, "FEAT_CSSC": true,
-	"FEAT_PACQARMA3": true, "FEAT_CONSTPACFIELD": true,
-	"FEAT_AMUv1": true, "FEAT_ECV": true, "FEAT_HCX": true,
-	"FEAT_D128": true, "FEAT_TLBID": true, "FEAT_TLBIRANGE": true, "FEAT_TLBIOS": true,
-	"FEAT_TLBIW": true, "FEAT_PRFMSLC": true, "FEAT_ATS1A": true,
-	"FEAT_OCCMO": true, "FEAT_PoPS": true, "FEAT_PCDPHINT": true,
-	"FEAT_PAN": true, "FEAT_PAN2": true, "FEAT_UAO": true, "FEAT_SSBS": true,
-	"FEAT_FAMINMAX": true, "FEAT_LSUI": true, "FEAT_LUT": true,
-}
-
+// mSeriesHas: some arch_variant of the class holds on the M-series
+// profile (asm/internal/armfeat).
 func mSeriesHas(class iclass) bool {
 	if len(class.ArchVariants) == 0 {
 		return true
 	}
 	for _, v := range class.ArchVariants {
-		if m := versionRe.FindStringSubmatch(v.Name); m != nil {
-			major, _ := strconv.Atoi(m[1])
-			minor, _ := strconv.Atoi(m[2])
-			if major > 8 || (major == 8 && minor > 7) {
+		if armfeat.Has(v.Name, v.Feature) {
+			return true
+		}
+	}
+	return false
+}
+
+// modeOf derives the PSTATE mode an encoding needs from the Check* call of
+// its pseudocode (the class's Decode section first, then the file's
+// Execute): sm (streaming SVE mode), za (the ZA array enabled), smza
+// (both), nosm (Advanced SIMD that is illegal in streaming mode), or ""
+// (legal in either mode). On the M4, SVE exists only in streaming mode, so
+// CheckSVEEnabled reads as sm.
+func modeOf(texts ...string) string {
+	for _, text := range texts {
+		switch {
+		case strings.Contains(text, "CheckStreamingSVEAndZAEnabled"):
+			return "smza"
+		case strings.Contains(text, "CheckSMEAndZAEnabled"), strings.Contains(text, "CheckSMEZT0Enabled"):
+			return "za"
+		case strings.Contains(text, "CheckStreamingSVEEnabled"), strings.Contains(text, "CheckSVEEnabled"):
+			return "sm"
+		case strings.Contains(text, "CheckFPAdvSIMDEnabled"):
+			return "nosm"
+		case strings.Contains(text, "CheckFPEnabled"), strings.Contains(text, "CheckSMEEnabled"):
+			return ""
+		}
+	}
+	return ""
+}
+
+var (
+	nzcvRe  = regexp.MustCompile(`PSTATE\.(<N,Z,C,V>|\[N,Z,C,V\]|NZCV)\s*=`)
+	checkRe = regexp.MustCompile(`Check[A-Za-z0-9]*Enabled`)
+)
+
+// currentDecode is the cleaned Decode pseudocode of the class under
+// construction: the offset of an immediate the prose leaves implicit
+// (`integer imm = UInt(imm4) + 1` for the count multipliers) is read here.
+var currentDecode string
+
+var (
+	subRe     = regexp.MustCompile(`encoded as (\d+) minus "`)
+	undefInRe = regexp.MustCompile(`if (\w+) (?:IN \{([^}]*)\}|(== '[01x]+')) then\s*EndOfDecode\(Decode_UNDEF`)
+	quotedRe  = regexp.MustCompile(`'([01x]+)'`)
+	commentRe = regexp.MustCompile(`//[^\n]*`)
+)
+
+// fixedByExclusion enumerates a field's values, removes those matching the
+// excluded patterns ('x' wild), and reports the bits constant over the
+// values that remain.
+func fixedByExclusion(width int, patterns [][]string) (mask, value uint32, ok bool) {
+	excluded := func(v uint32) bool {
+		for _, p := range patterns {
+			pat := p[1]
+			if len(pat) != width {
 				continue
 			}
-		}
-		absent := false
-		for _, name := range strings.FieldsFunc(v.Feature, func(r rune) bool { return r == ' ' || r == '|' || r == '&' || r == '(' || r == ')' }) {
-			if absentFeatures[name] {
-				absent = true
+			match := true
+			for i := 0; i < width; i++ {
+				bit := (v >> uint(width-1-i)) & 1
+				if pat[i] == 'x' || pat[i] == '1' && bit == 1 || pat[i] == '0' && bit == 0 {
+					continue
+				}
+				match = false
+				break
+			}
+			if match {
+				return true
 			}
 		}
-		if !absent {
+		return false
+	}
+	var allowed []uint32
+	for v := uint32(0); v < 1<<uint(width); v++ {
+		if !excluded(v) {
+			allowed = append(allowed, v)
+		}
+	}
+	if len(allowed) == 0 || len(allowed) == 1<<uint(width) {
+		return 0, 0, false
+	}
+	all := uint32(1<<uint(width) - 1)
+	mask, value = all, allowed[0]
+	for _, v := range allowed[1:] {
+		mask &^= v ^ allowed[0]
+	}
+	return mask, value & mask, mask != 0
+}
+
+// decodePlusRe matches the Decode's `= UInt(field) + N;`.
+func decodePlusRe(field string) *regexp.Regexp {
+	return regexp.MustCompile(`= UInt\(` + regexp.QuoteMeta(field) + `\) \+ (\d+);`)
+}
+
+// setsFlags reports an Execute section that writes the condition flags.
+func setsFlags(texts ...string) bool {
+	for _, text := range texts {
+		if nzcvRe.MatchString(html.UnescapeString(tags.ReplaceAllString(text, ""))) {
 			return true
 		}
 	}
@@ -229,13 +319,18 @@ func main() {
 		os.Exit(2)
 	}
 	var files []string
-	for _, index := range []string{"index.xml", "fpsimdindex.xml"} {
+	seen := map[string]bool{}
+	// The base and SIMD&FP sets, then SVE (its streaming-legal part) and SME.
+	for _, index := range []string{"index.xml", "fpsimdindex.xml", "sveindex.xml", "mortlachindex.xml"} {
 		data, err := os.ReadFile(filepath.Join(*xmlDir, index))
 		if err != nil {
 			fail(err)
 		}
 		for _, m := range regexp.MustCompile(`iformfile="([^"]+)"`).FindAllStringSubmatch(string(data), -1) {
-			files = append(files, m[1])
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				files = append(files, m[1])
+			}
 		}
 	}
 	var defs []encodingDef
@@ -249,12 +344,40 @@ func main() {
 		if err := xml.Unmarshal(data, &instr); err != nil {
 			fail(fmt.Errorf("%s: %w", file, err))
 		}
+		var execute []string
+		for _, ps := range instr.Operation {
+			execute = append(execute, ps.Inner)
+		}
+		executeText := strings.Join(execute, "")
 		for _, class := range instr.Classes.IClass {
 			if !mSeriesHas(class) {
 				continue
 			}
 			classMask, classValue, fields := diagramBits(class.Diagram.Boxes)
-			// Decode-time `if F != 'bits' then UNDEFINED` fixes a field.
+			var decode []string
+			for _, ps := range class.Decode {
+				decode = append(decode, ps.Inner)
+			}
+			decodeText := strings.Join(decode, "")
+			// Non-streaming SVE is not on the M4: the class's Decode says so,
+			// or the file's shared Execute does when the Decode says nothing.
+			checked := decodeText
+			if !checkRe.MatchString(decodeText) {
+				checked = executeText
+			}
+			if strings.Contains(checked, "CheckNonStreamingSVEEnabled") && len(checkRe.FindAllString(checked, -1)) == strings.Count(checked, "CheckNonStreamingSVEEnabled") {
+				// Unconditionally non-streaming (a conditional one, `if esize
+				// == 128 then CheckNonStreamingSVEEnabled() else
+				// CheckSVEEnabled()`, guards a variant the M4 lacks anyway).
+				skipped["non-streaming SVE (not on the M4)"]++
+				continue
+			}
+			mode := modeOf(decodeText, executeText)
+			flags := setsFlags(decodeText, executeText)
+			currentDecode = clean(decodeText)
+			// Decode-time `if F != 'bits' then UNDEFINED` fixes a field; `if F
+			// IN {'0x'} then UNDEFINED` (or `== 'bits'`) excludes patterns, and
+			// the bits constant over what remains are fixed too.
 			for _, ps := range class.Decode {
 				if ps.Section != "Decode" {
 					continue
@@ -269,6 +392,29 @@ func main() {
 						}
 					}
 				}
+				// Only a top-level `if`: one nested under another condition
+				// (`if cmode::op == '11111' then if Q == '0' then UNDEFINED`)
+				// constrains nothing on its own.
+				flat := commentRe.ReplaceAllString(tags.ReplaceAllString(ps.Inner, ""), "")
+				for _, loc := range undefInRe.FindAllStringSubmatchIndex(flat, -1) {
+					before := strings.TrimSpace(flat[:loc[0]])
+					if before != "" && !strings.HasSuffix(before, ";") {
+						continue
+					}
+					m := undefInRe.FindStringSubmatch(flat[loc[0]:loc[1]])
+					patterns := quotedRe.FindAllStringSubmatch(m[2]+m[3], -1)
+					for _, f := range fields {
+						if f.Name != m[1] || f.Width > 6 {
+							continue
+						}
+						mask, value, ok := fixedByExclusion(f.Width, patterns)
+						if ok {
+							low := uint(f.Hi - f.Width + 1)
+							classMask |= mask << low
+							classValue = classValue&^(mask<<low) | value<<low
+						}
+					}
+				}
 			}
 			for _, enc := range class.Encodings {
 				mask, value := classMask, classValue
@@ -277,7 +423,7 @@ func main() {
 					mask |= m
 					value = value&^m | v
 				}
-				def := encodingDef{Name: enc.Name, Mask: mask, Value: value, Fields: fields}
+				def := encodingDef{Name: enc.Name, Mask: mask, Value: value, Fields: fields, Mode: mode, Flags: flags}
 				isAlias = clean(enc.Equivalent.Template.Inner) != ""
 				template := clean(enc.Template.Inner)
 				if template == "" {
@@ -435,9 +581,31 @@ func omittedDefaults(enc, full, reading string, explanations []explanation) []fi
 		case regexp.MustCompile(`^[XW]\d+$`).MatchString(word):
 			n, _ := strconv.Atoi(word[1:])
 			out = append(out, fieldDefault{Field: fields[0], Value: uint32(n)})
+		case word == "XZR" || word == "WZR":
+			out = append(out, fieldDefault{Field: fields[0], Value: 31})
 		case regexp.MustCompile(`^\d+$`).MatchString(word):
-			n, _ := strconv.Atoi(word)
-			out = append(out, fieldDefault{Field: fields[0], Value: uint32(n)})
+			// The default value as the operand states it, encoded as its
+			// explanation says ("encoded as imm4 minus 1": field = value - 1).
+			n, _ := strconv.ParseInt(word, 10, 64)
+			scale, offset := int64(1), int64(0)
+			if sm := multipleRe.FindStringSubmatch(text); sm != nil {
+				scale, _ = strconv.ParseInt(sm[1], 10, 64)
+			}
+			if sm := plusRe.FindStringSubmatch(text); sm != nil {
+				offset, _ = strconv.ParseInt(sm[1], 10, 64)
+			}
+			if sm := minusRe.FindStringSubmatch(text); sm != nil {
+				v, _ := strconv.ParseInt(sm[1], 10, 64)
+				offset = -v
+			}
+			if offset == 0 && scale == 1 {
+				if sm := decodePlusRe(fields[0]).FindStringSubmatch(currentDecode); sm != nil {
+					offset, _ = strconv.ParseInt(sm[1], 10, 64) // the Decode's `UInt(imm4) + 1`
+				}
+			}
+			if scale > 0 && n%scale == 0 && n/scale-offset >= 0 {
+				out = append(out, fieldDefault{Field: fields[0], Value: uint32(n/scale - offset)})
+			}
 		default:
 			for _, row := range tableOf(b) {
 				if row.Text == strings.ToUpper(word) && len(row.Bits) == len(fields) {
@@ -452,6 +620,27 @@ func omittedDefaults(enc, full, reading string, explanations []explanation) []fi
 				if om := optionSYRe.FindStringSubmatch(text); om != nil && strings.ToUpper(word) == "SY" {
 					v, _ := strconv.ParseUint(om[1], 2, 32)
 					out = append(out, fieldDefault{Field: fields[0], Value: uint32(v)})
+				}
+			}
+		}
+	}
+	// A table row spelled `[absent]` states the omitted operand's bits
+	// (smstart's mode: SM, ZA, or both when absent).
+	for _, s := range symbolRe.FindAllString(full, -1) {
+		if present[s] || !seen[s] {
+			continue
+		}
+		b := explain(enc, s, explanations)
+		if b == nil || defaultRe.MatchString(introText(b)) {
+			continue
+		}
+		fields := fieldsOf(b)
+		for _, row := range tableOf(b) {
+			if row.Text == "[ABSENT]" && len(row.Bits) == len(fields) {
+				for i, f := range fields {
+					if v, err := strconv.ParseUint(row.Bits[i], 2, 32); err == nil {
+						out = append(out, fieldDefault{Field: f, Value: uint32(v)})
+					}
 				}
 			}
 		}
@@ -683,7 +872,7 @@ func buildForm(enc, text string, explanations []explanation) (formDef, string) {
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
 		// Trailing shift/extend modifiers attach to the previous operand.
-		if strings.HasPrefix(tok, "<shift>") || strings.HasPrefix(tok, "<extend>") || strings.HasPrefix(tok, "LSL") || strings.HasPrefix(tok, "MSL") {
+		if strings.HasPrefix(tok, "<shift>") || strings.HasPrefix(tok, "<extend>") || strings.HasPrefix(tok, "LSL") || strings.HasPrefix(tok, "MSL") || strings.HasPrefix(tok, "MUL #") {
 			mod, why := modifierOperands(enc, tok, explanations)
 			if why != "" {
 				return form, why
@@ -713,7 +902,7 @@ func modifierOperands(enc, tok string, explanations []explanation) ([]operand, s
 				return nil, "modifier without explanation: " + p
 			}
 			out = append(out, operand{Sym: p, Kind: "table", Fields: fieldsOf(b), Table: tableOf(b)})
-		case p == "LSL" || p == "MSL":
+		case p == "LSL" || p == "MSL" || p == "MUL":
 			out = append(out, operand{Sym: p, Kind: "text", Text: p})
 		case strings.HasPrefix(p, "#"):
 			op, why := classify(enc, p, explanations)
@@ -817,6 +1006,9 @@ func immediate(enc, sym string, explanations []explanation) (operand, string) {
 	if m := divRe.FindStringSubmatch(text); m != nil {
 		op.Scale, _ = strconv.ParseInt(m[1], 10, 64)
 	}
+	if m := encodedTimesRe.FindStringSubmatch(text); m != nil {
+		op.Scale, _ = strconv.ParseInt(m[1], 10, 64) // `encoded as "off3" times 2`
+	}
 	if m := plusRe.FindStringSubmatch(text); m != nil {
 		op.Offset, _ = strconv.ParseInt(m[1], 10, 64)
 	}
@@ -824,15 +1016,39 @@ func immediate(enc, sym string, explanations []explanation) (operand, string) {
 		v, _ := strconv.ParseInt(m[1], 10, 64)
 		op.Offset = -v
 	}
+	if op.Offset == 0 && op.Scale == 1 && len(op.Fields) == 1 && op.Special == "" && !isAlias && len(rows) == 0 {
+		// The prose says only "encoded in the imm4 field" while the Decode
+		// computes `UInt(imm4) + 1`: the offset the prose leaves implicit.
+		if m := decodePlusRe(op.Fields[0]).FindStringSubmatch(currentDecode); m != nil {
+			op.Offset, _ = strconv.ParseInt(m[1], 10, 64)
+		}
+	}
+	if m := subRe.FindStringSubmatch(text); m != nil && op.Special == "" {
+		// `encoded as 16 minus "imm4"`: the field holds N - value.
+		op.Special = "sub"
+		op.Offset, _ = strconv.ParseInt(m[1], 10, 64)
+	}
 	if len(rows) > 0 {
 		op.Kind = "table"
 		op.Table = rows
 	}
+	joined := strings.Join(op.Fields, ":")
 	switch {
 	case op.Special == "sub64":
+	case joined == "tszh:tszl:imm3" && strings.Contains(text, "shift amount"):
+		// The SVE shift by immediate: tsize = esize + shift (left) or
+		// 2*esize - shift (right), the element size in the top bits.
+		if strings.Contains(text, "in the range 0 to") {
+			op.Special = "sve-shift-left"
+		} else {
+			op.Special = "sve-shift-right"
+		}
+		op.HasRange = false
+	case joined == "imm2:tsz" && strings.Contains(text, "index"):
+		op.Special = "sve-index" // the index above the element-size marker bit
 	case strings.Contains(text, "bitmask immediate"):
 		op.Special = "bitmask"
-	case strings.Contains(text, "floating-point constant"):
+	case strings.Contains(text, "floating-point constant"), strings.Contains(text, "floating-point immediate value expressible"):
 		op.Kind = "fimm"
 		op.Special = "fp8"
 	case strings.Contains(strings.Join(op.Fields, ":"), "a:b:c:d:e:f:g:h"):
@@ -848,6 +1064,9 @@ func immediate(enc, sym string, explanations []explanation) (operand, string) {
 }
 
 func classify(enc, tok string, explanations []explanation) (operand, string) {
+	if op, why, matched := scalable(enc, tok, explanations); matched {
+		return op, why
+	}
 	switch {
 	case strings.HasPrefix(tok, "["):
 		return memory(enc, tok, explanations)
@@ -901,7 +1120,7 @@ func classify(enc, tok string, explanations []explanation) (operand, string) {
 			return operand{}, "structure lane list"
 		}
 		return list(enc, tok, explanations)
-	case strings.Contains(tok, "|") && !strings.HasPrefix(tok, "[") && !gpRegRe.MatchString(tok):
+	case strings.Contains(tok, "|") && !strings.HasPrefix(tok, "[") && !gpRegRe.MatchString(tok) && !rRegRe.MatchString(tok):
 		// Alternatives such as (<prfop>|#<imm5>) or (<systemreg>|S<op0>_...):
 		// the first spelling that explains itself stands for the operand
 		// (the encoder accepts both spellings through the same fields).
@@ -939,7 +1158,8 @@ func classify(enc, tok string, explanations []explanation) (operand, string) {
 	}
 	if rRegRe.MatchString(tok) {
 		b := explain(enc, "<R>", explanations)
-		op := operand{Sym: tok, Kind: "gp", Width: 0, ZR: true}
+		op := operand{Sym: tok, Kind: "gp", Width: 0, ZR: !strings.Contains(tok, "|SP"), SP: strings.Contains(tok, "|SP")}
+		tok = strings.Replace(tok, "|SP", "", 1)
 		if b != nil {
 			op.Table = tableOf(b) // W/X by the option field
 			op.Sizes = op.Table
@@ -1086,6 +1306,55 @@ func list(enc, tok string, explanations []explanation) (operand, string) {
 	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(tok, "{"), "}"))
 	parts := splitOperands(inner)
 	op := operand{Sym: tok, Kind: "list"}
+	// Scalable lists: `{ <Zt>.<T> }`, `{ <Zn1>.<T>-<Zn4>.<T> }` (consecutive
+	// registers, the first encoded), `{ <ZAt><HV>.S[<Ws>, <offs>] }` (one
+	// tile slice), `{ <mask> }` / `{ }` (zero's tile mask), `{ ZT0 }`.
+	if inner == "" || inner == "<mask>" || inner == "{<mask>}" {
+		b := explain(enc, "<mask>", explanations)
+		if b == nil {
+			return op, "tile mask without explanation"
+		}
+		return operand{Sym: tok, Kind: "tilemask", Fields: fieldsOf(b)}, ""
+	}
+	if len(parts) == 1 {
+		p := parts[0]
+		if m := zRangeRe.FindStringSubmatch(p); m != nil {
+			first, why := classify(enc, m[1], explanations)
+			if why != "" {
+				return op, why
+			}
+			count, _ := strconv.Atoi(m[3])
+			if first.Kind != "zreg" || count < 2 {
+				return op, "multi-vector list shape: " + p
+			}
+			return operand{Sym: tok, Kind: "zlist", Count: count, Sub: []operand{first}}, ""
+		}
+		if zRegRe.MatchString(p) || sliceRe.MatchString(p) {
+			sub, why := classify(enc, p, explanations)
+			if why != "" {
+				return op, why
+			}
+			return operand{Sym: tok, Kind: "zlist", Count: 1, Sub: []operand{sub}}, ""
+		}
+	}
+	if len(parts) > 1 && zRegRe.MatchString(parts[0]) {
+		// `{ <Zt1>.B, <Zt2>.B }`: consecutive registers when the head is
+		// encoded plainly (the SVE structure accesses), strided when it is
+		// constructed from T:'0':Zt (the SME2 strided multi-vector forms).
+		first, why := classify(enc, parts[0], explanations)
+		if why != "" {
+			if strings.Contains(why, "constructed") {
+				return op, "strided multi-vector list"
+			}
+			return op, why
+		}
+		for _, p := range parts[1:] {
+			if !zRegRe.MatchString(p) {
+				return op, "multi-vector list shape: " + inner
+			}
+		}
+		return operand{Sym: tok, Kind: "zlist", Count: len(parts), Sub: []operand{first}}, ""
+	}
 	for _, p := range parts {
 		sub, why := classify(enc, strings.TrimSpace(p), explanations)
 		if why != "" {
@@ -1124,6 +1393,9 @@ func memory(enc, tok string, explanations []explanation) (operand, string) {
 	for _, p := range parts[1:] {
 		p = strings.TrimSpace(p)
 		switch {
+		case p == "MUL VL":
+			// A vector-length-scaled immediate offset (SVE/SME).
+			op.Sub = append(op.Sub, operand{Sym: p, Kind: "text", Text: p})
 		case strings.HasPrefix(p, "#") || p == "<imm>":
 			imm, why := immediate(enc, "#"+strings.TrimPrefix(p, "#"), explanations)
 			if why != "" {
@@ -1170,6 +1442,9 @@ func memory(enc, tok string, explanations []explanation) (operand, string) {
 						}
 					}
 					op.Sub = append(op.Sub, am)
+				case strings.HasPrefix(f, "#") && strings.Trim(f[1:], "0123456789") == "":
+					// A fixed amount (`LSL #2` of the SVE word accesses).
+					op.Sub = append(op.Sub, operand{Sym: "<amount>", Kind: "text", Text: f})
 				default:
 					return op, "memory index shape: " + p
 				}
@@ -1201,6 +1476,8 @@ func memory(enc, tok string, explanations []explanation) (operand, string) {
 						}
 					}
 					op.Sub = append(op.Sub, am)
+				case strings.HasPrefix(f, "#") && strings.Trim(f[1:], "0123456789") == "":
+					op.Sub = append(op.Sub, operand{Sym: "<amount>", Kind: "text", Text: f})
 				default:
 					return op, "memory modifier shape: " + p
 				}
@@ -1213,6 +1490,212 @@ func memory(enc, tok string, explanations []explanation) (operand, string) {
 }
 
 // ---- rendering --------------------------------------------------------------
+
+// scalable classifies the SVE/SME template symbols. matched is false for a
+// token of the base or SIMD&FP vocabulary.
+func scalable(enc, tok string, explanations []explanation) (op operand, why string, matched bool) {
+	// The element size of a `.<T>` / `.S` suffix: a fixed letter or a table.
+	elem := func(op *operand, size string) string {
+		if size == "" {
+			return ""
+		}
+		if strings.HasPrefix(size, "<") {
+			b := explain(enc, size, explanations)
+			if b == nil || len(tableOf(b)) == 0 {
+				return "element size without table: " + size
+			}
+			op.Sub = append(op.Sub, operand{Sym: size, Kind: "table", Fields: fieldsOf(b), Table: tableOf(b)})
+			return ""
+		}
+		op.Text = size
+		return ""
+	}
+	// The register field, with the "times N" / "plus N" encodings of list
+	// heads and counter predicates.
+	regFields := func(op *operand, sym string) string {
+		b := explain(enc, sym, explanations)
+		if b == nil {
+			return "register without explanation: " + sym
+		}
+		op.Fields = fieldsOf(b)
+		text := introText(b)
+		if strings.Contains(text, "'") && !strings.Contains(text, "encoded in") {
+			return "register with a constructed encoding: " + sym
+		}
+		op.Scale = 1
+		if m := encodedTimesRe.FindStringSubmatch(text); m != nil {
+			op.Scale, _ = strconv.ParseInt(m[1], 10, 64)
+		}
+		if m := plusRe.FindStringSubmatch(text); m != nil {
+			op.Offset, _ = strconv.ParseInt(m[1], 10, 64)
+		}
+		return ""
+	}
+	switch {
+	case zLaneRe.MatchString(tok):
+		m := zLaneRe.FindStringSubmatch(tok)
+		op = operand{Sym: tok, Kind: "zlane"}
+		if why := regFields(&op, "<Z"+m[1]+">"); why != "" {
+			return op, why, true
+		}
+		if why := elem(&op, m[2]); why != "" {
+			return op, why, true
+		}
+		if strings.HasPrefix(m[3], "<") {
+			idx, why := immediate(enc, "#"+m[3], explanations)
+			if why != "" {
+				return op, why, true
+			}
+			idx.Sym = "idx"
+			op.Sub = append(op.Sub, idx)
+		} else {
+			// A literal index (`<Zn>.<T>[0]` of the mov alias): encoded like
+			// the instruction's own index operand when it has one.
+			idx := operand{Sym: "idx", Kind: "text", Text: m[3]}
+			for _, sym := range []string{"#<imm>", "#<index>"} {
+				if op, why := immediate(enc, sym, explanations); why == "" && len(op.Fields) > 0 {
+					idx = op
+					idx.Sym, idx.Text = "idx", m[3]
+					break
+				}
+			}
+			op.Sub = append(op.Sub, idx)
+		}
+		return op, "", true
+	case zRegRe.MatchString(tok):
+		m := zRegRe.FindStringSubmatch(tok)
+		op = operand{Sym: tok, Kind: "zreg"}
+		if why := regFields(&op, "<Z"+m[1]+">"); why != "" {
+			return op, why, true
+		}
+		return op, elem(&op, m[2]), true
+	case pRegRe.MatchString(tok):
+		m := pRegRe.FindStringSubmatch(tok)
+		op = operand{Sym: tok, Kind: "preg"}
+		if why := regFields(&op, "<P"+m[1]+">"); why != "" {
+			return op, why, true
+		}
+		if why := elem(&op, m[2]); why != "" {
+			return op, why, true
+		}
+		switch m[3] {
+		case "M", "Z":
+			op.Qual = m[3]
+		case "<ZM>":
+			b := explain(enc, "<ZM>", explanations)
+			if b == nil {
+				return op, "predicate qualifier without table", true
+			}
+			op.Sub = append(op.Sub, operand{Sym: "<ZM>", Kind: "table", Fields: fieldsOf(b), Table: tableOf(b)})
+		}
+		return op, "", true
+	case pnRegRe.MatchString(tok):
+		m := pnRegRe.FindStringSubmatch(tok)
+		op = operand{Sym: tok, Kind: "pnreg"}
+		if why := regFields(&op, "<PN"+m[1]+">"); why != "" {
+			return op, why, true
+		}
+		if why := elem(&op, m[2]); why != "" {
+			return op, why, true
+		}
+		if m[3] != "" {
+			op.Qual = "Z"
+		}
+		if m[4] != "" {
+			idx, why := immediate(enc, "#"+m[4], explanations)
+			if why != "" {
+				return op, why, true
+			}
+			idx.Sym = "idx"
+			op.Sub = append(op.Sub, idx)
+		}
+		return op, "", true
+	case tileRe.MatchString(tok):
+		m := tileRe.FindStringSubmatch(tok)
+		op = operand{Sym: tok, Kind: "tile"}
+		if strings.HasPrefix(m[1], "<") {
+			if why := regFields(&op, m[1]); why != "" {
+				return op, why, true
+			}
+		} else {
+			n, _ := strconv.Atoi(strings.TrimPrefix(m[1], "ZA"))
+			op.Offset = int64(n) // a fixed tile number, no field
+			op.Special = "fixed"
+		}
+		return op, elem(&op, m[2]), true
+	case sliceRe.MatchString(tok):
+		m := sliceRe.FindStringSubmatch(tok)
+		op = operand{Sym: tok, Kind: "slice", Count: 1}
+		tile := operand{Sym: "tile", Kind: "tile"}
+		switch {
+		case strings.HasPrefix(m[1], "<"):
+			if why := regFields(&tile, m[1]); why != "" {
+				return op, why, true
+			}
+		case m[1] == "ZA":
+			tile.Special = "array" // the whole array, addressed by vector
+		default:
+			n, _ := strconv.Atoi(strings.TrimPrefix(m[1], "ZA"))
+			tile.Offset = int64(n)
+			tile.Special = "fixed"
+		}
+		op.Sub = append(op.Sub, tile)
+		if m[2] != "" {
+			b := explain(enc, "<HV>", explanations)
+			if b == nil {
+				return op, "slice direction without table", true
+			}
+			op.Sub = append(op.Sub, operand{Sym: "hv", Kind: "table", Fields: fieldsOf(b), Table: tableOf(b)})
+		}
+		if m[3] != "" {
+			e := operand{Sym: "elem"}
+			if why := elem(&e, m[3]); why != "" {
+				return op, why, true
+			}
+			if e.Text != "" {
+				op.Text = e.Text
+			} else {
+				e.Sub[0].Sym = "elem"
+				op.Sub = append(op.Sub, e.Sub[0])
+			}
+		}
+		idx := operand{Sym: "idx", Kind: "gp", Width: 32}
+		if why := regFields(&idx, m[4]); why != "" {
+			return op, why, true
+		}
+		op.Sub = append(op.Sub, idx)
+		offs, why := immediate(enc, "#"+m[5], explanations)
+		if why != "" {
+			return op, why, true
+		}
+		offs.Sym = "offs"
+		op.Sub = append(op.Sub, offs)
+		if m[6] != "" {
+			count, _ := strconv.Atoi(strings.Trim(m[6], "<offs>"))
+			if count < 2 {
+				return op, "slice range shape: " + tok, true
+			}
+			op.Count = count
+		}
+		if m[7] != "" {
+			op.Sub = append(op.Sub, operand{Sym: "group", Kind: "text", Text: m[7]})
+		}
+		return op, "", true
+	case tok == "ZT0":
+		return operand{Sym: tok, Kind: "text", Text: tok}, "", true
+	case strings.HasPrefix(tok, "ZT0["):
+		return op, "ZT0 element index", true
+	case pSliceRe.MatchString(tok):
+		return op, "predicate element index (psel)", true
+	case tok == "<mask>":
+		b := explain(enc, tok, explanations)
+		if b == nil {
+			return op, "tile mask without explanation", true
+		}
+		return operand{Sym: tok, Kind: "tilemask", Fields: fieldsOf(b)}, "", true
+	}
+	return op, "", false
+}
 
 func render(release string, defs []encodingDef) string {
 	var b strings.Builder
@@ -1250,6 +1733,12 @@ func render(release string, defs []encodingDef) string {
 		b.WriteString("}")
 		if d.Alias != "" {
 			fmt.Fprintf(&b, ", Alias: %q, AliasCond: %q", d.Alias, d.AliasCond)
+		}
+		if d.Mode != "" {
+			fmt.Fprintf(&b, ", Mode: %q", d.Mode)
+		}
+		if d.Flags {
+			b.WriteString(", Flags: true")
 		}
 		b.WriteString("},\n")
 	}
@@ -1299,6 +1788,12 @@ func renderOperand(b *strings.Builder, op operand) {
 	}
 	if op.Special != "" {
 		fmt.Fprintf(b, ", Special: %q", op.Special)
+	}
+	if op.Count > 0 {
+		fmt.Fprintf(b, ", Count: %d", op.Count)
+	}
+	if op.Qual != "" {
+		fmt.Fprintf(b, ", Qual: %q", op.Qual)
 	}
 	if len(op.Table) > 0 {
 		b.WriteString(", Table: []isaTableRow{")
