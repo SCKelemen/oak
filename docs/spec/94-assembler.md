@@ -615,10 +615,33 @@ the debug-state instructions (`dcps1–3`, `drps`, `hlt`) and the raw `sys`/
 The audit skips when the model or the disassembler is absent. It audits
 mnemonic coverage, not operand-form completeness: the encodability of each
 operand form is still our reading, checked by the coverage test's samples
-and the executed programs. Remaining stage: (3) Sail-to-Lean for the
-modeled subset as the ground truth the Go transliteration is refined
-against; and, when Arm's A64 ISA XML is at hand, the operand-form
-derivation.
+and the executed programs; when Arm's A64 ISA XML is at hand, the
+operand-form derivation follows.
+
+**Sail-to-Lean: the hand transliteration proved against mechanically
+generated Lean (`spec/sail/`).** `spec/sail/arm_primitives.sail` carries
+Arm's Sail text for the primitives the semantics rest on — `AddWithCarry`,
+`ConditionHolds`, `integer_conditional_select`,
+`integer_conditional_compare_register`, `HighestSetBit`,
+`CountLeadingZeroBits`, with `IsZero`/`UInt`/`SInt` from Arm's prelude —
+copied from the Armv8.5-A model with the adaptations listed in the file's
+header (register reads and writes become parameters and results; Arm's
+prelude names are restated over the Sail standard library; none changes a
+computed value). Sail's Lean backend (Sail 0.20.2, `regen.sh`) generates
+`spec/sail/lean/Out.lean` from it, against the Sail Lean support library
+(rems-project/lean-sail, `setup.sh`); the generated files are committed and
+`asm/sail_lean_test.go` requires them to equal a fresh generation. Then
+`spec/sail/lean/Bridge.lean` proves `Oak.ArmASL` equal to the generated
+code: `AddWithCarry_bridge` (result and all four flags, every width ≥ 1),
+`ConditionHolds_bridge` (every code and flag pattern), `conditionalSelect_bridge`,
+`conditionalCompare_bridge`, and `HighestSetBit_bridge`/
+`CountLeadingZeroBits_bridge` (the generated early-return `foreach` loop,
+through the support library's integer-range loop, is our list search at
+every width). With the theorems of `Oak.ArmASL`, the chain is closed
+mechanically: Arm's ASL → Sail (Arm's tooling) → Lean (Sail's backend) ≡
+`Oak.ArmASL` ≡ `Oak.AssemblerSemantics` (proved) ≡ the Go executor
+(checked on the silicon). The bridge is a separate Lake package so the
+main specification builds without the Sail toolchain.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
