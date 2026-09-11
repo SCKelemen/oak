@@ -899,3 +899,253 @@ pub text_parse_u64: (src: []u8, radix: u32): Result[u64, TextParseError] {
     !valid ? { .Err(.InvalidDigit) } | overflowed ? { .Err(.NumberOverflow) } | { .Ok(value) }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Byte order marks, UTF-16 as bytes, Latin-1, and signed/radix numbers.
+// The same contract as the rest of this file: caller-owned storage, every
+// input and destination validated before a byte is written, u32 code-unit
+// counts on success.
+
+// text_bom classifies a leading byte order mark: 0 none, 1 UTF-8 (EF BB BF),
+// 2 UTF-16 LE (FF FE), 3 UTF-16 BE (FE FF), 4 UTF-32 LE (FF FE 00 00),
+// 5 UTF-32 BE (00 00 FE FF). UTF-32 LE is checked before UTF-16 LE, whose
+// mark it extends.
+pub text_bom: (src: []u8): u32 {
+  n: u32 = len(src)
+  n >= u32(4) && src[0] == u8(255) && src[1] == u8(254) && src[2] == u8(0) && src[3] == u8(0) ? u32(4) |
+  n >= u32(4) && src[0] == u8(0) && src[1] == u8(0) && src[2] == u8(254) && src[3] == u8(255) ? u32(5) |
+  n >= u32(3) && src[0] == u8(239) && src[1] == u8(187) && src[2] == u8(191) ? u32(1) |
+  n >= u32(2) && src[0] == u8(255) && src[1] == u8(254) ? u32(2) |
+  n >= u32(2) && src[0] == u8(254) && src[1] == u8(255) ? u32(3) | u32(0)
+}
+
+// text_bom_width is the mark's length in bytes for a text_bom kind (0 for none).
+pub text_bom_width: (kind: u32): u32 = kind == u32(1) ? u32(3) | kind == u32(2) || kind == u32(3) ? u32(2) | kind == u32(4) || kind == u32(5) ? u32(4) | u32(0)
+
+// text_strip_bom is the range of src after any leading mark.
+pub text_strip_bom: (src: []u8): TextRange = TextRange { start: text_bom_width(text_bom(src)), end: len(src) }
+
+// utf16_unit_at reads one UTF-16 code unit from bytes at an even offset.
+utf16_unit_at: (src: []u8, offset: u32, big_endian: Bool): u32 {
+  big_endian ? { (u32(src[offset]) << u32(8)) | u32(src[offset + u32(1)]) } | { (u32(src[offset + u32(1)]) << u32(8)) | u32(src[offset]) }
+}
+
+// utf16_bytes_decode decodes one scalar from UTF-16 stored as bytes; `next`
+// is the next byte offset. An odd tail, a lone surrogate, or an offset past
+// the end rejects.
+pub utf16_bytes_decode: (src: []u8, offset: u32, big_endian: Bool): Result[TextScalar, TextError] {
+  offset > len(src) ? { .Err(.OutOfBounds) } | offset == len(src) ? { .Err(.Empty) } | len(src) - offset < u32(2) ? { .Err(.InvalidEncoding) } | {
+    first: u32 = utf16_unit_at(src, offset, big_endian)
+    first < u32(55296) || first > u32(57343) ? { .Ok(TextScalar { value: first, next: offset + u32(2) }) } | {
+      first > u32(56319) || len(src) - offset < u32(4) ? { .Err(.InvalidEncoding) } | {
+        second: u32 = utf16_unit_at(src, offset + u32(2), big_endian)
+        second < u32(56320) || second > u32(57343) ? { .Err(.InvalidEncoding) } | {
+          .Ok(TextScalar { value: u32(65536) + ((first - u32(55296)) << u32(10)) + second - u32(56320), next: offset + u32(4) })
+        }
+      }
+    }
+  }
+}
+
+// utf16_bytes_to_utf8_size validates UTF-16 bytes and measures the UTF-8.
+pub utf16_bytes_to_utf8_size: (src: []u8, big_endian: Bool): Result[u32, TextError] {
+  at: u32 = 0
+  total: u32 = 0
+  valid: Bool = true
+  while at < len(src) && valid {
+    decoded: Result[TextScalar, TextError] = utf16_bytes_decode(src, at, big_endian)
+    valid = text_decode_ok(decoded)
+    valid ? {
+      item: TextScalar = text_decoded(decoded)
+      at = item.next
+      total = total + utf8_width(item.value)
+    }
+  }
+  valid ? { .Ok(total) } | { .Err(.InvalidEncoding) }
+}
+
+pub utf16_bytes_to_utf8: (dst: [*]u8, src: []u8, big_endian: Bool): Result[u32, TextError] {
+  measured: Result[u32, TextError] = utf16_bytes_to_utf8_size(src, big_endian)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      at: u32 = 0
+      out: u32 = 0
+      while at < len(src) {
+        item: TextScalar = text_decoded(utf16_bytes_decode(src, at, big_endian))
+        written: Result[u32, TextError] = utf8_encode(dst, out, item.value)
+        assert(text_result_ok(written))
+        out = out + text_result_value(written)
+        at = item.next
+      }
+      .Ok(out)
+    }
+  }
+}
+
+// utf8_to_utf16_bytes_size is the byte length of the UTF-16 for valid UTF-8.
+pub utf8_to_utf16_bytes_size: (src: []u8): Result[u32, TextError] {
+  units: Result[u32, TextError] = utf8_to_utf16_size(src)
+  !text_result_ok(units) ? { units } | {
+    count: u32 = text_result_value(units)
+    count > u32(2147483647) ? { .Err(.SizeOverflow) } | { .Ok(count * u32(2)) }
+  }
+}
+
+pub utf8_to_utf16_bytes: (dst: [*]u8, src: []u8, big_endian: Bool): Result[u32, TextError] {
+  measured: Result[u32, TextError] = utf8_to_utf16_bytes_size(src)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      at: u32 = 0
+      out: u32 = 0
+      while at < len(src) {
+        item: TextScalar = text_decoded(utf8_decode(src, at))
+        units: [2]u16
+        pair: [*]u16 = span(&units)
+        width: u32 = text_result_value(utf16_encode(pair, u32(0), item.value))
+        i: u32 = 0
+        while i < width {
+          unit: u32 = u32(pair[i])
+          big_endian ? {
+            dst[out] = u8_trunc_u32(unit >> u32(8))
+            dst[out + u32(1)] = u8_trunc_u32(unit & u32(255))
+          } | {
+            dst[out] = u8_trunc_u32(unit & u32(255))
+            dst[out + u32(1)] = u8_trunc_u32(unit >> u32(8))
+          }
+          out = out + u32(2)
+          i = i + u32(1)
+        }
+        at = item.next
+      }
+      .Ok(out)
+    }
+  }
+}
+
+// Latin-1 (ISO-8859-1): every byte is the scalar of the same value.
+pub latin1_to_utf8_size: (src: []u8): Result[u32, TextError] {
+  total: u32 = 0
+  i: u32 = 0
+  while i < len(src) {
+    total = total + (src[i] < u8(128) ? u32(1) | u32(2))
+    i = i + u32(1)
+  }
+  total < len(src) ? { .Err(.SizeOverflow) } | { .Ok(total) }
+}
+
+pub latin1_to_utf8: (dst: [*]u8, src: []u8): Result[u32, TextError] {
+  measured: Result[u32, TextError] = latin1_to_utf8_size(src)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      out: u32 = 0
+      i: u32 = 0
+      while i < len(src) {
+        written: Result[u32, TextError] = utf8_encode(dst, out, u32(src[i]))
+        assert(text_result_ok(written))
+        out = out + text_result_value(written)
+        i = i + u32(1)
+      }
+      .Ok(out)
+    }
+  }
+}
+
+// utf8_to_latin1_size counts scalars and rejects any above U+00FF.
+pub utf8_to_latin1_size: (src: []u8): Result[u32, TextError] {
+  at: u32 = 0
+  count: u32 = 0
+  valid: Bool = true
+  in_range: Bool = true
+  while at < len(src) && valid && in_range {
+    decoded: Result[TextScalar, TextError] = utf8_decode(src, at)
+    valid = text_decode_ok(decoded)
+    valid ? {
+      item: TextScalar = text_decoded(decoded)
+      in_range = item.value <= u32(255)
+      at = item.next
+      count = count + u32(1)
+    }
+  }
+  !valid ? { .Err(.InvalidEncoding) } | !in_range ? { .Err(.InvalidScalar) } | { .Ok(count) }
+}
+
+pub utf8_to_latin1: (dst: [*]u8, src: []u8): Result[u32, TextError] {
+  measured: Result[u32, TextError] = utf8_to_latin1_size(src)
+  !text_result_ok(measured) ? { measured } | {
+    needed: u32 = text_result_value(measured)
+    needed > len(dst) ? { .Err(.DestinationTooSmall) } | {
+      at: u32 = 0
+      out: u32 = 0
+      while at < len(src) {
+        item: TextScalar = text_decoded(utf8_decode(src, at))
+        dst[out] = u8_trunc_u32(item.value)
+        out = out + u32(1)
+        at = item.next
+      }
+      .Ok(out)
+    }
+  }
+}
+
+// text_parse_i64 accepts an optional leading '-' or '+' before the digits of
+// text_parse_u64; the magnitude must fit the sign (-2^63 .. 2^63-1).
+pub text_parse_i64: (src: []u8, radix: u32): Result[i64, TextParseError] {
+  len(src) == u32(0) ? { .Err(.EmptyNumber) } | {
+    negative: Bool = src[0] == u8(45)
+    signed: Bool = negative || src[0] == u8(43)
+    digits: []u8 = signed ? src[u32(1):len(src)] | src[u32(0):len(src)]
+    magnitude: Result[u64, TextParseError] = text_parse_u64(digits, radix)
+    magnitude ?
+      | .Err(reason) => .Err(reason)
+      | .Ok(value) => {
+        limit: u64 = negative ? u64(9223372036854775808) | u64(9223372036854775807)
+        value > limit ? { .Err(.NumberOverflow) } | negative ? { .Ok(i64_bits_u64(u64(0) - value)) } | { .Ok(i64_bits_u64(value)) }
+      }
+  }
+}
+
+// append_u64_radix writes value in radix 2..36, digits above 9 as letters
+// (upper selects the case); an invalid radix records InvalidScalar.
+pub append_u64_radix: (builder: TextBuilder, dst: [*]u8, value: u64, radix: u32, upper: Bool): TextBuilder {
+  assert(builder.length <= len(dst))
+  builder.status != u32(0) ? { builder } | radix < u32(2) || radix > u32(36) ? { text_builder_error(builder, .InvalidScalar) } | {
+    digits: [64]u8
+    count: u32 = 0
+    remaining: u64 = value
+    more: Bool = true
+    while more {
+      digit: u8 = u8_trunc_u64(remaining % u64(radix))
+      letter_base: u8 = upper ? u8(55) | u8(87)
+      digits[count] = digit < u8(10) ? { u8(48) + digit } | { letter_base + digit }
+      count = count + u32(1)
+      remaining = remaining / u64(radix)
+      more = remaining != u64(0)
+    }
+    count > len(dst) - builder.length ? { text_builder_error(builder, .DestinationTooSmall) } | {
+      next: TextBuilder = builder
+      i: u32 = 0
+      while i < count {
+        dst[builder.length + i] = digits[count - i - u32(1)]
+        i = i + u32(1)
+      }
+      next.length = next.length + count
+      next
+    }
+  }
+}
+
+// append_i64 writes a decimal integer with a leading '-' when negative.
+pub append_i64: (builder: TextBuilder, dst: [*]u8, value: i64): TextBuilder {
+  assert(builder.length <= len(dst))
+  builder.status != u32(0) ? { builder } | value >= i64(0) ? { append_u64(builder, dst, u64_bits_i64(value)) } | {
+    builder.length >= len(dst) ? { text_builder_error(builder, .DestinationTooSmall) } | {
+      dst[builder.length] = u8(45)
+      signed: TextBuilder = builder
+      signed.length = signed.length + u32(1)
+      append_u64(signed, dst, u64(0) - u64_bits_i64(value))
+    }
+  }
+}
