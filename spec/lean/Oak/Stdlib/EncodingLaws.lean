@@ -400,6 +400,314 @@ theorem hex_round_trip (src enc dst : Array UInt8) (upper : Bool) (fuel : Nat)
   rw [hdstget k, if_pos hk]
   exact decByte_encoding src enc' upper k hk hencget'
 
+/-! ## Hexadecimal strictness
+
+`hex_decode` accepts a string iff it has even length and every byte is a
+hexadecimal digit, and re-encoding what it decoded gives the string in
+lower case. The rejection half follows the validation scan: a non-digit's
+table value is exactly 16, so bit 4 of the accumulated `or` is set and stays
+set, and the size check refuses anything at or above 16. -/
+
+theorem hex_values_shape : ∀ b : Fin 256,
+    (HEX_VALUES.getD b.val 0).toNat < 16 ∨ (HEX_VALUES.getD b.val 0).toNat = 16 := by decide +kernel
+
+/-- The table value of a byte: a nibble for a digit, exactly 16 otherwise. -/
+def tableValue (b : UInt8) : Nat := (HEX_VALUES.getD (b.toUInt32).toNat 0).toNat
+
+theorem tableValue_shape (b : UInt8) : tableValue b < 16 ∨ tableValue b = 16 := by
+  have := hex_values_shape ⟨b.toNat, UInt8.toNat_lt b⟩
+  simpa [tableValue, UInt8.toNat_toUInt32] using this
+
+/-- Bit 4 of the scan accumulator: set once a non-digit has been seen. -/
+def Bit4 (acc : UInt32) : Prop := acc.toNat.testBit 4 = true
+
+theorem bit4_or_left {a : UInt32} (b : UInt32) (h : Bit4 a) : Bit4 (a ||| b) := by
+  unfold Bit4 at h ⊢
+  rw [UInt32.toNat_or, Nat.testBit_or, h]; rfl
+
+theorem bit4_or_right (a : UInt32) {b : UInt32} (h : Bit4 b) : Bit4 (a ||| b) := by
+  unfold Bit4 at h ⊢
+  rw [UInt32.toNat_or, Nat.testBit_or, h]; simp
+
+theorem bit4_of_sixteen {v : UInt32} (h : v.toNat = 16) : Bit4 v := by
+  unfold Bit4; rw [h]; decide
+
+theorem not_lt_of_bit4 {acc : UInt32} (h : Bit4 acc) : ¬ (acc.toNat < 16) := by
+  intro hlt
+  have := Nat.testBit_lt_two_pow (x := acc.toNat) (i := 4) hlt
+  rw [h] at this
+  cases this
+
+/-- The value the scan reads at byte `k`, as a `UInt32`. -/
+theorem value_toNat (src : Array UInt8) (k : Nat) :
+    ((HEX_VALUES.getD ((src.getD k 0).toUInt32).toNat 0).toUInt32).toNat = tableValue (src.getD k 0) := by
+  simp [tableValue, UInt8.toNat_toUInt32]
+
+theorem scan_loop1_bit (src : Array UInt8) (hsize : src.size + 4 < 2 ^ 32) (fuel : Nat) :
+    ∀ (acc i acc' i' : UInt32), i.toNat ≤ src.size →
+      hex_scan.loop1 src HEX_VALUES acc i fuel = some (acc', i') →
+      (Bit4 acc → Bit4 acc') ∧ i.toNat ≤ i'.toNat ∧ i'.toNat ≤ src.size ∧
+      (∀ k, i.toNat ≤ k → k < i'.toNat → tableValue (src.getD k 0) = 16 → Bit4 acc') := by
+  induction fuel with
+  | zero => intro acc i acc' i' _ h; cases h
+  | succ fuel ih =>
+    intro acc i acc' i' hi h
+    unfold hex_scan.loop1 at h
+    have hsz : (src.size.toUInt32).toNat = src.size := toUInt32_toNat_of_lt _ (by omega)
+    have hi4 : (i + 4).toNat = i.toNat + 4 := by
+      rw [UInt32.toNat_add, show (4 : UInt32).toNat = 4 by decide]; exact Nat.mod_eq_of_lt (by omega)
+    by_cases hle : i.toNat + 4 ≤ src.size
+    · have hc : decide (i + 4 ≤ src.size.toUInt32) = true := by
+        apply decide_eq_true; rw [UInt32.le_iff_toNat_le, hsz, hi4]; exact hle
+      simp only [hc, ↓reduceIte] at h
+      have hi1 : (i + 1).toNat = i.toNat + 1 := by
+        rw [UInt32.toNat_add, show (1 : UInt32).toNat = 1 by decide]; exact Nat.mod_eq_of_lt (by omega)
+      have hi2 : (i + 2).toNat = i.toNat + 2 := by
+        rw [UInt32.toNat_add, show (2 : UInt32).toNat = 2 by decide]; exact Nat.mod_eq_of_lt (by omega)
+      have hi3 : (i + 3).toNat = i.toNat + 3 := by
+        rw [UInt32.toNat_add, show (3 : UInt32).toNat = 3 by decide]; exact Nat.mod_eq_of_lt (by omega)
+      obtain ⟨hb, hle', hbound, hk⟩ := ih _ (i + 4) acc' i' (by rw [hi4]; exact hle) h
+      refine ⟨fun h0 => hb (bit4_or_left _ (bit4_or_left _ (bit4_or_left _ (bit4_or_left _ h0)))), by omega, hbound, ?_⟩
+      intro k hk0 hk1 hv
+      by_cases hk4 : i.toNat + 4 ≤ k
+      · exact hk k (by omega) hk1 hv
+      · apply hb
+        -- the non-digit is one of the four bytes this iteration read
+        have hv' : (HEX_VALUES.getD ((src.getD k 0).toUInt32).toNat 0).toUInt32.toNat = 16 := by
+          rw [value_toNat]; exact hv
+        rcases (show k = i.toNat ∨ k = (i + 1).toNat ∨ k = (i + 2).toNat ∨ k = (i + 3).toNat by
+            rw [hi1, hi2, hi3]; omega) with rfl | rfl | rfl | rfl
+        · exact bit4_or_left _ (bit4_or_left _ (bit4_or_left _ (bit4_or_right _ (bit4_of_sixteen hv'))))
+        · exact bit4_or_left _ (bit4_or_left _ (bit4_or_right _ (bit4_of_sixteen hv')))
+        · exact bit4_or_left _ (bit4_or_right _ (bit4_of_sixteen hv'))
+        · exact bit4_or_right _ (bit4_of_sixteen hv')
+    · have hc : decide (i + 4 ≤ src.size.toUInt32) = false := by
+        apply decide_eq_false; rw [UInt32.le_iff_toNat_le, hsz, hi4]; exact hle
+      simp only [hc, Bool.false_eq_true, ↓reduceIte, Option.pure_def, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      exact ⟨id, Nat.le_refl _, hi, fun k h1 h2 _ => absurd h2 (Nat.not_lt.mpr h1)⟩
+
+theorem scan_loop2_bit (src : Array UInt8) (hsize : src.size + 4 < 2 ^ 32) (fuel : Nat) :
+    ∀ (acc i acc' i' : UInt32), i.toNat ≤ src.size →
+      hex_scan.loop2 src HEX_VALUES acc i fuel = some (acc', i') →
+      (Bit4 acc → Bit4 acc') ∧ src.size ≤ i'.toNat ∧
+      (∀ k, i.toNat ≤ k → k < src.size → tableValue (src.getD k 0) = 16 → Bit4 acc') := by
+  induction fuel with
+  | zero => intro acc i acc' i' _ h; cases h
+  | succ fuel ih =>
+    intro acc i acc' i' hi h
+    unfold hex_scan.loop2 at h
+    have hsz : (src.size.toUInt32).toNat = src.size := toUInt32_toNat_of_lt _ (by omega)
+    by_cases hlt : i.toNat < src.size
+    · have hc : decide (i < src.size.toUInt32) = true := by
+        apply decide_eq_true; rw [UInt32.lt_iff_toNat_lt, hsz]; exact hlt
+      simp only [hc, ↓reduceIte] at h
+      have hi1 : (i + 1).toNat = i.toNat + 1 := by
+        rw [UInt32.toNat_add, show (1 : UInt32).toNat = 1 by decide]; exact Nat.mod_eq_of_lt (by omega)
+      obtain ⟨hb, hbound, hk⟩ := ih _ (i + 1) acc' i' (by rw [hi1]; omega) h
+      refine ⟨fun h0 => hb (bit4_or_left _ h0), hbound, ?_⟩
+      intro k hk0 hk1 hv
+      by_cases hki : k = i.toNat
+      · subst hki
+        apply hb
+        apply bit4_or_right
+        apply bit4_of_sixteen
+        rw [value_toNat]; exact hv
+      · exact hk k (by rw [hi1]; omega) hk1 hv
+    · have hc : decide (i < src.size.toUInt32) = false := by
+        apply decide_eq_false; rw [UInt32.lt_iff_toNat_lt, hsz]; exact hlt
+      simp only [hc, Bool.false_eq_true, ↓reduceIte, Option.pure_def, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      exact ⟨id, by omega, fun k h1 h2 _ => absurd h2 (by omega)⟩
+
+/-- A scan that sees a non-digit reports it in bit 4. -/
+theorem scan_bit (src : Array UInt8) (hsize : src.size + 4 < 2 ^ 32) (fuel : Nat) (acc : UInt32)
+    (h : hex_scan src fuel = some acc) (k : Nat) (hk : k < src.size) (hv : tableValue (src.getD k 0) = 16) :
+    Bit4 acc := by
+  unfold hex_scan at h
+  simp only [Option.bind_eq_some_iff, Option.pure_def, Option.some.injEq, bind, Prod.exists] at h
+  obtain ⟨a1, i1, h1, a2, i2, h2, rfl⟩ := h
+  obtain ⟨hb1, -, hbound1, hk1⟩ := scan_loop1_bit src hsize fuel 0 0 a1 i1 (by simp) h1
+  obtain ⟨hb2, -, hk2⟩ := scan_loop2_bit src hsize fuel a1 i1 a2 i2 hbound1 h2
+  by_cases hki : k < i1.toNat
+  · exact hb2 (hk1 k (by simp) hki hv)
+  · exact hk2 k (by omega) hk hv
+
+/-- The scan loops terminate on any input with enough fuel. -/
+theorem scan_loop1_some (src : Array UInt8) (hsize : src.size + 4 < 2 ^ 32) (fuel : Nat) :
+    ∀ (acc i : UInt32), i.toNat ≤ src.size → src.size - i.toNat < fuel →
+      ∃ acc' i', hex_scan.loop1 src HEX_VALUES acc i fuel = some (acc', i') ∧ i'.toNat ≤ src.size := by
+  induction fuel with
+  | zero => intro acc i _ hf; omega
+  | succ fuel ih =>
+    intro acc i hi hf
+    unfold hex_scan.loop1
+    have hsz : (src.size.toUInt32).toNat = src.size := toUInt32_toNat_of_lt _ (by omega)
+    have hi4 : (i + 4).toNat = i.toNat + 4 := by
+      rw [UInt32.toNat_add, show (4 : UInt32).toNat = 4 by decide]; exact Nat.mod_eq_of_lt (by omega)
+    by_cases hle : i.toNat + 4 ≤ src.size
+    · have hc : decide (i + 4 ≤ src.size.toUInt32) = true := by
+        apply decide_eq_true; rw [UInt32.le_iff_toNat_le, hsz, hi4]; exact hle
+      simp only [hc, ↓reduceIte]
+      exact ih _ (i + 4) (by rw [hi4]; exact hle) (by omega)
+    · have hc : decide (i + 4 ≤ src.size.toUInt32) = false := by
+        apply decide_eq_false; rw [UInt32.le_iff_toNat_le, hsz, hi4]; exact hle
+      simp only [hc, Bool.false_eq_true, ↓reduceIte]
+      exact ⟨acc, i, rfl, hi⟩
+
+theorem scan_loop2_some (src : Array UInt8) (hsize : src.size + 4 < 2 ^ 32) (fuel : Nat) :
+    ∀ (acc i : UInt32), i.toNat ≤ src.size → src.size - i.toNat < fuel →
+      ∃ acc' i', hex_scan.loop2 src HEX_VALUES acc i fuel = some (acc', i') := by
+  induction fuel with
+  | zero => intro acc i _ hf; omega
+  | succ fuel ih =>
+    intro acc i hi hf
+    unfold hex_scan.loop2
+    have hsz : (src.size.toUInt32).toNat = src.size := toUInt32_toNat_of_lt _ (by omega)
+    by_cases hlt : i.toNat < src.size
+    · have hc : decide (i < src.size.toUInt32) = true := by
+        apply decide_eq_true; rw [UInt32.lt_iff_toNat_lt, hsz]; exact hlt
+      simp only [hc, ↓reduceIte]
+      have hi1 : (i + 1).toNat = i.toNat + 1 := by
+        rw [UInt32.toNat_add, show (1 : UInt32).toNat = 1 by decide]; exact Nat.mod_eq_of_lt (by omega)
+      exact ih _ (i + 1) (by rw [hi1]; omega) (by omega)
+    · have hc : decide (i < src.size.toUInt32) = false := by
+        apply decide_eq_false; rw [UInt32.lt_iff_toNat_lt, hsz]; exact hlt
+      simp only [hc, Bool.false_eq_true, ↓reduceIte]
+      exact ⟨acc, i, rfl⟩
+
+theorem scan_some (src : Array UInt8) (hsize : src.size + 4 < 2 ^ 32) (fuel : Nat) (hf : src.size < fuel) :
+    ∃ acc, hex_scan src fuel = some acc := by
+  obtain ⟨a1, i1, h1, hi1⟩ := scan_loop1_some src hsize fuel 0 0 (by simp) (by simp; omega)
+  obtain ⟨a2, i2, h2⟩ := scan_loop2_some src hsize fuel a1 i1 hi1 (by omega)
+  refine ⟨a2, ?_⟩
+  unfold hex_scan
+  simp [h1, h2]
+
+/-- An odd-length string is rejected as `InvalidLength`. -/
+theorem decode_odd (src dst : Array UInt8) (fuel : Nat) (hsize : src.size < 2 ^ 32) (hodd : src.size % 2 = 1) :
+    hex_decode dst src fuel = some (.Err .InvalidLength, dst) := by
+  have hsz : (src.size.toUInt32).toNat = src.size := toUInt32_toNat_of_lt _ hsize
+  have hne : ((src.size.toUInt32 % 2) != 0) = true := by
+    have : src.size.toUInt32 % 2 = 1 := by
+      apply UInt32.toNat.inj
+      rw [UInt32.toNat_mod, hsz, show (2 : UInt32).toNat = 2 by decide, show (1 : UInt32).toNat = 1 by decide]
+      exact hodd
+    rw [this]; decide
+  unfold hex_decode hex_decoded_size
+  simp [hne]
+
+/-- An even-length string with a non-digit is rejected as `InvalidCharacter`. -/
+theorem decode_non_digit (src dst : Array UInt8) (fuel : Nat) (hsize : src.size + 4 < 2 ^ 32)
+    (heven : src.size % 2 = 0) (hf : src.size < fuel) (k : Nat) (hk : k < src.size)
+    (hv : tableValue (src.getD k 0) = 16) :
+    hex_decode dst src fuel = some (.Err .InvalidCharacter, dst) := by
+  have hsz : (src.size.toUInt32).toNat = src.size := toUInt32_toNat_of_lt _ (by omega)
+  have heven' : ((src.size.toUInt32 % 2) != 0) = false := by
+    have h0 : src.size.toUInt32 % 2 = 0 := by
+      apply UInt32.toNat.inj
+      rw [UInt32.toNat_mod, hsz, show (2 : UInt32).toNat = 2 by decide, show (0 : UInt32).toNat = 0 by decide]
+      exact heven
+    rw [h0]; decide
+  obtain ⟨acc, hscan⟩ := scan_some src hsize fuel hf
+  have hbit := scan_bit src hsize fuel acc hscan k hk hv
+  have hnot : ¬ (acc < 16) := by
+    intro h
+    exact not_lt_of_bit4 hbit (by rw [UInt32.lt_iff_toNat_lt] at h; simpa using h)
+  unfold hex_decode hex_decoded_size
+  simp [heven', hscan, hnot]
+
+/-- Strictness: `hex_decode` accepts exactly the even-length strings of
+hexadecimal digits (for a source of fewer than `2^32 - 4` bytes, a
+destination that holds the decoded bytes, and enough fuel). -/
+theorem hex_decode_ok_iff (src dst : Array UInt8) (fuel : Nat) (hsize : src.size + 4 < 2 ^ 32)
+    (hdst : src.size / 2 ≤ dst.size) (hdst_small : dst.size < 2 ^ 32) (hf : src.size + 8 < fuel) :
+    (∃ n dst', hex_decode dst src fuel = some (.Ok n, dst')) ↔ (src.size % 2 = 0 ∧ AllDigits src) := by
+  constructor
+  · intro ⟨n, dst', h⟩
+    by_cases heven : src.size % 2 = 0
+    · refine ⟨heven, ?_⟩
+      apply Classical.byContradiction
+      intro hv
+      unfold AllDigits at hv
+      obtain ⟨k, hk⟩ := Classical.not_forall.mp hv
+      have hk' : k < src.size ∧ tableValue (src.getD k 0) = 16 := by
+        by_cases hks : k < src.size
+        · refine ⟨hks, ?_⟩
+          rcases tableValue_shape (src.getD k 0) with hlt | heq
+          · exact absurd (fun _ => hlt) hk
+          · exact heq
+        · exact absurd (fun h => absurd h hks) hk
+      rw [decode_non_digit src dst fuel hsize heven (by omega) k hk'.1 hk'.2] at h
+      cases h
+    · have hodd : src.size % 2 = 1 := by omega
+      rw [decode_odd src dst fuel (by omega) hodd] at h
+      cases h
+  · intro ⟨heven, hv⟩
+    obtain ⟨dst', h, -, -⟩ := decode_spec src dst (src.size / 2) (by omega) (by omega) hv hdst hdst_small fuel (by omega)
+    exact ⟨_, dst', h⟩
+
+/-- Lower-case spelling of a hexadecimal digit byte. -/
+def lowerHex (b : UInt8) : UInt8 := if 65 ≤ b ∧ b ≤ 70 then b + 32 else b
+
+theorem lower_symbol : ∀ b : Fin 256, (HEX_VALUES.getD b.val 0).toNat < 16 →
+    HEX_LOWER_SYMBOLS.getD (HEX_VALUES.getD b.val 0).toNat 0 = lowerHex b.val.toUInt8 := by decide +kernel
+
+theorem nibble_split : ∀ a b : Fin 16,
+    (((a.val.toUInt8 <<< 4) ||| b.val.toUInt8) >>> 4) = a.val.toUInt8 ∧
+    (((a.val.toUInt8 <<< 4) ||| b.val.toUInt8) &&& 15) = b.val.toUInt8 := by decide +kernel
+
+theorem lower_symbol' (b : UInt8) (h : tableValue b < 16) :
+    HEX_LOWER_SYMBOLS.getD (tableValue b) 0 = lowerHex b := by
+  have := lower_symbol ⟨b.toNat, UInt8.toNat_lt b⟩ (by simpa [tableValue, UInt8.toNat_toUInt32] using h)
+  simpa [tableValue, UInt8.toNat_toUInt32, toUInt8_toNat] using this
+
+/-- The digit re-encoded from a decoded byte is the source digit in lower case. -/
+theorem encByte_decoded (src dec : Array UInt8) (n : Nat) (hsrc : src.size = 2 * n) (hv : AllDigits src)
+    (hdec : ∀ j, j < n → dec.getD j 0 = decByte src j) (k : Nat) (hk : k < 2 * n) :
+    encByte dec (symbolsOf false) k = lowerHex (src.getD k 0) := by
+  have hj : k / 2 < n := by omega
+  have h0 : tableValue (src.getD (2 * (k / 2)) 0) < 16 := hv _ (by omega)
+  have h1 : tableValue (src.getD (2 * (k / 2) + 1) 0) < 16 := hv _ (by omega)
+  have hsplit := nibble_split ⟨tableValue (src.getD (2 * (k / 2)) 0), h0⟩ ⟨tableValue (src.getD (2 * (k / 2) + 1) 0), h1⟩
+  simp only at hsplit
+  have hbyte : decByte src (k / 2) =
+      (tableValue (src.getD (2 * (k / 2)) 0)).toUInt8 <<< 4 ||| (tableValue (src.getD (2 * (k / 2) + 1) 0)).toUInt8 := by
+    unfold decByte tableValue
+    rw [toUInt8_toNat, toUInt8_toNat]
+  unfold encByte symbolsOf
+  simp only [Bool.false_eq_true, ↓reduceIte]
+  rw [hdec (k / 2) hj, hbyte]
+  by_cases hk2 : k % 2 = 0
+  · rw [if_pos hk2, hsplit.1, UInt8.toNat_toUInt32, toUInt8_toNat_of_lt _ (by omega), lower_symbol' _ h0]
+    rw [show 2 * (k / 2) = k by omega]
+  · rw [if_neg hk2, hsplit.2, UInt8.toNat_toUInt32, toUInt8_toNat_of_lt _ (by omega), lower_symbol' _ h1]
+    rw [show 2 * (k / 2) + 1 = k by omega]
+
+/-- Decode, then encode: the lower-case spelling of the source, for every
+even-length string of digits. -/
+theorem hex_decode_encode (src dst enc : Array UInt8) (n : Nat) (fuel : Nat) (hsrc : src.size = 2 * n)
+    (hsmall : 2 * n + 8 < 2 ^ 31) (hv : AllDigits src) (hdst : n ≤ dst.size) (hdst_small : dst.size < 2 ^ 32)
+    (henc : 2 * n ≤ enc.size) (henc_small : enc.size < 2 ^ 32) (hf : 2 * n + 8 < fuel) :
+    ∃ dst' enc', hex_decode dst src fuel = some (.Ok n.toUInt32, dst') ∧
+      hex_encode enc (dst'.extract 0 n) false fuel = some (.Ok (2 * n).toUInt32, enc') ∧
+      ∀ k, k < 2 * n → enc'.getD k 0 = lowerHex (src.getD k 0) := by
+  obtain ⟨dst', hdecode, hsize, hget⟩ := decode_spec src dst n hsrc (by omega) hv hdst hdst_small fuel (by omega)
+  have hext_size : (dst'.extract 0 n).size = n := by
+    rw [Array.size_extract, hsize]; omega
+  have hext_get : ∀ j, j < n → (dst'.extract 0 n).getD j 0 = decByte src j := by
+    intro j hj
+    rw [Array.getD_eq_getD_getElem?, Array.getElem?_extract, if_pos (by rw [hsize]; omega), Nat.zero_add,
+      ← Array.getD_eq_getD_getElem?, hget j, if_pos hj]
+  obtain ⟨enc', hencode, -, hencget⟩ :=
+    encode_spec (dst'.extract 0 n) enc false fuel (by rw [hext_size]; omega) (by rw [hext_size]; exact henc)
+      henc_small (by rw [hext_size]; omega)
+  rw [hext_size] at hencode
+  refine ⟨dst', enc', hdecode, hencode, ?_⟩
+  intro k hk
+  rw [hencget k, hext_size, if_pos hk]
+  exact encByte_decoded src (dst'.extract 0 n) n hsrc hv hext_get k hk
+
 /-! ## Base64 and base32: the RFC 4648 §10 vectors, decided -/
 
 /-- `foobar` in standard base64 with padding, and back. -/
