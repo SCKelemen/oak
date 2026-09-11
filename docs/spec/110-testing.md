@@ -184,6 +184,11 @@ directories and dotfiles, and counts each executed row as a case. `-runs`,
 seeds, and the failure corpus do not apply: the rows are the corpus. A target
 whose rows directory is missing or empty is an error, never a vacuous pass;
 a row larger than `-max-bytes` is an error rather than a truncated case.
+`-max-bytes` is the runner's input ceiling for every target kind (choice
+tapes, corpus inputs, and rows alike); its default is 256 bytes, so a
+table whose rows are longer — a 257-byte conformance vector, say — is run
+as `oak test -max-bytes 4096 ...`, and the refusal names the row and the
+limit rather than truncating it. The ceiling is per row, not per table.
 
 The row's bytes reach the test as the `[]u8` argument. The row format is the
 test's own; `import(testing)` provides little-endian readers `test_row_u32`,
