@@ -201,6 +201,9 @@ type checker struct {
 	// writable only after being saved to the frame, and restored from the
 	// same absolute slot before every ret (docs/spec/94-assembler.md §7).
 	calleeSaved map[int]*savedState
+	// calleeSavedV tracks d8–d15: the low 64 bits of v8–v15 are the
+	// caller's under AAPCS64, with the same save/restore obligation.
+	calleeSavedV map[int]*savedState
 
 	// state
 	written      map[int]bool
@@ -229,6 +232,9 @@ type savedState struct {
 }
 
 func calleeSavedRegister(num int) bool { return num >= 19 && num <= 30 }
+
+// calleeSavedVector reports v8–v15, whose d views the callee preserves.
+func calleeSavedVector(num int) bool { return num >= 8 && num <= 15 }
 
 // spanParam is a span/view parameter's contract: two consecutive general
 // registers (base pointer, then the 32-bit length in the low half of the
@@ -518,6 +524,10 @@ func (c *checker) walk() {
 	c.calleeSaved = map[int]*savedState{}
 	for num := 19; num <= 30; num++ {
 		c.calleeSaved[num] = &savedState{}
+	}
+	c.calleeSavedV = map[int]*savedState{}
+	for num := 8; num <= 15; num++ {
+		c.calleeSavedV[num] = &savedState{}
 	}
 
 	// Labels are known up front so forward branches resolve.
@@ -994,6 +1004,9 @@ func (c *checker) read(instr Instruction, reg Register) {
 		if c.writtenV[reg.Num] {
 			return
 		}
+		if calleeSavedVector(reg.Num) && !c.vZeroed {
+			return // d8–d15 carry the caller's values on entry
+		}
 		if c.boundVector(reg.Num) && !c.vZeroed {
 			return
 		}
@@ -1038,6 +1051,14 @@ func (c *checker) write(instr Instruction, reg Register) {
 		if !c.clobberV[reg.Num] && !c.boundVector(reg.Num) && !(c.hasResult && c.resultClass == ClassV && reg.Num == 0) {
 			c.errorf(instr.Line, "write to undeclared register %s: declare it with `clobber v%d`", reg.Text, reg.Num)
 			return
+		}
+		if state, isSaved := c.calleeSavedV[reg.Num]; isSaved {
+			if !state.saved {
+				c.errorf(instr.Line, "write to callee-saved %s before saving it to the frame (str/stp its d view into the declared frame first; d8–d15 are the caller's under AAPCS64)", reg.Text)
+				return
+			}
+			state.written = true
+			state.restored = false
 		}
 		c.writtenV[reg.Num] = true
 		return
@@ -1165,9 +1186,10 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 	}
 	width := size / int64(len(regs))
 	if isStore {
-		// Saving a still-untouched callee-saved register records its slot.
+		// Saving a still-untouched callee-saved register records its slot
+		// (x19–x30 whole, d8–d15 as their d view).
 		for i, reg := range regs {
-			if state, isSaved := c.calleeSaved[reg.Num]; isSaved && !state.written && !state.saved && reg.Class == ClassX {
+			if state := c.calleeSavedState(reg); state != nil && !state.written && !state.saved {
 				state.saved = true
 				state.slot = slotBase + int64(i)*width
 			}
@@ -1177,10 +1199,22 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 	for i, reg := range regs {
 		c.write(instr, reg)
 		// Loading a callee-saved register back from its own slot restores it.
-		if state, isSaved := c.calleeSaved[reg.Num]; isSaved && state.saved && reg.Class == ClassX && state.slot == slotBase+int64(i)*width {
+		if state := c.calleeSavedState(reg); state != nil && state.saved && state.slot == slotBase+int64(i)*width {
 			state.restored = true
 		}
 	}
+}
+
+// calleeSavedState is the save/restore obligation a register carries: x19–x30,
+// or v8–v15 accessed as its 64-bit d view; nil otherwise.
+func (c *checker) calleeSavedState(reg Register) *savedState {
+	switch {
+	case reg.Class == ClassX:
+		return c.calleeSaved[reg.Num]
+	case reg.Class == ClassV && reg.Vec == "d":
+		return c.calleeSavedV[reg.Num]
+	}
+	return nil
 }
 
 // systemRegister checks a named system register against Arm's SysReg
@@ -1484,6 +1518,11 @@ func (c *checker) ret(instr Instruction) bool {
 	for num := 19; num <= 30; num++ {
 		if state := c.calleeSaved[num]; state.written && !state.restored {
 			c.errorf(instr.Line, "ret without restoring callee-saved x%d from its frame slot (ldr/ldp it from the slot it was saved to)", num)
+		}
+	}
+	for num := 8; num <= 15; num++ {
+		if state := c.calleeSavedV[num]; state.written && !state.restored {
+			c.errorf(instr.Line, "ret without restoring callee-saved d%d from its frame slot (ldr/ldp its d view from the slot it was saved to)", num)
 		}
 	}
 	if c.hasResult {
