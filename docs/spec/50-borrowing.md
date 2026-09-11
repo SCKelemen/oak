@@ -837,6 +837,32 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   and otherwise returns `{base + start, n}` — zero copies, one check.
 - **Static extent**: a constant index below an owned array's declared
   length needs no fact (`static_extent`).
+- **Literal bound**: `i < K`, `i <= K`, `K > i`, `K >= i` with `K` a
+  literal bounds `i` by a number rather than a length, and proves `v[i]`
+  and `v[i + j]` against any container whose length is known to be at
+  least `K + j` — an owned array's declared length or a min-length fact
+  (`literal_bound_under_length`). This is the loop over a fixed table:
+  `while i < u32(64) { ... SHA256_K[i] ... w[i] ... }`.
+- **Scaled index**: under `i < U`, `v[i * K + j]` and `v[i * K]` (with
+  `K` and `j` literals, either operand order) are proven when the length
+  is known to be at least `(U - 1) * K + j + 1` (`scaled_under_bound`) —
+  the word loads of a block, `block[i * 4 + 3]` under `i < 16`.
+- **Lower bound and subtraction**: a literal initializer `i: u32 = K`
+  establishes `K <= i`; leaving `while i < K` (a bare comparison, no
+  `break` in the body) establishes `K <= i` for the rest of the block
+  (`loop_exit_lower_bound`); so does the guard `i >= K` for its true arm. Under `L <= i` with `K <= L` and an upper bound `i < U`,
+  `v[i - K]` is proven when the length is at least `U - K`
+  (`subtraction_under_bounds`; against `i < len(v)`,
+  `subtraction_under_length`), and the subtraction cannot wrap. A lower
+  bound survives a following loop whose only write to `i` is the trailing
+  `i = i + c` (`c` a literal) under an upper bound on `i` from the loop's
+  own condition, because the increment cannot wrap and only raises `i`
+  (`increment_keeps_lower_bound`, `increment_without_wrap`); any other
+  write to `i` kills it before the body — the SHA-256 schedule,
+  `w[i - 16]` for `16 <= i < 64`.
+- **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
+  when the length is known to be at least `M + 1`
+  (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`.
 - Conjunctions (`&&`) contribute every fact of both sides.
 
 Facts are refused, not weakened, whenever soundness would need dataflow

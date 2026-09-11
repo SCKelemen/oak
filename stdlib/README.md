@@ -764,7 +764,11 @@ bound and on any difference between compiled and interpreted results.
 32-byte output), and CRC-32C (the
 Castagnoli polynomial `0x82F63B78`, reflected, all-ones initial value,
 final complement — RFC 3720 appendix B.4) in Oak over the total fixed-width
-arithmetic, so the interpreter and every backend compute the same bits and
+arithmetic — CRC-32C table-driven, SHA-256 compressing whole blocks in
+place from the input, BLAKE3's quarter round by value, every block and
+table access proven by the extent facts (`benchmarks/kernels/RESULTS.md`
+measures them against Rust and Go) — so the interpreter and every backend
+compute the same bits and
 `oak test` can check a frame's checksum or a hash chain without a foreign
 implementation. Everything lives in caller-owned or bounded local storage:
 no allocation, every store bounds-checked.
