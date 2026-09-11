@@ -4394,7 +4394,7 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	// earlier statement of the body executes again after the assignment
 	// (typechecker/extents.go).
 	conditionFacts := tc.loopConditionFacts(stmt)
-	tc.killFactsAssignedBy(stmt)
+	tc.killFactsAssignedByExcept(stmt, tc.lowerBoundsSurviving(stmt, conditionFacts))
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError(stmt.Condition, "while condition must be bool, got %s", conditionType)
@@ -4412,6 +4412,11 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	tc.loopDepth--
 	tc.env = outerEnv
 	tc.popExtentFacts(mark)
+	// The loop's exit establishes a lower bound for the rest of the block
+	// (typechecker/extents.go, loopExitFact).
+	if exit := tc.loopExitFact(stmt); len(exit) > 0 {
+		tc.pushExtentFacts(exit)
+	}
 }
 
 func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {

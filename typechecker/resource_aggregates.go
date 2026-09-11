@@ -10,8 +10,21 @@ package typechecker
 // resourcePathsOf enumerates the resource-typed paths strictly below root
 // for a value of type typ. A resource type itself has no paths below it.
 func (tc *TypeChecker) resourcePathsOf(root string, typ Type, resourceTypes map[string]bool) []string {
+	paths, _ := tc.resourcePathsAndTypes(root, typ, resourceTypes)
+	return paths
+}
+
+// resourcePathTypesOf maps each resource path below root to the nominal
+// name of the resource type it holds.
+func (tc *TypeChecker) resourcePathTypesOf(root string, typ Type, resourceTypes map[string]bool) map[string]string {
+	_, types := tc.resourcePathsAndTypes(root, typ, resourceTypes)
+	return types
+}
+
+func (tc *TypeChecker) resourcePathsAndTypes(root string, typ Type, resourceTypes map[string]bool) ([]string, map[string]string) {
+	types := make(map[string]string)
 	if typ == nil || resourceTypes[nominalTypeName(typ)] {
-		return nil
+		return nil, types
 	}
 	var paths []string
 	active := make(map[string]bool)
@@ -22,6 +35,7 @@ func (tc *TypeChecker) resourcePathsOf(root string, typ Type, resourceTypes map[
 		}
 		if resourceTypes[nominalTypeName(t)] {
 			paths = append(paths, prefix)
+			types[prefix] = nominalTypeName(t)
 			return
 		}
 		if record, isRecord := t.(*RecordType); isRecord && record != nil {
@@ -55,7 +69,7 @@ func (tc *TypeChecker) resourcePathsOf(root string, typ Type, resourceTypes map[
 		}
 	}
 	visit(root, typ, 0)
-	return paths
+	return paths, types
 }
 
 // resourceLike reports whether a type is a resource or an aggregate with

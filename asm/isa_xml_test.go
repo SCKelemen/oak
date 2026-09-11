@@ -3,6 +3,7 @@ package asm
 import (
 	"encoding/xml"
 	"fmt"
+	"github.com/SCKelemen/oak/asm/internal/armfeat"
 	"html"
 	"os"
 	"path/filepath"
@@ -80,6 +81,7 @@ type xmlEncoding struct {
 }
 
 type xmlFeature struct {
+	name    string // the arch_variant name: an architecture version expression (`v8Ap2`, `(v8Ap2 && PROFILE_A) || (v9Ap2 && PROFILE_A)`)
 	feature string // e.g. FEAT_LSE (may be an expression)
 	major   int    // architecture version the feature belongs to, -1 if none
 	minor   int
@@ -106,7 +108,7 @@ func loadISAXML(t *testing.T) (string, []xmlEncoding) {
 	sort.Strings(dirs)
 	dir := dirs[len(dirs)-1]
 	var files []string
-	for _, index := range []string{"index.xml", "fpsimdindex.xml"} {
+	for _, index := range []string{"index.xml", "fpsimdindex.xml", "sveindex.xml", "mortlachindex.xml"} {
 		data, err := os.ReadFile(filepath.Join(dir, index))
 		if err != nil {
 			t.Fatal(err)
@@ -168,7 +170,7 @@ func loadISAXML(t *testing.T) (string, []xmlEncoding) {
 		for _, class := range instr.Classes.IClass {
 			var features []xmlFeature
 			for _, v := range class.ArchVariants {
-				f := xmlFeature{feature: v.Feature, major: -1}
+				f := xmlFeature{name: v.Name, feature: v.Feature, major: -1}
 				if m := xmlVersion.FindStringSubmatch(v.Name); m != nil {
 					f.major, _ = strconv.Atoi(m[1])
 					f.minor, _ = strconv.Atoi(m[2])
@@ -503,49 +505,25 @@ func hasClass(f form, class operandClass) bool {
 	return false
 }
 
-// mSeriesHas reports whether the Apple M-series (Armv8.7-A plus the
-// extensions LLVM enables for apple-m4) has an encoding's features: no
-// feature tag, or some tag at version ≤ 8.7 (or unversioned) naming no
-// absent feature.
+// mSeriesHas reports whether the Apple M-series has an encoding's features:
+// no feature tag, or some arch_variant that holds on the shared profile
+// (asm/internal/armfeat: Armv8.7-A, LLVM's apple-m4 extensions, and the
+// SME family with streaming SVE).
 func mSeriesHas(features []xmlFeature) bool {
 	if len(features) == 0 {
 		return true
 	}
 	for _, f := range features {
-		if f.major > 8 || (f.major == 8 && f.minor > 7) {
-			continue // a later architecture version than the M-series implements
-		}
-		absent := false
-		for _, name := range strings.FieldsFunc(f.feature, func(r rune) bool { return r == ' ' || r == '|' || r == '&' || r == '(' || r == ')' }) {
-			if _, ok := mSeriesAbsentFeatures[name]; ok {
-				absent = true
-			}
-		}
-		if !absent {
+		if armfeat.Has(f.name, f.feature) {
 			return true
 		}
 	}
 	return false
 }
 
-// Optional features of Armv8.x up to 8.7 the M-series does not implement.
-var mSeriesAbsentFeatures = map[string]string{
-	"FEAT_MTE": "memory tagging", "FEAT_MTE2": "memory tagging", "FEAT_MTE4": "memory tagging", "FEAT_MTE_TAGGED_FAR": "memory tagging", "FEAT_MTETC": "memory tagging",
-	"FEAT_SVE": "scalable vectors", "FEAT_SVE2": "scalable vectors", "FEAT_SME": "scalable matrix (SME assembly is out of scope)",
-	"FEAT_LS64": "64-byte loads and stores", "FEAT_LS64_V": "64-byte loads and stores", "FEAT_LS64_ACCDATA": "64-byte loads and stores",
-	"FEAT_TME": "transactional memory", "FEAT_RNG": "random number instructions", "FEAT_SM3": "SM3 crypto", "FEAT_SM4": "SM4 crypto",
-	"FEAT_SPE": "statistical profiling", "FEAT_TRBE": "trace buffer", "FEAT_BRBE": "branch record buffer", "FEAT_TRF": "self-hosted trace",
-	"FEAT_RME": "realm management", "FEAT_XS": "XS barriers and TLBI variants", "FEAT_LRCPC3": "RCpc3",
-	"FEAT_HBC": "hinted conditional branches", "FEAT_MOPS": "memory copy and set", "FEAT_CSSC": "common short sequence compression",
-	"FEAT_PACQARMA3": "QARMA3", "FEAT_CONSTPACFIELD": "constant PAC field",
-	"FEAT_AMUv1": "activity monitors", "FEAT_ECV": "enhanced counter virtualization", "FEAT_HCX": "HCRX_EL2",
-	"FEAT_D128": "128-bit descriptors", "FEAT_TLBID": "TLBI domains", "FEAT_TLBIRANGE": "range TLBI", "FEAT_TLBIOS": "outer-shareable TLBI",
-	"FEAT_TLBIW": "TLBI VMALL for dirty state", "FEAT_PRFMSLC": "system-level-cache prefetch", "FEAT_ATS1A": "address translation without permission checks",
-	"FEAT_OCCMO": "outer cacheable CMOs", "FEAT_PoPS": "point of physical storage", "FEAT_PCDPHINT": "producer-consumer data placement hints",
-	"FEAT_PAN": "privileged access never (system register only)", "FEAT_PAN2": "AT S1E1RP/WP", "FEAT_UAO": "user access override (system register only)",
-	"FEAT_SSBS":     "MSR SSBS (system register only)",
-	"FEAT_FAMINMAX": "famax/famin (v9.5)", "FEAT_LSUI": "unprivileged load/store pairs (v9.6)", "FEAT_LUT": "lookup-table instructions (v9.5)",
-}
+// mSeriesAbsentFeatures names the optional features the M-series lacks,
+// with the reason shown in reports.
+var mSeriesAbsentFeatures = armfeat.Absent
 
 // xmlExcluded lists M-series mnemonics the table leaves out by design.
 var xmlExcluded = map[string]string{
@@ -554,6 +532,7 @@ var xmlExcluded = map[string]string{
 	"sysp": "128-bit system operation (FEAT_SYSREG128)", "mrrs": "128-bit system register read", "msrr": "128-bit system register write",
 	"udf": "permanently undefined: never emitted", "bc.": "hinted conditional branch (FEAT_HBC, v8.8)",
 	"chkfeat": "feature check hint (FEAT_CHK, v8.9)", "clrbhb": "branch-history clear (FEAT_CLRBHB, v8.9)",
+	"movt": "ZT0 element move (the `zt0[<offs>]` operand is not modeled)", "psel": "predicate select by element index (the `<Pm>.<T>[<Wv>, <imm>]` operand is not modeled)",
 }
 
 // xmlFormsNotModeled: forms Arm spells for a table mnemonic that the table
@@ -575,8 +554,9 @@ func TestISAXMLOperandForms(t *testing.T) {
 		}
 		for _, reading := range e.readings() {
 			name := reading[0]
-			if _, inTable := instructionTable[name]; !inTable {
-				continue
+			spec, inTable := instructionTable[name]
+			if !inTable || scalableReading(spec, reading[1]) {
+				continue // SVE/SME forms are the encoding table's readings (asm/isa_sme.go)
 			}
 			forms, bad := deriveForms(name, reading[1])
 			for _, op := range bad {
@@ -645,6 +625,21 @@ func TestISAXMLOperandForms(t *testing.T) {
 	if len(missing) > 0 {
 		t.Errorf("%d operand forms Arm spells that the table refuses:\n%s", len(missing), strings.Join(missing, "\n"))
 	}
+}
+
+// scalableReading: a template of the scalable file (z, p, ZA, ZT0 operands,
+// vector-length offsets), or any reading of a mnemonic whose forms are the
+// encoding table's alone.
+func scalableReading(spec instructionSpec, operands string) bool {
+	if spec.tableForms && len(spec.forms) == 0 {
+		return true
+	}
+	for _, marker := range []string{"<Z", "<P", "ZA", "ZT0", "MUL VL", "<pattern>"} {
+		if strings.Contains(operands, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func dedupe(items []string) []string {

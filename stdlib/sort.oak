@@ -1,10 +1,13 @@
 // Sorting and searching over caller-owned spans, generic in the element type
 // through `<` (fixed-width integers, and any type the checker orders). No
-// allocation: heapsort works in place, binary search reads a view. Every
+// allocation: the sorts work in place, binary search reads a view. Every
 // function is total and every index is bounds-checked; the ordering used is
-// the element type's `<`, so equal elements are interchangeable (heapsort is
-// not stable — `sort_insertion` is, and is the right choice below a few
-// dozen elements).
+// the element type's `<`, so equal elements are interchangeable. `sort_span`
+// is a pattern-defeating quicksort (Peters 2021; the algorithm behind Go's
+// `slices.Sort` and Rust's `sort_unstable`): O(n log n) worst case through
+// its heapsort fallback, O(n) on sorted, reversed, and all-equal input, and
+// not stable — `sort_insertion` is, and is the right choice below a few dozen
+// elements.
 package sort
 
 // sort_is_sorted: non-decreasing order.
@@ -71,9 +74,282 @@ pub sort_heap[T]: (items: [*]T): () {
   }
 }
 
-// sort_span: insertion sort for short spans, heapsort otherwise.
+// SortPivot: a pivot index and what the pivot selection learned about the
+// range: hint 1 means every comparison was in increasing order, 2 means every
+// one was decreasing, 0 means mixed.
+SortPivot: type = struct { index: u32, hint: u32 }
+// SortSplit: the pivot's final index after partitioning, and whether the
+// range was already partitioned around it (no element had to move).
+SortSplit: type = struct { mid: u32, already: Bool }
+// SortMedian: the index of a median and the running count of out-of-order
+// pairs seen while finding it.
+SortMedian: type = struct { index: u32, swaps: u32 }
+
+sort_swap[T]: (items: [*]T, i: u32, j: u32): () {
+  held: T = items[i]
+  items[i] = items[j]
+  items[j] = held
+}
+
+// sort_bit_length: the number of bits needed to write n (0 for 0).
+sort_bit_length: (n: u32): u32 {
+  bits: u32 = u32(0)
+  rest: u32 = n
+  while rest > u32(0) {
+    rest = rest >> u32(1)
+    bits = bits + u32(1)
+  }
+  bits
+}
+
+// sort_median3: the index among a, b, c whose element is the median, found
+// with three ordered comparisons; each pair found out of order adds one to
+// `swaps`, which the pivot selection reads as a sortedness hint.
+sort_median3[T]: (items: [*]T, a: u32, b: u32, c: u32, swaps: u32): SortMedian {
+  x: u32 = a
+  y: u32 = b
+  z: u32 = c
+  count: u32 = swaps
+  items[y] < items[x] ? { first: u32 = x; x = y; y = first; count = count + u32(1) }
+  items[z] < items[y] ? { second: u32 = y; y = z; z = second; count = count + u32(1) }
+  items[y] < items[x] ? { third: u32 = x; x = y; y = third; count = count + u32(1) }
+  SortMedian { index: y, swaps: count }
+}
+
+// sort_choose_pivot: median of three for ranges of eight or more elements,
+// Tukey's ninther (median of three medians of adjacent triples) from fifty;
+// shorter ranges take the middle element. Twelve comparisons all in order
+// is the increasing hint, all reversed the decreasing hint.
+sort_choose_pivot[T]: (items: [*]T, a: u32, b: u32): SortPivot {
+  length: u32 = b - a
+  quarter: u32 = length / u32(4)
+  i: u32 = a + quarter
+  j: u32 = a + quarter * u32(2)
+  k: u32 = a + quarter * u32(3)
+  swaps: u32 = u32(0)
+  length >= u32(8) ? {
+    length >= u32(50) ? {
+      mi: SortMedian = sort_median3[T](items, i - u32(1), i, i + u32(1), swaps)
+      i = mi.index
+      mj: SortMedian = sort_median3[T](items, j - u32(1), j, j + u32(1), mi.swaps)
+      j = mj.index
+      mk: SortMedian = sort_median3[T](items, k - u32(1), k, k + u32(1), mj.swaps)
+      k = mk.index
+      swaps = mk.swaps
+    }
+    m: SortMedian = sort_median3[T](items, i, j, k, swaps)
+    j = m.index
+    swaps = m.swaps
+  }
+  hint: u32 = swaps == u32(0) ? u32(1) | (swaps == u32(12) ? u32(2) | u32(0))
+  SortPivot { index: j, hint: hint }
+}
+
+// sort_partition: move items[pivot] to items[a], partition [a+1, b) so that
+// everything less than the pivot precedes everything not less, and put the
+// pivot between them. Invariant: items[a+1..i) < pivot <= items(j..b), and
+// a <= j < b throughout, so every index stays inside the range.
+sort_partition[T]: (items: [*]T, a: u32, b: u32, pivot: u32): SortSplit {
+  sort_swap[T](items, a, pivot)
+  i: u32 = a + u32(1)
+  j: u32 = b - u32(1)
+  while i <= j && items[i] < items[a] { i = i + u32(1) }
+  while i <= j && !(items[j] < items[a]) { j = j - u32(1) }
+  i > j ? {
+    sort_swap[T](items, j, a)
+    SortSplit { mid: j, already: true }
+  } | {
+    sort_swap[T](items, i, j)
+    i = i + u32(1)
+    j = j - u32(1)
+    scanning: Bool = true
+    while scanning {
+      while i <= j && items[i] < items[a] { i = i + u32(1) }
+      while i <= j && !(items[j] < items[a]) { j = j - u32(1) }
+      i > j ? { scanning = false } | {
+        sort_swap[T](items, i, j)
+        i = i + u32(1)
+        j = j - u32(1)
+      }
+    }
+    sort_swap[T](items, j, a)
+    SortSplit { mid: j, already: false }
+  }
+}
+
+// sort_partition_equal: with items[pivot] known to equal its predecessor
+// items[a-1], move every element equal to the pivot to the front of [a, b)
+// and return the index just past them; those elements are in their final
+// place, which is what makes many duplicates linear.
+sort_partition_equal[T]: (items: [*]T, a: u32, b: u32, pivot: u32): u32 {
+  sort_swap[T](items, a, pivot)
+  i: u32 = a + u32(1)
+  j: u32 = b - u32(1)
+  scanning: Bool = true
+  while scanning {
+    while i <= j && !(items[a] < items[i]) { i = i + u32(1) }
+    while i <= j && items[a] < items[j] { j = j - u32(1) }
+    i > j ? { scanning = false } | {
+      sort_swap[T](items, i, j)
+      i = i + u32(1)
+      j = j - u32(1)
+    }
+  }
+  i
+}
+
+// sort_partial_insertion: finish a nearly sorted range by fixing at most five
+// out-of-order pairs; true when the range is sorted afterwards. Ranges below
+// fifty elements give up at the first disorder and leave the work to the
+// partition.
+sort_partial_insertion[T]: (items: [*]T, a: u32, b: u32): Bool {
+  i: u32 = a + u32(1)
+  steps: u32 = u32(0)
+  sorted: Bool = false
+  trying: Bool = true
+  while trying && steps < u32(5) {
+    while i < b && !(items[i] < items[i - u32(1)]) { i = i + u32(1) }
+    i == b ? { sorted = true; trying = false } |
+    b - a < u32(50) ? { trying = false } | {
+      sort_swap[T](items, i, i - u32(1))
+      i - a >= u32(2) ? {
+        left: u32 = i - u32(1)
+        shifting: Bool = true
+        while shifting && left > a {
+          items[left] < items[left - u32(1)] ? { sort_swap[T](items, left, left - u32(1)); left = left - u32(1) } | { shifting = false }
+        }
+      }
+      b - i >= u32(2) ? {
+        right: u32 = i + u32(1)
+        moving: Bool = true
+        while moving && right < b {
+          items[right] < items[right - u32(1)] ? { sort_swap[T](items, right, right - u32(1)); right = right + u32(1) } | { moving = false }
+        }
+      }
+      steps = steps + u32(1)
+    }
+  }
+  sorted
+}
+
+// sort_break_patterns: after an unbalanced partition, swap three elements
+// around the middle with pseudo-random positions (xorshift seeded by the
+// length) so an adversarial pattern cannot keep defeating the pivot choice.
+sort_break_patterns[T]: (items: [*]T, a: u32, b: u32): () {
+  length: u32 = b - a
+  length >= u32(8) ? {
+    bits: u32 = sort_bit_length(length)
+    mask: u32 = bits >= u32(32) ? u32(4294967295) | ((u32(1) << bits) - u32(1))
+    random: u64 = u64(length)
+    middle: u32 = a + (length / u32(4)) * u32(2) - u32(1)
+    step: u32 = u32(0)
+    while step < u32(3) {
+      random = random ^ (random << u64(13))
+      random = random ^ (random >> u64(7))
+      random = random ^ (random << u64(17))
+      other: u32 = u32_trunc_u64(random) & mask
+      other >= length ? { other = other - length }
+      sort_swap[T](items, middle - u32(1) + step, a + other)
+      step = step + u32(1)
+    }
+  }
+}
+
+// sort_span_budget: sort_span with an explicit depth budget: each unbalanced
+// partition spends one, and a range whose budget is exhausted falls back to
+// heapsort, which bounds the worst case at O(n log n). Ranges of at most
+// twelve elements are insertion sorted. Iterative: the smaller side of every
+// split is sorted next and the larger side waits on an explicit stack, so at
+// most one frame per halving is outstanding (33 for u32 lengths; 48 kept).
+pub sort_span_budget[T]: (items: [*]T, depth_limit: u32): () {
+  n: u32 = len(items)
+  n <= u32(12) ? { sort_insertion[T](items) } | {
+    stack: [144]u32
+    depth: u32 = u32(0)
+    a: u32 = u32(0)
+    b: u32 = n
+    limit: u32 = depth_limit
+    balanced: Bool = true
+    partitioned: Bool = true
+    working: Bool = true
+    while working {
+      length: u32 = b - a
+      done: Bool = false
+      length <= u32(12) ? {
+        true ? { short: [*]T = items[a:b]; sort_insertion[T](short) }
+        done = true
+      } |
+      limit == u32(0) ? {
+        true ? { fallback: [*]T = items[a:b]; sort_heap[T](fallback) }
+        done = true
+      } | {
+        !balanced ? {
+          sort_break_patterns[T](items, a, b)
+          limit = limit - u32(1)
+        }
+        chosen: SortPivot = sort_choose_pivot[T](items, a, b)
+        pivot: u32 = chosen.index
+        hint: u32 = chosen.hint
+        hint == u32(2) ? {
+          true ? { backwards: [*]T = items[a:b]; sort_reverse[T](backwards) }
+          pivot = (b - u32(1)) - (pivot - a)
+          hint = u32(1)
+        }
+        handled: Bool = false
+        balanced && partitioned && hint == u32(1) ? {
+          sort_partial_insertion[T](items, a, b) ? { done = true; handled = true }
+        }
+        !handled && a > u32(0) && !(items[a - u32(1)] < items[pivot]) ? {
+          a = sort_partition_equal[T](items, a, b, pivot)
+          handled = true
+        }
+        !handled ? {
+          split: SortSplit = sort_partition[T](items, a, b, pivot)
+          partitioned = split.already
+          mid: u32 = split.mid
+          left_len: u32 = mid - a
+          right_len: u32 = b - mid
+          threshold: u32 = length / u32(8)
+          push_a: u32 = a
+          push_b: u32 = b
+          left_len < right_len ? {
+            balanced = left_len >= threshold
+            push_a = mid + u32(1)
+            b = mid
+          } | {
+            balanced = right_len >= threshold
+            push_b = mid
+            a = mid + u32(1)
+          }
+          flags: u32 = (balanced ? u32(256) | u32(0)) + (partitioned ? u32(512) | u32(0))
+          stack[depth * u32(3)] = push_a
+          stack[depth * u32(3) + u32(1)] = push_b
+          stack[depth * u32(3) + u32(2)] = limit + flags
+          depth = depth + u32(1)
+          balanced = true
+          partitioned = true
+        }
+      }
+      done ? {
+        depth == u32(0) ? { working = false } | {
+          depth = depth - u32(1)
+          a = stack[depth * u32(3)]
+          b = stack[depth * u32(3) + u32(1)]
+          packed: u32 = stack[depth * u32(3) + u32(2)]
+          limit = packed & u32(255)
+          balanced = (packed & u32(256)) != u32(0)
+          partitioned = (packed & u32(512)) != u32(0)
+        }
+      }
+    }
+  }
+}
+
+// sort_span: pattern-defeating quicksort with a depth budget of the bit
+// length of n (Go's choice), heapsort beyond it, insertion sort below
+// thirteen elements. Not stable.
 pub sort_span[T]: (items: [*]T): () {
-  len(items) <= u32(16) ? { sort_insertion[T](items) } | { sort_heap[T](items) }
+  sort_span_budget[T](items, sort_bit_length(len(items)))
 }
 
 // sort_search: the index of `key` in a sorted view, or None. Equal elements:

@@ -90,24 +90,45 @@ type Operand interface{ operandKind() string }
 
 // Register is a parsed register operand.
 type Register struct {
-	Text  string // as written: "x0", "w5", "sp", "lr", "v3", "d1", "v0.4s", "v2.s[1]"
+	Text  string // as written: "x0", "w5", "sp", "lr", "v3", "d1", "v0.4s", "v2.s[1]", "z0.s", "p0/m", "pn8", "za0.s", "zt0"
 	Class RegClass
-	Num   int // physical register number for X/W (0..30), V (0..31); -1 for SP; 31 for zero registers
+	Num   int // physical register number for X/W (0..30), V/Z (0..31), P (0..15), ZA tiles (0..15, -1 for the whole array); -1 for SP; 31 for zero registers
 	// Vec is the vector register's view: a scalar width letter ("b", "h",
 	// "s", "d", "q"), an arrangement ("8b", "16b", "4h", "8h", "2s", "4s",
-	// "1d", "2d"), or "" for the whole register named as vN. Lane is the
-	// element index of a lane reference (v0.s[1]), -1 when none.
+	// "1d", "2d"), or "" for the whole register named as vN. For the
+	// scalable classes it is the element size letter (z0.s, p0.b, za0.d),
+	// "" when unsuffixed. Lane is the element index of a lane reference
+	// (v0.s[1], z2.s[1], z1[0], pn8[0]), -1 when none.
 	Vec  string
 	Lane int
+	// Qual is a predicate's qualifier: "m" (merging), "z" (zeroing), or "".
+	Qual string
 }
 
-// RegisterList is the `{v0.4s, v1.4s}` operand of the structure loads.
+// RegisterList is the `{v0.4s, v1.4s}` operand of the structure loads, the
+// `{z0.s - z3.s}` multi-vector groups, and zero's `{za0.s, za1.s}` tile list.
 type RegisterList struct{ Regs []Register }
+
+// TileSlice is a ZA operand addressed by a slice-index register: a tile
+// slice (`za0h.s[w12, 0]`, `za1v.b[w13, 0:3]`), a vector group of the array
+// (`za.s[w8, 0, vgx4]`), or an array vector (`za[w12, 0]`).
+type TileSlice struct {
+	Text   string
+	Tile   int      // 0..15, or -1 for the whole array
+	Dir    string   // "h", "v", or "" for an array vector
+	Elem   string   // element size letter, "" for za[w12, 0]
+	Index  Register // the slice index register w8-w15
+	Offset int64
+	Count  int    // consecutive slices named by offs1:offsN, 1 for a single slice
+	Group  string // "vgx2", "vgx4", or ""
+	Listed bool   // written in braces: {za0h.s[w12, 0]} of the ZA loads and stores
+}
 
 // FloatImmediate is `#0.0` and friends (fcmp, fmov).
 type FloatImmediate struct{ Value float64 }
 
 func (RegisterList) operandKind() string   { return "register list" }
+func (TileSlice) operandKind() string      { return "tile slice" }
 func (FloatImmediate) operandKind() string { return "float immediate" }
 
 var vectorArrangements = map[string]int{"8b": 8, "16b": 16, "2h": 2, "4h": 4, "8h": 8, "2s": 2, "4s": 4, "1d": 1, "2d": 2, "1q": 1}
@@ -118,6 +139,22 @@ func (r Register) VecBytes() int64 {
 	if r.Class != ClassV {
 		return 0
 	}
+	if r.Vec == "" {
+		return 16
+	}
+	if lanes, isArrangement := vectorArrangements[r.Vec]; isArrangement {
+		return int64(lanes * laneBytes(r.Vec))
+	}
+	return int64(scalarVectorWidths[r.Vec[0]])
+}
+
+// Scalable reports the SVE/SME register classes (z, p, pn, za, zt0).
+func (c RegClass) Scalable() bool {
+	return c == ClassZ || c == ClassP || c == ClassPN || c == ClassZA || c == ClassZT
+}
+
+// vecBytesUnused keeps the earlier arrangement-width code path documented.
+func vecBytesUnused(r Register) int64 {
 	if r.Vec == "" {
 		return 16
 	}
@@ -166,6 +203,8 @@ type Memory struct {
 	// Extend spells how the index is read: uxtw (the checker's idiom, a
 	// 32-bit element index), sxtw, lsl (a 64-bit index), or sxtx.
 	Extend string
+	// MulVL marks a vector-length-scaled offset: [x0, #1, mul vl] (SVE/SME).
+	MulVL bool
 }
 
 type MemMode int
@@ -182,8 +221,13 @@ type Symbol struct{ Name string }
 // SysReg names a system register operand of mrs/msr.
 type SysReg struct{ Name string }
 
-// Option is a barrier option word (sy, ish, ...).
-type Option struct{ Name string }
+// Option is a spelled operand word: a barrier option (sy, ish), a predicate
+// pattern (all, vl16, pow2), a vector-length group (vlx2); Mul carries the
+// `mul #n` multiplier of the element-count instructions (cntw x0, all, mul #4).
+type Option struct {
+	Name string
+	Mul  int64
+}
 
 // Condition is the condition-code operand of csel/cset (eq, lo, ge, ...).
 type Condition struct{ Code string }
@@ -204,6 +248,11 @@ const (
 	ClassW                  // arm64.W — 32-bit view
 	ClassV                  // arm64.V — 128-bit vector
 	ClassSP                 // arm64.SP — the stack pointer
+	ClassZ                  // arm64.Z — a scalable vector register (streaming SVE); zN extends vN
+	ClassP                  // arm64.P — a scalable predicate register p0-p15
+	ClassPN                 // arm64.PN — a predicate-as-counter register pn0-pn15
+	ClassZA                 // arm64.ZA — a ZA tile (za0.s), or the whole array (za)
+	ClassZT                 // arm64.ZT — the ZT0 lookup table register
 )
 
 func (c RegClass) String() string {
@@ -216,6 +265,16 @@ func (c RegClass) String() string {
 		return "arm64.V"
 	case ClassSP:
 		return "arm64.SP"
+	case ClassZ:
+		return "arm64.Z"
+	case ClassP:
+		return "arm64.P"
+	case ClassPN:
+		return "arm64.PN"
+	case ClassZA:
+		return "arm64.ZA"
+	case ClassZT:
+		return "arm64.ZT"
 	}
 	return "?"
 }
@@ -492,6 +551,28 @@ func parseInstruction(fields []string, line int) (Instruction, error) {
 			modifier = fields[i] + " " + fields[i+1]
 			i++
 		}
+		// `mul #n` multiplies the pattern word before it (cntw x0, all, mul #4).
+		if strings.EqualFold(modifier, "mul") && i+1 < len(fields) && strings.HasPrefix(fields[i+1], "#") {
+			mul, err := parseImmediate(fields[i+1][1:])
+			if err != nil {
+				return instr, err
+			}
+			if mul < 1 || mul > 16 {
+				return instr, fmt.Errorf("mul #%d is outside 1..16", mul)
+			}
+			last := len(instr.Operands) - 1
+			option, isOption := Option{}, false
+			if last >= 0 {
+				option, isOption = instr.Operands[last].(Option)
+			}
+			if !isOption {
+				return instr, fmt.Errorf("mul #%d must follow a pattern word", mul)
+			}
+			option.Mul = mul
+			instr.Operands[last] = option
+			i++
+			continue
+		}
 		if folded, consumed, err := foldModifier(modifier, instr.Operands); err != nil {
 			return instr, err
 		} else if consumed {
@@ -532,23 +613,7 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 		return Immediate{Value: value}, nil
 	}
 	if strings.HasPrefix(text, "{") && strings.HasSuffix(text, "}") {
-		var list RegisterList
-		for _, part := range strings.Split(text[1:len(text)-1], ",") {
-			reg, ok := parseRegister(strings.TrimSpace(part))
-			if !ok || reg.Class != ClassV || reg.Vec == "" || reg.Lane >= 0 {
-				return nil, fmt.Errorf("register list %q must hold arranged vector registers", text)
-			}
-			list.Regs = append(list.Regs, reg)
-		}
-		if len(list.Regs) < 1 || len(list.Regs) > 4 {
-			return nil, fmt.Errorf("register list %q must hold one to four registers", text)
-		}
-		for _, reg := range list.Regs[1:] {
-			if reg.Vec != list.Regs[0].Vec {
-				return nil, fmt.Errorf("register list %q mixes arrangements", text)
-			}
-		}
-		return list, nil
+		return parseRegisterList(text)
 	}
 	if strings.HasPrefix(text, "[") {
 		return parseMemory(text)
@@ -557,6 +622,9 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 		return reg, nil
 	}
 	lower := strings.ToLower(text)
+	if strings.HasPrefix(lower, "za") && strings.Contains(lower, "[") {
+		return parseTileSlice(text)
+	}
 	if spec.sysregOperand == position {
 		return SysReg{Name: lower}, nil
 	}
@@ -569,7 +637,199 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 	if spec.readsFlags && conditionCodes[lower] {
 		return Condition{Code: lower}, nil
 	}
+	if spec.tableForms && isWord(lower) {
+		// SVE/SME spelled words: predicate patterns (all, vl16, pow2),
+		// vector-length groups (vlx2), smstart's modes (sm, za).
+		return Option{Name: lower}, nil
+	}
 	return nil, fmt.Errorf("unrecognized operand %q", text)
+}
+
+func isWord(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return s[0] >= 'a' && s[0] <= 'z'
+}
+
+// parseRegisterList parses `{v0.4s, v1.4s}` (structure accesses),
+// `{z0.s, z1.s}` and `{z0.s - z3.s}` (multi-vector groups), `{za0.s, za1.s}`
+// and `{za}` (zero's tiles), `{zt0}`, and `{za0h.s[w12, 0]}` (one tile
+// slice, the ZA loads and stores).
+func parseRegisterList(text string) (Operand, error) {
+	inner := strings.TrimSpace(text[1 : len(text)-1])
+	if strings.Contains(inner, "[") {
+		slice, err := parseTileSlice(inner)
+		if err != nil {
+			return nil, err
+		}
+		s := slice.(TileSlice)
+		s.Listed = true
+		return s, nil
+	}
+	var list RegisterList
+	if inner == "" {
+		return list, nil // zero { }: no tiles
+	}
+	for _, part := range strings.Split(inner, ",") {
+		part = strings.TrimSpace(part)
+		if dash := strings.IndexByte(part, '-'); dash > 0 {
+			// A range `z0.s - z3.s`: consecutive registers, first to last.
+			first, okFirst := parseRegister(strings.TrimSpace(part[:dash]))
+			last, okLast := parseRegister(strings.TrimSpace(part[dash+1:]))
+			if !okFirst || !okLast || first.Class != ClassZ || last.Class != ClassZ || first.Vec != last.Vec || first.Lane >= 0 || last.Lane >= 0 {
+				return nil, fmt.Errorf("register range %q must run over z registers of one element size", part)
+			}
+			count := (last.Num-first.Num+32)%32 + 1
+			if count < 2 || count > 4 {
+				return nil, fmt.Errorf("register range %q must name two to four registers", part)
+			}
+			for i := 0; i < count; i++ {
+				reg := first
+				reg.Num = (first.Num + i) % 32
+				reg.Text = fmt.Sprintf("z%d", reg.Num)
+				if reg.Vec != "" {
+					reg.Text += "." + reg.Vec
+				}
+				list.Regs = append(list.Regs, reg)
+			}
+			continue
+		}
+		reg, ok := parseRegister(part)
+		if !ok {
+			return nil, fmt.Errorf("register list %q holds an unknown register %q", text, part)
+		}
+		list.Regs = append(list.Regs, reg)
+	}
+	first := list.Regs[0]
+	for _, reg := range list.Regs[1:] {
+		if reg.Class != first.Class {
+			return nil, fmt.Errorf("register list %q mixes register classes", text)
+		}
+	}
+	switch first.Class {
+	case ClassV:
+		if len(list.Regs) > 4 {
+			return nil, fmt.Errorf("register list %q must hold one to four registers", text)
+		}
+		for _, reg := range list.Regs {
+			if reg.Vec == "" || reg.Lane >= 0 {
+				return nil, fmt.Errorf("register list %q must hold arranged vector registers", text)
+			}
+			if _, arranged := vectorArrangements[reg.Vec]; !arranged {
+				return nil, fmt.Errorf("register list %q must hold arranged vector registers", text)
+			}
+			if reg.Vec != first.Vec {
+				return nil, fmt.Errorf("register list %q mixes arrangements", text)
+			}
+		}
+	case ClassZ, ClassP:
+		if len(list.Regs) > 4 {
+			return nil, fmt.Errorf("register list %q must hold one to four registers", text)
+		}
+		for _, reg := range list.Regs {
+			if reg.Lane >= 0 || reg.Vec != first.Vec || reg.Qual != "" {
+				return nil, fmt.Errorf("register list %q must hold registers of one element size", text)
+			}
+		}
+	case ClassZA:
+		if len(list.Regs) > 8 {
+			return nil, fmt.Errorf("tile list %q names more than eight tiles", text)
+		}
+		for _, reg := range list.Regs {
+			if reg.Num < 0 && len(list.Regs) != 1 {
+				return nil, fmt.Errorf("tile list %q names the whole array beside tiles", text)
+			}
+		}
+	case ClassZT:
+		if len(list.Regs) != 1 {
+			return nil, fmt.Errorf("%q: zt0 stands alone", text)
+		}
+	default:
+		return nil, fmt.Errorf("register list %q must hold vector, z, p, or za registers", text)
+	}
+	return list, nil
+}
+
+// parseTileSlice parses `za0h.s[w12, 0]`, `za1v.b[w13, 0:3]`,
+// `za.s[w8, 0, vgx4]`, `za.d[w8, 7]`, and `za[w12, 0]`.
+func parseTileSlice(text string) (Operand, error) {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	open := strings.IndexByte(lower, '[')
+	if open < 0 || !strings.HasSuffix(lower, "]") {
+		return nil, fmt.Errorf("bad tile slice %q", text)
+	}
+	head, inner := lower[:open], lower[open+1:len(lower)-1]
+	slice := TileSlice{Text: lower, Tile: -1, Count: 1}
+	if dot := strings.IndexByte(head, '.'); dot >= 0 {
+		slice.Elem = head[dot+1:]
+		head = head[:dot]
+		if len(slice.Elem) != 1 || strings.IndexByte("bhsdq", slice.Elem[0]) < 0 {
+			return nil, fmt.Errorf("tile slice %q: element size must be b, h, s, d, or q", text)
+		}
+	}
+	if !strings.HasPrefix(head, "za") {
+		return nil, fmt.Errorf("bad tile slice %q", text)
+	}
+	head = head[2:]
+	if head != "" {
+		if strings.HasSuffix(head, "h") || strings.HasSuffix(head, "v") {
+			slice.Dir = head[len(head)-1:]
+			head = head[:len(head)-1]
+		}
+		tile, err := strconv.Atoi(head)
+		if err != nil || tile < 0 || tile > 15 {
+			return nil, fmt.Errorf("tile slice %q: tile number must be 0..15", text)
+		}
+		slice.Tile = tile
+		if slice.Dir == "" {
+			return nil, fmt.Errorf("tile slice %q: a tile slice names its direction (za0h or za0v)", text)
+		}
+		if slice.Elem == "" {
+			return nil, fmt.Errorf("tile slice %q: a tile slice names its element size", text)
+		}
+	}
+	parts := strings.Split(inner, ",")
+	if len(parts) < 2 || len(parts) > 3 {
+		return nil, fmt.Errorf("tile slice %q: expected [wN, offset{, vgxK}]", text)
+	}
+	index, ok := parseRegister(strings.TrimSpace(parts[0]))
+	if !ok || index.Class != ClassW || index.Num < 8 || index.Num > 15 {
+		return nil, fmt.Errorf("tile slice %q: the slice index register is one of w8-w15", text)
+	}
+	slice.Index = index
+	offs := strings.TrimSpace(parts[1])
+	if colon := strings.IndexByte(offs, ':'); colon >= 0 {
+		first, err1 := strconv.Atoi(offs[:colon])
+		last, err2 := strconv.Atoi(offs[colon+1:])
+		if err1 != nil || err2 != nil || first < 0 || last < first || last-first+1 > 4 {
+			return nil, fmt.Errorf("tile slice %q: bad offset range %q", text, offs)
+		}
+		slice.Offset = int64(first)
+		slice.Count = last - first + 1
+	} else {
+		value, err := strconv.Atoi(offs)
+		if err != nil || value < 0 || value > 15 {
+			return nil, fmt.Errorf("tile slice %q: offset must be 0..15", text)
+		}
+		slice.Offset = int64(value)
+	}
+	if len(parts) == 3 {
+		group := strings.TrimSpace(parts[2])
+		if group != "vgx2" && group != "vgx4" {
+			return nil, fmt.Errorf("tile slice %q: vector group must be vgx2 or vgx4", text)
+		}
+		if slice.Tile >= 0 {
+			return nil, fmt.Errorf("tile slice %q: a vector group addresses the array (za.s[...]), not a tile", text)
+		}
+		slice.Group = group
+	}
+	return slice, nil
 }
 
 // formsTakeOption reports whether some legal form of the instruction has an
@@ -655,6 +915,20 @@ func parseMemory(text string) (Operand, error) {
 			return nil, err
 		}
 		mem.Offset = offset
+	} else if len(parts) == 3 && strings.HasPrefix(strings.TrimSpace(parts[1]), "#") {
+		// [base, #imm, mul vl]: a vector-length-scaled offset (SVE/SME).
+		offset, err := parseImmediate(strings.TrimSpace(parts[1])[1:])
+		if err != nil {
+			return nil, err
+		}
+		if strings.Join(strings.Fields(strings.ToLower(parts[2])), " ") != "mul vl" {
+			return nil, fmt.Errorf("memory operand %q: an immediate offset is followed only by `mul vl`", text)
+		}
+		if pre {
+			return nil, fmt.Errorf("vector-length offsets have no pre-index form")
+		}
+		mem.Offset = offset
+		mem.MulVL = true
 	} else if len(parts) == 3 {
 		// [base, wI, uxtw #s] (the checker's idiom), [base, wI, sxtw #s],
 		// [base, xI, lsl #s], [base, xI, sxtx #s].
@@ -712,6 +986,10 @@ func parseRegister(text string) (Register, bool) {
 	if len(lower) < 2 {
 		return Register{}, false
 	}
+	// The scalable file: z, p, pn, za, zt0.
+	if lower[0] == 'z' || lower[0] == 'p' {
+		return parseScalableRegister(lower)
+	}
 	// Vector views: v0.4s (arrangement), v0.s[1] (lane).
 	if lower[0] == 'v' {
 		if dot := strings.IndexByte(lower, '.'); dot > 0 {
@@ -768,4 +1046,86 @@ func parseRegister(text string) (Register, bool) {
 		}
 	}
 	return Register{}, false
+}
+
+// parseScalableRegister recognizes the SVE/SME register file
+// (docs/spec/94-assembler.md §3): z0-z31 with an element size (`z0.s`),
+// bare (`z0`), or indexed (`z2.s[1]`, `z1[0]`); predicates p0-p15 with an
+// element size or a qualifier (`p0.b`, `p0/m`, `p0/z`); predicate-as-counter
+// registers pn0-pn15 (`pn8`, `pn8.s`, `pn8/z`, `pn8[0]`); ZA tiles
+// (`za0.s`, `za5.d`) and the whole array (`za`); and `zt0`.
+func parseScalableRegister(lower string) (Register, bool) {
+	reg := Register{Text: lower, Lane: -1}
+	rest := ""
+	switch {
+	case lower == "za":
+		return Register{Text: lower, Class: ClassZA, Num: -1, Lane: -1}, true
+	case lower == "zt0":
+		return Register{Text: lower, Class: ClassZT, Num: 0, Lane: -1}, true
+	case strings.HasPrefix(lower, "za"):
+		reg.Class = ClassZA
+		rest = lower[2:]
+	case strings.HasPrefix(lower, "pn"):
+		reg.Class = ClassPN
+		rest = lower[2:]
+	case lower[0] == 'z':
+		reg.Class = ClassZ
+		rest = lower[1:]
+	default:
+		reg.Class = ClassP
+		rest = lower[1:]
+	}
+	// The number, then any of `.e`, `/q`, `[i]`.
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return Register{}, false
+	}
+	num, err := strconv.Atoi(rest[:digits])
+	if err != nil {
+		return Register{}, false
+	}
+	limit := 31
+	if reg.Class != ClassZ {
+		limit = 15
+	}
+	if num > limit {
+		return Register{}, false
+	}
+	reg.Num = num
+	rest = rest[digits:]
+	if strings.HasPrefix(rest, ".") {
+		if len(rest) < 2 || strings.IndexByte("bhsdq", rest[1]) < 0 {
+			return Register{}, false
+		}
+		reg.Vec = rest[1:2]
+		rest = rest[2:]
+	}
+	if strings.HasPrefix(rest, "/") {
+		if reg.Class != ClassP && reg.Class != ClassPN || len(rest) != 2 || rest[1] != 'm' && rest[1] != 'z' {
+			return Register{}, false
+		}
+		reg.Qual = rest[1:2]
+		rest = ""
+	}
+	if strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]") {
+		if reg.Class != ClassZ && reg.Class != ClassPN {
+			return Register{}, false
+		}
+		lane, err := strconv.Atoi(rest[1 : len(rest)-1])
+		if err != nil || lane < 0 || lane > 15 {
+			return Register{}, false
+		}
+		reg.Lane = lane
+		rest = ""
+	}
+	if rest != "" {
+		return Register{}, false
+	}
+	if reg.Class == ClassZA && reg.Vec == "" {
+		return Register{}, false // a tile names its element size (za0.s); the array is `za`
+	}
+	return reg, true
 }

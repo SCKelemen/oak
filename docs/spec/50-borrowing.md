@@ -673,8 +673,35 @@ governs every specialization's payloads. Not yet admitted: borrowing from
 or aliasing an aggregate argument as a whole (the result is unknown, fail
 closed), array element provenance, and partial-field states after a move.
 
-With this, milestone 4 of the authority roadmap (stages (a)–(e)) and the
-first increment of milestone 5 are implemented for opaque resources. Open follow-ups: a source spelling for
+**Terminal-state obligations.** A protocol may declare **terminal
+states** (`112-protocols.md` §5). A resource of such a protocol that a
+function **owns** — a fresh result, a local root, a fresh aggregate path,
+or a `consumed` parameter of a function that is not itself a closer — must
+reach a terminal state on every path before its last name leaves scope.
+Custody passes on, and the obligation with it, when the resource is
+returned (bare, inside a variant, or inside a returned aggregate), handed
+to a consuming operation, or aliased to a name that outlives the scope;
+whichever name survives carries the obligation. At the end of every
+scope — a block, a match arm, the function itself — each owned name bound
+in it whose class is still live and not transferred is `OAK-B0120`; a
+class consumed on some paths only is `OAK-B0120` as well (closing on one
+branch is not closing), and rebinding the only live name of an owned
+resource loses its custody the same way. The closers are the transitions
+into terminal states, and the diagnostic names them; a closer's own
+consumed parameter owes nothing more, since the transition is the terminal
+step. Borrowed parameters, borrowed results, and values of unknown
+provenance carry no obligation (the caller, the owner, or nothing known
+holds custody). Because consumption already forbids later use, there is
+no double cleanup after a transfer and no cleanup of a moved field. In
+SemIR the obligation is the protocol guarantee named `terminal`,
+`eventually(S1 or S2 ...)`. A protocol without terminal states keeps
+today's meaning: its values may be dropped in any state. Not yet
+specified: what dropping does (destructors, `defer`), and cleanup made
+auditable in generated C.
+
+With this, milestone 4 of the authority roadmap (stages (a)–(e)), the
+first increment of milestone 5, and the first increment of milestone 6
+are implemented for opaque resources. Open follow-ups: a source spelling for
 result identities, contracts on record-typed parameters and results that
 carry borrowed fields, and array element provenance.
 
@@ -837,6 +864,32 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   and otherwise returns `{base + start, n}` — zero copies, one check.
 - **Static extent**: a constant index below an owned array's declared
   length needs no fact (`static_extent`).
+- **Literal bound**: `i < K`, `i <= K`, `K > i`, `K >= i` with `K` a
+  literal bounds `i` by a number rather than a length, and proves `v[i]`
+  and `v[i + j]` against any container whose length is known to be at
+  least `K + j` — an owned array's declared length or a min-length fact
+  (`literal_bound_under_length`). This is the loop over a fixed table:
+  `while i < u32(64) { ... SHA256_K[i] ... w[i] ... }`.
+- **Scaled index**: under `i < U`, `v[i * K + j]` and `v[i * K]` (with
+  `K` and `j` literals, either operand order) are proven when the length
+  is known to be at least `(U - 1) * K + j + 1` (`scaled_under_bound`) —
+  the word loads of a block, `block[i * 4 + 3]` under `i < 16`.
+- **Lower bound and subtraction**: a literal initializer `i: u32 = K`
+  establishes `K <= i`; leaving `while i < K` (a bare comparison, no
+  `break` in the body) establishes `K <= i` for the rest of the block
+  (`loop_exit_lower_bound`); so does the guard `i >= K` for its true arm. Under `L <= i` with `K <= L` and an upper bound `i < U`,
+  `v[i - K]` is proven when the length is at least `U - K`
+  (`subtraction_under_bounds`; against `i < len(v)`,
+  `subtraction_under_length`), and the subtraction cannot wrap. A lower
+  bound survives a following loop whose only write to `i` is the trailing
+  `i = i + c` (`c` a literal) under an upper bound on `i` from the loop's
+  own condition, because the increment cannot wrap and only raises `i`
+  (`increment_keeps_lower_bound`, `increment_without_wrap`); any other
+  write to `i` kills it before the body — the SHA-256 schedule,
+  `w[i - 16]` for `16 <= i < 64`.
+- **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
+  when the length is known to be at least `M + 1`
+  (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`.
 - Conjunctions (`&&`) contribute every fact of both sides.
 
 Facts are refused, not weakened, whenever soundness would need dataflow

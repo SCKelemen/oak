@@ -226,6 +226,7 @@ The first stable borrow-conflict family is:
 | `OAK-B0116` | a function value passed for a function-typed parameter does not carry the callable contract that parameter requires (a consuming function for a borrowed requirement, an uncontracted or unknown value for any mode) |
 | `OAK-B0117` | a function body does not produce its declared result identity: a fresh-return body returns a parameter or an alias of one, an alias-return body returns anything but the declared parameter's authority on some path, or a borrow-return body returns authority derived from a parameter outside its declared origin set or of unknown provenance, or widens a shared borrow into a declared mutable reborrow |
 | `OAK-B0118` | a borrowed result's dependency is violated: its owner is mutated, consumed, or rebound while it lives; the result itself is mutated (unless it is a mutable reborrow), consumed, stored in an array, stored in a record whose binding outlives an owner, or returned without a contract tying it to the parameter it depends on; a record holding a borrowed field is passed to a call or returned; or a rebinding would let the result outlive its owner or its scope |
+| `OAK-B0120` | an owned resource whose protocol declares terminal states leaves scope, or is rebound, without having reached one on every path and without passing its custody on by return, consumption, or a surviving alias |
 | `OAK-B0119` | a resource is used — read, projected, passed in any position, rebound, or returned — while a live mutable reborrow of it (or of an alias) suspends it, until the reborrow's scope ends |
 | `OAK-B0113` | a region-indexed signature is invalid (its return region names no parameter or two, or a view from a span region), its body returns a borrow outside the region, or a call's region argument is not a traceable borrow |
 
@@ -280,6 +281,11 @@ For `OAK-B0119`, the primary label is the suspended use; a secondary
 label marks the binding of the mutable reborrow that suspends the owner,
 and the help suggests finishing with the reborrow in an inner scope or
 borrowing as shared.
+
+For `OAK-B0120`, the primary label is where the name took custody (its
+declaration, or the parameter); the title names the resource type and its
+terminal states and says whether the terminal state is missing on every
+path or on some only; the note lists the closers.
 
 For `OAK-B0113` (`50-borrowing.md` section 8c), the primary label is the returned expression in the callee, or the region argument at the caller. A note names what the returned view borrows instead (a local owner, another parameter, a temporary) or why the source cannot be traced, and the help names the parameter the signature commits to.
 

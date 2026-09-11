@@ -550,8 +550,22 @@ func (comp Compilation) EmitHeader() Stage[string] {
 	})
 }
 
-// EmitLean extracts the program's own declarations (never the spliced
-// standard library) into Lean 4 definitions under the given namespace
+// EmitLeanRoots extracts the named declarations and everything they reach
+// (callees, the types they mention) into Lean 4 definitions under the given
+// namespace (docs/spec/95-extraction.md section 4). The standard-library
+// extraction uses it with a package's own declarations as roots.
+func (comp Compilation) EmitLeanRoots(namespace string, roots []string) Stage[string] {
+	return comp.Check().Then(func(model *SemanticModel) (string, error) {
+		names := map[string]bool{}
+		for _, root := range roots {
+			names[root] = true
+		}
+		return lean.Emit(model.Tree.Root, model.TypeChecker, namespace, names)
+	})
+}
+
+// EmitLean extracts the program's own declarations, and the library
+// functions they call, into Lean 4 definitions under the given namespace
 // (docs/spec/95-extraction.md, codegen/lean). The extraction reads the
 // type-checked tree before lowering, so it sees the program as written.
 func (comp Compilation) EmitLean(namespace string) Stage[string] {
