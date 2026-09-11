@@ -254,12 +254,40 @@ scratch, fuel above 8800 — the extracted `rup_check` returns exactly
 table's database, the decoded target, and the one-based hint ids. Same
 axioms again.
 
-What this buys: the decoder's and the kernel's corpus comparisons are now
-regression checks, and the one gap between the extraction's acceptance
-and `OakTextRefinement.check_refines` is the stream loop itself — the
-extracted `rup_stream_check`'s seven loops against `CertifiedStream.run`
-on a represented layout, with `rup_check_spec` discharging every
-publication.
+`proof/ExtractionStream.lean` proves the stream checker and closes the
+chain. `StreamRel` states how the loop's state — the 256-slot tables, the
+last addition id, the refutation flag — represents a `CertifiedStream.State`;
+the seven loops are proved against list functions as before (the table
+zeroing, the literal check against the model's pool guard, the initial
+clauses against `LiveTable.initialTable` and the model's empty-clause scan,
+the hint mapping as `refOK` over the reference slice, the clause copy as
+`targetList` = `clauseAt`, the deletions as `clearAll`, which
+`deleteIDs_clearAll` identifies with the model's sequential `deleteIDs`),
+and the command loop is proved against `CertifiedStream.commands` one
+command at a time through the model's own case split (`command_add_check`
+and its siblings), with `rup_check_spec` discharging the kernel call: the
+copied clause is the pool's clause, the mapped hints read back are the
+reference slice, and the kernel's answer is `PropagationChain.check`'s.
+`rup_stream_check_spec` states the result: on every layout the decoder can
+hand over (`LayoutRel`, arrays inside the fixed capacities), with fuel
+above 9100, the extracted `rup_stream_check` returns exactly
+`CertifiedStream.check raw`.
+
+`rup_text_check_sound` is the composition and the end of the chain: for
+any pair of texts below the `UInt32` range, with fuel above twice both
+lengths plus 9101, if the extracted `rup_text_check` returns `true` then
+the model's layout of those texts exists and its initial database is
+unsatisfiable — `CertifiedStream.check_sound` transported to the
+compiler's extraction of the whole Oak program. Same axioms:
+`propext`, `Classical.choice`, `Quot.sound`.
+
+What this buys: the scanner, decoder, kernel, and stream corpus
+comparisons are all regression checks now. What remains between the
+compiled binary and the theorem is the extractor's fidelity to the
+compiled program and the compiler itself, which the extraction lane's
+own tests and the differential witnesses cover, and the string-level
+corollary (the theorem is over byte arrays; `ByteArray.toList` lacks its
+data lemma).
 
 The standard-library laws live next to the extractions, one file per
 package, and are theorems about the extracted programs — so about the Oak
@@ -316,10 +344,8 @@ most; the kernel-decided facts use no axioms.
 - The subset: strings and the text library, methods, and recursion;
   instantiations whose arguments are arrays or views; the `checked` float
   rows and `fma` once Lean carries them exactly.
-The stream checker (`rup_stream_check`, seven loops, against
-`CertifiedStream.check`, with `rup_check_spec` already covering the kernel
-it calls), which closes the transfer of `check_refines` to the extraction; the string-level
-corollary once `ByteArray.toList` has its data lemma; then the constructs
+The string-level corollary of `rup_text_check_sound` once
+`ByteArray.toList` has its data lemma; then the constructs
 the verification programs need next (matches over records, the `checked`
 rows), each added with its own fail-closed test. Integer-constant matches and the integer
 conversion rows were added for the ml subset (op dispatch on constants,
