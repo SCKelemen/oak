@@ -45,6 +45,10 @@ type ResourceOperation struct {
 	// Receiver is the authority mode of a method's receiver, its own slot
 	// beside the explicit parameters (docs/spec/50-borrowing.md section 9).
 	Receiver ResourceParameterMode
+	// Trusted marks the result identity as an assumption recorded from a
+	// `via unsafe` line: the body is not validated against it (OAK-B0117
+	// is not raised for this callable), callers reason from it unchanged.
+	Trusted bool
 }
 
 // ResourceModel is the syntax-independent bridge from resolved types/callables
@@ -283,7 +287,10 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 		// The body's scopes have ended; the result checks judge names bound
 		// inside them by the dependencies they had.
 		analysis.mergeDependents(analysis.expired, analysis.expiredScope, analysis.expiredDecl)
-		if hasContract {
+		// A trusted result identity (`via unsafe`) is the explicit boundary
+		// where the body is not held to its claim; every other check —
+		// entry authority, retention, exclusivity — still applies.
+		if hasContract && !own.Trusted {
 			analysis.checkResultContract(fn, own)
 		}
 		analysis.checkRetainedReturn(fn, own, hasContract)

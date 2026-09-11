@@ -779,7 +779,7 @@ byte-boundary limits. They verify deterministic reuse, reservation, double relea
 short storage, maximum u32 bounds, preserved tail/spare bits and the runnable
 record-valued example. Emitted example C is checked for allocator calls.
 
-The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs, with one exception growing: `oak build -lean` extracts whole packages into Lean (`docs/spec/95-extraction.md` section 5) — `varint`, `encoding`, `hash`, `random`, `uuid`, and `sort` at `u32` today, committed under `spec/lean/Oak/Stdlib/` with a drift test — and `Oak/Stdlib/VarintLaws.lean` decides the first law about an extraction in the kernel: encoding then decoding is the identity for every one-byte value, for one value of every encoding length up to ten, for the RFC example, and for the `u64` maximum, and the over-long and truncated forms are rejected. Those are statements about the extracted program, not corpus agreement. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and canonicity (`canonical`: whatever the decoder accepts, the encoder writes back byte for byte); `SortLaws.lean` proves the extracted insertion sort returns a sorted permutation, and records that heap sort and `sort_span` extract unfaithfully until oak #186 is fixed; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native ; that the extracted program is the compiled one is checked by `TestLeanStdlibFaithful`, which runs both on a fixed corpus (sorts, varint, hex and base64, xoshiro, CRC-32C, SHA-256) and compares byte for byte. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and records that the decoder still accepts the zero-padded spelling `80 00`; `SortLaws.lean` proves the extracted insertion sort returns a sorted permutation, and records that heap sort and `sort_span` extract unfaithfully until oak #186 is fixed; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native
+The standard-library workflow runs the full Go suite with the race detector. These are implementation tests, not formal refinement proofs, with one exception growing: `oak build -lean` extracts whole packages into Lean (`docs/spec/95-extraction.md` section 5) — `varint`, `encoding`, `hash`, `random`, `uuid`, and `sort` at `u32` today, committed under `spec/lean/Oak/Stdlib/` with a drift test — and `Oak/Stdlib/VarintLaws.lean` decides the first law about an extraction in the kernel: encoding then decoding is the identity for every one-byte value, for one value of every encoding length up to ten, for the RFC example, and for the `u64` maximum, and the over-long and truncated forms are rejected. Those are statements about the extracted program, not corpus agreement. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and canonicity (`canonical`: whatever the decoder accepts, the encoder writes back byte for byte); `SortLaws.lean` proves the extracted insertion sort and heap sort return sorted permutations for every input, the window write-back a permutation, and `sort_span` a sorted permutation below the insertion threshold and once the depth budget is spent, the pattern-defeating path in between decided on adversarial inputs; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native ; that the extracted program is the compiled one is checked by `TestLeanStdlibFaithful`, which runs both on a fixed corpus (sorts, varint, hex and base64, xoshiro, CRC-32C, SHA-256) and compares byte for byte. Native the laws next to them are theorems about those extractions: `VarintLaws.lean` proves the LEB128 round trip for every `u64` by induction over the extracted loops and records that the decoder still accepts the zero-padded spelling `80 00`; `SortLaws.lean` proves the extracted insertion sort returns a sorted permutation, and records that heap sort and `sort_span` extract unfaithfully until oak #186 is fixed; `EncodingLaws.lean` proves the hexadecimal round trip for every source and decides the RFC 4648 base64/base32 vectors; `RandomLaws.lean` proves `random_next` is the published xoshiro256** step and that `random_below`/`random_range` stay in bounds. These are statements about the extracted program, not corpus agreement, and hold with at most `propext`, `Classical.choice`, and `Quot.sound`. Native
 Apple Silicon execution, PAC/tag representations, capability transfer/revocation,
 allocator-backed pools, intrusive trees/hash tables, concurrent rings, broader collections and persistence
 protocols remain separate work; importing this module does not implement them.
@@ -1123,3 +1123,48 @@ program carves the ranges with `subslice` over `view(&b)` or `span(&b)` of
 a `Buffer[T]` or a fixed array, so the borrow checker decides what may be
 live at once. Executed over a libc allocation in
 `compiler/e2e_buffers_test.go`.
+
+## `iosim` and `ionative`: the IO port (`import("io")`)
+
+`docs/spec/120-io.md` fixes one completion-ring port two packages realize
+with an identical exported surface. A program imports the port as `io`
+and its manifest selects the realization — `replace io => iosim` for a
+simulation build, `replace io => ionative` for the operating system — so
+nothing in the program text changes (`compiler/e2e_io_port_test.go` is
+one consumer under both).
+
+- Storage is caller-owned and bounded: `IoRing`, `[N]IoRequest`,
+  `[N]IoCompletion`, and one byte region every buffer is a `(base, len)`
+  window into. `io_submit` returns false when the submission storage is
+  full; `io_wait`/`io_poll` complete into the completion storage from
+  index 0 and return the count (the storage must hold every pending
+  request). Ops: `io_op_open`, `close`, `pread`, `pwrite`, `fsync`,
+  `fdatasync`, `fsyncdir` (the directory's path bytes in the window);
+  errors are the closed set `io_err_*` in `IoCompletion.error`, 0 for
+  success. A request with `link` set must complete before the next one
+  starts, and its failure cancels the rest of the chain (`io_err_canceled`).
+- `iosim` is pure Oak over `SimDisk` (this module): a 64-block, 64-byte
+  device holding up to 8 files of 512 bytes; bytes are packed into words,
+  writes tear at block boundaries exactly as the device's mask allows,
+  `io_wait` completes chains in a tape-chosen order, `io_poll` completes a
+  tape-chosen subset. `io_attach(data, faults)` binds the run's tape and
+  fault mask; `iosim_crash`/`iosim_restart` are the scenario's crash
+  events (files close, unsynced bytes vanish, sizes revert);
+  `iosim_trusted(slot)` says whether the durability contract applies to a
+  file; `iosim_fault_count(kind)` reads the device's ledger; the
+  submit/complete ledger (`iosim_ledger_*`) is the scenario's to forward to
+  `testing_trace`. `testrunner/io_sim_test.go` runs a linked-fsync log
+  through torn, dropped and lost-fsync faults and a crash.
+- `ionative` is the portable backend of §5: bindings to
+  `stdlib/native/oak_io_host.c` (`openat`, `close`, `pread`, `pwrite`,
+  `fsync`, `fdatasync`, directory `fsync`), each declaring
+  `effects { Os.Syscall }`; errno is mapped onto the port's errors in the
+  shim and the raw code is readable through `ionative_last_errno`. Link
+  the shim into any program that imports it. A `Sim` test package rejects
+  it (undeclared externs), so the operating system cannot enter a
+  simulation by mistake.
+- `Oak.IoPort` (`spec/lean/Oak/IoPort.lean`) proves the contract's shape:
+  a failed linked request cancels exactly the rest of its chain, a
+  completed fsync covers every write completed before its submission and
+  claims nothing else, and a read of a written range sees the write.
+

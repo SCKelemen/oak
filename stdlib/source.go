@@ -139,6 +139,18 @@ var timenativeSource string
 //go:embed arena.oak
 var arenaSource string
 
+// iosim and ionative are the two realizations of the IO port
+// (docs/spec/120-io.md): completion rings over SimDisk for simulation,
+// and over host bindings (stdlib/native/oak_io_host.c) for the operating
+// system. A program imports the port as `io` and selects a realization
+// with `replace io => iosim` or `replace io => ionative`.
+//
+//go:embed iosim.oak
+var iosimSource string
+
+//go:embed ionative.oak
+var ionativeSource string
+
 // Prelude is the core library (std.oak): Option, Result, Overflow, byte and
 // ring helpers. Every standard library package builds on it unqualified, and
 // the loader splices it into any program that imports a library package.
@@ -197,6 +209,8 @@ var TestingSource = testingSource + "\n" + simStorageSource + "\n" + simSchedSou
 // declarations of strings.oak as `strings.member`. The views share the flat
 // bootstrap prelude, which the loader splices in alongside them.
 var Packages = map[string]string{
+	"iosim":           iosimSource,
+	"ionative":        ionativeSource,
 	"strings":         stringsSource,
 	"unicode":         unicodeSource,
 	"json":            jsonSource,

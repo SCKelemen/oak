@@ -111,6 +111,7 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 				Terminal:         terminalStates[transition.To],
 				Targets:          sortedTargets(callable),
 				Receiver:         receiverModeFromSemIR(semantics.Receiver),
+				Trusted:          semantics.ReturnTrusted,
 			})
 		}
 	}
@@ -224,7 +225,7 @@ func sameResourceOperation(left, right ResourceOperation) bool {
 }
 
 func sameResourceTransitionSemantics(left, right semir.ResourceTransitionSemantics) bool {
-	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver ||
+	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver || left.ReturnTrusted != right.ReturnTrusted ||
 		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) ||
 		left.ReturnsBorrow != right.ReturnsBorrow || (left.ReturnsBorrow && (!sameIndexSet(left.BorrowsArguments, right.BorrowsArguments) || left.BorrowMutable != right.BorrowMutable)) {
 		return false

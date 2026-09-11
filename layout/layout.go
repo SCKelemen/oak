@@ -133,6 +133,14 @@ func normalize(raw []token.Token) []token.Token {
 			pending.active = false
 		}
 
+		// `unsafe` opens a body only when a brace or an indented line follows
+		// it. Followed by anything else on its own line — `via unsafe f(...)`
+		// on a protocol transition (docs/spec/112-protocols.md section 5) — it
+		// is a marker, not a block header.
+		if pending.active && pending.kind == token.UNSAFE && !newLine && tok.TokenKind != token.LBRACE {
+			pending.active = false
+		}
+
 		// Oak currently permits expression-bodied functions using '='. Do not
 		// synthesize a block for those functions.
 		if tok.TokenKind == token.ASSIGN && pending.active && pending.kind == token.FN {

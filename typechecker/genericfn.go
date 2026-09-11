@@ -670,7 +670,7 @@ func substituteExpr(expr ast.Expression, bindings map[string]ast.Expression) (as
 				function = replacement
 			}
 		}
-		out := &ast.InvocationExpression{Token: e.Token, Function: function}
+		out := &ast.InvocationExpression{Token: e.Token, Function: function, ResolvedMethod: e.ResolvedMethod}
 		for _, arg := range e.Arguments {
 			substituted, ok := substituteExpr(arg, bindings)
 			if !ok {

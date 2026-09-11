@@ -1132,7 +1132,7 @@ theorem rup_loop4_spec (pool starts lengths hints : Array UInt32) (hint_count va
       8192 + 2 * (hint_count.toNat - h.toNat) + 2 < fuel →
       ∃ (a' : Array UInt8) (valid' conflict' : Bool) (h' : UInt32),
         rup_check.loop4 pool starts lengths hints hint_count a variables true false false h fuel =
-          some (a', valid', conflict', h') ∧
+          some (a', valid', conflict', h') ∧ a'.size = a.size ∧
         (valid' && conflict') = walk variables.toNat (LiveTable.database (toNats pool) t) s
           (((hintList hints hint_count.toNat).drop h.toNat).map (· + 1)) := by
   intro fuel
@@ -1184,7 +1184,7 @@ theorem rup_loop4_spec (pool starts lengths hints : Array UInt32) (hint_count va
         obtain ⟨f, hfe⟩ : ∃ f, fuel = f + 1 := ⟨fuel - 1, by omega⟩
         rw [hfe, rup_check.loop4]
         simp only [Bool.false_and, Bool.and_false, Bool.false_eq_true, ite_false, pure]
-        exact ⟨a, false, false, h + 1, rfl, rfl⟩
+        exact ⟨a, false, false, h + 1, rfl, rfl, rfl⟩
       | false =>
         simp only [Bool.not_false, ite_true]
         rw [beq_ofNat32 r' 0 (by decide), beq_ofNat32 r' 1 (by decide), hr]
@@ -1199,7 +1199,7 @@ theorem rup_loop4_spec (pool starts lengths hints : Array UInt32) (hint_count va
             obtain ⟨f, hfe⟩ : ∃ f, fuel = f + 1 := ⟨fuel - 1, by omega⟩
             rw [hfe, rup_check.loop4]
             simp only [Bool.not_true, Bool.and_false, Bool.false_eq_true, ite_false, pure]
-            refine ⟨a, true, true, h + 1, rfl, ?_⟩
+            refine ⟨a, true, true, h + 1, rfl, rfl, ?_⟩
             have hnil : (hintList hints hint_count.toNat).drop (h.toNat + 1) = [] :=
               List.drop_eq_nil_of_le (by rw [hintList_length hints hint_count.toNat hhc]; omega)
             rw [hnil]
@@ -1208,7 +1208,7 @@ theorem rup_loop4_spec (pool starts lengths hints : Array UInt32) (hint_count va
             obtain ⟨f, hfe⟩ : ∃ f, fuel = f + 1 := ⟨fuel - 1, by omega⟩
             rw [hfe, rup_check.loop4]
             simp only [Bool.false_and, Bool.and_false, Bool.false_eq_true, ite_false, pure]
-            refine ⟨a, false, false, h + 1, rfl, ?_⟩
+            refine ⟨a, false, false, h + 1, rfl, rfl, ?_⟩
             have hne : (hintList hints hint_count.toNat).drop (h.toNat + 1) ≠ [] := by
               intro hnil
               have := congrArg List.length hnil
@@ -1232,11 +1232,11 @@ theorem rup_loop4_spec (pool starts lengths hints : Array UInt32) (hint_count va
             have hnv : n / 2 < variables.toNat := hbound n hnmem
             rw [toNat_div2, hun, dec_index]
             have hrel' := scratchRel_write variables.toNat s a hrel hsize (n / 2) hnv (decodeLiteral n).positive
-            obtain ⟨a', v', c', h', hrun, hw⟩ := ih (h + 1) (write s (n / 2) (decodeLiteral n).positive)
+            obtain ⟨a', v', c', h', hrun, hsz, hw⟩ := ih (h + 1) (write s (n / 2) (decodeLiteral n).positive)
               (a.setIfInBounds (n / 2) (UInt8.ofNat (encode (some (decodeLiteral n).positive)))) hrel'
               (by rw [size_set8]; exact hsize) (by omega) (by omega)
             rw [hsucc] at hw
-            exact ⟨a', v', c', h', hrun, hw⟩
+            exact ⟨a', v', c', h', hrun, by rw [hsz, size_set8], hw⟩
           | cons m rest =>
             rw [hcr hsat (by rw [hunits]; simp)]
             have h0 : ((n :: m :: rest).length == 0) = false := by simp
@@ -1245,7 +1245,7 @@ theorem rup_loop4_spec (pool starts lengths hints : Array UInt32) (hint_count va
             obtain ⟨f, hfe⟩ : ∃ f, fuel = f + 1 := ⟨fuel - 1, by omega⟩
             rw [hfe, rup_check.loop4]
             simp only [Bool.false_and, Bool.and_false, Bool.false_eq_true, ite_false, pure]
-            exact ⟨a, false, false, h + 1, rfl, rfl⟩
+            exact ⟨a, false, false, h + 1, rfl, rfl, rfl⟩
     · have hlt : decide (h < hint_count) = false := by
         have := lt_iff_toNat h hint_count
         exact Bool.eq_false_iff.mpr (fun h => hin (this.mp h))
@@ -1253,7 +1253,7 @@ theorem rup_loop4_spec (pool starts lengths hints : Array UInt32) (hint_count va
       have hnil : (hintList hints hint_count.toNat).drop h.toNat = [] :=
         List.drop_eq_nil_of_le (by rw [hintList_length hints hint_count.toNat hhc]; omega)
       rw [hnil]
-      exact ⟨a, true, false, h, rfl, rfl⟩
+      exact ⟨a, true, false, h, rfl, rfl, rfl⟩
 
 /-! ## The kernel -/
 
@@ -1396,7 +1396,7 @@ theorem rup_check_spec (pool starts lengths target hints : Array UInt32) (assign
       rup_check pool starts lengths 256 target target_count hints hint_count assignments variables fuel =
         some ((PropagationChain.check variables.toNat (LiveTable.database (toNats pool) t)
           ((targetList target target_count.toNat).map decodeLiteral)
-          ((hintList hints hint_count.toNat).map (· + 1))).isSome, a') := by
+          ((hintList hints hint_count.toNat).map (· + 1))).isSome, a') ∧ a'.size = assignments.size := by
   obtain ⟨f, rfl⟩ : ∃ f, fuel = f + 1 := ⟨fuel - 1, by omega⟩
   unfold rup_check
   -- The entry guards other than the variable bound all hold.
@@ -1451,7 +1451,7 @@ theorem rup_check_spec (pool starts lengths target hints : Array UInt32) (assign
       simp only
       rw [rup_loop4_invalid]
       simp only [Bool.false_and, pure]
-      exact ⟨a1, by rw [check_isSome_hints _ _ _ _ hall]⟩
+      exact ⟨a1, by rw [check_isSome_hints _ _ _ _ hall], hsize1⟩
     | true =>
       -- Loop 3 assumes the negated target.
       obtain ⟨a3, i3, hrun3, hsize3, hrel3⟩ := rup_loop3_spec target target_count variables htarget htsize htvars
@@ -1464,9 +1464,9 @@ theorem rup_check_spec (pool starts lengths target hints : Array UInt32) (assign
       · -- A contradiction among the assumptions: the chain is never walked.
         rw [hc, rup_loop4_contradictory]
         simp only [Bool.true_or, Bool.and_true, pure]
-        exact ⟨a3, by rw [check_isSome_clash _ _ _ _ hp hnv hta hall hpre]⟩
+        exact ⟨a3, by rw [check_isSome_clash _ _ _ _ hp hnv hta hall hpre], by rw [hsize3, hsize1]⟩
       · rw [hc]
-        obtain ⟨a4, v4, c4, h4, hrun4, hwalk⟩ := rup_loop4_spec pool starts lengths hints hint_count variables t live
+        obtain ⟨a4, v4, c4, h4, hrun4, hsize4, hwalk⟩ := rup_loop4_spec pool starts lengths hints hint_count variables t live
           hpool hpvars hhints hn htable hlive
           (fun i hi => by
             have := List.all_eq_true.mp hall ((hints.getD i 0).toNat + 1)
@@ -1478,7 +1478,7 @@ theorem rup_check_spec (pool starts lengths target hints : Array UInt32) (assign
         rw [UInt32.toNat_zero, List.drop_zero] at hwalk
         rw [hrun4]
         simp only [Bool.false_or, pure]
-        refine ⟨a4, ?_⟩
+        refine ⟨a4, ?_, by rw [hsize4, hsize3, hsize1]⟩
         rw [hwalk, ← chain_walk, check_isSome_chain _ _ _ _ _ hp hnv hta hall hpre]
   · -- Outside the variable bound every loop exits at once.
     have hfalse : (decide (0 < variables.toNat) && decide (variables.toNat ≤ 64)) = false := by
@@ -1496,7 +1496,7 @@ theorem rup_check_spec (pool starts lengths target hints : Array UInt32) (assign
     simp only
     rw [rup_loop4_invalid]
     simp only [Bool.false_and, pure]
-    exact ⟨assignments, by rw [check_isSome_variables _ _ _ _ (by omega)]⟩
+    exact ⟨assignments, by rw [check_isSome_variables _ _ _ _ (by omega)], rfl⟩
 
 #print axioms rup_check_spec
 end OakVerification.Extraction
