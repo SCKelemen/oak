@@ -14,6 +14,11 @@ jobs:
     strategy:
       matrix:
         go-version: ['1.27.1']
+        # The compiler package's end-to-end suite under the race detector
+        # passed the 40-minute ceiling once the standard library grew; the
+        # shards partition every test name exactly once (compiler E2E A-R,
+        # compiler E2E S-Z, the rest of compiler, every other package).
+        shard: [e2e-a-r, e2e-s-z, compiler-rest, packages]
 
     steps:
     - name: Checkout code
@@ -44,7 +49,13 @@ jobs:
     - name: Run tests
       env:
         OAK_TLA2TOOLS_JAR: /tmp/tla2tools.jar
-      run: go test -v -race -timeout 40m ./...
+      run: |
+        case "${{ matrix.shard }}" in
+          e2e-a-r) go test -v -race -timeout 45m ./compiler -run '^TestE2E[A-R]' ;;
+          e2e-s-z) go test -v -race -timeout 45m ./compiler -run '^TestE2E[S-Z]' ;;
+          compiler-rest) go test -v -race -timeout 45m ./compiler -run '^Test([^E]|E[^2]|E2[^E])' ;;
+          packages) go test -v -race -timeout 45m $(go list ./... | grep -v '/compiler$') ;;
+        esac
 
   aarch64-memory-refinement:
     name: AArch64 Memory Refinement

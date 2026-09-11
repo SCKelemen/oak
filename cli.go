@@ -377,10 +377,11 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// compileBinary emits C for the package and compiles it with the system C
-// compiler into binary (fixed argument list, no shell).
-func compileBinary(comp compiler.Compilation, binary string) error {
-	code, err := comp.EmitC().Get()
+// compileBinary emits C for the package (and, in native asm mode, the asm
+// units' companion object) and compiles it with the system C compiler into
+// binary (fixed argument list, no shell).
+func compileBinary(comp compiler.Compilation, binary, asmMode string) error {
+	code, object, err := emitForHost(comp, asmMode)
 	if err != nil {
 		return err
 	}
@@ -400,7 +401,15 @@ func compileBinary(comp compiler.Compilation, binary string) error {
 	// -ffp-contract=off keeps floating-point semantics exactly as written
 	// (docs/spec/90-backend.md section 7a); -lm links the C99 math library
 	// the float intrinsics lower to.
-	build := exec.Command(cc, "-std=c99", "-O1", "-ffp-contract=off", "-o", binary, cPath, "-lm")
+	ccArgs := []string{"-std=c99", "-O1", "-ffp-contract=off", "-o", binary, cPath}
+	if object != nil {
+		objPath := filepath.Join(work, "asm.o")
+		if err := os.WriteFile(objPath, object, 0o600); err != nil {
+			return err
+		}
+		ccArgs = append(ccArgs, objPath)
+	}
+	build := exec.Command(cc, append(ccArgs, "-lm")...)
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		return fmt.Errorf("C compilation failed: %v", err)
@@ -469,7 +478,7 @@ func installPackage(args []string) int {
 	}
 	target := filepath.Join(bin, name)
 	comp := compiler.New().WithPackageDir(dir).WithProfile(profile).WithDiagnosticSink(reportAsmVerdict)
-	if err := compileBinary(comp, target); err != nil {
+	if err := compileBinary(comp, target, defaultAsmMode()); err != nil {
 		fmt.Fprintf(os.Stderr, "oak install: %v\n", err)
 		return 1
 	}
