@@ -66,6 +66,31 @@ static inline u8 oak_view_index_u8(oak_view_u8 v, u64 i) {
   return v.base[i];
 }
 
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline const char *oak_cstr_u8(oak_view_u8 v, const char *file, u32 line) {
+  if (v.len == 0u || v.base[v.len - 1u] != 0u) {
+    fprintf(stderr, "oak: c.cstr view is not NUL-terminated at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+  return (const char *)v.base;
+}
+#else
+static inline const char *oak_cstr_u8(oak_view_u8 v, const char *file, u32 line) {
+  (void)file; (void)line;
+  if (v.len == 0u || v.base[v.len - 1u] != 0u) { __builtin_trap(); }
+  return (const char *)v.base;
+}
+#endif
+
+static inline u32 oak_cstr_len(const void *p) {
+  const unsigned char *s = (const unsigned char *)p;
+  u64 n = 0;
+  if (s == 0) { return 0u; }
+  while (s[n] != 0u) { n++; if (n > 0xFFFFFFFFull) { __builtin_trap(); } }
+  return (u32)n;
+}
+
 static inline oak_view_u8 oak_view_subslice_u8(oak_view_u8 v, u64 start, u64 n) {
   if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }
   return (oak_view_u8){ v.base + start, (u32)n };
