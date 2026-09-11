@@ -8,7 +8,8 @@ import (
 // Conversions of constants in global initializers (ml finding F19,
 // docs/spec/60-effects-allocation.md section 10a): a named conversion or a
 // float constructor over constants is folded by the backend, so a
-// quantization table or a rounded threshold can be static storage. The
+// quantization table or a rounded threshold can be static storage, and a
+// constant global may be read by the constant initializers after it. The
 // compiled program reads the folded values; the interpreter computes the
 // same ones at load.
 const globalConstantsProgram = `
@@ -31,6 +32,11 @@ INF: f32 = f32_round_f64(1e300)
 NEGATIVE: f32 = -f32_round_i32(2)
 LIMITS: Limits = Limits { half: f16_round_f32(1.5), scale: f32_round_i32(4), byte: u8_saturating_u32(u32(300)) }
 TABLE: [4]bf16 = [4]bf16{ bf16_round_f32(1.0), bf16_round_f32(0x1.01p0), bf16_round_f32(0x1.018p0), bf16_round_f32(-2.0) }
+ROWS: u32 = u32(6)
+COLS: u32 = u32(7)
+CELLS: u32 = ROWS * COLS
+LAST: u32 = CELLS - u32(1)
+SCALED: f32 = f32_round_u32(CELLS) * 0.5
 
 checks: (): u32 {
   score: u32 = 0
@@ -48,6 +54,7 @@ checks: (): u32 {
   score = f32(LIMITS.half) == 1.5 && LIMITS.scale == 4.0 && LIMITS.byte == u8(255) ? score + 1 | score
   score = u16_bits_bf16(TABLE[0]) == u16(16256) && u16_bits_bf16(TABLE[1]) == u16(16256) ? score + 1 | score
   score = u16_bits_bf16(TABLE[2]) == u16(16257) && f32(TABLE[3]) == -2.0 ? score + 1 | score
+  score = CELLS == u32(42) && LAST == u32(41) && SCALED == 21.0 ? score + 1 | score
   score
 }
 
@@ -56,7 +63,7 @@ main: (): i32 {
 }
 `
 
-const globalConstantsScore = 14
+const globalConstantsScore = 15
 
 func TestE2EGlobalConstantConversions(t *testing.T) {
 	code, abnormal := buildAndRun(t, "globalconstants", globalConstantsProgram)
