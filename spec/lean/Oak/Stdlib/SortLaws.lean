@@ -241,28 +241,30 @@ theorem bit_length_some (n : UInt32) (fuel : Nat) (hf : 32 < fuel) :
   unfold sort_bit_length
   simp [h]
 
-/-! ## A recorded gap in the extraction
+/-! ## The heap sort and pdqsort on the fixed extraction
 
-The heap sort and `sort_span` are extracted unfaithfully today: a loop body
-or an `if` arm that changes the array only through a call (`sort_sift_down`,
-`sort_partition`, `sort_insertion`, ...) does not return the array, so the
-mutation is dropped and the array comes back unchanged (oak issue #186).
-The compiled program sorts; the model does not. The witnesses below are the
-kernel's evaluations of the extracted functions on inputs the compiled code
-sorts; they are expected to stop compiling once the extractor is fixed and
-the file regenerated, at which point the heap and pdqsort laws replace them
-(`bit_length_some` above is the first lemma that proof will need).
+Until the extractor's write set was fixed (oak issue #186), a loop body or
+an `if` arm that changed the array only through a call did not return it,
+and a sorted window (`items[a:b]`) was never written back, so the extracted
+heap sort and `sort_span` returned their input unchanged. The kernel
+evaluations below are the same inputs the earlier gap witnesses used, now
+sorted; the universal heap and pdqsort laws remain to be stated
+(`bit_length_some` above is the first lemma they need).
 -/
 
-theorem heap_extraction_gap :
-    sort_heap_u32 #[3, 1, 4, 1, 5, 9, 2, 6] 1000 = some ((), #[1, 1, 2, 5, 9, 4, 6, 3]) := by
+theorem heap_sorts_example :
+    sort_heap_u32 #[3, 1, 4, 1, 5, 9, 2, 6] 1000 = some ((), #[1, 1, 2, 3, 4, 5, 6, 9]) := by
   decide +kernel
 
-/-- The same gap at the statement level: `sort_span_budget_u32` rebinds the
-array inside an `if` arm through the call to insertion sort, and the arm's
-result set omits it, so even three elements come back unsorted. -/
-theorem span_extraction_gap :
-    sort_span_u32 #[3, 1, 2] 100 = some ((), #[3, 1, 2]) := by
+theorem span_sorts_example :
+    sort_span_u32 #[3, 1, 2] 100 = some ((), #[1, 2, 3]) := by
+  decide +kernel
+
+/-- Sixteen elements take the pdqsort path (`n > 12`); the reversed input
+exercises the pattern-breaking and window write-back. -/
+theorem span_sorts_reversed :
+    sort_span_u32 #[16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1] 100000 =
+      some ((), #[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]) := by
   decide +kernel
 
 end Oak.Stdlib.SortU32
