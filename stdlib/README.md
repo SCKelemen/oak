@@ -547,6 +547,37 @@ unwrappers. The `random` generator is xoshiro256** and not cryptographic, so
 a version 4 value from this package identifies things but must not serve as
 a secret or a capability token; version 3 and 5 (MD5/SHA-1) are absent
 because the `hash` package carries neither digest.
+## Paths and glob patterns
+
+`stdlib/path.oak` (`import("path")`, also in the flat prelude) is Go's `path`
+package over caller-owned bytes: slash-separated, no OS-specific behavior.
+`path_clean(dst, src)` applies Go's four rules (collapse slashes, drop `.`,
+resolve inner `..`, drop a rooted leading `..`; the empty path is `.`),
+`path_join(dst, a, b)` joins two elements and cleans (empty elements are
+skipped; both empty is empty), and `path_dir(dst, src)` writes the cleaned
+directory. All three clean in place inside the destination, because Go's
+algorithm never writes past its read position, so a destination as long as
+the input (one byte for the empty path) always fits and is checked before
+the first store. `path_base`, `path_ext`, `path_split` and the iterator
+`path_next_component(src, begin)` return `PathRange`s into the source that
+callers slice themselves (a function may not return a view); the base of an
+empty path is the empty range where Go spells `.`. `path_is_abs` tests the
+leading slash.
+
+`path_match(pattern, name)` is Go's `path.Match`: `*` any run of non-slash
+characters, `?` one non-slash character (a whole UTF-8 scalar, as Go matches
+runes), `[class]` and `[^class]` with `lo-hi` ranges and `\` escapes, `\c`
+for a literal; the whole name must match and a malformed pattern is
+`Err(BadPattern)` even after the name has already failed (Go 1.16+
+semantics). `path_match_glob` adds `**` as a whole component matching zero
+or more components, so `a/**/b` matches `a/b` and `a/x/y/b`, `**/b` matches
+`b`, and `a/**` matches `a` and everything below it; components are compared
+pairwise with `path_match`, so `a//b` and an absolute name keep their slash
+structure. Matching backtracks over star positions without recursion or
+allocation. Errors are the closed `PathError = BadPattern |
+DestinationTooSmall` with `path_ok`, `path_written`, `path_failure`,
+`path_matched`, `path_match_failure` unwrappers, and `path_match_code` /
+`path_match_glob_code` return 0, 1 or 2 for callers that prefer a code.
 
 ## Strings and Unicode text
 
