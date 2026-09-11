@@ -80,6 +80,7 @@ type isaOperand struct {
 	Special  string
 	Count    int
 	Qual     string
+	Const    string // strided list head: the constant bits between T and Zt
 	Table    []isaTableRow
 	Sizes    []isaTableRow
 	Sub      []isaOperand

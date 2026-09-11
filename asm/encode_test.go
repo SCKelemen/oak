@@ -454,9 +454,13 @@ func instantiate(rng *rand.Rand, enc *isaEncoding, form *isaForm) (string, bool)
 			} else {
 				num, _ = strconv.Atoi(head[1:])
 			}
+			stride := 1
+			if fop.Special == "strided" {
+				stride = 1 << uint(fieldsWidthOf(enc, fop.Sub[0].Fields[1:]))
+			}
 			var regs []string
 			for k := 0; k < fop.Count; k++ {
-				regs = append(regs, fmt.Sprintf("z%d%s", (num+k)%32, elem))
+				regs = append(regs, fmt.Sprintf("z%d%s", (num+k*stride)%32, elem))
 			}
 			parts = append(parts, "{"+strings.Join(regs, ", ")+"}")
 		case "tilemask":
@@ -715,6 +719,11 @@ func randomScalable(rng *rand.Rand, enc *isaEncoding, fop *isaOperand, letters m
 	var num int64
 	if fop.Kind == "tile" && fop.Special == "fixed" {
 		num = fop.Offset
+	} else if fop.Special == "strided" && len(fop.Fields) == 2 {
+		// T : const : Zt — a head of z0-z7/z16-z23 (or z0-z3/z16-z19).
+		ztWidth := fieldsWidthOf(enc, fop.Fields[1:])
+		constBits, _ := strconv.ParseInt(fop.Const, 2, 8)
+		num = int64(rng.Intn(2))<<uint(ztWidth+len(fop.Const)) | constBits<<uint(ztWidth) | int64(rng.Intn(1<<uint(ztWidth)))
 	} else {
 		width := fieldsWidthOf(enc, fop.Fields)
 		if width == 0 {

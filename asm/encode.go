@@ -555,9 +555,19 @@ func (e *encoder) operand(fop *isaOperand, op Operand, pc int64, labels map[stri
 		if len(list.Regs) != fop.Count {
 			return nil, mismatch("%s wants %d registers", fop.Sym, fop.Count)
 		}
+		stride := 1
+		if fop.Special == "strided" {
+			// `{z0.s, z8.s}`: the stride is the span of the Zt field.
+			stride = 1 << uint(e.fieldWidth(fop.Sub[0].Fields[1]))
+		}
 		for i, reg := range list.Regs {
-			if reg.Num != (list.Regs[0].Num+i)%32 {
-				return nil, fmt.Errorf("%s: the registers of a multi-vector group are consecutive", fop.Sym)
+			// Arm: "Zn plus 1 modulo 32" — a consecutive group may wrap
+			// (`{z31.h, z0.h}`); a strided head's range keeps it from wrapping.
+			if reg.Num != (list.Regs[0].Num+i*stride)%32 {
+				if stride == 1 {
+					return nil, fmt.Errorf("%s: the registers of a multi-vector group are consecutive", fop.Sym)
+				}
+				return nil, fmt.Errorf("%s: the registers of a strided group are %d apart", fop.Sym, stride)
 			}
 		}
 		return e.operand(&fop.Sub[0], list.Regs[0], pc, labels)
@@ -636,6 +646,26 @@ func (e *encoder) tableFill(fields []string, rows []isaTableRow, text, sym strin
 // explanation encodes it: `"Zn" times 2` (the head of a pair), `"PNg" plus
 // 8`, `"Rs" plus 12`.
 func (e *encoder) scalableNumber(fop *isaOperand, reg Register) error {
+	if fop.Special == "strided" {
+		// T : const : Zt make the register number of a strided list's head.
+		if len(fop.Fields) != 2 {
+			return fmt.Errorf("%s: strided head without T and Zt fields", fop.Sym)
+		}
+		ztWidth := uint(e.fieldWidth(fop.Fields[1]))
+		constWidth := uint(len(fop.Const))
+		want, _ := strconv.ParseUint(fop.Const, 2, 8)
+		num := uint64(reg.Num)
+		if reg.Num < 0 || reg.Num > 31 {
+			return fmt.Errorf("%s: %s is not a z register", fop.Sym, reg.Text)
+		}
+		if (num>>ztWidth)&(1<<constWidth-1) != want {
+			return fmt.Errorf("%s: %s is not among the registers a strided group starts at", fop.Sym, reg.Text)
+		}
+		if err := e.writeFields(fop.Fields[:1], num>>(ztWidth+constWidth)); err != nil {
+			return err
+		}
+		return e.writeFields(fop.Fields[1:], num&(1<<ztWidth-1))
+	}
 	scale := fop.Scale
 	if scale <= 0 {
 		scale = 1
