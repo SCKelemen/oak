@@ -61,6 +61,47 @@ func ResourceReturnBorrow(index int) Effect {
 	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnBorrow, Parameters: []string{"arg:" + strconv.Itoa(index)}}
 }
 
+// ResourceTerminalGuarantee names the protocol guarantee that encodes a
+// terminal-state obligation: eventually one of the listed states holds.
+const ResourceTerminalGuarantee = "terminal"
+
+// EventuallyStates builds the formula eventually(s1 or s2 or ...).
+func EventuallyStates(states []string) TemporalExpr {
+	if len(states) == 1 {
+		return TemporalExpr{Kind: TemporalEventually, Args: []TemporalExpr{{Kind: TemporalAtom, Atom: states[0]}}}
+	}
+	disjunction := TemporalExpr{Kind: TemporalOr}
+	for _, state := range states {
+		disjunction.Args = append(disjunction.Args, TemporalExpr{Kind: TemporalAtom, Atom: state})
+	}
+	return TemporalExpr{Kind: TemporalEventually, Args: []TemporalExpr{disjunction}}
+}
+
+// TerminalStates decodes a protocol's terminal-state obligation from its
+// guarantees: the states under the "terminal" guarantee's eventually(...)
+// formula, or nil when the protocol declares none.
+func (p Protocol) TerminalStates() []string {
+	for _, guarantee := range p.Guarantees {
+		if guarantee.Name != ResourceTerminalGuarantee || guarantee.Formula.Kind != TemporalEventually || len(guarantee.Formula.Args) != 1 {
+			continue
+		}
+		body := guarantee.Formula.Args[0]
+		switch body.Kind {
+		case TemporalAtom:
+			return []string{body.Atom}
+		case TemporalOr:
+			var states []string
+			for _, arg := range body.Args {
+				if arg.Kind == TemporalAtom {
+					states = append(states, arg.Atom)
+				}
+			}
+			return states
+		}
+	}
+	return nil
+}
+
 // ResourceReturnBorrowMut constructs the effect for a result that is a
 // mutable reborrow of the argument at index.
 func ResourceReturnBorrowMut(index int) Effect {

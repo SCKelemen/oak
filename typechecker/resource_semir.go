@@ -21,6 +21,7 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 	}
 
 	model := NewResourceModel()
+	protocolOf := make(map[string]string)
 	for _, definition := range module.Definitions {
 		switch definition.Authority.Resource {
 		case semir.ResourceAuthorityUnspecified:
@@ -29,6 +30,7 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 			semir.ResourceAuthorityConsumed,
 			semir.ResourceAuthorityMaybeConsumed:
 			model.MarkResourceType(definition.Name)
+			protocolOf[definition.Name] = definition.Protocol
 		default:
 			return ResourceModel{}, fmt.Errorf(
 				"definition %q has invalid resource authority %q",
@@ -40,6 +42,10 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 
 	fullSemantics := make(map[string]semir.ResourceTransitionSemantics)
 	for _, protocol := range module.Protocols {
+		terminalStates := make(map[string]bool)
+		for _, state := range protocol.TerminalStates() {
+			terminalStates[state] = true
+		}
 		for _, transition := range protocol.Transitions {
 			semantics, present, err := transition.ResourceSemantics()
 			if err != nil {
@@ -75,8 +81,41 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 				ReturnsBorrow:    semantics.ReturnsBorrow,
 				BorrowsArguments: append([]int(nil), semantics.BorrowsArguments...),
 				BorrowMutable:    semantics.BorrowMutable,
+				Terminal:         terminalStates[transition.To],
 				Receiver:         receiverModeFromSemIR(semantics.Receiver),
 			})
+		}
+	}
+
+	// Terminal-state obligations: a protocol guaranteeing that a terminal
+	// state is eventually reached obliges every resource type it governs to
+	// reach one before its last name leaves scope; the closers are the
+	// transitions into those states.
+	for _, protocol := range module.Protocols {
+		terminal := protocol.TerminalStates()
+		if len(terminal) == 0 {
+			continue
+		}
+		isTerminal := make(map[string]bool, len(terminal))
+		for _, state := range terminal {
+			isTerminal[state] = true
+		}
+		var closers []string
+		for _, transition := range protocol.Transitions {
+			if isTerminal[transition.To] && transition.Callable != "" {
+				closers = append(closers, transition.Callable)
+			}
+		}
+		sort.Strings(closers)
+		types := make([]string, 0, len(protocolOf))
+		for typeName, protocolName := range protocolOf {
+			if protocolName == protocol.Name {
+				types = append(types, typeName)
+			}
+		}
+		sort.Strings(types)
+		for _, typeName := range types {
+			model.MarkObligation(typeName, ResourceObligation{Terminal: append([]string(nil), terminal...), Closers: closers})
 		}
 	}
 

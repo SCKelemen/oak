@@ -43,3 +43,34 @@ main: (): i32 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }
+
+// A template whose body builds a record literal (`Pair { index: a, hint: b }`)
+// must instantiate: the substitution used to fail closed on record and
+// array literals with "type arguments must be mangleable concrete types".
+func TestE2EGenericTemplateRecordLiteral(t *testing.T) {
+	src := `import(std)
+
+Pair: type = struct { index: u32, hint: u32 }
+
+pick[T]: (items: [*]T, a: u32, b: u32): Pair {
+  held: T = items[a]
+  items[a] = held
+  Pair { index: a, hint: b }
+}
+
+first_two[T]: (items: [*]T): [2]u32 {
+  [2]u32{ len(items), len(items) + u32(1) }
+}
+
+main: (): i32 {
+  data: [4]u32 = [4]u32{ 3, 2, 9, 1 }
+  chosen: Pair = pick[u32](span(&data), u32(2), u32(4))
+  pair: [2]u32 = first_two[u32](span(&data))
+  chosen.index == u32(2) && chosen.hint == u32(4) && pair[0] == u32(4) && pair[1] == u32(5) ? { 42 } | { 0 }
+}
+`
+	code, abnormal := buildAndRun(t, "generic_record_literal", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}

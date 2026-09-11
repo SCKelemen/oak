@@ -119,11 +119,11 @@ func TestModCommandsEndToEnd(t *testing.T) {
 		t.Fatalf("upgrade: %d\n%s", code, out)
 	}
 	// try: the current lib builds; a breaking candidate does not.
-	if code, out := run(t, "try", "example.com/lib", lib, "-dir", app); code != 0 || !strings.Contains(out, "compatible") {
+	if code, out := run(t, "try", "-dir", app, "example.com/lib", lib); code != 0 || !strings.Contains(out, "compatible") {
 		t.Fatalf("try: %d\n%s", code, out)
 	}
 	breaking := writeTree(t, map[string]string{"oak.mod": "module example.com/lib\nversion 2.0.0\n", "geometry/point.oak": strings.Replace(libV1, "pub sum: (p: Point): i32 = p.x + p.y", "pub sum: (p: Point): i64 = i64(p.x + p.y)", 1)})
-	if code, out := run(t, "try", "example.com/lib", breaking, "-dir", app); code != 1 || !strings.Contains(out, "incompatible") {
+	if code, out := run(t, "try", "-dir", app, "example.com/lib", breaking); code != 1 || !strings.Contains(out, "incompatible") {
 		t.Fatalf("try breaking: %d\n%s", code, out)
 	}
 	// tidy: clean module, then a stale require.
@@ -461,5 +461,74 @@ func TestCLIParityRoundB(t *testing.T) {
 	}
 	if code, out := run(t, "verify", app); code != 1 || !strings.Contains(out, "modified") {
 		t.Fatalf("verify modified: %d\n%s", code, out)
+	}
+}
+
+// Round C: patterns, uniform -h, program arguments after --, completion.
+func TestCLIParityRoundC(t *testing.T) {
+	lib := writeTree(t, map[string]string{"oak.mod": "module example.com/lib\nversion 1.0.0\n", "geometry/point.oak": libV1})
+	app := writeTree(t, map[string]string{
+		"oak.mod":       "module example.com/app\nrequire example.com/lib 1.0.0\nreplace example.com/lib => " + lib + "\n",
+		"main.oak":      "package main\n\ngeo := import(\"example.com/lib/geometry\")\n\nmain: (): i32 = geo.sum(geo.make(20, 22))\n",
+		"util/util.oak": "package util\n\npub zero: (): i32 = 0\n",
+	})
+	// Patterns expand through the module's packages.
+	dirs, err := expandPackagePatterns([]string{filepath.Join(app, "...")})
+	if err != nil || len(dirs) != 2 {
+		t.Fatalf("expand = %v %v", dirs, err)
+	}
+	if code, out := runCLI(t, vetPackage, []string{filepath.Join(app, "...")}); code != 0 || strings.Count(out, "no recorded assumptions") != 2 {
+		t.Fatalf("vet pattern: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, listPackages, []string{filepath.Join(app, "util", "...")}); code != 0 || !strings.Contains(out, "example.com/app/util") || strings.Contains(out, "example.com/app\n") {
+		t.Fatalf("list pattern: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, buildPackage, []string{"-emit-c", filepath.Join(app, "...")}); code != 0 || strings.Count(out, "Built") != 2 {
+		t.Fatalf("build pattern: %d\n%s", code, out)
+	}
+	for _, name := range []string{"app.c", "util.c"} {
+		os.Remove(name)
+	}
+	if code, _ := runCLI(t, buildPackage, []string{"-o", "x", filepath.Join(app, "...")}); code != 2 {
+		t.Fatal("build must refuse -o with several packages")
+	}
+	// -h on every flag-bearing command prints usage and exits 0.
+	for _, c := range []struct {
+		fn   func([]string) int
+		want string
+	}{
+		{buildPackage, "usage: oak build"}, {runPackage, "usage: oak run"}, {installPackage, "usage: oak install"},
+		{vetPackage, "usage: oak vet"}, {listPackages, "usage: oak list"}, {docCommand, "usage: oak doc"},
+		{fmtCommand, "usage: oak fmt"}, {cleanCommand, "usage: oak clean"}, {modTidy, "usage: oak mod tidy"},
+		{modEdit, "usage: oak mod edit"}, {modPack, "usage: oak mod pack"}, {modAPI, "usage: oak mod api"},
+		{modUpgrade, "usage: oak mod upgrade"}, {modTry, "usage: oak mod try"},
+	} {
+		if code, out := runCLI(t, c.fn, []string{"-h"}); code != 0 || !strings.Contains(out, c.want) {
+			t.Fatalf("-h for %s: %d\n%s", c.want, code, out)
+		}
+	}
+	if code, out := runCLI(t, vetPackage, []string{"-bogus"}); code != 2 || !strings.Contains(out, "run 'oak vet -h'") {
+		t.Fatalf("unknown flag: %d\n%s", code, out)
+	}
+	// Program arguments after -- reach the program (the build must still
+	// succeed and the exit status propagate).
+	if _, err := exec.LookPath("cc"); err == nil {
+		if code, _ := runCLI(t, runPackage, []string{app, "--", "alpha", "-beta"}); code != 42 {
+			t.Fatalf("run with program arguments exit = %d", code)
+		}
+	}
+	own, program := splitProgramArgs([]string{"-profile", "strict", "dir", "--", "-x", "y"})
+	if len(own) != 3 || len(program) != 2 || program[0] != "-x" {
+		t.Fatalf("split = %v %v", own, program)
+	}
+	// Completion scripts name every command and mod subcommand.
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		code, out := runCLI(t, completionCommand, []string{shell})
+		if code != 0 || !strings.Contains(out, "vendor") || !strings.Contains(out, "install") {
+			t.Fatalf("completion %s: %d\n%s", shell, code, out)
+		}
+	}
+	if code, _ := runCLI(t, completionCommand, []string{"tcsh"}); code != 2 {
+		t.Fatal("completion must reject an unknown shell")
 	}
 }

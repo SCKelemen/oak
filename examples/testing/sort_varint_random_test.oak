@@ -27,7 +27,7 @@ PropertySortPermutes: (data: []u8): () {
   true ? {
     whole: [*]u32 = span(&values)
     items: [*]u32 = whole[u32(0):count]
-    count > u32(16) ? { sort_heap[u32](items) } | { sort_insertion[u32](items) }
+    sort_span[u32](items)
   }
   true ? {
     sorted_whole: []u32 = view(&values)
@@ -142,4 +142,64 @@ PropertyShuffleIsPermutation: (data: []u8): () {
     test_check(random_below(state, bound) < bound, u32(7121))
     k = k + u32(1)
   }
+}
+
+// Adversarial inputs for the pattern-defeating quicksort: 7130 sorted,
+// 7131 a permutation (counts per value), 7132 sort_span_budget agrees with
+// sort_span for every budget including 0 (heapsort at once), 7133 heapsort
+// and insertion sort give the same result on the same input.
+PropertySortAdversarial: (data: []u8): () {
+  tape: [1]TestChoices
+  choices: [*]TestChoices = span(&tape)
+  values: [200]u32
+  copy: [200]u32
+  before: [64]u32
+  after: [64]u32
+  count: u32 = test_range(choices, data, u32(0), u32(200))
+  shape: u32 = test_range(choices, data, u32(0), u32(6))
+  budget: u32 = test_range(choices, data, u32(0), u32(3))
+  i: u32 = u32(0)
+  while i < count {
+    v: u32 = u32(0)
+    shape == u32(0) ? { v = test_range(choices, data, u32(0), u32(63)) } |
+    shape == u32(1) ? { v = i / u32(4) } |
+    shape == u32(2) ? { v = (count - i) / u32(4) } |
+    shape == u32(3) ? { v = u32(17) } |
+    shape == u32(4) ? { v = i < count / u32(2) ? i / u32(2) | (count - i) / u32(2) } |
+    shape == u32(5) ? { v = test_range(choices, data, u32(0), u32(2)) } |
+    { v = i % u32(7) }
+    values[i] = v
+    copy[i] = v
+    before[v] = before[v] + u32(1)
+    i = i + u32(1)
+  }
+  true ? {
+    whole: [*]u32 = span(&values)
+    items: [*]u32 = whole[u32(0):count]
+    sort_span[u32](items)
+  }
+  true ? {
+    whole2: [*]u32 = span(&copy)
+    items2: [*]u32 = whole2[u32(0):count]
+    sort_span_budget[u32](items2, budget)
+  }
+  true ? {
+    sorted_whole: []u32 = view(&values)
+    sorted: []u32 = sorted_whole[u32(0):count]
+    test_check(sort_is_sorted[u32](sorted), u32(7130))
+    j: u32 = u32(0)
+    while j < count {
+      after[sorted[j]] = after[sorted[j]] + u32(1)
+      test_check(copy[j] == sorted[j], u32(7132))
+      j = j + u32(1)
+    }
+  }
+  k: u32 = u32(0)
+  while k < u32(64) {
+    test_check(before[k] == after[k], u32(7131))
+    k = k + u32(1)
+  }
+  testing_classify(u32(190) + shape)
+  budget == u32(0) ? { testing_classify(u32(198)) }
+  count > u32(50) ? { testing_classify(u32(199)) }
 }

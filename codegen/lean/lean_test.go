@@ -156,16 +156,128 @@ narrow: (x: u64, y: i32): u32 {
 func TestExtractionFailsClosed(t *testing.T) {
 	cases := map[string]struct{ src, want string }{
 		"recursion":      {"f: (n: u32): u32 = n == u32(0) ? u32(0) | f(n - u32(1))", "recursive"},
-		"checked":        {"Overflow: type = | Overflow\nResult[T, E]: type = Ok: T | Err: E\nf: (n: u32): Result[u8, Overflow] = u8_checked_u32(n)", "only record types are extracted"},
 		"float row":      {"f: (x: u32): u32 = u32_trunc_f32(f32_round_u32(x))", "integer conversions only"},
 		"mixed patterns": {"f: (n: u32): u32 = n ? | 0 => u32(1) | k => k", "outside the extracted subset"},
-		"adt match":      {"Kind: type = Word | Line\nclassify: (k: Kind): u32 = k ? | .Word => u32(2) | .Line => u32(1)", "only record types are extracted"},
+		"template call":  {"Kind: type = Word | Line\nf[T]: (k: T): T = k\ng: (k: Kind): Kind = f[Kind](k)\nh: (): u32 = u32(1)", ""},
 		"string":         {"s: (): string = \"x\"", "outside the extracted subset"},
 	}
 	for name, c := range cases {
-		_, err := extract(t, c.src)
+		out, err := extract(t, c.src)
+		if c.want == "" {
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if !strings.Contains(out, "def f_Kind (k : Kind)") || strings.Contains(out, "def f (") {
+				t.Fatalf("%s: instantiation must be extracted under its mangled name and the template never:\n%s", name, out)
+			}
+			continue
+		}
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Fatalf("%s: err = %v, want %q", name, err, c.want)
 		}
+	}
+}
+
+// Sum types extract as inductives (generic ones per recorded instantiation
+// under the checker's mangled name), variant construction as constructor
+// application, matches over variants as Lean matches in value and statement
+// position, a value-position arm carrying statements or calls as a bound
+// do-block, bitwise operators as their Lean spellings, and a checked
+// conversion as the Result it builds.
+func TestExtractionSumTypes(t *testing.T) {
+	src := `
+Option[T]: type = Some: T | None
+Result[T, E]: type = Ok: T | Err: E
+Overflow: type = | Overflow
+Fault: type = Short | Bad: u32
+Item: type = struct { value: u64, next: u32 }
+size: (value: u64): u32 {
+  n: u32 = u32(1)
+  rest: u64 = value >> u64(7)
+  while rest != u64(0) {
+    rest = rest >> u64(7)
+    n = n + u32(1)
+  }
+  n
+}
+encode: (dst: [*]u8, value: u64): Result[u32, Fault] {
+  n: u32 = size(value)
+  n > len(dst) ? { .Err(.Bad(n)) } | {
+    dst[0] = u8_trunc_u64(value & u64(127)) | u8(128)
+    .Ok(n)
+  }
+}
+first: (src: []u8): Option[Item] = len(src) == u32(0) ? .None | .Some(Item { value: u64(src[0]), next: u32(1) })
+value_of: (r: Result[u32, Fault]): u32 = r ? | .Ok(n) => n | .Err(.Bad(k)) => k | .Err(_) => u32(0)
+count: (src: []u8): u32 {
+  total: u32 = u32(0)
+  first(src) ? | .Some(item) => { total = item.next ^ u32(3) } | .None => { total = u32(0) }
+  total
+}
+narrow: (n: u32): Result[u8, Overflow] = u8_checked_u32(n)
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"inductive Fault where\n  | Short\n  | Bad (payload : UInt32)\n  deriving Repr, Inhabited, BEq, DecidableEq",
+		"inductive Result_u32_Fault where\n  | Ok (payload : UInt32)\n  | Err (payload : Fault)",
+		"inductive Option_Item where\n  | Some (payload : Item)\n  | None",
+		"structure Item where\n  value : UInt64\n  next : UInt32\n  deriving Repr, Inhabited, BEq, DecidableEq",
+		"def encode (dst : Array UInt8) (value : UInt64) (fuel : Nat) : Option (Result_u32_Fault × Array UInt8) := do",
+		"let (r2, dst) ← (\n    if (decide (n > (dst.size.toUInt32))) then (do",
+		"pure ((Result_u32_Fault.Err (Fault.Bad n)), dst))",
+		"let dst := dst.setIfInBounds 0 (((value &&& (127 : UInt64)).toUInt8) ||| (128 : UInt8))",
+		"pure ((Result_u32_Fault.Ok n), dst))",
+		"let rest : UInt64 := (value >>> (7 : UInt64))",
+		"(if ((src.size.toUInt32) == (0 : UInt32)) then Option_Item.None else (Option_Item.Some ({ value := ((src.getD 0 (0 : UInt8)).toUInt64), next := (1 : UInt32) } : Item)))",
+		"(match r with | (.Ok n) => n | (.Err (.Bad k)) => k | (.Err _) => (0 : UInt32))",
+		"let total ← (match r1 with\n    | (.Some item) => (do\n      let total := (item.next ^^^ (3 : UInt32))\n      pure total)\n    | .None => (do\n      let total := (0 : UInt32)\n      pure total))",
+		"(if n > (255 : UInt32) then Result_u8_Overflow.Err Overflow.Overflow else Result_u8_Overflow.Ok n.toUInt8)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("extraction lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "inductive Option where") || strings.Contains(out, "inductive Result where") {
+		t.Fatalf("templates must never be emitted:\n%s", out)
+	}
+}
+
+// Top-level constants extract as definitions, array literals as Lean array
+// literals, and a view of a constant table is the table's value; a
+// writable span of a global fails closed.
+func TestExtractionTablesAndGlobals(t *testing.T) {
+	src := `
+SYMBOLS: [4]u8 = [4]u8{ 48, 49, 50, 51 }
+LIMIT: u32 = 3
+digit: (n: u32, upper: Bool): u8 {
+  table: []u8 = upper ? view(&SYMBOLS) | view(&SYMBOLS)
+  n < LIMIT ? table[n] | SYMBOLS[0]
+}
+pair: (a: u32): [2]u32 = [2]u32{ a, a + u32(1) }
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"def SYMBOLS : Array UInt8 := (#[(48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8)] : Array UInt8)",
+		"def LIMIT : UInt32 := (3 : UInt32)",
+		"let table : Array UInt8 := (if upper then SYMBOLS else SYMBOLS)",
+		"pure (if (decide (n < LIMIT)) then (table.getD n.toNat (0 : UInt8)) else (SYMBOLS.getD 0 (0 : UInt8)))",
+		"pure (#[a, (a + (1 : UInt32))] : Array UInt32)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("extraction lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "def SYMBOLS") > strings.Index(out, "def digit") {
+		t.Fatalf("constants must precede the functions that read them:\n%s", out)
+	}
+	_, err = extract(t, "TABLE: [2]u8 = [2]u8{ 1, 2 }\nzap: (): () { s: [*]u8 = span(&TABLE)\n  s[0] = u8(0) }")
+	if err == nil || !strings.Contains(err.Error(), "span of the global") {
+		t.Fatalf("span of a global must fail closed, got %v", err)
 	}
 }

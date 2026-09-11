@@ -82,6 +82,11 @@ trusted, at its seams. v1 register classes for AArch64:
 | `arm64.V` | 128-bit vector register | `v0`–`v31` |
 | `arm64.SP` | stack pointer (singleton) | `sp` |
 | `arm64.Flags` | condition flags (singleton) | `nzcv` |
+| `arm64.Z` | scalable vector register (streaming SVE; `zN` extends `vN`) | `z0`–`z31`, with an element size `z0.b/h/s/d/q`, a bare `z0`, or an element `z2.s[1]` |
+| `arm64.P` | scalable predicate register | `p0`–`p15`, with an element size (`p0.s`) or a qualifier (`p0/m` merging, `p0/z` zeroing) |
+| `arm64.PN` | predicate-as-counter register (SME2) | `pn8`–`pn15` (`pn8/z`, `pn8[0]`) |
+| `arm64.ZA` | the ZA array and its tiles (SME) | `za`, tiles `za0.s`–`za3.s`, `za0.d`–`za7.d`, …; slices `za0h.s[w12, 0]`, `za1v.b[w13, 0:3]`, vectors `za.s[w8, 0, vgx4]`, `za[w12, 0]` |
+| `arm64.ZT` | the lookup-table register (SME2) | `zt0` |
 
 Rules the checker enforces inside an asm unit (whether names were bound explicitly or by the assembler):
 
@@ -106,6 +111,16 @@ Rules the checker enforces inside an asm unit (whether names were bound explicit
 - **No hidden memory**: memory operands go through declared frame slots or
   through pointer parameters that arrived typed. Stray absolute addresses
   are not expressible.
+- **Streaming mode and ZA are state**: `smstart`/`smstop` switch PSTATE.SM
+  and PSTATE.ZA along the block; each SVE/SME instruction needs the mode
+  Arm's pseudocode checks for it (streaming SVE needs SM, the ZA
+  instructions need ZA, most Advanced SIMD is illegal under SM); a change
+  of SM zeroes `z0`–`z31` and `p0`–`p15`, so a value bound or written before
+  it is gone after it; `bl` inside either mode and `ret` before leaving
+  both are refused (Oak callers have no streaming interface). Predicates
+  need `clobber pN`; `zN` is `vN`'s clobber. The predicated SVE/SME loads
+  and stores read their base and index registers and are otherwise trusted
+  (§5): their extent is the predicate's and the vector length's.
 
 The register types also appear (read-only) in Oak's diagnostics and
 tooling, but they are **not** first-class in ordinary Oak code: an Oak
@@ -551,11 +566,15 @@ on the wide moves. By group, with the verifier's status:
 
 | Apple M-series extensions (ARMv8.4–8.6, arm64e) | pointer authentication (`pac*`/`aut*` register, zero-modifier, and `sp`/`lr` forms, `xpac*`, `pacga`, `retaa`/`retab`, `eretaa`/`eretab`, `braa`/`brab`/`blraa`/`blrab` and z forms, `ldraa`/`ldrab`), `bti`, `sb`, `dgh`, `wfet`/`wfit`, FlagM/FlagM2 (`setf8 setf16 rmif axflag xaflag`), RCpc2 (`ldapur*`/`stlur*`), FP16 scalar arithmetic on the `h` view, DotProd (`sdot udot`), I8MM (`smmla ummla usmmla usdot sudot`), BF16 (`bfdot bfmmla bfmlalb bfmlalt bfcvt bfcvtn bfcvtn2`), FHM (`fmlal fmlsl` and `2` forms), FCMA (`fcadd fcmla`, rotations validated), JSCVT (`fjcvtzs`), FRINTTS (`frint32z/x frint64z/x`), crypto (`aes* sha1* sha256* sha512* eor3 rax1 xar bcax pmull pmull2` with the `1q` arrangement), scalar NEON integer forms on `b`/`h`/`s`/`d` | checked (`paciasp`-style link-register signing is transparent to the callee-saved discipline; authenticated returns and indirect transfers follow the `ret`/`br`/`blr` rules); trusted |
 
+| SVE and SME (streaming SVE, SME, SME2, SME_F64F64, SME_I16I64 — the M4's set; `asm/isa_sme.go`) | every mnemonic of the generated encoding table on those features — the streaming-legal SVE data processing, predicates and compares, `whilelt`/`ptrue`/`cntp`, the SVE loads and stores (`ld1w {z0.s}, p0/z, [x0, x1, lsl #2]`, `[x0, #1, mul vl]`, multi-vector groups under `pn8/z`), `smstart`/`smstop`, `zero`, the outer products (`fmopa fmops bfmopa smopa umopa sumopa usmopa addha addva`), tile slices and array vectors (`mova`, `ld1w {za0h.s[w12, 0]}`, `fmla za.s[w8, 0, vgx4]`, `ldr za[w12, 0]`), `luti2`/`luti4` over `zt0` | checked: the legal operand forms are exactly the readings of Arm's templates (the encoder's structural match decides — no hand-written form list); mode, zeroing, and authority per §3 | trusted |
+
 The bitvector verifier does not model floating-point or vector values: any
-body touching a vector register is trusted per §5 and says so. What the
-table does not cover, by design: SVE and SME (absent from M-series), and the
-system-register namespace beyond `mrs`/`msr` (any register name is
-accepted under `system`).
+body touching a vector, scalable, or ZA register is trusted per §5 and says
+so. What the table does not cover, by design: non-streaming SVE (the M4
+has SVE only inside streaming mode), the SME features beyond the M4's
+(SME2p1 and later, the FP8 and B16B16 products), strided multi-vector
+lists and `psel`, and the system-register namespace beyond `mrs`/`msr`
+(any register name is accepted under `system`).
 
 **Grounding the model in the hardware and in Arm's specification.** The
 verifier's semantics are a reading of the Arm manual, transliterated into
@@ -691,9 +710,11 @@ words, so that a unit's bytes depend on nothing outside this repository and
 Arm's specification. The encoding table is *generated* from Arm's A64 ISA
 XML by `asm/internal/isagen` (run against the release under `external/`;
 only the derived facts are written, never Arm's prose): for every encoding
-on features the M-series has — 1657 of them — the fixed bits (from the
-encoding diagram, the per-encoding bit settings, and the decode-time
-`if size != '10' then UNDEFINED` constraints), the named bit fields, and
+on features the M-series has — 3046 of them, the base and SIMD&FP sets
+and, since the SME lane, the streaming-legal SVE and SME sets — the fixed
+bits (from the encoding diagram, the per-encoding bit settings, and the
+decode-time `if size != '10' then UNDEFINED` and `if size IN {'0x'} then
+UNDEFINED` constraints), the named bit fields, and
 every assembler template reading with its operands mapped to the fields
 Arm's operand explanations state: register operands to their register
 field (with `sp` and the zero register admitted where the template spells
@@ -731,7 +752,7 @@ checked function with its relocations; nothing links or writes object
 files yet.
 
 **Trust.** The encoder is checked against the host LLVM assembler three
-ways (`asm/encode_test.go`, skipped without `llvm-mc`): 672 hand-written
+ways (`asm/encode_test.go`, `asm/sme_test.go`, skipped without `llvm-mc`): 672 hand-written
 instructions across the general-purpose, system, FP, and NEON surface
 agree word for word; a seeded fuzz instantiates every template reading of
 the generated table with random operands and requires agreement wherever
@@ -790,16 +811,41 @@ this encoder and object writer, with the C backend kept as the portable
 realization and the differential oracle. (2) The proof and solver stack
 in Oak itself, the long arc (`95-extraction.md` is its current foothold).
 
-**SME/SME2 (planned lane).** The Apple M4 implements the Scalable Matrix
-Extension; the XML's `mortlachindex.xml` lists 353 instruction files. The
-generator and the operand-form audit make the table mechanical, but the
-checker needs new operand kinds and disciplines: `z` registers with
-element sizes, predicate registers (`p0.b`, `p0/m`, `p0/z`), the `za`
-tile views (`za0h.s[w12, 0]`), the streaming-mode and ZA-state capabilities
-(`smstart`/`smstop` as a unit directive, the streaming vector length as an
-unknown), and its own load/store family. The bitvector verifier will trust
-all of it, as it trusts NEON. This is the lane for Oak kernels on the
-matrix unit (github.com/SCKelemen/ml).
+**SME/SME2 (landed).** The Apple M4 implements the Scalable Matrix
+Extension (SME, SME2, SME_F64F64, SME_I16I64 — the features LLVM enables
+for apple-m4) and reaches SVE only through SME's streaming mode. The
+generator now reads Arm's `sveindex.xml` and `mortlachindex.xml` beside the
+base and SIMD&FP indexes, gated by the shared M-series profile
+(`asm/internal/armfeat`: a boolean evaluator over Arm's arch_variant
+feature expressions — `FEAT_SVE || FEAT_SME` holds through SME,
+`FEAT_SVE2p1 || FEAT_SME2p1` does not; non-streaming SVE is skipped where
+its pseudocode says `CheckNonStreamingSVEEnabled`). Every encoding carries
+the mode its pseudocode checks (`sm`, `za`, `smza`, or `nosm` for the
+Advanced SIMD illegal in streaming mode) and whether its Execute writes
+NZCV. New template symbols: z registers with element sizes and elements,
+predicates with `/M`, `/Z`, and `/<ZM>` qualifiers, predicate-as-counter
+registers (`PNg` plus 8), ZA tiles and slices (`<ZAt><HV>.S[<Ws>, <offs>]`,
+`ZA.<T>[<Wv>, <offs>{, VGx4}]`, `ZA[<Wv>, <offs>]`, slice ranges
+`<offs1>:<offs2>`), multi-vector groups (`{ <Zn1>.<T>-<Zn4>.<T> }`, the head
+"times 2/4"), zero's tile mask, `MUL VL` offsets, `MUL #<imm>` multipliers
+with the offset the Decode leaves implicit (`UInt(imm4) + 1`), and the SVE
+immediate encodings (shift amounts in `tszh:tszl:imm3` as `esize + shift`
+or `2·esize − shift`, dup's index above the size marker in `imm2:tsz`,
+`16 minus imm4`, the FP constants). The parser knows the scalable register
+file (§3), and the checker's forms for these mnemonics are exactly Arm's
+template readings — the encoder's structural match decides — with the mode,
+zeroing, and authority disciplines of §3 on top (`asm/isa_sme.go`).
+Checked against llvm-mc: 254 hand-written SVE/SME spellings agree (the ten
+LLVM rejects for apple-m4's features we reject too), the seeded fuzz over
+every template reading now covers 2471 encodings with none differing, and
+the whole-function differential and objects are unchanged. Executed:
+`examples/sme` multiplies matrices by outer products on the M4's matrix
+unit — `smstart`, `whilelt`, `zero {za0.s}`, `ld1w`/`fmopa za0.s` per step
+of k, `st1w {za0h.s[w12, 0]}` per row, `smstop` — through the native
+object, through the C toolchain's assembler (`.arch_extension sme`), and as
+its Oak fallback (`TestE2EExampleSMEPackage`). Not modeled, reported by the
+audit: strided multi-vector lists, `psel`, `movt` to `zt0[…]`, and the SME
+features beyond the M4's.
 
 **RISC-V and RVV (planned lane).** The second architecture, RV64GC first
 (user-level integer and FP — the profile a hypervisor or firmware needs),

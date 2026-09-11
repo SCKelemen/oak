@@ -169,36 +169,51 @@ func modEdit(args []string) int {
 	dir := "."
 	type edit struct{ kind, a, b string }
 	var edits []edit
-	for i := 0; i < len(args); i++ {
-		flag := args[i]
-		switch {
-		case (flag == "-require" || flag == "-droprequire" || flag == "-replace" || flag == "-dropreplace" || flag == "-version" || flag == "-profile") && i+1 < len(args):
-			value := args[i+1]
-			i++
-			switch flag {
-			case "-require":
-				path, version, ok := strings.Cut(value, "@")
-				if !ok {
-					fmt.Fprintf(os.Stderr, "oak mod edit: -require takes path@version, got %q\n", value)
-					return 2
-				}
-				edits = append(edits, edit{"require", path, version})
-			case "-replace":
-				path, target, ok := strings.Cut(value, "=>")
-				if !ok {
-					fmt.Fprintf(os.Stderr, "oak mod edit: -replace takes path=>dir, got %q\n", value)
-					return 2
-				}
-				edits = append(edits, edit{"replace", strings.TrimSpace(path), strings.TrimSpace(target)})
-			default:
-				edits = append(edits, edit{strings.TrimPrefix(flag, "-"), value, ""})
-			}
-		case strings.HasPrefix(flag, "-"):
-			fmt.Fprintf(os.Stderr, "oak mod edit: unknown flag %s\nusage: oak mod edit [-require p@v] [-droprequire p] [-replace p=>dir] [-dropreplace p] [-version v] [-profile p] [dir]\n", flag)
-			return 2
-		default:
-			dir = flag
+	var bad error
+	fs := newFlagSet("mod edit", "oak mod edit [-require p@v] [-droprequire p] [-replace p=>dir] [-dropreplace p] [-version v] [-profile p] [dir]")
+	fs.Func("require", "add or replace `path@version`", func(value string) error {
+		path, version, ok := strings.Cut(value, "@")
+		if !ok {
+			bad = fmt.Errorf("-require takes path@version, got %q", value)
+			return bad
 		}
+		edits = append(edits, edit{"require", path, version})
+		return nil
+	})
+	fs.Func("droprequire", "drop the require (and replace) of `path`", func(value string) error {
+		edits = append(edits, edit{"droprequire", value, ""})
+		return nil
+	})
+	fs.Func("replace", "set `path=>dir`", func(value string) error {
+		path, target, ok := strings.Cut(value, "=>")
+		if !ok {
+			bad = fmt.Errorf("-replace takes path=>dir, got %q", value)
+			return bad
+		}
+		edits = append(edits, edit{"replace", strings.TrimSpace(path), strings.TrimSpace(target)})
+		return nil
+	})
+	fs.Func("dropreplace", "drop the replace of `path`", func(value string) error {
+		edits = append(edits, edit{"dropreplace", value, ""})
+		return nil
+	})
+	fs.Func("version", "set the module `version`", func(value string) error {
+		edits = append(edits, edit{"version", value, ""})
+		return nil
+	})
+	fs.Func("profile", "set the discipline `profile`", func(value string) error {
+		edits = append(edits, edit{"profile", value, ""})
+		return nil
+	})
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		if bad != nil {
+			fmt.Fprintf(os.Stderr, "oak mod edit: %v\n", bad)
+		}
+		return code
+	}
+	if len(rest) > 0 {
+		dir = rest[0]
 	}
 	if len(edits) == 0 {
 		fmt.Fprintln(os.Stderr, "oak mod edit: nothing to do")

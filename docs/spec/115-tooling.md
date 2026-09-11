@@ -15,7 +15,15 @@ oak help [command]
 
 `oak` with no arguments starts the REPL; `oak file.oak` compiles one file to
 C beside it (the original single-file mode). Flags precede positional
-arguments. Every command exits 0 on success, 1 on a failed check or build, 2
+arguments and every command answers `-h` with its usage and flags; an unknown
+flag is a usage error. **Package patterns**: where a command takes package
+directories, `./...` and `dir/...` expand to every package under the
+directory — the module's packages when an `oak.mod` is above it, otherwise
+every directory holding `.oak` files (hidden, `vendor`, and `testdata`
+directories excluded) — so `oak build ./...`, `oak vet ./...`, `oak list
+./util/...`, `oak fmt -l ./...`, and `oak test ./...` do what their Go
+counterparts do. `oak run [dir] -- args` passes everything after `--` to the
+program. Every command exits 0 on success, 1 on a failed check or build, 2
 on a usage error. Every command is offline unless this chapter says otherwise;
 external programs (the C compiler, Lean) are invoked with fixed argument lists
 and never through a shell; nothing is written outside the paths a command
@@ -37,6 +45,7 @@ names or the module cache.
 | `oak repl` | — | The interactive session (`83-modules.md` section 10). |
 | `oak version` | `go version` | The module version and VCS revision the Go toolchain recorded in the binary. |
 | `oak help [command]` | `go help` | Usage. |
+| `oak completion bash\|zsh\|fish` | — | A shell completion script generated from the command tables; nothing from the invocation is interpolated. |
 
 ## 2. Module maintenance
 

@@ -22,18 +22,13 @@ import (
 func docCommand(args []string) int {
 	dir, packageName, name := ".", "", ""
 	var positional []string
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-package" && i+1 < len(args):
-			packageName = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak doc: unknown flag %s\nusage: oak doc [-package P] [dir] [name]\n", args[i])
-			return 2
-		default:
-			positional = append(positional, args[i])
-		}
+	fs := newFlagSet("doc", "oak doc [-package P] [dir] [name]")
+	fs.StringVar(&packageName, "package", "", "document one package under this import path")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
 	}
+	positional = rest
 	for _, arg := range positional {
 		if info, err := os.Stat(arg); err == nil && info.IsDir() {
 			dir = arg
@@ -112,19 +107,23 @@ func docCommand(args []string) int {
 // printed.
 func fmtCommand(args []string) int {
 	list, write := false, false
+	fs := newFlagSet("fmt", "oak fmt [-l] [-w] [file.oak|dir|pattern]...")
+	fs.BoolVar(&list, "l", false, "list files whose formatting differs")
+	fs.BoolVar(&write, "w", false, "write the result back to the files")
+	rest, code, stop := parseFlags(fs, args)
+	if stop {
+		return code
+	}
 	var paths []string
-	for _, arg := range args {
-		switch {
-		case arg == "-l":
-			list = true
-		case arg == "-w":
-			write = true
-		case strings.HasPrefix(arg, "-"):
-			fmt.Fprintf(os.Stderr, "oak fmt: unknown flag %s\nusage: oak fmt [-l] [-w] [file.oak|dir]...\n", arg)
-			return 2
-		default:
-			paths = append(paths, arg)
+	for _, arg := range rest {
+		if isPattern(arg) {
+			root := strings.TrimSuffix(strings.TrimSuffix(arg, "..."), "/")
+			if root == "" {
+				root = "."
+			}
+			arg = root
 		}
+		paths = append(paths, arg)
 	}
 	if len(paths) == 0 {
 		paths = []string{"."}

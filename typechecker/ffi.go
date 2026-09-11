@@ -520,9 +520,10 @@ func cConversionToOak(oakName string, arg Type) bool {
 // symbol. Returns the declared function type, or nil if invalid.
 // checkAsmBoundary validates the typed interface of an asm-backed
 // declaration (docs/spec/94-assembler.md §3): v1 admits fixed-width
-// integers, Bool, and simd vectors across the boundary, plus () and never
-// results. The signature is registered so calls type ordinarily; the body
-// is the unit's, checked by the assembler.
+// integers, f32/f64, Bool, and simd vectors across the boundary, spans and
+// views of the fixed-width scalars, plus () and never results. The
+// signature is registered so calls type ordinarily; the body is the
+// unit's, checked by the assembler.
 func (tc *TypeChecker) checkAsmBoundary(stmt *ast.FunctionStatement) {
 	if tc.asmBackedFunctions == nil {
 		tc.asmBackedFunctions = make(map[string]bool)
@@ -532,10 +533,13 @@ func (tc *TypeChecker) checkAsmBoundary(stmt *ast.FunctionStatement) {
 		tc.addError(stmt, "asm-backed function %s cannot have a receiver or generic parameters", stmt.Name.Value)
 		return
 	}
+	fixedWidth := func(t *PrimitiveType) bool {
+		return t != nil && (t.Name[0] == 'u' || t.Name[0] == 'i' || t.Name == "f32" || t.Name == "f64")
+	}
 	boundary := func(typ Type) bool {
 		switch t := typ.(type) {
 		case *PrimitiveType:
-			return t != nil && (t.Name[0] == 'u' || t.Name[0] == 'i')
+			return fixedWidth(t)
 		case *BoolType, *SimdType:
 			return true
 		case *ArrayType:
@@ -545,7 +549,7 @@ func (tc *TypeChecker) checkAsmBoundary(stmt *ast.FunctionStatement) {
 				return false
 			}
 			elem, isPrim := t.ElementType.(*PrimitiveType)
-			return isPrim && elem != nil && (elem.Name[0] == 'u' || elem.Name[0] == 'i')
+			return isPrim && fixedWidth(elem)
 		}
 		return false
 	}

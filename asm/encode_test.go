@@ -252,8 +252,15 @@ func TestEncoderFuzzAgainstLLVM(t *testing.T) {
 
 // instantiate spells one reading with random operands in our syntax.
 func instantiate(rng *rand.Rand, enc *isaEncoding, form *isaForm) (string, bool) {
+	if enc.Mnemonic == "movprfx" {
+		return "", false // LLVM rejects the marker instruction that follows a movprfx
+	}
 	var parts []string
 	prevReg := ""
+	// One spelling per template symbol (`<Zdn>` twice), one element size per
+	// size table (`<T>` across operands).
+	chosen := map[string]string{}
+	letters := map[string]string{}
 	for i := 0; i < len(form.Operands); i++ {
 		fop := &form.Operands[i]
 		switch fop.Kind {
@@ -399,7 +406,93 @@ func instantiate(rng *rand.Rand, enc *isaEncoding, form *isaForm) (string, bool)
 				regs = append(regs, fmt.Sprintf("v%d.%s", (first+k)%32, arr))
 			}
 			parts = append(parts, "{"+strings.Join(regs, ", ")+"}")
+		case "zreg", "preg", "pnreg", "tile":
+			if prior, seen := chosen[fop.Sym]; seen {
+				parts = append(parts, prior)
+				continue
+			}
+			text, ok := randomScalable(rng, enc, fop, letters)
+			if !ok {
+				return "", false
+			}
+			chosen[fop.Sym] = text
+			parts = append(parts, text)
+		case "zlane":
+			text, ok := randomScalable(rng, enc, fop, letters)
+			if !ok {
+				return "", false
+			}
+			idx, ok := randomIndex(rng, enc, fop)
+			if !ok {
+				return "", false
+			}
+			parts = append(parts, fmt.Sprintf("%s[%d]", text, idx))
+		case "slice":
+			text, ok := randomSlice(rng, enc, fop, letters)
+			if !ok {
+				return "", false
+			}
+			parts = append(parts, text)
+		case "zlist":
+			if len(fop.Sub) == 1 && fop.Sub[0].Kind == "slice" {
+				text, ok := randomSlice(rng, enc, &fop.Sub[0], letters)
+				if !ok {
+					return "", false
+				}
+				parts = append(parts, "{"+text+"}")
+				continue
+			}
+			head, ok := randomScalable(rng, enc, &fop.Sub[0], letters)
+			if !ok {
+				return "", false
+			}
+			// zN.e → the consecutive group.
+			num, elem := 0, ""
+			if dot := strings.IndexByte(head, '.'); dot > 0 {
+				num, _ = strconv.Atoi(head[1:dot])
+				elem = head[dot:]
+			} else {
+				num, _ = strconv.Atoi(head[1:])
+			}
+			var regs []string
+			for k := 0; k < fop.Count; k++ {
+				regs = append(regs, fmt.Sprintf("z%d%s", (num+k)%32, elem))
+			}
+			parts = append(parts, "{"+strings.Join(regs, ", ")+"}")
+		case "tilemask":
+			if rng.Intn(5) == 0 {
+				parts = append(parts, "{za}")
+				continue
+			}
+			sizes := []struct {
+				letter string
+				tiles  int
+			}{{"b", 1}, {"h", 2}, {"s", 4}, {"d", 8}}
+			size := sizes[rng.Intn(len(sizes))]
+			var tiles []string
+			for k := 0; k < size.tiles; k++ {
+				if rng.Intn(2) == 0 {
+					tiles = append(tiles, fmt.Sprintf("za%d.%s", k, size.letter))
+				}
+			}
+			if len(tiles) == 0 {
+				tiles = append(tiles, "za0."+size.letter)
+			}
+			parts = append(parts, "{"+strings.Join(tiles, ", ")+"}")
 		case "text":
+			if fop.Text == "MUL" {
+				// `MUL #<imm>` after a pattern word.
+				if i+1 < len(form.Operands) && len(parts) > 0 && form.Operands[i+1].Kind == "imm" {
+					i++
+					v, ok := randomImmediate(rng, &form.Operands[i])
+					if !ok {
+						return "", false
+					}
+					parts[len(parts)-1] += fmt.Sprintf(", mul #%d", v)
+					continue
+				}
+				return "", false
+			}
 			if fop.Text == "LSL" || fop.Text == "MSL" {
 				// `LSL #<n>` after an immediate.
 				if i+1 < len(form.Operands) && len(parts) > 0 {
@@ -451,15 +544,21 @@ func randomImmediate(rng *rand.Rand, fop *isaOperand) (int64, bool) {
 	}
 	switch fop.Special {
 	case "bitmask":
-		// A run of ones rotated: always encodable.
-		width := 64
-		ones := rng.Intn(width-1) + 1
-		rot := rng.Intn(width)
-		v := uint64(1)<<uint(ones) - 1
-		v = v<<uint(rot) | v>>uint(width-rot)
+		// A run of ones inside the low 32 bits: encodable at either width.
+		ones := rng.Intn(31) + 1
+		rot := rng.Intn(32 - ones)
+		v := (uint64(1)<<uint(ones) - 1) << uint(rot)
 		return int64(v), true
 	case "wide", "movi", "shift-immh", "fbits", "index", "fp8":
 		return 0, false
+	case "sve-shift-left":
+		return int64(rng.Intn(8)), true // legal for every element size
+	case "sve-shift-right":
+		return int64(rng.Intn(8) + 1), true
+	case "sve-index":
+		return int64(rng.Intn(2)), true
+	case "sub":
+		return int64(rng.Int63n(fop.Offset) + 1), true
 	}
 	if !fop.HasRange {
 		return 0, false
@@ -486,8 +585,11 @@ func randomMemory(rng *rand.Rand, fop *isaOperand) (string, bool) {
 	}
 	var off string
 	var idx string
+	mulVL := false
 	for _, sub := range fop.Sub[1:] {
 		switch sub.Sym {
+		case "MUL VL":
+			mulVL = true
 		case "off":
 			v, ok := randomImmediate(rng, &sub)
 			if !ok {
@@ -505,7 +607,9 @@ func randomMemory(rng *rand.Rand, fop *isaOperand) (string, bool) {
 			}
 			if sub.Sym == "<amount>" && idx != "" {
 				var amount int64
-				if len(sub.Table) > 0 {
+				if sub.Kind == "text" {
+					amount, _ = strconv.ParseInt(strings.TrimPrefix(sub.Text, "#"), 10, 64)
+				} else if len(sub.Table) > 0 {
 					row := sub.Table[rng.Intn(len(sub.Table))]
 					amount, _ = strconv.ParseInt(strings.TrimPrefix(row.Text, "#"), 10, 64)
 				}
@@ -514,6 +618,12 @@ func randomMemory(rng *rand.Rand, fop *isaOperand) (string, bool) {
 				}
 			}
 		}
+	}
+	if mulVL {
+		if off == "" || idx != "" || fop.Mode != "off" {
+			return "", false
+		}
+		return fmt.Sprintf("[%s, %s, mul vl]", base, off), true
 	}
 	switch fop.Mode {
 	case "post":
@@ -537,6 +647,194 @@ func randomMemory(rng *rand.Rand, fop *isaOperand) (string, bool) {
 		return fmt.Sprintf("[%s, %s]", base, off), true
 	}
 	return fmt.Sprintf("[%s]", base), true
+}
+
+// fieldsWidthOf sums the widths of an encoding's named fields (slices
+// `f[hi:lo]` count their slice).
+func fieldsWidthOf(enc *isaEncoding, names []string) int {
+	total := 0
+	for _, name := range names {
+		base, slice := name, ""
+		if i := strings.IndexAny(name, "[<"); i >= 0 {
+			base, slice = name[:i], strings.Trim(name[i:], "[]<>")
+		}
+		for _, f := range enc.Fields {
+			if f.Name != base {
+				continue
+			}
+			if slice == "" {
+				total += f.Width
+			} else if j := strings.IndexByte(slice, ':'); j >= 0 {
+				hi, _ := strconv.Atoi(slice[:j])
+				lo, _ := strconv.Atoi(slice[j+1:])
+				total += hi - lo + 1
+			} else {
+				total++
+			}
+		}
+	}
+	return total
+}
+
+// randomElement picks an element size letter the operand admits: its fixed
+// letter, a row of its size table (the same row for every operand sharing
+// the table's symbol), or "" when it names none.
+func randomElement(rng *rand.Rand, fop *isaOperand, letters map[string]string) (string, bool) {
+	if fop.Text != "" {
+		return strings.ToLower(fop.Text), true
+	}
+	for _, sub := range fop.Sub {
+		if sub.Kind == "table" && sub.Sym != "<ZM>" && sub.Sym != "hv" && sub.Sym != "group" {
+			if prior, seen := letters[sub.Sym]; seen {
+				return prior, true
+			}
+			var options []string
+			for _, row := range sub.Table {
+				if len(row.Text) == 1 {
+					options = append(options, strings.ToLower(row.Text))
+				}
+			}
+			if len(options) == 0 {
+				return "", false
+			}
+			letter := options[rng.Intn(len(options))]
+			letters[sub.Sym] = letter
+			return letter, true
+		}
+	}
+	return "", true
+}
+
+// randomScalable spells a z, p, pn, or tile operand the reading admits.
+func randomScalable(rng *rand.Rand, enc *isaEncoding, fop *isaOperand, letters map[string]string) (string, bool) {
+	prefix := map[string]string{"zreg": "z", "zlane": "z", "preg": "p", "pnreg": "pn", "tile": "za"}[fop.Kind]
+	scale := fop.Scale
+	if scale <= 0 {
+		scale = 1
+	}
+	var num int64
+	if fop.Kind == "tile" && fop.Special == "fixed" {
+		num = fop.Offset
+	} else {
+		width := fieldsWidthOf(enc, fop.Fields)
+		if width == 0 {
+			return "", false
+		}
+		num = fop.Offset + int64(rng.Intn(1<<uint(width)))*scale
+	}
+	elem, ok := randomElement(rng, fop, letters)
+	if !ok {
+		return "", false
+	}
+	text := fmt.Sprintf("%s%d", prefix, num)
+	if elem != "" {
+		text += "." + elem
+	}
+	switch {
+	case fop.Qual != "":
+		text += "/" + strings.ToLower(fop.Qual)
+	default:
+		for _, sub := range fop.Sub {
+			if sub.Sym == "<ZM>" {
+				text += []string{"/m", "/z"}[rng.Intn(2)]
+			}
+		}
+	}
+	return text, true
+}
+
+// randomIndex picks the element or portion index of a zlane/pnreg reading.
+func randomIndex(rng *rand.Rand, enc *isaEncoding, fop *isaOperand) (int64, bool) {
+	for _, sub := range fop.Sub {
+		if sub.Sym != "idx" {
+			continue
+		}
+		if sub.Kind == "text" {
+			v, _ := strconv.ParseInt(sub.Text, 10, 64)
+			return v, true
+		}
+		if v, ok := randomImmediate(rng, &sub); ok {
+			return v, true
+		}
+		width := fieldsWidthOf(enc, sub.Fields)
+		if width == 0 {
+			return 0, false
+		}
+		return int64(rng.Intn(1 << uint(width))), true
+	}
+	return 0, false
+}
+
+// randomSlice spells a ZA slice or array vector the reading admits.
+func randomSlice(rng *rand.Rand, enc *isaEncoding, fop *isaOperand, letters map[string]string) (string, bool) {
+	var b strings.Builder
+	var elem string
+	if fop.Text != "" {
+		elem = strings.ToLower(fop.Text)
+	}
+	idxText, offsText, group := "", "", ""
+	for i := range fop.Sub {
+		sub := &fop.Sub[i]
+		switch sub.Sym {
+		case "tile":
+			switch sub.Special {
+			case "array":
+				b.WriteString("za")
+			case "fixed":
+				fmt.Fprintf(&b, "za%d", sub.Offset)
+			default:
+				width := fieldsWidthOf(enc, sub.Fields)
+				if width == 0 {
+					return "", false
+				}
+				fmt.Fprintf(&b, "za%d", rng.Intn(1<<uint(width)))
+			}
+		case "hv":
+			b.WriteString([]string{"h", "v"}[rng.Intn(2)])
+		case "elem":
+			if prior, seen := letters[sub.Sym]; seen {
+				elem = prior
+				continue
+			}
+			var options []string
+			for _, row := range sub.Table {
+				if len(row.Text) == 1 {
+					options = append(options, strings.ToLower(row.Text))
+				}
+			}
+			if len(options) == 0 {
+				return "", false
+			}
+			elem = options[rng.Intn(len(options))]
+			letters[sub.Sym] = elem
+		case "idx":
+			width := fieldsWidthOf(enc, sub.Fields)
+			idxText = fmt.Sprintf("w%d", sub.Offset+int64(rng.Intn(1<<uint(width))))
+		case "offs":
+			var v int64
+			if len(sub.Fields) == 0 {
+				v = 0
+			} else if value, ok := randomImmediate(rng, sub); ok {
+				v = value
+			} else {
+				return "", false
+			}
+			offsText = strconv.FormatInt(v, 10)
+			if fop.Count > 1 {
+				offsText = fmt.Sprintf("%d:%d", v, v+int64(fop.Count)-1)
+			}
+		case "group":
+			group = ", " + strings.ToLower(sub.Text)
+		}
+	}
+	if elem != "" {
+		b.WriteString("." + elem)
+	}
+	if idxText == "" || offsText == "" {
+		return "", false
+	}
+	fmt.Fprintf(&b, "[%s, %s%s]", idxText, offsText, group)
+	return b.String(), true
 }
 
 // TestEncodeFunctionAgainstLLVM encodes whole checked functions — labels

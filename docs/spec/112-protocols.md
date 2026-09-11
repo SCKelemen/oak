@@ -173,6 +173,15 @@ call, an open or selective import, or a sealed signature — so imports and
 sealing cannot erase modes. Callable contracts on function-typed
 parameters (`50-borrowing.md` §9) have no source spelling yet.
 
+A protocol may also declare **terminal states** (the resolved
+`ResourceProtocolDeclaration.Terminal`; source spelling pending with the
+other authority spellings): the states an owned resource must reach before
+its last name leaves scope (`50-borrowing.md` §9, terminal-state
+obligations). The obligation is emitted as the protocol guarantee named
+`terminal`, `eventually(S1 or S2 ...)`, so the model checker and the flow
+analysis read one fact. Without terminal states the protocol imposes no
+obligation.
+
 ## 6. What is not derived
 
 Liveness and environment assumptions (fairness, device progress) are the
