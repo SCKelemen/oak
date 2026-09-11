@@ -1958,6 +1958,10 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	}
 	lowering := newLowering(sig)
 	width, _, _ := contractBits(sig.ReturnType)
+	// A tail-recursive body is the loop it compiles to (docs/spec/85-discipline.md).
+	if loop, isTail := tailRecursionAsLoop(sig, oakBody); isTail {
+		oakBody = loop
+	}
 	oakTerm, reason, ok := lowering.lower(oakBody, width)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
@@ -1966,6 +1970,104 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 	}
 	return decideEqual(fn, lowering, asmTerm, oakTerm, width, "")
+}
+
+// tailRecursionAsLoop rewrites a tail-recursive body `c ? v | f(args)` (or
+// `c ? f(args) | v`) into the loop it denotes — the parameters as locals,
+// `while <continue> { fresh temporaries for the arguments; parameters =
+// temporaries }`, then the value arm — so the verifier's loop machinery
+// couples it with the backend's loop. Only scalar parameters qualify.
+func tailRecursionAsLoop(sig *ast.FunctionStatement, body ast.Expression) (ast.Expression, bool) {
+	if block, isBlock := body.(*ast.BlockExpression); isBlock {
+		if block.Block == nil || len(block.Block.Statements) != 1 {
+			return nil, false
+		}
+		es, isExpr := block.Block.Statements[0].(*ast.ExpressionStatement)
+		if !isExpr {
+			return nil, false
+		}
+		body = es.Expression
+	}
+	match, isMatch := body.(*ast.MatchExpression)
+	if !isMatch {
+		return nil, false
+	}
+	whenTrue, whenFalse, isBool := boolConditional(match)
+	if !isBool {
+		return nil, false
+	}
+	isSelf := func(expr ast.Expression) (*ast.InvocationExpression, bool) {
+		call, isCall := expr.(*ast.InvocationExpression)
+		if !isCall {
+			return nil, false
+		}
+		ident, isIdent := call.Function.(*ast.Identifier)
+		return call, isIdent && sig.Name != nil && ident.Value == sig.Name.Value && len(call.Arguments) == len(sig.Parameters)
+	}
+	tail, tailIsTrue := isSelf(whenTrue)
+	if _, falseIsSelf := isSelf(whenFalse); falseIsSelf == tailIsTrue {
+		return nil, false // both arms or neither
+	}
+	value := whenFalse
+	if !tailIsTrue {
+		tail, _ = isSelf(whenFalse)
+		value = whenTrue
+	}
+	continueWhile := match.Scrutinee
+	if !tailIsTrue {
+		negated, ok := negateCondition(match.Scrutinee)
+		if !ok {
+			return nil, false
+		}
+		continueWhile = negated
+	}
+	var statements []ast.Statement
+	var updates []ast.Statement
+	for i, param := range sig.Parameters {
+		if _, _, ok := contractBits(param.Type); !ok {
+			return nil, false
+		}
+		name := param.Name
+		// The parameter becomes a local of its own type, initialized from itself.
+		statements = append(statements, &ast.VariableDeclaration{Token: name.Token, Name: name, Type: param.Type, Value: &ast.Identifier{Token: name.Token, Value: name.Value}})
+		temp := &ast.Identifier{Token: name.Token, Value: name.Value + "#next"}
+		updates = append(updates, &ast.VariableDeclaration{Token: name.Token, Name: temp, Type: param.Type, Value: tail.Arguments[i]})
+	}
+	for _, param := range sig.Parameters {
+		name := param.Name
+		updates = append(updates, &ast.AssignmentStatement{Token: name.Token, Name: name, Value: &ast.Identifier{Token: name.Token, Value: name.Value + "#next"}})
+	}
+	statements = append(statements, &ast.WhileStatement{Token: match.Token, Condition: continueWhile, Body: &ast.BlockStatement{Token: match.Token, Statements: updates}})
+	statements = append(statements, &ast.ExpressionStatement{Token: match.Token, Expression: value})
+	return &ast.BlockExpression{Token: match.Token, Block: &ast.BlockStatement{Token: match.Token, Statements: statements}}, true
+}
+
+var negatedComparison = map[string]string{"==": "!=", "!=": "==", "<": ">=", ">=": "<", "<=": ">", ">": "<="}
+
+// negateCondition negates a condition built from comparisons with `&&`
+// and `||` (De Morgan), the shapes lowerCondition reads.
+func negateCondition(expr ast.Expression) (ast.Expression, bool) {
+	infix, isInfix := expr.(*ast.InfixExpression)
+	if !isInfix {
+		return nil, false
+	}
+	switch infix.Operator {
+	case "&&", "||":
+		left, okL := negateCondition(infix.Left)
+		right, okR := negateCondition(infix.Right)
+		if !okL || !okR {
+			return nil, false
+		}
+		op := "||"
+		if infix.Operator == "||" {
+			op = "&&"
+		}
+		return &ast.InfixExpression{Token: infix.Token, Left: left, Operator: op, Right: right}, true
+	}
+	if negated, ok := negatedComparison[infix.Operator]; ok {
+		return &ast.InfixExpression{Token: infix.Token, Left: infix.Left, Operator: negated, Right: infix.Right}, true
+	}
+	return nil, false
 }
 
 // newLowering builds the Oak-side contract from the signature.

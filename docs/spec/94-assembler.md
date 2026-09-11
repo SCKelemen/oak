@@ -891,11 +891,15 @@ Executed (`TestE2ENativeSpans`): a view sum, a byte total with
 zero-extending loads, a fill through a span with halfword stores, an
 element read, and a tail-recursive count as a loop — exit 42 natively and
 through the C backend, and an index at the length traps in both
-realizations. Next increments: the Oak side of tail recursion in the
-verifier (today a tail-call body is trusted), `break` as a second loop
-exit in the recognizer, records, floating point through the `s`/`d`
-views, and spans with calls (spilling the pair under a re-derivable
-fact).
+realizations. The verifier also reads a tail-recursive Oak body `c ? v | f(args)`
+as the loop it denotes (the parameters as locals, `while !c { params =
+args }`, then `v` — with fresh temporaries so the arguments read the old
+parameters, as the compiler's own layout does), so the compiled
+`count_down` is proven by coupling and the 64-bit `fact` agrees on every
+witness (its product's continue-condition proof exceeds the budget).
+Next increments: `break` as a second loop exit in the recognizer,
+records, floating point through the `s`/`d` views, and spans with calls
+(spilling the pair under a re-derivable fact).
 
 
 

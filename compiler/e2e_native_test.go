@@ -202,9 +202,9 @@ func TestE2ENativeSpans(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	for _, fn := range []string{"at", "sum", "byte_total"} {
+	for _, fn := range []string{"at", "sum", "byte_total", "count_down"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
-			t.Errorf("%s must be proven equal to its Oak body (the guarded element load, the coupled loops); diagnostics:\n%s", fn, joined)
+			t.Errorf("%s must be proven equal to its Oak body (the guarded element load, the coupled loops, the tail recursion as a loop); diagnostics:\n%s", fn, joined)
 		}
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_spans_c", New().WithSource("spans.oak", nativeSpanProgram)); abnormal || code != 42 {
