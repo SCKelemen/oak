@@ -61,6 +61,33 @@ func scalarOf(expr ast.Expression) (scalar, bool) {
 // wide reports a type held in an x register (64-bit); the rest use w.
 func (s scalar) wide() bool { return s.bits == 64 }
 
+// span is a span ([*]T, writable) or view ([]T) parameter of fixed-width
+// elements: it arrives as a {base, u32 len} register pair and stays in
+// those registers (the checker keys its facts on the bound base register).
+type span struct {
+	elem     scalar
+	writable bool
+	baseReg  int // x register holding the base
+	lenReg   int // w register holding the length
+}
+
+// spanOf reads a span or view type of the subset.
+func spanOf(expr ast.Expression) (span, bool) {
+	index, ok := expr.(*ast.IndexExpression)
+	if !ok || index.Dot {
+		return span{}, false
+	}
+	marker, isIdent := index.Index.(*ast.Identifier)
+	if !isIdent || (marker.Value != "*" && marker.Value != "") {
+		return span{}, false
+	}
+	elem, ok := scalarOf(index.Left)
+	if !ok || elem.isBool {
+		return span{}, false
+	}
+	return span{elem: elem, writable: marker.Value == "*"}, true
+}
+
 // Unsupported reports why a function is left to the C backend.
 type Unsupported struct{ Reason string }
 
@@ -77,20 +104,28 @@ type generator struct {
 	functions map[string]*ast.FunctionStatement
 	result    *scalar
 
-	items    []asm.Item
-	slots    map[string]int64  // variable → frame offset (relative to the frame base after the prologue)
-	types    map[string]scalar // variable → type
-	scopes   []map[string]slotBinding
-	nslots   int64
-	spill    map[int]int64 // scratch register → its spill slot offset
-	free     []int         // free scratch registers
-	live     []int         // allocated scratch registers, allocation order
-	labels   int
-	loops    []string // break targets
-	hasCalls bool
-	line     int
-	trap     string // the trap block's label (division by zero, shift overflow, assert)
-	usedTrap bool
+	items []asm.Item
+	slots map[string]int64  // variable → frame offset (relative to the frame base after the prologue)
+	types map[string]scalar // variable → type
+	spans map[string]span   // span and view parameters, register-resident
+	head  string            // the loop header a tail self-call jumps to
+	// Variables live in the callee-saved registers x19–x28 in declaration
+	// order (saved in the prologue, restored before ret), and in frame
+	// slots once those run out; regs maps a variable to its register.
+	regs       map[string]int
+	usedCallee int
+	saveArea   int64 // bytes reserved for the callee-saved pairs (fixed once any variable exists)
+	scopes     []map[string]slotBinding
+	nslots     int64
+	spill      map[int]int64 // scratch register → its spill slot offset
+	free       []int         // free scratch registers
+	live       []int         // allocated scratch registers, allocation order
+	labels     int
+	loops      []string // break targets
+	hasCalls   bool
+	line       int
+	trap       string // the trap block's label (division by zero, shift overflow, assert)
+	usedTrap   bool
 	// terminated: an unconditional jump was emitted and no label has
 	// followed — instructions there are unreachable and are not emitted (the
 	// checker refuses them).
@@ -100,9 +135,11 @@ type generator struct {
 type slotBinding struct {
 	offset int64
 	typ    scalar
+	reg    int // callee-saved register, or -1 for a slot
 }
 
 const scratchLow, scratchHigh = 9, 15
+const calleeLow, calleeHigh = 19, 28
 
 // Compile lowers one Oak function. functions maps every program function by
 // name (callees' signatures); tc is the checker that typed the program.
@@ -113,17 +150,39 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spill: map[int]int64{}, line: fn.Token.Line}
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}
+	if hasVariables(fn) {
+		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
+	}
 	for r := scratchHigh; r >= scratchLow; r-- {
 		g.free = append(g.free, r)
 	}
+	// Parameters take AAPCS64's integer registers in order: a scalar one, a
+	// span or view two (base, then the 32-bit length).
+	nextReg := 0
 	for _, p := range fn.Parameters {
 		if p.Variadic {
 			return nil, unsupported("variadic parameter %s", p.Name.Value)
 		}
-		if _, ok := scalarOf(p.Type); !ok {
-			return nil, unsupported("parameter %s of type %s", p.Name.Value, p.Type.String())
+		if _, ok := scalarOf(p.Type); ok {
+			nextReg++
+			continue
 		}
+		if sp, ok := spanOf(p.Type); ok {
+			sp.baseReg, sp.lenReg = nextReg, nextReg+1
+			nextReg += 2
+			g.spans[p.Name.Value] = sp
+			continue
+		}
+		return nil, unsupported("parameter %s of type %s", p.Name.Value, p.Type.String())
+	}
+	if nextReg > 8 {
+		return nil, unsupported("the parameters exhaust the eight argument registers")
+	}
+	if len(g.spans) > 0 && mentionsCall(fn.Body) {
+		// A call would clobber the span's registers, and reloading the base
+		// would drop the checker's span fact: span kernels are leaves.
+		return nil, unsupported("a span parameter in a function that calls")
 	}
 	if fn.ReturnType != nil {
 		if fn.ReturnType.String() != "()" {
@@ -135,12 +194,14 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 		}
 	}
 	g.hasCalls = mentionsCall(fn.Body)
-	// Parameters occupy the first slots, in order.
+	// Scalar parameters occupy the first slots, in order.
 	g.pushScope()
 	for _, p := range fn.Parameters {
-		s, _ := scalarOf(p.Type)
-		g.declare(p.Name.Value, s)
+		if s, ok := scalarOf(p.Type); ok {
+			g.declare(p.Name.Value, s)
+		}
 	}
+	g.head = g.newLabel("head")
 	body, err := g.lowerBody(fn.Body)
 	if err != nil {
 		return nil, err
@@ -161,26 +222,50 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	if g.hasCalls {
 		prologue = append(prologue, g.ins("stp", xr(29), xr(30), mem(0)))
 	}
+	// Save the callee-saved registers the variables occupy, in pairs.
+	for i := 0; i < g.usedCallee; i += 2 {
+		offset := g.saveBase() + int64(8*i)
+		if i+1 < g.usedCallee {
+			prologue = append(prologue, g.ins("stp", xr(calleeLow+i), xr(calleeLow+i+1), mem(offset)))
+		} else {
+			prologue = append(prologue, g.ins("str", xr(calleeLow+i), mem(offset)))
+		}
+	}
 	// Bind and store the parameters (narrow ones normalized: the caller's
-	// upper bits are unspecified under AAPCS64).
-	for i, p := range fn.Parameters {
+	// upper bits are unspecified under AAPCS64); a span's pair stays bound.
+	regIndex := 0
+	for _, p := range fn.Parameters {
+		if sp, isSpan := g.spans[p.Name.Value]; isSpan {
+			length := wr(sp.lenReg)
+			out.Bindings = append(out.Bindings, asm.Binding{Register: xr(sp.baseReg), Length: &length, Param: p.Name.Value, Line: fn.Token.Line})
+			regIndex += 2
+			continue
+		}
 		s, _ := scalarOf(p.Type)
+		i := regIndex
+		regIndex++
 		bound := wr(i)
 		if s.wide() {
 			bound = xr(i)
 		}
 		out.Bindings = append(out.Bindings, asm.Binding{Register: bound, Param: p.Name.Value, Line: fn.Token.Line})
 		prologue = append(prologue, g.normalizeInto(i, s)...)
-		prologue = append(prologue, g.ins("str", reg(i, s), g.slotMem(g.slots[p.Name.Value])))
+		prologue = append(prologue, g.storeVar(p.Name.Value, i))
 	}
+	// The loop header a tail self-call re-enters: after the parameters are
+	// in their slots.
+	prologue = append(prologue, asm.Label{Name: g.head, Line: fn.Token.Line})
 	out.Items = append(prologue, body...)
 	// Clobbers: the scratch registers, the argument registers a call
 	// writes beyond the bound parameters, and the link register.
 	for r := scratchLow; r <= scratchHigh; r++ {
 		out.Clobbers = append(out.Clobbers, xr(r))
 	}
+	for i := 0; i < g.usedCallee; i++ {
+		out.Clobbers = append(out.Clobbers, xr(calleeLow+i))
+	}
 	if g.hasCalls {
-		for r := len(fn.Parameters); r <= 7; r++ {
+		for r := regIndex; r <= 7; r++ {
 			if !(g.result != nil && r == 0) {
 				out.Clobbers = append(out.Clobbers, xr(r))
 			}
@@ -193,11 +278,51 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 // frameSize is the frame in bytes: the [x29, x30] pair when the body
 // calls, the slots, rounded up to 16.
 func (g *generator) frameSize() int64 {
-	base := int64(0)
+	return (g.saveBase() + g.saveArea + 8*g.nslots + 15) / 16 * 16
+}
+
+// saveBase is the frame offset of the callee-saved save area: past the
+// [x29, x30] pair when the body calls.
+func (g *generator) saveBase() int64 {
 	if g.hasCalls {
-		base = 16
+		return 16
 	}
-	return (base + 8*g.nslots + 15) / 16 * 16
+	return 0
+}
+
+// hasVariables reports scalar parameters or local declarations: what the
+// callee-saved registers are reserved for.
+func hasVariables(fn *ast.FunctionStatement) bool {
+	for _, p := range fn.Parameters {
+		if _, ok := scalarOf(p.Type); ok {
+			return true
+		}
+	}
+	found := false
+	walk(fn.Body, func(n ast.Node) {
+		if _, ok := n.(*ast.VariableDeclaration); ok {
+			found = true
+		}
+	})
+	return found
+}
+
+// storeVar moves a value held in register r into a variable's home.
+func (g *generator) storeVar(name string, r int) asm.Instruction {
+	typ := g.types[name]
+	if v, inReg := g.regs[name]; inReg && v >= 0 {
+		return g.ins("mov", reg(v, typ), reg(r, typ))
+	}
+	return g.ins("str", reg(r, typ), g.slotMem(g.slots[name]))
+}
+
+// loadVar brings a variable's value into register r.
+func (g *generator) loadVar(name string, r int) asm.Instruction {
+	typ := g.types[name]
+	if v, inReg := g.regs[name]; inReg && v >= 0 {
+		return g.ins("mov", reg(r, typ), reg(v, typ))
+	}
+	return g.ins("ldr", reg(r, typ), g.slotMem(g.slots[name]))
 }
 
 // ---- items ------------------------------------------------------------
@@ -291,10 +416,11 @@ func (g *generator) popScope() {
 	for name := range top {
 		delete(g.slots, name)
 		delete(g.types, name)
+		delete(g.regs, name)
 		// A shadowed outer binding comes back into view.
 		for i := len(g.scopes) - 1; i >= 0; i-- {
 			if b, ok := g.scopes[i][name]; ok {
-				g.slots[name], g.types[name] = b.offset, b.typ
+				g.slots[name], g.types[name], g.regs[name] = b.offset, b.typ, b.reg
 				break
 			}
 		}
@@ -303,20 +429,24 @@ func (g *generator) popScope() {
 
 // declare gives a variable a fresh slot in the current scope.
 func (g *generator) declare(name string, s scalar) int64 {
-	offset := 8 * g.nslots
-	g.nslots++
-	g.slots[name], g.types[name] = offset, s
-	g.scopes[len(g.scopes)-1][name] = slotBinding{offset, s}
+	offset := int64(-1)
+	r := -1
+	if g.usedCallee < calleeHigh-calleeLow+1 {
+		r = calleeLow + g.usedCallee
+		g.usedCallee++
+	} else {
+		offset = 8 * g.nslots
+		g.nslots++
+	}
+	g.slots[name], g.types[name], g.regs[name] = offset, s, r
+	g.scopes[len(g.scopes)-1][name] = slotBinding{offset, s, r}
 	return offset
 }
 
-// slotMem is the frame address of a slot; the prologue's [x29, x30] pair
-// sits below the slots when the body calls.
+// slotMem is the frame address of a slot: past the [x29, x30] pair and the
+// callee-saved save area.
 func (g *generator) slotMem(offset int64) asm.Memory {
-	if g.hasCalls {
-		return mem(offset + 16)
-	}
-	return mem(offset)
+	return mem(g.saveBase() + g.saveArea + offset)
 }
 
 // ---- types --------------------------------------------------------------
@@ -369,10 +499,25 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 			}
 		}
 		return g.typeOf(e.Right, hint)
+	case *ast.IndexExpression:
+		if e.Dot {
+			return scalar{}, unsupported("a field access")
+		}
+		sp, err := g.spanOperand(e.Left)
+		if err != nil {
+			return scalar{}, err
+		}
+		return sp.elem, nil
 	case *ast.InvocationExpression:
 		ident, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent {
 			return scalar{}, unsupported("a call through a value")
+		}
+		if ident.Value == "len" && len(e.Arguments) == 1 {
+			if _, err := g.spanOperand(e.Arguments[0]); err != nil {
+				return scalar{}, err
+			}
+			return scalars["u32"], nil
 		}
 		if s, isConv := scalars[ident.Value]; isConv && len(e.Arguments) == 1 && ident.Value != "byte" {
 			return s, nil
@@ -431,12 +576,9 @@ func (g *generator) lowerBody(body ast.Expression) ([]asm.Item, error) {
 		if g.result == nil {
 			return nil, unsupported("an expression body in a function without a result")
 		}
-		r, err := g.expr(body, g.result)
-		if err != nil {
+		if err := g.resultExpr(body); err != nil {
 			return nil, err
 		}
-		g.moveResult(r, *g.result)
-		g.release(r)
 	}
 	g.label(retLabel)
 	g.epilogue()
@@ -449,6 +591,14 @@ func (g *generator) lowerBody(body ast.Expression) ([]asm.Item, error) {
 
 func (g *generator) epilogue() {
 	frame := g.frameSize()
+	for i := 0; i < g.usedCallee; i += 2 {
+		offset := g.saveBase() + int64(8*i)
+		if i+1 < g.usedCallee {
+			g.emit("ldp", xr(calleeLow+i), xr(calleeLow+i+1), mem(offset))
+		} else {
+			g.emit("ldr", xr(calleeLow+i), mem(offset))
+		}
+	}
 	if g.hasCalls {
 		g.emit("ldp", xr(29), xr(30), mem(0))
 	}
@@ -492,8 +642,8 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			if err != nil {
 				return err
 			}
-			offset := g.declare(s.Name.Value, typ)
-			g.emit("str", reg(r, typ), g.slotMem(offset))
+			g.declare(s.Name.Value, typ)
+			g.items = append(g.items, g.storeVar(s.Name.Value, r))
 			g.release(r)
 		case *ast.AssignmentStatement:
 			typ, ok := g.types[s.Name.Value]
@@ -504,8 +654,12 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			if err != nil {
 				return err
 			}
-			g.emit("str", reg(r, typ), g.slotMem(g.slots[s.Name.Value]))
+			g.items = append(g.items, g.storeVar(s.Name.Value, r))
 			g.release(r)
+		case *ast.IndexAssignmentStatement:
+			if err := g.elementStore(s); err != nil {
+				return err
+			}
 		case *ast.WhileStatement:
 			if err := g.lowerWhile(s); err != nil {
 				return err
@@ -535,12 +689,9 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 					}
 					continue
 				}
-				r, err := g.expr(s.Expression, g.result)
-				if err != nil {
+				if err := g.resultExpr(s.Expression); err != nil {
 					return err
 				}
-				g.moveResult(r, *g.result)
-				g.release(r)
 				continue
 			}
 			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
@@ -689,14 +840,81 @@ func (g *generator) lowerArm(arm ast.Expression) error {
 
 // condition evaluates a Bool expression and branches to target when false.
 func (g *generator) condition(expr ast.Expression, target string) error {
+	return g.conditionBranch(expr, target, true)
+}
+
+var inverseCondition = map[string]string{"eq": "ne", "ne": "eq", "lo": "hs", "hs": "lo", "ls": "hi", "hi": "ls", "lt": "ge", "ge": "lt", "le": "gt", "gt": "le"}
+
+// conditionBranch evaluates a Bool expression and branches to target when
+// it is false (jumpIfFalse) or true. A comparison of simple operands —
+// variables in registers, a span length, a small constant — emits directly
+// as `cmp` then `b.cond`, the shape the checker's guards and the
+// verifier's loop recognizer read.
+func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFalse bool) error {
+	if infix, ok := expr.(*ast.InfixExpression); ok {
+		if codes, isComparison := conditionCodes[infix.Operator]; isComparison {
+			if operand, err := g.operandType(infix); err == nil {
+				left, leftOK := g.simpleOperand(infix.Left, operand, false)
+				right, rightOK := g.simpleOperand(infix.Right, operand, true)
+				if leftOK && rightOK {
+					code := codes[0]
+					if operand.signed {
+						code = codes[1]
+					}
+					if jumpIfFalse {
+						code = inverseCondition[code]
+					}
+					g.emit("cmp", left, right)
+					g.branch(code, target)
+					return nil
+				}
+			}
+		}
+	}
 	b := scalars["Bool"]
 	r, err := g.expr(expr, &b)
 	if err != nil {
 		return err
 	}
-	g.emit("cbz", wr(r), asm.Symbol{Name: target})
+	if jumpIfFalse {
+		g.emit("cbz", wr(r), asm.Symbol{Name: target})
+	} else {
+		g.emit("cbnz", wr(r), asm.Symbol{Name: target})
+	}
 	g.release(r)
 	return nil
+}
+
+// simpleOperand spells an operand `cmp` takes directly: a variable in its
+// register, a span's length register, or (on the right) a constant below
+// 4096, possibly under a widening constructor.
+func (g *generator) simpleOperand(expr ast.Expression, typ scalar, allowImm bool) (asm.Operand, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if v, inReg := g.regs[e.Value]; inReg && v >= 0 {
+			if t, ok := g.types[e.Value]; ok && t.wide() == typ.wide() {
+				return reg(v, typ), true
+			}
+		}
+	case *ast.InvocationExpression:
+		if ident, ok := e.Function.(*ast.Identifier); ok && len(e.Arguments) == 1 {
+			if ident.Value == "len" && !typ.wide() {
+				if sp, err := g.spanOperand(e.Arguments[0]); err == nil {
+					return wr(sp.lenReg), true
+				}
+			}
+			if _, isConv := scalars[ident.Value]; isConv && allowImm {
+				if v, ok := constantValue(e.Arguments[0]); ok && v >= 0 && v < 4096 {
+					return imm(v), true
+				}
+			}
+		}
+	case *ast.IntegerLiteral:
+		if allowImm && e.Value >= 0 && e.Value < 4096 {
+			return imm(e.Value), true
+		}
+	}
+	return nil, false
 }
 
 // ---- expressions ------------------------------------------------------------
@@ -732,14 +950,28 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("ldr", reg(r, typ), g.slotMem(g.slots[e.Value]))
+		g.items = append(g.items, g.loadVar(e.Value, r))
 		return r, nil
 	case *ast.InfixExpression:
 		return g.infix(e, typ)
 	case *ast.PrefixExpression:
 		return g.prefix(e, typ)
+	case *ast.IndexExpression:
+		return g.element(e)
 	case *ast.InvocationExpression:
 		ident := e.Function.(*ast.Identifier)
+		if ident.Value == "len" && len(e.Arguments) == 1 {
+			sp, err := g.spanOperand(e.Arguments[0])
+			if err != nil {
+				return 0, err
+			}
+			r, err := g.alloc()
+			if err != nil {
+				return 0, err
+			}
+			g.emit("mov", wr(r), wr(sp.lenReg))
+			return r, nil
+		}
 		if target, isConv := scalars[ident.Value]; isConv && len(e.Arguments) == 1 && ident.Value != "byte" {
 			return g.convert(e.Arguments[0], target)
 		}
@@ -1198,7 +1430,7 @@ func mentionsCall(body ast.Node) bool {
 	walk(body, func(n ast.Node) {
 		if call, ok := n.(*ast.InvocationExpression); ok {
 			if ident, ok := call.Function.(*ast.Identifier); ok {
-				if isConversion(ident.Value) || ident.Value == "assert" {
+				if isConversion(ident.Value) || ident.Value == "assert" || ident.Value == "len" {
 					return
 				}
 			}
@@ -1231,6 +1463,12 @@ func walk(n ast.Node, visit func(ast.Node)) {
 		}
 	case *ast.AssignmentStatement:
 		walk(e.Value, visit)
+	case *ast.IndexAssignmentStatement:
+		walk(e.Target, visit)
+		walk(e.Value, visit)
+	case *ast.IndexExpression:
+		walk(e.Left, visit)
+		walk(e.Index, visit)
 	case *ast.WhileStatement:
 		walk(e.Condition, visit)
 		walk(e.Body, visit)
@@ -1273,8 +1511,223 @@ func statementLine(stmt ast.Statement) int {
 		return s.Token.Line
 	case *ast.BreakStatement:
 		return s.Token.Line
+	case *ast.IndexAssignmentStatement:
+		return s.Token.Line
 	}
 	return 0
+}
+
+// ---- spans ------------------------------------------------------------------------
+
+// spanOperand resolves the span or view a `len(v)` / `v[i]` names.
+func (g *generator) spanOperand(expr ast.Expression) (span, error) {
+	ident, isIdent := expr.(*ast.Identifier)
+	if !isIdent {
+		return span{}, unsupported("an index into %s (not a span parameter)", expr.String())
+	}
+	sp, ok := g.spans[ident.Value]
+	if !ok {
+		return span{}, unsupported("an index into %s (not a span parameter)", ident.Value)
+	}
+	return sp, nil
+}
+
+// guardedIndex evaluates an element index into a 32-bit scratch register
+// and emits the checker's guard: `cmp wI, wL; b.hs <trap>` right before the
+// access, so an index at or past the length traps and the fall-through
+// path carries the fact that wI < len.
+func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
+	idxType, err := g.typeOf(index, nil)
+	if err != nil {
+		return 0, err
+	}
+	if idxType.wide() || idxType.signed || idxType.isBool {
+		return 0, unsupported("an element index of type %s (the span idiom walks by a u32 index)", idxType.name)
+	}
+	r, err := g.expr(index, &idxType)
+	if err != nil {
+		return 0, err
+	}
+	g.usedTrap = true
+	g.emit("cmp", wr(r), wr(sp.lenReg))
+	g.branch("hs", g.trap)
+	return r, nil
+}
+
+func log2Bytes(bytes int) int {
+	n := 0
+	for 1<<uint(n) < bytes {
+		n++
+	}
+	return n
+}
+
+// element lowers `v[i]`: a guarded, whole-element load through the bound
+// base, zero- or sign-extending as the element type reads in C.
+func (g *generator) element(e *ast.IndexExpression) (int, error) {
+	sp, err := g.spanOperand(e.Left)
+	if err != nil {
+		return 0, err
+	}
+	r, err := g.guardedIndex(sp, e.Index)
+	if err != nil {
+		return 0, err
+	}
+	index := wr(r)
+	address := asm.Memory{Base: xr(sp.baseReg), Index: &index, Shift: log2Bytes(sp.elem.bits / 8), Extend: "uxtw"}
+	var load string
+	switch {
+	case sp.elem.bits >= 32:
+		load = "ldr"
+	case sp.elem.bits == 16 && sp.elem.signed:
+		load = "ldrsh"
+	case sp.elem.bits == 16:
+		load = "ldrh"
+	case sp.elem.signed:
+		load = "ldrsb"
+	default:
+		load = "ldrb"
+	}
+	// The element lands in the index register: the index is spent.
+	g.emit(load, reg(r, sp.elem), address)
+	return r, nil
+}
+
+// elementStore lowers `v[i] = e` through a writable span.
+func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
+	if s.Target.Dot {
+		return unsupported("a field store")
+	}
+	sp, err := g.spanOperand(s.Target.Left)
+	if err != nil {
+		return err
+	}
+	if !sp.writable {
+		return unsupported("a store through the view %s", s.Target.Left.String())
+	}
+	value, err := g.expr(s.Value, &sp.elem)
+	if err != nil {
+		return err
+	}
+	r, err := g.guardedIndex(sp, s.Target.Index)
+	if err != nil {
+		return err
+	}
+	index := wr(r)
+	address := asm.Memory{Base: xr(sp.baseReg), Index: &index, Shift: log2Bytes(sp.elem.bits / 8), Extend: "uxtw"}
+	store := "str"
+	switch sp.elem.bits {
+	case 16:
+		store = "strh"
+	case 8:
+		store = "strb"
+	}
+	g.emit(store, reg(value, sp.elem), address)
+	g.release(r)
+	g.release(value)
+	return nil
+}
+
+// ---- results and tail calls ----------------------------------------------------
+
+// resultExpr places an expression in result position: a tail self-call
+// becomes the next iteration (the arguments into the parameter slots, then
+// a jump to the header); a Bool conditional keeps its arms in result
+// position; anything else evaluates into the result register.
+func (g *generator) resultExpr(expr ast.Expression) error {
+	switch e := expr.(type) {
+	case *ast.InvocationExpression:
+		if ident, ok := e.Function.(*ast.Identifier); ok && ident.Value == g.fn.Name.Value && len(g.spans) == 0 {
+			return g.tailCall(e)
+		}
+	case *ast.MatchExpression:
+		if whenTrue, whenFalse, ok := boolConditional(e); ok {
+			// With one arm a tail self-call, the loop shape the verifier
+			// recognizes: the exit branch leaves for the value arm, the tail
+			// arm falls through to the back edge.
+			if g.isTailCall(whenFalse) != g.isTailCall(whenTrue) {
+				tail, value, jumpIfFalse := whenTrue, whenFalse, true
+				if g.isTailCall(whenFalse) {
+					tail, value, jumpIfFalse = whenFalse, whenTrue, false
+				}
+				exit := g.newLabel("exit")
+				if err := g.conditionBranch(e.Scrutinee, exit, jumpIfFalse); err != nil {
+					return err
+				}
+				if err := g.resultExpr(tail); err != nil {
+					return err
+				}
+				g.label(exit)
+				return g.resultExpr(value)
+			}
+			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
+			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
+				return err
+			}
+			if err := g.resultExpr(whenTrue); err != nil {
+				return err
+			}
+			g.emit("b", asm.Symbol{Name: end})
+			g.label(elseLabel)
+			if err := g.resultExpr(whenFalse); err != nil {
+				return err
+			}
+			g.label(end)
+			return nil
+		}
+	case *ast.BlockExpression:
+		if e.Block != nil && len(e.Block.Statements) > 0 {
+			g.pushScope()
+			defer g.popScope()
+			stmts := e.Block.Statements
+			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+				return err
+			}
+			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
+				return g.resultExpr(es.Expression)
+			}
+		}
+	}
+	r, err := g.expr(expr, g.result)
+	if err != nil {
+		return err
+	}
+	g.moveResult(r, *g.result)
+	g.release(r)
+	return nil
+}
+
+// tailCall lowers a self-call in result position as a loop: every argument
+// is evaluated before any parameter slot changes.
+func (g *generator) tailCall(e *ast.InvocationExpression) error {
+	if len(e.Arguments) != len(g.fn.Parameters) {
+		return unsupported("a self-call with %d arguments", len(e.Arguments))
+	}
+	var values []int
+	for i, arg := range e.Arguments {
+		typ, _ := scalarOf(g.fn.Parameters[i].Type)
+		r, err := g.expr(arg, &typ)
+		if err != nil {
+			return err
+		}
+		values = append(values, r)
+	}
+	for i, r := range values {
+		g.items = append(g.items, g.storeVar(g.fn.Parameters[i].Name.Value, r))
+		g.release(r)
+	}
+	g.emit("b", asm.Symbol{Name: g.head})
+	return nil
+}
+
+// isTailCall recognizes a self-call the loop lowering handles.
+func (g *generator) isTailCall(expr ast.Expression) bool {
+	call, ok := expr.(*ast.InvocationExpression)
+	if !ok || len(g.spans) != 0 {
+		return false
+	}
+	ident, ok := call.Function.(*ast.Identifier)
+	return ok && ident.Value == g.fn.Name.Value
 }
 
 // Describe spells a lowered function as `.oakasm` text (diagnostics, tests).

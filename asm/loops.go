@@ -83,7 +83,11 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 			case "b", "b.", "cbz", "cbnz", "tbz", "tbnz":
 				target, ok := labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 				if !ok || target >= back {
-					wellFormed = false
+					// A guard's branch to the trap block is not an exit: the
+					// path it takes delivers no result (docs/spec/94-assembler.md §8).
+					if !ok || !isTrapBlock(items, target) || instr.Mnemonic == "b" {
+						wellFormed = false
+					}
 				} else if target <= i {
 					// A backward branch inside the body: admitted only as
 					// the back edge of a recognized inner loop lying inside.
@@ -100,6 +104,17 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 		innerHeaders[header] = back
 	}
 	return loops
+}
+
+// isTrapBlock reports a label whose first instruction is `brk`: the trap
+// a bounds guard, a zero divisor, or a failed assert branches to.
+func isTrapBlock(items []Item, index int) bool {
+	for i := index; i < len(items); i++ {
+		if instr, isInstr := items[i].(Instruction); isInstr {
+			return instr.Mnemonic == "brk"
+		}
+	}
+	return false
 }
 
 func isConditionalBranch(mnemonic string) bool {
@@ -320,6 +335,12 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					}
 					st = post
 					pc = inner.exitLabel
+					continue
+				}
+				if isTrapBlock(x.items, target) {
+					// The trap arm delivers no result; the body continues on
+					// the fall-through path, outside the trapping inputs.
+					pc++
 					continue
 				}
 				if len(ends)+len(work) >= bodyPathBudget {

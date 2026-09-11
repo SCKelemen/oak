@@ -63,6 +63,7 @@ jobs:
           lean -DwarningAsError=true -o proof/OakTextRefinement.olean proof/OakTextRefinement.lean 2>&1 | tee build/soundness/oak-text-refinement-proof.log
           lean -DwarningAsError=true -o proof/ExtractionDecoder.olean proof/ExtractionDecoder.lean 2>&1 | tee build/soundness/extraction-decoder-proof.log
           lean -DwarningAsError=true -o proof/ExtractionRUP.olean proof/ExtractionRUP.lean 2>&1 | tee build/soundness/extraction-rup-proof.log
+          lean -DwarningAsError=true -o proof/ExtractionStream.olean proof/ExtractionStream.lean 2>&1 | tee build/soundness/extraction-stream-proof.log
           lean -DwarningAsError=true -o proof/PackedText.olean proof/PackedText.lean 2>&1 | tee build/soundness/packed-text-proof.log
           lean -DwarningAsError=true proof/CertificateReplay.lean
       - name: Compare Go and Lean checker decisions

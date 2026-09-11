@@ -135,3 +135,30 @@ func TestDedentClosesNestedBlockBeforeOuterStatement(t *testing.T) {
 	}
 	t.Fatal("expected nested virtual block to close before outer x expression")
 }
+
+// `unsafe` opens a layout body only when a brace or an indented line
+// follows it. As a marker on a protocol transition (`via unsafe f(...)`,
+// docs/spec/112-protocols.md section 5) it is followed by the callable on
+// the same line and must neither synthesize a block nor demand one.
+func TestUnsafeMarkerOnOneLineDoesNotOpenLayoutBlock(t *testing.T) {
+	source := `Lifecycle: protocol = {
+  resource Arena
+  initial Open
+  raw: Open -> Open via unsafe cursor_raw(borrowed a): alias a
+  look: Open -> Open via read(borrowed a)
+}
+`
+	got := significant(New(scanner.New(source)))
+	for _, tok := range got {
+		if tok.Synthetic {
+			t.Fatalf("no synthetic token expected, got %#v", tok)
+		}
+		if tok.TokenKind == token.ILLEGAL {
+			t.Fatalf("layout rejected the marker: %#v", tok)
+		}
+	}
+	// The block form still opens a body.
+	layoutSource := "fn f(): u32\n  unsafe\n    x := 1\n  2\n"
+	explicitSource := "fn f(): u32 {\n  unsafe {\n    x := 1\n  }\n  2\n}"
+	assertKindsEqual(t, significant(New(scanner.New(layoutSource))), significant(New(scanner.New(explicitSource))))
+}

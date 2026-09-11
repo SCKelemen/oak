@@ -858,10 +858,44 @@ itself — lowered entirely by the backend, six functions proven at the bit
 level and the rest trusted with the reason (`bl`, no integer result, the
 conversion the verifier had not modeled before this increment), exit 42
 natively, through the C backend alone, and as the portable realization.
-Next increments: spans and views (the guarded `[base, wI, uxtw #s]`
-idiom), records, the tail-self-call loop, floating point through the
-`s`/`d` views, and a register allocator once the slot discipline is the
-bottleneck.
+**Second increment — spans, views, and the tail loop.** Span (`[*]T`) and
+view (`[]T`) parameters of fixed-width elements bind as their `{base, u32
+len}` pair and stay in those registers (the checker keys a span's facts on
+its bound base, so a span kernel is a leaf: a call would clobber the pair
+and a reload would drop the fact — such functions stay with the C
+backend). `len(v)` reads the length register; `v[i]` and `v[i] = e` go
+through the checker's own idiom — the index in a 32-bit scratch register,
+`cmp wI, wL` then `b.hs <trap>` immediately before the access, then
+`ldr`/`ldrb`/`ldrsh`/`str`/… `[xBase, wI, uxtw #log2(elem)]` — so every
+element access is bounds-checked (out of range traps, as the C backend's
+`oak_index` does), stores need a writable span, and the checker's
+index-fact rule admits the access rather than trusting it. A self-call in
+result position lowers to a loop: the arguments into the parameter slots,
+then a jump to the header after the prologue — constant stack depth, as
+the discipline requires. The verifier now drops a path that ends in `brk`
+from the fork that reached it (the Oak body traps on the same inputs:
+a failed bounds check, division by zero, an overflowing shift), so the
+guarded element load `at: (v: []u32, i: u32) -> u32 = v[i]` is proven and
+`byte_sum`/`clamp8` are proven at their 8-bit contracts. Variables now live in the callee-saved registers x19–x28 in declaration
+order (saved in pairs in the prologue, restored before `ret` — the
+checker's callee-saved discipline applies to the compiler's code), with
+frame slots only past ten variables; a comparison of simple operands emits
+directly as `cmp` then `b.cond`; and a result conditional with one
+tail-call arm is laid out with the tail arm falling through to the back
+edge. That is the loop shape the verifier recognizes, and its loop
+recognizer now admits a guard's branch to the trap block inside a body —
+so the compiled `sum` and `byte_total` loops are **proven** equal to their
+Oak `while` bodies by inductive coupling (`acc↔x19, i↔x20` under the
+invariant `i ≤ len(v)`), exactly as the hand-written checksum was.
+Executed (`TestE2ENativeSpans`): a view sum, a byte total with
+zero-extending loads, a fill through a span with halfword stores, an
+element read, and a tail-recursive count as a loop — exit 42 natively and
+through the C backend, and an index at the length traps in both
+realizations. Next increments: the Oak side of tail recursion in the
+verifier (today a tail-call body is trusted), `break` as a second loop
+exit in the recognizer, records, floating point through the `s`/`d`
+views, and spans with calls (spilling the pair under a re-derivable
+fact).
 
 
 

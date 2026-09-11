@@ -514,11 +514,20 @@ func (ft *FunctionTypeExpression) String() string {
 	return out.String()
 }
 
+// FunctionLiteral is a function value written in expression position
+// (docs/spec/10-syntax.md section 3c). Arguments always holds the parameter
+// names. Parameters and ReturnType are set for the typed shape
+// `fn(a: T): R { ... }`; ExpressionBody marks `fn(a: T): R = expr`, whose
+// expression is held as the single statement of Body so every consumer
+// sees one body shape.
 type FunctionLiteral struct {
 	BaseNode
-	Token     token.Token // func
-	Arguments []*Identifier
-	Body      *BlockStatement
+	Token          token.Token // fn
+	Arguments      []*Identifier
+	Parameters     []*FunctionParameter // typed shape only; same order as Arguments
+	ReturnType     Expression           // typed shape only; nil when unannotated
+	ExpressionBody bool
+	Body           *BlockStatement
 }
 
 func (fl *FunctionLiteral) expressionNode()      {}
@@ -526,16 +535,36 @@ func (fl *FunctionLiteral) TokenLiteral() string { return fl.Token.Literal }
 func (fl *FunctionLiteral) String() string {
 	var out bytes.Buffer
 
-	args := []string{}
-	for _, arg := range fl.Arguments {
-		args = append(args, arg.String())
-	}
-
 	out.WriteString(fl.TokenLiteral())
 	out.WriteRune('(')
-	out.WriteString(strings.Join(args, ", "))
+	if len(fl.Parameters) > 0 {
+		params := []string{}
+		for _, param := range fl.Parameters {
+			params = append(params, param.String())
+		}
+		out.WriteString(strings.Join(params, ", "))
+	} else {
+		args := []string{}
+		for _, arg := range fl.Arguments {
+			args = append(args, arg.String())
+		}
+		out.WriteString(strings.Join(args, ", "))
+	}
 	out.WriteRune(')')
-	out.WriteString(fl.Body.String())
+	if fl.ReturnType != nil {
+		out.WriteString(": ")
+		out.WriteString(fl.ReturnType.String())
+	}
+	if fl.ExpressionBody && fl.Body != nil && len(fl.Body.Statements) == 1 {
+		if stmt, ok := fl.Body.Statements[0].(*ExpressionStatement); ok && stmt.Expression != nil {
+			out.WriteString(" = ")
+			out.WriteString(stmt.Expression.String())
+			return out.String()
+		}
+	}
+	if fl.Body != nil {
+		out.WriteString(fl.Body.String())
+	}
 
 	return out.String()
 }
@@ -545,6 +574,13 @@ type InvocationExpression struct {
 	Token     token.Token // ( token
 	Function  Expression  // Identifier || FunctionLiteral
 	Arguments []Expression
+	// ResolvedMethod is set by the type checker when Function is the dotted
+	// form `recv.method` and recv is an ADT declaring the method: the
+	// checker's `Type::method` identity. The receiver stays in Function
+	// (it is not an argument, so explicit argument indices never shift);
+	// the backend lowers the call to the method's C function with the
+	// receiver as its first parameter (docs/spec/90-backend.md).
+	ResolvedMethod string `json:",omitempty"`
 }
 
 func (ie InvocationExpression) expressionNode()      {}
@@ -1350,18 +1386,57 @@ type ProtocolTransition struct {
 	Guard    Expression      // optional `when` expression over data.field and the payload
 	Effects  *BlockStatement // optional `then { ... }` statements over data.field and the payload
 	Callable *Identifier     // optional `via f`: the function that performs it
+	// CallableType is set when the callable is spelled `Type.method`: the
+	// receiver type whose method performs the transition. The checker knows
+	// the method as `Type::method`.
+	CallableType *Identifier
+	// Trusted marks `via unsafe f(...)`: the result identity written on
+	// this line is an assumption the compiler records instead of a claim
+	// it validates against f's body (docs/spec/112-protocols.md section 5).
+	Trusted      bool
+	TrustedToken token.Token
 	// Modes are the resource parameter modes written after the callable,
 	// `via f(consumed h, borrowed other, borrowed mut receiver)`
 	// (docs/spec/112-protocols.md section 5): each names one of f's
-	// parameters, or `receiver`, with its authority mode.
+	// parameters, or `receiver`, with its authority mode — or, for a
+	// function-typed parameter, the callable contract it requires.
 	Modes []*ProtocolParameterMode
+	// Result is the result identity written after the parenthesized
+	// modes, `: fresh`, `: alias h`, `: borrow h, g`, or `: borrow mut h`.
+	Result *ProtocolResultClause
 }
 
-// ProtocolParameterMode is one `mode name` entry of a `via` clause.
+// ProtocolParameterMode is one entry of a `via` clause: `mode name` for a
+// resource parameter, or `name(contract)` for a function-typed parameter.
 type ProtocolParameterMode struct {
-	Token token.Token // the mode keyword
-	Mode  string      // "borrowed", "borrowed mut", or "consumed"
+	Token token.Token // the mode keyword, or the parameter name for a contract entry
+	Mode  string      // "borrowed", "borrowed mut", or "consumed"; empty for a contract entry
 	Name  *Identifier // a parameter name of the callable, or `receiver`
+	// Contract is the callable contract of a function-typed parameter,
+	// `op(borrowed, _): fresh`: one mode per parameter of the function
+	// type, positionally, and whether the callable must return fresh
+	// authority.
+	Contract *ProtocolCallableContract
+}
+
+// ProtocolCallableContract is the contract a `via` clause requires of the
+// function values passed for one function-typed parameter. Modes are
+// positional over the function type's parameters: "borrowed", "borrowed
+// mut", "consumed", or "_" for a parameter the contract leaves unmarked.
+type ProtocolCallableContract struct {
+	Token        token.Token
+	Modes        []string
+	ModeTokens   []token.Token
+	ReturnsFresh bool
+}
+
+// ProtocolResultClause is the result identity of a `via` line: Kind is
+// "fresh" (no names), "alias" (exactly one parameter name), "borrow" or
+// "borrow mut" (one or more parameter names, the origins).
+type ProtocolResultClause struct {
+	Token token.Token
+	Kind  string
+	Names []*Identifier
 }
 
 func (pd *ProtocolDeclaration) statementNode()       {}
@@ -1402,6 +1477,13 @@ func (pd *ProtocolDeclaration) String() string {
 		}
 		if t.Callable != nil {
 			out.WriteString(" via ")
+			if t.Trusted {
+				out.WriteString("unsafe ")
+			}
+			if t.CallableType != nil {
+				out.WriteString(t.CallableType.String())
+				out.WriteString(".")
+			}
 			out.WriteString(t.Callable.String())
 			if len(t.Modes) > 0 {
 				out.WriteString("(")
@@ -1409,9 +1491,30 @@ func (pd *ProtocolDeclaration) String() string {
 					if i > 0 {
 						out.WriteString(", ")
 					}
+					if mode.Contract != nil {
+						out.WriteString(mode.Name.String())
+						out.WriteString("(")
+						out.WriteString(strings.Join(mode.Contract.Modes, ", "))
+						out.WriteString(")")
+						if mode.Contract.ReturnsFresh {
+							out.WriteString(": fresh")
+						}
+						continue
+					}
 					out.WriteString(mode.Mode + " " + mode.Name.String())
 				}
 				out.WriteString(")")
+			}
+			if t.Result != nil {
+				out.WriteString(": ")
+				out.WriteString(t.Result.Kind)
+				for i, name := range t.Result.Names {
+					if i > 0 {
+						out.WriteString(",")
+					}
+					out.WriteString(" ")
+					out.WriteString(name.String())
+				}
 			}
 		}
 	}

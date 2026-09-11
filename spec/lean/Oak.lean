@@ -13,6 +13,9 @@ import Oak.AArch64ColdEntry
 import Oak.Borrowing
 import Oak.ResourceFlow
 import Oak.ResourceCall
+import Oak.ResourceResult
+import Oak.MethodMangling
+import Oak.StatementBoundary
 import Oak.BorrowRegions
 import Oak.Reborrow
 import Oak.ReborrowRefinement
@@ -83,3 +86,4 @@ import Oak.Stdlib.SortLaws
 import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.RandomLaws
 import Oak.Typestate
+import Oak.IoPort

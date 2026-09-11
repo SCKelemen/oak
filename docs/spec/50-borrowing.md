@@ -710,6 +710,48 @@ are implemented for opaque resources. Open follow-ups: a source spelling for
 result identities, contracts on record-typed parameters and results that
 carry borrowed fields, and array element provenance.
 
+**Source spelling.** Every fact above — parameter and receiver modes, the
+three result identities, and callable contracts on function-typed
+parameters — is written on the protocol's `via` line
+(`112-protocols.md` §5.1): `via cursor_of(borrowed a): borrow a`,
+`via mut_cursor(borrowed mut a): borrow mut a`, `via peek(borrowed h): alias h`,
+`via open(): fresh`, `via with_each(op(borrowed), borrowed h)`, and
+`via Handle.close(consumed receiver)` for a method. The clause elaborates to
+the same SemIR effects this section names, so nothing here depends on
+which path declared the contract.
+
+**Trusted result claims.** A result identity marked `via unsafe` is an
+assumption rather than a validated claim: the body is not held to it
+(`OAK-B0117` is not raised for that callable), and the caller classifies
+the result from the declared identity exactly as it would a validated one.
+Nothing else changes — callee-entry authority and retention, call-local
+exclusivity, dependency and suspension are all still checked — so the
+marker admits exactly one thing: a body whose returned value the checker
+cannot relate to the claim (a cursor built over an arena through raw
+storage, an asm-backed accessor). It is the visible unsafe boundary for
+result identities, recorded as `resource.return-trusted` in SemIR.
+`Oak.ResourceResult` proves that the trusted judgment accepts every body,
+that the untrusted one is exactly body admission, and that the caller's
+classification is independent of the flag.
+
+**Formal model.** `Oak.ResourceResult` (`spec/lean/Oak/ResourceResult.lean`)
+states the body-admission rule of `OAK-B0117` over abstract return
+provenance and proves the laws the checker relies on: freshness cannot be
+manufactured from a parameter or a dependent; an alias claim is exact; a
+borrow never admits unknown provenance; declaring more origins admits every
+body the smaller set admitted (`borrow_monotone`), which is why declaring
+more than the body needs is safe and declaring fewer is the lie; an
+alias-admitted body and a tracked fresh-admitted body are borrow-admitted;
+a mutable reborrow narrows to a shared borrow and a shared dependent never
+widens into one. On the caller's side it proves, over `Oak.ResourceFlow`,
+that an alias result is the argument under a second name (consuming either
+consumes both) and that a fresh result's consumption leaves every other
+name as usable as before. For callable contracts it proves that exactly
+agreeing contracts commit the same caller state and that substituting a
+consuming value for a borrowed requirement would not (`OAK-B0116` is not
+vacuous). The model states the rule, not the walker that computes
+provenance from the body; implementation correspondence is by the tests.
+
 Imports and sealing cannot erase modes: a protocol declared in one package
 (`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the
 program's internal names, so the same contract governs every importer's

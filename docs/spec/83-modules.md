@@ -234,6 +234,10 @@ replace example.com/dep => ../dep
   SemVer with the lexical grammar of `82-package-semver.md` section 3.
 - `replace <path> => <dir>` — provide a required module from a local
   directory, relative to the manifest's directory unless absolute. Only the
+  A target that is a bare standard library package name (`replace io =>
+  iosim`) selects that library as the realization of the port path `io`,
+  needs no `require`, and loads the library under the port's path so its
+  names qualify as `io.` (`120-io.md` §1).
   root module's replace directives apply.
 - `profile <default|strict>` — at most once; the discipline profile every
   package of this module is judged under (`85-discipline.md` section 1). A

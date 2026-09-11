@@ -83,6 +83,13 @@ type CodeGenerator struct {
 	// bounds-checked form. Unknown containers fail closed.
 	localTypes   map[string]localContainer
 	sliceHelpers map[string]string
+	// liftedLiterals is the C text of every typed function literal lifted
+	// to a top-level function (emitFunctionLiteral); liftedCount names them
+	// in emission order; liftedOffset is where the text is spliced — after
+	// the prototypes, before the first definition that refers to one.
+	liftedLiterals strings.Builder
+	liftedCount    int
+	liftedOffset   int
 	// lineDirectives enables #line directives before every function and
 	// statement (docs/spec/90-backend.md section 10), so C diagnostics and
 	// debuggers attribute generated code to the Oak source line.
@@ -172,7 +179,13 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.programFunctions = make(map[string]*ast.FunctionStatement)
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil {
-			cg.programFunctions[fn.Name.Value] = fn
+			if fn.Receiver == nil {
+				cg.programFunctions[fn.Name.Value] = fn
+			} else if identity, isMethod := methodIdentity(fn); isMethod {
+				// Methods are known by the checker's Type::method identity
+				// so they never shadow a function of the same bare name.
+				cg.programFunctions[identity] = fn
+			}
 		}
 	}
 	cg.trampolineMember = make(map[string]string)
@@ -244,6 +257,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitFunctionPrototypes(program)
 	cg.emitStaticAsserts(program, tc)
 	cg.emitAsmUnits()
+	cg.liftedOffset = cg.output.Len()
 
 	// Emit function definitions
 	for _, stmt := range program.Statements {
@@ -257,6 +271,9 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitEntryPoint()
 
 	output := cg.output.String()
+	if cg.liftedLiterals.Len() != 0 {
+		output = output[:cg.liftedOffset] + "/* function literals lifted to plain functions: a literal is a code\n   pointer, never an environment (docs/spec/10-syntax.md section 3c) */\n" + cg.liftedLiterals.String() + output[cg.liftedOffset:]
+	}
 	if len(cg.sliceHelpers) != 0 {
 		names := make([]string, 0, len(cg.sliceHelpers))
 		for name := range cg.sliceHelpers {
@@ -749,6 +766,21 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	}
 
 	funcName := fn.Name.Value
+	cFuncName := cg.cFunctionName(funcName)
+	if fn.Receiver != nil {
+		// A method is emitted under its Type::method identity with the
+		// receiver as its first C parameter; the name is mangled
+		// injectively so two types' methods, or a method and a function
+		// of a similar spelling, never share a C symbol.
+		identity, isMethod := methodIdentity(fn)
+		if !isMethod {
+			cg.write("OAK_UNSUPPORTED_RECEIVER_TYPE;\n")
+			return
+		}
+		funcName = identity
+		typeName, method, _ := strings.Cut(identity, "::")
+		cFuncName = cg.cMethodName(typeName, method)
+	}
 
 	// Trampoline-group members are emitted once, together, as one engine
 	// plus per-member wrappers.
@@ -759,8 +791,6 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		}
 		return
 	}
-
-	cFuncName := cg.cFunctionName(funcName)
 
 	// Build Oak function signature
 	signature := cg.buildFunctionSignature(fn)
@@ -1642,7 +1672,7 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 	cg.inlineHelpers = make(map[string]bool)
 	functions := make(map[string]*ast.FunctionStatement)
 	for _, stmt := range program.Statements {
-		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil && fn.Receiver == nil {
 			functions[fn.Name.Value] = fn
 		}
 	}
@@ -1680,8 +1710,17 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 	emitted := false
 	for _, stmt := range program.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
-		if !ok || fn.Name == nil || fn.Receiver != nil {
+		if !ok || fn.Name == nil {
 			continue
+		}
+		cName := cg.cFunctionName(fn.Name.Value)
+		if fn.Receiver != nil {
+			identity, isMethod := methodIdentity(fn)
+			if !isMethod {
+				continue
+			}
+			typeName, method, _ := strings.Cut(identity, "::")
+			cName = cg.cMethodName(typeName, method)
 		}
 		if !emitted {
 			cg.write("/* forward declarations; OAK_INLINE marks private leaf helpers the C\n   compiler must inline at every optimization level (the external\n   definition is still emitted: C99 extern inline) */\n")
@@ -1695,7 +1734,27 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			continue
 		}
 		returnType := cg.parseTypeExpression(fn.ReturnType)
-		cg.write(fmt.Sprintf("%s%s %s( %s );\n", cg.linkage(fn.Name.Value), returnType, cg.cFunctionName(fn.Name.Value), cg.cParameterList(fn)))
+		cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(fn.Name.Value), returnType, cName))
+		if fn.Receiver != nil {
+			cg.write(cg.cParameter(fn.Receiver.Type, fn.Receiver.Name.Value))
+			if len(fn.Parameters) > 0 {
+				cg.write(", ")
+			}
+		} else if len(fn.Parameters) == 0 {
+			cg.write("void")
+		}
+		for i, param := range fn.Parameters {
+			if param.Variadic {
+				viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
+				cg.write(fmt.Sprintf("%s %s", viewType, cIdent(param.Name.Value)))
+			} else {
+				cg.write(cg.cParameter(param.Type, param.Name.Value))
+			}
+			if i < len(fn.Parameters)-1 {
+				cg.write(", ")
+			}
+		}
+		cg.write(" );\n")
 		// An explicit C ABI export is a second entry point with the
 		// declared symbol (docs/spec/92-ffi.md section 2.9).
 		if fn.ExportSymbol != "" {
@@ -2520,6 +2579,21 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				return
 			}
 		}
+		if access, isDot := e.Function.(*ast.IndexExpression); isDot && access.Dot && e.ResolvedMethod != "" {
+			// An ADT method call (docs/spec/90-backend.md): a direct call to
+			// the method's C function with the receiver as the first
+			// argument. No dispatch, no thunk, no allocation.
+			typeName, method, _ := strings.Cut(e.ResolvedMethod, "::")
+			cg.output.WriteString(cg.cMethodName(typeName, method))
+			cg.output.WriteString("( ")
+			cg.emitExpressionFragment(access.Left, tc)
+			for _, arg := range e.Arguments {
+				cg.output.WriteString(", ")
+				cg.emitExpressionFragment(arg, tc)
+			}
+			cg.output.WriteString(" )")
+			return
+		}
 		if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
 		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil {
@@ -2788,6 +2862,30 @@ func (cg *CodeGenerator) cFunctionName(oakName string) string {
 		return fmt.Sprintf("oak_%s_%s", cg.packageName, oakName)
 	}
 	return fmt.Sprintf("oak_%s", oakName)
+}
+
+// cMethodName mangles a method Type::method into a C symbol that no
+// function's mangled name and no other method's can equal: the receiver
+// type's length in decimal, the type, an underscore, the method
+// (docs/spec/90-backend.md). The length prefix begins with a digit, which
+// no Oak identifier can, so it cannot be a function's name; and it fixes
+// where the type ends, so `A_b::c` and `A::b_c` differ. Oak.MethodMangling
+// (spec/lean/Oak/MethodMangling.lean) proves the injectivity.
+func (cg *CodeGenerator) cMethodName(typeName, method string) string {
+	return cg.cFunctionName(fmt.Sprintf("%d%s_%s", len(typeName), typeName, method))
+}
+
+// methodIdentity is the checker's Type::method identity of a method whose
+// receiver type is a plain nominal type.
+func methodIdentity(fn *ast.FunctionStatement) (string, bool) {
+	if fn == nil || fn.Receiver == nil || fn.Name == nil {
+		return "", false
+	}
+	receiver, isIdent := fn.Receiver.Type.(*ast.Identifier)
+	if !isIdent {
+		return "", false
+	}
+	return receiver.Value + "::" + fn.Name.Value, true
 }
 
 func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
@@ -3402,6 +3500,22 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 		}
 	}
 
+	// A binding inferred from a typed function literal is a function
+	// pointer of the literal's own signature.
+	if literal, isLiteral := stmt.Value.(*ast.FunctionLiteral); isLiteral && stmt.Type == nil && (len(literal.Parameters) > 0 || literal.ReturnType != nil) {
+		signature := &ast.FunctionTypeExpression{Token: literal.Token, Return: literal.ReturnType}
+		for _, param := range literal.Parameters {
+			signature.Parameters = append(signature.Parameters, param.Type)
+		}
+		if signature.Return == nil {
+			signature.Return = &ast.Identifier{Token: literal.Token, Value: "()"}
+		}
+		cg.write("  " + cg.cFunctionPointer(signature, cIdent(varName)) + " = ")
+		cg.emitExpressionFragment(stmt.Value, tc)
+		cg.write(";\n")
+		return
+	}
+
 	// Determine type
 	var varType string
 	if stmt.Type != nil {
@@ -3554,11 +3668,45 @@ func (cg *CodeGenerator) emitRecordLiteral(expr *ast.RecordLiteral, tc *typechec
 	}
 }
 
-// emitFunctionLiteral emits a function literal (closure)
+// emitFunctionLiteral emits a function literal. A typed literal
+// (docs/spec/10-syntax.md section 3c) is lifted to a top-level C function
+// and the expression is that function's name — a plain code pointer, which
+// is all a captureless literal is (capturing literals are rejected by the
+// checker, OAK-T0401). The lifted definition is spliced after the
+// prototypes, so any function may refer to it. An untyped literal has no
+// declared parameter types to lower and is left unsupported.
 func (cg *CodeGenerator) emitFunctionLiteral(expr *ast.FunctionLiteral, tc *typechecker.TypeChecker) {
-	// For now, function literals are not fully supported in C
-	// In full implementation, we'd need to emit a function pointer or struct
-	cg.output.WriteString("/* function literal */")
+	if len(expr.Parameters) == 0 && expr.ReturnType == nil {
+		cg.output.WriteString("OAK_UNSUPPORTED_UNTYPED_FUNCTION_LITERAL")
+		return
+	}
+	cg.output.WriteString(cg.cFunctionName(cg.liftFunctionLiteral(expr, tc)))
+}
+
+// liftFunctionLiteral emits a typed function literal as a top-level
+// function into the lifted-literal buffer and returns its Oak-side name.
+// The name begins with a digit, which no Oak identifier can, so it never
+// collides with a program function's mangled name. Nested literals are
+// lifted while the outer body is emitted, so their definitions precede it.
+func (cg *CodeGenerator) liftFunctionLiteral(expr *ast.FunctionLiteral, tc *typechecker.TypeChecker) string {
+	name := fmt.Sprintf("0lit_%d", cg.liftedCount)
+	cg.liftedCount++
+	fn := &ast.FunctionStatement{
+		Token:      expr.Token,
+		Name:       &ast.Identifier{Token: expr.Token, Value: name},
+		Parameters: expr.Parameters,
+		ReturnType: expr.ReturnType,
+		Body:       &ast.BlockExpression{Token: expr.Token, Block: expr.Body},
+	}
+	saved, savedIndent, savedLocals := cg.output, cg.indentLevel, cg.localTypes
+	cg.output = strings.Builder{}
+	cg.indentLevel = 0
+	cg.localTypes = nil
+	cg.emitFunction(fn, tc)
+	lifted := cg.output.String()
+	cg.output, cg.indentLevel, cg.localTypes = saved, savedIndent, savedLocals
+	cg.liftedLiterals.WriteString(lifted)
+	return name
 }
 
 func (cg *CodeGenerator) parsePayloadType(expr ast.Expression) string {
