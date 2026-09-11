@@ -1,6 +1,8 @@
 package typechecker
 
 import (
+	"sort"
+
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
 )
@@ -148,4 +150,119 @@ func (e *TypeEnvironment) CheckedSIMDOperation(call *ast.InvocationExpression) s
 		return info.simdCalls[call]
 	}
 	return ""
+}
+
+// BorrowPath is one piece of borrowed storage inside a value: the dotted
+// path to it (fields by name, a variant's payload as `$Variant`, the empty
+// path for the value itself) and whether it is writable.
+type BorrowPath struct {
+	Path string
+	Span bool
+}
+
+// BorrowPaths lists every view or span a value of the type carries, by
+// path, so the borrow checker can name a binding's borrows field by field
+// and variant by variant (docs/spec/50-borrowing.md sections 8b, 8c).
+// Reports false when the type carries borrowed storage the path form does
+// not cover (strings, unions), so callers fail closed.
+func (e *TypeEnvironment) BorrowPaths(typ Type) ([]BorrowPath, bool) {
+	info := e.borrowMetadata()
+	var paths []BorrowPath
+	complete := true
+	active := make(map[string]bool)
+	var visit func(typ Type, prefix string, bindings map[string]Type, depth int)
+	visit = func(typ Type, prefix string, bindings map[string]Type, depth int) {
+		if typ == nil || depth > 16 {
+			return
+		}
+		switch t := typ.(type) {
+		case *StringType:
+			complete = false
+			return
+		case *UnionType:
+			for _, member := range t.Types {
+				if e.ContainsBorrowStorage(member) {
+					complete = false
+					return
+				}
+			}
+			return
+		case *ArrayType:
+			if t.IsSlice || t.IsSpan {
+				paths = append(paths, BorrowPath{Path: prefix, Span: t.IsSpan})
+				return
+			}
+			if e.ContainsBorrowStorage(t.ElementType) {
+				// Arrays of borrows have no per-element path.
+				complete = false
+			}
+			return
+		case *RecordType:
+			names := t.Order
+			if len(names) == 0 {
+				for name := range t.Fields {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+			}
+			for _, name := range names {
+				visit(t.Fields[name], join(prefix, name), bindings, depth+1)
+			}
+			return
+		case *ADTType:
+			if bound, isParameter := bindings[t.Name]; isParameter {
+				visit(bound, prefix, nil, depth+1)
+				return
+			}
+		}
+		name, _, args, nominal := adtInstantiation(typ)
+		if !nominal || info == nil {
+			return
+		}
+		def := info.adts[name]
+		if def == nil {
+			return
+		}
+		key := name + ":" + prefix
+		if active[key] {
+			return
+		}
+		active[key] = true
+		defer delete(active, key)
+		next := make(map[string]Type)
+		for i, parameter := range def.TypeParams {
+			if i < len(args) {
+				next[parameter] = substituteBindings(args[i], bindings)
+			}
+		}
+		for _, variant := range def.Variants {
+			payload := info.payloads[name][variant.Name]
+			if payload == nil {
+				continue
+			}
+			visit(payload, join(prefix, "$"+variant.Name), next, depth+1)
+		}
+	}
+	visit(typ, "", nil, 0)
+	return paths, complete
+}
+
+func join(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "." + name
+}
+
+// substituteBindings replaces bound type-parameter placeholders.
+func substituteBindings(typ Type, bindings map[string]Type) Type {
+	if len(bindings) == 0 {
+		return typ
+	}
+	if t, ok := typ.(*ADTType); ok {
+		if bound, isParameter := bindings[t.Name]; isParameter {
+			return bound
+		}
+	}
+	return typ
 }

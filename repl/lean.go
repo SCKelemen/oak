@@ -377,6 +377,14 @@ func (t *translator) statement(stmt ast.Statement, state *symbolicState, out *re
 			record = id.Value
 		} else if literal, ok := s.Value.(*ast.RecordLiteral); ok && literal.TypeName != nil && t.recordShape(literal.TypeName.Value) != nil {
 			record = literal.TypeName.Value
+		} else if call, ok := s.Value.(*ast.InvocationExpression); ok {
+			if typeName, variant := t.constructorOf(call.Function); variant != nil {
+				record = typeName
+			}
+		} else if typeName, variant := t.constructorOf(s.Value); variant != nil {
+			record = typeName
+		} else if ve, ok := s.Value.(*ast.VariantExpression); ok && ve.TypeName != nil && t.adtVariants(ve.TypeName.Value) != nil {
+			record = ve.TypeName.Value
 		}
 		if record != "" {
 			values := t.recordValue(s.Value, record, state)
@@ -408,6 +416,10 @@ func (t *translator) statement(stmt ast.Statement, state *symbolicState, out *re
 		match, isMatch := s.Expression.(*ast.MatchExpression)
 		if !isMatch {
 			t.fail("the body contains a statement outside the fragment (%T)", s.Expression)
+			return
+		}
+		if boolArms(match) == nil {
+			t.sumConditional(match, state, out)
 			return
 		}
 		t.conditional(match, state, out)
@@ -555,44 +567,150 @@ type recordField struct {
 	ty   string
 }
 
-// recordShape flattens a struct declaration into its scalar leaves;
-// nested records contribute their own leaves under the field's name. It
-// returns nil for a type that is not a translatable record.
+// tagType is the representation of a sum type's tag leaf.
+const tagType = "(.u 8)"
+
+// adtVariant is one constructor of a sum type: its tag (declaration
+// order) and its payload — a scalar representation, a record/sum type
+// name, or nothing.
+type adtVariant struct {
+	name    string
+	tag     int
+	payload string // Lean type of a scalar payload, "" otherwise
+	nested  string // aggregate type name of a record or sum payload
+}
+
+// recordShape flattens an aggregate declaration into its scalar leaves. A
+// struct contributes its fields (nested aggregates under the field's name);
+// a sum type contributes a `tag` leaf and, per constructor with a payload,
+// the payload's leaves under the constructor's name. It returns nil for a
+// type that is not a translatable aggregate.
 func (t *translator) recordShape(typeName string) []recordField {
 	if shape, done := t.shapes[typeName]; done {
 		return shape
 	}
 	t.shapes[typeName] = nil // guards recursive shapes
 	var shape []recordField
-	for _, stmt := range t.program.Statements {
-		adt, ok := stmt.(*ast.ADTType)
-		if !ok || adt.Name == nil || adt.Name.Value != typeName || len(adt.Variants) != 1 || adt.Variants[0] == nil {
-			continue
-		}
-		literal, ok := adt.Variants[0].Literal.(*ast.RecordLiteral)
-		if !ok || literal.Extension != nil {
+	adt := t.adtNamed(typeName)
+	if adt == nil {
+		return nil
+	}
+	if literal := structLiteral(adt); literal != nil {
+		if literal.Extension != nil {
 			return nil
 		}
 		for _, field := range literal.FieldOrder {
-			if ty := leanType(field.Value); ty != "" {
-				shape = append(shape, recordField{path: field.Name, ty: ty})
-				continue
-			}
-			nested, ok := field.Value.(*ast.Identifier)
-			if !ok {
+			leaves := t.leavesOf(field.Value)
+			if leaves == nil {
 				return nil
 			}
-			inner := t.recordShape(nested.Value)
-			if inner == nil {
-				return nil
+			for _, leaf := range leaves {
+				shape = append(shape, recordField{path: joinPath(field.Name, leaf.path), ty: leaf.ty})
 			}
-			for _, leaf := range inner {
-				shape = append(shape, recordField{path: field.Name + "." + leaf.path, ty: leaf.ty})
+		}
+	} else {
+		variants := t.adtVariants(typeName)
+		if variants == nil {
+			return nil
+		}
+		shape = append(shape, recordField{path: "tag", ty: tagType})
+		for _, variant := range variants {
+			switch {
+			case variant.payload != "":
+				shape = append(shape, recordField{path: variant.name, ty: variant.payload})
+			case variant.nested != "":
+				inner := t.recordShape(variant.nested)
+				if inner == nil {
+					return nil
+				}
+				for _, leaf := range inner {
+					shape = append(shape, recordField{path: variant.name + "." + leaf.path, ty: leaf.ty})
+				}
 			}
 		}
 	}
 	t.shapes[typeName] = shape
 	return shape
+}
+
+// leavesOf renders a type expression's leaves: a scalar is one leaf with
+// an empty path; an aggregate contributes its shape.
+func (t *translator) leavesOf(typeExpr ast.Expression) []recordField {
+	if ty := leanType(typeExpr); ty != "" {
+		return []recordField{{path: "", ty: ty}}
+	}
+	id, ok := typeExpr.(*ast.Identifier)
+	if !ok {
+		return nil
+	}
+	return t.recordShape(id.Value)
+}
+
+func joinPath(prefix, path string) string {
+	if path == "" {
+		return prefix
+	}
+	return prefix + "." + path
+}
+
+func (t *translator) adtNamed(typeName string) *ast.ADTType {
+	for _, stmt := range t.program.Statements {
+		if adt, ok := stmt.(*ast.ADTType); ok && adt.Name != nil && adt.Name.Value == typeName && len(adt.Variants) != 0 {
+			return adt
+		}
+	}
+	return nil
+}
+
+// structLiteral returns the record shape of a struct declaration, or nil
+// for a sum type.
+func structLiteral(adt *ast.ADTType) *ast.RecordLiteral {
+	if len(adt.Variants) != 1 || adt.Variants[0] == nil {
+		return nil
+	}
+	literal, ok := adt.Variants[0].Literal.(*ast.RecordLiteral)
+	if !ok {
+		return nil
+	}
+	return literal
+}
+
+// adtVariants lists a sum type's constructors, or nil when the type is a
+// struct or a constructor's payload is outside the fragment.
+func (t *translator) adtVariants(typeName string) []adtVariant {
+	adt := t.adtNamed(typeName)
+	if adt == nil || structLiteral(adt) != nil {
+		return nil
+	}
+	var variants []adtVariant
+	for i, variant := range adt.Variants {
+		if variant == nil || variant.Name == nil || variant.Literal != nil {
+			return nil
+		}
+		v := adtVariant{name: variant.Name.Value, tag: i}
+		if variant.Payload != nil {
+			if ty := leanType(variant.Payload); ty != "" {
+				v.payload = ty
+			} else if id, ok := variant.Payload.(*ast.Identifier); ok && t.recordShape(id.Value) != nil {
+				v.nested = id.Value
+			} else {
+				return nil
+			}
+		}
+		variants = append(variants, v)
+	}
+	return variants
+}
+
+// variantNamed finds a constructor of a sum type.
+func (t *translator) variantNamed(typeName, name string) *adtVariant {
+	for _, variant := range t.adtVariants(typeName) {
+		if variant.name == name {
+			v := variant
+			return &v
+		}
+	}
+	return nil
 }
 
 // recordOf returns the record type a variable path denotes, or "" for a
@@ -610,17 +728,14 @@ func (t *translator) recordOf(path string, state *symbolicState) string {
 	return typeName
 }
 
-// fieldRecord returns the record type of a field of a record type, or "".
+// fieldRecord returns the aggregate type of a field of a record type (or of
+// a constructor's payload of a sum type), or "".
 func (t *translator) fieldRecord(typeName, field string) string {
-	for _, stmt := range t.program.Statements {
-		adt, ok := stmt.(*ast.ADTType)
-		if !ok || adt.Name == nil || adt.Name.Value != typeName || len(adt.Variants) != 1 || adt.Variants[0] == nil {
-			continue
-		}
-		literal, ok := adt.Variants[0].Literal.(*ast.RecordLiteral)
-		if !ok {
-			return ""
-		}
+	adt := t.adtNamed(typeName)
+	if adt == nil {
+		return ""
+	}
+	if literal := structLiteral(adt); literal != nil {
 		for _, f := range literal.FieldOrder {
 			if f.Name == field {
 				if id, ok := f.Value.(*ast.Identifier); ok && t.recordShape(id.Value) != nil {
@@ -629,6 +744,10 @@ func (t *translator) fieldRecord(typeName, field string) string {
 				return ""
 			}
 		}
+		return ""
+	}
+	if variant := t.variantNamed(typeName, field); variant != nil {
+		return variant.nested
 	}
 	return ""
 }
@@ -726,22 +845,224 @@ func (t *translator) recordValue(expr ast.Expression, typeName string, state *sy
 				t.fail("record literal of %s leaves field %s unset", typeName, leaf.path)
 			}
 		}
-	case *ast.Identifier, *ast.IndexExpression:
-		source := t.place(e, state)
+	case *ast.VariantExpression:
+		// The elaborated form of `Type.Variant(payload)` / `Type.Variant`.
+		if e.Variant == nil {
+			t.fail("a variant expression without a constructor")
+			return values
+		}
+		if e.TypeName != nil && e.TypeName.Value != typeName {
+			t.fail("`%s` is not a constructor of %s", e.String(), typeName)
+			return values
+		}
+		variant := t.variantNamed(typeName, e.Variant.Value)
+		if variant == nil {
+			t.fail("`%s` is not a constructor of %s", e.Variant.Value, typeName)
+			return values
+		}
+		return t.constructed(typeName, variant, e.Payload, state)
+	case *ast.InvocationExpression:
+		// `Type.Variant(payload)`: the constructor's tag and payload; other
+		// constructors' payloads are unobservable and read as 0.
+		typeName2, variant := t.constructorOf(e.Function)
+		if variant == nil || typeName2 != typeName || len(e.Arguments) != 1 {
+			t.fail("`%s` is not a constructor of %s", e.Function.String(), typeName)
+			return values
+		}
+		return t.constructed(typeName, variant, e.Arguments[0], state)
+	case *ast.IndexExpression:
+		if typeName2, variant := t.constructorOf(e); variant != nil {
+			if typeName2 != typeName {
+				t.fail("`%s` is not a constructor of %s", e.String(), typeName)
+				return values
+			}
+			return t.constructed(typeName, variant, nil, state)
+		}
+		return t.copiedAggregate(e, typeName, state)
+	case *ast.Identifier:
+		return t.copiedAggregate(e, typeName, state)
+	case *ast.MatchExpression:
+		// A Boolean conditional with aggregate arms: each leaf is the
+		// conditional over the two arms' leaves.
+		if bools := boolArms(e); bools != nil && bools[0] != nil && bools[1] != nil {
+			condition, _ := t.expr(e.Scrutinee, state)
+			yes := t.recordValue(bools[0], typeName, state)
+			no := t.recordValue(bools[1], typeName, state)
+			if t.err != "" {
+				return values
+			}
+			for _, leaf := range t.recordShape(typeName) {
+				values[leaf.path] = fmt.Sprintf("(.cond %s %s %s)", condition, yes[leaf.path], no[leaf.path])
+			}
+			return values
+		}
+		// A sum-valued match: every leaf is the conditional over the arms.
+		arms := t.matchArms(e, state)
 		if t.err != "" {
 			return values
 		}
-		if source.record != typeName {
-			t.fail("`%s` is not a record of type %s", e.String(), typeName)
-			return values
+		branches := make([]map[string]string, len(arms))
+		for i, arm := range arms {
+			branches[i] = t.recordValue(arm.body, typeName, arm.scope)
+			if t.err != "" {
+				return values
+			}
 		}
 		for _, leaf := range t.recordShape(typeName) {
-			values[leaf.path] = t.variable(source.name+"."+leaf.path, state)
+			value := branches[len(arms)-1][leaf.path]
+			for i := len(arms) - 2; i >= 0; i-- {
+				value = fmt.Sprintf("(.cond %s %s %s)", arms[i].condition, branches[i][leaf.path], value)
+			}
+			values[leaf.path] = value
 		}
 	default:
-		t.fail("record-valued expression %T is outside the fragment", expr)
+		t.fail("aggregate-valued expression %T is outside the fragment", expr)
 	}
 	return values
+}
+
+// copiedAggregate renders the leaves of an aggregate variable or field path.
+func (t *translator) copiedAggregate(expr ast.Expression, typeName string, state *symbolicState) map[string]string {
+	values := map[string]string{}
+	source := t.place(expr, state)
+	if t.err != "" {
+		return values
+	}
+	if source.record != typeName {
+		t.fail("`%s` is not a value of type %s", expr.String(), typeName)
+		return values
+	}
+	for _, leaf := range t.recordShape(typeName) {
+		values[leaf.path] = t.variable(source.name+"."+leaf.path, state)
+	}
+	return values
+}
+
+// constructorOf recognizes `Type.Variant` and returns the sum type and the
+// constructor, or nil.
+func (t *translator) constructorOf(expr ast.Expression) (string, *adtVariant) {
+	access, ok := expr.(*ast.IndexExpression)
+	if !ok || !access.Dot {
+		return "", nil
+	}
+	typeName, ok := access.Left.(*ast.Identifier)
+	if !ok {
+		return "", nil
+	}
+	name, ok := access.Index.(*ast.Identifier)
+	if !ok || t.adtVariants(typeName.Value) == nil {
+		return "", nil
+	}
+	return typeName.Value, t.variantNamed(typeName.Value, name.Value)
+}
+
+// constructed renders the leaves of `Type.Variant(payload)`.
+func (t *translator) constructed(typeName string, variant *adtVariant, payload ast.Expression, state *symbolicState) map[string]string {
+	values := map[string]string{}
+	for _, leaf := range t.recordShape(typeName) {
+		values[leaf.path] = "(.lit 0)"
+	}
+	values["tag"] = literal(int64(variant.tag))
+	switch {
+	case variant.payload != "":
+		if payload == nil {
+			t.fail("constructor %s.%s needs a payload", typeName, variant.name)
+			return values
+		}
+		value, _ := t.expr(payload, state)
+		values[variant.name] = value
+	case variant.nested != "":
+		if payload == nil {
+			t.fail("constructor %s.%s needs a payload", typeName, variant.name)
+			return values
+		}
+		for path, value := range t.recordValue(payload, variant.nested, state) {
+			values[variant.name+"."+path] = value
+		}
+	default:
+		if payload != nil {
+			t.fail("constructor %s.%s takes no payload", typeName, variant.name)
+		}
+	}
+	return values
+}
+
+// matchArm is one arm of a sum-type match prepared for translation: the
+// tag condition (empty for the final, default arm), the arm's body, and
+// the scope in which the payload binding is a local.
+type matchArm struct {
+	condition string
+	body      ast.Expression
+	scope     *symbolicState
+}
+
+// matchArms prepares a match over a sum-typed scrutinee. Arms are tried in
+// order; the last arm is the default, so the checker's exhaustiveness makes
+// the translation total. Payload bindings become locals over the
+// scrutinee's payload leaves.
+func (t *translator) matchArms(match *ast.MatchExpression, state *symbolicState) []matchArm {
+	source := t.place(match.Scrutinee, state)
+	if t.err != "" {
+		return nil
+	}
+	if source.record == "" || t.adtVariants(source.record) == nil {
+		t.fail("`%s` is matched but is not a sum-typed variable in the fragment", match.Scrutinee.String())
+		return nil
+	}
+	typeName := source.record
+	tag := t.variable(source.name+".tag", state)
+	arms := make([]matchArm, 0, len(match.Arms))
+	for i, arm := range match.Arms {
+		scope := state.clone()
+		condition := ""
+		switch pattern := arm.Pattern.(type) {
+		case *ast.VariantPattern:
+			if pattern.Variant == nil {
+				t.fail("a variant pattern without a name")
+				return nil
+			}
+			variant := t.variantNamed(typeName, pattern.Variant.Value)
+			if variant == nil {
+				t.fail("`%s` is not a constructor of %s", pattern.Variant.Value, typeName)
+				return nil
+			}
+			if i != len(match.Arms)-1 {
+				condition = fmt.Sprintf("(.bin .eq %s %s)", tag, literal(int64(variant.tag)))
+			}
+			if binding, ok := pattern.Payload.(*ast.BindingPattern); ok && binding.Name != nil {
+				leafRoot := source.name + "." + variant.name
+				switch {
+				case variant.payload != "":
+					scope.locals[binding.Name.Value] = variant.payload
+					scope.vars[binding.Name.Value] = t.variable(leafRoot, state)
+				case variant.nested != "":
+					scope.records[binding.Name.Value] = variant.nested
+					for _, leaf := range t.recordShape(variant.nested) {
+						scope.locals[binding.Name.Value+"."+leaf.path] = leaf.ty
+						scope.vars[binding.Name.Value+"."+leaf.path] = t.variable(leafRoot+"."+leaf.path, state)
+					}
+				default:
+					t.fail("constructor %s has no payload to bind", variant.name)
+					return nil
+				}
+			} else if pattern.Payload != nil {
+				if _, wildcard := pattern.Payload.(*ast.WildcardPattern); !wildcard {
+					t.fail("payload pattern %T is outside the fragment", pattern.Payload)
+					return nil
+				}
+			}
+		case *ast.WildcardPattern:
+			if i != len(match.Arms)-1 {
+				t.fail("a wildcard arm must be last")
+				return nil
+			}
+		default:
+			t.fail("pattern %T is outside the fragment", arm.Pattern)
+			return nil
+		}
+		arms = append(arms, matchArm{condition: condition, body: arm.Body, scope: scope})
+	}
+	return arms
 }
 
 // conditional executes `c ? { A } | { B }`: both arms run from the current
@@ -827,6 +1148,68 @@ func (t *translator) conditional(match *ast.MatchExpression, state *symbolicStat
 	}
 	conditionWrites(yesState, true, yes)
 	conditionWrites(noState, false, no)
+}
+
+// sumConditional executes a statement-level match over a sum type with
+// block arms: every arm runs from the current state in its own scope, and
+// each assigned variable becomes the nested conditional over the tag.
+func (t *translator) sumConditional(match *ast.MatchExpression, state *symbolicState, out *results) {
+	arms := t.matchArms(match, state)
+	if t.err != "" {
+		return
+	}
+	type outcome struct {
+		state   *symbolicState
+		results *results
+	}
+	outcomes := make([]outcome, len(arms))
+	for i, arm := range arms {
+		results := newResults()
+		if arm.body != nil {
+			block, isBlock := arm.body.(*ast.BlockExpression)
+			if !isBlock {
+				t.fail("a match arm in statement position is not a block")
+				return
+			}
+			t.block(block.Block, arm.scope, results)
+			if t.err != "" {
+				return
+			}
+		}
+		outcomes[i] = outcome{state: arm.scope, results: results}
+	}
+	names := map[string]bool{}
+	for _, o := range outcomes {
+		for name := range o.results.assigned {
+			names[name] = true
+		}
+		if len(o.results.writes) != 0 {
+			t.fail("array stores inside a sum-type match are outside the fragment")
+			return
+		}
+	}
+	sorted := make([]string, 0, len(names))
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+	for _, name := range sorted {
+		before, had := state.vars[name]
+		if !had {
+			before = fmt.Sprintf("(.var %d)", t.index(name))
+		}
+		branch := func(i int) string {
+			if v, ok := outcomes[i].results.assigned[name]; ok {
+				return v
+			}
+			return before
+		}
+		value := branch(len(arms) - 1)
+		for i := len(arms) - 2; i >= 0; i-- {
+			value = fmt.Sprintf("(.cond %s %s %s)", arms[i].condition, branch(i), value)
+		}
+		t.assign(name, value, state, out)
+	}
 }
 
 // boolArms returns the true and false arm bodies of a Boolean conditional
@@ -938,7 +1321,21 @@ func (t *translator) expr(expr ast.Expression, state *symbolicState) (string, st
 	case *ast.MatchExpression:
 		arms := boolArms(e)
 		if arms == nil || arms[0] == nil || arms[1] == nil {
-			return t.fail("a match that is not a two-armed Boolean conditional is outside the fragment"), ""
+			// A scalar-valued match over a sum type: nested conditionals on
+			// the tag, the last arm the default.
+			prepared := t.matchArms(e, state)
+			if t.err != "" {
+				return "sorry", ""
+			}
+			value, ty := t.expr(prepared[len(prepared)-1].body, prepared[len(prepared)-1].scope)
+			for i := len(prepared) - 2; i >= 0; i-- {
+				branch, branchTy := t.expr(prepared[i].body, prepared[i].scope)
+				if ty == "" {
+					ty = branchTy
+				}
+				value = fmt.Sprintf("(.cond %s %s %s)", prepared[i].condition, branch, value)
+			}
+			return value, ty
 		}
 		condition, _ := t.expr(e.Scrutinee, state)
 		yes, yesTy := t.expr(arms[0], state)

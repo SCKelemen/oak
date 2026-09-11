@@ -610,6 +610,21 @@ func (c *checker) instruction(instr Instruction) bool {
 	if spec.system && !c.fn.System {
 		c.errorf(instr.Line, "%s requires the unit's `system` capability", instr.Mnemonic)
 	}
+	for _, operand := range instr.Operands {
+		switch operand.(type) {
+		case Shifted, Extended:
+			if !modifierAllowed(instr.Mnemonic, operand) {
+				c.errorf(instr.Line, "%s takes no shifted or extended register operand", instr.Mnemonic)
+			}
+		}
+	}
+	if imm, isImm := lastImmediate(instr.Operands); isImm && imm.Shift != 0 {
+		switch instr.Mnemonic {
+		case "movz", "movk", "movn":
+		default:
+			c.errorf(instr.Line, "%s takes no shifted immediate", instr.Mnemonic)
+		}
+	}
 
 	switch instr.Mnemonic {
 	case "b":
@@ -636,6 +651,46 @@ func (c *checker) instruction(instr Instruction) bool {
 			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
 		}
 		return false
+	case "br":
+		// An indirect terminal transfer: the frame is released and the
+		// callee-saved obligations met, as for ret; the target is unknown.
+		c.read(instr, instr.Operands[0].(Register))
+		if c.disp != 0 {
+			c.errorf(instr.Line, "br with sp displacement %d: the frame must be fully released", c.disp)
+		}
+		for num := 19; num <= 30; num++ {
+			if state := c.calleeSaved[num]; state.written && !state.restored {
+				c.errorf(instr.Line, "br without restoring callee-saved x%d", num)
+			}
+		}
+		c.unreachable = true
+		return true
+	case "blr":
+		c.read(instr, instr.Operands[0].(Register))
+		c.indirectCall(instr)
+		return false
+	case "brk":
+		// A trap: control never continues.
+		c.unreachable = true
+		return true
+	case "svc", "hvc", "smc":
+		// An exception to a higher level: the handler owns the caller-saved
+		// state, as a callee does.
+		c.clobberCallerSaved()
+		return false
+	case "wfe", "wfi", "sev", "sevl", "yield", "csdb", "esb", "hint", "clrex":
+		return false
+	case "dc", "ic", "tlbi", "at":
+		// Maintenance operations read their address register.
+		if reg, isReg := lastRegister(instr.Operands); isReg {
+			c.read(instr, reg)
+		}
+		return false
+	case "cfinv":
+		if !c.flagsValid {
+			c.errorf(instr.Line, "cfinv inverts flags no dominating instruction produced")
+		}
+		return false
 	case "cbz", "cbnz", "tbz", "tbnz":
 		// Compare-and-branch: reads its register, needs no flags; a bit
 		// test names a bit inside the register.
@@ -652,6 +707,9 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.call(instr)
 		return false
 	case "ret":
+		if len(instr.Operands) == 1 {
+			c.read(instr, instr.Operands[0].(Register)) // ret xN: an explicit return address
+		}
 		return c.ret(instr)
 	case "eret":
 		if !c.never && c.hasResult {
@@ -687,8 +745,34 @@ func (c *checker) instruction(instr Instruction) bool {
 	for _, source := range regs[1:] {
 		c.read(instr, source)
 	}
-	if instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" {
-		c.read(instr, dest) // cmp/tst: the first operand is a source
+	switch instr.Mnemonic {
+	case "ubfx", "ubfiz", "sbfx", "bfi":
+		// Bit-field immediates: a field of width >= 1 starting at lsb >= 0,
+		// inside the register.
+		lsb, width := instr.Operands[2].(Immediate).Value, instr.Operands[3].(Immediate).Value
+		if lsb < 0 || width < 1 || lsb+width > int64(widthOf(dest.Class)) {
+			c.errorf(instr.Line, "%s: field [%d, %d) is not inside %s", instr.Mnemonic, lsb, lsb+width, dest.Text)
+		}
+		if instr.Mnemonic == "bfi" {
+			c.read(instr, dest) // the insert keeps the destination's other bits
+		}
+	case "movk":
+		c.read(instr, dest) // the insert keeps the other halfwords
+	case "extr":
+		if lsb := instr.Operands[3].(Immediate).Value; lsb < 0 || lsb >= int64(widthOf(dest.Class)) {
+			c.errorf(instr.Line, "extr: lsb %d is not below the width of %s", lsb, dest.Text)
+		}
+	case "ccmp", "ccmn":
+		// A conditional compare reads its first operand and an nzcv immediate.
+		if nzcv := instr.Operands[2].(Immediate).Value; nzcv < 0 || nzcv > 15 {
+			c.errorf(instr.Line, "ccmp: nzcv immediate %d is not a 4-bit flag pattern", nzcv)
+		}
+		c.read(instr, dest)
+		c.flagsValid = true
+		return false
+	}
+	if instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || instr.Mnemonic == "cmn" {
+		c.read(instr, dest) // cmp/cmn/tst: the first operand is a source
 		c.flagsValid = true
 		// Only 32-bit comparisons guard: a span length lives in the low half
 		// of its register (the upper half is padding the contract never
@@ -728,11 +812,20 @@ func (c *checker) instruction(instr Instruction) bool {
 func registerOperands(operands []Operand) []Register {
 	var regs []Register
 	for _, operand := range operands {
-		if reg, ok := operand.(Register); ok {
+		if reg, ok := operandRegister(operand); ok {
 			regs = append(regs, reg)
 		}
 	}
 	return regs
+}
+
+func lastImmediate(operands []Operand) (Immediate, bool) {
+	for _, operand := range operands {
+		if imm, ok := operand.(Immediate); ok {
+			return imm, true
+		}
+	}
+	return Immediate{}, false
 }
 
 func describeOperands(operands []Operand) string {
@@ -852,6 +945,10 @@ func (c *checker) moveSP(instr Instruction, delta int64) {
 func (c *checker) memoryAccess(instr Instruction, matched form) {
 	mem, _ := instr.Operands[len(instr.Operands)-1].(Memory)
 	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
+	if isAtomic(instr.Mnemonic) || isExclusiveStore(instr.Mnemonic) {
+		c.atomicAccess(instr, matched, mem, regs)
+		return
+	}
 	isStore := isStoreMnemonic(instr.Mnemonic)
 	for _, reg := range regs {
 		if isStore {
@@ -891,6 +988,9 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 		c.checkAccess(instr, mem.Offset, size)
 		slotBase = -c.disp + mem.Offset
 	}
+	if len(regs) == 0 {
+		return // prfm: a bounds-checked hint with no register
+	}
 	width := size / int64(len(regs))
 	if isStore {
 		// Saving a still-untouched callee-saved register records its slot.
@@ -916,10 +1016,99 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 // register as written).
 func isStoreMnemonic(mnemonic string) bool {
 	switch mnemonic {
-	case "str", "stp", "strb", "strh":
+	case "str", "stp", "strb", "strh", "stur", "sturb", "sturh", "stlr", "stlrb", "stlrh":
 		return true
 	}
 	return false
+}
+
+// isExclusiveStore: stxr/stlxr and their b/h forms — a status register
+// written, a value read, a store through the base.
+func isExclusiveStore(mnemonic string) bool {
+	switch mnemonic {
+	case "stxr", "stlxr", "stxrb", "stlxrb", "stxrh", "stlxrh":
+		return true
+	}
+	return false
+}
+
+// atomicAccess checks an exclusive store or an LSE atomic through a span:
+// the base must be a guarded, writable span (every atomic may store), the
+// access one element; the roles of the register operands depend on the
+// operation — stxr writes its status register and reads the value, cas
+// reads both and writes the compare register, the others read the source
+// and write the destination.
+func (c *checker) atomicAccess(instr Instruction, matched form, mem Memory, regs []Register) {
+	if mem.Base.Class != ClassX {
+		c.errorf(instr.Line, "%s: atomics address a span base, not the frame", instr.Mnemonic)
+		return
+	}
+	fact, isSpan := c.spans[mem.Base.Num]
+	if !isSpan {
+		c.errorf(instr.Line, "%s through %s, which is not a bound span base", instr.Mnemonic, mem.Base.Text)
+		return
+	}
+	if !fact.writable {
+		c.errorf(instr.Line, "%s through %s: the parameter is a read-only view ([]T); atomics need a span ([*]T)", instr.Mnemonic, mem.Base.Text)
+		return
+	}
+	var reads, writes []Register
+	switch {
+	case isExclusiveStore(instr.Mnemonic):
+		writes, reads = regs[:1], regs[1:]
+	case atomicBase(instr.Mnemonic) == "cas":
+		reads, writes = regs, regs[:1]
+	default:
+		reads, writes = regs[:1], regs[1:]
+	}
+	for _, reg := range reads {
+		c.read(instr, reg)
+	}
+	// The access is one element at the base (no offset form for atomics).
+	c.spanAccess(instr, matched, mem, fact, nil, true)
+	for _, reg := range writes {
+		c.write(instr, reg)
+	}
+}
+
+func lastRegister(operands []Operand) (Register, bool) {
+	for i := len(operands) - 1; i >= 0; i-- {
+		if reg, ok := operands[i].(Register); ok {
+			return reg, true
+		}
+	}
+	return Register{}, false
+}
+
+// clobberCallerSaved: after a call or an exception, x0–x17, v0–v7, and the
+// flags belong to the callee.
+func (c *checker) clobberCallerSaved() {
+	for num := 0; num <= 17; num++ {
+		if !c.bound[num] || num == 0 {
+			delete(c.written, num)
+		}
+	}
+	for num := 0; num <= 7; num++ {
+		delete(c.writtenV, num)
+	}
+	c.written[0] = true // the call's result
+	c.flagsValid = false
+	c.forgetGuards()
+}
+
+// indirectCall is `blr xN`: a call to an unknown Oak-visible target.
+func (c *checker) indirectCall(instr Instruction) {
+	if !c.clobbered[30] {
+		c.errorf(instr.Line, "blr writes the link register: declare `clobber x30`")
+	}
+	if lr := c.calleeSaved[30]; lr != nil {
+		if !c.never && !lr.saved {
+			c.errorf(instr.Line, "blr in a returning function before saving the link register")
+		}
+		lr.written = true
+		lr.restored = false
+	}
+	c.clobberCallerSaved()
 }
 
 // spanAccess admits [base, #off] on a bound span only under a dominating
@@ -935,6 +1124,9 @@ func (c *checker) spanAccess(instr Instruction, matched form, mem Memory, fact *
 		return
 	}
 	size := accessBytes(instr.Mnemonic, matched[0])
+	if len(regs) > 0 {
+		size = memorySize(instr.Mnemonic, regs[0].Class)
+	}
 	if mem.Index != nil {
 		c.indexedSpanAccess(instr, mem, fact, size, regs, isStore)
 		return

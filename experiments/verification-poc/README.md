@@ -279,5 +279,8 @@ and fails on drift), and `OakTextCompare` requires the extraction, the
 transliteration, the file model, and compiled Oak to agree on every corpus
 case. The assumption between compiled Oak and the model is now the
 correctness of the compiler and a small translator rather than a reading of
-two sources; the theorem that the extraction equals the transliteration, so
-`check_refines` transfers to it directly, is the next increment.
+two sources. `proof/ExtractionScanner.lean` proves the first gate outright:
+`rup_token_scan` shows the extracted scanner returns the proved scanner's
+token on every bounded input, so the scanner comparison is regression, not
+evidence. The decoder phases and the stream checker are next, after which
+`check_refines` transfers to the extraction directly.

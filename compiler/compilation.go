@@ -293,6 +293,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		if tree.Modules != nil {
 			tc.SetModuleContext(tree.Modules.OpaqueTypes, tree.Modules.Packages)
+			tc.SetPackageExports(tree.Modules.Exports)
 			tc.SetSealedOpaque(tree.Modules.SealedOpaque)
 			tc.SetAbstractTypes(tree.Modules.Abstract)
 		}
@@ -308,6 +309,11 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := comp.gate("typecheck", tc.Diagnostics(), tree.Modules); err != nil {
 			return nil, err
 		}
+		// Operator definitions (docs/spec/10-syntax.md section 14): every
+		// infix expression the checker resolved through a binding becomes
+		// the plain call it denotes, so the borrow checker, discipline,
+		// lowering, codegen, and the interpreter never see an operator.
+		rewriteOperatorCalls(tree.Root, tc)
 
 		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions}
 		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)

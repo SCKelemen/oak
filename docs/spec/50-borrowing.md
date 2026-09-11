@@ -347,6 +347,24 @@ they landed and the shape each admits.
    region-declared parameter; a record parameter without a region keeps
    `OAK-B0109`. Executed: a cursor opened, advanced through nested calls,
    and read, with the owner write while it lives rejected.
+4. ADT payloads and match bindings. A region may be carried by an ADT
+   whose payloads hold borrows — `Result[Frame[R], E]`,
+   `Option[View[u8, R]]` — in parameters and returns alike. Borrowed
+   storage is named by **path**: record fields by name, a variant's payload
+   as `$Variant` (`r.$Ok.payload`), so the bound result of a call reborrows
+   the region argument once per path, and a match arm's payload binding
+   (`r ? | .Ok(f) => ...`) reborrows the scrutinee's paths under that
+   variant for the arm only — `f.payload` is a borrow inside the arm, and
+   the owner is writable again after the match (the `Result` binding
+   itself stays lexical). A returned variant traces its payload; a bare
+   variant carries nothing. Provenance is traced statically when the
+   lexical borrows have already dropped: a value assembled inside nested
+   conditionals is followed through the locals' declarations, record
+   literals, and payload bindings back to the region's owners, always as
+   a superset of what the value can hold, so the trace can only reject
+   more. Strings and unions of borrows are outside the path form and fail
+   closed. This is what a derived decoder needs to hand back views
+   (`71-codecs.md` §13a); executed there in both realizations.
 
 What stays rejected: borrows in globals and statics, borrows in records
 without a region crossing a call, a returned borrow whose provenance the

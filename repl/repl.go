@@ -416,6 +416,21 @@ func Start(in io.Reader, out io.Writer) {
 				fmt.Fprintf(out, "%s\n", strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "\n\t"))
 				continue
 			}
+			// :lean check [file] elaborates the statements with the
+			// repository's Lean toolchain and reports each theorem's verdict.
+			if file, isCheck := strings.CutPrefix(target, "check"); isCheck && (file == "" || strings.HasPrefix(file, " ")) {
+				file = strings.TrimSpace(file)
+				if file == "" {
+					file = "oak_session_obligations.lean"
+				}
+				report, err := session.LeanCheck(text, file)
+				if err != nil {
+					fmt.Fprintf(out, "%v\n", err)
+					continue
+				}
+				fmt.Fprint(out, report.String())
+				continue
+			}
 			if target == "-" {
 				fmt.Fprint(out, text)
 				continue
@@ -460,6 +475,7 @@ func Start(in io.Reader, out io.Writer) {
 					fmt.Fprintf(out, "  :strict          - Toggle the strict profile (assumptions reject)\n")
 					fmt.Fprintf(out, "  :lean            - Name the Lean law governing each recorded assumption\n")
 					fmt.Fprintf(out, "  :lean <file>     - Write the recorded assumptions as Lean theorem statements (- for stdout)\n")
+					fmt.Fprintf(out, "  :lean check [f]  - Write the statements and elaborate them with lake; report each theorem's verdict\n")
 					fmt.Fprintf(out, "\n")
 					fmt.Fprintf(out, "Inputs are checked by the full compiler pipeline. Imports resolve through\n")
 					fmt.Fprintf(out, "the module (oak.mod) enclosing the working directory: import(\"...\"), pub,\n")

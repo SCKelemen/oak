@@ -95,7 +95,12 @@ type Register struct {
 	Num   int // physical register number for X/W (0..30), V (0..31); -1 for SP; 31 for zero registers
 }
 
-type Immediate struct{ Value int64 }
+// Immediate is a constant operand; Shift is the `lsl #16`-style shift of a
+// movz/movk/movn immediate (0 when absent).
+type Immediate struct {
+	Value int64
+	Shift int64
+}
 
 // Memory is an sp-relative or register-relative access: [base, #off],
 // [base, #off]! (pre-index), [base], #off (post-index).
@@ -421,6 +426,19 @@ func parseInstruction(fields []string, line int) (Instruction, error) {
 		return instr, fmt.Errorf("unknown instruction %q (not in the v1 AArch64 table)", mnemonic)
 	}
 	for i := 1; i < len(fields); i++ {
+		// A trailing `lsl #3` / `uxtw` field modifies the operand before it;
+		// splitFields separates the kind from its amount, so rejoin them.
+		modifier := fields[i]
+		if lower := strings.ToLower(modifier); (shiftKinds[lower] || extendKinds[lower]) && i+1 < len(fields) && strings.HasPrefix(fields[i+1], "#") {
+			modifier = fields[i] + " " + fields[i+1]
+			i++
+		}
+		if folded, consumed, err := foldModifier(modifier, instr.Operands); err != nil {
+			return instr, err
+		} else if consumed {
+			instr.Operands = folded
+			continue
+		}
 		operand, err := parseOperand(fields[i], i-1, spec)
 		if err != nil {
 			return instr, err
@@ -460,13 +478,24 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 	if spec.branch != branchNone {
 		return Symbol{Name: text}, nil
 	}
-	if spec.barrier {
+	if spec.barrier || formsTakeOption(spec, position) {
 		return Option{Name: lower}, nil
 	}
 	if spec.readsFlags && conditionCodes[lower] {
 		return Condition{Code: lower}, nil
 	}
 	return nil, fmt.Errorf("unrecognized operand %q", text)
+}
+
+// formsTakeOption reports whether some legal form of the instruction has an
+// option word at the position (prefetch operations, maintenance targets).
+func formsTakeOption(spec instructionSpec, position int) bool {
+	for _, candidate := range spec.forms {
+		if position < len(candidate) && candidate[position] == opOption {
+			return true
+		}
+	}
+	return false
 }
 
 func parseImmediate(text string) (int64, error) {

@@ -65,6 +65,7 @@ func TestProtocolDataShapeDiagnostics(t *testing.T) {
 		"init extra field":  "P: protocol = { data { x: u32 }\n init { x: u32(1), z: u32(2) }\n initial X\n a: X -> Y }\nmain: (): i32 = 0",
 		"data w/o record":   "P: protocol = { initial X\n a: X -> Y when data.x > u32(0) }\nmain: (): i32 = 0",
 		"unguarded twins":   "P: protocol = { data { x: u32 }\n init { x: u32(0) }\n initial X\n a: X -> Y when data.x > u32(0)\n a: X -> X }\nmain: (): i32 = 0",
+		"reserved field":    "P: protocol = { data { state: u32 }\n init { state: u32(0) }\n initial X\n a: X -> Y }\nmain: (): i32 = 0",
 	}
 	for name, src := range cases {
 		_, err := New().WithSource(name+".oak", "import(std)\n"+src).EmitC().Get()

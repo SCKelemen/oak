@@ -112,8 +112,9 @@ lists the recorded assumptions the checker could not discharge. `:lean
 obligations.lean` states those assumptions as Lean theorems over the models in
 `spec/lean` (loop termination over `Oak.Loops`, tail cycles over
 `Oak.Discipline`, region disjointness over `Oak.Regions`) for you to prove
-there; see `spec/lean/Oak/SessionObligationsProved.lean` for the discharged
-example.
+there, and `:lean check` runs the repository's Lean toolchain on them from
+inside the session; see `spec/lean/Oak/SessionObligationsProved.lean` for the
+discharged example.
 
 ### Comments
 

@@ -37,6 +37,12 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 	s := newSynth("codec:" + readName)
 	var body []ast.Statement
 	var keyFn *ast.FunctionStatement
+	// A record with View[u8, R] fields decodes as views of its input: the
+	// reader and the decoder carry the region (docs/spec/50-borrowing.md
+	// section 8c), and the reader's result is a per-type record declared
+	// here, since the shared JsonDecoded[T] cannot carry a region.
+	region := ""
+	var decodedDecl *ast.ADTType
 	switch codecPrimitive(typ) {
 	case "u64", "i64":
 		body = integerReader(s, typ)
@@ -47,7 +53,13 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 		if err != nil {
 			return err
 		}
+		if region, err = viewRegion(typ, fields); err != nil {
+			return err
+		}
 		for _, field := range fields {
+			if field.view {
+				continue
+			}
 			if err := d.deriveDecoder(field.typ); err != nil {
 				return fmt.Errorf("codec field %s.%s: %w", typ, field.name, err)
 			}
@@ -57,22 +69,57 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			return fmt.Errorf("codec: generated name %s conflicts with a declaration", keyName)
 		}
 		keyFn = keyClassifier(newSynth("codec:"+keyName), keyName, fields)
-		body = recordReader(s, typ, keyName, fields)
+		decodedName := ""
+		if region != "" {
+			decodedName = codecName("decoded", typ)
+			if d.names[decodedName] {
+				return fmt.Errorf("codec: generated name %s conflicts with a declaration", decodedName)
+			}
+			decodedDecl = s.recordType(decodedName, []string{region},
+				s.set("value", s.app(typ, s.id(region))), s.set("next", s.id("u32")))
+		}
+		body = recordReader(s, typ, keyName, fields, decodedName)
 	}
-	readFn := s.fn(readName,
-		[]*ast.FunctionParameter{s.param("src", s.view(s.id("u8"))), s.param("offset", s.id("u32"))},
-		decodedResult(s, typ), body...)
+	srcType := func(b *synth) ast.Expression {
+		if region != "" {
+			return b.app("View", b.id("u8"), b.id(region))
+		}
+		return b.view(b.id("u8"))
+	}
+	regions := []string{}
+	if region != "" {
+		regions = []string{region}
+	}
+	readResult := decodedResult(s, typ)
+	if region != "" {
+		readResult = s.app("Result", s.app(codecName("decoded", typ), s.id(region)), s.id("JsonDecodeError"))
+	}
+	readFn := s.fnRegions(readName, regions,
+		[]*ast.FunctionParameter{s.param("src", srcType(s)), s.param("offset", s.id("u32"))},
+		readResult, body...)
 
 	// For this derivation subset, successful complete parsing establishes
 	// UTF-8: scalar values and delimiters are ASCII, and matched keys are
 	// validated literals or pass Unicode decoding. On failure, scan the full
 	// input to retain InvalidEncoding precedence even beyond the first
-	// syntax error.
+	// syntax error. A view field's bytes are handed back unvalidated by the
+	// scan, so a borrowed record also checks the input on success.
 	dec := newSynth("codec:" + decodeName)
-	decodeFn := dec.fn(decodeName,
-		[]*ast.FunctionParameter{dec.param("src", dec.view(dec.id("u8")))},
-		dec.app("Result", dec.id(typ), dec.id("JsonDecodeError")),
-		dec.decl("result", decodedResult(dec, typ), dec.call(readName, dec.id("src"), dec.u32(0))),
+	decodeResult := dec.app("Result", dec.id(typ), dec.id("JsonDecodeError"))
+	readResultType := decodedResult(dec, typ)
+	var success ast.Expression = dec.block(dec.expr(dec.variant("Ok", dec.field(dec.id("item"), "value"))))
+	if region != "" {
+		decodeResult = dec.app("Result", dec.app(typ, dec.id(region)), dec.id("JsonDecodeError"))
+		readResultType = dec.app("Result", dec.app(codecName("decoded", typ), dec.id(region)), dec.id("JsonDecodeError"))
+		success = dec.block(dec.expr(dec.cond(
+			dec.call("json_valid_utf8", dec.id("src")),
+			dec.block(dec.expr(dec.variant("Ok", dec.field(dec.id("item"), "value")))),
+			dec.block(dec.expr(errVariant(dec, "InvalidEncoding"))))))
+	}
+	decodeFn := dec.fnRegions(decodeName, regions,
+		[]*ast.FunctionParameter{dec.param("src", srcType(dec))},
+		decodeResult,
+		dec.decl("result", readResultType, dec.call(readName, dec.id("src"), dec.u32(0))),
 		dec.expr(dec.match(dec.id("result"),
 			dec.arm("Err", "reason", dec.block(dec.expr(dec.cond(
 				dec.call("json_valid_utf8", dec.id("src")),
@@ -84,7 +131,10 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 					dec.call("json_valid_utf8", dec.id("src")),
 					dec.block(dec.expr(errVariant(dec, "InvalidSyntax"))),
 					dec.block(dec.expr(errVariant(dec, "InvalidEncoding")))))),
-				dec.block(dec.expr(dec.variant("Ok", dec.field(dec.id("item"), "value")))))))))))
+				success)))))))
+	if decodedDecl != nil {
+		d.output = append(d.output, decodedDecl)
+	}
 	if keyFn != nil {
 		d.output = append(d.output, keyFn)
 	}
@@ -240,12 +290,32 @@ func separatorScan(s *synth) []ast.Statement {
 // recordReader reads an object: braces, keys classified by the fast path
 // or the classifier, each field decoded once, separators checked, and
 // every field required.
-func recordReader(s *synth, typ, keyName string, fields []codecField) []ast.Statement {
+func recordReader(s *synth, typ, keyName string, fields []codecField, decodedName string) []ast.Statement {
 	at := func() ast.Expression { return s.id("at") }
 	status := func() ast.Expression { return s.id("status") }
 	srcLen := func() ast.Expression { return s.call("len", s.id("src")) }
 	setStatus := func(code int64) ast.Statement { return s.assign("status", s.u32(code)) }
-	fieldOf := func(name string) *ast.IndexExpression { return s.field(s.id("value"), name) }
+	// A borrowed record (decodedName set) cannot start from a zero record
+	// holding views, so its fields decode into locals — a view's start and
+	// length as two words — and the record is built once at the end.
+	views := decodedName != ""
+	local := func(i int) string { return fmt.Sprintf("field%d", i) }
+	fieldIndex := map[string]int{}
+	for i, field := range fields {
+		fieldIndex[field.name] = i
+	}
+	fieldOf := func(name string) ast.Expression {
+		if views {
+			return s.id(local(fieldIndex[name]))
+		}
+		return s.field(s.id("value"), name)
+	}
+	storeField := func(name string, value ast.Expression) ast.Statement {
+		if views {
+			return s.assign(local(fieldIndex[name]), value)
+		}
+		return s.store(s.field(s.id("value"), name), value)
+	}
 	readCall := func(field codecField, from ast.Expression) ast.Expression {
 		return s.call(codecName("read", field.typ), s.id("src"), from)
 	}
@@ -253,12 +323,29 @@ func recordReader(s *synth, typ, keyName string, fields []codecField) []ast.Stat
 		return s.arm("Err", "reason", s.block(s.assign("status", s.call("json_decode_error_code", s.id("reason")))))
 	}
 
-	inner := []ast.Statement{
-		s.decl("value", s.id(typ), nil),
+	inner := []ast.Statement{}
+	if views {
+		for i, field := range fields {
+			switch {
+			case field.view:
+				inner = append(inner,
+					s.decl(local(i)+"_start", s.id("u32"), s.intLit(0)),
+					s.decl(local(i)+"_len", s.id("u32"), s.intLit(0)))
+			case field.nullable:
+				inner = append(inner, s.decl(local(i), s.app("Option", s.id(field.typ)), nil))
+			case field.length > 0:
+				inner = append(inner, s.decl(local(i), s.array(field.length, s.id(field.typ)), nil))
+			default:
+				inner = append(inner, s.decl(local(i), s.id(field.typ), nil))
+			}
+		}
+	} else {
+		inner = append(inner, s.decl("value", s.id(typ), nil))
+	}
+	inner = append(inner,
 		s.decl("at", s.id("u32"), s.field(s.id("opening"), "end")),
 		s.decl("status", s.id("u32"), s.intLit(0)),
-		s.decl("done", s.id("Bool"), s.boolean(false)),
-	}
+		s.decl("done", s.id("Bool"), s.boolean(false)))
 	for i := range fields {
 		inner = append(inner, s.decl(fmt.Sprintf("seen%d", i), s.id("Bool"), s.boolean(false)))
 	}
@@ -309,27 +396,39 @@ func recordReader(s *synth, typ, keyName string, fields []codecField) []ast.Stat
 		colonEnd := func() ast.Expression { return s.field(s.id("colon"), "end") }
 		var decode ast.Expression
 		switch {
+		case field.view:
+			// The string token, quotes included, becomes the view: its
+			// start and length are kept until the record is built.
+			decode = s.block(
+				s.decl("token", s.id("JsonToken"), s.call("json_token", s.id("src"), colonEnd())),
+				s.expr(s.cond(s.eq(s.field(s.id("token"), "kind"), s.u32(6)),
+					s.block(
+						s.assign(local(i)+"_start", s.field(s.id("token"), "start")),
+						s.assign(local(i)+"_len", s.sub(s.field(s.id("token"), "end"), s.field(s.id("token"), "start"))),
+						s.assign("at", s.field(s.id("token"), "end")),
+						s.assign(seen, s.boolean(true))),
+					s.cond(s.le(s.field(s.id("token"), "kind"), s.u32(1)), s.block(setStatus(2)), s.block(setStatus(3))))))
 		case field.nullable:
 			decode = s.block(
 				s.decl("token", s.id("JsonToken"), s.call("json_token", s.id("src"), colonEnd())),
 				s.expr(s.cond(s.eq(s.field(s.id("token"), "kind"), s.u32(10)),
 					s.block(
 						s.decl("absent", s.app("Option", s.id(field.typ)), s.variant("None", nil)),
-						s.store(fieldOf(field.name), s.id("absent")),
+						storeField(field.name, s.id("absent")),
 						s.assign("at", s.field(s.id("token"), "end")),
 						s.assign(seen, s.boolean(true))),
 					s.block(
 						s.decl(part, decodedResult(s, field.typ), readCall(field, colonEnd())),
 						s.expr(s.match(s.id(part), failArm(), s.arm("Ok", "decoded", s.block(
 							s.decl("present", s.app("Option", s.id(field.typ)), s.variant("Some", s.field(s.id("decoded"), "value"))),
-							s.store(fieldOf(field.name), s.id("present")),
+							storeField(field.name, s.id("present")),
 							s.assign("at", s.field(s.id("decoded"), "next")),
 							s.assign(seen, s.boolean(true))))))))))
 		case field.length == 0:
 			decode = s.block(
 				s.decl(part, decodedResult(s, field.typ), readCall(field, colonEnd())),
 				s.expr(s.match(s.id(part), failArm(), s.arm("Ok", "decoded", s.block(
-					s.store(fieldOf(field.name), s.field(s.id("decoded"), "value")),
+					storeField(field.name, s.field(s.id("decoded"), "value")),
 					s.assign("at", s.field(s.id("decoded"), "next")),
 					s.assign(seen, s.boolean(true)))))))
 		default:
@@ -392,10 +491,26 @@ func recordReader(s *synth, typ, keyName string, fields []codecField) []ast.Stat
 	for i := range fields {
 		required = append(required, s.id(fmt.Sprintf("seen%d", i)))
 	}
+	var completed ast.Expression = decodedItem(s, typ, s.id("value"), at())
+	if views {
+		var build []ast.Statement
+		var inits []recordInit
+		for i, field := range fields {
+			if field.view {
+				build = append(build, s.decl(local(i), s.view(s.id("u8")),
+					s.call("subslice", s.id("src"), s.id(local(i)+"_start"), s.id(local(i)+"_len"))))
+			}
+			inits = append(inits, s.set(field.name, s.id(local(i))))
+		}
+		build = append(build,
+			s.decl("value", s.id(typ), s.record(typ, inits...)),
+			s.decl("item", s.id(decodedName), s.record(decodedName, s.set("value", s.id("value")), s.set("next", at()))),
+			s.expr(s.variant("Ok", s.id("item"))))
+		completed = s.block(build...)
+	}
 	inner = append(inner, s.expr(s.cond(s.ne(status(), s.u32(0)),
 		s.block(s.expr(s.variant("Err", s.call("json_decode_error", status())))),
-		s.cond(s.not(s.and(required...)), errBlock(s, "MissingField"),
-			decodedItem(s, typ, s.id("value"), at())))))
+		s.cond(s.not(s.and(required...)), errBlock(s, "MissingField"), completed))))
 
 	return []ast.Statement{
 		s.decl("opening", s.id("JsonToken"), s.call("json_token", s.id("src"), s.id("offset"))),

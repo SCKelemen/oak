@@ -317,3 +317,38 @@ func (s *synth) fn(name string, params []*ast.FunctionParameter, returns ast.Exp
 		Body:       s.block(body...),
 	}
 }
+
+// fnRegions is fn with region parameters (docs/spec/50-borrowing.md section
+// 8c): type parameters the type checker erases once it has recorded which
+// parameter and return positions carry them.
+func (s *synth) fnRegions(name string, regions []string, params []*ast.FunctionParameter, returns ast.Expression, body ...ast.Statement) *ast.FunctionStatement {
+	decl := s.fn(name, params, returns, body...)
+	for _, region := range regions {
+		decl.TypeParams = append(decl.TypeParams, &ast.TypeParameter{Token: s.tok(token.IDENT, region), Name: s.id(region)})
+	}
+	return decl
+}
+
+// recordType declares `Name[regions]: type = struct { fields }` — the shape
+// the derived decoders use for their per-type result records.
+func (s *synth) recordType(name string, regions []string, fields ...recordInit) *ast.ADTType {
+	literal := &ast.RecordLiteral{
+		Token:    s.tok(token.STRUCT, "struct"),
+		EndToken: s.tok(token.RBRACE, "}"),
+		Fields:   map[string]ast.Expression{},
+	}
+	for _, field := range fields {
+		literal.Fields[field.name] = field.value
+		literal.FieldOrder = append(literal.FieldOrder, ast.RecordField{Token: s.tok(token.IDENT, field.name), Name: field.name, Value: field.value})
+	}
+	decl := &ast.ADTType{
+		Token:    s.tok(token.TYPE, "type"),
+		EndToken: s.tok(token.RBRACE, "}"),
+		Name:     s.id(name),
+		Variants: []*ast.ADTVariant{{Token: s.tok(token.STRUCT, "struct"), Name: s.id(name), Literal: literal}},
+	}
+	for _, region := range regions {
+		decl.TypeParams = append(decl.TypeParams, &ast.TypeParameter{Token: s.tok(token.IDENT, region), Name: s.id(region)})
+	}
+	return decl
+}

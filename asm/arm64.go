@@ -60,47 +60,56 @@ func regForms3() []form {
 }
 
 var instructionTable = map[string]instructionSpec{
-	"mov":  {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}, {opX, opSP}, {opSP, opX}}, sysregOperand: -1},
-	"add":  {forms: append(regForms3(), form{opSP, opSP, opImm}), sysregOperand: -1},
-	"sub":  {forms: append(regForms3(), form{opSP, opSP, opImm}), sysregOperand: -1},
-	"adds": {forms: regForms3(), setsFlags: true, sysregOperand: -1},
-	"subs": {forms: regForms3(), setsFlags: true, sysregOperand: -1},
-	"and":  {forms: regForms3(), sysregOperand: -1},
-	"orr":  {forms: regForms3(), sysregOperand: -1},
-	"eor":  {forms: regForms3(), sysregOperand: -1},
-	"lsl":  {forms: []form{{opX, opX, opImm}, {opW, opW, opImm}, {opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
-	"lsr":  {forms: []form{{opX, opX, opImm}, {opW, opW, opImm}, {opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
-	"cmp":  {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}}, setsFlags: true, sysregOperand: -1},
-	"csel": {forms: []form{{opX, opX, opX, opCond}, {opW, opW, opW, opCond}}, readsFlags: true, sysregOperand: -1},
-	"cset": {forms: []form{{opX, opCond}, {opW, opCond}}, readsFlags: true, sysregOperand: -1},
-	"ldr":  {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
-	"str":  {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
-	"ldrb": {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
-	"ldrh": {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
-	"strb": {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
-	"strh": {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
-	"mul":  {forms: []form{{opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
-	"neg":  {forms: []form{{opX, opX}, {opW, opW}}, sysregOperand: -1},
-	"mvn":  {forms: []form{{opX, opX}, {opW, opW}}, sysregOperand: -1},
-	"asr":  {forms: []form{{opX, opX, opImm}, {opW, opW, opImm}, {opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
-	"tst":  {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}}, setsFlags: true, sysregOperand: -1},
-	"ldp":  {forms: []form{{opX, opX, opMem}, {opW, opW, opMem}}, memory: true, sysregOperand: -1},
-	"stp":  {forms: []form{{opX, opX, opMem}, {opW, opW, opMem}}, memory: true, sysregOperand: -1},
-	"b":    {forms: []form{{opSym}}, branch: branchUnconditional, sysregOperand: -1},
-	"b.":   {forms: []form{{opSym}}, branch: branchConditional, readsFlags: true, sysregOperand: -1},
-	"cbz":  {forms: []form{{opW, opSym}, {opX, opSym}}, branch: branchConditional, sysregOperand: -1},
-	"cbnz": {forms: []form{{opW, opSym}, {opX, opSym}}, branch: branchConditional, sysregOperand: -1},
-	"tbz":  {forms: []form{{opW, opImm, opSym}, {opX, opImm, opSym}}, branch: branchConditional, sysregOperand: -1},
-	"tbnz": {forms: []form{{opW, opImm, opSym}, {opX, opImm, opSym}}, branch: branchConditional, sysregOperand: -1},
-	"bl":   {forms: []form{{opSym}}, branch: branchCall, clobbersCallerSaved: true, sysregOperand: -1},
-	"ret":  {forms: []form{{opNone}}, branch: branchReturn, sysregOperand: -1},
-	"eret": {forms: []form{{opNone}}, branch: branchReturn, system: true, sysregOperand: -1},
-	"mrs":  {forms: []form{{opX, opSysReg}}, system: true, sysregOperand: 1},
-	"msr":  {forms: []form{{opSysReg, opX}}, system: true, sysregOperand: 0},
-	"dmb":  {forms: []form{{opOption}}, barrier: true, sysregOperand: -1},
-	"dsb":  {forms: []form{{opOption}}, barrier: true, sysregOperand: -1},
-	"isb":  {forms: []form{{opOption}, {opNone}}, barrier: true, sysregOperand: -1},
-	"nop":  {forms: []form{{opNone}}, sysregOperand: -1},
+	"mov":   {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}, {opX, opSP}, {opSP, opX}}, sysregOperand: -1},
+	"add":   {forms: append(regForms3(), form{opSP, opSP, opImm}), sysregOperand: -1},
+	"sub":   {forms: append(regForms3(), form{opSP, opSP, opImm}), sysregOperand: -1},
+	"adds":  {forms: regForms3(), setsFlags: true, sysregOperand: -1},
+	"subs":  {forms: regForms3(), setsFlags: true, sysregOperand: -1},
+	"and":   {forms: regForms3(), sysregOperand: -1},
+	"orr":   {forms: regForms3(), sysregOperand: -1},
+	"eor":   {forms: regForms3(), sysregOperand: -1},
+	"lsl":   {forms: []form{{opX, opX, opImm}, {opW, opW, opImm}, {opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
+	"lsr":   {forms: []form{{opX, opX, opImm}, {opW, opW, opImm}, {opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
+	"cmp":   {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}}, setsFlags: true, sysregOperand: -1},
+	"csel":  {forms: []form{{opX, opX, opX, opCond}, {opW, opW, opW, opCond}}, readsFlags: true, sysregOperand: -1},
+	"cset":  {forms: []form{{opX, opCond}, {opW, opCond}}, readsFlags: true, sysregOperand: -1},
+	"ldr":   {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
+	"str":   {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
+	"ldrb":  {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
+	"ldrh":  {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
+	"strb":  {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
+	"strh":  {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
+	"mul":   {forms: []form{{opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
+	"neg":   {forms: []form{{opX, opX}, {opW, opW}}, sysregOperand: -1},
+	"mvn":   {forms: []form{{opX, opX}, {opW, opW}}, sysregOperand: -1},
+	"asr":   {forms: []form{{opX, opX, opImm}, {opW, opW, opImm}, {opX, opX, opX}, {opW, opW, opW}}, sysregOperand: -1},
+	"tst":   {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}}, setsFlags: true, sysregOperand: -1},
+	"ubfx":  {forms: []form{{opX, opX, opImm, opImm}, {opW, opW, opImm, opImm}}, sysregOperand: -1},
+	"ubfiz": {forms: []form{{opX, opX, opImm, opImm}, {opW, opW, opImm, opImm}}, sysregOperand: -1},
+	"sbfx":  {forms: []form{{opX, opX, opImm, opImm}, {opW, opW, opImm, opImm}}, sysregOperand: -1},
+	"bfi":   {forms: []form{{opX, opX, opImm, opImm}, {opW, opW, opImm, opImm}}, sysregOperand: -1},
+	"madd":  {forms: []form{{opX, opX, opX, opX}, {opW, opW, opW, opW}}, sysregOperand: -1},
+	"msub":  {forms: []form{{opX, opX, opX, opX}, {opW, opW, opW, opW}}, sysregOperand: -1},
+	"ccmp":  {forms: []form{{opX, opX, opImm, opCond}, {opW, opW, opImm, opCond}, {opX, opImm, opImm, opCond}, {opW, opImm, opImm, opCond}}, readsFlags: true, setsFlags: true, sysregOperand: -1},
+	"cinc":  {forms: []form{{opX, opX, opCond}, {opW, opW, opCond}}, readsFlags: true, sysregOperand: -1},
+	"cneg":  {forms: []form{{opX, opX, opCond}, {opW, opW, opCond}}, readsFlags: true, sysregOperand: -1},
+	"ldp":   {forms: []form{{opX, opX, opMem}, {opW, opW, opMem}}, memory: true, sysregOperand: -1},
+	"stp":   {forms: []form{{opX, opX, opMem}, {opW, opW, opMem}}, memory: true, sysregOperand: -1},
+	"b":     {forms: []form{{opSym}}, branch: branchUnconditional, sysregOperand: -1},
+	"b.":    {forms: []form{{opSym}}, branch: branchConditional, readsFlags: true, sysregOperand: -1},
+	"cbz":   {forms: []form{{opW, opSym}, {opX, opSym}}, branch: branchConditional, sysregOperand: -1},
+	"cbnz":  {forms: []form{{opW, opSym}, {opX, opSym}}, branch: branchConditional, sysregOperand: -1},
+	"tbz":   {forms: []form{{opW, opImm, opSym}, {opX, opImm, opSym}}, branch: branchConditional, sysregOperand: -1},
+	"tbnz":  {forms: []form{{opW, opImm, opSym}, {opX, opImm, opSym}}, branch: branchConditional, sysregOperand: -1},
+	"bl":    {forms: []form{{opSym}}, branch: branchCall, clobbersCallerSaved: true, sysregOperand: -1},
+	"ret":   {forms: []form{{opNone}}, branch: branchReturn, sysregOperand: -1},
+	"eret":  {forms: []form{{opNone}}, branch: branchReturn, system: true, sysregOperand: -1},
+	"mrs":   {forms: []form{{opX, opSysReg}}, system: true, sysregOperand: 1},
+	"msr":   {forms: []form{{opSysReg, opX}}, system: true, sysregOperand: 0},
+	"dmb":   {forms: []form{{opOption}}, barrier: true, sysregOperand: -1},
+	"dsb":   {forms: []form{{opOption}}, barrier: true, sysregOperand: -1},
+	"isb":   {forms: []form{{opOption}, {opNone}}, barrier: true, sysregOperand: -1},
+	"nop":   {forms: []form{{opNone}}, sysregOperand: -1},
 }
 
 // matchForm reports whether the operands fit any legal form, returning the
@@ -133,10 +142,17 @@ func matchForm(spec instructionSpec, operands []Operand) (form, bool) {
 func operandMatches(class operandClass, operand Operand) bool {
 	switch class {
 	case opX:
-		reg, ok := operand.(Register)
+		if ext, isExt := operand.(Extended); isExt {
+			// An extended w register widens into an x-form operand.
+			return ext.Reg.Class == ClassW || ext.Reg.Class == ClassX
+		}
+		reg, ok := operandRegister(operand)
 		return ok && reg.Class == ClassX
 	case opW:
-		reg, ok := operand.(Register)
+		if ext, isExt := operand.(Extended); isExt {
+			return ext.Reg.Class == ClassW
+		}
+		reg, ok := operandRegister(operand)
 		return ok && reg.Class == ClassW
 	case opV:
 		reg, ok := operand.(Register)
@@ -168,18 +184,9 @@ func operandMatches(class operandClass, operand Operand) bool {
 
 // accessBytes is the memory footprint of one load/store form.
 func accessBytes(mnemonic string, class operandClass) int64 {
-	switch mnemonic {
-	case "ldrb", "strb":
-		return 1
-	case "ldrh", "strh":
-		return 2
-	}
-	width := int64(8)
+	regClass := ClassX
 	if class == opW {
-		width = 4
+		regClass = ClassW
 	}
-	if mnemonic == "ldp" || mnemonic == "stp" {
-		return 2 * width
-	}
-	return width
+	return memorySize(mnemonic, regClass)
 }

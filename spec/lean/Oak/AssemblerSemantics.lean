@@ -64,6 +64,19 @@ def apply {w : Nat} (op : Op) (a b : BitVec w) : BitVec w :=
   | .asr => a.sshiftRight (b.toNat % w)
   | .mul => a * b
 
+/-- The negated logical forms and rotation, as the executor lowers them:
+    `bic a, b = a &&& ~~~b`, `orn a, b = a ||| ~~~b`, `eon a, b = a ^^^ ~~~b`,
+    `ror a, k` is the library's rotation. -/
+def bic {w : Nat} (a b : BitVec w) : BitVec w := a &&& ~~~b
+def orn {w : Nat} (a b : BitVec w) : BitVec w := a ||| ~~~b
+def eon {w : Nat} (a b : BitVec w) : BitVec w := a ^^^ ~~~b
+def ror {w : Nat} (a : BitVec w) (k : Nat) : BitVec w := a.rotateRight (k % w)
+
+/-- `bic` is `and` with the complement — the lowering's spelling. -/
+theorem bic_as_and {w : Nat} (a b : BitVec w) : bic a b = apply .and a (~~~b) := rfl
+theorem orn_as_orr {w : Nat} (a b : BitVec w) : orn a b = apply .orr a (~~~b) := rfl
+theorem eon_as_eor {w : Nat} (a b : BitVec w) : eon a b = apply .eor a (~~~b) := rfl
+
 /-- `neg` and `mvn` are `sub` from zero and `eor` with all ones. -/
 theorem neg_as_sub {w : Nat} (a : BitVec w) : -a = apply .sub 0 a := by
   simp [apply, BitVec.zero_sub]
@@ -244,6 +257,28 @@ def andFlagsOf {w : Nat} (l r : BitVec w) : Flags :=
 theorem tst_ne_iff {w : Nat} (l r : BitVec w) : Cond.holds (andFlagsOf l r) .ne = true ↔ l &&& r ≠ 0 := by
   simp [Cond.holds, andFlagsOf]
 
+/-- `ccmp l, r, #nzcv, c`: the flags of `l - r` when `c` holds on the prior
+    flags, else the immediate pattern. -/
+def ccmpFlags {w : Nat} (c : Cond) (prior : Flags) (l r : BitVec w) (imm : Flags) : Flags :=
+  if c.holds prior then flagsOf l r else imm
+
+theorem ccmp_of_holds {w : Nat} (c : Cond) (prior : Flags) (l r : BitVec w) (imm : Flags)
+    (h : c.holds prior = true) : ccmpFlags c prior l r imm = flagsOf l r := by
+  simp [ccmpFlags, h]
+
+theorem ccmp_of_not_holds {w : Nat} (c : Cond) (prior : Flags) (l r : BitVec w) (imm : Flags)
+    (h : c.holds prior = false) : ccmpFlags c prior l r imm = imm := by
+  simp [ccmpFlags, h]
+
+/-- `ubfx x, #lsb, #width` is the shift-and-mask extractor. -/
+def ubfx {w : Nat} (x : BitVec w) (lsb width : Nat) : BitVec w :=
+  (x >>> lsb) &&& (BitVec.allOnes width).setWidth w
+
+/-- `cinc` and `cneg` are selects on the condition. -/
+def cinc {w : Nat} (c : Cond) (f : Flags) (x : BitVec w) : BitVec w := if c.holds f then x + 1 else x
+def cneg {w : Nat} (c : Cond) (f : Flags) (x : BitVec w) : BitVec w := if c.holds f then -x else x
+
+
 /-- `mi` after `cmp l, r` is the sign bit of the difference. -/
 theorem mi_iff_msb {w : Nat} (l r : BitVec w) : Cond.holds (flagsOf l r) .mi = (l - r).msb := rfl
 
@@ -352,6 +387,10 @@ theorem csel_of_not_holds {w : Nat} (c : Cond) (f : Flags) (a b : BitVec w) (h :
     so. -/
 theorem cset_eq_csel {w : Nat} (c : Cond) (f : Flags) : cset w c f = csel c f 1 0 := rfl
 
+/-- `cinc` and `cneg` are selects too. -/
+theorem cinc_eq_csel {w : Nat} (c : Cond) (f : Flags) (x : BitVec w) : cinc c f x = csel c f (x + 1) x := rfl
+theorem cneg_eq_csel {w : Nat} (c : Cond) (f : Flags) (x : BitVec w) : cneg c f x = csel c f (-x) x := rfl
+
 /-- A cmp/csel pair on registers: `cmp n, m; csel d, a, b, cond`. -/
 def execCsel (c : Cond) (r : Regs) (d n m a b : Fin 32) : Regs :=
   writeX r d (csel c (flagsOf (readX r n) (readX r m)) (readX r a) (readX r b))
@@ -417,6 +456,33 @@ theorem loadElem_at {w : Nat} (s : Span w) (elem k : Nat) (h : 0 < elem) :
     asm's `cmp wL, #N; b.lo` read the same elements on the same inputs. -/
 theorem guarded_index_in_bounds (len N k : Nat) (hguard : ¬ len < N) (hk : k < N) : k < len := by
   omega
+
+/-! ## Frame memory
+
+The executor models the sp frame as a partial map from entry-relative slot
+addresses to stored values (`asm/verify.go`, `frameAccess`): a store writes
+a slot, a load reads back exactly what the last store of that width put
+there, and a slot never stored is outside the subset. The laws below are
+the map's read-after-write behavior. -/
+
+/-- Frame slots: entry-relative address to the stored value, if any. -/
+def Frame := Int → Option (BitVec 64)
+
+def storeSlot (f : Frame) (a : Int) (v : BitVec 64) : Frame :=
+  fun b => if b = a then some v else f b
+
+theorem loadSlot_storeSlot (f : Frame) (a : Int) (v : BitVec 64) :
+    storeSlot f a v a = some v := by
+  simp [storeSlot]
+
+theorem loadSlot_storeSlot_other (f : Frame) (a b : Int) (v : BitVec 64) (h : b ≠ a) :
+    storeSlot f a v b = f b := by
+  simp [storeSlot, h]
+
+/-- A save then restore of a callee-saved register through one slot returns
+    the caller's value. -/
+theorem save_restore (f : Frame) (a : Int) (callerValue : BitVec 64) :
+    storeSlot f a callerValue a = some callerValue := loadSlot_storeSlot f a callerValue
 
 /-! ## Counted loops unroll
 

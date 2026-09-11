@@ -120,7 +120,12 @@ import(std)                                     // bootstrap, unqualified (secti
   package-level declaration, an import alias, a selective import, or another
   open (`OAK-M0115`, checked at the importer, never resolved by precedence).
   An open cannot be bound, sealed, or repeated for one package; an open none
-  of whose names is used is an unused import.
+  of whose names is used is an unused import. `Oak.Modules.OpenImports`
+  states the rule: an open is rejected exactly when an export is already
+  bound (`openBind_none_iff`), an accepted open binds exactly the exports
+  and none was bound before (`openBind_some`), and adding exports can only
+  turn acceptance into rejection, never change a binding
+  (`openBind_none_mono`).
 - A bare identifier path (`import(std)`) is sugar for a single-segment path.
 
 `import(...)` is legal only as a top-level import statement or as the entire
@@ -190,7 +195,12 @@ modules; importing the enclosing package from inside is a cycle
 (`OAK-M0104`). The name follows the package-name grammar and may not be
 reserved; declaring one name twice in a package, or alongside a
 subdirectory of the same name, is rejected (`OAK-M0116`). `module` is a
-contextual word: outside this form it is an ordinary identifier.
+contextual word: outside this form it is an ordinary identifier. A nested
+module belongs to its parent's module and so inherits its discipline
+profile and version: under longest-prefix module resolution the nested path
+resolves as the parent's unless a module's path is exactly the nested path,
+the directory conflict `OAK-M0116` rejects
+(`Oak.Modules.NestedPaths.moduleOf_nested`).
 
 Nested modules are for a package that wants an internal abstraction
 boundary without a directory; the directory rule of section 2 is unchanged.
@@ -411,10 +421,16 @@ to resolve it, and unspellable because its internal name is reserved (section
 ### 6.5 Methods stay with their type
 
 A method (`fn (r: T) m()`) may be declared only in the package that declares
-its receiver type (`OAK-M0114`). Oak's interfaces are implicit, so there are
+its receiver type (`OAK-M0114`). Uniform call syntax (`10-syntax.md` §13)
+gives every exported function of that package the same call shape —
+`p.shift(1)` for `geo.shift(p, 1)` when `p: geo.Point` — without declaring a
+method: the receiver type's package is the only other package searched, so
+a call's meaning never depends on which unrelated package is compiled. Oak's interfaces are implicit, so there are
 no instances to collide, but two packages attaching same-named methods to one
 imported type would make method lookup depend on which package is compiled —
-Go's rule, adopted for the same reason.
+Go's rule, adopted for the same reason. Operator definitions
+(`10-syntax.md` §14) follow it too: an `operator(+)` binding for a type
+lives in the type's package and travels with the type to every importer.
 
 ### 6.6 Derived declarations
 
@@ -618,12 +634,13 @@ rejected as before.
 
 **Standard library packages.** The library files are real packages:
 `strings`, `unicode`, `json`, `filters`, `hash_table`, `bitset_algebra`,
-`causal_frontier`, and `math` each carry a package clause, import the
+`causal_frontier`, `math`, and `hash` each carry a package clause, import the
 library packages they use (`strings` imports `unicode`, `json` imports
 `strings`, `hash_table` imports `filters`), qualify their cross-references,
-and mark their exports `pub`. `math` (`20-types.md` §11.3.6) is a package
-only: its names (`exp`, `log`, …) are too common to enter every program
-unqualified, so it is never part of the flat prelude below. `import("json")` loads json, strings, unicode, and the **core prelude**
+and mark their exports `pub`. `math` (`20-types.md` §11.3.6) and `hash`
+(`stdlib/README.md`: SHA-256, CRC-32C) are packages only: their names
+(`exp`, `log`, `sha256`, …) are too common to enter every program
+unqualified, so they are never part of the flat prelude below. `import("json")` loads json, strings, unicode, and the **core prelude**
 (`std.oak`: Option, Result, Overflow, byte and ring helpers), which every
 library package builds on unqualified — and nothing else. The legacy flat
 prelude of `import(std)` is *derived* from the same sources at build time:
@@ -700,7 +717,13 @@ naming the import to add (`encode` needs `import("json")`, text needs
     parameter is one variable per scalar leaf `p.v`, `q.p.k`, an array of
     records one memory per leaf `cs.v`, and record literals, whole-record
     copies, field stores, and record arguments expand per leaf; the Lean
-    semantics sees only scalars), and calls: an expression-bodied,
+    semantics sees only scalars), sum types (flattened the same way: a
+    `tag` leaf in declaration order plus each constructor's payload leaves
+    under its name; a constructor sets the tag and its payload and zeroes
+    the unobservable rest; a match is the nested conditional on the tag
+    with the last arm as the checker-guaranteed default, and a payload
+    binding is a local over the payload leaves), and calls: an
+    expression-bodied,
     non-recursive, non-generic callee whose body is in the fragment is
     inlined, and any other callee is an uninterpreted function of the
     statement (`Oak.Loops.Funs`, the parameter `F` the programmer constrains
@@ -717,9 +740,17 @@ naming the import to add (`encode` needs `import("json")`, text needs
   `spec/lean/Oak/SessionObligations.lean` is the emitted file for the
   example session of `repl/lean_test.go` (regenerated by the test, checked by
   the Lean CI job), and `Oak/SessionObligationsProved.lean` discharges its
-  two loop statements by ranking functions — the programmer's half of the
-  exchange. The REPL still proves nothing: it records assumptions, states
-  them exactly, and Lean checks the statements and the proofs.
+  closed loop statements by ranking functions — the programmer's half of
+  the exchange. `:lean check [file]` closes the loop inside the session:
+  the REPL writes the statements and runs the repository's Lean toolchain
+  on them (`lake env lean --json`, from the `spec/lean` directory found
+  above the working directory or named by `$OAK_LEAN_DIR`, with a fixed
+  argument list and no shell), then reports each theorem as **proved**,
+  **sorry** (the programmer's part is still open), or **error** (the
+  statement is false or ill-formed, with Lean's message). Without `lake` on
+  the path the command says how to check by hand. The REPL still proves
+  nothing: it records assumptions, states them exactly, and Lean checks the
+  statements and the proofs.
 - **FFI/SIMD (`92-ffi.md`, `93-simd.md`).** `c`, `arm64`, and `simd` remain
   compiler-known libraries, not packages; an import alias may not reuse their
   names.
@@ -736,6 +767,12 @@ naming the import to add (`encode` needs `import("json")`, text needs
   declare locals need the larger semantics before they can be stated.
 
 ## 12. Required laws
+
+- An open import is rejected exactly when one of its exports is already
+  bound; an accepted open binds exactly the exports, none previously bound;
+  adding exports never changes a binding (`Oak.Modules.OpenImports`).
+- A nested module resolves to its parent's module unless a module path
+  equals the nested path (`Oak.Modules.NestedPaths.moduleOf_nested`).
 
 - `escape` is injective and never yields adjacent underscores; `mangle`
   decodes to exactly its package path and declaration name; every internal

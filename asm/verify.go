@@ -207,10 +207,23 @@ func conditionFromFlags(code string, n, z, c, v bool) bool {
 // flagsCondition is the condition term for a code read from the flags a
 // cmp/subs (subtraction) or adds (addition) produced.
 func flagsCondition(code string, flags *flagsFact) *term {
+	bare := code
 	if flags.kind != "" {
 		code = flags.kind + ":" + code
 	}
-	return cmpTerm(code, flags.left, flags.right)
+	compared := cmpTerm(code, flags.left, flags.right)
+	if flags.cond == nil {
+		return compared
+	}
+	// ccmp: under the prior condition the flags are the comparison's,
+	// otherwise the immediate pattern N=bit3 Z=bit2 C=bit1 V=bit0.
+	imm := flags.elseNZCV
+	otherwise := conditionFromFlags(bare, imm>>3&1 == 1, imm>>2&1 == 1, imm>>1&1 == 1, imm&1 == 1)
+	other := constTerm(0, compared.width)
+	if otherwise {
+		other = constTerm(1, compared.width)
+	}
+	return iteTerm(flags.cond, compared, other)
 }
 
 // The constructors fold constants: a term over constants is the constant
@@ -275,7 +288,23 @@ func adaptWidth(t *term, width int) *term {
 
 // eval computes the term for a parameter assignment (Oak.AssemblerSemantics
 // transliterated: every operation is total and wraps to the width).
+// eval computes the term for a parameter assignment (Oak.AssemblerSemantics
+// transliterated: every operation is total and wraps to the width). Shared
+// subterms are evaluated once per call.
 func (t *term) eval(env map[string]uint64) uint64 {
+	return t.evalMemo(env, map[*term]uint64{})
+}
+
+func (t *term) evalMemo(env map[string]uint64, memo map[*term]uint64) uint64 {
+	if cached, seen := memo[t]; seen {
+		return cached
+	}
+	value := t.evalUncached(env, memo)
+	memo[t] = value
+	return value
+}
+
+func (t *term) evalUncached(env map[string]uint64, memo map[*term]uint64) uint64 {
 	m := mask(t.width)
 	switch t.kind {
 	case termParam:
@@ -291,24 +320,24 @@ func (t *term) eval(env map[string]uint64) uint64 {
 	case termConst:
 		return t.value & m
 	case termSelect:
-		return elementValue(t.name, t.left.eval(env)&mask(32), t.width) & m
+		return elementValue(t.name, t.left.evalMemo(env, memo)&mask(32), t.width) & m
 	case termCmp:
 		// The comparison happens at the operands' width; t.width is only
 		// the width the 1/0 result is used at.
-		if conditionHolds(t.op, t.left.eval(env), t.right.eval(env), t.left.width) {
+		if conditionHolds(t.op, t.left.evalMemo(env, memo), t.right.evalMemo(env, memo), t.left.width) {
 			return 1
 		}
 		return 0
 	case termIte:
-		if t.cond.eval(env) != 0 {
-			return t.left.eval(env) & m
+		if t.cond.evalMemo(env, memo) != 0 {
+			return t.left.evalMemo(env, memo) & m
 		}
-		return t.right.eval(env) & m
+		return t.right.evalMemo(env, memo) & m
 	}
 	// Operands evaluate at their own widths (a mask node's inner term keeps
 	// its width and modulus); the operation wraps to this term's width.
-	l := t.left.eval(env) & m
-	r := t.right.eval(env) & m
+	l := t.left.evalMemo(env, memo) & m
+	r := t.right.evalMemo(env, memo) & m
 	switch t.op {
 	case "add":
 		return (l + r) & m
@@ -329,24 +358,40 @@ func (t *term) eval(env map[string]uint64) uint64 {
 		return uint64(int64(l<<shift)>>shift>>(r%uint64(t.width))) & m
 	case "mul":
 		return (l * r) & m
+	case "rev", "rev16", "rev32", "rbit", "clz", "cls":
+		return evalUnary(t.op, l, t.width) & m
+	}
+	if value, ok := evalBinaryExtra(t.op, l, r, t.width); ok {
+		return value & m
 	}
 	return 0
 }
 
+// String prints a term for diagnostics, bounded: a DAG's expansion can be
+// exponential in its depth, so the print stops after a few hundred nodes.
 func (t *term) String() string {
+	budget := 400
+	return t.stringBounded(&budget)
+}
+
+func (t *term) stringBounded(budget *int) string {
+	*budget--
+	if *budget < 0 {
+		return "…"
+	}
 	switch t.kind {
 	case termParam:
 		return t.name
 	case termConst:
 		return fmt.Sprintf("%d", t.value)
 	case termCmp:
-		return fmt.Sprintf("(%s %s %s)", t.left, t.op, t.right)
+		return fmt.Sprintf("(%s %s %s)", t.left.stringBounded(budget), t.op, t.right.stringBounded(budget))
 	case termIte:
-		return fmt.Sprintf("(%s ? %s : %s)", t.cond, t.left, t.right)
+		return fmt.Sprintf("(%s ? %s : %s)", t.cond.stringBounded(budget), t.left.stringBounded(budget), t.right.stringBounded(budget))
 	case termSelect:
-		return fmt.Sprintf("%s[%s]", t.name, t.left)
+		return fmt.Sprintf("%s[%s]", t.name, t.left.stringBounded(budget))
 	}
-	return fmt.Sprintf("(%s %s %s)", t.left, t.op, t.right)
+	return fmt.Sprintf("(%s %s %s)", t.left.stringBounded(budget), t.op, t.right.stringBounded(budget))
 }
 
 // --- linear normal form ------------------------------------------------
@@ -363,6 +408,22 @@ type linearForm struct {
 // transparent modulo 2^w, which is how the wN write/read discipline's
 // masks disappear from a 32-bit result; a narrower mask is not linear.
 func (t *term) linearAt(w int) *linearForm {
+	return t.linearAtMemo(w, map[*term]*linearForm{}, map[*term]bool{})
+}
+
+// linearAtMemo shares the normalization of shared subterms (terms are
+// DAGs); seen records subterms already normalized, nil results included.
+func (t *term) linearAtMemo(w int, memo map[*term]*linearForm, seen map[*term]bool) *linearForm {
+	if seen[t] {
+		return memo[t]
+	}
+	form := t.linearAtUncached(w, memo, seen)
+	seen[t] = true
+	memo[t] = form
+	return form
+}
+
+func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*term]bool) *linearForm {
 	m := mask(w)
 	switch t.kind {
 	case termParam:
@@ -375,14 +436,14 @@ func (t *term) linearAt(w int) *linearForm {
 	switch t.op {
 	case "and":
 		if t.right.kind == termConst && t.right.value&m == m {
-			return t.left.linearAt(w)
+			return t.left.linearAtMemo(w, memo, seen)
 		}
 		if t.left.kind == termConst && t.left.value&m == m {
-			return t.right.linearAt(w)
+			return t.right.linearAtMemo(w, memo, seen)
 		}
 		return nil
 	case "add", "sub":
-		l, r := t.left.linearAt(w), t.right.linearAt(w)
+		l, r := t.left.linearAtMemo(w, memo, seen), t.right.linearAtMemo(w, memo, seen)
 		if l == nil || r == nil {
 			return nil
 		}
@@ -415,7 +476,7 @@ func (t *term) linearAt(w int) *linearForm {
 		if factor.kind != termConst {
 			return nil
 		}
-		l := variable.linearAt(w)
+		l := variable.linearAtMemo(w, memo, seen)
 		if l == nil {
 			return nil
 		}
@@ -428,7 +489,7 @@ func (t *term) linearAt(w int) *linearForm {
 		if t.right.kind != termConst || t.width < w {
 			return nil
 		}
-		l := t.left.linearAt(w)
+		l := t.left.linearAtMemo(w, memo, seen)
 		if l == nil {
 			return nil
 		}
@@ -482,6 +543,17 @@ func (f *linearForm) equal(g *linearForm) bool {
 type symbolicState struct {
 	regs  map[int]*term // physical register -> 64-bit term
 	flags *flagsFact    // NZCV as the operands that produced them; nil until set
+	// The frame: sp's displacement below its entry value (the seam checker
+	// tracks the same number exactly) and the slots written so far, keyed
+	// by entry-relative address. A load reads back exactly the term a store
+	// of the same width put there; anything else is outside the subset.
+	disp  int64
+	frame map[int64]frameSlot
+}
+
+type frameSlot struct {
+	value *term
+	width int // bytes
 }
 
 // flagsFact records what produced the flags: cmp/subs leave NZCV as the
@@ -493,6 +565,9 @@ type flagsFact struct {
 	width       int
 	kind        string // "" (cmp/subs: left - right), "add" (adds: left + right), "and" (tst: left & right)
 	unknown     bool
+	// ccmp: the comparison's flags when cond holds, else the immediate NZCV.
+	cond     *term
+	elseNZCV int64
 }
 
 func (s *symbolicState) read(reg Register) (*term, bool) {
@@ -500,6 +575,13 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 		return constTerm(0, widthOf(reg.Class)), true
 	}
 	value, ok := s.regs[reg.Num]
+	if !ok && calleeSavedRegister(reg.Num) {
+		// A callee-saved register carries the caller's value on entry: an
+		// opaque symbol, which a save/restore pair round-trips unchanged.
+		value = paramTerm(fmt.Sprintf("entry.x%d", reg.Num), 64)
+		s.regs[reg.Num] = value
+		ok = true
+	}
 	if !ok {
 		return nil, false
 	}
@@ -676,7 +758,77 @@ func (s *symbolicState) clone() *symbolicState {
 	for reg, value := range s.regs {
 		regs[reg] = value
 	}
-	return &symbolicState{regs: regs, flags: s.flags}
+	frame := make(map[int64]frameSlot, len(s.frame))
+	for addr, slot := range s.frame {
+		frame[addr] = slot
+	}
+	return &symbolicState{regs: regs, flags: s.flags, disp: s.disp, frame: frame}
+}
+
+// frameAccess executes a load or store through the sp frame: the address
+// is entry-relative (-disp + offset), pre-index moves sp first and
+// post-index after, exactly as the seam checker computes it. Stores record
+// the term at the slot; loads read back a slot stored with the same width.
+func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (string, bool) {
+	mem := instr.Operands[len(instr.Operands)-1].(Memory)
+	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
+	if mem.Index != nil {
+		return "indexed frame access", false
+	}
+	if len(regs) == 0 || isAtomic(instr.Mnemonic) || isExclusiveStore(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic) || instr.Mnemonic == "ldpsw" {
+		return "a frame access outside the modeled subset (" + instr.Mnemonic + ")", false
+	}
+	size := memorySize(instr.Mnemonic, regs[0].Class)
+	if len(regs) == 2 {
+		size /= 2 // ldp/stp: one slot per register
+	}
+	var addr int64
+	switch mem.Mode {
+	case MemPreIndex:
+		state.disp -= mem.Offset
+		addr = -state.disp
+	case MemPostIndex:
+		addr = -state.disp
+		defer func() { state.disp -= mem.Offset }()
+	default:
+		addr = -state.disp + mem.Offset
+	}
+	if state.frame == nil {
+		state.frame = map[int64]frameSlot{}
+	}
+	if isStoreMnemonic(instr.Mnemonic) {
+		for i, reg := range regs {
+			value, ok := state.read(reg)
+			if !ok {
+				return "unbound register read", false
+			}
+			state.frame[addr+int64(i)*size] = frameSlot{value: value, width: int(size)}
+		}
+		return "", true
+	}
+	for i, reg := range regs {
+		slot, stored := state.frame[addr+int64(i)*size]
+		if !stored {
+			return "a load from a frame slot never stored on this path", false
+		}
+		if slot.width != int(size) {
+			return "a load whose width differs from the slot's store", false
+		}
+		if int(size) < widthOf(reg.Class)/8 {
+			return "a narrow frame load", false
+		}
+		state.write(reg, slot.value)
+	}
+	return "", true
+}
+
+// isFrameMemory reports a memory instruction through sp.
+func isFrameMemory(instr Instruction) bool {
+	if len(instr.Operands) == 0 {
+		return false
+	}
+	mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory)
+	return isMem && mem.Base.Class == ClassSP
 }
 
 // run executes from item index pc to a ret on every path.
@@ -746,6 +898,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			}
 			return iteTerm(cond, taken, fallThrough), "", true
 		}
+		if isFrameMemory(instr) {
+			if reason, ok := x.frameAccess(instr, state); !ok {
+				return nil, reason, false
+			}
+			continue
+		}
 		if isLoad(instr.Mnemonic) {
 			if reason, ok := x.load(instr, state); !ok {
 				return nil, reason, false
@@ -779,17 +937,18 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	if mem.Mode != MemOffset {
 		return "a span base moved by pre/post-index", false
 	}
-	// The access size is the element size; a byte or halfword load
-	// zero-extends the element into its w register.
-	size := int64(widthOf(dest.Class) / 8)
-	switch instr.Mnemonic {
-	case "ldrb":
-		size = 1
-	case "ldrh":
-		size = 2
-	}
+	// The access size is the element size; a narrower load extends the
+	// element into its register — zero-extending, or sign-extending for
+	// the ldrs* family.
+	size := memorySize(instr.Mnemonic, dest.Class)
 	if size != elem {
 		return fmt.Sprintf("a %d-byte load over %d-byte elements", size, elem), false
+	}
+	extend := func(element *term) *term {
+		if isSignExtendingLoad(instr.Mnemonic) {
+			return extendTerm(element, int(elem)*8, widthOf(dest.Class), true)
+		}
+		return zeroExtend(element, widthOf(dest.Class))
 	}
 	if mem.Index != nil {
 		// [base, wI, uxtw #s]: element wI. Along an unrolled counted loop the
@@ -802,20 +961,18 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if !ok {
 			return "unbound register read", false
 		}
-		state.write(dest, zeroExtend(x.element(param, index, int(elem)*8), widthOf(dest.Class)))
+		state.write(dest, extend(x.element(param, index, int(elem)*8)))
 		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
 	}
-	state.write(dest, zeroExtend(x.element(param, constTerm(uint64(mem.Offset/elem), 32), int(elem)*8), widthOf(dest.Class)))
+	state.write(dest, extend(x.element(param, constTerm(uint64(mem.Offset/elem), 32), int(elem)*8)))
 	return "", true
 }
 
 // isLoad reports the load mnemonics the executor resolves through a span.
-func isLoad(mnemonic string) bool {
-	return mnemonic == "ldr" || mnemonic == "ldrb" || mnemonic == "ldrh"
-}
+func isLoad(mnemonic string) bool { return isPlainLoad(mnemonic) }
 
 // element is the span element at an index term; in a concrete run the
 // witness memory's value.
@@ -877,6 +1034,89 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				return "unbound register read", false
 			}
 			state.flags = &flagsFact{left: l, right: r, width: width, kind: "and"}
+		case "ubfx", "ubfiz", "sbfx", "bfi":
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			source, ok := operandTerm(state, instr.Operands[1], width)
+			if !ok {
+				return "unbound register read", false
+			}
+			lsb := instr.Operands[2].(Immediate).Value
+			fieldWidth := instr.Operands[3].(Immediate).Value
+			if lsb < 0 || fieldWidth < 1 || lsb+fieldWidth > int64(width) {
+				return "a bit field outside the register", false
+			}
+			fieldMask := constTerm(mask(int(fieldWidth)), width)
+			switch instr.Mnemonic {
+			case "ubfx":
+				state.write(dest, binaryTerm("and", binaryTerm("shr", source, constTerm(uint64(lsb), width)), fieldMask))
+			case "ubfiz":
+				state.write(dest, binaryTerm("shl", binaryTerm("and", source, fieldMask), constTerm(uint64(lsb), width)))
+			case "sbfx":
+				// Shift the field to the top, then arithmetic-shift it down.
+				up := constTerm(uint64(int64(width)-lsb-fieldWidth), width)
+				down := constTerm(uint64(int64(width)-fieldWidth), width)
+				state.write(dest, binaryTerm("sar", binaryTerm("shl", source, up), down))
+			case "bfi":
+				current, ok := state.read(dest)
+				if !ok {
+					return "unbound register read", false
+				}
+				placed := binaryTerm("shl", binaryTerm("and", source, fieldMask), constTerm(uint64(lsb), width))
+				hole := constTerm(^(mask(int(fieldWidth))<<uint(lsb))&mask(width), width)
+				state.write(dest, binaryTerm("or", binaryTerm("and", current, hole), placed))
+			}
+		case "madd", "msub":
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			n, okN := operandTerm(state, instr.Operands[1], width)
+			m, okM := operandTerm(state, instr.Operands[2], width)
+			a, okA := operandTerm(state, instr.Operands[3], width)
+			if !okN || !okM || !okA {
+				return "unbound register read", false
+			}
+			product := binaryTerm("mul", n, m)
+			if instr.Mnemonic == "madd" {
+				state.write(dest, binaryTerm("add", a, product))
+			} else {
+				state.write(dest, binaryTerm("sub", a, product))
+			}
+		case "cinc", "cneg":
+			if state.flags == nil || state.flags.unknown {
+				return fmt.Sprintf("%s reading flags not produced by cmp/subs", instr.Mnemonic), false
+			}
+			code := instr.Operands[2].(Condition).Code
+			if !verifiableConditions[code] {
+				return fmt.Sprintf("condition code %s", code), false
+			}
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			source, ok := operandTerm(state, instr.Operands[1], width)
+			if !ok {
+				return "unbound register read", false
+			}
+			changed := binaryTerm("add", source, constTerm(1, width))
+			if instr.Mnemonic == "cneg" {
+				changed = binaryTerm("sub", constTerm(0, width), source)
+			}
+			state.write(dest, iteTerm(flagsCondition(code, state.flags), changed, source))
+		case "ccmp":
+			if state.flags == nil || state.flags.unknown {
+				return "ccmp reading flags not produced by cmp/subs", false
+			}
+			code := instr.Operands[3].(Condition).Code
+			if !verifiableConditions[code] {
+				return fmt.Sprintf("condition code %s", code), false
+			}
+			left := instr.Operands[0].(Register)
+			width := widthOf(left.Class)
+			l, okL := operandTerm(state, left, width)
+			r, okR := operandTerm(state, instr.Operands[1], width)
+			if !okL || !okR {
+				return "unbound register read", false
+			}
+			prior := flagsCondition(code, state.flags)
+			state.flags = &flagsFact{left: l, right: r, width: width, cond: prior, elseNZCV: instr.Operands[2].(Immediate).Value}
 		case "neg", "mvn":
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
@@ -890,13 +1130,27 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				state.write(dest, binaryTerm("xor", source, constTerm(mask(width), width)))
 			}
 		default:
+			if handled, reason, ok := stepISA(instr, state); handled {
+				return reason, ok
+			}
 			op, verifiable := verifiableOps[instr.Mnemonic]
 			if !verifiable || len(instr.Operands) != 3 {
 				return fmt.Sprintf("instruction %s", instr.Mnemonic), false
 			}
 			dest := instr.Operands[0].(Register)
 			if dest.Class == ClassSP {
-				return "stack pointer arithmetic", false
+				// sub/add sp, sp, #imm moves the frame (the checker keeps it
+				// inside the declared frame and 16-byte aligned).
+				imm, isImm := instr.Operands[2].(Immediate)
+				if !isImm || (instr.Mnemonic != "add" && instr.Mnemonic != "sub") {
+					return "stack pointer arithmetic that is not an immediate add/sub", false
+				}
+				if instr.Mnemonic == "sub" {
+					state.disp += imm.Value
+				} else {
+					state.disp -= imm.Value
+				}
+				return "", true
 			}
 			left, okL := operandTerm(state, instr.Operands[1], widthOf(dest.Class))
 			right, okR := operandTerm(state, instr.Operands[2], widthOf(dest.Class))
@@ -965,7 +1219,25 @@ func operandTerm(state *symbolicState, operand Operand, width int) (*term, bool)
 	case Register:
 		return state.read(o)
 	case Immediate:
-		return constTerm(uint64(o.Value), width), true
+		return constTerm(uint64(o.Value)<<uint(o.Shift), width), true
+	case Shifted:
+		value, ok := state.read(o.Reg)
+		if !ok {
+			return nil, false
+		}
+		op := map[string]string{"lsl": "shl", "lsr": "shr", "asr": "sar", "ror": "ror"}[o.Kind]
+		return binaryTerm(op, value, constTerm(uint64(o.Amount), value.width)), true
+	case Extended:
+		value, ok := state.read(o.Reg)
+		if !ok {
+			return nil, false
+		}
+		from := map[string]int{"uxtb": 8, "sxtb": 8, "uxth": 16, "sxth": 16, "uxtw": 32, "sxtw": 32, "uxtx": 64, "sxtx": 64}[o.Kind]
+		extended := extendTerm(value, from, width, o.Kind[0] == 's')
+		if o.Amount == 0 {
+			return extended, true
+		}
+		return binaryTerm("shl", extended, constTerm(uint64(o.Amount), width)), true
 	}
 	return nil, false
 }
@@ -1324,6 +1596,15 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
 	case *ast.IntegerLiteral:
 		return constTerm(uint64(e.Value), width), "", true
+	case *ast.PrefixExpression:
+		if e.Operator != "^" {
+			return nil, fmt.Sprintf("prefix operator %s", e.Operator), false
+		}
+		operand, reason, ok := lo.lower(e.Right, width)
+		if !ok {
+			return nil, reason, false
+		}
+		return binaryTerm("xor", operand, constTerm(mask(width), width)), "", true
 	case *ast.Boolean:
 		// Bool lowers to its C representation: 1 or 0 at the result width.
 		if e.Value {
@@ -1350,6 +1631,15 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		switch ident.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
+			// A widening of a signed operand sign-extends (i64(x) with x: i32);
+			// every other conversion is the operand's bits at the new width.
+			if srcWidth, signed, known := lo.operandContract(e.Arguments[0]); known && signed && ident.Value[0] == 'i' && srcWidth < width {
+				operand, reason, ok := lo.lower(e.Arguments[0], srcWidth)
+				if !ok {
+					return nil, reason, false
+				}
+				return extendTerm(operand, srcWidth, width, true), "", true
+			}
 			return lo.lower(e.Arguments[0], width)
 		}
 		return nil, fmt.Sprintf("call to %s", ident.Value), false
@@ -1655,9 +1945,14 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 // zero-extension copy a parameter node at the use width while the value
 // stays bounded by its declared width.
 func collectParams(t *term, into map[string]bool) {
-	if t == nil {
+	collectParamsVisited(t, into, map[*term]bool{})
+}
+
+func collectParamsVisited(t *term, into map[string]bool, visited map[*term]bool) {
+	if t == nil || visited[t] {
 		return
 	}
+	visited[t] = true // terms are DAGs: visit every shared subterm once
 	switch t.kind {
 	case termParam:
 		into[t.name] = true
@@ -1665,9 +1960,9 @@ func collectParams(t *term, into map[string]bool) {
 	case termConst:
 		return
 	}
-	collectParams(t.cond, into)
-	collectParams(t.left, into)
-	collectParams(t.right, into)
+	collectParamsVisited(t.cond, into, visited)
+	collectParamsVisited(t.left, into, visited)
+	collectParamsVisited(t.right, into, visited)
 }
 
 // declaredWidth is the width a parameter's values are bounded by: a scalar
