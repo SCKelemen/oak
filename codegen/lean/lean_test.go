@@ -244,3 +244,40 @@ narrow: (n: u32): Result[u8, Overflow] = u8_checked_u32(n)
 		t.Fatalf("templates must never be emitted:\n%s", out)
 	}
 }
+
+// Top-level constants extract as definitions, array literals as Lean array
+// literals, and a view of a constant table is the table's value; a
+// writable span of a global fails closed.
+func TestExtractionTablesAndGlobals(t *testing.T) {
+	src := `
+SYMBOLS: [4]u8 = [4]u8{ 48, 49, 50, 51 }
+LIMIT: u32 = 3
+digit: (n: u32, upper: Bool): u8 {
+  table: []u8 = upper ? view(&SYMBOLS) | view(&SYMBOLS)
+  n < LIMIT ? table[n] | SYMBOLS[0]
+}
+pair: (a: u32): [2]u32 = [2]u32{ a, a + u32(1) }
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"def SYMBOLS : Array UInt8 := (#[(48 : UInt8), (49 : UInt8), (50 : UInt8), (51 : UInt8)] : Array UInt8)",
+		"def LIMIT : UInt32 := (3 : UInt32)",
+		"let table : Array UInt8 := (if upper then SYMBOLS else SYMBOLS)",
+		"pure (if (decide (n < LIMIT)) then (table.getD n.toNat (0 : UInt8)) else (SYMBOLS.getD 0 (0 : UInt8)))",
+		"pure (#[a, (a + (1 : UInt32))] : Array UInt32)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("extraction lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "def SYMBOLS") > strings.Index(out, "def digit") {
+		t.Fatalf("constants must precede the functions that read them:\n%s", out)
+	}
+	_, err = extract(t, "TABLE: [2]u8 = [2]u8{ 1, 2 }\nzap: (): () { s: [*]u8 = span(&TABLE)\n  s[0] = u8(0) }")
+	if err == nil || !strings.Contains(err.Error(), "span of the global") {
+		t.Fatalf("span of a global must fail closed, got %v", err)
+	}
+}

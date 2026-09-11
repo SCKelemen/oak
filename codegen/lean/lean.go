@@ -123,6 +123,12 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 	// Straight-line translation rebinds and returns variables the source
 	// never reads again; that is the source's shape, not a defect.
 	out.WriteString("set_option linter.unusedVariables false\n")
+	// An unrolled function (a hash compression round) is one long do-block;
+	// the elaborator's default recursion limit is sized for hand-written code.
+	out.WriteString("set_option maxRecDepth 65536\n")
+	// The code generator's budget is sized the same way; an unrolled
+	// compression function is one definition with hundreds of binds.
+	out.WriteString("set_option maxHeartbeats 4000000\n")
 	fmt.Fprintf(&out, "namespace %s\n\n", namespace)
 	for _, name := range em.orderedTypes(typeRoots) {
 		adt := em.adts[name]
@@ -636,6 +642,33 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string) error {
 			emit("let %s := { %s with %s := %s }", ident(base.Value), ident(base.Value), ident(field.Value), term)
 			return nil
 		}
+		if fieldAccess, isField := s.Target.Left.(*ast.IndexExpression); isField && fieldAccess.Dot {
+			// r.field[i] = v: the field's array is updated and written back
+			// into the record (one level of fields, as for field assignment).
+			record, isIdent := fieldAccess.Left.(*ast.Identifier)
+			field, isName := fieldAccess.Index.(*ast.Identifier)
+			if !isIdent || !isName {
+				return fmt.Errorf("element assignment into %s is outside the extracted subset (one level of fields)", s.Target.Left.String())
+			}
+			fieldType, err := em.fieldType(record.Value, field.Value)
+			if err != nil {
+				return err
+			}
+			element, isArray := elementOf(fieldType)
+			if !isArray {
+				return fmt.Errorf("element assignment into non-array field %s", s.Target.Left.String())
+			}
+			index, err := em.indexTerm(s.Target.Index)
+			if err != nil {
+				return err
+			}
+			term, err := em.expr(s.Value, element)
+			if err != nil {
+				return err
+			}
+			emit("let %s := { %s with %s := %s.%s.setIfInBounds %s %s }", ident(record.Value), ident(record.Value), ident(field.Value), ident(record.Value), ident(field.Value), index, term)
+			return nil
+		}
 		base, ok := s.Target.Left.(*ast.Identifier)
 		if !ok {
 			return fmt.Errorf("element assignment into %s is outside the extracted subset", s.Target.Left.String())
@@ -1053,6 +1086,26 @@ func addressOf(expr ast.Expression) string {
 // expr renders an expression as a pure Lean term; calls are hoisted into
 // the current statement's preceding lines. want is the Lean type the
 // context expects, used to type integer literals.
+// arrayLiteralTerm renders an array literal. Lean elaborates `#[...]`
+// through a nested list literal, so a long table (a 2048-entry CRC table)
+// exceeds the default recursion depth as one literal; it is emitted as a
+// concatenation of chunks instead, which denotes the same array.
+func arrayLiteralTerm(terms []string, element string) string {
+	const chunk = 128
+	if len(terms) <= chunk {
+		return fmt.Sprintf("(#[%s] : Array %s)", strings.Join(terms, ", "), element)
+	}
+	var chunks []string
+	for start := 0; start < len(terms); start += chunk {
+		end := start + chunk
+		if end > len(terms) {
+			end = len(terms)
+		}
+		chunks = append(chunks, fmt.Sprintf("#[%s]", strings.Join(terms[start:end], ", ")))
+	}
+	return fmt.Sprintf("((%s) : Array %s)", strings.Join(chunks, " ++ "), element)
+}
+
 // literalTerm renders an integer literal at a Lean type. The parser stores
 // every literal in an int64, so an unsigned constant above 2^63 - 1 arrives
 // wrapped negative and is printed back as the unsigned value it spells.
@@ -1152,6 +1205,17 @@ func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 				return "", err
 			}
 			return "(0 - " + inner + ")", nil
+		case "^":
+			// Bitwise complement over the operand's width.
+			typ := em.checkedLeanType(e)
+			if typ == "" {
+				typ = want
+			}
+			inner, err := em.expr(e.Right, typ)
+			if err != nil {
+				return "", err
+			}
+			return "(~~~" + inner + ")", nil
 		}
 		return "", fmt.Errorf("prefix %s is outside the extracted subset", e.Operator)
 	case *ast.InfixExpression:
@@ -1199,6 +1263,35 @@ func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 			}
 		}
 		return fmt.Sprintf("(%s.extract %s %s)", base, low, high), nil
+	case *ast.ArrayLiteral:
+		// [N]T{ e1, ..., eN } is the Lean array literal; the element type
+		// comes from the literal's own type, else from the context.
+		arrayType := want
+		if e.Type != nil {
+			typ, err := em.leanType(e.Type)
+			if err != nil {
+				return "", err
+			}
+			arrayType = typ
+		}
+		element, isArray := elementOf(arrayType)
+		if !isArray {
+			if checked := em.checkedLeanType(e); checked != "" {
+				element, isArray = elementOf(checked)
+			}
+		}
+		if !isArray {
+			return "", fmt.Errorf("array literal has no element type in context")
+		}
+		terms := make([]string, 0, len(e.Elements))
+		for _, item := range e.Elements {
+			term, err := em.expr(item, element)
+			if err != nil {
+				return "", err
+			}
+			terms = append(terms, term)
+		}
+		return arrayLiteralTerm(terms, element), nil
 	case *ast.RecordLiteral:
 		if e.TypeName == nil {
 			return "", fmt.Errorf("record literal without a type name is outside the extracted subset")
@@ -1397,6 +1490,15 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 			return "", fmt.Errorf("%s of %s is outside the extracted subset", callee.Value, call.Arguments[0].String())
 		}
 		if _, known := em.scope.lookup(owner); !known {
+			// A view of a top-level constant is the constant's array value;
+			// a writable span of one would mutate the global and fails closed.
+			if _, isGlobal := em.globals[owner]; isGlobal && callee.Value == "view" {
+				em.usedGlobals[owner] = true
+				return ident(owner), nil
+			}
+			if _, isGlobal := em.globals[owner]; isGlobal {
+				return "", fmt.Errorf("span of the global %s is outside the extracted subset (globals are read-only constants here)", owner)
+			}
 			return "", fmt.Errorf("%s of unknown owner %s", callee.Value, owner)
 		}
 		return ident(owner), nil
@@ -1668,6 +1770,14 @@ func walkStatements(expr ast.Expression, visit func(ast.Statement)) {
 			for _, arg := range x.Arguments {
 				exprs(arg)
 			}
+		case *ast.ArrayLiteral:
+			for _, element := range x.Elements {
+				exprs(element)
+			}
+		case *ast.RecordLiteral:
+			for _, field := range x.FieldOrder {
+				exprs(field.Value)
+			}
 		case *ast.VariantExpression:
 			exprs(x.Payload)
 		}
@@ -1739,6 +1849,10 @@ func walkExpressions(expr ast.Expression, visit func(ast.Expression)) {
 		case *ast.RecordLiteral:
 			for _, field := range x.FieldOrder {
 				exprs(field.Value)
+			}
+		case *ast.ArrayLiteral:
+			for _, element := range x.Elements {
+				exprs(element)
 			}
 		case *ast.VariantExpression:
 			exprs(x.Payload)
