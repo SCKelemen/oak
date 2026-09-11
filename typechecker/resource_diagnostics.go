@@ -4,6 +4,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/modules"
 )
 
 const CodeResourceCallAliasConflict = "OAK-B0112"
@@ -22,6 +23,13 @@ const CodeResourceParameterForwarded = "OAK-B0114"
 // not an empty one, so the call fails closed.
 const CodeResourceUnknownCallable = "OAK-B0115"
 
+// CodeResourceCallableContractMismatch reports a function value passed for
+// a function-typed parameter whose required callable contract it does not
+// carry exactly — a consuming function where a borrowed one is required, an
+// uncontracted or unknown function value where any mode is required
+// (docs/spec/50-borrowing.md section 9, contracts on function types).
+const CodeResourceCallableContractMismatch = "OAK-B0116"
+
 // addResourceDiagnostic keeps resource authority failures in the borrow/resource
 // diagnostic category even though typed resource analysis is hosted by typechecker.
 func (tc *TypeChecker) addResourceDiagnostic(node ast.Node, title string) *diagnostic.Diagnostic {
@@ -29,6 +37,9 @@ func (tc *TypeChecker) addResourceDiagnostic(node ast.Node, title string) *diagn
 }
 
 func (tc *TypeChecker) addResourceDiagnosticWithCode(node ast.Node, code, title string) *diagnostic.Diagnostic {
+	// Imported callables carry internal names; readers see the qualified
+	// spelling (docs/spec/83-modules.md section 7).
+	title = modules.DemangleText(title)
 	var d *diagnostic.Diagnostic
 	if node != nil {
 		d = diagnostic.NewDiagnosticFromNodeWithCode(node, "borrow", code, title)

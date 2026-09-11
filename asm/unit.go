@@ -556,7 +556,7 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 	if spec.sysregOperand == position {
 		return SysReg{Name: lower}, nil
 	}
-	if spec.branch != branchNone {
+	if spec.branch != branchNone || formsTakeSymbol(spec, position) {
 		return Symbol{Name: text}, nil
 	}
 	if spec.barrier || formsTakeOption(spec, position) {
@@ -573,6 +573,17 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 func formsTakeOption(spec instructionSpec, position int) bool {
 	for _, candidate := range spec.forms {
 		if position < len(candidate) && candidate[position] == opOption {
+			return true
+		}
+	}
+	return false
+}
+
+// formsTakeSymbol reports whether some legal form of a non-branch
+// instruction names a label at the position (adr/adrp).
+func formsTakeSymbol(spec instructionSpec, position int) bool {
+	for _, candidate := range spec.forms {
+		if position < len(candidate) && candidate[position] == opSym {
 			return true
 		}
 	}
@@ -684,12 +695,19 @@ func parseRegister(text string) (Register, bool) {
 			}
 			view := lower[dot+1:]
 			if open := strings.IndexByte(view, '['); open > 0 && strings.HasSuffix(view, "]") {
+				// A lane (`v0.s[1]`) or a lane group (`v0.4b[1]`, `v0.2h[1]` —
+				// the dot-product by-element forms index 32-bit groups).
 				letter := view[:open]
+				group := 1
+				if len(letter) == 2 && (letter == "4b" || letter == "2h") {
+					group = int(letter[0] - '0')
+					letter = letter[1:]
+				}
 				lane, err := strconv.Atoi(view[open+1 : len(view)-1])
 				if err != nil || lane < 0 || len(letter) != 1 || strings.IndexByte("bhsd", letter[0]) < 0 {
 					return Register{}, false
 				}
-				if lane >= 16/laneBytes(letter) {
+				if lane >= 16/(group*laneBytes(letter)) {
 					return Register{}, false // a lane past the register
 				}
 				return Register{Text: lower, Class: ClassV, Num: num, Vec: letter, Lane: lane}, true

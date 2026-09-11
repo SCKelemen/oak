@@ -114,10 +114,10 @@ var instructionTable = map[string]instructionSpec{
 	"ret":   {forms: []form{{opNone}}, branch: branchReturn, sysregOperand: -1},
 	"eret":  {forms: []form{{opNone}}, branch: branchReturn, system: true, sysregOperand: -1},
 	"mrs":   {forms: []form{{opX, opSysReg}}, system: true, sysregOperand: 1},
-	"msr":   {forms: []form{{opSysReg, opX}}, system: true, sysregOperand: 0},
-	"dmb":   {forms: []form{{opOption}}, barrier: true, sysregOperand: -1},
-	"dsb":   {forms: []form{{opOption}}, barrier: true, sysregOperand: -1},
-	"isb":   {forms: []form{{opOption}, {opNone}}, barrier: true, sysregOperand: -1},
+	"msr":   {forms: []form{{opSysReg, opX}, {opSysReg, opImm}}, system: true, sysregOperand: 0},
+	"dmb":   {forms: []form{{opOption}, {opImm}}, barrier: true, sysregOperand: -1},
+	"dsb":   {forms: []form{{opOption}, {opImm}}, barrier: true, sysregOperand: -1},
+	"isb":   {forms: []form{{opOption}, {opImm}, {opNone}}, barrier: true, sysregOperand: -1},
 	"nop":   {forms: []form{{opNone}}, sysregOperand: -1},
 }
 

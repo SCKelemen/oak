@@ -20,7 +20,7 @@ jobs:
       - name: Test runner and failure replay
         run: go test -race ./testrunner -count=1 -v
       - name: Run Oak test suite
-        run: ./build/oak test -runs 20 examples/testing
+        run: ./build/oak test -runs 20 examples/testing examples/time
       - name: Exercise coverage-guided native fuzz harness
         run: |
           ./build/oak test -fuzz '^FuzzUtf8$' -emit-fuzz-harness build/fuzz.c examples/testing

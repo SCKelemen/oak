@@ -19,7 +19,39 @@ const (
 	ResourceEffectBorrowMut   = "borrow-mut"
 	ResourceEffectConsume     = "consume"
 	ResourceEffectReturnFresh = "return-fresh"
+	// Callable-contract effects describe what a function-typed parameter
+	// (arg:N) requires of the function values passed for it: the mode of
+	// the callable's own parameter param:M, or a fresh result.
+	ResourceEffectCallableBorrow      = "callable-borrow"
+	ResourceEffectCallableBorrowMut   = "callable-borrow-mut"
+	ResourceEffectCallableConsume     = "callable-consume"
+	ResourceEffectCallableReturnFresh = "callable-return-fresh"
 )
+
+// ResourceCallableSemantics is the contract required of a function value
+// passed for one function-typed parameter.
+type ResourceCallableSemantics struct {
+	Argument     int
+	Borrowed     []int
+	BorrowedMut  []int
+	Consumes     []int
+	ReturnsFresh bool
+}
+
+// ResourceCallableEffect constructs the effect requiring mode name (one of
+// borrow, borrow-mut, consume) of parameter param of the function value
+// passed as argument arg.
+func ResourceCallableEffect(name string, arg, param int) Effect {
+	return Effect{Namespace: ResourceEffectNamespace, Name: "callable-" + name,
+		Parameters: []string{"arg:" + strconv.Itoa(arg), "param:" + strconv.Itoa(param)}}
+}
+
+// ResourceCallableReturnFresh constructs the effect requiring a fresh
+// result of the function value passed as argument arg.
+func ResourceCallableReturnFresh(arg int) Effect {
+	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectCallableReturnFresh,
+		Parameters: []string{"arg:" + strconv.Itoa(arg)}}
+}
 
 // ResourceTransitionSemantics is the resource-authority projection of one
 // protocol transition. Parameter index lists are zero-based callable argument
@@ -30,6 +62,9 @@ type ResourceTransitionSemantics struct {
 	BorrowedMut  []int
 	Consumes     []int
 	ReturnsFresh bool
+	// Callables are the contracts required of function-typed parameters,
+	// sorted by argument index.
+	Callables []ResourceCallableSemantics
 	// Receiver is the authority mode of a method's receiver — one of the
 	// resource effect names borrow, borrow-mut, or consume — or empty when
 	// the receiver carries no resource contract. It is its own slot: it
@@ -127,6 +162,11 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 				result.Consumes = append(result.Consumes, index)
 			}
 
+		case ResourceEffectCallableBorrow, ResourceEffectCallableBorrowMut, ResourceEffectCallableConsume, ResourceEffectCallableReturnFresh:
+			if err := decodeCallableEffect(effect, &result); err != nil {
+				return ResourceTransitionSemantics{}, true, err
+			}
+
 		case ResourceEffectReturnFresh:
 			if len(effect.Parameters) != 0 {
 				return ResourceTransitionSemantics{}, true,
@@ -148,7 +188,68 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 	sort.Ints(result.Borrowed)
 	sort.Ints(result.BorrowedMut)
 	sort.Ints(result.Consumes)
+	for i := range result.Callables {
+		sort.Ints(result.Callables[i].Borrowed)
+		sort.Ints(result.Callables[i].BorrowedMut)
+		sort.Ints(result.Callables[i].Consumes)
+	}
+	sort.Slice(result.Callables, func(i, j int) bool { return result.Callables[i].Argument < result.Callables[j].Argument })
 	return result, present, nil
+}
+
+// decodeCallableEffect folds one callable-contract effect into the
+// semantics of its arg:N function-typed parameter.
+func decodeCallableEffect(effect Effect, result *ResourceTransitionSemantics) error {
+	if len(effect.Parameters) == 0 || !strings.HasPrefix(effect.Parameters[0], "arg:") {
+		return fmt.Errorf("resource.%s expects an arg:<index> parameter first", effect.Name)
+	}
+	arg, err := strconv.Atoi(strings.TrimPrefix(effect.Parameters[0], "arg:"))
+	if err != nil || arg < 0 {
+		return fmt.Errorf("resource.%s parameter %q has invalid argument index", effect.Name, effect.Parameters[0])
+	}
+	var callable *ResourceCallableSemantics
+	for i := range result.Callables {
+		if result.Callables[i].Argument == arg {
+			callable = &result.Callables[i]
+		}
+	}
+	if callable == nil {
+		result.Callables = append(result.Callables, ResourceCallableSemantics{Argument: arg})
+		callable = &result.Callables[len(result.Callables)-1]
+	}
+	if effect.Name == ResourceEffectCallableReturnFresh {
+		if len(effect.Parameters) != 1 {
+			return fmt.Errorf("resource.%s takes only arg:<index>", effect.Name)
+		}
+		if callable.ReturnsFresh {
+			return fmt.Errorf("resource.%s is duplicated for argument %d", effect.Name, arg)
+		}
+		callable.ReturnsFresh = true
+		return nil
+	}
+	if len(effect.Parameters) != 2 || !strings.HasPrefix(effect.Parameters[1], "param:") {
+		return fmt.Errorf("resource.%s expects arg:<index> and param:<index>", effect.Name)
+	}
+	param, err := strconv.Atoi(strings.TrimPrefix(effect.Parameters[1], "param:"))
+	if err != nil || param < 0 {
+		return fmt.Errorf("resource.%s parameter %q has invalid parameter index", effect.Name, effect.Parameters[1])
+	}
+	for _, listed := range [][]int{callable.Borrowed, callable.BorrowedMut, callable.Consumes} {
+		for _, existing := range listed {
+			if existing == param {
+				return fmt.Errorf("callable parameter %d of argument %d has two modes", param, arg)
+			}
+		}
+	}
+	switch effect.Name {
+	case ResourceEffectCallableBorrow:
+		callable.Borrowed = append(callable.Borrowed, param)
+	case ResourceEffectCallableBorrowMut:
+		callable.BorrowedMut = append(callable.BorrowedMut, param)
+	case ResourceEffectCallableConsume:
+		callable.Consumes = append(callable.Consumes, param)
+	}
+	return nil
 }
 
 func decodeResourceArgument(effect Effect) (int, error) {

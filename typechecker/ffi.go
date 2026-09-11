@@ -34,6 +34,10 @@ const (
 	// CodeCStringNotLiteral rejects c.String over anything but a string
 	// literal (section 2.5.3).
 	CodeCStringNotLiteral = "OAK-F0106"
+	// CodeForeignBorrowPlacement rejects c.borrow/c.borrow_mut outside an
+	// unsafe block or anywhere but the initializer of a named binding
+	// (docs/spec/92-ffi.md section 2.7).
+	CodeForeignBorrowPlacement = "OAK-F0107"
 )
 
 // CType is a member of the `c` interface library (docs/spec/92-ffi.md
@@ -247,7 +251,8 @@ func KnownLibraryMember(library, member string) bool {
 	switch library {
 	case "c":
 		_, isType := cTypeSpellings[member]
-		return isType || member == "extern" || member == "span_of" || member == "span_mut_of"
+		return isType || member == "extern" || member == "span_of" || member == "span_mut_of" ||
+			member == "borrow" || member == "borrow_mut" || member == "own" || member == "disown"
 	case "arm64":
 		_, isIntrinsic := arm64Intrinsics[member]
 		return isIntrinsic
@@ -422,6 +427,8 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 		return nil
 	}
 	switch member {
+	case "disown":
+		return tc.checkForeignDisown(expr)
 	case "span_of", "span_mut_of":
 		// Boundary spans are not expressions: they exist only as arguments
 		// of a call to an extern binding, where checkInvocationExpression
@@ -782,4 +789,106 @@ func (tc *TypeChecker) boundaryTaggedUnion(name string, visiting map[string]bool
 		}
 	}
 	return true
+}
+
+// foreignBorrowAccess recognizes the callee of an inbound buffer borrow,
+// `c.borrow[T]` or `c.borrow_mut[T]` (docs/spec/92-ffi.md section 2.7): an
+// index over the library member naming the element type.
+func foreignBorrowAccess(fn ast.Expression) (member string, element ast.Expression, ok bool) {
+	index, isIndex := fn.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return "", nil, false
+	}
+	library, member, isLibrary := libraryAccess(index.Left)
+	if !isLibrary || library != "c" || (member != "borrow" && member != "borrow_mut" && member != "own") {
+		return "", nil, false
+	}
+	return member, index.Index, true
+}
+
+// ForeignBorrowCall recognizes a call of `c.borrow[T](ptr, count)` or
+// `c.borrow_mut[T](ptr, count)`, for the backends and the borrow checker.
+func ForeignBorrowCall(call *ast.InvocationExpression) (member string, element ast.Expression, ok bool) {
+	if call == nil {
+		return "", nil, false
+	}
+	return foreignBorrowAccess(call.Function)
+}
+
+// checkForeignBorrow types an inbound buffer borrow (docs/spec/92-ffi.md
+// section 2.7): inside an unsafe block, as the initializer of a named
+// binding, `c.borrow[T](ptr, count)` is a read-only view `[]T` and
+// `c.borrow_mut[T](ptr, count)` a writable span `[*]T` over `count`
+// elements of runtime-owned memory at `ptr`. `T` is a boundary element type
+// (section 2.5.1), `ptr` a `c.Ptr`, `count` a `u32`. The trust contract the
+// program asserts is stated in the spec; here the placement is enforced so
+// the borrow checker always has a binding to scope the borrow to.
+func (tc *TypeChecker) checkForeignBorrow(expr *ast.InvocationExpression, member string, elementExpr ast.Expression) Type {
+	if tc.unsafeDepth == 0 {
+		d := tc.addTypeDiagnostic(expr, CodeForeignBorrowPlacement,
+			fmt.Sprintf("c.%s takes runtime-owned memory and is admitted only inside an unsafe block", member))
+		d.AddNote("the program asserts that the pointer addresses count elements of the element type, valid and unaliased for writes for the block's extent (docs/spec/92-ffi.md section 2.7)")
+		d.AddHelp("wrap the binding and its uses in unsafe { ... }")
+	} else if tc.initializerUnderCheck != expr {
+		d := tc.addTypeDiagnostic(expr, CodeForeignBorrowPlacement,
+			fmt.Sprintf("c.%s must initialize a named binding, so the borrow it creates has a scope", member))
+		d.AddHelp("bind it first: v: []T = c." + member + "[T](ptr, count)")
+	}
+	if len(expr.Arguments) != 2 {
+		tc.addError(expr, "c.%s takes a c.Ptr and a u32 element count", member)
+		return nil
+	}
+	element := tc.parseTypeExpression(elementExpr)
+	if element == nil {
+		tc.addError(elementExpr, "c.%s: invalid element type", member)
+		return nil
+	}
+	if !tc.boundarySpanElement(element, map[string]bool{}) {
+		d := tc.addTypeDiagnostic(elementExpr, CodeSpanElementNotABI,
+			fmt.Sprintf("element type %s cannot cross the C boundary in a borrowed buffer", element))
+		d.AddNote("inbound buffers carry the element types of docs/spec/92-ffi.md section 2.5.1: fixed-width integers, floating-point types, Bool, declared structs whose fields are those, and tagged unions whose payloads are those")
+		return nil
+	}
+	ptrType := tc.checkExpression(expr.Arguments[0], &CType{Name: "Ptr"})
+	if ptr, isC := ptrType.(*CType); ptrType != nil && (!isC || ptr.Name != "Ptr") {
+		tc.addError(expr.Arguments[0], "c.%s takes a c.Ptr first, got %s", member, ptrType)
+	}
+	u32Type := &PrimitiveType{Name: "u32"}
+	countType := tc.checkExpression(expr.Arguments[1], u32Type)
+	if prim, isPrim := countType.(*PrimitiveType); countType != nil && (!isPrim || prim.Name != "u32") {
+		tc.addError(expr.Arguments[1], "c.%s takes a u32 element count second, got %s (lengths stay in u32 on the Oak side, docs/spec/92-ffi.md section 2.2)", member, countType)
+	}
+	switch member {
+	case "borrow":
+		return &ArrayType{Length: -1, IsSlice: true, ElementType: element}
+	case "own":
+		// An owner of runtime length (section 2.8): the binding borrows
+		// it like an owned array until c.disown hands the memory back.
+		return &BufferType{Element: element}
+	}
+	return &ArrayType{Length: -1, IsSpan: true, ElementType: element}
+}
+
+// checkForeignDisown types c.disown(b): the buffer's pointer, for the
+// runtime to free or reuse; the borrow checker consumes the binding.
+func (tc *TypeChecker) checkForeignDisown(expr *ast.InvocationExpression) Type {
+	if len(expr.Arguments) != 1 {
+		tc.addError(expr, "c.disown takes exactly one Buffer[T] binding")
+		return nil
+	}
+	ident, isIdent := expr.Arguments[0].(*ast.Identifier)
+	if !isIdent {
+		tc.addError(expr.Arguments[0], "c.disown takes the Buffer[T] binding itself, not an expression")
+		return nil
+	}
+	scheme, bound := tc.env.Get(ident.Value)
+	if !bound || scheme == nil {
+		tc.addError(ident, "undefined variable: %s", ident.Value)
+		return nil
+	}
+	if _, isBuffer := scheme.Type.(*BufferType); !isBuffer {
+		tc.addError(ident, "c.disown takes a Buffer[T] binding, got %s", scheme.Type)
+		return nil
+	}
+	return &CType{Name: "Ptr"}
 }

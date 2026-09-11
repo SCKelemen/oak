@@ -1,0 +1,576 @@
+// Instants, durations, civil time, and RFC 3339 text (stdlib/README.md,
+// "time"). Pure Oak, no clock: an Instant is whatever the program, the
+// operating system, or the simulation says the time is. Instants and
+// durations are i64 nanoseconds, so an Instant spans 1677-09-21 to
+// 2262-04-11 around the Unix epoch and every arithmetic step is checked:
+// overflow is `Overflowed`, never a wrap. Civil conversions use the
+// proleptic Gregorian calendar (Howard Hinnant's days-from-civil and
+// civil-from-days, https://howardhinnant.github.io/date_algorithms.html)
+// over i64 days, so any Instant converts. Text follows RFC 3339 §5.6
+// (https://datatracker.ietf.org/doc/html/rfc3339#section-5.6) strictly:
+// four-digit years, `T` or `t`, `Z` or `z` or `±HH:MM`, one to nine
+// fraction digits, and no leap second (`:60` is rejected, as this library
+// cannot know when one occurred). Durations print and parse in Go's
+// spelling (`1h2m3.5s`, `1.5ms`, `500µs`, `12ns`, `0s`).
+package time
+
+NANOS_PER_MICRO: i64 = 1000
+NANOS_PER_MILLI: i64 = 1000000
+NANOS_PER_SECOND: i64 = 1000000000
+NANOS_PER_MINUTE: i64 = 60000000000
+NANOS_PER_HOUR: i64 = 3600000000000
+NANOS_PER_DAY: i64 = 86400000000000
+EPOCH_TO_ERA_DAYS: i64 = 719468
+DAYS_PER_ERA: i64 = 146097
+BAD_DIGITS: u32 = 4294967295
+
+pub TimeError: type = Overflowed | InvalidCivil | InvalidFormat | InvalidOffset | InvalidDuration | DestinationTooSmall
+
+pub Instant: type = struct { nanos: i64 }
+pub Duration: type = struct { nanos: i64 }
+pub Civil: type = struct { year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8, nanos: u32 }
+// A parsed RFC 3339 timestamp: the instant and the offset it was written in.
+pub Zoned: type = struct { instant: Instant, offset_minutes: i32 }
+
+// ---------------------------------------------------------------------------
+// Checked i64 helpers
+
+checked_i64: (r: Result[i64, Overflow]): Result[i64, TimeError] = r ? | .Ok(v) => .Ok(v) | .Err(e) => .Err(.Overflowed)
+
+// floor_div divides toward negative infinity; the divisor is positive.
+floor_div: (a: i64, b: i64): i64 {
+  q: i64 = a / b
+  a % b != i64(0) && a < i64(0) ? q - i64(1) | q
+}
+
+floor_mod: (a: i64, b: i64): i64 = a - floor_div(a, b) * b
+
+// ---------------------------------------------------------------------------
+// Durations
+
+pub duration_nanos: (nanos: i64): Duration = Duration { nanos: nanos }
+
+pub duration_micros: (micros: i64): Result[Duration, TimeError] {
+  checked_i64(i64_checked_mul(micros, NANOS_PER_MICRO)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub duration_millis: (millis: i64): Result[Duration, TimeError] {
+  checked_i64(i64_checked_mul(millis, NANOS_PER_MILLI)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub duration_seconds: (seconds: i64): Result[Duration, TimeError] {
+  checked_i64(i64_checked_mul(seconds, NANOS_PER_SECOND)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub duration_minutes: (minutes: i64): Result[Duration, TimeError] {
+  checked_i64(i64_checked_mul(minutes, NANOS_PER_MINUTE)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub duration_hours: (hours: i64): Result[Duration, TimeError] {
+  checked_i64(i64_checked_mul(hours, NANOS_PER_HOUR)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+// Whole units, truncated toward zero.
+pub duration_as_micros: (d: Duration): i64 = d.nanos / NANOS_PER_MICRO
+pub duration_as_millis: (d: Duration): i64 = d.nanos / NANOS_PER_MILLI
+pub duration_as_seconds: (d: Duration): i64 = d.nanos / NANOS_PER_SECOND
+pub duration_as_minutes: (d: Duration): i64 = d.nanos / NANOS_PER_MINUTE
+pub duration_as_hours: (d: Duration): i64 = d.nanos / NANOS_PER_HOUR
+
+pub duration_add: (a: Duration, b: Duration): Result[Duration, TimeError] {
+  checked_i64(i64_checked_add(a.nanos, b.nanos)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub duration_sub: (a: Duration, b: Duration): Result[Duration, TimeError] {
+  checked_i64(i64_checked_sub(a.nanos, b.nanos)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub duration_scale: (d: Duration, factor: i64): Result[Duration, TimeError] {
+  checked_i64(i64_checked_mul(d.nanos, factor)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+// duration_negate rejects the minimum, whose negation does not exist.
+pub duration_negate: (d: Duration): Result[Duration, TimeError] {
+  checked_i64(i64_checked_sub(i64(0), d.nanos)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+// -1, 0, 1
+pub duration_compare: (a: Duration, b: Duration): i32 = a.nanos < b.nanos ? { i32(0) - i32(1) } | a.nanos > b.nanos ? { i32(1) } | { i32(0) }
+
+// ---------------------------------------------------------------------------
+// Instants
+
+pub instant_nanos: (nanos: i64): Instant = Instant { nanos: nanos }
+
+pub instant_seconds: (seconds: i64): Result[Instant, TimeError] {
+  checked_i64(i64_checked_mul(seconds, NANOS_PER_SECOND)) ? | .Ok(n) => .Ok(Instant { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub instant_add: (i: Instant, d: Duration): Result[Instant, TimeError] {
+  checked_i64(i64_checked_add(i.nanos, d.nanos)) ? | .Ok(n) => .Ok(Instant { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub instant_sub: (i: Instant, d: Duration): Result[Instant, TimeError] {
+  checked_i64(i64_checked_sub(i.nanos, d.nanos)) ? | .Ok(n) => .Ok(Instant { nanos: n }) | .Err(e) => .Err(e)
+}
+
+// instant_since is a - b as a duration.
+pub instant_since: (a: Instant, b: Instant): Result[Duration, TimeError] {
+  checked_i64(i64_checked_sub(a.nanos, b.nanos)) ? | .Ok(n) => .Ok(Duration { nanos: n }) | .Err(e) => .Err(e)
+}
+
+pub instant_compare: (a: Instant, b: Instant): i32 = a.nanos < b.nanos ? { i32(0) - i32(1) } | a.nanos > b.nanos ? { i32(1) } | { i32(0) }
+
+// Whole seconds since the epoch, floored, and the nanoseconds into that second.
+pub instant_unix_seconds: (i: Instant): i64 = floor_div(i.nanos, NANOS_PER_SECOND)
+pub instant_subsecond_nanos: (i: Instant): u32 = u32_trunc_u64(u64_bits_i64(floor_mod(i.nanos, NANOS_PER_SECOND)))
+
+// ---------------------------------------------------------------------------
+// The proleptic Gregorian calendar
+
+pub is_leap_year: (year: i32): Bool = year % i32(4) == i32(0) && (year % i32(100) != i32(0) || year % i32(400) == i32(0))
+
+// days_in_month is 0 for a month outside 1..12.
+pub days_in_month: (year: i32, month: u8): u8 {
+  month == u8(2) ? { is_leap_year(year) ? u8(29) | u8(28) } |
+  month == u8(4) || month == u8(6) || month == u8(9) || month == u8(11) ? { u8(30) } |
+  month >= u8(1) && month <= u8(12) ? { u8(31) } | { u8(0) }
+}
+
+pub civil_valid: (c: Civil): Bool {
+  c.month >= u8(1) && c.month <= u8(12) && c.day >= u8(1) && c.day <= days_in_month(c.year, c.month) &&
+    c.hour < u8(24) && c.minute < u8(60) && c.second < u8(60) && c.nanos < u32(1000000000)
+}
+
+// days_from_civil: days since 1970-01-01 of a valid calendar date (Hinnant).
+pub days_from_civil: (year: i32, month: u8, day: u8): i64 {
+  y: i64 = month <= u8(2) ? { i64(year) - i64(1) } | { i64(year) }
+  era: i64 = (y >= i64(0) ? { y } | { y - i64(399) }) / i64(400)
+  yoe: i64 = y - era * i64(400)
+  m: i64 = i64(month)
+  shifted: i64 = m > i64(2) ? { m - i64(3) } | { m + i64(9) }
+  doy: i64 = (i64(153) * shifted + i64(2)) / i64(5) + i64(day) - i64(1)
+  doe: i64 = yoe * i64(365) + yoe / i64(4) - yoe / i64(100) + doy
+  era * DAYS_PER_ERA + doe - EPOCH_TO_ERA_DAYS
+}
+
+// civil_from_days: the calendar date of a day count since 1970-01-01, time
+// fields zero (Hinnant).
+pub civil_from_days: (days: i64): Civil {
+  z: i64 = days + EPOCH_TO_ERA_DAYS
+  era: i64 = (z >= i64(0) ? { z } | { z - i64(146096) }) / DAYS_PER_ERA
+  doe: i64 = z - era * DAYS_PER_ERA
+  yoe: i64 = (doe - doe / i64(1460) + doe / i64(36524) - doe / i64(146096)) / i64(365)
+  y: i64 = yoe + era * i64(400)
+  doy: i64 = doe - (i64(365) * yoe + yoe / i64(4) - yoe / i64(100))
+  mp: i64 = (i64(5) * doy + i64(2)) / i64(153)
+  d: i64 = doy - (i64(153) * mp + i64(2)) / i64(5) + i64(1)
+  m: i64 = mp < i64(10) ? { mp + i64(3) } | { mp - i64(9) }
+  year: i64 = m <= i64(2) ? { y + i64(1) } | { y }
+  Civil { year: i32_trunc_i64(year), month: u8_trunc_u64(u64_bits_i64(m)), day: u8_trunc_u64(u64_bits_i64(d)), hour: u8(0), minute: u8(0), second: u8(0), nanos: u32(0) }
+}
+
+// weekday of a day count: 0 Sunday .. 6 Saturday (1970-01-01 was a Thursday).
+pub weekday: (days: i64): u8 = u8_trunc_u64(u64_bits_i64(floor_mod(days + i64(4), i64(7))))
+
+// day_of_year is 1-based for a valid date.
+pub day_of_year: (c: Civil): u32 {
+  start: i64 = days_from_civil(c.year, u8(1), u8(1))
+  u32_trunc_u64(u64_bits_i64(days_from_civil(c.year, c.month, c.day) - start + i64(1)))
+}
+
+offset_valid: (offset_minutes: i32): Bool = offset_minutes > i32(0) - i32(1440) && offset_minutes < i32(1440)
+
+// civil_to_instant: the instant of a civil time written at `offset_minutes`
+// east of UTC. InvalidCivil for an invalid date or time, InvalidOffset for an
+// offset of a day or more, Overflowed outside the Instant range.
+pub civil_to_instant: (c: Civil, offset_minutes: i32): Result[Instant, TimeError] {
+  !civil_valid(c) ? { .Err(.InvalidCivil) } | !offset_valid(offset_minutes) ? { .Err(.InvalidOffset) } | {
+    // Whole seconds first: a year in i32 keeps them far inside i64, so only
+    // the scaling to nanoseconds can overflow.
+    days: i64 = days_from_civil(c.year, c.month, c.day)
+    seconds_of_day: i64 = i64(c.hour) * i64(3600) + i64(c.minute) * i64(60) + i64(c.second)
+    seconds: i64 = days * i64(86400) + seconds_of_day - i64(offset_minutes) * i64(60)
+    // Before the epoch the whole second floors below the instant, so scale
+    // the next second and subtract the rest: the minimum Instant sits in a
+    // second whose start does not exist.
+    carry: Bool = seconds < i64(0) && c.nanos > u32(0)
+    whole: i64 = carry ? { seconds + i64(1) } | { seconds }
+    rest: i64 = carry ? { i64(c.nanos) - NANOS_PER_SECOND } | { i64(c.nanos) }
+    scaled: Result[i64, Overflow] = i64_checked_mul(whole, NANOS_PER_SECOND)
+    scaled ?
+      | .Err(e) => .Err(.Overflowed)
+      | .Ok(base) => {
+        total: Result[i64, Overflow] = i64_checked_add(base, rest)
+        total ? | .Err(e2) => .Err(.Overflowed) | .Ok(t) => .Ok(Instant { nanos: t })
+      }
+  }
+}
+
+// instant_to_civil: the civil time of an instant at `offset_minutes` east
+// of UTC. Overflowed when applying the offset leaves the Instant range.
+pub instant_to_civil: (i: Instant, offset_minutes: i32): Result[Civil, TimeError] {
+  !offset_valid(offset_minutes) ? { .Err(.InvalidOffset) } | {
+    shifted: Result[i64, Overflow] = i64_checked_add(i.nanos, i64(offset_minutes) * NANOS_PER_MINUTE)
+    shifted ?
+      | .Err(e) => .Err(.Overflowed)
+      | .Ok(local) => {
+        days: i64 = floor_div(local, NANOS_PER_DAY)
+        rest: i64 = floor_mod(local, NANOS_PER_DAY)
+        date: Civil = civil_from_days(days)
+        seconds: i64 = rest / NANOS_PER_SECOND
+        .Ok(Civil {
+          year: date.year, month: date.month, day: date.day,
+          hour: u8_trunc_u64(u64_bits_i64(seconds / i64(3600))),
+          minute: u8_trunc_u64(u64_bits_i64((seconds / i64(60)) % i64(60))),
+          second: u8_trunc_u64(u64_bits_i64(seconds % i64(60))),
+          nanos: u32_trunc_u64(u64_bits_i64(rest % NANOS_PER_SECOND))
+        })
+      }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RFC 3339
+
+// put_digits writes `width` decimal digits of value, zero padded, at `at`;
+// the caller has checked the room.
+put_digits: (dst: [*]u8, at: u32, value: u32, width: u32): () {
+  remaining: u32 = value
+  i: u32 = width
+  while i > u32(0) {
+    i = i - u32(1)
+    dst[at + i] = u8(48) + u8_trunc_u32(remaining % u32(10))
+    remaining = remaining / u32(10)
+  }
+}
+
+// rfc3339_size is the byte length format_rfc3339 writes.
+pub rfc3339_size: (offset_minutes: i32, fraction_digits: u32): u32 {
+  fraction: u32 = fraction_digits > u32(0) ? { fraction_digits + u32(1) } | { u32(0) }
+  zone: u32 = offset_minutes == i32(0) ? { u32(1) } | { u32(6) }
+  u32(19) + fraction + zone
+}
+
+// format_rfc3339 writes `YYYY-MM-DDTHH:MM:SS[.f{n}](Z|±HH:MM)`: `Z` for a zero
+// offset, `fraction_digits` (0..9) digits of the nanoseconds truncated, upper
+// case letters. Every Instant falls in 1677..2262, so the year always has
+// four digits; more than nine fraction digits is InvalidFormat.
+pub format_rfc3339: (dst: [*]u8, i: Instant, offset_minutes: i32, fraction_digits: u32): Result[u32, TimeError] {
+  fraction_digits > u32(9) ? { .Err(.InvalidFormat) } | {
+    civil: Result[Civil, TimeError] = instant_to_civil(i, offset_minutes)
+    civil ?
+      | .Err(e) => .Err(e)
+      | .Ok(c) => {
+        size: u32 = rfc3339_size(offset_minutes, fraction_digits)
+        size > len(dst) ? { .Err(.DestinationTooSmall) } | {
+          put_digits(dst, u32(0), u32_bits_i32(c.year), u32(4))
+          dst[4] = u8(45)
+          put_digits(dst, u32(5), u32(c.month), u32(2))
+          dst[7] = u8(45)
+          put_digits(dst, u32(8), u32(c.day), u32(2))
+          dst[10] = u8(84)
+          put_digits(dst, u32(11), u32(c.hour), u32(2))
+          dst[13] = u8(58)
+          put_digits(dst, u32(14), u32(c.minute), u32(2))
+          dst[16] = u8(58)
+          put_digits(dst, u32(17), u32(c.second), u32(2))
+          at: u32 = 19
+          fraction_digits > u32(0) ? {
+            dst[at] = u8(46)
+            scaled: u32 = c.nanos
+            drop: u32 = u32(9) - fraction_digits
+            k: u32 = 0
+            while k < drop {
+              scaled = scaled / u32(10)
+              k = k + u32(1)
+            }
+            put_digits(dst, at + u32(1), scaled, fraction_digits)
+            at = at + u32(1) + fraction_digits
+          }
+          offset_minutes == i32(0) ? { dst[at] = u8(90) } | {
+            negative: Bool = offset_minutes < i32(0)
+            magnitude: u32 = negative ? { u32_bits_i32(i32(0) - offset_minutes) } | { u32_bits_i32(offset_minutes) }
+            dst[at] = negative ? { u8(45) } | { u8(43) }
+            put_digits(dst, at + u32(1), magnitude / u32(60), u32(2))
+            dst[at + u32(3)] = u8(58)
+            put_digits(dst, at + u32(4), magnitude % u32(60), u32(2))
+          }
+          .Ok(size)
+        }
+      }
+  }
+}
+
+is_digit: (b: u8): Bool = b >= u8(48) && b <= u8(57)
+
+// read_digits parses exactly `width` decimal digits at `at`; BAD_DIGITS marks
+// a non-digit or a short input.
+read_digits: (src: []u8, at: u32, width: u32): u32 {
+  len(src) < at || len(src) - at < width ? { BAD_DIGITS } | {
+    value: u32 = 0
+    ok: Bool = true
+    i: u32 = 0
+    while i < width && ok {
+      b: u8 = src[at + i]
+      ok = is_digit(b)
+      ok ? { value = value * u32(10) + u32(b - u8(48)) }
+      i = i + u32(1)
+    }
+    ok ? { value } | { BAD_DIGITS }
+  }
+}
+
+// parse_rfc3339 reads `YYYY-MM-DD(T|t)HH:MM:SS[.f+](Z|z|±HH:MM)` strictly:
+// exactly these separators and widths, one to nine fraction digits (more is
+// InvalidFormat, not a truncation), a valid date and time (a second of 60 is
+// InvalidCivil), and a zone that is `Z`/`z` or a well-formed `±HH:MM` below
+// a day (a malformed or out-of-range numeric offset is InvalidOffset; any
+// other character there is InvalidFormat). `-00:00` parses as offset 0; the
+// RFC's "unknown local offset" convention is not distinguished. The instant
+// is UTC; the offset comes back with it.
+pub parse_rfc3339: (src: []u8): Result[Zoned, TimeError] {
+  n: u32 = len(src)
+  year: u32 = read_digits(src, u32(0), u32(4))
+  month: u32 = read_digits(src, u32(5), u32(2))
+  day: u32 = read_digits(src, u32(8), u32(2))
+  hour: u32 = read_digits(src, u32(11), u32(2))
+  minute: u32 = read_digits(src, u32(14), u32(2))
+  second: u32 = read_digits(src, u32(17), u32(2))
+  fields_ok: Bool = year != BAD_DIGITS && month != BAD_DIGITS && day != BAD_DIGITS && hour != BAD_DIGITS && minute != BAD_DIGITS && second != BAD_DIGITS
+  shape_ok: Bool = n >= u32(20) && fields_ok && src[4] == u8(45) && src[7] == u8(45) && (src[10] == u8(84) || src[10] == u8(116)) && src[13] == u8(58) && src[16] == u8(58)
+  !shape_ok ? { .Err(.InvalidFormat) } | {
+    at: u32 = 19
+    nanos: u32 = 0
+    fraction_ok: Bool = true
+    src[at] == u8(46) ? {
+      at = at + u32(1)
+      digits: u32 = 0
+      scale: u32 = 100000000
+      while at < n && is_digit(src[at]) && digits < u32(9) {
+        nanos = nanos + u32(src[at] - u8(48)) * scale
+        scale = scale / u32(10)
+        digits = digits + u32(1)
+        at = at + u32(1)
+      }
+      fraction_ok = digits > u32(0) && (at >= n || !is_digit(src[at]))
+    }
+    !fraction_ok || at >= n ? { .Err(.InvalidFormat) } | {
+      offset: i32 = 0
+      offset_ok: Bool = true
+      zone_ok: Bool = true
+      end: u32 = at + u32(1)
+      src[at] == u8(90) || src[at] == u8(122) ? { offset = i32(0) } |
+      src[at] == u8(43) || src[at] == u8(45) ? {
+        oh: u32 = read_digits(src, at + u32(1), u32(2))
+        om: u32 = read_digits(src, at + u32(4), u32(2))
+        end = at + u32(6)
+        offset_ok = oh != BAD_DIGITS && om != BAD_DIGITS && n >= end && src[at + u32(3)] == u8(58) && oh < u32(24) && om < u32(60)
+        offset_ok ? {
+          minutes: i32 = i32_bits_u32(oh * u32(60) + om)
+          offset = src[at] == u8(45) ? { i32(0) - minutes } | { minutes }
+        }
+      } | { zone_ok = false }
+      !zone_ok ? { .Err(.InvalidFormat) } | !offset_ok ? { .Err(.InvalidOffset) } | end != n ? { .Err(.InvalidFormat) } | {
+        civil: Civil = Civil {
+          year: i32_bits_u32(year), month: u8_trunc_u32(month), day: u8_trunc_u32(day),
+          hour: u8_trunc_u32(hour), minute: u8_trunc_u32(minute), second: u8_trunc_u32(second), nanos: nanos
+        }
+        !civil_valid(civil) ? { .Err(.InvalidCivil) } | {
+          converted: Result[Instant, TimeError] = civil_to_instant(civil, offset)
+          converted ? | .Err(e) => .Err(e) | .Ok(i) => .Ok(Zoned { instant: i, offset_minutes: offset })
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Duration text, in Go's spelling
+
+// put_u64 writes a decimal without padding, returning the next offset; the
+// caller has checked the room (20 digits at most).
+put_u64: (dst: [*]u8, at: u32, value: u64): u32 {
+  digits: [20]u8
+  count: u32 = 0
+  remaining: u64 = value
+  more: Bool = true
+  while more {
+    digits[count] = u8(48) + u8_trunc_u64(remaining % u64(10))
+    count = count + u32(1)
+    remaining = remaining / u64(10)
+    more = remaining != u64(0)
+  }
+  i: u32 = 0
+  while i < count {
+    dst[at + i] = digits[count - i - u32(1)]
+    i = i + u32(1)
+  }
+  at + count
+}
+
+// put_frac writes `whole` then, when the fraction is nonzero, a point and the
+// fraction's `digits` decimal places with trailing zeros trimmed.
+put_frac: (dst: [*]u8, at: u32, whole: u64, fraction: u64, digits: u32): u32 {
+  next: u32 = put_u64(dst, at, whole)
+  fraction == u64(0) ? { next } | {
+    trimmed: u64 = fraction
+    places: u32 = digits
+    while trimmed % u64(10) == u64(0) {
+      trimmed = trimmed / u64(10)
+      places = places - u32(1)
+    }
+    dst[next] = u8(46)
+    put_digits(dst, next + u32(1), u32_trunc_u64(trimmed), places)
+    next + u32(1) + places
+  }
+}
+
+// DURATION_TEXT_SIZE bounds the bytes format_duration writes.
+pub DURATION_TEXT_SIZE: u32 = 40
+
+// format_duration writes Go's Duration spelling: `0s`; below a second
+// `12ns`, `1.5µs`, `500ms` (the largest unit that fits, fraction trimmed);
+// otherwise `[-][Nh][Nm]N[.f]s`. The minimum duration formats like Go's.
+pub format_duration: (dst: [*]u8, d: Duration): Result[u32, TimeError] {
+  DURATION_TEXT_SIZE > len(dst) ? { .Err(.DestinationTooSmall) } | {
+    negative: Bool = d.nanos < i64(0)
+    magnitude: u64 = negative ? { u64(0) - u64_bits_i64(d.nanos) } | { u64_bits_i64(d.nanos) }
+    at: u32 = 0
+    negative ? {
+      dst[0] = u8(45)
+      at = u32(1)
+    }
+    magnitude == u64(0) ? {
+      dst[at] = u8(48)
+      dst[at + u32(1)] = u8(115)
+      .Ok(at + u32(2))
+    } | magnitude < u64(1000) ? {
+      end: u32 = put_u64(dst, at, magnitude)
+      dst[end] = u8(110)
+      dst[end + u32(1)] = u8(115)
+      .Ok(end + u32(2))
+    } | magnitude < u64(1000000) ? {
+      end: u32 = put_frac(dst, at, magnitude / u64(1000), magnitude % u64(1000), u32(3))
+      dst[end] = u8(194)
+      dst[end + u32(1)] = u8(181)
+      dst[end + u32(2)] = u8(115)
+      .Ok(end + u32(3))
+    } | magnitude < u64(1000000000) ? {
+      end: u32 = put_frac(dst, at, magnitude / u64(1000000), magnitude % u64(1000000), u32(6))
+      dst[end] = u8(109)
+      dst[end + u32(1)] = u8(115)
+      .Ok(end + u32(2))
+    } | {
+      seconds: u64 = magnitude / u64(1000000000)
+      hours: u64 = seconds / u64(3600)
+      minutes: u64 = (seconds / u64(60)) % u64(60)
+      hours > u64(0) ? {
+        at = put_u64(dst, at, hours)
+        dst[at] = u8(104)
+        at = at + u32(1)
+      }
+      hours > u64(0) || minutes > u64(0) ? {
+        at = put_u64(dst, at, minutes)
+        dst[at] = u8(109)
+        at = at + u32(1)
+      }
+      end: u32 = put_frac(dst, at, seconds % u64(60), magnitude % u64(1000000000), u32(9))
+      dst[end] = u8(115)
+      .Ok(end + u32(1))
+    }
+  }
+}
+
+// unit_nanos reads a unit suffix at `at`, returning the nanoseconds per unit
+// and the width consumed (0 for no unit): h, m, s, ms, us, µs (U+00B5),
+// μs (U+03BC), ns.
+UnitMatch: type = struct { nanos: u64, width: u32 }
+
+unit_nanos: (src: []u8, at: u32): UnitMatch {
+  n: u32 = len(src)
+  b0: u8 = at < n ? { src[at] } | { u8(0) }
+  b1: u8 = at + u32(1) < n ? { src[at + u32(1)] } | { u8(0) }
+  b2: u8 = at + u32(2) < n ? { src[at + u32(2)] } | { u8(0) }
+  b0 == u8(104) ? { UnitMatch { nanos: u64(3600000000000), width: u32(1) } } |
+  b0 == u8(109) && b1 == u8(115) ? { UnitMatch { nanos: u64(1000000), width: u32(2) } } |
+  b0 == u8(109) ? { UnitMatch { nanos: u64(60000000000), width: u32(1) } } |
+  b0 == u8(115) ? { UnitMatch { nanos: u64(1000000000), width: u32(1) } } |
+  b0 == u8(110) && b1 == u8(115) ? { UnitMatch { nanos: u64(1), width: u32(2) } } |
+  b0 == u8(117) && b1 == u8(115) ? { UnitMatch { nanos: u64(1000), width: u32(2) } } |
+  b0 == u8(194) && b1 == u8(181) && b2 == u8(115) ? { UnitMatch { nanos: u64(1000), width: u32(3) } } |
+  b0 == u8(206) && b1 == u8(188) && b2 == u8(115) ? { UnitMatch { nanos: u64(1000), width: u32(3) } } |
+  { UnitMatch { nanos: u64(0), width: u32(0) } }
+}
+
+// parse_duration reads Go's spelling: an optional sign, then one or more
+// `<decimal>[.<decimal>]<unit>` terms with units ns, us, µs (U+00B5), μs
+// (U+03BC), ms, s, m, h; `0` alone is accepted. The value is checked, so
+// InvalidDuration covers both a bad spelling and an overflowing magnitude.
+// The result is Go's `time.ParseDuration` result for every input.
+pub parse_duration: (src: []u8): Result[Duration, TimeError] {
+  n: u32 = len(src)
+  n == u32(0) ? { .Err(.InvalidDuration) } | {
+    negative: Bool = src[0] == u8(45)
+    at: u32 = negative || src[0] == u8(43) ? { u32(1) } | { u32(0) }
+    limit: u64 = negative ? { u64(9223372036854775808) } | { u64(9223372036854775807) }
+    at == n ? { .Err(.InvalidDuration) } | n - at == u32(1) && src[at] == u8(48) ? { .Ok(Duration { nanos: i64(0) }) } | {
+      total: u64 = 0
+      ok: Bool = true
+      while ok && at < n {
+        // The integer part, checked against u64.
+        whole: u64 = 0
+        int_digits: u32 = 0
+        while at < n && is_digit(src[at]) && ok {
+          digit: u64 = u64(src[at] - u8(48))
+          ok = whole <= (u64(18446744073709551615) - digit) / u64(10)
+          ok ? { whole = whole * u64(10) + digit }
+          int_digits = int_digits + u32(1)
+          at = at + u32(1)
+        }
+        // The fraction, exactly as Go's leadingFraction keeps it: digits
+        // accumulate in a u64 until the next would pass 2^63, the scale is an
+        // f64 power of ten grown with the digits kept, and later digits are
+        // consumed without effect.
+        frac: u64 = 0
+        frac_scale: f64 = 1.0
+        frac_digits: u32 = 0
+        frac_full: Bool = false
+        ok && at < n && src[at] == u8(46) ? {
+          at = at + u32(1)
+          while at < n && is_digit(src[at]) {
+            !frac_full && frac <= u64(922337203685477580) ? {
+              grown: u64 = frac * u64(10) + u64(src[at] - u8(48))
+              grown <= u64(9223372036854775808) ? {
+                frac = grown
+                frac_scale = frac_scale * 10.0
+              } | { frac_full = true }
+            } | { frac_full = true }
+            frac_digits = frac_digits + u32(1)
+            at = at + u32(1)
+          }
+        }
+        ok = ok && (int_digits > u32(0) || frac_digits > u32(0))
+        unit: UnitMatch = unit_nanos(src, at)
+        ok = ok && unit.width > u32(0)
+        at = at + unit.width
+        ok ? {
+          // whole * unit + frac * unit / scale, each step checked; the
+          // fraction is scaled in f64 as Go does (`float64(f) * (float64(unit)
+          // / scale)`, truncated), so the two agree on every spelling, the
+          // rounding of long fractions of an hour included.
+          ok = whole <= limit / unit.nanos
+          part: u64 = ok ? { whole * unit.nanos } | { u64(0) }
+          frac_nanos: u64 = frac > u64(0) ? { u64_saturating_f64(f64_round_u64(frac) * (f64_round_u64(unit.nanos) / frac_scale)) } | { u64(0) }
+          ok = ok && part <= limit - frac_nanos
+          part = ok ? { part + frac_nanos } | { u64(0) }
+          ok = ok && total <= limit - part
+          total = ok ? { total + part } | { u64(0) }
+        }
+      }
+      !ok ? { .Err(.InvalidDuration) } | {
+        .Ok(Duration { nanos: negative ? { i64_bits_u64(u64(0) - total) } | { i64_bits_u64(total) } })
+      }
+    }
+  }
+}

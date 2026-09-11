@@ -653,12 +653,13 @@ rejected as before.
 
 **Standard library packages.** The library files are real packages:
 `strings`, `unicode`, `json`, `filters`, `hash_table`, `bitset_algebra`,
-`causal_frontier`, `math`, `hash`, and `mx` each carry a package clause, import the
+`causal_frontier`, `math`, `hash`, `mx`, and `arena` each carry a package clause, import the
 library packages they use (`strings` imports `unicode`, `json` imports
 `strings`, `hash_table` imports `filters`), qualify their cross-references,
 and mark their exports `pub`. `math` (`20-types.md` §11.3.6), `hash`
-(`stdlib/README.md`: SHA-256, CRC-32C), and `mx` (`20-types.md` §11.3.1a:
-MXFP4 blocks) are packages only: their names
+(`stdlib/README.md`: SHA-256, CRC-32C), `mx` (`20-types.md` §11.3.1a:
+MXFP4 blocks), and `arena` (`92-ffi.md` §2.8.4: reservations over a
+buffer) are packages only: their names
 (`exp`, `log`, `sha256`, …) are too common to enter every program
 unqualified, so they are never part of the flat prelude below. `import("json")` loads json, strings, unicode, and the **core prelude**
 (`std.oak`: Option, Result, Overflow, byte and ring helpers), which every

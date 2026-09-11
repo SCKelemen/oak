@@ -3,6 +3,7 @@ package typechecker
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
@@ -103,14 +104,15 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			continue
 		}
 		analysis := &typedResourceAnalysis{
-			tc:                tc,
-			model:             model,
-			flow:              resourceflow.New(),
-			reported:          make(map[string]bool),
-			unknownResources:  make(map[string]bool),
-			entryModes:        make(map[string]entryAuthority),
-			callableContracts: make(map[string]string),
-			unknownCallables:  make(map[string]bool),
+			tc:                 tc,
+			model:              model,
+			flow:               resourceflow.New(),
+			reported:           make(map[string]bool),
+			unknownResources:   make(map[string]bool),
+			entryModes:         make(map[string]entryAuthority),
+			callableContracts:  make(map[string]string),
+			unknownCallables:   make(map[string]bool),
+			parameterContracts: make(map[string]*ResourceCallableContract),
 		}
 		analysis.pushScope()
 		// The function's own contract fixes what its body may do with each
@@ -135,8 +137,13 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			}
 			analysis.bind(parameter.Name.Value)
 			if _, isCallable := parameter.Type.(*ast.FunctionTypeExpression); isCallable {
-				// A function-typed parameter arrives without a contract.
-				analysis.unknownCallables[parameter.Name.Value] = true
+				// A function-typed parameter arrives without a contract unless
+				// this function's own contract declares one for it.
+				if contract := own.callableContract(index); hasContract && contract != nil {
+					analysis.parameterContracts[parameter.Name.Value] = contract
+				} else {
+					analysis.unknownCallables[parameter.Name.Value] = true
+				}
 			}
 			if model.isResourceType(parameter.Type) {
 				analysis.flow.Register(parameter.Name.Value, parameter.Name)
@@ -190,6 +197,200 @@ func methodReceiver(expr *ast.InvocationExpression) ast.Expression {
 		return access.Left
 	}
 	return nil
+}
+
+// reassign gives a resource binding a new provenance (docs/spec/
+// 50-borrowing.md section 9): from a live registered name it becomes that
+// name's alias, so later exclusive use of the two conflicts; from a
+// fresh-return call it becomes a new authority, reviving nothing; from any
+// other resource-valued expression its provenance becomes unknown and later
+// exclusive or consuming use fails closed. The binding's entry authority, if
+// it was a parameter, no longer applies to the new value. A binding that
+// was never a tracked resource is untouched.
+func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
+	if s == nil || s.Name == nil {
+		return
+	}
+	name := s.Name.Value
+	tracked := a.flow.Registered(name) || a.unknownResources[name]
+	if !tracked && !a.isResourceValue(s.Value) {
+		// A whole-record reassignment b = c rebinds every tracked field
+		// path of b to c's corresponding path.
+		recordType := a.tc.env.CheckedExpressionType(s.Value)
+		if _, isRecord := recordType.(*RecordType); isRecord {
+			source, isIdent := s.Value.(*ast.Identifier)
+			for _, path := range a.resourcePaths(name, recordType) {
+				if !a.flow.Registered(path) && !a.unknownResources[path] {
+					continue
+				}
+				if isIdent && source != nil {
+					a.bindPath(path, &ast.IndexExpression{Token: s.Name.Token, Left: source, Index: &ast.Identifier{Token: s.Name.Token, Value: path[len(name)+1:]}, Dot: true}, s.Name)
+				} else {
+					a.flow.Forget(path)
+					a.unknownResources[path] = true
+				}
+			}
+		}
+		return
+	}
+	delete(a.entryModes, name)
+	delete(a.unknownResources, name)
+	if source, ok := s.Value.(*ast.Identifier); ok && source != nil && a.flow.Registered(source.Value) {
+		if a.flow.CanUse(source.Value) {
+			a.flow.Rebind(name, source.Value, s.Name)
+		} else {
+			// Ordinary evaluation reported the use-after-consume; the
+			// destination now has no usable provenance.
+			a.flow.Forget(name)
+			a.unknownResources[name] = true
+		}
+		return
+	}
+	if call, ok := s.Value.(*ast.InvocationExpression); ok && a.freshCalls[call] {
+		a.flow.RebindFresh(name, s.Name)
+		return
+	}
+	a.flow.Forget(name)
+	a.unknownResources[name] = true
+}
+
+// resourceName is the flow name of a resource-valued expression: an
+// identifier's own name, or the dotted path of a record projection
+// (b.inner, b.pair.left) whose root is an identifier
+// (docs/spec/50-borrowing.md section 9, projections). Anything else has no
+// name and therefore no tracked provenance.
+func resourceName(expr ast.Expression) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if e == nil || e.Value == "" {
+			return "", false
+		}
+		return e.Value, true
+	case *ast.IndexExpression:
+		if e == nil || !e.Dot {
+			return "", false
+		}
+		field, isField := e.Index.(*ast.Identifier)
+		if !isField || field == nil {
+			return "", false
+		}
+		base, ok := resourceName(e.Left)
+		if !ok {
+			return "", false
+		}
+		return base + "." + field.Value, true
+	}
+	return "", false
+}
+
+// resourcePaths lists the resource-typed field paths below a record value
+// of the given type, recursing into nested named records: for
+// Box { inner: Handle, pair: Pair { left: Handle } } and root "b",
+// b.inner and b.pair.left.
+func (a *typedResourceAnalysis) resourcePaths(root string, typ Type) []string {
+	record, isRecord := typ.(*RecordType)
+	if !isRecord || record == nil {
+		return nil
+	}
+	var paths []string
+	for _, name := range record.orderedFieldNames() {
+		fieldType := record.Fields[name]
+		path := root + "." + name
+		if a.model.ResourceTypes[nominalTypeName(fieldType)] {
+			paths = append(paths, path)
+			continue
+		}
+		paths = append(paths, a.resourcePaths(path, fieldType)...)
+	}
+	return paths
+}
+
+// bindRecordFields gives a freshly declared record binding's resource
+// fields their provenance from the record literal that built it: a field
+// initialized from a live named resource aliases it (consuming through
+// b.inner consumes h), a field initialized from a fresh-return call is a new
+// authority, and any other resource-valued initializer leaves the field
+// with unknown provenance. Records not built from a literal here — a
+// parameter, a call result — keep untracked fields, so exclusive or
+// consuming use of them fails closed: distinct fields are never assumed
+// distinct resources without provenance saying so.
+func (a *typedResourceAnalysis) bindRecordFields(stmt *ast.VariableDeclaration) {
+	if stmt == nil || stmt.Name == nil || stmt.Type == nil {
+		return
+	}
+	recordType := a.tc.parseTypeExpression(stmt.Type)
+	if _, isRecord := recordType.(*RecordType); !isRecord {
+		return
+	}
+	a.bindRecordValue(stmt.Name.Value, recordType, stmt.Value, stmt.Name)
+}
+
+// bindRecordValue gives the resource paths below root, a record of the
+// given type, the provenance of value: a literal binds field by field
+// (recursing into record-typed fields), a named record aliases every path
+// to the source's corresponding path, and anything else leaves every path
+// with unknown provenance.
+func (a *typedResourceAnalysis) bindRecordValue(root string, recordType Type, value ast.Expression, origin ast.Node) {
+	record, isRecord := recordType.(*RecordType)
+	if !isRecord || record == nil {
+		return
+	}
+	switch v := value.(type) {
+	case *ast.RecordLiteral:
+		for _, field := range v.FieldOrder {
+			fieldType, declared := record.Fields[field.Name]
+			if !declared {
+				continue
+			}
+			path := root + "." + field.Name
+			if a.model.ResourceTypes[nominalTypeName(fieldType)] {
+				a.bindPath(path, field.Value, origin)
+				continue
+			}
+			if _, nested := fieldType.(*RecordType); nested {
+				a.bindRecordValue(path, fieldType, field.Value, origin)
+			}
+		}
+	default:
+		if source, ok := resourceName(value); ok {
+			for _, path := range a.resourcePaths(root, recordType) {
+				sourcePath := source + path[len(root):]
+				a.flow.Forget(path)
+				delete(a.unknownResources, path)
+				if a.flow.Registered(sourcePath) && a.flow.CanUse(sourcePath) {
+					a.flow.Alias(path, sourcePath, origin)
+				} else if a.flow.Registered(sourcePath) || a.unknownResources[sourcePath] {
+					a.unknownResources[path] = true
+				}
+			}
+			return
+		}
+		for _, path := range a.resourcePaths(root, recordType) {
+			a.flow.Forget(path)
+			a.unknownResources[path] = true
+		}
+	}
+}
+
+// bindPath gives a resource path (or name) the provenance of a value: an
+// alias of a live named resource, a fresh authority from a fresh-return
+// call, else unknown provenance.
+func (a *typedResourceAnalysis) bindPath(path string, value ast.Expression, origin ast.Node) {
+	a.flow.Forget(path)
+	delete(a.unknownResources, path)
+	if source, ok := resourceName(value); ok && a.flow.Registered(source) {
+		if a.flow.CanUse(source) {
+			a.flow.Alias(path, source, origin)
+			return
+		}
+		a.unknownResources[path] = true
+		return
+	}
+	if call, ok := value.(*ast.InvocationExpression); ok && a.freshCalls[call] {
+		a.flow.Register(path, origin)
+		return
+	}
+	a.unknownResources[path] = true
 }
 
 // tailIdentifiers collects the identifiers an expression may evaluate to
@@ -279,6 +480,11 @@ type typedResourceAnalysis struct {
 	// contract cannot be known (parameters, closures, reassigned values).
 	callableContracts map[string]string
 	unknownCallables  map[string]bool
+	// parameterContracts holds, per function-typed parameter of the
+	// function under analysis, the callable contract its own contract
+	// declares: calls through the parameter use it instead of being
+	// unknown, and forwarding the parameter compares it exactly.
+	parameterContracts map[string]*ResourceCallableContract
 }
 
 // entryAuthority is a resource parameter's contract mode together with the
@@ -317,6 +523,107 @@ func (op ResourceOperation) parameterMode(index int) ResourceParameterMode {
 		}
 	}
 	return ResourceParameterUnspecified
+}
+
+// callableContract is the contract an operation requires of the function
+// value passed as its index-th argument, or nil.
+func (op ResourceOperation) callableContract(index int) *ResourceCallableContract {
+	for _, declaration := range op.Parameters {
+		if declaration.Index == index && declaration.Callable != nil {
+			return declaration.Callable
+		}
+	}
+	return nil
+}
+
+// argumentContract is the contract a function-valued argument carries: the
+// operation of the global it names or was bound from, the declared contract
+// of a function-typed parameter, or unknown. known is false for an unknown
+// callable; an uncontracted global yields an empty, known contract.
+func (a *typedResourceAnalysis) argumentContract(argument ast.Expression) (contract *ResourceCallableContract, known bool) {
+	ident, isIdent := argument.(*ast.Identifier)
+	if !isIdent || ident == nil {
+		return nil, false
+	}
+	if declared, isParameter := a.parameterContracts[ident.Value]; isParameter {
+		return declared, true
+	}
+	if a.unknownCallables[ident.Value] {
+		return nil, false
+	}
+	global := ident.Value
+	if a.isLocalBinding(ident.Value) {
+		carried, isCarried := a.callableContracts[ident.Value]
+		if !isCarried {
+			return nil, false
+		}
+		global = carried
+	} else if a.tc == nil || a.tc.globalEnv == nil {
+		return nil, false
+	} else if typ, exists := a.tc.globalEnv.GetType(global); !exists {
+		return nil, false
+	} else if _, isFunction := typ.(*FunctionType); !isFunction {
+		return nil, false
+	}
+	op, contracted := a.contractOperation(global)
+	if !contracted {
+		return &ResourceCallableContract{}, true
+	}
+	contract = &ResourceCallableContract{ReturnsFresh: op.ReturnsFresh}
+	for _, declaration := range op.Parameters {
+		if declaration.Callable == nil {
+			contract.Parameters = append(contract.Parameters, ResourceParameterDeclaration{Index: declaration.Index, Mode: declaration.Mode})
+		}
+	}
+	return normalizeCallableContract(contract), true
+}
+
+// checkCallableArguments rejects a function value passed for a
+// function-typed parameter whose required contract it does not carry
+// exactly (OAK-B0116): a consuming function where a borrowed one is
+// required, or an uncontracted or unknown value where any mode is
+// required. The rejected call has not occurred.
+func (a *typedResourceAnalysis) checkCallableArguments(expr *ast.InvocationExpression, op ResourceOperation) bool {
+	ok := true
+	for _, declaration := range op.Parameters {
+		if declaration.Callable == nil || declaration.Index < 0 || declaration.Index >= len(expr.Arguments) {
+			continue
+		}
+		argument := expr.Arguments[declaration.Index]
+		required := declaration.Callable
+		actual, known := a.argumentContract(argument)
+		if known && sameCallableContract(normalizeCallableContract(required), actual) {
+			continue
+		}
+		ok = false
+		callee, _ := a.callableIdentity(expr)
+		var d *diagnostic.Diagnostic
+		if !known {
+			d = a.tc.addResourceDiagnosticWithCode(argument, CodeResourceCallableContractMismatch,
+				fmt.Sprintf("argument %d to %q must carry the callable contract %s, but its contract is unknown", declaration.Index+1, callee, describeCallableContract(required)))
+		} else {
+			d = a.tc.addResourceDiagnosticWithCode(argument, CodeResourceCallableContractMismatch,
+				fmt.Sprintf("argument %d to %q must carry the callable contract %s, but %s carries %s", declaration.Index+1, callee, describeCallableContract(required), argument.String(), describeCallableContract(actual)))
+		}
+		d.AddNote("a function value satisfies a callable contract only by exact agreement of every parameter mode and the fresh-return fact; an uncontracted or unknown value satisfies no contract with a mode (docs/spec/50-borrowing.md section 9)")
+		d.AddHelp("pass a function whose declared resource contract matches, or declare the required contract on the function you pass")
+	}
+	return ok
+}
+
+// describeCallableContract renders a callable contract for diagnostics.
+func describeCallableContract(contract *ResourceCallableContract) string {
+	if contract == nil || (len(contract.Parameters) == 0 && !contract.ReturnsFresh) {
+		return "(no resource modes)"
+	}
+	parts := make([]string, 0, len(contract.Parameters)+1)
+	for _, declaration := range contract.Parameters {
+		parts = append(parts, fmt.Sprintf("parameter %d %s", declaration.Index+1, declaration.Mode))
+	}
+	if contract.ReturnsFresh {
+		parts = append(parts, "fresh result")
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
 }
 
 // authorityRank orders the modes by what they permit: shared < mutable <
@@ -518,9 +825,13 @@ func (a *typedResourceAnalysis) callableIdentity(expr *ast.InvocationExpression)
 		}
 		if a.isLocalBinding(function.Value) {
 			// A local function value carries the contract of the global it
-			// was initialized from, and nothing else.
+			// was initialized from, and nothing else; a contracted
+			// function-typed parameter is named by itself.
 			if global, carried := a.callableContracts[function.Value]; carried {
 				return global, true
+			}
+			if _, declared := a.parameterContracts[function.Value]; declared {
+				return function.Value, true
 			}
 			return "", false
 		}
@@ -560,6 +871,20 @@ func (a *typedResourceAnalysis) callableIdentity(expr *ast.InvocationExpression)
 }
 
 func (a *typedResourceAnalysis) operation(expr *ast.InvocationExpression) (ResourceOperation, bool) {
+	if callee, isIdent := expr.Function.(*ast.Identifier); isIdent && callee != nil {
+		if contract, declared := a.parameterContracts[callee.Value]; declared && a.isLocalBinding(callee.Value) {
+			// A call through a function-typed parameter uses the contract
+			// this function declared for it.
+			op := ResourceOperation{ReturnsFresh: contract.ReturnsFresh}
+			op.Parameters = append(op.Parameters, contract.Parameters...)
+			for _, declaration := range contract.Parameters {
+				if declaration.Mode == ResourceParameterConsumed {
+					op.Consumes = append(op.Consumes, declaration.Index)
+				}
+			}
+			return op, true
+		}
+	}
 	identity, ok := a.callableIdentity(expr)
 	if !ok {
 		return ResourceOperation{}, false
@@ -605,18 +930,25 @@ func (a *typedResourceAnalysis) statement(stmt ast.Statement) {
 				a.unknownCallables[s.Name.Value] = true
 			}
 		}
-		if a.isResourceValue(s.Value) || (s.Name != nil && (a.flow.Registered(s.Name.Value) || a.unknownResources[s.Name.Value])) {
-			a.tc.addResourceDiagnosticWithCode(s, CodeResourceCallAliasConflict,
-				"resource reassignment requires tracked destination provenance")
-		}
+		a.reassign(s)
 	case *ast.IndexAssignmentStatement:
 		if s.Target != nil {
-			a.expression(s.Target.Left)
 			if !s.Target.Dot {
+				a.expression(s.Target.Left)
 				a.expression(s.Target.Index)
+			} else if _, isPath := resourceName(s.Target); !isPath {
+				a.expression(s.Target.Left)
 			}
 		}
 		a.expression(s.Value)
+		// An aggregate write b.inner = v gives the field path v's
+		// provenance (docs/spec/50-borrowing.md section 9); writes through
+		// indices or to untracked records leave nothing tracked.
+		if s.Target != nil && s.Target.Dot {
+			if path, isPath := resourceName(s.Target); isPath && (a.flow.Registered(path) || a.unknownResources[path] || a.isResourceValue(s.Value)) {
+				a.bindPath(path, s.Value, s.Target)
+			}
+		}
 	case *ast.ExpressionStatement:
 		a.expression(s.Expression)
 	case *ast.BlockStatement:
@@ -664,6 +996,7 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 	}
 	isResource := a.model.isResourceType(stmt.Type) || fresh
 	if !isResource {
+		a.bindRecordFields(stmt)
 		return
 	}
 
@@ -771,6 +1104,12 @@ func (a *typedResourceAnalysis) expression(expr ast.Expression) {
 	case *ast.InvocationExpression:
 		a.invocation(e)
 	case *ast.IndexExpression:
+		if path, isPath := resourceName(e); isPath && e.Dot && a.flow.Registered(path) {
+			// A projection of a tracked record field is a use of that
+			// field's authority, not of the whole record.
+			a.use(path, e)
+			return
+		}
 		a.expression(e.Left)
 		if !e.Dot {
 			a.expression(e.Index)
@@ -867,6 +1206,9 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 	if !a.checkParameterForwarding(expr, op) {
 		return
 	}
+	if !a.checkCallableArguments(expr, op) {
+		return
+	}
 	if receiver := methodReceiver(expr); receiver != nil && op.Receiver == ResourceParameterConsumed {
 		if ident, ok := receiver.(*ast.Identifier); ok && ident != nil && a.flow.Registered(ident.Value) && a.flow.CanUse(ident.Value) {
 			a.flow.Consume(ident.Value, expr)
@@ -876,14 +1218,14 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 		if index < 0 || index >= len(expr.Arguments) {
 			continue
 		}
-		ident, ok := expr.Arguments[index].(*ast.Identifier)
-		if !ok || ident == nil || !a.flow.Registered(ident.Value) {
+		name, ok := resourceName(expr.Arguments[index])
+		if !ok || !a.flow.Registered(name) {
 			continue
 		}
 		// Argument evaluation already performed the ordinary Use check. If it
 		// failed, do not emit a second diagnostic for the consuming action.
-		if a.flow.CanUse(ident.Value) {
-			a.flow.Consume(ident.Value, expr)
+		if a.flow.CanUse(name) {
+			a.flow.Consume(name, expr)
 		}
 	}
 	a.freshCalls[expr] = op.ReturnsFresh

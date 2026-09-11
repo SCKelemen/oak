@@ -544,6 +544,15 @@ type TypeChecker struct {
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[string]string
+	// unsafeDepth counts the enclosing unsafe blocks; initializerUnderCheck
+	// is the initializer expression of the declaration being checked. Both
+	// gate the inbound buffer borrows of docs/spec/92-ffi.md section 2.7.
+	unsafeDepth           int
+	initializerUnderCheck ast.Expression
+	// constantGlobals names the top-level bindings whose initializers are
+	// compile-time constants, in declaration order, so later constant
+	// initializers may read them (typechecker/globals.go).
+	constantGlobals map[string]bool
 	// predeclaredGlobals names package-level bindings registered before any
 	// body is checked, so functions may mention globals declared later in
 	// the file; the defining declaration consumes its entry.
@@ -1308,6 +1317,7 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		if ContainsAtomicStorage(resultType) {
 			tc.addError(s.Expression, "Atomic[T] is storage identity, not a value; use an atomic_load_* operation")
 		}
+		tc.rejectBufferValue(s.Expression, resultType, "evaluated as a statement")
 		if s.Discard {
 			// `_ = expr` exists to drop a result on purpose
 			// (docs/spec/85-discipline.md section 6); discarding unit
@@ -1849,9 +1859,20 @@ func (tc *TypeChecker) checkBorrowBuiltin(name string, expr *ast.InvocationExpre
 	if ownerType == nil {
 		return nil
 	}
+	if buffer, isBuffer := ownerType.(*BufferType); isBuffer {
+		// An owned foreign buffer borrows exactly like an owned array
+		// (docs/spec/92-ffi.md section 2.8); its length is the count it
+		// was created with.
+		return &ArrayType{
+			Length:      -1,
+			IsSlice:     name == "view",
+			IsSpan:      name == "span",
+			ElementType: buffer.Element,
+		}
+	}
 	arrType, ok := ownerType.(*ArrayType)
 	if !ok || arrType.IsSlice || arrType.IsSpan || arrType.Length < 0 {
-		tc.addError(prefix.Right, "%s requires an owned array [N]T, got %s", name, ownerType)
+		tc.addError(prefix.Right, "%s requires an owned array [N]T or a Buffer[T], got %s", name, ownerType)
 		return nil
 	}
 	return &ArrayType{
@@ -1980,6 +2001,11 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	}
 	// Compiler-known library calls: c conversions, misplaced c.extern, and
 	// arm64 instruction functions (docs/spec/92-ffi.md).
+	if member, element, isBorrow := foreignBorrowAccess(expr.Function); isBorrow {
+		if _, bound := tc.env.Get("c"); !bound {
+			return tc.checkForeignBorrow(expr, member, element)
+		}
+	}
 	if libraryType, isLibrary := tc.checkLibraryInvocation(expr); isLibrary {
 		return libraryType
 	}
@@ -2049,9 +2075,9 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			}
 			argType := tc.checkExpression(expr.Arguments[0])
 			switch argType.(type) {
-			case *ArrayType, *StringType, nil:
+			case *ArrayType, *StringType, *BufferType, nil:
 			default:
-				tc.addError(expr.Arguments[0], "len requires an array, view, span, or string, got %s", argType)
+				tc.addError(expr.Arguments[0], "len requires an array, view, span, buffer, or string, got %s", argType)
 			}
 			return &PrimitiveType{Name: "u32"}
 		}
@@ -2203,6 +2229,10 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		expectedType := bindings.Apply(parameterType)
 		argType := tc.checkExpression(arg, expectedType)
 		if argType == nil {
+			validCall = false
+			continue
+		}
+		if tc.rejectBufferValue(arg, argType, "passed as an argument") {
 			validCall = false
 			continue
 		}
@@ -3438,6 +3468,10 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 	if arr, isArray := leftType.(*ArrayType); isArray && !expr.Dot {
 		tc.recordIndexProof(expr, arr)
 	}
+	if _, isBuffer := leftType.(*BufferType); isBuffer && !expr.Dot {
+		tc.addError(expr, "a Buffer[T] is indexed through a borrow: bind v: []T = view(&b) (or span(&b)) and index that (docs/spec/92-ffi.md section 2.8)")
+		return nil
+	}
 
 	// A constrained type variable exposes only fields guaranteed by its semantic
 	// record-shape requirements, never fields that happen to exist on one caller.
@@ -3557,6 +3591,11 @@ func (tc *TypeChecker) checkSliceExpression(expr *ast.SliceExpression) Type {
 }
 
 func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
+	// The initializer under check, so forms admitted only in binding
+	// position (inbound buffer borrows) can recognize it.
+	savedInitializer := tc.initializerUnderCheck
+	tc.initializerUnderCheck = stmt.Value
+	defer func() { tc.initializerUnderCheck = savedInitializer }()
 	defer func() {
 		if stmt != nil && stmt.Name != nil {
 			if info := tc.env.borrowMetadata(); info != nil {
@@ -3618,6 +3657,15 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 				return
 			}
 		}
+		if ContainsBufferStorage(varType) {
+			// A Buffer binding is created by c.own and nothing else
+			// (docs/spec/92-ffi.md section 2.8): never copied from another
+			// binding, never inside an array.
+			if _, direct := varType.(*BufferType); !direct || stmt.Value == nil || !isForeignOwnCall(stmt.Value) {
+				tc.addError(stmt, "variable %s: a Buffer[T] binding is created only by c.own[T](ptr, count) inside an unsafe block, and cannot be copied or nested (docs/spec/92-ffi.md section 2.8)", stmt.Name.Value)
+				return
+			}
+		}
 
 		// If there's an initializer, check that it matches the type (with coercion)
 		// Pass expected type for context-based inference (e.g., for integer literals)
@@ -3661,6 +3709,9 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 				}
 				if ContainsAtomicStorage(inferredType) {
 					tc.addError(stmt.Value, "Atomic[T] storage cannot be inferred/copied into a value binding; declare a named Atomic[T] cell")
+					return
+				}
+				if tc.rejectBufferValue(stmt.Value, inferredType, "copied into another binding") {
 					return
 				}
 				// Generalize: convert to a type scheme
@@ -3731,6 +3782,10 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 	// Instantiate the scheme to get the actual type
 	unifier := NewUnifier()
 	varType := Instantiate(varScheme, unifier)
+	if _, isBuffer := varType.(*BufferType); isBuffer {
+		tc.addError(stmt, "Buffer[T] bindings are not reassignable: a buffer is created once by c.own and ended by c.disown (docs/spec/92-ffi.md section 2.8)")
+		return
+	}
 	if _, atomic := varType.(*AtomicType); atomic {
 		tc.addError(stmt, "Atomic[T] cells are not assignable; use an atomic_store_* operation")
 		return
@@ -3911,6 +3966,9 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			tc.addError(param.Type, "Atomic[T] storage cannot be passed by value in v1; use package/local cells until an AtomicRef borrowing contract exists")
 			return
 		}
+		if tc.rejectBufferValue(param.Type, paramType, "a parameter") {
+			return
+		}
 		if param.Variadic {
 			// The body sees the trailing parameter as a read-only view of a
 			// caller-owned argument array (docs/spec/10-syntax.md).
@@ -3928,6 +3986,9 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	}
 	if ContainsAtomicStorage(returnType) {
 		tc.addError(stmt.ReturnType, "Atomic[T] storage cannot be returned by value in v1")
+		return
+	}
+	if tc.rejectBufferValue(stmt.ReturnType, returnType, "returned") {
 		return
 	}
 
@@ -4200,6 +4261,9 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 		// Parse field type from the expression
 		// In a record type definition, fieldExpr should be a type expression (identifier)
 		fieldType := tc.parseTypeExpression(fieldExpr)
+		if tc.rejectBufferValue(fieldExpr, fieldType, "a record field") {
+			return
+		}
 		if !atomicFieldShapeLegal(fieldType) {
 			tc.addError(fieldExpr, "Atomic[T] may be a field or an owned array of cells; deeper embeddings are not supported in v1")
 		}
@@ -4429,9 +4493,12 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 }
 
 func (tc *TypeChecker) checkUnsafeBlock(stmt *ast.UnsafeBlock) {
-	// Type check body (same as regular block)
-	// Unsafe blocks don't change type checking rules, they just bypass borrow checking
+	// Type check body (same as regular block). Unsafe blocks do not change
+	// the typing rules; they admit the forms that state an assumption, such
+	// as inbound buffer borrows (docs/spec/92-ffi.md section 2.7).
+	tc.unsafeDepth++
 	tc.checkBlockStatement(stmt.Body)
+	tc.unsafeDepth--
 }
 
 // typeExpressionFor renders a checked type back into the type-annotation

@@ -181,6 +181,13 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		// operations run natively in the interpreter; c conversions are
 		// value-preserving; extern is native-backend only. A local binding
 		// named c/arm64/simd shadows the library.
+		if member, _, isForeign := typechecker.ForeignBorrowCall(node); isForeign {
+			if _, bound := env.Get("c"); !bound {
+				// Inbound buffers (docs/spec/92-ffi.md section 2.7) address
+				// runtime-owned memory, which the interpreter does not have.
+				return newError("c.%s requires the native backend; the interpreter has no foreign memory to borrow", member)
+			}
+		}
 		if indexExpr, ok := node.Function.(*ast.IndexExpression); ok {
 			if base, isIdent := indexExpr.Left.(*ast.Identifier); isIdent && typechecker.CompilerKnownLibrary(base.Value) {
 				if _, bound := env.Get(base.Value); !bound {
