@@ -270,7 +270,8 @@ func stepISA(instr Instruction, state *symbolicState) (handled bool, reason stri
 		return true, name + " (an atomic access: ordering and exclusivity are outside the subset)", false
 	}
 	switch name {
-	case "ldar", "ldxr", "ldaxr", "ldapr", "ldarb", "ldxrb", "ldaxrb", "ldaprb", "ldarh", "ldxrh", "ldaxrh", "ldaprh", "stlr", "stlrb", "stlrh", "ldpsw":
+	case "ldar", "ldxr", "ldaxr", "ldapr", "ldarb", "ldxrb", "ldaxrb", "ldaprb", "ldarh", "ldxrh", "ldaxrh", "ldaprh", "stlr", "stlrb", "stlrh", "ldpsw",
+		"ldapur", "ldapurb", "ldapurh", "ldapursb", "ldapursh", "ldapursw", "stlur", "stlurb", "stlurh":
 		return true, name + " (an ordered access is outside the subset)", false
 	}
 	return false, "", false
