@@ -188,3 +188,22 @@ func hexDigit(r rune) (int, bool) {
 	}
 	return 0, false
 }
+
+// OpenBind is the loader's check for `open import(path)`
+// (docs/spec/83-modules.md section 3.2), a transliteration of
+// Oak.Modules.OpenImports.openBind: given the names the importing package
+// already binds and the opened package's exports, it either rejects — some
+// export is already bound, returned as the offending names — or accepts and
+// binds exactly the exports. Acceptance never rebinds a name, so what an
+// identifier means never depends on precedence.
+func OpenBind(bound func(name string) bool, exports []string) (names []string, collisions []string) {
+	for _, name := range exports {
+		if bound(name) {
+			collisions = append(collisions, name)
+		}
+	}
+	if len(collisions) != 0 {
+		return nil, collisions
+	}
+	return append([]string(nil), exports...), nil
+}

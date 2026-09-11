@@ -89,7 +89,7 @@ with a letter or digit; `.` and `..` are not segments; no segment contains
 `__`; the whole path is at most 256 bytes (`OAK-M0101`).
 
 A path whose first segment contains no dot names a **standard library**
-package (`std`, `testing`, and future `strings`, `encoding/utf8`). A path whose
+package (`std`, `testing`, `strings`, `json`, `unicode`, ...; section 9). A path whose
 first segment contains a dot (`example.com/hello`) belongs to a module (section
 4). The grammar is what makes the directory mapping containment-safe: a valid
 path can only name a directory below a module root, never `..` out of it.
@@ -302,6 +302,25 @@ An import path is mapped to a directory by the longest module path that is a
 segment-wise prefix of it. The resulting directory must exist, contain at least
 one `.oak` file, and lie within the module root after symlink resolution;
 otherwise the import is unresolvable (`OAK-M0102`).
+
+### 4.5 Tidying the manifest
+
+`oak mod tidy [-w] [dir]` reconciles the `require` directives with what the
+module's packages import. The check is syntactic — every `.oak` file of every
+package, test files included, is parsed and its import statements collected
+(nested module bodies too), never built — so it works on a module that does
+not yet compile. An import outside the module and the standard library is
+attributed to the `require` whose module path is its longest prefix; a
+`require` no import is attributed to is **unused**; an import no `require`
+covers is **missing** when the module cache (`$OAKMODCACHE`, section 4.3)
+holds a module whose path is its prefix — the highest cached version is
+proposed — and **uncovered** otherwise, since the providing module cannot be
+inferred offline and the compiler never asks a registry. With `-w` the
+manifest is rewritten: unused `require` lines are dropped and missing
+modules are appended as `require path version`; every other line —
+comments, `replace`, `profile`, `steady`, ordering — is kept verbatim, the
+result must parse, and the file is replaced through a temporary file in the
+same directory. Uncovered imports are reported for the author.
 
 ## 5. Compile order and cycles
 

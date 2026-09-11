@@ -198,6 +198,8 @@ func buildPackage(args []string) int {
 //	oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]
 //	                                  build the module archive carrying api.json
 //	                                  and print its `require` line
+//	oak mod tidy [-w] [dir]          reconcile require directives with imports;
+//	                                  -w rewrites oak.mod
 //	oak mod try path candidate-dir [-dir dir]
 //	                                  build every package with `path` replaced
 //	                                  by a local candidate: decides unsealed imports
@@ -208,7 +210,7 @@ func buildPackage(args []string) int {
 // The compiler itself never fetches; every input here is a local file.
 func modCommand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat|pack|upgrade|try ...")
+		fmt.Fprintln(os.Stderr, "usage: oak mod download|api|diff|bump|compat|pack|upgrade|try|tidy ...")
 		return 2
 	}
 	switch args[0] {
@@ -228,6 +230,8 @@ func modCommand(args []string) int {
 		return modUpgrade(args[1:])
 	case "try":
 		return modTry(args[1:])
+	case "tidy":
+		return modTidy(args[1:])
 	}
 	fmt.Fprintf(os.Stderr, "oak mod: unknown subcommand %q\n", args[0])
 	return 2
@@ -544,6 +548,67 @@ func modTry(args []string) int {
 		return 1
 	}
 	fmt.Printf("every package builds against %s\n", positional[1])
+	return 0
+}
+
+// modTidy reconciles require directives with the module's imports
+// (docs/spec/83-modules.md section 4.5). Without -w it reports; with -w it
+// rewrites oak.mod, dropping unused requires and adding the missing ones
+// the module cache ($OAKMODCACHE) can provide.
+func modTidy(args []string) int {
+	dir, write := ".", false
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-w":
+			write = true
+		case strings.HasPrefix(args[i], "-"):
+			fmt.Fprintf(os.Stderr, "oak mod tidy: unknown flag %s\nusage: oak mod tidy [-w] [dir]\n", args[i])
+			return 2
+		default:
+			dir = args[i]
+		}
+	}
+	report, err := compiler.Tidy(dir, os.Getenv("OAKMODCACHE"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod tidy: %v\n", err)
+		return 1
+	}
+	for _, path := range report.Unused {
+		fmt.Printf("unused: require %s (no package imports from it)\n", path)
+	}
+	for _, missing := range report.Missing {
+		version := missing.Version
+		if version == "" {
+			version = "<version unknown>"
+		}
+		fmt.Printf("missing: require %s %s (imported: %s)\n", missing.Path, version, strings.Join(missing.Imports, ", "))
+	}
+	for _, path := range report.Uncovered {
+		fmt.Printf("uncovered: import %q matches no require or replace; add the module that provides it\n", path)
+	}
+	if report.Clean() {
+		fmt.Println("oak.mod is tidy")
+		return 0
+	}
+	if !write {
+		fmt.Println("run `oak mod tidy -w` to rewrite oak.mod")
+		return 1
+	}
+	if err := compiler.TidyWrite(dir, report); err != nil {
+		fmt.Fprintf(os.Stderr, "oak mod tidy: %v\n", err)
+		return 1
+	}
+	fmt.Printf("rewrote %s\n", filepath.Join(dir, modules.ManifestFile))
+	unresolved := len(report.Uncovered)
+	for _, missing := range report.Missing {
+		if missing.Version == "" {
+			unresolved++
+		}
+	}
+	if unresolved != 0 {
+		fmt.Printf("%d requirement(s) still need a version or module path by hand\n", unresolved)
+		return 1
+	}
 	return 0
 }
 

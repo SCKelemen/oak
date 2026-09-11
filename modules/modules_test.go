@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"fmt"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -317,5 +318,52 @@ func TestLookupVisibilityAndSealing(t *testing.T) {
 	}
 	if !ProjectionAllowed("p", "p", true) || ProjectionAllowed("p", "q", true) || !ProjectionAllowed("p", "q", false) {
 		t.Fatal("ProjectionAllowed broken")
+	}
+}
+
+// OpenBind against Oak.Modules.OpenImports: rejected iff an export is
+// bound (openBind_none_iff); accepted binds exactly the exports, none bound
+// before (openBind_some); growth is monotone toward rejection
+// (openBind_none_mono).
+func TestOpenBindLaws(t *testing.T) {
+	rng := rand.New(rand.NewSource(23))
+	for round := 0; round < 500; round++ {
+		bound := map[string]bool{}
+		for i := 0; i < rng.Intn(6); i++ {
+			bound[fmt.Sprintf("n%d", rng.Intn(8))] = true
+		}
+		var exports []string
+		for i := 0; i < rng.Intn(6); i++ {
+			exports = append(exports, fmt.Sprintf("n%d", rng.Intn(8)))
+		}
+		isBound := func(name string) bool { return bound[name] }
+		names, collisions := OpenBind(isBound, exports)
+		anyBound := false
+		for _, name := range exports {
+			if bound[name] {
+				anyBound = true
+			}
+		}
+		if (len(collisions) != 0) != anyBound {
+			t.Fatalf("rejected=%v but bound export present=%v (%v %v)", len(collisions) != 0, anyBound, exports, bound)
+		}
+		if len(collisions) == 0 {
+			if len(names) != len(exports) {
+				t.Fatalf("accepted open must bind exactly the exports: %v vs %v", names, exports)
+			}
+			for i, name := range names {
+				if name != exports[i] || bound[name] {
+					t.Fatalf("accepted open bound %q, which was already bound or out of order", name)
+				}
+			}
+		} else {
+			if names != nil {
+				t.Fatal("a rejected open must bind nothing")
+			}
+			_, more := OpenBind(isBound, append(exports, "extra"))
+			if len(more) == 0 {
+				t.Fatal("adding exports must not turn a rejection into an acceptance")
+			}
+		}
 	}
 }

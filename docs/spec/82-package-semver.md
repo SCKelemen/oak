@@ -146,6 +146,7 @@ and `oak mod` never contacts a registry:
 | `oak mod pack [-o out.tar.gz] [-previous prev.json] [-url location] [dir]` | Build the archive `oak mod download` consumes, carrying `api.json`; with `-previous`, enforce the exact bump first (section 7). |
 | `oak mod upgrade [-dir dir] dep-api.json...` | Among candidate snapshots of one dependency, pick the highest version that satisfies the module's sealed imports (section 8). |
 | `oak mod try path candidate-dir [-dir dir]` | Build every package of the module with `path` replaced by the local candidate, deciding unsealed imports (section 8). |
+| `oak mod tidy [-w] [dir]` | Reconcile `require` directives with the packages' imports; `-w` rewrites `oak.mod` (`83-modules.md` section 4.5). |
 
 Both `diff` and `bump` snapshot the module through the ordinary package build,
 so a module that does not type check has no API and is rejected before any
