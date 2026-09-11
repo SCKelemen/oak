@@ -284,13 +284,13 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q transition %q binds %q, which is not a function", declaration.Name, transition.Name, transition.Callable)
 			}
 
-			parameters, consumes, err := resolveResourceParameters(transition, function, resourceTypes)
+			resourceLike := func(t Type) bool { return tc.resourceLike(t, resourceTypes) }
+			parameters, consumes, err := resolveResourceParameters(transition, function, resourceTypes, resourceLike)
 			if err != nil {
 				return ResolvedResourceProgram{}, err
 			}
 			if transition.ReturnsFresh {
-				returnName := nominalTypeName(function.ReturnType)
-				if !resourceTypes[returnName] {
+				if !resourceLike(function.ReturnType) {
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a fresh return but returns non-resource type %s", transition.Callable, function.ReturnType)
 				}
 			}
@@ -314,10 +314,10 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				if transition.AliasesArgument < 0 || transition.AliasesArgument >= len(function.Parameters) {
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q aliases argument %d outside its %d parameters", transition.Callable, transition.AliasesArgument, len(function.Parameters))
 				}
-				if !resourceTypes[nominalTypeName(function.Parameters[transition.AliasesArgument])] {
+				if !resourceLike(function.Parameters[transition.AliasesArgument]) {
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q aliases argument %d, which has non-resource type %s", transition.Callable, transition.AliasesArgument, function.Parameters[transition.AliasesArgument])
 				}
-				if !resourceTypes[nominalTypeName(function.ReturnType)] {
+				if !resourceLike(function.ReturnType) {
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks an alias return but returns non-resource type %s", transition.Callable, function.ReturnType)
 				}
 			}
@@ -332,14 +332,14 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				if len(borrows) != len(transition.BorrowsArguments) {
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q lists a borrowed argument twice", transition.Callable)
 				}
-				if !resourceTypes[nominalTypeName(function.ReturnType)] {
+				if !resourceLike(function.ReturnType) {
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a borrowed result but returns non-resource type %s", transition.Callable, function.ReturnType)
 				}
 				for _, index := range borrows {
 					if index < 0 || index >= len(function.Parameters) {
 						return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q borrows argument %d outside its %d parameters", transition.Callable, index, len(function.Parameters))
 					}
-					if !resourceTypes[nominalTypeName(function.Parameters[index])] {
+					if !resourceLike(function.Parameters[index]) {
 						return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q borrows argument %d, which has non-resource type %s", transition.Callable, index, function.Parameters[index])
 					}
 					sourceMode := ResourceParameterUnspecified
@@ -483,6 +483,7 @@ func resolveResourceParameters(
 	transition ResourceTransitionDeclaration,
 	function *FunctionType,
 	resourceTypes map[string]bool,
+	resourceLike func(Type) bool,
 ) ([]ResolvedResourceParameter, []int, error) {
 	seen := make(map[int]ResourceParameterMode)
 	parameters := make([]ResolvedResourceParameter, 0, len(transition.Parameters)+len(transition.Consumes))
@@ -497,8 +498,7 @@ func resolveResourceParameters(
 		if previous, exists := seen[index]; exists {
 			return fmt.Errorf("resource callable %q argument %d has both %s and %s modes", transition.Callable, index, previous, mode)
 		}
-		parameterName := nominalTypeName(function.Parameters[index])
-		if !resourceTypes[parameterName] {
+		if !resourceLike(function.Parameters[index]) {
 			return fmt.Errorf("resource callable %q argument %d has non-resource type %s", transition.Callable, index, function.Parameters[index])
 		}
 		seen[index] = mode

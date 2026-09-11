@@ -637,8 +637,44 @@ literal mentioning a dependent, to any call — contracted or not — is
 dependency carried by a field. Array elements are never tracked, so a
 borrowed result in an array literal stays rejected.
 
-With this, milestone 4 of the authority roadmap (stages (a)–(e)) is
-implemented for opaque resources. Open follow-ups: a source spelling for
+**Resources through aggregates.** A resource held inside an aggregate is
+a **path**: a record field is `root.field`, an ADT payload is
+`root.$Variant`, and paths compose through nested records and ADTs,
+including generic instantiations such as `Option[Handle]` and
+`Result[Handle, E]`. Paths are tracked like named resources. Construction
+binds them: a variant expression gives the chosen variant's payload path
+its payload's provenance (alias, fresh, borrow, dependent) and leaves the
+other variants' paths absent, a record literal binds field by field, and a
+contracted call's result fact applies to every path of an aggregate result
+(fresh registers each as a new class, alias makes each an alias of the
+argument, borrow makes each a dependent). **Matching** extracts without
+copying: a variant pattern descends into `$Variant`, and a binding pattern
+aliases its name to the path it stands for, so **inspection** (borrowed
+use of the binding) leaves the source usable while **extraction**
+(consuming the binding) consumes the location — matching the same value
+again then reads a consumed location (`OAK-B0111`), which is the
+whole-value move discipline: partial-field states are not modeled, and a
+payload of unknown provenance cannot be consumed (fail closed). A
+scrutinee that is a contracted call binds by its result fact; wildcards and
+literals bind nothing; a payload binding lives for its arm. A resource
+returned inside a variant (`.Ok(h)`) is returned, so retention and result
+contracts see it. **Aggregate parameters** are governed by their
+contracted mode path by path: every resource path below a `borrowed`,
+`borrowed-mut`, or `consumed` aggregate parameter enters with that
+authority as a tracked class, and two paths of one such parameter are
+never assumed distinct — pairing them exclusively fails closed
+(`OAK-B0112`) because field names alone prove nothing about the resources
+they hold. An unmarked aggregate parameter keeps unknown paths. At call
+sites an aggregate argument takes part once per path, consuming it moves
+every path, and forwarding is checked per path. Contracts may therefore
+name parameters and results whose types contain resource paths, not only
+nominal resource types, and a contract declared on a generic template
+governs every specialization's payloads. Not yet admitted: borrowing from
+or aliasing an aggregate argument as a whole (the result is unknown, fail
+closed), array element provenance, and partial-field states after a move.
+
+With this, milestone 4 of the authority roadmap (stages (a)–(e)) and the
+first increment of milestone 5 are implemented for opaque resources. Open follow-ups: a source spelling for
 result identities, contracts on record-typed parameters and results that
 carry borrowed fields, and array element provenance.
 
