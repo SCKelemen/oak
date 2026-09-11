@@ -11,6 +11,9 @@ package compiler
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/layout"
+	"github.com/SCKelemen/oak/parser"
+	"github.com/SCKelemen/oak/scanner"
 	"reflect"
 	"sort"
 	"strings"
@@ -48,6 +51,10 @@ type protocolMachine struct {
 	states  []string
 	initial string
 	steps   []*protocolStep
+	// typestate names the governed resource types that are record
+	// templates with one type parameter: their handles carry the protocol
+	// state in the type (docs/spec/112-protocols.md section 5a).
+	typestate map[string]bool
 }
 
 // variantName spells a transition name as its step variant: inject -> Inject.
@@ -217,12 +224,18 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 	found := false
 	declared := map[string]bool{}
 	functions := map[string]*ast.FunctionStatement{}
+	templates := map[string]int{}
 	for _, stmt := range program.Statements {
 		if name := declarationName(stmt); name != "" {
 			declared[name] = true
 		}
 		if fn, isFunction := stmt.(*ast.FunctionStatement); isFunction && fn.Name != nil && fn.Receiver == nil {
 			functions[fn.Name.Value] = fn
+		}
+		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil && len(adt.TypeParams) > 0 && len(adt.Variants) == 1 {
+			if _, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
+				templates[adt.Name.Value] = len(adt.TypeParams)
+			}
 		}
 	}
 	for _, stmt := range program.Statements {
@@ -236,7 +249,16 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 		if !ok {
 			continue
 		}
+		machine.typestate = map[string]bool{}
+		for _, r := range decl.Resources {
+			if r != nil && templates[r.Value] == 1 {
+				machine.typestate[r.Value] = true
+			}
+		}
 		projected := machine.project()
+		if len(machine.typestate) > 0 {
+			projected = append(projected, machine.stateMarkers()...)
+		}
 		for _, generated := range projected {
 			if name := declarationName(generated); declared[name] {
 				report(CodeProtocolShape, decl.Name, "protocol %s projects %s, which the program already declares", decl.Name.Value, name)
@@ -282,6 +304,20 @@ func (m *protocolMachine) resourceFacts(functions map[string]*ast.FunctionStatem
 		}
 		transition := typechecker.ResourceTransitionDeclaration{
 			Name: t.Name.Value + "@" + t.From.Value, Callable: t.Callable.Value, From: t.From.Value, To: t.To.Value,
+		}
+		if len(m.typestate) > 0 {
+			if fn := functions[t.Callable.Value]; fn != nil {
+				if !m.checkTypestateSignature(t, fn, report) {
+					ok = false
+					continue
+				}
+				// A transition that consumes a Segment[From] and returns a
+				// Segment[To] hands back the same resource in its next state:
+				// an alias of the consumed argument, by construction.
+				if index := m.typestateAliasIndex(t, fn); index >= 0 {
+					transition.ReturnsAlias, transition.AliasesArgument = true, index
+				}
+			}
 		}
 		if len(t.Modes) > 0 {
 			fn := functions[t.Callable.Value]
@@ -594,4 +630,114 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// stateMarkers declares one marker type per state of a typestate-indexed
+// protocol (docs/spec/112-protocols.md section 5a): `Offloaded: type =
+// struct { offloaded_: u8 }`. Markers are distinct nominal islands, so
+// `Segment[Offloaded]` and `Segment[Published]` are distinct types; they
+// are never instantiated as values, so they cost nothing at run time.
+func (m *protocolMachine) stateMarkers() []ast.Statement {
+	var out []ast.Statement
+	for _, state := range m.states {
+		src := fmt.Sprintf("%s: type = struct { %s_: u8 }\n", state, snakeCase(state))
+		p := parser.New(layout.New(scanner.New(src)))
+		program := p.ParseProgram()
+		if len(p.Errors()) != 0 || program == nil || len(program.Statements) != 1 {
+			continue
+		}
+		out = append(out, program.Statements[0])
+	}
+	return out
+}
+
+// typestateIndex reads Segment[X] from a type expression: the template and
+// the state it names. A bare template or an unrelated type is not indexed.
+func typestateIndex(typ ast.Expression) (template, state string, ok bool) {
+	index, isIndex := typ.(*ast.IndexExpression)
+	if !isIndex || index == nil {
+		return "", "", false
+	}
+	left, leftIsIdent := index.Left.(*ast.Identifier)
+	right, rightIsIdent := index.Index.(*ast.Identifier)
+	if !leftIsIdent || !rightIsIdent || left == nil || right == nil {
+		return "", "", false
+	}
+	return left.Value, right.Value, true
+}
+
+// checkTypestateSignature holds a via callable to its line: every parameter
+// of a typestate-indexed resource type must name the line's source state,
+// a return of that type must name its target state, a bare template or a
+// type-variable index is rejected (docs/spec/112-protocols.md section 5a).
+func (m *protocolMachine) checkTypestateSignature(t *ast.ProtocolTransition, fn *ast.FunctionStatement, report func(code string, node ast.Node, format string, args ...interface{})) bool {
+	ok := true
+	typeVars := map[string]bool{}
+	for _, tp := range fn.TypeParams {
+		if tp != nil && tp.Name != nil {
+			typeVars[tp.Name.Value] = true
+		}
+	}
+	check := func(typ ast.Expression, want, role string) {
+		if typ == nil {
+			return
+		}
+		if ident, isIdent := typ.(*ast.Identifier); isIdent && ident != nil && m.typestate[ident.Value] {
+			report(CodeProtocolShape, typ, "transition %s: via %s %s %s without its state; a typestate-indexed handle is spelled %s[%s]", t.Name.Value, fn.Name.Value, role, ident.Value, ident.Value, want)
+			ok = false
+			return
+		}
+		template, state, indexed := typestateIndex(typ)
+		if !indexed || !m.typestate[template] {
+			return
+		}
+		if typeVars[state] {
+			report(CodeProtocolShape, typ, "transition %s: via %s %s %s[%s] with a type variable; a transition names the concrete state %s", t.Name.Value, fn.Name.Value, role, template, state, want)
+			ok = false
+			return
+		}
+		if state != want {
+			report(CodeProtocolShape, typ, "transition %s: %s -> %s via %s %s %s[%s], but the line requires %s[%s]", t.Name.Value, t.From.Value, t.To.Value, fn.Name.Value, role, template, state, template, want)
+			ok = false
+		}
+	}
+	for _, parameter := range fn.Parameters {
+		if parameter != nil {
+			check(parameter.Type, t.From.Value, "takes")
+		}
+	}
+	if fn.Receiver != nil {
+		check(fn.Receiver.Type, t.From.Value, "takes receiver")
+	}
+	check(fn.ReturnType, t.To.Value, "returns")
+	return ok
+}
+
+// typestateAliasIndex finds the parameter a typestate transition rebuilds:
+// the one consumed parameter of the indexed type when the callable returns
+// that type in the target state. -1 when the callable is not that shape.
+func (m *protocolMachine) typestateAliasIndex(t *ast.ProtocolTransition, fn *ast.FunctionStatement) int {
+	returned, _, indexedReturn := typestateIndex(fn.ReturnType)
+	if !indexedReturn || !m.typestate[returned] {
+		return -1
+	}
+	consumed := map[string]bool{}
+	for _, entry := range t.Modes {
+		if entry.Mode == "consumed" && entry.Name != nil {
+			consumed[entry.Name.Value] = true
+		}
+	}
+	index := -1
+	for i, parameter := range fn.Parameters {
+		if parameter == nil || parameter.Name == nil {
+			continue
+		}
+		if template, _, indexed := typestateIndex(parameter.Type); indexed && template == returned && consumed[parameter.Name.Value] {
+			if index >= 0 {
+				return -1
+			}
+			index = i
+		}
+	}
+	return index
 }

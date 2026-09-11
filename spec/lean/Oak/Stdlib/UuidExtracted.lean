@@ -13,7 +13,8 @@ structure Xoshiro where
   s1 : UInt64
   s2 : UInt64
   s3 : UInt64
-  deriving Repr, Inhabited, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited Xoshiro := ⟨{ s0 := (0 : UInt64), s1 := (0 : UInt64), s2 := (0 : UInt64), s3 := (0 : UInt64) }⟩
 
 inductive UuidError where
   | InvalidLength
@@ -104,26 +105,26 @@ def random_next (state : Array Xoshiro) (fuel : Nat) : Option (UInt64 × Array X
   pure (result, state)
 
 def uuid_v4 (state : Array Xoshiro) (dst : Array UInt8) (fuel : Nat) : Option (Result_u32_UuidError × Array Xoshiro × Array UInt8) := do
-  let r1 ← (
+  let (r1, state, dst) ← (
     if (decide ((dst.size.toUInt32) < UUID_SIZE)) then (do
-      pure (Result_u32_UuidError.Err UuidError.DestinationTooSmall))
+      pure ((Result_u32_UuidError.Err UuidError.DestinationTooSmall), state, dst))
     else (do
       let (r2, state) ← random_next state fuel
       let (r3, dst) ← uuid_put_be dst (0 : UInt32) r2 (8 : UInt32) fuel
       let (r4, state) ← random_next state fuel
       let (r5, dst) ← uuid_put_be dst (8 : UInt32) r4 (8 : UInt32) fuel
       let (r6, dst) ← uuid_stamp dst (4 : UInt8) fuel
-      pure (Result_u32_UuidError.Ok UUID_SIZE)))
+      pure ((Result_u32_UuidError.Ok UUID_SIZE), state, dst)))
   pure (r1, state, dst)
 
 def uuid_v7 (unix_millis : UInt64) (state : Array Xoshiro) (dst : Array UInt8) (fuel : Nat) : Option (Result_u32_UuidError × Array Xoshiro × Array UInt8) := do
-  let r1 ← (
+  let (r1, state, dst) ← (
     if (decide ((dst.size.toUInt32) < UUID_SIZE)) then (do
-      pure (Result_u32_UuidError.Err UuidError.DestinationTooSmall))
+      pure ((Result_u32_UuidError.Err UuidError.DestinationTooSmall), state, dst))
     else (do
-      let r2 ← (
+      let (r2, state, dst) ← (
         if (decide (unix_millis >= (281474976710656 : UInt64))) then (do
-          pure (Result_u32_UuidError.Err UuidError.TimestampOutOfRange))
+          pure ((Result_u32_UuidError.Err UuidError.TimestampOutOfRange), state, dst))
         else (do
           let (r3, dst) ← uuid_put_be dst (0 : UInt32) unix_millis (6 : UInt32) fuel
           let (r4, state) ← random_next state fuel
@@ -131,8 +132,8 @@ def uuid_v7 (unix_millis : UInt64) (state : Array Xoshiro) (dst : Array UInt8) (
           let (r6, state) ← random_next state fuel
           let (r7, dst) ← uuid_put_be dst (14 : UInt32) r6 (2 : UInt32) fuel
           let (r8, dst) ← uuid_stamp dst (7 : UInt8) fuel
-          pure (Result_u32_UuidError.Ok UUID_SIZE)))
-      pure r2))
+          pure ((Result_u32_UuidError.Ok UUID_SIZE), state, dst)))
+      pure (r2, state, dst)))
   pure (r1, state, dst)
 
 def uuid_nil.loop1 (dst : Array UInt8) (i : UInt32) : Nat → Option (Array UInt8 × UInt32)

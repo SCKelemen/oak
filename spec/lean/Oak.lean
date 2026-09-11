@@ -82,3 +82,4 @@ import Oak.Stdlib.VarintLaws
 import Oak.Stdlib.SortLaws
 import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.RandomLaws
+import Oak.Typestate

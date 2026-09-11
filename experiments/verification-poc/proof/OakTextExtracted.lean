@@ -15,7 +15,8 @@ structure RUPCommand where
   count : UInt32
   refs_start : UInt32
   refs_count : UInt32
-  deriving Repr, Inhabited, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited RUPCommand := ⟨{ addition := false, id_ := (0 : UInt32), start := (0 : UInt32), count := (0 : UInt32), refs_start := (0 : UInt32), refs_count := (0 : UInt32) }⟩
 
 def literal_value (literal : UInt32) (fuel : Nat) : Option (UInt8) := do
   pure (if ((literal % (2 : UInt32)) == (1 : UInt32)) then (2 : UInt8) else (1 : UInt8))

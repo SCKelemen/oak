@@ -13,7 +13,8 @@ structure Sha256State where
   block : Array UInt8
   filled : UInt32
   total : UInt64
-  deriving Repr, Inhabited, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited Sha256State := ⟨{ h := Array.replicate 8 (0 : UInt32), block := Array.replicate 64 (0 : UInt8), filled := (0 : UInt32), total := (0 : UInt64) }⟩
 
 structure Blake3State where
   cv : Array UInt32
@@ -23,7 +24,8 @@ structure Blake3State where
   chunk_counter : UInt64
   stack : Array UInt32
   stack_len : UInt32
-  deriving Repr, Inhabited, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited Blake3State := ⟨{ cv := Array.replicate 8 (0 : UInt32), block := Array.replicate 64 (0 : UInt8), block_len := (0 : UInt32), blocks_compressed := (0 : UInt32), chunk_counter := (0 : UInt64), stack := Array.replicate 432 (0 : UInt32), stack_len := (0 : UInt32) }⟩
 
 def SHA256_K : Array UInt32 := (#[(1116352408 : UInt32), (1899447441 : UInt32), (3049323471 : UInt32), (3921009573 : UInt32), (961987163 : UInt32), (1508970993 : UInt32), (2453635748 : UInt32), (2870763221 : UInt32), (3624381080 : UInt32), (310598401 : UInt32), (607225278 : UInt32), (1426881987 : UInt32), (1925078388 : UInt32), (2162078206 : UInt32), (2614888103 : UInt32), (3248222580 : UInt32), (3835390401 : UInt32), (4022224774 : UInt32), (264347078 : UInt32), (604807628 : UInt32), (770255983 : UInt32), (1249150122 : UInt32), (1555081692 : UInt32), (1996064986 : UInt32), (2554220882 : UInt32), (2821834349 : UInt32), (2952996808 : UInt32), (3210313671 : UInt32), (3336571891 : UInt32), (3584528711 : UInt32), (113926993 : UInt32), (338241895 : UInt32), (666307205 : UInt32), (773529912 : UInt32), (1294757372 : UInt32), (1396182291 : UInt32), (1695183700 : UInt32), (1986661051 : UInt32), (2177026350 : UInt32), (2456956037 : UInt32), (2730485921 : UInt32), (2820302411 : UInt32), (3259730800 : UInt32), (3345764771 : UInt32), (3516065817 : UInt32), (3600352804 : UInt32), (4094571909 : UInt32), (275423344 : UInt32), (430227734 : UInt32), (506948616 : UInt32), (659060556 : UInt32), (883997877 : UInt32), (958139571 : UInt32), (1322822218 : UInt32), (1537002063 : UInt32), (1747873779 : UInt32), (1955562222 : UInt32), (2024104815 : UInt32), (2227730452 : UInt32), (2361852424 : UInt32), (2428436474 : UInt32), (2756734187 : UInt32), (3204031479 : UInt32), (3329325298 : UInt32)] : Array UInt32)
 

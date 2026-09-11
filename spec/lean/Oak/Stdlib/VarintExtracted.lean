@@ -17,12 +17,14 @@ inductive VarintError where
 structure VarintValue where
   value : UInt64
   next : UInt32
-  deriving Repr, Inhabited, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited VarintValue := ⟨{ value := (0 : UInt64), next := (0 : UInt32) }⟩
 
 structure VarintSigned where
   value : Int64
   next : UInt32
-  deriving Repr, Inhabited, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited VarintSigned := ⟨{ value := (0 : Int64), next := (0 : UInt32) }⟩
 
 inductive Result_VarintSigned_VarintError where
   | Ok (payload : VarintSigned)

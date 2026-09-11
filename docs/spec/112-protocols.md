@@ -173,6 +173,59 @@ call, an open or selective import, or a sealed signature — so imports and
 sealing cannot erase modes. Callable contracts on function-typed
 parameters (`50-borrowing.md` §9) have no source spelling yet.
 
+### 5a. Typestate-indexed resources
+
+When a governed resource type is a **record template with one type
+parameter**, the protocol puts its state into the handle's type:
+
+```oak
+Segment[S]: type = struct { id: u32, generation: u32 }
+
+Custody: protocol = {
+  resource Segment
+  initial Fresh
+  publish: Fresh -> Published via publish(consumed s)
+  offload: Published -> Offloaded via offload(consumed s)
+  evict: Offloaded -> Evicted via evict(consumed s)
+}
+
+publish: (s: Segment[Fresh]): Segment[Published] = Segment { id: s.id, generation: s.generation + u32(1) }
+evict: (s: Segment[Offloaded]): Segment[Evicted] = Segment { id: s.id, generation: s.generation + u32(1) }
+```
+
+The rules:
+
+1. The projection declares one **marker type per state** (`Fresh: type =
+   struct { fresh_: u8 }`, ...), never instantiated as a value, so
+   `Segment[Fresh]` and `Segment[Evicted]` are distinct nominal types
+   (`20-types.md` §5.1) with one representation (§9, phantom). A program
+   that already declares a state's name is `OAK-M0301`.
+2. A `via` callable is held to its line: every parameter of the indexed
+   type must be `Segment[From]`, a return of the indexed type must be
+   `Segment[To]`, a bare `Segment` or a type-variable index is rejected
+   (`OAK-M0301`). Calling `evict` on a `Segment[Published]` is therefore an
+   ordinary type error, and the legality trap of `custody_next` is
+   unreachable from well-typed code (`Oak.Typestate.run_legal`).
+3. A transition that consumes one `Segment[From]` and returns
+   `Segment[To]` hands back the **same resource in its next state**: its
+   result is an alias of the consumed argument by construction
+   (`50-borrowing.md` §9, result identity), so the old-state handle is dead
+   (`OAK-B0111` on reuse) and nothing is duplicated.
+4. A literal of the indexed type — `Segment { ... }`, which takes its type
+   arguments from the expected type like a list literal takes its shape
+   (`10-syntax.md` §2c), or is an error asking for an annotation — may be
+   written anywhere in the **initial state**, and otherwise only inside a
+   via callable of a transition **into** that state (`OAK-B0121`). Only the
+   transition may make the claim its target state represents.
+
+`Oak.Typestate` (`spec/lean/Oak/Typestate.lean`) states the calculus —
+construction at the initial state, transitions along legal lines — and
+proves that the machine state always equals the static index
+(`run_sound`), that every applied transition is legal (`run_legal`), and
+that a handle at a non-initial state can only come from a transition into
+it (`construct_initial_or_transition`). Terminal-state obligations and
+parameter modes apply unchanged: `Segment` names every instantiation.
+
 A protocol may also declare **terminal states** (the resolved
 `ResourceProtocolDeclaration.Terminal`; source spelling pending with the
 other authority spellings): the states an owned resource must reach before

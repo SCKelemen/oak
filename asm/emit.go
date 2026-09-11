@@ -109,6 +109,26 @@ func usesScalableFile(fn *Function) bool {
 	return false
 }
 
+// String spells an instruction as `.oakasm` text with symbols by name.
+func (instr Instruction) String() string {
+	mnemonic := instr.Mnemonic
+	if mnemonic == "b." {
+		mnemonic = "b." + instr.Cond
+	}
+	if len(instr.Operands) == 0 {
+		return mnemonic
+	}
+	parts := make([]string, 0, len(instr.Operands))
+	for _, operand := range instr.Operands {
+		if sym, isSym := operand.(Symbol); isSym {
+			parts = append(parts, sym.Name)
+			continue
+		}
+		parts = append(parts, renderOperand(operand, func(s string) string { return s }, nil, nil))
+	}
+	return mnemonic + " " + strings.Join(parts, ", ")
+}
+
 func renderInstruction(fn *Function, instr Instruction, symbolFor func(string) string, numbers map[string]int, defined map[string]bool) string {
 	mnemonic := instr.Mnemonic
 	if mnemonic == "b." {

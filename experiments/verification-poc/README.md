@@ -282,5 +282,10 @@ correctness of the compiler and a small translator rather than a reading of
 two sources. `proof/ExtractionScanner.lean` proves the first gate outright:
 `rup_token_scan` shows the extracted scanner returns the proved scanner's
 token on every bounded input, so the scanner comparison is regression, not
-evidence. The decoder phases and the stream checker are next, after which
-`check_refines` transfers to the extraction directly.
+evidence. `proof/ExtractionDecoder.lean` proves the decoder phases
+(`rup_text_check_spec`: the extraction rejects where the model's layout is
+`none`, else hands the stream checker arrays that represent it), and
+`proof/ExtractionRUP.lean` proves the RUP kernel (`rup_check_spec`: the
+extracted `rup_check` accepts exactly when `PropagationChain.check`
+certifies the decoded target under the live table). The stream loop is
+next, after which `check_refines` transfers to the extraction directly.
