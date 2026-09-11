@@ -567,6 +567,11 @@ type TypeChecker struct {
 	// an unsafe block (docs/spec/92-ffi.md section 2.10).
 	initializerDeclaredType Type
 	cFnAnnotationAllowed    bool
+	// targetConstants are the checked `c.const` bindings, by name and in
+	// declaration order (typechecker/ffi_const.go, docs/spec/92-ffi.md
+	// section 2.11).
+	targetConstants     map[string]*TargetConstant
+	targetConstantOrder []string
 	// constantGlobals names the top-level bindings whose initializers are
 	// compile-time constants, in declaration order, so later constant
 	// initializers may read them (typechecker/globals.go).
@@ -3906,6 +3911,22 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		tc.initializerDeclaredType = varType
 		defer func() { tc.initializerDeclaredType = savedDeclared }()
 
+		// A target constant (`NAME: c.Int = c.const("ID", "<h.h>")`) is a
+		// top-level binding whose value the target's C headers define
+		// (docs/spec/92-ffi.md section 2.11): its shape is checked here
+		// and its initializer is never checked as an expression.
+		if call, isTargetConstant := TargetConstantCall(stmt.Value); isTargetConstant {
+			if tc.env != tc.globalEnv {
+				d := tc.addTypeDiagnostic(stmt, CodeTargetConstant,
+					fmt.Sprintf("target constant %s must be a top-level binding", stmt.Name.Value))
+				d.AddNote("a c.const binding is static storage the C compiler initializes from the header's definition; declare it at package level and read it from functions (docs/spec/92-ffi.md section 2.11)")
+			} else {
+				tc.checkTargetConstant(stmt, call, varType)
+			}
+			tc.env.Set(stmt.Name.Value, GeneralizeWithFacts(varType, tc.env, GeneralizationFacts{}))
+			return
+		}
+
 		if ContainsAtomicStorage(varType) {
 			// Atomic-bearing storage (a cell, a record with cell fields, an
 			// array of cells) is zero-initialized declaration only: it is
@@ -4046,6 +4067,14 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 	}
 	if _, atomic := varType.(*AtomicType); atomic {
 		tc.addError(stmt, "Atomic[T] cells are not assignable; use an atomic_store_* operation")
+		return
+	}
+	if _, isTargetConstant := tc.targetConstants[stmt.Name.Value]; isTargetConstant {
+		// A target constant is the target's value, read-only static
+		// storage (docs/spec/92-ffi.md section 2.11).
+		d := tc.addTypeDiagnostic(stmt, CodeTargetConstant,
+			fmt.Sprintf("target constant %s is not assignable", stmt.Name.Value))
+		d.AddNote("a c.const binding holds the value the target's header defines; bind a mutable copy if you need one")
 		return
 	}
 

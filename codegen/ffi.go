@@ -622,7 +622,7 @@ func (cg *CodeGenerator) emitExternPrototype(fn *ast.FunctionStatement) {
 	if fn.ReturnType != nil {
 		returnType = cg.parseTypeExpression(fn.ReturnType)
 	}
-	cg.write(fmt.Sprintf("extern %s %s( ", returnType, symbol))
+	cg.write(fmt.Sprintf("extern %s %s( ", returnType, cg.externCallee(symbol)))
 	if len(fn.Parameters) == 0 {
 		cg.write("void")
 	}
@@ -632,7 +632,51 @@ func (cg *CodeGenerator) emitExternPrototype(fn *ast.FunctionStatement) {
 			cg.write(", ")
 		}
 	}
-	cg.write(" );\n")
+	cg.write(" )")
+	if len(cg.foreignHeaders) != 0 {
+		// The declaration is Oak's own identifier bound to the foreign
+		// symbol by an asm label, so a header the program includes for a
+		// target constant may declare the same function with its own
+		// prototype without a conflicting redeclaration (section 2.11).
+		cg.write(fmt.Sprintf(" __asm__(OAK_ASM_SYMBOL(\"%s\"))", symbol))
+	}
+	cg.write(";\n")
+}
+
+// externCallee is the C identifier a call to an extern binding names: the
+// foreign symbol itself, or — in a program that includes foreign headers
+// for target constants — Oak's asm-labeled declaration of it (section
+// 2.11). The symbol has passed ValidCSymbol at the call sites that use this.
+func (cg *CodeGenerator) externCallee(symbol string) string {
+	if len(cg.foreignHeaders) != 0 {
+		return "oak_extern_" + symbol
+	}
+	return symbol
+}
+
+// emitForeignHeaders emits the includes the program's target constants
+// need (docs/spec/92-ffi.md section 2.11), before any other header so a
+// feature-test macro can precede them: POSIX.1-2008 visibility, which
+// strict -std=c99 builds on glibc would otherwise withhold from <time.h>
+// and friends. Every header spelling passed ValidCHeader at check time and
+// is re-validated here; an invalid one fails the C build closed instead of
+// being emitted.
+func (cg *CodeGenerator) emitForeignHeaders() {
+	if len(cg.foreignHeaders) == 0 {
+		return
+	}
+	cg.write("/* target constants (docs/spec/92-ffi.md section 2.11): the headers that\n   define them, then Oak's extern declarations carry asm labels so these\n   headers' prototypes never conflict with them */\n")
+	cg.write("#if !__STDC_HOSTED__ || defined(OAK_FREESTANDING)\n#error \"target constants (c.const) need the hosted C library headers\"\n#endif\n")
+	cg.write("#if !defined(_POSIX_C_SOURCE) && !defined(_GNU_SOURCE) && !defined(_XOPEN_SOURCE) && !defined(_DEFAULT_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n")
+	for _, header := range cg.foreignHeaders {
+		if !typechecker.ValidCHeader(header) {
+			cg.write("OAK_INVALID_TARGET_CONSTANT_HEADER;\n")
+			continue
+		}
+		cg.write(fmt.Sprintf("#include %s\n", header))
+	}
+	cg.write("#define OAK_STRINGIFY_(x) #x\n#define OAK_STRINGIFY(x) OAK_STRINGIFY_(x)\n")
+	cg.write("#define OAK_ASM_SYMBOL(name) OAK_STRINGIFY(__USER_LABEL_PREFIX__) name\n")
 }
 
 // emitForeignBorrow lowers an inbound buffer borrow (docs/spec/92-ffi.md
