@@ -70,11 +70,25 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 				Parameters:   resourceParametersFromSemIR(semantics),
 				Consumes:     append([]int(nil), semantics.Consumes...),
 				ReturnsFresh: semantics.ReturnsFresh,
+				Receiver:     receiverModeFromSemIR(semantics.Receiver),
 			})
 		}
 	}
 
 	return model, nil
+}
+
+// receiverModeFromSemIR decodes the receiver effect name into a mode.
+func receiverModeFromSemIR(name string) ResourceParameterMode {
+	switch name {
+	case semir.ResourceEffectBorrow:
+		return ResourceParameterBorrowed
+	case semir.ResourceEffectBorrowMut:
+		return ResourceParameterBorrowedMut
+	case semir.ResourceEffectConsume:
+		return ResourceParameterConsumed
+	}
+	return ResourceParameterUnspecified
 }
 
 func resourceParametersFromSemIR(semantics semir.ResourceTransitionSemantics) []ResourceParameterDeclaration {
@@ -125,7 +139,7 @@ func sameResourceOperation(left, right ResourceOperation) bool {
 }
 
 func sameResourceTransitionSemantics(left, right semir.ResourceTransitionSemantics) bool {
-	if left.ReturnsFresh != right.ReturnsFresh {
+	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver {
 		return false
 	}
 	return sameIntSlice(left.Borrowed, right.Borrowed) &&
