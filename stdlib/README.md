@@ -526,6 +526,28 @@ percent-encoded — decode them with the `encoding` package's
 reference parses back to the ranges it was built from, and dot-segment
 removal is idempotent and leaves no `.` or `..` segment.
 
+## UUIDs
+
+`stdlib/uuid.oak` (`import("uuid")`, also in the flat prelude) makes and
+reads RFC 9562 values in caller storage: a UUID is sixteen bytes of a span or
+view. `uuid_v4(state, dst)` draws 122 random bits from a `random` generator
+and stamps version 4 and the RFC variant; `uuid_v7(unix_millis, state, dst)`
+writes the 48-bit millisecond timestamp big-endian, version 7, 74 random
+bits, and the variant, so version 7 values sort by time under
+`uuid_compare` (bytewise). `uuid_nil`/`uuid_max` write the two constants,
+`uuid_version`/`uuid_variant`/`uuid_v7_millis` read the fields as `Option`
+(None unless the view is sixteen bytes and, for the timestamp, version 7).
+`uuid_format(dst, src, upper)` writes the 8-4-4-4-12 form (`UUID_TEXT_SIZE`
+bytes, lowercase unless asked) and `uuid_parse(dst, src)` accepts exactly
+that form in either case, validating the whole input before the first store;
+braces, the URN prefix, and the 32-digit form are rejected. Errors are the
+closed `UuidError = InvalidLength | InvalidCharacter | DestinationTooSmall |
+TimestampOutOfRange` with `uuid_ok`, `uuid_written`, `uuid_failure`
+unwrappers. The `random` generator is xoshiro256** and not cryptographic, so
+a version 4 value from this package identifies things but must not serve as
+a secret or a capability token; version 3 and 5 (MD5/SHA-1) are absent
+because the `hash` package carries neither digest.
+
 ## Strings and Unicode text
 
 The [strings API](STRINGS.md) is executable through `import(std)`: strict

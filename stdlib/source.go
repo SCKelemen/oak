@@ -48,6 +48,12 @@ var varintSource string
 //go:embed random.oak
 var randomSource string
 
+// uuid: RFC 9562 version 4 and 7 values over the random and encoding
+// packages (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed uuid.oak
+var uuidSource string
+
 // encoding: hex, base64, base32 and percent codecs over borrowed bytes
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -107,12 +113,12 @@ var Prelude = baseSource
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
 	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource)
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource)
 
 var (
 	clauseLine    = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
 	importLine    = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
-	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url)\.`)
+	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -158,6 +164,7 @@ var Packages = map[string]string{
 	"sort":            sortSource,
 	"varint":          varintSource,
 	"random":          randomSource,
+	"uuid":            uuidSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,
 	"url":             urlSource,

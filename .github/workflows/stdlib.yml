@@ -40,6 +40,8 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlib(Deque|IdPool|Serenity)' -count=1
       - name: Test sort, varint, and random
         run: go test ./compiler -run 'TestE2EStdlib(SortAndSearch|Varint|Random)|TestE2EGenericNestedTemplate' -count=1
+      - name: Test uuid
+        run: go test ./compiler -run 'TestE2EStdlibUuid' -count=1
       - name: Test encoding codecs
         run: go test ./compiler -run 'TestE2EStdlibEncoding' -count=1
       - name: Test time
