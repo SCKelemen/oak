@@ -24,7 +24,7 @@ import (
 // Relocation records a reference to a symbol outside the function.
 type Relocation struct {
 	Offset int    // byte offset of the instruction in the function
-	Kind   string // branch26 (b/bl), condbr19 (b.cond/cbz/ldr literal), tbz14, adr21, adrp21
+	Kind   string // call26 (bl), jump26 (b), condbr19 (b.cond/cbz/ldr literal), tbz14, adr21, adrp21
 	Symbol string
 }
 
@@ -946,7 +946,10 @@ func expandFP8(imm uint32) float64 {
 // label writes a PC-relative displacement, or records a relocation.
 func (e *encoder) label(fop *isaOperand, sym Symbol, pc int64, labels map[string]int64) (*Relocation, error) {
 	fields := strings.Join(fop.Fields, ":")
-	kind := map[string]string{"imm26": "branch26", "imm19": "condbr19", "imm14": "tbz14", "immhi:immlo": "adr21"}[fields]
+	kind := map[string]string{"imm26": "jump26", "imm19": "condbr19", "imm14": "tbz14", "immhi:immlo": "adr21"}[fields]
+	if fields == "imm26" && e.enc.Mnemonic == "bl" {
+		kind = "call26"
+	}
 	if fop.Scale == 4096 {
 		kind = "adrp21"
 	}

@@ -73,7 +73,10 @@ func normalizeResourceOperation(op ResourceOperation) (ResourceOperation, error)
 	if !op.ReturnsBorrow {
 		borrows = nil
 	}
-	out := ResourceOperation{ReturnsFresh: op.ReturnsFresh, ReturnsAlias: op.ReturnsAlias, AliasesArgument: op.AliasesArgument, ReturnsBorrow: op.ReturnsBorrow, BorrowsArguments: borrows, Receiver: op.Receiver}
+	if op.BorrowMutable && !op.ReturnsBorrow {
+		return ResourceOperation{}, fmt.Errorf("a mutable reborrow requires a borrowed result")
+	}
+	out := ResourceOperation{ReturnsFresh: op.ReturnsFresh, ReturnsAlias: op.ReturnsAlias, AliasesArgument: op.AliasesArgument, ReturnsBorrow: op.ReturnsBorrow, BorrowsArguments: borrows, BorrowMutable: op.BorrowMutable, Receiver: op.Receiver}
 	for _, index := range indices {
 		if _, callable := callables[index]; callable {
 			return ResourceOperation{}, fmt.Errorf("parameter %d has both a resource mode and a callable contract", index)

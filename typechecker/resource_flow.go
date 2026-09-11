@@ -31,6 +31,9 @@ type ResourceOperation struct {
 	// borrowed results); sorted, without duplicates.
 	ReturnsBorrow    bool
 	BorrowsArguments []int
+	// BorrowMutable makes the borrowed result a mutable reborrow whose
+	// owners are suspended while it lives.
+	BorrowMutable bool
 	// Receiver is the authority mode of a method's receiver, its own slot
 	// beside the explicit parameters (docs/spec/50-borrowing.md section 9).
 	Receiver ResourceParameterMode
@@ -131,6 +134,8 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			expired:            make(map[string]map[string]bool),
 			expiredScope:       make(map[string]int),
 			expiredDecl:        make(map[string]ast.Node),
+			mutableDependents:  make(map[string]bool),
+			mutableCalls:       make(map[*ast.InvocationExpression]bool),
 		}
 		analysis.pushScope()
 		// The function's own contract fixes what its body may do with each
@@ -282,7 +287,7 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 					return
 				}
 				a.flow.Rebind(name, source.Value, s.Name)
-				a.setDependent(name, owners, targetScope, s.Name)
+				a.setDependent(name, owners, targetScope, s.Name, a.mutableDependents[dependent])
 				return
 			}
 			a.flow.Rebind(name, source.Value, s.Name)
@@ -315,7 +320,7 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 				}
 			}
 			a.flow.RebindFresh(name, s.Name)
-			a.setDependent(name, owners, targetScope, s.Name)
+			a.setDependent(name, owners, targetScope, s.Name, a.mutableCalls[call])
 			return
 		}
 	}
@@ -774,6 +779,9 @@ func (a *typedResourceAnalysis) checkResultContract(fn *ast.FunctionStatement, o
 			}
 			if owners, isBorrow := a.borrowCalls[call]; isBorrow {
 				if a.ownersWithin(owners, declared) {
+					if own.BorrowMutable && !a.mutableCalls[call] {
+						report(call, fmt.Sprintf("%s is declared to return a mutable reborrow of %s but returns a shared borrowed result: a borrow cannot be widened", fn.Name.Value, describeDeclared))
+					}
 					continue
 				}
 				report(call, fmt.Sprintf("%s is declared to return a borrow of %s but returns a borrowed result of %s", fn.Name.Value, describeDeclared, describeOwners(owners)))
@@ -791,6 +799,10 @@ func (a *typedResourceAnalysis) checkResultContract(fn *ast.FunctionStatement, o
 			}
 		}
 		for _, ident := range tails {
+			if dependent, owners, isDependent := a.dependentOf(ident.Value); isDependent && own.BorrowMutable && !a.mutableDependents[dependent] && a.ownersWithin(owners, declared) {
+				report(ident, fmt.Sprintf("%s is declared to return a mutable reborrow of %s but returns %q, a shared borrowed result: a borrow cannot be widened", fn.Name.Value, describeDeclared, ident.Value))
+				continue
+			}
 			if relatedToDeclared(ident.Value) {
 				continue
 			}
@@ -918,6 +930,10 @@ type typedResourceAnalysis struct {
 	expired      map[string]map[string]bool
 	expiredScope map[string]int
 	expiredDecl  map[string]ast.Node
+	// mutableDependents marks dependents that are mutable reborrows;
+	// mutableCalls marks borrow-returning calls whose result is one.
+	mutableDependents map[string]bool
+	mutableCalls      map[*ast.InvocationExpression]bool
 	// entryModes records, per resource parameter of the function under
 	// analysis, the authority its own contract grants on entry.
 	entryModes map[string]entryAuthority
@@ -1305,16 +1321,53 @@ func (a *typedResourceAnalysis) mergeDependents(deps map[string]map[string]bool,
 
 // setDependent records name as a borrowed result depending on owners, bound
 // in scope.
-func (a *typedResourceAnalysis) setDependent(name string, owners map[string]bool, scope int, decl ast.Node) {
+func (a *typedResourceAnalysis) setDependent(name string, owners map[string]bool, scope int, decl ast.Node, mutable bool) {
 	a.dependents[name] = cloneOwnerSet(owners)
 	a.dependentScope[name] = scope
 	a.dependentDecl[name] = decl
+	if mutable {
+		a.mutableDependents[name] = true
+	} else {
+		delete(a.mutableDependents, name)
+	}
 }
 
 func (a *typedResourceAnalysis) clearDependent(name string) {
 	delete(a.dependents, name)
 	delete(a.dependentScope, name)
 	delete(a.dependentDecl, name)
+	delete(a.mutableDependents, name)
+}
+
+// suspendedBy lists the live mutable reborrows whose owners include name
+// or an alias of it: while any exists, name is suspended.
+func (a *typedResourceAnalysis) suspendedBy(name string) []string {
+	var out []string
+	for _, dependent := range a.ownerDependents(name) {
+		if a.mutableDependents[dependent] {
+			out = append(out, dependent)
+		}
+	}
+	return out
+}
+
+func (a *typedResourceAnalysis) reportSuspended(node ast.Node, name, dependent string, how string) {
+	range_ := diagnostic.NodeToRange(node)
+	key := fmt.Sprintf("suspended:%s@%d:%d", name, range_.Start.Line, range_.Start.Character)
+	if a.reported[key] {
+		return
+	}
+	a.reported[key] = true
+	title := fmt.Sprintf("%q is suspended by a temporary mutable reborrow passed to the same call and cannot be %s", name, how)
+	if dependent != "" {
+		title = fmt.Sprintf("%q is suspended while the mutable reborrow %q lives and cannot be %s", name, dependent, how)
+	}
+	d := a.tc.addResourceDiagnosticWithCode(node, CodeResourceSuspendedOwner, title)
+	if decl := a.dependentDecl[dependent]; dependent != "" && decl != nil {
+		d.AddSecondary(diagnostic.NodeToRange(decl), fmt.Sprintf("%q was bound here as a mutable reborrow of %q", dependent, name))
+	}
+	d.AddNote("a mutable reborrow holds its owner's mutable authority for as long as its scope: the owner is suspended entirely — no reads, projections, calls, rebinding, or return — and usable again when the reborrow's scope ends (docs/spec/50-borrowing.md section 9)")
+	d.AddHelp("finish with the reborrow in an inner scope before using its owner, or borrow it as shared instead")
 }
 
 // dependentOf reports whether name is a borrowed result (or an alias of
@@ -1406,25 +1459,50 @@ func (a *typedResourceAnalysis) checkDependentAccess(expr *ast.InvocationExpress
 		positions = append(positions, governed{argument: argument, required: op.parameterMode(index)})
 	}
 	// Owners borrowed by temporary results passed to this same call are
-	// protected for the call's duration.
+	// protected for the call's duration; owners of a temporary mutable
+	// reborrow are suspended for it.
 	temporaryOwners := make(map[string]bool)
+	suspendedOwners := make(map[string]bool)
 	for _, position := range positions {
 		if call, isCall := position.argument.(*ast.InvocationExpression); isCall {
 			for owner := range a.borrowCalls[call] {
 				temporaryOwners[owner] = true
+				if a.mutableCalls[call] {
+					suspendedOwners[owner] = true
+				}
 			}
 		}
 	}
 	callee, _ := a.callableIdentity(expr)
 	ok := true
 	for _, position := range positions {
+		if _, isCall := position.argument.(*ast.InvocationExpression); isCall || len(suspendedOwners) == 0 {
+			continue
+		}
+		name, tracked := a.trackedName(position.argument)
+		if !tracked {
+			continue
+		}
+		for owner := range suspendedOwners {
+			if owner == name || (a.flow.Registered(owner) && a.flow.Aliases(owner, name)) {
+				ok = false
+				a.reportSuspended(position.argument, name, "", fmt.Sprintf("passed to %s", callee))
+				break
+			}
+		}
+	}
+	for _, position := range positions {
 		if position.required == ResourceParameterUnspecified || authorityRank(position.required) <= authorityRank(ResourceParameterBorrowed) {
 			continue
 		}
 		if call, isCall := position.argument.(*ast.InvocationExpression); isCall {
 			if owners, borrowed := a.borrowCalls[call]; borrowed {
+				if a.mutableCalls[call] && position.required == ResourceParameterBorrowedMut {
+					// A mutable reborrow carries mutable authority.
+					continue
+				}
 				ok = false
-				a.reportDependent(position.argument, fmt.Sprintf("a borrowed result cannot be passed to the %s parameter of %s: it holds shared authority borrowed from %s", position.required, callee, describeOwners(owners)), "", owners)
+				a.reportDependent(position.argument, fmt.Sprintf("a borrowed result cannot be passed to the %s parameter of %s: it holds %s authority borrowed from %s", position.required, callee, permissionWord(a.mutableCalls[call]), describeOwners(owners)), "", owners)
 			}
 			continue
 		}
@@ -1433,8 +1511,11 @@ func (a *typedResourceAnalysis) checkDependentAccess(expr *ast.InvocationExpress
 			continue
 		}
 		if dependent, owners, isDependent := a.dependentOf(name); isDependent {
+			if a.mutableDependents[dependent] && position.required == ResourceParameterBorrowedMut {
+				continue
+			}
 			ok = false
-			a.reportDependent(position.argument, fmt.Sprintf("%q is a borrowed result of %s and cannot be passed to the %s parameter of %s", name, describeOwners(owners), position.required, callee), dependent, owners)
+			a.reportDependent(position.argument, fmt.Sprintf("%q is a %s borrowed result of %s and cannot be passed to the %s parameter of %s", name, permissionWord(a.mutableDependents[dependent]), describeOwners(owners), position.required, callee), dependent, owners)
 			continue
 		}
 		if dependents := a.ownerDependents(name); len(dependents) > 0 {
@@ -1451,6 +1532,13 @@ func (a *typedResourceAnalysis) checkDependentAccess(expr *ast.InvocationExpress
 		}
 	}
 	return ok
+}
+
+func permissionWord(mutable bool) string {
+	if mutable {
+		return "mutable"
+	}
+	return "shared"
 }
 
 func describeOwners(owners map[string]bool) string {
@@ -1691,9 +1779,10 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 		if a.flow.Registered(source.Value) {
 			if a.flow.CanUse(source.Value) {
 				a.flow.Alias(stmt.Name.Value, source.Value, stmt.Name)
-				if _, owners, isDependent := a.dependentOf(source.Value); isDependent {
-					// An alias of a borrowed result carries its dependency.
-					a.setDependent(stmt.Name.Value, owners, len(a.scopes)-1, stmt.Name)
+				if dependent, owners, isDependent := a.dependentOf(source.Value); isDependent {
+					// An alias of a borrowed result carries its dependency
+					// and its permission.
+					a.setDependent(stmt.Name.Value, owners, len(a.scopes)-1, stmt.Name, a.mutableDependents[dependent])
 				}
 			}
 			return
@@ -1735,7 +1824,7 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 				return
 			}
 			a.flow.Register(stmt.Name.Value, stmt.Name)
-			a.setDependent(stmt.Name.Value, owners, len(a.scopes)-1, stmt.Name)
+			a.setDependent(stmt.Name.Value, owners, len(a.scopes)-1, stmt.Name, a.mutableCalls[call])
 			return
 		}
 	}
@@ -1909,6 +1998,7 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 	delete(a.freshCalls, expr)
 	delete(a.aliasCalls, expr)
 	delete(a.borrowCalls, expr)
+	delete(a.mutableCalls, expr)
 	diagnosticsBefore := len(a.tc.Diagnostics())
 	// The callee identifier is not a resource value. Non-identifier callees
 	// may themselves evaluate expressions, so preserve their effects.
@@ -2002,6 +2092,7 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 			}
 		}
 		a.borrowCalls[expr] = owners
+		a.mutableCalls[expr] = op.BorrowMutable
 	}
 }
 
@@ -2037,7 +2128,14 @@ func (a *typedResourceAnalysis) match(expr *ast.MatchExpression) {
 }
 
 func (a *typedResourceAnalysis) use(name string, node ast.Node) {
-	if a == nil || a.flow == nil || name == "" || !a.flow.Registered(name) || a.flow.CanUse(name) {
+	if a == nil || a.flow == nil || name == "" || !a.flow.Registered(name) {
+		return
+	}
+	if suspended := a.suspendedBy(name); len(suspended) > 0 {
+		a.reportSuspended(node, name, suspended[0], "used")
+		return
+	}
+	if a.flow.CanUse(name) {
 		return
 	}
 	range_ := diagnostic.NodeToRange(node)

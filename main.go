@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/SCKelemen/oak/compiler"
@@ -109,10 +110,18 @@ func buildPackage(args []string) int {
 	profile := ""
 	lines := false
 	emitC := false
+	asmMode := defaultAsmMode()
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "-o" && i+1 < len(args):
 			output = args[i+1]
+			i++
+		case args[i] == "-asm" && i+1 < len(args):
+			// native: the Oak assembler encodes asm units into a companion
+			// object linked with the executable; c: inline __asm__ text
+			// (docs/spec/94-assembler.md §9). C output (-emit-c) always
+			// carries the units inline, since it stands alone.
+			asmMode = args[i+1]
 			i++
 		case args[i] == "-emit-c":
 			// Write C instead of an executable (also implied by -o x.c).
@@ -135,7 +144,7 @@ func buildPackage(args []string) int {
 			// source (docs/spec/90-backend.md section 10).
 			lines = true
 		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-profile default|strict] [-lines] [dir|file.oak]\n", args[i])
+			fmt.Fprintf(os.Stderr, "oak build: unknown flag %s\nusage: oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-profile default|strict] [-asm native|c] [-lines] [dir|file.oak]\n", args[i])
 			return 2
 		default:
 			dir = args[i]
@@ -143,6 +152,10 @@ func buildPackage(args []string) int {
 	}
 	if !validProfile(profile) {
 		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
+		return 2
+	}
+	if asmMode != "native" && asmMode != "c" {
+		fmt.Fprintf(os.Stderr, "oak build: -asm takes native or c, got %q\n", asmMode)
 		return 2
 	}
 	comp, err := compilationFor(dir)
@@ -210,7 +223,7 @@ func buildPackage(args []string) int {
 	}
 	// An executable, like `go build`: the emitted C compiled by the system
 	// C compiler into the named output.
-	if err := compileBinary(comp, output); err != nil {
+	if err := compileBinary(comp, output, asmMode); err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
 	}
@@ -772,13 +785,20 @@ func validProfile(profile string) bool {
 func runPackage(args []string) int {
 	dir := "."
 	profile := ""
+	asmMode := defaultAsmMode()
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "-profile" && i+1 < len(args):
 			profile = args[i+1]
 			i++
+		case args[i] == "-asm" && i+1 < len(args):
+			// native: the Oak assembler encodes asm units into a companion
+			// object; c: they are emitted as __asm__ text the C toolchain
+			// assembles (docs/spec/94-assembler.md §9).
+			asmMode = args[i+1]
+			i++
 		case strings.HasPrefix(args[i], "-"):
-			fmt.Fprintf(os.Stderr, "oak run: unknown flag %s\nusage: oak run [-profile default|strict] [dir]\n", args[i])
+			fmt.Fprintf(os.Stderr, "oak run: unknown flag %s\nusage: oak run [-profile default|strict] [-asm native|c] [dir]\n", args[i])
 			return 2
 		default:
 			dir = args[i]
@@ -788,7 +808,12 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak run: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
 		return 2
 	}
-	code, err := compiler.New().WithPackageDir(dir).WithProfile(profile).WithDiagnosticSink(reportAsmVerdict).EmitC().Get()
+	if asmMode != "native" && asmMode != "c" {
+		fmt.Fprintf(os.Stderr, "oak run: -asm takes native or c, got %q\n", asmMode)
+		return 2
+	}
+	comp := compiler.New().WithPackageDir(dir).WithProfile(profile).WithDiagnosticSink(reportAsmVerdict)
+	code, object, err := emitForHost(comp, asmMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
@@ -812,8 +837,18 @@ func runPackage(args []string) int {
 	}
 	// -ffp-contract=off keeps floating-point semantics exactly as written
 	// (docs/spec/90-backend.md section 7a); -lm links the C99 math library
-	// the float intrinsics lower to.
-	build := exec.Command(cc, "-std=c99", "-O1", "-ffp-contract=off", "-o", binary, cPath, "-lm")
+	// the float intrinsics lower to. The asm units' companion object, when
+	// the Oak assembler encoded them, links beside the C.
+	ccArgs := []string{"-std=c99", "-O1", "-ffp-contract=off", "-o", binary, cPath}
+	if object != nil {
+		objPath := filepath.Join(work, "asm.o")
+		if err := os.WriteFile(objPath, object, 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
+			return 1
+		}
+		ccArgs = append(ccArgs, objPath)
+	}
+	build := exec.Command(cc, append(ccArgs, "-lm")...)
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "oak run: C compilation failed: %v\n", err)
@@ -830,6 +865,30 @@ func runPackage(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// defaultAsmMode: asm units are encoded by the Oak assembler on AArch64
+// hosts (where `oak run` executes them) and assembled by the C toolchain
+// elsewhere, since the companion object must match the running machine.
+func defaultAsmMode() string {
+	if runtime.GOARCH == "arm64" && (runtime.GOOS == "darwin" || runtime.GOOS == "linux") {
+		return "native"
+	}
+	return "c"
+}
+
+// emitForHost emits the C and, in native mode, the asm units' companion
+// object for the host's object format.
+func emitForHost(comp compiler.Compilation, asmMode string) (string, []byte, error) {
+	if asmMode == "native" {
+		native, err := comp.EmitNative(compiler.HostObjectFormat()).Get()
+		if err != nil {
+			return "", nil, err
+		}
+		return native.C, native.Object, nil
+	}
+	code, err := comp.EmitC().Get()
+	return code, nil, err
 }
 
 // leanNamespace derives a Lean namespace component from a package

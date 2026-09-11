@@ -153,8 +153,13 @@ day):** multiple-origin results (`BorrowsArguments`, one `return-borrow`
 per origin), root-owner union with fail-closed unknown origins, projection
 owners protected against field and whole-record writes, wrapper contracts
 that must cover every origin, and temporary borrowed results participating
-in exclusivity by owner set. Open: stages (d)–(e) and a source spelling
-for all three result identities.
+in exclusivity by owner set. **Stage (d) (same day):** mutable reborrows
+(`BorrowMutable`, `return-borrow-mut`, `OAK-B0119`): origins must all be
+borrowed-mut, the result may be passed to borrowed-mut positions and
+reborrowed, its owners are suspended entirely for its lexical scope (a
+temporary suspends for the call), widening is rejected and narrowing
+admitted. Open: stage (e) and a source spelling for all three result
+identities.
 
 ## 5. Resources through generics and pattern matching
 

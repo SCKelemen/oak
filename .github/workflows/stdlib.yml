@@ -48,6 +48,8 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlibTime' -count=1
       - name: Test url
         run: go test ./compiler -run 'TestE2EStdlibUrl' -count=1
+      - name: Test path
+        run: go test ./compiler -run 'TestE2EStdlibPath' -count=1
       # The whole compiler package runs under the race detector in ci.yml,
       # sharded; here the race run covers every other package plus the
       # compiler's standard-library and extraction tests.
