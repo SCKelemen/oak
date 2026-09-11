@@ -1,0 +1,86 @@
+// Variable-length integers for wire and log formats: unsigned LEB128 (the
+// protobuf / WebAssembly base-128 varint) and ZigZag for signed values, over
+// caller-owned bytes with the size checked before any write. A u64 takes one
+// to ten bytes; decoding rejects a truncated or over-long (more than ten
+// bytes, or a tenth byte above 1) encoding so every value has exactly one
+// canonical form.
+package varint
+
+pub VarintError: type = Truncated | Overlong | DestinationTooSmall
+
+pub VarintValue: type = struct { value: u64, next: u32 }
+pub VarintSigned: type = struct { value: i64, next: u32 }
+
+// varint_size: the encoded length of a u64, 1..10.
+pub varint_size: (value: u64): u32 {
+  n: u32 = u32(1)
+  rest: u64 = value >> u64(7)
+  while rest != u64(0) {
+    n = n + u32(1)
+    rest = rest >> u64(7)
+  }
+  n
+}
+
+// varint_encode writes value at offset; returns the bytes written.
+pub varint_encode: (dst: [*]u8, offset: u32, value: u64): Result[u32, VarintError] {
+  n: u32 = varint_size(value)
+  !bytes_range_fits(len(dst), offset, n) ? { .Err(.DestinationTooSmall) } | {
+    rest: u64 = value
+    i: u32 = u32(0)
+    while i < n {
+      unit: u8 = u8_trunc_u64(rest & u64(127))
+      rest = rest >> u64(7)
+      dst[offset + i] = rest != u64(0) ? { unit | u8(128) } | { unit }
+      i = i + u32(1)
+    }
+    .Ok(n)
+  }
+}
+
+// varint_decode reads a canonical LEB128 u64 at offset; `next` is the byte
+// after it.
+pub varint_decode: (src: []u8, offset: u32): Result[VarintValue, VarintError] {
+  value: u64 = u64(0)
+  shift: u32 = u32(0)
+  at: u32 = offset
+  done: Bool = false
+  failed: Bool = false
+  overlong: Bool = false
+  while !done && !failed {
+    at >= len(src) ? { failed = true } |
+    shift >= u32(70) ? { failed = true; overlong = true } | {
+      lead: u32 = u32(src[at])
+      shift == u32(63) && (lead & u32(127)) > u32(1) ? { failed = true; overlong = true } | {
+        value = value | (u64(lead & u32(127)) << u64(shift))
+        at = at + u32(1)
+        shift = shift + u32(7)
+        (lead & u32(128)) == u32(0) ? { done = true }
+      }
+    }
+  }
+  failed ? { overlong ? .Err(.Overlong) | .Err(.Truncated) } | { .Ok(VarintValue { value: value, next: at }) }
+}
+
+// zigzag_encode maps signed to unsigned so small magnitudes stay short:
+// 0, -1, 1, -2, ... -> 0, 1, 2, 3, ...
+pub zigzag_encode: (value: i64): u64 {
+  sign: u64 = value < i64(0) ? u64(18446744073709551615) | u64(0)
+  (u64_bits_i64(value) << u64(1)) ^ sign
+}
+
+pub zigzag_decode: (value: u64): i64 = i64_bits_u64((value >> u64(1)) ^ (u64(0) - (value & u64(1))))
+
+pub varint_encode_signed: (dst: [*]u8, offset: u32, value: i64): Result[u32, VarintError] = varint_encode(dst, offset, zigzag_encode(value))
+
+pub varint_decode_signed: (src: []u8, offset: u32): Result[VarintSigned, VarintError] {
+  varint_decode(src, offset) ?
+    | .Err(reason) => .Err(reason)
+    | .Ok(item) => .Ok(VarintSigned { value: zigzag_decode(item.value), next: item.next })
+}
+
+pub varint_ok: (result: Result[VarintValue, VarintError]): Bool = result ? | .Ok(v) => true | .Err(e) => false
+pub varint_value: (result: Result[VarintValue, VarintError]): VarintValue = result ? | .Ok(v) => v | .Err(e) => VarintValue { value: u64(0), next: u32(0) }
+pub varint_written: (result: Result[u32, VarintError]): u32 = result ? | .Ok(n) => n | .Err(e) => u32(0)
+pub varint_signed_ok: (result: Result[VarintSigned, VarintError]): Bool = result ? | .Ok(v) => true | .Err(e) => false
+pub varint_signed_value: (result: Result[VarintSigned, VarintError]): VarintSigned = result ? | .Ok(v) => v | .Err(e) => VarintSigned { value: i64(0), next: u32(0) }

@@ -465,6 +465,40 @@ record-valued deque with an ID pool. Both structures operate without allocation.
 Further AK-inspired work includes hash tables/maps, intrusive ordered trees, and
 segmented/disjoint storage; these are not implemented by this addition.
 
+## Sorting and searching
+
+`sort_span[T](items)` sorts a span in place through the element type's `<`
+(insertion sort up to sixteen elements, heapsort beyond; `sort_insertion` and
+`sort_heap` are also exported), `sort_is_sorted[T](view)` checks
+non-decreasing order, `sort_search[T](view, key)` is a binary search returning
+`Option[u32]`, `sort_lower_bound[T](view, key)` the first index not less than
+the key (the insertion point), `sort_dedup[T](span)` compacts a sorted span
+to one element per run and returns the new length, and `sort_reverse[T]`
+reverses in place. No allocation; heapsort is not stable, insertion sort is.
+
+## Variable-length integers
+
+`varint_encode(dst, offset, value)` writes unsigned LEB128 (one to ten bytes,
+`varint_size(value)`), `varint_decode(src, offset)` reads it back as a
+`VarintValue { value, next }` and rejects truncated and over-long forms so
+every value has one canonical encoding; `zigzag_encode`/`zigzag_decode` map
+signed to unsigned so small magnitudes stay short, and
+`varint_encode_signed`/`varint_decode_signed` compose the two. Errors are the
+closed `VarintError`; a failed write leaves the destination unchanged.
+`varint_ok`/`varint_value` and `varint_signed_ok`/`varint_signed_value` unwrap
+decode results (zero on error) and `varint_written` unwraps an encode result,
+for callers that have already checked the input.
+
+## Deterministic random numbers
+
+`random_seed(seed)` derives a xoshiro256** state (`Xoshiro`) through
+SplitMix64; `random_next(state)` yields 64 bits, `random_below(state, bound)`
+a uniform value below the bound by rejection (no modulo bias),
+`random_range(state, low, high)` an inclusive range, `random_bool`,
+`random_fill(state, dst)` random bytes, and `random_shuffle[T](state, span)` a
+Fisher-Yates permutation. Bit-exact across the interpreter and every backend;
+not a cryptographic source. Tests draw from the choice tape instead
+(`import(testing)`).
 ## URI references
 
 `url_parse(src)` splits a URI or relative reference (RFC 3986 §3, Appendix B)

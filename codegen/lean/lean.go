@@ -530,7 +530,7 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string) error {
 	case *ast.WhileStatement:
 		return em.whileStatement(s, lines, &hoisted)
 	case *ast.ExpressionStatement:
-		if match, ok := s.Expression.(*ast.MatchExpression); ok && isBoolConditional(match) {
+		if match, ok := s.Expression.(*ast.MatchExpression); ok && (isBoolConditional(match) || isIntegerMatch(match)) {
 			return em.conditionalStatement(match, lines, &hoisted)
 		}
 		if call, ok := s.Expression.(*ast.InvocationExpression); ok {
@@ -605,38 +605,114 @@ func isBoolConditional(match *ast.MatchExpression) bool {
 	return true
 }
 
-// conditionalStatement emits a Bool conditional whose arms are blocks: the
-// variables either arm assigns are rebound from the chosen arm.
-func (em *emitter) conditionalStatement(match *ast.MatchExpression, lines *[]string, hoisted *[]string) error {
-	trueBody, falseBody := match.Arms[0].Body, match.Arms[1].Body
-	if literal := match.Arms[0].Pattern.(*ast.LiteralPattern).Value.(*ast.Boolean); !literal.Value {
-		trueBody, falseBody = falseBody, trueBody
+// isIntegerMatch recognizes a match on integer constants: every arm but
+// the last a literal pattern over an integer, the last a literal or the
+// wildcard. It extracts as a chain of equality tests against the scrutinee
+// (docs/spec/95-extraction.md section 2).
+func isIntegerMatch(match *ast.MatchExpression) bool {
+	if len(match.Arms) < 2 {
+		return false
 	}
-	cond, err := em.expr(match.Scrutinee, "Bool")
+	for i, arm := range match.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			if _, isInt := pattern.Value.(*ast.IntegerLiteral); !isInt {
+				return false
+			}
+		case *ast.WildcardPattern:
+			if i != len(match.Arms)-1 {
+				return false
+			}
+		case *ast.BindingPattern:
+			// The parser spells `_` as a binding named "_"; a real binding
+			// names the scrutinee and stays outside the subset.
+			if i != len(match.Arms)-1 || pattern.Name == nil || pattern.Name.Value != "_" {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// branch is one guarded arm of a conditional chain; the final arm has no
+// condition.
+type branch struct {
+	cond string
+	body ast.Expression
+}
+
+// branches renders a Bool conditional or an integer-constant match as a
+// chain of guarded arms ending in the unguarded one.
+func (em *emitter) branches(match *ast.MatchExpression) ([]branch, error) {
+	if isBoolConditional(match) {
+		trueBody, falseBody := match.Arms[0].Body, match.Arms[1].Body
+		if literal := match.Arms[0].Pattern.(*ast.LiteralPattern).Value.(*ast.Boolean); !literal.Value {
+			trueBody, falseBody = falseBody, trueBody
+		}
+		cond, err := em.expr(match.Scrutinee, "Bool")
+		if err != nil {
+			return nil, err
+		}
+		return []branch{{cond, trueBody}, {"", falseBody}}, nil
+	}
+	typ := em.checkedLeanType(match.Scrutinee)
+	scrutinee, err := em.expr(match.Scrutinee, typ)
+	if err != nil {
+		return nil, err
+	}
+	var chain []branch
+	for i, arm := range match.Arms {
+		if i == len(match.Arms)-1 {
+			// The last arm is the else, whether a wildcard or the closing
+			// literal of an exhaustive match.
+			chain = append(chain, branch{"", arm.Body})
+			break
+		}
+		literal := arm.Pattern.(*ast.LiteralPattern).Value.(*ast.IntegerLiteral)
+		chain = append(chain, branch{fmt.Sprintf("(%s == (%d : %s))", scrutinee, literal.Value, typ), arm.Body})
+	}
+	return chain, nil
+}
+
+// conditionalStatement emits a Bool conditional or integer-constant match
+// whose arms are blocks: the variables any arm assigns are rebound from the
+// chosen arm, through a chain of `if ... then (do ...) else if ...`.
+func (em *emitter) conditionalStatement(match *ast.MatchExpression, lines *[]string, hoisted *[]string) error {
+	chain, err := em.branches(match)
 	if err != nil {
 		return err
 	}
 	*lines = append(*lines, *hoisted...)
 	*hoisted = nil
-	written := em.assignedOuter(trueBody, falseBody)
+	var bodies []ast.Expression
+	for _, b := range chain {
+		bodies = append(bodies, b.body)
+	}
+	written := em.assignedOuter(bodies...)
 	outs := tuple(identAll(written))
 	if len(written) == 0 {
 		outs = "()"
 	}
-	*lines = append(*lines, fmt.Sprintf("%slet %s ← (if %s then (do", em.indent, outs, cond))
-	for _, body := range []ast.Expression{trueBody, falseBody} {
+	for i, b := range chain {
+		switch {
+		case i == 0:
+			*lines = append(*lines, fmt.Sprintf("%slet %s ← (if %s then (do", em.indent, outs, b.cond))
+		case b.cond != "":
+			*lines = append(*lines, fmt.Sprintf("%s  else if %s then (do", em.indent, b.cond))
+		default:
+			*lines = append(*lines, em.indent+"  else (do")
+		}
 		saved := em.indent
 		em.indent = saved + "    "
 		var armLines []string
-		if err := em.branchBody(body, &armLines); err != nil {
+		if err := em.branchBody(b.body, &armLines); err != nil {
 			return err
 		}
 		armLines = append(armLines, em.indent+"pure "+outs+")")
 		em.indent = saved
 		*lines = append(*lines, armLines...)
-		if body == trueBody {
-			*lines = append(*lines, em.indent+"  else (do")
-		}
 	}
 	last := len(*lines) - 1
 	(*lines)[last] += ")"
@@ -657,7 +733,7 @@ func (em *emitter) branchBody(body ast.Expression, lines *[]string) error {
 		em.scope = inner.outer
 		return err
 	case *ast.MatchExpression:
-		if isBoolConditional(b) {
+		if isBoolConditional(b) || isIntegerMatch(b) {
 			var hoisted []string
 			return em.conditionalStatement(b, lines, &hoisted)
 		}
@@ -842,7 +918,53 @@ func addressOf(expr ast.Expression) string {
 // expr renders an expression as a pure Lean term; calls are hoisted into
 // the current statement's preceding lines. want is the Lean type the
 // context expects, used to type integer literals.
+// leanIntWidth is the bit width of a Lean fixed-width integer type name,
+// and whether it is signed.
+func leanIntWidth(name string) (int, bool, bool) {
+	switch name {
+	case "UInt8":
+		return 8, false, true
+	case "UInt16":
+		return 16, false, true
+	case "UInt32":
+		return 32, false, true
+	case "UInt64":
+		return 64, false, true
+	case "Int8":
+		return 8, true, true
+	case "Int16":
+		return 16, true, true
+	case "Int32":
+		return 32, true, true
+	case "Int64":
+		return 64, true, true
+	}
+	return 0, false, false
+}
+
+// expr renders an expression where a value of Lean type `want` is expected
+// (or "" when the context fixes nothing). Oak widens a narrower integer of
+// the same signedness implicitly (docs/spec/20-types.md section 11.1); the
+// extraction makes that widening explicit with the `toUIntN`/`toIntN` of
+// the wanted type, since Lean has no such coercion.
 func (em *emitter) expr(expr ast.Expression, want string) (string, error) {
+	term, err := em.exprValue(expr, want)
+	if err != nil {
+		return "", err
+	}
+	wantBits, wantSigned, wantInt := leanIntWidth(want)
+	if !wantInt {
+		return term, nil
+	}
+	have := em.checkedLeanType(expr)
+	haveBits, haveSigned, haveInt := leanIntWidth(have)
+	if !haveInt || have == want || haveSigned != wantSigned || haveBits >= wantBits {
+		return term, nil
+	}
+	return fmt.Sprintf("(%s.to%s)", term, want), nil
+}
+
+func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		typ := want
@@ -946,26 +1068,31 @@ func (em *emitter) expr(expr ast.Expression, want string) (string, error) {
 		}
 		return fmt.Sprintf("({ %s } : %s)", strings.Join(fields, ", "), ident(e.TypeName.Value)), nil
 	case *ast.MatchExpression:
-		if !isBoolConditional(e) {
-			return "", fmt.Errorf("match %s is outside the extracted subset (Bool conditionals only)", e.String())
+		if !isBoolConditional(e) && !isIntegerMatch(e) {
+			return "", fmt.Errorf("match %s is outside the extracted subset (Bool conditionals and integer-constant matches only)", e.String())
 		}
-		cond, err := em.expr(e.Scrutinee, "Bool")
+		chain, err := em.branches(e)
 		if err != nil {
 			return "", err
 		}
-		arms := map[bool]ast.Expression{}
-		for _, arm := range e.Arms {
-			arms[arm.Pattern.(*ast.LiteralPattern).Value.(*ast.Boolean).Value] = arm.Body
+		var out strings.Builder
+		out.WriteString("(")
+		for i, b := range chain {
+			value, err := em.armValue(b.body, want)
+			if err != nil {
+				return "", err
+			}
+			if b.cond == "" {
+				out.WriteString("else " + value)
+				break
+			}
+			if i > 0 {
+				out.WriteString("else ")
+			}
+			out.WriteString(fmt.Sprintf("if %s then %s ", b.cond, value))
 		}
-		then, err := em.armValue(arms[true], want)
-		if err != nil {
-			return "", err
-		}
-		otherwise, err := em.armValue(arms[false], want)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("(if %s then %s else %s)", cond, then, otherwise), nil
+		out.WriteString(")")
+		return out.String(), nil
 	case *ast.BlockExpression:
 		return em.armValue(e, want)
 	case *ast.InvocationExpression:
@@ -1091,7 +1218,7 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 			return "", fmt.Errorf("%s of unknown owner %s", callee.Value, owner)
 		}
 		return ident(owner), nil
-	case "u8", "u16", "u32", "u64":
+	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
 		if len(call.Arguments) != 1 {
 			return "", fmt.Errorf("%s takes one argument", callee.Value)
 		}
@@ -1108,6 +1235,9 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 			return inner, nil
 		}
 		return fmt.Sprintf("(%s.to%s)", inner, target), nil
+	}
+	if term, handled, err := em.conversion(callee.Value, call); handled {
+		return term, err
 	}
 	fn, known := em.functions[callee.Value]
 	if !known {
@@ -1161,6 +1291,46 @@ func argOperand(arg ast.Expression) ast.Expression {
 }
 
 // checkedLeanType is the Lean type of an expression's checked type, or "".
+// conversion extracts the integer rows of the `{target}_{op}_{source}`
+// scheme (docs/spec/20-types.md section 11.1): `trunc` is Lean's wrapping
+// `toUIntN`/`toIntN`, `bits` the same-width reinterpretation, `saturating`
+// a clamp before the truncation. `checked` builds an ADT value and the
+// floating-point rows have no Lean carrier here, so both stay outside the
+// subset and fail closed.
+func (em *emitter) conversion(name string, call *ast.InvocationExpression) (string, bool, error) {
+	target, op, source, ok := typechecker.ConversionParts(name)
+	if !ok {
+		return "", false, nil
+	}
+	targetLean, targetKnown := primitiveLean[target]
+	sourceLean, sourceKnown := primitiveLean[source]
+	if !targetKnown || !sourceKnown || target == "Bool" || source == "Bool" {
+		return "", true, fmt.Errorf("call to %s is outside the extracted subset (integer conversions only)", name)
+	}
+	if len(call.Arguments) != 1 {
+		return "", true, fmt.Errorf("%s takes one argument", name)
+	}
+	inner, err := em.expr(call.Arguments[0], sourceLean)
+	if err != nil {
+		return "", true, err
+	}
+	switch op {
+	case "trunc", "bits":
+		return fmt.Sprintf("(%s.to%s)", inner, targetLean), true, nil
+	case "saturating":
+		bits := typechecker.PrimitiveBits(target)
+		if target[0] == 'u' {
+			max := uint64(1)<<uint(bits) - 1
+			return fmt.Sprintf("(if %s > (%d : %s) then (%d : %s) else %s.to%s)", inner, max, sourceLean, max, targetLean, inner, targetLean), true, nil
+		}
+		max := int64(1)<<uint(bits-1) - 1
+		min := -int64(1) << uint(bits-1)
+		return fmt.Sprintf("(if %s > (%d : %s) then (%d : %s) else if %s < (%d : %s) then (%d : %s) else %s.to%s)",
+			inner, max, sourceLean, max, targetLean, inner, min, sourceLean, min, targetLean, inner, targetLean), true, nil
+	}
+	return "", true, fmt.Errorf("call to %s is outside the extracted subset (%s conversions build an ADT value)", name, op)
+}
+
 func (em *emitter) checkedLeanType(expr ast.Expression) string {
 	typ := em.env.CheckedExpressionType(expr)
 	if typ == nil {

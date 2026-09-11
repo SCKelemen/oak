@@ -557,6 +557,25 @@ table does not cover, by design: SVE and SME (absent from M-series), and the
 system-register namespace beyond `mrs`/`msr` (any register name is
 accepted under `system`).
 
+**Grounding the model in the hardware and in Arm's specification.** The
+verifier's semantics are a reading of the Arm manual, transliterated into
+Lean (`Oak.AssemblerSemantics`) and Go. The **silicon differential**
+(`asm/silicon_test.go`) executes every modeled register-level instruction
+body natively on the host's AArch64 core — pinned-register inline asm over a
+deterministic operand set of boundary values and a generator — and requires
+bit-for-bit agreement with the executor's term semantics: 181 bodies (every
+data-processing form, every condition code after `cmp`/`adds`/`subs`/`tst`,
+`ccmp`/`ccmn` chains, carry chains, multiplies, division, bit fields, bit
+manipulation, extends, wide moves, shifted and extended operands) × 60
+inputs agree. The staged plan beyond it: (1) derive the instruction table's
+operand forms, immediate encodability, flag effects, and access sizes from
+Arm's machine-readable A64 ISA XML; (2) transliterate the shared ASL
+primitives the semantics rest on (`AddWithCarry`, `ShiftReg`, `ExtendReg`,
+`ConditionHolds`, `DecodeBitMasks`) into Lean with the ASL alongside and
+prove `Oak.AssemblerSemantics` equal to them; (3) Sail-to-Lean for the
+modeled subset as the ground truth the Go transliteration is refined
+against.
+
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
 (§7), the design has a natural anchor — **the Oak body is the
