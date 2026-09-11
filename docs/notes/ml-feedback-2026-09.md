@@ -225,6 +225,14 @@ ran into while landing callee-entry authority, callable boundaries,
 provenance, and result contracts. The first group blocks using the features
 from Oak source; the second is fixture friction that keeps recurring.
 
+Two constraints govern every proposal here: **syntax stays lightweight** —
+reuse the words and positions Oak already has, add no punctuation-heavy
+clauses and at most one contextual word — and **no allocation is
+introduced** (00-constitution: no hidden work). Every authority fact is
+checked at compile time and erased; none of the features below adds a
+runtime representation, a copy, or an allocation. Where the checker today
+*forces* a copy (items 4 and 8), that is the allocation to remove.
+
 Prerequisites for adopting the authority features:
 
 1. **Source spelling for result identities and callable contracts.** Fresh,
@@ -232,33 +240,51 @@ Prerequisites for adopting the authority features:
    as protocol declarations and SemIR effects (`return-fresh`,
    `return-alias`, `return-borrow`, `return-borrow-mut`); contracts on
    function-typed parameters (`callable-*`) likewise. `via f(consumed h)`
-   covers parameter modes only. Proposal: extend the `via` line with a
-   result clause, e.g. `via cursor_of(borrowed a) -> borrow a`,
-   `-> borrow-mut a`, `-> alias h`, `-> fresh`, and a callable clause
-   `via apply(consumed h, f: (consumed Handle))`.
+   covers parameter modes only. Proposal, reusing the mode words and the
+   `:` result position of the `via` line, with elision like section 8c's
+   region returns:
+
+   ```oak
+   via open(): fresh                         // fresh result
+   via same(consumed h): h                   // alias: the result is h
+   via cursor_of(borrowed a): borrowed       // borrow of every borrowed parameter (elided)
+   via merge(borrowed a, borrowed b): borrowed a   // explicit origin subset
+   via mut_cursor(borrowed-mut a): borrowed-mut    // mutable reborrow
+   via apply(consumed h, f(consumed))        // callable contract: f's modes, positional
+   ```
+
+   `fresh` is the only new (contextual) word; a bare parameter name is the
+   alias form; `borrowed`/`borrowed-mut` in result position borrow every
+   parameter of that mode unless origins are named. No result clause keeps
+   today's meaning (unknown, fail closed).
 2. **A trusted boundary for resource primitives.** Definition-less
    declarations require an asm unit and `c.extern` requires C types, so a
    primitive such as a cursor over an arena cannot state a borrow honestly;
    today a provenance-free body is accepted for a borrow claim because a
-   borrow is the most conservative claim. An explicit `trusted` (or
-   `unsafe`) marker on a resource-typed declaration would make the boundary
-   visible and let fresh/alias claims be trusted there too.
+   borrow is the most conservative claim. Proposal: no new keyword — a
+   definition-less declaration that a `via` line gives a result clause is
+   the trusted boundary, and the compilation requires the body from an asm
+   unit or an extern as it does today.
 3. **Method calls on ADT receivers do not lower to C.** Receiver contracts
    typecheck and round-trip through SemIR but cannot be executed compiled.
 4. **Record-typed parameters and results carrying resource fields are not
    governed at calls.** A record with resource fields passed by value to an
    unmarked function is not checked; records holding borrowed fields
-   therefore fail closed (cannot be passed or returned). Contracts need a
-   path form (`via take(borrowed h.c)`) or a record-level mode.
+   therefore fail closed (cannot be passed or returned), which forces the
+   caller to copy the borrowed value out — the one place the current rules
+   cost an allocation-shaped copy. Proposal: the `via` parameter list
+   accepts field paths (`via take(borrowed h.c)`), and a record result
+   clause names the field (`: borrowed h.c`); no record-level mode word.
 
 Fixture and ergonomics friction:
 
 5. No bare block statement: scoping requires `flag ? { } | { }`, which
-   matters more now that dependencies and suspension are lexical.
+   matters more now that dependencies and suspension are lexical. A bare
+   `{ ... }` statement is the lightest fix and allocates nothing.
 6. Statement lines cannot start with `(`, `-`, or `!`.
 7. Closure literals cannot take typed parameters.
-8. One protocol per resource type; array elements never carry provenance.
+8. One protocol per resource type; array elements never carry provenance,
+   so a borrowed result cannot sit in an array without copying.
 9. `20-types.md` §11.3.8 should cite bf16 as the bfloat16 convention
    (Google Brain, vendor ISA documents) rather than IEEE 754, which does
    not define it.
-
