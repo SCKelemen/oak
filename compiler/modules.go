@@ -326,6 +326,20 @@ func (comp Compilation) WithModuleCache(dir string) Compilation {
 	return comp
 }
 
+// WithReplace lays a `replace path => dir` directive over the root module's
+// manifest for this build only; the manifest on disk is never rewritten.
+// `oak mod try` uses it to build against a local candidate of a dependency
+// (docs/spec/82-package-semver.md section 8).
+func (comp Compilation) WithReplace(path, dir string) Compilation {
+	replaces := map[string]string{}
+	for k, v := range comp.replaces {
+		replaces[k] = v
+	}
+	replaces[path] = dir
+	comp.replaces = replaces
+	return comp
+}
+
 // WithSessionSources configures an in-memory root package (the REPL's
 // session): files are named sources, and imports resolve through the module
 // enclosing moduleDir (the working directory, typically) as if the package
@@ -524,6 +538,16 @@ func (l *moduleLoader) findModuleRoot(dir string) (*moduleRoot, bool) {
 			manifest, ok := l.readManifest(candidate)
 			if !ok {
 				return nil, false
+			}
+			if len(l.comp.replaces) != 0 {
+				overlaid := map[string]string{}
+				for k, v := range manifest.Replaces {
+					overlaid[k] = v
+				}
+				for k, v := range l.comp.replaces {
+					overlaid[k] = v
+				}
+				manifest.Replaces = overlaid
 			}
 			l.root = &moduleRoot{Dir: current, Manifest: manifest}
 			l.located[manifest.Path] = l.root

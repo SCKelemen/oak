@@ -185,3 +185,48 @@ func VerifyArchiveAPI(dir string, version packageapi.Version) error {
 	}
 	return nil
 }
+
+// TryResult is one package's outcome when built against a candidate.
+type TryResult struct {
+	Package string
+	Err     error
+}
+
+// TryReplacement builds every package of the module at moduleDir with the
+// dependency `path` replaced by the local module at candidateDir, deciding
+// what no snapshot can: whether the module's unsealed imports of that
+// dependency still compile (docs/spec/82-package-semver.md section 8). The
+// candidate's oak.mod must declare `path`; the module's manifest is never
+// rewritten and nothing is fetched.
+func TryReplacement(moduleDir, path, candidateDir string) ([]TryResult, error) {
+	candidate, err := filepath.Abs(candidateDir)
+	if err != nil {
+		return nil, err
+	}
+	text, err := os.ReadFile(filepath.Join(candidate, modules.ManifestFile))
+	if err != nil {
+		return nil, fmt.Errorf("candidate: %w", err)
+	}
+	manifest, err := modules.ParseManifest(string(text))
+	if err != nil {
+		return nil, fmt.Errorf("candidate: %w", err)
+	}
+	if manifest.Path != path {
+		return nil, fmt.Errorf("candidate %s declares module %q, not %q", candidate, manifest.Path, path)
+	}
+	_, packages, err := ModulePackages(moduleDir)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(packages))
+	for p := range packages {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	results := make([]TryResult, 0, len(paths))
+	for _, p := range paths {
+		_, err := New().WithPackageDir(packages[p]).WithReplace(path, candidate).Check().Get()
+		results = append(results, TryResult{Package: p, Err: err})
+	}
+	return results, nil
+}
