@@ -89,6 +89,13 @@ main: (): i32 {
   assert(!varint_ok(varint_decode(view(&eleven), u32(0))))
   tenth_too_big: [10]u8 = [10]u8{ 255, 255, 255, 255, 255, 255, 255, 255, 255, 2 }
   assert(!varint_ok(varint_decode(view(&tenth_too_big), u32(0))))
+  // Zero padding spells a value the encoder writes shorter: 80 00 is not 0.
+  padded_zero: [2]u8 = [2]u8{ 128, 0 }
+  assert(!varint_ok(varint_decode(view(&padded_zero), u32(0))))
+  padded_one: [3]u8 = [3]u8{ 129, 128, 0 }
+  assert(!varint_ok(varint_decode(view(&padded_one), u32(0))))
+  plain_zero: [1]u8 = [1]u8{ 0 }
+  assert(varint_value(varint_decode(view(&plain_zero), u32(0))).value == u64(0))
   small: [1]u8
   true ? {
     sd: [*]u8 = span(&small)
