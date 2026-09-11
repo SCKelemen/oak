@@ -266,6 +266,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 			cg.emitFunction(s, tc)
 		}
 	}
+	cg.emitExportWrappers(program)
 
 	cg.emitEntryPoint()
 
@@ -1754,6 +1755,72 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			}
 		}
 		cg.write(" );\n")
+		// An explicit C ABI export is a second entry point with the
+		// declared symbol (docs/spec/92-ffi.md section 2.9).
+		if fn.ExportSymbol != "" {
+			cg.write(fmt.Sprintf("%s %s( %s );\n", returnType, fn.ExportSymbol, cg.cParameterList(fn)))
+		}
+	}
+	if emitted {
+		cg.write("\n")
+	}
+}
+
+// cParameterList spells a free function's parameters as a C parameter list
+// (`void` when there are none), the way the prototype and definition do:
+// owned arrays as wrapper structs, a variadic tail as a read-only view.
+func (cg *CodeGenerator) cParameterList(fn *ast.FunctionStatement) string {
+	if len(fn.Parameters) == 0 {
+		return "void"
+	}
+	parts := make([]string, 0, len(fn.Parameters))
+	for _, param := range fn.Parameters {
+		if param.Variadic {
+			viewType := cg.emitViewType(cg.parseTypeExpression(param.Type))
+			parts = append(parts, fmt.Sprintf("%s %s", viewType, cIdent(param.Name.Value)))
+		} else {
+			parts = append(parts, cg.cParameter(param.Type, param.Name.Value))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// emitExportWrappers defines every explicit C ABI export
+// (docs/spec/92-ffi.md section 2.9) as a forwarding function under its
+// declared symbol: the Oak-internal definition keeps the elaborator's name
+// for Oak callers, and the wrapper, one call the C compiler inlines, is the
+// stable symbol a C consumer links. The type checker has already rejected
+// symbols that are not C identifiers or that collide (OAK-F0108/F0109); the
+// backend re-checks the grammar before emitting.
+func (cg *CodeGenerator) emitExportWrappers(program *ast.Program) {
+	emitted := false
+	for _, stmt := range program.Statements {
+		fn, ok := stmt.(*ast.FunctionStatement)
+		if !ok || fn.Name == nil || fn.ExportSymbol == "" || fn.Receiver != nil || fn.ExternSymbol != "" || len(fn.TypeParams) != 0 {
+			continue
+		}
+		if !typechecker.ValidCSymbol(fn.ExportSymbol) {
+			cg.write(fmt.Sprintf("OAK_UNSUPPORTED_EXPORT_SYMBOL /* %q */\n", fn.ExportSymbol))
+			continue
+		}
+		if !emitted {
+			cg.write("/* C ABI exports (docs/spec/92-ffi.md section 2.9): stable symbols forwarding to the Oak definitions */\n")
+			emitted = true
+		}
+		returnType := "void"
+		if fn.ReturnType != nil {
+			returnType = cg.parseTypeExpression(fn.ReturnType)
+		}
+		args := make([]string, 0, len(fn.Parameters))
+		for _, param := range fn.Parameters {
+			args = append(args, cIdent(param.Name.Value))
+		}
+		cg.write(fmt.Sprintf("%s %s( %s ) {\n", returnType, fn.ExportSymbol, cg.cParameterList(fn)))
+		if returnType == "void" {
+			cg.write(fmt.Sprintf("  %s( %s );\n}\n", cg.cFunctionName(fn.Name.Value), strings.Join(args, ", ")))
+		} else {
+			cg.write(fmt.Sprintf("  return %s( %s );\n}\n", cg.cFunctionName(fn.Name.Value), strings.Join(args, ", ")))
+		}
 	}
 	if emitted {
 		cg.write("\n")

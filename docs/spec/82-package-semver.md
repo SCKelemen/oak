@@ -48,6 +48,10 @@ SemVer major/minor/patch rules apply.
 
 ## 3. Enforcement
 
+A function with a C ABI export marker (`92-ffi.md` §2.9) records the
+symbol as its ABI identity (`c-export <symbol>`): renaming or removing the
+export is a major change.
+
 Publishing compares the last published snapshot with the candidate snapshot.
 The declared candidate version must equal the exact next version implied by the
 table. A lower bump is unsafe; a larger bump is rejected as non-reproducible

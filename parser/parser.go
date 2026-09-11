@@ -307,6 +307,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		if p.currentToken.Literal == "operator" && p.peekTokenIs(token.LPAREN) {
 			return p.parseOperatorDeclaration()
 		}
+		// `export("symbol") pub name: (...)` gives a pub function a C ABI
+		// symbol (docs/spec/92-ffi.md section 2.9); `export` is contextual,
+		// so `export := 1` stays an ordinary binding.
+		if p.currentToken.Literal == "export" && p.peekTokenIs(token.LPAREN) && p.lookaheadSignificant(2).TokenKind == token.STRING {
+			return p.parseExportDeclaration()
+		}
 		// `module name { ... }` declares a nested module (section 3.5);
 		// `module` is contextual, so `module := 1` stays an ordinary binding.
 		if p.currentToken.Literal == "module" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.LBRACE {
@@ -1651,6 +1657,37 @@ func (p *Parser) parseOperatorDeclaration() ast.Statement {
 		return nil
 	}
 	fn.Operator = symbol
+	return fn
+}
+
+// parseExportDeclaration parses `export("symbol")` followed by a `pub`
+// function declaration and records the C ABI symbol on it
+// (docs/spec/92-ffi.md section 2.9). The symbol's grammar, uniqueness, and
+// the function's shape are checked by the type checker (OAK-F0108/F0109);
+// the parser only fixes the syntax: a string literal, then a pub function.
+func (p *Parser) parseExportDeclaration() ast.Statement {
+	marker := p.currentToken
+	p.nextToken() // (
+	p.nextToken() // the symbol
+	symbol := p.currentToken.Literal
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+	if !p.peekTokenIs(token.PUB) {
+		p.addErrorAtToken(&marker, "export(\""+symbol+"\") must be followed by a pub function declaration (docs/spec/92-ffi.md section 2.9)")
+		return nil
+	}
+	p.nextToken()
+	stmt := p.parsePubDeclaration()
+	if stmt == nil {
+		return nil
+	}
+	fn, isFunction := stmt.(*ast.FunctionStatement)
+	if !isFunction || fn.Receiver != nil {
+		p.addErrorAtToken(&marker, "export(\""+symbol+"\") must be followed by a pub function declaration (docs/spec/92-ffi.md section 2.9)")
+		return nil
+	}
+	fn.ExportSymbol = symbol
 	return fn
 }
 
