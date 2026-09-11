@@ -48,6 +48,12 @@ var varintSource string
 //go:embed random.oak
 var randomSource string
 
+// uuid: RFC 9562 version 4 and 7 values over the random and encoding
+// packages (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed uuid.oak
+var uuidSource string
+
 // path: slash-separated paths and glob patterns with Go's path semantics
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -113,7 +119,7 @@ var Prelude = baseSource
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
 	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(pathSource)
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource) + "\n" + flatten(pathSource)
 
 var (
 	clauseLine = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
@@ -121,7 +127,7 @@ var (
 	// A package qualifier is only a qualifier when nothing precedes it: after
 	// a `.` it is a field named like a package (the `Url` record's `path`), so
 	// the leading context is kept and only the qualifier is dropped.
-	qualification = regexp.MustCompile(`(^|[^.\w])(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|path)\.`)
+	qualification = regexp.MustCompile(`(^|[^.\w])(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid|path)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -167,6 +173,7 @@ var Packages = map[string]string{
 	"sort":            sortSource,
 	"varint":          varintSource,
 	"random":          randomSource,
+	"uuid":            uuidSource,
 	"path":            pathSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,
