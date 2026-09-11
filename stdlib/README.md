@@ -994,6 +994,22 @@ trips as properties over the full i64 range.
   and fuzzable as it stands; `examples/timesim` is the worked consumer and
   `timesim` below drives it.
 
+### Interval readings and attestation
+
+A `TimeSource` may carry an attested error bound: `time_source_attest(source,
+bound)` (a non-negative `Duration`, refused otherwise) is the platform
+layer's statement of its synchronization error, or a scenario's decree;
+`time_source_unattest` withdraws it. `time_interval(source)` is the
+clock-ordered reading `Result[TimeInterval, TimeError]`: `[wall - bound,
+wall + bound]` while attested, `Err(.Unattested)` otherwise, so a consumer
+that orders events by time refuses rather than guesses.
+`time_interval_before(a, b)` is definitely-before (`a.latest < b.earliest`;
+overlapping intervals are unordered) and `time_interval_contains(i, at)`
+membership. `Oak.TimeInterval` (`spec/lean/Oak/TimeInterval.lean`) proves
+the reading contains the true time exactly when the clock's departure is
+within the bound, that definitely-ordered honest intervals order their true
+times the same way, and that an unattested source yields no ordering.
+
 ## `timesim`: simulated time with clock faults (`import("timesim")`)
 
 `stdlib/timesim.oak` (a library package over `time` and `import(testing)`,
@@ -1014,7 +1030,11 @@ day), `TIME_FAULT_JUMP_FORWARD` (2), `TIME_FAULT_STALL` (4, neither clock
 advances this step), `TIME_FAULT_COARSE` (8, the wall clock is quantized to
 `coarse_nanos`, 10 ms unless `timesim_set_coarse` says otherwise),
 `TIME_FAULT_DRIFT` (16, the wall clock runs up to two percent fast or slow
-against the monotonic one), `TIME_FAULT_ALL`. The ledger (`jumps_back`,
+against the monotonic one), `TIME_FAULT_BOUND_BREAK` (32, the wall clock is
+stepped past the attested bound with the attestation left standing — the
+interval reading lies, and `timesim_interval_honest(sim, source, interval)`
+says so against `timesim_true_now`), `TIME_FAULT_UNATTEST` (64, the
+attestation is withdrawn, so `time_interval` refuses), `TIME_FAULT_ALL`. The ledger (`jumps_back`,
 `jumps_forward`, `stalls`, `coarsened`, `drifted`, `skew` — how far the wall
 clock has departed from the monotonic timeline) is there to classify on.
 The law every fault respects, asserted inside `timesim_advance`: **the

@@ -310,5 +310,17 @@ Stage B branch `sam/roadmap-stage-b`:
 10. Codegen: a span index inside a ternary that is a record literal's field
     value (`error: slot >= ring[0].files ? { a } | { b }`) emits raw
     `ring[0]` in C instead of the span accessor; binding the value to a
-    local first avoids it (met in `stdlib/ionative.oak`, 2026-09-12).
+    local first avoids it (met in `stdlib/ionative.oak`, 2026-09-12, and
+    again as a span read inside a call argument in a record literal field,
+    `Instant { nanos: f(x, source[0].wall) }`, in `stdlib/timesim.oak`).
+    The interpreter is unaffected; only the runner's and the e2e tests'
+    C builds catch it, which argues for a codegen test that emits every
+    stdlib package once.
+11. Codegen: a `?` match with a block arm that itself contains a match
+    (`r ? | .Ok(i) => false | .Err(e) => { e ? | .Overflowed => true | _ =>
+    false }`) emits an empty `/* match expression */` placeholder in C when
+    it is a binding's initializer; the same match as a function's tail
+    lowers fine, so a small helper function avoids it (met in
+    `compiler/e2e_time_interval_test.go`, 2026-09-12). The interpreter
+    handles both positions.
 
