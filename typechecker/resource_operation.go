@@ -55,7 +55,13 @@ func normalizeResourceOperation(op ResourceOperation) (ResourceOperation, error)
 	if op.ReturnsAlias && op.AliasesArgument < 0 {
 		return ResourceOperation{}, fmt.Errorf("invalid aliased argument %d", op.AliasesArgument)
 	}
-	out := ResourceOperation{ReturnsFresh: op.ReturnsFresh, ReturnsAlias: op.ReturnsAlias, AliasesArgument: op.AliasesArgument, Receiver: op.Receiver}
+	if op.ReturnsBorrow && (op.ReturnsFresh || op.ReturnsAlias) {
+		return ResourceOperation{}, fmt.Errorf("a borrowed result cannot also be fresh or an alias of an argument")
+	}
+	if op.ReturnsBorrow && op.BorrowsArgument < 0 {
+		return ResourceOperation{}, fmt.Errorf("invalid borrowed argument %d", op.BorrowsArgument)
+	}
+	out := ResourceOperation{ReturnsFresh: op.ReturnsFresh, ReturnsAlias: op.ReturnsAlias, AliasesArgument: op.AliasesArgument, ReturnsBorrow: op.ReturnsBorrow, BorrowsArgument: op.BorrowsArgument, Receiver: op.Receiver}
 	for _, index := range indices {
 		if _, callable := callables[index]; callable {
 			return ResourceOperation{}, fmt.Errorf("parameter %d has both a resource mode and a callable contract", index)

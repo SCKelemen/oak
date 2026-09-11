@@ -72,6 +72,8 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 				ReturnsFresh:    semantics.ReturnsFresh,
 				ReturnsAlias:    semantics.ReturnsAlias,
 				AliasesArgument: semantics.AliasesArgument,
+				ReturnsBorrow:   semantics.ReturnsBorrow,
+				BorrowsArgument: semantics.BorrowsArgument,
 				Receiver:        receiverModeFromSemIR(semantics.Receiver),
 			})
 		}
@@ -155,7 +157,8 @@ func sameResourceOperation(left, right ResourceOperation) bool {
 
 func sameResourceTransitionSemantics(left, right semir.ResourceTransitionSemantics) bool {
 	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver ||
-		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) {
+		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) ||
+		left.ReturnsBorrow != right.ReturnsBorrow || (left.ReturnsBorrow && left.BorrowsArgument != right.BorrowsArgument) {
 		return false
 	}
 	if len(left.Callables) != len(right.Callables) {

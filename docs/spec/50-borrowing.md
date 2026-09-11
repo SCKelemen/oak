@@ -550,8 +550,46 @@ it as a new class, which is indistinguishable from fresh authority. An
 alias of an argument without tracked provenance has unknown provenance.
 In SemIR the fact is the `resource.return-alias` (`arg:N`) effect beside
 `return-fresh`. Freshness and aliasing say nothing about the lifetime of
-backing storage: a borrowed *view* result stays under `OAK-B0109` until
-stage (b) of the authority roadmap's milestone 4.
+backing storage: a borrowed *view* result is governed by section 8c.
+
+**Borrowed results.** The third result identity is a **shared borrow of
+one argument**: the result is its own authority (distinct from the
+argument for exclusivity, so both may be read side by side) that
+*depends* on the argument's owner for as long as the binding that holds
+it is in scope. The declaration names one argument, which must be
+`borrowed` or `borrowed-mut` — a borrow of consumed or unmarked input is
+not admitted — and is exclusive with fresh and alias; in SemIR it is the
+`resource.return-borrow` (`arg:N`) effect. A borrow is the most
+conservative claim a result can make, so the callee's body may return the
+declared parameter, an alias or dependent of it, or a value with no
+provenance from any other tracked resource (a fresh result, an
+independent local, a record literal that mentions no other resource); it
+may not return authority derived from another parameter, a borrowed
+result of a different owner, or a value of unknown provenance
+(`OAK-B0117`). At the call site the result depends on the argument's root
+owners — a borrow of a borrowed result depends on the same owners — and
+an argument without tracked provenance leaves the result unknown, which
+fails closed. While a dependent lives, all of the following are rejected
+with `OAK-B0118`, and the rejected call or statement has not occurred:
+passing the owner, or an alias of it, to a borrowed-mut or consuming
+position; rebinding the owner; passing the dependent, an alias of it, or a
+temporary borrowed result to a borrowed-mut or consuming position;
+storing a dependent or temporary borrowed result in a record or array
+literal (borrowed values in aggregates await stage (e)); returning a
+dependent or temporary borrowed result from a function whose own
+contract does not declare its result a borrow of the parameter the value
+depends on (a contracted wrapper preserves the dependency, and returning
+the declared parameter itself is not retention); and rebinding a binding
+to a borrowed result whose owner, or whose own binding, lives in an inner
+scope, which would let the result outlive what it depends on. Rebinding a
+dependent releases its old dependency. Control-flow joins keep every
+dependency established on any path — a conservative set, never fresh
+authority — and the two-iteration loop probe applies. Freshness never
+proves backing-storage lifetime, and a borrowed result says nothing about
+storage either: it is an authority dependency between opaque resources.
+This is stage (b) of the authority roadmap's milestone 4; stages (c)–(e)
+(nested and multiple-origin results, mutable reborrows suspending the
+parent, borrowed values in aggregates) remain open.
 
 Imports and sealing cannot erase modes: a protocol declared in one package
 (`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the

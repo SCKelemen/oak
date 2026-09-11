@@ -22,6 +22,10 @@ const (
 	// ResourceEffectReturnAlias marks a result that aliases the argument
 	// arg:N: same authority class, no wider permission.
 	ResourceEffectReturnAlias = "return-alias"
+	// ResourceEffectReturnBorrow marks a result that is a shared borrow
+	// dependent on the argument arg:N: while it lives the argument may not
+	// be mutated, consumed, or rebound.
+	ResourceEffectReturnBorrow = "return-borrow"
 	// Callable-contract effects describe what a function-typed parameter
 	// (arg:N) requires of the function values passed for it: the mode of
 	// the callable's own parameter param:M, or a fresh result.
@@ -45,6 +49,12 @@ type ResourceCallableSemantics struct {
 // argument at index.
 func ResourceReturnAlias(index int) Effect {
 	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnAlias, Parameters: []string{"arg:" + strconv.Itoa(index)}}
+}
+
+// ResourceReturnBorrow constructs the effect for a result that is a shared
+// borrow of the argument at index.
+func ResourceReturnBorrow(index int) Effect {
+	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnBorrow, Parameters: []string{"arg:" + strconv.Itoa(index)}}
 }
 
 // ResourceCallableEffect constructs the effect requiring mode name (one of
@@ -75,6 +85,10 @@ type ResourceTransitionSemantics struct {
 	// one argument.
 	ReturnsAlias    bool
 	AliasesArgument int
+	// ReturnsBorrow and BorrowsArgument record a result declared to be a
+	// shared borrow of one argument.
+	ReturnsBorrow   bool
+	BorrowsArgument int
 	// Callables are the contracts required of function-typed parameters,
 	// sorted by argument index.
 	Callables []ResourceCallableSemantics
@@ -190,6 +204,16 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 			}
 			result.ReturnsAlias, result.AliasesArgument = true, index
 
+		case ResourceEffectReturnBorrow:
+			index, err := decodeResourceArgument(effect)
+			if err != nil {
+				return ResourceTransitionSemantics{}, true, err
+			}
+			if result.ReturnsBorrow {
+				return ResourceTransitionSemantics{}, true, fmt.Errorf("resource.return-borrow is duplicated")
+			}
+			result.ReturnsBorrow, result.BorrowsArgument = true, index
+
 		case ResourceEffectReturnFresh:
 			if len(effect.Parameters) != 0 {
 				return ResourceTransitionSemantics{}, true,
@@ -210,6 +234,9 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 
 	if result.ReturnsAlias && result.ReturnsFresh {
 		return ResourceTransitionSemantics{}, true, fmt.Errorf("a result cannot be both return-fresh and return-alias")
+	}
+	if result.ReturnsBorrow && (result.ReturnsFresh || result.ReturnsAlias) {
+		return ResourceTransitionSemantics{}, true, fmt.Errorf("a result cannot be return-borrow and also return-fresh or return-alias")
 	}
 	sort.Ints(result.Borrowed)
 	sort.Ints(result.BorrowedMut)
