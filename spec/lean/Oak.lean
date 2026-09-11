@@ -1,5 +1,6 @@
 import Oak.TypeLattice
 import Oak.Effects
+import Oak.EffectRows
 import Oak.MemoryOrder
 import Oak.HappensBefore
 import Oak.SequentialConsistency
@@ -72,6 +73,7 @@ import Oak.Loops
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved
+import Oak.Reduce
 import Oak.Floats
 import Oak.GraphemeBreak
 import Oak.Normalization
@@ -86,7 +88,9 @@ import Oak.Stdlib.SortU32Extracted
 import Oak.Stdlib.VarintLaws
 import Oak.Stdlib.SortLaws
 import Oak.Stdlib.EncodingLaws
+import Oak.Stdlib.Base64Laws
 import Oak.Stdlib.RandomLaws
+import Oak.Stdlib.UuidLaws
 import Oak.Typestate
 import Oak.IoPort
 import Oak.ProtocolQuorum

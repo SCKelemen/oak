@@ -3,6 +3,7 @@ package typechecker
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
@@ -505,6 +506,7 @@ type TypeChecker struct {
 	// operatorCalls records, position-keyed by the operator token, the
 	// callee of every infix expression that resolved through a binding.
 	operatorBindings map[string]string
+	operatorLaws     []OperatorLaw
 	operatorCalls    map[string]string
 	// packageExports is every loaded package's member table, for uniform
 	// call syntax (docs/spec/10-syntax.md section 13).
@@ -836,6 +838,8 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.predeclareFunctionSignature(fn)
 			if fn.Operator != "" && fn.Name != nil {
 				tc.registerOperator(fn)
+			} else if len(fn.Laws) > 0 {
+				tc.addError(fn, "laws { %s }: only an operator definition declares laws (docs/spec/10-syntax.md section 14a)", strings.Join(fn.Laws, ", "))
 			}
 			if len(fn.TypeParams) > 0 && fn.Receiver == nil && !typeParamsConstrained(fn.TypeParams) {
 				if tc.functionTemplates == nil {
@@ -969,6 +973,71 @@ func (tc *TypeChecker) registerOperator(fn *ast.FunctionStatement) {
 		return
 	}
 	tc.operatorBindings[key] = fn.Name.Value
+	tc.recordOperatorLaws(fn, typeName)
+}
+
+// OperatorLaw is one algebraic property an operator definition declares
+// (docs/spec/10-syntax.md section 14a): the permission a backend has to
+// regroup (associative) or reorder (commutative) applications of the
+// operator, on the author's authority.
+type OperatorLaw struct {
+	Type     string
+	Symbol   string
+	Function string
+	Law      string
+}
+
+// operatorLawNames are the laws a definition may declare.
+var operatorLawNames = map[string]bool{"associative": true, "commutative": true}
+
+// recordOperatorLaws validates a `laws { ... }` clause against the
+// operator's signature — both laws need two parameters of one type, and
+// associativity needs the result to be that type too — and records it.
+func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName string) {
+	if len(fn.Laws) == 0 {
+		return
+	}
+	sameParams := len(fn.Parameters) == 2 && fn.Parameters[0] != nil && fn.Parameters[1] != nil &&
+		fn.Parameters[0].Type != nil && fn.Parameters[1].Type != nil &&
+		fn.Parameters[0].Type.String() == fn.Parameters[1].Type.String()
+	returnsOperand := sameParams && fn.ReturnType != nil && fn.ReturnType.String() == fn.Parameters[0].Type.String()
+	seen := map[string]bool{}
+	for _, law := range fn.Laws {
+		if !operatorLawNames[law] {
+			tc.addError(fn, "operator(%s) %s: unknown law %q (associative, commutative)", fn.Operator, fn.Name.Value, law)
+			continue
+		}
+		if seen[law] {
+			tc.addError(fn, "operator(%s) %s: law %s declared twice", fn.Operator, fn.Name.Value, law)
+			continue
+		}
+		seen[law] = true
+		if !sameParams {
+			tc.addError(fn, "operator(%s) %s: %s needs two parameters of one type", fn.Operator, fn.Name.Value, law)
+			continue
+		}
+		if law == "associative" && !returnsOperand {
+			tc.addError(fn, "operator(%s) %s: associative needs the result type to be the operand type", fn.Operator, fn.Name.Value)
+			continue
+		}
+		tc.operatorLaws = append(tc.operatorLaws, OperatorLaw{Type: typeName, Symbol: fn.Operator, Function: fn.Name.Value, Law: law})
+	}
+}
+
+// OperatorLaws lists the declared operator laws in declaration order.
+func (tc *TypeChecker) OperatorLaws() []OperatorLaw {
+	return append([]OperatorLaw(nil), tc.operatorLaws...)
+}
+
+// HasOperatorLaw reports whether the function bound as an operator declares
+// the law — the fact a backend consults before regrouping.
+func (tc *TypeChecker) HasOperatorLaw(function, law string) bool {
+	for _, l := range tc.operatorLaws {
+		if l.Function == function && l.Law == law {
+			return true
+		}
+	}
+	return false
 }
 
 // operatorBinding reports the function bound to SYM for a left operand of

@@ -35,6 +35,8 @@
       "patterns": [
         { "name": "keyword.control.oak", "match": "\\b(while|break|defer)\\b" },
         { "name": "keyword.other.oak", "match": "\\b(package|import|open|module|pub|unsafe|fn|type|interface|struct|derive)\\b" },
+        { "name": "keyword.other.clause.oak", "match": "\\b(effects|forbids|laws)\\b(?=\\s*\\{)" },
+        { "name": "keyword.other.clause.oak", "match": "\\boperator\\b(?=\\s*\\()" },
         { "name": "constant.language.boolean.oak", "match": "\\b(true|false)\\b" }
       ]
     },

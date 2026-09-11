@@ -174,6 +174,11 @@ a type does — a variable of function type holds a function value:
 handler: (i32, i32) -> i32 = addi32
 ```
 
+A function type may carry an effect row, `(i32) -> i32 effects { }`
+(`60-effects-allocation.md` §2a): a value of the type performs at most the
+listed effects, which the effect analysis checks where a value enters the
+type and relies on where a call goes through it.
+
 ### Variadic trailing parameters
 
 The last parameter may be variadic, Go-style:
@@ -749,4 +754,30 @@ and the interpreter never see an operator (`compiler/operators.go`). The
 declared operator properties of `docs/notes/ml-feedback-2026-09.md` item
 7.3 (`associative`, `commutative`, `neutral`) are a later refinement over
 these bindings and are not part of this section.
+
+### 14a. Operator laws
+
+An operator definition may declare, on the author's authority, the algebraic
+properties its operation has:
+
+```oak
+operator(+) add: (a: Vec, b: Vec): Vec laws { associative, commutative } = ...
+```
+
+`laws { ... }` follows the effect clauses and names any of `associative`
+(`(a + b) + c = a + (b + c)`) and `commutative` (`a + b = b + a`). Both need
+two parameters of one type; `associative` needs the result to be that type
+too. A law is a **permission, not an optimization hint**: it is the only
+ground a backend or a library has to regroup or reorder applications of the
+operator (`55-parallelism.md` section 4). Without a declared law, the
+grouping a program names is the grouping computed — floating-point `+`
+declares nothing, so `reduce.tree` over floats yields the same bits on every
+target.
+
+Laws are declared, not checked: like `effects { }` on an extern, the
+declaration is the author's claim. The tooling keeps it visible — `oak vet`
+lists declared laws, and the REPL's `:lean` states each as a theorem over
+the extracted definition (`95-extraction.md`) so the claim can be proved
+rather than repeated. Declaring a false law makes a regrouped result differ
+from the named grouping; nothing else in the language depends on it.
 

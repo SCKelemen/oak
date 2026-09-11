@@ -168,3 +168,34 @@ func TestClassifyAttributesMessages(t *testing.T) {
 		t.Fatalf("report = %+v", report.Theorems)
 	}
 }
+
+// Declared operator laws (docs/spec/10-syntax.md section 14a) are stated by
+// :lean as theorems over the extracted operator function.
+func TestLeanObligationsStateOperatorLaws(t *testing.T) {
+	session := NewSession(t.TempDir())
+	for _, input := range []string{
+		"Vec: type = struct { x: u32, y: u32 }",
+		"operator(+) add: (a: Vec, b: Vec): Vec laws { associative, commutative } = Vec { x: a.x + b.x, y: a.y + b.y }",
+	} {
+		if _, err := session.Submit(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text, err := session.LeanObligations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"namespace Defs",
+		"def add (a : Vec) (b : Vec) (fuel : Nat) : Option (Vec)",
+		"theorem law_add_associative (a b c : Defs.Vec) (fuel : Nat) :\n    (Defs.add a b fuel >>= fun ab => Defs.add ab c fuel) = (Defs.add b c fuel >>= fun bc => Defs.add a bc fuel) := by\n  sorry",
+		"theorem law_add_commutative (a b : Defs.Vec) (fuel : Nat) :\n    Defs.add a b fuel = Defs.add b a fuel := by\n  sorry",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "No recorded assumptions") {
+		t.Fatalf("a declared law is an open claim:\n%s", text)
+	}
+}

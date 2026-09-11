@@ -72,7 +72,7 @@ func SubstituteTypeAST(expr ast.Expression, bindings map[string]ast.Expression) 
 		}
 		return &ast.IndexExpression{Token: t.Token, Left: left, Index: index, Dot: t.Dot}, true
 	case *ast.FunctionTypeExpression:
-		out := &ast.FunctionTypeExpression{Token: t.Token}
+		out := &ast.FunctionTypeExpression{Token: t.Token, Effects: t.Effects, EffectsDeclared: t.EffectsDeclared}
 		for _, parameter := range t.Parameters {
 			substituted, ok := SubstituteTypeAST(parameter, bindings)
 			if !ok {

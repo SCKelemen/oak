@@ -68,6 +68,19 @@ A future owning `Ring[T,N]` wrapper can bind storage and cursor once borrowing o
 aggregate storage is fully supported. The current API exposes both borrows rather
 than accidentally passing a whole fixed-size ring by value.
 
+## Reductions (`import("reduce")`)
+
+Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
+§4; `Oak.Reduce` in Lean).
+
+| Function | Semantics |
+| --- | --- |
+| `tree[T](xs: []T, zero: T, f: (T, T) -> T)` | The balanced binary-counter tree: four elements give `f(f(x0, x1), f(x2, x3))`, the `simd.reduce_add` grouping; an empty view yields `zero`, which takes no other part. Identical on every backend, no associativity assumed. O(n) work, one 64-entry stack. |
+| `left[T](xs: []T, zero: T, f: (T, T) -> T)` | The sequential left fold `f(f(zero, x0), x1) ...`. |
+
+When `f` is an operator declaring `laws { associative }` the two agree on
+non-empty input (`Oak.Reduce.tree_assoc`).
+
 ## Bytes
 
 | Function | Result and work |
@@ -748,8 +761,8 @@ file is derived from the tree and names the theorem and test functions, so
 it is the place to look before believing a sentence in this README.
 
 Three kinds of evidence back the packages, and they are not interchangeable.
-For `sort`, `varint`, `random`, and the hexadecimal codec the laws are
-theorems about the Lean image `oak build -lean` produces from the same
+For `sort`, `varint`, `random`, `uuid`, and the hexadecimal and base64
+codecs the laws are theorems about the Lean image `oak build -lean` produces from the same
 source the C backend compiles (`docs/spec/95-extraction.md`): a drift test
 keeps the committed image current and `TestLeanStdlibFaithful` runs the image
 and the compiled program on one corpus and compares them byte for byte, so
@@ -758,7 +771,7 @@ compiler. For `grapheme`, `normalize`, `causal_frontier`, the interval time
 readings, and the IO port the theorems are about a hand-written model of the
 published rules, and a Go law test or a transliteration relates the Oak code
 to that model on enumerated or random inputs. Everything else — the prelude
-collections, `strings`, `json`, `hash`, `math`, `mx`, `url`, `uuid`, `path`,
+collections, `strings`, `json`, `hash`, `math`, `mx`, `url`, `path`,
 `float`, `time`'s calendar, the simulation packages — is checked by
 implementation tests against sequence models, Go's standard library,
 conformance files, or reference implementations; those are not refinement

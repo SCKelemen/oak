@@ -150,6 +150,49 @@ func TestCheckerFrameArrays(t *testing.T) {
 	}
 }
 
+// A span parked in callee-saved registers: `mov x19, x0; mov w20, w1` copy
+// the span's base and length facts, so the pair survives a call (the
+// callee preserves x19–x28) and is walked from there; the original pair in
+// x0/w1 dies with the call.
+func TestCheckerSpanAliases(t *testing.T) {
+	decl := "first_after: (v: []u32) -> u32"
+	prologue := "  bind x0, w1 = v\n  clobber x9, x19, x20, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  stp x19, x20, [sp, #16]\n  mov x19, x0\n  mov w20, w1\n  bl helper\n"
+	epilogue := "  ldp x19, x20, [sp, #16]\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret\ntrap:\n  brk #1"
+	accept := prologue + "  mov w9, #0\n  cmp w9, w20\n  b.hs trap\n  ldr w0, [x19, w9, uxtw #2]\n" + epilogue
+	unit, errs := ParseUnit("alias.oakasm", decl+" = {\n"+accept+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	sig, _ := parseSignature(decl)
+	if findings := Check(unit.Functions[0], sig, map[string]bool{"helper": true}); len(findings) != 0 {
+		t.Fatalf("a span walked from its parked pair after a call must pass: %v", findings)
+	}
+	cases := []struct{ name, body, want string }{
+		{"original base dies at the call", prologue + "  mov w9, #0\n  cmp w9, w20\n  b.hs trap\n  ldr w0, [x0, w9, uxtw #2]\n" + epilogue, "memory operands go through the declared sp frame or a bound span base"},
+		{"length copy overwritten", prologue + "  mov w20, #8\n  mov w9, #0\n  cmp w9, w20\n  b.hs trap\n  ldr w0, [x19, w9, uxtw #2]\n" + epilogue, "not this span's length register"},
+		{"guard against another register", prologue + "  mov w9, #0\n  mov w0, #4\n  cmp w9, w0\n  b.hs trap\n  ldr w0, [x19, w9, uxtw #2]\n" + epilogue, "not this span's length register"},
+		{"length guard through the copy", prologue + "  cmp w20, #1\n  b.lo trap\n  ldr w0, [x19]\n" + epilogue, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit(tc.name+".oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			joined := strings.Join(Check(unit.Functions[0], sig, map[string]bool{"helper": true}), "\n")
+			if tc.want == "" {
+				if joined != "" {
+					t.Fatalf("expected no findings, got:\n%s", joined)
+				}
+				return
+			}
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("expected a finding mentioning %q, got:\n%s", tc.want, joined)
+			}
+		})
+	}
+}
+
 // Typed pointer memory: span/view parameters bind a register pair and are
 // addressable only under a dominating length guard.
 func TestCheckerSpanAccess(t *testing.T) {
