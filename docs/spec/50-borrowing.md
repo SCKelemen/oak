@@ -427,6 +427,23 @@ provenance and known consumed authority are distinct diagnostic causes. A confli
 involving an unknown argument must identify that argument, including when it is a
 shared participant paired with a tracked exclusive participant.
 
+**Callee-entry authority.** A function's own resource contract also governs
+its body. Each mode-marked resource parameter enters with exactly the
+authority its mode grants: a `borrowed` parameter enters with shared
+authority and may be read and forwarded to shared-borrowed positions, but
+may neither be passed to a mutable-borrowed position nor consumed; a
+`borrowed-mut` parameter may be forwarded to shared and mutable positions but
+never consumed; a `consumed` parameter enters with full authority, usable
+until its own consumption. An alias of a parameter carries the parameter's
+entry authority, so renaming does not launder it. A call that forwards a
+parameter beyond its entry authority is rejected with `OAK-B0114`, has not
+occurred semantically (it consumes nothing and establishes no fresh
+result), and the diagnostic names the parameter declaration and the
+offending argument. Unmarked parameters keep their ordinary meaning until a
+migration rule is chosen. This is the first increment of the authority
+roadmap's milestone 1 (`docs/notes/roadmap-authority-resources.md`);
+retention and escape of borrowed parameters remain with `OAK-B0109`.
+
 The callable-boundary audit and proposed result provenance/lifetime relationships
 are recorded in [`../resource-contracts-and-results.md`](../resource-contracts-and-results.md).
 These proposals do not relax the current borrowed-return restriction.
