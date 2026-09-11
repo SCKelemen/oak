@@ -156,7 +156,8 @@ narrow: (x: u64, y: i32): u32 {
 func TestExtractionFailsClosed(t *testing.T) {
 	cases := map[string]struct{ src, want string }{
 		"recursion":      {"f: (n: u32): u32 = n == u32(0) ? u32(0) | f(n - u32(1))", "recursive"},
-		"float row":      {"f: (x: u32): u32 = u32_trunc_f32(f32_round_u32(x))", "integer conversions only"},
+		"fma":            {"f: (x: f32): f32 = fma(x, x, x)", "no Lean carrier"},
+		"f16 row":        {"f: (x: f32): u16 = u16_bits_f16(f16_round_f32(x))", "f32/f64 conversions only"},
 		"mixed patterns": {"f: (n: u32): u32 = n ? | 0 => u32(1) | k => k", "outside the extracted subset"},
 		"template call":  {"Kind: type = Word | Line\nf[T]: (k: T): T = k\ng: (k: Kind): Kind = f[Kind](k)\nh: (): u32 = u32(1)", ""},
 		"string":         {"s: (): string = \"x\"", "outside the extracted subset"},
@@ -279,5 +280,97 @@ pair: (a: u32): [2]u32 = [2]u32{ a, a + u32(1) }
 	_, err = extract(t, "TABLE: [2]u8 = [2]u8{ 1, 2 }\nzap: (): () { s: [*]u8 = span(&TABLE)\n  s[0] = u8(0) }")
 	if err == nil || !strings.Contains(err.Error(), "span of the global") {
 		t.Fatalf("span of a global must fail closed, got %v", err)
+	}
+}
+
+// subslice(v, start, n) is the window of n elements from start as
+// Array.extract; Oak traps past the end, the extraction clamps
+// (docs/spec/95-extraction.md section 3).
+func TestExtractionSubslice(t *testing.T) {
+	src := `
+window_sum: (src: []u8, at: u32): u32 {
+  win: []u8 = subslice(src, at, u32(4))
+  total: u32 = 0
+  i: u32 = 0
+  while i < len(win) {
+    total = total + u32(win[i])
+    i = i + u32(1)
+  }
+  total
+}
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "let win : Array UInt8 := (src.extract at_.toNat (at_.toNat + (4 : UInt32).toNat))"
+	if !strings.Contains(out, want) {
+		t.Fatalf("extraction lacks %q:\n%s", want, out)
+	}
+}
+
+// f32 and f64 extract onto Lean's Float32 and Float: literals exactly by bit
+// pattern, the operators and comparisons as themselves, negation as the sign
+// flip, the conversion rows of section 11.3.4 onto toFloat/toFloat32/ofBits/
+// toBits/toUIntN, and the correctly rounded intrinsics Lean carries
+// (docs/spec/95-extraction.md sections 2 and 3).
+func TestExtractionFloats(t *testing.T) {
+	src := `
+dot: (a: []f32, b: []f32): f32 {
+  acc: f32 = 0.0
+  i: u32 = 0
+  while i < len(a) && i < len(b) {
+    acc = acc + a[i] * b[i]
+    i = i + u32(1)
+  }
+  acc
+}
+mean_above: (xs: []f64, floor_value: f64): f64 {
+  total: f64 = 0.0
+  count: u32 = 0
+  i: u32 = 0
+  while i < len(xs) {
+    xs[i] > floor_value ? {
+      total = total + xs[i]
+      count = count + u32(1)
+    }
+    i = i + u32(1)
+  }
+  count == u32(0) ? -1.0 | total / f64_round_u32(count)
+}
+rows: (x: f64, n: i32, bits: u64): u32 {
+  narrow: f32 = f32_round_f64(x)
+  wide: f64 = f64(narrow)
+  back: u64 = u64_bits_f64(wide) ^ bits
+  again: f64 = f64_bits_u64(back)
+  fromInt: f32 = f32_round_i32(n)
+  sat: u8 = u8_saturating_f64(again)
+  tr: i32 = i32_trunc_f32(fromInt)
+  u32(sat) + u32_bits_f32(sqrt(abs(-fromInt))) + u32_bits_i32(tr) + (is_nan(x) ? u32(1) | u32(0))
+}
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"def dot (a : Array Float32) (b : Array Float32) (fuel : Nat) : Option (Float32)",
+		"let acc : Float32 := (Float32.ofBits (0x00000000 : UInt32) /- 0.0 -/)",
+		"let acc := (acc + ((a.getD i.toNat (Float32.ofBits 0)) * (b.getD i.toNat (Float32.ofBits 0))))",
+		"if (decide ((xs.getD i.toNat (Float.ofBits 0)) > floor_value)) then",
+		"then (-(Float.ofBits (0x3FF0000000000000 : UInt64) /- 1.0 -/)) else (total / (count.toFloat))",
+		"let narrow : Float32 := (x.toFloat32)",
+		"let wide : Float := (narrow.toFloat)",
+		"let back : UInt64 := ((wide.toBits) ^^^ bits)",
+		"let again : Float := (Float.ofBits back)",
+		"let fromInt : Float32 := (n.toFloat32)",
+		"let sat : UInt8 := (again.toUInt8)",
+		"let tr : Int32 := (fromInt.toInt32)",
+		"(Float32.sqrt (Float32.abs (-fromInt))).toBits",
+		"(if (Float.isNaN x) then (1 : UInt32) else (0 : UInt32))",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("extraction lacks %q:\n%s", want, out)
+		}
 	}
 }
