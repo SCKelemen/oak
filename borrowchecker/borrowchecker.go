@@ -91,6 +91,11 @@ type BorrowChecker struct {
 	// (borrowchecker/regions.go): its body's result must borrow from the
 	// named parameter, checked while the body's borrows are still live.
 	pendingReturn *regionContract
+	// initializers and payloadBindings are the static shape of the function
+	// being checked (borrowchecker/regions.go, collectStatics): what each
+	// local was declared as and what each match payload binding projects.
+	initializers    map[string]ast.Expression
+	payloadBindings map[string]payloadBinding
 
 	// unsafeDepth tracks lexical unsafe-block nesting (Oak.Unsafe.Scope).
 	// Inside an unsafe boundary the checker may admit exactly the
@@ -237,6 +242,8 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	}
 	savedBlockDepth := bc.currentBlockDepth
 	savedPendingReturn := bc.pendingReturn
+	savedInitializers, savedPayloads := bc.initializers, bc.payloadBindings
+	bc.initializers, bc.payloadBindings = collectStatics(stmt.Body)
 
 	// Reset to function-local state
 	// We keep the outer environment for type lookups, but start fresh for borrows
@@ -280,10 +287,11 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 				paramType = fn.Parameters[index]
 			}
 		}
-		if record, isRecord := paramType.(*typechecker.RecordType); isRecord && index < len(regions) && regions[index] != "" && env.ContainsBorrowStorage(record) {
-			bc.registerRegionRecordParameter(param.Name.Value, record, param.Type)
-			funcEnv.SetType(param.Name.Value, paramType)
-			continue
+		if index < len(regions) && regions[index] != "" && !isDirectBorrowType(paramType) && env.ContainsBorrowStorage(paramType) {
+			if bc.registerRegionAggregateParameter(param.Name.Value, paramType, param.Type, env) {
+				funcEnv.SetType(param.Name.Value, paramType)
+				continue
+			}
 		}
 		bc.checkAggregateType(param.Type, paramType, env, false)
 		bc.registerBorrowParameter(param.Name.Value, paramType, param.Type)
@@ -326,6 +334,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	bc.ownerOf = savedOwnerOf
 	bc.currentBlockDepth = savedBlockDepth
 	bc.pendingReturn = savedPendingReturn
+	bc.initializers, bc.payloadBindings = savedInitializers, savedPayloads
 }
 
 // checkBorrowEscape rejects function signatures that would let a borrow
@@ -665,7 +674,22 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		bc.checkInvocationExpression(e, env, targetVar)
 	case *ast.MatchExpression:
 		bc.checkExpression(e.Scrutinee, env)
+		scrutinee, _ := fieldPath(e.Scrutinee)
 		for _, arm := range e.Arms {
+			// A variant pattern's payload binding reborrows what the
+			// scrutinee carries under that variant, for the arm only
+			// (docs/spec/50-borrowing.md section 8c).
+			variant, ok := arm.Pattern.(*ast.VariantPattern)
+			if ok && scrutinee != "" && variant.Variant != nil {
+				if binding, isBinding := variant.Payload.(*ast.BindingPattern); isBinding && binding.Name != nil {
+					bc.currentBlockDepth++
+					bc.bindPayload(scrutinee, variant.Variant.Value, binding.Name.Value, arm.Pattern)
+					bc.checkExpression(arm.Body, env)
+					bc.dropBorrowsInCurrentBlock()
+					bc.currentBlockDepth--
+					continue
+				}
+			}
 			bc.checkExpression(arm.Body, env)
 		}
 		if targetVar != "" && literalStringResult(e) {

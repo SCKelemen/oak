@@ -148,12 +148,44 @@ type codecField struct {
 	name, wire, typ string
 	length          int64 // Zero denotes a scalar field; fixed arrays must be nonempty.
 	nullable        bool
+	// view marks a `View[u8, R]` field (docs/spec/71-codecs.md section 5,
+	// item 3): decoded as a view of the input's string token, in region.
+	view   bool
+	region string
+}
+
+// viewFieldRegion recognizes `View[u8, R]` with R one of the record's region
+// parameters.
+func viewFieldRegion(element ast.Expression, regions map[string]bool) (string, bool) {
+	head, args, ok := codecApplication(element)
+	if !ok || head != "View" || len(args) != 2 {
+		return "", false
+	}
+	byteType, isIdent := args[0].(*ast.Identifier)
+	region, regionIsIdent := args[1].(*ast.Identifier)
+	if !isIdent || byteType.Value != "u8" || !regionIsIdent {
+		return "", false
+	}
+	if _, declared := regions[region.Value]; !declared {
+		return "", false
+	}
+	return region.Value, true
 }
 
 func (d *codecDeriver) fields(name string) ([]codecField, error) {
 	decl := d.records[name]
-	if decl == nil || len(decl.TypeParams) != 0 || len(decl.Variants) != 1 {
+	if decl == nil || len(decl.Variants) != 1 {
 		return nil, fmt.Errorf("codec: unsupported type %s; expected a concrete record, integer, Bool, or top-level string", name)
+	}
+	// Type parameters are admitted only as regions of `View[u8, R]` fields
+	// (docs/spec/50-borrowing.md section 8c): a borrowed record decodes as
+	// views of its input. Generic records are not derived.
+	regions := map[string]bool{}
+	for _, tp := range decl.TypeParams {
+		if tp == nil || tp.Name == nil || tp.Constraint != nil {
+			return nil, fmt.Errorf("codec: %s is generic; only region parameters of View[u8, R] fields are derived", name)
+		}
+		regions[tp.Name.Value] = false
 	}
 	record, ok := decl.Variants[0].Literal.(*ast.RecordLiteral)
 	if !ok || record.Extension != nil {
@@ -165,7 +197,10 @@ func (d *codecDeriver) fields(name string) ([]codecField, error) {
 		element := field.Value
 		length := int64(0)
 		nullable := false
-		if array, ok := element.(*ast.IndexExpression); ok && !array.Dot {
+		region, isView := viewFieldRegion(element, regions)
+		if isView {
+			regions[region] = true
+		} else if array, ok := element.(*ast.IndexExpression); ok && !array.Dot {
 			if base, named := array.Left.(*ast.Identifier); named && base.Value == "Option" {
 				nullable, element = true, array.Index
 			} else {
@@ -177,8 +212,8 @@ func (d *codecDeriver) fields(name string) ([]codecField, error) {
 			}
 		}
 		typ, ok := element.(*ast.Identifier)
-		if !ok || typ.Value == "string" {
-			return nil, fmt.Errorf("codec: unsupported field %s.%s; borrowed fields and composite type applications need further codec support", name, field.Name)
+		if !isView && (!ok || typ.Value == "string") {
+			return nil, fmt.Errorf("codec: unsupported field %s.%s; borrowed fields and composite type applications need further codec support (a View[u8, R] field decodes as a view of the input)", name, field.Name)
 		}
 		wire := field.Name
 		for _, tag := range field.Tags {
@@ -213,9 +248,33 @@ func (d *codecDeriver) fields(name string) ([]codecField, error) {
 			return nil, fmt.Errorf("codec: %s has duplicate JSON field name %q", name, wire)
 		}
 		seen[wire] = true
-		fields = append(fields, codecField{field.Name, wire, typ.Value, length, nullable})
+		if isView {
+			fields = append(fields, codecField{name: field.Name, wire: wire, typ: "view", view: true, region: region})
+			continue
+		}
+		fields = append(fields, codecField{name: field.Name, wire: wire, typ: typ.Value, length: length, nullable: nullable})
+	}
+	for region, used := range regions {
+		if !used {
+			return nil, fmt.Errorf("codec: %s: type parameter %s is not the region of a View[u8, %s] field; generic records are not derived", name, region, region)
+		}
 	}
 	return fields, nil
+}
+
+// viewRegion is the single region a record's view fields share, or "".
+func viewRegion(typ string, fields []codecField) (string, error) {
+	region := ""
+	for _, field := range fields {
+		if !field.view {
+			continue
+		}
+		if region != "" && field.region != region {
+			return "", fmt.Errorf("codec: %s carries views in two regions (%s, %s); one region per record is derived", typ, region, field.region)
+		}
+		region = field.region
+	}
+	return region, nil
 }
 
 // codecPrimitive classifies a scalar codec type: "u64" and "i64" for the
@@ -302,6 +361,9 @@ func (d *codecDeriver) derive(typ string) error {
 			return err
 		}
 		for _, field := range fields {
+			if field.view {
+				return fmt.Errorf("codec: encoding %s.%s: a View[u8, R] field is decoded as a view of the input; encoding borrowed records is not derived yet", typ, field.name)
+			}
 			if err := d.derive(field.typ); err != nil {
 				return fmt.Errorf("codec field %s.%s: %w", typ, field.name, err)
 			}
