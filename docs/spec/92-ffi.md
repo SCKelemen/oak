@@ -314,6 +314,127 @@ Generic unions cross only as concrete instantiations named by a declared
 alias or field; a template has no representation. The interpreter has no
 struct layout and treats the builtins as compiled-backend facts (§6b).
 
+### 2.7 Inbound buffers: borrowing runtime-owned memory
+
+**Status: implemented and tested** (`compiler/e2e_ffi_inbound_test.go`).
+Motivated by the ml project's third list: every upload, readback, host-side
+conversion, and test comparison stayed in Zig because Oak had no way to see
+memory a runtime owns (`docs/notes/ml-feedback-2026-09.md`, tier 9).
+
+§2.5 hands Oak memory to C for one call. This section is its inverse, in
+the same shape the borrow checker can vouch for: **a foreign pointer and a
+count become a borrowed view or span for the extent of one unsafe block,
+under a contract the program states, and for nothing else.**
+
+#### 2.7.1 Forms
+
+Two compiler-known forms exist only as the initializer of a named binding
+inside an `unsafe` block:
+
+| Form | Operands | Yields | Access |
+| --- | --- | --- | --- |
+| `c.borrow[T](p, n)` | `p: c.Ptr`, `n: u32` | `[]T` | Oak may read `n` elements |
+| `c.borrow_mut[T](p, n)` | `p: c.Ptr`, `n: u32` | `[*]T` | Oak may read and write `n` elements |
+
+`T` is a boundary element type exactly as in §2.5.1 — a fixed-width
+integer, a floating-point or storage format, `Bool`, a boundary tagged
+union, or a proven-layout `struct` of those — so the elements have one
+meaning on both sides (`OAK-F0104` otherwise). `n` is a `u32` element
+count, never a byte count, and lengths stay in `u32` on the Oak side
+(§2.2). The result is an ordinary view or span: indexing is bounds-checked
+against `n`, `len` reads `n`, `subslice` derives within it, and it may be
+passed to any Oak function taking `[]T`/`[*]T`.
+
+```oak
+device_buffer: (id: u32): c.Ptr = c.extern("rt_buffer_host_ptr")
+device_len: (id: u32): u32 = c.extern("rt_buffer_len")
+
+readback_sum: (id: u32): f32 {
+  p: c.Ptr = device_buffer(id)
+  total: f32 = 0.0
+  unsafe {
+    values: []f32 = c.borrow[f32](p, device_len(id))
+    i: u32 = 0
+    while i < len(values) {
+      total = total + values[i]
+      i = i + u32(1)
+    }
+  }
+  total
+}
+```
+
+#### 2.7.2 The trust contract
+
+`unsafe` marks where an assumption is admitted (`00-constitution.md`,
+`Oak.Unsafe`). An inbound borrow admits exactly one, the **foreign buffer
+contract**, which the program asserts for the block's extent:
+
+1. `p` addresses at least `n` elements of `T`, laid out as Oak lays out
+   `T` (the natural layout the backend asserts for proven structs);
+2. the memory stays mapped and is not freed, moved, or resized while the
+   block runs;
+3. for `c.borrow_mut`, nothing else writes the memory while the block runs
+   and no other live borrow in the block aliases it; for `c.borrow`,
+   nothing writes it.
+
+The contract is the binding author's, exactly as an extern prototype is
+(§2.3): a runtime that breaks it breaks the program, and Oak's guarantees
+end there. What Oak does guarantee is everything else: the borrow cannot
+outlive the block, every access is bounds-checked against `n`, the
+element type is one both sides agree on, and the assumption is recorded.
+
+#### 2.7.3 Rules and checking
+
+- **Placement.** Outside an `unsafe` block, or anywhere but the initializer
+  of a named binding (a call argument, a return, a field), the form is
+  rejected (`OAK-F0107`). The binding gives the borrow a scope.
+- **Scope.** The borrow checker treats the binding as a borrow of a foreign
+  owner that lives exactly as long as the enclosing block. The view or span
+  is dropped at the block's end; an `unsafe` block is a statement, so the
+  only ways out are assigning the borrow (or a reborrow of it, including
+  one returned by a region-indexed call) to an outer binding or storing it
+  in an aggregate, and the existing rules reject both (`OAK-B0105`,
+  `OAK-B0109`).
+- **Recorded assumption.** An accepted borrow records the foreign buffer
+  contract as an `OAK-B0110` warning naming the binding, next to every
+  other admitted unsafe assumption, so an audit of a program's assumptions
+  lists its foreign borrows. `Oak.Unsafe` (Lean) carries the contract as
+  the second entry of the assumption vocabulary and proves it discharges
+  only its own obligation.
+- **Exclusivity.** Two `c.borrow_mut` bindings in one block over the same
+  memory are the program's contract violation (item 3), not something Oak
+  can see: distinct foreign owners are distinct to the checker. Two views
+  are fine. A span and a view of the same pointer in one block are the
+  same violation.
+
+#### 2.7.4 Lowering and interpretation
+
+`c.borrow[T](p, n)` lowers to the view struct `{ (const T *)p, (u32)n }`
+and `c.borrow_mut[T](p, n)` to the span struct `{ (T *)p, (u32)n }` — the
+representation every view and span already has, so every existing helper
+(bounds-checked indexing, `subslice`, `len`) applies unchanged. No copy, no
+allocation. The interpreter has no foreign memory and rejects the forms
+with the diagnostic it gives an extern call (§4).
+
+#### 2.7.5 What this is not yet
+
+A borrow ends with its block. A `Buffer[CpuOwned]` record that *owns* a
+foreign allocation across calls, hands it to a device (`Buffer[DeviceOwned]`)
+and gets it back, is the typestate of `50-borrowing.md` §11: it needs the
+record to carry the region (`50-borrowing.md` §8c, more than one region per
+record) and an explicit close. This section is the shape that record's
+methods will use internally; the tier-9 note records it as the next
+increment after runtime-sized arenas.
+
+#### 2.7.6 Diagnostics
+
+| Code | Meaning |
+| --- | --- |
+| `OAK-F0104` | element type of an inbound buffer is not representable across the C ABI |
+| `OAK-F0107` | `c.borrow`/`c.borrow_mut` outside an `unsafe` block, or not the initializer of a named binding |
+| `OAK-B0110` | (warning) the foreign buffer contract assumed for a binding |
+
 ## 3. The abstract assembly interface
 
 ### 3.1 Shape

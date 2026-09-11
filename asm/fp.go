@@ -125,8 +125,76 @@ func init() {
 	for _, name := range []string{"movi", "mvni"} {
 		add(name, instructionSpec{forms: []form{{opVA, opImm}, {opFD, opImm}}})
 	}
-	// Structure loads and stores.
-	for _, name := range []string{"ld1", "st1", "ld2", "st2", "ld3", "st3", "ld4", "st4", "ld1r"} {
+	// Absolute compares, pairwise scalar reductions, reciprocal estimates
+	// and steps, conditional compares, the inexact narrowing conversion,
+	// and the second-half conversions.
+	for _, name := range []string{"facge", "facgt"} {
+		add(name, instructionSpec{forms: append(scalar(3), vector(3)...)})
+	}
+	for _, name := range []string{"fmaxnmp", "fminnmp"} {
+		add(name, instructionSpec{forms: append(vector(3), form{opFS, opVA}, form{opFD, opVA})})
+	}
+	for _, name := range []string{"faddp", "fmaxp", "fminp"} {
+		spec := instructionTable[name]
+		spec.forms = append(spec.forms, form{opFS, opVA}, form{opFD, opVA})
+		instructionTable[name] = spec
+	}
+	for _, name := range []string{"frecpe", "frsqrte"} {
+		add(name, instructionSpec{forms: append(scalar(2), vector(2)...)})
+	}
+	add("frecpx", instructionSpec{forms: scalar(2)})
+	for _, name := range []string{"frecps", "frsqrts"} {
+		add(name, instructionSpec{forms: append(scalar(3), vector(3)...)})
+	}
+	for _, name := range []string{"fccmp", "fccmpe"} {
+		add(name, instructionSpec{forms: []form{{opFS, opFS, opImm, opCond}, {opFD, opFD, opImm, opCond}, {opFH, opFH, opImm, opCond}}, readsFlags: true, setsFlags: true})
+	}
+	add("fcvtxn", instructionSpec{forms: append(vector(2), form{opFS, opFD})})
+	for _, name := range []string{"fcvtxn2", "fcvtl2", "fcvtn2"} {
+		add(name, instructionSpec{forms: vector(2)})
+	}
+	// Bitwise selects; halving-subtract and rounding-halving-add; absolute
+	// difference with accumulate; saturating unary forms; integer
+	// reciprocal estimates.
+	for _, name := range []string{"bif", "bit", "bsl", "shsub", "uhsub", "srhadd", "urhadd", "saba", "uaba"} {
+		add(name, instructionSpec{forms: vector(3)})
+	}
+	for _, name := range []string{"sqabs", "sqneg", "suqadd", "usqadd"} {
+		add(name, instructionSpec{forms: append(vector(2), form{opFB, opFB}, form{opFH, opFH}, form{opFS, opFS}, form{opFD, opFD})})
+	}
+	for _, name := range []string{"urecpe", "ursqrte"} {
+		add(name, instructionSpec{forms: vector(2)})
+	}
+	// Saturating doubling multiplies, vector and scalar, with element forms.
+	for _, name := range []string{"sqdmulh", "sqrdmulh", "sqrdmlah", "sqrdmlsh"} {
+		add(name, instructionSpec{forms: append(vector(3), form{opFH, opFH, opFH}, form{opFS, opFS, opFS}, form{opVA, opVA, opVL}, form{opFH, opFH, opVL}, form{opFS, opFS, opVL})})
+	}
+	for _, name := range []string{"sqdmlal", "sqdmlsl", "sqdmull"} {
+		add(name, instructionSpec{forms: append(vector(3), form{opFS, opFH, opFH}, form{opFD, opFS, opFS})})
+	}
+	for _, name := range []string{"sqdmlal2", "sqdmlsl2", "sqdmull2"} {
+		add(name, instructionSpec{forms: vector(3)})
+	}
+	// Narrowing high halves; the second-half widening forms; rounding shifts.
+	for _, name := range []string{"addhn", "addhn2", "raddhn", "raddhn2", "subhn", "subhn2", "rsubhn", "rsubhn2", "sabal", "uabal", "sabal2", "uabal2", "sabdl", "uabdl", "sabdl2", "uabdl2", "saddw2", "uaddw2", "ssubl2", "usubl2", "ssubw2", "usubw2", "smlal2", "umlal2", "smlsl2", "umlsl2"} {
+		add(name, instructionSpec{forms: vector(3)})
+	}
+	for _, name := range []string{"sqrshl", "uqrshl"} {
+		add(name, instructionSpec{forms: append(vector(3), form{opFB, opFB, opFB}, form{opFH, opFH, opFH}, form{opFS, opFS, opFS}, form{opFD, opFD, opFD})})
+	}
+	for _, name := range []string{"srshr", "urshr", "srsra", "ursra"} {
+		add(name, instructionSpec{forms: []form{{opVA, opVA, opImm}, {opFD, opFD, opImm}}})
+	}
+	add("sqshlu", instructionSpec{forms: []form{{opVA, opVA, opImm}, {opFB, opFB, opImm}, {opFH, opFH, opImm}, {opFS, opFS, opImm}, {opFD, opFD, opImm}}})
+	for _, name := range []string{"sshll2", "ushll2", "shll2", "shrn2", "rshrn2", "sqshrn2", "uqshrn2", "sqrshrn2", "uqrshrn2", "sqshrun2", "sqrshrun2"} {
+		add(name, instructionSpec{forms: []form{{opVA, opVA, opImm}}})
+	}
+	for _, name := range []string{"sqshrun", "sqrshrun"} {
+		add(name, instructionSpec{forms: []form{{opVA, opVA, opImm}, {opFB, opFH, opImm}, {opFH, opFS, opImm}, {opFS, opFD, opImm}}})
+	}
+	add("sqxtun2", instructionSpec{forms: vector(2)})
+	// Structure loads and stores, and the replicating loads.
+	for _, name := range []string{"ld1", "st1", "ld2", "st2", "ld3", "st3", "ld4", "st4", "ld1r", "ld2r", "ld3r", "ld4r"} {
 		add(name, instructionSpec{forms: []form{{opList, opMem}}, memory: true})
 	}
 	// Scalar and vector loads/stores through the general table: ldr/str/
@@ -181,7 +249,11 @@ func mixedArrangementAllowed(mnemonic string) bool {
 		"uaddlp", "saddlp", "uadalp", "sadalp", "uaddl", "saddl", "usubl", "ssubl", "umull", "smull", "umlal", "smlal", "umlsl", "smlsl", "uaddw", "saddw", "usubw", "ssubw",
 		"uaddl2", "saddl2", "umull2", "smull2", "fcvtn", "fcvtl", "fcvtzs", "fcvtzu", "scvtf", "ucvtf", "tbl", "tbx", "ext",
 		"sdot", "udot", "usdot", "sudot", "bfdot", "smmla", "ummla", "usmmla", "bfmmla", "bfmlalb", "bfmlalt", "bfcvtn", "bfcvtn2",
-		"fmlal", "fmlsl", "fmlal2", "fmlsl2", "pmull", "pmull2", "sha1c", "sha1p", "sha1m", "sha256h", "sha256h2", "sha512h", "sha512h2", "addp":
+		"fmlal", "fmlsl", "fmlal2", "fmlsl2", "pmull", "pmull2", "sha1c", "sha1p", "sha1m", "sha256h", "sha256h2", "sha512h", "sha512h2", "addp",
+		"fcvtxn", "fcvtxn2", "fcvtl2", "fcvtn2", "addhn", "addhn2", "raddhn", "raddhn2", "subhn", "subhn2", "rsubhn", "rsubhn2",
+		"sabal", "uabal", "sabal2", "uabal2", "sabdl", "uabdl", "sabdl2", "uabdl2", "saddw2", "uaddw2", "ssubl2", "usubl2", "ssubw2", "usubw2",
+		"smlal2", "umlal2", "smlsl2", "umlsl2", "sqdmlal", "sqdmlsl", "sqdmull", "sqdmlal2", "sqdmlsl2", "sqdmull2",
+		"sshll2", "ushll2", "shll2", "shrn2", "rshrn2", "sqshrn2", "uqshrn2", "sqrshrn2", "uqrshrn2", "sqshrun", "sqshrun2", "sqrshrun", "sqrshrun2", "sqxtun2":
 		return true
 	}
 	return false

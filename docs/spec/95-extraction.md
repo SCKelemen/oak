@@ -38,10 +38,13 @@ proofs written against them transfer.
 | `arr[i]` | `arr.getD i.toNat zero` |
 | `arr[lo:hi]` | `arr.extract lo hi` |
 | `len(v)` | `v.size.toUInt32` |
-| `u32(x)` | `x.toUInt32` (or a typed literal) |
+| `u32(x)`, `i64(x)` | `x.toUInt32`, `x.toInt64` (or a typed literal) |
+| `u32_trunc_u64(x)`, `u32_bits_i32(x)` | `x.toUInt32` — Lean's `toUIntN`/`toIntN` wrap and reinterpret exactly as the rows do |
+| `u8_saturating_u32(x)`, `i8_saturating_i32(x)` | `if x > 255 then 255 else x.toUInt8`; the signed form clamps both ends |
 | `a < b`, `a == b` | `decide (a < b)`, `a == b` — Bool throughout |
 | `c ? { A } \| { B }` (statement) | `let (vars) ← if c then do A; pure (vars) else do B; pure (vars)` over the variables either arm assigns |
 | `c ? a \| b` (value) | `if c then a else b` |
+| `op ? \| 0 => a \| 1 => b \| _ => c` (integer constants) | `if op == 0 then a else if op == 1 then b else c`, in value and statement position; the last arm is the else |
 | `while c { body }` | `def f.loopN (reads...) : Nat → Option (writes...)` with `0 => none`, recursing on the fuel |
 | `g(args)` | `let (r, spans...) ← g args fuel`, hoisted before the statement; the span owners are rebound |
 | `assert(c)` | `let () ← if c then pure () else none` |
@@ -105,5 +108,8 @@ the decoder (`OakText.check`), so `check_refines` transfers to the extracted
 model without a second corpus hop — the DIMACS and LRAT phases against
 `cnfLoop` and `proofLoop` on top of `rup_token_scan`, and the stream checker
 against `CertifiedStream.check`; then the constructs the verification
-programs need next (`subslice`, matches over records, more conversions),
-each added with its own fail-closed test.
+programs need next (matches over records, the `checked` rows), each added
+with its own fail-closed test. Integer-constant matches and the integer
+conversion rows were added for the ml subset (op dispatch on constants,
+`u64` index arithmetic narrowed to `u32`); `checked` conversions and every
+floating-point row still fail closed.

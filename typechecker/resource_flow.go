@@ -3,6 +3,7 @@ package typechecker
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
@@ -103,14 +104,15 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			continue
 		}
 		analysis := &typedResourceAnalysis{
-			tc:                tc,
-			model:             model,
-			flow:              resourceflow.New(),
-			reported:          make(map[string]bool),
-			unknownResources:  make(map[string]bool),
-			entryModes:        make(map[string]entryAuthority),
-			callableContracts: make(map[string]string),
-			unknownCallables:  make(map[string]bool),
+			tc:                 tc,
+			model:              model,
+			flow:               resourceflow.New(),
+			reported:           make(map[string]bool),
+			unknownResources:   make(map[string]bool),
+			entryModes:         make(map[string]entryAuthority),
+			callableContracts:  make(map[string]string),
+			unknownCallables:   make(map[string]bool),
+			parameterContracts: make(map[string]*ResourceCallableContract),
 		}
 		analysis.pushScope()
 		// The function's own contract fixes what its body may do with each
@@ -135,8 +137,13 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			}
 			analysis.bind(parameter.Name.Value)
 			if _, isCallable := parameter.Type.(*ast.FunctionTypeExpression); isCallable {
-				// A function-typed parameter arrives without a contract.
-				analysis.unknownCallables[parameter.Name.Value] = true
+				// A function-typed parameter arrives without a contract unless
+				// this function's own contract declares one for it.
+				if contract := own.callableContract(index); hasContract && contract != nil {
+					analysis.parameterContracts[parameter.Name.Value] = contract
+				} else {
+					analysis.unknownCallables[parameter.Name.Value] = true
+				}
 			}
 			if model.isResourceType(parameter.Type) {
 				analysis.flow.Register(parameter.Name.Value, parameter.Name)
@@ -279,6 +286,11 @@ type typedResourceAnalysis struct {
 	// contract cannot be known (parameters, closures, reassigned values).
 	callableContracts map[string]string
 	unknownCallables  map[string]bool
+	// parameterContracts holds, per function-typed parameter of the
+	// function under analysis, the callable contract its own contract
+	// declares: calls through the parameter use it instead of being
+	// unknown, and forwarding the parameter compares it exactly.
+	parameterContracts map[string]*ResourceCallableContract
 }
 
 // entryAuthority is a resource parameter's contract mode together with the
@@ -317,6 +329,107 @@ func (op ResourceOperation) parameterMode(index int) ResourceParameterMode {
 		}
 	}
 	return ResourceParameterUnspecified
+}
+
+// callableContract is the contract an operation requires of the function
+// value passed as its index-th argument, or nil.
+func (op ResourceOperation) callableContract(index int) *ResourceCallableContract {
+	for _, declaration := range op.Parameters {
+		if declaration.Index == index && declaration.Callable != nil {
+			return declaration.Callable
+		}
+	}
+	return nil
+}
+
+// argumentContract is the contract a function-valued argument carries: the
+// operation of the global it names or was bound from, the declared contract
+// of a function-typed parameter, or unknown. known is false for an unknown
+// callable; an uncontracted global yields an empty, known contract.
+func (a *typedResourceAnalysis) argumentContract(argument ast.Expression) (contract *ResourceCallableContract, known bool) {
+	ident, isIdent := argument.(*ast.Identifier)
+	if !isIdent || ident == nil {
+		return nil, false
+	}
+	if declared, isParameter := a.parameterContracts[ident.Value]; isParameter {
+		return declared, true
+	}
+	if a.unknownCallables[ident.Value] {
+		return nil, false
+	}
+	global := ident.Value
+	if a.isLocalBinding(ident.Value) {
+		carried, isCarried := a.callableContracts[ident.Value]
+		if !isCarried {
+			return nil, false
+		}
+		global = carried
+	} else if a.tc == nil || a.tc.globalEnv == nil {
+		return nil, false
+	} else if typ, exists := a.tc.globalEnv.GetType(global); !exists {
+		return nil, false
+	} else if _, isFunction := typ.(*FunctionType); !isFunction {
+		return nil, false
+	}
+	op, contracted := a.contractOperation(global)
+	if !contracted {
+		return &ResourceCallableContract{}, true
+	}
+	contract = &ResourceCallableContract{ReturnsFresh: op.ReturnsFresh}
+	for _, declaration := range op.Parameters {
+		if declaration.Callable == nil {
+			contract.Parameters = append(contract.Parameters, ResourceParameterDeclaration{Index: declaration.Index, Mode: declaration.Mode})
+		}
+	}
+	return normalizeCallableContract(contract), true
+}
+
+// checkCallableArguments rejects a function value passed for a
+// function-typed parameter whose required contract it does not carry
+// exactly (OAK-B0116): a consuming function where a borrowed one is
+// required, or an uncontracted or unknown value where any mode is
+// required. The rejected call has not occurred.
+func (a *typedResourceAnalysis) checkCallableArguments(expr *ast.InvocationExpression, op ResourceOperation) bool {
+	ok := true
+	for _, declaration := range op.Parameters {
+		if declaration.Callable == nil || declaration.Index < 0 || declaration.Index >= len(expr.Arguments) {
+			continue
+		}
+		argument := expr.Arguments[declaration.Index]
+		required := declaration.Callable
+		actual, known := a.argumentContract(argument)
+		if known && sameCallableContract(normalizeCallableContract(required), actual) {
+			continue
+		}
+		ok = false
+		callee, _ := a.callableIdentity(expr)
+		var d *diagnostic.Diagnostic
+		if !known {
+			d = a.tc.addResourceDiagnosticWithCode(argument, CodeResourceCallableContractMismatch,
+				fmt.Sprintf("argument %d to %q must carry the callable contract %s, but its contract is unknown", declaration.Index+1, callee, describeCallableContract(required)))
+		} else {
+			d = a.tc.addResourceDiagnosticWithCode(argument, CodeResourceCallableContractMismatch,
+				fmt.Sprintf("argument %d to %q must carry the callable contract %s, but %s carries %s", declaration.Index+1, callee, describeCallableContract(required), argument.String(), describeCallableContract(actual)))
+		}
+		d.AddNote("a function value satisfies a callable contract only by exact agreement of every parameter mode and the fresh-return fact; an uncontracted or unknown value satisfies no contract with a mode (docs/spec/50-borrowing.md section 9)")
+		d.AddHelp("pass a function whose declared resource contract matches, or declare the required contract on the function you pass")
+	}
+	return ok
+}
+
+// describeCallableContract renders a callable contract for diagnostics.
+func describeCallableContract(contract *ResourceCallableContract) string {
+	if contract == nil || (len(contract.Parameters) == 0 && !contract.ReturnsFresh) {
+		return "(no resource modes)"
+	}
+	parts := make([]string, 0, len(contract.Parameters)+1)
+	for _, declaration := range contract.Parameters {
+		parts = append(parts, fmt.Sprintf("parameter %d %s", declaration.Index+1, declaration.Mode))
+	}
+	if contract.ReturnsFresh {
+		parts = append(parts, "fresh result")
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
 }
 
 // authorityRank orders the modes by what they permit: shared < mutable <
@@ -518,9 +631,13 @@ func (a *typedResourceAnalysis) callableIdentity(expr *ast.InvocationExpression)
 		}
 		if a.isLocalBinding(function.Value) {
 			// A local function value carries the contract of the global it
-			// was initialized from, and nothing else.
+			// was initialized from, and nothing else; a contracted
+			// function-typed parameter is named by itself.
 			if global, carried := a.callableContracts[function.Value]; carried {
 				return global, true
+			}
+			if _, declared := a.parameterContracts[function.Value]; declared {
+				return function.Value, true
 			}
 			return "", false
 		}
@@ -560,6 +677,20 @@ func (a *typedResourceAnalysis) callableIdentity(expr *ast.InvocationExpression)
 }
 
 func (a *typedResourceAnalysis) operation(expr *ast.InvocationExpression) (ResourceOperation, bool) {
+	if callee, isIdent := expr.Function.(*ast.Identifier); isIdent && callee != nil {
+		if contract, declared := a.parameterContracts[callee.Value]; declared && a.isLocalBinding(callee.Value) {
+			// A call through a function-typed parameter uses the contract
+			// this function declared for it.
+			op := ResourceOperation{ReturnsFresh: contract.ReturnsFresh}
+			op.Parameters = append(op.Parameters, contract.Parameters...)
+			for _, declaration := range contract.Parameters {
+				if declaration.Mode == ResourceParameterConsumed {
+					op.Consumes = append(op.Consumes, declaration.Index)
+				}
+			}
+			return op, true
+		}
+	}
 	identity, ok := a.callableIdentity(expr)
 	if !ok {
 		return ResourceOperation{}, false
@@ -865,6 +996,9 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 		return
 	}
 	if !a.checkParameterForwarding(expr, op) {
+		return
+	}
+	if !a.checkCallableArguments(expr, op) {
 		return
 	}
 	if receiver := methodReceiver(expr); receiver != nil && op.Receiver == ResourceParameterConsumed {

@@ -118,6 +118,26 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 				To:       resourceTransition.To,
 			}
 			for _, parameter := range resourceTransition.Parameters {
+				if parameter.Callable != nil {
+					for _, inner := range parameter.Callable.Parameters {
+						name := ""
+						switch inner.Mode {
+						case typechecker.ResourceParameterBorrowed:
+							name = "borrow"
+						case typechecker.ResourceParameterBorrowedMut:
+							name = "borrow-mut"
+						case typechecker.ResourceParameterConsumed:
+							name = "consume"
+						default:
+							return semir.Module{}, fmt.Errorf("resource callable %q argument %d has an unresolved callable contract mode %d", resourceTransition.Callable, parameter.Index, inner.Mode)
+						}
+						transition.Effects = append(transition.Effects, semir.ResourceCallableEffect(name, parameter.Index, inner.Index))
+					}
+					if parameter.Callable.ReturnsFresh {
+						transition.Effects = append(transition.Effects, semir.ResourceCallableReturnFresh(parameter.Index))
+					}
+					continue
+				}
 				switch parameter.Mode {
 				case typechecker.ResourceParameterBorrowed:
 					transition.Effects = append(transition.Effects, semir.ResourceBorrowArgument(parameter.Index))

@@ -42,22 +42,28 @@ main: (): i32 {
 	}
 }
 
-// Non-constant global initializers fail closed in the C backend (OAK-T0501
-// warns; the strict profile rejects; the generated C never runs a hidden
-// global constructor).
+// Non-constant global initializers fail closed at C emission as an Oak
+// error naming the global (OAK-T0501; ml finding F19 found the earlier
+// C-compiler failure). Check-only pipelines still warn, so scripts may
+// interpret them; the strict profile rejects them; the generated C never
+// runs a hidden global constructor.
 func TestGlobalRuntimeInitializerFailsClosed(t *testing.T) {
-	output, err := New().WithSource("g.oak", `
+	src := `
 compute: (): i32 = 41
 
 bad: i32 = compute()
 
 main: (): i32 = bad
-`).EmitC().Get()
-	if err != nil {
-		t.Fatalf("pipeline should warn, not error: %v", err)
+`
+	_, err := New().WithSource("g.oak", src).EmitC().Get()
+	if err == nil {
+		t.Fatalf("non-constant global must fail C emission")
 	}
-	if !containsStr(output, "OAK_GLOBAL_INITIALIZER_NOT_CONSTANT") {
-		t.Fatalf("non-constant global must fail closed in C:\n%s", output)
+	if !containsStr(err.Error(), "OAK-T0501") || !containsStr(err.Error(), "global bad") || !containsStr(err.Error(), "4:1") {
+		t.Fatalf("emission error should name OAK-T0501, the global, and its position: %v", err)
+	}
+	if _, err := New().WithSource("g.oak", src).Check().Get(); err != nil {
+		t.Fatalf("check should warn, not error: %v", err)
 	}
 }
 

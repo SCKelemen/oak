@@ -10,6 +10,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
@@ -46,6 +47,18 @@ type CodeGenerator struct {
 	// globalTypes classifies top-level bindings (static globals) the same
 	// way localTypes classifies function locals.
 	globalTypes map[string]localContainer
+	// globalErrors collects top-level initializers the backend could not
+	// place in static storage; Generate reports the first (OAK-T0501 as an
+	// error at emission, ml finding F19).
+	globalErrors []error
+	// foldEnv holds the values of the constant globals emitted so far, so a
+	// later constant initializer may read them (codegen/globals.go).
+	foldEnv *object.Environment
+	// constantGlobals names the globals emitted so far with constant
+	// initializers; foldTypeHint is the annotated type of the global whose
+	// initializer is being emitted.
+	constantGlobals map[string]bool
+	foldTypeHint    string
 	// recordLayouts holds the resolved natural layout of each emitted
 	// record type (semir.NaturalRecordLayout, the Oak.RecordLayoutRefinement
 	// transliteration), for nested-record placement and layout assertions.
@@ -136,6 +149,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.stringLiteralMap = make(map[string]int)
 	cg.recordLayouts = make(map[string]semir.Representation)
 	cg.fieldAccessors = make(map[string]*ast.FieldAccessorExpression)
+	cg.globalErrors = nil
 
 	// Extract package name from program
 	for _, stmt := range program.Statements {
@@ -248,6 +262,9 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 			helpers.WriteString(cg.sliceHelpers[name])
 		}
 		output = output[:sliceHelperOffset] + helpers.String() + output[sliceHelperOffset:]
+	}
+	if len(cg.globalErrors) > 0 {
+		return "", cg.globalErrors[0]
 	}
 	return output, nil
 }
@@ -2281,6 +2298,13 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(")")
 		}
 	case *ast.InvocationExpression:
+		// An inbound buffer borrow (docs/spec/92-ffi.md section 2.7) is
+		// spelled as an index over a library member, so it comes before the
+		// generic index-call paths.
+		if member, element, isForeign := typechecker.ForeignBorrowCall(e); isForeign && len(e.Arguments) == 2 {
+			cg.emitForeignBorrow(member, element, e, tc)
+			return
+		}
 		// Sealed-boundary coercions are identities: the fresh abstract type is
 		// a typedef alias of its underlying type (docs/spec/83-modules.md
 		// section 6.3).
@@ -3062,6 +3086,19 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 		cg.emitBlockStatement(s, tc, false)
 		cg.indentLevel--
 		cg.write("  }\n")
+	case *ast.UnsafeBlock:
+		// An unsafe block is a scope like any other in C; what it admits is
+		// decided by the checkers (Oak.Unsafe), and the comment keeps the
+		// boundary visible in the emitted text. Before this case existed
+		// the body was dropped with a TODO comment, a silent miscompile the
+		// inbound-buffer tests exposed (docs/spec/92-ffi.md section 2.7).
+		if s.Body != nil {
+			cg.write("  { /* unsafe */\n")
+			cg.indentLevel++
+			cg.emitBlockStatement(s.Body, tc, false)
+			cg.indentLevel--
+			cg.write("  }\n")
+		}
 	default:
 		cg.write(fmt.Sprintf("  /* TODO: emit statement type %T */\n", s))
 	}
