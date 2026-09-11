@@ -1,0 +1,209 @@
+// UUIDs (RFC 9562): version 4 and version 7 generation from the `random`
+// package, the nil and max values, the 8-4-4-4-12 text form, and strict
+// parsing. Storage is the caller's: a UUID is sixteen bytes of a span or a
+// view, and text goes into a caller-owned span. Nothing allocates, and every
+// store is preceded by the length check, so a failed call leaves the
+// destination unchanged.
+//
+// The random source is xoshiro256** seeded by the caller; it is not a
+// cryptographic generator, so a version 4 UUID from this package identifies
+// things but must not stand in for a secret or a capability token.
+//
+// https://datatracker.ietf.org/doc/html/rfc9562
+package uuid
+
+import("random")
+import("encoding")
+
+pub UuidError: type = InvalidLength | InvalidCharacter | DestinationTooSmall | TimestampOutOfRange
+
+pub UUID_SIZE: u32 = 16
+pub UUID_TEXT_SIZE: u32 = 36
+
+pub uuid_ok: (result: Result[u32, UuidError]): Bool = result ? | .Ok(n) => true | .Err(e) => false
+pub uuid_written: (result: Result[u32, UuidError]): u32 = result ? | .Ok(n) => n | .Err(e) => u32(0)
+pub uuid_error_code: (reason: UuidError): u32 = reason ?
+  | .InvalidLength => u32(1)
+  | .InvalidCharacter => u32(2)
+  | .DestinationTooSmall => u32(3)
+  | .TimestampOutOfRange => u32(4)
+pub uuid_failure: (result: Result[u32, UuidError]): u32 = result ? | .Ok(n) => u32(0) | .Err(e) => uuid_error_code(e)
+
+// uuid_put_be writes `count` big-endian bytes of `value` at `at`; the caller
+// has already checked the destination length.
+uuid_put_be: (dst: [*]u8, at: u32, value: u64, count: u32): () {
+  i: u32 = u32(0)
+  while i < count {
+    shift: u64 = u64(8) * u64(count - u32(1) - i)
+    dst[at + i] = u8_trunc_u64((value >> shift) & u64(255))
+    i = i + u32(1)
+  }
+}
+
+// uuid_stamp sets the version field (RFC 9562 §4.2) and the RFC variant
+// (§4.1, bits 10xx) in place.
+// https://datatracker.ietf.org/doc/html/rfc9562#section-4.2
+uuid_stamp: (dst: [*]u8, version: u8): () {
+  dst[6] = (dst[6] & u8(15)) | (version << u8(4))
+  dst[8] = (dst[8] & u8(63)) | u8(128)
+}
+
+// uuid_v4: 122 random bits from the caller's generator, version 4, RFC variant.
+// RFC 9562 §5.4 https://datatracker.ietf.org/doc/html/rfc9562#section-5.4
+pub uuid_v4: (state: [*]random.Xoshiro, dst: [*]u8): Result[u32, UuidError] {
+  len(dst) < UUID_SIZE ? { .Err(.DestinationTooSmall) } | {
+    uuid_put_be(dst, u32(0), random.random_next(state), u32(8))
+    uuid_put_be(dst, u32(8), random.random_next(state), u32(8))
+    uuid_stamp(dst, u8(4))
+    .Ok(UUID_SIZE)
+  }
+}
+
+// uuid_v7: a 48-bit Unix millisecond timestamp (big-endian), version 7, 12
+// random bits, the RFC variant, and 62 more random bits, so values sort by
+// time when compared as bytes. A timestamp that does not fit in 48 bits is
+// TimestampOutOfRange.
+// RFC 9562 §5.7 https://datatracker.ietf.org/doc/html/rfc9562#section-5.7
+pub uuid_v7: (unix_millis: u64, state: [*]random.Xoshiro, dst: [*]u8): Result[u32, UuidError] {
+  len(dst) < UUID_SIZE ? { .Err(.DestinationTooSmall) } |
+  unix_millis >= u64(281474976710656) ? { .Err(.TimestampOutOfRange) } | {
+    uuid_put_be(dst, u32(0), unix_millis, u32(6))
+    uuid_put_be(dst, u32(6), random.random_next(state), u32(8))
+    uuid_put_be(dst, u32(14), random.random_next(state), u32(2))
+    uuid_stamp(dst, u8(7))
+    .Ok(UUID_SIZE)
+  }
+}
+
+// uuid_nil: all bits zero (RFC 9562 §5.9).
+// https://datatracker.ietf.org/doc/html/rfc9562#section-5.9
+pub uuid_nil: (dst: [*]u8): Result[u32, UuidError] {
+  len(dst) < UUID_SIZE ? { .Err(.DestinationTooSmall) } | {
+    i: u32 = u32(0)
+    while i < UUID_SIZE { dst[i] = u8(0)
+      i = i + u32(1)
+    }
+    .Ok(UUID_SIZE)
+  }
+}
+
+// uuid_max: all bits one (RFC 9562 §5.10).
+// https://datatracker.ietf.org/doc/html/rfc9562#section-5.10
+pub uuid_max: (dst: [*]u8): Result[u32, UuidError] {
+  len(dst) < UUID_SIZE ? { .Err(.DestinationTooSmall) } | {
+    i: u32 = u32(0)
+    while i < UUID_SIZE { dst[i] = u8(255)
+      i = i + u32(1)
+    }
+    .Ok(UUID_SIZE)
+  }
+}
+
+// uuid_version: the four-bit version field, None unless the view is sixteen bytes.
+// RFC 9562 §4.2 https://datatracker.ietf.org/doc/html/rfc9562#section-4.2
+pub uuid_version: (src: []u8): Option[u32] = len(src) != UUID_SIZE ? .None | .Some(u32(src[6] >> u8(4)))
+
+// uuid_variant: 0 for the NCS reserve (0xxx), 1 for the RFC variant (10xx),
+// 2 for the Microsoft reserve (110x), 3 for the future reserve (111x); None
+// unless the view is sixteen bytes.
+// RFC 9562 §4.1 https://datatracker.ietf.org/doc/html/rfc9562#section-4.1
+pub uuid_variant: (src: []u8): Option[u32] {
+  len(src) != UUID_SIZE ? { .None } | {
+    top: u8 = src[8] >> u8(5)
+    top < u8(4) ? { .Some(u32(0)) } | top < u8(6) ? { .Some(u32(1)) } | top == u8(6) ? { .Some(u32(2)) } | { .Some(u32(3)) }
+  }
+}
+
+// uuid_v7_millis: the 48-bit timestamp of a version 7 value, None for any
+// other version or length.
+// RFC 9562 §5.7 https://datatracker.ietf.org/doc/html/rfc9562#section-5.7
+pub uuid_v7_millis: (src: []u8): Option[u64] {
+  len(src) != UUID_SIZE || (src[6] >> u8(4)) != u8(7) ? { .None } | {
+    value: u64 = u64(0)
+    i: u32 = u32(0)
+    while i < u32(6) {
+      value = (value << u64(8)) | u64(src[i])
+      i = i + u32(1)
+    }
+    .Some(value)
+  }
+}
+
+// uuid_format: the 8-4-4-4-12 hexadecimal form (RFC 9562 §4), lowercase
+// unless `upper`; the source must be sixteen bytes and the destination at
+// least UUID_TEXT_SIZE.
+// https://datatracker.ietf.org/doc/html/rfc9562#section-4
+pub uuid_format: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, UuidError] {
+  len(src) != UUID_SIZE ? { .Err(.InvalidLength) } |
+  len(dst) < UUID_TEXT_SIZE ? { .Err(.DestinationTooSmall) } | {
+    out: u32 = u32(0)
+    i: u32 = u32(0)
+    while i < UUID_SIZE {
+      unit: u8 = src[i]
+      dst[out] = encoding.hex_digit(unit >> u8(4), upper)
+      dst[out + u32(1)] = encoding.hex_digit(unit & u8(15), upper)
+      out = out + u32(2)
+      i == u32(3) || i == u32(5) || i == u32(7) || i == u32(9) ? {
+        dst[out] = u8(45)
+        out = out + u32(1)
+      }
+      i = i + u32(1)
+    }
+    .Ok(UUID_TEXT_SIZE)
+  }
+}
+
+// uuid_parse: exactly the 36-character hyphenated form, hex digits in either
+// case, hyphens at 8, 13, 18 and 23, nothing else (no braces, no URN prefix,
+// no 32-digit form). The input is validated in full before the first store.
+// https://datatracker.ietf.org/doc/html/rfc9562#section-4
+pub uuid_parse: (dst: [*]u8, src: []u8): Result[u32, UuidError] {
+  len(src) != UUID_TEXT_SIZE ? { .Err(.InvalidLength) } |
+  len(dst) < UUID_SIZE ? { .Err(.DestinationTooSmall) } | {
+    valid: Bool = true
+    i: u32 = u32(0)
+    while i < UUID_TEXT_SIZE && valid {
+      hyphen: Bool = i == u32(8) || i == u32(13) || i == u32(18) || i == u32(23)
+      valid = hyphen ? { src[i] == u8(45) } | { encoding.hex_value(src[i]) < u32(16) }
+      i = i + u32(1)
+    }
+    !valid ? { .Err(.InvalidCharacter) } | {
+      at: u32 = u32(0)
+      out: u32 = u32(0)
+      while out < UUID_SIZE {
+        src[at] == u8(45) ? { at = at + u32(1) }
+        dst[out] = u8_trunc_u32((encoding.hex_value(src[at]) << u32(4)) | encoding.hex_value(src[at + u32(1)]))
+        at = at + u32(2)
+        out = out + u32(1)
+      }
+      .Ok(UUID_SIZE)
+    }
+  }
+}
+
+// uuid_equal: sixteen equal bytes.
+pub uuid_equal: (a: []u8, b: []u8): Bool {
+  len(a) != UUID_SIZE || len(b) != UUID_SIZE ? { false } | {
+    same: Bool = true
+    i: u32 = u32(0)
+    while i < UUID_SIZE && same {
+      same = a[i] == b[i]
+      i = i + u32(1)
+    }
+    same
+  }
+}
+
+// uuid_compare: bytewise order (-1, 0, 1), which for version 7 values is
+// time order; a shorter operand sorts first.
+pub uuid_compare: (a: []u8, b: []u8): i32 {
+  len(a) != len(b) ? { len(a) < len(b) ? i32(0) - i32(1) | i32(1) } | {
+    result: i32 = i32(0)
+    i: u32 = u32(0)
+    while i < len(a) && result == i32(0) {
+      a[i] != b[i] ? { result = a[i] < b[i] ? { i32(0) - i32(1) } | { i32(1) } }
+      i = i + u32(1)
+    }
+    result
+  }
+}
