@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"github.com/SCKelemen/oak/asm"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -2504,7 +2505,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		}
 		// assert carries its source position so a trap can be attributed.
 		if ident, ok := e.Function.(*ast.Identifier); ok && ident.Value == "assert" && len(e.Arguments) == 1 {
-			cg.output.WriteString(fmt.Sprintf(", %q, %d", cg.sourceFile, ident.Token.Line))
+			cg.output.WriteString(fmt.Sprintf(", %q, %d", cg.tokenSourceFile(ident.Token), ident.Token.Line))
 		}
 		cg.output.WriteString(" )")
 	case *ast.BlockExpression:
@@ -2994,7 +2995,29 @@ func (cg *CodeGenerator) emitLineDirective(tok token.Token) {
 	if !cg.lineDirectives || tok.Line <= 0 || tok.SemanticContext == "std" {
 		return
 	}
-	cg.output.WriteString(fmt.Sprintf("#line %d %s\n", tok.Line, strconv.Quote(cg.sourceFile)))
+	cg.output.WriteString(fmt.Sprintf("#line %d %s\n", tok.Line, strconv.Quote(cg.tokenSourceFile(tok))))
+}
+
+// tokenSourceFile is the file a token came from, for assertion traps and
+// #line directives. The module loader stamps every token `package#file`
+// (docs/spec/83-modules.md section 7), so a multi-package program names the
+// assertion's own file rather than the root package's directory (F21); the
+// file is spelled relative to the compiled package directory when it lies
+// inside it. A token without a stamp (a single-source compilation) keeps
+// the compilation's source name.
+func (cg *CodeGenerator) tokenSourceFile(tok token.Token) string {
+	context := tok.SemanticContext
+	hash := strings.LastIndex(context, "#")
+	if hash < 0 || hash == len(context)-1 {
+		return cg.sourceFile
+	}
+	file := context[hash+1:]
+	if filepath.IsAbs(file) && cg.sourceFile != "" {
+		if rel, err := filepath.Rel(cg.sourceFile, file); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return rel
+		}
+	}
+	return file
 }
 
 // statementToken is the token that opens a statement, for source mapping.
