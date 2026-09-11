@@ -70,3 +70,9 @@ import Oak.SessionObligations
 import Oak.SessionObligationsProved
 import Oak.Floats
 import Oak.GraphemeBreak
+import Oak.Stdlib.VarintExtracted
+import Oak.Stdlib.EncodingExtracted
+import Oak.Stdlib.RandomExtracted
+import Oak.Stdlib.UuidExtracted
+import Oak.Stdlib.SortU32Extracted
+import Oak.Stdlib.VarintLaws
