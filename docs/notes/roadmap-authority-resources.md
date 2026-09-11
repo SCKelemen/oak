@@ -135,6 +135,15 @@ of local storage stays rejected; owner mutation is rejected while a
 dependent view lives; wrappers preserve every dependency. Retain
 `OAK-B0109` for every unsupported case.
 
+**Landed (stage (a), 2026-09-12):** checked result contracts
+(`50-borrowing.md` §9 "Result identity"): a result is declared fresh or an
+alias of one argument (`resource.return-alias arg:N` in SemIR), bodies are
+validated against the claim (`OAK-B0117`), a declared alias return of a
+borrowed parameter is exempt from the retention rule, and callers carry
+the aliased argument's provenance into bindings, rebinding, projections,
+and nested arguments. Permission and lifetime facts, and stages (b)–(e),
+remain open; view results stay `OAK-B0109`.
+
 ## 5. Resources through generics and pattern matching
 
 Copyability as a capability, propagated through fields, payloads, generic

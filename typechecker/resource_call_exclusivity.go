@@ -62,7 +62,7 @@ func (a *typedResourceAnalysis) checkCallResourceExclusivity(expr *ast.Invocatio
 			mode:  parameter.mode,
 			node:  argument,
 		}
-		if name, ok := resourceName(argument); ok && a.flow.Registered(name) {
+		if name, ok := a.trackedName(argument); ok {
 			if !a.flow.CanUse(name) {
 				// Ordinary argument evaluation owns the use-after-consume diagnostic.
 				a.use(name, argument)

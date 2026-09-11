@@ -30,6 +30,13 @@ const CodeResourceUnknownCallable = "OAK-B0115"
 // (docs/spec/50-borrowing.md section 9, contracts on function types).
 const CodeResourceCallableContractMismatch = "OAK-B0116"
 
+// CodeResourceResultContract reports a body that does not honor its
+// declared result identity (docs/spec/50-borrowing.md section 9): a
+// fresh-return function returning a parameter or its alias, or an
+// alias-return function returning anything but the declared parameter's
+// authority.
+const CodeResourceResultContract = "OAK-B0117"
+
 // addResourceDiagnostic keeps resource authority failures in the borrow/resource
 // diagnostic category even though typed resource analysis is hosted by typechecker.
 func (tc *TypeChecker) addResourceDiagnostic(node ast.Node, title string) *diagnostic.Diagnostic {

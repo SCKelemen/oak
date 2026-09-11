@@ -19,6 +19,9 @@ const (
 	ResourceEffectBorrowMut   = "borrow-mut"
 	ResourceEffectConsume     = "consume"
 	ResourceEffectReturnFresh = "return-fresh"
+	// ResourceEffectReturnAlias marks a result that aliases the argument
+	// arg:N: same authority class, no wider permission.
+	ResourceEffectReturnAlias = "return-alias"
 	// Callable-contract effects describe what a function-typed parameter
 	// (arg:N) requires of the function values passed for it: the mode of
 	// the callable's own parameter param:M, or a fresh result.
@@ -36,6 +39,12 @@ type ResourceCallableSemantics struct {
 	BorrowedMut  []int
 	Consumes     []int
 	ReturnsFresh bool
+}
+
+// ResourceReturnAlias constructs the effect for a result that aliases the
+// argument at index.
+func ResourceReturnAlias(index int) Effect {
+	return Effect{Namespace: ResourceEffectNamespace, Name: ResourceEffectReturnAlias, Parameters: []string{"arg:" + strconv.Itoa(index)}}
 }
 
 // ResourceCallableEffect constructs the effect requiring mode name (one of
@@ -62,6 +71,10 @@ type ResourceTransitionSemantics struct {
 	BorrowedMut  []int
 	Consumes     []int
 	ReturnsFresh bool
+	// ReturnsAlias and AliasesArgument record a result declared to alias
+	// one argument.
+	ReturnsAlias    bool
+	AliasesArgument int
 	// Callables are the contracts required of function-typed parameters,
 	// sorted by argument index.
 	Callables []ResourceCallableSemantics
@@ -167,6 +180,16 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 				return ResourceTransitionSemantics{}, true, err
 			}
 
+		case ResourceEffectReturnAlias:
+			index, err := decodeResourceArgument(effect)
+			if err != nil {
+				return ResourceTransitionSemantics{}, true, err
+			}
+			if result.ReturnsAlias {
+				return ResourceTransitionSemantics{}, true, fmt.Errorf("resource.return-alias is duplicated")
+			}
+			result.ReturnsAlias, result.AliasesArgument = true, index
+
 		case ResourceEffectReturnFresh:
 			if len(effect.Parameters) != 0 {
 				return ResourceTransitionSemantics{}, true,
@@ -185,6 +208,9 @@ func (t Transition) ResourceSemantics() (ResourceTransitionSemantics, bool, erro
 		}
 	}
 
+	if result.ReturnsAlias && result.ReturnsFresh {
+		return ResourceTransitionSemantics{}, true, fmt.Errorf("a result cannot be both return-fresh and return-alias")
+	}
 	sort.Ints(result.Borrowed)
 	sort.Ints(result.BorrowedMut)
 	sort.Ints(result.Consumes)

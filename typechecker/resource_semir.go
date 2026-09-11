@@ -67,10 +67,12 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 			fullSemantics[callable] = semantics
 
 			model.MarkOperation(callable, ResourceOperation{
-				Parameters:   resourceParametersFromSemIR(semantics),
-				Consumes:     append([]int(nil), semantics.Consumes...),
-				ReturnsFresh: semantics.ReturnsFresh,
-				Receiver:     receiverModeFromSemIR(semantics.Receiver),
+				Parameters:      resourceParametersFromSemIR(semantics),
+				Consumes:        append([]int(nil), semantics.Consumes...),
+				ReturnsFresh:    semantics.ReturnsFresh,
+				ReturnsAlias:    semantics.ReturnsAlias,
+				AliasesArgument: semantics.AliasesArgument,
+				Receiver:        receiverModeFromSemIR(semantics.Receiver),
 			})
 		}
 	}
@@ -152,7 +154,8 @@ func sameResourceOperation(left, right ResourceOperation) bool {
 }
 
 func sameResourceTransitionSemantics(left, right semir.ResourceTransitionSemantics) bool {
-	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver {
+	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver ||
+		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) {
 		return false
 	}
 	if len(left.Callables) != len(right.Callables) {
