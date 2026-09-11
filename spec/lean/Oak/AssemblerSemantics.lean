@@ -64,6 +64,19 @@ def apply {w : Nat} (op : Op) (a b : BitVec w) : BitVec w :=
   | .asr => a.sshiftRight (b.toNat % w)
   | .mul => a * b
 
+/-- The negated logical forms and rotation, as the executor lowers them:
+    `bic a, b = a &&& ~~~b`, `orn a, b = a ||| ~~~b`, `eon a, b = a ^^^ ~~~b`,
+    `ror a, k` is the library's rotation. -/
+def bic {w : Nat} (a b : BitVec w) : BitVec w := a &&& ~~~b
+def orn {w : Nat} (a b : BitVec w) : BitVec w := a ||| ~~~b
+def eon {w : Nat} (a b : BitVec w) : BitVec w := a ^^^ ~~~b
+def ror {w : Nat} (a : BitVec w) (k : Nat) : BitVec w := a.rotateRight (k % w)
+
+/-- `bic` is `and` with the complement — the lowering's spelling. -/
+theorem bic_as_and {w : Nat} (a b : BitVec w) : bic a b = apply .and a (~~~b) := rfl
+theorem orn_as_orr {w : Nat} (a b : BitVec w) : orn a b = apply .orr a (~~~b) := rfl
+theorem eon_as_eor {w : Nat} (a b : BitVec w) : eon a b = apply .eor a (~~~b) := rfl
+
 /-- `neg` and `mvn` are `sub` from zero and `eor` with all ones. -/
 theorem neg_as_sub {w : Nat} (a : BitVec w) : -a = apply .sub 0 a := by
   simp [apply, BitVec.zero_sub]

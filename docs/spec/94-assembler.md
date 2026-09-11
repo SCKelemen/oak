@@ -521,6 +521,33 @@ against `lo <= v && v < hi` and the wrong immediate (`#0`, which leaves
 (`cinc_eq_csel`), `madd`/`msub` multiply-add terms (a constant factor stays
 linear). The Oak side gained the prefix `^` (bitwise not).
 
+**General-purpose ISA coverage.** The table now spans the A64
+general-purpose instruction set; `asm/isa_test.go` is the coverage
+witness (every mnemonic parses, matches a form, passes the checker, and
+renders). Operands: shifted registers (`x2, lsl #3`, also `lsr`/`asr`/`ror`)
+on the arithmetic and logical group, extended registers (`w2, uxtw #2`,
+`sxtw`) on `add`/`sub`/`cmp`/`cmn`, and shifted immediates (`#imm, lsl #16`)
+on the wide moves. By group, with the verifier's status:
+
+| Group | Instructions | Verifier |
+| --- | --- | --- |
+| arithmetic, carry | `add sub adds subs adc sbc adcs sbcs neg negs ngc ngcs cmp cmn madd msub mneg` | modeled (`adcs`/`sbcs` flags unknown) |
+| logical | `and ands orr eor bic bics orn eon tst mvn` | modeled |
+| shifts, rotates, fields | `lsl lsr asr ror extr ubfx ubfiz sbfx bfi` | modeled |
+| bit manipulation, extends | `rev rev16 rev32 rbit clz cls sxtb sxth sxtw uxtb uxth` | modeled (`clz` as a priority encoder) |
+| wide moves | `movz movn movk` | modeled |
+| conditional | `csel cset csetm csinc csinv csneg cinc cinv cneg ccmp ccmn` | modeled |
+| multiply, divide | `mul smull umull smaddl umaddl smsubl umsubl smulh umulh udiv sdiv` | modeled; two symbolic operands, high products, and division exceed the bit-level budget (evidence); Oak's `/` and `%` trap and stay unlowered |
+| memory | `ldr str ldp stp ldrb ldrh strb strh ldrsb ldrsh ldrsw ldpsw ldur stur ldurb ldurh sturb sturh ldursb ldursh ldursw prfm` | loads through spans and the frame modeled (sign-extending loads sign-extend the element); `prfm` checked only |
+| ordered, exclusive, atomic | `ldar ldxr ldaxr ldapr stlr stxr stlxr` (+`b`/`h`), the LSE set `ldadd ldclr ldeor ldset ldsmax ldsmin ldumax ldumin swp cas` × {`-`,`a`,`l`,`al`} × {`-`,`b`,`h`}, `clrex` | checked: a guarded writable span, one element, roles per operation (`stxr` writes its status register, `cas` reads both); trusted by the verifier |
+| branches | `b b.cond cbz cbnz tbz tbnz bl blr br ret ret-xN` | `br`/`blr` checked as an indirect transfer/call; trusted |
+| hints, traps, exceptions | `nop wfe wfi sev sevl yield csdb esb hint brk svc hvc smc` | hints have no value semantics; `brk` ends control; `svc`/`hvc`/`smc` need `system` and clobber the caller-saved state; trusted |
+| system, barriers, maintenance | `mrs msr eret dmb dsb isb dc ic tlbi at` | checked under `system`; trusted |
+| CRC, flags | `crc32{b,h,w,x} crc32c{b,h,w,x} cfinv` | checked; trusted |
+
+Floating-point and NEON are the next increment: the checker admits vector
+registers already, and the bitvector verifier does not model them.
+
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
 (§7), the design has a natural anchor — **the Oak body is the

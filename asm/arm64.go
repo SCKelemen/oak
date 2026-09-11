@@ -142,10 +142,17 @@ func matchForm(spec instructionSpec, operands []Operand) (form, bool) {
 func operandMatches(class operandClass, operand Operand) bool {
 	switch class {
 	case opX:
-		reg, ok := operand.(Register)
+		if ext, isExt := operand.(Extended); isExt {
+			// An extended w register widens into an x-form operand.
+			return ext.Reg.Class == ClassW || ext.Reg.Class == ClassX
+		}
+		reg, ok := operandRegister(operand)
 		return ok && reg.Class == ClassX
 	case opW:
-		reg, ok := operand.(Register)
+		if ext, isExt := operand.(Extended); isExt {
+			return ext.Reg.Class == ClassW
+		}
+		reg, ok := operandRegister(operand)
 		return ok && reg.Class == ClassW
 	case opV:
 		reg, ok := operand.(Register)
@@ -177,18 +184,9 @@ func operandMatches(class operandClass, operand Operand) bool {
 
 // accessBytes is the memory footprint of one load/store form.
 func accessBytes(mnemonic string, class operandClass) int64 {
-	switch mnemonic {
-	case "ldrb", "strb":
-		return 1
-	case "ldrh", "strh":
-		return 2
-	}
-	width := int64(8)
+	regClass := ClassX
 	if class == opW {
-		width = 4
+		regClass = ClassW
 	}
-	if mnemonic == "ldp" || mnemonic == "stp" {
-		return 2 * width
-	}
-	return width
+	return memorySize(mnemonic, regClass)
 }

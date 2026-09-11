@@ -288,7 +288,23 @@ func adaptWidth(t *term, width int) *term {
 
 // eval computes the term for a parameter assignment (Oak.AssemblerSemantics
 // transliterated: every operation is total and wraps to the width).
+// eval computes the term for a parameter assignment (Oak.AssemblerSemantics
+// transliterated: every operation is total and wraps to the width). Shared
+// subterms are evaluated once per call.
 func (t *term) eval(env map[string]uint64) uint64 {
+	return t.evalMemo(env, map[*term]uint64{})
+}
+
+func (t *term) evalMemo(env map[string]uint64, memo map[*term]uint64) uint64 {
+	if cached, seen := memo[t]; seen {
+		return cached
+	}
+	value := t.evalUncached(env, memo)
+	memo[t] = value
+	return value
+}
+
+func (t *term) evalUncached(env map[string]uint64, memo map[*term]uint64) uint64 {
 	m := mask(t.width)
 	switch t.kind {
 	case termParam:
@@ -304,24 +320,24 @@ func (t *term) eval(env map[string]uint64) uint64 {
 	case termConst:
 		return t.value & m
 	case termSelect:
-		return elementValue(t.name, t.left.eval(env)&mask(32), t.width) & m
+		return elementValue(t.name, t.left.evalMemo(env, memo)&mask(32), t.width) & m
 	case termCmp:
 		// The comparison happens at the operands' width; t.width is only
 		// the width the 1/0 result is used at.
-		if conditionHolds(t.op, t.left.eval(env), t.right.eval(env), t.left.width) {
+		if conditionHolds(t.op, t.left.evalMemo(env, memo), t.right.evalMemo(env, memo), t.left.width) {
 			return 1
 		}
 		return 0
 	case termIte:
-		if t.cond.eval(env) != 0 {
-			return t.left.eval(env) & m
+		if t.cond.evalMemo(env, memo) != 0 {
+			return t.left.evalMemo(env, memo) & m
 		}
-		return t.right.eval(env) & m
+		return t.right.evalMemo(env, memo) & m
 	}
 	// Operands evaluate at their own widths (a mask node's inner term keeps
 	// its width and modulus); the operation wraps to this term's width.
-	l := t.left.eval(env) & m
-	r := t.right.eval(env) & m
+	l := t.left.evalMemo(env, memo) & m
+	r := t.right.evalMemo(env, memo) & m
 	switch t.op {
 	case "add":
 		return (l + r) & m
@@ -342,24 +358,40 @@ func (t *term) eval(env map[string]uint64) uint64 {
 		return uint64(int64(l<<shift)>>shift>>(r%uint64(t.width))) & m
 	case "mul":
 		return (l * r) & m
+	case "rev", "rev16", "rev32", "rbit", "clz", "cls":
+		return evalUnary(t.op, l, t.width) & m
+	}
+	if value, ok := evalBinaryExtra(t.op, l, r, t.width); ok {
+		return value & m
 	}
 	return 0
 }
 
+// String prints a term for diagnostics, bounded: a DAG's expansion can be
+// exponential in its depth, so the print stops after a few hundred nodes.
 func (t *term) String() string {
+	budget := 400
+	return t.stringBounded(&budget)
+}
+
+func (t *term) stringBounded(budget *int) string {
+	*budget--
+	if *budget < 0 {
+		return "…"
+	}
 	switch t.kind {
 	case termParam:
 		return t.name
 	case termConst:
 		return fmt.Sprintf("%d", t.value)
 	case termCmp:
-		return fmt.Sprintf("(%s %s %s)", t.left, t.op, t.right)
+		return fmt.Sprintf("(%s %s %s)", t.left.stringBounded(budget), t.op, t.right.stringBounded(budget))
 	case termIte:
-		return fmt.Sprintf("(%s ? %s : %s)", t.cond, t.left, t.right)
+		return fmt.Sprintf("(%s ? %s : %s)", t.cond.stringBounded(budget), t.left.stringBounded(budget), t.right.stringBounded(budget))
 	case termSelect:
-		return fmt.Sprintf("%s[%s]", t.name, t.left)
+		return fmt.Sprintf("%s[%s]", t.name, t.left.stringBounded(budget))
 	}
-	return fmt.Sprintf("(%s %s %s)", t.left, t.op, t.right)
+	return fmt.Sprintf("(%s %s %s)", t.left.stringBounded(budget), t.op, t.right.stringBounded(budget))
 }
 
 // --- linear normal form ------------------------------------------------
@@ -376,6 +408,22 @@ type linearForm struct {
 // transparent modulo 2^w, which is how the wN write/read discipline's
 // masks disappear from a 32-bit result; a narrower mask is not linear.
 func (t *term) linearAt(w int) *linearForm {
+	return t.linearAtMemo(w, map[*term]*linearForm{}, map[*term]bool{})
+}
+
+// linearAtMemo shares the normalization of shared subterms (terms are
+// DAGs); seen records subterms already normalized, nil results included.
+func (t *term) linearAtMemo(w int, memo map[*term]*linearForm, seen map[*term]bool) *linearForm {
+	if seen[t] {
+		return memo[t]
+	}
+	form := t.linearAtUncached(w, memo, seen)
+	seen[t] = true
+	memo[t] = form
+	return form
+}
+
+func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*term]bool) *linearForm {
 	m := mask(w)
 	switch t.kind {
 	case termParam:
@@ -388,14 +436,14 @@ func (t *term) linearAt(w int) *linearForm {
 	switch t.op {
 	case "and":
 		if t.right.kind == termConst && t.right.value&m == m {
-			return t.left.linearAt(w)
+			return t.left.linearAtMemo(w, memo, seen)
 		}
 		if t.left.kind == termConst && t.left.value&m == m {
-			return t.right.linearAt(w)
+			return t.right.linearAtMemo(w, memo, seen)
 		}
 		return nil
 	case "add", "sub":
-		l, r := t.left.linearAt(w), t.right.linearAt(w)
+		l, r := t.left.linearAtMemo(w, memo, seen), t.right.linearAtMemo(w, memo, seen)
 		if l == nil || r == nil {
 			return nil
 		}
@@ -428,7 +476,7 @@ func (t *term) linearAt(w int) *linearForm {
 		if factor.kind != termConst {
 			return nil
 		}
-		l := variable.linearAt(w)
+		l := variable.linearAtMemo(w, memo, seen)
 		if l == nil {
 			return nil
 		}
@@ -441,7 +489,7 @@ func (t *term) linearAt(w int) *linearForm {
 		if t.right.kind != termConst || t.width < w {
 			return nil
 		}
-		l := t.left.linearAt(w)
+		l := t.left.linearAtMemo(w, memo, seen)
 		if l == nil {
 			return nil
 		}
@@ -727,12 +775,12 @@ func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (str
 	if mem.Index != nil {
 		return "indexed frame access", false
 	}
-	size := int64(widthOf(regs[0].Class) / 8)
-	switch instr.Mnemonic {
-	case "ldrb", "strb":
-		size = 1
-	case "ldrh", "strh":
-		size = 2
+	if len(regs) == 0 || isAtomic(instr.Mnemonic) || isExclusiveStore(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic) || instr.Mnemonic == "ldpsw" {
+		return "a frame access outside the modeled subset (" + instr.Mnemonic + ")", false
+	}
+	size := memorySize(instr.Mnemonic, regs[0].Class)
+	if len(regs) == 2 {
+		size /= 2 // ldp/stp: one slot per register
 	}
 	var addr int64
 	switch mem.Mode {
@@ -889,17 +937,18 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	if mem.Mode != MemOffset {
 		return "a span base moved by pre/post-index", false
 	}
-	// The access size is the element size; a byte or halfword load
-	// zero-extends the element into its w register.
-	size := int64(widthOf(dest.Class) / 8)
-	switch instr.Mnemonic {
-	case "ldrb":
-		size = 1
-	case "ldrh":
-		size = 2
-	}
+	// The access size is the element size; a narrower load extends the
+	// element into its register — zero-extending, or sign-extending for
+	// the ldrs* family.
+	size := memorySize(instr.Mnemonic, dest.Class)
 	if size != elem {
 		return fmt.Sprintf("a %d-byte load over %d-byte elements", size, elem), false
+	}
+	extend := func(element *term) *term {
+		if isSignExtendingLoad(instr.Mnemonic) {
+			return extendTerm(element, int(elem)*8, widthOf(dest.Class), true)
+		}
+		return zeroExtend(element, widthOf(dest.Class))
 	}
 	if mem.Index != nil {
 		// [base, wI, uxtw #s]: element wI. Along an unrolled counted loop the
@@ -912,20 +961,18 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if !ok {
 			return "unbound register read", false
 		}
-		state.write(dest, zeroExtend(x.element(param, index, int(elem)*8), widthOf(dest.Class)))
+		state.write(dest, extend(x.element(param, index, int(elem)*8)))
 		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
 	}
-	state.write(dest, zeroExtend(x.element(param, constTerm(uint64(mem.Offset/elem), 32), int(elem)*8), widthOf(dest.Class)))
+	state.write(dest, extend(x.element(param, constTerm(uint64(mem.Offset/elem), 32), int(elem)*8)))
 	return "", true
 }
 
 // isLoad reports the load mnemonics the executor resolves through a span.
-func isLoad(mnemonic string) bool {
-	return mnemonic == "ldr" || mnemonic == "ldrb" || mnemonic == "ldrh"
-}
+func isLoad(mnemonic string) bool { return isPlainLoad(mnemonic) }
 
 // element is the span element at an index term; in a concrete run the
 // witness memory's value.
@@ -1083,6 +1130,9 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				state.write(dest, binaryTerm("xor", source, constTerm(mask(width), width)))
 			}
 		default:
+			if handled, reason, ok := stepISA(instr, state); handled {
+				return reason, ok
+			}
 			op, verifiable := verifiableOps[instr.Mnemonic]
 			if !verifiable || len(instr.Operands) != 3 {
 				return fmt.Sprintf("instruction %s", instr.Mnemonic), false
@@ -1169,7 +1219,25 @@ func operandTerm(state *symbolicState, operand Operand, width int) (*term, bool)
 	case Register:
 		return state.read(o)
 	case Immediate:
-		return constTerm(uint64(o.Value), width), true
+		return constTerm(uint64(o.Value)<<uint(o.Shift), width), true
+	case Shifted:
+		value, ok := state.read(o.Reg)
+		if !ok {
+			return nil, false
+		}
+		op := map[string]string{"lsl": "shl", "lsr": "shr", "asr": "sar", "ror": "ror"}[o.Kind]
+		return binaryTerm(op, value, constTerm(uint64(o.Amount), value.width)), true
+	case Extended:
+		value, ok := state.read(o.Reg)
+		if !ok {
+			return nil, false
+		}
+		from := map[string]int{"uxtb": 8, "sxtb": 8, "uxth": 16, "sxth": 16, "uxtw": 32, "sxtw": 32, "uxtx": 64, "sxtx": 64}[o.Kind]
+		extended := extendTerm(value, from, width, o.Kind[0] == 's')
+		if o.Amount == 0 {
+			return extended, true
+		}
+		return binaryTerm("shl", extended, constTerm(uint64(o.Amount), width)), true
 	}
 	return nil, false
 }
@@ -1563,6 +1631,15 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		switch ident.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
+			// A widening of a signed operand sign-extends (i64(x) with x: i32);
+			// every other conversion is the operand's bits at the new width.
+			if srcWidth, signed, known := lo.operandContract(e.Arguments[0]); known && signed && ident.Value[0] == 'i' && srcWidth < width {
+				operand, reason, ok := lo.lower(e.Arguments[0], srcWidth)
+				if !ok {
+					return nil, reason, false
+				}
+				return extendTerm(operand, srcWidth, width, true), "", true
+			}
 			return lo.lower(e.Arguments[0], width)
 		}
 		return nil, fmt.Sprintf("call to %s", ident.Value), false
@@ -1868,9 +1945,14 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 // zero-extension copy a parameter node at the use width while the value
 // stays bounded by its declared width.
 func collectParams(t *term, into map[string]bool) {
-	if t == nil {
+	collectParamsVisited(t, into, map[*term]bool{})
+}
+
+func collectParamsVisited(t *term, into map[string]bool, visited map[*term]bool) {
+	if t == nil || visited[t] {
 		return
 	}
+	visited[t] = true // terms are DAGs: visit every shared subterm once
 	switch t.kind {
 	case termParam:
 		into[t.name] = true
@@ -1878,9 +1960,9 @@ func collectParams(t *term, into map[string]bool) {
 	case termConst:
 		return
 	}
-	collectParams(t.cond, into)
-	collectParams(t.left, into)
-	collectParams(t.right, into)
+	collectParamsVisited(t.cond, into, visited)
+	collectParamsVisited(t.left, into, visited)
+	collectParamsVisited(t.right, into, visited)
 }
 
 // declaredWidth is the width a parameter's values are bounded by: a scalar
