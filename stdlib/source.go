@@ -54,6 +54,12 @@ var randomSource string
 //go:embed uuid.oak
 var uuidSource string
 
+// grapheme: UAX #29 extended grapheme cluster segmentation over UTF-8 views
+// (stdlib/README.md); a library package and part of the flat prelude.
+//
+//go:embed grapheme.oak
+var graphemeSource string
+
 // encoding: hex, base64, base32 and percent codecs over borrowed bytes
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -113,12 +119,12 @@ var Prelude = baseSource
 var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
 	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
 	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource)
+	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource) + "\n" + flatten(graphemeSource)
 
 var (
 	clauseLine    = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
 	importLine    = regexp.MustCompile(`(?m)^import\("[a-z_]+"\)\n`)
-	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid)\.`)
+	qualification = regexp.MustCompile(`\b(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid|grapheme)\.`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -165,6 +171,7 @@ var Packages = map[string]string{
 	"varint":          varintSource,
 	"random":          randomSource,
 	"uuid":            uuidSource,
+	"grapheme":        graphemeSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,
 	"url":             urlSource,
