@@ -523,6 +523,36 @@ In SemIR the requirement is the `resource.callable-borrow`,
 (functions of functions) and ownership variance are not admitted until
 their substitutability laws are specified.
 
+**Result identity.** A resource-returning operation's contract also states
+what its result *is*: **fresh** authority (a class no caller name shares,
+the existing fact), an **alias** of exactly one argument (the same
+authority class, no wider permission), or unstated (unknown, which fails
+closed as today). The two facts are exclusive; an alias declaration names a
+resource-typed parameter of a resource-returning callable, and anything
+else is a declaration error. Both sides are held to the claim. The
+callee's body is validated against its own result contract: a fresh-return
+body may not return a parameter or an alias of one on any path, and an
+alias-return body must return the declared parameter's authority on every
+path, directly or through a local alias or a nested alias-returning call;
+a violation is `OAK-B0117`, which names the function, the declared
+identity, and the offending returned name. Because an alias result hands
+the caller a second name for an authority it already holds, returning the
+aliased parameter is not retention even when it is borrowed, so
+`peek: (borrowed h) -> alias of h` is accepted where the same body without
+the declaration is `OAK-B0114`. At the call site an alias result carries
+the argument's provenance: binding it, rebinding a name to it, storing it
+in a record field, or passing it directly as a nested argument gives that
+position the argument's class, so an exclusive pairing of the result with
+its source is `OAK-B0112` and consuming either consumes both. When the
+operation also consumes the aliased argument, every prior name of the
+class is dead and the result is its only surviving name; the caller tracks
+it as a new class, which is indistinguishable from fresh authority. An
+alias of an argument without tracked provenance has unknown provenance.
+In SemIR the fact is the `resource.return-alias` (`arg:N`) effect beside
+`return-fresh`. Freshness and aliasing say nothing about the lifetime of
+backing storage: a borrowed *view* result stays under `OAK-B0109` until
+stage (b) of the authority roadmap's milestone 4.
+
 Imports and sealing cannot erase modes: a protocol declared in one package
 (`112-protocols.md` §5, `via close(consumed h)`) is elaborated with the
 program's internal names, so the same contract governs every importer's

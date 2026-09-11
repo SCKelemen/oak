@@ -22,6 +22,10 @@ type ResourceOperation struct {
 	Parameters   []ResourceParameterDeclaration
 	Consumes     []int
 	ReturnsFresh bool
+	// ReturnsAlias marks a result aliasing the argument at AliasesArgument
+	// (docs/spec/50-borrowing.md section 9, result identity).
+	ReturnsAlias    bool
+	AliasesArgument int
 	// Receiver is the authority mode of a method's receiver, its own slot
 	// beside the explicit parameters (docs/spec/50-borrowing.md section 9).
 	Receiver ResourceParameterMode
@@ -113,6 +117,8 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			callableContracts:  make(map[string]string),
 			unknownCallables:   make(map[string]bool),
 			parameterContracts: make(map[string]*ResourceCallableContract),
+			aliasCalls:         make(map[*ast.InvocationExpression]string),
+			parameters:         make(map[string]bool),
 		}
 		analysis.pushScope()
 		// The function's own contract fixes what its body may do with each
@@ -147,6 +153,7 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			}
 			if model.isResourceType(parameter.Type) {
 				analysis.flow.Register(parameter.Name.Value, parameter.Name)
+				analysis.parameters[parameter.Name.Value] = true
 				if hasContract {
 					if mode := own.parameterMode(index); mode != ResourceParameterUnspecified {
 						analysis.entryModes[parameter.Name.Value] = entryAuthority{mode: mode, declaration: parameter.Name}
@@ -155,7 +162,10 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			}
 		}
 		analysis.expression(fn.Body)
-		analysis.checkRetainedReturn(fn)
+		if hasContract {
+			analysis.checkResultContract(fn, own)
+		}
+		analysis.checkRetainedReturn(fn, own, hasContract)
 	}
 }
 
@@ -249,6 +259,12 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 	if call, ok := s.Value.(*ast.InvocationExpression); ok && a.freshCalls[call] {
 		a.flow.RebindFresh(name, s.Name)
 		return
+	}
+	if call, ok := s.Value.(*ast.InvocationExpression); ok {
+		if source, aliased := a.aliasCalls[call]; aliased && source != "" && a.flow.CanUse(source) {
+			a.flow.Rebind(name, source, s.Name)
+			return
+		}
 	}
 	a.flow.Forget(name)
 	a.unknownResources[name] = true
@@ -390,6 +406,12 @@ func (a *typedResourceAnalysis) bindPath(path string, value ast.Expression, orig
 		a.flow.Register(path, origin)
 		return
 	}
+	if call, ok := value.(*ast.InvocationExpression); ok {
+		if source, aliased := a.aliasCalls[call]; aliased && source != "" && a.flow.CanUse(source) {
+			a.flow.Alias(path, source, origin)
+			return
+		}
+	}
 	a.unknownResources[path] = true
 }
 
@@ -424,13 +446,76 @@ func tailIdentifiers(expr ast.Expression) []*ast.Identifier {
 // borrowed-mut parameter (or an alias of one) as its result: the caller
 // keeps custody of a borrowed resource, so handing it back would mint a
 // second authority over the same resource (OAK-B0114, retention).
-func (a *typedResourceAnalysis) checkRetainedReturn(fn *ast.FunctionStatement) {
+func (a *typedResourceAnalysis) checkRetainedReturn(fn *ast.FunctionStatement, own ResourceOperation, hasContract bool) {
 	if len(a.entryModes) == 0 || fn == nil || fn.Body == nil {
 		return
 	}
+	declared := ""
+	if hasContract && own.ReturnsAlias && own.AliasesArgument >= 0 && own.AliasesArgument < len(fn.Parameters) && fn.Parameters[own.AliasesArgument].Name != nil {
+		declared = fn.Parameters[own.AliasesArgument].Name.Value
+	}
 	for _, ident := range tailIdentifiers(fn.Body) {
+		// A result the contract declares as an alias of a parameter hands
+		// the caller a second name for an authority it already holds; the
+		// callee retains nothing.
+		if declared != "" && (ident.Value == declared || a.flow.Aliases(ident.Value, declared)) {
+			continue
+		}
 		a.checkRetention(ident, "returned as this function's result")
 	}
+}
+
+// checkResultContract validates a body against its declared result
+// identity (OAK-B0117): a fresh result may not be a parameter or an alias
+// of one (freshness cannot be manufactured by renaming), and an alias
+// result must be the declared parameter's authority on every path.
+func (a *typedResourceAnalysis) checkResultContract(fn *ast.FunctionStatement, own ResourceOperation) {
+	if fn == nil || fn.Body == nil || (!own.ReturnsFresh && !own.ReturnsAlias) {
+		return
+	}
+	report := func(node ast.Node, title string) {
+		d := a.tc.addResourceDiagnosticWithCode(node, CodeResourceResultContract, title)
+		d.AddNote("a result contract is a claim about the returned value's authority: fresh means a new class no caller name shares, alias means exactly the named argument's class (docs/spec/50-borrowing.md section 9)")
+		d.AddHelp("declare the result identity the body actually produces, or return a value that has it")
+	}
+	tails := tailIdentifiers(fn.Body)
+	if own.ReturnsFresh {
+		for _, ident := range tails {
+			for parameter := range a.parameters {
+				if ident.Value == parameter || a.flow.Aliases(ident.Value, parameter) {
+					report(ident, fmt.Sprintf("%s is declared to return fresh authority but returns parameter %q (through %q)", fn.Name.Value, parameter, ident.Value))
+					break
+				}
+			}
+		}
+		return
+	}
+	if own.AliasesArgument < 0 || own.AliasesArgument >= len(fn.Parameters) || fn.Parameters[own.AliasesArgument].Name == nil {
+		return
+	}
+	declared := fn.Parameters[own.AliasesArgument].Name.Value
+	if len(tails) == 0 {
+		report(fn.Name, fmt.Sprintf("%s is declared to return an alias of %q but its result is not a named resource", fn.Name.Value, declared))
+		return
+	}
+	for _, ident := range tails {
+		if ident.Value == declared || a.flow.Aliases(ident.Value, declared) {
+			continue
+		}
+		report(ident, fmt.Sprintf("%s is declared to return an alias of %q but returns %q, which does not share its authority", fn.Name.Value, declared, ident.Value))
+	}
+}
+
+// trackedName is the flow name an expression's authority is known by: an
+// identifier, a record projection path, or the argument a checked
+// alias-returning call aliases. ok is false when there is no tracked name.
+func (a *typedResourceAnalysis) trackedName(expr ast.Expression) (string, bool) {
+	if call, isCall := expr.(*ast.InvocationExpression); isCall {
+		source, aliased := a.aliasCalls[call]
+		return source, aliased && source != ""
+	}
+	name, ok := resourceName(expr)
+	return name, ok && a.flow.Registered(name)
 }
 
 // checkRetention reports a borrowed or borrowed-mut parameter (or alias)
@@ -471,6 +556,13 @@ type typedResourceAnalysis struct {
 	unknownResources map[string]bool
 	scopes           []map[string]struct{}
 	freshCalls       map[*ast.InvocationExpression]bool
+	// aliasCalls maps a checked call whose contract declares an alias
+	// result to the tracked name of the aliased argument ("" when that
+	// argument had no tracked provenance).
+	aliasCalls map[*ast.InvocationExpression]string
+	// parameters are the function's resource parameter names, for result
+	// contract validation.
+	parameters map[string]bool
 	// entryModes records, per resource parameter of the function under
 	// analysis, the authority its own contract grants on entry.
 	entryModes map[string]entryAuthority
@@ -1020,6 +1112,18 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 		a.flow.Register(stmt.Name.Value, stmt.Name)
 		return
 	}
+	if call, ok := stmt.Value.(*ast.InvocationExpression); ok {
+		if source, aliased := a.aliasCalls[call]; aliased {
+			// A declared alias result gives the binding the argument's own
+			// authority; an argument without provenance leaves it unknown.
+			if source != "" && a.flow.CanUse(source) {
+				a.flow.Alias(stmt.Name.Value, source, stmt.Name)
+			} else {
+				a.unknownResources[stmt.Name.Value] = true
+			}
+			return
+		}
+	}
 
 	if stmt.Value != nil && a.isResourceValue(stmt.Value) {
 		// A projection or other resource-valued expression without a tracked
@@ -1218,8 +1322,8 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 		if index < 0 || index >= len(expr.Arguments) {
 			continue
 		}
-		name, ok := resourceName(expr.Arguments[index])
-		if !ok || !a.flow.Registered(name) {
+		name, ok := a.trackedName(expr.Arguments[index])
+		if !ok {
 			continue
 		}
 		// Argument evaluation already performed the ordinary Use check. If it
@@ -1229,6 +1333,28 @@ func (a *typedResourceAnalysis) invocation(expr *ast.InvocationExpression) {
 		}
 	}
 	a.freshCalls[expr] = op.ReturnsFresh
+	if op.ReturnsAlias {
+		// The result is the aliased argument's authority under a new name.
+		// When the operation also consumes that argument, every name the
+		// class had is now dead and the result is its only surviving name,
+		// which the caller cannot distinguish from a new class: track it as
+		// fresh rather than as an alias of consumed names.
+		consumed := false
+		for _, index := range op.Consumes {
+			consumed = consumed || index == op.AliasesArgument
+		}
+		if consumed {
+			a.freshCalls[expr] = true
+			return
+		}
+		source := ""
+		if op.AliasesArgument >= 0 && op.AliasesArgument < len(expr.Arguments) {
+			if name, ok := a.trackedName(expr.Arguments[op.AliasesArgument]); ok && a.flow.CanUse(name) && !a.unknownResources[name] {
+				source = name
+			}
+		}
+		a.aliasCalls[expr] = source
+	}
 }
 
 func (a *typedResourceAnalysis) match(expr *ast.MatchExpression) {

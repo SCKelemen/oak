@@ -163,6 +163,9 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 			if resourceTransition.ReturnsFresh {
 				transition.Effects = append(transition.Effects, semir.ResourceReturnFresh())
 			}
+			if resourceTransition.ReturnsAlias {
+				transition.Effects = append(transition.Effects, semir.ResourceReturnAlias(resourceTransition.AliasesArgument))
+			}
 			protocol.Transitions = append(protocol.Transitions, transition)
 		}
 		module.Protocols = append(module.Protocols, protocol)

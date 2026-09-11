@@ -77,6 +77,12 @@ type ResourceTransitionDeclaration struct {
 	// parameter modes. Resolution normalizes it to ResourceParameterConsumed.
 	Consumes     []int
 	ReturnsFresh bool
+	// ReturnsAlias marks a result that is an alias of the argument at
+	// AliasesArgument: the same authority class, no wider permission
+	// (docs/spec/50-borrowing.md section 9, result identity). Exclusive
+	// with ReturnsFresh.
+	ReturnsAlias    bool
+	AliasesArgument int
 	// Receiver is the authority mode of a method's receiver
 	// (docs/spec/50-borrowing.md section 9): its own slot, so the explicit
 	// parameter indices above never shift. Unspecified for plain functions
@@ -116,15 +122,19 @@ type ResolvedResourceTransition struct {
 	To         string
 	Parameters []ResolvedResourceParameter
 	// Consumes is retained as the executable permanent-authority projection.
-	Consumes     []int
-	ReturnsFresh bool
-	Receiver     ResourceParameterMode
+	Consumes        []int
+	ReturnsFresh    bool
+	ReturnsAlias    bool
+	AliasesArgument int
+	Receiver        ResourceParameterMode
 }
 
 type resolvedCallableResourceSemantics struct {
-	Parameters   []ResolvedResourceParameter
-	ReturnsFresh bool
-	Receiver     ResourceParameterMode
+	Parameters      []ResolvedResourceParameter
+	ReturnsFresh    bool
+	ReturnsAlias    bool
+	AliasesArgument int
+	Receiver        ResourceParameterMode
 }
 
 // ResolveResourceDeclarations resolves internal protocol facts against the
@@ -277,20 +287,36 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks a receiver mode but its receiver type %s is not a resource type", transition.Callable, receiverType)
 				}
 			}
-			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh, Receiver: transition.Receiver}
+			if transition.ReturnsAlias {
+				if transition.ReturnsFresh {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q cannot both return fresh authority and alias an argument", transition.Callable)
+				}
+				if transition.AliasesArgument < 0 || transition.AliasesArgument >= len(function.Parameters) {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q aliases argument %d outside its %d parameters", transition.Callable, transition.AliasesArgument, len(function.Parameters))
+				}
+				if !resourceTypes[nominalTypeName(function.Parameters[transition.AliasesArgument])] {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q aliases argument %d, which has non-resource type %s", transition.Callable, transition.AliasesArgument, function.Parameters[transition.AliasesArgument])
+				}
+				if !resourceTypes[nominalTypeName(function.ReturnType)] {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks an alias return but returns non-resource type %s", transition.Callable, function.ReturnType)
+				}
+			}
+			semantics := resolvedCallableResourceSemantics{Parameters: parameters, ReturnsFresh: transition.ReturnsFresh, ReturnsAlias: transition.ReturnsAlias, AliasesArgument: transition.AliasesArgument, Receiver: transition.Receiver}
 			if previous, exists := callableSemantics[transition.Callable]; exists && !sameResolvedCallableResourceSemantics(previous, semantics) {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q has conflicting semantics across protocols", transition.Callable)
 			}
 			callableSemantics[transition.Callable] = semantics
 			protocol.Transitions = append(protocol.Transitions, ResolvedResourceTransition{
-				Name:         transition.Name,
-				Callable:     transition.Callable,
-				From:         transition.From,
-				To:           transition.To,
-				Parameters:   parameters,
-				Consumes:     consumes,
-				ReturnsFresh: transition.ReturnsFresh,
-				Receiver:     transition.Receiver,
+				Name:            transition.Name,
+				Callable:        transition.Callable,
+				From:            transition.From,
+				To:              transition.To,
+				Parameters:      parameters,
+				Consumes:        consumes,
+				ReturnsFresh:    transition.ReturnsFresh,
+				ReturnsAlias:    transition.ReturnsAlias,
+				AliasesArgument: transition.AliasesArgument,
+				Receiver:        transition.Receiver,
 			})
 		}
 		resolved.Protocols = append(resolved.Protocols, protocol)
@@ -470,7 +496,8 @@ func resolveResourceParameters(
 }
 
 func sameResolvedCallableResourceSemantics(left, right resolvedCallableResourceSemantics) bool {
-	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver || len(left.Parameters) != len(right.Parameters) {
+	if left.ReturnsFresh != right.ReturnsFresh || left.Receiver != right.Receiver || len(left.Parameters) != len(right.Parameters) ||
+		left.ReturnsAlias != right.ReturnsAlias || (left.ReturnsAlias && left.AliasesArgument != right.AliasesArgument) {
 		return false
 	}
 	for i := range left.Parameters {
