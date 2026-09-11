@@ -1,0 +1,14 @@
+// Benchmark entry points for the sort package. The C runner fills a span
+// with the corpus and calls these; checksums are computed by the runner
+// over the sorted elements so every backend is measured the same way.
+package main
+
+import("sort")
+
+pub bench_sort: (items: [*]u32): () {
+  sort.sort_span[u32](items)
+}
+
+pub bench_is_sorted: (items: []u32): Bool = sort.sort_is_sorted[u32](items)
+
+main: (): i32 = 0

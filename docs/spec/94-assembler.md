@@ -744,18 +744,51 @@ with LLVM is a bug in one of the two readings of the same document, and the
 tests found several on the way (the wide-move and byte-mask immediates,
 the element-index field orders, the omitted-operand defaults). Not yet
 encoded: post-index by register, structure lane lists, `wsp`, literal
-loads, named system registers beyond the encoder's own table (the
-`S<op0>_<op1>_<Cn>_<Cm>_<op2>` spelling always works; Arm's SysReg XML
-release would complete the names).
+loads.
 
-**What self-hosting still needs.** (1) Object emission: Mach-O and ELF
-relocatable objects carrying the encoded bytes, symbols, and the
-relocation records above, so an asm unit links without the C toolchain
-assembling it. (2) A native backend for Oak bodies — a real compiler
-back end from the checked tree to machine code through this encoder,
-with the C backend kept as the portable realization and the differential
-oracle. (3) The proof and solver stack in Oak itself,
-the long arc (`95-extraction.md` is its current foothold).
+**System registers (`asm/sysregs_gen.go`, from Arm's SysReg XML by
+`asm/internal/sysreggen`).** Every AArch64 register MRS or MSR can name —
+1232 of them, register arrays expanded (`dbgbvr0_el1` … `dbgbvr15_el1`,
+`icc_ap0r1_el1`, `pmevcntr30_el0`) from the index expressions of their
+encodings — with its op0:op1:CRn:CRm:op2 and its access directions. The
+checker holds `mrs`/`msr` to that table: an unknown name is an error
+(implementation-defined registers keep the `S<op0>_<op1>_<Cn>_<Cm>_<op2>`
+spelling), reading a write-only register or writing a read-only one is an
+error. Checked against the host assembler on every access it knows: 1772
+agree, none differ; the 417 it does not know are newer than the host
+LLVM. `TestGeneratedTablesCurrent` regenerates both tables from the
+releases under `external/` and requires the committed files to match.
+
+**Object emission (`asm/object.go`).** The encoded functions of a
+compilation's asm units are written as a relocatable object — Mach-O
+(`MH_OBJECT`, `CPU_TYPE_ARM64`, one `__TEXT,__text` section,
+`LC_SYMTAB`, `LC_BUILD_VERSION`, `MH_SUBSECTIONS_VIA_SYMBOLS`) or ELF64
+(`ET_REL`, `EM_AARCH64`, `.text`/`.rela.text`/`.symtab`/`.strtab`) — under
+the C symbols the emitted C declares, functions laid out at their entry
+alignment, calls to other Oak functions as relocations
+(`ARM64_RELOC_BRANCH26`; `R_AARCH64_CALL26`/`JUMP26`/`CONDBR19`/`TSTBR14`/
+`ADR_PREL_LO21`/`ADR_PREL_PG_HI21`). Every offset and count is computed
+from the encoded bytes and checked against the field that carries it; a
+layout the format cannot express (a conditional branch to an external
+symbol on Mach-O, an odd alignment) is an error, never a truncated file.
+The compilation's `EmitNative` emits, in one pass, the C with asm units
+as prototypes (`EmitCExtern`: no `__asm__` text; without an Oak fallback
+body the C fails closed off AArch64) and the companion object; `oak run`
+and `oak build` link the object beside the C. **On AArch64 hosts this is
+the default (`-asm native`)**: the C toolchain compiles the C and links,
+and never sees the assembly. `-asm c` keeps the inline `__asm__` path (the
+portable lowering under `-DOAK_PORTABLE_INTRINSICS` still uses it, since
+the C then defines the functions itself). Checked: `llvm-objdump`
+disassembles our Mach-O and ELF objects to exactly the encoder's words
+with the recorded relocations, `llvm-nm` lists the symbols, and
+`examples/asm` builds, links, and runs to its expected exit through the
+native path (`TestE2EExampleAsmPackageNative`).
+
+**What self-hosting still needs.** (1) A native backend for Oak bodies —
+a real compiler back end from the checked tree to machine code through
+this encoder and object writer, with the C backend kept as the portable
+realization and the differential oracle. (2) The proof and solver stack
+in Oak itself, the long arc (`95-extraction.md` is its current foothold).
 
 **SME/SME2 (planned lane).** The Apple M4 implements the Scalable Matrix
 Extension; the XML's `mortlachindex.xml` lists 353 instruction files. The

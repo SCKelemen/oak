@@ -42,19 +42,38 @@ func buildAndRunFrom(t *testing.T, name string, comp Compilation, ccFlags ...str
 		t.Skip("no C compiler on PATH")
 	}
 
-	output, err := comp.EmitC().Get()
-	if err != nil {
-		t.Fatalf("compilation failed: %v", err)
-	}
-
 	dir := t.TempDir()
 	cPath := filepath.Join(dir, name+".c")
 	binPath := filepath.Join(dir, name)
+	var output string
+	var objects []string
+	if comp.options.NativeAsm {
+		// The Oak assembler encodes the asm units into a companion object;
+		// the C keeps their prototypes (docs/spec/94-assembler.md §9).
+		native, err := comp.EmitNative(HostObjectFormat()).Get()
+		if err != nil {
+			t.Fatalf("compilation failed: %v", err)
+		}
+		output = native.C
+		objPath := filepath.Join(dir, name+"_asm.o")
+		if err := os.WriteFile(objPath, native.Object, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		objects = append(objects, objPath)
+	} else {
+		var err error
+		output, err = comp.EmitC().Get()
+		if err != nil {
+			t.Fatalf("compilation failed: %v", err)
+		}
+	}
 	if err := os.WriteFile(cPath, []byte(output), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	args := append([]string{"-std=c99", "-O1", "-ffp-contract=off"}, ccFlags...)
-	args = append(args, "-o", binPath, cPath, "-lm")
+	args = append(args, "-o", binPath, cPath)
+	args = append(args, objects...)
+	args = append(args, "-lm")
 	compile := exec.Command(cc, args...)
 	if combined, err := compile.CombinedOutput(); err != nil {
 		t.Fatalf("cc failed: %v\n%s\n--- generated C ---\n%s", err, combined, output)

@@ -42,6 +42,10 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlib(SortAndSearch|Varint|Random)|TestE2EGenericNestedTemplate' -count=1
       - name: Test uuid
         run: go test ./compiler -run 'TestE2EStdlibUuid' -count=1
+      - name: Test grapheme
+        run: go test ./compiler -run 'TestE2EStdlibGrapheme' -count=1
+      - name: Test float
+        run: go test ./compiler -run 'TestE2EStdlibFloat' -count=1
       - name: Test encoding codecs
         run: go test ./compiler -run 'TestE2EStdlibEncoding' -count=1
       - name: Test time
@@ -50,8 +54,15 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlibTime(Source|Native)' -count=1 && go test ./testrunner -run 'TestTimesimExample' -count=1
       - name: Test url
         run: go test ./compiler -run 'TestE2EStdlibUrl' -count=1
-      - name: Test standard library and compiler
-        run: go test -race -timeout 40m ./...
+      - name: Test path
+        run: go test ./compiler -run 'TestE2EStdlibPath' -count=1
+      # The whole compiler package runs under the race detector in ci.yml,
+      # sharded; here the race run covers every other package plus the
+      # compiler's standard-library and extraction tests.
+      - name: Test standard library packages under the race detector
+        run: |
+          go test -race -timeout 45m $(go list ./... | grep -v '/compiler$')
+          go test -race -timeout 45m ./compiler -run 'Stdlib|Lean|Hash|Text'
       - name: Check formatting
         if: always()
         run: |

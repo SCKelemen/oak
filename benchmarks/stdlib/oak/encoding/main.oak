@@ -1,0 +1,13 @@
+// Benchmark entry points for the encoding package. Each returns the count
+// written (0 on failure); the runner checksums the destination bytes.
+package main
+
+import("encoding")
+
+pub bench_base64_encode: (dst: [*]u8, src: []u8): u32 = encoding.encoding_value(encoding.base64_encode(dst, src, false, true))
+pub bench_base64_decode: (dst: [*]u8, src: []u8): u32 = encoding.encoding_value(encoding.base64_decode(dst, src, false))
+pub bench_hex_encode: (dst: [*]u8, src: []u8): u32 = encoding.encoding_value(encoding.hex_encode(dst, src, false))
+pub bench_hex_decode: (dst: [*]u8, src: []u8): u32 = encoding.encoding_value(encoding.hex_decode(dst, src))
+pub bench_percent_encode: (dst: [*]u8, src: []u8, keep: []u8): u32 = encoding.encoding_value(encoding.percent_encode(dst, src, keep))
+
+main: (): i32 = 0

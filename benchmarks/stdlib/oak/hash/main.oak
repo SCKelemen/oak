@@ -1,0 +1,9 @@
+// Benchmark entry points for the hash package.
+package main
+
+import("hash")
+
+pub bench_sha256: (src: []u8, out: [*]u8): Bool = hash.sha256(src, out)
+pub bench_crc32c: (src: []u8): u32 = hash.crc32c(src)
+
+main: (): i32 = 0

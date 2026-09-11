@@ -16,6 +16,22 @@ const CPrelude = `/* asm units (docs/spec/94-assembler.md): top-level assembly b
 #define OAK_ASM_SYMBOL(name) OAK_ASM_STR(__USER_LABEL_PREFIX__) #name
 `
 
+// EmitCExtern is EmitC's counterpart when the unit is encoded by the Oak
+// assembler into a companion object (docs/spec/94-assembler.md §9): the C
+// keeps only the prototype the declaration emitted and, without an Oak
+// fallback body, fails closed off AArch64.
+func EmitCExtern(fn *Function, cSymbol string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "/* asm unit: %s — encoded by the Oak assembler into the companion object as %s */\n", fn.Name, cSymbol)
+	if !fn.Fallback {
+		b.WriteString("#if !defined(__aarch64__) || defined(OAK_PORTABLE_INTRINSICS)\n")
+		fmt.Fprintf(&b, "#error \"asm unit %s requires an AArch64 target (no Oak fallback body declared)\"\n", fn.Name)
+		b.WriteString("#endif\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 // EmitC renders one checked asm function as a top-level GNU assembly block
 // under the C symbol the Oak declaration's prototype uses. Non-AArch64
 // targets fail closed with #error: an asm unit is never silently stubbed.

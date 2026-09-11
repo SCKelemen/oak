@@ -148,8 +148,24 @@ authority dependent on the argument's owners for its scope; owner
 mutation, consumption, and rebinding, dependent mutation, consumption,
 storage, and uncontracted return, and rebinding across scopes are
 rejected; contracted wrappers preserve the dependency; joins union
-dependencies. Storage views keep their own rule (§8c). Open: stages
-(c)–(e) and a source spelling for all three result identities.
+dependencies. Storage views keep their own rule (§8c). **Stage (c) (same
+day):** multiple-origin results (`BorrowsArguments`, one `return-borrow`
+per origin), root-owner union with fail-closed unknown origins, projection
+owners protected against field and whole-record writes, wrapper contracts
+that must cover every origin, and temporary borrowed results participating
+in exclusivity by owner set. **Stage (d) (same day):** mutable reborrows
+(`BorrowMutable`, `return-borrow-mut`, `OAK-B0119`): origins must all be
+borrowed-mut, the result may be passed to borrowed-mut positions and
+reborrowed, its owners are suspended entirely for its lexical scope (a
+temporary suspends for the call), widening is rejected and narrowing
+admitted. **Stage (e) (same day):** borrowed values in aggregates: record
+fields hold borrowed results under a destination lifetime check, paths
+carry dependency and permission, copies carry them, records holding
+borrowed fields cannot be passed or returned, arrays stay rejected.
+**Milestone 4 is implemented for opaque resources.** Open: a source
+spelling for all three result identities; contracts for record-typed
+parameters and results that carry borrowed fields (today they fail
+closed); array element provenance.
 
 ## 5. Resources through generics and pattern matching
 
@@ -161,6 +177,17 @@ the one match form; whole-value moves before partial-field states.
 **Done when:** inspect an optional handle and keep using it; extract and
 reject reuse of the old location; return through `Result` without
 duplication; generic helpers specialize without erasing authority.
+
+**Landed (first increment, 2026-09-12):** resource paths through record
+fields and ADT payloads (`50-borrowing.md` §9 "Resources through
+aggregates"), construction and match extraction (inspect keeps the source,
+extract consumes the location, re-matching is `OAK-B0111`), return through
+`Result` as an alias of a consumed parameter (no duplication), contracts on
+aggregate parameters path by path with sibling paths failing closed, and a
+template's contract governing its specializations' payloads. All four
+"done when" cases are tested. Open: borrowing or aliasing an aggregate
+argument as a whole, partial-field states after a move, array elements,
+and copyability as a declared capability.
 
 ## 6. Cleanup and terminal-state obligations
 
