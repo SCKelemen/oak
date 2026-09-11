@@ -98,7 +98,9 @@ into `$OAKBIN`, `oak vet` reports what the checker recorded without generating
 code, `oak list [-json] [-deps]` lists packages and imports, `oak test`, `oak
 env`, `oak version`, `oak clean -modcache`, `oak doc`, `oak fmt`, `oak completion`,
 package patterns (`oak build ./...`), `oak run dir -- args`, a build cache that
-makes repeated builds and test runs skip the C compiler, and `oak mod
+makes repeated builds and test runs skip the C compiler, `oak lsp` (a language
+server with diagnostics, hover, definition, symbols, and semantic highlighting;
+`editors/vscode` wires it into VS Code with a TextMate grammar), and `oak mod
 init|download|tidy|edit|graph|why|vendor|verify` alongside the semver commands
 below. Build a package with `oak build [dir]`, run it with `oak run [dir]`, fetch
 pinned dependencies with `oak mod download`; see `examples/modules`. Versions

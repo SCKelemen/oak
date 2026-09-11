@@ -334,6 +334,23 @@ func (comp Compilation) WithModuleCache(dir string) Compilation {
 	return comp
 }
 
+// WithOverlay makes the loader read the given files from memory instead of
+// disk: keys are absolute paths, values the current contents. The language
+// server uses it for open documents; the files on disk are never written.
+func (comp Compilation) WithOverlay(files map[string]string) Compilation {
+	overlay := map[string]string{}
+	for path, text := range comp.overlay {
+		overlay[path] = text
+	}
+	for path, text := range files {
+		if abs, err := filepath.Abs(path); err == nil {
+			overlay[abs] = text
+		}
+	}
+	comp.overlay = overlay
+	return comp
+}
+
 // WithReplace lays a `replace path => dir` directive over the root module's
 // manifest for this build only; the manifest on disk is never rewritten.
 // `oak mod try` uses it to build against a local candidate of a dependency
@@ -732,6 +749,23 @@ func (l *moduleLoader) parseFile(path, text string) (*packageFile, bool) {
 	return &packageFile{Path: path, Text: text, Root: root, File: file}, true
 }
 
+// readSource reads a source file, preferring an overlay entry for its
+// absolute path (WithOverlay).
+func (l *moduleLoader) readSource(path string) (string, error) {
+	if len(l.comp.overlay) != 0 {
+		if abs, err := filepath.Abs(path); err == nil {
+			if text, ok := l.comp.overlay[abs]; ok {
+				return text, nil
+			}
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // loadPackage reads a package directory, checks its clause and imports, and
 // recursively loads what it imports. It returns nil after reporting.
 func (l *moduleLoader) loadPackage(dir, path string, isRoot bool) *loadedPackage {
@@ -782,12 +816,12 @@ func (l *moduleLoader) loadPackageInstance(dir, path, template string, arguments
 	ok := true
 	for _, name := range names {
 		filePath := filepath.Join(dir, name)
-		text, err := os.ReadFile(filePath)
+		text, err := l.readSource(filePath)
 		if err != nil {
 			l.report(CodeImportUnresolvable, nil, "%s: %v", filePath, err)
 			return nil
 		}
-		file, parsed := l.parseFile(filePath, string(text))
+		file, parsed := l.parseFile(filePath, text)
 		if !parsed {
 			ok = false
 			continue

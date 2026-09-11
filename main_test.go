@@ -512,7 +512,7 @@ func TestCLIParityRoundC(t *testing.T) {
 		{vetPackage, "usage: oak vet"}, {listPackages, "usage: oak list"}, {docCommand, "usage: oak doc"},
 		{fmtCommand, "usage: oak fmt"}, {cleanCommand, "usage: oak clean"}, {modTidy, "usage: oak mod tidy"},
 		{modEdit, "usage: oak mod edit"}, {modPack, "usage: oak mod pack"}, {modAPI, "usage: oak mod api"},
-		{modUpgrade, "usage: oak mod upgrade"}, {modTry, "usage: oak mod try"},
+		{modUpgrade, "usage: oak mod upgrade"}, {modTry, "usage: oak mod try"}, {lspCommand, "usage: oak lsp"},
 	} {
 		if code, out := runCLI(t, c.fn, []string{"-h"}); code != 0 || !strings.Contains(out, c.want) {
 			t.Fatalf("-h for %s: %d\n%s", c.want, code, out)

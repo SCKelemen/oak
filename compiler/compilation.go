@@ -76,6 +76,10 @@ type Compilation struct {
 	// replaces overlays `replace` directives on the root manifest in memory
 	// (oak mod try, docs/spec/82-package-semver.md section 8).
 	replaces map[string]string
+	// overlay maps absolute file paths to in-memory contents that stand in
+	// for the file on disk (the language server's open documents,
+	// docs/spec/115-tooling.md section 4). Nothing is written.
+	overlay map[string]string
 	// diagnosticSink observes every diagnostic a stage gate sees, rejecting
 	// or not — how a driver surfaces informational findings such as the
 	// assembler's verification verdicts (docs/spec/94-assembler.md §8).

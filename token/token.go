@@ -186,3 +186,8 @@ func Lookup(candidate string) TokenKind {
 	}
 	return IDENT
 }
+
+// IsKeyword reports whether the kind is a reserved word.
+func (k TokenKind) IsKeyword() bool {
+	return k > _keywords_beg && k < _keywords_end
+}

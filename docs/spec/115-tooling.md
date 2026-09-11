@@ -43,6 +43,7 @@ names or the module cache.
 | `oak clean [-cache] [-modcache]` | `go clean -cache/-modcache` | `-cache` removes the build cache (section 3); `-modcache` empties the module cache. Only an explicit `$OAKMODCACHE` that is a directory is touched; the tool never guesses a location to delete. |
 | `oak env [NAME...]` | `go env` | Print the environment oak reads: `OAKMODCACHE`, `OAKBIN`, `OAK_LEAN_DIR`, and the derived `OAKROOT` (the module root of the working directory). |
 | `oak repl` | — | The interactive session (`83-modules.md` section 10). |
+| `oak lsp` | `gopls` | The language server over stdio (section 4). |
 | `oak version` | `go version` | The module version and VCS revision the Go toolchain recorded in the binary. |
 | `oak help [command]` | `go help` | Usage. |
 | `oak completion bash\|zsh\|fish` | — | A shell completion script generated from the command tables; nothing from the invocation is interpolated. |
@@ -93,3 +94,31 @@ miss, never a failed build. `oak clean -cache` removes the entries;
   layout-sensitive syntax admits safely; reflowing tokens needs a
   comment-preserving printer for both surfaces, recorded as direction.
 - `oak generate`, `oak work`, `oak fix` — no counterpart yet.
+
+## 4. The language server
+
+`oak lsp` speaks the Language Server Protocol — JSON-RPC 2.0 in
+Content-Length frames, bounded at 16 MiB per message — over stdin and
+stdout only; it never opens a socket. A malformed frame ends the session
+with an error rather than being partially processed, and only `file:` URIs
+are accepted.
+
+The server answers from the same compiler every other tool uses. Open
+documents are compiled through an **overlay** (`Compilation.WithOverlay`):
+the editor's unsaved text stands in for the file on disk of the same
+absolute path, and nothing is ever written. On open, change, and save the
+document's package is compiled and the semantic model's diagnostics —
+errors and the recorded assumptions alike, with their codes — are published
+for every open document of that package; closing a document clears them.
+
+| Request | Answer |
+|---|---|
+| `textDocument/hover` | The checked type of a top-level name (`twice: fn(i32)->i32`), or the declaration of a parameter or local of the enclosing function. |
+| `textDocument/definition` | The declaration: a local or parameter of the enclosing function, a top-level declaration of the document, or one of another file of the same package. Cross-package definitions are direction. |
+| `textDocument/documentSymbol` | The document's top-level declarations with LSP kinds (function, method, variable, struct, enum, interface, module, property for tag schemas). |
+| `textDocument/semanticTokens/full` | Every scanner token classified — keyword, function, variable, type, string, number, comment, operator, namespace (import aliases and nested modules), property (after `.`) — as LSP relative deltas. |
+
+**Editors.** `editors/vscode` is a Visual Studio Code extension: a TextMate
+grammar for `.oak` and `oak.mod` (highlighting without the server) and a
+client that starts `oak lsp` with a fixed argument list (`oak.serverPath`
+names the executable). Any LSP client can start `oak lsp` the same way.
