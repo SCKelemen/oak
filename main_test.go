@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/modules"
 )
 
 func writeTree(t *testing.T, files map[string]string) string {
@@ -354,4 +356,110 @@ func runCLI(t *testing.T, fn func([]string) int, args []string) (int, string) {
 	writer.Close()
 	os.Stdout, os.Stderr = savedOut, savedErr
 	return code, <-done
+}
+
+// Round B: doc, fmt, mod vendor, mod verify.
+func TestCLIParityRoundB(t *testing.T) {
+	lib := writeTree(t, map[string]string{"oak.mod": "module example.com/lib\nversion 1.0.0\n", "geometry/point.oak": libV1, "geometry/.hidden.oak": "package geometry\n", "geometry/notes.txt": "x"})
+	app := writeTree(t, map[string]string{
+		"oak.mod":  "module example.com/app\nrequire example.com/lib 1.0.0\nreplace example.com/lib => " + lib + "\n",
+		"main.oak": "package main\n\ngeo := import(\"example.com/lib/geometry\")\n\nmain: (): i32 = geo.sum(geo.make(20, 22))\n",
+	})
+	// doc: module listing, name filter, opaque rendering, -package form.
+	code, out := runCLI(t, docCommand, []string{lib})
+	if code != 0 || !strings.Contains(out, "package example.com/lib/geometry") || !strings.Contains(out, "pub(opaque) Point: type") || !strings.Contains(out, "pub sum: fn(Point)->i32") {
+		t.Fatalf("doc: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, docCommand, []string{lib, "make"}); code != 0 || strings.Contains(out, "sum") || !strings.Contains(out, "pub make: fn(i32,i32)->Point") {
+		t.Fatalf("doc name: %d\n%s", code, out)
+	}
+	if code, _ := runCLI(t, docCommand, []string{lib, "absent"}); code != 1 {
+		t.Fatal("doc must fail for an unknown name")
+	}
+	if code, out := runCLI(t, docCommand, []string{"-package", "example.com/lib/geometry", filepath.Join(lib, "geometry")}); code != 0 || !strings.Contains(out, "pub make") {
+		t.Fatalf("doc -package: %d\n%s", code, out)
+	}
+	// fmt: whitespace canonicalized only when the tree is unchanged.
+	messy := filepath.Join(t.TempDir(), "messy.oak")
+	if err := os.WriteFile(messy, []byte("package main\r\n\r\n\r\n\r\nmain: (): i32 = 42   \r\n\r\n\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCLI(t, fmtCommand, []string{"-l", messy}); code != 0 || strings.TrimSpace(out) != messy {
+		t.Fatalf("fmt -l: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, fmtCommand, []string{messy}); code != 0 || out != "package main\n\nmain: (): i32 = 42\n" {
+		t.Fatalf("fmt stdout: %d\n%q", code, out)
+	}
+	if code, _ := runCLI(t, fmtCommand, []string{"-w", messy}); code != 0 {
+		t.Fatal("fmt -w")
+	}
+	if text, _ := os.ReadFile(messy); string(text) != "package main\n\nmain: (): i32 = 42\n" {
+		t.Fatalf("fmt -w result %q", text)
+	}
+	if code, out := runCLI(t, fmtCommand, []string{"-l", messy}); code != 0 || strings.TrimSpace(out) != "" {
+		t.Fatalf("fmt -l on a formatted file must list nothing: %d\n%s", code, out)
+	}
+	broken := filepath.Join(t.TempDir(), "broken.oak")
+	if err := os.WriteFile(broken, []byte("main: (): i32 = ((( 1 +   \n\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCLI(t, fmtCommand, []string{"-w", broken}); code != 1 || !strings.Contains(out, "left alone") {
+		t.Fatalf("fmt must not rewrite a file that does not parse: %d\n%s", code, out)
+	}
+	// vendor: the app builds from vendor/ with no replace and no cache.
+	if code, out := run(t, "vendor", app); code != 0 || !strings.Contains(out, "vendored example.com/lib 1.0.0 (2 files)") {
+		t.Fatalf("vendor: %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(app, "vendor", "example.com", "lib", "geometry", "point.oak")); err != nil {
+		t.Fatalf("vendored source missing: %v", err)
+	}
+	for _, absent := range []string{filepath.Join(app, "vendor", "example.com", "lib", "geometry", ".hidden.oak"), filepath.Join(app, "vendor", "example.com", "lib", "geometry", "notes.txt")} {
+		if _, err := os.Stat(absent); !os.IsNotExist(err) {
+			t.Fatalf("%s must not be vendored", absent)
+		}
+	}
+	list, _ := os.ReadFile(filepath.Join(app, "vendor", "modules.txt"))
+	if strings.TrimSpace(string(list)) != "# example.com/lib 1.0.0" {
+		t.Fatalf("modules.txt = %q", list)
+	}
+	if err := os.WriteFile(filepath.Join(app, "oak.mod"), []byte("module example.com/app\nrequire example.com/lib 1.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OAKMODCACHE", "")
+	if code, out := runCLI(t, vetPackage, []string{app}); code != 0 {
+		t.Fatalf("build from vendor: %d\n%s", code, out)
+	}
+	if code, out := runCLI(t, listPackages, []string{"-deps", app}); code != 0 || !strings.Contains(out, "example.com/lib/geometry") {
+		t.Fatalf("list from vendor: %d\n%s", code, out)
+	}
+	// verify: unset cache refused; a recorded entry verifies; an edit is caught.
+	if code, _ := run(t, "verify", app); code != 1 {
+		t.Fatal("verify must refuse without OAKMODCACHE")
+	}
+	cache := t.TempDir()
+	entry := filepath.Join(cache, "example.com", "lib@v1.0.0")
+	if err := os.MkdirAll(filepath.Join(entry, "geometry"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"oak.mod": "module example.com/lib\nversion 1.0.0\n", "geometry/point.oak": libV1} {
+		if err := os.WriteFile(filepath.Join(entry, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("OAKMODCACHE", cache)
+	if code, out := run(t, "verify", app); code != 1 || !strings.Contains(out, "unrecorded") {
+		t.Fatalf("verify unrecorded: %d\n%s", code, out)
+	}
+	if err := modules.WriteRecord(entry, "sha256:0"); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := run(t, "verify", app); code != 0 || !strings.Contains(out, "all 1 cached module(s) verified") {
+		t.Fatalf("verify ok: %d\n%s", code, out)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "geometry", "point.oak"), []byte(libV1+"// edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := run(t, "verify", app); code != 1 || !strings.Contains(out, "modified") {
+		t.Fatalf("verify modified: %d\n%s", code, out)
+	}
 }

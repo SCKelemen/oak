@@ -263,6 +263,10 @@ func modCommand(args []string) int {
 		return modWhy(args[1:])
 	case "edit":
 		return modEdit(args[1:])
+	case "vendor":
+		return modVendor(args[1:])
+	case "verify":
+		return modVerify(args[1:])
 	case "download":
 		return modDownload(args[1:])
 	case "api":
@@ -297,6 +301,8 @@ func printModUsage(out io.Writer) {
 		"tidy [-w] [dir]                  reconcile require directives with imports",
 		"edit [-require p@v] [-droprequire p] [-replace p=>dir] [-dropreplace p] [-version v] [-profile p] [dir]",
 		"                                 rewrite oak.mod directives",
+		"vendor [dir]                     copy dependencies into vendor/ (builds then need no cache)",
+		"verify [dir]                     check cached dependencies against their download records",
 		"graph [dir]                      print the module requirement graph",
 		"why <import-path> [dir]          show which packages import a path",
 		"api [dir] | api -package P [-version V] <dir|file>",
