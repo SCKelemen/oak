@@ -1,0 +1,436 @@
+/* Generated C code from Oak */
+#include <stdint.h>
+#include <stddef.h>
+
+typedef uint8_t  u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+
+typedef int8_t   i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+
+typedef u8  byte;
+typedef u32 rune;   /* refined u32: docs/spec/70-strings.md section 9 */
+
+typedef float  f32; /* IEEE 754 binary32: docs/spec/20-types.md section 11.3 */
+typedef double f64; /* IEEE 754 binary64 */
+typedef uint16_t f16;  /* binary16 storage: load, store, widen, round only */
+typedef uint16_t bf16; /* bfloat16 storage */
+typedef uint8_t f8e4m3; /* OCP FP8 E4M3 storage: no infinities, NaN is S.1111.111 */
+typedef uint8_t f8e5m2; /* OCP FP8 E5M2 storage: IEEE-like */
+
+typedef struct oak_string {
+    u8* data;  /* UTF-8 bytes, not necessarily null-terminated */
+    u32 len;   /* number of bytes */
+} string;
+
+typedef enum oak_Bool {
+    oak_Bool_False = 0,
+    oak_Bool_True  = 1
+} Bool;
+
+typedef enum oak_Comparison {
+    oak_Comparison_Less    = -1,
+    oak_Comparison_Equal    = 0,
+    oak_Comparison_Greater  = 1
+} Comparison;
+
+/* assert: always compiled in (docs/spec/85-discipline.md section 5) */
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+#include <stdio.h>
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  if (!cond) {
+    fprintf(stderr, "oak: assertion failed at %s:%u\n", file, (unsigned)line);
+    __builtin_trap();
+  }
+}
+#else
+static inline void oak_assert(Bool cond, const char *file, u32 line) {
+  (void)file; (void)line;
+  if (!cond) {
+    __builtin_trap();
+  }
+}
+#endif
+
+typedef struct oak_view_u8 {
+    const u8* base;
+    u32       len;
+} oak_view_u8;
+
+static inline u8 oak_view_index_u8(oak_view_u8 v, u64 i) {
+  if (i >= (u64)v.len) { __builtin_trap(); }
+  return v.base[i];
+}
+
+static inline oak_view_u8 oak_view_subslice_u8(oak_view_u8 v, u64 start, u64 n) {
+  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }
+  return (oak_view_u8){ v.base + start, (u32)n };
+}
+
+/* core_slice: view construction as a brace initializer (declaration
+   position); field order matches the view/span structs {base, len} */
+#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }
+
+/* bounds-checked owned-array indexing: out-of-range traps, never UB */
+static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }
+#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])
+/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */
+static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }
+
+/* checked shifts: a count reaching the operand width traps, never UB
+   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */
+#define OAK_SHIFT_HELPERS(T, W) \
+  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \
+  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }
+OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)
+
+/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md
+   section 7): results wrap mod 2^N, computed in unsigned space so no C
+   promotion overflows; signed results come back through a union pun (defined
+   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */
+#define OAK_ARITH_U(T) \
+  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \
+  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \
+  static inline T oak_neg_##T(T a) { return (T)(0u - (u64)a); } \
+  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \
+  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \
+  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }
+#define OAK_ARITH_I(T, U, MIN) \
+  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \
+  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \
+  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \
+  static inline T oak_neg_##T(T a) { return oak_pun_##T((U)(0u - (u64)(U)a)); } \
+  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \
+  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \
+  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }
+OAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)
+OAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)
+#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
+
+/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
+static Bool oak_is_valid_utf8(oak_view_u8 v) {
+  u64 i = 0;
+  u64 n = (u64)v.len;
+  while (i < n) {
+    u8 b0 = v.base[i];
+    if (b0 <= 0x7F) { i += 1; continue; }
+    if (0xC2 <= b0 && b0 <= 0xDF) {
+      if (i + 1 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF) { return oak_Bool_False; }
+      i += 2; continue;
+    }
+    if (b0 == 0xE0) {
+      if (i + 2 >= n || v.base[i+1] < 0xA0 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }
+      i += 3; continue;
+    }
+    if (0xE1 <= b0 && b0 <= 0xEC) {
+      if (i + 2 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }
+      i += 3; continue;
+    }
+    if (b0 == 0xED) {
+      if (i + 2 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0x9F ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }
+      i += 3; continue;
+    }
+    if (0xEE <= b0 && b0 <= 0xEF) {
+      if (i + 2 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF) { return oak_Bool_False; }
+      i += 3; continue;
+    }
+    if (b0 == 0xF0) {
+      if (i + 3 >= n || v.base[i+1] < 0x90 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF ||
+          v.base[i+3] < 0x80 || v.base[i+3] > 0xBF) { return oak_Bool_False; }
+      i += 4; continue;
+    }
+    if (0xF1 <= b0 && b0 <= 0xF3) {
+      if (i + 3 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0xBF ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF ||
+          v.base[i+3] < 0x80 || v.base[i+3] > 0xBF) { return oak_Bool_False; }
+      i += 4; continue;
+    }
+    if (b0 == 0xF4) {
+      if (i + 3 >= n || v.base[i+1] < 0x80 || v.base[i+1] > 0x8F ||
+          v.base[i+2] < 0x80 || v.base[i+2] > 0xBF ||
+          v.base[i+3] < 0x80 || v.base[i+3] > 0xBF) { return oak_Bool_False; }
+      i += 4; continue;
+    }
+    return oak_Bool_False;
+  }
+  return oak_Bool_True;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: ADT
+// @identifier: Utf8State
+typedef enum oak_Utf8State_tag {
+    oak_Utf8State_tag_Accept   = 0  ,
+    oak_Utf8State_tag_Two   = 6  ,
+    oak_Utf8State_tag_ThreeE0   = 12  ,
+    oak_Utf8State_tag_Three   = 18  ,
+    oak_Utf8State_tag_ThreeED   = 24  ,
+    oak_Utf8State_tag_FourF0   = 30  ,
+    oak_Utf8State_tag_Four   = 36  ,
+    oak_Utf8State_tag_FourF4   = 42
+} oak_Utf8State_tag;
+
+typedef struct oak_Utf8State {
+    u32 tag;
+} oak_Utf8State;
+
+typedef char oak_union_layout_Utf8State[ (sizeof(oak_Utf8State) == 4u && _Alignof(oak_Utf8State) == 4u && offsetof(oak_Utf8State, tag) == 0u) ? 1 : -1 ];
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: constructor
+// @identifier: oak_Utf8State::Accept
+static inline oak_Utf8State oak_Utf8State_Accept(  ) {
+    oak_Utf8State res;
+    res.tag = oak_Utf8State_tag_Accept;
+    return res;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: constructor
+// @identifier: oak_Utf8State::Two
+static inline oak_Utf8State oak_Utf8State_Two(  ) {
+    oak_Utf8State res;
+    res.tag = oak_Utf8State_tag_Two;
+    return res;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: constructor
+// @identifier: oak_Utf8State::ThreeE0
+static inline oak_Utf8State oak_Utf8State_ThreeE0(  ) {
+    oak_Utf8State res;
+    res.tag = oak_Utf8State_tag_ThreeE0;
+    return res;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: constructor
+// @identifier: oak_Utf8State::Three
+static inline oak_Utf8State oak_Utf8State_Three(  ) {
+    oak_Utf8State res;
+    res.tag = oak_Utf8State_tag_Three;
+    return res;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: constructor
+// @identifier: oak_Utf8State::ThreeED
+static inline oak_Utf8State oak_Utf8State_ThreeED(  ) {
+    oak_Utf8State res;
+    res.tag = oak_Utf8State_tag_ThreeED;
+    return res;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: constructor
+// @identifier: oak_Utf8State::FourF0
+static inline oak_Utf8State oak_Utf8State_FourF0(  ) {
+    oak_Utf8State res;
+    res.tag = oak_Utf8State_tag_FourF0;
+    return res;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: constructor
+// @identifier: oak_Utf8State::Four
+static inline oak_Utf8State oak_Utf8State_Four(  ) {
+    oak_Utf8State res;
+    res.tag = oak_Utf8State_tag_Four;
+    return res;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: constructor
+// @identifier: oak_Utf8State::FourF4
+static inline oak_Utf8State oak_Utf8State_FourF4(  ) {
+    oak_Utf8State res;
+    res.tag = oak_Utf8State_tag_FourF4;
+    return res;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: ADT
+// @identifier: Utf8Step
+typedef enum oak_Utf8Step_tag {
+    oak_Utf8Step_tag_Byte
+} oak_Utf8Step_tag;
+
+typedef struct oak_Utf8Step {
+    u32 tag;
+    union {
+        u8 Byte;
+    } payload;
+} oak_Utf8Step;
+
+typedef char oak_union_layout_Utf8Step[ (sizeof(oak_Utf8Step) == 8u && _Alignof(oak_Utf8Step) == 4u && offsetof(oak_Utf8Step, tag) == 0u && offsetof(oak_Utf8Step, payload) == 4u) ? 1 : -1 ];
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: constructor
+// @identifier: oak_Utf8Step::Byte
+static inline oak_Utf8Step oak_Utf8Step_Byte( u8 value ) {
+    oak_Utf8Step res;
+    res.tag = oak_Utf8Step_tag_Byte;
+    res.payload.Byte = value;
+    return res;
+}
+
+/* forward declarations; OAK_INLINE marks private leaf helpers the C
+   compiler must inline at every optimization level (the external
+   definition is still emitted: C99 extern inline) */
+#define OAK_INLINE extern inline __attribute__((always_inline))
+oak_Utf8State oak_utf8_initial( void );
+Bool oak_utf8_legal( oak_Utf8State state, oak_Utf8Step step );
+oak_Utf8State oak_utf8_next( oak_Utf8State state, oak_Utf8Step step );
+oak_Utf8State oak_utf8_run( oak_Utf8State state, oak_view_u8 bytes );
+u32 oak_main( void );
+
+/* function literals lifted to plain functions: a literal is a code
+   pointer, never an environment (docs/spec/10-syntax.md section 3c) */
+  /* shift-DFA rows of protocol Utf8: field 6*s of rows[symbol] is 6*next(s, symbol) */
+  static const u64 oak_utf8_transitions[256] = {
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL, 0x0030c30c30c30c00ULL,
+    0x0030492c061b0030ULL, 0x0030492c061b0030ULL, 0x0030492c061b0030ULL, 0x0030492c061b0030ULL,
+    0x0030492c061b0030ULL, 0x0030492c061b0030ULL, 0x0030492c061b0030ULL, 0x0030492c061b0030ULL,
+    0x0030492c061b0030ULL, 0x0030492c061b0030ULL, 0x0030492c061b0030ULL, 0x0030492c061b0030ULL,
+    0x0030492c061b0030ULL, 0x0030492c061b0030ULL, 0x0030492c061b0030ULL, 0x0030492c061b0030ULL,
+    0x0030c124861b0030ULL, 0x0030c124861b0030ULL, 0x0030c124861b0030ULL, 0x0030c124861b0030ULL,
+    0x0030c124861b0030ULL, 0x0030c124861b0030ULL, 0x0030c124861b0030ULL, 0x0030c124861b0030ULL,
+    0x0030c124861b0030ULL, 0x0030c124861b0030ULL, 0x0030c124861b0030ULL, 0x0030c124861b0030ULL,
+    0x0030c124861b0030ULL, 0x0030c124861b0030ULL, 0x0030c124861b0030ULL, 0x0030c124861b0030ULL,
+    0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL,
+    0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL,
+    0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL,
+    0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL,
+    0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL,
+    0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL,
+    0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL,
+    0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL, 0x0030c124b0186030ULL,
+    0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL,
+    0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL,
+    0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL,
+    0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL,
+    0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL,
+    0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL,
+    0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL,
+    0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL, 0x0030c30c30c30c06ULL,
+    0x0030c30c30c30c0cULL, 0x0030c30c30c30c12ULL, 0x0030c30c30c30c12ULL, 0x0030c30c30c30c12ULL,
+    0x0030c30c30c30c12ULL, 0x0030c30c30c30c12ULL, 0x0030c30c30c30c12ULL, 0x0030c30c30c30c12ULL,
+    0x0030c30c30c30c12ULL, 0x0030c30c30c30c12ULL, 0x0030c30c30c30c12ULL, 0x0030c30c30c30c12ULL,
+    0x0030c30c30c30c12ULL, 0x0030c30c30c30c18ULL, 0x0030c30c30c30c12ULL, 0x0030c30c30c30c12ULL,
+    0x0030c30c30c30c1eULL, 0x0030c30c30c30c24ULL, 0x0030c30c30c30c24ULL, 0x0030c30c30c30c24ULL,
+    0x0030c30c30c30c2aULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL,
+    0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL,
+    0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL
+  };
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: function
+// @identifier: utf8_initial
+// @signature: fn utf8_initial() -> Utf8State
+oak_Utf8State oak_utf8_initial(  ) {
+    return oak_Utf8State_Accept()  ;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: function
+// @identifier: utf8_legal
+// @signature: fn utf8_legal(state: Utf8State, step: Utf8Step) -> Bool
+Bool oak_utf8_legal( oak_Utf8State state, oak_Utf8Step step ) {
+    return (u32)( ( oak_utf8_transitions[ step.payload.Byte ] >> state.tag ) & 63u ) != 48u ? oak_Bool_True : oak_Bool_False;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: function
+// @identifier: utf8_next
+// @signature: fn utf8_next(state: Utf8State, step: Utf8Step) -> Utf8State
+oak_Utf8State oak_utf8_next( oak_Utf8State state, oak_Utf8Step step ) {
+    u32 next = (u32)( ( oak_utf8_transitions[ step.payload.Byte ] >> state.tag ) & 63u );
+    oak_assert( next != 48u ? oak_Bool_True : oak_Bool_False, "Utf8", 0 );
+    oak_Utf8State result;
+    result.tag = next;
+    return result;
+}
+
+// @source: utf8_protocol.oak:0:0
+// @package: main
+// @kind: function
+// @identifier: utf8_run
+// @signature: fn utf8_run(state: Utf8State, bytes: /* type */) -> Utf8State
+oak_Utf8State oak_utf8_run( oak_Utf8State state, oak_view_u8 bytes ) {
+    u32 current = state.tag;
+    const u8 *symbols = bytes.base;
+    u64 count = (u64)bytes.len;
+    for (u64 i = 0; i < count; i++) {
+      current = (u32)( ( oak_utf8_transitions[ symbols[ i ] ] >> current ) & 63u );
+    }
+    oak_assert( current != 48u ? oak_Bool_True : oak_Bool_False, "Utf8", 0 );
+    oak_Utf8State result;
+    result.tag = current;
+    return result;
+}
+
+// @source: utf8_protocol.oak:20:0-20:22
+// @package: main
+// @kind: function
+// @identifier: main
+// @signature: fn main() -> u32
+u32 oak_main(  ) {
+    return ((u32)( 0 ))  ;
+}
+
+int main(void) {
+  return (int)oak_main();
+}

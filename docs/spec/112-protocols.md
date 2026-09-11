@@ -127,6 +127,62 @@ one-element `NameData` array it spans), asks `name_legal` before acting, and
 moves with `name_next`; an illegal step is a bug in the caller and traps like
 any failed assertion.
 
+### 2a. Lowering: the declaration dictates the code
+
+A machine without a `data` record is lowered by the C backend from a
+**transition table the compiler computes from the declaration**
+(`90-backend.md` §14); the Oak projections above remain its meaning for
+the interpreter and the Lean extraction, and the backend's code is proved
+to compute the same function (`Oak.Protocol`). The symbols of the table
+are the step tags — a payload no guard reads leaves its step one symbol —
+or, for a machine with exactly one step whose `u8` payload guards read, the
+256 payload values: every guard is evaluated at compile time for every
+value, so a byte-driven machine (a UTF-8 validator, a tokenizer) becomes a
+table indexed by the input byte. A guard outside the evaluator's vocabulary
+(the payload, literals, width conversions, `+ - * / %`, comparisons,
+`&& || !`) leaves the branch-tree projection in place.
+
+Two forms, chosen by the machine's size and never by the program's use:
+
+| Form | When | `next` | `legal` |
+| --- | --- | --- | --- |
+| shift DFA | states plus the sink at most ten | `(rows[symbol] >> state) & 63`: one load, one shift, one mask | the same, compared with the sink |
+| dense table | otherwise, up to 254 states and 64 KiB | `table[state][symbol]`: one load | one load, one compare |
+
+Under the shift form the state type's tags are the field offsets `6 * i`
+(`ADTType.TagValues`), a representation choice matching compares by name
+and nothing else observes. The sentinel is the sink, one past the last
+state; `next` traps on it exactly where the branch tree asserted.
+
+A byte-driven machine also projects **`name_run`**:
+
+```oak
+utf8_run: (state: Utf8State, bytes: []u8): Utf8State
+```
+
+which steps the whole view with the sink absorbing and checks once at the
+end: it ends in the declared final state when every step was legal and
+traps when any was not — `Oak.Protocol.runSink_correct` — so the loop body
+carries no branch. Measured on the UTF-8 validator below, the emitted code
+runs at the speed of the hand-written shift DFA it is modeled on
+(`benchmarks/state-machines/`).
+
+Payload guards without a data record are honored: `legal` is the
+disjunction of the step's lines whose source state and guard hold, and
+`next` takes the first such line, in declaration order — the same
+first-match rule as the data-carrying projection. (Until 2026-09-12 the
+projection dropped these guards; the byte-driven shape below did not work.)
+
+```oak
+Utf8: protocol = {
+  initial Accept
+  byte(b: u8): Accept -> Accept when b < u8(128)
+  byte(b: u8): Accept -> Two when b >= u8(194) && b <= u8(223)
+  byte(b: u8): Two -> Accept when b >= u8(128) && b <= u8(191)
+  ...
+}
+```
+
 ## 3. Deterministic-simulation actions
 
 `NameStep` satisfies the typed-command shape of `110-testing.md`, so

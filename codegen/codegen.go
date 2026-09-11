@@ -90,6 +90,9 @@ type CodeGenerator struct {
 	liftedLiterals strings.Builder
 	liftedCount    int
 	liftedOffset   int
+	// protocolTables records which protocols' transition tables (or
+	// shift rows) have been emitted, so the three step functions share one.
+	protocolTables map[string]bool
 	// lineDirectives enables #line directives before every function and
 	// statement (docs/spec/90-backend.md section 10), so C diagnostics and
 	// debuggers attribute generated code to the Oak source line.
@@ -660,6 +663,11 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 		variantName := variant.Name.Value
 		tagName := fmt.Sprintf("%s_tag_%s", cName, variantName)
 		cg.write(fmt.Sprintf("  %s", tagName))
+		if i < len(adt.TagValues) {
+			// A representation choice recorded on the declaration (a
+			// shift-DFA state type: tags are field offsets 6*i).
+			cg.write(fmt.Sprintf(" = %d", adt.TagValues[i]))
+		}
 		if i < len(adt.Variants)-1 {
 			cg.write(",")
 		}
@@ -861,6 +869,18 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	cg.localTypes = cg.buildLocalTypes(fn)
 	defer func() { cg.localTypes = nil }()
+
+	// A projected protocol step function has a compiler-known lowering
+	// (docs/spec/90-backend.md section 14): the table or shift-DFA body
+	// replaces the Oak body, which remains the meaning for the interpreter
+	// and the Lean extraction.
+	if fn.Lowering != nil {
+		cg.emitProtocolLoweringBody(fn)
+		cg.indentLevel--
+		cg.write("}\n")
+		cg.write("\n")
+		return
+	}
 
 	// Self tail recursion compiles to a loop (docs/spec/85-discipline.md):
 	// the tail self-call becomes parameter rebinding plus continue, so the
@@ -3885,4 +3905,122 @@ func (cg *CodeGenerator) emitAbstractAliases() {
 		cg.write(fmt.Sprintf("typedef %s %s;\n", cg.cTypeName(cg.abstractAliases[fresh]), cg.cTypeName(fresh)))
 	}
 	cg.write("\n")
+}
+
+// emitProtocolLoweringBody emits the body of a projected protocol step
+// function from its compile-time transition table
+// (docs/spec/112-protocols.md section 2a, 90-backend.md section 14). The
+// signature, metadata, and closing brace are the ordinary function's; this
+// writes only the statements between them.
+//
+// Dense form: `static const u8 T[States+1][Symbols]`, sentinel States;
+// legal is one load and compare, next is one load, a compare on the
+// sentinel that traps, and the tag. Shift form (States+1 <= 10): one u64
+// row per symbol holding the next offset in the 6-bit field at the current
+// state's offset, so a step is `(rows[sym] >> tag) & 63`; the state type's
+// tags are the offsets (ADTType.TagValues). `run` steps a whole byte view
+// with the sink absorbing, and checks once at the end
+// (Oak.Protocol.runSink_correct).
+func (cg *CodeGenerator) emitProtocolLoweringBody(fn *ast.FunctionStatement) {
+	l := fn.Lowering
+	tableName := cg.cFunctionName(snakeIdent(l.Protocol) + "_transitions")
+	sink := l.States
+	sinkValue := sink
+	if l.Shift {
+		sinkValue = 6 * sink
+	}
+	if cg.protocolTables == nil {
+		cg.protocolTables = map[string]bool{}
+	}
+	if !cg.protocolTables[tableName] {
+		cg.protocolTables[tableName] = true
+		var table strings.Builder
+		if l.Shift {
+			// rows[symbol]: field s holds 6 * next(s, symbol); field sink holds 6 * sink.
+			table.WriteString(fmt.Sprintf("  /* shift-DFA rows of protocol %s: field 6*s of rows[symbol] is 6*next(s, symbol) */\n", l.Protocol))
+			table.WriteString(fmt.Sprintf("  static const u64 %s[%d] = {", tableName, l.Symbols))
+			for t := 0; t < l.Symbols; t++ {
+				var row uint64
+				for s := 0; s <= sink; s++ {
+					row |= uint64(6*l.Table[s*l.Symbols+t]) << (6 * uint(s))
+				}
+				if t > 0 {
+					table.WriteString(",")
+				}
+				if t%4 == 0 {
+					table.WriteString("\n    ")
+				} else {
+					table.WriteString(" ")
+				}
+				table.WriteString(fmt.Sprintf("0x%016xULL", row))
+			}
+			table.WriteString("\n  };\n")
+		} else {
+			table.WriteString(fmt.Sprintf("  /* transition table of protocol %s: T[state][symbol] is the next state, %d the sink */\n", l.Protocol, sink))
+			table.WriteString(fmt.Sprintf("  static const u8 %s[%d][%d] = {\n", tableName, sink+1, l.Symbols))
+			for s := 0; s <= sink; s++ {
+				table.WriteString("    {")
+				for t := 0; t < l.Symbols; t++ {
+					if t > 0 {
+						table.WriteString(",")
+					}
+					table.WriteString(fmt.Sprintf(" %d", l.Table[s*l.Symbols+t]))
+				}
+				table.WriteString(" },\n")
+			}
+			table.WriteString("  };\n")
+		}
+		// File scope, spliced after the prototypes with the lifted literals:
+		// the three step functions and any caller share one table.
+		cg.liftedLiterals.WriteString(table.String())
+	}
+	symbol := "step.tag"
+	if l.ByteSymbol {
+		symbol = fmt.Sprintf("step.payload.%s", l.StepName)
+	}
+	lookup := func(state, sym string) string {
+		if l.Shift {
+			return fmt.Sprintf("(u32)( ( %s[ %s ] >> %s ) & 63u )", tableName, sym, state)
+		}
+		return fmt.Sprintf("(u32)%s[ %s ][ %s ]", tableName, state, sym)
+	}
+	stateType := cg.cTypeName(l.Protocol + "State")
+	switch l.Kind {
+	case "legal":
+		cg.write(fmt.Sprintf("  return %s != %du ? oak_Bool_True : oak_Bool_False;\n", lookup("state.tag", symbol), sinkValue))
+	case "next":
+		cg.write(fmt.Sprintf("  u32 next = %s;\n", lookup("state.tag", symbol)))
+		cg.write(fmt.Sprintf("  oak_assert( next != %du ? oak_Bool_True : oak_Bool_False, \"%s\", 0 );\n", sinkValue, l.Protocol))
+		cg.write(fmt.Sprintf("  %s result;\n  result.tag = next;\n  return result;\n", stateType))
+	case "run":
+		// The sink absorbs, so the loop carries no check; the trap fires
+		// once at the end exactly when some step was illegal.
+		cg.write("  u32 current = state.tag;\n")
+		cg.write("  const u8 *symbols = bytes.base;\n")
+		cg.write("  u64 count = (u64)bytes.len;\n")
+		cg.write("  for (u64 i = 0; i < count; i++) {\n")
+		cg.write(fmt.Sprintf("    current = %s;\n", lookup("current", "symbols[ i ]")))
+		cg.write("  }\n")
+		cg.write(fmt.Sprintf("  oak_assert( current != %du ? oak_Bool_True : oak_Bool_False, \"%s\", 0 );\n", sinkValue, l.Protocol))
+		cg.write(fmt.Sprintf("  %s result;\n  result.tag = current;\n  return result;\n", stateType))
+	default:
+		cg.write("  OAK_UNSUPPORTED_PROTOCOL_LOWERING;\n")
+	}
+}
+
+// snakeIdent spells a protocol name the way its projected functions are
+// prefixed (compiler/protocols.go snakeCase), for the shared table's name.
+func snakeIdent(name string) string {
+	var out strings.Builder
+	for i, r := range name {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				out.WriteByte('_')
+			}
+			out.WriteRune(r + ('a' - 'A'))
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
