@@ -20,6 +20,7 @@ package lean
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -318,6 +319,9 @@ var primitiveLean = map[string]string{
 	"u8": "UInt8", "u16": "UInt16", "u32": "UInt32", "u64": "UInt64",
 	"i8": "Int8", "i16": "Int16", "i32": "Int32", "i64": "Int64",
 	"Bool": "Bool", "()": "Unit",
+	// f32 and f64 are Lean's Float32 and Float: the host's binary32 and
+	// binary64 (docs/spec/95-extraction.md section 3).
+	"f32": "Float32", "f64": "Float",
 }
 
 // leanType renders an Oak type expression.
@@ -409,6 +413,8 @@ func zeroOf(leanType string) string {
 		return "()"
 	case strings.HasPrefix(leanType, "UInt") || strings.HasPrefix(leanType, "Int"):
 		return "(0 : " + leanType + ")"
+	case isFloatLean(leanType):
+		return "(" + leanType + ".ofBits 0)"
 	case strings.HasPrefix(leanType, "Array "):
 		return "(#[] : " + leanType + ")"
 	default:
@@ -1173,6 +1179,12 @@ func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 			return "", fmt.Errorf("integer literal %d has no type in context", e.Value)
 		}
 		return literalTerm(e.Value, typ), nil
+	case *ast.FloatLiteral:
+		typ := want
+		if checked := em.checkedLeanType(e); checked != "" {
+			typ = checked
+		}
+		return floatLiteralTerm(e.Text, typ)
 	case *ast.Boolean:
 		if e.Value {
 			return "true", nil
@@ -1203,6 +1215,11 @@ func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 			inner, err := em.expr(e.Right, typ)
 			if err != nil {
 				return "", err
+			}
+			if isFloatLean(typ) {
+				// Negation flips the sign bit (section 11.3.5); `0 - x` would
+				// give +0 for x = +0.
+				return "(-" + inner + ")", nil
 			}
 			return "(0 - " + inner + ")", nil
 		case "^":
@@ -1523,6 +1540,25 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 			return "", fmt.Errorf("%s of unknown owner %s", callee.Value, owner)
 		}
 		return ident(owner), nil
+	case "f32", "f64":
+		// The implicit widening constructor (section 11.3.4): f64 of an f32 is
+		// exact; the storage formats have no carrier here.
+		if len(call.Arguments) != 1 {
+			return "", fmt.Errorf("%s takes one argument", callee.Value)
+		}
+		target := primitiveLean[callee.Value]
+		source := em.checkedLeanType(call.Arguments[0])
+		inner, err := em.expr(call.Arguments[0], target)
+		if err != nil {
+			return "", err
+		}
+		switch {
+		case source == target || source == "":
+			return inner, nil
+		case target == "Float" && source == "Float32":
+			return "(" + inner + ".toFloat)", nil
+		}
+		return "", fmt.Errorf("%s of a %s is outside the extracted subset", callee.Value, source)
 	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
 		if len(call.Arguments) != 1 {
 			return "", fmt.Errorf("%s takes one argument", callee.Value)
@@ -1543,6 +1579,9 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 	}
 	if term, handled, err := em.conversion(callee.Value, call); handled {
 		return term, err
+	}
+	if _, shadowed := em.functions[callee.Value]; !shadowed && typechecker.FloatIntrinsicName(callee.Value) {
+		return em.floatIntrinsic(callee.Value, call, want)
 	}
 	fn, known := em.functions[callee.Value]
 	if !known {
@@ -1610,7 +1649,7 @@ func (em *emitter) conversion(name string, call *ast.InvocationExpression) (stri
 	targetLean, targetKnown := primitiveLean[target]
 	sourceLean, sourceKnown := primitiveLean[source]
 	if !targetKnown || !sourceKnown || target == "Bool" || source == "Bool" {
-		return "", true, fmt.Errorf("call to %s is outside the extracted subset (integer conversions only)", name)
+		return "", true, fmt.Errorf("call to %s is outside the extracted subset (integer and f32/f64 conversions only)", name)
 	}
 	if len(call.Arguments) != 1 {
 		return "", true, fmt.Errorf("%s takes one argument", name)
@@ -1618,6 +1657,10 @@ func (em *emitter) conversion(name string, call *ast.InvocationExpression) (stri
 	inner, err := em.expr(call.Arguments[0], sourceLean)
 	if err != nil {
 		return "", true, err
+	}
+	if isFloatLean(targetLean) || isFloatLean(sourceLean) {
+		term, err := floatConversion(name, op, targetLean, sourceLean, inner)
+		return term, true, err
 	}
 	switch op {
 	case "trunc", "bits":
@@ -1724,6 +1767,12 @@ var leanReserved = map[string]bool{
 	"for": true, "unless": true, "repeat": true, "while": true, "try": true, "catch": true,
 	"finally": true, "mut": true, "pure": true, "fuel": true, "default": true, "none": true, "some": true,
 	"true": true, "false": true, "Nat": true, "Bool": true, "Array": true, "Option": true, "id": true,
+	// Keywords of later Lean releases and the float carriers, so a parameter
+	// named like one (the float package's `meta`) is escaped the same way.
+	"meta": true, "public": true, "export": true, "omit": true, "include": true, "lemma": true,
+	"only": true, "using": true, "attribute": true, "scoped": true, "local": true, "renaming": true,
+	"hiding": true, "nomatch": true, "nofun": true, "termination_by": true, "decreasing_by": true,
+	"Type": true, "Prop": true, "Sort": true, "Float": true, "Float32": true,
 }
 
 // ident renders an Oak identifier as a Lean identifier: Lean keywords and
@@ -1880,4 +1929,87 @@ func walkExpressions(expr ast.Expression, visit func(ast.Expression)) {
 		}
 	}
 	exprs(expr)
+}
+
+// ---- floating point ----
+
+// isFloatLean reports whether a Lean type name is one of the two float
+// carriers.
+func isFloatLean(typ string) bool { return typ == "Float" || typ == "Float32" }
+
+// floatLiteralTerm renders a floating-point literal exactly: the text is
+// rounded once to its type's width by the checker's own rule
+// (typechecker.FloatLiteralValue, correct rounding from the exact decimal
+// or hexadecimal value) and the resulting bit pattern is spelled through
+// `ofBits`, so no Lean-side decimal parsing takes part.
+func floatLiteralTerm(text, typ string) (string, error) {
+	switch typ {
+	case "Float32":
+		value, ok := typechecker.FloatLiteralValue(text, "f32")
+		if !ok {
+			return "", fmt.Errorf("floating-point literal %s does not fit f32", text)
+		}
+		return fmt.Sprintf("(Float32.ofBits (0x%08X : UInt32) /- %s -/)", math.Float32bits(float32(value)), text), nil
+	case "Float":
+		value, ok := typechecker.FloatLiteralValue(text, "f64")
+		if !ok {
+			return "", fmt.Errorf("floating-point literal %s does not fit f64", text)
+		}
+		return fmt.Sprintf("(Float.ofBits (0x%016X : UInt64) /- %s -/)", math.Float64bits(value), text), nil
+	}
+	return "", fmt.Errorf("floating-point literal %s in a non-float context %q", text, typ)
+}
+
+// floatConversion renders the f32/f64 rows of section 11.3.4 onto Lean's
+// Float and Float32: `round` between the two formats and from the integers
+// (`toFloat32`, `toFloat`), `bits` as `ofBits`/`toBits` over the same-width
+// unsigned integer, `saturating` into an integer as Lean's `toUIntN`/`toIntN`
+// (toward zero, clamped to the range, NaN to zero — the row's semantics), and
+// `trunc` into an integer as the same operation, since the trap it would
+// take out of range is a path the model does not follow (section 3).
+// `checked` into an integer and every storage-format row fail closed.
+func floatConversion(name, op, targetLean, sourceLean, inner string) (string, error) {
+	switch {
+	case op == "round" && targetLean == "Float32" && sourceLean == "Float":
+		return "(" + inner + ".toFloat32)", nil
+	case op == "round" && isFloatLean(targetLean) && !isFloatLean(sourceLean):
+		return fmt.Sprintf("(%s.to%s)", inner, targetLean), nil
+	case op == "bits" && targetLean == "Float" && sourceLean == "UInt64",
+		op == "bits" && targetLean == "Float32" && sourceLean == "UInt32":
+		return fmt.Sprintf("(%s.ofBits %s)", targetLean, inner), nil
+	case op == "bits" && sourceLean == "Float" && targetLean == "UInt64",
+		op == "bits" && sourceLean == "Float32" && targetLean == "UInt32":
+		return "(" + inner + ".toBits)", nil
+	case (op == "saturating" || op == "trunc") && isFloatLean(sourceLean) && !isFloatLean(targetLean):
+		return fmt.Sprintf("(%s.to%s)", inner, targetLean), nil
+	}
+	return "", fmt.Errorf("call to %s is outside the extracted subset (the %s row from %s to %s has no Lean carrier)", name, op, sourceLean, targetLean)
+}
+
+// floatIntrinsic renders the correctly rounded intrinsics of section 11.3.5
+// that Lean's Float and Float32 carry with the same contract: square root,
+// absolute value, floor, ceiling, `round` (ties away from zero, as Lean's
+// `Float.round`), and the classifications. fma, copysign, trunc,
+// round_even, min/max, is_normal, and total_order have no exact Lean
+// counterpart and fail closed.
+func (em *emitter) floatIntrinsic(name string, call *ast.InvocationExpression, want string) (string, error) {
+	leanName := map[string]string{
+		"sqrt": "sqrt", "abs": "abs", "floor": "floor", "ceil": "ceil", "round": "round",
+		"is_nan": "isNaN", "is_finite": "isFinite", "is_infinite": "isInf",
+	}[name]
+	if leanName == "" || len(call.Arguments) != 1 {
+		return "", fmt.Errorf("floating-point intrinsic %s is outside the extracted subset (no Lean carrier)", name)
+	}
+	width := em.checkedLeanType(call.Arguments[0])
+	if width == "" && isFloatLean(want) {
+		width = want
+	}
+	if !isFloatLean(width) {
+		return "", fmt.Errorf("floating-point intrinsic %s: operand width is not f32 or f64", name)
+	}
+	inner, err := em.expr(call.Arguments[0], width)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("(%s.%s %s)", width, leanName, inner), nil
 }

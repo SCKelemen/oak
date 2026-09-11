@@ -288,3 +288,11 @@ Fixture and ergonomics friction:
 9. `20-types.md` §11.3.8 should cite bf16 as the bfloat16 convention
    (Google Brain, vendor ISA documents) rather than IEEE 754, which does
    not define it.
+
+## Roadmap disposition (2026-09-11, night): E4
+
+The ml roadmap (`docs/notes/oak-roadmap.md` in SCKelemen/ml) names Lean extraction of float code as E4.
+
+| # | Ask | Disposition |
+| --- | --- | --- |
+| E4 | Lean extraction of float code | **First increment (2026-09-11, night)**: `f32`/`f64` extract to Lean's `Float32`/`Float` — literals by bit pattern, `+ - * /`, negation, comparisons, the `round`/`bits`/`saturating`/`trunc` rows, `sqrt`/`abs`/`floor`/`ceil`/`round`/`is_nan`/`is_finite`/`is_infinite` — and `spec/lean/Oak/Stdlib/FloatKernelsExtracted.lean` commits the ml shape (`dot_f32`, `sum_f32`/`sum_f64`, `axpy_f32`, `max_abs_f32`, `widen_mean`, `quantize_u8`) with a drift test (`95-extraction.md` §2–§5). Lean's `Float` is opaque to the kernel, so theorems about extracted float code are stated against `Oak.Floats`; `fma`, `copysign`, `min`/`max`, `round_even`, `total_order`, the `checked` float rows, and `f16`/`bf16`/`f8` fail closed. |

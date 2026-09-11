@@ -73,6 +73,8 @@ import Oak.GraphemeBreak
 import Oak.Stdlib.VarintExtracted
 import Oak.Stdlib.EncodingExtracted
 import Oak.Stdlib.HashExtracted
+import Oak.Stdlib.FloatExtracted
+import Oak.Stdlib.FloatKernelsExtracted
 import Oak.Stdlib.RandomExtracted
 import Oak.Stdlib.UuidExtracted
 import Oak.Stdlib.SortU32Extracted
