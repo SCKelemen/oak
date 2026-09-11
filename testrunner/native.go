@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/SCKelemen/oak/buildcache"
 	"io"
 	"os"
 	"os/exec"
@@ -126,12 +127,6 @@ int main(int argc, char **argv) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.BuildTimeout)
 	defer cancel()
-	var output limitedBuffer
-	cmd := exec.CommandContext(ctx, cc, args...)
-	cmd.Stdout, cmd.Stderr = &output, &output
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("C compilation: %w\n%s", err, output.text())
-	}
 	version := exec.CommandContext(ctx, cc, "--version")
 	var versionOutput limitedBuffer
 	version.Stdout, version.Stderr = &versionOutput, &versionOutput
@@ -141,6 +136,30 @@ int main(int argc, char **argv) {
 	// Generated C captures compiler/lowering changes; flags and compiler identity
 	// prevent replay under a silently different native build.
 	hash := sha256.Sum256([]byte(engineVersion + "\n" + source.String() + "\n" + strings.Join(flags, " ") + "\n" + versionOutput.String() + "\nadapter-v1:" + adapterIdentity))
+	// The same identity keys the build cache (docs/spec/115-tooling.md
+	// section 3): an unchanged test binary is copied, not recompiled.
+	binary := filepath.Join(dir, "test")
+	cacheKey := ""
+	if identity, err := buildcache.CompilerIdentity(cc); err == nil {
+		cacheKey = buildcache.Key("oak-test-v1", hex.EncodeToString(hash[:]), identity)
+	}
+	cached := false
+	if cacheKey != "" {
+		if entry, ok := buildcache.Lookup(cacheKey); ok {
+			cached = buildcache.Copy(entry, binary) == nil
+		}
+	}
+	if !cached {
+		var output limitedBuffer
+		cmd := exec.CommandContext(ctx, cc, args...)
+		cmd.Stdout, cmd.Stderr = &output, &output
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("C compilation: %w\n%s", err, output.text())
+		}
+		if cacheKey != "" {
+			_ = buildcache.Store(cacheKey, binary)
+		}
+	}
 	keep = true
 	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: cfg.MaxBytes, timeout: cfg.Timeout}, nil
 }
