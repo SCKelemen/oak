@@ -196,6 +196,34 @@ Stack and static storage are also explicit lifetime/storage strategies even when
 
 The compiler may choose stack placement for non-escaping values as an optimization/refinement of explicit value semantics. It must not silently move an escaping value to the heap.
 
+### 10a. Static storage initializers
+
+A top-level binding is static storage, initialized before any code runs.
+Its initializer is a compile-time constant or absent (zero initialization):
+
+- literals, arithmetic over literals, and primitive casts of constants,
+  which the C backend emits as C constant expressions;
+- the named conversions of `20-types.md` §11.1 and §11.3.4 other than
+  `checked`, and the float constructors `f32(x)`/`f64(x)`, applied to
+  constants — a rounded threshold `HALF: f16 = f16_round_f32(0.5)`, a
+  quantization table `[4]bf16{ bf16_round_f32(1.0), ... }`, a reinterpreted
+  bit pattern — which the backend **folds**: the initializer is evaluated
+  by the interpreter, the first witness of every conversion's bit-exact
+  semantics, and emitted as the literal of the initializer's type (hex
+  float, storage bits, or integer). The differential tests hold the
+  interpreter to the C helpers, so the folded constant is the value the
+  program would compute at run time;
+- record and array literals of the above.
+
+Anything else — a call to an ordinary function, a read of another global,
+an intrinsic — is not constant. `OAK-T0501` warns at check time (script
+programs may still interpret such a binding, initializing it at load), the
+strict profile rejects it, and **C emission fails with `OAK-T0501` as an
+error** naming the global and its position. The generated C never runs a
+hidden global constructor, and the failure is Oak's diagnostic, never the
+C compiler's (ml finding F19). Runtime initialization is written at the top
+of `main`.
+
 ## 11. Closures
 
 A capturing closure has an environment whose storage must be justified by ownership analysis.

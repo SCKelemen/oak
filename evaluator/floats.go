@@ -141,7 +141,7 @@ func evalFloatConversion(name, target, op, source string, operand object.Object,
 		case *object.Float:
 			switch v.Bits {
 			case 8, 16:
-				return &object.Integer{Value: int64(storageBits(v))}
+				return &object.Integer{Value: int64(StorageBits(v))}
 			case 32:
 				return &object.Integer{Value: int64(math.Float32bits(float32(v.Value)))}
 			}
@@ -532,7 +532,7 @@ func storageFloat(format string, bits uint16) *object.Float {
 // storageBits recovers the bit pattern of a storage-format value. A stored
 // value is exactly representable in its format, so rounding it again is
 // the identity; a NaN reproduces the format's quiet NaN.
-func storageBits(f *object.Float) uint16 {
+func StorageBits(f *object.Float) uint16 {
 	switch f.Format {
 	case "f16":
 		return float32ToHalf(float32(f.Value))

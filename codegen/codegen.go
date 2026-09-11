@@ -46,6 +46,10 @@ type CodeGenerator struct {
 	// globalTypes classifies top-level bindings (static globals) the same
 	// way localTypes classifies function locals.
 	globalTypes map[string]localContainer
+	// globalErrors collects top-level initializers the backend could not
+	// place in static storage; Generate reports the first (OAK-T0501 as an
+	// error at emission, ml finding F19).
+	globalErrors []error
 	// recordLayouts holds the resolved natural layout of each emitted
 	// record type (semir.NaturalRecordLayout, the Oak.RecordLayoutRefinement
 	// transliteration), for nested-record placement and layout assertions.
@@ -136,6 +140,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.stringLiteralMap = make(map[string]int)
 	cg.recordLayouts = make(map[string]semir.Representation)
 	cg.fieldAccessors = make(map[string]*ast.FieldAccessorExpression)
+	cg.globalErrors = nil
 
 	// Extract package name from program
 	for _, stmt := range program.Statements {
@@ -248,6 +253,9 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 			helpers.WriteString(cg.sliceHelpers[name])
 		}
 		output = output[:sliceHelperOffset] + helpers.String() + output[sliceHelperOffset:]
+	}
+	if len(cg.globalErrors) > 0 {
+		return "", cg.globalErrors[0]
 	}
 	return output, nil
 }
