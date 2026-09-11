@@ -947,7 +947,28 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 
 	// 1. Check arguments FIRST under the pre-call state
 	// This ensures that argument validation happens before any borrow state changes
+	//
+	// A string view conversion written directly as an argument
+	// (`f(str_bytes("x"))`, `f(str_bytes(name))`) is a temporary with the
+	// call's extent (F9): it borrows its literal or tracked string source
+	// like a named view would, is dropped when the call returns, and never
+	// outlives the callee, which cannot return a view (OAK-B0109).
+	var temporaries []string
+	defer func() {
+		for _, name := range temporaries {
+			bc.dropBorrow(name)
+		}
+		if len(temporaries) > 0 {
+			bc.recomputeOwnerStatesFromActiveBorrows()
+		}
+	}()
 	for i, arg := range call.Arguments {
+		if inner, ok := arg.(*ast.InvocationExpression); ok && isStringViewConversion(inner) {
+			name := fmt.Sprintf("$argument:%d:%p", i, call)
+			bc.checkStringViewCall(inner, env, name)
+			temporaries = append(temporaries, name)
+			continue
+		}
 		// A boundary span (docs/spec/92-ffi.md section 2.5.2) is a read use
 		// of the view's owner, or a write use of the span's owner, for the
 		// extent of the foreign call — the rule an Oak callee taking []T or
