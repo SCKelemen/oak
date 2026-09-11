@@ -280,11 +280,42 @@ type spanParam struct {
 // holds after a dominating guard `cmp wL, #N` + `b.lo <fail>`: on the
 // fall-through path len >= N, so offsets below N*elem are in bounds.
 type spanFact struct {
-	lenReg   int
+	lenReg   int // the primary length register (messages)
 	elem     int64
 	writable bool
 	hasMin   bool
 	minLen   int64
+	// lenRegs: every w register currently holding this span's length — the
+	// bound one and its copies (`mov wD, wL`). Shared between a base and its
+	// copies (`mov xD, xBase`): they describe one span.
+	lenRegs map[int]bool
+}
+
+// holdsLen reports whether w register n holds the span's length.
+func (f *spanFact) holdsLen(n int) bool { return f.lenRegs[n] }
+
+// dropLen forgets that w register n holds the length (it was written); the
+// primary moves to any remaining copy.
+func (f *spanFact) dropLen(n int) {
+	if !f.lenRegs[n] {
+		return
+	}
+	delete(f.lenRegs, n)
+	f.hasMin = false
+	if f.lenReg == n {
+		f.lenReg = -1
+		for reg := range f.lenRegs {
+			if f.lenReg < 0 || reg < f.lenReg {
+				f.lenReg = reg
+			}
+		}
+	}
+}
+
+// copy is the fact for a copied base register: the same span, the same
+// length registers.
+func (f *spanFact) copy() *spanFact {
+	return &spanFact{lenReg: f.lenReg, elem: f.elem, writable: f.writable, hasMin: f.hasMin, minLen: f.minLen, lenRegs: f.lenRegs}
 }
 
 // cmpFact remembers a 32-bit `cmp wA, #N` or `cmp wA, wB` for exactly the
@@ -483,7 +514,7 @@ func (c *checker) bindContract() {
 			}
 			c.bound[span.baseReg] = true
 			c.bound[span.lenReg] = true
-			c.spans[span.baseReg] = &spanFact{lenReg: span.lenReg, elem: span.elem, writable: span.writable}
+			c.spans[span.baseReg] = &spanFact{lenReg: span.lenReg, elem: span.elem, writable: span.writable, lenRegs: map[int]bool{span.lenReg: true}}
 			continue
 		}
 		if binding.Length != nil {
@@ -740,7 +771,7 @@ func (c *checker) instruction(instr Instruction) bool {
 		// len >= N for every span whose length register is wL.
 		if guard.valid && guard.rightReg < 0 && (instr.Cond == "lo" || instr.Cond == "cc") {
 			for _, fact := range c.spans {
-				if fact.lenReg == guard.left {
+				if fact.holdsLen(guard.left) {
 					fact.hasMin = true
 					fact.minLen = guard.imm
 				}
@@ -980,6 +1011,11 @@ func (c *checker) instruction(instr Instruction) bool {
 		return false
 	}
 	c.write(instr, dest)
+	if instr.Mnemonic == "mov" && len(regs) == 2 && len(instr.Operands) == 2 {
+		if _, isReg := instr.Operands[1].(Register); isReg {
+			c.aliasSpan(dest, regs[1])
+		}
+	}
 	if instr.Mnemonic == "add" && len(regs) == 2 && regs[1].Class == ClassSP && dest.Class == ClassX {
 		// `add xN, sp, #imm`: xN holds a frame address (an owned array's base).
 		if imm, isImm := instr.Operands[2].(Immediate); isImm {
@@ -1136,19 +1172,44 @@ func (c *checker) write(instr Instruction, reg Register) {
 	// Moving a span base forgets the span; touching a length register
 	// forgets its guard; touching an index or its bound forgets the
 	// index fact.
-	delete(c.spans, reg.Num)
+	c.forgetRegisterFacts(reg.Num)
+}
+
+// forgetRegisterFacts drops what a general register's old value supported:
+// the span whose base it was, its place among a span's length registers,
+// an index fact on it or bounded by it, a frame address in it.
+func (c *checker) forgetRegisterFacts(num int) {
+	delete(c.spans, num)
 	for _, fact := range c.spans {
-		if fact.lenReg == reg.Num {
-			fact.hasMin = false
-		}
+		fact.dropLen(num)
 	}
-	delete(c.idxFacts, reg.Num)
+	delete(c.idxFacts, num)
 	for index, fact := range c.idxFacts {
-		if fact.boundReg == reg.Num {
+		if fact.boundReg == num {
 			delete(c.idxFacts, index)
 		}
 	}
-	delete(c.frameAddrs, reg.Num)
+	delete(c.frameAddrs, num)
+}
+
+// aliasSpan records a register move that copies a span's base or length:
+// `mov xD, xB` makes xD a base of the same span, `mov wD, wL` makes wD a
+// length register of every span wL measures — so a span can be parked in
+// callee-saved registers across a call and walked from there.
+func (c *checker) aliasSpan(dest, src Register) {
+	if dest.Class == ClassX && src.Class == ClassX {
+		if fact, isSpan := c.spans[src.Num]; isSpan {
+			c.spans[dest.Num] = fact.copy()
+		}
+		return
+	}
+	if dest.Class == ClassW && src.Class == ClassW {
+		for _, fact := range c.spans {
+			if fact.holdsLen(src.Num) {
+				fact.lenRegs[dest.Num] = true
+			}
+		}
+	}
 }
 
 func (c *checker) moveSP(instr Instruction, delta int64) {
@@ -1415,6 +1476,8 @@ func (c *checker) clobberCallerSaved() {
 		if !c.bound[num] || num == 0 {
 			delete(c.written, num)
 		}
+		// A span parked in x0–x17 does not survive the callee.
+		c.forgetRegisterFacts(num)
 	}
 	for num := 0; num <= 7; num++ {
 		delete(c.writtenV, num)
@@ -1509,7 +1572,7 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 	case !guarded:
 		c.errorf(instr.Line, "%s indexed by %s without a dominating index guard: `cmp %s, w%d` then `b.hs <exit>` proves the index below the span's length for the fall-through path", instr.Mnemonic, index.Text, index.Text, fact.lenReg)
 		return
-	case bound.boundReg == fact.lenReg:
+	case bound.boundReg >= 0 && fact.holdsLen(bound.boundReg):
 		// index < len: in bounds.
 	case bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen:
 		// index < K <= len.
@@ -1597,6 +1660,8 @@ func (c *checker) call(instr Instruction) {
 		if !c.bound[num] || num == 0 {
 			delete(c.written, num)
 		}
+		// A span parked in x0–x17 does not survive the callee.
+		c.forgetRegisterFacts(num)
 	}
 	for num := 0; num <= 7; num++ {
 		delete(c.writtenV, num)
