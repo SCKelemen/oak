@@ -139,6 +139,42 @@ func (cg *CodeGenerator) emitOutArgument(operand ast.Expression, tc *typechecker
 	cg.output.WriteString(" )")
 }
 
+// emitForeignFunctionAt lowers `c.fn_at(p)` (docs/spec/92-ffi.md section
+// 2.10): the pointer itself, after oak_fn_at has trapped on NULL naming the
+// Oak source position. The binding it initializes is an opaque `void *`;
+// the signature lives in the annotation and is applied at each call.
+func (cg *CodeGenerator) emitForeignFunctionAt(call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	file := cg.tokenSourceFile(call.Token)
+	cg.output.WriteString("oak_fn_at( (void *)( ")
+	cg.emitExpressionFragment(call.Arguments[0], tc)
+	cg.output.WriteString(fmt.Sprintf(" ), %q, %d )", file, call.Token.Line))
+}
+
+// emitForeignFunctionCallee lowers the callee of a call through a `c.Fn`
+// binding (docs/spec/92-ffi.md section 2.10): the opaque pointer cast to
+// the annotated signature, `((ret (*)(params))f)`, with every C spelling
+// taken from the same table extern prototypes use, so the cast is exactly
+// the prototype an extern binding of that signature would have declared.
+func (cg *CodeGenerator) emitForeignFunctionCallee(signature *ast.FunctionTypeExpression, callee ast.Expression, tc *typechecker.TypeChecker) {
+	returnType := "void"
+	if signature.Return != nil {
+		if ident, isIdent := signature.Return.(*ast.Identifier); !isIdent || ident.Value != "()" {
+			returnType = cg.parseTypeExpression(signature.Return)
+		}
+	}
+	params := make([]string, 0, len(signature.Parameters))
+	for _, param := range signature.Parameters {
+		params = append(params, cg.parseTypeExpression(param))
+	}
+	paramList := "void"
+	if len(params) > 0 {
+		paramList = strings.Join(params, ", ")
+	}
+	cg.output.WriteString(fmt.Sprintf("(( %s (*)( %s ) )( ", returnType, paramList))
+	cg.emitExpressionFragment(callee, tc)
+	cg.output.WriteString(" ))")
+}
+
 // emitCStringArgument lowers `c.cstr(v)` at its extern call site (docs/spec/
 // 92-ffi.md section 2.5.3): a literal operand is the interned literal (the
 // typechecker required its trailing NUL); a named view goes through

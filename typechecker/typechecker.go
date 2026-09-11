@@ -559,6 +559,12 @@ type TypeChecker struct {
 	// gate the inbound buffer borrows of docs/spec/92-ffi.md section 2.7.
 	unsafeDepth           int
 	initializerUnderCheck ast.Expression
+	// initializerDeclaredType is the parsed annotation of the declaration
+	// being checked, and cFnAnnotationAllowed is set only while that
+	// annotation is parsed for a local binding `c.fn_at` initializes inside
+	// an unsafe block (docs/spec/92-ffi.md section 2.10).
+	initializerDeclaredType Type
+	cFnAnnotationAllowed    bool
 	// constantGlobals names the top-level bindings whose initializers are
 	// compile-time constants, in declaration order, so later constant
 	// initializers may read them (typechecker/globals.go).
@@ -2222,6 +2228,14 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	if accessor, ok := funcType.(*FieldAccessorType); ok {
 		return tc.checkFieldAccessorInvocation(accessor.Field, expr)
 	}
+	// A call through a foreign function pointer (docs/spec/92-ffi.md
+	// section 2.10) is checked as a call to an extern binding with the
+	// annotated signature; the backend lowers it as a cast-and-call.
+	var foreignFn *CFnType
+	if cfn, isForeign := funcType.(*CFnType); isForeign {
+		foreignFn = cfn
+		funcType = &FunctionType{Parameters: cfn.Parameters, ReturnType: cfn.ReturnType}
+	}
 	fnType, ok := funcType.(*FunctionType)
 	if !ok {
 		tc.addError(expr, "attempting to call non-function type: %s", funcType)
@@ -2235,6 +2249,9 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	isExtern := false
 	if funcIdent, ok := expr.Function.(*ast.Identifier); ok {
 		isExtern = tc.externFunctions[funcIdent.Value]
+	}
+	if foreignFn != nil {
+		isExtern = true
 	}
 	paramPos := make([]int, len(expr.Arguments))
 	effectiveArgs := 0
@@ -3801,12 +3818,24 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 	// Variable doesn't exist - this is a declaration
 	// HM-style: let-bound variables get generalized types
 	if stmt.Type != nil {
-		// Explicit type annotation: parse and use it
+		// Explicit type annotation: parse and use it. A `c.Fn[...]`
+		// annotation is admitted only here, for a local binding inside an
+		// unsafe block that `c.fn_at` initializes (docs/spec/92-ffi.md
+		// section 2.10); parseCFnType rejects it everywhere else.
+		if _, isCFn := CFnTypeExpression(stmt.Type); isCFn && tc.env != tc.globalEnv {
+			if call, isCall := stmt.Value.(*ast.InvocationExpression); isCall && ForeignFunctionAtCall(call) {
+				tc.cFnAnnotationAllowed = true
+			}
+		}
 		varType := tc.parseTypeExpression(stmt.Type)
+		tc.cFnAnnotationAllowed = false
 		if varType == nil {
 			tc.addError(stmt.Type, "variable %s: invalid type annotation", stmt.Name.Value)
 			return
 		}
+		savedDeclared := tc.initializerDeclaredType
+		tc.initializerDeclaredType = varType
+		defer func() { tc.initializerDeclaredType = savedDeclared }()
 
 		if ContainsAtomicStorage(varType) {
 			// Atomic-bearing storage (a cell, a record with cell fields, an
@@ -5048,6 +5077,14 @@ func (t *GenericType) Equals(other Type) bool {
 // parseTypeExpression parses a type from an AST expression
 // Handles identifiers, intersections (A & B), and other type expressions
 func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
+	// A foreign function signature `c.Fn[(params) -> ret]` (docs/spec/
+	// 92-ffi.md section 2.10) resolves before generic application: type
+	// position always means the library unless a local binding shadows `c`.
+	if fnExpr, isCFn := CFnTypeExpression(expr); isCFn {
+		if _, bound := tc.env.Get("c"); !bound {
+			return tc.parseCFnType(expr.(*ast.IndexExpression), fnExpr)
+		}
+	}
 	// Phantom-encoded strings resolve before generic ADT application:
 	// Str[Utf8] is a built-in phantom type, not a user generic.
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
@@ -5256,6 +5293,14 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 	if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "&" {
 		// This shouldn't happen if called correctly, but handle gracefully
 		return nil
+	}
+
+	// A foreign function signature `c.Fn[(params) -> ret]` (docs/spec/
+	// 92-ffi.md section 2.10), unless a local binding shadows `c`.
+	if fnExpr, isCFn := CFnTypeExpression(expr); isCFn {
+		if _, bound := tc.env.Get("c"); !bound {
+			return tc.parseCFnType(expr.(*ast.IndexExpression), fnExpr)
+		}
 	}
 
 	// Record-template applications (Ring[u8, 16]): typechecker/mono.go.

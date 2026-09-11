@@ -17,6 +17,7 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 const (
@@ -182,6 +183,12 @@ func collectEffectFacts(fn *ast.FunctionStatement, functions map[string]*ast.Fun
 		switch v := n.(type) {
 		case *ast.VariableDeclaration:
 			if _, isFn := v.Type.(*ast.FunctionTypeExpression); isFn {
+				valueNames[v.Name.Value] = true
+			}
+			// A foreign function pointer (docs/spec/92-ffi.md section
+			// 2.10) is a function value whose effects nothing declares:
+			// a call through it fails closed like any other.
+			if _, isForeign := typechecker.CFnTypeExpression(v.Type); isForeign {
 				valueNames[v.Name.Value] = true
 			}
 			if _, isLit := v.Value.(*ast.FunctionLiteral); isLit {
