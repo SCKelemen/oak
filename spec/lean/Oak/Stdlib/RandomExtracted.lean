@@ -13,7 +13,8 @@ structure Xoshiro where
   s1 : UInt64
   s2 : UInt64
   s3 : UInt64
-  deriving Repr, Inhabited, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited Xoshiro := ⟨{ s0 := (0 : UInt64), s1 := (0 : UInt64), s2 := (0 : UInt64), s3 := (0 : UInt64) }⟩
 
 def splitmix64_next (state : UInt64) (fuel : Nat) : Option (UInt64) := do
   let z : UInt64 := (state + (11400714819323198485 : UInt64))
@@ -51,65 +52,65 @@ def random_next (state : Array Xoshiro) (fuel : Nat) : Option (UInt64 × Array X
   let state := state.setIfInBounds 0 ({ s0 := s0, s1 := s1, s2 := s2, s3 := s3 } : Xoshiro)
   pure (result, state)
 
-def random_below.loop1 (state : Array Xoshiro) (limit : UInt64) (draw : UInt64) : Nat → Option (UInt64)
+def random_below.loop1 (state : Array Xoshiro) (limit : UInt64) (draw : UInt64) : Nat → Option (Array Xoshiro × UInt64)
   | 0 => none
   | fuel + 1 => do
     if ((decide (draw >= limit)) && (limit != (0 : UInt64))) then do
       let (r3, state) ← random_next state fuel
       let draw := r3
       random_below.loop1 state limit draw fuel
-    else pure draw
+    else pure (state, draw)
 
 def random_below (state : Array Xoshiro) (bound : UInt64) (fuel : Nat) : Option (UInt64 × Array Xoshiro) := do
-  let r1 ← (
+  let (r1, state) ← (
     if (decide (bound <= (1 : UInt64))) then (do
-      pure (0 : UInt64))
+      pure ((0 : UInt64), state))
     else (do
       let limit : UInt64 := ((0 : UInt64) - (((0 : UInt64) - bound) % bound))
       let (r2, state) ← random_next state fuel
       let draw : UInt64 := r2
-      let draw ← random_below.loop1 state limit draw fuel
-      pure (draw % bound)))
+      let (state, draw) ← random_below.loop1 state limit draw fuel
+      pure ((draw % bound), state)))
   pure (r1, state)
 
 def random_range (state : Array Xoshiro) (low : UInt64) (high : UInt64) (fuel : Nat) : Option (UInt64 × Array Xoshiro) := do
   let () ← (if (decide (low <= high)) then pure () else none)
-  let r1 ← (
+  let (r1, state) ← (
     if ((high - low) == (18446744073709551615 : UInt64)) then (do
       let (r2, state) ← random_next state fuel
-      pure r2)
+      pure (r2, state))
     else (do
       let (r3, state) ← random_below state ((high - low) + (1 : UInt64)) fuel
-      pure (low + r3)))
+      pure ((low + r3), state)))
   pure (r1, state)
 
 def random_bool (state : Array Xoshiro) (fuel : Nat) : Option (Bool × Array Xoshiro) := do
   let (r1, state) ← random_next state fuel
   pure (((r1 >>> (63 : UInt64)) == (1 : UInt64)), state)
 
-def random_fill.loop1 (state : Array Xoshiro) (dst : Array UInt8) (i : UInt32) (word : UInt64) : Nat → Option (Array UInt8 × UInt32 × UInt64)
+def random_fill.loop1 (state : Array Xoshiro) (dst : Array UInt8) (i : UInt32) (word : UInt64) : Nat → Option (Array Xoshiro × Array UInt8 × UInt32 × UInt64)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < (dst.size.toUInt32))) then do
-      let word ← (if ((i % (8 : UInt32)) == (0 : UInt32)) then (do
+      let (state, word) ← (if ((i % (8 : UInt32)) == (0 : UInt32)) then (do
           let (r1, state) ← random_next state fuel
           let word := r1
-          pure word)
+          pure (state, word))
         else (do
-          pure word))
+          pure (state, word)))
       let dst := dst.setIfInBounds i.toNat ((word &&& (255 : UInt64)).toUInt8)
       let word := (word >>> (8 : UInt64))
       let i := (i + (1 : UInt32))
       random_fill.loop1 state dst i word fuel
-    else pure (dst, i, word)
+    else pure (state, dst, i, word)
 
 def random_fill (state : Array Xoshiro) (dst : Array UInt8) (fuel : Nat) : Option (Unit × Array Xoshiro × Array UInt8) := do
   let i : UInt32 := (0 : UInt32)
   let word : UInt64 := (0 : UInt64)
-  let (dst, i, word) ← random_fill.loop1 state dst i word fuel
+  let (state, dst, i, word) ← random_fill.loop1 state dst i word fuel
   pure ((), state, dst)
 
-def random_shuffle_u32.loop1 (state : Array Xoshiro) (items : Array UInt32) (i : UInt32) : Nat → Option (Array UInt32 × UInt32)
+def random_shuffle_u32.loop1 (state : Array Xoshiro) (items : Array UInt32) (i : UInt32) : Nat → Option (Array Xoshiro × Array UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i > (1 : UInt32))) then do
@@ -120,11 +121,11 @@ def random_shuffle_u32.loop1 (state : Array Xoshiro) (items : Array UInt32) (i :
       let items := items.setIfInBounds i.toNat (items.getD j.toNat (0 : UInt32))
       let items := items.setIfInBounds j.toNat held
       random_shuffle_u32.loop1 state items i fuel
-    else pure (items, i)
+    else pure (state, items, i)
 
 def random_shuffle_u32 (state : Array Xoshiro) (items : Array UInt32) (fuel : Nat) : Option (Unit × Array Xoshiro × Array UInt32) := do
   let i : UInt32 := (items.size.toUInt32)
-  let (items, i) ← random_shuffle_u32.loop1 state items i fuel
+  let (state, items, i) ← random_shuffle_u32.loop1 state items i fuel
   pure ((), state, items)
 
 def drive_shuffle_u32 (state : Array Xoshiro) (items : Array UInt32) (fuel : Nat) : Option (Unit × Array Xoshiro × Array UInt32) := do
