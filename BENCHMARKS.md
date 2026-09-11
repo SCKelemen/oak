@@ -55,6 +55,26 @@ same day, after the facts learned to name record field paths
 2,636,150; the hash package's remaining checked accesses fell from eight
 to four, all four under a record invariant the extent facts cannot state.
 
+### Workload shapes
+
+Four more kernels shaped like the sibling projects' hot loops, with Go
+and Rust twins of identical arithmetic (`benchmarks/kernels/RESULTS.md`,
+`m-series-2026-09-11-shapes.json`):
+
+| Kernel | Shape | Oak | Rust | Go | Oak / Rust |
+| --- | --- | ---: | ---: | ---: | ---: |
+| page_probe | B-tree leaf probe (dbs) | 6,764,400 | 7,410,333 | 11,069,600 | 0.91× |
+| bitmap | allocator bitmap scan (os) | 137,400 | 134,458 (hardware popcount) | 342,358 (hardware) | 1.02× |
+| dispatch | bytecode dispatch (os) | 6,911,200 | 9,570,758 | 7,465,467 | 0.72× |
+| tiled | tiled f32 reduction (ml) | 159,200 | 175,750 | 390,567 | 0.91× |
+
+Every access in `tiled`, `bitmap`, and `dispatch` is proven and emitted
+unchecked; `page_probe` keeps two checked reads under a binary search's
+decreasing bound, which the extent facts do not yet track. `bitmap` is
+Oak's portable SWAR popcount against the hardware instruction in Rust
+and Go; it ties because clang vectorizes the loop, and it marks a missing
+intrinsic.
+
 ## Typed JSON decoding against simdjson
 
 `benchmarks/json` (`RESULTS.md`, `*.json`). Oak's derived decoder for one

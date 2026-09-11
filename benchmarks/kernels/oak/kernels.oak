@@ -59,4 +59,107 @@ pub bench_search: (keys: []u64, probes: []u64): u32 {
   hits
 }
 
+// B-tree leaf page probe: the dbs index shape. Keys are pages of 512
+// (4 KiB); a probe finds its page through the fence keys (each page's first
+// key), then searches inside the page through a fixed-length view. Returns
+// the number of hits.
+pub bench_page_probe: (keys: []u64, probes: []u64): u32 {
+  hits: u32 = 0
+  pages: u32 = len(keys) / u32(512)
+  p: u32 = 0
+  while pages > u32(0) && p < len(probes) {
+    target: u64 = probes[p]
+    lo: u32 = 0
+    hi: u32 = pages
+    while lo < hi {
+      mid: u32 = lo + (hi - lo) / u32(2)
+      keys[mid * u32(512)] <= target ? { lo = mid + u32(1) } | { hi = mid }
+    }
+    lo > u32(0) ? {
+      page: []u64 = subslice(keys, (lo - u32(1)) * u32(512), u32(512))
+      a: u32 = 0
+      b: u32 = 512
+      found: Bool = false
+      while a < b && !found {
+        m: u32 = a + (b - a) / u32(2)
+        k: u64 = page[m]
+        k == target ? { found = true }
+        | k < target ? { a = m + u32(1) }
+        | { b = m }
+      }
+      found ? { hits = hits + u32(1) }
+    }
+    p = p + u32(1)
+  }
+  hits
+}
+
+// Population count without an intrinsic: the SWAR form every portable
+// bitmap uses.
+popcount64: (x: u64): u64 {
+  a: u64 = x - ((x >> u64(1)) & u64(0x5555555555555555))
+  b: u64 = (a & u64(0x3333333333333333)) + ((a >> u64(2)) & u64(0x3333333333333333))
+  c: u64 = (b + (b >> u64(4))) & u64(0x0f0f0f0f0f0f0f0f)
+  (c * u64(0x0101010101010101)) >> u64(56)
+}
+
+// Free-bit count over a u64 bitmap: the os allocator scan shape.
+pub bench_bitmap: (words: []u64): u64 {
+  free: u64 = 0
+  i: u32 = 0
+  while i < len(words) {
+    free = free + popcount64(^words[i])
+    i = i + u32(1)
+  }
+  free
+}
+
+// Bytecode dispatch: the os and interpreter shape. Each byte is an opcode in
+// its low three bits and an operand above; two registers, wrapping u64.
+pub bench_dispatch: (code: []u8): u64 {
+  acc: u64 = 0
+  x: u64 = 0
+  i: u32 = 0
+  while i < len(code) {
+    b: u8 = code[i]
+    op: u8 = b & u8(7)
+    arg: u64 = u64(b >> u8(3))
+    op ?
+    | 0 => { acc = acc + arg }
+    | 1 => { acc = acc ^ (arg << u64(7)) }
+    | 2 => { acc = acc * u64(31) + arg }
+    | 3 => { x = acc }
+    | 4 => { acc = acc + x }
+    | 5 => { acc = acc & (^(arg << u64(3))) }
+    | 6 => { x = x + arg }
+    | _ => { acc = acc - x }
+    i = i + u32(1)
+  }
+  acc
+}
+
+// Tiled f32 sum of squares: the ml reduction shape with eight independent
+// accumulators, eight elements per step, a scalar tail, and a fixed
+// combination order (no reassociation anywhere).
+pub bench_tiled: (a: []f32): f32 {
+  acc: [8]f32 = [8]f32{ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 }
+  i: u32 = 0
+  while len(a) >= u32(8) && i <= len(a) - u32(8) {
+    acc[0] = acc[0] + a[i] * a[i]
+    acc[1] = acc[1] + a[i + u32(1)] * a[i + u32(1)]
+    acc[2] = acc[2] + a[i + u32(2)] * a[i + u32(2)]
+    acc[3] = acc[3] + a[i + u32(3)] * a[i + u32(3)]
+    acc[4] = acc[4] + a[i + u32(4)] * a[i + u32(4)]
+    acc[5] = acc[5] + a[i + u32(5)] * a[i + u32(5)]
+    acc[6] = acc[6] + a[i + u32(6)] * a[i + u32(6)]
+    acc[7] = acc[7] + a[i + u32(7)] * a[i + u32(7)]
+    i = i + u32(8)
+  }
+  while i < len(a) {
+    acc[0] = acc[0] + a[i] * a[i]
+    i = i + u32(1)
+  }
+  ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]))
+}
+
 main: (): i32 = 0
