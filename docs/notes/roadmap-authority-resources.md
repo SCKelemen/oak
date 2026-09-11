@@ -200,6 +200,14 @@ before choosing `defer`/destructor syntax.
 fields; required `close`/`abort` transitions checked on every exit;
 generated C makes cleanup auditable.
 
+**Landed (first increment, 2026-09-12):** terminal-state obligations
+(`50-borrowing.md` §9): protocols declare terminal states (SemIR guarantee
+`terminal`), owned resources must reach one on every exit or pass custody
+on (`OAK-B0120`), closers discharge their own parameters, and no double
+cleanup or moved-field cleanup can occur because consumption forbids later
+use. Three of four "done when" cases are tested; auditable cleanup in
+generated C, and what dropping does (destructors, `defer`), remain open.
+
 ## 7. Scoped callbacks and shortened borrows
 
 Nonescaping captures with justified stack environments first; callback

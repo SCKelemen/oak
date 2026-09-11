@@ -34,6 +34,10 @@ type ResourceOperation struct {
 	// BorrowMutable makes the borrowed result a mutable reborrow whose
 	// owners are suspended while it lives.
 	BorrowMutable bool
+	// Terminal marks an operation whose transition enters a terminal state
+	// of its protocol: it is a closer, so its own consumed parameters owe no
+	// further terminal state inside its body.
+	Terminal bool
 	// Receiver is the authority mode of a method's receiver, its own slot
 	// beside the explicit parameters (docs/spec/50-borrowing.md section 9).
 	Receiver ResourceParameterMode
@@ -45,13 +49,33 @@ type ResourceOperation struct {
 type ResourceModel struct {
 	ResourceTypes map[string]bool
 	Operations    map[string]ResourceOperation
+	// Obligations maps a resource type to its terminal-state obligation,
+	// when its protocol declares one (docs/spec/50-borrowing.md section 9).
+	Obligations map[string]ResourceObligation
+}
+
+// ResourceObligation is a protocol's terminal-state obligation: an owned
+// resource must reach one of Terminal before its last name leaves scope;
+// Closers are the callables whose transition enters a terminal state.
+type ResourceObligation struct {
+	Terminal []string
+	Closers  []string
 }
 
 func NewResourceModel() ResourceModel {
 	return ResourceModel{
 		ResourceTypes: make(map[string]bool),
 		Operations:    make(map[string]ResourceOperation),
+		Obligations:   make(map[string]ResourceObligation),
 	}
+}
+
+// MarkObligation records a terminal-state obligation for a resource type.
+func (m *ResourceModel) MarkObligation(typeName string, obligation ResourceObligation) {
+	if m.Obligations == nil {
+		m.Obligations = make(map[string]ResourceObligation)
+	}
+	m.Obligations[typeName] = obligation
 }
 
 func (m *ResourceModel) MarkResourceType(name string) {
@@ -95,6 +119,7 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 	// Normalize here too: callers can populate Operations without MarkOperation.
 	normalized := NewResourceModel()
 	normalized.ResourceTypes = model.ResourceTypes
+	normalized.Obligations = model.Obligations
 	names := make([]string, 0, len(model.Operations))
 	for name := range model.Operations {
 		names = append(names, name)
@@ -137,6 +162,13 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 			mutableDependents:  make(map[string]bool),
 			mutableCalls:       make(map[*ast.InvocationExpression]bool),
 			unprovenRoots:      make(map[string]bool),
+			owned:              make(map[string]string),
+			ownedOrigin:        make(map[string]ast.Node),
+			transferred:        make(map[string]bool),
+			pathTypes:          make(map[string]string),
+		}
+		for _, ident := range tailIdentifiers(fn.Body) {
+			analysis.transferred[ident.Value] = true
 		}
 		analysis.pushScope()
 		// The function's own contract fixes what its body may do with each
@@ -175,6 +207,11 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 				if hasContract {
 					if mode := own.parameterMode(index); mode != ResourceParameterUnspecified {
 						analysis.entryModes[parameter.Name.Value] = entryAuthority{mode: mode, declaration: parameter.Name}
+						if mode == ResourceParameterConsumed && !own.Terminal {
+							// Consumption transferred custody here: the callee owes
+							// the terminal state, unless it is the closer itself.
+							analysis.markOwned(parameter.Name.Value, model.typeNameOf(parameter.Type), parameter.Name)
+						}
 					}
 				}
 			} else if len(fn.TypeParams) == 0 {
@@ -189,6 +226,10 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 				if hasContract {
 					mode = own.parameterMode(index)
 				}
+				pathTypes := tc.resourcePathTypesOf(parameter.Name.Value, paramType, model.ResourceTypes)
+				for path, typeName := range pathTypes {
+					analysis.pathTypes[path] = typeName
+				}
 				for _, path := range analysis.resourcePaths(parameter.Name.Value, paramType) {
 					if mode == ResourceParameterUnspecified {
 						analysis.unknownResources[path] = true
@@ -198,10 +239,16 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 					analysis.parameters[path] = true
 					analysis.entryModes[path] = entryAuthority{mode: mode, declaration: parameter.Name}
 					analysis.unprovenRoots[parameter.Name.Value] = true
+					if mode == ResourceParameterConsumed && !own.Terminal {
+						analysis.markOwned(path, pathTypes[path], parameter.Name)
+					}
 				}
 			}
 		}
 		analysis.expression(fn.Body)
+		// The function's own scope ends here: consumed parameters it took
+		// custody of must have reached a terminal state or been returned.
+		analysis.checkScopeExit(0)
 		// The body's scopes have ended; the result checks judge names bound
 		// inside them by the dependencies they had.
 		analysis.mergeDependents(analysis.expired, analysis.expiredScope, analysis.expiredDecl)
@@ -318,6 +365,13 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 	// right-hand side decides what it depends on now.
 	a.clearDependent(name)
 	targetScope := a.scopeOf(name)
+	// Rebinding the only live name of an owned resource loses its custody.
+	if typeName, isOwned := a.owned[name]; isOwned && a.flow.Registered(name) {
+		if authority, _ := a.flow.AuthorityOf(name); authority != resourceflow.AuthorityConsumed && len(a.flow.ClassMates(name)) == 0 {
+			a.reportUnclosed(name, typeName, authority)
+		}
+	}
+	a.releaseOwned(name)
 	if source, ok := s.Value.(*ast.Identifier); ok && source != nil && a.flow.Registered(source.Value) {
 		if a.flow.CanUse(source.Value) {
 			if dependent, owners, isDependent := a.dependentOf(source.Value); isDependent {
@@ -332,6 +386,7 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 				return
 			}
 			a.flow.Rebind(name, source.Value, s.Name)
+			a.inheritOwnership(name, source.Value, s.Name)
 		} else {
 			// Ordinary evaluation reported the use-after-consume; the
 			// destination now has no usable provenance.
@@ -342,6 +397,9 @@ func (a *typedResourceAnalysis) reassign(s *ast.AssignmentStatement) {
 	}
 	if call, ok := s.Value.(*ast.InvocationExpression); ok && a.freshCalls[call] {
 		a.flow.RebindFresh(name, s.Name)
+		if typ, known := a.tc.env.GetType(name); known {
+			a.markOwned(name, nominalTypeName(typ), s.Name)
+		}
 		return
 	}
 	if call, ok := s.Value.(*ast.InvocationExpression); ok {
@@ -463,6 +521,9 @@ func (a *typedResourceAnalysis) bindRecordValue(root string, aggregateType Type,
 	if len(paths) == 0 {
 		return
 	}
+	for path, typeName := range a.tc.resourcePathTypesOf(root, aggregateType, a.model.ResourceTypes) {
+		a.pathTypes[path] = typeName
+	}
 	clear := func() {
 		for _, path := range paths {
 			a.flow.Forget(path)
@@ -517,8 +578,10 @@ func (a *typedResourceAnalysis) bindRecordValue(root string, aggregateType Type,
 		// makes each an alias of the argument, borrow makes each a dependent.
 		clear()
 		if a.freshCalls[v] {
+			pathTypes := a.tc.resourcePathTypesOf(root, aggregateType, a.model.ResourceTypes)
 			for _, path := range paths {
 				a.flow.Register(path, origin)
+				a.markOwned(path, pathTypes[path], origin)
 			}
 			return
 		}
@@ -561,6 +624,7 @@ func (a *typedResourceAnalysis) bindRecordValue(root string, aggregateType Type,
 						}
 					}
 					a.flow.Alias(path, sourcePath, origin)
+					a.inheritOwnership(path, sourcePath, origin)
 				} else if a.flow.Registered(sourcePath) || a.unknownResources[sourcePath] {
 					a.unknownResources[path] = true
 				}
@@ -591,6 +655,7 @@ func (a *typedResourceAnalysis) bindPathFrom(destination, sourcePath string, ori
 			}
 		}
 		a.flow.Alias(destination, sourcePath, origin)
+		a.inheritOwnership(destination, sourcePath, origin)
 		return
 	}
 	a.unknownResources[destination] = true
@@ -642,6 +707,7 @@ func (a *typedResourceAnalysis) bindPath(path string, value ast.Expression, orig
 	if source, ok := resourceName(value); ok && a.flow.Registered(source) {
 		if a.flow.CanUse(source) {
 			a.flow.Alias(path, source, origin)
+			a.inheritOwnership(path, source, origin)
 			return
 		}
 		a.unknownResources[path] = true
@@ -649,6 +715,7 @@ func (a *typedResourceAnalysis) bindPath(path string, value ast.Expression, orig
 	}
 	if call, ok := value.(*ast.InvocationExpression); ok && a.freshCalls[call] {
 		a.flow.Register(path, origin)
+		a.markOwned(path, a.pathTypeName(path), origin)
 		return
 	}
 	if call, ok := value.(*ast.InvocationExpression); ok {
@@ -658,6 +725,23 @@ func (a *typedResourceAnalysis) bindPath(path string, value ast.Expression, orig
 		}
 	}
 	a.unknownResources[path] = true
+}
+
+// pathTypeName is the resource type a path holds, from its root binding's
+// checked type; "" when unknown.
+func (a *typedResourceAnalysis) pathTypeName(path string) string {
+	if typeName, known := a.pathTypes[path]; known {
+		return typeName
+	}
+	root, _, isPath := strings.Cut(path, ".")
+	if !isPath || a.tc == nil || a.tc.env == nil {
+		return ""
+	}
+	rootType, ok := a.tc.env.GetType(root)
+	if !ok || rootType == nil {
+		return ""
+	}
+	return a.tc.resourcePathTypesOf(root, rootType, a.model.ResourceTypes)[path]
 }
 
 // tailIdentifiers collects the identifiers an expression may evaluate to
@@ -1195,6 +1279,15 @@ type typedResourceAnalysis struct {
 	// value, but nothing proves two of its paths denote distinct resources,
 	// so an exclusive pairing of sibling paths fails closed.
 	unprovenRoots map[string]bool
+	// owned maps a name or path holding full custody of a resource whose
+	// protocol declares terminal states to that resource type; ownedOrigin
+	// is where custody was taken; transferred marks names the function
+	// returns, whose custody passes to the caller.
+	owned       map[string]string
+	ownedOrigin map[string]ast.Node
+	transferred map[string]bool
+	// pathTypes caches the resource type each known aggregate path holds.
+	pathTypes map[string]string
 	// entryModes records, per resource parameter of the function under
 	// analysis, the authority its own contract grants on entry.
 	entryModes map[string]entryAuthority
@@ -1517,6 +1610,7 @@ func (a *typedResourceAnalysis) popScope() {
 	// A borrowed result lives exactly as long as its binding's scope; the
 	// owner is free again once the scope ends.
 	leaving := len(a.scopes) - 1
+	a.checkScopeExit(leaving)
 	for name, scope := range a.dependentScope {
 		if scope >= leaving {
 			a.expired[name] = a.dependents[name]
@@ -1528,6 +1622,126 @@ func (a *typedResourceAnalysis) popScope() {
 		}
 	}
 	a.scopes = a.scopes[:len(a.scopes)-1]
+}
+
+// markOwned records that name holds full custody of a resource of typeName;
+// only types whose protocol declares terminal states carry an obligation.
+func (a *typedResourceAnalysis) markOwned(name, typeName string, origin ast.Node) {
+	if name == "" || typeName == "" {
+		return
+	}
+	if _, obliged := a.model.Obligations[typeName]; !obliged {
+		return
+	}
+	a.owned[name] = typeName
+	a.ownedOrigin[name] = origin
+}
+
+// inheritOwnership makes destination owned when source is: custody follows
+// the class, and whichever name survives carries the obligation.
+func (a *typedResourceAnalysis) inheritOwnership(destination, source string, origin ast.Node) {
+	if typeName, isOwned := a.owned[source]; isOwned {
+		a.owned[destination] = typeName
+		a.ownedOrigin[destination] = origin
+	}
+}
+
+func (a *typedResourceAnalysis) releaseOwned(name string) {
+	delete(a.owned, name)
+	delete(a.ownedOrigin, name)
+}
+
+// rootOf is the binding a name or path belongs to.
+func rootOf(name string) string {
+	root, _, _ := strings.Cut(name, ".")
+	return root
+}
+
+// checkScopeExit enforces terminal-state obligations for the names bound
+// in scope index as it ends (docs/spec/50-borrowing.md section 9): an owned
+// name whose class is not consumed, is not returned, and has no live name
+// outside the scope leaves its resource unclosed (OAK-B0120); a class
+// consumed on some paths only fails closed the same way.
+func (a *typedResourceAnalysis) checkScopeExit(index int) {
+	if a == nil || a.flow == nil || index < 0 || index >= len(a.scopes) {
+		return
+	}
+	leaving := a.scopes[index]
+	names := make([]string, 0, len(a.owned))
+	for name := range a.owned {
+		if _, bound := leaving[rootOf(name)]; bound {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		typeName := a.owned[name]
+		if !a.flow.Registered(name) || a.transferred[rootOf(name)] || a.transferred[name] {
+			continue
+		}
+		authority, _ := a.flow.AuthorityOf(name)
+		if authority == resourceflow.AuthorityConsumed {
+			continue
+		}
+		// Custody reachable through a name that survives the scope is not
+		// lost; the surviving name carries the obligation.
+		survives := false
+		for _, mate := range a.flow.ClassMates(name) {
+			if !a.flow.Registered(mate) {
+				continue
+			}
+			if a.transferred[rootOf(mate)] || a.transferred[mate] {
+				survives = true
+				break
+			}
+			// Only a name bound in a scope that outlives this one keeps the
+			// class reachable; a mate from an already-ended inner scope, or
+			// from this scope, leaves with it.
+			if outer := a.scopeOf(rootOf(mate)); outer >= 0 && outer < index && a.owned[mate] != "" {
+				survives = true
+				break
+			}
+		}
+		if survives {
+			continue
+		}
+		a.reportUnclosed(name, typeName, authority)
+	}
+}
+
+func (a *typedResourceAnalysis) reportUnclosed(name, typeName string, authority resourceflow.Authority) {
+	obligation := a.model.Obligations[typeName]
+	closers := "a consuming transition into " + strings.Join(quoteAll(obligation.Terminal), " or ")
+	if len(obligation.Closers) > 0 {
+		closers = strings.Join(quoteAll(obligation.Closers), ", ")
+	}
+	title := fmt.Sprintf("resource %q of type %s leaves scope without reaching a terminal state (%s)", name, typeName, strings.Join(obligation.Terminal, ", "))
+	if authority == resourceflow.AuthorityMaybeConsumed {
+		title = fmt.Sprintf("resource %q of type %s reaches a terminal state on some paths only (%s)", name, typeName, strings.Join(obligation.Terminal, ", "))
+	}
+	node := a.ownedOrigin[name]
+	d := a.tc.addResourceDiagnosticWithCode(node, CodeResourceUnclosed, title)
+	if node != nil {
+		d.AddSecondary(diagnostic.NodeToRange(node), fmt.Sprintf("%q took custody of the resource here", name))
+	}
+	d.AddNote(fmt.Sprintf("a resource whose protocol declares terminal states must reach one — through %s — before its last name leaves scope, or pass its custody on by being returned or consumed (docs/spec/50-borrowing.md section 9)", closers))
+	d.AddHelp("close the resource on every path before the scope ends, return it, or hand it to a consuming operation")
+}
+
+// typeNameOf is the nominal name of a type expression, for obligations.
+func (m ResourceModel) typeNameOf(expr ast.Expression) string {
+	switch t := expr.(type) {
+	case *ast.Identifier:
+		return t.Value
+	case *ast.IndexExpression:
+		if ident, ok := t.Left.(*ast.Identifier); ok {
+			return ident.Value
+		}
+	}
+	if expr == nil {
+		return ""
+	}
+	return expr.String()
 }
 
 // scopeOf is the index of the lexical scope that binds name, or -1 for a
@@ -2070,6 +2284,7 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 		if a.flow.Registered(source.Value) {
 			if a.flow.CanUse(source.Value) {
 				a.flow.Alias(stmt.Name.Value, source.Value, stmt.Name)
+				a.inheritOwnership(stmt.Name.Value, source.Value, stmt.Name)
 				if dependent, owners, isDependent := a.dependentOf(source.Value); isDependent {
 					// An alias of a borrowed result carries its dependency
 					// and its permission.
@@ -2087,8 +2302,10 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 	if fresh {
 		// Only an explicit semantic fresh-return fact introduces a new authority
 		// class for an initialized local resource. This is never revival of an
-		// input resource consumed by the operation.
+		// input resource consumed by the operation. Fresh authority is owned:
+		// the binding owes its protocol's terminal state.
 		a.flow.Register(stmt.Name.Value, stmt.Name)
+		a.markOwned(stmt.Name.Value, a.declaredTypeName(stmt), stmt.Name)
 		return
 	}
 	if call, ok := stmt.Value.(*ast.InvocationExpression); ok {
@@ -2131,6 +2348,22 @@ func (a *typedResourceAnalysis) variable(stmt *ast.VariableDeclaration) {
 
 	// An uninitialized resource binding is an independent local authority root.
 	a.flow.Register(stmt.Name.Value, stmt.Name)
+	a.markOwned(stmt.Name.Value, a.declaredTypeName(stmt), stmt.Name)
+}
+
+// declaredTypeName is the nominal type of a variable declaration, from its
+// annotation or the checked declaration type.
+func (a *typedResourceAnalysis) declaredTypeName(stmt *ast.VariableDeclaration) string {
+	if stmt == nil {
+		return ""
+	}
+	if stmt.Type != nil {
+		return a.model.typeNameOf(stmt.Type)
+	}
+	if a.tc != nil && a.tc.env != nil {
+		return nominalTypeName(a.tc.env.CheckedDeclarationType(stmt))
+	}
+	return ""
 }
 
 func (a *typedResourceAnalysis) ifStatement(stmt *ast.IfStatement) {
@@ -2479,6 +2712,11 @@ func (a *typedResourceAnalysis) bindPattern(pattern ast.Pattern, scrutinee ast.E
 				switch {
 				case a.freshCalls[call]:
 					a.flow.Register(destination, p.Name)
+					if isResource {
+						a.markOwned(destination, nominalTypeName(typ), p.Name)
+					} else {
+						a.markOwned(destination, a.tc.resourcePathTypesOf(name, typ, a.model.ResourceTypes)[destination], p.Name)
+					}
 				case a.aliasCalls[call] != "" && a.flow.CanUse(a.aliasCalls[call]):
 					a.flow.Alias(destination, a.aliasCalls[call], p.Name)
 				case len(a.borrowCalls[call]) > 0 && a.adoptDependency(destination, a.borrowCalls[call], a.mutableCalls[call], p.Name, scrutinee):

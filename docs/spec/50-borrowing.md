@@ -673,8 +673,35 @@ governs every specialization's payloads. Not yet admitted: borrowing from
 or aliasing an aggregate argument as a whole (the result is unknown, fail
 closed), array element provenance, and partial-field states after a move.
 
-With this, milestone 4 of the authority roadmap (stages (a)–(e)) and the
-first increment of milestone 5 are implemented for opaque resources. Open follow-ups: a source spelling for
+**Terminal-state obligations.** A protocol may declare **terminal
+states** (`112-protocols.md` §5). A resource of such a protocol that a
+function **owns** — a fresh result, a local root, a fresh aggregate path,
+or a `consumed` parameter of a function that is not itself a closer — must
+reach a terminal state on every path before its last name leaves scope.
+Custody passes on, and the obligation with it, when the resource is
+returned (bare, inside a variant, or inside a returned aggregate), handed
+to a consuming operation, or aliased to a name that outlives the scope;
+whichever name survives carries the obligation. At the end of every
+scope — a block, a match arm, the function itself — each owned name bound
+in it whose class is still live and not transferred is `OAK-B0120`; a
+class consumed on some paths only is `OAK-B0120` as well (closing on one
+branch is not closing), and rebinding the only live name of an owned
+resource loses its custody the same way. The closers are the transitions
+into terminal states, and the diagnostic names them; a closer's own
+consumed parameter owes nothing more, since the transition is the terminal
+step. Borrowed parameters, borrowed results, and values of unknown
+provenance carry no obligation (the caller, the owner, or nothing known
+holds custody). Because consumption already forbids later use, there is
+no double cleanup after a transfer and no cleanup of a moved field. In
+SemIR the obligation is the protocol guarantee named `terminal`,
+`eventually(S1 or S2 ...)`. A protocol without terminal states keeps
+today's meaning: its values may be dropped in any state. Not yet
+specified: what dropping does (destructors, `defer`), and cleanup made
+auditable in generated C.
+
+With this, milestone 4 of the authority roadmap (stages (a)–(e)), the
+first increment of milestone 5, and the first increment of milestone 6
+are implemented for opaque resources. Open follow-ups: a source spelling for
 result identities, contracts on record-typed parameters and results that
 carry borrowed fields, and array element provenance.
 
