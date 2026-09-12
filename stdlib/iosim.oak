@@ -28,7 +28,7 @@ pub IoFile: type = struct { slot: u32 }
 pub IoBuffer: type = struct { base: u32, len: u32 }
 pub IoRequest: type = struct { op: u32, file: u32, offset: u64, buf: IoBuffer, tag: u64, link: Bool }
 pub IoCompletion: type = struct { tag: u64, result: u32, error: u32 }
-pub IoRing: type = struct { submitted: u32, completed: u32, files: u32, pending: u32, region_len: u32 }
+pub IoRing: type = struct { submitted: u32, completed: u32, files: u32, pending: u32, region_len: u32, sector: u32 }
 
 // Operation codes carried in IoRequest.op (docs/spec/120-io.md §2).
 pub io_op_open: (): u32 = u32(1)
@@ -44,6 +44,20 @@ pub io_op_readdir: (): u32 = u32(10)
 pub io_op_rename: (): u32 = u32(11)
 pub io_op_stat: (): u32 = u32(12)
 pub io_op_unlink: (): u32 = u32(13)
+pub io_op_open_direct: (): u32 = u32(14)
+
+// Direct I/O (docs/spec/120-io.md sections 2, 3, 5): a file opened with
+// open_direct bypasses the host's cache, and its reads and writes must be
+// whole sectors — offset, length, and the window's base each a multiple of
+// the sector — checked here before any system call. The ring records the
+// sector its region can serve: io_sector_bytes when the region's address
+// is sector-aligned, 0 when it is not (open_direct then completes Invalid).
+// IoSectorRegion[N] is the storage a program declares to obtain an aligned
+// region: span(&store.bytes).
+pub io_sector_bytes: (): u32 = u32(4096)
+pub IoSectorRegion[N: u32]: type = struct(align: 4096) { bytes: [N]u8 }
+pub io_direct_admits: (sector: u32, offset: u64, n: u32, base: u32): Bool =
+  sector != u32(0) && offset % u64(sector) == u64(0) && n % sector == u32(0) && base % sector == u32(0)
 
 // The closed error set carried in IoCompletion.error; 0 is success.
 pub io_err_not_found: (): u32 = u32(1)
@@ -106,6 +120,7 @@ iosim_lied: [16]Bool
 // close so iosim_trusted can name the file a slot last held.
 iosim_open: [16]Bool
 iosim_slot_entry: [16]u32
+iosim_direct: [16]Bool
 
 // The process the port belongs to (no operation while down, an epoch per
 // restart) and the scheduler that picks completion chains fairly.
@@ -152,6 +167,7 @@ pub io_attach: (data: []u8, faults: u32): () {
   s: u32 = u32(0)
   while s < iosim_slots() {
     iosim_open[s] = false
+    iosim_direct[s] = false
     iosim_slot_entry[s] = u32(0)
     s = s + u32(1)
   }
@@ -174,6 +190,7 @@ pub iosim_crash_at: (now: u64): () {
   s: u32 = u32(0)
   while s < iosim_slots() {
     iosim_open[s] = false
+    iosim_direct[s] = false
     s = s + u32(1)
   }
   e: u32 = u32(0)
@@ -261,6 +278,8 @@ pub io_open_region: (ring: [*]IoRing, region: [*]u8, files: u32): () {
   assert(len(ring) == u32(1))
   ring[0].files = files > iosim_slots() ? { iosim_slots() } | { files }
   ring[0].region_len = len(region)
+  // The simulated region has no address: every region serves the sector.
+  ring[0].sector = io_sector_bytes()
   ring[0].submitted = u32(0)
   ring[0].completed = u32(0)
   ring[0].pending = u32(0)
@@ -410,7 +429,7 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
   n: u32 = request.buf.len
   tag: u64 = request.tag
   in_region: Bool = base <= ring[0].region_len && n <= ring[0].region_len - base
-  op == io_op_open() || op == io_op_create() ? { iosim_open_or_create(ring, region, request, op == io_op_create()) } | {
+  op == io_op_open() || op == io_op_create() || op == io_op_open_direct() ? { iosim_open_or_create(ring, region, request, op == io_op_create(), op == io_op_open_direct()) } | {
   op == io_op_unlink() ? {
     !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
     e: u32 = iosim_find(subslice(region, base, n), false)
@@ -440,6 +459,7 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
   slot >= ring[0].files || !iosim_open[slot] ? { iosim_fail(tag, io_err_closed()) } | {
   op == io_op_close() ? {
     iosim_open[slot] = false
+    iosim_direct[slot] = false
     iosim_done(tag, u32(0))
   } | {
   op == io_op_fsync() || op == io_op_fdatasync() ? {
@@ -461,22 +481,25 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
   op == io_op_stat() ? { iosim_stat(ring, region, request) } | {
   op == io_op_truncate() ? { iosim_truncate(request) } | {
   !in_region ? { iosim_fail(tag, io_err_invalid()) } | {
+  iosim_direct[slot] && !io_direct_admits(ring[0].sector, request.offset, n, base) ? { iosim_fail(tag, io_err_invalid()) } | {
   request.offset > u64(iosim_file_bytes()) || u64(n) > u64(iosim_file_bytes()) - request.offset ? { iosim_fail(tag, io_err_too_large()) } | {
   op == io_op_pread() ? { iosim_pread(region, iosim_slot_entry[slot], u32_trunc_u64(request.offset), base, n, tag) } | {
   op == io_op_pwrite() ? { iosim_pwrite(region, iosim_slot_entry[slot], u32_trunc_u64(request.offset), base, n, tag) } | {
     iosim_fail(tag, io_err_invalid())
-  } } } } } } } } } } } } } }
+  } } } } } } } } } } } } } } }
 }
 
 // open (op 1) opens the named file, creating it when absent; create (op 8)
-// creates it and fails with Exists when it is present. Both bind the
-// caller's slot to the entry; the completion's result is the slot.
-iosim_open_or_create: (ring: [*]IoRing, region: [*]u8, request: IoRequest, exclusive: Bool): IoCompletion {
+// creates it and fails with Exists when it is present; open_direct (op 14)
+// is open with the sector rule on every later read and write, refused when
+// the ring's region cannot serve a sector. All bind the caller's slot to
+// the entry; the completion's result is the slot.
+iosim_open_or_create: (ring: [*]IoRing, region: [*]u8, request: IoRequest, exclusive: Bool, direct: Bool): IoCompletion {
   slot: u32 = request.file
   base: u32 = request.buf.base
   n: u32 = request.buf.len
   tag: u64 = request.tag
-  slot >= ring[0].files || !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
+  slot >= ring[0].files || !iosim_path_ok(ring, region, base, n) || (direct && ring[0].sector == u32(0)) ? { iosim_fail(tag, io_err_invalid()) } | {
   iosim_open[slot] ? { iosim_fail(tag, io_err_busy()) } | {
   name: [*]u8 = subslice(region, base, n)
   existing: u32 = iosim_find(name, false)
@@ -484,6 +507,7 @@ iosim_open_or_create: (ring: [*]IoRing, region: [*]u8, request: IoRequest, exclu
     entry: u32 = existing < iosim_entries() ? { existing } | { iosim_alloc(name) }
     entry >= iosim_entries() ? { iosim_fail(tag, io_err_no_space()) } | {
       iosim_open[slot] = true
+      iosim_direct[slot] = direct
       iosim_slot_entry[slot] = entry
       iosim_done(tag, slot)
     }

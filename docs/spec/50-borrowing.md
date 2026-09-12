@@ -27,6 +27,15 @@ OwnerOf(subslice(v)) = OwnerOf(v)
 
 The compiler must not forget this relation merely because the derived value has its own pointer/length representation.
 
+A record that holds an owned array owns that storage: `span(&record.field)`
+and `view(&record.field)` borrow the record, the way a record holding a
+`Buffer` carries its custody (`92-ffi.md` §2.8.6), and the record is
+written or moved only once the borrow ends. This is how a program names
+aligned storage — `store: IoSectorRegion[N]` is a `struct(align: 4096)`
+around `[N]u8`, and `span(&store.bytes)` is the sector-aligned region the
+I/O port registers (`120-io.md` §3). The borrow is of the whole record;
+two fields of one record cannot be spanned at once.
+
 ## 3. Borrow states
 
 For one owner, the core abstract states are:

@@ -238,4 +238,39 @@ theorem read_bounded_full (f : File) (size off len : Nat) (h : off + len ≤ siz
   simp [readBounded, readAt]
   omega
 
+/-! ## Direct I/O: the sector rule
+
+`open_direct` (op 14, docs/spec/120-io.md §2, §5) bypasses the host's
+cache; every later read and write of that file must be whole sectors.
+`io_direct_admits` in both realizations decides exactly this predicate
+before any system call. -/
+
+/-- A direct request is admitted when the region serves a sector and the
+    offset, the length, and the window's base are each a multiple of it. -/
+def directAdmits (sector off len base : Nat) : Bool :=
+  sector != 0 && off % sector == 0 && len % sector == 0 && base % sector == 0
+
+theorem directAdmits_iff (sector off len base : Nat) :
+    directAdmits sector off len base = true ↔
+      sector ≠ 0 ∧ off % sector = 0 ∧ len % sector = 0 ∧ base % sector = 0 := by
+  simp [directAdmits, and_assoc]
+
+/-- An admitted request ends on a sector boundary too: whole sectors in,
+    whole sectors out — nothing the device must read-modify-write. -/
+theorem directAdmits_end (sector off len base : Nat)
+    (h : directAdmits sector off len base = true) : (off + len) % sector = 0 := by
+  have h' := (directAdmits_iff sector off len base).mp h
+  obtain ⟨_, hoff, hlen, _⟩ := h'
+  rw [Nat.add_mod, hoff, hlen]
+  simp
+
+/-- A request that is not a sector multiple in any one of the three places
+    is refused: the rule is exactly the conjunction, nothing weaker. -/
+theorem directAdmits_refuses_misaligned_offset (sector off len base : Nat)
+    (h : off % sector ≠ 0) : directAdmits sector off len base = false := by
+  cases hd : directAdmits sector off len base with
+  | false => rfl
+  | true =>
+      exact absurd ((directAdmits_iff sector off len base).mp hd).2.1 h
+
 end Oak.IoPort

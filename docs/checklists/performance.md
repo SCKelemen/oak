@@ -622,9 +622,11 @@ remains that a fact could elide" is a finding.
       alignment carried in the buffer's type, Direct I/O a tri-state
       (required, optional, disabled) with a filesystem probe, and `pread`
       size capped by the OS limit constant? (TB `io/linux.zig`,
-      databases) — Oak: §2a alignment on records only; `120-io.md` §5
-      Direct I/O is increment two; no alignment fact on an `IoBuffer`
-      window — gap.
+      databases) — Oak: `120-io.md` §3 `open_direct`, `io_sector_bytes`,
+      the sector rule decided before any call, `IoSectorRegion` aligned
+      storage; alignment is checked at registration, not carried as a
+      static fact on the span — gap narrowed; tri-state is the program's
+      policy.
 - [ ] **Zero-copy from device to consumer.** Does data cross layers as
       views into the receive buffer, never re-copied for convenience?
       (dbs, DPDK) — Oak: `71-codecs.md` §13a.
