@@ -89,9 +89,13 @@ sequence of entries separated by newlines or commas:
   `data` in the guard subset: `eventually Yielded`, `eventually Running ->
   Yielded`, `eventually Running -> data.budget == u32(1)`. The module
   states them as `<>` and `~>` (leads to) under the property `Liveness`,
-  which TLC checks against the declared fairness. A state no transition
-  reaches, an unknown step, or data in a protocol that declares none is a
-  shape error (`OAK-M0301`).
+  which TLC checks against the declared fairness, and `oak prove` decides
+  them itself for a finite machine (`125-verification.md` §2b), over the
+  reachable states of the projection. Each side is also projected as a
+  Bool predicate over the state and data (`name_live1_from`,
+  `name_live1_to`, ...). A state no transition reaches, an unknown step,
+  or data in a protocol that declares none is a shape error
+  (`OAK-M0301`).
 
 States are the names `initial` and the transition lines mention, in order of
 first appearance with the initial state first; they are spelled like variants
@@ -478,10 +482,11 @@ obligation.
 ## 6. What is not derived
 
 Environment assumptions beyond fairness on the declared steps (device
-progress, timing) are the TLA+ extension module's, and liveness is the
-model checker's verdict, not the compiler's: `oak prove` decides safety
-invariants (`125-verification.md` §2a) and leaves `eventually` to TLC under
-the declared fairness. Guards and effects beyond the translated subset — loops, calls into
+progress, timing) are the TLA+ extension module's. `oak prove` decides
+safety invariants (`125-verification.md` §2a) and, for a finite machine,
+the `eventually` entries under the declared fairness (§2b) — over the
+projection's reading, the first line whose guard holds; TLC checks the
+same entries over the declaration's every-line reading. Guards and effects beyond the translated subset — loops, calls into
 the program, indices computed from other fields — stay in hand-written
 models. The declaration does
 not generate Lean definitions, state diagrams, or debugger decoding

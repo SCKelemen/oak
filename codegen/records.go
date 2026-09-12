@@ -127,6 +127,11 @@ func (cg *CodeGenerator) naturalFieldRepresentation(name string, typeExpr ast.Ex
 	if !isIdent {
 		return semir.RecordFieldRepresentation{}, false
 	}
+	// A refinement-typed field has its base's representation (the typedef
+	// of the base, docs/spec/20-types.md section 12).
+	if adt, declared := cg.adtTypes[ident.Value]; declared && adt.Refinement != nil && len(adt.Variants) == 1 && adt.Variants[0].Payload != nil {
+		return cg.naturalFieldRepresentation(name, adt.Variants[0].Payload)
+	}
 	if fixed, ok := fixedFieldRepresentations[ident.Value]; ok {
 		fixed.Name = name
 		return fixed, true

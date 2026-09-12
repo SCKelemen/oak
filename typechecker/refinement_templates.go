@@ -32,6 +32,13 @@ type refinementTemplateSet struct {
 	templates map[string]*ast.ADTType   // name -> template (nil when the declaration was rejected)
 	instances map[string][]*ast.ADTType // template name -> specializations, in first-use order
 	seen      map[string]bool           // mangled names already specialized
+	// live marks the set after the initial pass: an application found
+	// later — a record template's substituted field, a generic
+	// function's specialized clone — is specialized on demand, registered
+	// at once, and its declaration appended to the program at the end of
+	// checking (late).
+	live bool
+	late []ast.Statement
 }
 
 // specializeRefinementTemplates rewrites every application of a generic
@@ -66,6 +73,7 @@ func (tc *TypeChecker) specializeRefinementTemplates(program *ast.Program) {
 	if len(set.templates) == 0 {
 		return
 	}
+	tc.refinementTemplateSet = set
 	tc.rewriteRefinementApplications(reflect.ValueOf(program), set)
 	kept := make([]ast.Statement, 0, len(program.Statements))
 	for _, stmt := range program.Statements {
@@ -80,14 +88,75 @@ func (tc *TypeChecker) specializeRefinementTemplates(program *ast.Program) {
 		kept = append(kept, stmt)
 	}
 	program.Statements = kept
-	if tc.refinementTemplates == nil {
-		tc.refinementTemplates = map[string][]string{}
-	}
+	set.live = true
+	tc.noteRefinementInstances(set)
+}
+
+// noteRefinementInstances records every specialization for `oak vet`.
+func (tc *TypeChecker) noteRefinementInstances(set *refinementTemplateSet) {
+	tc.refinementTemplates = map[string][]string{}
 	for name, instances := range set.instances {
 		for _, instance := range instances {
 			tc.refinementTemplates[name] = append(tc.refinementTemplates[name], instance.Name.Value)
 		}
 	}
+}
+
+// appendLateRefinementInstances adds the specializations created after
+// the initial pass to the program, so the backends and the interpreter
+// see their declarations.
+func (tc *TypeChecker) appendLateRefinementInstances(program *ast.Program) {
+	set := tc.refinementTemplateSet
+	if set == nil || len(set.late) == 0 {
+		return
+	}
+	program.Statements = append(program.Statements, set.late...)
+	set.late = nil
+	tc.noteRefinementInstances(set)
+}
+
+// refinementTemplateApplication resolves a type expression that applies a
+// generic refinement to literal arguments, specializing on demand; nil
+// when the expression is anything else.
+func (tc *TypeChecker) refinementTemplateApplication(expr ast.Expression) *ast.Identifier {
+	set := tc.refinementTemplateSet
+	index, isIndex := expr.(*ast.IndexExpression)
+	if set == nil || !isIndex || index.Dot {
+		return nil
+	}
+	if replacement, isIdent := tc.refinementApplication(index, set).(*ast.Identifier); isIdent {
+		return replacement
+	}
+	return nil
+}
+
+// RefinementApplicationName reports the specialization an application of
+// a generic refinement to literal arguments names, when it exists; a
+// lookup for the backends, which never creates one.
+func (tc *TypeChecker) RefinementApplicationName(expr ast.Expression) (string, bool) {
+	set := tc.refinementTemplateSet
+	index, isIndex := expr.(*ast.IndexExpression)
+	if set == nil || !isIndex || index.Dot {
+		return "", false
+	}
+	name, args, ok := lenientFlattenApplication(index)
+	if !ok || len(args) == 0 {
+		return "", false
+	}
+	template, isTemplate := set.templates[name]
+	if !isTemplate || template == nil || len(args) != len(template.TypeParams) {
+		return "", false
+	}
+	atoms := make([]string, 0, len(args))
+	for _, arg := range args {
+		literal, isLiteral := arg.(*ast.IntegerLiteral)
+		if !isLiteral {
+			return "", false
+		}
+		atoms = append(atoms, strconv.FormatInt(literal.Value, 10))
+	}
+	mangled := Instantiation{ADT: name, Args: atoms}.MangledName()
+	return mangled, set.seen[mangled]
 }
 
 // rewriteRefinementApplications walks every node reachable from value and
@@ -160,7 +229,27 @@ func (tc *TypeChecker) refinementApplication(node *ast.IndexExpression, set *ref
 	if template == nil {
 		return nil // the declaration was rejected; one diagnostic is enough
 	}
-	if len(args) != len(template.TypeParams) {
+	if len(args) > len(template.TypeParams) {
+		// `[4]IrqId[4]` flattens to two arguments: the array (or arrays)
+		// of an application. The application sits at the depth of the
+		// extra indices; it is rewritten in place and the outer nodes stay
+		// array syntax.
+		parent := node
+		for depth := len(args) - len(template.TypeParams); depth > 1; depth-- {
+			next, isIndex := parent.Left.(*ast.IndexExpression)
+			if !isIndex {
+				return nil
+			}
+			parent = next
+		}
+		if application, isIndex := parent.Left.(*ast.IndexExpression); isIndex {
+			if replacement := tc.refinementApplication(application, set); replacement != nil {
+				parent.Left = replacement
+			}
+		}
+		return nil
+	}
+	if len(args) < len(template.TypeParams) {
 		tc.addTypeDiagnostic(node, CodeRefinementShape,
 			fmt.Sprintf("refinement %s takes %d constant argument(s), got %d", name, len(template.TypeParams), len(args)))
 		return nil
@@ -215,6 +304,17 @@ func (tc *TypeChecker) refinementApplication(node *ast.IndexExpression, set *ref
 		}
 		set.seen[mangled] = true
 		set.instances[name] = append(set.instances[name], specialized)
+		if set.live {
+			// Found after the initial pass: register the declaration now,
+			// under the global scope, and append it to the program later.
+			outer := tc.env
+			if tc.globalEnv != nil {
+				tc.env = tc.globalEnv
+			}
+			tc.checkRefinementType(specialized)
+			tc.env = outer
+			set.late = append(set.late, specialized)
+		}
 	}
 	return &ast.Identifier{Token: node.Token, Value: mangled}
 }

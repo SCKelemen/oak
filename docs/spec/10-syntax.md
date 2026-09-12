@@ -774,10 +774,27 @@ grouping a program names is the grouping computed — floating-point `+`
 declares nothing, so `reduce.tree` over floats yields the same bits on every
 target.
 
+**The first consumer.** A call of `reduce.tree(xs, zero, f)` whose `f`
+names an operator definition declaring `associative` is lowered to
+`reduce.chain(xs, zero, f)` — the left fold from the first element, `zero`
+only for the empty view, no stack of partials — by
+`Oak.Reduce.tree_eq_chainFold`: under associativity the binary-counter
+tree and the chain are one value on every input. The lowering is a
+rewrite of the call site in the type checker, so the C backend, the
+interpreter, and the extraction all compute the chain, and the semantic
+model lists every such site (`LawLowerings`: the operator, the call
+lowered from and to). `reduce.tree` with any other combine — a plain
+function, an operator without the law — is the tree it names, and so is a
+kernel's reduction (`56-kernels.md` §7): operators are declared over
+records, which are outside the kernel subset.
+
 Laws are declared, not checked: like `effects { }` on an extern, the
 declaration is the author's claim. The tooling keeps it visible — `oak vet`
 lists declared laws, and the REPL's `:lean` states each as a theorem over
 the extracted definition (`95-extraction.md`) so the claim can be proved
 rather than repeated. Declaring a false law makes a regrouped result differ
-from the named grouping; nothing else in the language depends on it.
+from the named grouping — floating-point addition declared associative
+turns `tree` over `[2^24, 1, 1, 1]` from `2^24 + 2` into the chain's
+`2^24` (`compiler/e2e_laws_consumer_test.go`); nothing else in the
+language depends on it.
 

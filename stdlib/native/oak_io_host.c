@@ -1,8 +1,10 @@
 // Reference host shim for the Oak `ionative` package (stdlib/ionative.oak):
 // the portable backend of docs/spec/120-io.md §5. Each function performs one
-// POSIX call, never allocates or retries, and returns >= 0 on success or the
-// negated port error code on failure; the raw errno of the last failure is
-// kept for the trace. Link this file into a program that imports ionative,
+// POSIX call (readdir: one directory walk), never allocates or retries, and
+// returns >= 0 on success or the negated port error code on failure; the raw
+// errno of the last failure is kept for the trace. Every path arrives as a
+// window of `len` bytes whose last byte must be NUL — checked by the Oak side
+// and refused here too — so no byte string reaches the kernel unterminated. Link this file into a program that imports ionative,
 // or provide the symbols yourself.
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE 1
@@ -10,6 +12,8 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <string.h>
+#include <dirent.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -86,5 +90,74 @@ int64_t oak_io_host_fsyncdir(const uint8_t *path, size_t len) {
     int saved = errno;
     close(fd);
     if (rc != 0) return oak_io_fail(saved);
+    return 0;
+}
+
+// Exclusive create: the file must not exist (EEXIST maps to the port's
+// Exists), the storage engine's atomic if-absent creation.
+int64_t oak_io_host_create(const uint8_t *path, size_t len) {
+    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    int fd = open((const char *)path, O_RDWR | O_CREAT | O_EXCL, 0644);
+    if (fd < 0) return oak_io_fail(errno);
+    return (int64_t)fd;
+}
+
+int64_t oak_io_host_truncate(int64_t fd, int64_t size) {
+    if (size < 0) return -OAK_IO_ERR_TOO_LARGE;
+    if (ftruncate((int)fd, (off_t)size) != 0) return oak_io_fail(errno);
+    return 0;
+}
+
+// The directory's entries other than . and .., each name followed by NUL,
+// written one after another into out; the result is the bytes written, or
+// TooLarge when they do not fit (out's contents are then unspecified). The
+// order is the directory's own; the port promises none.
+int64_t oak_io_host_readdir(uint8_t *buf, size_t len, size_t dir_len) {
+    // The directory's path is the window's first dir_len bytes (NUL-ended);
+    // the entries are written into the rest.
+    if (buf == 0 || dir_len == 0 || dir_len > len || buf[dir_len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    const uint8_t *path = buf;
+    uint8_t *out = buf + dir_len;
+    size_t out_len = len - dir_len;
+    DIR *dir = opendir((const char *)path);
+    if (dir == 0) return oak_io_fail(errno);
+    size_t written = 0;
+    int too_large = 0;
+    errno = 0;
+    for (struct dirent *entry = readdir(dir); entry != 0; entry = readdir(dir)) {
+        const char *name = entry->d_name;
+        if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
+        size_t n = strlen(name) + 1;
+        if (n > out_len - written) { too_large = 1; break; }
+        memcpy(out + written, name, n);
+        written += n;
+        errno = 0;
+    }
+    int saved = errno;
+    closedir(dir);
+    if (too_large) return -OAK_IO_ERR_TOO_LARGE;
+    if (saved != 0) return oak_io_fail(saved);
+    return (int64_t)written;
+}
+
+// The old name is the window's first from_len bytes and the new name the
+// rest; both must end in NUL within their part.
+int64_t oak_io_host_rename(const uint8_t *buf, size_t len, size_t from_len) {
+    if (buf == 0 || from_len == 0 || from_len >= len || buf[from_len - 1] != 0 || buf[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    if (rename((const char *)buf, (const char *)(buf + from_len)) != 0) return oak_io_fail(errno);
+    return 0;
+}
+
+// The file's size in bytes.
+int64_t oak_io_host_stat(int64_t fd) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0) return oak_io_fail(errno);
+    if (st.st_size < 0) return -OAK_IO_ERR_IO_FAILED;
+    return (int64_t)st.st_size;
+}
+
+int64_t oak_io_host_unlink(const uint8_t *path, size_t len) {
+    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    if (unlink((const char *)path) != 0) return oak_io_fail(errno);
     return 0;
 }

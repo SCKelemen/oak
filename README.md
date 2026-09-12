@@ -1157,6 +1157,19 @@ deterministic event simulations. See [the runner guide](testrunner/README.md)
 and [the testing contract](docs/spec/110-testing.md) for examples, shrinking,
 corpus replay, and Clang/libFuzzer harness export.
 
+## Running the compiler tests
+
+The `compiler` package alone takes longer than `go test`'s default ten
+minute limit on a laptop, so run the suite with an explicit timeout:
+
+```sh
+go test -timeout 30m ./...
+```
+
+CI shards the same suite by test name (`.github/workflows/ci.yml`); the
+`packages` shard is everything but `./compiler`, and the `e2e-*` shards
+split `./compiler` by `-run` pattern.
+
 ## Theorems
 
 `name: theorem (params) { Bool }` states that a `Bool` expression holds for

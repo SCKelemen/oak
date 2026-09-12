@@ -2,16 +2,19 @@
 // one: the portable backend). The same surface as iosim — a program written
 // against `import("io")` picks this realization with `replace io =>
 // ionative` and changes no text — over extern bindings to a small host
-// shim, stdlib/native/oak_io_host.c, which wraps openat, close, pread,
-// pwrite, fsync, fdatasync and directory fsync and maps errno onto the
-// port's closed error set. Every binding declares Os.Syscall; io_wait
+// shim, stdlib/native/oak_io_host.c, which wraps open, exclusive create,
+// close, pread, pwrite, fsync, fdatasync, directory fsync, ftruncate,
+// readdir, rename, fstat and unlink and maps errno onto the port's closed
+// error set. Every binding declares Os.Syscall; io_wait
 // executes pending requests in submission order (so links are honored
 // trivially) and blocks in the system calls it makes.
 //
 // The binding is the trust boundary (92-ffi.md §2.3). Audit list of this
-// package's bindings: oak_io_host_open, oak_io_host_close,
-// oak_io_host_pread, oak_io_host_pwrite, oak_io_host_fsync,
-// oak_io_host_fsyncdir, oak_io_host_last_errno. Link the shim (or your
+// package's bindings: oak_io_host_open, oak_io_host_create,
+// oak_io_host_close, oak_io_host_pread, oak_io_host_pwrite,
+// oak_io_host_fsync, oak_io_host_fsyncdir, oak_io_host_truncate,
+// oak_io_host_readdir, oak_io_host_rename, oak_io_host_stat,
+// oak_io_host_unlink, oak_io_host_last_errno. Link the shim (or your
 // own) into any program that imports this package; a Sim test package
 // rejects it, since its externs are undeclared there.
 package ionative
@@ -29,6 +32,12 @@ pub io_op_pwrite: (): u32 = u32(4)
 pub io_op_fsync: (): u32 = u32(5)
 pub io_op_fdatasync: (): u32 = u32(6)
 pub io_op_fsyncdir: (): u32 = u32(7)
+pub io_op_create: (): u32 = u32(8)
+pub io_op_truncate: (): u32 = u32(9)
+pub io_op_readdir: (): u32 = u32(10)
+pub io_op_rename: (): u32 = u32(11)
+pub io_op_stat: (): u32 = u32(12)
+pub io_op_unlink: (): u32 = u32(13)
 
 pub io_err_not_found: (): u32 = u32(1)
 pub io_err_exists: (): u32 = u32(2)
@@ -57,11 +66,20 @@ ionative_host_pread: (fd: c.Int64, buf: c.Ptr, len: c.Size, offset: c.Int64): c.
 ionative_host_pwrite: (fd: c.Int64, buf: c.Ptr, len: c.Size, offset: c.Int64): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_pwrite")
 ionative_host_fsync: (fd: c.Int64, data_only: c.UInt32): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_fsync")
 ionative_host_fsyncdir: (path: c.Ptr, len: c.Size): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_fsyncdir")
+ionative_host_create: (path: c.Ptr, len: c.Size): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_create")
+ionative_host_truncate: (fd: c.Int64, size: c.Int64): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_truncate")
+// readdir and rename take one window and the length of its first part: the
+// directory path (or old name) is the first `split` bytes, the output (or
+// new name) the rest, so the Oak side holds one reborrow of the region.
+ionative_host_readdir: (buf: c.Ptr, len: c.Size, dir_len: c.Size): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_readdir")
+ionative_host_rename: (buf: c.Ptr, len: c.Size, from_len: c.Size): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_rename")
+ionative_host_stat: (fd: c.Int64): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_stat")
+ionative_host_unlink: (path: c.Ptr, len: c.Size): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_unlink")
 pub ionative_last_errno: (): c.Int64 effects { } = c.extern("oak_io_host_last_errno")
 
-ionative_slots: (): u32 = u32(8)
-ionative_fds: [8]i64
-ionative_open: [8]Bool
+ionative_slots: (): u32 = u32(16)
+ionative_fds: [16]i64
+ionative_open: [16]Bool
 
 // io_attach exists for text parity with iosim; the operating system needs
 // no tape and injects its own faults.
@@ -97,47 +115,88 @@ ionative_completion: (tag: u64, raw: i64): IoCompletion {
   raw < i64(0) ? { IoCompletion { tag: tag, result: u32(0), error: u32_trunc_u64(u64_bits_i64(i64(0) - raw)) } } | { IoCompletion { tag: tag, result: u32_trunc_u64(u64_bits_i64(raw)), error: u32(0) } }
 }
 
+// A path window is well formed when it lies in the region, is non-empty
+// and ends in NUL: checked here and again in the shim before the bytes
+// reach the operating system.
+ionative_path_ok: (ring: [*]IoRing, region: [*]u8, base: u32, n: u32): Bool =
+  base <= ring[0].region_len && n <= ring[0].region_len - base && n > u32(0) && region[base + n - u32(1)] == u8(0)
+
 ionative_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletion {
   op: u32 = request.op
   slot: u32 = request.file
   base: u32 = request.buf.base
   n: u32 = request.buf.len
+  tag: u64 = request.tag
   in_region: Bool = base <= ring[0].region_len && n <= ring[0].region_len - base
-  op == io_op_open() || op == io_op_fsyncdir() ? {
+  op == io_op_open() || op == io_op_create() || op == io_op_fsyncdir() || op == io_op_unlink() ? {
     // The path is the window's bytes and must end in NUL inside the window.
-    !in_region || n == u32(0) || region[base + n - u32(1)] != u8(0) ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_invalid() } } | {
-    op == io_op_open() && (slot >= ring[0].files || ionative_open[slot]) ? {
+    !ionative_path_ok(ring, region, base, n) ? { IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() } } | {
+    (op == io_op_open() || op == io_op_create()) && (slot >= ring[0].files || ionative_open[slot]) ? {
       code: u32 = slot >= ring[0].files ? { io_err_invalid() } | { io_err_busy() }
-      IoCompletion { tag: request.tag, result: u32(0), error: code }
+      IoCompletion { tag: tag, result: u32(0), error: code }
     } | {
       path: [*]u8 = subslice(region, base, n)
-      raw: i64 = op == io_op_open() ? { i64(ionative_host_open(c.span_mut_of(path))) } | { i64(ionative_host_fsyncdir(c.span_mut_of(path))) }
-      op == io_op_open() && raw >= i64(0) ? {
+      raw: i64 = op == io_op_open() ? { i64(ionative_host_open(c.span_mut_of(path))) } | {
+        op == io_op_create() ? { i64(ionative_host_create(c.span_mut_of(path))) } | {
+        op == io_op_unlink() ? { i64(ionative_host_unlink(c.span_mut_of(path))) } | {
+        i64(ionative_host_fsyncdir(c.span_mut_of(path))) } } }
+      (op == io_op_open() || op == io_op_create()) && raw >= i64(0) ? {
         ionative_fds[slot] = raw
         ionative_open[slot] = true
-        IoCompletion { tag: request.tag, result: slot, error: u32(0) }
-      } | { ionative_completion(request.tag, raw) }
+        IoCompletion { tag: tag, result: slot, error: u32(0) }
+      } | { ionative_completion(tag, raw) }
     } }
   } | {
-  slot >= ring[0].files || !ionative_open[slot] ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_closed() } } | {
+  op == io_op_rename() || op == io_op_readdir() ? {
+    // Two windows in one: the first `offset` bytes are a path (the old
+    // name, or the directory), the rest the new name or the output.
+    split: u64 = request.offset
+    split == u64(0) || split > u64(n) || (op == io_op_rename() && split >= u64(n)) ? { IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() } } | {
+    first_len: u32 = u32_trunc_u64(split)
+    rest_len: u32 = n - first_len
+    rest_ok: Bool = op == io_op_rename() ? { ionative_path_ok(ring, region, base + first_len, rest_len) } | { in_region }
+    !ionative_path_ok(ring, region, base, first_len) || !rest_ok ? { IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() } } | {
+      window: [*]u8 = subslice(region, base, n)
+      raw: i64 = op == io_op_rename() ? { i64(ionative_host_rename(c.span_mut_of(window), c.Size(first_len))) } | { i64(ionative_host_readdir(c.span_mut_of(window), c.Size(first_len))) }
+      ionative_completion(tag, raw)
+    } }
+  } | {
+  slot >= ring[0].files || !ionative_open[slot] ? { IoCompletion { tag: tag, result: u32(0), error: io_err_closed() } } | {
   op == io_op_close() ? {
     ionative_open[slot] = false
-    ionative_completion(request.tag, i64(ionative_host_close(c.Int64(ionative_fds[slot]))))
+    ionative_completion(tag, i64(ionative_host_close(c.Int64(ionative_fds[slot]))))
   } | {
   op == io_op_fsync() || op == io_op_fdatasync() ? {
-    ionative_completion(request.tag, i64(ionative_host_fsync(c.Int64(ionative_fds[slot]), op == io_op_fdatasync() ? { c.UInt32(1) } | { c.UInt32(0) })))
+    ionative_completion(tag, i64(ionative_host_fsync(c.Int64(ionative_fds[slot]), op == io_op_fdatasync() ? { c.UInt32(1) } | { c.UInt32(0) })))
   } | {
-  !in_region ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_invalid() } } | {
-  request.offset > u64(9223372036854775807) ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_too_large() } } | {
+  op == io_op_stat() ? {
+    raw: i64 = i64(ionative_host_stat(c.Int64(ionative_fds[slot])))
+    // The size is also written into the window, little-endian, when it
+    // holds eight bytes.
+    raw >= i64(0) && in_region && n >= u32(8) ? {
+      size: u64 = u64_bits_i64(raw)
+      i: u32 = u32(0)
+      while i < u32(8) {
+        region[base + i] = u8_trunc_u64((size >> (u64(i) * u64(8))) & u64(255))
+        i = i + u32(1)
+      }
+    }
+    ionative_completion(tag, raw)
+  } | {
+  request.offset > u64(9223372036854775807) ? { IoCompletion { tag: tag, result: u32(0), error: io_err_too_large() } } | {
+  op == io_op_truncate() ? {
+    ionative_completion(tag, i64(ionative_host_truncate(c.Int64(ionative_fds[slot]), c.Int64(i64_bits_u64(request.offset)))))
+  } | {
+  !in_region ? { IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() } } | {
   op == io_op_pread() || op == io_op_pwrite() ? {
     window: [*]u8 = subslice(region, base, n)
     fd: c.Int64 = c.Int64(ionative_fds[slot])
     at: c.Int64 = c.Int64(i64_bits_u64(request.offset))
     raw: i64 = op == io_op_pread() ? { i64(ionative_host_pread(fd, c.span_mut_of(window), at)) } | { i64(ionative_host_pwrite(fd, c.span_mut_of(window), at)) }
-    ionative_completion(request.tag, raw)
+    ionative_completion(tag, raw)
   } | {
-    IoCompletion { tag: request.tag, result: u32(0), error: io_err_invalid() }
-  } } } } } } }
+    IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() }
+  } } } } } } } } } }
 }
 
 // io_wait executes every pending request in submission order and returns

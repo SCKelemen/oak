@@ -357,9 +357,17 @@ overflow-loud posture for hot paths that would rather stop than branch:
 `u64_trapping_add(lsn, 1)` never yields a wrapped log sequence number, and
 the trap names the call site. There is no `wrapping` spelling: the operator
 is it. A discipline profile that rejects the plain operators on integers
-unless a wrapping intent is spelled is direction, not implemented — every
-loop counter is a `+`, so the rejection needs an opt-in narrower than
-`strict` (85-discipline.md) before it is useful.
+unless a wrapping intent is spelled remains direction — every loop counter
+is a `+`, so the rejection needs an opt-in narrower than `strict`
+(85-discipline.md) before it is useful. What is implemented is the narrow
+report that catches the shape where accidental wrap is a security bug: an
+unsigned `+` or `*` computed *inside an ordering comparison* (`off + len <=
+cap`, `n * size < limit`) is reported as `OAK-T0701` at information
+severity — listed by `oak vet`, rejected by no profile (85-discipline.md
+§6a). The report names the carrier and the spelling that states the intent
+(`u32_checked_add`, `u32_saturating_add`); subtraction is not reported,
+because `off <= cap - len` is the recommended shape and its precondition
+(`len <= cap`) is a guard the reader can see.
 
 The interpreter computes the exact result in arbitrary precision and
 compares it with the range (a trapping overflow is its error, as a failed
@@ -882,7 +890,12 @@ integer literals within the parameter's kind (`IrqId[300]` with `N: u8` is
 an error, `OAK-T0602`); an application with the wrong count of arguments
 or a parameter that is a type rather than a constant is refused the same
 way. An application whose argument is the const parameter of an enclosing
-template (`IrqId[N]` inside `Table[N: u32]`) is not yet specialized.
+template — a record template's field `slot: IrqId[N]`, a generic
+function's `make[N: u32]: (v: u16): IrqId[N] = IrqId[N](v)` — is
+specialized when the enclosing template is instantiated, so `Table[8]`
+holds an `IrqId_8` and `make[8]` constructs one; `[4]IrqId[N]` is an
+array of the application. A record field of a refinement type has its
+base's representation in the backend.
 
 Not yet: refinements over records and floats, and the discharge of a
 construction from a declared theorem rather than the facts in scope. Each

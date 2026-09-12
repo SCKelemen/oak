@@ -168,6 +168,13 @@ var timesimSource string
 //go:embed timenative.oak
 var timenativeSource string
 
+// timehost is the freestanding realization of the time port
+// (docs/spec/90-backend.md §2a): the two clocks are extern hooks the
+// kernel or firmware defines, so no target constant and no libc.
+//
+//go:embed timehost.oak
+var timehostSource string
+
 // objc is a library package only (import("objc")), Darwin-only: the
 // Objective-C runtime's class and selector lookups; messages are sent with
 // the language form c.msg_send (docs/spec/92-ffi.md section 2.12).
@@ -280,6 +287,7 @@ var Packages = map[string]string{
 	"time":            timeSource,
 	"timesim":         timesimSource,
 	"timenative":      timenativeSource,
+	"timehost":        timehostSource,
 	"arena":           arenaSource,
 	"objc":            objcSource,
 }

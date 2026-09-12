@@ -23,6 +23,8 @@ import (
 
 const mcuOak = `
 import(std)
+import("time")
+import("timehost")
 
 sum: (v: []u32) -> u32 {
   total: u32 = u32(0)
@@ -49,7 +51,27 @@ main: (): i32 {
   fill(span(&data))
   total: u32 = sum(view(&data))
   assert(scale(f32(2.0)) == f32(3.0))
+  // The host's clocks through the freestanding boundary (timehost): the
+  // harness advances a counter on every read, so the monotonic reading
+  // moves and never backwards.
+  source: [1]time.TimeSource
+  timehost.timehost_source(span(&source))
+  first: time.Duration = time.time_monotonic(span(&source))
+  refreshed: Bool = timehost.timehost_refresh(span(&source))
+  assert(refreshed)
+  second: time.Duration = time.time_monotonic(span(&source))
+  assert(second.nanos >= first.nanos)
   i32_bits_u32(total)
+}
+`
+
+// mcuFailOak trips an assertion: the message must reach the harness's
+// oak_host_write before the trap.
+const mcuFailOak = `
+main: (): i32 {
+  x: u32 = u32(7)
+  assert(x == u32(8))
+  0
 }
 `
 
@@ -97,53 +119,65 @@ func TestE2EMicrocontrollerTargetsUnderQEMU(t *testing.T) {
 			if err != nil || drv.Kind != "zig" {
 				t.Skipf("no zig for %s (%v)", m.tgt, err)
 			}
-			comp := New().WithSource("mcu.oak", mcuOak).WithTarget(m.tgt)
-			code, err := comp.EmitC().Get()
-			if err != nil {
-				t.Fatal(err)
-			}
-			dir := t.TempDir()
-			write := func(name, text string) string {
-				path := filepath.Join(dir, name)
-				if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			for _, program := range []struct{ name, source, want string }{
+				{"mcu.oak", mcuOak, "0000002a\n"},
+				{"fail.oak", mcuFailOak, "oak: assertion failed at fail.oak:4\n"},
+			} {
+				// Library imports (time, timehost) resolve through a module root.
+				comp := New().WithPackageDir(writeModule(t, map[string]string{"oak.mod": "module example.com/mcu\noak 0.1.0\n", program.name: program.source})).WithTarget(m.tgt)
+				code, err := comp.EmitC().Get()
+				if err != nil {
 					t.Fatal(err)
 				}
-				return path
-			}
-			oakC := write("program.c", code)
-			// The Oak object exactly as `oak build -target` produces it.
-			objArgs := append(append([]string{}, drv.Args...), "-std=c99", "-O1", "-ffp-contract=off", "-c", "-o", filepath.Join(dir, "program.o"), oakC)
-			if out, err := exec.Command(drv.Path, objArgs...).CombinedOutput(); err != nil {
-				t.Fatalf("oak object: %v\n%s", err, out)
-			}
-			harness := "extern int oak_main(void);\n" +
-				"static void putc_(char c) { *(volatile unsigned char *)" + m.uart + " = c; }\n" +
-				"static void puthex(unsigned v) { for (int i = 28; i >= 0; i -= 4) putc_(\"0123456789abcdef\"[(v >> i) & 15]); putc_('\\n'); }\n" +
-				"void cmain(void) { " + m.uartInit + " puthex((unsigned)oak_main()); " + m.exitCode + " for (;;) {} }\n" +
-				"__asm__(" + quoteAsm(m.startAsm) + ");\n"
-			harnessC := write("harness.c", harness)
-			// The unwind index and note sections are discarded so the vector
-			// table is the first word of the image, where a Cortex-M reads it.
-			link := write("link.ld", "ENTRY(_start)\nSECTIONS {\n  /DISCARD/ : { *(.ARM.exidx*) *(.ARM.extab*) *(.note*) *(.comment) }\n  . = "+m.origin+";\n  .vectors : { KEEP(*(.vectors)) }\n  .text : { *(.text.init) *(.text*) }\n  .rodata : { *(.rodata*) *(.srodata*) }\n  .data : { *(.data*) *(.sdata*) }\n  .bss : { *(.bss*) *(.sbss*) }\n  . = ALIGN(16);\n  . += 0x8000;\n  _stack_top = .;\n}\n")
-			image := filepath.Join(dir, "image.elf")
-			// The harness links the object the way an OS or firmware would:
-			// no libc and no startup files (the harness is the startup), but
-			// the compiler's runtime library — compiler-rt from zig, libgcc
-			// from a GNU toolchain — for the __aeabi_*, __udiv*, and memset
-			// builtins the object references.
-			linkArgs := []string{"cc", "--target=" + m.tgt.ZigTriple(), "-mcpu=" + m.cpu, "-ffreestanding", "-nostartfiles", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-O1", "-Wl,--build-id=none", "-T", link, "-o", image, harnessC, filepath.Join(dir, "program.o")}
-			if out, err := exec.Command(drv.Path, linkArgs...).CombinedOutput(); err != nil {
-				t.Fatalf("link: %v\n%s", err, out)
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			args := append(append([]string{}, m.machine...), "-nographic", "-monitor", "none", "-kernel", image)
-			cmd := exec.CommandContext(ctx, m.qemu, args...)
-			var out bytes.Buffer
-			cmd.Stdout, cmd.Stderr = &out, &out
-			_ = cmd.Run() // the exit path is the harness's; the output is the verdict
-			if !strings.Contains(out.String(), "0000002a\n") {
-				t.Fatalf("%s did not print 0x2a (5+11+26):\n%s", m.qemu, out.String())
+				dir := t.TempDir()
+				write := func(name, text string) string {
+					path := filepath.Join(dir, name)
+					if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					return path
+				}
+				oakC := write("program.c", code)
+				// The Oak object exactly as `oak build -target` produces it.
+				objArgs := append(append([]string{}, drv.Args...), "-std=c99", "-O1", "-ffp-contract=off", "-c", "-o", filepath.Join(dir, "program.o"), oakC)
+				if out, err := exec.Command(drv.Path, objArgs...).CombinedOutput(); err != nil {
+					t.Fatalf("oak object: %v\n%s", err, out)
+				}
+				harness := "extern int oak_main(void);\n" +
+					"static void putc_(char c) { *(volatile unsigned char *)" + m.uart + " = c; }\n" +
+					// The freestanding host boundary: diagnostics over the UART,
+					// the two clocks over a counter that advances per read.
+					"long long oak_host_write(long long fd, const unsigned char *buf, unsigned long len) { (void)fd; for (unsigned long i = 0; i < len; i++) putc_((char)buf[i]); return (long long)len; }\n" +
+					"static long long ticks = 1000;\n" +
+					"long long oak_time_host_realtime_nanos(void) { return 1700000000000000000LL + ticks; }\n" +
+					"long long oak_time_host_monotonic_nanos(void) { ticks += 250; return ticks; }\n" +
+					"static void puthex(unsigned v) { for (int i = 28; i >= 0; i -= 4) putc_(\"0123456789abcdef\"[(v >> i) & 15]); putc_('\\n'); }\n" +
+					"void cmain(void) { " + m.uartInit + " puthex((unsigned)oak_main()); " + m.exitCode + " for (;;) {} }\n" +
+					"__asm__(" + quoteAsm(m.startAsm) + ");\n"
+				harnessC := write("harness.c", harness)
+				// The unwind index and note sections are discarded so the vector
+				// table is the first word of the image, where a Cortex-M reads it.
+				link := write("link.ld", "ENTRY(_start)\nSECTIONS {\n  /DISCARD/ : { *(.ARM.exidx*) *(.ARM.extab*) *(.note*) *(.comment) }\n  . = "+m.origin+";\n  .vectors : { KEEP(*(.vectors)) }\n  .text : { *(.text.init) *(.text*) }\n  .rodata : { *(.rodata*) *(.srodata*) }\n  .data : { *(.data*) *(.sdata*) }\n  .bss : { *(.bss*) *(.sbss*) }\n  . = ALIGN(16);\n  . += 0x8000;\n  _stack_top = .;\n}\n")
+				image := filepath.Join(dir, "image.elf")
+				// The harness links the object the way an OS or firmware would:
+				// no libc and no startup files (the harness is the startup), but
+				// the compiler's runtime library — compiler-rt from zig, libgcc
+				// from a GNU toolchain — for the __aeabi_*, __udiv*, and memset
+				// builtins the object references.
+				linkArgs := []string{"cc", "--target=" + m.tgt.ZigTriple(), "-mcpu=" + m.cpu, "-ffreestanding", "-nostartfiles", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-O1", "-Wl,--build-id=none", "-T", link, "-o", image, harnessC, filepath.Join(dir, "program.o")}
+				if out, err := exec.Command(drv.Path, linkArgs...).CombinedOutput(); err != nil {
+					t.Fatalf("link: %v\n%s", err, out)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				args := append(append([]string{}, m.machine...), "-nographic", "-monitor", "none", "-kernel", image)
+				cmd := exec.CommandContext(ctx, m.qemu, args...)
+				var out bytes.Buffer
+				cmd.Stdout, cmd.Stderr = &out, &out
+				_ = cmd.Run() // the exit path is the harness's; the output is the verdict
+				if !strings.Contains(out.String(), program.want) {
+					t.Fatalf("%s: %s did not print %q:\n%s", program.name, m.qemu, program.want, out.String())
+				}
 			}
 		})
 	}
@@ -152,4 +186,25 @@ func TestE2EMicrocontrollerTargetsUnderQEMU(t *testing.T) {
 // quoteAsm spells assembly text as a C string literal.
 func quoteAsm(text string) string {
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(text, `"`, `\"`), "\n", `\n`) + `"`
+}
+
+// timehost compiles for hosted targets too (the hooks are then the
+// program's to link); the host boundary is a compile-time fact, not a
+// target-specific one.
+func TestTimehostCompilesEverywhere(t *testing.T) {
+	root := writeModule(t, map[string]string{"oak.mod": "module example.com/mcu\noak 0.1.0\n", "main.oak": mcuOak})
+	for _, tgt := range target.Supported() {
+		code, err := New().WithPackageDir(root).WithTarget(tgt).EmitC().Get()
+		if err != nil {
+			t.Fatalf("%s: %v", tgt, err)
+		}
+		for _, want := range []string{"oak_time_host_realtime_nanos", "oak_time_host_monotonic_nanos"} {
+			if !strings.Contains(code, want) {
+				t.Fatalf("%s: C lacks the hook %s", tgt, want)
+			}
+		}
+		if !strings.Contains(code, "oak_host_write") {
+			t.Fatalf("%s: C lacks the host boundary block", tgt)
+		}
+	}
 }

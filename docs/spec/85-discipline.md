@@ -237,6 +237,29 @@ discarded, rejected by the strict profile. The discard form exists first so
 that the rule, when it lands, has an answer to point at. Until then a bare
 `putchar(c.Int(10))` is accepted silently.
 
+### 6a. Wrapping guards (`OAK-T0701`, reported)
+
+An unsigned `+` or `*` computed inside an ordering comparison is the shape
+of a bounds guard that wraps before it guards: `off + len <= cap` passes for
+an attacker-sized `len` because the sum wrapped mod `2^N` (CWE-190). The
+operators' wrapping contract is frozen (20-types.md §11.1), and rejecting
+every plain `+` would fire on every loop counter, so this rule is a
+**report**, not a warning: the typechecker emits `OAK-T0701` at information
+severity for each such operand, `oak vet` lists it beside the recorded
+assumptions, and neither profile rejects it. The report names the carrier
+and the spelling that states the intent — `u32_checked_add`,
+`u32_saturating_add` (20-types.md §11.1a) — or a rearranged guard
+(`off <= cap - len` once `len <= cap` holds). Subtraction is deliberately
+not reported, since that rearrangement is the recommended fix. Both
+operands literal is folded arithmetic and is not reported. A profile that
+promotes the report to a rejection is direction; it needs an opt-in
+narrower than `strict`.
+
+```oak
+fits(off: u32, len: u32, cap: u32): Bool = off + len <= cap    // reported
+room(off: u32, len: u32, cap: u32): Bool = len <= cap && off <= cap - len
+```
+
 ## 7. Zero warnings
 
 The strict profile promotes every warning — including recorded unsafe

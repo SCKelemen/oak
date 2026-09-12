@@ -517,6 +517,7 @@ type TypeChecker struct {
 	// callee of every infix expression that resolved through a binding.
 	operatorBindings map[string]string
 	operatorLaws     []OperatorLaw
+	lawLowerings     []LawLowering
 	// reinterpretFactors maps a view_as/span_as call (position-keyed) to
 	// the scalars per record its source holds.
 	reinterpretFactors map[string]Reinterpretation
@@ -572,10 +573,11 @@ type TypeChecker struct {
 	// refinements are the declared refinement types by name, and
 	// refinementChecks the constructions by call position
 	// (typechecker/refinements.go).
-	refinements          map[string]*refinementInfo
-	refinementTemplates  map[string][]string // generic refinement -> its specializations
-	refinementChecks     map[string]string
-	refinementDischarged map[string]bool
+	refinements           map[string]*refinementInfo
+	refinementTemplates   map[string][]string // generic refinement -> its specializations
+	refinementTemplateSet *refinementTemplateSet
+	refinementChecks      map[string]string
+	refinementDischarged  map[string]bool
 	// equalityTypes records, per `==`/`!=` operator position, the named
 	// sum type or record the operands have, so the backend emits that
 	// type's equality function (typechecker/equality.go).
@@ -932,6 +934,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 		program.Statements = kept
 	}
+	// Refinements specialized on demand while checking join the program
+	// (typechecker/refinement_templates.go).
+	tc.appendLateRefinementInstances(program)
 }
 
 // recordGlobalOwners notes, for every package-level function and binding,
@@ -1060,6 +1065,46 @@ func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName st
 // OperatorLaws lists the declared operator laws in declaration order.
 func (tc *TypeChecker) OperatorLaws() []OperatorLaw {
 	return append([]OperatorLaw(nil), tc.operatorLaws...)
+}
+
+// LawLowering records one call site regrouped on a declared operator law:
+// a reduce.tree over an operator declaring associative, lowered to
+// reduce.chain (docs/spec/10-syntax.md section 14a; the ml pilot's F3).
+type LawLowering struct {
+	Token    token.Token
+	Function string // the operator function whose law licensed the lowering
+	From, To string // the library function called and the one lowered to
+}
+
+// LawLowerings lists the call sites lowered on a declared law, in order.
+func (tc *TypeChecker) LawLowerings() []LawLowering {
+	return append([]LawLowering(nil), tc.lawLowerings...)
+}
+
+// lowerAssociativeTree rewrites reduce.tree(xs, zero, f) to
+// reduce.chain(xs, zero, f) when f names an operator definition declaring
+// laws { associative }: by Oak.Reduce.tree_eq_chainFold the two agree under
+// the law, and chain is the left fold from the first element with no stack
+// of partials. A kernel body cannot reach it: operators are declared over
+// records, which are outside the kernel subset, so a kernel's reduction is
+// the tree it names. A false law makes the result differ from the tree
+// named, which is what the chapter says a false law does.
+func (tc *TypeChecker) lowerAssociativeTree(expr *ast.InvocationExpression) {
+	callee, ok := expr.Function.(*ast.Identifier)
+	if !ok || len(expr.Arguments) != 3 {
+		return
+	}
+	path, name, ok := modules.Demangle(callee.Value)
+	if !ok || path != "reduce" || name != "tree" {
+		return
+	}
+	combine, ok := expr.Arguments[2].(*ast.Identifier)
+	if !ok || !tc.HasOperatorLaw(combine.Value, "associative") {
+		return
+	}
+	lowered := modules.Mangle(path, "chain")
+	tc.lawLowerings = append(tc.lawLowerings, LawLowering{Token: expr.Token, Function: combine.Value, From: callee.Value, To: lowered})
+	callee.Value = lowered
 }
 
 // HasOperatorLaw reports whether the function bound as an operator declares
@@ -1851,6 +1896,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		if tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType)) == nil {
 			return nil
 		}
+		tc.noteGuardWrap(expr, leftType, rightType)
 		return &BoolType{}
 	default:
 		tc.addError(expr, "unknown infix operator: %s", expr.Operator)
@@ -2186,6 +2232,10 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			return tc.checkReinterpretCast(callee, idx.Index, expr)
 		}
 	}
+	// A reduce.tree whose combine declares laws { associative } lowers to
+	// reduce.chain (docs/spec/10-syntax.md section 14a): the declared law is
+	// the permission to regroup, Oak.Reduce.tree_eq_chainFold the theorem.
+	tc.lowerAssociativeTree(expr)
 	// Generic function calls monomorphize here: the call site is rewritten
 	// to the specialized name and re-typed (typechecker/genericfn.go).
 	if genericType, isGeneric := tc.resolveGenericInvocation(expr); isGeneric {
@@ -5333,6 +5383,12 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		// Record-template applications (Ring[u8, 16]) resolve before array
 		// syntax: template knowledge is the const-parameter disambiguator
 		// (typechecker/mono.go).
+		// An application of a generic refinement to literals (IrqId[4]) —
+		// a record template's substituted field, or any late type —
+		// specializes on demand (typechecker/refinement_templates.go).
+		if refined := tc.refinementTemplateApplication(indexExpr); refined != nil {
+			return tc.parseTypeExpression(refined)
+		}
 		if instantiated, isTemplate := tc.resolveRecordTemplateApplication(indexExpr); isTemplate {
 			return instantiated
 		}
@@ -5544,6 +5600,12 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 
 	// Record-template applications (Ring[u8, 16]): typechecker/mono.go.
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		// An application of a generic refinement to literals (IrqId[4]) —
+		// a record template's substituted field, or any late type —
+		// specializes on demand (typechecker/refinement_templates.go).
+		if refined := tc.refinementTemplateApplication(indexExpr); refined != nil {
+			return tc.parseTypeExpression(refined)
+		}
 		if instantiated, isTemplate := tc.resolveRecordTemplateApplication(indexExpr); isTemplate {
 			return instantiated
 		}
@@ -6136,4 +6198,64 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 			tc.addError(nil, "invalid expression in record composition: %T", expr)
 		}
 	}
+}
+
+// noteGuardWrap reports an unsigned `+` or `*` that is computed inside an
+// ordering comparison. `off + len <= cap` is the shape of a bounds guard,
+// and on fixed-width unsigned operands the sum wraps mod 2^N before the
+// comparison sees it, so an attacker-sized `len` passes the guard
+// (CWE-190). The operators' wrapping contract is frozen
+// (docs/spec/20-types.md §11.1), so this is a report, not a rejection: the
+// arithmetic family (`u32_checked_add`, `u32_saturating_add`) or a
+// rearranged guard (`off <= cap - len` once `len <= cap` holds) spells the
+// intent. Subtraction is deliberately not reported: `off <= cap - len` is
+// the recommended shape, and its precondition (`len <= cap`) is a plain
+// guard the reader can see. Both operands literal is arithmetic the checker
+// already folds; signed operands are out of scope (their wrap is a
+// different rule).
+func (tc *TypeChecker) noteGuardWrap(cmp *ast.InfixExpression, leftType, rightType Type) {
+	sides := [...]struct {
+		expr ast.Expression
+		typ  Type
+	}{{cmp.Left, leftType}, {cmp.Right, rightType}}
+	for _, side := range sides {
+		inner, ok := side.expr.(*ast.InfixExpression)
+		if !ok || (inner.Operator != "+" && inner.Operator != "*") {
+			continue
+		}
+		if tc.literalOperand(inner.Left) && tc.literalOperand(inner.Right) {
+			continue
+		}
+		prim, ok := side.typ.(*PrimitiveType)
+		if !ok {
+			continue
+		}
+		fixed := tc.FixedWidthName(prim.Name)
+		if fixed == "" || fixed[0] != 'u' {
+			continue
+		}
+		verb := map[string]string{"+": "add", "*": "mul"}[inner.Operator]
+		d := tc.addTypeInformation(inner, CodeGuardWrap,
+			fmt.Sprintf("unsigned `%s` on %s inside an ordering guard wraps before the comparison", inner.Operator, fixed))
+		d.Advice = append(d.Advice, diagnostic.Advice{Kind: diagnostic.AdviceNote,
+			Message: fmt.Sprintf("spell the intent: `%s_checked_%s` or `%s_saturating_%s` (20-types.md §11.1a), or compare against the remaining room so the guard cannot wrap", fixed, verb, fixed, verb)})
+	}
+}
+
+// literalOperand reports an operand whose value is fixed in the source: a
+// literal, or a fixed-width conversion of one (`u32(1)`), the spelling Oak
+// programs use for typed constants.
+func (tc *TypeChecker) literalOperand(expr ast.Expression) bool {
+	if IsLiteralOnlyExpression(expr) {
+		return true
+	}
+	call, ok := expr.(*ast.InvocationExpression)
+	if !ok || len(call.Arguments) != 1 {
+		return false
+	}
+	ident, ok := call.Function.(*ast.Identifier)
+	if !ok || tc.FixedWidthName(ident.Value) == "" {
+		return false
+	}
+	return IsLiteralOnlyExpression(call.Arguments[0])
 }

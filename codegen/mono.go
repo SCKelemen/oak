@@ -20,7 +20,7 @@ import (
 // specializeADT builds the concrete ADT for one instantiation: the mangled
 // name, and every variant's payload type with the template's parameters
 // substituted by the argument atoms (which are ordinary Oak type names).
-func specializeADT(template *ast.ADTType, inst typechecker.Instantiation) (*ast.ADTType, bool) {
+func (cg *CodeGenerator) specializeADT(template *ast.ADTType, inst typechecker.Instantiation) (*ast.ADTType, bool) {
 	if len(template.TypeParams) != len(inst.Args) {
 		return nil, false
 	}
@@ -43,6 +43,7 @@ func specializeADT(template *ast.ADTType, inst typechecker.Instantiation) (*ast.
 		if !ok {
 			return nil, false
 		}
+		payload = cg.normalizeTypeExpression(payload)
 		literal := variant.Literal
 		// Record templates substitute inside the field list, so the
 		// specialized declaration routes to struct emission with concrete
@@ -62,6 +63,7 @@ func specializeADT(template *ast.ADTType, inst typechecker.Instantiation) (*ast.
 				if !okField {
 					return nil, false
 				}
+				substituted = cg.normalizeTypeExpression(substituted)
 				substitutedRecord.Fields[field.Name] = substituted
 				substitutedRecord.FieldOrder = append(substitutedRecord.FieldOrder, ast.RecordField{
 					Token: field.Token, Name: field.Name, Value: substituted, Align: field.Align,
@@ -193,6 +195,13 @@ func (cg *CodeGenerator) emitTypesInDependencyOrder(program *ast.Program, tc *ty
 			continue
 		}
 		unit := typeEmissionUnit{name: adt.Name.Value, declared: adt}
+		if adt.Refinement != nil {
+			// A refinement is a typedef of a primitive and a guard: nothing
+			// depends before it, and a record field may name it, so it is
+			// emitted ahead of every record.
+			cg.emitTypeUnit(unit, tc)
+			continue
+		}
 		if _, isRecord := recordDefinitionShape(adt); isRecord {
 			records = append(records, unit)
 		} else {
@@ -281,7 +290,7 @@ func (cg *CodeGenerator) emitRecordUnions(record *ast.RecordLiteral, unions []ty
 			}
 			adt := unit.declared
 			if adt == nil {
-				specialized, ok := specializeADT(cg.adtTypes[unit.instantiation.ADT], *unit.instantiation)
+				specialized, ok := cg.specializeADT(cg.adtTypes[unit.instantiation.ADT], *unit.instantiation)
 				if !ok {
 					continue
 				}
@@ -308,7 +317,7 @@ func (cg *CodeGenerator) emissionRecordLiteral(unit typeEmissionUnit) (*ast.Reco
 	if !declared {
 		return nil, false
 	}
-	specialized, ok := specializeADT(template, *unit.instantiation)
+	specialized, ok := cg.specializeADT(template, *unit.instantiation)
 	if !ok {
 		return nil, false
 	}
@@ -347,11 +356,33 @@ func (cg *CodeGenerator) emitTypeUnit(unit typeEmissionUnit, tc *typechecker.Typ
 		cg.write(fmt.Sprintf("OAK_MONOMORPHIZATION_NAME_COLLISION(%s);\n\n", cg.cTypeName(mangled)))
 		return
 	}
-	specialized, ok := specializeADT(template, inst)
+	specialized, ok := cg.specializeADT(template, inst)
 	if !ok {
 		cg.write(fmt.Sprintf("OAK_UNSUPPORTED_INSTANTIATION(%s);\n\n", cg.cTypeName(mangled)))
 		return
 	}
 	cg.adtTypes[mangled] = specialized
 	cg.emitADTType(specialized, tc)
+}
+
+// normalizeTypeExpression rewrites an application of a generic refinement
+// to literals, left behind by template substitution (IrqId[N] with N := 4),
+// to the name of its specialization; other type syntax is kept, arrays of
+// such applications included.
+func (cg *CodeGenerator) normalizeTypeExpression(expr ast.Expression) ast.Expression {
+	index, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return expr
+	}
+	if cg.refinementName != nil {
+		if name, ok := cg.refinementName(index); ok {
+			return &ast.Identifier{Token: index.Token, Value: name}
+		}
+	}
+	left := cg.normalizeTypeExpression(index.Left)
+	inner := cg.normalizeTypeExpression(index.Index)
+	if left == index.Left && inner == index.Index {
+		return expr
+	}
+	return &ast.IndexExpression{Token: index.Token, Left: left, Index: inner, Dot: index.Dot}
 }

@@ -366,3 +366,72 @@ main: (): i32 = 0
 		t.Fatalf("results: %+v", results)
 	}
 }
+
+// Protocol liveness (docs/spec/125-verification.md section 2b): the
+// `eventually` entries are decided over the reachable states of the
+// projection under the declared fairness.
+func TestProtocolLiveness(t *testing.T) {
+	quantum := func(fairness string) string {
+		return `
+Quantum: protocol = {
+  data { budget: u32 }
+  init { budget: u32(2) }
+  initial Running
+  tick: Running -> Running when data.budget > u32(1) then { data.budget = data.budget - u32(1) }
+  tick: Running -> Yielded when data.budget <= u32(1) then { data.budget = u32(2) }
+  resume: Yielded -> Running
+  signal(on: Bool): Running -> Running
+` + fairness + `
+  eventually Yielded
+  eventually Running -> Yielded
+  eventually Yielded -> Running
+  eventually Running -> data.budget == u32(1)
+}
+main: (): i32 = 0
+`
+	}
+	results, err := Theorems(check(t, quantum("  fair tick\n  fair resume\n  fair signal\n")), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 4 {
+		t.Fatalf("results: %+v", results)
+	}
+	for _, r := range results {
+		if r.Status != Decided || !strings.Contains(r.Detail, "holds on all 3 reachable states under fair tick, fair resume, fair signal") {
+			t.Errorf("fair: %+v", r)
+		}
+	}
+	results, err = Theorems(check(t, quantum("")), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		if r.Status != Refuted || !strings.Contains(r.Detail, "counterexample with no fairness declared") {
+			t.Errorf("unfair: %+v", r)
+		}
+	}
+	if !strings.Contains(results[0].Detail, "eventually Yielded: counterexample") || !strings.Contains(results[0].Detail, "from Running with {budget: 2}") {
+		t.Errorf("counterexample detail: %s", results[0].Detail)
+	}
+
+	// An intermittently enabled step needs strong fairness: under weak
+	// fairness the flip-flop cycle is a fair trap (go is disabled in B).
+	toggle := func(go_ string) string {
+		return "Toggle: protocol = {\n  initial A\n  flip: A -> B\n  flop: B -> A\n  go: A -> Done\n  fair flip\n  fair flop\n  " + go_ + " go\n  eventually Done\n}\nmain: (): i32 = 0\n"
+	}
+	results, err = Theorems(check(t, toggle("strongly fair")), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Status != Decided {
+		t.Fatalf("strong: %+v", results)
+	}
+	results, err = Theorems(check(t, toggle("fair")), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Status != Refuted || !strings.Contains(results[0].Detail, "staying within {A; B}") {
+		t.Fatalf("weak: %+v", results)
+	}
+}

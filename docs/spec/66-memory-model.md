@@ -285,7 +285,9 @@ structures depend on it end to end, Oak should verify refinement through:
 
 1. generated-C memory-order/assembly tests;
 2. AArch64 MP/SB/LB/IRIW-style litmus coverage and instruction inspection;
-3. target lock-free admission rules for realtime profiles;
+3. target lock-free admission — in place for the C backend as a per-carrier
+   static assertion (65-machine-memory.md §6); a realtime profile may still
+   want it to refuse `OAK_ATOMIC_ACCEPT_LOCKED`;
 4. direct implementation-to-Lean refinement for the most load-bearing pieces
    where the proof cost is justified.
 

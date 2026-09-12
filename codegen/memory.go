@@ -199,6 +199,7 @@ func (cg *CodeGenerator) emitAtomicGlobals(program *ast.Program) {
 		return
 	}
 	cg.write("#include <stdatomic.h>\n\n")
+	cg.atomicsIncluded = true
 
 	emitted := false
 	for _, stmt := range program.Statements {
@@ -210,6 +211,7 @@ func (cg *CodeGenerator) emitAtomicGlobals(program *ast.Program) {
 		if !atomic {
 			continue
 		}
+		cg.noteAtomicCarrier(decl.Type)
 		if !emitted {
 			cg.write("/* package-scope atomic cells: inline, zero initialized */\n")
 			emitted = true
@@ -408,4 +410,71 @@ func volatileWriteC(carrier, address, value string) (string, error) {
 		return "", fmt.Errorf("unsupported volatile carrier %q", carrier)
 	}
 	return fmt.Sprintf("(*(volatile %s *)(%s) = (%s))", carrier, address, value), nil
+}
+
+// noteAtomicCarrier records the carrier of one Atomic[T] type expression the
+// program declares storage for; emitAtomicAdmission asserts each recorded
+// carrier is lock-free on the compiling target.
+func (cg *CodeGenerator) noteAtomicCarrier(typeExpr ast.Expression) {
+	carrier, ok := atomicTypeCarrier(typeExpr)
+	if !ok {
+		return
+	}
+	if cg.atomicCarriers == nil {
+		cg.atomicCarriers = make(map[string]bool)
+	}
+	cg.atomicCarriers[carrier] = true
+}
+
+// lockFreeConditionC is the C integer constant expression that holds when
+// every C11 atomic of the carrier's width is always lock-free on the
+// compiling target. The width, not the C type name, is the contract: a
+// 4-byte carrier is `int` on every supported ABI and also `long` on ILP32,
+// so both macros are consulted where the width matches, and skipped where
+// it does not. The value 2 is C11's "always lock-free"; 1 ("sometimes")
+// and 0 both mean a libatomic fallback that may take a lock.
+func lockFreeConditionC(carrier string) (string, error) {
+	switch carrier {
+	case "u8", "i8":
+		return "ATOMIC_CHAR_LOCK_FREE == 2", nil
+	case "u16", "i16":
+		return "ATOMIC_SHORT_LOCK_FREE == 2", nil
+	case "u32", "i32":
+		return "(sizeof(int) != 4 || ATOMIC_INT_LOCK_FREE == 2) && (sizeof(long) != 4 || ATOMIC_LONG_LOCK_FREE == 2)", nil
+	case "u64", "i64":
+		return "(sizeof(long) != 8 || ATOMIC_LONG_LOCK_FREE == 2) && (sizeof(long long) != 8 || ATOMIC_LLONG_LOCK_FREE == 2)", nil
+	}
+	return "", fmt.Errorf("unsupported atomic carrier %q", carrier)
+}
+
+// emitAtomicAdmission emits the lock-free admission block
+// (docs/spec/65-machine-memory.md §6): one C99 static assertion per atomic
+// carrier the program declares, failing the C build on a target where that
+// carrier's C11 atomics fall back to a locked libatomic implementation — a
+// hidden lock is a hidden runtime, and on a Cortex-M0 it is also the
+// difference between an ISR-safe counter and a deadlock. A build that has
+// audited and accepted the fallback defines OAK_ATOMIC_ACCEPT_LOCKED.
+func (cg *CodeGenerator) emitAtomicAdmission() {
+	if !cg.atomicsIncluded || len(cg.atomicCarriers) == 0 {
+		return
+	}
+	carriers := make([]string, 0, len(cg.atomicCarriers))
+	for _, carrier := range atomicCarriers {
+		if cg.atomicCarriers[carrier] {
+			carriers = append(carriers, carrier)
+		}
+	}
+	cg.write("\n/* lock-free admission (docs/spec/65-machine-memory.md section 6): every\n")
+	cg.write("   atomic carrier this program declares must be always lock-free on the\n")
+	cg.write("   target; a libatomic fallback would be a hidden lock. Define\n")
+	cg.write("   OAK_ATOMIC_ACCEPT_LOCKED to accept one knowingly. */\n")
+	cg.write("#if !defined(OAK_ATOMIC_ACCEPT_LOCKED)\n")
+	for _, carrier := range carriers {
+		condition, err := lockFreeConditionC(carrier)
+		if err != nil {
+			continue
+		}
+		cg.write(fmt.Sprintf("typedef char oak_atomic_lock_free_%s[ (%s) ? 1 : -1 ];\n", carrier, condition))
+	}
+	cg.write("#endif\n")
 }
