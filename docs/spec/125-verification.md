@@ -361,6 +361,32 @@ pair, where the list form compares types pairwise.
 Every law is also witnessed in the compiled program; the file proves in
 about eight seconds.
 
+### 6.2 Effects and patterns
+
+`spec/oak/effects.oak` restates `Oak.Effects` (the subsumption order
+between broad and scoped effects that `forbids` reads) over a record
+`{family, scoped, scope}`, and `Oak.EffectRows` (the rows on function
+types, `60-effects-allocation.md` §2a) over a program of three functions
+and two slots whose effect sets are bitsets: `bound_step` and
+`perform_step` are one unfolding each of the Lean model's fuel-indexed
+`bound` and `perform`, `rows_admit` the row check at a fuel, and the
+soundness theorem is stated as the induction Lean runs — the step, for any
+two sets standing for the fuel-n bound and performance — with the bound's
+monotonicity and its fixed point beside it. `spec/oak/patterns.oak`
+restates `Oak.Exhaustiveness` and `Oak.PatternAnalysis`
+(`35-pattern-analysis.md` §11) over a closed universe of eight cases, sets
+as bitsets, with the procedure's verdict tied to the witness it reports
+(`exhaustive_or_counterexample`).
+
+| Lean law | Oak theorem | Rung |
+| --- | --- | --- |
+| `Effects.broad_subsumes_scoped`, `broad_subsumes_broad`, `scoped_subsumes_same`, `scoped_does_not_subsume_broad`, `scoped_subsumes_scoped_iff`, `broad_subsumes_scoped_iff`, `overlaps_symm`, `broad_overlaps_scoped`, `distinct_scopes_do_not_overlap`, `broad_forbid_rejects_scoped_requirement` | same names (`effects.oak`) | decided |
+| `EffectRows.perform_subset_bound`, `forbids_sound` | same names, as the induction step over any fuel-n sets under the row check at that fuel | decided, bit level |
+| (the fuel induction's side conditions) | `bound_step_monotone`, `bound_fixed_point` | decided, bit level |
+| `Exhaustiveness.wildcard_is_exhaustive`, `all_constructors_are_exhaustive`, `missing_constructor_is_not_exhaustive`, `adding_arms_preserves_exhaustiveness`, `constructor_membership_drives_coverage` | same names (`patterns.oak`) | decided |
+| `PatternAnalysis.counterexample_refutes_exhaustive`, `missing_reachable_is_counterexample`, `redundant_not_useful`, `adding_redundant_preserves_exhaustive`, `refinement_excludes_other`, `unreachable_case_not_required`, `constructor_match_introduces_refinement`, `excluded_constructor_arm_is_unreachable` | same names | decided |
+| (properties 1 and 2 of `35-pattern-analysis.md` §12) | `exhaustive_or_counterexample`, `wildcard_matches` | decided, bit level |
+
 ## 7. Direction
 
 In order of payoff, each reusing a surface that exists:
@@ -368,10 +394,11 @@ In order of payoff, each reusing a surface that exists:
 - **The verifier in Oak.** The aim is a compiler whose semantics, solver,
   and proofs are Oak programs, the language's own laws stated and decided
   by the language. The order of work: the algebras of the language
-  semantics first — the type lattice (§6.1, done), the effect rows
-  (`Oak.EffectRows`), the pattern algebra of `35-pattern-analysis.md`
-  (`Oak.PatternAnalysis`, `Oak.Exhaustiveness`), record shapes and ADT
-  semantics — each as an Oak procedure over words with its laws decided,
+  semantics first — the type lattice (§6.1), the effect algebra and rows,
+  the pattern algebra of `35-pattern-analysis.md` (§6.2; all three done),
+  then record shapes and ADT semantics, generalization, and the
+  monomorphization laws — each as an Oak procedure over words with its
+  laws decided,
   the standard library's laws left in Lean; then the solver: the ROBDD and
   the bit blaster of `asm/blast.go` as an Oak program, compiled and run
   beside the Go decider on the whole corpus until it replaces it; then

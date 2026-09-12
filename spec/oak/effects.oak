@@ -1,0 +1,163 @@
+// The effect algebra, in Oak (docs/spec/60-effects-allocation.md sections
+// 2 and 2a; spec/lean/Oak/Effects.lean; spec/lean/Oak/EffectRows.lean;
+// compiler/effects.go). Two models: the subsumption order between broad
+// and scoped effects, which `forbids` reads, and the effect rows on
+// function types, whose check keeps a run's performed effects inside the
+// static bound. Families and scopes are bytes; a function's effects are a
+// bitset of eight effects; a program has three functions and two slots
+// (parameters or locals of a function type with a row), which the Lean
+// model leaves unbounded. Every law is decided at the bit level.
+
+// --- Subsumption (Oak.Effects) ---
+
+// An effect is a family, broad or scoped to one scope.
+Effect: type = struct { family: u8, scoped: Bool, scope: u8 }
+
+broad: (f: u8): Effect = Effect { family: f, scoped: false, scope: u8(0) }
+scoped: (f: u8, s: u8): Effect = Effect { family: f, scoped: true, scope: s }
+
+// Subsumes: the forbidden effect covers the required one. A broad effect
+// covers its family broad or scoped; a scoped one covers exactly itself.
+subsumes: (forbidden: Effect, required: Effect): Bool {
+  forbidden.scoped ? {
+    required.scoped && forbidden.family == required.family && forbidden.scope == required.scope
+  } | {
+    forbidden.family == required.family
+  }
+}
+
+// Overlaps: either subsumes the other.
+overlaps: (a: Effect, b: Effect): Bool = subsumes(a, b) || subsumes(b, a)
+
+// Contradicts: a requirement against a forbidden effect it overlaps.
+contradicts: (required: Effect, forbidden: Effect): Bool = overlaps(required, forbidden)
+
+broad_subsumes_scoped: theorem (f: u8, s: u8) { subsumes(broad(f), scoped(f, s)) }
+broad_subsumes_broad: theorem (f: u8) { subsumes(broad(f), broad(f)) }
+scoped_subsumes_same: theorem (f: u8, s: u8) { subsumes(scoped(f, s), scoped(f, s)) }
+scoped_does_not_subsume_broad: theorem (f: u8, s: u8) { !subsumes(scoped(f, s), broad(f)) }
+scoped_subsumes_scoped_iff: theorem (f: u8, g: u8, s: u8, t: u8) { subsumes(scoped(f, s), scoped(g, t)) == (f == g && s == t) }
+broad_subsumes_scoped_iff: theorem (f: u8, g: u8, s: u8) { subsumes(broad(f), scoped(g, s)) == (f == g) }
+overlaps_symm: theorem (a: Effect, b: Effect) { overlaps(a, b) == overlaps(b, a) }
+broad_overlaps_scoped: theorem (f: u8, s: u8) { overlaps(broad(f), scoped(f, s)) }
+distinct_scopes_do_not_overlap: theorem (f: u8, s: u8, t: u8) { s == t || !overlaps(scoped(f, s), scoped(f, t)) }
+broad_forbid_rejects_scoped_requirement: theorem (f: u8, s: u8) { contradicts(scoped(f, s), broad(f)) }
+
+// --- Effect rows (Oak.EffectRows) ---
+
+// A program of three functions and two slots: own[f] is the bitset of the
+// effects f declares itself, callees[f] the bitset of the functions it
+// calls by name (the low three bits), slots[f] the bitset of the slots it
+// calls through (the low two bits), and row[s] the row of slot s.
+Program: type = struct { own: [3]u8, callees: [3]u8, slots: [3]u8, row: [2]u8 }
+
+// A run installs a function in every slot (the low two bits name it, 3
+// reading as function 2).
+Install: type = struct { s0: u8, s1: u8 }
+
+fn_index: (i: u8): u32 = (i & u8(3)) == u8(3) ? { u32(2) } | { u32(i & u8(3)) }
+
+// One effect set per function: the bound at a fuel, or what a run performs.
+Sets: type = struct { of: [3]u8 }
+
+empty_sets: (): Sets = Sets { of: [3]u8{ 0, 0, 0 } }
+set_of: (sets: Sets, f: u32): u8 = f == u32(0) ? { sets.of[u32(0)] } | { f == u32(1) ? { sets.of[u32(1)] } | { sets.of[u32(2)] } }
+has_bit: (mask: u8, i: u32): Bool = ((u32(mask) >> i) & u32(1)) == u32(1)
+installed: (sigma: Install, s: u32): u32 = s == u32(0) ? { fn_index(sigma.s0) } | { fn_index(sigma.s1) }
+subset: (small: u8, large: u8): Bool = (small & ^large) == u8(0)
+subset_all: (small: Sets, large: Sets): Bool = subset(small.of[u32(0)], large.of[u32(0)]) && subset(small.of[u32(1)], large.of[u32(1)]) && subset(small.of[u32(2)], large.of[u32(2)])
+sets_equal: (a: Sets, b: Sets): Bool = a.of[u32(0)] == b.of[u32(0)] && a.of[u32(1)] == b.of[u32(1)] && a.of[u32(2)] == b.of[u32(2)]
+
+// One unfolding of `bound`: f's own effects, the rows of its slots, and
+// the bounds of its callees at the previous fuel.
+bound_step: (p: Program, previous: Sets): Sets {
+  next: Sets = empty_sets()
+  f: u32 = 0
+  s: u32 = 0
+  g: u32 = 0
+  acc: u8 = 0
+  while f < u32(3) {
+    acc = p.own[f]
+    s = u32(0)
+    while s < u32(2) {
+      acc = has_bit(p.slots[f], s) ? { acc | p.row[s] } | { acc }
+      s = s + u32(1)
+    }
+    g = u32(0)
+    while g < u32(3) {
+      acc = has_bit(p.callees[f], g) ? { acc | previous.of[g] } | { acc }
+      g = g + u32(1)
+    }
+    next.of[f] = acc
+    f = f + u32(1)
+  }
+  next
+}
+
+// One unfolding of `perform` under the installation: f's own effects, what
+// its callees perform, and what the functions installed in its slots perform.
+perform_step: (p: Program, sigma: Install, previous: Sets): Sets {
+  next: Sets = empty_sets()
+  f: u32 = 0
+  s: u32 = 0
+  g: u32 = 0
+  acc: u8 = 0
+  while f < u32(3) {
+    acc = p.own[f]
+    g = u32(0)
+    while g < u32(3) {
+      acc = has_bit(p.callees[f], g) ? { acc | previous.of[g] } | { acc }
+      g = g + u32(1)
+    }
+    s = u32(0)
+    while s < u32(2) {
+      acc = has_bit(p.slots[f], s) ? { acc | set_of(previous, installed(sigma, s)) } | { acc }
+      s = s + u32(1)
+    }
+    next.of[f] = acc
+    f = f + u32(1)
+  }
+  next
+}
+
+// rows_admit: the row check at one fuel — for every function and every
+// slot it calls through, the installed function's bound is inside the
+// slot's row. The compiler's check (`checkEffectRows`) is this at the
+// bound's fixed point, which is the check at every fuel since the bound
+// is monotone (bound_step_monotone) and the fixed point contains them all.
+rows_admit: (p: Program, sigma: Install, bounds: Sets): Bool {
+  ok: Bool = true
+  f: u32 = 0
+  s: u32 = 0
+  while f < u32(3) {
+    s = u32(0)
+    while s < u32(2) {
+      ok = ok && (!has_bit(p.slots[f], s) || subset(set_of(bounds, installed(sigma, s)), p.row[s]))
+      s = s + u32(1)
+    }
+    f = f + u32(1)
+  }
+  ok
+}
+
+// perform_subset_bound, as the induction Lean runs: at fuel 0 both sides are
+// empty, and the step — under the row check at the fuel, if what every
+// function performs is inside its bound, the same holds one unfolding
+// later, for any pair of sets standing for the two fuel-n sets and any
+// function f. The theorem for every fuel is this step iterated.
+perform_subset_bound: theorem (p: Program, sigma: Install, performed: Sets, bounds: Sets, f: u8) { !(rows_admit(p, sigma, bounds) && subset_all(performed, bounds)) || subset(set_of(perform_step(p, sigma, performed), fn_index(f)), set_of(bound_step(p, bounds), fn_index(f))) }
+
+// forbids_sound: at the next fuel, an effect outside a function's bound is
+// not performed by an admitted run.
+forbids_sound: theorem (p: Program, sigma: Install, performed: Sets, bounds: Sets, f: u8, e: u8) { !(rows_admit(p, sigma, bounds) && subset_all(performed, bounds)) || has_bit(set_of(bound_step(p, bounds), fn_index(f)), u32(e & u8(7))) || !has_bit(set_of(perform_step(p, sigma, performed), fn_index(f)), u32(e & u8(7))) }
+
+// The bound's unfolding is monotone, so the bound grows with the fuel and
+// the check at the fixed point is the check at every fuel.
+bound_step_monotone: theorem (p: Program, smaller: Sets, larger: Sets, f: u8) { !subset_all(smaller, larger) || subset(set_of(bound_step(p, smaller), fn_index(f)), set_of(bound_step(p, larger), fn_index(f))) }
+
+// Three unfoldings reach the fixed point of a three-function program (the
+// longest simple call chain has three functions), so the compiler's bound
+// is the bound at every fuel.
+bound_fixed_point: theorem (p: Program) { sets_equal(bound_step(p, bound_step(p, bound_step(p, bound_step(p, empty_sets())))), bound_step(p, bound_step(p, bound_step(p, empty_sets())))) }
+
+main: (): i32 = 0

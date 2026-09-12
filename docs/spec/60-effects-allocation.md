@@ -67,6 +67,8 @@ need not declare what its callees declare.
 
 ### 2a. Effect rows on function types
 
+The subsumption order of §2 and the row check of this section are stated in Oak and decided by `oak prove` (`spec/oak/effects.oak`; `125-verification.md` §6.2): `Oak.Effects`' laws over a `{family, scoped, scope}` record, and `Oak.EffectRows`' soundness — under the row check, a run performs only effects in the static bound, so `forbids` sees through rows — as the induction step over a three-function program whose effect sets are bitsets, with the bound's monotonicity and fixed point.
+
 A function type may carry an effect row:
 
 ```oak
