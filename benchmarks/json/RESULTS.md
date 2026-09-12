@@ -1,5 +1,28 @@
 # JSON decoder optimization measurements
 
+## Sixth optimization pass: the scanner hands the reader its terminator
+
+Measured candidate: `sam/json-decoder-3` at `218b9cc7`. Baseline: `d23f134a` (the fifth
+pass). Data: `terminator-{base,cand}-{record,event}-2026-09-12.json`; five paired
+samples each, run while the load average stood above 140, so only the paired
+ratios carry information.
+
+| Workload | Run | Oak ns/document | simdjson ns/document | Paired-ratio median | Paired ratios |
+| --- | --- | ---: | ---: | ---: | --- |
+| record | Baseline | 65.7 | 70.2 | 0.934× | 0.93 0.95 0.95 0.93 0.93 |
+| record | Candidate | 61.9 | 66.7 | 0.930× | 0.93 1.20 0.73 0.96 0.93 |
+| event | Baseline | 761.1 | 547.6 | 1.382× | 1.38 1.44 1.38 1.34 1.31 |
+| event | Candidate | 595.6 | 461.9 | 1.290× | 1.29 1.27 1.24 1.31 1.30 |
+
+The scanner's status now carries the byte that ended the number (bit 9 set, the byte
+in bits 10 to 17) when a word saw it; the record reader and the array loop take a
+comma or a closing bracket or brace from it with no whitespace skip and no load, and
+an array element after a comma the scanner saw goes straight to the scanner when the
+byte after the comma starts a number (a closing bracket or whitespace there still
+takes the lookahead, so `[1,]` stays InvalidSyntax at the bracket). Neutral on the
+record workload, a fourteenth off the event workload's time.
+
+
 ## Fifth optimization pass: profile-guided reader, two workloads
 
 Measured candidate: branch `sam/json-decoder` at `b12e4951` (rebased on `2ae63198`).

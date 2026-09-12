@@ -770,6 +770,16 @@ twin without a range check when the checker proved every byte
 separators after values and elements are one byte read under its guard,
 no token record; the whitespace after the opening brace is skipped once.
 
+The scanner also hands the reader the byte that ended the number: the
+compact status's low byte is the code as before, and when a word saw the
+terminator, bit 9 is set with that byte in bits 10 to 17. The record
+reader and the array loop take a comma or a closing bracket or brace from
+it without a whitespace skip or a load, and an element after such a comma
+goes straight to the scanner when the byte after the comma starts a
+number; a closing bracket or whitespace there still takes the lookahead,
+so `[1,]` stays InvalidSyntax at the bracket. The public
+`json_read_integer` masks the code.
+
 On the local harness (`benchmarks/json/run.py --samples 9`, Apple arm64,
 the machine otherwise idle, the simdjson control in every run) the fourth
 pass took the derived decoder from 1.20 times simdjson's time to 1.00 —
