@@ -735,10 +735,11 @@ they are exported and some contain loops, so the leaf-helper shape rule
 would not pick them, and a call inside every derived reader's loop costs
 more than their bodies.
 
-On the local harness (`benchmarks/json/run.py`, Apple arm64, taken while
-other work loaded the machine, interleaved A/B with the simdjson control
-in every run) the derived decoder went from 1.17 times simdjson's time to
-1.03; recorded runs are in `benchmarks/json/RESULTS.md`. The remaining gap
+On the local harness (`benchmarks/json/run.py --samples 9`, Apple arm64,
+the machine otherwise idle, the simdjson control in every run) the derived
+decoder went from 1.20 times simdjson's time to 1.00 — 75.5 ns per
+document against 63.0 before, 64.5 against 64.6 after; recorded runs are
+in `benchmarks/json/RESULTS.md`. The remaining gap
 to the hand-written decoder is structural — about twenty-nine whitespace
 skips per document against fourteen, and the bookkeeping of a generic
 field loop — and is the next target; the per-line execution counts of the
