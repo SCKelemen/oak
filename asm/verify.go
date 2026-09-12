@@ -3198,6 +3198,28 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return zeroExtend(truncate(cond, width), width), "", true
 		}
+		if e.Operator == "/" || e.Operator == "%" {
+			// Unsigned division and remainder by a constant power of two
+			// are a shift and a mask; anything else stays outside the
+			// subset (the Lean projection states it).
+			if _, signed, isScalar := lo.operandContract(e); isScalar && !signed {
+				right, reason, okR := lo.lower(e.Right, width)
+				if !okR {
+					return nil, reason, false
+				}
+				if right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0 {
+					left, reason, okL := lo.lower(e.Left, width)
+					if !okL {
+						return nil, reason, false
+					}
+					if e.Operator == "%" {
+						return binaryTerm("and", left, constTerm(right.value-1, width)), "", true
+					}
+					return binaryTerm("shr", left, constTerm(uint64(bits.TrailingZeros64(right.value)), width)), "", true
+				}
+			}
+			return nil, fmt.Sprintf("operator %s (only by an unsigned constant power of two)", e.Operator), false
+		}
 		op, ok := oakOps[e.Operator]
 		if !ok {
 			return nil, fmt.Sprintf("operator %s", e.Operator), false

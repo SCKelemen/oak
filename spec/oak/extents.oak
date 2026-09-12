@@ -4,8 +4,9 @@
 // each law over the naturals; here every sum or product that the law
 // forms carries the premise that it did not wrap, spelled as the checker
 // spells it (`i + k >= i`), so the u32 statement is exactly the law the
-// facts rely on. `midpoint_*` and `div_bound_*` divide and live in
-// extents_lean.oak, where Lean's `omega` proves them.
+// facts rely on. Division by a power of two is a shift to the decider; the
+// page-scale laws and a division by three live in extents_lean.oak, where
+// Lean's `omega` proves them.
 
 // static_extent: a constant below a static length is in range.
 static_extent: theorem (c: u32, n: u32) { !(c < n) || c < n }
@@ -47,6 +48,12 @@ subtraction_under_length: theorem (i: u32, k: u32, len: u32) { !(k <= i && i < l
 // (U - 1) * K + j < len give i * K + j < len, with the products in range
 // (the 512-key page scale is in extents_lean.oak: its BDD exceeds the budget).
 scaled_under_bound_4: theorem (i: u32, j: u32, u: u32, len: u32) { !(i < u && u >= u32(1) && u <= u32(1073741824) && j < u32(4) && (u - u32(1)) * u32(4) + j < len) || i * u32(4) + j < len }
+
+// midpoint_under_bound, midpoint_under_length: under a < b, a + (b - a) / 2
+// is below b, and below len when b <= len (division by a power of two is a
+// shift to the decider).
+midpoint_under_bound: theorem (a: u32, b: u32) { !(a < b) || a + (b - a) / u32(2) < b }
+midpoint_under_length: theorem (a: u32, b: u32, len: u32) { !(a < b && b <= len) || a + (b - a) / u32(2) < len }
 
 // masked_under_length: e & M < len whenever M < len.
 masked_under_length: theorem (x: u32, m: u32, len: u32) { !(m < len) || (x & m) < len }

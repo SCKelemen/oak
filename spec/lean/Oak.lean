@@ -63,6 +63,7 @@ import Oak.Assembler
 import Oak.AssemblerSemantics
 import Oak.ArmASL
 import Oak.Extents
+import Oak.Discharge
 import Oak.RecordShape
 import Oak.RecordShapeRefinement
 import Oak.GenericConstraintRefinement

@@ -256,6 +256,19 @@ the toolchain.
 | Unicode Table 3-7, one and two bytes | `is_valid_utf8` over `[b0, b1]` equals the table's predicate | decided, all 65536 cases |
 | Table 3-7, the special three- and four-byte rows | `E0`, `E1`, `ED`; `F0`, `F4` with a fixed last byte, over every continuation pair | decided, all 65536 cases each |
 
+| Discharge law (`Oak.Discharge`, `spec/oak/discharge.oak`) | Statement | Rung |
+| --- | --- | --- |
+| `shift_multiple`, `mask_multiple`, `product_multiple` | a shift by log2 K, a mask with a multiple of K, a product with a multiple of K is a multiple of K, wrapping included | decided, bit level; `bv_decide` in Lean |
+| `sum_of_multiples`, `difference_of_multiples`, `or_of_multiples`, `xor_of_multiples` | combinations of multiples are multiples | decided; `bv_decide` |
+| `narrowing_keeps_multiple`, `widening_keeps_multiple` | a conversion keeps the low bits | decided; `bv_decide` |
+| `offset_below_bound`, `lower_bound_from_guard` | the bound rules | decided |
+| `product_multiple_needs_power_of_two` | `∃ x : BitVec 8, (x * 3) % 3 ≠ 0` — why the rule admits powers of two only | Lean only (a counterexample, not a law) |
+
+| Protocol against intrinsic (`spec/oak/protocols.oak`) | Statement | Rung |
+| --- | --- | --- |
+| `machine_agrees_two_bytes` | the `Utf8` machine, stepped through `utf8_legal`/`utf8_next`, accepts `[b0, b1]` exactly when `is_valid_utf8` does | decided, all 65536 cases |
+| `machine_agrees_three_bytes_e0/ed/e1` | the same under the three-byte leads with special ranges | decided, all 65536 cases each |
+
 The witnesses are the three-witness rule (`92-ffi.md` §3.1) as proof
 rather than test: the portable lowering, transcribed as an Oak function,
 is stated equal to the instruction function and the decider settles it
@@ -263,7 +276,8 @@ for every input; the validity intrinsic is stated against the table it
 implements and decided exhaustively. The instruction functions decide because the bit-level decider lowers
 `arm64.rev32`, `rbit`, `clz`, and `cnt` to the verifier's own instruction
 terms — the semantics the assembler lane is checked against — with `cnt`
-as a population-count term (an adder tree over the operand's bits). What
+as a population-count term (an adder tree over the operand's bits), and
+divides by an unsigned constant power of two as a shift or a mask. What
 is not yet restated: the laws of `Oak.Protocol` (about the lowering, not
 a value), `Oak.Floats` (the decider has no floats), and the laws over
 lists and layouts, which have no fixed-width statement.

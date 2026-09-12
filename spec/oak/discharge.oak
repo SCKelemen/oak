@@ -1,0 +1,34 @@
+// The discharge laws (docs/spec/20-types.md section 12, "Static
+// discharge"; typechecker/discharge.go; spec/lean/Oak/Discharge.lean): the
+// shapes under which a refinement's construction is emitted without its
+// guard, stated over the wrapping arithmetic the emitted code performs and
+// decided at the bit level. Every law is about a power-of-two divisor —
+// the rule's own scope, because wrapping keeps a power-of-two divisor's
+// low bits and no other's.
+
+// A shift by at least log2 K leaves a multiple of K.
+shift_multiple: theorem (e: u32) { (e << u32(12)) % u32(4096) == u32(0) }
+
+// A mask with a multiple of K leaves a multiple of K.
+mask_multiple: theorem (a: u32) { (a & u32(4294963200)) % u32(4096) == u32(0) }
+
+// A product with a multiple of K is a multiple of K, wrapping included.
+product_multiple: theorem (x: u32) { (x * u32(4096)) % u32(4096) == u32(0) }
+product_multiple_by_two: theorem (x: u8) { (x * u8(2)) % u8(2) == u8(0) }
+
+// Sums, differences, and bitwise combinations of multiples are multiples.
+sum_of_multiples: theorem (a: u32, b: u32) { !(a % u32(64) == u32(0) && b % u32(64) == u32(0)) || (a + b) % u32(64) == u32(0) }
+difference_of_multiples: theorem (a: u32, b: u32) { !(a % u32(64) == u32(0) && b % u32(64) == u32(0)) || (a - b) % u32(64) == u32(0) }
+or_of_multiples: theorem (a: u32, b: u32) { !(a % u32(64) == u32(0) && b % u32(64) == u32(0)) || (a | b) % u32(64) == u32(0) }
+xor_of_multiples: theorem (a: u32, b: u32) { !(a % u32(64) == u32(0) && b % u32(64) == u32(0)) || (a ^ b) % u32(64) == u32(0) }
+
+// A conversion keeps the low bits, narrowing or widening.
+narrowing_keeps_multiple: theorem (x: u32) { !(x % u32(16) == u32(0)) || u8_trunc_u32(x) % u8(16) == u8(0) }
+widening_keeps_multiple: theorem (x: u8) { !(x % u8(16) == u8(0)) || u32(x) % u32(16) == u32(0) }
+
+// The literal bound composes with an offset (the construction Slot(i + 1)
+// under i < 7 is discharged), and a lower bound is what the guard states.
+offset_below_bound: theorem (i: u32) { !(i < u32(7)) || i + u32(1) < u32(8) }
+lower_bound_from_guard: theorem (k: u32) { !(k >= u32(1)) || k >= u32(1) }
+
+main: (): i32 = 0
