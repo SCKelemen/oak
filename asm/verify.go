@@ -2939,7 +2939,13 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 		lo.inlining = map[string]bool{}
 	}
 	lo.inlining[name] = true
-	result, reason, ok := lo.lower(callee.Body, resultWidth)
+	// A tail-recursive callee is the loop it compiles to
+	// (docs/spec/85-discipline.md), over its parameters as locals.
+	body := callee.Body
+	if loop, isTail := tailRecursionAsLoop(callee, body); isTail {
+		body = loop
+	}
+	result, reason, ok := lo.lower(body, resultWidth)
 	delete(lo.inlining, name)
 	lo.locals = saved
 	if !ok {

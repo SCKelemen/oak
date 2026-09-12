@@ -240,6 +240,9 @@ type emitter struct {
 	// valueBinding is the Lean name `value` reads as while a refinement's
 	// predicate is rendered (predicateTerm); empty otherwise.
 	valueBinding string
+	// recursive marks the functions that call themselves; they extract by
+	// structural recursion on the fuel (docs/spec/95-extraction.md §2).
+	recursive map[string]bool
 	// adts holds every ADT declaration of the program plus every recorded
 	// generic instantiation, specialized; templates are never emitted.
 	adts      map[string]*ast.ADTType
@@ -349,6 +352,15 @@ func (em *emitter) dependencyOrder(names []string) ([]string, error) {
 		}
 		state[name] = 1
 		for _, callee := range em.callees(em.functions[name]) {
+			if callee == name {
+				// Direct self-recursion extracts by structural recursion on
+				// the fuel (emitFunction); mutual recursion still fails closed.
+				if em.recursive == nil {
+					em.recursive = map[string]bool{}
+				}
+				em.recursive[name] = true
+				continue
+			}
 			if _, known := em.functions[callee]; known {
 				if err := visit(callee, append(path, name)); err != nil {
 					return err
@@ -605,6 +617,9 @@ func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
 	em.scope = body
 	var lines []string
 	em.indent = "  "
+	if em.recursive[fn.Name.Value] {
+		em.indent = "    "
+	}
 	statements, result, err := em.functionBody(fn, returnType)
 	if err != nil {
 		return "", err
@@ -631,7 +646,16 @@ func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
 		out.WriteString(helper)
 		out.WriteString("\n")
 	}
-	fmt.Fprintf(&out, "def %s %s (fuel : Nat) : Option %s := do\n", ident(fn.Name.Value), strings.Join(params, " "), tupleType(resultTypes))
+	if em.recursive[fn.Name.Value] {
+		// A self-recursive function is a definition by recursion on the
+		// fuel: no fuel, no result; otherwise the body, whose recursive
+		// calls pass the fuel that remains.
+		fmt.Fprintf(&out, "def %s %s : Nat → Option %s\n", ident(fn.Name.Value), strings.Join(params, " "), tupleType(resultTypes))
+		out.WriteString("  | 0 => none\n")
+		out.WriteString("  | fuel + 1 => do\n")
+	} else {
+		fmt.Fprintf(&out, "def %s %s (fuel : Nat) : Option %s := do\n", ident(fn.Name.Value), strings.Join(params, " "), tupleType(resultTypes))
+	}
 	out.WriteString(strings.Join(lines, "\n"))
 	out.WriteString("\n")
 	if fn.Theorem {
