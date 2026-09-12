@@ -1126,7 +1126,7 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	if frame > 4080 {
 		return nil, unsupported("a frame of %d bytes", frame)
 	}
-	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Fallback: true}
+	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts}
 	g.line = fn.Token.Line
 	var prologue []asm.Item
 	if frame > 0 {

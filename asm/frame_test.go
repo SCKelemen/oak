@@ -42,11 +42,17 @@ func TestVerifyFrameMemory(t *testing.T) {
 	if unstored.Kind != VerdictTrusted || !strings.Contains(unstored.Message, "never stored") {
 		t.Fatalf("a load of an unstored slot must be trusted, got %s: %s", unstored.Kind, unstored.Message)
 	}
-	// A width mismatch between store and load is outside the subset.
+	// Frame slots tile: a narrower reload reads the slot's low bytes
+	// (little-endian), so the low half is proven and the high half refuted.
 	widths := verifyCase(t, "low: (a: u64) -> u32", "u32_trunc_u64(a)",
 		"  bind x0 = a\n  clobber w9\n  frame 16\n  str x0, [sp, #-16]!\n  ldr w9, [sp], #16\n  mov w0, w9\n  ret")
-	if widths.Kind != VerdictTrusted || !strings.Contains(widths.Message, "width") {
-		t.Fatalf("a narrower reload must be trusted, got %s: %s", widths.Kind, widths.Message)
+	if widths.Kind != VerdictProven {
+		t.Fatalf("a narrower reload of the low half must be proven, got %s: %s", widths.Kind, widths.Message)
+	}
+	highHalf := verifyCase(t, "low: (a: u64) -> u32", "u32_trunc_u64(a)",
+		"  bind x0 = a\n  clobber w9\n  frame 16\n  str x0, [sp, #-16]!\n  ldr w9, [sp, #4]\n  add sp, sp, #16\n  mov w0, w9\n  ret")
+	if highHalf.Kind != VerdictMismatch {
+		t.Fatalf("reloading the high half for the low half must be a mismatch, got %s: %s", highHalf.Kind, highHalf.Message)
 	}
 	// The wrong slot is a genuine difference: refuted.
 	wrongSlot := verifyCase(t, "second: (a, b: u64) -> u64", "b",

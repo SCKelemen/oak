@@ -97,6 +97,9 @@ func TestE2ENativeADTs(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	if !strings.Contains(joined, "asm unit name_len: proven") {
+		t.Errorf("name_len must be proven equal to its Oak body (a literal match as a chain of selects); diagnostics:\n%s", joined)
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_adts_c", New().WithSource("adts.oak", nativeADTProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}

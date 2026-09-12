@@ -1183,10 +1183,44 @@ element as a scalar: spans of records leave a body trusted. Executed
 index, a span of 12-byte records renumbered in place with an element
 replaced whole and one copied out, and a subslice of a record view walked
 by a leaf — natively against the C backend and the portable realization.
-Next increments: the verifier's frame addresses, record locals, and
-derived spans (so array, record, ADT, and subslice bodies are proven, not
-trusted), `break` as a second loop exit in the recognizer, and the slicing
-syntax `v[lo:hi]` once the C backend lowers `len` over it.
+**Thirteenth increment — the verifier reaches aggregates.** On the
+assembly side, frame slots tile: a store records its term at its width and
+splits any older slot it partly covers into the untouched aligned pieces,
+and a load reads back one slot, a sub-range of it (the low bytes of a
+64-bit slot for a 32-bit reload, little-endian), or the exact concatenation
+of adjacent pieces, zero- or sign-extending as its mnemonic says — so byte
+and halfword element accesses over word-zeroed storage and word copies over
+field stores resolve where they used to fail on a width mismatch (the
+narrow-reload case in `TestVerifyFrameMemory` is now proven for the low
+half and refuted for the high half). `add xN, sp, #imm` yields a frame
+address term (`sp#A`), constant element and field offsets fold onto it, and
+a load or store whose base resolves to a frame address reads or writes that
+slot; a data-dependent index leaves the body trusted. A span base plus a
+constant byte offset (a `subslice` with a constant start) is the element at
+the shifted index. On the Oak side, locals may be aggregates — records and
+tagged unions as field trees of leaf terms (the ADT's `u32` tag and one
+payload per carrying variant), owned arrays as element lists — built from
+typed literals, variants, array literals, copies, value-less arrays
+(zero-filled, as both backends fill them), field and constant-index element
+stores, and read through access chains; conditional arms merge aggregates
+leaf-wise; a `match` over a tagged union whose tag is decided on the path
+runs exactly its arm and binds the payload; a value-position `match` over a
+scalar that does not fold becomes a chain of selects on equality ending in
+its wildcard arm; unary minus wraps at the width. Aggregates across a
+data-dependent loop, data-dependent indices, and matches over undecided
+tags stay outside the subset (trusted), as do record and union parameters
+and results, which the executor does not yet bind (their chunk terms and
+leaf terms are the next increment's work). The declarations reach the
+verifier through the function (`asm.Function.Records`/`ADTs`, set by the
+compiler for native bodies and hand-written units alike). Proven now among
+the executed suites: `manhattan` (a record local with conditional field
+updates and unary minus), `copy_point` and `swap_in` (copies and
+whole-record assignment), `name_len` (a literal match over a parameter),
+beside the loop kernels proven before.
+Next increments: record and union parameters and results in the verifier
+(chunk terms bound to leaf terms), `break` as a second loop exit in the
+recognizer, and the slicing syntax `v[lo:hi]` once the C backend lowers
+`len` over it.
 
 
 

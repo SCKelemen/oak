@@ -102,6 +102,11 @@ func TestE2ENativeRecords(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	for _, fn := range []string{"manhattan", "copy_point", "swap_in"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s must be proven equal to its Oak body (record locals as aggregates, tiled frame slots); diagnostics:\n%s", fn, joined)
+		}
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_records_c", New().WithSource("records.oak", nativeRecordProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}

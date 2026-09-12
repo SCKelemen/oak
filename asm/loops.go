@@ -416,6 +416,9 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	if len(lo.loops) >= loopEventBudget {
 		return "more data-dependent loops than the verifier's budget", false
 	}
+	if lo.hasAggregates() {
+		return "an aggregate local across a data-dependent loop", false
+	}
 	// The loop-carried locals are those the body assigns and that exist
 	// before the loop; a local declared inside the body is the body's own.
 	assigned := map[string]bool{}
