@@ -90,6 +90,17 @@ type Compilation struct {
 	// or not — how a driver surfaces informational findings such as the
 	// assembler's verification verdicts (docs/spec/94-assembler.md §8).
 	diagnosticSink func(*diagnostic.Diagnostic)
+	// syntaxRewrites run on the parsed tree before checking, in order: how
+	// a driver adds declarations the program did not write, such as the
+	// prover's protocol obligations (docs/spec/125-verification.md §6).
+	syntaxRewrites []func(*SyntaxTree) error
+}
+
+// WithSyntaxRewrite returns a compilation that applies rewrite to the
+// parsed tree before checking it, after any rewrite added earlier.
+func (comp Compilation) WithSyntaxRewrite(rewrite func(*SyntaxTree) error) Compilation {
+	comp.syntaxRewrites = append(append([]func(*SyntaxTree) error(nil), comp.syntaxRewrites...), rewrite)
+	return comp
 }
 
 // WithDiagnosticSink returns a compilation that reports every diagnostic
@@ -293,6 +304,11 @@ func (comp Compilation) Check() Stage[*SemanticModel] {
 
 func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDeclaration) Stage[*SemanticModel] {
 	return comp.Parse().Then(func(tree *SyntaxTree) (*SemanticModel, error) {
+		for _, rewrite := range comp.syntaxRewrites {
+			if err := rewrite(tree); err != nil {
+				return nil, err
+			}
+		}
 		publicSource := tree.Root
 		if tree.Modules != nil && tree.Modules.Public != nil {
 			publicSource = tree.Modules.Public
@@ -334,7 +350,12 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// Asm units pair with definition-less declarations and pass the
 		// assembler's seam checker before type checking sees the program
 		// (docs/spec/94-assembler.md).
-		asmFunctions, asmDiagnostics := comp.stitchAsmUnits(tree.Root)
+		stitcher := comp
+		if tree.Modules != nil && len(tree.Modules.AsmUnits) > 0 {
+			// Imported library packages contribute their embedded units.
+			stitcher.options.AsmUnits = append(append([]SourceText(nil), comp.options.AsmUnits...), tree.Modules.AsmUnits...)
+		}
+		asmFunctions, asmDiagnostics := stitcher.stitchAsmUnits(tree.Root)
 		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}

@@ -107,6 +107,32 @@ decode, the two binary searches for scalars in marked blocks, the run
 buffer round trip, and the re-encode; a direct-indexed first-level table for
 the Latin and combining-mark blocks would remove most of the searches.
 
+## Hardware hashes, 2026-09-12
+
+`stdlib/hash.arm64.oakasm` realizes `crc32c_step7` (seven `crc32cx` over
+the 64-bit words `crc32c_update` folds 56 bytes at a time) and
+`sha256_block_hw` (one compression through `sha256h`/`sha256h2`/`sha256su0`/
+`sha256su1`) as asm units whose Oak bodies stay the portable definition.
+Same machine and toolchain as the baseline above, `--only hash`, five
+samples; raw data in
+[hash-hw-2026-09-12-m4max.json](hash-hw-2026-09-12-m4max.json).
+
+| Workload | Oak ns/byte before | Oak ns/byte after | Go ns/byte | Oak / Go before → after |
+| --- | ---: | ---: | ---: | ---: |
+| hash/crc32c | 2.08 | 0.10 | 0.10 | 20.0× → 0.97× |
+| hash/sha256 | 2.68 | 0.43 | 0.34 | 7.31× → 1.26× |
+
+CRC-32C is at parity: both sides are bound by the three-cycle latency of the
+dependent `crc32cx` chain, and the Oak side's seven-word call amortizes the
+call over 56 bytes. The remaining SHA-256 gap is structural rather than in
+the rounds: one call per 64-byte block, an eight-word state copied into a
+local and back around the call, and a `subslice` per block; Go compresses
+many blocks per call. Walking several blocks inside the unit would need the
+checker to admit a 16-byte vector load at a byte index (today an indexed
+access must move by whole elements of the span's element type), so it waits
+on that assembler extension. Off AArch64 and under
+`-DOAK_PORTABLE_INTRINSICS` the portable rows of the baseline apply.
+
 ## Hot spots, in the order they are worth pursuing
 
 1. **CRC-32C 20× and SHA-256 7.3× slower.** The portable tables are in;
@@ -217,7 +243,7 @@ makes two passes or returns aggregates through `Result`.
    heapsort can stay as the fallback. Expected: level with Go on random
    input, O(n) on presorted input.
 
-3. **CRC-32C 41× and SHA-256 8.9× slower.** `crc32c_update` is
+3. **CRC-32C 41× and SHA-256 8.9× slower** — resolved 2026-09-12 by the AArch64 units above (0.97× and 1.26×); the portable analysis stands for other targets. `crc32c_update` is
    bit-serial: an eight-iteration inner loop per byte. Go uses the arm64
    `CRC32CX` instruction and reaches 10 GB/s; a slicing-by-8 table (2 KiB
    of u32, eight bytes per step) is the portable answer and typically

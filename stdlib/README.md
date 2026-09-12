@@ -869,9 +869,32 @@ checksum of `a ++ b`. BLAKE3 has the same incremental shape —
 `blake3(view, out)`; the state carries the open chunk and the chaining-value
 stack (room for the 54 levels a 64-bit length can need), and the tree is the
 specification's: 1024-byte chunks, parents merged by the chunk counter's
-trailing zeros, the last parent taking the root flag. All three are
-bit-serial or byte-serial today; word-at-a-time and table paths are measured
-changes for later.
+trailing zeros, the last parent taking the root flag.
+
+On AArch64 the two hot kernels run through the CPU's instructions:
+`stdlib/hash.arm64.oakasm` (embedded and attached by the loader whenever
+`hash` is imported, its function names rewritten to the package's internal
+names) realizes `crc32c_step7` — seven `crc32cx` steps over the 64-bit
+words `crc32c_update` folds 56 bytes at a time — and `sha256_block_hw` — one
+compression through `sha256h`/`sha256h2`/`sha256su0`/`sha256su1`, the state
+read from and written to a span and the block and round constants read
+through views under the assembler checker's dominating length guards. Each
+unit pairs with an Oak declaration that keeps its portable body, so the body
+is the definition: the seam checker admits the unit only within the
+declared registers and proven memory, the extraction and the interpreter see
+the Oak body, non-AArch64 targets and `-DOAK_PORTABLE_INTRINSICS` builds run
+it, and the differential tests (`compiler/e2e_stdlib_crc_sha_hw_test.go`)
+plus the faithfulness harness compare the two paths byte for byte. The CRC
+and SHA-2 instructions have no semantics in the asm verifier, so their
+verdicts are "trusted" (`94-assembler.md` §5), which is exactly what the
+differential tests cover. An AArch64 build requires FEAT_CRC32 and
+FEAT_SHA256 (every Apple M-series core and Armv8.1+ server core has both;
+a core without them takes SIGILL at the first call — build with
+`-DOAK_PORTABLE_INTRINSICS` for such a target). Measured on an M4 Max
+(`benchmarks/stdlib/RESULTS.md`): CRC-32C at parity with Go's hardware path
+(0.97×, from 20×), SHA-256 within 1.26× (from 7.3×); the remaining SHA gap
+is one call and one 96-byte state copy per 64-byte block. BLAKE3 stays
+portable.
 
 `compiler/e2e_hash_test.go` checks the FIPS known-answer vectors, the
 RFC 3720 CRC-32C check value (`0xE3069283` for `"123456789"`), and random

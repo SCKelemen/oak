@@ -64,6 +64,8 @@ proofs written against them transfer.
 | `TABLE: [256]u8 = [256]u8{ ... }` at top level, `[16]u32{ m[2], ... }` anywhere | `def TABLE : Array UInt8 := (#[...] : Array UInt8)`; an array literal is the Lean array literal, split into `++`-joined chunks of 128 beyond that length so a 2048-entry table elaborates |
 | `view(&TABLE)` of a top-level constant | the constant's array value (a view is the array it views); `span(&TABLE)` would mutate the global and fails closed |
 | `r.field[i] = v` | `let r := { r with field := r.field.setIfInBounds i.toNat v }` (one level of fields) |
+| `arr[i].field = v` | `let arr := arr.setIfInBounds i.toNat { (arr.getD i.toNat zero) with field := v }` — the element record read, one field replaced, stored back at the same index (the text cursors of `strings`) |
+| `is_valid_utf8(v)` | `Oak.Utf8Exec.valid v` — the same Table 3-7 decision procedure over the carrier (section 3), imported only when used |
 | `^x` | `~~~x`, the complement over the operand's width |
 | `subslice(v, start, n)` | `v.extract start.toNat (start.toNat + n.toNat)` — the window as the array it views (section 3 on the clamp) |
 | `f32`, `f64` | `Float32`, `Float` — the host's binary32 and binary64 (section 3) |
@@ -145,6 +147,20 @@ for every value the constant could have, which is the only claim the
 program itself makes. The C identifier and the header never appear in the
 Lean text.
 
+**Fifth: UTF-8 validity is decided the same way twice.** The compiler's
+`is_valid_utf8` intrinsic (`70-strings.md`) decides Unicode Table 3-7 over a
+view; the extraction renders it as `Oak.Utf8Exec.valid`
+(`spec/lean/Oak/Utf8Exec.lean`), an executable definition of the same
+procedure over the `Array UInt8` carrier — one to four bytes, no overlongs,
+no surrogates, nothing above U+10FFFF, stopping at the first ill-formed
+sequence. It is a definition, not the relation `Oak.Utf8Validity.Valid`;
+the theorem relating the two is listed in section 7, and the faithfulness
+harness compares the definition with the compiled intrinsic on valid,
+damaged, and random inputs. The `string` type itself (a value the compiler
+guarantees valid) is still outside the subset: the text library's
+functions take and return `[]u8` views, which is why `strings`, `unicode`,
+`url`, `path`, `grapheme`, and `normalize` extract without it.
+
 ## 4. The subset, and what fails closed
 
 Records and sum types of extractable fields and payloads, generic ADTs per
@@ -160,11 +176,14 @@ comparisons, negation, the `round`/`bits`/`saturating`/`trunc` rows between
 them and the integers, and the intrinsics of the table above (`fma`,
 `copysign`, and `round_even` through `Oak.FloatOps`); field
 assignment and element assignment into a record's array field, one level
-deep; array literals; top-level constants, including constant tables read
+deep, and field assignment through an element of a span (`arr[i].field`);
+array literals; top-level constants, including constant tables read
 through `view` and target constants (`c.const`, as opaque constants of
-their `c.*` scalar type). The extraction closes over the roots'
+their `c.*` scalar type); `is_valid_utf8` through `Oak.Utf8Exec`. The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
-functions it reaches. Everything else — strings, generic templates
+functions it reaches. Everything else — the `string` type and its
+literals (the text library works over `[]u8` views and extracts; code that
+holds `string` values, such as `json`, does not), generic templates
 themselves, recursion, methods, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`
 float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
@@ -184,7 +203,13 @@ verification workflow and the certificate gate build and run it.
 builds one Oak module and one Lean driver over the committed extractions
 from a fixed-seed corpus — the heap, pdq and insertion sorts, LEB128
 encode and decode, hex and base64 round trips, xoshiro256** draws,
-CRC-32C and SHA-256, and the float packages: `float_format`,
+CRC-32C and SHA-256, the text library (UTF-8 validation, counting, and a
+decode scan over valid, damaged, and random byte strings; grapheme
+boundary chains over ZWJ sequences, flags, Hangul, and conjuncts;
+`normalize_nfc`/`normalize_nfd`/`normalize_is_nfc` over composed,
+decomposed, singleton, and reordering inputs; `url_parse` ranges over the
+RFC 3986 examples and malformed references; `path_clean` over Go's table
+shapes), and the float packages: `float_format`,
 `float_format_fixed`, `float_format_f32`, `float_parse`/`float_parse_f32`
 on hard values and spellings, the ml-shaped kernels (`dot_f32`, `sum_f32`,
 `sum_f64`, `axpy_f32`, `max_abs_f32`, `widen_mean`, `quantize_u8`), and
@@ -224,7 +249,10 @@ test and each fails this one.
 whole packages — `varint`, `encoding`, `hash`, `random`, `uuid`, `float`
 (the decimal text package, integer code over `f64` bit patterns), `math`
 (the transcendentals: pure binary64 arithmetic with `fma`, `copysign`, and
-`round_even` through `Oak.FloatOps`, 1,883 lines), and `sort` at `u32` —
+`round_even` through `Oak.FloatOps`, 1,883 lines), `sort` at `u32`, and
+the text library — `unicode`, `strings` (2,540 lines: the UTF-8 codec,
+case folding, the split and fold cursors), `url`, `path`, `grapheme`, and
+`normalize`, each closing over the `strings` functions it calls —
 into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
 failing on drift the same way. A package's program is the core prelude
 plus the flattened texts of its dependencies and itself (`stdlib.Flatten`);
@@ -388,11 +416,64 @@ the compiler compiles, up to the extractor and the compiler being correct:
   sorted permutation (it is insertion sort); `sort_span_budget_zero` — with
   the depth budget spent the whole span is heap sorted, so the fallback path
   is a sorted permutation for every array below `2^31`. The pattern-defeating
-  path beyond the threshold is decided on twenty-four-element sorted,
+  path beyond the threshold is also decided on twenty-four-element sorted,
   reversed, all-equal, organ-pipe, few-distinct and sawtooth inputs and a
-  budget of one on the reversed sixteen; its universal laws need the
-  range-stack invariant and the in-bounds proof of every swap (the extraction
-  drops an out-of-range store, so permutation itself depends on them).
+  budget of one on the reversed sixteen; its universal laws are the two
+  entries below (the extraction drops an out-of-range store, so permutation
+  itself depends on the in-bounds proof of every swap).
+- `Oak/Stdlib/PdqsortLaws.lean`: `sort_span_perm`, `sort_span_budget_perm`
+  and `sort_u32_span_perm` — the pattern-defeating quicksort returns a
+  permutation of its input for every array below `2^31` elements, every
+  depth budget and every fuel (partial correctness: whenever the extraction
+  returns). Every helper is shown to permute the window when its indices are
+  in bounds — `swap_perm` (the two guarded stores are `Array.swap`),
+  `insertion_perm`, `heap_perm`, `reverse_perm`, `break_patterns_perm` (the
+  three pattern-breaking swaps stay inside `[a, b)` because `bit_length_spec`
+  bounds the mask below twice the length), `choose_pivot_spec` (the array is
+  untouched and the pivot lies in `[a, b)`), `partial_insertion_perm`,
+  `partition_equal_spec` (the returned index lies in `[a + 1, b]`) and
+  `partition_spec` (the split lies in `[a, b - 1]`) — and the main loop
+  `sort_span_budget_u32.loop1` carries the range-stack invariant `StackInv`
+  by fuel induction: every pushed range `[a_k, b_k)` satisfies
+  `a_k ≤ b_k ≤ n` and `(b_k - a_k) · 2^k ≤ n`, the live range satisfies the
+  same at the current depth, and because the loop continues with the smaller
+  side and pushes only ranges of thirteen or more elements the depth never
+  exceeds 28, so no stack index wraps or leaves the 144 slots
+  (`stack_index_toNat`, `StackInv.push`).
+- `Oak/Stdlib/PdqsortWindows.lean`, `PdqsortHelpers.lean`,
+  `PdqsortSorted.lean`: `sort_span_sorted`, `sort_span_budget_sorted`,
+  `sort_u32_span_sorted` and the conjunction `sort_u32_span_correct` — the
+  pattern-defeating quicksort returns a *sorted* permutation of its input
+  under the same hypotheses (every array below `2^31` elements, every depth
+  budget, every fuel, whenever it returns). `WinPerm a b xs ys` says `ys`
+  agrees with `xs` outside `[a, b)` and draws every value inside from inside;
+  every helper is one (`swap_win`, `break_patterns_win`, the window
+  write-back `writeback_win`), and the insertion and heap windows are sorted
+  by `sort_insertion_spec`/`sort_heap_spec` transported to any fuel through
+  the fuel-monotonicity lemmas `insertion_mono_le`/`heap_mono_le`. The three
+  helpers that decide the order carry postconditions: `partition_post` (the
+  pivot value sits at `mid`, `[a, mid)` is at most it, `(mid, b)` at least
+  it — the scans keep `a + 1 ≤ i ≤ j + 1 ≤ b` and cross exactly at
+  `i = j + 1`), `partition_equal_post` (`[a, i')` at most the pivot value,
+  `[i', b)` above it), and `partial_insertion_spec` (when it reports the
+  range sorted, `SortedRange ys a b`; the left shift keeps the `ShiftInv`
+  "sorted except at the moving hole" invariant and the right shift never
+  touches positions below `i`). The main loop then carries the ordered-stack
+  invariant by the same fuel induction as `span_loop_perm`: `Ord items stack
+  depth a b` — any two positions that do not share a pending range (the
+  current `[a, b)` or a stacked one) are already in order — and `Disj` —
+  the pending ranges are pairwise disjoint. A window permutation of the
+  current range keeps `Ord` (`ord_win`, because a value moved inside the
+  range is compared against a position outside it that no stacked range
+  shares); finishing a window drops the range (`ord_finish`); a partition
+  replaces it by its two sides around the final pivot, one pushed at level
+  `depth` and one continued (`ord_split`/`disj_split`, with `push_slots`
+  showing the lower levels untouched); the equal-elements partition shrinks
+  it to `[i', b)` because the element before the range is at least the pivot
+  and, by `Ord`, at most everything inside, so the low side is all equal
+  (`ord_equal_step`); a pop makes the top of the stack current (`ord_pop`).
+  When the stack is empty and the range is done, `Ord` is `SortedPrefix`
+  (`sorted_of_ord0`).
 - `Oak/Stdlib/EncodingLaws.lean`: `hex_round_trip` — for every source below
   `2^31 - 2` bytes, either symbol case, a destination that holds exactly the
   encoding, and a decode destination that holds the source, `hex_encode`
@@ -410,7 +491,7 @@ the compiler compiles, up to the extractor and the compiler being correct:
   whatever the decoder accepts, re-encoding the decoded bytes in lower case
   writes the source back with its letters lowered (`lowerHex`), so the
   decoder accepts exactly the encodings, up to case. Base32 has the RFC 4648
-  §10 vectors decided; its universal round trip remains.
+  §10 vectors decided here; its universal round trip is `Base32Laws.lean`.
 - `Oak/Stdlib/Base64Laws.lean`: `base64_round_trip` — for every source below
   `2^31 - 8` bytes, either alphabet (standard or URL), padded or not, a
   destination that holds exactly the encoding (`encSize`), and a decode
@@ -436,6 +517,77 @@ the compiler compiles, up to the extractor and the compiler being correct:
   validation scan stays valid on the blocks (every `%` has three bytes and
   two digits below sixteen); `percent_decode_loop` reads each block back,
   the two digits through `upper_digits_join'` (decided over the 256 bytes).
+- `Oak/Stdlib/Base32Laws.lean`: `base32_round_trip` — for every source of at
+  most `2684354555` bytes (the library's size limit), either alphabet
+  (standard or base32hex), padded or not, a destination that holds exactly
+  the encoding (`encSize32`), and a decode destination that holds the
+  source, `base32_encode` reports the encoded length and `base32_decode` of
+  its output reports the source length and writes the source back.
+  `b32_encode_spec` characterizes the encoder position by position through
+  the five-to-eight group loop (`enc_loop2_unroll` folds the byte loop into
+  the 40-bit word, `enc_loop3_spec` the symbol loop into `encSlot`) and its
+  four tail lengths (`partial32`); `unpadded_length_spec32` shows the
+  padding strip counts exactly the pads written and the misplaced-pad scan
+  runs clean; `valid_loop32` shows every symbol's value is below 32;
+  `decoded_size_spec32` closes the size with the canonical check on the
+  last symbol's unused bits (`tail1_unused` … `tail4_unused`); `dec_word`
+  shows the decoder's word loop reassembles the encoder's word
+  (`reassemble8`, the fields past a partial group being zero), and
+  `dec_loop1_spec` writes the bytes back (`bytes_of_w40`). The word
+  identities are `bv_decide` facts on `UInt64`; the tables are read in the
+  kernel.
+- `Oak/Stdlib/Base64StrictLaws.lean`: `base64_decode_ok_iff` — for every text
+  below `2^31 - 8` bytes, `base64_decode` succeeds iff the text is an
+  encoding (`Encoded b src url pad` for some source `b` the destination
+  holds and some padding choice). `base64_decode_strict` builds the witness:
+  the bytes the decoder wrote (`dst'.extract 0 n`) are a source whose
+  encoding — padded iff the text carries padding — is the text; the
+  converse is `base64_decode_encoded`, the decode half of the round trip,
+  split out of `base64_round_trip`. The rejection half follows the decoder
+  on arbitrary input: `unpadded_length_gen` (the padding strip counts
+  trailing `=`, at most two, and refuses inconsistent padding), `Bit6` (the
+  scan's accumulated `|||` carries bit 6 once a byte outside the alphabet is
+  seen, its table value being exactly 64, so `all_symbols_of_scan` recovers
+  `AllSymbols` from a scan below 64), `decoded_size_gen` (the length and
+  canonical checks), `b64_decode_of_size` (the group loop and the tails on
+  any accepted text), and `encoded_of_decoded` (the decoded bytes
+  reassemble into the decoder's words, whose six-bit fields are the symbol
+  values — `sixbit_of_word`, `sixbit_of_tail2`, `sixbit_of_tail3` — and
+  `symbol_symValue` inverts the value table on the alphabet).
+- `Oak/Stdlib/PercentStrictLaws.lean`: `percent_decode_ok_iff` — for every
+  text below `2^32 - 3` bytes, `percent_decode` succeeds iff the reference
+  decoder `pdec` accepts it (every `%` starts two hexadecimal digits, read
+  through `hvU`), reporting exactly its length; `percent_decode_strict`
+  gives the three outcomes — `InvalidCharacter` when `pdec` refuses,
+  `DestinationTooSmall` when the destination is short, and otherwise the
+  decoded bytes written in order (`spelledByte` for a `%XX` block,
+  `plainByte` for anything else, `+` as a space when asked) with the rest
+  of the destination untouched. `percent_decoded_size_ok_iff` is the size
+  pass alone; `pdec_size_loop` and `pdec_decode_loop` relate the extracted
+  loops to `pdec` by strong induction on the remaining input.
+- `Oak/Stdlib/Base32StrictLaws.lean`: `base32_decode_ok_iff` — for every text
+  below `2^32 - 8` bytes, `base32_decode` succeeds iff the text with its
+  letters uppercased (`src.map upper32`) is an encoding of a source the
+  destination holds: the decoder folds case (its value tables read `a`–`z`
+  as `A`–`Z`), so strictness holds up to case, as `hex_decode_ok_iff` does
+  for hexadecimal. `base32_decode_strict` builds the witness: the bytes the
+  decoder wrote are a source whose encoding — padded iff the text carries
+  padding — is the uppercased text (`Encoded32`); the converse goes through
+  `Encoded32V`, the encoding as the decoder reads it (symbol values and pad
+  positions only), which `base32_decode_encoded` in `Base32Laws.lean` now
+  takes and which an encoding up to case satisfies (`Encoded32V_of_upper`,
+  by `val32_upper`). The rejection half follows the decoder on arbitrary
+  input: `unpadded_length_gen32` (the strip counts up to six trailing `=`,
+  the misplaced-pad scan refuses a `=` in the body, the padding must
+  complete a group), `valid_loop_gen32` (the scan reports clean only when
+  every value is below 32), `decoded_size_gen32` (the length check refuses
+  one, three, or six symbols past a group; the canonical check reads the
+  last symbol's unused bits), `b32_decode_of_size` (the group loop on any
+  accepted text writes the bytes of `decWord32`), and `encoded_of_decoded32`
+  (the decoded bytes reassemble into words whose five-bit fields are the
+  symbol values — `fld_reW8` for a full group, `fld_reW2` … `fld_reW7` for
+  the four tail lengths under their canonical bits — and `symbol_val32`
+  inverts the value table onto the uppercased byte).
 - `Oak/Stdlib/UuidLaws.lean`: for every one-cell generator state and every
   sixteen-byte destination, `uuid_v4_spec` — `uuid_v4` succeeds and the
   value reports version 4 (`uuid_version`) and the RFC variant
@@ -461,20 +613,18 @@ most; the kernel-decided facts use no axioms.
 
 ## 7. Next
 
-- State the pdqsort laws beyond the insertion threshold and the exhausted
-  budget: the range-stack invariant (ranges disjoint, everything between them
-  in final position, every swap in bounds) over `sort_span_budget.loop1`,
-  with `writeback_perm` and the heap and insertion laws as the leaves; the
-  universal base32 round trip (the base64 proof's shape, with five-to-eight
-  groups and four tail lengths); strictness for base64 (`base64_decode`
-  accepts a string iff it is a canonical encoding) and for percent-decoding
-  (accepted iff every `%` starts two hexadecimal digits) as
-  `hex_decode_ok_iff` does for hexadecimal; the SHA-256 and CRC-32C
+- The SHA-256 and CRC-32C
   extractions against reference definitions (the streaming laws hold; the
   compression and the table remain opaque to the proofs).
-- The subset: strings and the text library, methods, and recursion;
-  instantiations whose arguments are arrays or views; the `checked` float
-  rows and `fma` once Lean carries them exactly.
+- `Oak.Utf8Exec.valid bytes = true ↔ Oak.Utf8Validity.Valid bytes.toList`,
+  tying the executable procedure the extraction uses to the relation the
+  source gate is proved against; then the `strings` laws on the
+  extraction (`utf8_decode` inverts `utf8_encode`, `utf8_count` counts the
+  scalars `utf8_decode` yields) and the `url`/`path` laws (`url_parse`
+  ranges partition the input; `path_clean` is idempotent).
+- The subset: the `string` type and its literals (so `json` extracts),
+  methods, and recursion; instantiations whose arguments are arrays or
+  views; the `checked` float rows.
 The string-level corollary of `rup_text_check_sound` once
 `ByteArray.toList` has its data lemma; then the constructs
 the verification programs need next (matches over records, the `checked`

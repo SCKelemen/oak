@@ -933,23 +933,16 @@ theorem decByte3_encoded (src enc : Array UInt8) (url pad : Bool) (he : Encoded 
     · rw [if_pos h1, hw.2.1, show 3 * (k / 3) + 1 = k by omega]
     · rw [if_neg h1, hw.2.2, show 3 * (k / 3) + 2 = k by omega]
 
-/-- The base64 round trip, for every source of fewer than `2^31 - 8` bytes,
-both alphabets, padded or not, a destination that holds exactly the encoding,
-and a decode destination that holds the source. -/
-theorem base64_round_trip (src enc dst : Array UInt8) (url pad : Bool) (fuel : Nat)
-    (hsrc : src.size + 8 < 2 ^ 31) (henc : enc.size = encSize src.size pad) (hdst : src.size ≤ dst.size)
-    (hdst_small : dst.size < 2 ^ 32) (hf : 2 * src.size + 16 < fuel) :
-    ∃ enc' dst', base64_encode enc src url pad fuel = some (.Ok enc.size.toUInt32, enc') ∧
-      base64_decode dst enc' url fuel = some (.Ok src.size.toUInt32, dst') ∧ dst'.size = dst.size ∧
+/-- The decoder on an encoding: for every source of fewer than `2^31 - 8`
+bytes, either alphabet, padded or not, and a decode destination that holds
+the source, `base64_decode` of the encoding reports the source length and
+writes the source back. -/
+theorem base64_decode_encoded (src enc dst : Array UInt8) (url pad : Bool) (fuel : Nat) (he : Encoded src enc url pad)
+    (hsrc : src.size + 8 < 2 ^ 31) (hdst : src.size ≤ dst.size) (hdst_small : dst.size < 2 ^ 32) (hf : 2 * src.size + 16 < fuel) :
+    ∃ dst', base64_decode dst enc url fuel = some (.Ok src.size.toUInt32, dst') ∧ dst'.size = dst.size ∧
       ∀ k, k < src.size → dst'.getD k 0 = src.getD k 0 := by
   have hsrc' : src.size ≤ 3221225469 := by omega
   have hsize := encSize_lt src.size pad hsrc'
-  obtain ⟨enc', hencode, hencsize, hsyms, hpads, -⟩ :=
-    b64_encode_spec src enc url pad fuel hsrc' (by omega) (by rw [henc]; exact hsize) (by omega)
-  have he : Encoded src enc' url pad := ⟨by rw [hencsize, henc], hsyms, hpads⟩
-  rw [henc]
-  refine ⟨enc', ?_⟩
-  -- the decoder
   obtain ⟨g, hg⟩ : ∃ g, g = src.size / 3 := ⟨_, rfl⟩
   have hn : (src.size.toUInt32).toNat = src.size := toUInt32_toNat_of_lt _ (by omega)
   have hfits : decide (src.size.toUInt32 > dst.size.toUInt32) = false := by
@@ -979,7 +972,7 @@ theorem base64_round_trip (src enc dst : Array UInt8) (url pad : Bool) (fuel : N
       rw [Nat.mod_eq_of_lt (by omega), Nat.mod_eq_of_lt (by omega), Nat.mod_eq_of_lt (by omega)]; omega
   have hvalues : (if url then BASE64_URL_VALUES else BASE64_STD_VALUES) = b64values url := rfl
   obtain ⟨dst1, i1, out1, hloop, hsize1, hi1, hout1, hget1⟩ :=
-    b64_decode_loop enc' (b64values url) g (symCount src.size).toUInt32 (by rw [hcount, symCount_eq]; split <;> omega)
+    b64_decode_loop enc (b64values url) g (symCount src.size).toUInt32 (by rw [hcount, symCount_eq]; split <;> omega)
       (by rw [hcount]; omega) fuel dst 0 0 (by omega) hdst_small (by simp) (by simp) (by simp) (by simp; omega)
   have hrest : ((symCount src.size).toUInt32 - i1).toNat = symCount src.size - 4 * g := by
     rw [UInt32.toNat_sub_of_le, hcount, hi1]
@@ -987,7 +980,7 @@ theorem base64_round_trip (src enc dst : Array UInt8) (url pad : Bool) (fuel : N
   have hcount_eq : symCount src.size = 4 * g + (if src.size % 3 = 0 then 0 else src.size % 3 + 1) := by
     rw [symCount_eq, hg]
   unfold base64_decode
-  rw [decoded_size_spec src enc' url pad he hsrc fuel hf]
+  rw [decoded_size_spec src enc url pad he hsrc fuel hf]
   simp only [Option.pure_def, bind, Option.bind, hfits, Bool.false_eq_true, ↓reduceIte, hvalues, hbody, hloop]
   -- the tail
   have hi1n : i1.toNat = 4 * g := hi1
@@ -995,9 +988,9 @@ theorem base64_round_trip (src enc dst : Array UInt8) (url pad : Bool) (fuel : N
   have hi1q : (i1 + 2).toNat = 4 * g + 2 := by rw [uadd i1 2 2 (by decide) (by omega), hi1]
   have ho1 : (out1 + 1).toNat = 3 * g + 1 := by rw [uadd out1 1 1 (by decide) (by omega), hout1]
   have hsym : ∀ t, 4 * g + t < symCount src.size →
-      ((b64values url).getD ((enc'.getD (4 * g + t) 0).toUInt32).toNat 0).toUInt32 = sixbit (encWord src g) t := by
+      ((b64values url).getD ((enc.getD (4 * g + t) 0).toUInt32).toNat 0).toUInt32 = sixbit (encWord src g) t := by
     intro t hk
-    show symValue url (enc'.getD (4 * g + t) 0) = _
+    show symValue url (enc.getD (4 * g + t) 0) = _
     rw [he.syms _ hk, encSym_value, show (4 * g + t) / 4 = g by omega, show (4 * g + t) % 4 = t by omega]
   rcases (show src.size % 3 = 0 ∨ src.size % 3 = 1 ∨ src.size % 3 = 2 by omega) with h0 | h1 | h2
   · have hne2 : ((symCount src.size).toUInt32 - i1 == 2) = false := by
@@ -1007,10 +1000,10 @@ theorem base64_round_trip (src enc dst : Array UInt8) (url pad : Bool) (fuel : N
       rw [beq_eq_false_iff_ne]; intro h; have := congrArg UInt32.toNat h; rw [hrest, hcount_eq, if_pos h0] at this
       simp at this
     simp only [hne2, hne3, Bool.false_eq_true, ↓reduceIte]
-    refine ⟨_, hencode, rfl, hsize1, ?_⟩
+    refine ⟨_, rfl, hsize1, ?_⟩
     intro k hk
     rw [hget1 k, if_pos ⟨by simp, by omega⟩]
-    exact decByte3_encoded src enc' url pad he k (by omega)
+    exact decByte3_encoded src enc url pad he k (by omega)
   · -- one byte in the tail: two symbols
     have heq2 : ((symCount src.size).toUInt32 - i1 == 2) = true := by
       rw [beq_iff_eq]; apply UInt32.toNat.inj; rw [hrest, hcount_eq, if_neg (by omega), h1]; simp
@@ -1021,21 +1014,21 @@ theorem base64_round_trip (src enc dst : Array UInt8) (url pad : Bool) (fuel : N
     have hs1 := hsym 1 (by rw [hcount_eq, if_neg (by omega), h1]; omega)
     rw [Nat.add_zero] at hs0
     have hw1 : encWord src g = (src.getD (3 * g) 0).toUInt32 <<< (16 : UInt32) := (tail_word1 src g (by omega)).symm
-    have hword2 : ((((b64values url).getD ((enc'.getD i1.toNat 0).toUInt32).toNat 0).toUInt32 <<< (18 : UInt32)) |||
-        (((b64values url).getD ((enc'.getD (i1 + 1).toNat 0).toUInt32).toNat 0).toUInt32 <<< (12 : UInt32))) =
+    have hword2 : ((((b64values url).getD ((enc.getD i1.toNat 0).toUInt32).toNat 0).toUInt32 <<< (18 : UInt32)) |||
+        (((b64values url).getD ((enc.getD (i1 + 1).toNat 0).toUInt32).toNat 0).toUInt32 <<< (12 : UInt32))) =
         ((encWord src g >>> 18) <<< 18) ||| (((encWord src g >>> 12) &&& 63) <<< 12) := by
       rw [hi1n, hi1p, hs0, hs1]; simp [sixbit]
     have hbyte : ((((encWord src g >>> 18) <<< 18) ||| (((encWord src g >>> 12) &&& 63) <<< 12)) >>> 16).toUInt8 =
         src.getD (3 * g) 0 := by
       rw [hw1]; exact (tail1_byte (src.getD (3 * g) 0)).1
     simp only [heq2, hne3, Bool.false_eq_true, ↓reduceIte, hword2, hbyte]
-    refine ⟨_, hencode, rfl, by rw [Array.size_setIfInBounds, hsize1], ?_⟩
+    refine ⟨_, rfl, by rw [Array.size_setIfInBounds, hsize1], ?_⟩
     intro k hk
     rw [Array.getD_eq_getD_getElem?, Array.getElem?_setIfInBounds, hsize1, hout1]
     by_cases hk3 : 3 * g = k
     · rw [if_pos hk3, if_pos (by omega), Option.getD_some, ← hk3]
     · rw [if_neg hk3, ← Array.getD_eq_getD_getElem?, hget1 k, if_pos ⟨by simp, by omega⟩]
-      exact decByte3_encoded src enc' url pad he k (by omega)
+      exact decByte3_encoded src enc url pad he k (by omega)
   · -- two bytes in the tail: three symbols
     have hne2 : ((symCount src.size).toUInt32 - i1 == 2) = false := by
       rw [beq_eq_false_iff_ne]; intro h; have := congrArg UInt32.toNat h; rw [hrest, hcount_eq, if_neg (by omega), h2] at this
@@ -1048,16 +1041,16 @@ theorem base64_round_trip (src enc dst : Array UInt8) (url pad : Bool) (fuel : N
     rw [Nat.add_zero] at hs0
     have hw2 : encWord src g = ((src.getD (3 * g) 0).toUInt32 <<< (16 : UInt32)) ||| ((src.getD (3 * g + 1) 0).toUInt32 <<< (8 : UInt32)) :=
       (tail_word2 src g (by omega)).symm
-    have hword3 : (((((b64values url).getD ((enc'.getD i1.toNat 0).toUInt32).toNat 0).toUInt32 <<< (18 : UInt32)) |||
-        (((b64values url).getD ((enc'.getD (i1 + 1).toNat 0).toUInt32).toNat 0).toUInt32 <<< (12 : UInt32))) |||
-        (((b64values url).getD ((enc'.getD (i1 + 2).toNat 0).toUInt32).toNat 0).toUInt32 <<< (6 : UInt32))) =
+    have hword3 : (((((b64values url).getD ((enc.getD i1.toNat 0).toUInt32).toNat 0).toUInt32 <<< (18 : UInt32)) |||
+        (((b64values url).getD ((enc.getD (i1 + 1).toNat 0).toUInt32).toNat 0).toUInt32 <<< (12 : UInt32))) |||
+        (((b64values url).getD ((enc.getD (i1 + 2).toNat 0).toUInt32).toNat 0).toUInt32 <<< (6 : UInt32))) =
         ((encWord src g >>> 18) <<< 18) ||| (((encWord src g >>> 12) &&& 63) <<< 12) ||| (((encWord src g >>> 6) &&& 63) <<< 6) := by
       rw [hi1n, hi1p, hi1q, hs0, hs1, hs2]; simp [sixbit]
     have hbytes := tail2_bytes (src.getD (3 * g) 0) (src.getD (3 * g + 1) 0)
     simp only at hbytes
     rw [← hw2] at hbytes
     simp only [hne2, heq3, Bool.false_eq_true, ↓reduceIte, hword3, hbytes.1, hbytes.2.1]
-    refine ⟨_, hencode, rfl, by rw [Array.size_setIfInBounds, Array.size_setIfInBounds, hsize1], ?_⟩
+    refine ⟨_, rfl, by rw [Array.size_setIfInBounds, Array.size_setIfInBounds, hsize1], ?_⟩
     intro k hk
     rw [Array.getD_eq_getD_getElem?, Array.getElem?_setIfInBounds, Array.getElem?_setIfInBounds]
     simp only [Array.size_setIfInBounds, hsize1, hout1, ho1]
@@ -1067,6 +1060,24 @@ theorem base64_round_trip (src enc dst : Array UInt8) (url pad : Bool) (fuel : N
       by_cases hk3 : 3 * g = k
       · rw [if_pos hk3, if_pos (by omega), Option.getD_some, ← hk3]
       · rw [if_neg hk3, ← Array.getD_eq_getD_getElem?, hget1 k, if_pos ⟨by simp, by omega⟩]
-        exact decByte3_encoded src enc' url pad he k (by omega)
+        exact decByte3_encoded src enc url pad he k (by omega)
+
+/-- The base64 round trip, for every source of fewer than `2^31 - 8` bytes,
+both alphabets, padded or not, a destination that holds exactly the encoding,
+and a decode destination that holds the source. -/
+theorem base64_round_trip (src enc dst : Array UInt8) (url pad : Bool) (fuel : Nat)
+    (hsrc : src.size + 8 < 2 ^ 31) (henc : enc.size = encSize src.size pad) (hdst : src.size ≤ dst.size)
+    (hdst_small : dst.size < 2 ^ 32) (hf : 2 * src.size + 16 < fuel) :
+    ∃ enc' dst', base64_encode enc src url pad fuel = some (.Ok enc.size.toUInt32, enc') ∧
+      base64_decode dst enc' url fuel = some (.Ok src.size.toUInt32, dst') ∧ dst'.size = dst.size ∧
+      ∀ k, k < src.size → dst'.getD k 0 = src.getD k 0 := by
+  have hsrc' : src.size ≤ 3221225469 := by omega
+  have hsize := encSize_lt src.size pad hsrc'
+  obtain ⟨enc', hencode, hencsize, hsyms, hpads, -⟩ :=
+    b64_encode_spec src enc url pad fuel hsrc' (by omega) (by rw [henc]; exact hsize) (by omega)
+  have he : Encoded src enc' url pad := ⟨by rw [hencsize, henc], hsyms, hpads⟩
+  obtain ⟨dst', hdec, hsize', hget⟩ := base64_decode_encoded src enc' dst url pad fuel he hsrc hdst hdst_small hf
+  rw [henc]
+  exact ⟨enc', dst', hencode, hdec, hsize', hget⟩
 
 end Oak.Stdlib.Encoding

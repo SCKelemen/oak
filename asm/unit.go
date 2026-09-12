@@ -52,14 +52,92 @@ type Function struct {
 	// declarations (never from the unit text), so the checker binds them
 	// under AAPCS64's composite rules (docs/spec/94-assembler.md §9).
 	Composites map[string]Composite
+	// Records and ADTs: the program's monomorphic record and tagged-union
+	// declarations, by name — set by the compiler so the verifier can model
+	// aggregate locals of the Oak body (docs/spec/94-assembler.md §8).
+	Records map[string]*ast.RecordLiteral
+	ADTs    map[string]*ast.ADTType
 }
 
-// Composite is a record type's shape at the boundary: its size in bytes
-// and whether it is a homogeneous floating-point aggregate (which AAPCS64
-// passes in v registers; v1 leaves those to the C backend).
+// Composite is a record or tagged-union type's shape at the boundary: its
+// size in bytes, whether it is a homogeneous floating-point aggregate
+// (which AAPCS64 passes in v registers; v1 leaves those to the C backend),
+// and its placed fields — the layout the C backend asserts — so the
+// verifier can relate register chunks to the Oak body's fields. A tagged
+// union's Variants map each variant to its tag; its payload fields are
+// named after their variants.
 type Composite struct {
-	Size int64
-	HFA  bool
+	Size     int64
+	HFA      bool
+	Fields   []CompositeField
+	Variants map[string]int64
+}
+
+// TypeApplicationName maps a type application expression (F[A][B]…, as the
+// parser spells Option[u32] or Result[u32, Overflow]) to the mangled name
+// of its instantiation (Option_u32, Result_u32_Overflow — the typechecker's
+// Instantiation.MangledName), which is how the compiler names the
+// specialized declaration. Arguments are type names or integer constants;
+// a plain identifier is its own name.
+func TypeApplicationName(expr ast.Expression) (string, bool) {
+	switch t := expr.(type) {
+	case *ast.Identifier:
+		return t.Value, t.Value != ""
+	case *ast.IndexExpression:
+		if t.Dot || t.Index == nil {
+			return "", false
+		}
+		if marker, isIdent := t.Index.(*ast.Identifier); isIdent && (marker.Value == "" || marker.Value == "*") {
+			return "", false // a span or view, not an application
+		}
+		base, ok := TypeApplicationName(t.Left)
+		if !ok {
+			return "", false
+		}
+		atom, ok := typeArgumentAtom(t.Index)
+		if !ok {
+			return "", false
+		}
+		return base + "_" + atom, true
+	}
+	return "", false
+}
+
+func typeArgumentAtom(expr ast.Expression) (string, bool) {
+	switch t := expr.(type) {
+	case *ast.IntegerLiteral:
+		return fmt.Sprintf("%d", t.Value), true
+	case *ast.Identifier:
+		if t.Value == "" || t.Value == "*" {
+			return "", false
+		}
+		return t.Value, true
+	case *ast.IndexExpression:
+		base, isIdent := t.Left.(*ast.Identifier)
+		if !isIdent {
+			return "", false
+		}
+		inner, ok := typeArgumentAtom(t.Index)
+		if !ok {
+			return "", false
+		}
+		return base.Value + "_" + inner, true
+	}
+	return "", false
+}
+
+// CompositeField is one placed member: a scalar (Scalar names its type), a
+// nested composite (Type names it), or an owned array (Elem or ElemType
+// the element, Length the count).
+type CompositeField struct {
+	Name     string
+	Offset   int64
+	Size     int64
+	Scalar   string
+	Type     string
+	Elem     string
+	ElemType string
+	Length   int64
 }
 
 // Item is one line of the block: a label, an align directive, or an

@@ -105,22 +105,6 @@ def sha256_rounds (h : Array UInt32) (w_in : Array UInt32) (fuel : Nat) : Option
   let (i, a, b, c, d, e, f, g, hh) ← sha256_rounds.loop2 w i a b c d e f g hh fuel
   pure (#[((h.getD 0 (0 : UInt32)) + a), ((h.getD 1 (0 : UInt32)) + b), ((h.getD 2 (0 : UInt32)) + c), ((h.getD 3 (0 : UInt32)) + d), ((h.getD 4 (0 : UInt32)) + e), ((h.getD 5 (0 : UInt32)) + f), ((h.getD 6 (0 : UInt32)) + g), ((h.getD 7 (0 : UInt32)) + hh)] : Array UInt32)
 
-def sha256_compress.loop1 (block : Array UInt8) (w : Array UInt32) (i : UInt32) : Nat → Option (Array UInt32 × UInt32)
-  | 0 => none
-  | fuel + 1 => do
-    if (decide (i < (16 : UInt32))) then do
-      let w := w.setIfInBounds i.toNat ((((((block.getD (i * (4 : UInt32)).toNat (0 : UInt8)).toUInt32) <<< (24 : UInt32)) ||| (((block.getD ((i * (4 : UInt32)) + (1 : UInt32)).toNat (0 : UInt8)).toUInt32) <<< (16 : UInt32))) ||| (((block.getD ((i * (4 : UInt32)) + (2 : UInt32)).toNat (0 : UInt8)).toUInt32) <<< (8 : UInt32))) ||| ((block.getD ((i * (4 : UInt32)) + (3 : UInt32)).toNat (0 : UInt8)).toUInt32))
-      let i := (i + (1 : UInt32))
-      sha256_compress.loop1 block w i fuel
-    else pure (w, i)
-
-def sha256_compress (h : Array UInt32) (block : Array UInt8) (fuel : Nat) : Option (Array UInt32) := do
-  let w : Array UInt32 := Array.replicate 64 (0 : UInt32)
-  let i : UInt32 := (0 : UInt32)
-  let (w, i) ← sha256_compress.loop1 block w i fuel
-  let r1 ← sha256_rounds h w fuel
-  pure r1
-
 def sha256_compress_view.loop1 (block : Array UInt8) (w : Array UInt32) (i : UInt32) : Nat → Option (Array UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
@@ -142,6 +126,53 @@ def sha256_compress_view (h : Array UInt32) (block : Array UInt8) (fuel : Nat) :
       pure h))
   pure r1
 
+def sha256_block_hw.loop1 (h : Array UInt32) (entry : Array UInt32) (i : UInt32) : Nat → Option (Array UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (i < (8 : UInt32))) then do
+      let entry := entry.setIfInBounds i.toNat (h.getD i.toNat (0 : UInt32))
+      let i := (i + (1 : UInt32))
+      sha256_block_hw.loop1 h entry i fuel
+    else pure (entry, i)
+
+def sha256_block_hw.loop2 (h : Array UInt32) (next : Array UInt32) (j : UInt32) : Nat → Option (Array UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (j < (8 : UInt32))) then do
+      let h := h.setIfInBounds j.toNat (next.getD j.toNat (0 : UInt32))
+      let j := (j + (1 : UInt32))
+      sha256_block_hw.loop2 h next j fuel
+    else pure (h, j)
+
+def sha256_block_hw (h : Array UInt32) (block : Array UInt8) (k : Array UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
+  let h ← (if (((decide ((h.size.toUInt32) >= (8 : UInt32))) && (decide ((block.size.toUInt32) >= (64 : UInt32)))) && (decide ((k.size.toUInt32) >= (64 : UInt32)))) then (do
+      let entry : Array UInt32 := Array.replicate 8 (0 : UInt32)
+      let i : UInt32 := (0 : UInt32)
+      let (entry, i) ← sha256_block_hw.loop1 h entry i fuel
+      let r1 ← sha256_compress_view entry block fuel
+      let next : Array UInt32 := r1
+      let j : UInt32 := (0 : UInt32)
+      let (h, j) ← sha256_block_hw.loop2 h next j fuel
+      pure h)
+    else (do
+      pure h))
+  pure ((), h)
+
+def sha256_block (h : Array UInt32) (block : Array UInt8) (fuel : Nat) : Option (Array UInt32) := do
+  let state : Array UInt32 := h
+  let state ← (if true then (do
+      let hs : Array UInt32 := state
+      let (r1, hs) ← sha256_block_hw hs block SHA256_K fuel
+      let state := hs
+      pure state)
+    else (do
+      pure state))
+  pure state
+
+def sha256_compress (h : Array UInt32) (block : Array UInt8) (fuel : Nat) : Option (Array UInt32) := do
+  let r1 ← sha256_block h block fuel
+  pure r1
+
 def sha256_init  (fuel : Nat) : Option (Sha256State) := do
   let state : Sha256State := (default : Sha256State)
   let state := { state with h := (#[(1779033703 : UInt32), (3144134277 : UInt32), (1013904242 : UInt32), (2773480762 : UInt32), (1359893119 : UInt32), (2600822924 : UInt32), (528734635 : UInt32), (1541459225 : UInt32)] : Array UInt32) }
@@ -153,7 +184,7 @@ def sha256_update.loop1 (src : Array UInt8) (next : Sha256State) (i : UInt32) : 
   | 0 => none
   | fuel + 1 => do
     if (((next.filled == (0 : UInt32)) && (decide ((src.size.toUInt32) >= (64 : UInt32)))) && (decide (i <= ((src.size.toUInt32) - (64 : UInt32))))) then do
-      let r1 ← sha256_compress_view next.h (src.extract i.toNat (i.toNat + (64 : UInt32).toNat)) fuel
+      let r1 ← sha256_block next.h (src.extract i.toNat (i.toNat + (64 : UInt32).toNat)) fuel
       let next := { next with h := r1 }
       let i := (i + (64 : UInt32))
       sha256_update.loop1 src next i fuel
@@ -258,19 +289,76 @@ def sha256 (src : Array UInt8) (out : Array UInt8) (fuel : Nat) : Option (Bool �
   let (r3, out) ← sha256_final r2 out fuel
   pure (r3, out)
 
+def crc32c_word.loop1 (word : UInt64) (next : UInt32) (i : UInt32) : Nat → Option (UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (i < (8 : UInt32))) then do
+      let unit : UInt32 := (((word >>> ((8 : UInt64) * (i.toUInt64))).toUInt8).toUInt32)
+      let next := ((CRC32C_TABLE.getD ((next ^^^ unit) &&& (255 : UInt32)).toNat (0 : UInt32)) ^^^ (next >>> (8 : UInt32)))
+      let i := (i + (1 : UInt32))
+      crc32c_word.loop1 word next i fuel
+    else pure (next, i)
+
+def crc32c_word (state : UInt32) (word : UInt64) (fuel : Nat) : Option (UInt32) := do
+  let next : UInt32 := state
+  let i : UInt32 := (0 : UInt32)
+  let (next, i) ← crc32c_word.loop1 word next i fuel
+  pure next
+
+def crc32c_step7 (state : UInt32) (a : UInt64) (b : UInt64) (c : UInt64) (d : UInt64) (e : UInt64) (f : UInt64) (g : UInt64) (fuel : Nat) : Option (UInt32) := do
+  let r1 ← crc32c_word state a fuel
+  let r2 ← crc32c_word r1 b fuel
+  let r3 ← crc32c_word r2 c fuel
+  let r4 ← crc32c_word r3 d fuel
+  let r5 ← crc32c_word r4 e fuel
+  let r6 ← crc32c_word r5 f fuel
+  let r7 ← crc32c_word r6 g fuel
+  pure r7
+
+def crc32c_word_at (chunk : Array UInt8) (at_ : UInt32) (fuel : Nat) : Option (UInt64) := do
+  pure (if (decide ((chunk.size.toUInt32) >= (at_ + (8 : UInt32)))) then (((((((((chunk.getD at_.toNat (0 : UInt8)).toUInt64) ||| (((chunk.getD (at_ + (1 : UInt32)).toNat (0 : UInt8)).toUInt64) <<< (8 : UInt64))) ||| (((chunk.getD (at_ + (2 : UInt32)).toNat (0 : UInt8)).toUInt64) <<< (16 : UInt64))) ||| (((chunk.getD (at_ + (3 : UInt32)).toNat (0 : UInt8)).toUInt64) <<< (24 : UInt64))) ||| (((chunk.getD (at_ + (4 : UInt32)).toNat (0 : UInt8)).toUInt64) <<< (32 : UInt64))) ||| (((chunk.getD (at_ + (5 : UInt32)).toNat (0 : UInt8)).toUInt64) <<< (40 : UInt64))) ||| (((chunk.getD (at_ + (6 : UInt32)).toNat (0 : UInt8)).toUInt64) <<< (48 : UInt64))) ||| (((chunk.getD (at_ + (7 : UInt32)).toNat (0 : UInt8)).toUInt64) <<< (56 : UInt64))) else (0 : UInt64))
+
+def crc32c_chunk (state : UInt32) (chunk : Array UInt8) (fuel : Nat) : Option (UInt32) := do
+  let r1 ← (
+    if (decide ((chunk.size.toUInt32) >= (56 : UInt32))) then (do
+      let r2 ← crc32c_word_at chunk (0 : UInt32) fuel
+      let r3 ← crc32c_word_at chunk (8 : UInt32) fuel
+      let r4 ← crc32c_word_at chunk (16 : UInt32) fuel
+      let r5 ← crc32c_word_at chunk (24 : UInt32) fuel
+      let r6 ← crc32c_word_at chunk (32 : UInt32) fuel
+      let r7 ← crc32c_word_at chunk (40 : UInt32) fuel
+      let r8 ← crc32c_word_at chunk (48 : UInt32) fuel
+      let r9 ← crc32c_step7 state r2 r3 r4 r5 r6 r7 r8 fuel
+      pure r9)
+    else (do
+      pure state))
+  pure r1
+
 def crc32c_update.loop1 (src : Array UInt8) (state : UInt32) (i : UInt32) : Nat → Option (UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide ((src.size.toUInt32) >= (56 : UInt32))) && (decide (i <= ((src.size.toUInt32) - (56 : UInt32))))) then do
+      let chunk : Array UInt8 := (src.extract i.toNat (i.toNat + (56 : UInt32).toNat))
+      let r1 ← crc32c_chunk state chunk fuel
+      let state := r1
+      let i := (i + (56 : UInt32))
+      crc32c_update.loop1 src state i fuel
+    else pure (state, i)
+
+def crc32c_update.loop2 (src : Array UInt8) (state : UInt32) (i : UInt32) : Nat → Option (UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < (src.size.toUInt32))) then do
       let state := ((CRC32C_TABLE.getD ((state ^^^ ((src.getD i.toNat (0 : UInt8)).toUInt32)) &&& (255 : UInt32)).toNat (0 : UInt32)) ^^^ (state >>> (8 : UInt32)))
       let i := (i + (1 : UInt32))
-      crc32c_update.loop1 src state i fuel
+      crc32c_update.loop2 src state i fuel
     else pure (state, i)
 
 def crc32c_update (crc : UInt32) (src : Array UInt8) (fuel : Nat) : Option (UInt32) := do
   let state : UInt32 := (crc ^^^ (4294967295 : UInt32))
   let i : UInt32 := (0 : UInt32)
   let (state, i) ← crc32c_update.loop1 src state i fuel
+  let (state, i) ← crc32c_update.loop2 src state i fuel
   pure (state ^^^ (4294967295 : UInt32))
 
 def crc32c (src : Array UInt8) (fuel : Nat) : Option (UInt32) := do
