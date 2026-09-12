@@ -49,10 +49,54 @@ type rvChecker struct {
 	labelDisp   map[string]int64
 	labels      map[string]bool
 	unreachable bool
+
+	// Span element memory (docs/spec/94-assembler.md §9). Every fact below
+	// is forgotten at a label and on a write to a register it names, so a
+	// guard protects exactly the straight-line code after it.
+	writes  map[int]int          // register -> number of instructions writing it (whole body)
+	spans   map[int]*rvSpan      // bound base register -> the span
+	shl32   map[int]int          // register = raw length register << 32 (half of a normalization)
+	lenNorm map[int]int          // register holding a span's length zero-extended -> its raw length register
+	consts  map[int]int64        // register = constant (li)
+	idx     map[int]rvIndexFact  // register < a normalized length register, or < a constant
+	scaled  map[int]rvScaledFact // register = index << shift
+	regions map[int]rvRegion     // register = the address of one element (size bytes)
+}
+
+// rvSpan is the live knowledge about a bound span base: the LP64 pair
+// leaves the u32 length in the low half of its register with padding
+// above it, so a comparison against the raw register proves nothing; a
+// bound needs the normalized copy (slli 32 then srli 32).
+type rvSpan struct {
+	rawLen   int
+	elem     int64
+	writable bool
+	hasMin   bool
+	minLen   int64
+}
+
+// rvIndexFact: the register is below a normalized length register
+// (lenReg >= 0) or below a constant (lenReg < 0, bound).
+type rvIndexFact struct {
+	lenReg int
+	bound  int64
+}
+
+// rvScaledFact: the register is a guarded index shifted left by shift.
+// The guard is copied at the shift (the index register may be the
+// destination itself, `slli t2, t2, 3`).
+type rvScaledFact struct {
+	guard rvIndexFact
+	shift int
+}
+
+type rvRegion struct {
+	size     int64
+	writable bool
 }
 
 func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
-	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}}
+	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{}}
 	shared := &checker{fn: fn}
 	shared.checkSignature(decl)
 	if len(shared.errors) > 0 {
@@ -65,6 +109,8 @@ func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]boo
 	if len(c.errors) > 0 {
 		return c.errors
 	}
+	c.countWrites()
+	c.forgetGuards()
 	c.walk()
 	return c.errors
 }
@@ -133,6 +179,8 @@ func (c *rvChecker) bindContract() {
 				continue
 			}
 			c.bound[lenReg] = true
+			elem, writable, _ := spanShape(sigParamType(sig, b.Param))
+			c.spans[want] = &rvSpan{rawLen: lenReg, elem: elem, writable: writable}
 		} else if b.Length != nil {
 			c.errorf(b.Line, "parameter %s is not a span; bind one register", b.Param)
 			continue
@@ -203,6 +251,9 @@ func (c *rvChecker) write(reg Register, line int) {
 		return
 	}
 	num := reg.Num
+	if num != 0 {
+		c.forgetRegister(num)
+	}
 	switch {
 	case num == 0:
 		return // a write to zero is discarded
@@ -261,8 +312,128 @@ func (c *rvChecker) walk() {
 	}
 }
 
+// countWrites counts, over the whole body, the instructions writing each
+// register: a register written by exactly one instruction holds the same
+// value on every path that defined it, so a fact about it (a normalized
+// length, a constant) survives a label; every other fact is a guard fact
+// and is forgotten where paths meet.
+func (c *rvChecker) countWrites() {
+	var instrs []Instruction
+	for _, item := range c.fn.Items {
+		if instr, isInstr := item.(Instruction); isInstr {
+			instrs = append(instrs, rv64Base(instr))
+		}
+	}
+	for i, base := range instrs {
+		if len(base.Operands) == 0 || rv64Branches[base.Mnemonic] || rv64Stores[base.Mnemonic] != 0 || base.Mnemonic == "call" {
+			continue
+		}
+		dest, isReg := base.Operands[0].(Register)
+		if !isReg || dest.Class != ClassRV64X {
+			continue
+		}
+		// The normalization pair `slli rX, len, 32; srli rX, rX, 32` is one
+		// definition of rX: its second half counts with its first.
+		if base.Mnemonic == "srli" && i > 0 && c.isNormalization(instrs[i-1], base) {
+			continue
+		}
+		c.writes[dest.Num]++
+	}
+}
+
+// isNormalization recognizes `slli rX, len, 32` followed by `srli rX, rX, 32`
+// over a bound span's raw length register.
+func (c *rvChecker) isNormalization(first, second Instruction) bool {
+	if first.Mnemonic != "slli" || second.Mnemonic != "srli" || len(first.Operands) != 3 || len(second.Operands) != 3 {
+		return false
+	}
+	d1, s1, i1 := first.Operands[0].(Register), first.Operands[1].(Register), first.Operands[2].(Immediate)
+	d2, s2, i2 := second.Operands[0].(Register), second.Operands[1].(Register), second.Operands[2].(Immediate)
+	if i1.Value != 32 || i2.Value != 32 || d1.Num != d2.Num || s2.Num != d2.Num {
+		return false
+	}
+	for _, span := range c.spans {
+		if span.rawLen == s1.Num {
+			return true
+		}
+	}
+	return false
+}
+
+// stable reports a register written by at most one instruction in the body.
+func (c *rvChecker) stable(num int) bool { return c.writes[num] <= 1 }
+
+// forgetGuards drops the guard facts where paths meet (a label) or after a
+// call: index bounds, scaled indices, element regions, minimum lengths.
+// Normalized lengths, half-normalizations, and constants held by stable
+// registers survive (countWrites).
+func (c *rvChecker) forgetGuards() {
+	keepInt := func(m map[int]int) map[int]int {
+		out := map[int]int{}
+		for reg, src := range m {
+			if c.stable(reg) && c.stable(src) {
+				out[reg] = src
+			}
+		}
+		return out
+	}
+	c.shl32 = keepInt(c.shl32)
+	c.lenNorm = keepInt(c.lenNorm)
+	consts := map[int]int64{}
+	for reg, k := range c.consts {
+		if c.stable(reg) {
+			consts[reg] = k
+		}
+	}
+	c.consts = consts
+	c.idx = map[int]rvIndexFact{}
+	c.scaled = map[int]rvScaledFact{}
+	c.regions = map[int]rvRegion{}
+	for _, span := range c.spans {
+		span.hasMin = false
+	}
+}
+
+// forgetRegister drops the facts a write to num invalidates: what num
+// held, and what was derived from it.
+func (c *rvChecker) forgetRegister(num int) {
+	delete(c.shl32, num)
+	delete(c.lenNorm, num)
+	delete(c.consts, num)
+	delete(c.idx, num)
+	delete(c.scaled, num)
+	delete(c.regions, num)
+	for reg, fact := range c.idx {
+		if fact.lenReg == num {
+			delete(c.idx, reg)
+		}
+	}
+	for reg, fact := range c.scaled {
+		if fact.guard.lenReg == num {
+			delete(c.scaled, reg)
+		}
+	}
+	for reg, raw := range c.shl32 {
+		if raw == num {
+			delete(c.shl32, reg)
+		}
+	}
+	for reg, raw := range c.lenNorm {
+		if raw == num {
+			delete(c.lenNorm, reg)
+		}
+	}
+	delete(c.spans, num)
+	for _, span := range c.spans {
+		if span.rawLen == num {
+			span.hasMin = false
+		}
+	}
+}
+
 func (c *rvChecker) enterLabel(label Label) {
 	c.unreachable = false
+	c.forgetGuards()
 	if known, has := c.labelDisp[label.Name]; has {
 		if known != c.disp {
 			c.errorf(label.Line, "sp displacement %d at label %s disagrees with %d on another path", c.disp, label.Name, known)
@@ -321,6 +492,7 @@ func (c *rvChecker) call(target string, line int) {
 	}
 	c.saved[1].written = true
 	c.saved[1].restored = false
+	c.forgetGuards()
 	for num := 5; num <= 31; num++ {
 		if num >= 5 && num <= 7 || num >= 10 && num <= 17 || num >= 28 {
 			delete(c.written, num)
@@ -342,6 +514,7 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		c.read(reg(0), line)
 		c.read(reg(1), line)
 		c.branchTo(ops[2].(Symbol).Name, line)
+		c.guardFacts(name, reg(0), reg(1))
 		return false
 	}
 	switch name {
@@ -370,6 +543,9 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 			c.errorf(line, "li admits 32-bit immediates in this increment (%d)", imm)
 		}
 		c.write(reg(0), line)
+		if reg(0).Class == ClassRV64X && imm >= 0 {
+			c.consts[reg(0).Num] = imm
+		}
 		return false
 	case "jalr":
 		mem := ops[1].(Memory)
@@ -417,12 +593,22 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		}
 		c.write(reg(0), line)
 		return false
-	case "ecall", "ebreak", "fence":
+	case "ebreak":
+		// A trap: the failure arm of a guard. The path ends here.
+		c.unreachable = true
+		return true
+	case "ecall", "fence":
 		c.errorf(line, "%s is outside the rv64 subset of this increment", name)
 		return false
 	}
 	if width, isLoad := rv64Loads[name]; isLoad {
 		mem := ops[1].(Memory)
+		if mem.Base.Class != ClassSP {
+			c.read(mem.Base, line)
+			c.spanAccess(mem, int64(width), false, line)
+			c.write(reg(0), line)
+			return false
+		}
 		addr, ok := c.frameAddress(mem, int64(width), line)
 		dest := reg(0)
 		if ok && dest.Class == ClassRV64X && rv64Preserved(dest.Num) {
@@ -446,6 +632,11 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		mem := ops[1].(Memory)
 		src := reg(0)
 		c.read(src, line)
+		if mem.Base.Class != ClassSP {
+			c.read(mem.Base, line)
+			c.spanAccess(mem, int64(width), true, line)
+			return false
+		}
 		addr, ok := c.frameAddress(mem, int64(width), line)
 		if ok && src.Class == ClassRV64X && rv64Preserved(src.Num) && width == 8 {
 			state := c.saved[src.Num]
@@ -460,7 +651,13 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		"mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu", "mulw", "divw", "divuw", "remw", "remuw":
 		c.read(reg(1), line)
 		c.read(reg(2), line)
+		// The facts an `add` derives come from its sources as they were
+		// before the destination is written (dest may be a source).
+		pre := c.snapshot()
 		c.write(reg(0), line)
+		if name == "add" {
+			pre.deriveRegion(c, reg(0), reg(1), reg(2))
+		}
 		return false
 	case "addi", "andi", "ori", "xori", "slti", "sltiu", "slli", "srli", "srai", "addiw", "slliw", "srliw", "sraiw":
 		imm := ops[2].(Immediate).Value
@@ -479,7 +676,9 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 			}
 		}
 		c.read(reg(1), line)
+		pre := c.snapshot()
 		c.write(reg(0), line)
+		pre.deriveShift(c, name, reg(0), reg(1), imm)
 		return false
 	}
 	c.errorf(line, "instruction %s is not admitted by the RV64 checker", instr.Mnemonic)
@@ -506,4 +705,196 @@ func (c *rvChecker) ret(line int) bool {
 	}
 	c.unreachable = true
 	return true
+}
+
+// guardFacts records what the fall-through of a conditional branch proves
+// (Oak.RiscV.index_guard): `bgeu idx, len, L` — idx < len when len is a
+// normalized length register or a constant register; `bltu len, K, L` —
+// len >= K for the span whose normalized length is len.
+func (c *rvChecker) guardFacts(name string, left, right Register) {
+	if left.Class != ClassRV64X || right.Class != ClassRV64X {
+		return
+	}
+	switch name {
+	case "bgeu":
+		if _, isLen := c.lenNorm[right.Num]; isLen {
+			c.idx[left.Num] = rvIndexFact{lenReg: right.Num}
+			return
+		}
+		if k, isConst := c.consts[right.Num]; isConst && k > 0 {
+			c.idx[left.Num] = rvIndexFact{lenReg: -1, bound: k}
+		}
+	case "bltu":
+		raw, isLen := c.lenNorm[left.Num]
+		k, isConst := c.consts[right.Num]
+		if !isLen || !isConst || k <= 0 {
+			return
+		}
+		for _, span := range c.spans {
+			if span.rawLen == raw {
+				span.hasMin = true
+				span.minLen = k
+			}
+		}
+	}
+}
+
+// rvSnapshot is the guard state before an instruction writes its
+// destination: the facts of the sources, read before the write forgets
+// them (the destination may be one of the sources).
+type rvSnapshot struct {
+	shl32   map[int]int
+	lenNorm map[int]int
+	consts  map[int]int64
+	idx     map[int]rvIndexFact
+	scaled  map[int]rvScaledFact
+	spans   map[int]*rvSpan
+}
+
+func (c *rvChecker) snapshot() rvSnapshot {
+	copyInt := func(m map[int]int) map[int]int {
+		out := make(map[int]int, len(m))
+		for k, v := range m {
+			out[k] = v
+		}
+		return out
+	}
+	consts := make(map[int]int64, len(c.consts))
+	for k, v := range c.consts {
+		consts[k] = v
+	}
+	idx := make(map[int]rvIndexFact, len(c.idx))
+	for k, v := range c.idx {
+		idx[k] = v
+	}
+	scaled := make(map[int]rvScaledFact, len(c.scaled))
+	for k, v := range c.scaled {
+		scaled[k] = v
+	}
+	spans := make(map[int]*rvSpan, len(c.spans))
+	for k, v := range c.spans {
+		copied := *v
+		spans[k] = &copied
+	}
+	return rvSnapshot{shl32: copyInt(c.shl32), lenNorm: copyInt(c.lenNorm), consts: consts, idx: idx, scaled: scaled, spans: spans}
+}
+
+func (pre rvSnapshot) rawLen(num int) bool {
+	for _, span := range pre.spans {
+		if span.rawLen == num {
+			return true
+		}
+	}
+	return false
+}
+
+// deriveShift records the shift facts: `slli rX, len, 32` then
+// `srli rX, rX, 32` normalizes a raw length register; `slli t, idx, s`
+// scales an index; `addi rD, rS, 0` (mv) copies a normalized length or a
+// constant.
+func (pre rvSnapshot) deriveShift(c *rvChecker, name string, dest, src Register, imm int64) {
+	if dest.Class != ClassRV64X || src.Class != ClassRV64X || dest.Num == 0 {
+		return
+	}
+	switch name {
+	case "slli":
+		if imm == 32 && pre.rawLen(src.Num) {
+			c.shl32[dest.Num] = src.Num
+			return
+		}
+		if guard, guarded := pre.idx[src.Num]; guarded && imm >= 0 && imm < 32 {
+			c.scaled[dest.Num] = rvScaledFact{guard: guard, shift: int(imm)}
+		}
+	case "srli":
+		if raw, half := pre.shl32[src.Num]; half && imm == 32 {
+			c.lenNorm[dest.Num] = raw
+		}
+	case "addi":
+		if src.Num == 0 {
+			// li with a 12-bit immediate is addi from zero: a constant.
+			if imm >= 0 {
+				c.consts[dest.Num] = imm
+			}
+			return
+		}
+		if imm == 0 {
+			if raw, isLen := pre.lenNorm[src.Num]; isLen {
+				c.lenNorm[dest.Num] = raw
+			}
+			if k, isConst := pre.consts[src.Num]; isConst {
+				c.consts[dest.Num] = k
+			}
+		}
+	}
+}
+
+// deriveRegion records `add rD, base, t` as the address of one element of
+// the span at base when t = idx << s, idx is guarded below the span's
+// length (or below a constant its proven minimum covers), and 2^s is the
+// element size (Oak.RiscV.index_guard).
+func (pre rvSnapshot) deriveRegion(c *rvChecker, dest, left, right Register) {
+	if dest.Class != ClassRV64X || left.Class != ClassRV64X || right.Class != ClassRV64X {
+		return
+	}
+	base, offset := left, right
+	span, isBase := pre.spans[base.Num]
+	if !isBase {
+		base, offset = right, left
+		span, isBase = pre.spans[base.Num]
+	}
+	if !isBase || dest.Num == base.Num {
+		return
+	}
+	guard, guarded := pre.idx[offset.Num]
+	shift := 0
+	if scale, isScaled := pre.scaled[offset.Num]; isScaled {
+		guard, guarded, shift = scale.guard, true, scale.shift
+	}
+	if !guarded || int64(1)<<uint(shift) != span.elem {
+		return
+	}
+	inBounds := (guard.lenReg >= 0 && pre.lenNorm[guard.lenReg] == span.rawLen) || (guard.lenReg < 0 && span.hasMin && guard.bound <= span.minLen)
+	if inBounds {
+		c.regions[dest.Num] = rvRegion{size: span.elem, writable: span.writable}
+	}
+}
+
+// spanAccess checks a load or store through a register other than sp: an
+// element region (the access inside it), or a span base at a constant
+// offset below its proven minimum length. Stores need a writable span.
+func (c *rvChecker) spanAccess(mem Memory, width int64, store bool, line int) {
+	base := mem.Base
+	if base.Class != ClassRV64X {
+		c.errorf(line, "memory through %s is not admitted", base.Text)
+		return
+	}
+	if region, isRegion := c.regions[base.Num]; isRegion {
+		if mem.Offset < 0 || mem.Offset+width > region.size {
+			c.errorf(line, "access at %d..%d through %s is outside its %d-byte element", mem.Offset, mem.Offset+width, base.Text, region.size)
+			return
+		}
+		if store && !region.writable {
+			c.errorf(line, "store through %s into a read-only view", base.Text)
+		}
+		return
+	}
+	if span, isSpan := c.spans[base.Num]; isSpan {
+		if !span.hasMin {
+			c.errorf(line, "access through the span base %s without a length guard: compare its normalized length (slli/srli 32) against a constant with bltu first, or address an element through a guarded index", base.Text)
+			return
+		}
+		if width != span.elem || mem.Offset < 0 || mem.Offset%span.elem != 0 {
+			c.errorf(line, "access of %d bytes at offset %d through %s: elements are %d bytes at multiples of %d", width, mem.Offset, base.Text, span.elem, span.elem)
+			return
+		}
+		if mem.Offset+width > span.minLen*span.elem {
+			c.errorf(line, "offset %d through %s reaches past the %d elements the guard proved", mem.Offset, base.Text, span.minLen)
+			return
+		}
+		if store && !span.writable {
+			c.errorf(line, "store through %s into a read-only view", base.Text)
+		}
+		return
+	}
+	c.errorf(line, "memory through %s: only the sp frame, a bound span base under a length guard, or a guarded element address is admitted", base.Text)
 }

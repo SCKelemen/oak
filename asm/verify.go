@@ -1231,7 +1231,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 				result = truncate(result, widthOf(x.resultClass))
 			}
 			return result, "", true
-		case "brk":
+		case "brk", "ebreak":
 			// A trap: this path delivers no result. The Oak body traps on
 			// the same inputs (a failed bounds check, division by zero, an
 			// overflowing shift, a failed assert), so the path is outside

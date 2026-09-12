@@ -1394,8 +1394,36 @@ ABI for a hosted RISC-V target, lp64 for freestanding), and `oak build
 -target linux/riscv64` links the assembled unit into a static musl binary
 through `zig cc` from any host.
 
-Still to come in this lane: the span element memory rule (loads and stores
-through a bound base under a length guard), F/D under the LP64D contract,
+**Span element memory (landed).** A `[]T`/`[*]T` parameter arrives as the
+`a_i`/`a_{i+1}` pair with the `u32` length in the *low half* of its
+register and padding above it, so a comparison against the raw register
+proves nothing. The checker admits a bound only from the normalized copy,
+the exact pair `slli rX, a_{i+1}, 32` then `srli rX, rX, 32` (one
+definition of rX, so the fact survives labels). From there the guard facts
+mirror the AArch64 lane, computed on straight-line code and forgotten
+where paths meet (a label) and after a call: the fall-through of
+`bgeu idx, lenN, exit` proves `idx < len` (`Oak.RiscV.index_guard`, and
+`index_guard_lt32`: the index fits 32 bits, so the psABI's sign-extended
+upper half of a `u32` index cannot pass the guard); `bgeu idx, K, exit`
+against a constant register (`li`) proves `idx < K`; the fall-through of
+`bltu lenN, K, fail` proves `len >= K` (the minimum-length fact);
+`slli t, idx, s` carries the guard scaled by `2^s`
+(`scaled_index_exact`: no wrap), and `add r, base, t` with `2^s` the
+element size makes `r` the address of one element — a region of `2^s`
+bytes, writable iff the span is. Memory through a register other than
+`sp` is then admitted in exactly two shapes: inside a region
+(`offset + width <= 2^s`), or at a constant offset below the proven
+minimum length through the base itself, at the element width and a
+multiple of it; a store needs a writable span; `ebreak` is the failure
+arm's trap. The verifier resolves such a load to the element term — the
+address `&v + K` names element `K / elem`, `&v + (idx << s)` element
+`idx` — so `first(v) = v[0]` is proven and the QEMU differential's `vsum`
+runs the element loop against the verifier's fixed memory. A
+data-dependent loop over elements is reported *trusted* for now: the
+shared loop summarizer does not yet read `slli` in a loop body.
+
+Still to come in this lane: loop summaries over scaled indices, F/D under
+the LP64D contract,
 compressed encodings (RVC changes the label arithmetic), the RVWMO
 instantiation of `MemoryOrder.lean`, the sail-riscv bridge (the Sail C
 emulator as a second oracle, the Lean export as the semantics the
