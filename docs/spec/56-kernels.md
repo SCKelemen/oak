@@ -350,6 +350,13 @@ and it is the order every backend computes), and that a store through a
 record's span field reads back (`set_get`): the extractor threads a
 span-holding record parameter like a span, so `tensor_set` and
 `tensor_matmul` return the written record and their effect is visible to
-Lean. The specification of `tensor_matmul` against the inner-product
-definition over a contiguous output is the recorded next step.
+Lean — and that **`tensor_matmul` is the inner product**
+(`tensor_matmul_spec`): over a contiguous output of the right shape, the
+extracted function returns a record whose entry `(i, j)`, at storage
+index `i * cols + j`, is `inner a b i j` — `a.cols` terms `a[i, k] *
+b[k, j]` added left to right from zero — for every `(i, j)` in shape. The
+proof equates the extracted loops with a store model (`writeRows`)
+structurally, then shows the model keeps every entry it wrote, because a
+row writes indices below the next row's (`writeRow_inside`,
+`writeRows_outside`); the fuel is the three loop bounds.
 

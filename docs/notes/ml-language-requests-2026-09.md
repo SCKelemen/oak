@@ -79,17 +79,25 @@ list, in the order the pilot would meet them:
    `tensor_set` would (`56-kernels.md` §8, the matmul kernel).
 5. **A `Buffer` inside a record, and custody states carrying a device
    identity** (`92-ffi.md` §2.8.6).
-6. **A backend consuming declared laws**: nothing regroups on
-   `laws { associative }` yet; the kernel lowering of a reduction is the
-   first consumer (`10-syntax.md` §14a).
-7. **Specifications of `tensor_matmul` and `tensor_sum`** against a
+6. ~~**A backend consuming declared laws**~~ — landed after #244:
+   `reduce.tree` over an operator declaring `laws { associative }` is
+   lowered to `reduce.chain`, the left fold from the first element, by
+   `Oak.Reduce.tree_eq_chainFold` (`10-syntax.md` §14a). The kernel
+   lowering is not the consumer after all: operators are declared over
+   records, which are outside the kernel subset, so a kernel's reduction
+   keeps the tree it names.
+7. ~~**Specifications of `tensor_matmul` and `tensor_sum`**~~ against a
    mathematical definition over the extraction (`TensorLaws.lean`).
    `tensor_sum_spec` landed after #236 (the row-major left fold from
    zero). The extraction gap found on the way — a store through a
    record's span field extracted to `Option Unit` — is closed after #237:
    span-holding record parameters are threaded like spans, and `set_get`
-   proves read after write. The matmul specification against the
-   inner-product definition over a contiguous output is what remains.
+   proves read after write. `tensor_matmul_spec` landed after #244: over
+   a contiguous output of the right shape, the extracted `tensor_matmul`
+   writes the inner product — `a.cols` terms added left to right from
+   zero — at every `(i, j)` in shape (the loops equal a store model,
+   `writeRows`, and the model keeps every entry it wrote because later
+   rows write later indices).
 8. **GPU execution from the tools**: `oak test` running a kernel through
    a Metal device when the toolchain is present.
 

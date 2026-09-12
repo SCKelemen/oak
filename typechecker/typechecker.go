@@ -517,6 +517,7 @@ type TypeChecker struct {
 	// callee of every infix expression that resolved through a binding.
 	operatorBindings map[string]string
 	operatorLaws     []OperatorLaw
+	lawLowerings     []LawLowering
 	// reinterpretFactors maps a view_as/span_as call (position-keyed) to
 	// the scalars per record its source holds.
 	reinterpretFactors map[string]Reinterpretation
@@ -1060,6 +1061,46 @@ func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName st
 // OperatorLaws lists the declared operator laws in declaration order.
 func (tc *TypeChecker) OperatorLaws() []OperatorLaw {
 	return append([]OperatorLaw(nil), tc.operatorLaws...)
+}
+
+// LawLowering records one call site regrouped on a declared operator law:
+// a reduce.tree over an operator declaring associative, lowered to
+// reduce.chain (docs/spec/10-syntax.md section 14a; the ml pilot's F3).
+type LawLowering struct {
+	Token    token.Token
+	Function string // the operator function whose law licensed the lowering
+	From, To string // the library function called and the one lowered to
+}
+
+// LawLowerings lists the call sites lowered on a declared law, in order.
+func (tc *TypeChecker) LawLowerings() []LawLowering {
+	return append([]LawLowering(nil), tc.lawLowerings...)
+}
+
+// lowerAssociativeTree rewrites reduce.tree(xs, zero, f) to
+// reduce.chain(xs, zero, f) when f names an operator definition declaring
+// laws { associative }: by Oak.Reduce.tree_eq_chainFold the two agree under
+// the law, and chain is the left fold from the first element with no stack
+// of partials. A kernel body cannot reach it: operators are declared over
+// records, which are outside the kernel subset, so a kernel's reduction is
+// the tree it names. A false law makes the result differ from the tree
+// named, which is what the chapter says a false law does.
+func (tc *TypeChecker) lowerAssociativeTree(expr *ast.InvocationExpression) {
+	callee, ok := expr.Function.(*ast.Identifier)
+	if !ok || len(expr.Arguments) != 3 {
+		return
+	}
+	path, name, ok := modules.Demangle(callee.Value)
+	if !ok || path != "reduce" || name != "tree" {
+		return
+	}
+	combine, ok := expr.Arguments[2].(*ast.Identifier)
+	if !ok || !tc.HasOperatorLaw(combine.Value, "associative") {
+		return
+	}
+	lowered := modules.Mangle(path, "chain")
+	tc.lawLowerings = append(tc.lawLowerings, LawLowering{Token: expr.Token, Function: combine.Value, From: callee.Value, To: lowered})
+	callee.Value = lowered
 }
 
 // HasOperatorLaw reports whether the function bound as an operator declares
@@ -2187,6 +2228,10 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			return tc.checkReinterpretCast(callee, idx.Index, expr)
 		}
 	}
+	// A reduce.tree whose combine declares laws { associative } lowers to
+	// reduce.chain (docs/spec/10-syntax.md section 14a): the declared law is
+	// the permission to regroup, Oak.Reduce.tree_eq_chainFold the theorem.
+	tc.lowerAssociativeTree(expr)
 	// Generic function calls monomorphize here: the call site is rewritten
 	// to the specialized name and re-typed (typechecker/genericfn.go).
 	if genericType, isGeneric := tc.resolveGenericInvocation(expr); isGeneric {
