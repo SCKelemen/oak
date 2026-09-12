@@ -191,14 +191,24 @@ message; an error outside every statement leaves them all open with it.
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.
 
-`-solver oak` replays every theorem decided at the bit level through the
-solver written in Oak (`prove/solver/bdd.oak`, §7): the same lowered terms
-under the same variable order are serialized as a word table, embedded in
-a generated package with the solver, compiled through the backend, and
-run on the host; the row gains `the Oak solver agrees (same N nodes)`
-when the Oak solver reaches the same verdict with the same node count,
-and becomes `open` naming the difference otherwise. `TestOakSolverAgrees`
-runs it over the whole law corpus.
+The bit-level rung is decided by the solver written in Oak
+(`prove/solver/bdd.oak`, §7) by default: a theorem the exhaustive decider
+does not reach is lowered to the decider's terms, passed the Go decider's
+witness inputs (a counterexample among them settles it at once), and
+serialized under every variable order that applies as a word table; the
+solver and its driver are one fixed Oak program, built once through the
+backend and kept, and the pending theorems of a run are streamed to it on
+standard input, one process per order at the same time, each theorem
+taking the first verdict within the budget (the race the Go decider runs
+across goroutines, run across processes). A refuted theorem's counterexample is the path the solver
+walks to the failing root, read back through the parameter bits. With
+`-cross go` (the default) the Go decider replays the winning order and
+must reach the same verdict with the same number of nodes, which the row
+records as `the Go decider agrees`; a difference makes the row `open`
+naming both. `-solver go` keeps the bit-level rung with the Go decider
+alone; `-cross none` skips the replay. The protocol obligations of §2a
+stay with the Go decider, whose rows are folded into their invariant's.
+`TestOakSolverAgrees` runs the default over the whole law corpus.
 
 `-witness` evaluates every decided theorem in the compiled program as
 well, whichever decider settled it: `main` is replaced by a generated
@@ -441,8 +451,9 @@ In order of payoff, each reusing a surface that exists:
   operation the Go one — done as the twin; `oak prove -solver oak` runs it
   beside the Go decider on every bit-level law and requires the same
   verdict with the same node count, which it reaches on the whole corpus),
-  next made the decider `oak prove` runs by default with the Go one as the
-  check; then
+  now the decider `oak prove` runs by default, the Go one replaying the
+  winning order as the check on every verdict); then the term lowering
+  itself in Oak, so the bit-level path is Oak code end to end; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

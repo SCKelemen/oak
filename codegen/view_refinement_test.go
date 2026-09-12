@@ -18,9 +18,18 @@ var viewHelperLines = []string{
 	"static inline oak_span_u32 oak_span_subslice_u32(oak_span_u32 v, u64 start, u64 n) {\n  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }\n  return (oak_span_u32){ v.base + start, (u32)n };\n}\n",
 }
 
+// The owned-array bounds macros share the view index guard
+// (Oak.ViewRefinement, "Owned arrays").
+var ownedArrayMacroLines = []string{
+	"static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n",
+	"#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n",
+	"static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n",
+	"#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n",
+}
+
 func TestViewHelpersMatchLeanTransliteration(t *testing.T) {
 	output := generateC(t, "package main\n\nfill: (s: [*]u32): () {\n  s[u32(0)] = u32(1)\n  rest: [*]u32 = subslice(s, u32(1), u32(2))\n  rest[u32(0)] = u32(2)\n}\n\nsum: (v: []u32): u32 {\n  head: []u32 = subslice(v, u32(0), u32(2))\n  head[u32(0)] + v[u32(1)]\n}\n\nmain: (): i32 {\n  data: [4]u32\n  fill(span(&data))\n  i32_bits_u32(sum(view(&data)))\n}\n")
-	for _, helper := range viewHelperLines {
+	for _, helper := range append(append([]string{}, viewHelperLines...), ownedArrayMacroLines...) {
 		if !strings.Contains(output, helper) {
 			t.Fatalf("emitted C lacks the pinned helper\n%s\n— update spec/lean/Oak/ViewRefinement.lean with it; output:\n%s", helper, output)
 		}

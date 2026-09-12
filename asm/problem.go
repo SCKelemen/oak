@@ -17,6 +17,45 @@ type Problem struct {
 	Order  string // interleaved, blocks, or control: the variable order serialized
 	Terms  int
 	Leaves int
+	// Owners maps a variable index back to its parameter bit, so an
+	// assignment the Oak solver reports (the variables set on a path to a
+	// failing root) reads as a counterexample over the parameters.
+	Owners map[uint32]VariableOwner
+	names  []string
+}
+
+// VariableOwner is the parameter bit a diagram variable stands for.
+type VariableOwner struct {
+	Param string
+	Bit   int
+}
+
+// Counterexample renders the variables set on a failing path as the
+// parameter assignment the decider would print (every unset bit zero).
+func (p Problem) Counterexample(setVars []uint32) string {
+	env := map[string]uint64{}
+	for _, v := range setVars {
+		if owner, isParam := p.Owners[v]; isParam {
+			env[owner.Param] |= uint64(1) << uint(owner.Bit)
+		}
+	}
+	return describeEnv(p.names, env)
+}
+
+// ExportProblems serializes the theorem under every variable order that
+// applies to it (interleaved first), for the Oak solver to race. The
+// witness pass is the caller's (WitnessRefutation); the reason names what
+// keeps the theorem from the bit level.
+func ExportProblems(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard, decls Declarations, budget int) ([]Problem, string, bool) {
+	lowered, undecided := lowerTheorem(sig, functions, guards, decls)
+	if undecided != nil {
+		return nil, undecided.Message, false
+	}
+	var problems []Problem
+	for _, bl := range lowered.blasters() {
+		problems = append(problems, serializeProblem(bl, lowered.claim, lowered.traps, budget, orderNames[bl.label]))
+	}
+	return problems, "", true
 }
 
 const problemSelectSlots = 16
@@ -158,5 +197,9 @@ func serializeProblem(bl *blaster, claim *term, traps []*term, budget int, order
 			words = append(words, uint32(bl.selectVariable(slot, bit)))
 		}
 	}
-	return Problem{Words: words, Order: order, Terms: len(terms), Leaves: len(bl.params)}
+	owners := make(map[uint32]VariableOwner, len(bl.owners))
+	for v, owner := range bl.owners {
+		owners[uint32(v)] = VariableOwner{Param: owner.param, Bit: owner.bit}
+	}
+	return Problem{Words: words, Order: order, Terms: len(terms), Leaves: len(bl.params), Owners: owners, names: bl.params}
 }

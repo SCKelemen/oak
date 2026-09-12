@@ -85,6 +85,11 @@ main: (): i32 {
     failures = solve(l, span(&mem), view(&commuting)) == STATUS_PROVEN ? { failures } | { failures + u32(16) }
     absorbing: [192]u32 = xor_problem(false)
     failures = solve(l, span(&mem), view(&absorbing)) == STATUS_REFUTED ? { failures } | { failures + u32(32) }
+    vars: [64]u32
+    listed: u32 = witness_vars(l, span(&mem), view(&absorbing), span(&vars))
+    failures = listed > u32(0) ? { failures } | { failures + u32(64) }
+    raced: Race = solve_race(l, span(&mem), view(&commuting), span(&mem), view(&commuting), span(&mem), view(&commuting), u32(1))
+    failures = (raced.status == STATUS_PROVEN && raced.winner == u32(0)) ? { failures } | { failures + u32(128) }
     free(c.disown(mem))
   }
   i32_bits_u32(failures)

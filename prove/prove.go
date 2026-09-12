@@ -34,6 +34,10 @@ const (
 	Refuted Status = "refuted"
 	// Open: no decider applies; the Lean projection carries the statement.
 	Open Status = "open"
+	// Pending marks a theorem whose bit-level decision is deferred to the
+	// Oak solver (TheoremsWith with deferred set): the result carries its
+	// problems and ResolvePending settles it.
+	Pending Status = "pending"
 )
 
 // Result is one theorem's outcome.
@@ -48,6 +52,22 @@ type Result struct {
 	// solver replays (ProblemFor).
 	Order string
 	Nodes int
+	// Problems are a pending theorem's serializations, one per variable
+	// order, for the Oak solver; fallback is what stands when the solver
+	// cannot decide (enumeration, or the open result with its reason).
+	Problems []asm.Problem
+	fallback func() Result
+}
+
+// SolverVerdict is what the Oak solver reports for one theorem: the
+// status (0 proven, 1 refuted, 2 budget exceeded, 3 unsupported), which
+// variant (variable order) decided, its node count, and, for a refuted
+// theorem, the variables set on a path to the failing root.
+type SolverVerdict struct {
+	Status int
+	Winner int
+	Nodes  int
+	Vars   []uint32
 }
 
 // DefaultCases bounds the exhaustive decider: the product of the parameter
@@ -57,6 +77,15 @@ const DefaultCases = 1 << 16
 // Theorems discharges every theorem of the checked model, in source order.
 // cases bounds the exhaustive decider (DefaultCases when zero).
 func Theorems(model *compiler.SemanticModel, cases int) ([]Result, error) {
+	return TheoremsWith(model, cases, false)
+}
+
+// TheoremsWith is Theorems with the bit-level rung deferred when asked:
+// a theorem the exhaustive decider does not reach is returned Pending
+// with its problems (asm.ExportProblems) for the Oak solver, after the
+// Go decider's witness pass has had its say, and ResolvePending settles it
+// from the solver's verdict.
+func TheoremsWith(model *compiler.SemanticModel, cases int, deferred bool) ([]Result, error) {
 	if model == nil || model.Tree == nil || model.Tree.Root == nil || model.TypeChecker == nil {
 		return nil, fmt.Errorf("prove: no checked program")
 	}
@@ -87,7 +116,7 @@ func Theorems(model *compiler.SemanticModel, cases int) ([]Result, error) {
 	decls := declarationsOf(model.Tree.Root)
 	var results []Result
 	for _, theorem := range theorems {
-		results = append(results, decide(env, model.TypeChecker, functions, decls, theorem, cases))
+		results = append(results, decide(env, model.TypeChecker, functions, decls, theorem, cases, deferred))
 	}
 	// A protocol's `eventually` entries are decided over its reachable
 	// states (prove/liveness.go), after the theorems.
@@ -320,12 +349,16 @@ func integers(low, high int64) []object.Object {
 }
 
 // decide runs the exhaustive decider on one theorem.
-func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[string]*ast.FunctionStatement, decls asm.Declarations, theorem *ast.FunctionStatement, cases int) Result {
+func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[string]*ast.FunctionStatement, decls asm.Declarations, theorem *ast.FunctionStatement, cases int, deferred bool) Result {
 	name := theorem.Name.Value
 	fn, found := env.Get(name)
 	if !found {
 		return Result{Name: name, Status: Open, Detail: "the interpreter did not load the theorem"}
 	}
+	// A protocol obligation's row is folded into its invariant's before the
+	// deferred verdicts land (exploreInvariants), so it stays with the Go
+	// decider.
+	deferred = deferred && !strings.Contains(name, "__")
 	var domains []domain
 	total := 1
 	for _, param := range theorem.Parameters {
@@ -334,18 +367,18 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 		// than built.
 		if typ := tc.ParseTypeExpression(param.Type); typ != nil {
 			if size, reason := domainSize(tc, env, typ); reason == "" && int64(total)*size > int64(cases) {
-				return blastOr(tc, decls, theorem, functions, Result{Name: name, Status: Open,
+				return bitLevel(deferred, tc, decls, theorem, functions, Result{Name: name, Status: Open,
 					Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)})
 			}
 		}
 		d, reason := domainOf(tc, env, param)
 		if reason != "" {
-			return blastOr(tc, decls, theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})
+			return bitLevel(deferred, tc, decls, theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})
 		}
 		domains = append(domains, d)
 		total *= len(d.values)
 		if total > cases {
-			return blastOr(tc, decls, theorem, functions, Result{Name: name, Status: Open,
+			return bitLevel(deferred, tc, decls, theorem, functions, Result{Name: name, Status: Open,
 				Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)})
 		}
 	}
@@ -354,10 +387,21 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 	// (a 64-step product evaluated 65536 times). Enumeration remains the
 	// answer when the bit level does not apply.
 	if loopHeavy(theorem, functions) {
-		if r := blastOr(tc, decls, theorem, functions, Result{Name: name, Status: Open}); r.Status != Open {
+		r := bitLevel(deferred, tc, decls, theorem, functions, Result{Name: name, Status: Open})
+		if r.Status == Pending {
+			// Enumeration stands when the solver cannot decide.
+			r.fallback = func() Result { return enumerate(name, fn, domains, total) }
+			return r
+		}
+		if r.Status != Open {
 			return r
 		}
 	}
+	return enumerate(name, fn, domains, total)
+}
+
+// enumerate runs the theorem on every element of its parameter domains.
+func enumerate(name string, fn object.Object, domains []domain, total int) Result {
 	args := make([]object.Object, len(domains))
 	indices := make([]int, len(domains))
 	for {
@@ -419,6 +463,94 @@ func loopHeavy(theorem *ast.FunctionStatement, functions map[string]*ast.Functio
 		}
 	}
 	return false
+}
+
+// bitLevel is the bit-level rung: the Go decider (blastOr), or, when
+// deferred, the witness pass now and the Oak solver later — a Pending
+// result carrying the problems and, as fallback, the open result.
+func bitLevel(deferred bool, tc *typechecker.TypeChecker, decls asm.Declarations, theorem *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, open Result) Result {
+	if !deferred {
+		return blastOr(tc, decls, theorem, functions, open)
+	}
+	stated, callees, guards, reason := forDecider(tc, theorem, functions)
+	if reason != "" {
+		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
+	}
+	if decision, settled := asm.WitnessRefutation(stated, callees, guards, decls); settled {
+		if decision.Kind == asm.DecisionRefuted {
+			return Result{Name: open.Name, Status: Refuted, Detail: decision.Message}
+		}
+		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + decision.Message + ")"}
+	}
+	problems, reason, ok := asm.ExportProblems(stated, callees, guards, decls, asm.NodeBudget)
+	if !ok {
+		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
+	}
+	fallback := Result{Name: open.Name, Status: Open, Detail: open.Detail}
+	return Result{Name: open.Name, Status: Pending, Problems: problems, fallback: func() Result { return fallback }}
+}
+
+// ResolvePending settles the pending results from the Oak solver's
+// verdicts (by theorem name): proven becomes decided at the bit level with
+// the winning order and node count, refuted carries the counterexample
+// read through the problem's owner map, and a budget exceeded or an
+// unsupported term falls back — to the Go decider under every order for
+// the unsupported (goDecider), else to the pending result's fallback.
+func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecider func(name string) (Result, bool)) []Result {
+	for i, r := range results {
+		if r.Status != Pending {
+			continue
+		}
+		v, has := verdicts[r.Name]
+		settled := Result{Name: r.Name}
+		switch {
+		case has && v.Status == 0 && v.Winner >= 0 && v.Winner < len(r.Problems):
+			order := r.Problems[v.Winner].Order
+			label := ""
+			if order != "interleaved" {
+				label = ", " + map[string]string{"blocks": "parameters in blocks", "control": "control bits first"}[order]
+			}
+			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("at the bit level (%d BDD nodes%s; the Oak solver)", v.Nodes, label), Order: order, Nodes: v.Nodes}
+		case has && v.Status == 1 && v.Winner >= 0 && v.Winner < len(r.Problems):
+			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + r.Problems[v.Winner].Counterexample(v.Vars) + " (the Oak solver)"}
+		case has && v.Status == 3 && goDecider != nil:
+			if fromGo, ok := goDecider(r.Name); ok {
+				settled = fromGo
+			} else {
+				settled = r.fallback()
+			}
+		default:
+			settled = r.fallback()
+			if settled.Status == Open {
+				settled.Detail += " (bit-level: the Oak solver exceeded its node budget)"
+			}
+		}
+		results[i] = settled
+	}
+	return results
+}
+
+// GoDecision runs the Go decider on the named theorem: the cross-check of
+// the Oak solver, under one order when given (the node counts must match)
+// or under every order.
+func GoDecision(model *compiler.SemanticModel, name, order string) (Result, bool) {
+	stated, callees, guards, decls, reason, err := deciderInputs(model, name)
+	if err != nil || reason != "" {
+		return Result{}, false
+	}
+	var decision asm.Decision
+	if order != "" {
+		decision = asm.DecideWithOrder(stated, callees, guards, decls, order)
+	} else {
+		decision = asm.DecideTheoremWith(stated, callees, guards, decls)
+	}
+	switch decision.Kind {
+	case asm.DecisionProven:
+		return Result{Name: name, Status: Decided, Detail: decision.Message, Order: decision.Order, Nodes: decision.Nodes}, true
+	case asm.DecisionRefuted:
+		return Result{Name: name, Status: Refuted, Detail: decision.Message}, true
+	}
+	return Result{Name: name, Status: Open, Detail: decision.Message}, true
 }
 
 // blastOr runs the bit-level decider (asm.DecideTheorem) on a theorem the
