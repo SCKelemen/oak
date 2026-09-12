@@ -5,6 +5,7 @@ import (
 	"github.com/SCKelemen/oak/token"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
@@ -133,6 +134,7 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		return evalAssignmentStatement(node, env)
 
 	case *ast.FunctionLiteral:
+		env.MarkCaptured()
 		return &object.Function{
 			Parameters: node.Arguments,
 			Body:       node.Body,
@@ -344,7 +346,8 @@ func evalBlockStatement(block *ast.BlockStatement, env *object.Environment) obje
 	// declaring scope through Environment.Assign. A block that declares
 	// nothing binds nothing, so it evaluates in the enclosing scope and
 	// allocates none.
-	if blockDeclares(block) {
+	scoped := blockDeclares(block)
+	if scoped {
 		env = object.NewEnclosedEnvironment(env)
 	}
 	for _, statement := range block.Statements {
@@ -353,11 +356,13 @@ func evalBlockStatement(block *ast.BlockStatement, env *object.Environment) obje
 		if result != nil {
 			rt := result.Type()
 			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ || rt == object.BREAK_OBJ {
-				return result
+				break
 			}
 		}
 	}
-
+	if scoped {
+		object.ReleaseEnvironment(env)
+	}
 	return result
 }
 
@@ -368,17 +373,71 @@ func mapBooleans(val bool) *object.Boolean {
 	return FALSE
 }
 
+// lookupCached resolves an identifier through the location cached on its
+// node (docs/notes/formal-methods-performance-2026-09.md, item 5): the
+// scope distance and inline slot where the name was found last time,
+// rechecked by name, so a hit is one walk of `hops` pointers and one
+// string comparison instead of a search of every scope.
+func lookupCached(node *ast.Identifier, env *object.Environment) (object.Object, bool) {
+	if cache := atomic.LoadUint32(&node.Cache); cache != 0 {
+		if value, ok := env.At(int(cache>>16), int(cache&0xFFFF)-1, node.Value); ok {
+			return value, true
+		}
+	}
+	value, hops, slot, ok := env.Locate(node.Value)
+	if ok && slot >= 0 && hops < 0xFFFF && slot < 0xFFFE {
+		atomic.StoreUint32(&node.Cache, uint32(hops)<<16|uint32(slot+1))
+	}
+	return value, ok
+}
+
+// notTypeCached reports whether the identifier names no type. The answer
+// is cached on the node with the type-declaration generation it was
+// computed at, when every type lives in the root scope (so the answer
+// does not depend on the asking scope); a declaration anywhere moves the
+// generation and every cache is recomputed.
+func notTypeCached(node *ast.Identifier, env *object.Environment) bool {
+	generation := object.ADTGeneration()
+	if atomic.LoadUint32(&node.NotType) == generation+1 {
+		return true
+	}
+	if _, isType := env.GetADTType(node.Value); isType {
+		return false
+	}
+	if env.TypesOnlyAtRoot() {
+		atomic.StoreUint32(&node.NotType, generation+1)
+	}
+	return true
+}
+
+// lookupExists is lookupCached's answer to "is this name bound", for the
+// declaration that may be an assignment.
+func lookupExists(node *ast.Identifier, env *object.Environment) bool {
+	_, ok := lookupCached(node, env)
+	return ok
+}
+
+// assignCached updates an identifier's binding through the same cache.
+func assignCached(node *ast.Identifier, env *object.Environment, val object.Object) bool {
+	if cache := atomic.LoadUint32(&node.Cache); cache != 0 {
+		if env.AssignAt(int(cache>>16), int(cache&0xFFFF)-1, node.Value, val) {
+			return true
+		}
+	}
+	return env.Assign(node.Value, val)
+}
+
 func evalIdentifier(node *ast.Identifier, env *object.Environment) object.Object {
 	// First check if it's an ADT type name - types are not values
 	// We need to check this BEFORE looking in the value store, because
 	// type names might have been incorrectly stored as empty records
-	if _, ok := env.GetADTType(node.Value); ok {
+	if !notTypeCached(node, env) {
 		// This is a type name, not a value - return NULL
 		// Don't look it up in the value store
 		return NULL
 	}
 
-	val, ok := env.Get(node.Value)
+	val, ok := lookupCached(node, env)
 	if !ok {
 		// Check built-in functions
 		if builtin, ok := getBuiltin(node.Value); ok {
@@ -990,6 +1049,7 @@ func applyFunction(fn object.Object, args []object.Object) object.Object {
 	case *object.Function:
 		extendedEnv := extendFunctionEnv(fn, args)
 		evaluated := Eval(fn.Body, extendedEnv)
+		object.ReleaseEnvironment(extendedEnv)
 		return unwrapReturnValue(evaluated)
 	case *object.Builtin:
 		return fn.Fn(args...)
@@ -1061,7 +1121,9 @@ func evalMatchExpression(scrutinee object.Object, arms []*ast.MatchArm, env *obj
 			}
 			matchEnv := object.NewEnclosedEnvironment(env)
 			bindPattern(scrutinee, arm.Pattern, matchEnv)
-			return Eval(arm.Body, matchEnv)
+			result := Eval(arm.Body, matchEnv)
+			object.ReleaseEnvironment(matchEnv)
+			return result
 		}
 	}
 	return newError("non-exhaustive pattern match")
@@ -1175,6 +1237,7 @@ func evalADTType(adt *ast.ADTType, env *object.Environment) object.Object {
 			&ast.ExpressionStatement{Token: adt.Name.Token, Expression: check},
 			&ast.ExpressionStatement{Token: adt.Name.Token, Expression: value},
 		}}
+		env.MarkCaptured()
 		env.Set(adt.Name.Value, &object.Function{Parameters: []*ast.Identifier{value}, Body: body, Env: env})
 		if len(adt.Variants) == 1 && adt.Variants[0].Payload != nil {
 			env.SetRefinementBase(adt.Name.Value, adt.Variants[0].Payload)
@@ -1240,6 +1303,7 @@ func evalFunctionStatement(fn *ast.FunctionStatement, env *object.Environment) o
 		params[i] = param.Name
 	}
 
+	env.MarkCaptured()
 	function := &object.Function{
 		Parameters: params,
 		Body:       &ast.BlockStatement{Statements: []ast.Statement{&ast.ExpressionStatement{Expression: fn.Body}}},
@@ -1385,8 +1449,10 @@ func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environmen
 			return zero
 		}
 	}
-	// Check if variable already exists - if so, treat as assignment
-	if _, exists := env.Get(vd.Name.Value); exists && vd.Type == nil {
+	// Check if variable already exists - if so, treat as assignment. Only
+	// an untyped declaration can be one, so a typed declaration — the
+	// common case — skips the scope search.
+	if vd.Type == nil && lookupExists(vd.Name, env) {
 		// This is actually an assignment, not a declaration
 		if vd.Value != nil {
 			val := Eval(vd.Value, env)
@@ -1420,7 +1486,7 @@ func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environmen
 // Evaluate assignment statement: a = b
 func evalAssignmentStatement(as *ast.AssignmentStatement, env *object.Environment) object.Object {
 	// Check if variable exists
-	existing, ok := env.Get(as.Name.Value)
+	existing, ok := lookupCached(as.Name, env)
 	if !ok {
 		return newError("variable not declared: %s", as.Name.Value)
 	}
@@ -1437,7 +1503,7 @@ func evalAssignmentStatement(as *ast.AssignmentStatement, env *object.Environmen
 	// body must reach the outer variable, never shadow it. Records and
 	// owned arrays are values: assignment copies (views alias by design).
 	val = copyValue(val)
-	if !env.Assign(as.Name.Value, val) {
+	if !assignCached(as.Name, env, val) {
 		env.Set(as.Name.Value, val)
 	}
 	return val

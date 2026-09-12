@@ -1,6 +1,6 @@
 # Note: the most performant formal-methods implementation — what the codecs, os, ml, simdjson and Futhark teach the prover
 
-**Status: in progress — benchmarks, the first enumeration increment, resident runner workers, the BDD tables and the id-indexed witness evaluator landed.** 2026-09-12, `specification` branch.
+**Status: in progress — benchmarks, the first enumeration increment, resident runner workers, the BDD tables, the id-indexed witness evaluator and cached slots with pooled scopes landed.** 2026-09-12, `specification` branch.
 Source: a read of Oak's own verification engines (`prove/`, `asm/`,
 `repl/leancheck.go`, `testrunner/`, `experiments/verification-poc`), of
 `github.com/SCKelemen/os` and `github.com/SCKelemen/ml` for techniques those
@@ -298,6 +298,44 @@ cuts followed from the same profile: the tables start at 65,536 entries
 and the control-parameter walk shares one visited set across its
 collections instead of a map per conditional; paired under load, the
 lattice file went from 1.83 s to 1.62 s.
+
+## 4e. Fifth increment landed: cached slots and pooled scopes (item 5, second step)
+
+The remaining enumeration profile was the scopes themselves — one
+allocation per match arm, block and call, two thirds of what was left —
+and the name search behind every identifier. Rather than a separate
+resolution pass over each function (the interpreter runs unchecked
+programs, REPL sessions and derived code, all of which add bindings at run
+time), each identifier occurrence now carries a resolution cache: the
+scope distance and inline slot where its name was last found, packed in
+one `uint32` read and written with `sync/atomic` and rechecked by name on
+every use, so a stale cache can only miss, never read another binding
+(`object.Environment.At`, `evaluator.lookupCached`). Scopes come from a
+`sync.Pool`: creating a function value marks its scope chain captured, and
+a block, arm or call body whose scope was not captured returns it, cleared,
+when it ends (`ReleaseEnvironment`; `object.Function` is the only holder
+of an environment). Alongside: eight inline bindings and a linearly
+searched spill of up to thirty-two before a map, with the spill's capacity
+kept across reuse; a typed declaration no longer searches the scopes for a
+same-named binding (only an untyped one can be an assignment); and
+"this name is not a type" is cached on the identifier under a
+type-declaration generation, valid while every type lives in the root
+scope. The evaluator, checker, prover and REPL suites pass unchanged, and
+the race detector is clean over the evaluator, prover and REPL packages.
+
+| Benchmark | Baseline | Before this step | After |
+| --- | ---: | ---: | ---: |
+| `BenchmarkTheoremsProtocols` | 19.98 s | 5.65 s | 3.35 s |
+| `BenchmarkTheoremsPatterns` | 0.84 s | 0.22 s | 0.16 s |
+| `BenchmarkTheoremsEffects` | 2.54 s | 0.82 s | 0.72 s |
+| `BenchmarkTheoremsLattice` | 3.78 s | 1.08 s | 0.98 s |
+| Bytes allocated, protocols run | 33 GB | 5.5 GB | 0.37 GB |
+
+What remains in the enumeration profile is the evaluation itself — the
+`Eval` type switch, boxed integer and variant values, argument slices —
+which only compiling theorem bodies to closures over slots would remove.
+That is the third step of item 5, and it is now a smaller share of the
+whole than the deciders (`effects.oak` is BDD-bound at 0.72 s).
 
 ## 5. What carries over from the codec track, unchanged
 
