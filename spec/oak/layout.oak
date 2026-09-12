@@ -1,0 +1,25 @@
+// The placement arithmetic of the natural record layout
+// (docs/spec/40-records.md section 6; spec/lean/Oak/RecordLayout.lean):
+// rounding an offset up to a power-of-two alignment, as the backend's
+// layout does it, stated over u32 and decided at the bit level. The
+// list-level laws (field order, non-overlap over a field list) stay in
+// Lean; these are the arithmetic they rest on.
+
+align_up: (value: u32, alignment: u32): u32 = (value + alignment - u32(1)) & ^(alignment - u32(1))
+
+// alignUp_ge: the rounded offset is never below the value (the sum in range).
+align_up_ge_8: theorem (v: u32) { !(v + u32(7) >= v) || align_up(v, u32(8)) >= v }
+align_up_ge_64: theorem (v: u32) { !(v + u32(63) >= v) || align_up(v, u32(64)) >= v }
+
+// alignUp_aligned: the rounded offset is a multiple of the alignment.
+align_up_aligned_8: theorem (v: u32) { align_up(v, u32(8)) % u32(8) == u32(0) }
+align_up_aligned_64: theorem (v: u32) { align_up(v, u32(64)) % u32(64) == u32(0) }
+
+// The rounding is minimal and idempotent.
+align_up_minimal_8: theorem (v: u32) { !(v + u32(7) >= v) || align_up(v, u32(8)) - v < u32(8) }
+align_up_idempotent_8: theorem (v: u32) { !(v + u32(7) >= v) || align_up(align_up(v, u32(8)), u32(8)) == align_up(v, u32(8)) }
+
+// An aligned value is its own rounding.
+align_up_fixed_8: theorem (v: u32) { !(v % u32(8) == u32(0)) || align_up(v, u32(8)) == v }
+
+main: (): i32 = 0

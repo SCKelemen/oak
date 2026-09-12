@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	oaktarget "github.com/SCKelemen/oak/target"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/SCKelemen/oak/compiler"
@@ -24,11 +26,12 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	check := flags.Bool("check", false, "run Lean on the projection (-lean) and report the statements it proves")
 	leanBinary := flags.String("lean-binary", "lean", "the Lean executable -check runs")
 	cases := flags.Int("cases", prove.DefaultCases, "largest parameter domain the exhaustive decider enumerates")
+	witness := flags.Bool("witness", false, "also evaluate the exhaustively decided theorems in the compiled program")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 1 || (*check && *leanOut == "") {
-		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [dir|file.oak]")
+		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-witness] [dir|file.oak]")
 		return 2
 	}
 	target := "."
@@ -93,6 +96,34 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			results = checked
+		}
+	}
+	if *witness {
+		// The compiled witness (prove/witness.go): the same theorems, run
+		// through the backend on the host.
+		var plan prove.WitnessPlan
+		binary := filepath.Join(os.TempDir(), fmt.Sprintf("oak-witness-%d", os.Getpid()))
+		defer os.Remove(binary)
+		witnessed := comp.WithSyntaxRewrite(prove.WitnessRewrite(results, &plan))
+		host := oaktarget.Host()
+		if err := compileBinary(witnessed, binary, defaultAsmMode(host), host, ""); err != nil {
+			fmt.Fprintf(stderr, "oak prove: witness: %v\n", err)
+			return 2
+		}
+		run := exec.Command(binary)
+		run.Stdout, run.Stderr = stdout, stderr
+		status := 0
+		if err := run.Run(); err != nil {
+			exitErr, isExit := err.(*exec.ExitError)
+			if !isExit {
+				fmt.Fprintf(stderr, "oak prove: witness: %v\n", err)
+				return 2
+			}
+			status = exitErr.ExitCode()
+		}
+		results = prove.ApplyWitness(results, plan, status)
+		if skips := prove.WitnessSkips(plan); skips != "" {
+			fmt.Fprintf(stdout, "oak prove: witness left to the interpreter: %s\n", skips)
 		}
 	}
 	exit := 0
