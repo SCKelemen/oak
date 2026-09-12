@@ -221,6 +221,18 @@ Static capacity is a semantic fact and can support proofs of:
 
 No general heap behavior is implied.
 
+Implemented subset: the `slab` package (`stdlib/slab.oak`, `import("slab")`) is
+the bounded slab over caller-owned storage — a `[N]T` payload array the
+program owns beside a `[N]SlabSlot` metadata array — handing out slot
+indices with generation handles (§8): `slab_alloc` fails explicitly when
+full and changes nothing, `slab_free` returns the slot keeping its
+generation, `slab_resolves` refuses a handle whose slot was reused, and a
+slot at the largest generation is retired rather than wrapped. Occupancy
+never exceeds `len(slots)` (`Oak.Slab`); a stale handle never resolves
+after reuse (`Oak.Handles`); `compiler/e2e_slab_test.go` runs both laws in
+both realizations. This is the allocation half of the runtime-in-Oak item
+(`90-backend.md` §2a): no heap, no hook, storage the program already owns.
+
 ## 8. Handles
 
 `Handle[T]` is object identity, not a pointer synonym and not an allocator.

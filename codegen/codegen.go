@@ -32,6 +32,14 @@ type CodeGenerator struct {
 	// <stdatomic.h> was emitted, which the block's macros need.
 	atomicCarriers  map[string]bool
 	atomicsIncluded bool
+	// strictAdmission drops the OAK_ATOMIC_ACCEPT_LOCKED opt-out from the
+	// lock-free admission block: a strict-profile build never accepts a
+	// locked atomic fallback (docs/spec/85-discipline.md §7).
+	strictAdmission bool
+	// usesHostWrite records that the program binds the host package's
+	// write shim, so the hosted definition of oak_host_write and the shim
+	// are emitted (pay-for-use; every other program's C is unchanged).
+	usesHostWrite bool
 	// constantContext is set while emitting C integer constant expressions
 	// (file-scope initializers, static_assert), where arithmetic must stay
 	// a plain operator rather than a helper call.
@@ -562,6 +570,7 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.emitForeignHeaders()
 	cg.write("#include <stdint.h>\n")
 	cg.write("#include <stddef.h>\n")
+	cg.usesHostWrite = programBindsExtern(program, "oak_host_write_call")
 	cg.emitHostBoundary()
 	// <math.h> and the float helpers only when the program uses floating
 	// point, so every other program stays freestanding.
@@ -1892,6 +1901,14 @@ func (cg *CodeGenerator) SetAsmFunctions(functions []*asm.Function) {
 // SetNativeAsm selects the native realization of asm units: the Oak
 // assembler encodes them into a companion object and the C keeps only
 // their prototypes (docs/spec/94-assembler.md §9).
+// SetStrictAdmission makes the lock-free admission block unconditional: the
+// strict profile's zero-warning posture extends to the C build, which then
+// cannot accept a locked atomic fallback with OAK_ATOMIC_ACCEPT_LOCKED
+// (docs/spec/65-machine-memory.md §6, 85-discipline.md §7).
+func (cg *CodeGenerator) SetStrictAdmission(strict bool) {
+	cg.strictAdmission = strict
+}
+
 func (cg *CodeGenerator) SetNativeAsm(native bool) {
 	cg.nativeAsm = native
 }
@@ -2417,7 +2434,30 @@ func (cg *CodeGenerator) emitAssertHelper() {
 // no libc — so the block is exactly what the object can promise: the
 // hook is the only foreign symbol it introduces.
 func (cg *CodeGenerator) emitHostBoundary() {
-	cg.write("#if !__STDC_HOSTED__ || defined(OAK_FREESTANDING)\n")
+	// The hook's one prototype, in both build modes: the `host` package
+	// binds it with c.extern (stdlib/host.oak), and emitExternPrototype
+	// defers to this declaration so the two never disagree on the
+	// signature. Hosted builds define it — weak, so a harness may still
+	// supply its own — over the C library: fd 2 is stderr, anything else
+	// stdout, flushed per call so a trap that follows loses nothing.
+	// Pay-for-use: a program that never imports `host` gets exactly the
+	// freestanding block it always got, and no hosted definition.
+	if cg.usesHostWrite {
+		cg.write("/* host boundary (docs/spec/90-backend.md section 2a): the one write hook */\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+		cg.write("#include <stdio.h>\n")
+		cg.write("int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len) __attribute__((weak));\n")
+		cg.write("int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len) {\n")
+		cg.write("  FILE *out = fd == 2 ? stderr : stdout;\n")
+		cg.write("  size_t n = fwrite(buf, 1, len, out);\n")
+		cg.write("  fflush(out);\n")
+		cg.write("  return (int64_t)n;\n")
+		cg.write("}\n")
+		cg.write("static inline int64_t oak_host_write_call(int64_t fd, const uint8_t *buf, size_t len) { return oak_host_write(fd, buf, len); }\n")
+		cg.write("#else\n")
+	} else {
+		cg.write("#if !__STDC_HOSTED__ || defined(OAK_FREESTANDING)\n")
+	}
 	cg.write("/* freestanding host boundary (docs/spec/90-backend.md section 2a): a weak\n   hook the kernel or firmware may define; diagnostics reach it, then trap */\n")
 	cg.write("extern int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len) __attribute__((weak));\n")
 	cg.write("static void oak_report(const char *what, const char *file, uint32_t line) {\n")
@@ -2432,7 +2472,26 @@ func (cg *CodeGenerator) emitHostBoundary() {
 	cg.write("  buf[n++] = '\\n';\n")
 	cg.write("  (void)oak_host_write(2, buf, n);\n")
 	cg.write("}\n")
+	if cg.usesHostWrite {
+		cg.write("/* the host package's entry: a host that defined no hook takes nothing */\n")
+		cg.write("static inline int64_t oak_host_write_call(int64_t fd, const uint8_t *buf, size_t len) {\n")
+		cg.write("  if (&oak_host_write == 0) { return 0; }\n")
+		cg.write("  return oak_host_write(fd, buf, len);\n")
+		cg.write("}\n")
+	}
 	cg.write("#endif\n")
+}
+
+// programBindsExtern reports whether any extern binding in the program
+// names the C symbol — the `host` package's `oak_host_write_call`, whose
+// hosted definition and shim are emitted only for programs that import it.
+func programBindsExtern(program *ast.Program, symbol string) bool {
+	for _, stmt := range program.Statements {
+		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.ExternSymbol == symbol {
+			return true
+		}
+	}
+	return false
 }
 
 // assertValueFormats spells each comparable operand type for the failure

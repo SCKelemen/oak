@@ -681,6 +681,18 @@ func (cg *CodeGenerator) emitExternPrototype(fn *ast.FunctionStatement) {
 		cg.write("OAK_INVALID_EXTERN_SYMBOL;\n")
 		return
 	}
+	if symbol == "oak_host_write_call" {
+		// The host boundary's write hook is declared once, by
+		// emitHostBoundary, with the signature the freestanding chapter
+		// fixes; a second prototype spelled from the Oak binding's C types
+		// (void * for c.Ptr) would conflict with it. A program that
+		// includes foreign headers calls through the asm-labeled alias, so
+		// that alias gets the boundary's signature too.
+		if len(cg.foreignHeaders) != 0 {
+			cg.write(fmt.Sprintf("extern int64_t %s( int64_t fd, const uint8_t *buf, size_t len ) __asm__(OAK_ASM_SYMBOL(\"%s\"));\n", cg.externCallee(symbol), symbol))
+		}
+		return
+	}
 	returnType := "void"
 	if fn.ReturnType != nil {
 		if _, returnsBuffer := bufferElementSyntax(fn.ReturnType); !returnsBuffer {

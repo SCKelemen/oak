@@ -1286,6 +1286,41 @@ package declares the framework it drives (`framework Foundation`) in its
 initWithUTF8String:"oak"]` has length 3, `[NSNumber numberWithInt:41]`
 answers 41, and an `NSRange` boxed in an `NSValue` comes back by value.
 
+## `host`: the host boundary's write hook from Oak (`import("host")`)
+
+`stdlib/host.oak` is the runtime-in-Oak answer to printing (`docs/spec/90-backend.md`
+§2a): `host_write(fd, bytes)` hands a `[]u8` view to the one write hook of
+the freestanding host boundary, `int64_t oak_host_write(int64_t fd, const
+uint8_t *buf, size_t len)`, as a pointer and a length for that call
+(`92-ffi.md` §2.5), and returns how many bytes the host took;
+`host_write_all` retries short writes and reports whether every byte went;
+`host_stdout()`/`host_stderr()` are the two descriptors a host is expected
+to tell apart. Hosted builds define the hook over the C library (weak, so a
+harness may still supply its own), a freestanding build takes the kernel's
+or firmware's definition, and a build with neither writes nothing and
+reports zero — the binding goes through a null-checked shim, never the
+weak address itself. Text formatting stays in caller storage (`float`,
+`strings`); this package is the one place a program admits it writes to
+the host. `compiler/e2e_host_test.go` runs it hosted and cross-compiles it
+for a Cortex-M4 with no libc symbol.
+
+## `slab`: a bounded typed slab with generation handles (`import("slab")`)
+
+`stdlib/slab.oak` is the runtime-in-Oak answer to allocation without a heap
+(`docs/spec/60-effects-allocation.md` §7–§8): like `arena`, it hands out
+slot indices, never memory. The program owns a `[N]T` payload array and a
+`[N]SlabSlot` metadata array; `slab_init(slots)` threads the free list,
+`slab_alloc(slab, slots)` returns a `SlabHandle { slot, generation }` and
+the slab after it (or `ok: false` with the slab unchanged when full),
+`slab_free(slab, slots, handle)` returns the slot keeping its generation,
+and `slab_resolves(slots, handle)` says whether a handle still names the
+object in its slot — a handle kept past a free never resolves to the
+object that reused the slot, because reuse advances the generation first
+(`Oak.Handles`). Capacity is `len(slots)` and is never exceeded
+(`Oak.Slab`); a slot whose generation reaches the largest `u32` is retired
+rather than wrapped. `compiler/e2e_slab_test.go` runs the laws in both
+realizations.
+
 ## `arena`: reservations over an owner (`import("arena")`)
 
 `stdlib/arena.oak` is bump allocation over an owner's element index space
