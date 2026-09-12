@@ -356,12 +356,42 @@ func Composites(records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTT
 	out := map[string]asm.Composite{}
 	for name := range records {
 		if layout, err := g.layoutOf(name); err == nil {
-			out[name] = asm.Composite{Size: layout.size, HFA: layout.isHFA()}
+			out[name] = layout.composite()
 		}
 	}
 	for name := range adts {
 		if layout, err := g.layoutOf(name); err == nil {
-			out[name] = asm.Composite{Size: layout.size}
+			out[name] = layout.composite()
+		}
+	}
+	return out
+}
+
+// composite is the layout as the checker and verifier see it.
+func (l *recordLayout) composite() asm.Composite {
+	out := asm.Composite{Size: l.size, HFA: l.isHFA()}
+	for _, name := range l.order {
+		field := l.fields[name]
+		placed := asm.CompositeField{Name: name, Offset: field.offset, Size: field.size}
+		switch field.kind {
+		case fieldScalar:
+			placed.Scalar = field.typ.name
+		case fieldRecord:
+			placed.Type = field.layout.name
+		default:
+			placed.Length = field.length
+			if field.layout != nil {
+				placed.ElemType = field.layout.name
+			} else {
+				placed.Elem = field.typ.name
+			}
+		}
+		out.Fields = append(out.Fields, placed)
+	}
+	if l.variants != nil {
+		out.Variants = map[string]int64{}
+		for name, v := range l.variants {
+			out.Variants[name] = v.tag
 		}
 	}
 	return out
@@ -1246,31 +1276,10 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	if g.usedX8 {
 		out.Clobbers = append(out.Clobbers, xr(8))
 	}
-	// The record types at this function's boundary, for the checker's
-	// composite binding rules.
-	for _, p := range fn.Parameters {
-		if rp, isRecord := g.recordParams[p.Name.Value]; isRecord {
-			if out.Composites == nil {
-				out.Composites = map[string]asm.Composite{}
-			}
-			out.Composites[rp.layout.name] = asm.Composite{Size: rp.layout.size}
-		}
-	}
-	if g.resultRecord != nil {
-		if out.Composites == nil {
-			out.Composites = map[string]asm.Composite{}
-		}
-		out.Composites[g.resultRecord.name] = asm.Composite{Size: g.resultRecord.size}
-	}
-	for _, p := range fn.Parameters {
-		if sp, isSpan := g.spans[p.Name.Value]; isSpan && sp.elemLayout != nil {
-			// A span of records: the checker sizes its elements from the table.
-			if out.Composites == nil {
-				out.Composites = map[string]asm.Composite{}
-			}
-			out.Composites[sp.elemLayout.name] = asm.Composite{Size: sp.elemLayout.size}
-		}
-	}
+	// Every placeable record and union of the program, for the checker's
+	// composite binding rules and the verifier's leaf model (nested types
+	// included).
+	out.Composites = Composites(records, adts)
 	return out, nil
 }
 
@@ -1440,6 +1449,18 @@ func (g *generator) buildVariant(layout *recordLayout, e *ast.VariantExpression)
 		}
 	}
 	rec := g.tempRecord(layout)
+	// Every byte defined: inactive payloads and padding are zero (the C
+	// backend leaves them unspecified; zero is one value both realizations'
+	// readers never observe, and it lets the verifier compare whole chunks).
+	zero, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return nil, err
+	}
+	g.emit("mov", xr(zero), imm(0))
+	for w := int64(0); w < (layout.size+7)/8; w++ {
+		g.emit("str", xr(zero), g.slotMem(rec.offset+8*w))
+	}
+	g.release(zero)
 	tag, err := g.alloc(scalars["u32"])
 	if err != nil {
 		return nil, err

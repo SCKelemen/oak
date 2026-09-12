@@ -1217,10 +1217,40 @@ the executed suites: `manhattan` (a record local with conditional field
 updates and unary minus), `copy_point` and `swap_in` (copies and
 whole-record assignment), `name_len` (a literal match over a parameter),
 beside the loop kernels proven before.
-Next increments: record and union parameters and results in the verifier
-(chunk terms bound to leaf terms), `break` as a second loop exit in the
-recognizer, and the slicing syntax `v[lo:hi]` once the C backend lowers
-`len` over it.
+**Fourteenth increment — records and unions at the verifier's boundary.**
+The composites table now carries the placed layout (`asm.Composite.Fields`:
+scalar, nested, and array members with offsets; `Variants` with tag
+values), filled by the native backend from the same layouts the C backend
+asserts and passed to every function (nested types included). The executor
+binds a record or union parameter's scalar leaves as parameters named by
+access path (`p.x`, `r.a.y`, `h.buf[2]`, `s.tag`, `s.Circle`): a
+chunk-passed argument's registers hold the chunks assembled from those
+leaves at their byte offsets (a union payload selected by its tag — the
+other variants' bytes are zero, which is also what constructed values now
+hold, since `.Variant(…)` zero-fills its temp before storing tag and
+payload), and a by-reference argument's loads assemble the leaves inside
+the accessed bytes (padding zero; a load cutting through a leaf is outside
+the subset). A one-chunk record or union result comes back in `x0` and is
+compared over its fields (padding masked) against the Oak result aggregate
+packed the same way; the Oak side binds those parameters as aggregates of
+the same leaf terms, lowers aggregate results through blocks, Bool
+conditionals (merged leaf-wise), and matches, and decides matches in value
+and statement position as chains of selects on the tag or literal equality
+(each arm on a copy of the locals, the wildcard — or, exhaustively, the
+last arm — standing for the rest). A Bool parameter is the C enum, an int
+holding 0 or 1 with every bit of the low word defined (the earlier model
+of unspecified upper bits produced an impossible counterexample for
+`pick`). Bool fields at the boundary, two-chunk and `x8`-area results, and
+aggregates across data-dependent loops stay trusted. Proven now: `shift`,
+`wide_sum` (a 24-byte record by reference), `pick` (a one-chunk result
+chosen by a Bool), `small_total`, `sum_cell` (a 12-byte record in two
+chunks), `classify` (a union built by nested conditionals and returned),
+`tally` (a statement-position match over a union parameter); `area2` and
+`score` agree on every witness (their products exceed the BDD budget).
+Witness runs assign leaves like scalars.
+Next increments: two-chunk and `x8`-area record results in the verifier,
+`break` as a second loop exit in the recognizer, and the slicing syntax
+`v[lo:hi]` once the C backend lowers `len` over it.
 
 
 

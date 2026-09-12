@@ -59,12 +59,32 @@ type Function struct {
 	ADTs    map[string]*ast.ADTType
 }
 
-// Composite is a record type's shape at the boundary: its size in bytes
-// and whether it is a homogeneous floating-point aggregate (which AAPCS64
-// passes in v registers; v1 leaves those to the C backend).
+// Composite is a record or tagged-union type's shape at the boundary: its
+// size in bytes, whether it is a homogeneous floating-point aggregate
+// (which AAPCS64 passes in v registers; v1 leaves those to the C backend),
+// and its placed fields — the layout the C backend asserts — so the
+// verifier can relate register chunks to the Oak body's fields. A tagged
+// union's Variants map each variant to its tag; its payload fields are
+// named after their variants.
 type Composite struct {
-	Size int64
-	HFA  bool
+	Size     int64
+	HFA      bool
+	Fields   []CompositeField
+	Variants map[string]int64
+}
+
+// CompositeField is one placed member: a scalar (Scalar names its type), a
+// nested composite (Type names it), or an owned array (Elem or ElemType
+// the element, Length the count).
+type CompositeField struct {
+	Name     string
+	Offset   int64
+	Size     int64
+	Scalar   string
+	Type     string
+	Elem     string
+	ElemType string
+	Length   int64
 }
 
 // Item is one line of the block: a label, an align directive, or an

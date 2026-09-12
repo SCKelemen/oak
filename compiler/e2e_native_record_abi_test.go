@@ -101,6 +101,11 @@ func TestE2ENativeRecordABI(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	for _, fn := range []string{"shift", "wide_sum", "pick", "small_total"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s must be proven equal to its Oak body (record parameters as leaf terms, a one-chunk record result); diagnostics:\n%s", fn, joined)
+		}
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_record_abi_c", New().WithSource("record_abi.oak", nativeRecordABIProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}

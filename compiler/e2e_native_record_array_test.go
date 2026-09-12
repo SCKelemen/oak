@@ -106,6 +106,9 @@ func TestE2ENativeRecordArrays(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	if !strings.Contains(joined, "asm unit sum_cell: proven") {
+		t.Errorf("sum_cell must be proven equal to its Oak body (a 12-byte record parameter as two chunks of leaves); diagnostics:\n%s", joined)
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_record_arrays_c", New().WithSource("record_arrays.oak", nativeRecordArrayProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}
