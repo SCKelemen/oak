@@ -535,7 +535,7 @@ func compileBinary(comp compiler.Compilation, binary, asmMode string, tgt target
 // ccFlags are the fixed C compiler flags for executables: -ffp-contract=off
 // keeps floating-point semantics exactly as written (docs/spec/90-backend.md
 // section 7a); -lm links the C99 math library the float intrinsics lower to.
-var ccFlags = []string{"-std=c99", "-O1", "-ffp-contract=off"}
+var ccFlags = []string{"-std=c99", "-O1", "-ffp-contract=off", "-Wno-parentheses-equality"}
 
 // compileC turns emitted C (and an optional asm companion object) into the
 // executable at binary — or, for a freestanding target, the relocatable

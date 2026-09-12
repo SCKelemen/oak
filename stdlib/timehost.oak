@@ -1,0 +1,43 @@
+// The host realization of a time source for freestanding targets
+// (docs/spec/90-backend.md §2a; stdlib/README.md): a kernel, a hypervisor,
+// or firmware that has no operating system clock to call, but has a
+// counter. Importing this package is the one place a program admits it
+// reads the host's clocks, and it is the platform layer that imports it:
+// the code that owns timeouts and leases takes a `[*]time.TimeSource` and
+// never sees this package.
+//
+// The clocks are two extern bindings the host defines — the freestanding
+// host boundary. Both return nanoseconds; the monotonic one must not go
+// backwards (a stalled reading is admitted: `time_source_refresh` then
+// keeps the reading from moving), the wall clock may be zero when the host
+// has none. Unlike timenative there is no target constant and no struct
+// timespec, so the package compiles freestanding on every target in the
+// closed set, ILP32 included.
+//
+//   int64_t oak_time_host_realtime_nanos(void);
+//   int64_t oak_time_host_monotonic_nanos(void);
+package timehost
+
+import("time")
+
+// The hooks return the C int64_t; the conversion to i64 is the one place
+// the values enter Oak (docs/spec/92-ffi.md section 2.3).
+oak_time_host_realtime_nanos: (): c.Int64 effects { Os.Syscall } = c.extern("oak_time_host_realtime_nanos")
+oak_time_host_monotonic_nanos: (): c.Int64 effects { Os.Syscall } = c.extern("oak_time_host_monotonic_nanos")
+
+// timehost_refresh reads both host clocks into a native source. False, and
+// no change, for a fixed or simulated source (the platform layer handed a
+// test source to production code; that is a bug to surface, not to hide).
+pub timehost_refresh: (source: [*]time.TimeSource): Bool {
+  assert(len(source) == u32(1))
+  time.time_source_refresh(source, i64(oak_time_host_realtime_nanos()), i64(oak_time_host_monotonic_nanos()))
+}
+
+// timehost_source is a host source already refreshed once, so the first
+// read after it does not trap.
+pub timehost_source: (out: [*]time.TimeSource): () {
+  assert(len(out) == u32(1))
+  out[0] = time.time_source_native()
+  refreshed: Bool = timehost_refresh(out)
+  assert(refreshed)
+}
