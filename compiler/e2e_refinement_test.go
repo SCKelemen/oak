@@ -153,6 +153,8 @@ pick: (t: Table, i: IrqId[4]): u8 = t.rows[i]
 
 pick_wide: (t: Table, i: IrqId[8]): u8 = t.wide[i]
 
+tag: (n: u16): IrqId[8] = IrqId[8](n)
+
 sum_rows: (t: Table): u32 {
   total: u32 = 0
   k: u16 = 0
@@ -167,8 +169,7 @@ main: (): i32 {
   t: Table
   t.rows = [4]u8{ 1, 2, 3, 4 }
   t.wide = [8]u8{ 0, 0, 0, 0, 0, 0, 0, 30 }
-  n: u16 = 7
-  last: IrqId[8] = IrqId[8](n)
+  last: IrqId[8] = tag(u16(7))
   i: IrqId[4] = IrqId[4](u16(2))
   base: u16 = i
   i32_bits_u32(sum_rows(t) + u32(pick(t, i)) + u32(pick_wide(t, last)) + u32(base) - u32(1))
@@ -184,7 +185,7 @@ main: (): i32 {
 		}
 	}
 	// The literal construction and the loop-guarded one are discharged: the
-	// only guard left is the one over the arbitrary n.
+	// only guard left is the one over tag's arbitrary n.
 	if got := strings.Count(output, "oak_refine_oak_IrqId_"); got != 3 {
 		t.Fatalf("expected two guard definitions and one guarded construction, found %d:\n%s", got, output)
 	}

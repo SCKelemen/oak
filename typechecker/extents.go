@@ -42,6 +42,7 @@ const (
 	factUpperBound                       // other <= len(container), other a local binding
 	factIndexLit                         // other < bound, a literal bound on a local binding
 	factLowerLit                         // bound <= other, a literal lower bound on a local binding
+	factBelow                            // other < via, a guard between two local bindings
 )
 
 type extentFact struct {
@@ -421,6 +422,12 @@ func (tc *TypeChecker) factsFromConditionWith(cond ast.Expression, earlier []ext
 		if leftIsLen && rightIsConst && rightConst >= 0 && local(leftLen) {
 			return []extentFact{{kind: factMinLen, container: leftLen, bound: rightConst + 1}}, nil
 		}
+		// n > i between two local bindings: i < n.
+		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsIndex && !rightIsConst && rightOffset == 0 &&
+			!leftIsLen && local(leftIndex, rightIndex) {
+			return []extentFact{{kind: factBelow, other: rightIndex, via: leftIndex, indexDirect: true}},
+				[]indexPair{{index: rightIndex, bound: leftIndex}}
+		}
 		// len(v) > i: a plain index bound. An offset form (len(v) > i + K)
 		// proves nothing, because fixed-width i + K may have wrapped.
 		if leftIsLen && rightIsIndex && !rightIsConst && rightOffset == 0 && local(leftLen, rightIndex) {
@@ -459,7 +466,10 @@ func (tc *TypeChecker) factsFromConditionWith(cond ast.Expression, earlier []ext
 		// once the whole condition is known.
 		if leftIsIndex && !leftIsConst && leftOffset == 0 && rightIsIndex && !rightIsConst && rightOffset == 0 &&
 			!rightIsLen && local(leftIndex, rightIndex) {
-			return nil, []indexPair{{index: leftIndex, bound: rightIndex}}
+			// The relation itself is kept too: a midpoint declared under it
+			// is below its upper end (Oak.Extents.midpoint_under_bound).
+			return []extentFact{{kind: factBelow, other: leftIndex, via: rightIndex, indexDirect: true}},
+				[]indexPair{{index: leftIndex, bound: rightIndex}}
 		}
 		// i < len(v) - K with len(v) >= K known: i + K < len(v)
 		// (Oak.Extents.guard_without_wrap).
@@ -523,6 +533,16 @@ func (tc *TypeChecker) loopConditionFacts(loop *ast.WhileStatement) []extentFact
 	assignedNames(loop, assigned)
 	kept := make([]extentFact, 0)
 	for _, fact := range tc.factsFromCondition(loop.Condition) {
+		if fact.kind == factBelow {
+			// The guard compares the two bindings itself on every
+			// iteration; only a relation replayed from a Bool binding is
+			// stale once either side is written.
+			if fact.viaBinding && (touchedBy(assigned, fact.other) || touchedBy(assigned, fact.via)) {
+				continue
+			}
+			kept = append(kept, fact)
+			continue
+		}
 		if fact.via != "" && touchedBy(assigned, fact.via) {
 			continue
 		}
@@ -877,10 +897,37 @@ func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentF
 			}
 		}
 	}
-	// A literal integer initializer is a lower bound on the binding
-	// (docs/spec/50-borrowing.md, lower bound): `i: u32 = 16`.
+	// A literal integer initializer bounds the binding both ways
+	// (docs/spec/50-borrowing.md, lower bound; literal bound): `i: u32 =
+	// 16` is `16 <= i` and `i < 17` until the binding is written.
 	if k, isConst := constantIndex(decl.Value); isConst && k >= 0 {
-		return []extentFact{{kind: factLowerLit, other: decl.Name.Value, bound: k}}
+		return []extentFact{
+			{kind: factLowerLit, other: decl.Name.Value, bound: k},
+			{kind: factIndexLit, other: decl.Name.Value, bound: k + 1},
+		}
+	}
+	// The midpoint `m = a + (b - a) / K` (K a literal >= 2) under a live
+	// `a < b` is below b (Oak.Extents.midpoint_under_bound: the
+	// subtraction and the sum are the natural ones because a < b), so m
+	// inherits b's upper bounds: `m < len(c)` for `b <= len(c)`, `m < B - 1`
+	// for `b < B` — the binary-search probe.
+	if low, high, isMidpoint := midpointOf(decl.Value); isMidpoint && tc.localBinding(low) && tc.localBinding(high) && tc.belowLive(low, high) {
+		m := decl.Name.Value
+		facts := []extentFact{{kind: factBelow, other: m, via: high, indexDirect: true}}
+		for _, fact := range tc.extentFacts {
+			if fact.dead || fact.other != high {
+				continue
+			}
+			switch fact.kind {
+			case factUpperBound:
+				facts = append(facts, extentFact{kind: factIndexBound, container: fact.container, other: m, via: high, viaBinding: fact.viaBinding, indexDirect: true})
+			case factIndexLit:
+				if fact.bound >= 2 {
+					facts = append(facts, extentFact{kind: factIndexLit, other: m, bound: fact.bound - 1})
+				}
+			}
+		}
+		return facts
 	}
 	// `n: u32 = len(v)` binds an upper bound for indices into v: n = len(v)
 	// gives n <= len(v), so a later `i < n` proves `i < len(v)`
@@ -924,11 +971,18 @@ func (tc *TypeChecker) enterDeclarationFacts(decl *ast.VariableDeclaration, rest
 	if len(facts) == 0 {
 		return
 	}
-	if len(facts) == 1 && facts[0].kind == factLowerLit {
-		// A lower bound is killed flow-sensitively by any later write to the
-		// binding — a direct assignment when it is checked, a loop on its
-		// entry unless the loop preserves the bound (lowerBoundsSurviving) —
-		// so it is pushed for the statements before that write.
+	flowSensitive := true
+	for _, fact := range facts {
+		if fact.kind == factMinLen {
+			flowSensitive = false
+		}
+	}
+	if flowSensitive {
+		// A fact about a binding is killed flow-sensitively by any later
+		// write to it — a direct assignment when it is checked, a loop on
+		// its entry unless the loop preserves the bound
+		// (lowerBoundsSurviving, upperBoundsSurviving) — so it is pushed
+		// for the statements before that write.
 		tc.pushExtentFacts(facts)
 		return
 	}
@@ -1015,9 +1069,146 @@ func (tc *TypeChecker) lowerBoundsSurviving(loop *ast.WhileStatement, conditionF
 	return keep
 }
 
+// midpointOf reads `a + (b - a) / K` (either operand order of the sum)
+// with K a literal of at least 2, and names a and b.
+func midpointOf(expr ast.Expression) (low, high string, ok bool) {
+	sum, isInfix := expr.(*ast.InfixExpression)
+	if !isInfix || sum.Operator != "+" {
+		return "", "", false
+	}
+	for _, order := range [][2]ast.Expression{{sum.Left, sum.Right}, {sum.Right, sum.Left}} {
+		base, isPath := pathOf(order[0])
+		div, isDiv := order[1].(*ast.InfixExpression)
+		if !isPath || !isDiv || div.Operator != "/" {
+			continue
+		}
+		k, isConst := constantIndex(div.Right)
+		diff, isDiff := div.Left.(*ast.InfixExpression)
+		if !isConst || k < 2 || !isDiff || diff.Operator != "-" {
+			continue
+		}
+		upper, upperIsPath := pathOf(diff.Left)
+		lower, lowerIsPath := pathOf(diff.Right)
+		if upperIsPath && lowerIsPath && lower == base {
+			return base, upper, true
+		}
+	}
+	return "", "", false
+}
+
+// belowLive reports a live `low < high` relation between two bindings.
+func (tc *TypeChecker) belowLive(low, high string) bool {
+	for _, fact := range tc.extentFacts {
+		if !fact.dead && fact.kind == factBelow && fact.other == low && fact.via == high {
+			return true
+		}
+	}
+	return false
+}
+
+// upperBoundsSurviving names the bindings whose upper bounds a loop keeps
+// alive through its body: the body's first statement declares the
+// midpoint `m = a + (x - a) / K` under the loop's own guard `a < x`, m is
+// never written again, and every write to x in the body is `x = m` —
+// which only lowers x (Oak.Extents.midpoint_under_bound,
+// decreasing_keeps_upper_bound). This is the binary search: `hi = mid`
+// keeps `hi <= len(keys)`, so `keys[mid]` is proven on every iteration.
+func (tc *TypeChecker) upperBoundsSurviving(loop *ast.WhileStatement, conditionFacts []extentFact) map[string]bool {
+	keep := map[string]bool{}
+	if loop == nil || loop.Body == nil || len(loop.Body.Statements) == 0 {
+		return keep
+	}
+	decl, isDecl := loop.Body.Statements[0].(*ast.VariableDeclaration)
+	if !isDecl || decl.Name == nil || decl.Value == nil {
+		return keep
+	}
+	low, high, isMidpoint := midpointOf(decl.Value)
+	if !isMidpoint || strings.Contains(high, ".") || strings.Contains(low, ".") {
+		return keep
+	}
+	below := false
+	for _, fact := range conditionFacts {
+		if fact.kind == factBelow && !fact.viaBinding && fact.other == low && fact.via == high {
+			below = true
+		}
+	}
+	if !below {
+		return keep
+	}
+	m := decl.Name.Value
+	rest := &ast.BlockStatement{Statements: loop.Body.Statements[1:]}
+	if assignsAny(rest, map[string]bool{m: true}, false) || assignsAny(loop.Condition, map[string]bool{m: true, high: true}, false) {
+		return keep
+	}
+	var writes []ast.Expression
+	collectAssignments(rest, high, &writes)
+	if len(writes) == 0 {
+		return keep
+	}
+	for _, write := range writes {
+		if ident, isIdent := write.(*ast.Identifier); !isIdent || ident.Value != m {
+			return keep
+		}
+	}
+	keep[high] = true
+	return keep
+}
+
+// collectAssignments gathers the values written to a plain binding
+// anywhere in the node, declarations included.
+func collectAssignments(node ast.Node, name string, into *[]ast.Expression) {
+	switch n := node.(type) {
+	case nil:
+	case *ast.BlockStatement:
+		for _, stmt := range n.Statements {
+			collectAssignments(stmt, name, into)
+		}
+	case *ast.BlockExpression:
+		collectAssignments(n.Block, name, into)
+	case *ast.UnsafeBlock:
+		collectAssignments(n.Body, name, into)
+	case *ast.AssignmentStatement:
+		if n.Name != nil && n.Name.Value == name {
+			*into = append(*into, n.Value)
+		}
+		collectAssignments(n.Value, name, into)
+	case *ast.VariableDeclaration:
+		if n.Name != nil && n.Name.Value == name {
+			*into = append(*into, n.Value)
+		}
+		collectAssignments(n.Value, name, into)
+	case *ast.WhileStatement:
+		collectAssignments(n.Condition, name, into)
+		collectAssignments(n.Body, name, into)
+	case *ast.IfStatement:
+		collectAssignments(n.Condition, name, into)
+		collectAssignments(n.Consequence, name, into)
+		collectAssignments(n.Alternative, name, into)
+	case *ast.ExpressionStatement:
+		collectAssignments(n.Expression, name, into)
+	case *ast.IndexAssignmentStatement:
+		collectAssignments(n.Value, name, into)
+	case *ast.MatchExpression:
+		collectAssignments(n.Scrutinee, name, into)
+		for _, arm := range n.Arms {
+			collectAssignments(arm.Body, name, into)
+		}
+	case *ast.InvocationExpression:
+		for _, arg := range n.Arguments {
+			collectAssignments(arg, name, into)
+		}
+	case *ast.InfixExpression:
+		collectAssignments(n.Left, name, into)
+		collectAssignments(n.Right, name, into)
+	case *ast.PrefixExpression:
+		collectAssignments(n.Right, name, into)
+	}
+}
+
 // killFactsAssignedByExcept kills the facts a loop invalidates, keeping
-// the literal lower bounds of the bindings lowerBoundsSurviving names.
-func (tc *TypeChecker) killFactsAssignedByExcept(node ast.Node, keepLower map[string]bool) {
+// the literal lower bounds of the bindings lowerBoundsSurviving names and
+// the upper bounds of the bindings upperBoundsSurviving names.
+func (tc *TypeChecker) killFactsAssignedByExcept(node ast.Node, keepLower, keepUpper map[string]bool) {
 	names := map[string]bool{}
 	assignedNames(node, names)
 	if len(names) == 0 {
@@ -1026,6 +1217,9 @@ func (tc *TypeChecker) killFactsAssignedByExcept(node ast.Node, keepLower map[st
 	for i := range tc.extentFacts {
 		fact := &tc.extentFacts[i]
 		if fact.kind == factLowerLit && keepLower[fact.other] {
+			continue
+		}
+		if (fact.kind == factUpperBound || fact.kind == factIndexLit) && keepUpper[fact.other] {
 			continue
 		}
 		if fact.dependsOn(names) {

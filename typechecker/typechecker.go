@@ -4777,7 +4777,7 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	// earlier statement of the body executes again after the assignment
 	// (typechecker/extents.go).
 	conditionFacts := tc.loopConditionFacts(stmt)
-	tc.killFactsAssignedByExcept(stmt, tc.lowerBoundsSurviving(stmt, conditionFacts))
+	tc.killFactsAssignedByExcept(stmt, tc.lowerBoundsSurviving(stmt, conditionFacts), tc.upperBoundsSurviving(stmt, conditionFacts))
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError(stmt.Condition, "while condition must be bool, got %s", conditionType)

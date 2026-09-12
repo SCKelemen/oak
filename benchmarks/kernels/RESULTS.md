@@ -117,12 +117,16 @@ absolute numbers against the earlier table.)
 What the checker proved: every access in `tiled` (`a[i + 7]` under
 `i <= len(a) - 8` by `subtraction_under_length`, the eight constant
 accumulator indices), `bitmap`, and `dispatch` is unchecked; the constant
-shift counts fold their checks away. `page_probe` keeps two checked view
-reads, the same shape `search` keeps: `keys[mid * 512]` with `mid` below
-a bound derived by division, and `page[m]` where `m < b` and `b` only
-ever decreases from 512 — a monotone upper bound the facts do not yet
-track. Neither costs measurably; a binary search is latency-bound on the
-comparison chain.
+shift counts fold their checks away. `page_probe` keeps one checked view
+read: `keys[mid * 512]`, whose `mid` is below `pages = len(keys) / 512`
+— a bound derived by division, which the scaled-index law does not read
+yet. Its second read, `page[m]` under `b` decreasing from 512, and
+`search`'s `keys[mid]` under `hi = mid` are proven by the midpoint and
+decreasing-bound laws (`50-borrowing.md`, `Oak.Extents.midpoint_under_bound`,
+`decreasing_keeps_upper_bound`): the guard `lo < hi` is kept as a
+relation, the midpoint inherits `hi`'s upper bound, and the loop's only
+write to `hi` lowers it. Neither cost measurably before; a binary search is
+latency-bound on the comparison chain.
 
 What the numbers say: `bitmap` is now the population-count instruction
 in all three languages — Oak through `arm64.cnt64` (`docs/spec/92-ffi.md`

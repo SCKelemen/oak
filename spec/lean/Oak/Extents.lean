@@ -140,4 +140,28 @@ theorem increment_keeps_lower_bound (i c K0 : Nat) (h : K0 ≤ i) : K0 ≤ i + c
 theorem increment_without_wrap (i c U w : Nat) (hi : i < U) (hU : U + c ≤ 2 ^ w) :
     i + c < 2 ^ w := by omega
 
+/-- **Midpoint**: under `a < b`, `a + (b - a) / k` is below `b` for every
+    `k ≥ 2` — and the subtraction and the sum are the natural ones, since
+    `a < b` keeps both inside the word (`declarationFacts`, the midpoint
+    rule of a binary search; `k = 2` is `lo + (hi - lo) / 2`). -/
+theorem midpoint_under_bound (a b k : Nat) (hab : a < b) (hk : 2 ≤ k) :
+    a + (b - a) / k < b := by
+  have h : (b - a) / k < b - a := Nat.div_lt_self (by omega) (by omega)
+  omega
+
+/-- **Through the midpoint to a length**: with `b ≤ len` besides,
+    `a + (b - a) / k < len` — the composition the declaration's fact
+    records directly (`factIndexBound` through `b`). -/
+theorem midpoint_under_length (a b k len : Nat) (hab : a < b) (hk : 2 ≤ k) (hlen : b ≤ len) :
+    a + (b - a) / k < len :=
+  Nat.lt_of_lt_of_le (midpoint_under_bound a b k hab hk) hlen
+
+/-- **A decreasing write keeps an upper bound**: from `m < x` and `x ≤ n`,
+    the new value `m` is still at most `n`; and below a literal `B`
+    likewise (`checkWhileStatement`, upperBoundsSurviving: a loop whose
+    only writes to `x` are `x = m` with `m` the midpoint under `a < x`). -/
+theorem decreasing_keeps_upper_bound (m x n : Nat) (hm : m < x) (hx : x ≤ n) : m ≤ n := by omega
+
+theorem decreasing_keeps_literal_bound (m x B : Nat) (hm : m < x) (hx : x < B) : m < B := by omega
+
 end Oak.Extents

@@ -933,8 +933,10 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   condition, or the declaration `n: u32 = len(v)`, makes `n` an upper bound
   for indices into `v`, so a later `i < n` proves `v[i]`
   (`bound_through_upper`) — the canonical strict loop shape, whose bound
-  must be a binding (`85-discipline.md` §3). A declaration's fact holds for
-  the rest of its block unless the block reassigns `n` or `v`.
+  must be a binding (`85-discipline.md` §3). A declaration's fact holds
+  until the write that changes `n` or `v`: a direct assignment, or the
+  entry of a loop that writes either — unless the loop only lowers `n`
+  (midpoint and decreasing bound, below).
 - **Lower bound and subtraction**: a literal initializer `i: u32 = K`
   establishes `K <= i`; leaving `while i < K` (a bare comparison, no
   `break` in the body) establishes `K <= i` for the rest of the block
@@ -948,6 +950,19 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   (`increment_keeps_lower_bound`, `increment_without_wrap`); any other
   write to `i` kills it before the body — the SHA-256 schedule,
   `w[i - 16]` for `16 <= i < 64`.
+- **Midpoint and decreasing bound**: a guard `a < b` between two bindings
+  is kept as a relation, and a declaration `m: u32 = a + (b - a) / K` (`K`
+  a literal of at least 2) under it establishes `m < b`
+  (`midpoint_under_bound`; the subtraction and the sum cannot wrap because
+  `a < b`), so `m` inherits `b`'s upper bounds: `v[m]` is proven under
+  `b <= len(v)` (`midpoint_under_length`), and `m < B - 1` under `b < B`.
+  A loop whose body declares that midpoint first and whose only writes to
+  `b` are `b = m` keeps `b`'s upper bounds through the loop, because the
+  write only lowers `b` (`decreasing_keeps_upper_bound`,
+  `decreasing_keeps_literal_bound`) — the binary search, `keys[mid]` under
+  `hi = mid`, and the probe of a 512-element page under `b: u32 = 512`. A
+  literal initializer `b: u32 = K` bounds `b` above as well as below
+  (`b < K + 1`).
 - **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
   when the length is known to be at least `M + 1`
   (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`.
