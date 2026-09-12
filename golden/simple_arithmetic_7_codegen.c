@@ -539,7 +539,7 @@ i32 oak_main(  ) {
     string result   = ( ( x == 5 ) ? ( (string) { .data = (u8*)str_lit_0, .len = 4 } ) : ( x == 8 ) ? ( (string) { .data = (u8*)str_lit_1, .len = 5 } ) : ( (string) { .data = (u8*)str_lit_2, .len = 5 } ) )  ;
     oak_Status status1   = oak_Status_Ok()  ;
     oak_Status status2   = oak_Status_NotFound()  ;
-    i32 code  ;
+    i32 code   = 0  ;
     if ( status1.tag == oak_Status_tag_Ok ) {
       code     = 200    ;
     }

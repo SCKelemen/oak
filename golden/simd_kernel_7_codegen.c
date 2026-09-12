@@ -476,6 +476,9 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
 #include <arm_neon.h>
 #endif
+#if defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+#include <riscv_vector.h>
+#endif
 typedef struct oak_u8x16 { u8 lanes[16]; } u8x16;
 typedef struct oak_u16x8 { u16 lanes[8]; } u16x8;
 typedef struct oak_u32x4 { u32 lanes[4]; } u32x4;
@@ -496,6 +499,9 @@ static inline u8x16 oak_simd_eq_u8x16( u8x16 a, u8x16 b ) {
   u8x16 r;
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(r.lanes, vceqq_u8(vld1q_u8(a.lanes), vld1q_u8(b.lanes)));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  vbool8_t m = __riscv_vmseq_vv_u8m1_b8(__riscv_vle8_v_u8m1(a.lanes, 16), __riscv_vle8_v_u8m1(b.lanes, 16), 16);
+  __riscv_vse8_v_u8m1(r.lanes, __riscv_vmerge_vxm_u8m1(__riscv_vmv_v_x_u8m1(0, 16), (u8)~(u8)0, m, 16), 16);
 #else
   for (int i = 0; i < 16; i++) {
     u8 x = a.lanes[i]; u8 y = b.lanes[i];
@@ -510,6 +516,8 @@ static inline u8x16 oak_simd_load_u8x16( oak_view_u8 v, u32 off ) {
   u8x16 r;
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(r.lanes, vld1q_u8(v.base + off));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(r.lanes, __riscv_vle8_v_u8m1(v.base + off, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { r.lanes[i] = v.base[off + (u32)i]; }
 #endif
@@ -519,6 +527,8 @@ static inline u8x16 oak_simd_load_u8x16_proven( oak_view_u8 v, u32 off ) {
   u8x16 r;
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(r.lanes, vld1q_u8(v.base + off));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(r.lanes, __riscv_vle8_v_u8m1(v.base + off, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { r.lanes[i] = v.base[off + (u32)i]; }
 #endif
@@ -529,6 +539,8 @@ static inline u8x16 oak_simd_splat_u8x16( u8 x ) {
   u8x16 r;
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(r.lanes, vdupq_n_u8(x));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(r.lanes, __riscv_vmv_v_x_u8m1(x, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { r.lanes[i] = x; }
 #endif
@@ -559,6 +571,8 @@ static inline void oak_simd_store_u8x16( oak_span_u8 s, u32 off, u8x16 val ) {
   if ((u64)off + 16u > (u64)s.len) { __builtin_trap(); }
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(s.base + off, vld1q_u8(val.lanes));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(s.base + off, __riscv_vle8_v_u8m1(val.lanes, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { s.base[off + (u32)i] = val.lanes[i]; }
 #endif
@@ -566,6 +580,8 @@ static inline void oak_simd_store_u8x16( oak_span_u8 s, u32 off, u8x16 val ) {
 static inline void oak_simd_store_u8x16_proven( oak_span_u8 s, u32 off, u8x16 val ) {
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(s.base + off, vld1q_u8(val.lanes));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(s.base + off, __riscv_vle8_v_u8m1(val.lanes, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { s.base[off + (u32)i] = val.lanes[i]; }
 #endif

@@ -24,6 +24,15 @@ static void oak_report(const char *what, const char *file, uint32_t line) {
 #ifndef signbit
 #define signbit(x) __builtin_signbit(x)
 #endif
+#ifndef isnan
+#define isnan(x) __builtin_isnan(x)
+#endif
+#ifndef isinf
+#define isinf(x) __builtin_isinf(x)
+#endif
+#ifndef isfinite
+#define isfinite(x) __builtin_isfinite(x)
+#endif
 #endif
 #include <float.h>
 #if FLT_EVAL_METHOD != 0

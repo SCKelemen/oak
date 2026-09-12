@@ -617,7 +617,7 @@ OAK_INLINE oak_Option_u32 oak_first_even( u32 a, u32 b ) {
 // @signature: fn main() -> i32
 i32 oak_main(  ) {
     oak_Option_u32 found   = oak_first_even( ((u32)( 3 )), ((u32)( 8 )) )  ;
-    i32 byteRange  ;
+    i32 byteRange   = 0  ;
     oak_Result_u8_Overflow oak__scrutinee_0 = oak_conv_u8_checked_u32( ((u32)( 300 )) );
     if ( oak__scrutinee_0.tag == oak_Result_u8_Overflow_tag_Ok ) {
       u8 v = oak__scrutinee_0.payload.Ok;
