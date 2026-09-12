@@ -297,6 +297,12 @@ the toolchain.
 | `total_order_*` | reflexive, total, antisymmetric, refines the IEEE order, orders the zeros | decided; `bv_decide` |
 | `min_*`, `max_*` on non-NaN operands | commutative, one of the operands, below and above both, the zeros ordered | decided; `bv_decide` |
 
+| Bound (`Oak.FloatBounds`) | Statement | Rung |
+| --- | --- | --- |
+| `round_error` | `2^p · \|round p x − x\| ≤ \|x\|`: one rounding moves a value by at most `u·\|x\|`, `u = 2^-p` | proved in Lean |
+| `rounded_error`, `bound_closed` | any grouping of additions, depth `d`: `2^(p·d) · \|rounded − exact\| ≤ B p d · Σ\|xᵢ\|`, `B p d + 2^(p·d) = (2^p+1)^d` — the classical `((1+u)^d − 1) Σ\|xᵢ\|` | proved in Lean |
+| `chain_error`, `tree_is_grouping`, `groupings_differ` | `reduce.chain` over `n` values is within `((1+u)^(n−1) − 1) Σ\|xᵢ\|`; `reduce.tree` is the rounded sum of a grouping of the leaves; two groupings differ by at most the sum of their bounds (`55-parallelism.md` §4, `order any`) | proved in Lean |
+
 The decider models an `f32` or `f64` as its bit pattern (`asm/floats_lowering.go`): negation, abs, copysign, the classifiers, the comparisons, `min`, `max`, and `total_order` are the circuits `Oak.FloatBits` defines; a NaN operand of `min`/`max` yields a fresh symbol, since the backend's result is `a + b` and its payload the platform's, so no law about it can be proved (`TestFloatBitLevel`). Arithmetic, rounding, `sqrt`, `fma`, and width conversions are not bit operations and stay open at this rung; their laws live in `Oak.Floats`.
 
 | Discharge law (`Oak.Discharge`, `spec/oak/discharge.oak`) | Statement | Rung |
