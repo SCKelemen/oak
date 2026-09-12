@@ -230,11 +230,14 @@ index, which any buffer the tiles cover already guarantees.
 
 ## 7. What this increment does not do
 
-- Execute on a GPU from `oak run` or `oak test`: the host side (device,
-  pipeline state, command buffer) is the runtime's, reached through
-  `c.extern` and `framework Metal` in `oak.mod`. The Metal toolchain is not
-  part of the compiler's tests; the emitted text is checked against its
-  stated form and the C realization is executed.
+- Execute on a GPU from `oak run` or `oak test`: the host side of a
+  *program's* launch (device, pipeline state, command buffer) is the
+  runtime's, reached through `c.extern` and `framework Metal` in `oak.mod`.
+  The *tools* do run kernels on the device (§9): the emitted text is
+  checked against its stated form, the C realization is executed, and the
+  same kernels run on this machine's GPU in the tests and compile on it
+  under `-metal-check` — through the framework's run-time compiler, so
+  the Xcode toolchain is not needed.
 - SIMD-group operations, atomics beyond the fault word, and threadgroup
   memory other than the cooperative reduction's scratch. Reductions are
   in, two ways. **Within a thread**: `reduce.tree` over a window of the
@@ -360,3 +363,37 @@ structurally, then shows the model keeps every entry it wrote, because a
 row writes indices below the next row's (`writeRow_inside`,
 `writeRows_outside`); the fuel is the three loop bounds.
 
+## 9. Execution on the device (implemented)
+
+The Metal framework ships with macOS and compiles shader source at run
+time, so the emitted kernels run on this machine's GPU **without the Xcode
+toolchain**. `codegen/metal/gpu` builds a small Objective-C runner once
+(with the system C compiler and the Metal and Foundation frameworks, cached
+under the user cache directory), and the runner compiles the emitted source
+on the device, binds buffers by the launch descriptor (§5), dispatches, and
+writes the spans and the fault word back:
+
+- `gpu.Available()` says why kernels cannot run here (not macOS, no C
+  compiler, the runner does not build, no device), or `""`; tests skip on a
+  reason, tools report it.
+- `gpu.Check(ctx, source)` compiles the source on the device and returns
+  the driver's errors. `oak build -metal out.metal -metal-check` runs it
+  after writing the file: exit 0 and the device's name on success, exit 1
+  with the driver's message when the device rejects the source, exit 2
+  when there is no device.
+- `gpu.Run(ctx, source, kernel, grid, args)` launches one kernel over
+  `grid` positions — `grid * threadgroup` threads in threadgroups of
+  `threadgroup` for a group kernel (§7) — with one argument per view, span,
+  and scalar parameter by name (a record parameter's fields as
+  `name.field`, as the descriptor spells them), and returns every span's
+  bytes and the fault word. A nonzero fault word is the trap (§3); the
+  spans of a faulted launch are not a result.
+
+`compiler/e2e_kernels_gpu_test.go` runs the chapter's kernels on the
+device and checks them against what the C realization computed in the
+host tests: elementwise `relu`, tiled `axpy`, the per-thread `reduce.tree`
+over a window, the threadgroup `reduce.group_tree`, and the
+record-parameter `matmul_t` — the same bits — and an out-of-range read
+raises fault 1. What remains for the tools is a launch sequence under `oak
+test`: choosing the inputs, the trace schema for the launches, and the
+replay (`110-testing.md`); the runner is the primitive it will use.
