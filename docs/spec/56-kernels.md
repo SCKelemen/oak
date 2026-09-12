@@ -91,6 +91,7 @@ Inside the subset:
 | a record in a helper: parameter, result, local, literal | the MSL `struct` of the record (a buffer field is a pointer and its length), passed and returned by value; `Tensor2 { data: v, rows: r, … }` is `tensor__Tensor2{ v, v_len, r, … }` |
 | `t.rows`, `t.data[i]`, `len(t.data)`, `t.data[i] = v` | the struct field; a buffer field is indexed, measured, windowed, or passed on like a buffer parameter |
 | `assert(cond)` | `if (!cond) { oak_raise(oak_fault, 5u); return zero; }` — a failed assertion is a trap (section 3), and the thread leaves the function with a zero result |
+| `r.group_tree(G, xs, lo, m, zero, f)` in a kernel body | the **cooperative reduction** of section 7: the kernel becomes a group kernel with `G` threads per position; `G` is an integer literal, a power of two up to 1024, one per kernel |
 | the grid position | `uint gid [[thread_position_in_grid]]` |
 | locals `x: T = e`, `x := e`, assignment | the same, scalars only |
 | `x[i]`, `y[i] = v` | `x[oak_check(i, x_len, oak_fault)]` — the index is checked against the length and a miss raises the fault word (section 3) |
@@ -168,9 +169,12 @@ The emitted file begins with one line per kernel, machine-readable:
 ```
 
 Fields are `;`-separated: the kernel name, then each parameter as
-`name kind element buffer indices` (kind `grid`, `view`, `span`, or
-`scalar`; a view or span occupies two indices, data then length; a scalar
-one), then the fault buffer. The same information is `compiler.
+`name kind element buffer indices` (kind `grid` or `group` for the
+position, `view`, `span`, or `scalar`; a view or span occupies two indices,
+data then length; a scalar one; a record parameter is its fields as
+`name.field`), then the fault buffer, the independence shape, and for a
+group kernel `threadgroup G`: the host dispatches `positions * G` threads
+in threadgroups of `G`, and each position is one threadgroup. The same information is `compiler.
 Compilation.EmitMetal()`'s `Result.Kernels` for tools in Go. The host binds
 each view or span as a buffer of `element` values plus a `uint` length —
 `c.span_of`/`c.mut_span_of` (`92-ffi.md` section 2.5) are the Oak side of
@@ -222,15 +226,27 @@ index, which any buffer the tiles cover already guarantees.
   `c.extern` and `framework Metal` in `oak.mod`. The Metal toolchain is not
   part of the compiler's tests; the emitted text is checked against its
   stated form and the C realization is executed.
-- Threadgroup memory, SIMD-group operations, barriers, atomics beyond the
-  fault word, or reductions **across** threads. Reductions **within** a
-  thread are in: `reduce.tree` over a window of the input, its combine
-  bound to a named function, runs per thread with the binary-counter
-  grouping the host computes (`r.tree(subslice(x, gid * tile, tile),
-  zero, add)` into `partials[gid]`); the partials then reduce on the host
-  with `reduce.tree` again, so a launch's grouping is "tree of tile
-  trees" — a language fact, the same on every backend. A cooperative
-  threadgroup reduction with the same grouping is the next increment.
+- SIMD-group operations, atomics beyond the fault word, and threadgroup
+  memory other than the cooperative reduction's scratch. Reductions are
+  in, two ways. **Within a thread**: `reduce.tree` over a window of the
+  input, its combine bound to a named function, runs per thread with the
+  binary-counter grouping the host computes. **Across a threadgroup**:
+  `r.group_tree(G, x, lo, m, zero, add)` in a kernel body makes the kernel
+  a **group kernel** — its position is a threadgroup of `G` threads
+  (`[[threadgroup_position_in_grid]]`; `G` a literal power of two up to
+  1024, one per kernel, `threadgroup G` in the descriptor). The threads
+  load the `m` elements at `lo` into threadgroup scratch (`m <= G` and
+  the window fitting are checked, faults 5 and 4) and combine
+  **pairwise-adjacent with doubling stride**, partner present, behind
+  barriers; every thread reads the result, and one thread performs the
+  kernel's span stores. On the host `group_tree` is `tree` over the
+  window; `Oak.Reduce.coop_eq_tree` proves the cooperative scheme
+  computes the same binary-counter tree for every `m`, so `partials[gid]`
+  is the same bits on the GPU and the CPU, and a launch's total —
+  `reduce.tree` over the partials on the host — is "tree of group trees",
+  a language fact. Every Oak value in a group kernel depends only on the
+  position and the parameters, so the barriers are reached uniformly by
+  construction.
 - Fixed arrays as kernel parameters (a fixed array is thread-private; a
   buffer is a view or span).
 
