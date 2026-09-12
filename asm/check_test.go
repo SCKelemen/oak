@@ -150,6 +150,53 @@ func TestCheckerFrameArrays(t *testing.T) {
 	}
 }
 
+// The derived-span idiom (subslice): `cmp wS, wL; b.hi trap` (start <= len),
+// `sub wT, wL, wS`, `cmp wN, wT; b.hi trap` (n <= len - start), then
+// `add xD, xB, wS, uxtw #s` derives the span at xD of length wN.
+func TestCheckerSubslice(t *testing.T) {
+	decl := "second: (v: []u32, s: u32, n: u32) -> u32"
+	idiom := "  bind x0, w1 = v\n  bind w2 = s\n  bind w3 = n\n  clobber x9, x10, x11\n  cmp w2, w1\n  b.hi trap\n  sub w9, w1, w2\n  cmp w3, w9\n  b.hi trap\n  add x10, x0, w2, uxtw #2\n  mov w11, w3\n"
+	epilogue := "\ntrap:\n  brk #1"
+	accepts := []struct{ name, body string }{
+		{"indexed through the derived span", idiom + "  mov w9, #1\n  cmp w9, w11\n  b.hs trap\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue},
+		{"guarded against the original count register", idiom + "  mov w9, #1\n  cmp w9, w3\n  b.hs trap\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue},
+		{"length guard on the derived span", idiom + "  cmp w11, #1\n  b.lo trap\n  ldr w0, [x10]\n  ret" + epilogue},
+	}
+	for _, tc := range accepts {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("sub.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			sig, _ := parseSignature(decl)
+			if findings := Check(unit.Functions[0], sig, nil); len(findings) != 0 {
+				t.Fatalf("the subslice idiom must pass: %v", findings)
+			}
+		})
+	}
+	rejects := []struct{ name, body, want string }{
+		{"count check missing", "  bind x0, w1 = v\n  bind w2 = s\n  bind w3 = n\n  clobber x9, x10, x11\n  cmp w2, w1\n  b.hi trap\n  add x10, x0, w2, uxtw #2\n  mov w11, w3\n  mov w9, #0\n  cmp w9, w11\n  b.hs trap\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue, "memory operands go through the declared sp frame or a bound span base"},
+		{"start check missing", "  bind x0, w1 = v\n  bind w2 = s\n  bind w3 = n\n  clobber x9, x10, x11\n  sub w9, w1, w2\n  cmp w3, w9\n  b.hi trap\n  add x10, x0, w2, uxtw #2\n  mov w11, w3\n  mov w9, #0\n  cmp w9, w11\n  b.hs trap\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue, "memory operands go through the declared sp frame or a bound span base"},
+		{"wrong scale", "  bind x0, w1 = v\n  bind w2 = s\n  bind w3 = n\n  clobber x9, x10, x11\n  cmp w2, w1\n  b.hi trap\n  sub w9, w1, w2\n  cmp w3, w9\n  b.hi trap\n  add x10, x0, w2, uxtw #3\n  mov w11, w3\n  mov w9, #0\n  cmp w9, w11\n  b.hs trap\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue, "memory operands go through the declared sp frame or a bound span base"},
+		{"start rewritten before the add", "  bind x0, w1 = v\n  bind w2 = s\n  bind w3 = n\n  clobber x9, x10, x11\n  cmp w2, w1\n  b.hi trap\n  sub w9, w1, w2\n  cmp w3, w9\n  b.hi trap\n  mov w2, #7\n  add x10, x0, w2, uxtw #2\n  mov w11, w3\n  mov w9, #0\n  cmp w9, w11\n  b.hs trap\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue, "memory operands go through the declared sp frame or a bound span base"},
+		{"derived from a view stays read-only", idiom + "  mov w9, #0\n  cmp w9, w11\n  b.hs trap\n  str w9, [x10, w9, uxtw #2]\n  mov w0, #0\n  ret" + epilogue, "read-only view"},
+		{"guard against an unrelated register", idiom + "  mov w9, #0\n  cmp w9, w1\n  b.hs trap\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue, "not this span's length register"},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("sub.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			sig, _ := parseSignature(decl)
+			joined := strings.Join(Check(unit.Functions[0], sig, nil), "\n")
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("expected a finding mentioning %q, got:\n%s", tc.want, joined)
+			}
+		})
+	}
+}
+
 // Records at the boundary (AAPCS64 composites): up to 16 bytes as x-register
 // chunks, larger by reference to the caller's read-only copy, a large result
 // through the writable area in x8.

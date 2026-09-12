@@ -507,7 +507,11 @@ type TypeChecker struct {
 	// callee of every infix expression that resolved through a binding.
 	operatorBindings map[string]string
 	operatorLaws     []OperatorLaw
-	operatorCalls    map[string]string
+	// custodyInitializer is the custody transition call currently checked
+	// as a Buffer declaration's initializer, the one position such a call
+	// may stand in (docs/spec/92-ffi.md section 2.8.5).
+	custodyInitializer ast.Expression
+	operatorCalls      map[string]string
 	// packageExports is every loaded package's member table, for uniform
 	// call syntax (docs/spec/10-syntax.md section 13).
 	packageExports          map[string]modules.Exports
@@ -1956,7 +1960,11 @@ func (tc *TypeChecker) checkBorrowBuiltin(name string, expr *ast.InvocationExpre
 	if buffer, isBuffer := ownerType.(*BufferType); isBuffer {
 		// An owned foreign buffer borrows exactly like an owned array
 		// (docs/spec/92-ffi.md section 2.8); its length is the count it
-		// was created with.
+		// was created with. Only Host custody can be borrowed (2.8.5).
+		if !buffer.InHostCustody() {
+			tc.addError(prefix.Right, "%s: buffer %s is in %s custody and cannot be borrowed; a transition extern returns it to Host (docs/spec/92-ffi.md section 2.8.5)", name, prefix.Right.String(), buffer.CustodyState())
+			return nil
+		}
 		return &ArrayType{
 			Length:      -1,
 			IsSlice:     name == "view",
@@ -2468,7 +2476,15 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			validCall = false
 			continue
 		}
-		if tc.rejectBufferValue(arg, argType, "passed as an argument") {
+		if _, wantsBuffer := expectedType.(*BufferType); wantsBuffer && isExtern {
+			// A custody transition moves the buffer (docs/spec/92-ffi.md
+			// section 2.8.5): the argument is the binding itself.
+			if _, isIdent := arg.(*ast.Identifier); !isIdent {
+				tc.addError(arg, "a custody transition takes the Buffer binding itself, not an expression")
+				validCall = false
+				continue
+			}
+		} else if tc.rejectBufferValue(arg, argType, "passed as an argument") {
 			validCall = false
 			continue
 		}
@@ -2518,7 +2534,18 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		tc.stageMonomorphicBindings(bindings)
 	}
 
-	return bindings.Apply(fnType.ReturnType)
+	result = bindings.Apply(fnType.ReturnType)
+	if _, returnsBuffer := result.(*BufferType); returnsBuffer && isExtern {
+		// A custody transition's result is the moved buffer under its new
+		// name: the call stands only as a Buffer declaration's initializer
+		// (docs/spec/92-ffi.md section 2.8.5).
+		if tc.custodyInitializer != ast.Expression(expr) {
+			tc.addError(expr, "a custody transition initializes a Buffer binding: d: %s = %s(...)", result, expr.Function.String())
+			return nil
+		}
+		tc.custodyInitializer = nil
+	}
+	return result
 }
 
 // checkReinterpretCast checks view_as[U](src: []T) and span_as[U](src: [*]T) calls
@@ -3948,9 +3975,14 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 			// A Buffer binding is created by c.own and nothing else
 			// (docs/spec/92-ffi.md section 2.8): never copied from another
 			// binding, never inside an array.
-			if _, direct := varType.(*BufferType); !direct || stmt.Value == nil || !isForeignOwnCall(stmt.Value) {
-				tc.addError(stmt, "variable %s: a Buffer[T] binding is created only by c.own[T](ptr, count) inside an unsafe block, and cannot be copied or nested (docs/spec/92-ffi.md section 2.8)", stmt.Name.Value)
+			_, direct := varType.(*BufferType)
+			_, transition := tc.custodyTransitionCall(stmt.Value)
+			if !direct || stmt.Value == nil || (!isForeignOwnCall(stmt.Value) && !transition) {
+				tc.addError(stmt, "variable %s: a Buffer[T] binding is created only by c.own[T](ptr, count) inside an unsafe block or by a custody transition extern, and cannot be copied or nested (docs/spec/92-ffi.md section 2.8)", stmt.Name.Value)
 				return
+			}
+			if transition {
+				tc.custodyInitializer = stmt.Value
 			}
 		}
 

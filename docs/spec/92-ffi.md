@@ -716,24 +716,81 @@ carves the ranges it reserved with `subslice` over `view(&b)` or
 any number of views, or one span and its reborrows. Everything is `u32`
 arithmetic that the interpreter and the backends compute identically.
 
-#### 2.8.5 What stays outside
+#### 2.8.5 Custody states
+
+**Status: implemented and tested** (`compiler/e2e_buffer_custody_test.go`;
+the ml pilot's request F5, `docs/notes/ml-language-requests-2026-09.md`).
+The DMA and ownership states of `50-borrowing.md` §11, on `Buffer`:
+
+```oak
+submit:   (b: Buffer[f32, Host]):   Buffer[f32, Device] = c.extern("mlrt_submit")
+complete: (b: Buffer[f32, Device]): Buffer[f32, Host]   = c.extern("mlrt_complete")
+
+unsafe {
+  host: Buffer[f32] = c.own[f32](p, n)          // Buffer[f32, Host]
+  fill(span(&host))
+  device: Buffer[f32, Device] = submit(host)    // host is consumed
+  back: Buffer[f32] = complete(device)          // device is consumed
+  total = sum(view(&back))
+  free(c.disown(back))
+}
+```
+
+- `Buffer[T, S]` is a buffer in **custody state** `S`, a bare marker name;
+  `Buffer[T]` is `Buffer[T, Host]`. `Host` is the initial state, the one
+  `c.own` produces. States are phantom: every `Buffer[T, S]` has one
+  representation, and `Buffer[f32, Host]` and `Buffer[f32, Device]` are
+  distinct types. A state may not name a declared type.
+- **Only a `Host` buffer can be borrowed or handed back.** `view(&b)`,
+  `span(&b)`, and `c.disown(b)` on a buffer in another state are type
+  errors naming the state: CPU code cannot touch device-owned memory
+  because it lacks the state, not because the pointer is gone.
+- **A custody transition is an extern binding** with exactly one
+  `Buffer[T, From]` parameter and the return type `Buffer[T, To]`
+  (`To ≠ From`, same `T`); any other extern shape over a `Buffer` is
+  `OAK-F0110`. The binding is the trust boundary as for every extern
+  (§2.3): the runtime's function receives the buffer as `T *base, size_t
+  len` and returns nothing; the Oak result is the argument re-typed —
+  the same resource in its next state, nothing copied. Ordinary Oak
+  functions still take no `Buffer` (§2.8.1).
+- **Calling a transition consumes the binding**: the argument is the
+  `Buffer` binding itself, rejected while any view or span of it is live
+  (`OAK-B0000`), dead afterward (`OAK-B0111`), and the call stands only as
+  the initializer of a new `Buffer[T, To]` binding — the buffer always has
+  exactly one live name.
+- Lowering: the call is `( mlrt_submit( b.base, (size_t)b.len ), (oak_span_T){ b.base, b.len } )`,
+  the prototype `extern void mlrt_submit( T *b, size_t b_len );`. The
+  interpreter has no foreign memory and rejects the calls as it rejects
+  `c.own`.
+
+`Oak.BufferCustody` (`spec/lean/Oak/BufferCustody.lean`) instantiates the
+typestate calculus of `112-protocols.md` §5a with `Host ⇄ Device`: the
+round trip types (`round_trip`), a device handle only comes from a submit
+(`device_from_submit`), borrowing is admitted only at host
+(`no_borrow_in_device`, `borrow_state_is_host`), and the wrong-way
+transitions have no derivation.
+
+#### 2.8.6 What stays outside
 
 A `Buffer[T]` in a record or a global (a `Weights` record owning its
 arena, a package-level buffer loaded once) needs the record to carry
-custody, which is the `Buffer[CpuOwned]` typestate of `50-borrowing.md`
-§11 and the resource-consumption machinery of §9 applied to a field. The
-element-space arena admits one span at a time; carving several writable
-ranges from one buffer at once is the disjoint-region proof of
-`50-borrowing.md` §6, or an `unsafe` disjointness assumption.
+custody — the resource-consumption machinery of `50-borrowing.md` §9
+applied to a field, the increment after §2.8.5. The element-space arena
+admits one span at a time; carving several writable ranges from one buffer
+at once is the disjoint-region proof of `50-borrowing.md` §6, or an
+`unsafe` disjointness assumption. Custody states with more than a name —
+a device identity, a queue — are records over the buffer, which waits on
+the same increment.
 
-#### 2.8.6 Diagnostics
+#### 2.8.7 Diagnostics
 
 | Code | Meaning |
 | --- | --- |
 | `OAK-F0107` | `c.own` outside an `unsafe` block, or not the initializer of a named binding |
+| `OAK-F0110` | an extern binding over a `Buffer` that is not a custody transition |
 | `OAK-B0110` | (warning) the foreign buffer contract assumed for an owner |
-| `OAK-B0111` | a buffer used after `c.disown` |
-| `OAK-B0000` | `c.disown` while a view or span of the buffer is live |
+| `OAK-B0111` | a buffer used after `c.disown` or after a custody transition moved it |
+| `OAK-B0000` | `c.disown` or a custody transition while a view or span of the buffer is live |
 
 ### 2.9 C ABI exports from any package
 
