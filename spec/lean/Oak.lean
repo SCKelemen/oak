@@ -84,6 +84,7 @@ import Oak.Stdlib.EncodingExtracted
 import Oak.Stdlib.HashExtracted
 import Oak.FloatOps
 import Oak.Stdlib.FloatExtracted
+import Oak.Stdlib.TensorExtracted
 import Oak.Stdlib.MathExtracted
 import Oak.Stdlib.FloatKernelsExtracted
 import Oak.Stdlib.RandomExtracted
@@ -91,6 +92,7 @@ import Oak.Stdlib.UuidExtracted
 import Oak.Stdlib.SortU32Extracted
 import Oak.Stdlib.VarintLaws
 import Oak.Stdlib.SortLaws
+import Oak.Stdlib.TensorLaws
 import Oak.Stdlib.PdqsortLaws
 import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.Base64Laws

@@ -81,6 +81,28 @@ Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
 When `f` is an operator declaring `laws { associative }` the two agree on
 non-empty input (`Oak.Reduce.tree_assoc`).
 
+## Tensors (`import("tensor")`)
+
+Rank-2 tensors as records over borrowed views (`docs/spec/56-kernels.md`
+§8; the ml pilot's request F6): a shape, strides, and an offset into
+row-major storage. Transposition and row selection are new records over
+the same view, never copies; results leave through `MutTensor2` over a
+caller-owned span, so nothing allocates.
+
+| Function | Semantics |
+| --- | --- |
+| `tensor_of[R](data: View[f32, R], rows, cols)` / `tensor_mut_of[R](data: Span[f32, R], rows, cols)` | Contiguous row-major matrices over a view or span; the shape must fit (`assert`). |
+| `tensor_at(t, i, j)`, `tensor_get(t, i, j)`, `tensor_set(t, i, j, v)` | Element access through `tensor_index`, which traps on an out-of-shape pair; the view's bounds check guards the rest. |
+| `tensor_transpose(t)`, `tensor_row(t, i)` | The transposed view (strides swapped) and row `i` as a `1 x cols` tensor, both over the same storage. |
+| `tensor_sum(t)` | Every element in row-major order, left to right, from 0. |
+| `tensor_matmul(a, b, out)` | `out[i, j]` is the inner product of row `i` of `a` and column `j` of `b`, accumulated left to right from 0; shapes `m x k`, `k x n`, `m x n` asserted. |
+| `tensor_relu(x, out)`, `tensor_add(a, b, out)`, `tensor_scale(x, s, out)`, `tensor_fill(t, v)` | Elementwise into `out`, shapes asserted. |
+
+A kernel (`56-kernels.md`) computes the same element function per grid
+position over `t.data` and the shape scalars, since kernels take no
+records. `Oak.Stdlib.TensorLaws` proves the transposition laws over the
+extraction.
+
 ## Bytes
 
 | Function | Result and work |
@@ -847,9 +869,32 @@ checksum of `a ++ b`. BLAKE3 has the same incremental shape —
 `blake3(view, out)`; the state carries the open chunk and the chaining-value
 stack (room for the 54 levels a 64-bit length can need), and the tree is the
 specification's: 1024-byte chunks, parents merged by the chunk counter's
-trailing zeros, the last parent taking the root flag. All three are
-bit-serial or byte-serial today; word-at-a-time and table paths are measured
-changes for later.
+trailing zeros, the last parent taking the root flag.
+
+On AArch64 the two hot kernels run through the CPU's instructions:
+`stdlib/hash.arm64.oakasm` (embedded and attached by the loader whenever
+`hash` is imported, its function names rewritten to the package's internal
+names) realizes `crc32c_step7` — seven `crc32cx` steps over the 64-bit
+words `crc32c_update` folds 56 bytes at a time — and `sha256_block_hw` — one
+compression through `sha256h`/`sha256h2`/`sha256su0`/`sha256su1`, the state
+read from and written to a span and the block and round constants read
+through views under the assembler checker's dominating length guards. Each
+unit pairs with an Oak declaration that keeps its portable body, so the body
+is the definition: the seam checker admits the unit only within the
+declared registers and proven memory, the extraction and the interpreter see
+the Oak body, non-AArch64 targets and `-DOAK_PORTABLE_INTRINSICS` builds run
+it, and the differential tests (`compiler/e2e_stdlib_crc_sha_hw_test.go`)
+plus the faithfulness harness compare the two paths byte for byte. The CRC
+and SHA-2 instructions have no semantics in the asm verifier, so their
+verdicts are "trusted" (`94-assembler.md` §5), which is exactly what the
+differential tests cover. An AArch64 build requires FEAT_CRC32 and
+FEAT_SHA256 (every Apple M-series core and Armv8.1+ server core has both;
+a core without them takes SIGILL at the first call — build with
+`-DOAK_PORTABLE_INTRINSICS` for such a target). Measured on an M4 Max
+(`benchmarks/stdlib/RESULTS.md`): CRC-32C at parity with Go's hardware path
+(0.97×, from 20×), SHA-256 within 1.26× (from 7.3×); the remaining SHA gap
+is one call and one 96-byte state copy per 64-byte block. BLAKE3 stays
+portable.
 
 `compiler/e2e_hash_test.go` checks the FIPS known-answer vectors, the
 RFC 3720 CRC-32C check value (`0xE3069283` for `"123456789"`), and random
@@ -1139,6 +1184,25 @@ while the FFI lacked out-pointers and target constants is gone.
 `compiler/e2e_stdlib_timesim_test.go` checks the wall clock against Go's
 within a minute, that the monotonic clock starts at zero and never decreases
 over a thousand refreshes, and that a fixed source is refused.
+
+## `objc`: the Objective-C runtime (`import("objc")`)
+
+`stdlib/objc.oak` is Darwin-only and deliberately thin: `objc_class(name)`
+resolves a class by its NUL-terminated name (`objc_getClass` over `c.cstr`)
+and `objc_sel(name)` registers a selector (`sel_registerName`), both as
+opaque `c.Ptr` values. Sending a message is the language form
+`c.msg_send[(params) -> ret](receiver, selector, args...)` inside `unsafe`
+(`docs/spec/92-ffi.md` §2.12): the bracketed signature is the sender's
+assertion about the selector's implementation, checked at the call like an
+extern signature, lowered to `objc_msgSend` cast to that prototype, and
+recorded as the `OAK-B0122` assumption a strict module admits explicitly.
+Nothing models Objective-C types, ownership, or dispatch beyond that; the
+runtime's nil-receiver rule applies unchanged. A module that imports the
+package declares the framework it drives (`framework Foundation`) in its
+`oak.mod`, which brings the runtime library. arm64 only in this increment.
+`compiler/e2e_ffi_objc_test.go` drives Foundation: `[[NSString alloc]
+initWithUTF8String:"oak"]` has length 3, `[NSNumber numberWithInt:41]`
+answers 41, and an `NSRange` boxed in an `NSValue` comes back by value.
 
 ## `arena`: reservations over an owner (`import("arena")`)
 

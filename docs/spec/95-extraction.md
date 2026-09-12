@@ -167,7 +167,7 @@ callees, so a program that calls the standard library extracts the library
 functions it reaches. Everything else — strings, generic templates
 themselves, recursion, methods, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`
-float rows, SIMD, FFI, assignment to a global — is an
+float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
 error naming the construct. Nothing is approximated.
 
 ## 5. Where it runs

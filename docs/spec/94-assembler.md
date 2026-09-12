@@ -222,6 +222,17 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   as its fallback body. Verification verdicts (§8) are informational
   diagnostics the CLI prints as `asm: …` lines; a mismatch is an error.
   `examples/asm` is the reference: four kernels, all proven, run both ways.
+  **Library units.** A standard library package may carry units too
+  (`stdlib/hash.arm64.oakasm`, embedded as `stdlib.AsmUnits`): the module
+  loader attaches them when the package is imported, rewriting each unit
+  function's header to the package's internal name
+  (`83-modules.md` §7), so the pairing rule is the root package's; the
+  emitted block adds `.arch_extension crc`/`sha2` when a unit uses the
+  CRC-32 or SHA-256 mnemonics, for host assemblers whose default
+  architecture lacks them. The `hash` units keep their Oak bodies as
+  fallbacks, so the interpreter, the Lean extraction, and non-AArch64
+  builds see the portable definition and the differential tests compare it
+  with the hardware path.
 - **Typed pointer memory.** A span (`[*]T`) or view (`[]T`) parameter of
   fixed-width elements crosses as its `{base, u32 len}` pair and binds
   both registers explicitly — `bind x0, w1 = frame` (the base pointer,
@@ -1092,11 +1103,68 @@ written through, an empty subslice at the end, a local view copied from a
 parameter, and a subslice past the end trapping in both realizations.
 Array literals now store element by element (a long literal no longer
 exhausts the scratch registers).
+**Tenth increment — tagged unions and `match`.** A monomorphic ADT
+(`Shape: type = | Circle: i32 | Square: i32 | Empty`) is the synthetic
+record `semir.TaggedUnionLayout` places: the `u32` tag at offset 0 (its
+value the declaration index, or the declaration's `TagValues`) and one
+field per payload-carrying variant, named after the variant, at the
+payload union's offset — the numbers `codegen/records.go` asserts against
+the C compiler — so an ADT is a record local, crosses calls under the
+composite rules (`Shape` is 8 bytes, one chunk), and joins the composites
+table. `.Circle(5)` / `Shape.Circle(5)` (the type from the written name,
+the checker's resolution, or the expected type) stores the tag with a
+32-bit `str` and the payload at its field (a scalar, a record place, a
+call's result). A general `match` loads the tag once and compares it per
+arm (`cmp wT, #tag; b.ne next`); a payload binding becomes a local of the
+payload type (a scalar loaded at its width, a record copied into a fresh
+local, as the C backend binds a copy), `_` or a bare binding ends the
+chain, and a chain no arm closes falls to the trap block (the checker
+proved exhaustiveness, so it never runs). Matches lower in statement
+position (arm blocks, calls, asserts), value position (arms moved into one
+register), result position (scalar and record results, each arm placed
+directly), and as record values (arms copied into one temp); a scalar
+scrutinee takes literal patterns. Generic ADTs, string or span payloads,
+array payload bindings, and nested payload patterns stay with the C
+backend. Executed (`TestE2ENativeADTs`): the corpus `Shape`/`area2`
+program, a record payload bound and read in an arm, an ADT built by a
+nested conditional and returned then matched by the caller with the call
+as the scrutinee, a statement-position match updating a local, a literal
+match over `u32`, and reassignment of an ADT local — natively against the
+C backend and the portable realization. ADT bodies are trusted by the
+verifier (§5).
+**Eleventh increment — arrays of records.** `pool: [N]Rec` as a local
+(zero-filled, or from a literal of record values) and as a record field,
+with C's stride (`sizeof(Rec)`, the layout the C backend asserts). A
+literal index is a static place; a computed `pool[i]` is a record place
+addressed through a register, produced by the element idiom the checker
+now admits: the array's frame address, the constant guard `cmp wI, #N;
+b.hs trap`, then `add xE, xB, wI, uxtw #s` for a power-of-two stride up to
+16 bytes (the extended-register form's limit) or `movz wK, #stride; umaddl
+xE, wI, wK, xB` otherwise. The checker records `xE` as a writable region of
+exactly one element — `add xE, xB, wI, uxtw #s` or `umaddl` over a frame
+address with the index guarded below a constant `K` and `base + K·stride`
+inside the declared frame (`movz`/`mov wK, #c` records the stride as a
+constant fact, dying with a write, at labels, and at calls) — and narrows
+it through `add xD, xE, #imm` to a field's tail; memory through a region
+now also takes the indexed form `[xR, wJ, uxtw #t]` under a constant guard
+whose `K'·2^t` fits the region (an array field inside the element). Every
+place-taking path — field loads and stores, exact-size copies, chunk loads
+for calls (a register-addressed element is copied into an aligned frame
+temp first, so its last chunk never reads past the element), results,
+match scrutinees, payload bindings — takes the base register into
+account. Computed indexing into an array of records that itself lies
+inside a computed element stays with the C backend
+(`TestCheckerElementRegions`: three accepted shapes, six refusals).
+Executed (`TestE2ENativeRecordArrays`): a link pool of 8-byte nodes walked
+by index, a 12-byte record array updated in place through `umaddl` with an
+element copied out and passed on, and a record array field inside a record
+read and written by computed index — natively against the C backend and
+the portable realization.
 Next increments: the verifier's frame addresses, record locals, and
-derived spans (so array, record, and subslice bodies are proven, not
-trusted), `break` as a second loop exit in the recognizer, arrays of
-records, and the slicing syntax `v[lo:hi]` once the C backend lowers
-`len` over it.
+derived spans (so array, record, ADT, and subslice bodies are proven, not
+trusted), `break` as a second loop exit in the recognizer, spans of
+records, and the slicing syntax `v[lo:hi]` once the C backend lowers `len`
+over it.
 
 
 

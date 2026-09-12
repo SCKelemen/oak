@@ -102,6 +102,10 @@ drive_shuffle_u32: (state: [*]Xoshiro, items: [*]u32): () { random_shuffle[u32](
 `},
 	{name: "uuid", file: "UuidExtracted.lean", namespace: "Oak.Stdlib.Uuid", deps: []string{"random", "encoding"}},
 	{name: "float", file: "FloatExtracted.lean", namespace: "Oak.Stdlib.Float"},
+	// Tensors as records over views (docs/spec/56-kernels.md section 8):
+	// the shape and stride arithmetic, transposition, and the row-major
+	// reductions with their named grouping.
+	{name: "tensor", file: "TensorExtracted.lean", namespace: "Oak.Stdlib.Tensor"},
 	{name: "math", file: "MathExtracted.lean", namespace: "Oak.Stdlib.Math"},
 	// The ml shape (docs/notes/ml-feedback-2026-09.md, roadmap E4): fixed
 	// reductions over f32 and f64 in the stated sequential order, an axpy

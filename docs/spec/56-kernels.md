@@ -194,3 +194,55 @@ parallelism chapter requires.
   planned second increment.
 - Records and fixed arrays as kernel parameters (F6's tensors are records
   over views; the kernel takes the views).
+
+## 8. Tensors over views (`import("tensor")`)
+
+**Status: implemented (library), 2026-09-12.** The ml pilot's request F6:
+tensors as typed records over shapes and views. The library is
+`stdlib/tensor.oak`; what it needed from the language already existed —
+region records over views and spans (`50-borrowing.md` §8b, §8c), generic
+region parameters, `assert` — so no compiler change was made for it, and
+the record is host-side structure over the buffers a kernel takes.
+
+```oak
+t := import("tensor")
+
+a: t.Tensor2 = t.tensor_of(view(&xs), 2, 3)        // shape over a view, row-major
+at: t.Tensor2 = t.tensor_transpose(a)               // strides swapped, same storage
+{
+  o: t.MutTensor2 = t.tensor_mut_of(span(&ys), 2, 2) // results into a caller-owned span
+  t.tensor_matmul(a, at, o)
+}
+```
+
+- `Tensor2[R]` is `{ data: View[f32, R], rows, cols, row_stride, col_stride,
+  offset }`; `MutTensor2[R]` the same over `Span[f32, R]`. Element `(i, j)`
+  is `data[offset + i * row_stride + j * col_stride]` after the shape check
+  (`tensor_index` traps on an out-of-shape pair; the view's bounds check
+  guards the storage). `tensor_transpose` swaps the strides and
+  `tensor_row` moves the offset: new records, no copies.
+- **Nothing allocates.** `tensor_matmul`, `tensor_relu`, `tensor_add`,
+  `tensor_scale`, and `tensor_fill` write into a `MutTensor2` the caller
+  built over storage it owns — a fixed array, a `Buffer` in host custody
+  (§2.8.5 of `92-ffi.md`), an arena reservation. The borrow rules apply
+  unchanged: while the mutable tensor is live its owner is suspended, so
+  the result is read after the tensor's block ends.
+- **Reductions name their grouping**: `tensor_sum` and the inner product
+  of `tensor_matmul` are the sequential left fold in row-major order, the
+  grouping every backend computes; a tree-grouped variant is `reduce.tree`
+  (`55-parallelism.md` §4) over the same elements.
+- **Kernels take the tensor's parts.** A kernel takes `t.data` as a view
+  or span and the shape scalars as `u32` parameters (§1); the per-element
+  body is the library function's inner statement. Records as kernel
+  parameters are the increment that would let a kernel take the tensor
+  itself.
+
+`Oak.Stdlib.TensorLaws` (`spec/lean/Oak/Stdlib/TensorLaws.lean`) proves
+over the extraction (`TensorExtracted.lean`, regenerated from the Oak
+source) that reading the transpose at `(i, j)` is reading the original at
+`(j, i)`, shape check included (`at_transpose`), that transposing twice is
+the identity (`transpose_transpose`), and that a row reads as the original
+(`at_row`). Specifications of `tensor_matmul` and `tensor_sum` against a
+mathematical definition are the recorded next step, with the checker rule
+for kernel-thread independence over `tensor_index`.
+

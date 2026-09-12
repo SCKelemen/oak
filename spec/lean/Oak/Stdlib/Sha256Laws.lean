@@ -121,10 +121,10 @@ theorem rounds_fuel (h w : Array UInt32) (f1 f2 : Nat) (h1 : 64 < f1) (h2 : 64 <
   obtain ⟨_, _, _, _, _, _, _, _, _⟩ := r2
   first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
 
-theorem compress_loop1_fuel : ∀ (n : Nat) (block : Array UInt8) (w : Array UInt32) (i : UInt32) (f1 f2 : Nat),
+theorem view_loop1_fuel : ∀ (n : Nat) (block : Array UInt8) (w : Array UInt32) (i : UInt32) (f1 f2 : Nat),
     16 - i.toNat ≤ n → n < f1 → n < f2 →
-      sha256_compress.loop1 block w i f1 = sha256_compress.loop1 block w i f2 ∧
-      ∃ r, sha256_compress.loop1 block w i f1 = some r := by
+      sha256_compress_view.loop1 block w i f1 = sha256_compress_view.loop1 block w i f2 ∧
+      ∃ r, sha256_compress_view.loop1 block w i f1 = some r := by
   intro n
   induction n with
   | zero =>
@@ -135,7 +135,7 @@ theorem compress_loop1_fuel : ∀ (n : Nat) (block : Array UInt8) (w : Array UIn
       cases f2 with
       | zero => omega
       | succ f2 =>
-        unfold sha256_compress.loop1
+        unfold sha256_compress_view.loop1
         have hd : decide (i < (16 : UInt32)) = false := by
           apply decide_eq_false; rw [UInt32.lt_iff_toNat_lt]; simp; omega
         simp only [hd, Bool.false_eq_true, ↓reduceIte, Option.pure_def]
@@ -148,7 +148,7 @@ theorem compress_loop1_fuel : ∀ (n : Nat) (block : Array UInt8) (w : Array UIn
       cases f2 with
       | zero => omega
       | succ f2 =>
-        unfold sha256_compress.loop1
+        unfold sha256_compress_view.loop1
         by_cases hlt : i < (16 : UInt32)
         · have hd : decide (i < (16 : UInt32)) = true := decide_eq_true hlt
           simp only [hd, ↓reduceIte]
@@ -161,20 +161,145 @@ theorem compress_loop1_fuel : ∀ (n : Nat) (block : Array UInt8) (w : Array UIn
           simp only [hd, Bool.false_eq_true, ↓reduceIte, Option.pure_def]
           first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
 
-/-- The fuel any compression needs; `sha256_compress` and `sha256_compress_view`
-    agree with their value at this fuel from here on. -/
+/-- The two eight-word copies around the hardware block: fuel-insensitive past eight. -/
+theorem hw_loop1_fuel : ∀ (n : Nat) (h entry : Array UInt32) (i : UInt32) (f1 f2 : Nat),
+    8 - i.toNat ≤ n → n < f1 → n < f2 →
+      sha256_block_hw.loop1 h entry i f1 = sha256_block_hw.loop1 h entry i f2 ∧
+      ∃ r, sha256_block_hw.loop1 h entry i f1 = some r := by
+  intro n
+  induction n with
+  | zero =>
+    intro h entry i f1 f2 hn h1 h2
+    cases f1 with
+    | zero => omega
+    | succ f1 =>
+      cases f2 with
+      | zero => omega
+      | succ f2 =>
+        unfold sha256_block_hw.loop1
+        have hd : decide (i < (8 : UInt32)) = false := by
+          apply decide_eq_false; rw [UInt32.lt_iff_toNat_lt]; simp; omega
+        simp only [hd, Bool.false_eq_true, ↓reduceIte, Option.pure_def]
+        first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
+  | succ n ih =>
+    intro h entry i f1 f2 hn h1 h2
+    cases f1 with
+    | zero => omega
+    | succ f1 =>
+      cases f2 with
+      | zero => omega
+      | succ f2 =>
+        unfold sha256_block_hw.loop1
+        by_cases hlt : i < (8 : UInt32)
+        · have hd : decide (i < (8 : UInt32)) = true := decide_eq_true hlt
+          simp only [hd, ↓reduceIte]
+          have hi : i.toNat < 8 := by
+            have := UInt32.lt_iff_toNat_lt.mp hlt; simpa using this
+          have hi1 : (i + 1).toNat = i.toNat + 1 := by
+            rw [UInt32.toNat_add, show (1 : UInt32).toNat = 1 by decide]; exact Nat.mod_eq_of_lt (by omega)
+          exact ih h _ (i + 1) f1 f2 (by omega) (by omega) (by omega)
+        · have hd : decide (i < (8 : UInt32)) = false := decide_eq_false hlt
+          simp only [hd, Bool.false_eq_true, ↓reduceIte, Option.pure_def]
+          first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
+
+theorem hw_loop2_fuel : ∀ (n : Nat) (h next : Array UInt32) (j : UInt32) (f1 f2 : Nat),
+    8 - j.toNat ≤ n → n < f1 → n < f2 →
+      sha256_block_hw.loop2 h next j f1 = sha256_block_hw.loop2 h next j f2 ∧
+      ∃ r, sha256_block_hw.loop2 h next j f1 = some r := by
+  intro n
+  induction n with
+  | zero =>
+    intro h next j f1 f2 hn h1 h2
+    cases f1 with
+    | zero => omega
+    | succ f1 =>
+      cases f2 with
+      | zero => omega
+      | succ f2 =>
+        unfold sha256_block_hw.loop2
+        have hd : decide (j < (8 : UInt32)) = false := by
+          apply decide_eq_false; rw [UInt32.lt_iff_toNat_lt]; simp; omega
+        simp only [hd, Bool.false_eq_true, ↓reduceIte, Option.pure_def]
+        first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
+  | succ n ih =>
+    intro h next j f1 f2 hn h1 h2
+    cases f1 with
+    | zero => omega
+    | succ f1 =>
+      cases f2 with
+      | zero => omega
+      | succ f2 =>
+        unfold sha256_block_hw.loop2
+        by_cases hlt : j < (8 : UInt32)
+        · have hd : decide (j < (8 : UInt32)) = true := decide_eq_true hlt
+          simp only [hd, ↓reduceIte]
+          have hj : j.toNat < 8 := by
+            have := UInt32.lt_iff_toNat_lt.mp hlt; simpa using this
+          have hj1 : (j + 1).toNat = j.toNat + 1 := by
+            rw [UInt32.toNat_add, show (1 : UInt32).toNat = 1 by decide]; exact Nat.mod_eq_of_lt (by omega)
+          exact ih _ next (j + 1) f1 f2 (by omega) (by omega) (by omega)
+        · have hd : decide (j < (8 : UInt32)) = false := decide_eq_false hlt
+          simp only [hd, Bool.false_eq_true, ↓reduceIte, Option.pure_def]
+          first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
+
+/-- The fuel any compression needs; every compression entry agrees with its
+    value at this fuel from here on. -/
 def compressFuel : Nat := 128
+
+theorem compress_view_fuel (h : Array UInt32) (block : Array UInt8) (f1 f2 : Nat) (h1 : 64 < f1) (h2 : 64 < f2) :
+    sha256_compress_view h block f1 = sha256_compress_view h block f2 ∧
+      ∃ r, sha256_compress_view h block f1 = some r := by
+  unfold sha256_compress_view
+  by_cases hd : decide (block.size.toUInt32 ≥ (64 : UInt32)) = true
+  · simp only [hd, ↓reduceIte]
+    obtain ⟨heq1, r1, hr1⟩ := view_loop1_fuel 16 block (Array.replicate 64 0) 0 f1 f2 (by simp) (by omega) (by omega)
+    rw [← heq1, hr1]
+    obtain ⟨w', i'⟩ := r1
+    simp only [bind, Option.bind]
+    obtain ⟨heq2, r2, hr2⟩ := rounds_fuel h w' f1 f2 h1 h2
+    rw [← heq2, hr2]
+    first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
+  · have hd' : decide (block.size.toUInt32 ≥ (64 : UInt32)) = false := by simpa using hd
+    simp only [hd', Bool.false_eq_true, ↓reduceIte, Option.pure_def]
+    first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
+
+theorem block_hw_fuel (h : Array UInt32) (block : Array UInt8) (k : Array UInt32) (f1 f2 : Nat)
+    (h1 : 64 < f1) (h2 : 64 < f2) :
+    sha256_block_hw h block k f1 = sha256_block_hw h block k f2 ∧ ∃ r, sha256_block_hw h block k f1 = some r := by
+  unfold sha256_block_hw
+  by_cases hc : ((decide (h.size.toUInt32 ≥ (8 : UInt32)) && decide (block.size.toUInt32 ≥ (64 : UInt32))) &&
+      decide (k.size.toUInt32 ≥ (64 : UInt32))) = true
+  · simp only [hc, ↓reduceIte]
+    obtain ⟨heq1, r1, hr1⟩ := hw_loop1_fuel 8 h (Array.replicate 8 0) 0 f1 f2 (by simp) (by omega) (by omega)
+    rw [← heq1, hr1]
+    obtain ⟨entry', i'⟩ := r1
+    simp only [bind, Option.bind]
+    obtain ⟨heq2, r2, hr2⟩ := compress_view_fuel entry' block f1 f2 h1 h2
+    rw [← heq2, hr2]
+    simp only [bind, Option.bind]
+    obtain ⟨heq3, r3, hr3⟩ := hw_loop2_fuel 8 h r2 0 f1 f2 (by simp) (by omega) (by omega)
+    rw [← heq3, hr3]
+    obtain ⟨h', j'⟩ := r3
+    first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
+  · have hc' : ((decide (h.size.toUInt32 ≥ (8 : UInt32)) && decide (block.size.toUInt32 ≥ (64 : UInt32))) &&
+        decide (k.size.toUInt32 ≥ (64 : UInt32))) = false := by simpa using hc
+    simp only [hc', Bool.false_eq_true, ↓reduceIte, Option.pure_def]
+    first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
+
+/-- `sha256_compress` is `sha256_block`, which routes through the hardware block function. -/
+theorem block_eq_compress (h : Array UInt32) (block : Array UInt8) (fuel : Nat) :
+    sha256_block h block fuel = sha256_compress h block fuel := by
+  unfold sha256_compress
+  cases hx : sha256_block h block fuel <;> simp
 
 theorem compress_fuel (h : Array UInt32) (block : Array UInt8) (f1 f2 : Nat) (h1 : 64 < f1) (h2 : 64 < f2) :
     sha256_compress h block f1 = sha256_compress h block f2 ∧ ∃ r, sha256_compress h block f1 = some r := by
-  unfold sha256_compress
-  dsimp only
-  obtain ⟨heq1, r1, hr1⟩ := compress_loop1_fuel 16 block (Array.replicate 64 0) 0 f1 f2 (by simp) (by omega) (by omega)
-  rw [← heq1, hr1]
-  obtain ⟨w', i'⟩ := r1
-  simp only [bind, Option.bind]
-  obtain ⟨heq2, r2, hr2⟩ := rounds_fuel h w' f1 f2 h1 h2
-  rw [← heq2, hr2]
+  rw [← block_eq_compress, ← block_eq_compress]
+  unfold sha256_block
+  simp only [↓reduceIte]
+  obtain ⟨heq, r, hr⟩ := block_hw_fuel h block SHA256_K f1 f2 h1 h2
+  rw [← heq, hr]
+  obtain ⟨u, hs⟩ := r
   first | exact ⟨trivial, _, rfl⟩ | exact ⟨rfl, _, rfl⟩
 
 /-- The compression as a function: its value at `compressFuel`. -/
@@ -189,15 +314,15 @@ theorem compress_eq (h : Array UInt32) (block : Array UInt8) (fuel : Nat) (hf : 
   unfold compressFn
   rw [← heq, hr]
 
-/-! ## The compression reads the block through its first sixty-four bytes -/
+/-! ## The compression reads a sixty-four-byte block through its bytes -/
 
-theorem compress_loop1_congr (block block' : Array UInt8) (hb : ∀ k, k < 64 → block.getD k 0 = block'.getD k 0)
+theorem view_loop1_congr (block block' : Array UInt8) (hb : ∀ k, k < 64 → block.getD k 0 = block'.getD k 0)
     (w : Array UInt32) (i : UInt32) (fuel : Nat) :
-    sha256_compress.loop1 block w i fuel = sha256_compress.loop1 block' w i fuel := by
+    sha256_compress_view.loop1 block w i fuel = sha256_compress_view.loop1 block' w i fuel := by
   induction fuel generalizing w i with
   | zero => rfl
   | succ fuel ih =>
-    unfold sha256_compress.loop1
+    unfold sha256_compress_view.loop1
     by_cases hlt : i < (16 : UInt32)
     · have hd : decide (i < (16 : UInt32)) = true := decide_eq_true hlt
       simp only [hd, ↓reduceIte]
@@ -219,39 +344,34 @@ theorem compress_loop1_congr (block block' : Array UInt8) (hb : ∀ k, k < 64 �
     · have hd : decide (i < (16 : UInt32)) = false := decide_eq_false hlt
       simp only [hd, Bool.false_eq_true, ↓reduceIte]
 
+/-- Two sixty-four-byte blocks with the same bytes compress alike. The size
+    hypotheses matter: the block function leaves the state alone below
+    sixty-four bytes, so agreement on the first sixty-four bytes is not enough
+    on its own. -/
+theorem compress_view_congr (h : Array UInt32) (block block' : Array UInt8)
+    (hb : ∀ k, k < 64 → block.getD k 0 = block'.getD k 0) (h64 : block.size = 64) (h64' : block'.size = 64)
+    (fuel : Nat) : sha256_compress_view h block fuel = sha256_compress_view h block' fuel := by
+  unfold sha256_compress_view
+  simp only [h64, h64', view_loop1_congr block block' hb]
+
+theorem block_hw_congr (h : Array UInt32) (block block' : Array UInt8)
+    (hb : ∀ k, k < 64 → block.getD k 0 = block'.getD k 0) (h64 : block.size = 64) (h64' : block'.size = 64)
+    (k : Array UInt32) (fuel : Nat) : sha256_block_hw h block k fuel = sha256_block_hw h block' k fuel := by
+  unfold sha256_block_hw
+  simp only [h64, h64',
+    show ∀ e, sha256_compress_view e block fuel = sha256_compress_view e block' fuel from
+      fun e => compress_view_congr e block block' hb h64 h64' fuel]
+
 theorem compress_congr (h : Array UInt32) (block block' : Array UInt8)
-    (hb : ∀ k, k < 64 → block.getD k 0 = block'.getD k 0) (fuel : Nat) :
-    sha256_compress h block fuel = sha256_compress h block' fuel := by
-  unfold sha256_compress
-  dsimp only
-  rw [compress_loop1_congr block block' hb]
+    (hb : ∀ k, k < 64 → block.getD k 0 = block'.getD k 0) (h64 : block.size = 64) (h64' : block'.size = 64)
+    (fuel : Nat) : sha256_compress h block fuel = sha256_compress h block' fuel := by
+  rw [← block_eq_compress, ← block_eq_compress]
+  unfold sha256_block
+  simp only [block_hw_congr h block block' hb h64 h64' SHA256_K fuel]
 
-theorem compressFn_congr (h : Array UInt32) (block block' : Array UInt8)
+theorem compressFn_congr (h : Array UInt32) (block block' : Array UInt8) (h64 : block.size = 64) (h64' : block'.size = 64)
     (hb : ∀ k, k < 64 → block.getD k 0 = block'.getD k 0) : compressFn h block = compressFn h block' := by
-  unfold compressFn; rw [compress_congr h block block' hb]
-
-theorem view_loop1_eq (block : Array UInt8) (w : Array UInt32) (i : UInt32) (fuel : Nat) :
-    sha256_compress_view.loop1 block w i fuel = sha256_compress.loop1 block w i fuel := by
-  induction fuel generalizing w i with
-  | zero => rfl
-  | succ fuel ih =>
-    unfold sha256_compress_view.loop1 sha256_compress.loop1
-    by_cases hlt : i < (16 : UInt32)
-    · have hd : decide (i < (16 : UInt32)) = true := decide_eq_true hlt
-      simp only [hd, ↓reduceIte]
-      exact ih _ _
-    · have hd : decide (i < (16 : UInt32)) = false := decide_eq_false hlt
-      simp only [hd, Bool.false_eq_true, ↓reduceIte]
-
-theorem compress_view_eq (h : Array UInt32) (block : Array UInt8) (hsize : 64 ≤ block.size) (hsmall : block.size < 2 ^ 32)
-    (fuel : Nat) : sha256_compress_view h block fuel = sha256_compress h block fuel := by
-  unfold sha256_compress_view sha256_compress
-  dsimp only
-  have hd : decide (block.size.toUInt32 ≥ (64 : UInt32)) = true := by
-    apply decide_eq_true
-    show (64 : UInt32) ≤ block.size.toUInt32
-    rw [UInt32.le_iff_toNat_le, toUInt32_toNat_of_lt _ hsmall]; simpa using hsize
-  simp only [hd, ↓reduceIte, view_loop1_eq]
+  unfold compressFn; rw [compress_congr h block block' hb h64 h64']
 
 /-! ## The byte model of `sha256_update` -/
 
@@ -374,7 +494,8 @@ theorem absorb_equiv {s t : Sha256State} (hs : WF s) (ht : WF t) (hf : s.filled.
       rw [filled_lt_of_wf hf] at this; simpa using this
     refine ⟨?_, rfl, h3, fun k hk => by simp at hk⟩
     show compressFn s.h _ = compressFn s.h _
-    apply compressFn_congr
+    refine compressFn_congr _ _ _ (by rw [Array.size_setIfInBounds]; exact hs)
+      (by rw [Array.size_setIfInBounds]; exact ht) ?_
     intro k hk
     exact hblk k (by omega)
   · simp only [h64, Bool.false_eq_true, ↓reduceIte]
@@ -514,7 +635,7 @@ theorem absorb_block (src : Array UInt8) (s : Sha256State) (hs : WF s) (h0 : s.f
   refine ⟨?_, rfl, htot, fun k hk => by simp at hk⟩
   show compressFn t.h _ = compressFn s.h _
   rw [hh]
-  apply compressFn_congr
+  refine compressFn_congr _ _ _ (by rw [Array.size_setIfInBounds]; exact hwf) (by rw [Array.size_extract]; omega) ?_
   intro k hk
   rw [show i + (m + 1) = i + 64 by omega, extract_getD src i k hk hi, hfill]
   by_cases hkm : k = m
@@ -551,7 +672,7 @@ theorem update_loop1 (src : Array UInt8) (hsrc : src.size < 2 ^ 32) :
       simp only [hc, ↓reduceIte]
       have hext : (src.extract i.toNat (i.toNat + (64 : UInt32).toNat)).size = 64 := by
         rw [Array.size_extract]; simp; omega
-      rw [compress_view_eq _ _ (by rw [hext]; exact Nat.le_refl _) (by rw [hext]; decide) fuel, compress_eq _ _ fuel (by omega)]
+      rw [block_eq_compress, compress_eq _ _ fuel (by omega)]
       simp only [bind, Option.bind]
       have hi64' : (i + 64).toNat = i.toNat + 64 := by
         rw [UInt32.toNat_add, show (64 : UInt32).toNat = 64 by decide]; exact Nat.mod_eq_of_lt (by omega)
@@ -1029,8 +1150,9 @@ theorem stage1_agree (s t : Sha256State) (hs : WF s) (ht : WF t) (hf : s.filled.
   · rw [getD_setIfInBounds_ne _ _ _ _ (Ne.symm hkf), getD_setIfInBounds_ne _ _ _ _ (Ne.symm hkf)]
     exact h4 k (by omega)
 
-theorem compressFn_agree {s t : Sha256State} (h : AgreeTo s t 64) : compressFn s.h s.block = compressFn t.h t.block := by
-  rw [h.1]; exact compressFn_congr _ _ _ h.2.2.2
+theorem compressFn_agree {s t : Sha256State} (hs : WF s) (ht : WF t) (h : AgreeTo s t 64) :
+    compressFn s.h s.block = compressFn t.h t.block := by
+  rw [h.1]; exact compressFn_congr _ _ _ hs ht h.2.2.2
 
 theorem stage2_props (s : Sha256State) (hs : WF s) (hf : s.filled.toNat < 64) :
     WF (stage2 s) ∧ (stage2 s).filled.toNat ≤ 56 := by
@@ -1057,7 +1179,8 @@ theorem stage2_agree (s t : Sha256State) (hs : WF s) (ht : WF t) (hf : s.filled.
   · rw [if_pos h56, if_pos h56]
     have hz := zeroFill_congr (stage1 s) (stage1 t) h1wf h1wf' (64 - (stage1 s).filled.toNat) (by omega) hag
     rw [Nat.add_sub_cancel' (by omega)] at hz
-    exact ⟨compressFn_agree hz, rfl, hz.2.2.1, fun k hk => by simp at hk⟩
+    exact ⟨compressFn_agree (zeroFill_props (stage1 s) h1wf _ (by omega)).1
+      (zeroFill_props (stage1 t) h1wf' _ (by rw [← hfill]; omega)).1 hz, rfl, hz.2.2.1, fun k hk => by simp at hk⟩
   · rw [if_neg h56, if_neg h56]
     exact hag
 
@@ -1083,11 +1206,17 @@ theorem stage4_agree (s t : Sha256State) (hs : WF s) (ht : WF t) (hf : s.filled.
   rw [heq.total_eq]
   exact lenFill_congr _ _ z3wf z3wf' _ hag
 
+theorem stage4_wf (s : Sha256State) (hs : WF s) (hf : s.filled.toNat < 64) : WF (stage4 s) := by
+  obtain ⟨h2wf, h2le⟩ := stage2_props s hs hf
+  have h3wf : WF (stage3 s) := (zeroFill_props (stage2 s) h2wf (56 - (stage2 s).filled.toNat) (by omega)).1
+  exact (lenFill_props (stage3 s) h3wf (s.total * 8) 8 0 (by decide)).1
+
 /-- Equivalent states finalize to the same bytes. -/
 theorem finalModel_congr (s t : Sha256State) (hs : WF s) (ht : WF t) (hf : s.filled.toNat < 64) (heq : Equiv s t)
     (out : Array UInt8) : finalModel s out = finalModel t out := by
   unfold finalModel
-  rw [compressFn_agree (stage4_agree s t hs ht hf heq)]
+  rw [compressFn_agree (stage4_wf s hs hf) (stage4_wf t ht (by rw [← heq.filled_eq]; exact hf))
+    (stage4_agree s t hs ht hf heq)]
 
 /-- `sha256_final` cannot tell equivalent states apart. -/
 theorem final_congr (s t : Sha256State) (hs : WF s) (ht : WF t) (hf : s.filled.toNat < 64) (heq : Equiv s t)
