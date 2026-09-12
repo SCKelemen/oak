@@ -354,8 +354,38 @@ while remaining != u32(0) bounded_by len(input) {
 }
 ```
 
-The spelling is non-normative in v1; the semantic constraints above are the
-design boundary.
+**Landed subset (dbs ask 7, second increment).** The shape above is now the
+surface, for `u8` and `u32` lanes: `simd.Active`, `simd.ScalableU8`,
+`simd.ScalableU32`; `simd.active_u8(remaining)` / `active_u32(remaining)`
+choose an extent no wider than the remaining count nor the realization's
+capacity, `simd.count(active)` reads it; `splat_active_E(x, a)`,
+`load_active_E(v, off, a)` (traps unless `off + count ≤ len(v)`),
+`store_active_E(s, off, x, a)`, the lane-wise `add sub subs and or xor min
+max eq _active_E(x, y, a)` and `shr_active_E(x, n, a)`, `any_active_E` and
+`all_active_E`, and `reduce_add_active_u32` (the wrapping sum over the
+active lanes). Every operation takes the extent it applies to; lanes
+outside it are never read. The types are **block-local** (item 7,
+`OAK-S0401`): a local or an expression, never a record field, a global, a
+parameter, a result, or an array element — which is what lets a backend
+hold them in sizeless registers.
+
+Realizations: the portable one is a 16-byte vector and a `u32` extent
+(capacity 16 lanes for `u8`, 4 for `u32`); RISC-V Vector holds
+`vuint8m1_t`/`vuint32m1_t` block-locals with the extent from `vsetvl`
+(capacity `VLEN/8` and `VLEN/32` lanes); the interpreter uses the portable
+capacity, lowered on request so a test can stress a program at extents of
+one, three, or five lanes. **Extent independence** is the semantics
+(`Oak.Simd.chunked_map_eq`, `chunked_sum_eq`, `chunked_any_eq`,
+`chunked_all_eq`): a lane-wise map over any chunking is the map of the
+whole, the wrapping sum of chunk sums is the whole's, and `any`/`all`
+folded with or/and across chunks are the whole's. Two things a program
+must therefore do: fold per-chunk observations (`found = found ||
+any(...)`), since the number of chunks depends on the extent
+(`chunk_count_depends_on_extent`); and bound the request when staging
+lanes into fixed storage (`active_u8(remaining < 16 ? remaining | 16)`),
+since the backend may otherwise choose a wider extent — at VLEN 256 an
+unbounded request is 32 lanes. `compiler/e2e_scalable_test.go` is the
+worked program, over every input length from zero to forty.
 
 ### 4.1 Tail and mask policy
 
@@ -425,5 +455,13 @@ Discharged for the fixed vectors under the RVV realization
 programs of the NEON and portable witnesses run under `qemu-system-riscv64`
 with V at VLEN 128 and 256 and print the interpreter's checksum — the same
 program under portable scalar, NEON, and a scalable backend, at two
-emulated hardware vector lengths. The scalable *API* obligations (active
-extents, masks, fault-first) remain for the scalable model of §4.
+emulated hardware vector lengths. Discharged for the scalable API's landed
+subset (`compiler/e2e_scalable_test.go`): final partial chunks of every
+size from zero through the maximum (inputs of every length 0..40), the
+same program at extents 1, 3, 5, and 16 in the interpreter, portable C,
+and RVV at VLEN 128 and 256 (extents 16 and 32), and tail lanes unable to
+affect stores, reductions, or returned values — every operation takes its
+extent, and Lean states the independence. Still open: predicated
+(masked) operations, fault-first loads, and the call-boundary
+re-establishment of vector state (no scalable value crosses a call by the
+locality rule; the backend's `vsetvl` is re-issued per chunk).

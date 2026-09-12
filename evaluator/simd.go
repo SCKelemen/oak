@@ -74,6 +74,9 @@ func (layout simdLayout) setLane(v *object.Vector, i int, lane uint64) {
 // section 1.2. Member names come from the fixed compiler catalog; anything
 // else is an error.
 func evalSimdOp(member string, args []ast.Expression, env *object.Environment) object.Object {
+	if isScalableMember(member) {
+		return evalScalableOp(member, args, env)
+	}
 	splitAt := strings.LastIndex(member, "_")
 	if splitAt <= 0 {
 		return newError("the simd library has no operation simd.%s", member)

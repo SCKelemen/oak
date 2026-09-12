@@ -32,14 +32,14 @@ func TestE2ERVVAgreesWithInterpreter(t *testing.T) {
 	if err != nil || drv.Kind != "zig" {
 		t.Skipf("no zig for %s (%v)", tgt, err)
 	}
-	for _, program := range []struct{ name, source string }{{"simd_bytes", simdBytesProgram}, {"simd_float", floatSimdProgram}} {
+	for _, program := range []struct{ name, source string }{{"simd_bytes", simdBytesProgram}, {"simd_float", floatSimdProgram}, {"scalable", scalableProgram}} {
 		t.Run(program.name, func(t *testing.T) {
 			want := uint32(interpretChecked(t, program.source))
 			code, err := New().WithSource(program.name+".oak", program.source).WithTarget(tgt).EmitC().Get()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(code, "__riscv_vle") {
+			if !strings.Contains(code, "__riscv_vle") && !strings.Contains(code, "__riscv_vsetvl") {
 				t.Fatal("the emitted C carries no RVV realization")
 			}
 			dir := t.TempDir()
