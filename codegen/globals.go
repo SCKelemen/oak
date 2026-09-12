@@ -316,6 +316,12 @@ func (cg *CodeGenerator) isConstantGlobal(decl *ast.VariableDeclaration) bool {
 	if decl == nil || decl.Name == nil || decl.Value == nil || decl.Type == nil || cg.mutatedGlobals[decl.Name.Value] {
 		return false
 	}
+	// A placed global (docs/spec/65-machine-memory.md) is storage the
+	// machine sees in its section: it keeps its declared mutability, since
+	// a constant in a writable section conflicts with the section's type.
+	if decl.Section != "" {
+		return false
+	}
 	typeName, isIdent := decl.Type.(*ast.Identifier)
 	if !isIdent || !scalarGlobalTypes[typeName.Value] {
 		return false

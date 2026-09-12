@@ -257,7 +257,8 @@ as a C constant, `static const u64 page_size = 16384;`, never as a mutable
 static: the C compiler then folds it, so `pa / page_size` is a shift and
 `pa % page_size` a mask, where a mutable static would be a hardware
 division (the OS pilot's R2). A global some statement writes stays a
-mutable `static`; owned arrays and records keep their storage. Shifts in a
+mutable `static`, as does a global placed in a section
+(`65-machine-memory.md`); owned arrays and records keep their storage. Shifts in a
 global initializer are the plain operator at the checked width, so
 `(u32(0xFFFF) << 16) | u32(0xFFFF)` is a C integer constant expression
 (R5); the checker has already bounded the shift count.
