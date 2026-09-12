@@ -248,7 +248,19 @@ the toolchain.
 | `ctz_zero`, `ctz_lt_of_mem_true` | `ctz32_zero`, `ctz32_odd` (through `rbit`) | decided |
 | `popcount_le_width`, `popcount_zero`, `popcount_ones`, `popcount_not`, `popcount_eq_zero_iff` | `popcount32/64_*` | decided, bit level |
 
-The instruction functions decide because the bit-level decider lowers
+| Witness (`spec/oak/witnesses.oak`) | Statement | Rung |
+| --- | --- | --- |
+| the SWAR population count | `swar_popcount32(x) == arm64.cnt32(x)`, and at 64 bits | decided, bit level |
+| the byte shuffle, the swap network | `shuffle_rev32(x) == arm64.rev32(x)`, `network_rbit32(x) == arm64.rbit32(x)` | decided, bit level |
+| leading zeros as thresholds | `threshold_clz32(x) == arm64.clz32(x)` | decided, bit level |
+| Unicode Table 3-7, one and two bytes | `is_valid_utf8` over `[b0, b1]` equals the table's predicate | decided, all 65536 cases |
+| Table 3-7, the special three- and four-byte rows | `E0`, `E1`, `ED`; `F0`, `F4` with a fixed last byte, over every continuation pair | decided, all 65536 cases each |
+
+The witnesses are the three-witness rule (`92-ffi.md` §3.1) as proof
+rather than test: the portable lowering, transcribed as an Oak function,
+is stated equal to the instruction function and the decider settles it
+for every input; the validity intrinsic is stated against the table it
+implements and decided exhaustively. The instruction functions decide because the bit-level decider lowers
 `arm64.rev32`, `rbit`, `clz`, and `cnt` to the verifier's own instruction
 terms — the semantics the assembler lane is checked against — with `cnt`
 as a population-count term (an adder tree over the operand's bits). What
